@@ -18,9 +18,17 @@
     /* Typography — font families (single source of truth for the TS mirror
        in frontend/src/lib/fonts.ts; keep both in sync) */
     --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-    --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-    /* Icon font ONLY — Nerd Font glyphs for file/tree/completion icons.
-       Never use for text; text mono is --font-mono. */
+    /* Text mono leads with the bundled Nerd Font family (the same webfont
+       --font-icon serves): every monospace surface — the terminal, code
+       blocks, the CodeMirror viewer — resolves Nerd Font glyphs (icons,
+       decorations) by default, keeping one uniform mono stack app-wide. A
+       user-picked family is prepended BEFORE this stack, so it still renders
+       the text and the leading NF entry only catches the glyphs it lacks
+       (per-glyph fallback). Mirrored in lib/fonts.ts FONT_MONO_STACK. */
+    --font-mono: "SauceCodePro NF", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    /* Icon-scope token — Nerd Font glyphs for file/tree/completion icons.
+       The SAME family leads --font-mono (see above); elements address it as
+       --font-icon for icons, text addresses --font-mono. */
     --font-icon: "SauceCodePro NF", monospace;
 
     /* Typography — type scale (xs..lg). Values mirror the Tailwind defaults

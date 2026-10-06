@@ -17,7 +17,7 @@
 
 import { getApp } from './runtime'
 import { logger } from '@/lib/logger'
-import { MAX_FONT_NAME_LENGTH } from '@/lib/fonts'
+import { MAX_FONT_NAME_LENGTH, stripUnsafeFontNameChars } from '@/lib/fonts'
 
 /** Hard cap on any single font name passing through this boundary. Owned by
  *  lib/fonts.ts (the font store canonicalizes against the same number); this
@@ -53,19 +53,17 @@ export interface FontFamiliesResponseWire {
 }
 
 /**
- * Sanitize one raw font name from OS font metadata: strip double quotes,
- * backslashes and control characters, then cap the length. Returns null when
- * nothing usable remains (the name was empty or consisted entirely of stripped
- * characters) — callers treat that the same as "not detected" and drop the
- * entry. The quote/backslash stripping mirrors the store-side normalizeFamily,
- * so a shown picker option and the applied value stay the same name.
+ * Sanitize one raw font name from OS font metadata: strip the shared unsafe
+ * character set (double quotes, backslashes, control characters — see
+ * `stripUnsafeFontNameChars` in lib/fonts), then cap the length. Returns
+ * null when nothing usable remains (the name was empty or consisted entirely
+ * of stripped characters) — callers treat that the same as "not detected"
+ * and drop the entry. The stripping is the same helper the store-side
+ * normalizeFamily runs, so a shown picker option and the applied value stay
+ * the same name.
  */
 export function sanitizeFontName(raw: string): string | null {
-  // Deliberate control-character regex: stripping control characters out of
-  // OS-provided font metadata is this sanitizer's whole job — they must never
-  // reach a CSS font stack or UI state.
-  // eslint-disable-next-line no-control-regex
-  const cleaned = raw.replace(/["\\]/g, '').replace(/[\u0000-\u001F\u007F]/g, '')
+  const cleaned = stripUnsafeFontNameChars(raw)
   if (cleaned.length === 0) return null
   return cleaned.slice(0, MAX_FONT_NAME_LENGTH)
 }

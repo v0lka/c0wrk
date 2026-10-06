@@ -93,12 +93,15 @@ function press(key: string, alt = false): void {
   })
 }
 
-/** Radix's DropdownMenuTrigger toggles on `pointerdown`, not `click`. */
+/** Radix's DropdownMenuTrigger toggles on `pointerdown`, not `click`. The
+ *  async act scope flushes the whole synchronous open path (state update →
+ *  portal → effects), so assertions after this helper see the open menu —
+ *  no wall-clock settle (forbidden new timing debt,
+ *  internal/testtiming.TestNoNewTimingDebt). */
 async function openDropdown(): Promise<void> {
   const btn = chevron()
   await act(async () => {
     btn.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
-    await new Promise((r) => setTimeout(r, 10))
   })
 }
 
@@ -363,9 +366,11 @@ describe('StringCombobox inside a modal Radix dialog', () => {
       'button[aria-label="Profile name options"]',
     )
     expect(btn).not.toBeNull()
+    // Same flush contract as openDropdown: the async act scope runs the
+    // synchronous open path to completion — DismissableLayer's
+    // pointer-events effects included — without a wall-clock settle.
     await act(async () => {
       btn!.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
-      await new Promise((r) => setTimeout(r, 10))
     })
     // The modal dialog locks body pointer events; the menu layer must
     // re-enable them for itself (Radix DismissableLayer).

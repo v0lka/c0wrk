@@ -134,10 +134,27 @@ describe('fontStore', () => {
       expect(monoVar()).toBe(`"JetBrains Mono", ${FONT_MONO_STACK}`)
     })
 
+    it('canonicalizes a hand-edited family on apply (control characters stripped)', () => {
+      // The remaining half of the shared character set: a hand-edited
+      // payload carrying control characters must not reach the CSS var —
+      // the apply path runs the same stripUnsafeFontNameChars helper as the
+      // actions and api/fonts, so all three boundaries agree by construction.
+      applyFontsToDocument({
+        uiFontFamily: 'Can\u0000tarell',
+        monoFontFamily: null,
+        uiSmoothing: '',
+        monoSmoothing: '',
+      })
+      expect(sansVar()).toBe(`"Cantarell", ${FONT_SANS_STACK}`)
+    })
+
     it('removes the family property when an apply-side family sanitizes to nothing', () => {
       // A corrupted value of only quotes/backslashes degrades to the default
       // stack (property removed) — never an empty quoted token in the var.
       applyFontsToDocument({ uiFontFamily: '"\\', monoFontFamily: null, uiSmoothing: '', monoSmoothing: '' })
+      expect(sansVar()).toBe('')
+      // Control characters only: the same collapse.
+      applyFontsToDocument({ uiFontFamily: '\t\n\u0000', monoFontFamily: null, uiSmoothing: '', monoSmoothing: '' })
       expect(sansVar()).toBe('')
     })
 
@@ -196,6 +213,15 @@ describe('fontStore', () => {
       // Quote stripped, whitespace trimmed — applied AND stored canonically.
       expect(sansVar()).toBe(`"Noto Sans", ${FONT_SANS_STACK}`)
       expect(useFontStore.getState().uiFontFamily).toBe('Noto Sans')
+    })
+
+    it('setUIFontFamily strips control characters like the api boundary', () => {
+      // The same shared character set api/fonts strips from backend data:
+      // a typed/pasted name carrying control characters must not reach the
+      // store or the CSS var.
+      useFontStore.getState().setUIFontFamily('Can\u0000tarell\u0007')
+      expect(useFontStore.getState().uiFontFamily).toBe('Cantarell')
+      expect(sansVar()).toBe(`"Cantarell", ${FONT_SANS_STACK}`)
     })
 
     it('setUIFontFamily collapses an empty/blank family to the default', () => {

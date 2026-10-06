@@ -30,9 +30,10 @@
 //    literal stack string, not a `var()` reference). CSS may only reference
 //    `var(--font-*)` (plus the `@font-face` declaration itself); TS may only
 //    use the `FONT_*_STACK` constants (or a `var(--font-…)` string). The
-//    icon font (`--font-icon`, SauceCodePro NF) carries Nerd Font glyphs
-//    ONLY — text mono is `--font-mono`, so the terminal rides the plain
-//    mono stack with no icon font.
+//    icon family (`--font-icon`, SauceCodePro NF) also LEADS `--font-mono` /
+//    FONT_MONO_STACK, so every monospace surface — the terminal included —
+//    resolves Nerd Font glyphs by default; `--font-icon` stays the icon-scope
+//    token and is never written by the font mechanism.
 
 import { describe, it, expect } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";

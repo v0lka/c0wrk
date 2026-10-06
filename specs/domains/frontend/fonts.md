@@ -44,7 +44,7 @@ Defines the Appearance-tab **Fonts** settings: the user picks the app's UI (sans
 `frontend/src/api/fonts.ts` is the only path to the RPCs (components never import `wailsjs` directly):
 
 - Type guards validate the wire; malformed data raises `TypeError` (nothing half-shaped enters stores).
-- `sanitizeFontName` strips double quotes and control characters and caps at `MAX_FONT_NAME_LENGTH` (100) — the raw values come from OS font metadata and must be safe to embed into CSS font stacks and combobox options; entries that sanitize to nothing are dropped.
+- `sanitizeFontName` strips the shared unsafe character set (`stripUnsafeFontNameChars` in `lib/fonts.ts`: double quotes, backslashes, control characters) and caps at `MAX_FONT_NAME_LENGTH` (100) — the raw values come from OS font metadata and must be safe to embed into CSS font stacks and combobox options; entries that sanitize to nothing are dropped. The store (`normalizeFamily`) and typed input (`normalizeTyped`) run the same helper, so all three boundaries normalize identically by construction.
 - `getSystemFonts` maps an empty wire family to `null`; `listFontFamilies(monospace)` forwards the flag verbatim and maps `available=false` to `[]` — both without logging (normal outcomes). Backend/runtime errors are logged via `logger.error` and re-thrown.
 
 ### Detection wiring
@@ -58,7 +58,7 @@ Defines the Appearance-tab **Fonts** settings: the user picks the app's UI (sans
 - `uiFontFamily` / `monoFontFamily: string | null`, `uiFontSmoothing` / `monoFontSmoothing: FontSmoothingSetting` (`''` = Not set) — the user's choices; the **only persisted fields** (`partialize`). `null` = c0wrk's default stack, left untouched on `<html>`; `''` = the webview's own smoothing, no property written.
 - `detectedUIFamily` / `detectedMonoFamily: string | null` — the session detections; never persisted (a stale detection would survive a system-side font change) and never applied by themselves — they are candidates the settings offer.
 - Every family action calls `applyFontsToDocument` **before** `set` — the effect on `<html>` is immediate; there is no apply/save step anywhere in the UI.
-- `normalizeFamily` canonicalizes before storage: quotes and backslashes stripped (the value is interpolated into a double-quoted CSS token; a family name legitimately never carries either), trimmed, empty → back to `null`.
+- `normalizeFamily` canonicalizes before storage: the shared unsafe character set stripped (`stripUnsafeFontNameChars` in `lib/fonts.ts` — double quotes, backslashes, control characters; the value is interpolated into a double-quoted CSS token, and untrusted input must never carry any of them), trimmed, empty → back to `null`.
 - `main.tsx` re-applies both choices pre-paint (before React renders) for FOUC-free startup, and calls `removeOrphanSystemFontKey` once: the replaced follow-system-font store's boolean payload under `c0wrk-follow-system-font` has no successor in the chosen-family model, so the key is retired, not migrated.
 
 ### CSS delivery (`@theme` token override)
@@ -80,7 +80,9 @@ Each scope carries a smoothing knob over the non-standard `-webkit-font-smoothin
 
 `FontSettings` renders on the Appearance tab: a "Fonts" header, a **`Use system`** outline button, four `StringCombobox`es in one 2×2 grid — *Interface font* / *Monospace font* on the first row, *Interface smoothing* / *Monospace smoothing* directly under them — over `fontStore`, plus a muted caption. Mechanics:
 
-- The family comboboxes are **free-text**: offer order is `Default` (the `null` sentinel, mapped back before it reaches the store), the session-detected family, the current custom value (always present so the choice stays visible/re-pickable), then the installed families. Typed input is normalized like the store (`normalizeTyped`) so a nothing-left input reverts inside the combobox instead of round-tripping a value the store would collapse to `null`.
+- The family comboboxes are **free-text**: offer order is `Default` (the `null` sentinel, mapped back before it reaches the store), then the session-detected family, the current custom value (always present so the choice stays visible/re-pickable), then the installed families. Typed input is normalized like the store (`normalizeTyped` — the shared `stripUnsafeFontNameChars` + trim) so a nothing-left input reverts inside the combobox instead of round-tripping a value the store would collapse to `null`.
+- The `Default` name is **reserved by the sentinel**: a real installed or detected family literally named `Default` is filtered from every offer source — the bare string IS the committed value, so offering it would silently reset the stack instead of applying the family. The sentinel wins the word; the (vanishingly rare) real carrier stays unoffered, and typed input keeps the one documented meaning ("reset").
+- The bundled Nerd Font webfont needs **no picker entry**: the `SauceCodePro NF` family leads the mono stack itself (`--font-mono` / the `FONT_MONO_STACK` mirror), so every monospace surface — the terminal, code blocks, the CodeMirror viewer — resolves Nerd Font glyphs (starship, eza, git status decorations) by default, uniform app-wide. A picked family composes in FRONT of that stack: it renders the text, and the leading NF entry only catches the glyphs it lacks (per-glyph fallback). The webfont is invisible to fontconfig, so enumeration never offers it, and neither picker does.
 - The smoothing comboboxes are **select-only** (`StringCombobox` `editable: false` — a read-only input whose dropdown is the sole input; even a synthetic/autofill `input` event is ignored in this mode): the options are exactly `Not set`, `None (aliased)`, `Grayscale`, `Subpixel (LCD)` — labels mapped to/from the store's `FontSmoothingSetting` inside the component, since free text is meaningless for an enum.
 - Each smoothing option label is styled with its own `-webkit-font-smoothing` value through `itemStyle` — the same previews-itself contract as the font pickers; `Not set` carries no style, because it stands for "nothing written".
 - The two pickers enumerate independently and fail-soft: the interface combobox loads every installed family (`listFontFamilies(false)`), the monospace combobox loads only the fontconfig-mono families (`listFontFamilies(true)`) — a mono-only failure must not empty the interface list. A detection or current value outside the enumeration is still offered.
@@ -93,6 +95,8 @@ Each scope carries a smoothing knob over the non-standard `-webkit-font-smoothin
 ### Terminal consumption
 
 `Terminal.tsx` subscribes to `monoFontFamily` (primitive, referentially stable) and derives the xterm font with the same `composeFontFamily` — bare `FONT_MONO_STACK` with `null`, `"Family", <stack>` with a choice. The constructor reads a render-phase ref (a font switch never restarts the session); a live effect assigns only `term.options.fontFamily` and the fit is re-scheduled, because the new family changes cell metrics while the container box is unchanged.
+
+The terminal's chain carries the Nerd Font family **by default**: `FONT_MONO_STACK` leads with the bundled `SauceCodePro NF` (the `--font-icon` `@font-face` document family, invisible to `fc-list`), so a default-install terminal resolves Nerd Font glyphs (starship, eza, git status decorations) — and the same leading entry keeps every other monospace surface (code blocks, the CodeMirror viewer) uniform with it. A picked family composes in front of that stack, so it renders the text while the NF entry only catches the glyphs it lacks (per-glyph fallback); the default (`null`) is exactly `FONT_MONO_STACK`.
 
 ### CodeMirror consumption
 
@@ -118,7 +122,7 @@ The xterm terminal stays the one literal-stack consumer: it measures glyphs on c
 - **Probe unavailable/error (backend)** → zero/empty response + Debug log (nil-guarded); the UI degrades (no detections → `Use system` disabled; no enumeration → reduced dropdown). Never an RPC error, never user-visible noise.
 - **Unparsable gsettings value** → that family's wire field is empty; the other family is unaffected.
 - **Malformed wire data (frontend)** → `TypeError` from the type guards; nothing half-shaped enters stores.
-- **Unsanitary font name** → `sanitizeFontName` strips quotes/control characters and caps length; empty survivors are dropped.
+- **Unsanitary font name** → the shared `stripUnsafeFontNameChars` (quotes, backslashes, control characters) strips it at all three boundaries (api/fonts, store, typed input) and `MAX_FONT_NAME_LENGTH` caps it; empty survivors are dropped.
 - **Unrecognized persisted smoothing** → collapsed to Not set on the next apply; nothing arbitrary ever reaches a CSS value.
 - **RPC/runtime failure** → logged at the `api/fonts` boundary and re-thrown; `useSystemFonts` keeps the `backend:ready` retry path armed (no latch on failure) and the document keeps whatever it already had; the settings dropdown degrades to Default + current.
 - **No DOM** → `applyFontsToDocument` is a no-op; **storage failure** → `removeOrphanSystemFontKey` swallows (privacy modes — cleanup is best-effort).
@@ -129,13 +133,13 @@ The xterm terminal stays the one literal-stack consumer: it measures glyphs on c
 - The persisted payload contains exactly `{uiFontFamily, monoFontFamily, uiFontSmoothing, monoFontSmoothing}` under `c0wrk-fonts` v2; detections are session state and are never persisted.
 - Every `applyFontsToDocument` call writes or removes the family and smoothing properties as one four-property set — a partial apply never resets an untouched knob.
 - `GetSystemFonts` and `ListFontFamilies` never fail to the renderer: unavailability is the zero/empty response plus a Debug log.
-- A stored family never contains `"` or `\` and is non-empty (`normalizeFamily`); a applied value always leads with one double-quoted family followed by the stock stack, or the property is absent.
+- A stored family never contains `"`, `\` or a control character and is non-empty (`normalizeFamily` runs the shared `stripUnsafeFontNameChars`); an applied value always leads with one double-quoted family followed by the stock stack, or the property is absent.
 - `null` (or no choice) ⇒ no inline `--font-sans`/`--font-mono` on `<html>` ⇒ rendered fonts byte-identical to a build without the feature; `''` smoothing ⇒ no `--font-smoothing-*` on `<html>` ⇒ rendering identical to a build without the feature. The mono knob's sole projection is the monospace-surface rule list — sans surfaces are unreachable from it.
 - Detection never repaints: only `setUIFontFamily`/`setMonoFontFamily` (and `Use system` through them) move the document.
-- The monospace picker offers only fontconfig-mono families (`fc-list :mono`); the interface picker offers every installed family; the two enumerations are independent — one failing never empties the other.
+- The monospace picker offers exactly the fontconfig-mono families (`fc-list :mono`); the interface picker offers every installed family; the two enumerations are independent — one failing never empties the other. The bundled Nerd Font family is never offered (it leads the mono stack unconditionally). The `Default` string is reserved by the reset sentinel: a real family of that name is filtered from every offer source.
 - Every font preview (dropdown labels and the closed field's value) goes through `composeFontFamily` via `StringCombobox`'s `itemStyle`/`inputStyle`; no component carries a raw `fontFamily` literal (pinned by the type-scale guard's shape rule and the FontSettings/StringCombobox tests).
 - No CodeMirror theme bakes a literal font stack — `.cm-content`/`.cm-scroller` carry the `--font-*` vars (pinned by `cmTheme.test.ts` / `cmChatTheme.test.ts` against the mounted stylesheet), and the CM hosts reconfigure on the font choice (pinned by the MiniCodeMirrorField wiring test).
-- The icon font (`--font-icon`, SauceCodePro NF) and the type scale (14px base + UI Scale) are unaffected in every state.
+- The `--font-icon` token (`SauceCodePro NF` for file-tree icons) and the type scale (14px base + UI Scale) are never written by the font mechanism in any state. The same icon family LEADS the stock `--font-mono` stack (the index.css `@theme` token and the `FONT_MONO_STACK` mirror, kept in sync): every monospace surface — the terminal included — resolves Nerd Font glyphs by default, and a user pick only composes in front of it, never displacing the glyph-fallback entry.
 
 ## Extension Points
 

@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import { FONT_SANS_STACK, FONT_MONO_STACK, composeFontFamily, MAX_FONT_NAME_LENGTH } from '@/lib/fonts'
+import { FONT_SANS_STACK, FONT_MONO_STACK, composeFontFamily, MAX_FONT_NAME_LENGTH, stripUnsafeFontNameChars } from '@/lib/fonts'
 
 /**
  * CSS custom properties carrying the user's font-family overrides on <html>.
@@ -107,17 +107,18 @@ interface FontActions {
 
 /**
  * Canonicalizes a family name before it is stored or applied. `null` stays
- * `null` (the "default" sentinel); otherwise quotes and backslashes are
- * stripped (the value is interpolated into a double-quoted CSS token, and a
- * family name legitimately never carries either — the backend's gsettings
- * parser already delivers quote-free names), surrounding whitespace is
- * trimmed, a survivor that is empty collapses back to `null`, and the
+ * `null` (the "default" sentinel); otherwise the shared unsafe character set
+ * is stripped (quotes and backslashes — the value is interpolated into a
+ * double-quoted CSS token — and control characters, via the same
+ * `stripUnsafeFontNameChars` helper api/fonts runs, so pasted or hand-edited
+ * input is normalized identically to backend data), surrounding whitespace
+ * is trimmed, a survivor that is empty collapses back to `null`, and the
  * survivor is capped at the shared MAX_FONT_NAME_LENGTH (lib/fonts) so a
  * corrupted store payload cannot smuggle an unbounded value into CSS.
  */
 function normalizeFamily(family: string | null): string | null {
   if (family === null) return null
-  const cleaned = family.replace(/["\\]/g, '').trim()
+  const cleaned = stripUnsafeFontNameChars(family).trim()
   if (cleaned === '') return null
   return cleaned.slice(0, MAX_FONT_NAME_LENGTH)
 }
@@ -154,7 +155,8 @@ export function applyFontsToDocument(overrides: FontOverrides): void {
   // Families are canonicalized at this boundary too, mirroring the smoothing
   // normalization below: rehydration (a hand-edited localStorage payload)
   // reaches <html> through this function without passing a write action, so
-  // the same quotes/backslashes stripping and length cap must hold here.
+  // the same shared normalization (stripUnsafeFontNameChars + length cap)
+  // must hold here.
   const uiFamily = normalizeFamily(overrides.uiFontFamily)
   if (uiFamily !== null) {
     root.style.setProperty(FONT_SANS_CSS_VAR, composeFontFamily(uiFamily, FONT_SANS_STACK))

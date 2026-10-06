@@ -40,7 +40,7 @@ vi.stubGlobal(
 
 import { FontSettings } from './FontSettings'
 import { useFontStore, FONT_SANS_CSS_VAR, FONT_MONO_CSS_VAR, FONT_SMOOTHING_SANS_CSS_VAR, FONT_SMOOTHING_MONO_CSS_VAR } from '@/stores/fontStore'
-import { FONT_SANS_STACK, FONT_MONO_STACK } from '@/lib/fonts'
+import { FONT_SANS_STACK, FONT_MONO_STACK, FONT_ICON_FAMILY } from '@/lib/fonts'
 
 let container: HTMLDivElement
 let root: Root
@@ -121,10 +121,13 @@ function actionButton(): HTMLButtonElement {
 async function openMenu(ariaLabel: string): Promise<void> {
   const btn = container.querySelector<HTMLButtonElement>(`button[aria-label="${ariaLabel} options"]`)
   expect(btn).not.toBeNull()
-  // Radix's DropdownMenuTrigger toggles on `pointerdown`, not `click`.
+  // Radix's DropdownMenuTrigger toggles on `pointerdown`, not `click`. The
+  // async act scope flushes the whole synchronous open path (state update →
+  // portal → effects), so every following assertion is already satisfied
+  // when it returns — no wall-clock settle (forbidden new timing debt,
+  // internal/testtiming.TestNoNewTimingDebt).
   await act(async () => {
     btn!.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
-    await new Promise((r) => setTimeout(r, 10))
   })
 }
 
@@ -254,6 +257,48 @@ describe('FontSettings options', () => {
     closeMenu()
     await openMenu('Interface font')
     expect(menuItems()).toEqual(['Default', 'Inter', 'Cantarell'])
+  })
+
+  it('never offers the bundled Nerd Font — it leads the mono stack itself', async () => {
+    // The webfont is invisible to fc-list, so enumeration never surfaces it
+    // — and no picker entry is needed: FONT_MONO_STACK leads with the
+    // bundled family, so Nerd Font glyphs (starship, eza, git decorations)
+    // render in every mono surface by default and stay the glyph-fallback
+    // layer under any pick. The offer lists stay pure fontconfig families.
+    listFontFamiliesMock.mockResolvedValue(['JetBrains Mono'])
+    await render()
+
+    await openMenu('Monospace font')
+    expect(menuItems()).toEqual(['Default', 'JetBrains Mono'])
+    closeMenu()
+    await openMenu('Interface font')
+    expect(menuItems()).not.toContain(FONT_ICON_FAMILY)
+    closeMenu()
+
+    // The stack mirror carries the leading family: a picked mono family
+    // composes in front of a stack that itself starts with the Nerd Font.
+    expect(FONT_MONO_STACK.startsWith(`"${FONT_ICON_FAMILY}", `)).toBe(true)
+    act(() => {
+      useFontStore.getState().setMonoFontFamily('JetBrains Mono')
+    })
+    expect(monoVar()).toBe(`"JetBrains Mono", ${FONT_MONO_STACK}`)
+  })
+
+  it('a real family literally named "Default" never collides with the reset sentinel', async () => {
+    // The bare string IS the committed value and 'Default' is the reset
+    // sentinel, so a real carrier of that name is filtered from the
+    // detected and installed sources: the menu offers the sentinel exactly
+    // once and picking it resets to the stock stack — never "applies the
+    // family Default".
+    listFontFamiliesMock.mockResolvedValue(['Default', 'Inter'])
+    useFontStore.setState({ detectedUIFamily: 'Default' })
+    await render()
+
+    await openMenu('Interface font')
+    expect(menuItems()).toEqual(['Default', 'Inter'])
+    pick('Default')
+    expect(useFontStore.getState().uiFontFamily).toBeNull()
+    expect(sansVar()).toBe('')
   })
 })
 

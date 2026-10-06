@@ -2,7 +2,12 @@ import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'r
 import { Button } from '@/components/ui/button'
 import { StringCombobox } from '@/components/ui/StringCombobox'
 import { listFontFamilies } from '@/api/fonts'
-import { composeFontFamily, FONT_MONO_STACK, FONT_SANS_STACK } from '@/lib/fonts'
+import {
+  composeFontFamily,
+  FONT_MONO_STACK,
+  FONT_SANS_STACK,
+  stripUnsafeFontNameChars,
+} from '@/lib/fonts'
 import {
   useFontStore,
   smoothingToCss,
@@ -39,28 +44,45 @@ function smoothingLabel(value: FontSmoothingSetting): string {
 }
 
 /**
- * Typed-text normalization mirroring `fontStore`'s `normalizeFamily` (quotes
- * and backslashes stripped, trimmed): an input that carries nothing usable
- * reverts inside `StringCombobox` instead of round-tripping a value the
- * store would immediately collapse to `null`.
+ * Typed-text normalization mirroring `fontStore`'s `normalizeFamily`: the
+ * shared unsafe character set stripped (quotes, backslashes, control
+ * characters — the same `stripUnsafeFontNameChars` helper the store and
+ * api/fonts run, so pasted input is normalized identically at every
+ * boundary) and trimmed. An input that carries nothing usable reverts inside
+ * `StringCombobox` instead of round-tripping a value the store would
+ * immediately collapse to `null`.
  */
 function normalizeTyped(raw: string): string {
-  return raw.replace(/["\\]/g, '').trim()
+  return stripUnsafeFontNameChars(raw).trim()
 }
 
 /**
  * Options for one combobox, in offer order: Default (the store's `null`),
- * the session-detected system family right after it (its "mark" is the
- * detected-names caption below — `StringCombobox` options are bare strings
- * whose text IS the committed value, so the annotation cannot live in the
- * option itself), then the current custom value (always present, so the
- * choice stays visible and re-pickable), then the installed families.
+ * then the session-detected system family (its "mark"
+ * is the detected-names caption below — `StringCombobox` options are bare
+ * strings whose text IS the committed value, so the annotation cannot live
+ * in the option itself), then the current custom value (always present, so
+ * the choice stays visible and re-pickable), then the installed families.
+ * Any real family literally named "Default" is filtered from the detected
+ * and installed sources: the bare string IS the committed value and
+ * 'Default' is the reset sentinel, so offering such a family would silently
+ * reset the stack instead of applying it. A family can legitimately never be
+ * renamed into the picker through a different string, so the sentinel wins
+ * the name and the (vanishingly rare) real carrier stays unoffered; typed
+ * input keeps the one documented meaning of the word ("reset").
  */
-function buildOptions(current: string | null, detected: string | null, families: readonly string[]): string[] {
+function buildOptions(
+  current: string | null,
+  detected: string | null,
+  families: readonly string[],
+): string[] {
   const options: string[] = [DEFAULT_OPTION]
-  if (detected !== null && !options.includes(detected)) options.push(detected)
+  if (detected !== null && detected !== DEFAULT_OPTION && !options.includes(detected)) {
+    options.push(detected)
+  }
   if (current !== null && !options.includes(current)) options.push(current)
   for (const family of families) {
+    if (family === DEFAULT_OPTION) continue
     if (!options.includes(family)) options.push(family)
   }
   return options
@@ -76,7 +98,11 @@ function buildOptions(current: string | null, detected: string | null, families:
  * each smoothing knob sits directly under its font and previews its own
  * mode; the interface picker enumerates every installed family while the
  * monospace picker lists only the families fontconfig tags as monospace
- * (`fc-list :mono`, the ListFontFamilies monospace flag).
+ * (`fc-list :mono`, the ListFontFamilies monospace flag). Nerd Font glyphs
+ * (starship, eza, git status decorations) need no picker entry: the bundled
+ * SauceCodePro NF webfont leads the mono stack itself (FONT_MONO_STACK), so
+ * it renders by default and stays the glyph-fallback layer under any pick
+ * (see specs/domains/frontend/fonts.md).
  *
  * The block ALWAYS renders: the comboboxes are free-text fields, so choosing
  * a family works on every OS — where detection/enumeration come up empty the

@@ -173,9 +173,10 @@ describe('Terminal mono-font wiring (fontStore)', () => {
   it('renders the default mono stack when no family is chosen', () => {
     renderTerminal()
     expect(boundaryTripped).toBe(false)
-    // monoFontFamily null → the bare stock stack, exactly as before the
-    // font-store wiring (the xterm constructor is px/px by API and needs a
-    // literal stack, not the CSS var).
+    // monoFontFamily null → the bare stock stack (which itself leads with
+    // the bundled Nerd Font family, so Nerd Font glyphs resolve by default;
+    // the xterm constructor is px/px by API and needs a literal stack, not
+    // the CSS var).
     expect(terminalInstances[0]!._options.fontFamily).toBe(FONT_MONO_STACK)
   })
 
