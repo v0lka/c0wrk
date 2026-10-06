@@ -212,6 +212,15 @@ func (s *SQLiteSessionStore) forkTasks(ctx context.Context, tx *sql.Tx, srcID, n
 			return fmt.Errorf("failed to copy task steps for %q: %w", oldTaskID, err)
 		}
 
+		// task_mcp_mentions — independent durable intent under the fork's task id.
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO task_mcp_mentions (task_id, server_name)
+			SELECT ?, server_name FROM task_mcp_mentions WHERE task_id = ?`,
+			newTaskID, oldTaskID,
+		); err != nil {
+			return fmt.Errorf("failed to copy task MCP mentions for %q: %w", oldTaskID, err)
+		}
+
 		// task_facts — blackboard facts.
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO task_facts (task_id, facts, updated_at)

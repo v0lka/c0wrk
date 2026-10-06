@@ -161,6 +161,7 @@ func TestFinishTool_Execute(t *testing.T) {
 }
 
 type mockTaskStore struct {
+	mockMCPMentions
 	taskState *TaskState
 	loadErr   error
 }
@@ -430,6 +431,7 @@ func TestHandleMessage_RoutingFailureFailsFreshTask(t *testing.T) {
 // mockTaskStoreWithReactivate is a mock TaskPersistence that tracks
 // ReactivateTask and PersistFailure calls.
 type mockTaskStoreWithReactivate struct {
+	mockMCPMentions
 	taskState    *TaskState
 	loadErr      error
 	reactivateFn func(taskID string) error
@@ -1765,6 +1767,9 @@ func TestConversationHistory_NoTruncation(t *testing.T) {
 	mockStore := &mockTaskStore{taskState: taskState}
 	orchestrator.SetTaskStore(mockStore)
 	orchestrator.SetBlackboardRestoreFunc(testBlackboardRestoreFunc())
+	orchestrator.bbFactory = func(id string) orchestration.Blackboard {
+		return &testPersistableBlackboard{MapBlackboard: orchestration.NewMapBlackboard(), taskID: id, store: mockStore}
+	}
 
 	// First message.
 	_, err := orchestrator.HandleMessage(context.Background(), "write REST API", "session-1", HandleOptions{})

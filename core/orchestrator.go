@@ -250,6 +250,18 @@ type OrchestratorConfig struct {
 	// byte cap, retry/observation caps, anti-spin thresholds) and fall back to
 	// the core/e2s defaults when zero.
 	E2S E2SSettings
+
+	// MCPServerModes carries the per-server MCP mode map ("auto" | "manual"
+	// | "disabled") from the config snapshot the orchestrator was built
+	// with. It drives task-level tool gating: a "manual" server's tools are
+	// hidden (and rejected at dispatch) unless the user mentioned the server
+	// in the task's messages, and "disabled" servers never surface at all
+	// (the builder already refuses to dial them). Empty (no modes configured)
+	// gates nothing — zero regression.
+	MCPServerModes map[string]string
+	// MCPServerModesResolver supplies the builder's current immutable policy snapshot.
+	// Direct constructors fall back to MCPServerModes when it is nil.
+	MCPServerModesResolver func() map[string]string
 }
 
 // E2SSettings is the runtime mirror of BuilderE2SConfig carried on
@@ -376,6 +388,10 @@ type Orchestrator struct {
 	// pointer is swapped atomically so a toggle is safe against an in-flight
 	// HandleMessage / E2S loop.
 	e2sSettingsOverride atomic.Pointer[E2SSettings]
+
+	// mcpMentions holds ephemeral intent only for explicitly nonpersistent callers.
+	// Durable tasks load through taskStore on every entry, never from this cache.
+	mcpMentions sync.Map
 
 	// modelProfilesSettingsOverride, when set, supersedes config.ModelProfiles for the effective
 	// model-profile settings. config is immutable after Build, so a runtime ModelProfiles
@@ -1238,6 +1254,11 @@ func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, 
 		return nil, ErrGoalBlockedByModelProfiles
 	}
 
+	ctx, err = o.prepareTaskMCP(ctx, bb, nil)
+	if err != nil {
+		return nil, err
+	}
+
 	// One-shot resume-compaction request: when the user selected a compaction
 	// strategy for this resume (manual compaction of a paused task), the
 	// backend armed it via RequestResumeCompaction before re-entering here.
@@ -1359,6 +1380,8 @@ func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, 
 	// counter from where it left off. A plan is NOT required — the Conductor
 	// handles plan-less tasks via a standalone checklist.
 	availableTools := o.toolRegistry.ListFiltered(o.disabledToolNames())
+
+	availableTools = stripGatedMCPTools(ctx, availableTools)
 
 	// If this task was running a goal loop that was paused (or is still active),
 	// re-enter the goal loop instead of the plain Conductor path. The prior
@@ -1539,11 +1562,11 @@ func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, 
 // here (as the fresh path applies them at its call site).
 //
 // It mirrors the fresh HandleMessage routing step for the request TEXT, but
-// NOT for an explicit invocation. The frontend strips the /skill and #agent
-// refs before the request is stored (PreprocessMessageText), so the stored
-// original request seen here carries neither, and the requested
+// NOT for an explicit invocation. The frontend strips the /-mention refs
+// (skills and agents) before the request is stored (PreprocessMessageText),
+// so the stored original request seen here carries neither, and the requested
 // UserSkills/UserAgents (which the fresh path threads through HandleOptions)
-// are not available on resume: an explicit /skill or #agent ref is therefore
+// are not available on resume: an explicit /-mention ref is therefore
 // NOT re-applied by a re-route. The refs are persisted nowhere Resume can read
 // (TaskState carries no such field, and Resume/ResumeTask receive no
 // HandleOptions), so closing this gap would require a persistence-schema
@@ -3115,6 +3138,11 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	if err != nil {
 		return nil, err
 	}
+	ctx, err = o.prepareTaskMCP(ctx, bb, opts.UserMCPServers)
+	if err != nil {
+		return nil, err
+	}
+	opts.UserMCPServers = UserMCPServersFromContext(ctx)
 
 	// Augment the Conductor's task message with the session's attached files.
 	// The router and conversation history keep the clean `taskMessage`; only the
@@ -3142,6 +3170,8 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 		}
 	}
 	o.logDebug("orchestrator: tools loaded from registry", "total", len(availableTools), "mcp", mcpCount)
+
+	availableTools = stripGatedMCPTools(ctx, availableTools)
 
 	// E2S MODE: an explicit-execution-state request enters runE2SLoop instead
 	// of the route→Conductor flow. The run maintains an externalized state Σ

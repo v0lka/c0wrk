@@ -1150,6 +1150,48 @@ export namespace backend {
 	        this.tls_fingerprint = source["tls_fingerprint"];
 	    }
 	}
+	export class MCPMentionableServer {
+	    name: string;
+	    mode: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new MCPMentionableServer(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.mode = source["mode"];
+	    }
+	}
+	export class MCPServerStatusInfo {
+	    name: string;
+	    transport: string;
+	    connected: boolean;
+	    unhealthy: boolean;
+	    starting: boolean;
+	    tool_count: number;
+	    tools: string[];
+	    error?: string;
+	    mode: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new MCPServerStatusInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.transport = source["transport"];
+	        this.connected = source["connected"];
+	        this.unhealthy = source["unhealthy"];
+	        this.starting = source["starting"];
+	        this.tool_count = source["tool_count"];
+	        this.tools = source["tools"];
+	        this.error = source["error"];
+	        this.mode = source["mode"];
+	    }
+	}
 	export class ModelConfigRequest {
 	    context_window: number;
 	    output_limit: number;
@@ -2595,37 +2637,6 @@ export namespace llm {
 	        this.reasoning = source["reasoning"];
 	        this.temperature = source["temperature"];
 	        this.tool_call = source["tool_call"];
-	    }
-	}
-
-}
-
-export namespace mcp {
-	
-	export class ServerStatus {
-	    name: string;
-	    transport: string;
-	    connected: boolean;
-	    unhealthy: boolean;
-	    starting: boolean;
-	    tool_count: number;
-	    tools: string[];
-	    error?: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new ServerStatus(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.name = source["name"];
-	        this.transport = source["transport"];
-	        this.connected = source["connected"];
-	        this.unhealthy = source["unhealthy"];
-	        this.starting = source["starting"];
-	        this.tool_count = source["tool_count"];
-	        this.tools = source["tools"];
-	        this.error = source["error"];
 	    }
 	}
 

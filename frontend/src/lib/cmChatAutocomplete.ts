@@ -7,6 +7,7 @@ import {
 import type { Extension } from '@codemirror/state'
 import { listSkills } from '@/api/skills'
 import { listAgents } from '@/api/agents'
+import { getMCPMentionableServers, isMentionableMCPMode } from '@/api/mcp'
 import { listDirectory, getSessionWorkspace } from '@/api/workspace'
 import { subscribe } from '@/api/runtime'
 import { logger } from '@/lib/logger'
@@ -16,7 +17,7 @@ import { useProjectStore } from '@/stores/projectStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import { fuzzyFilter } from '@/lib/fuzzyMatch'
 import { formatFileRefPath } from '@/lib/parseReferences'
-import type { SkillDescriptor, AgentDescriptor, FileEntry } from '@/types/models'
+import type { SkillDescriptor, AgentDescriptor, MCPMentionableServer, FileEntry } from '@/types/models'
 
 const DEFAULT_FILE_ICON = '\uf15b'
 const DEFAULT_FOLDER_ICON = '\uf07b'
@@ -31,6 +32,9 @@ let skillsLoaded = false
 
 let agentsCache: AgentDescriptor[] = []
 let agentsLoaded = false
+
+let mcpCache: MCPMentionableServer[] = []
+let mcpLoaded = false
 
 let filesCache: FileEntry[] = []
 let filesLoaded = false
@@ -112,6 +116,10 @@ function invalidateAgentsCache() {
   agentsLoaded = false
 }
 
+function invalidateMCPCache() {
+  mcpLoaded = false
+}
+
 // Subscribe once to rootPath changes and filesystem/skills events.
 let rootSubActive = false
 function ensureRootSubscription() {
@@ -129,6 +137,7 @@ function ensureRootSubscription() {
       invalidateFilesCache()
       invalidateSkillsCache()
       invalidateAgentsCache()
+      invalidateMCPCache()
     }
   })
   // Project and session switches change which workspace the backend expects
@@ -143,6 +152,7 @@ function ensureRootSubscription() {
       invalidateFilesCache()
       invalidateSkillsCache()
       invalidateAgentsCache()
+      invalidateMCPCache()
     }
   })
   let prevSessionId = useSessionStore.getState().activeSessionId
@@ -152,6 +162,7 @@ function ensureRootSubscription() {
       invalidateFilesCache()
       invalidateSkillsCache()
       invalidateAgentsCache()
+      invalidateMCPCache()
     }
   })
   // Filesystem changes inside the workspace (including project-local skills
@@ -161,6 +172,7 @@ function ensureRootSubscription() {
     invalidateFilesCache()
     invalidateSkillsCache()
     invalidateAgentsCache()
+    invalidateMCPCache()
   })
   // Global skill directory changes (outside the workspace) invalidate the
   // skills cache only — files and agents are unaffected.
@@ -171,6 +183,11 @@ function ensureRootSubscription() {
   // invalidate the agents cache only.
   subscribe('agents:changed', () => {
     invalidateAgentsCache()
+  })
+  // The MCP gateway finishing its (re)start is the one MCP lifecycle event
+  // the backend emits — a fresh mentionable set is cheapest to pick up here.
+  subscribe('mcp:ready', () => {
+    invalidateMCPCache()
   })
   rootSubActive = true
 }
@@ -195,6 +212,17 @@ async function getAgents(): Promise<AgentDescriptor[]> {
     agentsCache = []
   }
   return agentsCache
+}
+
+async function getMCPServers(): Promise<MCPMentionableServer[]> {
+  if (mcpLoaded) return mcpCache
+  // getMCPMentionableServers degrades to [] on failure (logged there), so a
+  // transient RPC hiccup hides the section for one trigger, never blocks it.
+  // Only auto/manual servers are mentionable — a disabled server is inert by
+  // design and must not be offered.
+  mcpCache = (await getMCPMentionableServers()).filter((s) => isMentionableMCPMode(s.mode))
+  mcpLoaded = true
+  return mcpCache
 }
 
 async function getFiles(): Promise<{ entries: FileEntry[]; root: string | null }> {
@@ -259,7 +287,15 @@ function chatApplyPath(absPath: string, rootPath: string | null, suffix: string,
   return formatFileRefPath(rel, forceQuoted) + suffix
 }
 
-async function skillSource(ctx: CompletionContext): Promise<CompletionResult | null> {
+// One `/` source for ALL capability kinds (issue #110 + the MCP mention
+// flow): subagents, MCP servers and skills share the single slash trigger,
+// presented as three labelled sections (Subagents, MCP Servers, Skills). A
+// name present in more than one catalog is a collision — every colliding
+// entry is offered in its collision-qualified spelling (`/agent: name`,
+// `/mcp: name`, `/skill: name`, the canonical spaced form) so the applied
+// text is unambiguous on the send path. Only auto/manual MCP servers are
+// offered; a disabled server is inert and hidden.
+async function slashSource(ctx: CompletionContext): Promise<CompletionResult | null> {
   // Scan backward for '/' trigger.
   const line = ctx.state.doc.lineAt(ctx.pos)
   const textBefore = line.text.slice(0, ctx.pos - line.from)
@@ -281,58 +317,54 @@ async function skillSource(ctx: CompletionContext): Promise<CompletionResult | n
   const from = line.from + triggerIdx + 1
   const query = textBefore.slice(triggerIdx + 1)
 
-  const skills = await getSkills()
-  const filtered = fuzzyFilter(query, skills, (s) => s.name)
-  if (filtered.length === 0) return null
+  const [agents, mcpServers, skills] = await Promise.all([getAgents(), getMCPServers(), getSkills()])
+  const skillNames = new Set(skills.map((s) => s.name))
+  const agentNames = new Set(agents.map((a) => a.name))
+  const mcpNames = new Set(mcpServers.map((s) => s.name))
 
-  return {
-    from,
-    filter: false,
-    options: filtered.map((s) => ({
-      label: s.name,
-      detail: s.description,
-      type: 'keyword',
-      apply: s.name + ' ',
-    })),
-  }
-}
+  const options: Completion[] = []
 
-async function agentSource(ctx: CompletionContext): Promise<CompletionResult | null> {
-  // Scan backward for '#' trigger.
-  const line = ctx.state.doc.lineAt(ctx.pos)
-  const textBefore = line.text.slice(0, ctx.pos - line.from)
-
-  let triggerIdx = -1
-  for (let i = textBefore.length - 1; i >= 0; i--) {
-    const ch = textBefore[i]
-    if (ch === ' ' || ch === '\t') break
-    if (ch === '#') {
-      if (i === 0 || textBefore[i - 1] === ' ' || textBefore[i - 1] === '\t') {
-        triggerIdx = i
-      }
-      break
-    }
-  }
-
-  if (triggerIdx === -1) return null
-
-  const from = line.from + triggerIdx + 1
-  const query = textBefore.slice(triggerIdx + 1)
-
-  const agents = await getAgents()
-  const filtered = fuzzyFilter(query, agents, (a) => a.name)
-  if (filtered.length === 0) return null
-
-  return {
-    from,
-    filter: false,
-    options: filtered.map((a) => ({
-      label: a.name,
+  // Subagents first: section rank 0 orders the section above MCP Servers and
+  // Skills, and the array order keeps agents ahead within the unfiltered
+  // list.
+  for (const a of fuzzyFilter(query, agents, (a) => a.name)) {
+    const collides = skillNames.has(a.name) || mcpNames.has(a.name)
+    options.push({
+      label: collides ? `/agent: ${a.name}` : a.name,
       detail: a.description,
-      type: 'keyword',
-      apply: a.name + ' ',
-    })),
+      type: 'agent',
+      section: { name: 'Subagents', rank: 0 },
+      // The replacement range starts AFTER the typed '/', so the applied
+      // text must not repeat it.
+      apply: (collides ? `agent: ${a.name}` : a.name) + ' ',
+    })
   }
+  // MCP Servers between Subagents and Skills (rank 1): manual servers are
+  // the mention-triggered ones (the detail says so), auto servers are
+  // always connected but still mentionable to surface the soft directive.
+  for (const m of fuzzyFilter(query, mcpServers, (m) => m.name)) {
+    const collides = agentNames.has(m.name) || skillNames.has(m.name)
+    options.push({
+      label: collides ? `/mcp: ${m.name}` : m.name,
+      detail: m.mode === 'manual' ? 'MCP server — mention to enable' : 'MCP server',
+      type: 'mcp',
+      section: { name: 'MCP Servers', rank: 1 },
+      apply: (collides ? `mcp: ${m.name}` : m.name) + ' ',
+    })
+  }
+  for (const s of fuzzyFilter(query, skills, (s) => s.name)) {
+    const collides = agentNames.has(s.name) || mcpNames.has(s.name)
+    options.push({
+      label: collides ? `/skill: ${s.name}` : s.name,
+      detail: s.description,
+      type: 'skill',
+      section: { name: 'Skills', rank: 2 },
+      apply: (collides ? `skill: ${s.name}` : s.name) + ' ',
+    })
+  }
+  if (options.length === 0) return null
+
+  return { from, filter: false, options }
 }
 
 async function fileSource(ctx: CompletionContext): Promise<CompletionResult | null> {
@@ -439,17 +471,25 @@ async function fileSource(ctx: CompletionContext): Promise<CompletionResult | nu
 }
 
 /**
- * CodeMirror autocomplete extension configured with /skill and @file sources.
+ * CodeMirror autocomplete extension configured with the unified `/` source
+ * (subagents + MCP servers + skills, issue #110 + the MCP mention flow) and
+ * the @file source. `#` is no longer a trigger anywhere.
  */
 export function createChatAutocomplete(): Extension {
   ensureRootSubscription()
   return autocompletion({
-    override: [skillSource, agentSource, fileSource],
+    override: [slashSource, fileSource],
     closeOnBlur: true,
     activateOnTyping: true,
     icons: false,
     optionClass: (completion) =>
-      completion.type === 'keyword' ? 'skill-item' : 'file-item',
+      completion.type === 'agent'
+        ? 'agent-item'
+        : completion.type === 'skill'
+          ? 'skill-item'
+          : completion.type === 'mcp'
+            ? 'mcp-item'
+            : 'file-item',
     addToOptions: [
       {
         render: (completion: Completion) => {

@@ -187,6 +187,7 @@ describe('PapersView — invocation surface', () => {
       [STUDY_PAPER_SKILL],
       undefined,
       undefined,
+      undefined,
       { newSession: true },
     )
     const input = container.querySelector<HTMLInputElement>('[data-testid="papers-invoke-input"]')!
@@ -211,6 +212,7 @@ describe('PapersView — invocation surface', () => {
     expect(sendMock).toHaveBeenCalledWith(
       buildStudyPrompt('10.1145/xyz', 'implement'),
       [STUDY_PAPER_SKILL],
+      undefined,
       undefined,
       undefined,
       { newSession: true },
@@ -317,6 +319,7 @@ describe('PapersView — invocation surface', () => {
       [STUDY_PAPER_SKILL],
       undefined,
       undefined,
+      undefined,
       { newSession: true },
     )
     const input = container.querySelector<HTMLInputElement>('[data-testid="papers-invoke-input"]')!
@@ -338,6 +341,7 @@ describe('PapersView — invocation surface', () => {
     expect(sendMock).toHaveBeenCalledWith(
       buildStudyPrompt('/Users/x/Downloads/attention.pdf', 'review'),
       [STUDY_PAPER_SKILL],
+      undefined,
       undefined,
       undefined,
       { newSession: true },
@@ -508,6 +512,7 @@ describe('PapersView — row actions', () => {
       [STUDY_PAPER_SKILL],
       undefined,
       undefined,
+      undefined,
       { newSession: false },
     )
   })
@@ -525,6 +530,7 @@ describe('PapersView — row actions', () => {
       [STUDY_PAPER_SKILL],
       undefined,
       undefined,
+      undefined,
       { newSession: true },
     )
   })
@@ -540,6 +546,7 @@ describe('PapersView — row actions', () => {
       [STUDY_PAPER_SKILL],
       undefined,
       undefined,
+      undefined,
       { newSession: false },
     )
   })
@@ -553,6 +560,7 @@ describe('PapersView — row actions', () => {
     expect(sendMock).toHaveBeenCalledWith(
       buildProposeHypothesisPrompt(makePaper()),
       [RESEARCH_HYPOTHESIS_SKILL],
+      undefined,
       undefined,
       undefined,
       { newSession: false },
@@ -682,6 +690,7 @@ describe('PapersView — multi-select comparison', () => {
       [STUDY_PAPER_SKILL],
       undefined,
       undefined,
+      undefined,
       { newSession: false },
     )
     // The dispatch clears the selection so the gesture cannot repeat by accident.
@@ -704,6 +713,7 @@ describe('PapersView — multi-select comparison', () => {
     expect(sendMock).toHaveBeenCalledWith(
       buildCompareSelectedPrompt([p1, p2], '/root/.research'),
       [STUDY_PAPER_SKILL],
+      undefined,
       undefined,
       undefined,
       { newSession: true },

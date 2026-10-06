@@ -146,9 +146,10 @@ export function useReviewActions(sessionId: string) {
       // fails, clear the flag so no spurious reopen happens.
       enterReviewLoop(sessionId)
       try {
-        // Positional args: (…, goal, goalBudget, e2s, reviewMode) — e2s
-        // must be explicitly false so reviewMode stays in its binding slot.
-        await chatApi.sendMessage(sessionId, commentsText, [], [], '', '', false, '', false, true)
+        // Positional args: (…, skills, agents, mcpServers, goal, goalBudget,
+        // e2s, reviewMode) — e2s must be explicitly false so reviewMode
+        // stays in its binding slot.
+        await chatApi.sendMessage(sessionId, commentsText, [], [], [], '', '', false, '', false, true)
         // Confirmed fresh, non-E2S review task (e2s=false in the binding): drop
         // any stale E2S snapshot so the Execution State panel does not shadow
         // the plan view for the review task. Cleared AFTER the send succeeds so

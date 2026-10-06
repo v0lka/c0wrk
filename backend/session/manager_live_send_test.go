@@ -44,7 +44,7 @@ func liveTestSession(t *testing.T) (*Manager, *Session, *core.Orchestrator, chan
 func TestSendMessage_LiveQueuesIntoRunningTask(t *testing.T) {
 	manager, sess, orch, events := liveTestSession(t)
 
-	err := manager.SendMessage(context.Background(), sess.ID, "steer left", nil, nil, "", "", false, "", false, false)
+	err := manager.SendMessage(context.Background(), sess.ID, "steer left", nil, nil, nil, "", "", false, "", false, false)
 	if err != nil {
 		t.Fatalf("live SendMessage returned error: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestSendMessage_LiveRejectedWhilePausing(t *testing.T) {
 	sess.pausing = true
 	sess.mu.Unlock()
 
-	err := manager.SendMessage(context.Background(), sess.ID, "too late", nil, nil, "", "", false, "", false, false)
+	err := manager.SendMessage(context.Background(), sess.ID, "too late", nil, nil, nil, "", "", false, "", false, false)
 	if !errors.Is(err, ErrPausePending) {
 		t.Fatalf("expected ErrPausePending, got %v", err)
 	}
@@ -99,7 +99,7 @@ func TestSendMessage_LiveRejectedWhilePausing(t *testing.T) {
 func TestSendMessage_LiveRejectedForGoal(t *testing.T) {
 	manager, sess, orch, _ := liveTestSession(t)
 
-	err := manager.SendMessage(context.Background(), sess.ID, "/goal chase it", nil, nil, "", "", true, "", false, false)
+	err := manager.SendMessage(context.Background(), sess.ID, "/goal chase it", nil, nil, nil, "", "", true, "", false, false)
 	if err == nil {
 		t.Fatal("expected an error for a goal request into a running task")
 	}
@@ -114,7 +114,7 @@ func TestSendMessage_LiveRejectedForGoal(t *testing.T) {
 func TestSendMessage_LiveRejectedForE2S(t *testing.T) {
 	manager, sess, orch, _ := liveTestSession(t)
 
-	err := manager.SendMessage(context.Background(), sess.ID, "run with explicit state", nil, nil, "", "", false, "", true, false)
+	err := manager.SendMessage(context.Background(), sess.ID, "run with explicit state", nil, nil, nil, "", "", false, "", true, false)
 	if err == nil {
 		t.Fatal("expected an error for an E2S request into a running task")
 	}
@@ -131,12 +131,32 @@ func TestSendMessage_LiveRejectedForE2S(t *testing.T) {
 func TestSendMessage_LiveRejectedForSkills(t *testing.T) {
 	manager, sess, orch, _ := liveTestSession(t)
 
-	err := manager.SendMessage(context.Background(), sess.ID, "run the checker", []string{"reviewer"}, nil, "", "", false, "", false, false)
+	err := manager.SendMessage(context.Background(), sess.ID, "run the checker", []string{"reviewer"}, nil, nil, "", "", false, "", false, false)
 	if err == nil {
 		t.Fatal("expected an error for a skill send into a running task")
 	}
 	if got := orch.DrainLiveUserMessages(); got != "" {
 		t.Errorf("queue holds %q after a rejected skill send, want empty", got)
+	}
+}
+
+// TestSendMessage_LiveRejectedForMCPServers verifies MCP-server mentions are
+// rejected on the live path with the same reasoning as skill/agent refs: the
+// task's per-server MCP gating was fixed at task start, so a mid-run mention
+// could never take effect — reject instead of silently ignoring it.
+func TestSendMessage_LiveRejectedForMCPServers(t *testing.T) {
+	manager, sess, orch, _ := liveTestSession(t)
+
+	err := manager.SendMessage(context.Background(), sess.ID, "use the tools", nil, nil, []string{"manual-srv"}, "", "", false, "", false, false)
+	if err == nil {
+		t.Fatal("expected an error for an MCP-server mention sent into a running task")
+	}
+	if got := orch.DrainLiveUserMessages(); got != "" {
+		t.Errorf("queue holds %q after a rejected MCP-mention send, want empty", got)
+	}
+	// The pre-persistence gate (ValidateLiveSend) rejects identically.
+	if err := manager.ValidateLiveSend(sess.ID, false, false, "use the tools", nil, nil, []string{"manual-srv"}); err == nil {
+		t.Fatal("ValidateLiveSend must reject an MCP-server mention while a task is running")
 	}
 }
 

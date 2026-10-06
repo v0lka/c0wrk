@@ -1950,7 +1950,7 @@ func (m *Manager) convertChatMessagesToLLM(msgs []ChatMessage, workspacePath str
 			// @file normalization is applied. Relative @file paths are
 			// resolved against the session workspace, mirroring the live
 			// preprocessing.
-			lm := llm.Message{Role: "user", Content: core.PreprocessMessageText(msg.Content, nil, nil, workspacePath)}
+			lm := llm.Message{Role: "user", Content: core.PreprocessMessageText(msg.Content, nil, nil, nil, workspacePath)}
 			// Reconstruct image content blocks from persisted metadata
 			// (thumbnail + on-disk path). The DB stores only the path, never
 			// the full base64, so the image data is reloaded from

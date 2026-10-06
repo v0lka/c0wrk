@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { EditorView } from '@codemirror/view'
 import { EditorState } from '@codemirror/state'
@@ -6,9 +7,10 @@ import { startCompletion, currentCompletions, completionStatus } from '@codemirr
 import type { FileEntry } from '@/types/models'
 import { useFileTreeStore } from '@/stores/fileTreeStore'
 
-const { listDirectoryMock, getSessionWorkspaceMock } = vi.hoisted(() => ({
+const { listDirectoryMock, getSessionWorkspaceMock, getMCPMentionableServersMock } = vi.hoisted(() => ({
   listDirectoryMock: vi.fn(),
   getSessionWorkspaceMock: vi.fn(),
+  getMCPMentionableServersMock: vi.fn(),
 }))
 
 vi.mock('@/api/workspace', () => ({
@@ -20,6 +22,12 @@ vi.mock('@/api/skills', () => ({
 }))
 vi.mock('@/api/agents', () => ({
   listAgents: vi.fn().mockResolvedValue([]),
+}))
+vi.mock('@/api/mcp', () => ({
+  getMCPMentionableServers: (...args: unknown[]) => getMCPMentionableServersMock(...args),
+  // Pure helpers are mirrored verbatim so the filter behavior under test is
+  // the production one.
+  isMentionableMCPMode: (mode: string) => mode === 'auto' || mode === 'manual',
 }))
 vi.mock('@/api/runtime', () => ({
   subscribe: vi.fn(() => () => {}),
@@ -33,6 +41,8 @@ vi.mock('@/lib/logger', () => ({
 
 import { createChatAutocomplete } from './cmChatAutocomplete'
 import { logger } from '@/lib/logger'
+import { listSkills } from '@/api/skills'
+import { listAgents } from '@/api/agents'
 import { createChatExtensions } from './cmChatExtensions'
 import { useProjectStore } from '@/stores/projectStore'
 import { useSessionStore } from '@/stores/sessionStore'
@@ -457,5 +467,210 @@ describe('chat editor tooltip placement', () => {
     expect(host.contains(tooltip as Node)).toBe(false)
     // And it must sit in CodeMirror's own container directly under <body>.
     expect(tooltip?.parentElement?.parentElement).toBe(document.body)
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Unified /-source (issue #110): one slash trigger, labelled sections
+// (Subagents, MCP Servers, Skills), collision-qualified insertions, and `#`
+// removed as a trigger everywhere. MCP servers come from the secret-free
+// GetMCPMentionableServers listing; only auto/manual servers are offered.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('cmChatAutocomplete unified /-source', () => {
+  const slashViews: { view: EditorView; host: HTMLElement }[] = []
+
+  afterEach(() => {
+    for (const { view, host } of slashViews) {
+      view.destroy()
+      host.remove()
+    }
+    slashViews.length = 0
+    vi.clearAllMocks()
+    // Store transitions fire the completion caches' invalidation
+    // subscriptions; combined with the per-test project-id change below,
+    // every test refetches its own catalog fixtures.
+    useFileTreeStore.setState({ rootPath: '' })
+    useSessionStore.setState({ sessions: null, activeSessionId: null })
+    useProjectStore.setState({ projects: null, activeProjectId: null })
+  })
+
+  function newSlashView(): EditorView {
+    const { view, host } = makeView()
+    slashViews.push({ view, host })
+    return view
+  }
+
+  it('opens one combined list: Subagents, MCP Servers, Skills; plain insert without collision', async () => {
+    // A distinct project id per test guarantees a store transition → cache
+    // invalidation → fresh catalog fetch (the previous afterEach reset it to
+    // null).
+    useProjectStore.setState({ projects: [], activeProjectId: 'slash-sections' })
+    vi.mocked(listAgents).mockResolvedValue([{ name: 'code-reviewer', description: 'Reviews code' }])
+    vi.mocked(listSkills).mockResolvedValue([{ name: 'commit', description: 'Commit helper' }])
+    getMCPMentionableServersMock.mockResolvedValue([{ name: 'context7', mode: 'auto' }])
+
+    const view = newSlashView()
+    typeAndComplete(view, '/')
+    await until(
+      () => currentCompletions(view.state).some((c) => c.label === 'code-reviewer'),
+      'all sections to appear',
+    )
+
+    const completions = currentCompletions(view.state)
+    const agent = completions.find((c) => c.label === 'code-reviewer')!
+    const mcp = completions.find((c) => c.label === 'context7')!
+    const skill = completions.find((c) => c.label === 'commit')!
+    expect(agent.section).toEqual({ name: 'Subagents', rank: 0 })
+    expect(agent.type).toBe('agent')
+    // MCP Servers sits BETWEEN Subagents and Skills.
+    expect(mcp.section).toEqual({ name: 'MCP Servers', rank: 1 })
+    expect(mcp.type).toBe('mcp')
+    expect(skill.section).toEqual({ name: 'Skills', rank: 2 })
+    expect(skill.type).toBe('skill')
+    // Subagents are offered ahead of MCP servers, which lead skills.
+    expect(completions.indexOf(agent)).toBeLessThan(completions.indexOf(mcp))
+    expect(completions.indexOf(mcp)).toBeLessThan(completions.indexOf(skill))
+
+    // Headers are real, non-selectable section elements; spacing stays in CSS.
+    await until(() => document.querySelectorAll('completion-section').length === 3, 'section headers to render')
+    const headers = Array.from(document.querySelectorAll<HTMLElement>('completion-section'))
+    expect(headers.map((el) => el.textContent)).toEqual(['Subagents', 'MCP Servers', 'Skills'])
+    const css = readFileSync('src/index.css', 'utf8')
+    const spacingRule = css.match(/\.cm-tooltip-autocomplete completion-section:not\(:first-child\)\s*\{[^}]+\}/)?.[0]
+    expect(spacingRule).toBeDefined()
+    const style = document.createElement('style')
+    style.textContent = spacingRule!
+    document.head.appendChild(style)
+    try {
+      expect(getComputedStyle(headers[0]!).marginTop).not.toBe('0.5rem')
+      expect(getComputedStyle(headers[1]!).marginTop).toBe('0.5rem')
+      expect(getComputedStyle(headers[2]!).marginTop).toBe('0.5rem')
+    } finally {
+      style.remove()
+    }
+
+    // A non-colliding pick inserts the plain name after the typed '/'.
+    await vi.advanceTimersByTimeAsync(100)
+    acceptCompletion(view)
+    expect(view.state.doc.toString()).toBe('/code-reviewer ')
+  })
+
+  it('hides disabled MCP servers and marks manual ones as mention-to-enable', async () => {
+    useProjectStore.setState({ projects: [], activeProjectId: 'slash-mcp-modes' })
+    vi.mocked(listAgents).mockResolvedValue([])
+    vi.mocked(listSkills).mockResolvedValue([])
+    getMCPMentionableServersMock.mockResolvedValue([
+      { name: 'auto-srv', mode: 'auto' },
+      { name: 'manual-srv', mode: 'manual' },
+      { name: 'off-srv', mode: 'disabled' },
+    ])
+
+    const view = newSlashView()
+    typeAndComplete(view, '/')
+    await until(
+      () => currentCompletions(view.state).some((c) => c.label === 'manual-srv'),
+      'mentionable MCP servers to appear',
+    )
+
+    const labels = currentCompletions(view.state).map((c) => c.label)
+    expect(labels).toContain('auto-srv')
+    expect(labels).toContain('manual-srv')
+    // A disabled server is inert — never offered.
+    expect(labels).not.toContain('off-srv')
+
+    const manual = currentCompletions(view.state).find((c) => c.label === 'manual-srv')!
+    expect(manual.detail).toContain('mention')
+  })
+
+  it('offers the /mcp: qualified spelling for a name colliding with a skill and inserts it', async () => {
+    useProjectStore.setState({ projects: [], activeProjectId: 'slash-mcp-collision' })
+    vi.mocked(listAgents).mockResolvedValue([])
+    vi.mocked(listSkills).mockResolvedValue([{ name: 'context7', description: 'Context7 skill' }])
+    getMCPMentionableServersMock.mockResolvedValue([{ name: 'context7', mode: 'auto' }])
+
+    const view = newSlashView()
+    typeAndComplete(view, '/con')
+    await until(
+      () => currentCompletions(view.state).some((c) => c.label === '/mcp: context7'),
+      'qualified MCP collision option',
+    )
+    const completions = currentCompletions(view.state)
+    expect(completions.some((c) => c.label === '/skill: context7')).toBe(true)
+    // Under a collision the plain spelling is never offered.
+    expect(completions.some((c) => c.label === 'context7')).toBe(false)
+
+    // The MCP option precedes the skill option in the combined list (MCP
+    // Servers section sits between Subagents and Skills), so accepting the
+    // selected (first) entry inserts the MCP-qualified spaced form.
+    await vi.advanceTimersByTimeAsync(100)
+    acceptCompletion(view)
+    expect(view.state.doc.toString()).toBe('/mcp: context7 ')
+  })
+
+  it('offers both qualified spellings for a colliding agent/skill name and inserts the qualified form', async () => {
+    useProjectStore.setState({ projects: [], activeProjectId: 'slash-collision' })
+    vi.mocked(listAgents).mockResolvedValue([{ name: 'review', description: 'Agent review' }])
+    vi.mocked(listSkills).mockResolvedValue([{ name: 'review', description: 'Skill review' }])
+    getMCPMentionableServersMock.mockResolvedValue([])
+
+    const view = newSlashView()
+    typeAndComplete(view, '/rev')
+    await until(
+      () => currentCompletions(view.state).some((c) => c.label === '/agent: review'),
+      'qualified collision options',
+    )
+    const completions = currentCompletions(view.state)
+    expect(completions.some((c) => c.label === '/skill: review')).toBe(true)
+    // Under a collision the plain spelling is never offered.
+    expect(completions.some((c) => c.label === 'review')).toBe(false)
+
+    // Accepting the (first) agent entry inserts the qualified spaced form.
+    await vi.advanceTimersByTimeAsync(100)
+    acceptCompletion(view)
+    expect(view.state.doc.toString()).toBe('/agent: review ')
+  })
+
+  it('never triggers any completion for # — the removed trigger', async () => {
+    useProjectStore.setState({ projects: [], activeProjectId: 'slash-hash-inert' })
+    vi.mocked(listAgents).mockResolvedValue([{ name: 'code-reviewer', description: 'Reviews code' }])
+    vi.mocked(listSkills).mockResolvedValue([{ name: 'commit', description: 'Commit helper' }])
+    getMCPMentionableServersMock.mockResolvedValue([{ name: 'context7', mode: 'auto' }])
+
+    const view = newSlashView()
+    typeAndComplete(view, '#co')
+    await settledCompletion(view)
+    expect(currentCompletions(view.state)).toEqual([])
+    // `#` must not even reach the catalog fetches.
+    expect(vi.mocked(listAgents)).not.toHaveBeenCalled()
+    expect(vi.mocked(listSkills)).not.toHaveBeenCalled()
+    expect(getMCPMentionableServersMock).not.toHaveBeenCalled()
+  })
+
+  it('filters all three catalogs by the query in one list', async () => {
+    useProjectStore.setState({ projects: [], activeProjectId: 'slash-filter' })
+    vi.mocked(listAgents).mockResolvedValue([{ name: 'code-reviewer', description: 'Reviews code' }])
+    vi.mocked(listSkills).mockResolvedValue([
+      { name: 'commit', description: 'Commit helper' },
+      { name: 'review-pr', description: 'Reviews a PR' },
+    ])
+    getMCPMentionableServersMock.mockResolvedValue([
+      { name: 'review-mcp', mode: 'manual' },
+      { name: 'zeta-mcp', mode: 'auto' },
+    ])
+
+    const view = newSlashView()
+    typeAndComplete(view, '/rev')
+    await until(
+      () => currentCompletions(view.state).length > 0,
+      'query-filtered completions',
+    )
+    const labels = currentCompletions(view.state).map((c) => c.label)
+    // Matches from ALL three sections appear together (agent + mcp + skill)…
+    expect(labels).toContain('code-reviewer')
+    expect(labels).toContain('review-mcp')
+    expect(labels).toContain('review-pr')
+    // …and non-matching entries are filtered out.
+    expect(labels).not.toContain('commit')
+    expect(labels).not.toContain('zeta-mcp')
   })
 })

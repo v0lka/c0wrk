@@ -12,22 +12,45 @@ import (
 	"github.com/v0lka/sp4rk/tools/mcp"
 )
 
+// MCPServerStatusInfo is the GetMCPStatus wire shape: the live gateway
+// status of one server plus its configured activation mode — a c0wrk-level
+// concept the sp4rk ServerStatus does not carry. The embedded status keeps
+// its JSON keys (embedding flattens), so `mode` is the only addition and
+// existing frontend payloads stay valid.
+type MCPServerStatusInfo struct {
+	mcp.ServerStatus
+	// Mode is the normalized per-server config mode ("auto" | "manual" |
+	// "disabled"). Always set by the merge; empty only on the synthetic
+	// gateway-starting placeholder, which the frontend renders by its
+	// `starting` flag anyway.
+	Mode string `json:"mode"`
+}
+
 // GetMCPStatus returns the status of every CONFIGURED MCP server so the
 // settings UI always renders the full configuration, unavailable servers
 // included (shown with a red indicator). Configured names missing from the
 // live gateway status — the gateway is missing entirely, failed to start, or
-// dropped a server — are synthesized as disconnected entries. While gateway
-// startup is still in flight (the "_gateway" starting placeholder) nothing is
-// merged: availability is genuinely unknown, and the frontend refreshes on
-// the mcp:ready event once startup completes.
+// dropped a server — are synthesized as disconnected entries. A DISABLED
+// server is rendered NEUTRALLY instead: it is intentionally not dialed, so
+// it never surfaces as an error/unavailable state (see
+// mergeConfiguredMCPServers). While gateway startup is still in flight (the
+// "_gateway" starting placeholder) nothing is merged: availability is
+// genuinely unknown, and the frontend refreshes on the mcp:ready event once
+// startup completes.
 // Returns an empty slice if the backend application is not initialized.
-func (f *FrontendAPI) GetMCPStatus() []mcp.ServerStatus {
+func (f *FrontendAPI) GetMCPStatus() []MCPServerStatusInfo {
 	if f.app == nil {
-		return []mcp.ServerStatus{}
+		return []MCPServerStatusInfo{}
 	}
 	status := f.app.GetMCPStatus()
 	if isMCPStartupPlaceholder(status) {
-		return status
+		// Preserve the placeholder verbatim (no config merge — availability
+		// is unknown while startup is in flight).
+		out := make([]MCPServerStatusInfo, len(status))
+		for i, s := range status {
+			out[i] = MCPServerStatusInfo{ServerStatus: s}
+		}
+		return out
 	}
 	return mergeConfiguredMCPServers(status, f.GetMCPServers())
 }
@@ -39,18 +62,40 @@ func isMCPStartupPlaceholder(status []mcp.ServerStatus) bool {
 	return len(status) == 1 && status[0].Name == "_gateway" && status[0].Starting
 }
 
-// mergeConfiguredMCPServers appends a disconnected entry (Error "unavailable")
-// for every configured server absent from status, then sorts the result by
-// name. This keeps the settings list a mirror of the configuration even when
-// the gateway cannot report a server itself (failed startup, gateway missing,
+// mergeConfiguredMCPServers enriches the live gateway status with the
+// configured per-server mode, appends a synthesized entry for every
+// configured server absent from status, then sorts the result by name. This
+// keeps the settings list a mirror of the configuration even when the
+// gateway cannot report a server itself (failed startup, gateway missing,
 // config ahead of a failed reconfigure).
-func mergeConfiguredMCPServers(status []mcp.ServerStatus, configured map[string]config.MCPServerConfig) []mcp.ServerStatus {
-	if len(configured) == 0 {
-		return status
-	}
+//
+// A DISABLED server is INERT, not broken, and must render neutrally:
+//   - a configured-but-absent name synthesizes an entry WITHOUT the usual
+//     "unavailable" error (absence is exactly what "never dialed" produces);
+//   - a name a stale gateway still reports (a reconfigure that failed
+//     mid-flight can leave the old connection behind) is neutralized — the
+//     config mode is authoritative, so connected/tools/error are cleared and
+//     the frontend renders the entry by its mode instead of a live-looking
+//     or red state.
+func mergeConfiguredMCPServers(status []mcp.ServerStatus, configured map[string]config.MCPServerConfig) []MCPServerStatusInfo {
+	merged := make([]MCPServerStatusInfo, 0, len(status)+len(configured))
 	present := make(map[string]bool, len(status))
 	for _, s := range status {
 		present[s.Name] = true
+		mode := config.MCPServerModeAuto
+		if cfg, ok := configured[s.Name]; ok {
+			mode = config.NormalizeMCPServerMode(cfg.Mode)
+		}
+		info := MCPServerStatusInfo{ServerStatus: s, Mode: mode}
+		if mode == config.MCPServerModeDisabled {
+			info.Connected = false
+			info.Unhealthy = false
+			info.Starting = false
+			info.ToolCount = 0
+			info.Tools = []string{}
+			info.Error = ""
+		}
+		merged = append(merged, info)
 	}
 	for name, cfg := range configured {
 		if present[name] {
@@ -60,16 +105,23 @@ func mergeConfiguredMCPServers(status []mcp.ServerStatus, configured map[string]
 		if transport == "" {
 			transport = "stdio"
 		}
-		status = append(status, mcp.ServerStatus{
+		mode := config.NormalizeMCPServerMode(cfg.Mode)
+		entry := mcp.ServerStatus{
 			Name:      name,
 			Transport: transport,
 			Connected: false,
 			Tools:     []string{},
 			Error:     "unavailable",
-		})
+		}
+		// Intentionally not dialed — absent from the gateway BY DESIGN, so
+		// the entry carries no failure state for the UI to render red.
+		if mode == config.MCPServerModeDisabled {
+			entry.Error = ""
+		}
+		merged = append(merged, MCPServerStatusInfo{ServerStatus: entry, Mode: mode})
 	}
-	sort.Slice(status, func(i, j int) bool { return status[i].Name < status[j].Name })
-	return status
+	sort.Slice(merged, func(i, j int) bool { return merged[i].Name < merged[j].Name })
+	return merged
 }
 
 // GetMCPServers returns the current MCP server configurations.
@@ -106,6 +158,40 @@ func (f *FrontendAPI) GetMCPServers() map[string]config.MCPServerConfig {
 	}
 
 	return result
+}
+
+// MCPMentionableServer is the minimal identity of one configured MCP server
+// for the chat input's @-completion and the send path: name plus per-server
+// mode. It deliberately carries NOTHING else — command args, env and headers
+// can embed secrets, and none of them is needed to mention a server. The
+// mode lets the consumer decide mentionability (manual servers are the
+// mention-triggered ones; disabled are inert) without another round-trip.
+type MCPMentionableServer struct {
+	Name string `json:"name"`
+	Mode string `json:"mode"`
+}
+
+// GetMCPMentionableServers returns every configured MCP server as a
+// secret-free {name, mode} pair, sorted by name. It is the lightweight
+// read behind the chat-input completion and the send path — no transport
+// details, no gateway status, no credentials. Modes are normalized
+// (empty/invalid resolve to "auto"), matching the load pipeline.
+// Returns an empty slice if config is not initialized.
+func (f *FrontendAPI) GetMCPMentionableServers() []MCPMentionableServer {
+	servers := f.GetMCPServers()
+	names := make([]string, 0, len(servers))
+	for name := range servers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]MCPMentionableServer, 0, len(names))
+	for _, name := range names {
+		out = append(out, MCPMentionableServer{
+			Name: name,
+			Mode: config.NormalizeMCPServerMode(servers[name].Mode),
+		})
+	}
+	return out
 }
 
 // GetToolList returns all registered tools with source, security group, and
@@ -276,6 +362,15 @@ func validateMCPServerConfig(name string, cfg config.MCPServerConfig) error {
 		}
 	default:
 		return fmt.Errorf("server %q: unsupported transport: %q", name, transport)
+	}
+
+	// Mode: empty is allowed (the default "auto"); a non-empty value must be
+	// a recognized enum member. Invalid values are rejected up front here,
+	// while the load path fails soft to "auto" with a warning
+	// (normalizeMCPModes) — the same split as the timeout fields.
+	if cfg.Mode != "" && !config.ValidMCPServerMode(cfg.Mode) {
+		return fmt.Errorf("server %q: invalid mode %q: must be %q, %q or %q",
+			name, cfg.Mode, config.MCPServerModeAuto, config.MCPServerModeManual, config.MCPServerModeDisabled)
 	}
 
 	if err := validateMCPTimeout(name, "timeout", cfg.Timeout); err != nil {

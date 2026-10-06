@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted — note [ADR-076](./076-unified-slash-mentions.md): `/` is now the single mention trigger for skills and subagents. This ADR's `/skill-name` references remain valid (a skill may also be named via the collision-qualified `/skill: name` form); the `skills:` field semantics are unchanged.
 
 ## Context
 

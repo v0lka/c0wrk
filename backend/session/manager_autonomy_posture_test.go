@@ -92,7 +92,7 @@ func TestSendMessage_RepinsAutonomyPostureAtTaskLaunch(t *testing.T) {
 	on := coretools.SilentModeState{ToolConfirm: "judge", StepLimit: "auto", AskUser: "disable"}
 	shared.ApplySecurityState(nil, false, coretools.AutonomyModeSilent, on)
 
-	if err := mgr.SendMessage(context.Background(), info.ID, "do the thing", nil, nil, "", "", false, "", false, false); err != nil {
+	if err := mgr.SendMessage(context.Background(), info.ID, "do the thing", nil, nil, nil, "", "", false, "", false, false); err != nil {
 		t.Fatalf("SendMessage failed: %v", err)
 	}
 	if _, ok := waitForEvent(eventChan, "task_complete", 5*time.Second); !ok {

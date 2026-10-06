@@ -32,6 +32,7 @@ export interface UseMessageSenderResult {
     messageText: string,
     activeSkills?: string[],
     activeAgents?: string[],
+    activeMCPServers?: string[],
     originSessionId?: string | null,
     options?: SendOptions,
   ) => Promise<void>
@@ -48,6 +49,7 @@ export function useMessageSender(): UseMessageSenderResult {
     messageText: string,
     activeSkills?: string[],
     activeAgents?: string[],
+    activeMCPServers?: string[],
     originSessionId?: string | null,
     options?: SendOptions,
   ) => {
@@ -144,7 +146,7 @@ export function useMessageSender(): UseMessageSenderResult {
       const modelOverride = useInputModeStore.getState().selectedModel ?? ''
       const reasoningOverride = useInputModeStore.getState().selectedReasoning ?? ''
       const goalBudget = useInputModeStore.getState().goalBudget
-      await sendMessage(sessionId, messageText, activeSkills ?? [], activeAgents ?? [], modelOverride, reasoningOverride, goalEnabled, goalBudget, e2sEnabled)
+      await sendMessage(sessionId, messageText, activeSkills ?? [], activeAgents ?? [], activeMCPServers ?? [], modelOverride, reasoningOverride, goalEnabled, goalBudget, e2sEnabled)
       // A confirmed fresh non-E2S task supersedes any prior E2S run in this
       // session: drop the stale Σ snapshot so the Execution State panel does
       // not shadow the plan view for the new task (E2S is selected per

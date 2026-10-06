@@ -306,6 +306,10 @@ export function GetLogLevel() {
   return window['go']['desktop']['App']['GetLogLevel']();
 }
 
+export function GetMCPMentionableServers() {
+  return window['go']['desktop']['App']['GetMCPMentionableServers']();
+}
+
 export function GetMCPServers() {
   return window['go']['desktop']['App']['GetMCPServers']();
 }
@@ -686,8 +690,8 @@ export function SelectModelProfile(arg1) {
   return window['go']['desktop']['App']['SelectModelProfile'](arg1);
 }
 
-export function SendMessage(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10) {
-  return window['go']['desktop']['App']['SendMessage'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10);
+export function SendMessage(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11) {
+  return window['go']['desktop']['App']['SendMessage'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11);
 }
 
 export function SendSystemNotification(arg1, arg2, arg3) {

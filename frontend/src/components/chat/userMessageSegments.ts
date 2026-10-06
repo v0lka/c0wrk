@@ -1,20 +1,37 @@
 // Pure parsing logic for user message content: splits text into segments
-// (text / skill / file refs). Extracted from UserMessageContent.tsx so the
+// (text / slash refs / file refs). Extracted from UserMessageContent.tsx so the
 // component file only exports a React component (react-refresh requirement).
 
-// Combined pattern for splitting: matches /skill-name, #agent-name, or @path refs.
-// Line anchors accept an optional `L` prefix (e.g. #L20-L36), consistent with
-// GitHub canonical form and the backend preprocessor. The #agent-name alt must
-// only match when followed by [\w-]+ with a word boundary so a trailing @file
-// line anchor (@x.go#L20) is never captured as an agent. The @path alt accepts
-// two forms, tried in order: a single-quoted path (@'my file.go', the
-// canonical form for paths with spaces) and a bare path with backslash-escaped
-// spaces (@my\ file.go, the legacy form).
-const REF_PATTERN = /(?:^|\s)(\/[\w-]+|#([\w-]+)|@(?:'[^']+'|(?:[^\s\\]|\\.)+)(?:#L?\d+(?:-L?\d+)?)?)/g
+import { REF_BOUNDARY_SPACE_SOURCE, SLASH_REF_SOURCE } from '@/lib/parseReferences'
+
+// Combined pattern for splitting: matches /-refs or @path refs (issue #110).
+// A /-ref is either collision-qualified (`/agent: name` / `/skill: name` /
+// `/mcp: name`, the space after the colon optional) or plain (`/name` — kind
+// resolved at display time against the catalogs). `#` is NOT a ref trigger
+// anymore: historical `#foo` mentions fall through as plain text, while the
+// `#` in @file line anchors belongs to the file alternative below. The @path
+// alt accepts two forms, tried in order: a single-quoted path (@'my file.go',
+// the canonical form for paths with spaces) and a bare path with
+// backslash-escaped spaces (@my\ file.go, the legacy form).
+// Keep the file branch's existing whitespace semantics; slash refs use the
+// same complete-token grammar as send-path extraction.
+const REF_PATTERN = new RegExp(
+    String.raw`(?:^|${REF_BOUNDARY_SPACE_SOURCE})(${SLASH_REF_SOURCE})|(?:^|\s)(@(?:'[^']+'|(?:[^\s\\]|\\.)+)(?:#L?\d+(?:-L?\d+)?)?)`,
+    'g',
+)
 
 export interface Segment {
-    type: 'text' | 'skill' | 'agent' | 'file'
+    /**
+     * 'skill' / 'agent' / 'mcp': a collision-qualified /-ref (explicit kind).
+     * 'ref': a plain /name whose kind is resolved at display time against
+     * the catalogs (agent chip / skill chip / mcp chip / neutral when
+     * unresolvable).
+     */
+    type: 'text' | 'skill' | 'agent' | 'mcp' | 'ref' | 'file'
+    /** The ref name (slash refs) or verbatim ref (file refs). */
     content: string
+    /** Verbatim source spelling of a slash ref (`/agent: name`, `/name`). */
+    raw?: string
     // For file refs:
     path?: string
     startLine?: number
@@ -28,7 +45,7 @@ export function parseSegments(content: string): Segment[] {
     let match: RegExpExecArray | null
     while ((match = REF_PATTERN.exec(content)) !== null) {
         const fullMatch = match[0]
-        const ref = match[1]
+        const ref = match[1] ?? match[5]
         if (ref === undefined) continue
         // Account for leading whitespace in match
         const refStart = match.index + (fullMatch.length - ref.length)
@@ -39,9 +56,18 @@ export function parseSegments(content: string): Segment[] {
         }
 
         if (ref.startsWith('/')) {
-            segments.push({ type: 'skill', content: ref.slice(1) })
-        } else if (ref.startsWith('#')) {
-            segments.push({ type: 'agent', content: match[2] ?? ref.slice(1) })
+            const qualifiedKind = match[2]
+            const qualifiedName = match[3]
+            const plainName = match[4]
+            if (qualifiedKind !== undefined && qualifiedName !== undefined) {
+                segments.push({
+                    type: qualifiedKind as 'agent' | 'skill' | 'mcp',
+                    content: qualifiedName,
+                    raw: ref,
+                })
+            } else if (plainName !== undefined) {
+                segments.push({ type: 'ref', content: plainName, raw: ref })
+            }
         } else if (ref.startsWith('@')) {
             // Two path forms: single-quoted (@'my file.go', content
             // verbatim) and legacy backslash-escaped (@my\ file.go). The

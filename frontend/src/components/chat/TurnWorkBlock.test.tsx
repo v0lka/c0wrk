@@ -4,6 +4,7 @@
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
+import { TooltipProvider } from '@/components/ui/tooltip'
 import { TurnWorkBlock } from './TurnWorkBlock'
 import { turnWorkOwners } from './turnWorkOwners'
 import { bookmarkKey } from '@/lib/bookmarks'

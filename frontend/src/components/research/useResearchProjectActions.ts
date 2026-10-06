@@ -186,7 +186,7 @@ export function useResearchProjectActions() {
   const dispatchSessionAction = useCallback(
     (prompt: string, skill: string, newSession: boolean, skillLabel: string) =>
       Promise.resolve(
-        send(prompt, [skill], undefined, undefined, { newSession }),
+        send(prompt, [skill], undefined, undefined, undefined, { newSession }),
       ).catch((err) => {
         useResearchStore
           .getState()

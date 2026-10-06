@@ -4,6 +4,7 @@
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
+import { TooltipProvider } from '@/components/ui/tooltip'
 import type { ChatMessageUI, DisplayItem } from '@/types/messages'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { ChatMessageRenderer } from './ChatMessageRenderer'

@@ -223,6 +223,7 @@ describe('AttachmentChips — Study (PDF only)', () => {
       [STUDY_PAPER_SKILL],
       undefined,
       undefined,
+      undefined,
       { newSession: false },
     )
   })

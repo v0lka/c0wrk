@@ -55,6 +55,7 @@ core ToolRegistry.Execute(ctx, name, input)
 ├─ 1. Lookup tool by name → not found? return error result
 ├─ 2. Structural input validation (sdktools.ValidateToolInput against the tool's JSON schema — required keys, declared types, unknown keys, recursively into nested objects and array items; fail-open on unmodeled constructs) → invalid? return error result naming the offending path (e.g. tasks[2].id)
 ├─ 3. Disabled tool (No Project mode)? → return error result (applies to ALL tools including system-group)
+├─ 3a. MCP source category + server source tag is gated by task context? → return error result naming the server (Gate 2b, including stale calls and MCP servers named `core`)
 ├─ 4. Tool's group == system? → execute immediately (bypass remaining policy/judge/hook checks)
 ├─ 5. PostExecuteHook deferred (runs on every later return path)
 ├─ 6. PreExecuteHook (blocking gate, e.g., index ready)
@@ -87,7 +88,7 @@ The group policy resolution, auto-approval (session roots), and symlink gate are
 ## Invariants
 
 - Tool names are unique within the registry
-- `system`-group tools bypass policy and judge checks — membership is declared on the tool itself (`ToolGroup: sdktools.GroupSystem` on `BaseTool`), not an out-of-band name set. The disabled-tool check (No Project mode) applies to all tools including system-group ones. `batch` is intercepted at the executor level before reaching the registry's `Execute()` path
+- `system`-group tools bypass policy and judge checks — membership is declared on the tool itself (`ToolGroup: sdktools.GroupSystem` on `BaseTool`), not an out-of-band name set. The disabled-tool check (No Project mode) and task-context MCP server gate (Gate 2b) apply before the bypass, including to MCP tools declaring the system group. The MCP check uses source category plus server tag, so a server named `core` is gated while genuine built-ins stay exempt. `batch` is intercepted at the executor level before reaching the registry's `Execute()` path
 - A tool with an undeclared group matches no allow-list (fail-closed for group filtering, subagent budgets, verifier sets)
 - The symlink analysis runs during safety-signal gathering for every non-system tool call; only escapes out of the session roots are hard reasons — the gate is a pure literal-path extractor, so the former unresolvable/suspicious expansion escalation no longer exists (ADR-055)
 - MCP tools carry source category `mcp` (source tag = the MCP server's name); core built-in tools carry source category `core`

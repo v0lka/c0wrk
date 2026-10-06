@@ -5,7 +5,6 @@ import {backend} from '../models';
 import {project} from '../models';
 import {workspace} from '../models';
 import {config} from '../models';
-import {mcp} from '../models';
 import {desktop} from '../models';
 import {review} from '../models';
 
@@ -161,9 +160,11 @@ export function GetLastActiveProjectID():Promise<string>;
 
 export function GetLogLevel():Promise<string>;
 
+export function GetMCPMentionableServers():Promise<Array<backend.MCPMentionableServer>>;
+
 export function GetMCPServers():Promise<Record<string, config.MCPServerConfig>>;
 
-export function GetMCPStatus():Promise<Array<mcp.ServerStatus>>;
+export function GetMCPStatus():Promise<Array<backend.MCPServerStatusInfo>>;
 
 export function GetModelConfig(arg1:string):Promise<backend.ModelConfigResponse>;
 
@@ -351,7 +352,7 @@ export function SearchVectorStore(arg1:backend.SearchRequest):Promise<Array<back
 
 export function SelectModelProfile(arg1:string):Promise<void>;
 
-export function SendMessage(arg1:string,arg2:string,arg3:Array<string>,arg4:Array<string>,arg5:string,arg6:string,arg7:boolean,arg8:string,arg9:boolean,arg10:boolean):Promise<void>;
+export function SendMessage(arg1:string,arg2:string,arg3:Array<string>,arg4:Array<string>,arg5:Array<string>,arg6:string,arg7:string,arg8:boolean,arg9:string,arg10:boolean,arg11:boolean):Promise<void>;
 
 export function SendSystemNotification(arg1:string,arg2:string,arg3:Record<string, string>):Promise<void>;
 

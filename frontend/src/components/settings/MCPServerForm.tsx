@@ -14,10 +14,12 @@ import {
 import type { MCPServerConfig } from '@/types/models'
 
 type TransportType = 'stdio' | 'http'
+type ServerMode = 'auto' | 'manual' | 'disabled'
 
 interface ServerFormData {
   name: string
   transport: TransportType
+  mode: ServerMode
   command: string
   args: string
   env: Record<string, string>
@@ -34,7 +36,7 @@ function makeEntry(key = '', value = ''): KeyValueEntry {
 }
 
 const emptyForm: ServerFormData = {
-  name: '', transport: 'stdio', command: '', args: '', env: {}, url: '', headers: {}, timeout: '', callTimeout: '',
+  name: '', transport: 'stdio', mode: 'auto', command: '', args: '', env: {}, url: '', headers: {}, timeout: '', callTimeout: '',
 }
 
 interface MCPServerFormProps {
@@ -52,7 +54,7 @@ export function MCPServerForm({ open, onOpenChange, editingName, serverConfigs, 
     if (editingName && serverConfigs[editingName]) {
       const cfg = serverConfigs[editingName]
       const isStdio = editServer?.transport === 'stdio'
-      return { name: editingName, transport: isStdio ? 'stdio' : 'http', command: cfg.command || '', args: cfg.args?.join(', ') || '', env: cfg.env || {}, url: cfg.url || '', headers: cfg.headers || {}, timeout: cfg.timeout || '', callTimeout: cfg.call_timeout || '' }
+      return { name: editingName, transport: isStdio ? 'stdio' : 'http', mode: cfg.mode ?? 'auto', command: cfg.command || '', args: cfg.args?.join(', ') || '', env: cfg.env || {}, url: cfg.url || '', headers: cfg.headers || {}, timeout: cfg.timeout || '', callTimeout: cfg.call_timeout || '' }
     }
     return emptyForm
   })
@@ -89,6 +91,7 @@ export function MCPServerForm({ open, onOpenChange, editingName, serverConfigs, 
       headers: isStdio ? {} : headers,
       timeout: formData.timeout.trim(),
       call_timeout: formData.callTimeout.trim(),
+      mode: formData.mode,
     }
 
     const newServers = { ...serverConfigs }

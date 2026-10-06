@@ -464,6 +464,7 @@ describe('FileTreeContextMenu — Study this paper (PDF only)', () => {
       [STUDY_PAPER_SKILL],
       undefined,
       undefined,
+      undefined,
       { newSession: false },
     )
   })

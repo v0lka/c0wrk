@@ -139,3 +139,31 @@ describe('MCPServerForm timeout fields', () => {
     expect(saved['my-server']!.call_timeout).toBe('')
   })
 })
+
+// Activation is managed on the card; editing transport details must preserve it.
+describe('MCPServerForm activation mode preservation', () => {
+  it('has no activation controls and creates new servers in auto mode', async () => {
+    const onSave = vi.fn(async () => null)
+    render({ onSave })
+    expect(document.body.textContent).not.toContain('Activation Mode')
+    expect(document.querySelector('[aria-label*="activation"]')).toBeNull()
+    typeInto(nameInput()!, 'new-server')
+    await act(async () => { saveButton()!.click() })
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+      'new-server': expect.objectContaining({ mode: 'auto' }),
+    }), null)
+  })
+
+  it.each(['auto', 'manual', 'disabled', undefined] as const)('preserves stored mode %s when saving an existing server', async (mode) => {
+    const cfg: MCPServerConfig = {
+      transport: 'stdio', command: 'cmd', args: [], env: {}, url: '', headers: {},
+      timeout: '30s', call_timeout: '2m', mode,
+    }
+    const onSave = vi.fn(async () => null)
+    render({ editingName: 'srv', serverConfigs: { srv: cfg }, editServer: { name: 'srv', transport: 'stdio' }, onSave })
+    expect(document.body.textContent).not.toContain('Activation Mode')
+    typeInto(timeoutInputs()[0]!, '45s')
+    await act(async () => { saveButton()!.click() })
+    expect(onSave).toHaveBeenCalledWith({ srv: { ...cfg, timeout: '45s', mode: mode ?? 'auto' } }, 'srv')
+  })
+})

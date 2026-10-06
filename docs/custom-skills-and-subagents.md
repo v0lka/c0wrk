@@ -31,8 +31,8 @@ directory", but they do different jobs:
 | Job | Activates *reusable instructions + bundled resources* for the agent that runs with them | Declares a *specialized persona + tool budget + limits* for a **delegated** subagent |
 | Applied to | The current (main) Conductor loop, or a subagent that requires it | A subagent launched under that profile |
 | Effect on the prompt | Adds a `## Active Skills` section (body emitted **verbatim**) | **Replaces** the orchestrator core directive with the profile body |
-| Trigger | Automatic router match **or** explicit `/skill-name` | Explicit `#agent-name`, plan-step `agent:`, or `delegate(agent: "name")` |
-| Mention syntax | `/skill-name` | `#agent-name` |
+| Trigger | Automatic router match **or** explicit `/skill-name` | Explicit `/agent-name` (or `/agent: name`), plan-step `agent:`, or `delegate(agent: "name")` |
+| Mention syntax | `/skill-name` (or `/skill: name` under a collision) | `/agent-name` (or `/agent: name`) |
 | Bundled files | Yes (`references/`, `scripts/`, `assets/`, …) read via `read_skill_resource` | No — a profile is a single directive file |
 | Tool permissions | None — a skill grants and revokes nothing | Narrows/closes the subagent's *available* tool set (never the policy applied) |
 | Spec lineage | [agentskills.io](https://agentskills.io) open spec | c0wrk-specific (ADR-021) |
@@ -153,7 +153,10 @@ A skill is activated through one of two independent paths, and the two sets are
 2. **Explicit (`/skill-name` mention).** If you type `/my-skill` in the message,
    that skill is activated directly and **bypasses the router**. To keep routing
    quality high, the router message is rebuilt with the skill's name and
-   description restored, so classification still reflects the task.
+   description restored, so classification still reflects the task. When the
+   name also exists as a subagent profile (a collision), type
+   `/skill: my-skill` to force the skill kind (see
+   [§4.1](#41-mention-and-reference-syntax)).
 
 When the router auto-selects, c0wrk emits a `skills_activated` event; the
 frontend reflects the active set.
@@ -331,12 +334,12 @@ not-yet-supported fields do not break parsing).
 | Field | Required | Rules / meaning |
 | --- | --- | --- |
 | `name` | **Yes** | Lowercase alphanumeric + hyphens, no leading/trailing hyphen. **Must equal the parent directory name.** |
-| `description` | **Yes** | Drives the `#` autocomplete and the `## Available Subagents` roster. Describe the specialty and when to use it. |
+| `description` | **Yes** | Drives the `/` autocomplete's Subagents section and the `## Available Subagents` roster. Describe the specialty and when to use it. |
 | `tools` | No | The subagent's tool budget. `all` (default) · `read-only` · a comma-separated list of **capability-group tokens** (see [§3.6](#36-tool-budgets-capability-groups)). A typo fails the profile. |
 | `max-steps` | No | ReAct iteration cap for the subagent. `0`/absent ⇒ derived from complexity (see [§3.8](#38-delegation-settings-and-limits)). |
 | `model` | No | Per-agent model override — every LLM call the subagent makes is forced to this model. |
 | `allow-redelegate` | No | `true` lets this subagent itself delegate deeper (capped by config). Default `false`. |
-| `hidden` | No | `true` hides the profile from the `#` autocomplete and the `Available Subagents` roster (see [§3.10](#310-hidden-profiles)). Default `false`. |
+| `hidden` | No | `true` hides the profile from the `/` autocomplete's Subagents section and the `Available Subagents` roster (see [§3.10](#310-hidden-profiles)). Default `false`. |
 | `color` | No | UI accent color for the agent badge (e.g. `"#e06c75"`). |
 | `skills` | No | A comma-separated list of **skill names this profile requires** (see [§3.7](#37-requiring-skills-profile-skills)). |
 
@@ -353,12 +356,21 @@ method, and what "done" means for this specialist.
 There are four ways a profile is chosen — two driven by you, two by the
 Conductor:
 
-1. **Explicit `#agent-name` mention (you).** Type `#code-reviewer` in your
-   message. The frontend extracts the mention, validates it against the
-   user-visible catalog, **strips it from the message text**, and threads it to
-   the backend. The Conductor's prompt then gains a `## Requested Subagents`
-   directive telling it that it **MUST** delegate the corresponding work to each
-   named agent. This is a directive, not a hint.
+1. **Explicit `/agent-name` mention (you).** Type `/code-reviewer` in your
+   message. The frontend extracts the mention from the single `/`-triggered
+   list, partitions it against the three catalogs (agents / skills / MCP
+   servers; agents → `activeAgents`),
+   **strips it from the message text**, and threads it to the backend. The
+   Conductor's prompt then gains a `## Requested Subagents` directive telling
+   it that it **MUST** delegate the corresponding work to each named agent.
+   This is a directive, not a hint. When the same name exists in more than
+   one public catalog (skills, profiles or MCP servers — a *collision*), type
+   the collision-qualified form `/agent: code-reviewer` (`/skill: <name>` or
+   `/mcp: <name>` selects the other kind) — both with and
+   without the space after the colon are accepted, and the dropdown inserts
+   the spaced form. A plain `/name` under a real collision is an ambiguous
+   no-op: nothing is activated or requested and the text is preserved (see
+   [§4.1](#41-mention-and-reference-syntax)).
 2. **Implicit discovery (the Conductor).** When the catalog is non-empty, the
    Conductor's prompt gains a `## Available Subagents` roster (non-hidden
    profiles only). The Conductor may choose to delegate to a fitting specialist
@@ -371,11 +383,13 @@ Conductor:
    (`declare_plan`), so a step's work runs with that profile's persona and
    budget. This survives pause/resume and JSON round-trips.
 
-> **`#` vs `/` vs `@`.** `#agent-name` targets a subagent, `/skill-name`
-> activates a skill, and `@path` references a file. A `#` that is glued to a file
-> token (the GitHub-style line anchor in `@x.go#L20`) is never mistaken for an
-> agent mention. A mention only counts when it is at the start of the text or
-> preceded by whitespace.
+> **`#` vs `/` vs `@`.** `/name` mentions a skill, a subagent profile or an
+> MCP server (one `/`-triggered list; `/agent: …`/`/skill: …`/`/mcp: …`
+> disambiguates collisions), and
+> `@path` references a file. `#` is not a trigger at all — `#foo` is always
+> plain text, and the `#` glued to a file token (the GitHub-style line anchor
+> in `@x.go#L20`) belongs to the file ref. A mention only counts when it is at
+> the start of the text or preceded by whitespace.
 
 #### The two Conductor-only prompt sections
 
@@ -391,7 +405,7 @@ subagent (a generic subagent must not inherit the Conductor's roster or its
 > agent by name via `delegate(agent: "name")` when a subagent's specialty fits
 > the unit of work.
 
-`## Requested Subagents` (from your `#mentions`) is a directive:
+`## Requested Subagents` (from your `/agent` mentions) is a directive:
 
 > The user explicitly requested delegation to the following subagents. You MUST
 > delegate the corresponding units of work to each named agent via
@@ -401,7 +415,7 @@ subagent (a generic subagent must not inherit the Conductor's roster or its
 
 A requested name that is not in the catalog is still listed (without a
 description) so the mismatch is surfaced rather than silently dropped. In
-practice the frontend already validates `#mentions`, so only names in the
+practice the frontend already validates `/agent` mentions, so only names in the
 user-visible catalog are threaded from chat (see [§3.10](#310-hidden-profiles)
 for the hidden-profile nuance).
 
@@ -520,20 +534,20 @@ Conductor-only.)
 
 `hidden: true` keeps a profile out of the discovery surfaces:
 
-- It is excluded from the `#` autocomplete list (the frontend roster).
+- It is excluded from the `/` autocomplete's Subagents section (the frontend roster).
 - It is excluded from the `## Available Subagents` roster the Conductor sees.
 
 A hidden profile remains **resolvable by name** when targeted explicitly (a
 `delegate` call or a plan step naming it). Note the consequence of the
-autocomplete exclusion: because chat-input `#mentions` are validated against the
-*visible* catalog, a hidden profile's `#name` typed in chat will not be threaded
+autocomplete exclusion: because chat-input `/agent` mentions are validated against the
+*visible* catalog, a hidden profile's `/agent-name` typed in chat will not be threaded
 as a delegation directive. Treat `hidden` as "not offered for discovery", not as
 a secret with special privileges.
 
 ### 3.11 Live reload
 
 c0wrk watches the profile directories. Adding or editing an `AGENT.md` refreshes
-the `#` autocomplete live; changes outside the workspace emit the
+the `/` autocomplete's Subagents section live; changes outside the workspace emit the
 `agents:changed` event, changes inside the workspace arrive via
 `workspace:tree_changed`. As with skills, a profile directory that did not exist
 at startup is not watched (a restart picks it up); existing directories also
@@ -565,7 +579,7 @@ You are a meticulous code reviewer.
 - End with a short verdict: approve / request changes, and why.
 ```
 
-Use it by asking "review my changes `#code-reviewer`" (explicit), or simply by
+Use it by asking "review my changes `/code-reviewer`" (explicit), or simply by
 asking for a code review and letting the Conductor pick it from the
 `Available Subagents` roster (implicit). To make it depend on a skill, add
 `skills: code-review` and ship the matching skill.
@@ -588,22 +602,71 @@ asking for a code review and letting the Conductor pick it from the
 
 | Syntax | Refers to | Extracted/validated by |
 | --- | --- | --- |
-| `/skill-name` | An Agent Skill to activate | Frontend `extractSkillRefs`; backed by the discovered skill catalog |
-| `#agent-name` | A Subagent Profile to delegate to | Frontend `extractAgentRefs` + catalog filter |
+| `/agent-name` | A Subagent Profile to delegate to (plain form) | Frontend; partitioned against the discovered agent catalog |
+| `/skill-name` | An Agent Skill to activate (plain form) | Frontend; partitioned against the discovered skill catalog |
+| `/server-name` | A configured MCP server to enable/request for this task (plain form; `auto`/`manual` servers only) | Frontend; partitioned against the configured MCP server catalog |
+| `/agent: name` (or `/agent:name`) | A Subagent Profile, collision-qualified | Frontend; the marker forces the agent kind |
+| `/skill: name` (or `/skill:name`) | An Agent Skill, collision-qualified | Frontend; the marker forces the skill kind |
+| `/mcp: name` (or `/mcp:name`) | An MCP server, collision-qualified | Frontend; the marker forces the MCP kind (always valid input) |
 | `@path` | A file reference (with optional `#L20` / `#L5-L10` line anchors) | Frontend; converted to a `fileref://` URI for the agent |
 | `/goal …` | Switches the first message of a task into goal mode | Backend goal-mode detection |
 
-Rules that keep the three reference kinds unambiguous:
+`/` is the single trigger for all three mention kinds: it opens one completion
+list with a labelled **Subagents** section first, then **MCP Servers**, then
+**Skills**. The MCP Servers section lists every configured server with
+activation mode `auto` or `manual` (`disabled` servers are hidden — they are
+never dialed and a mention cannot make their tools available).
+
+The collision-qualified form is **always valid input** — with or without the
+space after the colon — even when there is no collision; the dropdown inserts
+the spaced form canonically. A **collision** is an exact, case-sensitive name
+present in more than one of the three public catalogs (skills, subagent
+profiles, MCP servers — across all precedence roots). Under a collision the
+dropdown only offers the qualified spellings, and a hand-typed plain `/name`
+is an **ambiguous no-op**: nothing is activated or requested, the text is
+preserved verbatim, and a hint points at the qualified form.
+
+**MCP server mentions** (per-server activation mode, see Settings → MCP):
+
+- `auto` (the default) — the server is connected and its tools are always
+  available; mentioning it just tells the agent you *prefer* its tools (a
+  soft hint, never an obligation).
+- `manual` — the server stays configured and connected, but its tools join a
+  task **only after you mention it**. The mention takes effect **for the
+  whole task**: it survives follow-up messages, pause/resume and app restart,
+  and it cannot be retracted mid-task. Selections are stored as task-owned
+  server names, not permissions: each new-task, continuation or resume entry
+  computes availability from one snapshot of the current modes. Settings
+  changes apply at the next entry; a now-disabled server stays unavailable.
+  A fresh task starts with its own selection set (empty for legacy tasks);
+  a fork copies selections independently, and deleting the task/session
+  removes its selection rows.
+- `disabled` — never connected, never available; a mention cannot override
+  it.
+
+A mention cannot be sent while a task is running. A paused task accepts a
+text nudge, but that resume path does not add new server selections; its
+persisted selections remain in effect. Mention additions are accepted on a
+new task or an idle continuation send. Before resumed plan steps or delegates
+run, c0wrk restores the selections and attaches the same gate used by the main
+agent, E2S and verifier. If selection storage cannot be loaded or updated,
+execution stops with a retryable authorization-state error; it never silently
+uses a memory cache or starts a fresh task to bypass the failure. For the full
+semantics — task-wide availability and the fail-closed dispatch gate — see
+[ADR-077](../specs/decisions/077-explicit-mcp-server-mentions.md).
+
+Rules that keep the reference kinds unambiguous:
 
 - A reference is only recognized at the **start of the text or after
-  whitespace** — mid-word slashes and hashes are not references (so
-  `http://...` is safe).
-- A `#` glued to a file token (the line anchor in `@x.go#L20`) is **never** an
-  agent mention.
-- `#review`, `/review`, and `@review` are three distinct references.
-- `#mentions` are validated against the user-visible profile catalog before being
-  threaded; unknown ones (e.g. an issue number `#42`) are left in the message
-  text and never become a delegation directive.
+  whitespace** — mid-word slashes are not references (so `http://...` is
+  safe), and `/goal` keeps its command meaning (it is never a catalog name).
+- `#` is not a trigger: `#foo` is always plain text (issue numbers, hashtags,
+  …). The `#` glued to a file token (the line anchor in `@x.go#L20`) belongs
+  to the file ref.
+- `/review` and `@review` are distinct references (a mention vs. a file ref).
+- `/agent` mentions are validated against the user-visible profile catalog
+  before being threaded; unknown ones are left in the message text and never
+  become a delegation directive.
 
 ### 4.2 File layout at a glance
 
@@ -651,9 +714,11 @@ become undiscoverable (c0wrk warns at startup).
 | --- | --- |
 | `skills:changed` | A skill directory **outside** the workspace (e.g. `~/.c0wrk/.agents/skills`) changed. |
 | `agents:changed` | A profile directory **outside** the workspace changed. |
+| `mcp:ready` | The MCP gateway's startup goroutine finished (once, success or failure) — the configured server set is known; the settings dialog and the `/` completion's MCP cache refresh. |
 | `workspace:tree_changed` | A workspace change, including project-local `.agents/skills` and `.agents/agents` edits. |
 
-These drive the live refresh of the `/` and `#` autocompletes.
+These drive the live refresh of the `/` autocomplete (its Subagents,
+MCP Servers, and Skills sections).
 
 ### 4.5 Related tools and RPCs
 
@@ -663,8 +728,9 @@ These drive the live refresh of the `/` and `#` autocompletes.
 | `delegate` | Tool (Conductor) | Launch subagents, optionally under a profile (`agent:`). |
 | `declare_plan` | Tool (Conductor) | Declare a plan; each step can carry an `agent:`. |
 | `cancel_delegation` | Tool (Conductor, or a redelegating subagent) | Cancel a running delegation. |
-| `ListSkills` | RPC | Read-only: the discovered skill descriptors (feeds the `/` autocomplete). |
-| `ListAgents` | RPC | Read-only: the discovered, non-hidden profile descriptors (feeds the `#` autocomplete). |
+| `ListSkills` | RPC | Read-only: the discovered skill descriptors (feeds the `/` autocomplete's Skills section). |
+| `ListAgents` | RPC | Read-only: the discovered, non-hidden profile descriptors (feeds the `/` autocomplete's Subagents section). |
+| `GetMCPMentionableServers` | RPC | Read-only: the configured MCP servers as `{name, mode}` pairs (feeds the `/` autocomplete's MCP Servers section and the mention partition; `auto` + `manual` only, `disabled` hidden). |
 
 There is no create/update/delete RPC and no in-app editor: skills and profiles
 are files on disk, managed with your own tools.
@@ -682,9 +748,9 @@ The two mechanisms compose naturally. Common patterns:
 - **A persona vs. a capability.** Use a skill when you want *the main agent* to
   follow a procedure right now; use a profile when you want a *delegated
   specialist* whose whole context is devoted to the task.
-- **Explicit routing.** Mention both: "review the API change `#code-reviewer`"
-  (profile) while the review skill it requires is activated automatically for
-  that subagent via `skills:`.
+- **Explicit routing.** Mention both: "review the API change
+  `/agent: code-reviewer`" (profile) while the review skill it requires is
+  activated automatically for that subagent via `skills:`.
 - **Parallelism.** Several independent profiles can be delegated in one batch to
   run concurrently (bounded by `max_parallel_subagents`), each with its own tool
   budget and persona.
@@ -697,7 +763,7 @@ The two mechanisms compose naturally. Common patterns:
 | --- | --- |
 | Skill never activates automatically | Its `description` must clearly state when to use it (the router only sees name + description). Or activate it explicitly with `/skill-name`. |
 | `/my-skill` does nothing | The skill is not discovered: wrong directory, `name` ≠ folder name, missing/invalid `SKILL.md`, or it is shadowed by a same-named higher-priority skill. |
-| `#my-agent` is ignored | The profile is not in the user-visible catalog (invalid `AGENT.md`, or `hidden: true`), or the mention was not at a boundary (needs whitespace/start). |
+| `/my-agent` does nothing | The profile is not in the user-visible catalog (invalid `AGENT.md`, or `hidden: true`), the mention was not at a boundary (needs whitespace/start), or the name collides with a skill — use `/agent: my-agent` (see [§4.1](#41-mention-and-reference-syntax)). |
 | Delegation fails with an unknown-agent error | The `agent:` name doesn't match a discovered profile name exactly. |
 | Delegation fails mentioning a skill | The profile's `skills:` names a skill that isn't discovered — resolution is fail-closed by design. |
 | Profile's tools don't apply | Check `tools` for unknown tokens or mixed `all`/`read-only` + list (invalid ⇒ profile skipped, Warn logged). |
@@ -708,8 +774,9 @@ The two mechanisms compose naturally. Common patterns:
 
 ## Further reading (in-repo specs)
 
-- `specs/decisions/021-subagents.md` — Subagent Profiles, `#agent-name`, plan-step targeting.
+- `specs/decisions/021-subagents.md` — Subagent Profiles, `/agent` mentions, plan-step targeting.
 - `specs/decisions/037-agent-profile-skills.md` — profile-required skills and inheritance.
+- `specs/decisions/076-unified-slash-mentions.md` — one `/` trigger for skills and subagents, collision-qualified syntax, `#` removal.
 - `specs/decisions/006-skills-mcp-layer.md` — skills (and MCP) live in sp4rk.
 - `specs/decisions/024-group-policies.md` — capability-group policies; skills grant no permissions.
 - `specs/domains/orchestration/delegation.md` and `…/conductor.md` — the delegation pipeline and prompt assembly.

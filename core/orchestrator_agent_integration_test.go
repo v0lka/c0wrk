@@ -56,7 +56,7 @@ func TestEnrichAgentContext_DiscoversAgentsFromDisk(t *testing.T) {
 	// enrichAgentContext is the HandleMessage seam (orchestrator_handle.go):
 	// it attaches the discovered catalog + explicit #mentions to the context.
 	ctx := sdktools.WithWorkspacePath(context.Background(), ws)
-	ctx = o.enrichAgentContext(ctx, []string{"code-reviewer"})
+	ctx = o.enrichAgentContext(ctx, []string{"code-reviewer"}, nil)
 
 	// The discovered catalog must include both agents (hidden filtering happens
 	// at prompt-render time, not discovery time).
@@ -98,7 +98,7 @@ func TestEnrichAgentContext_DiscoversAgentsFromDisk(t *testing.T) {
 func TestEnrichAgentContext_NilManagerIsNoRegression(t *testing.T) {
 	o := &Orchestrator{} // agentManager == nil
 
-	ctx := o.enrichAgentContext(context.Background(), nil)
+	ctx := o.enrichAgentContext(context.Background(), nil, nil)
 
 	if got := AvailableAgentsFromContext(ctx); got != nil {
 		t.Errorf("nil agentManager must leave no available agents, got %v", got)
@@ -125,7 +125,7 @@ func TestEnrichAgentContext_RequestOnlyStillListsRequest(t *testing.T) {
 	o := &Orchestrator{agentManager: mgr}
 	ctx := sdktools.WithWorkspacePath(context.Background(), ws)
 	// No explicit #mentions.
-	ctx = o.enrichAgentContext(ctx, nil)
+	ctx = o.enrichAgentContext(ctx, nil, nil)
 
 	result := buildSystemPrompt(ctx, "just review this", llmModelMetaForTests())
 

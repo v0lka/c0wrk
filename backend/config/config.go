@@ -1559,6 +1559,16 @@ type MCPServerConfig struct {
 	// be positive; invalid values are rejected on the UI save path and fail
 	// soft to the default on the load path.
 	CallTimeout string `yaml:"call_timeout,omitempty" json:"call_timeout,omitempty"`
+
+	// Mode is the per-server activation mode: "auto" (default — connect
+	// whenever the MCP gateway starts or reconfigures), "manual" (keep the
+	// configuration and surface the server as mentionable for the chat-input
+	// completion / send flow instead of treating it as always-on) or
+	// "disabled" (never dialed — the server is skipped when the gateway
+	// config is built). Empty selects auto. An unrecognized value is rejected
+	// on the UI save path (validateMCPServerConfig) and fails soft to auto
+	// with a load warning (normalizeMCPModes).
+	Mode string `yaml:"mode,omitempty" json:"mode,omitempty"`
 }
 
 // RouterConfig holds router settings.
@@ -2893,10 +2903,16 @@ func LoadWithResult(path string) (*LoadResult, error) {
 	// the adapter without a logger).
 	mcpWarnings := normalizeMCPTimeouts(&cfg)
 
+	// Canonicalize the MCP per-server activation modes (fail-soft: an
+	// unrecognized mode is warned about and reset to the default "auto").
+	// Same pipeline position and surfacing contract as normalizeMCPTimeouts.
+	mcpModeWarnings := normalizeMCPModes(&cfg)
+
 	// Warnings collected before validation, in a deterministic order.
 	warnings := autonomyWarnings
 	warnings = append(warnings, shellExecWarnings...)
 	warnings = append(warnings, mcpWarnings...)
+	warnings = append(warnings, mcpModeWarnings...)
 
 	// Validate configuration
 	if err := validate(&cfg); err != nil {
