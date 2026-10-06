@@ -188,7 +188,7 @@ describe('chat autocomplete tooltip — live cascade winner', () => {
     const ul = tooltip.querySelector('ul')
     expect(ul).not.toBeNull()
 
-    expect(winner(declarationsFor(ul!, 'max-height')).value).toBe('240px')
+    expect(winner(declarationsFor(ul!, 'max-height')).value).toBe('480px')
 
     const li = ul!.querySelector('li')
     expect(li).not.toBeNull()

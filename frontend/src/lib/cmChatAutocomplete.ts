@@ -17,6 +17,7 @@ import { useProjectStore } from '@/stores/projectStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import { fuzzyFilter } from '@/lib/fuzzyMatch'
 import { formatFileRefPath } from '@/lib/parseReferences'
+import { mentionTooltip, type MentionCompletion } from './cmMentionTooltip'
 import type { SkillDescriptor, AgentDescriptor, MCPMentionableServer, FileEntry } from '@/types/models'
 
 const DEFAULT_FILE_ICON = '\uf15b'
@@ -322,7 +323,7 @@ async function slashSource(ctx: CompletionContext): Promise<CompletionResult | n
   const agentNames = new Set(agents.map((a) => a.name))
   const mcpNames = new Set(mcpServers.map((s) => s.name))
 
-  const options: Completion[] = []
+  const options: MentionCompletion[] = []
 
   // Subagents first: section rank 0 orders the section above MCP Servers and
   // Skills, and the array order keeps agents ahead within the unfiltered
@@ -332,6 +333,8 @@ async function slashSource(ctx: CompletionContext): Promise<CompletionResult | n
     options.push({
       label: collides ? `/agent: ${a.name}` : a.name,
       detail: a.description,
+      // Full description for the hover/selection markdown pane (cmMentionTooltip).
+      mentionMarkdown: a.description,
       type: 'agent',
       section: { name: 'Subagents', rank: 0 },
       // The replacement range starts AFTER the typed '/', so the applied
@@ -344,9 +347,11 @@ async function slashSource(ctx: CompletionContext): Promise<CompletionResult | n
   // always connected but still mentionable to surface the soft directive.
   for (const m of fuzzyFilter(query, mcpServers, (m) => m.name)) {
     const collides = agentNames.has(m.name) || skillNames.has(m.name)
+    const summary = m.mode === 'manual' ? 'MCP server — mention to enable' : 'MCP server'
     options.push({
       label: collides ? `/mcp: ${m.name}` : m.name,
-      detail: m.mode === 'manual' ? 'MCP server — mention to enable' : 'MCP server',
+      detail: summary,
+      mentionMarkdown: summary,
       type: 'mcp',
       section: { name: 'MCP Servers', rank: 1 },
       apply: (collides ? `mcp: ${m.name}` : m.name) + ' ',
@@ -357,6 +362,7 @@ async function slashSource(ctx: CompletionContext): Promise<CompletionResult | n
     options.push({
       label: collides ? `/skill: ${s.name}` : s.name,
       detail: s.description,
+      mentionMarkdown: s.description,
       type: 'skill',
       section: { name: 'Skills', rank: 2 },
       apply: (collides ? `skill: ${s.name}` : s.name) + ' ',
@@ -474,37 +480,46 @@ async function fileSource(ctx: CompletionContext): Promise<CompletionResult | nu
  * CodeMirror autocomplete extension configured with the unified `/` source
  * (subagents + MCP servers + skills, issue #110 + the MCP mention flow) and
  * the @file source. `#` is no longer a trigger anywhere.
+ *
+ * The popup opens ABOVE the trigger line for BOTH lists (`aboveCursor` — the
+ * view still falls back below when there is no room above), and the
+ * mentionTooltip extension renders the full description of a hovered or
+ * keyboard-selected `/` row as sanitized markdown.
  */
 export function createChatAutocomplete(): Extension {
   ensureRootSubscription()
-  return autocompletion({
-    override: [slashSource, fileSource],
-    closeOnBlur: true,
-    activateOnTyping: true,
-    icons: false,
-    optionClass: (completion) =>
-      completion.type === 'agent'
-        ? 'agent-item'
-        : completion.type === 'skill'
-          ? 'skill-item'
-          : completion.type === 'mcp'
-            ? 'mcp-item'
-            : 'file-item',
-    addToOptions: [
-      {
-        render: (completion: Completion) => {
-          const fc = completion as FileCompletion
-          if (!fc.nerdIcon) return null
-          const span = document.createElement('span')
-          span.className = 'cm-completion-nerd-icon'
-          span.textContent = fc.nerdIcon
-          if (fc.nerdIconColor) {
-            span.style.color = fc.nerdIconColor
-          }
-          return span
+  return [
+    autocompletion({
+      override: [slashSource, fileSource],
+      closeOnBlur: true,
+      activateOnTyping: true,
+      icons: false,
+      aboveCursor: true,
+      optionClass: (completion) =>
+        completion.type === 'agent'
+          ? 'agent-item'
+          : completion.type === 'skill'
+            ? 'skill-item'
+            : completion.type === 'mcp'
+              ? 'mcp-item'
+              : 'file-item',
+      addToOptions: [
+        {
+          render: (completion: Completion) => {
+            const fc = completion as FileCompletion
+            if (!fc.nerdIcon) return null
+            const span = document.createElement('span')
+            span.className = 'cm-completion-nerd-icon'
+            span.textContent = fc.nerdIcon
+            if (fc.nerdIconColor) {
+              span.style.color = fc.nerdIconColor
+            }
+            return span
+          },
+          position: 20,
         },
-        position: 20,
-      },
-    ],
-  })
+      ],
+    }),
+    mentionTooltip(),
+  ]
 }

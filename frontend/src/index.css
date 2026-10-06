@@ -970,6 +970,36 @@ body {
    tooltip renders in a body-level container (tooltips({parent}) in
    cmChatExtensions.ts). */
 
+/* Host for the /-mention markdown description pane (cmMentionTooltip): a
+   body-level sibling of the CM tooltip container, positioned by the
+   controller. z-index must out-rank the CM tooltip base theme's 500, and
+   pointer-events stay off so the pane can never steal hover from the list. */
+.cm-mention-tooltip-host {
+    position: fixed;
+    z-index: 550;
+    pointer-events: none;
+}
+
+/* Align the list scrollbar with the app-wide .custom-scrollbar look — same
+   pattern as the .cm-viewer-container / .cm-chat-container scroller blocks.
+   The tooltip is CM-rendered, so the class itself cannot be applied here. */
+.cm-tooltip-autocomplete ul::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+    background: transparent;
+}
+
+.cm-tooltip-autocomplete ul::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.cm-tooltip-autocomplete ul::-webkit-scrollbar-thumb {
+    background-clip: padding-box;
+    background-color: color-mix(in srgb, var(--color-border) 50%, transparent);
+    border-radius: 9999px;
+    border: 1px solid transparent;
+}
+
 /* Separate slash capability groups without adding fake selectable rows. */
 .cm-tooltip-autocomplete completion-section:not(:first-child) {
     margin-top: 0.5rem;
@@ -977,13 +1007,12 @@ body {
     padding-top: 0.5rem;
 }
 
-/* Skill items: no icon, bold label, description at 30% opacity */
+/* Skill items: no icon, bold label. The li carries the 30% description tint
+   (cmChatTheme.ts); the label re-pins full strength so only the ellipsis and
+   detail dim. */
 .cm-tooltip-autocomplete li.skill-item .cm-completionLabel {
     font-weight: 600;
-}
-
-.cm-tooltip-autocomplete li.skill-item .cm-completionDetail {
-    opacity: 0.3;
+    color: var(--color-popover-foreground);
 }
 
 /* Subagent items (unified /-list, issue #110): same shape as skill items,
@@ -993,19 +1022,11 @@ body {
     color: var(--color-highlight);
 }
 
-.cm-tooltip-autocomplete li.agent-item .cm-completionDetail {
-    opacity: 0.3;
-}
-
 /* MCP server items (unified /-list): label tinted with the info color used
    by /mcp chips — a third visual kind alongside agents and skills */
 .cm-tooltip-autocomplete li.mcp-item .cm-completionLabel {
     font-weight: 600;
     color: var(--color-info);
-}
-
-.cm-tooltip-autocomplete li.mcp-item .cm-completionDetail {
-    opacity: 0.3;
 }
 
 /* File items: nerd font icon */

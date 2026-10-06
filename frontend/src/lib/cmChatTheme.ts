@@ -76,7 +76,9 @@ export function createChatEditorTheme(isDark: boolean = true): Extension {
       backgroundColor: 'var(--color-popover)',
       border: '1px solid var(--color-border)',
       borderRadius: '0.375rem',
-      boxShadow: '0 4px 12px var(--color-shadow)',
+      // Tailwind shadow-md — the same elevation every project dropdown carries
+      // (DropdownMenuContent, the toolbar combobox portals), not a custom one.
+      boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)',
       overflow: 'hidden',
     },
     '.cm-tooltip.cm-tooltip-autocomplete > ul': {
@@ -87,7 +89,9 @@ export function createChatEditorTheme(isDark: boolean = true): Extension {
       // --font-icon (index.css, uncontested).
       fontFamily: 'var(--font-sans)',
       fontSize: 'var(--text-xs)',
-      maxHeight: '240px',
+      // Both the / and @ lists open upward over the chat history, so the list
+      // gets room to read instead of squeezing against the input's bottom edge.
+      maxHeight: '480px',
     },
     '.cm-tooltip.cm-tooltip-autocomplete > ul > li': {
       padding: 'calc(0.25rem + 2px) calc(0.5rem + 2px)',
@@ -99,6 +103,26 @@ export function createChatEditorTheme(isDark: boolean = true): Extension {
     '.cm-tooltip.cm-tooltip-autocomplete > ul > li[aria-selected]': {
       backgroundColor: 'var(--color-muted)',
       color: 'var(--color-foreground)',
+    },
+    // Pointer hover mirrors DropdownMenuItem's focus:bg-muted/50 tint, but is
+    // excluded from the keyboard-selected row so the selection stays visually
+    // stronger (full --color-muted above).
+    '.cm-tooltip.cm-tooltip-autocomplete > ul > li:not([aria-selected]):hover': {
+      backgroundColor: 'color-mix(in srgb, var(--color-muted) 50%, transparent)',
+    },
+    // The truncation ellipsis must read as part of the description. The CM base
+    // theme paints a row's text-overflow ellipsis in the li's own color, so the
+    // li carries the 30% popover-foreground description tint for the three
+    // description-carrying kinds; the label rules in index.css re-pin their
+    // full-strength colors, so only the ellipsis and detail dim.
+    '.cm-tooltip.cm-tooltip-autocomplete > ul > li.agent-item': {
+      color: 'color-mix(in srgb, var(--color-popover-foreground) 30%, transparent)',
+    },
+    '.cm-tooltip.cm-tooltip-autocomplete > ul > li.skill-item': {
+      color: 'color-mix(in srgb, var(--color-popover-foreground) 30%, transparent)',
+    },
+    '.cm-tooltip.cm-tooltip-autocomplete > ul > li.mcp-item': {
+      color: 'color-mix(in srgb, var(--color-popover-foreground) 30%, transparent)',
     },
     '.cm-completionMatchedText': {
       textDecoration: 'none',

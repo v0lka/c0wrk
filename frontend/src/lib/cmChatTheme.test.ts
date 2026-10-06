@@ -76,7 +76,7 @@ describe('createChatEditorTheme — scroller font follows the CSS var', () => {
       /\.cm-tooltip\.cm-tooltip-autocomplete > ul[^{}]*\{[^{}]*font-size:\s*var\(--text-xs\)/,
     )
     expect(css).toMatch(
-      /\.cm-tooltip\.cm-tooltip-autocomplete > ul[^{}]*\{[^{}]*max-height:\s*240px/,
+      /\.cm-tooltip\.cm-tooltip-autocomplete > ul[^{}]*\{[^{}]*max-height:\s*480px/,
     )
 
     view.destroy()

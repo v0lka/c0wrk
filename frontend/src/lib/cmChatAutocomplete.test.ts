@@ -38,6 +38,12 @@ vi.mock('@/api/runtime', () => ({
 vi.mock('@/lib/logger', () => ({
   logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }))
+// The mention markdown pane is exercised end-to-end in cmMentionTooltip.test.ts;
+// these suites stub the extension out so popup assertions see only
+// CodeMirror's own chrome (and no out-of-act React mounts).
+vi.mock('./cmMentionTooltip', () => ({
+  mentionTooltip: () => [],
+}))
 
 import { createChatAutocomplete } from './cmChatAutocomplete'
 import { logger } from '@/lib/logger'
@@ -672,5 +678,134 @@ describe('cmChatAutocomplete unified /-source', () => {
     // …and non-matching entries are filtered out.
     expect(labels).not.toContain('commit')
     expect(labels).not.toContain('zeta-mcp')
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Popup chrome. Both the /-mention and @-file lists render through the single
+// `.cm-tooltip-autocomplete` tooltip. Its CONTESTED surface (container skin,
+// list font/size/max-height, row colors, hover, matched-text and detail) lives
+// in cmChatTheme.ts: @codemirror/autocomplete's baseTheme beats any global
+// index.css rule there (see the theme comment and test/cmTooltipCascade.test.ts).
+// index.css keeps only the uncontested accents — the markdown-pane host, the
+// custom scrollbar look, and the item labels.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('cmChatAutocomplete popup chrome', () => {
+  const chromeViews: { view: EditorView; host: HTMLElement }[] = []
+
+  afterEach(() => {
+    for (const { view, host } of chromeViews) {
+      view.destroy()
+      host.remove()
+    }
+    chromeViews.length = 0
+    vi.clearAllMocks()
+    // Store transitions fire the completion caches' invalidation
+    // subscriptions, so per-test project ids (set below) keep every test on
+    // fresh catalog fixtures.
+    useFileTreeStore.setState({ rootPath: '' })
+    useProjectStore.setState({ projects: null, activeProjectId: null })
+    useSessionStore.setState({ sessions: null, activeSessionId: null })
+  })
+
+  function readIndexCss(): string {
+    return readFileSync('src/index.css', 'utf8')
+  }
+
+  /** The theme text — the home of the contested tooltip surface rules. */
+  function readTheme(): string {
+    return readFileSync('src/lib/cmChatTheme.ts', 'utf8')
+  }
+
+  it('renders completion descriptions upright — the theme entry out-ranks the base theme italic', async () => {
+    useProjectStore.setState({ projects: [], activeProjectId: 'chrome-upright-detail' })
+    vi.mocked(listAgents).mockResolvedValue([{ name: 'code-reviewer', description: 'Reviews code' }])
+    getMCPMentionableServersMock.mockResolvedValue([])
+
+    const { view, host } = makeView()
+    chromeViews.push({ view, host })
+    typeAndComplete(view, '/')
+    await until(
+      () => document.querySelectorAll('.cm-completionDetail').length > 0,
+      'rendered detail descriptions',
+    )
+
+    // The upright rule lives in the theme, where it ties @codemirror's base
+    // theme — whose `.cm-completionDetail { font-style: italic }` is the italic
+    // source — and wins on mount order. A bare index.css class selector cannot
+    // out-rank that (class,class) selector.
+    expect(readTheme()).toMatch(/\.cm-completionDetail':\s*\{[^}]*fontStyle:\s*'normal'/)
+  })
+
+  it('carries the shared dropdown elevation (shadow-md) in the theme and the custom scrollbar in index.css', () => {
+    // shadow-md — the same elevation DropdownMenuContent and the toolbar
+    // combobox portals use. The popover skin is contested → cmChatTheme.ts.
+    expect(readTheme()).toMatch(
+      /boxShadow:\s*'0 4px 6px -1px rgb\(0 0 0 \/ 0\.1\), 0 2px 4px -2px rgb\(0 0 0 \/ 0\.1\)'/,
+    )
+
+    // The scrollable list mirrors .custom-scrollbar (the same pattern as the
+    // .cm-viewer-container / .cm-chat-container scroller precedent blocks).
+    // The tooltip is CM-rendered, so the class itself cannot be applied here —
+    // the webkit pseudo rules are uncontested and stay global.
+    const css = readIndexCss()
+    expect(css.match(/\.cm-tooltip-autocomplete ul::-webkit-scrollbar\s*\{[^}]*width:\s*8px/)).toBeTruthy()
+    expect(
+      css.match(
+        /\.cm-tooltip-autocomplete ul::-webkit-scrollbar-thumb\s*\{[^}]*color-mix\(in srgb, var\(--color-border\) 50%, transparent\)/,
+      ),
+    ).toBeTruthy()
+  })
+
+  it('tints pointer-hovered rows like DropdownMenuItem while the selected row stays stronger', () => {
+    // Row colors are contested → the theme. The hover tint excludes the
+    // keyboard-selected row so the selection stays visually stronger.
+    expect(readTheme()).toMatch(
+      /\.cm-tooltip\.cm-tooltip-autocomplete > ul > li:not\(\[aria-selected\]\):hover':\s*\{\s*backgroundColor:\s*'color-mix\(in srgb, var\(--color-muted\) 50%, transparent\)'/,
+    )
+  })
+
+  it('paints the truncation ellipsis in the description tint, not full-strength', () => {
+    // The CM base theme paints a row's text-overflow ellipsis in the li's own
+    // color, so the li carries the same 30% popover-foreground description tint
+    // the text renders with — for all three description-carrying kinds. The
+    // rule lives in the theme (row colors are contested).
+    const theme = readTheme()
+    expect(theme).toMatch(
+      /'\.cm-tooltip\.cm-tooltip-autocomplete > ul > li\.agent-item':\s*\{\s*color:\s*'color-mix\(in srgb, var\(--color-popover-foreground\) 30%, transparent\)'/,
+    )
+    expect(theme).toMatch(
+      /'\.cm-tooltip\.cm-tooltip-autocomplete > ul > li\.skill-item':\s*\{\s*color:\s*'color-mix\(in srgb, var\(--color-popover-foreground\) 30%, transparent\)'/,
+    )
+    expect(theme).toMatch(
+      /'\.cm-tooltip\.cm-tooltip-autocomplete > ul > li\.mcp-item':\s*\{\s*color:\s*'color-mix\(in srgb, var\(--color-popover-foreground\) 30%, transparent\)'/,
+    )
+
+    // The detail now inherits the li tint, so the per-detail opacity rules
+    // must be gone — opacity would stack 30% on top of the 30% color.
+    expect(readIndexCss().match(/li\.(?:agent|skill|mcp)-item \.cm-completionDetail\s*\{[^}]*opacity/)).toBeNull()
+
+    // Labels re-pin full strength so only the ellipsis (and detail) dim.
+    const css = readIndexCss()
+    const skillLabel = css.match(/\.cm-tooltip-autocomplete li\.skill-item \.cm-completionLabel\s*\{[^}]+\}/)?.[0]
+    expect(skillLabel).toContain('color: var(--color-popover-foreground)')
+    const agentLabel = css.match(/\.cm-tooltip-autocomplete li\.agent-item \.cm-completionLabel\s*\{[^}]+\}/)?.[0]
+    expect(agentLabel).toContain('color: var(--color-highlight)')
+    const mcpLabel = css.match(/\.cm-tooltip-autocomplete li\.mcp-item \.cm-completionLabel\s*\{[^}]+\}/)?.[0]
+    expect(mcpLabel).toContain('color: var(--color-info)')
+  })
+
+  it('opens twice as tall — both lists share the doubled max-height in the theme', () => {
+    expect(readTheme()).toMatch(/maxHeight:\s*'480px'/)
+  })
+
+  it('hosts the mention markdown pane above the CM tooltip layer', () => {
+    const host = readIndexCss().match(/\.cm-mention-tooltip-host\s*\{[^}]+\}/)?.[0]
+    expect(host).toBeDefined()
+    // The CM tooltip base theme carries z-index 500; the pane must stack on
+    // top, stay fixed (body-level), and never intercept pointer events.
+    expect(host).toContain('position: fixed')
+    expect(host).toContain('z-index: 550')
+    expect(host).toContain('pointer-events: none')
   })
 })
