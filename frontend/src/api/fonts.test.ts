@@ -2,7 +2,8 @@
 //
 // Tests for the system-font RPC wrappers in api/fonts.ts: boundary
 // validation of both backend responses (type guards), name sanitization
-// (quotes / control chars / length cap), the unavailable → empty mapping,
+// name sanitization (quotes / backslashes / control chars / length cap), the
+// unavailable → empty mapping,
 // and the log-then-rethrow error path (the api wrapper pattern).
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
@@ -51,6 +52,13 @@ describe('sanitizeFontName', () => {
     expect(sanitizeFontName('Can"tarell 11')).toBe('Cantarell 11')
   })
 
+  it('strips backslashes like the store-side normalizer', () => {
+    // The picker shows the sanitized name; the store's normalizeFamily strips
+    // the same characters, so shown and applied must stay identical.
+    expect(sanitizeFontName('Cant\\arell')).toBe('Cantarell')
+    expect(sanitizeFontName('\\DejaVu Sans')).toBe('DejaVu Sans')
+  })
+
   it('strips control characters', () => {
     expect(sanitizeFontName('Can\ttarell\n')).toBe('Cantarell')
     expect(sanitizeFontName('\u0000Noto\u0001 Sans')).toBe('Noto Sans')
@@ -71,6 +79,7 @@ describe('sanitizeFontName', () => {
   it('returns null for empty and stripped-to-nothing names', () => {
     expect(sanitizeFontName('')).toBeNull()
     expect(sanitizeFontName('""')).toBeNull()
+    expect(sanitizeFontName('\\')).toBeNull()
     expect(sanitizeFontName('\t\n\u0000')).toBeNull()
   })
 })

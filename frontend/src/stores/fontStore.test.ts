@@ -14,7 +14,7 @@ import {
   FONT_SMOOTHING_SANS_CSS_VAR,
   FONT_SMOOTHING_MONO_CSS_VAR,
 } from '@/stores/fontStore'
-import { FONT_SANS_STACK, FONT_MONO_STACK } from '@/lib/fonts'
+import { FONT_SANS_STACK, FONT_MONO_STACK, MAX_FONT_NAME_LENGTH } from '@/lib/fonts'
 
 const LEGACY_KEY = 'c0wrk-follow-system-font'
 const STORE_KEY = 'c0wrk-fonts'
@@ -119,6 +119,38 @@ describe('fontStore', () => {
       expect(monoSmoothingVar()).toBe('')
     })
 
+    it('canonicalizes a hand-edited family on apply (quotes/backslashes stripped)', () => {
+      // Rehydration reaches <html> through applyFontsToDocument without a
+      // write action, so a hand-edited localStorage payload must meet the
+      // same canonicalization the actions run — the family-side mirror of
+      // the smoothing collapse test above.
+      applyFontsToDocument({
+        uiFontFamily: 'Can"t\\arell',
+        monoFontFamily: '"JetBrains Mono"',
+        uiSmoothing: '',
+        monoSmoothing: '',
+      })
+      expect(sansVar()).toBe(`"Cantarell", ${FONT_SANS_STACK}`)
+      expect(monoVar()).toBe(`"JetBrains Mono", ${FONT_MONO_STACK}`)
+    })
+
+    it('removes the family property when an apply-side family sanitizes to nothing', () => {
+      // A corrupted value of only quotes/backslashes degrades to the default
+      // stack (property removed) — never an empty quoted token in the var.
+      applyFontsToDocument({ uiFontFamily: '"\\', monoFontFamily: null, uiSmoothing: '', monoSmoothing: '' })
+      expect(sansVar()).toBe('')
+    })
+
+    it('caps a family at MAX_FONT_NAME_LENGTH on apply', () => {
+      applyFontsToDocument({
+        uiFontFamily: 'A'.repeat(MAX_FONT_NAME_LENGTH + 50),
+        monoFontFamily: null,
+        uiSmoothing: '',
+        monoSmoothing: '',
+      })
+      expect(sansVar()).toBe(`"${'A'.repeat(MAX_FONT_NAME_LENGTH)}", ${FONT_SANS_STACK}`)
+    })
+
     it('writes/removes all four properties together (full-set contract)', () => {
       applyFontsToDocument({ uiFontFamily: 'Noto Sans', monoFontFamily: null, uiSmoothing: 'none', monoSmoothing: '' })
       expect(sansVar()).toBe(`"Noto Sans", ${FONT_SANS_STACK}`)
@@ -171,6 +203,12 @@ describe('fontStore', () => {
       useFontStore.getState().setUIFontFamily('   ')
       expect(useFontStore.getState().uiFontFamily).toBeNull()
       expect(sansVar()).toBe('')
+    })
+
+    it('setUIFontFamily caps the stored and applied family at MAX_FONT_NAME_LENGTH', () => {
+      useFontStore.getState().setUIFontFamily('A'.repeat(MAX_FONT_NAME_LENGTH + 50))
+      expect(useFontStore.getState().uiFontFamily).toHaveLength(MAX_FONT_NAME_LENGTH)
+      expect(sansVar()).toBe(`"${'A'.repeat(MAX_FONT_NAME_LENGTH)}", ${FONT_SANS_STACK}`)
     })
 
     it('setMonoFontFamily applies its own variable, leaving sans untouched', () => {

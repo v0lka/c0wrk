@@ -10,6 +10,13 @@
  * When changing a stack: edit `@theme` first, then mirror here.
  */
 
+/** Hard cap on any single font name crossing the font boundary: api/fonts
+ *  sanitizes against it and the font store canonicalizes against it, so one
+ *  number owns the limit. OS font metadata is trusted to be short; a longer
+ *  value is treated as corrupted metadata and truncated rather than forwarded
+ *  into CSS or UI state. */
+export const MAX_FONT_NAME_LENGTH = 100
+
 /** Matches `--font-mono` in index.css @theme. */
 export const FONT_MONO_STACK =
   'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace'

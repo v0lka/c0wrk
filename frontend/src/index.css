@@ -289,7 +289,6 @@ body {
    Everything clickable shows the pointer cursor; disabled controls show
    not-allowed. Native browser defaults (default arrow on buttons, text
    caret on selects) are replaced by explicit rules so the whole app has a
-   caret on selects) are replaced by explicit rules so the whole app has a
    consistent, obvious "this is clickable" affordance.
    Lives in @layer base: any utility class (cursor-wait, cursor-grab, …)
    still overrides it where a component needs an intentional exception.
