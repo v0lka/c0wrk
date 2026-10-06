@@ -34,6 +34,8 @@ NewOrchestratorBuilder()
 
 `EventBackendReady` fires without waiting for the MCP gateway's async init; MCP tools become available asynchronously. The dedicated `EventMCPReady` (`mcp:ready`) event fires once the startup goroutine completes (success or failure).
 
+`StopGateway` bounds its wait for an in-flight startup: it aborts the startup goroutine (cancelling its context), which stops the not-yet-published gateway it owns and joins within a short grace — so a quit during the first seconds of startup neither stalls the shutdown thread nor leaves MCP server processes orphaned. Once the stop decision is made, no gateway is published or reconfigured (`mcpStopping` guards both, and a stopped `mcp.Gateway` refuses `Reconfigure`).
+
 ### Registration into the Core Registry
 
 MCP tools are wrapped in sp4rk `mcp.Tool` (implements the `Tool` interface) and registered by the sp4rk gateway via `RegisterWithSourceCategory(mcpTool, serverName, SourceCategoryMCP)` on the embedded sp4rk `ToolRegistry` (`b.registry.ToolRegistry`):

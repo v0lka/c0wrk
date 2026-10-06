@@ -168,13 +168,21 @@ type OrchestratorBuilder struct {
 	mcpDone    chan struct{}
 	initErr    error
 	gatewayErr error // non-nil if MCP gateway startup failed
-	// mcpStopping is set by StopGateway when shutdown cannot wait for the
-	// still-in-flight MCP startup. runMCPInit checks it before publishing the
-	// gateway it just built: instead of assigning it, it stops the fresh
-	// gateway itself — the shutdown path never waits out a multi-second
-	// server-spawn sequence only to immediately tear the result down, and no
-	// gateway is published after the stop decision. Guarded by mu.
+	// mcpStopping marks that the builder is shutting down. StopGateway sets it
+	// UNDER b.mu BEFORE it does anything else, so no gateway may be published
+	// or reconfigured after the stop decision: runMCPInit/publishMCPGateway
+	// stops (rather than publishes) a gateway it built, and ReconfigureMCP
+	// re-checks it at its publication site. Guarded by mu.
 	mcpStopping bool
+	// mcpInitCtx parents runMCPInit's context. StopGateway cancels it to abort
+	// an in-flight MCP startup, so the bounded join on mcpDone (which the
+	// startup goroutine performs after stopping the gateway it built) returns
+	// promptly instead of waiting out a multi-second server-spawn sequence on
+	// the app-shutdown thread. Set once in the constructor; nil on a hand-built
+	// test literal, where StopGateway skips the cancel. Never mutated after
+	// construction, so it needs no b.mu guarding.
+	mcpInitCtx    context.Context
+	mcpInitCancel context.CancelFunc
 }
 
 func (b *OrchestratorBuilder) log() *slog.Logger {
@@ -227,6 +235,9 @@ func NewOrchestratorBuilder(cfg *BuilderConfig, askUserFunc tools.AskUserFunc, p
 		mcpModes:       mcpServerModesFromConfig(cfg),
 		serviceMetrics: newServiceMetrics(),
 	}
+	// Parent the MCP startup goroutine's context so StopGateway can abort an
+	// in-flight startup and join it promptly at shutdown (see StopGateway).
+	b.mcpInitCtx, b.mcpInitCancel = context.WithCancel(context.Background())
 
 	// 0. Build proxy client (fast — no network, just config parsing)
 	if cfg.Proxy.Enabled {
@@ -302,7 +313,14 @@ func (b *OrchestratorBuilder) runMCPInit(cfg *BuilderConfig) {
 		}
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Derive the startup context from the builder's cancellable parent so
+	// StopGateway can abort an in-flight startup promptly (the timeout still
+	// caps a wedged connect).
+	base := b.mcpInitCtx
+	if base == nil {
+		base = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(base, 30*time.Second)
 	defer cancel()
 
 	// MCP Gateway (optional — failures are non-fatal)
@@ -325,14 +343,17 @@ func (b *OrchestratorBuilder) runMCPInit(cfg *BuilderConfig) {
 // publishMCPGateway assigns the freshly built gateway (or its startup error)
 // to the builder and applies any work directory recorded by SetMCPWorkDir
 // during the startup window (record-and-apply, so a SetMCPWorkDir that
-// arrived before the gateway existed is not lost).
+// arrived before the gateway existed is not lost). It reports whether the
+// gateway was published: false means the builder is shutting down, in which
+// case the caller must treat the gateway as rejected (the gateway itself is
+// stopped here).
 //
 // When StopGateway has already given up waiting for this startup
 // (mcpStopping), nothing is published: this goroutine keeps ownership of the
 // fresh gateway and stops it here — off the app-shutdown path. Freshly
 // spawned stdio children exit the moment their stdin closes (bounded by the
 // server close grace in tools/mcp), so this cannot stall app exit materially.
-func (b *OrchestratorBuilder) publishMCPGateway(gw *mcp.Gateway, err error) {
+func (b *OrchestratorBuilder) publishMCPGateway(gw *mcp.Gateway, err error) bool {
 	b.mu.Lock()
 	if b.mcpStopping {
 		b.mu.Unlock()
@@ -341,7 +362,7 @@ func (b *OrchestratorBuilder) publishMCPGateway(gw *mcp.Gateway, err error) {
 				b.log().Warn("MCP gateway built during shutdown was stopped before publication", "error", stopErr)
 			}
 		}
-		return
+		return false
 	}
 	b.gateway = gw
 	b.gatewayErr = err
@@ -352,6 +373,7 @@ func (b *OrchestratorBuilder) publishMCPGateway(gw *mcp.Gateway, err error) {
 		gw.SetDefaultWorkDir(b.mcpWorkDir)
 	}
 	b.mu.Unlock()
+	return true
 }
 
 // runAsyncInit performs the slow network-dependent initialization gated by

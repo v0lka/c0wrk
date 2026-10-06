@@ -496,7 +496,7 @@ func (m *Manager) startIgnoreBuild(root string) {
 	}
 
 	if !m.spawnBackgroundNamed("ignore-resolver-walk root="+root, func() {
-		r, err := ignore.NewResolverContext(m.shutdownCtx, root)
+		r, err := m.ignoreResolverBuild(m.shutdownCtx, root)
 		if err != nil {
 			if errors.Is(err, context.Canceled) && m.shutdownCtx.Err() != nil {
 				m.log().Debug("ignore checker: background resolver build aborted by shutdown", "root", root)

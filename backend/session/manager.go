@@ -22,6 +22,7 @@ import (
 	"github.com/v0lka/c0wrk/core"
 	"github.com/v0lka/c0wrk/core/markitdown"
 	"github.com/v0lka/c0wrk/core/toolmanager"
+	"github.com/v0lka/sp4rk/ignore"
 	"github.com/v0lka/sp4rk/llm"
 	"github.com/v0lka/sp4rk/orchestration"
 	sdktools "github.com/v0lka/sp4rk/tools"
@@ -210,6 +211,13 @@ type Manager struct {
 	// after construction so they are safe for concurrent use once cached.
 	ignoreCache sync.Map // string (resolved root) → *ignore.Resolver
 
+	// ignoreResolverBuild constructs an ignore.Resolver for root, deriving the
+	// (cancellable) walk from the supplied context. It defaults to
+	// ignore.NewResolverContext and is overridable in tests to substitute a
+	// deterministic barrier for the timing-dependent real walk. Callers must go
+	// through startIgnoreBuild rather than touching this field directly.
+	ignoreResolverBuild func(ctx context.Context, root string) (*ignore.Resolver, error)
+
 	// caseInsensitiveCache caches the filesystem case-sensitivity probe
 	// result per resolved workspace root. Case-sensitivity is a property of
 	// the filesystem mount and cannot change mid-session, so the probe (which
@@ -324,6 +332,7 @@ func NewManager(factory OrchestratorFactory, emitFunc func(Event), agentDir stri
 	m.shutdownCtx, m.shutdownCancel = context.WithCancel(context.Background())
 	m.fileTracker = NewFileCoherenceTracker(m.resolveSessionName)
 	m.detectCaseInsensitiveFn = defaultDetectCaseInsensitive
+	m.ignoreResolverBuild = ignore.NewResolverContext
 	return m
 }
 

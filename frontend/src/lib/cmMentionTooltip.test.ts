@@ -177,6 +177,36 @@ describe('mention markdown pane', () => {
     )
   })
 
+  it('resolves the hovered row by its id index, not its DOM position (virtualized list)', async () => {
+    vi.mocked(listAgents).mockResolvedValue([
+      { name: 'alpha', description: 'Alpha agent description' },
+      { name: 'beta', description: 'Beta agent description' },
+    ])
+    // The completion caches are module-level and refreshed only on a rootPath
+    // change; bump it so this test's agents mock is fetched (not a previous
+    // test's cached list).
+    useFileTreeStore.setState({ rootPath: '/mention-virtualized' })
+    await openSlash()
+
+    // CodeMirror virtualizes the completion list: each row's id ends in its
+    // ABSOLUTE option index (`<listId>-<i>`), which stops matching the row's
+    // DOM position once the rendered window starts at `range.from > 0` (a list
+    // longer than maxRenderedOptions, 100). Model that mismatch by giving the
+    // first rendered row the id of a later option: the pane must show THAT
+    // completion's description, not the one at DOM position 0 (which is what
+    // counting `li` siblings would wrongly resolve).
+    rows()[0]!.id = 'virtualized-1'
+    expect(rows()[0]!.id).toMatch(/-1$/)
+
+    await hoverRow(0)
+    await vi.advanceTimersByTimeAsync(TOOLTIP_DELAY_MS + 50)
+    await until(
+      () => (hostEl()?.textContent ?? '').includes('Beta agent description'),
+      'pane resolved via the row id index',
+    )
+    expect(hostEl()?.textContent ?? '').not.toContain('Alpha agent description')
+  })
+
   it('hides immediately when the pointer leaves the row, with nothing to fall back to', async () => {
     vi.mocked(listAgents).mockResolvedValue([{ name: 'alpha', description: 'Alpha agent first description' }])
     await openSlash()

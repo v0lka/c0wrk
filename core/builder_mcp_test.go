@@ -640,6 +640,46 @@ func TestStopGateway_DoesNotWaitOutInFlightStartup(t *testing.T) {
 	}
 }
 
+// TestStopGateway_AbortsInFlightStartupAndJoins pins finding 3: StopGateway
+// cancels an in-flight MCP startup so the goroutine that owns the
+// not-yet-published gateway stops it and closes mcpDone promptly, and the join
+// returns well inside the grace rather than waiting out the full startup. No
+// gateway is published and no child is left running.
+func TestStopGateway_AbortsInFlightStartupAndJoins(t *testing.T) {
+	b := &OrchestratorBuilder{initDone: make(chan struct{}), mcpDone: make(chan struct{})}
+	initCtx, cancel := context.WithCancel(context.Background())
+	b.mcpInitCtx, b.mcpInitCancel = initCtx, cancel
+
+	// Fake the startup goroutine: it blocks until the builder's init context is
+	// cancelled (as mcp.StartGateway's connect does on shutdown), then stops
+	// the gateway it built through publishMCPGateway and closes mcpDone.
+	gw := nonNilTestGateway(t)
+	go func() {
+		<-initCtx.Done()
+		b.publishMCPGateway(gw, initCtx.Err())
+		close(b.mcpDone)
+	}()
+
+	start := time.Now()
+	if err := b.StopGateway(); err != nil {
+		t.Fatalf("StopGateway: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > mcpStopStartupGrace+time.Second {
+		t.Fatalf("StopGateway took %v; cancelling the startup should make the join prompt", elapsed)
+	}
+
+	b.mu.RLock()
+	published := b.gateway
+	stopping := b.mcpStopping
+	b.mu.RUnlock()
+	if published != nil {
+		t.Error("a gateway must not be published once shutdown began during startup")
+	}
+	if !stopping {
+		t.Error("StopGateway must flag mcpStopping")
+	}
+}
+
 // TestPublishMCPGateway_SuppressedWhenStopping verifies the ownership handoff:
 // a gateway whose build finished after StopGateway gave up waiting is stopped
 // by the startup goroutine and NOT published — the shutdown decision wins even
@@ -668,7 +708,7 @@ func TestPublishMCPGateway_SuppressedWhenStopping(t *testing.T) {
 
 // TestStopGateway_StopsCompletedGateway keeps the non-degenerate path honest:
 // when startup already finished, StopGateway stops the published gateway
-// normally and does not set mcpStopping.
+// normally and returns promptly.
 func TestStopGateway_StopsCompletedGateway(t *testing.T) {
 	b := &OrchestratorBuilder{initDone: make(chan struct{}), mcpDone: make(chan struct{})}
 	close(b.mcpDone)
@@ -685,11 +725,14 @@ func TestStopGateway_StopsCompletedGateway(t *testing.T) {
 		t.Errorf("StopGateway took %v for an already-finished startup", elapsed)
 	}
 
+	// StopGateway always flags shutdown so nothing is published or
+	// reconfigured afterwards — regardless of whether startup was still in
+	// flight when it was called.
 	b.mu.RLock()
 	stopping := b.mcpStopping
 	b.mu.RUnlock()
-	if stopping {
-		t.Error("mcpStopping must stay false when startup was already complete")
+	if !stopping {
+		t.Error("StopGateway must flag mcpStopping so no gateway is published or reconfigured after the stop decision")
 	}
 }
 

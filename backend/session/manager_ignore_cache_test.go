@@ -1,7 +1,7 @@
 package session
 
 import (
-	"fmt"
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -174,43 +174,54 @@ func TestStartIgnoreBuild_ShutdownCancelAbortsBuildAndCleansSentinel(t *testing.
 	}
 }
 
-// TestStartIgnoreBuild_MidWalkShutdownJoinIsPrompt pins the real-world shape
-// of the frozen-quit bug: the walk is IN FLIGHT (not pre-cancelled) when
-// Shutdown cancels the manager's context. On a root with hundreds of
-// thousands of entries the walk runs for minutes, so a straggler walk would
-// make stopBackground burn the whole stopTimeout on the main thread — the
-// exact multi-second freeze reported on quit. The ctx check fires per entry,
-// so cancel-then-join must drain within milliseconds regardless of tree size.
+// TestStartIgnoreBuild_MidWalkShutdownJoinIsPrompt pins the frozen-quit fix
+// deterministically: while the ignore walk is IN FLIGHT, Shutdown cancels the
+// manager's context and the background tracker must drain promptly — the walk
+// derives from shutdownCtx, so cancel-then-join must never burn the whole
+// stopTimeout on the quiescing main thread (the multi-second quit freeze
+// reported on a huge work-directory root).
+//
+// A real walk is timing-dependent — it may finish before the cancel lands or
+// not have started yet — so the test substitutes the resolver builder with an
+// entered/blocked/release barrier (m.ignoreResolverBuild): the goroutine
+// signals it is live, blocks until the manager's shutdown context is
+// cancelled, then returns that context's error. This exercises the exact
+// cancellation contract (the build receives the manager's shutdown context and
+// the join drains on cancel) with no wall-clock sleep.
 func TestStartIgnoreBuild_MidWalkShutdownJoinIsPrompt(t *testing.T) {
 	m, _, _ := testManager(t)
 	root := runtimeTempDir(t)
 
-	// A tree big enough that the walk is still mid-flight when the test
-	// cancels: 20 dirs x 500 files = 10k entries.
-	for d := 0; d < 20; d++ {
-		dir := filepath.Join(root, fmt.Sprintf("dir%02d", d))
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatalf("mkdir: %v", err)
+	entered := make(chan struct{})
+	m.ignoreResolverBuild = func(ctx context.Context, gotRoot string) (*ignore.Resolver, error) {
+		if gotRoot != root {
+			t.Errorf("resolver build root = %q, want %q", gotRoot, root)
 		}
-		for f := 0; f < 500; f++ {
-			name := filepath.Join(dir, fmt.Sprintf("file%03d.txt", f))
-			if err := os.WriteFile(name, []byte("x"), 0o644); err != nil {
-				t.Fatalf("write: %v", err)
-			}
-		}
+		close(entered)
+		// Stay in flight until shutdown cancels the manager's context — the
+		// mid-walk state whose join must be prompt.
+		<-ctx.Done()
+		return nil, ctx.Err()
 	}
 
 	m.startIgnoreBuild(root)
-	// Let the walk get going: by the time cancel fires it must be somewhere
-	// mid-tree, not already finished and not still before the first entry.
-	time.Sleep(30 * time.Millisecond)
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the ignore build never entered the walk")
+	}
 
-	m.shutdownCancel()
 	start := time.Now()
+	// Cancel exactly as Shutdown's first step (shutdownCancel) does.
+	m.shutdownCancel()
 	if !waitBackgroundSettled(m, 2*time.Second) {
 		t.Fatal("mid-walk cancellation must let the background tracker drain promptly")
 	}
 	if elapsed := time.Since(start); elapsed > time.Second {
 		t.Fatalf("tracker drained in %v after mid-walk cancel; want ~instantaneous", elapsed)
+	}
+	// The aborted build must remove its sentinel so a later call can retry.
+	if _, ok := m.ignoreCache.Load(root); ok {
+		t.Fatal("aborted build must remove its sentinel so a later call can retry")
 	}
 }

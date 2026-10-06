@@ -125,16 +125,23 @@ export function computeMentionTooltipPlacement(args: {
   return { left, top, arrowX, side }
 }
 
-/** Index of a row among its selectable `li[id]` siblings, or -1. */
-function rowIndex(li: Element): number {
-  const parent = li.parentElement
-  if (!parent) return -1
-  let i = 0
-  for (let opt = parent.firstElementChild; opt; opt = opt.nextElementSibling) {
-    if (opt === li) return i
-    if (opt.nodeName === 'LI' && opt.id) i++
-  }
-  return -1
+/**
+ * Absolute index of the completion a row renders, recovered from the row's id.
+ *
+ * CodeMirror's completion list VIRTUALIZES: `createListBox` assigns every row
+ * `li.id = <listId>-<absoluteOptionIndex>` and renders only the current window
+ * (`rangeAroundSelected`, default maxRenderedOptions 100), so once the list
+ * exceeds the window the rendered rows' DOM positions no longer equal their
+ * absolute option indices — the window starts at `range.from > 0`. CodeMirror's
+ * own row-click handler recovers the index by parsing that id suffix
+ * (`/-(\d+)$/.exec(dom.id)`); we mirror it so a hovered row resolves its OWN
+ * completion in both the un-virtualized and virtualized cases. Counting DOM
+ * siblings (the previous approach) is off by the window offset and would show a
+ * different completion's description once more than 100 entries are offered.
+ */
+function completionIndex(li: Element): number {
+  const match = /-(\d+)$/.exec(li.id)
+  return match ? Number(match[1]) : -1
 }
 
 function markdownFor(state: EditorState, index: number): string | null {
@@ -244,7 +251,7 @@ class MentionTooltipView {
     const li = target.closest('.cm-tooltip-autocomplete li[id]')
     if (!(li instanceof HTMLElement) || li === this.hoverLi) return
     this.cancelShowTimer()
-    const index = rowIndex(li)
+    const index = completionIndex(li)
     const markdown = index >= 0 ? markdownFor(this.view.state, index) : null
     if (!markdown) {
       // The row carries no description (file items): nothing to show.
