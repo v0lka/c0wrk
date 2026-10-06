@@ -5,28 +5,35 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"testing"
 )
 
-// deadPID spawns a sacrificial child process and waits for it to exit,
-// returning a pid that is guaranteed not to be running (bar theoretical OS
-// pid reuse) so liveness-dependent tests never flake on a busy machine.
+// deadPID returns a process id that is guaranteed not to reference a running
+// process, so liveness-dependent tests cannot flake on a busy machine.
+//
+// It deliberately does NOT reuse the pid of a freshly reaped child: on Windows
+// a freed pid becomes eligible for reuse the moment the process handle is
+// released, and the NT allocator recycles small pid values aggressively, so a
+// concurrently running test binary can claim the pid within microseconds and
+// make ReportUncleanShutdown observe a "live" process for a pid that had
+// already exited (seen on CI as the stashed-marker test taking the
+// overlapping-instance branch). A value beyond any OS-assignable pid — Linux
+// PID_MAX_LIMIT is 2^22, macOS PID_MAX is 99998, and NT keeps pid values small
+// — is rejected by both liveness probes (unix.Kill(pid, 0) returns ESRCH;
+// OpenProcess returns ERROR_INVALID_PARAMETER), so it is dead by construction
+// on every platform.
 func deadPID(t *testing.T) int {
 	t.Helper()
-	cmd := exec.CommandContext(t.Context(), "true")
-	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(t.Context(), "cmd", "/c", "exit 0")
+	const pid = math.MaxInt32
+	if processAlive(pid) {
+		t.Fatalf("sentinel pid %d is unexpectedly alive; deadPID needs a new value", pid)
 	}
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("spawn sacrificial process: %v", err)
-	}
-	return cmd.Process.Pid
+	return pid
 }
 
 // restoreThreshold keeps the rotation-size override local to the rotation

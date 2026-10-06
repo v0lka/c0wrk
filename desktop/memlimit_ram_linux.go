@@ -3,7 +3,6 @@
 package desktop
 
 import (
-	"os"
 	"strconv"
 	"strings"
 
