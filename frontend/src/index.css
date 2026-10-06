@@ -106,8 +106,8 @@
    an absent property falls back to `auto` — the webview default, which is
    the "Not set" option. Sans scopes from the root to the whole document;
    mono overrides only the monospace surfaces — code and pre blocks
-   (preflight/prose mono), the CodeMirror viewer/mini-field container, the
-   terminal's DOM-rendered text, and the body-level CM autocomplete tooltip.
+   (preflight/prose mono), the CodeMirror viewer/mini-field container, and
+   the terminal's DOM-rendered text.
    The property is the non-standard -webkit-font-smoothing (the only CSS-level
    AA lever a webview exposes); a webview that ignores it renders the knob as
    a no-op, never a breakage.
@@ -124,8 +124,7 @@
 code,
 pre,
 .xterm,
-.cm-viewer-container,
-.cm-tooltip-autocomplete {
+.cm-viewer-container {
     -webkit-font-smoothing: var(--font-smoothing-mono, auto);
 }
 
@@ -946,50 +945,22 @@ body {
     pointer-events: none;
 }
 
-/* Autocomplete tooltip.
-   These selectors are intentionally NOT scoped under `.cm-chat-container`:
-   the tooltip renders in a body-level container (see `tooltips({ parent })`
-   in cmChatExtensions.ts) so it can overflow the input shell's
-   `overflow-hidden` box instead of being clipped by it. `.cm-tooltip-autocomplete`
-   exists only for the chat input's autocompletion (the file viewer editor
-   enables none), so the global scope is unambiguous. */
-.cm-tooltip-autocomplete {
-    background: var(--color-popover);
-    border: 1px solid var(--color-border);
-    border-radius: 0.375rem;
-    box-shadow: 0 4px 12px var(--color-shadow);
-    overflow: hidden;
-}
-
-.cm-tooltip-autocomplete ul {
-    max-height: 240px;
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-}
-
-.cm-tooltip-autocomplete li {
-    padding: calc(0.25rem + 2px) calc(0.5rem + 2px);
-    /* Explicit color so suggestion text never blends into the popover
-       background. Without this CodeMirror falls back to its dark/light base
-       theme text color, which can collide with --color-popover. */
-    color: var(--color-popover-foreground);
-}
-
-.cm-tooltip-autocomplete li[aria-selected] {
-    background: var(--color-muted);
-    color: var(--color-foreground);
-}
-
-.cm-completionMatchedText {
-    text-decoration: none;
-    background: color-mix(in srgb, var(--color-foreground) 25%, transparent);
-    border-radius: 2px;
-}
-
-.cm-completionDetail {
-    font-style: normal;
-    margin-left: 0.5rem;
-}
+/* Autocomplete tooltip — accents only.
+   The contested surface rules (container background/border/radius/shadow,
+   the list's font/size/max-height, item padding/colors, the selected row,
+   matched-text and detail) live in cmChatTheme.ts, NOT here:
+   @codemirror/autocomplete's baseTheme styles the same elements with
+   editor-scoped selectors (specificity (0,3,1)+) that beat ANY global rule
+   in this file, so those declarations were dead code and the hints rendered
+   in CM's own literal `monospace` family, ignoring the chosen fonts. The
+   theme channel (scoped with the chat editor's class, mirrored onto the
+   body-level tooltip wrapper by CodeMirror) ties baseTheme and wins on
+   mount order — see the comment block in cmChatTheme.ts and the live
+   cascade guard in test/cmTooltipCascade.test.ts.
+   The rules below have no CodeMirror competitor, so global scope is safe;
+   they are intentionally NOT scoped under `.cm-chat-container` because the
+   tooltip renders in a body-level container (tooltips({parent}) in
+   cmChatExtensions.ts). */
 
 /* Skill items: no icon, bold label, description at 30% opacity */
 .cm-tooltip-autocomplete li.skill-item .cm-completionLabel {

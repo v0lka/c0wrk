@@ -53,6 +53,62 @@ export function createChatEditorTheme(isDark: boolean = true): Extension {
     '&.cm-focused': {
       outline: 'none',
     },
+
+    // --- Autocomplete tooltip (/ skills, @ files, # agents) -----------------
+    //
+    // The tooltip renders in a body-level wrapper (tooltips({parent}) in
+    // cmChatExtensions.ts), and CodeMirror mirrors THIS editor's style
+    // classes onto that wrapper, so theme entries reach it. They must reach
+    // it through here: @codemirror/autocomplete's baseTheme styles the same
+    // surface with editor-scoped selectors (`.ͼbase .cm-tooltip.
+    // cm-tooltip-autocomplete > ul`, specificity (0,3,1)) that beat any
+    // global index.css rule. A plain `.cm-tooltip-autocomplete ul` in
+    // index.css loses the cascade, and the hints silently render in CM's
+    // `font-family: monospace` — the bug that moved this block here. Theme
+    // entries carry the same specificity as baseTheme and win on mount
+    // order (themes mount at editor creation, after the import-time base
+    // theme) — the same mechanism that lets `.cm-scroller` above override
+    // the base `font-family: monospace`. Guarded by
+    // test/cmTooltipCascade.test.ts, which resolves the live cascade
+    // winner. Keep contested tooltip styling in THIS theme: the same
+    // selector in index.css is dead code.
+    '.cm-tooltip.cm-tooltip-autocomplete': {
+      backgroundColor: 'var(--color-popover)',
+      border: '1px solid var(--color-border)',
+      borderRadius: '0.375rem',
+      boxShadow: '0 4px 12px var(--color-shadow)',
+      overflow: 'hidden',
+    },
+    '.cm-tooltip.cm-tooltip-autocomplete > ul': {
+      // Suggestions are UI chrome, not code: they ride the interface font
+      // chain, exactly like the rest of the chat UI — a mono pick in
+      // Settings must not leak into this list (and CM's base `monospace`
+      // literal must not either). The nerd-font item icons keep their own
+      // --font-icon (index.css, uncontested).
+      fontFamily: 'var(--font-sans)',
+      fontSize: 'var(--text-xs)',
+      maxHeight: '240px',
+    },
+    '.cm-tooltip.cm-tooltip-autocomplete > ul > li': {
+      padding: 'calc(0.25rem + 2px) calc(0.5rem + 2px)',
+      // Explicit color so suggestion text never blends into the popover
+      // background; without it CM's dark/light base theme text color can
+      // collide with --color-popover.
+      color: 'var(--color-popover-foreground)',
+    },
+    '.cm-tooltip.cm-tooltip-autocomplete > ul > li[aria-selected]': {
+      backgroundColor: 'var(--color-muted)',
+      color: 'var(--color-foreground)',
+    },
+    '.cm-completionMatchedText': {
+      textDecoration: 'none',
+      backgroundColor: 'color-mix(in srgb, var(--color-foreground) 25%, transparent)',
+      borderRadius: '2px',
+    },
+    '.cm-completionDetail': {
+      fontStyle: 'normal',
+      marginLeft: '0.5rem',
+    },
   }, { dark: isDark })
 
   return [theme, syntaxHighlighting(createOneDarkHighlightStyle())]

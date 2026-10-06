@@ -220,6 +220,40 @@ describe("type-scale guard (relative typography invariant)", () => {
     expect(css).toMatch(/--text-lg:\s*1\.125rem/);
   });
 
+  it("draws the chat autocomplete tooltip with the UI font chain, never mono", () => {
+    const css = readFileSync(join(SRC_DIR, "index.css"), "utf8");
+    // Skill/file/agent suggestions are UI chrome: they follow --font-sans so
+    // the Interface-font pick (or its default stack) reaches the hint list,
+    // and a mono pick must not leak in either.
+    //
+    // The contested tooltip rules (the list's font among them) live in
+    // cmChatTheme.ts, NOT here: @codemirror/autocomplete's baseTheme beats
+    // any global rule with editor-scoped selectors, so an index.css rule for
+    // that surface is dead code — its presence here means someone
+    // reintroduced the bug that rendered the hints in CM's literal
+    // `monospace` family. The live cascade winner is resolved (and the
+    // theme's own styles pinned) by test/cmTooltipCascade.test.ts and
+    // lib/cmChatTheme.test.ts.
+    expect(css).not.toMatch(/\.cm-tooltip-autocomplete\s+ul\s*\{/);
+    // The theme must carry the tooltip list font through the var chain.
+    const theme = readFileSync(join(SRC_DIR, "lib", "cmChatTheme.ts"), "utf8");
+    expect(theme).toContain("'.cm-tooltip.cm-tooltip-autocomplete > ul'");
+    expect(theme).toMatch(/fontFamily:\s*'var\(--font-sans\)'/);
+    expect(theme).not.toMatch(/fontFamily:\s*'(?!var\()[^']*'/);
+    // A sans surface stays out of the mono smoothing group — it inherits the
+    // :root sans smoothing rule instead.
+    const monoSmoothing = css.indexOf(
+      "-webkit-font-smoothing: var(--font-smoothing-mono",
+    );
+    expect(monoSmoothing).toBeGreaterThan(-1);
+    const group = css.slice(
+      css.lastIndexOf("}", monoSmoothing) + 1,
+      css.indexOf("}", monoSmoothing) + 1,
+    );
+    expect(group).toContain(".cm-viewer-container"); // sanity: the right group
+    expect(group).not.toContain(".cm-tooltip-autocomplete");
+  });
+
   it("never hardcodes a font-family stack in TS outside lib/fonts.ts", () => {
     const offenders: string[] = [];
     for (const file of sources) {

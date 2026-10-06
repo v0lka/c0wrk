@@ -57,4 +57,28 @@ describe('createChatEditorTheme — scroller font follows the CSS var', () => {
 
     view.destroy()
   })
+
+  it('mounts the autocomplete tooltip list with font-family: var(--font-sans)', () => {
+    const view = mountView([createChatEditorTheme(true)])
+    const css = mountedStylesCSS()
+
+    // The tooltip (/ skills, @ files, # agents) must ride the same UI-font
+    // chain as the rest of the chat UI. The rule lives in THIS theme (not
+    // index.css) because @codemirror/autocomplete's baseTheme beats any
+    // global rule there — see the cascade comment in cmChatTheme.ts; the
+    // live cascade winner is asserted by test/cmTooltipCascade.test.ts.
+    expect(css).toMatch(
+      /\.cm-tooltip\.cm-tooltip-autocomplete > ul[^{}]*\{[^{}]*font-family:\s*var\(--font-sans\)/,
+    )
+    // CM's base theme sets font-size/max-height too — ours must be present
+    // (the var-only size token keeps the type scale authoritative).
+    expect(css).toMatch(
+      /\.cm-tooltip\.cm-tooltip-autocomplete > ul[^{}]*\{[^{}]*font-size:\s*var\(--text-xs\)/,
+    )
+    expect(css).toMatch(
+      /\.cm-tooltip\.cm-tooltip-autocomplete > ul[^{}]*\{[^{}]*max-height:\s*240px/,
+    )
+
+    view.destroy()
+  })
 })
