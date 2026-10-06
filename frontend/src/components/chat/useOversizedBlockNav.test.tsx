@@ -524,6 +524,30 @@ describe('useOversizedBlockNav — collapse', () => {
     expect(setOpen).not.toHaveBeenCalled()
     collapsibleRegistry.unregister('small', setOpen)
   })
+
+  it('reports navigation intent on collapse (at-bottom=false + suppression) and never scrolls itself', () => {
+    const f = standardFixture()
+    const setOpen = vi.fn<(open: boolean) => void>()
+    collapsibleRegistry.register('b', setOpen)
+    const isAtBottomRef = { current: true }
+    const suppressAutoScrollUntilRef = { current: 0 }
+    viewportRef.current = f.viewport
+    const before = Date.now()
+    mount({ isAtBottomRef, suppressAutoScrollUntilRef })
+
+    act(() => { api?.collapse() })
+
+    expect(setOpen).toHaveBeenCalledTimes(1)
+    expect(setOpen).toHaveBeenCalledWith(false)
+    // The reposition to the collapsed block's start is owned by
+    // CollapsibleBlock's open→closed transition effect (the single scroll
+    // writer for collapses); the hook only holds off stick-to-bottom while
+    // that smooth scroll settles — the same intent report every navigation.
+    expect(isAtBottomRef.current).toBe(false)
+    expect(suppressAutoScrollUntilRef.current).toBe(before + 500)
+    expect(scrollBlockStartIntoView).not.toHaveBeenCalled()
+    collapsibleRegistry.unregister('b', setOpen)
+  })
 })
 
 describe('useOversizedBlockNav — lifecycle', () => {

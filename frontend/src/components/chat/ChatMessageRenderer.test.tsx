@@ -53,6 +53,12 @@ function renderRenderer(overrides?: {
   root = createRoot(container)
   act(() => {
     root!.render(
+      // Mirrors production (App.tsx mounts one provider at the app root):
+      // real ToolCards render EllipsisHint's Radix tooltip, which throws
+      // "Tooltip must be used within TooltipProvider" without a provider —
+      // the per-item ErrorBoundary would then swallow the card into its
+      // fallback and log structured errors into the test output. With the
+      // provider the assertions exercise the REAL card rendering.
       <TooltipProvider>
         <ChatMessageRenderer
           items={overrides?.items ?? items}
@@ -230,6 +236,8 @@ describe('ChatMessageRenderer sticky user turns', () => {
     const renderWith = (its: DisplayItem[], taskActive: boolean) =>
       act(() => {
         root!.render(
+          // Same TooltipProvider mirror as renderRenderer() above: the work
+          // items carry real ToolCards (EllipsisHint's Radix tooltip).
           <TooltipProvider>
             <ChatMessageRenderer
               items={its}

@@ -12,6 +12,25 @@ import { useProjectGitRepo } from "@/hooks/useProjectGitRepo";
 import { focusFileExplorer } from "@/lib/workspaceLayout";
 import { FolderTree, GitBranch, Search, FlaskConical } from "lucide-react";
 
+/** Stable ids wiring each tab to its panel (the ARIA tabs pattern, same
+ *  shape as the Research panel's segment wiring). */
+function workspaceTabId(tab: WorkspaceTab): string {
+  return `workspace-tab-${tab}`;
+}
+function workspacePanelId(tab: WorkspaceTab): string {
+  return `workspace-panel-${tab}`;
+}
+
+/** itemProps passed to every SegmentedControl item: the shared control
+ *  cannot know panel ids, so each tab carries its own `id` + `aria-controls`
+ *  onto the rendered tab button. */
+function tabItemProps(tab: WorkspaceTab) {
+  return {
+    id: workspaceTabId(tab),
+    "aria-controls": workspacePanelId(tab),
+  };
+}
+
 export function WorkspacePanel() {
   const isNoProject = useProjectStore(selectIsNoProject);
   const activeProjectId = useProjectStore((s) => s.activeProjectId);
@@ -96,16 +115,19 @@ export function WorkspacePanel() {
                   value: 'git',
                   icon: <GitBranch className="size-4" />,
                   label: 'Git',
+                  itemProps: tabItemProps('git'),
                 },
                 {
                   value: 'semantics',
                   icon: <Search className="size-4" />,
                   label: 'Search',
+                  itemProps: tabItemProps('semantics'),
                 },
                 {
                   value: 'research',
                   icon: <FlaskConical className="size-4" />,
                   label: 'Research',
+                  itemProps: tabItemProps('research'),
                 },
               ]
             : [
@@ -113,16 +135,19 @@ export function WorkspacePanel() {
                   value: 'explorer',
                   icon: <FolderTree className="size-4" />,
                   label: 'Explorer',
+                  itemProps: tabItemProps('explorer'),
                 },
                 {
                   value: 'semantics',
                   icon: <Search className="size-4" />,
                   label: 'Search',
+                  itemProps: tabItemProps('semantics'),
                 },
                 {
                   value: 'research',
                   icon: <FlaskConical className="size-4" />,
                   label: 'Research',
+                  itemProps: tabItemProps('research'),
                 },
               ]) as ReadonlyArray<SegmentedControlItem<WorkspaceTab>>}
           value={effectiveTab}
@@ -141,26 +166,46 @@ export function WorkspacePanel() {
 
         {isGitRepo ? (
           effectiveTab === 'git' && (
-            <div className="flex-1 min-h-0 overflow-hidden">
+            <div
+              role="tabpanel"
+              id={workspacePanelId('git')}
+              aria-labelledby={workspaceTabId('git')}
+              className="flex-1 min-h-0 overflow-hidden"
+            >
               <GitPanel />
             </div>
           )
         ) : (
           effectiveTab === 'explorer' && (
-            <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+            <div
+              role="tabpanel"
+              id={workspacePanelId('explorer')}
+              aria-labelledby={workspaceTabId('explorer')}
+              className="flex-1 min-h-0 flex flex-col overflow-hidden"
+            >
               <FileTreePanel />
             </div>
           )
         )}
 
         {effectiveTab === 'semantics' && (
-          <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+          <div
+            role="tabpanel"
+            id={workspacePanelId('semantics')}
+            aria-labelledby={workspaceTabId('semantics')}
+            className="flex-1 min-h-0 flex flex-col overflow-hidden"
+          >
             <VectorStorePanel />
           </div>
         )}
 
         {effectiveTab === 'research' && (
-          <div className="flex-1 min-h-0 overflow-hidden">
+          <div
+            role="tabpanel"
+            id={workspacePanelId('research')}
+            aria-labelledby={workspaceTabId('research')}
+            className="flex-1 min-h-0 overflow-hidden"
+          >
             <ResearchPanel />
           </div>
         )}

@@ -222,3 +222,70 @@ describe('WorkspacePanel — per-project workspaceTab (normalization + restore)'
     expect(has('git-panel')).toBe(false)
   })
 })
+
+describe('WorkspacePanel — ARIA tabs wiring', () => {
+  /** The currently selected tab button. */
+  function selectedTab(): HTMLElement {
+    return container!.querySelector('[role="tab"][aria-selected="true"]')!
+  }
+
+  it('wires the active tab to its panel through id + aria-controls (explorer)', async () => {
+    renderPanel()
+    await flush()
+
+    const tab = selectedTab()
+    expect(tab.getAttribute('data-segment-value')).toBe('explorer')
+    expect(tab.id).toBe('workspace-tab-explorer')
+    expect(tab.getAttribute('aria-controls')).toBe('workspace-panel-explorer')
+
+    const panel = container!.querySelector('[role="tabpanel"]')!
+    expect(panel.id).toBe('workspace-panel-explorer')
+    expect(panel.getAttribute('aria-labelledby')).toBe('workspace-tab-explorer')
+  })
+
+  it('re-points the association when the tab switches (semantics panel renders)', async () => {
+    renderPanel()
+    await flush()
+
+    act(() => {
+      useUIStore.getState().setWorkspaceTab('p1', 'semantics')
+    })
+    await flush()
+
+    const tab = selectedTab()
+    expect(tab.getAttribute('data-segment-value')).toBe('semantics')
+    expect(tab.id).toBe('workspace-tab-semantics')
+
+    const panel = container!.querySelector('[role="tabpanel"]')!
+    expect(panel.id).toBe('workspace-panel-semantics')
+    expect(panel.getAttribute('aria-labelledby')).toBe('workspace-tab-semantics')
+  })
+
+  it('wires the git tab to the git panel in a git project', async () => {
+    act(() => {
+      useGitPanelStore.getState().setGitRepo(true, 'p1')
+    })
+
+    renderPanel()
+    await flush()
+
+    const tab = selectedTab()
+    expect(tab.getAttribute('data-segment-value')).toBe('git')
+    expect(tab.getAttribute('aria-controls')).toBe('workspace-panel-git')
+
+    const panel = container!.querySelector('[role="tabpanel"]')!
+    expect(panel.id).toBe('workspace-panel-git')
+    expect(panel.getAttribute('aria-labelledby')).toBe('workspace-tab-git')
+    expect(has('git-panel')).toBe(true)
+  })
+
+  it('No Project mode renders no tabs and no panels', async () => {
+    useProjectStore.setState({ activeProjectId: 'np' })
+
+    renderPanel()
+    await flush()
+
+    expect(container!.querySelectorAll('[role="tab"]')).toHaveLength(0)
+    expect(container!.querySelectorAll('[role="tabpanel"]')).toHaveLength(0)
+  })
+})
