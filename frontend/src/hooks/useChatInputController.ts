@@ -12,7 +12,7 @@ import { extractRefs, partitionRefs } from '@/lib/parseReferences'
 import { optimizePrompt } from '@/api/prompt'
 import { pauseSession, resumeSession } from '@/api/chat'
 import { computeChatInputDisabled, computeChatPlaceholder } from '@/lib/chatInputLock'
-import { createSession } from '@/api/sessions'
+import { createSessionFromDraft } from '@/lib/sessionDraft'
 import { listAgents } from '@/api/agents'
 import { listSkills } from '@/api/skills'
 import { getMCPMentionableServers, mentionableMCPNames } from '@/api/mcp'
@@ -102,15 +102,15 @@ export function useChatInputController(): ChatInputController {
   const clearPendingInsertion = useInputModeStore((s) => s.clearPendingInsertion)
 
   // Wrapped setMode that implicitly creates a session when switching to
-  // terminal mode so the user never sees "Start a conversation…".
+  // terminal mode so the user never sees "Start a conversation…". Opening
+  // the terminal is a draft-committing action: an armed branch draft
+  // provisions the managed worktree here.
   const setMode = useCallback(async (newMode: 'chat' | 'terminal') => {
     if (newMode === 'terminal') {
       const sid = useSessionStore.getState().activeSessionId
       if (!sid) {
         try {
-          const newSession = await createSession()
-          useSessionStore.getState().addSession(newSession)
-          useSessionStore.getState().selectSession(newSession.id, newSession.project_id)
+          await createSessionFromDraft()
         } catch (err) {
           logger.error('Failed to implicitly create session for terminal:', err)
           // Keyed to the origin context (no session was active — that is why

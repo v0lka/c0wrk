@@ -289,33 +289,19 @@ func (m *Manager) injectWorkDirectories(ctx context.Context, dirs []core.WorkDir
 
 // researchProjectInfo reports whether the session's project has RESEARCH mode
 // active and, when it does, returns the research-root path. RESEARCH is
-// always on for real projects: the root is the project's canonical
-// <workspace>/.research (derived from the workspace path). It loads the
-// project from the store, so callers MUST NOT hold the session lock. Returns
-// ("", false) for No Project sessions, when no project store is configured,
-// when the project is missing or has no workspace, or on load errors (logged
-// best-effort).
-func (m *Manager) researchProjectInfo(projectID string) (string, bool) {
-	if projectID == project.NoProjectID {
+// always on for real projects: the root is the SESSION's canonical
+// <workspace>/.research, derived from the session's own execution workspace —
+// for a local session that is the project checkout, for a managed-worktree
+// session its own tree — so two concurrently running sessions of the same
+// project never share (or overwrite) each other's research state. It reads
+// only immutable session fields, so callers MUST NOT hold the session lock
+// (same contract as before). Returns ("", false) for No Project sessions and
+// for sessions without a workspace (defensive; every CODE session has one).
+func (m *Manager) researchProjectInfo(sess *Session) (string, bool) {
+	if sess == nil || sess.ProjectID == project.NoProjectID || sess.WorkspacePath == "" {
 		return "", false
 	}
-	m.mu.RLock()
-	store := m.projectStore
-	m.mu.RUnlock()
-	if store == nil {
-		return "", false
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	proj, err := store.LoadProject(ctx, projectID)
-	if err != nil {
-		m.log().Warn("failed to load project for research check", "project", projectID, "error", err)
-		return "", false
-	}
-	if proj == nil || proj.WorkspacePath == "" {
-		return "", false
-	}
-	return config.ProjectResearchPath(proj.WorkspacePath), true
+	return config.ProjectResearchPath(sess.WorkspacePath), true
 }
 
 // injectIgnoreChecker builds a multi-root ignore resolver from the session's
@@ -793,9 +779,10 @@ func (m *Manager) sendMessage(ctx context.Context, id, text string, activeSkills
 		return SendNudgeResume, m.ResumeSession(ctx, id, modelOverride, reasoningEffort, text)
 	}
 
-	// Determine RESEARCH mode from the project's research root (loaded before
-	// the session lock to avoid a DB query while holding it).
-	researchRoot, isResearch := m.researchProjectInfo(session.ProjectID)
+	// Determine RESEARCH mode from the session's own research root (the
+	// session's execution workspace — derived before the session lock; the
+	// fields read are immutable).
+	researchRoot, isResearch := m.researchProjectInfo(session)
 
 	session.mu.Lock()
 
@@ -1475,9 +1462,10 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 		goalState = nil
 	}
 
-	// Determine RESEARCH mode from the project's research root (loaded before
-	// the session lock to avoid a DB query while holding it).
-	researchRoot, isResearch := m.researchProjectInfo(session.ProjectID)
+	// Determine RESEARCH mode from the session's own research root (the
+	// session's execution workspace — derived before the session lock; the
+	// fields read are immutable).
+	researchRoot, isResearch := m.researchProjectInfo(session)
 
 	session.mu.Lock()
 	if session.active {

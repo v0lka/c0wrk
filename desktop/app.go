@@ -16,7 +16,6 @@ import (
 	"github.com/v0lka/c0wrk/backend/logger"
 	"github.com/v0lka/c0wrk/backend/session"
 	"github.com/v0lka/c0wrk/core/markitdown"
-	"github.com/v0lka/c0wrk/core/vectorindex"
 )
 
 // App holds the Wails application state and exposes methods to the frontend.
@@ -57,11 +56,6 @@ type App struct {
 	// judgeWG tracks in-flight runJudgeEvaluation goroutines so Shutdown can
 	// wait for them before tearing down the backend application.
 	judgeWG sync.WaitGroup
-
-	// vectorMgrPtr mirrors the atomic pointer passed to buildVectorCallbacks
-	// so Shutdown can check whether a background-init vector manager was set
-	// after Cleanup already sampled FrontendAPI.vectorManager as nil.
-	vectorMgrPtr *atomic.Pointer[vectorindex.Manager]
 
 	// wailsEmit, when non-nil, is used in place of wailsRuntime.EventsEmit. It
 	// lets tests inject a fake event sink so phase helpers can be exercised

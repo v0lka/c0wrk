@@ -17,6 +17,21 @@ interface UserMessageContentProps {
     content: string
 }
 
+/** Shared chip box for every /-ref (explicit or catalog-resolved). */
+const CHIP_CLASS = 'inline-flex items-center rounded px-1.5 py-0.5 text-xs font-mono mx-0.5'
+
+/**
+ * The one kind→color mapping shared by all three mention surfaces (the
+ * autocomplete list rows, the editor decorations, and these chat chips):
+ * subagents → highlight (yellow), MCP servers → info (blue), skills →
+ * success (green).
+ */
+const REF_KIND_COLOR = {
+    agent: 'var(--color-highlight)',
+    skill: 'var(--color-success)',
+    mcp: 'var(--color-info)',
+} as const
+
 export function UserMessageContent({ content }: UserMessageContentProps) {
     const segments = useMemo(() => parseSegments(content), [content])
     const hasRefs = useMemo(() => segments.some((s) => s.type !== 'text'), [segments])
@@ -72,33 +87,16 @@ export function UserMessageContent({ content }: UserMessageContentProps) {
 
     const renderSlashRef = (seg: Segment, i: number) => {
         const label = seg.raw ?? `/${seg.content}`
-        if (seg.type === 'agent') {
+        // Explicit-kind refs (qualified) and catalog-resolved plain refs share
+        // the same chip box, tinted by kind — the SAME mapping the autocomplete
+        // list and the editor decorations use: agent → highlight (yellow),
+        // mcp → info (blue), skill → success (green).
+        if (seg.type === 'agent' || seg.type === 'skill' || seg.type === 'mcp') {
             return (
                 <span
                     key={`${seg.type}-${seg.content}-${i}`}
-                    className="inline-flex items-center rounded px-1.5 py-0.5 text-xs font-mono mx-0.5"
-                    style={{ color: 'var(--color-highlight)' }}
-                >
-                    {label}
-                </span>
-            )
-        }
-        if (seg.type === 'skill') {
-            return (
-                <span
-                    key={`${seg.type}-${seg.content}-${i}`}
-                    className="inline-flex items-center bg-background text-foreground rounded px-1.5 py-0.5 text-xs font-mono mx-0.5"
-                >
-                    {label}
-                </span>
-            )
-        }
-        if (seg.type === 'mcp') {
-            return (
-                <span
-                    key={`${seg.type}-${seg.content}-${i}`}
-                    className="inline-flex items-center rounded px-1.5 py-0.5 text-xs font-mono mx-0.5"
-                    style={{ color: 'var(--color-info)' }}
+                    className={CHIP_CLASS}
+                    style={{ color: REF_KIND_COLOR[seg.type] }}
                 >
                     {label}
                 </span>
@@ -106,33 +104,21 @@ export function UserMessageContent({ content }: UserMessageContentProps) {
         }
         // Plain /name — kind resolved from the catalogs at display time.
         const kind = resolvePlainRef(seg.content)
-        if (kind === 'agent') {
+        if (kind) {
             return (
                 <span
                     key={`ref-${seg.content}-${i}`}
-                    className="inline-flex items-center rounded px-1.5 py-0.5 text-xs font-mono mx-0.5"
-                    style={{ color: 'var(--color-highlight)' }}
+                    className={CHIP_CLASS}
+                    style={{ color: REF_KIND_COLOR[kind] }}
                 >
                     {label}
                 </span>
             )
         }
-        if (kind === 'mcp') {
-            return (
-                <span
-                    key={`ref-${seg.content}-${i}`}
-                    className="inline-flex items-center rounded px-1.5 py-0.5 text-xs font-mono mx-0.5"
-                    style={{ color: 'var(--color-info)' }}
-                >
-                    {label}
-                </span>
-            )
-        }
-        const neutralClass = kind === 'skill'
-            ? 'inline-flex items-center bg-background text-foreground rounded px-1.5 py-0.5 text-xs font-mono mx-0.5'
-            : 'inline-flex items-center bg-background text-muted-foreground rounded px-1.5 py-0.5 text-xs font-mono mx-0.5'
+        // Unknown in every catalog or colliding (catalogs changed after the
+        // message was sent): a neutral chip.
         return (
-            <span key={`ref-${seg.content}-${i}`} className={neutralClass}>
+            <span key={`ref-${seg.content}-${i}`} className={`${CHIP_CLASS} bg-background text-muted-foreground`}>
                 {label}
             </span>
         )

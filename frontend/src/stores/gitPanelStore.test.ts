@@ -284,6 +284,22 @@ describe('gitPanelStore', () => {
     expect(useGitPanelStore.getState().isBranchPickerOpen).toBe(false)
   })
 
+  it('openBranchPicker defaults to switch mode and accepts an explicit draft mode', () => {
+    const { openBranchPicker } = useGitPanelStore.getState()
+    expect(useGitPanelStore.getState().branchPickerMode).toBe('switch')
+    openBranchPicker('draft')
+    expect(useGitPanelStore.getState().branchPickerMode).toBe('draft')
+    openBranchPicker()
+    expect(useGitPanelStore.getState().branchPickerMode).toBe('switch')
+  })
+
+  it('closing the picker resets a draft mode so it never leaks into a later Git-panel open', () => {
+    const { openBranchPicker, closeBranchPicker } = useGitPanelStore.getState()
+    openBranchPicker('draft')
+    closeBranchPicker()
+    expect(useGitPanelStore.getState().branchPickerMode).toBe('switch')
+  })
+
   // ── setGeneratingCommit (per-project) ──
 
   it('setGeneratingCommit toggles the flag of the given project', () => {

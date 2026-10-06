@@ -785,14 +785,40 @@ describe('cmChatAutocomplete popup chrome', () => {
     // must be gone — opacity would stack 30% on top of the 30% color.
     expect(readIndexCss().match(/li\.(?:agent|skill|mcp)-item \.cm-completionDetail\s*\{[^}]*opacity/)).toBeNull()
 
-    // Labels re-pin full strength so only the ellipsis (and detail) dim.
+    // Labels re-pin full strength in their KIND's color so only the ellipsis
+    // (and detail) dim.
     const css = readIndexCss()
     const skillLabel = css.match(/\.cm-tooltip-autocomplete li\.skill-item \.cm-completionLabel\s*\{[^}]+\}/)?.[0]
-    expect(skillLabel).toContain('color: var(--color-popover-foreground)')
+    expect(skillLabel).toContain('color: var(--color-success)')
     const agentLabel = css.match(/\.cm-tooltip-autocomplete li\.agent-item \.cm-completionLabel\s*\{[^}]+\}/)?.[0]
     expect(agentLabel).toContain('color: var(--color-highlight)')
     const mcpLabel = css.match(/\.cm-tooltip-autocomplete li\.mcp-item \.cm-completionLabel\s*\{[^}]+\}/)?.[0]
     expect(mcpLabel).toContain('color: var(--color-info)')
+  })
+
+  it('renders bold-caps section headers on a muted band, and upright item labels', () => {
+    // The section-header chrome is contested with the CM base theme (which
+    // paints the header as a dim `list-item` with a silver bottom rule), so it
+    // lives in the theme like the rest of the popover skin.
+    const header = readTheme().match(
+      /'\.cm-tooltip\.cm-tooltip-autocomplete > ul > completion-section':\s*\{[^}]+\}/,
+    )?.[0]
+    expect(header).toBeDefined()
+    expect(header).toContain("fontWeight: '600'")
+    expect(header).toContain("textTransform: 'uppercase'")
+    expect(header).toContain("backgroundColor: 'color-mix(in srgb, var(--color-muted) 30%, transparent)'")
+    expect(header).toContain("borderBottom: 'none'")
+    expect(header).toContain("opacity: '1'")
+
+    // The item labels are NOT bold — the header alone carries the weight.
+    const css = readIndexCss()
+    for (const kind of ['skill', 'agent', 'mcp']) {
+      const label = css.match(
+        new RegExp(`\\.cm-tooltip-autocomplete li\\.${kind}-item \\.cm-completionLabel\\s*\\{[^}]+\\}`),
+      )?.[0]
+      expect(label).toBeDefined()
+      expect(label).not.toContain('font-weight')
+    }
   })
 
   it('opens twice as tall — both lists share the doubled max-height in the theme', () => {

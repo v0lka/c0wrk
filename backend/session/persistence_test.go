@@ -52,13 +52,16 @@ func createProjectsTable(t *testing.T, db *sql.DB) {
 	}
 }
 
-// insertTestProject inserts a test project and returns its ID.
+// insertTestProject inserts a test project and returns its ID. The workspace
+// path must be absolute on every platform — a bare "/tmp/test" is not absolute
+// on Windows (no volume) and NormalizeWorkspaceBinding rejects it — so derive
+// one from an OS temp dir.
 func insertTestProject(t *testing.T, db *sql.DB, id string) string {
 	t.Helper()
 	_, err := db.ExecContext(context.Background(), `
 		INSERT INTO projects (id, name, workspace_path, created_at)
 		VALUES (?, ?, ?, ?)`,
-		id, "Test Project", "/tmp/test", time.Now().Format(time.RFC3339),
+		id, "Test Project", runtimeTempDir(t), time.Now().Format(time.RFC3339),
 	)
 	if err != nil {
 		t.Fatalf("failed to insert test project: %v", err)

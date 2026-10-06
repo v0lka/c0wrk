@@ -15,7 +15,7 @@
 import { getApp } from './runtime'
 import { logger } from '@/lib/logger'
 import { isArrayOf } from '@/types/guards'
-import type { Branch, BranchBase, BranchInfo, CommitFile, DiffStat, StashEntry, GitHistoryCommit, GitHistoryPage, HunkDiffInfo, MergeRebaseState } from '@/types/models'
+import type { Branch, BranchBase, BranchInfo, CommitFile, DiffStat, GitHistoryCommit, GitHistoryPage, GitPanelFocus, GitWorktree, HunkDiffInfo, MergeRebaseState, StashEntry } from '@/types/models'
 
 // --- Type guards ---
 
@@ -662,4 +662,71 @@ export async function deleteRemoteTag(name: string, remote: string): Promise<str
 export async function resetToCommit(sha: string, mode: 'soft' | 'mixed' | 'hard'): Promise<void> {
   const app = getApp()
   await app.ResetToCommit(sha, mode)
+}
+
+// --- Git-panel focus (worktrees) ---
+
+function isGitWorktree(v: unknown): v is GitWorktree {
+  if (typeof v !== 'object' || v === null) return false
+  const o = v as Record<string, unknown>
+  return (
+    typeof o.path === 'string' &&
+    typeof o.name === 'string' &&
+    (o.kind === 'main' || o.kind === 'managed' || o.kind === 'external') &&
+    typeof o.head === 'string' &&
+    typeof o.managed === 'boolean' &&
+    typeof o.pinned === 'boolean' &&
+    typeof o.is_focus === 'boolean'
+  )
+}
+
+function isGitPanelFocus(v: unknown): v is GitPanelFocus {
+  if (typeof v !== 'object' || v === null) return false
+  const o = v as Record<string, unknown>
+  return (
+    typeof o.path === 'string' &&
+    typeof o.name === 'string' &&
+    (o.kind === 'main' || o.kind === 'managed' || o.kind === 'external') &&
+    typeof o.managed === 'boolean' &&
+    typeof o.pinned === 'boolean'
+  )
+}
+
+/**
+ * List every worktree of the active project's repository — the local
+ * checkout, the app-managed session trees, and external linked trees —
+ * with managed/pinned flags and the owning session of each managed tree.
+ * Powers the Git panel's focus switcher (BranchPicker / BranchDropdown).
+ */
+export async function listProjectWorktrees(): Promise<GitWorktree[]> {
+  const app = getApp()
+  const result = await app.ListProjectWorktrees()
+  if (!isArrayOf(result, isGitWorktree)) {
+    throw new Error('listProjectWorktrees: backend returned invalid worktree data')
+  }
+  return result
+}
+
+/**
+ * Read the resolved Git-panel focus target: the worktree every git RPC
+ * currently operates on (its classification and owning-session metadata).
+ */
+export async function getGitPanelFocus(): Promise<GitPanelFocus> {
+  const app = getApp()
+  const result = await app.GetGitPanelFocus()
+  if (!isGitPanelFocus(result)) {
+    throw new Error('getGitPanelFocus: backend returned invalid focus data')
+  }
+  return result
+}
+
+/**
+ * Switch the Git panel's focus to a worktree of the active project. An
+ * empty path resets the focus to the default (the project checkout); the
+ * frontend pushes the ACTIVE SESSION's workspace as the default target on
+ * every project/session switch, and the focus-button re-applies it.
+ */
+export async function setGitPanelFocus(worktreePath: string): Promise<void> {
+  const app = getApp()
+  await app.SetGitPanelFocus(worktreePath)
 }

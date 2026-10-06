@@ -36,6 +36,14 @@ const EmbeddedRuntimesRelativePath = "runtimes"
 // from ever touching the embedding model (ADR-066, Alternatives Considered).
 const EmbeddedModelRelativePath = "models/bonsai-2-27b"
 
+// WorktreesRelativePath is the conventional relative path from a project
+// repository root to the app-managed session-worktree container
+// (<repo>/.worktrees/<name> per ADR-080). Shared between core/ (worktree
+// primitive classification in core/workspace) and backend/config (the
+// ManagedWorktreesDir/ManagedWorktreePath constructors) so the two layers
+// agree on one literal — mirroring SkillsRelativePath.
+const WorktreesRelativePath = ".worktrees"
+
 // GitSafeHooksRelativePath is the relative path, within the c0wrk default
 // agent directory, of the empty directory every git invocation points at via
 // "-c core.hooksPath=<dir>" (see internal/sysproc.GitCmd). Hooks from the

@@ -22,7 +22,6 @@ import (
 	"github.com/v0lka/c0wrk/backend/session"
 	"github.com/v0lka/c0wrk/core/terminal"
 	coretools "github.com/v0lka/c0wrk/core/tools"
-	"github.com/v0lka/c0wrk/core/vectorindex"
 	"github.com/v0lka/sp4rk/agent"
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
@@ -355,7 +354,6 @@ func (a *App) Startup(ctx context.Context) {
 	confirmFunc := a.buildConfirmCallback(uiEmitFunc)
 	hitlHandler := a.buildStepLimitCallback(uiEmitFunc)
 
-	var vectorMgrPtr atomic.Pointer[vectorindex.Manager]
 	vectorReady := make(chan struct{})
 	var vectorOnce sync.Once
 	// Bound for vector-search readiness waits (vector_index.search_wait_
@@ -367,18 +365,18 @@ func (a *App) Startup(ctx context.Context) {
 	// search_wait_timeout_ms: 0 — carried as an explicit flag because the
 	// orchestrator layer treats a bare zero timeout as "unset" (3s default).
 	vectorSearchWaitDisabled := cfg.VectorIndex.SearchWaitTimeoutMs != nil && *cfg.VectorIndex.SearchWaitTimeoutMs == 0
-	vectorSearchFunc, vectorSearchWaitFunc := a.buildVectorCallbacks(&vectorMgrPtr, vectorReady, vectorSearchWaitTimeout)
 
 	// File-change notification: called by the PostExecuteHook after a
 	// file-mutating tool completes. Triggers debounced incremental
 	// re-indexing so subsequent searches reflect the change without waiting
 	// for the filesystem watcher (which has latency on macOS and may miss
-	// same-process writes). Safe to call before the vector manager is ready
-	// — the atomic pointer returns nil and the call is a no-op.
-	fileChangeNotify := func() {
-		if mgr := vectorMgrPtr.Load(); mgr != nil {
-			mgr.NotifyFileChange()
-		}
+	// same-process writes). The executor context carries the session's
+	// workspace root, so the notification re-indexes THAT root's manager
+	// (ADR-080) — a background session's writes refresh its own tree, not
+	// whatever tree the Git panel focuses. Safe before the vector factory is
+	// wired: the registry lookup is a no-op without a live manager.
+	fileChangeNotify := func(ctx context.Context) {
+		a.Lifecycle().NotifyVectorFileChange(sdktools.WorkspacePathFrom(ctx))
 	}
 
 	// Workspace tree changed emitter: called alongside fileChangeNotify to
@@ -400,8 +398,6 @@ func (a *App) Startup(ctx context.Context) {
 		GoalProposer:                goalProposer,
 		ConfirmFunc:                 confirmFunc,
 		HITLHandler:                 hitlHandler,
-		VectorSearchFunc:            vectorSearchFunc,
-		VectorSearchWaitFunc:        vectorSearchWaitFunc,
 		VectorSearchWaitTimeout:     vectorSearchWaitTimeout,
 		VectorSearchWaitDisabled:    vectorSearchWaitDisabled,
 		FileChangeNotifyFunc:        fileChangeNotify,
@@ -430,7 +426,6 @@ func (a *App) Startup(ctx context.Context) {
 		LogLevel:        logLevel,
 		ProjectManager:  projectMgr,
 		AgentDir:        agentDir,
-		VectorManager:   nil, // set lazily once background init completes
 		TerminalManager: termManager,
 		EmitEvent: func(eventName string, data ...any) {
 			a.emit(eventName, data...)
@@ -448,6 +443,12 @@ func (a *App) Startup(ctx context.Context) {
 			wailsRuntime.Quit(a.ctx)
 		},
 	}, configLoadErrors, projStore, log, startTime)
+
+	// Late-bind the per-root vector registry (ADR-080) onto the Application:
+	// the search closures registered on the orchestrator builder resolve it
+	// at call time — the session's workspace root from the executor context
+	// for agent-side calls, the Git-panel focus for user-facing search.
+	application.SetVectorRoots(a.Lifecycle().VectorRoots())
 
 	// ── Embedded local model: restore only ──────────────────────────
 	// Reads manifest.json into the supervisor and emits the initial
@@ -542,16 +543,13 @@ func (a *App) Startup(ctx context.Context) {
 		a.deferredWakeReload()
 	})
 
-	// Store vector manager pointer for Shutdown fallback check (W3).
-	a.vectorMgrPtr = &vectorMgrPtr
-
 	// ── Background: MCP Ready notifier ───────────────────────────────
 	// Emits EventMCPReady once the MCP gateway startup goroutine finishes so
 	// the settings dialog can refresh its transient "Starting…" placeholder.
 	a.startMCPReadyNotifier(a.ctx, log)
 
 	// ── Background: Vector Index ─────────────────────────────────────
-	a.startVectorIndexBackground(agentDir, cfg, &vectorMgrPtr, vectorReady, &vectorOnce, startTime, log)
+	a.startVectorIndexBackground(agentDir, cfg, vectorReady, &vectorOnce, startTime, log)
 
 	// ── Background: Update check ────────────────────────────────────
 	// Runs a single best-effort "check for updates" after the backend is
@@ -669,16 +667,6 @@ func (a *App) Shutdown(ctx context.Context) {
 		return true
 	})
 	shutdownStep("pendingActionDrains")
-
-	// Ensure vector manager set by background init is visible to Cleanup (W3).
-	// The background init goroutine calls vectorMgrPtr.Store then SetVectorManager
-	// in sequence; this check catches the narrow window where Store has run but
-	// SetVectorManager has not, so Cleanup won't miss it.
-	if a.vectorMgrPtr != nil {
-		if mgr := a.vectorMgrPtr.Load(); mgr != nil {
-			a.Lifecycle().SetVectorManager(mgr)
-		}
-	}
 
 	if a.FrontendAPI != nil {
 		a.Lifecycle().Cleanup()

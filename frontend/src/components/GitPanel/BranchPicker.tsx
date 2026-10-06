@@ -13,13 +13,16 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
+import { useSessionDraftStore } from '@/stores/sessionDraftStore'
 import { getBranches } from '@/api/git'
 import { useBranchActions } from '@/hooks/useBranchActions'
 import type { BranchActionKind } from '@/hooks/useBranchActions'
+import { focusWorktree } from '@/lib/gitFocus'
 import { LocalBranchRow } from './LocalBranchRow'
 import { RemoteBranchRow } from './RemoteBranchRow'
 import { BranchDeleteConfirmDialog } from './BranchDeleteConfirmDialog'
 import { NewBranchSection } from './NewBranchSection'
+import { WorktreesSection } from './WorktreesSection'
 
 /**
  * Modal picker for switching, creating and managing git branches.
@@ -37,15 +40,21 @@ import { NewBranchSection } from './NewBranchSection'
  *   busy track that records each result in the Git panel's operation console);
  *   the picker closes once the checkout settles — on success AND on error — so
  *   a recorded failure is visible in that console rather than behind the modal.
+ * - A "Worktrees" section switches the Git panel's FOCUS between every
+ *   worktree of the project (local checkout, managed session trees with their
+ *   owning session, external trees) — a focus switch via SetGitPanelFocus,
+ *   never a checkout, so it never touches the operation console.
  */
 export function BranchPicker() {
   const isOpen = useGitPanelStore((s) => s.isBranchPickerOpen)
   const closeBranchPicker = useGitPanelStore((s) => s.closeBranchPicker)
+  const pickerMode = useGitPanelStore((s) => s.branchPickerMode)
   const currentBranch = useGitPanelStore((s) => s.branch)
   const branches = useGitPanelStore((s) => s.branches)
   const setBranches = useGitPanelStore((s) => s.setBranches)
   const pendingBranchBase = useGitPanelStore((s) => s.pendingBranchBase)
   const clearPendingBranchBase = useGitPanelStore((s) => s.clearPendingBranchBase)
+  const worktrees = useGitPanelStore((s) => s.worktrees)
 
   const actions = useBranchActions()
   // Destructure the stable operation callbacks so the checkout handlers below
@@ -137,6 +146,41 @@ export function BranchPicker() {
     [checkoutRemote, closeBranchPicker],
   )
 
+  // ── Session-draft mode (ADR-080) ──────────────────────────────────────
+  // The picker was opened from the chat toolbar's `branch…` entry: rows
+  // SELECT the branch the drafted session's managed worktree will be
+  // provisioned on. Nothing is checked out here — the working tree is
+  // untouched; provisioning (worktree add + optional branch creation)
+  // happens at draft commit via CreateManagedSession.
+  const isDraftMode = pickerMode === 'draft'
+  const draft = useSessionDraftStore((s) => s.draft)
+
+  const handleDraftSelect = useCallback(
+    (name: string) => {
+      useSessionDraftStore
+        .getState()
+        .setDraftWorkspace({ kind: 'branch', branch: name, createBranch: false, startPoint: '' })
+      closeBranchPicker()
+    },
+    [closeBranchPicker],
+  )
+
+  const handleDraftCreate = useCallback(
+    (name: string, startPoint: string) => {
+      useSessionDraftStore
+        .getState()
+        .setDraftWorkspace({ kind: 'branch', branch: name, createBranch: true, startPoint })
+      closeBranchPicker()
+    },
+    [closeBranchPicker],
+  )
+
+  // The row-level "already picked" marker: an existing-branch selection.
+  const draftSelectedBranch =
+    draft !== null && draft.workspace.kind === 'branch' && !draft.workspace.createBranch
+      ? draft.workspace.branch
+      : null
+
   const handleClearError = useCallback(() => setError(null), [])
   const handleError = useCallback((msg: string) => setError(msg), [])
 
@@ -162,8 +206,13 @@ export function BranchPicker() {
         <DialogHeader className="px-4 pt-4 pb-2 shrink-0">
           <DialogTitle className="flex items-center gap-2 text-sm">
             <GitBranch className="size-4" />
-            Switch Branch
+            {isDraftMode ? 'Choose Branch' : 'Switch Branch'}
           </DialogTitle>
+          {isDraftMode && (
+            <p className="text-xs text-muted-foreground">
+              The new session runs in its own worktree on the picked branch — your working tree stays untouched.
+            </p>
+          )}
         </DialogHeader>
 
         {/* Filter */}
@@ -225,30 +274,60 @@ export function BranchPicker() {
                     onRebase={actions.rebaseBranch}
                     onPush={actions.push}
                     onDelete={actions.requestDeleteLocal}
+                    draftSelect={
+                      isDraftMode
+                        ? { selected: draftSelectedBranch === b.name, onSelect: handleDraftSelect }
+                        : undefined
+                    }
                   />
                 </li>
               ))}
-              {visibleRemote.length > 0 && (
+              {!isDraftMode && visibleRemote.length > 0 && (
                 <li className="px-2 py-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                   Remote
                 </li>
               )}
-              {visibleRemote.map((b) => (
-                <li key={b.name}>
-                  <RemoteBranchRow
-                    branch={b}
-                    inFlight={inFlightFor(b.name)}
-                    disabled={disabledFor(b.name)}
-                    onCheckoutRemote={handleCheckoutRemote}
-                    onDeleteRemote={actions.requestDeleteRemote}
-                  />
-                </li>
-              ))}
+              {!isDraftMode &&
+                visibleRemote.map((b) => (
+                  <li key={b.name}>
+                    <RemoteBranchRow
+                      branch={b}
+                      inFlight={inFlightFor(b.name)}
+                      disabled={disabledFor(b.name)}
+                      onCheckoutRemote={handleCheckoutRemote}
+                      onDeleteRemote={actions.requestDeleteRemote}
+                    />
+                  </li>
+                ))}
             </ul>
           )}
         </div>
 
-        {/* New branch — key on isOpen so the field resets when reopened. */}
+        {/* Worktrees — switch the Git panel's FOCUS between every worktree of
+            the project (local checkout, managed session trees, external
+            trees). Selecting one closes the picker: the focus switch is not
+            a checkout, so there is no operation console outcome to read.
+            Hidden in draft mode: the draft picks a BRANCH for a new
+            session's worktree; focus switching is a different intent. */}
+        {!isDraftMode && worktrees.length > 0 && (
+          <div className="shrink-0 border-t border-border px-2 pb-2 pt-1">
+            <div className="px-2 py-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              Worktrees
+            </div>
+            <WorktreesSection
+              worktrees={worktrees}
+              onSelect={(w) => {
+                void focusWorktree(w.path)
+                closeBranchPicker()
+              }}
+            />
+          </div>
+        )}
+
+        {/* New branch — key on isOpen so the field resets when reopened. In
+            draft mode the submit records the drafted branch (created at
+            draft commit in the session's managed worktree) instead of
+            running CreateBranch + in-place checkout. */}
         <NewBranchSection
           key={isOpen ? 'open' : 'closed'}
           disabled={actions.isBusy}
@@ -257,6 +336,7 @@ export function BranchPicker() {
           onClearError={handleClearError}
           onError={handleError}
           onCreated={closeBranchPicker}
+          onDraftCreate={isDraftMode ? handleDraftCreate : undefined}
         />
 
         {/* Local error (branch-list load / create-branch failures) */}

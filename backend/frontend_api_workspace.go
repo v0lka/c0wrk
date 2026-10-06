@@ -137,21 +137,25 @@ func (f *FrontendAPI) GetSessionWorkspace(sessionID string) (string, error) {
 	if sessionID != "" && f.app != nil {
 		if mgr := f.app.Manager(); mgr != nil {
 			if sess, ok := mgr.GetSession(sessionID); ok && sess != nil && sess.WorkspacePath != "" {
-				// Return the session workspace only if it belongs to the active project.
-				// For No Project, session and project workspaces differ by design
-				// (per-session isolation), so match by the session's project ID
-				// instead — and REQUIRE that match: a session registered under a
-				// real project must never leak its workspace into CHAT mode. The
-				// old unconditional short-circuit (activeProjectID == NoProjectID)
-				// let a stale cross-project activeSessionId (e.g. after concurrent
-				// project toggles) set the file-tree root to a path outside the
-				// No Project tree — ListDirectory then rejects it ("path outside
-				// project workspace") and @-file completions die until restart.
+				// Return the session workspace only if the session belongs to
+				// the ACTIVE project — membership is decided by project ID,
+				// never by comparing the workspace path to the project path:
+				// a managed-worktree session of the active project has a
+				// WorkspacePath inside <checkout>/.worktrees and must still
+				// resolve to its own tree (the explorer, @-file completions,
+				// and the viewer root follow the active session). For No
+				// Project, session and project workspaces differ by design
+				// (per-session isolation), and a session registered under a
+				// real project must never leak its workspace into CHAT mode
+				// (the old unconditional short-circuit let a stale
+				// cross-project activeSessionId set the file-tree root
+				// outside the No Project tree — ListDirectory rejected it
+				// and @-file completions died until restart).
 				var belongsToActive bool
 				if activeProjectID == project.NoProjectID {
 					belongsToActive = sess.ProjectID == project.NoProjectID
 				} else {
-					belongsToActive = sess.WorkspacePath == activeProject
+					belongsToActive = sess.ProjectID == activeProjectID
 				}
 				if belongsToActive || activeProject == "" {
 					return sess.WorkspacePath, nil
@@ -193,9 +197,15 @@ func (f *FrontendAPI) GetFileIcon(filePath string) (FileIconResponse, error) {
 	return FileIconResponse{Icon: style.Icon, IconColor: snapToTheme(style.Color)}, nil
 }
 
-// GetGitStatus returns a map of absolute file paths to their git status for the
-// active project. Delegates to core/workspace.GitStatus after path validation.
-// Returns an empty map for No Project (no git operations).
+// GetGitStatus returns a map of absolute file paths to their git status for
+// the Git-panel focus target — the explicitly focused worktree of the active
+// project, or the project checkout by default. The panel's frontend always
+// passes the project workspace path; the backend resolves the focus root so
+// status reflects the focused tree (the worktree every git RPC operates
+// on). Containment accepts the project workspace (worktree files under the
+// checkout's .worktrees container included) and, for an external linked
+// tree focus, the focus root itself. Returns an empty map for No Project
+// (no git operations).
 func (f *FrontendAPI) GetGitStatus(dirPath string) (map[string]GitStatusEntry, error) {
 	f.activeProjectMu.RLock()
 	projectPath := f.activeProjectPath
@@ -219,12 +229,25 @@ func (f *FrontendAPI) GetGitStatus(dirPath string) (map[string]GitStatusEntry, e
 	if err != nil {
 		return nil, fmt.Errorf("invalid workspace path: %w", err)
 	}
+	focusRoot := f.resolveGitFocusRoot(absRoot)
+
 	ok, err := config.IsWithinPath(absRoot, absDir)
 	if err != nil || !ok {
-		return nil, errors.New("path outside project workspace")
+		// An external linked-tree focus lies outside the project workspace;
+		// containment against the focus root keeps it reachable.
+		absFocus, focusErr := filepath.Abs(focusRoot)
+		focusOK := focusErr == nil
+		if focusOK {
+			if focusWithin, fwErr := config.IsWithinPath(absFocus, absDir); fwErr != nil || !focusWithin {
+				focusOK = false
+			}
+		}
+		if !focusOK {
+			return nil, errors.New("path outside project workspace")
+		}
 	}
 
-	return f.cachedGitStatus(absRoot)
+	return f.cachedGitStatus(focusRoot)
 }
 
 // ReadFile returns the content of a file. The path is not constrained to the
@@ -397,18 +420,33 @@ func (f *FrontendAPI) GetFileDiff(filePath string) (string, error) {
 		return "", nil
 	}
 
-	if !f.isGitRepo(absRoot) {
+	// Diff in the repository that OWNS the file, not the project checkout:
+	// containment is validated against the active project root (which
+	// contains the managed .worktrees container), but a file inside a
+	// session's managed worktree belongs to that worktree's own repository —
+	// running the diff from the checkout would see the .worktrees subtree as
+	// excluded (info/exclude) and report no changes. ResolveWorkTreeRoot
+	// walks up from the file to the nearest .git (a linked worktree's .git
+	// pointer file included), so checkout files keep their checkout baseline
+	// and worktree files get their own tree's baseline — the viewer's diff
+	// follows the file's session workspace, while the Git panel keeps its
+	// explicit focus target.
+	fileRoot := workspace.ResolveWorkTreeRoot(absPath)
+	if fileRoot == "" {
+		fileRoot = absRoot
+	}
+	if !f.isGitRepo(fileRoot) {
 		// Non-git paths (non-git workspaces, session-infra directories) have no
 		// git baseline to diff against. Return an empty string so the frontend
 		// does not render a synthetic diff or the hunk-staging panel.
 		return "", nil
 	}
 
-	relPath, err := filepath.Rel(absRoot, absPath)
+	relPath, err := filepath.Rel(fileRoot, absPath)
 	if err != nil {
 		return "", fmt.Errorf("failed to compute relative path: %w", err)
 	}
-	return workspace.GetFileDiffInRepo(f.ctx(), absRoot, relPath)
+	return workspace.GetFileDiffInRepo(f.ctx(), fileRoot, relPath)
 }
 
 // ListDirectory returns the children of a directory. When recursive is false,

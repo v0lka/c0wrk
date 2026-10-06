@@ -16,6 +16,17 @@ interface LocalBranchRowProps {
   onRebase: (name: string) => void
   onPush: (name: string) => void
   onDelete: (name: string) => void
+  /**
+   * Session-draft mode (ADR-080): when set, clicking SELECTS the branch for
+   * the new session's managed worktree instead of checking it out — no git
+   * operation runs, and the per-branch hover actions are hidden. The branch
+   * currently checked out in the working tree is disabled: a managed
+   * worktree needs a free branch (one branch, one worktree).
+   */
+  draftSelect?: {
+    selected: boolean
+    onSelect: (name: string) => void
+  }
 }
 
 /**
@@ -24,6 +35,9 @@ interface LocalBranchRowProps {
  * shared ItemAction overlay. Merge & rebase are hidden for the current branch
  * (self-merge/rebase is rejected by git), and delete is disabled there too —
  * the backend refuses to delete the checked-out branch.
+ *
+ * With `draftSelect` set, the row is a pure selection target for the chat
+ * draft's managed-worktree branch — see {@link LocalBranchRowProps.draftSelect}.
  */
 export function LocalBranchRow({
   branch,
@@ -35,13 +49,21 @@ export function LocalBranchRow({
   onRebase,
   onPush,
   onDelete,
+  draftSelect,
 }: LocalBranchRowProps) {
   const isCurrent = branch.is_current
   // A row is blocked when any operation is running on it OR elsewhere.
   const blocked = disabled || inFlight !== null
+  // Draft mode: the working tree's own branch cannot back a managed
+  // worktree — git enforces one worktree per branch.
+  const draftBlocked = draftSelect !== undefined && isCurrent
 
   const handleCheckout = () => {
     if (isCurrent || blocked) return
+    if (draftSelect) {
+      if (!draftBlocked) draftSelect.onSelect(branch.name)
+      return
+    }
     onCheckout(branch.name)
   }
 
@@ -52,28 +74,34 @@ export function LocalBranchRow({
     }
   }
 
+  const selected = draftSelect?.selected ?? false
+
   return (
     <div
       role="button"
-      tabIndex={isCurrent || blocked ? -1 : 0}
-      aria-current={isCurrent ? 'true' : undefined}
+      tabIndex={isCurrent || blocked || draftBlocked ? -1 : 0}
+      aria-current={isCurrent || selected ? 'true' : undefined}
+      title={draftBlocked ? 'Checked out in the working tree — pick another branch or use local' : undefined}
       onClick={handleCheckout}
       onKeyDown={handleKeyDown}
+      data-testid={draftSelect ? 'draft-branch-row' : undefined}
       className={cn(
         'group/item relative flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors',
-        isCurrent ? 'bg-primary/10 text-primary' : 'text-foreground hover:bg-muted',
-        disabled && 'cursor-not-allowed opacity-50',
-        !disabled && !isCurrent && 'cursor-pointer',
+        isCurrent || selected ? 'bg-primary/10 text-primary' : 'text-foreground hover:bg-muted',
+        (disabled || draftBlocked) && 'cursor-not-allowed opacity-50',
+        !disabled && !isCurrent && !draftBlocked && 'cursor-pointer',
       )}
     >
       <GitBranch className="size-4 shrink-0 text-muted-foreground" />
       <span className="flex-1 truncate">{branch.name}</span>
-      {isCurrent && <Check className="size-4 shrink-0" />}
+      {(isCurrent || selected) && <Check className="size-4 shrink-0" />}
       {inFlight === 'checkout' && (
         <Loader2 className="size-4 shrink-0 animate-spin text-muted-foreground" />
       )}
 
-      {/* Hover action overlay — push/merge/rebase/rename/delete. */}
+      {/* Hover action overlay — push/merge/rebase/rename/delete. Hidden in
+          draft mode: the row is a selection target, not a management one. */}
+      {draftSelect ? null : (
       <ItemActions>
         <ItemAction
           label={`Push ${branch.name}`}
@@ -146,6 +174,7 @@ export function LocalBranchRow({
           )}
         </ItemAction>
       </ItemActions>
+      )}
     </div>
   )
 }

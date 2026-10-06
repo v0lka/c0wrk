@@ -43,6 +43,19 @@ is a backend ViewModel concern (see `FrontendAPI.isGitRepo`).
 | `GitIgnoredPaths` | `(ctx context.Context, dir string) (map[string]bool, error)` | Set of git-ignored absolute paths |
 | `ListDirFlat` | `(absDir string, ignoredPaths map[string]bool, opts ...ListDirOption) ([]FileNode, error)` | Immediate children listing |
 | `ListDirRecursive` | `(absDir string, ignoredPaths map[string]bool, opts ...ListDirOption) ([]FileNode, error)` | Recursive flat listing |
+| `ListWorktrees` | `(ctx context.Context, repoRoot string) ([]WorktreeInfo, error)` | Structured worktree list (main/managed/external, locked/prunable state); fail-closed on malformed porcelain output |
+| `AddWorktree` | `(ctx, repoRoot, target string, opts AddWorktreeOptions) (WorktreeInfo, error)` | Serialized linked-worktree creation with branch-occupancy and structural path validation; installs the `/.worktrees/` exclude for managed targets |
+| `RecreateWorktree` | `(ctx, repoRoot, target, branch string) (WorktreeInfo, error)` | Session-restore guarantee: tree exists on the pinned branch (no-op / mismatch-refused / stale-metadata pruned); never creates branches |
+| `RemoveWorktree` | `(ctx, repoRoot, target string, opts RemoveWorktreeOptions) error` | Explicit-decision removal (dirty/locked are typed failures unless Force/Unlock); NEVER deletes the branch |
+| `PruneWorktrees` | `(ctx context.Context, repoRoot string) error` | Remove metadata of worktrees whose directories are gone |
+
+Backend session-worktree ownership (provisioning/restore/release lifecycle for
+`<repo>/.worktrees/<name>`) goes through the ownership coordinator
+`backend/worktrees.Owner` — paths are always derived via
+`config.ManagedWorktreePath` (never accepted from callers), external linked
+worktrees are visible in listings but unreachable for mutation, and release
+maps the primitive taxonomy onto caller decisions (dirty-loss confirmation,
+locked-tree unlock). See [session-worktrees.md](../domains/session-worktrees.md).
 
 ## Config Adapter
 
@@ -94,6 +107,13 @@ resume entry. Catalog filtering and dispatch inherit that entry's context
 snapshot throughout execution; subsequent settings changes apply at the next
 entry without pushing overrides into session orchestrators. Direct constructors
 with a nil resolver use `OrchestratorConfig.MCPServerModes` as a static fallback.
+
+The `workspacePath` parameter is the session's **immutable execution workspace**
+(ADR-080): the project checkout for `local` sessions, the session's managed
+git worktree for `managed_worktree` sessions, or the CHAT per-session
+directory. It is resolved from the persisted `WorkspaceBinding` at creation
+and restore — never from the Git panel's focus target, which is a separate
+`GitPanelTarget` ([../domains/session-worktrees.md](../domains/session-worktrees.md)).
 
 ## Session Manager Ownership
 
@@ -197,3 +217,4 @@ The emitter implementation lives in `backend/session/` (not in core).
 - Adding `ReviewMode` to `HandleOptions` → thread a `reviewMode bool` through `backend/frontend_api_session.go` (`FrontendAPI.SendMessage`) + `backend/session/manager_execution.go` (`Manager.SendMessage`, both `HandleOptions` construction sites in the send goroutine); in core, `HandleMessage` sets `ReviewModeKey` so `buildSystemPrompt` renders the Code Review section (prompts `CodeReviewMode`). Also add a `, false` arg to all `Manager.SendMessage` test call sites, regenerate Wails bindings (`wails generate module`), and add the param to `frontend/src/api/chat.ts` (`sendMessage`) plus the review submit call site (`useReviewActions.handleSubmit`).
 - Removing `LogDir`/`ProjectsDir` from `ApplicationConfig` → update `desktop/startup.go` caller; use `backend/config/paths.go` functions instead
 - Changing directories under `~/.c0wrk/` → update `backend/config/paths.go` (single source of truth); verify all callers use path functions, not direct `filepath.Join`
+- Changing the session workspace model → keep `SessionInfo.WorkspaceBinding` the only binding carrier across the boundary; managed `.worktrees` paths come exclusively from `config.ManagedWorktreePath`, and Git-panel focus stays a `GitPanelTarget`, never a binding (ADR-080)

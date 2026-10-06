@@ -1,8 +1,11 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import type { Branch, BranchInfo, MergeRebaseState } from '@/types/models'
+import type { Branch, BranchInfo, GitPanelFocus, GitWorktree, MergeRebaseState } from '@/types/models'
 
 // --- Types ---
+
+/** The BranchPicker's open intent: Git-panel switch/create vs chat-side draft. */
+export type BranchPickerMode = 'switch' | 'draft'
 
 /** Empty BranchInfo used as the initial branch state. */
 export const EMPTY_BRANCH_INFO: BranchInfo = {
@@ -186,6 +189,16 @@ interface GitPanelState {
   branch: BranchInfo
   branches: Branch[]
   isBranchPickerOpen: boolean
+  /**
+   * The intent the BranchPicker opens with. 'switch' is the Git panel's
+   * classic mode (checkout / manage branches). 'draft' is the chat-side
+   * session-draft mode (ADR-080): rows SELECT the branch a new session's
+   * managed worktree will be provisioned on — no checkout, no in-place
+   * mutation; creation happens at draft commit via CreateManagedSession.
+   * Reset to 'switch' on close so a draft open can never leak into a later
+   * Git-panel open.
+   */
+  branchPickerMode: BranchPickerMode
   expandedDirs: Set<string>
   isLoading: boolean
   isGitRepo: boolean
@@ -233,6 +246,28 @@ interface GitPanelState {
    * NewBranchSection on open.
    */
   pendingBranchBase: string | null
+  /**
+   * The resolved Git-panel focus target — the worktree every git RPC
+   * operates on (the backend's GetGitPanelFocus). Null before the first
+   * resolve or when no project is active. Transient — NOT persisted: the
+   * backend re-derives the focus from the pushed session default on every
+   * mount (useGitFocusSync), so a persisted copy could only go stale.
+   */
+  focus: GitPanelFocus | null
+  /**
+   * The active session's execution workspace — the DEFAULT focus target
+   * (the managed tree of a managed session, the checkout for a local
+   * session, null for no session). The focus button highlights divergence
+   * against this value. Transient — NOT persisted.
+   */
+  focusSessionPath: string | null
+  /**
+   * Every worktree of the active project (local checkout + app-managed
+   * session trees + external linked trees) with owning-session metadata,
+   * from the backend's ListProjectWorktrees. Powers the focus switcher in
+   * BranchPicker and BranchDropdown. Transient — NOT persisted.
+   */
+  worktrees: GitWorktree[]
 }
 
 interface GitPanelActions {
@@ -242,7 +277,9 @@ interface GitPanelActions {
   loadEntries: (entries: GitPanelEntry[]) => void
   setBranch: (branch: BranchInfo) => void
   setBranches: (branches: Branch[]) => void
-  openBranchPicker: () => void
+  /** Open the branch picker. `mode` defaults to 'switch' (Git-panel intent). */
+  openBranchPicker: (mode?: BranchPickerMode) => void
+  /** Close the branch picker and reset its mode to 'switch'. */
   closeBranchPicker: () => void
   /** Toggle the AI-generation flag for a project. */
   setGeneratingCommit: (projectId: string, generating: boolean) => void
@@ -299,6 +336,12 @@ interface GitPanelActions {
   setPendingBranchBase: (base: string) => void
   /** Clear the pending branch base after it has been consumed. */
   clearPendingBranchBase: () => void
+  /** Set the resolved Git-panel focus target (null = no project/unresolved). */
+  setFocus: (focus: GitPanelFocus | null) => void
+  /** Set the active session's execution workspace (the default focus target). */
+  setFocusSessionPath: (path: string | null) => void
+  /** Replace the worktree list of the active project. */
+  setWorktrees: (worktrees: GitWorktree[]) => void
   reset: () => void
 }
 
@@ -316,6 +359,7 @@ const initialState: GitPanelState = {
   isGitRepo: false,
   gitRepoProjectId: null,
   isBranchPickerOpen: false,
+  branchPickerMode: 'switch',
   error: null,
   remoteOperationInProgress: false,
   activeTabByProject: {},
@@ -325,6 +369,9 @@ const initialState: GitPanelState = {
   groupBy: 'none',
   pendingHistoryFilter: null,
   pendingBranchBase: null,
+  focus: null,
+  focusSessionPath: null,
+  worktrees: [],
 }
 
 // --- Persist helpers (exported for direct unit testing) ---
@@ -539,9 +586,10 @@ export const useGitPanelStore = create<GitPanelState & GitPanelActions>()(
 
       setBranches: (branches) => set({ branches }),
 
-      openBranchPicker: () => set({ isBranchPickerOpen: true }),
+      openBranchPicker: (mode = 'switch' as BranchPickerMode) =>
+        set({ isBranchPickerOpen: true, branchPickerMode: mode }),
 
-      closeBranchPicker: () => set({ isBranchPickerOpen: false }),
+      closeBranchPicker: () => set({ isBranchPickerOpen: false, branchPickerMode: 'switch' }),
 
       setGeneratingCommit: (projectId, generating) =>
         set((s) => withCommitDraft(s, projectId, { isGenerating: generating })),
@@ -659,6 +707,10 @@ export const useGitPanelStore = create<GitPanelState & GitPanelActions>()(
       setPendingBranchBase: (base) => set({ pendingBranchBase: base }),
 
       clearPendingBranchBase: () => set({ pendingBranchBase: null }),
+
+      setFocus: (focus) => set({ focus }),
+      setFocusSessionPath: (path) => set({ focusSessionPath: path }),
+      setWorktrees: (worktrees) => set({ worktrees }),
 
       reset: () => {
         set({

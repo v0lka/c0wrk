@@ -34,15 +34,22 @@ interface FileTreeContextMenuProps {
   onClose: () => void
 }
 
-/** Platform path separator — Windows uses `\`, POSIX uses `/`. */
-const PATH_SEP = navigator.platform.includes('Win') ? '\\' : '/'
+/** Platform path separator — Windows uses `\`, POSIX uses `/`. Derived
+ *  lazily per call, never at module scope: a module-scope `navigator` read
+ *  crashes test collection (the vitest environment has no `navigator`),
+ *  taking down every importing test file with it. */
+function pathSep(): string {
+  const platform = typeof navigator === 'undefined' ? '' : navigator.platform
+  return platform.includes('Win') ? '\\' : '/'
+}
 
 /** Repo-relative path suitable as a .gitignore pattern / display string.
  *  Matches workspaceRoot only at a path-separator boundary to avoid a sibling
  *  directory sharing the same prefix (e.g. "/repo" vs "/repo-extra"). Uses a
  *  platform-aware separator so it works on Windows as well as macOS/Linux. */
 function toRelativePath(path: string, workspaceRoot?: string | null): string {
-  if (workspaceRoot && (path === workspaceRoot || path.startsWith(workspaceRoot + PATH_SEP))) {
+  const sep = pathSep()
+  if (workspaceRoot && (path === workspaceRoot || path.startsWith(workspaceRoot + sep))) {
     return path.slice(workspaceRoot.length).replace(/^[\\/]/, '')
   }
   return path
@@ -226,7 +233,7 @@ export function FileTreeContextMenu({
     // prefix (e.g. "src/components" would otherwise also match
     // "src/components-extra"). Uses the platform-aware separator so it
     // works on Windows as well as macOS/Linux.
-    const filter = entry.is_dir ? relativePath + PATH_SEP : relativePath
+    const filter = entry.is_dir ? relativePath + pathSep() : relativePath
     useGitPanelStore.getState().setPendingHistoryFilter(filter)
     onClose()
   }, [entry.is_dir, relativePath, onClose])

@@ -376,8 +376,15 @@ func TestManager_ListSessionsAll(t *testing.T) {
 
 	// Overlay: a live in-memory session (persisted by the desktop layer, as
 	// FrontendAPI.CreateSession does) gets its Active/Pinned flags overlaid
-	// from memory onto the stored row.
-	info, err := manager.CreateSession("project-a", testWorkspacePath(t))
+	// from memory onto the stored row. The local binding must name the
+	// project's registered checkout, so register the temp workspace as
+	// project-a's workspace_path first — exactly what SwitchProject does
+	// before CreateSession in production.
+	liveWorkspace := testWorkspacePath(t)
+	if _, err := db.ExecContext(context.Background(), `UPDATE projects SET workspace_path = ? WHERE id = 'project-a'`, liveWorkspace); err != nil {
+		t.Fatalf("register live workspace: %v", err)
+	}
+	info, err := manager.CreateSession("project-a", liveWorkspace)
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -2787,34 +2794,44 @@ func TestRestoreSession_RenameSession(t *testing.T) {
 	}
 }
 
-// TestRestoreSession_DeleteSession verifies that DeleteSession works on a
-// session that is only in the persistent store.
+// TestRestoreSession_DeleteSession verifies that DeleteSession never
+// resurrects: an in-memory session is fully deleted (event emitted), while a
+// store-only session is refused with "session not found" — restoring a
+// session just to delete it would re-provision a managed session's released
+// worktree (ADR-080). Store-row and file cleanup for store-only sessions
+// belongs to the FrontendAPI fallback.
 func TestRestoreSession_DeleteSession(t *testing.T) {
 	mgr, eventChan, store := restoreTestManager(t)
 
-	seedSession(t, store, "delete-restore", testProjectID, "To Delete", false)
+	// In-memory session: full deletion with event.
+	seedSession(t, store, "delete-live", testProjectID, "To Delete", false)
 	drainEvents(eventChan)
-
-	if err := mgr.DeleteSession("delete-restore"); err != nil {
-		t.Fatalf("DeleteSession on restored session failed: %v", err)
+	if _, ok := mgr.GetSession("delete-live"); !ok {
+		t.Fatal("session should restore before deletion")
 	}
-
-	// Session should be gone from in-memory map.
-	// Note: the mock store doesn't actually remove from its map on Manager.DeleteSession
-	// because the Manager only deletes from its own sessions map. But GetSession
-	// first checks the in-memory map, so after delete it will try to restore again.
-	// Since it was removed from the manager map, it would restore again from the store.
-	// This is acceptable — the important thing is the delete event was emitted.
+	if err := mgr.DeleteSession("delete-live"); err != nil {
+		t.Fatalf("DeleteSession on in-memory session failed: %v", err)
+	}
 	select {
 	case event := <-eventChan:
 		if event.Type != "session_deleted" {
-			t.Errorf("expected session_deleted event, got %s", event.Type)
+			t.Errorf("expected session_deleted, got %s", event.Type)
 		}
-		if event.SessionID != "delete-restore" {
+		if event.SessionID != "delete-live" {
 			t.Errorf("event session ID mismatch: got %q", event.SessionID)
 		}
 	case <-time.After(time.Second):
 		t.Error("timeout waiting for session_deleted event")
+	}
+
+	// Store-only session: refused without resurrection.
+	seedSession(t, store, "delete-restore", testProjectID, "Store Only", false)
+	err := mgr.DeleteSession("delete-restore")
+	if err == nil || !strings.Contains(err.Error(), "session not found") {
+		t.Fatalf("DeleteSession on store-only session must refuse, got %v", err)
+	}
+	if mgr.HasSession("delete-restore") {
+		t.Error("DeleteSession must not restore a store-only session into memory")
 	}
 }
 

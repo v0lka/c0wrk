@@ -3,14 +3,147 @@ package backend
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 
+	"github.com/v0lka/c0wrk/backend/config"
+	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/core/vectorindex"
 	"github.com/v0lka/sp4rk/embedding"
 )
 
 const defaultVectorBrowseTopK = 50
 
-// SearchVectorStore searches the vector store for the given request.
+// vectorIndexTarget is the resolved (workspace root, storage root) pair the
+// vector index must target: the workspace the indexer walks and the branch is
+// detected from, plus the per-target storage root for its collections.
+type vectorIndexTarget struct {
+	workspacePath string
+	storagePath   string
+}
+
+// resolveVectorIndexTarget resolves the effective vector-index target for
+// project p. A managed-worktree session of p (the saved session of the
+// project at switch time) targets that session's OWN tree root with a
+// worktree-scoped storage dir — index and search route per session workspace
+// root, the branch is resolved from that root by the manager's async init,
+// and concurrent sessions on different trees keep disjoint persisted index
+// state. Every other case — local sessions, no resolvable session, or a
+// session workspace that is not a managed tree of this project — keeps the
+// project checkout with the project storage dir: the default local-project
+// flow, unchanged. Membership is decided by containment (the tree must live
+// inside THIS project's .worktrees container), never by comparing paths to
+// the checkout.
+//
+// This is the INITIAL Git-panel-focus resolution at project switch: the
+// resolved root is handed to the per-root registry (ApplyFocus), which owns
+// the manager for it. It no longer re-points a shared singleton — sessions
+// route through their own task context, the user's search follows the focus.
+func (f *FrontendAPI) resolveVectorIndexTarget(p *project.ProjectInfo) vectorIndexTarget {
+	base := vectorIndexTarget{
+		workspacePath: p.WorkspacePath,
+		storagePath:   config.ProjectVectorIndexPath(f.agentDir, p.ID),
+	}
+	if p.IsNoProject || f.app == nil || f.app.Manager() == nil {
+		return base
+	}
+	savedID := ""
+	if f.projStore != nil {
+		if st, err := f.projStore.LoadUIState(context.Background(), p.ID); err == nil && st != nil {
+			savedID = strings.TrimSpace(st.SavedSessionID)
+		}
+	}
+	if savedID == "" {
+		return base
+	}
+	ws, ok := f.app.Manager().WorkspacePathFor(context.Background(), savedID)
+	if !ok || ws == "" || ws == p.WorkspacePath {
+		return base
+	}
+	target, ok := f.managedWorktreeVectorTarget(p, ws)
+	if !ok {
+		return base
+	}
+	return target
+}
+
+// managedWorktreeVectorTarget derives the worktree-scoped vector target for
+// workspace ws when ws is a managed worktree of project p's checkout, and
+// reports whether it is. The workspace is the tree root itself; the storage
+// root is <project vector index>/worktrees/<name> (config owns the layout).
+// The embedding cache is per-tree too (WorktreeEmbeddingCachePath): with
+// per-root managers a checkout manager and a tree manager run concurrently,
+// and the cache accounting walks its root recursively, so a shared root is
+// no longer safe.
+func (f *FrontendAPI) managedWorktreeVectorTarget(p *project.ProjectInfo, ws string) (vectorIndexTarget, bool) {
+	name, err := config.ManagedWorktreeNameFromPath(p.WorkspacePath, ws)
+	if err != nil {
+		return vectorIndexTarget{}, false
+	}
+	storage, err := config.WorktreeVectorIndexPath(f.agentDir, p.ID, name)
+	if err != nil {
+		f.log().Warn("vector index: deriving worktree storage path failed; indexing the project checkout instead",
+			"project", p.ID, "workspace", ws, "error", err)
+		return vectorIndexTarget{}, false
+	}
+	return vectorIndexTarget{workspacePath: ws, storagePath: storage}, true
+}
+
+// deleteWorktreeVectorIndex releases a managed tree's per-root manager and
+// removes the tree's persisted vector-index state — its whole worktree-scoped
+// storage root plus its per-tree embedding cache. Best-effort by design: the
+// tree is already gone, so leftover index data is only disk garbage.
+// The registry Release must happen FIRST: it shuts the manager down (dropping
+// its open chromem handles so the directory removal works on Windows too)
+// before DeleteProjectData wipes the storage.
+func (f *FrontendAPI) deleteWorktreeVectorIndex(repoRoot, projectID, name string) {
+	vr := f.vectorRootsRegistry()
+	root, err := config.ManagedWorktreePath(repoRoot, name)
+	if err != nil {
+		f.log().Debug("vector index: cannot derive worktree root for release",
+			"project", projectID, "worktree", name, "error", err)
+		root = filepath.Join(config.ManagedWorktreesDir(repoRoot), name)
+	}
+	mgr := vr.Release(root)
+
+	storage, err := config.WorktreeVectorIndexPath(f.agentDir, projectID, name)
+	if err != nil {
+		f.log().Debug("vector index: cannot derive worktree storage path for cleanup",
+			"project", projectID, "worktree", name, "error", err)
+		return
+	}
+	clean, disposable := mgr, false
+	if clean == nil {
+		// No live manager ever routed to this tree in this app run, but
+		// persisted data from a previous run may exist; any manager can
+		// remove it (DeleteProjectData is a plain fs + park-slot operation).
+		clean, disposable = vr.ManagerForCleanup()
+	}
+	if clean != nil {
+		if err := clean.DeleteProjectData(storage); err != nil {
+			f.log().Warn("vector index: failed to remove released worktree index data",
+				"project", projectID, "worktree", name, "error", err)
+		}
+		if disposable {
+			clean.Shutdown()
+		}
+	}
+
+	// The per-tree embedding cache is a sibling of the tree's storage (its
+	// content-addressed entries are meaningless without the tree) — drop it.
+	if cache, cerr := config.WorktreeEmbeddingCachePath(f.agentDir, projectID, name); cerr == nil {
+		if err := os.RemoveAll(cache); err != nil {
+			f.log().Warn("vector index: failed to remove released worktree embedding cache",
+				"project", projectID, "worktree", name, "error", err)
+		}
+	}
+}
+
+// SearchVectorStore searches the vector store for the given request, routed
+// to the Git-panel FOCUS tree's manager (ADR-080): the user's search follows
+// the tree the panel displays, not the last session that was driven. Session
+// tools route separately, through their task context (vector_roots.go).
 //
 // When req.Query is empty it browses arbitrary chunks (no semantic
 // ordering) through BrowseWithFilter. Otherwise it dispatches to
@@ -27,9 +160,10 @@ func (f *FrontendAPI) SearchVectorStore(req SearchRequest) ([]VectorStoreEntry, 
 		return []VectorStoreEntry{}, nil
 	}
 
-	vm := f.getVectorManager()
-	if vm == nil {
-		return nil, errors.New("vector search not available")
+	vr := f.vectorRootsRegistry()
+	vm, err := vr.FocusManager()
+	if err != nil {
+		return nil, errVectorNoTarget
 	}
 
 	topK := req.TopK
@@ -40,7 +174,6 @@ func (f *FrontendAPI) SearchVectorStore(req SearchRequest) ([]VectorStoreEntry, 
 	vectorSvc := vm.Service()
 
 	var results []vectorindex.SearchResult
-	var err error
 
 	// Defense-in-depth: bound the readiness wait inside HybridSearch /
 	// BrowseWithFilter with the same knob that bounds the semantic_search
@@ -117,7 +250,7 @@ func (f *FrontendAPI) SearchVectorStore(req SearchRequest) ([]VectorStoreEntry, 
 }
 
 // GetVectorIndexStatus returns the current state and progress of the
-// vector index for the active project.
+// vector index for the FOCUS tree (the Git-panel focus root; ADR-080).
 func (f *FrontendAPI) GetVectorIndexStatus() VectorIndexStatus {
 	// No Project (CHAT mode): the vector index is disabled. Report an
 	// unavailable state so the frontend UI reflects the dormant subsystem
@@ -128,22 +261,31 @@ func (f *FrontendAPI) GetVectorIndexStatus() VectorIndexStatus {
 		return st
 	}
 
-	result := VectorIndexStatus{}
-
-	vm := f.getVectorManager()
-	if vm == nil {
-		result.State = "unavailable"
+	vm, err := f.vectorRootsRegistry().FocusManager()
+	if err != nil {
+		result := VectorIndexStatus{State: "unavailable", Indices: []string{}}
 		f.applyEmbedderInfo(&result)
 		return result
 	}
 
+	result := f.vectorIndexStatusFromManager(vm)
+	f.applyEmbedderInfo(&result)
+	return result
+}
+
+// vectorIndexStatusFromManager builds the wire status from a manager's live
+// index state (progress fraction, active indices). Embedder-info enrichment
+// stays with the callers via applyEmbedderInfo.
+func (f *FrontendAPI) vectorIndexStatusFromManager(vm *vectorindex.Manager) VectorIndexStatus {
 	st := vm.GetIndexStatus()
-	result.State = string(st.State)
-	result.Phase = string(st.Phase)
-	result.FilesIndexed = st.FilesIndexed
-	result.TotalFiles = st.TotalFiles
-	result.CurrentFile = st.CurrentFile
-	result.Branch = st.Branch
+	result := VectorIndexStatus{
+		State:        string(st.State),
+		Phase:        string(st.Phase),
+		FilesIndexed: st.FilesIndexed,
+		TotalFiles:   st.TotalFiles,
+		CurrentFile:  st.CurrentFile,
+		Branch:       st.Branch,
+	}
 
 	// Compute progress as a fraction.
 	if st.TotalFiles > 0 {
@@ -153,40 +295,36 @@ func (f *FrontendAPI) GetVectorIndexStatus() VectorIndexStatus {
 	// Determine which indices are active.
 	svc := vm.Service()
 	indices := make([]string, 0, 2)
-	if svc == nil {
-		result.Indices = indices
-		f.applyEmbedderInfo(&result)
-		return result
-	}
-	if svc.GetCollection() != nil {
-		indices = append(indices, "vector")
-	}
-	if svc.GetLexical() != nil {
-		indices = append(indices, "lexical")
+	if svc != nil {
+		if svc.GetCollection() != nil {
+			indices = append(indices, "vector")
+		}
+		if svc.GetLexical() != nil {
+			indices = append(indices, "lexical")
+		}
 	}
 	result.Indices = indices
-
-	f.applyEmbedderInfo(&result)
 	return result
 }
 
-// ReindexVectorIndex forces a full reindex of the active project's vector
-// index. It reconciles the existing index against the workspace, re-indexing
+// ReindexVectorIndex forces a full reindex of the FOCUS tree's vector index.
+// It reconciles the existing index against the workspace, re-indexing
 // changed/new/deleted files; when no index exists yet (empty collection) it
 // falls back to a full build from scratch. The pass runs in the background and
 // streams progress through vector_index:status events.
 //
 // It returns an error when the vector index is unavailable: No Project (CHAT
-// mode, indexing is disabled) or no wired vector manager (before startup's
-// background vector init completes).
+// mode, indexing is disabled), no focus root resolved (no project switch has
+// pointed the Git panel anywhere yet), or the embedding backend is still
+// loading / failed to load.
 func (f *FrontendAPI) ReindexVectorIndex() error {
 	// No Project (CHAT mode): the vector index is disabled — nothing to reindex.
 	if f.isNoProject() {
 		return errors.New("vector index is unavailable in No Project mode")
 	}
 
-	vm := f.getVectorManager()
-	if vm == nil {
+	vm, err := f.vectorRootsRegistry().FocusManager()
+	if err != nil {
 		return errors.New("vector index not available")
 	}
 

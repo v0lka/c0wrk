@@ -19,7 +19,6 @@
   "backend/frontend_api_research_watcher_test.go | sleep: time.Sleep(200 * time.Millisecond)": 1,
   "backend/frontend_api_research_watcher_test.go | sleep: time.Sleep(300 * time.Millisecond)": 1,
   "backend/frontend_api_skills_test.go | sleep: time.Sleep(25 * time.Millisecond)": 1,
-  "backend/frontend_api_vector_startup_test.go | sleep: time.Sleep(200 * time.Millisecond)": 1,
   "backend/frontend_api_watcher_test.go | sleep: time.Sleep(25 * time.Millisecond)": 1,
   "backend/session/background_test.go | negative-timeout: time.After(200 * time.Millisecond)": 1,
   "backend/session/manager_compaction_test.go | negative-timeout: time.After(10 * time.Millisecond)": 1,

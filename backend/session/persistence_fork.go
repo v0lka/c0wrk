@@ -40,6 +40,14 @@ type ForkReviewCloner func(ctx context.Context, tx *sql.Tx, srcSessionID, dstSes
 // tasks (use GetUnfinishedTask) before calling this method; the store performs
 // a faithful copy regardless of task status.
 func (s *SQLiteSessionStore) ForkSession(ctx context.Context, srcID string, cloneReview ForkReviewCloner) (*SessionInfo, error) {
+	return s.ForkSessionWithBinding(ctx, srcID, "", nil, cloneReview)
+}
+
+// ForkSessionWithBinding persists a fork after its destination workspace has
+// been prepared. Managed sources require a distinct managed binding; the Git
+// lifecycle owner creates the derived branch from source HEAD before calling.
+// dstID may be preallocated by that owner; an empty id allocates a fresh UUID.
+func (s *SQLiteSessionStore) ForkSessionWithBinding(ctx context.Context, srcID, dstID string, binding *WorkspaceBinding, cloneReview ForkReviewCloner) (*SessionInfo, error) {
 	if srcID == "" {
 		return nil, errors.New("source session id is required")
 	}
@@ -52,10 +60,27 @@ func (s *SQLiteSessionStore) ForkSession(ctx context.Context, srcID string, clon
 		return nil, fmt.Errorf("source session %q not found", srcID)
 	}
 
+	if src.WorkspaceBinding != nil && src.WorkspaceBinding.Kind == WorkspaceManagedWorktree {
+		if binding == nil || binding.Kind != WorkspaceManagedWorktree || binding.WorkspacePath == src.WorkspaceBinding.WorkspacePath || binding.Branch == src.WorkspaceBinding.Branch {
+			return nil, errors.New("managed session fork requires a new tree and derived branch")
+		}
+	} else if binding != nil && binding.Kind != WorkspaceLocal {
+		return nil, errors.New("local session fork retains the local checkout")
+	}
+	bindingJSON, err := s.sessionBindingJSON(ctx, SessionInfo{ProjectID: src.ProjectID, WorkspaceBinding: binding})
+	if err != nil {
+		return nil, fmt.Errorf("validate fork binding: %w", err)
+	}
 	forkName := s.resolveForkName(ctx, src.ProjectID, src.Name)
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	newSessionID := uuid.NewString()
+	newSessionID := dstID
+	if newSessionID == "" {
+		newSessionID = uuid.NewString()
+	}
+	if newSessionID == srcID {
+		return nil, errors.New("fork destination must have a new session identity")
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -65,9 +90,9 @@ func (s *SQLiteSessionStore) ForkSession(ctx context.Context, srcID string, clon
 
 	// 1. New session row (fresh runtime accounting: tokens/fill/model/family reset).
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO sessions (id, project_id, name, created_at, last_active_at, archived, pinned, total_input_tokens, total_output_tokens, model, family, fill_percent)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		newSessionID, src.ProjectID, forkName, now, now, false, false, 0, 0, "", "", 0,
+		INSERT INTO sessions (id, project_id, name, created_at, last_active_at, archived, pinned, total_input_tokens, total_output_tokens, model, family, fill_percent, workspace_binding)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		newSessionID, src.ProjectID, forkName, now, now, false, false, 0, 0, "", "", 0, bindingJSON,
 	); err != nil {
 		return nil, fmt.Errorf("failed to insert forked session: %w", err)
 	}

@@ -932,11 +932,15 @@ body {
 }
 
 .cm-chat-container .cm-ref-skill {
-    color: var(--color-warning);
+    color: var(--color-success);
 }
 
 .cm-chat-container .cm-ref-agent {
     color: var(--color-highlight);
+}
+
+.cm-chat-container .cm-ref-mcp {
+    color: var(--color-info);
 }
 
 .cm-chat-container .cm-ref-file {
@@ -1007,25 +1011,25 @@ body {
     padding-top: 0.5rem;
 }
 
-/* Skill items: no icon, bold label. The li carries the 30% description tint
-   (cmChatTheme.ts); the label re-pins full strength so only the ellipsis and
-   detail dim. */
+/* Skill items: no icon, label tinted with the theme's success (green) — the
+   same color the skill chip uses in the chat (UserMessageContent) and the
+   editor decoration (.cm-ref-skill). The li carries the 30% description tint
+   (cmChatTheme.ts); the label re-pins its full-strength color so only the
+   ellipsis and detail dim. Labels stay upright — the section headers carry
+   the weight. */
 .cm-tooltip-autocomplete li.skill-item .cm-completionLabel {
-    font-weight: 600;
-    color: var(--color-popover-foreground);
+    color: var(--color-success);
 }
 
-/* Subagent items (unified /-list, issue #110): same shape as skill items,
-   label tinted with the agent highlight color used by /agent chips */
+/* Subagent items (unified /-list, issue #110): label tinted with the agent
+   highlight color used by /agent chips */
 .cm-tooltip-autocomplete li.agent-item .cm-completionLabel {
-    font-weight: 600;
     color: var(--color-highlight);
 }
 
 /* MCP server items (unified /-list): label tinted with the info color used
    by /mcp chips — a third visual kind alongside agents and skills */
 .cm-tooltip-autocomplete li.mcp-item .cm-completionLabel {
-    font-weight: 600;
     color: var(--color-info);
 }
 

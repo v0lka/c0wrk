@@ -21,7 +21,17 @@ const { gitMocks } = vi.hoisted(() => ({
 vi.mock('@/api/git', () => gitMocks)
 vi.mock('@/lib/logger', () => ({ logger: { error: vi.fn() } }))
 
+// Focus actions (worktree switching) are mocked so tests never touch the backend.
+const { focusMocks } = vi.hoisted(() => ({
+  focusMocks: {
+    focusWorktree: vi.fn(),
+  },
+}))
+
+vi.mock('@/lib/gitFocus', () => focusMocks)
+
 import { BranchDropdown } from './BranchDropdown'
+import { focusWorktree } from '@/lib/gitFocus'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
 import { useProjectStore } from '@/stores/projectStore'
 import type { Branch } from '@/types/models'
@@ -394,6 +404,54 @@ describe('BranchDropdown', () => {
     })
 
     expect(useGitPanelStore.getState().isBranchPickerOpen).toBe(true)
+    expect(isMenuOpen()).toBe(false)
+  })
+})
+
+describe('BranchDropdown — worktree focus switcher', () => {
+  beforeEach(() => {
+    focusMocks.focusWorktree.mockReset()
+    focusMocks.focusWorktree.mockResolvedValue(undefined)
+  })
+
+  it('hides the Worktrees section when the project has no worktrees', async () => {
+    useGitPanelStore.getState().setWorktrees([])
+    renderDropdown()
+    await openDropdown()
+
+    expect(Array.from(body().querySelectorAll('[data-testid="worktree-row"]'))).toHaveLength(0)
+    expect(body().textContent).not.toContain('Worktrees')
+  })
+
+  it('lists every worktree and switches the panel focus on selection', async () => {
+    useGitPanelStore.getState().setWorktrees([
+      {
+        path: '/repo', name: 'repo', kind: 'main', branch: 'main', head: 'a',
+        managed: false, pinned: false, is_focus: true,
+      },
+      {
+        path: '/repo/.worktrees/s-abc12345', name: 's-abc12345', kind: 'managed',
+        branch: 'sess/s-abc12345', head: 'b', managed: true, pinned: false,
+        is_focus: false, session_id: 'sess-1', session_name: 'Refactor loop',
+      },
+    ])
+    renderDropdown()
+    await openDropdown()
+
+    const rows = Array.from(body().querySelectorAll('[data-testid="worktree-row"]'))
+    expect(rows).toHaveLength(2)
+    expect(body().textContent).toContain('Worktrees')
+    expect(body().textContent).toContain('Local checkout')
+    expect(body().textContent).toContain('Refactor loop')
+
+    act(() => {
+      rows[1]!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await flush()
+
+    expect(focusWorktree).toHaveBeenCalledTimes(1)
+    expect(focusWorktree).toHaveBeenCalledWith('/repo/.worktrees/s-abc12345')
+    // Selecting a worktree closes the dropdown.
     expect(isMenuOpen()).toBe(false)
   })
 })

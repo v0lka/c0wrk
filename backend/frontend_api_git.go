@@ -15,7 +15,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/core/workspace"
 	"github.com/v0lka/sp4rk/pathutil"
 )
@@ -266,21 +265,18 @@ func (f *FrontendAPI) resolveGitPath(path string) (repoPath, relPath string, err
 	return repoPath, relPath, nil
 }
 
-// resolveGitRepoRoot returns the active project's workspace path after
-// validating that a project is active and is not No Project.
+// resolveGitRepoRoot returns the repository root the Git panel operates on:
+// the Git-panel focus target (the explicitly focused worktree of the active
+// project, or — by default — the active session's workspace as pushed by the
+// frontend) resolved by resolveGitFocusRoot, after validating that a project
+// is active and is not No Project. A vanished focus tree falls back to the
+// project checkout fail-soft.
 func (f *FrontendAPI) resolveGitRepoRoot() (string, error) {
-	f.activeProjectMu.RLock()
-	projectPath := f.activeProjectPath
-	projectID := f.activeProjectID
-	f.activeProjectMu.RUnlock()
-
-	if projectPath == "" {
-		return "", errors.New("no active project")
+	projectPath, _, err := f.activeGitProjectRoot()
+	if err != nil {
+		return "", err
 	}
-	if projectID == project.NoProjectID {
-		return "", errors.New("no git operations in No Project mode")
-	}
-	return projectPath, nil
+	return f.resolveGitFocusRoot(projectPath), nil
 }
 
 // runGitCmd executes a git sub-command in the given repository directory
@@ -659,19 +655,26 @@ func (f *FrontendAPI) GetBranchBases() ([]BranchBase, error) {
 // Branch management RPCs (Phase 4)
 // ---------------------------------------------------------------------------
 
-// CheckoutBranch switches the active project's repository to the named
-// local branch (git checkout <name>). Emits git:status_changed on
-// success. Returns an error when no project is active, the project is
-// No Project, the branch name is empty, or the git command fails (for
-// example, when local changes would be overwritten by the checkout).
+// CheckoutBranch switches the focused worktree to the named local branch
+// (git checkout <name>). The focus target is a managed session worktree
+// when the panel is focused on one; such trees refuse the switch — their
+// branch is pinned by their owning session (ADR-080) — unless the named
+// branch is the pinned one. Emits git:status_changed on success. Returns an
+// error when no project is active, the project is No Project, the branch
+// name is empty, the focus is a managed tree and the branch differs from
+// its pin (ErrPinnedWorktreeBranch), or the git command fails (for example,
+// when local changes would be overwritten by the checkout).
 func (f *FrontendAPI) CheckoutBranch(name string) error {
 	branchName := strings.TrimSpace(name)
 	if branchName == "" {
 		return errors.New("branch name must not be empty")
 	}
 
-	repoPath, err := f.resolveGitRepoRoot()
+	checkout, repoPath, err := f.gitFocusRoots()
 	if err != nil {
+		return err
+	}
+	if err := f.refusePinnedBranchSwitch(checkout, repoPath, branchName); err != nil {
 		return err
 	}
 
@@ -695,18 +698,23 @@ var ErrInvalidBaseRef = errors.New("invalid base ref")
 // <name>). When base is non-empty it is used as the start-point
 // (git checkout -b <name> <base>); if base is a remote-tracking branch,
 // --track is added so the new branch sets up upstream tracking
-// automatically. Emits git:status_changed on success. Returns an error
-// when no project is active, the project is No Project, the branch name
-// is empty, the branch already exists, the base ref is invalid, or the
-// git command fails.
+// automatically. A managed session worktree focus refuses the operation:
+// checking out a brand-new branch always moves the tree off its pinned
+// branch (ErrPinnedWorktreeBranch). Emits git:status_changed on success.
+// Returns an error when no project is active, the project is No Project,
+// the branch name is empty, the branch already exists, the base ref is
+// invalid, the focus is a managed tree, or the git command fails.
 func (f *FrontendAPI) CreateBranch(name, base string) error {
 	branchName := strings.TrimSpace(name)
 	if branchName == "" {
 		return errors.New("branch name must not be empty")
 	}
 
-	repoPath, err := f.resolveGitRepoRoot()
+	checkout, repoPath, err := f.gitFocusRoots()
 	if err != nil {
+		return err
+	}
+	if err := f.refusePinnedBranchSwitch(checkout, repoPath, branchName); err != nil {
 		return err
 	}
 
@@ -772,11 +780,14 @@ func (f *FrontendAPI) isRemoteTrackingRef(repoPath, ref string) bool {
 // RenameBranch renames a local branch from oldName to newName
 // (git branch -m <old> <new>). This also works when oldName is the
 // currently checked-out branch — git renames it and keeps HEAD on it.
-// Both names are passed to git as separate argv elements (never
-// interpolated into a command line), per SECURITY.md. Emits
-// git:status_changed on success. Returns an error when no project is
-// active, the project is No Project, either name is empty, the new name
-// already exists, or the git command fails.
+// Renaming the pinned branch of a managed session worktree focus is
+// refused (the branch name is part of the session's immutable binding,
+// ErrPinnedWorktreeBranch); other branches rename normally. Both names are
+// passed to git as separate argv elements (never interpolated into a
+// command line), per SECURITY.md. Emits git:status_changed on success.
+// Returns an error when no project is active, the project is No Project,
+// either name is empty, the new name already exists, the focus is a
+// managed tree and oldName is its pinned branch, or the git command fails.
 func (f *FrontendAPI) RenameBranch(oldName, newName string) error {
 	oldBranch := strings.TrimSpace(oldName)
 	if oldBranch == "" {
@@ -787,9 +798,14 @@ func (f *FrontendAPI) RenameBranch(oldName, newName string) error {
 		return errors.New("new branch name must not be empty")
 	}
 
-	repoPath, err := f.resolveGitRepoRoot()
+	checkout, repoPath, err := f.gitFocusRoots()
 	if err != nil {
 		return err
+	}
+	if isManagedTreePath(checkout, repoPath) {
+		if current, curErr := f.currentBranchName(repoPath); curErr == nil && oldBranch == current {
+			return fmt.Errorf("%w: %s's pinned branch %q cannot be renamed; the owning session's binding records it", ErrPinnedWorktreeBranch, filepath.Base(repoPath), oldBranch)
+		}
 	}
 
 	if _, err := f.runGitCmd(repoPath, "branch", "-m", oldBranch, newBranch); err != nil {
@@ -1035,13 +1051,15 @@ func (f *FrontendAPI) defaultPushRemote(repoPath, branchName string) string {
 // CheckoutRemoteBranch creates a local branch from a remote-tracking branch
 // and switches to it (git switch -c <local> --track <remoteBranch>). The
 // local branch name is everything after the first "/" of remoteBranch
-// (e.g. "origin/feature/x" becomes "feature/x"). This is a local operation
+// (e.g. "origin/feature/x" becomes "feature/x"). A managed session
+// worktree focus refuses the switch: the created local branch is never the
+// tree's pinned branch (ErrPinnedWorktreeBranch). This is a local operation
 // (the remote-tracking ref must already exist locally, e.g. after a fetch),
 // so it uses the standard git command timeout rather than
 // remoteGitCmdTimeout. Emits git:status_changed on success. Returns an
 // error when no project is active, the project is No Project, remoteBranch
 // is empty or not in <remote>/<branch> form, the local branch already
-// exists, or the git command fails.
+// exists, the focus is a managed tree, or the git command fails.
 func (f *FrontendAPI) CheckoutRemoteBranch(remoteBranch string) error {
 	rb := strings.TrimSpace(remoteBranch)
 	if rb == "" {
@@ -1056,8 +1074,11 @@ func (f *FrontendAPI) CheckoutRemoteBranch(remoteBranch string) error {
 		return errors.New("remote branch must be in <remote>/<branch> form")
 	}
 
-	repoPath, err := f.resolveGitRepoRoot()
+	checkout, repoPath, err := f.gitFocusRoots()
 	if err != nil {
+		return err
+	}
+	if err := f.refusePinnedBranchSwitch(checkout, repoPath, local); err != nil {
 		return err
 	}
 

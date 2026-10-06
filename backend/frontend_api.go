@@ -150,6 +150,16 @@ type FrontendAPI struct {
 	activeProjectPath string
 	activeProjectMu   sync.RWMutex
 
+	// Git-panel focus target (ADR-080's GitPanelTarget consumption): the
+	// worktree every git RPC operates on, as the project checkout or one of
+	// its worktrees. Empty = the project checkout (the default). Set only
+	// through SetGitPanelFocus, which validates membership in the active
+	// project's worktree list. Guarded by gitFocusMu, separately from
+	// activeProjectMu: the two change on different cadences (project switches
+	// vs. explicit panel focus switches) and neither write ever holds both.
+	gitFocusMu   sync.RWMutex
+	gitFocusPath string
+
 	// switchMu serializes the whole SwitchProject body (teardown → vector →
 	// watcher → activate → event). Wails runs each binding call in its own
 	// goroutine, so two rapid CHAT↔CODE toggles used to interleave inside the
@@ -244,28 +254,33 @@ type FrontendAPI struct {
 	agentWatchers   []*workspace.Watcher
 	agentWatchersMu sync.Mutex
 
-	// Vector search
-	vectorManager   *vectorindex.Manager
-	vectorManagerMu sync.RWMutex
+	// Vector search: the per-root registry (ADR-080). One manager per
+	// workspace root, created on demand through the late-bound factory;
+	// vectorRootsMu guards the lazy construction of the registry itself
+	// (the registry's own state carries its internal lock). Sessions route
+	// through the executor context's workspace; user-facing RPCs route
+	// through the Git-panel focus stored inside the registry.
+	vectorRoots   *VectorRoots
+	vectorRootsMu sync.Mutex
 
 	// vectorSetupMu guards deferredVectorProject — the handshake that lets a
-	// project switch whose vector-index setup was skipped (the manager was
-	// still being built by the background ONNX init) be applied later, once the
-	// manager is wired in via SetVectorManager. Acquired OUTSIDE
-	// vectorManagerMu (vectorSetupMu → vectorManagerMu) and OUTSIDE switchMu
-	// (switchMu → vectorSetupMu) to keep one global lock order.
+	// project switch whose vector-index setup was skipped (the manager
+	// factory was still being built by the background ONNX init) be applied
+	// later, once the factory is wired in via SetVectorRootsFactory. Acquired
+	// OUTSIDE vectorRootsMu (vectorSetupMu → vectorRootsMu) and OUTSIDE
+	// switchMu (switchMu → vectorSetupMu) to keep one global lock order.
 	vectorSetupMu sync.Mutex
 	// deferredVectorProject is the project whose vector-index setup was
-	// skipped because getVectorManager() was nil (background ONNX init still
-	// in flight). Drained once by InitVectorIndexForActiveProject when the
-	// manager becomes available. Nil when no setup is pending.
+	// skipped because the vector registry was not yet ready (background
+	// ONNX init still in flight). Drained once by InitVectorIndexForActiveProject
+	// when the factory becomes available. Nil when no setup is pending.
 	deferredVectorProject *project.ProjectInfo
 
 	// vectorEmbedderInfo records the embedder's execution-provider facts for
 	// vector-index status payloads (effective/requested provider, CUDA
 	// verification verdict). Written once by desktop's background init and
-	// read by every VectorIndexStatus producer; guarded by vectorManagerMu
-	// to avoid a third lock for the same lifecycle.
+	// read by every VectorIndexStatus producer; guarded by vectorRootsMu to
+	// avoid a third lock for the same lifecycle.
 	vectorEmbedderInfo VectorEmbedderInfo
 
 	// Self-update state. updateMu guards lastCheckResult and
@@ -290,6 +305,13 @@ type FrontendAPI struct {
 
 	// Terminal
 	terminalManager TerminalManager
+
+	// managedForkCommit, when non-nil, replaces the store fork call used by
+	// ForkSession's managed branch. Test-only seam (nil in production, where
+	// store.ForkSessionWithBinding runs) letting rollback tests fail the
+	// persistence step after the fork tree was provisioned, mirroring
+	// gitStatusFn and friends.
+	managedForkCommit func(ctx context.Context, srcID, dstID string, binding *session.WorkspaceBinding, cloner session.ForkReviewCloner) (*session.SessionInfo, error)
 
 	// Injected Wails callbacks (set by desktop during construction).
 	emitEvent func(string, ...any)
@@ -358,7 +380,6 @@ type FrontendAPIConfig struct {
 	Watcher         *workspace.Watcher
 	ProjectManager  *project.Manager
 	AgentDir        string
-	VectorManager   *vectorindex.Manager
 	TerminalManager TerminalManager
 	EmitEvent       func(string, ...any)
 	AppCtx          func() context.Context
@@ -384,7 +405,6 @@ func NewFrontendAPI(cfg FrontendAPIConfig) *FrontendAPI {
 		watcher:         cfg.Watcher,
 		projectManager:  cfg.ProjectManager,
 		agentDir:        cfg.AgentDir,
-		vectorManager:   cfg.VectorManager,
 		terminalManager: cfg.TerminalManager,
 		emitEvent:       cfg.EmitEvent,
 		appCtx:          cfg.AppCtx,
@@ -448,6 +468,11 @@ func NewFrontendAPI(cfg FrontendAPIConfig) *FrontendAPI {
 	// Route the session manager's one-shot service LLM requests (session title
 	// generation) through the embedded readiness gate.
 	f.installServiceLLMGate()
+
+	// Wire the managed-worktree lifecycle owner into the session manager's
+	// lazy restore: managed sessions fail closed (never fall back to the
+	// project checkout) until this ensurer guarantees their tree exists.
+	f.installWorkspaceEnsurer()
 
 	return f
 }
@@ -662,9 +687,7 @@ func (l *FrontendAPILifecycle) Cleanup() {
 		f.terminalManager.StopAll()
 	}
 	cleanupStep("terminalStopAll")
-	if vm := f.getVectorManager(); vm != nil {
-		vm.Shutdown()
-	}
+	f.vectorRootsRegistry().ShutdownAll()
 	cleanupStep("vectorShutdown")
 	f.watcherMu.Lock()
 	if f.watcher != nil {
@@ -704,13 +727,42 @@ func (f *FrontendAPI) log() *slog.Logger {
 	return slog.Default()
 }
 
-// SetVectorManager sets the vector index manager after background initialization.
+// vectorRootsRegistry returns the per-root vector-index registry, creating it
+// on first use. Tests may pre-set f.vectorRoots directly; production gets it
+// from NewFrontendAPI.
+func (f *FrontendAPI) vectorRootsRegistry() *VectorRoots {
+	f.vectorRootsMu.Lock()
+	defer f.vectorRootsMu.Unlock()
+	if f.vectorRoots == nil {
+		f.vectorRoots = newVectorRoots(f)
+	}
+	return f.vectorRoots
+}
+
+// SetVectorRootsFactory wires the manager factory the desktop background ONNX
+// init produced, together with the readiness channel (closed once the init
+// settles, success or known-unavailable) and the once-guarded embedder close
+// run by ShutdownAll after every manager is down.
 // Thread-safe; may be called from any goroutine.
 // Moved to FrontendAPILifecycle to avoid exposure on the Wails RPC surface.
-func (l *FrontendAPILifecycle) SetVectorManager(m *vectorindex.Manager) {
-	l.f.vectorManagerMu.Lock()
-	l.f.vectorManager = m
-	l.f.vectorManagerMu.Unlock()
+func (l *FrontendAPILifecycle) SetVectorRootsFactory(factory func() (*vectorindex.Manager, error), ready <-chan struct{}, closeEmbedder func() error) {
+	l.f.vectorRootsRegistry().SetFactory(factory, ready, closeEmbedder)
+}
+
+// VectorRoots exposes the per-root registry for desktop-side wiring (the
+// Application's late-bound router needs the same instance).
+// Moved to FrontendAPILifecycle to avoid exposure on the Wails RPC surface.
+func (l *FrontendAPILifecycle) VectorRoots() *VectorRoots {
+	return l.f.vectorRootsRegistry()
+}
+
+// NotifyVectorFileChange triggers debounced incremental re-indexing on the
+// manager of the given workspace root ("" = the focus root) — the
+// file-mutating post-execute hook's entry point. A root with no live manager
+// is a no-op (it indexes from scratch when next routed to).
+// Moved to FrontendAPILifecycle to avoid exposure on the Wails RPC surface.
+func (l *FrontendAPILifecycle) NotifyVectorFileChange(root string) {
+	l.f.vectorRootsRegistry().NotifyFileChangeForRoot(root)
 }
 
 // SetVectorEmbedderInfo records the embedder's execution-provider facts
@@ -721,9 +773,9 @@ func (l *FrontendAPILifecycle) SetVectorManager(m *vectorindex.Manager) {
 // self-explanatory in the status (which provider was asked for and why it did
 // not come up). Thread-safe.
 func (l *FrontendAPILifecycle) SetVectorEmbedderInfo(info VectorEmbedderInfo) {
-	l.f.vectorManagerMu.Lock()
+	l.f.vectorRootsMu.Lock()
 	l.f.vectorEmbedderInfo = info
-	l.f.vectorManagerMu.Unlock()
+	l.f.vectorRootsMu.Unlock()
 }
 
 // applyEmbedderInfo fills the execution-provider fields of a VectorIndexStatus
@@ -732,9 +784,9 @@ func (l *FrontendAPILifecycle) SetVectorEmbedderInfo(info VectorEmbedderInfo) {
 // (success, unavailable, failure-reason). Zero-value fields remain empty and
 // are omitted from the JSON payload.
 func (f *FrontendAPI) applyEmbedderInfo(st *VectorIndexStatus) {
-	f.vectorManagerMu.RLock()
+	f.vectorRootsMu.Lock()
 	info := f.vectorEmbedderInfo
-	f.vectorManagerMu.RUnlock()
+	f.vectorRootsMu.Unlock()
 	if info.IsZero() {
 		return
 	}
@@ -745,33 +797,27 @@ func (f *FrontendAPI) applyEmbedderInfo(st *VectorIndexStatus) {
 	st.DeviceID = info.DeviceID
 }
 
-// getVectorManager returns the vector index manager (may be nil if not yet initialized).
-func (f *FrontendAPI) getVectorManager() *vectorindex.Manager {
-	f.vectorManagerMu.RLock()
-	defer f.vectorManagerMu.RUnlock()
-	return f.vectorManager
-}
-
 // InitVectorIndexForActiveProject applies a project-switch vector setup that was
-// skipped because the vector manager was not yet wired in. It is called by the
-// desktop background ONNX goroutine immediately after SetVectorManager.
+// skipped because the vector manager factory was not yet wired in. It is called
+// by the desktop background ONNX goroutine immediately after handing the
+// factory to the registry (SetVectorRootsFactory).
 //
 // Why it is needed: the frontend issues its first SwitchProject on
 // backend:ready, which almost always arrives BEFORE the background ONNX init
-// finishes (embedder load + manager construction). switchProjectSetupVector then
-// sees getVectorManager() == nil and skips setup, so the startup project's index
+// finishes (embedder load + factory construction). switchProjectSetupVector then
+// sees FactoryReady() == false and skips setup, so the startup project's index
 // is never built and semantic search stays unavailable until the user manually
 // switches projects. This drains the setup deferred by that skipped switch.
 //
 // It serializes with SwitchProject via switchMu, so it runs either entirely
 // before the in-flight switch (the deferred slot is then empty and the switch's
-// own setup observes the now-ready manager) or entirely after it (the deferred
+// own setup observes the now-ready registry) or entirely after it (the deferred
 // slot holds the destination project and is applied here). It is a no-op when
 // nothing was deferred (the switch won the race and initialized the index
 // itself), for No Project (CHAT mode), and when no project is active.
 func (l *FrontendAPILifecycle) InitVectorIndexForActiveProject() {
 	f := l.f
-	if f == nil || f.getVectorManager() == nil {
+	if f == nil || !f.vectorRootsRegistry().FactoryReady() {
 		return
 	}
 

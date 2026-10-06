@@ -19,19 +19,20 @@ import (
 
 // SessionInfo is the public-facing session metadata.
 type SessionInfo struct {
-	ID                string  `json:"id"`
-	ProjectID         string  `json:"project_id"`
-	Name              string  `json:"name"`
-	CreatedAt         string  `json:"created_at"`     // RFC 3339 formatted timestamp
-	LastActiveAt      string  `json:"last_active_at"` // RFC 3339 formatted timestamp
-	Archived          bool    `json:"archived"`
-	Pinned            bool    `json:"pinned"`
-	Active            bool    `json:"active"`
-	TotalInputTokens  int     `json:"total_input_tokens"`
-	TotalOutputTokens int     `json:"total_output_tokens"`
-	Model             string  `json:"model"`
-	Family            string  `json:"family"`
-	FillPercent       float64 `json:"fill_percent"`
+	ID                string            `json:"id"`
+	ProjectID         string            `json:"project_id"`
+	WorkspaceBinding  *WorkspaceBinding `json:"workspace_binding,omitempty"`
+	Name              string            `json:"name"`
+	CreatedAt         string            `json:"created_at"`     // RFC 3339 formatted timestamp
+	LastActiveAt      string            `json:"last_active_at"` // RFC 3339 formatted timestamp
+	Archived          bool              `json:"archived"`
+	Pinned            bool              `json:"pinned"`
+	Active            bool              `json:"active"`
+	TotalInputTokens  int               `json:"total_input_tokens"`
+	TotalOutputTokens int               `json:"total_output_tokens"`
+	Model             string            `json:"model"`
+	Family            string            `json:"family"`
+	FillPercent       float64           `json:"fill_percent"`
 	// HasUnfinishedTask is true when the session has an in-progress, paused,
 	// or failed task. GetUnfinishedTask defines the authoritative status list
 	// that the correlated subqueries below must mirror. Such sessions cannot
@@ -457,7 +458,7 @@ func (s *SQLiteSessionStore) createTables() error {
 		s.log().Warn("failed to normalize session_messages.created_at to UTC RFC3339", "error", err)
 	}
 
-	return nil
+	return s.migrateWorkspaceBindings()
 }
 
 // columnExists checks whether a column exists in a table using PRAGMA table_info.
@@ -477,14 +478,20 @@ func (s *SQLiteSessionStore) columnExists(table, column string) bool {
 
 // SaveSession saves or updates a session.
 func (s *SQLiteSessionStore) SaveSession(ctx context.Context, info SessionInfo) error {
-	// Use created_at as fallback for last_active_at if not set
+	if info.ID == "" {
+		return errors.New("session identity is required")
+	}
+	bindingJSON, err := s.sessionBindingJSON(ctx, info)
+	if err != nil {
+		return fmt.Errorf("validate session binding: %w", err)
+	}
 	lastActiveAt := info.LastActiveAt
 	if lastActiveAt == "" {
 		lastActiveAt = info.CreatedAt
 	}
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO sessions (id, project_id, name, created_at, last_active_at, archived, pinned, total_input_tokens, total_output_tokens, model, family, fill_percent)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	result, err := s.db.ExecContext(ctx, `
+		INSERT INTO sessions (id, project_id, name, created_at, last_active_at, archived, pinned, total_input_tokens, total_output_tokens, model, family, fill_percent, workspace_binding)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name = excluded.name,
 			last_active_at = excluded.last_active_at,
@@ -494,11 +501,25 @@ func (s *SQLiteSessionStore) SaveSession(ctx context.Context, info SessionInfo) 
 			total_output_tokens = excluded.total_output_tokens,
 			model = excluded.model,
 			family = excluded.family,
-			fill_percent = excluded.fill_percent`,
-		info.ID, info.ProjectID, info.Name, info.CreatedAt, lastActiveAt, info.Archived, info.Pinned, info.TotalInputTokens, info.TotalOutputTokens, info.Model, info.Family, info.FillPercent,
+			fill_percent = excluded.fill_percent
+		WHERE sessions.project_id = excluded.project_id
+		  AND CASE WHEN sessions.workspace_binding = '' THEN '' ELSE json_extract(sessions.workspace_binding, '$.kind') END
+		    = CASE WHEN excluded.workspace_binding = '' THEN '' ELSE json_extract(excluded.workspace_binding, '$.kind') END
+		  AND CASE WHEN sessions.workspace_binding = '' THEN '' ELSE COALESCE(json_extract(sessions.workspace_binding, '$.worktree_name'), '') END
+		    = CASE WHEN excluded.workspace_binding = '' THEN '' ELSE COALESCE(json_extract(excluded.workspace_binding, '$.worktree_name'), '') END
+		  AND CASE WHEN sessions.workspace_binding = '' THEN '' ELSE COALESCE(json_extract(sessions.workspace_binding, '$.branch'), '') END
+		    = CASE WHEN excluded.workspace_binding = '' THEN '' ELSE COALESCE(json_extract(excluded.workspace_binding, '$.branch'), '') END`,
+		info.ID, info.ProjectID, info.Name, info.CreatedAt, lastActiveAt, info.Archived, info.Pinned, info.TotalInputTokens, info.TotalOutputTokens, info.Model, info.Family, info.FillPercent, bindingJSON,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to save session: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("check saved session: %w", err)
+	}
+	if changed == 0 {
+		return errors.New("session project and workspace binding are immutable")
 	}
 	return nil
 }
@@ -506,12 +527,13 @@ func (s *SQLiteSessionStore) SaveSession(ctx context.Context, info SessionInfo) 
 // LoadSession loads a session by ID.
 func (s *SQLiteSessionStore) LoadSession(ctx context.Context, id string) (*SessionInfo, error) {
 	var info SessionInfo
+	var rawBinding, projectRoot string
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, project_id, name, created_at, COALESCE(last_active_at, created_at), archived, COALESCE(pinned, 0), COALESCE(total_input_tokens, 0), COALESCE(total_output_tokens, 0), COALESCE(model, ''), COALESCE(family, ''), COALESCE(fill_percent, 0),
-		EXISTS(SELECT 1 FROM tasks WHERE tasks.session_id = sessions.id AND tasks.status IN ('in_progress', 'paused', 'failed'))
+		EXISTS(SELECT 1 FROM tasks WHERE tasks.session_id = sessions.id AND tasks.status IN ('in_progress', 'paused', 'failed')), `+sessionBindingColumns+`
 		FROM sessions WHERE id = ?`,
 		id,
-	).Scan(&info.ID, &info.ProjectID, &info.Name, &info.CreatedAt, &info.LastActiveAt, &info.Archived, &info.Pinned, &info.TotalInputTokens, &info.TotalOutputTokens, &info.Model, &info.Family, &info.FillPercent, &info.HasUnfinishedTask)
+	).Scan(&info.ID, &info.ProjectID, &info.Name, &info.CreatedAt, &info.LastActiveAt, &info.Archived, &info.Pinned, &info.TotalInputTokens, &info.TotalOutputTokens, &info.Model, &info.Family, &info.FillPercent, &info.HasUnfinishedTask, &rawBinding, &projectRoot)
 
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -520,6 +542,10 @@ func (s *SQLiteSessionStore) LoadSession(ctx context.Context, id string) (*Sessi
 		return nil, fmt.Errorf("failed to load session: %w", err)
 	}
 
+	info.WorkspaceBinding, err = decodeWorkspaceBinding(rawBinding, info.ProjectID, projectRoot)
+	if err != nil {
+		return nil, fmt.Errorf("invalid stored session binding: %w", err)
+	}
 	return &info, nil
 }
 
@@ -574,7 +600,7 @@ func (s *SQLiteSessionStore) ListSessions(ctx context.Context) ([]SessionInfo, e
 		       COALESCE(family, ''),
 		       COALESCE(fill_percent, 0),
 		       EXISTS(SELECT 1 FROM tasks WHERE tasks.session_id = sessions.id AND tasks.status IN ('in_progress', 'paused', 'failed')),
-		       `+unfinishedTaskStatusSQL+`
+		       `+unfinishedTaskStatusSQL+`, `+sessionBindingColumns+`
 		FROM sessions
 		`+sessionListOrderSQL)
 	if err != nil {
@@ -589,8 +615,13 @@ func (s *SQLiteSessionStore) ListSessions(ctx context.Context) ([]SessionInfo, e
 	var sessions []SessionInfo
 	for rows.Next() {
 		var info SessionInfo
-		if err := rows.Scan(&info.ID, &info.ProjectID, &info.Name, &info.CreatedAt, &info.LastActiveAt, &info.Archived, &info.Pinned, &info.TotalInputTokens, &info.TotalOutputTokens, &info.Model, &info.Family, &info.FillPercent, &info.HasUnfinishedTask, &info.UnfinishedTaskStatus); err != nil {
+		var rawBinding, projectRoot string
+		if err := rows.Scan(&info.ID, &info.ProjectID, &info.Name, &info.CreatedAt, &info.LastActiveAt, &info.Archived, &info.Pinned, &info.TotalInputTokens, &info.TotalOutputTokens, &info.Model, &info.Family, &info.FillPercent, &info.HasUnfinishedTask, &info.UnfinishedTaskStatus, &rawBinding, &projectRoot); err != nil {
 			return nil, fmt.Errorf("failed to scan session: %w", err)
+		}
+		info.WorkspaceBinding, err = decodeWorkspaceBinding(rawBinding, info.ProjectID, projectRoot)
+		if err != nil {
+			return nil, fmt.Errorf("invalid stored session binding: %w", err)
 		}
 		sessions = append(sessions, info)
 	}
@@ -615,7 +646,7 @@ func (s *SQLiteSessionStore) ListSessionsByProject(ctx context.Context, projectI
 		       `+sessionEffectiveActivitySQL+` AS effective_activity,
 		       archived, COALESCE(pinned, 0), COALESCE(total_input_tokens, 0), COALESCE(total_output_tokens, 0), COALESCE(model, ''), COALESCE(family, ''), COALESCE(fill_percent, 0),
 		EXISTS(SELECT 1 FROM tasks WHERE tasks.session_id = sessions.id AND tasks.status IN ('in_progress', 'paused', 'failed')),
-		`+unfinishedTaskStatusSQL+`
+		`+unfinishedTaskStatusSQL+`, `+sessionBindingColumns+`
 		FROM sessions
 		WHERE project_id = ?
 		`+sessionListOrderSQL, projectID)
@@ -631,8 +662,13 @@ func (s *SQLiteSessionStore) ListSessionsByProject(ctx context.Context, projectI
 	var sessions []SessionInfo
 	for rows.Next() {
 		var info SessionInfo
-		if err := rows.Scan(&info.ID, &info.ProjectID, &info.Name, &info.CreatedAt, &info.LastActiveAt, &info.Archived, &info.Pinned, &info.TotalInputTokens, &info.TotalOutputTokens, &info.Model, &info.Family, &info.FillPercent, &info.HasUnfinishedTask, &info.UnfinishedTaskStatus); err != nil {
+		var rawBinding, projectRoot string
+		if err := rows.Scan(&info.ID, &info.ProjectID, &info.Name, &info.CreatedAt, &info.LastActiveAt, &info.Archived, &info.Pinned, &info.TotalInputTokens, &info.TotalOutputTokens, &info.Model, &info.Family, &info.FillPercent, &info.HasUnfinishedTask, &info.UnfinishedTaskStatus, &rawBinding, &projectRoot); err != nil {
 			return nil, fmt.Errorf("failed to scan session: %w", err)
+		}
+		info.WorkspaceBinding, err = decodeWorkspaceBinding(rawBinding, info.ProjectID, projectRoot)
+		if err != nil {
+			return nil, fmt.Errorf("invalid stored session binding: %w", err)
 		}
 		sessions = append(sessions, info)
 	}

@@ -48,7 +48,9 @@ trigger ──┐
  focus    │     │
           │     ▼
           │  1. git.auto_fetch master gate          (config under configMu; nil config = OFF)
-          │  2. active project ≠ No Project         (resolveGitRepoRoot)
+          │  2. active project ≠ No Project         (resolveGitRepoRoot — resolves
+          │     the Git-panel focus root; equivalent for fetch: remote-tracking
+          │     refs live in the common dir shared by every worktree)
           │  3. isGitRepo(repoPath)                 (30s-cached, local check)
           │  4. 60s min-interval, ALL triggers      (stamp taken HERE, on every attempt)
           │  5. `git remote` non-empty              (local check; empty → quiet skip)

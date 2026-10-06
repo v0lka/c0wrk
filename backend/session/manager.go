@@ -16,7 +16,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/core"
@@ -47,6 +46,16 @@ const SessionIDKey contextKey = "session_id"
 // retryable error instead of a hang.
 const restoreDBReadTimeout = 15 * time.Second
 
+// ensureWorktreeTimeout bounds one managed-workspace ensure during lazy
+// restore (git worktree list/recreate). Unlike the DB read above, this
+// operation writes: recreating a tree materializes a full checkout, which on
+// a large repository and a cold disk can take real time. Two minutes is a
+// ceiling against a wedged git, not an expected duration; the underlying git
+// spawns are hardened and serialized per repository, so expiry turns a stuck
+// restore into a prompt, retryable error without leaving the manager waiting
+// forever.
+const ensureWorktreeTimeout = 2 * time.Minute
+
 // ContextWithSessionID returns a new context with the session ID attached.
 func ContextWithSessionID(ctx context.Context, sessionID string) context.Context {
 	return context.WithValue(ctx, SessionIDKey, sessionID)
@@ -69,8 +78,10 @@ type Session struct {
 	LastActiveAt        time.Time
 	Archived            bool
 	Pinned              bool
-	WorkspacePath       string // workspace directory (from project)
-	TempDir             string // session-specific temp directory
+	ProjectPath         string            // immutable owning project checkout
+	workspaceBinding    *WorkspaceBinding // immutable, accessor returns copies
+	WorkspacePath       string            // immutable session execution workspace
+	TempDir             string            // session-specific temp directory
 	orchestrator        *core.Orchestrator
 	emitter             *EventEmitter      // session emitter; agent quality metrics are read from it on task finish
 	logFile             *os.File           // session log file handle, closed on deletion
@@ -200,10 +211,17 @@ type Manager struct {
 	// the whole one-shot call fits inside serviceLLMTimeout.
 	serviceLLMGate  func(context.Context) error
 	projectResolver ProjectResolverFunc // resolves projectID -> workspacePath for lazy session restoration
-	fileTracker     *FileCoherenceTracker
-	converter       *markitdown.Converter // lazy-init markitdown converter for AttachFiles
-	converterMu     sync.Mutex            // guards lazy converter initialization
-	modelProfiles   ModelProfilesMetaInfo // Model Profiles profile annotating agent_metrics events (guarded by mu)
+	// workspaceEnsurer guarantees the execution workspace named by a restored
+	// managed binding physically exists before the orchestrator is built on
+	// top of it (ADR-080). Installed by the backend FrontendAPI, which owns
+	// the worktrees.Owner coordinator. A managed restore without an ensurer
+	// fails closed: the manager must never point a session at a missing tree
+	// and must never fall back to the project checkout. Guarded by mu.
+	workspaceEnsurer WorkspaceEnsurer
+	fileTracker      *FileCoherenceTracker
+	converter        *markitdown.Converter // lazy-init markitdown converter for AttachFiles
+	converterMu      sync.Mutex            // guards lazy converter initialization
+	modelProfiles    ModelProfilesMetaInfo // Model Profiles profile annotating agent_metrics events (guarded by mu)
 
 	// ignoreCache caches per-root ignore.Resolver instances so the directory
 	// tree is walked only once per root (not on every SendMessage). The key
@@ -672,6 +690,15 @@ func (m *Manager) SetProjectResolver(fn ProjectResolverFunc) {
 	m.projectResolver = fn
 }
 
+// SetWorkspaceEnsurer installs the managed-workspace ensurer used during lazy
+// restore (see WorkspaceEnsurer). Restores of managed sessions fail closed
+// until an ensurer is installed.
+func (m *Manager) SetWorkspaceEnsurer(fn WorkspaceEnsurer) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.workspaceEnsurer = fn
+}
+
 // getOrRestoreSession looks up a session in the in-memory map. If not found and
 // a session store + project resolver are configured, it lazily restores the
 // session from the database, creating a fully-functional Session object.
@@ -695,6 +722,7 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 	}
 	store := m.sessionStore
 	resolver := m.projectResolver
+	ensurer := m.workspaceEnsurer
 	m.mu.RUnlock()
 
 	if store == nil {
@@ -733,6 +761,15 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 	restoreReadCancel()
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve workspace for project %s: %w", info.ProjectID, err)
+	}
+
+	projectPath := workspacePath
+	binding, err := NormalizeWorkspaceBinding(info.ProjectID, projectPath, info.WorkspaceBinding)
+	if err != nil {
+		return nil, fmt.Errorf("validate restored workspace: %w", err)
+	}
+	if binding != nil {
+		workspacePath = binding.WorkspacePath
 	}
 
 	// For No Project, each session gets its own isolated workspace.
@@ -793,6 +830,49 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 		delete(m.restoreInFlight, id)
 		m.mu.Unlock()
 		close(waitCh)
+	}
+
+	// Managed binding: guarantee the session-owned tree exists before anything
+	// is built on top of it (ADR-080). The ensurer validates the stored Git
+	// identity against the repository and recreates a missing tree from the
+	// pinned branch; any failure aborts the restore explicitly. A managed
+	// session must never silently fall back to the project checkout, and a
+	// missing branch or retargeted tree must surface as an error the user can
+	// act on, not as an orchestrator pointed at a path that merely looks
+	// right. This runs INSIDE the single-flight window so concurrent restores
+	// of the same session execute the (per-repo serialized) git operation
+	// once, and after the No-Project re-derivation above so it can never run
+	// for a CHAT session (whose binding is nil).
+	if binding != nil && binding.Kind == WorkspaceManagedWorktree {
+		if ensurer == nil {
+			finishRestore()
+			return nil, fmt.Errorf("managed session %q cannot be restored: no workspace ensurer is configured", id)
+		}
+		ensureCtx, ensureCancel := context.WithTimeout(context.Background(), ensureWorktreeTimeout)
+		recreated, ensureErr := ensurer(ensureCtx, projectPath, binding)
+		ensureCancel()
+		if ensureErr != nil {
+			finishRestore()
+			return nil, fmt.Errorf("ensure session worktree %q on branch %q: %w", binding.WorktreeName, binding.Branch, ensureErr)
+		}
+		if recreated {
+			m.log().Warn("recreated missing session worktree during restore",
+				"session_id", id, "worktree", binding.WorktreeName, "branch", binding.Branch)
+			// phase "orchestration" is the chat-visibility discriminator for
+			// service events (event-catalog): this warning must render as a
+			// chat row and persist across reloads, not stay a transient
+			// activity label — the user must see that uncommitted data was
+			// lost even when the restore happened while the session was not
+			// mounted.
+			m.emitFunc(Event{
+				SessionID: id,
+				Type:      "service",
+				Data: map[string]any{
+					"content": fmt.Sprintf("This session's worktree (%s, branch %s) was missing and has been recreated from the pinned branch. Uncommitted changes that existed only in the missing tree could not be recovered.", binding.WorktreeName, binding.Branch),
+					"phase":   "orchestration",
+				},
+			})
+		}
 	}
 
 	// Create session logger.
@@ -972,6 +1052,8 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 		CreatedAt:           createdAt,
 		Archived:            info.Archived,
 		Pinned:              info.Pinned,
+		ProjectPath:         projectPath,
+		workspaceBinding:    binding,
 		WorkspacePath:       workspacePath,
 		TempDir:             tempDir,
 		orchestrator:        orchestrator,
@@ -1125,13 +1207,35 @@ func (m *Manager) ListSessionsAll() ([]SessionInfo, error) {
 // CreateSession creates a new session with a fresh orchestrator.
 // The projectID ties the session to a project; workspacePath is the project's workspace directory.
 func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, error) {
+	return m.CreateSessionFromDraft(NewSessionDraft(projectID, nil), workspacePath)
+}
+
+// CreateSessionFromDraft commits a prepared execution workspace into a runtime
+// session. Managed Git provisioning is the caller's responsibility; this method
+// cannot change the selected workspace or branch after creation.
+func (m *Manager) CreateSessionFromDraft(draft SessionDraft, repositoryPath string) (*SessionInfo, error) {
+	projectID, id := draft.ProjectID, draft.ID
+	if id == "" || filepath.Base(id) != id || strings.ContainsAny(id, "\\/\x00") || id == "." || id == ".." {
+		return nil, fmt.Errorf("invalid session draft identity: %q", id)
+	}
+	binding, err := NormalizeWorkspaceBinding(projectID, repositoryPath, draft.WorkspaceBinding)
+	if err != nil {
+		return nil, fmt.Errorf("validate session draft: %w", err)
+	}
+	m.mu.RLock()
+	_, exists := m.sessions[id]
+	m.mu.RUnlock()
+	if exists {
+		return nil, fmt.Errorf("session draft identity already exists: %s", id)
+	}
+	workspacePath := repositoryPath
+	if binding != nil {
+		workspacePath = binding.WorkspacePath
+	}
 	// Per-phase timing (DEBUG only) so session-creation latency can be
 	// pinpointed in real-world environments where MCP gateways, large skill
 	// directories, or slow filesystems add overhead not visible in unit tests.
 	overallStart := time.Now()
-
-	// Generate UUID for session ID
-	id := uuid.New().String()
 
 	var phaseT0, phaseT1 time.Time
 	debugTiming := strings.EqualFold(m.logLevel, "DEBUG")
@@ -1298,18 +1402,20 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 
 	// Create session
 	session := &Session{
-		ID:            id,
-		ProjectID:     projectID,
-		Name:          "Session " + safeSessionPrefix(id), // Default name using first 8 chars of UUID
-		CreatedAt:     time.Now().UTC(),
-		Archived:      false,
-		WorkspacePath: workspacePath,
-		TempDir:       tempDir,
-		orchestrator:  orchestrator,
-		emitter:       emitter,
-		logFile:       logFile,
-		dumpFile:      dumpFile,
-		active:        false,
+		ID:               id,
+		ProjectID:        projectID,
+		Name:             "Session " + safeSessionPrefix(id), // Default name using first 8 chars of UUID
+		CreatedAt:        time.Now().UTC(),
+		Archived:         false,
+		ProjectPath:      repositoryPath,
+		workspaceBinding: binding,
+		WorkspacePath:    workspacePath,
+		TempDir:          tempDir,
+		orchestrator:     orchestrator,
+		emitter:          emitter,
+		logFile:          logFile,
+		dumpFile:         dumpFile,
+		active:           false,
 	}
 
 	// Store session
@@ -1342,14 +1448,15 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 	}
 
 	return &SessionInfo{
-		ID:           session.ID,
-		ProjectID:    projectID,
-		Name:         session.Name,
-		CreatedAt:    session.CreatedAt.Format(time.RFC3339),
-		LastActiveAt: session.CreatedAt.Format(time.RFC3339),
-		Archived:     session.Archived,
-		Pinned:       session.Pinned,
-		Active:       false,
+		ID:               session.ID,
+		ProjectID:        projectID,
+		WorkspaceBinding: session.WorkspaceBinding(),
+		Name:             session.Name,
+		CreatedAt:        session.CreatedAt.Format(time.RFC3339),
+		LastActiveAt:     session.CreatedAt.Format(time.RFC3339),
+		Archived:         session.Archived,
+		Pinned:           session.Pinned,
+		Active:           false,
 	}, nil
 }
 
@@ -1397,12 +1504,20 @@ func (m *Manager) SetLogLevel(level string) {
 }
 
 // DeleteSession removes a session, cancelling any active task.
+// DeleteSession removes an in-memory session: it cancels and joins any
+// running task, closes the session's resources (orchestrator, log/dump
+// handles), purges tracking state, removes the session's internal files
+// under the agent dir, and emits session_deleted.
+//
+// Deletion never RESTORES: a session that is not in memory is not this
+// manager's to clean up, and restoring one just to delete it would be a
+// resurrection with real side effects — for a managed-worktree session
+// (ADR-080) the restore's workspace ensurer re-provisions the very tree the
+// caller may have just released. Callers deleting store-only sessions own
+// their store-row and file cleanup (see FrontendAPI.DeleteSessionWithOptions
+// and its store-only fallback). Returns "session not found" for sessions
+// that are not in memory.
 func (m *Manager) DeleteSession(id string) error {
-	// Try lazy restoration before checking the map.
-	if _, restoreErr := m.getOrRestoreSession(id); restoreErr != nil {
-		m.log().Warn("failed to restore session for deletion", "session_id", id, "error", restoreErr)
-	}
-
 	m.mu.Lock()
 	session, exists := m.sessions[id]
 	if !exists {
@@ -1507,6 +1622,18 @@ func (m *Manager) GetSession(id string) (*Session, bool) {
 	return sess, sess != nil
 }
 
+// HasSession reports whether the session is live in memory WITHOUT the lazy
+// restore GetSession performs. Deletion flows use it to decide between the
+// in-memory cleanup path and the store-only fallback without ever
+// resurrecting a session (restoring a managed session re-provisions its
+// worktree — see DeleteSession).
+func (m *Manager) HasSession(id string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, exists := m.sessions[id]
+	return exists
+}
+
 // GetSessionWorkspacePath returns the workspace path for a session.
 func (m *Manager) GetSessionWorkspacePath(id string) (string, bool) {
 	sess, ok := m.GetSession(id)
@@ -1572,6 +1699,14 @@ func (m *Manager) WorkspacePathFor(ctx context.Context, id string) (string, bool
 		return "", false
 	}
 
+	binding, err := NormalizeWorkspaceBinding(info.ProjectID, workspacePath, info.WorkspaceBinding)
+	if err != nil {
+		return "", false
+	}
+	if binding != nil {
+		workspacePath = binding.WorkspacePath
+	}
+
 	// For No Project, each session gets its own isolated workspace — re-derive
 	// it here exactly like getOrRestoreSession so a path lookup never points a
 	// terminal at the shared project-level directory.
@@ -1601,14 +1736,15 @@ func (m *Manager) ListSessions() []SessionInfo {
 			lastActive = s.CreatedAt
 		}
 		sessions = append(sessions, SessionInfo{
-			ID:           s.ID,
-			ProjectID:    s.ProjectID,
-			Name:         s.Name,
-			CreatedAt:    s.CreatedAt.Format(time.RFC3339),
-			LastActiveAt: lastActive.Format(time.RFC3339),
-			Archived:     s.Archived,
-			Pinned:       s.Pinned,
-			Active:       s.active,
+			ID:               s.ID,
+			ProjectID:        s.ProjectID,
+			WorkspaceBinding: s.WorkspaceBinding(),
+			Name:             s.Name,
+			CreatedAt:        s.CreatedAt.Format(time.RFC3339),
+			LastActiveAt:     lastActive.Format(time.RFC3339),
+			Archived:         s.Archived,
+			Pinned:           s.Pinned,
+			Active:           s.active,
 		})
 		s.mu.Unlock()
 	}

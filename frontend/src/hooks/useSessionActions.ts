@@ -17,6 +17,8 @@
 import { useState, useRef, useCallback } from 'react'
 import type { RefObject } from 'react'
 import { useSessionStore } from '@/stores/sessionStore'
+import { useProjectStore, selectIsNoProject } from '@/stores/projectStore'
+import { useSessionDraftStore } from '@/stores/sessionDraftStore'
 import { useChatStore } from '@/stores/chatStore'
 import { useTerminalRegistryStore } from '@/stores/terminalRegistryStore'
 import { useChatInputStore } from '@/stores/chatInputStore'
@@ -83,6 +85,22 @@ export function useSessionActions(): SessionActions {
 
   const handleNewSession = useCallback(async () => {
     setCreateError(null)
+    // CODE projects use the draft flow (ADR-080): New Session arms a draft
+    // instead of creating a session row — no orchestrator, terminal, or DB
+    // row exists until the first real action (send / attachment / terminal
+    // open) commits it, honoring the drafted workspace (local checkout or a
+    // managed worktree provisioned on the picked branch). The chat input's
+    // toolbar exposes the workspace choice while the draft is armed.
+    const projectState = useProjectStore.getState()
+    const projectId = projectState.activeProjectId
+    if (projectId !== null && !selectIsNoProject(projectState)) {
+      useSessionDraftStore.getState().startDraft(projectId)
+      // Clear the active session (in-memory only — the project's saved
+      // session is deliberately NOT touched, so a restart restores it and an
+      // un-committed draft simply evaporates).
+      selectSession(null)
+      return
+    }
     try {
       const session = await createSession()
       addSession(session)

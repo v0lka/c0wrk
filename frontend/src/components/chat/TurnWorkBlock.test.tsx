@@ -4,8 +4,8 @@
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { TooltipProvider } from '@/components/ui/tooltip'
 import { TurnWorkBlock } from './TurnWorkBlock'
+import { TooltipProvider } from '@/components/ui/tooltip'
 import { turnWorkOwners } from './turnWorkOwners'
 import { bookmarkKey } from '@/lib/bookmarks'
 import { BookmarkableContext } from './BookmarkableContext'
@@ -60,15 +60,11 @@ describe('TurnWorkBlock', () => {
   const render = (work: DisplayItem[], tail: DisplayItem[], tailSlot?: React.ReactNode, opts?: { live?: boolean }) =>
     act(() => {
       root.render(
-        // Mirrors production (App.tsx): the work items carry real ToolCards
-        // whose EllipsisHint mounts a Radix tooltip — without the provider
-        // every card throws, the ErrorBoundary logs into the output and the
-        // assertions would run against the fallback rendering.
-        <BookmarkableContext.Provider value={false}>
-          <TooltipProvider>
+        <TooltipProvider>
+          <BookmarkableContext.Provider value={false}>
             <TurnWorkBlock live={opts?.live ?? false} work={work} tail={tail} tailSlot={tailSlot} />
-          </TooltipProvider>
-        </BookmarkableContext.Provider>,
+          </BookmarkableContext.Provider>
+        </TooltipProvider>,
       )
     })
 

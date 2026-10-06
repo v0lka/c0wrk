@@ -33,7 +33,7 @@ import {
   failAttachmentUploads,
 } from '@/lib/attachmentUploads'
 import type { AttachmentUploadUI } from '@/types/models'
-import { createSession } from '@/api/sessions'
+import { createSessionFromDraft } from '@/lib/sessionDraft'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useAttachmentsStore } from '@/stores/attachmentsStore'
 import { getInputState, useChatInputStore } from '@/stores/chatInputStore'
@@ -86,16 +86,16 @@ export function usePasteHandler(editor: ChatEditorAPI): {
         const supportsVision = resolveSupportsVision(selectedModel, defaultModel, allModels)
         const descriptors = collectPasteUploadDescriptors(_data, supportsVision)
 
-        // Ensure a session exists before probing (the backend paste needs one).
-        // Captured BEFORE the awaits: every store write below is keyed to this
-        // id, so a paste that resolves after the user switched sessions still
-        // lands in the session the paste was made from — never in the
-        // currently-visible one.
+        // Ensure a session exists before probing (the backend paste needs
+        // one). Pasting a file is a draft-committing action: an armed branch
+        // draft provisions the managed worktree here. Captured BEFORE the
+        // awaits: every store write below is keyed to this id, so a paste
+        // that resolves after the user switched sessions still lands in the
+        // session the paste was made from — never in the currently-visible
+        // one.
         let sessionId = useSessionStore.getState().activeSessionId
         if (!sessionId) {
-          const newSession = await createSession()
-          useSessionStore.getState().addSession(newSession)
-          useSessionStore.getState().selectSession(newSession.id, newSession.project_id)
+          const newSession = await createSessionFromDraft()
           sessionId = newSession.id
         }
 

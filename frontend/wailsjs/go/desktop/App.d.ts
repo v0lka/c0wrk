@@ -62,6 +62,8 @@ export function CreateBranch(arg1:string,arg2:string):Promise<void>;
 
 export function CreateHypothesis(arg1:string,arg2:backend.NewHypothesisCard):Promise<backend.ResearchGraphDTO>;
 
+export function CreateManagedSession(arg1:string,arg2:boolean,arg3:string):Promise<session.SessionInfo>;
+
 export function CreateModelProfile(arg1:string,arg2:string):Promise<string>;
 
 export function CreateProject(arg1:string,arg2:string):Promise<project.ProjectInfo>;
@@ -87,6 +89,8 @@ export function DeleteResearch(arg1:string,arg2:string):Promise<backend.Research
 export function DeleteReviewComment(arg1:string):Promise<void>;
 
 export function DeleteSession(arg1:string):Promise<void>;
+
+export function DeleteSessionWithOptions(arg1:string,arg2:backend.SessionDeleteOptions):Promise<void>;
 
 export function DeleteTag(arg1:string):Promise<void>;
 
@@ -149,6 +153,8 @@ export function GetFileDiffHunks(arg1:string):Promise<Array<workspace.HunkDiffIn
 export function GetFileIcon(arg1:string):Promise<backend.FileIconResponse>;
 
 export function GetGitHistory(arg1:number,arg2:number):Promise<workspace.GitHistoryPage>;
+
+export function GetGitPanelFocus():Promise<backend.GitPanelFocusInfo>;
 
 export function GetGitStatus(arg1:string):Promise<Record<string, workspace.GitStatusEntry>>;
 
@@ -245,6 +251,8 @@ export function ListDirectory(arg1:string,arg2:boolean):Promise<Array<workspace.
 export function ListFontFamilies(arg1:boolean):Promise<backend.FontFamiliesResponse>;
 
 export function ListProjectWorkDirectories(arg1:string):Promise<Array<project.WorkDirectoryRecord>>;
+
+export function ListProjectWorktrees():Promise<Array<backend.GitWorktree>>;
 
 export function ListProjects():Promise<Array<project.ProjectInfo>>;
 
@@ -363,6 +371,8 @@ export function SetActiveResearch(arg1:string,arg2:string):Promise<backend.Resea
 export function SetEmbeddedLLMAutoUnload(arg1:boolean,arg2:number):Promise<void>;
 
 export function SetEmbeddedLLMTuning(arg1:backend.EmbeddedLLMTuningRequest):Promise<void>;
+
+export function SetGitPanelFocus(arg1:string):Promise<void>;
 
 export function SetHypothesisPinned(arg1:string,arg2:string,arg3:string,arg4:boolean):Promise<void>;
 

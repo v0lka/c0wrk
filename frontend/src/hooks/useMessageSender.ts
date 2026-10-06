@@ -10,7 +10,7 @@ import { useAttachmentsStore, EMPTY_ATTACHMENTS } from '@/stores/attachmentsStor
 import { buildUserMessageMeta } from '@/lib/userMessageMeta'
 import { isE2SSendEnabled } from '@/lib/e2sGate'
 import { sendMessage, cancelTask } from '@/api/chat'
-import { createSession } from '@/api/sessions'
+import { createSessionFromDraft } from '@/lib/sessionDraft'
 import { generateMessageId } from '@/lib/ids'
 import { logger } from '@/lib/logger'
 
@@ -58,19 +58,16 @@ export function useMessageSender(): UseMessageSenderResult {
 
     // The pinned origin session wins; only an explicitly null origin (the
     // no-session scratch space) falls through to the auto-create flow —
-    // unless the caller forced a fresh session (research Shift-click).
+    // unless the caller forced a fresh session (research Shift-click). Both
+    // paths honor an armed session draft: the first real action commits it,
+    // creating the session on the project checkout (local) or provisioning
+    // its managed worktree (branch draft) via CreateManagedSession.
     let sessionId = originSessionId ?? useSessionStore.getState().activeSessionId
     if (options?.newSession || !sessionId) {
       try {
-        const newSession = await createSession()
-        useSessionStore.getState().addSession(newSession)
-        // The implicitly created session becomes the visible active one —
-        // persist it as the project's saved session so an app restart
-        // restores exactly this session.
-        useSessionStore.getState().selectSession(newSession.id, newSession.project_id)
+        const newSession = await createSessionFromDraft()
         sessionId = newSession.id
       } catch (error) {
-        logger.error('Failed to create session:', error)
         setIsProcessing(false)
         throw error // let caller restore text
       }

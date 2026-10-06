@@ -1018,7 +1018,16 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawM
 	//     expansions are flowsh's domain, not the symlink gate's).
 	judgeOutcome := judgeToolCall(ctx, tool, input)
 	symlinkReason, symlinkCode := r.symlinkHardReason(ctx, name, tool, input)
+	worktreeReason, worktreeCode := worktreeTraversalHardReason(ctx, input)
 	reasons := splitSafetyReasons(judgeOutcome, symlinkReason, symlinkCode)
+	// The managed-worktree traversal gate is an independent hard signal. It
+	// yields only to an already-canonical hard reason (judge control or
+	// symlink escape — every escalation is equivalent for the funnel); a
+	// non-canonical judge limitation (⊤) or a clean outcome lets the
+	// traversal reason through so it can never be silently cleared.
+	if worktreeReason != "" && !isCanonicalHardReason(reasons.hardCode) {
+		reasons.hard, reasons.hardCode = worktreeReason, worktreeCode
+	}
 
 	if policy == sdktools.PolicyAlwaysAllow {
 		// Hard reasons are security-control triggers (command blocklist, SSRF,
@@ -1902,7 +1911,8 @@ func isCanonicalHardReason(code sdktools.JudgeReasonCode) bool {
 		sdktools.ReasonCodeUnassessableURL,
 		sdktools.ReasonCodeUnassessablePath,
 		sdktools.ReasonCodeSymlinkEscape,
-		sdktools.ReasonCodeGitInternal:
+		sdktools.ReasonCodeGitInternal,
+		ReasonCodeManagedWorktreeTraversal:
 		return true
 	default:
 		return false

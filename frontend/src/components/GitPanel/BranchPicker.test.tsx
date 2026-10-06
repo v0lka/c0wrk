@@ -22,9 +22,20 @@ vi.mock('@/lib/logger', () => ({
   logger: { error: vi.fn() },
 }))
 
+// Focus actions (worktree switching) are mocked so tests never touch the backend.
+const { focusMocks } = vi.hoisted(() => ({
+  focusMocks: {
+    focusWorktree: vi.fn(),
+  },
+}))
+
+vi.mock('@/lib/gitFocus', () => focusMocks)
+
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { BranchPicker } from './BranchPicker'
+import { focusWorktree } from '@/lib/gitFocus'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
+import { useSessionDraftStore } from '@/stores/sessionDraftStore'
 import { useProjectStore } from '@/stores/projectStore'
 
 let container: HTMLDivElement
@@ -416,5 +427,220 @@ describe('BranchPicker', () => {
     // Radix Dialog's deferred Presence mount.
     expect(body().textContent).toContain('Base:')
     expect(body().textContent).toContain('abc1234deadbeef')
+  })
+})
+
+describe('BranchPicker — worktree focus switcher', () => {
+  beforeEach(() => {
+    focusMocks.focusWorktree.mockReset()
+    focusMocks.focusWorktree.mockResolvedValue(undefined)
+  })
+
+  it('hides the Worktrees section when the project has no worktrees', async () => {
+    useGitPanelStore.getState().setWorktrees([])
+    renderPicker()
+    await flush()
+
+    expect(body().textContent).not.toContain('Worktrees')
+  })
+
+  it('lists every worktree (including the local checkout) and switches the focus on selection', async () => {
+    useGitPanelStore.getState().setWorktrees([
+      {
+        path: '/repo', name: 'repo', kind: 'main', branch: 'main', head: 'a',
+        managed: false, pinned: false, is_focus: false,
+      },
+      {
+        path: '/repo/.worktrees/s-abc12345', name: 's-abc12345', kind: 'managed',
+        branch: 'sess/s-abc12345', head: 'b', managed: true, pinned: true,
+        is_focus: true, session_id: 'sess-1', session_name: 'Refactor loop',
+      },
+      {
+        path: '/elsewhere/ext', name: 'ext', kind: 'external', branch: 'ext-branch',
+        head: 'c', managed: false, pinned: false, is_focus: false,
+      },
+    ])
+    renderPicker()
+    await flush()
+
+    const rows = Array.from(body().querySelectorAll<HTMLButtonElement>('[data-testid="worktree-row"]'))
+    expect(rows).toHaveLength(3)
+    expect(body().textContent).toContain('Worktrees')
+    expect(body().textContent).toContain('Local checkout')
+    expect(body().textContent).toContain('Refactor loop')
+
+    await act(async () => {
+      rows[0]!.click()
+    })
+    await flush()
+
+    expect(focusWorktree).toHaveBeenCalledTimes(1)
+    expect(focusWorktree).toHaveBeenCalledWith('/repo')
+    // Selecting a worktree closes the switch-branch dialog.
+    expect(useGitPanelStore.getState().isBranchPickerOpen).toBe(false)
+  })
+})
+
+describe('BranchPicker — session-draft mode (select/create for a managed worktree)', () => {
+  /**
+   * Open the picker in DRAFT mode with a standard branch fixture:
+   * `main` is the working tree's current branch, `feat/a` + `feat/b` are
+   * free local branches, `origin/feat/remote` is a remote branch.
+   */
+  async function openDraftPicker() {
+    gitMocks.getBranches.mockResolvedValue([
+      { name: 'main', is_current: true, kind: 'local', upstream: '' },
+      { name: 'feat/a', is_current: false, kind: 'local', upstream: '' },
+      { name: 'feat/b', is_current: false, kind: 'local', upstream: '' },
+      { name: 'origin/feat/remote', is_current: false, kind: 'remote', upstream: '' },
+    ])
+    useGitPanelStore.getState().openBranchPicker('draft')
+    renderPicker()
+    await flush()
+  }
+
+  beforeEach(() => {
+    useSessionDraftStore.getState().startDraft('p1')
+    // The shared focus mock carries call history from the earlier describes.
+    focusMocks.focusWorktree.mockReset()
+    focusMocks.focusWorktree.mockResolvedValue(undefined)
+  })
+
+  it('select-existing intent: records the branch in the draft, never checks out', async () => {
+    await openDraftPicker()
+
+    const row = branchRow('feat/a')!
+    expect(row).toBeDefined()
+    await act(async () => {
+      row.click()
+    })
+    await flush()
+
+    expect(useSessionDraftStore.getState().draft?.workspace).toEqual({
+      kind: 'branch',
+      branch: 'feat/a',
+      createBranch: false,
+      startPoint: '',
+    })
+    // NO in-place checkout side effect: no git mutation ran at pick time —
+    // provisioning happens at draft commit via CreateManagedSession.
+    expect(gitMocks.checkoutBranch).not.toHaveBeenCalled()
+    expect(gitMocks.createBranch).not.toHaveBeenCalled()
+    expect(gitMocks.checkoutRemoteBranch).not.toHaveBeenCalled()
+    expect(focusWorktree).not.toHaveBeenCalled()
+    // Selection closes the picker.
+    expect(useGitPanelStore.getState().isBranchPickerOpen).toBe(false)
+  })
+
+  it('marks the already-picked branch and keeps the picker open while it loads', async () => {
+    useSessionDraftStore
+      .getState()
+      .setDraftWorkspace({ kind: 'branch', branch: 'feat/b', createBranch: false, startPoint: '' })
+    await openDraftPicker()
+
+    expect(body().textContent).toContain('Choose Branch')
+    expect(branchRow('feat/b')!.getAttribute('aria-current')).toBe('true')
+    expect(branchRow('feat/a')!.getAttribute('aria-current')).toBeNull()
+    expect(useGitPanelStore.getState().isBranchPickerOpen).toBe(true)
+  })
+
+  it('disables the working tree\'s own branch — a managed worktree needs a free branch', async () => {
+    await openDraftPicker()
+
+    const row = branchRow('main')!
+    expect(row.className).toContain('cursor-not-allowed')
+    await act(async () => {
+      row.click()
+    })
+    await flush()
+
+    // The draft stays local and the picker stays open (no selection made).
+    expect(useSessionDraftStore.getState().draft?.workspace).toEqual({ kind: 'local' })
+    expect(useGitPanelStore.getState().isBranchPickerOpen).toBe(true)
+  })
+
+  it('create-new intent: records the drafted branch instead of CreateBranch + checkout', async () => {
+    await openDraftPicker()
+
+    const input = Array.from(body().querySelectorAll<HTMLInputElement>('input')).find((i) => i.placeholder === 'branch-name')!
+    act(() => {
+      setInputValue(input, 'feat/drafted')
+    })
+    const newButton = allButtons().find((b) => b.textContent?.trim() === 'New')!
+    await act(async () => {
+      newButton.click()
+    })
+    await flush()
+
+    expect(useSessionDraftStore.getState().draft?.workspace).toEqual({
+      kind: 'branch',
+      branch: 'feat/drafted',
+      createBranch: true,
+      startPoint: '',
+    })
+    // The branch is created at draft commit inside the session's managed
+    // worktree — NOT here via an in-place CreateBranch/checkout.
+    expect(gitMocks.createBranch).not.toHaveBeenCalled()
+    expect(gitMocks.checkoutBranch).not.toHaveBeenCalled()
+    expect(useGitPanelStore.getState().isBranchPickerOpen).toBe(false)
+  })
+
+  it('create-new intent: carries the chosen base as the start point', async () => {
+    gitMocks.getBranchBases.mockResolvedValue([
+      { ref: 'main', label: 'main' },
+      { ref: 'v1.0.0', label: 'tag: v1.0.0' },
+    ])
+    // Preselect a base the way the history context menu does — the section
+    // opens with the base selector expanded and the ref picked.
+    useGitPanelStore.getState().setPendingBranchBase('v1.0.0')
+    await openDraftPicker()
+
+    const input = Array.from(body().querySelectorAll<HTMLInputElement>('input')).find((i) => i.placeholder === 'branch-name')!
+    act(() => {
+      setInputValue(input, 'feat/from-base')
+    })
+    const newButton = allButtons().find((b) => b.textContent?.trim() === 'New')!
+    await act(async () => {
+      newButton.click()
+    })
+    await flush()
+
+    expect(useSessionDraftStore.getState().draft?.workspace).toEqual({
+      kind: 'branch',
+      branch: 'feat/from-base',
+      createBranch: true,
+      startPoint: 'v1.0.0',
+    })
+  })
+
+  it('hides remote branches and the worktrees section in draft mode', async () => {
+    useGitPanelStore.getState().setWorktrees([
+      {
+        path: '/repo', name: 'repo', kind: 'main', branch: 'main', head: 'a',
+        managed: false, pinned: false, is_focus: false,
+      },
+    ])
+    await openDraftPicker()
+
+    expect(branchRow('origin/feat/remote')).toBeUndefined()
+    expect(body().textContent).not.toContain('Remote')
+    expect(body().textContent).not.toContain('Worktrees')
+  })
+
+  it('closing the picker resets the mode — the next Git-panel open is a switch intent', async () => {
+    await openDraftPicker()
+    act(() => {
+      useGitPanelStore.getState().closeBranchPicker()
+    })
+    // Radix settles the dialog's exit asynchronously — flush inside act so
+    // the deferred state update is not an unwrapped act warning.
+    await flush()
+    expect(useGitPanelStore.getState().branchPickerMode).toBe('switch')
+
+    act(() => {
+      useGitPanelStore.getState().openBranchPicker()
+    })
+    await flush()
+    expect(useGitPanelStore.getState().branchPickerMode).toBe('switch')
   })
 })

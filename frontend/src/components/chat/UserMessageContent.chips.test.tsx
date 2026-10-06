@@ -62,12 +62,12 @@ describe('UserMessageContent /-ref chips', () => {
     const [agentChip, skillChip, mcpChip] = chips(container)
     expect(agentChip).toBeDefined()
     expect(agentChip!.textContent).toBe('/agent: code-reviewer')
-    // Agent chips carry the highlight color; skill chips the plain chip box;
-    // mcp chips the info color.
+    // Agent chips carry the highlight (yellow) color; skill chips the success
+    // (green) color; mcp chips the info (blue) color.
     expect(agentChip!.getAttribute('style')).toContain('--color-highlight')
     expect(skillChip).toBeDefined()
     expect(skillChip!.textContent).toBe('/skill: study-paper')
-    expect(skillChip!.className).toContain('bg-background')
+    expect(skillChip!.getAttribute('style')).toContain('--color-success')
     expect(mcpChip).toBeDefined()
     expect(mcpChip!.textContent).toBe('/mcp: context7')
     expect(mcpChip!.getAttribute('style')).toContain('--color-info')
@@ -117,14 +117,13 @@ describe('UserMessageContent /-ref chips', () => {
     expect(resolved.every((c) => c.className.includes('text-muted-foreground'))).toBe(true)
 
     // Catalogs settle → chips upgrade to their resolved kind (agent colored,
-    // skill boxed, mcp info-colored, unknown stays neutral).
+    // skill green-colored, mcp info-colored, unknown stays neutral).
     await act(async () => {
       await Promise.resolve()
     })
     resolved = resolve()
     expect(resolved[0]!.getAttribute('style')).toContain('--color-highlight')
-    expect(resolved[1]!.className).toContain('bg-background')
-    expect(resolved[1]!.className).not.toContain('text-muted-foreground')
+    expect(resolved[1]!.getAttribute('style')).toContain('--color-success')
     expect(resolved[2]!.getAttribute('style')).toContain('--color-info')
     expect(resolved[3]!.className).toContain('text-muted-foreground')
 
