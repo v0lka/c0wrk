@@ -237,6 +237,16 @@ type Config struct {
 	// PauseChecker is a cooperative pause signal checked once per step
 	// boundary; a true return stops the loop with ErrPaused.
 	PauseChecker func(ctx context.Context) bool
+	// ToolCallTimeout, when positive, bounds a SINGLE action's tool call. The
+	// dispatch watchdog abandons its wait for Registry.Execute after this
+	// duration and the run fails with an error wrapping ErrToolTimeout (naming
+	// the tool), so a stuck tool cannot block the E2S loop indefinitely — the
+	// exact bound the sp4rk executor installs via SetToolCallTimeout. Pause and
+	// cancellation stay observable while the tool is in flight (the watchdog
+	// polls PauseChecker and selects on ctx.Done()). Zero (the default)
+	// disables the bound, preserving the pre-watchdog behavior. Mirrors the
+	// host's timeouts.toolCallTimeout.
+	ToolCallTimeout time.Duration
 	// Logger; nil → slog.Default().
 	Logger *slog.Logger
 }
@@ -546,8 +556,34 @@ func (l *Loop) Run(ctx context.Context) (*Result, error) {
 			continue
 		}
 
-		// Dispatch the action through the registry (all security gates).
-		step := l.dispatch(ctx, turn, res.thought, res.call)
+		// Dispatch the action through the registry (all security gates). The
+		// dispatch watchdog can interrupt a stuck tool call: a cooperative
+		// pause observed in flight returns ErrPaused (a resumable checkpoint),
+		// a call exceeding cfg.ToolCallTimeout returns ErrToolTimeout (a
+		// terminal failure naming the tool), and cancellation returns ctx.Err().
+		// The incomplete action is NOT appended to the trajectory: a
+		// paused/timed-out tool's side effects are unknown (it keeps running in
+		// its detached goroutine), so it must not enter the resumable steps.
+		step, dispatchErr := l.dispatch(ctx, turn, res.thought, res.call)
+		if dispatchErr != nil {
+			// A pause that tripped while the tool was in flight: mirror the
+			// step-boundary pause — a recoverable checkpoint carrying the
+			// trajectory so far (the current turn's Σ patch is already applied
+			// and rides in `state`).
+			if errors.Is(dispatchErr, ErrPaused) {
+				return l.checkpoint(RunStatusPaused, state, turn-1, steps), ErrPaused
+			}
+			// Cancellation surfaced inside the tool call (the watchdog returns
+			// ctx.Err()): checkpoint the run as canceled (non-terminal,
+			// resumable) rather than a failure that would drop the Σ.
+			if err := ctx.Err(); err != nil {
+				return l.checkpoint(RunStatusCanceled, state, turn-1, steps), err
+			}
+			// A tool that exceeded its per-call ceiling (errors.Is-matchable
+			// against ErrToolTimeout): terminal failure — the run returns
+			// promptly instead of hanging on the stuck tool.
+			return l.checkpoint(RunStatusFailed, state, turn-1, steps), dispatchErr
+		}
 		steps = append(steps, step)
 		l.syncTrajectory(steps)
 		observation = step.Observation
@@ -714,7 +750,13 @@ func (l *Loop) reportResponse(turn int, res stepResult, emitAnswer bool) {
 // configured a verify-on-edit runner, the verification note is appended to
 // the observation exactly as the executor appends it to the group's last
 // observation.
-func (l *Loop) dispatch(ctx context.Context, turn int, thought string, call StepCall) agent.Step {
+//
+// A non-nil error is NOT a tool failure (those become error observations): it
+// is a watchdog signal — ErrPaused (a cooperative pause observed while the
+// tool was in flight) or an error wrapping ErrToolTimeout (the tool exceeded
+// Config.ToolCallTimeout) — that Run unwinds into the matching checkpoint, or a
+// context cancellation. The step is returned zero on those paths.
+func (l *Loop) dispatch(ctx context.Context, turn int, thought string, call StepCall) (agent.Step, error) {
 	argsPreview := strutil.TruncateUTF8(compactJSON(call.Action.Args), 200)
 	l.emit(func(e Emitter) { e.ToolCall(turn, 0, call.Action.Tool, argsPreview, l.toolSource(call.Action.Tool)) })
 
@@ -750,10 +792,18 @@ func (l *Loop) dispatch(ctx context.Context, turn int, thought string, call Step
 				// form always errors): each sub-call dispatches through the
 				// same registry path, inheriting every security gate.
 				var rawJoined string
-				observation, isError, rawJoined, editSucceeded = l.dispatchBatch(ctx, call.Action.Args)
+				var dispatchErr error
+				observation, isError, rawJoined, editSucceeded, dispatchErr = l.dispatchBatch(ctx, call.Action.Args)
+				if dispatchErr != nil {
+					return agent.Step{}, dispatchErr
+				}
 				rawPreview = rawJoined
 			} else {
-				observation, isError = l.executeSingle(ctx, call.Action.Tool, call.Action.Args)
+				var dispatchErr error
+				observation, isError, dispatchErr = l.executeSingle(ctx, call.Action.Tool, call.Action.Args)
+				if dispatchErr != nil {
+					return agent.Step{}, dispatchErr
+				}
 				rawPreview = observation
 				editSucceeded = !isError && agent.IsFileEditTool(call.Action.Tool)
 			}
@@ -813,7 +863,7 @@ func (l *Loop) dispatch(ctx context.Context, turn int, thought string, call Step
 		Action:      llm.ToolCall{ID: call.ID, Name: call.Action.Tool, Input: call.Action.Args},
 		Observation: truncated,
 		IsError:     isError,
-	}
+	}, nil
 }
 
 // toolSource resolves the tool-call event source: "core" for built-ins, the
@@ -831,20 +881,30 @@ func (l *Loop) toolSource(name string) string {
 	return "core"
 }
 
-// executeSingle runs one tool call through the registry and returns the raw
-// observation plus its error flag (registry errors and IsError results both
-// surface as error observations). Untrusted wrapping is NOT applied here —
-// the caller decides (single dispatch wraps the whole observation; batch
+// executeSingle runs one tool call through the bounded dispatch watchdog and
+// returns the raw observation plus its error flag (registry errors and IsError
+// results both surface as error observations). Untrusted wrapping is NOT applied
+// here — the caller decides (single dispatch wraps the whole observation; batch
 // wraps each sub-result individually).
-func (l *Loop) executeSingle(ctx context.Context, tool string, args json.RawMessage) (string, bool) {
-	result, err := l.registry.Execute(ctx, tool, args)
+//
+// A non-nil third return is a watchdog signal, not a tool failure: ErrPaused
+// (a cooperative pause observed while the tool was in flight) or an error
+// wrapping ErrToolTimeout (the call exceeded Config.ToolCallTimeout, named with
+// the tool). Both unwind the whole action to the loop's checkpoint; the
+// observation/flag are meaningless on that path.
+func (l *Loop) executeSingle(ctx context.Context, tool string, args json.RawMessage) (observation string, isError bool, dispatchErr error) {
+	result, err := l.executeToolCall(ctx, tool, args)
 	switch {
+	case errors.Is(err, ErrPaused):
+		return "", true, ErrPaused
+	case errors.Is(err, ErrToolTimeout):
+		return "", true, fmt.Errorf("tool %q: %w", tool, ErrToolTimeout)
 	case err != nil:
-		return fmt.Sprintf("tool execution error: %v", err), true
+		return fmt.Sprintf("tool execution error: %v", err), true, nil
 	case result.IsError:
-		return result.Content, true
+		return result.Content, true, nil
 	default:
-		return result.Content, false
+		return result.Content, false, nil
 	}
 }
 
@@ -852,13 +912,16 @@ func (l *Loop) executeSingle(ctx context.Context, tool string, args json.RawMess
 // sub-call runs the full single-dispatch path — schema validation (against
 // the sub-tool's own schema), registry execution with every security gate,
 // and per-sub-call untrusted wrapping by tool class — and the numbered
-// results are joined into one observation. Per-call errors never abort the
-// batch (mirroring the executor's batch semantics); nested batch and the
+// results are joined into one observation. Per-call tool FAILURES never abort
+// the batch (mirroring the executor's batch semantics); nested batch and the
 // E2S envelope targets (e2s_step, finish) are rejected fail-closed: finish
 // must stay a top-level action or the loop's finish interception could be
 // bypassed. Returns the wrapped observation, its error flag, the raw
-// pre-wrap join (UI preview), and whether any file edit succeeded.
-func (l *Loop) dispatchBatch(ctx context.Context, args json.RawMessage) (observation string, anyError bool, rawJoined string, editSucceeded bool) {
+// pre-wrap join (UI preview), whether any file edit succeeded, and a watchdog
+// error (ErrPaused / ErrToolTimeout) that aborts the whole action — the batch
+// is a single E2S action, so an in-flight pause or a timed-out sub-call unwinds
+// it wholesale rather than emitting a partial observation.
+func (l *Loop) dispatchBatch(ctx context.Context, args json.RawMessage) (observation string, anyError bool, rawJoined string, editSucceeded bool, dispatchErr error) {
 	var input struct {
 		Calls []struct {
 			Tool  string          `json:"tool"`
@@ -866,10 +929,10 @@ func (l *Loop) dispatchBatch(ctx context.Context, args json.RawMessage) (observa
 		} `json:"calls"`
 	}
 	if err := json.Unmarshal(args, &input); err != nil {
-		return "batch parse error: " + err.Error(), true, "", false
+		return "batch parse error: " + err.Error(), true, "", false, nil //nolint:nilerr // a malformed batch envelope becomes an error observation, not a run-terminating error
 	}
 	if len(input.Calls) == 0 {
-		return "batch: no calls provided (empty calls array)", true, "", false
+		return "batch: no calls provided (empty calls array)", true, "", false, nil
 	}
 
 	// sb carries the model-facing join (each untrusted sub-result wrapped);
@@ -903,7 +966,13 @@ func (l *Loop) dispatchBatch(ctx context.Context, args json.RawMessage) (observa
 				continue
 			}
 		}
-		content, subErr := l.executeSingle(ctx, sub.Tool, sub.Input)
+		content, subErr, execErr := l.executeSingle(ctx, sub.Tool, sub.Input)
+		if execErr != nil {
+			// Watchdog signal (pause/timeout) mid-batch: unwind the whole
+			// action to the loop's checkpoint. A per-call tool FAILURE (subErr)
+			// stays a per-call result and does not abort the batch.
+			return "", true, "", false, execErr
+		}
 		if subErr {
 			anyError = true
 		} else if agent.IsFileEditTool(sub.Tool) {
@@ -918,7 +987,7 @@ func (l *Loop) dispatchBatch(ctx context.Context, args json.RawMessage) (observa
 		raw.WriteString(rawContent)
 		raw.WriteString("\n\n")
 	}
-	return strings.TrimRight(sb.String(), "\n"), anyError, strings.TrimRight(raw.String(), "\n"), editSucceeded
+	return strings.TrimRight(sb.String(), "\n"), anyError, strings.TrimRight(raw.String(), "\n"), editSucceeded, nil
 }
 
 // emitState publishes the full Σ + turn snapshot via the optional

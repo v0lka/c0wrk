@@ -53,6 +53,9 @@ type Config struct {
 	Search     SearchConfig     `yaml:"search"`
 	ToolLimits ToolLimitsConfig `yaml:"toolLimits"`
 	Timeouts   TimeoutsConfig   `yaml:"timeouts"`
+	// Shutdown bounds the application teardown so that a stuck goroutine can
+	// never leave the process alive on quit. See ShutdownConfig.
+	Shutdown ShutdownConfig `yaml:"shutdown"`
 	// ShellExec overrides the shell-execution tool's launch shape
 	// (bash_exec on Unix, posh_exec on Windows) and declares the shell the
 	// command text is written in. Zero value = built-in launch shape; load
@@ -2230,6 +2233,12 @@ type ToolLimitsConfig struct {
 	// Search limits
 	WebSearchMaxResults int `yaml:"webSearchMaxResults"` // max web search results (default: 5)
 
+	// Glob limits (runaway-walk protection). Together they make a single glob
+	// walk bounded so a symlink loop or an enormous directory tree can neither
+	// hang the tool nor exhaust memory.
+	GlobMaxEntries int `yaml:"globMaxEntries"` // max filesystem entries visited per glob walk before abort (0 = no entry budget; default: 500000)
+	GlobMaxResults int `yaml:"globMaxResults"` // max matching paths collected per glob walk before abort (0 = unlimited; default: 10000)
+
 	// Per-tool Stage 1 truncation defaults (line/byte-based, applied before token budget).
 	// If omitted for a tool, no Stage 1 truncation is applied.
 	PerToolTruncation map[string]ToolTruncationConfig `yaml:"perToolTruncation"`
@@ -2246,6 +2255,8 @@ type TimeoutsConfig struct {
 	BashMaxTimeout           int `yaml:"bashMaxTimeout"`           // seconds, default: 120
 	BashWaitDelay            int `yaml:"bashWaitDelay"`            // seconds, default: 5
 	RipgrepTimeout           int `yaml:"ripgrepTimeout"`           // seconds, default: 60
+	GlobTimeout              int `yaml:"globTimeout"`              // seconds, default: 30 — wall-clock budget for a single glob walk (0 disables)
+	ToolCallTimeout          int `yaml:"toolCallTimeout"`          // seconds, default: 300 (5 min) — ceiling for a SINGLE tool call in the ReAct loop, applied to the main and every subagent executor (0 disables)
 	WebFetchTimeout          int `yaml:"webFetchTimeout"`          // seconds, default: 30
 	WebFetchProxyTimeout     int `yaml:"webFetchProxyTimeout"`     // seconds, default: 30 — per-attempt web fetch timeout used when the proxy is enabled
 	WebFetchRetries          int `yaml:"webFetchRetries"`          // retry count (not seconds) for failed web fetches; each retry doubles the active timeout (webFetchTimeout, or webFetchProxyTimeout when the proxy is on), default: 2
@@ -2257,6 +2268,29 @@ type TimeoutsConfig struct {
 	// AdaptiveBudget configures the adaptive per-model LLM request budget
 	// (ADR-071). See AdaptiveBudgetConfig.
 	AdaptiveBudget AdaptiveBudgetConfig `yaml:"adaptive_budget"`
+}
+
+// ShutdownConfig bounds the application teardown. Every teardown step is
+// individually bounded (task-goroutine joins, background-goroutine joins,
+// blackboard persistence workers all share the manager's stopTimeout), but a
+// cancellation path that is broken somewhere can still, in principle, park the
+// main thread. The desktop layer therefore arms one hard watchdog over the
+// whole teardown: when it expires the process logs at Error and forces an exit,
+// so a silent "application shutdown: complete" that never appears (the app
+// beach-balls until it is killed) is impossible.
+type ShutdownConfig struct {
+	// HardDeadline is the total budget, in seconds, for the whole Shutdown
+	// teardown. When exceeded the desktop layer logs at Error and exits the
+	// process immediately. 0 / omitted = default 20.
+	//
+	// Note for operators running the embedded local model: the embedded-server
+	// stop is itself bounded but has a larger legitimate ceiling (up to ~46 s
+	// when a quit races an in-flight cold load holding the supervisor gate).
+	// A hardDeadline shorter than that truncates that stop — the process still
+	// exits, but the detached llama-server may outlive it, exactly the one
+	// quit outcome the embedded teardown cannot otherwise produce. Raise this
+	// above the embedded stop ceiling if that matters on your machine.
+	HardDeadline int `yaml:"hardDeadline"`
 }
 
 // AdaptiveBudgetConfig holds the adaptive per-model LLM request budget

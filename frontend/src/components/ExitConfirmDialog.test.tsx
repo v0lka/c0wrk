@@ -106,6 +106,21 @@ describe('ExitConfirmDialog — plain quit', () => {
     expect(bodyText()).toContain('Quit anyway')
   })
 
+  it('flags a hung session as not responding', () => {
+    renderDialog()
+    act(() => {
+      useExitGuardStore
+        .getState()
+        .present([{ id: 'sess-1', name: 'Stuck', compacting: false, hung: true }], false)
+    })
+
+    // The session row is labelled distinctly and the summary calls it out, so
+    // "quit anyway" is an informed choice.
+    expect(bodyText()).toContain('not responding')
+    expect(bodyText()).toContain('Some sessions are not responding to a stop request.')
+    expect(bodyText()).not.toContain('running task')
+  })
+
   it('renders nothing while closed', () => {
     renderDialog()
 

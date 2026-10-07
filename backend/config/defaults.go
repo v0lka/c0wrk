@@ -338,6 +338,13 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.ToolLimits.WebSearchMaxResults == 0 {
 		cfg.ToolLimits.WebSearchMaxResults = 5
 	}
+	// Glob limits (runaway-walk protection): mirrors builtins.DefaultGlobLimits.
+	if cfg.ToolLimits.GlobMaxEntries == 0 {
+		cfg.ToolLimits.GlobMaxEntries = 500000
+	}
+	if cfg.ToolLimits.GlobMaxResults == 0 {
+		cfg.ToolLimits.GlobMaxResults = 10000
+	}
 
 	// Per-tool Stage 1 truncation defaults (applied before token budget).
 	// These limits trigger output fragmentation: when tool output exceeds the
@@ -367,6 +374,12 @@ func ApplyDefaults(cfg *Config) {
 	}
 	if cfg.Timeouts.RipgrepTimeout == 0 {
 		cfg.Timeouts.RipgrepTimeout = 60
+	}
+	if cfg.Timeouts.GlobTimeout == 0 {
+		cfg.Timeouts.GlobTimeout = 30
+	}
+	if cfg.Timeouts.ToolCallTimeout == 0 {
+		cfg.Timeouts.ToolCallTimeout = 300
 	}
 	if cfg.Timeouts.WebFetchTimeout == 0 {
 		cfg.Timeouts.WebFetchTimeout = 30
@@ -399,6 +412,13 @@ func ApplyDefaults(cfg *Config) {
 	}
 	if cfg.Timeouts.GitCommitTimeout == 0 {
 		cfg.Timeouts.GitCommitTimeout = 300
+	}
+
+	// Shutdown defaults: the hard teardown watchdog. It is the last-resort
+	// bound so the process always exits; a broken cancellation path that
+	// ignores the per-step budgets must not keep the app alive forever.
+	if cfg.Shutdown.HardDeadline == 0 {
+		cfg.Shutdown.HardDeadline = 20
 	}
 
 	// Orchestration defaults

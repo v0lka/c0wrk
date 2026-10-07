@@ -23,8 +23,11 @@ import { confirmExit } from '@/api/runtime'
 import { logger } from '@/lib/logger'
 import { useExitGuardStore } from '@/stores/exitGuardStore'
 
-/** Human label for one active session's live work. */
-function sessionActivityLabel(compacting: boolean): string {
+/** Human label for one active session's live work. A hung session (a
+ *  stop/pause was requested but the task goroutine has not answered) is called
+ *  out distinctly so "quit anyway" is an informed choice. */
+function sessionActivityLabel(compacting: boolean, hung: boolean): string {
+  if (hung) return 'not responding'
   return compacting ? 'compacting context' : 'running task'
 }
 
@@ -50,6 +53,7 @@ export function ExitConfirmDialog() {
 
   const count = sessions.length
   const hasList = count > 0
+  const hungCount = sessions.filter((s) => s.hung === true).length
 
   // On success the app quits (the window goes away with it); on failure the
   // modal stays open with the error rendered inline so the user can retry or
@@ -84,6 +88,9 @@ export function ExitConfirmDialog() {
                 {hasList
                   ? sessionsSummary(count)
                   : 'Some sessions are still working. Quitting now may interrupt them.'}
+                {hungCount > 0
+                  ? ' Some sessions are not responding to a stop request.'
+                  : ''}
                 {updatePending
                   ? ' The staged update will be installed and c0wrk will restart.'
                   : ' Unfinished work cannot be resumed after the app closes.'}
@@ -102,8 +109,12 @@ export function ExitConfirmDialog() {
                 <span className="min-w-0 truncate" title={s.name || s.id}>
                   {s.name || s.id}
                 </span>
-                <span className="shrink-0 text-xs text-muted-foreground">
-                  {sessionActivityLabel(s.compacting)}
+                <span
+                  className={`shrink-0 text-xs ${
+                    s.hung === true ? 'text-warning' : 'text-muted-foreground'
+                  }`}
+                >
+                  {sessionActivityLabel(s.compacting, s.hung === true)}
                 </span>
               </li>
             ))}

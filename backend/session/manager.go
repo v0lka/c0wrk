@@ -91,6 +91,7 @@ type Session struct {
 	active              bool               // is currently processing
 	pausing             bool               // pause requested: the running task is on its way to a cooperative pause checkpoint (guarded by mu)
 	pauseOwner          pauseOwner         // who requested the in-flight/latest pause: the user or the manual-compaction flow (guarded by mu); the flow's auto-resume resumes only its own pause
+	stopRequestedAt     time.Time          // when a user-visible stop (CancelTask) or pause (PauseSession) was requested for the running task (guarded by mu); zero when none is pending. Reset when the task settles and when a new task launches. ActiveSessions uses it to flag a session that has not answered the request as hung, so "quit anyway" is an informed choice.
 	done                chan struct{}      // closed when task goroutine finishes
 	compacting          bool               // manual context compaction in flight: sends/resumes rejected, UI locked (guarded by mu)
 	compactCancel       context.CancelFunc // cancels the in-flight manual compaction (guarded by mu)
@@ -464,6 +465,20 @@ func (m *Manager) stopBackground() {
 		}
 		m.log().Info("shutdown: blackboard persistence workers stopped",
 			"blackboards", len(blackboards), "ms", time.Since(bbStart).Milliseconds())
+
+		// The re-drain exists because a task goroutine whose join timed out
+		// above may still restore a blackboard and register it AFTER the
+		// snapshot was taken. A straggler that keeps (re-)registering must not
+		// spin this loop forever: once the single shared deadline has passed,
+		// abandon whatever is left with a WARN instead of looping. The batch
+		// just drained was already stopped with whatever budget remained (a
+		// non-positive remainder makes pb.Shutdown return immediately), so the
+		// loop is bounded by the same stopTimeout as every other wait.
+		if time.Now().After(deadline) {
+			m.log().Warn("shutdown: blackboard drain deadline exceeded; abandoning late-registered persistence workers",
+				"blackboards", len(blackboards), "ms", time.Since(bgStart).Milliseconds())
+			return
+		}
 	}
 }
 

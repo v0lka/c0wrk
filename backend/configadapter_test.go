@@ -360,6 +360,49 @@ func TestToBuilderConfig_WebFetchTimeouts(t *testing.T) {
 	}
 }
 
+// TestToBuilderConfig_GlobLimitsAndToolCallTimeout verifies the config→builder
+// mapping for the glob budgets and the tool-call ceiling: toolLimits
+// globMaxEntries/globMaxResults and timeouts globTimeout/toolCallTimeout flow
+// into BuilderToolLimitsConfig / BuilderTimeoutsConfig, from where core builds
+// the glob tool's GlobLimits and threads the timeout to the executors.
+func TestToBuilderConfig_GlobLimitsAndToolCallTimeout(t *testing.T) {
+	cfg := &config.Config{}
+	config.ApplyDefaults(cfg)
+
+	bc := ToBuilderConfig(cfg, config.PredefinedModelProfiles())
+	if got := bc.ToolLimits.GlobMaxEntries; got != 500000 {
+		t.Errorf("GlobMaxEntries default = %d, want 500000", got)
+	}
+	if got := bc.ToolLimits.GlobMaxResults; got != 10000 {
+		t.Errorf("GlobMaxResults default = %d, want 10000", got)
+	}
+	if got := bc.Timeouts.GlobTimeout; got != 30 {
+		t.Errorf("GlobTimeout default = %d, want 30", got)
+	}
+	if got := bc.Timeouts.ToolCallTimeout; got != 300 {
+		t.Errorf("ToolCallTimeout default = %d, want 300", got)
+	}
+
+	cfg.ToolLimits.GlobMaxEntries = 123
+	cfg.ToolLimits.GlobMaxResults = 7
+	cfg.Timeouts.GlobTimeout = 11
+	cfg.Timeouts.ToolCallTimeout = 42
+
+	bc = ToBuilderConfig(cfg, config.PredefinedModelProfiles())
+	if got := bc.ToolLimits.GlobMaxEntries; got != 123 {
+		t.Errorf("GlobMaxEntries = %d, want 123", got)
+	}
+	if got := bc.ToolLimits.GlobMaxResults; got != 7 {
+		t.Errorf("GlobMaxResults = %d, want 7", got)
+	}
+	if got := bc.Timeouts.GlobTimeout; got != 11 {
+		t.Errorf("GlobTimeout = %d, want 11", got)
+	}
+	if got := bc.Timeouts.ToolCallTimeout; got != 42 {
+		t.Errorf("ToolCallTimeout = %d, want 42", got)
+	}
+}
+
 // TestE2SConfigExperimentalGate pins the fail-closed gate for the E2S
 // execution mode: core's BuilderE2SConfig.Enabled is exactly the experimental
 // master switch (there is no separate e2s toggle), while the numeric knobs

@@ -19,6 +19,7 @@ import (
 type BuiltinToolsConfig struct {
 	FileLimits      builtins.FileLimits
 	RipgrepLimits   builtins.RipgrepLimits
+	GlobLimits      builtins.GlobLimits
 	WebFetchLimits  builtins.WebFetchLimits
 	WebSearchLimits builtins.WebSearchLimits
 	BashTimeouts    builtins.BashTimeouts
@@ -125,7 +126,7 @@ func RegisterBuiltinTools(registry *ToolRegistry, cfg BuiltinToolsConfig) error 
 	}
 
 	// Glob and ripgrep
-	registry.Register(builtins.NewGlobTool())
+	registry.Register(builtins.NewGlobToolWithLimits(cfg.GlobLimits))
 	registry.Register(builtins.NewRipgrepToolWithLimits(cfg.RipgrepLimits))
 
 	// Tool result cache reader

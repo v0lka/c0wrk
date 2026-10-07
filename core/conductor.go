@@ -37,6 +37,17 @@ type trajectoryHolder struct {
 func (h *trajectoryHolder) Sync(steps []agent.Step) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	// A trajectory never shrinks to nothing: a freshly-started executor (e.g. a
+	// subagent that inherits this holder through the context) syncs its own
+	// still-empty step list at its first loop boundary. Letting that empty sync
+	// replace an already-populated trajectory would erase the task checkpoint
+	// the parent conductor had synced — violating the "the persisted trajectory
+	// never goes backwards" invariant and losing the checkpoint on
+	// shutdown/restart. An empty sync carries no information, so ignore it when
+	// a non-empty trajectory is already held.
+	if len(steps) == 0 && len(h.steps) > 0 {
+		return
+	}
 	h.steps = make([]agent.Step, len(steps))
 	copy(h.steps, steps)
 }
@@ -325,11 +336,15 @@ func (c *compositeTrajectoryStore) Sync(steps []agent.Step) {
 		return
 	}
 
-	// Defensive copy: the caller's slice is mutated across iterations, so the
-	// async writer needs its own snapshot. Shallow copy is safe under the
-	// immutability invariant documented above.
-	snapshot := make([]agent.Step, len(steps))
-	copy(snapshot, steps)
+	// Defensive copy of the *guarded* in-memory trajectory rather than the raw
+	// caller steps: the holder ignores a sync that would erase a populated
+	// trajectory with an empty one (a freshly-started subagent's first boundary
+	// sync), and the persisted snapshot must honor the same never-shrink
+	// invariant — otherwise a stale empty upsert could race ahead of the final
+	// Flush. Steps() returns the live slice, so copy it for the async writer.
+	effective := c.memory.Steps()
+	snapshot := make([]agent.Step, len(effective))
+	copy(snapshot, effective)
 
 	c.wg.Add(1)
 	c.mu.Unlock()
@@ -421,6 +436,13 @@ type conductorDeps struct {
 	maxParallelSubagents int
 	reasoningEffort      string
 	preWarningPct        int
+
+	// toolCallTimeout, when positive, bounds a SINGLE tool call in the ReAct
+	// loop. configureExecutor installs it on every subagent executor the
+	// launcher builds (SetToolCallTimeout) and the Conductor's own main
+	// executor receives it through ConductorConfig.ToolCallTimeout. 0 disables
+	// the bound. Mirrors the Orchestrator's config.ToolCallTimeout.
+	toolCallTimeout time.Duration
 
 	// lifecycle is the inline plan-step lifecycle tracker. It is created in
 	// RunConductor (from emitter + blackboard) and threaded in here so the
@@ -2322,6 +2344,12 @@ func (l *conductorLauncher) configureExecutor(executor *agent.Executor) {
 	if l.deps.reasoningEffort != "" {
 		executor.SetReasoningEffort(l.deps.reasoningEffort)
 	}
+	// Per-tool-call ceiling: a single tool call that blocks forever must not
+	// hang a subagent's ReAct loop. Mirrors the Conductor's
+	// ConductorConfig.ToolCallTimeout for the main executor (0 = disabled).
+	if l.deps.toolCallTimeout > 0 {
+		executor.SetToolCallTimeout(l.deps.toolCallTimeout)
+	}
 	// Mechanical edit verification (executor.verify_on_edit): subagent
 	// executors that perform file edits get the same hook as the main
 	// executor. RunConductor nils deps.verifyOnEdit for specialized goal
@@ -2862,6 +2890,7 @@ func RunConductor(
 		PendingUserInterjection:    deps.nudge,
 		PauseChecker:               deps.pauseChecker,
 		UserMessageSource:          deps.userMessageSource,
+		ToolCallTimeout:            deps.toolCallTimeout,
 		VerifyOnEdit:               deps.verifyOnEdit,
 		VerifyOnEditMaxOutputChars: deps.verifyOnEditMaxOutputChars,
 		StopTools:                  deps.stopTools,
@@ -3009,6 +3038,7 @@ func (o *Orchestrator) buildConductorDeps(conversationHistory []llm.Message, res
 		maxParallelSubagents: o.config.MaxParallelSubagents,
 		reasoningEffort:      o.currentReasoningEffort(),
 		preWarningPct:        o.config.PreWarningPercent,
+		toolCallTimeout:      o.config.ToolCallTimeout,
 		conversationHistory:  conversationHistory,
 		taskStore:            o.taskStore,
 		resumeSteps:          resumeSteps,

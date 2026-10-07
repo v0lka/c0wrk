@@ -351,12 +351,16 @@ func ToBuilderConfig(cfg *config.Config, modelProfilesCatalog []config.ModelProf
 		ToolLimits: core.BuilderToolLimitsConfig{
 			ReadDefaultLines:    cfg.ToolLimits.ReadDefaultLines,
 			WebSearchMaxResults: cfg.ToolLimits.WebSearchMaxResults,
+			GlobMaxEntries:      cfg.ToolLimits.GlobMaxEntries,
+			GlobMaxResults:      cfg.ToolLimits.GlobMaxResults,
 			PerToolTruncation:   convertTruncationMap(cfg.ToolLimits.PerToolTruncation),
 		},
 		Timeouts: core.BuilderTimeoutsConfig{
 			BashMaxTimeout:       cfg.Timeouts.BashMaxTimeout,
 			BashWaitDelay:        cfg.Timeouts.BashWaitDelay,
 			RipgrepTimeout:       cfg.Timeouts.RipgrepTimeout,
+			GlobTimeout:          cfg.Timeouts.GlobTimeout,
+			ToolCallTimeout:      cfg.Timeouts.ToolCallTimeout,
 			WebFetchTimeout:      cfg.Timeouts.WebFetchTimeout,
 			WebFetchProxyTimeout: cfg.Timeouts.WebFetchProxyTimeout,
 			WebFetchRetries:      cfg.Timeouts.WebFetchRetries,

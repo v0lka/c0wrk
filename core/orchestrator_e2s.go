@@ -564,6 +564,11 @@ func (o *Orchestrator) runE2SWithState(
 		// resolve through the dispatch context.
 		ToolCache:    deps.toolCache,
 		PauseChecker: deps.pauseChecker,
+		// Per-tool-call ceiling: the E2S loop has its own dispatch (it bypasses
+		// the sp4rk executor entirely), so it must thread the SAME bound the
+		// executor gets — a stuck action tool fails the run with ErrToolTimeout
+		// instead of hanging the loop. 0 disables the bound.
+		ToolCallTimeout: deps.toolCallTimeout,
 		// Conductor-parity knobs (review fix cycle): the resolved reasoning
 		// effort (per-message override / Model Profiles sampling), the
 		// config-gated injection-defense directive, the subagent prompt

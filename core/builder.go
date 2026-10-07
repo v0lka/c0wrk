@@ -692,6 +692,10 @@ func (b *OrchestratorBuilder) Build(
 		MaxDependencyContextChars: cfg.Orchestration.MaxDependencyContextChars,
 		MaxRedelegationDepth:      cfg.Orchestration.MaxRedelegationDepth,
 		MaxParallelSubagents:      cfg.Orchestration.MaxParallelSubagents,
+		// ToolCallTimeout bounds a SINGLE tool call in the ReAct loop (0 =
+		// disabled). Threaded to the Conductor (main executor) and every
+		// subagent executor via conductorDeps.toolCallTimeout.
+		ToolCallTimeout: time.Duration(cfg.Timeouts.ToolCallTimeout) * time.Second,
 		// OrchestratorConfig.Model is used for model METADATA resolution
 		// (ModelRegistry.Resolve keys on the bare model name), not for routing —
 		// so strip any provider prefix from the router's composite active model.
@@ -3240,6 +3244,11 @@ func configToBuiltinToolsConfig(cfg *BuilderConfig) tools.BuiltinToolsConfig {
 		},
 		RipgrepLimits: builtins.RipgrepLimits{
 			Timeout: time.Duration(cfg.Timeouts.RipgrepTimeout) * time.Second,
+		},
+		GlobLimits: builtins.GlobLimits{
+			MaxEntries: cfg.ToolLimits.GlobMaxEntries,
+			MaxResults: cfg.ToolLimits.GlobMaxResults,
+			Timeout:    time.Duration(cfg.Timeouts.GlobTimeout) * time.Second,
 		},
 		WebFetchLimits: builtins.WebFetchLimits{
 			Timeout: time.Duration(cfg.Timeouts.WebFetchTimeout) * time.Second,
