@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -110,14 +111,20 @@ func TestSeedWorktreeEmbeddingCache_CopiesEntriesAndSkipsWhenPresent(t *testing.
 	}
 	// Entry permissions must match the cache writer's (0o600 files): a
 	// world-readable vector is not a vulnerability, but a mode drift would
-	// silently diverge the seed from the cache's own put path.
-	for rel := range got {
-		info, statErr := os.Stat(filepath.Join(dst, rel))
-		if statErr != nil {
-			t.Fatal(statErr)
-		}
-		if info.Mode().Perm() != 0o600 {
-			t.Errorf("seeded entry %s mode = %v, want -rw-------", rel, info.Mode().Perm())
+	// silently diverge the seed from the cache's own put path. Windows
+	// persists only the read-only bit, so ModePerm there reports 0666 for
+	// a writable file no matter which perm O_CREATE requested — the copier
+	// passes the source's own mode through unchanged, but that is only
+	// observable on POSIX platforms.
+	if runtime.GOOS != "windows" {
+		for rel := range got {
+			info, statErr := os.Stat(filepath.Join(dst, rel))
+			if statErr != nil {
+				t.Fatal(statErr)
+			}
+			if info.Mode().Perm() != 0o600 {
+				t.Errorf("seeded entry %s mode = %v, want -rw-------", rel, info.Mode().Perm())
+			}
 		}
 	}
 	if !strings.Contains(logs.String(), "seeded worktree embedding cache from the project checkout") {
@@ -175,7 +182,10 @@ func TestSeedWorktreeEmbeddingCache_ToleratesIrregularSourceEntries(t *testing.T
 		t.Fatal(err)
 	}
 	got := cacheFileSet(t, dst)
-	if len(got) != 1 || got["ab/abcd0123456789ef.vec"] != "vector-1" {
+	// Keys are filepath.Rel results: fanout paths must be joined with the
+	// platform's own separator, never written as a literal slash.
+	entry := filepath.Join("ab", "abcd0123456789ef.vec")
+	if len(got) != 1 || got[entry] != "vector-1" {
 		t.Fatalf("seeded cache = %v, want exactly the one regular entry", got)
 	}
 	if strings.Contains(logs.String(), "seed incomplete") {
@@ -248,7 +258,8 @@ func TestForkManagedSession_SeedsWorktreeEmbeddingCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := cacheFileSet(t, dst)
-	if len(got) != 1 || got["ab/abcd0123456789ef.vec"] != "vector-1" {
+	entry := filepath.Join("ab", "abcd0123456789ef.vec")
+	if len(got) != 1 || got[entry] != "vector-1" {
 		t.Fatalf("fork cache = %v, want the seeded checkout entry", got)
 	}
 }
