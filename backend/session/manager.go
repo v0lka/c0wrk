@@ -91,6 +91,9 @@ type Session struct {
 	active              bool               // is currently processing
 	pausing             bool               // pause requested: the running task is on its way to a cooperative pause checkpoint (guarded by mu)
 	pauseOwner          pauseOwner         // who requested the in-flight/latest pause: the user or the manual-compaction flow (guarded by mu); the flow's auto-resume resumes only its own pause
+	stopRequestedAt     time.Time          // when a user-visible stop (CancelTask) was requested for the running task (guarded by mu); zero when none is pending. Reset when the task settles and when a new task launches. ActiveSessions uses it to flag a session that has not answered the stop as hung, so "quit anyway" is an informed choice.
+	terminalEmitted     bool               // the run's single terminal emission has been claimed (guarded by mu): forceTerminateStuckTask sets it when it emits the forced task_cancelled so the stuck goroutine, when it finally settles, skips its own duplicate emission. Reset when a NEW task launches (SendMessage/ResumeTask), not on settle — so a late force-terminate after the goroutine's own emission still observes the claim and cannot double-emit.
+	forceTerminated     bool               // this run was force-terminated by forceTerminateStuckTask (guarded by mu): its terminal event was emitted while the stuck goroutine was still running, so the goroutine has NOT yet run its own deferred deactivateSessionTask. A live message the user sends into that window arrived AFTER the cancel was reported and so belongs to the NEXT task — deactivateSessionTask keeps it queued instead of discarding it with the dead run. Cleared when the goroutine settles (deactivateSessionTask) and when a NEW task launches.
 	done                chan struct{}      // closed when task goroutine finishes
 	compacting          bool               // manual context compaction in flight: sends/resumes rejected, UI locked (guarded by mu)
 	compactCancel       context.CancelFunc // cancels the in-flight manual compaction (guarded by mu)
@@ -446,6 +449,7 @@ func (m *Manager) stopBackground() {
 		m.log().Warn("shutdown: slow background goroutine join", "ms", elapsed.Milliseconds())
 	}
 
+	drainPass := 0
 	for {
 		m.mu.Lock()
 		blackboards := m.blackboards
@@ -454,6 +458,7 @@ func (m *Manager) stopBackground() {
 		if len(blackboards) == 0 {
 			return
 		}
+		drainPass++
 		bbStart := time.Now()
 		for _, pb := range blackboards {
 			pbStart := time.Now()
@@ -464,6 +469,31 @@ func (m *Manager) stopBackground() {
 		}
 		m.log().Info("shutdown: blackboard persistence workers stopped",
 			"blackboards", len(blackboards), "ms", time.Since(bbStart).Milliseconds())
+
+		// The re-drain exists because a task goroutine whose join timed out
+		// above may still restore a blackboard and register it AFTER the
+		// snapshot was taken. A straggler that keeps (re-)registering must not
+		// spin this loop forever: once the single shared deadline has passed,
+		// abandon whatever is left with a WARN instead of looping. The batch
+		// just drained was already stopped with whatever budget remained (a
+		// non-positive remainder makes pb.Shutdown return immediately), so the
+		// loop is bounded by the same stopTimeout as every other wait.
+		//
+		// The deadline is SHARED with the background-goroutine join above, so a
+		// join that consumed the whole budget reaches here already expired. On
+		// the first pass the batch is therefore the ordinary set of persistence
+		// workers — not "late-registered" ones — so the message only says
+		// "late-registered" from the second pass on, where a blackboard really
+		// was registered after a snapshot.
+		if time.Now().After(deadline) {
+			reason := "persistence workers"
+			if drainPass > 1 {
+				reason = "late-registered persistence workers"
+			}
+			m.log().Warn("shutdown: blackboard drain deadline exceeded; abandoning "+reason,
+				"blackboards", len(blackboards), "ms", time.Since(bgStart).Milliseconds())
+			return
+		}
 	}
 }
 

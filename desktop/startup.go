@@ -293,6 +293,11 @@ func (a *App) Startup(ctx context.Context) {
 	configLoadErrors := resolved.LoadErrors
 	// agentDir and logDir are already computed in phase 0
 
+	// Arm the hard shutdown deadline from config now, before any teardown path
+	// can run. Shutdown reads it (shutdownDeadline()); a zero value falls back
+	// to the built-in default.
+	a.shutdownHardDeadline = time.Duration(cfg.Shutdown.HardDeadline) * time.Second
+
 	logLevel := cfg.LogLevel
 	log, sessionLogger = a.maybeReinitLogger(logLevel, sessionLogger, log, logDir)
 
@@ -579,6 +584,25 @@ func (a *App) Shutdown(ctx context.Context) {
 			"step", name,
 			"step_ms", time.Since(shutdownStart).Milliseconds())
 	}
+
+	// Arm one hard watchdog over the WHOLE teardown. Each step below is
+	// individually bounded, but a broken cancellation path must not be able to
+	// keep the process alive on quit. When the deadline expires the watchdog
+	// logs at Error and forces the process to exit, so the app always closes
+	// within a bounded time — the failure it prevents is the silent one where
+	// the session log ends at "blackboard persistence workers stopped" and
+	// "application shutdown: complete" never appears, so the user must kill the
+	// process. Disarmed by the deferred stop on every normal return.
+	// Route the forced exit through crashlog.ForceExit so a legitimate but
+	// forced quit still removes the liveness marker and writes its closing exit
+	// banner — the hooks main() runs on a normal return, which os.Exit here
+	// would skip (making the next launch misreport this quit as a crash).
+	shutdownExit := func() { crashlog.ForceExit(0) }
+	if a.shutdownExitFn != nil {
+		shutdownExit = func() { a.shutdownExitFn(0) }
+	}
+	watchdog := startShutdownWatchdog(a.shutdownDeadline(), a.log(), shutdownExit)
+	defer watchdog.stop()
 
 	// Make every quit visible in the session log: a Wails quit (window close
 	// button, Cmd+Q, updater-triggered quit) runs this hook, and without an

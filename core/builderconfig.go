@@ -709,6 +709,11 @@ type BuilderToolLimitsConfig struct {
 
 	WebSearchMaxResults int
 
+	// Glob limits (runaway-walk protection): max filesystem entries visited and
+	// max matching paths collected per glob walk (0 = unlimited for each).
+	GlobMaxEntries int
+	GlobMaxResults int
+
 	// Per-tool Stage 1 truncation (line/byte-based, applied before token budget).
 	PerToolTruncation map[string]BuilderToolTruncationConfig
 }
@@ -728,6 +733,8 @@ type BuilderTimeoutsConfig struct {
 	BashMaxTimeout       int
 	BashWaitDelay        int
 	RipgrepTimeout       int
+	GlobTimeout          int // seconds; wall-clock budget for a single glob walk (0 = no timeout)
+	ToolCallTimeout      int // seconds; ceiling for a single tool call in the ReAct loop (0 = disabled). Installed on the main conductor executor and every subagent executor.
 	WebFetchTimeout      int
 	WebFetchProxyTimeout int // seconds; per-attempt web fetch timeout when the proxy is enabled
 	WebFetchRetries      int // retry count (not seconds); each retry doubles the active web fetch timeout

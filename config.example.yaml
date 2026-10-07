@@ -1014,6 +1014,19 @@ toolLimits:
   # Search limits
   webSearchMaxResults: 5 # Max web search results
 
+  # --- Glob limits (runaway-walk protection) --------------------------------
+  # A single glob walk is bounded so a symlink loop or an enormous directory
+  # tree can neither hang the tool nor exhaust memory. globMaxEntries caps the
+  # filesystem entries visited (Open/ReadDir/Stat calls) before the walk aborts;
+  # globMaxResults caps the matching paths collected. The walk also honours
+  # timeouts.globTimeout.
+  #
+  # Omitting a key uses its default (500000 / 10000); an EXPLICIT 0 disables the
+  # respective budget (no entry cap / unlimited results). To disable the budget
+  # on purpose, write 0 — deleting the line returns to the default.
+  globMaxEntries: 500000 # Max filesystem entries visited per glob walk (omit = 500000; 0 = no entry budget)
+  globMaxResults: 10000 # Max matching paths collected per glob walk (omit = 10000; 0 = unlimited)
+
   # --- Per-tool Stage 1 truncation (applied before token budget) ------------
   # These limits trigger output fragmentation: when tool output exceeds the
   # limit, it is truncated and a nudge with a cache hash is appended so the
@@ -1056,6 +1069,12 @@ timeouts:
   bashMaxTimeout: 120 # Max execution time for bash commands
   bashWaitDelay: 5 # Wait delay for bash process cleanup
   ripgrepTimeout: 60 # Timeout for ripgrep searches
+  globTimeout: 30 # Wall-clock budget for a single glob walk (bounds a symlink loop / huge tree). Omit = 30; 0 = no timeout
+  # Ceiling for a SINGLE tool call in the ReAct loop: a tool that blocks forever
+  # (e.g. a wedged syscall) no longer hangs the loop indefinitely — the wait is
+  # abandoned and the run returns a "tool call timed out" error naming the tool.
+  # Applied to the main executor AND every subagent executor. Omit = 300; 0 = disabled.
+  toolCallTimeout: 300 # Seconds; a single tool call ceiling (5 min). Omit = 300; 0 = disabled
   webFetchTimeout: 30 # Timeout for web page fetching
   webFetchProxyTimeout: 30 # Timeout for web page fetching when the proxy is enabled. 0 = use default 30s
   webFetchRetries: 2 # Retries for failed web page fetches; each retry doubles the active timeout (webFetchTimeout, or webFetchProxyTimeout when proxy is on). 0 = use default 2
@@ -1094,6 +1113,27 @@ timeouts:
   # command itself; quick git probes (rev-parse and friends) keep the fast
   # 30s timeout. 0 / omitted = use default 300s (5 min).
   # gitCommitTimeout: 300
+
+# ---------------------------------------------------------------------------
+# Shutdown
+# ---------------------------------------------------------------------------
+# The application teardown is individually bounded at every step (running
+# task goroutines, manager-owned background goroutines and blackboard
+# persistence workers all share the session manager's stop timeout). This
+# section adds one last-resort watchdog over the WHOLE teardown: if the
+# process has not finished closing within hardDeadline, it logs at Error and
+# exits immediately. It is what guarantees the app always closes even when a
+# cancellation path is broken somewhere (e.g. a goroutine wedged in an
+# uninterruptible call), instead of the silent "hangs forever until killed"
+# failure where the session log never reaches "application shutdown: complete".
+#
+# With the embedded local model, quitting during an in-flight cold load can
+# legitimately take the embedded-server stop up to ~46 s. The default (60 s) sits
+# above that ceiling, so a normal quit during a cold load is not force-exited
+# mid-stop — lowering it below ~46 s risks truncating that stop (the process
+# still exits, but the detached llama-server may outlive it).
+# shutdown:
+#   hardDeadline: 60 # total seconds allowed for the whole teardown; 0 / omitted = 60
 
 # ---------------------------------------------------------------------------
 # Shell Execution Override

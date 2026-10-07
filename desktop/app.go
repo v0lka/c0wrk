@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
@@ -118,6 +119,20 @@ type App struct {
 	// tests observe the confirmed quit without a live Wails runtime.
 	// Production wiring keeps it nil.
 	quitFn func(ctx context.Context)
+
+	// shutdownHardDeadline is the hard budget for the WHOLE Shutdown teardown,
+	// set from config (shutdown.hardDeadline) during Startup. Zero falls back
+	// to defaultShutdownHardDeadline. The shutdown watchdog (see
+	// shutdown_watchdog.go) enforces it: on expiry the process logs at Error
+	// and exits, so a stuck goroutine can never keep the app alive on quit.
+	shutdownHardDeadline time.Duration
+
+	// shutdownExitFn, when non-nil, replaces the forced-exit call in the
+	// shutdown watchdog's expiry path. Lets tests observe the forced exit
+	// without killing the test process (same purpose as quitFn / windowShowFn).
+	// Production wiring keeps it nil, where the watchdog calls
+	// crashlog.ForceExit(0) (marker removal + exit banner + os.Exit).
+	shutdownExitFn func(code int)
 
 	// embeddedLLMStopFn, when non-nil, replaces the backend embedded-LLM
 	// server stop in stopEmbeddedLLM (the Shutdown teardown of the supervised
@@ -363,6 +378,16 @@ func (a *App) PickAndImportThemes() ([]backend.ThemeImportResult, error) {
 	// from compromised renderer JS). The picker above is the sole path
 	// source.
 	return backend.ImportThemesFromPaths(a.FrontendAPI, paths), nil
+}
+
+// shutdownDeadline returns the effective hard deadline for the Shutdown
+// teardown: the value Startup recorded from shutdown.hardDeadline, or
+// defaultShutdownHardDeadline when unset (0) or Startup never got that far.
+func (a *App) shutdownDeadline() time.Duration {
+	if a.shutdownHardDeadline > 0 {
+		return a.shutdownHardDeadline
+	}
+	return defaultShutdownHardDeadline
 }
 
 // log returns the instance logger, falling back to slog.Default() when nil.

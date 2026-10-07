@@ -188,6 +188,13 @@ type OrchestratorConfig struct {
 	MaxParallelSubagents      int    // cap on concurrent subagents, shared by delegate and plan waves (default: 4)
 	Model                     string // active model name for ModelRegistry.Resolve()
 
+	// ToolCallTimeout, when positive, bounds a SINGLE tool call in the ReAct
+	// loop. It is installed on the Conductor's main executor and, via
+	// conductorDeps.toolCallTimeout, on every subagent executor the launcher
+	// builds. 0 disables the bound (the historical behavior). See
+	// agent.DefaultToolCallTimeout for the recommended value.
+	ToolCallTimeout time.Duration
+
 	// Compaction carries the full executor compaction settings (Model Profiles
 	// context-management overrides already applied by the builder). It feeds
 	// manual conversation-history compaction (CompactConversationHistory);

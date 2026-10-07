@@ -385,7 +385,8 @@ func (o *Orchestrator) runE2SWithState(
 	// dependency instead of resurrecting the plan workflow.
 	planState := newPlanRunState(false)
 	registry := tools.NewDelegationRegistry()
-	launcher := tools.DelegationLauncher(&conductorLauncher{deps: deps, bb: bb, planState: planState})
+	e2sConductorLauncher := &conductorLauncher{deps: deps, bb: bb, planState: planState}
+	launcher := tools.DelegationLauncher(e2sConductorLauncher)
 	if o.e2sLauncher != nil {
 		launcher = o.e2sLauncher
 	}
@@ -564,6 +565,11 @@ func (o *Orchestrator) runE2SWithState(
 		// resolve through the dispatch context.
 		ToolCache:    deps.toolCache,
 		PauseChecker: deps.pauseChecker,
+		// Per-tool-call ceiling: the E2S loop has its own dispatch (it bypasses
+		// the sp4rk executor entirely), so it must thread the SAME bound the
+		// executor gets — a stuck action tool fails the run with ErrToolTimeout
+		// instead of hanging the loop. 0 disables the bound.
+		ToolCallTimeout: deps.toolCallTimeout,
 		// Conductor-parity knobs (review fix cycle): the resolved reasoning
 		// effort (per-message override / Model Profiles sampling), the
 		// config-gated injection-defense directive, the subagent prompt
@@ -579,6 +585,24 @@ func (o *Orchestrator) runE2SWithState(
 		EditVerifyMaxChars: deps.verifyOnEditMaxOutputChars,
 		FinishGuard:        e2sFinishGuard(registry),
 		Logger:             o.logger,
+	}
+
+	// Bind the launcher to the run-scoped context NOW that every context value
+	// the delegate tool and its subagents rely on is injected: an ASYNC
+	// delegation launches in the background and the delegate tool returns at
+	// once, but the E2S dispatch watchdog (executeToolCall) cancels the
+	// per-call context the moment the call returns — which would tear the
+	// just-launched background subagent down before it does any work. The run
+	// context outlives the tool call yet still dies with a task cancel / the
+	// run, so an E2S async delegation keeps exactly the lifetime it had before
+	// the watchdog existed (survives the delegate call and a cooperative
+	// pause). Mirrors RunConductor's conductorLauncher.asyncBaseCtx wiring;
+	// E2S advertises delegate with mode:"async" and its finish-join guard
+	// (e2sFinishGuard) explicitly awaits pending async delegations, so their
+	// lifetime must survive the delegate call. Skipped when a test launcher
+	// was injected through the o.e2sLauncher seam.
+	if o.e2sLauncher == nil {
+		e2sConductorLauncher.asyncBaseCtx = ctx
 	}
 
 	// deps.llm IS the session TrackingCaller chain (builder.go wraps the

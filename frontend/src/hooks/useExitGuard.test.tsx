@@ -216,4 +216,11 @@ describe('isExitRequestedData — payload guard', () => {
   it('tolerates an absent optional compacting flag', () => {
     expect(isExitRequestedData({ sessions: [{ id: 's', name: 'n' }] })).toBe(true)
   })
+
+  it('accepts an optional boolean hung flag and rejects a non-boolean one', () => {
+    expect(
+      isExitRequestedData({ sessions: [{ id: 's', name: 'n', compacting: false, hung: true }] }),
+    ).toBe(true)
+    expect(isExitRequestedData({ sessions: [{ id: 's', name: 'n', hung: 'yes' }] })).toBe(false)
+  })
 })

@@ -157,3 +157,23 @@ func TestShouldPreventClose_UpdatePendingContext(t *testing.T) {
 		t.Error("an expired update-quit marker must not carry update_pending=true")
 	}
 }
+
+// TestShouldPreventClose_PayloadCarriesHungFlag verifies that a session the
+// backend flagged as hung (a stop request that went unanswered) is
+// forwarded to the modal, so "quit anyway" is an informed choice. The guard
+// copies ActiveSessionInfo verbatim; this pins that the hung field survives.
+func TestShouldPreventClose_PayloadCarriesHungFlag(t *testing.T) {
+	f := newExitGuardFixture([]session.ActiveSessionInfo{
+		{ID: "sess-1", Name: "Stuck", Hung: true},
+	})
+
+	if !f.app.ShouldPreventClose(context.Background()) {
+		t.Fatal("expected close to be prevented with an active session")
+	}
+	if len(f.payloads) != 1 || len(f.payloads[0].Sessions) != 1 {
+		t.Fatalf("expected one session in the payload, got %+v", f.payloads)
+	}
+	if !f.payloads[0].Sessions[0].Hung {
+		t.Errorf("expected the hung flag to reach the modal payload, got %+v", f.payloads[0].Sessions[0])
+	}
+}

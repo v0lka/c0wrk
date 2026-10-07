@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 
 	"github.com/v0lka/c0wrk/core/e2s"
 	"github.com/v0lka/c0wrk/core/tools"
@@ -527,6 +529,124 @@ func TestRunE2SLoop_DelegateReachesInjectedLauncher(t *testing.T) {
 	t.Run("run finished successfully", func(t *testing.T) {
 		if result == nil || result.Status != orchestration.ExecutionStatusSuccess {
 			t.Fatalf("HandleResult.Status = %+v, want success", result)
+		}
+	})
+}
+
+// TestRunE2SLoop_AsyncDelegationSurvivesDelegateCall is the regression test for
+// the E2S async-delegation lifetime fix. The E2S dispatch watchdog
+// (core/e2s/tool_watchdog.go executeToolCall) derives a PER-CALL context and
+// cancels it the instant the delegate call returns; the E2S launcher must
+// therefore base a mode:"async" background subagent on the RUN context
+// (mirroring RunConductor's conductorLauncher.asyncBaseCtx), not on that
+// per-call context — otherwise the background subagent is torn down the moment
+// the delegate tool returns, even though E2S's finish-join guard
+// (e2sFinishGuard) explicitly awaits pending async delegations.
+//
+// The test parks the subagent's first LLM call, lets the delegate call return
+// (signalled by the main loop reaching its SECOND request, which is strictly
+// after the watchdog's deferred cancel has run), then releases the subagent and
+// asserts its context was still live. A cancelled subagent context means the
+// per-call context leaked into the background lifetime.
+func TestRunE2SLoop_AsyncDelegationSurvivesDelegateCall(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var (
+			subagentRelease = make(chan struct{})
+			mainTurn2       = make(chan struct{}, 1)
+			mainTurn        atomic.Int32
+			subagentEntered atomic.Bool
+			sawCancel       atomic.Bool
+		)
+
+		isE2SRequest := func(req llm.ChatRequest) bool {
+			for _, td := range req.Tools {
+				if td.Name == e2s.StepToolName {
+					return true
+				}
+			}
+			return false
+		}
+
+		mockLLM := &mockLLMCaller{callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+			if isE2SRequest(req) {
+				if mainTurn.Add(1) == 1 {
+					// Turn 1: launch the async delegation.
+					return e2sStepResponse("e2s-async-1", `{"findings": []}`, "delegate",
+						`{"tasks":[{"id":"del_1","summary":"background work","task":"do the background work","mode":"async"}]}`), nil
+				}
+				// Turn 2+: the delegate call has returned by now and — on the
+				// buggy path — the watchdog has already cancelled the per-call
+				// context. Signal the test, then block until the run context is
+				// cancelled so the loop does not spin through its turn budget.
+				select {
+				case mainTurn2 <- struct{}{}:
+				default:
+				}
+				<-ctx.Done()
+				return nil, ctx.Err()
+			}
+			// Subagent call: record that the background work actually began,
+			// then park until the test releases it.
+			subagentEntered.Store(true)
+			select {
+			case <-subagentRelease:
+				if ctx.Err() != nil {
+					sawCancel.Store(true)
+				}
+			case <-ctx.Done():
+				sawCancel.Store(true)
+			}
+			return &llm.ChatResponse{
+				Message: llm.Message{
+					Role:    "assistant",
+					Content: "done",
+					ToolCalls: []llm.ToolCall{
+						{ID: "sub-1", Name: "finish", Input: json.RawMessage(`{"answer":"ok"}`)},
+					},
+				},
+				StopReason: "tool_use",
+				Usage:      llm.TokenUsage{InputTokens: 5, OutputTokens: 5},
+			}, nil
+		}}
+
+		registry := createTestRegistryWithDelegate(t)
+		registry.Register(&mockTool{
+			name: "finish", description: "finish", group: sdktools.GroupSystem,
+			result: sdktools.ToolResult{Content: "done"},
+		})
+
+		o := newE2STestOrchestrator(mockLLM, registry, &spyEmitter{}, nil)
+
+		runCtx, cancelRun := context.WithCancel(context.Background())
+		defer cancelRun()
+
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			// The error is ctx.Canceled on the teardown path; only the async
+			// subagent's observed context is under test.
+			_, _ = o.HandleMessage(runCtx, "run the background work", "session-e2s-async", HandleOptions{E2S: true})
+		}()
+
+		// The main loop reaching its second request proves the delegate call
+		// returned — and thus that the watchdog's deferred per-call cancel has
+		// run (when the bug is present). Then let every goroutine settle.
+		<-mainTurn2
+		synctest.Wait()
+
+		subagentRan := subagentEntered.Load()
+		if subagentRan {
+			close(subagentRelease)
+			synctest.Wait()
+		}
+		cancelRun()
+		<-done
+
+		if !subagentRan {
+			t.Fatal("the async subagent never began its work: the delegate call tore it down before its first step (E2S must base async delegations on the run context, not the per-call watchdog context)")
+		}
+		if sawCancel.Load() {
+			t.Fatal("the async subagent context was cancelled after the delegate call returned (E2S must base async delegations on the run context, not the per-call watchdog context)")
 		}
 	})
 }

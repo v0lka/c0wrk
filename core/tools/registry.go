@@ -3,13 +3,23 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
 	"sync"
+	"time"
 
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
+
+// confirmCeilingGuard is how far ahead of the executor's per-tool-call ceiling
+// the user-confirmation wait must yield its denial. The confirmation and the
+// ceiling are separate timers over the same budget; the confirmation must
+// return its (clean) denial strictly before the ceiling fires so the run
+// continues on a normal result rather than aborting with ErrToolTimeout — see
+// ToolRegistry.SetToolCallTimeout.
+const confirmCeilingGuard = time.Second
 
 // goalModeTools is the set of system-group tools that exist ONLY for goal mode:
 // they have no meaning (and must not be offered to the agent) outside an
@@ -123,8 +133,15 @@ type ToolRegistry struct {
 	// composition — store *sdktools.ToolRegistry as a private field and
 	// explicitly delegate only the methods the core layer intends to expose.
 	*sdktools.ToolRegistry
-	mu                         sync.RWMutex
-	confirmFunc                sdktools.ConfirmFunc
+	mu          sync.RWMutex
+	confirmFunc sdktools.ConfirmFunc
+	// toolCallTimeout mirrors the executor's per-tool-call ceiling
+	// (timeouts.toolCallTimeout), so a user-confirmation wait can be bounded
+	// slightly under it and yield a clean denial instead of letting the
+	// executor's watchdog abort the whole run with ErrToolTimeout when a human
+	// answers slowly. Zero disables the confirmation bound. See
+	// SetToolCallTimeout.
+	toolCallTimeout            time.Duration
 	judge                      *sdktools.ToolJudge
 	groupPolicies              map[sdktools.ToolGroup]sdktools.ToolPolicy
 	preExecuteHook             PreExecuteHook
@@ -337,6 +354,7 @@ func (r *ToolRegistry) Clone() *ToolRegistry {
 	cloned := &ToolRegistry{
 		ToolRegistry:               r.ToolRegistry, // shared sp4rk registry (tool definitions)
 		confirmFunc:                r.confirmFunc,
+		toolCallTimeout:            r.toolCallTimeout,
 		judge:                      r.judge,
 		preExecuteHook:             r.preExecuteHook,
 		postExecuteHook:            r.postExecuteHook,
@@ -420,6 +438,23 @@ func (r *ToolRegistry) SetConfirmFunc(fn sdktools.ConfirmFunc) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.confirmFunc = fn
+}
+
+// SetToolCallTimeout mirrors the executor's per-tool-call ceiling
+// (timeouts.toolCallTimeout) onto the registry so a user-confirmation wait can
+// be bounded just under it. A confirmation answered within the budget is
+// unaffected; one that outlasts it yields a CLEAN denial (the tool is treated
+// as denied, the model is told, and the run continues) instead of letting the
+// executor's watchdog fire its own ErrToolTimeout and abort the whole run. The
+// ceiling still bounds the tool's actual execution: only the human wait is
+// bounded here, and a fast confirmation leaves the rest of the budget to the
+// tool. A zero value (the default) leaves the confirmation unbounded — the
+// pre-existing behavior for callers that do not thread the ceiling. Safe to
+// call at any time (it is read under the same lock by the confirmation path).
+func (r *ToolRegistry) SetToolCallTimeout(d time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.toolCallTimeout = d
 }
 
 // SetJudge sets the tool judge for evaluating mutating tool calls.
@@ -1961,6 +1996,7 @@ func (r *ToolRegistry) confirmAndExecute(ctx context.Context, tool sdktools.Tool
 func (r *ToolRegistry) confirmAndExecuteWithOptions(ctx context.Context, tool sdktools.Tool, name string, input json.RawMessage, reasoning string, disableJudge bool) (sdktools.ToolResult, error) {
 	r.mu.RLock()
 	confirmFunc := r.confirmFunc
+	ceiling := r.toolCallTimeout
 	r.mu.RUnlock()
 
 	if confirmFunc == nil {
@@ -1974,13 +2010,43 @@ func (r *ToolRegistry) confirmAndExecuteWithOptions(ctx context.Context, tool sd
 		}, nil
 	}
 
-	resp, err := confirmFunc(ctx, sdktools.ConfirmationRequest{
+	// Bound the human wait just under the executor's per-tool-call ceiling (when
+	// one is configured) so a slow confirmation yields a clean denial and the run
+	// continues, instead of the executor's watchdog firing its own ErrToolTimeout
+	// and aborting the whole run. See SetToolCallTimeout.
+	confirmCtx := ctx
+	confirmBounded := false
+	if ceiling > confirmCeilingGuard {
+		var cancel context.CancelFunc
+		confirmCtx, cancel = context.WithTimeout(ctx, ceiling-confirmCeilingGuard)
+		defer cancel()
+		confirmBounded = true
+	}
+
+	resp, err := confirmFunc(confirmCtx, sdktools.ConfirmationRequest{
 		ToolName:       name,
 		Input:          input,
 		JudgeReasoning: reasoning,
 		DisableJudge:   disableJudge,
 	})
 	if err != nil {
+		// A confirmation that outlasts the ceiling budget is a clean denial, not
+		// a run failure: the run context itself is still live (only this wait's
+		// own derived deadline fired), so report the tool as denied and let the
+		// loop continue. A confirmFunc that returns a deadline error of its own
+		// accord (confirmCtx not expired) and every other error — including a
+		// genuine run cancellation or shutdown, which cancels ctx — propagates
+		// unchanged.
+		if confirmBounded && ctx.Err() == nil && errors.Is(confirmCtx.Err(), context.DeadlineExceeded) {
+			r.log().Warn("security: tool confirmation timed out; execution denied",
+				"tool", name,
+				"reason", "confirmation_timeout",
+				"asi_scope", "ASI02,ASI09")
+			return sdktools.ToolResult{
+				Content: fmt.Sprintf("tool %q was not executed: the confirmation request was not answered within the per-tool-call time limit", name),
+				IsError: true,
+			}, nil
+		}
 		return sdktools.ToolResult{}, err
 	}
 

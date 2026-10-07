@@ -117,6 +117,8 @@ security:
 toolLimits:
   readDefaultLines: 2000
   webSearchMaxResults: 5
+  globMaxEntries: 500000 # omit = 500000; 0 = no entry budget (glob runaway protection)
+  globMaxResults: 10000 # omit = 10000; 0 = unlimited
   perToolTruncation:
     read_file: { maxLines: 2000 }
     read_attachment: { maxLines: 2000 }
@@ -135,6 +137,8 @@ timeouts:
   bashMaxTimeout: 120 # seconds
   bashWaitDelay: 5 # seconds
   ripgrepTimeout: 60 # seconds
+  globTimeout: 30 # seconds; single glob walk wall-clock budget. omit = 30; 0 = no timeout
+  toolCallTimeout: 300 # seconds; per-tool-call ceiling (main + subagent + E2S). omit = 300; 0 = disabled
   webFetchTimeout: 30 # seconds
   webFetchProxyTimeout: 30 # seconds; per-attempt web fetch timeout when the proxy is enabled
   webFetchRetries: 2 # retry count (not seconds); each retry doubles the active web fetch timeout

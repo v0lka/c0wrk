@@ -177,6 +177,26 @@ Non-truncation tool limits:
 | `BashTimeouts.WaitDelay`     | shell-exec (`bash_exec`/`posh_exec`) | 5s                  |
 | `ShellBlocklist`             | shell-exec (`bash_exec`/`posh_exec`) | [] (user-authored regex patterns, empty by default — ADR-052) |
 | `WebSearchLimits.MaxResults` | web_search                | 5                   |
+| `GlobLimits` (`toolLimits.globMaxEntries` / `globMaxResults`, `timeouts.globTimeout`) | `glob` walk bounds (entries / results / wall-clock) | 500000 / 10000 / 30s (each `0` = disabled) |
+| `ToolCallTimeout` (`timeouts.toolCallTimeout`) | per-tool-call ceiling, applied to the main, every subagent, and the E2S executor | 300s (`0` = disabled) |
+
+The per-tool-call ceiling bounds a single tool call's **execution**. A
+user-confirmation wait (the `user_confirm` group policy gate, which blocks
+*inside* the tool call) is bounded separately by the registry, just under the
+ceiling: a confirmation the user does not answer within the budget yields a
+clean denial (the tool is reported as not executed and the loop continues)
+rather than letting the executor's watchdog fire its own `ErrToolTimeout` and
+abort the whole run. A run cancellation still propagates, and a fast
+confirmation leaves the rest of the budget to the tool.
+
+The glob walk is bounded by `GlobLimits` (runaway protection): a single walk is
+capped on filesystem entries visited, matching paths collected, and wall-clock
+time, and symlinked directories are not traversed. A bound that fires returns the
+matches already collected with a warning suffix (a non-error result) rather than
+discarding them. An explicit `0` on any field disables that bound; a completely
+zero `GlobLimits` (e.g. a zero-value `BuiltinToolsConfig`) falls back to
+`DefaultGlobLimits()` so an unpopulated struct cannot register an unbounded walk.
+See the sp4rk builtins spec for the engine-level detail.
 
 ## Engine Behavior (canonical in sp4rk)
 

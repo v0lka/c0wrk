@@ -555,6 +555,55 @@ func TestConfirmFunc_ConfirmFuncError(t *testing.T) {
 	}
 }
 
+// TestConfirmFunc_ConfirmationOutlastingCeilingIsCleanDenial proves the
+// confirmation-wait bound: when a per-tool-call ceiling is configured and the
+// user does not answer within it, the confirmation yields a CLEAN denial (the
+// tool is reported as not executed and Execute returns a nil error) instead of
+// letting the executor's watchdog abort the whole run with ErrToolTimeout.
+// Without SetToolCallTimeout the wait is unbounded and this path is inert
+// (TestConfirmFunc_ConfirmFuncError pins that a plain confirmFunc error still
+// propagates).
+func TestConfirmFunc_ConfirmationOutlastingCeilingIsCleanDenial(t *testing.T) {
+	registry := NewToolRegistry()
+	registry.Register(newMockTool("mutating", "A mutating tool"))
+	registry.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+		// A human who never answers: wait for the (bounded) context, exactly as
+		// the desktop confirmation callback does.
+		<-ctx.Done()
+		return sdktools.ConfirmDenyAndStop, ctx.Err()
+	})
+	// A ceiling just above the guard so the derived confirmation deadline is tiny.
+	registry.SetToolCallTimeout(confirmCeilingGuard + 20*time.Millisecond)
+
+	result, err := registry.Execute(context.Background(), "mutating", json.RawMessage(`{"data":"test"}`))
+	if err != nil {
+		t.Fatalf("Execute error = %v, want nil (a slow confirmation must be a clean denial, not a run failure)", err)
+	}
+	if !result.IsError {
+		t.Fatalf("result.IsError = false, want true (the tool must be reported as denied)")
+	}
+}
+
+// TestConfirmFunc_RunCancellationStillPropagates proves the confirmation bound
+// does not mask a genuine run cancellation: when the RUN context is cancelled
+// (not the confirmation's own derived deadline) the error still propagates so
+// the run aborts as cancelled rather than continuing on a fabricated denial.
+func TestConfirmFunc_RunCancellationStillPropagates(t *testing.T) {
+	registry := NewToolRegistry()
+	registry.Register(newMockTool("mutating", "A mutating tool"))
+	registry.SetConfirmFunc(func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
+		<-ctx.Done()
+		return sdktools.ConfirmDenyAndStop, ctx.Err()
+	})
+	registry.SetToolCallTimeout(time.Minute)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := registry.Execute(ctx, "mutating", json.RawMessage(`{"data":"test"}`)); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Execute error = %v, want context.Canceled", err)
+	}
+}
+
 // ── Group policy resolution ───────────────────────────────────────────────
 
 // TestPolicyAlwaysAllow_ExecutesImmediately tests that an allow group

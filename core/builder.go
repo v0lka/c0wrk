@@ -692,6 +692,10 @@ func (b *OrchestratorBuilder) Build(
 		MaxDependencyContextChars: cfg.Orchestration.MaxDependencyContextChars,
 		MaxRedelegationDepth:      cfg.Orchestration.MaxRedelegationDepth,
 		MaxParallelSubagents:      cfg.Orchestration.MaxParallelSubagents,
+		// ToolCallTimeout bounds a SINGLE tool call in the ReAct loop (0 =
+		// disabled). Threaded to the Conductor (main executor) and every
+		// subagent executor via conductorDeps.toolCallTimeout.
+		ToolCallTimeout: time.Duration(cfg.Timeouts.ToolCallTimeout) * time.Second,
 		// OrchestratorConfig.Model is used for model METADATA resolution
 		// (ModelRegistry.Resolve keys on the bare model name), not for routing —
 		// so strip any provider prefix from the router's composite active model.
@@ -780,6 +784,14 @@ func (b *OrchestratorBuilder) Build(
 	// this session without a restart; its entry is released by the cleanup
 	// hook wired into OrchestratorDeps below.
 	sessionRegistry := b.registerSessionRegistry()
+
+	// Mirror the per-tool-call ceiling onto the session registry so a
+	// user-confirmation wait can be bounded just under it and yield a clean
+	// denial (the run continues) instead of letting the executor's watchdog
+	// abort the run when a human answers slowly. The ceiling itself is unchanged
+	// and still bounds the tool's actual execution. See
+	// tools.ToolRegistry.SetToolCallTimeout.
+	sessionRegistry.SetToolCallTimeout(time.Duration(cfg.Timeouts.ToolCallTimeout) * time.Second)
 
 	// Session judge: bind this session's judge to the session's OWN router NOW
 	// so even the first tool escalation is evaluated on the provider/model this
@@ -3240,6 +3252,11 @@ func configToBuiltinToolsConfig(cfg *BuilderConfig) tools.BuiltinToolsConfig {
 		},
 		RipgrepLimits: builtins.RipgrepLimits{
 			Timeout: time.Duration(cfg.Timeouts.RipgrepTimeout) * time.Second,
+		},
+		GlobLimits: builtins.GlobLimits{
+			MaxEntries: cfg.ToolLimits.GlobMaxEntries,
+			MaxResults: cfg.ToolLimits.GlobMaxResults,
+			Timeout:    time.Duration(cfg.Timeouts.GlobTimeout) * time.Second,
 		},
 		WebFetchLimits: builtins.WebFetchLimits{
 			Timeout: time.Duration(cfg.Timeouts.WebFetchTimeout) * time.Second,

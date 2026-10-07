@@ -641,6 +641,13 @@ export interface ExitRequestedSession {
   readonly name: string
   /** True when the live work is a manual compaction, not a running task. */
   readonly compacting: boolean
+  /** True when a STOP (CancelTask) was requested for this session's live work
+   *  but the task goroutine has not answered within the backend's threshold —
+   *  the work is not responding to cancellation. A cooperative pause never sets
+   *  it (a pause is only answered at a step boundary, which a long LLM call can
+   *  delay). The modal flags it so "quit anyway" is an informed choice.
+   *  Optional — an absent flag means "responding". */
+  readonly hung?: boolean
 }
 
 /** Payload of the global `app:exit_requested` event. The user answers through
@@ -1418,7 +1425,13 @@ export function isExitRequestedData(d: unknown): d is ExitRequestedData {
   if (!isObj(d)) return false
   if (!Array.isArray(d.sessions)) return false
   if (d.update_pending !== undefined && typeof d.update_pending !== 'boolean') return false
-  return d.sessions.every((s) => isObj(s) && typeof s.id === 'string' && typeof s.name === 'string')
+  return d.sessions.every(
+    (s) =>
+      isObj(s) &&
+      typeof s.id === 'string' &&
+      typeof s.name === 'string' &&
+      (s.hung === undefined || typeof s.hung === 'boolean'),
+  )
 }
 
 /** Guard for a `notification_clicked` payload (system-notification

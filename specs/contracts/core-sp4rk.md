@@ -31,6 +31,9 @@ sp4rk (module `github.com/v0lka/sp4rk`) lives in its [own repository](https://gi
 | `Executor.AddNonCacheableTools` | github.com/v0lka/sp4rk/agent | core/conductor                          | Extends the non-cacheable tool set with consumer-specific meta-tools (delegate, declare_plan, reflect, etc.) |
 | `WithResumeSteps` (Option) | github.com/v0lka/sp4rk/agent     | core/orchestrator (Resume)                   | Seeds prior ReAct steps into the Executor so the step counter resumes from `len(steps)+1` and the full trajectory syncs to the TrajectoryStore |
 | `Step.UserNudge`           | github.com/v0lka/sp4rk/agent     | core/session (tryContinueInterruptedTask)    | User message appended to a resumed trajectory; rendered as a `{role:user}` turn |
+| `Executor.SetToolCallTimeout` / `WithToolCallTimeout` | github.com/v0lka/sp4rk/agent | core/builder, core/conductor | Per-tool-call wall-clock ceiling (main + every subagent executor); `0` disables |
+| `Executor.SetToolCallTimeoutExempt` | github.com/v0lka/sp4rk/agent | core/conductor | Names the interactive/long-running orchestration tools exempt from the ceiling |
+| `ErrToolTimeout`, `DefaultToolCallTimeout` | github.com/v0lka/sp4rk/agent | core/builder, core/orchestrator_e2s | Ceiling sentinel + recommended default surfaced to config |
 
 ### Consumed from `github.com/v0lka/sp4rk/orchestration`
 
@@ -43,6 +46,7 @@ sp4rk (module `github.com/v0lka/sp4rk`) lives in its [own repository](https://gi
 | `ConductorConfig.ResumeSteps` | github.com/v0lka/sp4rk/orchestration | core/orchestrator (`runConductor`)    | Prior ReAct steps seeded into the ContextManager + Executor on resume |
 | `ConductorConfig`  | github.com/v0lka/sp4rk/orchestration | core/conductor (`RunConductor`)           | Engine configuration (incl. `ToolCache`, `PerToolTruncation`, `NonCacheableTools`, `ResumeSteps`) |
 | `ConductorConfig.NonCacheableTools` | github.com/v0lka/sp4rk/orchestration | core/conductor | Lists consumer-specific non-cacheable tool names passed to the sp4rk Conductor's executor |
+| `ConductorConfig.ToolCallTimeout` | github.com/v0lka/sp4rk/orchestration | core/conductor | Per-tool-call ceiling threaded to the main and every subagent executor (`0` disables) |
 | `Plan`, `PlanStep` | github.com/v0lka/sp4rk/orchestration | core/types (direct use)                       | Plan data structures       |
 | `CompletedStep`    | github.com/v0lka/sp4rk/orchestration | core/types (direct)                           | Step result record         |
 | `Reflection`       | github.com/v0lka/sp4rk/orchestration | core/types (direct)                           | Reflector output           |
@@ -69,6 +73,7 @@ sp4rk (module `github.com/v0lka/sp4rk`) lives in its [own repository](https://gi
 | ---------------------- | ------------------------------ | ------------------------------ | ---------------------------------------------- |
 | `Tool`                 | github.com/v0lka/sp4rk/tools   | core/tools (embedded registry) | Tool interface (incl. IsUntrusted())          |
 | `BaseTool`             | github.com/v0lka/sp4rk/tools   | core/tools/builtins, MCP tools | Base impl with Untrusted field               |
+| `builtins.GlobLimits`, `DefaultGlobLimits`, `NewGlobToolWithLimits` | github.com/v0lka/sp4rk/tools/builtins | core/tools (`RegisterBuiltinTools`) | Bounded glob walk (entries / results / wall-clock); a completely zero `GlobLimits` falls back to defaults |
 | `ContentBackedReader`  | github.com/v0lka/sp4rk/tools   | core/tools (`read_file_doc.go`) | Optional interface; `IsContentBacked` opts document-format `read_file` reads into content-backed caching |
 | `ToolRegistry`         | github.com/v0lka/sp4rk/tools   | core/tools (embedded)          | Tool store; SDK `Execute` adds pre-dispatch input validation + policy enforcement (shadowed by the core wrapper) |
 | `ValidateToolInput`    | github.com/v0lka/sp4rk/tools   | core/tools (registry Gate 1 in `Execute`/`ExecuteUnattended`), core/e2s (pre-dispatch action-args validation) | Recursive structural tool-input validator (closed-set schemas, fail-open on unmodeled constructs) |

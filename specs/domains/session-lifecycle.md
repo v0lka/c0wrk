@@ -701,6 +701,42 @@ User clicks "Cancel"
           → emit task_cancelled
 ```
 
+`CancelTask` cancels the run's context and waits up to `Manager.stopTimeout`
+(10 s) for the task goroutine to settle. A well-behaved goroutine settles well
+within that (the ctx cancellation aborts an in-flight LLM request and, via the
+per-tool watchdog, every in-flight tool). If the deadline expires the manager
+calls `forceTerminateStuckTask`, which durably terminalizes the task and emits
+the single `task_cancelled` + agent metrics:
+
+- **One terminal emission per run.** A `terminalEmitted` flag on the `Session`
+  (reset when a NEW task launches, not on settle) is claimed by whichever path
+  emits first — the forced path or the settling goroutine's own
+  `emitTaskCancelledUnlessShuttingDown`. So a stuck goroutine that finally
+  settles after a forced termination, or a repeated Stop click, cannot emit a
+  second `task_cancelled` with zeroed step counters over the run's real metrics.
+- **Shutdown wins.** Under `m.shuttingDown` the forced path neither persists nor
+  emits, mirroring the goroutine's own terminal path, so a Stop racing app
+  shutdown leaves the task `in_progress` and resumable.
+- The session is deliberately NOT deactivated by the forced path (the goroutine
+  really is still running), so `ActiveSessions` keeps listing it and the quit
+  close guard flags it as **hung** — `stopRequestedAt` is recorded only by a
+  **Stop** (never by a cooperative pause, which a long LLM call can legitimately
+  delay) and `Hung` is set once `hungSessionThreshold` (10 s) elapses unanswered,
+  so the exit modal can label that session "not responding" (see
+  [../contracts/event-catalog.md](../contracts/event-catalog.md) `app:exit_requested`).
+- A live message the user sends into that window — while the forced-cancelled
+  goroutine is still settling — arrived AFTER the cancel was reported, so it
+  belongs to the **next** task. The settling goroutine's `deactivateSessionTask`
+  therefore KEEPS it queued (`liveActionNone` semantics) instead of discarding it
+  with the dead run, so the follow-up does not silently vanish. A plain
+  (non-forced) user cancel still discards the live queue.
+
+At **shutdown**, `stopBackground` drains the tracked blackboards under a single
+shared deadline (the same `stopTimeout` spent by the background-goroutine join).
+Once it expires the loop abandons the remaining persistence workers with a WARN
+(from the second pass on it words them "late-registered"; a first-pass abort —
+the join consumed the whole budget — keeps the plain wording).
+
 ### Session Pause / Resume / Nudge
 
 Pause/resume is a **session-level** control that applies uniformly to **all** tasks — goal and non-goal alike. There is no goal-specific pause; the universal pause signal (`Orchestrator.activePause`) is read by every conductor run's pause-checker at each step boundary. See [goal-mode.md § Pause is Session-Level](goal-mode.md#pause-is-session-level-universal-pause-signal).
@@ -715,7 +751,19 @@ User clicks "Pause"
       └─ Manager.PauseSession() — sets session.pausing (under session.mu,
           only when a task is active) + Orchestrator.PauseSession() flips
           the active pause signal
-      In-flight conductor run observes the signal at the next step boundary
+      In-flight conductor run observes the signal at the next step boundary,
+        or — while a TOOL call is in flight — at the next per-tool watchdog
+        tick: the executor's watchdog polls the pause checker mid-call, so a
+        long tool (bash_exec, a blocking delegate) reaches its pause
+        checkpoint promptly instead of waiting for the step boundary. The
+        pause is cooperative and mid-tool: the watchdog abandons the WAIT and
+        cancels the tool's child context (a cooperative request — an
+        uninterruptible or already-past-its-last-cancellation-check tool may
+        still run to completion), so the in-flight tool's side effects must be
+        treated as possibly occurred
+        (see the per-tool-call ceiling in [orchestration/executor.md](orchestration/executor.md)); a paused
+        run's checkpoint carries the flushed trajectory but NOT the in-flight
+        call's step.
         → executor returns ErrPaused → Conductor maps to ExecutionStatusPaused
         → persistTaskOutcome: pbb.PauseTask() (task persisted as "paused")
         → emit session_paused (UI unlocks input; shows Resume + Stop)
