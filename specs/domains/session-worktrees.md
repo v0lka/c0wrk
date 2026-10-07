@@ -28,7 +28,7 @@ git RPC, the worktree listing RPC, and the pinned-branch refusal).
 - `backend/session/manager.go` — `CreateSessionFromDraft` (commit a prepared workspace), `SetWorkspaceEnsurer` + the restore-time ensure inside `getOrRestoreSession`'s single-flight, `HasSession` (non-restoring existence), binding-aware lazy restore and `WorkspacePathFor`
 - `backend/config/paths.go` — `ManagedWorktreesDir`, `ManagedWorktreePath` (the only place `.worktrees` paths are constructed or validated)
 - `backend/frontend_api_git_focus.go` — the Git-panel focus model: `SetGitPanelFocus`/`GetGitPanelFocus`/`ListProjectWorktrees` RPCs, `resolveGitFocusRoot` (the focus resolution behind `resolveGitRepoRoot`), owning-session metadata, and the pinned-branch guard (`ErrPinnedWorktreeBranch`, `refusePinnedBranchSwitch`)
-- `backend/frontend_api_vector.go` — vector-index RPC surface (`SearchVectorStore`/`GetVectorIndexStatus`/`ReindexVectorIndex`, all routed to the Git-panel FOCUS root), focus-target resolution (`resolveVectorIndexTarget` — the project switch resolves the saved session's tree), worktree-scoped storage (`config.WorktreeVectorIndexPath`) and release cleanup (`deleteWorktreeVectorIndex`: registry release → storage → per-tree cache)
+- `backend/frontend_api_vector.go` — vector-index RPC surface (`SearchVectorStore`/`GetVectorIndexStatus`/`ReindexVectorIndex`, all routed to the Git-panel FOCUS root), focus-target resolution (`resolveVectorIndexTarget` — the project switch resolves the saved session's tree), worktree-scoped storage (`config.WorktreeVectorIndexPath`), release cleanup (`deleteWorktreeVectorIndex`: registry release → storage → per-tree cache) and provisioning seeding (`seedWorktreeEmbeddingCache`: copies the checkout's embedding cache into a fresh tree's cache root)
 - `backend/vector_roots.go` — the per-root registry (ADR-081): one `vectorindex.Manager` per workspace root (single-flight creation, LRU-bounded live set with the focus pinned), agent-side routing by the executor context's workspace root, `ApplyFocus`/`LeaveFocus`, `Release`/`ReleaseProject`/`ShutdownAll`, and `Application.buildVectorRouter` (the shared search closures)
 - `core/vectorindex/git.go` — `resolveGitDir` follows a linked worktree's `.git` pointer file to the private git directory that owns HEAD, so the vector index's branch monitoring works inside managed trees; `backend/config/paths.go` `ManagedWorktreeNameFromPath`/`WorktreeVectorIndexPath` derive the per-tree index storage
 - `frontend/src/lib/gitFocus.ts` + `frontend/src/hooks/useGitFocusSync.ts` — the frontend side: serialized/supersede-guarded focus applies and the follow-the-session effect (project/session switches move the focus to the active session's execution workspace)
@@ -88,6 +88,27 @@ provisioning, the in-memory session is removed and the fresh tree released
 (best-effort, logged); the created branch is KEPT — no operation in this path
 ever deletes a branch. `CreateSession(projectID, workspacePath)` remains the
 local/CHAT entry point and wraps the same path with a nil binding.
+
+#### Embedding-cache seeding
+
+After its success point (create: after the binding is persisted; fork: after
+the store fork), both provisioning flows call `seedWorktreeEmbeddingCache`
+(backend `frontend_api_vector.go`): the project checkout's content-addressed
+embedding cache is copied into the fresh tree's cache root
+(`config.WorktreeEmbeddingCachePath`) — synchronously, before the RPC returns,
+so the frontend's immediate focus move builds the tree's vector manager over
+an already-warm cache. A session tree is 99-100% identical to its branch
+point, and the cache — keyed by chunk-text hash plus model fingerprint with
+paths deliberately excluded — is the one layer where that identity is legally
+reusable (branch collections are absolute-path-keyed and cannot be shared);
+with a warm seed the tree's first index pass reuses the checkout's embeddings
+instead of re-running ONNX inference over near-identical content. The seed is
+best-effort and idempotent: a missing checkout cache, a derivation failure, or
+a partial copy only means the first pass runs cold (copied entries are
+checksum-guarded, so a torn file is a miss, never a wrong vector); an existing
+target directory is never touched; per-file failures against the checkout's
+live cache are skipped. The recreate path needs no call — its cache root
+survives the lost tree.
 
 ### Restore
 
@@ -238,6 +259,12 @@ frontend (useGitFocusSync)                  backend
   handles dropped so removal is Windows-safe), then removes its vector-index
   storage root and per-tree embedding cache; project deletion removes every
   worktree root together with the project root.
+- Worktree embedding-cache seeding is a provisioning-time, best-effort,
+  once-per-tree step: it runs only after the flow's success point and before
+  the RPC returns, never touches an existing cache root, copies only the
+  content-addressed entries (never branch collections — those are
+  absolute-path-keyed and tree-specific), and its failure never fails the
+  provisioning flow.
 
 ## Configuration
 
