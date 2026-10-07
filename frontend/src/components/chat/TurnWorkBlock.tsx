@@ -1,5 +1,5 @@
 import { memo, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
-import { Loader2, CheckCircle2, XCircle, CircleSlash } from 'lucide-react'
+import { Loader2, CheckCircle2, XCircle, Split, CircleSlash } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { bookmarkDefaultTitle, bookmarkKey, flattenDisplayItems } from '@/lib/bookmarks'
 import { areDisplayItemsEqual } from '@/lib/displayItemStability'
@@ -24,7 +24,7 @@ import type { DisplayItem } from '@/types/messages'
  * settles: the answer commits, OR the turn is superseded (a nudge / resume
  * started a new turn), OR the task ended without an answer (stop / error /
  * app exit — historical dead turns settle the same way after a reload).
- * EARLIER segments are settled from birth (`superseded`): the step that cut
+ * EARLIER segments are settled from birth (`cutByStep`): the step that cut
  * them out completed the activity they hold, so they render COLLAPSED with
  * the completed status — "block considered finished when a step appeared".
  * A manual toggle wins until the next auto edge, mirroring SubAgentBlock:
@@ -45,7 +45,17 @@ interface TurnWorkBlockProps {
    * birth with the completed status (failed when its work holds an error) —
    * never open, regardless of `live`.
    */
-  superseded?: boolean
+  cutByStep?: boolean
+  /**
+   * The turn was SUPERSEDED by a newer user turn — a nudge / follow-up sent
+   * while this turn had not answered yet — so the conversation moved on and
+   * this turn's work will never produce an answer of its own. A settled,
+   * superseded-by-turn segment renders the neutral `superseded` status (muted
+   * split icon + `— superseded`), NOT `interrupted`: the work was taken over,
+   * not broken. Only the LAST turn (no later user message) that ends without
+   * an answer is `interrupted` (a stop, an error, or an app exit / reload).
+   */
+  supersededByTurn?: boolean
   /** The segment's work items — one collapsible block's content. */
   work: DisplayItem[]
   /** The turn's tail (final answer + lifted panels) — LAST segment only.
@@ -68,16 +78,22 @@ interface TurnWorkBlockProps {
   tailSlot?: ReactNode
 }
 
-type WorkStatus = 'running' | 'completed' | 'failed' | 'interrupted'
+type WorkStatus = 'running' | 'completed' | 'failed' | 'superseded' | 'interrupted'
 
 // Mirrors SubAgentBlock's statusConfig, narrowed to the states a work block
-// can take: `failed` is derived from an error item inside the work, and
-// `interrupted` (settled without an answer — a stop, an error turn, or the
-// turn superseded by a nudge/resume) from `live=false` with an empty tail.
+// can take: `failed` is derived from an error item inside the work; the two
+// neutral settled-without-answer states are distinguished by WHY the turn
+// never answered — `superseded` when a NEWER user turn took over (the turn is
+// not the last one, so a nudge/follow-up displaced it), `interrupted` when
+// the LAST turn ended without an answer (a stop, an error turn, or an app
+// exit / reload).
 const statusConfig = {
   running:   { Icon: Loader2,      iconClass: 'text-info animate-spin', accent: 'info' },
   completed: { Icon: CheckCircle2, iconClass: 'text-success', accent: 'success' },
   failed:    { Icon: XCircle,      iconClass: 'text-destructive', accent: 'destructive' },
+  // Taken over by a newer user turn — not broken: a neutral split marker, NOT
+  // the alarming CircleSlash reserved for an actually-interrupted run.
+  superseded:  { Icon: Split,      iconClass: 'text-muted-foreground', accent: 'muted' },
   interrupted: { Icon: CircleSlash, iconClass: 'text-muted-foreground', accent: 'muted' },
 } as const
 
@@ -121,7 +137,7 @@ function anchorKeysFor(it: DisplayItem): string[] {
   return keys
 }
 
-export const TurnWorkBlock = memo(function TurnWorkBlock({ live = false, superseded = false, work, tail, tailSlot }: TurnWorkBlockProps) {
+export const TurnWorkBlock = memo(function TurnWorkBlock({ live = false, cutByStep = false, supersededByTurn = false, work, tail, tailSlot }: TurnWorkBlockProps) {
   const bookmarkable = useContext(BookmarkableContext)
 
   // The auto-open state: the LAST segment of a turn is expanded while the
@@ -130,10 +146,10 @@ export const TurnWorkBlock = memo(function TurnWorkBlock({ live = false, superse
   // between steps; the turn keeps producing items). The block settles
   // (collapses) when the turn is done: answer committed AND the turn is no
   // longer live, or the turn is not live anymore without an answer (stop /
-  // error / superseded by nudge / historical dead turn after a reload).
-  // EARLIER segments (superseded) are settled from birth: the step that cut
+  // error / superseded by a newer turn / historical dead turn after a reload).
+  // EARLIER segments (cutByStep) are settled from birth: the step that cut
   // them out completed the activity they hold.
-  const settled = !live || superseded
+  const settled = !live || cutByStep
   const derivedOpen = !settled
   const [userOverride, setUserOverride] = useState<boolean | null>(null)
   const isOpen = userOverride ?? derivedOpen
@@ -145,22 +161,26 @@ export const TurnWorkBlock = memo(function TurnWorkBlock({ live = false, superse
   // An answer committed only when the tail holds the assistant item — the
   // split now lifts unresolved pending-action panels into the tail even while
   // the turn is still running (no answer yet), so bare tail length is NOT an
-  // answer signal anymore. A superseded segment settled when the step that
-  // cut it out started — completed, not interrupted (unless its work holds an
-  // error → failed).
+  // answer signal anymore. A step-cut segment settled when the step that cut
+  // it out started — completed, not interrupted (unless its work holds an
+  // error → failed). A settled turn with no answer is `superseded` when a
+  // newer user turn displaced it, and `interrupted` only for the LAST turn
+  // (stop / error / app exit / reload).
   const answerCommitted = tail.some(it => it.kind === 'assistant')
   const status: WorkStatus = useMemo(
     () =>
       work.some(it => it.kind === 'error')
         ? 'failed'
-        : live && !superseded
+        : live && !cutByStep
           ? 'running'
           : answerCommitted
             ? 'completed'
-            : superseded
+            : cutByStep
               ? 'completed'
-              : 'interrupted',
-    [work, live, superseded, answerCommitted],
+              : supersededByTurn
+                ? 'superseded'
+                : 'interrupted',
+    [work, live, cutByStep, answerCommitted, supersededByTurn],
   )
   const cfg = statusConfig[status]
   const StatusIcon = cfg.Icon
@@ -227,6 +247,9 @@ export const TurnWorkBlock = memo(function TurnWorkBlock({ live = false, superse
 
   const headerExtra = useMemo(() => (
     <>
+      {status === 'superseded' && (
+        <span className="text-xs text-muted-foreground truncate min-w-0">— superseded</span>
+      )}
       {status === 'interrupted' && (
         <span className="text-xs text-muted-foreground truncate min-w-0">— interrupted</span>
       )}
@@ -280,7 +303,8 @@ export const TurnWorkBlock = memo(function TurnWorkBlock({ live = false, superse
   displayItemsArraysEqual(prev.work, next.work) &&
   displayItemsArraysEqual(prev.tail, next.tail) &&
   prev.live === next.live &&
-  prev.superseded === next.superseded &&
+  prev.cutByStep === next.cutByStep &&
+  prev.supersededByTurn === next.supersededByTurn &&
   // Slot-only streaming content: false when the node changed (a new chunk
   // landed) so the block re-renders and the stream keeps flowing inside it.
   prev.tailSlot === next.tailSlot)

@@ -57,12 +57,24 @@ describe('TurnWorkBlock', () => {
     document.body.replaceChildren()
   })
 
-  const render = (work: DisplayItem[], tail: DisplayItem[], tailSlot?: React.ReactNode, opts?: { live?: boolean }) =>
+  const render = (
+    work: DisplayItem[],
+    tail: DisplayItem[],
+    tailSlot?: React.ReactNode,
+    opts?: { live?: boolean; supersededByTurn?: boolean; cutByStep?: boolean },
+  ) =>
     act(() => {
       root.render(
         <TooltipProvider>
           <BookmarkableContext.Provider value={false}>
-            <TurnWorkBlock live={opts?.live ?? false} work={work} tail={tail} tailSlot={tailSlot} />
+            <TurnWorkBlock
+              live={opts?.live ?? false}
+              supersededByTurn={opts?.supersededByTurn ?? false}
+              cutByStep={opts?.cutByStep ?? false}
+              work={work}
+              tail={tail}
+              tailSlot={tailSlot}
+            />
           </BookmarkableContext.Provider>
         </TooltipProvider>,
       )
@@ -210,6 +222,42 @@ describe('TurnWorkBlock', () => {
     render([tool()], [], undefined, { live: false })
     expect(container.querySelector('svg.text-muted-foreground')).not.toBeNull()
     expect(trigger().textContent).toContain('— interrupted')
+  })
+
+  it('shows the neutral split marker for a turn superseded by a newer user turn', () => {
+    // A nudge / follow-up displaced this turn before it answered: the work was
+    // taken over, not broken — the neutral `superseded` state, never the
+    // alarming `interrupted` CircleSlash.
+    render([tool()], [], undefined, { live: false, supersededByTurn: true })
+    const icon = container.querySelector('svg.text-muted-foreground')
+    expect(icon).not.toBeNull()
+    expect(trigger().textContent).toContain('— superseded')
+    expect(trigger().textContent).not.toContain('— interrupted')
+  })
+
+  it('keeps a committed answer / step-cut segment ahead of the superseded-by-turn state', () => {
+    // A newer turn displaced this one AFTER it answered → the answer is the
+    // outcome: completed, never superseded.
+    render([tool()], [assistant()], undefined, { live: false, supersededByTurn: true })
+    expect(container.querySelector('svg.text-success')).not.toBeNull()
+    expect(trigger().textContent).not.toContain('— superseded')
+    // A segment cut out by its own step is completed regardless of a newer
+    // turn superseding the turn.
+    render([tool()], [], undefined, { cutByStep: true, supersededByTurn: true })
+    expect(container.querySelector('svg.text-success')).not.toBeNull()
+    expect(trigger().textContent).not.toContain('— superseded')
+    expect(trigger().textContent).not.toContain('— interrupted')
+  })
+
+  it('re-renders on the supersededByTurn edge even when work/tail are structurally equal', () => {
+    const work = [tool()]
+    render(work, [], undefined, { live: false, supersededByTurn: false })
+    expect(trigger().textContent).toContain('— interrupted')
+    // Only `supersededByTurn` flips (fresh arrays, same structure): the block
+    // must re-derive from interrupted to superseded.
+    render(work, [], undefined, { live: false, supersededByTurn: true })
+    expect(trigger().textContent).toContain('— superseded')
+    expect(trigger().textContent).not.toContain('— interrupted')
   })
 
   it('shows a failure icon when the work contains an error item (live or settled)', () => {

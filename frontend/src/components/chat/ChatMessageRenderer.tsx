@@ -203,11 +203,12 @@ export function ChatMessageRenderer({
         // appeared. Turns without a work region keep the plain flat layout.
         const { segments, tail } = splitTurnWork(turn)
         // "Live" = the turn can still produce new items: it is the session's
-        // last turn AND the session's task is active. When the task ends
-        // without an answer (stop / error / app exit) the block settles the
-        // same way a nudge-superseded turn does — fixing both the
-        // nudge-superseded-turn rendering and the never-collapsing historical
-        // dead turn after a reload.
+        // last turn AND the session's task is active. When a turn settles
+        // without an answer it renders one of two neutral states: the LAST
+        // turn ended (stop / error / app exit / reload) → `interrupted`;
+        // a turn displaced by a NEWER user turn (a nudge / follow-up sent
+        // before it answered) → `superseded`. Only the last turn can be
+        // `interrupted`.
         const live = isLastTurn && lastTurnActive
         // Tail content of the live turn (the streaming answer) streams INSIDE
         // the live segment's block via its render-slot: the block is open
@@ -221,7 +222,7 @@ export function ChatMessageRenderer({
         // with no observable work between them render their block as a thin
         // separator row) — EXCEPT when the whole turn has no segments at all
         // (a plain chat turn: user → answer). The LAST segment is the live
-        // one; earlier segments are superseded (settled from birth).
+        // one; earlier segments are cut by their step (settled from birth).
         const hasSegments = segments.length > 0
         return (
           <div key={bookmarkKey(turn[0]!)} className="space-y-4 min-w-0">
@@ -238,7 +239,8 @@ export function ChatMessageRenderer({
                   {seg.work.length > 0 && (
                     <TurnWorkBlock
                       live={live && isLastSegment}
-                      superseded={!isLastSegment}
+                      cutByStep={!isLastSegment}
+                      supersededByTurn={!isLastTurn}
                       work={seg.work}
                       tail={isLastSegment ? tail : EMPTY}
                       tailSlot={isLastSegment ? slot : undefined}

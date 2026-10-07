@@ -260,7 +260,7 @@ describe('ChatMessageRenderer sticky user turns', () => {
     expect(turn.textContent).not.toContain('thinking')
   })
 
-  it('renders a nudge-superseded / dead turn as a COLLAPSED interrupted block (not flat)', () => {
+  it('renders a nudge-superseded turn as a COLLAPSED superseded block (not flat)', () => {
     const dead: DisplayItem[] = [
       { kind: 'user', message: message('user-0', 'user', 'abandoned') },
       thought('th-0', 'lost work'),
@@ -270,17 +270,37 @@ describe('ChatMessageRenderer sticky user turns', () => {
     const container = renderRenderer({ items: dead })
     const turns = turnRoots(container)
 
-    // Turn 0: no answer ever arrived → collapsed interrupted block, not flat.
+    // Turn 0: no answer ever arrived AND a newer user turn took over → a
+    // collapsed `superseded` block (taken over, not broken), not flat.
     const deadBlock = turns[0]?.querySelector('[data-chevron-reveal-id^="turn-work:"]')
     expect(deadBlock).not.toBeNull()
     expect(deadBlock?.querySelector('[data-slot="collapsible-content"]')?.getAttribute('data-state')).toBe('closed')
     // Its work items are unmounted (collapsed): no DOM anchor, owner registry
     // holds it; "lost work" surfaces only inside the header preview.
     expect(turns[0]?.querySelector('[data-bookmark-id="th-0"]')).toBeNull()
-    expect(turns[0]?.textContent).toContain('— interrupted')
+    expect(turns[0]?.textContent).toContain('— superseded')
+    expect(turns[0]?.textContent).not.toContain('— interrupted')
     expect(turnWorkOwners.get('th-0')).toBeDefined()
     // Turn 1 is the last, but has no work → flat too.
     expect(turns[1]?.querySelector('[data-chevron-reveal-id^="turn-work:"]')).toBeNull()
+  })
+
+  it('distinguishes a superseded turn from an interrupted dead LAST turn', () => {
+    const dead: DisplayItem[] = [
+      { kind: 'user', message: message('u-1', 'user', 'first') },
+      thought('th-a', 'superseded work'),
+      { kind: 'user', message: message('u-2', 'user', 'second') },
+      thought('th-b', 'dead work'),
+      // No assistant: the LAST turn ended without an answer → interrupted.
+    ]
+    const container = renderRenderer({ items: dead })
+    const turns = turnRoots(container)
+    // Turn 0 was displaced by the newer user turn → superseded.
+    expect(turns[0]?.textContent).toContain('— superseded')
+    expect(turns[0]?.textContent).not.toContain('— interrupted')
+    // Turn 1 is the last turn and ended without an answer → interrupted.
+    expect(turns[1]?.textContent).toContain('— interrupted')
+    expect(turns[1]?.textContent).not.toContain('— superseded')
   })
 
   it('renders plan/subagent steps OUTSIDE the work blocks; a step splits the turn (status survives a collapse)', () => {
