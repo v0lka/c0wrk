@@ -114,10 +114,6 @@ func TestRun_ToolWithinTimeoutUnaffected(t *testing.T) {
 // cooperative pause that trips while the tool is blocked stops the loop with a
 // resumable ErrPaused checkpoint — not the timeout, and certainly not a hang.
 func TestRun_PauseObservedWhileToolInFlight(t *testing.T) {
-	prev := toolWatchdogInterval
-	toolWatchdogInterval = 5 * time.Millisecond
-	defer func() { toolWatchdogInterval = prev }()
-
 	caller := &scriptedCaller{responses: []*llm.ChatResponse{
 		stepResponse(`{}`, "slow", `{}`),
 		stepResponse(`{}`, "finish", `{"answer":"never"}`),
@@ -133,6 +129,11 @@ func TestRun_PauseObservedWhileToolInFlight(t *testing.T) {
 	cfg.PauseChecker = func(context.Context) bool { return armed.Swap(true) }
 	cfg.ToolCallTimeout = 0 // the pause, not the timeout, must be the trigger
 	loop := New(caller, reg, nil, cfg)
+	// Shorten this loop's pause-poll cadence so the pause is observed without a
+	// multi-hundred-millisecond wait. The cadence lives on the instance (never
+	// in package state), so the override cannot leak into production or into a
+	// parallel test.
+	loop.watchdogInterval = 5 * time.Millisecond
 
 	res, err := runWithWatchdog(t, loop)
 	if !errors.Is(err, ErrPaused) {
@@ -163,5 +164,194 @@ func TestRun_BatchSubCallTimeoutAbortsAction(t *testing.T) {
 	}
 	if res == nil || res.Status != RunStatusFailed {
 		t.Fatalf("status = %v, want failed", res)
+	}
+}
+
+// panickingRegistry models a tool that panics inside Execute — the case the
+// detached watchdog goroutine must contain so a tool bug cannot abort the host.
+type panickingRegistry struct{}
+
+func (r *panickingRegistry) List() []sdktools.ToolDescriptor { return nil }
+
+func (r *panickingRegistry) Execute(context.Context, string, json.RawMessage) (sdktools.ToolResult, error) {
+	panic("boom in tool")
+}
+
+func (r *panickingRegistry) IsToolUntrusted(string) bool { return false }
+
+func (r *panickingRegistry) ToolSource(string) string { return "core" }
+
+// TestRun_PanicInToolCallContained pins #12: a tool that panics on the detached
+// watchdog goroutine must not crash the process — the panic is recovered there
+// and surfaced as an ordinary error observation, so the loop proceeds to the
+// next turn instead of aborting the host.
+func TestRun_PanicInToolCallContained(t *testing.T) {
+	caller := &scriptedCaller{responses: []*llm.ChatResponse{
+		stepResponse(`{}`, "explode", `{}`),
+		stepResponse(`{}`, "finish", `{"answer":"recovered"}`),
+	}}
+	loop := New(caller, &panickingRegistry{}, nil, testConfig())
+
+	res, err := runWithWatchdog(t, loop)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res == nil || res.Status != RunStatusFinished {
+		t.Fatalf("status = %v, want finished — a tool panic must be contained, not abort the run", res.Status)
+	}
+	found := false
+	for _, s := range res.Steps {
+		if strings.Contains(s.Observation, "panicked") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("trajectory %+v must carry the recovered panic as an error observation", res.Steps)
+	}
+}
+
+// cancellingBlockingRegistry cancels the run's context as soon as Execute is
+// entered (modeling a shutdown landing while the tool is in flight) and then
+// blocks until released, so the watchdog observes cancellation, not a result.
+type cancellingBlockingRegistry struct {
+	cancel   context.CancelFunc
+	released chan struct{}
+}
+
+func (r *cancellingBlockingRegistry) List() []sdktools.ToolDescriptor { return nil }
+
+func (r *cancellingBlockingRegistry) Execute(context.Context, string, json.RawMessage) (sdktools.ToolResult, error) {
+	r.cancel()
+	<-r.released
+	return sdktools.ToolResult{Content: "released"}, nil
+}
+
+func (r *cancellingBlockingRegistry) IsToolUntrusted(string) bool { return false }
+
+func (r *cancellingBlockingRegistry) ToolSource(string) string { return "core" }
+
+// runWithCtxWatchdog is runWithWatchdog with a caller-supplied context, so a
+// test can drive cancellation itself. It remains a bounded hang detector.
+func runWithCtxWatchdog(ctx context.Context, t *testing.T, loop *Loop) (*Result, error) {
+	t.Helper()
+	type outcome struct {
+		res *Result
+		err error
+	}
+	ch := make(chan outcome, 1)
+	go func() {
+		res, err := loop.Run(ctx)
+		ch <- outcome{res: res, err: err}
+	}()
+	select {
+	case o := <-ch:
+		return o.res, o.err
+	case <-time.After(5 * time.Second):
+		t.Fatal("E2S Run did not return — the cancelled in-flight tool hung the loop")
+		return nil, nil
+	}
+}
+
+// TestRun_CancellationDuringSingleToolCallNoSpuriousStep pins #7: cancelling
+// the run while a single (non-batch) tool call is in flight must checkpoint as
+// canceled WITHOUT appending a bogus "tool execution error: context canceled"
+// step — a fabricated failure observation for a call that was merely
+// interrupted.
+func TestRun_CancellationDuringSingleToolCallNoSpuriousStep(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	caller := &scriptedCaller{responses: []*llm.ChatResponse{
+		stepResponse(`{}`, "probe", `{}`),
+		stepResponse(`{}`, "finish", `{"answer":"never"}`),
+	}}
+	reg := &cancellingBlockingRegistry{cancel: cancel, released: make(chan struct{})}
+	defer close(reg.released)
+
+	loop := New(caller, reg, nil, testConfig())
+
+	res, err := runWithCtxWatchdog(ctx, t, loop)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if res == nil || res.Status != RunStatusCanceled {
+		t.Fatalf("status = %v, want canceled", res.Status)
+	}
+	for _, s := range res.Steps {
+		if strings.Contains(s.Observation, "tool execution error") {
+			t.Fatalf("cancelled dispatch must not append a spurious error step: %+v", s)
+		}
+	}
+}
+
+// TestRun_CancelWinsOverPauseWhileToolInFlight pins the E2S watchdog's
+// cancellation precedence: when a tool is in flight and BOTH the run context is
+// cancelled AND the pause checker trips on the same tick, Run must report a
+// cancellation (RunStatusCanceled), never a resumable pause.
+func TestRun_CancelWinsOverPauseWhileToolInFlight(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	caller := &scriptedCaller{responses: []*llm.ChatResponse{
+		stepResponse(`{}`, "probe", `{}`),
+		stepResponse(`{}`, "finish", `{"answer":"never"}`),
+	}}
+	reg := &cancellingBlockingRegistry{cancel: cancel, released: make(chan struct{})}
+	defer close(reg.released)
+
+	// The checker passes the turn-1 step boundary (its first call returns false)
+	// and trips on the next poll — i.e. while the tool is in flight, at the same
+	// time the registry cancels the context.
+	var armed atomic.Bool
+	cfg := testConfig()
+	cfg.PauseChecker = func(context.Context) bool { return armed.Swap(true) }
+	loop := New(caller, reg, nil, cfg)
+	loop.watchdogInterval = time.Millisecond
+
+	res, err := runWithCtxWatchdog(ctx, t, loop)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled (cancellation must win over a simultaneous pause tick)", err)
+	}
+	if res == nil || res.Status != RunStatusCanceled {
+		t.Fatalf("status = %v, want canceled", res.Status)
+	}
+}
+
+// TestRun_ExemptToolNotBoundedByTimeout pins the E2S half of the interactive-tool
+// exemption: an E2S-available tool that blocks on a human (ask_user) or on
+// sub-work (a blocking delegate) must not be killed by Config.ToolCallTimeout,
+// while an ordinary tool still is. The blocking registry releases the exempt
+// call well after the ceiling would have fired; the run must then finish
+// normally instead of failing with ErrToolTimeout.
+func TestRun_ExemptToolNotBoundedByTimeout(t *testing.T) {
+	caller := &scriptedCaller{responses: []*llm.ChatResponse{
+		stepResponse(`{}`, "ask_user", `{}`),
+		stepResponse(`{}`, "finish", `{"answer":"done"}`),
+	}}
+	reg := &blockingRegistry{released: make(chan struct{})}
+	cfg := testConfig()
+	cfg.ToolCallTimeout = 20 * time.Millisecond
+	loop := New(caller, reg, nil, cfg)
+
+	// Release the blocking tool AFTER the ceiling would have fired. The
+	// two-case watchdog shape (a non-empty timeout arm plus a context guard) is
+	// the sanctioned barrier — it does not sleep to give the scheduler a
+	// chance, and the context arm prevents a leaked goroutine if the run has
+	// already ended.
+	go func() {
+		select {
+		case <-time.After(80 * time.Millisecond):
+			close(reg.released)
+		case <-t.Context().Done():
+		}
+	}()
+
+	res, err := runWithWatchdog(t, loop)
+	if err != nil {
+		t.Fatalf("exempt E2S tool must not be bounded by the ceiling, got err=%v", err)
+	}
+	if res == nil || res.Status != RunStatusFinished {
+		t.Fatalf("status = %v, want finished", res)
 	}
 }

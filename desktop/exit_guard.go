@@ -13,7 +13,7 @@ import (
 
 // EventAppExitRequested is the global event emitted when a quit attempt is
 // intercepted because sessions have live work. Payload:
-// {"sessions": [{id, name, compacting}], "update_pending": bool}. The
+// {"sessions": [{id, name, compacting, hung}], "update_pending": bool}. The
 // frontend answers through the ConfirmExit RPC — there is no response event,
 // because the decision must reach the process that owns the exit-confirmed
 // flag. See specs/contracts/event-catalog.md (Global Events).

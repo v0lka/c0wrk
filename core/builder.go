@@ -785,6 +785,14 @@ func (b *OrchestratorBuilder) Build(
 	// hook wired into OrchestratorDeps below.
 	sessionRegistry := b.registerSessionRegistry()
 
+	// Mirror the per-tool-call ceiling onto the session registry so a
+	// user-confirmation wait can be bounded just under it and yield a clean
+	// denial (the run continues) instead of letting the executor's watchdog
+	// abort the run when a human answers slowly. The ceiling itself is unchanged
+	// and still bounds the tool's actual execution. See
+	// tools.ToolRegistry.SetToolCallTimeout.
+	sessionRegistry.SetToolCallTimeout(time.Duration(cfg.Timeouts.ToolCallTimeout) * time.Second)
+
 	// Session judge: bind this session's judge to the session's OWN router NOW
 	// so even the first tool escalation is evaluated on the provider/model this
 	// session runs on — not on the builder's global active model, which may

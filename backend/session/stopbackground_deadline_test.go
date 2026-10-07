@@ -47,24 +47,32 @@ func (c *messageCapture) snapshot() []string {
 }
 
 // TestStopBackground_DrainLoopBoundedByDeadline verifies that the blackboard
-// re-drain loop honours the single shared deadline instead of spinning when
-// the registry is never observed empty: once the deadline has passed, the loop
-// abandons the remaining workers with a WARN and returns. Without the bound, a
-// straggler that keeps re-registering a persistence worker would spin the
-// shutdown main thread forever.
+// drain loop is BOUNDED: it returns instead of spinning when the shared
+// deadline has already elapsed. The single registered blackboard is drained on
+// the first (and only) pass, and the pre-expired zero budget makes the deadline
+// branch fire on that pass, so stopBackground returns with the WARN.
+//
+// What this test does NOT exercise: the multi-pass shape where a straggler
+// re-registers a blackboard after the first snapshot (the re-drain the branch
+// also bounds). Nothing re-registers here, so the loop would equally terminate
+// on the empty-registry check; the deadline branch is what actually ends this
+// run because the shared deadline is already spent. The straggler path is
+// bounded by the same `time.Now().After(deadline)` check this test exercises.
 func TestStopBackground_DrainLoopBoundedByDeadline(t *testing.T) {
 	manager, _, _ := testManager(t)
-	// A zero budget makes the deadline already expired when the drain loop
-	// runs, so the drain runs once (with a non-positive remainder) and then the
-	// new deadline branch fires deterministically.
+	// A zero budget makes the shared deadline already expired when the drain
+	// loop runs, so the single pass drains immediately (a non-positive remainder
+	// makes pb.Shutdown return at once) and the deadline branch then fires
+	// deterministically.
 	manager.stopTimeout = 0
 
 	capture := &messageCapture{}
 	manager.SetLogger(slog.New(capture))
 
 	// A blackboard whose persistence worker never reports stopped (zero value:
-	// nil persistDone, nil persistCh) keeps the registry non-empty, so the loop
-	// cannot terminate by draining to zero — exactly the straggler shape.
+	// nil persistDone, nil persistCh) is drained on the single pass. Nothing
+	// re-registers it, so it is the pre-expired shared deadline — not an empty
+	// registry — that ends the loop here.
 	manager.trackBlackboard(&PersistentBlackboard{})
 
 	done := make(chan struct{})

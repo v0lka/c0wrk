@@ -159,7 +159,7 @@ func TestShouldPreventClose_UpdatePendingContext(t *testing.T) {
 }
 
 // TestShouldPreventClose_PayloadCarriesHungFlag verifies that a session the
-// backend flagged as hung (a stop/pause request that went unanswered) is
+// backend flagged as hung (a stop request that went unanswered) is
 // forwarded to the modal, so "quit anyway" is an informed choice. The guard
 // copies ActiveSessionInfo verbatim; this pins that the hung field survives.
 func TestShouldPreventClose_PayloadCarriesHungFlag(t *testing.T) {

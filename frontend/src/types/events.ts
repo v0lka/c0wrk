@@ -641,10 +641,12 @@ export interface ExitRequestedSession {
   readonly name: string
   /** True when the live work is a manual compaction, not a running task. */
   readonly compacting: boolean
-  /** True when a stop/pause was requested for this session's live work but the
-   *  task goroutine has not answered within the backend's threshold — the work
-   *  is not responding to cancellation. The modal flags it so "quit anyway" is
-   *  an informed choice. Optional — an absent flag means "responding". */
+  /** True when a STOP (CancelTask) was requested for this session's live work
+   *  but the task goroutine has not answered within the backend's threshold —
+   *  the work is not responding to cancellation. A cooperative pause never sets
+   *  it (a pause is only answered at a step boundary, which a long LLM call can
+   *  delay). The modal flags it so "quit anyway" is an informed choice.
+   *  Optional — an absent flag means "responding". */
   readonly hung?: boolean
 }
 

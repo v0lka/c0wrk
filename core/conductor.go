@@ -37,15 +37,19 @@ type trajectoryHolder struct {
 func (h *trajectoryHolder) Sync(steps []agent.Step) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	// A trajectory never shrinks to nothing: a freshly-started executor (e.g. a
-	// subagent that inherits this holder through the context) syncs its own
-	// still-empty step list at its first loop boundary. Letting that empty sync
-	// replace an already-populated trajectory would erase the task checkpoint
-	// the parent conductor had synced — violating the "the persisted trajectory
-	// never goes backwards" invariant and losing the checkpoint on
-	// shutdown/restart. An empty sync carries no information, so ignore it when
-	// a non-empty trajectory is already held.
-	if len(steps) == 0 && len(h.steps) > 0 {
+	// The trajectory never shrinks: a subagent that inherits this holder
+	// through the context runs its own executor, which syncs that executor's
+	// step list here at the top of every loop iteration. The subagent's list is
+	// its OWN (short) trajectory — it starts empty and grows to a step or two —
+	// while the parent conductor has already synced the completed run's steps.
+	// Letting a shorter sync replace the parent's longer one would erase the
+	// task checkpoint the parent persisted — violating the "the persisted
+	// trajectory never goes backwards" invariant and losing the parent's work on
+	// shutdown/restart. Guarding against EMPTY syncs alone is not enough: the
+	// subagent's first non-empty sync (a single step) would still shrink the
+	// held trajectory, so the guard is monotonic — any sync shorter than what is
+	// already held is ignored.
+	if len(steps) < len(h.steps) {
 		return
 	}
 	h.steps = make([]agent.Step, len(steps))
@@ -337,11 +341,12 @@ func (c *compositeTrajectoryStore) Sync(steps []agent.Step) {
 	}
 
 	// Defensive copy of the *guarded* in-memory trajectory rather than the raw
-	// caller steps: the holder ignores a sync that would erase a populated
-	// trajectory with an empty one (a freshly-started subagent's first boundary
-	// sync), and the persisted snapshot must honor the same never-shrink
-	// invariant — otherwise a stale empty upsert could race ahead of the final
-	// Flush. Steps() returns the live slice, so copy it for the async writer.
+	// caller steps: the holder ignores a sync shorter than what it already holds
+	// (a freshly-started subagent's first boundary sync, which is shorter than
+	// the parent conductor's trajectory), and the persisted snapshot must honor
+	// the same never-shrink invariant — otherwise a stale shorter upsert could
+	// race ahead of the final Flush. Steps() returns the live slice, so copy it
+	// for the async writer.
 	effective := c.memory.Steps()
 	snapshot := make([]agent.Step, len(effective))
 	copy(snapshot, effective)
@@ -613,6 +618,19 @@ type conductorDeps struct {
 type conductorLauncher struct {
 	deps conductorDeps
 	bb   orchestration.Blackboard
+	// asyncBaseCtx is the RUN-scoped context an ASYNC delegation is based on.
+	// The delegate tool returns as soon as an async task is launched, but that
+	// task keeps running in the background under the executor's per-tool
+	// watchdog. The watchdog cancels the tool-call context the moment the call
+	// returns, which would tear the just-launched background subagent down
+	// before it does any work. The run context outlives the tool call yet is
+	// still cancelled with the task, so an async delegation keeps exactly the
+	// lifetime it had before the tool-call watchdog existed: it survives the
+	// delegate call and a cooperative pause, and dies with a task cancel / the
+	// run. Set once in RunConductor just before the conductor starts; nil under
+	// direct (test) construction, where launchAsync falls back to the
+	// dispatched context.
+	asyncBaseCtx context.Context
 	// runPlanStepWave executes one wave of ready plan steps concurrently and
 	// returns their outcomes. Defaults to defaultPlanStepWave (which builds an
 	// isolated subagent executor per step and runs them via
@@ -1709,6 +1727,18 @@ func (l *conductorLauncher) runRedelegBlocking(ctx context.Context, t tools.Dele
 }
 
 func (l *conductorLauncher) launchAsync(ctx context.Context, t tools.DelegationTask, registry *tools.DelegationRegistry) tools.DelegationResult {
+	// Base the async delegation on the RUN context, not the transient tool-call
+	// context it was dispatched under: the delegate tool returns as soon as the
+	// task is launched, and the executor's per-tool watchdog cancels the
+	// tool-call context when the call returns — which would cancel the
+	// just-launched background subagent before it does any work. The run
+	// context outlives the call but is still cancelled with the task, so the
+	// async delegation keeps the lifetime it had before the watchdog existed
+	// (survives the delegate call and a pause, dies with a task cancel / the
+	// run). Nil under direct (test) construction — the dispatched ctx is used.
+	if l.asyncBaseCtx != nil {
+		ctx = l.asyncBaseCtx
+	}
 	// Async delegations always take the non-redelegating path today (runWave
 	// dispatches all async tasks here regardless of AllowRedelegate), so the
 	// Conductor-only context values must always be stripped — see subagentCtx.
@@ -2900,6 +2930,12 @@ func RunConductor(
 	if deps.emitter != nil {
 		events = deps.emitter
 	}
+
+	// Bind the launcher to the run-scoped context NOW that every Conductor
+	// context value the tools (and thus subagents) rely on is injected: async
+	// delegations base their lifetime on this instead of the transient
+	// tool-call context — see conductorLauncher.asyncBaseCtx.
+	launcher.asyncBaseCtx = ctx
 
 	conductor := orchestration.NewConductor(cfg)
 	result, err := conductor.Run(ctx, message, bb, availableTools, events, compactionStrategy)

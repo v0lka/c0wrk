@@ -23,9 +23,9 @@ import { confirmExit } from '@/api/runtime'
 import { logger } from '@/lib/logger'
 import { useExitGuardStore } from '@/stores/exitGuardStore'
 
-/** Human label for one active session's live work. A hung session (a
- *  stop/pause was requested but the task goroutine has not answered) is called
- *  out distinctly so "quit anyway" is an informed choice. */
+/** Human label for one active session's live work. A hung session (a Stop was
+ *  requested but the task goroutine has not answered) is called out distinctly
+ *  so "quit anyway" is an informed choice. */
 function sessionActivityLabel(compacting: boolean, hung: boolean): string {
   if (hung) return 'not responding'
   return compacting ? 'compacting context' : 'running task'

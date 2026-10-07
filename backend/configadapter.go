@@ -10,7 +10,9 @@ import (
 	"github.com/v0lka/c0wrk/backend/providerauth"
 	"github.com/v0lka/c0wrk/core"
 	"github.com/v0lka/c0wrk/core/proxy"
+	"github.com/v0lka/sp4rk/agent"
 	sdktools "github.com/v0lka/sp4rk/tools"
+	"github.com/v0lka/sp4rk/tools/builtins"
 )
 
 // derefBool safely dereferences a *bool, defaulting to true when nil.
@@ -19,6 +21,18 @@ func derefBool(b *bool) bool {
 		return true
 	}
 	return *b
+}
+
+// derefInt dereferences a *int, returning def when the pointer is nil. The
+// *int config knobs distinguish an absent key (nil → default) from an explicit
+// zero ("0 disables"); config normally flows through ApplyDefaults (which
+// materializes the default), but a programmatically built config may bypass it,
+// so the deref is defensive.
+func derefInt(p *int, def int) int {
+	if p == nil {
+		return def
+	}
+	return *p
 }
 
 // loadModelProfilesCatalog loads the full model-profile profile catalog (predefined ∪
@@ -351,16 +365,16 @@ func ToBuilderConfig(cfg *config.Config, modelProfilesCatalog []config.ModelProf
 		ToolLimits: core.BuilderToolLimitsConfig{
 			ReadDefaultLines:    cfg.ToolLimits.ReadDefaultLines,
 			WebSearchMaxResults: cfg.ToolLimits.WebSearchMaxResults,
-			GlobMaxEntries:      cfg.ToolLimits.GlobMaxEntries,
-			GlobMaxResults:      cfg.ToolLimits.GlobMaxResults,
+			GlobMaxEntries:      derefInt(cfg.ToolLimits.GlobMaxEntries, builtins.DefaultGlobLimits().MaxEntries),
+			GlobMaxResults:      derefInt(cfg.ToolLimits.GlobMaxResults, builtins.DefaultGlobLimits().MaxResults),
 			PerToolTruncation:   convertTruncationMap(cfg.ToolLimits.PerToolTruncation),
 		},
 		Timeouts: core.BuilderTimeoutsConfig{
 			BashMaxTimeout:       cfg.Timeouts.BashMaxTimeout,
 			BashWaitDelay:        cfg.Timeouts.BashWaitDelay,
 			RipgrepTimeout:       cfg.Timeouts.RipgrepTimeout,
-			GlobTimeout:          cfg.Timeouts.GlobTimeout,
-			ToolCallTimeout:      cfg.Timeouts.ToolCallTimeout,
+			GlobTimeout:          derefInt(cfg.Timeouts.GlobTimeout, int(builtins.DefaultGlobLimits().Timeout/time.Second)),
+			ToolCallTimeout:      derefInt(cfg.Timeouts.ToolCallTimeout, int(agent.DefaultToolCallTimeout/time.Second)),
 			WebFetchTimeout:      cfg.Timeouts.WebFetchTimeout,
 			WebFetchProxyTimeout: cfg.Timeouts.WebFetchProxyTimeout,
 			WebFetchRetries:      cfg.Timeouts.WebFetchRetries,

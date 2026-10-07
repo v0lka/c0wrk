@@ -328,6 +328,12 @@ type Loop struct {
 	// sdktools.ValidateToolInput). Built once in New from the same descriptor
 	// list the system prompt renders.
 	schemas map[string]json.RawMessage
+	// watchdogInterval is this loop's pause-poll cadence while a tool call is in
+	// flight (see executeToolCall). It is defaulted in New and lives on the
+	// instance — never in package state — so shortening it for a test cannot
+	// change the real cadence for the rest of the package. Mirrors the sp4rk
+	// executor's per-instance toolWatchdogInterval.
+	watchdogInterval time.Duration
 }
 
 // New creates an E2S loop. caller must be non-nil. A nil registry allows
@@ -337,10 +343,11 @@ func New(caller llm.Caller, registry Registry, emitter Emitter, cfg Config) *Loo
 	cfg = cfg.withDefaults()
 	stepTool := NewStepTool()
 	l := &Loop{
-		cfg:      cfg,
-		caller:   caller,
-		registry: registry,
-		emitter:  emitter,
+		cfg:              cfg,
+		caller:           caller,
+		registry:         registry,
+		emitter:          emitter,
+		watchdogInterval: defaultToolWatchdogInterval,
 		toolDefs: []llm.ToolDefinition{{
 			Name:        stepTool.Name(),
 			Description: stepTool.Description(),
@@ -564,6 +571,12 @@ func (l *Loop) Run(ctx context.Context) (*Result, error) {
 		// The incomplete action is NOT appended to the trajectory: a
 		// paused/timed-out tool's side effects are unknown (it keeps running in
 		// its detached goroutine), so it must not enter the resumable steps.
+		// Unlike the sp4rk executor, E2S does NOT flush a pending verify-on-edit
+		// at this boundary: the E2S model's memory is Σ (the returned trajectory
+		// is not replayed on resume), so a note appended here would have no
+		// consumer and running the verification command would be a
+		// side-effecting no-op. E2S verify-on-edit is per-turn only — the note
+		// lands in the action's observation for the next turn.
 		step, dispatchErr := l.dispatch(ctx, turn, res.thought, res.call)
 		if dispatchErr != nil {
 			// A pause that tripped while the tool was in flight: mirror the
@@ -887,11 +900,12 @@ func (l *Loop) toolSource(name string) string {
 // here — the caller decides (single dispatch wraps the whole observation; batch
 // wraps each sub-result individually).
 //
-// A non-nil third return is a watchdog signal, not a tool failure: ErrPaused
-// (a cooperative pause observed while the tool was in flight) or an error
-// wrapping ErrToolTimeout (the call exceeded Config.ToolCallTimeout, named with
-// the tool). Both unwind the whole action to the loop's checkpoint; the
-// observation/flag are meaningless on that path.
+// A non-nil third return is a watchdog/context signal, not a tool failure:
+// ErrPaused (a cooperative pause observed while the tool was in flight), an
+// error wrapping ErrToolTimeout (the call exceeded Config.ToolCallTimeout,
+// named with the tool), or a context cancellation/deadline (the run's ctx fired
+// while the call was in flight). All unwind the whole action to the loop's
+// checkpoint; the observation/flag are meaningless on that path.
 func (l *Loop) executeSingle(ctx context.Context, tool string, args json.RawMessage) (observation string, isError bool, dispatchErr error) {
 	result, err := l.executeToolCall(ctx, tool, args)
 	switch {
@@ -899,6 +913,14 @@ func (l *Loop) executeSingle(ctx context.Context, tool string, args json.RawMess
 		return "", true, ErrPaused
 	case errors.Is(err, ErrToolTimeout):
 		return "", true, fmt.Errorf("tool %q: %w", tool, ErrToolTimeout)
+	case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
+		// Cancellation/deadline observed inside the tool call (the watchdog
+		// returns ctx.Err()): propagate as a dispatchErr so the loop checkpoints
+		// the run as canceled rather than appending a spurious
+		// "tool execution error: context canceled" step — a fabricated failure
+		// observation for a call that was merely interrupted. Mirrors the
+		// dispatch comment and the batch path's context-error handling.
+		return "", true, err
 	case err != nil:
 		return fmt.Sprintf("tool execution error: %v", err), true, nil
 	case result.IsError:

@@ -593,7 +593,11 @@ func (a *App) Shutdown(ctx context.Context) {
 	// the session log ends at "blackboard persistence workers stopped" and
 	// "application shutdown: complete" never appears, so the user must kill the
 	// process. Disarmed by the deferred stop on every normal return.
-	shutdownExit := func() { os.Exit(0) }
+	// Route the forced exit through crashlog.ForceExit so a legitimate but
+	// forced quit still removes the liveness marker and writes its closing exit
+	// banner — the hooks main() runs on a normal return, which os.Exit here
+	// would skip (making the next launch misreport this quit as a crash).
+	shutdownExit := func() { crashlog.ForceExit(0) }
 	if a.shutdownExitFn != nil {
 		shutdownExit = func() { a.shutdownExitFn(0) }
 	}

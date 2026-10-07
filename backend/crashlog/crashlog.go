@@ -35,6 +35,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -62,6 +63,12 @@ const (
 // const) so tests can shrink it; panic dumps are a few hundred KiB at most,
 // 4 MiB keeps several of them plus chatty native-library output.
 var maxStderrLogBytes int64 = 4 << 20
+
+// currentCapture is the process-wide capture installed by install(). It lets a
+// forced-exit path in another package (the desktop shutdown watchdog) run the
+// same clean-exit hooks main() runs on a normal return, without a handle to the
+// caller's capture. Nil until install() succeeds (or when capture is disabled).
+var currentCapture atomic.Pointer[Capture]
 
 // runRecord is the JSON payload of the liveness marker.
 type runRecord struct {
@@ -150,6 +157,9 @@ func install(logDir string, redirect bool) (*Capture, error) {
 	if err := c.writeMarker(); err != nil {
 		slog.Warn("crashlog: failed to write liveness marker", "error", err)
 	}
+	// Publish the capture so ForceExit (the forced-exit path in another
+	// package) can run the clean-exit hooks on a normal-return-less exit.
+	currentCapture.Store(c)
 	return c, nil
 }
 
@@ -182,6 +192,22 @@ func (c *Capture) LogExit(code int) {
 		" uptime=" + time.Since(c.startedAt).Round(time.Second).String() +
 		" at=" + time.Now().Format(time.RFC3339) + " ===")
 	_ = c.file.Sync()
+}
+
+// ForceExit runs the clean-exit hooks on the process-wide capture and exits
+// immediately: RemoveMarker (so the surviving marker cannot make the next
+// launch report this quit as an unclean shutdown) and LogExit (so the run ends
+// with its closing banner), then os.Exit(code). It is the forced-exit path —
+// the desktop shutdown watchdog's hard deadline — which cannot wait for the
+// normal main() return where those hooks otherwise run. Without it a legitimate
+// forced quit looks indistinguishable from a crash on the next launch.
+// Nil-tolerant: with no capture installed it simply exits.
+func ForceExit(code int) {
+	if c := currentCapture.Load(); c != nil {
+		c.RemoveMarker()
+		c.LogExit(code)
+	}
+	os.Exit(code)
 }
 
 // writeBanner records the run header: pid and build identify the process in

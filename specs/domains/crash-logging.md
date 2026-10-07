@@ -26,7 +26,8 @@ Guarantees that the fact and the cause of ANY application termination — crash,
 
 ## Key Files
 
-- `backend/crashlog/crashlog.go` — `Install`, `Capture` (nil-tolerant `RemoveMarker`/`LogExit`), marker stashing, rotation, `ReportUncleanShutdown`
+- `backend/crashlog/crashlog.go` — `Install`, `Capture` (nil-tolerant `RemoveMarker`/`LogExit`), marker stashing, rotation, `ReportUncleanShutdown`; `ForceExit(code)` runs the clean-exit hooks (`RemoveMarker` + `LogExit`) on the process-wide capture (`currentCapture`, published by `install`) and then `os.Exit` — the forced-exit path the desktop shutdown watchdog uses when the normal `main` return is never reached
+- `desktop/shutdown_watchdog.go` — the last-resort teardown watchdog (`shutdown.hardDeadline`, default 60 s; above the embedded-model stop ceiling): a wedged `App.Shutdown` past the deadline logs at Error and forces exit through `crashlog.ForceExit(0)`, so a forced-but-legitimate quit still removes the marker and writes its closing banner instead of being misreported as a crash on the next launch
 - `backend/crashlog/process_unix.go` — pid liveness probe (signal 0; EPERM = alive; darwin/linux)
 - `backend/crashlog/process_windows.go` — pid liveness probe (OpenProcess; ERROR_ACCESS_DENIED = alive)
 - `backend/crashlog/redirect_unix.go` — dup2-based fd redirect + signal re-raise (darwin/linux)
@@ -38,7 +39,8 @@ Guarantees that the fact and the cause of ANY application termination — crash,
 ## Invariants
 
 - The marker is removed on clean exits only, and only when it records this process's pid; panic paths deliberately skip removal so the next start reports the crash.
-- Wails' own quit paths never bypass `App.Shutdown` (OnShutdown hook), and the session log closes after the final `application shutdown: complete` record, so a clean quit always ends with a closing bracket; an abrupt log end means abnormal termination by construction.
+- Wails' own quit paths never bypass `App.Shutdown` (OnShutdown hook), and the session log closes after the final `application shutdown: complete` record, so a clean quit always ends with a closing bracket; an abrupt log end means abnormal termination by construction. The one bounded exception is the shutdown watchdog (`desktop/shutdown_watchdog.go`, `shutdown.hardDeadline`): a teardown wedged past the deadline forces exit, and that forced path deliberately runs `crashlog.ForceExit` so it too removes the marker and writes its exit banner — a forced quit is still not misreported as a crash.
+- The forced exit (the shutdown watchdog) and every normal exit share the same clean-exit hooks: `crashlog.ForceExit` performs `RemoveMarker` + `LogExit` on the process-wide capture before `os.Exit`, so the surviving-marker / missing-banner "unclean shutdown" signal cannot be fabricated by a legitimate forced quit.
 - An unclean-shutdown WARN requires the stashed marker's pid to be gone; a live pid yields an overlap WARN (concurrent instances or pid reuse).
 - The `--self-update` helper child process never installs the capture (it returns before `Install`), so the updater's lifecycle does not touch the parent's marker or stderr.log.
 - A second-instance relay process never installs the capture either ([ADR-075](../decisions/075-single-instance-lock.md)): `mainImpl` probes `desktop.AcquireSingleInstanceLock` (`~/.c0wrk/app.lock`) before `Install`, and a held lock means the process lives only to relay its launch data through the Wails `SingleInstanceLock` and exit — no marker stash, no marker write, no fd redirection. The probe fails open (a broken lock file is treated as first instance), so the gate can never brick startup.
@@ -47,5 +49,5 @@ Guarantees that the fact and the cause of ANY application termination — crash,
 
 ## Non-goals
 
-- No quit interception logic of its own: window-close interception lives in the exit guard (`desktop/exit_guard.go`, `OnBeforeClose` → `app:exit_requested` → frontend `ExitConfirmDialog` → `ConfirmExit`; see [../contracts/desktop-frontend.md](../contracts/desktop-frontend.md)). Every confirmed quit still funnels through `App.Shutdown`, so the closing-bracket invariant above is unaffected; an abrupt log end remains abnormal termination by construction.
+- No quit interception logic of its own: window-close interception lives in the exit guard (`desktop/exit_guard.go`, `OnBeforeClose` → `app:exit_requested` → frontend `ExitConfirmDialog` → `ConfirmExit`; see [../contracts/desktop-frontend.md](../contracts/desktop-frontend.md)). Every confirmed quit still funnels through `App.Shutdown`, so the closing-bracket invariant above is unaffected (the shutdown watchdog's forced exit is the one bounded exception, and it routes through `crashlog.ForceExit`); an abrupt log end remains abnormal termination by construction.
 - No in-process capture of pure native crashes (WebKit/ONNX) — those are covered by OS crash reports (.ips) plus the next-start marker warning.

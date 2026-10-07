@@ -127,10 +127,11 @@ type App struct {
 	// and exits, so a stuck goroutine can never keep the app alive on quit.
 	shutdownHardDeadline time.Duration
 
-	// shutdownExitFn, when non-nil, replaces os.Exit in the shutdown watchdog's
-	// expiry path. Lets tests observe the forced exit without killing the test
-	// process (same purpose as quitFn / windowShowFn). Production wiring keeps
-	// it nil, where the watchdog calls os.Exit(0).
+	// shutdownExitFn, when non-nil, replaces the forced-exit call in the
+	// shutdown watchdog's expiry path. Lets tests observe the forced exit
+	// without killing the test process (same purpose as quitFn / windowShowFn).
+	// Production wiring keeps it nil, where the watchdog calls
+	// crashlog.ForceExit(0) (marker removal + exit banner + os.Exit).
 	shutdownExitFn func(code int)
 
 	// embeddedLLMStopFn, when non-nil, replaces the backend embedded-LLM

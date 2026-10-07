@@ -5,15 +5,20 @@ acceptance scenarios, and confirm no sleep/timeout debt was added.
 
 ## Environment
 
-- c0wrk: `/home/vkochetkov/Repositories/c0wrk`, HEAD `1627a5f0` + the uncommitted
-  fix working tree (parts A–E).
-- sp4rk: `/home/vkochetkov/Repositories/sp4rk`, HEAD `0b35afe` + the uncommitted
-  fix working tree.
+- c0wrk: `/home/vkochetkov/Repositories/c0wrk`, HEAD `477a136f` — the fix commit
+  (`1627a5f0` + parts A–E).
+- sp4rk: `/home/vkochetkov/Repositories/sp4rk`, HEAD `c8cd0dd` — the fix commit
+  (`0b35afe` + the bounded tool-call / glob-walk changes).
 - `go.work` present: `use ( . ../sp4rk )`. `go list -m github.com/v0lka/sp4rk`
-  resolves to `/home/vkochetkov/Repositories/sp4rk` (local); with `GOWORK=off`
-  it resolves to the module cache pin
-  `v0.15.1-0.20261006200117-0b35afe097b3` — the **same commit** as sp4rk HEAD,
-  so there is no cross-repo drift.
+  resolves to `/home/vkochetkov/Repositories/sp4rk` (local HEAD `c8cd0dd`). With
+  `GOWORK=off` it resolves to the module cache pin
+  `v0.15.1-0.20261006200117-0b35afe097b3` (commit `0b35afe`, the **pre-fix**
+  pin), so `go.mod` still lags sp4rk HEAD by the fix commit and the tree does
+  **not** build from the pin alone (`undefined: agent.ErrToolTimeout`,
+  `builtins.GlobLimits`, `builtins.NewGlobToolWithLimits`). This is the
+  sanctioned ADR-031 cross-repo mid-cycle state; it is closed by publishing
+  sp4rk `c8cd0dd` and running `make bump` (which re-pins `go.mod` under
+  `GOWORK=off`).
 - Toolchain: Go 1.27.x, wails v2.15.0, Node 20.20.2.
 
 ## Commands
@@ -44,7 +49,7 @@ scratch `go.work`-redirected copies of sp4rk):
 
 - HEAD c0wrk + committed sp4rk → **PASS**
 - HEAD c0wrk + sp4rk working tree → **FAIL** ⇒ the regression is caused by
-  sp4rk's uncommitted changes, not c0wrk's.
+  sp4rk's fix changes (now `c8cd0dd`), not c0wrk's.
 - Reverting sp4rk `agent/executor*.go` + `orchestration/conductor.go` → **PASS**;
   keeping the agent changes and reverting only `orchestration/conductor.go` →
   **FAIL** ⇒ culprit is the new per-tool-call watchdog
@@ -64,17 +69,21 @@ non-empty). `Flush()` then persists the empty trajectory.
 
 **Remediation** (`core/conductor.go`, c0wrk): enforce the holder's own documented
 invariant — *"the persisted trajectory never goes backwards"* — by making a Sync
-unable to erase a populated trajectory with an empty one, and by snapshotting the
-guarded in-memory trajectory (so the DB write follows the same rule):
+**monotonic**: any sync shorter than the trajectory already held is ignored (an
+empty sync is just the degenerate case). A subagent shares the holder and its own
+list starts empty and grows to one or two steps, so its first non-empty sync is
+still *shorter* than the parent conductor's completed trajectory — an empty-only
+guard would let that shorter list replace the parent's checkpoint. The composite
+store also snapshots the guarded in-memory trajectory so the DB write follows the
+same rule:
 
 ```go
 func (h *trajectoryHolder) Sync(steps []agent.Step) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	// An empty sync carries no information, so ignore it when a non-empty
-	// trajectory is already held (a freshly-started subagent's first boundary
-	// sync must not erase the parent's checkpoint).
-	if len(steps) == 0 && len(h.steps) > 0 {
+	// The trajectory never shrinks: a subagent's own (short) sync must not
+	// replace the parent conductor's longer, completed trajectory.
+	if len(steps) < len(h.steps) {
 		return
 	}
 	h.steps = make([]agent.Step, len(steps))
@@ -129,6 +138,6 @@ package passes; no races/panics.
   modal, confirm the window closes) is **not runnable in this headless
   environment**. Its parts are covered by the unit tests at the exact injected
   seams: `ShouldPreventClose` (modal) and the `shutdownWatchdog.onExpiry`
-  (`os.Exit`) seam for the bounded close.
+  (`crashlog.ForceExit`) seam for the bounded close.
 - The remediation touches a shared trajectory holder; it is validated by the
   complete c0wrk Go suite (35 pkgs) and the sp4rk suite.

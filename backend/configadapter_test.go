@@ -383,10 +383,11 @@ func TestToBuilderConfig_GlobLimitsAndToolCallTimeout(t *testing.T) {
 		t.Errorf("ToolCallTimeout default = %d, want 300", got)
 	}
 
-	cfg.ToolLimits.GlobMaxEntries = 123
-	cfg.ToolLimits.GlobMaxResults = 7
-	cfg.Timeouts.GlobTimeout = 11
-	cfg.Timeouts.ToolCallTimeout = 42
+	ptr := func(v int) *int { return &v }
+	cfg.ToolLimits.GlobMaxEntries = ptr(123)
+	cfg.ToolLimits.GlobMaxResults = ptr(7)
+	cfg.Timeouts.GlobTimeout = ptr(11)
+	cfg.Timeouts.ToolCallTimeout = ptr(42)
 
 	bc = ToBuilderConfig(cfg, config.PredefinedModelProfiles())
 	if got := bc.ToolLimits.GlobMaxEntries; got != 123 {
@@ -400,6 +401,24 @@ func TestToBuilderConfig_GlobLimitsAndToolCallTimeout(t *testing.T) {
 	}
 	if got := bc.Timeouts.ToolCallTimeout; got != 42 {
 		t.Errorf("ToolCallTimeout = %d, want 42", got)
+	}
+
+	// An explicit 0 must mean "disabled/no budget", NOT the default — the
+	// documented contract that a plain int (which cannot tell absent from 0)
+	// could not honor. *int + ApplyDefaults (nil = default) make it reachable.
+	cfg.ToolLimits.GlobMaxEntries = ptr(0)
+	cfg.ToolLimits.GlobMaxResults = ptr(0)
+	cfg.Timeouts.GlobTimeout = ptr(0)
+	cfg.Timeouts.ToolCallTimeout = ptr(0)
+
+	bc = ToBuilderConfig(cfg, config.PredefinedModelProfiles())
+	if bc.ToolLimits.GlobMaxEntries != 0 || bc.ToolLimits.GlobMaxResults != 0 {
+		t.Errorf("explicit 0 glob budgets must reach the builder as 0, got entries=%d results=%d",
+			bc.ToolLimits.GlobMaxEntries, bc.ToolLimits.GlobMaxResults)
+	}
+	if bc.Timeouts.GlobTimeout != 0 || bc.Timeouts.ToolCallTimeout != 0 {
+		t.Errorf("explicit 0 timeouts must reach the builder as 0, got glob=%d toolCall=%d",
+			bc.Timeouts.GlobTimeout, bc.Timeouts.ToolCallTimeout)
 	}
 }
 

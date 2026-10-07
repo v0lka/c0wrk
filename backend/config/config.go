@@ -2235,9 +2235,10 @@ type ToolLimitsConfig struct {
 
 	// Glob limits (runaway-walk protection). Together they make a single glob
 	// walk bounded so a symlink loop or an enormous directory tree can neither
-	// hang the tool nor exhaust memory.
-	GlobMaxEntries int `yaml:"globMaxEntries"` // max filesystem entries visited per glob walk before abort (0 = no entry budget; default: 500000)
-	GlobMaxResults int `yaml:"globMaxResults"` // max matching paths collected per glob walk before abort (0 = unlimited; default: 10000)
+	// hang the tool nor exhaust memory. *int: an absent key (nil) takes the
+	// default; an explicit 0 disables the respective budget.
+	GlobMaxEntries *int `yaml:"globMaxEntries"` // max filesystem entries visited per glob walk before abort (nil = default 500000; 0 = no entry budget)
+	GlobMaxResults *int `yaml:"globMaxResults"` // max matching paths collected per glob walk before abort (nil = default 10000; 0 = unlimited)
 
 	// Per-tool Stage 1 truncation defaults (line/byte-based, applied before token budget).
 	// If omitted for a tool, no Stage 1 truncation is applied.
@@ -2252,19 +2253,19 @@ type ToolTruncationConfig struct {
 
 // TimeoutsConfig holds configurable timeout values for various operations.
 type TimeoutsConfig struct {
-	BashMaxTimeout           int `yaml:"bashMaxTimeout"`           // seconds, default: 120
-	BashWaitDelay            int `yaml:"bashWaitDelay"`            // seconds, default: 5
-	RipgrepTimeout           int `yaml:"ripgrepTimeout"`           // seconds, default: 60
-	GlobTimeout              int `yaml:"globTimeout"`              // seconds, default: 30 — wall-clock budget for a single glob walk (0 disables)
-	ToolCallTimeout          int `yaml:"toolCallTimeout"`          // seconds, default: 300 (5 min) — ceiling for a SINGLE tool call in the ReAct loop, applied to the main and every subagent executor (0 disables)
-	WebFetchTimeout          int `yaml:"webFetchTimeout"`          // seconds, default: 30
-	WebFetchProxyTimeout     int `yaml:"webFetchProxyTimeout"`     // seconds, default: 30 — per-attempt web fetch timeout used when the proxy is enabled
-	WebFetchRetries          int `yaml:"webFetchRetries"`          // retry count (not seconds) for failed web fetches; each retry doubles the active timeout (webFetchTimeout, or webFetchProxyTimeout when the proxy is on), default: 2
-	WebSearchTimeout         int `yaml:"webSearchTimeout"`         // seconds, default: 30
-	PersistenceTimeout       int `yaml:"persistenceTimeout"`       // seconds, default: 5
-	LLMRequestTimeout        int `yaml:"llmRequestTimeout"`        // seconds; the main chat loop. Under the adaptive budget (ADR-071): >0 is a FIXED, never-escalated override, 0 (the default) means "no opinion" and the trained per-model budgets govern; with the adaptive budget disabled it keeps the legacy fixed semantics (0 behaves as 600).
-	ServiceLLMRequestTimeout int `yaml:"serviceLLMRequestTimeout"` // seconds, default: 600 (10 min) — one-shot service LLM requests (session title, commit message, prompt optimization); one budget for the whole client exchange incl. auto-retry re-sends
-	GitCommitTimeout         int `yaml:"gitCommitTimeout"`         // seconds, default: 300 (5 min) — git commit spawn (rev-parse and other quick git probes keep the fast 30s timeout)
+	BashMaxTimeout           int  `yaml:"bashMaxTimeout"`           // seconds, default: 120
+	BashWaitDelay            int  `yaml:"bashWaitDelay"`            // seconds, default: 5
+	RipgrepTimeout           int  `yaml:"ripgrepTimeout"`           // seconds, default: 60
+	GlobTimeout              *int `yaml:"globTimeout"`              // seconds; wall-clock budget for a single glob walk (nil = default 30; 0 = no timeout)
+	ToolCallTimeout          *int `yaml:"toolCallTimeout"`          // seconds; ceiling for a SINGLE tool call in the ReAct loop, applied to the main and every subagent executor (nil = default 300 (5 min); 0 = disabled)
+	WebFetchTimeout          int  `yaml:"webFetchTimeout"`          // seconds, default: 30
+	WebFetchProxyTimeout     int  `yaml:"webFetchProxyTimeout"`     // seconds, default: 30 — per-attempt web fetch timeout used when the proxy is enabled
+	WebFetchRetries          int  `yaml:"webFetchRetries"`          // retry count (not seconds) for failed web fetches; each retry doubles the active timeout (webFetchTimeout, or webFetchProxyTimeout when the proxy is on), default: 2
+	WebSearchTimeout         int  `yaml:"webSearchTimeout"`         // seconds, default: 30
+	PersistenceTimeout       int  `yaml:"persistenceTimeout"`       // seconds, default: 5
+	LLMRequestTimeout        int  `yaml:"llmRequestTimeout"`        // seconds; the main chat loop. Under the adaptive budget (ADR-071): >0 is a FIXED, never-escalated override, 0 (the default) means "no opinion" and the trained per-model budgets govern; with the adaptive budget disabled it keeps the legacy fixed semantics (0 behaves as 600).
+	ServiceLLMRequestTimeout int  `yaml:"serviceLLMRequestTimeout"` // seconds, default: 600 (10 min) — one-shot service LLM requests (session title, commit message, prompt optimization); one budget for the whole client exchange incl. auto-retry re-sends
+	GitCommitTimeout         int  `yaml:"gitCommitTimeout"`         // seconds, default: 300 (5 min) — git commit spawn (rev-parse and other quick git probes keep the fast 30s timeout)
 	// AdaptiveBudget configures the adaptive per-model LLM request budget
 	// (ADR-071). See AdaptiveBudgetConfig.
 	AdaptiveBudget AdaptiveBudgetConfig `yaml:"adaptive_budget"`
@@ -2281,15 +2282,15 @@ type TimeoutsConfig struct {
 type ShutdownConfig struct {
 	// HardDeadline is the total budget, in seconds, for the whole Shutdown
 	// teardown. When exceeded the desktop layer logs at Error and exits the
-	// process immediately. 0 / omitted = default 20.
+	// process immediately. 0 / omitted = default 60.
 	//
-	// Note for operators running the embedded local model: the embedded-server
-	// stop is itself bounded but has a larger legitimate ceiling (up to ~46 s
-	// when a quit races an in-flight cold load holding the supervisor gate).
-	// A hardDeadline shorter than that truncates that stop — the process still
-	// exits, but the detached llama-server may outlive it, exactly the one
-	// quit outcome the embedded teardown cannot otherwise produce. Raise this
-	// above the embedded stop ceiling if that matters on your machine.
+	// The default deliberately sits above the embedded local model's stop
+	// ceiling: the embedded-server stop is itself bounded but can legitimately
+	// take up to ~46 s when a quit races an in-flight cold load holding the
+	// supervisor gate. A hardDeadline shorter than that truncates that stop —
+	// the process still exits, but the detached llama-server may outlive it,
+	// exactly the one quit outcome the embedded teardown cannot otherwise
+	// produce. Lower it only if a short forced exit matters more than that.
 	HardDeadline int `yaml:"hardDeadline"`
 }
 

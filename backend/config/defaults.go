@@ -62,6 +62,11 @@ var defaultModelProfilesAlwaysPresent = []string{
 	"finish",
 }
 
+// intPtr returns a pointer to v. It is the constructor for the *int config
+// knobs whose documented contract distinguishes an absent key (nil → default)
+// from an explicit zero ("0 disables"); a plain int cannot express that.
+func intPtr(v int) *int { return &v }
+
 // ApplyDefaults sets default values for zero-value fields in the configuration.
 func ApplyDefaults(cfg *Config) {
 	// Log level defaults to INFO — the production default. DEBUG is verbose
@@ -339,11 +344,15 @@ func ApplyDefaults(cfg *Config) {
 		cfg.ToolLimits.WebSearchMaxResults = 5
 	}
 	// Glob limits (runaway-walk protection): mirrors builtins.DefaultGlobLimits.
-	if cfg.ToolLimits.GlobMaxEntries == 0 {
-		cfg.ToolLimits.GlobMaxEntries = 500000
+	// The fields are *int so an explicit `0` means "disabled/no budget" while an
+	// absent key (nil) takes the default — following the llmRequestTimeout
+	// precedent for a knob documented as "0 disables". A plain int cannot tell
+	// "absent" from "explicit 0", so it could never honor that contract.
+	if cfg.ToolLimits.GlobMaxEntries == nil {
+		cfg.ToolLimits.GlobMaxEntries = intPtr(500000)
 	}
-	if cfg.ToolLimits.GlobMaxResults == 0 {
-		cfg.ToolLimits.GlobMaxResults = 10000
+	if cfg.ToolLimits.GlobMaxResults == nil {
+		cfg.ToolLimits.GlobMaxResults = intPtr(10000)
 	}
 
 	// Per-tool Stage 1 truncation defaults (applied before token budget).
@@ -375,11 +384,13 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.Timeouts.RipgrepTimeout == 0 {
 		cfg.Timeouts.RipgrepTimeout = 60
 	}
-	if cfg.Timeouts.GlobTimeout == 0 {
-		cfg.Timeouts.GlobTimeout = 30
+	// GlobTimeout / ToolCallTimeout are *int for the same reason as the glob
+	// budgets above: nil = absent → default, explicit 0 = "disabled/no budget".
+	if cfg.Timeouts.GlobTimeout == nil {
+		cfg.Timeouts.GlobTimeout = intPtr(30)
 	}
-	if cfg.Timeouts.ToolCallTimeout == 0 {
-		cfg.Timeouts.ToolCallTimeout = 300
+	if cfg.Timeouts.ToolCallTimeout == nil {
+		cfg.Timeouts.ToolCallTimeout = intPtr(300)
 	}
 	if cfg.Timeouts.WebFetchTimeout == 0 {
 		cfg.Timeouts.WebFetchTimeout = 30
@@ -416,9 +427,11 @@ func ApplyDefaults(cfg *Config) {
 
 	// Shutdown defaults: the hard teardown watchdog. It is the last-resort
 	// bound so the process always exits; a broken cancellation path that
-	// ignores the per-step budgets must not keep the app alive forever.
+	// ignores the per-step budgets must not keep the app alive forever. 60 s
+	// sits above the embedded local model's worst-case stop ceiling (~46 s), so
+	// a normal quit during a cold load is not force-exited mid-stop.
 	if cfg.Shutdown.HardDeadline == 0 {
-		cfg.Shutdown.HardDeadline = 20
+		cfg.Shutdown.HardDeadline = 60
 	}
 
 	// Orchestration defaults

@@ -70,8 +70,14 @@ func TestRegisterBuiltinTools_GlobLimitsReachGlobTool(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Execute: %v", err)
 		}
-		if !res.IsError || !strings.Contains(res.Content, "matched 1 or more results") {
-			t.Fatalf("expected the MaxResults=1 limit to fire, got IsError=%v content=%q", res.IsError, res.Content)
+		// A bound that fires is a non-error warning, not a failure: the matches
+		// already collected are returned with a truncation suffix rather than
+		// discarded.
+		if res.IsError {
+			t.Fatalf("a bound abort must not be an error result, got content=%q", res.Content)
+		}
+		if !strings.Contains(res.Content, "results limited to 1") {
+			t.Fatalf("expected the MaxResults=1 limit to fire, got content=%q", res.Content)
 		}
 	})
 

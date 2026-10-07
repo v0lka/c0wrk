@@ -76,6 +76,16 @@ func TestCancelTask_TimeoutForcesTerminalState(t *testing.T) {
 	if n := countEvents(eventChan, "task_cancelled"); n != 1 {
 		t.Errorf("expected one task_cancelled event on stuck cancel, got %d", n)
 	}
+
+	// The forced path must mark the run force-terminated in the SAME claim that
+	// owns the terminal emission, so the settling goroutine's deactivation
+	// keeps (rather than discards) a live message queued after the cancel.
+	sess.mu.Lock()
+	forced := sess.forceTerminated
+	sess.mu.Unlock()
+	if !forced {
+		t.Error("the forced terminal path must mark the run force-terminated")
+	}
 }
 
 // TestCancelTask_FastStopDoesNotForceTerminalState verifies the normal path is
@@ -123,7 +133,7 @@ func TestCancelTask_FastStopDoesNotForceTerminalState(t *testing.T) {
 }
 
 // TestActiveSessions_FlagsHungSessions verifies the close-guard payload flags a
-// session whose stop/pause request has gone unanswered past the threshold,
+// session whose stop request has gone unanswered past the threshold,
 // while a session with no pending request (or a fresh one) is not flagged.
 func TestActiveSessions_FlagsHungSessions(t *testing.T) {
 	manager, _, _ := testManager(t)
@@ -154,5 +164,47 @@ func TestActiveSessions_FlagsHungSessions(t *testing.T) {
 	}
 	if byID["fresh"].Hung {
 		t.Error("a session whose stop was just requested must not yet be flagged hung")
+	}
+}
+
+// TestDeactivateSessionTask_ForceTerminatedKeepsLiveMessages pins the #2
+// follow-up: after a Stop force-terminated a stuck run (its terminal event was
+// emitted while the goroutine was still stuck), a live message the user queued
+// after that arrived AFTER the cancel was reported, so the goroutine's eventual
+// deactivation must KEEP it queued for the next task instead of discarding it
+// with the dead run.
+func TestDeactivateSessionTask_ForceTerminatedKeepsLiveMessages(t *testing.T) {
+	manager, sess, orch, _, _ := newCompactionTestManager(t)
+
+	sess.mu.Lock()
+	sess.active = true
+	sess.forceTerminated = true
+	sess.mu.Unlock()
+	orch.QueueLiveUserMessage("sent after the forced stop")
+	orch.QueueLiveUserMessage("and another")
+
+	manager.deactivateSessionTask(sess, liveActionDiscard)
+
+	if queued := orch.TakeLiveUserMessages(); len(queued) != 2 {
+		t.Fatalf("a force-terminated run must keep the post-cancel live messages, got %q", queued)
+	}
+}
+
+// TestDeactivateSessionTask_NormalCancelDiscards is the control for the test
+// above: a plain (non-forced) user cancel still discards the live queue, so an
+// undelivered message in a genuinely cancelled exchange does not leak into a
+// future request.
+func TestDeactivateSessionTask_NormalCancelDiscards(t *testing.T) {
+	manager, sess, orch, _, _ := newCompactionTestManager(t)
+
+	sess.mu.Lock()
+	sess.active = true
+	sess.mu.Unlock()
+	orch.QueueLiveUserMessage("queued mid-run")
+
+	manager.deactivateSessionTask(sess, liveActionDiscard)
+
+	if queued := orch.TakeLiveUserMessages(); len(queued) != 0 {
+		t.Fatalf("a normal cancel must discard the live queue, got %q", queued)
 	}
 }
