@@ -214,6 +214,11 @@ func (f *FrontendAPI) CreateManagedSession(branch string, createBranch bool, sta
 		}
 		return nil, fmt.Errorf("failed to persist managed session binding: %w", err)
 	}
+	// Seed the tree's embedding cache from the checkout's — after the success
+	// point (a failed creation must leave no seeded state) and before the RPC
+	// returns (the frontend switches to the new session immediately, and that
+	// focus move builds the tree's vector manager with this cache root).
+	f.seedWorktreeEmbeddingCache(projectID, treeName)
 	return info, nil
 }
 
@@ -280,6 +285,11 @@ func (f *FrontendAPI) forkManagedSession(ctx context.Context, src *session.Sessi
 		f.compensateProvisionedTree(provisionCtx, repoRoot, treeName, "fork persistence failed")
 		return nil, err
 	}
+	// Same contract as CreateManagedSession: after the success point, before
+	// the RPC returns and the frontend focuses the fork's tree. A fork's tree
+	// starts at the source's committed HEAD, so the checkout cache is a
+	// near-perfect match for its first index pass.
+	f.seedWorktreeEmbeddingCache(src.ProjectID, treeName)
 	return info, nil
 }
 

@@ -3,9 +3,12 @@ package backend
 import (
 	"context"
 	"errors"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/project"
@@ -138,6 +141,145 @@ func (f *FrontendAPI) deleteWorktreeVectorIndex(repoRoot, projectID, name string
 				"project", projectID, "worktree", name, "error", err)
 		}
 	}
+}
+
+// seedWorktreeEmbeddingCache populates a freshly provisioned worktree's
+// content-addressed embedding cache from the project checkout's cache, so the
+// tree's first index pass reuses the embeddings the checkout already computed
+// instead of re-running ONNX inference over near-identical content. A session
+// worktree is 99-100% byte-identical to the branch point, and the cache — not
+// the branch collections — is the layer where that identity is reusable:
+// entries are keyed by (format version, embedding fingerprint, chunk text
+// hash) with paths deliberately excluded from the key, and every embed path
+// (full or incremental) consults the cache before the model.
+//
+// Correctness: entries carry a trailing checksum, so a partially copied or
+// torn file decodes as a cold miss, never as a wrong vector; the fingerprint
+// covers the model/tokenizer bytes and every vector-producing parameter, so a
+// model swap turns the seed into dead weight the per-root FIFO prune evicts.
+// The per-tree cache keeps its single-owner-directory model (ADR-081): the
+// seed runs once, synchronously, in the provisioning RPC — after the session
+// row is persisted and before the RPC returns, so the frontend's immediate
+// focus move cannot build the tree's vector manager (and install its cache
+// instance) until the copied state is already in place. The checkout's
+// manager may concurrently write or prune the source; the tolerant copier
+// treats a vanished or unreadable entry as the cold miss it is.
+//
+// Contract: best-effort and idempotent — never fails the caller. A skipped or
+// partial seed only means the tree's first index pass runs cold. Call from
+// the provisioning flows after their success point (create and fork); the
+// recreate path needs no call (its cache root survives the lost tree).
+func (f *FrontendAPI) seedWorktreeEmbeddingCache(projectID, worktreeName string) {
+	src := config.ProjectEmbeddingCachePath(f.agentDir, projectID)
+	dst, err := config.WorktreeEmbeddingCachePath(f.agentDir, projectID, worktreeName)
+	if err != nil {
+		f.log().Debug("vector index: cannot derive worktree cache path for seeding",
+			"project", projectID, "worktree", worktreeName, "error", err)
+		return
+	}
+	srcInfo, err := os.Stat(src)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			f.log().Debug("vector index: checkout embedding cache unreadable; seed skipped",
+				"project", projectID, "worktree", worktreeName, "error", err)
+		}
+		return
+	}
+	if !srcInfo.IsDir() {
+		return
+	}
+	if _, err := os.Stat(dst); err == nil {
+		// Already seeded (or the tree's manager created the root): never
+		// touch an existing cache directory.
+		return
+	} else if !os.IsNotExist(err) {
+		f.log().Warn("vector index: worktree embedding cache state unreadable; seed skipped",
+			"project", projectID, "worktree", worktreeName, "error", err)
+		return
+	}
+	if err := os.MkdirAll(dst, 0o750); err != nil {
+		f.log().Debug("vector index: cannot create worktree embedding cache; seed skipped",
+			"project", projectID, "worktree", worktreeName, "error", err)
+		return
+	}
+
+	started := time.Now()
+	files, bytes, err := copyEmbeddingCacheTree(src, dst)
+	if err != nil {
+		f.log().Warn("vector index: worktree embedding cache seed incomplete; the tree's first index pass stays cold",
+			"project", projectID, "worktree", worktreeName,
+			"files", files, "bytes", bytes, "error", err)
+		return
+	}
+	f.log().Info("vector index: seeded worktree embedding cache from the project checkout",
+		"project", projectID, "worktree", worktreeName,
+		"files", files, "bytes", bytes, "duration", time.Since(started))
+}
+
+// copyEmbeddingCacheTree mirrors src's fanout tree (two-level hex dirs of
+// .vec entries; only regular files are meaningful) into dst, which must not
+// exist. Tolerant by design: the source is a live cache the checkout's
+// manager may be writing or pruning concurrently, so per-file failures are
+// skipped — a missing entry is a cold miss downstream, and a torn copy fails
+// the entry's checksum at read time. Directory and file modes match the
+// cache's own writer (0o750 dirs, 0o600 files). Returns the copied entry
+// count and byte size; the error is the first fatal walk error (an unreadable
+// source directory), not a per-file skip.
+func copyEmbeddingCacheTree(src, dst string) (filesCopied int, bytesCopied int64, err error) {
+	err = filepath.WalkDir(src, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			if path == src {
+				return walkErr // unreadable source root: nothing sensible to copy
+			}
+			return nil //nolint:nilerr // a vanished subtree is a skip, not a failure
+		}
+		rel, relErr := filepath.Rel(src, path)
+		if relErr != nil {
+			return nil //nolint:nilerr // cannot express the entry relative to src: skip it
+		}
+		if d.IsDir() {
+			if path == src {
+				return nil // dst root already exists
+			}
+			return os.MkdirAll(filepath.Join(dst, rel), 0o750)
+		}
+		if !d.Type().IsRegular() {
+			return nil // caches hold only regular entries; skip anything else
+		}
+		info, infoErr := d.Info()
+		if infoErr != nil {
+			return nil //nolint:nilerr // the entry vanished between ReadDir and Info: cold miss
+		}
+		if copyErr := copyFileExact(filepath.Join(dst, rel), path, info.Mode().Perm()); copyErr != nil {
+			return nil //nolint:nilerr // unreadable or just-pruned source entry: cold miss
+		}
+		filesCopied++
+		bytesCopied += info.Size()
+		return nil
+	})
+	return filesCopied, bytesCopied, err
+}
+
+// copyFileExact copies one regular file, creating dstPath exclusively with
+// the source's permission bits. A failed copy removes the partial so the
+// destination never holds a half-written entry under a name a later copy
+// would consider done.
+func copyFileExact(dstPath, srcPath string, perm os.FileMode) error {
+	in, err := os.Open(srcPath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = in.Close() }()
+	out, err := os.OpenFile(dstPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		_ = os.Remove(dstPath)
+		return err
+	}
+	return out.Close()
 }
 
 // SearchVectorStore searches the vector store for the given request, routed

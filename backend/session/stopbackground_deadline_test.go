@@ -49,8 +49,8 @@ func (c *messageCapture) snapshot() []string {
 // TestStopBackground_DrainLoopBoundedByDeadline verifies that the blackboard
 // drain loop is BOUNDED: it returns instead of spinning when the shared
 // deadline has already elapsed. The single registered blackboard is drained on
-// the first (and only) pass, and the pre-expired zero budget makes the deadline
-// branch fire on that pass, so stopBackground returns with the WARN.
+// the first (and only) pass, and the pre-expired (negative) budget makes the
+// deadline branch fire on that pass, so stopBackground returns with the WARN.
 //
 // What this test does NOT exercise: the multi-pass shape where a straggler
 // re-registers a blackboard after the first snapshot (the re-drain the branch
@@ -60,11 +60,16 @@ func (c *messageCapture) snapshot() []string {
 // bounded by the same `time.Now().After(deadline)` check this test exercises.
 func TestStopBackground_DrainLoopBoundedByDeadline(t *testing.T) {
 	manager, _, _ := testManager(t)
-	// A zero budget makes the shared deadline already expired when the drain
-	// loop runs, so the single pass drains immediately (a non-positive remainder
-	// makes pb.Shutdown return at once) and the deadline branch then fires
-	// deterministically.
-	manager.stopTimeout = 0
+	// A negative budget puts the shared deadline strictly in the past, so the
+	// single pass drains immediately (a non-positive remainder makes
+	// pb.Shutdown return at once) and the deadline branch then fires
+	// deterministically. A plain zero budget is NOT enough for that: the
+	// branch compares with a strict After, and on a coarse monotonic clock
+	// (Windows ticks at ~0.5 ms) the whole drain can land inside the
+	// deadline's own tick — the branch then never fires and the loop exits
+	// through the empty-registry check without the WARN this test asserts
+	// (seen on a CI windows runner).
+	manager.stopTimeout = -time.Millisecond
 
 	capture := &messageCapture{}
 	manager.SetLogger(slog.New(capture))

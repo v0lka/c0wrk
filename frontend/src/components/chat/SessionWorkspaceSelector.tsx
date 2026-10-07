@@ -24,8 +24,15 @@ import { useExperimentalStore } from '@/stores/experimentalStore'
  *   commit (first send / attachment / terminal open) via
  *   CreateManagedSession, never as an in-place checkout.
  * - Once a session exists, the selector shows that session's pinned
- *   workspace read-only — the branch/workspace is immutable for an existing
- *   session (chosen only at creation).
+ *   workspace as a permanently DISABLED button — the branch/workspace is
+ *   immutable for an existing session (chosen only at creation), so choosing
+ *   another one is impossible forever. The disabled state must state itself
+ *   (dimmed, cursor-not-allowed, native disabled semantics) instead of an
+ *   enabled-looking control that silently swallows clicks. It is
+ *   unconditional: it deliberately ignores the transient `disabled` prop
+ *   (the mid-task selector lock) — that lock lifts when the task settles,
+ *   while the pin never does, so the button stays disabled across chat
+ *   continuations for the session's whole lifetime.
  *
  * The whole picker/display is an EXPERIMENTAL surface behind the master
  * experimental switch (`experimental.enabled`): it renders nothing while that
@@ -74,9 +81,15 @@ export function SessionWorkspaceSelector({ disabled = false }: { disabled?: bool
 
   if (activeProjectId === null || isNoProject) return null
 
-  // An existing session pins its workspace read-only. While the session list
-  // has not loaded the entry yet (transient switch window), render nothing
-  // rather than guess the binding.
+  // An existing session pins its workspace: the binding is immutable after
+  // creation (ADR-080), so choosing another branch/workspace is impossible —
+  // forever, chat continuations included. The pin renders as a PERMANENTLY
+  // DISABLED button rather than an enabled-looking non-interactive element:
+  // the disabled state must be visible up front, not discovered by clicks
+  // that go nowhere. It deliberately ignores the transient `disabled` prop
+  // (the mid-task selector lock) — that lock lifts when the task settles;
+  // the pin never does. While the session list has not loaded the entry yet
+  // (transient switch window), render nothing rather than guess the binding.
   if (activeSessionId !== null) {
     const activeSession = sessions?.find((s) => s.id === activeSessionId) ?? null
     if (!activeSession) return null
@@ -84,7 +97,9 @@ export function SessionWorkspaceSelector({ disabled = false }: { disabled?: bool
     const isManaged = binding?.kind === 'managed_worktree'
     const label = isManaged ? binding?.branch || 'branch' : 'local'
     return (
-      <span
+      <button
+        type="button"
+        disabled
         data-testid="session-workspace-readonly"
         aria-label={`Session workspace: ${label}`}
         title={
@@ -94,7 +109,8 @@ export function SessionWorkspaceSelector({ disabled = false }: { disabled?: bool
         }
         className={cn(
           'flex items-center gap-1 px-2 py-1 text-xs rounded-md border border-input bg-background',
-          'text-muted-foreground max-w-[200px]',
+          'text-muted-foreground max-w-[200px] truncate',
+          'disabled:opacity-50 disabled:cursor-not-allowed',
         )}
       >
         {isManaged ? (
@@ -103,7 +119,7 @@ export function SessionWorkspaceSelector({ disabled = false }: { disabled?: bool
           <FolderTree className="size-3 shrink-0" />
         )}
         <span className="truncate">{label}</span>
-      </span>
+      </button>
     )
   }
 
