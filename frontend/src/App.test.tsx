@@ -34,6 +34,11 @@ vi.mock('@/components/research/ResearchEventBridge', () => ({ ResearchEventBridg
 vi.mock('@/hooks/useUpdateChecker', () => ({ useUpdateChecker: () => {} }))
 vi.mock('@/hooks/useExitGuard', () => ({ useExitGuard: () => {} }))
 vi.mock('@/hooks/useGitFocusRefresh', () => ({ useGitFocusRefresh: () => {} }))
+// Mounted at the App root (beside useVectorIndexStatus); its own behavior is
+// covered by hooks/useGitFocusSync.test.tsx. Stubbed here so the App mount
+// does not pull @/lib/gitFocus (→ api/git + api/workspace → the wails
+// bridge) into this audio-unlock-only suite.
+vi.mock('@/hooks/useGitFocusSync', () => ({ useGitFocusSync: () => {} }))
 vi.mock('@/hooks/useWindowTitle', () => ({ useWindowTitle: () => {} }))
 vi.mock('@/hooks/useProjectLoader', () => ({ useProjectLoader: () => {} }))
 vi.mock('@/hooks/useSessionLoader', () => ({ useSessionLoader: () => {} }))

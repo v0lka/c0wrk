@@ -3,8 +3,10 @@
 // re-applies the session-default focus (the active session's execution
 // workspace — the managed tree of a managed session, the checkout for a
 // local session) on the backend and refreshes the mirrored focus/worktree
-// state. Mounted exactly once inside the Git panel (beside
-// useGitStatusEvents), so the effect never races a second copy of itself.
+// state. Mounted exactly once at the App root (beside
+// useVectorIndexStatus) — the Git panel exists only while the workspace's
+// git tab is active, so a panel-level mount would miss chat-area session
+// switches — and the effect never races a second copy of itself.
 
 import { useEffect } from 'react'
 import { clearGitFocusState, focusSessionWorkspace } from '@/lib/gitFocus'
