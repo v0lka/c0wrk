@@ -970,16 +970,37 @@ func stageFakeRuntime(t *testing.T, body string) string {
 func warmStagedRuntime(t *testing.T, script string) {
 	t.Helper()
 
-	if err := exec.CommandContext(t.Context(), script).Run(); err != nil {
-		// The warm-up is about the kernel's first-exec cost, not the script's
-		// exit status: a script that deliberately exits nonzero still warms the
-		// inode, so its own ExitError is expected and fine.
-		var exitErr *exec.ExitError
-		if !errors.As(err, &exitErr) {
-			t.Fatalf("warming the staged runtime %s: %v", script, err)
+	// The first exec can additionally be refused with the transient ETXTBSY
+	// that runProbeCommand already absorbs (isTransientExecError): the kernel
+	// refuses execve while any writer still holds the file open, and the
+	// staging write only just closed its own descriptor — a CI linux runner
+	// hit exactly this on the very first attempt. The refusal is raised
+	// before the child runs, so a retry cannot repeat a side effect. The
+	// retries are a tight loop on purpose: a refused attempt costs one failed
+	// execve and the condition clears the moment the writer's close settles,
+	// while a sleep would be exactly the timing debt the suite guard rejects.
+	var err error
+	for attempt := 1; ; attempt++ {
+		err = exec.CommandContext(t.Context(), script).Run()
+		if !isTransientExecError(err) || attempt >= warmExecAttempts {
+			break
 		}
 	}
+	// The warm-up is about the kernel's first-exec cost, not the script's
+	// exit status: a script that deliberately exits nonzero still warms the
+	// inode, so its own ExitError is expected and fine.
+	var exitErr *exec.ExitError
+	if err != nil && !errors.As(err, &exitErr) {
+		t.Fatalf("warming the staged runtime %s: %v", script, err)
+	}
 }
+
+// warmExecAttempts bounds the ETXTBSY retry in warmStagedRuntime. The refusal
+// is transient by construction — it ends when the last writer's descriptor is
+// gone, and stageFakeRuntime closed its own before returning — so in practice
+// the next attempt succeeds; the bound only keeps a pathological external
+// writer from spinning the test forever.
+const warmExecAttempts = 16
 
 // TestProbeDevicesSpawnsTheListDevicesProbe is the end-to-end happy path: the
 // flag the probe uses, the inventory it returns, and the stamp it applies.
