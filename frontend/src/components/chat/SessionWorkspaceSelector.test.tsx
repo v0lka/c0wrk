@@ -5,8 +5,10 @@
 // gate is off; interactive draft state (`local`
 // default, branch display, `branch…` opens the picker in draft mode and arms
 // the draft when missing, non-git projects hide `branch…`, choosing local
-// resets a branch draft); read-only pinned display for existing managed and
-// local sessions; draft retirement when a session becomes active.
+// resets a branch draft); permanently disabled pinned button for existing
+// managed and local sessions — the pin ignores the transient selector lock,
+// so it stays disabled across chat continuations; draft retirement when a
+// session becomes active.
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { act } from 'react'
@@ -56,7 +58,7 @@ function makeSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
   }
 }
 
-function renderSelector() {
+function renderSelector(props: { disabled?: boolean } = {}) {
   container = document.createElement('div')
   document.body.appendChild(container)
   const r = createRoot(container)
@@ -64,7 +66,7 @@ function renderSelector() {
   act(() => {
     r.render(
       <TooltipProvider>
-        <SessionWorkspaceSelector />
+        <SessionWorkspaceSelector {...props} />
       </TooltipProvider>,
     )
   })
@@ -85,8 +87,8 @@ function trigger(): HTMLButtonElement | null {
   return body().querySelector<HTMLButtonElement>('[data-testid="session-workspace-selector"]')
 }
 
-function readOnly(): HTMLElement | null {
-  return body().querySelector<HTMLElement>('[data-testid="session-workspace-readonly"]')
+function readOnly(): HTMLButtonElement | null {
+  return body().querySelector<HTMLButtonElement>('[data-testid="session-workspace-readonly"]')
 }
 
 function menuItem(testId: string): HTMLElement | null {
@@ -160,7 +162,7 @@ describe('SessionWorkspaceSelector', () => {
     expect(trigger()).toBeNull()
     expect(readOnly()).toBeNull()
 
-    // The pinned read-only display for an existing session is gated the same way.
+    // The pinned disabled button for an existing session is gated the same way.
     act(() => {
       useSessionStore.setState({
         activeSessionId: 's-m',
@@ -243,7 +245,7 @@ describe('SessionWorkspaceSelector', () => {
     expect(menuItem('workspace-option-branch')).toBeNull()
   })
 
-  it('managed session: shows the pinned branch read-only', () => {
+  it('managed session: shows the pinned branch as a permanently disabled button', () => {
     useSessionStore.setState({
       activeSessionId: 's-m',
       sessions: [
@@ -262,11 +264,17 @@ describe('SessionWorkspaceSelector', () => {
 
     const chip = readOnly()
     expect(chip).not.toBeNull()
+    // A real disabled button, not an enabled-looking passive element: the
+    // disabled state must be visible up front, not discovered by clicks that
+    // go nowhere.
+    expect(chip!.tagName).toBe('BUTTON')
+    expect(chip!.disabled).toBe(true)
+    expect(chip!.className).toContain('cursor-not-allowed')
     expect(chip!.textContent).toContain('feat/pinned')
     expect(trigger()).toBeNull()
   })
 
-  it('local session: shows local read-only', () => {
+  it('local session: shows local as a permanently disabled button', () => {
     useSessionStore.setState({
       activeSessionId: 's-l',
       sessions: [makeSession({ id: 's-l', workspace_binding: { kind: 'local', workspace_path: '/w/proj' } })],
@@ -275,7 +283,37 @@ describe('SessionWorkspaceSelector', () => {
 
     const chip = readOnly()
     expect(chip).not.toBeNull()
+    expect(chip!.tagName).toBe('BUTTON')
+    expect(chip!.disabled).toBe(true)
     expect(chip!.textContent).toContain('local')
+  })
+
+  it('pinned button stays disabled across chat continuations (ignores the transient selector lock)', () => {
+    // The mid-task selector lock (the `disabled` prop) lifts when the task
+    // settles — that is exactly when a chat continuation becomes possible.
+    // The pin must not lift with it: the workspace binding is immutable for
+    // the session's whole lifetime, so the button stays disabled even though
+    // the transient lock is gone.
+    useSessionStore.setState({
+      activeSessionId: 's-m',
+      sessions: [
+        makeSession({
+          id: 's-m',
+          workspace_binding: {
+            kind: 'managed_worktree',
+            workspace_path: '/w/proj/.worktrees/s-abcd1234',
+            worktree_name: 's-abcd1234',
+            branch: 'feat/pinned',
+          },
+        }),
+      ],
+    })
+    renderSelector({ disabled: false })
+
+    const chip = readOnly()
+    expect(chip).not.toBeNull()
+    expect(chip!.tagName).toBe('BUTTON')
+    expect(chip!.disabled).toBe(true)
   })
 
   it('selecting a session retires an armed draft', async () => {
