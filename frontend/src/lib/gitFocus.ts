@@ -2,8 +2,8 @@
 // React-free module that moves the panel's focus target on the backend and
 // mirrors the resolved state into gitPanelStore. Components import these
 // plain async functions (single instances, no duplicated effects); the
-// follow-the-session effect lives in useGitFocusSync, mounted once inside
-// the Git panel.
+// follow-the-session effect lives in useGitFocusSync, mounted once at the
+// App root.
 
 import { logger } from '@/lib/logger'
 import { getGitPanelFocus, listProjectWorktrees, setGitPanelFocus } from '@/api/git'

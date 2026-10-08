@@ -152,7 +152,9 @@ func (f *FrontendAPI) gitFocusPathSnapshot() string {
 // itself, an app-managed session tree, or an external linked tree — and is
 // validated against the live `git worktree list` before being stored.
 // Emits git:status_changed for the new target so the panel refreshes its
-// status/branch/branch-list from the focused tree. Returns an error when no
+// status/branch/branch-list from the focused tree, and moves the vector
+// registry's focus to the same root so the user-facing index identity
+// follows the panel (focusVectorRoots; fail-soft). Returns an error when no
 // project is active, the project is No Project, the listing fails, or the
 // path is not a worktree of the active project.
 func (f *FrontendAPI) SetGitPanelFocus(worktreePath string) error {
@@ -163,6 +165,10 @@ func (f *FrontendAPI) SetGitPanelFocus(worktreePath string) error {
 	target := strings.TrimSpace(worktreePath)
 	if target == "" {
 		f.setGitFocusPath("")
+		// The reset lands on the default target — the project checkout —
+		// NOT LeaveFocus: the visible index identity follows the checkout
+		// rather than going blank.
+		f.focusVectorRoots(projectPath)
 		f.emitGitStatusChanged(projectPath)
 		return nil
 	}
@@ -179,8 +185,23 @@ func (f *FrontendAPI) SetGitPanelFocus(worktreePath string) error {
 		return fmt.Errorf("%w: %s is not a worktree of the active project", workspace.ErrWorktreeNotLinked, abs)
 	}
 	f.setGitFocusPath(entry.Path)
+	f.focusVectorRoots(entry.Path)
 	f.emitGitStatusChanged(entry.Path)
 	return nil
+}
+
+// focusVectorRoots re-points the vector registry at the new Git-panel focus
+// root so the user-facing index identity (status RPC, SearchVectorStore,
+// manual reindex, the vector_index:status stream) follows the panel focus —
+// the documented "USER routing resolves the Git-panel focus root" contract.
+// Fail-soft, mirroring switchProjectSetupVector: a focus that cannot be
+// indexed (manager factory still unwired during the startup race,
+// unresolvable root) is logged at Warn and never fails the git RPC — the
+// vector_index:status stream carries the actionable state instead.
+func (f *FrontendAPI) focusVectorRoots(root string) {
+	if err := f.vectorRootsRegistry().ApplyFocus(canonicalRoot(root)); err != nil {
+		f.log().Warn("vector focus unavailable for git panel target", "root", root, "error", err)
+	}
 }
 
 // GetGitPanelFocus returns the resolved focus target with its

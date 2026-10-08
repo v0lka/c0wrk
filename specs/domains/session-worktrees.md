@@ -27,11 +27,11 @@ git RPC, the worktree listing RPC, and the pinned-branch refusal).
 - `backend/session/persistence_fork.go` — `ForkSessionWithBinding` (managed fork requires a new tree + derived branch)
 - `backend/session/manager.go` — `CreateSessionFromDraft` (commit a prepared workspace), `SetWorkspaceEnsurer` + the restore-time ensure inside `getOrRestoreSession`'s single-flight, `HasSession` (non-restoring existence), binding-aware lazy restore and `WorkspacePathFor`
 - `backend/config/paths.go` — `ManagedWorktreesDir`, `ManagedWorktreePath` (the only place `.worktrees` paths are constructed or validated)
-- `backend/frontend_api_git_focus.go` — the Git-panel focus model: `SetGitPanelFocus`/`GetGitPanelFocus`/`ListProjectWorktrees` RPCs, `resolveGitFocusRoot` (the focus resolution behind `resolveGitRepoRoot`), owning-session metadata, and the pinned-branch guard (`ErrPinnedWorktreeBranch`, `refusePinnedBranchSwitch`)
+- `backend/frontend_api_git_focus.go` — the Git-panel focus model: `SetGitPanelFocus`/`GetGitPanelFocus`/`ListProjectWorktrees` RPCs, `resolveGitFocusRoot` (the focus resolution behind `resolveGitRepoRoot`), owning-session metadata, the pinned-branch guard (`ErrPinnedWorktreeBranch`, `refusePinnedBranchSwitch`), and the fail-soft vector-registry re-point every accepted focus move carries (`focusVectorRoots` → `ApplyFocus`)
 - `backend/frontend_api_vector.go` — vector-index RPC surface (`SearchVectorStore`/`GetVectorIndexStatus`/`ReindexVectorIndex`, all routed to the Git-panel FOCUS root), focus-target resolution (`resolveVectorIndexTarget` — the project switch resolves the saved session's tree), worktree-scoped storage (`config.WorktreeVectorIndexPath`), release cleanup (`deleteWorktreeVectorIndex`: registry release → storage → per-tree cache) and provisioning seeding (`seedWorktreeEmbeddingCache`: copies the checkout's embedding cache into a fresh tree's cache root)
 - `backend/vector_roots.go` — the per-root registry (ADR-081): one `vectorindex.Manager` per workspace root (single-flight creation, LRU-bounded live set with the focus pinned), agent-side routing by the executor context's workspace root, `ApplyFocus`/`LeaveFocus`, `Release`/`ReleaseProject`/`ShutdownAll`, and `Application.buildVectorRouter` (the shared search closures)
 - `core/vectorindex/git.go` — `resolveGitDir` follows a linked worktree's `.git` pointer file to the private git directory that owns HEAD, so the vector index's branch monitoring works inside managed trees; `backend/config/paths.go` `ManagedWorktreeNameFromPath`/`WorktreeVectorIndexPath` derive the per-tree index storage
-- `frontend/src/lib/gitFocus.ts` + `frontend/src/hooks/useGitFocusSync.ts` — the frontend side: serialized/supersede-guarded focus applies and the follow-the-session effect (project/session switches move the focus to the active session's execution workspace)
+- `frontend/src/lib/gitFocus.ts` + `frontend/src/hooks/useGitFocusSync.ts` — the frontend side: serialized/supersede-guarded focus applies and the follow-the-session effect (project/session switches move the focus to the active session's execution workspace); the hook is mounted once at the App root (beside `useVectorIndexStatus`) — the Git panel lives only while the git tab is active, and the follow must also run on chat-area session switches with any other tab open
 - `frontend/src/stores/sessionDraftStore.ts` + `frontend/src/lib/sessionDraft.ts` — the chat-side draft UX: the pending New-Session draft (project + drafted workspace) and `createSessionFromDraft()`, the single commit path that routes a branch draft to `CreateManagedSession` and everything else to `CreateSession`
 - `frontend/src/components/chat/SessionWorkspaceSelector.tsx` + `frontend/src/components/GitPanel/BranchPicker.tsx` — the draft's selection surfaces: the chat toolbar selector (`local` / `branch…`, read-only pinned display for existing sessions) and the BranchPicker's intent-separated draft mode (`branchPickerMode: 'draft'`) that records a picked/created branch without any checkout
 
@@ -181,18 +181,31 @@ otherwise. A vanished focus tree falls back to the checkout fail-soft and
 clears the override (a stale focus never bricks every git RPC).
 
 ```
-frontend (useGitFocusSync)                  backend
+frontend (useGitFocusSync, mounted at the App root)  backend
   project/session switch ──► GetSessionWorkspace(sessionID)
                             └► SetGitPanelFocus(session workspace)   // default target
   worktree switcher ────────► SetGitPanelFocus(tree path)            // explicit
   focus button ─────────────► SetGitPanelFocus(session workspace)     // snap back
   any git RPC ◄──────────── resolveGitRepoRoot() = resolveGitFocusRoot()
+  vector RPCs/status ◄───── vectorRootsRegistry().ApplyFocus(root)    // rides every accepted
+                                                                      // move (fail-soft)
 ```
 
 - `SetGitPanelFocus("")` resets to the default; a non-empty path is validated
   against the live `git worktree list` of the active project (checkout,
   managed tree, or external linked tree — foreign paths fail with
   `ErrWorktreeNotLinked`) and stores the canonical entry path.
+- Every accepted focus move also re-points the per-root vector registry
+  (`focusVectorRoots` → `ApplyFocus`): a non-empty focus lands on the
+  canonical tree path, and the empty reset lands on the project checkout —
+  deliberately NOT `LeaveFocus` (the visible index identity follows the
+  checkout instead of going blank). Fail-soft, mirroring the project-switch
+  vector setup: a root the registry cannot focus (manager factory still
+  unwired in the startup race, unresolvable root) logs Warn and never fails
+  the git RPC. `GetVectorIndexStatus`/`SearchVectorStore`/
+  `ReindexVectorIndex` and the `vector_index:status` stream carry only the
+  focused root, so after a session starts its tree's indexing progress is
+  what the status bar reflects.
 - `GetGitPanelFocus` reports the resolved target with its classification
   (`kind`: main/managed/external) and owning session; `ListProjectWorktrees`
   returns the full decorated list (`managed`/`pinned`, session id/name,
@@ -208,6 +221,9 @@ frontend (useGitFocusSync)                  backend
   it never retargets execution (ADR-080's `GitPanelTarget` separation).
   `GetGitStatus` follows the focus root the same way (containment accepts
   the project workspace and, for an external-tree focus, the focus root).
+  The vector-registry focus an accepted move drags along is likewise
+  user-side only — agent-side routing stays context-borne (ADR-081), so
+  focusing a tree never redirects another session's searches.
 
 ## Invariants
 
@@ -226,6 +242,10 @@ frontend (useGitFocusSync)                  backend
 - Git-panel focus resolution always funnels through `resolveGitFocusRoot`;
   a focus override is admitted only after worktree-list validation and falls
   back to the project checkout when the tree is gone.
+- A `SetGitPanelFocus` move re-points the per-root vector registry focus
+  (the empty reset targets the checkout, not `LeaveFocus`) and is fail-soft:
+  a vector-side focus failure is logged at Warn and never fails the git RPC;
+  the `vector_index:status` stream and the vector RPCs follow the panel.
 - Branch-switching RPCs (`CheckoutBranch`, `CreateBranch`,
   `CheckoutRemoteBranch`, rename of the pinned branch) fail with
   `ErrPinnedWorktreeBranch` while the Git panel is focused on a managed
@@ -279,7 +299,8 @@ No `config.yaml` keys. The managed container is always
 - Git panel: the focus model is landed — `SetGitPanelFocus`/
   `GetGitPanelFocus`/`ListProjectWorktrees` with the worktree switcher
   (BranchPicker + BranchDropdown), the header focus button, and the
-  follow-the-session sync (`useGitFocusSync`). Extensions keep the same
+  follow-the-session sync (`useGitFocusSync`, mounted at the App root).
+  Extensions keep the same
   contract: the focus target stays UI state resolved server-side and is
   never written back into the session binding; `Owner.List`/`Inspect` back
   the worktree views.

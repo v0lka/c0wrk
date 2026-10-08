@@ -17,7 +17,6 @@ import { GitPanelFooter } from './GitPanelFooter'
 import { GitFocusButton } from './GitFocusButton'
 import { FileTreePanel } from '@/components/layout/FileTreePanel'
 import { SegmentedControl } from '@/components/ui/segmented-control'
-import { useGitFocusSync } from '@/hooks/useGitFocusSync'
 
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -25,11 +24,6 @@ export function GitPanel() {
   // Side-effect hook: subscribes to git:status_changed + workspace:tree_changed
   // events and keeps the store in sync with the backend. Returns void.
   useGitStatusEvents()
-
-  // Side-effect hook: moves the Git-panel FOCUS target automatically on
-  // every project/session switch (the active session's execution workspace
-  // is the default target). Returns void. Mounted exactly once, here.
-  useGitFocusSync()
 
   // Stable individual selectors — each only triggers re-render when its
   // specific slice changes (prevents infinite re-render loops per AGENTS.md).

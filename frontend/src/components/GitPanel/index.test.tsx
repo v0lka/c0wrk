@@ -4,10 +4,9 @@ import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
 // GitPanel's own tab routing is under test: everything it renders per tab
-// (and the side-effect hook) is mocked with sentinels so assertions stay
-// about WHICH section is mounted for WHICH internal tab.
+// (and the side-effect hook it mounts) is mocked with sentinels so assertions
+// stay about WHICH section is mounted for WHICH internal tab.
 vi.mock('@/hooks/useGitStatusEvents', () => ({ useGitStatusEvents: vi.fn() }))
-vi.mock('@/hooks/useGitFocusSync', () => ({ useGitFocusSync: vi.fn() }))
 vi.mock('./GitPanelToolbar', () => ({ GitPanelToolbar: () => createElement('div', { 'data-testid': 'git-toolbar' }) }))
 vi.mock('./ChangesList', () => ({
   ChangesList: () => createElement('div', { 'data-testid': 'changes-list' }, 'CHANGES'),

@@ -15,6 +15,7 @@ import { useUpdateChecker } from '@/hooks/useUpdateChecker'
 import { useExitGuard } from '@/hooks/useExitGuard'
 import { useSystemFonts } from '@/hooks/useSystemFonts'
 import { useGitFocusRefresh } from '@/hooks/useGitFocusRefresh'
+import { useGitFocusSync } from '@/hooks/useGitFocusSync'
 import { useVectorIndexStatus } from '@/hooks/useVectorIndexStatus'
 import { useAutonomyLoader } from '@/hooks/useAutonomyLoader'
 import { useProjectLoader } from '@/hooks/useProjectLoader'
@@ -94,6 +95,16 @@ function App() {
   // Seed/refresh the vector-index status (status bar pill + search panel) —
   // the push events alone leave it stale on startup (see the hook).
   useVectorIndexStatus()
+  // Move the Git-panel FOCUS target automatically on every project/session
+  // switch (the active session's execution workspace is the default target).
+  // Mounted at the App root — NOT inside the Git panel — because the panel
+  // exists only while the workspace's git tab is active, yet the follow must
+  // also run when the user picks a branch in the chat area and starts a
+  // session with any other tab open. Mounted exactly once so the effect never
+  // races a second copy of itself; safe in every app phase (no active
+  // project → the mirrored focus state is cleared, no RPC is issued; the
+  // apply is serialized + supersede-guarded inside focusSessionWorkspace).
+  useGitFocusSync()
   // Hydrate the app-wide autonomy posture (autonomyStore) so the
   // review-prompt gate is always current, whether or not Settings was opened.
   useAutonomyLoader()
