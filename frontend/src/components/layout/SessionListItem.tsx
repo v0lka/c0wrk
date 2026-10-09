@@ -67,16 +67,18 @@ interface SessionRowContentProps extends SessionItemCallbacks {
 }
 
 function SessionRowContent({ session, isActive, status, onPin, onFork, onPromote, onRename, onArchive, onDelete }: SessionRowContentProps) {
-  // Fork is the only action that requires a settled session: it deep-copies the
-  // execution state, which is impossible while a task is running or unfinished.
-  // Archive and delete are always allowed — the backend cancels/completes any
-  // in-flight or unfinished task as needed before archiving/deleting. Busy is
-  // read from the row's derived status alone (the SAME single mechanism every
-  // dot uses): every non-idle status means the session is NOT settled. This
-  // deliberately includes 'pending' — a task blocked on a HITL prompt is still
-  // RUNNING (taskActive stays true and the DB task is in_progress), so the
-  // backend rejects a fork of it; enumerating only active/paused/failed would
-  // leave Fork enabled-but-doomed for a pending row.
+  // Fork and Promote require a settled session: fork deep-copies the
+  // execution state, and promote moves the session's on-disk storage — both
+  // are impossible while a task is running or unfinished. Archive and delete
+  // are always allowed — the backend cancels/completes any in-flight or
+  // unfinished task as needed before archiving/deleting. Busy is read from
+  // the row's derived status alone (the SAME single mechanism every dot
+  // uses): every non-idle status means the session is NOT settled. This
+  // deliberately includes 'pending' — a task blocked on a HITL prompt is
+  // still RUNNING (taskActive stays true and the DB task is in_progress), so
+  // the backend rejects a fork or promotion of it; enumerating only
+  // active/paused/failed would leave the actions enabled-but-doomed for a
+  // pending row.
   const busy = status !== 'idle'
   const forkReason = status === 'active' || status === 'pending' ? 'Cannot fork while a task is running' : 'Cannot fork a session with an unfinished task'
   const promoteReason = status === 'active' || status === 'pending' ? 'Cannot promote while a task is running' : 'Cannot promote a session with an unfinished task'

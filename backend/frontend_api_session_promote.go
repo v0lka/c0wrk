@@ -5,13 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/project"
+	"github.com/v0lka/c0wrk/internal/sysproc"
 )
 
 // gitInitTimeout bounds the fail-soft `git init` run in a promoted workspace.
@@ -41,7 +41,11 @@ const gitInitTimeout = 30 * time.Second
 // memory (a HITL-pending session still has an in_progress task, so the store
 // guard covers it). Any failure after the project row is created is
 // compensated: the files move back and the fresh project is deleted, leaving
-// the session exactly as it was in CHAT.
+// the session exactly as it was in CHAT. When the file-level undo itself
+// fails, nothing is deleted — a compensation that cannot prove the files
+// came home must never reach for a recursive delete — so the fresh project
+// row and its directory stay in place and the error names the paths for
+// manual recovery.
 //
 // Best-effort tail: the saved-session pointers (the new project starts on the
 // promoted session; No Project drops its stale pointer) and a fail-soft
@@ -118,18 +122,39 @@ func (f *FrontendAPI) PromoteSessionToProject(sessionID, projectName string) (*p
 }
 
 // runPromotionMoves performs the ordered mutation core of the promotion:
-// terminal stop → in-memory evict → file moves → store re-parent. The session
-// terminal is stopped first because its PTY's cwd sits inside the tree the
-// moves rename; the evict releases open log/dump handles for the same reason.
+// terminal stop → in-memory evict → restore reservation → file moves → store
+// re-parent. The session terminal is stopped first because its PTY's cwd sits
+// inside the tree the moves rename (and the frontend is told via
+// terminal_exited so it can lazily resurrect the shell in the new workspace);
+// the evict releases open log/dump handles for the same reason. The restore
+// reservation then parks lazy GetSession restores for the whole evict →
+// commit window, so no restore can rebuild the session from the pre-commit
+// store state or recreate the source directory the undo needs.
+//
 // Each failure compensates exactly what already happened: the inverse file
-// move runs only when the forward move succeeded, while the fresh project row
-// is always removed (the user never sees an empty leftover project).
+// move runs only when the forward move succeeded, while the fresh project is
+// removed once the files are verifiably back home (a failed undo keeps
+// everything in place for manual recovery — see compensateFailedPromotion).
 func (f *FrontendAPI) runPromotionMoves(ctx context.Context, sessionID string, proj *project.ProjectInfo) error {
-	f.stopSessionTerminal(sessionID)
+	if f.stopSessionTerminal(sessionID) {
+		// Explicit stop at promotion is the one deliberate exception to the
+		// terminal manager's silent explicit-stop rule: without the event
+		// the frontend's xterm instance would sit frozen on a dead PTY with
+		// no user-reachable restart. The event arms the existing lazy
+		// resurrection — the shell re-spawns in the promoted workspace on
+		// the session's next activation.
+		f.emitEvent(fmt.Sprintf("session:%s:terminal_exited", sessionID), map[string]string{})
+	}
 	if err := f.app.Manager().EvictSession(sessionID); err != nil {
 		f.compensateFailedPromotion(sessionID, proj, false)
 		return fmt.Errorf("failed to quiesce the session: %w", err)
 	}
+	releaseRestores, err := f.app.Manager().ReserveRestores(sessionID)
+	if err != nil {
+		f.compensateFailedPromotion(sessionID, proj, false)
+		return fmt.Errorf("failed to reserve the session: %w", err)
+	}
+	defer releaseRestores()
 	if err := f.app.Manager().MoveSessionStorage(sessionID, project.NoProjectID, proj.ID); err != nil {
 		f.compensateFailedPromotion(sessionID, proj, false)
 		return fmt.Errorf("failed to move the session storage: %w", err)
@@ -143,15 +168,38 @@ func (f *FrontendAPI) runPromotionMoves(ctx context.Context, sessionID string, p
 
 // compensateFailedPromotion undoes a failed promotion: when the file moves
 // happened, they are reversed first (so the restored layout is valid while the
-// project still exists), then the fresh project row and its directory are
-// removed. Best-effort with loud logging — the original CHAT state is the
-// invariant to defend.
+// project still exists), then the fresh project is deleted — but only once
+// the tree is verifiably free of session files. The original CHAT state is
+// the invariant to defend: when the undo fails, or the project directory
+// still holds the moved session directory (a failed in-move rollback looks
+// the same), nothing is deleted. The project row and its tree stay in place
+// for manual recovery and an Error names the paths — the user may see a
+// leftover project, never silently lose the session files to os.RemoveAll.
 func (f *FrontendAPI) compensateFailedPromotion(sessionID string, proj *project.ProjectInfo, movesCompleted bool) {
 	if movesCompleted {
 		if err := f.app.Manager().UndoMoveSessionStorage(sessionID, proj.ID); err != nil {
-			f.log().Error("failed to undo the promotion file moves",
-				"session_id", sessionID, "project_id", proj.ID, "error", err)
+			f.log().Error("failed to undo the promotion file moves; keeping the promotion project and its directory for manual recovery",
+				"session_id", sessionID, "project_id", proj.ID,
+				"project_dir", config.ProjectDir(f.agentDir, proj.ID),
+				"restore_destination", config.SessionDir(f.agentDir, project.NoProjectID, sessionID),
+				"error", err)
+			return
 		}
+	}
+	// Defensive gate before any deletion: the project tree must not hold the
+	// session directory. Covers the moves-not-completed path too, where a
+	// failed internal rollback can strand the files inside the fresh project.
+	dstSessionDir := config.SessionDir(f.agentDir, proj.ID, sessionID)
+	if _, err := os.Lstat(dstSessionDir); err == nil {
+		f.log().Error("the promotion project directory still contains the session directory; keeping everything for manual recovery",
+			"session_id", sessionID, "project_id", proj.ID,
+			"session_dir", dstSessionDir)
+		return
+	} else if !errors.Is(err, os.ErrNotExist) {
+		f.log().Error("cannot inspect the promoted session directory; keeping the promotion project",
+			"session_id", sessionID, "project_id", proj.ID,
+			"session_dir", dstSessionDir, "error", err)
+		return
 	}
 	if err := f.projectManager.DeleteProject(proj.ID); err != nil {
 		f.log().Error("failed to delete the compensation project",
@@ -180,8 +228,13 @@ func (f *FrontendAPI) savePromotionSessionPointers(ctx context.Context, sessionI
 // initPromotedWorkspaceGit runs a fail-soft `git init` in the promoted
 // workspace (no initial commit — the content stays untracked, the first
 // commit belongs to the user). A workspace that already carries a repository
-// (the user ran git inside CHAT) is left untouched. A failure logs a warning
-// and continues: a CODE project works without a repository, and the git panel
+// (the user ran git inside CHAT) is left untouched. The spawn goes through
+// sysproc.GitCmd — SECURITY.md rule 12: the hardened environment and the
+// neutralizing -c overrides (a user's global init.templateDir or
+// core.hooksPath must not leak into the fresh repository) apply to every git
+// invocation, and HideConsole keeps the GUI-subsystem app flash-free on
+// Windows. A failure (including GitCmd refusing to spawn) logs a warning and
+// continues: a CODE project works without a repository, and the git panel
 // degrades gracefully until the user initializes one.
 func (f *FrontendAPI) initPromotedWorkspaceGit(workspacePath string) {
 	if workspacePath == "" {
@@ -194,12 +247,17 @@ func (f *FrontendAPI) initPromotedWorkspaceGit(workspacePath string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), gitInitTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "init")
+	cmd, err := sysproc.GitCmd(ctx, "init")
+	if err != nil {
+		f.log().Warn("failed to prepare the git init in the promoted workspace",
+			"path", workspacePath, "error", err)
+		return
+	}
 	cmd.Dir = workspacePath
-	// git init never prompts, but the pin keeps the spawn consistent with
-	// every other backend git invocation (a background operation must never
-	// hang on an interactive credential prompt).
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	// git init never prompts, but the pin keeps even the spawn-time
+	// environment uniform with the rest of the backend's git operations (a
+	// background operation must never hang on an interactive prompt).
+	cmd.Env = append(cmd.Env, "GIT_TERMINAL_PROMPT=0")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		f.log().Warn("failed to initialize a git repository in the promoted workspace",

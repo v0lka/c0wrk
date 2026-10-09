@@ -340,3 +340,99 @@ func TestPromoteSessionToProject_OtherSessionsUntouched(t *testing.T) {
 		t.Fatalf("promoted metadata must carry the new session dir, got %s", mine[0].Metadata)
 	}
 }
+
+func TestRewritePathPrefixes_RespectsSegmentBoundary(t *testing.T) {
+	oldRaw := "/home/u/.c0wrk/projects/__no_project__/sid"
+	newRaw := "/home/u/.c0wrk/projects/dst/sid"
+
+	// A sibling directory that merely extends the prefix must NOT follow the
+	// files into a location the promotion never moved it to.
+	got := rewritePathPrefixes(
+		`{"note":{"ref":"`+oldRaw+`-backup/notes.md"}}`,
+		[][2]string{{oldRaw, newRaw}},
+	)
+	want := `{"note":{"ref":"` + oldRaw + `-backup/notes.md"}}`
+	if got != want {
+		t.Fatalf("sibling prefix must stay untouched:\n got %s\nwant %s", got, want)
+	}
+
+	// A real child path is rewritten: the separator continues the prefix.
+	got = rewritePathPrefixes(
+		`{"images":[{"path":"`+oldRaw+`/images/a.jpg"}]}`,
+		[][2]string{{oldRaw, newRaw}},
+	)
+	want = `{"images":[{"path":"` + newRaw + `/images/a.jpg"}]}`
+	if got != want {
+		t.Fatalf("child path must be rewritten:\n got %s\nwant %s", got, want)
+	}
+
+	// An occurrence at the very end of the blob is its own boundary.
+	got = rewritePathPrefixes(oldRaw, [][2]string{{oldRaw, newRaw}})
+	if got != newRaw {
+		t.Fatalf("end-of-blob occurrence must be rewritten, got %s", got)
+	}
+}
+
+func TestRewritePathPrefixes_KeepsJSONStringEndBoundary(t *testing.T) {
+	// Inside a JSON string value a path ends at the closing quote — the
+	// escaped-form matcher must treat it as a boundary or the primary
+	// metadata shape (a path as the last thing in the value) would be
+	// missed.
+	oldRaw := `C:\Users\u\proj`
+	newRaw := `C:\Users\u\dst`
+	got := rewritePathPrefixes(
+		`{"path":"`+jsonEscapeString(oldRaw)+`"}`,
+		[][2]string{{oldRaw, newRaw}},
+	)
+	want := `{"path":"` + jsonEscapeString(newRaw) + `"}`
+	if got != want {
+		t.Fatalf("quoted end boundary must be rewritten:\n got %s\nwant %s", got, want)
+	}
+}
+
+func TestRewritePathPrefixes_MatchesHTMLEscapedCharacters(t *testing.T) {
+	// encoding/json HTML-escapes &, <, > inside string values by default, so
+	// a path component containing them is stored as \uXXXX sequences. The
+	// escaped variant must mirror that or such paths never follow the files.
+	oldRaw := `/home/u/ma&m's <dir>`
+	newRaw := `/home/u/dst`
+	blob := `{"images":[{"path":"` + oldRaw + `/img.jpg"}]}`
+	// Simulate the stored shape: re-escape the way encoding/json would store
+	// the blob (both < and > are HTML-escaped).
+	stored := strings.ReplaceAll(blob, "&", `\u0026`)
+	stored = strings.ReplaceAll(stored, "<", `\u003c`)
+	stored = strings.ReplaceAll(stored, ">", `\u003e`)
+
+	got := rewritePathPrefixes(stored, [][2]string{{oldRaw, newRaw}})
+	want := `{"images":[{"path":"` + strings.ReplaceAll(newRaw+`/img.jpg`, "&", `\u0026`) + `"}]}`
+	// newRaw contains no HTML-significant characters, so no re-escaping of
+	// the destination is needed beyond the &-free tail.
+	if got != want {
+		t.Fatalf("HTML-escaped path must be rewritten:\n got %s\nwant %s", got, want)
+	}
+}
+
+func TestJSONEscapeString_MirrorsEncodingJSON(t *testing.T) {
+	// The derived escaped form must match what encoding/json actually emits
+	// for a string value: backslashes, quotes, and the HTML set.
+	in := `C:\Users\u "quoted" & <dir>`
+	blob, err := json.Marshal(map[string]string{"p": in})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var out struct {
+		P string `json:"p"`
+	}
+	// Compare at the raw-text level: the stored blob carries the escaped
+	// forms verbatim.
+	wantQuoted := string(blob)
+	if !strings.Contains(wantQuoted, jsonEscapeString(in)) {
+		t.Fatalf("jsonEscapeString must reproduce encoding/json's escaping:\n got %s\nblob %s", jsonEscapeString(in), wantQuoted)
+	}
+	if err := json.Unmarshal(blob, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.P != in {
+		t.Fatalf("round-trip broken: %q", out.P)
+	}
+}

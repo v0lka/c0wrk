@@ -39,7 +39,7 @@ function findButton(text: string): HTMLButtonElement | undefined {
 }
 
 function findInput(): HTMLInputElement | undefined {
-  return document.querySelector('input')
+  return document.querySelector<HTMLInputElement>('input') ?? undefined
 }
 
 beforeEach(() => {

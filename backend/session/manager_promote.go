@@ -84,6 +84,47 @@ func (m *Manager) EvictSession(id string) error {
 	return nil
 }
 
+// ReserveRestores parks new lazy restores of the session until the returned
+// release function is called. It closes the gap EvictSession cannot: a
+// restore that STARTS after the eviction but before the caller's store
+// commit would rebuild the session from the pre-commit state (CHAT owner,
+// stale workspace paths — and, worse, it would recreate the source session
+// directory a later file-level undo needs to rename back into). The
+// reservation waits out any restore already in flight (the same single-
+// flight loop EvictSession uses), then blocks every new attempt; a blocked
+// GetSession restarts its restore from scratch once the window closes, so it
+// observes the post-mutation store state. The caller MUST invoke release —
+// defer it — otherwise lazy restores of the session park forever.
+//
+// Used by the session-promotion flow; not part of the general lifecycle.
+func (m *Manager) ReserveRestores(id string) (func(), error) {
+	if id == "" {
+		return nil, errors.New("session id is required")
+	}
+	// Wait out any in-flight restore first (same loop as EvictSession): the
+	// reservation must start from a quiesced session — nothing mid-restore,
+	// and nothing allowed to start until release.
+	for {
+		m.mu.Lock()
+		waitCh, inflight := m.restoreInFlight[id]
+		if !inflight {
+			break // still holding m.mu — proceed to the reservation below
+		}
+		m.mu.Unlock()
+		<-waitCh
+	}
+	parkCh := make(chan struct{})
+	m.restoreParked[id] = parkCh
+	m.mu.Unlock()
+
+	return func() {
+		m.mu.Lock()
+		delete(m.restoreParked, id)
+		m.mu.Unlock()
+		close(parkCh)
+	}, nil
+}
+
 // MoveSessionStorage physically relocates a CHAT session's on-disk state into
 // a CODE project's layout, using the same derived paths every other subsystem
 // (DeleteSession, restore, dump tracker) computes from (agentDir, projectID,
@@ -192,6 +233,13 @@ func (m *Manager) renameOr(fallback func(oldpath, newpath string) error) func(ol
 // the files and the database agree again, before deleting the (still rowless
 // or to-be-deleted) destination project. The No Project project row itself is
 // never deleted, so the restored layout is immediately valid again.
+//
+// A session that never materialized on disk has nothing to undo: when BOTH
+// the source and the destination session directories are missing, the undo
+// is trivially successful and returns nil — the same settled answer
+// MoveSessionStorage gives for the missing source (a source that is already
+// home with the destination gone is equally settled). Only an ambiguous,
+// half-moved layout — both directories present — is an error.
 func (m *Manager) UndoMoveSessionStorage(id, dstProjectID string) error {
 	if id == "" {
 		return errors.New("session id is required")
@@ -204,15 +252,30 @@ func (m *Manager) UndoMoveSessionStorage(id, dstProjectID string) error {
 	dstWorkspace := config.ProjectWorkspacePath(m.agentDir, dstProjectID)
 	innerWorkspace := filepath.Join(dstSessionDir, config.NoProjectWorkspaceSegment)
 
-	if _, err := os.Lstat(srcDir); err == nil {
-		return fmt.Errorf("source session directory %s already exists; nothing to undo", srcDir)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("cannot inspect source session directory: %w", err)
+	srcStat, srcErr := os.Lstat(srcDir)
+	if srcErr != nil && !errors.Is(srcErr, os.ErrNotExist) {
+		return fmt.Errorf("cannot inspect source session directory: %w", srcErr)
 	}
-	if _, err := os.Lstat(dstSessionDir); errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("destination session directory %s is missing; nothing to undo", dstSessionDir)
-	} else if err != nil {
-		return fmt.Errorf("cannot inspect destination session directory: %w", err)
+	dstStat, dstErr := os.Lstat(dstSessionDir)
+	if dstErr != nil && !errors.Is(dstErr, os.ErrNotExist) {
+		return fmt.Errorf("cannot inspect destination session directory: %w", dstErr)
+	}
+	if srcStat != nil && dstStat == nil {
+		// The session directory is already home (the move never happened,
+		// or a previous undo already completed): there is nothing left to
+		// move back.
+		return nil
+	}
+	if srcStat == nil && dstStat == nil {
+		// A session that never materialized on disk: nothing to undo — the
+		// same settled answer MoveSessionStorage gives for a missing source.
+		return nil
+	}
+	if srcStat != nil {
+		// Both directories exist: an ambiguous, half-moved layout (e.g. a
+		// lazy restore recreated the source mid-promotion) that no blind
+		// rename may resolve.
+		return fmt.Errorf("source session directory %s already exists; cannot undo into it", srcDir)
 	}
 
 	rename := m.renameOr(os.Rename)

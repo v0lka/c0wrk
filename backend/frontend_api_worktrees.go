@@ -420,14 +420,18 @@ func lockedReasonOf(err error) string {
 	return "no reason recorded"
 }
 
-// stopSessionTerminal stops the session's terminal, if any. Shared by the
-// managed pre-flight (before tree removal) and the legacy deletion path
-// (idempotent: IsActive gates the Stop).
-func (f *FrontendAPI) stopSessionTerminal(id string) {
+// stopSessionTerminal stops the session's terminal, if any, and reports
+// whether a live terminal was stopped. Shared by the managed pre-flight
+// (before tree removal) and the legacy deletion path (idempotent: IsActive
+// gates the Stop). The promotion flow uses the report to emit
+// session:<id>:terminal_exited — the one explicit stop the frontend must
+// hear about, because its terminal instance survives the promotion.
+func (f *FrontendAPI) stopSessionTerminal(id string) bool {
 	if f.terminalManager == nil || !f.terminalManager.IsActive(id) {
-		return
+		return false
 	}
 	if err := f.terminalManager.Stop(id); err != nil {
 		f.log().Warn("failed to stop terminal for session", "session_id", id, "error", err)
 	}
+	return true
 }

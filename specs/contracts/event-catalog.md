@@ -176,7 +176,7 @@ See [../domains/goal-mode.md](../domains/goal-mode.md).
 | ----------------- | --------------------------------- | --------------- | ---------------------------- |
 | `task_resumed`    | `{session_id, text}` (the original request, `MessageReceivedData`) — the frontend currently types this handler payload as void | useActionEvents | A paused or failed task resumed (`ResumeSession`/`ResumeTask`, or the automatic-retry timer firing — [ADR-065](../decisions/065-auto-resend-retryable-errors.md)). Resolves the pending `task_failed_resumable` banner; an auto and a manual resume are indistinguishable to the UI. Emitted alongside `session_resumed` when resuming a paused task |
 | `terminal_output` | `{data: string}` (base64-encoded) | useTerminalEvents | PTY output for terminal mode |
-| `terminal_exited` | no payload                         | useTerminalEvents | Natural shell exit (user typed `exit` or the shell crashed); the terminal instance marks itself dead and resurrects the shell lazily on next activation |
+| `terminal_exited` | no payload                         | useTerminalEvents | Natural shell exit (user typed `exit` or the shell crashed); the terminal instance marks itself dead and resurrects the shell lazily on next activation. Sole explicit-stop exception: session promotion stops the PTY and emits this event so the surviving xterm instance follows the session into the promoted workspace (see [session-lifecycle.md](../domains/session-lifecycle.md) § Per-Session Terminal Lifetime) |
 
 ### Plan Review
 

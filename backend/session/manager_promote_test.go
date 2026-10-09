@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/project"
@@ -253,5 +254,122 @@ func TestMoveSessionStorage_RollsBackWhenSecondHopFails(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(srcDir, config.NoProjectWorkspaceSegment)); err != nil {
 		t.Fatalf("the source workspace must be back inside the session dir: %v", err)
+	}
+}
+
+func TestUndoMoveSessionStorage_NothingToUndoIsNotAnError(t *testing.T) {
+	manager, _, _ := testManager(t)
+
+	// A session that never materialized: neither directory exists anywhere.
+	// The undo is trivially successful — the same settled answer
+	// MoveSessionStorage gives for a missing source — so the promotion
+	// compensation must not log a failure for the ordinary case.
+	if err := manager.UndoMoveSessionStorage("s-ghost", "dst-project"); err != nil {
+		t.Fatalf("undo without on-disk state must succeed, got %v", err)
+	}
+}
+
+func TestUndoMoveSessionStorage_AlreadyHomeIsNotAnError(t *testing.T) {
+	manager, _, agentDir := testManager(t)
+	const sid = "already-home"
+
+	// The session directory is back under __no_project__ and the destination
+	// holds nothing: there is nothing left to move back.
+	srcDir := config.SessionDir(agentDir, project.NoProjectID, sid)
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatalf("mkdir source: %v", err)
+	}
+	if err := manager.UndoMoveSessionStorage(sid, "dst-project"); err != nil {
+		t.Fatalf("undo of an already-restored layout must succeed, got %v", err)
+	}
+
+	// Both directories present is the genuinely ambiguous half-moved layout
+	// and must stay an error: no blind rename may resolve it.
+	dstSessionDir := config.SessionDir(agentDir, "dst-project", sid)
+	if err := os.MkdirAll(dstSessionDir, 0o755); err != nil {
+		t.Fatalf("mkdir destination: %v", err)
+	}
+	if err := manager.UndoMoveSessionStorage(sid, "dst-project"); err == nil {
+		t.Fatal("undo with both session directories present must be refused")
+	}
+}
+
+func TestUndoMoveSessionStorage_RestoresMovedLayout(t *testing.T) {
+	manager, _, agentDir := testManager(t)
+	const sid = "undo-me"
+
+	// A completed move: the session dir sits in the project, its workspace
+	// lifted into the canonical Workspace slot.
+	dstSessionDir := config.SessionDir(agentDir, "dst-project", sid)
+	dstWorkspace := config.ProjectWorkspacePath(agentDir, "dst-project")
+	if err := os.MkdirAll(filepath.Join(dstSessionDir, config.NoProjectWorkspaceSegment), 0o755); err != nil {
+		t.Fatalf("mkdir moved layout: %v", err)
+	}
+	if err := os.Rename(filepath.Join(dstSessionDir, config.NoProjectWorkspaceSegment), dstWorkspace); err != nil {
+		t.Fatalf("lift workspace: %v", err)
+	}
+	// The undo's hop-2 destination parent must exist, as it always does in
+	// production (a session that was moved had a source directory there).
+	if err := os.MkdirAll(config.SessionDir(agentDir, project.NoProjectID, "parent-anchor"), 0o755); err != nil {
+		t.Fatalf("mkdir __no_project__: %v", err)
+	}
+
+	if err := manager.UndoMoveSessionStorage(sid, "dst-project"); err != nil {
+		t.Fatalf("undo failed: %v", err)
+	}
+
+	srcDir := config.SessionDir(agentDir, project.NoProjectID, sid)
+	if _, err := os.Stat(filepath.Join(srcDir, config.NoProjectWorkspaceSegment)); err != nil {
+		t.Fatalf("workspace must be back inside the session dir: %v", err)
+	}
+	if _, err := os.Stat(dstSessionDir); !os.IsNotExist(err) {
+		t.Fatalf("destination session dir must be gone after the undo (stat err=%v)", err)
+	}
+}
+
+func TestReserveRestores_ParksNewRestoresUntilRelease(t *testing.T) {
+	manager, _, store := restoreTestManager(t)
+	const sid = "s-parked"
+
+	// A CODE-project session: the restore fixture's nil orchestrator cannot
+	// rebuild a No Project session (NoProjectMode is set on it), and the
+	// park mechanism under test is project-agnostic.
+	seedSession(t, store, sid, testProjectID, "parked", false)
+
+	release, err := manager.ReserveRestores(sid)
+	if err != nil {
+		t.Fatalf("ReserveRestores failed: %v", err)
+	}
+
+	// While parked, a GetSession must not restore the session. The join
+	// channel proves the blocking point — no sleeps: a completed restore
+	// before release is impossible, so a closed done channel is a failure.
+	started := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		close(started)
+		if sess, ok := manager.GetSession(sid); !ok {
+			t.Error("GetSession must find the restored session")
+		} else {
+			_ = sess
+		}
+		close(done)
+	}()
+	<-started
+	select {
+	case <-done:
+		t.Fatal("a parked restore must not complete before release")
+	default:
+	}
+
+	// Release: the waiter restarts from scratch and restores the session.
+	release()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the parked restore did not resume after release")
+	}
+	if sess, ok := manager.GetSession(sid); !ok || sess == nil {
+		t.Fatalf("post-release GetSession = (%v, %v)", sess, ok)
 	}
 }

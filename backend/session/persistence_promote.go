@@ -34,11 +34,15 @@ import (
 // would match.
 //
 // The rewrite matches both the raw prefix and its JSON-string-escaped form
-// (backslash and quote escaping, the shape stored metadata carries on
-// Windows), because the blobs are serialized JSON text rather than raw paths.
-// Occurrences encoded as \uXXXX escapes (never produced by Go's encoder for
-// path characters) are out of scope: a missed rewrite degrades to a stale
-// rendered path, never to corruption.
+// (backslash and quote escaping plus the default HTML escapes — the shape
+// stored metadata carries on Windows and around &, <, > path characters),
+// because the blobs are serialized JSON text rather than raw paths. An
+// occurrence is rewritten only when a path boundary follows it (separator,
+// enclosing quote, end of blob): a sibling name that merely extends the
+// prefix keeps its stale path instead of following the files to a location
+// that does not exist. Occurrences hidden behind any other \uXXXX escape
+// (e.g. U+2028/U+2029 line separators) are out of scope: a missed rewrite
+// degrades to a stale rendered path, never to corruption.
 //
 // The source session must belong to the No Project pseudo-project: promotion
 // is a CHAT→CODE transform, and the rewrite semantics are specific to the No
@@ -153,28 +157,103 @@ func (s *SQLiteSessionStore) scanMetadataRewrites(ctx context.Context, tx *sql.T
 
 // rewritePathPrefixes returns s with every rewrite applied in both the raw
 // and the JSON-string-escaped form. Escaped variants are derived per pair
-// (backslashes first, then quotes) because Windows paths are stored inside
-// JSON string values with doubled separators.
+// (backslashes first, then quotes, then the HTML escapes encoding/json
+// applies by default) because the blobs are serialized JSON text produced by
+// encoding/json rather than raw paths.
+//
+// An occurrence is rewritten only when a path boundary follows it: a path
+// separator, the enclosing JSON string's closing quote, or the end of the
+// blob. A longer sibling name that merely extends the prefix — a
+// …/__no_project__/<sid>-backup directory mentioned in the metadata — keeps
+// its stale path instead of being pointed at a location the promotion never
+// moved it to. A prefix that carries its own trailing separator is
+// self-bounded and always matches.
 func rewritePathPrefixes(s string, rewrites [][2]string) string {
 	for _, pair := range rewrites {
 		oldRaw, newRaw := pair[0], pair[1]
 		if oldRaw == "" || oldRaw == newRaw {
 			continue
 		}
-		s = strings.ReplaceAll(s, oldRaw, newRaw)
+		// Raw form: plain-text contexts of the blob.
+		s = rewriteSegmentScoped(s, oldRaw, newRaw, rawPathBoundaries)
 		oldEsc := jsonEscapeString(oldRaw)
 		if oldEsc != oldRaw {
+			// Escaped JSON-string form: forward slashes are stored raw,
+			// backslashes doubled, and the value ends at a closing quote.
 			newEsc := jsonEscapeString(newRaw)
-			s = strings.ReplaceAll(s, oldEsc, newEsc)
+			s = rewriteSegmentScoped(s, oldEsc, newEsc, escapedPathBoundaries)
 		}
 	}
 	return s
 }
 
+// rawPathBoundaries may follow a raw-form prefix occurrence: path separators
+// or a quote around a plainly quoted path.
+var rawPathBoundaries = []string{`/`, `\`, `"`}
+
+// escapedPathBoundaries may follow an escaped-form occurrence inside a JSON
+// string value: raw forward separators, doubled backslashes, or the closing
+// quote that ends the value.
+var escapedPathBoundaries = []string{`/`, `\\`, `"`}
+
+// rewriteSegmentScoped replaces every occurrence of old whose remainder in s
+// starts with one of the boundaries (or ends the string) with its
+// replacement. A candidate that lacks a boundary advances the scan by a
+// single byte so overlapping candidates are still examined.
+func rewriteSegmentScoped(s, old, replacement string, boundaries []string) string {
+	if old == "" {
+		return s
+	}
+	selfBounded := false
+	for _, b := range boundaries {
+		if strings.HasSuffix(old, b) {
+			selfBounded = true
+			break
+		}
+	}
+	var out strings.Builder
+	for {
+		i := strings.Index(s, old)
+		if i < 0 {
+			break
+		}
+		out.WriteString(s[:i])
+		rest := s[i+len(old):]
+		if selfBounded || rest == "" || hasPrefixAny(rest, boundaries) {
+			out.WriteString(replacement)
+			s = rest
+			continue
+		}
+		out.WriteByte(s[i])
+		s = s[i+1:]
+	}
+	out.WriteString(s)
+	return out.String()
+}
+
+// hasPrefixAny reports whether s starts with one of the prefixes.
+func hasPrefixAny(s string, prefixes []string) bool {
+	for _, p := range prefixes {
+		if strings.HasPrefix(s, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // jsonEscapeString renders a path the way it appears inside a JSON string
-// value produced by encoding/json: backslashes and quotes are backslash-
-// escaped (forward slashes are left alone by Go's encoder).
+// value produced by encoding/json with its default Marshal settings:
+// backslashes and quotes are backslash-escaped, and the HTML-significant
+// characters (&, <, >) become their \uXXXX forms — all legal in Unix path
+// components, so the escaped variant must mirror them. Forward slashes are
+// left alone by Go's encoder, and no other path character is ever escaped;
+// exotic escapes such as the U+2028/U+2029 line separators stay out of scope
+// (a missed rewrite degrades to a stale rendered path, never to corruption).
 func jsonEscapeString(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
-	return strings.ReplaceAll(s, `"`, `\"`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	s = strings.ReplaceAll(s, "&", `\u0026`)
+	s = strings.ReplaceAll(s, "<", `\u003c`)
+	s = strings.ReplaceAll(s, ">", `\u003e`)
+	return s
 }

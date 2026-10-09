@@ -292,6 +292,8 @@ export function PinSession(arg1:string):Promise<void>;
 
 export function ProbeEmbeddedLLMDevices():Promise<backend.EmbeddedLLMDevicesDTO>;
 
+export function PromoteSessionToProject(arg1:string,arg2:string):Promise<project.ProjectInfo>;
+
 export function Pull(arg1:string,arg2:Array<string>):Promise<string>;
 
 export function Push(arg1:string,arg2:Array<string>):Promise<string>;

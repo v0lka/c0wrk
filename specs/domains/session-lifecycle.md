@@ -963,10 +963,18 @@ User clicks "Promote to project" (FolderOpen icon) on a CHAT SessionList row
       ├─ Guards: store.LoadSession → owner == __no_project__;
       │   store.GetUnfinishedTask → nil (fork's exact rule)
       ├─ projectManager.CreateProject(name, "") — INTERNAL workspace
-      ├─ stopSessionTerminal(id)   (PTY cwd sits inside the tree being moved)
+      ├─ stopSessionTerminal(id)   (PTY cwd sits inside the tree being moved;
+      │   when a live PTY was stopped, the RPC emits session:<id>:terminal_exited —
+      │   the ONE explicit-stop exception to the terminal manager's silent rule,
+      │   so the surviving xterm instance resurrects the shell in the promoted
+      │   workspace instead of sitting frozen on the dead PTY)
       ├─ manager.EvictSession(id)  (close log/dump handles, purge trackers;
       │   refuses an active task or in-flight compaction; waits out any
       │   in-flight lazy restore so it cannot re-insert the session)
+      ├─ manager.ReserveRestores(id) — parks NEW lazy restores for the whole
+      │   evict → move → commit window; a parked GetSession restarts from
+      │   scratch after the release, so it can never rebuild the session from
+      │   the pre-commit store state or recreate the undo's source directory
       ├─ manager.MoveSessionStorage(id, __no_project__, dst) — two renames
       │   on one filesystem:
       │     projects/__no_project__/<sid>/        → projects/<dst>/<sid>/
@@ -990,8 +998,12 @@ User clicks "Promote to project" (FolderOpen icon) on a CHAT SessionList row
 
 Compensation: any failure inside the mutation core restores the prior state —
 the inverse file move (`UndoMoveSessionStorage`) runs only when the forward
-move completed, and the fresh project row is always deleted, so a failed
-promotion leaves the session exactly as it was in CHAT.
+move completed, and the fresh project is deleted only once the files are
+verifiably back home (the undo succeeded and the project tree demonstrably
+holds no session directory — a failed in-move rollback looks the same to the
+gate). When the undo fails, nothing is deleted: the fresh project row and its
+directory stay in place for manual recovery and an Error names the paths — a
+leftover project the user can see, never silently lost session files.
 
 Invariants:
 - The session's identity never changes; only `sessions.project_id` (and the
@@ -1013,6 +1025,8 @@ Invariants:
 The terminal manager owns at most one PTY per session ID. Switching the active session or project does not stop that PTY: the frontend keeps one xterm instance per session, and `StartTerminal(sessionID)` treats an already-active PTY as a successful reattach. Input, resize, output events, and command history remain session-keyed, so concurrent terminal sessions do not cross streams.
 
 `StartTerminalInDir` is the explicit restart path: the requested working directory must be contained in the session workspace, then any existing PTY for that session is stopped and replaced. `StopTerminal` ends only the named session's PTY. Application shutdown calls the terminal manager's global stop through backend cleanup; terminal processes do not outlive the app.
+
+Session promotion is the one flow that stops a PTY whose session SURVIVES the stop: the session's xterm instance is keyed by the unchanged session ID and the terminal registry intentionally outlives project switches, so a silent stop would leave a frozen panel with no user-reachable restart. The promotion therefore emits `session:<id>:terminal_exited` right after stopping a live PTY — the sole explicit-stop exception to the manager's silent rule — which arms the same lazy resurrection a natural shell exit uses: the shell respawns in the promoted workspace on the session's next activation, scrollback preserved.
 
 ### Session Persistence
 

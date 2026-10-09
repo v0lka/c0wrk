@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -371,5 +373,187 @@ func TestPromoteSessionToProject_CompensatesWhenMoveFails(t *testing.T) {
 		if p.Name == "Doomed Move" {
 			t.Fatalf("the compensation project must be deleted, projects=%+v", projects)
 		}
+	}
+}
+
+// promoteDiagnosticSink captures the Warn+ diagnostics of one FrontendAPI so
+// the compensation failure paths assert their exact messages, levels and call
+// counts instead of letting them leak into the test output.
+type promoteDiagnosticSink struct {
+	mu       sync.Mutex
+	messages []string
+	levels   []slog.Level
+}
+
+type promoteDiagnosticHandler struct {
+	next slog.Handler
+	sink *promoteDiagnosticSink
+}
+
+func (h *promoteDiagnosticHandler) Enabled(_ context.Context, level slog.Level) bool {
+	return level >= slog.LevelWarn
+}
+
+func (h *promoteDiagnosticHandler) Handle(_ context.Context, r slog.Record) error {
+	h.sink.mu.Lock()
+	defer h.sink.mu.Unlock()
+	h.sink.messages = append(h.sink.messages, r.Message)
+	h.sink.levels = append(h.sink.levels, r.Level)
+	return nil
+}
+
+func (h *promoteDiagnosticHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &promoteDiagnosticHandler{next: h.next.WithAttrs(attrs), sink: h.sink}
+}
+
+func (h *promoteDiagnosticHandler) WithGroup(name string) slog.Handler {
+	return &promoteDiagnosticHandler{next: h.next.WithGroup(name), sink: h.sink}
+}
+
+// capturePromoteDiagnostics routes the API's logger through the sink and, on
+// cleanup, requires exactly the expected diagnostics at Error level.
+func capturePromoteDiagnostics(t *testing.T, api *FrontendAPI, wantMessages ...string) {
+	t.Helper()
+	previous := api.logger
+	base := previous
+	if base == nil {
+		base = slog.Default() // the harness leaves the logger unset
+	}
+	sink := &promoteDiagnosticSink{}
+	api.logger = slog.New(&promoteDiagnosticHandler{next: base.Handler(), sink: sink})
+	t.Cleanup(func() {
+		api.logger = previous
+		sink.mu.Lock()
+		defer sink.mu.Unlock()
+		if !reflect.DeepEqual(sink.messages, wantMessages) {
+			t.Errorf("promotion diagnostics(%s) = %#v, want %#v", t.Name(), sink.messages, wantMessages)
+		}
+		for i, level := range sink.levels {
+			if level != slog.LevelError {
+				t.Errorf("promotion diagnostics(%s) record %d level = %v, want Error", t.Name(), i, level)
+			}
+		}
+	})
+}
+
+func TestPromoteSessionToProject_KeepsProjectWhenUndoFails(t *testing.T) {
+	h := newPromoteTestAPI(t)
+	api, projectManager, agentDir := h.api, h.projects, h.agentDir
+
+	proj, err := projectManager.CreateProject("Stranded Project", "")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	// Craft the ambiguous layout the compensation must refuse to touch: both
+	// session directories exist (e.g. a lazy restore recreated the source
+	// mid-promotion), so the undo refuses and the project tree still holds
+	// the moved files.
+	dstSessionDir := config.SessionDir(agentDir, proj.ID, "s-undofail")
+	if err := os.MkdirAll(filepath.Join(dstSessionDir, config.NoProjectWorkspaceSegment), 0o755); err != nil {
+		t.Fatalf("mkdir destination layout: %v", err)
+	}
+	keptFile := filepath.Join(dstSessionDir, config.NoProjectWorkspaceSegment, "precious.txt")
+	if err := os.WriteFile(keptFile, []byte("session data"), 0o644); err != nil {
+		t.Fatalf("write stranded file: %v", err)
+	}
+	srcDir := config.SessionDir(agentDir, project.NoProjectID, "s-undofail")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatalf("mkdir source: %v", err)
+	}
+
+	capturePromoteDiagnostics(t, api,
+		"failed to undo the promotion file moves; keeping the promotion project and its directory for manual recovery")
+	api.compensateFailedPromotion("s-undofail", proj, true)
+
+	// Nothing was deleted: the stranded files survive and the project row
+	// stays for manual recovery.
+	content, err := os.ReadFile(keptFile)
+	if err != nil || string(content) != "session data" {
+		t.Fatalf("stranded file must survive the failed compensation: content=%q err=%v", content, err)
+	}
+	projects, err := projectManager.ListProjects()
+	if err != nil {
+		t.Fatalf("list projects: %v", err)
+	}
+	found := false
+	for _, p := range projects {
+		if p.ID == proj.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("a failed undo must keep the project row, projects=%+v", projects)
+	}
+}
+
+func TestPromoteSessionToProject_KeepsStrandedTreeWithoutCompletedMoves(t *testing.T) {
+	h := newPromoteTestAPI(t)
+	api, projectManager, agentDir := h.api, h.projects, h.agentDir
+
+	proj, err := projectManager.CreateProject("Half-Moved Project", "")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	// A failed in-move rollback strands the session directory inside the
+	// fresh project while the forward move "never completed" — the defensive
+	// gate must keep the tree exactly as it is.
+	dstSessionDir := config.SessionDir(agentDir, proj.ID, "s-stranded")
+	if err := os.MkdirAll(dstSessionDir, 0o755); err != nil {
+		t.Fatalf("mkdir stranded layout: %v", err)
+	}
+	keptFile := filepath.Join(dstSessionDir, "logs", "session.log")
+	if err := os.MkdirAll(filepath.Dir(keptFile), 0o755); err != nil {
+		t.Fatalf("mkdir logs: %v", err)
+	}
+	if err := os.WriteFile(keptFile, []byte("logs"), 0o644); err != nil {
+		t.Fatalf("write stranded log: %v", err)
+	}
+
+	capturePromoteDiagnostics(t, api,
+		"the promotion project directory still contains the session directory; keeping everything for manual recovery")
+	api.compensateFailedPromotion("s-stranded", proj, false)
+
+	if _, err := os.ReadFile(keptFile); err != nil {
+		t.Fatalf("stranded file must survive: %v", err)
+	}
+	projects, err := projectManager.ListProjects()
+	if err != nil {
+		t.Fatalf("list projects: %v", err)
+	}
+	for _, p := range projects {
+		if p.ID == proj.ID {
+			return
+		}
+	}
+	t.Fatalf("a stranded project tree must keep its project row, projects=%+v", projects)
+}
+
+func TestPromoteSessionToProject_CleanCompensationStillDeletesProject(t *testing.T) {
+	h := newPromoteTestAPI(t)
+	api, projectManager, agentDir := h.api, h.projects, h.agentDir
+
+	proj, err := projectManager.CreateProject("Clean Compensation", "")
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	// A session that never materialized: nothing moved, no diagnostics, the
+	// fresh project is removed as before.
+	capturePromoteDiagnostics(t, api)
+	api.compensateFailedPromotion("s-ghost", proj, false)
+
+	projects, err := projectManager.ListProjects()
+	if err != nil {
+		t.Fatalf("list projects: %v", err)
+	}
+	for _, p := range projects {
+		if p.ID == proj.ID {
+			t.Fatalf("a clean compensation must delete the project, projects=%+v", projects)
+		}
+	}
+	if _, err := os.Stat(config.ProjectDir(agentDir, proj.ID)); !os.IsNotExist(err) {
+		t.Fatalf("a clean compensation must remove the project tree (stat err=%v)", err)
 	}
 }
