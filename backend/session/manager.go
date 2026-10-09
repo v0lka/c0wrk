@@ -200,6 +200,9 @@ type Manager struct {
 	stopTimeout         time.Duration        // how long to wait for goroutine on cancel/delete
 	maxSummaryLen       int                  // character limit for auto-generated step summaries
 	serviceLLMTimeout   time.Duration        // timeout for one-shot service LLM requests (session title); default 10m
+	// promoteRename is the fault-injection seam for MoveSessionStorage's
+	// renames; in-package tests assign it directly. nil = os.Rename.
+	promoteRename func(oldpath, newpath string) error
 	// serviceLLMGate, when set, is invoked BEFORE a one-shot service LLM
 	// request's timeout context is created, and must return once whatever the
 	// request needs in order to be served is ready. It exists for the embedded
