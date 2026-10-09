@@ -79,7 +79,7 @@ Titles are composed at the single dispatch site (`notifySessionCue` in `frontend
 
 ## Click → window activation
 
-A banner click must bring the c0wrk window forward, not merely un-hide it. `desktop/app.go showWindow` implements the reveal-AND-raise per platform (verified against the Wails v2.15 frontends, `internal/frontend/desktop/*`):
+A banner click must bring the c0wrk window forward, not merely un-hide it. `desktop/app.go showWindow` implements the reveal-AND-raise per platform (verified against the Wails v2.16 frontends, `internal/frontend/desktop/*`):
 
 | Platform | Calls | Why |
 | -------- | ----- | --- |

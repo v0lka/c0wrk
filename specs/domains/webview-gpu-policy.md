@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Sets the Linux webview's (WebKitGTK) hardware-acceleration policy explicitly instead of relying on Wails' nil-options default, and exposes it as an environment override (`C0WRK_WEBVIEW_GPU_POLICY`). The conversion into Wails' enum deliberately compensates for a Go-enum/C-layer mismatch in the pinned Wails v2.15.0, so the policy named on the environment variable is the one WebKit actually receives.
+Sets the Linux webview's (WebKitGTK) hardware-acceleration policy explicitly instead of relying on Wails' nil-options default, and exposes it as an environment override (`C0WRK_WEBVIEW_GPU_POLICY`). The conversion into Wails' enum deliberately compensates for a Go-enum/C-layer mismatch in the pinned Wails v2.16.0, so the policy named on the environment variable is the one WebKit actually receives.
 
 ## Key Files
 
@@ -24,7 +24,7 @@ const (
 )
 
 // wailsWebviewGpuPolicy converts to the value handed to Wails.
-// v2.15.0 mapping (desired → Go enum → C switch in window.c → WebKit):
+// v2.16.0 mapping (desired → Go enum → C switch in window.c → WebKit):
 //   always    → WebviewGpuPolicyOnDemand (0) → case 0 → POLICY_ALWAYS
 //   on-demand → WebviewGpuPolicyAlways  (1)  → case 1 → POLICY_ON_DEMAND
 //   never     → WebviewGpuPolicyNever   (2)  → case 2 → POLICY_NEVER
@@ -54,7 +54,7 @@ linux.Options.WebviewGpuPolicy → wails.Run → SetupWebview(window.c switch) �
 
 - The env var accepts exactly `always`, `on-demand`, `ondemand` (alias), `never` — case-insensitive, whitespace-tolerant; every other value (including empty) resolves to `never` with a Warn log.
 - The default is `never`, matching the workaround Wails applies for [wails#2977](https://github.com/wailsapp/wails/issues/2977) when no Linux options are passed; passing the options explicitly pins that behavior against a future Wails default change.
-- `wailsWebviewGpuPolicy` is the single place aware of the v2.15.0 Go-enum/C-layer mismatch (`linux.go`: OnDemand=0, Always=1, Never=2 vs `window.c` `SetupWebview`: 0→ALWAYS, 1→ON_DEMAND, 2→NEVER); like-named constants are deliberately NOT used there, and the mapping yields the C-layer integer that selects the WebKit policy matching the env-var name.
+- `wailsWebviewGpuPolicy` is the single place aware of the v2.16.0 Go-enum/C-layer mismatch (`linux.go`: OnDemand=0, Always=1, Never=2 vs `window.c` `SetupWebview`: 0→ALWAYS, 1→ON_DEMAND, 2→NEVER); like-named constants are deliberately NOT used there, and the mapping yields the C-layer integer that selects the WebKit policy matching the env-var name.
 - Tests pin the compensation by C-layer numeric value (`0/1/2`), and an enum-order canary (`TestWailsWebviewGpuPolicyEnumOrderCanary`) pins the Go enum's numeric order — so a Wails upgrade that reorders either side fails the desktop test suite loudly instead of silently swapping `always`/`on-demand` at runtime.
 - macOS and Windows receive nil Linux options — the override affects the WebKitGTK frontend only.
 - On every Wails upgrade, `window.c` (`SetupWebview`) and `pkg/options/linux/linux.go` are re-verified; if upstream aligns the C switch with the Go enum, the two non-default arms of `wailsWebviewGpuPolicy` are swapped back or dropped and the numeric pins updated to match.

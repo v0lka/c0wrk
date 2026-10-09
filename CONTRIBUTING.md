@@ -56,10 +56,10 @@ See the "Frontend architecture" section of [`AGENTS.md`](AGENTS.md) for the full
 
 Verified from project configuration and build files:
 
-- **Go 1.27.1** (single root module; `go.mod` at repo root). The `go` directive in `go.mod` and the `go-version` pins in `.github/workflows/*.yml` must stay in lockstep — CI builds with exactly this toolchain and `govulncheck` scans its stdlib, so bump both together whenever Go ships a security patch.
+- **Go 1.27.2** (single root module; `go.mod` at repo root). The `go` directive in `go.mod` and the `go-version` pins in `.github/workflows/*.yml` must stay in lockstep — CI builds with exactly this toolchain and `govulncheck` scans its stdlib, so bump both together whenever Go ships a security patch.
 - **Node.js 24 + npm** (used by Wails frontend commands and `frontend/package.json` scripts). CI pins `node-version: "24"`.
-- **Wails v2 CLI, matching the version pinned in `go.mod`** (`github.com/wailsapp/wails/v2`, currently **v2.15.0**) — CI and the release workflow install the same pinned version (`go install github.com/wailsapp/wails/v2/cmd/wails@v2.15.0`); `wails build`/`wails dev` are used by the Makefile and, on Windows, by [`build.ps1`](build.ps1).
-- **golangci-lint v2.13.2** (for `make lint` / `./build.ps1 lint`) — pinned to match CI (`go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2`).
+- **Wails v2 CLI, matching the version pinned in `go.mod`** (`github.com/wailsapp/wails/v2`, currently **v2.16.0**) — CI and the release workflow install the same pinned version (`go install github.com/wailsapp/wails/v2/cmd/wails@v2.16.0`); `wails build`/`wails dev` are used by the Makefile and, on Windows, by [`build.ps1`](build.ps1).
+- **golangci-lint v2.14.0** (for `make lint` / `./build.ps1 lint`) — pinned to match CI (`go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0`).
 - **govulncheck v1.7.0** (for `make vulncheck` / `./build.ps1 vulncheck`) — the Makefile pins the version and runs it via `go run`, so no separate install is needed.
 - **`git`** — required for CODE mode only; checked on first project switch. CHAT mode (No Project) works without git.
 - **`rg` (ripgrep)** — auto-downloaded by the tool-manager on first run; no manual install needed.
@@ -111,15 +111,15 @@ PowerShell analog of every Makefile target ships at the repository root as
 Install once per machine. Every version below is pinned to what CI uses
 ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)):
 
-- **Go 1.27.1** — `winget install GoLang.Go`, or the official MSI from
-  [go.dev/dl](https://go.dev/dl/). Must match the `go 1.27.1` directive in `go.mod`.
+- **Go 1.27.2** — `winget install GoLang.Go`, or the official MSI from
+  [go.dev/dl](https://go.dev/dl/). Must match the `go 1.27.2` directive in `go.mod`.
 - **Node.js 24 + npm** — `winget install OpenJS.NodeJS.LTS`. CI pins `node-version: "24"`.
-- **Wails v2 CLI (v2.15.0)** —
-  `go install github.com/wailsapp/wails/v2/cmd/wails@v2.15.0`.
-- **golangci-lint v2.13.2** —
-  `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2`.
+- **Wails v2 CLI (v2.16.0)** —
+  `go install github.com/wailsapp/wails/v2/cmd/wails@v2.16.0`.
+- **golangci-lint v2.14.0** —
+  `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0`.
   `winget install GolangCI.golangci-lint` also works but currently installs a
-  newer minor — pin v2.13.2 to match CI exactly.
+  newer minor — pin v2.14.0 to match CI exactly.
 - **A C toolchain (MinGW-w64 gcc)** — **required.** `onnxruntime_go` (transitive
   via sp4rk) is CGO-dependent, so `go build`, `go test`, `golangci-lint`, and
   `wails build` all need a working C compiler. Install MSYS2 (from
@@ -377,7 +377,7 @@ Vector index needs ONNX Runtime plus a quantized embedding model + tokenizer (fe
 
 ## Continuous integration
 
-CI runs on pushes to `main` and pull requests targeting `main` across Linux, macOS, and Windows (see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)). Every job installs the same pinned toolchain — Go 1.27.1, Node 24, Wails v2.15.0, golangci-lint v2.13.2 — and the Windows job additionally sets `CGO_ENABLED=1` with MinGW-w64 gcc and normalizes line endings (`core.autocrlf false`). Before opening a PR, run the full local validation sequence:
+CI runs on pushes to `main` and pull requests targeting `main` across Linux, macOS, and Windows (see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)). Every job installs the same pinned toolchain — Go 1.27.2, Node 24, Wails v2.16.0, golangci-lint v2.14.0 — and the Windows job additionally sets `CGO_ENABLED=1` with MinGW-w64 gcc and normalizes line endings (`core.autocrlf false`). Before opening a PR, run the full local validation sequence:
 
 ```bash
 make build

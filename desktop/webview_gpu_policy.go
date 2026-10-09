@@ -64,7 +64,7 @@ func parseWebviewGpuPolicy(raw string) (webviewGpuPolicy, error) {
 // wailsWebviewGpuPolicy converts the policy into the linux.WebviewGpuPolicy
 // value to hand to Wails.
 //
-// Wails v2.15.0 (the version pinned in go.mod) carries a mismatch between
+// Wails v2.16.0 (the version pinned in go.mod) carries a mismatch between
 // its Go enum and its C layer: internal/frontend/desktop/linux/window.c
 // (SetupWebview) maps the integer to WebKit policies as 0→ALWAYS,
 // 1→ON_DEMAND, 2→NEVER, while the Go enum orders OnDemand=0, Always=1,

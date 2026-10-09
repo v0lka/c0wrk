@@ -32,7 +32,7 @@ A session's cues — audible **and** banner, both channels — have exactly one 
 2. **Unguarded/cancellable fast restore (guarded).** The restore RPC is cancelled by a switch-away (correct — its write would target a now-background session) and its resolved snapshot can be older than a live flag transition (`task_resumed`, terminal events). The write is skipped when `taskFlagsEventAt[dest]` is newer than the snapshot read, mirroring `reconcileRuntimeStatus`.
 3. **Snapshot refresh triggers derived from the corrupted state (made independent).** `useActiveSessionsRefresh` used to re-read `listAllSessions` only on mount and live-set changes (`liveSessionsSignature(taskActive, paused)`) — a signal derived from the very flags the switch dance could corrupt. After a corruption the live set goes empty and stays empty, so no refresh would ever re-fire and the watched set never self-healed. Now **every project/session switch triggers a refresh** (the DB's `unfinished_task_status` is authoritative and independent of the live flags), and a **visible-window safety poll** (`SNAPSHOT_POLL_INTERVAL_MS`, 30 s) bounds the worst case after a refresh-RPC failure or a stale answer. All triggers ride the same 500 ms debounce funnel.
 
-The Wails event layer itself is not a loss point: `EventsOn` cancellation is per-listener (v2.15 runtime), and Go→webview delivery is unconditional — coverage is decided entirely by which listeners the frontend holds.
+The Wails event layer itself is not a loss point: `EventsOn` cancellation is per-listener (v2.16 runtime), and Go→webview delivery is unconditional — coverage is decided entirely by which listeners the frontend holds.
 
 ## Behavior
 

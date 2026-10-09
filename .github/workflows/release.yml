@@ -35,9 +35,9 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  GO_VERSION: "1.27.1"
+  GO_VERSION: "1.27.2"
   NODE_VERSION: "24"
-  WAILS_VERSION: "v2.15.0"
+  WAILS_VERSION: "v2.16.0"
   # Application version injected into the binary via ldflags on every
   # platform. Resolves to the pushed tag (v*) on tag pushes, or the
   # user-supplied tag_name on workflow_dispatch runs.
