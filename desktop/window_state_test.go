@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -150,7 +151,10 @@ func TestPersistWindowBoundsAtShutdown_PrefersSnapshotOverDestroyedWindow(t *tes
 	}
 	a.windowIsMaximisedFn = func(context.Context) bool { return false }
 
-	a.persistWindowBoundsAtShutdown(testLogger())
+	// testLogger lives in the linux-only notifications test file, so the
+	// logger is built inline to keep this file platform-independent; its
+	// records carry no signal for these assertions.
+	a.persistWindowBoundsAtShutdown(slog.New(slog.DiscardHandler))
 
 	got := LoadWindowBounds(agentDir)
 	if got.Width != 1600 || got.Height != 1000 {
