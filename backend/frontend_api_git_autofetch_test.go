@@ -42,12 +42,12 @@ func (r *gitEventRecorder) count(event string) int {
 // given active project, an optional config, and an emitEvent recorder.
 func newAutoFetchAPI(projectPath, projectID string, cfg *config.Config) (*FrontendAPI, *gitEventRecorder) {
 	rec := &gitEventRecorder{}
-	return &FrontendAPI{
+	return seedPublishedAPI(&FrontendAPI{
 		config:            cfg,
 		activeProjectPath: projectPath,
 		activeProjectID:   projectID,
 		emitEvent:         rec.record,
-	}, rec
+	}), rec
 }
 
 // setupAutoFetchRepo creates a local repository with a bare remote that

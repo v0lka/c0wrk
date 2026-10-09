@@ -2,11 +2,13 @@
 package core
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -194,6 +196,14 @@ type OrchestratorConfig struct {
 	// builds. 0 disables the bound (the historical behavior). See
 	// agent.DefaultToolCallTimeout for the recommended value.
 	ToolCallTimeout time.Duration
+
+	// ToolCallTimeoutExemptTools replaces the ceiling's exempt tool-name set
+	// (threaded to the main executor through
+	// orchestration.ConductorConfig.ToolCallTimeoutExemptTools and to every
+	// subagent executor via SetToolCallTimeoutExempt in the launcher). A nil
+	// slice keeps sp4rk's built-in default exempt set; a non-nil (possibly
+	// empty) slice replaces it wholesale.
+	ToolCallTimeoutExemptTools []string
 
 	// Compaction carries the full executor compaction settings (Model Profiles
 	// context-management overrides already applied by the builder). It feeds
@@ -1494,10 +1504,16 @@ func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, 
 	// augmentWithAttachments so it reflects both the current attachment state
 	// and the continuation directive. Without this, a resumed image-bearing
 	// task would lose its images (SetTask is text-only).
+	//
+	// The attachment augmentation itself is UNCONDITIONAL (not gated on the
+	// image branch): the "## Attached files" section it produces is the only
+	// place the model learns an attachment's attachment_id — the read_attachment
+	// precondition — so a resumed task must carry it exactly like a fresh send
+	// even when there are no images to re-inject.
+	conductorMessage := o.augmentWithAttachments(taskMessage, bb)
 	var resumeContentBlocks []llm.ContentBlock
 	if origReq := bb.GetOriginalRequest(); origReq != "" {
 		if imageBlocks := imageBlocksForRequest(o.historySnapshot(), origReq); len(imageBlocks) > 0 {
-			conductorMessage := o.augmentWithAttachments(taskMessage, bb)
 			resumeContentBlocks = buildContentBlocks(conductorMessage, imageBlocks)
 		}
 	}
@@ -1518,7 +1534,7 @@ func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, 
 	// (dropFailedExchangeTail).
 	conversationHistory := truncateHistory(dropFailedExchangeTail(o.historySnapshot(), bb.GetOriginalRequest()), o.config.ConductorHistoryWindow)
 
-	execResult, err := o.runConductor(ctx, taskMessage, bb, availableTools, plansDir, conversationHistory, resumeSteps, resumeContentBlocks, "", forceCompactionStrategy, resumedWithPlan)
+	execResult, err := o.runConductor(ctx, conductorMessage, bb, availableTools, plansDir, conversationHistory, resumeSteps, resumeContentBlocks, "", forceCompactionStrategy, resumedWithPlan)
 	// Cooperative pause: a clean, recoverable checkpoint — not a failure.
 	// Surface it, persist the task as resumable (persistTaskOutcome below),
 	// and return the paused result with a nil error so the backend treats it
@@ -2482,9 +2498,15 @@ func (o *Orchestrator) collectAgentsMDPaths(ctx context.Context) []string {
 // readAgentsMD reads AGENTS.md from disk with a per-path cache that
 // invalidates on mtime change. This avoids repeated disk reads on every
 // HandleMessage call while still picking up edits. Write-through: every cache
-// miss re-reads the file and updates modTime. The raw (uncapped) content is
-// returned; the size cap is applied to the combined content of all sources in
-// capAgentsMD.
+// miss re-reads the file and updates modTime. The content is read through a
+// per-file byte cap (the same AgentsMDMaxBytes cap capAgentsMD applies to the
+// combined content), so a huge workspace-controlled file is never fully
+// materialized before any cap is applied. The per-file cap equals the combined
+// cap, so the final combined-truncated content is identical to reading
+// uncapped — the allocation is what stays bounded. A file larger than the
+// cap is clipped per source with the SAME truncation note and UTF-8/line
+// snapping capAgentsMD applies to the combined content; the note reports the
+// file's true on-disk size (Stat), not the clipped read length.
 func (o *Orchestrator) readAgentsMD(path string) (string, error) {
 	if o.agentsMDCache == nil {
 		o.agentsMDCache = make(map[string]agentsMDCacheEntry)
@@ -2504,10 +2526,46 @@ func (o *Orchestrator) readAgentsMD(path string) (string, error) {
 		return cached.content, nil
 	}
 
-	content, readErr := safeio.ReadFile(path)
+	// Open through safeio (regular-file check: refuses FIFOs/devices) and read
+	// through io.LimitReader so at most cap+1 bytes are buffered — the extra
+	// byte DETECTS an oversized file instead of silently clipping it at the
+	// raw reader boundary (which would lose capAgentsMD's truncation note and
+	// UTF-8/line snapping). A negative cap disables capping entirely (mirrors
+	// capAgentsMD's opt-out).
+	f, readErr := safeio.Open(path)
 	if readErr != nil {
 		o.agentsMDCache[path] = agentsMDCacheEntry{err: readErr, modTime: info.ModTime()}
 		return "", readErr
+	}
+	var content []byte
+	truncated := false
+	if maxBytes := o.agentsMDMaxBytes(); maxBytes > 0 {
+		content, readErr = io.ReadAll(io.LimitReader(f, maxBytes+1))
+		truncated = int64(len(content)) > maxBytes
+	} else {
+		content, readErr = io.ReadAll(f)
+	}
+	if closeErr := f.Close(); readErr == nil {
+		readErr = closeErr
+	}
+	if readErr != nil {
+		o.agentsMDCache[path] = agentsMDCacheEntry{err: readErr, modTime: info.ModTime()}
+		return "", readErr
+	}
+	if truncated {
+		// Byte-precise snap with the note's own size RESERVED from the cap:
+		// the marker becomes part of the produced content, so a clip that
+		// spends the full cap window pushes the note past maxBytes — and the
+		// oversize leftover is then re-truncated by capAgentsMD, producing a
+		// second marker and a false "original was" size (the inflated,
+		// note-carrying length). Reserving the note room keeps the capped
+		// result within the cap exactly once, note included, so the combined
+		// pass below passes it through untouched.
+		maxBytes := o.agentsMDMaxBytes()
+		note := agentsMDTruncationNote(maxBytes, info.Size())
+		clipped := snapAgentsMDWindow(content, maxBytes-int64(len(note)))
+		o.logDebug("AGENTS.md truncated", "path", path, "originalSize", info.Size(), "cap", maxBytes)
+		content = []byte(string(clipped) + note)
 	}
 
 	contentStr := string(content)
@@ -2515,24 +2573,72 @@ func (o *Orchestrator) readAgentsMD(path string) (string, error) {
 	return contentStr, nil
 }
 
-// capAgentsMD applies the AgentsMDMaxBytes cap to the combined AGENTS.md
-// content. A cap of 0 means use the default (DefaultAgentsMDMaxBytes); a
-// negative cap disables truncation entirely. Truncation snaps to a UTF-8 rune
-// boundary and then back to the last newline so multibyte content is not split
-// mid-rune.
-func (o *Orchestrator) capAgentsMD(content string) string {
+// agentsMDMaxBytes resolves the effective AGENTS.md byte cap shared by
+// readAgentsMD (per-file read bound) and capAgentsMD (combined truncation):
+// 0 means the default (DefaultAgentsMDMaxBytes); a negative cap disables
+// capping entirely.
+func (o *Orchestrator) agentsMDMaxBytes() int64 {
 	maxBytes := o.config.AgentsMDMaxBytes
 	if maxBytes == 0 {
 		maxBytes = DefaultAgentsMDMaxBytes
 	}
-	originalSize := len(content)
+	return int64(maxBytes)
+}
+
+// agentsMDTruncationNote renders the marker appended to clipped AGENTS.md
+// content: maxBytes is the effective cap, originalSize the true pre-truncation
+// size. Shared by readAgentsMD (per-file clip) and capAgentsMD (combined cap)
+// so both stages emit byte-identical markers.
+func agentsMDTruncationNote(maxBytes, originalSize int64) string {
+	return fmt.Sprintf("\n\n[…AGENTS.md truncated at %d bytes; original was %d bytes]", maxBytes, originalSize)
+}
+
+// snapAgentsMDWindow returns the longest byte-precise prefix of content that
+// fits budget bytes AND ends at a line boundary: the last '\n' within the
+// budget window, or — when the window holds no newline at all — a UTF-8 rune
+// boundary so a multibyte rune is never split. Byte-precise on purpose: a
+// rune-counting trim (strutil.TruncateUTF8AtLineBoundary) would let multibyte
+// content overflow the byte budget by up to 4x. Content that already fits the
+// budget is returned unchanged; a non-positive budget yields nil.
+func snapAgentsMDWindow(content []byte, budget int64) []byte {
+	if budget <= 0 {
+		return nil
+	}
+	if int64(len(content)) <= budget {
+		return content
+	}
+	window := content[:budget]
+	if idx := bytes.LastIndexByte(window, '\n'); idx >= 0 {
+		return window[:idx+1]
+	}
+	for len(window) > 0 && window[len(window)-1]&0xC0 == 0x80 {
+		window = window[:len(window)-1]
+	}
+	if len(window) > 0 && window[len(window)-1]&0xC0 == 0xC0 {
+		window = window[:len(window)-1]
+	}
+	return window
+}
+
+// capAgentsMD applies the AgentsMDMaxBytes cap to the combined AGENTS.md
+// content. A cap of 0 means use the default (DefaultAgentsMDMaxBytes); a
+// negative cap disables truncation entirely. Truncation is byte-precise and
+// snaps to the last newline within the budget, falling back to a UTF-8 rune
+// boundary; the truncation note's own size is RESERVED from the cap, so the
+// marker can never push the result past maxBytes (which would leave the
+// oversize to a second-stage clip — duplicate markers, false reported size).
+// The note always survives: for a pathological cap smaller than the note
+// itself the note alone is returned rather than silently dropping content.
+func (o *Orchestrator) capAgentsMD(content string) string {
+	originalSize := int64(len(content))
+	maxBytes := o.agentsMDMaxBytes()
 	if maxBytes <= 0 || originalSize <= maxBytes {
 		return content
 	}
-	trimmed := strutil.TruncateUTF8AtLineBoundary(content, maxBytes)
-	trimmed += fmt.Sprintf("\n\n[…AGENTS.md truncated at %d bytes; original was %d bytes]", maxBytes, originalSize)
+	note := agentsMDTruncationNote(maxBytes, originalSize)
+	clipped := snapAgentsMDWindow([]byte(content), maxBytes-int64(len(note)))
 	o.logDebug("AGENTS.md truncated", "originalSize", originalSize, "cap", maxBytes)
-	return trimmed
+	return string(clipped) + note
 }
 
 // emitInitialContextFill emits a 0% context_fill so the frontend has a baseline.
@@ -3236,7 +3342,13 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 		// before this point (e.g. blackboard restore) leaves the anchor's
 		// terminal status intact for the manager's fresh-workflow fallback.
 		o.reactivateContinuationTask(bb, opts.TaskID)
-		return o.runGoalLoop(ctx, message, opts, bb, availableTools, opts.SessionPlansDir)
+		// taskMessage (resolveTaskMessage) — not the raw message: skill-ref
+		// preprocessing can leave the raw text empty ("/goal /skill"-only
+		// sends), and the goal derivation seeds from this message, so it must
+		// match what the Conductor path, the E2S branch, and the blackboard
+		// record. (runGoalLoop passes the non-attachment-augmented value to
+		// routing internally, so this stays consistent with its own contract.)
+		return o.runGoalLoop(ctx, taskMessage, opts, bb, availableTools, opts.SessionPlansDir)
 	}
 
 	// Goal-mode-only tools (propose_goal, declare_goal_status, declare_verification)

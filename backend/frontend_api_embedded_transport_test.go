@@ -243,6 +243,8 @@ func TestToBuilderConfigLockedNeverTakesTheSubsystemMutex(t *testing.T) {
 // seam before the app is wired must fail with an actionable error.
 func TestEmbeddedLoaderRefWithoutAnAgentDirIsAnErrorNotAPanic(t *testing.T) {
 	f := &FrontendAPI{logger: slog.New(slog.DiscardHandler)}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	ref := embeddedLoaderRef{f: f}
 
 	err := ref.Load(context.Background())

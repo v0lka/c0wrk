@@ -1044,12 +1044,23 @@ func (idx *Indexer) RebuildLexical(ctx context.Context) error {
 	processed, skipped, unrepairable := 0, 0, 0
 	// flush commits one window of lexical documents under the service write
 	// lock (bleve mutation convention; the read/hash/chunk prep above stays
-	// lock-free so searches are not blocked for the pass duration).
+	// lock-free so searches are not blocked for the pass duration). The
+	// captured lex pointer is re-validated under that lock before the upsert:
+	// a concurrent branch/project switch or Service.Close closed (or
+	// replaced) the index under the same lock, and bleveIndex has no internal
+	// synchronization — upserting into the closed index would dereference its
+	// nil'd field. Aborting the rebuild is safe: the new index state is
+	// (re)built by whoever swapped it in, and the incremental pass re-writes
+	// anything still missing.
 	flush := func() error {
 		if len(batch) == 0 {
 			return nil
 		}
 		idx.service.AcquireWriteLock()
+		if cur := idx.service.currentLexicalLocked(); cur != lex {
+			idx.service.ReleaseWriteLock()
+			return fmt.Errorf("lexical rebuild aborted: lexical index replaced by a concurrent switch: %w", context.Canceled)
+		}
 		upsertStarted := time.Now()
 		upsertErr := lex.Upsert(ctx, batch)
 		idx.service.ReleaseWriteLock()
@@ -1248,10 +1259,19 @@ func (idx *Indexer) rebuildLexicalFromCollection(ctx context.Context, lex lexica
 
 	// upsertWindow commits one bleve window under the service write lock (the
 	// bleve mutation convention); the reconstruction around it stays lock-free
-	// so searches are not blocked for the pass duration.
+	// so searches are not blocked for the pass duration. The captured lex is
+	// re-validated under that lock before the upsert — a concurrent
+	// branch/project switch or Service.Close closed (or replaced) the index
+	// under the same lock, and upserting into the closed index would
+	// dereference bleveIndex's nil'd field (same mechanism as the sidecar
+	// path's flush).
 	upsertWindow := func(window []lexical.Doc) error {
 		started := time.Now()
 		idx.service.AcquireWriteLock()
+		if cur := idx.service.currentLexicalLocked(); cur != lex {
+			idx.service.ReleaseWriteLock()
+			return fmt.Errorf("lexical backfill aborted: lexical index replaced by a concurrent switch: %w", context.Canceled)
+		}
 		upErr := lex.Upsert(ctx, window)
 		idx.service.ReleaseWriteLock()
 		idx.telemetry.observe(StageBleveUpsert, len(window), time.Since(started))

@@ -68,6 +68,15 @@ func (a *App) updateQuitPending() bool {
 // anyway" calls ConfirmExit to quit for real, so the regular Shutdown path
 // (window bounds, pending-action drain, backend cleanup) still runs.
 func (a *App) ShouldPreventClose(_ context.Context) bool {
+	// Snapshot the window geometry while the window is guaranteed alive: this
+	// hook runs on every quit path BEFORE Wails destroys the window, whereas
+	// OnShutdown runs after the destroy on Linux — reading geometry there
+	// returns the creation default and would clobber the persisted value (see
+	// captureWindowGeometry). Captured on every pass, including the
+	// exit-confirmed re-entry, so a resize made while the confirmation modal
+	// was open is still reflected.
+	a.captureWindowGeometry()
+
 	if a.exitConfirmed.Load() {
 		return false
 	}
@@ -83,8 +92,8 @@ func (a *App) ShouldPreventClose(_ context.Context) bool {
 	// visible — the quit may arrive while it is hidden — then deliver the
 	// request. a.emit tolerates a nil ctx (Startup not run yet) by dropping
 	// the event with a warning, but that window cannot have active sessions.
-	if a.ctx != nil {
-		a.showWindow(a.ctx)
+	if a.wailsCtx() != nil {
+		a.showWindow(a.wailsCtx())
 	}
 	a.emit(EventAppExitRequested, exitGuardPayload{
 		Sessions:      active,
@@ -101,10 +110,11 @@ func (a *App) lookupActiveSessions() []session.ActiveSessionInfo {
 	if a.activeSessionsFn != nil {
 		return a.activeSessionsFn()
 	}
-	if a.app == nil {
+	app := a.application()
+	if app == nil {
 		return nil
 	}
-	return a.app.Manager().ActiveSessions()
+	return app.Manager().ActiveSessions()
 }
 
 // ConfirmExit is the frontend-callable counterpart to an intercepted quit:
@@ -113,15 +123,15 @@ func (a *App) lookupActiveSessions() []session.ActiveSessionInfo {
 // OnBeforeClose (allowed through by the flag) and then runs the normal
 // Shutdown sequence.
 func (a *App) ConfirmExit() error {
-	if a.ctx == nil {
+	if a.wailsCtx() == nil {
 		return errors.New("ConfirmExit: application context is not initialized")
 	}
 	a.exitConfirmed.Store(true)
 	a.log().Info("quit confirmed by user despite active sessions")
 	if a.quitFn != nil {
-		a.quitFn(a.ctx)
+		a.quitFn(a.wailsCtx())
 		return nil
 	}
-	wailsRuntime.Quit(a.ctx)
+	wailsRuntime.Quit(a.wailsCtx())
 	return nil
 }

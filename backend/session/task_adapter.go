@@ -31,6 +31,26 @@ func NewTaskStoreAdapter(store TaskStore) *TaskStoreAdapter {
 // compile-time check
 var _ core.TaskPersistence = (*TaskStoreAdapter)(nil)
 
+// storeCallTimeout bounds every TaskStoreAdapter store call. The
+// core.TaskPersistence interface predates context threading — its methods
+// take no ctx, so the adapter cannot forward a caller's deadline — and all
+// its store calls share the app's single SQLite pool with every active
+// session's writes. Without a bound, database/sql waits for a free pooled
+// connection with NO deadline, so one saturated pool parks the synchronous
+// terminal finalizers (CompleteTask/FailTask/CancelTask run directly on the
+// caller's goroutine via persistSynchronously) and the task UI stays
+// "running" forever. The same bound the restore head-reads use turns
+// contention into a prompt, retryable error instead.
+const storeCallTimeout = restoreDBReadTimeout
+
+// boundedStoreCtx returns a deadline-bounded context for one adapter store
+// call. Call it per call site and `defer cancel()` — the calls are
+// synchronous, so the cancel releases the context's timer as soon as the
+// store call returns.
+func boundedStoreCtx() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), storeCallTimeout)
+}
+
 var (
 	emptyJSONObject = json.RawMessage("{}")
 	emptyJSONArray  = json.RawMessage("[]")
@@ -38,7 +58,9 @@ var (
 
 // PersistNewTask creates a new task record with status "in_progress".
 func (a *TaskStoreAdapter) PersistNewTask(taskID, sessionID, originalRequest string) error {
-	return a.store.SaveTask(context.Background(), TaskRecord{
+	ctx, cancel := boundedStoreCtx()
+	defer cancel()
+	return a.store.SaveTask(ctx, TaskRecord{
 		ID:              taskID,
 		SessionID:       sessionID,
 		OriginalRequest: originalRequest,
@@ -66,7 +88,9 @@ func (a *TaskStoreAdapter) PersistPlan(taskID string, plan *orchestration.Plan) 
 	if err != nil {
 		return fmt.Errorf("marshal plan: %w", err)
 	}
-	return a.store.UpdateTaskPlan(context.Background(), taskID, data)
+	ctx, cancel := boundedStoreCtx()
+	defer cancel()
+	return a.store.UpdateTaskPlan(ctx, taskID, data)
 }
 
 // PersistRouting JSON-marshals the routing decision and updates the task record.
@@ -75,7 +99,9 @@ func (a *TaskStoreAdapter) PersistRouting(taskID string, routing *router.Routing
 	if err != nil {
 		return fmt.Errorf("marshal routing: %w", err)
 	}
-	return a.store.UpdateTaskRouting(context.Background(), taskID, data)
+	ctx, cancel := boundedStoreCtx()
+	defer cancel()
+	return a.store.UpdateTaskRouting(ctx, taskID, data)
 }
 
 // PersistStepResult creates a TaskStepRecord with JSON-marshaled steps.
@@ -84,7 +110,9 @@ func (a *TaskStoreAdapter) PersistStepResult(taskID, stepID, summary, fullOutput
 	if err != nil {
 		return fmt.Errorf("marshal steps: %w", err)
 	}
-	return a.store.SaveTaskStep(context.Background(), taskID, TaskStepRecord{
+	ctx, cancel := boundedStoreCtx()
+	defer cancel()
+	return a.store.SaveTaskStep(ctx, taskID, TaskStepRecord{
 		StepID:     stepID,
 		TaskID:     taskID,
 		Summary:    summary,
@@ -101,33 +129,45 @@ func (a *TaskStoreAdapter) PersistReflection(taskID string, r orchestration.Refl
 	if err != nil {
 		return fmt.Errorf("marshal reflection: %w", err)
 	}
-	return a.store.AddTaskReflection(context.Background(), taskID, data)
+	ctx, cancel := boundedStoreCtx()
+	defer cancel()
+	return a.store.AddTaskReflection(ctx, taskID, data)
 }
 
 // PersistCompletion marks the task as completed.
 func (a *TaskStoreAdapter) PersistCompletion(taskID, finalOutput string, attemptCount int) error {
-	return a.store.CompleteTask(context.Background(), taskID, finalOutput, attemptCount)
+	ctx, cancel := boundedStoreCtx()
+	defer cancel()
+	return a.store.CompleteTask(ctx, taskID, finalOutput, attemptCount)
 }
 
 // PersistFailure marks the task as failed.
 func (a *TaskStoreAdapter) PersistFailure(taskID string) error {
-	return a.store.FailTask(context.Background(), taskID)
+	ctx, cancel := boundedStoreCtx()
+	defer cancel()
+	return a.store.FailTask(ctx, taskID)
 }
 
 // PersistCancellation marks the task as cancelled.
 func (a *TaskStoreAdapter) PersistCancellation(taskID string) error {
-	return a.store.CancelTask(context.Background(), taskID)
+	ctx, cancel := boundedStoreCtx()
+	defer cancel()
+	return a.store.CancelTask(ctx, taskID)
 }
 
 // PersistPause marks the task as paused so it survives app restart as a
 // resumable checkpoint (GetUnfinishedTask matches the paused status).
 func (a *TaskStoreAdapter) PersistPause(taskID string) error {
-	return a.store.PauseTask(context.Background(), taskID)
+	ctx, cancel := boundedStoreCtx()
+	defer cancel()
+	return a.store.PauseTask(ctx, taskID)
 }
 
 // ReactivateTask reactivates a completed task back to in_progress.
 func (a *TaskStoreAdapter) ReactivateTask(taskID string) error {
-	return a.store.ReactivateTask(context.Background(), taskID)
+	ctx, cancel := boundedStoreCtx()
+	defer cancel()
+	return a.store.ReactivateTask(ctx, taskID)
 }
 
 // PersistFacts JSON-marshals facts and stores them for a task.
@@ -136,7 +176,9 @@ func (a *TaskStoreAdapter) PersistFacts(taskID string, facts []orchestration.Fac
 	if err != nil {
 		return fmt.Errorf("marshal facts: %w", err)
 	}
-	return a.store.SaveFacts(context.Background(), taskID, data)
+	ctx, cancel := boundedStoreCtx()
+	defer cancel()
+	return a.store.SaveFacts(ctx, taskID, data)
 }
 
 // PersistAttachments JSON-marshals attachments and stores them for a task.
@@ -145,7 +187,9 @@ func (a *TaskStoreAdapter) PersistAttachments(taskID string, attachments []orche
 	if err != nil {
 		return fmt.Errorf("marshal attachments: %w", err)
 	}
-	return a.store.SaveAttachments(context.Background(), taskID, data)
+	ctx, cancel := boundedStoreCtx()
+	defer cancel()
+	return a.store.SaveAttachments(ctx, taskID, data)
 }
 
 // SaveTrajectory JSON-marshals the full Conductor step trajectory and stores it
@@ -155,13 +199,17 @@ func (a *TaskStoreAdapter) SaveTrajectory(taskID string, steps []agent.Step) err
 	if err != nil {
 		return fmt.Errorf("marshal trajectory steps: %w", err)
 	}
-	return a.store.SaveTrajectory(context.Background(), taskID, data)
+	ctx, cancel := boundedStoreCtx()
+	defer cancel()
+	return a.store.SaveTrajectory(ctx, taskID, data)
 }
 
 // LoadTrajectory loads the Conductor step trajectory for a task and unmarshals
 // it into []agent.Step. Returns nil, nil when no trajectory has been persisted.
 func (a *TaskStoreAdapter) LoadTrajectory(taskID string) ([]agent.Step, error) {
-	data, err := a.store.LoadTrajectory(context.Background(), taskID)
+	ctx, cancel := boundedStoreCtx()
+	defer cancel()
+	data, err := a.store.LoadTrajectory(ctx, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("load trajectory: %w", err)
 	}
@@ -182,13 +230,17 @@ func (a *TaskStoreAdapter) PersistGoalState(taskID string, gs *goal.GoalState) e
 	if err != nil {
 		return fmt.Errorf("marshal goal state: %w", err)
 	}
-	return a.store.SaveGoalState(context.Background(), taskID, data)
+	ctx, cancel := boundedStoreCtx()
+	defer cancel()
+	return a.store.SaveGoalState(ctx, taskID, data)
 }
 
 // LoadGoalState loads the goal-loop state for a task and unmarshals it into a
 // *goal.GoalState. Returns nil, nil when no goal state has been persisted.
 func (a *TaskStoreAdapter) LoadGoalState(taskID string) (*goal.GoalState, error) {
-	data, err := a.store.LoadGoalState(context.Background(), taskID)
+	ctx, cancel := boundedStoreCtx()
+	defer cancel()
+	data, err := a.store.LoadGoalState(ctx, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("load goal state: %w", err)
 	}
@@ -211,14 +263,18 @@ func (a *TaskStoreAdapter) PersistE2SState(taskID string, st *e2s.E2SState) erro
 	if err != nil {
 		return fmt.Errorf("marshal e2s state: %w", err)
 	}
-	return a.store.SaveE2SState(context.Background(), taskID, data)
+	ctx, cancel := boundedStoreCtx()
+	defer cancel()
+	return a.store.SaveE2SState(ctx, taskID, data)
 }
 
 // LoadE2SState loads the E2S execution state for a task and unmarshals it into
 // an *e2s.E2SState. Returns nil, nil when no E2S state has been persisted
 // (non-E2S tasks).
 func (a *TaskStoreAdapter) LoadE2SState(taskID string) (*e2s.E2SState, error) {
-	data, err := a.store.LoadE2SState(context.Background(), taskID)
+	ctx, cancel := boundedStoreCtx()
+	defer cancel()
+	data, err := a.store.LoadE2SState(ctx, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("load e2s state: %w", err)
 	}
@@ -240,7 +296,9 @@ func (a *TaskStoreAdapter) PersistDelegationSpec(taskID string, spec tools.Deleg
 	if err != nil {
 		return fmt.Errorf("marshal delegation spec: %w", err)
 	}
-	return a.store.SaveDelegationSpec(context.Background(), taskID, TaskDelegationRecord{
+	ctx, cancel := boundedStoreCtx()
+	defer cancel()
+	return a.store.SaveDelegationSpec(ctx, taskID, TaskDelegationRecord{
 		DelegationID: spec.Task.ID,
 		TaskID:       taskID,
 		ParentID:     spec.ParentID,
@@ -253,7 +311,9 @@ func (a *TaskStoreAdapter) PersistDelegationSpec(taskID string, spec tools.Deleg
 // LoadDelegationSpecs loads the delegation specs for a task and unmarshals
 // them into []tools.DelegationSpec. Returns nil, nil when none are persisted.
 func (a *TaskStoreAdapter) LoadDelegationSpecs(taskID string) ([]tools.DelegationSpec, error) {
-	recs, err := a.store.LoadDelegationSpecs(context.Background(), taskID)
+	ctx, cancel := boundedStoreCtx()
+	defer cancel()
+	recs, err := a.store.LoadDelegationSpecs(ctx, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("load delegation specs: %w", err)
 	}
@@ -275,7 +335,9 @@ func (a *TaskStoreAdapter) LoadDelegationSpecs(taskID string) ([]tools.Delegatio
 // to core types, and returns a populated *core.TaskState.
 // Returns nil, nil if the task is not found.
 func (a *TaskStoreAdapter) LoadTaskState(taskID string) (*core.TaskState, error) {
-	rec, err := a.store.LoadTask(context.Background(), taskID)
+	ctx, cancel := boundedStoreCtx()
+	defer cancel()
+	rec, err := a.store.LoadTask(ctx, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("load task: %w", err)
 	}
@@ -317,7 +379,9 @@ func (a *TaskStoreAdapter) LoadTaskState(taskID string) (*core.TaskState, error)
 	}
 
 	// Load step records
-	stepRecords, err := a.store.LoadTaskSteps(context.Background(), taskID)
+	ctx2, cancel2 := boundedStoreCtx()
+	defer cancel2()
+	stepRecords, err := a.store.LoadTaskSteps(ctx2, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("load task steps: %w", err)
 	}
@@ -347,7 +411,9 @@ func (a *TaskStoreAdapter) LoadTaskState(taskID string) (*core.TaskState, error)
 	}
 
 	// Load facts
-	factsJSON, err := a.store.LoadFacts(context.Background(), taskID)
+	ctx3, cancel3 := boundedStoreCtx()
+	defer cancel3()
+	factsJSON, err := a.store.LoadFacts(ctx3, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("load facts: %w", err)
 	}
@@ -358,7 +424,9 @@ func (a *TaskStoreAdapter) LoadTaskState(taskID string) (*core.TaskState, error)
 	}
 
 	// Load attachments
-	attachmentsJSON, err := a.store.LoadAttachments(context.Background(), taskID)
+	ctx4, cancel4 := boundedStoreCtx()
+	defer cancel4()
+	attachmentsJSON, err := a.store.LoadAttachments(ctx4, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("load attachments: %w", err)
 	}
@@ -369,7 +437,9 @@ func (a *TaskStoreAdapter) LoadTaskState(taskID string) (*core.TaskState, error)
 	}
 
 	// Load goal state (nil for non-goal tasks).
-	goalJSON, err := a.store.LoadGoalState(context.Background(), taskID)
+	ctx5, cancel5 := boundedStoreCtx()
+	defer cancel5()
+	goalJSON, err := a.store.LoadGoalState(ctx5, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("load goal state: %w", err)
 	}
@@ -394,7 +464,9 @@ func (a *TaskStoreAdapter) LoadTaskState(taskID string) (*core.TaskState, error)
 // GetUnfinishedTaskID returns the ID of the most recent in-progress task for the
 // given session, or "" if none exists.
 func (a *TaskStoreAdapter) GetUnfinishedTaskID(sessionID string) (string, error) {
-	rec, err := a.store.GetUnfinishedTask(context.Background(), sessionID)
+	ctx, cancel := boundedStoreCtx()
+	defer cancel()
+	rec, err := a.store.GetUnfinishedTask(ctx, sessionID)
 	if err != nil {
 		return "", err
 	}
@@ -410,7 +482,9 @@ func (a *TaskStoreAdapter) GetUnfinishedTaskID(sessionID string) (string, error)
 // terminal status (e.g. cancelled/completed) by CancelTask. Used when a caller
 // needs the latest task row regardless of its lifecycle state.
 func (a *TaskStoreAdapter) GetLatestTaskID(sessionID string) (string, error) {
-	return a.store.GetLatestTaskID(context.Background(), sessionID)
+	ctx, cancel := boundedStoreCtx()
+	defer cancel()
+	return a.store.GetLatestTaskID(ctx, sessionID)
 }
 
 // ---------------------------------------------------------------------------
@@ -436,7 +510,9 @@ type unitStoreFacade struct {
 
 // SaveUnit persists a unit record (spec + status + steps) for a task.
 func (f *unitStoreFacade) SaveUnit(rec units.UnitRecord) error {
-	return f.us.SaveTaskUnit(context.Background(), toTaskUnitRecord(rec))
+	ctx, cancel := boundedStoreCtx()
+	defer cancel()
+	return f.us.SaveTaskUnit(ctx, toTaskUnitRecord(rec))
 }
 
 // unitStatusSettler is the optional targeted-status capability a unit task
@@ -453,9 +529,13 @@ type unitStatusSettler interface {
 // status column alone.
 func (f *unitStoreFacade) SettleUnitStatusIfInFlight(taskID, namespace, id string, status units.UnitStatus) (bool, error) {
 	if ss, ok := f.us.(unitStatusSettler); ok {
-		return ss.SettleTaskUnitStatusIfInFlight(context.Background(), taskID, namespace, id, string(status))
+		ctx, cancel := boundedStoreCtx()
+		defer cancel()
+		return ss.SettleTaskUnitStatusIfInFlight(ctx, taskID, namespace, id, string(status))
 	}
-	recs, err := f.us.LoadTaskUnits(context.Background(), taskID)
+	ctx, cancel := boundedStoreCtx()
+	defer cancel()
+	recs, err := f.us.LoadTaskUnits(ctx, taskID)
 	if err != nil {
 		return false, err
 	}
@@ -468,14 +548,19 @@ func (f *unitStoreFacade) SettleUnitStatusIfInFlight(taskID, namespace, id strin
 		}
 		rec.Status = string(status)
 		rec.UpdatedAt = time.Now().UTC()
-		return true, f.us.SaveTaskUnit(context.Background(), rec)
+		ctx, cancel := boundedStoreCtx()
+		err := f.us.SaveTaskUnit(ctx, rec)
+		cancel()
+		return true, err
 	}
 	return false, nil
 }
 
 // LoadUnits returns every unit persisted under a task, across all namespaces.
 func (f *unitStoreFacade) LoadUnits(taskID string) ([]units.UnitRecord, error) {
-	recs, err := f.us.LoadTaskUnits(context.Background(), taskID)
+	ctx, cancel := boundedStoreCtx()
+	defer cancel()
+	recs, err := f.us.LoadTaskUnits(ctx, taskID)
 	if err != nil {
 		return nil, err
 	}

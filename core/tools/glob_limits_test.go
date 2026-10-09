@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	sdktools "github.com/v0lka/sp4rk/tools"
 	"github.com/v0lka/sp4rk/tools/builtins"
@@ -91,6 +92,57 @@ func TestRegisterBuiltinTools_GlobLimitsReachGlobTool(t *testing.T) {
 		}
 		if got := len(strings.Split(strings.TrimSpace(res.Content), "\n")); got != 3 {
 			t.Fatalf("expected 3 matches, got %d (%q)", got, res.Content)
+		}
+	})
+}
+
+// registeredGlobLimits builds a registry via RegisterBuiltinTools and returns
+// the limits the registered glob tool actually carries (read through the
+// Limits() accessor), so a test can assert what survived registration rather
+// than what was passed in.
+func registeredGlobLimits(t *testing.T, cfg BuiltinToolsConfig) builtins.GlobLimits {
+	t.Helper()
+	r := NewToolRegistry()
+	if err := RegisterBuiltinTools(r, cfg); err != nil {
+		t.Fatalf("RegisterBuiltinTools: %v", err)
+	}
+	raw, ok := r.Get("glob")
+	if !ok {
+		t.Fatal("glob tool not registered")
+	}
+	glob, ok := raw.(*builtins.GlobTool)
+	if !ok {
+		t.Fatalf("registered glob tool has unexpected type %T", raw)
+	}
+	return glob.Limits()
+}
+
+// TestRegisterBuiltinTools_GlobLimitsExplicitZerosSurvive pins the c0wrk side
+// of the "0 disables" contract: an explicitly populated all-zero glob config
+// (all three knobs at 0) must reach the registered tool VERBATIM — the
+// no-fallback constructor — instead of being silently replaced by the
+// defaults, while a fully-unset config keeps the zero-struct→defaults fallback
+// (the runaway-walk safety net for a never-populated BuiltinToolsConfig).
+func TestRegisterBuiltinTools_GlobLimitsExplicitZerosSurvive(t *testing.T) {
+	t.Run("explicit all-zero config is honored verbatim", func(t *testing.T) {
+		got := registeredGlobLimits(t, BuiltinToolsConfig{GlobLimits: builtins.GlobLimits{}, GlobLimitsExplicit: true})
+		if got != (builtins.GlobLimits{}) {
+			t.Errorf("explicit all-zero limits were not honored, got %+v (defaults silently re-armed?)", got)
+		}
+	})
+
+	t.Run("unset config keeps the defaults fallback", func(t *testing.T) {
+		got := registeredGlobLimits(t, BuiltinToolsConfig{})
+		if want := builtins.DefaultGlobLimits(); got != want {
+			t.Errorf("unset config limits = %+v, want the defaults %+v", got, want)
+		}
+	})
+
+	t.Run("explicit non-zero config flows verbatim", func(t *testing.T) {
+		want := builtins.GlobLimits{MaxEntries: 11, MaxResults: 7, Timeout: 3 * time.Second}
+		got := registeredGlobLimits(t, BuiltinToolsConfig{GlobLimits: want, GlobLimitsExplicit: true})
+		if got != want {
+			t.Errorf("explicit limits = %+v, want %+v", got, want)
 		}
 	})
 }

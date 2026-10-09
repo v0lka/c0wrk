@@ -80,6 +80,8 @@ func TestNotifyGitConfigRisk_DangerousKeysEmitted(t *testing.T) {
 	writeGitConfig(t, dir, "[core]\n\tfsmonitor = /tmp/evil\n\thooksPath = .githooks\n[filter \"lfs\"]\n\tprocess = /tmp/evil-filter\n")
 
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	rec := newRiskRecorder(t, f)
 	f.notifyGitConfigRisk(GitConfigRiskSourceProject, dir)
 
@@ -126,6 +128,8 @@ func TestNotifyGitConfigRisk_TransportKeysCovered(t *testing.T) {
 		"[diff]\n\texternal = /tmp/evil-ext.sh\n")
 
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	rec := newRiskRecorder(t, f)
 	f.notifyGitConfigRisk(GitConfigRiskSourceProject, dir)
 
@@ -173,6 +177,8 @@ func TestNotifyGitConfigRisk_SigningKeysReported(t *testing.T) {
 		"[user]\n\tname = a\n\temail = b\n\tsigningkey = /tmp/evil-key\n")
 
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	rec := newRiskRecorder(t, f)
 	f.notifyGitConfigRisk(GitConfigRiskSourceProject, dir)
 
@@ -207,6 +213,8 @@ func TestNotifyGitConfigRisk_SigningKeysReported(t *testing.T) {
 		dir := t.TempDir()
 		writeGitConfig(t, dir, "[user]\n\tname = Test\n\temail = test@example.com\n[commit]\n\tgpgsign = false\n")
 		f := &FrontendAPI{}
+		f.seedPublished.Store(true)
+		f.seedPublished.Store(true)
 		rec := newRiskRecorder(t, f)
 		f.notifyGitConfigRisk(GitConfigRiskSourceProject, dir)
 		if rec.fired {
@@ -222,6 +230,8 @@ func TestNotifyGitConfigRisk_SigningKeysReported(t *testing.T) {
 		dir := t.TempDir()
 		writeGitConfig(t, dir, "[gpg]\n\tformat = ssh\n\tprogram = /tmp/evil-gpg.sh\n[user]\n\tsigningkey = /tmp/evil-key\n")
 		f := &FrontendAPI{}
+		f.seedPublished.Store(true)
+		f.seedPublished.Store(true)
 		rec := newRiskRecorder(t, f)
 		f.notifyGitConfigRisk(GitConfigRiskSourceProject, dir)
 		if rec.fired {
@@ -233,6 +243,8 @@ func TestNotifyGitConfigRisk_SigningKeysReported(t *testing.T) {
 func TestNotifyGitConfigRisk_CleanRepoSilent(t *testing.T) {
 	t.Run("no git dir at all", func(t *testing.T) {
 		f := &FrontendAPI{}
+		f.seedPublished.Store(true)
+		f.seedPublished.Store(true)
 		rec := newRiskRecorder(t, f)
 		f.notifyGitConfigRisk(GitConfigRiskSourceWorkdir, t.TempDir())
 		if rec.fired {
@@ -244,6 +256,8 @@ func TestNotifyGitConfigRisk_CleanRepoSilent(t *testing.T) {
 		dir := t.TempDir()
 		writeGitConfig(t, dir, "[user]\n\tname = Test\n\temail = test@example.com\n[init]\n\tdefaultBranch = main\n")
 		f := &FrontendAPI{}
+		f.seedPublished.Store(true)
+		f.seedPublished.Store(true)
 		rec := newRiskRecorder(t, f)
 		f.notifyGitConfigRisk(GitConfigRiskSourceProject, dir)
 		if rec.fired {
@@ -257,6 +271,8 @@ func TestNotifyGitConfigRisk_IncludeDirectiveFailsClosed(t *testing.T) {
 	writeGitConfig(t, dir, "[include]\n\tpath = ~/.gitconfig-evil\n")
 
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	captureMiscDiagnostics(t, f, miscExpectedDiagnostic{
 		message: "git config include directive ignored (not followed); config is an incomplete view",
 		attrs:   map[string]string{"line": "2", "conditional": "false", "condition": "", "path": "~/.gitconfig-evil"},
@@ -291,6 +307,8 @@ func TestNotifyGitConfigRisk_AttributesDisabledDisclosure(t *testing.T) {
 		writeGitConfig(t, dir, "[include]\n\tpath = ~/.gitconfig-evil\n")
 
 		f := &FrontendAPI{}
+		f.seedPublished.Store(true)
+		f.seedPublished.Store(true)
 		captureMiscDiagnostics(t, f, miscExpectedDiagnostic{
 			message: "git config include directive ignored (not followed); config is an incomplete view",
 			attrs:   map[string]string{"line": "2", "conditional": "false", "condition": "", "path": "~/.gitconfig-evil"},
@@ -322,6 +340,8 @@ func TestNotifyGitConfigRisk_AttributesDisabledDisclosure(t *testing.T) {
 		writeGitConfig(t, dir, "[filter \"lfs\"]\n\tclean = git-lfs clean -- %f\n")
 
 		f := &FrontendAPI{}
+		f.seedPublished.Store(true)
+		f.seedPublished.Store(true)
 		rec := newRiskRecorder(t, f)
 		f.notifyGitConfigRisk(GitConfigRiskSourceProject, dir)
 
@@ -341,6 +361,8 @@ func TestNotifyGitConfigRisk_MalformedConfigFailsClosed(t *testing.T) {
 	writeGitConfig(t, dir, "[core]\n\tfsmonitor = \"unterminated\n")
 
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	rec := newRiskRecorder(t, f)
 	f.notifyGitConfigRisk(GitConfigRiskSourceWorkdir, dir)
 
@@ -367,6 +389,8 @@ func TestNotifyGitConfigRisk_UnreadableConfigFailsClosed(t *testing.T) {
 	}
 
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	rec := newRiskRecorder(t, f)
 	f.notifyGitConfigRisk(GitConfigRiskSourceProject, dir)
 
@@ -596,6 +620,8 @@ func TestTrustGitRepo_RoundTrip(t *testing.T) {
 // the fail-closed direction of the scan itself.
 func TestGitRepoTrusted_NilConfigIsFailClosed(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	if f.gitRepoTrusted("/some/repo") {
 		t.Error("gitRepoTrusted must be false with no config loaded")
 	}
@@ -625,6 +651,8 @@ func TestNotifyGitConfigRisk_AttributeRoutingSourcesEmitted(t *testing.T) {
 	}
 
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	captureMiscDiagnostics(t, f, miscExpectedDiagnostic{
 		message: "git config include directive ignored (not followed); config is an incomplete view",
 		attrs:   map[string]string{"line": "2", "conditional": "false", "condition": "", "path": "/abs/extra.conf"},
@@ -653,6 +681,8 @@ func TestNotifyGitConfigRisk_AttributeRoutingSourcesEmitted(t *testing.T) {
 		t.Fatal(err)
 	}
 	f2 := &FrontendAPI{}
+	f2.seedPublished.Store(true)
+	f2.seedPublished.Store(true)
 	rec2 := newRiskRecorder(t, f2)
 	f2.notifyGitConfigRisk(GitConfigRiskSourceProject, unscannable)
 	if !rec2.fired {
@@ -680,6 +710,8 @@ func TestNotifyGitConfigRisk_AttributesAndTrustsRepoRoot(t *testing.T) {
 
 	// Warning attribution: the subdirectory open warns under the repo root.
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	rec := newRiskRecorder(t, f)
 	f.notifyGitConfigRisk(GitConfigRiskSourceWorkdir, sub)
 	if !rec.fired {

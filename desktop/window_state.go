@@ -1,9 +1,9 @@
 package desktop
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
-	"os"
 
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
@@ -75,7 +75,7 @@ func defaultWindowBounds() WindowBounds {
 // an ungraceful exit (force-quit/crash) — the last persisted state is always
 // recent. It reads the live OS window geometry from the Wails runtime.
 func (a *App) PersistWindowBounds() {
-	if a.ctx == nil {
+	if a.wailsCtx() == nil {
 		return
 	}
 	a.saveWindowBounds(a.log())
@@ -85,11 +85,11 @@ func (a *App) PersistWindowBounds() {
 // is created (called from Startup). Window size is handled by wails.Run
 // options in main.go; only the maximize flag needs runtime re-application.
 func (a *App) restoreMaximizedWindow() {
-	if a.ctx == nil {
+	if a.wailsCtx() == nil {
 		return
 	}
 	if LoadWindowBounds(a.agentDir()).Maximized {
-		wailsRuntime.WindowMaximise(a.ctx)
+		wailsRuntime.WindowMaximise(a.wailsCtx())
 	}
 }
 
@@ -99,24 +99,73 @@ func (a *App) restoreMaximizedWindow() {
 // file) so the restore rectangle is not overwritten with the fullscreen size —
 // only the Maximized flag is updated. Writes are atomic (temp + rename).
 func (a *App) saveWindowBounds(log *slog.Logger) {
-	if a.ctx == nil {
+	ctx := a.wailsCtx()
+	if ctx == nil {
 		return
 	}
+	a.writeResolvedWindowBounds(a.readLiveWindowGeometry(ctx), log)
+}
 
+// readLiveWindowGeometry reads the current OS window geometry through the
+// per-call seams (windowGetSizeFn/windowIsMaximisedFn — tests) or the Wails
+// runtime (production).
+func (a *App) readLiveWindowGeometry(ctx context.Context) WindowBounds {
+	var b WindowBounds
+	if a.windowGetSizeFn != nil {
+		b.Width, b.Height = a.windowGetSizeFn(ctx)
+	} else {
+		b.Width, b.Height = wailsRuntime.WindowGetSize(ctx)
+	}
+	if a.windowIsMaximisedFn != nil {
+		b.Maximized = a.windowIsMaximisedFn(ctx)
+	} else {
+		b.Maximized = wailsRuntime.WindowIsMaximised(ctx)
+	}
+	return b
+}
+
+// captureWindowGeometry snapshots the CURRENT window geometry for the
+// shutdown persist. Called from ShouldPreventClose — the one quit-path hook
+// that still runs while the window is alive. On Linux, Wails destroys the
+// main window BEFORE the OnShutdown hook runs (wails v2 production app loop:
+// frontend.Run → RunMainLoop → WindowClose → shutdownCallback), and reading
+// geometry from a destroyed GTK window returns the CREATION default — so the
+// historical read-at-shutdown clobbered the correct value the resize-debounced
+// PersistWindowBounds had already written while the window was up.
+func (a *App) captureWindowGeometry() {
+	ctx := a.wailsCtx()
+	if ctx == nil {
+		return
+	}
+	b := a.readLiveWindowGeometry(ctx)
+	a.windowGeomCache.Store(&b)
+}
+
+// persistWindowBoundsAtShutdown persists the final window geometry on quit.
+// It prefers the snapshot captured while the window was alive
+// (captureWindowGeometry) and falls back to the historical live read only
+// when no snapshot exists (a quit path that never ran the close guard).
+func (a *App) persistWindowBoundsAtShutdown(log *slog.Logger) {
+	if snap := a.windowGeomCache.Load(); snap != nil {
+		a.writeResolvedWindowBounds(*snap, log)
+		return
+	}
+	a.saveWindowBounds(log)
+}
+
+// writeResolvedWindowBounds applies the maximized-preservation rule and
+// writes the state file. When maximized, the last non-maximized Width/Height
+// (loaded from the existing file) is preserved so un-maximizing restores the
+// user's chosen rectangle rather than the fullscreen dimensions — only the
+// Maximized flag is updated. Writes are atomic (temp + rename).
+func (a *App) writeResolvedWindowBounds(live WindowBounds, log *slog.Logger) {
 	agentDir := a.agentDir()
-	width, height := wailsRuntime.WindowGetSize(a.ctx)
-	maximized := wailsRuntime.WindowIsMaximised(a.ctx)
-
-	next := WindowBounds{Width: width, Height: height, Maximized: maximized}
-
-	if maximized {
-		// Preserve the last non-maximized size so un-maximizing restores the
-		// user's chosen rectangle rather than the fullscreen dimensions.
+	next := live
+	if live.Maximized {
 		prev := LoadWindowBounds(agentDir)
 		next.Width = prev.Width
 		next.Height = prev.Height
 	}
-
 	if err := writeWindowBounds(agentDir, next); err != nil {
 		log.Warn("failed to persist window state", "error", err)
 	}
@@ -129,19 +178,16 @@ func (a *App) agentDir() string {
 }
 
 // writeWindowBounds serializes bounds to window_state.json atomically.
+//
+// The write goes through safeio.WriteFileAtomic: the staging file is a
+// random-suffix sibling created in the same directory (there is no fixed
+// path+".tmp" name left to pre-plant a blocking FIFO on), and the final
+// rename REPLACES the directory entry itself — a symlink planted at
+// window_state.json is replaced, never written through.
 func writeWindowBounds(agentDir string, b WindowBounds) error {
 	data, err := json.MarshalIndent(b, "", "  ")
 	if err != nil {
 		return err
 	}
-	path := config.WindowStatePath(agentDir)
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	return nil
+	return safeio.WriteFileAtomic(config.WindowStatePath(agentDir), data, 0o600)
 }

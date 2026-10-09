@@ -1,7 +1,6 @@
 package backend
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -14,6 +13,7 @@ import (
 // to the backend and is produced/consumed by the frontend's groupMessages
 // (DisplayItem key), so navigation and preview stay a frontend concern.
 func (f *FrontendAPI) AddBookmark(sessionID, eventKey, title string) (session.SessionBookmark, error) {
+	f.seedAcquire()
 	if f.store == nil {
 		return session.SessionBookmark{}, errors.New("session store not initialized")
 	}
@@ -31,7 +31,9 @@ func (f *FrontendAPI) AddBookmark(sessionID, eventKey, title string) (session.Se
 		EventKey:  eventKey,
 		Title:     title,
 	}
-	saved, err := f.store.SaveBookmark(context.Background(), bookmark)
+	ctx, cancel := f.storeOpCtx()
+	defer cancel()
+	saved, err := f.store.SaveBookmark(ctx, bookmark)
 	if err != nil {
 		return session.SessionBookmark{}, fmt.Errorf("failed to add bookmark: %w", err)
 	}
@@ -40,10 +42,13 @@ func (f *FrontendAPI) AddBookmark(sessionID, eventKey, title string) (session.Se
 
 // ListBookmarks returns all bookmarks for a session, oldest first.
 func (f *FrontendAPI) ListBookmarks(sessionID string) ([]session.SessionBookmark, error) {
+	f.seedAcquire()
 	if f.store == nil {
 		return nil, errors.New("session store not initialized")
 	}
-	bookmarks, err := f.store.ListBookmarks(context.Background(), sessionID)
+	ctx, cancel := f.storeOpCtx()
+	defer cancel()
+	bookmarks, err := f.store.ListBookmarks(ctx, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list bookmarks: %w", err)
 	}
@@ -53,10 +58,13 @@ func (f *FrontendAPI) ListBookmarks(sessionID string) ([]session.SessionBookmark
 // DeleteBookmark removes a bookmark from a session. sessionID scopes the delete
 // so a bookmark id can never remove another session's bookmark.
 func (f *FrontendAPI) DeleteBookmark(sessionID, bookmarkID string) error {
+	f.seedAcquire()
 	if f.store == nil {
 		return errors.New("session store not initialized")
 	}
-	if err := f.store.DeleteBookmark(context.Background(), sessionID, bookmarkID); err != nil {
+	ctx, cancel := f.storeOpCtx()
+	defer cancel()
+	if err := f.store.DeleteBookmark(ctx, sessionID, bookmarkID); err != nil {
 		return fmt.Errorf("failed to delete bookmark: %w", err)
 	}
 	return nil
@@ -65,6 +73,7 @@ func (f *FrontendAPI) DeleteBookmark(sessionID, bookmarkID string) error {
 // RenameBookmark updates a bookmark's title. sessionID scopes the update so a
 // bookmark id can never rename another session's bookmark.
 func (f *FrontendAPI) RenameBookmark(sessionID, bookmarkID, title string) error {
+	f.seedAcquire()
 	if f.store == nil {
 		return errors.New("session store not initialized")
 	}
@@ -72,7 +81,9 @@ func (f *FrontendAPI) RenameBookmark(sessionID, bookmarkID, title string) error 
 	if title == "" {
 		return errors.New("bookmark title is empty")
 	}
-	if err := f.store.RenameBookmark(context.Background(), sessionID, bookmarkID, title); err != nil {
+	ctx, cancel := f.storeOpCtx()
+	defer cancel()
+	if err := f.store.RenameBookmark(ctx, sessionID, bookmarkID, title); err != nil {
 		return fmt.Errorf("failed to rename bookmark: %w", err)
 	}
 	return nil

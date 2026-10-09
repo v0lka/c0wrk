@@ -226,6 +226,10 @@ export function isEmbeddedLLMStatus(d: unknown): d is EmbeddedLLMStatus {
     typeof o.installed_at === 'string' &&
     typeof o.model_file === 'string' &&
     typeof o.pid === 'number' &&
+    // Optional omitempty fields stay valid when absent; a present one must be
+    // a string — fit_warning is rendered as a React child (title + body) in
+    // the install record.
+    (o.fit_warning === undefined || typeof o.fit_warning === 'string') &&
     typeof o.error === 'string' &&
     typeof o.install_error === 'string' &&
     typeof o.available === 'boolean' &&

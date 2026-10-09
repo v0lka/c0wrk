@@ -515,6 +515,14 @@ func (pb *PersistentBlackboard) TaskID() string {
 	return pb.taskID
 }
 
+// SessionID returns the session ID the blackboard was created for.
+// The session Manager groups tracked blackboards by it: DeleteSession stops
+// the deleted session's persistence workers, whose task can no longer reach a
+// terminal finalizer.
+func (pb *PersistentBlackboard) SessionID() string {
+	return pb.sessionID
+}
+
 // ---------------------------------------------------------------------------
 // Restoration
 // ---------------------------------------------------------------------------

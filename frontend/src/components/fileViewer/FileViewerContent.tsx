@@ -111,7 +111,13 @@ export function FileViewerContent() {
   // Plan files: render structured editor instead of plain markdown viewer
   const isPlanFile = activeFile.includes('.c0wrk/plans/')
   if (isPlanFile) {
-    return <PlanEditor content={fileData.content} path={activeFile} />
+    // key={activeFile}: a plan→plan tab switch must REMOUNT the editor, not
+    // reconcile to the same instance — otherwise a pending 500 ms auto-save
+    // timer armed for plan A fires after the switch with the freshly
+    // re-targeted `path` prop and writes A's markdown over plan B (the
+    // remount's unmount flush instead saves A's edit to A, and B opens
+    // with a fresh baseline).
+    return <PlanEditor key={activeFile} content={fileData.content} path={activeFile} />
   }
 
   const hunks = fileData.hunks ?? EMPTY_HUNKS

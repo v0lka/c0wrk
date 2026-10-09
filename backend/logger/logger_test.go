@@ -261,3 +261,72 @@ func TestSessionLogger_JSONFormat(t *testing.T) {
 		t.Errorf("log should contain key2 field")
 	}
 }
+
+// TestInit_RefusesEscapingSymlinkedLogDir pins the corrected #77 contract:
+// a PRE-EXISTING symlinked logs directory whose target lies OUTSIDE the
+// agent directory (the log dir's parent — the containment boundary) is
+// REFUSED, because it redirects every session log outside ~/.c0wrk (the
+// finding's documented trigger: rm -rf ~/.c0wrk/logs && ln -s /tmp/evil
+// ~/.c0wrk/logs). Init fails closed instead of writing through the link.
+// What still resolves as operator intent is a link INSIDE the boundary
+// (covered below) — the macOS /var → /private/var class lives ABOVE the
+// boundary and is unaffected; a dangling link or a link swapped into a
+// created component fails Init closed as before.
+func TestInit_RefusesEscapingSymlinkedLogDir(t *testing.T) {
+	base := t.TempDir()
+	victim := filepath.Join(t.TempDir(), "victim")
+	if err := os.MkdirAll(victim, 0o750); err != nil {
+		t.Fatalf("mkdir victim: %v", err)
+	}
+	logDir := filepath.Join(base, "logs")
+	if err := os.Symlink(victim, logDir); err != nil {
+		t.Skipf("symlinks unavailable on this platform: %v", err)
+	}
+
+	l, err := Init("INFO", logDir)
+	if err == nil {
+		_ = l.Close()
+		t.Fatal("expected Init to refuse a logs dir symlink escaping the agent directory")
+	}
+	// The refusal must leave the link target untouched.
+	entries, err := os.ReadDir(victim)
+	if err != nil {
+		t.Fatalf("read victim: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("the escaped link target was written to: %v", entries)
+	}
+}
+
+// TestInit_ResolvesInBoundarySymlinkedLogDir pins the operator-intent half
+// of the corrected #77 contract: a symlinked logs directory whose target
+// resolves WITHIN the agent directory (the containment boundary) still
+// resolves, and the session log is created inside the link's REAL target.
+func TestInit_ResolvesInBoundarySymlinkedLogDir(t *testing.T) {
+	base := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(base, "real-logs"), 0o750); err != nil {
+		t.Fatalf("mkdir real-logs: %v", err)
+	}
+	logDir := filepath.Join(base, "logs")
+	if err := os.Symlink(filepath.Join(base, "real-logs"), logDir); err != nil {
+		t.Skipf("symlinks unavailable on this platform: %v", err)
+	}
+
+	l, err := Init("INFO", logDir)
+	if err != nil {
+		t.Fatalf("expected Init to resolve an in-boundary operator-symlinked logs dir, got: %v", err)
+	}
+	defer func() { _ = l.Close() }()
+	entries, err := os.ReadDir(filepath.Join(base, "real-logs"))
+	if err != nil {
+		t.Fatalf("read real-logs: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("expected the session log inside the symlink's resolved target")
+	}
+	for _, e := range entries {
+		if e.IsDir() || strings.HasSuffix(e.Name(), ".lnk") {
+			t.Fatalf("unexpected non-file entry in the resolved target: %v", e)
+		}
+	}
+}

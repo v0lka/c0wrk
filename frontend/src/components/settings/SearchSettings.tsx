@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import type { KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { AlertTriangle } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { Combobox } from '@/components/ui/combobox'
@@ -27,6 +28,7 @@ export function SearchSettings() {
   const [isApiKeyFocused, setIsApiKeyFocused] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const pendingConfigRef = useRef<SearchConfig | null>(null)
 
   useEffect(() => {
     const load = async () => {
@@ -56,11 +58,48 @@ export function SearchSettings() {
   }, [])
 
   const debouncedSave = useCallback((newConfig: SearchConfig) => {
+    pendingConfigRef.current = newConfig
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current)
-    saveTimeoutRef.current = setTimeout(() => saveSettings(newConfig), 500)
+    saveTimeoutRef.current = setTimeout(() => {
+      saveTimeoutRef.current = null
+      pendingConfigRef.current = null
+      void saveSettings(newConfig)
+    }, 500)
   }, [saveSettings])
 
-  useEffect(() => () => { if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current) }, [])
+  // Flush a pending debounced save on unmount so a user who edits the search
+  // provider / API key and closes the modal (or switches tabs) within the
+  // debounce window does not lose the change. Safe against half-typed keys:
+  // pendingConfigRef only ever holds COMMITTED values (a key edit enters the
+  // save flow on blur/Enter, never per keystroke), so the flush cannot
+  // persist an unfinished fragment over the stored key.
+  useEffect(() => () => {
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current)
+      saveTimeoutRef.current = null
+    }
+    const pending = pendingConfigRef.current
+    pendingConfigRef.current = null
+    if (pending) void saveSettings(pending)
+  }, [saveSettings])
+
+  // commitApiKeyDraft moves an API-key edit from the local input draft into
+  // the saved config. Keystrokes NEVER schedule a save: the stored key is
+  // invisible while masked (the input renders empty), so a half-typed
+  // fragment autosaved mid-typing would overwrite the real key with a value
+  // the user never finished entering. The explicit commit (blur or Enter) is
+  // the single point where a key edit becomes saveable — the debounced save
+  // and its unmount flush therefore only ever carry committed values.
+  const commitApiKeyDraft = () => {
+    setIsApiKeyFocused(false)
+    // Empty input maps to the masked sentinel: the backend keeps the stored
+    // key on it (an empty field must not be able to clear a configured key).
+    const committed = apiKeyInput.trim() === '' ? MASKED_API_KEY : apiKeyInput
+    if (committed === config.api_key) return
+    const newConfig = { ...config, api_key: committed }
+    setConfig(newConfig)
+    debouncedSave(newConfig)
+  }
 
   const handleProviderChange = (value: string) => {
     const newConfig = { ...config, provider: value }
@@ -70,10 +109,6 @@ export function SearchSettings() {
 
   const handleApiKeyChange = (value: string) => {
     setApiKeyInput(value)
-    const apiKeyToSave = value.trim() === '' ? MASKED_API_KEY : value
-    const newConfig = { ...config, api_key: apiKeyToSave }
-    setConfig(newConfig)
-    debouncedSave(newConfig)
   }
 
   const handleApiKeyFocus = () => {
@@ -81,7 +116,14 @@ export function SearchSettings() {
     if (config.api_key === MASKED_API_KEY) setApiKeyInput('')
   }
 
-  const handleApiKeyBlur = () => setIsApiKeyFocused(false)
+  const handleApiKeyBlur = () => commitApiKeyDraft()
+
+  const handleApiKeyKeyDown = (e: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      commitApiKeyDraft()
+    }
+  }
 
   const getPlaceholder = () =>
     config.api_key === MASKED_API_KEY && !isApiKeyFocused ? '••••••••••••••••' : 'Enter API key'
@@ -124,6 +166,7 @@ export function SearchSettings() {
             onChange={(e) => handleApiKeyChange(e.target.value)}
             onFocus={handleApiKeyFocus}
             onBlur={handleApiKeyBlur}
+            onKeyDown={handleApiKeyKeyDown}
             className="h-9 text-sm"
           />
           <p className="text-xs text-muted-foreground">

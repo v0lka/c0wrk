@@ -17,6 +17,8 @@ func TestSearchVectorStore_NoFocusRootErrors(t *testing.T) {
 	f := &FrontendAPI{
 		appCtx: context.Background,
 	}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	_, err := f.SearchVectorStore(SearchRequest{Query: "query", TopK: 10})
 	if err == nil {
@@ -35,6 +37,8 @@ func TestSearchVectorStore_NoProjectReturnsEmpty(t *testing.T) {
 		appCtx:          context.Background,
 		activeProjectID: project.NoProjectID,
 	}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	got, err := f.SearchVectorStore(SearchRequest{Query: "query", TopK: 10})
 	if err != nil {
@@ -53,6 +57,8 @@ func TestGetVectorIndexStatus_NoProjectUnavailable(t *testing.T) {
 		appCtx:          context.Background,
 		activeProjectID: project.NoProjectID,
 	}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	st := f.GetVectorIndexStatus()
 	if st.State != "unavailable" {
@@ -78,6 +84,8 @@ func TestGetVectorIndexStatus_EmbedderInfoSurfaced(t *testing.T) {
 			CUDAVerified:      &verified,
 		},
 	}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	st := f.GetVectorIndexStatus()
 	if st.State != "unavailable" {
@@ -111,6 +119,8 @@ func TestGetVectorIndexStatus_FallbackFieldsSurfaced(t *testing.T) {
 			FallbackReason:    "AppendExecutionProvider_CUDA: provider library missing",
 		},
 	}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	st := f.GetVectorIndexStatus()
 	if st.ExecutionProvider != "cpu" {
@@ -135,6 +145,8 @@ func TestGetVectorIndexStatus_NoEmbedderInfoKeepsFieldsEmpty(t *testing.T) {
 		appCtx:          context.Background,
 		activeProjectID: project.NoProjectID,
 	}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	st := f.GetVectorIndexStatus()
 	if st.ExecutionProvider != "" || st.RequestedExecutionProvider != "" ||
@@ -163,6 +175,8 @@ func newFocusedStuckVectorAPI(t *testing.T, waitTimeout time.Duration) (*Fronten
 	t.Cleanup(func() { mgr.Shutdown() })
 
 	f := &FrontendAPI{appCtx: context.Background}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	root := canonicalRoot(t.TempDir())
 	vr := f.vectorRootsRegistry()
 	vr.mu.Lock()
@@ -246,6 +260,8 @@ func TestReindexVectorIndex_NoProject(t *testing.T) {
 		appCtx:          context.Background,
 		activeProjectID: project.NoProjectID,
 	}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	err := f.ReindexVectorIndex()
 	if err == nil {
@@ -263,6 +279,8 @@ func TestReindexVectorIndex_NoFocusRoot(t *testing.T) {
 	f := &FrontendAPI{
 		appCtx: context.Background,
 	}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	err := f.ReindexVectorIndex()
 	if err == nil {

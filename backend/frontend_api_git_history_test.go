@@ -98,6 +98,8 @@ func TestParseGitHistory(t *testing.T) {
 
 func TestGetGitHistory_NoProject(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	if _, err := f.GetGitHistory(0, 0); err == nil {
 		t.Fatal("GetGitHistory: expected error when no active project")
 	}

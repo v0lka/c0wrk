@@ -1693,10 +1693,15 @@ func writeFilesAtomic(researchRoot string, files map[string][]byte) error {
 
 	// Phase 2 — commit: rename every staged temp onto its now-free target. A
 	// failure rolls the whole set back (see rollbackStaged) and surfaces both
-	// the commit error and any rollback error.
+	// the commit error and any rollback error. The FULL set is passed, not
+	// just the committed prefix: phase 1 already moved every original aside,
+	// so an entry after the failing index still needs its backup renamed
+	// back, even though its own rename never ran (rollbackStaged tolerates
+	// never-committed entries — their missing-target displacements are
+	// ignored).
 	for i := range staged {
 		if err := os.Rename(staged[i].tmp, staged[i].target); err != nil {
-			return fmt.Errorf("committing %q: %w", staged[i].target, errors.Join(err, rollbackStaged(staged[:i+1])))
+			return fmt.Errorf("committing %q: %w", staged[i].target, errors.Join(err, rollbackStaged(staged)))
 		}
 	}
 

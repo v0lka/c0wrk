@@ -64,6 +64,8 @@ interface RenderOpts {
   provider?: string
   baseUrl?: string
   fingerprint?: string
+  /** Stored API key for the draft config; defaults to a real 'key'. */
+  apiKey?: string
   proxyActive?: boolean
   bypassList?: string[]
   /** Draft auto-retry interval in seconds; undefined = not carried. */
@@ -83,6 +85,7 @@ function render({
   provider = 'selfhosted',
   baseUrl = 'https://llm.lan:8443/v1',
   fingerprint = '',
+  apiKey = 'key',
   proxyActive = false,
   bypassList = [],
   autoRetry,
@@ -94,7 +97,7 @@ function render({
     root.render(
       <ProviderConfigForm
         activeProvider={provider}
-        config={{ api_key: 'key', base_url: baseUrl, tls_fingerprint: fingerprint, auto_retry_seconds: autoRetry }}
+        config={{ api_key: apiKey, base_url: baseUrl, tls_fingerprint: fingerprint, auto_retry_seconds: autoRetry }}
         apiKeyDirty={false}
         hasRequiredCredentials={true}
         modelsLoading={false}
@@ -539,5 +542,98 @@ describe('ProviderConfigForm auto-retry interval', () => {
     typeRetry('45')
     pressRetry('Enter')
     expect(changes).toEqual([{ auto_retry_seconds: 45 }])
+  })
+})
+
+// --- API-key explicit commit ---
+
+// The API-key field is an explicit-commit field: the stored key is invisible
+// here (a masked key renders as an empty input), so keystrokes must stay in
+// a local draft and only blur/Enter may move an edit into the save flow.
+// Otherwise a half-typed fragment — autosaved mid-typing, or flushed by the
+// debounced save's unmount cleanup — would overwrite the real stored key
+// with a value the user never finished entering.
+
+function apiKeyInput(): HTMLInputElement {
+  const input = container.querySelector('input[type="password"]')
+  if (!input) throw new Error('api key input not found')
+  return input as HTMLInputElement
+}
+
+describe('ProviderConfigForm API-key explicit commit', () => {
+  it('keeps keystrokes local: typing never calls onConfigChange', () => {
+    render({ apiKey: '' })
+    typeInto(apiKeyInput(), 'sk-new')
+    expect(changes).toEqual([])
+    // The draft is visible in the input while typing.
+    expect(apiKeyInput().value).toBe('sk-new')
+  })
+
+  it('commits the draft on blur', () => {
+    render({ apiKey: '' })
+    const input = apiKeyInput()
+    typeInto(input, 'sk-new')
+    act(() => {
+      input.focus()
+    })
+    act(() => {
+      input.blur()
+    })
+    expect(changes).toEqual([{ api_key: 'sk-new' }])
+  })
+
+  it('commits the draft on Enter without a blur', () => {
+    render({ apiKey: '' })
+    typeInto(apiKeyInput(), 'sk-new')
+    act(() => {
+      apiKeyInput().dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+      )
+    })
+    expect(changes).toEqual([{ api_key: 'sk-new' }])
+  })
+
+  it('never emits an uncommitted draft on unmount', () => {
+    render({ apiKey: '***configured***' })
+    const input = apiKeyInput()
+    // A masked stored key renders as an empty input.
+    expect(input.value).toBe('')
+    act(() => {
+      input.focus()
+    })
+    typeInto(input, 'sk-tes')
+    act(() => {
+      root.unmount()
+    })
+    expect(changes).toEqual([])
+  })
+
+  it('an untouched blur over a masked stored key emits nothing', () => {
+    render({ apiKey: '***configured***' })
+    const input = apiKeyInput()
+    act(() => {
+      input.focus()
+    })
+    act(() => {
+      input.blur()
+    })
+    expect(changes).toEqual([])
+    // The committed state is untouched: the Configured badge survives.
+    expect(container.textContent).toContain('Configured')
+  })
+
+  it('a fully-cleared draft on a masked stored key emits nothing', () => {
+    render({ apiKey: '***configured***' })
+    const input = apiKeyInput()
+    act(() => {
+      input.focus()
+    })
+    typeInto(input, 'sk')
+    typeInto(input, '')
+    act(() => {
+      input.blur()
+    })
+    expect(changes).toEqual([])
+    expect(container.textContent).toContain('Configured')
   })
 })

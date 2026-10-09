@@ -131,5 +131,5 @@ func processAlive(pid int) bool {
 // cleanupStaleUpdatersPlatform removes leftover staging artifacts from prior
 // crashed runs.
 func cleanupStaleUpdatersPlatform(log *slog.Logger) {
-	cleanupTempGlobs(log, "c0wrk-update-*", "c0wrk-extract-*")
+	cleanupTempGlobs(os.TempDir(), log, "c0wrk-update-*", "c0wrk-extract-*")
 }

@@ -22,6 +22,7 @@ import (
 // than shipped to the webview) and must stay within maxThemeCSSSize, the
 // same cap the import path enforces.
 func (f *FrontendAPI) ListThemes() []ThemeDTO {
+	f.seedAcquire()
 	themesDir := config.ThemesDir(f.agentDir)
 	entries, err := os.ReadDir(themesDir)
 	if err != nil {
@@ -97,12 +98,26 @@ func (f *FrontendAPI) ListThemes() []ThemeDTO {
 // JS with any filesystem path; the sole entry point is the native picker
 // (desktop.App.PickAndImportThemes).
 func (f *FrontendAPI) importThemeFromPath(path string) (ThemeDTO, error) {
+	f.seedAcquire()
 	if strings.TrimSpace(path) == "" {
 		return ThemeDTO{}, errors.New("theme path is empty")
 	}
+	// Enforce the documented size cap BEFORE reading: the cap exists so a
+	// multi-gigabyte file cannot be slurped into memory, and the full-file
+	// allocation itself is the DoS — reading first and rejecting afterwards
+	// would defeat it (the same stat-before-read defense ListThemes applies).
+	info, err := os.Stat(path)
+	if err != nil {
+		return ThemeDTO{}, fmt.Errorf("failed to stat theme file: %w", err)
+	}
+	if info.Size() > maxThemeCSSSize {
+		return ThemeDTO{}, fmt.Errorf("invalid theme CSS: theme CSS is too large: %d bytes (limit %d)", info.Size(), maxThemeCSSSize)
+	}
 	// safeio refuses a non-regular file (the native picker cannot select a
 	// FIFO, but a path passed programmatically could point at one) instead of
-	// blocking the import RPC on an open that waits for a writer forever.
+	// blocking the import RPC on an open that waits for a writer forever. The
+	// length is re-checked after the read: the file may have grown since the
+	// stat above.
 	raw, err := safeio.ReadFile(path)
 	if err != nil {
 		return ThemeDTO{}, fmt.Errorf("failed to read theme file: %w", err)
@@ -120,19 +135,24 @@ func (f *FrontendAPI) importThemeFromPath(path string) (ThemeDTO, error) {
 	}
 
 	themesDir := config.ThemesDir(f.agentDir)
-	if err := os.MkdirAll(themesDir, 0o755); err != nil {
+	// The themes directory is created as REAL directories only: a dangling
+	// link, a non-directory component, or a link swapped into a created
+	// component fails the import closed instead of redirecting it. A
+	// PRE-EXISTING symlinked themes dir resolves as operator intent (the
+	// macOS /var → /private/var class) and the install lands inside the
+	// operator's chosen target — deletion, the destructive direction, keeps
+	// its own strict refusal (see DeleteTheme).
+	if err := safeio.MkdirAllReal(themesDir, 0o755); err != nil {
 		return ThemeDTO{}, fmt.Errorf("failed to create themes directory: %w", err)
 	}
 	dest := filepath.Join(themesDir, id+".css")
-	// Write via a temp file + rename so a failed write never leaves a
-	// half-written theme behind (the previous copy, if any, stays intact).
-	tmp := dest + ".tmp"
-	if err := os.WriteFile(tmp, []byte(content), 0o644); err != nil {
-		_ = os.Remove(tmp)
-		return ThemeDTO{}, fmt.Errorf("failed to write theme file: %w", err)
-	}
-	if err := os.Rename(tmp, dest); err != nil {
-		_ = os.Remove(tmp)
+	// Install via safeio's atomic replace: the data lands in a uniquely named
+	// temp file (there is no plantable fixed "<dest>.tmp" — a FIFO planted at
+	// that deterministic name used to block the write-open forever), which is
+	// then renamed over dest. The rename replaces an entry at dest itself
+	// instead of writing through it, and a failed write leaves the previous
+	// copy of the theme intact.
+	if err := safeio.WriteFileAtomic(dest, []byte(content), 0o644); err != nil {
 		return ThemeDTO{}, fmt.Errorf("failed to install theme file: %w", err)
 	}
 
@@ -186,11 +206,25 @@ func ImportThemesFromPaths(f *FrontendAPI, paths []string) []ThemeImportResult {
 // multiple matches (two file names slugifying to the same id) are rejected
 // rather than guessing which file to remove.
 func (f *FrontendAPI) DeleteTheme(id string) error {
+	f.seedAcquire()
 	slug, err := themeSlug(id)
 	if err != nil {
 		return err
 	}
 	themesDir := config.ThemesDir(f.agentDir)
+	// The themes directory must be a REAL directory before anything is read
+	// or unlinked through it: a symlink planted at ~/.c0wrk/themes would
+	// redirect both the scan and the os.Remove below into the link target,
+	// deleting a file OUTSIDE ~/.c0wrk (out-of-containment unlink). Unlike
+	// the import path there is nothing to create here — a missing directory
+	// just means the theme does not exist.
+	fi, err := os.Lstat(themesDir)
+	if err != nil {
+		return fmt.Errorf("theme %q does not exist", id)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 || !fi.IsDir() {
+		return fmt.Errorf("themes directory %q is not a real directory; refusing to delete themes through it", themesDir)
+	}
 	entries, err := os.ReadDir(themesDir)
 	if err != nil {
 		return fmt.Errorf("theme %q does not exist", id)

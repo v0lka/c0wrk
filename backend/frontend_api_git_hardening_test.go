@@ -26,6 +26,8 @@ func TestRunGitCmdCarriesHardening(t *testing.T) {
 	readLog := gittest.InstallFakeGit(t)
 
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	dir := t.TempDir()
 	out, err := f.runGitCmd(dir, "log", "--oneline", "-5")
 	if err != nil {

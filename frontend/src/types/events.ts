@@ -921,13 +921,78 @@ function isObjLocal(v: unknown): v is Record<string, unknown> {
   return isObj(v)
 }
 
-export function isRoutingData(d: unknown): d is RoutingData { return isObj(d) && has(d, 'domain', 'complexity') }
-export function isStepData(d: unknown): d is StepData { return isObj(d) && has(d, 'step_num') }
-export function isThoughtData(d: unknown): d is ThoughtData { return isObj(d) && has(d, 'content', 'step_num') }
-export function isToolCallData(d: unknown): d is ToolCallData { return isObj(d) && has(d, 'tool', 'step') }
-export function isToolResultData(d: unknown): d is ToolResultData { return isObj(d) && has(d, 'step', 'result_len') }
-export function isToolConfirmData(d: unknown): d is ToolConfirmData { return isObj(d) && has(d, 'confirm_id', 'tool') }
-export function isAskUserData(d: unknown): d is AskUserData { return isObj(d) && has(d, 'request_id', 'questions') }
+export function isRoutingData(d: unknown): d is RoutingData {
+  // `domain` is rendered in the execution-panel stats strip (a React child)
+  // and both fields flow through reconstructContent on reload — a present
+  // non-string must fail the guard instead of throwing during render.
+  return isObj(d) && typeof d.domain === 'string' && typeof d.complexity === 'string'
+}
+export function isStepData(d: unknown): d is StepData { return isObj(d) && typeof d.step_num === 'number' }
+export function isThoughtData(d: unknown): d is ThoughtData {
+  // `content` reaches normalizeThoughtContent (content.trim()) on live AND
+  // reloaded rows, `reasoning` reaches ThoughtBlock's reasoning.trim() —
+  // both are declared strings the guard must pin. `step_num` is read as a
+  // number by the rebuild path.
+  if (!isObj(d)) return false
+  if (typeof d.content !== 'string' || typeof d.step_num !== 'number') return false
+  if (d.reasoning !== undefined && typeof d.reasoning !== 'string') return false
+  if (d.plan_step_id !== undefined && typeof d.plan_step_id !== 'string') return false
+  return true
+}
+export function isToolCallData(d: unknown): d is ToolCallData {
+  // `tool` feeds toolName.endsWith(...) in every tool card, `args` reaches
+  // GenericBody's .includes/.slice, `source` reaches ToolCard's mcpBadge
+  // .startsWith/.slice — all three are declared strings (source optional) a
+  // key-presence check would let through as a truthy non-string.
+  if (!isObj(d)) return false
+  if (typeof d.tool !== 'string' || typeof d.step !== 'number' || typeof d.args !== 'string') return false
+  if (d.tool_call_id !== undefined && typeof d.tool_call_id !== 'string') return false
+  if (d.parsed_args !== undefined && d.parsed_args !== null && !isObj(d.parsed_args)) return false
+  if (d.plan_step_id !== undefined && typeof d.plan_step_id !== 'string') return false
+  if (d.source !== undefined && typeof d.source !== 'string') return false
+  if (d.call_idx !== undefined && typeof d.call_idx !== 'number') return false
+  if (d.retry_attempt !== undefined && typeof d.retry_attempt !== 'number') return false
+  if (d.attachment_name !== undefined && typeof d.attachment_name !== 'string') return false
+  return true
+}
+export function isToolResultData(d: unknown): d is ToolResultData {
+  // `result`/`result_preview` are declared strings the tool-card bodies call
+  // .match/.split on; `step`/`result_len` are read as numbers by the grouping
+  // handlers. `result` is always present (the Go emitter carries the preview
+  // verbatim); `result_preview` is optional on the wire.
+  if (!isObj(d)) return false
+  if (typeof d.step !== 'number' || typeof d.result_len !== 'number' || typeof d.result !== 'string') return false
+  if (d.result_preview !== undefined && typeof d.result_preview !== 'string') return false
+  if (d.tool_call_id !== undefined && typeof d.tool_call_id !== 'string') return false
+  if (d.plan_step_id !== undefined && typeof d.plan_step_id !== 'string') return false
+  if (d.call_idx !== undefined && typeof d.call_idx !== 'number') return false
+  if (d.retry_attempt !== undefined && typeof d.retry_attempt !== 'number') return false
+  if (d.error !== undefined && typeof d.error !== 'boolean') return false
+  return true
+}
+export function isToolConfirmData(d: unknown): d is ToolConfirmData {
+  return isObj(d) && typeof d.confirm_id === 'string' && typeof d.tool === 'string' && typeof d.args === 'string'
+}
+/** Element guard for one ask_user question: id/question are rendered, options
+ *  are mapped into the answer form (label/value as keys + children). */
+export function isAskUserQuestion(v: unknown): v is AskUserQuestion {
+  if (!isObj(v)) return false
+  if (typeof v.id !== 'string' || typeof v.question !== 'string') return false
+  if (!isArrayOf(v.options, isAskUserOption)) return false
+  if (v.multi_select !== undefined && typeof v.multi_select !== 'boolean') return false
+  if (v.recommended !== undefined
+      && !(Array.isArray(v.recommended) && v.recommended.every((s) => typeof s === 'string'))) return false
+  return true
+}
+function isAskUserOption(v: unknown): v is AskUserQuestion['options'][number] {
+  return isObj(v) && typeof v.label === 'string' && typeof v.value === 'string'
+}
+export function isAskUserData(d: unknown): d is AskUserData {
+  // `questions` is a required array of well-formed questions: the answer form
+  // maps over it and renders every question/option directly. (The Go producer
+  // rejects a question with zero options, so `options` is never null.)
+  return isObj(d) && typeof d.request_id === 'string' && isArrayOf(d.questions, isAskUserQuestion)
+}
 export function isStepLimitData(d: unknown): d is StepLimitData { return isObj(d) && has(d, 'request_id', 'current_step', 'max_steps') }
 export function isAutonomyDecisionData(d: unknown): d is AutonomyDecisionData {
   // Type-validate at the boundary, not just key presence: `kind`/`verdict` are
@@ -968,8 +1033,38 @@ export function isNetworkDecisionData(v: unknown): v is NetworkDecisionData {
   }
   return true
 }
-export function isPlanData(d: unknown): d is PlanData { return isObj(d) && has(d, 'step_count') }
-export function isPlanStepStartData(d: unknown): d is PlanStepStartData { return isObj(d) && has(d, 'step_id') }
+/** Element guard for one plan step (PlanData.steps / persisted plan metadata).
+ *  `description` is required (both plan paths render title = summary ||
+ *  description); `depends_on` may be null (Go nil slice) or absent. */
+export function isPlanStepData(v: unknown): v is PlanStepData {
+  if (!isObj(v)) return false
+  if (v.id !== undefined && typeof v.id !== 'string') return false
+  if (typeof v.description !== 'string' || typeof v.status !== 'string') return false
+  if (v.summary !== undefined && typeof v.summary !== 'string') return false
+  if (v.depends_on !== undefined && v.depends_on !== null
+      && !(Array.isArray(v.depends_on) && v.depends_on.every((s) => typeof s === 'string'))) return false
+  return true
+}
+export function isPlanData(d: unknown): d is PlanData {
+  // `steps` is the array the plan panel maps over; Go marshals a nil slice as
+  // null and the handler treats null/absent as "no steps", so only a present
+  // non-array (or a malformed element) fails the guard.
+  if (!isObj(d) || typeof d.step_count !== 'number') return false
+  if (d.steps !== undefined && d.steps !== null && !isArrayOf(d.steps, isPlanStepData)) return false
+  if (d.progress !== undefined && typeof d.progress !== 'number') return false
+  if (d.current_step_index !== undefined && typeof d.current_step_index !== 'number') return false
+  if (d.completed_count !== undefined && typeof d.completed_count !== 'number') return false
+  if (d.total_count !== undefined && typeof d.total_count !== 'number') return false
+  return true
+}
+export function isPlanStepStartData(d: unknown): d is PlanStepStartData {
+  // `description` is stored as the row content and `summary` reaches
+  // handlePlanStepStart's .trim() (live and persisted metadata) — both are
+  // declared strings the guard must pin.
+  if (!isObj(d) || typeof d.step_id !== 'string' || typeof d.description !== 'string') return false
+  if (d.summary !== undefined && typeof d.summary !== 'string') return false
+  return true
+}
 export function isPlanStepCompleteData(d: unknown): d is PlanStepCompleteData {
   if (!isObj(d) || !has(d, 'step_id', 'success')) return false
   // Validate the required `duration` (a non-number would reach formatDuration)
@@ -1004,7 +1099,11 @@ export function isAssistantChunkData(d: unknown): d is AssistantChunkData {
 export function isAssistantDoneData(d: unknown): d is AssistantDoneData {
   return isObjLocal(d) && 'content' in d && typeof d.content === 'string'
 }
-export function isErrorData(d: unknown): d is ErrorData { return isObj(d) && has(d, 'error') }
+export function isErrorData(d: unknown): d is ErrorData {
+  // `error` becomes the rendered error-message content — a truthy non-string
+  // would reach a React child slot.
+  return isObj(d) && typeof d.error === 'string'
+}
 export function isTaskCompleteData(d: unknown): d is TaskCompleteData {
   if (!isObjLocal(d)) return false
   const hasValidOutput = typeof d.output === 'string'
@@ -1024,8 +1123,19 @@ export function isTaskCompleteData(d: unknown): d is TaskCompleteData {
 }
 export function isRetryData(d: unknown): d is RetryData { return isObj(d) && has(d, 'attempt', 'max_attempts') }
 export function isStepRetryData(d: unknown): d is StepRetryData { return isObj(d) && has(d, 'step_id', 'attempt', 'max_attempts') }
-export function isServiceData(d: unknown): d is ServiceData { return isObj(d) && has(d, 'content') }
-export function isSubAgentLaunchData(d: unknown): d is SubAgentLaunchData { return isObj(d) && has(d, 'step_id') }
+export function isServiceData(d: unknown): d is ServiceData {
+  // `content` drives the activity label and is stored as the status row's
+  // rendered content — a present non-string must fail the guard.
+  return isObj(d) && typeof d.content === 'string'
+    && (d.phase === undefined || typeof d.phase === 'string')
+}
+export function isSubAgentLaunchData(d: unknown): d is SubAgentLaunchData {
+  // `description` is rendered by the subagent block (and its ErrorBoundary
+  // fallback) — a truthy non-string would throw inside the fallback render.
+  if (!isObj(d) || typeof d.step_id !== 'string' || typeof d.description !== 'string') return false
+  if (d.plan_step_id !== undefined && typeof d.plan_step_id !== 'string') return false
+  return true
+}
 export function isSubAgentCompleteData(d: unknown): d is SubAgentCompleteData {
   if (!isObj(d) || !has(d, 'step_id', 'success')) return false
   // Validate the REQUIRED fields symmetrically with isSubAgentPausedData — a
@@ -1072,7 +1182,10 @@ export function isCompactionAvailability(d: unknown): d is CompactionAvailabilit
   return true
 }
 export function isSessionTokensData(d: unknown): d is SessionTokensData {
-  if (!isObj(d) || !has(d, 'session_input_tokens', 'session_output_tokens')) return false
+  if (!isObj(d) || typeof d.session_input_tokens !== 'number' || typeof d.session_output_tokens !== 'number') return false
+  // `model`/`family` are declared strings the always-mounted status bar
+  // renders as React children — pin them like the numeric counts.
+  if (typeof d.model !== 'string' || typeof d.family !== 'string') return false
   // Validate the optional throughput fields when present (additive fields —
   // older payloads simply omit them, mirroring the compaction flags above).
   if ('median_output_tok_s' in d && d.median_output_tok_s !== undefined && typeof d.median_output_tok_s !== 'number') return false
@@ -1209,8 +1322,29 @@ export function normalizeAgentMetricsData(d: unknown): AgentMetricsData | undefi
     },
   }
 }
-export function isReflectionData(d: unknown): d is ReflectionData { return isObj(d) && has(d, 'summary', 'attempt') }
-export function isToolJudgeResponseData(d: unknown): d is ToolJudgeResponseData { return isObj(d) && has(d, 'confirm_id') }
+export function isReflectionData(d: unknown): d is ReflectionData {
+  // `summary` is rendered as the reflection card body and every optional
+  // string field is rendered as a React child by ReflectionBlock;
+  // `insights` feeds hypotheses.map(...). Go marshals a nil Hypotheses slice
+  // as null — null/absent means "none" and stays valid; only a present
+  // non-array (or non-string element) fails.
+  if (!isObj(d)) return false
+  if (typeof d.summary !== 'string' || typeof d.attempt !== 'number') return false
+  if (d.max_attempts !== undefined && typeof d.max_attempts !== 'number') return false
+  if (d.insights !== undefined && d.insights !== null
+      && !(Array.isArray(d.insights) && d.insights.every((s) => typeof s === 'string'))) return false
+  for (const key of ['suggested_action', 'root_cause', 'failure_analysis', 'action_plan', 'reasoning'] as const) {
+    if (d[key] !== undefined && typeof d[key] !== 'string') return false
+  }
+  return true
+}
+export function isToolJudgeResponseData(d: unknown): d is ToolJudgeResponseData {
+  // `reasoning`/`error` land in ToolConfirmation's useState<string|null> and
+  // render as React children — optional strings must be pinned when present.
+  return isObj(d) && typeof d.confirm_id === 'string'
+    && (d.reasoning === undefined || typeof d.reasoning === 'string')
+    && (d.error === undefined || typeof d.error === 'string')
+}
 export function isToolJudgePhaseData(d: unknown): d is ToolJudgePhaseData { return isObj(d) && has(d, 'tool') }
 export function isBlackboardUpdatedData(d: unknown): d is BlackboardUpdatedData { return isObj(d) && has(d, 'change_type') }
 
@@ -1271,8 +1405,16 @@ export function isAttachmentsChangedData(d: unknown): d is AttachmentsChangedDat
   }
   return true
 }
+/** Element guard for one checklist item (step_todo_update items): both fields
+ *  are copied into the rendered ChecklistItem list. */
+export function isTodoItemData(v: unknown): v is TodoItemData {
+  return isObj(v) && typeof v.text === 'string' && typeof v.checked === 'boolean'
+}
 export function isStepTodoUpdateData(d: unknown): d is StepTodoUpdateData {
-  return isObj(d) && has(d, 'step_id', 'items') && Array.isArray(d.items)
+  // `items` is mapped element-wise into the checklist card — every element
+  // must be a well-formed {text, checked} pair (the Go emitter builds them
+  // from typed TodoItem structs, so this cannot reject a conforming payload).
+  return isObj(d) && typeof d.step_id === 'string' && isArrayOf(d.items, isTodoItemData)
 }
 
 export function isPlanReviewReadyData(d: unknown): d is PlanReviewReadyData {
@@ -1290,17 +1432,36 @@ export function isGoalProposalData(d: unknown): d is GoalProposalData {
     && typeof d.verify === 'string'
 }
 
+/** Element guard for one goal-evidence entry ({type, ref, summary}): all
+ *  three fields are rendered directly in the verdict panel. */
+export function isGoalEvidence(v: unknown): v is GoalEvidence {
+  return isObj(v) && typeof v.type === 'string' && typeof v.ref === 'string' && typeof v.summary === 'string'
+}
+
 /**
  * Guard for a goal_status payload. The backend emits goal_status as a dedicated
  * session event; the required numeric/string goal fields must validate before
- * consumption.
+ * consumption, and so must the optional verdict fields — `reason` is trimmed
+ * by goalTransition and `verdict`/`evidence` render as React children /
+ * evidence rows (goalStatusToActiveGoal stores them verbatim for
+ * GoalProposalPanel).
  */
 export function isGoalStatusData(d: unknown): d is GoalStatusData {
   if (!isObj(d)) return false
-  return typeof d.status === 'string'
-    && typeof d.turn === 'number'
-    && typeof d.condition === 'string'
-    && typeof d.max_turns === 'number'
+  if (typeof d.status !== 'string'
+      || typeof d.turn !== 'number'
+      || typeof d.condition !== 'string'
+      || typeof d.max_turns !== 'number') return false
+  for (const key of ['verdict', 'reason', 'verification', 'verification_reason', 'verification_mode'] as const) {
+    if (d[key] !== undefined && typeof d[key] !== 'string') return false
+  }
+  for (const key of ['evidence', 'verification_evidence'] as const) {
+    const arr: unknown = d[key]
+    // null (Go nil slice) behaves like absent — "no evidence".
+    if (arr !== undefined && arr !== null && !isArrayOf(arr, isGoalEvidence)) return false
+  }
+  if (d.created_at !== undefined && typeof d.created_at !== 'number') return false
+  return true
 }
 
 /**
@@ -1454,6 +1615,9 @@ export function isVectorIndexPayload(d: unknown): d is VectorIndexStatus {
   if (typeof d.progress !== 'number') return false
   if (typeof d.files_indexed !== 'number') return false
   if (typeof d.total_files !== 'number') return false
+  // `provider_fallback_reason` is optional (omitempty) but reaches
+  // .trim() in VectorIndexDiagnostics — pin the string type when present.
+  if (d.provider_fallback_reason !== undefined && typeof d.provider_fallback_reason !== 'string') return false
   return true
 }
 

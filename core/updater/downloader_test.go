@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -467,5 +468,47 @@ func TestNewDownloader_Defaults(t *testing.T) {
 	}
 	if _, ok := d.Verifier.(SHA256Verifier); !ok {
 		t.Errorf("expected SHA256Verifier default, got %T", d.Verifier)
+	}
+}
+
+// TestDownload_ResolvesSymlinkedStagingDir pins the revised contract: a
+// PRE-EXISTING symlinked staging dir resolves as operator intent (the macOS
+// /var → /private/var class), so a verified download proceeds and the
+// archive lands inside the link's REAL target. What the downloader still
+// refuses is a dangling link or a link swapped into a component MkdirAllReal
+// creates — those fail the staging-dir creation before any network I/O.
+func TestDownload_ResolvesSymlinkedStagingDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics are unix-specific")
+	}
+	staging := filepath.Join(t.TempDir(), "update-staging")
+	outside := t.TempDir()
+	if err := os.Symlink(outside, staging); err != nil {
+		t.Fatalf("plant symlink: %v", err)
+	}
+
+	assetBody := []byte("this is a release archive body")
+	sumsBody := []byte(sumsLine(sha256Hex(assetBody), testAssetName))
+	srv := makeServer(t, assetBody, sumsBody)
+
+	d := NewDownloader(srv.Client(), nil)
+	res, err := d.Download(context.Background(),
+		srv.URL+"/"+testAssetName,
+		srv.URL+"/"+testSumsName,
+		testAssetName, staging, nil)
+	if err != nil {
+		t.Fatalf("expected Download to resolve an operator-symlinked staging dir, got: %v", err)
+	}
+	// The archive must exist inside the link's resolved target — the path
+	// Download reports goes through the link, so read it via the target.
+	if !strings.HasPrefix(res.ArchivePath, staging) {
+		t.Fatalf("archive path %q does not live under the staging dir %q", res.ArchivePath, staging)
+	}
+	got, err := os.ReadFile(filepath.Join(outside, filepath.Base(res.ArchivePath)))
+	if err != nil {
+		t.Fatalf("archive missing inside the resolved target: %v", err)
+	}
+	if !bytes.Equal(got, assetBody) {
+		t.Error("archive content does not match what was served")
 	}
 }

@@ -45,6 +45,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // agentPackFS embeds the built-in research Subagent Profile directories (each
@@ -110,7 +112,7 @@ func SeedAgents(destAgentsDir string, logger *slog.Logger) (*SeedAgentsResult, e
 	if destAgentsDir == "" {
 		return nil, errors.New("research.SeedAgents: destAgentsDir is empty")
 	}
-	if err := os.MkdirAll(destAgentsDir, 0o755); err != nil {
+	if err := safeio.MkdirAllRealWithin(filepath.Dir(filepath.Dir(destAgentsDir)), destAgentsDir, 0o755); err != nil {
 		return nil, fmt.Errorf("research.SeedAgents: create agents dir %q: %w", destAgentsDir, err)
 	}
 

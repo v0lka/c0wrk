@@ -879,8 +879,12 @@ func (s *SQLiteSessionStore) ReplaceStepTodoUpdate(ctx context.Context, sessionI
 		}
 	}
 
-	if err := s.insertMessage(ctx, conn, msg); err != nil {
-		return err
+	// Assign to the OUTER err (no :=): the deferred ROLLBACK above observes
+	// this variable, so an INSERT failure must land here or the connection is
+	// returned to the pool with the BEGIN IMMEDIATE transaction still open.
+	if insertErr := s.insertMessage(ctx, conn, msg); insertErr != nil {
+		err = insertErr // the deferred ROLLBACK observes the OUTER err variable
+		return insertErr
 	}
 
 	if _, err = conn.ExecContext(ctx, "COMMIT"); err != nil {

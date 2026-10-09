@@ -24,7 +24,6 @@ import (
 	"github.com/v0lka/c0wrk/core/terminal"
 	"github.com/v0lka/c0wrk/core/toolmanager"
 	coretools "github.com/v0lka/c0wrk/core/tools"
-	"github.com/v0lka/c0wrk/core/updater"
 	"github.com/v0lka/c0wrk/core/vectorindex"
 	"github.com/v0lka/sp4rk/agent"
 	"github.com/v0lka/sp4rk/embedding"
@@ -54,7 +53,7 @@ func (a *App) initLogger(logDir string) (*slog.Logger, *logger.SessionLogger) {
 	} else {
 		log = slog.Default()
 	}
-	a.logger = log
+	a.setLogger(log)
 	return log, sessionLogger
 }
 
@@ -75,8 +74,8 @@ func (a *App) maybeReinitLogger(level string, sessionLogger *logger.SessionLogge
 		}
 	}
 	log := newLogger.Logger()
-	a.logger = log
-	a.sessionLogger = newLogger
+	a.setLogger(log)
+	a.setSessionLogger(newLogger)
 	if a.wailsLogger != nil {
 		a.wailsLogger.SetDelegate(log)
 	}
@@ -333,7 +332,7 @@ func (a *App) initTerminalManager(log *slog.Logger, userEnv map[string]string) *
 	for k, v := range userEnv {
 		env[k] = config.ExpandEnvVars(v)
 	}
-	return terminal.NewManager(a.ctx, log,
+	return terminal.NewManager(a.wailsCtx(), log,
 		func(sessionID string, data []byte) {
 			eventName := fmt.Sprintf("session:%s:terminal_output", sessionID)
 			encoded := base64.StdEncoding.EncodeToString(data)
@@ -408,7 +407,15 @@ func (a *App) preloadProjectsAndSessions(projectMgr *project.Manager, sessStore 
 	a.emit(backend.EventProjectsLoaded, projects)
 
 	if sessStore != nil {
-		sessions, sErr := sessStore.ListSessionsByProject(context.Background(), projects[0].ID)
+		// Bounded context: this read runs synchronously inside Startup before
+		// emitBackendReady, and the startup path arms no hard watchdog — a
+		// never-deadlined context would park the OnStartup goroutine (splash
+		// forever) behind a contended SQLite pool. 5s mirrors the sibling
+		// bounded store read in buildFrontendAPI's project resolver; expiry
+		// just skips the early sessions emit.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		sessions, sErr := sessStore.ListSessionsByProject(ctx, projects[0].ID)
+		cancel()
 		if sErr == nil {
 			a.emit(backend.EventSessionsLoaded, sessions)
 		} else {
@@ -455,7 +462,7 @@ func (a *App) buildUIEmitFunc() func(session.Event) {
 // unavailability instead of blocking forever.
 func (a *App) buildAskUserCallback(uiEmit func(session.Event)) coretools.AskUserFunc {
 	return func(ctx context.Context, req coretools.AskUserRequest) (coretools.AskUserResponse, error) {
-		if a.ctx == nil {
+		if a.wailsCtx() == nil {
 			return coretools.AskUserResponse{}, errors.New("ask_user not available: no UI context")
 		}
 		sessionID := session.SessionIDFromContext(ctx)
@@ -479,9 +486,9 @@ func (a *App) buildAskUserCallback(uiEmit func(session.Event)) coretools.AskUser
 		case <-ctx.Done():
 			a.pendingAskUser.Delete(requestID)
 			return coretools.AskUserResponse{}, ctx.Err()
-		case <-a.ctx.Done():
+		case <-a.wailsCtx().Done():
 			a.pendingAskUser.Delete(requestID)
-			return coretools.AskUserResponse{}, a.ctx.Err()
+			return coretools.AskUserResponse{}, a.wailsCtx().Err()
 		}
 	}
 }
@@ -506,7 +513,7 @@ type goalProposalResponse struct {
 // sign-off request into a Wails event and waits for the frontend response
 // (event- or RPC-based). Mirrors buildPlanApprovalCallback.
 func (a *App) buildGoalProposalCallback(uiEmit func(session.Event)) coretools.GoalProposer {
-	return &goalProposerAdapter{ctx: a.ctx, app: a, uiEmit: uiEmit}
+	return &goalProposerAdapter{ctx: a.wailsCtx(), app: a, uiEmit: uiEmit}
 }
 
 // goalProposerAdapter implements tools.GoalProposer, bridging the core
@@ -571,7 +578,7 @@ func (g *goalProposerAdapter) Propose(ctx context.Context, proposal coretools.Go
 // await_approval mode into a Wails event and waits for the frontend response.
 func (a *App) buildPlanApprovalCallback(uiEmit func(session.Event)) coretools.ApprovalFunc {
 	return func(ctx context.Context, planPath, planMarkdown string) (string, string, error) {
-		if a.ctx == nil {
+		if a.wailsCtx() == nil {
 			return "", "", errors.New("plan approval not available: no UI context")
 		}
 		sessionID := session.SessionIDFromContext(ctx)
@@ -603,8 +610,8 @@ func (a *App) buildPlanApprovalCallback(uiEmit func(session.Event)) coretools.Ap
 		// the plan_review_ready event survives app restarts. Fall back to
 		// the raw UI emitter when the Application is not yet initialized.
 		evt := session.Event{SessionID: sessionID, Type: "plan_review_ready", Data: payload}
-		if a.app != nil {
-			a.app.EmitSessionEvent(evt)
+		if app := a.application(); app != nil {
+			app.EmitSessionEvent(evt)
 		} else {
 			uiEmit(evt)
 		}
@@ -615,9 +622,9 @@ func (a *App) buildPlanApprovalCallback(uiEmit func(session.Event)) coretools.Ap
 		case <-ctx.Done():
 			a.pendingPlanApprovals.Delete(requestID)
 			return "", "", ctx.Err()
-		case <-a.ctx.Done():
+		case <-a.wailsCtx().Done():
 			a.pendingPlanApprovals.Delete(requestID)
-			return "", "", a.ctx.Err()
+			return "", "", a.wailsCtx().Err()
 		}
 	}
 }
@@ -628,7 +635,7 @@ func (a *App) buildPlanApprovalCallback(uiEmit func(session.Event)) coretools.Ap
 // let any tool execute without user oversight.
 func (a *App) buildConfirmCallback(uiEmit func(session.Event)) sdktools.ConfirmFunc {
 	return func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
-		if a.ctx == nil {
+		if a.wailsCtx() == nil {
 			a.log().Warn("confirmation callback denied: app context unavailable",
 				"tool", req.ToolName, "reason", "ctx_nil")
 			return sdktools.ConfirmDenyAndStop, nil
@@ -650,8 +657,8 @@ func (a *App) buildConfirmCallback(uiEmit func(session.Event)) sdktools.ConfirmF
 		// recorded id is the one being confirmed. The tool-name guard rejects
 		// a stale id left by a concurrent subagent call to a *different* tool.
 		var toolCallID string
-		if a.app != nil {
-			if id, tool := a.app.LastToolCallID(sessionID); id != "" && tool == req.ToolName {
+		if app := a.application(); app != nil {
+			if id, tool := app.LastToolCallID(sessionID); id != "" && tool == req.ToolName {
 				toolCallID = id
 			}
 		}
@@ -679,8 +686,8 @@ func (a *App) buildConfirmCallback(uiEmit func(session.Event)) sdktools.ConfirmF
 		// emitter — keeping the runtime-status snapshot honest ("Awaiting
 		// confirmation..." instead of a stale "Running tool: ..."). Raw UI
 		// emitter only when the Application is not yet initialized.
-		if a.app != nil {
-			a.app.EmitToolConfirm(sessionID, payload)
+		if app := a.application(); app != nil {
+			app.EmitToolConfirm(sessionID, payload)
 		} else {
 			uiEmit(session.Event{SessionID: sessionID, Type: "tool_confirm", Data: payload})
 		}
@@ -691,9 +698,9 @@ func (a *App) buildConfirmCallback(uiEmit func(session.Event)) sdktools.ConfirmF
 		case <-ctx.Done():
 			a.pendingConfirmations.Delete(requestID)
 			return sdktools.ConfirmDenyAndStop, ctx.Err()
-		case <-a.ctx.Done():
+		case <-a.wailsCtx().Done():
 			a.pendingConfirmations.Delete(requestID)
-			return sdktools.ConfirmDenyAndStop, a.ctx.Err()
+			return sdktools.ConfirmDenyAndStop, a.wailsCtx().Err()
 		}
 	}
 }
@@ -702,7 +709,7 @@ func (a *App) buildConfirmCallback(uiEmit func(session.Event)) sdktools.ConfirmF
 // Tool confirmation is handled separately via buildConfirmCallback → ToolRegistry.ConfirmFunc.
 func (a *App) buildStepLimitCallback(uiEmit func(session.Event)) agent.HITLHandler {
 	return &stepLimitHITLAdapter{
-		ctx:              a.ctx,
+		ctx:              a.wailsCtx(),
 		pendingStepLimit: &a.pendingStepLimit,
 		uiEmit:           uiEmit,
 		resolver:         appStepLimitResolver{app: a},
@@ -810,13 +817,17 @@ func (a *App) buildApplication(cfg backend.ApplicationConfig, log *slog.Logger, 
 		})
 		return nil, err
 	}
-	a.app = application
+	a.setApplication(application)
 	log.Info("startup phase complete", "phase", "application", "elapsed_ms", time.Since(startTime).Milliseconds())
 	return application, nil
 }
 
 // buildFrontendAPI constructs the FrontendAPI, wires the project resolver, and
-// validates LLM provider config. Stores the result on a.FrontendAPI.
+// validates LLM provider config. Initializes the App's embedded seed instance
+// IN PLACE (a.frontendAPI()): the pointer is published once in NewApp and is
+// never swapped afterwards, so the Wails binding dispatch — which re-reads the
+// embedded pointer on every promoted-method call — can never race a
+// reassignment (review finding #52).
 func (a *App) buildFrontendAPI(
 	application *backend.Application,
 	cfg backend.FrontendAPIConfig,
@@ -825,10 +836,10 @@ func (a *App) buildFrontendAPI(
 	log *slog.Logger,
 	startTime time.Time,
 ) {
-	a.FrontendAPI = backend.NewFrontendAPI(cfg)
+	a.frontendAPI().Lifecycle().Init(cfg)
 	log.Info("startup phase complete", "phase", "frontend_api", "elapsed_ms", time.Since(startTime).Milliseconds())
 
-	a.Lifecycle().SetConfigLoadState(configLoadErrors)
+	a.frontendAPI().Lifecycle().SetConfigLoadState(configLoadErrors)
 
 	// Wire project resolver for lazy session restoration.
 	if projStore != nil {
@@ -875,8 +886,8 @@ func (a *App) buildFrontendAPI(
 func (a *App) emitBackendReady(cachedProjects []project.ProjectInfo, projectMgr *project.Manager, filterNoProject bool, log *slog.Logger) {
 	// Last safety-net reveal before the frontend is told the backend is up.
 	// Guard against nil ctx in tests (no Wails lifecycle).
-	if a.ctx != nil {
-		a.showWindow(a.ctx)
+	if a.wailsCtx() != nil {
+		a.showWindow(a.wailsCtx())
 	}
 
 	// Collect projects from cache or fresh query, applying No Project filter if
@@ -925,10 +936,11 @@ func (a *App) emitBackendReady(cachedProjects []project.ProjectInfo, projectMgr 
 // and the event is emitted immediately. On shutdown the ctx is cancelled,
 // unblocking the wait.
 func (a *App) startMCPReadyNotifier(ctx context.Context, log *slog.Logger) {
-	if a.app == nil || a.app.Builder() == nil {
+	app := a.application()
+	if app == nil || app.Builder() == nil {
 		return
 	}
-	b := a.app.Builder()
+	b := app.Builder()
 
 	// Fast path: startup already finished before this notifier ran.
 	if b.MCPStartupDone() {
@@ -1057,7 +1069,7 @@ func (a *App) startVectorIndexBackground(
 				"deviceID", onnxDevice,
 				"library", libraryPath)
 			embedderInfo.FallbackReason = embErr.Error()
-			a.Lifecycle().SetVectorEmbedderInfo(embedderInfo)
+			a.frontendAPI().Lifecycle().SetVectorEmbedderInfo(embedderInfo)
 			a.emit("vector_index:status", map[string]any{
 				"available":                    false,
 				"reason":                       embErr.Error(),
@@ -1090,7 +1102,7 @@ func (a *App) startVectorIndexBackground(
 			verified := a.verifyEmbedderGPU(emb, log)
 			embedderInfo.CUDAVerified = &verified
 		}
-		a.Lifecycle().SetVectorEmbedderInfo(embedderInfo)
+		a.frontendAPI().Lifecycle().SetVectorEmbedderInfo(embedderInfo)
 
 		// Content filter: deterministic early rejection of generated /
 		// minified / pathological files before chunking. Resolved from
@@ -1160,7 +1172,7 @@ func (a *App) startVectorIndexBackground(
 		// registry is closed and will never build a manager, so nobody would
 		// release the embedder; close it here instead (quitting during init
 		// must not leak the ONNX runtime).
-		if a.ctx != nil && a.ctx.Err() != nil {
+		if a.wailsCtx() != nil && a.wailsCtx().Err() != nil {
 			log.Info("vector search init aborted: app shutting down")
 			_ = emb.Close()
 			return
@@ -1169,12 +1181,12 @@ func (a *App) startVectorIndexBackground(
 		// point managers are built per workspace root on demand; the deferred
 		// project setup (the startup SwitchProject that arrived before the
 		// factory was wired) is applied right after.
-		a.Lifecycle().SetVectorRootsFactory(factory, vectorReady, emb.Close)
+		a.frontendAPI().Lifecycle().SetVectorRootsFactory(factory, vectorReady, emb.Close)
 		// The frontend's first SwitchProject (fired on backend:ready) almost
 		// certainly ran before the line above and skipped vector setup because
 		// the factory was not wired yet. Apply that deferred setup now, so the
 		// startup project is indexed without a manual project switch.
-		a.Lifecycle().InitVectorIndexForActiveProject()
+		a.frontendAPI().Lifecycle().InitVectorIndexForActiveProject()
 		log.Info("background init complete", "phase", "vector_index", "elapsed_ms", time.Since(startTime).Milliseconds())
 	}()
 }
@@ -1252,25 +1264,27 @@ func derefParkBudgetBytes(p *int64) int64 {
 	return *p << 20
 }
 
-// startUpdateCheckerBackground reaps stale updater artifacts from a prior
-// interrupted self-update, then runs a single best-effort automatic update
+// startUpdateCheckerBackground runs a single best-effort automatic update
 // check in a goroutine. The check itself (operator + user gates, interval,
 // result caching, event emission) lives in FrontendAPI.RunBackgroundUpdateCheck
 // — the sole automatic-check path — so a discovered update is always
 // downloadable. It never blocks or breaks startup; network failures are
 // swallowed inside RunBackgroundUpdateCheck.
+//
+// Deliberately NO updater.CleanupStaleUpdaters here: Startup runs only in the
+// owning (first) instance — i.e. exactly while the app-level lock is held — so
+// a reap at this point would delete the live c0wrk-update-* / c0wrk-extract-*
+// staging of a self-update that is mid-apply (the relaunch the updater itself
+// performs lands here). The only reap site is main.go's post-lock,
+// first-instance-gated call.
 func (a *App) startUpdateCheckerBackground(log *slog.Logger) {
-	// Reap orphaned updater artifacts (e.g. Windows c0wrk-updater-*.exe copies
-	// that cannot self-delete while running). Best-effort, runs unconditionally.
-	updater.CleanupStaleUpdaters(log)
-
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
 				log.Error("automatic update check panicked", "panic", r)
 			}
 		}()
-		a.RunBackgroundUpdateCheck()
+		a.frontendAPI().RunBackgroundUpdateCheck()
 	}()
 }
 
@@ -1283,7 +1297,7 @@ func (a *App) startUpdateCheckerBackground(log *slog.Logger) {
 // without an app restart; an interval of "0" disables only the ticker while
 // the event-driven triggers (startup, project switch, window focus) stay on.
 func (a *App) startAutoFetchBackground() {
-	a.Lifecycle().StartAutoFetch()
+	a.frontendAPI().Lifecycle().StartAutoFetch()
 }
 
 // initEmbeddedLLM restores the embedded local-model state on the startup path.
@@ -1302,11 +1316,11 @@ func (a *App) startAutoFetchBackground() {
 // background goroutine — the restore has to be complete before the first
 // GetEmbeddedLLMStatus can report anything truthful.
 func (a *App) initEmbeddedLLM(log *slog.Logger) {
-	if a.FrontendAPI == nil {
+	if a.frontendAPI() == nil {
 		return
 	}
 	startTime := time.Now()
-	a.Lifecycle().InitEmbeddedLLM()
+	a.frontendAPI().Lifecycle().InitEmbeddedLLM()
 	log.Info("startup phase complete", "phase", "embedded_llm",
 		"elapsed_ms", time.Since(startTime).Milliseconds())
 }
@@ -1335,7 +1349,7 @@ func (a *App) initEmbeddedLLM(log *slog.Logger) {
 // a late restore never races the teardown — the goroutine itself may linger
 // on a wedged prompt until the process exits.
 func (a *App) initChatGPTAuth(log *slog.Logger) {
-	if a.FrontendAPI == nil {
+	if a.frontendAPI() == nil {
 		return
 	}
 	// Run the restore off the startup path, through safeGo — the same
@@ -1343,13 +1357,13 @@ func (a *App) initChatGPTAuth(log *slog.Logger) {
 	// keyring backend is native code (the same class of surface the
 	// vector-index goroutine recovers against), and an unrecovered panic
 	// would take the whole desktop process down for a feature designed to
-	// degrade gracefully. a.ctx cancellation (app shutdown) does not
+	// degrade gracefully. a.wailsCtx() cancellation (app shutdown) does not
 	// interrupt the underlying keychain call itself — nothing can — but the
 	// goroutine checks it before touching FrontendAPI state, so a shutdown
 	// is never raced by a late restore.
 	safeGo(log, "chatgpt_auth", func() {
 		startTime := time.Now()
-		a.Lifecycle().InitChatGPTAuth()
+		a.frontendAPI().Lifecycle().InitChatGPTAuth()
 		log.Info("startup phase complete", "phase", "chatgpt_auth",
 			"elapsed_ms", time.Since(startTime).Milliseconds())
 	})
@@ -1399,12 +1413,12 @@ func (a *App) initChatGPTAuth(log *slog.Logger) {
 // launch (EnsurePort walks upward past a squatted or foreign listener) but the
 // memory does not, and no persisted state identifies the orphan.
 func (a *App) stopEmbeddedLLM(ctx context.Context) {
-	if a.FrontendAPI == nil {
+	if a.frontendAPI() == nil {
 		return
 	}
 	stop := a.embeddedLLMStopFn
 	if stop == nil {
-		stop = a.Lifecycle().StopEmbeddedLLM
+		stop = a.frontendAPI().Lifecycle().StopEmbeddedLLM
 	}
 	if err := stop(ctx); err != nil {
 		a.log().Error("failed to stop the embedded LLM server during shutdown", "error", err)

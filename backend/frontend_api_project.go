@@ -19,6 +19,7 @@ import (
 
 // CreateProject creates a new project. If externalPath is empty, an internal workspace is created.
 func (f *FrontendAPI) CreateProject(name, externalPath string) (*project.ProjectInfo, error) {
+	f.seedAcquire()
 	if f.projectManager == nil {
 		return nil, errors.New("project subsystem not initialized")
 	}
@@ -34,8 +35,37 @@ func (f *FrontendAPI) CreateProject(name, externalPath string) (*project.Project
 
 // DeleteProject deletes a project and all its sessions.
 func (f *FrontendAPI) DeleteProject(id string) error {
+	f.seedAcquire()
 	if f.projectManager == nil {
 		return errors.New("project subsystem not initialized")
+	}
+	// Validate the id BEFORE any destructive work: the manager rejects the
+	// No Project pseudo-project, but only one layer below — the session
+	// teardown loop and the vector release below must never run for it (or
+	// for an empty id), or a forged RPC deletes every loaded CHAT session's
+	// on-disk workspace and THEN fails with the manager's rejection.
+	if id == "" || id == project.NoProjectID {
+		return errors.New("cannot delete the No Project pseudo-project")
+	}
+
+	// Per-root vector managers (ADR-080) are released FIRST — shutdown drops
+	// their open chromem handles so the directory removal below works on
+	// Windows too. Managed-session worktree indexes live under
+	// <projectVI>/worktrees/<name> with per-tree embedding caches under
+	// <projectVI>/embedding_cache-worktrees/<name>: drop each worktree
+	// storage explicitly, then the project root removes everything left
+	// (caches included). Any live manager can run the deletion (it is a
+	// plain fs + park-slot operation); without one there is nothing this app
+	// run can be holding open, so the best-effort pass is skipped exactly
+	// like the nil-manager case before it. Releasing before removal is the
+	// invariant: the removal inside projectManager.DeleteProject would
+	// otherwise fail on the still-open Windows handles and orphan the index.
+	viRoot := config.ProjectVectorIndexPath(f.agentDir, id)
+	if released := f.vectorRootsRegistry().ReleaseProject(id); len(released) > 0 {
+		for _, e := range worktreeStorageNames(viRoot) {
+			_ = released[0].DeleteProjectData(e) // Best-effort.
+		}
+		_ = released[0].DeleteProjectData(viRoot) // Best-effort; error is non-critical.
 	}
 
 	// Stop and clean up all in-memory sessions for the project BEFORE removing
@@ -71,23 +101,13 @@ func (f *FrontendAPI) DeleteProject(id string) error {
 	}
 	f.activeProjectMu.Unlock()
 
-	// Clean up vector index data for the deleted project. Per-root managers
-	// (ADR-080) are released FIRST — shutdown drops their open chromem
-	// handles so the directory removal works on Windows too. Managed-session
-	// worktree indexes live under <projectVI>/worktrees/<name> with per-tree
-	// embedding caches under <projectVI>/embedding_cache-worktrees/<name>:
-	// drop each worktree storage explicitly, then the project root removes
-	// everything left (caches included). Any live manager can run the
-	// deletion (it is a plain fs + park-slot operation); without one there is
-	// nothing this app run can be holding open, so the best-effort pass is
-	// skipped exactly like the nil-manager case before it.
-	viRoot := config.ProjectVectorIndexPath(f.agentDir, id)
-	if released := f.vectorRootsRegistry().ReleaseProject(id); len(released) > 0 {
-		for _, e := range worktreeStorageNames(viRoot) {
-			_ = released[0].DeleteProjectData(e) // Best-effort.
-		}
-		_ = released[0].DeleteProjectData(viRoot) // Best-effort; error is non-critical.
-	}
+	// The Git-panel focus belongs to the deleted project's repository; a
+	// stale override would resolve every PATHLESS git RPC into the removed
+	// (or, for an external workspace, still-on-disk) tree between this
+	// deletion and the frontend's asynchronous focus re-apply — wrong-repo
+	// commit/push/reset. invalidateAllGitCaches is the same funnel the
+	// project switch uses: cache drop + focus clear in one step.
+	f.invalidateAllGitCaches()
 
 	// Stop watcher if this was the active project
 	f.watcherMu.Lock()
@@ -103,6 +123,7 @@ func (f *FrontendAPI) DeleteProject(id string) error {
 
 // RenameProject renames a project.
 func (f *FrontendAPI) RenameProject(id, name string) error {
+	f.seedAcquire()
 	if f.projectManager == nil {
 		return errors.New("project subsystem not initialized")
 	}
@@ -115,6 +136,7 @@ func (f *FrontendAPI) RenameProject(id, name string) error {
 
 // ListProjects returns all projects sorted by last activity.
 func (f *FrontendAPI) ListProjects() ([]project.ProjectInfo, error) {
+	f.seedAcquire()
 	if f.projectManager == nil {
 		return nil, errors.New("project subsystem not initialized")
 	}
@@ -138,6 +160,7 @@ func (f *FrontendAPI) ActiveProjectDir() string {
 
 // SaveProjectUIState persists project-scoped UI switch state.
 func (f *FrontendAPI) SaveProjectUIState(req ProjectUIStateRequest) error {
+	f.seedAcquire()
 	if req.ProjectID == "" {
 		return errors.New("project_id is required")
 	}
@@ -161,7 +184,9 @@ func (f *FrontendAPI) SaveProjectUIState(req ProjectUIStateRequest) error {
 		state.SavedSessionID = resolved
 	}
 
-	if err := f.projStore.SaveUIState(context.Background(), state); err != nil {
+	ctx, cancel := f.storeOpCtx()
+	defer cancel()
+	if err := f.projStore.SaveUIState(ctx, state); err != nil {
 		return fmt.Errorf("failed to save project UI state: %w", err)
 	}
 	return nil
@@ -174,6 +199,7 @@ func (f *FrontendAPI) SaveProjectUIState(req ProjectUIStateRequest) error {
 // file viewer. When no UI-state row exists yet, one is created with empty
 // open tabs.
 func (f *FrontendAPI) SaveProjectActiveSession(projectID, sessionID string) error {
+	f.seedAcquire()
 	projectID = strings.TrimSpace(projectID)
 	if projectID == "" {
 		return errors.New("project_id is required")
@@ -207,7 +233,9 @@ func (f *FrontendAPI) SaveProjectActiveSession(projectID, sessionID string) erro
 		sessionID = resolved
 	}
 
-	if err := f.projStore.SaveSavedSessionID(context.Background(), projectID, sessionID); err != nil {
+	ctx, cancel := f.storeOpCtx()
+	defer cancel()
+	if err := f.projStore.SaveSavedSessionID(ctx, projectID, sessionID); err != nil {
 		return fmt.Errorf("failed to save project active session: %w", err)
 	}
 	return nil
@@ -215,6 +243,7 @@ func (f *FrontendAPI) SaveProjectActiveSession(projectID, sessionID string) erro
 
 // GetProjectUIState loads persisted project-scoped UI switch state.
 func (f *FrontendAPI) GetProjectUIState(projectID string) (*ProjectUIStateResponse, error) {
+	f.seedAcquire()
 	if projectID == "" {
 		return nil, errors.New("project_id is required")
 	}
@@ -222,7 +251,9 @@ func (f *FrontendAPI) GetProjectUIState(projectID string) (*ProjectUIStateRespon
 		return nil, nil
 	}
 
-	state, err := f.projStore.LoadUIState(context.Background(), projectID)
+	ctx, cancel := f.storeOpCtx()
+	defer cancel()
+	state, err := f.projStore.LoadUIState(ctx, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load project UI state: %w", err)
 	}
@@ -240,7 +271,7 @@ func (f *FrontendAPI) GetProjectUIState(projectID string) (*ProjectUIStateRespon
 		normalized.SavedSessionID = resolved
 	}
 	if !projectUIStateEqual(normalized, *state) {
-		if saveErr := f.projStore.SaveUIState(context.Background(), normalized); saveErr != nil {
+		if saveErr := f.projStore.SaveUIState(ctx, normalized); saveErr != nil {
 			f.log().Warn("failed to normalize persisted project UI state", "project", projectID, "error", saveErr)
 		}
 	}
@@ -260,10 +291,13 @@ func (f *FrontendAPI) GetProjectUIState(projectID string) (*ProjectUIStateRespon
 // previously active project. Returns an empty string when nothing was
 // persisted yet or persistence is unavailable.
 func (f *FrontendAPI) GetLastActiveProjectID() string {
+	f.seedAcquire()
 	if f.projStore == nil {
 		return ""
 	}
-	id, err := f.projStore.LoadAppState(context.Background(), project.AppStateKeyLastActiveProjectID)
+	ctx, cancel := f.storeOpCtx()
+	defer cancel()
+	id, err := f.projStore.LoadAppState(ctx, project.AppStateKeyLastActiveProjectID)
 	if err != nil {
 		f.log().Warn("failed to load last active project id", "error", err)
 		return ""
@@ -279,6 +313,7 @@ func (f *FrontendAPI) GetLastActiveProjectID() string {
 // supported — switching tears down the previous project's resources before
 // activating the new one.
 func (f *FrontendAPI) SwitchProject(id string) error {
+	f.seedAcquire()
 	if f.projectManager == nil {
 		return errors.New("project subsystem not initialized")
 	}
@@ -495,6 +530,7 @@ func (f *FrontendAPI) switchProjectTeardown(newID string) {
 
 // switchProjectActivate sets the new project as active and updates related state.
 func (f *FrontendAPI) switchProjectActivate(p *project.ProjectInfo) {
+	f.seedAcquire()
 	f.activeProjectMu.Lock()
 	f.activeProjectID = p.ID
 	f.activeProjectPath = p.WorkspacePath
@@ -534,13 +570,15 @@ func (f *FrontendAPI) switchProjectActivate(p *project.ProjectInfo) {
 
 	// Update project activity timestamp.
 	if f.projStore != nil {
-		_ = f.projStore.UpdateProjectActivity(context.Background(), p.ID) // Best-effort; error is non-critical.
+		ctx, cancel := f.storeOpCtx()
+		_ = f.projStore.UpdateProjectActivity(ctx, p.ID) // Best-effort; error is non-critical.
 		// Persist the destination project (including the No Project
 		// pseudo-project) so the last active project survives an app restart.
 		// Best-effort: a failed write must not abort the switch.
-		if err := f.projStore.SaveAppState(context.Background(), project.AppStateKeyLastActiveProjectID, p.ID); err != nil {
+		if err := f.projStore.SaveAppState(ctx, project.AppStateKeyLastActiveProjectID, p.ID); err != nil {
 			f.log().Warn("failed to persist last active project id", "project", p.ID, "error", err)
 		}
+		cancel()
 	}
 }
 
@@ -560,6 +598,7 @@ func (f *FrontendAPI) switchProjectActivate(p *project.ProjectInfo) {
 // deferred until the first session is activated — WatchDirectory creates the
 // watcher lazily.
 func (f *FrontendAPI) switchProjectSetupWatcher(p *project.ProjectInfo) {
+	f.seedAcquire()
 	// For No Project, resolve the session workspace before acquiring the lock
 	// to avoid holding watcherMu during session-manager queries.
 	if p.IsNoProject {
@@ -702,6 +741,7 @@ func (f *FrontendAPI) switchProjectSetupWatcher(p *project.ProjectInfo) {
 // the main thread. DRY-extracted from the CODE-mode and No-Project watcher
 // callbacks.
 func (f *FrontendAPI) emitResearchFileChanged(researchRoot, projectID string, changedPaths []string) bool {
+	f.seedAcquire()
 	if researchRoot == "" {
 		return false
 	}
@@ -742,6 +782,7 @@ func (f *FrontendAPI) reScopeNoProjectWatcher(root string) error {
 // reScopeNoProjectWatcherLocked is the lock-held implementation of
 // reScopeNoProjectWatcher. The caller must hold f.watcherMu.
 func (f *FrontendAPI) reScopeNoProjectWatcherLocked(root string) error {
+	f.seedAcquire()
 	if root == "" {
 		return errors.New("cannot re-scope watcher to empty path")
 	}
@@ -797,6 +838,7 @@ func (f *FrontendAPI) reScopeNoProjectWatcherLocked(root string) error {
 // indexing is fully disabled: the focus is cleared and an unavailable status
 // is emitted; no index is built.
 func (f *FrontendAPI) switchProjectSetupVector(p *project.ProjectInfo) error {
+	f.seedAcquire()
 	// Handshake with the background ONNX init: the manager factory is built
 	// asynchronously (its own goroutine, after EventBackendReady) and is
 	// usually NOT ready when the frontend fires its first SwitchProject on
@@ -920,6 +962,7 @@ func projectUIStateEqual(a, b project.ProjectUIState) bool {
 // Backend is not authoritative for open tabs/selected session, so this method
 // only validates and normalizes already persisted state (non-destructive).
 func (f *FrontendAPI) persistCurrentProjectSwitchState(projectID string) {
+	f.seedAcquire()
 	if strings.TrimSpace(projectID) == "" {
 		return
 	}
@@ -927,7 +970,9 @@ func (f *FrontendAPI) persistCurrentProjectSwitchState(projectID string) {
 		return
 	}
 
-	state, err := f.projStore.LoadUIState(context.Background(), projectID)
+	ctx, cancel := f.storeOpCtx()
+	defer cancel()
+	state, err := f.projStore.LoadUIState(ctx, projectID)
 	if err != nil {
 		f.log().Warn("failed to load current project switch state", "project", projectID, "error", err)
 		return
@@ -946,7 +991,7 @@ func (f *FrontendAPI) persistCurrentProjectSwitchState(projectID string) {
 		normalized.SavedSessionID = resolved
 	}
 	if !projectUIStateEqual(normalized, *state) {
-		if saveErr := f.projStore.SaveUIState(context.Background(), normalized); saveErr != nil {
+		if saveErr := f.projStore.SaveUIState(ctx, normalized); saveErr != nil {
 			f.log().Warn("failed to normalize current project switch state", "project", projectID, "error", saveErr)
 		}
 	}
@@ -958,6 +1003,7 @@ func (f *FrontendAPI) persistCurrentProjectSwitchState(projectID string) {
 // 2) otherwise select latest session for project
 // 3) otherwise create a new project-scoped session
 func (f *FrontendAPI) applySavedProjectSwitchState(projectID string) {
+	f.seedAcquire()
 	if strings.TrimSpace(projectID) == "" {
 		return
 	}
@@ -965,7 +1011,9 @@ func (f *FrontendAPI) applySavedProjectSwitchState(projectID string) {
 		return
 	}
 
-	state, err := f.projStore.LoadUIState(context.Background(), projectID)
+	ctx, cancel := f.storeOpCtx()
+	defer cancel()
+	state, err := f.projStore.LoadUIState(ctx, projectID)
 	if err != nil {
 		f.log().Warn("failed to load saved project switch state", "project", projectID, "error", err)
 		return
@@ -991,7 +1039,7 @@ func (f *FrontendAPI) applySavedProjectSwitchState(projectID string) {
 
 	shouldPersist := changed || state == nil || !projectUIStateEqual(normalized, *state)
 	if shouldPersist {
-		if saveErr := f.projStore.SaveUIState(context.Background(), normalized); saveErr != nil {
+		if saveErr := f.projStore.SaveUIState(ctx, normalized); saveErr != nil {
 			f.log().Warn("failed to persist resolved project switch state", "project", projectID, "error", saveErr)
 		}
 	}
@@ -1028,7 +1076,7 @@ func (f *FrontendAPI) resolveLatestSessionForProject(projectID string) string {
 	if strings.TrimSpace(projectID) == "" {
 		return ""
 	}
-	if f.app == nil || f.app.Manager() == nil {
+	if f.appCell() == nil || f.app.Manager() == nil {
 		return ""
 	}
 
@@ -1075,7 +1123,7 @@ func (f *FrontendAPI) createSessionForProject(projectID string) string {
 	if strings.TrimSpace(projectID) == "" {
 		return ""
 	}
-	if f.projectManager == nil || f.app == nil || f.app.Manager() == nil {
+	if f.projectManager == nil || f.appCell() == nil || f.app.Manager() == nil {
 		return ""
 	}
 
@@ -1098,9 +1146,11 @@ func (f *FrontendAPI) createSessionForProject(projectID string) string {
 	}
 
 	if f.store != nil {
-		if err := f.store.SaveSession(context.Background(), *created); err != nil {
+		ctx, cancel := f.storeOpCtx()
+		if err := f.store.SaveSession(ctx, *created); err != nil {
 			f.log().Warn("failed to persist fallback session", "project", projectID, "session_id", created.ID, "error", err)
 		}
+		cancel()
 	}
 
 	return created.ID
@@ -1111,7 +1161,7 @@ func (f *FrontendAPI) createSessionForProject(projectID string) string {
 // session exists yet. Used to scope the file watcher to the session-specific
 // directory instead of the shared __no_project__/ base.
 func (f *FrontendAPI) resolveNoProjectSessionWorkspace() string {
-	if f.app == nil || f.app.Manager() == nil {
+	if f.appCell() == nil || f.app.Manager() == nil {
 		return ""
 	}
 	sessions, err := f.app.Manager().ListSessionsByProject(project.NoProjectID)
@@ -1144,7 +1194,7 @@ func (f *FrontendAPI) resolveSavedSessionForProject(projectID, savedSessionID st
 	if savedSessionID == "" {
 		return "", nil
 	}
-	if f.app == nil || f.app.Manager() == nil {
+	if f.appCell() == nil || f.app.Manager() == nil {
 		return "", nil
 	}
 
@@ -1160,13 +1210,14 @@ func (f *FrontendAPI) resolveSavedSessionForProject(projectID, savedSessionID st
 		}
 	}
 
-	// If session is not listed but a store+resolver may lazily restore it,
-	// validate ownership directly via manager.GetSession.
-	if restored, ok := f.app.Manager().GetSession(savedSessionID); ok && restored != nil {
-		if restored.ProjectID == projectID && !restored.Archived {
-			return savedSessionID, nil
-		}
-	}
+	// No manager-level fallback here: ListSessionsByProject is authoritative
+	// for "exists, belongs to the project, not archived". The old
+	// manager.GetSession fallback fired exactly for the sessions the loop
+	// already rejects — an archived row or a cross-project pointer — and
+	// RESTORED each one (full orchestrator build, managed-worktree
+	// re-provision) only to reject it, on UI paths and inside SwitchProject
+	// under switchMu. A store-only session is resolved by the loop without
+	// any restore; nothing else can legitimately answer "usable".
 
 	return "", nil
 }

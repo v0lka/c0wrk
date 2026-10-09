@@ -63,6 +63,13 @@ func relaunchApp(targetDir string, log *slog.Logger) error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start %s: %w", exePath, err)
 	}
+	// Release the child so its process handle is not leaked: the updater
+	// exits right after the relaunch and never Waits, and per os/exec a
+	// successful Start must be followed by Wait or Release to release the
+	// child's associated resources (mirrors the Linux branch).
+	if err := cmd.Process.Release(); err != nil {
+		log.Debug("could not release relaunched process (best-effort)", "error", err)
+	}
 	log.Info("relaunched app", "target", exePath)
 	return nil
 }
@@ -138,7 +145,7 @@ func processAlive(pid int) bool {
 // %TEMP%. Because a running Windows updater .exe cannot self-delete, this runs
 // at the *next* normal startup to reap orphans from prior updates.
 func cleanupStaleUpdatersPlatform(log *slog.Logger) {
-	cleanupTempGlobs(log,
+	cleanupTempGlobs(os.TempDir(), log,
 		"c0wrk-updater.exe", // staging updater copy that cannot self-delete on Windows
 		"c0wrk-update-*",    // staging dirs
 		"c0wrk-updater-*",   // leftover updater-related dirs

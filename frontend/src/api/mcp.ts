@@ -2,7 +2,7 @@
 
 import { getApp } from './runtime'
 import { logger } from '@/lib/logger'
-import { isMCPServerStatus, isMCPMentionableServer, isArrayOf } from '@/types/guards'
+import { isMCPServerStatus, isMCPMentionableServer, isToolInfo, isArrayOf } from '@/types/guards'
 import type { MCPServerStatus, MCPServerConfig, MCPMentionableServer, ToolInfo } from '@/types/models'
 
 export async function getMCPStatus(): Promise<MCPServerStatus[]> {
@@ -27,21 +27,36 @@ export async function getMCPServers(): Promise<Record<string, MCPServerConfig>> 
     if (typeof result !== 'object' || result === null) {
       throw new Error('getMCPServers: backend returned invalid data')
     }
-    // The backend marshals `timeout`/`call_timeout`/`mode` with `omitempty`,
-    // so an unset value is absent from the payload. Normalize the missing
-    // keys at this boundary so every downstream consumer sees the non-optional
-    // shape the type declares: '' timeouts mean "use the default", and an
-    // absent mode means "auto" (the backend's effective default).
+    // Per-entry tolerance: each map VALUE is validated individually. A valid
+    // entry is kept (and normalized below); a malformed entry (null or
+    // non-object) is warned about and skipped, so one bad backend entry can
+    // no longer erase every other server from the next settings save
+    // (MCPSettings replaces the whole map it loaded here). Only a wholly
+    // malformed payload (non-object) still throws above.
+    const raw = result as Record<string, unknown>
     const servers: Record<string, MCPServerConfig> = {}
-    for (const [name, cfg] of Object.entries(
-      result as Record<string, MCPServerConfig>,
-    )) {
-      servers[name] = {
-        ...cfg,
-        timeout: cfg.timeout ?? '',
-        call_timeout: cfg.call_timeout ?? '',
-        mode: cfg.mode ?? 'auto',
+    const malformed: string[] = []
+    for (const [name, cfg] of Object.entries(raw)) {
+      if (cfg === null || typeof cfg !== 'object') {
+        malformed.push(name)
+        continue
       }
+      // The backend marshals `timeout`/`call_timeout`/`mode` with `omitempty`,
+      // so an unset value is absent from the payload. Normalize the missing
+      // keys at this boundary so every downstream consumer sees the
+      // non-optional shape the type declares: '' timeouts mean "use the
+      // default", and an absent mode means "auto" (the backend's effective
+      // default).
+      const valid = cfg as MCPServerConfig
+      servers[name] = {
+        ...valid,
+        timeout: valid.timeout ?? '',
+        call_timeout: valid.call_timeout ?? '',
+        mode: valid.mode ?? 'auto',
+      }
+    }
+    if (malformed.length > 0) {
+      logger.warn(`getMCPServers: skipping malformed server entries: ${malformed.join(', ')}`)
     }
     return servers
   } catch (err) {
@@ -108,11 +123,11 @@ export async function getToolList(): Promise<ToolInfo[]> {
   try {
     const app = getApp()
     const result = await app.GetToolList()
-    if (!Array.isArray(result)) {
+    if (!isArrayOf(result, isToolInfo)) {
       logger.error('getToolList: unexpected response shape, returning []', result)
       return []
     }
-    return result as ToolInfo[]
+    return result
   } catch (err) {
     logger.error('Failed to get tool list:', err)
     throw err
@@ -129,7 +144,8 @@ export async function listProviderModels(
       logger.error('listProviderModels: unexpected response shape, returning []', result)
       return []
     }
-    return result as string[]
+    // Elements are rendered directly as picker options — keep strings only.
+    return result.filter((m): m is string => typeof m === 'string')
   } catch (err) {
     logger.error('Failed to list provider models:', err)
     throw err

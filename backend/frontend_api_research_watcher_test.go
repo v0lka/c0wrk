@@ -52,6 +52,8 @@ func TestResearchFileChanged_NestedSubdir(t *testing.T) {
 			}
 		},
 	}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	f.activeProjectMu.Lock()
 	f.activeProjectID = "real-project"
 	f.activeProjectPath = ws
@@ -267,6 +269,8 @@ func researchMutationTestFrontend(t *testing.T) (api *FrontendAPI, projectID, ro
 		projectManager: mgr,
 		emitEvent:      func(_ string, _ ...any) {},
 	}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	return f, "proj-1", researchRoot
 }
 

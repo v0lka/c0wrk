@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -34,8 +35,23 @@ type GitMonitor struct {
 	watcher       *fsnotify.Watcher
 	onChange      func(newBranch string)
 	done          chan struct{}
-	mu            sync.Mutex
-	logger        *slog.Logger
+	// loopDone is closed by eventLoop on EVERY return path (done, a closed
+	// Events/Errors channel), so Stop can join the loop instead of leaving a
+	// goroutine that may still arm the debounce timer.
+	loopDone chan struct{}
+	// loopStarted records that Start actually spawned eventLoop: Stop joins
+	// loopDone only then (a never-started monitor's loopDone would never
+	// close).
+	loopStarted atomic.Bool
+	// debounceMu guards timer and stopped. It is deliberately NOT m.mu: Stop
+	// joins loopDone while its CALLER (Manager.Shutdown/SwitchProject) holds
+	// the manager mutex, and the event loop arms the timer — sharing m.mu
+	// here would deadlock that join against a timer arm waiting for m.mu.
+	debounceMu sync.Mutex
+	timer      *time.Timer
+	stopped    bool
+	mu         sync.Mutex
+	logger     *slog.Logger
 }
 
 // CurrentBranch returns the current git branch name using the system `git` CLI.
@@ -115,6 +131,7 @@ func NewGitMonitor(repoPath string, onChange func(newBranch string), logger *slo
 		watcher:       fsw,
 		onChange:      onChange,
 		done:          make(chan struct{}),
+		loopDone:      make(chan struct{}),
 		logger:        logger,
 	}, nil
 }
@@ -148,7 +165,12 @@ func resolveGitDir(repoPath string) (string, error) {
 	}
 
 	// Linked worktree: `.git` is a regular file carrying a gitdir pointer.
-	data, err := os.ReadFile(dotGit)
+	// The read goes through the package's FIFO-safe primitive: a plain
+	// os.ReadFile would open a non-regular `.git` (a readerless FIFO planted
+	// in the workspace) with a blocking open and hang this monitor goroutine
+	// forever; safeio refuses it instead. The generous bound is defensive —
+	// a real pointer line is a single short path.
+	data, err := readBounded(dotGit, 4096)
 	if err != nil {
 		return "", fmt.Errorf("reading .git pointer file: %w", err)
 	}
@@ -194,21 +216,23 @@ func (m *GitMonitor) Start() error {
 		return fmt.Errorf("watching git directory %s: %w", gitDir, err)
 	}
 
+	m.loopStarted.Store(true)
 	go m.eventLoop()
 	m.logger.Info("git monitor started", "path", m.repoPath, "gitdir", gitDir, "branch", m.currentBranch)
 	return nil
 }
 
 // eventLoop reads fsnotify events and debounces branch change detection.
+// It stops the debounce timer on EVERY return path — including the closed
+// watcher-channel branches — so Stop, which joins this loop, can guarantee
+// that no armed timer fires a stale checkBranch after the monitor is gone.
 func (m *GitMonitor) eventLoop() {
-	var timer *time.Timer
+	defer close(m.loopDone)
+	defer m.stopDebounceTimer()
 
 	for {
 		select {
 		case <-m.done:
-			if timer != nil {
-				timer.Stop()
-			}
 			return
 		case event, ok := <-m.watcher.Events:
 			if !ok {
@@ -218,10 +242,7 @@ func (m *GitMonitor) eventLoop() {
 			if filepath.Base(event.Name) != "HEAD" {
 				continue
 			}
-			if timer != nil {
-				timer.Stop()
-			}
-			timer = time.AfterFunc(gitHeadDebounce, m.checkBranch)
+			m.armDebounce()
 		case watchErr, ok := <-m.watcher.Errors:
 			if !ok {
 				return
@@ -231,8 +252,45 @@ func (m *GitMonitor) eventLoop() {
 	}
 }
 
+// armDebounce (re)arms the HEAD-change debounce timer unless the monitor was
+// already stopped, so a timer can never be armed across a Stop.
+func (m *GitMonitor) armDebounce() {
+	m.debounceMu.Lock()
+	defer m.debounceMu.Unlock()
+	if m.stopped {
+		return
+	}
+	if m.timer != nil {
+		m.timer.Stop()
+	}
+	m.timer = time.AfterFunc(gitHeadDebounce, m.checkBranch)
+}
+
+// stopDebounceTimer stops any armed debounce timer and marks the monitor
+// stopped, so neither a pending nor a later-armed timer can fire a stale
+// checkBranch.
+func (m *GitMonitor) stopDebounceTimer() {
+	m.debounceMu.Lock()
+	defer m.debounceMu.Unlock()
+	m.stopped = true
+	if m.timer != nil {
+		m.timer.Stop()
+		m.timer = nil
+	}
+}
+
 // checkBranch reads the current branch and calls onChange if it changed.
+// A monitor stopped while the read was in flight must not fire its callback:
+// the caller has already torn the monitor down, and a stale onChange would
+// mutate state that no longer belongs to this monitor.
 func (m *GitMonitor) checkBranch() {
+	m.debounceMu.Lock()
+	stopped := m.stopped
+	m.debounceMu.Unlock()
+	if stopped {
+		return
+	}
+
 	branch, err := CurrentBranch(context.Background(), m.repoPath)
 	if err != nil {
 		m.logger.Warn("failed to detect branch", "error", err)
@@ -259,11 +317,24 @@ func (m *GitMonitor) CurrentBranchName() string {
 
 // Stop stops the monitor and releases resources.
 func (m *GitMonitor) Stop() error {
+	// Stop any armed debounce timer first, so neither a pending nor a
+	// later-armed timer can fire a stale checkBranch across this return.
+	m.stopDebounceTimer()
+
 	select {
 	case <-m.done:
-		return nil // already stopped
+		// Already stopped: the first Stop closed done, and the event loop
+		// (if it ever ran) has been joined below on that pass.
 	default:
 		close(m.done)
 	}
-	return m.watcher.Close()
+	err := m.watcher.Close()
+	if m.loopStarted.Load() {
+		// Join the event loop so it can no longer arm a timer after this
+		// return. The loop exits promptly: done is closed and the watcher is
+		// closed, and the loop never blocks on a lock Stop's caller holds —
+		// the debounce mutex is exclusive to this monitor.
+		<-m.loopDone
+	}
+	return err
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/v0lka/c0wrk/core/markitdown"
 	"github.com/v0lka/sp4rk/llm"
 	"github.com/v0lka/sp4rk/orchestration"
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // attachmentConvertTimeout is the per-file budget for a single markitdown
@@ -452,7 +453,19 @@ func (m *Manager) attachImage(session *Session, sessionID, path, imagesDir, disp
 		return err
 	}
 
-	if err := os.MkdirAll(imagesDir, 0o755); err != nil {
+	// The images directory is a fixed, prompt-disclosed path under the
+	// session dir (~/.c0wrk/projects/<pid>/<sid>/images), so both operations
+	// below keep the write inside the agent tree: MkdirAllRealWithin (the
+	// agent dir is the boundary) only ever creates real directories and
+	// REFUSES any pre-existing link in the path that resolves outside
+	// ~/.c0wrk (review finding #48), while links resolving inside the agent
+	// tree and a symlinked agent dir itself remain operator intent; and
+	// safeio.WriteFile opens the final component O_NOFOLLOW (os.WriteFile
+	// follows a symlink at imgPath and truncates its target; on Windows the
+	// safeio parity note applies — the final symlink is still resolved —
+	// tempered by Windows requiring elevated/dev-mode rights to create
+	// symlinks).
+	if err := safeio.MkdirAllRealWithin(m.agentDir, imagesDir, 0o755); err != nil {
 		return fmt.Errorf("create images dir: %w", err)
 	}
 
@@ -466,7 +479,7 @@ func (m *Manager) attachImage(session *Session, sessionID, path, imagesDir, disp
 	if err != nil {
 		return fmt.Errorf("decode processed image: %w", err)
 	}
-	if err := os.WriteFile(imgPath, imgBytes, 0o644); err != nil {
+	if err := safeio.WriteFile(imgPath, imgBytes, 0o644); err != nil {
 		return fmt.Errorf("write image: %w", err)
 	}
 
@@ -551,13 +564,18 @@ func (m *Manager) RemovePendingAttachment(sessionID, attachmentID string) error 
 // GetSessionAttachments returns a defensive copy of the session's staged
 // (pending) attachments as metadata-only AttachmentInfo values, for UI chips.
 // Includes both document attachments and image attachments.
+//
+// MEMORY-ONLY lookup (sessionByID, no lazy restore): this backs the frontend's
+// attachment-chips effect, which re-fires on EVERY session switch — including
+// switches to sessions that were never opened this app run. Restoring there
+// would build a full orchestrator and open log/dump/step-dump handles nobody
+// closes, for a session that has no staged pending attachments to show by
+// definition (staging is in-memory state). A session that is not resident
+// simply has no chips: return an empty list.
 func (m *Manager) GetSessionAttachments(sessionID string) ([]AttachmentInfo, error) {
-	session, err := m.getOrRestoreSession(sessionID)
-	if err != nil {
-		return nil, fmt.Errorf("get attachments: %w", err)
-	}
-	if session == nil {
-		return nil, fmt.Errorf("get attachments: session %q not found", sessionID)
+	session, ok := m.sessionByID(sessionID)
+	if !ok || session == nil {
+		return []AttachmentInfo{}, nil
 	}
 
 	session.mu.Lock()

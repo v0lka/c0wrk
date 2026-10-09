@@ -1,7 +1,6 @@
 package backend
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -186,6 +185,7 @@ func (f *FrontendAPI) GetPaper(projectID, paperID string) (*PaperDTO, error) {
 // pins delta under that lock, so a concurrent row save cannot clobber it (or
 // vice versa).
 func (f *FrontendAPI) SetPaperPinned(projectID, paperID string, pinned bool) error {
+	f.seedAcquire()
 	if f.projStore == nil {
 		return errors.New("project subsystem not initialized")
 	}
@@ -232,9 +232,15 @@ func (f *FrontendAPI) SetPaperPinned(projectID, paperID string, pinned bool) err
 			return nil // already in the requested state
 		}
 		fresh.ResearchPins.Papers = next
-		if err := f.projStore.SaveProject(context.Background(), *fresh); err != nil {
+		// Bounded: this write runs under the per-root research mutation
+		// mutex, so an unbounded pool wait here head-of-line-blocks every
+		// pin/flashcard mutation on the root.
+		pctx, pcancel := f.storeOpCtx()
+		if err := f.projStore.SaveProject(pctx, *fresh); err != nil {
+			pcancel()
 			return fmt.Errorf("failed to persist paper pins: %w", err)
 		}
+		pcancel()
 		return nil
 	}
 
@@ -253,9 +259,13 @@ func (f *FrontendAPI) SetPaperPinned(projectID, paperID string, pinned bool) err
 		return nil // already in the requested state
 	}
 	fresh.ResearchPins.Papers = next
-	if err := f.projStore.SaveProject(context.Background(), *fresh); err != nil {
+	// Bounded: same mutex head-of-line-blocking rationale as the unpin branch.
+	pctx, pcancel := f.storeOpCtx()
+	if err := f.projStore.SaveProject(pctx, *fresh); err != nil {
+		pcancel()
 		return fmt.Errorf("failed to persist paper pins: %w", err)
 	}
+	pcancel()
 	return nil
 }
 
@@ -418,6 +428,7 @@ func effectiveResearchRoot(p *project.ProjectInfo) string {
 // fsnotify callback goroutine and project switches on the main thread. An empty
 // root is treated as "not applicable" and simply never matches.
 func (f *FrontendAPI) emitPapersChanged(papersRoot, comparisonsRoot, projectID string, changedPaths []string) bool {
+	f.seedAcquire()
 	if papersRoot == "" && comparisonsRoot == "" {
 		return false
 	}
@@ -464,6 +475,7 @@ func pathWithinRoot(root, p string) bool {
 // was validated at enable time). It errors for a missing/unknown project, the
 // No Project pseudo-project, or a root that escapes the workspace.
 func (f *FrontendAPI) papersReadContextFor(projectID string) (*papersReadContext, error) {
+	f.seedAcquire()
 	if projectID == "" {
 		return nil, errors.New("project_id is required")
 	}

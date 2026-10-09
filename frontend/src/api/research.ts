@@ -9,6 +9,8 @@ import type {
   HypothesisUpdateFields,
   NewHypothesisCard,
   HypothesisNode,
+  ResearchBrief,
+  ResearchMetrics,
 } from '@/types/models'
 
 /**
@@ -336,19 +338,64 @@ function isHypothesisNode(v: unknown): v is HypothesisNode {
   return true
 }
 
+/** Normalize one project's required nested `brief` object: the research DTO
+ *  can carry a project whose brief is missing/malformed (a project created
+ *  before its brief is materialized, backend version skew, a serialization
+ *  edge), and the picker/workspace/dashboard dereference `project.brief.title`
+ *  unguarded — degrade to a neutral default here instead of throwing during
+ *  render. Optional brief fields are carried through only when well-typed. */
+function normalizeProjectBrief(brief: unknown, projectId: string): ResearchBrief {
+  const rec = isRecord(brief) ? brief : {}
+  const out: ResearchBrief = {
+    id: typeof rec['id'] === 'string' ? rec['id'] : projectId,
+    title: typeof rec['title'] === 'string' ? rec['title'] : '',
+  }
+  for (const key of [
+    'status', 'problem_domain', 'quarter', 'researchers',
+    'related_researches', 'research_question', 'success_criteria',
+  ] as const) {
+    const v = rec[key]
+    if (typeof v === 'string') out[key] = v
+  }
+  return out
+}
+
+/** Same treatment for the required nested `metrics` object: every metrics
+ *  field is read unguarded (`project.metrics.total`, `.active_front`) by the
+ *  store selector and the quick-action/picker components. */
+function normalizeProjectMetrics(metrics: unknown): ResearchMetrics {
+  const rec = isRecord(metrics) ? metrics : {}
+  return {
+    total: typeof rec['total'] === 'number' ? rec['total'] : 0,
+    by_status: isRecord(rec['by_status']) ? { ...rec['by_status'] } as Record<string, number> : {},
+    confirmation_rate: typeof rec['confirmation_rate'] === 'number' ? rec['confirmation_rate'] : 0,
+    depth: typeof rec['depth'] === 'number' ? rec['depth'] : 0,
+    breadth: typeof rec['breadth'] === 'number' ? rec['breadth'] : 0,
+    ...(Array.isArray(rec['active_front'])
+      ? { active_front: rec['active_front'].filter((s): s is string => typeof s === 'string') }
+      : {}),
+  }
+}
+
 /** Normalize backend `null` slice fields to `[]` so downstream store/UI code
  *  can rely on the declared array types (e.g. `.map`, `.length`). Malformed
  *  node entries are dropped here (per-entry fail-closed). The graph path
  *  (normalizeResearchGraphResponse) normalizes only a single graph; the
  *  status path carries a project list, so every project's graph must be
- *  normalized the same way. */
+ *  normalized the same way. Per-project required nested objects (brief,
+ *  metrics) are defaulted the same way, and a project without a usable
+ *  string id is dropped — a malformed PROJECT must not cost the whole
+ *  research panel its data. */
 function normalizeResearchStatus(status: ResearchStatus): ResearchStatus {
   if (status.root) {
     status.root.projects ??= []
+    status.root.projects = status.root.projects.filter((p) => typeof p.id === 'string')
     for (const project of status.root.projects) {
       project.graph.nodes = (project.graph.nodes ?? []).filter(isHypothesisNode)
       project.graph.edges ??= []
       project.log ??= []
+      project.brief = normalizeProjectBrief(project.brief, project.id)
+      project.metrics = normalizeProjectMetrics(project.metrics)
     }
   }
   // Pins follow the same nil-slice normalization: the store consumes them
@@ -362,5 +409,9 @@ function normalizeResearchGraphResponse(res: ResearchGraphResponse): ResearchGra
   res.graph.nodes = (res.graph.nodes ?? []).filter(isHypothesisNode)
   res.graph.edges ??= []
   res.log ??= []
+  // The incremental graph path REPLACES the store's project metrics wholesale
+  // (researchStore.loadGraph), so its metrics object must satisfy the same
+  // fully-typed shape the status path guarantees.
+  res.metrics = normalizeProjectMetrics(res.metrics)
   return res
 }

@@ -292,6 +292,17 @@ type Manager struct {
 	// follow-up SwitchProject), and s.mu serializes any residual overlap.
 	initWG sync.WaitGroup
 
+	// wgMu guards wgClosed and serializes every indexingWG.Add against
+	// Shutdown's indexingWG.Wait: sync.WaitGroup forbids a positive Add
+	// concurrent with Wait (fatal "Add called concurrently with Wait" panic),
+	// so late work registration (Reindex, a debounce-fired incremental pass,
+	// a git-monitor branch switch) must go through addIndexingWork, which is
+	// refused once Shutdown has sealed the manager via sealIndexingWork. An
+	// Add therefore either happens-before the Wait or never happens.
+	wgMu sync.Mutex
+	// wgClosed is set by Shutdown (under wgMu) before it drains indexingWG.
+	wgClosed bool
+
 	// closeFn is called during Shutdown to release the embedder (if provided).
 	closeFn func() error
 
@@ -974,10 +985,23 @@ func (m *Manager) runIncrementalGuarded() {
 		ctx = context.Background()
 	}
 	m.indexing.Store(true)
+	// The debounce-fired pass IS background indexing work and must be joined
+	// by Shutdown's bounded drain like every other pass: a pass can fire
+	// inside the debounce window just before (or while) the user quits, and
+	// without the registration Shutdown would close the service while (or
+	// after) it still uses it. The guarded Add refuses the pass when Shutdown
+	// already sealed the manager (a timer re-armed before being stopped can
+	// fire late), so a late fire can never touch a closing service.
+	if !m.addIndexingWork() {
+		m.indexing.Store(false)
+		m.logger.Info("incremental indexing skipped: manager shutting down")
+		return
+	}
 	if idxErr := idx.IndexIncremental(ctx, ws); idxErr != nil {
 		m.logger.Warn("incremental indexing failed", "error", idxErr)
 	}
 	m.indexing.Store(false)
+	m.indexingWG.Done()
 }
 
 // CancelIndexing cancels any in-flight indexing operation and stops pending debounces.
@@ -1157,6 +1181,25 @@ func (m *Manager) freeOSMemoryAfterFullIndex() {
 // would freeze the whole app (in-flight LLM streaming included) for no
 // memory win.
 func (m *Manager) handleBranchSwitch(ctx context.Context, indexer *Indexer, workspacePath, newBranch string) {
+	// A stale monitor callback — a HEAD change debounced across a project
+	// switch or a shutdown — must not mutate the newly-switched project's
+	// index or touch a closed service: ctx is the originating project's index
+	// context, cancelled by the next SwitchProject/Shutdown, so a
+	// cancellation here means this callback no longer owns the live state.
+	if err := ctx.Err(); err != nil {
+		m.logger.Info("branch switch dropped: index context no longer live",
+			"branch", newBranch, "cause", context.Cause(ctx))
+		return
+	}
+	// Join the indexing work set (refused once Shutdown sealed it) so an
+	// in-flight switch is covered by the bounded Shutdown drain instead of
+	// racing service.Close().
+	if !m.addIndexingWork() {
+		m.logger.Info("branch switch dropped: manager shutting down", "branch", newBranch)
+		return
+	}
+	defer m.indexingWG.Done()
+
 	fullPass, bsErr := indexer.HandleBranchSwitch(ctx, workspacePath, newBranch)
 	if bsErr != nil {
 		m.logger.Warn("branch switch indexing failed", "error", bsErr)
@@ -1208,7 +1251,12 @@ func (m *Manager) Reindex(ctx context.Context) error {
 	m.indexCtx = indexCtx
 	m.mu.Unlock()
 
-	m.indexingWG.Add(1)
+	// The Add must be refusal-guarded against a concurrent Shutdown's Wait
+	// (sync.WaitGroup misuse is fatal); a refused registration means the
+	// manager is closing and no pass may start.
+	if !m.addIndexingWork() {
+		return errors.New("vector index manager is shutting down; reindex refused")
+	}
 	go func() {
 		defer m.indexingWG.Done()
 		col := m.service.GetCollection()
@@ -1273,6 +1321,16 @@ func (m *Manager) Shutdown() {
 	m.mu.Unlock()
 
 	m.stopDebounce()
+
+	// Seal the indexing work registry BEFORE any Wait: sync.WaitGroup forbids
+	// a positive Add concurrent with Wait, so every late registration (a
+	// Reindex RPC, a debounce-fired incremental pass, a git-monitor branch
+	// switch landing mid-shutdown) is refused from here on instead of racing
+	// the drain below. The initProject pass's own Add needs no guard: it runs
+	// on the init goroutine, which is joined via initWG before indexingWG is
+	// waited on, so that Add always happens-before the Wait.
+	m.sealIndexingWork()
+
 	grace := m.initDrainGrace()
 
 	// Wait for the async init goroutine, bounded by the grace period.
@@ -1320,6 +1378,32 @@ func (m *Manager) initDrainGrace() time.Duration {
 		return m.shutdownGrace
 	}
 	return shutdownIndexGracePeriod
+}
+
+// addIndexingWork registers one background indexing goroutine with
+// indexingWG on behalf of a late launcher (Reindex, a debounce-fired pass, a
+// git-monitor branch switch). It reports whether the registration happened:
+// a false return means Shutdown already sealed the manager (wgClosed), and
+// the caller must NOT launch the goroutine — that is what keeps every Add
+// strictly ordered against Shutdown's indexingWG.Wait instead of racing it
+// (a concurrent positive Add and Wait are a fatal sync.WaitGroup misuse).
+func (m *Manager) addIndexingWork() bool {
+	m.wgMu.Lock()
+	defer m.wgMu.Unlock()
+	if m.wgClosed {
+		return false
+	}
+	m.indexingWG.Add(1)
+	return true
+}
+
+// sealIndexingWork marks the manager as closed for new indexing work. It must
+// be called by Shutdown before it drains indexingWG, so any later
+// addIndexingWork is refused rather than racing the Wait.
+func (m *Manager) sealIndexingWork() {
+	m.wgMu.Lock()
+	m.wgClosed = true
+	m.wgMu.Unlock()
 }
 
 // waitBounded waits for wg to drain or for grace to elapse, whichever is first.

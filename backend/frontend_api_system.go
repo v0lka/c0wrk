@@ -58,6 +58,7 @@ type SystemFontsResponse struct {
 // reads succeed, each description is parsed independently: an unparsable
 // value empties only its own family.
 func (f *FrontendAPI) GetSystemFonts() SystemFontsResponse {
+	f.seedAcquire()
 	readFonts := f.readSystemFontsFn
 	if readFonts == nil {
 		readFonts = readSystemFonts
@@ -111,6 +112,7 @@ type FontFamiliesResponse struct {
 // at Debug only — a desktop without fontconfig is a normal outcome, never
 // an error surfaced to the renderer.
 func (f *FrontendAPI) ListFontFamilies(monospace bool) FontFamiliesResponse {
+	f.seedAcquire()
 	listFamilies := f.listFontFamiliesFn
 	if listFamilies == nil {
 		listFamilies = listFontFamilies

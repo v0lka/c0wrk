@@ -58,6 +58,8 @@ func newForkTestAPI(t *testing.T) (api *FrontendAPI, sessionStore *session.SQLit
 		store:       sessionStore,
 		reviewStore: reviewStore,
 	}
+	api.seedPublished.Store(true)
+	api.seedPublished.Store(true)
 
 	// Seed a source session.
 	if err := sessionStore.SaveSession(ctx, session.SessionInfo{
@@ -198,6 +200,8 @@ func TestListAllSessions_ReturnsSessionsAcrossProjects(t *testing.T) {
 	manager.SetSessionStore(sessionStore)
 
 	api := &FrontendAPI{app: &Application{manager: manager}}
+	api.seedPublished.Store(true)
+	api.seedPublished.Store(true)
 
 	// Seed one session per project with distinct activity; A is newer.
 	if err := sessionStore.SaveSession(ctx, session.SessionInfo{
@@ -233,6 +237,8 @@ func TestListAllSessions_ReturnsSessionsAcrossProjects(t *testing.T) {
 // UI can call it unconditionally during startup.
 func TestListAllSessions_NilManagerReturnsEmpty(t *testing.T) {
 	f := &FrontendAPI{} // f.app == nil — mirrors early startup
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	got, err := f.ListAllSessions()
 	if err != nil {
 		t.Fatalf("expected no error with nil manager, got %v", err)
@@ -467,6 +473,8 @@ func TestModelProfilesGoalBlocked_Combinations(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			api := &FrontendAPI{config: tc.cfg}
+			api.seedPublished.Store(true)
+			api.seedPublished.Store(true)
 			if got := api.modelProfilesGoalBlocked(); got != tc.want {
 				t.Errorf("modelProfilesGoalBlocked() = %v, want %v", got, tc.want)
 			}
@@ -528,6 +536,8 @@ func TestResumeTask_GoalBlockedByModelProfiles(t *testing.T) {
 // without -race, so the invariant is asserted in CI's race build.
 func TestModelProfilesGoalBlocked_ConcurrentWithMutation(t *testing.T) {
 	api := &FrontendAPI{config: modelProfilesNarrowingConfig("")}
+	api.seedPublished.Store(true)
+	api.seedPublished.Store(true)
 
 	var wg sync.WaitGroup
 	stop := make(chan struct{})

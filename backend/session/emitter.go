@@ -997,6 +997,12 @@ func (e *EventEmitter) emitSessionTokens(totalIn, totalOut int, model, family st
 		persist(totalIn, totalOut, model, family, fillPercent)
 	}
 
+	// emitEvent reads planStepID/retryAttempt, which SetCurrentStepID/
+	// SetRetryAttempt write under e.mu on the conductor goroutine while this
+	// emission can run on a subagent/E2S token-observer goroutine — hold e.mu
+	// across the dispatch like every other emitEvent call site (ContextFill,
+	// Service) so the read cannot race the writer.
+	e.mu.Lock()
 	e.emitEvent(Event{
 		SessionID: e.sessionID,
 		Type:      "session_tokens",
@@ -1012,6 +1018,7 @@ func (e *EventEmitter) emitSessionTokens(totalIn, totalOut int, model, family st
 			TokSSamples:         throughputSamples,
 		},
 	})
+	e.mu.Unlock()
 }
 
 // ContextFill emits a context fill status event, enriched with session-level token totals.

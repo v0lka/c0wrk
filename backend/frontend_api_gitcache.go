@@ -1,6 +1,7 @@
 package backend
 
 import (
+	"context"
 	"errors"
 	"maps"
 	"path/filepath"
@@ -91,7 +92,14 @@ func (f *FrontendAPI) runGitStatus(repoRoot string) (map[string]GitStatusEntry, 
 	if f.gitStatusFn != nil {
 		return f.gitStatusFn(repoRoot)
 	}
-	return workspace.GitStatus(f.ctx(), repoRoot)
+	// f.ctx() is the application context — no deadline, cancelled only at
+	// shutdown — and GitStatus spawns git with no internal bound, so a
+	// wedged git would hang the GetGitStatus RPC indefinitely. Bound it
+	// with the same 30s budget every other local git call gets (review
+	// [176]); expiry surfaces as the RPC's ordinary git-failure path.
+	ctx, cancel := context.WithTimeout(f.ctx(), gitCmdTimeout)
+	defer cancel()
+	return workspace.GitStatus(ctx, repoRoot)
 }
 
 // runGitIgnoredPaths delegates to the injectable gitIgnoredFn test seam,
@@ -100,7 +108,10 @@ func (f *FrontendAPI) runGitIgnoredPaths(repoRoot string) (map[string]bool, erro
 	if f.gitIgnoredFn != nil {
 		return f.gitIgnoredFn(repoRoot)
 	}
-	return workspace.GitIgnoredPaths(f.ctx(), repoRoot)
+	// Same never-deadlined-context bound as runGitStatus (review [176]).
+	ctx, cancel := context.WithTimeout(f.ctx(), gitCmdTimeout)
+	defer cancel()
+	return workspace.GitIgnoredPaths(ctx, repoRoot)
 }
 
 // cachedGitStatus returns the git status for repoRoot, reusing a snapshot
@@ -231,4 +242,16 @@ func (f *FrontendAPI) invalidateAllGitCaches() {
 	f.gitIgnoredCacheMu.Lock()
 	f.gitIgnoredCache = nil
 	f.gitIgnoredCacheMu.Unlock()
+
+	// The Git-panel focus belongs to the previous project's repository; a
+	// stale override would resolve every PATHLESS git RPC (commit, stage
+	// all, stash, pull/push/fetch, reset) into the previous project's
+	// repository during the window between this switch and the frontend's
+	// asynchronous focus re-apply — wrong-repo commit/push/reset (review
+	// [78]). Drop it so resolution falls back to the new project's checkout;
+	// the frontend re-applies the focus right after the switch (and the
+	// focus path of the NEW project is revalidated against the live
+	// worktree list at that point, so a focused external linked tree
+	// restores correctly).
+	f.setGitFocusPath("")
 }

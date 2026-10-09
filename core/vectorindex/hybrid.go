@@ -215,10 +215,19 @@ func (s *Service) hybridSearch(ctx context.Context, opts SearchOptions, wait boo
 	mustMatch = append(mustMatch, opts.MustMatch...)
 	mustMatch = append(mustMatch, sugarMust...)
 
+	// Capture the collection and lexical index and hold the read lock across
+	// the whole search, including every lexical query below. bleveIndex has
+	// no internal synchronization and its Close — taken under the write lock
+	// by a branch/project switch, a park eviction or Service.Close — nils the
+	// underlying index, so using a captured pointer after releasing the lock
+	// races the close and can dereference nil. This mirrors browseWithFilter,
+	// which holds the read lock across its query; the chromem collection is
+	// covered by the same hold.
 	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	col := s.current.collection
 	lex := s.current.lexical
-	s.mu.RUnlock()
 
 	if col == nil {
 		return nil, errors.New("no collection available; call SetProject and SwitchBranch first")

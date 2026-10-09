@@ -197,3 +197,30 @@ func TestHandleSecondInstanceLaunch_BeforeStartupNoop(t *testing.T) {
 		t.Fatalf("the skipped focus must be logged, got: %s", out)
 	}
 }
+
+// TestAcquireSingleInstanceLock_RefusesSymlinkedLockFile pins the #93 fix:
+// the fixed app.lock path is opened no-follow, so a planted symlink fails
+// the open — and the caller's documented fail-open contract degrades the
+// run to "first instance" without creating the link's target or locking a
+// foreign file.
+func TestAcquireSingleInstanceLock_RefusesSymlinkedLockFile(t *testing.T) {
+	dir := t.TempDir()
+	victim := filepath.Join(t.TempDir(), "victim")
+	if err := os.Symlink(victim, filepath.Join(dir, "app.lock")); err != nil {
+		t.Skipf("symlinks unavailable on this platform: %v", err)
+	}
+
+	lock, first, err := AcquireSingleInstanceLock(filepath.Join(dir, "app.lock"))
+	if err == nil {
+		t.Fatal("expected a fail-closed open error for a symlinked lock file")
+	}
+	if lock != nil {
+		t.Fatal("expected no lock handle on the symlink refusal")
+	}
+	if !first {
+		t.Fatal("expected the documented fail-open degradation to first instance")
+	}
+	if _, err := os.Lstat(victim); !os.IsNotExist(err) {
+		t.Fatalf("symlink target was created: %v", err)
+	}
+}

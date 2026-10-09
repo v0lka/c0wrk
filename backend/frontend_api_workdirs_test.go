@@ -90,6 +90,7 @@ func newWorkDirsHarness(t *testing.T) *workDirsHarness {
 			h.events = append(h.events, name)
 		},
 	}
+	h.api.seedPublished.Store(true)
 	t.Cleanup(func() { _ = db.Close() })
 	return h
 }
@@ -295,6 +296,8 @@ func TestDeleteWorkDirectory_RemovesRow(t *testing.T) {
 
 func TestListWorkDirectories_NilStoreReturnsError(t *testing.T) {
 	f := &FrontendAPI{} // no stores wired — mirrors early startup
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	if _, err := f.ListProjectWorkDirectories("p1"); err == nil {
 		t.Fatal("expected error when project store is nil")
 	}

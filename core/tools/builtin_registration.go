@@ -17,13 +17,21 @@ import (
 // All limit and callback types are imported directly from their source packages
 // per ADR-008 (no type re-exports).
 type BuiltinToolsConfig struct {
-	FileLimits      builtins.FileLimits
-	RipgrepLimits   builtins.RipgrepLimits
-	GlobLimits      builtins.GlobLimits
-	WebFetchLimits  builtins.WebFetchLimits
-	WebSearchLimits builtins.WebSearchLimits
-	BashTimeouts    builtins.BashTimeouts
-	ShellBlocklist  []string
+	FileLimits    builtins.FileLimits
+	RipgrepLimits builtins.RipgrepLimits
+	GlobLimits    builtins.GlobLimits
+	// GlobLimitsExplicit selects the no-fallback glob constructor (see
+	// BuilderToolLimitsConfig.GlobLimitsExplicit): true registers via
+	// NewGlobToolWithLimitsOverride so an explicitly all-zero config — the
+	// documented "0 disables" on all three glob knobs — is honored verbatim;
+	// false keeps NewGlobToolWithLimits, whose zero-struct→defaults fallback
+	// protects a fully-unset BuiltinToolsConfig from registering an unbounded
+	// walk.
+	GlobLimitsExplicit bool
+	WebFetchLimits     builtins.WebFetchLimits
+	WebSearchLimits    builtins.WebSearchLimits
+	BashTimeouts       builtins.BashTimeouts
+	ShellBlocklist     []string
 	// BashShellInvocation / PoshShellInvocation carry the operator's optional
 	// launch-shape override for the shell-exec tool (sp4rk
 	// tools.ShellInvocation). Only the platform-matching entry is consumed
@@ -125,8 +133,14 @@ func RegisterBuiltinTools(registry *ToolRegistry, cfg BuiltinToolsConfig) error 
 		registry.Register(websearch.NewTool(provider, cfg.WebSearchLimits))
 	}
 
-	// Glob and ripgrep
-	registry.Register(builtins.NewGlobToolWithLimits(cfg.GlobLimits))
+	// Glob and ripgrep. An explicitly customized glob config goes through the
+	// no-fallback constructor so the all-zero "disable every bound" case
+	// survives; anything else keeps the zero-struct→defaults fallback.
+	if cfg.GlobLimitsExplicit {
+		registry.Register(builtins.NewGlobToolWithLimitsOverride(cfg.GlobLimits))
+	} else {
+		registry.Register(builtins.NewGlobToolWithLimits(cfg.GlobLimits))
+	}
 	registry.Register(builtins.NewRipgrepToolWithLimits(cfg.RipgrepLimits))
 
 	// Tool result cache reader

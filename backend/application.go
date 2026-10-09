@@ -3,6 +3,7 @@ package backend
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -123,11 +124,52 @@ type Application struct {
 	// registered search closures resolve it at call time and surface the
 	// still-loading error until SetVectorRoots lands. Nil before wiring.
 	vectorRootsPtr atomic.Pointer[VectorRoots]
+
+	// builderConfigProvider produces the BuilderConfig every new session's
+	// orchestrator is built from, once wired by NewFrontendAPI: the conversion
+	// runs under FrontendAPI's configMu on the live config (see
+	// sessionBuilderConfig). Nil before that wiring — in that window no Wails
+	// call goroutine exists, so the factory converts the startup config
+	// directly and cannot race a Settings save.
+	builderConfigProvider atomic.Pointer[func() *core.BuilderConfig]
 }
 
-func (app *Application) log() *slog.Logger {
-	if app.logger != nil {
-		return app.logger
+// SetBuilderConfigProvider wires the lock-respecting config snapshot the
+// session-orchestrator factory converts (see builderConfigProvider and
+// sessionBuilderConfig). Called once from NewFrontendAPI; startup-only, not
+// meant for concurrent callers.
+func (a *Application) SetBuilderConfigProvider(fn func() *core.BuilderConfig) {
+	a.builderConfigProvider.Store(&fn)
+}
+
+// sessionBuilderConfig returns the BuilderConfig a new session's orchestrator
+// is built from. After Init wired the provider, the conversion runs
+// under FrontendAPI's configMu: the factory is invoked on Wails call
+// goroutines, concurrently with Settings saves that mutate the shared live
+// config's maps in place under the same lock, so converting the live pointer
+// unlocked is a fatal concurrent-map-access crash. Before that wiring the
+// startup config is converted directly (the NewApplication behavior this
+// snapshot path replaces): Init wires the provider INSIDE its critical
+// section, before it raises the seedPublished flag that admits guardless RPC
+// readers (see FrontendAPILifecycle.Init), so a session factory on a call
+// goroutine can never reach this fallback while a settings save could race it.
+func (a *Application) sessionBuilderConfig(startupCfg *config.Config) *core.BuilderConfig {
+	if fn := a.builderConfigProvider.Load(); fn != nil {
+		if cfg := (*fn)(); cfg != nil {
+			return cfg
+		}
+		// The provider's nil means the FrontendAPI config was never wired
+		// (mis-wired test/startup); fail loud here rather than nil-deref on
+		// the caller's first field access.
+		a.log().Error("builder config provider returned nil — startup wiring is broken")
+		return nil
+	}
+	return ToBuilderConfig(startupCfg, loadModelProfilesCatalog(a.agentDir, a.logger), a.logger)
+}
+
+func (a *Application) log() *slog.Logger {
+	if a.logger != nil {
+		return a.logger
 	}
 	return slog.Default()
 }
@@ -299,7 +341,15 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 
 	// 5. Orchestrator factory closure for the session manager.
 	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string, bbFactory core.BlackboardFactory, dumpWriter io.Writer, stepDumpTracker *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
-		orchCfg := ToBuilderConfig(cfg.Config, loadModelProfilesCatalog(app.agentDir, app.log()), app.log())
+		// Converted under FrontendAPI's configMu once NewFrontendAPI wires the
+		// provider (see sessionBuilderConfig): the factory runs on Wails call
+		// goroutines and must not range the live config's maps unlocked.
+		orchCfg := app.sessionBuilderConfig(cfg.Config)
+		if orchCfg == nil {
+			// sessionBuilderConfig already logged the wiring break; surface it
+			// as a session-creation error instead of a nil dereference below.
+			return nil, errors.New("builder config unavailable (provider returned nil)")
+		}
 		// The lazy python probe is consumed at tool registration (builder
 		// creation); propagate it here as well so any future Build-side
 		// consumer sees the closure instead of a zero value.
@@ -376,26 +426,26 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 }
 
 // Manager returns the session manager.
-func (app *Application) Manager() *session.Manager {
-	return app.manager
+func (a *Application) Manager() *session.Manager {
+	return a.manager
 }
 
 // Builder returns the orchestrator builder for advanced operations.
-func (app *Application) Builder() *core.OrchestratorBuilder {
-	return app.builder
+func (a *Application) Builder() *core.OrchestratorBuilder {
+	return a.builder
 }
 
 // SetGoalProposer sets the goal-proposer hook that the orchestrator factory
 // injects onto every per-session orchestrator. Desktop calls this after
 // construction, once its pending-confirmation map + emitter are ready, so the
 // proposer is in place before any session's orchestrator is built.
-func (app *Application) SetGoalProposer(proposer coretools.GoalProposer) {
-	app.goalProposer = proposer
+func (a *Application) SetGoalProposer(proposer coretools.GoalProposer) {
+	a.goalProposer = proposer
 }
 
 // TitleGenerator returns the session title generator.
-func (app *Application) TitleGenerator() *session.TitleGenerator {
-	return app.titleGen
+func (a *Application) TitleGenerator() *session.TitleGenerator {
+	return a.titleGen
 }
 
 // EvaluateJudge performs an on-demand judge evaluation for a pending tool
@@ -405,11 +455,11 @@ func (app *Application) TitleGenerator() *session.TitleGenerator {
 // session's own provider/model so manual and automatic judge evaluations
 // cannot disagree across models. Returns the verdict, reasoning (prefixed
 // with "SAFE: " when allowed), and any error.
-func (app *Application) EvaluateJudge(ctx context.Context, toolName string, input json.RawMessage, taskContext string) (verdict sdktools.JudgeVerdict, reasoning string, err error) {
-	if err := app.builder.WaitReady(ctx); err != nil {
+func (a *Application) EvaluateJudge(ctx context.Context, toolName string, input json.RawMessage, taskContext string) (verdict sdktools.JudgeVerdict, reasoning string, err error) {
+	if err := a.builder.WaitReady(ctx); err != nil {
 		return sdktools.VerdictConfirm, "", fmt.Errorf("judge not available: %w", err)
 	}
-	registry := app.builder.ToolRegistry()
+	registry := a.builder.ToolRegistry()
 	if registry == nil {
 		return sdktools.VerdictConfirm, "", ErrJudgeNotAvailable
 	}
@@ -429,9 +479,9 @@ func (app *Application) EvaluateJudge(ctx context.Context, toolName string, inpu
 // the shared registry's judge (EvaluateJudge) when the session is unknown,
 // has no orchestrator or registry yet, or its judge is not bound, so a manual
 // evaluation never fails merely because session context is unavailable.
-func (app *Application) EvaluateJudgeForSession(ctx context.Context, sessionID, toolName string, input json.RawMessage, taskContext string) (verdict sdktools.JudgeVerdict, reasoning string, err error) {
-	if sessionID != "" && app.manager != nil {
-		if sess, ok := app.manager.GetSession(sessionID); ok {
+func (a *Application) EvaluateJudgeForSession(ctx context.Context, sessionID, toolName string, input json.RawMessage, taskContext string) (verdict sdktools.JudgeVerdict, reasoning string, err error) {
+	if sessionID != "" && a.manager != nil {
+		if sess, ok := a.manager.GetSession(sessionID); ok {
 			if orch := sess.GetOrchestrator(); orch != nil {
 				if registry := orch.ToolRegistry(); registry != nil {
 					if judge := registry.GetJudge(); judge != nil {
@@ -442,7 +492,7 @@ func (app *Application) EvaluateJudgeForSession(ctx context.Context, sessionID, 
 			}
 		}
 	}
-	return app.EvaluateJudge(ctx, toolName, input, taskContext)
+	return a.EvaluateJudge(ctx, toolName, input, taskContext)
 }
 
 // evaluateJudgeWith runs a single judge evaluation and prefixes the reasoning
@@ -485,16 +535,16 @@ func evaluateJudgeWith(ctx context.Context, judge *sdktools.ToolJudge, tool sdkt
 // as a neutral "Starting…" state rather than an error. Once startup finishes,
 // if the gateway failed to start the same placeholder surfaces the error;
 // otherwise it returns the live per-server status from the gateway.
-func (app *Application) GetMCPStatus() []mcp.ServerStatus {
-	if !app.builder.MCPStartupDone() {
+func (a *Application) GetMCPStatus() []mcp.ServerStatus {
+	if !a.builder.MCPStartupDone() {
 		return []mcp.ServerStatus{{
 			Name:     "_gateway",
 			Starting: true,
 		}}
 	}
-	gw := app.builder.MCPGatewayNoWait()
+	gw := a.builder.MCPGatewayNoWait()
 	if gw == nil {
-		if errMsg := app.builder.MCPGatewayError(); errMsg != "" {
+		if errMsg := a.builder.MCPGatewayError(); errMsg != "" {
 			return []mcp.ServerStatus{{
 				Name:  "_gateway",
 				Error: errMsg,
@@ -506,47 +556,47 @@ func (app *Application) GetMCPStatus() []mcp.ServerStatus {
 }
 
 // ListTools returns descriptors for all registered tools.
-func (app *Application) ListTools() []sdktools.ToolDescriptor {
-	return app.builder.ToolRegistry().List()
+func (a *Application) ListTools() []sdktools.ToolDescriptor {
+	return a.builder.ToolRegistry().List()
 }
 
 // GroupPolicies returns the live group→policy map enforced by the shared
 // tool registry (what security.groups resolved to after the builder applied
 // them). Callers use it to report each tool's EFFECTIVE policy — the same
 // map Execute consults — instead of re-deriving it from config.
-func (app *Application) GroupPolicies() map[sdktools.ToolGroup]sdktools.ToolPolicy {
-	return app.builder.ToolRegistry().GroupPolicies()
+func (a *Application) GroupPolicies() map[sdktools.ToolGroup]sdktools.ToolPolicy {
+	return a.builder.ToolRegistry().GroupPolicies()
 }
 
 // Shutdown stops all managed resources (manager, persistence pipeline, MCP
 // gateway). Each step logs its duration as it completes — this runs on the
 // main goroutine during app shutdown, and the per-step records keep a slow
 // teardown attributable from the session log.
-func (app *Application) Shutdown() {
+func (a *Application) Shutdown() {
 	shutdownStart := time.Now()
 	shutdownStep := func(name string) {
-		app.log().Info("application teardown step complete",
+		a.log().Info("application teardown step complete",
 			"step", name,
 			"step_ms", time.Since(shutdownStart).Milliseconds())
 	}
-	if app.manager != nil {
-		app.manager.Shutdown()
+	if a.manager != nil {
+		a.manager.Shutdown()
 	}
 	shutdownStep("managerShutdown")
 	// Drain the persistence pipeline AFTER the manager has stopped every task
 	// goroutine (so nothing new is enqueued): flush the coalesced token updates,
 	// then drain the event-write queue so no pending write is lost on exit.
-	if app.tokenPersist != nil {
-		app.tokenPersist.Close()
+	if a.tokenPersist != nil {
+		a.tokenPersist.Close()
 	}
 	shutdownStep("tokenPersistClose")
-	if app.persister != nil {
-		app.persister.Close()
+	if a.persister != nil {
+		a.persister.Close()
 	}
 	shutdownStep("eventPersisterClose")
-	if app.builder != nil {
-		if err := app.builder.StopGateway(); err != nil {
-			app.log().Error("failed to stop MCP gateway", "error", err)
+	if a.builder != nil {
+		if err := a.builder.StopGateway(); err != nil {
+			a.log().Error("failed to stop MCP gateway", "error", err)
 		}
 	}
 	shutdownStep("stopMCPGateway")
@@ -625,9 +675,9 @@ func expandTilde(p, home string) string {
 // EmitSessionEvent emits a session event through the combined UI + persistence
 // path. Desktop-layer callbacks (e.g. plan approval) use this instead of the
 // raw UI emitter so events survive app restarts.
-func (app *Application) EmitSessionEvent(evt session.Event) {
-	if app.emitFunc != nil {
-		app.emitFunc(evt)
+func (a *Application) EmitSessionEvent(evt session.Event) {
+	if a.emitFunc != nil {
+		a.emitFunc(evt)
 	}
 }
 
@@ -636,23 +686,23 @@ func (app *Application) EmitSessionEvent(evt session.Event) {
 // session switches) reports "Awaiting confirmation..." while the agent
 // goroutine blocks on the user's decision. Desktop's confirm callback calls
 // this instead of the raw UI emitter.
-func (app *Application) EmitToolConfirm(sessionID string, payload session.ToolConfirmPayload) {
-	if app.manager != nil {
-		app.manager.EmitToolConfirm(sessionID, payload)
+func (a *Application) EmitToolConfirm(sessionID string, payload session.ToolConfirmPayload) {
+	if a.manager != nil {
+		a.manager.EmitToolConfirm(sessionID, payload)
 		return
 	}
-	app.EmitSessionEvent(session.Event{SessionID: sessionID, Type: "tool_confirm", Data: payload})
+	a.EmitSessionEvent(session.Event{SessionID: sessionID, Type: "tool_confirm", Data: payload})
 }
 
 // LastToolCallID returns the most recently emitted tool_call_id for a session
 // (and its tool name). The desktop tool-confirmation callback uses it to
 // attach the matching tool_call_id to the tool_confirm payload so the frontend
 // can correlate a confirmation with the exact tool_call event.
-func (app *Application) LastToolCallID(sessionID string) (id, tool string) {
-	if app.manager == nil {
+func (a *Application) LastToolCallID(sessionID string) (id, tool string) {
+	if a.manager == nil {
 		return "", ""
 	}
-	return app.manager.LastToolCallID(sessionID)
+	return a.manager.LastToolCallID(sessionID)
 }
 
 // buildAutoRetryIntervals derives the provider→interval snapshot from a
@@ -675,16 +725,16 @@ func buildAutoRetryIntervals(cfg *config.Config) map[string]int {
 // publishAutoRetryIntervals rebuilds and stores the atomic snapshot from the
 // given config. Called at Application construction and after every committed
 // LLM config mutation.
-func (app *Application) publishAutoRetryIntervals(cfg *config.Config) {
+func (a *Application) publishAutoRetryIntervals(cfg *config.Config) {
 	snapshot := buildAutoRetryIntervals(cfg)
-	app.autoRetryIntervals.Store(&snapshot)
+	a.autoRetryIntervals.Store(&snapshot)
 }
 
 // autoRetryIntervalSnapshot returns the published provider→interval snapshot
 // (nil before the first publish — reads on a nil map are safe and yield 0,
 // "no provider has an interval").
-func (app *Application) autoRetryIntervalSnapshot() map[string]int {
-	if p := app.autoRetryIntervals.Load(); p != nil {
+func (a *Application) autoRetryIntervalSnapshot() map[string]int {
+	if p := a.autoRetryIntervals.Load(); p != nil {
 		return *p
 	}
 	return nil

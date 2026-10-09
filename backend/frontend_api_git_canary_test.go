@@ -27,6 +27,8 @@ func TestRunGitCmdNeutralizesRepoConfig(t *testing.T) {
 	repo.Write(t, "file.txt", "hello\nworld\n")
 
 	f := &FrontendAPI{} // ctx() falls back to context.Background()
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	out, err := f.runGitCmd(root, "diff", "--numstat", "HEAD")
 	if err != nil {
@@ -63,6 +65,8 @@ func TestRunGitCmdFailsClosedOnUnscannableConfig(t *testing.T) {
 	}
 
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	if _, err := f.runGitCmd(root, "status", "--porcelain"); err == nil {
 		t.Fatal("expected runGitCmd to fail closed on unscannable config")
 	}

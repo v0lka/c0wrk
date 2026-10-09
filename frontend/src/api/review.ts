@@ -3,7 +3,6 @@
 import { getApp } from './runtime'
 import { logger } from '@/lib/logger'
 import { isArrayOf, isObj } from '@/types/guards'
-
 function isStr(v: unknown): v is string {
   return typeof v === 'string'
 }
@@ -48,19 +47,41 @@ export interface ReviewFileDiff {
   hunks: ReviewHunk[]
 }
 
+function isReviewComment(v: unknown): v is (ReviewHunkComment | ReviewFileComment) {
+  return isObj(v)
+    && isStr(v.id)
+    && isStr(v.session_id)
+    && isStr(v.file_path)
+    && isStr(v.body)
+    && isStr(v.created_at)
+}
+
+/** Element guard for one diff hunk: parseHunkRaw(hunk.raw, hunk.old_start,
+ *  hunk.new_start) and the diff-equality pass read every field per element,
+ *  so a malformed hunk must fail the file guard instead of throwing during
+ *  the review render. */
+function isReviewHunk(v: unknown): v is ReviewHunk {
+  return isObj(v)
+    && isStr(v.raw)
+    && typeof v.old_start === 'number'
+    && typeof v.old_count === 'number'
+    && typeof v.new_start === 'number'
+    && typeof v.new_count === 'number'
+}
+
 function isReviewData(v: unknown): v is ReviewData {
   return (
     isObj(v) &&
     isStr(v.session_id) &&
     isStr(v.status) &&
     isStr(v.general_comment) &&
-    Array.isArray(v.hunk_comments) &&
-    Array.isArray(v.file_comments)
+    isArrayOf(v.hunk_comments, isReviewComment) &&
+    isArrayOf(v.file_comments, isReviewComment)
   )
 }
 
 function isReviewFileDiff(v: unknown): v is ReviewFileDiff {
-  return isObj(v) && isStr(v.path) && Array.isArray(v.hunks)
+  return isObj(v) && isStr(v.path) && isArrayOf(v.hunks, isReviewHunk)
 }
 
 export async function getReview(sessionId: string): Promise<ReviewData> {

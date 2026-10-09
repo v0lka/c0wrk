@@ -866,3 +866,69 @@ func TestWorktreeOps_WorktreeConfigOverlayCanary(t *testing.T) {
 	}
 	canary.RequireNotFired(t)
 }
+
+// ---------------------------------------------------------------------------
+// Bare-repository listings (review [95])
+// ---------------------------------------------------------------------------
+
+// TestListWorktrees_BareRepositoryPorcelain pins the parser against git's
+// bare-repository output shape: a bare repository's `worktree list
+// --porcelain` entry is `worktree <path>` + `bare` with NO HEAD line (with
+// or without commits), and it must parse as WorktreeMain with Bare=true —
+// not fail the whole listing with ErrWorktreeMalformed. The malformed
+// non-bare variant (missing HEAD) stays rejected — see the table in
+// TestListWorktrees_MalformedVariants.
+func TestListWorktrees_BareRepositoryPorcelain(t *testing.T) {
+	cases := []struct {
+		name   string
+		output string
+	}{
+		{"bare without commits", "worktree /tmp/repo.git\nbare\n"},
+		{"bare with branch", "worktree /tmp/repo.git\nbare\nbranch refs/heads/main\n"},
+		{"bare with locked", "worktree /tmp/repo.git\nbare\nlocked\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			installScriptGit(t, tc.output)
+			trees, err := ListWorktrees(context.Background(), t.TempDir())
+			if err != nil {
+				t.Fatalf("ListWorktrees(bare output): %v", err)
+			}
+			if len(trees) != 1 {
+				t.Fatalf("ListWorktrees(bare output) = %d entries, want 1", len(trees))
+			}
+			if trees[0].Path != "/tmp/repo.git" || !trees[0].Bare || trees[0].Head != "" {
+				t.Fatalf("entry = %+v, want {Path:/tmp/repo.git Bare:true Head:}", trees[0])
+			}
+		})
+	}
+}
+
+// TestListWorktrees_BareRepositoryRealGit runs the documented bare-main
+// layout against the real git binary: a workspace that IS a bare repository
+// must list (a single main entry, Bare=true) instead of erroring, so the
+// worktree subsystem works on mirror/server-style clones.
+func TestListWorktrees_BareRepositoryRealGit(t *testing.T) {
+	gittest.RequirePOSIXShell(t)
+	gittest.RequireGit(t)
+
+	bare := filepath.Join(gittest.TempDir(t), "repo.git")
+	cmd := exec.CommandContext(context.Background(), "git", "init", "--bare", bare)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init --bare: %v: %s", err, out)
+	}
+
+	trees, err := ListWorktrees(context.Background(), bare)
+	if err != nil {
+		t.Fatalf("ListWorktrees(bare repository): %v", err)
+	}
+	if len(trees) != 1 {
+		t.Fatalf("ListWorktrees(bare repository) = %d entries, want 1", len(trees))
+	}
+	if !trees[0].Bare || trees[0].Kind != WorktreeMain {
+		t.Fatalf("entry = %+v, want the bare main entry", trees[0])
+	}
+	if trees[0].Path != bare {
+		t.Errorf("entry path = %q, want %q", trees[0].Path, bare)
+	}
+}

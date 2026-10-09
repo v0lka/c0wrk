@@ -153,19 +153,37 @@ func (f *FrontendAPI) trustedGitRepoEntry(path string) (config.TrustedGitRepo, b
 // when the agent dir is unset — production always sets it; tests that trust a
 // repo must too.
 func (f *FrontendAPI) writeGitConfigSnapshot(fingerprint string, snapshot []byte) error {
+	f.seedAcquire()
 	if f.agentDir == "" {
 		return errors.New("agent dir not set")
 	}
 	dir := config.GitConfigSnapshotsDir(f.agentDir)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
+	// The snapshot root must be created as REAL directories (review [108]):
+	// os.MkdirAll accepts a symlink-to-directory, so a link swapped into a
+	// created component would redirect every trust-snapshot write (and the
+	// paired read) outside ~/.c0wrk; MkdirAllReal refuses a dangling or
+	// swapped-in link, while a pre-existing operator-symlinked tree resolves
+	// as intent.
+	if err := safeio.MkdirAllReal(dir, 0o755); err != nil {
+		return fmt.Errorf("creating git-config snapshot directory: %w", err)
 	}
-	return os.WriteFile(filepath.Join(dir, fingerprint), snapshot, 0o644)
+	// safeio.WriteFile refuses a non-regular target (review [35]): a FIFO
+	// planted at the content-addressed snapshot path would block the
+	// write-open forever. Its open is no-follow on unix; on Windows the
+	// safeio parity note applies (the final symlink is still resolved), and
+	// this write is destructive (O_TRUNC) — so the final symlink is refused
+	// explicitly on every platform instead of relying on the open.
+	snapshotPath := filepath.Join(dir, fingerprint)
+	if info, lerr := os.Lstat(snapshotPath); lerr == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing to write git-config snapshot: %s is a symlink", snapshotPath)
+	}
+	return safeio.WriteFile(snapshotPath, snapshot, 0o644)
 }
 
 // readGitConfigSnapshot returns the previously-stored snapshot bytes for a
 // fingerprint, or an error when none is stored (or the agent dir is unset).
 func (f *FrontendAPI) readGitConfigSnapshot(fingerprint string) ([]byte, error) {
+	f.seedAcquire()
 	if f.agentDir == "" {
 		return nil, errors.New("agent dir not set")
 	}
@@ -529,6 +547,7 @@ func (f *FrontendAPI) RemoveHardenGitRepo(path string) error {
 // core.attributesFile values anchor where git actually runs (the workspace
 // directory), not the repository root.
 func (f *FrontendAPI) notifyGitConfigRisk(source, path string) {
+	f.seedAcquire()
 	if f.emitEvent == nil {
 		return
 	}
@@ -603,6 +622,7 @@ func (f *FrontendAPI) notifyGitConfigRisk(source, path string) {
 // core.attributesFile anchors where git runs; scanning a subdirectory would
 // resolve it differently and false-trigger drift).
 func (f *FrontendAPI) recheckTrustedGitRepo(source, displayPath string, trusted config.TrustedGitRepo) {
+	f.seedAcquire()
 	// v1→v2 migration: a record predating the semantic layer carries no
 	// semantic fingerprint. Recover it from the stored raw snapshot before
 	// anything else — an unrecoverable record fails closed below.
@@ -738,14 +758,22 @@ func (f *FrontendAPI) migrateTrustedGitRepoRecord(trusted config.TrustedGitRepo)
 			updated = true
 		}
 	}
+	if updated {
+		// Persisted UNDER configMu (review [103]): persistConfig → config.Save
+		// yaml.Marshals the live config maps, and marshalling outside the
+		// lock races a concurrent Settings save's in-place map writes into a
+		// fatal "concurrent map read and map write". Every other persistConfig
+		// caller in the trust path holds the lock; these two sites were the
+		// outliers.
+		if err := f.persistConfig(); err != nil {
+			f.log().Warn("failed to persist migrated trusted git repositories", "error", err)
+		}
+	}
 	f.configMu.Unlock()
 	if !updated {
 		// The record changed or vanished concurrently; do not report a
 		// migration for a trust that is no longer the one being rechecked.
 		return nil
-	}
-	if err := f.persistConfig(); err != nil {
-		f.log().Warn("failed to persist migrated trusted git repositories", "error", err)
 	}
 	f.log().Debug("trusted git repository record migrated to the semantic fingerprint", "path", trusted.Path)
 	out := trusted
@@ -778,12 +806,17 @@ func (f *FrontendAPI) refreshTrustedGitRepoRawSnapshot(displayPath string, trust
 			updated = true
 		}
 	}
+	if updated {
+		// Persisted UNDER configMu, mirroring the other persistConfig
+		// callers — config.Save's yaml.Marshal ranges the live config maps
+		// (review [103]).
+		if err := f.persistConfig(); err != nil {
+			f.log().Warn("failed to persist refreshed trusted git repositories", "error", err)
+		}
+	}
 	f.configMu.Unlock()
 	if !updated {
 		return // the entry was evicted concurrently; nothing to refresh
-	}
-	if err := f.persistConfig(); err != nil {
-		f.log().Warn("failed to persist refreshed trusted git repositories", "error", err)
 	}
 	f.log().Debug("git-config drift for trusted repository is inert; raw snapshot refreshed", "path", displayPath)
 }

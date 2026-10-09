@@ -344,7 +344,13 @@ func (p *EventPersister) Persist(evt Event) {
 			}
 		}
 		p.SubmitWrite(func() {
-			if err := store.ReplaceStepTodoUpdate(context.Background(), evt.SessionID, stepID, ChatMessage{
+			// Bounded like every other direct store call (restoreDBReadTimeout):
+			// this is the single-writer goroutine, so one unbounded write
+			// queuing behind a saturated pool would wedge ALL event
+			// persistence (the queue then grows past queueHighWater).
+			ctx, cancel := context.WithTimeout(context.Background(), restoreDBReadTimeout)
+			defer cancel()
+			if err := store.ReplaceStepTodoUpdate(ctx, evt.SessionID, stepID, ChatMessage{
 				SessionID: evt.SessionID,
 				Role:      role,
 				Content:   content,
@@ -358,7 +364,11 @@ func (p *EventPersister) Persist(evt Event) {
 	}
 
 	p.SubmitWrite(func() {
-		if err := store.SaveMessage(context.Background(), ChatMessage{
+		// Bounded like the ReplaceStepTodoUpdate write above — same
+		// single-writer wedge hazard.
+		ctx, cancel := context.WithTimeout(context.Background(), restoreDBReadTimeout)
+		defer cancel()
+		if err := store.SaveMessage(ctx, ChatMessage{
 			SessionID: evt.SessionID,
 			Role:      role,
 			Content:   content,

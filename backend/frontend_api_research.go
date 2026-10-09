@@ -1,7 +1,6 @@
 package backend
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -149,6 +148,7 @@ type NewHypothesisCard struct {
 // returns a neutral empty state (Enabled=false, nil Root) rather than an
 // error.
 func (f *FrontendAPI) GetResearchStatus(projectID string) (*ResearchStatusDTO, error) {
+	f.seedAcquire()
 	if projectID == "" {
 		return nil, errors.New("project_id is required")
 	}
@@ -199,6 +199,7 @@ func (f *FrontendAPI) GetResearchStatus(projectID string) (*ResearchStatusDTO, e
 // GetResearchStatus — both call parseResearchRootBestEffort (which parses the
 // full research root); only the serialized JSON response is smaller.
 func (f *FrontendAPI) GetResearchGraph(projectID string) (*ResearchGraphDTO, error) {
+	f.seedAcquire()
 	if projectID == "" {
 		return nil, errors.New("project_id is required")
 	}
@@ -279,6 +280,7 @@ func researchGraphDTOFromProject(active *research.ResearchProject) *ResearchGrap
 // setup recommendation (research-init) rather than an error, so the dashboard
 // always has a next step to show.
 func (f *FrontendAPI) GetResearchNextStep(projectID, hypothesisID string) (*ResearchNextStepDTO, error) {
+	f.seedAcquire()
 	if projectID == "" {
 		return nil, errors.New("project_id is required")
 	}
@@ -464,6 +466,7 @@ func (f *FrontendAPI) CreateHypothesis(projectID string, newCard NewHypothesisCa
 // graph and the project's pins) and emits a research:changed event
 // (action="active_changed").
 func (f *FrontendAPI) SetActiveResearch(projectID, researchID string) (*ResearchStatusDTO, error) {
+	f.seedAcquire()
 	researchRoot, _, err := f.researchRootForMutation(projectID)
 	if err != nil {
 		return nil, err
@@ -525,6 +528,7 @@ func (f *FrontendAPI) SetActiveResearch(projectID, researchID string) (*Research
 // projects, with the next active one selected by the index rule) and emits a
 // research:changed event (action="project_deleted").
 func (f *FrontendAPI) DeleteResearch(projectID, researchID string) (*ResearchStatusDTO, error) {
+	f.seedAcquire()
 	if f.projStore == nil {
 		return nil, errors.New("project subsystem not initialized")
 	}
@@ -577,9 +581,15 @@ func (f *FrontendAPI) DeleteResearch(projectID, researchID string) (*ResearchSta
 	pins, pinsChanged := removePinnedUnderDir(proj.ResearchPins, pinDir)
 	if pinsChanged {
 		proj.ResearchPins = pins
-		if err := f.projStore.SaveProject(context.Background(), *proj); err != nil {
+		// Bounded: this write runs under the per-root research mutation
+		// mutex — an unbounded pool wait parks every pin/flashcard/paper
+		// mutation on the root behind it.
+		pctx, pcancel := f.storeOpCtx()
+		if err := f.projStore.SaveProject(pctx, *proj); err != nil {
+			pcancel()
 			return nil, fmt.Errorf("failed to persist cleaned research pins: %w", err)
 		}
+		pcancel()
 	}
 
 	root := f.parseResearchRootBestEffort(researchRoot)
@@ -607,6 +617,7 @@ func (f *FrontendAPI) DeleteResearch(projectID, researchID string) (*ResearchSta
 // before anything is touched. Both directions are idempotent. No event is
 // emitted: the caller's resolved promise is its refresh signal.
 func (f *FrontendAPI) SetResearchPinned(projectID, researchID string, pinned bool) error {
+	f.seedAcquire()
 	if f.projStore == nil {
 		return errors.New("project subsystem not initialized")
 	}
@@ -653,9 +664,13 @@ func (f *FrontendAPI) SetResearchPinned(projectID, researchID string, pinned boo
 		return nil // already in the requested state
 	}
 	proj.ResearchPins.Research = next
-	if err := f.projStore.SaveProject(context.Background(), *proj); err != nil {
+	// Bounded: same per-root mutation-mutex rationale as DeleteResearch.
+	pctx, pcancel := f.storeOpCtx()
+	if err := f.projStore.SaveProject(pctx, *proj); err != nil {
+		pcancel()
 		return fmt.Errorf("failed to persist research pins: %w", err)
 	}
+	pcancel()
 	return nil
 }
 
@@ -670,6 +685,7 @@ func (f *FrontendAPI) SetResearchPinned(projectID, researchID string, pinned boo
 // works for a card whose file has since been deleted, so stale pins are
 // always removable. Both directions are idempotent. No event is emitted.
 func (f *FrontendAPI) SetHypothesisPinned(projectID, researchID, hypothesisID string, pinned bool) error {
+	f.seedAcquire()
 	if f.projStore == nil {
 		return errors.New("project subsystem not initialized")
 	}
@@ -727,9 +743,13 @@ func (f *FrontendAPI) SetHypothesisPinned(projectID, researchID, hypothesisID st
 		}
 		proj.ResearchPins.Hypotheses[hid] = next
 	}
-	if err := f.projStore.SaveProject(context.Background(), *proj); err != nil {
+	// Bounded: same per-root mutation-mutex rationale as DeleteResearch.
+	pctx, pcancel := f.storeOpCtx()
+	if err := f.projStore.SaveProject(pctx, *proj); err != nil {
+		pcancel()
 		return fmt.Errorf("failed to persist research pins: %w", err)
 	}
+	pcancel()
 	return nil
 }
 
@@ -849,6 +869,7 @@ func (f *FrontendAPI) researchMutationMu(researchRoot string) *sync.Mutex {
 // under the per-root mutation mutex and merge only their field delta (see
 // SetResearchPinned); this helper only requires the read path.
 func (f *FrontendAPI) researchRootForMutation(projectID string) (string, *project.ProjectInfo, error) {
+	f.seedAcquire()
 	if projectID == "" {
 		return "", nil, errors.New("project_id is required")
 	}
@@ -904,6 +925,7 @@ func (f *FrontendAPI) researchGraphAfterMutation(researchRoot, rid string) *Rese
 // pseudo-project (RESEARCH mode is only meaningful for real projects with a
 // workspace).
 func (f *FrontendAPI) loadProjectForResearch(projectID string) (*project.ProjectInfo, error) {
+	f.seedAcquire()
 	proj, err := f.projectManager.GetProject(projectID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load project %q: %w", projectID, err)
@@ -954,6 +976,7 @@ func (f *FrontendAPI) parseResearchRootBestEffort(researchRoot string) *research
 // and agent caches are invalidated afterwards so the next ListSkills /
 // ListAgents call reflects the seeded entries.
 func (f *FrontendAPI) seedGlobalPacks() {
+	f.seedAcquire()
 	if f.agentDir == "" {
 		return
 	}

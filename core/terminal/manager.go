@@ -161,6 +161,14 @@ func (m *Manager) teardown(sess *Session, sessionID string) {
 			m.logger.Warn("failed to kill shell process", "session_id", sessionID, "error", err)
 		}
 	}
+	// Reap the child: on Unix an exited child stays a zombie (defunct) until
+	// its parent Wait()s, and the Go runtime does not auto-reap. teardown is
+	// the single owner of the session lifecycle — it is called exactly once,
+	// by the goroutine that just removed the session from the map — so this
+	// is the one place a Wait can never race another Wait. The child was just
+	// killed (or already exited on its own), so Wait returns promptly; the
+	// collected status is almost always "signal: killed" and not interesting.
+	_ = sess.cmd.Wait()
 }
 
 // Stop terminates the shell and closes the PTY for the given session.

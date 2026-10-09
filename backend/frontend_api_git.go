@@ -296,19 +296,31 @@ func (f *FrontendAPI) runGitCmd(dir string, args ...string) (string, error) {
 		return "", fmt.Errorf("git: %w", err)
 	}
 	cmd.Dir = dir
+	// A non-*os.File stdout capture makes os/exec copy each pipe on its own
+	// goroutine and block Wait until they see EOF, so a grandchild spawned
+	// by a trusted repository's hook (which inherits the write end) would
+	// stall the call past the deadline forever. WaitDelay bounds exactly
+	// that window (review [62]); an orphan holding the pipes past it
+	// surfaces as exec.ErrWaitDelay after the command itself exited 0,
+	// which is success for this caller — tolerate it like the commit spawn
+	// does (cmd.Output would discard the already-captured stdout on that
+	// error, so the streams are captured explicitly here).
+	cmd.WaitDelay = commitWaitDelay
 
-	out, err := cmd.Output()
-	if err != nil {
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil && !errors.Is(err, exec.ErrWaitDelay) {
 		// Surface git's stderr so callers can match on specific failure
 		// messages (e.g. "already exists", "local changes would be
-		// overwritten"). cmd.Output captures stderr into *exec.ExitError.
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
-			return "", fmt.Errorf("git: %w: %s", err, strings.TrimSpace(string(exitErr.Stderr)))
+		// overwritten").
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return "", fmt.Errorf("git: %w: %s", err, msg)
 		}
 		return "", fmt.Errorf("git: %w", err)
 	}
-	return string(out), nil
+	return stdout.String(), nil
 }
 
 // runGitCmdWithStdin is like runGitCmd but feeds stdinData to the command's
@@ -330,16 +342,20 @@ func (f *FrontendAPI) runGitCmdWithStdin(dir, stdinData string, args ...string) 
 	}
 	cmd.Dir = dir
 	cmd.Stdin = strings.NewReader(stdinData)
+	// Same orphan-holds-the-pipes bound as runGitCmd (review [62]).
+	cmd.WaitDelay = commitWaitDelay
 
-	out, err := cmd.Output()
-	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
-			return "", fmt.Errorf("git: %w: %s", err, strings.TrimSpace(string(exitErr.Stderr)))
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil && !errors.Is(err, exec.ErrWaitDelay) {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return "", fmt.Errorf("git: %w: %s", err, msg)
 		}
 		return "", fmt.Errorf("git: %w", err)
 	}
-	return string(out), nil
+	return stdout.String(), nil
 }
 
 // runGitCmdCombined executes a git sub-command in the given repository
@@ -372,8 +388,14 @@ func (f *FrontendAPI) runGitCmdCombined(dir string, timeout time.Duration, args 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	// Same orphan-holds-the-pipes bound as runGitCmd (review [62]): this is
+	// the spawn every remote operation (push/pull/fetch/tags) goes through
+	// UNDER remoteOpMu, so an unbounded wait here would wedge the whole
+	// remote-git funnel permanently. An orphan past the delay after a
+	// successful exit (exec.ErrWaitDelay) keeps the captured output.
+	cmd.WaitDelay = commitWaitDelay
 
-	if err := cmd.Run(); err != nil {
+	if err := cmd.Run(); err != nil && !errors.Is(err, exec.ErrWaitDelay) {
 		return combinedGitOutput(stdout.String(), stderr.String()), fmt.Errorf("git: %w", err)
 	}
 	return combinedGitOutput(stdout.String(), stderr.String()), nil
@@ -425,6 +447,7 @@ func combinedGitOutput(stdout, stderr string) string {
 // dropping the cached snapshots here keeps GetGitStatus/ListDirectory fresh
 // without touching each operation individually. See frontend_api_gitcache.go.
 func (f *FrontendAPI) emitGitStatusChanged(repoPath string) {
+	f.seedAcquire()
 	f.invalidateGitCaches(repoPath)
 	if f.emitEvent != nil {
 		f.emitEvent(EventGitStatusChanged, repoPath)
@@ -670,6 +693,12 @@ func (f *FrontendAPI) CheckoutBranch(name string) error {
 	if branchName == "" {
 		return errors.New("branch name must not be empty")
 	}
+	// A ref literally named "-f" (creatable via git update-ref / a crafted
+	// packed-refs and listed verbatim by GetBranches) would turn this into
+	// `git checkout -f` and discard uncommitted work (review [26]).
+	if err := validateGitOperand("branch name", branchName); err != nil {
+		return err
+	}
 
 	checkout, repoPath, err := f.gitFocusRoots()
 	if err != nil {
@@ -709,6 +738,9 @@ func (f *FrontendAPI) CreateBranch(name, base string) error {
 	branchName := strings.TrimSpace(name)
 	if branchName == "" {
 		return errors.New("branch name must not be empty")
+	}
+	if err := validateGitOperand("branch name", branchName); err != nil {
+		return err
 	}
 
 	checkout, repoPath, err := f.gitFocusRoots()
@@ -798,6 +830,14 @@ func (f *FrontendAPI) RenameBranch(oldName, newName string) error {
 	if newBranch == "" {
 		return errors.New("new branch name must not be empty")
 	}
+	// Option-injection guard (review [33]): leading-dash ref names are
+	// creatable via update-ref and would be parsed as git branch options.
+	if err := validateGitOperand("old branch name", oldBranch); err != nil {
+		return err
+	}
+	if err := validateGitOperand("new branch name", newBranch); err != nil {
+		return err
+	}
 
 	checkout, repoPath, err := f.gitFocusRoots()
 	if err != nil {
@@ -833,6 +873,11 @@ func (f *FrontendAPI) DeleteBranch(name string, force bool) error {
 	branchName := strings.TrimSpace(name)
 	if branchName == "" {
 		return errors.New("branch name must not be empty")
+	}
+	// Option-injection guard (review [33]): a ref named "-D" would flip
+	// the force flag instead of naming the branch to delete.
+	if err := validateGitOperand("branch name", branchName); err != nil {
+		return err
 	}
 
 	repoPath, err := f.resolveGitRepoRoot()
@@ -901,6 +946,14 @@ func (f *FrontendAPI) PushBranch(name string) (string, error) {
 	branchName := strings.TrimSpace(name)
 	if branchName == "" {
 		return "", errors.New("branch name must not be empty")
+	}
+	// Option-injection guard (review [33]): the branch name becomes a
+	// positional refspec AFTER the remote, so a ref named "--mirror" or
+	// "--force" (creatable via git update-ref / a crafted packed-refs,
+	// listed verbatim by GetBranches) would be parsed as a push option —
+	// a mirror push deletes every remote ref absent locally.
+	if err := validateGitOperand("branch name", branchName); err != nil {
+		return "", err
 	}
 
 	repoPath, err := f.resolveGitRepoRoot()
@@ -1074,6 +1127,16 @@ func (f *FrontendAPI) CheckoutRemoteBranch(remoteBranch string) error {
 	if local == "" {
 		return errors.New("remote branch must be in <remote>/<branch> form")
 	}
+	// Option-injection guard (review [105]): rb becomes the bare --track
+	// start-point operand and local the -c branch name; a remote-tracking
+	// ref whose short name begins with '-' is creatable via update-ref /
+	// a crafted packed-refs and listed verbatim by GetBranches.
+	if err := validateGitOperand("remote branch", rb); err != nil {
+		return err
+	}
+	if err := validateGitOperand("branch name", local); err != nil {
+		return err
+	}
 
 	checkout, repoPath, err := f.gitFocusRoots()
 	if err != nil {
@@ -1116,6 +1179,15 @@ func (f *FrontendAPI) DeleteRemoteBranch(name, remote string) (string, error) {
 	if remoteName == "" {
 		remoteName = "origin"
 	}
+	// Option-injection guards (review [33]): the remote is the first
+	// positional operand of `git push`; the branch name is the --delete
+	// value.
+	if err := validateGitOperand("remote name", remoteName); err != nil {
+		return "", err
+	}
+	if err := validateGitOperand("branch name", branchName); err != nil {
+		return "", err
+	}
 
 	return f.runSerializedRemoteOp(repoPath, "push", remoteName, "--delete", branchName)
 }
@@ -1146,6 +1218,11 @@ func (f *FrontendAPI) CreateTag(name, sha string) error {
 	if tagName == "" {
 		return errors.New("tag name must not be empty")
 	}
+	// Option-injection guard (review [33]): the tag name is a positional
+	// operand of `git tag`.
+	if err := validateGitOperand("tag name", tagName); err != nil {
+		return err
+	}
 	tagSha := strings.TrimSpace(sha)
 	if tagSha == "" {
 		return errors.New("sha must not be empty")
@@ -1175,6 +1252,11 @@ func (f *FrontendAPI) DeleteTag(name string) error {
 	tagName := strings.TrimSpace(name)
 	if tagName == "" {
 		return errors.New("tag name must not be empty")
+	}
+	// Option-injection guard (review [33]): the tag name is a positional
+	// operand of `git tag -d`.
+	if err := validateGitOperand("tag name", tagName); err != nil {
+		return err
 	}
 
 	repoPath, err := f.resolveGitRepoRoot()
@@ -1213,6 +1295,16 @@ func (f *FrontendAPI) PushTag(name, remote string) (string, error) {
 	if remoteName == "" {
 		remoteName = "origin"
 	}
+	// Option-injection guard (review [53]): the remote is the first
+	// positional operand and this call bypasses runRemoteOp's flag
+	// allow-list, so a remote named "--prune"/"--delete"/"--force" would
+	// be parsed as a push option (remote data loss).
+	if err := validateGitOperand("remote name", remoteName); err != nil {
+		return "", err
+	}
+	if err := validateGitOperand("tag name", tagName); err != nil {
+		return "", err
+	}
 
 	return f.runSerializedRemoteOp(repoPath, "push", remoteName, "refs/tags/"+tagName)
 }
@@ -1239,6 +1331,14 @@ func (f *FrontendAPI) DeleteRemoteTag(name, remote string) (string, error) {
 	remoteName := strings.TrimSpace(remote)
 	if remoteName == "" {
 		remoteName = "origin"
+	}
+	// Same option-injection guard as PushTag (review [54]): the bare
+	// remote operand bypasses runRemoteOp's flag allow-list.
+	if err := validateGitOperand("remote name", remoteName); err != nil {
+		return "", err
+	}
+	if err := validateGitOperand("tag name", tagName); err != nil {
+		return "", err
 	}
 
 	return f.runSerializedRemoteOp(repoPath, "push", remoteName, ":refs/tags/"+tagName)
@@ -1468,12 +1568,24 @@ func (f *FrontendAPI) runRemoteOp(op, remote string, flags []string) (string, er
 	// through to the bare push, which is what git does without a remote.
 	if op == "push" && strings.TrimSpace(remote) == "" {
 		if branchName, berr := f.currentBranchName(repoPath); berr == nil && branchName != "" && branchName != "HEAD" {
+			// Same option-injection guard as PushBranch (review [33]):
+			// the name comes straight from rev-parse and becomes a
+			// positional refspec.
+			if verr := validateGitOperand("branch name", branchName); verr != nil {
+				return "", verr
+			}
 			return f.runSerializedRemoteOp(repoPath, f.pushArgs(repoPath, branchName, flags)...)
 		}
 	}
 
 	args := []string{op}
 	if r := strings.TrimSpace(remote); r != "" {
+		// Option-injection guard (review [33]): the remote is the first
+		// positional operand; a remote named "--all"/"--force" (creatable
+		// in .git/config) would be parsed as a fetch/push option.
+		if err := validateGitOperand("remote name", r); err != nil {
+			return "", err
+		}
 		args = append(args, r)
 	}
 	args = append(args, flags...)
@@ -1497,6 +1609,25 @@ var validShaRe = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
 func validateCommitSha(s string) error {
 	if !validShaRe.MatchString(s) {
 		return fmt.Errorf("invalid commit SHA %q: must be 7-40 hex characters", s)
+	}
+	return nil
+}
+
+// validateGitOperand rejects a repository- or RPC-controlled git operand
+// (branch/ref/remote/tag name) that git could parse as an OPTION instead of
+// a value: git consumes every leading-dash argument up to "--", and such
+// operands are real — `git update-ref refs/heads/--mirror` (or a crafted
+// packed-refs) creates them, `git check-ref-format` accepts them, and
+// GetBranches lists them verbatim into the pickers that feed these RPCs
+// (review [26]/[33]/[53]/[54]/[105]). An unguarded operand turns an
+// ordinary panel action into e.g. `git checkout -f` (discards uncommitted
+// work) or `git push --mirror` (deletes remote refs). Every RPC that hands
+// such a name to git as a positional validates it here first; the shell
+// layer passes each name as a single argv element (no interpolation), so a
+// leading dash is the one remaining injection channel.
+func validateGitOperand(kind, name string) error {
+	if strings.HasPrefix(name, "-") {
+		return fmt.Errorf("invalid %s %q: must not start with '-'", kind, name)
 	}
 	return nil
 }
@@ -1861,6 +1992,24 @@ func (f *FrontendAPI) DiscardChanges(path string) error {
 		return nil
 	}
 
+	// A staged NEW file (porcelain "A" in the index column — "A ", "AM",
+	// "AD") also has no committed counterpart to restore: routing it
+	// through the tracked branch below would un-stage it with reset and
+	// then fail `git checkout --` with "pathspec did not match", leaving
+	// the file on disk and the confirmed discard silently denied (review
+	// [70]). Un-stage, then remove from the work tree — mirroring the
+	// untracked branch above.
+	if len(status) >= 2 && status[0] == 'A' {
+		if _, err := f.runGitCmd(repoPath, "reset", "HEAD", "--", relPath); err != nil {
+			return err
+		}
+		if _, err := f.runGitCmd(repoPath, "clean", "-f", "--", relPath); err != nil {
+			return err
+		}
+		f.emitGitStatusChanged(repoPath)
+		return nil
+	}
+
 	// Tracked files: drop any staged version, then restore the worktree
 	// from HEAD.
 	if _, err := f.runGitCmd(repoPath, "reset", "HEAD", "--", relPath); err != nil {
@@ -1893,6 +2042,23 @@ func (f *FrontendAPI) AppendToGitignore(pattern string) error {
 
 	gitignorePath := filepath.Join(repoPath, ".gitignore")
 
+	// A symlinked .gitignore is refused outright (review [4]): the file is
+	// commonly a git-tracked symlink in repos from untrusted sources, and
+	// both this read and the append's rewrite would resolve through it to
+	// any path the process can write — an out-of-workspace modification
+	// with attacker-chosen appended lines. safeio.ReadFile already refuses
+	// non-regular targets (a planted FIFO would hang both this read and
+	// the write-open forever) but still follows a symlink to a regular
+	// file, hence the explicit Lstat refusal — which is also the first-line
+	// guard for the write below: safeio.WriteFile's open is no-follow on
+	// unix; on Windows the safeio parity note applies (the final symlink is
+	// still resolved there — tempered by Windows requiring elevated/dev-mode
+	// rights to create symlinks), so the Lstat above carries the refusal on
+	// both platforms.
+	if info, lerr := os.Lstat(gitignorePath); lerr == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing to append to .gitignore: %s is a symlink", gitignorePath)
+	}
+
 	// Read existing content to detect duplicates; a missing file is
 	// expected and treated as empty. The read goes through safeio so a
 	// non-regular .gitignore (a planted FIFO would block both this read and
@@ -1914,7 +2080,7 @@ func (f *FrontendAPI) AppendToGitignore(pattern string) error {
 	}
 	content += p + "\n"
 
-	if err := os.WriteFile(gitignorePath, []byte(content), 0o644); err != nil {
+	if err := safeio.WriteFile(gitignorePath, []byte(content), 0o644); err != nil {
 		return fmt.Errorf("write .gitignore: %w", err)
 	}
 
@@ -1946,6 +2112,11 @@ func (f *FrontendAPI) Merge(branch string) error {
 	if branchName == "" {
 		return errors.New("branch name must not be empty")
 	}
+	// Option-injection guard (review [33]): a branch named "--abort" would
+	// discard in-progress conflict resolutions instead of merging.
+	if err := validateGitOperand("branch name", branchName); err != nil {
+		return err
+	}
 
 	repoPath, err := f.resolveGitRepoRoot()
 	if err != nil {
@@ -1968,6 +2139,11 @@ func (f *FrontendAPI) Rebase(branch string) error {
 	branchName := strings.TrimSpace(branch)
 	if branchName == "" {
 		return errors.New("branch name must not be empty")
+	}
+	// Option-injection guard (review [33]): a branch named "--skip" or
+	// "--abort" would drop/abort an in-progress rebase instead.
+	if err := validateGitOperand("branch name", branchName); err != nil {
+		return err
 	}
 
 	repoPath, err := f.resolveGitRepoRoot()

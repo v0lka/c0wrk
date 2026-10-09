@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -16,7 +17,22 @@ import (
 
 	"github.com/v0lka/c0wrk/core/vectorindex/lexical"
 	"github.com/v0lka/sp4rk/pathutil"
+	"github.com/v0lka/sp4rk/safeio"
 )
+
+// ensureRealDir creates dir along with any missing parents, producing only
+// REAL directories: a dangling link, a non-directory component, or a link
+// swapped into a component being created fails closed instead of being
+// followed (including the final one). The vector-index storage root
+// (~/.c0wrk/projects/<id>/vector_index and its branches/, lexical/ and
+// embedding_cache/ subtrees) is user-dir owned and its paths are
+// deterministic, so os.MkdirAll's symlink-following Stat would let a link
+// planted there redirect the whole index — the chromem DB, the bleve lexical
+// index, the embedding cache and the file-hash sidecar — outside ~/.c0wrk;
+// a pre-existing operator-symlinked tree resolves as intent.
+func ensureRealDir(dir string, perm fs.FileMode) error {
+	return safeio.MkdirAllReal(dir, perm)
+}
 
 // newPersistentDB opens a project's persistent chromem DB. It is a package
 // variable — not a direct chromem.NewPersistentDB call — purely as a test
@@ -530,7 +546,7 @@ func (s *Service) SetProject(projectID, fullPath string, embeddingCachePaths ...
 	// accessors never see a nil current.
 	ps := &projectState{projectID: projectID, projectPath: fullPath}
 	if fullPath != "" {
-		if err := os.MkdirAll(fullPath, 0o750); err != nil {
+		if err := ensureRealDir(fullPath, 0o750); err != nil {
 			s.current = &projectState{}
 			return fmt.Errorf("creating project directory %s: %w", fullPath, err)
 		}
@@ -1201,15 +1217,27 @@ func (s *Service) GetCollection() *chromem.Collection {
 func (s *Service) GetLexical() lexical.Index {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return s.currentLexicalLocked()
+}
+
+// currentLexicalLocked returns the live lexical index without acquiring
+// s.mu — for callers that already hold the read or the write lock.
+func (s *Service) currentLexicalLocked() lexical.Index {
+	if s.current == nil {
+		return nil
+	}
 	return s.current.lexical
 }
 
 // LexicalCount returns the number of documents in the lexical index, or
-// 0 if no lexical index is currently open.
+// 0 if no lexical index is currently open. The read lock is held across the
+// Count call: bleveIndex has no internal synchronization and its Close (under
+// the write lock) nils the index, so the captured pointer must not outlive
+// the lock that serializes the close.
 func (s *Service) LexicalCount() (uint64, error) {
 	s.mu.RLock()
+	defer s.mu.RUnlock()
 	lex := s.current.lexical
-	s.mu.RUnlock()
 	if lex == nil {
 		return 0, nil
 	}

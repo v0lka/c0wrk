@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/v0lka/c0wrk/internal/sysproc"
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // ProgressCallback is called during tool installation to report progress
@@ -122,8 +123,12 @@ func (m *Manager) EnsureCriticalTools(ctx context.Context, opts EnsureOptions) (
 	// has a valid path to stat. Without this, on first run Statfs would
 	// receive ENOENT for ~/.c0wrk/tools/ and silently skip the check.
 	// The parent ~/.c0wrk/ exists by now (created during Phase 1 logger init).
+	// The roots must be REAL directories: a dangling or swapped-in symlink
+	// at the fixed .cache, python or bin path is refused instead of followed,
+	// so archive downloads, extraction and venv writes stay inside ~/.c0wrk
+	// (a pre-existing operator-symlinked tree resolves as intent).
 	for _, dir := range []string{m.BinDir, cacheDir, m.PythonDir} {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := safeio.MkdirAllReal(dir, 0o755); err != nil {
 			return nil, fmt.Errorf("creating directory %s: %w", dir, err)
 		}
 	}

@@ -3,6 +3,7 @@ import { persist } from 'zustand/middleware'
 import type { HunkDiffInfo } from '@/types/models'
 import { RESEARCH_TAB_PATH } from '@/stores/researchStore'
 import { PAPER_TAB_PREFIX } from '@/stores/paperStore'
+import { getUiZoomFactor } from '@/stores/uiScaleStore'
 
 // --- State types ---
 
@@ -87,9 +88,16 @@ interface FileViewerActions {
 const VIEWER_MIN = 250
 const VIEWER_MAX = 900
 
-function getDefaultViewerWidth(): number {
+/**
+ * Default viewer width: 2/5 of the screen, clamped to [VIEWER_MIN, VIEWER_MAX].
+ * Zoom-safe: window.innerWidth is VISUAL px (layout × zoom under the UI Scale),
+ * while the width feeds a LAYOUT-px style — divide by the live zoom factor so the
+ * default is correct at any scale (and identical to the raw value at 100 %).
+ */
+export function getDefaultViewerWidth(): number {
   const screenWidth = typeof window !== 'undefined' ? window.innerWidth : 1440
-  return Math.max(VIEWER_MIN, Math.min(VIEWER_MAX, Math.round(screenWidth * 2 / 5)))
+  const layoutWidth = screenWidth / getUiZoomFactor()
+  return Math.max(VIEWER_MIN, Math.min(VIEWER_MAX, Math.round((layoutWidth * 2) / 5)))
 }
 
 // --- Store ---

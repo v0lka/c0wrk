@@ -28,6 +28,8 @@ func TestStartSkillsWatchers_SkipsMissingDirs(t *testing.T) {
 	f := &FrontendAPI{
 		emitEvent: func(string, ...any) {},
 	}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	f.startSkillsWatchers([]string{"/nonexistent/skills/dir"})
 	if len(f.skillWatchers) != 0 {
 		t.Errorf("expected 0 watchers for non-existent dir, got %d", len(f.skillWatchers))
@@ -52,6 +54,8 @@ func TestStartSkillsWatchers_InvalidatesCacheOnChange(t *testing.T) {
 			}
 		},
 	}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	t.Cleanup(f.closeSkillsWatchers)
 
 	f.startSkillsWatchers([]string{skillDir})
@@ -114,6 +118,8 @@ func TestCloseSkillsWatchers_Idempotent(t *testing.T) {
 	f := &FrontendAPI{
 		emitEvent: func(string, ...any) {},
 	}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	f.startSkillsWatchers([]string{skillDir})
 	f.closeSkillsWatchers()
 	f.closeSkillsWatchers() // must not panic

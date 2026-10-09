@@ -616,10 +616,10 @@ describe('useBackgroundSessionWatcher', () => {
     expect(handleToolConfirmEventMock).not.toHaveBeenCalled()
 
     // Valid payload → handler invoked AND both cues sent.
-    fireSessionEvent('bg-1', 'tool_confirm', { confirm_id: 'c1', tool: 'bash' })
-    expect(handleToolConfirmEventMock).toHaveBeenCalledWith('bg-1', { confirm_id: 'c1', tool: 'bash' })
+    fireSessionEvent('bg-1', 'tool_confirm', { confirm_id: 'c1', tool: 'bash', args: '{}' })
+    expect(handleToolConfirmEventMock).toHaveBeenCalledWith('bg-1', { confirm_id: 'c1', tool: 'bash', args: '{}' })
     expect(playSoundMock).toHaveBeenCalledWith('attention')
-    expect(notifySessionCueMock).toHaveBeenCalledWith('tool_confirm', { confirm_id: 'c1', tool: 'bash' }, { sessionId: 'bg-1' })
+    expect(notifySessionCueMock).toHaveBeenCalledWith('tool_confirm', { confirm_id: 'c1', tool: 'bash', args: '{}' }, { sessionId: 'bg-1' })
   })
 
   // --- Notification parity: a background session raises the same system

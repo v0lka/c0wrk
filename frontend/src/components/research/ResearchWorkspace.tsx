@@ -122,9 +122,9 @@ export function ResearchWorkspace() {
         <FlaskConical className="size-3.5 shrink-0 text-success" />
         <span
           className="truncate text-xs font-medium"
-          title={project?.brief.title ?? 'Research'}
+          title={project?.brief?.title ?? 'Research'}
         >
-          {project?.brief.title ?? 'Research'}
+          {project?.brief?.title ?? 'Research'}
         </span>
         <label className="ml-auto flex shrink-0 cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
           <input

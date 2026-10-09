@@ -273,9 +273,26 @@ func (t *ReadFileDocTool) getOrConvert(ctx context.Context, absPath string) (str
 
 	tempDir := sdktools.TempDirFrom(ctx)
 	if tempDir != "" {
-		cacheFile := filepath.Join(tempDir, docConversionSubdir, cacheKey+".md")
-		if cached, rErr := safeio.ReadFile(cacheFile); rErr == nil {
-			return string(cached), nil
+		if cacheDir, ok := conversionCacheDir(tempDir); ok {
+			cacheFile := filepath.Join(cacheDir, cacheKey+".md")
+			// A symlink planted at the deterministic cache-entry name must not
+			// be followed (the read below would serve the link target's
+			// bytes): treat it as a cache miss instead.
+			if fi, lErr := os.Lstat(cacheFile); lErr != nil || fi.Mode()&os.ModeSymlink == 0 {
+				// Read the entry back with the SAME cap the converter enforces
+				// on writes (markitdown.MaxConversionOutputBytes): a conversion
+				// result is never larger than that cap by construction, so
+				// every legitimately written entry is readable. The safeio
+				// default cap (10 MiB) would refuse entries between the two
+				// limits and silently disable the cache exactly for the large
+				// documents it exists for. Anything larger than the converter
+				// cap can only be a planted or corrupt entry: ReadFileLimited
+				// refuses it and this miss falls through to a fresh conversion
+				// that overwrites it.
+				if cached, rErr := safeio.ReadFileLimited(cacheFile, markitdown.MaxConversionOutputBytes); rErr == nil {
+					return string(cached), nil
+				}
+			}
 		}
 	}
 
@@ -292,9 +309,17 @@ func (t *ReadFileDocTool) getOrConvert(ctx context.Context, absPath string) (str
 	// Persist to the conversion cache so paginated reads don't re-convert.
 	// The write is atomic (temp file + rename) so concurrent readers of the
 	// same newly-converted document cannot observe a half-written cache entry.
+	// The cache directory is verified to be a REAL directory first: both
+	// MkdirAll and the rename would follow a symlink planted at the fixed,
+	// prompt-disclosed "<session-temp>/conversions" path and materialize the
+	// cache outside the session tree, so a non-real directory disables the
+	// cache entirely (conversion still runs; only persistence is skipped).
 	if tempDir != "" {
-		cacheDir := filepath.Join(tempDir, docConversionSubdir)
-		if mkErr := os.MkdirAll(cacheDir, 0o755); mkErr != nil {
+		cacheDir, ok := conversionCacheDir(tempDir)
+		if !ok {
+			t.log.Warn("conversion cache dir is not a real directory; skipping cache write",
+				"dir", filepath.Join(tempDir, docConversionSubdir), "path", absPath)
+		} else if mkErr := os.MkdirAll(cacheDir, 0o755); mkErr != nil {
 			t.log.Warn("failed to create conversion cache dir",
 				"path", absPath, "err", mkErr)
 		} else {
@@ -307,6 +332,27 @@ func (t *ReadFileDocTool) getOrConvert(ctx context.Context, absPath string) (str
 	}
 
 	return markdown, nil
+}
+
+// conversionCacheDir returns the document-conversion cache directory under
+// tempDir, provided the existing entry there is a real directory. A symlink
+// (or non-directory) planted at the fixed "<tempDir>/conversions" path would
+// redirect every cache write outside the session tree and let a planted entry
+// spoof later reads, so such an entry is refused: ok=false disables the cache
+// for this call. A missing directory is acceptable — the caller creates it.
+func conversionCacheDir(tempDir string) (dir string, ok bool) {
+	cacheDir := filepath.Join(tempDir, docConversionSubdir)
+	fi, err := os.Lstat(cacheDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return cacheDir, true
+		}
+		return "", false
+	}
+	if fi.Mode()&os.ModeSymlink != 0 || !fi.IsDir() {
+		return "", false
+	}
+	return cacheDir, true
 }
 
 // docCacheKey computes a deterministic cache key from the absolute file path,

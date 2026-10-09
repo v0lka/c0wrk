@@ -22,6 +22,7 @@ vi.mock('@/lib/logger', () => ({
 }))
 
 import { useLLMConfig, type ProviderConfig } from './useLLMConfig'
+import { useLLMConfigSave } from './useLLMConfigSave'
 import { useProxyDraftStore } from '@/stores/proxyDraftStore'
 
 let container: HTMLDivElement
@@ -344,6 +345,57 @@ describe('useLLMConfig structural mutations persist immediately (no unmount drop
     act(() => localRoot.unmount())
     await act(async () => { await vi.advanceTimersByTimeAsync(300) })
 
+    expect(mocks.updateLLMConfig).not.toHaveBeenCalled()
+    localContainer.remove()
+  })
+})
+
+// --- Debounced-save flush on unmount ---
+describe('useLLMConfigSave debounced save flush', () => {
+  let saveResult!: ReturnType<typeof useLLMConfigSave>
+  function SaveHarness() {
+    saveResult = useLLMConfigSave()
+    return null
+  }
+  function renderSaveHarness(): { localRoot: Root; localContainer: HTMLDivElement } {
+    const localContainer = document.createElement('div')
+    document.body.appendChild(localContainer)
+    const localRoot = createRoot(localContainer)
+    act(() => localRoot.render(<SaveHarness />))
+    return { localRoot, localContainer }
+  }
+  const anthropicOnly = (): Record<string, ProviderConfig> => ({
+    anthropic: { api_key: 'sk-secret', base_url: '', models: ['claude-3-opus'], tls_fingerprint: '' },
+  })
+
+  it('flushes a pending debounced save on unmount instead of discarding it', async () => {
+    const { localRoot, localContainer } = renderSaveHarness()
+    act(() => saveResult.debouncedSave('anthropic/claude-3-opus', anthropicOnly()))
+    // Close the dialog BEFORE the 300 ms debounce window elapses.
+    act(() => localRoot.unmount())
+    // The unmount flush must carry the queued snapshot by itself.
+    expect(mocks.updateLLMConfig).toHaveBeenCalledTimes(1)
+    expect(mocks.updateLLMConfig).toHaveBeenCalledWith({
+      default_model: 'anthropic/claude-3-opus',
+      anthropic: { api_key: 'sk-secret', models: ['claude-3-opus'] },
+      openai_compatible: {},
+      anthropic_compatible: {},
+    })
+    // The abandoned timer must not produce a duplicate save afterwards.
+    await act(async () => { await vi.advanceTimersByTimeAsync(300) })
+    expect(mocks.updateLLMConfig).toHaveBeenCalledTimes(1)
+    localContainer.remove()
+  })
+
+  it('cancelDebouncedSave still discards the pending snapshot (no flush on unmount)', async () => {
+    const { localRoot, localContainer } = renderSaveHarness()
+    act(() => saveResult.debouncedSave('anthropic/claude-3-opus', anthropicOnly()))
+    // Structural-change callers cancel first so a stale snapshot cannot
+    // land after (or instead of) their own save — that discard semantics
+    // must survive the unmount flush.
+    act(() => saveResult.cancelDebouncedSave())
+    act(() => localRoot.unmount())
+    await act(async () => { await vi.advanceTimersByTimeAsync(300) })
     expect(mocks.updateLLMConfig).not.toHaveBeenCalled()
     localContainer.remove()
   })

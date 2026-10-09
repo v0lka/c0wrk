@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -331,6 +332,89 @@ func TestApplyDefaults_MaxParallelSubagents(t *testing.T) {
 				t.Fatalf("ApplyDefaults with max_parallel_subagents=%d = %d, want %d", tc.value, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestApplyDefaults_ToolCallTimeoutExemptToolsNotMaterialized pins the
+// anti-freeze contract on Timeouts.ToolCallTimeoutExemptTools: an absent knob
+// must stay nil after ApplyDefaults. The whole config struct is what gets
+// serialized on save, so materializing sp4rk's built-in exempt set here would
+// write today's default into config.yaml on the operator's first save and
+// silently freeze it — future sp4rk releases that add a tool to the exempt
+// set would never reach a user who ever saved settings, while the threaded
+// nil lets sp4rk resolve its CURRENT built-in set at execution time. An
+// explicit list (including the explicit "no exemptions" empty list) must
+// survive verbatim.
+func TestApplyDefaults_ToolCallTimeoutExemptToolsNotMaterialized(t *testing.T) {
+	cfg := &Config{}
+	ApplyDefaults(cfg)
+	if cfg.Timeouts.ToolCallTimeoutExemptTools != nil {
+		t.Fatalf("ApplyDefaults materialized the exempt set (%v); the absent knob must stay nil so a config save never freezes today's default into config.yaml",
+			cfg.Timeouts.ToolCallTimeoutExemptTools)
+	}
+
+	explicit := YAMLNilAwareList{"my_slow_mcp_tool", "ask_user"}
+	cfg.Timeouts.ToolCallTimeoutExemptTools = explicit
+	ApplyDefaults(cfg)
+	if !slices.Equal([]string(cfg.Timeouts.ToolCallTimeoutExemptTools), explicit) {
+		t.Fatalf("explicit exempt list = %v, want it preserved verbatim", cfg.Timeouts.ToolCallTimeoutExemptTools)
+	}
+
+	cfg.Timeouts.ToolCallTimeoutExemptTools = YAMLNilAwareList{}
+	ApplyDefaults(cfg)
+	if cfg.Timeouts.ToolCallTimeoutExemptTools == nil || len(cfg.Timeouts.ToolCallTimeoutExemptTools) != 0 {
+		t.Fatalf("explicit empty exempt list = %#v, want a non-nil empty slice (\"no exemptions\")", cfg.Timeouts.ToolCallTimeoutExemptTools)
+	}
+
+	// Serialization boundary — the freeze shape this contract guards against:
+	// Save marshals the whole struct, so the knob must survive the Save→Load
+	// round-trip with its nil-vs-empty distinction intact (nil stays nil and
+	// is never persisted as an explicit list; an explicit empty list stays a
+	// non-nil empty slice). Load re-runs ApplyDefaults, so this also pins the
+	// end-to-end guarantee that a reload never materializes the default.
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "config-nil.yaml")
+	cfg = &Config{}
+	cfg.LLM.DefaultModel = "claude-3-5-sonnet"
+	cfg.LLM.Anthropic.APIKey = "test-key-123"
+	cfg.LLM.Anthropic.Models = []string{"claude-3-5-sonnet"}
+	if err := Save(cfg, path); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if loaded.Timeouts.ToolCallTimeoutExemptTools != nil {
+		t.Fatalf("nil knob came back from Save→Load as %v; the absent knob must never be persisted as an explicit list", loaded.Timeouts.ToolCallTimeoutExemptTools)
+	}
+
+	cfg.Timeouts.ToolCallTimeoutExemptTools = YAMLNilAwareList{}
+	path = filepath.Join(tmpDir, "config-empty.yaml")
+	if err := Save(cfg, path); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+	loaded, err = Load(path)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if loaded.Timeouts.ToolCallTimeoutExemptTools == nil || len(loaded.Timeouts.ToolCallTimeoutExemptTools) != 0 {
+		t.Fatalf("explicit empty exempt list came back from Save→Load as %#v, want a non-nil empty slice", loaded.Timeouts.ToolCallTimeoutExemptTools)
+	}
+
+	// Explicit non-empty list: must survive the round-trip verbatim (no
+	// sorting, dedup, or dropping on the serialize/deserialize path).
+	cfg.Timeouts.ToolCallTimeoutExemptTools = YAMLNilAwareList{"my_slow_mcp_tool", "ask_user"}
+	path = filepath.Join(tmpDir, "config-explicit.yaml")
+	if err := Save(cfg, path); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+	loaded, err = Load(path)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if !slices.Equal([]string(loaded.Timeouts.ToolCallTimeoutExemptTools), []string{"my_slow_mcp_tool", "ask_user"}) {
+		t.Fatalf("explicit exempt list came back from Save→Load as %#v, want [my_slow_mcp_tool ask_user] verbatim", loaded.Timeouts.ToolCallTimeoutExemptTools)
 	}
 }
 

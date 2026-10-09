@@ -23,6 +23,11 @@ import type {
     ModelProfilesResponse,
     ModelProfilesBuiltinTool,
     ModelProfilesToolGroup,
+    AgentDescriptor,
+    SkillDescriptor,
+    ToolInfo,
+    GPUDeviceResponse,
+    VectorStoreEntry,
 } from './models'
 
 export function isObj(v: unknown): v is Record<string, unknown> {
@@ -50,6 +55,11 @@ export function isArrayOf<T>(v: unknown, guard: (item: unknown) => item is T): v
 }
 
 export function isSessionInfo(v: unknown): v is SessionInfo {
+    // The declared-string identity fields are type-checked, not just
+    // key-presence-checked: consumers call string methods on them
+    // (sessionStore.trim(), SessionSelector.toLowerCase()) and render them as
+    // React children, so a present non-string must fail the guard instead of
+    // throwing during the sidebar render.
     // unfinished_task_status is optional for backward compatibility: payloads
     // from older backends (and non-list readers) omit it entirely; when
     // present it must be a string status ("failed"|"in_progress"|"paused"|"").
@@ -57,6 +67,9 @@ export function isSessionInfo(v: unknown): v is SessionInfo {
     // backends omit it); when present it must carry a typed kind string.
     return isObj(v)
         && has(v, 'id', 'project_id', 'name')
+        && typeof v.id === 'string'
+        && typeof v.project_id === 'string'
+        && typeof v.name === 'string'
         && (!('unfinished_task_status' in v) || typeof v.unfinished_task_status === 'string')
         && (!('workspace_binding' in v)
             || v.workspace_binding === null
@@ -66,7 +79,14 @@ export function isSessionInfo(v: unknown): v is SessionInfo {
 }
 
 export function isProjectInfo(v: unknown): v is ProjectInfo {
-    return isObj(v) && has(v, 'id', 'name', 'workspace_path')
+    // `name` is rendered as a React child (ProjectSelector) and trimmed by the
+    // app-root selectTitleScope selector; `id` drives the active-project
+    // lookup — a present non-string must fail here, not in the shell render.
+    return isObj(v)
+        && has(v, 'id', 'name', 'workspace_path')
+        && typeof v.id === 'string'
+        && typeof v.name === 'string'
+        && typeof v.workspace_path === 'string'
 }
 
 export function isProjectSwitchState(v: unknown): v is ProjectSwitchState {
@@ -74,19 +94,94 @@ export function isProjectSwitchState(v: unknown): v is ProjectSwitchState {
 }
 
 export function isChatMessage(v: unknown): v is ChatMessage {
-    return isObj(v) && has(v, 'session_id', 'role', 'content')
+    // `content` is a declared string that the history reconstruction calls
+    // .startsWith/.replace on and renders as a React child — key presence
+    // alone lets a present non-string reach those call sites.
+    return isObj(v)
+        && has(v, 'session_id', 'role', 'content')
+        && typeof v.session_id === 'string'
+        && typeof v.role === 'string'
+        && typeof v.content === 'string'
 }
 
 export function isSessionBookmark(v: unknown): v is SessionBookmark {
-    return isObj(v) && has(v, 'id', 'session_id', 'event_key', 'title', 'created_at')
+    // `title` is rendered as a React child (BookmarksPanel); the rest are
+    // identity/timestamp strings.
+    return isObj(v)
+        && has(v, 'id', 'session_id', 'event_key', 'title', 'created_at')
+        && typeof v.id === 'string'
+        && typeof v.session_id === 'string'
+        && typeof v.event_key === 'string'
+        && typeof v.title === 'string'
+        && typeof v.created_at === 'string'
 }
 
 export function isTokenInfo(v: unknown): v is TokenInfo {
-    return isObj(v) && has(v, 'total_input_tokens', 'total_output_tokens')
+    // `model`/`family` are declared strings the status bar renders as React
+    // children; the counts are read as numbers.
+    return isObj(v)
+        && has(v, 'total_input_tokens', 'total_output_tokens', 'model', 'family')
+        && typeof v.total_input_tokens === 'number'
+        && typeof v.total_output_tokens === 'number'
+        && typeof v.model === 'string'
+        && typeof v.family === 'string'
 }
 
 export function isFileEntry(v: unknown): v is FileEntry {
-    return isObj(v) && has(v, 'name', 'path', 'is_dir')
+    // `name`/`path` are declared strings the file tree lower-cases,
+    // locale-compares and renders as React children; `is_dir` selects the
+    // icon and expansion behavior.
+    return isObj(v)
+        && has(v, 'name', 'path', 'is_dir')
+        && typeof v.name === 'string'
+        && typeof v.path === 'string'
+        && typeof v.is_dir === 'boolean'
+}
+
+/** Element guard for ListAgents (`/`-mention agent catalog). Both fields are
+ *  rendered/collected by lib/refCatalogs (`new Set(agents.map(a => a.name))`). */
+export function isAgentDescriptor(v: unknown): v is AgentDescriptor {
+    return isObj(v) && typeof v.name === 'string' && typeof v.description === 'string'
+}
+
+/** Element guard for ListSkills (`/`-mention skill catalog). Same consumer
+ *  shape as isAgentDescriptor. */
+export function isSkillDescriptor(v: unknown): v is SkillDescriptor {
+    return isObj(v) && typeof v.name === 'string' && typeof v.description === 'string'
+}
+
+/** Element guard for GetToolList (Settings → Tools). Every field is rendered
+ *  directly (name as key + child, group/policy as badges). */
+export function isToolInfo(v: unknown): v is ToolInfo {
+    return isObj(v)
+        && typeof v.name === 'string'
+        && typeof v.description === 'string'
+        && typeof v.source === 'string'
+        && typeof v.group === 'string'
+        && typeof v.policy === 'string'
+}
+
+/** Element guard for ListVectorIndexGPUs (Settings device picker): rendered
+ *  as `#{index} — {name}`. */
+export function isGPUDevice(v: unknown): v is GPUDeviceResponse {
+    return isObj(v) && typeof v.index === 'number' && typeof v.name === 'string'
+}
+
+/** Element guard for SearchVectorStore results: the results list calls string
+ *  methods on `content`/`file_path` and renders every required field. */
+export function isVectorStoreEntry(v: unknown): v is VectorStoreEntry {
+    return isObj(v)
+        && typeof v.file_path === 'string'
+        && typeof v.file_name === 'string'
+        && typeof v.content === 'string'
+        && typeof v.language === 'string'
+        && typeof v.score === 'number'
+        && typeof v.start_line === 'number'
+        && typeof v.end_line === 'number'
+        && (v.vector_score === undefined || typeof v.vector_score === 'number')
+        && (v.lexical_score === undefined || typeof v.lexical_score === 'number')
+        && (v.vector_rank === undefined || typeof v.vector_rank === 'number')
+        && (v.lexical_rank === undefined || typeof v.lexical_rank === 'number')
 }
 
 export function isConfigResponse(v: unknown): v is ConfigResponse {
@@ -94,7 +189,14 @@ export function isConfigResponse(v: unknown): v is ConfigResponse {
 }
 
 export function isMCPServerStatus(v: unknown): v is MCPServerStatus {
+    // `name` is rendered as a React child (MCPServerCard) and `connected`
+    // drives the status indicator — type-check both instead of trusting key
+    // presence. (The remaining fields stay presence-only: `tools` is a Go
+    // slice the backend legitimately marshals as null when empty, and the
+    // card tolerates that today.)
     return isObj(v) && has(v, 'name', 'connected')
+        && typeof v.name === 'string'
+        && typeof v.connected === 'boolean'
 }
 
 /** Validates one GetMCPMentionableServers entry: a name plus a normalized
@@ -136,7 +238,20 @@ export function isShellExecSettingsResponse(v: unknown): v is ShellExecSettingsR
 }
 
 export function isBlackboardState(v: unknown): v is BlackboardState {
-    return isObj(v) && has(v, 'task_id', 'session_id', 'status')
+    // All four collections are REQUIRED on the type and the panel dereferences
+    // them unguarded (Object.keys(state.step_results), .length on each array),
+    // so the guard must assert their kind — the backend builder always emits
+    // non-nil collections (make([]T, 0, …) / make(map…)), so requiring them
+    // cannot reject a conforming payload.
+    return isObj(v)
+        && has(v, 'task_id', 'session_id', 'status', 'step_results', 'facts', 'reflections', 'attachments')
+        && typeof v.task_id === 'string'
+        && typeof v.session_id === 'string'
+        && typeof v.status === 'string'
+        && isObj(v.step_results)
+        && Array.isArray(v.facts)
+        && Array.isArray(v.reflections)
+        && Array.isArray(v.attachments)
 }
 
 export function isProjectRenamed(v: unknown): v is { id: string; name: string } {

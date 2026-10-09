@@ -1080,3 +1080,82 @@ func TestCapabilityProbeNeverFailsASend(t *testing.T) {
 		t.Errorf("Notify calls = %d, want 1 — the probe must not consume the send", len(conn.notifyCalls))
 	}
 }
+
+// blockingMatchConn parks the FIRST match registration so a test can hold the
+// dial in flight — modelling a notification daemon that accepts the socket
+// but never answers.
+type blockingMatchConn struct {
+	*fakeDBusConn
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (b *blockingMatchConn) AddMatchSignal(options ...dbus.MatchOption) error {
+	b.once.Do(func() {
+		close(b.started)
+		<-b.release
+	})
+	return b.fakeDBusConn.AddMatchSignal(options...)
+}
+
+// TestTeardownDuringDialDoesNotWedgeAndDoesNotPublish pins the #134 fix: the
+// dial (and the match registration inside it) runs WITHOUT s.mu, so the
+// shutdown path's teardown must complete while a deadline-less dial is parked
+// — the old code held the mutex across the dial and wedged teardown behind
+// it (skipping the embedded-LLM stop). It also pins the companion guarantee:
+// a send whose dial raced the teardown must not publish a post-shutdown
+// connection.
+func TestTeardownDuringDialDoesNotWedgeAndDoesNotPublish(t *testing.T) {
+	st := &platformNotificationState{}
+	blk := &blockingMatchConn{
+		fakeDBusConn: &fakeDBusConn{},
+		started:      make(chan struct{}),
+		release:      make(chan struct{}),
+	}
+	origDial := dbusDialSessionBus
+	dbusDialSessionBus = func() (dbusDialer, error) { return blk, nil }
+	t.Cleanup(func() { dbusDialSessionBus = origDial })
+
+	results := &notificationResults{}
+	sendDone := make(chan error, 1)
+	go func() {
+		sendDone <- st.send(wailsRuntime.NotificationOptions{ID: "n1", Title: "t", Body: "b"},
+			results.dispatch, dbusNotificationTimeoutDefault, testLogger())
+	}()
+	<-blk.started // the dial is now parked inside the match registration
+
+	// The regression: teardown (Shutdown's cleanupNotifications) must not
+	// block behind the in-flight dial.
+	teardownDone := make(chan struct{})
+	go func() {
+		st.teardown()
+		close(teardownDone)
+	}()
+	teardownWatch := time.NewTimer(5 * time.Second)
+	defer teardownWatch.Stop()
+	select {
+	case <-teardownDone:
+	case <-teardownWatch.C:
+		t.Fatal("teardown blocked behind an in-flight dial: s.mu is held across the dial")
+	}
+
+	close(blk.release)
+	sendWatch := time.NewTimer(5 * time.Second)
+	defer sendWatch.Stop()
+	select {
+	case err := <-sendDone:
+		if err == nil {
+			t.Fatal("expected the send racing the teardown to be refused")
+		}
+	case <-sendWatch.C:
+		t.Fatal("send did not complete after the teardown-during-dial race")
+	}
+
+	st.mu.Lock()
+	published := st.conn != nil
+	st.mu.Unlock()
+	if published {
+		t.Fatal("a connection was published after the teardown: post-shutdown pump leak")
+	}
+}

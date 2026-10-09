@@ -327,6 +327,191 @@ func TestListAnthropicModels_BaseURLWithV1(t *testing.T) {
 	}
 }
 
+// TestListAnthropicModels_OversizedBody verifies the bounded read (#23): a
+// response larger than maxModelsListBodyLen is refused with an actionable
+// error instead of being buffered unbounded from a configurable endpoint.
+func TestListAnthropicModels_OversizedBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(strings.Repeat("a", maxModelsListBodyLen+1024)))
+	}))
+	defer srv.Close()
+
+	_, err := listAnthropicModels(context.Background(), srv.URL, "", nil)
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("oversized models response: err = %v, want a byte-cap error", err)
+	}
+}
+
+// TestListOpenAIModels_Success guards the bounded-client wiring (#69): a
+// normal listing still parses through the SDK with the body-capping transport
+// attached to the client.
+func TestListOpenAIModels_Success(t *testing.T) {
+	var hadAuth bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			t.Errorf("request path = %q, want /models", r.URL.Path)
+		}
+		hadAuth = r.Header.Get("Authorization") == "Bearer test-key"
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"model-b"},{"id":"model-a"}]}`))
+	}))
+	defer srv.Close()
+
+	names, err := listOpenAIModels(context.Background(), srv.URL, "test-key", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !hadAuth {
+		t.Error("Authorization header with the API key was not sent")
+	}
+	want := []string{"model-a", "model-b"}
+	if len(names) != 2 || names[0] != want[0] || names[1] != want[1] {
+		t.Errorf("names = %v, want %v", names, want)
+	}
+}
+
+// TestListOpenAIModels_OversizedBody verifies the transport-level body cap
+// (#69): the openai-go SDK buffers the /v1/models response with a bare
+// io.ReadAll and offers no maximum-body option, so the capped transport must
+// turn an oversized body into an actionable error instead of an unbounded
+// allocation from a UI-configurable endpoint.
+func TestListOpenAIModels_OversizedBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(strings.Repeat("a", maxModelsListBodyLen+1024)))
+	}))
+	defer srv.Close()
+
+	_, err := listOpenAIModels(context.Background(), srv.URL, "", nil)
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("oversized models response: err = %v, want a byte-cap error", err)
+	}
+}
+
+// TestWaitReadyInitErrSynchronizedWithRebuild is the #16 race witness: it
+// drives WaitReady's locked read of initErr concurrently with the
+// RebuildRouter-style locked write, so `go test -race` (make test-stress)
+// flags any unsynchronized access. Without the lock the two goroutines read
+// and write b.initErr with no shared synchronization.
+func TestWaitReadyInitErrSynchronizedWithRebuild(t *testing.T) {
+	b := &OrchestratorBuilder{
+		logger:   slog.New(slog.DiscardHandler),
+		initDone: make(chan struct{}),
+	}
+	close(b.initDone)
+	b.mu.Lock()
+	b.initErr = errors.New("init failed")
+	b.mu.Unlock()
+
+	ctx := context.Background()
+	const iterations = 2000
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			_ = b.WaitReady(ctx)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			b.mu.Lock()
+			b.initErr = nil
+			b.mu.Unlock()
+			b.mu.Lock()
+			b.initErr = errors.New("init failed")
+			b.mu.Unlock()
+		}
+	}()
+	wg.Wait()
+}
+
+// TestBuildModelRegistryOwnershipMatchesOutcome is the #17 regression guard:
+// the per-session model registry must be registered exactly when Build hands
+// the orchestrator back — never left registered on a failed Build (it would
+// otherwise keep receiving every UpdateModelOverrides push forever), and
+// never dropped early on a successful one — and released by the
+// orchestrator's cleanup hook.
+func TestBuildModelRegistryOwnershipMatchesOutcome(t *testing.T) {
+	cfg := &BuilderConfig{
+		LLM: BuilderLLMConfig{
+			DefaultModel: "local-model",
+			ProviderConfigs: map[string]BuilderProviderConfig{
+				"openai": {ProviderType: "openai", Models: []string{"local-model"}},
+			},
+			Retry: BuilderRetryConfig{MaxRetries: 1, InitialBackoff: "1s", MaxBackoff: "10s"},
+		},
+		Security: BuilderSecurityConfig{},
+		Orchestration: BuilderOrchestrationConfig{
+			MaxDependencyContextChars: 8000,
+			MaxJudgeCacheSize:         1000,
+		},
+		Executor: BuilderExecutorConfig{
+			MaxRetries:         2,
+			OutputTokenReserve: 1024,
+			Compaction: BuilderCompactionConfig{
+				SlidingWindow: BuilderSlidingWindow{KeepFirst: 3, KeepLast: 10},
+				Thresholds:    BuilderCompactionThresholds{PredictivePercent: 80, WarningPercent: 90, EmergencyPercent: 95},
+			},
+			ToolResultBudget:  BuilderToolResultBudget{HardCapTokens: 32000, MaxFillFraction: 0.4},
+			ToolOutputPruning: BuilderToolOutputPruning{KeepLastN: 5},
+		},
+		Timeouts:      BuilderTimeoutsConfig{BashMaxTimeout: 120, WebFetchProxyTimeout: 30},
+		ToolLimits:    BuilderToolLimitsConfig{ReadDefaultLines: 100},
+		ExpandEnvVars: func(s string) string { return s },
+	}
+
+	b, err := NewOrchestratorBuilder(cfg, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("NewOrchestratorBuilder failed: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := b.waitReady(ctx); err != nil {
+			t.Errorf("waitReady = %v, want completed init", err)
+		}
+		if err := b.waitMCPReady(ctx); err != nil {
+			t.Errorf("waitMCPReady = %v, want completed init", err)
+		}
+	})
+
+	waitCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := b.WaitReady(waitCtx); err != nil {
+		t.Fatalf("WaitReady = %v, want offline init to complete", err)
+	}
+
+	orch, buildErr := b.Build(cfg, nil, slog.New(slog.DiscardHandler), "", nil, nil, nil, nil)
+	b.mu.RLock()
+	live := len(b.sessionModelRegistries)
+	b.mu.RUnlock()
+
+	if buildErr != nil {
+		// Failed Build: the registry must have been released again.
+		if live != 0 {
+			t.Fatalf("failed Build (%v) left %d live session model registries, want 0", buildErr, live)
+		}
+		return
+	}
+	if orch == nil {
+		t.Fatal("Build returned a nil orchestrator without an error")
+	}
+	if live != 1 {
+		t.Fatalf("successful Build: live session model registries = %d, want 1 (ownership must survive until cleanup)", live)
+	}
+
+	orch.Cleanup()
+	b.mu.RLock()
+	live = len(b.sessionModelRegistries)
+	b.mu.RUnlock()
+	if live != 0 {
+		t.Fatalf("after orchestrator Cleanup: live session model registries = %d, want 0", live)
+	}
+}
+
 // TestListAnthropicModels_FallbackOnError verifies that an error response is
 // returned (the caller — ListProviderModels — maps it to the built-in list).
 func TestListAnthropicModels_FallbackOnError(t *testing.T) {

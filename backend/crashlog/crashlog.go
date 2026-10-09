@@ -110,7 +110,13 @@ func Install(logDir string) (*Capture, error) {
 // side effects (fd redirection, default logger rewiring, signal handling) so
 // tests can exercise banner/marker/rotation logic inside the test process.
 func install(logDir string, redirect bool) (*Capture, error) {
-	if err := os.MkdirAll(logDir, 0o750); err != nil {
+	// MkdirAllReal: the logs directory is created as a chain of REAL
+	// directories — a dangling link, a non-directory component, or a link
+	// swapped into a created component fails capture closed for the run (the
+	// caller warns); an operator-symlinked logs dir resolves and keeps the
+	// fd 1/2 capture and the liveness marker inside the operator's chosen
+	// tree.
+	if err := safeio.MkdirAllReal(logDir, 0o750); err != nil {
 		return nil, fmt.Errorf("crashlog: creating log directory: %w", err)
 	}
 
@@ -127,7 +133,15 @@ func install(logDir string, redirect bool) (*Capture, error) {
 		slog.Warn("crashlog: failed to rotate oversized stderr log", "error", err)
 	}
 
-	file, err := safeio.OpenFile(filepath.Join(logDir, stderrLogName),
+	// OpenFileNoFollow: the fixed stderr.log path must not have the
+	// O_CREATE (and the fd 1/2 capture) redirected through a planted
+	// symlink — the post-open fstat of plain safeio.OpenFile would see the
+	// (regular) link target and pass. A symlink fails the open with ELOOP
+	// and disables capture for this run (fail closed). On Windows the
+	// safeio parity note applies — the final symlink is still resolved
+	// there — tempered by Windows requiring elevated/dev-mode rights to
+	// create symlinks.
+	file, err := safeio.OpenFileNoFollow(filepath.Join(logDir, stderrLogName),
 		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640)
 	if err != nil {
 		return nil, fmt.Errorf("crashlog: opening stderr log: %w", err)
@@ -232,7 +246,13 @@ func (c *Capture) writeMarker() error {
 	if err != nil {
 		return fmt.Errorf("crashlog: encoding marker: %w", err)
 	}
-	if werr := os.WriteFile(c.markerPath, data, 0o640); werr != nil {
+	// WriteFileAtomic: the rename REPLACES the directory entry, so a
+	// symlink planted at the fixed marker path — including a DANGLING one,
+	// which stashPreviousMarker does not stash (its os.Stat reports
+	// ErrNotExist) — is replaced itself instead of being written through
+	// (which would create the link target outside ~/.c0wrk). The random-
+	// suffix staging file also leaves no plantable fixed temp path.
+	if werr := safeio.WriteFileAtomic(c.markerPath, data, 0o640); werr != nil {
 		return fmt.Errorf("crashlog: writing marker: %w", werr)
 	}
 	return nil

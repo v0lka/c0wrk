@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -86,6 +87,11 @@ func TestMaskURL(t *testing.T) {
 		// url.URL.String percent-encodes asterisks; both forms acceptable.
 		{"http://user:pass@proxy:3128", "http://user:%2A%2A%2A@proxy:3128"},
 		{":://invalid", ":://invalid"}, // unparseable returns original
+		// Scheme-less credentials form (accepted by parseProxyURL): the
+		// password must be masked and the scheme-less shape preserved (#24).
+		{"user:secret@proxy.lan:3128", "user:%2A%2A%2A@proxy.lan:3128"},
+		{"user@proxy.lan:3128", "user@proxy.lan:3128"}, // scheme-less, no password
+		{"socks5://user:secret@proxy:1080", "socks5://user:%2A%2A%2A@proxy:1080"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.in, func(t *testing.T) {
@@ -93,6 +99,50 @@ func TestMaskURL(t *testing.T) {
 				t.Errorf("MaskURL(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestMaskURL_SchemeLessNeverReturnsSecret double-checks the #24 guarantee
+// independently of the exact rendering: a scheme-less URL with a password must
+// never come back unmasked.
+func TestMaskURL_SchemeLessNeverReturnsSecret(t *testing.T) {
+	const secret = "s3cret-juice"
+	got := MaskURL("user:" + secret + "@proxy.lan:3128")
+	if strings.Contains(got, secret) {
+		t.Fatalf("MaskURL returned the password in cleartext: %q", got)
+	}
+	if !strings.Contains(got, "%2A%2A%2A") { // url.URL.String percent-encodes the asterisks
+		t.Fatalf("MaskURL(%q) = %q, want a masked password", "user:"+secret+"@proxy.lan:3128", got)
+	}
+}
+
+// TestParseProxyURL_ErrorDoesNotLeakUserinfo verifies the #175 redaction: the
+// *url.Error returned by url.Parse embeds the full raw URL (including the
+// password), so parseProxyURL must surface only the underlying reason.
+func TestParseProxyURL_ErrorDoesNotLeakUserinfo(t *testing.T) {
+	const raw = "http://user:s3cret@proxy.lan:3128/%zz"
+	_, err := parseProxyURL(raw)
+	if err == nil {
+		t.Fatal("expected a parse error for an invalid URL escape")
+	}
+	if strings.Contains(err.Error(), "s3cret") || strings.Contains(err.Error(), "proxy.lan") {
+		t.Fatalf("parse error embeds the raw URL: %q", err)
+	}
+}
+
+// TestBuildTransport_InvalidURLDoesNotLeakCredentials verifies the #175 fix
+// end to end: the error surfaced to the builder's proxy log/return sites must
+// not carry the proxy password.
+func TestBuildTransport_InvalidURLDoesNotLeakCredentials(t *testing.T) {
+	_, err := BuildTransport(Config{
+		Enabled: true,
+		URL:     "http://user:s3cret@proxy.lan:3128/%zz",
+	}, nil)
+	if err == nil {
+		t.Fatal("expected an error for an unparseable proxy URL")
+	}
+	if strings.Contains(err.Error(), "s3cret") || strings.Contains(err.Error(), "proxy.lan") {
+		t.Fatalf("transport error leaks the proxy credentials: %q", err)
 	}
 }
 

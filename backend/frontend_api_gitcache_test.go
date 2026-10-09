@@ -23,6 +23,8 @@ import (
 // they consult the git caches.
 func newGitCacheTestAPI(ws string) *FrontendAPI {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	f.activeProjectMu.Lock()
 	f.activeProjectID = "gitcache-test-project"
 	f.activeProjectPath = ws
@@ -126,6 +128,8 @@ func TestInvalidateGitCachesOnWatcher(t *testing.T) {
 			return map[string]bool{}, nil
 		},
 	}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	// Prime both caches.
 	if _, err := f.cachedGitStatus(root); err != nil {
@@ -205,6 +209,8 @@ func TestSwitchProject_InvalidatesGitCaches(t *testing.T) {
 // cache is ever populated for a session workspace).
 func TestGitCaches_NoProjectUntouched(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	f.activeProjectMu.Lock()
 	f.activeProjectID = project.NoProjectID
 	f.activeProjectMu.Unlock()

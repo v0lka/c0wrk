@@ -22,7 +22,13 @@ import (
 // hold the manager or session locks (work directories are loaded from the
 // persistent stores).
 func (m *Manager) JudgeContext(ctx context.Context, sessionID string) context.Context {
-	session, ok := m.GetSession(sessionID)
+	// Memory-only lookup (sessionByID, not the restoring GetSession): this
+	// backs the on-demand judge evaluation, i.e. a pending-confirmation
+	// callback — the session it names is live by construction, and lazily
+	// restoring a just-deleted session here would rebuild an orchestrator and
+	// reopen log/dump handles nobody closes. A session that is not resident
+	// degrades exactly like the not-found case below.
+	session, ok := m.sessionByID(sessionID)
 	if !ok || session == nil {
 		m.log().Warn("judge context: session not found", "session_id", sessionID)
 		return ctx

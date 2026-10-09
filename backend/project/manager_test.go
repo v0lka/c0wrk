@@ -3,6 +3,7 @@ package project
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -276,5 +277,109 @@ func TestManager_GetProject(t *testing.T) {
 	}
 	if proj.ID != created.ID {
 		t.Errorf("ID mismatch: got %q, want %q", proj.ID, created.ID)
+	}
+}
+
+// ctxCaptureStore records whether the manager handed the store a context
+// carrying a deadline (#136: every Manager store call must be bounded, or a
+// contended shared SQLite pool parks the caller indefinitely).
+type ctxCaptureStore struct {
+	ProjectStore
+	hasDeadline bool
+}
+
+func (s *ctxCaptureStore) ListProjects(ctx context.Context) ([]ProjectInfo, error) {
+	_, s.hasDeadline = ctx.Deadline()
+	return nil, errors.New("captured")
+}
+
+func TestManager_StoreCallsAreDeadlineBounded(t *testing.T) {
+	store := &ctxCaptureStore{}
+	mgr := &Manager{store: store, agentDir: t.TempDir()}
+
+	_, _ = mgr.ListProjects()
+	if !store.hasDeadline {
+		t.Fatal("ListProjects handed the store a context with no deadline: a contended pool would park the RPC indefinitely")
+	}
+}
+
+// A PRE-EXISTING symlinked projects root resolves as operator intent (the
+// revised #101 contract — the macOS /var → /private/var class), so NewManager
+// succeeds and the project/session subtree writes land inside the link's REAL
+// target. A dangling link still fails NewManager closed (#101): os.MkdirAll
+// would create through it, redirecting every workspaces/logs/dumps/temp/plans
+// write outside the agent dir.
+func TestManager_NewManager_ResolvesSymlinkedProjectsDir(t *testing.T) {
+	agentDir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "resolved")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatalf("mkdir link target: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(agentDir, "projects")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	store, err := NewSQLiteProjectStore(db)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+
+	mgr := NewManager(store, agentDir, nil)
+	if mgr.initErr != nil {
+		t.Fatalf("NewManager refused an operator-symlinked projects dir: %v", mgr.initErr)
+	}
+	if _, err := mgr.ListProjects(); err != nil {
+		t.Fatalf("ListProjects must work through the resolved root: %v", err)
+	}
+	// The subtree is created lazily; CreateProject is the creator that must
+	// land inside the link's resolved target.
+	if _, err := mgr.CreateProject("P", ""); err != nil {
+		t.Fatalf("CreateProject through the resolved root: %v", err)
+	}
+
+	// The projects tree was created inside the link's resolved target.
+	entries, err := os.ReadDir(outside)
+	if err != nil {
+		t.Fatalf("read link target: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("expected the projects tree inside the symlink's resolved target")
+	}
+}
+
+// A DANGLING link at the projects root is still refused closed: there is no
+// operator target to resolve to, and creating through it would adopt a path
+// the operator left broken (#101).
+func TestManager_NewManager_RefusesDanglingProjectsDir(t *testing.T) {
+	agentDir := t.TempDir()
+	if err := os.Symlink(filepath.Join(t.TempDir(), "missing"), filepath.Join(agentDir, "projects")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	store, err := NewSQLiteProjectStore(db)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+
+	mgr := NewManager(store, agentDir, nil)
+	if mgr.initErr == nil {
+		t.Fatal("NewManager accepted a dangling projects directory")
+	}
+	// Every operation fails closed instead of creating through the link.
+	if _, err := mgr.ListProjects(); err == nil {
+		t.Fatal("ListProjects must fail closed on an unusable projects root")
+	}
+	if _, err := mgr.EnsureNoProject(); err == nil {
+		t.Fatal("EnsureNoProject must fail closed on an unusable projects root")
 	}
 }

@@ -36,6 +36,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // seedAction enumerates the per-entry seeding outcomes.
@@ -205,13 +207,14 @@ func stageAndSwap(name, target, version string, writeTree func(stagingDir string
 
 // writeMarkerAtomic stamps the pack version marker into dir via a temp file +
 // rename, so an interrupted write can never leave a truncated marker behind.
+// The staging temp is created by safeio.WriteFileAtomic under a randomized
+// name, so the write-open cannot be redirected by a FIFO or symlink planted
+// at the deterministic "<dir>/.seed-version.tmp" name the previous
+// implementation used (the rename replaces such an entry itself instead of
+// following it).
 func writeMarkerAtomic(dir, version string) error {
-	tmp := filepath.Join(dir, "."+seedVersionFile+".tmp")
-	if err := seedWriteFile(tmp, []byte(version), 0o644); err != nil {
-		return fmt.Errorf("write marker temp file: %w", err)
-	}
-	if err := os.Rename(tmp, filepath.Join(dir, seedVersionFile)); err != nil {
-		return fmt.Errorf("rename marker into place: %w", err)
+	if err := safeio.WriteFileAtomic(filepath.Join(dir, seedVersionFile), []byte(version), 0o644); err != nil {
+		return fmt.Errorf("write marker file: %w", err)
 	}
 	return nil
 }
@@ -290,6 +293,15 @@ func diskFileSet(dir string) (map[string][]byte, error) {
 			return nil
 		}
 		if strings.HasPrefix(d.Name(), ".") {
+			return nil
+		}
+		// Skip every non-regular entry before reading: fs.ReadFile would open
+		// a FIFO (or socket/device) with a plain blocking open and hang the
+		// startup seeding forever on a readerless pipe. A symlink is likewise
+		// never followed — the pack hash classifies only genuine regular
+		// content, which also keeps the classification stable for such
+		// entries instead of failing the whole scan.
+		if !d.Type().IsRegular() {
 			return nil
 		}
 		data, rerr := fs.ReadFile(dfs, p)

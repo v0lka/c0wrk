@@ -213,77 +213,15 @@ func (o GitConfigOverride) Argv() string {
 	return o.Key + "=" + o.Value
 }
 
-// GitConfigFinding describes one dangerous key occurrence discovered in a
-// repository's .git/config. It is the single source of truth for the intake
-// scanner: every command-bearing key parsed from the in-scope section families
-// produces a finding, whether or not it needs a per-repo override.
-type GitConfigFinding struct {
-	// Kind classifies the vector; one of the GitConfigFinding* constants.
-	Kind string
-	// Section is the lowercased section name ("core", "filter", ...).
-	Section string
-	// Subsection is the verbatim subsection name for [filter "lfs"]-style
-	// headers (case-sensitive, as git treats them); empty for plain sections.
-	Subsection string
-	// Key is the lowercased key name within the section ("process", ...).
-	Key string
-	// FullKey is the complete dotted key ("filter.lfs.process").
-	FullKey string
-	// Value is the parsed value ("" for bare boolean keys, with Boolean=true).
-	Value string
-	// Boolean reports a bare key (no '='), which git reads as boolean true.
-	Boolean bool
-	// Line is the 1-based line number of the occurrence.
-	Line int
-	// Description is a human-readable explanation of what the key does, its
-	// reachability from c0wrk's git usage, and how it is neutralized.
-	Description string
-	// BaselineCovered reports that the key is already neutralized on every
-	// c0wrk git invocation by the unconditional sysproc.GitCmd baseline
-	// (-c core.fsmonitor=false, -c core.hooksPath=<safe dir>,
-	// GIT_EDITOR=true), so it needs no per-repo override.
-	BaselineCovered bool
-	// Inert reports that the finding cannot execute in this configuration.
-	// The signing siblings (gpg.format, gpg.program, user.signingkey) are
-	// emitted whenever present, but git only runs a signing program when
-	// commit.gpgsign is ARMED — without it the siblings are dead
-	// configuration, so ScanGitConfig flags them inert and Clean() ignores
-	// them (a repository that merely documents a signing setup stays
-	// warning-free). Inert findings still render in the intake payload when
-	// a warning fires for another reason.
-	Inert bool
-	// Overrides are the verified per-repo `-c` neutralizations for this
-	// finding. Empty when none is needed or none is verified (the
-	// description explains which case applies).
-	Overrides []GitConfigOverride
-}
-
-// GitConfigInclude records an include/includeIf directive. The referenced file
-// is deliberately not read: an included config can define additional
-// command-bearing keys, so any recorded include means the visible config is an
-// incomplete view and the workspace must be treated with corresponding
-// suspicion (NeutralizingOverrides compensates with the attribute-routing
-// kill, but unknown filter names remain unneutralizable — this is a
-// detection-grade signal, not a mitigation).
-type GitConfigInclude struct {
-	Conditional bool   // true for includeIf
-	Condition   string // includeIf condition (e.g. "gitdir:~/x/**"); "" for include
-	Path        string // unexpanded path value as written
-	Line        int    // 1-based line number
-	// SourceDir is the absolute directory of the config file that contained
-	// the directive (git resolves a relative include path against it). Empty
-	// for results produced by the pure parser (parseGitConfigData), which has
-	// no file of its own; ScanGitConfigFile fills it.
-	SourceDir string
-}
-
-// GitConfigError is a malformed construct. git itself refuses to run with a
-// malformed config ("fatal: bad config line N"), so Errors non-empty means the
-// file would fail git wholesale — but callers scanning untrusted workspaces
-// should still fail closed.
-type GitConfigError struct {
-	Line    int // 1-based line number
-	Message string
+// errUnrenderableOverrideKey marks a neutralizing override whose key cannot
+// be expressed as a `-c` argv element. Git splits every `-c` argument at the
+// FIRST `=`, so a key that itself contains `=` (a subsection like
+// `[filter "a=b"]`, legal in git config and in .gitattributes values) would
+// shift that boundary: the emitted pin `filter.a=b.process=` is parsed as key
+// `filter.a` with value `b.process=`, and the intended key is never pinned —
+// the repository-controlled command stays armed (review [21], fail-open).
+func errUnrenderableOverrideKey(key string) error {
+	return fmt.Errorf("git config override key %q contains '=' (subsection with '='?) and cannot be expressed as a -c argv element; rename the config subsection or remove the command-bearing key", key)
 }
 
 // GitConfigInfo is the full result of parsing one .git/config.
@@ -373,6 +311,100 @@ type GitConfigInfo struct {
 	// SemanticSnapshot/SemanticFingerprint. Source indexes the config layer
 	// (into rawSources) the record was parsed from.
 	records []gitConfigRecord
+}
+
+// NeutralizingArgvErr is NeutralizingArgv with the spawn gate attached: a
+// rendered set whose key contains `=` is refused instead of silently
+// under-neutralizing. The command-bearing key stays armed in the repository,
+// so spawning git would run with a dead neutralization — fail closed and let
+// the caller surface the actionable error (mirrors the scan's own
+// fail-closed contract; see errUnrenderableOverrideKey).
+func (info *GitConfigInfo) NeutralizingArgvErr() ([]string, error) {
+	overrides := info.NeutralizingOverrides()
+	if len(overrides) == 0 {
+		return nil, nil
+	}
+	out := make([]string, 0, len(overrides)*2)
+	for _, o := range overrides {
+		if strings.Contains(o.Key, "=") {
+			return nil, errUnrenderableOverrideKey(o.Key)
+		}
+		out = append(out, "-c", o.Argv())
+	}
+	return out, nil
+}
+
+// GitConfigFinding describes one dangerous key occurrence discovered in a
+// repository's .git/config. It is the single source of truth for the intake
+// scanner: every command-bearing key parsed from the in-scope section families
+// produces a finding, whether or not it needs a per-repo override.
+type GitConfigFinding struct {
+	// Kind classifies the vector; one of the GitConfigFinding* constants.
+	Kind string
+	// Section is the lowercased section name ("core", "filter", ...).
+	Section string
+	// Subsection is the verbatim subsection name for [filter "lfs"]-style
+	// headers (case-sensitive, as git treats them); empty for plain sections.
+	Subsection string
+	// Key is the lowercased key name within the section ("process", ...).
+	Key string
+	// FullKey is the complete dotted key ("filter.lfs.process").
+	FullKey string
+	// Value is the parsed value ("" for bare boolean keys, with Boolean=true).
+	Value string
+	// Boolean reports a bare key (no '='), which git reads as boolean true.
+	Boolean bool
+	// Line is the 1-based line number of the occurrence.
+	Line int
+	// Description is a human-readable explanation of what the key does, its
+	// reachability from c0wrk's git usage, and how it is neutralized.
+	Description string
+	// BaselineCovered reports that the key is already neutralized on every
+	// c0wrk git invocation by the unconditional sysproc.GitCmd baseline
+	// (-c core.fsmonitor=false, -c core.hooksPath=<safe dir>,
+	// GIT_EDITOR=true), so it needs no per-repo override.
+	BaselineCovered bool
+	// Inert reports that the finding cannot execute in this configuration.
+	// The signing siblings (gpg.format, gpg.program, user.signingkey) are
+	// emitted whenever present, but git only runs a signing program when
+	// commit.gpgsign is ARMED — without it the siblings are dead
+	// configuration, so ScanGitConfig flags them inert and Clean() ignores
+	// them (a repository that merely documents a signing setup stays
+	// warning-free). Inert findings still render in the intake payload when
+	// a warning fires for another reason.
+	Inert bool
+	// Overrides are the verified per-repo `-c` neutralizations for this
+	// finding. Empty when none is needed or none is verified (the
+	// description explains which case applies).
+	Overrides []GitConfigOverride
+}
+
+// GitConfigInclude records an include/includeIf directive. The referenced file
+// is deliberately not read: an included config can define additional
+// command-bearing keys, so any recorded include means the visible config is an
+// incomplete view and the workspace must be treated with corresponding
+// suspicion (NeutralizingOverrides compensates with the attribute-routing
+// kill, but unknown filter names remain unneutralizable — this is a
+// detection-grade signal, not a mitigation).
+type GitConfigInclude struct {
+	Conditional bool   // true for includeIf
+	Condition   string // includeIf condition (e.g. "gitdir:~/x/**"); "" for include
+	Path        string // unexpanded path value as written
+	Line        int    // 1-based line number
+	// SourceDir is the absolute directory of the config file that contained
+	// the directive (git resolves a relative include path against it). Empty
+	// for results produced by the pure parser (parseGitConfigData), which has
+	// no file of its own; ScanGitConfigFile fills it.
+	SourceDir string
+}
+
+// GitConfigError is a malformed construct. git itself refuses to run with a
+// malformed config ("fatal: bad config line N"), so Errors non-empty means the
+// file would fail git wholesale — but callers scanning untrusted workspaces
+// should still fail closed.
+type GitConfigError struct {
+	Line    int // 1-based line number
+	Message string
 }
 
 // gitConfigSource is one raw config/routing source read by the scan, kept for
@@ -1391,6 +1423,14 @@ func (info *GitConfigInfo) NeutralizingOverrides() []GitConfigOverride {
 		set["core.askPass"] = ""
 		set["credential.helper"] = ""
 		set["diff.external"] = ""
+		// core.gitProxy is command-bearing exactly like the keys above, and
+		// the proxy command itself cannot be neutralized — the finding path
+		// pins the transport-family allowlist, so the include branch must
+		// too: an include-hidden core.gitProxy with a git:// remote would
+		// otherwise execute the attacker's proxy command on the next
+		// Fetch/Pull instead of failing closed with "transport not allowed"
+		// (review [147]).
+		set[gitProxyAllowKey] = gitProxyDenyValue
 	}
 	if len(set) == 0 {
 		return nil
@@ -1427,15 +1467,19 @@ func (info *GitConfigInfo) AttributesInterpretationDisabled() bool {
 	return false
 }
 
-// NeedsWorkTreeEnvPin reports whether the scanned config carries a
-// core.worktree finding — the one vector no `-c` override can neutralize
-// (verified on git 2.50.1: both a value and an empty core.worktree lose to
-// the file config). GitCmdInRepo consults this to pin the spawn
-// environment's GIT_WORK_TREE to the discovered repository root instead,
-// the one channel that outranks the config key. Deliberately finding-gated:
-// a blanket pin would impose our discovery on every repository, breaking
-// legitimate core.worktree-using setups; only an attacker-observable
-// occurrence in the scanned config derives the pin.
+// NeedsWorkTreeEnvPin reports whether the spawn environment's GIT_WORK_TREE
+// must be pinned to the discovered work-tree root — the one channel that
+// outranks the config key. Two conditions derive the pin: a scanned
+// core.worktree finding (the one vector no `-c` override can neutralize —
+// verified on git 2.50.1: both a value and an empty core.worktree lose to
+// the file config), and an include-bearing config (review [148]): an
+// included file the scanner deliberately does not follow can hide
+// core.worktree just as it can hide a driver, and an unpinned checkout/
+// reset/clean would write tracked files to the included file's absolute
+// path. The pin is a no-op for an honest repository — it pins exactly the
+// root git itself would discover — so include-bearing configs always derive
+// it; only an attacker-observable occurrence in the scanned config would
+// otherwise arm the key invisibly.
 func (info *GitConfigInfo) NeedsWorkTreeEnvPin() bool {
 	if info == nil {
 		return false
@@ -1445,7 +1489,7 @@ func (info *GitConfigInfo) NeedsWorkTreeEnvPin() bool {
 			return true
 		}
 	}
-	return false
+	return len(info.Includes) > 0
 }
 
 // emptyTreeHash returns the empty-tree hash matching the repository's object

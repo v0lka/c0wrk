@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/v0lka/c0wrk/backend/config"
+	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/core/workspace"
 )
 
@@ -16,6 +18,8 @@ import (
 
 func TestResolveWorkspacePath_NoActiveProject(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	_, _, err := f.resolveWorkspacePath("/some/path")
 	if err == nil {
 		t.Fatal("expected error when no active project")
@@ -25,6 +29,8 @@ func TestResolveWorkspacePath_NoActiveProject(t *testing.T) {
 func TestResolveWorkspacePath_PathOutsideWorkspace(t *testing.T) {
 	tmpDir := t.TempDir()
 	f := &FrontendAPI{activeProjectPath: tmpDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	_, _, err := f.resolveWorkspacePath("/etc/passwd")
 	if err == nil {
@@ -35,6 +41,8 @@ func TestResolveWorkspacePath_PathOutsideWorkspace(t *testing.T) {
 func TestResolveWorkspacePath_ValidPath(t *testing.T) {
 	tmpDir := t.TempDir()
 	f := &FrontendAPI{activeProjectPath: tmpDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	filePath := filepath.Join(tmpDir, "test.txt")
 	absPath, absRoot, err := f.resolveWorkspacePath(filePath)
@@ -52,6 +60,8 @@ func TestResolveWorkspacePath_ValidPath(t *testing.T) {
 func TestResolveWorkspacePath_WorkspaceRootItself(t *testing.T) {
 	tmpDir := t.TempDir()
 	f := &FrontendAPI{activeProjectPath: tmpDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	absPath, absRoot, err := f.resolveWorkspacePath(tmpDir)
 	if err != nil {
@@ -95,6 +105,8 @@ func TestStripLineAnchor(t *testing.T) {
 
 func TestReadFile_NoActiveProject(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	_, err := f.ReadFile("/some/path")
 	if err == nil {
 		t.Fatal("expected error when no active project")
@@ -107,6 +119,8 @@ func TestReadFile_NoActiveProject(t *testing.T) {
 func TestReadFile_OutsideWorkspaceReadable(t *testing.T) {
 	tmpDir := t.TempDir()
 	f := &FrontendAPI{activeProjectPath: tmpDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	// ReadFile is now path-agnostic: the viewer may surface any file path
 	// surfaced by the agent (e.g. SDK files, system files referenced in
@@ -134,6 +148,8 @@ func TestReadFile_OutsideWorkspaceReadable(t *testing.T) {
 func TestReadFile_LineAnchorStripped(t *testing.T) {
 	tmpDir := t.TempDir()
 	f := &FrontendAPI{activeProjectPath: tmpDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	filePath := filepath.Join(tmpDir, "x.go")
 	wantContent := "package x\n"
@@ -153,6 +169,8 @@ func TestReadFile_LineAnchorStripped(t *testing.T) {
 func TestReadFile_Success(t *testing.T) {
 	tmpDir := t.TempDir()
 	f := &FrontendAPI{activeProjectPath: tmpDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	// Create a test file
 	testContent := "hello world\nline 2\n"
@@ -173,6 +191,8 @@ func TestReadFile_Success(t *testing.T) {
 func TestReadFile_FileNotFound(t *testing.T) {
 	tmpDir := t.TempDir()
 	f := &FrontendAPI{activeProjectPath: tmpDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	filePath := filepath.Join(tmpDir, "nonexistent.txt")
 	_, err := f.ReadFile(filePath)
@@ -184,6 +204,8 @@ func TestReadFile_FileNotFound(t *testing.T) {
 func TestReadFile_NestedPath(t *testing.T) {
 	tmpDir := t.TempDir()
 	f := &FrontendAPI{activeProjectPath: tmpDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	// Create nested directory and file
 	nestedDir := filepath.Join(tmpDir, "sub", "dir")
@@ -213,6 +235,8 @@ func TestReadFile_NestedPath(t *testing.T) {
 func TestReadImageAsDataURL_OutsideWorkspaceReadable(t *testing.T) {
 	tmpDir := t.TempDir()
 	f := &FrontendAPI{activeProjectPath: tmpDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	// Small PNG signature bytes — content is opaque to the RPC.
 	png := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}
@@ -235,6 +259,8 @@ func TestReadImageAsDataURL_OutsideWorkspaceReadable(t *testing.T) {
 func TestReadImageAsDataURL_FileNotFound(t *testing.T) {
 	tmpDir := t.TempDir()
 	f := &FrontendAPI{activeProjectPath: tmpDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	if _, err := f.ReadImageAsDataURL(filepath.Join(tmpDir, "missing.png")); err == nil {
 		t.Fatal("expected error for nonexistent image")
@@ -246,6 +272,8 @@ func TestReadImageAsDataURL_FileNotFound(t *testing.T) {
 func TestReadImageAsDataURL_LineAnchorStripped(t *testing.T) {
 	tmpDir := t.TempDir()
 	f := &FrontendAPI{activeProjectPath: tmpDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	png := []byte{0x89, 'P', 'N', 'G'}
 	p := filepath.Join(tmpDir, "pic.png")
@@ -264,6 +292,8 @@ func TestReadImageAsDataURL_LineAnchorStripped(t *testing.T) {
 func TestReadFileAsDataURL_RetainsContainment(t *testing.T) {
 	tmpDir := t.TempDir()
 	f := &FrontendAPI{activeProjectPath: tmpDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	outsideDir := t.TempDir()
 	outsidePath := filepath.Join(outsideDir, "secret.png")
@@ -281,6 +311,8 @@ func TestReadFileAsDataURL_RetainsContainment(t *testing.T) {
 func TestReadFileAsDataURL_Contained(t *testing.T) {
 	tmpDir := t.TempDir()
 	f := &FrontendAPI{activeProjectPath: tmpDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	svg := []byte("<svg/>")
 	p := filepath.Join(tmpDir, "pic.svg")
@@ -339,6 +371,8 @@ func TestMimeByExtension_ImageFormats(t *testing.T) {
 
 func TestGetFileDiff_NoActiveProject(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	// No active project at all means projectPath is empty, so any path is
 	// out-of-workspace → no git baseline. Consistent with the relaxed read
@@ -358,6 +392,8 @@ func TestGetFileDiff_NoActiveProject(t *testing.T) {
 func TestGetFileDiff_OutsideWorkspaceNoBaseline(t *testing.T) {
 	tmpDir := t.TempDir()
 	f := &FrontendAPI{activeProjectPath: tmpDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	// Out-of-workspace paths have no git baseline — GetFileDiff returns
 	// ("", nil) instead of an error.
@@ -379,6 +415,8 @@ func TestGetFileDiff_OutsideWorkspaceNoBaseline(t *testing.T) {
 func TestGetFileDiff_NotGitRepo(t *testing.T) {
 	tmpDir := t.TempDir()
 	f := &FrontendAPI{activeProjectPath: tmpDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	// Create a test file (no git repo)
 	filePath := filepath.Join(tmpDir, "test.txt")
@@ -401,6 +439,8 @@ func TestGetFileDiff_NotGitRepo(t *testing.T) {
 func TestGetFileDiff_UntrackedFileInGitRepo(t *testing.T) {
 	tmpDir := t.TempDir()
 	f := &FrontendAPI{activeProjectPath: tmpDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	// Initialize git repo
 	gitInit(t, tmpDir)
@@ -426,6 +466,8 @@ func TestGetFileDiff_UntrackedFileInGitRepo(t *testing.T) {
 func TestGetFileDiff_TrackedFileNoChanges(t *testing.T) {
 	tmpDir := t.TempDir()
 	f := &FrontendAPI{activeProjectPath: tmpDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	// Initialize git repo
 	gitInit(t, tmpDir)
@@ -585,6 +627,8 @@ func TestListDirectoryWalk_HiddenAndGitIgnored(t *testing.T) {
 func TestListDirectory_AiignoreFlagsFiles(t *testing.T) {
 	tmpDir := t.TempDir()
 	f := &FrontendAPI{activeProjectPath: tmpDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	// Seed a few files: one matched by .aiignore, one matched by .gitignore,
 	// and one visible.
@@ -646,6 +690,8 @@ func TestListDirectory_AiignoreFlagsFiles(t *testing.T) {
 func TestListDirectory_AiignoreRecursiveAndDirs(t *testing.T) {
 	tmpDir := t.TempDir()
 	f := &FrontendAPI{activeProjectPath: tmpDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	// build/ directory with contents, plus a loose file.
 	if err := os.MkdirAll(filepath.Join(tmpDir, "build", "out"), 0o755); err != nil {
@@ -706,6 +752,8 @@ func TestListDirectory_AiignoreNonGitNoError(t *testing.T) {
 	// here either (resolver is only built for git repos), matching the task
 	// requirement that the No-Project / non-git path is unchanged.
 	f := &FrontendAPI{activeProjectPath: tmpDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	if err := os.WriteFile(filepath.Join(tmpDir, "plain.txt"), []byte("p"), 0o644); err != nil {
 		t.Fatalf("write plain: %v", err)
@@ -728,6 +776,8 @@ func TestListDirectory_AiignoreNonGitNoError(t *testing.T) {
 func TestListDirectory_IconsAttached(t *testing.T) {
 	tmpDir := t.TempDir()
 	f := &FrontendAPI{activeProjectPath: tmpDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	// Create test files with known extensions
 	goFile := filepath.Join(tmpDir, "main.go")
@@ -791,6 +841,8 @@ func TestListDirectory_IconsAttached(t *testing.T) {
 func TestGetFileIcon_OutsideWorkspace(t *testing.T) {
 	tmpDir := t.TempDir()
 	f := &FrontendAPI{activeProjectPath: tmpDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	// GetFileIcon is now path-agnostic: the viewer may request an icon for
 	// any file path surfaced by the agent (e.g. SDK files).
@@ -811,6 +863,8 @@ func TestGetFileIcon_OutsideWorkspace(t *testing.T) {
 func TestGetGitStatus(t *testing.T) {
 	tmpDir := t.TempDir()
 	f := &FrontendAPI{activeProjectPath: tmpDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	gitInit(t, tmpDir)
 
 	// Commit an initial file so we have a HEAD.
@@ -890,6 +944,8 @@ func TestGetGitStatus(t *testing.T) {
 func TestGetGitStatus_RenamedAndCopied(t *testing.T) {
 	tmpDir := t.TempDir()
 	f := &FrontendAPI{activeProjectPath: tmpDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	gitInit(t, tmpDir)
 
 	// Renamed file (R) -> status R, uses destination path
@@ -921,6 +977,8 @@ func TestGetGitStatus_RenamedAndCopied(t *testing.T) {
 func TestGetGitStatus_Unmerged(t *testing.T) {
 	tmpDir := t.TempDir()
 	f := &FrontendAPI{activeProjectPath: tmpDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	gitInit(t, tmpDir)
 
 	// Create and commit a file on the default branch so both branches share a common ancestor.
@@ -1004,4 +1062,188 @@ func gitInit(t *testing.T, dir string) {
 	cmd = exec.CommandContext(context.Background(), "git", "config", "user.name", "Test")
 	cmd.Dir = dir
 	_ = cmd.Run()
+}
+
+// --- WriteFile: admitted-root re-validation (#146) + symlink refusal (#27) ---
+
+func newWriteFileTestAPI(t *testing.T, agentDir, projectID, projectPath string) *FrontendAPI {
+	t.Helper()
+	f := &FrontendAPI{agentDir: agentDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
+	f.activeProjectMu.Lock()
+	f.activeProjectID = projectID
+	f.activeProjectPath = projectPath
+	f.activeProjectMu.Unlock()
+	return f
+}
+
+// A session-infra path (<pid>/<sid>/plans/...) is admitted by
+// resolveWorkspacePath with absRoot = the project data dir. The re-validation
+// must check that SAME root: re-checking SessionWorkspaceRoot
+// (<pid>/Workspace) rejected every plan write, silently swallowing the plan
+// editor's auto-save (#146).
+func TestWriteFile_SessionInfraPlanPath_Admitted(t *testing.T) {
+	base := t.TempDir()
+	pid, sid := "proj-1", "sess-1"
+	ws := filepath.Join(base, "projects", pid, "Workspace")
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	f := newWriteFileTestAPI(t, base, pid, ws)
+
+	planPath := filepath.Join(base, "projects", pid, sid, "plans", "plan_x.md")
+	if err := f.WriteFile(sid, planPath, "# plan"); err != nil {
+		t.Fatalf("session-infra plan write rejected: %v", err)
+	}
+	data, err := os.ReadFile(planPath)
+	if err != nil || string(data) != "# plan" {
+		t.Fatalf("plan content not persisted: %v (%q)", err, string(data))
+	}
+}
+
+// An EXTERNAL project's workspace is its external checkout, not
+// <agentDir>/projects/<pid>/Workspace — the write must be validated against
+// the root resolveWorkspacePath admitted (#146).
+func TestWriteFile_ExternalProjectWorkspace_Admitted(t *testing.T) {
+	checkout := t.TempDir()
+	base := t.TempDir()
+	pid := "ext-1"
+	f := newWriteFileTestAPI(t, base, pid, checkout)
+
+	p := filepath.Join(checkout, "src", "main.go")
+	if err := f.WriteFile("sess-1", p, "package main"); err != nil {
+		t.Fatalf("external-workspace write rejected: %v", err)
+	}
+}
+
+// No Project keeps the per-session isolation: a CHAT session may write its
+// own workspace and its own plans//temp/, but never another session's tree.
+func TestWriteFile_NoProject_CrossSessionRejected(t *testing.T) {
+	base := t.TempDir()
+	projectDir := config.ProjectDir(base, project.NoProjectID)
+	if err := os.MkdirAll(filepath.Join(projectDir, "other-session", "workspace"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	f := newWriteFileTestAPI(t, base, project.NoProjectID, projectDir)
+
+	foreign := filepath.Join(projectDir, "other-session", "workspace", "x.txt")
+	if err := f.WriteFile("my-session", foreign, "data"); err == nil {
+		t.Fatal("cross-session write in No Project mode must be rejected")
+	}
+
+	own := filepath.Join(projectDir, "my-session", "workspace", "x.txt")
+	if err := f.WriteFile("my-session", own, "data"); err != nil {
+		t.Fatalf("own-workspace write rejected: %v", err)
+	}
+	ownPlan := filepath.Join(projectDir, "my-session", "plans", "plan.md")
+	if err := f.WriteFile("my-session", ownPlan, "# plan"); err != nil {
+		t.Fatalf("own session-infra write rejected: %v", err)
+	}
+}
+
+// A symlink at the final path component must be refused, never written
+// through (#27): os.WriteFile would truncate the link's target.
+func TestWriteFile_RefusesSymlinkAtFinalComponent(t *testing.T) {
+	ws := t.TempDir()
+	victim := filepath.Join(ws, "real.txt")
+	if err := os.WriteFile(victim, []byte("keep"), 0o644); err != nil {
+		t.Fatalf("seed victim: %v", err)
+	}
+	link := filepath.Join(ws, "link.txt")
+	if err := os.Symlink(victim, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	f := newWriteFileTestAPI(t, t.TempDir(), "p", ws)
+
+	if err := f.WriteFile("s", link, "clobber"); err == nil {
+		t.Fatal("write through a symlinked final component must be refused")
+	}
+	data, err := os.ReadFile(victim)
+	if err != nil || string(data) != "keep" {
+		t.Fatalf("symlink target was clobbered: %v (%q)", err, string(data))
+	}
+}
+
+// A dangling symlink INSIDE the workspace (the repo-shipped shape: the link
+// exists, its target does not) must not redirect the create outside the
+// workspace (#27) — neither the parent MkdirAll nor the final open.
+func TestWriteFile_RefusesCreateThroughDanglingSymlink(t *testing.T) {
+	ws := t.TempDir()
+	outsideDir := filepath.Join(t.TempDir(), "escape")
+	if err := os.MkdirAll(outsideDir, 0o755); err != nil {
+		t.Fatalf("mkdir escape dir: %v", err)
+	}
+	link := filepath.Join(ws, "evil")
+	if err := os.Symlink(outsideDir, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	f := newWriteFileTestAPI(t, t.TempDir(), "p", ws)
+
+	through := filepath.Join(link, "created.txt")
+	if err := f.WriteFile("s", through, "data"); err == nil {
+		t.Fatal("create through a symlinked directory must be refused")
+	}
+	if _, statErr := os.Stat(filepath.Join(outsideDir, "created.txt")); !os.IsNotExist(statErr) {
+		t.Fatal("file was created outside the workspace through the symlink")
+	}
+}
+
+// --- ReadFile: the 8 MiB viewer cap (#131) ---
+
+func TestReadFile_RejectsFileAboveViewerCap(t *testing.T) {
+	tmp := t.TempDir()
+	big := filepath.Join(tmp, "big.bin")
+	if err := os.WriteFile(big, make([]byte, maxViewerFileSize+1), 0o644); err != nil {
+		t.Fatalf("seed big file: %v", err)
+	}
+	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
+
+	if _, err := f.ReadFile(big); err == nil || !strings.Contains(err.Error(), "too large") {
+		t.Fatalf("expected a file-too-large error, got %v", err)
+	}
+
+	exact := filepath.Join(tmp, "exact.bin")
+	if err := os.WriteFile(exact, make([]byte, maxViewerFileSize), 0o644); err != nil {
+		t.Fatalf("seed exact file: %v", err)
+	}
+	if _, err := f.ReadFile(exact); err != nil {
+		t.Fatalf("file of exactly the cap must read: %v", err)
+	}
+}
+
+// --- WatchDirectory (No Project): renderer-supplied paths are gated (#63) ---
+
+func TestWatchDirectory_NoProject_RejectsUncontainedPath(t *testing.T) {
+	base := t.TempDir()
+	noProjectDir := config.ProjectDir(base, project.NoProjectID)
+	f := newWriteFileTestAPI(t, base, project.NoProjectID, noProjectDir)
+
+	cases := []string{
+		filepath.Join(base, "outside", "dir"),                               // outside the project dir
+		filepath.Join(noProjectDir, "sess-1", "logs"),                       // session dir, but not <sid>/workspace
+		filepath.Join(noProjectDir, "sess-1", "other-session", "workspace"), // wrong structure
+	}
+	for _, dir := range cases {
+		if err := f.WatchDirectory(dir); err == nil {
+			t.Fatalf("WatchDirectory accepted uncontained path %q", dir)
+		}
+	}
+
+	// The legitimate shape — the active session's workspace — is admitted and
+	// re-roots the watcher there (cleanup: close the created watcher).
+	legit := filepath.Join(noProjectDir, "sess-1", "workspace")
+	if err := f.WatchDirectory(legit); err != nil {
+		t.Fatalf("legitimate session workspace rejected: %v", err)
+	}
+	f.watcherMu.Lock()
+	if f.watcher == nil {
+		f.watcherMu.Unlock()
+		t.Fatal("expected the watcher to be re-scoped to the session workspace")
+	}
+	_ = f.watcher.Close()
+	f.watcher = nil
+	f.watcherMu.Unlock()
 }

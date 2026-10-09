@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
+import { getUiZoomFactor } from '@/stores/uiScaleStore'
 
 // --- Constants ---
 
@@ -10,10 +11,15 @@ function clamp(value: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, value))
 }
 
-/** Default sidebar width: 1/5 of the screen, clamped to [SIDEBAR_MIN, SIDEBAR_MAX]. */
+/**
+ * Default sidebar width: 1/5 of the screen, clamped to [SIDEBAR_MIN, SIDEBAR_MAX].
+ * Zoom-safe: window.innerWidth is VISUAL px (layout × zoom under the UI Scale),
+ * while the width feeds a LAYOUT-px style — divide by the live zoom factor so the
+ * default is correct at any scale (and identical to the raw value at 100 %).
+ */
 export function getDefaultSidebarWidth(): number {
   const screenWidth = typeof window !== 'undefined' ? window.innerWidth : 1440
-  return clamp(Math.round(screenWidth / 5), SIDEBAR_MIN, SIDEBAR_MAX)
+  return clamp(Math.round(screenWidth / getUiZoomFactor() / 5), SIDEBAR_MIN, SIDEBAR_MAX)
 }
 
 // --- State types ---

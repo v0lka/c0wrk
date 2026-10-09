@@ -730,6 +730,14 @@ func (m *Manager) sendMessage(ctx context.Context, id, text string, activeSkills
 		session.mu.Unlock()
 		return SendFresh, ErrSessionArchived
 	}
+	// Same choke point for a session whose deletion has begun: DeleteSession
+	// tears the orchestrator and log handles down after setting the flag, so
+	// a message landing in that window must not launch a task against a
+	// session being dismantled.
+	if session.deleting {
+		session.mu.Unlock()
+		return SendFresh, fmt.Errorf("session %s is being deleted", id)
+	}
 	// Live-send: a message arriving while a task is already running is queued
 	// into the RUNNING request instead of starting a new one — the executor
 	// drains the queue at its next step boundary and delivers the text to the
@@ -1403,12 +1411,20 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 	}
 
 	// Archived sessions are read-only: fail fast before touching the task store
-	// or restoring a blackboard. Mirrors the SendMessage guard.
+	// or restoring a blackboard. Mirrors the SendMessage guard. The deleting
+	// check is the same class: the compaction flow's auto-resume re-enters
+	// here after DeleteSession set the flag but before it removed the
+	// session — without this guard the resume would launch a ghost task
+	// against the session being torn down.
 	session.mu.Lock()
 	archived := session.Archived
+	deleting := session.deleting
 	session.mu.Unlock()
 	if archived {
 		return ErrSessionArchived
+	}
+	if deleting {
+		return fmt.Errorf("session %s is being deleted", id)
 	}
 
 	adapter := NewTaskStoreAdapter(ts)
@@ -1486,6 +1502,17 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 	if session.active {
 		session.mu.Unlock()
 		return errors.New("session is already processing a task")
+	}
+	// Re-check deleting INSIDE the activation critical section: the snapshot
+	// guard above ran before the task-store reads and blackboard restore, and
+	// DeleteSession's whole teardown (orchestrator cleanup, log/dump handle
+	// close, map removal, blackboard stop) can serialize into that window —
+	// without this re-check the resume would activate a task against the
+	// session being dismantled (the ghost-task class the deleting flag
+	// exists to kill).
+	if session.deleting {
+		session.mu.Unlock()
+		return fmt.Errorf("session %s is being deleted", id)
 	}
 	// Manual compaction owns the session until it finishes (it swaps the
 	// conversation history while the session is idle); resuming a task in
@@ -2317,8 +2344,14 @@ func (m *Manager) claimTaskTerminalForceTerminated(s *Session) bool {
 // profile) for the task run that just finished — complete, cancel or failure.
 // The counters reset afterwards, so one agent_metrics event covers exactly
 // one task run. No-op when the session is no longer tracked.
+//
+// The lookup is MEMORY-ONLY (sessionByID, no lazy restore): this runs from
+// task-terminal callbacks, including a wedged run settling after
+// DeleteSession already stopped waiting. GetSession would lazily RESTORE the
+// just-deleted session (the store row still exists in that window), rebuilding
+// an orchestrator and reopening log/dump handles nobody will ever close.
 func (m *Manager) emitAgentMetrics(sessionID, finish string) {
-	s, ok := m.GetSession(sessionID)
+	s, ok := m.sessionByID(sessionID)
 	if !ok || s == nil || s.emitter == nil {
 		return
 	}
@@ -2329,11 +2362,13 @@ func (m *Manager) emitAgentMetrics(sessionID, finish string) {
 // trajectory + run counters + plan progress) for a session. ok is false when
 // the session is unknown or has no emitter. It backs the silent-mode
 // step-limit judge, which needs the trajectory — not just the boundary reason.
+// Memory-only lookup (see emitAgentMetrics): a judge callback must never
+// lazily restore a session.
 func (m *Manager) ExecutionWindow(sessionID string) (ExecutionWindowSnapshot, bool) {
 	if sessionID == "" {
 		return ExecutionWindowSnapshot{}, false
 	}
-	s, ok := m.GetSession(sessionID)
+	s, ok := m.sessionByID(sessionID)
 	if !ok || s == nil || s.emitter == nil {
 		return ExecutionWindowSnapshot{}, false
 	}
@@ -2756,7 +2791,14 @@ func (m *Manager) resolveResumableTaskMessage(sessionID, taskID, decision string
 	if decision != "" {
 		extra["decision"] = decision
 	}
-	if err := store.ResolvePendingMessage(context.Background(), sessionID, "task_failed_resumable", "task_id", taskID, extra); err != nil {
+	// Bounded like every other direct store call on the send/terminal paths
+	// (restoreDBReadTimeout): this runs on the task-terminal and send paths
+	// and shares the app's single SQLite pool — an unbounded wait for a pooled
+	// connection under a write storm would hang the settle path. Best-effort
+	// either way: errors are logged only.
+	resolveCtx, resolveCancel := context.WithTimeout(context.Background(), restoreDBReadTimeout)
+	defer resolveCancel()
+	if err := store.ResolvePendingMessage(resolveCtx, sessionID, "task_failed_resumable", "task_id", taskID, extra); err != nil {
 		m.log().Warn("failed to resolve persisted task_failed_resumable message",
 			"session", sessionID, "task", taskID, "decision", decision, "error", err)
 	}
@@ -3059,6 +3101,19 @@ func (m *Manager) forceTerminateStuckTask(sessionID string) {
 		if err != nil {
 			m.log().Warn("stuck-cancel: failed to look up unfinished task", "session", sessionID, "error", err)
 		} else if taskID != "" {
+			// Terminalize the run's goal/E2S state BEFORE persisting the
+			// cancellation, mirroring the settle paths' ordering (abandon →
+			// persistCancellationIfUnfinished). Both abandon helpers resolve
+			// the task through GetUnfinishedTaskID, which matches only
+			// in_progress/paused/failed rows — after PersistCancellation flips
+			// the row to cancelled they would no-op, leaving the persisted
+			// goal state / E2S Σ non-terminal while the row reads cancelled:
+			// on restore the continuation anchor lands on the cancelled task
+			// (GetLatestTaskID is status-agnostic) and the next send silently
+			// RESUMES a run the user explicitly stopped instead of honoring
+			// the new instruction.
+			m.abandonGoalIfUnfinished(sessionID)
+			m.abandonE2SIfUnfinished(sessionID)
 			if err := adapter.PersistCancellation(taskID); err != nil {
 				m.log().Warn("stuck-cancel: failed to persist cancellation", "session", sessionID, "task", taskID, "error", err)
 			}
@@ -3126,14 +3181,18 @@ func (m *Manager) cancelUnfinishedTask(sessionID string) error {
 // It uses the in-memory lastCompletedTaskID if available, otherwise falls back
 // to the most recent task ID from the database.
 // Returns nil, nil if no task state is available.
+//
+// The session lookup is MEMORY-ONLY (no lazy restore): this is a read-only,
+// per-session-switch display RPC (fired by the frontend's blackboard hook on
+// every session switch), and restoring a store-only session here would build
+// a full orchestrator and open log/dump/step-dump handles nobody closes — a
+// ghost session for one the user merely viewed. A session that is not in
+// memory cannot carry an in-memory anchor anyway, so the only behavioral
+// difference is skipping the restore: the fallback below queries the same
+// GetLatestTaskID the restore itself anchors from, producing byte-identical
+// output for a store-only session with none of the side effects.
 func (m *Manager) GetBlackboardState(sessionID string) (*BlackboardState, error) {
-	sess, err := m.getOrRestoreSession(sessionID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to restore session: %w", err)
-	}
-	if sess == nil {
-		return nil, fmt.Errorf("session not found: %s", sessionID)
-	}
+	sess, _ := m.sessionByID(sessionID)
 
 	m.mu.RLock()
 	ts := m.taskStore
@@ -3143,25 +3202,39 @@ func (m *Manager) GetBlackboardState(sessionID string) (*BlackboardState, error)
 		return nil, nil // no task persistence — no blackboard state
 	}
 
-	// Try in-memory lastCompletedTaskID first.
-	sess.mu.Lock()
-	taskID := sess.lastCompletedTaskID
-	sess.mu.Unlock()
+	// Try in-memory lastCompletedTaskID first (only a live session has one).
+	if sess != nil {
+		sess.mu.Lock()
+		taskID := sess.lastCompletedTaskID
+		sess.mu.Unlock()
+		if taskID != "" {
+			adapter := NewTaskStoreAdapter(ts)
+			state, err := adapter.LoadTaskState(taskID)
+			if err != nil {
+				return nil, fmt.Errorf("failed to load task state: %w", err)
+			}
+			if state == nil {
+				return nil, nil
+			}
+			return &BlackboardState{TaskState: state}, nil
+		}
+	}
 
-	// Fallback: query the database for the latest task.
-	if taskID == "" {
-		dbTaskID, dbErr := ts.GetLatestTaskID(context.Background(), sessionID)
-		if dbErr != nil {
-			return nil, fmt.Errorf("failed to get latest task ID: %w", dbErr)
-		}
-		if dbTaskID == "" {
-			return nil, nil // no tasks for this session
-		}
-		taskID = dbTaskID
+	// Fallback: query the database for the latest task. Bounded like the
+	// restore-path anchor read (restoreDBReadTimeout) — this runs on the
+	// session-switch RPC and shares the app's single SQLite pool.
+	dbCtx, dbCancel := context.WithTimeout(context.Background(), restoreDBReadTimeout)
+	defer dbCancel()
+	dbTaskID, dbErr := ts.GetLatestTaskID(dbCtx, sessionID)
+	if dbErr != nil {
+		return nil, fmt.Errorf("failed to get latest task ID: %w", dbErr)
+	}
+	if dbTaskID == "" {
+		return nil, nil // no tasks for this session
 	}
 
 	adapter := NewTaskStoreAdapter(ts)
-	state, err := adapter.LoadTaskState(taskID)
+	state, err := adapter.LoadTaskState(dbTaskID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load task state: %w", err)
 	}

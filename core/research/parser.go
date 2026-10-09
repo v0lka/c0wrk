@@ -1174,12 +1174,34 @@ func PickActiveProject(root *ResearchRoot) *ResearchProject {
 	return nil
 }
 
+// maxArtifactBytes bounds a single RESEARCH artifact read. The research root
+// is workspace content (<workspace>/.research is repository-controlled) and
+// every parse feeds read-only status RPCs, so an oversized (hostile or
+// accidental) artifact must not be read whole into memory — safeio.ReadFile
+// is an unbounded io.ReadAll. 8 MiB is far above any real brief, card, graph,
+// log or report; a file over the cap is treated as unreadable (skipped by the
+// tolerant reader, refused by the strict one).
+const maxArtifactBytes = 8 << 20
+
+// oversizedArtifact reports whether path exists and is larger than the
+// per-artifact read cap. Stat errors — including NotExist — are not
+// "oversized": the caller's read handles them.
+func oversizedArtifact(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Size() > maxArtifactBytes
+}
+
 // readFile reads a file's contents, returning ("", false) when the file is
 // missing rather than an error — missing optional artifacts are a normal
 // partial state, not a failure. Rendering-only (parser) paths use this
 // tolerant form; mutation (writer) paths must use readFileStrict instead so
 // an unreadable-but-present file is never mistaken for a missing one.
+// An artifact over maxArtifactBytes is likewise treated as unreadable: its
+// read would otherwise be unbounded.
 func readFile(path string) (string, bool) {
+	if oversizedArtifact(path) {
+		return "", false
+	}
 	data, err := safeio.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -1201,6 +1223,9 @@ func readFile(path string) (string, bool) {
 // artifacts are persisted agent memory (SECURITY.md, ASI06); treating
 // "cannot read" as "does not exist" is a data-loss path, so it fails closed.
 func readFileStrict(path string) (string, error) {
+	if oversizedArtifact(path) {
+		return "", fmt.Errorf("reading %s: artifact exceeds the %d byte read cap", path, maxArtifactBytes)
+	}
 	data, err := safeio.ReadFile(path)
 	switch {
 	case err == nil:

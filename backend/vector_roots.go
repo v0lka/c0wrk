@@ -50,6 +50,12 @@ import (
 // the managed trees of the sessions a user realistically keeps warm.
 const vectorRootsCapacity = 4
 
+// vectorRootsEvictWait bounds how long ManagerForRoot waits for an in-flight
+// eviction's Shutdown drain before giving up with a retryable error. The
+// manager's own Shutdown is bounded by two grace periods (init + indexing,
+// 10 s each), so this sits comfortably above the worst-case drain.
+const vectorRootsEvictWait = 25 * time.Second
+
 // errVectorStillLoading is the pre-init surface: the background ONNX init has
 // not produced the manager factory yet. Text is part of the semantic_search
 // tool's error contract (tests and prompts reference the retry hint).
@@ -80,7 +86,15 @@ type VectorRoots struct {
 
 	mu    sync.Mutex
 	roots map[string]*vectorRootEntry // key: canonical (filepath.Clean) root
-	focus string                      // canonical focus root; "" = none yet
+	// closing tracks in-flight LRU evictions: root → channel closed when the
+	// evicted manager's Shutdown has RETURNED. ManagerForRoot waits (bounded)
+	// on that channel before building a fresh manager, so the documented
+	// single-flight-per-root invariant also holds across the eviction window:
+	// without it, a reopen during the bounded drain would build a second
+	// manager over the same chromem storage while the first is still closing
+	// (concurrent gob/sidecar writes and handle close).
+	closing map[string]chan struct{}
+	focus   string // canonical focus root; "" = none yet
 
 	// factory builds a fresh manager wired to the process-global embedder.
 	// Nil until the desktop background ONNX init succeeds; once the ready
@@ -98,8 +112,9 @@ type VectorRoots struct {
 
 func newVectorRoots(f *FrontendAPI) *VectorRoots {
 	return &VectorRoots{
-		f:     f,
-		roots: make(map[string]*vectorRootEntry),
+		f:       f,
+		roots:   make(map[string]*vectorRootEntry),
+		closing: make(map[string]chan struct{}),
 	}
 }
 
@@ -197,6 +212,7 @@ func (vr *VectorRoots) awaitReady(ctx context.Context, block bool) error {
 // worktree of one — vector indexing is a CODE-project feature; CHAT session
 // workspaces and auxiliary work dirs have no index.
 func (f *FrontendAPI) resolveRootPlan(root string) (projectID, storagePath, cachePath string, err error) {
+	f.seedAcquire()
 	if f.projectManager == nil {
 		return "", "", "", errors.New("no project manager wired")
 	}
@@ -256,6 +272,32 @@ func (vr *VectorRoots) ManagerForRoot(root string) (*vectorindex.Manager, error)
 		e.lastUsed = time.Now()
 		return e.mgr, nil
 	}
+	if ch, evicting := vr.closing[root]; evicting {
+		// An eviction of this root is still draining: the outgoing manager
+		// is being shut down over the very storage a fresh manager would
+		// open. Wait (bounded) for the drain, then re-read the map — this is
+		// what keeps creation single-flight across the eviction window.
+		vr.mu.Unlock()
+		select {
+		case <-ch:
+		case <-time.After(vectorRootsEvictWait):
+			vr.mu.Lock()
+			return nil, fmt.Errorf("%w: %s is still shutting down; retry shortly", errVectorUnavailable, root)
+		}
+		vr.mu.Lock()
+		// Re-validate after reacquiring the lock: the wait may have raced a
+		// concurrent creator, a fresh eviction, or ShutdownAll.
+		if vr.shutdown {
+			return nil, errors.New("vector search is shutting down")
+		}
+		if e, ok := vr.roots[root]; ok {
+			e.lastUsed = time.Now()
+			return e.mgr, nil
+		}
+		if _, evicting = vr.closing[root]; evicting {
+			return nil, fmt.Errorf("%w: %s is still shutting down; retry shortly", errVectorUnavailable, root)
+		}
+	}
 	if vr.factory == nil {
 		if vr.readySettledLocked() {
 			return nil, errVectorUnavailable
@@ -314,8 +356,27 @@ func (vr *VectorRoots) evictLocked() {
 		v := candidates[oldest]
 		candidates = append(candidates[:oldest], candidates[oldest+1:]...)
 		delete(vr.roots, v.root)
+		// Park the root in the closing set until the evicted manager's
+		// Shutdown has fully returned, so a concurrent ManagerForRoot waits
+		// for the drain instead of building a second manager over the same
+		// chromem persistent storage. The channel is closed under vr.mu only
+		// after Shutdown returned, so "gone from the map" and "safe to
+		// rebuild" are one atomic transition for any waiter.
+		closed := make(chan struct{})
+		if vr.closing == nil {
+			vr.closing = make(map[string]chan struct{})
+		}
+		vr.closing[v.root] = closed
 		vr.f.log().Debug("vector roots: evicting least-recently-used root manager", "root", v.root)
-		go v.mgr.Shutdown()
+		go func() {
+			v.mgr.Shutdown()
+			vr.mu.Lock()
+			if ch, ok := vr.closing[v.root]; ok && ch == closed {
+				delete(vr.closing, v.root)
+			}
+			close(closed)
+			vr.mu.Unlock()
+		}()
 	}
 }
 
@@ -524,6 +585,11 @@ func (vr *VectorRoots) Release(root string) *vectorindex.Manager {
 func (vr *VectorRoots) ReleaseProject(projectID string) []*vectorindex.Manager {
 	vr.mu.Lock()
 	var released []*vectorindex.Manager
+	type closingEntry struct {
+		root   string
+		closed chan struct{}
+	}
+	var closing []closingEntry
 	for root, e := range vr.roots {
 		if e.projectID != projectID {
 			continue
@@ -533,10 +599,29 @@ func (vr *VectorRoots) ReleaseProject(projectID string) []*vectorindex.Manager {
 		if vr.focus == root {
 			vr.focus = ""
 		}
+		// Park the root in the closing set exactly like the LRU eviction
+		// above: "gone from the map" and "safe to rebuild" must be one
+		// atomic transition, or a search issued while this manager's
+		// Shutdown is still draining (a task in the project being deleted
+		// is cancelled only later) rebuilds a second manager over the same
+		// chromem storage.
+		closed := make(chan struct{})
+		if vr.closing == nil {
+			vr.closing = make(map[string]chan struct{})
+		}
+		vr.closing[root] = closed
+		closing = append(closing, closingEntry{root: root, closed: closed})
 	}
 	vr.mu.Unlock()
-	for _, mgr := range released {
+	for i, mgr := range released {
 		mgr.Shutdown()
+		e := closing[i]
+		vr.mu.Lock()
+		if ch, ok := vr.closing[e.root]; ok && ch == e.closed {
+			delete(vr.closing, e.root)
+		}
+		close(e.closed)
+		vr.mu.Unlock()
 	}
 	return released
 }

@@ -145,6 +145,8 @@ func newEmbeddedTestAPI(t *testing.T) (*FrontendAPI, *embeddedEventRecorder, *mo
 		appCtx:          context.Background,
 		logger:          slog.New(slog.DiscardHandler),
 	}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	t.Cleanup(func() {
 		_ = f.stopEmbeddedLLM(context.Background())
 	})
@@ -616,6 +618,8 @@ func TestInitEmbeddedLLMWithoutAnInstallReportsNotInstalled(t *testing.T) {
 // return errors instead of panicking): the getter degrades to "unavailable".
 func TestGetEmbeddedLLMStatusWithoutAnAgentDirIsNotAPanic(t *testing.T) {
 	f := &FrontendAPI{logger: slog.New(slog.DiscardHandler)}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	status := f.GetEmbeddedLLMStatus()
 	if status.Available {

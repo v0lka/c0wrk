@@ -3,7 +3,9 @@ package crashlog
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"math"
 	"os"
@@ -11,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // deadPID returns a process id that is guaranteed not to reference a running
@@ -299,4 +302,56 @@ func readMarkerPID(t *testing.T, path string) int {
 		t.Fatalf("unmarshal marker: %v", err)
 	}
 	return rec.PID
+}
+
+// TestWriteMarker_ReplacesDanglingSymlinkWithoutFollowing pins the #46 fix:
+// stashPreviousMarker does not stash a DANGLING symlink (its Stat reports
+// ErrNotExist), so the marker write itself must not follow the link — the
+// atomic rename replaces the link and the outside target is never created.
+func TestWriteMarker_ReplacesDanglingSymlinkWithoutFollowing(t *testing.T) {
+	dir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "victim")
+	markerPath := filepath.Join(dir, markerName)
+	if err := os.Symlink(outside, markerPath); err != nil {
+		t.Skipf("symlinks unavailable on this platform: %v", err)
+	}
+
+	c := &Capture{markerPath: markerPath, startedAt: time.Now()}
+	if err := c.writeMarker(); err != nil {
+		t.Fatalf("writeMarker: %v", err)
+	}
+
+	if _, err := os.Lstat(outside); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("symlink target was created outside the agent dir: %v", err)
+	}
+	fi, err := os.Lstat(markerPath)
+	if err != nil {
+		t.Fatalf("lstat marker: %v", err)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 || !fi.Mode().IsRegular() {
+		t.Fatalf("marker must be a replaced regular file, mode=%v", fi.Mode())
+	}
+}
+
+// TestInstall_RefusesSymlinkedStderrLog pins the #75 fix: the fixed
+// stderr.log path must be opened no-follow — a planted symlink disables the
+// fd 1/2 capture for the run (fail closed) instead of redirecting the whole
+// process stdout/stderr into an arbitrary user file.
+func TestInstall_RefusesSymlinkedStderrLog(t *testing.T) {
+	dir := t.TempDir()
+	victim := filepath.Join(t.TempDir(), "victim")
+	if err := os.WriteFile(victim, []byte("keep me"), 0o600); err != nil {
+		t.Fatalf("seed victim: %v", err)
+	}
+	if err := os.Symlink(victim, filepath.Join(dir, stderrLogName)); err != nil {
+		t.Skipf("symlinks unavailable on this platform: %v", err)
+	}
+
+	if _, err := install(dir, false); err == nil {
+		t.Fatal("expected install to fail closed on a symlinked stderr.log")
+	}
+	data, err := os.ReadFile(victim)
+	if err != nil || string(data) != "keep me" {
+		t.Fatalf("symlink target was modified: %q (%v)", data, err)
+	}
 }

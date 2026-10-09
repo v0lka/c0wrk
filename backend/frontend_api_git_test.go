@@ -36,6 +36,8 @@ func withGitRepo(t *testing.T, fn func(*FrontendAPI, string)) {
 	commitFile(t, tmpDir, "committed.txt", "v1\n")
 
 	f := &FrontendAPI{activeProjectPath: tmpDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	fn(f, tmpDir)
 }
 
@@ -43,6 +45,8 @@ func withGitRepo(t *testing.T, fn func(*FrontendAPI, string)) {
 
 func TestStageFile_NoProject(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	err := f.StageFile("/some/file.txt")
 	if err == nil {
 		t.Fatal("expected error when no active project")
@@ -51,6 +55,8 @@ func TestStageFile_NoProject(t *testing.T) {
 
 func TestStageFile_NoProjectMode(t *testing.T) {
 	f := &FrontendAPI{activeProjectID: "NO_PROJECT", activeProjectPath: t.TempDir()}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	err := f.StageFile(filepath.Join(f.activeProjectPath, "file.txt"))
 	if err == nil {
 		t.Fatal("expected error for No Project mode")
@@ -123,6 +129,8 @@ func TestStageFile_AlreadyStaged(t *testing.T) {
 
 func TestUnstageFile_NoProject(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	err := f.UnstageFile("/some/file.txt")
 	if err == nil {
 		t.Fatal("expected error when no active project")
@@ -131,6 +139,8 @@ func TestUnstageFile_NoProject(t *testing.T) {
 
 func TestUnstageFile_NoProjectMode(t *testing.T) {
 	f := &FrontendAPI{activeProjectID: "NO_PROJECT", activeProjectPath: t.TempDir()}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	err := f.UnstageFile(filepath.Join(f.activeProjectPath, "file.txt"))
 	if err == nil {
 		t.Fatal("expected error for No Project mode")
@@ -183,6 +193,8 @@ func TestUnstageFile_NotStaged(t *testing.T) {
 
 func TestStageAll_NoProject(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	err := f.StageAll()
 	if err == nil {
 		t.Fatal("expected error when no active project")
@@ -191,6 +203,8 @@ func TestStageAll_NoProject(t *testing.T) {
 
 func TestStageAll_NoProjectMode(t *testing.T) {
 	f := &FrontendAPI{activeProjectID: "NO_PROJECT", activeProjectPath: t.TempDir()}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	err := f.StageAll()
 	if err == nil {
 		t.Fatal("expected error for No Project mode")
@@ -226,6 +240,8 @@ func TestStageAll_Success(t *testing.T) {
 
 func TestUnstageAll_NoProject(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	err := f.UnstageAll()
 	if err == nil {
 		t.Fatal("expected error when no active project")
@@ -234,6 +250,8 @@ func TestUnstageAll_NoProject(t *testing.T) {
 
 func TestUnstageAll_NoProjectMode(t *testing.T) {
 	f := &FrontendAPI{activeProjectID: "NO_PROJECT", activeProjectPath: t.TempDir()}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	err := f.UnstageAll()
 	if err == nil {
 		t.Fatal("expected error for No Project mode")
@@ -272,6 +290,8 @@ func TestUnstageAll_Success(t *testing.T) {
 
 func TestGetDiffStat_NoProject(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	_, err := f.GetDiffStat("/some/file.txt")
 	if err == nil {
 		t.Fatal("expected error when no active project")
@@ -280,6 +300,8 @@ func TestGetDiffStat_NoProject(t *testing.T) {
 
 func TestGetDiffStat_NoProjectMode(t *testing.T) {
 	f := &FrontendAPI{activeProjectID: "NO_PROJECT", activeProjectPath: t.TempDir()}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	_, err := f.GetDiffStat(filepath.Join(f.activeProjectPath, "file.txt"))
 	if err == nil {
 		t.Fatal("expected error for No Project mode")
@@ -382,6 +404,8 @@ func TestGetDiffStat_DeletedLines(t *testing.T) {
 
 func TestGetDiffStats_NoProject(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	_, err := f.GetDiffStats()
 	if err == nil {
 		t.Fatal("expected error when no active project")
@@ -601,6 +625,8 @@ func TestGitStatus_WorkTreeOnly(t *testing.T) {
 
 func TestCommit_NoProject(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	_, err := f.Commit("test", false)
 	if err == nil {
 		t.Fatal("expected error when no active project")
@@ -609,6 +635,8 @@ func TestCommit_NoProject(t *testing.T) {
 
 func TestCommit_NoProjectMode(t *testing.T) {
 	f := &FrontendAPI{activeProjectID: "NO_PROJECT", activeProjectPath: t.TempDir()}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	_, err := f.Commit("test", false)
 	if err == nil {
 		t.Fatal("expected error for No Project mode")
@@ -697,6 +725,8 @@ func TestCommit_NothingToCommit(t *testing.T) {
 
 func TestGetBranches_NoProject(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	_, err := f.GetBranches()
 	if err == nil {
 		t.Fatal("expected error when no active project")
@@ -705,6 +735,8 @@ func TestGetBranches_NoProject(t *testing.T) {
 
 func TestGetBranches_NoProjectMode(t *testing.T) {
 	f := &FrontendAPI{activeProjectID: "NO_PROJECT", activeProjectPath: t.TempDir()}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	_, err := f.GetBranches()
 	if err == nil {
 		t.Fatal("expected error for No Project mode")
@@ -720,6 +752,8 @@ func TestGetBranches_ReturnsCurrent(t *testing.T) {
 	defBranch := gitDefaultBranch(t, tmpDir)
 
 	f := &FrontendAPI{activeProjectPath: tmpDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	branches, err := f.GetBranches()
 	if err != nil {
 		t.Fatalf("GetBranches: %v", err)
@@ -754,6 +788,8 @@ func TestGetBranches_WithExtraBranch(t *testing.T) {
 	runGit(t, tmpDir, "branch", "feature-x")
 
 	f := &FrontendAPI{activeProjectPath: tmpDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	branches, err := f.GetBranches()
 	if err != nil {
 		t.Fatalf("GetBranches: %v", err)
@@ -786,6 +822,8 @@ func TestGetBranches_IncludesBranchNamedHEAD(t *testing.T) {
 	runGit(t, tmpDir, "branch", "feature/HEAD")
 
 	f := &FrontendAPI{activeProjectPath: tmpDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	branches, err := f.GetBranches()
 	if err != nil {
 		t.Fatalf("GetBranches: %v", err)
@@ -822,6 +860,8 @@ func TestGetBranches_EmptyRepo(t *testing.T) {
 	_ = cmd.Run()
 
 	f := &FrontendAPI{activeProjectPath: tmpDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	branches, err := f.GetBranches()
 	if err != nil {
 		t.Fatalf("GetBranches (empty repo): %v", err)
@@ -856,6 +896,8 @@ func TestGetBranches_RemoteAndUpstream(t *testing.T) {
 	}
 
 	f := &FrontendAPI{activeProjectPath: tmpDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	branches, err := f.GetBranches()
 	if err != nil {
 		t.Fatalf("GetBranches: %v", err)
@@ -898,6 +940,8 @@ func TestGetBranches_RemoteAndUpstream(t *testing.T) {
 
 func TestGetCurrentBranch_NoProject(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	_, err := f.GetCurrentBranch()
 	if err == nil {
 		t.Fatal("expected error when no active project")
@@ -906,6 +950,8 @@ func TestGetCurrentBranch_NoProject(t *testing.T) {
 
 func TestGetIsGitRepo_NoProject(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	isRepo, err := f.GetIsGitRepo()
 	if err == nil {
 		t.Fatal("expected error when no active project")
@@ -917,6 +963,8 @@ func TestGetIsGitRepo_NoProject(t *testing.T) {
 
 func TestGetIsGitRepo_NoProjectMode(t *testing.T) {
 	f := &FrontendAPI{activeProjectID: project.NoProjectID, activeProjectPath: t.TempDir()}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	_, err := f.GetIsGitRepo()
 	if err == nil {
 		t.Fatal("expected error for No Project mode")
@@ -929,6 +977,8 @@ func TestGetIsGitRepo_RepoWorkspace(t *testing.T) {
 	commitFile(t, tmpDir, "f.txt", "x\n")
 
 	f := &FrontendAPI{activeProjectPath: tmpDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	isRepo, err := f.GetIsGitRepo()
 	if err != nil {
 		t.Fatalf("GetIsGitRepo: %v", err)
@@ -940,6 +990,8 @@ func TestGetIsGitRepo_RepoWorkspace(t *testing.T) {
 
 func TestGetIsGitRepo_NonRepoWorkspace(t *testing.T) {
 	f := &FrontendAPI{activeProjectPath: t.TempDir()}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	isRepo, err := f.GetIsGitRepo()
 	if err != nil {
 		t.Fatalf("GetIsGitRepo: %v", err)
@@ -951,6 +1003,8 @@ func TestGetIsGitRepo_NonRepoWorkspace(t *testing.T) {
 
 func TestGetCurrentBranch_NoProjectMode(t *testing.T) {
 	f := &FrontendAPI{activeProjectID: "NO_PROJECT", activeProjectPath: t.TempDir()}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	_, err := f.GetCurrentBranch()
 	if err == nil {
 		t.Fatal("expected error for No Project mode")
@@ -965,6 +1019,8 @@ func TestGetCurrentBranch_ReturnsBranchName(t *testing.T) {
 	defBranch := gitDefaultBranch(t, tmpDir)
 
 	f := &FrontendAPI{activeProjectPath: tmpDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	info, err := f.GetCurrentBranch()
 	if err != nil {
 		t.Fatalf("GetCurrentBranch: %v", err)
@@ -989,6 +1045,8 @@ func TestGetCurrentBranch_DetachedHead(t *testing.T) {
 	runGit(t, tmpDir, "checkout", "--detach", "HEAD")
 
 	f := &FrontendAPI{activeProjectPath: tmpDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	info, err := f.GetCurrentBranch()
 	if err != nil {
 		t.Fatalf("GetCurrentBranch (detached): %v", err)
@@ -1164,6 +1222,8 @@ func TestEventNotEmitted_OnError(t *testing.T) {
 
 func TestCheckoutBranch_NoProject(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	if err := f.CheckoutBranch("main"); err == nil {
 		t.Fatal("expected error when no active project")
 	}
@@ -1262,6 +1322,8 @@ func TestCheckoutBranch_NonexistentBranch(t *testing.T) {
 
 func TestCreateBranch_NoProject(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	if err := f.CreateBranch("main", ""); err == nil {
 		t.Fatal("expected error when no active project")
 	}
@@ -1347,6 +1409,8 @@ func TestCreateBranch_FromRemoteBranch_Track(t *testing.T) {
 	gitOut(t, localDir, "push", "-u", "origin", branch)
 
 	f := &FrontendAPI{activeProjectPath: localDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	if err := f.CreateBranch("feature", "origin/"+branch); err != nil {
 		t.Fatalf("CreateBranch from remote: %v", err)
@@ -1422,6 +1486,8 @@ func TestCreateBranch_InvalidBase(t *testing.T) {
 
 func TestRenameBranch_NoProject(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	if err := f.RenameBranch("old", "new"); err == nil {
 		t.Fatal("expected error when no active project")
 	}
@@ -1504,6 +1570,8 @@ func TestRenameBranch_AlreadyExists(t *testing.T) {
 
 func TestDeleteBranch_NoProject(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	if err := f.DeleteBranch("doomed", false); err == nil {
 		t.Fatal("expected error when no active project")
 	}
@@ -1585,6 +1653,8 @@ func TestDeleteBranch_UnmergedWithoutForce(t *testing.T) {
 
 func TestGetBranchBases_NoProject(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	if _, err := f.GetBranchBases(); err == nil {
 		t.Fatal("expected error when no active project")
 	}
@@ -1612,6 +1682,8 @@ func TestGetBranchBases_Types(t *testing.T) {
 	commitFile(t, localDir, "b.txt", "b\n")
 
 	f := &FrontendAPI{activeProjectPath: localDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	bases, err := f.GetBranchBases()
 	if err != nil {
 		t.Fatalf("GetBranchBases: %v", err)
@@ -1683,6 +1755,8 @@ func TestGetBranchBases_EmptyRepo(t *testing.T) {
 	gitInit(t, tmpDir)
 
 	f := &FrontendAPI{activeProjectPath: tmpDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	bases, err := f.GetBranchBases()
 	if err != nil {
 		t.Fatalf("GetBranchBases on empty repo: %v", err)
@@ -1711,6 +1785,8 @@ func TestGetBranchBases_SkipsSymbolicHeadKeepsBranchNamedHEAD(t *testing.T) {
 	runGit(t, localDir, "branch", "feature/HEAD")
 
 	f := &FrontendAPI{activeProjectPath: localDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	bases, err := f.GetBranchBases()
 	if err != nil {
 		t.Fatalf("GetBranchBases: %v", err)
@@ -1732,6 +1808,8 @@ func TestGetBranchBases_SkipsSymbolicHeadKeepsBranchNamedHEAD(t *testing.T) {
 
 func TestGenerateCommitMessage_NoBuilder(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	captureMiscDiagnostics(t, f, miscExpectedDiagnostic{
 		message: "GenerateCommitMessage: application not initialized (builder is nil)",
 		attrs:   map[string]string{},
@@ -1743,6 +1821,8 @@ func TestGenerateCommitMessage_NoBuilder(t *testing.T) {
 
 func TestGenerateCommitMessage_NoProject(t *testing.T) {
 	f := &FrontendAPI{builderOverride: &mockBuilder{}}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	captureMiscDiagnostics(t, f, miscExpectedDiagnostic{
 		message: "GenerateCommitMessage: no active project",
 		attrs:   map[string]string{"err": "no active project"},
@@ -1909,6 +1989,8 @@ func TestGetCommitFiles(t *testing.T) {
 	commitFile(t, tmpDir, "mod.txt", "v1\n")
 
 	f := &FrontendAPI{activeProjectPath: tmpDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	// A mixed commit: add, modify, delete, rename.
 	if err := os.WriteFile(filepath.Join(tmpDir, "new.txt"), []byte("n\n"), 0o644); err != nil {
@@ -1949,6 +2031,8 @@ func TestGetCommitFiles(t *testing.T) {
 
 func TestGetCommitFiles_EmptySHA(t *testing.T) {
 	f := &FrontendAPI{activeProjectPath: t.TempDir()}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	if _, err := f.GetCommitFiles(""); err == nil {
 		t.Fatal("expected error for empty sha")
 	}
@@ -1959,6 +2043,8 @@ func TestGetCommitFiles_EmptySHA(t *testing.T) {
 
 func TestGetCommitFiles_InvalidSha(t *testing.T) {
 	f := &FrontendAPI{activeProjectPath: t.TempDir()}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	if _, err := f.GetCommitFiles("not-a-sha"); err == nil {
 		t.Fatal("expected error for non-hex SHA")
 	}
@@ -1978,6 +2064,8 @@ func TestGetCommitFilesBatch(t *testing.T) {
 	sha2 := gitOut(t, tmpDir, "rev-parse", "HEAD")
 
 	f := &FrontendAPI{activeProjectPath: tmpDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	result, err := f.GetCommitFilesBatch([]string{sha1, sha2})
 	if err != nil {
@@ -2007,6 +2095,8 @@ func TestGetCommitFilesBatch(t *testing.T) {
 
 func TestGetCommitFilesBatch_EmptyList(t *testing.T) {
 	f := &FrontendAPI{activeProjectPath: t.TempDir()}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	if _, err := f.GetCommitFilesBatch(nil); err == nil {
 		t.Fatal("expected error for nil sha list")
 	}
@@ -2020,6 +2110,8 @@ func TestGetCommitFilesBatch_EmptyList(t *testing.T) {
 
 func TestGetCommitFilesBatch_NoProject(t *testing.T) {
 	f := &FrontendAPI{activeProjectPath: ""}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	if _, err := f.GetCommitFilesBatch([]string{"abcdef1234"}); err == nil {
 		t.Fatal("expected error when no project is active")
 	}
@@ -2027,6 +2119,8 @@ func TestGetCommitFilesBatch_NoProject(t *testing.T) {
 
 func TestGetCommitFilesBatch_InvalidSha(t *testing.T) {
 	f := &FrontendAPI{activeProjectPath: t.TempDir()}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	// Non-hex characters must be rejected.
 	if _, err := f.GetCommitFilesBatch([]string{"not-a-sha"}); err == nil {
 		t.Fatal("expected error for non-hex SHA")
@@ -2056,6 +2150,8 @@ func TestGetCommitFilesBatch_AbbreviatedShas(t *testing.T) {
 	sha2Abbrev := sha2Full[:7]
 
 	f := &FrontendAPI{activeProjectPath: tmpDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	// Pass abbreviated SHAs; the result should be keyed by full SHAs
 	// (resolved by git rev-parse before the log call).
@@ -2184,6 +2280,8 @@ func TestStashCreateListPop(t *testing.T) {
 
 func TestStashPop_NegativeIndex(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	if err := f.StashPop(-1); err == nil {
 		t.Fatal("expected error for negative stash index")
 	}
@@ -2191,6 +2289,8 @@ func TestStashPop_NegativeIndex(t *testing.T) {
 
 func TestStashDrop_NegativeIndex(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	if err := f.StashDrop(-1); err == nil {
 		t.Fatal("expected error for negative stash index")
 	}
@@ -2294,6 +2394,8 @@ func TestGetCurrentBranch_AheadBehind(t *testing.T) {
 	gitOut(t, localDir, "push", "-u", "origin", branch)
 
 	f := &FrontendAPI{activeProjectPath: localDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	// In sync.
 	info, err := f.GetCurrentBranch()
@@ -2333,6 +2435,8 @@ func TestPush_LocalRemote(t *testing.T) {
 	gitOut(t, localDir, "push", "-u", "origin", branch)
 
 	f := &FrontendAPI{activeProjectPath: localDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	var emitted string
 	f.emitEvent = func(name string, args ...any) {
 		if name == EventGitStatusChanged && len(args) >= 1 {
@@ -2375,6 +2479,8 @@ func TestPush_EmptyRemote_UntrackedBranch_PublishesAndSetsUpstream(t *testing.T)
 	commitFile(t, localDir, "b.txt", "b\n")
 
 	f := &FrontendAPI{activeProjectPath: localDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	var emitted string
 	f.emitEvent = func(name string, args ...any) {
 		if name == EventGitStatusChanged && len(args) >= 1 {
@@ -2424,6 +2530,8 @@ func TestPush_EmptyRemote_UntrackedBranch_NoOriginUsesDefaultRemote(t *testing.T
 	commitFile(t, localDir, "b.txt", "b\n")
 
 	f := &FrontendAPI{activeProjectPath: localDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	if _, err := f.Push("", nil); err != nil {
 		t.Fatalf("Push (empty remote, no origin): %v", err)
 	}
@@ -2456,6 +2564,8 @@ func TestPush_EmptyRemote_TrackedBranch_UsesConfiguredRemote(t *testing.T) {
 	gitOut(t, localDir, "push", "-u", "upstream", branch)
 
 	f := &FrontendAPI{activeProjectPath: localDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	// New local commit to push via the RPC.
 	commitFile(t, localDir, "b.txt", "b\n")
@@ -2493,6 +2603,8 @@ func TestPush_EmptyRemote_TrackedBranch_HonorsPushRemote(t *testing.T) {
 	gitOut(t, localDir, "config", "branch."+branch+".pushRemote", "fork")
 
 	f := &FrontendAPI{activeProjectPath: localDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	commitFile(t, localDir, "b.txt", "b\n")
 	if _, err := f.Push("", nil); err != nil {
@@ -2521,6 +2633,8 @@ func TestFetchAndPull_LocalRemote(t *testing.T) {
 	gitOut(t, localDir, "push", "-u", "origin", branch)
 
 	f := &FrontendAPI{activeProjectPath: localDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	// Advance the remote from a clone so local falls behind.
 	cloneParent := t.TempDir()
@@ -2560,6 +2674,8 @@ func TestFetchAndPull_LocalRemote(t *testing.T) {
 
 func TestPhase5Git_NoProject(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	if _, err := f.Pull("origin", nil); err == nil {
 		t.Error("Pull: expected error")
 	}
@@ -2585,6 +2701,8 @@ func TestPhase5Git_NoProject(t *testing.T) {
 
 func TestPhase5Git_NoProjectMode(t *testing.T) {
 	f := &FrontendAPI{activeProjectID: "NO_PROJECT", activeProjectPath: t.TempDir()}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	captureMiscDiagnostics(t, f,
 		miscRemoteFailure("[pull origin]"),
 		miscRemoteFailure("[push origin]"),
@@ -2651,6 +2769,8 @@ func TestRemoteOp_RejectsInvalidFlags(t *testing.T) {
 	// No active project, but flag validation runs first — an invalid flag
 	// is rejected before the project check.
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	if _, err := f.Pull("", []string{"--evil"}); err == nil {
 		t.Error("Pull with invalid flag: expected error")
 	}
@@ -2681,6 +2801,8 @@ func TestPull_FFOnlyFlag_FastForward(t *testing.T) {
 	gitOut(t, localDir, "push", "-u", "origin", branch)
 
 	f := &FrontendAPI{activeProjectPath: localDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	// Advance the remote from a clone so local falls behind.
 	cloneParent := t.TempDir()
@@ -2717,6 +2839,8 @@ func TestPull_FFOnlyFlag_Diverged(t *testing.T) {
 	gitOut(t, localDir, "push", "-u", "origin", branch)
 
 	f := &FrontendAPI{activeProjectPath: localDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	// Advance the remote from a clone.
 	cloneParent := t.TempDir()

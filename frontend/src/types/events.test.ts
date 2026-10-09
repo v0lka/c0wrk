@@ -627,7 +627,7 @@ describe('isSessionTokensData', () => {
     // payloads that predate the metric simply omit both, so the guard accepts
     // the legacy shape untouched and validates the new fields only when
     // present — the same pattern as the compaction no-op flags.
-    const legacy = { session_input_tokens: 1200, session_output_tokens: 340 }
+    const legacy = { session_input_tokens: 1200, session_output_tokens: 340, model: 'm', family: 'f' }
 
     it('accepts the legacy payload (no throughput fields)', () => {
         expect(isSessionTokensData(legacy)).toBe(true)

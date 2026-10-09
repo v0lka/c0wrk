@@ -18,6 +18,8 @@ import (
 func TestReadFile_RefusesFifoWithoutHanging(t *testing.T) {
 	dir := t.TempDir()
 	f := &FrontendAPI{activeProjectPath: dir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	fifo := filepath.Join(dir, "pipe")
 	if err := syscall.Mkfifo(fifo, 0o644); err != nil {
 		t.Fatalf("mkfifo: %v", err)
@@ -41,6 +43,8 @@ func TestReadFile_RefusesFifoWithoutHanging(t *testing.T) {
 func TestReadFileAsDataURL_RefusesFifoWithoutHanging(t *testing.T) {
 	dir := t.TempDir()
 	f := &FrontendAPI{activeProjectPath: dir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	fifo := filepath.Join(dir, "pipe.png")
 	if err := syscall.Mkfifo(fifo, 0o644); err != nil {
 		t.Fatalf("mkfifo: %v", err)

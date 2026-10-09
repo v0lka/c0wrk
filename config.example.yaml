@@ -1024,6 +1024,11 @@ toolLimits:
   # Omitting a key uses its default (500000 / 10000); an EXPLICIT 0 disables the
   # respective budget (no entry cap / unlimited results). To disable the budget
   # on purpose, write 0 — deleting the line returns to the default.
+  #
+  # Setting 0 on ALL THREE knobs (these two plus timeouts.globTimeout) is
+  # honoured verbatim: the glob tool is registered with every bound disabled,
+  # not silently re-armed with the defaults. (A config that touches none of the
+  # three keys keeps the defaults.)
   globMaxEntries: 500000 # Max filesystem entries visited per glob walk (omit = 500000; 0 = no entry budget)
   globMaxResults: 10000 # Max matching paths collected per glob walk (omit = 10000; 0 = unlimited)
 
@@ -1075,6 +1080,20 @@ timeouts:
   # abandoned and the run returns a "tool call timed out" error naming the tool.
   # Applied to the main executor AND every subagent executor. Omit = 300; 0 = disabled.
   toolCallTimeout: 300 # Seconds; a single tool call ceiling (5 min). Omit = 300; 0 = disabled
+  # Exempt tools for the ceiling above: tool NAMES (not capability groups) that
+  # are never bounded by it. Omitted = sp4rk's built-in default set:
+  # [ask_user, declare_plan, propose_goal, delegate, execute_plan] — the
+  # interactive/blocking orchestration tools that wait on a human or on
+  # sub-work by design. An explicit list REPLACES that set wholesale (keep the
+  # defaults you still want); an explicit empty list means "no exemptions".
+  # Use it to exempt long-running tools the default set does not know — e.g. an
+  # MCP-backed tool with no internal timeout that legitimately waits on a slow
+  # server instead of failing the whole run at the ceiling.
+  # Note: the omitted default is resolved from sp4rk at runtime and is never
+  # written into config.yaml; a stored list identical to the built-in default
+  # may be a leftover from a save by an older build — delete the key to
+  # re-follow sp4rk's built-in set.
+  # toolCallTimeoutExemptTools: [ask_user, declare_plan, propose_goal, delegate, execute_plan]
   webFetchTimeout: 30 # Timeout for web page fetching
   webFetchProxyTimeout: 30 # Timeout for web page fetching when the proxy is enabled. 0 = use default 30s
   webFetchRetries: 2 # Retries for failed web page fetches; each retry doubles the active timeout (webFetchTimeout, or webFetchProxyTimeout when proxy is on). 0 = use default 2

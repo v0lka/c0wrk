@@ -20,10 +20,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // testLogger is a discard-backed logger so tests stay silent regardless of
@@ -814,5 +816,165 @@ func TestConvertWithVision_DataURIAltReused(t *testing.T) {
 	}
 	if n := calls.Load(); n != 0 {
 		t.Errorf("expected 0 captioning calls when alt text already present, got %d", n)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Plain-CLI failure diagnostics (bounded stderr surfacing) — POSIX shims.
+// ---------------------------------------------------------------------------
+
+// installMarkitdownShim puts a shell-script markitdown stand-in on PATH that
+// runs the given POSIX-sh body regardless of argv, shadowing any real CLI.
+// The original PATH is kept as the tail so the script's own tool lookups
+// (head, …) still resolve. POSIX only: skipped on Windows, which has no
+// /bin/sh and no executable bit.
+func installMarkitdownShim(t *testing.T, body string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("shim fixtures use POSIX shell scripts; skipping on Windows")
+	}
+	binDir := t.TempDir()
+	script := "#!/bin/sh\n" + body + "\n"
+	if err := os.WriteFile(filepath.Join(binDir, "markitdown"), []byte(script), 0o755); err != nil {
+		t.Fatalf("writing markitdown shim: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// shimFixtureDoc writes a minimal supported document for the shim to reject.
+func shimFixtureDoc(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "doc.md")
+	if err := os.WriteFile(path, []byte("# hi\n"), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	return path
+}
+
+// TestConvert_CLIErrorSurfacesStderr pins the failure-path diagnostics
+// contract: the markitdown CLI writes its real diagnostics (tracebacks,
+// module errors) to stderr, so a failed conversion must surface BOTH streams
+// — in the returned error AND in the Warn log — with the exec cause still
+// reachable for errors.Is / errors.As.
+func TestConvert_CLIErrorSurfacesStderr(t *testing.T) {
+	const stdoutNoise = "some stdout progress noise"
+	const stderrMarker = "MARKITDOWN_STDERR_TRACEBACK_MARKER"
+	installMarkitdownShim(t, fmt.Sprintf("printf '%%s\\n' %q\necho %q >&2\nexit 3\n", stdoutNoise, stderrMarker))
+
+	var logBuf bytes.Buffer
+	c := &Converter{log: slog.New(slog.NewTextHandler(&logBuf, nil)), timeout: time.Minute}
+
+	_, err := c.Convert(context.Background(), shimFixtureDoc(t))
+	if err == nil {
+		t.Fatal("expected error from failing CLI, got nil")
+	}
+	if !strings.Contains(err.Error(), "conversion failed") {
+		t.Errorf("expected 'conversion failed' in error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), stdoutNoise) {
+		t.Errorf("expected stdout noise surfaced in error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), stderrMarker) {
+		t.Errorf("expected stderr marker surfaced in error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "(stderr: "+stderrMarker) {
+		t.Errorf("expected stderr framed via '(stderr: ...)' in error, got: %v", err)
+	}
+	// The exec cause stays reachable through the wrapper.
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Errorf("expected error to wrap *exec.ExitError, got: %v", err)
+	}
+
+	// The Warn log must carry the stderr diagnostics too.
+	logged := logBuf.String()
+	if !strings.Contains(logged, "markitdown conversion failed") {
+		t.Errorf("expected failure Warn record, got: %s", logged)
+	}
+	if !strings.Contains(logged, "stderr="+stderrMarker) {
+		t.Errorf("expected stderr marker recorded in Warn log, got: %s", logged)
+	}
+}
+
+// TestConvert_ShimSuccessStderrIgnored pins the success-path contract: a
+// zero-exit conversion returns the trimmed stdout as markdown and stderr
+// noise (warnings, deprecation notices) never pollutes the document.
+func TestConvert_ShimSuccessStderrIgnored(t *testing.T) {
+	installMarkitdownShim(t, fmt.Sprintf("printf '%%s\\n' %q %q\necho shim-stderr-noise >&2\nexit 0\n", "  # Converted", "body  "))
+
+	c := newBareConverter(t, time.Minute)
+
+	md, err := c.Convert(context.Background(), shimFixtureDoc(t))
+	if err != nil {
+		t.Fatalf("Convert returned error: %v", err)
+	}
+	if md != "# Converted\nbody" {
+		t.Errorf("markdown = %q, want trimmed stdout %q", md, "# Converted\nbody")
+	}
+	if strings.Contains(md, "shim-stderr-noise") {
+		t.Errorf("stderr leaked into the converted document: %q", md)
+	}
+}
+
+// TestConvert_CLIOverflowCaptureCap pins the capture-cap behavior through a
+// real subprocess: a stream exceeding maxConverterOutputBytes fails the
+// conversion with the precise capture-cap error (not a silent truncation and
+// not the stderr-diagnostic branch), whether the flood arrives on stdout or
+// stderr alone.
+func TestConvert_CLIOverflowCaptureCap(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"stdout overflow", "head -c 34000000 /dev/zero\nexit 0\n"},
+		{"stderr overflow", "head -c 34000000 /dev/zero >&2\nexit 0\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			installMarkitdownShim(t, tc.body)
+
+			var logBuf bytes.Buffer
+			c := &Converter{log: slog.New(slog.NewTextHandler(&logBuf, nil)), timeout: time.Minute}
+
+			_, err := c.Convert(context.Background(), shimFixtureDoc(t))
+			if err == nil {
+				t.Fatal("expected capture-cap error, got nil")
+			}
+			if !strings.Contains(err.Error(), "capture cap") {
+				t.Errorf("expected capture-cap error, got: %v", err)
+			}
+			if strings.Contains(err.Error(), "(stderr:") {
+				t.Errorf("overflow must fail before the stderr-diagnostic branch, got: %v", err)
+			}
+			// The overflow Warn record keeps its original shape: no stderr field.
+			if strings.Contains(logBuf.String(), "stderr=") {
+				t.Errorf("overflow Warn log must not carry a stderr field, got: %s", logBuf.String())
+			}
+		})
+	}
+}
+
+// TestStreamExcerpt pins the bounded-diagnostic helper: short strings pass
+// through untouched, longer ones are cut to maxErrorStreamBytes, and a cut
+// landing inside a multi-byte rune is pulled back to a valid boundary.
+func TestStreamExcerpt(t *testing.T) {
+	if got := streamExcerpt("short"); got != "short" {
+		t.Errorf("streamExcerpt(short) = %q, want unchanged", got)
+	}
+
+	long := strings.Repeat("a", maxErrorStreamBytes+100)
+	if got := streamExcerpt(long); len(got) != maxErrorStreamBytes || !strings.HasPrefix(long, got) {
+		t.Errorf("streamExcerpt(long) length = %d, want %d-byte prefix", len(got), maxErrorStreamBytes)
+	}
+
+	// 'é' is two bytes: the default cut would split it, so the excerpt must
+	// give the trailing partial rune back.
+	multi := strings.Repeat("a", maxErrorStreamBytes-1) + "é" + strings.Repeat("b", 10)
+	got := streamExcerpt(multi)
+	if len(got) != maxErrorStreamBytes-1 {
+		t.Errorf("streamExcerpt(rune boundary) length = %d, want %d", len(got), maxErrorStreamBytes-1)
+	}
+	if !utf8.ValidString(got) {
+		t.Errorf("streamExcerpt produced invalid UTF-8: %q", got)
 	}
 }

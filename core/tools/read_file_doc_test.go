@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/v0lka/c0wrk/core/markitdown"
+	"github.com/v0lka/sp4rk/safeio"
 	sdktools "github.com/v0lka/sp4rk/tools"
 	"github.com/v0lka/sp4rk/tools/builtins"
 )
@@ -353,6 +355,95 @@ func TestGetOrConvert_CacheHit(t *testing.T) {
 	}
 	if markdown != cachedMarkdown {
 		t.Errorf("expected cached markdown, got: %s", markdown)
+	}
+}
+
+// TestGetOrConvert_CacheHitAboveDefaultReadCap pins the cache-read cap
+// contract: an entry between safeio.DefaultMaxFileSize (10 MiB, the safeio
+// default) and markitdown.MaxConversionOutputBytes (32 MiB, the converter's
+// write cap) must be SERVED from the cache. The converter refuses output
+// beyond 32 MiB instead of writing a truncated entry, so every legitimately
+// written cache entry fits that cap — reading entries back with the safeio
+// default would fail ErrTooLarge exactly for the largest documents and
+// silently re-convert them on every read.
+func TestGetOrConvert_CacheHitAboveDefaultReadCap(t *testing.T) {
+	ws := t.TempDir()
+	tempDir := t.TempDir()
+
+	pdfPath := filepath.Join(ws, "big.pdf")
+	if err := os.WriteFile(pdfPath, []byte("%PDF fake"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// An entry in the (10 MiB, 32 MiB] window: legal for the converter,
+	// illegal for the safeio default read cap.
+	bodyLen := int(markitdown.MaxConversionOutputBytes) - 2 // '#' prefix + trailing newline
+	cachedMarkdown := "#" + strings.Repeat("a", bodyLen) + "\n"
+	if int64(len(cachedMarkdown)) <= safeio.DefaultMaxFileSize ||
+		int64(len(cachedMarkdown)) > markitdown.MaxConversionOutputBytes {
+		t.Fatalf("test entry must exceed the safeio default and fit the converter cap: %d", len(cachedMarkdown))
+	}
+
+	info, _ := os.Stat(pdfPath)
+	cacheKey := docCacheKey(pdfPath, info.ModTime().UnixNano(), info.Size(), "")
+	cacheDir := filepath.Join(tempDir, docConversionSubdir)
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cacheFile := filepath.Join(cacheDir, cacheKey+".md")
+	if err := os.WriteFile(cacheFile, []byte(cachedMarkdown), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := NewReadFileDocTool(builtins.DefaultFileLimits(), nil, nil)
+	ctx := sdktools.WithWorkspacePath(context.Background(), ws)
+	ctx = sdktools.WithTempDir(ctx, tempDir)
+
+	markdown, err := tool.getOrConvert(ctx, pdfPath)
+	if err != nil {
+		t.Fatalf("getOrConvert refused a legal cache entry: %v", err)
+	}
+	if markdown != cachedMarkdown {
+		t.Errorf("expected the full cached markdown (%d bytes), got %d bytes", len(cachedMarkdown), len(markdown))
+	}
+}
+
+// TestGetOrConvert_OverconverterCapEntryIsMiss pins the forged-entry path: a
+// cache entry LARGER than markitdown.MaxConversionOutputBytes can never have
+// been written by the converter (it refuses such output), so it must be
+// treated as a cache miss — falling through to conversion — instead of being
+// served. With markitdown unavailable the conversion errors, proving the
+// oversized content was never returned.
+func TestGetOrConvert_OverconverterCapEntryIsMiss(t *testing.T) {
+	ws := t.TempDir()
+	tempDir := t.TempDir()
+
+	pdfPath := filepath.Join(ws, "big.pdf")
+	if err := os.WriteFile(pdfPath, []byte("%PDF fake"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	oversized := "#" + strings.Repeat("a", int(markitdown.MaxConversionOutputBytes)) + "\n"
+
+	info, _ := os.Stat(pdfPath)
+	cacheKey := docCacheKey(pdfPath, info.ModTime().UnixNano(), info.Size(), "")
+	cacheDir := filepath.Join(tempDir, docConversionSubdir)
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cacheDir, cacheKey+".md"), []byte(oversized), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Scope PATH to an empty dir so the miss cannot silently convert.
+	t.Setenv("PATH", t.TempDir())
+
+	tool := NewReadFileDocTool(builtins.DefaultFileLimits(), nil, nil)
+	ctx := sdktools.WithWorkspacePath(context.Background(), ws)
+	ctx = sdktools.WithTempDir(ctx, tempDir)
+
+	if _, err := tool.getOrConvert(ctx, pdfPath); err == nil {
+		t.Fatal("expected an error (cache miss → conversion attempt with no markitdown), got nil")
 	}
 }
 

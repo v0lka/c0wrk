@@ -116,7 +116,7 @@ func SeedSkills(destSkillsDir string, logger *slog.Logger) (*SeedSkillsResult, e
 	if destSkillsDir == "" {
 		return nil, errors.New("research.SeedSkills: destSkillsDir is empty")
 	}
-	if err := os.MkdirAll(destSkillsDir, 0o755); err != nil {
+	if err := safeio.MkdirAllRealWithin(filepath.Dir(filepath.Dir(destSkillsDir)), destSkillsDir, 0o755); err != nil {
 		return nil, fmt.Errorf("research.SeedSkills: create skills dir %q: %w", destSkillsDir, err)
 	}
 

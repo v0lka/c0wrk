@@ -4,6 +4,7 @@
  */
 import type { ChatMessageUI, DisplayItem } from '@/types/messages'
 import type { TodoItem } from '@/types/models'
+import { isTodoItemData } from '@/types/events'
 import { resolveToolKey } from './chatUtilsHelpers'
 
 export type ToolLike = DisplayItem & { kind: 'tool' }
@@ -11,6 +12,20 @@ export type PlanStep = DisplayItem & { kind: 'plan_step' }
 export type SubAgentItem = DisplayItem & { kind: 'subagent' }
 export type StepLikeItem = PlanStep | SubAgentItem
 export type ActionDisplayItem = Extract<DisplayItem, { kind: 'tool_confirm' | 'ask_user' | 'step_limit' | 'plan_review' | 'resume_action' | 'goal_proposal' }>
+
+/**
+ * Narrow one persisted-metadata field to a string.
+ *
+ * History-rebuild metadata rows are re-read RAW (the live event guards —
+ * isToolCallData, isReflectionData, … — only run on fresh events), so a
+ * malformed persisted row must degrade to the same fallback the live guard's
+ * absence would produce instead of throwing a TypeError inside groupMessages
+ * (which runs on every message-list render).
+ */
+function metaString(meta: Record<string, unknown> | undefined, key: string): string | undefined {
+  const v = meta?.[key]
+  return typeof v === 'string' ? v : undefined
+}
 
 /**
  * handleStepTodoUpdate processes a step_todo_update message into a
@@ -27,9 +42,14 @@ export function handleStepTodoUpdate(
   openSteps: Map<string, StepLikeItem>, items: DisplayItem[],
   checklistsByKey: Map<string, { item: DisplayItem & { kind: 'checklist' }; container: DisplayItem[] }>,
 ) {
-  const stepId = (meta?.step_id as string) || ''
-  const rawItems = meta?.items as Array<{ text: string; checked: boolean }> | undefined
-  if (!rawItems || rawItems.length === 0) return
+  const stepId = typeof meta?.step_id === 'string' ? meta.step_id : ''
+  // `items` is re-read raw from persisted metadata on history rebuild: the
+  // blind cast kept a truthy non-array (its .map then threw) and a null/
+  // primitive element (it.text then threw). Require a real array and keep
+  // only well-formed {text, checked} elements — a malformed row degrades to
+  // "no checklist" instead of breaking the chat render.
+  const rawItems = Array.isArray(meta?.items) ? meta.items.filter(isTodoItemData) : []
+  if (rawItems.length === 0) return
 
   const todoItems: TodoItem[] = rawItems.map((it) => ({ text: it.text, checked: it.checked }))
   const active = todoItems.some((it) => !it.checked)
@@ -73,9 +93,9 @@ export function handlePlanStepStart(
   stepIndexMap: Map<string, { num: number; title: string; description: string }>,
   stepIdCounts: Map<string, number>, openSteps: Map<string, StepLikeItem>, items: DisplayItem[],
 ) {
-  const stepId = (meta?.step_id as string) || ''
-  const description = (meta?.description as string) || ''
-  const summary = (meta?.summary as string)?.trim() || ''
+  const stepId = metaString(meta, 'step_id') ?? ''
+  const description = metaString(meta, 'description') ?? ''
+  const summary = metaString(meta, 'summary')?.trim() ?? ''
   const info = stepIndexMap.get(stepId)
   // Skip plan_step blocks for ad-hoc step_ids not in a declared plan
   // (e.g. the Conductor's own update_checklist with step_id "main").
@@ -186,8 +206,8 @@ export function handleSubAgentLaunch(
   msg: ChatMessageUI, meta: Record<string, unknown> | undefined,
   openSteps: Map<string, StepLikeItem>, items: DisplayItem[],
 ) {
-  const stepId = (meta?.step_id as string) || ''
-  const description = (meta?.description as string) || ''
+  const stepId = metaString(meta, 'step_id') ?? ''
+  const description = metaString(meta, 'description') ?? ''
   // Delegated steps do not receive plan_step_start, so there is never a
   // pre-existing plan_step to convert — always create a fresh subagent block.
   const subItem: SubAgentItem = {
@@ -254,12 +274,21 @@ export function handleReflection(
   msg: ChatMessageUI, meta: Record<string, unknown> | undefined,
   openSteps: Map<string, StepLikeItem>, items: DisplayItem[],
 ) {
+  // Persisted reflection fields are re-read raw on history rebuild — a truthy
+  // non-string survived the old `(meta?.x as string) || ''` cast and threw as
+  // a React child inside ReflectionBlock (and `insights` reached
+  // hypotheses.map). Narrow every field at this consumption point: malformed
+  // values degrade to ''/[] instead of breaking the chat render.
   const item: DisplayItem = {
-    kind: 'reflection', id: msg.id, summary: (meta?.summary as string) || '',
-    suggestedAction: (meta?.suggested_action as string) || '', rootCause: (meta?.root_cause as string) || '',
-    failureAnalysis: (meta?.failure_analysis as string) || '', actionPlan: (meta?.action_plan as string) || '',
-    reasoning: (meta?.reasoning as string) || '', hypotheses: (meta?.insights as string[]) || [],
-    attempt: (meta?.attempt as number) || 0, maxAttempts: (meta?.max_attempts as number) || 0,
+    kind: 'reflection', id: msg.id, summary: metaString(meta, 'summary') ?? '',
+    suggestedAction: metaString(meta, 'suggested_action') ?? '', rootCause: metaString(meta, 'root_cause') ?? '',
+    failureAnalysis: metaString(meta, 'failure_analysis') ?? '', actionPlan: metaString(meta, 'action_plan') ?? '',
+    reasoning: metaString(meta, 'reasoning') ?? '',
+    hypotheses: Array.isArray(meta?.insights)
+      ? meta.insights.filter((s): s is string => typeof s === 'string')
+      : [],
+    attempt: typeof meta?.attempt === 'number' ? meta.attempt : 0,
+    maxAttempts: typeof meta?.max_attempts === 'number' ? meta.max_attempts : 0,
   }
   const ref = meta?.plan_step_id as string | undefined
   const container = ref ? openSteps.get(ref) : null
@@ -292,7 +321,11 @@ export function handleToolCall(
   pushItem: (item: DisplayItem, psId?: string) => DisplayItem[],
   toolItemById: Map<string, { item: ToolLike; container: DisplayItem[] }>,
 ) {
-  const toolName = (meta?.tool as string) || ''
+  // toolName/args/source are re-read raw from persisted metadata: the old
+  // blind casts kept truthy non-strings, which later threw inside the tool
+  // cards (toolName.endsWith / args.includes / source.startsWith). Narrow at
+  // the consumption point — malformed values fall back to '' / undefined.
+  const toolName = metaString(meta, 'tool') ?? ''
   if (toolName === 'subagent') return
   // Goal verdict tools (declare_goal_status / declare_verification) never render
   // a "Used:" card — their structured verdict reaches the UI exclusively through
@@ -307,14 +340,17 @@ export function handleToolCall(
   const hasResult = meta?.completed === true
   const isAwaiting = meta?.awaiting_confirmation === true
   const isError = meta?.error === true
+  const parsedArgs = meta?.parsed_args
   const toolItem: DisplayItem & { kind: 'tool' } = {
-    kind: 'tool', id: msg.id, toolName: toolName || 'Tool', args: (meta?.args as string) || '',
-    parsedArgs: meta?.parsed_args as Record<string, unknown> | undefined,
-    result: hasResult ? ((meta?.result as string) ?? (meta?.result_preview as string)) : undefined,
-    resultLen: hasResult ? (meta?.result_len as number) : undefined,
+    kind: 'tool', id: msg.id, toolName: toolName || 'Tool', args: metaString(meta, 'args') ?? '',
+    parsedArgs: parsedArgs !== null && typeof parsedArgs === 'object' && !Array.isArray(parsedArgs)
+      ? parsedArgs as Record<string, unknown>
+      : undefined,
+    result: hasResult ? (metaString(meta, 'result') ?? metaString(meta, 'result_preview')) : undefined,
+    resultLen: hasResult && typeof meta?.result_len === 'number' ? meta.result_len : undefined,
     status: hasResult ? (isError ? 'error' : 'success') : (isAwaiting ? 'awaiting_confirmation' : 'running'),
-    source: meta?.source as string | undefined,
-    attachmentName: meta?.attachment_name as string | undefined,
+    source: metaString(meta, 'source'),
+    attachmentName: metaString(meta, 'attachment_name'),
   }
   applyPending(toolItem, key, toolItemsByKey, pendingResults)
   // Record the tool card by its message id and the container it landed in,
@@ -332,15 +368,18 @@ export function handleToolResult(
   const resultPlanStepId = meta.plan_step_id as string | undefined
   const key = resolveToolKey(meta, resultPlanStepId)
   if (!key) return
+  // result/result_preview are re-read raw from persisted metadata — a truthy
+  // non-string would throw inside the tool-card bodies (.match/.split).
+  const result = metaString(meta, 'result') ?? metaString(meta, 'result_preview')
+  const resultLen = typeof meta.result_len === 'number' ? meta.result_len : undefined
   const toolItem = toolItemsByKey.get(key)
   if (toolItem) {
-    toolItem.result = (meta.result as string) ?? (meta.result_preview as string)
-    toolItem.resultLen = meta.result_len as number
+    toolItem.result = result
+    toolItem.resultLen = resultLen
     toolItem.status = (meta.error === true) ? 'error' : 'success'
   } else {
     pendingResults.set(key, {
-      result: (meta.result as string) ?? (meta.result_preview as string),
-      resultLen: meta.result_len as number, error: meta.error === true,
+      result, resultLen, error: meta.error === true,
     })
   }
 }

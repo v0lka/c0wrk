@@ -2,9 +2,11 @@ package config
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/v0lka/c0wrk/core/embeddedllm"
@@ -60,7 +62,11 @@ func (s embeddedConfigSink) ApplyInstalled(_ context.Context, state embeddedllm.
 
 // ApplyRemoved clears the install state, migrates llm.default_model off the
 // embedded composite (otherwise the next load fails validation and the next
-// settings save is rejected as dangling), and drops the provider record. The
+// settings save is rejected as dangling), and drops the provider record. When
+// the embedded model is the default and NO other model is enabled there is no
+// migration target: the removal is refused and the config is left untouched —
+// the same contract as the production sink — because persisting an empty
+// default would hand the next launch a config that fails validate(). The
 // auto-unload and tuning knobs are operator settings, not install state, so
 // both survive — a reinstall starts from the same memory plan the operator
 // chose, not from a reset one.
@@ -73,6 +79,9 @@ func (s embeddedConfigSink) ApplyRemoved(_ context.Context) error {
 	if migrated == composite {
 		migrated = firstNonEmbeddedModelID(s.cfg, composite)
 	}
+	if migrated == "" {
+		return errors.New("cannot remove the embedded model: it is the default model and no other provider model is enabled — add or enable another model first")
+	}
 	autoUnload := s.cfg.EmbeddedLLM.AutoUnload
 	tuning := s.cfg.EmbeddedLLM.Tuning
 	s.cfg.EmbeddedLLM = EmbeddedLLMConfig{AutoUnload: autoUnload, Tuning: tuning}
@@ -83,9 +92,8 @@ func (s embeddedConfigSink) ApplyRemoved(_ context.Context) error {
 
 // firstNonEmbeddedModelID picks the migration target for llm.default_model when
 // the embedded model is removed. When it was the only enabled model there is
-// nothing to move to and the result is empty: ApplyDefaults fills the first
-// available model on the next load, and a config with no provider at all is
-// already invalid independently of this subsystem.
+// nothing to move to and the result is empty: the caller (ApplyRemoved) then
+// REFUSES the removal instead of persisting an invalid empty default.
 func firstNonEmbeddedModelID(cfg *Config, composite string) string {
 	for _, id := range cfg.LLM.AllModelIDs() {
 		if id != composite {
@@ -308,14 +316,15 @@ func TestEmbeddedLLMRemoveClearsProviderRecordEndToEnd(t *testing.T) {
 	}
 }
 
-// TestEmbeddedLLMRemoveWithNoOtherModelLeavesAnEmptyDefault documents the one
-// removal case with no migration target: the embedded model was the only
-// enabled model. The record is still erased and llm.default_model ends up
-// empty, which validate() reports — a config with no provider at all is invalid
-// independently of this subsystem. Nothing reseeds the key (ApplyDefaults never
-// touches DefaultModel), so the config stays invalid until the operator picks
-// or adds a provider; that is deliberate, see firstNonEmbeddedModelID.
-func TestEmbeddedLLMRemoveWithNoOtherModelLeavesAnEmptyDefault(t *testing.T) {
+// TestEmbeddedLLMRemoveWithNoOtherModelIsRefused pins the one removal case
+// with no migration target: the embedded model was the only enabled model.
+// The removal is REFUSED with an actionable error and the config is left
+// completely untouched — llm.default_model keeps the composite and the
+// provider record stays, so the config remains validate()-clean and the
+// installed model stays usable until the operator adds or enables another
+// provider. Persisting an empty default instead would fail validate() at the
+// next load; see ApplyRemoved for why that must never be written to disk.
+func TestEmbeddedLLMRemoveWithNoOtherModelIsRefused(t *testing.T) {
 	agentDir := t.TempDir()
 	layout, err := embeddedllm.NewLayout(RuntimesDir(agentDir), EmbeddedModelDir(agentDir))
 	if err != nil {
@@ -331,19 +340,25 @@ func TestEmbeddedLLMRemoveWithNoOtherModelLeavesAnEmptyDefault(t *testing.T) {
 
 	installer := embeddedllm.NewInstaller(layout, newDiscardLogger())
 	installer.Sink = embeddedConfigSink{cfg: cfg}
-	if err := installer.Remove(context.Background()); err != nil {
-		t.Fatalf("Remove: %v", err)
+	removeErr := installer.Remove(context.Background())
+	if removeErr == nil {
+		t.Fatal("Remove: want a refusal when the embedded model is the only enabled model, got nil")
+	}
+	if !strings.Contains(removeErr.Error(), "add or enable another model") {
+		t.Errorf("Remove error %q does not carry the actionable reason", removeErr.Error())
 	}
 
-	if _, ok := cfg.LLM.OpenAICompatible[EmbeddedLLMProviderName]; ok {
-		t.Errorf("openai_compatible.%s survived Remove", EmbeddedLLMProviderName)
+	// Nothing was mutated: the install state, the generated provider record
+	// and the default are all intact, and the config still validates.
+	if !cfg.EmbeddedLLM.Installed || cfg.LLM.DefaultModel != composite {
+		t.Errorf("config was mutated by the refused removal: installed=%v default=%q, want installed=true default=%q",
+			cfg.EmbeddedLLM.Installed, cfg.LLM.DefaultModel, composite)
 	}
-	if cfg.LLM.DefaultModel != "" {
-		t.Errorf("llm.default_model = %q, want empty when no other model is enabled",
-			cfg.LLM.DefaultModel)
+	if _, ok := cfg.LLM.OpenAICompatible[EmbeddedLLMProviderName]; !ok {
+		t.Error("the generated embedded provider record was dropped by the refused removal")
 	}
-	if err := validate(cfg); err == nil {
-		t.Error("validate() accepted a config with no enabled model at all")
+	if err := validate(cfg); err != nil {
+		t.Errorf("validate() after the refused removal: %v", err)
 	}
 }
 

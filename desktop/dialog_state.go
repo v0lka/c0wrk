@@ -59,21 +59,15 @@ func rememberDialogDirectory(agentDir, dir string, log *slog.Logger) {
 	}
 }
 
-// writeDialogState serializes state to dialog_state.json atomically
-// (temp + rename), mirroring writeWindowBounds.
+// writeDialogState serializes state to dialog_state.json atomically,
+// mirroring writeWindowBounds: safeio.WriteFileAtomic stages through a
+// random-suffix sibling (no plantable fixed ".tmp" path, no blocking
+// FIFO open) and the rename replaces a symlink at the final path itself
+// instead of writing through it.
 func writeDialogState(agentDir string, s DialogState) error {
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
 	}
-	path := config.DialogStatePath(agentDir)
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	return nil
+	return safeio.WriteFileAtomic(config.DialogStatePath(agentDir), data, 0o600)
 }

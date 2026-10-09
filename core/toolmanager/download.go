@@ -103,8 +103,14 @@ func (d *HTTPDownloader) Download(ctx context.Context, tool ToolSpec, cacheDir s
 	archivePath := filepath.Join(cacheDir, tool.ArchiveName)
 
 	// Check cache: if the file exists and checksum matches, skip download.
-	if _, statErr := os.Stat(archivePath); statErr == nil {
-		if d.verifyChecksum(archivePath, tool, platform) {
+	// The probe is Lstat-based and refuses non-regular entries: os.Stat
+	// follows a symlink, so a DANGLING symlink planted at this deterministic
+	// path reported "absent" and fell through to a bare create that wrote
+	// through the link; with Lstat, any non-regular plant (dangling symlink,
+	// FIFO, device) is removed (the link itself — never its target) and
+	// re-downloaded like a checksum mismatch.
+	if info, statErr := os.Lstat(archivePath); statErr == nil {
+		if info.Mode().IsRegular() && d.verifyChecksum(archivePath, tool, platform) {
 			return &DownloadResult{
 				ToolName:     tool.Name,
 				ArchivePath:  archivePath,
@@ -112,7 +118,7 @@ func (d *HTTPDownloader) Download(ctx context.Context, tool ToolSpec, cacheDir s
 				ArchiveBytes: 0,
 			}, nil
 		}
-		// Checksum mismatch — delete and re-download.
+		// Checksum mismatch, or a non-regular plant — delete and re-download.
 		_ = os.Remove(archivePath)
 	}
 
@@ -138,17 +144,23 @@ func (d *HTTPDownloader) Download(ctx context.Context, tool ToolSpec, cacheDir s
 		return nil, fmt.Errorf("tool %q: HTTP %d from %s", tool.Name, resp.StatusCode, url)
 	}
 
-	f, err := os.Create(archivePath)
+	// Download into a uniquely named temp in the cache dir and rename into
+	// place. The fixed archivePath is pre-plantable with a dangling symlink,
+	// which a bare os.Create here followed and truncated OUTSIDE ~/.c0wrk;
+	// the random temp name leaves nothing to pre-plant, and the rename
+	// replaces a planted entry itself instead of writing through it.
+	tmp, err := os.CreateTemp(cacheDir, tool.ArchiveName+".tmp-*")
 	if err != nil {
-		return nil, fmt.Errorf("tool %q: creating archive file: %w", tool.Name, err)
+		return nil, fmt.Errorf("tool %q: creating archive temp file: %w", tool.Name, err)
 	}
-	defer func() { _ = f.Close() }()
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }() // no-op after a successful rename
 
 	// Wire up progress tracking if Content-Length is known.
-	var writer io.Writer = f
+	var writer io.Writer = tmp
 	if resp.ContentLength > 0 && progress != nil {
 		pw := &progressWriter{
-			writer:    f,
+			writer:    tmp,
 			progress:  progress,
 			total:     resp.ContentLength,
 			lastFlush: time.Now(),
@@ -162,18 +174,21 @@ func (d *HTTPDownloader) Download(ctx context.Context, tool ToolSpec, cacheDir s
 		progress(n, resp.ContentLength)
 	}
 	if err != nil {
-		_ = os.Remove(archivePath)
 		return nil, fmt.Errorf("tool %q: writing archive: %w", tool.Name, err)
 	}
 	if n > maxDownloadBytes {
-		_ = os.Remove(archivePath)
 		return nil, fmt.Errorf("tool %q: download exceeds max size %d bytes", tool.Name, maxDownloadBytes)
 	}
+	if err := tmp.Close(); err != nil {
+		return nil, fmt.Errorf("tool %q: writing archive: %w", tool.Name, err)
+	}
 
-	// Verify checksum after download.
-	if !d.verifyChecksum(archivePath, tool, platform) {
-		_ = os.Remove(archivePath)
+	// Verify checksum before the download is published under its final name.
+	if !d.verifyChecksum(tmpName, tool, platform) {
 		return nil, fmt.Errorf("tool %q: checksum verification failed after download", tool.Name)
+	}
+	if err := os.Rename(tmpName, archivePath); err != nil {
+		return nil, fmt.Errorf("tool %q: publishing archive: %w", tool.Name, err)
 	}
 
 	return &DownloadResult{

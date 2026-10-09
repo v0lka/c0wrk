@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { act } from 'react'
+import { act, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
 // --- Mock the git API + runtime + stores so tests never touch Wails ---
@@ -295,6 +295,46 @@ describe('GitHistoryContextMenu — Reset', () => {
       'p1',
       expect.objectContaining({ kind: 'reset', ok: true }),
     )
+  })
+
+  it('hard reset keeps its target after the parent clears the menu state on close', async () => {
+    const onAfterMutation = vi.fn()
+    const fullSha = '0123456789abcdef'
+    // Mirror the real host (GitHistoryTab): the menu state drives both props,
+    // and onClose() clears it — `sha` becomes '' and `position` null while the
+    // component instance (and its dialogs) stay mounted.
+    function Host() {
+      const [open, setOpen] = useState(true)
+      return (
+        <GitHistoryContextMenu
+          sha={open ? fullSha : ''}
+          refs={[]}
+          currentBranch="main"
+          position={open ? { x: 10, y: 10 } : null}
+          onClose={() => setOpen(false)}
+          onAfterMutation={onAfterMutation}
+        />
+      )
+    }
+    act(() => {
+      root.render(<Host />)
+    })
+    hoverSubTrigger('Reset')
+    clickItem('Hard')
+    // Menu is gone (props cleared) but the dialog must show the captured SHA…
+    expect(document.body.querySelector('[role="menu"]')).toBeNull()
+    expect(document.body.textContent).toContain('0123456')
+    // …and confirming must reset to the captured SHA, not the emptied prop.
+    const confirmBtn = Array.from(document.body.querySelectorAll('button')).find(
+      (b) => b.textContent?.includes('Hard Reset'),
+    ) as HTMLButtonElement
+    await act(async () => {
+      confirmBtn.click()
+      await flush()
+    })
+    expect(gitMocks.resetToCommit).toHaveBeenCalledWith(fullSha, 'hard')
+    expect(gitMocks.resetToCommit).not.toHaveBeenCalledWith('', 'hard')
+    expect(onAfterMutation).toHaveBeenCalled()
   })
 
   it('labels the Reset submenu with the current branch name', () => {

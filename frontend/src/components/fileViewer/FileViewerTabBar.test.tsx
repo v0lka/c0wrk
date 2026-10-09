@@ -205,3 +205,89 @@ describe('FileViewerTabBar — middle-click closes the tab', () => {
     expect(useFileViewerStore.getState().openTabs).toHaveLength(3)
   })
 })
+
+describe('FileViewerTabBar — vertical wheel remaps onto the horizontal strip', () => {
+  beforeEach(() => {
+    getFileIconMock.mockReset().mockResolvedValue({ icon: 'go', icon_color: '#00ADD8' })
+    useFileViewerStore.setState({
+      openTabs: ['/ws/active.go', '/ws/inactive.go', '/ws/other.go'],
+      activeFile: '/ws/active.go',
+      files: {},
+      fileIcons: {},
+    })
+  })
+
+  afterEach(() => {
+    act(() => {
+      root?.unmount()
+    })
+    container?.remove()
+    root = null
+    container = null
+  })
+
+  /** A wheel Event with explicit deltas (jsdom has no WheelEvent layout). */
+  function wheelEvent(deltaX: number, deltaY: number): Event {
+    const ev = new Event('wheel', { bubbles: true, cancelable: true })
+    Object.defineProperty(ev, 'deltaX', { value: deltaX })
+    Object.defineProperty(ev, 'deltaY', { value: deltaY })
+    return ev
+  }
+
+  it('intercepts the vertical wheel: prevents the default scroll and remaps it to horizontal scrolling', async () => {
+    await renderBar()
+
+    const strip = tabButton('/ws/active.go').parentElement as HTMLElement
+    // jsdom implements no scrolling — swap in a spy for the remap assertion.
+    const scrollBy = vi.fn()
+    ;(strip as unknown as { scrollBy: unknown }).scrollBy = scrollBy
+
+    // The listener must be registered NON-passively (a native listener, not
+    // React 19's passive delegated onWheel): a cancelable event is actually
+    // preventDefault-ed. Under a passive listener dispatchEvent would return
+    // true and the console would log "Unable to preventDefault inside
+    // passive event listener invocation." on every gesture.
+    const vertical = wheelEvent(0, 120)
+    act(() => {
+      expect(strip.dispatchEvent(vertical)).toBe(false)
+    })
+    expect(scrollBy).toHaveBeenCalledTimes(1)
+    expect(scrollBy).toHaveBeenCalledWith({ left: 120, behavior: 'instant' })
+
+    // Horizontal wheel input passes through untouched (no remap, no prevent).
+    const horizontal = wheelEvent(100, 0)
+    act(() => {
+      expect(strip.dispatchEvent(horizontal)).toBe(true)
+    })
+    expect(scrollBy).toHaveBeenCalledTimes(1)
+  })
+
+  it('re-binds the native listener when the tab strip mounts after being empty', async () => {
+    useFileViewerStore.setState({ openTabs: [], activeFile: null })
+    await renderBar()
+    // No tabs → the component renders nothing.
+    expect(document.querySelector('[data-file-path]')).toBeNull()
+
+    // Opening the first tab mounts the strip; the wheel guard must come up
+    // with it (the bind effect re-runs when the strip appears). The icon RPC
+    // the mount fires must settle inside act(...) — an unwrapped store update
+    // from its .then logs "not wrapped in act(...)" to stderr.
+    await act(async () => {
+      useFileViewerStore.setState({
+        openTabs: ['/ws/active.go'],
+        activeFile: '/ws/active.go',
+      })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    const strip = tabButton('/ws/active.go').parentElement as HTMLElement
+    const scrollBy = vi.fn()
+    ;(strip as unknown as { scrollBy: unknown }).scrollBy = scrollBy
+    const vertical = wheelEvent(0, 120)
+    act(() => {
+      expect(strip.dispatchEvent(vertical)).toBe(false)
+    })
+    expect(scrollBy).toHaveBeenCalledWith({ left: 120, behavior: 'instant' })
+  })
+})

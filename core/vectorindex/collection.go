@@ -118,9 +118,10 @@ func (s *Service) SwitchBranch(ctx context.Context, branchName string) error {
 	// state) gets no lexical persistence at all.
 	if s.current.projectPath != "" && s.current.projectID != "" {
 		lexDir := filepath.Join(s.current.projectPath, "lexical", lexicalBranchDirName(branchName))
-		// Ensure the parent directory (…/{projectID}/lexical/) exists;
+		// Ensure the parent directory (…/{projectID}/lexical/) exists as a
+		// real directory (a planted symlink must not redirect the index);
 		// bleve's New() creates the leaf (branch) directory itself.
-		if mkErr := os.MkdirAll(filepath.Dir(lexDir), 0o750); mkErr != nil {
+		if mkErr := ensureRealDir(filepath.Dir(lexDir), 0o750); mkErr != nil {
 			s.logger.Warn("failed to create lexical parent directory", "path", lexDir, "error", mkErr)
 		} else {
 			lex, lexErr := lexical.Open(lexDir)
@@ -980,13 +981,16 @@ const contentlessProbeGapTolerance = 8
 
 // writeContentlessMarker best-effort writes the zero-byte migration marker.
 // A failed write never fails the caller: it only costs one no-op probe pass
-// on the next open. Caller must hold s.mu (the path derives from the current
-// state's branch).
+// on the next open. The write is FIFO/symlink-safe (safeio.WriteFileAtomic):
+// the marker path is deterministic under the storage root, and a bare
+// os.WriteFile would block on a planted FIFO — under s.mu, wedging the whole
+// service — and write through a planted symlink. Caller must hold s.mu (the
+// path derives from the current state's branch).
 func (s *Service) writeContentlessMarker(path string) {
 	if path == "" {
 		return
 	}
-	if err := os.WriteFile(path, nil, 0o644); err != nil {
+	if err := safeio.WriteFileAtomic(path, nil, 0o644); err != nil {
 		s.logger.Warn("failed to write content-less migration marker",
 			"path", path, "error", err)
 	}
@@ -1338,12 +1342,13 @@ func (ps *projectState) saveFileHashes() error {
 	if err != nil {
 		return fmt.Errorf("marshaling file hashes: %w", err)
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	// Atomic + FIFO/symlink-safe: the "<path>.tmp" staging name was a fixed,
+	// pre-plantable path whose bare os.WriteFile blocked forever on a planted
+	// FIFO — under s.mu, wedging the whole service and (via Service.Close)
+	// shutdown — and wrote through a planted symlink. WriteFileAtomic stages
+	// under a randomized name and replaces the final entry itself.
+	if err := safeio.WriteFileAtomic(path, data, 0o644); err != nil {
 		return fmt.Errorf("writing file-hash sidecar: %w", err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		return fmt.Errorf("renaming file-hash sidecar: %w", err)
 	}
 	return nil
 }

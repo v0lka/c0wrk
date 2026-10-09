@@ -30,6 +30,11 @@ func newExitGuardFixture(active []session.ActiveSessionInfo) *exitGuardFixture {
 	f.app.activeSessionsFn = func() []session.ActiveSessionInfo { return f.active }
 	f.app.quitFn = func(context.Context) { f.quitCalls++ }
 	f.app.windowShowFn = func(context.Context) {}
+	// Geometry seams for captureWindowGeometry (the close guard snapshots
+	// the live window geometry on every pass now): the real wailsRuntime
+	// calls fatal on a context no live runtime owns.
+	f.app.windowGetSizeFn = func(context.Context) (int, int) { return 1400, 900 }
+	f.app.windowIsMaximisedFn = func(context.Context) bool { return false }
 	f.app.wailsEmit = func(eventName string, optionalData ...any) {
 		f.emitted = append(f.emitted, eventName)
 		if len(optionalData) > 0 {

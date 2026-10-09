@@ -14,6 +14,7 @@ import (
 
 	"github.com/v0lka/c0wrk/core"
 	"github.com/v0lka/sp4rk/pathutil"
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // Worktree primitives: the safe git-worktree service every higher layer
@@ -257,8 +258,10 @@ func ListWorktrees(ctx context.Context, repoRoot string) ([]WorktreeInfo, error)
 // output. Grammar (git-worktree docs): entries separated by blank lines;
 // each entry starts `worktree <absolute-path>` followed by `HEAD <sha>`
 // and any of `branch <ref>` | `detached`, `bare`, `locked [reason]`,
-// `prunable [reason]`. Deviations — unknown attribute, entry missing its
-// worktree/HEAD lines, non-absolute path, empty stream — are
+// `prunable [reason]` — except a bare repository, whose entry is only
+// `worktree <path>` + `bare` (git emits no HEAD there). Deviations —
+// unknown attribute, entry missing its worktree line or its HEAD line
+// (when not bare), non-absolute path, empty stream — are
 // ErrWorktreeMalformed. Fail-closed matters: a partially parsed list would
 // silently hide trees that the branch-occupancy and ownership checks
 // depend on.
@@ -269,7 +272,12 @@ func parseWorktreePorcelain(out string) ([]WorktreeInfo, error) {
 		if cur == nil {
 			return nil
 		}
-		if cur.Path == "" || cur.Head == "" {
+		// A bare repository emits `worktree <path>` + `bare` with NO HEAD
+		// line (verified on git 2.55.0, with and without commits) — only a
+		// non-bare entry must carry HEAD (review [95]; the package doc at
+		// the top of the file documents the bare main entry with
+		// Bare=true).
+		if cur.Path == "" || (cur.Head == "" && !cur.Bare) {
 			return fmt.Errorf("%w: entry missing worktree/HEAD line", ErrWorktreeMalformed)
 		}
 		trees = append(trees, *cur)
@@ -755,6 +763,16 @@ func worktreeDirty(ctx context.Context, path string) (bool, error) {
 	return strings.TrimSpace(out) != "", nil
 }
 
+// WorktreeDirty is the exported read-only probe of worktreeDirty: it
+// applies the same dirty classification the removal primitive applies at
+// removal time (uncommitted changes or untracked files) without touching
+// anything, so a caller can decide a would-be-blocked removal BEFORE its
+// destructive pre-flight (the session-deletion pre-flight's non-destructive
+// block probe, review [161]).
+func WorktreeDirty(ctx context.Context, path string) (bool, error) {
+	return worktreeDirty(ctx, path)
+}
+
 // classifyRemoveFailure maps git's raw removal refusals onto the taxonomy.
 func classifyRemoveFailure(err error, target string) error {
 	var state *StateError
@@ -829,11 +847,36 @@ func ensureWorktreesExcluded(ctx context.Context, scan *gitScanMemo, root, targe
 		common = filepath.Join(root, common)
 	}
 	infoDir := filepath.Join(common, "info")
-	if err := os.MkdirAll(infoDir, 0o755); err != nil {
+	// Directory creation must not be redirected out of the repository
+	// (review [41], repo-arrives-as-files threat model): MkdirAllReal creates
+	// only real directories — a link swapped into a component it creates, or
+	// a dangling link at any component, is refused — but it RESOLVES
+	// pre-existing links by design, so ordinary operator/system ancestors
+	// (macOS /var → /private/var, a symlinked home) keep working. A link
+	// shipped inside the repository is therefore enforced HERE, after
+	// creation: when the common dir lives under the repo root, every
+	// component below the root is re-verified as a real directory, so a
+	// planted link at info (or .git) is refused instead of being resolved
+	// into an exclude write outside the repository. A common dir outside the
+	// root is git's own .git-file indirection (linked worktrees), not
+	// repository-controlled content, and keeps the plain MkdirAllReal path.
+	if err := safeio.MkdirAllReal(infoDir, 0o755); err != nil {
 		return fmt.Errorf("creating %s: %w", infoDir, err)
 	}
+	if within, werr := pathutil.IsWithinPath(root, infoDir); werr != nil {
+		return fmt.Errorf("classifying common info dir: %w", werr)
+	} else if within {
+		if err := safeio.CheckRealDirsBelow(root, infoDir); err != nil {
+			return fmt.Errorf("refusing non-real component in %s: %w", infoDir, err)
+		}
+	}
 	excludePath := filepath.Join(infoDir, "exclude")
-	existing, err := os.ReadFile(excludePath)
+	// safeio.ReadFile refuses a non-regular target (review [38]): a planted
+	// FIFO would otherwise block the open forever, hanging the managed-tree
+	// provisioning path — the same reason the config scan reads through
+	// safeio. A missing file (or a dangling link at the final component) is
+	// the expected first-run case and is treated as empty.
+	existing, err := safeio.ReadFile(excludePath)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("reading %s: %w", excludePath, err)
 	}
@@ -848,27 +891,11 @@ func ensureWorktreesExcluded(ctx context.Context, scan *gitScanMemo, root, targe
 	}
 	updated = append(updated, []byte(worktreesExcludePattern+"\n")...)
 	// Atomic replace within the same directory: a crash mid-write can
-	// never leave a truncated exclude file behind.
-	tmp, err := os.CreateTemp(infoDir, "exclude-*")
-	if err != nil {
-		return fmt.Errorf("staging exclude update: %w", err)
-	}
-	tmpName := tmp.Name()
-	if _, err := tmp.Write(updated); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("staging exclude update: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("staging exclude update: %w", err)
-	}
-	if err := os.Chmod(tmpName, 0o644); err != nil {
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("staging exclude update: %w", err)
-	}
-	if err := os.Rename(tmpName, excludePath); err != nil {
-		_ = os.Remove(tmpName)
+	// never leave a truncated exclude file behind. safeio.WriteFileAtomic
+	// stages through a randomly named temp (no plantable fixed path) and
+	// the rename replaces a symlink at exclude itself instead of writing
+	// through it.
+	if err := safeio.WriteFileAtomic(excludePath, updated, 0o644); err != nil {
 		return fmt.Errorf("updating %s: %w", excludePath, err)
 	}
 	return nil

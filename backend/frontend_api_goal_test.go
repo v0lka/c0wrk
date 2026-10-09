@@ -22,7 +22,7 @@ func goalTestApp(t *testing.T) *FrontendAPI {
 	}
 	mgr := session.NewManager(factory, emitFunc, t.TempDir())
 	app := &Application{manager: mgr}
-	return &FrontendAPI{app: app}
+	return seedPublishedAPI(&FrontendAPI{app: app})
 }
 
 // TestConfirmGoal_DelegatesToResolver verifies ConfirmGoal forwards the
@@ -86,6 +86,8 @@ func TestGoalRPCs_EmptyRequestID(t *testing.T) {
 // isn't initialized.
 func TestGoalRPCs_NoManagerReturnsError(t *testing.T) {
 	f := &FrontendAPI{} // no app
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	for _, err := range []error{
 		f.ConfirmGoal("s", "r", "c", "v", "executable"),
 		f.CancelGoal("s", "r"),

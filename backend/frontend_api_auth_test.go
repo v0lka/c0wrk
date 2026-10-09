@@ -222,6 +222,8 @@ func newChatGPTAuthTestAPI(t *testing.T) (*FrontendAPI, *mockBuilder, *authEvent
 		emitEvent:       rec.emit,
 		appCtx:          context.Background,
 	}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	return f, mock, rec
 }
 

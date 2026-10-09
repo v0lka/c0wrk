@@ -3,7 +3,7 @@ import type { ChatMessage, PlanGroup, PlanItem } from '@/types/models'
 import type { AgentMetricsData } from '@/types/events'
 import { normalizeAgentMetricsData, isGoalStatusData } from '@/types/events'
 import type { ActiveGoal, GoalProgress } from '@/stores/goalStore'
-import { reconstructContent, buildHistoryId, collapseThoughts, dedupThoughtVsAnswer, extractMeta, normalizeThoughtContent } from './chatUtilsHelpers'
+import { reconstructContent, buildHistoryId, collapseThoughts, dedupThoughtVsAnswer, extractMeta, normalizeThoughtContent, parsePlanSteps } from './chatUtilsHelpers'
 import { buildGoalTransitionNotice, goalStatusToActiveGoal, type GoalCarryOver } from './goalTransition'
 import {
   handlePlanStepStart, handlePlanStepComplete, handlePlanStepPaused,
@@ -228,7 +228,7 @@ export function groupMessages(messages: ChatMessageUI[], workUnitStatus?: Record
     const planStepId = meta?.plan_step_id as string | undefined
 
     if (msg.type === 'plan') {
-      const steps = (meta?.steps as Array<{ id?: string; summary?: string; description: string }>) || []
+      const steps = parsePlanSteps(meta)
       steps.forEach((s, i) => {
         if (s.id) stepIndexMap.set(s.id, { num: i + 1, title: s.summary?.trim() || s.description, description: s.description })
       })
@@ -247,7 +247,10 @@ export function groupMessages(messages: ChatMessageUI[], workUnitStatus?: Record
       case 'user': pushItem({ kind: 'user', message: msg }, planStepId); break
       case 'assistant': pushItem({ kind: 'assistant', message: msg }, planStepId); break
       case 'thought': {
-        const reasoning = meta?.reasoning as string | undefined
+        // reasoning is re-read raw from persisted metadata (the live guard
+        // isThoughtData only runs on fresh events) — narrow it here so a
+        // truthy non-string cannot reach ThoughtBlock's reasoning.trim().
+        const reasoning = typeof meta?.reasoning === 'string' ? meta.reasoning : undefined
         pushItem({ kind: 'thought', id: msg.id, stepNum: (meta?.step_num as number) ?? 0, content: normalizeThoughtContent(msg.content), reasoning }, planStepId)
         break
       }
@@ -401,7 +404,7 @@ export function rebuildPlanFromHistory(messages: ChatMessageUI[], store: PlanSto
   if (!planMsg) return
 
   const meta = planMsg.metadata as Record<string, unknown> | undefined
-  const steps = (meta?.steps as Array<{ id?: string; description: string; summary?: string; depends_on?: string[] }>) || []
+  const steps = parsePlanSteps(meta)
   if (steps.length === 0) return
 
   const items: PlanItem[] = steps.map((step, i) => ({

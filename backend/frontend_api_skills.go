@@ -75,6 +75,7 @@ func (f *FrontendAPI) invalidateSkillCache() {
 // detected until an app restart. This is an acceptable trade-off — skill
 // directories are typically created once during installation.
 func (f *FrontendAPI) startSkillsWatchers(dirs []string) {
+	f.seedAcquire()
 	f.skillWatchersMu.Lock()
 	defer f.skillWatchersMu.Unlock()
 

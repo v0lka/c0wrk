@@ -32,7 +32,8 @@ sp4rk (module `github.com/v0lka/sp4rk`) lives in its [own repository](https://gi
 | `WithResumeSteps` (Option) | github.com/v0lka/sp4rk/agent     | core/orchestrator (Resume)                   | Seeds prior ReAct steps into the Executor so the step counter resumes from `len(steps)+1` and the full trajectory syncs to the TrajectoryStore |
 | `Step.UserNudge`           | github.com/v0lka/sp4rk/agent     | core/session (tryContinueInterruptedTask)    | User message appended to a resumed trajectory; rendered as a `{role:user}` turn |
 | `Executor.SetToolCallTimeout` / `WithToolCallTimeout` | github.com/v0lka/sp4rk/agent | core/builder, core/conductor | Per-tool-call wall-clock ceiling (main + every subagent executor); `0` disables |
-| `Executor.SetToolCallTimeoutExempt` | github.com/v0lka/sp4rk/agent | core/conductor | Names the interactive/long-running orchestration tools exempt from the ceiling |
+| `Executor.SetToolCallTimeoutExempt` | github.com/v0lka/sp4rk/agent | core/conductor | Replaces the ceiling's exempt tool-NAME set wholesale; threaded from `timeouts.toolCallTimeoutExemptTools` (subagent executors) |
+| `agent.DefaultToolCallTimeoutExemptTools` | github.com/v0lka/sp4rk/agent | sp4rk agent (executor construction); documented in `backend/config` (field doc, prose) | Sorted copy of the built-in exempt set — ask_user, declare_plan, propose_goal, delegate, execute_plan; the default of `timeouts.toolCallTimeoutExemptTools` (nil knob = this set, resolved inside sp4rk at executor construction; the knob is deliberately never materialized into config.yaml, so a save cannot freeze the default) |
 | `ErrToolTimeout`, `DefaultToolCallTimeout` | github.com/v0lka/sp4rk/agent | core/builder, core/orchestrator_e2s | Ceiling sentinel + recommended default surfaced to config |
 
 ### Consumed from `github.com/v0lka/sp4rk/orchestration`
@@ -47,6 +48,7 @@ sp4rk (module `github.com/v0lka/sp4rk`) lives in its [own repository](https://gi
 | `ConductorConfig`  | github.com/v0lka/sp4rk/orchestration | core/conductor (`RunConductor`)           | Engine configuration (incl. `ToolCache`, `PerToolTruncation`, `NonCacheableTools`, `ResumeSteps`) |
 | `ConductorConfig.NonCacheableTools` | github.com/v0lka/sp4rk/orchestration | core/conductor | Lists consumer-specific non-cacheable tool names passed to the sp4rk Conductor's executor |
 | `ConductorConfig.ToolCallTimeout` | github.com/v0lka/sp4rk/orchestration | core/conductor | Per-tool-call ceiling threaded to the main and every subagent executor (`0` disables) |
+| `ConductorConfig.ToolCallTimeoutExemptTools` | github.com/v0lka/sp4rk/orchestration | core/conductor | Exempt tool-name set for the main executor's ceiling (nil = sp4rk's built-in default set; non-nil — possibly empty — replaces it wholesale) |
 | `Plan`, `PlanStep` | github.com/v0lka/sp4rk/orchestration | core/types (direct use)                       | Plan data structures       |
 | `CompletedStep`    | github.com/v0lka/sp4rk/orchestration | core/types (direct)                           | Step result record         |
 | `Reflection`       | github.com/v0lka/sp4rk/orchestration | core/types (direct)                           | Reflector output           |

@@ -253,11 +253,23 @@ func (m *Manager) runSessionCompaction(compCtx context.Context, cancel context.C
 		deferredToResume = true
 	}
 
+	// Liveness gate: DeleteSession sets session.deleting BEFORE it cancels and
+	// joins this flow, so once that flag is visible the session is being torn
+	// down (orchestrator cleanup, file closes, map removal, dir removal) and
+	// the flow must not touch the store on the session's behalf (phase 4) or
+	// resurrect it (phase 5's auto-resume → getOrRestoreSession would rebuild
+	// the just-deleted session while the caller is mid-deletion). The join in
+	// DeleteSession normally happens BEFORE these lines run, but the flag
+	// covers the window where the flow reached here before the cancel landed.
+	session.mu.Lock()
+	deleting := session.deleting
+	session.mu.Unlock()
+
 	// Phase 4: persist the marker so a restart restores the compacted history.
 	// Skipped for the no-op outcome — there is no compacted history to
 	// snapshot, and the executor's context_compaction card (phase 3.5) is the
 	// user-facing record of the deferred compaction instead.
-	if err == nil && !cancelled && !nothingCompacted && !shuttingDown {
+	if err == nil && !cancelled && !nothingCompacted && !shuttingDown && !deleting {
 		if perr := m.persistCompactionMarker(sessionID, orch, strategy, before, after); perr != nil {
 			m.log().Error("manual compaction: failed to persist marker", "session", sessionID, "error", perr)
 			// Non-fatal: the in-memory history is already compacted; only the
@@ -292,6 +304,7 @@ func (m *Manager) runSessionCompaction(compCtx context.Context, cancel context.C
 	pausedWithoutResume := false
 	session.mu.Lock()
 	ownsPause := session.pauseOwner == pauseOwnerCompaction
+	deleting = session.deleting // re-read: DeleteSession may have flipped it while phases 3.5/4 ran
 	session.pauseOwner = pauseOwnerNone
 	session.mu.Unlock()
 	// Re-read the flag here: Shutdown may have begun after the mid-flow
@@ -299,8 +312,10 @@ func (m *Manager) runSessionCompaction(compCtx context.Context, cancel context.C
 	// would reject the resume anyway; skipping it outright keeps the
 	// terminal event honest (no spurious "auto-resume failed" warning
 	// during teardown) and the checkpoint persists as resumable via
-	// Shutdown's persistPauseIfUnfinished.
-	if pausedForCompaction && !shuttingDown && !m.shuttingDown.Load() && m.hasPausedUnfinishedTask(sessionID) {
+	// Shutdown's persistPauseIfUnfinished. The deleting check is the
+	// DeleteSession counterpart: an auto-resume here would ghost-resurrect
+	// the session the user just deleted.
+	if pausedForCompaction && !shuttingDown && !deleting && !m.shuttingDown.Load() && m.hasPausedUnfinishedTask(sessionID) {
 		if ownsPause {
 			if rerr := m.ResumeTask(context.Background(), sessionID, "", "", ""); rerr != nil {
 				// The checkpoint is still there with nobody else to resume it, and
@@ -413,7 +428,14 @@ func (m *Manager) persistCompactionMarker(sessionID string, orch *core.Orchestra
 	if err != nil {
 		return fmt.Errorf("marshal compaction marker: %w", err)
 	}
-	return store.SaveMessage(context.Background(), ChatMessage{
+	// Bounded like the sibling forecast save (restoreDBReadTimeout): this
+	// write runs on the compaction flow goroutine and shares the app's single
+	// SQLite pool; an unbounded wait for a pooled connection under a write
+	// storm would stall the flow's finish path (and, before the phase-4
+	// gate, its auto-resume) indefinitely.
+	ctx, cancel := context.WithTimeout(context.Background(), restoreDBReadTimeout)
+	defer cancel()
+	return store.SaveMessage(ctx, ChatMessage{
 		SessionID: sessionID,
 		Role:      compactMarkerRole,
 		Content:   fmt.Sprintf("Context compacted from %.0f%% to %.0f%%", before, after),

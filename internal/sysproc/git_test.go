@@ -232,3 +232,29 @@ func TestGitCmdRawSkipsOverridesAndHardening(t *testing.T) {
 		t.Errorf("GitCmdRaw must leave cmd.Env nil (inherit parent env), got %d entries: %q", len(cmd.Env), cmd.Env)
 	}
 }
+
+// TestResolveGitSafeHooksDirUncached_RefusesSymlinkedHooksDir pins the #96
+// fix: a symlink planted at the fixed, predictable safe-hooks path must fail
+// the resolution closed (GitCmd then spawns no git at all) instead of handing
+// the link target to git as core.hooksPath.
+func TestResolveGitSafeHooksDirUncached_RefusesSymlinkedHooksDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	hooks := filepath.Join(home, DefaultAgentDirName, "git", "safe-hooks")
+	if err := os.MkdirAll(filepath.Dir(hooks), 0o700); err != nil {
+		t.Fatalf("mkdir parent: %v", err)
+	}
+	evil := filepath.Join(home, "evil")
+	if err := os.MkdirAll(evil, 0o700); err != nil {
+		t.Fatalf("mkdir evil target: %v", err)
+	}
+	if err := os.Symlink(evil, hooks); err != nil {
+		t.Skipf("symlinks unavailable on this platform: %v", err)
+	}
+
+	if dir, err := resolveGitSafeHooksDirUncached(); err == nil {
+		t.Fatalf("expected fail-closed on a symlinked safe-hooks dir, got %q", dir)
+	}
+}
