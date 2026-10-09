@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted
+Accepted (amended by [ADR-082](./082-shared-managed-worktrees.md): the
+one-session-per-managed-tree rule — the partial unique index — is replaced by
+shared trees with reference-counted release; every other decision stands)
 
 ## Context
 

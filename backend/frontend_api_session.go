@@ -114,21 +114,29 @@ func (f *FrontendAPI) DeleteSession(id string) error {
 
 // DeleteSessionWithOptions removes a session carrying the user's explicit
 // deletion decisions for its managed worktree. Managed pre-flight (in order):
-// join the running task, stop the session terminal, then release the tree —
-// the removal primitives recheck dirtiness/lock state at removal time, so a
-// blocked deletion leaves the session, tree, and branch fully intact and
-// retryable. Only after the tree is released (or was never managed) does the
-// session itself get deleted: in-memory resources via the manager, rows via
-// the store, internal files under ~/.c0wrk.
+// join the running task, stop the session terminal, then run the
+// [count co-owners → own-row removal → release] protocol — the removal
+// primitives recheck dirtiness/lock state at removal time, so a blocked
+// deletion leaves the session, tree, and branch fully intact and retryable
+// (the own-row removal only happens on the shared-tree path, where no
+// blocking decision exists). Only after the tree is released (or was never
+// managed, or stays with its co-owners) does the rest of the session get
+// deleted: in-memory resources via the manager, the store row when the
+// pre-flight left it, internal files under ~/.c0wrk.
 func (f *FrontendAPI) DeleteSessionWithOptions(id string, opts SessionDeleteOptions) error {
 	if f.app == nil || f.app.Manager() == nil {
 		return errors.New("session manager not initialized")
 	}
-	// Managed sessions: stop task/terminal and release the session-owned tree
-	// BEFORE any session state is removed, so a blocked or failed release
-	// keeps the session retryable. Store-only sessions (restored never this
-	// run) are handled too — the binding is read from the store.
-	if err := f.prepareManagedTreeDeletion(context.Background(), id, opts); err != nil {
+	// Managed sessions: stop task/terminal and run the tree protocol BEFORE
+	// any session state is removed, so a blocked or failed release keeps the
+	// session retryable. Store-only sessions (restored never this run) are
+	// handled too — the binding is read from the store. A shared-tree
+	// co-owner deletion has its row removed by the pre-flight itself (a
+	// concurrent co-owner's count must observe it gone); cleanupProjectID
+	// then carries the project whose internal files still need the fallback
+	// cleanup below.
+	cleanupProjectID, err := f.prepareManagedTreeDeletion(context.Background(), id, opts)
+	if err != nil {
 		return err
 	}
 	manager := f.app.Manager()
@@ -142,11 +150,16 @@ func (f *FrontendAPI) DeleteSessionWithOptions(id string, opts SessionDeleteOpti
 	// pre-flight just released.
 	var unrestorableProjectID string
 	// Only delete from manager if session is live in memory.
-	if manager.HasSession(id) {
+	switch {
+	case manager.HasSession(id):
 		if err := manager.DeleteSession(id); err != nil {
 			return fmt.Errorf("failed to delete session: %w", err)
 		}
-	} else if f.store != nil {
+	case cleanupProjectID != "":
+		// The pre-flight removed the store row itself, so the row-based
+		// lookup below can no longer resolve the project.
+		unrestorableProjectID = cleanupProjectID
+	case f.store != nil:
 		if info, err := f.store.LoadSession(context.Background(), id); err == nil && info != nil {
 			unrestorableProjectID = info.ProjectID
 		}

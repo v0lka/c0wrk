@@ -160,6 +160,23 @@ type FrontendAPI struct {
 	gitFocusMu   sync.RWMutex
 	gitFocusPath string
 
+	// managedTreeMu serializes the short critical sections that must not
+	// interleave once managed worktrees are shared (ADR-082): a deletion's
+	// [count co-owners → own-row removal → release tree] protocol (against
+	// BOTH adoptions and other deletions — two simultaneous deletions of the
+	// last two co-owners must not both skip the release) and an adoption's
+	// [commit binding → re-validate tree] pair. Without it, an adoption that
+	// validated the tree could commit its binding after the deleter counted
+	// zero remaining owners, and the release would remove the tree out from
+	// under the freshly committed session — which, being in memory, would
+	// not re-run the restore ensurer until restart. Held only across the DB
+	// count/writes plus one or two git calls; never across task cancellation,
+	// terminal stops, or vector cleanup. A wait is bounded in practice (the
+	// adoption side holds it under the creation's managedProvisionTimeout
+	// context), so a wedged git delays — but never deadlocks — concurrent
+	// deletions and adoption commits.
+	managedTreeMu sync.Mutex
+
 	// switchMu serializes the whole SwitchProject body (teardown → vector →
 	// watcher → activate → event). Wails runs each binding call in its own
 	// goroutine, so two rapid CHAT↔CODE toggles used to interleave inside the

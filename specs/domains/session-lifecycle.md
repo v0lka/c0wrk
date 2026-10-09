@@ -186,19 +186,26 @@ Every session carries a persisted, immutable workspace binding
 
 - `local` — the project checkout; execution path follows the project's
   current registered root.
-- `managed_worktree` — a session-owned git worktree under
-  `<repo>/.worktrees/<name>` with the branch pinned at selection.
+- `managed_worktree` — a managed git worktree under
+  `<repo>/.worktrees/<name>` with the branch pinned at selection; since
+  ADR-082 several sessions may share one tree (the release refcount is keyed
+  by the globally unique tree name, across project rows).
 - `nil` — CHAT (No Project) sessions keep their per-session workspace under
   `~/.c0wrk/projects/__no_project__/`, unchanged.
 
 Creation may go through `SessionDraft` (`NewSessionDraft` +
 `Manager.CreateSessionFromDraft`) so a managed tree can be provisioned before
 any orchestrator, log file, or persisted row exists — `FrontendAPI.CreateManagedSession`
-drives that flow: reserve identity → provision the tree via `worktrees.Owner`
-(new branch at a start point, or checkout of an existing one) → commit the
-runtime session via `CreateSessionFromDraft` → persist the binding. The
+drives that flow: reserve identity → look up the requested branch's holder (a
+managed tree is ADOPTED — the session binds to the existing tree, ADR-082; the
+main checkout silently degrades the request to a plain local session; an
+external linked tree is a typed refusal) → provision a fresh tree via
+`worktrees.Owner` when nobody holds the branch (new branch at a start point,
+or checkout of an existing one) → commit the runtime session via
+`CreateSessionFromDraft` → persist the binding. The
 persisted binding is REQUIRED for a managed session: a store failure rolls
-the whole creation back (in-memory session removed, fresh tree released; the
+the whole creation back (in-memory session removed, freshly provisioned tree
+released — adopted trees are never touched; the
 created branch is kept — no path ever deletes branches). Lazy restore and
 `WorkspacePathFor` resolve the execution path from the stored binding — never
 from the ambient active-project state. A managed session forks only through
@@ -219,10 +226,19 @@ explicit restore failure. A managed restore NEVER falls back to the project
 checkout, and without an ensurer configured it fails closed.
 
 **Managed deletion.** `DeleteSession`/`DeleteSessionWithOptions` release the
-session-owned tree BEFORE any session state is removed, in this order: join
+session's managed tree BEFORE any session state is removed, in this order: join
 the running task (`CancelTask` cancels and waits, so the task's final writes
 are visible to the dirty recheck), stop the session terminal (its shell's
-cwd lives inside the tree), then release through `worktrees.Owner` — the
+cwd lives inside the tree), then run the [count remaining owners → own-row
+removal → release] protocol (`CountManagedWorktreeSessions`; while another
+row — live or archived — still binds the tree, the release is skipped and the
+deleting session's own row is removed inside the same critical section, so a
+concurrent co-owner deletion observes it gone and performs the release —
+two simultaneous deletions of the last two owners can never both skip; the
+[count → release] protocol shares the critical section with the adoption
+commit, so a binding committed concurrently is either counted or rolled back
+— ADR-082), then release
+through `worktrees.Owner` — the
 primitives recheck dirty/lock state at removal time, never from a stale
 snapshot. A dirty tree without `confirm_uncommitted_loss`, or a locked tree
 without `unlock_locked_tree`, fails with `*SessionDeleteBlockedError` and the
