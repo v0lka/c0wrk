@@ -279,7 +279,10 @@ func TestPromoteSessionToProject_MissingDestinationProjectRollsBack(t *testing.T
 	if err != nil {
 		t.Fatalf("failed to reload messages: %v", err)
 	}
-	if !strings.Contains(string(msgs[0].Metadata), oldSessionDir) {
+	// The stored blob is JSON text: encoding/json doubles the separators on
+	// Windows (see TestPromoteSessionToProject_RewritesJSONEscapedPrefix), so
+	// the containment check must mirror that escaping.
+	if !strings.Contains(string(msgs[0].Metadata), jsonEscapeString(oldSessionDir)) {
 		t.Fatalf("failed promotion must roll back metadata rewrites, got %s", msgs[0].Metadata)
 	}
 }
@@ -328,7 +331,8 @@ func TestPromoteSessionToProject_OtherSessionsUntouched(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to load other session messages: %v", err)
 	}
-	if !strings.Contains(string(msgs[0].Metadata), otherDir) {
+	// JSON-escaped containment — see the rollback test above.
+	if !strings.Contains(string(msgs[0].Metadata), jsonEscapeString(otherDir)) {
 		t.Fatalf("another session's metadata must stay untouched, got %s", msgs[0].Metadata)
 	}
 
@@ -336,7 +340,8 @@ func TestPromoteSessionToProject_OtherSessionsUntouched(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to load promoted messages: %v", err)
 	}
-	if !strings.Contains(string(mine[0].Metadata), newSessionDir) {
+	// JSON-escaped containment — see the rollback test above.
+	if !strings.Contains(string(mine[0].Metadata), jsonEscapeString(newSessionDir)) {
 		t.Fatalf("promoted metadata must carry the new session dir, got %s", mine[0].Metadata)
 	}
 }

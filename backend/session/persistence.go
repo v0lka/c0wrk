@@ -458,7 +458,10 @@ func (s *SQLiteSessionStore) createTables() error {
 		s.log().Warn("failed to normalize session_messages.created_at to UTC RFC3339", "error", err)
 	}
 
-	return s.migrateWorkspaceBindings()
+	if err := s.migrateWorkspaceBindings(); err != nil {
+		return err
+	}
+	return s.migrateSharedManagedWorktrees()
 }
 
 // columnExists checks whether a column exists in a table using PRAGMA table_info.

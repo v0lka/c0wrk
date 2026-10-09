@@ -291,11 +291,12 @@ func (f *FrontendAPI) ListProjectWorktrees() ([]GitWorktree, error) {
 	return out, nil
 }
 
-// managedTreeOwner resolves the session that owns the managed worktree
-// name, if a live session claims it. The session's persisted binding is the
-// ownership record (one session per managed tree, enforced by the partial
-// unique index); an unresolvable listing is non-fatal — ownership metadata
-// is display-only enrichment.
+// managedTreeOwner resolves the session bound to the managed worktree name,
+// if any session claims it — since the shared-tree revision of ADR-080
+// several sessions may execute in one tree, and this returns one of them
+// (the listing order's first match). The session's persisted binding is the
+// ownership record; an unresolvable listing is non-fatal — ownership
+// metadata is display-only enrichment.
 func (f *FrontendAPI) managedTreeOwner(projectID, worktreeName string) (sessionInfoSnapshot, bool) {
 	for _, s := range f.projectSessions(projectID) {
 		if b := s.WorkspaceBinding; b != nil && b.Kind == session.WorkspaceManagedWorktree && b.WorktreeName == worktreeName {
