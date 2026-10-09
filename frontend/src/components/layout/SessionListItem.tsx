@@ -13,6 +13,7 @@ import { useSessionStatusIndicator } from '@/hooks/useSessionStatusIndicator'
 import type { SessionIndicatorStatus } from '@/hooks/useSessionStatusIndicator'
 import { DropdownMenuItem } from '@/components/ui/dropdown-menu'
 import { ItemAction, ItemActions } from './ItemAction'
+import { NO_PROJECT_ID } from '@/types/models'
 import {
   Check,
   Pencil,
@@ -22,6 +23,7 @@ import {
   GitFork,
   Pin,
   PinOff,
+  FolderOpen,
 } from 'lucide-react'
 
 /** Minimal session shape consumed by a list item. */
@@ -51,6 +53,9 @@ export interface SessionItemCallbacks {
   onPin: () => void
   onFork: () => void
   onDelete: () => void
+  /** Promote-to-project (CHAT surfaces only; optional so CODE-mode lists
+   *  never render it). Only No Project rows show the action. */
+  onPromote?: () => void
 }
 
 // --- Row content (shared between variants) ---
@@ -61,19 +66,22 @@ interface SessionRowContentProps extends SessionItemCallbacks {
   status: SessionIndicatorStatus
 }
 
-function SessionRowContent({ session, isActive, status, onPin, onFork, onRename, onArchive, onDelete }: SessionRowContentProps) {
-  // Fork is the only action that requires a settled session: it deep-copies the
-  // execution state, which is impossible while a task is running or unfinished.
-  // Archive and delete are always allowed — the backend cancels/completes any
-  // in-flight or unfinished task as needed before archiving/deleting. Busy is
-  // read from the row's derived status alone (the SAME single mechanism every
-  // dot uses): every non-idle status means the session is NOT settled. This
-  // deliberately includes 'pending' — a task blocked on a HITL prompt is still
-  // RUNNING (taskActive stays true and the DB task is in_progress), so the
-  // backend rejects a fork of it; enumerating only active/paused/failed would
-  // leave Fork enabled-but-doomed for a pending row.
+function SessionRowContent({ session, isActive, status, onPin, onFork, onPromote, onRename, onArchive, onDelete }: SessionRowContentProps) {
+  // Fork and Promote require a settled session: fork deep-copies the
+  // execution state, and promote moves the session's on-disk storage — both
+  // are impossible while a task is running or unfinished. Archive and delete
+  // are always allowed — the backend cancels/completes any in-flight or
+  // unfinished task as needed before archiving/deleting. Busy is read from
+  // the row's derived status alone (the SAME single mechanism every dot
+  // uses): every non-idle status means the session is NOT settled. This
+  // deliberately includes 'pending' — a task blocked on a HITL prompt is
+  // still RUNNING (taskActive stays true and the DB task is in_progress), so
+  // the backend rejects a fork or promotion of it; enumerating only
+  // active/paused/failed would leave the actions enabled-but-doomed for a
+  // pending row.
   const busy = status !== 'idle'
   const forkReason = status === 'active' || status === 'pending' ? 'Cannot fork while a task is running' : 'Cannot fork a session with an unfinished task'
+  const promoteReason = status === 'active' || status === 'pending' ? 'Cannot promote while a task is running' : 'Cannot promote a session with an unfinished task'
 
   return (
     <>
@@ -98,6 +106,16 @@ function SessionRowContent({ session, isActive, status, onPin, onFork, onRename,
           item. Appears on hover/focus, with a gradient background so the
           underlying time text stays readable underneath the buttons. */}
       <ItemActions>
+        {onPromote && session.project_id === NO_PROJECT_ID && (
+          <ItemAction
+            label="Promote to project"
+            onClick={onPromote}
+            disabled={busy}
+            disabledReason={busy ? promoteReason : undefined}
+          >
+            <FolderOpen className="size-3 text-primary" />
+          </ItemAction>
+        )}
         <ItemAction label={session.pinned ? 'Unpin' : 'Pin'} onClick={onPin}>
           {session.pinned ? <PinOff className="size-3 text-primary" /> : <Pin className="size-3 text-primary" />}
         </ItemAction>
@@ -138,10 +156,11 @@ export function SessionItem({
   onArchive,
   onPin,
   onFork,
+  onPromote,
   onDelete,
 }: SessionItemProps) {
   const status = useSessionStatusIndicator(session.id, session.unfinished_task_status ?? '', session.archived)
-  const callbacks: SessionItemCallbacks = { onSelect, onRename, onArchive, onPin, onFork, onDelete }
+  const callbacks: SessionItemCallbacks = { onSelect, onRename, onArchive, onPin, onFork, onPromote, onDelete }
 
   if (variant === 'flat') {
     return (

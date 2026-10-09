@@ -6,6 +6,7 @@ import { ChevronDown, ChevronRight, Plus, Search } from "lucide-react";
 import { useSessionActions } from "@/hooks/useSessionActions";
 import { SessionItem, type SessionItemSummary } from "./SessionListItem";
 import { SessionActionConfirmDialog } from "./SessionActionConfirmDialog";
+import { PromoteSessionDialog } from "./PromoteSessionDialog";
 
 /**
  * Flat, scrollable session list — used in CHAT (No Project) mode.
@@ -48,6 +49,10 @@ export function SessionList() {
   // Archived sessions are collapsed by default; the header shows the count and
   // expands on click.
   const [archivedCollapsed, setArchivedCollapsed] = useState(true);
+  // "Promote to project" target: the CHAT session being turned into a CODE
+  // project. Keyed by session id in the dialog so the pre-filled name state
+  // resets per target.
+  const [promoteTarget, setPromoteTarget] = useState<SessionItemSummary | null>(null);
 
   const activeSessionsList = useMemo(() => (sessions ?? []).filter((s) => !s.archived), [sessions]);
   const archivedList = useMemo(() => (sessions ?? []).filter((s) => s.archived), [sessions]);
@@ -96,6 +101,7 @@ export function SessionList() {
         onArchive={() => handleArchive(session.id, session.archived)}
         onPin={() => handlePin(session.id, session.pinned)}
         onFork={() => handleFork(session.id)}
+        onPromote={() => setPromoteTarget(session)}
         onDelete={() => handleDelete(session.id)}
       />
     );
@@ -167,6 +173,16 @@ export function SessionList() {
         )}
       </div>
       <SessionActionConfirmDialog pending={pendingAction} onConfirm={confirmPendingAction} onCancel={cancelPendingAction} />
+      {promoteTarget && (
+        <PromoteSessionDialog
+          key={promoteTarget.id}
+          sessionId={promoteTarget.id}
+          sessionName={promoteTarget.name}
+          onOpenChange={(open) => {
+            if (!open) setPromoteTarget(null)
+          }}
+        />
+      )}
     </div>
   );
 }

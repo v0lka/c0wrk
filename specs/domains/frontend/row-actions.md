@@ -8,7 +8,7 @@ Shared hover-overlay primitives for list-row actions: `ItemAction` is one icon b
 
 - `frontend/src/components/layout/ItemAction.tsx` — both primitives; no other file defines row-action buttons
 - `frontend/src/components/layout/ProjectSelector.tsx` — project dropdown rows (Rename, Delete)
-- `frontend/src/components/layout/SessionListItem.tsx` — session rows for both surfaces: `SessionSelector` (dropdown, CODE mode) and `SessionList` (flat, CHAT mode); the `variant` prop selects the outer element (`dropdown` → `DropdownMenuItem`, `flat` → `div[role=button]`); actions: Pin/Unpin, Fork (busy-gated), Rename, Archive/Unarchive, Delete
+- `frontend/src/components/layout/SessionListItem.tsx` — session rows for both surfaces: `SessionSelector` (dropdown, CODE mode) and `SessionList` (flat, CHAT mode); the `variant` prop selects the outer element (`dropdown` → `DropdownMenuItem`, `flat` → `div[role=button]`); actions: Promote to project (only when the row's `project_id` is `__no_project__` AND the caller wired `onPromote` — CODE-mode selectors pass no callback, busy-gated with a promote-specific `disabledReason`), Pin/Unpin, Fork (busy-gated), Rename, Archive/Unarchive, Delete
 - `frontend/src/components/GitPanel/LocalBranchRow.tsx` — local branch rows (Push, Merge, Rebase, Rename, Delete)
 - `frontend/src/components/GitPanel/RemoteBranchRow.tsx` — remote branch rows (Delete on remote)
 - `frontend/src/components/settings/ThemeMenuItem.tsx` — theme menu rows (Delete theme; predefined themes render no actions)
@@ -30,7 +30,7 @@ A disabled button (`pointer-events-none`) never receives pointer events, so its 
 | Surface | File | Actions |
 | ------- | ---- | ------- |
 | Project selector rows | `ProjectSelector.tsx` | Rename, Delete |
-| Session rows (dropdown + flat) | `SessionListItem.tsx` | Pin/Unpin, Fork (busy-gated with `disabledReason`), Rename, Archive/Unarchive, Delete |
+| Session rows (dropdown + flat) | `SessionListItem.tsx` | Promote to project (No Project rows only, busy-gated), Pin/Unpin, Fork (busy-gated), Rename, Archive/Unarchive, Delete |
 | Local branch rows | `LocalBranchRow.tsx` | Push, Merge, Rebase, Rename, Delete |
 | Remote branch rows | `RemoteBranchRow.tsx` | Delete on remote |
 | Theme menu rows | `ThemeMenuItem.tsx` | Delete theme |

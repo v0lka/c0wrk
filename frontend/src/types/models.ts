@@ -1337,3 +1337,6 @@ export interface GitPanelFocus {
   pinned: boolean
   session_id?: string
 }
+
+/** Well-known id of the "No Project" pseudo-project (CHAT mode). */
+export const NO_PROJECT_ID = '__no_project__'

@@ -183,7 +183,15 @@ type Manager struct {
 	// files independently; on Windows the resulting concurrent open/close
 	// churn leaves the OS file lock briefly held even after every handle is
 	// closed, breaking TempDir cleanup.
-	restoreInFlight     map[string]chan struct{}
+	restoreInFlight map[string]chan struct{}
+	// restoreParked parks NEW lazy restores of a session while an external
+	// mutation (the session-promotion flow) owns the session: the evict →
+	// move → store-commit window must not be interleaved with a restore that
+	// would rebuild the session from the pre-commit store state. Keyed by
+	// session ID; value is a channel closed when the reservation is released.
+	// Guarded by mu. Waiters blocked here re-run their restore attempt from
+	// scratch once the window closes.
+	restoreParked       map[string]chan struct{}
 	mu                  sync.RWMutex
 	orchestratorFactory OrchestratorFactory
 	emitFunc            func(Event) // shared event emission callback
@@ -200,6 +208,9 @@ type Manager struct {
 	stopTimeout         time.Duration        // how long to wait for goroutine on cancel/delete
 	maxSummaryLen       int                  // character limit for auto-generated step summaries
 	serviceLLMTimeout   time.Duration        // timeout for one-shot service LLM requests (session title); default 10m
+	// promoteRename is the fault-injection seam for MoveSessionStorage's
+	// renames; in-package tests assign it directly. nil = os.Rename.
+	promoteRename func(oldpath, newpath string) error
 	// serviceLLMGate, when set, is invoked BEFORE a one-shot service LLM
 	// request's timeout context is created, and must return once whatever the
 	// request needs in order to be served is ready. It exists for the embedded
@@ -342,6 +353,7 @@ func NewManager(factory OrchestratorFactory, emitFunc func(Event), agentDir stri
 	m := &Manager{
 		sessions:            make(map[string]*Session),
 		restoreInFlight:     make(map[string]chan struct{}),
+		restoreParked:       make(map[string]chan struct{}),
 		orchestratorFactory: factory,
 		emitFunc:            emitFunc,
 		agentDir:            agentDir,
@@ -835,6 +847,17 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 	if existing, ok := m.sessions[id]; ok {
 		m.mu.Unlock()
 		return existing, nil
+	}
+	// External mutation window (session promotion): a ReserveRestores
+	// reservation parks new restores while the promotion owns the session
+	// (the evict → move → store-commit span). Wait for the release, then
+	// restart from scratch: the store state this restore is about to read
+	// and the workspace it is about to materialize are both rewritten by the
+	// time the window closes, so a fresh attempt is the only correct shape.
+	if parkCh, parked := m.restoreParked[id]; parked {
+		m.mu.Unlock()
+		<-parkCh
+		return m.getOrRestoreSession(id)
 	}
 	if waitCh, inflight := m.restoreInFlight[id]; inflight {
 		m.mu.Unlock()

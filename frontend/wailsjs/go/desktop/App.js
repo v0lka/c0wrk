@@ -570,6 +570,10 @@ export function ProbeEmbeddedLLMDevices() {
   return window['go']['desktop']['App']['ProbeEmbeddedLLMDevices']();
 }
 
+export function PromoteSessionToProject(arg1, arg2) {
+  return window['go']['desktop']['App']['PromoteSessionToProject'](arg1, arg2);
+}
+
 export function Pull(arg1, arg2) {
   return window['go']['desktop']['App']['Pull'](arg1, arg2);
 }

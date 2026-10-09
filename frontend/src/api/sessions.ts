@@ -2,8 +2,8 @@
 
 import { getApp } from './runtime'
 import { logger } from '@/lib/logger'
-import { isSessionInfo, isArrayOf } from '@/types/guards'
-import type { SessionInfo } from '@/types/models'
+import { isSessionInfo, isArrayOf, isProjectInfo } from '@/types/guards'
+import type { ProjectInfo, SessionInfo } from '@/types/models'
 
 export async function createSession(): Promise<SessionInfo> {
   try {
@@ -128,6 +128,27 @@ export async function forkSession(id: string): Promise<SessionInfo> {
     return result
   } catch (err) {
     logger.error('Failed to fork session:', err)
+    throw err
+  }
+}
+
+/**
+ * Promote a CHAT (No Project) session into a new CODE project with that
+ * single session in it. The session keeps its identity and full history; its
+ * workspace moves into the project's internal Workspace. The backend rejects
+ * the promotion for a session with an unfinished task or a non-CHAT owner.
+ * The caller switches to the returned project on success.
+ */
+export async function promoteSessionToProject(sessionId: string, projectName: string): Promise<ProjectInfo> {
+  try {
+    const app = getApp()
+    const result = await app.PromoteSessionToProject(sessionId, projectName)
+    if (!isProjectInfo(result)) {
+      throw new Error('promoteSessionToProject: backend returned invalid data')
+    }
+    return result
+  } catch (err) {
+    logger.error('Failed to promote session to project:', err)
     throw err
   }
 }
