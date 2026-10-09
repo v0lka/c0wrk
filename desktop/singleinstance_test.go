@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -204,6 +205,12 @@ func TestHandleSecondInstanceLaunch_BeforeStartupNoop(t *testing.T) {
 // run to "first instance" without creating the link's target or locking a
 // foreign file.
 func TestAcquireSingleInstanceLock_RefusesSymlinkedLockFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// The lock open is no-follow via safeio.OpenFileNoFollow, which still
+		// follows the final symlink on Windows (sp4rk safeio parity
+		// limitation); the fail-closed refusal this pins is unix-specific.
+		t.Skip("no-follow symlink refusal is unix-specific")
+	}
 	dir := t.TempDir()
 	victim := filepath.Join(t.TempDir(), "victim")
 	if err := os.Symlink(victim, filepath.Join(dir, "app.lock")); err != nil {

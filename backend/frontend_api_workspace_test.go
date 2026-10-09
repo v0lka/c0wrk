@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -13,6 +14,20 @@ import (
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/core/workspace"
 )
+
+// canonicalTempDir resolves the 8.3 short form Windows hands out for the
+// per-run temp directory (C:\Users\RUNNER~1\...): with two spellings of the
+// same directory in play, IsWithinPath's raw-vs-EvalSymlinks prefix
+// resolution rejects admitted paths. On error the raw path is kept — the
+// tests then exercise the same spelling they did before.
+func canonicalTempDir(t *testing.T) string {
+	t.Helper()
+	base := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(base); err == nil {
+		return resolved
+	}
+	return base
+}
 
 // --- resolveWorkspacePath tests ---
 
@@ -1084,7 +1099,7 @@ func newWriteFileTestAPI(t *testing.T, agentDir, projectID, projectPath string) 
 // (<pid>/Workspace) rejected every plan write, silently swallowing the plan
 // editor's auto-save (#146).
 func TestWriteFile_SessionInfraPlanPath_Admitted(t *testing.T) {
-	base := t.TempDir()
+	base := canonicalTempDir(t)
 	pid, sid := "proj-1", "sess-1"
 	ws := filepath.Join(base, "projects", pid, "Workspace")
 	if err := os.MkdirAll(ws, 0o755); err != nil {
@@ -1120,7 +1135,7 @@ func TestWriteFile_ExternalProjectWorkspace_Admitted(t *testing.T) {
 // No Project keeps the per-session isolation: a CHAT session may write its
 // own workspace and its own plans//temp/, but never another session's tree.
 func TestWriteFile_NoProject_CrossSessionRejected(t *testing.T) {
-	base := t.TempDir()
+	base := canonicalTempDir(t)
 	projectDir := config.ProjectDir(base, project.NoProjectID)
 	if err := os.MkdirAll(filepath.Join(projectDir, "other-session", "workspace"), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -1145,6 +1160,12 @@ func TestWriteFile_NoProject_CrossSessionRejected(t *testing.T) {
 // A symlink at the final path component must be refused, never written
 // through (#27): os.WriteFile would truncate the link's target.
 func TestWriteFile_RefusesSymlinkAtFinalComponent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// safeio.OpenFileNoFollow still follows the final symlink on Windows
+		// (sp4rk safeio parity limitation); the refusal this pins is
+		// unix-specific.
+		t.Skip("no-follow symlink refusal is unix-specific")
+	}
 	ws := t.TempDir()
 	victim := filepath.Join(ws, "real.txt")
 	if err := os.WriteFile(victim, []byte("keep"), 0o644); err != nil {

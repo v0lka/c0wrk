@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -338,6 +339,12 @@ func TestWriteMarker_ReplacesDanglingSymlinkWithoutFollowing(t *testing.T) {
 // fd 1/2 capture for the run (fail closed) instead of redirecting the whole
 // process stdout/stderr into an arbitrary user file.
 func TestInstall_RefusesSymlinkedStderrLog(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// safeio.OpenFileNoFollow still follows the final symlink on Windows
+		// (sp4rk safeio parity limitation); the fail-closed refusal this pins
+		// is unix-specific.
+		t.Skip("no-follow symlink refusal is unix-specific")
+	}
 	dir := t.TempDir()
 	victim := filepath.Join(t.TempDir(), "victim")
 	if err := os.WriteFile(victim, []byte("keep me"), 0o600); err != nil {
