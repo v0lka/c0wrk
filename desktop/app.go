@@ -423,7 +423,7 @@ func (a *App) emit(eventName string, optionalData ...any) {
 // a normal start these calls have nothing left to do; they exist so a window
 // that is hidden, minimized, or buried under other windows still comes back.
 //
-// Activation semantics per platform (verified against the Wails v2.15
+// Activation semantics per platform (verified against the Wails v2.16
 // frontends — internal/frontend/desktop/{linux,darwin,windows}):
 //
 //		Linux     WindowShow is gtk_widget_show — a bare map call that is a NO-OP

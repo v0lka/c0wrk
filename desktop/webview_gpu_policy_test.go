@@ -55,7 +55,7 @@ func TestParseWebviewGpuPolicyErrorContainsAllowedValues(t *testing.T) {
 }
 
 // The Wails conversion deliberately does NOT use like-named constants: the
-// pinned Wails v2.15.0 C layer maps 0→ALWAYS, 1→ON_DEMAND, 2→NEVER while
+// pinned Wails v2.16.0 C layer maps 0→ALWAYS, 1→ON_DEMAND, 2→NEVER while
 // the Go enum orders OnDemand=0, Always=1, Never=2. These tests pin the
 // compensation by NUMERIC value — the integer the C layer actually switches
 // on — never by named constant: if a future Wails upgrade reorders the Go
@@ -65,7 +65,7 @@ func TestParseWebviewGpuPolicyErrorContainsAllowedValues(t *testing.T) {
 // numeric pin fails loudly instead.
 func TestWailsWebviewGpuPolicyCompensatesCMapping(t *testing.T) {
 	// wantC is the integer crossing wails.Run into SetupWebview's switch in
-	// window.c (v2.15.0): 0→WEBKIT_…POLICY_ALWAYS, 1→…POLICY_ON_DEMAND,
+	// window.c (v2.16.0): 0→WEBKIT_…POLICY_ALWAYS, 1→…POLICY_ON_DEMAND,
 	// 2→…POLICY_NEVER.
 	cases := []struct {
 		policy webviewGpuPolicy
@@ -83,7 +83,7 @@ func TestWailsWebviewGpuPolicyCompensatesCMapping(t *testing.T) {
 }
 
 // TestWailsWebviewGpuPolicyEnumOrderCanary pins the numeric order of the
-// Wails Go enum itself (OnDemand=0, Always=1, Never=2 as of v2.15.0). The
+// Wails Go enum itself (OnDemand=0, Always=1, Never=2 as of v2.16.0). The
 // compensation test above already fails on any reorder — production returns
 // the named constants, whose numbers would drift — but its failure alone
 // does not say WHY. This canary names the root cause explicitly ("the Go
@@ -111,7 +111,7 @@ func TestWailsWebviewGpuPolicyEnumOrderCanary(t *testing.T) {
 func TestWebviewGpuPolicyOptions(t *testing.T) {
 	logger := slog.New(slog.DiscardHandler)
 	// wantC pins the integer the C layer receives (window.c switch in the
-	// pinned Wails v2.15.0: 0→ALWAYS, 1→ON_DEMAND, 2→NEVER) — not the named
+	// pinned Wails v2.16.0: 0→ALWAYS, 1→ON_DEMAND, 2→NEVER) — not the named
 	// constants, which would keep passing through a Go-enum reorder while
 	// the runtime silently swaps policies (see
 	// TestWailsWebviewGpuPolicyCompensatesCMapping).
