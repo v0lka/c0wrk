@@ -159,24 +159,37 @@ func TestEventBatcher_SizeThresholdTriggersFlush(t *testing.T) {
 	b := newTestBatcher(sink, 4) // flush every 4 enqueued events
 	defer b.Stop()
 
-	// No explicit Flush: the size threshold must flush on its own. 10 events
-	// cross the threshold at #4 and #8, so at least the first 8 must arrive
-	// without any other trigger (the ticker is an hour away). Exactly how
-	// much crosses depends on when the batcher goroutine wakes — a late wake
-	// may deliver all 10 in one flush — so assert a floor of 8, drain the
-	// leftovers with an explicit flush, and pin the full order.
-	for i := 0; i < 10; i++ {
+	// No explicit Flush: the size threshold must flush on its own. Each
+	// threshold crossing is collected as it lands instead of enqueueing all
+	// ten up front: the flush goroutine drains whatever is queued at its
+	// first wake, so a front-loaded burst of ten can split as 7+3 — a
+	// seven-event drain satisfies the threshold yet strands three below it
+	// (the ticker is an hour away), which made the former floor-of-8
+	// assertion depend on goroutine scheduling (observed flaking on a loaded
+	// Windows runner). Collecting each crossing pins the guarantee — a flush
+	// happens per crossing, with no timing assumption — while the collect
+	// watchdogs still catch a hang.
+	for i := 0; i < 4; i++ {
 		b.Enqueue("session:s1:thought", []any{map[string]any{"content": i}}, "", false, 0)
 	}
-	got := sink.collectFlattened(t, 8)
+	got := sink.collectFlattened(t, 4) // first crossing: exactly events 0-3
+	for i := 4; i < 8; i++ {
+		b.Enqueue("session:s1:thought", []any{map[string]any{"content": i}}, "", false, 0)
+	}
+	got = append(got, sink.collectFlattened(t, 4)...) // second crossing: events 4-7
 	for i, ev := range got {
 		if content := mapPayload(t, ev)["content"]; content != i {
 			t.Fatalf("size-flushed event %d out of order: content=%v", i, content)
 		}
 	}
 
+	// The two stragglers sit below the threshold and ride the explicit
+	// flush; the full order is pinned end to end.
+	for i := 8; i < 10; i++ {
+		b.Enqueue("session:s1:thought", []any{map[string]any{"content": i}}, "", false, 0)
+	}
 	b.Flush()
-	got = append(got, sink.collectFlattened(t, 10-len(got))...)
+	got = append(got, sink.collectFlattened(t, 2)...)
 	if len(got) != 10 {
 		t.Fatalf("delivered %d events, want 10", len(got))
 	}
