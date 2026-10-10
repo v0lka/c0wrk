@@ -56,8 +56,8 @@ func TestHandleMessageMCP_RestartContinuationUnionAndFreshIsolation(t *testing.T
 		t.Fatalf("LoadMCPMentions(continued task) = (%v,%v), want a,b,nil", got, err)
 	}
 	for i, prompt := range prompts {
-		if !strings.Contains(prompt, "Requested MCP Servers") || !strings.Contains(prompt, "a") {
-			t.Errorf("HandleMessage(entry %d) lacks retained requested-server directive", i)
+		if strings.Contains(prompt, "Requested MCP Servers") {
+			t.Errorf("HandleMessage(entry %d) renders a server directive — E2S renders no server sections; the durable mention union lives in the task store and the entry gate", i)
 		}
 	}
 	fresh, err := o.HandleMessage(WithUserMCPServers(context.Background(), []string{"foreign"}), "new work", "session", HandleOptions{E2S: true})

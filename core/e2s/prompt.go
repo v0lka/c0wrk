@@ -30,8 +30,8 @@ type SkillSection struct {
 // directives (the unconditional VerificationMandate and the config-gated
 // InjectionDefense, mirroring the Conductor's prefix — SECURITY.md mandates
 // them for every model-facing loop), the workspace sections, the Available
-// Tools catalog (from the registry descriptors), the optional delegation
-// directive and subagent sections, and the active-skill sections. The
+// Tools catalog (from the registry descriptors), and the active-skill
+// sections. The
 // composition is deterministic and session-stable: the same config and
 // descriptor set always produce the same prompt, so provider-side prefix
 // caching applies across the loop's fresh one-shot dialogs.
@@ -48,17 +48,16 @@ func BuildSystemPrompt(cfg Config, descriptors []sdktools.ToolDescriptor) string
 	}
 	sb.WriteString(workspaceSection(cfg))
 	sb.WriteString(availableToolsSection(descriptors))
-	if cfg.DelegateDirective != "" {
-		sb.WriteString("\n\n## Delegation\n")
-		sb.WriteString(cfg.DelegateDirective)
-	}
-	sb.WriteString(cfg.AgentSections)
 	sb.WriteString(skillsSection(cfg.Skills))
 	return sb.String()
 }
 
 // workspaceSection renders the workspace/temp-directory containment sections,
-// mirroring the orchestrator's Workspace block.
+// mirroring the orchestrator's Workspace block, plus the scratchpad block:
+// when cfg.NotesPath is set (derived from TempDir by withDefaults) it names
+// the scratchpad file and states the overflow discipline — raw evidence goes
+// to the file, Σ keeps distilled facts and pointers, the final answer draws
+// on both.
 func workspaceSection(cfg Config) string {
 	if cfg.WorkspacePath == "" {
 		return ""
@@ -71,15 +70,19 @@ func workspaceSection(cfg Config) string {
 		sb.WriteString("\nYour session temp directory is: " + cfg.TempDir + "\n")
 		sb.WriteString("Use this directory for ANY intermediate files — drafts, partial results, scratch data, inter-step artifacts. These files are NOT part of the final deliverable and will be cleaned up when the session ends.")
 	}
+	if cfg.NotesPath != "" {
+		sb.WriteString("\nYour scratchpad file is: " + cfg.NotesPath + "\n")
+		sb.WriteString("The scratchpad is your overflow memory for RAW evidence — tool output, dumps, long excerpts, bulky intermediate results. Raw content longer than ~5 lines does not belong in the state: write it to the scratchpad and keep in Σ only the distilled fact plus a pointer (scratchpad path + line range); re-read the range with `read_file` when you need the raw data back. The final answer is assembled from Σ and the scratchpad together — check both before you finish.")
+	}
 	return sb.String()
 }
 
 // availableToolsSection renders the catalog of tools the action dispatch can
 // target. Descriptors are sorted by name for a stable, cache-friendly list;
-// each entry carries its purpose line and the FULL input schema (compact
-// JSON) — the model dispatches free-form action.args objects, so without the
-// schema it cannot know parameter names and guesses wrong ones that Go's
-// json.Unmarshal then silently ignores.
+// each entry carries its purpose line and the compact description-free input
+// schema (compactSchema) — the model dispatches free-form action.args
+// objects, so without the schema it cannot know parameter names and guesses
+// wrong ones that Go's json.Unmarshal then silently ignores.
 func availableToolsSection(descriptors []sdktools.ToolDescriptor) string {
 	if len(descriptors) == 0 {
 		return "\n\n## Available Tools\nNone — call " + FinishActionName + " with your best answer."
@@ -107,18 +110,64 @@ func availableToolsSection(descriptors []sdktools.ToolDescriptor) string {
 	return sb.String()
 }
 
-// compactSchema renders a tool's input schema as compact JSON (whitespace
-// removed via json.Compact, preserving the schema's own key order — stable
-// for a given build). An empty/unparseable schema renders as "".
+// compactSchema renders a tool's input schema as COMPACT, description-free
+// JSON: every "description" key is stripped from the whole schema tree (the
+// tool's purpose is already rendered as the catalog entry's one-line
+// summary, so the schema-level prose is bulk without information the model
+// cannot get elsewhere). Everything else is preserved VERBATIM — property
+// names, required, enum values, types, and all constraint metadata (the
+// ADR-040 lesson: the model dispatches action.args by exact parameter name,
+// so any metadata loss or renaming would push it toward wrong argument
+// names that Go's json.Unmarshal then silently ignores).
+//
+// The result is deterministic: parsing into generic values and re-marshaling
+// sorts object keys alphabetically (stable for a given build), which keeps
+// the rendered catalog — and therefore the provider-side prefix cache over
+// the loop's fresh one-shot dialogs — reproducible. Numbers are carried
+// through as literals (json.Decoder.UseNumber), so a constraint like
+// min/max lengths re-renders byte-identically. An empty/unparseable schema
+// renders as "".
 func compactSchema(schema json.RawMessage) string {
 	if strings.TrimSpace(string(schema)) == "" {
 		return ""
 	}
-	var buf bytes.Buffer
-	if err := json.Compact(&buf, schema); err != nil {
+	var v any
+	dec := json.NewDecoder(bytes.NewReader(schema))
+	dec.UseNumber()
+	if err := dec.Decode(&v); err != nil {
 		return ""
 	}
-	return buf.String()
+	data, err := json.Marshal(stripSchemaDescriptions(v))
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+// stripSchemaDescriptions returns a copy of the parsed schema tree with
+// every "description" object key removed at any nesting depth (properties,
+// items, oneOf/anyOf branches). Scalars, arrays, and every other key pass
+// through untouched.
+func stripSchemaDescriptions(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, val := range t {
+			if k == "description" {
+				continue
+			}
+			out[k] = stripSchemaDescriptions(val)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, val := range t {
+			out[i] = stripSchemaDescriptions(val)
+		}
+		return out
+	default:
+		return v
+	}
 }
 
 // skillsSection renders the active-skill bodies. Skill bodies are emitted
@@ -201,11 +250,16 @@ func turnHeader(turn, maxTurns int) string {
 }
 
 // BuildCorrectionSuffix renders the corrective tail appended to the user
-// message for the bounded retry after an invalid e2s_step call.
+// message for the bounded retry after an invalid e2s_step call. The error
+// line names the violation; the envelope literals re-show the exact shapes
+// (regular action and finish) so the retry can copy the form instead of
+// re-guessing it.
 func BuildCorrectionSuffix(validationErr error) string {
 	return "\n<correction>\nYour previous turn was INVALID and was not applied. Error:\n" +
 		validationErr.Error() +
-		"\nRespond now with a corrected `" + StepToolName + "` call following the E2S protocol exactly: a state_patch object and an action object with tool and args.\n</correction>\n"
+		"\nA valid `" + StepToolName + "` call has the exact shape " + stepEnvelope +
+		"; to finish, the action is " + stepFinishEnvelope + "." +
+		"\nRespond now with one corrected `" + StepToolName + "` call following the E2S protocol exactly.\n</correction>\n"
 }
 
 // untrustedWrap wraps an observation from an untrusted source (MCP, web,

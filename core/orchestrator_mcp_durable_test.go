@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -185,6 +186,10 @@ func TestResumeMCP_WaveCatalogDispatchAndCurrentSnapshot(t *testing.T) {
 			bb := newUnitLedgerBB("task", store)
 			bb.SetOriginalRequest("work")
 			if kind == "e2s-delegate" {
+				// The `all` preset puts the MCP probes in the E2S catalog so the
+				// assertions target the per-server MODE gate, not the slim
+				// default catalog that excludes MCP tools.
+				o.config.E2S.Tools = BuilderE2SToolsConfig{Preset: E2SToolsPresetAll}
 				es := e2s.NewE2SState("work", time.Now())
 				if err := store.PersistE2SState("task", &es); err != nil {
 					t.Fatal(err)
@@ -239,13 +244,14 @@ func TestResumeMCP_E2SDurableDirective(t *testing.T) {
 		for _, message := range req.Messages {
 			prompt.WriteString(message.Content)
 		}
-		if !strings.Contains(prompt.String(), "Requested MCP Servers") || !strings.Contains(prompt.String(), "selected") {
-			t.Errorf("E2S Resume prompt lacks durable requested-server directive")
+		if strings.Contains(prompt.String(), "Requested MCP Servers") {
+			t.Errorf("E2S Resume prompt renders a server directive — E2S renders no server sections; the durable mention gates the catalog instead")
 		}
 		return e2sFinishResponse("finish", "done"), nil
 	}}
 	o, _, _, _ := newFunnelOrchestrator(t, caller)
 	o.SetTaskStore(store)
+	o.config.MCPServerModesResolver = func() map[string]string { return map[string]string{"selected": "manual"} }
 	es := e2s.NewE2SState("work", time.Now())
 	if err := store.PersistE2SState("task", &es); err != nil {
 		t.Fatal(err)
@@ -255,5 +261,17 @@ func TestResumeMCP_E2SDurableDirective(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Errorf("E2S Resume calls=%d, want 1", calls)
+	}
+	// The durable mention survives the restart: the common task preparation
+	// re-derives the context from the persisted union, so the mentioned manual
+	// server is ALLOWED for the resumed run (it joins the user-server set —
+	// only unmentioned manual servers land in the gated set) even though no
+	// directive renders.
+	next, err := o.prepareTaskMCP(context.Background(), bb, nil)
+	if err != nil {
+		t.Fatalf("prepareTaskMCP(after E2S Resume) = %v, want nil", err)
+	}
+	if got := UserMCPServersFromContext(next); !slices.Contains(got, "selected") {
+		t.Errorf("UserMCPServersFromContext(after E2S Resume) = %v, want the durable selected mention", got)
 	}
 }
