@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -1497,17 +1498,21 @@ func TestSystemPrompt_Sections(t *testing.T) {
 func TestSystemPrompt_Scratchpad(t *testing.T) {
 	// With a temp dir, withDefaults derives <TempDir>/e2s-notes.md and the
 	// prompt names the path plus the discipline (raw evidence → file, Σ keeps
-	// distilled facts + pointers, answer assembled from both).
+	// distilled facts + pointers, answer assembled from both). The derivation
+	// goes through filepath.Join (loop.go), so the expectation must be built
+	// with the same separator rules — a literal "/ws/tmp/..." hardcodes the
+	// Unix separator and mismatches the backslash form Windows produces.
 	cfg := testConfig()
 	cfg.WorkspacePath = "/ws/project"
 	cfg.TempDir = "/ws/tmp"
 	cfg = cfg.withDefaults()
-	if cfg.NotesPath != "/ws/tmp/"+NotesFileName {
-		t.Fatalf("withDefaults NotesPath = %q, want %q", cfg.NotesPath, "/ws/tmp/"+NotesFileName)
+	wantNotes := filepath.Join("/ws/tmp", NotesFileName)
+	if cfg.NotesPath != wantNotes {
+		t.Fatalf("withDefaults NotesPath = %q, want %q", cfg.NotesPath, wantNotes)
 	}
 	prompt := BuildSystemPrompt(cfg, nil)
 	for _, want := range []string{
-		"/ws/tmp/e2s-notes.md",
+		wantNotes,
 		"scratchpad",
 		"~5 lines",
 		"line range",
