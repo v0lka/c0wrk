@@ -1502,11 +1502,14 @@ func TestSystemPrompt_Scratchpad(t *testing.T) {
 	// goes through filepath.Join (loop.go), so the expectation must be built
 	// with the same separator rules — a literal "/ws/tmp/..." hardcodes the
 	// Unix separator and mismatches the backslash form Windows produces.
+	// Join the TempDir variable (not a separator-carrying literal — gocritic
+	// filepathJoin): the asserted contract is exactly NotesPath ==
+	// Join(TempDir, NotesFileName), on every OS.
 	cfg := testConfig()
 	cfg.WorkspacePath = "/ws/project"
 	cfg.TempDir = "/ws/tmp"
 	cfg = cfg.withDefaults()
-	wantNotes := filepath.Join("/ws/tmp", NotesFileName)
+	wantNotes := filepath.Join(cfg.TempDir, NotesFileName)
 	if cfg.NotesPath != wantNotes {
 		t.Fatalf("withDefaults NotesPath = %q, want %q", cfg.NotesPath, wantNotes)
 	}
