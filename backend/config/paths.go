@@ -523,7 +523,12 @@ func IsSessionInfraPath(projectDir, absPath string) bool {
 	if err != nil {
 		return false
 	}
-	parts := pathutil.SplitPathComponents(filepath.ToSlash(rel))
+	// rel stays in its platform-native form: SplitPathComponents splits on
+	// filepath.Separator, a COMPILE-TIME per-OS constant. Pre-converting with
+	// filepath.ToSlash made the slash-joined path split into a SINGLE
+	// component on Windows (where the separator is '\'), so every
+	// session-infra path was classified as non-infra and rejected (#146).
+	parts := pathutil.SplitPathComponents(rel)
 	// Structure: <sessionID>/plans/... or <sessionID>/temp/...
 	return len(parts) >= 2 && (parts[1] == "plans" || parts[1] == "temp")
 }
