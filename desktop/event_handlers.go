@@ -201,7 +201,8 @@ func (a *App) runJudgeEvaluation(confirmID string, pendingData *pendingConfirmDa
 
 	log.Debug("judge: goroutine started", "confirm_id", confirmID, "tool", pendingData.toolName)
 
-	if a.app == nil {
+	app := a.application()
+	if app == nil {
 		log.Warn("judge: no application available", "confirm_id", confirmID)
 		a.pendingConfirmations.Delete(confirmID)
 		uiEmit(session.Event{
@@ -215,7 +216,7 @@ func (a *App) runJudgeEvaluation(confirmID string, pendingData *pendingConfirmDa
 		return
 	}
 
-	parentCtx := a.ctx
+	parentCtx := a.wailsCtx()
 	if parentCtx == nil {
 		parentCtx = context.Background()
 	}
@@ -227,14 +228,14 @@ func (a *App) runJudgeEvaluation(confirmID string, pendingData *pendingConfirmDa
 	// temp dir, EnvInfo, auxiliary work directories as allowed roots) so the
 	// judge LLM knows the session's directory scope — explicit and implicit
 	// additional work directories included.
-	sess, sessOK := a.app.Manager().GetSession(pendingData.sessionID)
+	sess, sessOK := app.Manager().GetSession(pendingData.sessionID)
 	if sessOK {
 		if dumpFile := sess.DumpFile(); dumpFile != nil {
 			defer func() { _ = dumpFile.Close() }()
 			judgeCtx = agent.WithDumpWriter(judgeCtx, dumpFile)
 		}
 	}
-	judgeCtx = a.app.Manager().JudgeContext(judgeCtx, pendingData.sessionID)
+	judgeCtx = app.Manager().JudgeContext(judgeCtx, pendingData.sessionID)
 
 	responsePayload := session.JudgeResponsePayload{ConfirmID: confirmID}
 
@@ -242,7 +243,7 @@ func (a *App) runJudgeEvaluation(confirmID string, pendingData *pendingConfirmDa
 	// a confirmation card must evaluate on the session's own provider/model —
 	// the same judge automatic escalations use — falling back to the shared
 	// registry's judge when the session context is unavailable.
-	_, reasoning, err := a.app.EvaluateJudgeForSession(judgeCtx, pendingData.sessionID, pendingData.toolName, pendingData.input, pendingData.taskContext)
+	_, reasoning, err := app.EvaluateJudgeForSession(judgeCtx, pendingData.sessionID, pendingData.toolName, pendingData.input, pendingData.taskContext)
 	if err != nil {
 		log.Warn("judge: evaluation failed", "confirm_id", confirmID, "tool", pendingData.toolName, "error", err)
 		responsePayload.Error = fmt.Sprintf("Judge evaluation failed: %v", err)

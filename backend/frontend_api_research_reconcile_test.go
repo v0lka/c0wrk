@@ -56,6 +56,8 @@ func seedGlobalPacksTestFrontend(t *testing.T) (f *FrontendAPI, projectID, ws, a
 		agentDir:       agentDir,
 		emitEvent:      func(string, ...any) {},
 	}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	return f, "proj-1", ws, agentDir
 }
 
@@ -186,12 +188,16 @@ func TestSwitchProject_DoesNotSeedProjectLocalPacks(t *testing.T) {
 // (or missing agentDir) yields "" — the explicit no_script degradation.
 func TestLiteratureScriptPath_Global(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	if got := f.literatureScriptPath(); got != "" {
 		t.Errorf("literatureScriptPath() with no agentDir = %q, want empty", got)
 	}
 
 	agentDir := t.TempDir()
 	f = &FrontendAPI{agentDir: agentDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	if got := f.literatureScriptPath(); got != "" {
 		t.Errorf("literatureScriptPath() missing = %q, want empty", got)
 	}

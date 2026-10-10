@@ -28,7 +28,7 @@ func (f *FrontendAPI) StartTerminal(sessionID string) error {
 	if f.terminalManager == nil {
 		return errors.New("terminal manager not initialized")
 	}
-	if f.app == nil || f.app.Manager() == nil {
+	if f.appCell() == nil || f.app.Manager() == nil {
 		return errors.New("session manager not initialized")
 	}
 
@@ -57,6 +57,7 @@ func (f *FrontendAPI) StartTerminal(sessionID string) error {
 // timeout or store failure the bool is false and the caller reports a
 // retryable error.
 func (f *FrontendAPI) workspacePathForTerminal(sessionID string) (string, bool) {
+	f.seedAcquire()
 	ctx, cancel := context.WithTimeout(context.Background(), terminalPathLookupTimeout)
 	defer cancel()
 	return f.app.Manager().WorkspacePathFor(ctx, sessionID)
@@ -71,7 +72,7 @@ func (f *FrontendAPI) StartTerminalInDir(sessionID, workDir string) error {
 	if f.terminalManager == nil {
 		return errors.New("terminal manager not initialized")
 	}
-	if f.app == nil || f.app.Manager() == nil {
+	if f.appCell() == nil || f.app.Manager() == nil {
 		return errors.New("session manager not initialized")
 	}
 
@@ -104,6 +105,7 @@ func (f *FrontendAPI) StartTerminalInDir(sessionID, workDir string) error {
 
 // TerminalInput sends user input to the terminal PTY.
 func (f *FrontendAPI) TerminalInput(sessionID, data string) error {
+	f.seedAcquire()
 	if f.terminalManager == nil {
 		return errors.New("terminal manager not initialized")
 	}
@@ -115,6 +117,7 @@ func (f *FrontendAPI) TerminalInput(sessionID, data string) error {
 
 // TerminalResize updates the terminal dimensions.
 func (f *FrontendAPI) TerminalResize(sessionID string, cols, rows int) error {
+	f.seedAcquire()
 	if f.terminalManager == nil {
 		return errors.New("terminal manager not initialized")
 	}
@@ -126,6 +129,7 @@ func (f *FrontendAPI) TerminalResize(sessionID string, cols, rows int) error {
 
 // StopTerminal stops the terminal for the given session.
 func (f *FrontendAPI) StopTerminal(sessionID string) error {
+	f.seedAcquire()
 	if f.terminalManager == nil {
 		return errors.New("terminal manager not initialized")
 	}
@@ -137,10 +141,15 @@ func (f *FrontendAPI) StopTerminal(sessionID string) error {
 
 // GetTerminalHistory returns the command history for a session.
 func (f *FrontendAPI) GetTerminalHistory(sessionID string) ([]session.TerminalCommand, error) {
+	f.seedAcquire()
 	if f.store == nil {
 		return []session.TerminalCommand{}, nil
 	}
-	commands, err := f.store.LoadTerminalCommands(context.Background(), sessionID, 100)
+	// Bounded like the sibling workspace lookup above (terminalPathLookupTimeout):
+	// the same store over the same shared pool must not park the history load.
+	ctx, cancel := context.WithTimeout(f.ctx(), terminalPathLookupTimeout)
+	defer cancel()
+	commands, err := f.store.LoadTerminalCommands(ctx, sessionID, 100)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load terminal history: %w", err)
 	}

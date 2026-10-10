@@ -90,7 +90,7 @@ const wakeReloadDelay = 1500 * time.Millisecond
 //   - returns immediately to the caller (it spawns a goroutine);
 //   - waits wakeReloadDelay, but cancels early if the app context is done
 //     (shutdown), via select;
-//   - re-checks a.ctx.Err() once more after the wait, so a shutdown that
+//   - re-checks a.wailsCtx().Err() once more after the wait, so a shutdown that
 //     began during the delay never triggers a reload of a torn-down context.
 //
 // The delay is essential: calling the reload inline inside the wake observer
@@ -104,10 +104,10 @@ const wakeReloadDelay = 1500 * time.Millisecond
 // already reloaded via -[WKWebView reload]; the native reload here is then a
 // harmless second reload of the same view.
 func (a *App) deferredWakeReload() {
-	if a.ctx == nil {
+	if a.wailsCtx() == nil {
 		return
 	}
-	ctx := a.ctx
+	ctx := a.wailsCtx()
 	go func() {
 		timer := time.NewTimer(wakeReloadDelay)
 		defer timer.Stop()
@@ -226,7 +226,7 @@ func (a *App) Startup(ctx context.Context) {
 	// only this captured value (see memlimit.go).
 	runtimeSeenGomemlimit := os.Getenv("GOMEMLIMIT")
 
-	a.ctx = ctx
+	a.setContext(ctx)
 
 	// ── Restore maximized window state ───────────────────────────────
 	// The window SIZE is already restored via wails.Run options in main.go
@@ -242,7 +242,7 @@ func (a *App) Startup(ctx context.Context) {
 	// navigates to/open the file — this callback is the sole delivery channel.
 	// The nil guards mirror the other wailsRuntime registrations: ctx is always
 	// non-nil here (Wails passes a live context), but a.emit additionally guards
-	// a.ctx so a late drop during teardown is dropped harmlessly instead of panic.
+	// a.wailsCtx() so a late drop during teardown is dropped harmlessly instead of panic.
 	wailsRuntime.OnFileDrop(ctx, func(x, y int, paths []string) {
 		if len(paths) == 0 {
 			return
@@ -264,7 +264,7 @@ func (a *App) Startup(ctx context.Context) {
 	// MUST run before any config/env-var resolution.
 	config.LoadShellEnvironment(nil)
 	log, sessionLogger := a.initLogger(logDir)
-	a.sessionLogger = sessionLogger // stored for cleanup on early Startup exits (W1)
+	a.setSessionLogger(sessionLogger) // stored for cleanup on early Startup exits (W1)
 
 	log.Info("startup phase complete", "phase", "logger", "elapsed_ms", time.Since(startTime).Milliseconds())
 
@@ -274,6 +274,12 @@ func (a *App) Startup(ctx context.Context) {
 	resolved, toolsBinPath, toolsInstalled, toolsOK := a.initConfigAndDeps(ctx, log)
 	log.Info("startup phase complete", "phase", "config", "elapsed_ms", time.Since(startTime).Milliseconds(), "tools_installed", toolsInstalled)
 	if !toolsOK {
+		// Same contract as the buildApplication failure return below: this
+		// window exits Startup before buildFrontendAPI, so the seed must be
+		// published (empty) here or every guardless RPC spins forever in
+		// seedAcquire on a live webview. A failed first-run tool download is
+		// a supported outcome, not a crash.
+		_ = a.frontendAPI().Lifecycle().Init(backend.FrontendAPIConfig{})
 		return
 	}
 
@@ -296,7 +302,7 @@ func (a *App) Startup(ctx context.Context) {
 	// Arm the hard shutdown deadline from config now, before any teardown path
 	// can run. Shutdown reads it (shutdownDeadline()); a zero value falls back
 	// to the built-in default.
-	a.shutdownHardDeadline = time.Duration(cfg.Shutdown.HardDeadline) * time.Second
+	a.setShutdownHardDeadline(time.Duration(cfg.Shutdown.HardDeadline) * time.Second)
 
 	logLevel := cfg.LogLevel
 	log, sessionLogger = a.maybeReinitLogger(logLevel, sessionLogger, log, logDir)
@@ -335,7 +341,7 @@ func (a *App) Startup(ctx context.Context) {
 	})
 	phase3.Wait()
 	log.Info("startup phase complete", "phase", "database", "elapsed_ms", time.Since(startTime).Milliseconds())
-	a.db = db
+	a.setDatabase(db)
 
 	// ── Phase 4: Stores + Project/Session Preload ────────────────────
 	projStore, sessStore, reviewStore := a.initStores(db, log)
@@ -381,7 +387,7 @@ func (a *App) Startup(ctx context.Context) {
 	// whatever tree the Git panel focuses. Safe before the vector factory is
 	// wired: the registry lookup is a no-op without a live manager.
 	fileChangeNotify := func(ctx context.Context) {
-		a.Lifecycle().NotifyVectorFileChange(sdktools.WorkspacePathFrom(ctx))
+		a.frontendAPI().Lifecycle().NotifyVectorFileChange(sdktools.WorkspacePathFrom(ctx))
 	}
 
 	// Workspace tree changed emitter: called alongside fileChangeNotify to
@@ -409,6 +415,13 @@ func (a *App) Startup(ctx context.Context) {
 		FileChangedWorkspaceEmitter: fileChangedWorkspaceEmitter,
 	}, log, startTime)
 	if err != nil {
+		// Publish an EMPTY seed before returning: seedPublished is what
+		// admits the guardless RPCs, and a window whose Startup failed before
+		// buildFrontendAPI would otherwise leave every one of them spinning
+		// forever in seedAcquire at 100% of a core. The zero value makes each
+		// nil guard fail cleanly instead ("not initialized" errors), matching
+		// the app's existing degraded-startup behavior.
+		_ = a.frontendAPI().Lifecycle().Init(backend.FrontendAPIConfig{})
 		return
 	}
 
@@ -436,7 +449,7 @@ func (a *App) Startup(ctx context.Context) {
 			a.emit(eventName, data...)
 		},
 		AppCtx: func() context.Context {
-			return a.ctx
+			return a.wailsCtx()
 		},
 		QuitApp: func() {
 			// quitApp is invoked exclusively by ApplyUpdate after the staged
@@ -445,7 +458,7 @@ func (a *App) Startup(ctx context.Context) {
 			// self-update". Arm the marker before quitting so the close
 			// guard (should the quit be intercepted) can flag the context.
 			a.markUpdateQuit()
-			wailsRuntime.Quit(a.ctx)
+			wailsRuntime.Quit(a.wailsCtx())
 		},
 	}, configLoadErrors, projStore, log, startTime)
 
@@ -453,7 +466,7 @@ func (a *App) Startup(ctx context.Context) {
 	// the search closures registered on the orchestrator builder resolve it
 	// at call time — the session's workspace root from the executor context
 	// for agent-side calls, the Git-panel focus for user-facing search.
-	application.SetVectorRoots(a.Lifecycle().VectorRoots())
+	application.SetVectorRoots(a.frontendAPI().Lifecycle().VectorRoots())
 
 	// ── Embedded local model: restore only ──────────────────────────
 	// Reads manifest.json into the supervisor and emits the initial
@@ -522,8 +535,8 @@ func (a *App) Startup(ctx context.Context) {
 	// thread mid-resume, while the OS is still restoring the web-content
 	// process. Calling the reload inline at that point races the OS and
 	// silently kills the app. deferredWakeReload spawns a goroutine that waits
-	// wakeReloadDelay, is cancellable via a.ctx.Done() (shutdown), and
-	// re-checks a.ctx.Err() before reloading.
+	// wakeReloadDelay, is cancellable via a.wailsCtx().Done() (shutdown), and
+	// re-checks a.wailsCtx().Err() before reloading.
 	//
 	// Both paths use a NATIVE -[WKWebView reload] (reloadFrontend on the wake
 	// path; the IMP in powerstate_darwin.go on the death path). Wails's
@@ -551,14 +564,15 @@ func (a *App) Startup(ctx context.Context) {
 	// ── Background: MCP Ready notifier ───────────────────────────────
 	// Emits EventMCPReady once the MCP gateway startup goroutine finishes so
 	// the settings dialog can refresh its transient "Starting…" placeholder.
-	a.startMCPReadyNotifier(a.ctx, log)
+	a.startMCPReadyNotifier(a.wailsCtx(), log)
 
 	// ── Background: Vector Index ─────────────────────────────────────
 	a.startVectorIndexBackground(agentDir, cfg, vectorReady, &vectorOnce, startTime, log)
 
 	// ── Background: Update check ────────────────────────────────────
 	// Runs a single best-effort "check for updates" after the backend is
-	// ready. Reaps stale temp updater artifacts, then delegates to
+	// ready. Deliberately NO updater.CleanupStaleUpdaters here — the reap
+	// moved to main.go, behind the single-instance lock. Delegates to
 	// FrontendAPI.RunBackgroundUpdateCheck (the sole auto-check path: honours
 	// operator + user gates, respects the interval, caches the result so a
 	// discovered update is downloadable). Never blocks or breaks startup.
@@ -627,7 +641,11 @@ func (a *App) Shutdown(ctx context.Context) {
 	// even if no resize fired this session. Best-effort: a torn-down context
 	// makes this a no-op, and the debounced frontend saves already captured
 	// any prior resize.
-	a.saveWindowBounds(a.log())
+	// Persist the snapshot captured while the window was alive (the close
+	// guard); a direct read here would hit the already-destroyed window on
+	// Linux and clobber the correct persisted geometry (see
+	// persistWindowBoundsAtShutdown).
+	a.persistWindowBoundsAtShutdown(a.log())
 	shutdownStep("saveWindowBounds")
 
 	// Stop the embedded local-model server (llama-server) if one is running.
@@ -692,8 +710,12 @@ func (a *App) Shutdown(ctx context.Context) {
 	})
 	shutdownStep("pendingActionDrains")
 
-	if a.FrontendAPI != nil {
-		a.Lifecycle().Cleanup()
+	// Close-path reads go through the locked accessors: Shutdown runs on the
+	// platform main goroutine and can race a still-running Startup (the
+	// first-run tool install keeps Startup busy for minutes) — see the
+	// block comment on App.
+	if fa := a.frontendAPI(); fa != nil {
+		fa.Lifecycle().Cleanup()
 	}
 	shutdownStep("frontendAPICleanup")
 
@@ -701,13 +723,13 @@ func (a *App) Shutdown(ctx context.Context) {
 	a.judgeWG.Wait()
 	shutdownStep("judgeWGWait")
 
-	if a.app != nil {
-		a.app.Shutdown()
+	if app := a.application(); app != nil {
+		app.Shutdown()
 	}
 	shutdownStep("applicationShutdown")
 
-	if a.db != nil {
-		if err := a.db.Close(); err != nil {
+	if db := a.database(); db != nil {
+		if err := db.Close(); err != nil {
 			a.log().Error("failed to close database", "error", err)
 		}
 	}
@@ -718,8 +740,8 @@ func (a *App) Shutdown(ctx context.Context) {
 	// The session log is the sink of a.logger; it closes only after the last
 	// record is written so the "complete" bracket (and the db.Close error
 	// above) are persisted instead of silently dropped into a closed file.
-	if a.sessionLogger != nil {
-		_ = a.sessionLogger.Close()
+	if sl := a.sessionLog(); sl != nil {
+		_ = sl.Close()
 	}
 }
 
@@ -728,7 +750,7 @@ func (a *App) Shutdown(ctx context.Context) {
 // body is extracted into desktop/event_handlers.go (W-23) so it can be
 // unit-tested without a running Wails runtime.
 func (a *App) wireWailsEventListeners(log *slog.Logger, uiEmitFunc func(session.Event)) {
-	wailsRuntime.EventsOn(a.ctx, backend.EventToolConfirmResponse, func(data ...any) {
+	wailsRuntime.EventsOn(a.wailsCtx(), backend.EventToolConfirmResponse, func(data ...any) {
 		payload, ok := extractPayload("tool confirmation response", data, log)
 		if !ok {
 			return
@@ -736,7 +758,7 @@ func (a *App) wireWailsEventListeners(log *slog.Logger, uiEmitFunc func(session.
 		a.handleToolConfirmResponse(payload, log)
 	})
 
-	wailsRuntime.EventsOn(a.ctx, backend.EventToolJudgeRequest, func(data ...any) {
+	wailsRuntime.EventsOn(a.wailsCtx(), backend.EventToolJudgeRequest, func(data ...any) {
 		payload, ok := extractPayload("tool judge request", data, log)
 		if !ok {
 			return
@@ -744,7 +766,7 @@ func (a *App) wireWailsEventListeners(log *slog.Logger, uiEmitFunc func(session.
 		a.handleToolJudgeRequest(payload, uiEmitFunc, log)
 	})
 
-	wailsRuntime.EventsOn(a.ctx, backend.EventAskUserResponse, func(data ...any) {
+	wailsRuntime.EventsOn(a.wailsCtx(), backend.EventAskUserResponse, func(data ...any) {
 		payload, ok := extractPayload("ask_user response", data, log)
 		if !ok {
 			return
@@ -752,7 +774,7 @@ func (a *App) wireWailsEventListeners(log *slog.Logger, uiEmitFunc func(session.
 		a.handleAskUserResponse(payload, log)
 	})
 
-	wailsRuntime.EventsOn(a.ctx, backend.EventStepLimitResponse, func(data ...any) {
+	wailsRuntime.EventsOn(a.wailsCtx(), backend.EventStepLimitResponse, func(data ...any) {
 		payload, ok := extractPayload("step_limit response", data, log)
 		if !ok {
 			return
@@ -760,7 +782,7 @@ func (a *App) wireWailsEventListeners(log *slog.Logger, uiEmitFunc func(session.
 		a.handleStepLimitResponse(payload, log)
 	})
 
-	wailsRuntime.EventsOn(a.ctx, backend.EventPlanApprovalResponse, func(data ...any) {
+	wailsRuntime.EventsOn(a.wailsCtx(), backend.EventPlanApprovalResponse, func(data ...any) {
 		payload, ok := extractPayload("plan_approval response", data, log)
 		if !ok {
 			return
@@ -768,7 +790,7 @@ func (a *App) wireWailsEventListeners(log *slog.Logger, uiEmitFunc func(session.
 		a.handlePlanApprovalResponse(payload, log)
 	})
 
-	wailsRuntime.EventsOn(a.ctx, backend.EventGoalProposalResponse, func(data ...any) {
+	wailsRuntime.EventsOn(a.wailsCtx(), backend.EventGoalProposalResponse, func(data ...any) {
 		payload, ok := extractPayload("goal_proposal response", data, log)
 		if !ok {
 			return

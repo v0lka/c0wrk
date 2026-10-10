@@ -91,8 +91,8 @@ func (a *App) notificationCallback(result wailsRuntime.NotificationResult) {
 
 	// Focus first, then tell the frontend: the reveal must not depend on JS
 	// involvement (a busy or reloaded webview may drop the event entirely).
-	if a.ctx != nil {
-		a.showWindow(a.ctx)
+	if a.wailsCtx() != nil {
+		a.showWindow(a.wailsCtx())
 	}
 	a.emit(EventNotificationClicked, payload)
 }
@@ -107,7 +107,7 @@ func (a *App) notificationCallback(result wailsRuntime.NotificationResult) {
 // This must remain on App (not FrontendAPI) because it requires the Wails
 // context, exactly like PickDirectory.
 func (a *App) InitNotifications() error {
-	if a.ctx == nil {
+	if a.wailsCtx() == nil {
 		return errors.New("InitNotifications: application context is not initialized")
 	}
 
@@ -119,10 +119,10 @@ func (a *App) InitNotifications() error {
 	}
 
 	if a.notificationsInitFn != nil {
-		if err := a.notificationsInitFn(a.ctx); err != nil {
+		if err := a.notificationsInitFn(a.wailsCtx()); err != nil {
 			return err
 		}
-	} else if err := wailsRuntime.InitializeNotifications(a.ctx); err != nil {
+	} else if err := wailsRuntime.InitializeNotifications(a.wailsCtx()); err != nil {
 		return err
 	}
 
@@ -137,9 +137,9 @@ func (a *App) InitNotifications() error {
 		var granted bool
 		var err error
 		if a.notificationsAuthFn != nil {
-			granted, err = a.notificationsAuthFn(a.ctx)
+			granted, err = a.notificationsAuthFn(a.wailsCtx())
 		} else {
-			granted, err = wailsRuntime.RequestNotificationAuthorization(a.ctx)
+			granted, err = wailsRuntime.RequestNotificationAuthorization(a.wailsCtx())
 		}
 		if err != nil {
 			a.log().Warn("notification authorization request failed", "error", err)
@@ -151,9 +151,9 @@ func (a *App) InitNotifications() error {
 	// Registering the callback AFTER a successful initialize keeps the
 	// single callback slot consistent with the live notification service.
 	if a.onNotificationResponseFn != nil {
-		a.onNotificationResponseFn(a.ctx, a.notificationCallback)
+		a.onNotificationResponseFn(a.wailsCtx(), a.notificationCallback)
 	} else {
-		wailsRuntime.OnNotificationResponse(a.ctx, a.notificationCallback)
+		wailsRuntime.OnNotificationResponse(a.wailsCtx(), a.notificationCallback)
 	}
 
 	a.notificationsInitialized.Store(true)
@@ -168,13 +168,13 @@ func (a *App) InitNotifications() error {
 // (true, nil) unconditionally (no authorization concept), so the hint never
 // renders there. Must remain on App (Wails context).
 func (a *App) CheckNotificationAuthorization() (bool, error) {
-	if a.ctx == nil {
+	if a.wailsCtx() == nil {
 		return false, errors.New("CheckNotificationAuthorization: application context is not initialized")
 	}
 	if a.notificationsAuthCheckFn != nil {
-		return a.notificationsAuthCheckFn(a.ctx)
+		return a.notificationsAuthCheckFn(a.wailsCtx())
 	}
-	return wailsRuntime.CheckNotificationAuthorization(a.ctx)
+	return wailsRuntime.CheckNotificationAuthorization(a.wailsCtx())
 }
 
 // SendSystemNotification sends one native notification. Frontend-callable —
@@ -197,7 +197,7 @@ func (a *App) CheckNotificationAuthorization() (bool, error) {
 // D-Bus transport consumes it, so macOS/Windows never pay for the resolution
 // and never log its clamp warnings for a knob that has no effect there.
 func (a *App) SendSystemNotification(title, body string, data map[string]string) error {
-	if a.ctx == nil {
+	if a.wailsCtx() == nil {
 		return errors.New("SendSystemNotification: application context is not initialized")
 	}
 
@@ -215,9 +215,9 @@ func (a *App) SendSystemNotification(title, body string, data map[string]string)
 
 	var err error
 	if a.notificationsSendFn != nil {
-		err = a.notificationsSendFn(a.ctx, options)
+		err = a.notificationsSendFn(a.wailsCtx(), options)
 	} else {
-		err = a.sendNotificationPlatform(a.ctx, options, a.notificationExpireTimeoutMs)
+		err = a.sendNotificationPlatform(a.wailsCtx(), options, a.notificationExpireTimeoutMs)
 	}
 	if err != nil {
 		return err
@@ -273,8 +273,8 @@ type expireTimeoutResolver = func() int32
 // silently.
 func (a *App) notificationExpireTimeoutMs() int32 {
 	seconds := config.NotificationBannerTimeoutDaemonDefault
-	if a.FrontendAPI != nil {
-		seconds = a.GetNotificationBannerTimeout()
+	if fa := a.frontendAPI(); fa != nil {
+		seconds = fa.GetNotificationBannerTimeout()
 	}
 	switch {
 	case seconds == config.NotificationBannerTimeoutDaemonDefault:
@@ -339,7 +339,7 @@ func (a *App) ShowTestNotification() error {
 // Linux this closes the D-Bus session-bus connection of the Wails transport
 // AND c0wrk's own icon-augmented transport (cleanupNotificationTransport, a
 // no-op on other platforms). Called from Shutdown with the lifecycle context
-// (identical to a.ctx in production; taken as a parameter so the teardown
+// (identical to a.wailsCtx() in production; taken as a parameter so the teardown
 // stays exercisable in tests); safe to call when notifications were never
 // initialized (the Wails call is a no-op on a nil connection, and
 // macOS/Windows implement it as a stub).

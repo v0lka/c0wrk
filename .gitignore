@@ -56,8 +56,11 @@ go.work.sum
 # Project Specific
 # =============================================================================
 
-# Compiled agent binary (project-specific)
+# Compiled Go binaries from a module-root `go build` (the binary name follows
+# the module: github.com/v0lka/c0wrk -> ./c0wrk; ./agent predates the rename).
+# Real release/desktop builds go to build/bin/ (gitignored separately).
 /agent
+/c0wrk
 
 # Cache directory for downloaded libraries
 .cache/

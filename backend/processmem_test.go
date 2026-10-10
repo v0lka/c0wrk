@@ -11,6 +11,8 @@ func TestGetProcessMemory_StubbedSeam(t *testing.T) {
 	f := &FrontendAPI{readProcessRSSFn: func() (uint64, error) {
 		return 1_234_567_896, nil
 	}}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	got, err := f.GetProcessMemory()
 	if err != nil {
@@ -30,6 +32,8 @@ func TestGetProcessMemory_NilSeamUsesRealRead(t *testing.T) {
 		t.Skipf("readProcessRSS() unavailable in this environment: %v", err)
 	}
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	got, err := f.GetProcessMemory()
 	if err != nil {
@@ -45,6 +49,8 @@ func TestGetProcessMemory_SeamError(t *testing.T) {
 	f := &FrontendAPI{readProcessRSSFn: func() (uint64, error) {
 		return 0, errSeam
 	}}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	got, err := f.GetProcessMemory()
 	if err == nil {
@@ -65,6 +71,8 @@ func TestGetProcessMemory_Overflow(t *testing.T) {
 	f := &FrontendAPI{readProcessRSSFn: func() (uint64, error) {
 		return math.MaxUint64, nil
 	}}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	got, err := f.GetProcessMemory()
 	if err == nil {

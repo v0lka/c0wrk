@@ -93,3 +93,33 @@ func TestRememberDialogDirectory(t *testing.T) {
 		t.Fatalf("expected persisted %q, got %q", picked, got.LastDirectory)
 	}
 }
+
+// TestWriteDialogState_ReplacesSymlinkInsteadOfTarget pins the #65 fix for
+// the dialog state file: a symlink planted at the fixed dialog_state.json
+// path must be replaced by the atomic rename, never written through.
+func TestWriteDialogState_ReplacesSymlinkInsteadOfTarget(t *testing.T) {
+	agentDir := t.TempDir()
+	victim := filepath.Join(t.TempDir(), "authorized_keys")
+	if err := os.WriteFile(victim, []byte("keep me"), 0o600); err != nil {
+		t.Fatalf("seed victim: %v", err)
+	}
+	path := config.DialogStatePath(agentDir)
+	if err := os.Symlink(victim, path); err != nil {
+		t.Skipf("symlinks unavailable on this platform: %v", err)
+	}
+
+	if err := writeDialogState(agentDir, DialogState{LastDirectory: "/tmp"}); err != nil {
+		t.Fatalf("writeDialogState: %v", err)
+	}
+
+	data, err := os.ReadFile(victim)
+	if err != nil {
+		t.Fatalf("read victim: %v", err)
+	}
+	if string(data) != "keep me" {
+		t.Fatalf("symlink target was overwritten: %q", data)
+	}
+	if fi, err := os.Lstat(path); err != nil || fi.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("state file must be a replaced regular file, got %v (%v)", fi, err)
+	}
+}

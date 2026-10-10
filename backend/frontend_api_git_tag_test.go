@@ -37,6 +37,8 @@ func disableGpgSign(t *testing.T, dir string) {
 
 func TestCreateTag_NoProject(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	if err := f.CreateTag("v1.0", "HEAD"); err == nil {
 		t.Fatal("expected error when no active project")
 	}

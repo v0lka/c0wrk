@@ -23,8 +23,14 @@ type SessionLogger struct {
 func Init(level, logDir string) (*SessionLogger, error) {
 	parsedLevel, levelErr := parseLevel(level)
 
-	// Create log directory
-	if err := os.MkdirAll(logDir, 0o750); err != nil {
+	// Create the log directory as a chain of REAL directories under the
+	// agent directory (the log dir's parent) as the containment boundary: a
+	// link planted at ~/.c0wrk/logs → <outside> is REFUSED and startup
+	// logging fails closed instead of redirecting every session log outside
+	// ~/.c0wrk (review finding #77). A symlinked agent directory itself —
+	// and any link resolving inside it — remains operator intent; a
+	// dangling or swapped-in link still fails as before.
+	if err := safeio.MkdirAllRealWithin(filepath.Dir(logDir), logDir, 0o750); err != nil {
 		return nil, fmt.Errorf("failed to create log directory: %w", err)
 	}
 
@@ -32,8 +38,13 @@ func Init(level, logDir string) (*SessionLogger, error) {
 	timestamp := time.Now().Format("2006-01-02T15-04-05")
 	sessionFile := filepath.Join(logDir, fmt.Sprintf("session-%s.log", timestamp))
 
-	// Open log file
-	file, err := safeio.OpenFile(sessionFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640)
+	// Open log file with O_NOFOLLOW (unix): a symlink planted at the
+	// predictable session-<ts>.log name must not redirect the write (the
+	// plain safeio.OpenFile fstat guard runs after the open and would see
+	// the regular link target). On Windows the safeio parity note applies —
+	// the final symlink is still resolved there — tempered by Windows
+	// requiring elevated/dev-mode rights to create symlinks.
+	file, err := safeio.OpenFileNoFollow(sessionFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open log file: %w", err)
 	}

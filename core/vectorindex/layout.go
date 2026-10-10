@@ -163,7 +163,7 @@ func (s *Service) migrateLegacyLayoutLocked(projectPath string) {
 			name = orphanBranchRootName
 		}
 		destDir := filepath.Join(projectPath, branchRootsDirName, name)
-		if err := os.MkdirAll(destDir, 0o750); err != nil {
+		if err := ensureRealDir(destDir, 0o750); err != nil {
 			s.logger.Warn("vector index: cannot create branch root during migration",
 				"path", destDir, "error", err)
 			continue
@@ -195,7 +195,7 @@ func (s *Service) migrateLegacyLayoutLocked(projectPath string) {
 // hold s.mu.
 func (s *Service) openBranchDBLocked(branch string) (*chromem.DB, error) {
 	root := branchRootPath(s.current.projectPath, branch)
-	if err := os.MkdirAll(root, 0o750); err != nil {
+	if err := ensureRealDir(root, 0o750); err != nil {
 		return nil, fmt.Errorf("creating branch root %s: %w", root, err)
 	}
 	db, err := newPersistentDB(root, false)

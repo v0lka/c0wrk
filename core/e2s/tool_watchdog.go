@@ -32,6 +32,9 @@ const defaultToolWatchdogInterval = 250 * time.Millisecond
 // ceiling. Mirrors the sp4rk executor's default exemption set, narrowed to the
 // tools E2S actually exposes (the plan-workflow tools declare_plan/execute_plan
 // are stripped from the E2S catalog, and propose_goal with the goal-only set).
+// Deliberately NOT operator-configurable: the timeouts.toolCallTimeoutExempt-
+// Tools knob applies only to the Conductor/executor loops — the experimental
+// E2S state loop keeps this narrowed built-in default.
 var toolCallTimeoutExemptTools = map[string]struct{}{
 	"ask_user": {},
 	"delegate": {},

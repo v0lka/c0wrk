@@ -70,6 +70,8 @@ func papersTestFrontend(t *testing.T, _ string, pins project.ResearchPins) (api 
 		projStore:      store,
 		emitEvent:      recorder.emit,
 	}
+	api.seedPublished.Store(true)
+	api.seedPublished.Store(true)
 	return api, "proj-1", ws, effectiveRoot
 }
 
@@ -361,6 +363,8 @@ func TestSetPaperPinned_PinUnpinPersists(t *testing.T) {
 func TestEmitPapersChanged_ScopesToLibrary(t *testing.T) {
 	rec := &researchEventRecorder{}
 	f := &FrontendAPI{emitEvent: rec.emit}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	// Arbitrary (non-existent) POSIX paths: emitPapersChanged only does
 	// containment prefix-matching, it never touches the filesystem.
 	root := "/ws/.research/papers"
@@ -440,6 +444,8 @@ func TestPapersFileChanged_EmitsWithoutResearch(t *testing.T) {
 			}
 		},
 	}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	f.activeProjectMu.Lock()
 	f.activeProjectID = "real-project"
 	f.activeProjectPath = ws
@@ -518,6 +524,8 @@ func TestComparisonsFileChanged_EmitsWithoutResearch(t *testing.T) {
 			}
 		},
 	}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	f.activeProjectMu.Lock()
 	f.activeProjectID = "real-project"
 	f.activeProjectPath = ws
@@ -694,6 +702,8 @@ func TestSwitchProjectSetupWatcher_WatchesHybridLibrary(t *testing.T) {
 			}
 		},
 	}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	// The production callback snapshots the active fields (set by
 	// switchProjectActivate in the real switch); set them directly so this test
 	// stays focused on the watcher wiring.

@@ -707,8 +707,8 @@ describe('rebuildPlanFromHistory', () => {
         content: '',
         metadata: {
           steps: [
-            { id: 'step-0', description: 'Setup project', summary: 'Setup' },
-            { id: 'step-1', description: 'Implement feature', summary: 'Implement' },
+            { id: 'step-0', description: 'Setup project', summary: 'Setup', status: 'pending' },
+            { id: 'step-1', description: 'Implement feature', summary: 'Implement', status: 'pending' },
           ],
         },
       }),
@@ -763,7 +763,7 @@ describe('rebuildPlanFromHistory', () => {
         type: 'plan',
         content: '',
         metadata: {
-          steps: [{ id: 'step-0', description: 'Do work', summary: 'Work' }],
+          steps: [{ id: 'step-0', description: 'Do work', summary: 'Work', status: 'pending' }],
         },
       }),
       makeUI({
@@ -797,9 +797,9 @@ describe('rebuildPlanFromHistory', () => {
         content: '',
         metadata: {
           steps: [
-            { id: 'step-0', description: 'Setup project', summary: 'Setup' },
-            { id: 'step-1', description: 'Implement feature', summary: 'Implement' },
-            { id: 'step-2', description: 'Ship it', summary: 'Ship' },
+            { id: 'step-0', description: 'Setup project', summary: 'Setup', status: 'pending' },
+            { id: 'step-1', description: 'Implement feature', summary: 'Implement', status: 'pending' },
+            { id: 'step-2', description: 'Ship it', summary: 'Ship', status: 'pending' },
           ],
         },
       }),
@@ -842,7 +842,7 @@ describe('groupMessages — pause checkpoints', () => {
         id: 'plan-1',
         type: 'plan',
         content: '',
-        metadata: { steps: [{ id: 'step-0', description: 'Setup', summary: 'Setup' }] },
+        metadata: { steps: [{ id: 'step-0', description: 'Setup', summary: 'Setup', status: 'pending' }] },
       }),
       makeUI({ type: 'plan_step_start', metadata: { step_id: 'step-0', description: 'Setup', summary: 'Setup' } }),
       makeUI({ type: 'tool_call', metadata: { tool: 'write_file', plan_step_id: 'step-0', args: '{}', completed: true } }),
@@ -861,7 +861,7 @@ describe('groupMessages — pause checkpoints', () => {
         id: 'plan-1',
         type: 'plan',
         content: '',
-        metadata: { steps: [{ id: 'step-0', description: 'Setup', summary: 'Setup' }] },
+        metadata: { steps: [{ id: 'step-0', description: 'Setup', summary: 'Setup', status: 'pending' }] },
       }),
       makeUI({ type: 'plan_step_start', metadata: { step_id: 'step-0', description: 'Setup', summary: 'Setup' } }),
       makeUI({ id: 'pause-1', type: 'plan_step_paused', metadata: { step_id: 'step-0', duration: 1500 } }),
@@ -886,7 +886,7 @@ describe('groupMessages — pause checkpoints', () => {
         id: 'plan-1',
         type: 'plan',
         content: '',
-        metadata: { steps: [{ id: 'step-0', description: 'Setup', summary: 'Setup' }] },
+        metadata: { steps: [{ id: 'step-0', description: 'Setup', summary: 'Setup', status: 'pending' }] },
       }),
       makeUI({ type: 'plan_step_start', metadata: { step_id: 'step-0', description: 'Setup', summary: 'Setup' } }),
       makeUI({ type: 'tool_call', metadata: { tool: 'write_file', plan_step_id: 'step-0', args: '{}', completed: true } }),
@@ -914,7 +914,7 @@ describe('groupMessages — pause checkpoints', () => {
         id: 'plan-1',
         type: 'plan',
         content: '',
-        metadata: { steps: [{ id: 'step-0', description: 'Setup', summary: 'Setup' }] },
+        metadata: { steps: [{ id: 'step-0', description: 'Setup', summary: 'Setup', status: 'pending' }] },
       }),
       // The step started, then the process died / crashed before any terminal
       // event (plan_step_complete / plan_step_paused) was persisted — so the
@@ -947,7 +947,7 @@ describe('groupMessages — pause checkpoints', () => {
         id: 'plan-1',
         type: 'plan',
         content: '',
-        metadata: { steps: [{ id: 'step-0', description: 'Setup', summary: 'Setup' }] },
+        metadata: { steps: [{ id: 'step-0', description: 'Setup', summary: 'Setup', status: 'pending' }] },
       }),
       makeUI({ id: 'start-1', type: 'plan_step_start', metadata: { step_id: 'step-0', description: 'Setup', summary: 'Setup' } }),
       makeUI({ id: 'done-1', type: 'plan_step_complete', metadata: { step_id: 'step-0', success: false, duration: 1000, error: 'boom' } }),
@@ -979,9 +979,9 @@ describe('groupMessages — pause checkpoints', () => {
         content: '',
         metadata: {
           steps: [
-            { id: 'step-0', description: 'Setup project', summary: 'Setup' },
-            { id: 'step-1', description: 'Implement feature', summary: 'Implement' },
-            { id: 'step-2', description: 'Ship it', summary: 'Ship' },
+            { id: 'step-0', description: 'Setup project', summary: 'Setup', status: 'pending' },
+            { id: 'step-1', description: 'Implement feature', summary: 'Implement', status: 'pending' },
+            { id: 'step-2', description: 'Ship it', summary: 'Ship', status: 'pending' },
           ],
         },
       }),
@@ -1018,7 +1018,7 @@ describe('groupMessages — pause checkpoints', () => {
         id: 'plan-1',
         type: 'plan',
         content: '',
-        metadata: { steps: [{ id: 'step-0', description: 'Setup', summary: 'Setup' }] },
+        metadata: { steps: [{ id: 'step-0', description: 'Setup', summary: 'Setup', status: 'pending' }] },
       }),
       makeUI({ id: 'start-1', type: 'plan_step_start', metadata: { step_id: 'step-0', description: 'Setup', summary: 'Setup' } }),
       makeUI({ id: 'done-1', type: 'plan_step_complete', metadata: { step_id: 'step-0', success: true, duration: 1000 } }),

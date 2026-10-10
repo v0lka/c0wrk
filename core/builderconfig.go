@@ -714,6 +714,17 @@ type BuilderToolLimitsConfig struct {
 	GlobMaxEntries int
 	GlobMaxResults int
 
+	// GlobLimitsExplicit reports that the glob config is explicitly customized
+	// — at least one of the three glob knobs (entries, results, timeout)
+	// resolved to a non-default value, which post-ApplyDefaults can only mean
+	// the operator set it (including the explicit "0 disables"). It selects the
+	// no-fallback glob constructor in core/tools so an explicitly all-zero
+	// config ("0 disables" on all three knobs, the documented contract) is
+	// honored verbatim instead of being silently replaced by sp4rk's defaults;
+	// false keeps NewGlobToolWithLimits's zero-struct→defaults fallback (the
+	// runaway-walk safety net for a fully-unset / never-populated config).
+	GlobLimitsExplicit bool
+
 	// Per-tool Stage 1 truncation (line/byte-based, applied before token budget).
 	PerToolTruncation map[string]BuilderToolTruncationConfig
 }
@@ -730,16 +741,25 @@ type BuilderToolTruncationConfig struct {
 
 // BuilderTimeoutsConfig holds timeout values (in seconds).
 type BuilderTimeoutsConfig struct {
-	BashMaxTimeout       int
-	BashWaitDelay        int
-	RipgrepTimeout       int
-	GlobTimeout          int // seconds; wall-clock budget for a single glob walk (0 = no timeout)
-	ToolCallTimeout      int // seconds; ceiling for a single tool call in the ReAct loop (0 = disabled). Installed on the main conductor executor and every subagent executor.
-	WebFetchTimeout      int
-	WebFetchProxyTimeout int // seconds; per-attempt web fetch timeout when the proxy is enabled
-	WebFetchRetries      int // retry count (not seconds); each retry doubles the active web fetch timeout
-	WebSearchTimeout     int
-	LLMRequestTimeout    int
+	BashMaxTimeout  int
+	BashWaitDelay   int
+	RipgrepTimeout  int
+	GlobTimeout     int // seconds; wall-clock budget for a single glob walk (0 = no timeout)
+	ToolCallTimeout int // seconds; ceiling for a single tool call in the ReAct loop (0 = disabled). Installed on the main conductor executor and every subagent executor.
+	// ToolCallTimeoutExemptTools replaces the per-tool-call ceiling's exempt
+	// set (tool NAMES, threaded to the main executor via
+	// orchestration.ConductorConfig and to every subagent executor via
+	// SetToolCallTimeoutExempt). nil keeps sp4rk's built-in default exempt set
+	// (agent.DefaultToolCallTimeoutExemptTools); an explicit list — possibly
+	// empty — replaces it wholesale, so an operator can extend the exemption
+	// to long-running tools the default does not know (e.g. MCP-backed tools
+	// with no internal timeout).
+	ToolCallTimeoutExemptTools []string
+	WebFetchTimeout            int
+	WebFetchProxyTimeout       int // seconds; per-attempt web fetch timeout when the proxy is enabled
+	WebFetchRetries            int // retry count (not seconds); each retry doubles the active web fetch timeout
+	WebSearchTimeout           int
+	LLMRequestTimeout          int
 	// AdaptiveBudgetEnabled mirrors timeouts.adaptive_budget.enabled
 	// (ADR-071 D11, default true). When false NO llmbudget transport is
 	// installed on any provider entry and every client is built exactly as

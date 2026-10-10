@@ -136,21 +136,50 @@ func ClearEnvVars() {
 
 // MaskURL replaces the password in a proxy URL with "***" for safe display.
 // Returns the original string if parsing fails.
+//
+// Scheme-less URLs carrying credentials (e.g. "user:secret@proxy.lan:3128" —
+// accepted everywhere else in this package via parseProxyURL) are masked too:
+// url.Parse reads them as an opaque URL whose "scheme" is the username and
+// reports no User info, so they are re-parsed with the scheme parseProxyURL
+// would add and rendered back in the original scheme-less form.
 func MaskURL(rawURL string) string {
 	if rawURL == "" {
 		return ""
 	}
 	parsed, err := url.Parse(rawURL)
-	if err != nil {
+	if err == nil && parsed.User != nil {
+		if masked := maskUserInfo(parsed); masked != "" {
+			return masked
+		}
 		return rawURL
 	}
-	if parsed.User == nil {
+	// Scheme-less credentials form: no "://" means url.Parse may have swallowed
+	// the username as a scheme (mirror of parseProxyURL's normalization).
+	if strings.Contains(rawURL, "://") {
 		return rawURL
 	}
-	if _, hasPass := parsed.User.Password(); hasPass {
-		parsed.User = url.UserPassword(parsed.User.Username(), "***")
+	parsed, err = url.Parse("http://" + rawURL)
+	if err != nil || parsed.User == nil {
+		return rawURL
 	}
-	return parsed.String()
+	masked := maskUserInfo(parsed)
+	if masked == "" {
+		return rawURL
+	}
+	// Strip the scheme added only for parsing, so the masked value keeps the
+	// shape the user wrote.
+	return strings.TrimPrefix(masked, "http://")
+}
+
+// maskUserInfo returns u rendered with the password replaced by "***", or ""
+// when there is no password to mask.
+func maskUserInfo(u *url.URL) string {
+	if _, hasPass := u.User.Password(); !hasPass {
+		return ""
+	}
+	masked := *u
+	masked.User = url.UserPassword(u.User.Username(), "***")
+	return masked.String()
 }
 
 // stripCredentials removes the userinfo component (user:password@) from a
@@ -181,7 +210,16 @@ func parseProxyURL(rawURL string) (*url.URL, error) {
 
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
-		return nil, err
+		// *url.Error embeds the full raw URL — including any userinfo — in
+		// its message, so returning it verbatim would leak the proxy password
+		// into logs and RPC errors (this error is wrapped by BuildTransport
+		// and surfaced by the builder's proxy-rebuild paths). Surface only
+		// the underlying reason; it never carries the URL.
+		var uerr *url.Error
+		if errors.As(err, &uerr) && uerr.Err != nil {
+			return nil, uerr.Err
+		}
+		return nil, errors.New("invalid proxy URL")
 	}
 
 	switch parsed.Scheme {

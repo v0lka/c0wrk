@@ -71,6 +71,7 @@ func (f *FrontendAPI) invalidateAgentCache() {
 // invalidated and an agents:changed event is emitted so the frontend
 // #-autocomplete refreshes. Mirrors startSkillsWatchers.
 func (f *FrontendAPI) startAgentsWatchers(dirs []string) {
+	f.seedAcquire()
 	f.agentWatchersMu.Lock()
 	defer f.agentWatchersMu.Unlock()
 

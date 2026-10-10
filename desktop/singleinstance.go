@@ -58,7 +58,7 @@ func SingleInstanceOptions(app *App) *options.SingleInstanceLock {
 // recoverable here. Focus-only is the designed behavior; see ADR-075.
 //
 // Wails starts the second-instance processor goroutine in NewFrontend, before
-// OnStartup binds a.ctx — a relay that arrives during this instance's own
+// OnStartup binds a.wailsCtx() — a relay that arrives during this instance's own
 // startup finds ctx nil. That is harmless rather than a bug to fix: startup
 // is still mid-flight, the window is revealed by the startup phases anyway,
 // and there is nothing to steal focus from yet.
@@ -66,13 +66,13 @@ func (a *App) handleSecondInstanceLaunch(data options.SecondInstanceData) {
 	a.log().Info("second instance launch relayed; focusing existing window",
 		"args", data.Args,
 		"working_directory", data.WorkingDirectory)
-	if a.ctx == nil {
+	if a.wailsCtx() == nil {
 		a.log().Debug("second-instance relay arrived before Startup; focus skipped")
 		return
 	}
 	// Same reveal-AND-raise the notification-click callback uses — every
 	// focus path funnels through showWindow by design.
-	a.showWindow(a.ctx)
+	a.showWindow(a.wailsCtx())
 }
 
 // InstanceLock is the exclusively-held, process-lifetime OS lock guarding
@@ -108,10 +108,23 @@ type InstanceLock struct {
 //     never brick app startup, and the Wails SingleInstanceLock still
 //     enforces single instance on its own. The caller should log the error.
 func AcquireSingleInstanceLock(path string) (*InstanceLock, bool, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+	// MkdirAllReal + OpenFileNoFollow (instead of the symlink-following
+	// MkdirAll/safeio.OpenFile): the fixed, predictable app.lock file must not
+	// have its O_CREATE (nor the process-lifetime flock) land through a
+	// planted symlink — a dangling link is refused outright, a link to an
+	// existing regular file fails the open with ELOOP (no-follow on the final
+	// component — unix; on Windows the safeio parity note applies: the final
+	// symlink is still resolved, tempered by Windows requiring elevated or
+	// developer-mode rights to create symlinks), and MkdirAllReal refuses a
+	// link swapped into the lock
+	// directory it creates. A pre-existing symlinked directory component is
+	// resolved as operator intent, and the caller's existing fail-open
+	// contract still applies: the run degrades to "first instance" and the
+	// Wails SingleInstanceLock still enforces single instance on its own.
+	if err := safeio.MkdirAllReal(filepath.Dir(path), 0o750); err != nil {
 		return nil, true, fmt.Errorf("single-instance lock: creating lock directory: %w", err)
 	}
-	file, err := safeio.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o640)
+	file, err := safeio.OpenFileNoFollow(path, os.O_CREATE|os.O_RDWR, 0o640)
 	if err != nil {
 		return nil, true, fmt.Errorf("single-instance lock: opening lock file: %w", err)
 	}

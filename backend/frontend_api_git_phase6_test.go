@@ -129,6 +129,8 @@ func TestIsRebaseActive(t *testing.T) {
 
 func TestDiscardChanges_NoProject(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	if err := f.DiscardChanges("/some/file.txt"); err == nil {
 		t.Fatal("DiscardChanges: expected error when no active project")
 	}
@@ -136,6 +138,8 @@ func TestDiscardChanges_NoProject(t *testing.T) {
 
 func TestDiscardChanges_NoProjectMode(t *testing.T) {
 	f := &FrontendAPI{activeProjectID: project.NoProjectID, activeProjectPath: t.TempDir()}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	if err := f.DiscardChanges(filepath.Join(f.activeProjectPath, "file.txt")); err == nil {
 		t.Fatal("DiscardChanges: expected error for No Project mode")
 	}
@@ -230,6 +234,8 @@ func TestDiscardChanges_EmitsStatusChanged(t *testing.T) {
 
 func TestAppendToGitignore_NoProject(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	if err := f.AppendToGitignore("build/"); err == nil {
 		t.Fatal("AppendToGitignore: expected error when no active project")
 	}
@@ -317,6 +323,8 @@ func TestAppendToGitignore_EmitsStatusChanged(t *testing.T) {
 
 func TestMerge_NoProject(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	if err := f.Merge("topic"); err == nil {
 		t.Fatal("Merge: expected error when no active project")
 	}
@@ -365,6 +373,8 @@ func TestMerge_ConflictReturnsError(t *testing.T) {
 
 func TestRebase_NoProject(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	if err := f.Rebase("main"); err == nil {
 		t.Fatal("Rebase: expected error when no active project")
 	}
@@ -423,6 +433,8 @@ func TestRebase_ConflictReturnsError(t *testing.T) {
 
 func TestAbortMerge_NoProject(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	if err := f.AbortMerge(); err == nil {
 		t.Fatal("AbortMerge: expected error when no active project")
 	}
@@ -476,6 +488,8 @@ func TestAbortMerge_CleansUpInProgressMerge(t *testing.T) {
 
 func TestAbortRebase_NoProject(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	if err := f.AbortRebase(); err == nil {
 		t.Fatal("AbortRebase: expected error when no active project")
 	}
@@ -523,6 +537,8 @@ func TestAbortRebase_CleansUpInProgressRebase(t *testing.T) {
 
 func TestGetRebaseMergeState_NoProject(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	if _, err := f.GetRebaseMergeState(); err == nil {
 		t.Fatal("GetRebaseMergeState: expected error when no active project")
 	}
@@ -563,6 +579,8 @@ func TestGetRebaseMergeState_DoesNotEmit(t *testing.T) {
 
 func TestPhase6Git_NoProject(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	if err := f.DiscardChanges("/f.txt"); err == nil {
 		t.Error("DiscardChanges: expected error")
 	}
@@ -591,6 +609,8 @@ func TestPhase6Git_NoProject(t *testing.T) {
 
 func TestPhase6Git_NoProjectMode(t *testing.T) {
 	f := &FrontendAPI{activeProjectID: project.NoProjectID, activeProjectPath: t.TempDir()}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	if err := f.DiscardChanges(filepath.Join(f.activeProjectPath, "f.txt")); err == nil {
 		t.Error("DiscardChanges: expected error")
 	}
@@ -799,6 +819,33 @@ func TestGetFileDiffHunks_NoChanges(t *testing.T) {
 		}
 		if len(hunks) != 0 {
 			t.Errorf("expected 0 hunks for clean file, got %d", len(hunks))
+		}
+	})
+}
+
+func TestDiscardChanges_StagedNewFileRemoved(t *testing.T) {
+	withGitRepo(t, func(f *FrontendAPI, dir string) {
+		path := filepath.Join(dir, "staged-new.txt")
+		if err := os.WriteFile(path, []byte("new\n"), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		// Stage the brand-new file: porcelain reports "A " — no committed
+		// counterpart exists, so the discard must unstage + clean, not
+		// reset+checkout (which fails and leaves the file on disk).
+		runGit(t, dir, "add", "staged-new.txt")
+
+		if err := f.DiscardChanges(path); err != nil {
+			t.Fatalf("DiscardChanges (staged new file): %v", err)
+		}
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("after discard: staged-new.txt should be removed, stat err: %v", err)
+		}
+		status, err := workspace.GitStatus(context.Background(), dir)
+		if err != nil {
+			t.Fatalf("GitStatus: %v", err)
+		}
+		if len(status) != 0 {
+			t.Errorf("after discard: status = %v, want empty", status)
 		}
 	})
 }

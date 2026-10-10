@@ -44,6 +44,8 @@ func newRouterStuckManager(t *testing.T) *vectorindex.Manager {
 func newRouterHarness(t *testing.T, factory func() (*vectorindex.Manager, error), ready chan struct{}, focusMgr *vectorindex.Manager) (*Application, *VectorRoots) {
 	t.Helper()
 	f := &FrontendAPI{appCtx: context.Background}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	vr := newVectorRoots(f)
 	root := canonicalRoot(t.TempDir())
 	vr.mu.Lock()

@@ -317,7 +317,8 @@ func TestScanGitConfig_InfoAttributesRoutingNeutered(t *testing.T) {
 		"filter.x.clean=cat",
 		"filter.x.process=",
 		"filter.x.smudge=cat",
-		"merge.drv.driver=false %O %A %B")
+		"merge.drv.driver=false %O %A %B",
+		"protocol.git.allow=never")
 }
 
 func TestScanGitConfig_AttributesFileRouting(t *testing.T) {
@@ -509,7 +510,8 @@ func TestScanGitConfig_SHA256RepoUsesSHA256EmptyTree(t *testing.T) {
 		"diff.external=",
 		"filter.x.clean=cat",
 		"filter.x.process=",
-		"filter.x.smudge=cat")
+		"filter.x.smudge=cat",
+		"protocol.git.allow=never")
 	if f := finding(t, info, "filter.x.clean"); len(f.Overrides) == 0 {
 		t.Error("filter finding must carry overrides")
 	}

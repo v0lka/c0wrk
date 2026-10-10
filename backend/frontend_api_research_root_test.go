@@ -113,6 +113,8 @@ func researchRootTestFrontend(t *testing.T, seedDirs []string, pins project.Rese
 		projStore:      store,
 		emitEvent:      recorder.emit,
 	}
+	api.seedPublished.Store(true)
+	api.seedPublished.Store(true)
 	return api, "proj-1", researchRoot, recorder
 }
 
@@ -152,6 +154,8 @@ func researchTwoRootTestFrontend(t *testing.T) (api *FrontendAPI, projA, projB, 
 		projStore:      store,
 		emitEvent:      recorder.emit,
 	}
+	api.seedPublished.Store(true)
+	api.seedPublished.Store(true)
 	return api, "proj-a", "proj-b", rootA, rootB
 }
 

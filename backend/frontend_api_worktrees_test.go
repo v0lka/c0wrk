@@ -194,6 +194,7 @@ func newWTHarness(t *testing.T, factory session.OrchestratorFactory) *wtHarness 
 		agentDir:        h.agentDir,
 		terminalManager: h.terminal,
 	}
+	h.api.seedPublished.Store(true)
 	h.api.installWorkspaceEnsurer()
 	h.api.activeProjectMu.Lock()
 	h.api.activeProjectID = proj.ID
@@ -231,6 +232,8 @@ func (h *wtHarness) restart(t *testing.T) (*FrontendAPI, *session.Manager, *wtRe
 		agentDir:        h.agentDir,
 		terminalManager: h.terminal,
 	}
+	api.seedPublished.Store(true)
+	api.seedPublished.Store(true)
 	api.installWorkspaceEnsurer()
 	api.activeProjectMu.Lock()
 	api.activeProjectID = h.project.ID

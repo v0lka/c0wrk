@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/v0lka/c0wrk/backend/config"
@@ -14,6 +15,7 @@ import (
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/backend/review"
 	"github.com/v0lka/c0wrk/backend/session"
+	"github.com/v0lka/c0wrk/core"
 	"github.com/v0lka/c0wrk/core/papers"
 	"github.com/v0lka/c0wrk/core/updater"
 	"github.com/v0lka/c0wrk/core/vectorindex"
@@ -28,8 +30,14 @@ type FrontendAPI struct {
 	logger *slog.Logger
 
 	// Config state
-	config           *config.Config
-	configMu         sync.RWMutex
+	config   *config.Config
+	configMu sync.RWMutex
+	// seedPublished is the Init-publication flag for guardless seed-field
+	// readers: Init stores true inside its one configMu critical section, as
+	// soon as the seed fields are written (see Init), and seedAcquire waits
+	// on it. The atomic Release/Acquire pair — not the RWMutex barrier — is
+	// what orders those readers against the publication.
+	seedPublished    atomic.Bool
 	configPath       string
 	configLoadErrors []string
 	// modelProfilesGateResp caches the EFFECTIVE Model Profiles gate reported as
@@ -409,29 +417,214 @@ type FrontendAPIConfig struct {
 
 // NewFrontendAPI creates a new FrontendAPI with the given configuration.
 func NewFrontendAPI(cfg FrontendAPIConfig) *FrontendAPI {
-	f := &FrontendAPI{
-		app:             cfg.App,
-		logger:          cfg.Logger,
-		config:          cfg.Config,
-		configPath:      cfg.ConfigPath,
-		store:           cfg.Store,
-		projStore:       cfg.ProjStore,
-		reviewStore:     cfg.ReviewStore,
-		sessionLogger:   cfg.SessionLogger,
-		logLevel:        cfg.LogLevel,
-		watcher:         cfg.Watcher,
-		projectManager:  cfg.ProjectManager,
-		agentDir:        cfg.AgentDir,
-		terminalManager: cfg.TerminalManager,
-		emitEvent:       cfg.EmitEvent,
-		appCtx:          cfg.AppCtx,
-		quitApp:         cfg.QuitApp,
+	return (&FrontendAPI{}).Lifecycle().Init(cfg)
+}
+
+// installServiceLLMGate routes the session manager's one-shot service LLM
+// requests (session title generation) through the embedded readiness gate.
+//
+// Installed unconditionally: the gate resolves the active model per call and
+// returns at once for every provider that is always listening, so a machine
+// without the local model pays one config read and nothing else. It is a method
+// (rather than inline code) because the manager is created before any
+// FrontendAPI exists, so this is the one place the two can meet — and a wiring
+// line nobody can observe is a wiring line that silently goes missing.
+func (f *FrontendAPI) installServiceLLMGate() {
+	if f.appCell() == nil {
+		return
 	}
+	if m := f.app.Manager(); m != nil {
+		f.activeSessionCount = func() int { return len(m.ActiveSessions()) }
+		m.SetServiceLLMGate(f.serviceEmbeddedGateBackground)
+	}
+}
+
+// warnIfSeedDirUndiscovered emits a startup warning when the compiled-in
+// global directory the c0wrk packs are seeded into (config.SkillsDir /
+// config.AgentsDir off the agent dir) is NOT among the effective configured
+// discovery dirs the skill/agent watchers use. Discovery follows the
+// configured list, so a custom list that omits the global directory silently
+// orphans every seeded pack. Best-effort and non-fatal — an empty seedDir
+// (no agent dir) is a no-op, since nothing is seeded then.
+func warnIfSeedDirUndiscovered(lg *slog.Logger, kind, seedDir string, discovered []string) {
+	if lg == nil || seedDir == "" {
+		return
+	}
+	seed := filepath.Clean(seedDir)
+	for _, d := range discovered {
+		if filepath.Clean(d) == seed {
+			return
+		}
+	}
+	lg.Warn("c0wrk packs are seeded into a global directory that is absent from the configured discovery dirs; the seeded packs may be undiscoverable — add the directory to the dirs list",
+		"kind", kind, "seed_dir", seedDir, "discovered_dirs", discovered)
+}
+
+// FrontendAPILifecycle holds infrastructure/lifecycle methods that must NOT
+// be exposed as Wails RPC methods — Init (the #52 seed publication, callable
+// only by desktop startup / NewFrontendAPI) and SetConfigLoadState included.
+// FrontendAPI owns a pointer to this struct;
+// desktop accesses it via FrontendAPI.Lifecycle() which acts as a benign RPC
+// getter (returns a struct pointer — Wails does not recursively bind methods
+// on returned objects).
+type FrontendAPILifecycle struct {
+	f *FrontendAPI
+}
+
+// Lifecycle returns the lifecycle accessor for infrastructure methods that
+// should not be directly callable from the frontend.
+func (f *FrontendAPI) Lifecycle() *FrontendAPILifecycle {
+	return &FrontendAPILifecycle{f: f}
+}
+
+// appCell reads the app seed field under configMu. Wails RPC entry points use
+// it as their nil guard (see Init for the publication invariant): before Init
+// it returns nil and the guard errors out without touching any other seed
+// field; after Init the RLock is ordered after the publication critical
+// section, so every plain seed-field read that follows it in the same call
+// chain is ordered after the publication too.
+func (f *FrontendAPI) appCell() *Application {
+	f.configMu.RLock()
+	defer f.configMu.RUnlock()
+	return f.app
+}
+
+// seedAcquire performs the Init-publication acquire on behalf of entry points
+// that read seed fields without an app nil guard (see Init for the full
+// invariant). It waits on the seedPublished flag that Init stores inside its
+// publication critical section, as soon as the seed fields are written; the
+// atomic Store/Load pair is the
+// happens-before edge that orders every plain seed-field read the caller
+// makes afterwards after Init's writes. On an already-initialized instance
+// (the only steady-state case) it is a single atomic load.
+func (f *FrontendAPI) seedAcquire() {
+	for !f.seedPublished.Load() {
+		// Park briefly instead of a hot Gosched spin: the WAIT is unbounded
+		// by design (a guardless RPC cannot proceed without the seed, and
+		// first-run tool installs legitimately take minutes), but waiting
+		// must not pin a whole core for that duration.
+		time.Sleep(200 * time.Microsecond)
+	}
+}
+
+// Init wires an already-allocated FrontendAPI in place and returns it. It
+// lives on FrontendAPILifecycle — NOT directly on FrontendAPI — because every
+// exported FrontendAPI method is promoted onto desktop.App and bound as a
+// frontend-callable Wails RPC; Init is a startup-only infrastructure operation
+// (it republishes all 16 seed fields of the LIVE app instance) and must never
+// be callable from the renderer — the same charter as SetConfigLoadState (see
+// the FrontendAPILifecycle doc). The desktop App embeds a *FrontendAPI seed
+// (allocated once in NewApp) whose pointer the Wails binding dispatch re-reads
+// on every promoted-method call; startup must therefore INITIALIZE that seed
+// instead of swapping in a different pointer, so no reader ever observes two
+// distinct values (the data race recorded as review finding #52). Callers that
+// need a standalone instance use NewFrontendAPI.
+func (l *FrontendAPILifecycle) Init(cfg FrontendAPIConfig) *FrontendAPI {
+	f := l.f
+	// Publish every seed field under ONE configMu critical section, then
+	// raise the seedPublished flag. THIS instance is already reachable when
+	// Init runs: the desktop App embeds this seed from NewApp onward, so a
+	// Wails binding goroutine may serve a frontend RPC while Startup is still
+	// here. A structural happens-before (initializing the seed before the
+	// dispatcher can serve any RPC) is not achievable — Init consumes the
+	// Application/DB/stores that Startup builds only after wails.Run has
+	// begun dispatching RPCs — so the ordering is carried by two explicit
+	// synchronization points:
+	//
+	//   - Guarded entries read through appCell(): before Init the guard sees
+	//     nil and returns an error WITHOUT touching any other seed field
+	//     (short-circuit discipline of every nil guard); once this critical
+	//     section has run, the RLock inside appCell is ordered after the
+	//     Unlock below, so every plain seed-field read that follows it in the
+	//     call chain is ordered too (the canonical write-under-Lock /
+	//     read-under-RLock pattern).
+	//   - Guardless entries call seedAcquire() first: it waits on the
+	//     seedPublished flag stored immediately after this Unlock. The
+	//     atomic Store/Load pair is the happens-before edge that orders the
+	//     caller's subsequent plain seed-field reads after every write in
+	//     this critical section. The flag deliberately goes up BEFORE the
+	//     rest of Init runs (provider wiring, trust registry, pack seeding,
+	//     watchers): those steps only READ seed fields on the Init goroutine
+	//     (program order) and the goroutines Init creates from here on
+	//     inherit the ordering by creation.
+	//
+	// Every Wails RPC entry point performs one of the two acquires before its
+	// first seed-field read; helper methods that touch seed fields carry the
+	// same acquire so they stay independently safe. Non-RPC goroutines are
+	// ordered by creation: Init itself runs on the OnStartup goroutine, and
+	// watcher/supervisor/background goroutines are created only after the
+	// flag is up. FrontendAPILifecycle.Cleanup re-checks seedPublished with a
+	// bare Load — deliberately NOT a blocking seedAcquire, see Cleanup —
+	// because shutdown may run on a different goroutine than Startup.
+	//
+	// Except config and logLevel (written only under configMu — here and in
+	// the config-save / SetLogLevel paths) and watcher (watcherMu on project
+	// switches), the seed fields are written ONLY here, exactly once;
+	// configPath likewise. One acquire per goroutine therefore orders them
+	// for the process lifetime. FrontendAPI values constructed directly in
+	// tests never race an Init, so their plain field writes stay lock-free.
+	f.configMu.Lock()
+	f.app = cfg.App
+	f.logger = cfg.Logger
+	f.config = cfg.Config
+	f.configPath = cfg.ConfigPath
+	f.store = cfg.Store
+	f.projStore = cfg.ProjStore
+	f.reviewStore = cfg.ReviewStore
+	f.sessionLogger = cfg.SessionLogger
+	f.logLevel = cfg.LogLevel
+	f.watcher = cfg.Watcher
+	f.projectManager = cfg.ProjectManager
+	f.agentDir = cfg.AgentDir
+	f.terminalManager = cfg.TerminalManager
+	f.emitEvent = cfg.EmitEvent
+	f.appCtx = cfg.AppCtx
+	f.quitApp = cfg.QuitApp
+	// Wire the session-orchestrator factory's config source (the factory was
+	// closed over inside NewApplication, before this FrontendAPI existed) to a
+	// lock-respecting conversion. The factory runs on Wails call goroutines,
+	// concurrently with Settings saves that mutate f.config's maps IN PLACE
+	// under configMu (SetModelConfig, UpdateMCPServers, …), so it must convert
+	// under the same lock instead of ranging the live maps unlocked — a fatal
+	// concurrent map read/write. toBuilderConfigLocked additionally attaches
+	// the embedded loader seam; that is a no-op while nothing is installed,
+	// and the builder-level default seam (syncEmbeddedBuilderSeam) still backs
+	// sessions built before any install.
+	//
+	// The wiring MUST happen inside this critical section, BEFORE the
+	// seedPublished store below: the flag admits every guardless RPC, and an
+	// early CreateSession between the store and a post-Unlock wiring would
+	// take the factory's unlocked startup-config fallback — ranging the live
+	// shared config's maps while a settings save mutates them. With the
+	// provider in place first, that window cannot exist.
+	// SetBuilderConfigProvider itself is a lock-free atomic store on the
+	// Application, so holding configMu here cannot deadlock it.
+	if cfg.App != nil {
+		f.app.SetBuilderConfigProvider(func() *core.BuilderConfig {
+			f.configMu.RLock()
+			defer f.configMu.RUnlock()
+			if f.config == nil {
+				return nil
+			}
+			return f.toBuilderConfigLocked()
+		})
+	}
+	// Publication point for seedAcquire: raised as soon as the sixteen seed
+	// fields are written — BEFORE the remaining in-critical-section work —
+	// so helpers Init itself calls (refreshModelProfilesGateLocked →
+	// modelProfilesCatalog → modelProfilesStore) pass their own seedAcquire
+	// instead of deadlocking on a flag only Init can raise. Readers released
+	// by the flag see every seed field above (program order within this
+	// critical section); the gate-cache refresh below is configMu-guarded for
+	// its own readers, so a guardless RPC released here cannot observe it at
+	// all.
+	f.seedPublished.Store(true)
 
 	// Seed the effective Model Profiles gate cache (ConfigResponse.model_profiles) so GetConfig
 	// stays a pure in-memory read. Every later Model Profiles mutation
-	// refreshes it via refreshModelProfilesGateLocked.
-	f.configMu.Lock()
+	// refreshes it via refreshModelProfilesGateLocked. Folded into the same
+	// critical section as the seed-field publication above (the refresh
+	// reads f.config, which the writes above have just published).
 	f.refreshModelProfilesGateLocked()
 	f.configMu.Unlock()
 
@@ -494,71 +687,23 @@ func NewFrontendAPI(cfg FrontendAPIConfig) *FrontendAPI {
 	return f
 }
 
-// installServiceLLMGate routes the session manager's one-shot service LLM
-// requests (session title generation) through the embedded readiness gate.
-//
-// Installed unconditionally: the gate resolves the active model per call and
-// returns at once for every provider that is always listening, so a machine
-// without the local model pays one config read and nothing else. It is a method
-// (rather than inline code) because the manager is created before any
-// FrontendAPI exists, so this is the one place the two can meet — and a wiring
-// line nobody can observe is a wiring line that silently goes missing.
-func (f *FrontendAPI) installServiceLLMGate() {
-	if f.app == nil {
-		return
-	}
-	if m := f.app.Manager(); m != nil {
-		f.activeSessionCount = func() int { return len(m.ActiveSessions()) }
-		m.SetServiceLLMGate(f.serviceEmbeddedGateBackground)
-	}
-}
-
-// warnIfSeedDirUndiscovered emits a startup warning when the compiled-in
-// global directory the c0wrk packs are seeded into (config.SkillsDir /
-// config.AgentsDir off the agent dir) is NOT among the effective configured
-// discovery dirs the skill/agent watchers use. Discovery follows the
-// configured list, so a custom list that omits the global directory silently
-// orphans every seeded pack. Best-effort and non-fatal — an empty seedDir
-// (no agent dir) is a no-op, since nothing is seeded then.
-func warnIfSeedDirUndiscovered(lg *slog.Logger, kind, seedDir string, discovered []string) {
-	if lg == nil || seedDir == "" {
-		return
-	}
-	seed := filepath.Clean(seedDir)
-	for _, d := range discovered {
-		if filepath.Clean(d) == seed {
-			return
-		}
-	}
-	lg.Warn("c0wrk packs are seeded into a global directory that is absent from the configured discovery dirs; the seeded packs may be undiscoverable — add the directory to the dirs list",
-		"kind", kind, "seed_dir", seedDir, "discovered_dirs", discovered)
-}
-
-// FrontendAPILifecycle holds infrastructure/lifecycle methods that must NOT be
-// exposed as Wails RPC methods. FrontendAPI owns a pointer to this struct;
-// desktop accesses it via FrontendAPI.Lifecycle() which acts as a benign RPC
-// getter (returns a struct pointer — Wails does not recursively bind methods
-// on returned objects).
-type FrontendAPILifecycle struct {
-	f *FrontendAPI
-}
-
-// Lifecycle returns the lifecycle accessor for infrastructure methods that
-// should not be directly callable from the frontend.
-func (f *FrontendAPI) Lifecycle() *FrontendAPILifecycle {
-	return &FrontendAPILifecycle{f: f}
-}
-
 // SetConfigLoadState sets the config loading state for display by GetConfig.
 // Called by desktop after initial config loading.
 // Moved to FrontendAPILifecycle to avoid exposure on the Wails RPC surface.
 func (l *FrontendAPILifecycle) SetConfigLoadState(errors []string) {
+	// OnStartup runs on its own Wails goroutine while bound RPCs (GetConfig,
+	// the only reader of this field, reads it under configMu.RLock) may
+	// already be served on other goroutines — so this writer takes the same
+	// lock every other configLoadErrors writer holds.
+	l.f.configMu.Lock()
 	l.f.configLoadErrors = errors
+	l.f.configMu.Unlock()
 }
 
 // ctx returns the application context, falling back to context.Background()
 // when the appCtx callback is not configured (e.g. in tests).
 func (f *FrontendAPI) ctx() context.Context {
+	f.seedAcquire()
 	if f.appCtx != nil {
 		return f.appCtx()
 	}
@@ -585,6 +730,7 @@ func (f *FrontendAPI) serviceLLMTimeout() time.Duration {
 // persistence path (delegates to Application). Used by desktop-layer
 // callbacks (e.g. plan approval) so events survive app restarts.
 func (f *FrontendAPI) EmitSessionEvent(evt session.Event) {
+	f.seedAcquire()
 	if f.app != nil {
 		f.app.EmitSessionEvent(evt)
 	}
@@ -673,6 +819,17 @@ func (f *FrontendAPI) isNoProject() bool {
 // App.Shutdown; closing it here silenced every later shutdown record
 // (applicationShutdown timings, db.Close errors, the "complete" bracket).
 func (l *FrontendAPILifecycle) Cleanup() {
+	// Deliberately NOT seedAcquire: a blocking wait would hang Shutdown on
+	// any seed Init never published — a quit racing a slow startup phase
+	// (first-run tool installs can take minutes, and the shutdown watchdog
+	// kills slow shutdowns), or a hand-constructed instance in tests. When
+	// the seed is unpublished nothing has been published to clean up; the
+	// bare Load(false) path reads no seed fields, so there is no race. When
+	// it reads true, the atomic pair orders every plain read below after
+	// Init's publication exactly like seedAcquire does.
+	if !l.f.seedPublished.Load() {
+		return
+	}
 	f := l.f
 	cleanupStart := time.Now()
 	cleanupStep := func(name string) {
@@ -738,6 +895,7 @@ func (l *FrontendAPILifecycle) Cleanup() {
 
 // log returns the instance logger, falling back to slog.Default() when nil.
 func (f *FrontendAPI) log() *slog.Logger {
+	f.seedAcquire()
 	if f.logger != nil {
 		return f.logger
 	}

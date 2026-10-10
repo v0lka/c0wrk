@@ -14,9 +14,27 @@ import (
 	"github.com/v0lka/c0wrk/core"
 )
 
+// sessionStoreOpTimeout bounds one session/project/review store round-trip
+// issued from the RPC layer. Every store shares the app's single SQLite
+// connection pool; database/sql waits for a free pooled connection with no
+// deadline when the caller context carries none (busy_timeout bounds only
+// SQLite lock retry, not pool acquisition). The default mirrors the session
+// package's restoreDBReadTimeout so a contended pool yields a prompt,
+// retryable error instead of an indefinitely parked RPC.
+const sessionStoreOpTimeout = 15 * time.Second
+
+// storeOpCtx returns the request context (f.ctx(), cancelled at app shutdown)
+// bounded by sessionStoreOpTimeout, for one store round-trip. Every direct
+// f.store/f.projStore/f.reviewStore call on an RPC path must go through it —
+// a bare context.Background() discards both the shutdown cancellation and
+// any bound on the pool wait.
+func (f *FrontendAPI) storeOpCtx() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(f.ctx(), sessionStoreOpTimeout)
+}
+
 // CreateSession creates a new agent session within the active project.
 func (f *FrontendAPI) CreateSession() (*session.SessionInfo, error) {
-	if f.app == nil || f.app.Manager() == nil {
+	if f.appCell() == nil || f.app.Manager() == nil {
 		return nil, errors.New("session manager not initialized - check startup logs for LLM router or configuration errors")
 	}
 
@@ -36,9 +54,11 @@ func (f *FrontendAPI) CreateSession() (*session.SessionInfo, error) {
 	// Persist to SQLite
 	// Best-effort persistence: log and continue to avoid disrupting the user session.
 	if f.store != nil {
-		if err := f.store.SaveSession(context.Background(), *info); err != nil {
+		ctx, cancel := f.storeOpCtx()
+		if err := f.store.SaveSession(ctx, *info); err != nil {
 			f.log().Error("failed to save session to store", "error", err)
 		}
+		cancel()
 	}
 	return info, nil
 }
@@ -50,7 +70,7 @@ func (f *FrontendAPI) CreateSession() (*session.SessionInfo, error) {
 // (in-progress or failed) task. On success the new session is returned; the
 // caller switches the active session to it.
 func (f *FrontendAPI) ForkSession(sessionID string) (*session.SessionInfo, error) {
-	if f.app == nil || f.app.Manager() == nil {
+	if f.appCell() == nil || f.app.Manager() == nil {
 		return nil, errors.New("session manager not initialized")
 	}
 	if f.store == nil {
@@ -124,7 +144,7 @@ func (f *FrontendAPI) DeleteSession(id string) error {
 // deleted: in-memory resources via the manager, the store row when the
 // pre-flight left it, internal files under ~/.c0wrk.
 func (f *FrontendAPI) DeleteSessionWithOptions(id string, opts SessionDeleteOptions) error {
-	if f.app == nil || f.app.Manager() == nil {
+	if f.appCell() == nil || f.app.Manager() == nil {
 		return errors.New("session manager not initialized")
 	}
 	// Managed sessions: stop task/terminal and run the tree protocol BEFORE
@@ -160,16 +180,20 @@ func (f *FrontendAPI) DeleteSessionWithOptions(id string, opts SessionDeleteOpti
 		// lookup below can no longer resolve the project.
 		unrestorableProjectID = cleanupProjectID
 	case f.store != nil:
-		if info, err := f.store.LoadSession(context.Background(), id); err == nil && info != nil {
+		ctx, cancel := f.storeOpCtx()
+		if info, err := f.store.LoadSession(ctx, id); err == nil && info != nil {
 			unrestorableProjectID = info.ProjectID
 		}
+		cancel()
 	}
 	// Always delete from store (handles store-only sessions from previous runs)
 	// Best-effort persistence: log and continue to avoid disrupting the user session.
 	if f.store != nil {
-		if err := f.store.DeleteSession(context.Background(), id); err != nil {
+		ctx, cancel := f.storeOpCtx()
+		if err := f.store.DeleteSession(ctx, id); err != nil {
 			f.log().Error("failed to delete session from store", "error", err)
 		}
+		cancel()
 	}
 	// Stop any active terminal for this session (idempotent — the managed
 	// pre-flight already stopped it for managed sessions; local and CHAT
@@ -196,7 +220,7 @@ func (f *FrontendAPI) ListSessions() ([]session.SessionInfo, error) {
 		return []session.SessionInfo{}, nil
 	}
 
-	if f.app == nil || f.app.Manager() == nil {
+	if f.appCell() == nil || f.app.Manager() == nil {
 		return []session.SessionInfo{}, nil
 	}
 
@@ -209,7 +233,7 @@ func (f *FrontendAPI) ListSessions() ([]session.SessionInfo, error) {
 // uninitialized session manager yields an empty slice rather than an error,
 // so the UI can call this unconditionally during startup.
 func (f *FrontendAPI) ListAllSessions() ([]session.SessionInfo, error) {
-	if f.app == nil || f.app.Manager() == nil {
+	if f.appCell() == nil || f.app.Manager() == nil {
 		return []session.SessionInfo{}, nil
 	}
 
@@ -218,12 +242,16 @@ func (f *FrontendAPI) ListAllSessions() ([]session.SessionInfo, error) {
 
 // RenameSession changes session name.
 func (f *FrontendAPI) RenameSession(id, name string) error {
-	if f.app == nil || f.app.Manager() == nil {
+	if f.appCell() == nil || f.app.Manager() == nil {
 		return errors.New("session manager not initialized")
 	}
 	manager := f.app.Manager()
-	// Only rename in manager if session exists in memory
-	if _, exists := manager.GetSession(id); exists {
+	// Only rename in manager if session exists in memory. HasSession (NOT
+	// GetSession) is the memory-only test the comment describes: GetSession
+	// lazily RESTORES a store-only session (full orchestrator build, fresh
+	// log/dump handles, managed-worktree re-provision) inside a plain
+	// metadata RPC — a rename of a never-opened session would resurrect it.
+	if manager.HasSession(id) {
 		if err := manager.RenameSession(id, name); err != nil {
 			return fmt.Errorf("failed to rename session: %w", err)
 		}
@@ -231,21 +259,24 @@ func (f *FrontendAPI) RenameSession(id, name string) error {
 	// Always rename in store (handles store-only sessions from previous runs)
 	// Best-effort persistence: log and continue to avoid disrupting the user session.
 	if f.store != nil {
-		if err := f.store.RenameSession(context.Background(), id, name); err != nil {
+		ctx, cancel := f.storeOpCtx()
+		if err := f.store.RenameSession(ctx, id, name); err != nil {
 			f.log().Error("failed to rename session in store", "error", err)
 		}
+		cancel()
 	}
 	return nil
 }
 
 // ArchiveSession archives/unarchives a session.
 func (f *FrontendAPI) ArchiveSession(id string) error {
-	if f.app == nil || f.app.Manager() == nil {
+	if f.appCell() == nil || f.app.Manager() == nil {
 		return errors.New("session manager not initialized")
 	}
 	manager := f.app.Manager()
-	// Only archive in manager if session exists in memory
-	if _, exists := manager.GetSession(id); exists {
+	// Only archive in manager if session exists in memory (HasSession, not
+	// the restoring GetSession — see RenameSession above).
+	if manager.HasSession(id) {
 		if err := manager.ArchiveSession(id); err != nil {
 			return fmt.Errorf("failed to archive session: %w", err)
 		}
@@ -253,24 +284,27 @@ func (f *FrontendAPI) ArchiveSession(id string) error {
 	// Toggle archive in store
 	// Best-effort persistence: log and continue to avoid disrupting the user session.
 	if f.store != nil {
-		info, err := f.store.LoadSession(context.Background(), id)
+		ctx, cancel := f.storeOpCtx()
+		info, err := f.store.LoadSession(ctx, id)
 		if err == nil && info != nil {
-			if err := f.store.ArchiveSession(context.Background(), id, !info.Archived); err != nil {
+			if err := f.store.ArchiveSession(ctx, id, !info.Archived); err != nil {
 				f.log().Error("failed to archive session in store", "error", err)
 			}
 		}
+		cancel()
 	}
 	return nil
 }
 
 // PinSession pins/unpins a session.
 func (f *FrontendAPI) PinSession(id string) error {
-	if f.app == nil || f.app.Manager() == nil {
+	if f.appCell() == nil || f.app.Manager() == nil {
 		return errors.New("session manager not initialized")
 	}
 	manager := f.app.Manager()
-	// Only pin in manager if session exists in memory
-	if _, exists := manager.GetSession(id); exists {
+	// Only pin in manager if session exists in memory (HasSession, not the
+	// restoring GetSession — see RenameSession above).
+	if manager.HasSession(id) {
 		if err := manager.PinSession(id); err != nil {
 			return fmt.Errorf("failed to pin session: %w", err)
 		}
@@ -278,12 +312,14 @@ func (f *FrontendAPI) PinSession(id string) error {
 	// Toggle pin in store
 	// Best-effort persistence: log and continue to avoid disrupting the user session.
 	if f.store != nil {
-		info, err := f.store.LoadSession(context.Background(), id)
+		ctx, cancel := f.storeOpCtx()
+		info, err := f.store.LoadSession(ctx, id)
 		if err == nil && info != nil {
-			if err := f.store.PinSession(context.Background(), id, !info.Pinned); err != nil {
+			if err := f.store.PinSession(ctx, id, !info.Pinned); err != nil {
 				f.log().Error("failed to pin session in store", "error", err)
 			}
 		}
+		cancel()
 	}
 	return nil
 }
@@ -360,15 +396,17 @@ func (f *FrontendAPI) SendMessage(id, text string, activeSkills, activeAgents, a
 	if goalEnabled && f.modelProfilesGoalBlocked() {
 		return errors.New("goal mode is unavailable while the Model Profiles essential-tools profile is active — disable the Model Profiles profile or its essential-tools narrowing to use goal mode")
 	}
-	if f.app == nil || f.app.Manager() == nil {
+	if f.appCell() == nil || f.app.Manager() == nil {
 		return errors.New("session manager not initialized - check startup logs for LLM router or configuration errors")
 	}
 	// Update session activity timestamp
 	// Best-effort persistence: log and continue to avoid disrupting the user session.
 	if f.store != nil {
-		if err := f.store.UpdateSessionActivity(context.Background(), id); err != nil {
+		ctx, cancel := f.storeOpCtx()
+		if err := f.store.UpdateSessionActivity(ctx, id); err != nil {
 			f.log().Error("failed to update session activity", "error", err)
 		}
+		cancel()
 	}
 	// Authoritative live-send gate: validate the pause window, goal/E2S mode,
 	// and skill/agent references BEFORE persisting anything, so a rejected
@@ -441,7 +479,8 @@ func (f *FrontendAPI) SendMessage(id, text string, activeSkills, activeAgents, a
 		if classification != session.SendFresh {
 			messageMetadata = mergeIsNudgeMetadata(messageMetadata)
 		}
-		if err := f.store.SaveMessage(context.Background(), session.ChatMessage{
+		ctx, cancel := f.storeOpCtx()
+		if err := f.store.SaveMessage(ctx, session.ChatMessage{
 			SessionID: id,
 			Role:      "user",
 			Content:   text,
@@ -457,6 +496,7 @@ func (f *FrontendAPI) SendMessage(id, text string, activeSkills, activeAgents, a
 		}); err != nil {
 			f.log().Error("failed to save user message to store", "error", err)
 		}
+		cancel()
 	}
 
 	return nil
@@ -464,7 +504,7 @@ func (f *FrontendAPI) SendMessage(id, text string, activeSkills, activeAgents, a
 
 // CancelTask cancels the running task in a session.
 func (f *FrontendAPI) CancelTask(id string) error {
-	if f.app == nil || f.app.Manager() == nil {
+	if f.appCell() == nil || f.app.Manager() == nil {
 		return errors.New("session manager not initialized")
 	}
 	return f.app.Manager().CancelTask(id)
@@ -476,7 +516,7 @@ func (f *FrontendAPI) CancelTask(id string) error {
 // to the resumed task (same semantics as SendMessage) instead of inheriting the
 // interrupted task's settings.
 func (f *FrontendAPI) ResumeTask(id, modelOverride, reasoningEffort string) error {
-	if f.app == nil || f.app.Manager() == nil {
+	if f.appCell() == nil || f.app.Manager() == nil {
 		return errors.New("session manager not initialized")
 	}
 	if f.goalResumeBlockedByModelProfiles(id) {
@@ -496,6 +536,7 @@ func (f *FrontendAPI) ResumeTask(id, modelOverride, reasoningEffort string) erro
 // and before any task activation) and resumeGoalLoop is the ultimate
 // authority, so a transient read error must not strand a legitimate resume.
 func (f *FrontendAPI) goalResumeBlockedByModelProfiles(id string) bool {
+	f.seedAcquire()
 	if f.store == nil || !f.modelProfilesGoalBlocked() {
 		return false
 	}
@@ -517,7 +558,7 @@ func (f *FrontendAPI) goalResumeBlockedByModelProfiles(id string) bool {
 // checkpoint, and the task is persisted as paused so a later ResumeSession can
 // re-enter. It is a no-op when no request is in flight.
 func (f *FrontendAPI) PauseSession(sessionID string) error {
-	if f.app == nil || f.app.Manager() == nil {
+	if f.appCell() == nil || f.app.Manager() == nil {
 		return errors.New("session manager not initialized")
 	}
 	return f.app.Manager().PauseSession(sessionID)
@@ -531,7 +572,7 @@ func (f *FrontendAPI) PauseSession(sessionID string) error {
 // The optional modelOverride/reasoningEffort apply the user's current selection
 // to the resumed task. Returns nil if there is nothing to resume.
 func (f *FrontendAPI) ResumeSession(sessionID, modelOverride, reasoningEffort, nudge string) error {
-	if f.app == nil || f.app.Manager() == nil {
+	if f.appCell() == nil || f.app.Manager() == nil {
 		return errors.New("session manager not initialized")
 	}
 	if f.goalResumeBlockedByModelProfiles(sessionID) {
@@ -549,7 +590,7 @@ func (f *FrontendAPI) ResumeSession(sessionID, modelOverride, reasoningEffort, n
 // task paused by the flow is auto-resumed. Returns an error immediately for an
 // unknown strategy or when a compaction is already in flight.
 func (f *FrontendAPI) CompactSessionContext(sessionID, strategy string) error {
-	if f.app == nil || f.app.Manager() == nil {
+	if f.appCell() == nil || f.app.Manager() == nil {
 		return errors.New("session manager not initialized")
 	}
 	return f.app.Manager().CompactSessionContext(f.ctx(), sessionID, strategy)
@@ -559,7 +600,7 @@ func (f *FrontendAPI) CompactSessionContext(sessionID, strategy string) error {
 // CompactSessionContext for the cancellation semantics). A no-op when no
 // compaction is running.
 func (f *FrontendAPI) CancelSessionCompaction(sessionID string) error {
-	if f.app == nil || f.app.Manager() == nil {
+	if f.appCell() == nil || f.app.Manager() == nil {
 		return errors.New("session manager not initialized")
 	}
 	return f.app.Manager().CancelSessionCompaction(sessionID)
@@ -571,6 +612,7 @@ func (f *FrontendAPI) CancelSessionCompaction(sessionID string) error {
 // up-to-the-call fill percent — so a switch back to a running session restores
 // the status bar's "N of M" display instead of a stale/partial fill.
 func (f *FrontendAPI) GetSessionTokens(sessionID string) SessionTokensResponse {
+	f.seedAcquire()
 	var result SessionTokensResponse
 	if f.store == nil || sessionID == "" {
 		return result
@@ -611,7 +653,7 @@ func (f *FrontendAPI) GetSessionTokens(sessionID string) SessionTokensResponse {
 // preventing future resume prompts. Safe to call when no unfinished task
 // exists; in that case it is a no-op.
 func (f *FrontendAPI) CancelUnfinishedTask(id string) error {
-	if f.app == nil || f.app.Manager() == nil {
+	if f.appCell() == nil || f.app.Manager() == nil {
 		return errors.New("session manager not initialized")
 	}
 	return f.app.Manager().CancelUnfinishedTask(id)
@@ -622,7 +664,7 @@ func (f *FrontendAPI) CancelUnfinishedTask(id string) error {
 // in the task store. The frontend calls this after loading history so the UI
 // reflects real execution state instead of defaulting to "idle/completed".
 func (f *FrontendAPI) GetSessionRuntimeStatus(id string) (session.SessionRuntimeStatus, error) {
-	if f.app == nil || f.app.Manager() == nil {
+	if f.appCell() == nil || f.app.Manager() == nil {
 		return session.SessionRuntimeStatus{}, errors.New("session manager not initialized")
 	}
 	return f.app.Manager().GetSessionRuntimeStatus(id)
@@ -637,16 +679,22 @@ func (f *FrontendAPI) GetSessionRuntimeStatus(id string) (session.SessionRuntime
 // needed for plan-timeline restore, so NO numeric ceiling remains on the
 // initial-load cost. See SQLiteSessionStore.LoadSessionHistory.
 func (f *FrontendAPI) GetSessionHistory(id string) ([]session.ChatMessage, error) {
+	f.seedAcquire()
 	if f.store == nil {
 		return []session.ChatMessage{}, nil
 	}
-	return f.store.LoadSessionHistory(context.Background(), id)
+	// The heaviest read on the shared pool (the row caps were removed — see
+	// above); bound the pool wait so a contended DB yields a retryable error
+	// instead of an indefinitely open chat view.
+	ctx, cancel := f.storeOpCtx()
+	defer cancel()
+	return f.store.LoadSessionHistory(ctx, id)
 }
 
 // GetBlackboardState returns the current blackboard state for a session.
 // Returns nil if no task state is available.
 func (f *FrontendAPI) GetBlackboardState(sessionID string) (*BlackboardStateResponse, error) {
-	if f.app == nil || f.app.Manager() == nil {
+	if f.appCell() == nil || f.app.Manager() == nil {
 		return nil, errors.New("session manager not initialized")
 	}
 
@@ -745,7 +793,7 @@ func convertBlackboardState(state *core.TaskState) *BlackboardStateResponse {
 // (nil, nil) when no task state is available. Shared by GetStepOutput and
 // SearchBlackboardStepOutputs so the restore logic stays in one place.
 func (f *FrontendAPI) taskState(sessionID string) (*core.TaskState, error) {
-	if f.app == nil || f.app.Manager() == nil {
+	if f.appCell() == nil || f.app.Manager() == nil {
 		return nil, errors.New("session manager not initialized")
 	}
 	bbState, err := f.app.Manager().GetBlackboardState(sessionID)
@@ -802,6 +850,7 @@ func (f *FrontendAPI) SearchBlackboardStepOutputs(sessionID, query string) ([]st
 // ask_user / step_limit / plan_review messages as resolved in the DB so they
 // don't reappear as pending on session reload.
 func (f *FrontendAPI) ResolvePendingMessage(sessionID, role, matchField, matchValue string, extra map[string]any) error {
+	f.seedAcquire()
 	if f.store == nil {
 		return errors.New("session store not available")
 	}

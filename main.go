@@ -8,6 +8,7 @@ import (
 	"runtime/debug"
 
 	"github.com/wailsapp/wails/v2"
+	wailslogger "github.com/wailsapp/wails/v2/pkg/logger"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 
@@ -50,7 +51,14 @@ func mainImpl() int {
 
 	// Normal startup: reap any orphaned updater artifacts left by a previous
 	// update (notably Windows, where a running updater .exe cannot self-delete).
-	updater.CleanupStaleUpdaters(slog.Default())
+	// This MUST happen only after the single-instance gate below and only in
+	// the owning instance: the reap os.RemoveAll's every c0wrk-update-* /
+	// c0wrk-extract-* staging in os.TempDir() older than the 24 h staleness
+	// bound (updater.cleanupStaleMaxAge), so the fresh staging of an in-flight
+	// self-update is never touched — but keeping the sweep behind the gate
+	// still means only the owning instance ever destroys temp artifacts, and
+	// a transient second launch can never race a mid-flight relaunch's use of
+	// its staging (review finding #37).
 
 	// Top-level panic recovery captures any unrecovered panic in the
 	// main goroutine (e.g. a nil dereference in a goroutine without its
@@ -94,6 +102,14 @@ func mainImpl() int {
 	// Wails single-instance relay), where the OS drops the lock anyway.
 	defer func() { _ = instanceLock.Close() }()
 
+	// Reap orphaned updater artifacts (see the comment above): only now that
+	// the app-level lock is held, and only in the first instance — the exact
+	// gate the crash capture below uses — so a transient second launch can
+	// never reap a live self-update's staging.
+	if firstInstance {
+		updater.CleanupStaleUpdaters(slog.Default())
+	}
+
 	// Arm crash capture before anything else can fail: fd 1/2 are redirected
 	// into <logDir>/stderr.log so Go runtime panic dumps, native-library
 	// errors and termination signals are persisted even when launched from
@@ -115,6 +131,16 @@ func mainImpl() int {
 	wlog, wlogErr := desktop.NewWailsLogger(logDir)
 	if wlogErr != nil {
 		slog.Warn("failed to create wails log file, Wails errors may be lost", "error", wlogErr)
+	}
+	// Wails substitutes its default logger only when options.Logger is a nil
+	// INTERFACE (options.MergeDefaults: `if appoptions.Logger == nil`). wlog
+	// is a concrete *wailsLogAdapter, so a plain `Logger: wlog` would store a
+	// typed-nil inside a non-nil interface, defeat the guard, and panic on the
+	// first Wails log call (nil receiver deref in the adapter). Convert the
+	// failure to a genuine nil interface so Wails' default logger takes over.
+	var wailsLogger wailslogger.Logger
+	if wlog != nil {
+		wailsLogger = wlog
 	}
 
 	app := desktop.NewApp()
@@ -190,7 +216,7 @@ func mainImpl() int {
 		Debug: options.Debug{
 			OpenInspectorOnStartup: os.Getenv("C0WRK_DEBUG") != "",
 		},
-		Logger:   wlog,
+		Logger:   wailsLogger,
 		LogLevel: 2, // TRACE to capture all Wails messages
 	})
 	if runErr != nil {

@@ -72,6 +72,8 @@ func TestCommit_SuppressedUntrustedHook(t *testing.T) {
 	repo.Git(t, "add", ".")
 
 	f := &FrontendAPI{activeProjectPath: root} // no config → untrusted (fail-closed)
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	events := 0
 	f.emitEvent = func(name string, _ ...any) {
 		if name == EventGitStatusChanged {
@@ -124,6 +126,8 @@ func TestCommit_ForceCommitsHardened(t *testing.T) {
 	repo.Git(t, "add", ".")
 
 	f := &FrontendAPI{activeProjectPath: root} // untrusted
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	res, err := f.Commit("forced commit", true)
 	if err != nil {
@@ -233,6 +237,8 @@ func TestCommit_CleanUntrustedUnchanged(t *testing.T) {
 // positive, the 300s default otherwise (nil config or zero value).
 func TestGitCommitTimeout_ConfigAndDefault(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	if got := f.gitCommitTimeout(); got != 300*time.Second {
 		t.Errorf("gitCommitTimeout (nil config) = %v, want 300s", got)
 	}
@@ -397,6 +403,8 @@ func TestCommit_UntrustedSubdirectorySuppresses(t *testing.T) {
 	plantCommitHook(t, root, "hook-line", marker)
 
 	f := &FrontendAPI{activeProjectPath: sub} // untrusted, subdirectory workspace
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	repo.Write(t, "file.txt", "hello\nchanged\n")
 	repo.Git(t, "add", ".")
 

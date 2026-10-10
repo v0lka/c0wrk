@@ -421,7 +421,7 @@ describe('sound coverage across CHAT↔CODE toggles', () => {
 
 /** Valid payloads per HITL event — pass both the guards and handler internals. */
 const VALID_HITL_PAYLOADS: Record<string, unknown> = {
-  tool_confirm: { confirm_id: 'c1', tool: 'bash' },
+  tool_confirm: { confirm_id: 'c1', tool: 'bash', args: '{}' },
   ask_user: { request_id: 'r1', questions: [{ id: 'q1', question: 'Proceed?', options: [{ label: 'Yes', value: 'yes' }] }] },
   step_limit: { request_id: 'r2', current_step: 25, max_steps: 25 },
   plan_review_ready: { request_id: 'r3', plan_path: '/tmp/p.md', plan_content: '# Plan' },

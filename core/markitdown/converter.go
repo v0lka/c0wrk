@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/v0lka/c0wrk/internal/sysproc"
 )
@@ -122,8 +123,8 @@ func NewConverter(opts Options) (*Converter, error) {
 // missing file, or an unsupported format each yield a wrapped error. The
 // underlying cause is always reachable via errors.Is / errors.As — missing
 // files wrap the os.Stat error, cancellation wraps context.Canceled or
-// context.DeadlineExceeded, and CLI failures wrap the exec error with the
-// command's combined stdout/stderr.
+// context.DeadlineExceeded, and CLI failures wrap the exec error with short
+// bounded excerpts of the command's captured stdout and stderr.
 func (c *Converter) Convert(ctx context.Context, path string) (string, error) {
 	return c.convert(ctx, path, nil)
 }
@@ -161,6 +162,84 @@ func (c *Converter) ConvertWithVision(ctx context.Context, path string, vision *
 // (seconds each), so a deck with dozens of pictures legitimately needs more
 // than the plain conversion budget.
 const visionTimeoutFloor = 5 * time.Minute
+
+// MaxConversionOutputBytes caps how much subprocess output (converted stdout
+// plus diagnostics stderr) the converter buffers. Converting a large or
+// hostile document must not grow the desktop process's memory without bound
+// (the previous bytes.Buffer/CombinedOutput capture was unbounded). A
+// conversion whose output exceeds the cap FAILS with a clear error rather
+// than truncating silently — a silently-truncated markdown document would be
+// indistinguishable from a complete one.
+//
+// Exported so consumers of conversion results can size their reads to exactly
+// the largest legal result: the read_file document cache persists converted
+// markdown to disk and reads entries back with
+// safeio.ReadFileLimited(…, MaxConversionOutputBytes) — the safeio default
+// cap would refuse entries between the two limits and silently disable the
+// cache for the largest documents it exists for.
+const MaxConversionOutputBytes = int64(32 << 20)
+
+// maxConverterOutputBytes is MaxConversionOutputBytes as the int the bounded
+// capture buffers are sized with.
+const maxConverterOutputBytes = int(MaxConversionOutputBytes)
+
+// maxErrorStreamBytes bounds how much of a captured subprocess stream
+// (stdout or stderr) is embedded into an error string or log record. The
+// capture buffers may legally hold up to maxConverterOutputBytes (32 MiB)
+// per stream — far too much to paste into an error message that callers
+// persist and render. The head of the stream carries the diagnostic: CLI
+// tracebacks and module errors state their failing reason early.
+const maxErrorStreamBytes = 2 << 10
+
+// streamExcerpt returns the first maxErrorStreamBytes bytes of s with any
+// invalid UTF-8 replaced by U+FFFD (subprocess stderr is not guaranteed to
+// be valid UTF-8, and an error excerpt must stay diagnosable instead of
+// collapsing to empty), never
+// splitting a multi-byte UTF-8 rune at the cut point.
+func streamExcerpt(s string) string {
+	if len(s) <= maxErrorStreamBytes {
+		return strings.ToValidUTF8(s, "\uFFFD")
+	}
+	cut := s[:maxErrorStreamBytes]
+	// Trim at most one rune split by the cut point: walk the tail back over
+	// continuation bytes to the enclosing lead byte. An invalid byte ANYWHERE
+	// else must not shrink the excerpt (it cannot be fixed by trimming) — it
+	// is replaced by U+FFFD below instead.
+	for i := 0; i < utf8.UTFMax-1 && cut != ""; i++ {
+		if utf8.ValidString(cut) {
+			break
+		}
+		if cut[len(cut)-1] < utf8.RuneSelf {
+			break // ASCII tails cannot be repaired by trimming
+		}
+		cut = cut[:len(cut)-1]
+	}
+	return strings.ToValidUTF8(cut, "\uFFFD")
+}
+
+// boundedBuffer is an io.Writer that buffers at most max bytes and then
+// fails the write — which breaks the subprocess's stdout/stderr copy and
+// therefore surfaces through cmd.Run — instead of buffering without bound.
+// overflow records that the cap was hit so the caller can report a precise
+// error rather than a generic copy failure.
+type boundedBuffer struct {
+	max      int
+	buf      bytes.Buffer
+	overflow bool
+}
+
+func (b *boundedBuffer) Write(p []byte) (int, error) {
+	if b.overflow {
+		return 0, fmt.Errorf("output exceeds the %d byte capture cap", b.max)
+	}
+	if b.buf.Len()+len(p) > b.max {
+		b.overflow = true
+		return 0, fmt.Errorf("output exceeds the %d byte capture cap", b.max)
+	}
+	return b.buf.Write(p)
+}
+
+func (b *boundedBuffer) String() string { return b.buf.String() }
 
 // convert implements both Convert and ConvertWithVision. See those methods
 // for the documented semantics; this helper owns the mode selection, the
@@ -233,10 +312,21 @@ func (c *Converter) runVisionDriver(ctx context.Context, path string, vision *Vi
 		visionEnvPrompt+"="+vision.Prompt,
 	)
 
-	var stdout, stderr bytes.Buffer
+	var stdout, stderr boundedBuffer
+	stdout.max = maxConverterOutputBytes
+	stderr.max = maxConverterOutputBytes
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		// A capture-cap overflow is a conversion failure, not a context
+		// event: report it precisely before the deadline/cancellation checks.
+		if stdout.overflow || stderr.overflow {
+			c.log.Warn("markitdown vision conversion output exceeded capture cap",
+				"path", path,
+				"duration", time.Since(start),
+			)
+			return "", fmt.Errorf("markitdown: vision conversion output exceeds the %d byte capture cap", maxConverterOutputBytes)
+		}
 		// Distinguish deadline/cancellation from a genuine driver failure so
 		// the caller can errors.Is the context cause.
 		if cerr := ctx.Err(); cerr != nil {
@@ -244,11 +334,14 @@ func (c *Converter) runVisionDriver(ctx context.Context, path string, vision *Vi
 				"path", path,
 				"duration", time.Since(start),
 				"err", cerr,
-				"stderr", strings.TrimSpace(stderr.String()),
+				"stderr", streamExcerpt(strings.TrimSpace(stderr.String())),
 			)
 			return "", fmt.Errorf("markitdown: vision conversion aborted: %w", cerr)
 		}
-		return "", fmt.Errorf("markitdown: vision conversion failed: %w: %s", err, strings.TrimSpace(stderr.String()))
+		return "", fmt.Errorf("markitdown: vision conversion failed: %w: %s", err, streamExcerpt(strings.TrimSpace(stderr.String())))
+	}
+	if stdout.overflow || stderr.overflow {
+		return "", fmt.Errorf("markitdown: vision conversion output exceeds the %d byte capture cap", maxConverterOutputBytes)
 	}
 
 	markdown := strings.TrimSpace(stdout.String())
@@ -256,7 +349,7 @@ func (c *Converter) runVisionDriver(ctx context.Context, path string, vision *Vi
 		// The driver loads the full markitdown surface (PIL, pdfminer, bs4),
 		// which routinely emits warnings; keep them reachable for
 		// troubleshooting without polluting the document.
-		c.log.Debug("markitdown vision driver emitted stderr", "path", path, "stderr", diag)
+		c.log.Debug("markitdown vision driver emitted stderr", "path", path, "stderr", streamExcerpt(diag))
 	}
 	c.log.Debug("markitdown vision conversion succeeded",
 		"path", path,
@@ -274,8 +367,27 @@ func (c *Converter) runPlainCLI(ctx context.Context, path string, start time.Tim
 
 	mdCmd := exec.CommandContext(runCtx, "markitdown", path)
 	sysproc.HideConsole(mdCmd) // avoid flashing console windows on Windows (GUI app)
-	out, err := mdCmd.CombinedOutput()
+	// Capture through bounded buffers instead of CombinedOutput: the whole
+	// stdout+stderr of the conversion must not be bufferable without bound.
+	var out, errOut boundedBuffer
+	out.max = maxConverterOutputBytes
+	errOut.max = maxConverterOutputBytes
+	mdCmd.Stdout = &out
+	mdCmd.Stderr = &errOut
+	err := mdCmd.Run()
+	if err == nil && (out.overflow || errOut.overflow) {
+		err = fmt.Errorf("output exceeds the %d byte capture cap", maxConverterOutputBytes)
+	}
 	if err != nil {
+		// A capture-cap overflow is a genuine conversion failure even when a
+		// deadline is also armed: report it precisely.
+		if out.overflow || errOut.overflow {
+			c.log.Warn("markitdown conversion output exceeded capture cap",
+				"path", path,
+				"duration", time.Since(start),
+			)
+			return "", fmt.Errorf("markitdown: conversion output exceeds the %d byte capture cap", maxConverterOutputBytes)
+		}
 		// Distinguish deadline/cancellation from a genuine CLI failure so the
 		// caller can errors.Is the context cause.
 		if cerr := runCtx.Err(); cerr != nil {
@@ -289,13 +401,24 @@ func (c *Converter) runPlainCLI(ctx context.Context, path string, start time.Tim
 		c.log.Warn("markitdown conversion failed",
 			"path", path,
 			"duration", time.Since(start),
+			"outputBytes", len(out.String()),
 			"err", err,
-			"output", strings.TrimSpace(string(out)),
+			"output", streamExcerpt(strings.TrimSpace(out.String())),
+			"stderr", streamExcerpt(strings.TrimSpace(errOut.String())),
 		)
-		return "", fmt.Errorf("markitdown: conversion failed: %w: %s", err, strings.TrimSpace(string(out)))
+		// Surface BOTH captured streams: the CLI writes its real diagnostics
+		// (tracebacks, module errors) to stderr, and an error that carries
+		// only stdout leaves failures undiagnosable. Bounded excerpts only —
+		// the buffers may hold up to 32 MiB per stream.
+		if stderr := streamExcerpt(strings.TrimSpace(errOut.String())); stderr != "" {
+			return "", fmt.Errorf("markitdown: conversion failed: %w: %s (stderr: %s)",
+				err, streamExcerpt(strings.TrimSpace(out.String())), stderr)
+		}
+		return "", fmt.Errorf("markitdown: conversion failed: %w: %s",
+			err, streamExcerpt(strings.TrimSpace(out.String())))
 	}
 
-	markdown := strings.TrimSpace(string(out))
+	markdown := strings.TrimSpace(out.String())
 	c.log.Debug("markitdown conversion succeeded",
 		"path", path,
 		"duration", time.Since(start),

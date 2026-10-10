@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef } from 'react'
 import { ResizeHandle } from '@/components/ResizeHandle'
+import { useResize } from '@/hooks/useResize'
 import { useUIStore } from '@/stores/uiStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useChatInputController } from '@/hooks/useChatInputController'
@@ -31,43 +31,19 @@ export function ChatInput() {
   // dragActive drives the full-window drop-zone highlight overlay.
   const { dragActive } = useFileDrop(activeSessionId)
 
-  const cleanupRef = useRef<(() => void) | null>(null)
-
-  useEffect(() => {
-    return () => { cleanupRef.current?.() }
-  }, [])
-
-  const handleResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault()
-    const startY = e.clientY
-    const startHeight = height
-
-    const handleMouseMove = (e: MouseEvent) => {
-      const delta = startY - e.clientY
-      const newHeight = Math.max(140, Math.min(800, startHeight + delta))
-      setHeight(newHeight)
-    }
-
-    const handleMouseUp = () => {
-      document.removeEventListener('mousemove', handleMouseMove)
-      document.removeEventListener('mouseup', handleMouseUp)
-      cleanupRef.current = null
-    }
-
-    document.addEventListener('mousemove', handleMouseMove)
-    document.addEventListener('mouseup', handleMouseUp)
-    cleanupRef.current = handleMouseUp
-  }, [height, setHeight])
-
-  const handleResizeKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (e.key === 'ArrowUp') {
-      e.preventDefault()
-      setHeight(height + 20)
-    } else if (e.key === 'ArrowDown') {
-      e.preventDefault()
-      setHeight(height - 20)
-    }
-  }, [height, setHeight])
+  // Zoom-aware drag/keyboard resize (shared hook): pointer deltas arrive in
+  // visual px under the UI-scale zoom and are converted to layout px before
+  // being applied to the panel's layout-px height.
+  const resize = useResize({
+    initialWidth: height,
+    min: 140,
+    max: 800,
+    // Bottom panel: dragging the top handle up grows the height (the divider
+    // follows the pointer).
+    direction: -1,
+    axis: 'y',
+    onChange: setHeight,
+  })
 
   return (
     <>
@@ -82,8 +58,8 @@ export function ChatInput() {
       >
         <ResizeHandle
           orientation="horizontal"
-          onMouseDown={handleResizeStart}
-          onKeyDown={handleResizeKeyDown}
+          onMouseDown={resize.handleMouseDown}
+          onKeyDown={resize.handleKeyDown}
         />
         <AttachmentChips />
         <ImageErrorBanner />

@@ -7,14 +7,19 @@ import (
 	"testing"
 	"time"
 
+	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/core/workspace"
 )
 
-// markNoProjectActive sets the active project to No Project on a FrontendAPI.
+// markNoProjectActive sets the active project to No Project on a FrontendAPI,
+// mirroring the state switchProjectActivate leaves behind: both the project ID
+// and the project path (the No Project project dir — the containment root the
+// WatchDirectory gate validates renderer-supplied paths against).
 func markNoProjectActive(f *FrontendAPI) {
 	f.activeProjectMu.Lock()
 	f.activeProjectID = project.NoProjectID
+	f.activeProjectPath = config.ProjectDir(f.agentDir, project.NoProjectID)
 	f.activeProjectMu.Unlock()
 }
 
@@ -40,15 +45,19 @@ func waitForEmission(counter *atomic.Int32, target int32, timeout time.Duration)
 // first.
 func TestWatchDirectory_NoProject_ReScopesAcrossSessions(t *testing.T) {
 	base := t.TempDir()
-	// Two isolated session workspaces, siblings (neither contains the other).
-	wsA := filepath.Join(base, "sess-a", "workspace")
-	wsB := filepath.Join(base, "sess-b", "workspace")
+	// Two isolated session workspaces, siblings (neither contains the other),
+	// under the production No Project project dir.
+	noProjectDir := config.ProjectDir(base, project.NoProjectID)
+	wsA := filepath.Join(noProjectDir, "sess-a", "workspace")
+	wsB := filepath.Join(noProjectDir, "sess-b", "workspace")
 
 	var emitted atomic.Int32
 	f := &FrontendAPI{
 		agentDir:  base,
 		emitEvent: func(string, ...any) { emitted.Add(1) },
 	}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	markNoProjectActive(f)
 	t.Cleanup(func() {
 		if f.watcher != nil {
@@ -96,12 +105,14 @@ func TestWatchDirectory_NoProject_ReScopesAcrossSessions(t *testing.T) {
 // previously caused NewWatcher to fail and left f.watcher permanently nil.
 func TestWatchDirectory_NoProject_CreatesMissingWorkspace(t *testing.T) {
 	base := t.TempDir()
-	ws := filepath.Join(base, "sess-new", "workspace") // does not exist yet
+	ws := filepath.Join(config.ProjectDir(base, project.NoProjectID), "sess-new", "workspace") // does not exist yet
 
 	f := &FrontendAPI{
 		agentDir:  base,
 		emitEvent: func(string, ...any) {},
 	}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	markNoProjectActive(f)
 	t.Cleanup(func() {
 		if f.watcher != nil {
@@ -126,12 +137,14 @@ func TestWatchDirectory_NoProject_CreatesMissingWorkspace(t *testing.T) {
 // remove the active session's workspace root and break change detection.
 func TestUnwatchDirectory_NoProject_IsNoOp(t *testing.T) {
 	base := t.TempDir()
-	ws := filepath.Join(base, "sess-a", "workspace")
+	ws := filepath.Join(config.ProjectDir(base, project.NoProjectID), "sess-a", "workspace")
 
 	f := &FrontendAPI{
 		agentDir:  base,
 		emitEvent: func(string, ...any) {},
 	}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	markNoProjectActive(f)
 	t.Cleanup(func() {
 		if f.watcher != nil {
@@ -174,6 +187,8 @@ func TestUnwatchDirectory_CodeMode_IsNoOp(t *testing.T) {
 		agentDir:  base,
 		emitEvent: func(string, ...any) { emitted.Add(1) },
 	}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	// CODE mode: the active project is a real (non-No-Project) project.
 	f.activeProjectMu.Lock()
 	f.activeProjectID = "real-project"
@@ -232,6 +247,8 @@ func TestSwitchProjectSetupWatcher_NoProject_NoSession_DeferCreation(t *testing.
 		emitEvent: func(string, ...any) {},
 		// app is nil => resolveNoProjectSessionWorkspace returns "" (no sessions).
 	}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	p := &project.ProjectInfo{
 		ID:            project.NoProjectID,
 		IsNoProject:   true,

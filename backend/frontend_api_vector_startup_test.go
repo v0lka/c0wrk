@@ -36,6 +36,8 @@ func newStartupVectorAPI(t *testing.T) *FrontendAPI {
 		projectManager: project.NewManager(projectStore, agentDir, nil),
 		emitEvent:      func(string, ...any) {},
 	}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	return f
 }
 

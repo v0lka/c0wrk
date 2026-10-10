@@ -232,6 +232,8 @@ func TestGetMCPServers_DeepCopy(t *testing.T) {
 // deterministically from the backend package.
 func TestGetMCPStatus_NoApp(t *testing.T) {
 	f := &FrontendAPI{} // f.app == nil
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	got := f.GetMCPStatus()
 	if got == nil {
 		t.Fatal("expected non-nil empty slice")
@@ -415,6 +417,8 @@ func TestGetMCPMentionableServers(t *testing.T) {
 // early return: an empty (never nil) slice, not a null payload.
 func TestGetMCPMentionableServers_NoConfig(t *testing.T) {
 	f := &FrontendAPI{} // f.config == nil
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	got := f.GetMCPMentionableServers()
 	if got == nil {
 		t.Fatal("expected non-nil empty slice")
@@ -448,6 +452,8 @@ func TestIsMCPStartupPlaceholder(t *testing.T) {
 
 func TestGetToolList_NoApp(t *testing.T) {
 	f := &FrontendAPI{} // f.app == nil
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	got := f.GetToolList()
 	if got == nil {
 		t.Fatal("expected non-nil empty slice")

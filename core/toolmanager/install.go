@@ -179,7 +179,10 @@ func writeRequirementsLock(tool ToolSpec, toolsDir string) (string, error) {
 		return "", nil
 	}
 	lockPath := filepath.Join(toolsDir, tool.Name+"-lock.txt")
-	if err := os.WriteFile(lockPath, []byte(tool.RequirementsLock), 0o644); err != nil {
+	// Atomic + FIFO/symlink-safe: the fixed <name>-lock.txt path is
+	// pre-plantable, and a bare os.WriteFile would block on a planted FIFO
+	// and write through a planted symlink.
+	if err := safeio.WriteFileAtomic(lockPath, []byte(tool.RequirementsLock), 0o644); err != nil {
 		return "", fmt.Errorf("tool %q: writing requirements lock: %w", tool.Name, err)
 	}
 	return lockPath, nil
@@ -264,13 +267,19 @@ func findPythonInDir(dir, pythonVersion, goos string) string {
 // pythonBin must be the absolute path to the Python interpreter (already
 // resolved by the caller via findPythonInDir).
 func createWrapper(wrapperPath, pythonBin, moduleName string) error {
+	// Atomic + FIFO/symlink-safe: the fixed wrapper path under the (user-owned)
+	// bin dir is pre-plantable, and a bare os.WriteFile would block on a
+	// planted FIFO and write through a planted symlink.
+	write := func(content []byte) error {
+		return safeio.WriteFileAtomic(wrapperPath, content, 0o755)
+	}
 	if runtime.GOOS == "windows" {
 		wrapperPath = strings.TrimSuffix(wrapperPath, ".cmd") + ".cmd"
 		content := fmt.Sprintf("@echo off\r\n\"%s\" -m %s %%*\r\n", pythonBin, moduleName) //nolint:gocritic // batch file, not Go string
-		return os.WriteFile(wrapperPath, []byte(content), 0o755)
+		return write([]byte(content))
 	}
 	content := fmt.Sprintf("#!/bin/sh\nexec \"%s\" -m %s \"$@\"\n", pythonBin, moduleName) //nolint:gocritic // shell script, not Go string
-	return os.WriteFile(wrapperPath, []byte(content), 0o755)
+	return write([]byte(content))
 }
 
 // resolveBinaryInTree locates the extracted binary by trying the declared
@@ -444,19 +453,30 @@ func copyFile(src, dst string, mode os.FileMode) (err error) {
 		}
 	}()
 
-	out, err := os.Create(dst)
+	// Stage into a uniquely named sibling temp and rename into place: the
+	// fixed final path is pre-plantable with a dangling symlink, which a
+	// bare os.Create would follow and truncate OUTSIDE ~/.c0wrk (the Lstat
+	// "already installed" probe upstream follows links too, so it misses the
+	// dangling case). The random temp name leaves nothing to pre-plant, and
+	// the rename replaces a planted entry itself instead of writing through
+	// it. The destination is only ever replaced by a complete copy — a
+	// failed copy leaves the previous file untouched.
+	tmp, err := os.CreateTemp(filepath.Dir(dst), "."+filepath.Base(dst)+".tmp-*")
 	if err != nil {
 		return err
 	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }() // no-op after a successful rename
 
-	if _, err := io.Copy(out, in); err != nil {
-		_ = out.Close()
-		_ = os.Remove(dst) // don't leave a partial file that looks "installed"
+	if _, err := io.Copy(tmp, in); err != nil {
+		_ = tmp.Close()
 		return err
 	}
-	if err := out.Close(); err != nil {
-		_ = os.Remove(dst) // don't leave a partial file that looks "installed"
+	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Chmod(dst, mode)
+	if err := os.Chmod(tmpName, mode); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, dst)
 }

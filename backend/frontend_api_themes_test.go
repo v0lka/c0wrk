@@ -3,6 +3,7 @@ package backend
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -13,7 +14,7 @@ import (
 func newThemesTestAPI(t *testing.T) (api *FrontendAPI, agentDir string) {
 	t.Helper()
 	agentDir = t.TempDir()
-	return &FrontendAPI{agentDir: agentDir}, agentDir
+	return seedPublishedAPI(&FrontendAPI{agentDir: agentDir}), agentDir
 }
 
 // writeThemeFile writes content to a source file outside the themes dir.
@@ -375,5 +376,95 @@ func TestFrontendAPI_Themes_DeleteAmbiguousSlugRejected(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(themesDir, name)); err != nil {
 			t.Fatalf("rejected delete must not remove %s: %v", name, err)
 		}
+	}
+}
+
+// TestFrontendAPI_Themes_ImportResolvesSymlinkedThemesDir pins the revised
+// contract: a PRE-EXISTING symlinked ~/.c0wrk/themes resolves as operator
+// intent (the macOS /var → /private/var class), so the import — and its
+// rename — install into the link's REAL target. A dangling link or a link
+// swapped into a component MkdirAllReal creates still fails the import
+// closed instead of redirecting it.
+func TestFrontendAPI_Themes_ImportResolvesSymlinkedThemesDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics are unix-specific")
+	}
+	f, agentDir := newThemesTestAPI(t)
+
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(agentDir, "themes")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	src := writeThemeFile(t, filepath.Join(agentDir, "downloads"), "nord.css",
+		"/* c0wrk-theme: Nord | dark */\n:root { --color-background: #2e3440; --color-foreground: #d8dee9; }\n")
+	if _, err := f.importThemeFromPath(src); err != nil {
+		t.Fatalf("expected the import to resolve an operator-symlinked themes dir, got: %v", err)
+	}
+
+	// The theme must exist inside the link's resolved target.
+	entries, err := os.ReadDir(outside)
+	if err != nil {
+		t.Fatalf("read link target: %v", err)
+	}
+	found := false
+	for _, e := range entries {
+		if !e.IsDir() && strings.EqualFold(e.Name(), "nord.css") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("imported theme not found inside the resolved target: %v", entries)
+	}
+}
+
+// TestFrontendAPI_Themes_ImportRejectsOversizedSource pins the size cap on the
+// import path: a source file above maxThemeCSSSize is rejected with the
+// too-large error instead of being read whole (the full-file allocation is
+// itself the DoS the cap exists to prevent).
+func TestFrontendAPI_Themes_ImportRejectsOversizedSource(t *testing.T) {
+	f, agentDir := newThemesTestAPI(t)
+	oversized := validThemeCSS + "\n/* " + strings.Repeat("x", maxThemeCSSSize) + " */"
+	src := writeThemeFile(t, filepath.Join(agentDir, "downloads"), "big.css", oversized)
+
+	_, err := f.importThemeFromPath(src)
+	if err == nil {
+		t.Fatal("expected the oversized source to be rejected")
+	}
+	if !strings.Contains(err.Error(), "too large") {
+		t.Errorf("error %q does not report the size cap", err.Error())
+	}
+	// Nothing was installed.
+	if got := f.ListThemes(); len(got) != 0 {
+		t.Errorf("the rejected import installed %d themes", len(got))
+	}
+}
+
+// TestFrontendAPI_Themes_DeleteRefusesSymlinkedThemesDir pins the deletion
+// contract: DeleteTheme is a DESTRUCTIVE operation (an os.Remove scan), so
+// unlike creation paths it keeps its own strict check — a symlinked
+// ~/.c0wrk/themes stops the deletion closed instead of unlinking inside the
+// link target. Creation paths (the import above) resolve pre-existing links
+// as operator intent; deletion refuses them by design.
+func TestFrontendAPI_Themes_DeleteRefusesSymlinkedThemesDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics are unix-specific")
+	}
+	f, agentDir := newThemesTestAPI(t)
+
+	outside := t.TempDir()
+	victim := filepath.Join(outside, "victim.css")
+	if err := os.WriteFile(victim, []byte("/* victim */\n"), 0o644); err != nil {
+		t.Fatalf("write victim: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(agentDir, "themes")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	if err := f.DeleteTheme("victim"); err == nil {
+		t.Fatal("expected the delete through a symlinked themes dir to be refused")
+	}
+	if _, err := os.Stat(victim); err != nil {
+		t.Errorf("the victim file inside the link target was removed: %v", err)
 	}
 }

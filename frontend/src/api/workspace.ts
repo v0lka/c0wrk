@@ -34,6 +34,20 @@ export async function listDirectory(path: string, recursive = false): Promise<Fi
   }
 }
 
+/** Per-entry guard for the GetGitStatus map: the consumer (lib/gitStatus
+ *  toEntries) dereferences status/staged/index_status/worktree_status on
+ *  every value inside a fire-and-forget refresh — a null/non-object map
+ *  value must fail the boundary instead of throwing there. The Go DTO is
+ *  fully typed (strings + bool, no omitempty), so this cannot reject a
+ *  conforming payload. */
+function isGitStatusEntry(v: unknown): v is GitStatusEntry {
+  return typeof v === 'object' && v !== null
+    && typeof (v as GitStatusEntry).status === 'string'
+    && typeof (v as GitStatusEntry).staged === 'boolean'
+    && typeof (v as GitStatusEntry).index_status === 'string'
+    && typeof (v as GitStatusEntry).worktree_status === 'string'
+}
+
 export async function getGitStatus(path: string): Promise<Record<string, GitStatusEntry>> {
   try {
     const app = getApp()
@@ -41,7 +55,12 @@ export async function getGitStatus(path: string): Promise<Record<string, GitStat
     if (typeof result !== 'object' || result === null) {
       throw new Error('getGitStatus: backend returned invalid data')
     }
-    return result as Record<string, GitStatusEntry>
+    const raw = result as Record<string, unknown>
+    if (!Object.values(raw).every(isGitStatusEntry)) {
+      logger.error('getGitStatus: malformed status entry in response, returning {}', result)
+      return {}
+    }
+    return raw as Record<string, GitStatusEntry>
   } catch (err) {
     logger.error('Failed to get git status:', err)
     throw err

@@ -3,8 +3,9 @@
  * Extracted to keep chatUtils.ts under 200 lines.
  */
 import type { ChatMessageUI, DisplayItem } from '@/types/messages'
+import type { PlanStepData } from '@/types/events'
 import { isArrayOf } from '@/types/guards'
-import { normalizeAgentMetricsData, isAutonomyDecisionData } from '@/types/events'
+import { isPlanStepData, normalizeAgentMetricsData, isAutonomyDecisionData } from '@/types/events'
 import { autonomyDecisionContent } from './autonomyDecision'
 
 /** Build a composite tool key for correlating tool_call ↔ tool_result. */
@@ -63,12 +64,32 @@ export function collapseThoughts(items: DisplayItem[]): DisplayItem[] {
  * is empty or only the "(proceeding)" placeholder.
  */
 export function normalizeThoughtContent(content: string): string {
-  const trimmed = content.trim()
+  // Defensive string narrowing: callers pass persisted `thought` content that
+  // a key-presence-only guard may have let through as a non-string (a present
+  // non-string would throw on .trim() inside the chat render).
+  const s = typeof content === 'string' ? content : ''
+  const trimmed = s.trim()
   const normalized = trimmed.toLowerCase()
   if (normalized === '' || normalized === '(proceeding)' || normalized === 'proceeding') {
     return ''
   }
-  return content
+  return s
+}
+
+/**
+ * Parse the persisted plan metadata's `steps` array for the history-rebuild
+ * paths (groupMessages' plan index + rebuildPlanFromHistory).
+ *
+ * The live `plan_generated` event is gated by isPlanData/isPlanStepData, but
+ * the metadata row is re-read raw on reload/fork — a truthy non-array (the old
+ * `|| []` fallback did not fire) or a malformed element would throw inside
+ * groupMessages and break the chat render. Degrade to [] and keep only
+ * well-formed elements instead.
+ */
+export function parsePlanSteps(meta: Record<string, unknown> | undefined): PlanStepData[] {
+  const steps: unknown = meta?.steps
+  if (!Array.isArray(steps)) return []
+  return steps.filter(isPlanStepData)
 }
 
 /**

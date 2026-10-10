@@ -177,4 +177,71 @@ func TestRemapLocalGoogleProtocols(t *testing.T) {
 			t.Fatalf("non-openai local provider must not be remapped; found override")
 		}
 	})
+
+	// (#6 regression) A PARTIAL user entry — a non-protocol field set, so
+	// Protocol is still empty — must be MERGED, not replaced: the protocol is
+	// pinned, every user-set field survives, and Capabilities are backfilled
+	// from the built-in catalog because the user did not pin them.
+	t.Run("partial user entry is merged, not replaced", func(t *testing.T) {
+		cfg := map[string]BuilderProviderConfig{
+			"lmstudio": {
+				ProviderType: "openai",
+				BaseURL:      "http://127.0.0.1:1234/v1",
+				Models:       []string{"gemma-3-27b-it"},
+			},
+		}
+		overrides := map[string]llm.ModelMetadata{
+			"gemma-3-27b-it": {ContextWindow: 32768, OutputLimit: 4096, Family: "custom"},
+		}
+
+		remapLocalGoogleProtocols(overrides, cfg, noopExpand)
+
+		got := overrides["gemma-3-27b-it"]
+		if got.Protocol != llm.ProtocolChatCompletions {
+			t.Errorf("protocol = %q, want %q (remap must still apply)",
+				got.Protocol, llm.ProtocolChatCompletions)
+		}
+		if got.ContextWindow != 32768 {
+			t.Errorf("ContextWindow = %d, want 32768 (user field must survive the remap)", got.ContextWindow)
+		}
+		if got.OutputLimit != 4096 {
+			t.Errorf("OutputLimit = %d, want 4096 (user field must survive the remap)", got.OutputLimit)
+		}
+		if got.Family != "custom" {
+			t.Errorf("Family = %q, want custom (user field must survive the remap)", got.Family)
+		}
+		if got.Capabilities == nil {
+			t.Errorf("Capabilities = nil, want backfilled from the built-in catalog")
+		}
+	})
+
+	// (#6 regression) Capabilities the user pinned explicitly are kept as-is —
+	// only UNSET capabilities are backfilled from the built-in catalog.
+	t.Run("user-pinned capabilities are kept", func(t *testing.T) {
+		cfg := map[string]BuilderProviderConfig{
+			"lmstudio": {
+				ProviderType: "openai",
+				BaseURL:      "http://127.0.0.1:1234/v1",
+				Models:       []string{"gemma-3-27b-it"},
+			},
+		}
+		userCaps := &llm.ModelCapabilities{ToolCall: true}
+		overrides := map[string]llm.ModelMetadata{
+			"gemma-3-27b-it": {ContextWindow: 32768, Capabilities: userCaps},
+		}
+
+		remapLocalGoogleProtocols(overrides, cfg, noopExpand)
+
+		got := overrides["gemma-3-27b-it"]
+		if got.Protocol != llm.ProtocolChatCompletions {
+			t.Errorf("protocol = %q, want %q (remap must still apply)",
+				got.Protocol, llm.ProtocolChatCompletions)
+		}
+		if got.Capabilities != userCaps {
+			t.Errorf("Capabilities = %+v, want the user-pinned pointer preserved", got.Capabilities)
+		}
+		if got.ContextWindow != 32768 {
+			t.Errorf("ContextWindow = %d, want 32768 (user field must survive the remap)", got.ContextWindow)
+		}
+	})
 }

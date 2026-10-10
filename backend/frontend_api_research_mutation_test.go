@@ -48,6 +48,8 @@ func researchTwoProjectTestFrontend(t *testing.T) (api *FrontendAPI, projA, proj
 		projectManager: mgr,
 		emitEvent:      func(_ string, _ ...any) {},
 	}
+	api.seedPublished.Store(true)
+	api.seedPublished.Store(true)
 	return api, "proj-a", "proj-b", rootA, rootB
 }
 

@@ -109,7 +109,10 @@ export function selectTitleScope(state: ProjectState): string | null {
   const active = state.projects.find((p) => p.id === state.activeProjectId)
   if (!active) return null
   if (active.is_no_project) return CHAT_LABEL
-  const name = active.name.trim()
+  // isProjectInfo validates name as a string at the RPC boundary, but this
+  // selector runs at the app root (useWindowTitle) — a non-string name must
+  // degrade to "no segment" here rather than throwing in the shell render.
+  const name = typeof active.name === 'string' ? active.name.trim() : ''
   return name === '' ? null : name
 }
 

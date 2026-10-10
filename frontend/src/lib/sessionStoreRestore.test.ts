@@ -17,7 +17,7 @@ describe('restorePlanAndGoalFromHistory', () => {
   })
 
   it('rebuilds the plan group from a plan declaration row', () => {
-    const plan = msg('p1', 'plan', { steps: [{ id: 'step_1', description: 'd1' }, { id: 'step_2', description: 'd2' }] })
+    const plan = msg('p1', 'plan', { steps: [{ id: 'step_1', description: 'd1', status: 'pending' }, { id: 'step_2', description: 'd2', status: 'pending' }] })
     restorePlanAndGoalFromHistory('s1', [plan])
     const groups = usePlanStore.getState().planGroups
     expect(groups).toHaveLength(1)

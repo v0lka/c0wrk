@@ -4,6 +4,7 @@ package desktop
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -16,6 +17,8 @@ import (
 
 	"github.com/godbus/dbus/v5"
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
+
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // This file implements c0wrk's own Linux notification transport: the same
@@ -87,7 +90,7 @@ const (
 	// honors the action list a notification carries. Without it the `default`
 	// action is ignored, no ActionInvoked signal is ever emitted, and the
 	// only routing left is the reason-2 dismiss quirk — see the dial-time
-	// probe in ensureDialLocked.
+	// probe in dial — the once-per-dial capability probe
 	dbusCapabilityActions = "actions"
 
 	// notificationPendingTTL / notificationPendingMax bound the routing map.
@@ -170,6 +173,13 @@ type platformNotificationState struct {
 	// a failed export falls back to the theme name on EVERY send, since the
 	// cache dir may become writable later).
 	icon string
+	// gen increments on every teardown: a send whose unlocked dial is in
+	// flight while teardown runs must not publish the fresh connection
+	// afterwards (a post-shutdown connection and signal pump would be left
+	// behind). Sends capture the generation before dialing and re-check it
+	// before publishing. teardownIfCurrent — the redial-on-dead-connection
+	// path — does not bump it: dialing again afterwards is legitimate.
+	gen uint64
 }
 
 // linuxNotificationMeta is the per-notification bookkeeping needed to route
@@ -235,15 +245,11 @@ func (s *platformNotificationState) send(options wailsRuntime.NotificationOption
 	sendSerial.Lock()
 	defer sendSerial.Unlock()
 
-	s.mu.Lock()
-	if err := s.ensureDialLocked(dispatch, log); err != nil {
-		s.mu.Unlock()
+	conn, icon, err := s.ensureDial(dispatch, log)
+	if err != nil {
 		return err
 	}
-	conn := s.conn
 	obj := conn.Object(dbusNotificationsInterface, dbusNotificationsPath)
-	icon := s.iconLocked()
-	s.mu.Unlock()
 
 	call := obj.Call(
 		dbusNotificationsInterface+".Notify",
@@ -290,29 +296,85 @@ func (s *platformNotificationState) send(options wailsRuntime.NotificationOption
 	return nil
 }
 
-// ensureDialLocked dials the session bus on first use and starts the signal
-// pump. Must be called with s.mu held.
-func (s *platformNotificationState) ensureDialLocked(dispatch func(wailsRuntime.NotificationResult), log *slog.Logger) error {
+// ensureDial returns the live connection (dialing it on first use) plus the
+// resolved app_icon argument.
+//
+// The dial, the match registration and the capability probe run WITHOUT
+// s.mu: they are deadline-less D-Bus round trips (godbus resolves the seam's
+// Call to CallWithContext(context.Background())), and holding the state mutex
+// across them would let a daemon that accepts the socket but never answers
+// park s.mu indefinitely — wedging the signal pump's takePending and, worse,
+// Shutdown's cleanupNotifications → teardown, which needs the same mutex and
+// runs BEFORE stopEmbeddedLLM (a stalled teardown there skips the embedded
+// model stop and the watchdog force-exit orphans the detached llama-server).
+// Only the fast-path check, the publish of the dialed connection and the icon
+// resolution take the lock — the same unlocked design the blocking Notify
+// round trip already uses. Concurrent sends are serialized by sendSerial, so
+// at most one dial is ever in flight; a teardown may still interleave, which
+// the generation guard turns the publish into a refused send instead of a post-shutdown
+// connection resurrection.
+func (s *platformNotificationState) ensureDial(dispatch func(wailsRuntime.NotificationResult), log *slog.Logger) (dbusDialer, string, error) {
+	var gen uint64
+	s.mu.Lock()
 	if s.conn != nil {
-		return nil
+		conn, icon := s.conn, s.iconLocked()
+		s.mu.Unlock()
+		return conn, icon, nil
 	}
+	gen = s.gen
+	s.mu.Unlock()
+
+	conn, cancel, err := s.dial(dispatch, log)
+	if err != nil {
+		return nil, "", err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.gen != gen || s.conn != nil {
+		// A teardown ran while the unlocked dial was in flight — publish
+		// nothing after it, or the shutdown path would leave a live
+		// connection and signal pump behind. (The s.conn != nil half is
+		// unreachable while sends serialize on sendSerial; kept as a safety
+		// net: drop the surplus connection, serve the published one.)
+		if cancel != nil {
+			cancel()
+		}
+		_ = conn.Close()
+		if s.conn != nil {
+			return s.conn, s.iconLocked(), nil
+		}
+		return nil, "", errors.New("notification transport torn down during dial")
+	}
+	s.conn = conn
+	s.cancel = cancel
+	s.pending = make(map[uint32]linuxNotificationMeta)
+	icon := s.iconLocked()
+	return conn, icon, nil
+}
+
+// dial performs the connection setup that must NOT run under s.mu (see
+// ensureDial): dial the session bus, register the two match rules, run the
+// once-per-dial capability probe, and start the signal pump. On any error the
+// half-configured connection is closed before returning.
+func (s *platformNotificationState) dial(dispatch func(wailsRuntime.NotificationResult), log *slog.Logger) (dbusDialer, context.CancelFunc, error) {
 	conn, err := dbusDialSessionBus()
 	if err != nil {
-		return fmt.Errorf("dial session bus: %w", err)
+		return nil, nil, fmt.Errorf("dial session bus: %w", err)
 	}
 	if err := conn.AddMatchSignal(
 		dbus.WithMatchInterface(dbusNotificationsInterface),
 		dbus.WithMatchMember("ActionInvoked"),
 	); err != nil {
 		_ = conn.Close()
-		return fmt.Errorf("subscribe ActionInvoked: %w", err)
+		return nil, nil, fmt.Errorf("subscribe ActionInvoked: %w", err)
 	}
 	if err := conn.AddMatchSignal(
 		dbus.WithMatchInterface(dbusNotificationsInterface),
 		dbus.WithMatchMember("NotificationClosed"),
 	); err != nil {
 		_ = conn.Close()
-		return fmt.Errorf("subscribe NotificationClosed: %w", err)
+		return nil, nil, fmt.Errorf("subscribe NotificationClosed: %w", err)
 	}
 
 	// Capability probe, once per dial: purely diagnostic, never fatal. A
@@ -326,16 +388,12 @@ func (s *platformNotificationState) ensureDialLocked(dispatch func(wailsRuntime.
 	signals := make(chan *dbus.Signal, 16)
 	conn.Signal(signals)
 
-	s.conn = conn
-	s.cancel = cancel
-	s.pending = make(map[uint32]linuxNotificationMeta)
-
 	// dispatch travels with the pump instead of living on the struct: a
 	// redial (teardown after a failed Notify, then the next send) would
 	// otherwise write the field while the previous pump — which cancel() has
 	// signalled but not yet stopped — is still reading it to route a signal.
 	go s.pumpSignals(pumpCtx, signals, dispatch, log)
-	return nil
+	return conn, cancel, nil
 }
 
 // logActionsCapability reads the daemon's GetCapabilities and reports whether
@@ -526,10 +584,14 @@ func (s *platformNotificationState) takePending(dbusID uint32) (linuxNotificatio
 	return meta, ok
 }
 
-// teardown closes the connection and stops the pump.
+// teardown closes the connection and stops the pump. It also marks the
+// transport permanently closed: a concurrent send whose unlocked dial is
+// still in flight must not publish a fresh connection after the shutdown
+// path has torn the transport down (see ensureDial).
 func (s *platformNotificationState) teardown() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.gen++
 	s.teardownLocked()
 }
 
@@ -580,16 +642,23 @@ func (s *platformNotificationState) iconLocked() string {
 // exportNotificationIcon writes the embedded PNG into the user cache dir and
 // returns its file:// URI. The URI is percent-encoded via net/url (cache
 // paths may contain spaces or non-ASCII user names).
+//
+// Both filesystem steps are hardened (safeio): MkdirAllReal only ever
+// builds real directories (a dangling or swapped-in link is refused), and
+// WriteFile refuses a non-regular or symlinked final target instead of
+// truncating whatever it points at. Any failure is
+// the same fail-soft outcome as an unwritable cache dir: the send falls back
+// to the theme icon name.
 func exportNotificationIcon() (string, bool) {
 	dir, err := notificationIconCacheDir()
 	if err != nil {
 		return "", false
 	}
 	path := filepath.Join(dir, notificationIconDirName, notificationIconFileName)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := safeio.MkdirAllReal(filepath.Dir(path), 0o755); err != nil {
 		return "", false
 	}
-	if err := os.WriteFile(path, notificationIconPNG(), notificationIconFileMode); err != nil {
+	if err := safeio.WriteFile(path, notificationIconPNG(), notificationIconFileMode); err != nil {
 		return "", false
 	}
 	return (&url.URL{Scheme: "file", Path: path}).String(), true

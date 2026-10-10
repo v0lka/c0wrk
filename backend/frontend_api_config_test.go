@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -397,6 +398,8 @@ func newTestAPI(t *testing.T) (*FrontendAPI, *mockBuilder, string) {
 		agentDir:        dir,
 		builderOverride: mock,
 	}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	// Knob values live in the active profile: activate a writable custom one
 	// so ModelProfiles profile mutations have an editable target (the default "generic" active
 	// profile is predefined/read-only).
@@ -603,6 +606,8 @@ func TestUpdateLLMConfig_PerProviderFields(t *testing.T) {
 
 func TestUpdateLLMConfig_NilConfig(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	err := f.UpdateLLMConfig(LLMFullConfigRequest{DefaultModel: "claude-3-sonnet"})
 	if err == nil {
 		t.Fatal("expected error when config is nil")
@@ -994,6 +999,8 @@ func TestGetModelConfig_WithOverride(t *testing.T) {
 
 func TestGetModelConfig_NilConfig(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	if _, err := f.GetModelConfig("gpt-4o"); err == nil {
 		t.Fatal("expected error when config is nil")
 	}
@@ -1040,6 +1047,78 @@ func TestSetModelConfig_BothFieldsNonDefault(t *testing.T) {
 	}
 	if got.ContextWindow != 200000 || got.OutputLimit != 99999 {
 		t.Errorf("persisted override = %+v, want {200000 99999}", got)
+	}
+}
+
+// TestSetModelConfig_RejectsContextWindowAboveCeiling pins the upper bound:
+// config.validate() refuses a context_window above MaxModelContextWindow at
+// LOAD time, but Save does not validate — so an out-of-range value persisted
+// here would only surface on the next launch, where the failed validation
+// discards the whole config and the next save overwrites it with defaults
+// (total data loss). The RPC is the enforcement boundary and must refuse.
+func TestSetModelConfig_RejectsContextWindowAboveCeiling(t *testing.T) {
+	f, mock, cfgPath := newTestAPI(t)
+
+	err := f.SetModelConfig("gpt-4o", ModelConfigRequest{
+		ContextWindow: config.MaxModelContextWindow + 1,
+		OutputLimit:   4096,
+	})
+	if err == nil {
+		t.Fatal("expected an out-of-ceiling context window to be rejected")
+	}
+	if !strings.Contains(err.Error(), "context window") {
+		t.Errorf("error %q does not name the offending field", err.Error())
+	}
+
+	// Nothing was stored in memory...
+	if _, ok := f.config.LLM.Models["gpt-4o"]; ok {
+		t.Error("the rejected override was stored in memory")
+	}
+	// ...nor persisted: a rejected save must not create or rewrite the file
+	// (the harness starts with no config.yaml on disk).
+	if _, err := os.Stat(cfgPath); !os.IsNotExist(err) {
+		t.Error("the rejected save touched the persisted config file")
+	}
+	if mock.rebuildRouterCalls != 0 {
+		t.Errorf("RebuildRouter called %d times after a rejection, want 0", mock.rebuildRouterCalls)
+	}
+}
+
+// TestSetModelConfig_RejectsNonPositiveContextWindow pins the lower bound of
+// the same boundary: the RPC range is the conjunction of the positive-int
+// guard (ContextWindow/OutputLimit < 1) and the MaxModelContextWindow
+// ceiling, i.e. [1, Max] — strictly tighter than the load-time validator's
+// [0, Max] (0 = unset/inherit is a legal STORED value but not a meaningful
+// request value; the dialog always sends concrete positive ints). A negative
+// window therefore cannot reach the persisted config, the router rebuild, or
+// the context-fill arithmetic through this boundary.
+func TestSetModelConfig_RejectsNonPositiveContextWindow(t *testing.T) {
+	f, mock, cfgPath := newTestAPI(t)
+
+	for name, req := range map[string]ModelConfigRequest{
+		"negative context window": {ContextWindow: -1, OutputLimit: 4096},
+		"zero context window":     {ContextWindow: 0, OutputLimit: 4096},
+		"negative output limit":   {ContextWindow: 128000, OutputLimit: -1},
+	} {
+		err := f.SetModelConfig("gpt-4o", req)
+		if err == nil {
+			t.Fatalf("%s: expected a non-positive window to be rejected", name)
+		}
+		if !strings.Contains(err.Error(), "positive integers") {
+			t.Errorf("%s: error %q does not name the positive-int guard", name, err.Error())
+		}
+	}
+
+	// Nothing was stored in memory...
+	if _, ok := f.config.LLM.Models["gpt-4o"]; ok {
+		t.Error("a rejected override was stored in memory")
+	}
+	// ...nor persisted...
+	if _, err := os.Stat(cfgPath); !os.IsNotExist(err) {
+		t.Error("a rejected save touched the persisted config file")
+	}
+	if mock.rebuildRouterCalls != 0 {
+		t.Errorf("RebuildRouter called %d times after rejections, want 0", mock.rebuildRouterCalls)
 	}
 }
 
@@ -1145,6 +1224,8 @@ func TestSetModelConfig_PreservesRequestTimeout(t *testing.T) {
 
 func TestSetModelConfig_NilConfig(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	err := f.SetModelConfig("gpt-4o", ModelConfigRequest{ContextWindow: 200000})
 	if err == nil {
 		t.Fatal("expected error when config is nil")
@@ -1556,6 +1637,8 @@ func TestUpdateVectorIndexSettings_InvalidValuesRejectedBeforeWrite(t *testing.T
 
 func TestUpdateVectorIndexSettings_NilConfig(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	err := f.UpdateVectorIndexSettings(VectorIndexSettingsResponse{
 		ExecutionProvider: config.VectorIndexProviderCPU,
 	})
@@ -1585,6 +1668,8 @@ func TestUpdateProxySettings_PersistsAndRebuilds(t *testing.T) {
 
 func TestUpdateProxySettings_NilConfig(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	err := f.UpdateProxySettings(ProxySettingsRequest{Enabled: true})
 	if err == nil {
 		t.Fatal("expected error when config is nil")
@@ -1624,6 +1709,34 @@ func TestUpdateProxySettings_NewURLApplied(t *testing.T) {
 	}
 	if f.config.Proxy.URL != newURL {
 		t.Errorf("proxy URL not updated: got %q want %q", f.config.Proxy.URL, newURL)
+	}
+}
+
+// TestUpdateProxySettings_EmptiedURLClearsTheProxy pins the clearing path:
+// an empty incoming URL is NOT the masked round-trip form (MaskURL("") is ""),
+// so it must clear the stored URL instead of being swallowed as
+// "preserve the password-bearing value". Otherwise a user who clears the
+// field keeps the old credentials persisted and dialing while the frontend
+// reports the proxy inactive.
+func TestUpdateProxySettings_EmptiedURLClearsTheProxy(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+	const realURL = "http://user:secret@proxy.example.com:8080"
+	f.config.Proxy.URL = realURL
+
+	if err := f.UpdateProxySettings(ProxySettingsRequest{Enabled: false, URL: ""}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if f.config.Proxy.URL != "" {
+		t.Errorf("emptied proxy URL was not cleared: got %q, want \"\"", f.config.Proxy.URL)
+	}
+
+	// The cleared value is persisted too (the next load must not resurrect it).
+	reloaded, err := config.Load(f.configPath)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if reloaded.Proxy.URL != "" {
+		t.Errorf("persisted proxy URL = %q, want cleared", reloaded.Proxy.URL)
 	}
 }
 
@@ -2014,6 +2127,8 @@ func TestGetUpdateSecuritySettings_GroupsRoundTrip(t *testing.T) {
 // still hands the UI a complete, editable default group set.
 func TestGetSecuritySettings_NoConfigDefaults(t *testing.T) {
 	f := &FrontendAPI{} // f.config == nil
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	got := f.GetSecuritySettings()
 	if len(got.Groups) != 7 {
 		t.Fatalf("expected the 7 configurable groups from defaults, got %d: %v", len(got.Groups), got.Groups)
@@ -2152,6 +2267,8 @@ func TestGetModelProfiles_ReturnsCatalog(t *testing.T) {
 
 func TestGetModelProfiles_NilConfigReturnsCatalogAndUniverse(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	got := f.GetModelProfiles()
 	if got.ActiveID != "" {
 		t.Errorf("ActiveID = %q, want empty for nil config", got.ActiveID)
@@ -2189,6 +2306,8 @@ func TestGetModelProfiles_ReportsStoredEnabled(t *testing.T) {
 
 func TestGetModelProfiles_PickerAlwaysNonNil(t *testing.T) {
 	f := &FrontendAPI{} // no app: registry unavailable
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	got := f.GetModelProfiles()
 	if got.BuiltinTools == nil || len(got.BuiltinTools) != 0 {
 		t.Errorf("BuiltinTools = %v, want empty non-nil when the registry is unavailable", got.BuiltinTools)
@@ -2545,6 +2664,8 @@ func TestUpdateModelProfile_PersistsAndRebuilds(t *testing.T) {
 
 func TestUpdateModelProfile_NilConfig(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	err := f.UpdateModelProfile("any", modelProfilesConfigReq(validModelProfilesValues()))
 	if err == nil {
 		t.Fatal("expected error when config is nil")
@@ -2763,21 +2884,30 @@ func TestUpdateModelProfile_ZeroSentinelsAndDisabledVariants(t *testing.T) {
 
 // TestUpdateModelProfile_StoreWriteFailureLeavesStateUntouched forces the store
 // write to fail and verifies nothing changed. The store persists with an
-// atomic temp-file-then-rename (see config.SaveCustomModelProfiles), so
-// occupying that temp sibling with a directory makes os.WriteFile fail on
-// every platform. Making the agent dir read-only via os.Chmod cannot: on
-// Windows the read-only attribute does not block creating files inside a
-// directory, so the write would silently succeed.
+// atomic randomized-temp-file-then-rename (safeio.WriteFileAtomic — the old
+// fixed <store>.tmp sibling no longer exists by design, so occupying it
+// cannot inject a failure; see the save_safety tests). The write is blocked
+// per platform instead: on POSIX the agent dir loses its write bit (the
+// temp-file creation fails with EACCES, while reads — which need only the
+// search bit — keep working, so the untouched-state witness stays readable);
+// on Windows MoveFileEx(REPLACE_EXISTING) refuses to replace a read-only
+// file, so the final rename fails with the store itself left readable.
 func TestUpdateModelProfile_StoreWriteFailureLeavesStateUntouched(t *testing.T) {
 	f, mock, _ := newTestAPI(t)
 	active := activateCustomModelProfile(t, f)
 	before := modelProfilesStoredProfile(t, f, active.ID)
 
-	// Block the atomic write: a directory at the temp path makes the
-	// temp-file creation fail before it can be renamed into place.
-	tmpPath := config.ModelProfilesPath(f.agentDir) + ".tmp"
-	if err := os.Mkdir(tmpPath, 0o755); err != nil {
-		t.Fatalf("cannot occupy the store temp path %q: %v", tmpPath, err)
+	storePath := config.ModelProfilesPath(f.agentDir)
+	if runtime.GOOS == "windows" {
+		if err := os.Chmod(storePath, 0o444); err != nil {
+			t.Fatalf("cannot make the store read-only: %v", err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(storePath, 0o644) })
+	} else {
+		if err := os.Chmod(f.agentDir, 0o500); err != nil {
+			t.Fatalf("cannot make the agent dir read-only: %v", err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(f.agentDir, 0o755) })
 	}
 
 	if err := f.UpdateModelProfile(active.ID, modelProfilesConfigReq(validModelProfilesValues())); err == nil {
@@ -3224,6 +3354,8 @@ func TestSetModelProfilesEnabled_EmitsConfigUpdated(t *testing.T) {
 // TestModelProfilesNilConfigRejected verifies the nil-config guard on every mutation.
 func TestModelProfilesNilConfigRejected(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	name := "X"
 	if _, err := f.CreateModelProfile("generic", "X"); err == nil {
 		t.Error("CreateModelProfile must fail on nil config")
@@ -3680,6 +3812,8 @@ func newUpdateLLMConfigProjectHarness(t *testing.T) (*FrontendAPI, *project.Proj
 		emitEvent:       rec.emit,
 		appCtx:          func() context.Context { return ctx },
 	}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	_ = ctx
 	return f, createdProject, rec, db
 }
@@ -5146,6 +5280,8 @@ func TestNotificationBannerTimeout_RejectsOutOfRange(t *testing.T) {
 // value 0 — which would silently mean "banners never go away".
 func TestNotificationBannerTimeout_UnloadedConfigIsSafe(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	if got := f.GetNotificationBannerTimeout(); got != config.NotificationBannerTimeoutDaemonDefault {
 		t.Errorf("GetNotificationBannerTimeout() on an unloaded config = %d, want %d",
 			got, config.NotificationBannerTimeoutDaemonDefault)

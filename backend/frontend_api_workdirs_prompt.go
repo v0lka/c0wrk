@@ -40,6 +40,7 @@ var homeRelativeRe = regexp.MustCompile(`~[A-Za-z0-9_.\-]*(?:/[A-Za-z0-9/_.\-~]+
 // skipped, and a failure never blocks the user's message. Emits a single
 // workdirs:changed event when at least one directory was added.
 func (f *FrontendAPI) autoAddPromptWorkDirs(sessionID, text string) {
+	f.seedAcquire()
 	if f.store == nil || strings.TrimSpace(text) == "" {
 		return
 	}

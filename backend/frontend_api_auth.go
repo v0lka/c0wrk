@@ -1114,6 +1114,7 @@ const (
 // emitChatGPTAuthState publishes one chatgpt_auth:state transition. The
 // payload never carries a secret: URLs and identity fields only.
 func (f *FrontendAPI) emitChatGPTAuthState(data ChatGPTAuthEventData) {
+	f.seedAcquire()
 	if f.emitEvent == nil {
 		return
 	}

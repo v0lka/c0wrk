@@ -369,6 +369,7 @@ func TestParseGitConfig_IncludesIgnoredAndLogged(t *testing.T) {
 		"core.sshCommand=ssh",
 		"credential.helper=",
 		"diff.external=",
+		"protocol.git.allow=never",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("overrides with includes = %v, want %v", got, want)
@@ -737,11 +738,12 @@ func TestNeutralizingOverrides_Matrix(t *testing.T) {
 		// included file may arm invisibly.
 		{"includes only", "[include]\n\tpath = x\n", []string{
 			et, "core.askPass=", "core.attributesFile=", "core.sshCommand=ssh",
-			"credential.helper=", "diff.external="}},
+			"credential.helper=", "diff.external=", "protocol.git.allow=never"}},
 		{"filter plus include keeps attr.tree", "[filter \"x\"]\n\tprocess = e\n[include]\n\tpath = y\n", []string{
 			et, "core.askPass=", "core.attributesFile=", "core.sshCommand=ssh",
 			"credential.helper=", "diff.external=",
-			"filter.x.clean=cat", "filter.x.process=", "filter.x.smudge=cat"}},
+			"filter.x.clean=cat", "filter.x.process=", "filter.x.smudge=cat",
+			"protocol.git.allow=never"}},
 		// Baseline-covered signing keys are reported as findings but must
 		// never derive spawn hardening: commit.gpgsign=true, gpg.format,
 		// gpg.program and user.signingkey are all neutralized by the

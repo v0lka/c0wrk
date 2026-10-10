@@ -5,10 +5,8 @@ package terminal
 import (
 	"bytes"
 	"context"
-	"errors"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -273,9 +271,14 @@ func TestManager_OnExitNotFiredOnStop(t *testing.T) {
 				go func() { waited <- sess.cmd.Wait() }()
 				select {
 				case err := <-waited:
-					var exitErr *exec.ExitError
-					if err != nil && !errors.As(err, &exitErr) {
-						t.Errorf("shell Wait() = %v, want exit status or nil", err)
+					// teardown now reaps the shell child itself (the child
+					// used to linger as a zombie per session), so this
+					// follow-up Wait reports "already called" rather than an
+					// exit status. The reaping proof is the recorded
+					// ProcessState: nil means teardown never Waited, i.e.
+					// the child was left unreaped.
+					if sess.cmd.ProcessState == nil {
+						t.Errorf("shell Wait() = %v, want the child's exit state recorded by teardown's reap", err)
 					}
 				case <-time.After(10 * time.Second):
 					t.Fatal("shell Wait did not join after PTY teardown")

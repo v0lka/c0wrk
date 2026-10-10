@@ -48,19 +48,27 @@ func (f *FrontendAPI) resolveVectorIndexTarget(p *project.ProjectInfo) vectorInd
 		workspacePath: p.WorkspacePath,
 		storagePath:   config.ProjectVectorIndexPath(f.agentDir, p.ID),
 	}
-	if p.IsNoProject || f.app == nil || f.app.Manager() == nil {
+	if p.IsNoProject || f.appCell() == nil || f.app.Manager() == nil {
 		return base
 	}
+	// Both reads below are bounded by terminalPathLookupTimeout, as this
+	// function's siblings require: Manager.WorkspacePathFor's contract makes
+	// the CALLER bound the session-row read, and the shared SQLite pool can
+	// otherwise park SwitchProject (switchMu held) indefinitely. A timeout
+	// degrades to base — the project checkout — which is already the
+	// fail-soft default of every negative branch here.
+	ctx, cancel := context.WithTimeout(f.ctx(), terminalPathLookupTimeout)
+	defer cancel()
 	savedID := ""
 	if f.projStore != nil {
-		if st, err := f.projStore.LoadUIState(context.Background(), p.ID); err == nil && st != nil {
+		if st, err := f.projStore.LoadUIState(ctx, p.ID); err == nil && st != nil {
 			savedID = strings.TrimSpace(st.SavedSessionID)
 		}
 	}
 	if savedID == "" {
 		return base
 	}
-	ws, ok := f.app.Manager().WorkspacePathFor(context.Background(), savedID)
+	ws, ok := f.app.Manager().WorkspacePathFor(ctx, savedID)
 	if !ok || ws == "" || ws == p.WorkspacePath {
 		return base
 	}
@@ -80,6 +88,7 @@ func (f *FrontendAPI) resolveVectorIndexTarget(p *project.ProjectInfo) vectorInd
 // and the cache accounting walks its root recursively, so a shared root is
 // no longer safe.
 func (f *FrontendAPI) managedWorktreeVectorTarget(p *project.ProjectInfo, ws string) (vectorIndexTarget, bool) {
+	f.seedAcquire()
 	name, err := config.ManagedWorktreeNameFromPath(p.WorkspacePath, ws)
 	if err != nil {
 		return vectorIndexTarget{}, false
@@ -101,6 +110,7 @@ func (f *FrontendAPI) managedWorktreeVectorTarget(p *project.ProjectInfo, ws str
 // its open chromem handles so the directory removal works on Windows too)
 // before DeleteProjectData wipes the storage.
 func (f *FrontendAPI) deleteWorktreeVectorIndex(repoRoot, projectID, name string) {
+	f.seedAcquire()
 	vr := f.vectorRootsRegistry()
 	root, err := config.ManagedWorktreePath(repoRoot, name)
 	if err != nil {
@@ -170,6 +180,7 @@ func (f *FrontendAPI) deleteWorktreeVectorIndex(repoRoot, projectID, name string
 // the provisioning flows after their success point (create and fork); the
 // recreate path needs no call (its cache root survives the lost tree).
 func (f *FrontendAPI) seedWorktreeEmbeddingCache(projectID, worktreeName string) {
+	f.seedAcquire()
 	src := config.ProjectEmbeddingCachePath(f.agentDir, projectID)
 	dst, err := config.WorktreeEmbeddingCachePath(f.agentDir, projectID, worktreeName)
 	if err != nil {

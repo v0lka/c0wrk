@@ -36,6 +36,8 @@ func seedLogger(t *testing.T) (*FrontendAPI, *bytes.Buffer) {
 			Level: slog.LevelDebug,
 		})),
 	}
+	api.seedPublished.Store(true)
+	api.seedPublished.Store(true)
 	return api, &buf
 }
 

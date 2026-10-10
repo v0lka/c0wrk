@@ -2,12 +2,16 @@ package sysproc
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 const (
@@ -89,13 +93,20 @@ var (
 // resolveGitSafeHooksDir returns the absolute path of the empty directory
 // handed to git via "-c core.hooksPath". The directory lives under the c0wrk
 // default agent directory (~/.c0wrk/git/safe-hooks) and is created on first
-// use. Creation is best-effort: git treats a nonexistent hooksPath exactly
-// like an empty one — hooks are silently skipped, with no fallback to the
-// repository's own .git/hooks — so a creation failure never downgrades to
-// repo-controlled hooks. Home resolution is NOT best-effort (review [42]):
-// when os.UserHomeDir fails there is no absolute safe location, and the old
-// "." fallback would have handed git a RELATIVE hooksPath that resolves
-// inside the repository — letting a planted .c0wrk/git/safe-hooks/pre-commit
+// use. Two error classes, deliberately split: a SYMLINK at the fixed path
+// fails closed (review fix) — git would follow a symlinked core.hooksPath
+// and execute whatever hooks the target holds. Every OTHER creation failure
+// (a non-directory component such as ~/.c0wrk existing as a regular file,
+// EACCES on a read-only home, ENOSPC) is best-effort: git treats a
+// nonexistent — or not-a-directory — hooksPath exactly like an empty one —
+// hooks are silently skipped, with no fallback to the repository's own
+// .git/hooks — so the resolved directory is still returned (with a Warn) and
+// git keeps working without downgrading to repo-controlled hooks. Home
+// resolution is NOT
+// best-effort (review [42]): when os.UserHomeDir fails there is no absolute
+// safe location, and the old "." fallback would have handed git a RELATIVE
+// hooksPath that resolves inside the repository — letting a planted
+// .c0wrk/git/safe-hooks/pre-commit
 // become the "safe" hook. The error fails closed through GitCmd: no git
 // process is spawned at all.
 func resolveGitSafeHooksDir() (string, error) {
@@ -111,7 +122,43 @@ func resolveGitSafeHooksDirUncached() (string, error) {
 		return "", fmt.Errorf("cannot resolve home directory for the safe git hooks path (fail closed: a relative core.hooksPath would resolve inside the repository): %w", err)
 	}
 	dir := filepath.Join(home, DefaultAgentDirName, GitSafeHooksSegment)
-	_ = os.MkdirAll(dir, 0o700)
+	// Build the directory out of REAL components, and split the failure
+	// classes (see the function contract above): ONLY a symlink AT the fixed
+	// safe-hooks component fails closed — a dangling or swapped-in one via
+	// MkdirAllReal's creation checks, a PRE-EXISTING one via the strict
+	// re-check below, which resolution would otherwise honor; a symlinked
+	// core.hooksPath is the planted-hook attack,
+	// and GitCmd spawns no git process at all for it (same as an
+	// unresolvable home dir). Every other failure — a non-directory component
+	// (~/.c0wrk or ~/.c0wrk/git existing as a regular file), EACCES, ENOSPC —
+	// degrades to the historical best-effort behavior: return the resolved
+	// directory, because git runs NO hooks for a nonexistent OR
+	// not-a-directory hooksPath (there is no fallback to the repository's own
+	// hooks), which is exactly the neutralization this directory exists for;
+	// the Warn keeps the broken environment observable instead of silently
+	// unhooked.
+	if err := safeio.MkdirAllReal(dir, 0o700); err != nil {
+		if errors.Is(err, safeio.ErrSymlink) {
+			return "", fmt.Errorf("safe git hooks directory refused (fail closed: a symlinked core.hooksPath would run planted hooks): %w", err)
+		}
+		return bestEffortSafeHooksDir(dir, err)
+	}
+	if err := safeio.CheckRealDirsBelow(filepath.Dir(dir), dir); err != nil {
+		if errors.Is(err, safeio.ErrSymlink) {
+			return "", fmt.Errorf("safe git hooks directory refused (fail closed: a symlinked core.hooksPath would run planted hooks): %w", err)
+		}
+		return bestEffortSafeHooksDir(dir, err)
+	}
+	return dir, nil
+}
+
+// bestEffortSafeHooksDir logs the non-security creation failure and returns
+// the resolved safe-hooks path anyway: a missing hooksPath disables hook
+// execution entirely (git skips hooks; no repo-hook fallback), which is the
+// neutralization this directory exists for.
+func bestEffortSafeHooksDir(dir string, cause error) (string, error) {
+	slog.Warn("safe git hooks directory could not be created; git will run with hooks silently skipped (no repository-hook fallback)",
+		"dir", dir, "error", cause)
 	return dir, nil
 }
 

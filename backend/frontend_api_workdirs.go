@@ -51,6 +51,7 @@ func resolveWorkDirPath(path string) (string, error) {
 
 // ListProjectWorkDirectories returns all project-scoped auxiliary directories.
 func (f *FrontendAPI) ListProjectWorkDirectories(projectID string) ([]project.WorkDirectoryRecord, error) {
+	f.seedAcquire()
 	if f.projStore == nil {
 		return nil, errors.New("project store not initialized")
 	}
@@ -63,6 +64,7 @@ func (f *FrontendAPI) ListProjectWorkDirectories(projectID string) ([]project.Wo
 
 // ListSessionWorkDirectories returns all session-scoped auxiliary directories.
 func (f *FrontendAPI) ListSessionWorkDirectories(sessionID string) ([]project.WorkDirectoryRecord, error) {
+	f.seedAcquire()
 	if f.store == nil {
 		return nil, errors.New("session store not initialized")
 	}
@@ -78,6 +80,7 @@ func (f *FrontendAPI) ListSessionWorkDirectories(sessionID string) ([]project.Wo
 // on disk; project-scoped directories are not available for the No Project
 // pseudo-project.
 func (f *FrontendAPI) AddWorkDirectory(scope, ownerID, path, description string) error {
+	f.seedAcquire()
 	path = strings.TrimSpace(path)
 	description = strings.TrimSpace(description)
 	if path == "" {
@@ -142,6 +145,7 @@ func (f *FrontendAPI) AddWorkDirectory(scope, ownerID, path, description string)
 // sessionID (used as a scope guard so a cross-scope ID cannot mutate another
 // owner's record); id is the record ID.
 func (f *FrontendAPI) UpdateWorkDirectoryDescription(scope, ownerID, id, description string) error {
+	f.seedAcquire()
 	description = strings.TrimSpace(description)
 	if description == "" {
 		return errors.New("description is required")
@@ -174,6 +178,7 @@ func (f *FrontendAPI) UpdateWorkDirectoryDescription(scope, ownerID, id, descrip
 // ownerID is the projectID or sessionID (used as a scope guard); id is the
 // record ID.
 func (f *FrontendAPI) DeleteWorkDirectory(scope, ownerID, id string) error {
+	f.seedAcquire()
 	switch scope {
 	case workDirScopeProject:
 		if f.projStore == nil {
@@ -202,6 +207,7 @@ func (f *FrontendAPI) DeleteWorkDirectory(scope, ownerID, id string) error {
 // been wired yet (e.g. very early in startup) — mirrors how other global events
 // are dispatched through the injected emitEvent callback.
 func (f *FrontendAPI) emitWorkDirsChanged() {
+	f.seedAcquire()
 	if f.emitEvent != nil {
 		f.emitEvent(EventWorkDirsChanged)
 	}

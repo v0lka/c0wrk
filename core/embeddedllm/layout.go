@@ -7,8 +7,10 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/v0lka/sp4rk/pathutil"
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // This file is the ONLY place that knows where embedded-LLM bytes live on
@@ -234,6 +236,33 @@ func (l Layout) EnsureRoots() error {
 		return err
 	}
 	dirs = append(dirs, downloads)
+	// Refuse a link planted at a fixed layout root BEFORE any creation side
+	// effect (review fix): MkdirAllReal resolves pre-existing links by
+	// contract — an operator-symlinked agent dir must keep working — but the
+	// roots carry multi-gigabyte install writes and the matching Remove
+	// deletions, so a link planted AT a root, or at the shared models
+	// parent, must stop here, before scaffolding lands in its target. A
+	// missing component is fine (created below); a symlinked one is not.
+	for _, dir := range []string{l.RuntimesRoot, filepath.Dir(l.ModelRoot), l.ModelRoot, downloads} {
+		rel, rerr := filepath.Rel(filepath.Dir(dir), dir)
+		if rerr != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+			return fmt.Errorf("embeddedllm: root %q is not below its parent", dir)
+		}
+		cur := filepath.Dir(dir)
+		for _, comp := range strings.Split(rel, string(os.PathSeparator)) {
+			cur = filepath.Join(cur, comp)
+			fi, serr := os.Lstat(cur)
+			if errors.Is(serr, fs.ErrNotExist) {
+				break // nothing below a missing component exists yet
+			}
+			if serr != nil {
+				return fmt.Errorf("embeddedllm: stat %q: %w", cur, serr)
+			}
+			if fi.Mode()&fs.ModeSymlink != 0 {
+				return fmt.Errorf("embeddedllm: root %q is a symlink: %w", dir, &safeio.SymlinkError{Path: cur})
+			}
+		}
+	}
 	for _, dir := range dirs {
 		if err := mkdirAll(dir); err != nil {
 			return err
@@ -314,7 +343,17 @@ func ServerBinaryPath(runtimeDir, goos string) (string, error) {
 }
 
 func mkdirAll(dir string) error {
-	if err := os.MkdirAll(dir, 0o750); err != nil {
+	// MkdirAllReal, not os.MkdirAll: creation only ever produces REAL
+	// directories — a dangling link, a non-directory component, or a link
+	// swapped into a component being created fails the call instead of being
+	// followed. Pre-existing links on the existing prefix are resolved by
+	// contract (an operator-symlinked agent dir keeps working); the fixed
+	// layout roots themselves are strictly re-verified as real directories
+	// by EnsureRoots, because a plant there would redirect the
+	// multi-gigabyte install writes — and the matching Remove deletions —
+	// outside the agent dir. Deeper mkdirs run inside those self-created,
+	// self-owned trees.
+	if err := safeio.MkdirAllReal(dir, 0o750); err != nil {
 		return fmt.Errorf("embeddedllm: creating %q: %w", dir, err)
 	}
 	return nil

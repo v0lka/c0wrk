@@ -13,6 +13,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // errNonHTTPS is returned when a download URL is not HTTPS-only. The update
@@ -120,7 +122,14 @@ func (d *Downloader) Download(ctx context.Context, assetURL, sumsURL, assetName,
 		return nil, err
 	}
 
-	if err := os.MkdirAll(stagingDir, 0o755); err != nil {
+	// The staging root must be created as REAL directories: a link swapped
+	// into a created component at the fixed ~/.c0wrk/update-staging path
+	// would otherwise redirect the verified release archive and SHA256SUMS —
+	// written below via tmp-file + rename — outside the agent dir.
+	// MkdirAllReal refuses a dangling or swapped-in link (and any
+	// non-directory component); a pre-existing operator-symlinked tree
+	// resolves as intent.
+	if err := safeio.MkdirAllReal(stagingDir, 0o755); err != nil {
 		return nil, fmt.Errorf("creating staging dir %q: %w", stagingDir, err)
 	}
 

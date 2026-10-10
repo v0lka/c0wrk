@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import * as reviewApi from '@/api/review'
 import { subscribe } from '@/api/runtime'
 import { useReviewStore } from '@/stores/reviewStore'
+import { getUiZoomFactor } from '@/stores/uiScaleStore'
 import { logger } from '@/lib/logger'
 import { ReviewHeader } from './ReviewHeader'
 import { FileReviewBlock } from './FileReviewBlock'
@@ -182,7 +183,15 @@ export function ReviewPage({ sessionId, commitSha }: ReviewPageProps) {
       cancelAnimationFrame(raf)
       container.removeEventListener('scroll', onScroll)
     }
-  }, [totalHunks])
+    // Re-bind whenever the scroll container is (re-)created: the `if (loading)`
+    // early return unmounts the scroll <div> on every non-silent load, and the
+    // `if (error)` early return unmounts it on every error flip. Either flip
+    // can happen with an unchanged hunk count — a commit→commit switch, or a
+    // failing/recovering silent background re-fetch (which never touches
+    // `loading`) — and without re-binding, the listener stays attached to the
+    // detached old node: manual-scroll tracking and prev/next navigation
+    // silently stop working.
+  }, [totalHunks, loading, error])
 
   // Scroll a hunk so its top edge aligns with the top of the review pane.
   const goToHunk = useCallback((index: number) => {
@@ -202,7 +211,11 @@ export function ReviewPage({ sessionId, commitSha }: ReviewPageProps) {
       pendingNavTimer.current = null
     }, 600)
     const delta = target.getBoundingClientRect().top - container.getBoundingClientRect().top
-    container.scrollBy({ top: delta, behavior: 'smooth' })
+    // getBoundingClientRect() reports VISUAL px (layout × UI zoom) while
+    // scrollBy's `top` is LAYOUT px — divide the measured delta by the live
+    // zoom factor or the pane overshoots by exactly the zoom factor (the
+    // same conversion lib/chatScroll.scrollBlockStartIntoView performs).
+    container.scrollBy({ top: delta / getUiZoomFactor(), behavior: 'smooth' })
     setCurrentHunk(index)
   }, [])
 

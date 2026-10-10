@@ -8,16 +8,42 @@ import (
 	"github.com/v0lka/c0wrk/backend/crashlog"
 )
 
+// Component ceilings the default deadline must cover CUMULATIVELY. Shutdown
+// runs its steps sequentially, so the worst case is the SUM of the bounded
+// steps, not the largest one:
+//
+//   - embeddedLLMStopCeiling: stopEmbeddedLLM is bounded at ~46 s when a quit
+//     races an in-flight cold load holding the supervisor gate — a 30 s
+//     bounded wait for the single-instance gate (backend embeddedStopTimeout)
+//     plus the stop's own derived force budget (15 s once the gate is held,
+//     16 s on the no-gate force path; core/embeddedllm) — after which the
+//     child is terminated.
+//   - sessionManagerStopBudget: a.app.Shutdown joins the manager's background
+//     goroutines and drains both blackboards under ONE shared stopTimeout
+//     budget (10 s; backend/session/manager.go).
+//   - teardownSlack: every remaining step is individually bounded and fast
+//     (batcher stop, pending-action drains, judgeWG.Wait, FrontendAPI
+//     lifecycle cleanup, db/sessionLogger close); the slack covers their sum
+//     on slow storage.
+const (
+	embeddedLLMStopCeiling   = 30*time.Second + 16*time.Second
+	sessionManagerStopBudget = 10 * time.Second
+	teardownSlack            = 10 * time.Second
+)
+
 // defaultShutdownHardDeadline bounds the whole Shutdown teardown when
-// shutdown.hardDeadline is unset (0). It is deliberately generous: normal
-// teardown completes in well under a second, so the deadline only ever fires
-// on a genuinely wedged cancellation path, never on a merely slow one. It is
-// set above the embedded local model's worst-case stop ceiling (~46 s when a
-// quit races an in-flight cold load holding the supervisor gate) so that a
-// normal quit during a cold load is NOT force-exited mid-stop — which would
-// leave a detached llama-server running. Only a genuinely wedged teardown,
-// longer even than that, trips it.
-const defaultShutdownHardDeadline = 60 * time.Second
+// shutdown.hardDeadline is unset (0). It is derived from the cumulative
+// worst case of the sequential teardown steps (see the component ceilings
+// above), with the historical 60 s kept as a floor: normal teardown
+// completes in well under a second, so the deadline only ever fires on a
+// genuinely wedged cancellation path — never on a merely slow one. Sizing it
+// below the cumulative worst case would force-exit a LEGITIMATE quit (a cold
+// embedded-model load racing a slow manager teardown) mid-stop, leaving the
+// detached llama-server running — exactly the outcome the deadline exists to
+// prevent.
+const cumulativeTeardownCeiling = embeddedLLMStopCeiling + sessionManagerStopBudget + teardownSlack
+
+var defaultShutdownHardDeadline = max(cumulativeTeardownCeiling, 60*time.Second)
 
 // shutdownWatchdog enforces one hard deadline over the entire application
 // teardown. Every step of Shutdown is already bounded individually (task

@@ -92,6 +92,7 @@ type PaperLiteratureDTO struct {
 // per-paper-directory guard instead — lookups of other papers, and the
 // projects-row writers, stay concurrent.
 func (f *FrontendAPI) RunPaperLiterature(projectID, paperID string) (*PaperLiteratureDTO, error) {
+	f.seedAcquire()
 	if strings.TrimSpace(paperID) == "" {
 		return nil, errors.New("paper id or slug is required")
 	}
@@ -185,6 +186,7 @@ func (f *FrontendAPI) resolvePaperForRun(projectID, paperID string, rctx *papers
 // present (an explicit, honest degradation rather than a crash). A missing
 // agentDir (or an unseeded pack) yields "".
 func (f *FrontendAPI) literatureScriptPath() string {
+	f.seedAcquire()
 	if f.agentDir == "" {
 		return ""
 	}

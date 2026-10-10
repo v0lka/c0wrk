@@ -49,9 +49,17 @@ func DefaultBrowserOpener(authURL string) error {
 	default:
 		command, args = "xdg-open", []string{authURL}
 	}
-	if err := exec.CommandContext(context.Background(), command, args...).Start(); err != nil {
+	cmd := exec.CommandContext(context.Background(), command, args...)
+	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("providerauth: opening the system browser (%s): %w", command, err)
 	}
+	// Reap the launcher child (xdg-open / open / rundll32): Start must be
+	// followed by Wait (or Release) or the exited child stays a zombie in the
+	// process table for the app's lifetime — one leaked entry per sign-in.
+	// The Wait goroutine detaches on purpose: the browser launcher must not
+	// be killed when the sign-in flow returns (the context has no deadline
+	// and no cancellation), and its error carries no actionable signal.
+	go func() { _ = cmd.Wait() }()
 	return nil
 }
 

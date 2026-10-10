@@ -28,11 +28,42 @@ type App struct {
 	ctx context.Context
 	*backend.FrontendAPI
 
+	// ── Cross-goroutine lifecycle state ─────────────────────────────────
+	//
+	// ctx, FrontendAPI (above), app, logger, db, sessionLogger and
+	// shutdownHardDeadline are written by the Wails OnStartup goroutine while
+	// Startup runs. They are read concurrently by:
+	//   - the second-instance relay goroutine (Wails starts it inside
+	//     NewFrontend, before the OnStartup goroutine is even spawned — so a
+	//     relay delivered during this instance's own startup reads these
+	//     fields with no happens-before edge to the writes), and
+	//   - the Wails binding-dispatch goroutines (App methods like
+	//     PickDirectory / ConfirmExit / PersistWindowBounds run there, and
+	//     each promoted FrontendAPI RPC re-reads the embedded pointer), and
+	//   - the close/quit path (OnBeforeClose and Shutdown run on the platform
+	//     main goroutine and can fire while a first-run Startup is still
+	//     mid-flight, minutes from its last field write).
+	//
+	// stateMu provides the happens-before edge: every write goes through a
+	// set* helper that takes it for writing, and every read outside the
+	// OnStartup goroutine goes through the matching accessor (Context, log,
+	// application, database, sessionLog, frontendAPI, shutdownDeadline),
+	// which takes it for reading. The accessors are leaf helpers — they
+	// never call each other and never run caller code under the lock, so
+	// the critical sections are single field loads/stores and cannot
+	// deadlock. Reads on the OnStartup goroutine itself (the Startup phases)
+	// are ordered by program order and do not need the lock, but they use
+	// the accessors anyway so no future caller has to know which goroutine
+	// it is on.
+	stateMu sync.RWMutex
+
 	// app is the central ViewModel (owns builder, manager, persister).
 	// Kept here for Startup/Shutdown orchestration that references it directly.
+	// Guarded by stateMu — see the block comment above.
 	app *backend.Application
 
 	// logger used during Startup before FrontendAPI is constructed.
+	// Guarded by stateMu — see the block comment above.
 	logger *slog.Logger
 
 	// wailsLogger bridges Wails internal messages (including Fatal/Error)
@@ -40,11 +71,11 @@ type App struct {
 	// messages are also duplicated to the session log.
 	wailsLogger *wailsLogAdapter
 
-	db *sql.DB // shared SQLite connection; lifecycle: opened in Startup, closed in Shutdown
+	db *sql.DB // shared SQLite connection; opened in Startup, closed in Shutdown. Guarded by stateMu.
 
 	// sessionLogger is stored so Shutdown can close it on early Startup exits
 	// (e.g. when tool installation fails and Startup returns before
-	// FrontendAPI is wired).
+	// FrontendAPI is wired). Guarded by stateMu.
 	sessionLogger *logger.SessionLogger
 
 	// Wails event-listener infrastructure (used only in startup.go listeners)
@@ -125,6 +156,7 @@ type App struct {
 	// to defaultShutdownHardDeadline. The shutdown watchdog (see
 	// shutdown_watchdog.go) enforces it: on expiry the process logs at Error
 	// and exits, so a stuck goroutine can never keep the app alive on quit.
+	// Guarded by stateMu — see the block comment above.
 	shutdownHardDeadline time.Duration
 
 	// shutdownExitFn, when non-nil, replaces the forced-exit call in the
@@ -133,6 +165,24 @@ type App struct {
 	// Production wiring keeps it nil, where the watchdog calls
 	// crashlog.ForceExit(0) (marker removal + exit banner + os.Exit).
 	shutdownExitFn func(code int)
+
+	// windowGeomCache snapshots the window geometry captured from the LIVE
+	// window by the close guard (OnBeforeClose → captureWindowGeometry). On
+	// Linux, Wails destroys the window before the OnShutdown hook runs, so
+	// Shutdown persists this snapshot instead of reading the (already
+	// destroyed) window — a post-destroy read returns the creation default
+	// and clobbers the value PersistWindowBounds saved on resize. Atomic
+	// pointer: captured on the platform close-handler goroutine, consumed by
+	// Shutdown on the main goroutine.
+	windowGeomCache atomic.Pointer[WindowBounds]
+
+	// windowGetSizeFn / windowIsMaximisedFn replace wailsRuntime.WindowGetSize
+	// and wailsRuntime.WindowIsMaximised in the geometry capture/persist
+	// paths (the per-call seam pattern of windowRaiseFn et al. — the runtime
+	// calls fatal on a context no live runtime owns). Production keeps them
+	// nil.
+	windowGetSizeFn     func(ctx context.Context) (int, int)
+	windowIsMaximisedFn func(ctx context.Context) bool
 
 	// embeddedLLMStopFn, when non-nil, replaces the backend embedded-LLM
 	// server stop in stopEmbeddedLLM (the Shutdown teardown of the supervised
@@ -208,7 +258,10 @@ type App struct {
 // FrontendAPI is initialized as a non-nil zero-value so that early frontend
 // RPC calls (before Startup finishes) hit the per-method nil guards and
 // return proper errors instead of panicking on a nil pointer dereference.
-// Startup replaces the pointer with a fully-wired FrontendAPI.
+// Startup INITIALIZES this seed IN PLACE (buildFrontendAPI → Init); the
+// pointer itself is published exactly once here and never reassigned, so the
+// Wails binding dispatch's per-call dereference can never race a swap
+// (review finding #52).
 func NewApp() *App {
 	return &App{
 		FrontendAPI: &backend.FrontendAPI{},
@@ -227,7 +280,7 @@ func (a *App) SetWailsLogger(wl *wailsLogAdapter) {
 // memory. This must remain on App (not FrontendAPI) because it requires the
 // Wails context.
 func (a *App) PickDirectory() (string, error) {
-	if a.ctx == nil {
+	if a.wailsCtx() == nil {
 		return "", errors.New("PickDirectory: application context is not initialized")
 	}
 
@@ -242,7 +295,7 @@ func (a *App) PickDirectory() (string, error) {
 		options.DefaultDirectory = last.LastDirectory
 	}
 
-	dir, err := wailsRuntime.OpenDirectoryDialog(a.ctx, options)
+	dir, err := wailsRuntime.OpenDirectoryDialog(a.wailsCtx(), options)
 	if err != nil {
 		return "", err
 	}
@@ -274,7 +327,7 @@ func attachmentFilterPattern() string {
 // On cancel, OpenMultipleFilesDialog returns an empty slice and a nil error;
 // that ([]string{}, nil) is returned as-is.
 func (a *App) PickAttachmentFiles() ([]string, error) {
-	if a.ctx == nil {
+	if a.wailsCtx() == nil {
 		return nil, errors.New("PickAttachmentFiles: application context is not initialized")
 	}
 
@@ -291,7 +344,7 @@ func (a *App) PickAttachmentFiles() ([]string, error) {
 	// in another Cocoa-backed webview shell). This is why images could not
 	// be selected at all in the attach dialog. The "Supported documents" and
 	// "Images" filters already cover every extension the backend accepts.
-	return wailsRuntime.OpenMultipleFilesDialog(a.ctx, wailsRuntime.OpenDialogOptions{
+	return wailsRuntime.OpenMultipleFilesDialog(a.wailsCtx(), wailsRuntime.OpenDialogOptions{
 		Title: "Attach files",
 		Filters: []wailsRuntime.FileFilter{
 			{
@@ -316,7 +369,7 @@ func (a *App) PickAttachmentFiles() ([]string, error) {
 // On cancel, OpenFileDialog returns ("", nil) — returned as-is so the frontend
 // can distinguish "user cancelled" (empty path, no error) from a failure.
 func (a *App) PickStudyDocument() (string, error) {
-	if a.ctx == nil {
+	if a.wailsCtx() == nil {
 		return "", errors.New("PickStudyDocument: application context is not initialized")
 	}
 
@@ -324,7 +377,7 @@ func (a *App) PickStudyDocument() (string, error) {
 	// (a "*" pattern resolves to a dynamic UTType on macOS and corrupts the
 	// panel's content-type filter), and the supported-documents set already
 	// covers every format the study flow can convert and read.
-	return wailsRuntime.OpenFileDialog(a.ctx, wailsRuntime.OpenDialogOptions{
+	return wailsRuntime.OpenFileDialog(a.wailsCtx(), wailsRuntime.OpenDialogOptions{
 		Title: "Study a local document",
 		Filters: []wailsRuntime.FileFilter{
 			{
@@ -351,11 +404,11 @@ func (a *App) PickStudyDocument() (string, error) {
 // underlying import functions are not FrontendAPI methods precisely so the
 // binding generator never publishes a path-taking RPC to the renderer.
 func (a *App) PickAndImportThemes() ([]backend.ThemeImportResult, error) {
-	if a.ctx == nil {
+	if a.wailsCtx() == nil {
 		return nil, errors.New("PickAndImportThemes: application context is not initialized")
 	}
 
-	paths, err := wailsRuntime.OpenMultipleFilesDialog(a.ctx, wailsRuntime.OpenDialogOptions{
+	paths, err := wailsRuntime.OpenMultipleFilesDialog(a.wailsCtx(), wailsRuntime.OpenDialogOptions{
 		Title: "Import Themes",
 		Filters: []wailsRuntime.FileFilter{
 			{
@@ -377,40 +430,141 @@ func (a *App) PickAndImportThemes() ([]backend.ThemeImportResult, error) {
 	// auto-bound to the renderer; a path-taking RPC must not be callable
 	// from compromised renderer JS). The picker above is the sole path
 	// source.
-	return backend.ImportThemesFromPaths(a.FrontendAPI, paths), nil
+	return backend.ImportThemesFromPaths(a.frontendAPI(), paths), nil
+}
+
+// setShutdownHardDeadline records the configured hard deadline (Startup only).
+func (a *App) setShutdownHardDeadline(d time.Duration) {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	a.shutdownHardDeadline = d
 }
 
 // shutdownDeadline returns the effective hard deadline for the Shutdown
 // teardown: the value Startup recorded from shutdown.hardDeadline, or
 // defaultShutdownHardDeadline when unset (0) or Startup never got that far.
 func (a *App) shutdownDeadline() time.Duration {
+	a.stateMu.RLock()
+	defer a.stateMu.RUnlock()
 	if a.shutdownHardDeadline > 0 {
 		return a.shutdownHardDeadline
 	}
 	return defaultShutdownHardDeadline
 }
 
+// setLogger records the active logger (Startup only).
+func (a *App) setLogger(log *slog.Logger) {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	a.logger = log
+}
+
+// setSessionLogger records the session log handle (Startup only).
+func (a *App) setSessionLogger(l *logger.SessionLogger) {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	a.sessionLogger = l
+}
+
+// sessionLog returns the session log handle for the close path, or nil when
+// Startup has not opened (or has already swapped) one.
+func (a *App) sessionLog() *logger.SessionLogger {
+	a.stateMu.RLock()
+	defer a.stateMu.RUnlock()
+	return a.sessionLogger
+}
+
+// setContext records the Wails context (Startup only).
+func (a *App) setContext(ctx context.Context) {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	a.ctx = ctx
+}
+
+// wailsCtx returns the Wails application context, or nil before Startup
+// bound it (or after a test built the App without a lifecycle). It is the
+// locked read of the Wails runtime context, deliberately UNexported: every
+// exported App method is promoted onto the Wails binding surface and becomes
+// renderer-callable, and this accessor is internal plumbing (the context
+// marshals to an empty object — harmless but pointless to expose).
+// Cross-goroutine readers — the second-instance relay, binding-dispatch
+// goroutines, the close/quit path — must use this instead of touching a.ctx
+// directly.
+func (a *App) wailsCtx() context.Context {
+	a.stateMu.RLock()
+	defer a.stateMu.RUnlock()
+	return a.ctx
+}
+
+// setDatabase records the shared SQLite connection (Startup only).
+func (a *App) setDatabase(db *sql.DB) {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	a.db = db
+}
+
+// database returns the shared SQLite connection for the close path, or nil
+// before Startup opened it.
+func (a *App) database() *sql.DB {
+	a.stateMu.RLock()
+	defer a.stateMu.RUnlock()
+	return a.db
+}
+
+// setApplication records the backend Application (Startup only).
+func (a *App) setApplication(app *backend.Application) {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	a.app = app
+}
+
+// application returns the backend Application, or nil before Startup built
+// it. Cross-goroutine readers (the close guard, Shutdown) must use this
+// instead of touching a.app directly.
+func (a *App) application() *backend.Application {
+	a.stateMu.RLock()
+	defer a.stateMu.RUnlock()
+	return a.app
+}
+
+// frontendAPI returns the live FrontendAPI. Never nil: NewApp seeds a
+// non-nil zero-value shell so early RPCs hit the per-method guards. The
+// embedded pointer is published exactly once (NewApp) and startup INITIALIZES
+// that seed in place (buildFrontendAPI → Init) — it is never reassigned — so
+// the Wails binding dispatch's per-call dereference of the embedded field can
+// never race a swap (review finding #52). The zero-value shell has no wiring —
+// callers that need live state must treat it accordingly (the Lifecycle
+// accessors guard internally).
+func (a *App) frontendAPI() *backend.FrontendAPI {
+	a.stateMu.RLock()
+	defer a.stateMu.RUnlock()
+	return a.FrontendAPI
+}
+
 // log returns the instance logger, falling back to slog.Default() when nil.
 func (a *App) log() *slog.Logger {
-	if a.logger != nil {
-		return a.logger
+	a.stateMu.RLock()
+	log := a.logger
+	a.stateMu.RUnlock()
+	if log != nil {
+		return log
 	}
 	return slog.Default()
 }
 
 // emit dispatches a Wails event. Tests can inject a fake bus by setting
 // a.wailsEmit; production code uses wailsRuntime.EventsEmit. Callers must not
-// invoke this before Startup binds a.ctx (or before a.wailsEmit is set in tests).
+// invoke this before Startup binds a.wailsCtx() (or before a.wailsEmit is set in tests).
 func (a *App) emit(eventName string, optionalData ...any) {
 	if a.wailsEmit != nil {
 		a.wailsEmit(eventName, optionalData...)
 		return
 	}
-	if a.ctx == nil {
+	if a.wailsCtx() == nil {
 		a.log().Warn("emit called with nil ctx, event dropped", "event", eventName)
 		return
 	}
-	wailsRuntime.EventsEmit(a.ctx, eventName, optionalData...)
+	wailsRuntime.EventsEmit(a.wailsCtx(), eventName, optionalData...)
 }
 
 // showWindow reveals AND raises the main window. Tests can inject a fake by
@@ -527,8 +681,9 @@ func (a *App) windowIsMinimised(ctx context.Context) bool {
 // resolvePendingMessage delegates to FrontendAPI.ResolvePendingMessage to mark
 // a persisted HITL message as resolved in the DB.
 func (a *App) resolvePendingMessage(sessionID, role, matchField, matchValue string, extra map[string]any) error {
-	if a.FrontendAPI == nil {
+	fa := a.frontendAPI()
+	if fa == nil {
 		return nil
 	}
-	return a.ResolvePendingMessage(sessionID, role, matchField, matchValue, extra)
+	return fa.ResolvePendingMessage(sessionID, role, matchField, matchValue, extra)
 }

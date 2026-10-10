@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/v0lka/c0wrk/backend/config"
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // Manager provides high-level project lifecycle operations.
@@ -21,6 +22,35 @@ type Manager struct {
 	agentDir string // ~/.c0wrk
 	logger   *slog.Logger
 	mu       sync.RWMutex
+	// initErr is non-nil when the projects base directory could not be
+	// created as a REAL directory (a symlink or non-directory planted at any
+	// component of ~/.c0wrk/projects). Every operation fails closed while it
+	// is set: os.MkdirAll would silently follow the link and materialize
+	// project workspaces, session logs/dumps/temp and vector indexes inside
+	// the link target — outside ~/.c0wrk. Mirrors the loud agent-dir refusal
+	// in backend/config resolve.
+	initErr error
+}
+
+// storeOpTimeout bounds one ProjectStore round-trip. The store rides the
+// app's single shared SQLite connection pool; database/sql waits for a free
+// pooled connection with no deadline when the caller context carries none
+// (busy_timeout bounds only SQLite lock retry). Mirrors the session
+// package's restoreDBReadTimeout so a contended pool yields a prompt,
+// retryable error instead of an indefinitely parked RPC.
+const storeOpTimeout = 15 * time.Second
+
+// opCtx returns a bounded context for one store round-trip.
+func (m *Manager) opCtx() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), storeOpTimeout)
+}
+
+// checkReady reports the manager's initialization failure, if any.
+func (m *Manager) checkReady() error {
+	if m.initErr != nil {
+		return fmt.Errorf("projects directory unusable: %w", m.initErr)
+	}
+	return nil
 }
 
 // EnsureNoProject creates the No Project pseudo-project if it does not already exist.
@@ -32,10 +62,15 @@ type Manager struct {
 // subdirectory. Per-session workspaces live under <session-uuid>/workspace/
 // and are created lazily by the session manager.
 func (m *Manager) EnsureNoProject() (created bool, err error) {
+	if err := m.checkReady(); err != nil {
+		return false, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	proj, err := m.store.LoadProject(context.Background(), NoProjectID)
+	ctx, cancel := m.opCtx()
+	defer cancel()
+	proj, err := m.store.LoadProject(ctx, NoProjectID)
 	if err != nil {
 		return false, fmt.Errorf("checking No Project: %w", err)
 	}
@@ -64,7 +99,7 @@ func (m *Manager) EnsureNoProject() (created bool, err error) {
 	}
 	// Do not eagerly create the directory — per-session workspace
 	// creation will create parent directories lazily via MkdirAll.
-	if err := m.store.SaveProject(context.Background(), info); err != nil {
+	if err := m.store.SaveProject(ctx, info); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -80,16 +115,24 @@ func NewManager(store ProjectStore, agentDir string, logger *slog.Logger) *Manag
 	// creation (internal workspaces, session directories) can proceed
 	// without the caller needing to manage directory layout.
 	projectsDir := config.ProjectsDir(agentDir)
-	if err := os.MkdirAll(projectsDir, 0o755); err != nil {
-		if logger != nil {
-			logger.Warn("failed to create projects directory", "path", projectsDir, "error", err)
-		}
+	// MkdirAllReal creates only real directories: a dangling link, a
+	// non-directory component, or a link swapped into a created component is
+	// refused loudly and fail-closed — initErr makes every subsequent
+	// operation fail rather than write through it — while a pre-existing
+	// operator-symlinked tree resolves as intent rather than as a planted
+	// redirect of the project/session subtree writes (workspaces, session
+	// logs/dumps/temp/plans, the vector index).
+	initErr := safeio.MkdirAllReal(projectsDir, 0o755)
+	if initErr != nil && logger != nil {
+		logger.Error("projects directory is not a real directory — refusing to create or operate projects through it",
+			"path", projectsDir, "error", initErr)
 	}
 
 	return &Manager{
 		store:    store,
 		agentDir: agentDir,
 		logger:   logger,
+		initErr:  initErr,
 	}
 }
 
@@ -97,6 +140,9 @@ func NewManager(store ProjectStore, agentDir string, logger *slog.Logger) *Manag
 // If externalPath is empty, an internal workspace directory is created under the agentDir.
 // If externalPath is non-empty, the path is validated and used as-is (external project).
 func (m *Manager) CreateProject(name, externalPath string) (*ProjectInfo, error) {
+	if err := m.checkReady(); err != nil {
+		return nil, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -114,7 +160,11 @@ func (m *Manager) CreateProject(name, externalPath string) (*ProjectInfo, error)
 		// Internal project: create workspace directory under ~/.c0wrk/projects/<id>/Workspace
 		info.WorkspacePath = config.ProjectWorkspacePath(m.agentDir, id)
 		info.IsExternal = false
-		if err := os.MkdirAll(info.WorkspacePath, 0o755); err != nil {
+		// Real-directory creation: a dangling or swapped-in symlink at the
+		// workspace root fails instead of redirecting it (same
+		// directory-vector class as the projects root guarded in
+		// NewManager).
+		if err := safeio.MkdirAllReal(info.WorkspacePath, 0o755); err != nil {
 			return nil, fmt.Errorf("failed to create internal workspace directory: %w", err)
 		}
 	} else {
@@ -139,7 +189,9 @@ func (m *Manager) CreateProject(name, externalPath string) (*ProjectInfo, error)
 		info.IsExternal = true
 	}
 
-	if err := m.store.SaveProject(context.Background(), info); err != nil {
+	ctx, cancel := m.opCtx()
+	defer cancel()
+	if err := m.store.SaveProject(ctx, info); err != nil {
 		return nil, fmt.Errorf("failed to persist project: %w", err)
 	}
 
@@ -152,10 +204,15 @@ func (m *Manager) DeleteProject(id string) error {
 	if id == NoProjectID {
 		return errors.New("cannot delete the No Project pseudo-project")
 	}
+	if err := m.checkReady(); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	proj, err := m.store.LoadProject(context.Background(), id)
+	ctx, cancel := m.opCtx()
+	defer cancel()
+	proj, err := m.store.LoadProject(ctx, id)
 	if err != nil {
 		return fmt.Errorf("failed to load project for deletion: %w", err)
 	}
@@ -164,7 +221,7 @@ func (m *Manager) DeleteProject(id string) error {
 	}
 
 	// Delete from store first (FK cascade handles sessions+messages)
-	if err := m.store.DeleteProject(context.Background(), id); err != nil {
+	if err := m.store.DeleteProject(ctx, id); err != nil {
 		return fmt.Errorf("failed to delete project from store: %w", err)
 	}
 
@@ -193,21 +250,36 @@ func (m *Manager) RenameProject(id, name string) error {
 	if id == NoProjectID {
 		return errors.New("cannot rename the No Project pseudo-project")
 	}
+	if err := m.checkReady(); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.store.RenameProject(context.Background(), id, name)
+	ctx, cancel := m.opCtx()
+	defer cancel()
+	return m.store.RenameProject(ctx, id, name)
 }
 
 // ListProjects returns all projects ordered by last activity.
 func (m *Manager) ListProjects() ([]ProjectInfo, error) {
+	if err := m.checkReady(); err != nil {
+		return nil, err
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.store.ListProjects(context.Background())
+	ctx, cancel := m.opCtx()
+	defer cancel()
+	return m.store.ListProjects(ctx)
 }
 
 // GetProject returns a project by ID, or nil if not found.
 func (m *Manager) GetProject(id string) (*ProjectInfo, error) {
+	if err := m.checkReady(); err != nil {
+		return nil, err
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.store.LoadProject(context.Background(), id)
+	ctx, cancel := m.opCtx()
+	defer cancel()
+	return m.store.LoadProject(ctx, id)
 }

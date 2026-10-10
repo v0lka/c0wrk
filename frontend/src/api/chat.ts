@@ -2,7 +2,7 @@
 
 import { getApp } from './runtime'
 import { logger } from '@/lib/logger'
-import { isChatMessage, isTokenInfo, isArrayOf } from '@/types/guards'
+import { isChatMessage, isTokenInfo, isArrayOf, isObj } from '@/types/guards'
 import { isCompactionAvailability } from '@/types/events'
 import type { ChatMessage, TokenInfo, CompactionAvailability } from '@/types/models'
 
@@ -344,11 +344,65 @@ export interface PendingActionsResponse {
 // pending action legitimately produces null for that field. null/absent is
 // treated as "no pending actions of this kind" and normalized to [] by the
 // caller — rejecting it here would silently disable HITL reconciliation.
+// ELEMENT shapes are validated separately (guards below) and enforced by
+// per-element filtering in getPendingActions, so one malformed entry is
+// dropped without discarding the session's remaining pending prompts.
 function isPendingActionsResponse(d: unknown): boolean {
   if (typeof d !== 'object' || d === null) return false
   const o = d as Record<string, unknown>
   const kinds = [o.tool_confirms, o.step_limits, o.plan_approvals, o.ask_user, o.goal_proposals]
   return kinds.every(k => k === undefined || k === null || Array.isArray(k))
+}
+
+// --- Per-kind element guards (fields the reconciliation and the pending bar
+// read/render: ids, rendered strings, question options) ---
+
+function isPendingToolConfirm(v: unknown): v is PendingToolConfirm {
+  return isObj(v)
+    && typeof v.confirm_id === 'string'
+    && typeof v.tool === 'string'
+    && typeof v.args === 'string'
+}
+
+function isPendingStepLimit(v: unknown): v is PendingStepLimit {
+  return isObj(v)
+    && typeof v.request_id === 'string'
+    && typeof v.current_step === 'number'
+    && typeof v.max_steps === 'number'
+}
+
+function isPendingPlanApproval(v: unknown): v is PendingPlanApproval {
+  return isObj(v)
+    && typeof v.request_id === 'string'
+    && typeof v.plan_path === 'string'
+    && typeof v.plan_content === 'string'
+}
+
+function isPendingAskUser(v: unknown): v is PendingAskUser {
+  if (!isObj(v) || typeof v.request_id !== 'string' || !Array.isArray(v.questions)) return false
+  // The answer form renders every question + option; the Go producer rejects
+  // a question with zero options, so requiring >=1 well-formed option cannot
+  // reject a conforming payload.
+  return v.questions.every((q) =>
+    isObj(q)
+    && typeof q.id === 'string'
+    && typeof q.question === 'string'
+    && Array.isArray(q.options)
+    && q.options.every((opt) => isObj(opt) && typeof opt.label === 'string' && typeof opt.value === 'string'))
+}
+
+function isPendingGoalProposal(v: unknown): v is PendingGoalProposal {
+  return isObj(v)
+    && typeof v.request_id === 'string'
+    && typeof v.condition === 'string'
+    && typeof v.verify === 'string'
+}
+
+/** Filter one kind's array down to well-formed elements (null/absent → []),
+ *  so a single malformed entry is skipped instead of poisoning reconciliation. */
+function filterKind<T>(raw: unknown, guard: (v: unknown) => v is T): T[] {
+  if (!Array.isArray(raw)) return []
+  return raw.filter((el): el is T => guard(el))
 }
 
 /**
@@ -367,14 +421,18 @@ export async function getPendingActions(sessionId: string): Promise<PendingActio
       return null
     }
     // Normalize null/absent kinds to empty arrays (Go nil-slice → JSON null)
-    // so downstream `.map(...)` consumers never hit a null.
+    // and drop malformed ELEMENTS per kind (per-element fail-closed): the
+    // reconciliation maps confirm_id/request_id off every entry, so one
+    // malformed element must be skipped rather than breaking the whole
+    // session-load reconciliation (which would leave stale HITL prompts
+    // unresolved and the session appearing hung).
     const o = result as Record<string, unknown>
     return {
-      tool_confirms: (o.tool_confirms as PendingToolConfirm[] | undefined) ?? [],
-      step_limits: (o.step_limits as PendingStepLimit[] | undefined) ?? [],
-      plan_approvals: (o.plan_approvals as PendingPlanApproval[] | undefined) ?? [],
-      ask_user: (o.ask_user as PendingAskUser[] | undefined) ?? [],
-      goal_proposals: (o.goal_proposals as PendingGoalProposal[] | undefined) ?? [],
+      tool_confirms: filterKind<PendingToolConfirm>(o.tool_confirms, isPendingToolConfirm),
+      step_limits: filterKind<PendingStepLimit>(o.step_limits, isPendingStepLimit),
+      plan_approvals: filterKind<PendingPlanApproval>(o.plan_approvals, isPendingPlanApproval),
+      ask_user: filterKind<PendingAskUser>(o.ask_user, isPendingAskUser),
+      goal_proposals: filterKind<PendingGoalProposal>(o.goal_proposals, isPendingGoalProposal),
     }
   } catch (err) {
     logger.error('Failed to get pending actions:', err)

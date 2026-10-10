@@ -63,6 +63,8 @@ func TestListDirectory_GitIgnoreFailureDegrades(t *testing.T) {
 	}
 
 	f := &FrontendAPI{agentDir: base}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	captureMiscDiagnostics(t, f, miscExpectedDiagnostic{
 		message: "failed to list git-ignored paths; listing without ignore flags",
 		attrs:   map[string]string{"dir": ws, "error": "git ls-files failed: exit status 128"},
@@ -102,6 +104,8 @@ func TestListDirectory_NonRepoUnaffected(t *testing.T) {
 	}
 
 	f := &FrontendAPI{agentDir: base}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	f.activeProjectMu.Lock()
 	f.activeProjectID = "test-project"
 	f.activeProjectPath = ws

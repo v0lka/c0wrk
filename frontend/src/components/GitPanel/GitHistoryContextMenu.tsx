@@ -215,8 +215,11 @@ export function GitHistoryContextMenu({
   const [creatingTag, setCreatingTag] = useState(false)
   const [tagError, setTagError] = useState<string | null>(null)
 
-  // Hard-reset confirmation dialog state.
+  // Hard-reset confirmation dialog state. The target SHA is captured into
+  // local state when the dialog opens because `onClose()` clears the parent's
+  // context-menu state and with it the `sha` prop before the user confirms.
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false)
+  const [resetTargetSha, setResetTargetSha] = useState('')
   const [resetting, setResetting] = useState(false)
   const [resetError, setResetError] = useState<string | null>(null)
 
@@ -291,8 +294,11 @@ export function GitHistoryContextMenu({
     (mode: 'soft' | 'mixed' | 'hard') => {
       onClose()
       // Hard reset is destructive — route through the confirmation dialog.
+      // Capture the SHA first: onClose() nulls the parent's context-menu
+      // state, so the `sha` prop is no longer valid once the dialog opens.
       if (mode === 'hard') {
         setResetError(null)
+        setResetTargetSha(sha)
         setResetConfirmOpen(true)
         return
       }
@@ -318,8 +324,8 @@ export function GitHistoryContextMenu({
     const outcome = await runGitOperation({
       projectId,
       kind: 'reset',
-      label: `Reset ${branchLabel} to ${sha.slice(0, 7)} (hard)`,
-      fn: () => resetToCommit(sha, 'hard'),
+      label: `Reset ${branchLabel} to ${resetTargetSha.slice(0, 7)} (hard)`,
+      fn: () => resetToCommit(resetTargetSha, 'hard'),
     })
     setResetting(false)
     if (outcome.ok) {
@@ -328,7 +334,7 @@ export function GitHistoryContextMenu({
     } else {
       setResetError(outcome.error)
     }
-  }, [sha, onAfterMutation, branchLabel])
+  }, [resetTargetSha, onAfterMutation, branchLabel])
 
   // ── Per-tag actions ────────────────────────────────────────────────
   const handlePushTag = useCallback(
@@ -580,7 +586,9 @@ export function GitHistoryContextMenu({
               This will reset{' '}
               <span className="font-mono text-foreground">{branchLabel}</span>{' '}
               to commit{' '}
-              <span className="font-mono text-foreground">{sha.slice(0, 7)}</span>{' '}
+              <span className="font-mono text-foreground">
+                {resetTargetSha.slice(0, 7)}
+              </span>{' '}
               and <strong>permanently discard</strong> all uncommitted changes
               (staged and unstaged). This cannot be undone.
             </DialogDescription>

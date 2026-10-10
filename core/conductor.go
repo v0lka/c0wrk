@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -22,6 +21,7 @@ import (
 	"github.com/v0lka/sp4rk/agents"
 	"github.com/v0lka/sp4rk/llm"
 	"github.com/v0lka/sp4rk/orchestration"
+	"github.com/v0lka/sp4rk/safeio"
 	"github.com/v0lka/sp4rk/skills"
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
@@ -37,17 +37,16 @@ type trajectoryHolder struct {
 func (h *trajectoryHolder) Sync(steps []agent.Step) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	// The trajectory never shrinks: a subagent that inherits this holder
-	// through the context runs its own executor, which syncs that executor's
-	// step list here at the top of every loop iteration. The subagent's list is
-	// its OWN (short) trajectory — it starts empty and grows to a step or two —
-	// while the parent conductor has already synced the completed run's steps.
-	// Letting a shorter sync replace the parent's longer one would erase the
-	// task checkpoint the parent persisted — violating the "the persisted
-	// trajectory never goes backwards" invariant and losing the parent's work on
-	// shutdown/restart. Guarding against EMPTY syncs alone is not enough: the
-	// subagent's first non-empty sync (a single step) would still shrink the
-	// held trajectory, so the guard is monotonic — any sync shorter than what is
+	// The trajectory never shrinks. Subagent executors get their OWN holder
+	// (see subagentCtx / runRedelegBlocking), so under normal wiring only the
+	// parent conductor syncs here; this length-monotonic guard stays as
+	// defense in depth: if any foreign executor ever reaches this holder with
+	// a shorter list (a mis-wired context, a resumed seed narrower than the
+	// held trajectory), the sync is ignored rather than erasing the task
+	// checkpoint the parent persisted — the persisted trajectory must never go
+	// backwards. Guarding against EMPTY syncs alone is not enough: a first
+	// non-empty foreign sync (a single step) would still shrink the held
+	// trajectory, so the guard is monotonic — any sync shorter than what is
 	// already held is ignored.
 	if len(steps) < len(h.steps) {
 		return
@@ -448,6 +447,13 @@ type conductorDeps struct {
 	// executor receives it through ConductorConfig.ToolCallTimeout. 0 disables
 	// the bound. Mirrors the Orchestrator's config.ToolCallTimeout.
 	toolCallTimeout time.Duration
+
+	// toolCallTimeoutExempt mirrors OrchestratorConfig.ToolCallTimeoutExemptTools:
+	// the ceiling's exempt tool-NAME set. nil keeps sp4rk's built-in default
+	// exempt set; a non-nil (possibly empty) slice replaces it wholesale — on
+	// the main executor via ConductorConfig.ToolCallTimeoutExemptTools and on
+	// every subagent executor via SetToolCallTimeoutExempt in configureExecutor.
+	toolCallTimeoutExempt []string
 
 	// lifecycle is the inline plan-step lifecycle tracker. It is created in
 	// RunConductor (from emitter + blackboard) and threaded in here so the
@@ -1525,6 +1531,18 @@ func subagentCtx(ctx context.Context) context.Context {
 	// "Available Subagents"/"Requested Subagents" prompt sections (ADR-021 §4).
 	ctx = WithAvailableAgents(ctx, nil)
 	ctx = WithUserAgents(ctx, nil)
+	// Detach the trajectory store: the parent holder backs the task checkpoint
+	// (the persisted trajectory seeded into resumeSteps and the reflect tool's
+	// trajectory scope) and is synced by whichever executor holds the context
+	// — the sp4rk executor calls Sync(its own steps) at the top of every loop
+	// iteration. A subagent inheriting the parent holder would sync its own
+	// (unrelated) step list into it, and because Sync's guard is
+	// length-monotonic, a longer subagent run would REPLACE the parent's
+	// trajectory and suppress the parent's later syncs — corrupting the task
+	// checkpoint. Subagent steps are transient (never part of the parent task
+	// checkpoint), so every subagent executor gets a fresh in-memory holder it
+	// cannot clobber the parent's with.
+	ctx = agent.WithTrajectoryStore(ctx, &trajectoryHolder{})
 	return ctx
 }
 
@@ -1633,6 +1651,46 @@ func (l *conductorLauncher) runRegularBlocking(ctx context.Context, tasks []tool
 	return out
 }
 
+// redelegTaskCtx builds the per-task context for a RE-delegating subagent.
+// This path bypasses subagentCtx (it must keep the delegation machinery the
+// child needs), so it must explicitly clear everything a subagent must not
+// inherit from the delegating executor: the Conductor-only subagent roster
+// (ADR-021 §4), the goal-loop state (buildSystemPrompt would otherwise replace
+// the normal completion directive with the goal-turn protocol naming
+// declare_goal_status — a tool resolveTaskTools strips from every subagent
+// toolset), the goal-loop sinks, and the parent's trajectory store (a foreign
+// executor must never sync into the parent task checkpoint — see subagentCtx).
+// The child delegation registry/launcher ARE injected: re-delegation is the
+// one capability this subagent keeps.
+func (l *conductorLauncher) redelegTaskCtx(ctx context.Context, childReg *tools.DelegationRegistry) context.Context {
+	taskCtx := tools.WithDelegationRegistry(ctx, childReg)
+	taskCtx = tools.WithDelegationLauncher(taskCtx, l)
+	// Also inject into the sp4rk-level context key so the sp4rk Conductor's
+	// finish guard (executor.SetFinishGuard) can find the child registry and
+	// reject finish while sub-delegations are still pending.
+	taskCtx = orchestration.WithDelegationRegistry(taskCtx, childReg)
+	// Clear the Conductor-only subagent roster so the redelegating subagent
+	// does not inherit the parent's "Available Subagents"/"Requested Subagents"
+	// prompt sections (ADR-021 §4).
+	taskCtx = WithAvailableAgents(taskCtx, nil)
+	taskCtx = WithUserAgents(taskCtx, nil)
+	// Clear the goal-loop state (class 3 of subagentCtx): the goal-turn
+	// completion directive names declare_goal_status, which this subagent's
+	// toolset does not contain.
+	taskCtx = WithGoalState(taskCtx, nil)
+	// Clear the goal-loop sinks: a redelegating subagent holds
+	// delegate/cancel_delegation but must still never write goal-status or
+	// verification verdicts (resolveTaskTools strips the goal tools from its
+	// toolset; this is the second layer).
+	taskCtx = tools.WithGoalStatusSink(taskCtx, nil)
+	taskCtx = tools.WithVerificationSink(taskCtx, nil)
+	// Detach the trajectory store (see subagentCtx): without this override the
+	// redelegating subagent would sync its own step list into the delegating
+	// executor's holder and could overwrite the parent task checkpoint.
+	taskCtx = agent.WithTrajectoryStore(taskCtx, &trajectoryHolder{})
+	return taskCtx
+}
+
 func (l *conductorLauncher) runRedelegBlocking(ctx context.Context, t tools.DelegationTask, registry *tools.DelegationRegistry) tools.DelegationResult {
 	if registry.Depth() >= l.deps.maxRedelegDepth {
 		err := fmt.Errorf("delegation %q: allow_redelegate requested at depth %d but cap is %d", t.ID, registry.Depth(), l.deps.maxRedelegDepth)
@@ -1657,25 +1715,7 @@ func (l *conductorLauncher) runRedelegBlocking(ctx context.Context, t tools.Dele
 			wireDelegationSpecSink(childReg, l.unitLedger(), t.ID, tid, l.deps.taskStore, l.deps.logger)
 		}
 	}
-	taskCtx := tools.WithDelegationRegistry(ctx, childReg)
-	taskCtx = tools.WithDelegationLauncher(taskCtx, l)
-	// Also inject into the sp4rk-level context key so the sp4rk Conductor's
-	// finish guard (executor.SetFinishGuard) can find the child registry and
-	// reject finish while sub-delegations are still pending.
-	taskCtx = orchestration.WithDelegationRegistry(taskCtx, childReg)
-	// Clear the Conductor-only subagent roster so the redelegating subagent
-	// does not inherit the parent's "Available Subagents"/"Requested Subagents"
-	// prompt sections (ADR-021 §4). This path bypasses subagentCtx (it must
-	// keep delegation machinery to re-inject the child registry), so the roster
-	// is cleared explicitly here.
-	taskCtx = WithAvailableAgents(taskCtx, nil)
-	taskCtx = WithUserAgents(taskCtx, nil)
-	// Clear the goal-loop sinks here for the same reason: a redelegating
-	// subagent holds delegate/cancel_delegation but must still never write
-	// goal-status or verification verdicts (resolveTaskTools strips the goal
-	// tools from its toolset; this is the second layer).
-	taskCtx = tools.WithGoalStatusSink(taskCtx, nil)
-	taskCtx = tools.WithVerificationSink(taskCtx, nil)
+	taskCtx := l.redelegTaskCtx(ctx, childReg)
 
 	// Build the subagent task. The finish guard in the sp4rk Conductor
 	// (SetFinishGuard) rejects finish with a nudge while pending async
@@ -2380,6 +2420,13 @@ func (l *conductorLauncher) configureExecutor(executor *agent.Executor) {
 	if l.deps.toolCallTimeout > 0 {
 		executor.SetToolCallTimeout(l.deps.toolCallTimeout)
 	}
+	// The ceiling's exempt tool-name set: a nil slice keeps sp4rk's built-in
+	// default exempt set; a configured slice replaces it wholesale, so a
+	// host-exempted long-running tool (e.g. an MCP-backed tool with no
+	// internal timeout) survives the ceiling here too.
+	if l.deps.toolCallTimeoutExempt != nil {
+		executor.SetToolCallTimeoutExempt(l.deps.toolCallTimeoutExempt...)
+	}
 	// Mechanical edit verification (executor.verify_on_edit): subagent
 	// executors that perform file edits get the same hook as the main
 	// executor. RunConductor nils deps.verifyOnEdit for specialized goal
@@ -2506,14 +2553,24 @@ func (p *conductorPublisher) Publish(ctx context.Context, tasks []tools.PlanTask
 	if p.plansDir == "" {
 		return "", errors.New("declare_plan: session plans directory not configured")
 	}
-	if err := os.MkdirAll(p.plansDir, 0o755); err != nil {
+	// MkdirAllRealWithin creates the plans directory as real directories and
+	// REFUSES any pre-existing link in the path that resolves OUTSIDE the
+	// session directory (the plans dir's parent): a planted
+	// …/<sid>/plans → <outside> link fails closed instead of redirecting the
+	// plan write out of ~/.c0wrk (review finding #47). Links resolving
+	// inside the session tree — and a symlinked session dir itself — remain
+	// operator intent; a dangling or swapped-in link still fails as before.
+	if err := safeio.MkdirAllRealWithin(filepath.Dir(p.plansDir), p.plansDir, 0o755); err != nil {
 		return "", fmt.Errorf("declare_plan: failed to create plans directory: %w", err)
 	}
 	md := SerializePlan(plan)
 	p.lastMD = md
 	suffix := RandomSuffix()
 	path := filepath.Join(p.plansDir, fmt.Sprintf("plan_%s.md", suffix))
-	if err := os.WriteFile(path, []byte(md), 0o644); err != nil {
+	// WriteFileAtomic writes via a same-directory temp + rename and refuses
+	// following a symlink planted at the final name, so the random plan file
+	// can never land outside the (already real) plans directory.
+	if err := safeio.WriteFileAtomic(path, []byte(md), 0o644); err != nil {
 		return "", fmt.Errorf("declare_plan: failed to write plan file: %w", err)
 	}
 
@@ -2774,6 +2831,18 @@ func RunConductor(
 	deps.lifecycle = inlineLifecycle
 
 	registry := tools.NewDelegationRegistry()
+	// verify-on-edit is suppressed for specialized passes (goal derivation /
+	// goal verification / ask-user) — those override the system prompt and run
+	// with model-specific budgets; mechanical edit verification belongs to
+	// ordinary CODE-task execution only. This MUST happen before the launcher
+	// below is built: conductorLauncher holds deps by VALUE, so a suppression
+	// after the copy would disarm only the main executor's config and leave
+	// launcher.deps.verifyOnEdit armed — every subagent executor the launcher
+	// builds (configureExecutor) would still run the user-configured
+	// verification command during a specialized pass.
+	if deps.systemPromptOverride != nil {
+		deps.verifyOnEdit = nil
+	}
 	launcher := &conductorLauncher{deps: deps, bb: bb, planState: planState}
 	publisher := &conductorPublisher{emitter: deps.emitter, bb: bb, plansDir: plansDir, logger: deps.logger, planState: planState}
 
@@ -2885,16 +2954,6 @@ func RunConductor(
 	// checks — it is bounded exactly like a normal executor run.
 	maxSteps := complexity * stepsPerComplexity
 
-	// verify-on-edit is suppressed for specialized passes (goal derivation /
-	// goal verification / ask-user) — those override the system prompt and run
-	// with model-specific budgets; mechanical edit verification belongs to
-	// ordinary CODE-task execution only. Nilling deps.verifyOnEdit here (deps
-	// is a value copy) also disarms the subagent executors the launcher later
-	// builds from these deps.
-	if deps.systemPromptOverride != nil {
-		deps.verifyOnEdit = nil
-	}
-
 	cfg := orchestration.ConductorConfig{
 		LLM:                        callerForConductor(deps),
 		Tools:                      deps.toolExec,
@@ -2921,6 +2980,7 @@ func RunConductor(
 		PauseChecker:               deps.pauseChecker,
 		UserMessageSource:          deps.userMessageSource,
 		ToolCallTimeout:            deps.toolCallTimeout,
+		ToolCallTimeoutExemptTools: deps.toolCallTimeoutExempt,
 		VerifyOnEdit:               deps.verifyOnEdit,
 		VerifyOnEditMaxOutputChars: deps.verifyOnEditMaxOutputChars,
 		StopTools:                  deps.stopTools,
@@ -3050,35 +3110,36 @@ func (o *Orchestrator) runConductor(ctx context.Context, message string, bb orch
 // propose_goal tool can reach the desktop approval flow during derivation.
 func (o *Orchestrator) buildConductorDeps(conversationHistory []llm.Message, resumeSteps []agent.Step) conductorDeps {
 	return conductorDeps{
-		contextFactory:       o.contextFactory,
-		toolExec:             o.toolExec,
-		toolRegistry:         o.toolRegistry,
-		disabledTools:        o.disabledToolNames(),
-		llm:                  o.llm,
-		modelRegistry:        o.modelRegistry,
-		model:                o.currentModel(),
-		tokenCounter:         o.tokenCounter,
-		emitter:              o.emitter,
-		logger:               o.logger,
-		trackingCaller:       o.trackingCaller,
-		providerName:         o.providerName,
-		stepDumpTracker:      o.stepDumpTracker,
-		toolCache:            o.toolCache,
-		perToolTrunc:         o.perToolTrunc,
-		toolResultBudget:     o.toolResultBudget,
-		circuitBreaker:       o.circuitBreaker,
-		hitlHandler:          o.config.HITLHandler,
-		reflector:            o.reflector,
-		maxRedelegDepth:      o.config.MaxRedelegationDepth,
-		maxDepCtxChars:       o.config.MaxDependencyContextChars,
-		maxParallelSubagents: o.config.MaxParallelSubagents,
-		reasoningEffort:      o.currentReasoningEffort(),
-		preWarningPct:        o.config.PreWarningPercent,
-		toolCallTimeout:      o.config.ToolCallTimeout,
-		conversationHistory:  conversationHistory,
-		taskStore:            o.taskStore,
-		resumeSteps:          resumeSteps,
-		goalProposer:         o.goalProposer,
+		contextFactory:        o.contextFactory,
+		toolExec:              o.toolExec,
+		toolRegistry:          o.toolRegistry,
+		disabledTools:         o.disabledToolNames(),
+		llm:                   o.llm,
+		modelRegistry:         o.modelRegistry,
+		model:                 o.currentModel(),
+		tokenCounter:          o.tokenCounter,
+		emitter:               o.emitter,
+		logger:                o.logger,
+		trackingCaller:        o.trackingCaller,
+		providerName:          o.providerName,
+		stepDumpTracker:       o.stepDumpTracker,
+		toolCache:             o.toolCache,
+		perToolTrunc:          o.perToolTrunc,
+		toolResultBudget:      o.toolResultBudget,
+		circuitBreaker:        o.circuitBreaker,
+		hitlHandler:           o.config.HITLHandler,
+		reflector:             o.reflector,
+		maxRedelegDepth:       o.config.MaxRedelegationDepth,
+		maxDepCtxChars:        o.config.MaxDependencyContextChars,
+		maxParallelSubagents:  o.config.MaxParallelSubagents,
+		reasoningEffort:       o.currentReasoningEffort(),
+		preWarningPct:         o.config.PreWarningPercent,
+		toolCallTimeout:       o.config.ToolCallTimeout,
+		toolCallTimeoutExempt: o.config.ToolCallTimeoutExemptTools,
+		conversationHistory:   conversationHistory,
+		taskStore:             o.taskStore,
+		resumeSteps:           resumeSteps,
+		goalProposer:          o.goalProposer,
 		// agentResolver exposes the discovered Subagent Profiles to the
 		// Conductor context so buildSubAgentTask can apply a requested
 		// profile. Built from the agentManager; nil-safe when none configured

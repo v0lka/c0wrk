@@ -1,6 +1,7 @@
 package backend
 
 import (
+	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -52,6 +53,7 @@ func stripLineAnchor(p string) string {
 // must account for this — the project data dir is not a git repo and
 // git-based diff operations will fall back to the no-repo variant.
 func (f *FrontendAPI) resolveWorkspacePath(filePath string) (absPath, absRoot string, err error) {
+	f.seedAcquire()
 	f.activeProjectMu.RLock()
 	projectPath := f.activeProjectPath
 	projectID := f.activeProjectID
@@ -130,6 +132,7 @@ func resolveFileIcon(info os.FileInfo) (icon, color string) {
 // registered, the manager is unavailable, or the session belongs to a
 // different project.
 func (f *FrontendAPI) GetSessionWorkspace(sessionID string) (string, error) {
+	f.seedAcquire()
 	f.activeProjectMu.RLock()
 	activeProject := f.activeProjectPath
 	activeProjectID := f.activeProjectID
@@ -137,7 +140,34 @@ func (f *FrontendAPI) GetSessionWorkspace(sessionID string) (string, error) {
 
 	if sessionID != "" && f.app != nil {
 		if mgr := f.app.Manager(); mgr != nil {
-			if sess, ok := mgr.GetSession(sessionID); ok && sess != nil && sess.WorkspacePath != "" {
+			// Non-restoring lookups ONLY: GetSession here rebuilt a store-only
+			// session (full orchestrator build, fresh log/dump handles,
+			// managed-worktree re-provision) inside a pure path-lookup RPC on
+			// the session/project-switch hot path. WorkspacePathFor resolves
+			// the workspace for in-memory AND store-only sessions without any
+			// restore side effect; its contract requires the caller to bound
+			// the session-row read. The project ID for the membership check
+			// below comes from the store row, with a RESIDENT session's
+			// in-memory ProjectID as the fallback when the row is missing (a
+			// session never moves between projects, so both are
+			// authoritative).
+			ctx, cancel := context.WithTimeout(f.ctx(), terminalPathLookupTimeout)
+			ws, hasWS := mgr.WorkspacePathFor(ctx, sessionID)
+			var sessProjectID string
+			if hasWS && ws != "" && f.store != nil {
+				if info, err := f.store.LoadSession(ctx, sessionID); err == nil && info != nil {
+					sessProjectID = info.ProjectID
+				} else if pid, live := mgr.SessionProjectID(sessionID); live {
+					// Store row missing (best-effort SaveSession at creation
+					// never landed) but the session is RESIDENT: its in-memory
+					// ProjectID is authoritative, otherwise membership would
+					// degrade to the project-checkout fallback for a live
+					// session of the active project.
+					sessProjectID = pid
+				}
+			}
+			cancel()
+			if hasWS && ws != "" {
 				// Return the session workspace only if the session belongs to
 				// the ACTIVE project — membership is decided by project ID,
 				// never by comparing the workspace path to the project path:
@@ -154,12 +184,12 @@ func (f *FrontendAPI) GetSessionWorkspace(sessionID string) (string, error) {
 				// and @-file completions died until restart).
 				var belongsToActive bool
 				if activeProjectID == project.NoProjectID {
-					belongsToActive = sess.ProjectID == project.NoProjectID
+					belongsToActive = sessProjectID == project.NoProjectID
 				} else {
-					belongsToActive = sess.ProjectID == activeProjectID
+					belongsToActive = sessProjectID == activeProjectID
 				}
 				if belongsToActive || activeProject == "" {
-					return sess.WorkspacePath, nil
+					return ws, nil
 				}
 			}
 		}
@@ -259,24 +289,60 @@ func (f *FrontendAPI) GetGitStatus(dirPath string) (map[string]GitStatusEntry, e
 // The read goes through safeio, which refuses a non-regular file (a FIFO,
 // socket, device, or directory) instead of blocking the open forever: a
 // leftover named pipe at a path the viewer opens would otherwise hang this
-// synchronous RPC — and the UI waiting on it — indefinitely.
+// synchronous RPC — and the UI waiting on it — indefinitely. The size is
+// capped at maxViewerFileSize (the same 8 MiB the sibling data-URL path
+// enforces): the content crosses the IPC channel as one JSON string, and a
+// multi-GB file must fail with a user-visible error instead of exhausting
+// the Go process.
 func (f *FrontendAPI) ReadFile(filePath string) (string, error) {
 	absPath, err := f.resolveReadablePath(filePath)
 	if err != nil {
 		return "", err
 	}
 
-	content, err := safeio.ReadFile(absPath)
+	content, err := readCappedFile(absPath, maxViewerFileSize)
 	if err != nil {
-		return "", fmt.Errorf("failed to read file: %w", err)
+		return "", err
 	}
 
 	return string(content), nil
 }
 
+// readCappedFile reads absPath, rejecting files larger than maxSize with a
+// user-visible error BEFORE reading (the sibling readFileAsDataURL pattern):
+// the content crosses the IPC channel as one JSON string, and a multi-GB
+// file must fail fast instead of being buffered whole in the Go process.
+// The read itself still goes through safeio (FIFO/non-regular refusal).
+func readCappedFile(absPath string, maxSize int64) ([]byte, error) {
+	info, err := os.Stat(absPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to stat file: %w", err)
+	}
+	if info.Size() > maxSize {
+		return nil, fmt.Errorf("file too large (%d bytes, max %d bytes) — open it in an external editor instead", info.Size(), maxSize)
+	}
+	data, err := safeio.ReadFile(absPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read file: %w", err)
+	}
+	// The file may have grown between the stat above and the read (a build
+	// log or agent-written dump being appended to): enforce the cap against
+	// what was actually buffered, mirroring importThemeFromPath.
+	if int64(len(data)) > maxSize {
+		return nil, fmt.Errorf("file too large (%d bytes, max %d bytes) — open it in an external editor instead", len(data), maxSize)
+	}
+	return data, nil
+}
+
 // maxDataURLSize caps a data-URL payload at 8 MiB so a huge binary is never
 // streamed through the IPC channel in a single base64 string.
 const maxDataURLSize = 8 << 20
+
+// maxViewerFileSize caps the file-viewer ReadFile RPC at the same 8 MiB the
+// sibling data-URL path enforces: the content travels over the Wails IPC
+// channel as one JSON string, so an unbounded read means an unbounded
+// allocation in the Go process plus a giant IPC payload for the webview.
+const maxViewerFileSize = maxDataURLSize
 
 // imageMimeByExt pins the media type for the image formats the file viewer and
 // the markdown renderer must always render, independent of the host MIME
@@ -452,7 +518,12 @@ func (f *FrontendAPI) GetFileDiff(filePath string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to compute relative path: %w", err)
 	}
-	return workspace.GetFileDiffInRepo(f.ctx(), fileRoot, relPath)
+	// Bounded like every other local git spawn (gitCmdTimeout): f.ctx() is
+	// the application context — cancelled only at shutdown, no deadline — so
+	// a git wedged on a hung filesystem would park this RPC forever.
+	ctx, cancel := context.WithTimeout(f.ctx(), gitCmdTimeout)
+	defer cancel()
+	return workspace.GetFileDiffInRepo(ctx, fileRoot, relPath)
 }
 
 // ListDirectory returns the children of a directory. When recursive is false,
@@ -589,8 +660,31 @@ func (f *FrontendAPI) ListDirectory(dirPath string, recursive bool) ([]FileNode,
 // changes. For CODE mode, the directory is added to the existing project
 // watcher.
 func (f *FrontendAPI) WatchDirectory(dirPath string) error {
+	f.seedAcquire()
 	if f.isNoProject() {
-		return f.reScopeNoProjectWatcher(dirPath)
+		// dirPath is renderer-supplied: the No-Project re-scope would
+		// otherwise MkdirAll and re-root the watcher at ANY path (the path is
+		// trivially "under" itself once used as the root). Gate it exactly
+		// like ListDirectory: containment within the No-Project project dir
+		// plus the <sessionID>/workspace/... structural rule.
+		f.activeProjectMu.RLock()
+		projectPath := f.activeProjectPath
+		f.activeProjectMu.RUnlock()
+		if projectPath == "" {
+			return errors.New("no active project")
+		}
+		absDir, err := filepath.Abs(dirPath)
+		if err != nil {
+			return fmt.Errorf("invalid path: %w", err)
+		}
+		absRoot, err := filepath.Abs(projectPath)
+		if err != nil {
+			return fmt.Errorf("invalid workspace path: %w", err)
+		}
+		if err := config.ValidateNoProjectSessionPath(absRoot, absDir); err != nil {
+			return err
+		}
+		return f.reScopeNoProjectWatcher(absDir)
 	}
 	f.watcherMu.Lock()
 	defer f.watcherMu.Unlock()
@@ -624,22 +718,72 @@ func (f *FrontendAPI) UnwatchDirectory(_ string) error {
 }
 
 // WriteFile writes content to a file within the session's workspace.
+//
+// Trust boundary: resolveWorkspacePath is the containment decision — the
+// re-validation below checks the SAME root it admitted (the project
+// workspace, or the project data dir for session-infra paths), never
+// SessionWorkspaceRoot. The two roots disagree by construction: plans/ and
+// temp/ are siblings of <projects>/<pid>/Workspace (never descendants), and
+// an external project's workspace is its external checkout — re-checking
+// against SessionWorkspaceRoot rejected EVERY admitted session-infra and
+// external-project write, silently swallowing the plan editor's auto-save.
 func (f *FrontendAPI) WriteFile(sessionID, path, content string) error {
-	absPath, _, err := f.resolveWorkspacePath(path)
+	f.seedAcquire()
+	absPath, absRoot, err := f.resolveWorkspacePath(path)
 	if err != nil {
 		return err
+	}
+
+	// Defence in depth: re-verify containment against the admitted root.
+	if ok, err := config.IsWithinPath(absRoot, absPath); err != nil {
+		return fmt.Errorf("path %q: %w", path, err)
+	} else if !ok {
+		return fmt.Errorf("path %q is outside session workspace", path)
 	}
 
 	f.activeProjectMu.RLock()
 	projectID := f.activeProjectID
 	f.activeProjectMu.RUnlock()
-	if err := config.ValidateWithinSessionWorkspace(f.agentDir, projectID, sessionID, absPath); err != nil {
-		return fmt.Errorf("path %q is outside session workspace: %w", path, err)
+	// No Project keeps the per-session isolation on top of the project-dir
+	// boundary: a CHAT session writes only inside its own <sid>/workspace or
+	// its own plans//temp/ session-infra dirs — never another session's tree.
+	if projectID == project.NoProjectID {
+		wsErr := config.ValidateWithinSessionWorkspace(f.agentDir, projectID, sessionID, absPath)
+		infraOK := false
+		if sessionID != "" {
+			ownSession := config.SessionDir(f.agentDir, projectID, sessionID)
+			if ownOK, ownErr := config.IsWithinPath(ownSession, absPath); ownErr == nil && ownOK {
+				// IsSessionInfraPath takes the PROJECT dir (it validates the
+				// <sid>/plans|temp structure against it); the own-session
+				// containment above pins <sid> to the calling session.
+				infraOK = config.IsSessionInfraPath(config.ProjectDir(f.agentDir, projectID), absPath)
+			}
+		}
+		if wsErr != nil && !infraOK {
+			return fmt.Errorf("path %q is outside session workspace: %w", path, wsErr)
+		}
 	}
 
 	dir := filepath.Dir(absPath)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	// Symlink safety (review fix): MkdirAllReal creates only real directories
+	// — a dangling link at any component, or a link swapped into a component
+	// it creates, is refused — but it RESOLVES pre-existing links by design,
+	// so ordinary operator/system ancestors (macOS /var → /private/var, a
+	// symlinked home) keep working. A resolvable link SHIPPED inside the
+	// workspace is therefore refused HERE: every component of dir below the
+	// admitted root must be a real directory, so a planted link cannot steer
+	// the WRITE outside the workspace — the strict check runs before
+	// WriteFile (MkdirAllReal necessarily resolves first to have components
+	// to check, so a fresh sub-tree may exist inside the link's target before
+	// the refusal; the write itself never happens), and the no-follow open
+	// still protects the final component (unix; on Windows the safeio parity
+	// note applies, tempered by Windows requiring elevated/dev-mode rights to
+	// create symlinks).
+	if err := safeio.MkdirAllReal(dir, 0o755); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
-	return os.WriteFile(absPath, []byte(content), 0o644)
+	if err := safeio.CheckRealDirsBelow(absRoot, dir); err != nil {
+		return fmt.Errorf("path %q: %w", path, err)
+	}
+	return safeio.WriteFile(absPath, []byte(content), 0o644)
 }

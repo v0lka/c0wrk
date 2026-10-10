@@ -22,6 +22,8 @@ import (
 
 func TestPushBranch_NoProject(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	if _, err := f.PushBranch("main"); err == nil {
 		t.Fatal("expected error when no active project")
 	}
@@ -51,6 +53,8 @@ func TestPushBranch_UntrackedBranch_PublishesAndSetsUpstream(t *testing.T) {
 	commitFile(t, localDir, "b.txt", "b\n")
 
 	f := &FrontendAPI{activeProjectPath: localDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	var emitted string
 	f.emitEvent = func(name string, args ...any) {
 		if name == EventGitStatusChanged && len(args) >= 1 {
@@ -95,6 +99,8 @@ func TestPushBranch_TrackedBranch_PushesToConfiguredRemote(t *testing.T) {
 	gitOut(t, localDir, "push", "-u", "upstream", mainBranch)
 
 	f := &FrontendAPI{activeProjectPath: localDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 
 	// New local commit to push via the RPC.
 	commitFile(t, localDir, "b.txt", "b\n")
@@ -134,6 +140,8 @@ func TestPushBranch_UpstreamRefNameDiffers_PushesConfiguredRefspec(t *testing.T)
 	gitOut(t, localDir, "config", "branch.feature-x.merge", "refs/heads/feature")
 
 	f := &FrontendAPI{activeProjectPath: localDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	if _, err := f.PushBranch("feature-x"); err != nil {
 		t.Fatalf("PushBranch: %v", err)
 	}
@@ -171,6 +179,8 @@ func TestPush_EmptyRemote_UpstreamRefNameDiffers_PushesConfiguredRefspec(t *test
 	gitOut(t, localDir, "config", "branch.feature-x.merge", "refs/heads/feature")
 
 	f := &FrontendAPI{activeProjectPath: localDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	if _, err := f.Push("", nil); err != nil {
 		t.Fatalf("Push (empty remote): %v", err)
 	}
@@ -186,6 +196,8 @@ func TestPush_EmptyRemote_UpstreamRefNameDiffers_PushesConfiguredRefspec(t *test
 
 func TestCheckoutRemoteBranch_NoProject(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	if err := f.CheckoutRemoteBranch("origin/main"); err == nil {
 		t.Fatal("expected error when no active project")
 	}
@@ -232,6 +244,8 @@ func TestCheckoutRemoteBranch_CreatesTrackingBranchAndSwitches(t *testing.T) {
 	gitOut(t, localDir, "fetch", "origin")
 
 	f := &FrontendAPI{activeProjectPath: localDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	if err := f.CheckoutRemoteBranch("origin/feature/x"); err != nil {
 		t.Fatalf("CheckoutRemoteBranch: %v", err)
 	}
@@ -271,6 +285,8 @@ func TestCheckoutRemoteBranch_NestedBranchName(t *testing.T) {
 	gitOut(t, localDir, "fetch", "origin")
 
 	f := &FrontendAPI{activeProjectPath: localDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	// Local name is everything after the first '/'.
 	if err := f.CheckoutRemoteBranch("origin/feature/deep/x"); err != nil {
 		t.Fatalf("CheckoutRemoteBranch: %v", err)
@@ -289,6 +305,8 @@ func TestCheckoutRemoteBranch_NestedBranchName(t *testing.T) {
 
 func TestDeleteRemoteBranch_NoProject(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	if _, err := f.DeleteRemoteBranch("main", "origin"); err == nil {
 		t.Fatal("expected error when no active project")
 	}
@@ -319,6 +337,8 @@ func TestDeleteRemoteBranch_DeletesOnRemote(t *testing.T) {
 	gitOut(t, localDir, "push", "-u", "origin", "feature/x")
 
 	f := &FrontendAPI{activeProjectPath: localDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	var emitted string
 	f.emitEvent = func(name string, args ...any) {
 		if name == EventGitStatusChanged && len(args) >= 1 {
@@ -356,6 +376,8 @@ func TestDeleteRemoteBranch_DefaultRemoteOrigin(t *testing.T) {
 	gitOut(t, localDir, "push", "-u", "origin", "feature/x")
 
 	f := &FrontendAPI{activeProjectPath: localDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	// Empty remote falls back to "origin".
 	if _, err := f.DeleteRemoteBranch("feature/x", ""); err != nil {
 		t.Fatalf("DeleteRemoteBranch (default remote): %v", err)

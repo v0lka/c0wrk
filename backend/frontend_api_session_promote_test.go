@@ -79,14 +79,18 @@ func newPromoteTestAPI(t *testing.T) *promoteHarness {
 	}
 
 	events := &promoteEventCapture{}
-	api := &FrontendAPI{
+	// seedPublishedAPI performs Init's last publication step on this
+	// hand-built instance: the promotion path reads seed fields through
+	// guardless entries (stopSessionTerminal's seedAcquire), which block
+	// forever until the seed is published.
+	api := seedPublishedAPI(&FrontendAPI{
 		app:            &Application{manager: session.NewManager(nil, func(session.Event) {}, agentDir)},
 		store:          sessionStore,
 		projStore:      projectStore,
 		projectManager: projectManager,
 		agentDir:       agentDir,
 		emitEvent:      events.emit,
-	}
+	})
 	return &promoteHarness{
 		api:      api,
 		sessions: sessionStore,

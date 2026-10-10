@@ -94,6 +94,8 @@ func TestListFontFamilies_StubbedSeam(t *testing.T) {
 		f := &FrontendAPI{listFontFamiliesFn: func(monospace bool) ([]string, error) {
 			return []string{"DejaVu Sans", "Noto Sans", "Ubuntu"}, nil
 		}}
+		f.seedPublished.Store(true)
+		f.seedPublished.Store(true)
 		resp := f.ListFontFamilies(false)
 		if !resp.Available {
 			t.Fatal("ListFontFamilies() Available = false, want true")
@@ -108,6 +110,8 @@ func TestListFontFamilies_StubbedSeam(t *testing.T) {
 		f := &FrontendAPI{listFontFamiliesFn: func(monospace bool) ([]string, error) {
 			return nil, errors.New("fc-list not found in PATH: exec: not found")
 		}}
+		f.seedPublished.Store(true)
+		f.seedPublished.Store(true)
 		resp := f.ListFontFamilies(true)
 		if resp.Available {
 			t.Fatal("ListFontFamilies() Available = true, want false on reader error")
@@ -124,6 +128,8 @@ func TestListFontFamilies_StubbedSeam(t *testing.T) {
 		f := &FrontendAPI{listFontFamiliesFn: func(monospace bool) ([]string, error) {
 			return nil, nil
 		}}
+		f.seedPublished.Store(true)
+		f.seedPublished.Store(true)
 		resp := f.ListFontFamilies(false)
 		if !resp.Available {
 			t.Fatal("ListFontFamilies() Available = false, want true for a successful empty listing")
@@ -145,6 +151,8 @@ func TestListFontFamilies_StubbedSeam(t *testing.T) {
 			seen = append(seen, monospace)
 			return []string{}, nil
 		}}
+		f.seedPublished.Store(true)
+		f.seedPublished.Store(true)
 		f.ListFontFamilies(false)
 		f.ListFontFamilies(true)
 		want := []bool{false, true}
@@ -166,6 +174,8 @@ func TestListFontFamilies_NilSeamUsesRealRead(t *testing.T) {
 	}
 
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	resp := f.ListFontFamilies(false)
 	if !resp.Available {
 		t.Fatal("ListFontFamilies() Available = false, want true when the real read succeeded")

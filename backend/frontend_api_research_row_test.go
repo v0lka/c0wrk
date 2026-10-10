@@ -78,6 +78,8 @@ func researchLostUpdateTestFrontend(t *testing.T) (f *FrontendAPI, projectID, ro
 		projStore:      store,
 		emitEvent:      func(string, ...any) {},
 	}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	return f, "proj-1", root, signaling.loads
 }
 

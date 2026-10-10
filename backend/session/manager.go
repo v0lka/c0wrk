@@ -84,21 +84,23 @@ type Session struct {
 	WorkspacePath       string            // immutable session execution workspace
 	TempDir             string            // session-specific temp directory
 	orchestrator        *core.Orchestrator
-	emitter             *EventEmitter      // session emitter; agent quality metrics are read from it on task finish
-	logFile             *os.File           // session log file handle, closed on deletion
-	dumpFile            *os.File           // LLM dump file handle (DEBUG mode only), closed on deletion
-	cancel              context.CancelFunc // cancel for current task
-	active              bool               // is currently processing
-	pausing             bool               // pause requested: the running task is on its way to a cooperative pause checkpoint (guarded by mu)
-	pauseOwner          pauseOwner         // who requested the in-flight/latest pause: the user or the manual-compaction flow (guarded by mu); the flow's auto-resume resumes only its own pause
-	stopRequestedAt     time.Time          // when a user-visible stop (CancelTask) was requested for the running task (guarded by mu); zero when none is pending. Reset when the task settles and when a new task launches. ActiveSessions uses it to flag a session that has not answered the stop as hung, so "quit anyway" is an informed choice.
-	terminalEmitted     bool               // the run's single terminal emission has been claimed (guarded by mu): forceTerminateStuckTask sets it when it emits the forced task_cancelled so the stuck goroutine, when it finally settles, skips its own duplicate emission. Reset when a NEW task launches (SendMessage/ResumeTask), not on settle — so a late force-terminate after the goroutine's own emission still observes the claim and cannot double-emit.
-	forceTerminated     bool               // this run was force-terminated by forceTerminateStuckTask (guarded by mu): its terminal event was emitted while the stuck goroutine was still running, so the goroutine has NOT yet run its own deferred deactivateSessionTask. A live message the user sends into that window arrived AFTER the cancel was reported and so belongs to the NEXT task — deactivateSessionTask keeps it queued instead of discarding it with the dead run. Cleared when the goroutine settles (deactivateSessionTask) and when a NEW task launches.
-	done                chan struct{}      // closed when task goroutine finishes
-	compacting          bool               // manual context compaction in flight: sends/resumes rejected, UI locked (guarded by mu)
-	compactCancel       context.CancelFunc // cancels the in-flight manual compaction (guarded by mu)
-	compactDone         chan struct{}      // closed when the manual-compaction flow goroutine exits (guarded by mu); joined by Shutdown
-	lastCompletedTaskID string             // tracks last completed task for continuations
+	emitter             *EventEmitter                  // session emitter; agent quality metrics are read from it on task finish
+	logFile             *os.File                       // session log file handle, closed on deletion
+	dumpFile            *os.File                       // LLM dump file handle (DEBUG mode only), closed on deletion
+	stepDumpTracker     *orchestration.StepDumpTracker // per-plan-step dump files (DEBUG mode only); CloseAll'd on deletion and shutdown — the orchestrator's Cleanup deliberately does not own it (session-layer resource), so without this every executed step leaks one open *os.File until process exit (and blocks Windows session-dir removal)
+	cancel              context.CancelFunc             // cancel for current task
+	active              bool                           // is currently processing
+	pausing             bool                           // pause requested: the running task is on its way to a cooperative pause checkpoint (guarded by mu)
+	pauseOwner          pauseOwner                     // who requested the in-flight/latest pause: the user or the manual-compaction flow (guarded by mu); the flow's auto-resume resumes only its own pause
+	stopRequestedAt     time.Time                      // when a user-visible stop (CancelTask) was requested for the running task (guarded by mu); zero when none is pending. Reset when the task settles and when a new task launches. ActiveSessions uses it to flag a session that has not answered the stop as hung, so "quit anyway" is an informed choice.
+	terminalEmitted     bool                           // the run's single terminal emission has been claimed (guarded by mu): forceTerminateStuckTask sets it when it emits the forced task_cancelled so the stuck goroutine, when it finally settles, skips its own duplicate emission. Reset when a NEW task launches (SendMessage/ResumeTask), not on settle — so a late force-terminate after the goroutine's own emission still observes the claim and cannot double-emit.
+	forceTerminated     bool                           // this run was force-terminated by forceTerminateStuckTask (guarded by mu): its terminal event was emitted while the stuck goroutine was still running, so the goroutine has NOT yet run its own deferred deactivateSessionTask. A live message the user sends into that window arrived AFTER the cancel was reported and so belongs to the NEXT task — deactivateSessionTask keeps it queued instead of discarding it with the dead run. Cleared when the goroutine settles (deactivateSessionTask) and when a NEW task launches.
+	done                chan struct{}                  // closed when task goroutine finishes
+	compacting          bool                           // manual context compaction in flight: sends/resumes rejected, UI locked (guarded by mu)
+	compactCancel       context.CancelFunc             // cancels the in-flight manual compaction (guarded by mu)
+	compactDone         chan struct{}                  // closed when the manual-compaction flow goroutine exits (guarded by mu); joined by Shutdown and DeleteSession
+	deleting            bool                           // deletion has begun: the compaction flow's tail must not auto-resume or touch the session after teardown (guarded by mu); set by DeleteSession before it cancels/joins the flow
+	lastCompletedTaskID string                         // tracks last completed task for continuations
 	mu                  sync.RWMutex
 	// mu guards the mutable session fields below and the orchestrator/emitter
 	// references. It is an RWMutex so read-mostly accessors (e.g. the
@@ -509,6 +511,55 @@ func (m *Manager) stopBackground() {
 	}
 }
 
+// stopSessionBlackboards stops and forgets the persistence workers of every
+// blackboard the manager tracked for the given session. DeleteSession calls
+// it: a deleted session's task can no longer reach a terminal finalizer (a
+// paused task's worker deliberately outlives the pause), so without this each
+// deleted session would leak its blocked worker goroutine — plus its retained
+// blackboard and SQLite-backed adapter — in m.blackboards until Shutdown.
+// The stop is bounded by the same stopTimeout budget stopBackground uses, and
+// the drain re-loops because a task goroutine settling concurrently with the
+// deletion may still register (restore) another blackboard for this session
+// after the snapshot below was taken. Mirrors stopBackground; called from
+// DeleteSession only, so Shutdown's own drain remains the sole owner of the
+// process-exit path.
+func (m *Manager) stopSessionBlackboards(sessionID string) {
+	deadline := time.Now().Add(m.stopTimeout)
+	for {
+		m.mu.Lock()
+		var sessionBBs []*PersistentBlackboard
+		remaining := make([]*PersistentBlackboard, 0, len(m.blackboards))
+		for _, b := range m.blackboards {
+			if b.SessionID() == sessionID {
+				sessionBBs = append(sessionBBs, b)
+				continue
+			}
+			// Prune workers that already exited while we are here — same dead
+			// weight trackBlackboard skips on the way in.
+			if !b.persistenceWorkerStopped() {
+				remaining = append(remaining, b)
+			}
+		}
+		m.blackboards = remaining
+		m.mu.Unlock()
+		if len(sessionBBs) == 0 {
+			return
+		}
+		for _, pb := range sessionBBs {
+			pb.Shutdown(time.Until(deadline))
+		}
+		// Bounded re-drain: a straggler that keeps registering blackboards for
+		// this session must not spin this loop forever — once the shared
+		// deadline has passed, abandon the rest with a WARN (a non-positive
+		// remainder makes the next Shutdown call return immediately anyway).
+		if time.Now().After(deadline) {
+			m.log().Warn("delete: blackboard stop deadline exceeded; abandoning late-registered persistence workers",
+				"session_id", sessionID, "blackboards", len(sessionBBs))
+			return
+		}
+	}
+}
+
 // resolveSessionName returns a display name for the given session ID.
 func (m *Manager) resolveSessionName(id string) string {
 	m.mu.RLock()
@@ -830,7 +881,11 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 			m.log().Warn("failed to resolve absolute workspace path for restored session",
 				"session_id", id, "path", workspacePath, "error", absErr)
 		}
-		if mkErr := os.MkdirAll(workspacePath, 0o755); mkErr != nil {
+		// MkdirAllReal, not os.MkdirAll: a dangling or swapped-in symlink on
+		// any component must fail the (best-effort) recreation instead of
+		// writing through the link outside the workspace (review finding
+		// #101).
+		if mkErr := safeio.MkdirAllReal(workspacePath, 0o755); mkErr != nil {
 			m.log().Warn("failed to recreate per-session workspace on restore", "session_id", id, "error", mkErr)
 		}
 	}
@@ -989,25 +1044,7 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 	}
 
 	// Create LLM dump file when DEBUG logging is enabled.
-	var dumpFile *os.File
-	var stepDumpTracker *orchestration.StepDumpTracker
-	if strings.EqualFold(m.logLevel, "DEBUG") {
-		dumpPath := config.SessionDumpPath(m.agentDir, info.ProjectID, id)
-		if mkErr := os.MkdirAll(filepath.Dir(dumpPath), 0o755); mkErr != nil {
-			m.log().Warn("failed to create dumps directory", "session_id", id, "error", mkErr)
-		} else {
-			dumpFile, err = safeio.OpenFile(dumpPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-			if err != nil {
-				m.log().Warn("failed to create LLM dump file", "session_id", id, "error", err)
-				dumpFile = nil
-			}
-		}
-		// Per-step dump tracker uses a "steps" subdirectory
-		if dumpFile != nil {
-			stepDumpDir := config.SessionStepDumpDir(m.agentDir, info.ProjectID, id)
-			stepDumpTracker = orchestration.NewStepDumpTracker(stepDumpDir, m.log().With("session_id", id))
-		}
-	}
+	dumpFile, stepDumpTracker := m.openDumpArtifacts(info.ProjectID, id)
 
 	// Create orchestrator.
 	orchestrator, err := factory(emitter, logger, workspacePath, bbFactory, dumpFile, stepDumpTracker)
@@ -1053,8 +1090,15 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 
 	// Restore full conversation history from persistent storage so the router
 	// and Conductor see all previous messages across backend restarts.
+	// Bounded like the head read: this runs inside the restoreInFlight
+	// single-flight window, so an unbounded read queuing behind a write storm
+	// would park the restore — and every concurrent waiter on the same
+	// session — indefinitely, exactly what the head-read deadline exists to
+	// prevent. Failure stays non-fatal (warn + continue, as before).
 	if m.sessionStore != nil {
-		storedMsgs, loadErr := m.sessionStore.LoadMessages(context.Background(), id)
+		historyCtx, historyCancel := context.WithTimeout(context.Background(), restoreDBReadTimeout)
+		storedMsgs, loadErr := m.sessionStore.LoadMessages(historyCtx, id)
+		historyCancel()
 		if loadErr != nil {
 			m.log().Warn("failed to load session messages for history restore", "session_id", id, "error", loadErr)
 		} else {
@@ -1077,7 +1121,9 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 	// behavior where lastCompletedTaskID survives between messages.
 	var restoredTaskID string
 	if ts != nil {
-		latestTaskID, taskErr := ts.GetLatestTaskID(context.Background(), id)
+		anchorCtx, anchorCancel := context.WithTimeout(context.Background(), restoreDBReadTimeout)
+		latestTaskID, taskErr := ts.GetLatestTaskID(anchorCtx, id)
+		anchorCancel()
 		switch {
 		case taskErr != nil:
 			m.log().Warn("failed to restore last task ID for session", "session_id", id, "error", taskErr)
@@ -1095,7 +1141,10 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 
 	// Create session temp directory.
 	tempDir := sessionTempDir(m.agentDir, info.ProjectID, id)
-	if mkErr := os.MkdirAll(tempDir, 0o755); mkErr != nil {
+	// MkdirAllReal, not os.MkdirAll: a dangling or swapped-in symlink on any
+	// component of the agent-dir tree fails creation instead of redirecting
+	// the session temp dir (review finding #101).
+	if mkErr := safeio.MkdirAllReal(tempDir, 0o755); mkErr != nil {
 		m.log().Warn("failed to create session temp directory", "session_id", id, "temp_dir", tempDir, "error", mkErr)
 	}
 
@@ -1114,6 +1163,7 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 		emitter:             emitter,
 		logFile:             logFile,
 		dumpFile:            dumpFile,
+		stepDumpTracker:     stepDumpTracker,
 		active:              false,
 		lastCompletedTaskID: restoredTaskID,
 	}
@@ -1189,7 +1239,14 @@ func (m *Manager) ListSessionsByProject(projectID string) ([]SessionInfo, error)
 		return result, nil
 	}
 
-	sessions, err := store.ListSessionsByProject(context.Background(), projectID)
+	// Bounded like the restore head-read (restoreDBReadTimeout): this read
+	// backs the synchronous session-list / project-switch RPCs and shares the
+	// app's single SQLite pool; without a deadline a read queuing behind a
+	// write storm hangs the RPC indefinitely instead of surfacing a retryable
+	// error.
+	listCtx, listCancel := context.WithTimeout(context.Background(), restoreDBReadTimeout)
+	sessions, err := store.ListSessionsByProject(listCtx, projectID)
+	listCancel()
 	if err != nil {
 		return nil, err
 	}
@@ -1226,8 +1283,12 @@ func (m *Manager) ListSessionsAll() ([]SessionInfo, error) {
 		// Fallback: in-memory sessions across all projects.
 		sessions = m.ListSessions()
 	} else {
+		// Bounded like ListSessionsByProject above — same shared-pool
+		// contention surface (cross-project live-sessions indicator).
+		listCtx, listCancel := context.WithTimeout(context.Background(), restoreDBReadTimeout)
 		var err error
-		sessions, err = store.ListSessions(context.Background())
+		sessions, err = store.ListSessions(listCtx)
+		listCancel()
 		if err != nil {
 			return nil, err
 		}
@@ -1292,7 +1353,7 @@ func (m *Manager) CreateSessionFromDraft(draft SessionDraft, repositoryPath stri
 	overallStart := time.Now()
 
 	var phaseT0, phaseT1 time.Time
-	debugTiming := strings.EqualFold(m.logLevel, "DEBUG")
+	debugTiming := strings.EqualFold(m.logLevelValue(), "DEBUG")
 	phaseStart := func() {
 		if debugTiming {
 			phaseT0 = time.Now()
@@ -1318,7 +1379,10 @@ func (m *Manager) CreateSessionFromDraft(draft SessionDraft, repositoryPath stri
 			m.log().Warn("failed to resolve absolute workspace path for new session",
 				"session_id", id, "path", workspacePath, "error", absErr)
 		}
-		if err := os.MkdirAll(workspacePath, 0o755); err != nil {
+		// MkdirAllReal, not os.MkdirAll: refuse to create the per-session
+		// workspace through a dangling or swapped-in symlink (review finding
+		// #101); a pre-existing operator-symlinked tree resolves as intent.
+		if err := safeio.MkdirAllReal(workspacePath, 0o755); err != nil {
 			return nil, fmt.Errorf("failed to create per-session workspace: %w", err)
 		}
 	}
@@ -1384,25 +1448,7 @@ func (m *Manager) CreateSessionFromDraft(draft SessionDraft, repositoryPath stri
 	}
 
 	// Create LLM request/response dump file when DEBUG logging is enabled
-	var dumpFile *os.File
-	var stepDumpTracker *orchestration.StepDumpTracker
-	if strings.EqualFold(m.logLevel, "DEBUG") {
-		dumpPath := config.SessionDumpPath(m.agentDir, projectID, id)
-		if mkErr := os.MkdirAll(filepath.Dir(dumpPath), 0o755); mkErr != nil {
-			m.log().Warn("failed to create dumps directory", "session_id", id, "error", mkErr)
-		} else {
-			dumpFile, err = safeio.OpenFile(dumpPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-			if err != nil {
-				m.log().Warn("failed to create LLM dump file", "session_id", id, "error", err)
-				dumpFile = nil // non-fatal, continue without dump
-			}
-		}
-		// Per-step dump tracker uses a "steps" subdirectory
-		if dumpFile != nil {
-			stepDumpDir := config.SessionStepDumpDir(m.agentDir, projectID, id)
-			stepDumpTracker = orchestration.NewStepDumpTracker(stepDumpDir, m.log().With("session_id", id))
-		}
-	}
+	dumpFile, stepDumpTracker := m.openDumpArtifacts(projectID, id)
 
 	// Create orchestrator using the factory (called outside the lock — can be slow)
 	phaseStart()
@@ -1450,7 +1496,9 @@ func (m *Manager) CreateSessionFromDraft(draft SessionDraft, repositoryPath stri
 
 	// Create session temp directory
 	tempDir := sessionTempDir(m.agentDir, projectID, id)
-	if err := os.MkdirAll(tempDir, 0o755); err != nil {
+	// MkdirAllReal: refuse a dangling or swapped-in symlink (review finding #101); a
+	// pre-existing operator-symlinked tree resolves as intent.
+	if err := safeio.MkdirAllReal(tempDir, 0o755); err != nil {
 		m.log().Warn("failed to create session temp directory", "session_id", id, "temp_dir", tempDir, "error", err)
 	}
 
@@ -1469,6 +1517,7 @@ func (m *Manager) CreateSessionFromDraft(draft SessionDraft, repositoryPath stri
 		emitter:          emitter,
 		logFile:          logFile,
 		dumpFile:         dumpFile,
+		stepDumpTracker:  stepDumpTracker,
 		active:           false,
 	}
 
@@ -1518,22 +1567,81 @@ func (m *Manager) CreateSessionFromDraft(draft SessionDraft, repositoryPath stri
 // Returns the logger, the file handle (for cleanup), and an error.
 func (m *Manager) createSessionLogger(projectID, sessionID string) (*slog.Logger, *os.File, error) {
 	logDir := config.SessionLogsDir(m.agentDir, projectID, sessionID)
-	// Create log directory if it doesn't exist
-	if err := os.MkdirAll(logDir, 0o755); err != nil {
+	// Create the log directory as a chain of REAL directories under the
+	// agent directory as the containment boundary: a link planted anywhere
+	// in the path — at <sessionDir>/logs or deeper — that resolves OUTSIDE
+	// ~/.c0wrk is REFUSED, and session creation aborts instead of
+	// redirecting the session log (LLM prompts/responses, tool output)
+	// outside the agent tree (review finding #59). The agent dir is the
+	// boundary (not the session dir) because the session chain may not
+	// exist yet at first lazy log creation. Links resolving inside
+	// ~/.c0wrk, and a symlinked agent dir itself, remain operator intent;
+	// a dangling or swapped-in link still fails as before.
+	if err := safeio.MkdirAllRealWithin(m.agentDir, logDir, 0o755); err != nil {
 		return nil, nil, fmt.Errorf("failed to create log directory: %w", err)
 	}
 
-	// Create log file for this session
+	// Create log file for this session. O_NOFOLLOW (unix): safeio.OpenFileNoFollow
+	// fails a symlink at the final component with ELOOP instead of following
+	// it. On Windows no O_NOFOLLOW equivalent exists without new dependencies
+	// (see the safeio parity note): the final symlink is still resolved there
+	// — tempered by Windows requiring elevated/dev-mode rights to create
+	// symlinks.
 	logFile := config.SessionLogPath(m.agentDir, projectID, sessionID)
-	file, err := safeio.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	file, err := safeio.OpenFileNoFollow(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to open log file: %w", err)
 	}
 
 	handler := slog.NewJSONHandler(file, &slog.HandlerOptions{
-		Level: parseSlogLevel(m.logLevel),
+		Level: parseSlogLevel(m.logLevelValue()),
 	})
 	return slog.New(handler), file, nil
+}
+
+// openDumpArtifacts creates the DEBUG-mode LLM dump file and the per-step
+// dump tracker for a session. Both are best-effort debugging aids: any
+// failure logs a warning and disables the artifact (nil) instead of failing
+// the session.
+//
+// Both paths produce real directories and refuse links where resolution is
+// not wanted: the dumps/steps directories go through safeio.MkdirAllReal (a
+// dangling or swapped-in symlink is refused — os.MkdirAll would follow a
+// link) and the dump file itself is opened O_NOFOLLOW (safeio.OpenFile adds
+// O_NONBLOCK and a post-open regularity fstat but still FOLLOWS a symlink at
+// the final component, so the redirection would already have happened by the
+// time the fstat ran).
+func (m *Manager) openDumpArtifacts(projectID, sessionID string) (*os.File, *orchestration.StepDumpTracker) {
+	if !strings.EqualFold(m.logLevelValue(), "DEBUG") {
+		return nil, nil
+	}
+	dumpPath := config.SessionDumpPath(m.agentDir, projectID, sessionID)
+	// Containment boundary is the agent dir: a planted …/<sid>/dumps →
+	// <outside> link is refused instead of redirecting the LLM dump out of
+	// ~/.c0wrk (review finding #59), while in-tree operator links and a
+	// symlinked agent dir itself resolve as intent.
+	if mkErr := safeio.MkdirAllRealWithin(m.agentDir, filepath.Dir(dumpPath), 0o755); mkErr != nil {
+		m.log().Warn("failed to create dumps directory", "session_id", sessionID, "error", mkErr)
+		return nil, nil
+	}
+	dumpFile, err := safeio.OpenFileNoFollow(dumpPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		m.log().Warn("failed to create LLM dump file", "session_id", sessionID, "error", err)
+		return nil, nil
+	}
+	// Per-step dump tracker uses a "steps" subdirectory. Pre-create it as a
+	// real directory (NewStepDumpTracker's own os.MkdirAll would follow a
+	// planted symlink); a refused directory disables step dumps, like a
+	// failed dump file above.
+	stepDumpDir := config.SessionStepDumpDir(m.agentDir, projectID, sessionID)
+	// Same containment as the dumps dir above — the boundary is the agent
+	// dir, so an escaping link planted at ANY component of the steps path
+	// (dumps or steps alike) is refused (review finding #59).
+	if mkErr := safeio.MkdirAllRealWithin(m.agentDir, stepDumpDir, 0o755); mkErr != nil {
+		m.log().Warn("failed to create step dump directory", "session_id", sessionID, "error", mkErr)
+		return dumpFile, nil
+	}
+	return dumpFile, orchestration.NewStepDumpTracker(stepDumpDir, m.log().With("session_id", sessionID))
 }
 
 // parseSlogLevel converts a string log level to slog.Level.
@@ -1557,6 +1665,17 @@ func (m *Manager) SetLogLevel(level string) {
 	m.logLevel = level
 }
 
+// logLevelValue returns the current log level under m.mu. SetLogLevel writes
+// m.logLevel under the write lock from a Wails RPC goroutine while sessions
+// are created/restored on other goroutines, so every read must take the same
+// lock (a plain read of a string field concurrently with a write is a data
+// race).
+func (m *Manager) logLevelValue() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.logLevel
+}
+
 // DeleteSession removes a session, cancelling any active task.
 // DeleteSession removes an in-memory session: it cancels and joins any
 // running task, closes the session's resources (orchestrator, log/dump
@@ -1572,6 +1691,12 @@ func (m *Manager) SetLogLevel(level string) {
 // and its store-only fallback). Returns "session not found" for sessions
 // that are not in memory.
 func (m *Manager) DeleteSession(id string) error {
+	// Capture the logger BEFORE taking m.mu: the close-error branches below
+	// run while m.mu's WRITE lock is held, and m.log() takes m.mu.RLock —
+	// sync.RWMutex is not reentrant, so logging inside the critical section
+	// would deadlock the goroutine while it still holds the write lock,
+	// freezing every other manager operation.
+	logger := m.log()
 	m.mu.Lock()
 	session, exists := m.sessions[id]
 	if !exists {
@@ -1579,12 +1704,24 @@ func (m *Manager) DeleteSession(id string) error {
 		return fmt.Errorf("session not found: %s", id)
 	}
 
-	// Cancel any active task and grab the done channel for waiting.
+	// Cancel any active task and grab the done channels for waiting. An
+	// in-flight manual-compaction flow is cancelled too and flagged via
+	// deleting: without this a compacting session (session.active is already
+	// false — the flow paused the task) would be torn down here while
+	// runSessionCompaction still runs with no owner, and its phase-5
+	// auto-resume would resurrect the just-deleted session (fresh orchestrator
+	// + log/dump handles + task) after session_deleted was emitted.
 	session.mu.Lock()
 	var doneCh chan struct{}
 	if session.active && session.cancel != nil {
 		session.cancel()
 		doneCh = session.done
+	}
+	session.deleting = true
+	var compactDone chan struct{}
+	if session.compactCancel != nil {
+		session.compactCancel()
+		compactDone = session.compactDone
 	}
 	session.mu.Unlock()
 	m.mu.Unlock()
@@ -1594,7 +1731,18 @@ func (m *Manager) DeleteSession(id string) error {
 		select {
 		case <-doneCh:
 		case <-time.After(m.stopTimeout):
-			m.log().Warn("timed out waiting for task goroutine to stop", "session_id", id)
+			logger.Warn("timed out waiting for task goroutine to stop", "session_id", id)
+		}
+	}
+	// Join the compaction flow BEFORE the orchestrator/file teardown below:
+	// the flow drives m.CompactConversationHistory on this orchestrator and
+	// must be gone (its compactCancel unblocks it; it skips its tail phases
+	// once deleting is set) before cleanup. Bounded by the same stopTimeout.
+	if compactDone != nil {
+		select {
+		case <-compactDone:
+		case <-time.After(m.stopTimeout):
+			logger.Warn("timed out waiting for manual compaction goroutine to stop", "session_id", id)
 		}
 	}
 
@@ -1605,20 +1753,40 @@ func (m *Manager) DeleteSession(id string) error {
 	if session.orchestrator != nil {
 		session.orchestrator.Cleanup()
 	}
+	// Close the per-step dump tracker: the orchestrator does NOT own it (its
+	// Cleanup deliberately leaves session-layer resources alone), so without
+	// this every executed step's open dump-file handle leaks until process
+	// exit — and on Windows the still-open files make the session-dir removal
+	// below fail. CloseAll is idempotent.
+	if session.stepDumpTracker != nil {
+		if err := session.stepDumpTracker.CloseAll(); err != nil {
+			logger.Warn("failed to close per-step dump files", "session_id", id, "error", err)
+		}
+	}
 	// Close log file if it exists
 	if session.logFile != nil {
 		if err := session.logFile.Close(); err != nil {
-			m.log().Warn("failed to close session log file", "session_id", id, "error", err)
+			logger.Warn("failed to close session log file", "session_id", id, "error", err)
 		}
 	}
 	if session.dumpFile != nil {
 		if err := session.dumpFile.Close(); err != nil {
-			m.log().Warn("failed to close session LLM dump file", "session_id", id, "error", err)
+			logger.Warn("failed to close session LLM dump file", "session_id", id, "error", err)
 		}
 	}
 	session.mu.Unlock()
 	delete(m.sessions, id)
 	m.mu.Unlock()
+
+	// Stop the session's blackboard persistence workers. A paused/deleted
+	// task never reaches a terminal finalizer, so its worker would otherwise
+	// stay blocked on its channel (holding the blackboard and its SQLite
+	// adapter) until app shutdown — one leaked goroutine per deleted session,
+	// plus one more per prior pause→resume cycle. Called after the task and
+	// compaction joins above so no settling goroutine can still hand out a
+	// new blackboard for this session's live task; the helper re-drains in
+	// case one lands in the window anyway.
+	m.stopSessionBlackboards(id)
 
 	// Purge file coherence state for this session.
 	m.fileTracker.PurgeSession(id)
@@ -1686,6 +1854,21 @@ func (m *Manager) HasSession(id string) bool {
 	defer m.mu.RUnlock()
 	_, exists := m.sessions[id]
 	return exists
+}
+
+// SessionProjectID returns the project ID of a session LIVE IN MEMORY without
+// the lazy restore GetSession performs (memory-only read, like HasSession).
+// Use it when a store row may be missing but a resident session's identity is
+// still authoritative — e.g. a best-effort SaveSession that never landed
+// (review re-follow-up: GetSessionWorkspace membership fallback).
+func (m *Manager) SessionProjectID(id string) (string, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	sess, exists := m.sessions[id]
+	if !exists || sess == nil {
+		return "", false
+	}
+	return sess.ProjectID, true
 }
 
 // GetSessionWorkspacePath returns the workspace path for a session.
@@ -1769,7 +1952,9 @@ func (m *Manager) WorkspacePathFor(ctx context.Context, id string) (string, bool
 		if absPath, absErr := filepath.Abs(workspacePath); absErr == nil {
 			workspacePath = absPath
 		}
-		if mkErr := os.MkdirAll(workspacePath, 0o755); mkErr != nil {
+		// MkdirAllReal: refuse a dangling or swapped-in symlink (review finding #101); a
+		// pre-existing operator-symlinked tree resolves as intent.
+		if mkErr := safeio.MkdirAllReal(workspacePath, 0o755); mkErr != nil {
 			m.log().Warn("failed to ensure per-session workspace on path lookup",
 				"session_id", id, "error", mkErr)
 		}
@@ -1852,6 +2037,16 @@ func (m *Manager) ArchiveSession(id string) error {
 
 	session.mu.Lock()
 	archiving := !session.Archived
+	// The toggle's target is fixed HERE, under this lock: the final write at
+	// the end of the function assigns this absolute value instead of
+	// re-reading and re-flipping the field. The stop/CancelUnfinishedTask
+	// block between the two sections can wait up to stopTimeout, so Wails can
+	// interleave a duplicate ArchiveSession in that window; a second
+	// `session.Archived = !session.Archived` would apply the concurrent
+	// writer's flip too, netting TWO flips for two archive requests of the
+	// same pre-state and desynchronizing the manager from the single store
+	// toggle. Assigning the captured target is idempotent instead.
+	target := archiving
 	session.mu.Unlock()
 
 	// Archiving a session that still has a running or unfinished task must first
@@ -1915,7 +2110,7 @@ func (m *Manager) ArchiveSession(id string) error {
 	}
 
 	session.mu.Lock()
-	session.Archived = !session.Archived
+	session.Archived = target
 	archived := session.Archived
 	session.mu.Unlock()
 
@@ -2159,6 +2354,13 @@ func (m *Manager) Shutdown() {
 	// goroutines have stopped.
 	for _, p := range pendingList {
 		p.session.mu.Lock()
+		// Close the per-step dump tracker too: the orchestrator's Cleanup
+		// deliberately does not own it (session-layer resource), and without
+		// this every executed step leaks an open *os.File past quit — and on
+		// Windows the open files block the session/temp-dir removal. Idempotent.
+		if p.session.stepDumpTracker != nil {
+			_ = p.session.stepDumpTracker.CloseAll()
+		}
 		if p.session.logFile != nil {
 			_ = p.session.logFile.Close()
 		}

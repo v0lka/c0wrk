@@ -502,8 +502,17 @@ func (o *Orchestrator) resumeGoalLoop(
 	// stored history. This mirrors the plain-Conductor resume path in Resume.
 	// The text block is still built from the augmented message so each turn's
 	// conductor sees the factual wave data.
+	// The attachment augmentation is UNCONDITIONAL (not gated on images): the
+	// "## Attached files" section is the only place the model learns an
+	// attachment's attachment_id (the read_attachment precondition), so a
+	// resumed goal task must carry it exactly like a fresh goal send — even
+	// when there are no image blocks to re-inject. The augmented message feeds
+	// BOTH the rebuilt text block and every turn's conductor message,
+	// mirroring runGoalLoop (which passes the augmented conductorMessage into
+	// the turns).
+	goalMessage := o.augmentWithAttachments(message, bb)
 	resumeContentBlocks := buildContentBlocks(
-		o.augmentWithAttachments(message, bb),
+		goalMessage,
 		imageBlocksForRequest(o.historySnapshot(), bb.GetOriginalRequest()),
 	)
 	seed := resumeSteps
@@ -541,7 +550,7 @@ func (o *Orchestrator) resumeGoalLoop(
 	// withResumeContinuation: this re-entry CONTINUES the interrupted turn — the
 	// first turn reuses the interrupted turn's number (no budget re-charge) and
 	// tolerates an idle outcome (Issue #94).
-	gs, paused := o.runGoalTurns(ctx, message, bb, availableTools, plansDir, conversationHistory, gs, wrapped, withResumeContinuation())
+	gs, paused := o.runGoalTurns(ctx, goalMessage, bb, availableTools, plansDir, conversationHistory, gs, wrapped, withResumeContinuation())
 
 	o.persistGoalStateBestEffort(bb, gs)
 	// The output fallback is the clean original request, mirroring runGoalLoop

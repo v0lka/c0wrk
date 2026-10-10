@@ -444,7 +444,13 @@ func (b *OrchestratorBuilder) waitMCPReady(ctx context.Context) error {
 func (b *OrchestratorBuilder) WaitReady(ctx context.Context) error {
 	select {
 	case <-b.initDone:
-		return b.initErr
+		// Read under the lock: RebuildRouter clears initErr under b.mu on
+		// success, so an unlocked read here would race that write (the
+		// close(initDone) ordering covers only runAsyncInit's own write).
+		b.mu.RLock()
+		err := b.initErr
+		b.mu.RUnlock()
+		return err
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -607,7 +613,18 @@ func (b *OrchestratorBuilder) Build(
 		return nil, fmt.Errorf("failed to build LLM router: %w", err)
 	}
 	// Track the model registry for runtime metadata pushes (see
-	// registerSessionModelRegistry) and release it via the cleanup hook below.
+	// registerSessionModelRegistry). Build can still fail after this point;
+	// the OnCleanup hook below is the only other releaser and it fires only
+	// when the orchestrator is actually returned, so release the registry on
+	// every path that does not hand it to an orchestrator — otherwise the
+	// long-lived builder's live set leaks the entry and it keeps receiving
+	// every UpdateModelOverrides push forever.
+	modelRegOwned := false
+	defer func() {
+		if !modelRegOwned {
+			b.unregisterSessionModelRegistry(modelReg)
+		}
+	}()
 	b.registerSessionModelRegistry(modelReg)
 	if d := time.Since(routerStart); d > 50*time.Millisecond {
 		b.log().Warn("build_router slow", "elapsed_ms", d.Milliseconds())
@@ -696,6 +713,11 @@ func (b *OrchestratorBuilder) Build(
 		// disabled). Threaded to the Conductor (main executor) and every
 		// subagent executor via conductorDeps.toolCallTimeout.
 		ToolCallTimeout: time.Duration(cfg.Timeouts.ToolCallTimeout) * time.Second,
+		// The ceiling's exempt tool-name set (nil = sp4rk's built-in default
+		// set; explicit list replaces it wholesale). Rides the same path as
+		// ToolCallTimeout: ConductorConfig for the main executor,
+		// SetToolCallTimeoutExempt for every subagent executor.
+		ToolCallTimeoutExemptTools: cfg.Timeouts.ToolCallTimeoutExemptTools,
 		// OrchestratorConfig.Model is used for model METADATA resolution
 		// (ModelRegistry.Resolve keys on the bare model name), not for routing —
 		// so strip any provider prefix from the router's composite active model.
@@ -869,7 +891,10 @@ func (b *OrchestratorBuilder) Build(
 		}
 	}
 
-	return NewOrchestrator(orchConfig, OrchestratorDeps{
+	// The orchestrator (and its OnCleanup hook above) is about to own the
+	// registry: ownership transfers only once construction actually returns,
+	// so even a panic inside NewOrchestrator releases the registration below.
+	orch := NewOrchestrator(orchConfig, OrchestratorDeps{
 		Router:               coreRouter,
 		LLM:                  loggedLLM,
 		ModelSwitcher:        llmRouter,
@@ -914,7 +939,9 @@ func (b *OrchestratorBuilder) Build(
 			b.unregisterSessionRegistry(sessionRegistry)
 			b.unregisterSessionModelRegistry(modelReg)
 		},
-	}), nil
+	})
+	modelRegOwned = true
+	return orch, nil
 }
 
 // RebuildRouter creates a new LLM router from the given config and caches it.
@@ -2054,6 +2081,12 @@ func applyProviderOutputReserves(
 // that probe result, leaving the context-fill accounting and compaction
 // thresholds pinned to an inflated window.
 //
+// When the user already seeded a PARTIAL override for the model (a non-protocol
+// field, so its Protocol is empty), the remap MERGES into that entry — the
+// protocol is pinned and Capabilities are backfilled only when unset, while
+// every user-set field is preserved. Replacing the entry wholesale would
+// silently discard the user's tier-1 metadata.
+//
 // An explicit protocol override seeded from cfg.LLM.Models (already present in
 // overrides with a non-empty protocol) is respected: the user's choice always
 // wins and is never clobbered. The remap is idempotent, so map-iteration order
@@ -2070,19 +2103,35 @@ func remapLocalGoogleProtocols(
 		for _, model := range pc.Models {
 			// Respect an explicit user override (cfg.LLM.Models) that already
 			// set a protocol — never clobber the user's choice.
-			if existing, ok := overrides[model]; ok && existing.Protocol != "" {
+			existing, hasEntry := overrides[model]
+			if hasEntry && existing.Protocol != "" {
 				continue
 			}
 			base, _ := llm.ResolveBuiltInModel(model)
-			if base.Protocol == llm.ProtocolGoogle {
-				// Protocol-only override: the registry inherits the unset
-				// scalar fields (context window, output limit, tokenizer) from
-				// its lower tiers so the lazy probe result takes effect. See
-				// the function doc comment for the shadowing rationale.
-				overrides[model] = llm.ModelMetadata{
-					Protocol:     llm.ProtocolChatCompletions,
-					Capabilities: base.Capabilities,
+			if base.Protocol != llm.ProtocolGoogle {
+				continue
+			}
+			if hasEntry {
+				// The user seeded a PARTIAL entry (a non-protocol field, so
+				// Protocol is still empty). Merge the remap into it instead of
+				// replacing it: pin only the protocol and backfill
+				// Capabilities when the user did not set them, so the user's
+				// other tier-1 fields (context window, output limit,
+				// tokenizer, family, capabilities) survive the remap.
+				existing.Protocol = llm.ProtocolChatCompletions
+				if existing.Capabilities == nil {
+					existing.Capabilities = base.Capabilities
 				}
+				overrides[model] = existing
+				continue
+			}
+			// Protocol-only override: the registry inherits the unset
+			// scalar fields (context window, output limit, tokenizer) from
+			// its lower tiers so the lazy probe result takes effect. See
+			// the function doc comment for the shadowing rationale.
+			overrides[model] = llm.ModelMetadata{
+				Protocol:     llm.ProtocolChatCompletions,
+				Capabilities: base.Capabilities,
 			}
 		}
 	}
@@ -3258,6 +3307,7 @@ func configToBuiltinToolsConfig(cfg *BuilderConfig) tools.BuiltinToolsConfig {
 			MaxResults: cfg.ToolLimits.GlobMaxResults,
 			Timeout:    time.Duration(cfg.Timeouts.GlobTimeout) * time.Second,
 		},
+		GlobLimitsExplicit: cfg.ToolLimits.GlobLimitsExplicit,
 		WebFetchLimits: builtins.WebFetchLimits{
 			Timeout: time.Duration(cfg.Timeouts.WebFetchTimeout) * time.Second,
 			Retries: cfg.Timeouts.WebFetchRetries,
@@ -3293,11 +3343,23 @@ func configToBuiltinToolsConfig(cfg *BuilderConfig) tools.BuiltinToolsConfig {
 // Standalone model listing helpers (no receiver state needed)
 // ---------------------------------------------------------------------------
 
+// maxModelsListBodyLen caps the buffered size of a provider models-listing
+// response (GET /v1/models). The listing is a small JSON document; anything
+// larger means a misbehaving or hostile endpoint — the same rationale as the
+// sibling bounded reads in lmstudio_probe.go and embeddedllm/server.go. The
+// 10-second request context bounds duration, not bytes, so a loopback/LAN
+// endpoint could otherwise push unbounded data into the heap.
+const maxModelsListBodyLen = 1 << 20
+
 // listOpenAIModels fetches model names from an OpenAI-compatible API.
 // httpClient may be nil (SDK default transport); fetchProviderModels threads
 // either the proxy client or a per-provider TLS-pinned client
 // (llmtls.DirectDialClient) so the listing reaches self-signed endpoints
 // exactly like the chat path (ADR-054).
+//
+// The client's transport is wrapped in a body-capping transport: the SDK
+// buffers the whole response with a bare io.ReadAll (its internal
+// requestconfig), so the maxModelsListBodyLen cap must be applied beneath it.
 func listOpenAIModels(ctx context.Context, baseURL, apiKey string, httpClient *http.Client) ([]string, error) {
 	opts := []option.RequestOption{
 		option.WithAPIKey(apiKey),
@@ -3305,9 +3367,18 @@ func listOpenAIModels(ctx context.Context, baseURL, apiKey string, httpClient *h
 	if baseURL != "" {
 		opts = append(opts, option.WithBaseURL(baseURL))
 	}
+	// Copy the caller's client and cap its response bodies; a nil client gets
+	// the default transport, capped the same way.
+	bounded := http.Client{}
 	if httpClient != nil {
-		opts = append(opts, option.WithHTTPClient(httpClient))
+		bounded = *httpClient
 	}
+	if bounded.Transport == nil {
+		bounded.Transport = http.DefaultTransport
+	}
+	bounded.Transport = &boundedBodyTransport{inner: bounded.Transport, limit: maxModelsListBodyLen}
+	opts = append(opts, option.WithHTTPClient(&bounded))
+
 	client := oai.NewClient(opts...)
 
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -3325,6 +3396,52 @@ func listOpenAIModels(ctx context.Context, baseURL, apiKey string, httpClient *h
 	sort.Strings(names)
 	return names, nil
 }
+
+// boundedBodyTransport wraps an http.RoundTripper and caps every response
+// body at limit bytes. The openai-go SDK reads response bodies with a bare
+// io.ReadAll and offers no maximum-body option, so an oversized or endless
+// response from a UI-configurable /v1/models endpoint would otherwise grow
+// the heap unbounded (same class as the raw io.ReadAll capped in
+// listAnthropicModels).
+type boundedBodyTransport struct {
+	inner http.RoundTripper
+	limit int64
+}
+
+func (t *boundedBodyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.inner.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp != nil && resp.Body != nil {
+		resp.Body = &limitErrorBody{rc: resp.Body, limit: t.limit}
+	}
+	return resp, nil
+}
+
+// limitErrorBody wraps a response body and fails the read once more than
+// limit bytes have been consumed, so an oversized response surfaces as an
+// actionable error ("response body exceeds ...") instead of an unbounded
+// allocation inside the caller's io.ReadAll.
+type limitErrorBody struct {
+	rc       io.ReadCloser
+	limit    int64
+	consumed int64
+}
+
+func (b *limitErrorBody) Read(p []byte) (int, error) {
+	if b.consumed > b.limit {
+		return 0, fmt.Errorf("response body exceeds %d bytes", b.limit)
+	}
+	n, err := b.rc.Read(p)
+	b.consumed += int64(n)
+	if b.consumed > b.limit && (err == nil || errors.Is(err, io.EOF)) {
+		return n, fmt.Errorf("response body exceeds %d bytes", b.limit)
+	}
+	return n, err
+}
+
+func (b *limitErrorBody) Close() error { return b.rc.Close() }
 
 // listAnthropicModels fetches model names from an Anthropic-compatible API by
 // performing a raw HTTP GET to {baseURL}/v1/models (the go-anthropic SDK does
@@ -3368,9 +3485,16 @@ func listAnthropicModels(ctx context.Context, baseURL, apiKey string, httpClient
 		return nil, fmt.Errorf("anthropic-compatible models endpoint returned %s", resp.Status)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	// Cap+1 read: a body larger than the cap means a misbehaving or hostile
+	// endpoint — refuse it with an actionable error instead of buffering an
+	// unbounded response (the truncated tail is drained and discarded).
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxModelsListBodyLen+1))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read models response: %w", err)
+	}
+	if len(body) > maxModelsListBodyLen {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return nil, fmt.Errorf("models response exceeds %d bytes; refusing to buffer it", maxModelsListBodyLen)
 	}
 
 	var payload struct {

@@ -3,6 +3,7 @@ package backend
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -174,10 +175,17 @@ func (f *FrontendAPI) runAutoFetch(repoPath string) error {
 	}
 
 	// git fetch writes progress and diagnostics to stderr only; capture it
-	// for the Debug log. stdout stays discarded (nil → /dev/null).
+	// for the Debug log. stdout stays discarded (nil → /dev/null). The
+	// stderr capture is a non-*os.File writer, so an orphan spawned by a
+	// trusted repository's pre-fetch hook would hold the pipe open and
+	// stall cmd.Run past remoteGitCmdTimeout forever — while holding
+	// remoteOpMu, wedging every later remote operation. WaitDelay bounds
+	// the window (review [62]); an orphan after a clean exit tolerates as
+	// exec.ErrWaitDelay, which is success for this caller.
+	cmd.WaitDelay = commitWaitDelay
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	if err := cmd.Run(); err != nil && !errors.Is(err, exec.ErrWaitDelay) {
 		if msg := strings.TrimSpace(stderr.String()); msg != "" {
 			return fmt.Errorf("git fetch: %w: %s", err, msg)
 		}

@@ -47,6 +47,15 @@ func (f *FrontendAPI) builder() appBuilder {
 	if f.builderOverride != nil {
 		return f.builderOverride
 	}
+	// seedAcquire, NOT appCell: builder() is reached from code that already
+	// holds configMu (UpdateMCPServers and applyModelProfilesChange under the
+	// write lock, GetConfig/ListProviderModels under RLock), and sync.RWMutex
+	// is not reentrant — an RLock here would self-deadlock against the held
+	// write lock and block behind any queued writer from the read paths.
+	// seedAcquire provides the same happens-before edge for the plain f.app
+	// read (it is a single atomic load once Init has published) without
+	// touching configMu.
+	f.seedAcquire()
 	if f.app == nil {
 		return nil
 	}

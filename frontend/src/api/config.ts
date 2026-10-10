@@ -8,6 +8,39 @@ import type { ConfigResponse, SecuritySettingsResponse, ShellExecSettingsRespons
 /** Sentinel value returned by backend when an API key is configured but should not be displayed */
 export const MASKED_API_KEY = '***configured***'
 
+/** Guard for the GetModelConfig response. The Configure dialog copies
+ *  capabilities/default_capabilities into React state and dereferences their
+ *  four boolean flags in the render body (outside its try/catch), so a
+ *  payload missing the nested objects must fail HERE instead of throwing a
+ *  render TypeError. The Go DTO is fully typed with no omitempty, so a
+ *  conforming payload always passes. */
+function isModelCapabilities(v: unknown): v is { attachment: boolean; reasoning: boolean; temperature: boolean; tool_call: boolean } {
+  return typeof v === 'object' && v !== null
+    && typeof (v as Record<string, unknown>).attachment === 'boolean'
+    && typeof (v as Record<string, unknown>).reasoning === 'boolean'
+    && typeof (v as Record<string, unknown>).temperature === 'boolean'
+    && typeof (v as Record<string, unknown>).tool_call === 'boolean'
+}
+
+function isModelConfigResponse(v: unknown): v is ModelConfigResponse {
+  if (typeof v !== 'object' || v === null) return false
+  const o = v as Record<string, unknown>
+  return typeof o.model === 'string'
+    && typeof o.context_window === 'number'
+    && typeof o.output_limit === 'number'
+    && typeof o.tokenizer_type === 'string'
+    && typeof o.family === 'string'
+    && typeof o.protocol === 'string'
+    && isModelCapabilities(o.capabilities)
+    && typeof o.default_context_window === 'number'
+    && typeof o.default_output_limit === 'number'
+    && typeof o.default_tokenizer_type === 'string'
+    && typeof o.default_family === 'string'
+    && typeof o.default_protocol === 'string'
+    && isModelCapabilities(o.default_capabilities)
+    && typeof o.has_override === 'boolean'
+}
+
 export async function getConfig(): Promise<ConfigResponse> {
   try {
     const app = getApp()
@@ -135,7 +168,11 @@ export async function getProviderTLSCertificate(
 export async function getModelConfig(model: string): Promise<ModelConfigResponse> {
   try {
     const app = getApp()
-    return await app.GetModelConfig(model)
+    const result = await app.GetModelConfig(model)
+    if (!isModelConfigResponse(result)) {
+      throw new Error('getModelConfig: backend returned invalid data')
+    }
+    return result
   } catch (err) {
     logger.error('Failed to get model config:', err)
     throw err
@@ -297,7 +334,13 @@ export async function setModelProfilesEnabled(enabled: boolean): Promise<void> {
 export async function createModelProfile(baseId: string, name: string): Promise<string> {
   try {
     const app = getApp()
-    return await app.CreateModelProfile(baseId, name)
+    const id = await app.CreateModelProfile(baseId, name)
+    // The returned id keys the subsequent select/update RPCs — a non-string
+    // (or empty) id is schema drift and must fail here, not downstream.
+    if (typeof id !== 'string' || id === '') {
+      throw new Error('createModelProfile: backend returned an invalid profile id')
+    }
+    return id
   } catch (err) {
     logger.error('Failed to create Model Profiles profile:', err)
     throw err

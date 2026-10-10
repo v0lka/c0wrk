@@ -314,3 +314,31 @@ func statusKeys(status map[string]GitStatusEntry) []string {
 	sort.Strings(keys)
 	return keys
 }
+
+// TestInvalidateAllGitCaches_ClearsGitPanelFocus pins review [78]: the
+// Git-panel focus belongs to the previous project's repository, so the
+// project-switch funnel (invalidateAllGitCaches, called from
+// switchProjectActivate) must drop it — otherwise every pathless git RPC
+// resolves into the previous project's repository until the frontend's
+// asynchronous focus re-apply lands.
+func TestInvalidateAllGitCaches_ClearsGitPanelFocus(t *testing.T) {
+	h := newWTHarness(t, wtFactory())
+	tree, _ := focusTestTree(t, h)
+
+	if err := h.api.SetGitPanelFocus(tree); err != nil {
+		t.Fatalf("SetGitPanelFocus(tree): %v", err)
+	}
+	if got, err := h.api.resolveGitRepoRoot(); err != nil || got != tree {
+		t.Fatalf("focus resolution after SetGitPanelFocus = %q, %v; want %q", got, err, tree)
+	}
+
+	h.api.invalidateAllGitCaches()
+
+	got, err := h.api.resolveGitRepoRoot()
+	if err != nil {
+		t.Fatalf("resolveGitRepoRoot after project-switch invalidation: %v", err)
+	}
+	if got != h.project.WorkspacePath {
+		t.Fatalf("focus after project-switch invalidation = %q, want the (new) project checkout %q", got, h.project.WorkspacePath)
+	}
+}

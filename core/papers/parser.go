@@ -1094,13 +1094,24 @@ func isCanonicalVerdict(v Verdict) bool {
 // Filesystem orchestrators (read-only)
 // ---------------------------------------------------------------------------
 
+// maxArtifactBytes bounds a single paper-artifact read: the library is
+// user-selected content and every parse feeds read-only UI paths, so an
+// oversized artifact must not be read whole into memory — safeio.ReadFile is
+// an unbounded io.ReadAll. A file over the cap is reported as a read failure,
+// which ParsePaperDir's best-effort handling skips.
+const maxArtifactBytes = 8 << 20
+
 // readFile reads a file's contents. A missing artifact is a normal partial
 // state, so fs.ErrNotExist yields ("", false, nil); any other error (a
 // permission failure, a corrupted/dangling symlink, or a path that is itself a
 // directory) is a genuine failure and is propagated rather than silently folded
 // into "artifact absent". Parsing is rendering-only; mutation lives in the
-// writer, which uses its own strict reads.
+// writer, which uses its own strict reads. An artifact over maxArtifactBytes
+// is likewise a failure: its read would otherwise be unbounded.
 func readFile(path string) (body string, ok bool, err error) {
+	if info, statErr := os.Stat(path); statErr == nil && info.Size() > maxArtifactBytes {
+		return "", false, fmt.Errorf("reading paper artifact %q: file exceeds the %d byte read cap", path, maxArtifactBytes)
+	}
 	data, err := safeio.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {

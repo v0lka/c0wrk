@@ -203,7 +203,7 @@ func (c *embeddingCache) put(text string, vec []float32) {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+	if err := ensureRealDir(filepath.Dir(path), 0o750); err != nil {
 		c.logger.Debug("embedding cache directory unavailable", "error", err)
 		return
 	}

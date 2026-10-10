@@ -200,14 +200,19 @@ func SaveCustomModelProfiles(path string, profiles []ModelProfile) error {
 		return fmt.Errorf("model profiles: failed to marshal: %w", err)
 	}
 
-	// Write atomically: temp file, then rename (same pattern as Save).
-	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
-		return fmt.Errorf("model profiles: failed to write temp file: %w", err)
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("model profiles: failed to rename into place: %w", err)
+	// Write atomically via safeio: the temporary file carries a randomized
+	// name (no plantable fixed "<path>.tmp" — a FIFO planted there blocked
+	// the write-open forever, and a symlink was followed into an arbitrary
+	// write target), and the final rename replaces a planted symlink at path
+	// itself instead of writing through it (same pattern as Save).
+	//
+	// The mode is an unconditional 0o600, matching Save: WriteFileAtomic
+	// publishes the staging file with an exact fchmod and no umask
+	// filtering, so a literal 0o644 would silently widen the file on hosts
+	// whose umask used to keep it tighter. The store lives next to the
+	// secrets-bearing config.yaml and gets the same owner-only hardening.
+	if err := safeio.WriteFileAtomic(path, data, 0o600); err != nil {
+		return fmt.Errorf("model profiles: failed to write file: %w", err)
 	}
 	return nil
 }

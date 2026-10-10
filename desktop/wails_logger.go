@@ -31,11 +31,21 @@ type wailsLogAdapter struct {
 // An optional delegate is used for duplicate delivery once a session logger
 // is available (messages go to both the persistent file and the delegate).
 func NewWailsLogger(logDir string) (*wailsLogAdapter, error) {
-	if err := os.MkdirAll(logDir, 0o750); err != nil {
+	// MkdirAllReal + OpenFileNoFollow (instead of the symlink-following
+	// MkdirAll/safeio.OpenFile): a symlink planted at the wails.log file
+	// itself must not redirect the app's log stream into an arbitrary
+	// user-writable file outside ~/.c0wrk (no-follow on the final component —
+	// unix; on Windows the safeio parity note applies, tempered by Windows
+	// requiring elevated/dev-mode rights to create symlinks);
+	// MkdirAllReal refuses a dangling link and resolves an
+	// operator-symlinked logs directory as intent. Failure fails closed
+	// to "no Wails log file": the caller warns and Wails falls back to its
+	// own default logger.
+	if err := safeio.MkdirAllReal(logDir, 0o750); err != nil {
 		return nil, fmt.Errorf("creating wails log directory: %w", err)
 	}
 	logPath := filepath.Join(logDir, "wails.log")
-	file, err := safeio.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640)
+	file, err := safeio.OpenFileNoFollow(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640)
 	if err != nil {
 		return nil, fmt.Errorf("opening wails log file: %w", err)
 	}

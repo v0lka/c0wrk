@@ -266,9 +266,12 @@ describe('SessionWorkspaceSelector', () => {
     expect(chip).not.toBeNull()
     // A real disabled button, not an enabled-looking passive element: the
     // disabled state must be visible up front, not discovered by clicks that
-    // go nowhere.
+    // go nowhere. Expressed as aria-disabled (not the native attribute) so
+    // the chip stays focusable and its reason is announced (see the
+    // accessibility test below).
     expect(chip!.tagName).toBe('BUTTON')
-    expect(chip!.disabled).toBe(true)
+    expect(chip!.getAttribute('aria-disabled')).toBe('true')
+    expect(chip!.disabled).toBe(false)
     expect(chip!.className).toContain('cursor-not-allowed')
     expect(chip!.textContent).toContain('feat/pinned')
     expect(trigger()).toBeNull()
@@ -284,8 +287,49 @@ describe('SessionWorkspaceSelector', () => {
     const chip = readOnly()
     expect(chip).not.toBeNull()
     expect(chip!.tagName).toBe('BUTTON')
-    expect(chip!.disabled).toBe(true)
+    expect(chip!.getAttribute('aria-disabled')).toBe('true')
+    expect(chip!.disabled).toBe(false)
     expect(chip!.textContent).toContain('local')
+  })
+
+  it('pinned chip is focusable and announces its pin reason to assistive tech', () => {
+    // A natively `disabled` button is removed from the tab order and
+    // suppresses pointer events, so the `title`-only reason was unreachable
+    // by keyboard/screen-reader (and the tooltip itself unreliable in the
+    // WebKit webview). aria-disabled keeps the chip in the tab order and
+    // aria-describedby carries the reason in a visually-hidden element.
+    useSessionStore.setState({
+      activeSessionId: 's-m',
+      sessions: [
+        makeSession({
+          id: 's-m',
+          workspace_binding: {
+            kind: 'managed_worktree',
+            workspace_path: '/w/proj/.worktrees/s-abcd1234',
+            worktree_name: 's-abcd1234',
+            branch: 'feat/pinned',
+          },
+        }),
+      ],
+    })
+    renderSelector()
+
+    const chip = readOnly()
+    expect(chip).not.toBeNull()
+    // Focusable (no native disabled) — the reason is reachable by keyboard.
+    expect(chip!.disabled).toBe(false)
+    // The description reference resolves to a non-empty element that names
+    // the reason: fixed at creation.
+    const describedBy = chip!.getAttribute('aria-describedby')
+    expect(describedBy).toBeTruthy()
+    const description = document.getElementById(describedBy!)
+    expect(description).not.toBeNull()
+    expect(description!.textContent).toContain('fixed when the session was created')
+    // The visually-hidden description is hidden visually but exposed to AT.
+    expect(description!.className).toContain('sr-only')
+    // The mouse tooltip mirrors the same reason (works again: no native
+    // disabled suppressing pointer events).
+    expect(chip!.getAttribute('title')).toContain('fixed when the session was created')
   })
 
   it('pinned button stays disabled across chat continuations (ignores the transient selector lock)', () => {
@@ -313,7 +357,7 @@ describe('SessionWorkspaceSelector', () => {
     const chip = readOnly()
     expect(chip).not.toBeNull()
     expect(chip!.tagName).toBe('BUTTON')
-    expect(chip!.disabled).toBe(true)
+    expect(chip!.getAttribute('aria-disabled')).toBe('true')
   })
 
   it('selecting a session retires an armed draft', async () => {

@@ -113,7 +113,7 @@ func forkBranchName(sourceBranch, dstSessionID string) string {
 // meet). Without this line managed restores fail closed; tests that build
 // FrontendAPI via struct literal call it (or SetWorkspaceEnsurer) explicitly.
 func (f *FrontendAPI) installWorkspaceEnsurer() {
-	if f.app == nil {
+	if f.appCell() == nil {
 		return
 	}
 	if m := f.app.Manager(); m != nil {
@@ -168,7 +168,7 @@ func (f *FrontendAPI) ensureManagedWorkspace(ctx context.Context, repoRoot strin
 // is released again (compensation); adopted trees are never touched. The
 // created branch is kept — no operation in this path ever deletes a branch.
 func (f *FrontendAPI) CreateManagedSession(branch string, createBranch bool, startPoint string) (*session.SessionInfo, error) {
-	if f.app == nil || f.app.Manager() == nil {
+	if f.appCell() == nil || f.app.Manager() == nil {
 		return nil, errors.New("session manager not initialized - check startup logs for LLM router or configuration errors")
 	}
 	if f.store == nil {
@@ -407,6 +407,15 @@ func (f *FrontendAPI) compensateProvisionedTree(ctx context.Context, repoRoot, t
 // against each other: a store failure releases the freshly provisioned tree
 // (its branch is kept).
 func (f *FrontendAPI) forkManagedSession(ctx context.Context, src *session.SessionInfo, cloneReview session.ForkReviewCloner) (*session.SessionInfo, error) {
+	f.seedAcquire()
+	// The caller (ForkSession) passes a never-deadlined context; bound the
+	// worktree inspect and the store fork with the same budget the sibling
+	// provisioning step gets, so a wedged git fails the synchronous
+	// ForkSession RPC explicitly instead of hanging it forever (review
+	// [117]). ProvisionNewBranch derives its own (nested) deadline below.
+	ctx, cancel := context.WithTimeout(ctx, managedProvisionTimeout)
+	defer cancel()
+
 	binding := src.WorkspaceBinding
 	repoRoot, err := f.resolveProjectRoot(ctx, src.ProjectID)
 	if err != nil {
@@ -459,6 +468,7 @@ func (f *FrontendAPI) forkManagedSession(ctx context.Context, src *session.Sessi
 // from it; an unusable root must fail those flows explicitly rather than
 // guess.
 func (f *FrontendAPI) resolveProjectRoot(ctx context.Context, projectID string) (string, error) {
+	f.seedAcquire()
 	if f.projectManager == nil {
 		return "", errors.New("project manager not initialized")
 	}
@@ -494,9 +504,18 @@ func (f *FrontendAPI) resolveProjectRoot(ctx context.Context, projectID string) 
 // for internal files; a tree can be released by retrying the deletion once
 // the store is reachable again).
 func (f *FrontendAPI) prepareManagedTreeDeletion(ctx context.Context, id string, opts SessionDeleteOptions) (cleanupProjectID string, err error) {
+	f.seedAcquire()
 	if f.store == nil {
 		return "", nil
 	}
+	// The caller passes a never-deadlined context; bound the git worktree
+	// work (and the store read) with the same generous budget provisioning
+	// gets, so a wedged git fails the DeleteSession RPC explicitly instead
+	// of hanging it — and, while the removal holds the per-repo worktree
+	// lock, every other managed-worktree operation for the repository
+	// behind it (review [115]).
+	ctx, cancel := context.WithTimeout(ctx, managedProvisionTimeout)
+	defer cancel()
 	info, err := f.store.LoadSession(ctx, id)
 	if err != nil {
 		f.log().Warn("failed to load session for managed-tree deletion check", "session_id", id, "error", err)
@@ -506,6 +525,40 @@ func (f *FrontendAPI) prepareManagedTreeDeletion(ctx context.Context, id string,
 		return "", nil
 	}
 	binding := info.WorkspaceBinding
+
+	// 0. Decide the block FIRST, touching nothing (review [161]): the
+	// deletion contract promises that a blocked deletion leaves the
+	// session, tree, and branch "fully intact and retryable", but the
+	// task-join and terminal-stop below are irreversible — a first,
+	// unconfirmed call that only exists to surface the user decision must
+	// not already have killed the in-flight run. The probe applies the
+	// same locked/dirty classification the removal primitive applies at
+	// removal time; the authoritative recheck inside the release still
+	// gates the actual removal.
+	//
+	// A shared tree lowers the stakes: a co-owner deletion removes nothing
+	// (the tree — and any uncommitted work in it — stays for the remaining
+	// sessions), so no confirmation is even asked and the probe is skipped.
+	// The count here is advisory (step 3 re-counts under the critical
+	// section, and the removal primitives recheck at removal time); on a
+	// count failure the probe still runs, so a wedged store can only ever
+	// over-block (the retryable direction), never under-block.
+	coOwnerShared := false
+	if sharers, cerr := f.store.CountManagedWorktreeSessions(ctx, binding.WorktreeName, id); cerr != nil {
+		f.log().Warn("failed to count shared-tree co-owners before the deletion probe; probing anyway",
+			"session_id", id, "worktree", binding.WorktreeName, "error", cerr)
+	} else {
+		coOwnerShared = sharers > 0
+	}
+	if !coOwnerShared {
+		repoRoot, err := f.resolveProjectRoot(ctx, info.ProjectID)
+		if err != nil {
+			return "", fmt.Errorf("cannot resolve project root to release session worktree: %w", err)
+		}
+		if blockErr := f.probeSessionTreeDeletionBlock(ctx, repoRoot, binding, opts); blockErr != nil {
+			return "", blockErr
+		}
+	}
 
 	// 1. Join the running task first: its final writes must be visible to
 	// the dirty recheck below. CancelTask signals cancellation and waits
@@ -586,6 +639,43 @@ func (f *FrontendAPI) removeOwnerAndReleaseTreeLocked(ctx context.Context, proje
 	return true, "", repoRoot, nil
 }
 
+// probeSessionTreeDeletionBlock reports the *SessionDeleteBlockedError the
+// release attempt would produce, without touching anything: the same
+// locked/dirty classification RemoveWorktree applies at removal time (live
+// worktree list + the tree's porcelain status), evaluated BEFORE the
+// destructive pre-flight so a blocked first call destroys neither the
+// in-flight task nor the terminal (review [161]). A nil return means "not
+// blocked" — or "the probe could not classify" (tree not linked anymore,
+// listing failure, dirty-probe failure); the authoritative recheck inside
+// releaseSessionTree still gates the actual removal, so a probe pass never
+// bypasses a real block.
+func (f *FrontendAPI) probeSessionTreeDeletionBlock(ctx context.Context, repoRoot string, binding *session.WorkspaceBinding, opts SessionDeleteOptions) error {
+	entry, err := f.worktreeOwner().Inspect(ctx, repoRoot, binding.WorktreeName)
+	if err != nil {
+		// Not linked anymore (nothing to release) or the listing failed:
+		// neither is a user decision — let the release attempt decide.
+		return nil //nolint:nilerr // the authoritative release path re-checks and reports the real block
+	}
+	if entry.Kind != workspace.WorktreeManaged {
+		return nil // non-managed tree: the release leaves it in place
+	}
+	if entry.Locked && !opts.UnlockLockedTree {
+		return &SessionDeleteBlockedError{
+			Reason: fmt.Sprintf("the session's worktree %q is locked (%s)", binding.WorktreeName, entry.LockedReason),
+			Option: "unlock_locked_tree",
+		}
+	}
+	if !opts.ConfirmUncommittedLoss && !entry.Prunable {
+		if dirty, derr := workspace.WorktreeDirty(ctx, entry.Path); derr == nil && dirty {
+			return &SessionDeleteBlockedError{
+				Reason: fmt.Sprintf("the session's worktree %q (branch %s) contains uncommitted changes; deleting the session removes the tree and those changes cannot be recovered (the branch itself is kept)", binding.WorktreeName, binding.Branch),
+				Option: "confirm_uncommitted_loss",
+			}
+		}
+	}
+	return nil
+}
+
 // releaseSessionTree removes the session's managed tree per the caller's
 // explicit decisions. Never-removal boundaries: a tree that is not linked
 // anymore is already gone (nothing to do), and a tree classified as
@@ -643,6 +733,7 @@ func lockedReasonOf(err error) string {
 // session:<id>:terminal_exited — the one explicit stop the frontend must
 // hear about, because its terminal instance survives the promotion.
 func (f *FrontendAPI) stopSessionTerminal(id string) bool {
+	f.seedAcquire()
 	if f.terminalManager == nil || !f.terminalManager.IsActive(id) {
 		return false
 	}

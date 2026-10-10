@@ -126,7 +126,14 @@ func (m *gitScanMemo) argv() ([]string, error) {
 	if m.err != nil {
 		return nil, m.err
 	}
-	return m.info.NeutralizingArgv(), nil
+	argv, err := m.info.NeutralizingArgvErr()
+	if err != nil {
+		// A neutralizing key that cannot be rendered as -c key=value
+		// (a subsection containing '=') would leave the repository's
+		// command armed while git runs — refuse the spawn (review [21]).
+		return nil, fmt.Errorf("rendering neutralizing overrides for repo %s (fail closed): %w", m.path, err)
+	}
+	return argv, nil
 }
 
 // scanGitConfigFn is the scan seam gitScanMemo goes through; in-package
@@ -203,11 +210,35 @@ func gitCmdInRepoScanned(ctx context.Context, scan *gitScanMemo, args ...string)
 		// honoring the hostile key.
 		root := ResolveWorkTreeRoot(scan.path)
 		if root == "" {
-			return nil, fmt.Errorf(
-				"pinning GIT_WORK_TREE for repo %s (fail closed): core.worktree is set but no work-tree root can be discovered",
-				scan.path)
+			// Relax ONLY when the pin was demanded by include-derived roots
+			// and NO core.worktree finding exists (the bare-repository case
+			// review [95] documents). A config carrying an actual
+			// core.worktree key with no discoverable root stays fail-closed:
+			// the hostile key must never reach git unpinned.
+			hasWorkTreeFinding := false
+			for i := range scan.info.Findings {
+				if scan.info.Findings[i].Kind == GitConfigFindingWorkTree {
+					hasWorkTreeFinding = true
+					break
+				}
+			}
+			if hasWorkTreeFinding || len(scan.info.Includes) == 0 {
+				return nil, fmt.Errorf(
+					"pinning GIT_WORK_TREE for repo %s (fail closed): core.worktree is set but no work-tree root can be discovered",
+					scan.path)
+			}
+			// Include-derived pin (review [148]) with no discoverable
+			// work-tree root: a bare repository — the documented layout
+			// the worktree listing supports (review [95]). There is no
+			// work tree for tracked-file writes to land in and no honest
+			// root to pin; failing every git operation here would break
+			// the supported bare layout. Nothing to pin.
+			//
+			// This branch is defensive today: a scanned config implies a
+			// .git entry on the lexical chain, so a root is discoverable.
+		} else {
+			cmd.Env = pinGitEnv(cmd.Env, "GIT_WORK_TREE", root)
 		}
-		cmd.Env = pinGitEnv(cmd.Env, "GIT_WORK_TREE", root)
 	}
 	// GIT_OPTIONAL_LOCKS=0: read-only commands (status/diff/ls-files) must
 	// not take git's opportunistic index lock. Without it every `git status`
@@ -263,7 +294,7 @@ func IsGitRepo(ctx context.Context, dir string) bool {
 // IsGitTracked reports whether relPath is tracked by git in dir.
 // Unscannable config counts as not tracked (fail closed, see IsGitRepo).
 func IsGitTracked(ctx context.Context, dir, relPath string) bool {
-	cmd, err := GitCmdInRepo(ctx, dir, "ls-files", "--error-unmatch", relPath)
+	cmd, err := GitCmdInRepo(ctx, dir, "ls-files", "--error-unmatch", "--", relPath)
 	if err != nil {
 		return false
 	}
@@ -279,11 +310,27 @@ func IsGitTracked(ctx context.Context, dir, relPath string) bool {
 // present.  For backward compatibility the legacy Status/Staged fields
 // reflect the index side when available, falling back to the work tree.
 func GitStatus(ctx context.Context, repoPath string) (map[string]GitStatusEntry, error) {
-	cmd, err := GitCmdInRepo(ctx, repoPath, "status", "--porcelain", "-uall")
+	// Porcelain v1 paths are always relative to the REPOSITORY ROOT, not to
+	// the current directory (git docs: status.relativePaths "is only used
+	// by the non-porcelain commands"). Joining them onto repoPath is only
+	// correct when repoPath IS the work-tree root; for a workspace rooted
+	// at a repository subdirectory every entry would be keyed onto a
+	// non-existent path — and a root-level change whose name collides with
+	// a workspace file would make DiscardChanges revert the WRONG file
+	// (review [99]). Run the command from — and key paths onto — the
+	// work-tree root git would discover (a no-op when repoPath is already
+	// the root; changes outside the workspace then simply match no tree
+	// node). Unresolvable chains keep repoPath, matching the fail-closed
+	// pairing ResolveWorkTreeRoot documents.
+	root := repoPath
+	if r := ResolveWorkTreeRoot(repoPath); r != "" {
+		root = r
+	}
+	cmd, err := GitCmdInRepo(ctx, root, "status", "--porcelain", "-uall")
 	if err != nil {
 		return nil, err
 	}
-	cmd.Dir = repoPath
+	cmd.Dir = root
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -317,7 +364,7 @@ func GitStatus(ctx context.Context, repoPath string) (map[string]GitStatusEntry,
 
 		if x == '?' && y == '?' {
 			// Untracked file — not in index, present in work tree.
-			path := filepath.Join(repoPath, unquoteGitPath(rawPath))
+			path := filepath.Join(root, unquoteGitPath(rawPath))
 			result[path] = GitStatusEntry{
 				Status:         "A",
 				Staged:         false,
@@ -340,7 +387,7 @@ func GitStatus(ctx context.Context, repoPath string) (map[string]GitStatusEntry,
 			continue
 		}
 
-		path := filepath.Join(repoPath, unquoteGitPath(rawPath))
+		path := filepath.Join(root, unquoteGitPath(rawPath))
 		result[path] = GitStatusEntry{
 			Status:         legacyStatus,
 			Staged:         legacyStaged,
@@ -556,7 +603,7 @@ func runGitDiff(ctx context.Context, scan *gitScanMemo, cached bool, relPath str
 // config, so an armed diff.external would otherwise execute (verified on git
 // 2.50.1).
 func runGitDiffNoIndex(ctx context.Context, scan *gitScanMemo, relPath string) (string, error) {
-	cmd, err := gitCmdInRepoScanned(ctx, scan, "diff", "--no-ext-diff", "--no-index", os.DevNull, relPath)
+	cmd, err := gitCmdInRepoScanned(ctx, scan, "diff", "--no-ext-diff", "--no-index", "--", os.DevNull, relPath)
 	if err != nil {
 		return "", err
 	}

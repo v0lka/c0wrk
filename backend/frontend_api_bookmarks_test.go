@@ -41,7 +41,7 @@ func newBookmarkTestAPI(t *testing.T) (*FrontendAPI, *session.SQLiteSessionStore
 		t.Fatalf("save session: %v", err)
 	}
 
-	return &FrontendAPI{store: sessStore}, sessStore, db
+	return seedPublishedAPI(&FrontendAPI{store: sessStore}), sessStore, db
 }
 
 func TestFrontendAPI_Bookmarks(t *testing.T) {

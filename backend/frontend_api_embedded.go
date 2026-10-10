@@ -379,6 +379,7 @@ func (s *embeddedLLMState) deviceProber() func(ctx context.Context, binaryPath s
 // lets startup call it on the critical path and lets an early RPC call it
 // safely.
 func (f *FrontendAPI) embeddedBuild() (*embeddedllm.Server, *embeddedllm.Installer, error) {
+	f.seedAcquire()
 	st := &f.embedded
 
 	st.mu.Lock()
@@ -847,7 +848,7 @@ func (f *FrontendAPI) persistEmbeddedContext(_ context.Context, contextSize int)
 func (f *FrontendAPI) pushDisplayContextWindow(contextSize int) {
 	push := f.displayWindowPush
 	if push == nil {
-		if f.app == nil || f.app.Manager() == nil {
+		if f.appCell() == nil || f.app.Manager() == nil {
 			return
 		}
 		push = f.app.Manager().SetDisplayContextWindowForModel
@@ -883,6 +884,7 @@ func (f *FrontendAPI) onEmbeddedLLMState(ev embeddedllm.StateEvent) {
 // the persisted config. Nil-guarded like every other emitter: most tests do not
 // wire emitEvent.
 func (f *FrontendAPI) emitEmbeddedLLMState(state embeddedllm.State, port int, message string) {
+	f.seedAcquire()
 	if f.emitEvent == nil {
 		return
 	}
@@ -943,6 +945,7 @@ func (f *FrontendAPI) embeddedStatePayload(state embeddedllm.State, port int, me
 // must not block: the emit is a synchronous Wails dispatch, and the core
 // downloader already throttles the byte-level updates.
 func (f *FrontendAPI) emitEmbeddedInstallProgress(p embeddedllm.Progress) {
+	f.seedAcquire()
 	if f.emitEvent == nil {
 		return
 	}
@@ -958,6 +961,7 @@ func (f *FrontendAPI) emitEmbeddedInstallProgress(p embeddedllm.Progress) {
 // failure — the case where no RPC is left to carry the error. Mirrors the
 // existing runtime_error emitters (id, message, error_code).
 func (f *FrontendAPI) emitEmbeddedRuntimeError(code, message string) {
+	f.seedAcquire()
 	if f.emitEvent == nil {
 		return
 	}
@@ -1320,6 +1324,24 @@ func (f *FrontendAPI) RemoveEmbeddedLLM(scope string) error {
 	}
 	defer f.endEmbeddedOperation()
 	f.embedded.setError(nil)
+
+	// Refuse BEFORE any byte is deleted when the removal would orphan the
+	// config: with the embedded model as the default and no other model
+	// enabled, the sink's migration target is empty and ApplyRemoved refuses —
+	// but only after the installer has already deleted the weights and the
+	// manifest. Gating here keeps the refusal clean: nothing is removed, the
+	// installed model stays usable, and the operator sees the actionable
+	// reason. See embeddedConfigSink.ApplyRemoved for the data-loss rationale.
+	f.configMu.RLock()
+	orphanedConfig := f.config != nil &&
+		f.config.LLM.DefaultModel == embeddedCompositeModelID() &&
+		firstNonEmbeddedModelID(f.config, embeddedCompositeModelID()) == ""
+	f.configMu.RUnlock()
+	if orphanedConfig {
+		err := errors.New("cannot remove the embedded model: it is the default model and no other provider model is enabled — add or enable another model first")
+		f.log().Warn("embedded LLM removal refused", "reason", err.Error())
+		return err
+	}
 
 	budget := f.embeddedStopBudget()
 	removeCtx, cancel := context.WithTimeout(f.ctx(), budget)
@@ -1944,6 +1966,19 @@ func (s embeddedConfigSink) ApplyRemoved(_ context.Context) error {
 	if migrated == composite {
 		migrated = firstNonEmbeddedModelID(f.config, composite)
 	}
+	if migrated == "" {
+		// No migration target: the embedded model is the default and NO other
+		// model is enabled. Persisting the removal would leave llm.default_model
+		// empty with zero providers — a config that fails validate() at the next
+		// load — and a failed validation must not be answered with data loss.
+		// Refuse instead: the config is never mutated, so it stays validate()-clean
+		// and the installed model stays usable until the operator adds or enables
+		// another provider. RemoveEmbeddedLLM gates the same predicate before any
+		// byte is deleted; this refusal is the convergent backstop for every
+		// removal path (direct Installer use included).
+		f.configMu.Unlock()
+		return errors.New("cannot remove the embedded model: it is the default model and no other provider model is enabled — add or enable another model first")
+	}
 	autoUnload := f.config.EmbeddedLLM.AutoUnload
 	tuning := f.config.EmbeddedLLM.Tuning
 	f.config.EmbeddedLLM = config.EmbeddedLLMConfig{AutoUnload: autoUnload, Tuning: tuning}
@@ -2441,14 +2476,15 @@ func (f *FrontendAPI) runEmbeddedRouterRefresh() {
 }
 
 // firstNonEmbeddedModelID picks the migration target for llm.default_model when
-// the embedded model is removed. Empty when it was the only enabled model, and
-// the config is then DELIBERATELY left invalid: nothing reseeds
-// llm.default_model (ApplyDefaults never touches it), so the next load fails
-// validate() with "llm.default_model is not set" and the operator must pick or
-// add a provider. Guessing a default here would silently select a model the
-// operator never chose — the same rule as a config with no provider at all,
-// which is invalid independently of this subsystem. Pinned by
-// config.TestEmbeddedLLMRemoveWithNoOtherModelLeavesAnEmptyDefault.
+// the embedded model is removed. Empty when it was the only enabled model —
+// ApplyRemoved then REFUSES the removal (returning an actionable error and
+// leaving the config untouched) instead of persisting an empty
+// llm.default_model: that config would fail validate() at the next load, and
+// discarding the whole operator configuration over a removable-model edge case
+// is never the right outcome. Guessing a default here would silently select a
+// model the operator never chose — the same rule as a config with no provider
+// at all, which is invalid independently of this subsystem. Pinned by
+// config.TestEmbeddedLLMRemoveWithNoOtherModelIsRefused.
 func firstNonEmbeddedModelID(cfg *config.Config, composite string) string {
 	for _, id := range cfg.LLM.AllModelIDs() {
 		if id != composite {

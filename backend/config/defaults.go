@@ -392,6 +392,15 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.Timeouts.ToolCallTimeout == nil {
 		cfg.Timeouts.ToolCallTimeout = intPtr(300)
 	}
+	// The ceiling's exempt tool-name set: the knob is deliberately left nil
+	// when absent. Nil threads through configadapter → builder → orchestrator
+	// → ConductorConfig (all nil-guarded) and sp4rk then applies its OWN
+	// built-in exempt set at execution time (agent/tool_watchdog.go), so the
+	// default can never drift and — because the whole config struct is what
+	// gets serialized on save — is never materialized into config.yaml, where
+	// a first save would otherwise freeze the 2026-10 default against future
+	// sp4rk updates. An explicit list survives verbatim; an explicit empty
+	// list survives as a non-nil empty slice ("no exemptions").
 	if cfg.Timeouts.WebFetchTimeout == 0 {
 		cfg.Timeouts.WebFetchTimeout = 30
 	}

@@ -18,8 +18,28 @@ import (
 // ceiling are separate timers over the same budget; the confirmation must
 // return its (clean) denial strictly before the ceiling fires so the run
 // continues on a normal result rather than aborting with ErrToolTimeout — see
-// ToolRegistry.SetToolCallTimeout.
+// ToolRegistry.SetToolCallTimeout. Both timers measure from the same instant —
+// the tool-CALL start — so the guard is armed against the call deadline (see
+// confirmAndExecuteWithOptions), not from the (later) confirmation start that
+// would leave the denial unreachable whenever the pre-confirmation work
+// (dispatch, strict judge) already consumed the guard.
 const confirmCeilingGuard = time.Second
+
+// callStartCtxKey is the context key under which Execute publishes the
+// wall-clock instant the current tool call began, so late stages of the same
+// call (the user-confirmation wait) can budget themselves against the SAME
+// deadline the executor's watchdog uses instead of a fresh span of their own.
+type callStartCtxKey struct{}
+
+// callStartFrom returns the tool-call start published by Execute, or the zero
+// time when the context did not come from Execute (direct confirmAndExecute
+// callers in tests, future entry points).
+func callStartFrom(ctx context.Context) time.Time {
+	if t, ok := ctx.Value(callStartCtxKey{}).(time.Time); ok {
+		return t
+	}
+	return time.Time{}
+}
 
 // goalModeTools is the set of system-group tools that exist ONLY for goal mode:
 // they have no meaning (and must not be offered to the agent) outside an
@@ -917,6 +937,12 @@ func (r *ToolRegistry) RegisterWithSource(tool sdktools.Tool, source string) {
 // Hard reasons never pass Smart Approve: they confirm directly with the
 // advisory Ask Agent action disabled.
 func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawMessage) (result sdktools.ToolResult, err error) {
+	// Publish the call start so the same wall-clock budget the executor's
+	// watchdog measures (armed at dispatch, just before Execute) can be shared
+	// by the in-call confirmation guard instead of being restarted at the
+	// confirmation.
+	ctx = context.WithValue(ctx, callStartCtxKey{}, time.Now())
+
 	tool, ok := r.Get(name)
 	if !ok {
 		return sdktools.ToolNotFoundResult(ctx, name, func(candidate string) bool {
@@ -2010,15 +2036,24 @@ func (r *ToolRegistry) confirmAndExecuteWithOptions(ctx context.Context, tool sd
 		}, nil
 	}
 
-	// Bound the human wait just under the executor's per-tool-call ceiling (when
-	// one is configured) so a slow confirmation yields a clean denial and the run
-	// continues, instead of the executor's watchdog firing its own ErrToolTimeout
-	// and aborting the whole run. See SetToolCallTimeout.
+	// Bound the human wait so it yields a clean denial strictly before the
+	// executor's per-tool-call ceiling fires — the ceiling is measured from
+	// the tool-CALL start, and the pre-confirmation work of this very call
+	// (dispatch, the strict judge) already consumed part of it. The guard is
+	// therefore armed against the CALL deadline (call start + ceiling − guard)
+	// when that start is known; arming a fresh span from the confirmation
+	// start instead would make the denial unreachable whenever that
+	// pre-confirmation latency exceeded the guard, aborting the whole run
+	// with the watchdog's ErrToolTimeout. See SetToolCallTimeout.
 	confirmCtx := ctx
 	confirmBounded := false
 	if ceiling > confirmCeilingGuard {
 		var cancel context.CancelFunc
-		confirmCtx, cancel = context.WithTimeout(ctx, ceiling-confirmCeilingGuard)
+		if callStart := callStartFrom(ctx); !callStart.IsZero() {
+			confirmCtx, cancel = context.WithDeadline(ctx, callStart.Add(ceiling-confirmCeilingGuard))
+		} else {
+			confirmCtx, cancel = context.WithTimeout(ctx, ceiling-confirmCeilingGuard)
+		}
 		defer cancel()
 		confirmBounded = true
 	}

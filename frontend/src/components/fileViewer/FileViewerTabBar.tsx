@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { X, ChevronDown, PanelRightClose, PanelRightOpen, Pin, PinOff, FlaskConical } from "lucide-react";
 import { useFileViewerStore } from "@/stores/fileViewerStore";
 import { RESEARCH_TAB_PATH } from "@/stores/researchStore";
@@ -53,14 +53,26 @@ export function FileViewerTabBar({ onToggleCollapse, collapsed }: FileViewerTabB
     [closeFile],
   );
 
-  const handleWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
+  // React 19 registers its delegated `wheel` listener as passive, so an
+  // `onWheel` prop can never preventDefault() — the browser ignores the call,
+  // logs "Unable to preventDefault inside passive event listener invocation."
+  // on every event, and vertically scrolls the page anyway. Bind an explicit
+  // NON-passive native listener instead: it remaps the vertical wheel delta
+  // onto the horizontal tab strip and actually suppresses the default
+  // vertical scroll (same pattern as usePanZoom's canvas wheel listener).
+  const hasTabs = openTabs.length > 0;
+  useEffect(() => {
     const el = tabsRef.current;
     if (!el) return;
-    // Only intercept vertical scroll — let native horizontal scroll pass through
-    if (e.deltaY === 0) return;
-    e.preventDefault();
-    el.scrollBy({ left: e.deltaY, behavior: "instant" });
-  }, []);
+    const onWheel = (e: WheelEvent) => {
+      // Only intercept vertical scroll — let native horizontal scroll pass through
+      if (e.deltaY === 0) return;
+      e.preventDefault();
+      el.scrollBy({ left: e.deltaY, behavior: "instant" });
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [hasTabs]);
 
   const scrollToTab = useCallback((path: string) => {
     const el = tabsRef.current?.querySelector<HTMLElement>(`[data-file-path="${CSS.escape(path)}"]`);
@@ -96,7 +108,7 @@ export function FileViewerTabBar({ onToggleCollapse, collapsed }: FileViewerTabB
       {/* Tab strip + controls */}
       <div className="flex items-end flex-1 min-h-0">
         {/* Scrollable tab strip */}
-        <div ref={tabsRef} onWheel={handleWheel} className="flex-1 flex overflow-x-auto no-scrollbar min-w-0">
+        <div ref={tabsRef} className="flex-1 flex overflow-x-auto no-scrollbar min-w-0">
           {openTabs.map((path) => {
             const name = fileNameFromPath(path);
             const isActive = path === activeFile;

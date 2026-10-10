@@ -41,5 +41,5 @@ func TestIsGitTrackedCarriesHardening(t *testing.T) {
 	if !IsGitTracked(context.Background(), dir, "file.txt") {
 		t.Fatal("IsGitTracked = false, want true (fake git exits 0)")
 	}
-	gittest.AssertHardenedInvocation(t, readLog(), "ls-files", "--error-unmatch", "file.txt")
+	gittest.AssertHardenedInvocation(t, readLog(), "ls-files", "--error-unmatch", "--", "file.txt")
 }

@@ -52,6 +52,8 @@ func TestGetSystemFonts_StubbedSeam(t *testing.T) {
 				Mono: "'DejaVu Sans Mono Bold 10'",
 			}, nil
 		}}
+		f.seedPublished.Store(true)
+		f.seedPublished.Store(true)
 		resp := f.GetSystemFonts()
 		if resp.UIFamily != "Noto Sans" {
 			t.Errorf("GetSystemFonts() UIFamily = %q, want %q", resp.UIFamily, "Noto Sans")
@@ -65,6 +67,8 @@ func TestGetSystemFonts_StubbedSeam(t *testing.T) {
 		f := &FrontendAPI{readSystemFontsFn: func() (systemFontPair, error) {
 			return systemFontPair{}, errors.New("gsettings not found in PATH: exec: not found")
 		}}
+		f.seedPublished.Store(true)
+		f.seedPublished.Store(true)
 		resp := f.GetSystemFonts()
 		if resp.UIFamily != "" || resp.MonoFamily != "" {
 			t.Errorf("GetSystemFonts() = %+v, want the zero response on a reader error", resp)
@@ -75,6 +79,8 @@ func TestGetSystemFonts_StubbedSeam(t *testing.T) {
 		f := &FrontendAPI{readSystemFontsFn: func() (systemFontPair, error) {
 			return systemFontPair{UI: "''", Mono: "'DejaVu Sans Mono 10'"}, nil
 		}}
+		f.seedPublished.Store(true)
+		f.seedPublished.Store(true)
 		resp := f.GetSystemFonts()
 		if resp.UIFamily != "" {
 			t.Errorf("GetSystemFonts() UIFamily = %q, want empty for an unparsable UI value", resp.UIFamily)
@@ -88,6 +94,8 @@ func TestGetSystemFonts_StubbedSeam(t *testing.T) {
 		f := &FrontendAPI{readSystemFontsFn: func() (systemFontPair, error) {
 			return systemFontPair{UI: "'Noto Sans 11'\n", Mono: "'11'"}, nil
 		}}
+		f.seedPublished.Store(true)
+		f.seedPublished.Store(true)
 		resp := f.GetSystemFonts()
 		if resp.UIFamily != "Noto Sans" {
 			t.Errorf("GetSystemFonts() UIFamily = %q, want %q", resp.UIFamily, "Noto Sans")
@@ -113,6 +121,8 @@ func TestGetSystemFonts_NilSeamUsesRealRead(t *testing.T) {
 	}
 
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	resp := f.GetSystemFonts()
 	wantUI, uiOK := parseGnomeFontName(pair.UI)
 	wantMono, monoOK := parseGnomeFontName(pair.Mono)

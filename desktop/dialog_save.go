@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
+
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // SaveMessageAsMarkdown opens a native save-file dialog and writes content to
@@ -27,7 +29,7 @@ import (
 // the write (including overwrite confirmation), so no additional confirmation
 // gate applies; the content is chat text the user already sees on screen.
 func (a *App) SaveMessageAsMarkdown(content string) (string, error) {
-	if a.ctx == nil {
+	if a.wailsCtx() == nil {
 		return "", errors.New("SaveMessageAsMarkdown: application context is not initialized")
 	}
 
@@ -45,7 +47,7 @@ func (a *App) SaveMessageAsMarkdown(content string) (string, error) {
 		options.DefaultDirectory = dir
 	}
 
-	path, err := wailsRuntime.SaveFileDialog(a.ctx, options)
+	path, err := wailsRuntime.SaveFileDialog(a.wailsCtx(), options)
 	if err != nil {
 		return "", fmt.Errorf("save dialog failed: %w", err)
 	}
@@ -58,7 +60,20 @@ func (a *App) SaveMessageAsMarkdown(content string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	// Guarded write (safeio.OpenFile): the open is non-blocking and fstat-
+	// checked for regularity, so a FIFO planted at the chosen path is refused
+	// instead of blocking this Wails RPC goroutine forever inside open(2). A
+	// symlink at the user-chosen path keeps its historical follow-through
+	// semantics: the picker is the user's explicit choice of target.
+	f, err := safeio.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return "", fmt.Errorf("failed to write markdown file: %w", err)
+	}
+	if _, err := f.WriteString(content); err != nil {
+		_ = f.Close()
+		return "", fmt.Errorf("failed to write markdown file: %w", err)
+	}
+	if err := f.Close(); err != nil {
 		return "", fmt.Errorf("failed to write markdown file: %w", err)
 	}
 

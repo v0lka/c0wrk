@@ -694,6 +694,8 @@ func normalizedDocText(source string) string {
 // context is tolerated because Shutdown may be handed a torn-down one.
 func TestStopEmbeddedLLMIsANoOpWithoutASupervisor(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	if err := f.stopEmbeddedLLM(context.Background()); err != nil {
 		t.Errorf("stopEmbeddedLLM on a zero API = %v, want nil", err)
 	}

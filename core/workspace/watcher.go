@@ -193,6 +193,41 @@ func (w *Watcher) eventLoop() {
 			if event.Has(fsnotify.Create) && event.Name != "" {
 				w.maybeAutoAddDir(event.Name)
 			}
+			// Forget watches on deleted/renamed directories (review [71]):
+			// fsnotify watches inodes, so when a watched directory is
+			// unlinked the kernel drops its watch while watched[path] stays
+			// true — and because the auto-add above short-circuits on that
+			// map, a directory deleted and recreated at the same path was
+			// never re-watched, silently losing all change detection for
+			// the recreated subtree. Dropping the stale entry lets the
+			// Create of the recreated directory re-register it.
+			if event.Has(fsnotify.Remove) && event.Name != "" {
+				w.forgetWatchedDir(event.Name)
+			} else if event.Has(fsnotify.Rename) && event.Name != "" {
+				// Drop the stale watched entries for the old path (and
+				// its watched descendants): they short-circuit every
+				// re-watch path, so a directory recreated at the old
+				// path would otherwise stay silently unwatched (review
+				// [71]). Unlike Remove, the fsnotify watches are NOT
+				// closed here.
+				//
+				// The destination side deliberately gets NO recovery: on
+				// fsnotify v1, moving a watched directory itself makes
+				// fsnotify handle IN_MOVE_SELF in its own read loop by
+				// REMOVING the watch (kernel watch + bookkeeping) at an
+				// ordering we cannot observe, so any re-registration of
+				// the moved path raced that removal and intermittently
+				// lost all detection for the moved directory (the interim
+				// pairing attempt won some interleavings and was silently
+				// stripped in others). A renamed explicit watch therefore
+				// recovers only through a recreate at the old path (the
+				// Create re-registers, review [71]) or through
+				// recursive-root auto-add at the destination (best-effort,
+				// subject to the same MOVE_SELF race); a watch registered
+				// via WatchDir must be re-issued by its owner after a
+				// move.
+				w.forgetRenamedWatched(event.Name)
+			}
 			// (Re)start the debounce window.
 			if timer == nil {
 				timer = time.NewTimer(defaultDebounce)
@@ -346,6 +381,72 @@ func (w *Watcher) isWithinRecursiveRootLocked(path string) bool {
 		}
 	}
 	return false
+}
+
+// forgetRenamedWatched drops the stale watched entries a RENAMED directory
+// left behind: the path itself and every watched descendant below it. These
+// entries short-circuit both re-registration paths (the event loop's
+// maybeAutoAddDir and the WatchTree/WatchDir early-outs), so a directory
+// recreated at the renamed-away path would never be re-watched and its
+// change detection would silently die (the same failure shape review [71]
+// fixed for Remove). Unlike forgetWatchedDir this does NOT close the
+// fsnotify watches: fsnotify handles a moved directory's IN_MOVE_SELF in
+// its own read loop — removing the moved watch (kernel watch included) at
+// an ordering we cannot observe (see the Rename handling in the event
+// loop) — so closing anything here would race that removal. Leaving a
+// now-stale kernel watch briefly alive is harmless: the watched-map drops
+// are what unblock re-registration. Mirrors forgetWatchedDir's
+// no-early-return shape: a watched descendant can exist even when the
+// renamed path itself was never in the map. The scan is a bounded map walk
+// per Rename event.
+func (w *Watcher) forgetRenamedWatched(path string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for watched := range w.watched {
+		within, withinErr := pathutil.IsWithinPath(path, watched)
+		if withinErr != nil || !within {
+			continue
+		}
+		delete(w.watched, watched)
+	}
+}
+
+// forgetWatchedDir drops a DELETED directory — and every watched descendant
+// BENEATH it — from the watch list so a tree recreated at the same path is
+// re-registered by the event loop's auto-add instead of being
+// short-circuited by stale entries (review [71]). Forgetting only the exact
+// path would leave stale entries for descendants whose kernel watches died
+// with the deleted inode: the Remove event fires only for the deleted
+// directory itself, and both registration paths skip any path already
+// present in w.watched — so a recreated subtree with surviving stale entries
+// would never be re-watched and its changes would silently go unreported.
+// Best-effort: the kernel already dropped the watches when the directories
+// were unlinked, so the fsnotify Removes typically error — logged at Debug
+// and skipped, exactly like UnwatchTree's teardown. Renames take the
+// forgetRenamedWatched path instead: the stale map entries must go (they
+// would short-circuit every re-watch path), while the destination side has
+// no reliable recovery on fsnotify v1 (see the Rename handling in the event
+// loop for the IN_MOVE_SELF race that rules it out).
+func (w *Watcher) forgetWatchedDir(path string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	// No early return when path itself is not (or no longer) in w.watched: a
+	// Remove event can name a directory whose own registration was skipped
+	// best-effort (a WatchTree walk hitting a transient error) while watched
+	// descendants DID register. Their stale entries must still be dropped —
+	// both re-registration paths short-circuit on them, so a recreated
+	// descendant would stay silently unwatched (review [71]). The scan is a
+	// bounded map walk per Remove event.
+	for watched := range w.watched {
+		within, withinErr := pathutil.IsWithinPath(path, watched)
+		if withinErr != nil || !within {
+			continue
+		}
+		if rmErr := w.watcher.Remove(watched); rmErr != nil {
+			w.log().Debug("watcher: failed to remove watch for deleted directory", "dir", watched, "error", rmErr)
+		}
+		delete(w.watched, watched)
+	}
 }
 
 // WatchDir adds a directory to the watch list. The path must be under the root.

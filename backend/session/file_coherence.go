@@ -31,9 +31,24 @@ type FileCoherenceTracker struct {
 	snapshots    map[string]map[string]sdktools.FileSig // sessionID -> path -> sig
 	activity     []writeRecord                          // ring buffer of recent writes
 	activityCap  int
-	fileMutexes  map[string]*sync.Mutex
+	fileMutexes  map[string]*fileLockEntry
 	fileMu       sync.Mutex // protects fileMutexes map
 	nameResolver func(string) string
+}
+
+// fileLockEntry is a per-path mutex plus a reference count of every Lock
+// (holder or waiter) that resolved this entry. The refcount is what keeps the
+// entry alive while a lock is held or waited on: pruning must never delete an
+// entry whose mutex is (or may be) locked, because Unlock re-resolves the
+// entry by path — a deleted entry would no-op the Unlock and leave the mutex
+// locked forever, blocking the next Lock on that path (or, after a fresh
+// entry is created, break same-path exclusivity entirely). The count is
+// incremented under fileMu at Lock time and decremented at Unlock time, so a
+// nonzero count exactly covers the lock's hold window, including the span
+// between Lock and the first snapshot/activity record for the path.
+type fileLockEntry struct {
+	mu   sync.Mutex
+	refs int
 }
 
 // NewFileCoherenceTracker creates a new tracker instance.
@@ -43,31 +58,41 @@ func NewFileCoherenceTracker(nameResolver func(string) string) *FileCoherenceTra
 		snapshots:    make(map[string]map[string]sdktools.FileSig),
 		activity:     make([]writeRecord, 0, defaultActivityCap),
 		activityCap:  defaultActivityCap,
-		fileMutexes:  make(map[string]*sync.Mutex),
+		fileMutexes:  make(map[string]*fileLockEntry),
 		nameResolver: nameResolver,
 	}
 }
 
-// Lock acquires a per-file mutex for the given path.
+// Lock acquires a per-file mutex for the given path. The resolved entry is
+// pinned by the refcount for the whole hold window, so a concurrent prune
+// cannot remove it out from under the matching Unlock.
 func (t *FileCoherenceTracker) Lock(path string) {
 	t.fileMu.Lock()
-	mu, ok := t.fileMutexes[path]
+	e, ok := t.fileMutexes[path]
 	if !ok {
-		mu = &sync.Mutex{}
-		t.fileMutexes[path] = mu
+		e = &fileLockEntry{}
+		t.fileMutexes[path] = e
 	}
+	e.refs++
 	t.fileMu.Unlock()
-	mu.Lock()
+	e.mu.Lock()
 }
 
-// Unlock releases the per-file mutex for the given path.
+// Unlock releases the per-file mutex for the given path. The entry is still
+// guaranteed to be in the map — the Lock that acquired it pinned it with its
+// refcount, and pruning skips pinned entries — so the exact mutex that was
+// locked is the one unlocked (no no-op on a pruned entry, no unlock of a
+// replacement mutex). Unmatched Unlock calls (no prior Lock) are ignored.
 func (t *FileCoherenceTracker) Unlock(path string) {
 	t.fileMu.Lock()
-	mu, ok := t.fileMutexes[path]
-	t.fileMu.Unlock()
+	e, ok := t.fileMutexes[path]
 	if ok {
-		mu.Unlock()
+		if e.refs > 0 {
+			e.refs--
+		}
+		e.mu.Unlock()
 	}
+	t.fileMu.Unlock()
 }
 
 // CheckRead checks if the file at path changed since this session last read it.
@@ -226,8 +251,12 @@ func (t *FileCoherenceTracker) PurgeSession(sessionID string) {
 }
 
 // pruneOrphanFileMutexesLocked removes per-path mutexes for paths that are
-// no longer referenced by any session's snapshot map and have no remaining
-// entries in the activity log. The caller must hold t.mu.
+// no longer referenced by any session's snapshot map, have no remaining
+// entries in the activity log, AND are not currently pinned by a Lock (a
+// nonzero refcount covers the whole hold/wait window between Lock and
+// Unlock — deleting a pinned entry would strand the lock held forever and
+// break same-path exclusivity, since Unlock re-resolves the entry by path).
+// The caller must hold t.mu.
 func (t *FileCoherenceTracker) pruneOrphanFileMutexesLocked() {
 	t.fileMu.Lock()
 	defer t.fileMu.Unlock()
@@ -243,10 +272,17 @@ func (t *FileCoherenceTracker) pruneOrphanFileMutexesLocked() {
 	for _, r := range t.activity {
 		referenced[r.Path] = struct{}{}
 	}
-	for path := range t.fileMutexes {
-		if _, ok := referenced[path]; !ok {
-			delete(t.fileMutexes, path)
+	for path, e := range t.fileMutexes {
+		if _, ok := referenced[path]; ok {
+			continue
 		}
+		if e.refs > 0 {
+			// Held or waited-on: the Lock that pinned it still has its Unlock
+			// ahead of it. Leave the entry in place; it becomes prunable once
+			// the refcount drops back to zero.
+			continue
+		}
+		delete(t.fileMutexes, path)
 	}
 }
 

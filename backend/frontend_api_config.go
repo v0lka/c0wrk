@@ -245,6 +245,7 @@ func (f *FrontendAPI) collectAllModels(reg *llm.ModelRegistry) []ModelInfo {
 // never be rolled back to a snapshot that predates a concurrent config
 // writer's changes.
 func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
+	f.seedAcquire()
 	f.saveMu.Lock()
 	defer f.saveMu.Unlock()
 
@@ -618,15 +619,22 @@ func (f *FrontendAPI) UpdateProxySettings(settings ProxySettingsRequest) error {
 	}
 
 	f.config.Proxy.Enabled = settings.Enabled
-	// Preserve the existing URL when the incoming value is the masked form
-	// returned by GetConfig's proxy section (proxy.MaskURL replaces the
+	// Preserve the existing URL ONLY when the incoming value is the masked
+	// form returned by GetConfig's proxy section (proxy.MaskURL replaces the
 	// password with "***"). The frontend round-trips the displayed (masked)
 	// URL verbatim when
 	// only another field (enabled/bypass/cert-dir) is edited, so without this
 	// guard the real password would be silently overwritten with "***" and the
 	// next proxy connection would fail to authenticate. Mirrors the
 	// maskedAPIKey preserve guard used for API keys above.
-	if settings.URL != "" && settings.URL != proxy.MaskURL(f.config.Proxy.URL) {
+	//
+	// The comparison is against the mask ALONE — never "any empty value":
+	// treating an empty URL as preserve-round-trip would also swallow the
+	// user CLEARING the field, leaving the old credentials persisted and
+	// dialing while the frontend reports the proxy inactive. An empty
+	// incoming value is never the masked form (MaskURL("") is ""), so it
+	// clears the URL as intended.
+	if settings.URL != proxy.MaskURL(f.config.Proxy.URL) {
 		f.config.Proxy.URL = settings.URL
 	}
 	if settings.BypassList != nil {
@@ -701,6 +709,7 @@ func (f *FrontendAPI) UpdateProxySettings(settings ProxySettingsRequest) error {
 // an app restart. Model Profiles is not gated by this switch, so this method
 // never touches its persisted master toggle (model_profiles.enabled).
 func (f *FrontendAPI) UpdateExperimentalFeatures(enabled bool) error {
+	f.seedAcquire()
 	f.configMu.Lock()
 	defer f.configMu.Unlock()
 
@@ -1139,6 +1148,7 @@ func responseToGroupPolicies(groups map[string]GroupPolicyResponse) (map[string]
 // returned (the catalog is independent of config.yaml); active_id is empty
 // and suggested_profile_id is null.
 func (f *FrontendAPI) GetModelProfiles() ModelProfilesResponse {
+	f.seedAcquire()
 	// Picker universe (built-in tools + workflow clusters) comes from the live
 	// tool registry, not from config, so it is read here. Both this registry
 	// call and the catalog load below do I/O (the latter reads
@@ -1306,6 +1316,7 @@ func suggestModelProfileID(defaultModel string) string {
 // custom profile saved at runtime applies on the next config conversion
 // without a restart; the store file is tiny and conversions are not hot paths.
 func (f *FrontendAPI) modelProfilesCatalog() []config.ModelProfile {
+	f.seedAcquire()
 	return loadModelProfilesCatalog(f.agentDir, f.log())
 }
 
@@ -1380,7 +1391,7 @@ func (f *FrontendAPI) modelProfilesGoalBlocked() bool {
 // unavailable (before construction, or in unit tests built without an
 // Application).
 func (f *FrontendAPI) modelProfilesPickerData() ([]ModelProfilesBuiltinTool, []ModelProfilesToolGroup) {
-	if f.app == nil {
+	if f.appCell() == nil {
 		return []ModelProfilesBuiltinTool{}, []ModelProfilesToolGroup{}
 	}
 	tools := builtinToolInfos(f.app.ListTools())
@@ -1455,6 +1466,7 @@ func modelProfilesToolGroups(tools []ModelProfilesBuiltinTool) []ModelProfilesTo
 // modelProfilesStore reads the custom profile store (fail-soft), logging store-level
 // warnings. Mutations operate on this fresh snapshot.
 func (f *FrontendAPI) modelProfilesStore() (custom []config.ModelProfile, storePath string) {
+	f.seedAcquire()
 	storePath = config.ModelProfilesPath(f.agentDir)
 	custom, warnings := config.LoadCustomModelProfiles(storePath)
 	for _, w := range warnings {
@@ -1473,6 +1485,7 @@ func (f *FrontendAPI) modelProfilesStore() (custom []config.ModelProfile, storeP
 // manager's Model Profiles snapshot so later agent_metrics events are annotated
 // with the new profile.
 func (f *FrontendAPI) applyModelProfilesChange() {
+	f.seedAcquire()
 	f.configLoadErrors = nil
 	f.emitConfigUpdated()
 	// Recompute the cached effective gate that GetConfig serves (this method
@@ -1827,6 +1840,7 @@ func (f *FrontendAPI) GetLogLevel() string {
 
 // SetLogLevel sets the log level dynamically.
 func (f *FrontendAPI) SetLogLevel(level string) error {
+	f.seedAcquire()
 	f.configMu.Lock()
 	defer f.configMu.Unlock()
 
@@ -2262,6 +2276,15 @@ func (f *FrontendAPI) SetModelConfig(model string, req ModelConfigRequest) error
 			req.ContextWindow, req.OutputLimit)
 	}
 
+	// The same ceiling config.validate enforces at load. Save does not run
+	// validate, so an out-of-range window persisted here would surface only on
+	// the next launch — where the failed validation discards the whole config
+	// and the next save overwrites it with defaults (total data loss).
+	if req.ContextWindow > config.MaxModelContextWindow {
+		return fmt.Errorf("context window %d is not valid; must be within 1-%d tokens",
+			req.ContextWindow, config.MaxModelContextWindow)
+	}
+
 	// TokenizerType/Family/Protocol are selected from fixed dropdown lists; the
 	// backend is the enforcement boundary. Empty is allowed (means "inherit").
 	if req.TokenizerType != "" {
@@ -2383,6 +2406,7 @@ func (f *FrontendAPI) persistConfig() error {
 // event delivery). Nil-guarded: most tests exercise persistConfig without
 // wiring emitEvent.
 func (f *FrontendAPI) emitConfigUpdated() {
+	f.seedAcquire()
 	if f.emitEvent == nil {
 		return
 	}

@@ -96,6 +96,8 @@ func newProjectSwitchHarness(t *testing.T) *projectSwitchTestHarness {
 		agentDir:       agentDir,
 		appCtx:         func() context.Context { return ctx },
 	}
+	api.seedPublished.Store(true)
+	api.seedPublished.Store(true)
 
 	return &projectSwitchTestHarness{
 		api:          api,
@@ -602,6 +604,8 @@ func TestGetSessionWorkspace_NoProject_ForeignSessionDoesNotLeak(t *testing.T) {
 		agentDir:  base,
 		emitEvent: func(string, ...any) {},
 	}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	f.activeProjectMu.Lock()
 	f.activeProjectID = project.NoProjectID
 	f.activeProjectPath = filepath.Join(base, "__no_project__")
@@ -888,6 +892,8 @@ func TestSwitchProject_PersistsLastActiveProjectIDAcrossReopen(t *testing.T) {
 		// switchProjectActivate (see TestSwitchProject_AlreadyActive_EmitsSwitchedEvent).
 		builderOverride: &mockBuilder{},
 	}
+	api.seedPublished.Store(true)
+	api.seedPublished.Store(true)
 	defer func() {
 		api.watcherMu.Lock()
 		defer api.watcherMu.Unlock()
@@ -937,6 +943,8 @@ func TestSwitchProject_PersistsLastActiveProjectIDAcrossReopen(t *testing.T) {
 	db2, projectStore2, _ := openStores(t)
 	defer func() { _ = db2.Close() }()
 	restarted := &FrontendAPI{projStore: projectStore2}
+	restarted.seedPublished.Store(true)
+	restarted.seedPublished.Store(true)
 	if got := restarted.GetLastActiveProjectID(); got != project.NoProjectID {
 		t.Fatalf("last active project after reopen: got %q, want %q", got, project.NoProjectID)
 	}
@@ -1223,5 +1231,65 @@ func TestProgressFraction(t *testing.T) {
 				t.Fatalf("progressFraction must never exceed 1 (fraction, not percent); got %v", got)
 			}
 		})
+	}
+}
+
+// DeleteProject must reject the No Project pseudo-project BEFORE any
+// destructive work: pre-#92 the in-memory session teardown loop (which
+// removes each CHAT session's on-disk workspace) ran ahead of the manager's
+// rejection, so a forged DeleteProject(NoProjectID) wrecked every loaded
+// CHAT session and THEN returned an error.
+func TestDeleteProject_NoProject_RejectedBeforeSessionTeardown(t *testing.T) {
+	base := t.TempDir()
+	factory := func(core.Emitter, *slog.Logger, string, core.BlackboardFactory, io.Writer, *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+		// Non-nil: CreateSession calls SetNoProjectMode on the orchestrator
+		// for CHAT sessions. The zero value is fine (nil registry is guarded).
+		return &core.Orchestrator{}, nil
+	}
+	manager := session.NewManager(factory, func(session.Event) {}, base)
+	t.Cleanup(manager.Shutdown)
+
+	created, err := manager.CreateSession(project.NoProjectID, "")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	// A No-Project session's workspace is deterministic.
+	chatWS := config.NoProjectSessionWorkspace(base, created.ID)
+	if _, statErr := os.Stat(chatWS); statErr != nil {
+		t.Fatalf("session workspace missing after create: %v", statErr)
+	}
+
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	store, err := project.NewSQLiteProjectStore(db)
+	if err != nil {
+		t.Fatalf("project store: %v", err)
+	}
+	projMgr := project.NewManager(store, base, nil)
+
+	f := &FrontendAPI{
+		app:            &Application{manager: manager},
+		agentDir:       base,
+		projectManager: projMgr,
+		emitEvent:      func(string, ...any) {},
+	}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
+
+	for _, id := range []string{project.NoProjectID, ""} {
+		if err := f.DeleteProject(id); err == nil {
+			t.Fatalf("DeleteProject(%q) must be rejected", id)
+		}
+	}
+
+	// The CHAT session's on-disk workspace survived the rejected deletion.
+	if _, statErr := os.Stat(chatWS); statErr != nil {
+		t.Fatalf("rejected deletion destroyed the session workspace: %v", statErr)
+	}
+	if manager.HasSession(created.ID) != true {
+		t.Fatal("rejected deletion removed the in-memory session")
 	}
 }

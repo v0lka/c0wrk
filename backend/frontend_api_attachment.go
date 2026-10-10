@@ -12,7 +12,7 @@ import (
 // as pending attachments on the session. Returns metadata for the successfully
 // attached files. See session.Manager.AttachFiles for full semantics.
 func (f *FrontendAPI) AttachFiles(sessionID string, paths []string) ([]session.AttachmentInfo, error) {
-	if f.app == nil || f.app.Manager() == nil {
+	if f.appCell() == nil || f.app.Manager() == nil {
 		return nil, errors.New("session manager not initialized")
 	}
 	infos, err := f.app.Manager().AttachFiles(context.Background(), sessionID, paths)
@@ -28,7 +28,7 @@ func (f *FrontendAPI) AttachFiles(sessionID string, paths []string) ([]session.A
 // whether the active model can consume image input. See session.Manager.
 // PasteFromClipboard for the full precedence and per-kind semantics.
 func (f *FrontendAPI) PasteFromClipboard(sessionID string, supportsVision bool) (session.PasteResult, error) {
-	if f.app == nil || f.app.Manager() == nil {
+	if f.appCell() == nil || f.app.Manager() == nil {
 		return session.PasteResult{}, errors.New("session manager not initialized")
 	}
 	res, err := f.app.Manager().PasteFromClipboard(context.Background(), sessionID, supportsVision)
@@ -40,7 +40,7 @@ func (f *FrontendAPI) PasteFromClipboard(sessionID string, supportsVision bool) 
 
 // RemoveAttachment removes a staged (pending) attachment from the session by ID.
 func (f *FrontendAPI) RemoveAttachment(sessionID, attachmentID string) error {
-	if f.app == nil || f.app.Manager() == nil {
+	if f.appCell() == nil || f.app.Manager() == nil {
 		return errors.New("session manager not initialized")
 	}
 	if err := f.app.Manager().RemovePendingAttachment(sessionID, attachmentID); err != nil {
@@ -52,7 +52,7 @@ func (f *FrontendAPI) RemoveAttachment(sessionID, attachmentID string) error {
 // GetAttachments returns the staged (pending) attachments for a session as
 // metadata-only values for UI display.
 func (f *FrontendAPI) GetAttachments(sessionID string) ([]session.AttachmentInfo, error) {
-	if f.app == nil || f.app.Manager() == nil {
+	if f.appCell() == nil || f.app.Manager() == nil {
 		return nil, errors.New("session manager not initialized")
 	}
 	return f.app.Manager().GetSessionAttachments(sessionID)
@@ -64,7 +64,7 @@ func (f *FrontendAPI) GetAttachments(sessionID string) ([]session.AttachmentInfo
 // blackboard state response, keeping that response free of potentially large
 // payloads.
 func (f *FrontendAPI) GetBlackboardAttachmentMarkdown(sessionID, attachmentID string) (string, error) {
-	if f.app == nil || f.app.Manager() == nil {
+	if f.appCell() == nil || f.app.Manager() == nil {
 		return "", errors.New("session manager not initialized")
 	}
 	bbState, err := f.app.Manager().GetBlackboardState(sessionID)

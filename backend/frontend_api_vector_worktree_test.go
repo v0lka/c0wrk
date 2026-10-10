@@ -99,6 +99,8 @@ func newVectorWorktreeHarness(t *testing.T) *vectorWorktreeHarness {
 		activeProjectPath: created.WorkspacePath,
 		emitEvent:         func(string, ...any) {},
 	}
+	api.seedPublished.Store(true)
+	api.seedPublished.Store(true)
 
 	// The registry builds a real manager per routed root through the factory
 	// (fake 4-dim embeddings, same as the pre-registry fixtures). The ready

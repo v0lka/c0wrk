@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import type { KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -114,6 +115,43 @@ export function ProviderConfigForm({
     [autoRetryMaxSeconds],
   )
 
+  // API-key edit draft: null when no edit is in progress (the input then
+  // displays the committed value, which renders as an empty string while the
+  // stored key is masked), a string while the user is typing. Keystrokes
+  // NEVER reach onConfigChange: the stored key is invisible here, so an
+  // autosaved half-typed fragment could overwrite the real key with a value
+  // the user never finished entering. The draft is committed to the save
+  // flow on blur or Enter — the single point where a key edit becomes
+  // saveable — so the debounced save and its unmount flush only ever carry
+  // committed keys.
+  const [apiKeyDraft, setApiKeyDraft] = useState<string | null>(null)
+  const storedApiKey = config?.api_key ?? ''
+  // The committed value as displayed: a masked stored key renders as an
+  // empty input.
+  const committedApiKeyView = storedApiKey === '***configured***' ? '' : storedApiKey
+  const displayedApiKey = apiKeyDraft ?? committedApiKeyView
+
+  const commitApiKeyDraft = () => {
+    if (apiKeyDraft === null) return
+    const draft = apiKeyDraft
+    setApiKeyDraft(null)
+    // An untouched or fully-cleared draft is a no-op: committing '' over a
+    // masked stored key would flip the draft to a real '' (hiding the
+    // "Configured" badge and the Fetch models button) even though the
+    // backend would have kept the stored key. '' only reaches the backend
+    // when the user explicitly commits an emptied field on a provider whose
+    // stored key is a real (non-masked) value.
+    if (draft === committedApiKeyView) return
+    onConfigChange({ api_key: draft })
+  }
+
+  const handleApiKeyKeyDown = (e: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      commitApiKeyDraft()
+    }
+  }
+
   // Unconditional with respect to the configured pin: no fingerprint is
   // sent, and the result overwrites whatever the field holds. Pressing Get
   // always answers "what is this endpoint serving right now?".
@@ -182,13 +220,12 @@ export function ProviderConfigForm({
           <label className="text-xs text-muted-foreground">API Key</label>
           <div className="flex items-center gap-2">
             <Input
-              type={(() => {
-                const val = config?.api_key === '***configured***' ? '' : (config?.api_key ?? '')
-                return val.startsWith('${') ? 'text' : 'password'
-              })()}
+              type={displayedApiKey.startsWith('${') ? 'text' : 'password'}
               placeholder={isOAuth ? 'Not used — subscription signs requests' : 'Enter API key'}
-              value={config?.api_key === '***configured***' ? '' : (config?.api_key ?? '')}
-              onChange={(e) => onConfigChange({ api_key: e.target.value })}
+              value={displayedApiKey}
+              onChange={(e) => setApiKeyDraft(e.target.value)}
+              onBlur={commitApiKeyDraft}
+              onKeyDown={isOAuth ? undefined : handleApiKeyKeyDown}
               disabled={isOAuth}
               title={
                 isOAuth

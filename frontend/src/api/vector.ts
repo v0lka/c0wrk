@@ -2,17 +2,18 @@
 
 import { getApp } from './runtime'
 import { logger } from '@/lib/logger'
+import { isArrayOf, isGPUDevice, isVectorStoreEntry } from '@/types/guards'
 import type { SearchRequest, VectorStoreEntry, VectorIndexStatus, GPUDeviceResponse } from '@/types/models'
 
 export async function searchVectorStore(req: SearchRequest): Promise<VectorStoreEntry[]> {
   try {
     const app = getApp()
     const result = await app.SearchVectorStore(req)
-    if (!Array.isArray(result)) {
+    if (!isArrayOf(result, isVectorStoreEntry)) {
       logger.error('searchVectorStore: unexpected response shape, returning []', result)
       return []
     }
-    return result as VectorStoreEntry[]
+    return result
   } catch (err) {
     logger.error('Failed to search vector store:', err)
     throw err
@@ -61,11 +62,11 @@ export async function listVectorIndexGPUs(): Promise<GPUDeviceResponse[]> {
   try {
     const app = getApp()
     const result = await app.ListVectorIndexGPUs()
-    if (!Array.isArray(result)) {
+    if (!isArrayOf(result, isGPUDevice)) {
       logger.error('listVectorIndexGPUs: unexpected response shape, returning []', result)
       return []
     }
-    return result as GPUDeviceResponse[]
+    return result
   } catch (err) {
     logger.error('Failed to list vector index GPUs:', err)
     throw err

@@ -107,6 +107,8 @@ func TestGetReviewDiff_TwoFiles(t *testing.T) {
 // slice (not an error) for No Project mode.
 func TestGetReviewDiff_NoProject(t *testing.T) {
 	f := &FrontendAPI{activeProjectID: project.NoProjectID, activeProjectPath: t.TempDir()}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	files, err := f.GetReviewDiff()
 	if err != nil {
 		t.Fatalf("unexpected error for No Project: %v", err)
@@ -120,6 +122,8 @@ func TestGetReviewDiff_NoProject(t *testing.T) {
 // FrontendAPI (no active project) also returns an empty slice.
 func TestGetReviewDiff_NoActiveProject(t *testing.T) {
 	f := &FrontendAPI{}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	files, err := f.GetReviewDiff()
 	if err != nil {
 		t.Fatalf("unexpected error for no active project: %v", err)
@@ -133,6 +137,8 @@ func TestGetReviewDiff_NoActiveProject(t *testing.T) {
 // workspace that is not a git repository.
 func TestGetReviewDiff_NonGit(t *testing.T) {
 	f := &FrontendAPI{activeProjectPath: t.TempDir()}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	files, err := f.GetReviewDiff()
 	if err != nil {
 		t.Fatalf("unexpected error for non-git workspace: %v", err)
@@ -362,6 +368,8 @@ func TestGetCommitDiff_RootCommit(t *testing.T) {
 	runGit(t, tmpDir, "commit", "-m", "initial")
 
 	f := &FrontendAPI{activeProjectPath: tmpDir}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	sha := gitOut(t, tmpDir, "rev-parse", "HEAD")
 
 	files, err := f.GetCommitDiff(sha)
@@ -382,6 +390,8 @@ func TestGetCommitDiff_RootCommit(t *testing.T) {
 // TestGetCommitDiff_EmptySHA verifies the RPC rejects an empty/whitespace SHA.
 func TestGetCommitDiff_EmptySHA(t *testing.T) {
 	f := &FrontendAPI{activeProjectPath: t.TempDir()}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	if _, err := f.GetCommitDiff(""); err == nil {
 		t.Fatal("expected error for empty sha")
 	}
@@ -393,6 +403,8 @@ func TestGetCommitDiff_EmptySHA(t *testing.T) {
 // TestGetCommitDiff_InvalidSha verifies the RPC rejects a non-hex SHA.
 func TestGetCommitDiff_InvalidSha(t *testing.T) {
 	f := &FrontendAPI{activeProjectPath: t.TempDir()}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	if _, err := f.GetCommitDiff("not-a-sha"); err == nil {
 		t.Fatal("expected error for non-hex SHA")
 	}
@@ -402,6 +414,8 @@ func TestGetCommitDiff_InvalidSha(t *testing.T) {
 // Project mode (a commit diff requires a git repository).
 func TestGetCommitDiff_NoProject(t *testing.T) {
 	f := &FrontendAPI{activeProjectID: project.NoProjectID, activeProjectPath: t.TempDir()}
+	f.seedPublished.Store(true)
+	f.seedPublished.Store(true)
 	if _, err := f.GetCommitDiff("abcdef1234"); err == nil {
 		t.Fatal("expected error for No Project")
 	}

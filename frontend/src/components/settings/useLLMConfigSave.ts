@@ -45,6 +45,10 @@ interface ProviderEntryPayload {
 
 export function useLLMConfigSave(onSettingsSaved?: () => void): UseLLMConfigSaveResult {
   const debounceRef = useRef<NodeJS.Timeout | null>(null)
+  // Latest snapshot queued by debouncedSave and not yet persisted. Held so the
+  // unmount cleanup can FLUSH it (cancelDebouncedSave discards it instead —
+  // the "cancel stale state" semantics its callers rely on).
+  const pendingSaveRef = useRef<{ defModel: string; configs: Record<string, ProviderConfig> } | null>(null)
   const onSavedRef = useRef(onSettingsSaved)
   onSavedRef.current = onSettingsSaved
 
@@ -127,8 +131,13 @@ export function useLLMConfigSave(onSettingsSaved?: () => void): UseLLMConfigSave
   // --- debouncedSave -----------------------------------------------------------
   const debouncedSave = useCallback(
     (defModel: string, configs: Record<string, ProviderConfig>) => {
+      pendingSaveRef.current = { defModel, configs }
       if (debounceRef.current) clearTimeout(debounceRef.current)
-      debounceRef.current = setTimeout(() => saveFullConfig(defModel, configs), 300)
+      debounceRef.current = setTimeout(() => {
+        debounceRef.current = null
+        pendingSaveRef.current = null
+        saveFullConfig(defModel, configs)
+      }, 300)
     },
     [saveFullConfig],
   )
@@ -138,12 +147,24 @@ export function useLLMConfigSave(onSettingsSaved?: () => void): UseLLMConfigSave
       clearTimeout(debounceRef.current)
       debounceRef.current = null
     }
+    pendingSaveRef.current = null
   }, [])
 
-  // Cleanup debounce timer on unmount.
+  // Flush a pending debounced save on unmount so field/model/default edits
+  // made within the 300 ms window survive closing the settings dialog or
+  // switching tabs (cancelDebouncedSave would silently discard them).
+  // Safe against half-typed API keys: the provider forms commit a key edit
+  // only on blur/Enter (ProviderConfigForm.commitApiKeyDraft), so a pending
+  // snapshot can never carry a keystroke-level fragment over the stored key.
   useEffect(() => () => {
-    cancelDebouncedSave()
-  }, [cancelDebouncedSave])
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current)
+      debounceRef.current = null
+    }
+    const pending = pendingSaveRef.current
+    pendingSaveRef.current = null
+    if (pending) saveFullConfig(pending.defModel, pending.configs)
+  }, [saveFullConfig])
 
   // --- buildSafeUpdates --------------------------------------------------------
   const buildSafeUpdates = useCallback(

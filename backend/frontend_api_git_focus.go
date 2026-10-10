@@ -24,6 +24,7 @@
 package backend
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -146,6 +147,18 @@ func (f *FrontendAPI) gitFocusPathSnapshot() string {
 	return f.gitFocusPath
 }
 
+// listWorktreesBounded lists the project's worktrees under the same 30s
+// budget every other local git invocation gets (gitCmdTimeout). f.ctx() is
+// the application context — cancelled only at app shutdown and carrying no
+// deadline — and the worktree primitives apply no internal bound, so a
+// wedged git (stuck worktree metadata, hung filesystem) would otherwise
+// hang the Git-panel RPCs indefinitely (review [162]).
+func (f *FrontendAPI) listWorktreesBounded(projectPath string) ([]workspace.WorktreeInfo, error) {
+	ctx, cancel := context.WithTimeout(f.ctx(), gitCmdTimeout)
+	defer cancel()
+	return f.worktreeOwner().List(ctx, projectPath)
+}
+
 // SetGitPanelFocus switches the Git panel's focus target. An empty path
 // resets the focus to the default (the project checkout); a non-empty path
 // must be a worktree of the active project's repository — the checkout
@@ -176,7 +189,7 @@ func (f *FrontendAPI) SetGitPanelFocus(worktreePath string) error {
 	if err != nil {
 		return fmt.Errorf("invalid focus path: %w", err)
 	}
-	trees, err := f.worktreeOwner().List(f.ctx(), projectPath)
+	trees, err := f.listWorktreesBounded(projectPath)
 	if err != nil {
 		return fmt.Errorf("listing worktrees of the active project: %w", err)
 	}
@@ -214,7 +227,7 @@ func (f *FrontendAPI) GetGitPanelFocus() (GitPanelFocusInfo, error) {
 		return GitPanelFocusInfo{}, err
 	}
 	focus := f.resolveGitFocusRoot(projectPath)
-	trees, err := f.worktreeOwner().List(f.ctx(), projectPath)
+	trees, err := f.listWorktreesBounded(projectPath)
 	if err != nil {
 		return GitPanelFocusInfo{}, fmt.Errorf("listing worktrees of the active project: %w", err)
 	}
@@ -258,7 +271,7 @@ func (f *FrontendAPI) ListProjectWorktrees() ([]GitWorktree, error) {
 	if err != nil {
 		return nil, err
 	}
-	trees, err := f.worktreeOwner().List(f.ctx(), projectPath)
+	trees, err := f.listWorktreesBounded(projectPath)
 	if err != nil {
 		return nil, fmt.Errorf("listing worktrees of the active project: %w", err)
 	}
@@ -317,7 +330,7 @@ type sessionInfoSnapshot struct {
 // metadata; nil when no manager is wired (ownership enrichment degrades to
 // absent, never fails the RPC).
 func (f *FrontendAPI) projectSessions(projectID string) []session.SessionInfo {
-	if f.app == nil {
+	if f.appCell() == nil {
 		return nil
 	}
 	mgr := f.app.Manager()

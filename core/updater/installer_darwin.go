@@ -103,5 +103,5 @@ func processAlive(pid int) bool {
 // cleanupStaleUpdatersPlatform removes leftover c0wrk-update-* staging dirs in
 // the OS temp directory from prior crashed runs.
 func cleanupStaleUpdatersPlatform(log *slog.Logger) {
-	cleanupTempGlobs(log, "c0wrk-update-*", "c0wrk-extract-*")
+	cleanupTempGlobs(os.TempDir(), log, "c0wrk-update-*", "c0wrk-extract-*")
 }

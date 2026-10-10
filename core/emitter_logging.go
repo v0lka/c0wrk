@@ -1,7 +1,10 @@
 package core
 
 import (
+	"fmt"
 	"log/slog"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/v0lka/sp4rk/agent"
@@ -130,7 +133,11 @@ func (l *loggingEmitter) StepComplete(stepNum int, duration time.Duration) {
 }
 
 func (l *loggingEmitter) SubAgentLaunch(stepID, description string) {
-	l.logger.Debug("subagent: launch", "stepID", stepID, "description", description)
+	// description is model-authored prose (the plan-step description forwarded
+	// by planStepEventTranslator): bounded preview plus its length only, never
+	// the payload unbounded ("no secrets in logs", cf. SubAgentComplete).
+	l.logger.Debug("subagent: launch", "stepID", stepID, "descriptionLen", len(description),
+		"descriptionPreview", strutil.TruncateUTF8(description, 200))
 	l.inner.SubAgentLaunch(stepID, description)
 }
 
@@ -171,12 +178,20 @@ func (l *loggingEmitter) ContextCompaction(beforePercent, afterPercent float64, 
 }
 
 func (l *loggingEmitter) Finishing(stepNum int, summary string) {
-	l.logger.Debug("executor: finishing", "stepNum", stepNum, "summary", summary)
+	// summary is model-authored prose (the run's delivered answer; in the E2S
+	// path it is literally the model's final Answer): bounded preview plus its
+	// length only ("no secrets in logs", cf. SubAgentComplete above).
+	l.logger.Debug("executor: finishing", "stepNum", stepNum, "summaryLen", len(summary),
+		"summaryPreview", strutil.TruncateUTF8(summary, 200))
 	l.inner.Finishing(stepNum, summary)
 }
 
 func (l *loggingEmitter) ExecutorDiagnostic(stepNum int, event string, details map[string]any) {
-	l.logger.Debug("executor: diagnostic", "stepNum", stepNum, "event", event, "details", details)
+	// details is an arbitrary payload map that can embed quoted file contents
+	// or secrets: log the shape only (sorted key + string byte-length / Go
+	// type), never the raw values ("no secrets in logs", cf. E2SState below).
+	l.logger.Debug("executor: diagnostic", "stepNum", stepNum, "event", event,
+		"detailsShape", payloadShape(details))
 	l.inner.ExecutorDiagnostic(stepNum, event, details)
 }
 
@@ -195,17 +210,30 @@ func (l *loggingEmitter) PlanGenerated(stepCount int, steps []orchestration.Plan
 }
 
 func (l *loggingEmitter) PlanStepStart(stepID, description, summary string) {
-	l.logger.Info("plan step start", "stepID", stepID, "description", description, "summary", summary)
+	// description/summary are model-authored prose (declare_plan fields): log
+	// bounded previews plus their lengths only, never the payloads unbounded
+	// ("no secrets in logs", cf. SubAgentComplete below).
+	l.logger.Info("plan step start", "stepID", stepID,
+		"descriptionLen", len(description), "descriptionPreview", strutil.TruncateUTF8(description, 200),
+		"summaryLen", len(summary), "summaryPreview", strutil.TruncateUTF8(summary, 200))
 	l.inner.PlanStepStart(stepID, description, summary)
 }
 
 func (l *loggingEmitter) PlanStepComplete(stepID string, success bool, duration time.Duration, errMsg string) {
-	l.logger.Info("plan step complete", "stepID", stepID, "success", success, "durationMs", duration.Milliseconds(), "errMsg", errMsg)
+	// errMsg is model-authored (mirrors SubAgentComplete below): bounded
+	// preview plus its length only, never the payload unbounded
+	// ("no secrets in logs").
+	l.logger.Info("plan step complete", "stepID", stepID, "success", success,
+		"durationMs", duration.Milliseconds(), "errMsgLen", len(errMsg),
+		"errMsgPreview", strutil.TruncateUTF8(errMsg, 200))
 	l.inner.PlanStepComplete(stepID, success, duration, errMsg)
 }
 
 func (l *loggingEmitter) PlanStepPaused(stepID string, duration time.Duration, errMsg string) {
-	l.logger.Info("plan step paused", "stepID", stepID, "durationMs", duration.Milliseconds(), "errMsg", errMsg)
+	// errMsg is model-authored (mirrors SubAgentComplete below): bounded
+	// preview plus its length only ("no secrets in logs").
+	l.logger.Info("plan step paused", "stepID", stepID, "durationMs", duration.Milliseconds(),
+		"errMsgLen", len(errMsg), "errMsgPreview", strutil.TruncateUTF8(errMsg, 200))
 	l.inner.PlanStepPaused(stepID, duration, errMsg)
 }
 
@@ -214,7 +242,14 @@ func (l *loggingEmitter) Reflection(reflection *orchestration.Reflection, attemp
 	if reflection != nil {
 		summary, action, cause = reflection.Summary, reflection.SuggestedAction, reflection.RootCause
 	}
-	l.logger.Info("reflection", "attempt", attempt, "maxAttempts", maxAttempts, "summary", summary, "suggestedAction", action, "rootCause", cause)
+	// The reflector's Summary/SuggestedAction/RootCause are LLM-authored prose
+	// derived from the failing trajectory and its tool output — they restate
+	// observed failure output and can embed quoted file contents: bounded
+	// previews plus lengths only ("no secrets in logs", cf. SubAgentComplete).
+	l.logger.Info("reflection", "attempt", attempt, "maxAttempts", maxAttempts,
+		"summaryLen", len(summary), "summaryPreview", strutil.TruncateUTF8(summary, 200),
+		"suggestedActionLen", len(action), "suggestedActionPreview", strutil.TruncateUTF8(action, 200),
+		"rootCauseLen", len(cause), "rootCausePreview", strutil.TruncateUTF8(cause, 200))
 	l.inner.Reflection(reflection, attempt, maxAttempts)
 }
 
@@ -229,23 +264,83 @@ func (l *loggingEmitter) StepRetry(stepID string, attempt, maxAttempts int) {
 }
 
 func (l *loggingEmitter) Service(content string) {
-	l.logger.Debug("service", "content", content)
+	// content can embed model/service-authored prose: bounded preview plus its
+	// length only ("no secrets in logs", cf. SubAgentComplete above).
+	l.logger.Debug("service", "contentLen", len(content),
+		"contentPreview", strutil.TruncateUTF8(content, 200))
 	l.inner.Service(content)
 }
 
 func (l *loggingEmitter) ServiceWithMeta(content string, meta map[string]any) {
-	l.logger.Debug("service", "content", content, "meta", meta)
+	// content bounded as in Service; meta is an arbitrary map that can embed
+	// file contents or secrets: log the shape only ("no secrets in logs").
+	l.logger.Debug("service", "contentLen", len(content),
+		"contentPreview", strutil.TruncateUTF8(content, 200), "metaShape", payloadShape(meta))
 	l.inner.ServiceWithMeta(content, meta)
 }
 
 func (l *loggingEmitter) GoalStatus(data map[string]any) {
-	l.logger.Debug("goal_status", "data", data)
+	// The goal payload carries model/judge-authored prose (condition, reason,
+	// evidence, verification_* — and verdict.Status, which is free-form model
+	// text, core/goal/types.go): log the short non-prose metadata plus bounded
+	// previews and the payload shape only, never the prose unbounded ("no
+	// secrets in logs", cf. E2SState below).
+	l.logger.Debug("goal_status", "turn", data["turn"], "max_turns", data["max_turns"],
+		"status", data["status"], "verdict", boundedPreview(data["verdict"]),
+		"verification", data["verification"], "verification_mode", data["verification_mode"],
+		"payloadShape", payloadShape(data))
 	l.inner.GoalStatus(data)
 }
 
 func (l *loggingEmitter) GoalProgress(data map[string]any) {
-	l.logger.Debug("goal_progress", "data", data)
+	// Same policy as GoalStatus: metadata + shape only, prose never unbounded.
+	l.logger.Debug("goal_progress", "turn", data["turn"], "max_turns", data["max_turns"],
+		"payloadShape", payloadShape(data))
 	l.inner.GoalProgress(data)
+}
+
+// payloadShape summarizes an event payload map as a deterministic,
+// human-readable string of "key(byteLength)" entries for string values and
+// "key(goType)" entries otherwise (sorted by key), so the log keeps the
+// payload's structure and sizes without any model/judge-authored prose. It is
+// the shared form of the bound-and-truncate policy this file applies to
+// model-authored text (SubAgentComplete's length+preview, E2SState's
+// metadata-only logging): the maps it renders can embed quoted file contents
+// or secrets and are never logged raw ("no secrets in logs").
+func payloadShape(data map[string]any) string {
+	if len(data) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(data))
+	for k := range data {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		if s, ok := data[k].(string); ok {
+			parts = append(parts, fmt.Sprintf("%s(%d)", k, len(s)))
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s(%T)", k, data[k]))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// boundedPreview renders a possibly model-authored payload value as a bounded
+// log attribute: strings are truncated like every prose preview in this file,
+// and any other non-nil value is rendered through %v and truncated the same
+// way — a struct (e.g. a goal Verdict) can embed unbounded model prose, so it
+// must never reach the log verbatim ("no secrets in logs").
+func boundedPreview(v any) string {
+	if v == nil {
+		return ""
+	}
+	s, ok := v.(string)
+	if !ok {
+		s = fmt.Sprintf("%v", v)
+	}
+	return strutil.TruncateUTF8(s, 200)
 }
 
 func (l *loggingEmitter) E2SState(data map[string]any) {

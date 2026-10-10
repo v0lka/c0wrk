@@ -8,6 +8,7 @@ import (
 	_ "image/gif" // register gif decoder for image.Decode
 	"image/jpeg"
 	_ "image/png" // register png decoder for image.Decode
+	"io"
 
 	"golang.org/x/image/draw"
 	_ "golang.org/x/image/webp" // register webp decoder for image.Decode
@@ -25,6 +26,24 @@ const (
 	thumbnailSize     = 64              // thumbnail long edge in pixels
 	jpegQuality       = 90              // quality for re-encoded full image
 	thumbnailQuality  = 70              // quality for thumbnail
+
+	// maxImageFileBytes caps how much of the encoded attachment file is read
+	// into memory. Files above the provider cap get re-encoded anyway, so a
+	// generous ceiling (well above the 5 MB re-encode threshold, far below
+	// anything a user attachment realistically needs) bounds the raw buffer
+	// instead of letting safeio.ReadFile accept an arbitrarily large file.
+	maxImageFileBytes = 32 << 20 // 32 MB
+
+	// maxDecodedPixels bounds the DECODED pixel buffer. image.Decode
+	// allocates the full W×H buffer from the format header alone — before any
+	// pixel data is read — so a few-hundred-byte crafted PNG declaring
+	// 65535×65535 would allocate ~17 GB and fatally OOM the desktop process.
+	// The bound equals the worst case the dimension cap already admitted
+	// (maxImageDimension × maxImageDimension), so every image that previously
+	// decoded without OOM still decodes (and is resized exactly as before);
+	// only header-declared allocations beyond that fail fast, as a per-file
+	// attach error. Enforced via DecodeConfig BEFORE the full decode.
+	maxDecodedPixels = maxImageDimension * maxImageDimension
 )
 
 // processImage reads an image file, decodes it (png/jpeg/gif/webp), and
@@ -39,13 +58,31 @@ const (
 // file size when unchanged, re-encoded JPEG size when resized).
 //
 // The read goes through safeio so a non-regular attachment path (a FIFO or
-// device) is refused instead of blocking the attach RPC's read-open forever.
+// device) is refused instead of blocking the attach RPC's read-open forever,
+// and is capped at maxImageFileBytes so an oversized file fails with an error
+// instead of being buffered whole.
 func processImage(path string) (base64Data, mediaType, thumbnailDataURI string, sizeBytes int64, err error) {
-	raw, err := safeio.ReadFile(path)
+	raw, err := readImageFileCapped(path, maxImageFileBytes)
 	if err != nil {
-		return "", "", "", 0, fmt.Errorf("read image: %w", err)
+		return "", "", "", 0, err
 	}
 	sizeBytes = int64(len(raw))
+
+	// Pre-decode guard: parse only the format header and reject a header-
+	// declared pixel allocation beyond the bound BEFORE image.Decode
+	// materializes the full buffer. DecodeConfig reads the same header bytes
+	// the full decoder would, so any image that decodes at all yields a
+	// config here; images whose config fails would have failed the full
+	// decode too, just after wasting the allocation.
+	cfg, _, cfgErr := image.DecodeConfig(bytes.NewReader(raw))
+	if cfgErr != nil {
+		return "", "", "", 0, fmt.Errorf("decode image: %w", cfgErr)
+	}
+	if cfg.Width < 0 || cfg.Height < 0 || cfg.Width*cfg.Height > maxDecodedPixels {
+		return "", "", "", 0, fmt.Errorf(
+			"image dimensions %dx%d exceed the %d pixel limit and cannot be attached",
+			cfg.Width, cfg.Height, maxDecodedPixels)
+	}
 
 	// image.Decode handles png/jpeg/gif (stdlib) and webp (golang.org/x/image/webp)
 	// via format decoders registered by the blank imports above.
@@ -111,6 +148,27 @@ func imageFileExtension(mediaType string) string {
 	default:
 		return ".jpg"
 	}
+}
+
+// readImageFileCapped reads path through safeio (FIFO/device-refusing open)
+// but bounds the in-memory copy at limit bytes: a larger file fails with an
+// explicit "too large" error instead of being buffered whole. A file of
+// exactly limit bytes is accepted; only strictly larger content is refused
+// (the +1 read admits detecting the overflow without unbounded buffering).
+func readImageFileCapped(path string, limit int64) ([]byte, error) {
+	f, err := safeio.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("read image: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	data, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil {
+		return nil, fmt.Errorf("read image: %w", err)
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("read image: file exceeds the %d MB attachment read limit", limit>>20)
+	}
+	return data, nil
 }
 
 // resizeToLongEdge scales img so its longest edge equals target, preserving

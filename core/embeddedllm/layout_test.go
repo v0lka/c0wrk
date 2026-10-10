@@ -4,8 +4,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // testModelDirName mirrors the leaf of core.EmbeddedModelRelativePath
@@ -383,5 +386,47 @@ func TestNeedsAdHocSignature(t *testing.T) {
 		if needsAdHocSignature(name) {
 			t.Errorf("needsAdHocSignature(%q) = true, want false", name)
 		}
+	}
+}
+
+// TestEnsureRootsRefusesSymlinkedRoot pins the root guard: a symlink planted
+// at a layout root must fail the root creation instead of being followed.
+// os.MkdirAll stats through a link, so without this an install would write
+// the multi-gigabyte runtime and weight trees — and a later Remove delete
+// them — inside the link target, outside the agent dir: pathutil.IsWithinPath
+// cannot see the redirection because both of its arguments resolve through
+// the same link.
+func TestEnsureRootsRefusesSymlinkedRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics are unix-specific")
+	}
+	agentDir := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(agentDir, "runtimes")); err != nil {
+		t.Fatalf("plant symlink: %v", err)
+	}
+	layout, err := NewLayout(
+		filepath.Join(agentDir, "runtimes"),
+		filepath.Join(agentDir, "models", testModelDirName),
+	)
+	if err != nil {
+		t.Fatalf("NewLayout: %v", err)
+	}
+
+	err = layout.EnsureRoots()
+	if err == nil {
+		t.Fatal("EnsureRoots through a symlinked root succeeded, want a refusal")
+	}
+	if !errors.Is(err, safeio.ErrSymlink) {
+		t.Errorf("EnsureRoots error %v does not report the symlink refusal", err)
+	}
+
+	// Nothing was written into the link target.
+	entries, err := os.ReadDir(outside)
+	if err != nil {
+		t.Fatalf("read link target: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("EnsureRoots wrote %d entries into the link target", len(entries))
 	}
 }

@@ -39,7 +39,7 @@ type MCPServerStatusInfo struct {
 // startup completes.
 // Returns an empty slice if the backend application is not initialized.
 func (f *FrontendAPI) GetMCPStatus() []MCPServerStatusInfo {
-	if f.app == nil {
+	if f.appCell() == nil {
 		return []MCPServerStatusInfo{}
 	}
 	status := f.app.GetMCPStatus()
@@ -201,7 +201,7 @@ func (f *FrontendAPI) GetMCPMentionableServers() []MCPMentionableServer {
 // same map Execute consults), so the list reflects what is actually enforced
 // after runtime updates, not a re-derivation from config.
 func (f *FrontendAPI) GetToolList() []ToolInfo {
-	if f.app == nil {
+	if f.appCell() == nil {
 		return []ToolInfo{}
 	}
 

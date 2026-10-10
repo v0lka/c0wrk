@@ -6,6 +6,7 @@ package backend
 // frontend_api_worktrees_test.go.
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -174,5 +175,44 @@ func TestManagedWorktreesDirInsideRepo(t *testing.T) {
 	}
 	if !ok {
 		t.Fatalf("tree %q must live inside the container %q", managed.WorkspaceBinding.WorkspacePath, container)
+	}
+}
+
+// TestGetSessionWorkspace_ResidentSessionWithoutStoreRowFallsBackToMemory
+// pins the membership fallback: when a RESIDENT session's store row is
+// missing (session-row persistence is asynchronous), its in-memory ProjectID
+// must decide membership. A MANAGED session is the discriminating shape: its
+// workspace lives inside <checkout>/.worktrees and differs from the project
+// checkout, so a regressed fallback (empty project ID → membership false)
+// would resolve to the checkout while the correct path resolves to the
+// session's own tree.
+func TestGetSessionWorkspace_ResidentSessionWithoutStoreRowFallsBackToMemory(t *testing.T) {
+	h := newWTHarness(t, wtFactory())
+
+	managed, err := h.api.CreateManagedSession("", true, "")
+	if err != nil {
+		t.Fatalf("CreateManagedSession: %v", err)
+	}
+	want := managed.WorkspaceBinding.WorkspacePath
+	if want == h.project.WorkspacePath {
+		t.Fatalf("precondition broken: managed workspace equals the checkout")
+	}
+
+	// Remove the persisted row: the managed session stays RESIDENT (in-memory
+	// identity intact) while the store row is gone — exactly the state the
+	// fallback exists for.
+	if err := h.store.DeleteSession(context.Background(), managed.ID); err != nil {
+		t.Fatalf("delete store row: %v", err)
+	}
+	if info, err := h.store.LoadSession(context.Background(), managed.ID); err != nil || info != nil {
+		t.Fatalf("precondition broken: expected no store row, got info=%v err=%v", info != nil, err)
+	}
+
+	got, err := h.api.GetSessionWorkspace(managed.ID)
+	if err != nil {
+		t.Fatalf("GetSessionWorkspace: %v", err)
+	}
+	if got != want {
+		t.Fatalf("resident managed session without a store row resolved to %q, want its own tree %q (a regression resolves to the checkout)", got, want)
 	}
 }

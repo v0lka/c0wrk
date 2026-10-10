@@ -16,7 +16,7 @@ import (
 // sessionID is required by the Wails RPC binding signature for session-scoped
 // event routing; the requestID alone identifies the pending proposal.
 func (f *FrontendAPI) ConfirmGoal(sessionID, requestID, condition, verify, verificationMode string) error {
-	if f.app == nil || f.app.Manager() == nil {
+	if f.appCell() == nil || f.app.Manager() == nil {
 		return errors.New("session manager not initialized")
 	}
 	if requestID == "" {
@@ -35,7 +35,7 @@ func (f *FrontendAPI) ConfirmGoal(sessionID, requestID, condition, verify, verif
 // sessionID is required by the Wails RPC binding signature for session-scoped
 // event routing; the requestID alone identifies the pending proposal.
 func (f *FrontendAPI) CancelGoal(sessionID, requestID string) error {
-	if f.app == nil || f.app.Manager() == nil {
+	if f.appCell() == nil || f.app.Manager() == nil {
 		return errors.New("session manager not initialized")
 	}
 	if requestID == "" {

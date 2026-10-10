@@ -79,6 +79,7 @@ func (f *FrontendAPI) autoCheckEnabled() bool {
 // unreadable, or the field is unset — never returns an error so a missing state
 // file never blocks the update flow.
 func (f *FrontendAPI) loadSkippedVersion() string {
+	f.seedAcquire()
 	if f.agentDir == "" {
 		return ""
 	}
@@ -123,6 +124,7 @@ func (f *FrontendAPI) proxyConfigForUpdater() proxy.Config {
 // logs it. The payload is a map[string]string so the frontend can render it
 // without a bespoke type guard.
 func (f *FrontendAPI) emitUpdateError(msg string) {
+	f.seedAcquire()
 	f.log().Error("update error", "error", msg)
 	f.emitEvent(EventUpdateError, map[string]string{"message": msg})
 }
@@ -177,6 +179,7 @@ func (f *FrontendAPI) checkAndCache(ctx context.Context, skippedVersion string) 
 // enable/disable switch: when it is false, this method short-circuits and
 // reports no update (without touching the network).
 func (f *FrontendAPI) CheckForUpdates() (*UpdateInfo, error) {
+	f.seedAcquire()
 	current := version.Version
 
 	if !f.operatorUpdateCheckEnabled() {
@@ -214,6 +217,7 @@ func (f *FrontendAPI) CheckForUpdates() (*UpdateInfo, error) {
 // is streamed as update:progress events. Emits update:downloaded on success or
 // update:error on failure.
 func (f *FrontendAPI) DownloadUpdate() error {
+	f.seedAcquire()
 	f.updateMu.Lock()
 	result := f.lastCheckResult
 	f.updateMu.Unlock()
@@ -270,6 +274,7 @@ func (f *FrontendAPI) DownloadUpdate() error {
 // exits — it never force-exits. Returns an error (without quitting) when any
 // preparation step fails.
 func (f *FrontendAPI) ApplyUpdate() error {
+	f.seedAcquire()
 	f.updateMu.Lock()
 	archivePath := f.downloadedArchivePath
 	f.updateMu.Unlock()
@@ -340,6 +345,7 @@ func (f *FrontendAPI) ApplyUpdate() error {
 // last-check timestamp) and invalidates any cached check result so the next
 // CheckForUpdates reflects it.
 func (f *FrontendAPI) SkipVersion(ver string) error {
+	f.seedAcquire()
 	if f.agentDir == "" {
 		return errors.New("agent directory not configured")
 	}
@@ -434,6 +440,7 @@ const defaultCheckInterval = 6 * time.Hour
 //
 // Network failures are swallowed (logged at debug) and never break startup.
 func (f *FrontendAPI) RunBackgroundUpdateCheck() {
+	f.seedAcquire()
 	log := f.log()
 
 	// Operator gate (config.yaml): when an administrator disables updates, the

@@ -35,21 +35,20 @@ func ReadVersions(toolsDir string) (ToolVersions, error) {
 	return tv, nil
 }
 
-// WriteVersions atomically writes the ToolVersions as JSON to toolsDir.
+// WriteVersions atomically writes the ToolVersions as JSON to toolsDir. The
+// staging temp is created under a randomized name (safeio.WriteFileAtomic),
+// so the write-open cannot be redirected by a FIFO or symlink planted at the
+// deterministic "<file>.tmp" name the previous implementation used, and the
+// rename replaces such a planted entry itself instead of writing through it.
 func WriteVersions(toolsDir string, versions ToolVersions) error {
 	path := filepath.Join(toolsDir, versionsFileName)
-	tmpPath := path + ".tmp"
 
 	data, err := json.MarshalIndent(versions, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling versions: %w", err)
 	}
-	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
+	if err := safeio.WriteFileAtomic(path, data, 0o644); err != nil {
 		return fmt.Errorf("writing versions file: %w", err)
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("renaming versions file: %w", err)
 	}
 	return nil
 }
