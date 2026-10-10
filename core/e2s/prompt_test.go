@@ -9,6 +9,8 @@ import (
 
 	sdktools "github.com/v0lka/sp4rk/tools"
 	"github.com/v0lka/sp4rk/tools/builtins"
+
+	c0wrktools "github.com/v0lka/c0wrk/core/tools"
 )
 
 // TestBuildSystemPrompt_NoDelegationSections pins the self-sufficiency
@@ -96,21 +98,19 @@ func TestUntrustedWrapEscapesSourceAttribute(t *testing.T) {
 // compactSchema: description stripping with metadata preservation
 // ----------------------------------------------------------------------------
 
-// e2sRealToolSchema returns the real input schema of one of the three
-// dispatch-critical tools (read_file, bash_exec, batch) from the actual
-// sp4rk builtin implementations — the snapshot subjects.
+// e2sRealToolSchema returns the real input schema of the three
+// dispatch-critical tools — read_file, the platform shell-execution tool
+// (bash_exec on Unix, posh_exec on Windows; tools.ShellExecToolName), and
+// batch — from the actual sp4rk builtin implementations, the snapshot
+// subjects.
 func e2sRealToolSchema(t *testing.T, name string) json.RawMessage {
 	t.Helper()
 	var schema json.RawMessage
 	switch name {
 	case "read_file":
 		schema = builtins.NewReadFileTool().InputSchema()
-	case "bash_exec":
-		bash, err := builtins.NewBashExecTool(nil)
-		if err != nil {
-			t.Fatalf("build bash_exec tool: %v", err)
-		}
-		schema = bash.InputSchema()
+	case c0wrktools.ShellExecToolName():
+		schema = e2sShellExecSchema(t)
 	case "batch":
 		schema = builtins.NewBatchTool().InputSchema()
 	default:
@@ -214,14 +214,15 @@ func findEnums(v any) map[string]any {
 
 // TestCompactSchema_StripsDescriptions_KeepsNamesRequiredEnum is the
 // snapshot contract over the three dispatch-critical tools' REAL schemas
-// (read_file, bash_exec, batch): stripping removes ONLY "description" keys —
+// (read_file, the platform shell tool — bash_exec/posh_exec — and batch):
+// stripping removes ONLY "description" keys —
 // every property name, the required list, and enum values survive verbatim,
 // and the compact rendering is byte-identical to an independent
 // description-strip of the original. ADR-040: the model dispatches
 // action.args by exact parameter name, so metadata loss here would push it
 // toward wrong argument names.
 func TestCompactSchema_StripsDescriptions_KeepsNamesRequiredEnum(t *testing.T) {
-	for _, name := range []string{"read_file", "bash_exec", "batch"} {
+	for _, name := range []string{"read_file", c0wrktools.ShellExecToolName(), "batch"} {
 		t.Run(name, func(t *testing.T) {
 			raw := e2sRealToolSchema(t, name)
 			got := compactSchema(raw)
