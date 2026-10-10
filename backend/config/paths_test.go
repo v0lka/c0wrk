@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -315,5 +316,91 @@ func TestEmbeddedAutoUnloadDefaultMirrorsCore(t *testing.T) {
 	}
 	if !embeddedllm.DefaultAutoUnloadEnabled {
 		t.Error("embeddedllm.DefaultAutoUnloadEnabled = false, want the documented default true")
+	}
+}
+
+// TestIsSessionInfraPath classifies the session-infra admission shape on
+// every supported platform. Regression for #146: the classifier used to
+// pre-convert rel with filepath.ToSlash before handing it to
+// pathutil.SplitPathComponents, which splits on filepath.Separator — a
+// COMPILE-TIME per-OS constant ('\'). On Windows a slash-joined path split
+// on '\' yields ONE component, len(parts) >= 2 never held, and every
+// session-infra write (plan editor auto-save, temp inspection) was rejected.
+// The plans/temp cases below failed on the Windows CI leg while passing on
+// Linux/macOS before the fix.
+func TestIsSessionInfraPath(t *testing.T) {
+	base := t.TempDir()
+	projectDir := filepath.Join(base, "projects", "proj-1")
+	if err := os.MkdirAll(filepath.Join(projectDir, "Workspace"), 0o755); err != nil {
+		t.Fatalf("mkdir project tree: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		rel  []string
+		want bool
+	}{
+		{"plans under session", []string{"sess-1", "plans", "plan.md"}, true},
+		{"temp under session", []string{"sess-1", "temp", "dump.bin"}, true},
+		{"deep under plans", []string{"sess-1", "plans", "sub", "plan.md"}, true},
+		{"deep under temp", []string{"sess-1", "temp", "run", "out.txt"}, true},
+		{"workspace is not infra", []string{"Workspace", "src", "main.go"}, false},
+		{"session root is not infra", []string{"sess-1", "notes.txt"}, false},
+		{"other segment under session", []string{"sess-1", "images", "x.png"}, false},
+		{"plans at project root is not <sid>/plans", []string{"plans", "plan.md"}, false},
+		{"project dir itself", nil, false},
+	}
+	for _, tt := range tests {
+		absPath := projectDir
+		for _, seg := range tt.rel {
+			absPath = filepath.Join(absPath, seg)
+		}
+		if got := IsSessionInfraPath(projectDir, absPath); got != tt.want {
+			t.Errorf("IsSessionInfraPath(%q, %q) = %v, want %v", projectDir, absPath, got, tt.want)
+		}
+	}
+
+	// A directory whose name merely extends the project dir's last component
+	// is a sibling, never a child — the containment prefix test must reject it.
+	siblingDir := filepath.Join(base, "projects", "proj-1-sibling")
+	if err := os.MkdirAll(filepath.Join(siblingDir, "sess-1", "plans"), 0o755); err != nil {
+		t.Fatalf("mkdir sibling tree: %v", err)
+	}
+	siblingPath := filepath.Join(siblingDir, "sess-1", "plans", "plan.md")
+	if IsSessionInfraPath(projectDir, siblingPath) {
+		t.Errorf("IsSessionInfraPath(%q, %q) = true, want false (sibling prefix)", projectDir, siblingPath)
+	}
+}
+
+// TestIsWithinPath_ExistingParentNonExistentTail pins the pathutil semantics
+// the session-infra admission relies on (#146): a child whose tail does not
+// exist yet is contained by a fully existing parent on every supported OS —
+// ResolveExistingPrefix resolves the longest existing prefix and rejoins the
+// raw remainder. Confirmed on the Windows CI leg by the #146 trace.
+func TestIsWithinPath_ExistingParentNonExistentTail(t *testing.T) {
+	base := t.TempDir()
+	parent := filepath.Join(base, "projects", "proj-1")
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		t.Fatalf("mkdir parent: %v", err)
+	}
+
+	// Nothing below parent exists yet — exactly the admission-time shape.
+	child := filepath.Join(parent, "sess-1", "plans", "plan.md")
+	ok, err := IsWithinPath(parent, child)
+	if err != nil {
+		t.Fatalf("IsWithinPath(%q, %q) error: %v", parent, child, err)
+	}
+	if !ok {
+		t.Errorf("IsWithinPath(%q, %q) = false, want true (non-existent tail under existing parent)", parent, child)
+	}
+
+	// A prefix-sibling directory is not contained, tails included.
+	sibling := filepath.Join(base, "projects", "proj-1-sibling", "plans", "plan.md")
+	ok, err = IsWithinPath(parent, sibling)
+	if err != nil {
+		t.Fatalf("IsWithinPath(%q, %q) error: %v", parent, sibling, err)
+	}
+	if ok {
+		t.Errorf("IsWithinPath(%q, %q) = true, want false (prefix-sibling)", parent, sibling)
 	}
 }

@@ -1099,15 +1099,6 @@ func newWriteFileTestAPI(t *testing.T, agentDir, projectID, projectPath string) 
 // (<pid>/Workspace) rejected every plan write, silently swallowing the plan
 // editor's auto-save (#146).
 func TestWriteFile_SessionInfraPlanPath_Admitted(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		// FIXME(windows): real defect, not a test artifact - even with the
-		// canonicalized base the session-infra admission still rejects the
-		// write under Windows EvalSymlinks semantics, so plan writes would
-		// fail on Windows builds. Needs a Windows debugging session
-		// (pathutil/safeio resolution); skipped so the rest of the run stays
-		// visible.
-		t.Skip("session-infra path admission is broken on Windows (follow-up)")
-	}
 	base := canonicalTempDir(t)
 	pid, sid := "proj-1", "sess-1"
 	ws := filepath.Join(base, "projects", pid, "Workspace")
@@ -1144,15 +1135,6 @@ func TestWriteFile_ExternalProjectWorkspace_Admitted(t *testing.T) {
 // No Project keeps the per-session isolation: a CHAT session may write its
 // own workspace and its own plans//temp/, but never another session's tree.
 func TestWriteFile_NoProject_CrossSessionRejected(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		// FIXME(windows): real defect, not a test artifact - even with the
-		// canonicalized base the session-infra admission still rejects the
-		// write under Windows EvalSymlinks semantics, so plan writes would
-		// fail on Windows builds. Needs a Windows debugging session
-		// (pathutil/safeio resolution); skipped so the rest of the run stays
-		// visible.
-		t.Skip("session-infra path admission is broken on Windows (follow-up)")
-	}
 	base := canonicalTempDir(t)
 	projectDir := config.ProjectDir(base, project.NoProjectID)
 	if err := os.MkdirAll(filepath.Join(projectDir, "other-session", "workspace"), 0o755); err != nil {
