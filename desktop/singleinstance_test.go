@@ -132,19 +132,202 @@ func TestAcquireSingleInstanceLock_IndependentPaths(t *testing.T) {
 	_ = lockB.Close()
 }
 
-// TestSingleInstanceOptions_Wiring: the Wails option carries the bundle-id
-// identity and relays to the app handler.
+// assertSingleInstanceIDShape fails the test unless id is exactly
+// SingleInstanceLockID + "_" + 12 lowercase hex characters — the shape every
+// platform derivation (D-Bus bus name, darwin lockfile, Windows mutex/window
+// class) is documented against. The literal 12 deliberately pins the shape
+// rather than echoing singleInstanceLockIDSuffixHexLen.
+func assertSingleInstanceIDShape(t *testing.T, id string) {
+	t.Helper()
+	suffix, found := strings.CutPrefix(id, SingleInstanceLockID+"_")
+	if !found {
+		t.Fatalf("id %q missing the %q_ prefix", id, SingleInstanceLockID)
+	}
+	if len(suffix) != 12 {
+		t.Fatalf("id %q suffix = %q, want 12 characters", id, suffix)
+	}
+	for i, r := range suffix {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			t.Fatalf("id %q suffix character %d = %q is not [0-9a-f]", id, i, r)
+		}
+	}
+}
+
+// TestSingleInstanceOptions_Wiring: the Wails option carries the derived
+// agent-dir identity — the SingleInstanceLockID prefix plus a well-formed
+// hex suffix, never the bare constant — threaded from the caller's agentDir,
+// and relays second launches to the app handler.
 func TestSingleInstanceOptions_Wiring(t *testing.T) {
 	app := NewApp()
-	opts := SingleInstanceOptions(app)
+	agentDir := t.TempDir()
+	opts := SingleInstanceOptions(app, agentDir)
 	if opts == nil {
 		t.Fatal("SingleInstanceOptions must return a non-nil option")
 	}
-	if opts.UniqueId != SingleInstanceLockID {
-		t.Fatalf("UniqueId = %q, want %q", opts.UniqueId, SingleInstanceLockID)
+	assertSingleInstanceIDShape(t, opts.UniqueId)
+	if want := SingleInstanceLockIDFor(agentDir); opts.UniqueId != want {
+		t.Fatalf("UniqueId = %q, want %q", opts.UniqueId, want)
 	}
 	if opts.OnSecondInstanceLaunch == nil {
 		t.Fatal("OnSecondInstanceLaunch must be wired")
+	}
+}
+
+// TestSingleInstanceLockIDFor_Deterministic pins the contract the lock
+// depends on: the same agent dir yields the same id on every call, and the
+// derived id has the prefix+hex-suffix shape.
+func TestSingleInstanceLockIDFor_Deterministic(t *testing.T) {
+	dir := t.TempDir()
+	first := SingleInstanceLockIDFor(dir)
+	if first != SingleInstanceLockIDFor(dir) {
+		t.Fatalf("id not deterministic: %q vs %q", first, SingleInstanceLockIDFor(dir))
+	}
+	assertSingleInstanceIDShape(t, first)
+	// A trailing separator and an unclean relative spelling of the same
+	// absolute directory canonicalize to the identical id.
+	if cleaned := SingleInstanceLockIDFor(dir + string(filepath.Separator)); cleaned != first {
+		t.Fatalf("trailing separator changed the id: %q vs %q", cleaned, first)
+	}
+}
+
+// TestSingleInstanceLockIDFor_DistinctDirs: different agent directories must
+// never share a lock identity — the lock would wrongly merge two independent
+// profiles.
+func TestSingleInstanceLockIDFor_DistinctDirs(t *testing.T) {
+	root := t.TempDir()
+	a := filepath.Join(root, "c0wrk-a")
+	b := filepath.Join(root, "c0wrk-b")
+	for _, dir := range []string{a, b} {
+		if err := os.Mkdir(dir, 0o750); err != nil {
+			t.Fatalf("creating %s: %v", dir, err)
+		}
+	}
+	if idA, idB := SingleInstanceLockIDFor(a), SingleInstanceLockIDFor(b); idA == idB {
+		t.Fatalf("distinct dirs share an id: %q", idA)
+	}
+	if idRoot, idA := SingleInstanceLockIDFor(root), SingleInstanceLockIDFor(a); idRoot == idA {
+		t.Fatalf("parent and child share an id: %q", idA)
+	}
+}
+
+// TestSingleInstanceLockIDFor_SuffixShape: the derived id must be exactly
+// the SingleInstanceLockID prefix plus 12 lowercase hex characters — the
+// shape every platform derivation (bus name, lockfile, mutex/window class)
+// is documented against.
+func TestSingleInstanceLockIDFor_SuffixShape(t *testing.T) {
+	assertSingleInstanceIDShape(t, SingleInstanceLockIDFor(t.TempDir()))
+}
+
+// TestSingleInstanceLockIDFor_UnresolvableDirFailsSoft pins the fail-soft
+// canonicalization: a not-yet-created directory (the pre-Acquire
+// first-launch case) still yields a well-formed id instead of an error or an
+// empty identity. Note the ordering invariant keeps this form from ever
+// reaching production (AcquireSingleInstanceLock creates the dir first);
+// this only pins that the degradation cannot panic or corrupt the id.
+func TestSingleInstanceLockIDFor_UnresolvableDirFailsSoft(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	assertSingleInstanceIDShape(t, SingleInstanceLockIDFor(missing))
+}
+
+// TestSingleInstanceLockIDFor_UncleanPathsSameID pins the canonicalization
+// contract with every non-canonical spelling of one agent directory: a
+// relative path, a path with redundant separators, and a symlink to the same
+// directory must all derive the identical id — otherwise two spellings of
+// one profile would run as two "first" instances. Unix-guarded after
+// TestAcquireSingleInstanceLock_RefusesSymlinkedLockFile: the symlink
+// spelling needs symlink-creation rights windows only grants to elevated or
+// developer-mode processes, and a skip beats asserting a degraded case.
+func TestSingleInstanceLockIDFor_UncleanPathsSameID(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation is not reliably available on windows")
+	}
+	dir := t.TempDir()
+	want := SingleInstanceLockIDFor(dir)
+
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Skipf("symlinks unavailable on this platform: %v", err)
+	}
+
+	// The relative spelling is resolved from dir's parent directory.
+	t.Chdir(filepath.Dir(dir))
+	for _, tc := range []struct {
+		name string
+		path string
+	}{
+		{"relative", filepath.Base(dir)},
+		{
+			name: "redundant separators",
+			path: strings.Repeat(string(filepath.Separator), 3) +
+				dir + strings.Repeat(string(filepath.Separator), 2),
+		},
+		{"symlink", link},
+	} {
+		if got := SingleInstanceLockIDFor(tc.path); got != want {
+			t.Fatalf("%s spelling %q derived %q, want the canonical %q", tc.name, tc.path, got, want)
+		}
+	}
+}
+
+// dbusNameElementValid reports whether s is a valid single element of a
+// D-Bus well-known name: non-empty, [A-Za-z0-9_] only, and never led by a
+// digit (D-Bus specification, "valid names").
+func dbusNameElementValid(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		alnum := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_'
+		if !alnum {
+			return false
+		}
+		if i == 0 && r >= '0' && r <= '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// TestSingleInstanceLockIDFor_DBusValidAfterWailsMapping replicates the
+// Wails v2.16 Linux derivation (internal/frontend/desktop/linux/
+// single_instance.go: underscore the id, then "org." + id + ".SingleInstance"
+// as the bus name and "/org/" + id + "/SingleInstance" as the object path)
+// and asserts the result satisfies the D-Bus name/path grammar. This is the
+// one platform where a malformed id fails OPEN-but-silently (every error is
+// swallowed), so an invalid name would permanently kill the relay.
+func TestSingleInstanceLockIDFor_DBusValidAfterWailsMapping(t *testing.T) {
+	id := SingleInstanceLockIDFor(t.TempDir())
+
+	mapped := strings.ReplaceAll(strings.ReplaceAll(id, "-", "_"), ".", "_")
+	mapped = "wails_app_" + mapped
+	busName := "org." + mapped + ".SingleInstance"
+	objectPath := "/org/" + mapped + "/SingleInstance"
+
+	elements := strings.Split(busName, ".")
+	if len(elements) < 2 {
+		t.Fatalf("bus name %q must have at least two elements", busName)
+	}
+	for _, el := range elements {
+		if !dbusNameElementValid(el) {
+			t.Fatalf("bus name %q has invalid element %q", busName, el)
+		}
+	}
+	if len(busName) > 255 {
+		t.Fatalf("bus name %q exceeds the 255-byte D-Bus limit", busName)
+	}
+	if !strings.HasPrefix(objectPath, "/") || strings.HasSuffix(objectPath, "/") {
+		t.Fatalf("object path %q must start and not end with '/'", objectPath)
+	}
+	for _, el := range strings.Split(strings.TrimPrefix(objectPath, "/"), "/") {
+		if el == "" {
+			t.Fatalf("object path %q has an empty element", objectPath)
+		}
+		for _, r := range el {
+			alnum := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_'
+			if !alnum {
+				t.Fatalf("object path %q has invalid character %q in %q", objectPath, r, el)
+			}
+		}
 	}
 }
 

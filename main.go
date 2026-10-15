@@ -199,7 +199,10 @@ func mainImpl() int {
 		// The relay focuses the existing window; the notification's session
 		// routing is not recoverable on this path (only the process macOS
 		// attributes the click to receives it).
-		SingleInstanceLock: desktop.SingleInstanceOptions(app),
+		// The identity is derived from agentDir (SingleInstanceLockIDFor) —
+		// evaluated here, after AcquireSingleInstanceLock above has created
+		// it, per the ordering invariant in that function's doc.
+		SingleInstanceLock: desktop.SingleInstanceOptions(app, agentDir),
 		OnStartup:          app.Startup,
 		OnDomReady:         app.DomReady,
 		OnShutdown:         app.Shutdown,

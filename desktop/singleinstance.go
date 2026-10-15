@@ -1,6 +1,8 @@
 package desktop
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,21 +11,106 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options"
 )
 
-// SingleInstanceLockID is the Wails SingleInstanceLock UniqueId — the single
-// identity all c0wrk processes agree on for "the one running instance". It is
-// deliberately the macOS bundle identifier (com.wails.{{.Name}} from
-// build/darwin/Info.plist with wails.json name=c0wrk-desktop): LaunchServices
-// resolves a notification-banner activation to the bundle, so keying the
-// single-instance identity to the same string keeps the two notions of "this
-// app" aligned. Platform derivations of the id (lockfile name on darwin,
-// session-bus name on Linux, mutex/window class on Windows) are built by the
-// Wails frontends; keep this in sync with the bundle id if it ever changes.
+// singleInstanceLockIDSuffixHexLen is the length of the hex(sha256) suffix
+// SingleInstanceLockIDFor appends to the prefix: 48 bits of the canonical
+// agent-directory path — collision-resistant for every realistic parallel
+// c0wrk profile set while keeping the derived platform names (D-Bus bus
+// name, darwin lockfile, Windows mutex/window class) compact.
+const singleInstanceLockIDSuffixHexLen = 12
+
+// SingleInstanceLockID is the stable PREFIX of the Wails SingleInstanceLock
+// UniqueId — the identity all c0wrk processes agree on for "the one running
+// instance". The full identity is derived by SingleInstanceLockIDFor as
+// SingleInstanceLockID + "_" + hex(sha256(canonical agent dir))[:12], so it
+// stays c0wrk-scoped and greppable while binding to the user's concrete
+// agent directory (~/.c0wrk by way of config.AgentDir).
+//
+// ADR-075 originally keyed the identity to the macOS bundle identifier
+// (com.wails.{{.Name}} from build/darwin/Info.plist with wails.json
+// name=c0wrk-desktop) so that LaunchServices resolving a notification-banner
+// activation to the bundle and the single-instance lock naming "this app"
+// were one and the same string. That alignment is now DELIBERATELY SEVERED:
+// the lock identity is per-agent-directory, so the constant is only the
+// human-readable prefix and nothing resolves it as a bundle id anymore. The
+// trade is accepted because the Wails relay never depended on the bundle id
+// matching — it keys on the UniqueId alone — while a per-dir identity keeps
+// parallel agent directories (separate user homes, a relocated ~/.c0wrk) from
+// sharing one lock, and the home-dir-derived hash keeps the per-user platform
+// namespaces collision-free (see SingleInstanceLockIDFor for the per-platform
+// rationale).
 //
 // See ADR-075 (single-instance lock) and issue #98.
 const SingleInstanceLockID = "com.wails.c0wrk-desktop"
 
+// SingleInstanceLockIDFor derives the full Wails SingleInstanceLock UniqueId
+// for the agent directory agentDir:
+//
+//	SingleInstanceLockID + "_" + hex(sha256(canonical agentDir))[:12]
+//
+// Canonicalization is lexical first, filesystem second: filepath.Clean, then
+// filepath.Abs (which Cleans again), then filepath.EvalSymlinks — the last
+// degrading softly to the Clean+Abs form when it cannot resolve (a
+// not-yet-created agent dir, a dangling link, an unreachable working
+// directory for the relative fallback). Deliberately NO user.Current/passwd
+// lookup: the home directory is already embedded in config.AgentDir, and
+// re-deriving it here would create a second source of truth that can drift
+// from every other path helper.
+//
+// The contract that makes the lock work is determinism: the same agentDir
+// must always yield the same id (darwin is fail-CLOSED on a lock miss — a
+// drifting id would let a second process boot a full app over the first
+// one's state instead of relaying), and different agent dirs must never
+// share an id (the lock would wrongly merge two independent profiles).
+// That contract imposes an ordering invariant on main.go: derive the id
+// (via SingleInstanceOptions) only AFTER AcquireSingleInstanceLock — its
+// safeio.MkdirAllReal guarantees agentDir exists, which is what makes
+// EvalSymlinks resolve the same way on this launch as on every later one.
+// A first run computing the id before the directory exists would fail
+// EvalSymlinks and silently pin the unresolved form, while every later run
+// would resolve it — two identities for one directory across restarts.
+//
+// The hash suffix is sized for, and safe in, each platform's derivation of
+// the id (Wails v2.16 internal/frontend/desktop/<platform>/single_instance.go):
+//   - Linux is fail-OPEN: Wails swallows every D-Bus connect/error and just
+//     runs on, so a broken session bus degrades single instance to "maybe
+//     two instances" without bricking startup — but an INVALID bus name
+//     would kill the relay on every launch, permanently. Wails builds
+//     "org." + underscore(id) + ".SingleInstance" (dash/dot → underscore);
+//     the suffix appends [0-9a-f] after a '_' inside a single dot-element,
+//     so every element stays letter-led and [A-Za-z0-9_]-only — a valid bus
+//     name and object path for any agent dir.
+//   - darwin is fail-CLOSED: the process that cannot create the lockfile
+//     relays and exits, so the id doubles as the lockfile name
+//     "<native temp dir>/<id>.lock" (a per-user NSTemporaryDirectory path).
+//     Hex keeps it a safe filename; determinism (above) is what keeps the
+//     fail-closed semantics honest across launches.
+//   - Windows feeds the id into the Win32 object namespace: mutex
+//     "wails-app-<id>sim" (session-local, no Global\ prefix) plus window
+//     class/name "<id>-sic"/"<id>-siw" for the WM_COPYDATA relay. Hex is
+//     namespace-safe, and the home-dir-derived hash keeps parallel user
+//     sessions distinguishable even if the names are ever moved to a shared
+//     namespace.
+//
+// See ADR-075 (single-instance lock) and issue #98.
+func SingleInstanceLockIDFor(agentDir string) string {
+	canonical := filepath.Clean(agentDir)
+	if abs, err := filepath.Abs(canonical); err == nil {
+		canonical = abs
+	}
+	if resolved, err := filepath.EvalSymlinks(canonical); err == nil {
+		canonical = resolved
+	}
+	sum := sha256.Sum256([]byte(canonical))
+	suffix := hex.EncodeToString(sum[:])[:singleInstanceLockIDSuffixHexLen]
+	return SingleInstanceLockID + "_" + suffix
+}
+
 // SingleInstanceOptions builds the Wails v2 SingleInstanceLock option wired
-// into options.App by main.go. The option is what turns a LaunchServices-
+// into options.App by main.go. The UniqueId is derived from the agent
+// directory via SingleInstanceLockIDFor — the caller must pass it only after
+// AcquireSingleInstanceLock has guaranteed the directory exists (the
+// ordering invariant documented there; main.go's lock acquisition precedes
+// the wails.Run options literal). The option is what turns a LaunchServices-
 // spawned second process (macOS notification-banner click against a stale or
 // rebuilt bundle registration — issue #98's failure mode) into a relay: the
 // second process detects the first instance's platform lock, forwards its
@@ -37,9 +124,9 @@ const SingleInstanceLockID = "com.wails.c0wrk-desktop"
 // exempting only the four lifecycle hooks (OnStartup/OnShutdown/OnDomReady/
 // OnBeforeClose), and a frontend-callable "focus the window" binding is
 // surface nobody needs.
-func SingleInstanceOptions(app *App) *options.SingleInstanceLock {
+func SingleInstanceOptions(app *App, agentDir string) *options.SingleInstanceLock {
 	return &options.SingleInstanceLock{
-		UniqueId:               SingleInstanceLockID,
+		UniqueId:               SingleInstanceLockIDFor(agentDir),
 		OnSecondInstanceLaunch: app.handleSecondInstanceLaunch,
 	}
 }

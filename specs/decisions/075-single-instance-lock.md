@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted — the lock identity was later made **per-agent-directory** by [ADR-086](./086-per-profile-single-instance-identity.md): D1's `UniqueId = "com.wails.c0wrk-desktop"` reads as the stable PREFIX of `desktop.SingleInstanceLockIDFor(agentDir)` (`prefix + "_" + hex(sha256(canonical agentDir))[:12]`), the bundle-id alignment it documented is deliberately severed, and its `desktop.SingleInstanceOptions(app)` wiring reads as `desktop.SingleInstanceOptions(app, agentDir)`; D4's "no opt-in" extends to "per agent directory" (parallel agent dirs are independent lock domains), so the Consequences trade-off "two simultaneous c0wrk processes are now impossible" reads as "…over one agent directory" (fully isolated parallel profiles are a supported state); D2 and D3 stand unchanged.
 
 ## Context
 
