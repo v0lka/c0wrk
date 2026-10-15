@@ -183,8 +183,10 @@ func TestSingleInstanceLockIDFor_Deterministic(t *testing.T) {
 		t.Fatalf("id not deterministic: %q vs %q", first, SingleInstanceLockIDFor(dir))
 	}
 	assertSingleInstanceIDShape(t, first)
-	// A trailing separator and an unclean relative spelling of the same
-	// absolute directory canonicalize to the identical id.
+	// A trailing separator on the canonical absolute directory must not
+	// change the id. The remaining unclean spellings (relative path,
+	// redundant separators, symlink) are pinned in
+	// TestSingleInstanceLockIDFor_UncleanPathsSameID.
 	if cleaned := SingleInstanceLockIDFor(dir + string(filepath.Separator)); cleaned != first {
 		t.Fatalf("trailing separator changed the id: %q vs %q", cleaned, first)
 	}
@@ -231,41 +233,53 @@ func TestSingleInstanceLockIDFor_UnresolvableDirFailsSoft(t *testing.T) {
 
 // TestSingleInstanceLockIDFor_UncleanPathsSameID pins the canonicalization
 // contract with every non-canonical spelling of one agent directory: a
-// relative path, a path with redundant separators, and a symlink to the same
+// relative path, paths with redundant separators, and a symlink to the same
 // directory must all derive the identical id — otherwise two spellings of
-// one profile would run as two "first" instances. Unix-guarded after
-// TestAcquireSingleInstanceLock_RefusesSymlinkedLockFile: the symlink
-// spelling needs symlink-creation rights windows only grants to elevated or
-// developer-mode processes, and a skip beats asserting a degraded case.
+// one profile would run as two "first" instances. The portable spellings run
+// on every platform; two stay unix-only (same guard as
+// TestAcquireSingleInstanceLock_RefusesSymlinkedLockFile): a leading
+// separator run re-roots the path as UNC on windows instead of redundantly
+// separating it, and the symlink spelling needs symlink-creation rights
+// windows only grants to elevated or developer-mode processes — a skip beats
+// asserting a degraded case.
 func TestSingleInstanceLockIDFor_UncleanPathsSameID(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("symlink creation is not reliably available on windows")
-	}
 	dir := t.TempDir()
 	want := SingleInstanceLockIDFor(dir)
-
-	link := filepath.Join(t.TempDir(), "link")
-	if err := os.Symlink(dir, link); err != nil {
-		t.Skipf("symlinks unavailable on this platform: %v", err)
-	}
+	sep := string(filepath.Separator)
 
 	// The relative spelling is resolved from dir's parent directory.
 	t.Chdir(filepath.Dir(dir))
+
+	// Portable spellings: a relative path and interior redundant
+	// separators — interior, because a leading separator run is
+	// UNC-ambiguous on windows and stays unix-only below.
 	for _, tc := range []struct {
 		name string
 		path string
 	}{
 		{"relative", filepath.Base(dir)},
-		{
-			name: "redundant separators",
-			path: strings.Repeat(string(filepath.Separator), 3) +
-				dir + strings.Repeat(string(filepath.Separator), 2),
-		},
-		{"symlink", link},
+		{"interior redundant separators", filepath.Dir(dir) + strings.Repeat(sep, 2) + filepath.Base(dir)},
 	} {
 		if got := SingleInstanceLockIDFor(tc.path); got != want {
 			t.Fatalf("%s spelling %q derived %q, want the canonical %q", tc.name, tc.path, got, want)
 		}
+	}
+
+	if runtime.GOOS == "windows" {
+		t.Skip("the remaining spellings are unix-only: a leading separator run is UNC-ambiguous there and symlinks need elevated or developer-mode rights")
+	}
+
+	leading := strings.Repeat(sep, 3) + dir + strings.Repeat(sep, 2)
+	if got := SingleInstanceLockIDFor(leading); got != want {
+		t.Fatalf("leading redundant separators %q derived %q, want the canonical %q", leading, got, want)
+	}
+
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Skipf("symlinks unavailable on this platform: %v", err)
+	}
+	if got := SingleInstanceLockIDFor(link); got != want {
+		t.Fatalf("symlink spelling %q derived %q, want the canonical %q", link, got, want)
 	}
 }
 
