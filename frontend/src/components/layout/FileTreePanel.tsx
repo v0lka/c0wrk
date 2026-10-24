@@ -3,8 +3,8 @@ import { cn } from '@/lib/utils'
 import { useFileTreeStore } from '@/stores/fileTreeStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { useProjectStore } from '@/stores/projectStore'
-import { useSessionStore } from '@/stores/sessionStore'
-import { listDirectory, getGitStatus, watchDirectory, unwatchDirectory, getSessionWorkspace } from '@/api/workspace'
+import { listDirectory, getGitStatus, watchDirectory, unwatchDirectory } from '@/api/workspace'
+import { useWorkspaceRootState } from '@/hooks/useWorkspacePath'
 import { subscribe } from '@/api/runtime'
 import { FilterBar } from '@/components/ui/FilterBar'
 import { Button } from '@/components/ui/button'
@@ -245,7 +245,6 @@ function TreeNode({ entry, depth, gitStatus, propagatedPaths, onContextMenu }: T
 export function FileTreePanel() {
   const activeProjectId = useProjectStore((s) => s.activeProjectId)
   const projects = useProjectStore((s) => s.projects)
-  const activeSessionId = useSessionStore((s) => s.activeSessionId)
   const rootPath = useFileTreeStore((s) => s.rootPath)
   const rootEntries = useFileTreeStore((s) => (rootPath ? s.tree[rootPath] : undefined))
   const gitStatusRaw = useFileTreeStore((s) => s.gitStatus)
@@ -273,63 +272,24 @@ export function FileTreePanel() {
     return projects?.find((p) => p.id === activeProjectId)?.is_no_project === true
   }, [activeProjectId, projects])
 
-  // Project-level workspace path (correct for regular projects;
-  // for No Project this is the empty placeholder directory).
-  const projectWorkspacePath = activeProjectId && projects
-    ? projects.find((p) => p.id === activeProjectId)?.workspace_path ?? null
-    : null
-
-  // The workspace root follows the ACTIVE SESSION, not just the project:
-  // GetSessionWorkspace resolves the session's own execution workspace —
-  // the project checkout for a local session, its managed worktree for a
-  // worktree session, and the per-session isolated directory for No Project
-  // (CHAT). Keyed by the session so a delayed response can never install
-  // another session's root (cancelled flag below); falls back to the
-  // project-level path when no session is active, the backend has no
-  // answer yet, or the RPC fails — for local sessions both values coincide.
-  const [sessionWorkspacePath, setSessionWorkspacePath] = useState<string | null>(null)
-  useEffect(() => {
-    if (!activeSessionId) {
-      setSessionWorkspacePath(null)
-      return
-    }
-    let cancelled = false
-    let attempts = 0
-    const maxRetries = 5
-    let retryTimer: ReturnType<typeof setTimeout> | null = null
-
-    async function fetchWithRetry(): Promise<void> {
-      while (attempts < maxRetries && !cancelled) {
-        try {
-          const wsPath = await getSessionWorkspace(activeSessionId!)
-          if (!cancelled) setSessionWorkspacePath(wsPath)
-          return
-        } catch {
-          attempts++
-          if (attempts < maxRetries && !cancelled) {
-            // Wait with backoff: 1s, 2s, 3s, 4s, 5s
-            await new Promise<void>(resolve => {
-              retryTimer = setTimeout(resolve, 1000 * attempts)
-            })
-          }
-        }
-      }
-    }
-    fetchWithRetry()
-    return () => {
-      cancelled = true
-      if (retryTimer !== null) clearTimeout(retryTimer)
-    }
-  }, [activeSessionId])
-
-  // Session-first resolution: the backend-authoritative session root wins
-  // whenever it resolved; otherwise degrade to the project-level path. No
-  // Project keeps the strict old contract — the project-level
-  // __no_project__/ directory (all sessions' scaffolding) is NEVER exposed:
-  // a CHAT session whose root has not resolved yet simply shows no tree.
-  const workspacePath = isNoProject
-    ? sessionWorkspacePath
-    : sessionWorkspacePath ?? projectWorkspacePath
+  // The workspace root follows the ACTIVE SESSION (specs/domains/
+  // session-worktrees.md, User-facing workspace roots) through the SHARED
+  // resolver — the same binding-first rule the chat links and the file
+  // viewer resolve with, so the three surfaces cannot drift.
+  //
+  // While the root is PENDING (a session is active and its workspace has not
+  // settled — a managed binding whose path has not landed, a session missing
+  // from the list, or a No Project session whose RPC is in flight) the panel
+  // shows NO tree instead of falling back to the project-level path: a
+  // checkout-rooted flash would re-scope the backend watcher onto the WRONG
+  // root (tearing down the live one and dropping its events until the next
+  // change) and list/git-status the checkout for nothing. The No Project
+  // contract was already strict — "a CHAT session whose root has not
+  // resolved yet simply shows no tree" — and the same deferral now covers
+  // managed sessions, so each mount/switch causes at most one re-scope, to
+  // the correct root.
+  const { path: resolvedRoot, pending: rootPending } = useWorkspaceRootState()
+  const workspacePath = rootPending ? null : resolvedRoot
 
   // Load root on project or session change
   useEffect(() => {

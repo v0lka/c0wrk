@@ -428,6 +428,15 @@ identifier, not an OS path.
 
 Rules:
 
+- **The session workspace follows the session's binding.** The workspace a
+  relative input joins is the session's OWN execution workspace: a
+  `managed_worktree` session joins against its tree, a `local` session
+  against the project checkout (the ADR-080/ADR-091 bindings) — the
+  checkout is only the fallback for unbound sessions. The frontend
+  click-resolution root (`resolveChatWorkspaceRoot()`) applies the same
+  session-first rule to markdown links and tool-card paths (see
+  [ADR-095](../decisions/095-chat-file-reference-path-semantics.md),
+  Decision 6).
 - **Canonical form is forward-slash.** Drive/UNC inputs pass through
   `core.NormalizeAbsPath`: backslashes become `/`, dot segments are
   removed, and `..` is clamped at the anchored root (filesystem root /

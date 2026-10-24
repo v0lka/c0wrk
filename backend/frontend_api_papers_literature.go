@@ -165,7 +165,7 @@ func (f *FrontendAPI) resolvePaperForRun(projectID, paperID string, rctx *papers
 	if err != nil {
 		return nil, err
 	}
-	if effectiveResearchRoot(fresh) != rctx.researchRoot {
+	if f.effectiveResearchRoot(fresh) != rctx.researchRoot {
 		return nil, errResearchRootChanged
 	}
 

@@ -1,6 +1,7 @@
 package backend
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/project"
+	"github.com/v0lka/c0wrk/backend/session"
 	"github.com/v0lka/c0wrk/core/papers"
 )
 
@@ -22,7 +24,8 @@ import (
 // research root: <research-root>/papers/<slug>/{paper.md, note.md,
 // appraisal.md}. It lives independently of any R-NNN research project — no
 // project may exist yet, and the library still works. The effective research
-// root is the canonical <workspace>/.research (see effectiveResearchRoot).
+// root is the project's effective research root, which follows the active
+// session (see effectiveResearchRoot).
 //
 // Papers link to research via the paper card's `research_ids` field (H-NNN
 // hypothesis ids); the read RPCs resolve each id to the owning R-NNN project(s)
@@ -210,7 +213,7 @@ func (f *FrontendAPI) SetPaperPinned(projectID, paperID string, pinned bool) err
 	if err != nil {
 		return err
 	}
-	if effectiveResearchRoot(fresh) != ctx.researchRoot {
+	if f.effectiveResearchRoot(fresh) != ctx.researchRoot {
 		return errResearchRootChanged
 	}
 
@@ -344,7 +347,7 @@ func (f *FrontendAPI) RecordFlashcardReview(projectID, paperID, cardID, grade st
 	if err != nil {
 		return err
 	}
-	if effectiveResearchRoot(fresh) != ctx.researchRoot {
+	if f.effectiveResearchRoot(fresh) != ctx.researchRoot {
 		return errResearchRootChanged
 	}
 
@@ -375,8 +378,8 @@ func (f *FrontendAPI) RecordFlashcardReview(projectID, paperID, cardID, grade st
 // research/papers subsystems are unavailable. Used by the project switch (to
 // track the active library for the watcher) and by the watcher setup (to
 // recursively watch the library for every real project).
-func papersRootForProject(p *project.ProjectInfo) string {
-	root := effectiveResearchRoot(p)
+func (f *FrontendAPI) papersRootForProject(p *project.ProjectInfo) string {
+	root := f.effectiveResearchRoot(p)
 	if root == "" {
 		return ""
 	}
@@ -389,22 +392,135 @@ func papersRootForProject(p *project.ProjectInfo) string {
 // watched for every real project, so a comparison artifact written before any
 // R-NNN exists still refreshes the Compare section. It returns "" for
 // the No Project pseudo-project or a project without a workspace.
-func comparisonsRootForProject(p *project.ProjectInfo) string {
-	root := effectiveResearchRoot(p)
+func (f *FrontendAPI) comparisonsRootForProject(p *project.ProjectInfo) string {
+	root := f.effectiveResearchRoot(p)
 	if root == "" {
 		return ""
 	}
 	return config.ComparisonsPathIn(root)
 }
 
-// effectiveResearchRoot returns the project's research root: the canonical
-// <workspace>/.research (RESEARCH is always on for real projects). Returns ""
-// for nil, No Project, or a workspace-less project.
-func effectiveResearchRoot(p *project.ProjectInfo) string {
+// effectiveResearchRoot returns the project's effective research root,
+// following the ACTIVE SESSION.
+//
+// Spec: specs/decisions/098-research-root-follows-active-session.md;
+// specs/domains/session-worktrees.md (Research/papers roots).
+//
+// Protocol — "research root follows the active session": the agent writes
+// research artifacts under <session-workspace>/.research (the session
+// Manager's researchProjectInfo derives the root from the SESSION's execution
+// workspace), so every research/papers read and mutation path must resolve
+// the SAME root. The root is <workspace-of-the-active-session>/.research,
+// where the active session is the project's most recently active
+// non-archived session, resolved through the READ-ONLY
+// Manager.WorkspacePathFor lookup with project-ID membership decided exactly
+// as GetSessionWorkspace decides it (activeSessionWorkspace). It falls back
+// to the project checkout (<proj.WorkspacePath>/.research) when no session
+// workspace resolves — a fresh project without sessions, or a manager/store
+// unavailability. A local session's workspace IS the checkout, so its
+// resolution and the fallback agree by construction; a managed-worktree
+// session resolves to its own tree, which is what makes research the agent
+// writes there visible to the panel and papers surfaces (the former
+// checkout-only resolution made it invisible).
+//
+// Returns "" for nil, No Project, or a workspace-less project (RESEARCH and
+// papers are unavailable there). Containment must validate against the
+// workspace the root was derived from — use researchRootWithBoundary at
+// containment-checked sites.
+func (f *FrontendAPI) effectiveResearchRoot(p *project.ProjectInfo) string {
+	root, _ := f.researchRootWithBoundary(p)
+	return root
+}
+
+// researchRootWithBoundary returns the project's effective research root
+// (see effectiveResearchRoot for the protocol) together with the workspace
+// its containment must be validated against: the session workspace when the
+// root followed a session — a managed tree legitimately lives in the
+// agent-dir container, OUTSIDE the checkout — or the project checkout on the
+// fallback path.
+func (f *FrontendAPI) researchRootWithBoundary(p *project.ProjectInfo) (root, boundary string) {
 	if p == nil || p.IsNoProject || p.WorkspacePath == "" {
-		return ""
+		return "", ""
 	}
-	return config.ProjectResearchPath(p.WorkspacePath)
+	if ws, ok := f.activeSessionWorkspace(p.ID); ok {
+		return config.ProjectResearchPath(ws), ws
+	}
+	return config.ProjectResearchPath(p.WorkspacePath), p.WorkspacePath
+}
+
+// activeSessionWorkspace resolves the workspace of the project's active
+// session: the most recently active non-archived session of projectID,
+// through the READ-ONLY Manager.WorkspacePathFor lookup — never
+// GetSessionWorkspacePath, whose lazy restore would rebuild a full
+// orchestrator on a pure path lookup (the same rule the terminal and
+// explorer paths follow). Membership is by project ID, GetSessionWorkspace's
+// rule: the store row's ProjectID, with a RESIDENT session's in-memory
+// ProjectID as the fallback when the row is missing (a session never moves
+// between projects, so both are authoritative). Both reads share one
+// terminalPathLookupTimeout-bounded context, so a saturated SQLite pool
+// degrades to the caller's fallback instead of parking the caller. Returns
+// ok=false when the manager is unavailable or no session workspace resolves
+// (including a row whose project no longer matches — a foreign session must
+// never steer the root).
+func (f *FrontendAPI) activeSessionWorkspace(projectID string) (string, bool) {
+	if f.appCell() == nil {
+		return "", false
+	}
+	mgr := f.app.Manager()
+	if mgr == nil {
+		return "", false
+	}
+	ctx, cancel := context.WithTimeout(f.ctx(), terminalPathLookupTimeout)
+	defer cancel()
+
+	sessionID, err := f.latestSessionID(ctx, mgr, projectID)
+	if err != nil || sessionID == "" {
+		return "", false
+	}
+	ws, hasWS := mgr.WorkspacePathFor(ctx, sessionID)
+	if !hasWS || ws == "" {
+		return "", false
+	}
+	if f.store != nil {
+		if info, rowErr := f.store.LoadSession(ctx, sessionID); rowErr == nil && info != nil {
+			if info.ProjectID == projectID {
+				return ws, true
+			}
+			return "", false
+		}
+	}
+	if pid, live := mgr.SessionProjectID(sessionID); live {
+		return ws, pid == projectID
+	}
+	// No authority answered (transient store failure, session neither stored
+	// nor resident): treat as no session so the caller takes its fallback.
+	return "", false
+}
+
+// latestSessionID returns the id of projectID's most recently active
+// non-archived session: the SessionInfo.LastActiveAt ordering
+// ListSessionsByProjectCtx exposes (falling back to created_at), with
+// archived sessions excluded — they are read-only and hidden from the picker,
+// so they must never be selected as the active one. The list query itself IS
+// the project-ID membership filter.
+func (f *FrontendAPI) latestSessionID(ctx context.Context, mgr *session.Manager, projectID string) (string, error) {
+	sessions, err := mgr.ListSessionsByProjectCtx(ctx, projectID)
+	if err != nil {
+		return "", err
+	}
+	latestID := ""
+	var latestTS time.Time
+	for _, candidate := range sessions {
+		if candidate.Archived {
+			continue
+		}
+		ts := parseSessionActivityTimestamp(candidate)
+		if latestID == "" || ts.After(latestTS) {
+			latestID = candidate.ID
+			latestTS = ts
+		}
+	}
+	return latestID, nil
 }
 
 // emitPapersChanged checks whether any of the changed paths fall inside the
@@ -488,24 +604,27 @@ func (f *FrontendAPI) papersReadContextFor(projectID string) (*papersReadContext
 	if err != nil {
 		return nil, err
 	}
-	researchRoot := effectiveResearchRoot(proj)
+	// The root follows the active session (see researchRootWithBoundary);
+	// containment is validated against the workspace the root was derived
+	// from — a managed session's tree lives outside the checkout.
+	researchRoot, boundary := f.researchRootWithBoundary(proj)
 	if researchRoot == "" {
 		return nil, errors.New("project has no workspace to derive a paper library from")
 	}
-	contained, withinErr := config.IsWithinPath(proj.WorkspacePath, researchRoot)
+	contained, withinErr := config.IsWithinPath(boundary, researchRoot)
 	if withinErr != nil {
 		return nil, fmt.Errorf("failed to validate research root containment: %w", withinErr)
 	}
 	if !contained {
-		return nil, fmt.Errorf("research root %q must be inside the project workspace %q", researchRoot, proj.WorkspacePath)
+		return nil, fmt.Errorf("research root %q must be inside the workspace %q", researchRoot, boundary)
 	}
 	libraryRoot := config.PaperLibraryPathIn(researchRoot)
-	libContained, libErr := config.IsWithinPath(proj.WorkspacePath, libraryRoot)
+	libContained, libErr := config.IsWithinPath(boundary, libraryRoot)
 	if libErr != nil {
 		return nil, fmt.Errorf("failed to validate paper library containment: %w", libErr)
 	}
 	if !libContained {
-		return nil, fmt.Errorf("paper library %q must be inside the project workspace %q", libraryRoot, proj.WorkspacePath)
+		return nil, fmt.Errorf("paper library %q must be inside the workspace %q", libraryRoot, boundary)
 	}
 	return &papersReadContext{project: proj, researchRoot: researchRoot, libraryRoot: libraryRoot}, nil
 }

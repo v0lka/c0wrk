@@ -457,12 +457,22 @@ func (f *FrontendAPI) SwitchProject(id string) error {
 	if err := f.switchSetupVector(switchCtx, p); err != nil {
 		return err
 	}
-	f.switchProjectSetupWatcher(switchCtx, p)
+	// The active session's workspace resolves ONCE, here, and feeds BOTH
+	// steps: the watcher root (setupWatcher's CODE branch) and the tracked
+	// research/papers/comparisons roots (activate's derivation). Resolving
+	// independently per step re-ran the bounded store reads twice and opened
+	// a desync window: a transient store failure (or a concurrent
+	// last-activity write) between the two resolutions could root the
+	// watcher at the session tree while the emit roots fell back to the
+	// checkout — or the reverse — leaving research/papers events unrouted
+	// until the next WatchDirectory self-healed. One resolution, one
+	// snapshot, no window.
+	sessionWS, hasSessionWS := f.switchProjectSetupWatcher(switchCtx, p)
 
 	// All fallible steps succeeded: commit the activation. From here on the
 	// switch cannot fail, so the active marker and the project:switched event
 	// stay consistent with what the frontend is told.
-	f.switchProjectActivate(switchCtx, p)
+	f.switchProjectActivate(switchCtx, p, sessionWS, hasSessionWS)
 	f.applySavedProjectSwitchState(switchCtx, p.ID)
 
 	// c0wrk-owned packs (research-*/study-paper skills, research agent
@@ -590,30 +600,69 @@ func (f *FrontendAPI) switchProjectTeardown(ctx context.Context, newID string) {
 	_ = previousProjectID
 }
 
+// trackedSessionRoots derives the research/papers/comparisons roots a project
+// switch tracks for the watcher callbacks, from an ALREADY-RESOLVED active
+// session workspace (the same snapshot switchProjectSetupWatcher rooted the
+// watcher with): <session-workspace>/.research when a session workspace
+// resolved, <checkout>/.research otherwise — the effectiveResearchRoot
+// protocol without a second resolution. The papers/comparisons derivation
+// stays GUARDED: an empty effective research root (No Project, or a project
+// without a workspace) must leave both roots EMPTY — the watcher emit gates
+// treat "" as "root not tracked", while filepath.Join("", "papers") would
+// silently produce the RELATIVE "papers"/"comparisons" and break that
+// cross-goroutine contract for every consumer.
+func trackedSessionRoots(p *project.ProjectInfo, sessionWS string, hasSessionWS bool) (researchRoot, papersRoot, comparisonsRoot string) {
+	if p == nil || p.IsNoProject || p.WorkspacePath == "" {
+		return "", "", ""
+	}
+	if hasSessionWS && sessionWS != "" {
+		researchRoot = config.ProjectResearchPath(sessionWS)
+	} else {
+		researchRoot = config.ProjectResearchPath(p.WorkspacePath)
+	}
+	if researchRoot == "" {
+		return "", "", ""
+	}
+	return researchRoot, config.PaperLibraryPathIn(researchRoot), config.ComparisonsPathIn(researchRoot)
+}
+
 // switchProjectActivate sets the new project as active and updates related state.
-func (f *FrontendAPI) switchProjectActivate(switchCtx context.Context, p *project.ProjectInfo) {
+// sessionWS/hasSessionWS carry the active-session workspace resolution the
+// watcher setup already made (switchProjectSetupWatcher returns it), so the
+// session-following roots derive from the SAME snapshot the watcher root was
+// chosen from — resolving them independently here would re-run the bounded
+// store reads and open a desync window between the watcher root and the
+// tracked emit roots.
+func (f *FrontendAPI) switchProjectActivate(switchCtx context.Context, p *project.ProjectInfo, sessionWS string, hasSessionWS bool) {
 	f.seedAcquire()
+	// Derive the session-following roots BEFORE the lock: the tracked-root
+	// fields are read by the watcher callbacks under activeProjectMu, so no
+	// work beyond cheap derivations may run while it is held. The roots
+	// follow the active session (see trackedSessionRoots).
+	researchRoot, papersRoot, comparisonsRoot := trackedSessionRoots(p, sessionWS, hasSessionWS)
+
 	f.activeProjectMu.Lock()
 	f.activeProjectID = p.ID
 	f.activeProjectPath = p.WorkspacePath
 	// Track the active research root so the workspace watcher callback can
-	// emit research:file_changed events for file modifications inside it. The
-	// root is the project's canonical <workspace>/.research, so the
-	// incremental update path works across a restart and a project switch.
+	// emit research:file_changed events for file modifications inside it.
+	// The root follows the active session, so the incremental update path
+	// works across a restart, a project switch, and a session switch into a
+	// managed worktree.
 	// Always assign (including "") so switching to No Project clears a stale
 	// research root from the previously-active project and stops cross-project
 	// research:file_changed events.
-	f.activeResearchRoot = effectiveResearchRoot(p)
+	f.activeResearchRoot = researchRoot
 	// Track the paper-library root (<effective research root>/papers)
 	// independently of the active R-NNN, so the workspace watcher can emit
 	// papers:changed even before any project exists — the library is a global
 	// subdirectory of the research root that outlives any R-NNN. Empty for the
-	// No Project pseudo-project (papersRootForProject).
-	f.activePapersRoot = papersRootForProject(p)
+	// No Project pseudo-project (empty effective research root).
+	f.activePapersRoot = papersRoot
 	// Track the comparisons root (<effective research root>/comparisons) with
 	// the same independence from the active R-NNN: comparisons is a global
 	// sibling of the paper library and must always be watched for a real project.
-	f.activeComparisonsRoot = comparisonsRootForProject(p)
+	f.activeComparisonsRoot = comparisonsRoot
 	f.activeProjectMu.Unlock()
 
 	// Invalidate cached skill list since project-local skills may differ.
@@ -644,30 +693,37 @@ func (f *FrontendAPI) switchProjectActivate(switchCtx context.Context, p *projec
 	}
 }
 
-// switchProjectSetupWatcher creates a file watcher for the new project workspace.
-// For No Project (CHAT mode), each session has an isolated workspace
-// (~/.c0wrk/projects/__no_project__/<sid>/workspace/). The watcher is scoped to
-// the active session's workspace so only that session's file changes emit
-// workspace:tree_changed — other sessions and session-infra directories
-// (plans/, temp/, logs) that live outside workspace/ are excluded. fsnotify is
-// NOT recursive (it only reports events for explicitly-added directories, even
-// on macOS), so scoping to the session workspace — rather than the shared
-// project dir — is what prevents cross-session noise.
+// switchProjectSetupWatcher creates a file watcher for the new project.
+// The watcher root FOLLOWS the active session in BOTH modes: for No Project
+// (CHAT mode) each session has an isolated workspace
+// (~/.c0wrk/projects/__no_project__/<sid>/workspace/) and scoping to it —
+// rather than the shared project dir — is what excludes other sessions and
+// session-infra directories (plans/, temp/, logs); for CODE mode the root is
+// the active session's workspace when one resolves (its managed worktree for
+// a bound session), falling back to the project checkout. fsnotify is NOT
+// recursive (it only reports events for explicitly-added directories, even
+// on macOS), so the root choice decides what is watched at all.
 //
-// The watcher root must follow the active session. It is created here for the
-// most recently active session (if any) and re-scoped on every session switch
-// via WatchDirectory. When no session exists yet (fresh start), creation is
-// deferred until the first session is activated — WatchDirectory creates the
-// watcher lazily.
-func (f *FrontendAPI) switchProjectSetupWatcher(switchCtx context.Context, p *project.ProjectInfo) {
+// The watcher is created here for the most recently active session (if any)
+// and re-scoped on every session switch via WatchDirectory. When no session
+// exists yet (fresh CHAT start), creation is deferred until the first session
+// is activated — WatchDirectory creates the watcher lazily.
+//
+// The CODE branch RETURNS the active-session workspace it resolved, and the
+// caller threads that same snapshot into switchProjectActivate so the tracked
+// research/papers/comparisons roots derive from ONE resolution (see
+// SwitchProject). The No Project branch returns ("", false): the
+// research/papers roots are unavailable for No Project by protocol
+// (researchRootWithBoundary returns ""), so there is no snapshot to thread.
+func (f *FrontendAPI) switchProjectSetupWatcher(switchCtx context.Context, p *project.ProjectInfo) (sessionWS string, hasSessionWS bool) {
 	f.seedAcquire()
 	// For No Project, resolve the session workspace before acquiring the lock
 	// to avoid holding watcherMu during session-manager queries.
 	if p.IsNoProject {
-		sessionWS := f.resolveNoProjectSessionWorkspace(switchCtx)
+		noProjectWS := f.resolveNoProjectSessionWorkspace(switchCtx)
 		f.watcherMu.Lock()
 		defer f.watcherMu.Unlock()
-		if sessionWS == "" {
+		if noProjectWS == "" {
 			// No session yet: tear down any previous watcher and defer
 			// creation until the first session is activated (WatchDirectory
 			// re-scopes then).
@@ -675,27 +731,57 @@ func (f *FrontendAPI) switchProjectSetupWatcher(switchCtx context.Context, p *pr
 				_ = f.watcher.Close()
 				f.watcher = nil
 			}
-			return
+			return "", false
 		}
-		if err := f.reScopeNoProjectWatcherLocked(sessionWS); err != nil {
+		if err := f.reScopeNoProjectWatcherLocked(noProjectWS); err != nil {
 			f.log().Warn("failed to start workspace file watcher", "project", p.ID, "error", err)
 		}
-		return
+		return "", false
 	}
 
-	// CODE mode: tear down the previous watcher and create a new one scoped
-	// to the project workspace. The effective research root is derived from
-	// the TARGET project (p) at the end of this function, not from the active
-	// fields: watcher setup runs BEFORE switchProjectActivate commits the new
-	// project, so f.activeResearchRoot still holds the PREVIOUS project's root
-	// here.
+	// CODE mode: the watcher root follows the ACTIVE SESSION — the managed
+	// worktree a session is bound to, the checkout otherwise (the same
+	// resolution activeSessionWorkspace documents; the file tree re-roots at
+	// the same workspace on every session switch). Resolved BEFORE watcherMu:
+	// the resolver queries the session manager/store, which must not hold
+	// watcherMu (the same ordering rule the No-Project branch follows) — and
+	// before switchProjectActivate commits the new project, so the tracked
+	// emit roots still hold the PREVIOUS project's values here; the callback
+	// snapshots them per batch under activeProjectMu.
+	watchRoot := p.WorkspacePath
+	sessionWS, hasSessionWS = f.activeSessionWorkspace(p.ID)
+	if hasSessionWS && sessionWS != "" {
+		watchRoot = sessionWS
+	}
 	f.watcherMu.Lock()
 	defer f.watcherMu.Unlock()
+	if err := f.reScopeCodeWatcherLocked(watchRoot, config.ProjectResearchPath(p.WorkspacePath)); err != nil {
+		f.log().Warn("failed to start workspace file watcher", "project", p.ID, "error", err)
+	}
+	return sessionWS, hasSessionWS
+}
+
+// reScopeCodeWatcherLocked tears down the current watcher and creates a new
+// one rooted at watchRoot — the CODE-mode counterpart of the No-Project
+// re-scope. The root follows the active session (its managed worktree when
+// one is bound, the checkout otherwise), and the callback routes the per-root
+// consumers (git status/ignore caches, vector NotifyFileChange) at watchRoot —
+// the tree the events actually come from — never at the project checkout.
+// checkoutResearchRoot is the checkout's canonical <workspace>/.research,
+// watched recursively regardless of where the root moved (see
+// watchResearchTreesLocked). The caller must hold f.watcherMu and must have
+// resolved watchRoot WITHOUT holding it (the resolver queries the session
+// manager/store).
+func (f *FrontendAPI) reScopeCodeWatcherLocked(watchRoot, checkoutResearchRoot string) error {
+	f.seedAcquire()
+	if watchRoot == "" {
+		return errors.New("cannot re-scope watcher to empty path")
+	}
 	if f.watcher != nil {
 		_ = f.watcher.Close()
 		f.watcher = nil
 	}
-	watcher, err := workspace.NewWatcher(p.WorkspacePath, func(changedPaths []string) {
+	watcher, err := workspace.NewWatcher(watchRoot, func(changedPaths []string) {
 		// Snapshot the active project fields under the lock to avoid a data
 		// race between this callback (fsnotify goroutine) and project
 		// switches / research active-project changes (main thread). Reading
@@ -707,17 +793,14 @@ func (f *FrontendAPI) switchProjectSetupWatcher(switchCtx context.Context, p *pr
 		snapComparisonsRoot := f.activeComparisonsRoot
 		f.activeProjectMu.RUnlock()
 
-		// Emit research:file_changed for any changed path inside the research
-		// directory. The helper returns whether the change set was
-		// research-scoped so we can annotate workspace:tree_changed — the
-		// frontend's full-refetch path skips when the incremental path will
-		// handle the update, avoiding a redundant double fetch.
+		// research:file_changed for paths inside the tracked research root;
+		// the returned flag annotates workspace:tree_changed so the
+		// frontend's full-refetch path can skip when the incremental path
+		// (useResearchFileWatcher) handles the update.
 		researchScoped := f.emitResearchFileChanged(snapResearchRoot, snapProjectID, changedPaths)
-		// Emit papers:changed for any changed path inside the paper library or
-		// the comparisons directory. Independent of the research emitter
-		// above: both roots are always watched for a real project, so an edit
-		// to a paper card or a comparison artifact still refreshes the Papers /
-		// Compare surfaces.
+		// papers:changed for the paper library / comparisons roots — tracked
+		// independently of the active R-NNN so card edits still refresh
+		// Papers / Compare before any R-NNN exists.
 		f.emitPapersChanged(snapPapersRoot, snapComparisonsRoot, snapProjectID, changedPaths)
 		f.emitEvent(EventWorkspaceTreeChanged, map[string]bool{
 			"research_scoped": researchScoped,
@@ -731,64 +814,66 @@ func (f *FrontendAPI) switchProjectSetupWatcher(switchCtx context.Context, p *pr
 			f.app.Manager().InvalidateIgnoreCache(changedPaths)
 		}
 
-		// Any tree change can alter the working-tree status of the active
-		// repo, and an ignore-rule edit additionally stales the ignored-path
-		// set. Treat the debounced batch as the cache-invalidation point for
-		// the active project (this callback only runs for CODE-mode watchers;
-		// No Project uses a separate, cache-free watcher). See
-		// frontend_api_gitcache.go.
-		f.invalidateGitCachesOnWatcher(p.WorkspacePath, changedPaths)
+		// Git status/ignore caches are keyed by repository root: route the
+		// invalidation at the WATCHED root. With the root following the
+		// active session, a managed tree's churn refreshes that tree's Git
+		// panel state, not the checkout's. See frontend_api_gitcache.go.
+		f.invalidateGitCachesOnWatcher(watchRoot, changedPaths)
 
-		// Project-local skills live under <workspace>/.agents/skills, so a
-		// workspace change may have added/removed/modified them. Invalidate
-		// the skill cache so the next ListSkills call rescans.
+		// Project-local skills (<workspace>/.agents/skills) and agents
+		// (<workspace>/.agents/agents) live under the watched workspace, so
+		// a change may have added/removed/modified them — invalidate both
+		// caches so the next ListSkills / ListAgents rescans.
 		f.invalidateSkillCache()
-		// Project-local agents live under <workspace>/.agents/agents — same
-		// reasoning. Invalidate the agent cache so ListAgents rescans.
 		f.invalidateAgentCache()
 		// Project-local commands live under <workspace>/.agents/commands —
 		// same reasoning. Invalidate the command cache so ListCommands rescans.
 		f.invalidateCommandCache()
 
 		// Only trigger vector re-indexing when at least one changed path is
-		// indexable. Churn inside ignored locations (.git maintenance: gc,
-		// repack, reflog cleanup; .DS_Store; node_modules) must not wake the
-		// indexer — it would run a full ValidateCollection pass (including a
-		// wasted ONNX inference) only to find "no changes detected". The
-		// indexer's cached .gitignore patterns are reused so the watcher does
-		// not re-read .gitignore on every debounce flush. The watcher root is
-		// the project checkout, so the notification targets that root's
-		// manager only (ADR-080): other trees' managers are untouched.
-		if vm := f.vectorRootsRegistry().LiveManager(p.WorkspacePath); vm != nil && vm.IsAnyIndexablePath(changedPaths) {
+		// indexable — churn inside ignored locations (.git maintenance,
+		// .DS_Store, node_modules) must not wake the indexer into a wasted
+		// ValidateCollection pass (including a wasted ONNX inference). The
+		// notification targets the WATCHED root's manager only (per-root
+		// registry, ADR-081): with the root following the active session, a
+		// managed tree's churn never wakes the checkout's manager, and vice
+		// versa.
+		if vm := f.vectorRootsRegistry().LiveManager(watchRoot); vm != nil && vm.IsAnyIndexablePath(changedPaths) {
 			vm.NotifyFileChange()
 		}
 	})
 	if err != nil {
-		f.log().Warn("failed to start workspace file watcher", "project", p.ID, "error", err)
-		return
+		return err
 	}
 	f.watcher = watcher
+	f.watchResearchTreesLocked(watcher, watchRoot, checkoutResearchRoot)
+	return nil
+}
 
-	// Recursively watch the project's EFFECTIVE research root — the canonical
-	// <workspace>/.research for every real project (config.ProjectResearchPath).
-	// This single recursive root covers the research artifact tree (hypothesis
-	// cards, the brief, prior-art, and graph files that live in nested
-	// subdirectories like .research/R-NNN/hypotheses/), the paper library
-	// (<root>/papers), and the comparisons directory (<root>/comparisons) — so
-	// a paper or comparison edit still emits papers:changed even before any
-	// R-NNN exists.
-	//
-	// The workspace watcher is NOT recursive (fsnotify only reports events for
-	// explicitly-added directories), and WatchTree registers the root as a
-	// recursive root, so subdirectories created later — including .research
-	// itself, then papers/ and comparisons/ — are auto-added on their first
-	// write. Crucially this creates NOTHING on disk at switch time: selecting a
-	// project no longer materializes .research/papers and .research/comparisons
-	// in the user's repository (which surfaced as untracked entries in git
-	// status / the file tree and as spurious workspace:tree_changed events).
-	if effectiveRoot := effectiveResearchRoot(p); effectiveRoot != "" {
-		if err := watcher.WatchTree(effectiveRoot); err != nil {
-			f.log().Debug("failed to watch research tree", "root", effectiveRoot, "error", err)
+// watchResearchTreesLocked registers the recursive research-tree watches on a
+// freshly built CODE watcher: the checkout's canonical <workspace>/.research
+// and the watched root's own .research when the two differ. Either tree may
+// live outside the watcher root (a managed tree's research lives in the
+// agent-dir container; the checkout's lives outside a tree-rooted watcher),
+// so each is admitted via AllowRoot first — an inert extra entry for in-root
+// trees. Registration creates NOTHING on disk (Issue 52: a project switch
+// must not materialize .research in the user's repository) — a missing tree
+// is only marked recursive, and its first write auto-adds it (the watcher's
+// recursive-root mechanics, core/workspace/watcher.go).
+func (f *FrontendAPI) watchResearchTreesLocked(w *workspace.Watcher, watchRoot, checkoutResearchRoot string) {
+	roots := make([]string, 0, 2)
+	if checkoutResearchRoot != "" {
+		roots = append(roots, checkoutResearchRoot)
+	}
+	if sessionRoot := config.ProjectResearchPath(watchRoot); sessionRoot != "" && sessionRoot != checkoutResearchRoot {
+		roots = append(roots, sessionRoot)
+	}
+	for _, root := range roots {
+		if err := w.AllowRoot(root); err != nil {
+			f.log().Debug("failed to admit research root", "root", root, "error", err)
+		}
+		if err := w.WatchTree(root); err != nil {
+			f.log().Debug("failed to watch research tree", "root", root, "error", err)
 		}
 	}
 }
@@ -1156,37 +1241,15 @@ func (f *FrontendAPI) resolveLatestSessionForProject(switchCtx context.Context, 
 		return ""
 	}
 
-	sessions, err := func() ([]session.SessionInfo, error) {
-		opCtx, cancel := f.switchStoreOpCtx(switchCtx)
-		defer cancel()
-		return f.app.Manager().ListSessionsByProjectCtx(opCtx, projectID)
-	}()
+	sessions := f.app.Manager()
+	opCtx, cancel := f.switchStoreOpCtx(switchCtx)
+	defer cancel()
+	latest, err := f.latestSessionID(opCtx, sessions, projectID)
 	if err != nil {
 		f.log().Warn("failed to list sessions for latest fallback resolution", "project", projectID, "error", err)
 		return ""
 	}
-
-	// Archived sessions are read-only and hidden from the session picker;
-	// they must never be auto-selected as the restore target.
-	latest := session.SessionInfo{}
-	latestTS := time.Time{}
-	found := false
-	for _, candidate := range sessions {
-		if candidate.Archived {
-			continue
-		}
-		candidateTS := parseSessionActivityTimestamp(candidate)
-		if !found || candidateTS.After(latestTS) {
-			latest = candidate
-			latestTS = candidateTS
-			found = true
-		}
-	}
-	if !found {
-		return ""
-	}
-
-	return latest.ID
+	return latest
 }
 
 func parseSessionActivityTimestamp(info session.SessionInfo) time.Time {

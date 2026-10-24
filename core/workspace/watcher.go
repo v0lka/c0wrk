@@ -30,6 +30,13 @@ type Watcher struct {
 	onChange ChangeHandler
 	mu       sync.Mutex
 	watched  map[string]bool
+	// extraRoots are additional admitted roots for the under-root gate: paths
+	// under the primary root OR any extra root pass WatchDir/WatchTree
+	// validation. Needed when a watched subtree legitimately lives outside the
+	// primary root — e.g. a managed session worktree whose .research artifact
+	// tree must be watched while the watcher stays rooted at the project
+	// checkout. Populated only via AllowRoot.
+	extraRoots map[string]bool
 	// recursiveRoots are directory roots whose entire subtree must be watched.
 	// The event loop auto-adds any directory created within a recursive root
 	// so newly-created subdirectories (e.g. a new R-NNN research project) are
@@ -79,6 +86,7 @@ func NewWatcher(root string, onChange ChangeHandler, loggers ...*slog.Logger) (*
 		watcher:        fsw,
 		onChange:       onChange,
 		watched:        make(map[string]bool),
+		extraRoots:     make(map[string]bool),
 		recursiveRoots: make(map[string]bool),
 		done:           make(chan struct{}),
 		logger:         logger,
@@ -91,12 +99,30 @@ func NewWatcher(root string, onChange ChangeHandler, loggers ...*slog.Logger) (*
 	}
 	w.watched[absRoot] = true
 
-	// Also watch the .git directory so that index changes (staging/unstaging)
+	// Also watch the .git entry so that index changes (staging/unstaging)
 	// trigger the same onChange callback used by the file tree. The vector
 	// indexer ignores .git, so the consumer (backend) filters .git paths before
 	// triggering re-indexing — keeping this watch for file-tree refresh only.
-	gitDir := filepath.Join(absRoot, ".git")
-	if stat, err := os.Stat(gitDir); err == nil && stat.IsDir() {
+	//
+	// For a LINKED worktree <root>/.git is a regular "gitdir:" pointer file,
+	// not a directory, and the tree's own git metadata — the index (staging)
+	// and HEAD (commits, ref updates) — lives in the per-worktree git
+	// directory the pointer names (<common>/worktrees/<name>), which sits
+	// OUTSIDE the watched root whenever the root follows the session (a
+	// managed worktree in the agent-dir container). Watch the resolved
+	// directory instead: without it, agent-side git operations in a managed
+	// tree produced no events at all and the tree's git badges / Git-panel
+	// state went stale until an unrelated working-tree event (see
+	// specs/domains/workspace.md, Filesystem Watcher). Only the per-worktree
+	// directory is watched — the same single-level shape a checkout-rooted
+	// watcher had on its own <checkout>/.git (index/HEAD churn surfaces at
+	// that level; refs/ and logs/ subdirectories were never watched either).
+	// Best-effort: a resolve or fsnotify failure is logged and skipped — the
+	// working-tree watch above still covers content churn.
+	gitDir, err := resolveGitDirAt(absRoot)
+	if err != nil {
+		w.log().Debug("failed to resolve .git entry for watching", "root", absRoot, "error", err)
+	} else if gitDir != "" {
 		if err := fsw.Add(gitDir); err != nil {
 			w.log().Warn("failed to watch .git directory", "error", err)
 		}
@@ -104,6 +130,15 @@ func NewWatcher(root string, onChange ChangeHandler, loggers ...*slog.Logger) (*
 
 	go w.eventLoop()
 	return w, nil
+}
+
+// Root returns the watcher's primary root directory (absolute). It is fixed
+// at construction and never mutated, so no locking is required. Callers use
+// it to detect whether a re-scope target already matches the live root
+// (e.g. the backend WatchDirectory RPC re-issued on every FileTreePanel
+// mount) and keep the existing watcher instead of tearing it down.
+func (w *Watcher) Root() string {
+	return w.root
 }
 
 // eventLoop reads fsnotify events, accumulates their paths during a debounce
@@ -537,14 +572,39 @@ func (w *Watcher) Close() error {
 	return err
 }
 
-// isUnderRoot checks whether absPath is under (or equal to) the root directory.
+// AllowRoot admits an additional root for the under-root gate: WatchDir and
+// WatchTree accept paths under the watcher's primary root OR any allowed
+// extra root. Needed when a watched subtree legitimately lives outside the
+// primary root — a managed session worktree (kept in the agent-dir container,
+// outside the checkout) whose .research artifact tree must be watched while
+// the watcher stays rooted at the project checkout. Idempotent.
+func (w *Watcher) AllowRoot(path string) error {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("invalid path: %w", err)
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.extraRoots[absPath] = true
+	return nil
+}
+
+// isUnderRoot checks whether absPath is under (or equal to) the root directory
+// or any admitted extra root (see AllowRoot).
 // Uses the centralized containment primitive so symlink-escaped paths (e.g.
 // macOS /var → /private/var) are resolved consistently with the rest of the
-// codebase, per the path-centralization convention.
+// codebase, per the path-centralization convention. Callers must not hold
+// w.mu — the WatchDir/WatchTree gates run it before taking the lock.
 func (w *Watcher) isUnderRoot(absPath string) bool {
-	within, err := pathutil.IsWithinPath(w.root, absPath)
-	if err != nil {
-		return false
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if within, err := pathutil.IsWithinPath(w.root, absPath); err == nil && within {
+		return true
 	}
-	return within
+	for extra := range w.extraRoots {
+		if within, err := pathutil.IsWithinPath(extra, absPath); err == nil && within {
+			return true
+		}
+	}
+	return false
 }

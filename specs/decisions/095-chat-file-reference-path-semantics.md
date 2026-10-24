@@ -6,7 +6,12 @@ Accepted. Documents the cross-platform path semantics that the chat
 file-reference pipeline (the `fileref://` URI emission, the markdown link
 classification, the tool-card link resolution, and the read-path RPC
 resolvers) now implements; the domain and contract specs listed under
-References were updated in the same change.
+References were updated in the same change. Amended in the same cycle: the
+chat workspace root that relative user-facing paths resolve against follows
+the ACTIVE SESSION (execution workspace; checkout fallback) — Decision 6
+and the Consequences; [ADR-098](098-research-root-follows-active-session.md)
+records the same session-following rule for the research/papers roots and
+the workspace watcher.
 
 ## Context
 
@@ -113,9 +118,19 @@ keep old rows readable without a schema migration.
    one only for the eight file tools: `read_skill_resource` paths resolve
    through the skill-resource RPC keyed by the call's skill argument (no
    skill name → no resolution), while every other file tool resolves
-   `normalizePath(root, arg)` against the chat workspace root. With no
-   workspace root available (No-Project / transient window) the raw path
-   passes through unchanged. Markdown links and `@file` user-message links
+   `normalizePath(root, arg)` against the chat workspace root. That root is
+   resolved by `resolveChatWorkspaceRoot()`
+   (`frontend/src/lib/chatWorkspaceRoot.ts`) and follows the ACTIVE
+   SESSION: a `managed_worktree` session of the active project resolves
+   against its own tree (the binding's `workspace_path`, or the
+   backend-authoritative `GetSessionWorkspace` RPC while the binding row
+   has not landed), and local/unbound sessions fall back to the project
+   checkout — the session's `project_id` must equal the active project, so
+   a foreign session's tree never leaks into another project's window (the
+   same session-following rule the research/papers roots and the CODE
+   watcher follow, [ADR-098](098-research-root-follows-active-session.md)).
+   With no workspace root available (No-Project / transient window) the
+   raw path passes through unchanged. Markdown links and `@file` user-message links
    resolve through `resolveFileRefPath` against the workspace root —
    absolute inputs (POSIX, drive, UNC) are recognized by decision 1's
    classifier and normalized *without* joining, with or without a root (a
@@ -153,6 +168,12 @@ keep old rows readable without a schema migration.
 - Windows drive/UNC paths work end-to-end in chat on every platform: they
   are never joined onto the workspace, never dispatched to the system
   browser, and every read-path RPC resolves them.
+- Relative user-facing paths resolve against the ACTIVE SESSION's
+  execution workspace, not a fixed project checkout: a click in a session
+  bound to a managed worktree opens the file in that session's tree, and
+  the checkout is only the fallback for local/unbound sessions
+  (`resolveChatWorkspaceRoot()` for links and tool cards; the viewer's
+  `useWorkspacePath` mirrors the rule for markdown preview).
 - Classification is deterministic and testable: the Go and TS classifiers
   are declared mirrors and the test suites are GOOS-independent tables over
   the same inputs, so a transcript renders identically after moving between
@@ -216,6 +237,9 @@ keep old rows readable without a schema migration.
 - [specs/domains/frontend/rendering.md](../domains/frontend/rendering.md)
   § Markdown Element Handling — link classification, `normalizePath`, and
   the tool-card resolution bases.
+- [specs/decisions/098-research-root-follows-active-session.md](098-research-root-follows-active-session.md)
+  — the session-following workspace-root rule Decision 6 builds on (the
+  research/papers roots and the workspace watcher).
 - [specs/contracts/desktop-frontend.md](../contracts/desktop-frontend.md)
   § Workspace and § Skills — the read-path RPC dialect contract and the
   `ResolveSkillResourcePath` RPC.

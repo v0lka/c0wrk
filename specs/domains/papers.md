@@ -50,7 +50,7 @@ The paper ("literature") library is a per-project, workspace-contained store of 
     <slug>.md           multi-paper comparison (study-paper Compare intent)
 ```
 
-`<research-root>` is `<workspace>/.research` (RESEARCH is always on for real projects; the root is derived from the workspace path and never persisted per project). `papers/` and `comparisons/` are direct children of the root — global siblings of the `R-NNN-<slug>/` research projects, owned by no single project. `paper.md`, `note.md`, and `appraisal.md` are the `PaperArtifacts` set (the front matter card and the two Markdown sheets the writer owns); `flashcards.md`, `literature.json`, and the OPTIONAL per-paper artifacts `source.md` (the extracted source text), `literature.md` (the literature-context note) and `comparison.md` (a single-paper comparison) are additionally produced by the skill/helper and are NOT part of the backend `PaperArtifacts`. `paper.html` and `assets/` (`papers.OriginalHTMLFileName` / `papers.OriginalAssetsDirName`) are a third category — APP-OWNED fetch output: written only by the `FetchPaperOriginal` RPC (`core/papers.FetchOriginalHTML`), never by the study-paper skill or the backend writer, and read-only for the skill (see Invariants).
+`<research-root>` is `<workspace>/.research` (RESEARCH is always on for real projects; the root is derived from the workspace path and never persisted per project). `<workspace>` is the ACTIVE SESSION's execution workspace ([ADR-098](../decisions/098-research-root-follows-active-session.md)) — the managed tree for a `managed_worktree` session, the project checkout otherwise; the papers and comparisons roots follow the session ([session-worktrees.md](session-worktrees.md#researchpapers-roots)). `papers/` and `comparisons/` are direct children of the root — global siblings of the `R-NNN-<slug>/` research projects, owned by no single project. `paper.md`, `note.md`, and `appraisal.md` are the `PaperArtifacts` set (the front matter card and the two Markdown sheets the writer owns); `flashcards.md`, `literature.json`, and the OPTIONAL per-paper artifacts `source.md` (the extracted source text), `literature.md` (the literature-context note) and `comparison.md` (a single-paper comparison) are additionally produced by the skill/helper and are NOT part of the backend `PaperArtifacts`. `paper.html` and `assets/` (`papers.OriginalHTMLFileName` / `papers.OriginalAssetsDirName`) are a third category — APP-OWNED fetch output: written only by the `FetchPaperOriginal` RPC (`core/papers.FetchOriginalHTML`), never by the study-paper skill or the backend writer, and read-only for the skill (see Invariants).
 
 ## Core Types
 
@@ -174,7 +174,7 @@ Original-HTML fetch ("Load HTML original" in the workspace Source section)
 ## Invariants
 
 - Papers are available only for real projects: `loadProjectForResearch` rejects the No Project pseudo-project, and every RPC enforces workspace containment on the research root and on the paper library (`config.IsWithinPath`, defense in depth).
-- The library location is `<research-root>/papers` with `<research-root>` = `<workspace>/.research` (RESEARCH is always on for real projects). The library is a global sibling of the `R-NNN-<slug>/` projects and belongs to no single one.
+- The library location is `<research-root>/papers` with `<research-root>` = `<workspace>/.research` (RESEARCH is always on for real projects; `<workspace>` is the active session's execution workspace — the managed tree for a bound session, the checkout otherwise — ADR-098). The library is a global sibling of the `R-NNN-<slug>/` projects and belongs to no single one.
 - The library is maintained and watched independently of any particular `R-NNN` research project: a paper edit emits `papers:changed` regardless of which project (if any) is active.
 - Parsing is best-effort and total: every artifact is optional, so a partially written or hand-edited paper yields a usable record; an empty library and a zero-value `PaperRecord` are valid partial states. Missing optional artifacts never invalidate other parseable papers.
 - Records and libraries are deterministically ordered: papers by numeric id then slug (`P-2` sorts before `P-10`), so a parse is stable regardless of directory-read order.
@@ -195,7 +195,7 @@ Original-HTML fetch ("Load HTML original" in the workspace Source section)
 
 | Parameter | Default | Description |
 | --------- | ------- | ----------- |
-| Library location | `<research-root>/papers` | Global sibling of the `R-NNN-*` projects; `<research-root>` = `<workspace>/.research` (`config.ProjectResearchPath`) |
+| Library location | `<research-root>/papers` | Global sibling of the `R-NNN-*` projects; `<research-root>` = `<workspace>/.research` (`config.ProjectResearchPath`; `<workspace>` = the ACTIVE SESSION's execution workspace, ADR-098) |
 | Comparisons location | `<research-root>/comparisons` | One `<slug>.md` per comparison set (`config.ComparisonDirName`) |
 | Global skill seed dir | `~/.c0wrk/.agents/skills` (`config.SkillsDir`) | Destination of the startup `seedGlobalPacks` paper-pack seed; outranks `~/.agents` in discovery (ADR-056) |
 | `papers.CurrentSeedVersion` | `5` | Pack version stamped into each seeded skill's `.seed-version` marker; bump to refresh marked copies |

@@ -141,12 +141,13 @@ type NewHypothesisCard struct {
 // ---------------------------------------------------------------------------
 
 // GetResearchStatus returns the live RESEARCH mode state for a project.
-// RESEARCH is always on for real projects: the research root is the project's
-// canonical <workspace>/.research, and the returned DTO carries the parsed
-// root (graph + metrics + project list) with Enabled=true. The No Project
-// pseudo-project has no workspace, so RESEARCH is unavailable there — it
-// returns a neutral empty state (Enabled=false, nil Root) rather than an
-// error.
+// RESEARCH is always on for real projects: the returned DTO carries the
+// parsed root (graph + metrics + project list) with Enabled=true, and
+// ResearchRoot is the project's effective research root — the root
+// effectiveResearchRoot resolves, following the active session. The No
+// Project pseudo-project has no workspace, so RESEARCH is unavailable there
+// — it returns a neutral empty state (Enabled=false, nil Root) rather than
+// an error.
 func (f *FrontendAPI) GetResearchStatus(projectID string) (*ResearchStatusDTO, error) {
 	f.seedAcquire()
 	if projectID == "" {
@@ -175,7 +176,7 @@ func (f *FrontendAPI) GetResearchStatus(projectID string) (*ResearchStatusDTO, e
 		return status, nil
 	}
 
-	researchRoot := config.ProjectResearchPath(proj.WorkspacePath)
+	researchRoot := f.effectiveResearchRoot(proj)
 	root := f.parseResearchRootBestEffort(researchRoot)
 	status := &ResearchStatusDTO{
 		Enabled:      true,
@@ -212,8 +213,8 @@ func (f *FrontendAPI) GetResearchGraph(projectID string) (*ResearchGraphDTO, err
 		return nil, err
 	}
 
-	// RESEARCH is always on for real projects: the root is <workspace>/.research.
-	researchRoot := config.ProjectResearchPath(proj.WorkspacePath)
+	// The root follows the active session (see effectiveResearchRoot).
+	researchRoot := f.effectiveResearchRoot(proj)
 
 	// Parse the full root to get the active project.
 	root := f.parseResearchRootBestEffort(researchRoot)
@@ -293,10 +294,10 @@ func (f *FrontendAPI) GetResearchNextStep(projectID, hypothesisID string) (*Rese
 		return nil, err
 	}
 
-	// RESEARCH is always on for real projects: the root is <workspace>/.research.
-	// A missing/unparseable root (no research artifacts yet) yields the setup
+	// The root follows the active session (see effectiveResearchRoot);
+	// a missing/unparseable root (no research artifacts yet) yields the setup
 	// recommendation.
-	root := f.parseResearchRootBestEffort(config.ProjectResearchPath(proj.WorkspacePath))
+	root := f.parseResearchRootBestEffort(f.effectiveResearchRoot(proj))
 	if root == nil {
 		return f.setupNextStep(projectID), nil
 	}
@@ -491,7 +492,7 @@ func (f *FrontendAPI) SetActiveResearch(projectID, researchID string) (*Research
 	if err != nil {
 		return nil, err
 	}
-	if effectiveResearchRoot(proj) != researchRoot {
+	if f.effectiveResearchRoot(proj) != researchRoot {
 		return nil, errResearchRootChanged
 	}
 
@@ -554,7 +555,7 @@ func (f *FrontendAPI) DeleteResearch(projectID, researchID string) (*ResearchSta
 	if err != nil {
 		return nil, err
 	}
-	if effectiveResearchRoot(proj) != researchRoot {
+	if f.effectiveResearchRoot(proj) != researchRoot {
 		return nil, errResearchRootChanged
 	}
 
@@ -649,7 +650,7 @@ func (f *FrontendAPI) SetResearchPinned(projectID, researchID string, pinned boo
 	if err != nil {
 		return err
 	}
-	if effectiveResearchRoot(proj) != researchRoot {
+	if f.effectiveResearchRoot(proj) != researchRoot {
 		return errResearchRootChanged
 	}
 
@@ -713,7 +714,7 @@ func (f *FrontendAPI) SetHypothesisPinned(projectID, researchID, hypothesisID st
 	if err != nil {
 		return err
 	}
-	if effectiveResearchRoot(proj) != researchRoot {
+	if f.effectiveResearchRoot(proj) != researchRoot {
 		return errResearchRootChanged
 	}
 
@@ -861,10 +862,11 @@ func (f *FrontendAPI) researchMutationMu(researchRoot string) *sync.Mutex {
 	return mu
 }
 
-// researchRootForMutation loads the project and returns its research root,
-// derived from the workspace path (<workspace>/.research) with workspace
-// containment enforced (SECURITY.md; defense in depth even though the root is
-// deterministic). The returned project record predates the caller's mutex
+// researchRootForMutation loads the project and returns its research root —
+// the effective root, following the active session (see
+// effectiveResearchRoot) — with workspace containment enforced (SECURITY.md;
+// defense in depth even though the root is deterministic). The returned
+// project record predates the caller's mutex
 // acquisition, so callers that persist the project back must re-load the row
 // under the per-root mutation mutex and merge only their field delta (see
 // SetResearchPinned); this helper only requires the read path.
@@ -882,13 +884,16 @@ func (f *FrontendAPI) researchRootForMutation(projectID string) (string, *projec
 		return "", nil, err
 	}
 
-	researchRoot := config.ProjectResearchPath(proj.WorkspacePath)
-	contained, withinErr := config.IsWithinPath(proj.WorkspacePath, researchRoot)
+	// The root follows the active session; containment is validated against
+	// the workspace the root was derived from — a managed session's tree
+	// lives outside the checkout (see researchRootWithBoundary).
+	researchRoot, boundary := f.researchRootWithBoundary(proj)
+	contained, withinErr := config.IsWithinPath(boundary, researchRoot)
 	if withinErr != nil {
 		return "", nil, fmt.Errorf("failed to validate research root containment: %w", withinErr)
 	}
 	if !contained {
-		return "", nil, fmt.Errorf("research root %q must be inside the project workspace %q", researchRoot, proj.WorkspacePath)
+		return "", nil, fmt.Errorf("research root %q must be inside the workspace %q", researchRoot, boundary)
 	}
 	return researchRoot, proj, nil
 }

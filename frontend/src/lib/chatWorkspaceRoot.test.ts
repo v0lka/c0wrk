@@ -66,6 +66,96 @@ describe('resolveChatWorkspaceRoot', () => {
     expect(getSessionWorkspace).not.toHaveBeenCalled()
   })
 
+  it('resolves a managed-worktree session of the active project to its own tree', async () => {
+    useProjectStore.setState({
+      projects: [makeProject({ id: 'p1', workspace_path: '/ws/p1' })],
+      activeProjectId: 'p1',
+    })
+    useSessionStore.setState({
+      sessions: [makeSession({
+        id: 's1',
+        project_id: 'p1',
+        workspace_binding: {
+          kind: 'managed_worktree',
+          workspace_path: '/w/trees/s-1',
+          worktree_name: 's-1',
+          branch: 'feat/x',
+        },
+      })],
+      activeSessionId: 's1',
+    })
+    useFileTreeStore.setState({ rootPath: '/ws/p1' })
+
+    await expect(resolveChatWorkspaceRoot()).resolves.toBe('/w/trees/s-1')
+    expect(getSessionWorkspace).not.toHaveBeenCalled()
+  })
+
+  it('falls back to the RPC when a managed binding carries no tree path', async () => {
+    vi.mocked(getSessionWorkspace).mockResolvedValue('/w/trees/s-1')
+    useProjectStore.setState({
+      projects: [makeProject({ id: 'p1', workspace_path: '/ws/p1' })],
+      activeProjectId: 'p1',
+    })
+    useSessionStore.setState({
+      sessions: [makeSession({
+        id: 's1',
+        project_id: 'p1',
+        workspace_binding: { kind: 'managed_worktree', workspace_path: '' },
+      })],
+      activeSessionId: 's1',
+    })
+
+    await expect(resolveChatWorkspaceRoot()).resolves.toBe('/w/trees/s-1')
+    expect(getSessionWorkspace).toHaveBeenCalledWith('s1')
+  })
+
+  it('does not leak a foreign project session managed tree', async () => {
+    // The managed session belongs to p1 while p2 is active. The tree must
+    // stay hidden: the resolver falls through to the project-checkout rules
+    // (mirroring the backend membership guard), never to the session's tree.
+    useProjectStore.setState({
+      projects: [
+        makeProject({ id: 'p1', workspace_path: '/ws/p1' }),
+        makeProject({ id: 'p2', workspace_path: '/ws/p2' }),
+      ],
+      activeProjectId: 'p2',
+    })
+    useSessionStore.setState({
+      sessions: [makeSession({
+        id: 's1',
+        project_id: 'p1',
+        workspace_binding: {
+          kind: 'managed_worktree',
+          workspace_path: '/w/trees/s-1',
+          worktree_name: 's-1',
+          branch: 'feat/x',
+        },
+      })],
+      activeSessionId: 's1',
+    })
+
+    await expect(resolveChatWorkspaceRoot()).resolves.toBe('/ws/p1')
+    expect(getSessionWorkspace).not.toHaveBeenCalled()
+  })
+
+  it('resolves a local-binding session to the project checkout as before', async () => {
+    useProjectStore.setState({
+      projects: [makeProject({ id: 'p1', workspace_path: '/ws/p1' })],
+      activeProjectId: 'p1',
+    })
+    useSessionStore.setState({
+      sessions: [makeSession({
+        id: 's1',
+        project_id: 'p1',
+        workspace_binding: { kind: 'local', workspace_path: '/ws/p1' },
+      })],
+      activeSessionId: 's1',
+    })
+
+    await expect(resolveChatWorkspaceRoot()).resolves.toBe('/ws/p1')
+    expect(getSessionWorkspace).not.toHaveBeenCalled()
+  })
+
   it('resolves a No Project session via the per-session RPC', async () => {
     vi.mocked(getSessionWorkspace).mockResolvedValue('/ws/no-project/s1/workspace')
     useProjectStore.setState({

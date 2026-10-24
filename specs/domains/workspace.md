@@ -116,12 +116,27 @@ core/workspace.NewWatcher(root string, onChange ChangeHandler, loggers ...*slog.
       └─ Frontend: fileTreeStore refreshes affected subtree
 ```
 
-File watching is enabled for No Project using the active session's
-workspace directory (`__no_project__/<sessionID>/workspace/`) as the
-watcher root. When no session exists yet, any previous watcher is torn
-down and watcher creation is deferred until the first session activates
-(there is no project-base-directory fallback). Git operations and vector
-indexing remain skipped.
+The watcher root FOLLOWS the active session in both modes. For No Project
+(CHAT mode) it is the active session's workspace directory
+(`__no_project__/<sessionID>/workspace/`); when no session exists yet, any
+previous watcher is torn down and creation is deferred until the first
+session activates (there is no project-base-directory fallback). For CODE
+mode the root is the active session's workspace — its managed worktree when
+the session is bound to one, the project checkout otherwise — resolved at
+switch time through the READ-ONLY session lookup, and re-scoped on every
+session switch by the panel's `WatchDirectory` call, whose renderer-supplied
+path is containment-validated first (inside the active workspace, or one of
+its managed worktrees; a foreign path is rejected and changes nothing). The
+per-root consumers the callback feeds — git status/ignore caches and the
+vector `NotifyFileChange` — route at the WATCHED root (per-root registry,
+[ADR-081](../decisions/081-vector-per-root-registry.md)), so a managed
+tree's churn refreshes that tree's Git-panel state and wakes only that
+tree's index manager, never the checkout's. Recursive research-tree watches
+([ADR-098](../decisions/098-research-root-follows-active-session.md): the
+checkout's `.research` plus the watched root's own when it differs,
+admitted via `AllowRoot` when they live outside the root) are re-registered
+on every re-scope and create nothing on disk (Issue 52). Git operations and
+vector indexing remain skipped for No Project.
 
 ### Git Integration
 
@@ -255,7 +270,7 @@ Filename search is available via the `glob` built-in tool (`github.com/v0lka/sp4
 - Workspace-scoped viewer writes, directory listing, embedded-image reads and diff validation admit the active checkout or a validated managed-tree descendant belonging to that repository; containment remains symlink-aware. A managed tree's diff runs from its own Git root. Unmarked foreign roots remain outside workspace scope.
 - Project app-data cleanup refuses while its default worktree container has entries other than the repository marker, before runtime/session/vector teardown; explicit worktree removal retains the dirty/lock confirmation protocol.
 - File tree is always relative to active project's workspace path
-- Watcher emits events only for the active project's workspace
+- The watcher root follows the ACTIVE SESSION, so it emits events only for the session's workspace: a bound managed worktree when the active session has one, the project checkout otherwise (No Project keeps the deferred-creation rule); the session-switch `WatchDirectory` call re-scopes the watcher after containment-validating its renderer-supplied path
 - Git processes spawned in this domain always carry the sysproc baseline overrides; repo-scoped invocations re-scan the discovered repository's config fresh per call (walking up the `.git` chain like git's own discovery) and fail closed on unscannable configs — repository-defined hooks, fsmonitor daemons, filters, merge drivers, and textconv never execute (see [ADR-033](../decisions/033-git-subprocess-hardening.md))
 - A repository whose `.git/config` cannot be scanned safely is reported as not-a-repo by the boolean predicates, so callers take their non-repo paths — which the same scan failure then errors out of (fail-closed, review [53]) rather than producing degraded git output: git never runs un-neutralized
 - Worktree primitives (`core/workspace/worktrees.go`) serialize every mutating operation per repository and validate inside the serialized section: concurrent same-branch (or same-path) creates cannot both succeed — exactly one wins and every loser gets an explicit typed error

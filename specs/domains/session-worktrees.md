@@ -477,6 +477,54 @@ frontend (useGitFocusSync, mounted at the App root)  backend
   user-side only — agent-side routing stays context-borne (ADR-081), so
   focusing a tree never redirects another session's searches.
 
+### User-facing workspace roots
+
+The workspace root for USER-FACING path resolution follows the ACTIVE
+SESSION (its execution workspace); the project checkout is only the
+fallback. Chat file references — markdown links, `@file` clicks, and
+tool-card paths — resolve through `resolveChatWorkspaceRoot()` against the
+session's own workspace: the managed tree for a `managed_worktree` session
+of the active project (the binding's path, or the backend
+`GetSessionWorkspace` RPC while the binding row has not landed), the
+checkout for `local`/unbound sessions, with a project-ID membership guard
+so a foreign session's tree never leaks into another project's window
+([ADR-095](../decisions/095-chat-file-reference-path-semantics.md),
+Decision 6). The research/papers roots and the workspace watcher follow the
+same session-first rule (below and
+[workspace.md](workspace.md#filesystem-watcher)); agent-side execution
+paths are unrelated — a session always executes and searches in its own
+workspace regardless of which session is active.
+
+### Research/papers roots
+
+The RESEARCH and papers subsystems resolve their root the same way the
+explorer does — by the ACTIVE SESSION, not the project row (the "research
+root follows the active session" protocol, [ADR-098](../decisions/098-research-root-follows-active-session.md)):
+
+- The agent writes research artifacts under `<session-workspace>/.research`
+  (`session/Manager.researchProjectInfo` derives the root from the session's
+  own execution workspace), so every panel-side read/mutation path
+  (`FrontendAPI.effectiveResearchRoot`), the papers library and comparisons
+  roots, and the workspace watcher's tracked emit roots resolve
+  `<workspace-of-the-active-session>/.research` through the READ-ONLY
+  `Manager.WorkspacePathFor` with `GetSessionWorkspace`'s project-ID
+  membership, falling back to `<proj.WorkspacePath>/.research` when no
+  session of the project resolves.
+- Containment for the root (and the papers/comparisons subdirectories) is
+  validated against the workspace the root was derived from
+  (`researchRootWithBoundary`) — a managed tree lives OUTSIDE the checkout,
+  so the checkout is the wrong containment boundary whenever the session
+  resolution won.
+- The CODE-mode watcher ROOT follows the active session too (see
+  [workspace.md](workspace.md#filesystem-watcher)): its root is the session's
+  workspace — the managed tree — so the session's `.research` is an in-root
+  recursive watch, while the checkout's `.research` stays watched through an
+  admitted `AllowRoot` tree when the two differ. The frontend's session-switch
+  `WatchDirectory(session workspace)` call re-scopes the watcher to the new
+  tree and re-points the tracked emit roots, so `research:file_changed` /
+  `papers:changed` (and `workspace:tree_changed`) follow the session the user
+  switched to.
+
 ## Invariants
 
 - A binding is immutable after creation: project, kind, worktree name, and
@@ -510,6 +558,15 @@ frontend (useGitFocusSync, mounted at the App root)  backend
   is invalid.
 - `GitPanelTarget` may name only the owning project's checkout or one of its
   managed trees; it can never change `ExecutionWorkspace`.
+- The research/papers root follows the active session (ADR-098): a
+  panel-side resolver may derive the root only from the requesting project's
+  active session workspace or its checkout — never from another project's
+  session — and containment uses the workspace the root was derived from.
+- The workspace root for user-facing path resolution follows the active
+  session (ADR-095 Decision 6, ADR-098): chat file references, the file
+  viewer, and every panel-side root resolver answer the ACTIVE SESSION's
+  execution workspace — the managed tree for a bound session, the project
+  checkout otherwise — never another project's workspace.
 - Git-panel focus resolution always funnels through `resolveGitFocusRoot`;
   a focus override is admitted only after worktree-list validation and falls
   back to the project checkout when the tree is gone.
@@ -635,6 +692,7 @@ CHAT workspaces remain `~/.c0wrk/projects/__no_project__/<id>/workspace`.
 - [session-lifecycle.md](session-lifecycle.md) — creation/restore/fork flows this binds into
 - [ADR-080 Typed Session Workspace Bindings](../decisions/080-session-worktrees.md)
 - [ADR-082 Shared Managed Worktrees](../decisions/082-shared-managed-worktrees.md)
+- [ADR-098 Research/papers root follows the active session](../decisions/098-research-root-follows-active-session.md)
 - [ADR-030 Session Context Restore](../decisions/030-session-context-restore.md)
 - [backend-core.md](../contracts/backend-core.md) — the factory's workspace parameter is the execution workspace
 - [git-auto-fetch.md](git-auto-fetch.md) — remote refresh funnels through the same focus-resolving `resolveGitRepoRoot` (equivalent for fetch: the common dir is shared by every worktree)

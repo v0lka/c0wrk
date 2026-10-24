@@ -712,8 +712,8 @@ func TestSwitchProjectSetupWatcher_WatchesHybridLibrary(t *testing.T) {
 	f.activeProjectID = p.ID
 	f.activeProjectPath = ws
 	f.activeResearchRoot = "" // RESEARCH off — hybrid mode
-	f.activePapersRoot = papersRootForProject(p)
-	f.activeComparisonsRoot = comparisonsRootForProject(p)
+	f.activePapersRoot = f.papersRootForProject(p)
+	f.activeComparisonsRoot = f.comparisonsRootForProject(p)
 	f.activeProjectMu.Unlock()
 	t.Cleanup(func() {
 		f.watcherMu.Lock()

@@ -242,3 +242,107 @@ func waitEvent(counter *atomic.Int32, timeout time.Duration) bool {
 	}
 	return counter.Load() > 0
 }
+
+// writeUntilFlush writes path and waits (bounded) for the watcher to flush a
+// debounce batch containing want; if the event does not arrive it rewrites
+// and re-waits until the overall deadline. fsnotify watch registration is
+// asynchronous on every backend (OS sampling: a write issued before the
+// kernel watch is live is simply never reported), so the write retries
+// instead of assuming a fixed registration delay — the same bounded
+// event-driven retry shape backend/frontend_api_watcher_test.go's
+// writeUntilEmitted uses. Never a fixed sleep.
+func writeUntilFlush(t *testing.T, path string, data []byte, ch <-chan []string, want string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+		if flushContains(ch, want, 750*time.Millisecond) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("watcher event for %s not emitted", path)
+		}
+	}
+}
+
+// flushContains waits (bounded) for one debounce batch containing want. A
+// batch without our path (debounce merged other churn) keeps waiting within
+// the same window; expiry returns false so the caller's retry loop rewrites.
+// Watchdog shape — the timer bounds the wait, it never busy-polls.
+func flushContains(ch <-chan []string, want string, within time.Duration) bool {
+	timer := time.NewTimer(within)
+	defer timer.Stop()
+	for {
+		select {
+		case paths := <-ch:
+			for _, p := range paths {
+				if p == want {
+					return true
+				}
+			}
+		case <-timer.C:
+			return false
+		}
+	}
+}
+
+// TestNewWatcher_WatchesLinkedWorktreeGitDir pins the linked-worktree half of
+// the .git watch: <tree>/.git is a regular "gitdir:" pointer file there, and
+// the tree's own git metadata — the index (staging) and HEAD (commits, ref
+// updates) — lives in the per-worktree git directory the pointer names,
+// OUTSIDE the watched root (the layout `git worktree add` produces; the
+// watcher root follows the session, so a managed tree is the common case).
+// The pointer must be resolved and that directory watched, or agent-side git
+// churn in the tree produces no events at all.
+func TestNewWatcher_WatchesLinkedWorktreeGitDir(t *testing.T) {
+	base := t.TempDir()
+	commonDir := filepath.Join(base, "repo", ".git")
+	wtGitDir := filepath.Join(commonDir, "worktrees", "wt-1")
+	tree := filepath.Join(base, "agent-container", "wt-1")
+	for _, d := range []string{wtGitDir, tree} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatalf("MkdirAll %s: %v", d, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(tree, ".git"), []byte("gitdir: "+wtGitDir+"\n"), 0o644); err != nil {
+		t.Fatalf("write .git pointer: %v", err)
+	}
+
+	ch := make(chan []string, 64)
+	w, err := NewWatcher(tree, func(paths []string) { ch <- paths })
+	if err != nil {
+		t.Fatalf("NewWatcher: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	// `git add` in the managed tree rewrites the per-worktree index — the
+	// event must arrive even though the path is outside the watcher root.
+	index := filepath.Join(wtGitDir, "index")
+	writeUntilFlush(t, index, []byte("index"), ch, index)
+
+	// A commit/checkout updates HEAD the same way.
+	head := filepath.Join(wtGitDir, "HEAD")
+	writeUntilFlush(t, head, []byte("ref: refs/heads/main\n"), ch, head)
+}
+
+// TestNewWatcher_MalformedGitPointerFailsSoft: an unparseable .git entry must
+// not fail watcher construction — the working-tree watch keeps working and
+// only the git-metadata watch is skipped (best-effort, logged).
+func TestNewWatcher_MalformedGitPointerFailsSoft(t *testing.T) {
+	tree := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tree, ".git"), []byte("gitdir:\n"), 0o644); err != nil {
+		t.Fatalf("write .git pointer: %v", err)
+	}
+
+	ch := make(chan []string, 64)
+	w, err := NewWatcher(tree, func(paths []string) { ch <- paths })
+	if err != nil {
+		t.Fatalf("NewWatcher must tolerate a malformed .git pointer: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	f := filepath.Join(tree, "file.txt")
+	writeUntilFlush(t, f, []byte("x"), ch, f)
+}
