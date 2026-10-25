@@ -28,41 +28,35 @@ import (
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
-// ErrNoActiveTask is returned by CancelTask when the session has no task
-// currently running. Callers that don't care whether a task was actually
-// cancelled can treat this as non-fatal via errors.Is.
+// ErrNoActiveTask is returned by CancelTask when no task is running; callers
+// that don't care treat it as non-fatal via errors.Is.
 var ErrNoActiveTask = errors.New("no active task to cancel")
 
-// ErrSessionArchived is returned by SendMessage/ResumeTask when the target
-// session is archived. An archived session is read-only: no new task may be
-// launched or resumed on it. The UI hides the input shell for archived
-// sessions, but this guard is the single server-side choke point that also
-// defends inline action panels (e.g. the failed-task Resume button) and any
-// other caller of the manager. Restore the session to clear the flag.
+// ErrSessionArchived is returned by SendMessage/ResumeTask for an archived
+// session (read-only: no new/resumed tasks). The UI hides the input shell,
+// but this guard is the single server-side choke point — it also covers
+// inline action panels and any other manager caller. Restore the session to
+// clear the flag.
 var ErrSessionArchived = errors.New("session is archived: restore it before sending messages or resuming tasks")
 
-// ErrPausePending is returned by SendMessage when the session's running task
-// has been signalled to pause but the cooperative pause has not landed yet
-// (the executor stops at its next step boundary). Sends are rejected in that
-// window to avoid racing the pause→paused transition: once session_paused is
-// emitted, a message becomes a nudge-resume instead. The UI locks the input
-// for the window; this is the server-side backstop.
+// ErrPausePending is returned by SendMessage while the running task has been
+// signalled to pause but the cooperative pause has not landed (the executor
+// stops at its next step boundary). Sends are rejected in that window to
+// avoid racing pause→paused: once session_paused is emitted, a message
+// becomes a nudge-resume instead. The UI locks the input; this is the
+// server-side backstop.
 var ErrPausePending = errors.New("session is pausing — send again once the pause completes")
 
-// finishLiveLeftover launches the follow-up task for live messages that were
-// queued but never delivered before the request finished (liveActionFollowUp).
-// leftover is nil for every other epilogue action. The messages were already
-// persisted and rendered at send time, so the follow-up re-enters sendMessage
-// as a presented relaunch (no duplicate message_received, no title regen). A
-// fresh context is used: the original task's cancel func must not govern the
-// follow-up.
-//
-// When a manual context compaction owns the session (it was armed while the
-// task was finishing, so the follow-up send hits the compacting guard), the
-// drained messages are re-queued on the orchestrator instead of being lost:
-// live-message text reaches the model only through this queue, and the first
-// epilogue after the compaction releases the session (the flow's auto-resume,
-// or the next user send) drains it again and delivers the follow-up.
+// finishLiveLeftover launches the follow-up task for live messages queued but
+// never delivered before the request finished (leftover is nil for every
+// other epilogue action). The messages were persisted and rendered at send
+// time, so the follow-up re-enters sendMessage as a presented relaunch (no
+// duplicate message_received, no title regen) on a FRESH context — the
+// original task's cancel func must not govern it. When a manual compaction
+// owns the session (the follow-up send hits the compacting guard), the
+// drained messages are re-queued on the orchestrator instead of lost: live
+// text reaches the model only through that queue, and the first epilogue
+// after the compaction releases the session drains it again.
 func (m *Manager) finishLiveLeftover(_ context.Context, id string, session *Session, leftover []string) {
 	if len(leftover) == 0 {
 		return
@@ -84,8 +78,8 @@ func (m *Manager) finishLiveLeftover(_ context.Context, id string, session *Sess
 		}
 		m.log().Error("failed to launch follow-up task for live messages", "session_id", id, "error", err)
 		// A service notice, not an error: this failure does not settle the
-		// just-finished task, and `error` is reserved for terminal events the
-		// UI treats as "the run ended" (it clears task/streaming state).
+		// just-finished task, and `error` is reserved for terminal events
+		// the UI treats as "the run ended" (clears task/streaming state).
 		m.emitFunc(Event{
 			SessionID: id,
 			Type:      "service",
@@ -117,12 +111,12 @@ func (m *Manager) requeueLiveMessages(session *Session, joined string) bool {
 }
 
 // deactivateSessionTask flips the session back to idle and, for a follow-up
-// action, drains the queued live messages under the same lock hold. It returns
-// the drained leftovers (nil for any other action). Terminal events must be
+// action, drains the queued live messages under the same lock hold (returning
+// the drained leftovers; nil for any other action). Terminal events MUST be
 // emitted AFTER this call: a consumer reacting to task_complete/session_paused
 // treats the session as free to resume/send, so it must already observe
-// active == false — otherwise a fast follow-up hits a spurious
-// "session is already processing a task" error.
+// active == false — otherwise a fast follow-up hits a spurious "already
+// processing" error.
 func (m *Manager) deactivateSessionTask(session *Session, action liveAction) []string {
 	session.mu.Lock()
 	defer session.mu.Unlock()
@@ -142,12 +136,11 @@ func (m *Manager) deactivateSessionTask(session *Session, action liveAction) []s
 	case liveActionFollowUp:
 		return session.orchestrator.TakeLiveUserMessages()
 	case liveActionDiscard:
-		// A force-terminated run (forceTerminateStuckTask) already emitted its
-		// terminal event while this goroutine was still stuck, so a live
-		// message queued since then arrived AFTER the cancel was reported and
-		// belongs to the NEXT task. Keep it queued (liveActionNone semantics)
-		// instead of discarding it together with the dead run — the user's
-		// follow-up must not silently vanish.
+		// A force-terminated run already emitted its terminal event while this
+		// goroutine was still stuck, so a live message queued since then
+		// arrived AFTER the cancel was reported and belongs to the NEXT task:
+		// keep it queued (liveActionNone semantics) instead of discarding it
+		// with the dead run — the user's follow-up must not silently vanish.
 		if forceTerminated {
 			return nil
 		}
@@ -156,11 +149,10 @@ func (m *Manager) deactivateSessionTask(session *Session, action liveAction) []s
 	return nil
 }
 
-// loadWorkDirectories fetches project-scoped and session-scoped auxiliary work
-// directories for the given session. It is best-effort: nil stores or listing
-// errors are logged and skipped. Project-scoped entries come first, then
-// session-scoped entries. Loaded fresh on every call so mid-session additions
-// take effect on the next task.
+// loadWorkDirectories fetches project-scoped then session-scoped auxiliary
+// work directories (best-effort: nil stores / listing errors logged and
+// skipped). Loaded fresh every call so mid-session additions take effect on
+// the next task.
 func (m *Manager) loadWorkDirectories(session *Session) []core.WorkDirectory {
 	m.mu.RLock()
 	projStore := m.projectStore
@@ -195,25 +187,19 @@ func (m *Manager) loadWorkDirectories(session *Session) []core.WorkDirectory {
 	return dirs
 }
 
-// implicitTempRoots computes the host OS temporary-directory roots that are
-// always allowed for task execution, even when no auxiliary work directories
-// are configured and even in CHAT mode (No Project). Agent-authored shell
-// commands and tool paths routinely reference the OS temp tree (mktemp
-// scratch, downloaded artifacts, scratch files of managed CLI tools), so those
-// roots are injected as implicit containment peers of the workspace. They
-// never surface in the system prompt or the UI — they are security roots
-// only, set via sdktools.WithAllowedRoots.
+// implicitTempRoots computes the host OS temp-directory roots always allowed
+// for task execution — even with no auxiliary work directories and in CHAT
+// mode — because agent-authored shell commands routinely reference the OS
+// temp tree. They are security roots only (sdktools.WithAllowedRoots), never
+// surfaced in the prompt or UI.
 //
-// goos is the runtime.GOOS value (parameterised for testability), tempDir the
-// os.TempDir() value, and systemRootEnv the %SystemRoot% value (Windows only,
-// e.g. "C:\Windows"). On Windows the candidates are tempDir and
-// %SystemRoot%\Temp (the classic inherited-TMP location); everywhere else
-// they are "/tmp" and tempDir. Candidates are validated and normalized with
-// host-independent string analysis (NOT filepath.Clean/Join, whose separator
-// semantics depend on the host OS — the branches must behave identically on
-// every CI runner): trailing separators are trimmed, duplicates dropped, and
-// empty, relative, or drive-relative inputs skipped. The containment API
-// requires roots to be absolute paths.
+// goos/tempDir/systemRootEnv are parameterized for testability. Windows
+// candidates: tempDir and %SystemRoot%\Temp; elsewhere "/tmp" and tempDir.
+// Candidates are validated with host-independent string analysis (NOT
+// filepath.Clean/Join, whose separator semantics depend on the host — the
+// branches must behave identically on every CI runner): trailing separators
+// trimmed, duplicates dropped, empty/relative/drive-relative skipped. The
+// containment API requires absolute roots.
 func implicitTempRoots(goos, tempDir, systemRootEnv string) []string {
 	var candidates []string
 	if goos == "windows" {
@@ -241,11 +227,11 @@ func implicitTempRoots(goos, tempDir, systemRootEnv string) []string {
 	return roots
 }
 
-// isAbsForGOOS reports whether p is absolute for the given GOOS, using pure
-// string analysis so a windows branch evaluated on a POSIX host (and vice
-// versa) yields the same verdict as on its native host. Windows absolute
-// forms: volume letter + separator (e.g. "C:\Temp") or a UNC path
-// ("\\server\share"). Drive-relative paths ("C:foo") are NOT absolute.
+// isAbsForGOOS reports whether p is absolute for the given GOOS using pure
+// string analysis, so a windows branch evaluated on a POSIX host (and vice
+// versa) yields the same verdict as on its native host. Windows absolute:
+// volume letter + separator ("C:\Temp") or UNC ("\\server\share");
+// drive-relative ("C:foo") is NOT absolute.
 func isAbsForGOOS(goos, p string) bool {
 	if goos == "windows" {
 		if len(p) >= 3 && p[1] == ':' && (p[2] == '\\' || p[2] == '/') && isVolumeLetter(p[0]) {
@@ -261,10 +247,10 @@ func isVolumeLetter(c byte) bool {
 	return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
 }
 
-// trimTrailingSeps removes trailing path separators for the given GOOS while
-// preserving the minimal absolute form ("/" on POSIX, the volume root "C:\"
-// on Windows). Host-independent: a trailing backslash is a separator only
-// for the windows GOOS, where on POSIX it is a legal filename character.
+// trimTrailingSeps removes trailing separators for the given GOOS while
+// preserving the minimal absolute form ("/" on POSIX, "C:\" on Windows).
+// Host-independent: a trailing backslash is a separator only under the
+// windows GOOS — on POSIX it is a legal filename character.
 func trimTrailingSeps(goos, p string) string {
 	minLen := 1
 	if goos == "windows" {
@@ -276,16 +262,13 @@ func trimTrailingSeps(goos, p string) string {
 	return p
 }
 
-// injectWorkDirectories injects the session's auxiliary work directories into
-// the context as both allowed roots (security containment) and the
-// prompt-facing directory list. dirs must be loaded by the caller (shared with
-// injectIgnoreChecker so loadWorkDirectories runs once per task rather than
-// twice). Allowed roots are ALWAYS set: the work-directory paths plus the
-// implicit host temp roots from implicitTempRoots, so tasks with no configured
-// directories (including CHAT-mode No Project sessions) still operate freely
-// inside the OS temp tree. The prompt-facing core.WithWorkDirectories is
-// applied only when directories are configured — implicit temp roots never
-// reach the system prompt or the UI.
+// injectWorkDirectories injects the session's auxiliary work directories as
+// both allowed roots (security containment) and the prompt-facing list. dirs
+// is loaded by the caller (shared with injectIgnoreChecker so
+// loadWorkDirectories runs once per task). Allowed roots are ALWAYS set —
+// the work dirs plus implicitTempRoots — so even No Project sessions operate
+// freely inside the OS temp tree; the prompt-facing WithWorkDirectories
+// applies only when directories are configured.
 func (m *Manager) injectWorkDirectories(ctx context.Context, dirs []core.WorkDirectory) context.Context {
 	paths := make([]string, 0, len(dirs))
 	for i := range dirs {
@@ -299,16 +282,12 @@ func (m *Manager) injectWorkDirectories(ctx context.Context, dirs []core.WorkDir
 	return core.WithWorkDirectories(ctx, dirs)
 }
 
-// researchProjectInfo reports whether the session's project has RESEARCH mode
-// active and, when it does, returns the research-root path. RESEARCH is
-// always on for real projects: the root is the SESSION's canonical
-// <workspace>/.research, derived from the session's own execution workspace —
-// for a local session that is the project checkout, for a managed-worktree
-// session its own tree — so two concurrently running sessions of the same
-// project never share (or overwrite) each other's research state. It reads
-// only immutable session fields, so callers MUST NOT hold the session lock
-// (same contract as before). Returns ("", false) for No Project sessions and
-// for sessions without a workspace (defensive; every CODE session has one).
+// researchProjectInfo reports whether the session's project has RESEARCH
+// active and returns the research root: the SESSION's canonical
+// <workspace>/.research derived from its own execution workspace (checkout or
+// managed worktree), so concurrent sessions of one project never share
+// research state. Reads only immutable session fields — callers MUST NOT
+// hold the session lock. ("", false) for No Project / no workspace.
 func (m *Manager) researchProjectInfo(sess *Session) (string, bool) {
 	if sess == nil || sess.ProjectID == project.NoProjectID || sess.WorkspacePath == "" {
 		return "", false
@@ -316,23 +295,15 @@ func (m *Manager) researchProjectInfo(sess *Session) (string, bool) {
 	return config.ProjectResearchPath(sess.WorkspacePath), true
 }
 
-// injectIgnoreChecker builds a multi-root ignore resolver from the session's
-// workspace path plus its auxiliary work directories and attaches it to the
-// context via sdktools.WithIgnoreChecker. Read-style search/listing tools
-// (glob, ripgrep) consult it to honour each root's own .gitignore + .aiignore;
-// read_file remains unrestricted.
-//
-// dirs is the work-directory slice the caller already loaded (shared with
-// injectWorkDirectories) so loadWorkDirectories runs once per task rather than
-// twice. For No Project sessions (no workspace and no work directories) ctx is
-// returned unchanged, so behaviour is identical to before.
-//
-// Each root is symlink-resolved before being handed to the resolver so the
-// roots match the (symlink-resolved) form that glob/ripgrep query paths in. A
-// resolver is then built PER ROOT with skip-and-log on failure: a single bad
-// root (e.g. a vanished or unreadable work-directory entry) only drops that
-// root and must not disable ignore filtering for the healthy roots. The
-// survivors are combined via ignore.NewMultiFromResolvers.
+// injectIgnoreChecker builds a multi-root ignore resolver (workspace + work
+// directories) and attaches it via sdktools.WithIgnoreChecker; glob/ripgrep
+// consult it to honour each root's own .gitignore/.aiignore (read_file stays
+// unrestricted). dirs is the caller-loaded slice (shared with
+// injectWorkDirectories — one loadWorkDirectories per task); No Project with
+// no dirs returns ctx unchanged. Roots are symlink-resolved to match the form
+// glob/ripgrep query paths in; a resolver is built PER ROOT with
+// skip-and-log, so one bad root only drops itself, and survivors combine via
+// ignore.NewMultiFromResolvers.
 func (m *Manager) injectIgnoreChecker(ctx context.Context, session *Session, dirs []core.WorkDirectory) context.Context {
 	rawRoots := make([]string, 0, 1+len(dirs))
 	if session.WorkspacePath != "" {
@@ -364,19 +335,17 @@ func (m *Manager) injectIgnoreChecker(ctx context.Context, session *Session, dir
 		roots = append(roots, resolved)
 	}
 
-	// Build a resolver per root from the cache. Roots that are not yet cached
-	// are built asynchronously — the resolver is expensive (it walks the
-	// entire directory tree for .gitignore/.aiignore files) and blocking
-	// SendMessage on a large directory (e.g. the Go module cache with tens of
-	// thousands of entries) causes multi-minute hangs. On the first message
-	// after startup the checker may be incomplete; subsequent messages pick up
-	// the cached resolver once the background walk finishes.
+	// Build a resolver per root from the cache; uncached roots build
+	// asynchronously — the resolver walk is expensive and blocking SendMessage
+	// on a huge directory (the Go module cache) causes multi-minute hangs. On
+	// the first message after startup the checker may be incomplete; later
+	// messages pick up the cached resolver once the walk finishes.
 	resolvers := make([]*ignore.Resolver, 0, len(roots))
 	for _, root := range roots {
 		if cached, loaded := m.ignoreCache.Load(root); loaded {
-			// The cache only ever stores *ignore.Resolver (a real resolver or
-			// the building sentinel), but assert with the comma-ok form so an
-			// unexpected type is skipped instead of panicking.
+			// The cache stores only *ignore.Resolver (real or building
+			// sentinel); assert comma-ok so an unexpected type is skipped,
+			// not a panic.
 			r, ok := cached.(*ignore.Resolver)
 			if !ok {
 				continue
@@ -395,28 +364,24 @@ func (m *Manager) injectIgnoreChecker(ctx context.Context, session *Session, dir
 	return sdktools.WithIgnoreChecker(ctx, checker)
 }
 
-// caseInsensitiveProbe carries the single result of a case-sensitivity probe.
-// The first call to miss the cache stores a fresh probe via LoadOrStore and
-// performs the actual filesystem probe, then publishes the result by closing
-// done. Any concurrent call that loses the LoadOrStore race observes the
-// in-flight probe and blocks on its done channel, reusing the same result
-// rather than re-probing. This guarantees the CaseSense-*.probe file is
-// created exactly once per resolved root even under concurrent messages.
+// caseInsensitiveProbe carries one case-sensitivity probe result. The first
+// caller to miss the cache stores a fresh probe via LoadOrStore, performs the
+// filesystem probe, then publishes by closing done; race losers block on
+// done and reuse the result — the CaseSense-*.probe file is created exactly
+// once per resolved root even under concurrent messages.
 type caseInsensitiveProbe struct {
 	done chan struct{}
 	ci   bool
 }
 
-// defaultDetectCaseInsensitive is the production case-sensitivity probe wired
-// into Manager.detectCaseInsensitiveFn at construction. Tests override the
+// defaultDetectCaseInsensitive is the production probe wired into
+// Manager.detectCaseInsensitiveFn at construction; tests override the
 // per-instance field (not this value) to assert call counts.
 var defaultDetectCaseInsensitive = pathutil.DetectCaseInsensitive
 
-// caseInsensitiveCachedValue reads the resolved bool from a cache entry. It
-// blocks until the entry's probe has completed (the winning goroutine closes
-// done), then returns (value, true). ok is false only if the entry is not a
-// *caseInsensitiveProbe, which cannot happen by construction; it exists to
-// satisfy errcheck on the type assertion.
+// caseInsensitiveCachedValue reads a cache entry's resolved bool, blocking
+// until its probe completes. ok is false only for a non-*caseInsensitiveProbe
+// entry (impossible by construction; satisfies errcheck).
 func caseInsensitiveCachedValue(v any) (ci, ok bool) {
 	p, okp := v.(*caseInsensitiveProbe)
 	if !okp {
@@ -426,38 +391,32 @@ func caseInsensitiveCachedValue(v any) (ci, ok bool) {
 	return p.ci, true
 }
 
-// detectCaseInsensitive returns the cached case-sensitivity of the filesystem
-// at path, probing exactly once per resolved root and reusing the result on
-// every subsequent call. Case-sensitivity is a mount-level property that does
-// not change during a session, so the probe — which creates and deletes a
-// temporary CaseSense-*.probe file — must run at most once per root rather
-// than on every SendMessage/ResumeSession. LoadOrStore plus the probe's done
-// channel guarantee a single probe per root even under concurrent calls: the
-// goroutine that wins the race performs it, every loser waits for its result.
-//
-// When path is empty (e.g. a No-Project session) it returns false, the
-// fail-safe case-sensitive default, without touching the cache.
+// detectCaseInsensitive returns the cached case-sensitivity at path, probing
+// exactly once per resolved root: it is a mount-level property that does not
+// change mid-session, and the probe (create+delete of a CaseSense-*.probe
+// file) must not run on every SendMessage/ResumeSession. LoadOrStore plus the
+// done channel guarantee one probe per root under concurrency: the winner
+// probes, losers wait for its result. Empty path (No Project) → false, the
+// fail-safe case-sensitive default, cache untouched.
 func (m *Manager) detectCaseInsensitive(path string) bool {
 	if path == "" {
 		return false
 	}
-	// Resolve symlinks so the cache key matches the physical root even when
-	// the workspace is reached through a symlink (consistent with ignoreCache).
-	// A resolution failure (e.g. a not-yet-created workspace) falls back to
-	// the raw path; DetectCaseInsensitive itself climbs to the nearest existing
-	// ancestor, so the probe still yields the correct filesystem answer.
+	// Symlink-resolve so the cache key matches the physical root (consistent
+	// with ignoreCache); a resolution failure (workspace not yet created)
+	// falls back to the raw path — DetectCaseInsensitive climbs to the
+	// nearest existing ancestor, so the probe still answers correctly.
 	resolved, err := filepath.EvalSymlinks(path)
 	if err != nil {
 		resolved = path
 	}
 	probe := &caseInsensitiveProbe{done: make(chan struct{})}
 	if actual, loaded := m.caseInsensitiveCache.LoadOrStore(resolved, probe); loaded {
-		// Another call already won the race for this root. Reuse its in-flight
-		// (or already-completed) probe result instead of re-probing.
+		// Another call won the race: reuse its in-flight (or completed)
+		// result instead of re-probing.
 		existing, ok := actual.(*caseInsensitiveProbe)
 		if !ok {
-			// Unreachable by construction; the cache only stores
-			// *caseInsensitiveProbe. Defensive to satisfy errcheck.
+			// Unreachable by construction; defensive for errcheck.
 			return false
 		}
 		<-existing.done
@@ -469,20 +428,18 @@ func (m *Manager) detectCaseInsensitive(path string) bool {
 	return probe.ci
 }
 
-// startIgnoreBuild launches a background goroutine to walk root and cache its
-// ignore.Resolver. It is deduplicated: if another goroutine has already started
-// (or completed) a build for the same root, this is a no-op.
+// startIgnoreBuild launches a background walk of root and caches its
+// ignore.Resolver, deduplicated (a concurrent/completed build for the same
+// root makes this a no-op).
 //
-// The goroutine is tracked by the manager (see background.go) so Shutdown
-// joins it: a walk that is still running when the process tears sessions down
-// would otherwise keep touching the workspace after its temp dir was removed.
-// The walk derives from the manager's shutdown context: on a huge root (a Go
-// module cache or vendor tree work directory — hundreds of thousands of
-// entries) it runs for minutes and has no other cancellation, so Shutdown's
+// The goroutine is manager-tracked (background.go) so Shutdown joins it: a
+// walk still running at teardown would otherwise keep touching the workspace
+// after its temp dir was removed. It derives from the manager's shutdown
+// context: on a huge root (module cache / vendor tree — hundreds of thousands
+// of entries) it runs for minutes with no other cancellation, so
 // shutdownCancel aborts it BEFORE stopBackground joins, and the join returns
-// at the next walk entry instead of burning the whole stopTimeout on the
-// quiescing main thread. The walk only reads, so a straggler cannot add an
-// entry to a directory being removed.
+// at the next walk entry instead of burning stopTimeout on the quiescing main
+// thread. Read-only walk: a straggler cannot add to a directory being removed.
 func (m *Manager) startIgnoreBuild(root string) {
 	// Deduplicate via a sentinel "building" marker stored in the cache map.
 	// sync.Map.LoadOrStore guarantees exactly one goroutine wins the race.
@@ -513,34 +470,28 @@ func (m *Manager) startIgnoreBuild(root string) {
 	}
 }
 
-// ignoreFileNames are the files whose change invalidates a cached resolver.
-// ignore.NewResolver walks the whole root collecting every occurrence of these,
-// so a change to any one of them — anywhere under a root — makes that root's
-// cached resolver stale.
+// ignoreFileNames are the files whose change invalidates a cached resolver:
+// NewResolver walks the whole root collecting every occurrence, so a change
+// to any one — anywhere under a root — makes that root's resolver stale.
 var ignoreFileNames = map[string]struct{}{
 	".gitignore": {},
 	".aiignore":  {},
 	".ignore":    {}, // .ignore is honoured by ripgrep and some tools
 }
 
-// InvalidateIgnoreCache evicts cached ignore resolvers whose root contains one
-// of changedPaths when that path is an ignore-rule file (.gitignore/.aiignore/
-// .ignore). It is the invalidation half of the async ignore cache: without it,
-// edits to ignore files would be invisible until the app restarts.
+// InvalidateIgnoreCache evicts cached resolvers whose root contains a changed
+// ignore-rule file (.gitignore/.aiignore/.ignore) — the invalidation half of
+// the async cache; without it ignore edits stay invisible until restart.
 //
-// It only DELETEs cache entries — it never rebuilds synchronously. The rebuild
-// is triggered lazily and asynchronously by the next injectIgnoreChecker call:
-// startIgnoreBuild launches a background goroutine and deduplicates concurrent
-// builds via a sentinel. Because the rebuild never blocks SendMessage, this
-// cannot regress the multi-minute-build case on roots with hundreds of
-// thousands of files — at worst the first message after invalidation runs
-// without ignore filtering (the no-checker / sentinel path), exactly like the
-// first message after startup, until the background walk completes.
+// It only DELETEs entries, never rebuilds synchronously: the next
+// injectIgnoreChecker rebuilds lazily/asynchronously (startIgnoreBuild
+// deduplicates via a sentinel), so this cannot regress the multi-minute-build
+// case — at worst the first message after invalidation runs without ignore
+// filtering, exactly like the first message after startup.
 //
-// changedPaths are expected to be absolute filesystem paths (as reported by the
-// workspace watcher / fsnotify); the cache is keyed by symlink-resolved roots.
-// pathutil.IsWithinPath resolves symlinks on both sides, so the match is
-// correct even when the workspace lives behind an OS symlink.
+// changedPaths are absolute (workspace watcher / fsnotify form); the cache is
+// keyed by symlink-resolved roots and pathutil.IsWithinPath resolves both
+// sides, so the match is correct behind an OS symlink too.
 func (m *Manager) InvalidateIgnoreCache(changedPaths []string) {
 	affected := make(map[string]struct{})
 	for _, p := range changedPaths {
@@ -553,9 +504,8 @@ func (m *Manager) InvalidateIgnoreCache(changedPaths []string) {
 		return
 	}
 
-	// For each affected ignore file, evict every cached root that contains it.
-	// The cache typically holds only a handful of roots (workspace + a few
-	// auxiliary work directories), so a full Range per affected file is cheap.
+	// For each affected ignore file, evict every cached root containing it —
+	// the cache holds only a handful of roots, so a full Range is cheap.
 	m.ignoreCache.Range(func(key, _ any) bool {
 		root, ok := key.(string)
 		if !ok {
@@ -564,8 +514,8 @@ func (m *Manager) InvalidateIgnoreCache(changedPaths []string) {
 		for ignoreFile := range affected {
 			within, err := pathutil.IsWithinPath(root, ignoreFile)
 			if err != nil {
-				// Resolve failure (e.g. vanished root) — evict to be safe; the
-				// lazy rebuild will re-add it (or skip it) on next use.
+				// Resolve failure (vanished root) — evict to be safe; the
+				// lazy rebuild re-adds (or skips) it on next use.
 				m.ignoreCache.Delete(root)
 				m.log().Debug("ignore checker: evicted root on resolve error", "root", root, "error", err)
 				continue
@@ -579,16 +529,14 @@ func (m *Manager) InvalidateIgnoreCache(changedPaths []string) {
 	})
 }
 
-// Runs in a goroutine, results come via events.
-// reviewMode, when true, marks the message as carrying code review feedback
-// the agent must address (see core HandleOptions.ReviewMode).
-// e2s, when true, enables the E2S (explicit-state) execution mode for the
-// task — the mirror of the goal flag. It must be exclusive with goal (the
-// manager rejects both set; the frontend store enforces the same rule).
+// Runs in a goroutine; results come via events. reviewMode marks the message
+// as carrying code review feedback the agent must address (core
+// HandleOptions.ReviewMode); e2s enables the E2S (explicit-state) execution
+// mode — the mirror of the goal flag, exclusive with it (the manager rejects
+// both set; the frontend store enforces the same rule).
 //
-// This is the single-return convenience form of SendMessageClassified for
-// callers that do not need the authoritative send classification. Options are
-// forwarded unchanged (see SendOption).
+// Single-return convenience form of SendMessageClassified for callers not
+// needing the authoritative classification; options forwarded unchanged.
 func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills, activeAgents, activeMCPServers []string, modelOverride, reasoningEffort string, goal bool, goalBudget string, e2s, reviewMode bool, opts ...SendOption) error {
 	_, err := m.SendMessageClassified(ctx, id, text, activeSkills, activeAgents, activeMCPServers, modelOverride, reasoningEffort, goal, goalBudget, e2s, reviewMode, opts...)
 	return err
@@ -602,59 +550,43 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 type SendClassification int
 
 const (
-	// SendFresh means no task was running or paused when the message arrived —
-	// it started a new task (or, on a continuation, re-entered the prior
-	// completed task).
-	SendFresh SendClassification = iota
-	// SendNudgeResume means the message resumed a paused task and is injected
-	// as a trailing user nudge.
-	SendNudgeResume
-	// SendLive means the message was queued into a running task as a live
-	// interjection.
-	SendLive
+	SendFresh       SendClassification = iota // no task running/paused: started a new task (or re-entered the prior completed one)
+	SendNudgeResume                           // resumed a paused task, injected as a trailing user nudge
+	SendLive                                  // queued into a running task as a live interjection
 )
 
 // SendOption customizes one SendMessage/SendMessageClassified dispatch without
-// touching the positional parameter list shared by every caller (the internal
+// touching the positional parameter list shared by every caller (internal
 // re-entries and the whole test corpus call the positional form).
 type SendOption func(*sendOptions)
 
 // sendOptions carries the resolved option values for one dispatch.
 type sendOptions struct {
 	echoText string
-	// clientSendID is the sending surface's optimistic-card id, when the
-	// send originates from a surface that rendered one. The message_received
-	// echo carries it back so the sender dedups by identity instead of
-	// content+time-window: two surfaces sending identical text inside the
-	// echo window then stay two distinct cards instead of one echo being
-	// swallowed (frontend useChatEvents).
+	// clientSendID is the sending surface's optimistic-card id, echoed back so
+	// the sender dedups by identity instead of content+time-window: two
+	// surfaces sending identical text inside the echo window stay two distinct
+	// cards instead of one echo being swallowed (frontend useChatEvents).
 	clientSendID string
 }
 
-// WithEchoText overrides the user-facing text carried by the message_received
-// event. The event is the UI's delivery notification: every surface watching
-// the session renders the user card from it, and the sending surface dedupes
-// it against its optimistic card by send id when one was attached
-// (WithClientMessageID), falling back to exact content otherwise. The manager's text
-// parameter is the POST-preprocessing form (/-mention refs stripped, @file
-// refs resolved) built for the orchestrator, while the persisted message row
-// and the sending surface's optimistic card hold the RAW user input. Callers
-// that pre-process text before dispatch must therefore pass the raw input
-// here, so the echo stays byte-identical to both: whenever preprocessing
-// actually changed the text (a leading "/skill" mention, an @file ref), a
-// processed echo would fail the dedup and render a second, ref-less card on
-// the sending surface. Without this option the echo carries text — the
-// historical behavior every internal caller and existing test relies on.
+// WithEchoText overrides the user-facing text carried by message_received —
+// the UI's delivery notification, deduped by the sending surface against its
+// optimistic card by send id (WithClientMessageID) or exact content. text is
+// the POST-preprocessing form for the orchestrator, while the persisted row
+// and the optimistic card hold the RAW input, so a caller that pre-processes
+// must pass the raw input here: whenever preprocessing changed the text (a
+// "/skill" mention, an @file ref), a processed echo would fail the dedup and
+// render a second ref-less card. Without this option the echo carries text
+// (the historical behavior every internal caller and test relies on).
 func WithEchoText(raw string) SendOption {
 	return func(o *sendOptions) { o.echoText = raw }
 }
 
 // WithClientMessageID attaches the sending surface's optimistic-card id to
-// the message_received echo. The sender's echo dedup matches this id exactly,
-// so another surface sending the same text inside the echo window renders its
-// own card instead of being dropped as the sender's echo. Internal callers
-// without an optimistic card (resume drain, follow-up relaunch) omit it and
-// the echo carries no id.
+// the echo, so another surface sending the same text inside the echo window
+// renders its own card instead of being dropped as the sender's echo.
+// Internal callers without an optimistic card omit it.
 func WithClientMessageID(id string) SendOption {
 	return func(o *sendOptions) { o.clientSendID = id }
 }
@@ -689,32 +621,19 @@ func (m *Manager) SendMessageClassified(ctx context.Context, id, text string, ac
 type liveAction int
 
 const (
-	// liveActionNone keeps the queue: the messages remain queued and a later
-	// request (resume, follow-up, or a fresh task) delivers them. Used for
-	// paused and failed/resumable outcomes — the next entry point drains the
-	// queue at its first step boundary.
-	liveActionNone liveAction = iota
-	// liveActionFollowUp takes the leftovers and launches a continuation task
-	// carrying them (they were already persisted + rendered, so the follow-up
-	// skips re-presentation). Used when the task completed successfully
-	// without delivering them.
-	liveActionFollowUp
-	// liveActionDiscard drops the queue: the user stopped the run, and an
-	// undelivered message in a cancelled exchange must not leak into a future
-	// request. Used for user-initiated cancellation.
-	liveActionDiscard
+	liveActionNone     liveAction = iota // keep queued — a later request (resume/follow-up/fresh) delivers them; paused & failed/resumable outcomes
+	liveActionFollowUp                   // take the leftovers into a continuation task (already persisted+rendered, no re-presentation); successful completion
+	liveActionDiscard                    // drop the queue — a user-stopped run's undelivered message must not leak into a future request
 )
 
-// liveSendRejectionLocked returns the error that must reject a live send (a
-// message arriving while a task is running) for the given request, or nil when
-// the send may queue. The caller must hold session.mu. The same conditions are
-// checked by ValidateLiveSend before the frontend persists the message and by
-// the live branch here under the lock (the authoritative gate).
+// liveSendRejectionLocked returns the error rejecting a live send (message
+// while a task runs) for the request, or nil when it may queue. Caller holds
+// session.mu; the same conditions are checked by ValidateLiveSend before the
+// frontend persists, and here under the lock (the authoritative gate).
 func liveSendRejectionLocked(session *Session, goal, e2s bool, text string, activeSkills, activeAgents, activeMCPServers []string) error {
-	// A leading "/goal" command selects goal mode even when the explicit goal
-	// flag is absent. The fresh-task path detects it via
-	// DetectAndStripGoalMode; the live-send gate must reject it identically
-	// instead of queueing the raw text as a plain LLM interjection.
+	// A leading "/goal" selects goal mode even without the explicit flag; the
+	// fresh path detects it via DetectAndStripGoalMode, so the live gate must
+	// reject it identically instead of queueing it as a plain interjection.
 	_, isGoalPrefix := core.DetectAndStripGoalMode(text)
 	goal = goal || isGoalPrefix
 	switch {
@@ -725,15 +644,13 @@ func liveSendRejectionLocked(session *Session, goal, e2s bool, text string, acti
 	case goal:
 		return errors.New("goal requests cannot be sent while a task is running — pause or wait for completion first")
 	case e2s:
-		// E2S mirrors goal: an E2S run owns the whole task lifecycle (its Σ
-		// is seeded only at task start), so it can never join a running task
-		// as a live interjection.
+		// E2S mirrors goal: the run owns the whole task lifecycle (Σ seeded
+		// only at task start), so it can never join a running task.
 		return errors.New("E2S requests cannot be sent while a task is running — pause or wait for completion first")
 	case len(activeSkills) > 0 || len(activeAgents) > 0 || len(activeMCPServers) > 0:
-		// An MCP-server mention is rejected with the same reasoning as skill
-		// and agent refs: the task's per-server MCP gating was fixed at task
-		// start, so a mention arriving mid-run could never take effect —
-		// reject it up front instead of silently ignoring it.
+		// Rejected for the same reason as skill/agent refs: the task's
+		// per-server MCP gating was fixed at task start, so a mid-run mention
+		// could never take effect — reject up front, never silently ignore.
 		return errors.New("skill, agent, or MCP server references cannot be sent while a task is running — pause or wait for completion first")
 	case session.orchestrator == nil:
 		return errors.New("session is already processing a task")
@@ -742,15 +659,13 @@ func liveSendRejectionLocked(session *Session, goal, e2s bool, text string, acti
 }
 
 // refreshAutonomyPosture re-pins the session registry's autonomy posture
-// (autonomy mode + silent-mode sub-policies) from the shared builder registry
-// at a task-launch boundary — fresh sends and every resume path. It is the
-// receiving half of the per-task pinning contract (see
-// ToolRegistry.RefreshAutonomyPosture and applySecurityPolicies): a Settings
-// save updates the shared registry immediately but never flips the posture of
-// a task that is already running, so the posture a task runs under is exactly
-// what the user last saved before the task launched. Best-effort and safe to
-// call concurrently with tool execution on another session: nil orchestrator
-// or nil registry (no CoreToolRegistry wired — tests, CLI) is a no-op.
+// (mode + silent-mode sub-policies) from the shared builder registry at a
+// task-launch boundary — fresh sends and every resume path. Receiving half of
+// the per-task pinning contract (ToolRegistry.RefreshAutonomyPosture /
+// applySecurityPolicies): a Settings save updates the shared registry
+// immediately but never flips a RUNNING task's posture, so a task runs under
+// exactly what was saved before it launched. Best-effort; nil orchestrator/
+// registry (tests, CLI) is a no-op.
 func (m *Manager) refreshAutonomyPosture(session *Session) {
 	session.mu.RLock()
 	orch := session.orchestrator
@@ -760,24 +675,21 @@ func (m *Manager) refreshAutonomyPosture(session *Session) {
 	}
 	if reg := orch.ToolRegistry(); reg != nil {
 		reg.RefreshAutonomyPosture()
-		// Scope the silent-mode judge memo to this task: the session's registry
-		// clone outlives the task, so a verdict from the previous task would
-		// otherwise be replayed for an identical effect in this one. See
-		// ToolRegistry.ResetJudgeMemo.
+		// Scope the silent-mode judge memo to this task: the registry clone
+		// outlives the task, so a previous task's verdict must not be
+		// replayed for an identical effect in this one (ResetJudgeMemo).
 		reg.ResetJudgeMemo()
 	}
 }
 
 // sendMessage is the implementation behind SendMessage. presented marks a
 // relaunch of an already-rendered message (the live-send follow-up): it skips
-// the message_received emission and title generation because the UI and the
-// message store already hold the message from the original send. text is the
-// post-preprocessing form routed to the orchestrator; echoText is the raw
-// user-facing form the message_received event carries (WithEchoText) — the
-// two differ whenever preprocessing changed the input, and the UI dedup
-// (frontend useChatEvents) matches the echo against the raw optimistic card.
-// clientSendID is that card's id (WithClientMessageID); empty when the caller
-// rendered no optimistic card.
+// the message_received emission and title generation — the UI and store
+// already hold the message from the original send. text is the
+// post-preprocessing form for the orchestrator; echoText the raw user-facing
+// form message_received carries (WithEchoText) — they differ whenever
+// preprocessing changed the input; clientSendID is the optimistic card's id
+// (WithClientMessageID), empty when none was rendered.
 func (m *Manager) sendMessage(ctx context.Context, id, text, echoText, clientSendID string, activeSkills, activeAgents, activeMCPServers []string, modelOverride, reasoningEffort string, goal bool, goalBudget string, e2s, reviewMode, presented bool) (SendClassification, error) {
 	// No task may be launched once Shutdown has begun (see ResumeTask).
 	if m.shuttingDown.Load() {
@@ -792,30 +704,27 @@ func (m *Manager) sendMessage(ctx context.Context, id, text, echoText, clientSen
 	}
 
 	session.mu.Lock()
-	// Archived sessions are read-only: reject before activating. This is the
-	// server-side choke point that prevents any caller (not just the UI) from
-	// launching a task on an archived session.
+	// Archived sessions are read-only: reject before activating — the
+	// server-side choke point covering every caller, not just the UI.
 	if session.Archived {
 		session.mu.Unlock()
 		return SendFresh, ErrSessionArchived
 	}
 	// Same choke point for a session whose deletion has begun: DeleteSession
-	// tears the orchestrator and log handles down after setting the flag, so
-	// a message landing in that window must not launch a task against a
-	// session being dismantled.
+	// tears the orchestrator and log handles down after setting the flag, so a
+	// message in that window must not launch a task against a session being
+	// dismantled.
 	if session.deleting {
 		session.mu.Unlock()
 		return SendFresh, fmt.Errorf("session %s is being deleted", id)
 	}
-	// Live-send: a message arriving while a task is already running is queued
-	// into the RUNNING request instead of starting a new one — the executor
-	// drains the queue at its next step boundary and delivers the text to the
-	// LLM as a user interjection (the same landing spot as a resume-with-
-	// nudge). The queue-while-locked ordering pairs with the request epilogue
-	// (which flips active=false and takes leftovers under the same lock), so a
-	// message sent in the closing window of a finishing request is either
-	// delivered by that request or becomes its follow-up task — never lost
-	// and never duplicated.
+	// Live-send: a message while a task runs is queued into the RUNNING
+	// request — the executor drains at its next step boundary and delivers it
+	// as a user interjection (the same landing spot as a resume-with-nudge).
+	// Queue-while-locked pairs with the request epilogue (which flips
+	// active=false and takes leftovers under the same lock), so a message in
+	// the closing window of a finishing request is either delivered by it or
+	// becomes its follow-up — never lost, never duplicated.
 	if session.active {
 		if err := liveSendRejectionLocked(session, goal, e2s, text, activeSkills, activeAgents, activeMCPServers); err != nil {
 			session.mu.Unlock()
@@ -823,12 +732,10 @@ func (m *Manager) sendMessage(ctx context.Context, id, text, echoText, clientSen
 		}
 		session.orchestrator.QueueLiveUserMessage(text)
 		session.mu.Unlock()
-		// Emit message_received so non-optimistic listeners see the user
-		// message (mirrors the normal path; the frontend renders its own
-		// optimistic copy and ignores this event). Carries the echo form.
-		// IsNudge matches the classification the caller will persist
-		// (SendLive → mergeIsNudgeMetadata): other surfaces render their card
-		// from this event and show the Nudge badge immediately.
+		// Emit message_received for non-optimistic listeners (the frontend
+		// renders its own optimistic copy and ignores this event); IsNudge
+		// matches the classification the caller persists (SendLive), so other
+		// surfaces show the Nudge badge immediately.
 		m.emitFunc(Event{
 			SessionID: id,
 			Type:      "message_received",
@@ -841,35 +748,30 @@ func (m *Manager) sendMessage(ctx context.Context, id, text, echoText, clientSen
 		})
 		return SendLive, nil
 	}
-	// Manual compaction owns the session from the moment it starts (it waits
-	// for a running task to pause, then swaps the history): a fresh task in
-	// that window would race the swap. The nudge-resume path below is covered
-	// by ResumeTask's own compacting guard.
+	// Manual compaction owns the session from the moment it starts (waits for
+	// a running task to pause, then swaps the history): a fresh task in that
+	// window would race the swap. The nudge-resume path is covered by
+	// ResumeTask's own compacting guard.
 	if session.compacting {
 		session.mu.Unlock()
 		return SendFresh, ErrSessionCompacting
 	}
 	session.mu.Unlock()
 
-	// Nudge-resume: if the session has a paused task, sending a message does
-	// NOT start a new task — the message becomes a nudge that resumes the
-	// paused task via ResumeSession (which re-activates the session and injects
-	// the text as a trailing user turn). Goal and E2S requests are excluded:
-	// a /goal or E2S message supersedes any paused task
-	// (abandonUnfinishedTaskForGoal/abandonUnfinishedTaskForE2S handle
-	// cleanup). Detected here before activation so ResumeTask's own activation
-	// path is not tripped by a spurious "already processing" check.
+	// Nudge-resume: a message into a PAUSED session does not start a new task
+	// — it resumes the paused one via ResumeSession (which re-activates and
+	// injects the text as a trailing user turn). Goal/E2S requests are
+	// excluded: they supersede any paused task (abandonUnfinishedTaskForGoal /
+	// ...ForE2S handle cleanup). Detected before activation so ResumeTask's
+	// own activation path is not tripped by a spurious "already processing".
 	if !goal && !e2s && m.hasPausedUnfinishedTask(id) {
 		resumeErr := m.ResumeSession(ctx, id, modelOverride, reasoningEffort, text)
 		if resumeErr == nil {
 			// Emit message_received only AFTER the resume commits (CS #66):
-			// this echo drives the card on non-optimistic surfaces, and a
-			// failed resume makes the caller skip the SaveMessage — a
-			// pre-dispatch emission let a card that no persisted row backs
-			// vanish on reload. IsNudge matches the classification this
-			// branch returns (SendNudgeResume → mergeIsNudgeMetadata): other
-			// surfaces render their card from this event and show the Nudge
-			// badge immediately.
+			// a failed resume makes the caller skip SaveMessage, and a
+			// pre-dispatch echo would leave a card no persisted row backs —
+			// vanishing on reload. IsNudge matches SendNudgeResume so other
+			// surfaces show the Nudge badge immediately.
 			m.emitFunc(Event{
 				SessionID: id,
 				Type:      "message_received",
@@ -891,12 +793,11 @@ func (m *Manager) sendMessage(ctx context.Context, id, text, echoText, clientSen
 
 	session.mu.Lock()
 
-	// Re-check the compacting window under the SAME lock hold as the
-	// activation: the guard above ran before the DB reads (nudge-resume
-	// lookup, research info), and CompactSessionContext can have armed in
-	// that gap — it would see active=false and swap the history while this
-	// task runs. ResumeTask checks and activates in one hold for the same
-	// reason; this mirrors it.
+	// Re-check the compacting window under the SAME hold as activation: the
+	// guard above ran before the DB reads (nudge-resume lookup, research
+	// info), and CompactSessionContext can have armed in that gap — it would
+	// see active=false and swap the history while this task runs. ResumeTask
+	// checks-and-activates in one hold for the same reason.
 	if session.compacting {
 		session.mu.Unlock()
 		return SendFresh, ErrSessionCompacting
@@ -930,21 +831,16 @@ func (m *Manager) sendMessage(ctx context.Context, id, text, echoText, clientSen
 	session.cancel = cancel
 	session.mu.Unlock()
 
-	// Activation is committed: announce the task start. This single
-	// activation point covers the fresh, goal, E2S, and continue-interrupted
-	// dispatches below, so one emission announces every way a task can
-	// start. The desktop layer mirrors it into the global sessions:changed
-	// push (start-side lifecycle hook, EventTaskStarted) so every surface's
-	// session list shows the session running immediately. The resume path
-	// announces itself via task_resumed + session_resumed instead — do not
-	// emit task_started there too, or one resume would push the list-change
-	// signal twice.
+	// Activation committed: announce the task start. This single point covers
+	// the fresh, goal, E2S, and continue-interrupted dispatches below; the
+	// desktop layer mirrors it into the global sessions:changed push so every
+	// surface shows the session running immediately. The resume path
+	// announces itself via task_resumed + session_resumed — do NOT emit
+	// task_started there too, or one resume pushes the list-change twice.
 	m.emitFunc(Event{SessionID: id, Type: EventTaskStarted})
 
-	// Task-launch boundary: pin the autonomy posture this task will run under
-	// from the current Settings (covers the fresh, goal, E2S, and
-	// continue-interrupted dispatches below — they all run in this task's
-	// goroutine).
+	// Task-launch boundary: pin the autonomy posture this task runs under
+	// from the current Settings (all dispatches below run in this goroutine).
 	m.refreshAutonomyPosture(session)
 
 	// Snapshot envInfo under read lock
@@ -955,23 +851,20 @@ func (m *Manager) sendMessage(ctx context.Context, id, text, echoText, clientSen
 		taskCtx = sdktools.WithEnvInfo(taskCtx, envInfo)
 	}
 
-	// Inject auxiliary work directories (allowed roots + prompt list), and
-	// attach a multi-root ignore checker so glob/ripgrep honour each root's
-	// own .gitignore + .aiignore. dirs is loaded once and shared so the
-	// (DB-hitting) loadWorkDirectories runs a single time per task. Allowed
-	// roots ALWAYS include the implicit host temp roots (see implicitTempRoots),
-	// also for No Project sessions; the prompt-facing list and the ignore
-	// checker remain no-ops when no directories are configured.
+	// Inject auxiliary work directories (allowed roots + prompt list) and the
+	// multi-root ignore checker. dirs is loaded once and shared so the
+	// DB-hitting loadWorkDirectories runs a single time per task; allowed
+	// roots ALWAYS include the implicit host temp roots (implicitTempRoots),
+	// also for No Project; the prompt list and ignore checker stay no-ops
+	// when no directories are configured.
 	dirs := m.loadWorkDirectories(session)
 	taskCtx = m.injectWorkDirectories(taskCtx, dirs)
 	taskCtx = m.injectIgnoreChecker(taskCtx, session, dirs)
 
-	// Emit message received event. Skipped for a presented relaunch (the
-	// live-send follow-up): the message was already emitted when it was
-	// queued into the running task, and the frontend renders its own
-	// optimistic copy. IsNudge stays absent: a fresh launch persists no
-	// is_nudge stamp (mergeIsNudgeMetadata fires only on non-fresh
-	// classifications), and the event flag must agree with the DB row.
+	// Emit message_received, skipped for a presented relaunch (already
+	// emitted when queued into the running task; the frontend renders its own
+	// optimistic copy). IsNudge stays absent: a fresh launch persists no
+	// is_nudge stamp, and the event flag must agree with the DB row.
 	if !presented {
 		m.emitFunc(Event{
 			SessionID: id,
@@ -989,12 +882,11 @@ func (m *Manager) sendMessage(ctx context.Context, id, text, echoText, clientSen
 
 	// Launch goroutine to handle the message
 	go func(ctx context.Context, msg string, skills []string, agents []string, mcpServers []string) {
-		// action tells the request epilogue what to do with queued-but-
-		// undelivered live messages. The zero value (liveActionNone) keeps
-		// them queued — the default for every path that either delegated to
-		// another flow (tryContinueInterruptedTask's resumed run drains the
-		// queue itself) or left the task resumable (paused/failed: the next
-		// resume delivers them).
+		// action tells the epilogue what to do with queued-but-undelivered
+		// live messages; liveActionNone (zero) keeps them queued — the default
+		// for paths that delegated elsewhere (the resumed run drains the queue
+		// itself) or left the task resumable (paused/failed: the next resume
+		// delivers them).
 		action := liveActionNone
 		finished := false
 		defer close(doneCh)
@@ -1006,12 +898,11 @@ func (m *Manager) sendMessage(ctx context.Context, id, text, echoText, clientSen
 			m.finishLiveLeftover(ctx, id, session, leftover)
 		}()
 
-		// Snapshot pending attachments and clear them so they are flushed
-		// exactly once into the blackboard for this SendMessage — regardless
-		// of whether the message continues an interrupted task or starts a
-		// fresh one. Done before the continue check so the resume path also
-		// receives them (it bypasses HandleMessage, which would otherwise
-		// flush them via setupBlackboard).
+		// Snapshot pending attachments and clear them so they flush exactly
+		// once into the blackboard for this SendMessage — whether the message
+		// continues an interrupted task or starts fresh. Before the continue
+		// check so the resume path receives them too (it bypasses
+		// HandleMessage, which would otherwise flush via setupBlackboard).
 		session.mu.Lock()
 		pendingAttachments := session.pendingAttachments
 		session.pendingAttachments = nil
@@ -1019,25 +910,22 @@ func (m *Manager) sendMessage(ctx context.Context, id, text, echoText, clientSen
 		session.pendingImageAttachments = nil
 		session.mu.Unlock()
 
-		// Clear the pending-attachment chips now that the attachments have been
-		// flushed into the blackboard for this task. Only emit when there were
-		// pending attachments to avoid a spurious event on attachment-free sends.
+		// Clear the pending-attachment chips now that they are flushed; emit
+		// only when there were any (no spurious event on attachment-free sends).
 		if len(pendingAttachments) > 0 || len(pendingImages) > 0 {
 			m.emitAttachmentsChanged(id, []AttachmentInfo{}, nil)
 		}
 
-		// Convert staged image attachments into LLM image content blocks for
-		// the context window. The blocks carry the base64 image data (held in
-		// memory only until this snapshot); the on-disk copy at FilePath
-		// persists for restart reconstruction via ChatMessage.Metadata.
+		// Convert staged images into LLM image content blocks: base64 data is
+		// held in memory only until this snapshot; the on-disk copy at
+		// FilePath persists for restart reconstruction (ChatMessage.Metadata).
 		imageBlocks := imageAttachmentsToContentBlocks(pendingImages)
 
-		// Detect goal mode (leading "/goal" command OR an explicit goal flag)
-		// BEFORE the resume check. A goal request starts a fresh goal pursuit
-		// rather than continuing an interrupted task, so the resume path is
-		// skipped and any unfinished task is abandoned (see
-		// abandonUnfinishedTaskForGoal). The two signals are OR-ed: a goal
-		// flag enables goal mode regardless of the message prefix.
+		// Detect goal mode (leading "/goal" OR the explicit flag) BEFORE the
+		// resume check: a goal request starts a fresh pursuit rather than
+		// continuing an interrupted task, so the resume path is skipped and
+		// any unfinished task is abandoned (abandonUnfinishedTaskForGoal).
+		// The two signals are OR-ed.
 		goalMsg, isGoal := core.DetectAndStripGoalMode(msg)
 		goalEnabled := isGoal || goal
 
@@ -1045,21 +933,21 @@ func (m *Manager) sendMessage(ctx context.Context, id, text, echoText, clientSen
 		case goalEnabled:
 			// Goal mode supersedes any interrupted task: cancel it so it does
 			// not linger as resumable WIP across the new goal task, then fall
-			// through to the goal dispatch below. Best-effort; a missing task
-			// store or no unfinished task is a no-op.
+			// through to the goal dispatch. Best-effort no-op without a store
+			// or unfinished task.
 			m.abandonUnfinishedTaskForGoal(id)
 		case e2s:
-			// E2S mirrors goal: an E2S run seeds its Σ only at task start, so
-			// it can never continue an interrupted plain task — the unfinished
-			// task is abandoned and a fresh E2S task starts below.
+			// E2S mirrors goal: Σ is seeded only at task start, so it can
+			// never continue an interrupted plain task — abandoned, fresh E2S
+			// task starts below.
 			m.abandonUnfinishedTaskForE2S(id)
 		default:
 			// Continue an interrupted (unfinished) task if one exists: the new
-			// user message is appended as a final user-nudge turn to the prior
-			// trajectory and the ReAct cycle resumes — no routing, no new task,
-			// no conversation-history pair. The function fully owns terminal
-			// handling (deactivate + emit + follow-up) for every outcome, so
-			// mark finished to skip the deferred epilogue's second deactivation.
+			// message becomes a final user-nudge turn on the prior trajectory
+			// and the ReAct cycle resumes — no routing, no new task, no
+			// history pair. The function owns terminal handling (deactivate +
+			// emit + follow-up) for every outcome, so mark finished to skip
+			// the deferred epilogue's second deactivation.
 			if m.tryContinueInterruptedTask(ctx, id, session, msg, modelOverride, reasoningEffort, pendingAttachments) {
 				finished = true
 				return
@@ -1075,33 +963,30 @@ func (m *Manager) sendMessage(ctx context.Context, id, text, echoText, clientSen
 
 		// Snapshot the anchor's unfinished state BEFORE HandleMessage can
 		// reactivate it. lastCompletedTaskID is restored without a status
-		// check, so after an app restart it may point at a failed task whose
-		// resume path (tryContinueInterruptedTask) then fell back here on a
-		// restore error — such an anchor is unfinished BEFORE the send. The
-		// snapshot lets shouldRetryContinuationFresh tell that case apart from
-		// an anchor reactivated by this send's own execution. The
-		// short-circuit keeps fresh sends (the common case) off the lookup.
+		// check, so after a restart it may point at a failed task whose resume
+		// path fell back here on a restore error — such an anchor was
+		// unfinished BEFORE the send. The snapshot lets
+		// shouldRetryContinuationFresh tell that case apart from an anchor
+		// reactivated by this send's own execution; the short-circuit keeps
+		// fresh sends (the common case) off the lookup.
 		anchorWasUnfinished := lastTaskID != "" && m.unfinishedTaskID(id) == lastTaskID
 
 		// On a continuation (lastTaskID != ""), goal mode runs ON the restored
-		// blackboard of the prior completed task: the agent keeps the inherited
-		// facts and history, and a fresh goal is derived from the new message.
-		// When the goal request supplanted an interrupted task, that task was
-		// already cancelled above and lastTaskID refers to the last COMPLETED
-		// task (or "" for a fresh goal).
+		// blackboard of the prior completed task: inherited facts and history,
+		// a fresh goal derived from the new message. When the goal request
+		// supplanted an interrupted task, that task was cancelled above and
+		// lastTaskID refers to the last COMPLETED task (or "" for fresh).
 
-		// Parse the optional budget override (JSON or empty). Empty/invalid
-		// → nil (unlimited). A parse error is logged but does not block the
-		// send; the goal simply runs unlimited.
+		// Parse the optional budget override (JSON or empty → nil unlimited);
+		// a parse error is logged, never blocks — the goal runs unlimited.
 		var budgetOverride *goalpkg.GoalBudget
 		if goalEnabled {
 			budgetOverride = parseGoalBudget(goalBudget, m.log())
 		}
 
-		// When goal mode is enabled, the orchestrator receives the /goal-stripped
-		// message; otherwise it receives the original (preprocessed) message.
-		// goalMsg == msg when no /goal prefix is present, so this is safe even
-		// when goal mode was enabled by the flag rather than the command.
+		// The orchestrator receives the /goal-stripped message when goal mode
+		// is on, else the original (preprocessed) message; goalMsg == msg
+		// without the prefix, so this is safe even for flag-enabled goal mode.
 		hmMsg := msg
 		if goalEnabled {
 			hmMsg = goalMsg
@@ -1130,20 +1015,19 @@ func (m *Manager) sendMessage(ctx context.Context, id, text, echoText, clientSen
 			err = nil
 		}
 
-		// Fallback: if the continuation failed BEFORE it started executing
-		// (blackboard restore or routing error) and we had a TaskID, retry
-		// fresh. shouldRetryContinuationFresh returns false only when this
-		// send's continuation actually started executing — the anchor was
-		// terminal before the send and its row was reactivated to
-		// in_progress, so a fresh retry would orphan it. An anchor that was
-		// ALREADY unfinished when the send began still falls back to fresh:
-		// the resume path cannot restore it (same error every time), so the
-		// banner would dead-end, and the stale-task sweep cancels the row
-		// once the fresh run succeeds.
-		// Preserves goal mode: a failed goal-on-continuation retries as a fresh
-		// goal task rather than silently dropping the flag (and, when goal was
-		// enabled via the "/goal" prefix, leaking the prefix into the fresh task
-		// — hmMsg is already /goal-stripped, msg is not).
+		// Fallback: a continuation that failed BEFORE executing (blackboard
+		// restore or routing error) with a TaskID retries fresh.
+		// shouldRetryContinuationFresh returns false only when this send's
+		// continuation actually started executing — the anchor was terminal
+		// before the send and its row was reactivated to in_progress, so a
+		// fresh retry would orphan it. An anchor ALREADY unfinished when the
+		// send began still falls back to fresh: the resume path cannot restore
+		// it (same error every time), so the banner would dead-end, and the
+		// stale-task sweep cancels the row once the fresh run succeeds.
+		// Goal mode is preserved: a failed goal-on-continuation retries as a
+		// fresh goal task rather than dropping the flag (or, for a "/goal"
+		// prefix, leaking it into the fresh task — hmMsg is already stripped,
+		// msg is not).
 		if err != nil && !errors.Is(err, core.ErrMCPAuthorizationState) && m.shouldRetryContinuationFresh(id, lastTaskID, anchorWasUnfinished) {
 			m.log().Warn("continuation failed, falling back to fresh workflow", "session_id", id, "task_id", lastTaskID, "error", err)
 			session.mu.Lock()
@@ -1173,11 +1057,10 @@ func (m *Manager) sendMessage(ctx context.Context, id, text, echoText, clientSen
 		if err != nil {
 			// Check if it was a cancellation
 			if ctx.Err() == context.Canceled {
-				// On shutdown, leave the task in_progress so it can be
-				// resumed after restart; only user-initiated cancels are
-				// persisted as cancelled. The goal and the E2S run are
-				// abandoned (cancelled) only on a user cancel, not on
-				// shutdown.
+				// On shutdown leave the task in_progress so it can be resumed
+				// after restart; only user-initiated cancels persist as
+				// cancelled. Goal and E2S runs are abandoned only on a user
+				// cancel, not on shutdown.
 				if m.emitTaskCancelledUnlessShuttingDown(id) {
 					action = liveActionDiscard
 					m.abandonGoalIfUnfinished(id)
@@ -1220,14 +1103,14 @@ func (m *Manager) sendMessage(ctx context.Context, id, text, echoText, clientSen
 			return
 		}
 
-		// A cooperative pause is a clean checkpoint, not a degraded completion.
-		// Emit session_paused so the UI shows a paused state (unlocked input,
-		// Resume/Stop controls) instead of a misleading failed/resumable banner.
-		// The task is persisted as paused (resumable); a later Resume re-enters.
+		// A cooperative pause is a clean checkpoint, not a degraded completion:
+		// emit session_paused so the UI shows a paused state (unlocked input,
+		// Resume/Stop) instead of a misleading failed/resumable banner; the
+		// task persists as paused (resumable).
 		if result != nil && result.Status == orchestration.ExecutionStatusPaused {
 			// Deactivate BEFORE the terminal event: a consumer reacting to
-			// session_paused treats the session as free to resume/send, so it
-			// must already observe active == false (see deactivateSessionTask).
+			// session_paused treats the session as free (see
+			// deactivateSessionTask).
 			leftover := m.deactivateSessionTask(session, action)
 			finished = true
 			m.emitFunc(Event{SessionID: id, Type: "session_paused"})
@@ -1235,12 +1118,11 @@ func (m *Manager) sendMessage(ctx context.Context, id, text, echoText, clientSen
 			return
 		}
 
-		// Emit done event with result (carries the typed success contract;
-		// degraded outcomes surface a resumable action or a fallback warning).
+		// Emit done (typed success contract; degraded outcomes surface a
+		// resumable action or a fallback warning).
 		action = liveActionFollowUp
-		// Deactivate BEFORE emitting task_complete: the event is the frontend's
-		// signal that the session is free for a Resume/Send, so a consumer
-		// reacting to it must already observe active == false.
+		// Deactivate BEFORE task_complete: the event is the frontend's signal
+		// that the session is free for Resume/Send.
 		leftover := m.deactivateSessionTask(session, action)
 		finished = true
 		m.emitTaskComplete(id, result, nil)
@@ -1250,11 +1132,9 @@ func (m *Manager) sendMessage(ctx context.Context, id, text, echoText, clientSen
 	return SendFresh, nil
 }
 
-// parseGoalBudget parses a goal-budget override string into a *goal.GoalBudget.
-// The string is expected to be a JSON object with the goal.GoalBudget field
-// (max_turns). An empty string returns nil (unlimited). An unparseable string
-// is logged and returns nil so a malformed budget never blocks the send — the
-// goal simply falls back to unlimited.
+// parseGoalBudget parses a goal-budget override (JSON with the GoalBudget
+// field, max_turns). Empty → nil (unlimited); unparseable is logged and nil —
+// a malformed budget never blocks the send.
 func parseGoalBudget(raw string, log *slog.Logger) *goalpkg.GoalBudget {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -1268,30 +1148,24 @@ func parseGoalBudget(raw string, log *slog.Logger) *goalpkg.GoalBudget {
 	return &b
 }
 
-// tryContinueInterruptedTask checks whether the session has an unfinished
-// (interrupted) task and, if so, continues its ReAct cycle by appending the
-// user's new message as a final seeded user-nudge turn. It returns true when
-// it took the resume path (the caller must NOT proceed with the normal
-// HandleMessage flow), and false when there is no unfinished task (the caller
-// runs the normal route → plan → execute flow).
+// tryContinueInterruptedTask continues an unfinished (interrupted) task by
+// appending the user's new message as a final seeded user-nudge turn. Returns
+// true when it took the resume path (caller must NOT run the normal
+// HandleMessage flow), false when there is no unfinished task.
 //
-// The user message is rendered as a user turn in the LLM context (via the
-// trajectory's Step.UserNudge, which stepsToMessages emits as a {role:user}
-// message), so the agent sees the new instruction immediately after the prior
-// trajectory. The task is NOT re-routed, NO new task is created, and NO new
-// conversation-history pair is recorded — the task lifecycle simply continues.
-// (Resume's recordResumeOutcome records the assistant side only, mirroring the
-// app-restart ResumeTask path.)
+// The message renders as a {role:user} turn (Step.UserNudge /
+// stepsToMessages) right after the prior trajectory. The task is NOT
+// re-routed, no new task or history pair is created — the lifecycle simply
+// continues (Resume's recordResumeOutcome records the assistant side only,
+// mirroring the app-restart ResumeTask path).
 //
-// Because this path bypasses HandleMessage (step 0 there applies them), the
-// per-request model/reasoning overrides are applied here via
-// orchestrator.ApplyRequestOverrides, and pending attachments are flushed into
-// the restored blackboard (mirroring HandleMessage's setupBlackboard
-// continuation path). Both are no-ops when empty.
+// This path bypasses HandleMessage, so the per-request model/reasoning
+// overrides are applied here (ApplyRequestOverrides) and pending attachments
+// are flushed into the restored blackboard (mirroring setupBlackboard's
+// continuation path); both no-ops when empty.
 //
-// The message_received event has already been emitted by SendMessage, so the
-// UI shows the user message; the resumed task emits its own task lifecycle
-// events (routing/context_fill/steps/task_complete) on top.
+// message_received was already emitted by SendMessage; the resumed task
+// emits its own lifecycle events on top.
 func (m *Manager) tryContinueInterruptedTask(
 	ctx context.Context,
 	id string,
@@ -1366,31 +1240,30 @@ func (m *Manager) tryContinueInterruptedTask(
 
 	// A task whose original run never got past routing (no persisted routing
 	// decision AND no execution state) is re-classified on this nudge-resume,
-	// mirroring Manager.ResumeTask: without it the resumed run would default to
-	// the "general" domain and skip the routing stage. A routed task keeps its
+	// mirroring Manager.ResumeTask: without it the resumed run would default
+	// to the "general" domain and skip routing. A routed task keeps its
 	// persisted decision (a nudge-resume never re-classifies a continuation).
 	if routing == nil && !hadTrajectory && bb.GetPlan() == nil {
 		session.orchestrator.RequestResumeReroute()
 	}
 
-	// Load the persisted goal state. A NON-terminal goal (e.g. a goal that
-	// halted as a resumable turn-error failure, leaving the task "failed", or
-	// an active goal) must NOT be continued as a plain task: it re-enters the
-	// goal loop so the pursuit is preserved (Issue #95 AC2). A nil goal state
-	// (an ordinary paused/failed task) continues as a plain run. A TERMINAL
-	// goal (exhausted) is over by design — resumeGoalLoop must not re-enter it,
-	// and Manager.ResumeTask surfaces an explicit notice on that path — so it
-	// is deliberately dropped here too.
+	// Load the persisted goal state. A NON-terminal goal (halted as a
+	// resumable turn-error failure, or still active) must NOT continue as a
+	// plain task: it re-enters the goal loop so the pursuit is preserved
+	// (Issue #95 AC2). A nil state (ordinary paused/failed task) continues
+	// plain. A TERMINAL goal (exhausted) is over by design — resumeGoalLoop
+	// must not re-enter it (ResumeTask surfaces an explicit notice there) —
+	// so it is dropped here too.
 	goalState, gerr := adapter.LoadGoalState(taskID)
 	if gerr != nil {
 		m.log().Warn("continue-interrupted-task: failed to load goal state; continuing as a plain task", "session", id, "error", gerr)
 		goalState = nil
 	}
 	// Model Profiles gate (mirrors Manager.ResumeTask): goal mode and the
-	// essential-tools narrowing are mutually exclusive (see
-	// core.ErrGoalBlockedByModelProfiles). Refuse the goal continuation under
-	// narrowing with a visible error instead of silently degrading it to a
-	// plain run. Checked BEFORE the run starts so the paused task row is left
+	// essential-tools narrowing are mutually exclusive
+	// (core.ErrGoalBlockedByModelProfiles) — refuse the goal continuation
+	// under narrowing with a visible error instead of silently degrading to a
+	// plain run. Checked BEFORE the run starts so the paused row is left
 	// untouched and a later message re-enters this path.
 	if goalState != nil && !goalState.Status.IsTerminal() &&
 		session.orchestrator != nil && session.orchestrator.ModelProfilesNarrowingEnabled() {
@@ -1445,12 +1318,10 @@ func (m *Manager) tryContinueInterruptedTask(
 	}
 
 	// A cooperative pause during resume is a clean checkpoint (see the
-	// SendMessage and ResumeTask goroutines): emit session_paused instead of a
-	// degraded task_complete. Checked before the task-ID store below so a
-	// paused result does not update lastCompletedTaskID (the task is not
-	// completed). Deactivate BEFORE the terminal event so a consumer reacting
-	// to session_paused already observes active == false (see
-	// deactivateSessionTask).
+	// SendMessage and ResumeTask goroutines): session_paused instead of a
+	// degraded task_complete. Checked before the task-ID store so a paused
+	// result does not update lastCompletedTaskID (not completed). Deactivate
+	// BEFORE the terminal event (see deactivateSessionTask).
 	if result != nil && result.Status == orchestration.ExecutionStatusPaused {
 		m.deactivateSessionTask(session, liveActionNone)
 		m.emitFunc(Event{SessionID: id, Type: "session_paused"})
@@ -1464,10 +1335,8 @@ func (m *Manager) tryContinueInterruptedTask(
 		session.mu.Unlock()
 	}
 
-	// Deactivate BEFORE emitting task_complete: the event is the frontend's
-	// signal that the session is free for a Resume/Send, so a consumer reacting
-	// to it must already observe active == false (see deactivateSessionTask).
-	// The follow-up for queued live messages is drained and launched here; the
+	// Deactivate BEFORE task_complete (frontend free-for-Resume/Send signal).
+	// The queued-live-messages follow-up is drained and launched here; the
 	// caller marks the run finished so its deferred epilogue does not
 	// deactivate a second time and clobber the just-launched follow-up.
 	leftover := m.deactivateSessionTask(session, liveActionFollowUp)
@@ -1476,20 +1345,17 @@ func (m *Manager) tryContinueInterruptedTask(
 	return true
 }
 
-// ResumeTask checks for an unfinished task in the given session and resumes it.
-// Returns nil if no unfinished task exists or if the task store is not configured.
-// Invoked both by the manual Resume button (with the user's current model/reasoning
-// selection) and on app restart to resume interrupted tasks. The optional
-// modelOverride/reasoningEffort are applied (same as a fresh SendMessage) so a
-// model/reasoning switch the user made before resuming is honored instead of
-// silently inheriting the interrupted task's settings. The optional nudge is
-// injected as a trailing user message into the first resumed turn (one-shot) —
-// used by the nudge-resume path when a user sends a message into a paused session.
+// ResumeTask resumes an unfinished task: nil when none exists or the task
+// store is not configured. Invoked by the manual Resume button (with the
+// user's current model/reasoning selection) and on app restart for
+// interrupted tasks. The optional modelOverride/reasoningEffort are applied
+// like a fresh SendMessage so a pre-resume switch is honored instead of
+// silently inherited; the optional nudge is injected as a trailing user
+// message into the first resumed turn (one-shot) — the nudge-resume path.
 func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEffort, nudge string) error {
-	// No task may be launched once Shutdown has begun: the teardown drains
-	// and joins all task goroutines, so a resume racing it would spawn a
-	// goroutine nobody waits for (running LLM calls and tools against a
-	// closing backend).
+	// No task may launch once Shutdown has begun: teardown drains and joins
+	// all task goroutines, so a resume racing it would spawn a goroutine
+	// nobody waits for (LLM calls and tools against a closing backend).
 	if m.shuttingDown.Load() {
 		return errors.New("session manager is shutting down")
 	}
@@ -1509,12 +1375,12 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 		return fmt.Errorf("session not found: %s", id)
 	}
 
-	// Archived sessions are read-only: fail fast before touching the task store
-	// or restoring a blackboard. Mirrors the SendMessage guard. The deleting
-	// check is the same class: the compaction flow's auto-resume re-enters
-	// here after DeleteSession set the flag but before it removed the
-	// session — without this guard the resume would launch a ghost task
-	// against the session being torn down.
+	// Archived sessions are read-only: fail fast before touching the task
+	// store or restoring a blackboard (mirrors the SendMessage guard). The
+	// deleting check is the same class: the compaction flow's auto-resume
+	// re-enters here after DeleteSession set the flag but before it removed
+	// the session — without it the resume would launch a ghost task against
+	// a session being torn down.
 	session.mu.Lock()
 	archived := session.Archived
 	deleting := session.deleting
@@ -1604,35 +1470,31 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 	}
 	// Re-check deleting INSIDE the activation critical section: the snapshot
 	// guard above ran before the task-store reads and blackboard restore, and
-	// DeleteSession's whole teardown (orchestrator cleanup, log/dump handle
-	// close, map removal, blackboard stop) can serialize into that window —
-	// without this re-check the resume would activate a task against the
-	// session being dismantled (the ghost-task class the deleting flag
-	// exists to kill).
+	// DeleteSession's whole teardown can serialize into that window — without
+	// this re-check the resume would activate a task against the session being
+	// dismantled (the ghost-task class the flag exists to kill).
 	if session.deleting {
 		session.mu.Unlock()
 		return fmt.Errorf("session %s is being deleted", id)
 	}
 	// Manual compaction owns the session until it finishes (it swaps the
-	// conversation history while the session is idle); resuming a task in
-	// that window would race the swap. The compaction flow's own auto-resume
-	// runs after the flag is cleared, so it is not blocked here.
+	// history while idle); resuming in that window would race the swap. The
+	// compaction flow's own auto-resume runs after the flag clears, so it is
+	// not blocked here.
 	if session.compacting {
 		session.mu.Unlock()
 		return ErrSessionCompacting
 	}
-	// Model Profiles goal guard: a paused non-terminal goal must not be resumed
-	// while the essential-tools narrowing is active — goal mode and the
-	// narrowing are mutually exclusive (see core.ErrGoalBlockedByModelProfiles). Checked
-	// here, under the session lock and BEFORE the task is activated or
-	// reactivated, so EVERY resume entry point that funnels through ResumeTask
-	// (the ResumeTask / ResumeSession RPCs, the sendMessage nudge-resume, and
-	// the manual-compaction auto-resume) is refused without a side effect: the
-	// task row is left untouched (still "paused"), so a later message re-enters
-	// the nudge-resume path instead of degrading into a plain continuation.
-	// The orchestrator's own guard (Resume / resumeGoalLoop) is the ultimate
-	// authority behind this; the frontend API pre-check gives the friendly
-	// message.
+	// Model Profiles goal guard: a paused non-terminal goal must not resume
+	// while the essential-tools narrowing is active (mutually exclusive,
+	// core.ErrGoalBlockedByModelProfiles). Checked here, under the session
+	// lock and BEFORE activation, so EVERY resume entry point funneling
+	// through ResumeTask (ResumeTask/ResumeSession RPCs, the nudge-resume,
+	// the compaction auto-resume) is refused without side effects: the row
+	// stays "paused", so a later message re-enters the nudge-resume path
+	// instead of degrading to a plain continuation. The orchestrator's own
+	// guard (Resume / resumeGoalLoop) is the ultimate authority; the frontend
+	// API pre-check gives the friendly message.
 	if goalState != nil && !goalState.Status.IsTerminal() &&
 		session.orchestrator != nil && session.orchestrator.ModelProfilesNarrowingEnabled() {
 		session.mu.Unlock()
@@ -1663,19 +1525,17 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 	session.cancel = cancel
 	session.mu.Unlock()
 
-	// Apply per-request model/reasoning overrides. This path bypasses
-	// HandleMessage, where step 0 would otherwise apply them, so the resumed
-	// task picks up the model/reasoning the user selected instead of silently
-	// inheriting the interrupted task's settings. No-op when both are empty.
-	// Run after the active-check (so overrides never leak into a concurrently
-	// running task) but before launching the Resume goroutine, so the emitter's
-	// cached model is synchronized before the initial context_fill is emitted.
+	// Apply per-request model/reasoning overrides — this path bypasses
+	// HandleMessage (step 0 would apply them), so the resumed task picks up
+	// the user's selection instead of inheriting the interrupted task's;
+	// no-op when both empty. After the active-check (never leak into a
+	// concurrently running task) but before the Resume goroutine, so the
+	// emitter's cached model is synchronized before the first context_fill.
 	session.orchestrator.ApplyRequestOverrides(ctx, modelOverride, reasoningEffort)
 
-	// Task-launch boundary (resume): pin the autonomy posture the resumed run
-	// will execute under from the current Settings — the pause→edit→resume
-	// flow must behave exactly like launching a new task with those Settings.
-	// The interrupted task's own posture is discarded by design.
+	// Task-launch boundary (resume): pin the autonomy posture from current
+	// Settings — pause→edit→resume behaves exactly like launching a new task
+	// with those Settings; the interrupted task's own posture is discarded.
 	m.refreshAutonomyPosture(session)
 
 	// Snapshot envInfo under read lock
@@ -1686,13 +1546,10 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 		taskCtx = sdktools.WithEnvInfo(taskCtx, envInfo)
 	}
 
-	// Inject auxiliary work directories (allowed roots + prompt list), and
-	// attach a multi-root ignore checker so glob/ripgrep honour each root's
-	// own .gitignore + .aiignore. dirs is loaded once and shared so the
-	// (DB-hitting) loadWorkDirectories runs a single time per task. Allowed
-	// roots ALWAYS include the implicit host temp roots (see implicitTempRoots),
-	// also for No Project sessions; the prompt-facing list and the ignore
-	// checker remain no-ops when no directories are configured.
+	// Inject auxiliary work directories + ignore checker (same contract as
+	// the sendMessage path: one DB-hitting load per task; implicit temp roots
+	// always in the allowed roots; prompt list/ignore checker no-ops without
+	// configured directories).
 	dirs := m.loadWorkDirectories(session)
 	taskCtx = m.injectWorkDirectories(taskCtx, dirs)
 	taskCtx = m.injectIgnoreChecker(taskCtx, session, dirs)
@@ -1707,12 +1564,12 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 		},
 	})
 	// session_resumed clears the UI's paused state (complementary to
-	// session_paused) so the input re-locks and Pause/Stop controls show again.
+	// session_paused): input re-locks, Pause/Stop controls show again.
 	m.emitFunc(Event{SessionID: id, Type: "session_resumed"})
 
 	// Goal-mode-over notice (Issue #95 AC3): the resumed task's goal ended
 	// terminally (budget exhausted) and will NOT be re-armed — the user must
-	// know the continuation is a regular run, not a resumed goal pursuit.
+	// know the continuation is a regular run.
 	if goalModeOver {
 		m.emitFunc(Event{
 			SessionID: id,
@@ -1724,36 +1581,32 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 		})
 	}
 
-	// Mark the prior task_failed_resumable banner as resolved so it does not
-	// reappear as pending after the resume goroutine finishes. Done here (at
-	// the committed point, right before launching) so a failed restore still
-	// leaves the banner actionable for a retry.
+	// Mark the prior task_failed_resumable banner resolved so it does not
+	// reappear as pending after the resume finishes — done here at the
+	// committed point so a failed restore still leaves the banner actionable.
 	m.resolveResumableTaskMessage(id, taskID, "resumed")
 
-	// Flip the persisted task row back to in_progress for the duration of the
-	// resumed run. The row was written 'paused' by the prior run's checkpoint
-	// (PersistentBlackboard.PauseTask) and would otherwise stay 'paused' for
-	// the whole resumed execution — the paused-ghost bug: the store claims a
-	// paused task while it is actively running. A cooperative pause mid-run
-	// rewrites 'paused' at the next checkpoint (persistTaskOutcome), so the
-	// pause contract is preserved. Best-effort like the orchestrator's
-	// reactivateContinuationTask: a failed UPDATE is logged, never fatal —
-	// the resume itself must proceed.
+	// Flip the persisted task row back to in_progress for the resumed run. The
+	// row was written 'paused' by the prior run's checkpoint
+	// (PersistentBlackboard.PauseTask) and would otherwise stay 'paused' all
+	// run — the paused-ghost bug: the store claims a paused task while it is
+	// actively running. A cooperative pause mid-run rewrites 'paused' at the
+	// next checkpoint (persistTaskOutcome), preserving the pause contract.
+	// Best-effort like reactivateContinuationTask: a failed UPDATE is logged,
+	// never fatal.
 	if err := adapter.ReactivateTask(taskID); err != nil {
 		m.log().Warn("failed to reactivate task row on resume", "session_id", id, "task_id", taskID, "error", err)
 	}
 
 	// A task whose original run never got past routing (no persisted routing
 	// decision AND no execution state — empty trajectory, no plan) has nothing
-	// to continue: it is typically a fresh send that failed while the router
-	// was calling the LLM (e.g. a network error), leaving this resumable
-	// "failed" row with no routing decision. Resuming it without re-routing
-	// would silently default to the "general" domain and skip the routing
-	// stage. Arm the one-shot re-route request so the resumed run classifies
-	// the original request first. A task that WAS routed (routing decision
-	// persisted) or that has any execution state keeps the normal
-	// reuse-without-routing behavior — a resume never re-classifies a
-	// continuation.
+	// to continue: typically a fresh send that failed while the router was
+	// calling the LLM, leaving a resumable "failed" row with no routing
+	// decision. Resuming without re-routing would silently default to the
+	// "general" domain and skip routing. Arm the one-shot re-route so the
+	// resumed run classifies the original request first; a task that WAS
+	// routed or has any execution state keeps reuse-without-routing — a resume
+	// never re-classifies a continuation.
 	if routing == nil && len(resumeSteps) == 0 && bb.GetPlan() == nil {
 		session.orchestrator.RequestResumeReroute()
 	}
@@ -1809,11 +1662,9 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 			return
 		}
 
-		// Safety net: if the context was cancelled but Resume returned no
-		// error (the goal-loop path returns nil error on cancel because
-		// resumeGoalLoop always returns nil), still treat it as a
-		// cancellation — mark the task cancelled and return. This mirrors
-		// the HandleMessage goroutine's safety net.
+		// Safety net: context cancelled but Resume returned no error (the
+		// goal-loop path returns nil on cancel — resumeGoalLoop always does) —
+		// still treat as cancellation; mirrors HandleMessage's safety net.
 		if taskCtx.Err() == context.Canceled {
 			if m.emitTaskCancelledUnlessShuttingDown(id) {
 				action = liveActionDiscard
@@ -1825,14 +1676,11 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 		}
 
 		// A cooperative pause during resume is a clean checkpoint (see the
-		// HandleMessage goroutine): emit session_paused instead of a degraded
-		// task_complete. The task stays resumable; a later Resume re-enters.
-		// Checked before the task-ID store below so a paused result does not
-		// update lastCompletedTaskID (the task is not completed).
+		// HandleMessage goroutine): session_paused instead of a degraded
+		// task_complete; the task stays resumable. Checked before the task-ID
+		// store so a paused result does not update lastCompletedTaskID.
 		if result != nil && result.Status == orchestration.ExecutionStatusPaused {
-			// Deactivate BEFORE the terminal event so a consumer reacting to
-			// session_paused already observes active == false (see
-			// deactivateSessionTask).
+			// Deactivate BEFORE the terminal event (deactivateSessionTask).
 			leftover := m.deactivateSessionTask(session, action)
 			finished = true
 			m.emitFunc(Event{SessionID: id, Type: "session_paused"})
@@ -1848,9 +1696,8 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 		}
 
 		action = liveActionFollowUp
-		// Close the processing window BEFORE emitting task_complete: the event
-		// is the frontend's signal that the session is free for a Resume/Send,
-		// so a consumer reacting to it must already observe active == false.
+		// Close the processing window BEFORE task_complete: the event is the
+		// frontend's free-for-Resume/Send signal.
 		leftover := m.deactivateSessionTask(session, action)
 		finished = true
 		m.emitTaskComplete(id, result, nil)
@@ -1860,13 +1707,11 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 	return nil
 }
 
-// CancelUnfinishedTask discards any unfinished task in the given session by
-// marking it as cancelled in the task store. After this returns successfully,
-// the session no longer has a resumable task and emitResumableIfUnfinished
-// will not emit a "task_failed_resumable" event for it. Any deferred
-// resume-compaction armed for the task's future resume is discarded too — it
-// must not outlive the task it was armed for.
-// Returns nil if no task store is configured or no unfinished task exists.
+// CancelUnfinishedTask discards any unfinished task by marking it cancelled
+// in the task store; afterwards the session has no resumable task and
+// emitResumableIfUnfinished will not emit for it. Any deferred
+// resume-compaction armed for the task is discarded too — it must not outlive
+// the task it was armed for. Nil when no store or no unfinished task.
 func (m *Manager) CancelUnfinishedTask(sessionID string) error {
 	m.clearResumeRequests(sessionID)
 	m.mu.RLock()
@@ -1893,13 +1738,12 @@ func (m *Manager) CancelUnfinishedTask(sessionID string) error {
 	return nil
 }
 
-// PauseSession signals the currently-running task (any mode) for the session to
-// pause at the next step boundary. It delegates to the orchestrator's universal
-// PauseSession: the conductor's executor checks the pause signal at every step
-// boundary (normal path and every goal-loop turn alike), stops with a paused
-// checkpoint, and the request persists the task as paused + exits so a later
-// ResumeSession/ResumeTask can re-enter. It is a no-op when no request is in
-// flight or the orchestrator is not yet built.
+// PauseSession signals the running task (any mode) to pause at the next step
+// boundary, delegating to the orchestrator's universal PauseSession: the
+// executor checks the pause signal at every step boundary (normal path and
+// goal-loop turns alike), stops with a paused checkpoint, and the request
+// persists the task as paused + exits so ResumeSession/ResumeTask can
+// re-enter. No-op with no request in flight or no orchestrator yet.
 func (m *Manager) PauseSession(sessionID string) error {
 	session, err := m.getOrRestoreSession(sessionID)
 	if err != nil {
@@ -1912,31 +1756,30 @@ func (m *Manager) PauseSession(sessionID string) error {
 	if orch == nil {
 		return errors.New("orchestrator not initialized")
 	}
-	// Flag the pausing window under the session lock: from here until the
-	// running request's epilogue flips it off, live sends are rejected with
-	// ErrPausePending (the UI mirrors this by locking the input). The flag is
-	// set under the lock BEFORE the pause signal is flipped (after unlock), so
-	// a send that races the signal flip still observes pausing=true and is
-	// rejected — the window stays closed for the whole pause-in-flight period.
+	// Flag the pausing window under the session lock: until the running
+	// request's epilogue flips it off, live sends are rejected with
+	// ErrPausePending (the UI mirrors this by locking the input). Set under
+	// the lock BEFORE the pause signal flips (after unlock), so a send racing
+	// the flip still observes pausing=true — the window stays closed for the
+	// whole pause-in-flight period.
 	//
 	// The pause owner is recorded on EVERY call, including on an idle session:
-	// inside the manual-compaction window (checkpoint landed, task paused)
-	// a pause click is the user saying "keep it paused" — the compaction
-	// flow's auto-resume checks the owner and must not override it.
+	// inside the manual-compaction window (checkpoint landed, task paused) a
+	// pause click means "keep it paused" — the compaction flow's auto-resume
+	// checks the owner and must not override it.
 	session.mu.Lock()
 	session.pauseOwner = pauseOwnerUser
 	if session.active {
 		session.pausing = true
-		// Deliberately do NOT record stopRequestedAt here. A pause is a
-		// COOPERATIVE signal answered at the next step boundary, and a long LLM
-		// call (which routinely exceeds hungSessionThreshold) is not a step
-		// boundary — the executor checks the pause checker only after the
-		// in-flight model request returns, and the tool watchdog polls pause only
-		// while a TOOL is in flight. Flagging a healthy, paused session as "not
-		// responding to a stop request" during that window is the false positive
-		// this avoids. Only a Stop (CancelTask) records stopRequestedAt: it
-		// cancels the context, so an unanswered Stop genuinely means a wedged
-		// goroutine.
+		// Deliberately do NOT record stopRequestedAt: a pause is a COOPERATIVE
+		// signal answered at the next step boundary, and a long LLM call
+		// routinely exceeds hungSessionThreshold — the executor checks the
+		// pause checker only after the in-flight model request returns, and
+		// the tool watchdog polls pause only while a TOOL is in flight.
+		// Flagging a healthy session as "not responding to a stop request"
+		// during that window is the false positive this avoids. Only a Stop
+		// (CancelTask) records stopRequestedAt: it cancels the context, so an
+		// unanswered Stop genuinely means a wedged goroutine.
 	}
 	session.mu.Unlock()
 	orch.PauseSession()
@@ -1944,23 +1787,19 @@ func (m *Manager) PauseSession(sessionID string) error {
 }
 
 // ResumeSession re-enters the execution loop for a paused (or still-active,
-// non-terminal) task. It delegates to ResumeTask, which loads the unfinished
-// task + persisted state (trajectory, goal state) and dispatches to the
-// orchestrator's resume path. The optional nudge is injected as a trailing
-// user message into the first resumed turn (one-shot) — the nudge-resume path
-// when a user sends a message into a paused session. The optional
-// modelOverride/reasoningEffort are forwarded so a model/reasoning switch made
-// before resuming is honored. Returns nil if there is no resumable task.
+// non-terminal) task via ResumeTask, which loads the unfinished task +
+// persisted state and dispatches to the orchestrator's resume path. The
+// optional nudge is injected as a one-shot trailing user message (the
+// nudge-resume path); modelOverride/reasoningEffort are forwarded so a
+// pre-resume switch is honored. Nil when there is nothing resumable.
 func (m *Manager) ResumeSession(ctx context.Context, sessionID, modelOverride, reasoningEffort, nudge string) error {
 	return m.ResumeTask(ctx, sessionID, modelOverride, reasoningEffort, nudge)
 }
 
-// hasPausedUnfinishedTask reports whether the session's resumable unfinished
-// task is specifically in the paused status. Used by the SendMessage
-// nudge-resume router to decide whether a new message resumes the paused task
-// instead of starting a fresh one. Returns false when no task store is
-// configured or on lookup error (best-effort: a failure falls through to the
-// normal SendMessage path).
+// hasPausedUnfinishedTask reports whether the resumable unfinished task is
+// specifically paused — the SendMessage nudge-resume router's discriminator
+// between resuming and starting fresh. False with no store or on lookup
+// error (best-effort: falls through to the normal send path).
 func (m *Manager) hasPausedUnfinishedTask(sessionID string) bool {
 	m.mu.RLock()
 	ts := m.taskStore
@@ -1988,59 +1827,49 @@ type SessionRuntimeStatus struct {
 	HasUnfinishedTask bool   `json:"has_unfinished_task"`
 	UnfinishedTaskID  string `json:"unfinished_task_id,omitempty"`
 	// UnfinishedTaskStatus is the RAW persisted status of the resumable task
-	// ("in_progress", "paused", "failed"), or "" when there is none. It lets the
-	// frontend's reconcile seed its live status overlay with the exact value —
-	// without it every non-paused unfinished task collapses to "failed", which
-	// colours an orphaned in_progress red on a visited session but green on an
-	// unvisited one (whose DB fallback still says "in_progress"). The value is
-	// the task store's status passed through verbatim (no clamping); consumers
-	// must consult it only while Active is false, and apply their own policy for
-	// a status outside the unfinished set (which can only appear if the task
-	// settles between the ID lookup and the state load).
+	// ("in_progress", "paused", "failed"), or "" when none — the frontend's
+	// reconcile seeds its live overlay with the exact value instead of
+	// collapsing every non-paused unfinished task to "failed" (an orphaned
+	// in_progress would colour red on a visited session but green on an
+	// unvisited one). Verbatim, no clamping; consult only while Active is
+	// false, and apply your own policy for a status outside the unfinished
+	// set (possible only if the task settles between the ID lookup and the
+	// state load).
 	UnfinishedTaskStatus string `json:"unfinished_task_status,omitempty"`
-	// Paused is true when the resumable unfinished task is in the "paused"
-	// status — a cooperative pause checkpoint that the user can resume (with
-	// an optional nudge) or send a new message into (treated as a nudge-resume).
+	// Paused is true when the resumable unfinished task is paused — a
+	// cooperative checkpoint the user can resume (optionally with a nudge) or
+	// send into (treated as a nudge-resume).
 	Paused bool `json:"paused"`
-	// Compacting is true while a manual context compaction is in flight. The
-	// UI locks the input and swaps the compact button for a cancel button.
+	// Compacting is true while a manual context compaction is in flight; the
+	// UI locks the input and swaps compact for cancel.
 	Compacting bool `json:"compacting"`
 	// CompactionAvailability is the per-strategy manual-compaction prediction
-	// for the session's current conversation history (see
-	// Orchestrator.ManualCompactionAvailability): whether each strategy would
-	// actually shrink the dialogue right now, how many tokens it would reclaim,
-	// and whether that reclaim is exact or a forecast. The UI enables the
-	// compact button when at least one strategy is available and disables (with
-	// a reason) the strategies that would not shrink the dialogue. Fail-open:
-	// empty whenever the session or its orchestrator is not in memory — a status
-	// poll must never guess "disabled"; a pointless click simply reports the
-	// existing nothing_compacted outcome. omitempty keeps the nil slice OFF the
-	// wire (no "compaction_availability":null): a null the frontend validator
-	// would have to tolerate is indistinguishable from "no prediction" anyway,
-	// so the absent field is the canonical fail-open shape.
+	// for the session's current history (Orchestrator.ManualCompactionAvailability):
+	// whether each strategy would shrink the dialogue now, how many tokens it
+	// would reclaim, and whether that is exact or a forecast. Fail-open:
+	// empty whenever the session/orchestrator is not in memory — a status
+	// poll must never guess "disabled"; a pointless click just reports the
+	// existing nothing_compacted outcome. omitempty keeps the nil slice OFF
+	// the wire (no null — indistinguishable from "no prediction" anyway).
 	CompactionAvailability []core.CompactionAvailability `json:"compaction_availability,omitempty"`
 	// Activity is the session's last user-facing activity label
-	// ("Thinking...", "Routing request...", "Generating response...", ...)
-	// tracked by the emitter. It lets the frontend replace the frozen
-	// activityStatus left over from before a session/project switch — e.g. a
-	// session that advanced past routing while unobserved must not keep
-	// displaying "Routing request...". Authoritative only while Active is
-	// true: terminal events (task_complete/error/cancel) are emitted by the
-	// Manager outside the emitter and clear the activity on the frontend.
+	// ("Thinking...", "Routing request...", ...) tracked by the emitter, so
+	// the frontend can replace the frozen activityStatus left over from
+	// before a session/project switch. Authoritative only while Active is
+	// true: terminal events clear the activity on the frontend.
 	Activity string `json:"activity,omitempty"`
 	// Streaming is true while an assistant stream is open (assistant_chunk
-	// emitted without the closing assistant_done). When false, the frontend
-	// clears stale streaming text for the session — a stream that ended while
-	// the session was in the background would otherwise render a frozen
-	// partial answer forever (the full answer arrives via history reload).
+	// without the closing assistant_done); when false the frontend clears
+	// stale streaming text — a stream that ended in the background would
+	// otherwise render a frozen partial answer forever (the full answer
+	// arrives via history reload).
 	Streaming bool `json:"streaming"`
-	// WorkUnits is the durable work-unit snapshot for the session's resumable
-	// task (see Manager.workUnitSnapshot). The frontend reconciles chat blocks
-	// against it after a restart/session load so a delegate or plan step that
-	// was paused or interrupted before the app exited renders as paused or
-	// interrupted instead of a misleading "running" (the replayed history has
-	// no terminal event for it). Empty when there is no resumable task or no
-	// durable unit storage.
+	// WorkUnits is the durable work-unit snapshot for the resumable task
+	// (Manager.workUnitSnapshot): the frontend reconciles chat blocks against
+	// it after a restart/session load, so a paused/interrupted delegate or
+	// plan step renders as such instead of a misleading "running" (the
+	// replayed history has no terminal event for it). Empty with no resumable
+	// task or no durable unit storage.
 	WorkUnits []WorkUnitStatus `json:"work_units,omitempty"`
 }
 
@@ -2062,35 +1891,29 @@ type WorkUnitStatus struct {
 	ParentID string `json:"parent_id,omitempty"`
 }
 
-// GetSessionRuntimeStatus returns whether a task is currently running in the
-// session (in-memory) and whether an unfinished (resumable) task is persisted
-// in the task store. When a resumable task exists, Paused reports whether it is
-// in the paused status — never while the task is running in memory (a live
-// task cannot be paused; see the invariant note in the body).
-//
-// It never RESTORES a session, and it never mutates the session's own state. It
-// is not entirely side-effect-free, though: it settles the task's abandoned
-// in-flight units as `interrupted` (see workUnitSnapshot) — a column-scoped,
-// conditional, idempotent ledger write confined to a task that is neither
-// executing nor paused.
+// GetSessionRuntimeStatus reports the session's live (in-memory) and
+// persisted execution state so the frontend can reconstruct
+// "running / resumable / paused" after a restart or session switch. It never
+// RESTORES a session and never mutates session state; it is not entirely
+// side-effect-free: it settles the task's abandoned in-flight units as
+// `interrupted` (workUnitSnapshot) — a column-scoped, conditional, idempotent
+// ledger write confined to a task neither executing nor paused.
 func (m *Manager) GetSessionRuntimeStatus(sessionID string) (SessionRuntimeStatus, error) {
 	var status SessionRuntimeStatus
 
-	// Memory-only lookup: a session that is not in memory cannot be active,
-	// and restoring it here would be an unwanted side effect for a status poll.
+	// Memory-only lookup: a session not in memory cannot be active, and
+	// restoring it here would be an unwanted side effect for a status poll.
 	m.mu.RLock()
 	sess := m.sessions[sessionID]
 	m.mu.RUnlock()
 	if sess != nil {
 		status.Active = sess.IsActive()
 		status.Compacting = sess.IsCompacting()
-		// Live activity/streaming from the session's emitter — the same
-		// signals the (possibly unmounted) frontend listeners would have
-		// received as events. Reading the emitter pointer under sess.mu keeps
-		// the pointer stable; the activity/token states have their own locks.
-		// The orchestrator pointer is read under the same lock; the no-op
-		// predicate runs outside it (it only reads orchestrator state, the
-		// same unlocked access pattern the accessors use).
+		// Live activity/streaming from the emitter — the same signals the
+		// (possibly unmounted) frontend listeners would have received as
+		// events. Reading the emitter pointer under sess.mu keeps it stable
+		// (the activity/token states have their own locks); the orchestrator
+		// pointer is read under the same lock, its no-op predicate outside.
 		sess.mu.Lock()
 		emitter := sess.emitter
 		orch := sess.orchestrator
@@ -2117,21 +1940,17 @@ func (m *Manager) GetSessionRuntimeStatus(sessionID string) (SessionRuntimeStatu
 			status.HasUnfinishedTask = true
 			status.UnfinishedTaskID = taskID
 			// Load the task record to distinguish a paused checkpoint from a
-			// plain in-progress/failed task. LoadTaskState returns the status
-			// field; a missing state is treated as non-paused.
+			// plain in-progress/failed task; a missing state is non-paused.
 			if state, stateErr := adapter.LoadTaskState(taskID); stateErr == nil && state != nil {
-				// Expose the raw persisted status so the frontend can seed its
-				// live overlay with the EXACT value (an orphaned 'in_progress'
-				// stays green, matching the DB fallback of a session that was
-				// never reconciled) instead of collapsing everything non-paused
-				// to 'failed'.
+				// Raw persisted status so the frontend seeds its live overlay
+				// with the EXACT value (an orphaned 'in_progress' stays green,
+				// matching the DB fallback) instead of collapsing to 'failed'.
 				status.UnfinishedTaskStatus = state.Status
-				// Invariant: {Active:true, Paused:true} must not exist. A live
-				// task can never be paused — pausing deactivates the session
-				// until the session_paused event lands, so a "paused" status
-				// string observed while a task is running in memory is a stale
-				// snapshot (a resumed/new run racing the status poll) and must
-				// not surface Paused=true.
+				// Invariant: {Active:true, Paused:true} must not exist —
+				// pausing deactivates the session until session_paused lands,
+				// so a "paused" status observed while a task runs in memory is
+				// a stale snapshot (a resumed/new run racing the poll) and
+				// must not surface Paused=true.
 				status.Paused = state.Status == "paused" && !status.Active
 			} else if stateErr != nil {
 				m.log().Warn("get session runtime status: failed to load task state", "session", sessionID, "error", stateErr)
@@ -2139,12 +1958,12 @@ func (m *Manager) GetSessionRuntimeStatus(sessionID string) (SessionRuntimeStatu
 		}
 	}
 
-	// Durable work-unit snapshot for the resumable task: folded into the same
-	// status round-trip the frontend already performs on session load, so chat
-	// blocks can be reconciled without an extra RPC. Units the resume funnel
-	// will not relaunch (abandoned in flight by a crash/app exit) are settled
-	// explicitly as interrupted here — never for a cooperatively PAUSED task,
-	// whose untouched tail units are exactly what Resume runs.
+	// Durable work-unit snapshot folded into the same status round-trip the
+	// frontend already performs on session load — no extra RPC to reconcile
+	// chat blocks. Units the resume funnel will not relaunch (abandoned in
+	// flight by a crash/app exit) settle as interrupted here — never for a
+	// cooperatively PAUSED task, whose untouched tail units are exactly what
+	// Resume runs.
 	if status.HasUnfinishedTask && status.UnfinishedTaskID != "" {
 		status.WorkUnits = m.workUnitSnapshot(sessionID, status.UnfinishedTaskID, status.Active, status.Paused)
 	}
@@ -2156,25 +1975,22 @@ func (m *Manager) GetSessionRuntimeStatus(sessionID string) (SessionRuntimeStatu
 // frontend-facing snapshot used to reconcile chat blocks after a restart or
 // session load.
 //
-// A unit left in flight (pending or running) by a task that is no longer
-// executing was abandoned by a crash or app exit: the resume funnel does not
-// relaunch it, so it is explicitly settled as interrupted and a
-// "work_unit_settled" event is emitted for any live view. The settle is a
-// column-scoped transition conditional on the unit still being in flight, so it
-// can neither drop a spec/checkpoint another writer set nor double-emit when
-// pollers race, and it is idempotent — once settled, later polls neither write
-// nor emit.
+// A unit left in flight by a task no longer executing was abandoned by a
+// crash or app exit: the resume funnel does not relaunch it, so it settles
+// explicitly as interrupted and a "work_unit_settled" event fires for any
+// live view. The settle is a column-scoped transition conditional on the unit
+// still being in flight — it can neither drop a spec/checkpoint another
+// writer set nor double-emit when pollers race, and is idempotent (once
+// settled, later polls neither write nor emit).
 //
-// active reports whether the task is currently executing in memory; a live
-// task's running units are genuinely running and are never settled. pausedTask
-// reports a cooperatively PAUSED task: it is not executing, but it is not
-// abandoned either — its untouched tail units are the canonical resumable
-// checkpoint Resume runs — so nothing is settled for it. A paused unit is an
-// explicit resumable checkpoint the funnel owns and is left untouched in every
-// case. Container units (the task root, a goal-verification pass) are not
-// relaunchable execution work, so they are excluded from the snapshot exactly
-// as the resume funnel excludes them. A task with no durable unit storage
-// (older store, test double) yields an empty snapshot.
+// active: the task is executing in memory — a live task's running units are
+// genuinely running, never settled. pausedTask: a cooperatively PAUSED task
+// is not executing but not abandoned either — its untouched tail units are
+// the canonical resumable checkpoint Resume runs, so nothing settles. A
+// paused unit is an explicit resumable checkpoint the funnel owns, untouched
+// in every case. Container units (task root, goal-verification pass) are not
+// relaunchable execution work — excluded exactly as the resume funnel
+// excludes them. No durable unit storage (older store, test double) → empty.
 func (m *Manager) workUnitSnapshot(sessionID, taskID string, active, pausedTask bool) []WorkUnitStatus {
 	if taskID == "" {
 		return nil
@@ -2202,14 +2018,14 @@ func (m *Manager) workUnitSnapshot(sessionID, taskID string, active, pausedTask 
 	for _, rec := range recs {
 		if rec.Kind.Container() {
 			// A container is not execution work: surfacing it would hand the
-			// frontend a block it has no chat item for, and settling it would
-			// durably assert that a finished pass was abandoned.
+			// frontend a block with no chat item, and settling it would
+			// durably assert a finished pass was abandoned.
 			continue
 		}
 		status := rec.Status
-		// Abandoned in flight: settle as interrupted. A paused task's in-flight
-		// units are NOT abandoned (Resume runs them), and a paused unit is a
-		// resumable checkpoint the funnel owns, so neither is settled here.
+		// Abandoned in flight → settle as interrupted. A paused task's
+		// in-flight units are NOT abandoned (Resume runs them), and a paused
+		// unit is a resumable checkpoint the funnel owns — neither settles.
 		if !active && !pausedTask && status.InFlight() {
 			if changed, err := store.SettleUnitStatusIfInFlight(taskID, rec.Namespace, rec.ID, units.UnitStatusInterrupted); err != nil {
 				m.log().Warn("failed to settle abandoned work unit", "session", sessionID, "unit", rec.ID, "error", err)
@@ -2242,45 +2058,36 @@ func (m *Manager) workUnitSnapshot(sessionID, taskID string, active, pausedTask 
 	return out
 }
 
-// hungSessionThreshold is how long a STOP (CancelTask) request may go
-// unanswered before ActiveSessions reports the session as hung. CancelTask
-// cancels the context and force-terminates after the manager's stopTimeout
-// (10s), and its ctx cancellation aborts an in-flight LLM request and every
-// in-flight tool, so a healthy task settles well within the threshold. A Stop
-// still unanswered past it therefore means the task goroutine is genuinely
-// wedged, not merely slow, so the quit modal may honestly present it as "not
+// hungSessionThreshold is how long a STOP (CancelTask) may go unanswered
+// before ActiveSessions reports the session as hung. CancelTask cancels the
+// context and force-terminates after stopTimeout (10s); the cancellation
+// aborts an in-flight LLM request and every in-flight tool, so a healthy task
+// settles well within the threshold — a Stop still unanswered past it means a
+// genuinely wedged goroutine, and the quit modal may honestly present "not
 // responding" (the wire contract of ActiveSessionInfo.Hung). A cooperative
 // PAUSE is deliberately excluded: it is answered at the next step boundary,
-// which a long LLM call routinely delays past this threshold, so counting it
-// would false-positive a healthy session (PauseSession no longer records
-// stopRequestedAt).
+// which a long LLM call routinely delays past this threshold.
 const hungSessionThreshold = 10 * time.Second
 
-// ActiveSessionInfo identifies a session that currently has live background
-// work, for the desktop close-confirmation guard.
+// ActiveSessionInfo identifies a session with live background work, for the
+// desktop close-confirmation guard.
 type ActiveSessionInfo struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
-	// Compacting is true when the session's live work is an in-flight manual
-	// context compaction rather than a running task.
+	// Compacting: the live work is an in-flight manual compaction, not a task.
 	Compacting bool `json:"compacting"`
-	// Hung is true when a STOP (CancelTask) request was issued for this
-	// session's live work but the task goroutine has not answered within
-	// hungSessionThreshold. It lets the quit confirmation modal flag a wedged
-	// session so "quit anyway" is an informed choice rather than a guess. A
-	// cooperative pause does not set it: a pause is only answered at a step
-	// boundary and can legitimately outlast the threshold during a long LLM
-	// call.
+	// Hung: a STOP was issued but the task goroutine has not answered within
+	// hungSessionThreshold — the quit modal flags a wedged session so
+	// "quit anyway" is an informed choice. A cooperative pause never sets it.
 	Hung bool `json:"hung"`
 }
 
-// ActiveSessions returns the in-memory sessions that currently have live
-// background work — a running task or an in-flight manual compaction. The
-// desktop close guard uses it to decide whether quitting the app needs user
-// confirmation: this work dies with the process, unlike paused/unfinished
-// tasks which are persisted and resumable after restart. Memory-only by
-// design: a session that is not in memory cannot have live work, and the
-// check must never restore sessions as a side effect.
+// ActiveSessions returns the in-memory sessions with live background work (a
+// running task or an in-flight manual compaction); the desktop close guard
+// uses it to decide whether quitting needs confirmation — this work dies with
+// the process, unlike persisted resumable tasks. Memory-only by design: a
+// session not in memory cannot have live work, and the check must never
+// restore sessions as a side effect.
 func (m *Manager) ActiveSessions() []ActiveSessionInfo {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -2310,12 +2117,12 @@ func (m *Manager) ActiveSessions() []ActiveSessionInfo {
 	return active
 }
 
-// LiveTokenSnapshot returns the in-memory token/fill state of a session — the
-// same values the emitter broadcasts via session_tokens / context_fill. It
-// exists so GetSessionTokens can serve live used/max tokens (and a fresh
-// fill/model) for a session that is mid-task, values the persisted session
-// row only partially carries. Memory-only: no session restore side effect;
-// ok=false when the session is not in memory (caller falls back to the store).
+// LiveTokenSnapshot returns the in-memory token/fill state — the same values
+// the emitter broadcasts via session_tokens/context_fill — so
+// GetSessionTokens can serve live used/max (and fresh fill/model) for a
+// mid-task session, values the persisted row only partially carries.
+// Memory-only: no restore side effect; ok=false when not in memory (caller
+// falls back to the store).
 func (m *Manager) LiveTokenSnapshot(sessionID string) (TokenSnapshot, bool) {
 	m.mu.RLock()
 	sess := m.sessions[sessionID]
@@ -2332,15 +2139,14 @@ func (m *Manager) LiveTokenSnapshot(sessionID string) (TokenSnapshot, bool) {
 	return emitter.TokenSnapshot(), true
 }
 
-// ValidateLiveSend performs the live-send gate checks without queuing: when a
-// task is currently running, it returns the same rejection errors the live
-// branch of sendMessage would (pause window, goal, E2S, skill/agent/MCP-server
-// references). The frontend API calls this BEFORE persisting the user message
-// so a rejected live send never leaves a phantom persisted message. It is a
-// memory-only lookup (no session restore side effect); when no task is running
-// it is a no-op. The authoritative re-check still happens under the session
-// lock in sendMessage — a message that passes here but finds the task finished
-// afterwards simply starts a normal task.
+// ValidateLiveSend runs the live-send gate checks WITHOUT queuing: with a
+// task running it returns the same rejections as sendMessage's live branch
+// (pause window, goal, E2S, skill/agent/MCP references). The frontend API
+// calls it BEFORE persisting the user message so a rejected live send never
+// leaves a phantom persisted row. Memory-only (no restore side effect);
+// no-op with no running task. The authoritative re-check still happens under
+// the session lock in sendMessage — a message passing here that finds the
+// task finished simply starts a normal task.
 func (m *Manager) ValidateLiveSend(sessionID string, goal, e2s bool, text string, activeSkills, activeAgents, activeMCPServers []string) error {
 	m.mu.RLock()
 	sess := m.sessions[sessionID]
@@ -2350,9 +2156,9 @@ func (m *Manager) ValidateLiveSend(sessionID string, goal, e2s bool, text string
 	}
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
-	// A compacting session rejects sends even when no task is running: the
+	// A compacting session rejects sends even when no task runs: the
 	// compaction flow owns the idle window between the pause landing and the
-	// auto-resume. Mirrors the authoritative guard in sendMessage.
+	// auto-resume (mirrors sendMessage's guard).
 	if sess.compacting {
 		return ErrSessionCompacting
 	}
@@ -2362,19 +2168,17 @@ func (m *Manager) ValidateLiveSend(sessionID string, goal, e2s bool, text string
 	return liveSendRejectionLocked(sess, goal, e2s, text, activeSkills, activeAgents, activeMCPServers)
 }
 
-// emitTaskCancelledUnlessShuttingDown emits the "task_cancelled" event for the
-// session unless the manager is shutting down. It returns true when the caller
-// should persist the cancellation (user-initiated cancel), and false when the
-// manager is shutting down — in that case the task must stay in_progress so it
-// remains resumable after restart, so the caller skips persistence entirely.
+// emitTaskCancelledUnlessShuttingDown emits task_cancelled unless the manager
+// is shutting down. Returns true when the caller should persist the
+// cancellation (user-initiated), false on shutdown — the task stays
+// in_progress and resumable, so the caller skips persistence entirely.
 //
-// It is also the single gate for the run's terminal emission: when
-// forceTerminateStuckTask has already claimed the run (a Stop that exhausted
-// stopTimeout while the task goroutine ignored its cancellation), a settling
-// goroutine reaching this funnel finds the claim taken and skips its own
-// task_cancelled + metrics — preventing a duplicate terminal event with zeroed
-// counters over the forced one. It still returns true so the caller's
-// idempotent cleanup (abandon goal/E2S, persist cancellation) runs.
+// Also the single gate for the run's terminal emission: when
+// forceTerminateStuckTask already claimed the run (a Stop that exhausted
+// stopTimeout while the goroutine ignored cancellation), a settling goroutine
+// finds the claim taken and skips its own task_cancelled + metrics — no
+// duplicate terminal event with zeroed counters over the forced one. It still
+// returns true so the caller's idempotent cleanup runs.
 func (m *Manager) emitTaskCancelledUnlessShuttingDown(id string) bool {
 	if m.shuttingDown.Load() {
 		return false
@@ -2422,14 +2226,14 @@ func (m *Manager) claimTaskTerminal(s *Session) bool {
 	return true
 }
 
-// claimTaskTerminalForceTerminated atomically claims the run's single terminal
-// emission AND marks the run force-terminated under one lock, for
-// forceTerminateStuckTask. Combining both writes in a single critical section is
-// what makes the force-terminate path race-free: a settling stuck goroutine's
-// deactivateSessionTask reads forceTerminated under s.mu, so it must never see
-// the emission claimed while forceTerminated is still false (which would discard
-// a live message queued after the cancel was reported). It returns true for the
-// first caller and false when the emission was already claimed.
+// claimTaskTerminalForceTerminated atomically claims the run's single
+// terminal emission AND marks the run force-terminated under one lock, for
+// forceTerminateStuckTask. Combining both writes is what makes the
+// force-terminate path race-free: a settling stuck goroutine's
+// deactivateSessionTask reads forceTerminated under s.mu, so it must never
+// see the emission claimed while forceTerminated is still false (which would
+// discard a live message queued after the cancel was reported). True for the
+// first caller, false when the emission was already claimed.
 func (m *Manager) claimTaskTerminalForceTerminated(s *Session) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -2442,16 +2246,16 @@ func (m *Manager) claimTaskTerminalForceTerminated(s *Session) bool {
 }
 
 // emitAgentMetrics emits the aggregated agent quality metrics (parse errors,
-// loop-detector nudges/aborts, steps, output tokens and the active Model Profiles
-// profile) for the task run that just finished — complete, cancel or failure.
-// The counters reset afterwards, so one agent_metrics event covers exactly
-// one task run. No-op when the session is no longer tracked.
+// loop-detector nudges/aborts, steps, output tokens, active Model Profiles
+// profile) for the run that just finished — complete, cancel or failure. The
+// counters reset afterwards, so one agent_metrics event covers exactly one
+// run. No-op when the session is no longer tracked.
 //
-// The lookup is MEMORY-ONLY (sessionByID, no lazy restore): this runs from
-// task-terminal callbacks, including a wedged run settling after
-// DeleteSession already stopped waiting. GetSession would lazily RESTORE the
-// just-deleted session (the store row still exists in that window), rebuilding
-// an orchestrator and reopening log/dump handles nobody will ever close.
+// MEMORY-ONLY lookup (sessionByID, no lazy restore): this runs from
+// task-terminal callbacks, including a wedged run settling after DeleteSession
+// stopped waiting. GetSession would lazily RESTORE the just-deleted session
+// (the store row still exists in that window), rebuilding an orchestrator and
+// reopening log/dump handles nobody will ever close.
 func (m *Manager) emitAgentMetrics(sessionID, finish string) {
 	s, ok := m.sessionByID(sessionID)
 	if !ok || s == nil || s.emitter == nil {
@@ -2461,11 +2265,10 @@ func (m *Manager) emitAgentMetrics(sessionID, finish string) {
 }
 
 // ExecutionWindow returns the host-side recent-execution window (bounded
-// trajectory + run counters + plan progress) for a session. ok is false when
-// the session is unknown or has no emitter. It backs the silent-mode
-// step-limit judge, which needs the trajectory — not just the boundary reason.
-// Memory-only lookup (see emitAgentMetrics): a judge callback must never
-// lazily restore a session.
+// trajectory + run counters + plan progress); ok=false when the session is
+// unknown or has no emitter. It backs the silent-mode step-limit judge, which
+// needs the trajectory, not just the boundary reason. Memory-only (see
+// emitAgentMetrics): a judge callback must never lazily restore a session.
 func (m *Manager) ExecutionWindow(sessionID string) (ExecutionWindowSnapshot, bool) {
 	if sessionID == "" {
 		return ExecutionWindowSnapshot{}, false
@@ -2500,14 +2303,12 @@ func (m *Manager) persistCancellationIfUnfinished(sessionID string) {
 	}
 }
 
-// persistPauseIfUnfinished marks the session's unfinished task as paused in
-// the task store. It is the graceful-shutdown counterpart of
-// persistCancellationIfUnfinished: instead of cancelling an active task (or
-// leaving it as a stale in_progress), the task is checkpointed as paused so it
-// survives app restart in a clearly resumable state and SessionRuntimeStatus
-// reports Paused=true. Only an in_progress task is paused — a task that
-// already completed/failed/was cancelled (or was paused cooperatively) keeps
-// its existing status. Best-effort: errors are logged only.
+// persistPauseIfUnfinished marks the unfinished task paused in the task store
+// — the graceful-shutdown counterpart of persistCancellationIfUnfinished:
+// instead of cancelling (or leaving a stale in_progress), the task is
+// checkpointed paused so it survives restart clearly resumable and
+// SessionRuntimeStatus reports Paused=true. Only in_progress is paused.
+// Best-effort: errors logged only.
 func (m *Manager) persistPauseIfUnfinished(sessionID string) {
 	m.mu.RLock()
 	ts := m.taskStore
@@ -2524,9 +2325,9 @@ func (m *Manager) persistPauseIfUnfinished(sessionID string) {
 	if tid == "" {
 		return
 	}
-	// Only an in_progress task should be paused on shutdown. A task that
-	// already failed, was cancelled, or was paused cooperatively must keep its
-	// real status — pausing it would mask the actual outcome.
+	// Only in_progress is paused on shutdown: a task that already failed, was
+	// cancelled, or was paused cooperatively keeps its real status — pausing
+	// it would mask the actual outcome.
 	state, err := adapter.LoadTaskState(tid)
 	if err != nil {
 		m.log().Warn("failed to load task state on shutdown pause", "task", tid, "error", err)
@@ -2541,14 +2342,12 @@ func (m *Manager) persistPauseIfUnfinished(sessionID string) {
 }
 
 // abandonGoalIfUnfinished terminalizes the unfinished task's goal state as
-// cancelled (terminal) on a user-initiated cancel so a later resume does not
-// re-enter the goal loop. On shutdown the goal is left active (non-terminal)
-// so it survives restart — this method is only called inside the
-// emitTaskCancelledUnlessShuttingDown(id) == true branch (i.e. NOT shutting
-// down). Must be called BEFORE persistCancellationIfUnfinished/bb.CancelTask
-// because a cancelled task is no longer "unfinished" and GetUnfinishedTaskID
-// would not find it. Best-effort: errors are logged only. No-op when there is
-// no task store, no unfinished task, or no non-terminal goal state.
+// cancelled on a user-initiated cancel, so a later resume does not re-enter
+// the goal loop. On shutdown the goal stays active (non-terminal) and
+// survives restart — this runs only inside the
+// emitTaskCancelledUnlessShuttingDown == true branch. Must run BEFORE
+// persistCancellationIfUnfinished/bb.CancelTask: a cancelled task is no longer
+// "unfinished" and GetUnfinishedTaskID would not find it. Best-effort.
 func (m *Manager) abandonGoalIfUnfinished(sessionID string) {
 	m.mu.RLock()
 	ts := m.taskStore
@@ -2580,14 +2379,10 @@ func (m *Manager) abandonGoalIfUnfinished(sessionID string) {
 }
 
 // abandonE2SIfUnfinished terminalizes the unfinished task's E2S state as
-// cancelled (terminal) on a user-initiated cancel so a later resume does not
-// re-enter the E2S loop with a stale Σ. It mirrors abandonGoalIfUnfinished:
-// on shutdown the state is left active/paused (non-terminal) so it survives
-// restart; it is only called inside the emitTaskCancelledUnlessShuttingDown(id)
-// == true branch (i.e. NOT shutting down) and BEFORE
-// persistCancellationIfUnfinished/bb.CancelTask (a cancelled task is no longer
-// "unfinished"). Best-effort: errors are logged only. No-op when there is no
-// task store, no unfinished task, or no non-terminal E2S state.
+// cancelled on a user-initiated cancel, so a later resume does not re-enter
+// the E2S loop with a stale Σ. Mirrors abandonGoalIfUnfinished: non-terminal
+// on shutdown (survives restart), only inside the not-shutting-down branch,
+// and BEFORE persistCancellationIfUnfinished/bb.CancelTask. Best-effort.
 func (m *Manager) abandonE2SIfUnfinished(sessionID string) {
 	tid := m.unfinishedTaskID(sessionID)
 	if tid == "" {
@@ -2639,37 +2434,32 @@ func e2sStateTerminal(s e2spkg.StateStatus) bool {
 	}
 }
 
-// abandonUnfinishedTaskForGoal cancels the session's unfinished task (if any)
-// so a goal request can start a fresh goal pursuit instead of resuming the
-// interrupted task. It persists the cancellation, resolves any pending
-// task_failed_resumable banner so it does not linger, and emits a service
-// event so the user sees the interrupted task was abandoned for the goal.
-// Best-effort: errors are logged only. No-op when there is no task store or
-// no unfinished task.
+// abandonUnfinishedTaskForGoal cancels the session's unfinished task so a
+// goal request starts a fresh pursuit instead of resuming the interrupted
+// task: persists the cancellation, resolves the pending resumable banner, and
+// emits a service notice. Best-effort; no-op without a store/unfinished task.
 func (m *Manager) abandonUnfinishedTaskForGoal(id string) {
 	m.abandonUnfinishedTaskForMode(id, "abandoned_for_goal", "Interrupted task abandoned to start goal mode.")
 }
 
-// abandonUnfinishedTaskForE2S cancels the session's unfinished task (if any)
-// so an E2S request can start a fresh E2S run instead of resuming the
-// interrupted task — the E2S mirror of abandonUnfinishedTaskForGoal.
+// abandonUnfinishedTaskForE2S cancels the unfinished task so an E2S request
+// starts a fresh run — the E2S mirror of abandonUnfinishedTaskForGoal.
 //
 // Unlike the goal takeover, the E2S takeover is not stateless: runE2SLoop
-// resumes any non-terminal persisted Σ it finds under the continuation anchor
-// (core.loadE2SResumeState) and seeds the loop from that Σ's objective —
-// ResumeState takes precedence over the new message. A leftover active Σ or a
-// stale anchor would therefore make the new E2S instruction a silent no-op, so
-// the abandoned task's Σ is terminalized and the anchor dropped when it points
-// at that task.
+// resumes any non-terminal persisted Σ under the continuation anchor
+// (core.loadE2SResumeState), and ResumeState takes precedence over the new
+// message — a leftover active Σ or stale anchor would make the new E2S
+// instruction a silent no-op. So the abandoned task's Σ is terminalized and
+// the anchor dropped when it points at that task.
 func (m *Manager) abandonUnfinishedTaskForE2S(id string) {
 	tid := m.abandonUnfinishedTaskForMode(id, "abandoned_for_e2s", "Interrupted task abandoned to start E2S mode.")
 	if tid == "" {
 		return
 	}
-	// Drop the continuation anchor when it points at the abandoned task. The
-	// anchor is restored from GetLatestTaskID (status-agnostic) on session
-	// restore, so after a restart it can equal the interrupted task; leaving it
-	// would make the send below restore the abandoned task's blackboard instead
+	// Drop the continuation anchor when it points at the abandoned task: the
+	// anchor is restored status-agnostically (GetLatestTaskID) on session
+	// restore, so after a restart it can equal the interrupted task; leaving
+	// it would make the send restore the abandoned task's blackboard instead
 	// of starting the fresh E2S task this takeover intends.
 	m.mu.RLock()
 	sess := m.sessions[id]
@@ -2685,17 +2475,16 @@ func (m *Manager) abandonUnfinishedTaskForE2S(id string) {
 }
 
 // abandonUnfinishedTaskForMode is the shared body behind the goal/E2S
-// abandon-on-mode-takeover helpers: it drops any armed deferred
-// resume-compaction, persists the unfinished task's cancellation, resolves
-// the lingering task_failed_resumable banner, and emits the given service
-// notice. It returns the abandoned task's ID ("" when there was none) so the
-// E2S takeover can also clear the run's persisted state and continuation
-// anchor (see abandonUnfinishedTaskForE2S); the goal takeover ignores it.
+// abandon-on-mode-takeover helpers: drops any armed deferred
+// resume-compaction, persists the cancellation, resolves the lingering
+// resumable banner, and emits the given service notice. Returns the abandoned
+// task's ID ("" when none) so the E2S takeover can also clear the run's
+// persisted state and continuation anchor; the goal takeover ignores it.
 func (m *Manager) abandonUnfinishedTaskForMode(id, bannerReason, serviceContent string) string {
-	// The interrupted task being abandoned may carry an armed deferred
-	// resume-compaction (a manual no-op compaction deferred to its resume) —
-	// drop it so the new mode's loop (or any later task) does not inherit the
-	// forced compaction chosen for the abandoned task.
+	// The abandoned task may carry an armed deferred resume-compaction (a
+	// manual no-op compaction deferred to its resume) — drop it so the new
+	// mode's loop (or any later task) does not inherit the forced compaction
+	// chosen for the abandoned task.
 	m.clearResumeRequests(id)
 	m.mu.RLock()
 	ts := m.taskStore
@@ -2715,10 +2504,10 @@ func (m *Manager) abandonUnfinishedTaskForMode(id, bannerReason, serviceContent 
 	if err := adapter.PersistCancellation(tid); err != nil {
 		m.log().Warn("mode takeover: failed to cancel unfinished task", "task", tid, "error", err)
 	}
-	// A takeover abandons the unfinished task for good, so terminalize any
-	// persisted E2S Σ as well: otherwise a later resume that still resolves the
-	// anchor could re-enter the E2S loop with the abandoned run's state. No-op
-	// for a non-E2S task (nothing persisted).
+	// A takeover abandons the task for good, so terminalize any persisted E2S
+	// Σ too — otherwise a later resume still resolving the anchor could
+	// re-enter the E2S loop with the abandoned run's state (no-op for a
+	// non-E2S task).
 	m.terminalizeE2SState(tid)
 	m.resolveResumableTaskMessage(id, tid, bannerReason)
 	m.emitFunc(Event{
@@ -2733,36 +2522,30 @@ func (m *Manager) abandonUnfinishedTaskForMode(id, bannerReason, serviceContent 
 }
 
 // shouldRetryContinuationFresh reports whether a failed continuation attempt
-// (HandleMessage invoked with a TaskID) should be retried as a fresh task.
-// anchorWasUnfinished is the caller's PRE-HandleMessage snapshot of whether
-// the anchor was already the session's unfinished task when the send began
-// (see SendMessage); it disambiguates the two ways an unfinished lookup can
-// return the anchor after a failed attempt:
+// (HandleMessage with a TaskID) should retry fresh. anchorWasUnfinished is
+// the caller's PRE-HandleMessage snapshot of whether the anchor was already
+// the session's unfinished task when the send began; it disambiguates the two
+// ways an unfinished lookup can return the anchor after a failure:
 //
-//   - anchorWasUnfinished=false: a normal send only reaches HandleMessage
-//     with a TaskID when no unfinished task existed when the send began (an
-//     unfinished task is continued via tryContinueInterruptedTask instead),
-//     and the anchor is reactivated back to in_progress only once its
-//     execution actually started (post-routing — see the orchestrator's
-//     reactivateContinuationTask). An unfinished lookup returning the anchor
-//     therefore means the continuation's own execution started and failed
-//     mid-flight: retrying fresh would abandon the reactivated row as an
-//     orphaned in_progress task — the session would then report
-//     has_unfinished_task=true forever and re-inject the "Task failed /
-//     Resume" banner after every restart over an otherwise completed
-//     session. In that case the caller must NOT retry fresh; the error
-//     falls through to the shared error path, which emits the resumable
-//     banner for the anchor instead.
+//   - false: a normal send only reaches HandleMessage with a TaskID when no
+//     unfinished task existed at send time (an unfinished task goes through
+//     tryContinueInterruptedTask), and the anchor is reactivated to
+//     in_progress only once its execution actually starts (post-routing,
+//     reactivateContinuationTask). So an unfinished lookup returning the
+//     anchor means the continuation's own execution started and failed
+//     mid-flight: retrying fresh would orphan the reactivated row — the
+//     session would report has_unfinished_task=true forever and re-inject the
+//     "Task failed / Resume" banner after every restart over an otherwise
+//     completed session. Do NOT retry; the error falls through to the shared
+//     error path, which emits the resumable banner instead.
 //
-//   - anchorWasUnfinished=true: the anchor predates the send. This happens
-//     when lastCompletedTaskID was restored without a status check (it may
-//     point at a failed task after an app restart) and the resume path
-//     itself could not restore the task's blackboard or trajectory, falling
-//     back to a continuation attempt on a row that never was terminal. A
-//     failed attempt here must NOT dead-end on the resumable banner — the
-//     resume path would hit the same restore error — so a fresh retry is
-//     allowed. Should the fresh run succeed, sweepStaleUnfinishedTasks
-//     cancels the leftover anchor row, so no orphan remains.
+//   - true: the anchor predates the send — lastCompletedTaskID was restored
+//     without a status check (may point at a failed task after a restart) and
+//     the resume path itself could not restore the blackboard/trajectory,
+//     falling back to a continuation on a row that never was terminal. A
+//     failure here must not dead-end on the banner (the resume path hits the
+//     same restore error), so a fresh retry is allowed; if it succeeds,
+//     sweepStaleUnfinishedTasks cancels the leftover anchor row.
 func (m *Manager) shouldRetryContinuationFresh(sessionID, lastTaskID string, anchorWasUnfinished bool) bool {
 	if lastTaskID == "" {
 		return false
@@ -2793,22 +2576,19 @@ func (m *Manager) unfinishedTaskID(sessionID string) string {
 	return taskID
 }
 
-// emitResumableIfUnfinished checks whether the session has an unfinished task
-// in the task store and, if so, emits a "task_failed_resumable" event so the
-// frontend can offer a Resume button. It returns true when the event was
+// emitResumableIfUnfinished emits "task_failed_resumable" when the session
+// has an unfinished task, so the frontend can offer Resume. Returns true when
 // emitted, so callers that KNOW the execution was degraded can surface a
-// fallback warning when the resumable safety net is unavailable (nil task
-// store, lookup error, or no unfinished record). reason is a concise,
-// contextual cause prepended to the banner message and carried in the
-// structured Reason field; pass "" for the generic message. cause, when
-// non-nil, is the terminal execution error inspected for the automatic-retry
-// timer (a classified *llm.Error with a rate-limit status arms the timer and
-// surfaces AutoRetryAt in the payload; pass nil to never arm).
+// fallback warning when the safety net is unavailable (nil store, lookup
+// error, no unfinished record). reason is a concise contextual cause
+// prepended to the banner and carried in the Reason field ("" = generic);
+// cause, when non-nil, is inspected for the automatic-retry timer (a
+// classified *llm.Error with a rate-limit status arms it and surfaces
+// AutoRetryAt; nil never arms).
 //
-// This helper emits ONLY the banner. The "agent_metrics" counters reset on
-// every emission, so exactly one agent_metrics event must fire per terminal
-// path — emitting it here would double-count on the emitTaskComplete path
-// (which already emits) and zero out the real per-run report in the UI.
+// Emits ONLY the banner: agent_metrics resets on every emission, so exactly
+// one must fire per terminal path — emitting here would double-count on the
+// emitTaskComplete path and zero out the real per-run report.
 func (m *Manager) emitResumableIfUnfinished(sessionID, reason string, cause error) bool {
 	taskID := m.unfinishedTaskID(sessionID)
 	if taskID == "" {
@@ -2876,12 +2656,11 @@ func resumableReasonFromError(err error) string {
 	return msg
 }
 
-// resolveResumableTaskMessage marks the persisted "task_failed_resumable"
-// message for the given task as resolved, so the Resume/Cancel banner does
-// not reappear as pending on session reload after the user resumes or cancels.
-// Best-effort: errors are logged only — the in-memory UI is already updated
-// optimistically by the frontend, and a missed persist is self-healing via
-// stale reconciliation on the next reload.
+// resolveResumableTaskMessage marks the persisted task_failed_resumable
+// message resolved, so the Resume/Cancel banner does not reappear as pending
+// on session reload after the user resumes or cancels. Best-effort — the
+// in-memory UI is already updated optimistically and a missed persist
+// self-heals via stale reconciliation on the next reload.
 func (m *Manager) resolveResumableTaskMessage(sessionID, taskID, decision string) {
 	m.mu.RLock()
 	store := m.sessionStore
@@ -2894,10 +2673,9 @@ func (m *Manager) resolveResumableTaskMessage(sessionID, taskID, decision string
 		extra["decision"] = decision
 	}
 	// Bounded like every other direct store call on the send/terminal paths
-	// (restoreDBReadTimeout): this runs on the task-terminal and send paths
-	// and shares the app's single SQLite pool — an unbounded wait for a pooled
-	// connection under a write storm would hang the settle path. Best-effort
-	// either way: errors are logged only.
+	// (restoreDBReadTimeout): this shares the app's single SQLite pool — an
+	// unbounded wait for a pooled connection under a write storm would hang
+	// the settle path.
 	resolveCtx, resolveCancel := context.WithTimeout(context.Background(), restoreDBReadTimeout)
 	defer resolveCancel()
 	if err := store.ResolvePendingMessage(resolveCtx, sessionID, "task_failed_resumable", "task_id", taskID, extra); err != nil {
@@ -2951,33 +2729,31 @@ func (m *Manager) emitTaskComplete(sessionID string, result *core.HandleResult, 
 	// Prompt suggestions (ADR-088): one fail-open generation pass after a
 	// full or partial finish, on a tracked background goroutine. The gate
 	// reads the TYPED status — Cancelled and Paused share the "partial"
-	// completion string with degraded outcomes but finished nothing, so they
-	// never trigger. Guards (flag/generator/store) are checked before the
-	// goroutine spawns.
+	// string with degraded outcomes but finished nothing, so they never
+	// trigger. Guards checked before the goroutine spawns.
 	if promptSuggestOutcomeTriggers(result) {
 		m.maybeSpawnPromptSuggestions(sessionID, result)
 	}
 
-	// On a genuinely successful completion, NEVER offer a resume action — the
-	// result above is final. If the task that just ran is still marked
-	// unfinished, the completion write raced or was dropped; surface a
-	// persistence warning instead of a misleading "resume" banner (see
-	// warnIfCompletionDidNotPersist). Any OTHER unfinished row in the session
-	// is a stale orphan of an abandoned continuation — cancel it so the
-	// session's has_unfinished_task flag finally clears (see
-	// sweepStaleUnfinishedTasks).
+	// On a genuinely successful completion, NEVER offer a resume — the result
+	// is final. If the task just ran is still marked unfinished, the
+	// completion write raced or was dropped: surface a persistence warning
+	// instead of a misleading resume banner
+	// (warnIfCompletionDidNotPersist). Any OTHER unfinished row is a stale
+	// orphan of an abandoned continuation — cancel it so
+	// has_unfinished_task finally clears (sweepStaleUnfinishedTasks).
 	if success {
 		m.warnIfCompletionDidNotPersist(sessionID, result)
 		m.sweepStaleUnfinishedTasks(sessionID, result)
 		return
 	}
 
-	// The typed degraded-completion cause (ADR-065 follow-up): a result
-	// whose run collapsed its error into the output (the goal loop's
-	// errored-turn halt) carries it on HandleResult.Err so the auto-retry
-	// classifier still sees the *llm.Error chain. Non-degraded outcomes
-	// (plain partial/aborted/cancelled — budget/reflector outcomes with no
-	// typed cause) pass nil and never arm the timer, exactly as before.
+	// The typed degraded-completion cause (ADR-065 follow-up): a result whose
+	// run collapsed its error into the output (the goal loop's errored-turn
+	// halt) carries it on HandleResult.Err so the auto-retry classifier still
+	// sees the *llm.Error chain. Non-degraded outcomes (plain
+	// partial/aborted/cancelled — no typed cause) pass nil and never arm the
+	// timer, exactly as before.
 	cause := error(nil)
 	if result != nil {
 		cause = result.Err
@@ -3030,17 +2806,16 @@ func (m *Manager) warnIfCompletionDidNotPersist(sessionID string, result *core.H
 // silently fails) must not turn the sweep into an infinite loop.
 const maxStaleTaskSweep = 8
 
-// sweepStaleUnfinishedTasks cancels leftover unfinished (in_progress /
-// paused / failed) task rows in the session after a successful completion and
-// resolves their persisted task_failed_resumable banners. Such rows are stale
-// by construction: a session executes one task at a time and a fresh task is
-// only started when no unfinished task exists, so any unfinished row other
-// than the just-completed one is the orphan of an abandoned continuation
-// (historically the reactivated-then-abandoned anchor of the
-// fresh-workflow fallback). Left in place, the row keeps the session's
-// has_unfinished_task=true forever, so every app restart re-injects the
-// "Task failed / Resume" banner over an otherwise successfully completed
-// session. Best-effort: errors are logged only.
+// sweepStaleUnfinishedTasks cancels leftover unfinished (in_progress / paused
+// / failed) rows after a successful completion and resolves their persisted
+// resumable banners. Such rows are stale by construction: a session executes
+// one task at a time and a fresh task starts only when no unfinished task
+// exists, so any unfinished row other than the just-completed one is the
+// orphan of an abandoned continuation (historically the
+// reactivated-then-abandoned anchor of the fresh-workflow fallback). Left in
+// place, the row keeps has_unfinished_task=true forever and every restart
+// re-injects the "Task failed / Resume" banner over a completed session.
+// Best-effort: errors logged only.
 func (m *Manager) sweepStaleUnfinishedTasks(sessionID string, result *core.HandleResult) {
 	m.mu.RLock()
 	ts := m.taskStore
@@ -3056,10 +2831,9 @@ func (m *Manager) sweepStaleUnfinishedTasks(sessionID string, result *core.Handl
 		}
 	}
 	// Symmetric with warnIfCompletionDidNotPersist: without a persistable
-	// blackboard there is no ID identifying the task that just completed, so
-	// the sweep cannot tell that task's (possibly racing) unfinished row
-	// apart from a stale orphan. Cancel nothing rather than risk discarding
-	// the live row.
+	// blackboard there is no ID identifying the just-completed task, so the
+	// sweep cannot tell its (possibly racing) row apart from a stale orphan —
+	// cancel nothing rather than risk discarding the live row.
 	if completedTaskID == "" {
 		return
 	}
@@ -3071,12 +2845,11 @@ func (m *Manager) sweepStaleUnfinishedTasks(sessionID string, result *core.Handl
 			m.log().Warn("stale-task sweep: unfinished lookup failed", "session", sessionID, "error", err)
 			return
 		}
-		// Done when nothing is unfinished, or when the lookup reaches the row
-		// of the task that just completed (its own completion raced or was
-		// dropped — warnIfCompletionDidNotPersist already surfaced that). The
-		// lookup returns one row at a time, so any older orphan sitting behind
-		// that row is invisible to this sweep and stays for the NEXT
-		// successful completion to cancel — best-effort by design.
+		// Done when nothing is unfinished, or when the lookup reaches the
+		// just-completed task's own row (its completion raced or was dropped —
+		// warnIfCompletionDidNotPersist surfaced that). The lookup returns one
+		// row at a time, so an older orphan behind it stays for the NEXT
+		// successful completion — best-effort by design.
 		if taskID == "" || taskID == completedTaskID {
 			return
 		}
@@ -3107,19 +2880,18 @@ func (m *Manager) CancelTask(id string) error {
 
 	if !session.active {
 		session.mu.Unlock()
-		// Nothing is running, but a cooperatively paused (or otherwise
-		// unfinished, resumable) task is still cancellable via the Stop
-		// button. Discard it and emit task_cancelled so the frontend leaves
-		// the paused state. When there is no unfinished task to discard, keep
-		// ErrNoActiveTask so callers can still distinguish "nothing running"
-		// from a successful cancellation.
+		// Nothing running, but a cooperatively paused (or otherwise
+		// unfinished, resumable) task is still cancellable via Stop: discard
+		// it and emit task_cancelled so the frontend leaves the paused state.
+		// With no unfinished task, keep ErrNoActiveTask so callers can
+		// distinguish "nothing running" from a successful cancellation.
 		return m.cancelUnfinishedTask(id)
 	}
 
 	doneCh := session.done
 	// Record when the stop was requested so a session that ignores it can be
-	// flagged as hung by ActiveSessions while CancelTask waits (keep the first
-	// timestamp on a repeat Stop: resetting it would hide the hang).
+	// flagged hung by ActiveSessions while CancelTask waits (keep the FIRST
+	// timestamp on a repeat Stop — resetting it would hide the hang).
 	if session.stopRequestedAt.IsZero() {
 		session.stopRequestedAt = time.Now()
 	}
@@ -3128,18 +2900,17 @@ func (m *Manager) CancelTask(id string) error {
 	}
 	session.mu.Unlock()
 
-	// Wait for the goroutine to finish so the task_cancelled event is emitted
-	// before this method returns to the frontend.
+	// Wait so the task_cancelled event lands before this returns to the
+	// frontend.
 	if doneCh != nil {
 		select {
 		case <-doneCh:
 		case <-time.After(m.stopTimeout):
-			// Re-check done non-blockingly first: the goroutine can settle in the
-			// instant between the timer firing and this arm running. A teardown
-			// that actually completed must win — forcing a terminal state then
-			// would log a spurious "forcing terminal state" and race the
-			// goroutine's own emission (the claim still prevents a duplicate, but
-			// there is nothing to force). Same select-race class as #1.
+			// Re-check done non-blockingly first: the goroutine can settle in
+			// the instant between the timer firing and this arm running — a
+			// teardown that actually completed must win, or we log a spurious
+			// "forcing terminal state" and race the goroutine's own emission
+			// (the claim prevents a duplicate, but there is nothing to force).
 			select {
 			case <-doneCh:
 				break
@@ -3153,47 +2924,42 @@ func (m *Manager) CancelTask(id string) error {
 	return nil
 }
 
-// forceTerminateStuckTask is CancelTask's escape hatch for a task goroutine
-// that ignored its cancellation for the whole stopTimeout — typically parked in
-// a tool call that never returns. Returning nil silently would leave the UI
-// showing "Generating response…" forever, because the terminal event is emitted
-// by the very goroutine that is stuck. Instead the cancellation is forced onto
-// the durable state and the wire: the persisted task is flipped to cancelled
-// (resolving any resumable banner) and the terminal task_cancelled event plus
-// agent metrics are emitted here, so the frontend clears its running state.
+// forceTerminateStuckTask is CancelTask's escape hatch for a goroutine that
+// ignored its cancellation for the whole stopTimeout — typically parked in a
+// tool call that never returns. Returning nil silently would leave the UI on
+// "Generating response…" forever (the terminal event is emitted by the stuck
+// goroutine itself). Instead the cancellation is forced onto the durable
+// state and the wire: the persisted task flips to cancelled (banner
+// resolved), and the terminal task_cancelled + agent metrics are emitted
+// here, so the frontend clears its running state.
 //
 // The session is deliberately NOT deactivated: the goroutine really is still
-// running, so ActiveSessions keeps listing it and the close guard flags it as
-// hung (its stop has gone unanswered past the threshold), which is the honest
-// picture to present on quit.
+// running, so ActiveSessions keeps listing it and the close guard flags it
+// hung — the honest picture on quit.
 //
-// Two guards make the forced path mirror the goroutine's own terminal path
-// instead of doubling it:
-//
-//   - Shutdown wins. A Stop that races application shutdown leaves the task
-//     in_progress and resumable, exactly like emitTaskCancelledUnlessShuttingDown:
-//     the forced path persists nothing and emits nothing while shutting down.
-//   - The emission is claimed once per run (claimTaskTerminal). The stuck
+// Two guards make the forced path mirror (never double) the goroutine's own
+// terminal path:
+//   - Shutdown wins: a Stop racing shutdown leaves the task in_progress and
+//     resumable, exactly like emitTaskCancelledUnlessShuttingDown — the
+//     forced path persists and emits nothing while shutting down.
+//   - The emission is claimed once per run (claimTaskTerminal): the stuck
 //     goroutine, when it finally settles, finds the claim taken and skips its
-//     own task_cancelled + zeroed metrics; a repeated Stop click is a no-op
-//     instead of a re-emission.
+//     own task_cancelled + zeroed metrics; a repeated Stop click is a no-op.
 func (m *Manager) forceTerminateStuckTask(sessionID string) {
-	// Mirror emitTaskCancelledUnlessShuttingDown: on shutdown the task must stay
-	// in_progress so it remains resumable after restart, so neither persist the
-	// cancellation nor emit a terminal event.
+	// On shutdown the task must stay in_progress/resumable: neither persist
+	// nor emit.
 	if m.shuttingDown.Load() {
 		return
 	}
-	// Claim the run's single terminal emission. If it is already claimed (a
-	// repeated Stop click, or the goroutine settled at the deadline and emitted
-	// its own), there is nothing left to force.
+	// Claim the run's single terminal emission; already claimed (repeated
+	// Stop, or the goroutine settled at the deadline and emitted its own) →
+	// nothing left to force.
 	if s, ok := m.sessionByID(sessionID); ok && s != nil {
-		// Claim the run's single terminal emission AND mark the run
-		// force-terminated in ONE critical section, so a settling stuck
-		// goroutine's deactivateSessionTask can never observe the claim taken
-		// while forceTerminated is still false — which would make it discard a
-		// live message the user queued after this terminal was reported (see
-		// deactivateSessionTask).
+		// Claim the emission AND mark force-terminated in ONE critical
+		// section, so a settling stuck goroutine's deactivateSessionTask can
+		// never observe the claim taken while forceTerminated is still false
+		// — which would make it discard a live message the user queued after
+		// this terminal was reported (see deactivateSessionTask).
 		if !m.claimTaskTerminalForceTerminated(s) {
 			return
 		}
@@ -3216,14 +2982,13 @@ func (m *Manager) forceTerminateStuckTask(sessionID string) {
 			// Terminalize the run's goal/E2S state BEFORE persisting the
 			// cancellation, mirroring the settle paths' ordering (abandon →
 			// persistCancellationIfUnfinished). Both abandon helpers resolve
-			// the task through GetUnfinishedTaskID, which matches only
-			// in_progress/paused/failed rows — after PersistCancellation flips
-			// the row to cancelled they would no-op, leaving the persisted
-			// goal state / E2S Σ non-terminal while the row reads cancelled:
-			// on restore the continuation anchor lands on the cancelled task
-			// (GetLatestTaskID is status-agnostic) and the next send silently
-			// RESUMES a run the user explicitly stopped instead of honoring
-			// the new instruction.
+			// the task via GetUnfinishedTaskID (in_progress/paused/failed
+			// only) — after PersistCancellation flips the row to cancelled
+			// they would no-op, leaving the goal state / E2S Σ non-terminal
+			// while the row reads cancelled: on restore the continuation
+			// anchor lands on the cancelled task (GetLatestTaskID is
+			// status-agnostic) and the next send silently RESUMES a run the
+			// user explicitly stopped instead of honoring the new instruction.
 			m.abandonGoalIfUnfinished(sessionID)
 			m.abandonE2SIfUnfinished(sessionID)
 			if err := adapter.PersistCancellation(taskID); err != nil {
@@ -3242,15 +3007,13 @@ func (m *Manager) forceTerminateStuckTask(sessionID string) {
 
 // cancelUnfinishedTask discards the session's unfinished (e.g. cooperatively
 // paused) task and emits task_cancelled so the frontend leaves the
-// paused/resumable state. It is the non-active counterpart of CancelTask: the
-// running-task goroutine has already exited, so instead of signalling a
-// context it flips the persisted task to cancelled and emits the terminal
-// event directly. Any deferred resume-compaction armed for the task's future
-// resume is discarded too (mirroring CancelUnfinishedTask): a Stop-button
-// cancel of the paused task must not leave a one-shot flag that a later,
-// unrelated task's resume would consume. Returns ErrNoActiveTask when there
-// is no unfinished task to cancel, preserving the sentinel callers rely on
-// to distinguish "nothing running" from a successful cancellation.
+// paused/resumable state — the non-active counterpart of CancelTask: the
+// goroutine has already exited, so instead of signalling a context it flips
+// the persisted task to cancelled and emits the terminal event directly. Any
+// deferred resume-compaction armed for the task is discarded too (mirroring
+// CancelUnfinishedTask): a Stop-button cancel of the paused task must not
+// leave a one-shot flag a later, unrelated task's resume would consume.
+// ErrNoActiveTask when there is nothing to cancel, preserving the sentinel.
 func (m *Manager) cancelUnfinishedTask(sessionID string) error {
 	m.clearResumeRequests(sessionID)
 	m.mu.RLock()
@@ -3276,9 +3039,9 @@ func (m *Manager) cancelUnfinishedTask(sessionID string) error {
 	m.resolveResumableTaskMessage(sessionID, taskID, "cancelled")
 
 	// Emit the same terminal event the active-task cancel path emits so the UI
-	// clears the paused state and shows "Task was cancelled". A cooperatively
-	// paused run has not yet emitted agent metrics (pause is a checkpoint, not
-	// a terminal state), so this is the single terminal emission for the run.
+	// clears the paused state. A cooperatively paused run has not yet emitted
+	// agent metrics (pause is a checkpoint, not a terminal state), so this is
+	// the run's single terminal emission.
 	m.emitFunc(Event{
 		SessionID: sessionID,
 		Type:      "task_cancelled",
@@ -3289,20 +3052,18 @@ func (m *Manager) cancelUnfinishedTask(sessionID string) error {
 	return nil
 }
 
-// GetBlackboardState returns the current blackboard state for a session.
-// It uses the in-memory lastCompletedTaskID if available, otherwise falls back
-// to the most recent task ID from the database.
-// Returns nil, nil if no task state is available.
+// GetBlackboardState returns the session's current blackboard state, using
+// the in-memory lastCompletedTaskID when available, else the most recent task
+// ID from the database (nil, nil when none).
 //
-// The session lookup is MEMORY-ONLY (no lazy restore): this is a read-only,
-// per-session-switch display RPC (fired by the frontend's blackboard hook on
-// every session switch), and restoring a store-only session here would build
-// a full orchestrator and open log/dump/step-dump handles nobody closes — a
-// ghost session for one the user merely viewed. A session that is not in
-// memory cannot carry an in-memory anchor anyway, so the only behavioral
-// difference is skipping the restore: the fallback below queries the same
-// GetLatestTaskID the restore itself anchors from, producing byte-identical
-// output for a store-only session with none of the side effects.
+// MEMORY-ONLY session lookup (no lazy restore): a read-only display RPC fired
+// by the frontend's blackboard hook on every session switch — restoring a
+// store-only session here would build a full orchestrator and open
+// log/dump/step-dump handles nobody closes — a ghost session for one the user
+// merely viewed. A session not in memory cannot carry an in-memory anchor, so
+// the only difference is skipping the restore: the fallback queries the same
+// GetLatestTaskID the restore anchors from, producing byte-identical output
+// with none of the side effects.
 func (m *Manager) GetBlackboardState(sessionID string) (*BlackboardState, error) {
 	sess, _ := m.sessionByID(sessionID)
 
@@ -3364,19 +3125,17 @@ type BlackboardState struct {
 
 // maybeSpawnTitleGeneration auto-names a session from its first message.
 //
-// It runs the generation in a tracked background goroutine derived from the
-// manager's shutdown context: the goroutine writes through the session dump
-// file, so Shutdown must be able to abort it and wait for it before closing that
-// handle.
+// The generation runs on a tracked background goroutine derived from the
+// manager's shutdown context: it writes through the session dump file, so
+// Shutdown must be able to abort it and wait before closing that handle.
 //
-// Only a session still carrying its generated placeholder name is renamed, and
-// never a presented relaunch (the live-send follow-up), whose first message was
-// already handled when the original task launched.
+// Only a session still carrying its generated placeholder name is renamed,
+// and never a presented relaunch (the live-send follow-up), whose first
+// message was already handled when the original task launched.
 //
-// The readiness gate runs BEFORE the service timeout is armed — see
-// serviceLLMGate. A gate failure skips the rename and leaves the placeholder in
-// place: the session stays usable, and the run's own request is what reports the
-// cause to the user.
+// The readiness gate runs BEFORE the service timeout is armed (serviceLLMGate):
+// a gate failure skips the rename and leaves the placeholder — the session
+// stays usable, and the run's own request reports the cause to the user.
 func (m *Manager) maybeSpawnTitleGeneration(session *Session, id, text string, presented bool, activeSkills []string) {
 	session.mu.Lock()
 	sessionName := session.Name
@@ -3399,22 +3158,18 @@ func (m *Manager) maybeSpawnTitleGeneration(session *Session, id, text string, p
 			defer func() { _ = dumpFile.Close() }()
 		}
 		// Readiness BEFORE the budget: the embedded model's cold load is
-		// longer than the service timeout, so arming the timeout first
-		// would spend it on the load and lose the title. A failure here
-		// skips the rename and leaves the generated name in place — the
-		// session is still usable, and the run's own request reports the
-		// cause to the user.
+		// longer than the service timeout, so arming the timeout first would
+		// spend it on the load and lose the title. A failure here skips the
+		// rename (placeholder stays; the session remains usable).
 		//
 		// BY DESIGN the gate sits outside the serviceLLMTimeout envelope
 		// (ADR-066 D13: no LLM request may start before the model is
-		// resident, and the load is never charged to the request's own
-		// budget). The worst-case wait before this goroutine's budget
-		// starts is therefore embeddedllm.DefaultLoadWaitTimeout when the
-		// local model is the default and cold; how that bound is derived is
-		// stated once, on the constant itself. Nothing user-facing blocks on
-		// it: this runs on a tracked background goroutine, so the only
-		// observable effect is that the auto-name lands late (or not at all
-		// if the gate fails).
+		// resident; the load is never charged to the request's own budget).
+		// The worst-case wait before this goroutine's budget starts is
+		// embeddedllm.DefaultLoadWaitTimeout when the local model is the
+		// default and cold (derivation stated on the constant). Nothing
+		// user-facing blocks: tracked background goroutine — the only
+		// observable effect is a late (or skipped) auto-name.
 		if serviceLLMGate != nil {
 			if err := serviceLLMGate(m.shutdownCtx); err != nil {
 				m.log().Warn("skipping session title generation: the model is not ready",
@@ -3444,11 +3199,10 @@ func (m *Manager) maybeSpawnTitleGeneration(session *Session, id, text string, p
 		}
 	})
 	if !titleSpawned && dumpFile != nil {
-		// Shutdown closed the tracker concurrently, so the closure never
-		// runs and its deferred close never happens. DumpFile duplicated
-		// the descriptor for the closure to own; close it here or it leaks
-		// until process exit (and on Windows it blocks the dump file's
-		// removal from the agent dir).
+		// Shutdown closed the tracker concurrently, so the closure never runs
+		// and its deferred close never happens. DumpFile duplicated the
+		// descriptor for the closure to own — close it here or it leaks until
+		// process exit (and on Windows blocks the dump file's removal).
 		_ = dumpFile.Close()
 	}
 }

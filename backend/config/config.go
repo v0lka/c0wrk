@@ -33,27 +33,19 @@ type Config struct {
 	LogLevel string    `yaml:"log_level"`
 	LLM      LLMConfig `yaml:"llm"`
 
-	// EmbeddedLLM is the authoritative state of the optional in-app local
-	// model (Bonsai 2 27B). It is mostly APP-WRITTEN state: Install records
-	// it, Remove clears it, and hand-editing it neither downloads nor starts
-	// anything. Two sub-sections are the exception and are OPERATOR settings
-	// that both flows preserve — `auto_unload` (the idle budget) and `tuning`
-	// (the memory-plan overrides). The `llm.openai_compatible.embedded`
-	// provider record is GENERATED from this section (see
-	// SyncEmbeddedLLMProvider) — the LLM section never owns it. See
-	// specs/domains/embedded-llm.md and ADR-066.
+	// EmbeddedLLM is the optional in-app local model (Bonsai 2 27B): mostly
+	// app-written install state; auto_unload/tuning are the operator settings
+	// both flows preserve, and llm.openai_compatible.embedded is GENERATED from
+	// it (SyncEmbeddedLLMProvider). See specs/domains/embedded-llm.md, ADR-066.
 	EmbeddedLLM EmbeddedLLMConfig `yaml:"embedded_llm"`
 
 	MCP MCPConfig `yaml:"mcp"`
 
-	// Capabilities carries per-name activation modes for the three capability
-	// catalogs — skills, subagent profiles and MCP servers — split by the
-	// execution context a mode applies to (chat vs code). The section is
-	// purely operator-authored and additive: an omitted name, section, or the
-	// whole block behaves as "auto" for both contexts, so a config without it
-	// is exactly the pre-capabilities behavior. The shared enum, the fail-soft
-	// load normalization and the legacy mcp.servers.<name>.mode migration
-	// live in mcp_mode.go.
+	// Capabilities carries per-name, per-context (chat vs code) activation
+	// modes for skills, subagent profiles and MCP servers; additive — an
+	// omitted name/section behaves as "auto" in both contexts. Shared enum,
+	// load normalization and legacy-mode migration live in mcp_mode.go; see
+	// specs/domains/capabilities.md.
 	Capabilities CapabilitiesConfig `yaml:"capabilities,omitempty"`
 
 	Router     RouterConfig     `yaml:"router"`
@@ -68,16 +60,16 @@ type Config struct {
 	// Shutdown bounds the application teardown so that a stuck goroutine can
 	// never leave the process alive on quit. See ShutdownConfig.
 	Shutdown ShutdownConfig `yaml:"shutdown"`
-	// ShellExec overrides the shell-execution tool's launch shape
-	// (bash_exec on Unix, posh_exec on Windows) and declares the shell the
-	// command text is written in. Zero value = built-in launch shape; load
-	// problems are fail-soft (warning + default). See shell_exec.go.
+	// ShellExec overrides the shell-execution tool's launch shape and declares
+	// the shell the command text is written in. Zero value = built-in launch
+	// shape; load problems fail soft (warning + default). See shell_exec.go,
+	// ADR-058.
 	ShellExec     ShellExecConfig     `yaml:"shell_exec"`
 	Orchestration OrchestrationConfig `yaml:"orchestration"`
 	GoalLoop      GoalLoopConfig      `yaml:"goal_loop"`
-	// PromptSuggestions gates the proactive follow-up prompts the chat input
-	// offers after a task finishes successfully (full or partial). See
-	// PromptSuggestionsConfig (ADR-088).
+	// PromptSuggestions gates the follow-up prompts the chat input offers
+	// after a task finishes (full or partial). See
+	// specs/domains/prompt-suggestions.md.
 	PromptSuggestions PromptSuggestionsConfig `yaml:"prompt_suggestions"`
 	VectorIndex       VectorIndexConfig       `yaml:"vector_index"`
 	Proxy             ProxyConfig             `yaml:"proxy"`
@@ -86,76 +78,50 @@ type Config struct {
 	Runtime           RuntimeConfig           `yaml:"runtime"`
 	Notifications     NotificationsConfig     `yaml:"notifications"`
 
-	// ModelProfiles configures optimizations applied when running on a "small"
-	// (low-capacity / cheaper) LLM. Only the two durable operator choices are
-	// persisted here — the manual-only master toggle (no auto-detection) and
-	// the active profile id. Model Profiles is independent of the
-	// experimental-features switch: its own master toggle is the only switch.
-	// The 25 variant knobs are NOT stored in
-	// config.yaml: they are resolved at runtime from the active profile
-	// (predefined catalog ∪ custom store, see ResolveModelProfilesConfig). A legacy
-	// inline `small_llm:` section with the full knob set is ignored at load
-	// (decoding is non-strict) and silently dropped by the next save — the
-	// sanctioned reset migration; the effective profile falls back to
-	// "generic".
+	// ModelProfiles persists only the two durable operator choices — the
+	// manual-only master toggle and the active profile id; the 25 variant
+	// knobs are resolved at runtime from the profile catalog
+	// (ResolveModelProfilesConfig). A legacy inline small_llm: section is
+	// ignored at load and dropped by the next save. See
+	// specs/domains/model-profiles.md.
 	ModelProfiles ModelProfilesPersistConfig `yaml:"model_profiles"`
 
-	// E2S configures the E2S (explicit-state) execution mode: a run style
-	// where the model maintains an externalized state Σ that is patched and
-	// re-presented every turn (context bounded at O(1)) instead of replaying
-	// a growing transcript. The domain types and the validated merge operator
-	// live in core/e2s. The section is gated by experimental.enabled: while
-	// the gate is off the section is ineffective (treated as disabled).
+	// E2S configures the E2S (explicit-state Σ) execution mode, gated by
+	// experimental.enabled. See specs/domains/e2s.md.
 	E2S E2SConfig `yaml:"e2s"`
 
-	// Experimental gates features that are still under active development
-	// (currently the E2S execution mode, the embedded local model's frontend
-	// surfaces, and the browser web-access sidecar) behind a single master
-	// switch. Model Profiles is NOT gated by this switch — it carries its own
-	// manual master toggle (model_profiles.enabled). When disabled, every
-	// gated feature is treated as off. Default: off.
+	// Experimental is the all-or-nothing gate for the E2S mode, the embedded
+	// model's frontend surfaces and the web-access sidecar (the last a
+	// compound gate with web_access.enabled). Model Profiles is NOT gated by
+	// it. See ADR-068, specs/domains/web-access.md. Default: off.
 	Experimental ExperimentalConfig `yaml:"experimental"`
 
-	// Updates configures the automatic "check for updates" subsystem that runs
-	// in the background after the backend is ready. The state it produces (the
-	// timestamp of the last check) is persisted to update_state.json, not to
-	// this file; see core/updater/state.go and config.UpdateStatePath.
+	// Updates configures the background update checks; their state persists
+	// to update_state.json, not here. See ADR-023.
 	Updates UpdatesConfig `yaml:"updates"`
 
 	// WebAccess configures the browser web-access sidecar (ADR-101): an
-	// HTTP/WebSocket server that mirrors the desktop UI into a browser
-	// window. Default off — an absent section (or enabled: false) starts
-	// nothing and the app behaves exactly as before the section existed. The
-	// struct is pure data: it knows nothing about the webaccess package.
-	// Load-time validity problems are fail-soft (warning + reset to the safe
-	// default state, see web_access.go); Save refuses to persist an invalid
-	// enabled state, while a valid non-loopback bind is a warned-about LAN
-	// listener. See specs/decisions/101-browser-web-access.md.
+	// HTTP/WS server mirroring the desktop UI, default off. Load-time
+	// problems fail soft (see web_access.go); Save refuses to persist an
+	// invalid enabled state. See specs/domains/web-access.md.
 	WebAccess WebAccessConfig `yaml:"web_access"`
 }
 
-// UpdatesConfig controls the self-update subsystem. Both toggles are
-// operator-level settings in config.yaml; there is no separate user-preference
-// file.
+// UpdatesConfig controls the self-update subsystem; both toggles are
+// operator-level settings in config.yaml.
 type UpdatesConfig struct {
-	// Enabled is the master switch for the update subsystem. It is a
-	// pointer-bool so callers can distinguish "unset" (defaults to true) from
-	// "explicitly disabled" (false), matching the ProxyConfig.SetGlobalEnv
-	// convention. When false, CheckForUpdates reports no update, the
-	// background auto-check never runs, and the UI disables all update
-	// affordances.
+	// Enabled is the update subsystem master switch. Pointer-bool: unset
+	// defaults to true (the ProxyConfig.SetGlobalEnv convention); false
+	// disables every update affordance.
 	Enabled *bool `yaml:"enabled"`
 
-	// AutoCheck controls whether the app polls for updates automatically on
-	// startup. It is a pointer-bool defaulting to true (an absent key keeps
-	// auto-checks on, while an explicit false disables them). When false only
-	// the automatic background check is suppressed — manual checks from the UI
-	// still work (provided Enabled is true).
+	// AutoCheck controls the automatic startup/background check. Pointer-bool
+	// defaulting to true; false suppresses only the automatic check — manual
+	// checks still work.
 	AutoCheck *bool `yaml:"auto_check"`
 
-	// CheckInterval is the minimum time between automatic checks, expressed as
-	// a duration string (e.g. "6h"). Defaults to "6h". It is parsed with
-	// time.ParseDuration; an unparseable value is treated as the default.
+	// CheckInterval is the minimum time between automatic checks (duration
+	// string, default "6h"; unparseable → default).
 	CheckInterval string `yaml:"check_interval"`
 }
 
@@ -167,53 +133,35 @@ type ProxyConfig struct {
 	TLSCertDir string   `yaml:"tls_cert_dir"` // directory with .pem/.crt CA certs
 
 	// SetGlobalEnv, when true, exports HTTP_PROXY/HTTPS_PROXY/NO_PROXY/SSL_CERT_DIR
-	// into the process environment so subprocesses (bash_exec children, MCP
-	// stdio servers) inherit the proxy. Default: true when proxy is enabled
-	// (backward compat). Set to false to prevent proxy state from leaking into
-	// third-party Go libraries that read env vars at init time.
-	// Pointer-bool so callers can distinguish "unset" from "explicitly false".
+	// into the process environment for subprocesses (bash_exec children, MCP
+	// stdio servers). Default: true when proxy is enabled. Pointer-bool so
+	// "unset" is distinguishable from "explicitly false"; false keeps proxy
+	// state out of third-party libraries that read env at init time.
 	SetGlobalEnv *bool `yaml:"set_global_env"`
 }
 
 // TerminalConfig configures the embedded PTY terminal (xterm.js panel).
 type TerminalConfig struct {
 	// Env holds extra environment variables set on every terminal shell
-	// process, on top of the app's inherited environment and the built-in
-	// terminal defaults (TERM, COLORTERM, TERM_PROGRAM=c0wrk). Values win
-	// over both, so a user can override the defaults. `${VAR}` references
-	// are expanded at startup.
-	//
-	// Typical use: marker variables that shell rc files check to skip
-	// behaviors that assume a real standalone terminal — most commonly
-	// tmux auto-attach (the embedded terminal is NOT the user's own tmux
-	// instance; attaching would land the panel in an unrelated session
-	// and directory). Example rc guard:
+	// process, on top of the inherited environment and the built-in terminal
+	// defaults (TERM, COLORTERM, TERM_PROGRAM=c0wrk); values win, and ${VAR}
+	// references expand at startup. Typical use: marker variables rc files
+	// check to skip behaviors that assume a standalone terminal — most
+	// commonly tmux auto-attach (this is NOT the user's own tmux):
 	//
 	//	[[ -z "$TMUX" && "$TERM_PROGRAM" != "c0wrk" ]] && tmux attach
 	Env map[string]string `yaml:"env,omitempty" json:"env,omitempty"`
 }
 
-// GitConfig controls the automatic git background behaviour of the app
-// (periodic and event-driven background fetches). Manual fetches triggered
-// from the UI are not gated by this section.
 // NotificationsConfig configures the OS-level notification banners of the
-// desktop system-notification channel (specs/domains/frontend/
-// system-notifications.md).
+// desktop system-notification channel
+// (specs/domains/frontend/system-notifications.md).
 type NotificationsConfig struct {
 	// BannerTimeoutSeconds is how long a delivered banner stays on screen:
-	//
-	//   -1  let the notification daemon apply its own default
-	//    0  never expire — the banner stays until clicked or dismissed
-	//   >0  explicit lifetime in seconds
-	//
-	// A pointer so an explicit 0 ("never expire" — the reason the setting
-	// exists) is distinguishable from an absent key, which defaults to -1.
-	// Same convention as GitConfig.AutoFetch below.
-	//
-	// Linux only: the value becomes the freedesktop `expire_timeout` argument
-	// (in milliseconds) of the org.freedesktop.Notifications Notify call.
-	// macOS and Windows notification centers own banner lifetime themselves
-	// and ignore it.
+	// -1 daemon default, 0 never expire, >0 explicit seconds. Pointer so an
+	// explicit 0 is distinguishable from unset (default -1; same convention
+	// as GitConfig.AutoFetch). Linux only — it becomes the freedesktop
+	// expire_timeout; macOS/Windows own banner lifetime themselves.
 	BannerTimeoutSeconds *int `yaml:"banner_timeout_seconds"`
 }
 
@@ -221,76 +169,48 @@ type GitConfig struct {
 	// WorktreesRoot is a config-only base directory for NEW managed trees.
 	// Empty selects <agentDir>/projects; each project uses <base>/<id>/worktrees.
 	WorktreesRoot string `yaml:"worktrees_root,omitempty"`
-	// AutoFetch is the master gate for ALL automatic fetch triggers: app
-	// startup, project switch, window focus, and the periodic ticker. It is
-	// a pointer-bool so callers can distinguish "unset" (defaults to true)
-	// from "explicitly disabled" (false), matching the UpdatesConfig
-	// convention. When false, no automatic fetch ever runs — only manual
-	// fetches from the UI still work.
+	// AutoFetch is the master gate for ALL automatic fetch triggers (startup,
+	// project switch, window focus, ticker). Pointer-bool: unset defaults to
+	// true (the UpdatesConfig convention); manual UI fetches are never gated.
+	// See specs/domains/git-auto-fetch.md.
 	AutoFetch *bool `yaml:"auto_fetch"`
 
-	// AutoFetchInterval is the period of the periodic background fetch
-	// ticker, expressed as a duration string (e.g. "2m"). Defaults to "2m".
-	// The special value "0" disables ONLY the ticker — the event-driven
-	// triggers (startup, project switch, window focus) remain active while
-	// AutoFetch is true. The string is parsed with time.ParseDuration by the
-	// consumer; the config layer only stores the raw value and applies the
-	// default. An unparseable value is treated by the consumer as the
-	// default.
+	// AutoFetchInterval is the periodic-ticker period (duration string,
+	// default "2m"); "0" disables ONLY the ticker. Parsed by the consumer —
+	// the config layer stores the raw value; unparseable → default.
+	// See specs/domains/git-auto-fetch.md.
 	AutoFetchInterval string `yaml:"auto_fetch_interval"`
 }
 
 // maxMemoryLimitMiB bounds the MiB-valued memory knobs
-// (runtime.memory_soft_limit_mb and vector_index.park_budget_mb). Consumers
-// convert MiB→bytes with `<< 20`, which overflows int64 to a negative above
-// this ceiling — a negative SetMemoryLimit is ignored by the runtime (the soft
-// limit silently disappears) and a negative park budget reads as "budget
-// disabled". 1<<31 MiB = 2 PiB, far above any real machine, so it only catches
-// unit mix-ups (e.g. a byte value entered as MiB).
+// (runtime.memory_soft_limit_mb, vector_index.park_budget_mb): past it the
+// consumers' MiB→bytes `<< 20` overflows to a negative, which silently drops
+// the soft limit / reads as "budget disabled". 1<<31 MiB = 2 PiB — only a
+// unit mix-up (bytes entered as MiB) lands there.
 const maxMemoryLimitMiB = 1 << 31
 
-// RuntimeConfig holds process-level runtime tunables that govern the Go
-// runtime itself rather than any agent subsystem (desktop/startup.go consumes
-// this section right after config load, before background indexing starts).
+// RuntimeConfig holds process-level tunables for the Go runtime itself
+// (consumed by desktop/startup.go right after config load, before background
+// indexing starts).
 type RuntimeConfig struct {
-	// MemorySoftLimitMB configures the Go runtime soft memory limit
-	// (debug.SetMemoryLimit — a GC target, NOT a hard cap: the heap may
-	// exceed it under live-set pressure; the GC just runs more often).
-	// Without it, GOGC=100 lets transient spikes — a full project
-	// re-index (embedding the whole corpus) — double the resident set, and
-	// the memory is never handed back to the OS promptly.
-	//
-	// Values:
-	//   0 (or unset, the default) — AUTO: 50% of physical RAM, clamped to
-	//       [2 GiB, 8 GiB] (see desktop/memlimit.go);
-	//   >0 — explicit limit in MiB, applied verbatim;
-	//   -1 — OFF: no soft limit is set at all.
-	//
-	// An explicit GOMEMLIMIT environment variable takes priority over AUTO
-	// mode (the Go runtime already applied it at process start; the app must
-	// not silently override an operator-level setting) — but an explicit
-	// positive config value still wins over the env var for this app.
+	// MemorySoftLimitMB is the Go runtime soft memory limit
+	// (debug.SetMemoryLimit — a GC target, NOT a hard cap). Values:
+	// 0/unset = auto (50% of RAM clamped to [2 GiB, 8 GiB],
+	// desktop/memlimit.go), >0 = explicit MiB, -1 = off.
+	// Precedence: an explicit positive config value wins over the GOMEMLIMIT
+	// env var, which itself outranks AUTO mode (the app must not silently
+	// override an operator-level env setting).
 	MemorySoftLimitMB int `yaml:"memory_soft_limit_mb"`
 }
 
 // VectorIndexConfig holds vector / hybrid search runtime settings.
 //
-// Hybrid is a pointer-bool so callers can distinguish "unset" (defaults
-// to true) from "explicitly disabled" (false). When Hybrid is false the
-// service only writes and reads the chromem vector index; bleve is
-// still opened but not consulted at query time.
-//
-// The HybridRRFK / HybridFanoutMultiplier / HybridFanoutMin fields tune
-// Reciprocal Rank Fusion. A zero value falls back to the built-in
-// default (60 / 4 / 100).
-//
-// The HybridVectorScoreFloor / HybridVectorScoreRatio /
-// HybridLexicalScoreRatio fields are pointer-float64 so callers can
-// distinguish "unset" (defaults applied) from "explicitly zero"
-// (threshold disabled). They suppress noise-tail hits before fusion:
-//   - VectorScoreFloor: absolute cosine-similarity floor.
-//   - VectorScoreRatio: relative cutoff (sim < ratio × top sim rejected).
-//   - LexicalScoreRatio: relative BM25 cutoff (score < ratio × top rejected).
+// Hybrid is a pointer-bool (unset = true); false means only the chromem index
+// is consulted, bleve is opened but not queried. The HybridRRFK /
+// HybridFanout* fields tune Reciprocal Rank Fusion and the pointer-float64
+// Hybrid*Score* fields suppress noise-tail hits before fusion (absolute
+// cosine floor, relative vector and BM25 cutoffs); zero/nil falls back to the
+// built-in defaults (60 / 4 / 100).
 type VectorIndexConfig struct {
 	Hybrid *bool `yaml:"hybrid"`
 
@@ -301,160 +221,97 @@ type VectorIndexConfig struct {
 	HybridVectorScoreRatio  *float64 `yaml:"hybrid_vector_score_ratio"`
 	HybridLexicalScoreRatio *float64 `yaml:"hybrid_lexical_score_ratio"`
 
-	// EmbeddingThreads controls the ONNX intra-op thread pool used by the
-	// embedding model during indexing. 0 (or unset) lets ONNX use all cores —
-	// the legacy behaviour and default. Set 1..N to cap intra-op threads and
-	// lower the CPU spike during (re)indexing at the cost of throughput.
+	// EmbeddingThreads caps the ONNX intra-op thread pool during indexing
+	// (0/unset = all cores, the legacy default); bounds the CPU spike at the
+	// cost of throughput.
 	EmbeddingThreads int `yaml:"embedding_threads"`
 
-	// MaxFileSize is the upper bound (in bytes) on a file's size for it to be
-	// read fully into memory for chunking and embedding. Files above this are
-	// skipped at walk, validation, and read time. 0 (or unset) defaults to
-	// 4 MiB. Raise it if legitimate large source files are excluded from
-	// vector search; lower it to bound memory on constrained machines.
+	// MaxFileSize is the upper bound (bytes) for a file to be read fully for
+	// chunking/embedding; larger files are skipped at walk/validation/read
+	// time. 0/unset defaults to 4 MiB.
 	MaxFileSize int64 `yaml:"max_file_size"`
 
-	// MaxChunkSize is the maximum chunk size in characters passed to the
-	// chunker. 0 (or unset) defaults to 1500. It is sized to fit the embedding
-	// model's context window; raising it significantly above 1500 risks
-	// producing chunks the model cannot embed in a single pass.
+	// MaxChunkSize is the maximum chunk size in characters handed to the
+	// chunker (0/unset → 1500); significantly larger risks chunks the
+	// embedding model cannot embed in one pass.
 	MaxChunkSize int `yaml:"max_chunk_size"`
 
-	// MaxChunksPerFile is the upper bound on the number of chunks a single
-	// file may contribute to one index pass. A file that exceeds it is
-	// skipped wholesale (logged at WARN) rather than handed to the embedder
-	// in a runaway batch. This guards against data-format files — BPE
-	// vocab/merges tokenizer.json, minified assets, lockfiles — that the
-	// structure-aware splitter fragments into tens of thousands of tiny
-	// chunks, each requiring a separate ONNX inference pass that would
-	// otherwise hang/OOM the embedder. Embedding is sub-batched, so this cap
-	// is a backstop against pathological inputs, not a tight per-call limit.
-	// 0 (or unset) defaults to 4000, which sits above any legitimate source
-	// file (a 4 MiB file yields ~3230 chunks).
+	// MaxChunksPerFile caps one file's chunks per index pass; an exceeding
+	// file is skipped wholesale (WARN). Backstop against pathological inputs
+	// (tokenizer.json, minified assets, lockfiles) the splitter fragments
+	// into tens of thousands of inference-pass chunks — not a tight per-call
+	// limit. 0/unset defaults to 4000.
 	MaxChunksPerFile int `yaml:"max_chunks_per_file"`
 
 	// EmbeddingBatchSize is the fixed row capacity of the embedder's batch
-	// ONNX session (sp4rk embedding.EmbedderConfig.BatchSize). Larger
-	// capacities amortize ONNX inference across more chunks per call
-	// (higher indexing throughput) but linearly grow the per-inference
-	// output tensor (B × 512 × 512 × 4 bytes ≈ B MiB) and single-call
-	// latency. 32 sits at the measured throughput knee. 0 (or unset)
-	// defaults to 32 — identical to the previous behaviour, where sp4rk
-	// applied its own default.
+	// ONNX session: larger amortizes inference but linearly grows the output
+	// tensor (≈B MiB) and single-call latency; 32 is the measured knee.
+	// 0/unset defaults to 32.
 	EmbeddingBatchSize int `yaml:"embedding_batch_size"`
 
 	// EmbeddingCacheMaxBytes caps the branch-independent content-addressed
-	// embedding cache stored under each project's vector-index directory.
-	// 0 (or unset) defaults to 512 MiB; a negative value disables it.
+	// embedding cache per project's vector-index directory. 0/unset →
+	// 512 MiB; negative disables it.
 	EmbeddingCacheMaxBytes int64 `yaml:"embedding_cache_max_bytes"`
 
-	// PrepWorkers is the number of parallel file-preparation workers
-	// (read/hash/chunk) overlapping ONNX inference in the indexing
-	// pipeline. 1 reproduces the historical serial behaviour; higher
-	// values overlap file I/O with embedding (embedding itself stays
-	// single-threaded under the service write lock). 0 (or unset)
-	// defaults to 2.
+	// PrepWorkers is the parallel file-prep worker count (read/hash/chunk)
+	// overlapping single-threaded ONNX inference; 1 = historical serial
+	// behaviour, 0/unset defaults to 2.
 	PrepWorkers int `yaml:"prep_workers"`
 
-	// DebounceMs is how long file-change notifications wait, in
-	// milliseconds, before a single incremental index pass runs — it
-	// coalesces bursts of watcher events into one pass. 0 (or unset)
-	// defaults to 1000 (the historical hardcoded value).
+	// DebounceMs coalesces file-change notification bursts into one
+	// incremental index pass. 0/unset defaults to 1000.
 	DebounceMs int `yaml:"debounce_ms"`
 
-	// ChunkOverlap is the character overlap between adjacent chunks handed
-	// to the chunker. 0 (or unset) defaults to 200 (the historical
-	// hardcoded value). Changing this (or MaxChunkSize) is picked up
-	// automatically: the file-hash sidecar records the chunker
-	// configuration each file was chunked under, and the next incremental
-	// validation pass reports affected files as stale so they are
-	// re-chunked — no manual Reindex required.
+	// ChunkOverlap is the character overlap between adjacent chunks
+	// (0/unset → 200). Changes (and MaxChunkSize) are picked up
+	// automatically: the file-hash sidecar records the chunker config, so
+	// the next validation pass re-chunks affected files — no manual Reindex.
 	ChunkOverlap int `yaml:"chunk_overlap"`
 
 	// ContentFilter configures deterministic early rejection of generated,
-	// minified, and pathological files before chunking (see
-	// VectorIndexContentFilterConfig). Unset fields fall back to the
-	// vectorindex package defaults; the resolved policy participates in
-	// the chunker fingerprint, so policy changes re-validate affected
-	// files automatically.
+	// minified and pathological files before chunking
+	// (VectorIndexContentFilterConfig); the resolved policy participates in
+	// the chunker fingerprint, so policy changes re-validate automatically.
 	ContentFilter VectorIndexContentFilterConfig `yaml:"content_filter"`
 
-	// SearchWaitTimeoutMs bounds, in milliseconds, how long a consumer may
-	// WAIT for the vector index to become ready (e.g. right after a project
-	// switch while the initial index pass is still running). It is a
-	// pointer-int so an unset key resolves to the 3000 ms default while an
-	// explicit 0 is preserved as the "fail fast" sentinel — never wait,
-	// return immediately with whatever the index can serve now. The bound
-	// covers readiness waiting exactly once per consumer: the
-	// semantic_search tool waits in its dedicated wait step (the search
-	// call itself never waits — it fails fast with an actionable not-ready
-	// error if readiness flipped in between), RAG hint generation calls
-	// wait+search under one shared deadline, and the SearchVectorStore RPC
-	// bounds its single call. On expiry the caller gets an actionable
-	// not-ready error (tool/RPC) or proceeds without hints (RAG). Query
-	// execution is separately bounded by the same value as
-	// defense-in-depth.
+	// SearchWaitTimeoutMs bounds, in ms, how long a consumer may WAIT for
+	// index readiness — each consumer waits exactly once, in its dedicated
+	// wait step (queries are separately bounded by the same value as
+	// defense-in-depth). Pointer-int: unset → 3000; explicit 0 = fail fast,
+	// never wait.
 	SearchWaitTimeoutMs *int `yaml:"search_wait_timeout_ms"`
 
-	// ParkCapacity is the maximum number of recently-closed projects whose
-	// vector-index state (chromem DB + bleve lexical index + file-hash
-	// sidecar) is kept resident in RAM so that returning to one of them
-	// restores it instantly — skipping the expensive chromem gob-decode of
-	// every branch document, plus the lexical index reopen. It is a
-	// pointer-int so an unset key resolves to the default of 3 while an
-	// explicit 0 is preserved and DISABLES parking (reproducing the
-	// historical behaviour where every project switch reopened the
-	// persistent DB from scratch). Memory/latency tradeoff: each parked
-	// project holds its full vector + lexical index in memory, so raise this
-	// on a RAM-rich machine to make frequent project hopping instant, and
-	// lower it (or set 0) on a constrained one to cap resident memory.
+	// ParkCapacity is how many recently-closed projects keep their vector
+	// index state (chromem DB + bleve + sidecar) resident in RAM for instant
+	// restore — each parked project holds its full index in memory, so tune
+	// for the machine. Pointer-int: unset → 3; explicit 0 disables parking.
 	ParkCapacity *int `yaml:"park_capacity"`
 
-	// ParkBudgetMb is the cumulative byte budget (in MiB) for the parked
-	// project states: right after a state is parked, the oldest parked
-	// states are evicted — sidecar flushed, freed RAM nudged back to the OS
-	// — while the summed ESTIMATED footprints (documents × (embedding
-	// dims × 4 B + 1 KiB)) exceed the budget. The effective bound is
-	// min(park_capacity, park_budget_mb): capacity still applies, and an
-	// explicit park_capacity: 0 still disables parking entirely regardless
-	// of the budget. It is a pointer-int64 so an unset key resolves to the
-	// default of 1024 while an explicit -1 is preserved as the "budget
-	// disabled" sentinel (park_capacity alone bounds the LRU). An explicit
-	// 0 is rejected by validate() as ambiguous and any value below -1 is
-	// rejected as a typo (only -1 disables), mirroring
-	// runtime.memory_soft_limit_mb.
+	// ParkBudgetMb is the cumulative MiB budget for parked project states:
+	// the oldest states are evicted while their estimated footprints exceed
+	// it; the effective bound is min(park_capacity, park_budget_mb).
+	// Pointer-int64: unset → 1024; -1 = budget disabled (capacity alone);
+	// explicit 0 and values below -1 are rejected by validate() (only -1
+	// disables), mirroring runtime.memory_soft_limit_mb.
 	ParkBudgetMb *int64 `yaml:"park_budget_mb"`
 
-	// ExecutionProvider selects the ONNX Runtime execution provider the
-	// embedding model runs on: VectorIndexProviderAuto ("auto"),
-	// VectorIndexProviderCPU ("cpu"), VectorIndexProviderCUDA ("cuda") or
-	// VectorIndexProviderOpenVINO ("openvino"). The empty string (a config
-	// written before the knob existed) is normalized to "auto" by
-	// ApplyDefaults: try the NVIDIA CUDA provider, then the OpenVINO
-	// provider, and fall back to the CPU provider when neither hardware
-	// provider is usable. "cpu" always runs on the CPU; "cuda" targets an
-	// NVIDIA GPU; "openvino" targets Intel hardware via the OpenVINO
-	// execution provider. "auto" and "cuda" additionally require a GPU
-	// (CUDA-enabled) ONNX Runtime build sitting next to the executable;
-	// "openvino" additionally requires the OpenVINO provider plugin next
-	// to it — see config.example.yaml. Invalid values are rejected at
-	// load time by validate().
+	// ExecutionProvider selects the ONNX Runtime execution provider for the
+	// embedding model — see the VectorIndexProvider* constants. The empty
+	// string (pre-knob config) is normalized to "auto" by ApplyDefaults;
+	// invalid values are rejected at load by validate().
 	ExecutionProvider string `yaml:"execution_provider"`
 
-	// DeviceID is the GPU device index used when ExecutionProvider
-	// resolves to CUDA. Defaults to 0 (the first GPU) — the right choice
-	// on single-GPU machines. It is ignored by the CPU provider, and the
-	// OpenVINO provider accepts only 0 (the OpenVINO plugin picks the
-	// concrete Intel device itself; any other value fails embedder
-	// creation). Negative values are rejected at load time by validate().
+	// DeviceID is the GPU device index for the CUDA provider (default 0;
+	// CPU ignores it, OpenVINO accepts only 0 — the plugin picks the Intel
+	// device itself). Negative values are rejected by validate().
 	DeviceID int `yaml:"device_id"`
 }
 
 // VectorIndexContentFilterConfig is the YAML surface of the pre-chunk content
-// policy (see vectorindex.ContentFilterConfig). Every field is optional:
-// pointer bools distinguish "unset" (package default) from an explicit false;
-// zero numeric thresholds fall back to the package defaults, matching the
-// rest of the vector_index knobs.
+// policy (see vectorindex.ContentFilterConfig): pointer bools distinguish
+// "unset" (package default) from explicit false, zero numeric thresholds fall
+// back to the package defaults.
 type VectorIndexContentFilterConfig struct {
 	// Enabled gates the whole policy. Nil (unset) resolves to true.
 	Enabled *bool `yaml:"enabled"`
@@ -512,23 +369,13 @@ func (c VectorIndexContentFilterConfig) ResolveContentFilter() vectorindex.Conte
 }
 
 // Vector index embedding execution provider values
-// (VectorIndexConfig.ExecutionProvider).
+// (VectorIndexConfig.ExecutionProvider); "auto"/"cuda" require a GPU ONNX
+// Runtime build next to the executable, "openvino" the provider plugin.
 const (
-	// VectorIndexProviderAuto tries the CUDA provider, then the OpenVINO
-	// provider, and falls back to the CPU provider when neither hardware
-	// provider is usable. The default.
-	VectorIndexProviderAuto = "auto"
-	// VectorIndexProviderCPU always runs embedding inference on the CPU.
-	VectorIndexProviderCPU = "cpu"
-	// VectorIndexProviderCUDA runs embedding inference on an NVIDIA GPU
-	// via the CUDA execution provider.
-	VectorIndexProviderCUDA = "cuda"
-	// VectorIndexProviderOpenVINO runs embedding inference on Intel
-	// hardware (integrated or discrete GPUs, Intel CPUs) via the OpenVINO
-	// execution provider. Requires the OpenVINO provider plugin next to
-	// the ONNX Runtime library; only device_id 0 is valid — the plugin
-	// chooses the concrete Intel device itself.
-	VectorIndexProviderOpenVINO = "openvino"
+	VectorIndexProviderAuto     = "auto"     // CUDA → OpenVINO → CPU fallback; the default
+	VectorIndexProviderCPU      = "cpu"      // always CPU inference
+	VectorIndexProviderCUDA     = "cuda"     // NVIDIA GPU via the CUDA execution provider
+	VectorIndexProviderOpenVINO = "openvino" // Intel hardware; only device_id 0 (the plugin picks the device)
 )
 
 // LLMConfig holds LLM provider configuration with fixed provider schema.
@@ -546,10 +393,9 @@ type LLMConfig struct {
 type AnthropicConfig struct {
 	APIKey string   `yaml:"api_key"`
 	Models []string `yaml:"models"` // enabled models for this provider
-	// OutputTokenReserve overrides the output-token budget for every model
-	// served by this provider: it is subtracted from the context window in
-	// overflow validation and caps executor MaxTokens. 0 = inherit the global
-	// executor.output_token_reserve.
+	// OutputTokenReserve overrides the per-provider output-token budget:
+	// subtracted from the context window in overflow validation and capping
+	// executor MaxTokens; 0 inherits the global executor.output_token_reserve.
 	OutputTokenReserve int `yaml:"output_token_reserve"`
 }
 
@@ -558,52 +404,44 @@ type OpenAICompatibleConfig struct {
 	BaseURL string   `yaml:"base_url"`
 	APIKey  string   `yaml:"api_key"`
 	Models  []string `yaml:"models"` // enabled models for this provider
-	// TLSFingerprint pins the endpoint's SPKI: base64(SHA-256(SPKI DER)).
-	// Non-empty = ONLY the pinned key is accepted (self-signed / internal
-	// PKI); empty = normal system CA verification. The pin is the only
-	// verification override — there is no configured accept-any state, and
-	// no separate toggle. Ignored while an effective HTTP proxy is active
-	// (proxy.enabled + a proxy.url). See ADR-054.
+	// TLSFingerprint pins the endpoint SPKI (base64(SHA-256(SPKI DER))):
+	// non-empty = ONLY the pinned key is accepted (self-signed/internal
+	// PKI), empty = system CA verification — there is no accept-any state.
+	// Ignored while an effective HTTP proxy is active. See ADR-054.
 	TLSFingerprint string `yaml:"tls_fingerprint,omitempty"`
-	// OutputTokenReserve overrides the output-token budget for every model
-	// served by this provider: it is subtracted from the context window in
-	// overflow validation and caps executor MaxTokens. 0 = inherit the global
+	// OutputTokenReserve overrides the per-provider output-token budget
+	// (overflow validation + executor MaxTokens cap); 0 inherits the global
 	// executor.output_token_reserve.
 	OutputTokenReserve int `yaml:"output_token_reserve"`
-	// AutoRetrySeconds enables the c0wrk-layer automatic retry timer for
-	// this provider: after a failed request the session waits this many
-	// seconds before re-sending automatically (0 = disabled, the model is
-	// asked how to proceed instead). Compatible providers only — the fixed
-	// providers (anthropic, chatgpt) have no such knob. Not mapped into
-	// ToBuilderConfig: the timer lives in the c0wrk session layer, not in
-	// the router/SDK layer.
+	// AutoRetrySeconds enables the c0wrk-layer auto-resend timer for this
+	// provider (seconds between re-sends; 0 = disabled, the model is asked
+	// how to proceed). Compatible providers only; not mapped into
+	// ToBuilderConfig — the timer lives in the c0wrk session layer. See
+	// ADR-065.
 	AutoRetrySeconds int `yaml:"auto_retry_seconds,omitempty"`
-	// TimeoutClass is the adaptive request budget's class override for this
-	// provider (ADR-071 D3): "local" or "remote". Empty = infer (a loopback
-	// base_url is local, everything else remote; the reserved "embedded"
-	// provider is fixed by its name and accepts no override). The class
-	// selects the floor/ceiling envelope that bounds the provider's trained
-	// budgets. validate() rejects anything but the enum.
+	// TimeoutClass is the adaptive request budget's class override
+	// (ADR-071 D3): "local" or "remote"; empty = infer (loopback base_url is
+	// local). The class selects the envelope bounding the provider's trained
+	// budgets; validate() rejects anything but the enum.
 	TimeoutClass string `yaml:"timeout_class,omitempty"`
 }
 
 // maxAutoRetrySeconds is the inclusive upper bound for per-provider
-// auto_retry_seconds (ADR-065); 0 disables the timer. The Settings UI
-// clamps its input to the same range, and validate() enforces it for
-// YAML/RPC edits that bypass the UI.
+// auto_retry_seconds (ADR-065); 0 disables the timer. The Settings UI clamps
+// to the same range; validate() enforces it for edits that bypass the UI.
 const maxAutoRetrySeconds = 3600
 
 // MaxAutoRetrySeconds exposes the inclusive upper bound of per-provider
-// auto_retry_seconds to other packages (the Settings RPC path validates
-// incoming values against the same bound Load enforces).
+// auto_retry_seconds, so the Settings RPC validates against the same bound
+// Load enforces.
 func MaxAutoRetrySeconds() int {
 	return maxAutoRetrySeconds
 }
 
 // ValidTimeoutClass reports whether s is a legal per-provider timeout_class
 // override (ADR-071 D3): unset (""), "local", or "remote". The reserved
-// "embedded" class is intentionally not accepted — it is fixed by the
-// backend-owned provider identity rather than selected.
+// `embedded` class is deliberately not accepted — fixed by identity, not
+// selected.
 func ValidTimeoutClass(s string) bool {
 	switch s {
 	case "", string(llmbudget.ClassLocal), string(llmbudget.ClassRemote):
@@ -614,20 +452,12 @@ func ValidTimeoutClass(s string) bool {
 }
 
 // ValidateProviderTimeoutClass enforces the FULL per-provider timeout_class
-// rules (ADR-071 D3) on a (provider name, class) pair:
-//
-//   - the enum is exactly "local" | "remote" | unset (ValidTimeoutClass);
-//   - the reserved, backend-owned `embedded` provider must carry no override at
-//     all: its envelope is fixed by its identity, so an override would let a
-//     hand-edited entry downgrade it (a "remote" override caps the local model
-//     at 600 s) even though Classify honors such an override.
-//
-// This is the single gate shared by validate() (the load-time frontier) and the
-// UpdateLLMConfig RPC trust boundary. Both MUST go through it: an invalid value
-// passes the enum check alone, is persisted verbatim by Save (which does not run
-// validate), and then fails validate() on the next Load — which rolls the
-// ENTIRE config back to defaults. Keeping one function is what stops the two
-// gates from drifting out of step.
+// rules (ADR-071 D3): the enum is "local"|"remote"|unset, and the backend-owned
+// `embedded` provider must carry no override — an override would let a
+// hand-edited entry downgrade the local model even though Classify honors it.
+// This is the single gate shared by validate() and the UpdateLLMConfig RPC
+// trust boundary: Save persists without validate, so both frontiers must go
+// through it or an invalid value fails the whole config at the next Load.
 func ValidateProviderTimeoutClass(name, class string) error {
 	if !ValidTimeoutClass(class) {
 		return fmt.Errorf(
@@ -650,55 +480,40 @@ type AnthropicCompatibleConfig struct {
 	BaseURL string   `yaml:"base_url"`
 	APIKey  string   `yaml:"api_key"`
 	Models  []string `yaml:"models"` // enabled models for this provider
-	// TLSFingerprint pins the endpoint's SPKI: base64(SHA-256(SPKI DER)).
-	// Non-empty = ONLY the pinned key is accepted (self-signed / internal
-	// PKI); empty = normal system CA verification. The pin is the only
-	// verification override — there is no configured accept-any state, and
-	// no separate toggle. Ignored while an effective HTTP proxy is active
-	// (proxy.enabled + a proxy.url). See ADR-054.
+	// TLSFingerprint pins the endpoint SPKI (base64(SHA-256(SPKI DER))):
+	// non-empty = ONLY the pinned key is accepted, empty = system CA
+	// verification — there is no accept-any state. Ignored while an
+	// effective HTTP proxy is active. See ADR-054.
 	TLSFingerprint string `yaml:"tls_fingerprint,omitempty"`
-	// OutputTokenReserve overrides the output-token budget for every model
-	// served by this provider: it is subtracted from the context window in
-	// overflow validation and caps executor MaxTokens. 0 = inherit the global
+	// OutputTokenReserve overrides the per-provider output-token budget
+	// (overflow validation + executor MaxTokens cap); 0 inherits the global
 	// executor.output_token_reserve.
 	OutputTokenReserve int `yaml:"output_token_reserve"`
-	// AutoRetrySeconds enables the c0wrk-layer automatic retry timer for
-	// this provider: after a failed request the session waits this many
-	// seconds before re-sending automatically (0 = disabled, the model is
-	// asked how to proceed instead). Compatible providers only — the fixed
-	// providers (anthropic, chatgpt) have no such knob. Not mapped into
-	// ToBuilderConfig: the timer lives in the c0wrk session layer, not in
-	// the router/SDK layer.
+	// AutoRetrySeconds enables the c0wrk-layer auto-resend timer for this
+	// provider (seconds between re-sends; 0 = disabled, the model is asked
+	// how to proceed). Compatible providers only; not mapped into
+	// ToBuilderConfig — the timer lives in the c0wrk session layer. See
+	// ADR-065.
 	AutoRetrySeconds int `yaml:"auto_retry_seconds,omitempty"`
-	// TimeoutClass is the adaptive request budget's class override for this
-	// provider (ADR-071 D3): "local" or "remote". Empty = infer (a loopback
-	// base_url is local, everything else remote; the reserved "embedded"
-	// provider is fixed by its name and accepts no override). The class
-	// selects the floor/ceiling envelope that bounds the provider's trained
-	// budgets. validate() rejects anything but the enum.
+	// TimeoutClass is the adaptive request budget's class override
+	// (ADR-071 D3): "local" or "remote"; empty = infer (loopback base_url is
+	// local). The class selects the envelope bounding the provider's trained
+	// budgets; validate() rejects anything but the enum.
 	TimeoutClass string `yaml:"timeout_class,omitempty"`
 }
 
 // ChatGPT auth-mode values (llm.chatgpt.auth.mode).
 const (
-	// ChatGPTAuthModeAPIKey is the default: the provider authenticates with
-	// the static llm.chatgpt.api_key exactly as it always has.
-	ChatGPTAuthModeAPIKey = "api_key"
-	// ChatGPTAuthModeOAuth switches the provider to ChatGPT subscription
-	// auth: the app signs in through the browser (backend/providerauth),
-	// keeps the OAuth tokens fresh, and routes requests to the pinned
-	// ChatGPT Codex endpoint instead of the public OpenAI API.
-	ChatGPTAuthModeOAuth = "oauth"
+	ChatGPTAuthModeAPIKey = "api_key" // default: the static llm.chatgpt.api_key, exactly as always
+	ChatGPTAuthModeOAuth  = "oauth"   // subscription auth: browser sign-in (backend/providerauth), tokens kept fresh, pinned Codex endpoint (ADR-074)
 )
 
 // ChatGPTAuthConfig selects how the chatgpt provider authenticates.
 type ChatGPTAuthConfig struct {
-	// Mode is "api_key" (default) or "oauth". ApplyDefaults seeds the empty
-	// value with "api_key"; validate() rejects any other value so a typo can
-	// never silently keep key auth while the operator believes subscription
-	// auth is on (or vice versa). Every consumer reads the empty mode as
-	// "api_key", so a programmatically built config that bypassed
-	// ApplyDefaults gets the historical behavior, never an undefined one.
+	// Mode is "api_key" (default; every consumer reads empty as api_key, so
+	// a config that bypassed ApplyDefaults keeps the historical behavior) or
+	// "oauth". validate() rejects any other value — a typo must never leave
+	// the operator believing the opposite of what runs. See ADR-074.
 	Mode string `yaml:"mode,omitempty"`
 }
 
@@ -706,50 +521,28 @@ type ChatGPTAuthConfig struct {
 type ChatGPTConfig struct {
 	APIKey string   `yaml:"api_key"`
 	Models []string `yaml:"models"` // enabled models for this provider
-	// Auth selects the authentication mode for this provider: "api_key"
-	// (the default — the static key above, exactly the historical behavior)
-	// or "oauth" (ChatGPT subscription auth via browser sign-in; see
-	// ChatGPTAuthConfig). In oauth mode api_key is never used as a silent
-	// fallback: while signed out, requests to this provider fail with an
-	// actionable "sign in with ChatGPT" error until an account signs in.
+	// Auth selects the authentication mode: "api_key" (default, the static
+	// key above) or "oauth" (ADR-074; api_key is never a silent fallback —
+	// signed-out requests fail with an actionable sign-in error).
 	Auth ChatGPTAuthConfig `yaml:"auth,omitempty"`
-	// OutputTokenReserve overrides the output-token budget for every model
-	// served by this provider: it is subtracted from the context window in
-	// overflow validation and caps executor MaxTokens. 0 = inherit the global
+	// OutputTokenReserve overrides the per-provider output-token budget
+	// (overflow validation + executor MaxTokens cap); 0 inherits the global
 	// executor.output_token_reserve.
 	OutputTokenReserve int `yaml:"output_token_reserve"`
 }
 
-// MaxModelContextWindow is the sanity ceiling for a
-// llm.models.<name>.context_window override. 1<<24 = 16,777,216 tokens, which
-// is roughly eight times the largest context any real remote model serves
-// today (2M), so it can never refuse a legitimate configuration — it exists to
-// reject the absurd instead.
-//
-// Why it is needed at all: this override is a TIER-1 value that shadows the
-// tier-1.5 lazy probe, so a poisoned one is never corrected by asking the model
-// again. Two writers feed it — an operator hand-editing config.yaml, and the
-// embedded LLM's `/props` context readback (backend.persistEmbeddedContext,
-// which reads the figure off a local HTTP endpoint) — and an absurd value is
-// worse than a wrong one: sp4rk's memory-context arithmetic reports "fits" for
-// every prompt, so compaction never triggers. Both writers therefore bound the
-// value against this one constant rather than each keeping its own figure.
+// MaxModelContextWindow is the sanity ceiling for a llm.models.<name>
+// .context_window override — a TIER-1 value that shadows the lazy probe and is
+// never corrected by re-asking the model, so an absurd value silently disables
+// compaction (every prompt "fits"). Both writers (a hand-edited config.yaml
+// and the embedded LLM's /props readback) bound against this one constant.
 const MaxModelContextWindow = 1 << 24
 
-// ModelOverride allows overriding built-in model metadata.
-// Fields use omitempty so a 0/empty/nil value (meaning "inherit the built-in
-// default") is not serialized — only fields that actually differ from the
-// built-in metadata are persisted to config.yaml.
-// TokenizerType/Family/Protocol use the empty string as the "inherit" sentinel
-// (the built-in resolver derives them via DetectFamily/DetectProtocol when
-// unset). Capabilities uses a nil pointer: nil = inherit default, a non-nil
-// value overrides all four capability flags atomically. The string and pointer
-// sentinels ensure a deliberate override to "default"/""/all-false is still
-// distinguishable from "no override", so a user can force e.g. a false
-// Attachment capability that differs from the built-in true.
-//
-// ContextWindow is 0 (unset → inherit) or within 1..MaxModelContextWindow;
-// validate() rejects anything else.
+// ModelOverride allows overriding built-in model metadata. omitempty keeps
+// "inherit" values out of config.yaml; TokenizerType/Family/Protocol use ""
+// as the inherit sentinel and Capabilities a nil pointer, so a deliberate
+// override to the default / all-false stays distinguishable from "no
+// override". ContextWindow is 0 (inherit) or within 1..MaxModelContextWindow.
 type ModelOverride struct {
 	ContextWindow int                    `yaml:"context_window,omitempty"`
 	OutputLimit   int                    `yaml:"output_limit,omitempty"`
@@ -758,11 +551,9 @@ type ModelOverride struct {
 	Protocol      string                 `yaml:"protocol,omitempty"`
 	Capabilities  *llm.ModelCapabilities `yaml:"capabilities,omitempty"`
 	// RequestTimeout is the per-model FIXED request deadline in seconds
-	// (ADR-071 D5): when positive, every request for this model is armed
-	// with exactly this budget — never escalated, immune to the adaptive
-	// estimate. 0 (unset) = "no opinion": the adaptive budget governs (or,
-	// with the kill-switch off, the global timeouts.llmRequestTimeout).
-	// validate() bounds it to [0, 3600].
+	// (ADR-071 D5): positive = armed exactly, never escalated; 0 = "no
+	// opinion" (the adaptive budget governs). validate() bounds it to
+	// [0, 3600].
 	RequestTimeout int `yaml:"request_timeout,omitempty"`
 }
 
@@ -774,115 +565,83 @@ type LLMRetryConfig struct {
 }
 
 // Embedded LLM identity and limits. The provider record is backend-owned:
-// `embedded_llm:` is the authoritative state and `llm.openai_compatible.embedded`
-// is GENERATED from it (SyncEmbeddedProvider), so the UI's whole-map provider
-// replacement can never delete the local model. See
-// specs/domains/embedded-llm.md and ADR-066.
+// `embedded_llm:` is the authoritative state and
+// `llm.openai_compatible.embedded` is GENERATED from it
+// (SyncEmbeddedProvider), so the UI's whole-map provider replacement can
+// never delete the local model. See specs/domains/embedded-llm.md, ADR-066.
 const (
-	// EmbeddedLLMProviderName is the openai_compatible key of the generated
-	// provider and therefore the provider half of the composite model id
-	// ("embedded/Bonsai 2 27B").
-	EmbeddedLLMProviderName = "embedded"
+	EmbeddedLLMProviderName = "embedded"     // openai_compatible key of the generated provider
+	EmbeddedLLMModelName    = "Bonsai 2 27B" // the single exposed model; also the llm.models override key (bare name)
+	EmbeddedLLMHost         = "127.0.0.1"    // loopback only by design — never network-reachable
 
-	// EmbeddedLLMModelName is the single model the local server exposes. It is
-	// also the llm.models override key, which is always the BARE model name.
-	EmbeddedLLMModelName = "Bonsai 2 27B"
+	EmbeddedLLMDefaultAutoUnloadMinutes = 60 // default idle budget before the server is stopped
 
-	// EmbeddedLLMHost is the loopback address the server binds. Fixed by
-	// design: the inference runtime must never become network-reachable.
-	EmbeddedLLMHost = "127.0.0.1"
-
-	// EmbeddedLLMDefaultAutoUnloadMinutes is the default idle budget before the
-	// server process is stopped so RAM/VRAM is returned deterministically.
-	EmbeddedLLMDefaultAutoUnloadMinutes = 60
-
-	// EmbeddedLLMMinPort and EmbeddedLLMMaxPort bound the persisted loopback
-	// port. 0 is the "not allocated yet" sentinel and is only legal while
-	// Installed is false.
+	// EmbeddedLLMMinPort/MaxPort bound the persisted loopback port; 0 is the
+	// "not allocated yet" sentinel, legal only while Installed is false.
 	EmbeddedLLMMinPort = 1024
 	EmbeddedLLMMaxPort = 65535
 
-	// EmbeddedLLMOutputLimit is the generation ceiling (max_tokens) seeded for
-	// the local model. The registry's 32768 static fallback assumes a
-	// datacenter-speed model; at this model's measured decode rates (15-31
-	// tok/s) a 32768-token ceiling is 17-36 minutes of worst-case generation,
-	// so the local model gets the budget an agent loop actually spends. A
-	// user-authored llm.models output_limit still wins (see
-	// SyncEmbeddedProvider).
+	// EmbeddedLLMOutputLimit is the seeded generation ceiling: the registry's
+	// 32768 fallback assumes datacenter decode rates (here: 17-36 minutes of
+	// worst-case generation); a user-authored output_limit still wins.
 	EmbeddedLLMOutputLimit = 8192
 )
 
-// EmbeddedLLMConfig is the persisted state of the embedded local model. Most
-// fields are written by the app and document what is on THIS machine (resolved
-// packing, probed backend, allocated port) so a restart can supervise the
-// server without probing hardware or network. The three operator-owned entries
-// — Engine, AutoUnload and Tuning — are settings instead: every flow that
-// rewrites the record carries them through unchanged.
+// EmbeddedLLMConfig is the persisted state of the embedded local model: mostly
+// app-written records of what is on THIS machine so a restart can supervise
+// the server without re-probing. Engine, AutoUnload and Tuning are the three
+// operator-owned settings every rewrite carries through unchanged.
 type EmbeddedLLMConfig struct {
-	// Engine is the runtime-family SETTING: "auto" (the empty or absent
-	// spelling), "mtplx" (MLX on Apple Silicon, macOS 14+), or "llama" (the
-	// pinned PrismML-Eng llama.cpp fork). Auto resolves per platform at
-	// install time — mtplx on darwin/arm64, llama everywhere else — and the
-	// resolution is what Install runs; an explicit value is honored wherever
-	// the platform supports it and refused where it does not. This is one of
-	// the three operator-owned entries in this section (the others are
-	// auto_unload and tuning): install and removal PRESERVE it.
+	// Engine is the runtime-family setting: "auto" (empty/absent), "mtplx"
+	// (MLX on Apple Silicon, macOS 14+), "llama" (the pinned PrismML-Eng
+	// llama.cpp fork). Auto resolves per platform at install time; an
+	// explicit value is honored where the platform supports it, refused
+	// where it does not. Preserved by install and removal.
 	Engine string `yaml:"engine,omitempty"`
-	// Installed reports that the runtime and the weights are on disk and
-	// SHA256-verified. It gates the generated provider entry.
+	// Installed reports the runtime and weights are on disk and
+	// SHA256-verified; gates the generated provider entry.
 	Installed bool `yaml:"installed"`
-	// Packing is the ternary quantization resolved for this machine
-	// ("PQ2_0" | "PTQ1_0"). Informational — shown in Settings.
+	// Packing is the quantization resolved for this machine
+	// ("PQ2_0" | "PTQ1_0"). Informational.
 	Packing string `yaml:"packing"`
-	// Backend is the accelerator the hardware probe selected ("metal",
-	// "cuda-12.4", "cuda-12.8", "cuda-13.3", "rocm", "vulkan", "cpu").
-	// Informational.
-	//
-	// "cuda-13.3" is PINNED and therefore recordable here — it is part of the
-	// pinned runtime artifact set — but the compat guard
-	// `cuda-13.3-crash` (PrismML-Eng/llama.cpp#222)
-	// substitutes it only where that is safe: cuda-12.8 on linux/amd64 when the
-	// probed CUDA 12.x userland verdict is present (absent/unknown keep 13.3 and
-	// the guard is recorded unapplied), cuda-12.4 on windows/amd64
-	// unconditionally, so a machine resolves to 13.3 exactly when the Linux
-	// substitution is withheld. Recordable-in-the-manifest and user-selectable
+	// Backend is the probed accelerator ("metal", "cuda-12.4", "cuda-12.8",
+	// "cuda-13.3", "rocm", "vulkan", "cpu"). Informational, but per ADR-073
+	// the pinned "cuda-13.3" is substituted by the cuda-13.3-crash guard
+	// only where safe (cuda-12.8 on linux/amd64 with a CUDA 12.x userland
+	// verdict, cuda-12.4 on windows/amd64) — recording and user-selectability
 	// are different predicates; this field records.
 	Backend string `yaml:"backend"`
-	// Port is the persisted loopback port; 0 = allocate at install time. The
-	// provider base URL is ALWAYS derived from it, never stored separately.
+	// Port is the persisted loopback port; 0 = allocate at install time.
+	// The provider base URL is always derived from it.
 	Port int `yaml:"port"`
 	// ModelFile is the absolute path of the installed GGUF weights.
 	ModelFile string `yaml:"model_file"`
-	// RuntimeVersion is the pinned runtime release the install came from: the
-	// llama fork tag, or the MTPLX version under the mtplx engine. A pin
-	// change forces a runtime re-download and keeps the weights.
+	// RuntimeVersion is the pinned runtime release the install came from;
+	// a pin change forces a runtime re-download, weights are kept.
 	RuntimeVersion string `yaml:"runtime_version"`
-	// PythonVersion is the managed CPython the mtplx engine was provisioned
-	// with. Informational record (empty on the llama family).
+	// PythonVersion is the managed CPython of the mtplx provisioning
+	// (informational, empty on the llama family).
 	PythonVersion string `yaml:"python_version,omitempty"`
-	// PackRevision is the pinned Hugging Face revision of the mtplx engine's
-	// weight pack. Informational record (empty on the llama family, whose
-	// weights pin is ModelRevision recorded through the checksums).
+	// PackRevision is the pinned HF revision of the mtplx weight pack
+	// (informational; the llama weights pin travels via the checksums).
 	PackRevision string `yaml:"pack_revision,omitempty"`
 	// InstalledAt is the RFC 3339 timestamp of the install.
 	InstalledAt string `yaml:"installed_at"`
-	// AutoUnload is the idle budget after which the server process is stopped.
+	// AutoUnload is the idle budget after which the server is stopped.
 	AutoUnload AutoUnloadConfig `yaml:"auto_unload"`
-	// Tuning is the operator override surface for the memory plan. It is the
-	// ONE part of this section that is a setting rather than a record: Install
-	// and Remove both preserve it verbatim (see TuningConfig), and an absent
-	// knob leaves the decision to the planner.
+	// Tuning is the operator override surface for the memory plan — the one
+	// setting in this section; Install and Remove preserve it verbatim
+	// (see TuningConfig).
 	Tuning TuningConfig `yaml:"tuning,omitempty"`
 }
 
-// AutoUnloadConfig is the embedded server's idle-unload budget. Both fields are
-// pointers so an explicit `enabled: false` / `minutes: N` in YAML is
-// distinguishable from "unset" (which resolves to the documented default).
+// AutoUnloadConfig is the embedded server's idle-unload budget; pointer
+// fields keep an explicit YAML value distinguishable from "unset" (which
+// resolves to the documented default).
 type AutoUnloadConfig struct {
-	// Enabled is the idle-timer master switch. Default: true.
-	Enabled *bool `yaml:"enabled"`
-	// Minutes is the idle budget before unload. Default: 60; must be within
-	// 1..embeddedllm.MaxAutoUnloadMinutes.
+	Enabled *bool `yaml:"enabled"` // idle-timer master switch; default true
+	// Minutes is the idle budget before unload (default 60; within
+	// 1..embeddedllm.MaxAutoUnloadMinutes).
 	Minutes *int `yaml:"minutes"`
 }
 
@@ -891,10 +650,9 @@ func (a AutoUnloadConfig) IsEnabled() bool {
 	return a.Enabled == nil || *a.Enabled
 }
 
-// IdleMinutes resolves the idle budget (nil → EmbeddedLLMDefaultAutoUnloadMinutes).
-// An explicit value outside 1..embeddedllm.MaxAutoUnloadMinutes is rejected by
-// validate(), so a config that loaded always resolves to a budget the
-// minutes→duration conversion can represent.
+// IdleMinutes resolves the idle budget (nil → default). validate() bounds
+// explicit values to 1..embeddedllm.MaxAutoUnloadMinutes, so a loaded config
+// always resolves to a budget the minutes→duration conversion can represent.
 func (a AutoUnloadConfig) IdleMinutes() int {
 	if a.Minutes == nil {
 		return EmbeddedLLMDefaultAutoUnloadMinutes
@@ -902,45 +660,33 @@ func (a AutoUnloadConfig) IdleMinutes() int {
 	return *a.Minutes
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Embedded LLM memory-plan tuning (the operator override surface)
-// ─────────────────────────────────────────────────────────────────────────────
-
-// The YAML spellings of the memory-plan override modes. `embeddedllm.Tuning`
-// is the authority on what each choice MEANS; these constants are only its
-// config-file vocabulary, and ToTuning is the single translation between the
-// two. They are declared here (rather than in core) because they are a
-// serialization concern: core's `ContextMode`/`OffloadMode` are int enums with
-// no spelling at all.
+// Embedded LLM memory-plan tuning (the operator override surface).
+//
+// YAML spellings of the memory-plan override modes: `embeddedllm.Tuning` is
+// the authority on what each choice means and ToTuning the single
+// translation; declared here because it is a serialization concern (core's
+// ContextMode/OffloadMode are int enums with no spelling).
 const (
-	// EmbeddedLLMTuningAuto is the explicit "let the planner decide" spelling.
-	// It resolves to the same plan as an absent key, but it is NOT the same
-	// value: an absent key means the operator chose nothing, which is what
-	// Install/Remove preservation and the round-trip contract key off. An
-	// empty string is accepted as a synonym so `kv_cache_type: ""` cannot
-	// become a silent typo.
+	// EmbeddedLLMTuningAuto ("auto"; empty string accepted as a synonym so
+	// `kv_cache_type: ""` cannot be a silent typo) resolves like an absent
+	// key but is a DIFFERENT value: absent means the operator chose nothing,
+	// which Install/Remove preservation and the round-trip contract key off.
 	EmbeddedLLMTuningAuto = "auto"
 
-	// EmbeddedLLMContextExact pins `-c` to context.tokens.
-	EmbeddedLLMContextExact = "exact"
+	EmbeddedLLMContextExact = "exact" // pins -c to context.tokens
 
-	// EmbeddedLLMOffloadAll is `-ngl 99` (every offloadable layer on the
-	// device), EmbeddedLLMOffloadCPU is `-ngl 0` (nothing offloaded), and
-	// EmbeddedLLMOffloadLayers is an explicit `-ngl <offload.layers>`.
-	EmbeddedLLMOffloadAll    = "all"
-	EmbeddedLLMOffloadCPU    = "cpu"
-	EmbeddedLLMOffloadLayers = "layers"
+	EmbeddedLLMOffloadAll    = "all"    // -ngl 99: every offloadable layer on the device
+	EmbeddedLLMOffloadCPU    = "cpu"    // -ngl 0: nothing offloaded
+	EmbeddedLLMOffloadLayers = "layers" // explicit -ngl <offload.layers>
 )
 
-// EmbeddedLLMMinContextTokens is the smallest legal explicit context. There is
-// no such thing as a zero-token context window: a plan that cannot reach a
-// positive `-c` is a refusal, not a configuration.
+// EmbeddedLLMMinContextTokens is the smallest legal explicit context: a plan
+// that cannot reach a positive `-c` is a refusal, not a configuration.
 const EmbeddedLLMMinContextTokens = 1
 
-// embeddedLLMContextModes and embeddedLLMOffloadModes are the closed sets
-// behind the two composite knobs, in the order config.example.yaml documents
-// them. `auto` is not listed: it is the EmbeddedLLMTuningAuto sentinel, which
-// tuningChoice handles before consulting these.
+// embeddedLLMContextModes/embeddedLLMOffloadModes are the closed sets behind
+// the two composite knobs, in config.example.yaml order; `auto` is not listed
+// (the EmbeddedLLMTuningAuto sentinel, handled by tuningChoice first).
 var (
 	embeddedLLMContextModes = []string{EmbeddedLLMContextExact}
 	embeddedLLMOffloadModes = []string{
@@ -948,13 +694,10 @@ var (
 	}
 )
 
-// embeddedLLMMaxContext resolves the ceiling for an explicit context: the
-// pinned model's OWN training context (262144), read from core's memory
-// profile rather than transcribed here so a pin bump cannot leave a stale
-// ceiling behind. OnceValues keeps the profile's measurement tables off the
-// per-load path, and the error is propagated rather than defaulted away —
-// failing closed is the point, since a ceiling nobody could read is a ceiling
-// nobody can enforce.
+// embeddedLLMMaxContext resolves the explicit-context ceiling from the pinned
+// model's OWN training context (core's memory profile — never transcribed, so
+// a pin bump cannot leave a stale ceiling). It fails closed: an unreadable
+// profile is an error, never a permissive bound.
 var embeddedLLMMaxContext = sync.OnceValues(func() (int, error) {
 	profile, err := embeddedllm.PinnedMemoryProfile()
 	if err != nil {
@@ -967,150 +710,107 @@ var embeddedLLMMaxContext = sync.OnceValues(func() (int, error) {
 })
 
 // EmbeddedLLMMaxContextTokens exposes the resolved context ceiling for
-// diagnostics and tests. It fails closed: a profile that cannot be read
-// yields an error, never a permissive bound.
+// diagnostics and tests (fail-closed).
 func EmbeddedLLMMaxContextTokens() (int, error) { return embeddedLLMMaxContext() }
 
-// TuningConfig is the persisted, user-editable override surface for the
-// embedded model's memory plan. It maps onto `embeddedllm.Tuning` one-to-one
-// (see ToTuning) and follows the AutoUnloadConfig precedent exactly: every
-// field is a pointer, so an explicit value — including an explicit `auto` or
-// an explicit `0` — is distinguishable from "the operator never wrote this".
-//
-// That distinction is load-bearing, not cosmetic. Two examples from the
-// planner's own contract:
-//
-//   - an UNSET `fit` lets the fit-exclusivity rule decide, while an explicit
-//     `fit: false` forces `-fit off`;
-//   - an UNSET `cache_ram_mib` leaves the ceiling to the planner (the
-//     runtime's own default, raised to the measured spare memory when that
-//     exceeds it), while an explicit `0` DISABLES the prompt cache.
-//
-// Nothing here is seeded by ApplyDefaults, for the same reason: materializing
-// the pointers would turn every "unset" into an "explicit auto" on the first
-// save and destroy the distinction this struct exists to preserve. The zero
-// TuningConfig — all knobs absent — IS the documented all-Auto default, and
-// `yaml:"tuning,omitempty"` keeps it out of a config.yaml that never authored it.
-//
-// Unlike the rest of embedded_llm, this section is a SETTING: Install and
-// Remove both carry it through verbatim, so provisioning or uninstalling the
-// model never resets a tuned memory plan.
-//
-// Two `embeddedllm.Tuning` fields are deliberately NOT exposed here: `Devices`
-// (`-dev`) and `SplitMode` (`-sm`). Both pin the offload, which forces fit off,
-// and neither has a safe default on a machine c0wrk has not measured — naming
-// the wrong device is an unlaunchable server, not a slower one. They stay
-// reachable only through the planner's own vocabulary.
+// TuningConfig is the persisted operator override surface for the embedded
+// model's memory plan, mapped one-to-one onto `embeddedllm.Tuning` (ToTuning
+// is the only translation). Every field is a pointer, so an explicit value —
+// including "auto" or 0 — is distinguishable from "never written"; the
+// distinction is load-bearing (unset fit lets the exclusivity rule decide,
+// explicit false forces `-fit off`; unset cache_ram_mib defers to the
+// planner, explicit 0 disables the cache). Nothing is seeded by
+// ApplyDefaults — the zero value IS the documented all-Auto default — and
+// Install/Remove carry the section through verbatim. See
+// specs/domains/embedded-llm.md, ADR-067. `Devices`/`SplitMode` are
+// deliberately not exposed: they pin the offload and have no safe default on
+// an unmeasured machine.
 type TuningConfig struct {
-	// Context overrides `-c`. Absent (or `mode: auto`) lets the planner size
-	// it: from the fit floor under fit, otherwise from the RAM ladder.
+	// Context overrides `-c`; absent (or mode auto) lets the planner size it
+	// (fit floor under fit, otherwise the RAM ladder).
 	Context EmbeddedLLMContextConfig `yaml:"context,omitempty"`
-	// KVCacheType overrides BOTH `-ctk` and `-ctv` (one value for both: a
-	// mixed pair silently drops to CPU flash attention). Absent or "auto" is
-	// the ADAPTIVE path — f16, escalating to q8_0 and then q4_0 until the
-	// target context fits. Any other spelling must be one of the three
-	// precisions core has a measurement for; `q5_0` is excluded on a measured
-	// ~8x long-context decode slowdown, and an unlisted precision is refused
-	// rather than coerced to f16.
+	// KVCacheType overrides BOTH `-ctk` and `-ctv` (a mixed pair silently
+	// drops to CPU flash attention). Absent/"auto" = adaptive (f16 → q8_0 →
+	// q4_0 until the context fits); any other spelling must be a measured
+	// precision — q5_0 is excluded (measured ~8x long-context decode
+	// slowdown) and unlisted ones are refused, never coerced to f16.
 	KVCacheType *string `yaml:"kv_cache_type,omitempty"`
-	// Offload overrides `-ngl`. Absent (or `mode: auto`) leaves the layer
-	// count to the runtime's fit pass when nothing else pins it.
+	// Offload overrides `-ngl`; absent (or mode auto) leaves the layer count
+	// to the runtime's fit pass when nothing else pins it.
 	Offload EmbeddedLLMOffloadConfig `yaml:"offload,omitempty"`
-	// Fit overrides `-fit`. Absent lets the exclusivity rule decide; an
-	// explicit false forces `-fit off` and hands context sizing back to the
-	// planner; an explicit true NEXT TO an explicit offload loses to the
-	// exclusivity rule (and the planner records that in its notes).
+	// Fit overrides `-fit`: absent lets the exclusivity rule decide, false
+	// forces `-fit off` (planner sizes context), and true next to an explicit
+	// offload loses to the exclusivity rule (recorded in the plan notes).
 	Fit *bool `yaml:"fit,omitempty"`
-	// FitTargetMiB overrides `-fitt`, the per-device margin fit leaves free.
-	// Absent keeps the runtime's own 1024 MiB target; an explicit 0 also omits
-	// the flag. Must be within 0..embeddedllm.MaxTuningMiB. Only emitted under
-	// fit.
+	// FitTargetMiB overrides `-fitt` (fit's per-device free margin; explicit
+	// 0 also omits the flag). 0..embeddedllm.MaxTuningMiB; emitted under fit.
 	FitTargetMiB *int `yaml:"fit_target_mib,omitempty"`
-	// FitMinContext overrides `-fitc`, the smallest context fit may settle on.
-	// Absent means c0wrk's 65536 floor — deliberately NOT the runtime's own
-	// 4096, which is small enough to truncate answers on this model. Must be
-	// within 1..max context. Only emitted under fit.
+	// FitMinContext overrides `-fitc`; absent means c0wrk's 65536 floor —
+	// deliberately NOT the runtime's own 4096, small enough to truncate
+	// answers on this model. 1..max context; emitted under fit.
 	FitMinContext *int `yaml:"fit_min_context,omitempty"`
-	// KVOffload is `-kvo`/`-nkvo`. Absent and an explicit true keep the KV
-	// cache on the device with the layers; false passes `-nkvo` and leaves it
-	// in system RAM, trading device memory for host memory and attention
-	// bandwidth.
+	// KVOffload is `-kvo`/`-nkvo`: false moves the KV cache from the device
+	// to system RAM (device memory traded for host memory and attention
+	// bandwidth); absent/true keep it with the layers.
 	KVOffload *bool `yaml:"kv_offload,omitempty"`
-	// MMProjOffload is `--mmproj-offload`/`--no-mmproj-offload`. Absent and an
-	// explicit true keep the vision projector's reserve on the device; false
-	// moves it to system RAM.
+	// MMProjOffload is `--mmproj-offload`/`--no-mmproj-offload`: false moves
+	// the vision projector's reserve to system RAM.
 	MMProjOffload *bool `yaml:"mmproj_offload,omitempty"`
-	// Packing overrides the weights quantization. Absent or "auto" keeps the
-	// packing the hardware probe resolved (recorded separately in
-	// `embedded_llm.packing`); any other spelling must be one the registry pins
-	// AND the memory model has measured residency for, or the plan is refused
-	// instead of projected from a file size.
+	// Packing overrides the weights quantization; absent/"auto" keeps the
+	// probe-resolved packing (recorded in embedded_llm.packing). Any other
+	// spelling must be registry-pinned AND measured in the memory model, or
+	// the plan is refused instead of projected from a file size.
 	Packing *string `yaml:"packing,omitempty"`
-	// Parallel overrides `-np`, the slot count. Absent means 1: c0wrk serves
-	// one agent loop over one loopback socket and issues one request at a time,
-	// and `-np 4` was measured to inflate fit's own projection from 24450 MiB
-	// to 77297 MiB while SPLITTING the context across slots (`-c 8192 -np 4`
-	// yields 2048-token slots). Must be within
-	// 1..embeddedllm.MaxTuningParallel.
+	// Parallel overrides `-np` (slot count); absent means 1: one agent loop,
+	// one request at a time — `-np 4` was measured to inflate fit's
+	// projection (24450 → 77297 MiB) while SPLITTING the context across
+	// slots. 1..embeddedllm.MaxTuningParallel.
 	Parallel *int `yaml:"parallel,omitempty"`
-	// CacheRAMMiB overrides `-cram`, the prompt-cache ceiling. Absent leaves
-	// the ceiling to the planner (the runtime's own default, raised to the
-	// measured spare memory only when that exceeds it AND per-slot context
-	// checkpoints are disabled — with snapshots enabled the spare is held for
-	// their active-slot storage, which sits outside the cache limit and has no
-	// measured bound); an explicit 0 DISABLES the cache and is passed through
-	// verbatim, because disabling it is a legitimate choice. Must be within
+	// CacheRAMMiB overrides `-cram`, the prompt-cache ceiling; absent leaves
+	// it to the planner (runtime default raised to measured spare memory
+	// only when per-slot context checkpoints are disabled — with snapshots
+	// the spare is held for their storage outside the cache limit), and an
+	// explicit 0 DISABLES the cache verbatim (a legitimate choice).
 	// 0..embeddedllm.MaxTuningMiB.
 	CacheRAMMiB *int `yaml:"cache_ram_mib,omitempty"`
-	// CtxCheckpoints overrides `--ctx-checkpoints`, the per-slot KV snapshot
-	// count. Absent means embeddedllm.DefaultCtxCheckpoints (32, the runtime's
-	// own figure, rendered explicitly so an inherited LLAMA_ARG_CTX_CHECKPOINTS
-	// env value cannot decide it); an explicit 0 DISABLES the snapshots and is
-	// passed through verbatim, because disabling them is a legitimate choice.
-	// Must be within 0..embeddedllm.MaxTuningCtxCheckpoints.
+	// CtxCheckpoints overrides `--ctx-checkpoints` (per-slot KV snapshots);
+	// absent means embeddedllm.DefaultCtxCheckpoints, rendered explicitly so
+	// an inherited LLAMA_ARG_CTX_CHECKPOINTS env value cannot decide it.
+	// Explicit 0 disables them verbatim (legitimate). 0..MaxTuningCtxCheckpoints.
 	CtxCheckpoints *int `yaml:"ctx_checkpoints,omitempty"`
-	// CacheIdleSlots is `--cache-idle-slots`/`--no-cache-idle-slots`. Absent
-	// and an explicit true keep the runtime's default of saving idle slots to
-	// the prompt cache on a new task; false passes `--no-cache-idle-slots`.
+	// CacheIdleSlots is `--cache-idle-slots`/`--no-cache-idle-slots`: false
+	// stops saving idle slots to the prompt cache on a new task.
 	CacheIdleSlots *bool `yaml:"cache_idle_slots,omitempty"`
-	// HostReserveGiB overrides the system RAM kept out of the host budget.
-	// Absent keeps the topology's own derivation (the larger of a 4 GiB floor
-	// and 1/8 of RAM). It is a PLANNER-side budget knob, not a runtime flag —
-	// the pinned fork has no `--host-reserve` — and it REPLACES the derived
-	// reserve rather than stacking on it. Must be a FINITE number within
-	// 0..embeddedllm.MaxTuningHostReserveGiB: the planner converts it to an
-	// integer MiB count, and a float→int conversion the result type cannot
-	// represent is implementation-defined (it saturates on arm64 and goes
-	// negative on amd64, which would fail the memory gate open).
+	// HostReserveGiB REPLACES (never stacks on) the derived system-RAM
+	// reserve (planner-side budget — the pinned fork has no --host-reserve
+	// flag); absent keeps the topology derivation (max(4 GiB, RAM/8)). Must
+	// be a FINITE number within 0..MaxTuningHostReserveGiB: the planner's
+	// float→int conversion must stay representable (see ToTuning).
 	HostReserveGiB *float64 `yaml:"host_reserve_gib,omitempty"`
 }
 
 // EmbeddedLLMContextConfig is the `tuning.context` knob: a mode plus, for
 // `mode: exact` only, the token count. Mirrors `embeddedllm.ContextTuning`.
 type EmbeddedLLMContextConfig struct {
-	// Mode is "auto" (absent is a synonym) or "exact".
-	Mode *string `yaml:"mode,omitempty"`
-	// Tokens is the pinned `-c`. Validated even while Mode is auto, so
-	// switching to exact can never activate an out-of-range context — the same
-	// rule auto_unload.minutes follows while the timer is disabled.
+	Mode *string `yaml:"mode,omitempty"` // "auto" (absent is a synonym) or "exact"
+	// Tokens is the pinned `-c`, validated even while Mode is auto — switching
+	// to exact can never activate an out-of-range context.
 	Tokens *int `yaml:"tokens,omitempty"`
 }
 
 // EmbeddedLLMOffloadConfig is the `tuning.offload` knob: a mode plus, for
 // `mode: layers` only, the layer count. Mirrors `embeddedllm.Offload`.
 type EmbeddedLLMOffloadConfig struct {
-	// Mode is "auto" (absent is a synonym), "all", "cpu" or "layers".
-	Mode *string `yaml:"mode,omitempty"`
-	// Layers is the explicit `-ngl` count. Validated even while Mode is not
-	// "layers", for the same reason as Tokens above. Must be within
-	// 0..embeddedllm.MaxTuningLayers.
+	Mode *string `yaml:"mode,omitempty"` // "auto" (absent is a synonym), "all", "cpu" or "layers"
+	// Layers is the explicit `-ngl` count, validated even while Mode is not
+	// "layers" (same rule as Tokens). 0..embeddedllm.MaxTuningLayers.
 	Layers *int `yaml:"layers,omitempty"`
 }
 
-// tuningChoice resolves one string knob against a closed set. It reports the
-// CANONICAL spelling (so `PQ2_0` and `pq2_0` are the same choice) and whether
-// the operator picked something other than Auto. Matching is case-insensitive
-// and trimmed; the error names the key and lists every legal spelling.
+// tuningChoice resolves one string knob against a closed set, reporting the
+// CANONICAL spelling and whether the operator picked something other than
+// Auto (matching is case-insensitive/trimmed; the error names the key and
+// lists every legal spelling).
 func tuningChoice(key string, value *string, allowed []string) (canonical string, explicit bool, err error) {
 	if value == nil {
 		return "", false, nil
@@ -1134,9 +834,8 @@ func tuningChoice(key string, value *string, allowed []string) (canonical string
 }
 
 // tuningKVChoices and tuningPackingChoices read the two closed sets from core
-// instead of transcribing them, so a precision or a packing core adds (or
-// retires on a new measurement) changes what config.yaml may say with no edit
-// here.
+// instead of transcribing them, so a precision/packing core adds or retires
+// changes what config.yaml may say with no edit here.
 func tuningKVChoices() []string {
 	kv := embeddedllm.KVTypes()
 	out := make([]string, 0, len(kv))
@@ -1155,17 +854,13 @@ func tuningPackingChoices() []string {
 	return out
 }
 
-// tuningRange checks one integer knob against a closed range. The key is named
-// in the message and the fix is stated, matching validateEmbeddedLLM's existing
-// style.
-//
-// The CEILING is as load-bearing as the floor. Core owns the figures
-// (embeddedllm.MaxTuning*) and they are overflow/absurdity guards, not tuning
-// opinions: every one of these values is multiplied by a per-unit footprint
-// downstream (MiB→bytes, layers→per-layer weights, slots→per-slot KV caches), so
-// an unbounded knob makes that arithmetic wrap instead of merely being refused
-// by the memory gate — and a bound that exists at only one layer is a bound an
-// operator walks around by hand-editing config.yaml.
+// tuningRange checks one integer knob against a closed range (the message
+// names the key and states the fix). The CEILING is as load-bearing as the
+// floor: core's MaxTuning* figures are overflow/absurdity guards — each value
+// feeds a per-unit footprint downstream (MiB→bytes, layers→weights,
+// slots→KV caches), so an unbounded knob wraps that arithmetic instead of
+// being refused, and a bound at only one layer is walked around by
+// hand-editing config.yaml.
 func tuningRange(key string, value *int, floor, ceiling int, fix string) error {
 	if value == nil {
 		return nil
@@ -1177,18 +872,12 @@ func tuningRange(key string, value *int, floor, ceiling int, fix string) error {
 }
 
 // ToTuning translates the persisted override surface into the planner's
-// `embeddedllm.Tuning` vocabulary, and it is the ONLY place that translation
-// happens — validateEmbeddedLLMTuning calls it too, so a config validate()
-// accepts is by construction a config the planner can honour, and the two can
-// never drift apart.
-//
-// It fails closed. A spelling outside a closed set, or a number outside its
-// range, is an error naming the key and the fix; nothing is coerced to Auto,
-// because silently planning a different memory plan than the one the operator
-// wrote is exactly the failure this surface exists to avoid.
-//
-// Pointer fields are cloned, so the returned Tuning never aliases the config
-// and a caller cannot reach back into the live state through it.
+// `embeddedllm.Tuning` vocabulary — the ONLY translation site
+// (validateEmbeddedLLMTuning calls it too, so "validate() accepts" and "the
+// planner can honour it" are one statement by construction). It fails closed:
+// out-of-set spellings and out-of-range numbers are errors naming key and fix,
+// never coerced to Auto; pointer fields are cloned so the result never aliases
+// the config.
 func (t TuningConfig) ToTuning() (embeddedllm.Tuning, error) {
 	maxContext, err := embeddedLLMMaxContext()
 	if err != nil {
@@ -1290,7 +979,7 @@ func (t TuningConfig) ToTuning() (embeddedllm.Tuning, error) {
 
 	// The remaining numeric knobs. Every bound is checked whether or not the
 	// knob is currently inert — an out-of-range fit_min_context beside
-	// `fit: false` is still a dead budget waiting for the flag to be flipped.
+	// `fit: false` is still a dead budget waiting for the flag to flip.
 	if err := tuningRange("embedded_llm.tuning.fit_target_mib", t.FitTargetMiB, 0,
 		embeddedllm.MaxTuningMiB,
 		" (0 keeps the runtime's own 1024 MiB target)"); err != nil {
@@ -1318,15 +1007,13 @@ func (t TuningConfig) ToTuning() (embeddedllm.Tuning, error) {
 		return embeddedllm.Tuning{}, err
 	}
 	if t.HostReserveGiB != nil {
-		// A FINITE-and-bounded check, not just `< 0`. NaN compares false against
-		// every bound, so the old floor-only check let an operator typo through
-		// and the planner then silently ignored it; and a float→int conversion
-		// whose value the result type cannot represent is implementation-defined
-		// in Go — the planner's `int64(reserve * mibPerGiB)` saturates on arm64
-		// and yields the negative "indefinite value" on amd64, which would make
-		// host = ram − reserve enormous and fail the memory gate OPEN on the one
-		// knob meant to shrink the budget. Rejecting ±Inf keeps that conversion
-		// total on every architecture.
+		// A FINITE-and-bounded check, not just `< 0`: NaN compares false
+		// against every bound (the old floor-only check let a typo through,
+		// silently ignored), and a float→int conversion the result type cannot
+		// represent is implementation-defined — saturates on arm64, negative
+		// "indefinite" on amd64, which would make host = ram − reserve enormous
+		// and fail the memory gate OPEN on the one knob meant to shrink it.
+		// Rejecting ±Inf keeps the conversion total on every architecture.
 		reserve := *t.HostReserveGiB
 		if math.IsNaN(reserve) || math.IsInf(reserve, 0) ||
 			reserve < 0 || reserve > embeddedllm.MaxTuningHostReserveGiB {
@@ -1345,9 +1032,8 @@ func tuningContextRange(tokens *int, maxContext int) error {
 	return tuningContextRangeNamed("embedded_llm.tuning.context.tokens", tokens, maxContext)
 }
 
-// tuningContextRangeNamed checks one context-shaped knob against the model's
-// own training context. The upper bound is the pinned profile's, not a
-// transcribed figure.
+// tuningContextRangeNamed checks one context-shaped knob against the pinned
+// profile's training context (never a transcribed figure).
 func tuningContextRangeNamed(key string, value *int, maxContext int) error {
 	if value == nil {
 		return nil
@@ -1387,17 +1073,17 @@ func cloneFloat64Ptr(v *float64) *float64 {
 	return &copied
 }
 
-// BaseURL derives the loopback OpenAI-compatible endpoint from the persisted
-// port. Deriving (instead of storing) the URL is what keeps a port reallocation
-// from leaving a stale endpoint behind.
+// BaseURL derives the loopback endpoint from the persisted port — deriving
+// (instead of storing) is what keeps a port reallocation from leaving a stale
+// endpoint behind.
 func (c EmbeddedLLMConfig) BaseURL() string {
 	return fmt.Sprintf("http://%s:%d/v1", EmbeddedLLMHost, c.Port)
 }
 
 // ProviderConfig returns the generated openai_compatible record for the
-// embedded server. It is only meaningful while Installed is true. The API key
-// is always empty (a loopback server takes no key) and no TLS fingerprint is
-// set (the endpoint is plain HTTP, so ADR-054 pinning does not apply).
+// embedded server (meaningful only while Installed): empty API key (loopback
+// takes none) and no TLS fingerprint (plain HTTP; ADR-054 pinning does not
+// apply).
 func (c EmbeddedLLMConfig) ProviderConfig() OpenAICompatibleConfig {
 	return OpenAICompatibleConfig{
 		BaseURL: c.BaseURL(),
@@ -1411,24 +1097,16 @@ func (c *Config) SyncEmbeddedLLMProvider(contextWindow int) bool {
 	return c.LLM.SyncEmbeddedProvider(c.EmbeddedLLM, contextWindow)
 }
 
-// SyncEmbeddedProvider makes the generated `embedded` provider record match the
-// authoritative embedded_llm state:
-//
-//   - installed     → the record is (re)generated from the persisted port, so a
-//     reallocated port or a hand-deleted entry self-heals;
-//   - not installed → the record is removed, so no dangling provider survives a
-//     Remove.
-//
-// contextWindow > 0 additionally records the resolved RAM-tier context window as
-// an llm.models override for the embedded model (every other override field is
-// preserved); <= 0 leaves an existing override untouched. The tier is passed IN:
-// this function performs no hardware probe, no network I/O and no disk access,
-// so it is safe on the config-load path and from any request handler.
-//
-// This is the single defense against UpdateLLMConfig's whole-map replacement of
-// openai_compatible: the UI draft never owns the `embedded` key. Maps are
-// copied before mutation, so calling this on a struct copy that still shares
-// its maps with the live config cannot leak a partial change to readers.
+// SyncEmbeddedProvider makes the generated `embedded` provider record match
+// the authoritative embedded_llm state: installed → (re)generated from the
+// persisted port (a reallocated port or hand-deleted entry self-heals), not
+// installed → removed (no dangling provider survives a Remove).
+// contextWindow > 0 additionally records the resolved RAM-tier context window
+// as an llm.models override (other override fields preserved); <= 0 leaves it
+// untouched. The tier is passed IN — no probe, no network, no disk, safe on
+// the config-load path. This is the single defense against UpdateLLMConfig's
+// whole-map replacement of openai_compatible; maps are copied before mutation
+// so a struct copy sharing maps cannot leak a partial change.
 func (c *LLMConfig) SyncEmbeddedProvider(state EmbeddedLLMConfig, contextWindow int) bool {
 	changed := false
 
@@ -1460,11 +1138,10 @@ func (c *LLMConfig) SyncEmbeddedProvider(state EmbeddedLLMConfig, contextWindow 
 	return changed
 }
 
-// embeddedOutputLimitCeiling is the generation ceiling recorded for the local
-// model: EmbeddedLLMOutputLimit, clamped under contextWindow/4 when a window is
-// known (an output reserve at or above a quarter of the window is the shape
-// that disables compaction). contextWindow <= 0 (the seed path before the
-// readback) keeps the plain default.
+// embeddedOutputLimitCeiling is the local model's generation ceiling:
+// EmbeddedLLMOutputLimit clamped under contextWindow/4 (an output reserve at
+// a quarter of the window is the shape that disables compaction); <= 0 (the
+// pre-readback seed path) keeps the plain default.
 func embeddedOutputLimitCeiling(contextWindow int) int {
 	if contextWindow <= 0 {
 		return EmbeddedLLMOutputLimit
@@ -1473,9 +1150,8 @@ func embeddedOutputLimitCeiling(contextWindow int) int {
 }
 
 // setEmbeddedOutputLimit records the local model's generation ceiling as its
-// llm.models override. A value the user authored is left alone: this is a
-// seeded default, not an operator override — once anything non-zero is present
-// the function reports no change and SyncEmbeddedProvider skips the write.
+// llm.models override. A user-authored value is left alone — this seeds a
+// default, it does not override (any non-zero present ⇒ no change).
 func (c *LLMConfig) setEmbeddedOutputLimit(limit int) bool {
 	if limit <= 0 {
 		return false
@@ -1535,18 +1211,16 @@ func (c *LLMConfig) copyModelOverridesMap() {
 	c.Models = clone
 }
 
-// validateEmbeddedLLM checks the embedded_llm section. Most of it is
-// app-written state, so an invalid value there is either a hand edit or a bug —
-// both must fail fast with an actionable message rather than produce an
-// unreachable provider endpoint or a dead idle timer. The `tuning` sub-section
-// is operator-authored, and it is held to the same standard for the same
-// reason: a plan the planner cannot honour must be refused at load, not at
-// launch.
+// validateEmbeddedLLM checks the embedded_llm section: most of it is
+// app-written state, so an invalid value is a hand edit or a bug — either way
+// it must fail fast with an actionable message, and the operator-authored
+// tuning sub-section is held to the same standard (refuse at load, not at
+// launch).
 func validateEmbeddedLLM(c *EmbeddedLLMConfig) error {
-	// The engine setting is a closed vocabulary, and an explicit mtplx cannot
-	// carry llama-only tuning: the two halves of one contradiction are named
-	// together. Auto is NOT cross-checked here — its resolution is a platform
-	// fact the install owns, and PlanMLX refuses the same list there.
+	// Closed vocabulary; an explicit mtplx cannot carry llama-only tuning —
+	// both halves of one contradiction are named together. Auto is not
+	// cross-checked here (a platform fact the install owns; PlanMLX refuses
+	// the same list there).
 	switch embeddedllm.NormalizeEngine(embeddedllm.Engine(c.Engine)) {
 	case embeddedllm.EngineAuto, embeddedllm.EngineLlama, embeddedllm.EngineMTPLX:
 	default:
@@ -1584,15 +1258,11 @@ func validateEmbeddedLLM(c *EmbeddedLLMConfig) error {
 		)
 	}
 
-	// The idle budget is bounded on BOTH sides. The floor keeps the timer from
-	// being armed with a non-positive budget; the ceiling
-	// (embeddedllm.MaxAutoUnloadMinutes) keeps the minutes→nanoseconds multiply
-	// total — past it `time.Duration(minutes) * time.Minute` wraps, and the
-	// wrapped result can be a short POSITIVE budget (seconds, or at the residues
-	// of the 2^11 divisor even microseconds), so an "effectively never" value
-	// would silently invert into "unload immediately" and the UI would keep
-	// echoing the operator's number. Same overflow class maxMemoryLimitMiB
-	// already guards for the two MiB-valued memory knobs.
+	// The idle budget is bounded on BOTH sides: the floor keeps a non-positive
+	// timer, the ceiling keeps the minutes→nanoseconds multiply total — past
+	// it `Duration(minutes) * Minute` wraps and can yield a short POSITIVE
+	// budget, silently inverting "effectively never" into "unload
+	// immediately" (same overflow class maxMemoryLimitMiB guards).
 	if minutes := c.AutoUnload.IdleMinutes(); minutes < 1 || minutes > embeddedllm.MaxAutoUnloadMinutes {
 		return fmt.Errorf(
 			"embedded_llm.auto_unload.minutes %d is not valid; must be within 1-%d (default %d), or set embedded_llm.auto_unload.enabled: false to disable the idle timer",
@@ -1600,20 +1270,16 @@ func validateEmbeddedLLM(c *EmbeddedLLMConfig) error {
 		)
 	}
 
-	// The tuning knobs are validated unconditionally — while the model is not
-	// installed, while fit is off, and while a knob is otherwise inert — for
-	// the reason auto_unload.minutes already is: a value that is merely
-	// dormant today must not become a dead budget the moment the switch is
-	// flipped. Routing through ToTuning is what keeps this list and the
-	// planner's own closed sets from ever disagreeing.
+	// The tuning knobs are validated unconditionally (model not installed, fit
+	// off, knob inert) — a dormant value must not become a dead budget when
+	// the switch flips. Routing through ToTuning keeps this list and the
+	// planner's closed sets from ever disagreeing.
 	return validateEmbeddedLLMTuning(&c.Tuning)
 }
 
 // validateEmbeddedLLMTuning checks the embedded_llm.tuning section by
-// translating it. Delegating to ToTuning makes "validate() accepts it" and
-// "the planner can honour it" the same statement by construction rather than by
-// coincidence, so the two cannot drift; every message names the offending key
-// and states the fix.
+// translating it through ToTuning — "validate() accepts" and "the planner can
+// honour it" are the same statement by construction, so the two cannot drift.
 func validateEmbeddedLLMTuning(t *TuningConfig) error {
 	_, err := t.ToTuning()
 	return err
@@ -1637,57 +1303,43 @@ type MCPServerConfig struct {
 	URL     string            `yaml:"url,omitempty" json:"url,omitempty"`
 	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
 
-	// Timeout bounds this server's initialization handshake (initialize +
-	// tools/list), as a Go duration string (e.g. "30s"). Empty is allowed and
-	// selects the mcp package default (60s). When set it must parse and be
-	// positive; invalid values are rejected on the UI save path
-	// (validateMCPServerConfig) and fail soft to the default on the load path.
+	// Timeout bounds the initialization handshake (initialize + tools/list) as
+	// a duration string; empty selects the mcp package default (60s). Invalid
+	// values are rejected on the UI save path and fail soft to the default on
+	// the load path.
 	Timeout string `yaml:"timeout,omitempty" json:"timeout,omitempty"`
 
-	// CallTimeout bounds a single tools/call invocation against this server,
-	// as a Go duration string (e.g. "2m"). Empty is allowed: the call inherits
-	// Timeout (which itself defaults when unset). When set it must parse and
-	// be positive; invalid values are rejected on the UI save path and fail
-	// soft to the default on the load path.
+	// CallTimeout bounds a single tools/call invocation (duration string);
+	// empty inherits Timeout (itself defaulted when unset). Same
+	// save-rejects / load-fails-soft handling as Timeout.
 	CallTimeout string `yaml:"call_timeout,omitempty" json:"call_timeout,omitempty"`
 
 	// Mode is the LEGACY per-server activation key (mcp.servers.<name>.mode):
-	// "auto" (the historical default — connect whenever the MCP gateway
-	// starts or reconfigures), "manual" (keep the configuration and surface
-	// the server as mentionable for the chat-input completion / send flow
-	// instead of treating it as always-on) or "disabled" (never dialed — the
-	// server is skipped when the gateway config is built). The load pipeline
-	// folds a set mode into capabilities.mcp.<name> (both contexts, unless
-	// the entry already carries explicit values — migrateLegacyMCPServerModes)
-	// and ALWAYS erases the field, so the key disappears from YAML at the
-	// next save and capabilities.mcp.<name> is the only place the mode
-	// survives. An unrecognized value fails soft to "auto" with a load
-	// warning. The enum is shared with the capabilities section through
-	// ValidMCPServerMode. The JSON tag is "-": the wire format stopped
-	// carrying mode when the per-context capabilities section took over —
-	// UpdateMCPServers does not accept it and GetMCPServers / GetConfig do
-	// not emit it. The YAML tag stays so the load pipeline can still read
-	// (and migrate) legacy configs.
+	// "auto" | "manual" | "disabled". The load pipeline folds it into
+	// capabilities.mcp.<name> (both contexts, unless explicit values already
+	// exist) and always erases the field — the key disappears from YAML at the
+	// next save. Unrecognized values fail soft to "auto" with a load warning;
+	// the enum is shared with the capabilities section (ValidMCPServerMode).
+	// json:"-" (the wire stopped carrying it); the YAML tag stays so legacy
+	// configs still load and migrate. See specs/domains/capabilities.md.
 	Mode string `yaml:"mode,omitempty" json:"-"`
 }
 
 // CapabilityModes is one capability entry's activation modes, one per
-// execution context: ChatMode applies to interactive chat tasks, CodeMode to
-// project (CODE) tasks. Both share the MCP server mode enum — "auto",
-// "manual" or "disabled", with ValidMCPServerMode as the single source of
-// truth — and an empty value IS "auto" (the default), which is why the YAML
-// keys are omitempty.
+// execution context (ChatMode = interactive chat tasks, CodeMode = project
+// CODE tasks). Both share the MCP server mode enum ("auto"/"manual"/"disabled",
+// ValidMCPServerMode as the single source of truth); empty IS "auto", hence
+// the omitempty keys.
 type CapabilityModes struct {
 	ChatMode string `yaml:"chat_mode,omitempty" json:"chat_mode,omitempty"`
 	CodeMode string `yaml:"code_mode,omitempty" json:"code_mode,omitempty"`
 }
 
 // CapabilitiesConfig is the top-level capabilities: section (skills, agents,
-// mcp), each map keyed by the capability's name. Every map is optional; a
-// missing name resolves to "auto" in both contexts. The maps are normalized
-// at load: entries whose values are BOTH empty are dropped as meaningless,
-// and capabilities.mcp names outside mcp.servers are dropped as stale, so
-// the section never carries entries the rest of the config cannot resolve.
+// mcp), each map keyed by capability name. Optional: a missing name resolves
+// to "auto" in both contexts. Normalized at load — both-empty entries dropped
+// as meaningless, capabilities.mcp names outside mcp.servers dropped as
+// stale — so the section never carries unresolvable entries.
 type CapabilitiesConfig struct {
 	Skills map[string]CapabilityModes `yaml:"skills,omitempty" json:"skills,omitempty"`
 	Agents map[string]CapabilityModes `yaml:"agents,omitempty" json:"agents,omitempty"`
@@ -1714,9 +1366,9 @@ type ToolOutputPruningConfig struct {
 	ThresholdPercent float64  `yaml:"thresholdPercent"` // Context fill % below which pruning is skipped (default: 50)
 }
 
-// HistoryMutationConfig configures regular (non-emergency) history mutation
-// to reduce O(n²) replay cost. Unlike emergency compaction, mutation runs on
-// every BuildPrompt call and replaces old tool results with cache references.
+// HistoryMutationConfig configures regular (non-emergency) history mutation,
+// reducing O(n²) replay cost: unlike emergency compaction it runs on every
+// BuildPrompt call, replacing old tool results with cache references.
 type HistoryMutationConfig struct {
 	ToolResultEvictionStep int  `yaml:"toolResultEvictionStep"` // evict tool results to cache refs after N steps (default: 10)
 	EvictStepStatus        bool `yaml:"evictStepStatus"`        // evict update_checklist results immediately
@@ -1746,10 +1398,9 @@ type ExecutorConfig struct {
 	ToolOutputPruning  ToolOutputPruningConfig `yaml:"toolOutputPruning"`
 	HistoryMutation    HistoryMutationConfig   `yaml:"historyMutation"`
 	CircuitBreaker     CircuitBreakerConfig    `yaml:"circuitBreaker"`
-	// VerifyOnEdit runs a user-configured verification command (tests/linter)
-	// after every successful file edit in CODE tasks and injects its output
-	// into the conversation as a system observation. Default off; the command
-	// always comes from this config, never from the model. See
+	// VerifyOnEdit runs a config-authored verification command after every
+	// successful file edit in CODE tasks and injects bounded output as a
+	// system observation; default off, never model-authored. See
 	// specs/domains/verify-on-edit.md.
 	VerifyOnEdit VerifyOnEditConfig `yaml:"verify_on_edit"`
 }
@@ -1759,19 +1410,17 @@ type ExecutorConfig struct {
 type VerifyOnEditConfig struct {
 	Enabled bool `yaml:"enabled"`
 	// Command is the shell command executed after a successful write_file/
-	// edit_file call. It runs through the bash tool machinery, so the
-	// execute-group deny policy and the command blocklist still apply — but
-	// because the command is user-configured (not model-authored) it is not
-	// routed through interactive confirmation.
+	// edit_file call, through the bash tool machinery: the execute-group deny
+	// policy and command blocklist still apply, but being user-configured
+	// (not model-authored) it skips interactive confirmation.
 	Command string `yaml:"command"`
-	// Timeout is a Go duration string ("120s", "2m"). Empty or invalid values
-	// fall back to 2 minutes. The effective timeout is capped by
-	// timeouts.bashMaxTimeout — the bash tool enforces its own maximum on
-	// every command, so a larger value here is clamped (with a warning).
+	// Timeout is a Go duration string; empty/invalid falls back to 2 minutes,
+	// and the effective value is clamped (with a warning) by
+	// timeouts.bashMaxTimeout.
 	Timeout string `yaml:"timeout"`
 	// MaxOutputChars caps the verification output injected into the model
-	// context (truncated with a marker when exceeded). 0 falls back to the
-	// SDK default (agent.DefaultVerifyOnEditCap, currently 4000).
+	// context (truncated with a marker); 0 falls back to the SDK default
+	// (agent.DefaultVerifyOnEditCap, currently 4000).
 	MaxOutputChars int `yaml:"max_output_chars"`
 }
 
@@ -1787,12 +1436,11 @@ type CompactionConfig struct {
 	Forecast            CompactionForecastConfig `yaml:"forecast"`            // compression-ratio forecast seeds for manual-compaction prediction
 }
 
-// CompactionForecastConfig holds the compression-ratio forecast seeds used to
-// predict the effect of the LLM-backed manual-compaction strategies. They seed
-// an EWMA that is refined after each real compaction; the forecast affects only
-// the predicted reclaim number in the compact menu, never strategy availability
-// (which is an exact structural verdict). Zero values fall back to sp4rk's
-// conservative defaults.
+// CompactionForecastConfig holds the compression-ratio forecast seeds for the
+// LLM-backed manual-compaction strategies: an EWMA refined after each real
+// compaction, affecting only the predicted reclaim number in the compact
+// menu — never strategy availability (an exact structural verdict). Zeros
+// fall back to sp4rk's conservative defaults.
 type CompactionForecastConfig struct {
 	SummarizationRatio       float64 `yaml:"summarization_ratio"`        // summarization + hierarchical middle (default: 0.3)
 	HierarchicalDistantRatio float64 `yaml:"hierarchical_distant_ratio"` // hierarchical distant zone (default: 0.15)
@@ -1845,12 +1493,11 @@ const (
 	ToolGroupRemoteMCP   = "remote_mcp"   // MCP servers reached over the network (http)
 	ToolGroupRemoteWrite = "remote_write" // writes to remote resources (e.g. remote MCP mutations)
 
-	// ToolGroupSystem is a reserved group covering internal/system tools (the
-	// sdktools.GroupSystem each such tool declares on its BaseTool). Its
-	// policy is fixed (always allowed, never surfaced for
-	// confirmation) and it MUST NOT appear in config.yaml — validation rejects
-	// it so users cannot widen or narrow the internal-tools bypass from the
-	// config file.
+	// ToolGroupSystem is the reserved internal/system-tools group
+	// (sdktools.GroupSystem on each such tool's BaseTool): policy fixed
+	// (always allowed, never surfaced for confirmation), and it MUST NOT
+	// appear in config.yaml — validation rejects it so the internal-tools
+	// bypass cannot be widened from the config file.
 	ToolGroupSystem = "system"
 )
 
@@ -1862,127 +1509,73 @@ const (
 )
 
 // Mode values accepted by security.autonomy_mode — the unified autonomy
-// posture replacing the former pair of autonomy booleans (the Smart Approve
-// toggle and the silent-mode master switch). The core mirror of this
-// vocabulary lives in core (core.AutonomyMode*); backend/
-// configadapter_test.go pins the two dictionaries against each other so
-// neither side can rename a value alone.
+// posture replacing the former autonomy booleans (Smart Approve toggle +
+// silent-mode master switch). The core mirror (core.AutonomyMode*) is pinned
+// against this dictionary by backend/configadapter_test.go.
 const (
-	// AutonomyModeStandard is the default posture: every interactive prompt
-	// (tool confirmations, step-limit cards, ask_user, review prompt)
-	// reaches a human.
-	AutonomyModeStandard = "standard"
-	// AutonomyModeAssisted lets the strict OWASP ASI judge resolve escalated
-	// calls (the former Smart Approve toggle): only a strict ALLOW skips the
-	// UI; every other outcome still asks the user.
-	AutonomyModeAssisted = "assisted"
-	// AutonomyModeSilent is the unattended posture (the former
-	// security.silent_mode.enabled=true): the four silent-mode sub-policies
-	// resolve the interactive prompts without a human.
-	AutonomyModeSilent = "silent"
+	AutonomyModeStandard = "standard" // default: every interactive prompt (confirmations, step limits, ask_user, review) reaches a human
+	AutonomyModeAssisted = "assisted" // the strict OWASP ASI judge resolves escalated calls; only a strict ALLOW skips the UI
+	AutonomyModeSilent   = "silent"   // unattended: the silent-mode sub-policies resolve interactive prompts without a human
 )
 
-// Mode values accepted by security.silent_mode.tool_confirm.mode.
-//
-// In silent mode a tool call that would normally open a confirmation card
-// must resolve without a human. This enum selects how:
+// Mode values accepted by security.silent_mode.tool_confirm.mode: how a
+// silent-mode tool call that would normally open a confirmation card
+// resolves without a human.
 const (
-	// SilentToolConfirmJudge routes the call through the strict judge (the
-	// same OWASP ASI evaluation Smart Approve uses): a strict ALLOW executes —
-	// canonical hard reasons included (the silent terminal deliberately drops
-	// the interactive canonical backstop; the executed decision is audited) —
-	// while a deliberate DENY denies. A fail-closed CONFIRM outcome (a spoken
-	// CONFIRM, a missing judge, an error/timeout, or an unparseable verdict) is
-	// resolved by security.silent_mode.user_confirm (deny default | escalate |
-	// confirm). Default.
+	// SilentToolConfirmJudge routes through the strict judge (the Smart
+	// Approve evaluation): a strict ALLOW executes — canonical hard reasons
+	// included; the silent terminal deliberately drops the interactive
+	// canonical backstop, and the executed decision is audited — a deliberate
+	// DENY denies, and a fail-closed CONFIRM outcome is resolved by
+	// security.silent_mode.user_confirm (deny | escalate | confirm). Default.
 	SilentToolConfirmJudge = "judge"
-	// SilentToolConfirmAllow executes a confirmation-gated call without UI when
-	// it carries no hard safety reason; a call carrying a HARD reason (canonical
-	// or not) escalates to the strict judge, which decides (its ALLOW executes,
-	// canonical included; a fail-closed CONFIRM follows user_confirm).
+	// SilentToolConfirmAllow executes calls carrying no hard safety reason;
+	// a HARD reason (canonical or not) escalates to the strict judge, whose
+	// ALLOW executes (a fail-closed CONFIRM follows user_confirm).
 	SilentToolConfirmAllow = "allow"
-	// SilentToolConfirmDeny blocks every confirmation-gated call.
-	SilentToolConfirmDeny = "deny"
+	SilentToolConfirmDeny  = "deny" // blocks every confirmation-gated call
 )
 
-// Mode values accepted by security.silent_mode.user_confirm.mode.
-//
-// Refines the tool_confirm terminal for a fail-closed CONFIRM outcome (the
-// judge returns CONFIRM, or is unavailable, errors, times out, or produces an
-// unparseable verdict): when silent mode would otherwise auto-deny such a call,
-// this sub-policy decides whether it executes unattended, still auto-denies, or
-// opens the blocking card. It never governs a deliberate judge DENY or an
-// ALLOW — those are resolved by tool_confirm alone.
+// Mode values accepted by security.silent_mode.user_confirm.mode: refines the
+// tool_confirm terminal for a fail-closed CONFIRM outcome (judge CONFIRM, or
+// unavailable/error/timeout/unparseable verdict). Never governs a deliberate
+// judge DENY or ALLOW — those tool_confirm resolves alone.
 const (
-	// SilentUserConfirmConfirm executes a fail-closed CONFIRM outcome
-	// unattended, audited as an allow. The most permissive value.
-	SilentUserConfirmConfirm = "confirm"
-	// SilentUserConfirmDeny is the fail-closed default: a CONFIRM outcome
-	// auto-denies with the reasoning, exactly as before the refinement.
-	SilentUserConfirmDeny = "deny"
-	// SilentUserConfirmEscalate falls back to the blocking confirmation card,
-	// deferring the decision to a human. The least permissive value.
-	SilentUserConfirmEscalate = "escalate"
+	SilentUserConfirmConfirm  = "confirm"  // executes unattended, audited as an allow — most permissive
+	SilentUserConfirmDeny     = "deny"     // fail-closed default: auto-denies with the reasoning
+	SilentUserConfirmEscalate = "escalate" // falls back to the blocking card — least permissive
 )
 
-// Mode values accepted by security.silent_mode.step_limit.mode.
-//
-// Selects what the execution loops do at a step-limit boundary (step-budget
-// exhaustion or a circuit-breaker abort). "auto" lets the strict loop judge
-// decide among the four responses; the other values pin one response
-// deterministically without consulting the judge.
+// Mode values accepted by security.silent_mode.step_limit.mode: what the
+// execution loops do at a step-limit boundary (budget exhaustion or
+// circuit-breaker abort). "auto" lets the strict loop judge decide; the rest
+// pin one response deterministically without consulting the judge.
 const (
-	// SilentStepLimitAuto lets the strict loop judge decide the boundary from
-	// the trajectory (task, plan progress, abort category, recent steps,
-	// metrics): it may grant more steps (allow_once/allow_more/allow_always)
-	// or stop (deny). Fail-closed to deny when the judge is unavailable or
-	// fails. Default.
-	SilentStepLimitAuto = "auto"
-	// SilentStepLimitAllowOnce grants exactly one more step.
-	SilentStepLimitAllowOnce = "allow_once"
-	// SilentStepLimitAllowMore grants a fresh batch of steps.
-	SilentStepLimitAllowMore = "allow_more"
-	// SilentStepLimitAllowAlways suspends the step budget entirely.
-	SilentStepLimitAllowAlways = "allow_always"
-	// SilentStepLimitDeny automates the "stop" answer: the run halts at the
-	// boundary and reports it, with NO card (unlike "stop", which keeps the
-	// interactive card and therefore opts this gate out of silent mode).
-	SilentStepLimitDeny = "deny"
-	// SilentStepLimitStop does NOT resolve the boundary: it keeps the blocking
-	// step-limit card, i.e. opts this gate out of silent mode.
-	SilentStepLimitStop = "stop"
+	SilentStepLimitAuto        = "auto"         // judge decides from the trajectory; fail-closed to deny. Default.
+	SilentStepLimitAllowOnce   = "allow_once"   // exactly one more step
+	SilentStepLimitAllowMore   = "allow_more"   // a fresh batch of steps
+	SilentStepLimitAllowAlways = "allow_always" // suspends the step budget entirely
+	SilentStepLimitDeny        = "deny"         // halts at the boundary and reports it, with NO card
+	SilentStepLimitStop        = "stop"         // keeps the blocking card — opts this gate out of silent mode
 )
 
-// Mode values accepted by security.silent_mode.ask_user.mode.
-//
-// Controls the availability of the ask_user tool:
+// Mode values accepted by security.silent_mode.ask_user.mode (ask_user
+// availability under silent mode).
 const (
-	// SilentAskUserDisable registers the ask_user tool with a nil callback, so
-	// a call resolves to the explicit "not available" result and the agent can
-	// never block on a question. Default.
-	SilentAskUserDisable = "disable"
-	// SilentAskUserEnable keeps the ask_user tool registered.
-	SilentAskUserEnable = "enable"
+	SilentAskUserDisable = "disable" // registered with a nil callback — calls resolve "not available". Default.
+	SilentAskUserEnable  = "enable"  // keeps the ask_user tool registered
 )
 
-// TrustedGitRepo is one entry in security.trusted_git_repos: a repository
-// whose untrusted-git-config intake warning the user has explicitly dismissed.
-// Path is the absolute, filepath.Clean-ed repository work-tree root (the same
-// form TrustGitRepo stores and notifyGitConfigRisk attributes warnings to).
-// Fingerprint identifies the git-config snapshot captured at trust time
-// (stored separately under ~/.c0wrk/git-config-snapshots/, see
-// GitConfigSnapshotsDir) so a later scan can diff against it and reinstate the
-// warning when the config changed after the trust decision.
-// SemanticFingerprint identifies the same snapshot's DANGEROUS semantic
-// content (every config entry outside the inert branch/alias allowlist, plus
-// the attribute routing and include sources verbatim — see
-// workspace.SemanticFingerprint): the trust lifecycle is bound to it, so the
-// benign branch/alias churn a git user legitimately produces no longer evicts
-// the trust, while any semantic change still does. Fingerprint and
-// SemanticFingerprint may be empty for entries written before fingerprinting
-// (or before the semantic layer) — the backend migrates those on the next
-// open, evicting the trust fail-closed when the migration cannot recover the
-// semantic identity.
+// TrustedGitRepo is one security.trusted_git_repos entry: a repository whose
+// untrusted-git-config intake warning the user explicitly dismissed. Path is
+// the absolute, Clean-ed work-tree root; Fingerprint identifies the captured
+// git-config snapshot (a later scan diffs against it and reinstates the
+// warning on change) and SemanticFingerprint its dangerous semantic content —
+// the trust lifecycle is bound to the semantic identity, so benign
+// branch/alias churn no longer evicts trust while any semantic change still
+// does. Empty fingerprints mark pre-fingerprinting records the backend
+// migrates on next open (fail-closed eviction when the semantic identity
+// cannot be recovered).
 type TrustedGitRepo struct {
 	Path                string `yaml:"path"`
 	Fingerprint         string `yaml:"fingerprint,omitempty"`
@@ -1990,11 +1583,9 @@ type TrustedGitRepo struct {
 }
 
 // UnmarshalYAML accepts both the current mapping form
-// ({path, fingerprint, semantic_fingerprint}) and the legacy string form (a
-// bare absolute path, pre-fingerprint). A legacy string migrates to a Path
-// with empty fingerprints, preserving warning suppression for
-// already-trusted repositories without inventing a snapshot that was never
-// captured (the backend migrates such records on the next open).
+// ({path, fingerprint, semantic_fingerprint}) and the legacy bare-path string
+// form; a legacy string migrates to a Path with empty fingerprints, preserving
+// warning suppression without inventing a snapshot that was never captured.
 func (r *TrustedGitRepo) UnmarshalYAML(value *yaml.Node) error {
 	if value.Kind == yaml.ScalarNode {
 		r.Path = value.Value
@@ -2012,11 +1603,9 @@ func (r *TrustedGitRepo) UnmarshalYAML(value *yaml.Node) error {
 }
 
 // validateGitSemanticFingerprint checks a trusted_git_repos entry's
-// semantic_fingerprint: it must be empty (a record the backend has not
-// migrated to the semantic trust lifecycle yet) or the 64-character hex
-// SHA-256 the scanner writes. Anything else can never match a computed
-// value, so it is rejected at load time instead of silently turning every
-// later open into a trust eviction.
+// semantic_fingerprint: empty (not yet migrated) or the 64-character hex
+// SHA-256 the scanner writes — anything else can never match a computed
+// value and would silently turn every later open into a trust eviction.
 func validateGitSemanticFingerprint(v string) error {
 	if v == "" {
 		return nil
@@ -2035,91 +1624,49 @@ type SecurityConfig struct {
 	InjectionDefense InjectionDefenseConfig `yaml:"injection_defense"`
 
 	// Groups is the tool-security schema: a fixed set of tool groups, each
-	// with its own policy (and, for the "execute" group only, an optional
-	// command blocklist). See the ToolGroup* constants for the group names and
-	// defaults.go for the default policies.
+	// with its own policy (plus an execute-only command blocklist). See the
+	// ToolGroup* constants and defaults.go for names and default policies.
 	Groups map[string]GroupPolicyConfig `yaml:"groups"`
 
-	// AutoApproveWorkspaceWrites, when true, auto-executes file write tools
-	// (write_file, edit_file, delete_file, delete_directory, create_directory)
-	// without user confirmation when all paths are within the session workspace.
-	// Symlink traversals are still intercepted and forced to confirmation
-	// regardless of this setting. Default: false (always confirm writes).
+	// AutoApproveWorkspaceWrites auto-executes the file write tools when all
+	// paths stay within the session workspace (symlink traversals still force
+	// confirmation). Default: false.
 	AutoApproveWorkspaceWrites bool `yaml:"auto_approve_workspace_writes"`
 
-	// AutonomyMode is the unified autonomy posture (security.autonomy_mode),
-	// replacing the former pair of autonomy booleans (the Smart Approve
-	// toggle and the silent-mode master switch):
-	//   standard (default) — every interactive prompt reaches a human;
-	//   assisted           — the strict judge resolves effective user_confirm
-	//                        calls (the former Smart Approve toggle on);
-	//   silent             — unattended operation: the silent_mode
-	//                        sub-policies resolve the interactive prompts
-	//                        without a human (the former silent-mode master
-	//                        switch on).
-	// Configs written before the enum carry the two legacy keys instead; the
-	// loader migrates them onto this enum (migrateLegacyAutonomyMode) with
-	// silent taking priority over assisted, and the legacy keys disappear at
-	// the next Save. An unknown value fails safe to standard with a load
-	// warning (never a hard load error).
+	// AutonomyMode is the unified autonomy posture (see the AutonomyMode*
+	// constants). Configs written before the enum carry the two legacy keys,
+	// migrated by migrateLegacyAutonomyMode (silent wins over assisted); an
+	// unknown value fails safe to standard with a load warning.
 	AutonomyMode string `yaml:"autonomy_mode"`
 
 	// LegacySmartApprove is the load-time mirror of the pre-enum
-	// `smart_approve` yaml key. It is populated only by yaml decoding of an
-	// old config file and is migrated into AutonomyMode (or dropped) by
-	// migrateLegacyAutonomyMode immediately after load — the same pattern as
-	// GroupPolicyConfig.LegacyBlacklist (blacklist_migration.go). It is never
-	// persisted: omitempty plus the unconditional clearing in the migration
-	// keep the stale key out of every Save, and json:"-" keeps it out of any
-	// JSON view.
+	// smart_approve key: populated only by yaml decoding, migrated (or
+	// dropped) by migrateLegacyAutonomyMode immediately after load — the
+	// blacklist_migration.go pattern. Never persisted (omitempty +
+	// unconditional clearing; json:"-").
 	LegacySmartApprove *bool `yaml:"smart_approve,omitempty" json:"-"`
 
 	// SilentMode is the silent-mode sub-policy container
-	// (security.silent_mode). The former master switch (enabled) is gone —
-	// whether these policies are live is decided solely by AutonomyMode
-	// ("silent"). When the mode is not "silent" every sub-policy is inert
-	// and the app behaves exactly as before — confirmations, step-limit
-	// cards, and ask_user questions all surface normally. When the mode is
-	// "silent", the sub-policies decide how the loops resolve those three
-	// interactive prompts without a human. See SilentModeConfig.
+	// (security.silent_mode); live only while AutonomyMode is "silent" — the
+	// former master switch migrated onto that enum. See SilentModeConfig.
 	SilentMode SilentModeConfig `yaml:"silent_mode"`
 
-	// AgentsMDMaxBytes caps the AGENTS.md content size injected into prompts.
-	// AGENTS.md is workspace-controlled untrusted input; without a cap a large or
-	// malicious file could flood the context window.
-	//   0  = use default (65536)
-	//  -1  = no cap (unlimited — USE WITH CAUTION)
+	// AgentsMDMaxBytes caps the AGENTS.md content injected into prompts —
+	// workspace-controlled untrusted input. 0 = default (65536), -1 = no cap
+	// (use with caution).
 	AgentsMDMaxBytes int `yaml:"agents_md_max_bytes"`
 
-	// TrustedGitRepos lists repository roots for which the untrusted-git-config
-	// intake warning (the project:git_config_risk event fired on project switch
-	// or work-directory add, see ADR-033 layer 3) has been explicitly
-	// dismissed by the user via the "Trust this repo" action. Each entry is a
-	// {path, fingerprint} pair: the absolute, filepath.Clean-ed repository
-	// work-tree root and the fingerprint of the git-config snapshot captured
-	// when the user trusted it (empty for entries migrated from the legacy
-	// string format). Matching is exact on the path. Trusting a repo both
-	// suppresses the UI warning AND opts the repository back into its own git
-	// configuration: backend mirrors this list into the process-wide
-	// core/gittrust registry, which the spawn layer consults to run raw git
-	// for the root (sysproc.GitCmdRaw) — so its hooks, filters and signing
-	// apply as they would outside c0wrk. A root that is NOT trusted (or is
-	// hardened, below) keeps the full spawn-layer neutralization.
-	// Default: empty (every suspicious config warns; every repo is hardened).
+	// TrustedGitRepos lists roots whose untrusted-git-config warning was
+	// dismissed via "Trust this repo": suppression plus opt-back-in to raw
+	// git (the list is mirrored into the core/gittrust registry the spawn
+	// layer consults; an untrusted root keeps the full neutralization).
+	// Exact path matching; default empty.
 	TrustedGitRepos []TrustedGitRepo `yaml:"trusted_git_repos,omitempty"`
 
-	// HardenGitRepos lists repository roots that are always treated as
-	// hardened: their untrusted-git-config intake warning is never suppressed
-	// and they are excluded from the trust list — a root cannot be both
-	// trusted and hardened (validation enforces the mutual exclusion). Entries
-	// are absolute, filepath.Clean-ed paths; matching probes the same
-	// trust-key forms the trust list matches on (workspace.TrustProbePaths),
-	// so a legacy entry keyed on a linked worktree still covers — and
-	// conflicts with — its repository's main root. Hardening is
-	// the inverse of trust at the spawn layer: a hardened root never becomes
-	// raw-git eligible, so the spawn-layer neutralization stays in force for
-	// it regardless of anything else.
-	// Default: empty.
+	// HardenGitRepos lists roots that are always treated as hardened: the
+	// warning is never suppressed and the root is excluded from the trust
+	// list (mutual exclusion enforced by validation, across the same
+	// trust-key forms the runtime matcher probes). Default: empty.
 	HardenGitRepos []string `yaml:"harden_git_repos,omitempty"`
 }
 
@@ -2127,66 +1674,48 @@ type SecurityConfig struct {
 // (security.groups.<group>).
 type GroupPolicyConfig struct {
 	Policy string `yaml:"policy"` // "allow"|"user_confirm"|"deny"
-	// Blocklist holds regex patterns applied to shell commands; only the
-	// "execute" group supports it and validation rejects it on any other
-	// group. A matching command is forced to confirmation regardless of
-	// Policy. Empty by default: the app ships no predefined patterns, the
-	// list is purely a user-authored extension.
+	// Blocklist holds regex patterns applied to shell commands (execute group
+	// only — validation rejects it elsewhere): a match forces confirmation
+	// regardless of Policy. Empty by default — the app ships no predefined
+	// patterns; the list is purely a user-authored extension.
 	Blocklist []string `yaml:"blocklist,omitempty" json:"blocklist,omitempty"`
 
-	// LegacyBlacklist is the load-time mirror of the pre-rename
-	// `blacklist` yaml key. It is populated only by yaml decoding of an
-	// old config file and is migrated into Blocklist (or dropped) by
-	// migrateLegacyGroupBlacklists immediately after load — see
-	// blacklist_migration.go. It is never persisted: omitempty plus the
-	// unconditional clearing in the migration keep the stale key out of
-	// every Save, and json:"-" keeps it out of any JSON view.
+	// LegacyBlacklist is the load-time mirror of the pre-rename blacklist key:
+	// populated only by yaml decoding, migrated into Blocklist (or dropped) by
+	// migrateLegacyGroupBlacklists — the blacklist_migration.go pattern.
+	// Never persisted (omitempty + unconditional clearing; json:"-").
 	LegacyBlacklist []string `yaml:"blacklist,omitempty" json:"-"`
 }
 
 // SilentModeConfig is security.silent_mode: the container for the four
-// unattended-operation sub-policies. It is scoped to the three interactive
-// decisions the execution loops would otherwise punt to the user (the tool
-// confirmation decision is refined by user_confirm, below). The
-// policies are live only while the unified autonomy mode is "silent"
-// (security.autonomy_mode — the former master switch silent_mode.enabled is
-// migrated onto that enum by the loader); in every other mode each
-// sub-policy is inert. When live, each sub-policy decides how its prompt is
-// resolved without a human — see the SilentToolConfirm*, SilentUserConfirm*,
-// SilentStepLimit*, and SilentAskUser* enum constants for the accepted Mode
-// values and their meaning.
+// unattended-operation sub-policies over the three interactive decisions the
+// execution loops would otherwise punt to the user (tool confirmation is
+// refined by user_confirm). Live only while the unified autonomy mode is
+// "silent"; the accepted Mode values are documented on the SilentToolConfirm*,
+// SilentUserConfirm*, SilentStepLimit* and SilentAskUser* enums.
 //
-// Silent mode only replaces the human ANSWER to a prompt; it never weakens a
-// gate: `deny` groups and the deterministic pre-funnel floor are preserved
-// under every mode. The canonical hard-reason backstop (isCanonicalHardReason)
-// is scoped to the interactive paths (standard/assisted) — the silent `judge`
-// terminal deliberately drops it, so a strict ALLOW (and, under
-// user_confirm=confirm, a fail-closed CONFIRM) executes a canonical reason
-// unattended, with every such execution audited.
+// Silent mode replaces only the human ANSWER, never the gate: deny groups and
+// the deterministic pre-funnel floor hold under every mode, and the canonical
+// hard-reason backstop (isCanonicalHardReason) is scoped to the interactive
+// paths — the silent judge terminal deliberately drops it, so a strict ALLOW
+// (and, under user_confirm=confirm, a fail-closed CONFIRM) executes a
+// canonical reason unattended, audited.
 type SilentModeConfig struct {
 	// LegacyEnabled is the load-time mirror of the pre-enum
-	// `silent_mode.enabled` yaml key. It is populated only by yaml decoding
-	// of an old config file and is migrated into SecurityConfig.AutonomyMode
-	// (or dropped) by migrateLegacyAutonomyMode immediately after load — the
-	// same pattern as GroupPolicyConfig.LegacyBlacklist
-	// (blacklist_migration.go). It is never persisted: omitempty plus the
-	// unconditional clearing in the migration keep the stale key out of every
-	// Save, and json:"-" keeps it out of any JSON view.
+	// `silent_mode.enabled` yaml key: populated only by yaml decoding,
+	// migrated into SecurityConfig.AutonomyMode (or dropped) by
+	// migrateLegacyAutonomyMode immediately after load — the
+	// blacklist_migration.go pattern. Never persisted (omitempty +
+	// unconditional clearing; json:"-").
 	LegacyEnabled *bool `yaml:"enabled,omitempty" json:"-"`
 
-	// ToolConfirm resolves a tool call that would open a confirmation card.
-	// Default mode: "judge".
-	ToolConfirm SilentSubPolicyConfig `yaml:"tool_confirm"`
+	ToolConfirm SilentSubPolicyConfig `yaml:"tool_confirm"` // resolves a call that would open a confirmation card; default "judge"
 	// UserConfirm refines the ToolConfirm terminal for a fail-closed CONFIRM
-	// outcome: "confirm" executes it unattended, "escalate" opens the blocking
-	// card, "deny" auto-denies. Default mode: "deny".
+	// outcome ("confirm" executes unattended, "escalate" opens the card,
+	// "deny" auto-denies); default "deny".
 	UserConfirm SilentSubPolicyConfig `yaml:"user_confirm"`
-	// StepLimit resolves the step-budget-exhaustion card.
-	// Default mode: "auto".
-	StepLimit SilentSubPolicyConfig `yaml:"step_limit"`
-	// AskUser controls availability of the ask_user tool.
-	// Default mode: "disable".
-	AskUser SilentSubPolicyConfig `yaml:"ask_user"`
+	StepLimit   SilentSubPolicyConfig `yaml:"step_limit"` // resolves the step-budget-exhaustion card; default "auto"
+	AskUser     SilentSubPolicyConfig `yaml:"ask_user"`   // ask_user tool availability; default "disable"
 }
 
 // SilentSubPolicyConfig is one silent-mode sub-policy: a single Mode drawn
@@ -2196,12 +1725,10 @@ type SilentSubPolicyConfig struct {
 }
 
 // ValidateSilentMode checks that every silent-mode sub-policy carries a value
-// from its enum. It is shared by config-file validation (validate) and the
-// runtime security-settings update (UpdateSecuritySettings) so a UI-sourced
-// value can never store what the loader would reject on the next start. An
-// empty Mode is accepted here because ApplyDefaults has already seeded the
-// default before validation runs; callers that bypass ApplyDefaults (the RPC)
-// validate the fully-defaulted value.
+// from its enum; shared by config validation and the runtime
+// security-settings update, so the UI can never store what the loader would
+// reject. An empty Mode passes here (ApplyDefaults has already seeded the
+// default); callers bypassing ApplyDefaults validate the defaulted value.
 func ValidateSilentMode(sm SilentModeConfig) error {
 	checks := []struct {
 		name    string
@@ -2234,11 +1761,9 @@ func ValidateSilentMode(sm SilentModeConfig) error {
 	return nil
 }
 
-// SilentModeDefaults returns the canonical default silent-mode configuration:
-// each sub-policy at its documented default (inert until the autonomy mode
-// is "silent"). It is the single source of truth for the sub-policy
-// defaults, used by ApplyDefaults and by the runtime security-settings
-// update.
+// SilentModeDefaults returns the canonical default silent-mode configuration
+// (each sub-policy at its documented default) — the single source of truth
+// for ApplyDefaults and the runtime security-settings update.
 func SilentModeDefaults() SilentModeConfig {
 	return SilentModeConfig{
 		ToolConfirm: SilentSubPolicyConfig{Mode: SilentToolConfirmJudge},
@@ -2267,31 +1792,22 @@ func ApplySilentModeDefaults(sm *SilentModeConfig) {
 }
 
 // AskUserDisabled reports whether the autonomy mode is "silent" AND the
-// ask_user sub-policy disables the tool — the predicate that suppresses
-// ask_user registration. The core mirror of this predicate lives on
-// core.BuilderSecurityConfig (pinned against this one by
-// backend/configadapter_test.go).
+// ask_user sub-policy disables the tool — the predicate suppressing ask_user
+// registration. The core mirror on core.BuilderSecurityConfig is pinned to
+// this one by backend/configadapter_test.go.
 func (s SecurityConfig) AskUserDisabled() bool {
 	return s.AutonomyMode == AutonomyModeSilent && s.SilentMode.AskUser.Mode == SilentAskUserDisable
 }
 
 // migrateLegacyAutonomyMode migrates the pre-enum autonomy booleans
-// (security.smart_approve and security.silent_mode.enabled, mirrored by
-// LegacySmartApprove / SilentModeConfig.LegacyEnabled) onto the unified
-// SecurityConfig.AutonomyMode enum — the same load-time pattern as
-// migrateLegacyGroupBlacklists (blacklist_migration.go). Resolution order:
-//
-//   - an explicit security.autonomy_mode decides. A value outside the enum
-//     fails SAFE to "standard" with a warning (never a hard load error — a
-//     value written by a newer app version must not brick startup);
-//   - otherwise the legacy keys are honored: silent_mode.enabled=true maps
-//     to "silent" (priority — an explicit unattended posture wins), else
-//     smart_approve=true maps to "assisted", else "standard";
-//
-// The legacy mirrors are cleared unconditionally so both stale keys
-// disappear from the file at the next Save. Every observed legacy key (and
-// every ignored-legacy or unknown-enum case) is reported as a warning
-// string for the load-warnings channel the UI displays.
+// (security.smart_approve / security.silent_mode.enabled) onto the unified
+// SecurityConfig.AutonomyMode enum — the blacklist_migration.go load-time
+// pattern. Resolution: an explicit security.autonomy_mode decides (unknown
+// value fails SAFE to "standard" with a warning — a newer app's value must
+// not brick startup); otherwise the legacy keys are honored, silent_mode
+// winning priority over smart_approve. The mirrors are cleared
+// unconditionally so the stale keys disappear at the next Save; every
+// observed/ignored/unknown case is reported as a load warning.
 func migrateLegacyAutonomyMode(sec *SecurityConfig) []string {
 	legacySmart := sec.LegacySmartApprove
 	legacySilent := sec.SilentMode.LegacyEnabled
@@ -2377,13 +1893,10 @@ type ToolTruncationConfig struct {
 }
 
 // TimeoutsConfig holds configurable timeout values for various operations.
-// YAMLNilAwareList is a []string whose nil state survives the Save→Load
-// round-trip: yaml.v3 marshals a plain nil []string as `[]`, which would
-// reload as an explicit empty list — for Timeouts.ToolCallTimeoutExemptTools
-// that would silently turn "follow sp4rk's built-in exempt set" (nil) into
-// "no exemptions" (non-nil empty) on the first config save. MarshalYAML
-// renders nil as YAML null (which unmarshals back to nil) and passes every
-// non-nil slice — including the explicit empty one — through verbatim.
+// YAMLNilAwareList is a []string whose nil state survives Save→Load:
+// yaml.v3 marshals a plain nil slice as `[]`, which would reload as an
+// explicit empty list — MarshalYAML renders nil as YAML null and passes
+// every non-nil slice (explicit empty included) through verbatim.
 type YAMLNilAwareList []string
 
 func (l YAMLNilAwareList) MarshalYAML() (interface{}, error) {
@@ -2399,20 +1912,15 @@ type TimeoutsConfig struct {
 	RipgrepTimeout  int  `yaml:"ripgrepTimeout"`  // seconds, default: 60
 	GlobTimeout     *int `yaml:"globTimeout"`     // seconds; wall-clock budget for a single glob walk (nil = default 30; 0 = no timeout)
 	ToolCallTimeout *int `yaml:"toolCallTimeout"` // seconds; ceiling for a SINGLE tool call in the ReAct loop, applied to the main and every subagent executor (nil = default 300 (5 min); 0 = disabled)
-	// ToolCallTimeoutExemptTools replaces the ceiling's exempt tool-NAME set (Conductor/executor loops only — the experimental E2S watchdog keeps its own narrowed built-in exemption set)
-	// (not a capability group). Absent (nil) keeps sp4rk's built-in default —
-	// ask_user, declare_plan, propose_goal, delegate, execute_plan (see
-	// agent.DefaultToolCallTimeoutExemptTools); an explicit list replaces it
-	// wholesale, so an operator can exempt long-running tools the default set
-	// does not know (e.g. an MCP-backed tool with no internal timeout). An
-	// explicit empty list means "no exemptions". The absent default is
-	// resolved from sp4rk at runtime and deliberately never persisted (a save
-	// must not freeze it); a stored list identical to the built-in default may
-	// be a leftover from an older build's save — deleting the key re-follows
-	// the built-in set. The YAMLNilAwareList type preserves the
-	// absent-vs-empty distinction through Save: yaml.v3 would render a plain
-	// nil []string as `[]` (explicit "no exemptions" on reload), so nil is
-	// marshaled as YAML null instead.
+	// ToolCallTimeoutExemptTools replaces the ceiling's exempt tool-NAME set
+	// (Conductor/executor loops only — not a capability group; the E2S
+	// watchdog keeps its own narrowed built-in set). Absent (nil) follows
+	// sp4rk's built-in default (agent.DefaultToolCallTimeoutExemptTools),
+	// resolved at runtime and deliberately never persisted; an explicit list
+	// replaces it wholesale ("no exemptions" = explicit empty). A stored list
+	// equal to the built-in default may be an older build's leftover —
+	// deleting the key re-follows the built-in set. The YAMLNilAwareList type
+	// preserves absent-vs-empty through Save.
 	ToolCallTimeoutExemptTools YAMLNilAwareList `yaml:"toolCallTimeoutExemptTools"`
 	WebFetchTimeout            int              `yaml:"webFetchTimeout"`          // seconds, default: 30
 	WebFetchProxyTimeout       int              `yaml:"webFetchProxyTimeout"`     // seconds, default: 30 — per-attempt web fetch timeout used when the proxy is enabled
@@ -2428,41 +1936,30 @@ type TimeoutsConfig struct {
 }
 
 // ShutdownConfig bounds the application teardown. Every teardown step is
-// individually bounded (task-goroutine joins, background-goroutine joins,
-// blackboard persistence workers all share the manager's stopTimeout), but a
-// cancellation path that is broken somewhere can still, in principle, park the
-// main thread. The desktop layer therefore arms one hard watchdog over the
-// whole teardown: when it expires the process logs at Error and forces an exit,
-// so a silent "application shutdown: complete" that never appears (the app
-// beach-balls until it is killed) is impossible.
+// individually bounded, but a broken cancellation path can still park the
+// main thread — the desktop layer arms one hard watchdog over the whole
+// teardown (Error log + forced exit), so a silent hang on quit is impossible.
 type ShutdownConfig struct {
-	// HardDeadline is the total budget, in seconds, for the whole Shutdown
-	// teardown. When exceeded the desktop layer logs at Error and exits the
-	// process immediately. 0 / omitted = default 60.
-	//
-	// The default deliberately sits above the embedded local model's stop
-	// ceiling: the embedded-server stop is itself bounded but can legitimately
-	// take up to ~46 s when a quit races an in-flight cold load holding the
-	// supervisor gate. A hardDeadline shorter than that truncates that stop —
-	// the process still exits, but the detached llama-server may outlive it,
-	// exactly the one quit outcome the embedded teardown cannot otherwise
-	// produce. Lower it only if a short forced exit matters more than that.
+	// HardDeadline is the total seconds budget for the whole Shutdown
+	// teardown; on expiry the desktop layer logs at Error and exits
+	// immediately. 0/omitted = 60. The default deliberately sits above the
+	// embedded model's stop ceiling (~46 s when a quit races an in-flight
+	// cold load holding the supervisor gate): a shorter deadline truncates
+	// that stop — the process exits but the detached llama-server may
+	// outlive it, the one quit outcome the embedded teardown cannot
+	// otherwise produce. Lower only if a short forced exit matters more.
 	HardDeadline int `yaml:"hardDeadline"`
 }
 
 // AdaptiveBudgetConfig holds the adaptive per-model LLM request budget
-// kill-switch (ADR-071 D11). When enabled (the default), provider entry
-// clients carry the core/llmbudget transport: it arms every main-agent LLM
-// request with a per-model deadline learned from the session's own traffic —
-// warmup 600 s until three samples, then the trained estimate bounded by the
-// provider class envelope, ×2 escalation on the transport's own expiry. When
-// disabled, NO budget transport is installed anywhere and the behavior is
-// exactly the pre-ADR-071 fixed regime — timeouts.llmRequestTimeout, with 0
-// behaving as the legacy 600 s.
+// kill-switch (ADR-071 D11). Enabled (the default) arms every main-agent LLM
+// request with a per-model deadline learned from the session's own traffic
+// (core/llmbudget transport); disabled installs no transport anywhere and
+// restores the pre-ADR-071 fixed regime (timeouts.llmRequestTimeout, 0
+// behaving as the legacy 600 s). See specs/domains/llm-providers.md.
 type AdaptiveBudgetConfig struct {
-	// Enabled is the kill-switch. A *bool so an explicit `enabled: false`
-	// survives defaults (a plain bool would be indistinguishable from unset
-	// and coerced back to true). nil = unset → default true.
+	// Enabled is the kill-switch (*bool so an explicit false survives
+	// defaults; nil = unset → true).
 	Enabled *bool `yaml:"enabled"`
 }
 
@@ -2476,18 +1973,11 @@ type OrchestrationConfig struct {
 	MaxRedelegationDepth int `yaml:"maxRedelegationDepth"` // default: 2
 }
 
-// GoalLoopConfig holds settings for the goal-derivation / verification loop.
-//
-// Verification controls whether the loop runs the independent verifier.
-//   - "independent" (default): the goal loop uses an independent verifier turn
-//     to confirm task completion before declaring success.
-//   - "off": the verifier is disabled; the loop relies solely on the agent's
-//     own declare_goal_status verdict.
-//
-// Suggest controls the goal-mode suggestion gate: after routing a FRESH
-// non-goal task's message, a one-shot classifier judges whether goal mode is
-// obviously the better fit and, when it is, the user is offered to activate it
-// before the task starts.
+// GoalLoopConfig holds goal-mode settings. Verification selects the verifier
+// ("independent" default — a separate verifier turn confirms completion; "off"
+// relies on declare_goal_status alone); Suggest gates the goal-mode suggestion
+// (after routing a FRESH non-goal task, a one-shot classifier may offer to
+// activate goal mode before it starts). See specs/domains/goal-mode.md, ADR-086.
 type GoalLoopConfig struct {
 	Verification string            `yaml:"verification"` // "independent" | "off"; default "independent"
 	Suggest      GoalSuggestConfig `yaml:"suggest"`
@@ -2495,11 +1985,9 @@ type GoalLoopConfig struct {
 
 // GoalSuggestConfig holds the goal-mode suggestion gate settings.
 type GoalSuggestConfig struct {
-	// Enabled gates the whole feature. Pointer-bool: nil (unset) defaults to
-	// true; an explicit false opts out of the suggestion gate entirely.
-	Enabled *bool `yaml:"enabled"`
+	Enabled *bool `yaml:"enabled"` // nil defaults to true; explicit false opts out entirely
 	// MinComplexity is the routing-complexity floor below which the
-	// suitability classifier is never consulted. Default 3.
+	// suitability classifier is never consulted (default 3).
 	MinComplexity int `yaml:"min_complexity"`
 }
 
@@ -2508,105 +1996,86 @@ func (c GoalSuggestConfig) SuggestEnabled() bool {
 	return c.Enabled == nil || *c.Enabled
 }
 
-// PromptSuggestionsConfig gates the proactive follow-up prompts (ADR-088):
-// after a task finishes with outcome full or partial, a fail-open one-shot
-// service call generates a small set of suggested next prompts per kind and
-// the chat input offers them (↑/↓/→).
+// PromptSuggestionsConfig gates the follow-up prompts (ADR-088): after a
+// full/partial task outcome, a fail-open one-shot service call generates a
+// small set of suggested next prompts for the chat input (↑/↓/→).
 type PromptSuggestionsConfig struct {
-	// Enabled gates the whole feature. Pointer-bool: nil (unset) defaults to
-	// true; an explicit false opts out entirely — the manager's outcome gate
-	// never fires, so a disabled feature costs zero LLM calls, zero store
-	// writes, and zero events.
+	// Enabled gates the whole feature; nil defaults to true. Explicit false
+	// means the manager's outcome gate never fires — zero LLM calls, zero
+	// store writes, zero events.
 	Enabled *bool `yaml:"enabled"`
 }
 
 // SuggestionsEnabled resolves the effective feature gate: unset (nil) means
-// on (ADR-088 D9: the feature is fail-open and bounded, so it defaults to
-// enabled; the section exists as the documented opt-out extension point).
+// on (ADR-088 D9 — fail-open and bounded; the section is the documented
+// opt-out extension point).
 func (c PromptSuggestionsConfig) SuggestionsEnabled() bool {
 	return c.Enabled == nil || *c.Enabled
 }
 
 // SkillsConfig holds Agent Skills discovery configuration.
 type SkillsConfig struct {
-	// Dirs lists skill discovery directories in priority order (highest first).
-	// Paths may be absolute or relative to the agent directory (~/.c0wrk).
+	// Dirs lists skill discovery directories in priority order (highest
+	// first); absolute or relative to the agent directory (~/.c0wrk).
 	Dirs []string `yaml:"dirs"`
 }
 
 // AgentsConfig holds Subagent Profile (AGENT.md) discovery configuration.
-// Mirrors SkillsConfig: the project-local `.agents/agents` directory is always
-// scanned automatically (see core/builder.go) and does NOT need to be listed.
+// Mirrors SkillsConfig; the project-local .agents/agents directory is always
+// scanned automatically (core/builder.go) and needs no entry here.
 type AgentsConfig struct {
-	// Dirs lists subagent profile discovery directories in priority order
-	// (highest first). Paths may be absolute or relative to the agent dir.
+	// Dirs lists profile discovery directories in priority order (highest
+	// first); absolute or relative to the agent dir.
 	Dirs []string `yaml:"dirs"`
 
-	// MaxParallelSubagents caps how many subagents execute concurrently,
-	// enforced through the launcher's shared limiter that every dispatch path
-	// acquires from — the delegate tool (blocking batches and async launches
-	// alike) and plan waves. <= 0 resolves to the default (4) in
-	// ApplyDefaults. Bounding concurrency bounds the peak rate of subagent
-	// lifecycle events (and the burst of concurrent LLM calls / tool
-	// executions) without changing results or their order.
+	// MaxParallelSubagents caps concurrent subagent execution through the
+	// launcher's shared limiter every dispatch path acquires (delegate tool,
+	// blocking and async, plus plan waves); <= 0 resolves to the default (4)
+	// in ApplyDefaults. Bounding concurrency bounds the event/call burst
+	// without changing results or their order.
 	MaxParallelSubagents int `yaml:"max_parallel_subagents"`
 }
 
-// CommandsConfig holds custom command discovery configuration (ADR-096).
-// Custom commands are markdown prompt templates invoked with a leading
-// /name token in the chat input.
+// CommandsConfig holds custom command discovery configuration (ADR-096):
+// markdown prompt templates invoked with a leading /name token.
 type CommandsConfig struct {
 	// Dirs lists command discovery directories in priority order (highest
-	// first). Paths may be absolute or relative to the agent directory
-	// (~/.c0wrk). Mirrors SkillsConfig: the project-local `.agents/commands`
-	// directory is always scanned automatically (see backend/frontend_api_commands.go)
-	// and does NOT need to be listed here.
+	// first); absolute or relative to ~/.c0wrk. Mirrors SkillsConfig: the
+	// project-local .agents/commands directory is always scanned
+	// (backend/frontend_api_commands.go) and needs no entry here.
 	Dirs []string `yaml:"dirs"`
 }
 
 // envVarPattern matches ${ENV_VAR} patterns for substitution.
 var envVarPattern = regexp.MustCompile(`\$\{([^}]+)\}`)
 
-// ExperimentalConfig gates features that are still under active development
-// behind a single master switch. It is all-or-nothing by design: there is no
-// per-feature toggle, so enabling it exposes every gated feature and
-// disabling it treats each as off. Currently gated: the E2S execution mode
-// (e2s.*); the embedded local model's FRONTEND surfaces — the Settings
-// block and its entries in both model pickers are hidden while the switch is
-// off, while the backend keeps serving the subsystem's RPCs (ADR-068); and
-// the browser web-access sidecar (web_access.*) — a COMPOUND gate, where the
-// sidecar mounts only while this switch AND web_access.enabled are both on,
-// and a mid-session flip of either switch is followed live (the sidecar is
-// mounted or stopped without an app restart).
-// Model Profiles (model_profiles.*) is NOT gated — it carries its own
-// manual master toggle.
+// ExperimentalConfig gates features under active development behind one
+// all-or-nothing master switch (no per-feature toggle): the E2S execution
+// mode, the embedded model's FRONTEND surfaces (the backend keeps serving the
+// subsystem's RPCs; ADR-068), and the browser web-access sidecar — a compound
+// gate with web_access.enabled, a mid-session flip of either followed live.
+// Model Profiles is NOT gated — it carries its own master toggle.
 type ExperimentalConfig struct {
-	// Enabled is the master switch for the gated experimental features (the
-	// E2S execution mode, the embedded model's frontend surfaces, and the
-	// web-access sidecar — the latter additionally requires web_access.enabled).
-	// When false, every gated feature is treated as off regardless of its own
-	// toggles. Default: false.
+	// Enabled is the master switch; false treats every gated feature as off
+	// regardless of its own toggles. Default: false.
 	Enabled bool `yaml:"enabled"`
 }
 
-// ModelProfilesPersistConfig is the persisted `model_profiles:` section of config.yaml. It carries
-// exactly the two durable operator choices; the 25 variant knobs live in
-// profiles (the predefined catalog and ~/.c0wrk/model-profiles.yaml), so this
-// struct deliberately has no knob fields. Legacy inline `small_llm.*` keys in
-// an existing config.yaml are ignored by the non-strict YAML decoding and
-// disappear on the next save (sanctioned reset migration).
+// ModelProfilesPersistConfig is the persisted `model_profiles:` section: only
+// the two durable operator choices — the 25 variant knobs live in profiles
+// (predefined catalog + ~/.c0wrk/model-profiles.yaml). Legacy inline
+// small_llm.* keys are ignored by non-strict decoding and disappear at the
+// next save (sanctioned reset migration). See specs/domains/model-profiles.md.
 type ModelProfilesPersistConfig struct {
-	// Enabled is the master toggle for the model-profile profile. When false,
-	// every variant sub-toggle is ignored. There is no auto-detection — this
-	// must be set explicitly. Default: false.
+	// Enabled is the master toggle (no auto-detection); false ignores every
+	// variant sub-toggle. Default: false.
 	Enabled bool `yaml:"enabled"`
 
-	// ActiveProfile is the id of the profile whose 25 knob values form the
-	// effective runtime configuration (see ResolveModelProfilesConfig). ApplyDefaults
-	// seeds it with the model-agnostic "generic" profile; a retired predefined
-	// id resolves to its replacement, and an id that no longer resolves (e.g. a
-	// custom profile deleted by hand) falls back to "generic"
-	// with a warning instead of failing the run.
+	// ActiveProfile is the id whose knob values form the effective runtime
+	// configuration (ResolveModelProfilesConfig). ApplyDefaults seeds
+	// "generic"; a retired predefined id resolves to its replacement, an
+	// unresolvable id falls back to "generic" with a warning — never failing
+	// the run.
 	ActiveProfile string `yaml:"active_profile"`
 }
 
@@ -2621,22 +2090,13 @@ func FindModelProfile(profiles []ModelProfile, id string) (ModelProfile, bool) {
 	return ModelProfile{}, false
 }
 
-// ResolveModelProfilesConfig builds the effective runtime ModelProfilesConfig for a persisted
-// `model_profiles:` section against a profile catalog (predefined ∪ custom — see
-// LoadModelProfilesCatalog). Resolution rules:
-//
-//   - a known profile id → that profile's values;
-//   - a retired predefined id with no catalog entry of its own → the
-//     replacement predefined profile (see legacyPredefinedModelProfileAliases)
-//     plus one warning — a predefined rename must not strand a stored
-//     active_profile;
-//   - an empty or unknown id → soft fallback to the model-agnostic "generic"
-//     profile plus one warning each — a stale id must never break the run.
-//
-// The master Enabled flag is carried over from the persist section verbatim —
-// the master toggle is the only switch (Model Profiles is not gated by the
-// experimental-features switch). The returned struct owns its slices, so
-// callers cannot mutate the catalog through it.
+// ResolveModelProfilesConfig builds the effective runtime ModelProfilesConfig
+// for a persisted `model_profiles:` section against a catalog (predefined ∪
+// custom — LoadModelProfilesCatalog). A known id → that profile; a retired
+// predefined id → its replacement plus one warning; an empty/unknown id →
+// soft fallback to "generic" plus one warning (a stale id never breaks the
+// run). Enabled carries over verbatim — the master toggle is the only switch.
+// The returned struct owns its slices (callers cannot mutate the catalog).
 func ResolveModelProfilesConfig(persist ModelProfilesPersistConfig, catalog []ModelProfile) (resolved ModelProfilesConfig, warnings []string) {
 	var profile ModelProfile
 	if id := persist.ActiveProfile; id != "" {
@@ -2669,299 +2129,187 @@ func ResolveModelProfilesConfig(persist ModelProfilesPersistConfig, catalog []Mo
 	return resolved, warnings
 }
 
-// LoadModelProfilesCatalog assembles the full profile catalog used for resolution: the
-// compiled-in predefined entries plus the operator's custom profiles from
-// <agentDir>/model-profiles.yaml. Store-level problems (unreadable/broken file,
-// discarded records) are returned as warnings rather than errors — a damaged
-// custom store must never take the predefined catalog down with it.
+// LoadModelProfilesCatalog assembles the full resolution catalog: the
+// compiled-in predefined entries plus custom profiles from
+// <agentDir>/model-profiles.yaml. Store problems come back as warnings — a
+// damaged custom store must never take the predefined catalog down with it.
 func LoadModelProfilesCatalog(agentDir string) (catalog []ModelProfile, warnings []string) {
 	custom, storeWarnings := LoadCustomModelProfiles(ModelProfilesPath(agentDir))
 	catalog = PredefinedModelProfiles()
 	return append(catalog, custom...), storeWarnings
 }
 
-// ModelProfilesConfig is the RESOLVED runtime view of the model-profile profile: the master
-// toggle plus the 25 variant knobs of the active profile (see ResolveModelProfilesConfig).
-// It is not persisted to config.yaml anymore — only model_profiles.enabled and
-// model_profiles.active_profile are (see ModelProfilesPersistConfig). Each variant carries its own
-// sub-toggle so individual optimizations can be turned off independently, and
-// every threshold/value is exposed so behaviour can be tuned without a rebuild.
+// ModelProfilesConfig is the RESOLVED runtime view: the master toggle plus the
+// active profile's 25 variant knobs (ResolveModelProfilesConfig). Not
+// persisted — only enabled/active_profile are (ModelProfilesPersistConfig).
+// Each variant carries its own sub-toggle; every threshold is exposed so
+// tuning needs no rebuild.
 type ModelProfilesConfig struct {
-	// Enabled is the master toggle for the model-profile profile. When false, every
-	// variant sub-toggle is ignored. There is no auto-detection — this must be
-	// set explicitly. Default: false.
+	// Enabled is the master toggle (no auto-detection); false ignores every
+	// variant sub-toggle. Default: false.
 	Enabled bool `yaml:"enabled"`
 
-	// EssentialTools narrows the visible tool set to a curated subset to reduce
-	// the schema/token overhead injected into every prompt.
-	EssentialTools EssentialToolsConfig `yaml:"essential_tools"`
-
-	// SystemPrompt applies prompt-simplification variants (lite, few-shot,
-	// reasoning scaffold) to shrink the system prompt size.
-	SystemPrompt SystemPromptConfig `yaml:"system_prompt"`
-
-	// Sampling overrides LLM sampling parameters for more deterministic,
-	// lower-effort generation suitable for smaller models.
-	Sampling ModelProfilesSamplingConfig `yaml:"sampling"`
-
-	// LoopHardening tightens the executor circuit-breaker thresholds so a small
-	// model that repeats itself or fails to make progress is nudged/aborted
-	// sooner, conserving the token budget.
-	LoopHardening LoopHardeningConfig `yaml:"loop_hardening"`
-
-	// Context applies aggressive context management: tighter compaction, stricter
-	// tool-output pruning, and a larger output token reserve.
-	Context ModelProfilesContextConfig `yaml:"context"`
+	EssentialTools EssentialToolsConfig        `yaml:"essential_tools"` // narrows the visible tool set to cut schema/token overhead
+	SystemPrompt   SystemPromptConfig          `yaml:"system_prompt"`   // lite/few-shot/scaffold variants shrink the system prompt
+	Sampling       ModelProfilesSamplingConfig `yaml:"sampling"`        // deterministic, lower-effort sampling for smaller models
+	LoopHardening  LoopHardeningConfig         `yaml:"loop_hardening"`  // tighter circuit-breakers catch small-model loops sooner
+	Context        ModelProfilesContextConfig  `yaml:"context"`         // tighter compaction/pruning, larger output reserve
 }
 
-// EssentialToolsConfig narrows the tool set visible to a smaller model to reduce
-// per-prompt schema overhead.
+// EssentialToolsConfig narrows the tool set visible to a smaller model,
+// reducing per-prompt schema overhead.
 type EssentialToolsConfig struct {
-	// Enabled gates this variant. When false the full tool set is exposed
-	// regardless of the master ModelProfiles.Enabled toggle.
-	Enabled bool `yaml:"enabled"`
-
-	// AlwaysPresent is the allow-list of tool names always exposed when this
-	// variant is active. Tools not in this list are hidden from the model.
-	// Protected orchestration tools and all MCP tools are always preserved
+	Enabled bool `yaml:"enabled"` // gates the variant; false exposes the full tool set
+	// AlwaysPresent is the allow-list always exposed when the variant is
+	// active; protected orchestration tools and all MCP tools are preserved
 	// regardless, and the selection is never trimmed.
 	AlwaysPresent []string `yaml:"always_present"`
-
-	// CompactDescriptions replaces every known builtin's full rubric
-	// description with a one-line compact variant while this variant is
-	// active, shrinking prompt overhead on small models. Off by default:
-	// with it off, descriptions are byte-identical to the non-ModelProfiles
-	// behavior.
+	// CompactDescriptions swaps every known builtin's full rubric description
+	// for a one-line compact variant; off by default (byte-identical
+	// descriptions when off).
 	CompactDescriptions bool `yaml:"compact_descriptions"`
 }
 
 // SystemPromptConfig applies prompt-simplification variants to shrink the
-// system prompt injected for a smaller model. Each flag is independent; FewShot
-// and ReasoningScaffold are only honored when Lite is active (both are
-// tailored to the compact lite directive).
+// system prompt. Each flag is independent; FewShot and ReasoningScaffold are
+// honored only under Lite (both tailored to the compact lite directive).
 type SystemPromptConfig struct {
-	// Lite trims verbose guidance from the base system prompt, swapping the
-	// verbose OrchestratorSystem directive for the compact OrchestratorSystemLite.
-	Lite bool `yaml:"lite"`
-	// FewShot appends curated worked-example ReAct cycles demonstrating correct
-	// tool-call format, tool choice, error recovery, and finish. Only applied
-	// when Lite is active.
+	Lite bool `yaml:"lite"` // swaps OrchestratorSystem for the compact OrchestratorSystemLite
+	// FewShot appends curated worked-example ReAct cycles (format, tool
+	// choice, error recovery, finish); only under Lite.
 	FewShot bool `yaml:"few_shot"`
-	// ReasoningScaffold appends a lightweight three-step reasoning scaffold
-	// (goal → tool+why → args) tailored to small-model instruction following.
-	// Only applied when Lite is active.
+	// ReasoningScaffold appends a three-step scaffold (goal → tool+why →
+	// args); only under Lite.
 	ReasoningScaffold bool `yaml:"reasoning_scaffold"`
 }
 
-// ModelProfilesSamplingConfig overrides LLM sampling parameters for a small model.
-// Every parameter uses zero as the "not set" sentinel: an unset parameter
-// inherits the per-family vendor preset (prompt.DefaultSampling) instead of
-// clobbering it, so enabling the sampling variant with no explicit values is
-// a behavioral no-op. Out-of-range values are rejected by validation
-// (config/modelProfiles_profiles.go, ValidateModelProfileConfig) whenever they are set.
+// ModelProfilesSamplingConfig overrides LLM sampling parameters for a small
+// model. Zero is the "not set" sentinel: unset parameters inherit the
+// per-family vendor preset (prompt.DefaultSampling), so enabling the variant
+// with no explicit values is a behavioral no-op; out-of-range values are
+// rejected by ValidateModelProfileConfig.
 type ModelProfilesSamplingConfig struct {
-	// Enabled gates this variant.
-	Enabled bool `yaml:"enabled"`
+	Enabled bool `yaml:"enabled"` // gates this variant
 
-	// Temperature sets generation temperature (lower = more deterministic).
-	// 0 (unset) inherits the vendor preset; when set it must be > 0.
-	Temperature float64 `yaml:"temperature"`
-
-	// TopP sets nucleus-sampling probability mass. 0 (unset) inherits the
-	// vendor preset; when set it must be in (0, 1].
-	TopP float64 `yaml:"top_p"`
-
-	// TopK sets top-k sampling. 0 (unset) inherits the vendor preset; when
-	// set it must be >= 1.
-	TopK int `yaml:"top_k"`
-
-	// RepetitionPenalty penalizes repeated tokens. 0 (unset) inherits the
-	// vendor preset; when set it must be in [1, 2].
+	Temperature float64 `yaml:"temperature"` // lower = more deterministic; set ⇒ > 0
+	TopP        float64 `yaml:"top_p"`       // nucleus mass; set ⇒ (0, 1]
+	TopK        int     `yaml:"top_k"`       // set ⇒ >= 1
+	// RepetitionPenalty penalizes repeated tokens; set ⇒ [1, 2].
 	RepetitionPenalty float64 `yaml:"repetition_penalty"`
-
-	// PresencePenalty penalizes tokens already present in the context — the
-	// OpenAI-schema anti-repetition lever. The Qwen card sanctions 0–2 (the
-	// instruct default is 1.5); values above 2 increase language mixing, so
-	// they are rejected. 0 (unset) inherits the vendor preset (no family
-	// preset sets it, so the field is simply not sent); when set it must be
-	// in [0, 2].
+	// PresencePenalty is the OpenAI-schema anti-repetition lever: the Qwen
+	// card sanctions 0–2 (instruct default 1.5), above 2 increases language
+	// mixing and is rejected; set ⇒ [0, 2] (0/unset = not sent).
 	PresencePenalty float64 `yaml:"presence_penalty"`
-
-	// ReasoningEffort controls reasoning depth: "" (unset → inherit the
-	// model default; the shipped "generic" profile pins "medium") | "off" |
-	// "low" | "medium". Smaller models generally benefit from reduced
-	// reasoning effort; an explicit value is never overwritten.
+	// ReasoningEffort: "" (inherit; the shipped "generic" profile pins
+	// "medium") | "off" | "low" | "medium"; an explicit value is never
+	// overwritten.
 	ReasoningEffort string `yaml:"reasoning_effort"`
 }
 
-// LoopHardeningConfig tightens executor circuit-breaker thresholds for a small
-// LLM so loops are caught earlier, conserving the token budget.
+// LoopHardeningConfig tightens executor circuit-breaker thresholds for a
+// small LLM so loops are caught earlier, conserving the token budget.
 type LoopHardeningConfig struct {
-	// Enabled gates this variant.
-	Enabled bool `yaml:"enabled"`
+	Enabled bool `yaml:"enabled"` // gates this variant
 
-	// RepeatNudgeThreshold is the number of consecutive identical tool calls
-	// before a corrective nudge is issued.
-	RepeatNudgeThreshold int `yaml:"repeat_nudge_threshold"`
-
-	// ParseErrorAbortThreshold is the number of consecutive response parse
-	// errors before the executor aborts.
-	ParseErrorAbortThreshold int `yaml:"parse_error_abort_threshold"`
-
-	// FruitlessNudgeThreshold is the number of consecutive minimal-result tool
-	// calls before a corrective nudge is issued.
-	FruitlessNudgeThreshold int `yaml:"fruitless_nudge_threshold"`
-
-	// FruitlessAbortThreshold is the number of consecutive minimal-result tool
-	// calls before the executor aborts.
-	FruitlessAbortThreshold int `yaml:"fruitless_abort_threshold"`
-
-	// SameToolRepeatNudgeThreshold is the number of same-tool (varied args, similar
-	// results) calls before a corrective nudge is issued.
+	RepeatNudgeThreshold     int `yaml:"repeat_nudge_threshold"`      // identical tool calls before a corrective nudge
+	ParseErrorAbortThreshold int `yaml:"parse_error_abort_threshold"` // parse errors before abort
+	FruitlessNudgeThreshold  int `yaml:"fruitless_nudge_threshold"`   // minimal-result calls before a nudge
+	FruitlessAbortThreshold  int `yaml:"fruitless_abort_threshold"`   // minimal-result calls before abort
+	// SameToolRepeatNudgeThreshold: same-tool (varied args, similar results)
+	// calls before a corrective nudge.
 	SameToolRepeatNudgeThreshold int `yaml:"same_tool_repeat_nudge_threshold"`
 }
 
-// ModelProfilesContextConfig is the fifth model-profile profile variant: aggressive
-// context management. When active it tightens the executor's compaction knobs
-// (smaller sliding window, smaller summarization block, earlier trigger),
-// prunes tool outputs more aggressively, and reserves more output tokens so a
-// small model is less likely to exhaust the context window mid-task. The
-// general executor defaults are NOT changed — the overrides only apply while
-// both the master toggle (ModelProfiles.Enabled) and this variant's toggle are
-// enabled.
+// ModelProfilesContextConfig is the fifth variant: aggressive context
+// management — tighter compaction, stricter tool-output pruning, a larger
+// output reserve. The general executor defaults are NOT changed; overrides
+// apply only while both the master toggle and this variant's toggle are on.
 type ModelProfilesContextConfig struct {
-	// Enabled gates this variant (in addition to the master ModelProfiles.Enabled).
-	Enabled bool `yaml:"enabled"`
+	Enabled bool `yaml:"enabled"` // gates this variant (besides the master toggle)
 
 	// Compaction overrides the executor compaction knobs.
 	Compaction ModelProfilesCompactionConfig `yaml:"compaction"`
-
-	// ToolOutputKeepLastN overrides the executor's tool-output pruning depth
-	// (stricter than the general executor default).
+	// ToolOutputKeepLastN overrides the tool-output pruning depth.
 	ToolOutputKeepLastN int `yaml:"tool_output_keep_last_n"`
-
-	// OutputTokenReserve overrides the token budget reserved for the model's
-	// output (e.g. 8192).
+	// OutputTokenReserve overrides the reserved output budget (e.g. 8192).
 	OutputTokenReserve int `yaml:"output_token_reserve"`
 }
 
-// ModelProfilesCompactionConfig holds the compaction-tightening overrides. Zero
-// values mean "do not override" — the corresponding executor baseline is kept.
+// ModelProfilesCompactionConfig holds the compaction-tightening overrides;
+// zero values keep the corresponding executor baseline.
 type ModelProfilesCompactionConfig struct {
-	// KeepLast overrides the sliding-window keep-last count (variant default 6
-	// vs the general executor default of 10).
-	KeepLast int `yaml:"keep_last"`
-
-	// BlockSize overrides the summarization block size (variant default 5 vs
-	// the general 7).
-	BlockSize int `yaml:"block_size"`
-
-	// TriggerPercent overrides the predictive compaction trigger percentage
-	// (variant default 80 vs the general 85).
-	TriggerPercent int `yaml:"trigger_percent"`
+	KeepLast       int `yaml:"keep_last"`       // sliding-window keep-last (variant 6 vs general 10)
+	BlockSize      int `yaml:"block_size"`      // summarization block (variant 5 vs general 7)
+	TriggerPercent int `yaml:"trigger_percent"` // predictive trigger (variant 80 vs general 85)
 }
 
-// E2SConfig configures the E2S (explicit-state) execution mode. The mode is
-// experimental and fail-closed gated by experimental.enabled alone: when the
-// gate is off the whole section is ineffective. Every knob is seeded with a
-// default so tuning never requires a rebuild.
+// E2SConfig configures the E2S (explicit-state) execution mode, fail-closed
+// gated by experimental.enabled alone. Every knob is seeded so tuning never
+// needs a rebuild. See specs/domains/e2s.md, ADR-040 (§6 anti-spin).
 type E2SConfig struct {
-	// MaxSteps caps the number of E2S turns (patch+action cycles) per run.
-	// Exhaustion is NOT a failure: the run stops at a resumable step-limit
-	// checkpoint (Σ preserved; Resume continues with a fresh budget).
-	// Default: 50.
+	// MaxSteps caps the turns (patch+action cycles) per run; exhaustion is a
+	// resumable step-limit checkpoint (Σ preserved, fresh budget on Resume),
+	// not a failure. Default: 50.
 	MaxSteps int `yaml:"max_steps"`
 
-	// StateByteLimit caps the JSON-encoded size of the working state Σ, in
-	// bytes. A patch whose merged Σ exceeds the limit is rejected as a
+	// StateByteLimit caps the JSON-encoded Σ size: an over-limit patch is a
 	// validation error (bounded retry, then the error becomes the next
-	// observation and the run CONTINUES — Σ unchanged); the initial Σ
-	// itself is checked up front, so an oversized objective fails fast
-	// instead of wedging the run. Default: 16384 (mirrors
-	// core/e2s.DefaultStateByteLimit).
+	// observation — the run continues, Σ unchanged); the initial Σ is checked
+	// up front so an oversized objective fails fast. Default: 16384.
 	StateByteLimit int `yaml:"state_byte_limit"`
 
-	// PatchRetries is how many times a rejected state patch (validation
-	// error or over-limit Σ) may be re-requested from the model before the
-	// failure becomes an error observation (the run continues; Σ
-	// unchanged). Default: 1.
+	// PatchRetries is how often a rejected patch may be re-requested before
+	// the failure becomes an error observation. Default: 1.
 	PatchRetries int `yaml:"patch_retries"`
 
-	// ObservationTruncate caps the tool observation fed back to the model per
-	// turn, in characters; longer observations are truncated. It is the
-	// FALLBACK cap used when the loop has no model context window to scale
-	// against (ContextWindowTokens == 0); with a window the token-proportional
-	// budget below takes over. Default: 8000.
+	// ObservationTruncate caps the per-turn observation in characters — the
+	// FALLBACK when no model context window is resolved; with a window the
+	// token-proportional budget below takes over. Default: 8000.
 	ObservationTruncate int `yaml:"observation_truncate"`
 
-	// ObservationBudgetTokens is the per-turn observation budget in TOKENS —
-	// the ReAct-scale cap (the executor's tool-result budget is 30K tokens
-	// against a comparable window share). It engages when the loop resolves a
-	// model context window: the effective cap is
-	// min(observation_budget_tokens, observation_fill_fraction × window) × 4
-	// characters. Default: 8192.
+	// ObservationBudgetTokens is the per-turn observation budget in TOKENS
+	// (ReAct-scale); with a resolved window the effective cap is
+	// min(budget, fill_fraction × window) × 4 chars. Default: 8192.
 	ObservationBudgetTokens int `yaml:"observation_budget_tokens"`
 
-	// ObservationFillFraction caps the observation budget as a fraction of
-	// the model's context window, so a small-window model gets
-	// proportionally smaller observations. Only meaningful together with
-	// observation_budget_tokens and a resolved window. Default: 0.4.
+	// ObservationFillFraction caps the budget as a window fraction so a
+	// small-window model gets proportionally smaller observations.
+	// Default: 0.4.
 	ObservationFillFraction float64 `yaml:"observation_fill_fraction"`
 
-	// RepeatNudgeThreshold is the number of consecutive identical step
-	// actions (same tool + target anchor — the semantic fingerprint of
-	// ADR-040 §6: precision args like line ranges are ignored, while the
-	// content payloads of write_file/edit_file are part of the identity)
-	// before a corrective nudge observation is injected instead of
-	// dispatching the redundant action again. Default: 3.
+	// RepeatNudgeThreshold: consecutive identical step actions (same tool +
+	// target anchor, the ADR-040 §6 semantic fingerprint — line ranges
+	// ignored, write/edit payloads included) before a corrective nudge is
+	// injected instead of the redundant dispatch. Default: 3.
 	RepeatNudgeThreshold int `yaml:"repeat_nudge_threshold"`
 
-	// RepeatAbortThreshold is the number of consecutive identical step
-	// actions before the run is aborted as a spin. Must be >= the nudge
-	// threshold so the model always gets at least one nudge first.
-	// Default: 5.
+	// RepeatAbortThreshold: consecutive identical actions before the run is
+	// aborted as a spin; must be >= the nudge threshold. Default: 5.
 	RepeatAbortThreshold int `yaml:"repeat_abort_threshold"`
 
-	// Tools narrows the E2S available-tool catalog: the "Available Tools"
-	// section of every turn's system prompt AND the action-dispatch surface.
-	// The default core preset keeps the relevant local-work core (~19 tools:
-	// local_read + local_write + execute + remote_read groups plus the E2S
-	// system plumbing) instead of the full ~85-tool catalog, so the per-turn
-	// prompt stays within budget for small-context models. Filtering happens
-	// BEFORE the E2S plan/delegation/goal stripping, and every filtered-out
-	// name is also rejected fail-closed at dispatch (the catalog is the
-	// dispatch contract). See core/orchestrator_e2s.go.
+	// Tools narrows the E2S tool catalog — the "Available Tools" prompt
+	// section AND the dispatch surface (the catalog is the dispatch contract;
+	// filtered names are rejected fail-closed). Filtering runs before the
+	// plan/delegation/goal stripping. See core/orchestrator_e2s.go.
 	Tools E2SToolsConfig `yaml:"tools"`
 }
 
 // E2S tool-catalog preset values (must match core.E2SToolsPresetCore /
 // core.E2SToolsPresetAll — backend/config does not import the core package).
 const (
-	// E2SToolsPresetCore keeps the capability groups local_read, local_write,
-	// execute, and remote_read plus the E2S system plumbing tools (batch,
-	// tool_result_read, ask_user, store_fact, search_facts,
-	// read_attachment). This is the DEFAULT.
-	E2SToolsPresetCore = "core"
-	// E2SToolsPresetAll restores the full former surface (every registered
-	// tool minus the goal/plan/delegation stripping that always applies).
-	E2SToolsPresetAll = "all"
+	E2SToolsPresetCore = "core" // default: local_read/local_write/execute/remote_read groups + E2S system plumbing
+	E2SToolsPresetAll  = "all"  // the full former surface (goal/plan/delegation stripping always applies)
 )
 
 // E2SToolsConfig configures the E2S tool-catalog narrowing (e2s.tools).
 type E2SToolsConfig struct {
-	// Preset selects the base catalog: "core" (default — the relevant local
-	// work core described on the E2SConfig.Tools field) or "all" (the full
-	// former surface). Any other value is rejected at config load.
+	// Preset selects the base catalog: "core" (default) or "all"; anything
+	// else is rejected at config load.
 	Preset string `yaml:"preset"`
-
-	// Allow re-includes specific tools the preset excluded (e.g. the
-	// system-group semantic_search, or one MCP tool). Ignored under
-	// preset=all (nothing left to re-include).
+	// Allow re-includes preset-excluded tools; ignored under preset=all.
 	Allow []string `yaml:"allow"`
-
-	// Deny removes specific tools from the catalog regardless of the preset
-	// or allow — deny wins over allow. A denied name is absent from the
-	// prompt catalog AND rejected fail-closed at action dispatch.
+	// Deny removes tools regardless of preset/allow — absent from the catalog
+	// AND rejected fail-closed at dispatch. Deny wins over allow.
 	Deny []string `yaml:"deny"`
 }
 
@@ -2989,20 +2337,17 @@ type ProviderWithModels struct {
 	BaseURL      string
 	Models       []string // enabled models for this one provider
 	// TLSFingerprint carries the per-provider SPKI pin (only meaningful for
-	// compatible providers, which are the only ones with a BaseURL):
-	// non-empty = ONLY the pinned key is accepted; empty = system CA
-	// verification. See ADR-054.
+	// compatible providers — the only ones with a BaseURL): non-empty = ONLY
+	// the pinned key accepted; empty = system CA verification. See ADR-054.
 	TLSFingerprint string
 	// OutputTokenReserve is the per-provider output-token budget override
 	// (0 = inherit the global executor.output_token_reserve).
 	OutputTokenReserve int
-	// AutoRetrySeconds is the per-provider automatic-retry timer knob for
-	// compatible providers (0 = disabled). Fixed providers (anthropic,
-	// chatgpt) have no such knob and always report 0.
+	// AutoRetrySeconds is the per-provider auto-retry timer knob for
+	// compatible providers (0 = disabled); fixed providers always report 0.
 	AutoRetrySeconds int
-	// TimeoutClass is the adaptive request budget's class override for
-	// compatible providers (ADR-071 D3); empty = infer. Fixed providers
-	// (anthropic, chatgpt) have no such knob and always report "".
+	// TimeoutClass is the adaptive budget's class override for compatible
+	// providers (ADR-071 D3); empty = infer; fixed providers always report "".
 	TimeoutClass string
 }
 
@@ -3067,8 +2412,8 @@ func (c *LLMConfig) providerType(name string) string {
 }
 
 // GetAllProviderConfigs returns all known providers, including those with no
-// models enabled yet. Callers that require enabled models (e.g. the LLM router)
-// filter by len(Models) > 0 at the usage site.
+// models enabled yet; callers needing enabled models filter by
+// len(Models) > 0 at the usage site (e.g. the LLM router).
 func (c *LLMConfig) GetAllProviderConfigs() []ProviderWithModels {
 	result := make([]ProviderWithModels, 0, len(c.allProviderEntries()))
 	for _, p := range c.allProviderEntries() {
@@ -3087,11 +2432,10 @@ func (c *LLMConfig) GetAllProviderConfigs() []ProviderWithModels {
 	return result
 }
 
-// ResolveDefaultModelProvider looks up the provider that owns DefaultModel.
-// DefaultModel may be a bare model name (resolved to the first matching
-// provider) or a composite identifier "provider/model" (resolved to the named
-// provider). Returns the provider config and the bare model name, or an error
-// if DefaultModel is empty or not found in any provider's Models list.
+// ResolveDefaultModelProvider looks up the provider owning DefaultModel —
+// a bare model name (first matching provider) or composite "provider/model"
+// (the named provider). Returns the provider config and bare model name, or
+// an error when DefaultModel is empty or not found in any Models list.
 func (c *LLMConfig) ResolveDefaultModelProvider() (ProviderWithModels, string, error) {
 	if c.DefaultModel == "" {
 		return ProviderWithModels{}, "", errors.New("default_model is not set")
@@ -3138,10 +2482,9 @@ func (c *LLMConfig) ResolveDefaultModelProvider() (ProviderWithModels, string, e
 	return ProviderWithModels{}, "", fmt.Errorf("default_model %q not found in any provider's enabled models", c.DefaultModel)
 }
 
-// Load reads a configuration file, applies defaults, validates the configuration, and returns it.
-// Environment variable references like ${VAR} are preserved as-is in the config struct;
-// use ExpandEnvVars() at runtime to resolve them when needed.
-// For better error handling and migration support, use LoadWithResult.
+// Load reads, defaults, validates and returns the configuration; ${VAR}
+// references are preserved as-is (resolve at runtime via ExpandEnvVars). For
+// full error reporting and migration support use LoadWithResult.
 func Load(path string) (*Config, error) {
 	result, err := LoadWithResult(path)
 	if err != nil {
@@ -3150,9 +2493,9 @@ func Load(path string) (*Config, error) {
 	return result.Config, nil
 }
 
-// LoadWithResult reads a configuration file with full error reporting.
-// Environment variable references like ${VAR} are preserved as-is;
-// they are resolved at runtime via ExpandEnvVars() when actually needed.
+// LoadWithResult reads a configuration file with full error reporting;
+// ${VAR} references are preserved as-is and resolved at runtime via
+// ExpandEnvVars() when actually needed.
 func LoadWithResult(path string) (*LoadResult, error) {
 	// Read file
 	data, err := safeio.ReadFile(path)
@@ -3168,71 +2511,54 @@ func LoadWithResult(path string) (*LoadResult, error) {
 	}
 
 	// One-time migration from the pre-rename `blacklist` key to `blocklist`
-	// (see blacklist_migration.go): a customized legacy list is carried over,
-	// a default-equal or absent one is dropped. Must run before ApplyDefaults
-	// and validate so the migrated value flows through both untouched.
+	// (blacklist_migration.go): a customized legacy list is carried over, a
+	// default-equal or absent one dropped. Before ApplyDefaults and validate.
 	migrateLegacyGroupBlacklists(cfg.Security.Groups)
 
-	// One-time migration from the pre-enum autonomy booleans
-	// (smart_approve / silent_mode.enabled) onto security.autonomy_mode.
-	// Must run BEFORE ApplyDefaults: only an empty AutonomyMode at this
-	// point means "the config predates the enum", so the legacy keys are
-	// honored; afterwards ApplyDefaults seeds the standard default. Each
-	// observed legacy key (and any unknown enum value, which fails safe to
-	// standard) is surfaced as a load warning for the UI.
+	// One-time migration from the pre-enum autonomy booleans onto
+	// security.autonomy_mode. Before ApplyDefaults: only an empty
+	// AutonomyMode here means "pre-enum config", so the legacy keys are
+	// honored; unknown enum values fail safe to standard — all surfaced as
+	// load warnings.
 	autonomyWarnings := migrateLegacyAutonomyMode(&cfg.Security)
 
 	// Apply defaults for zero-value fields
 	ApplyDefaults(&cfg)
 
 	// Reconcile the backend-owned `embedded` provider record with the
-	// authoritative embedded_llm state: generated from the persisted port
-	// while installed, removed otherwise (so a hand-deleted entry self-heals
-	// and no dangling provider survives a Remove). Pure in-memory work — no
-	// probe, no network, no disk. Must run after ApplyDefaults and before
-	// validate so the generated provider takes part in the default_model
-	// resolution check. The context_window override is deliberately NOT
-	// recomputed here: the resolved RAM tier is written by the install and
-	// supervision paths that know it.
+	// authoritative embedded_llm state (generated while installed, removed
+	// otherwise). Pure in-memory; after ApplyDefaults and before validate so
+	// the generated provider joins default_model resolution. The
+	// context_window override is deliberately NOT recomputed here — the
+	// resolved RAM tier is written by the install/supervision paths.
 	cfg.SyncEmbeddedLLMProvider(0)
 
-	// Validate the shell_exec override section in place (fail-soft: invalid
-	// entries are warned about and reset to the built-in launch shape). Must
-	// run after ApplyDefaults (which seeds the platform-default shell kind
-	// for an active override) and before validate, so the persisted shape is
-	// always valid.
+	// Validate the shell_exec override in place (fail-soft: warn + reset to
+	// the built-in launch shape). After ApplyDefaults (seeds the platform
+	// shell kind), before validate — the persisted shape is always valid.
 	shellExecWarnings := normalizeShellExec(&cfg)
 
-	// Validate the web_access section in place (fail-soft: an enabled section
-	// with an invalid bind or an out-of-range port is warned about and reset
-	// to the safe default state — the sidecar stays off; a valid non-loopback
-	// bind stays enabled with a network-exposure warning). Must run after
-	// ApplyDefaults (which seeds the default bind) and before validate, so
-	// the persisted shape is always valid. See web_access.go / ADR-101.
+	// Validate the web_access section in place (fail-soft: invalid enabled
+	// state warned + reset to the safe default; a valid non-loopback bind
+	// stays enabled with an exposure warning). See web_access.go / ADR-101.
 	webAccessWarnings := normalizeWebAccess(&cfg)
 
-	// Validate the MCP per-server timeout durations (fail-soft: invalid entries
-	// are warned about and left untouched — the config→builder adapter resolves
-	// them to the engine default at build time). Must run after ApplyDefaults
-	// and before validate. Surfacing the warning here is what makes the ADR-063
-	// "logged warning" reach the user on the production load path — this is what
-	// feeds the UI's configLoadErrors channel (the frontend rebuild paths call
-	// the adapter without a logger).
+	// Validate the MCP per-server timeout durations (fail-soft: warned and
+	// left untouched — the config→builder adapter resolves them at build
+	// time). Surfacing here is what makes the ADR-063 "logged warning" reach
+	// the user on the production load path (the UI's configLoadErrors
+	// channel; frontend rebuild paths run the adapter without a logger).
 	mcpWarnings := normalizeMCPTimeouts(&cfg)
 
-	// Fold the legacy per-server MCP activation key (mcp.servers.<name>.mode)
-	// into capabilities.mcp and erase it: after the load the legacy field is
-	// dead state, so the next save drops the key from YAML. Fail-soft: an
-	// unrecognized legacy mode is warned about and folds as the default
-	// "auto". Same pipeline position and surfacing contract as
-	// normalizeMCPTimeouts.
+	// Fold the legacy per-server MCP activation key into capabilities.mcp and
+	// erase it (dead state after load; the next save drops the key). Fail-soft
+	// to "auto"; same pipeline position/surfacing as normalizeMCPTimeouts.
 	mcpModeWarnings := migrateLegacyMCPServerModes(&cfg)
 
-	// Canonicalize the capabilities sections (fail-soft: an unrecognized
-	// chat_mode / code_mode is warned about and reset to the default "auto"),
-	// dropping stale capabilities.mcp names and both-empty entries along the
-	// way. Must run after the legacy migration, whose folded values are
-	// already canonical.
+	// Canonicalize the capabilities sections (fail-soft: unrecognized
+	// chat_mode/code_mode warned + reset to "auto"), dropping stale
+	// capabilities.mcp names and both-empty entries. After the legacy
+	// migration, whose folded values are already canonical.
 	capWarnings := normalizeCapabilities(&cfg)
 
 	// Warnings collected before validation, in a deterministic order.
@@ -3257,35 +2583,27 @@ func LoadWithResult(path string) (*LoadResult, error) {
 // Save writes the configuration to a YAML file atomically.
 func Save(cfg *Config, path string) error {
 	// Fail-closed web_access gate: refuse to persist an enabled section with
-	// an invalid bind or an out-of-range port (a valid non-loopback bind is
-	// a stage-2 LAN listener and saves as-is). The load path heals an
-	// invalid state (normalizeWebAccess resets it), so hitting this means an
-	// in-memory mutation tried to persist a section the sidecar must never
-	// run with. See web_access.go / ADR-101.
+	// an invalid bind or out-of-range port. The load path heals an invalid
+	// state, so hitting this means an in-memory mutation tried to persist a
+	// section the sidecar must never run with. See web_access.go / ADR-101.
 	if err := validateWebAccessForSave(cfg); err != nil {
 		return fmt.Errorf("refusing to save config: %w", err)
 	}
-	// Marshal the config as-is: the execute blocklist is empty by default
-	// and purely user-authored, so there is no derived view to maintain —
-	// what is stored is what is written.
+	// Marshal as-is: the execute blocklist is empty by default and purely
+	// user-authored — what is stored is what is written.
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
 
-	// Write atomically via safeio: the temporary file carries a randomized
-	// name, so there is no plantable fixed "<path>.tmp" (a FIFO planted there
-	// used to block the write-open forever, and a symlink was followed into
-	// an arbitrary write target), and the final rename replaces a planted
-	// symlink at path itself instead of writing through it.
-	//
-	// The mode is an unconditional 0o600, deliberately NOT the historical
-	// 0o644: WriteFileAtomic publishes the staging file with an exact fchmod
-	// and no umask filtering (unlike the os.WriteFile staging write this file
-	// had before, which produced perm &^ umask), so a literal 0o644 would
-	// silently widen config.yaml to world-readable on hosts whose umask used
-	// to keep it tighter. The file carries provider API keys, so it is
-	// published owner-only regardless of the ambient umask.
+	// Write atomically via safeio: a randomized staging name (no plantable
+	// fixed "<path>.tmp" — a planted FIFO blocked write-open forever, a
+	// planted symlink was followed), and the final rename replaces a planted
+	// symlink at path instead of writing through it. The mode is an
+	// unconditional 0o600, deliberately NOT the historical 0o644:
+	// WriteFileAtomic fchmods the staging file exactly (no umask filtering),
+	// so a literal 0o644 would silently publish the API-key-bearing file
+	// world-readable regardless of the ambient umask.
 	if err := safeio.WriteFileAtomic(path, data, 0o600); err != nil {
 		return fmt.Errorf("failed to write config file: %w", err)
 	}
@@ -3297,12 +2615,11 @@ func validate(cfg *Config) error {
 	if cfg.Git.WorktreesRoot != "" && (!filepath.IsAbs(cfg.Git.WorktreesRoot) || filepath.Clean(cfg.Git.WorktreesRoot) != cfg.Git.WorktreesRoot) {
 		return errors.New("git.worktrees_root must be an absolute clean path")
 	}
-	// Validate search.base_url for the searxng provider. The raw value is
-	// checked here (an ${ENV_VAR} placeholder passes — it resolves at
-	// runtime); the expanded value is re-checked fail-closed at consumption
-	// time by core/tools.CreateSearchProviderWithClient, so a placeholder
-	// that expands to garbage still surfaces an explicit error instead of a
-	// silently missing web_search tool.
+	// Validate search.base_url for the searxng provider (raw value — an
+	// ${ENV_VAR} placeholder passes and resolves at runtime; the expanded
+	// value is re-checked fail-closed at consumption by
+	// core/tools.CreateSearchProviderWithClient, so garbage still surfaces an
+	// explicit error instead of a silently missing web_search tool).
 	if err := ValidateSearchBaseURL(cfg.Search.Provider, cfg.Search.BaseURL); err != nil {
 		return err
 	}
@@ -3330,12 +2647,10 @@ func validate(cfg *Config) error {
 	}
 
 	// Validate the chatgpt auth-mode enum: exactly "api_key" | "oauth"
-	// (empty reads as the default "api_key" for programmatically built
-	// configs that bypassed ApplyDefaults). An unknown value must fail the
-	// load rather than be silently ignored: the mode decides whether the
-	// provider's requests carry subscription credentials or a static key,
-	// and a typo would leave the operator believing the opposite of what
-	// runs.
+	// (empty reads as the default "api_key" for configs that bypassed
+	// ApplyDefaults). An unknown value must fail the load: the mode decides
+	// whether requests carry subscription credentials or a static key, and a
+	// typo must not leave the operator believing the opposite of what runs.
 	switch cfg.LLM.ChatGPT.Auth.Mode {
 	case "", ChatGPTAuthModeAPIKey, ChatGPTAuthModeOAuth:
 	default:
@@ -3345,11 +2660,11 @@ func validate(cfg *Config) error {
 		)
 	}
 
-	// Validate per-provider auto_retry_seconds (ADR-065): the timer accepts
-	// [0, 3600] seconds. 0 disables; negative or oversized values would arm
-	// time.AfterFunc on an unusable window (years) while the banner still
-	// promises an auto-resend. The Settings UI clamps to the same range;
-	// YAML/RPC edits go through this check instead of trusting the clamp.
+	// Validate per-provider auto_retry_seconds (ADR-065): [0, 3600] seconds;
+	// 0 disables. Out-of-range values would arm time.AfterFunc on an unusable
+	// window (years) while the banner still promises an auto-resend. The
+	// Settings UI clamps to the same range; YAML/RPC edits go through this
+	// check instead of trusting the clamp.
 	for _, p := range cfg.LLM.allProviderEntries() {
 		if p.autoRetrySeconds < 0 || p.autoRetrySeconds > maxAutoRetrySeconds {
 			return fmt.Errorf(
@@ -3357,26 +2672,19 @@ func validate(cfg *Config) error {
 				p.name, maxAutoRetrySeconds, p.autoRetrySeconds,
 			)
 		}
-		// Validate the per-provider timeout_class override (ADR-071 D3): the
-		// enum is exactly "local" | "remote" | unset, and the reserved
-		// `embedded` provider must carry no override. An unknown value would
-		// otherwise be silently ignored by Classify and infer the class
-		// anyway, so a typo would silently change which envelope bounds the
-		// provider's budgets; a hand-written override on `embedded` would let
-		// the backend-owned local model be downgraded. Shared with the
-		// UpdateLLMConfig trust boundary so the two gates cannot drift.
+		// Full timeout_class rules (ADR-071 D3) — see
+		// ValidateProviderTimeoutClass, the single gate shared with the
+		// UpdateLLMConfig trust boundary.
 		if err := ValidateProviderTimeoutClass(p.name, p.timeoutClass); err != nil {
 			return err
 		}
 	}
 
-	// Range-check the llm.models context_window overrides. 0 means "inherit the
-	// built-in metadata" and stays legal; anything else must be a plausible
-	// token count. The override is a TIER-1 value that shadows the tier-1.5 lazy
-	// probe, so a poisoned one is never corrected by asking the model again, and
-	// an absurd window makes every prompt "fit" — which silently disables
-	// context compaction. Keys are sorted so a config with several bad overrides
-	// reports the same one every run. See MaxModelContextWindow.
+	// Range-check the llm.models context_window overrides: 0 = inherit
+	// (legal), anything else within 1..MaxModelContextWindow — a TIER-1 value
+	// that shadows the lazy probe and silently disables compaction when
+	// absurd (see MaxModelContextWindow). Keys are sorted so a config with
+	// several bad overrides reports the same one every run.
 	modelNames := make([]string, 0, len(cfg.LLM.Models))
 	for name := range cfg.LLM.Models {
 		modelNames = append(modelNames, name)
@@ -3395,15 +2703,11 @@ func validate(cfg *Config) error {
 		}
 	}
 
-	// Validate the per-model request_timeout override (ADR-071 D5): the fixed
-	// deadline accepts [0, 3600] seconds. 0 = "no opinion" (the adaptive
-	// budget governs); a positive value is armed EXACTLY as configured and
-	// never escalated, so an absurd value would silently disable the
-	// stalled-upstream protection the budget exists to provide (or strangle a
-	// legitimate long generation). Same bound and rationale as the
-	// per-provider auto_retry_seconds. The loop is separate from the
-	// context_window check above: a model with no window override must still
-	// get its deadline validated.
+	// Validate the per-model request_timeout override (ADR-071 D5): [0, 3600]
+	// seconds; 0 = "no opinion", positive armed EXACTLY (never escalated —
+	// an absurd value would silently disable the stalled-upstream protection).
+	// Separate loop from the context_window check: a model without a window
+	// override still gets its deadline validated.
 	for _, name := range modelNames {
 		timeout := cfg.LLM.Models[name].RequestTimeout
 		if timeout < 0 || timeout > maxAutoRetrySeconds {
@@ -3414,10 +2718,9 @@ func validate(cfg *Config) error {
 		}
 	}
 
-	// Validate the security.groups schema: only the fixed set of configurable
-	// groups is accepted, the reserved "system" group must never appear in
-	// config, policies must use the group enum, and a blocklist is an
-	// execute-only feature.
+	// Validate the security.groups schema: only the fixed configurable groups,
+	// never the reserved "system" group, group-enum policies only, and the
+	// blocklist is an execute-only feature.
 	for name, group := range cfg.Security.Groups {
 		if name == ToolGroupSystem {
 			return fmt.Errorf(
@@ -3456,17 +2759,16 @@ func validate(cfg *Config) error {
 		}
 	}
 
-	// Validate security.silent_mode sub-policy enums. ApplyDefaults has
-	// already seeded the defaults, so an unset mode is valid here; an
-	// explicit value must be drawn from that sub-policy's enum.
+	// Validate security.silent_mode sub-policy enums: unset is valid here
+	// (ApplyDefaults seeded the defaults); explicit values must come from
+	// the sub-policy's enum.
 	if err := ValidateSilentMode(cfg.Security.SilentMode); err != nil {
 		return err
 	}
 
-	// Validate vector_index.content_filter thresholds: explicit values must
-	// be non-negative and the whitespace ratio within [0, 1]. A mis-typed
-	// threshold (negative bytes, ratio > 1) would silently disable a
-	// heuristic in the detector, so it fails fast at load time instead.
+	// Validate vector_index.content_filter thresholds: non-negative values,
+	// whitespace ratio within [0, 1] — a mis-typed threshold would silently
+	// disable a detector heuristic, so it fails fast at load.
 	cf := cfg.VectorIndex.ContentFilter
 	for name, v := range map[string]int{
 		"generated_header_bytes":       cf.GeneratedHeaderBytes,
@@ -3485,25 +2787,17 @@ func validate(cfg *Config) error {
 	}
 
 	// Validate and normalize security.trusted_git_repos and
-	// security.harden_git_repos. Both hold absolute repository roots — compared
-	// literally (after Clean) against scanned work-tree roots — so a relative
-	// entry could never match and is rejected at load time rather than leaving
-	// dead config. Entries are cleaned in place, duplicate roots are rejected,
-	// and the two lists are mutually exclusive: a root cannot be both trusted
-	// (warning suppressed) and hardened (warning forced). The mutual exclusion
-	// compares the SAME trust-key forms the runtime matcher probes
-	// (workspace.TrustProbePaths: the literal cleaned spelling, its
-	// symlink-resolved spelling, the repository trust root, the legacy
-	// work-tree root, and the canonical spelling of both roots) — best effort:
-	// an entry whose path does not resolve where this config is loaded only
-	// conflicts through the forms that do resolve. So the same repository
-	// listed as trusted under one key form and hardened under another — e.g. a
-	// legacy entry keyed on a linked worktree against a main-root hardening,
-	// a state pre-unification builds could persist — is rejected exactly like
-	// the literal collision instead of loading cleanly and letting trust win
-	// repo-wide at runtime; the runtime trust/harden transitions enforce the
-	// same exclusion across every key form once the repositories actually
-	// exist.
+	// security.harden_git_repos. Both hold absolute repository roots
+	// (compared literally, after Clean, against scanned work-tree roots — a
+	// relative entry could never match and is rejected instead of staying
+	// dead config); cleaned in place, duplicates rejected, and the two lists
+	// are mutually exclusive across the SAME trust-key forms the runtime
+	// matcher probes (workspace.TrustProbePaths) — best effort where paths do
+	// not resolve on this machine, so the same repository listed trusted
+	// under one key form and hardened under another is rejected exactly like
+	// the literal collision instead of letting trust win repo-wide at
+	// runtime; the runtime transitions enforce the same exclusion across
+	// every key form once the repositories exist.
 	seenTrusted := make(map[string]struct{}, len(cfg.Security.TrustedGitRepos))
 	trustedForms := make(map[string]struct{}, 2*len(cfg.Security.TrustedGitRepos))
 	cleanTrusted := make([]TrustedGitRepo, 0, len(cfg.Security.TrustedGitRepos))
@@ -3569,9 +2863,8 @@ func validate(cfg *Config) error {
 		)
 	}
 
-	// Validate goal_loop.suggest bounds. The classifier consult floor is a
-	// complexity band value ([1,5]); negative or absurd values are config
-	// mistakes, not "never suggest".
+	// Validate goal_loop.suggest bounds: the consult floor is a complexity
+	// band value ([1,5]); negative/absurd values are config mistakes.
 	if cfg.GoalLoop.Suggest.MinComplexity < 0 || cfg.GoalLoop.Suggest.MinComplexity > 5 {
 		return fmt.Errorf(
 			"goal_loop.suggest.min_complexity %d is not valid; must be within [0, 5] (0 = use the default)",
@@ -3579,11 +2872,10 @@ func validate(cfg *Config) error {
 		)
 	}
 
-	// Validate the E2S section: explicit numeric values must be non-negative
-	// (the seeded defaults are positive, so only a hand-written YAML can go
-	// below zero), and the anti-spin thresholds must keep their ordering —
-	// the model always gets at least one corrective nudge before the loop
-	// aborts. Fail fast at load rather than misbehaving mid-run.
+	// Validate the E2S section: explicit numerics must be non-negative (only
+	// hand-written YAML can go below the seeded defaults), and the anti-spin
+	// thresholds keep their ordering — at least one corrective nudge before
+	// the abort. Fail fast at load rather than misbehaving mid-run.
 	for name, v := range map[string]int{
 		"max_steps":                 cfg.E2S.MaxSteps,
 		"state_byte_limit":          cfg.E2S.StateByteLimit,
@@ -3607,9 +2899,9 @@ func validate(cfg *Config) error {
 		)
 	}
 	// Validate the E2S tool-catalog narrowing: an unknown preset is a typo,
-	// not a sentinel — reject it at load (the core filter fails closed to the
-	// core preset for anything but "all", so a silent fallback here would
-	// hide the mistake). allow/deny entries must name tools.
+	// not a sentinel — rejected at load (the core filter fails closed to
+	// "core" for anything but "all", so a silent fallback would hide the
+	// mistake). allow/deny entries must name tools.
 	switch cfg.E2S.Tools.Preset {
 	case E2SToolsPresetCore, E2SToolsPresetAll:
 		// valid
@@ -3630,9 +2922,8 @@ func validate(cfg *Config) error {
 		}
 	}
 
-	// Validate vector_index.execution_provider enum. ApplyDefaults has
-	// already normalized the empty string to "auto", so anything else
-	// here is a user-authored value.
+	// Validate vector_index.execution_provider enum: ApplyDefaults has
+	// already normalized empty to "auto", so anything else is user-authored.
 	switch cfg.VectorIndex.ExecutionProvider {
 	case VectorIndexProviderAuto, VectorIndexProviderCPU, VectorIndexProviderCUDA, VectorIndexProviderOpenVINO:
 		// valid
@@ -3653,14 +2944,12 @@ func validate(cfg *Config) error {
 		)
 	}
 
-	// Validate vector_index.park_budget_mb. ApplyDefaults has already
-	// resolved an unset key to the 1024 MiB default, so an explicit 0 here
-	// is a hand-authored value. Zero is ambiguous — read literally, a zero
-	// budget would evict every non-empty parked state the moment it parks —
-	// so it is rejected: use a positive budget, or -1 to disable the byte
-	// budget (park_capacity alone). Only -1 is a legal negative, mirroring
-	// runtime.memory_soft_limit_mb; anything below it is a typo, not a
-	// sentinel, and fails fast rather than silently disabling the budget.
+	// Validate vector_index.park_budget_mb (unset already resolved to the
+	// 1024 MiB default, so an explicit 0 is hand-authored and ambiguous —
+	// read literally it evicts every parked state the moment it parks — and
+	// rejected): use a positive budget or -1 to disable the byte budget.
+	// Only -1 is a legal negative (mirroring runtime.memory_soft_limit_mb);
+	// anything below is a typo and fails fast.
 	if budget := cfg.VectorIndex.ParkBudgetMb; budget != nil {
 		switch {
 		case *budget == 0:
@@ -3680,13 +2969,11 @@ func validate(cfg *Config) error {
 		}
 	}
 
-	// Validate runtime.memory_soft_limit_mb. The field is a tri-state int:
-	// 0 (or unset) = auto, >0 = explicit MiB, -1 = off. Only -1 is a legal
-	// negative — anything below it is a typo (e.g. -10), not a sentinel, and
-	// fails fast at load rather than silently selecting auto mode. The upper
-	// bound guards the int64 MiB→bytes shift in the consumer
-	// (desktop/memlimit.go), which overflows to a negative — and a negative
-	// SetMemoryLimit is ignored by the runtime, silently dropping the limit.
+	// Validate runtime.memory_soft_limit_mb: tri-state 0/unset = auto,
+	// >0 = explicit MiB, -1 = off; only -1 is a legal negative (anything
+	// below is a typo, not a sentinel). The upper bound guards the consumer's
+	// int64 MiB→bytes shift (desktop/memlimit.go): it overflows to a negative,
+	// and a negative SetMemoryLimit is ignored, silently dropping the limit.
 	if cfg.Runtime.MemorySoftLimitMB < -1 {
 		return fmt.Errorf(
 			"runtime.memory_soft_limit_mb must be -1 (off), 0/unset (auto), or a positive MiB value, got %d",
