@@ -242,6 +242,10 @@ policy of the tool's owning group (see the group table above). A legacy file
 that is not hand-converted silently drops those settings on the next Save
 (verified by test: legacy keys load inert and are wiped).
 
+### 8. The Settings RPC's groups payload is a wholesale replacement
+
+The Settings RPC's groups payload (`UpdateSecuritySettings`) must carry the COMPLETE set of configurable groups: the result replaces the stored map wholesale, and a partial payload would silently weaken security (an omitted group resolves fail-safe to `user_confirm` — weaker than a configured `deny`; omitting `execute` strips the live shell blocklist).
+
 ## Consequences
 
 **Positive:**

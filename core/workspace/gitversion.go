@@ -14,16 +14,10 @@ import (
 
 // Git version probing ──────────────────────────────────────────────────────
 //
-// attr.tree — the blanket attribute-routing kill the neutralizing set leans
-// on for include-bearing configs (an included file can hide driver names
-// per-name pins cannot cover) — exists only since git 2.45 (Ubuntu 22.04
-// ships 2.34, RHEL 9 ships 2.43). Older git SILENTLY IGNORES the key: the
-// -c attr.tree=<empty tree> pin parses, matches nothing, and the
-// in-tree .gitattributes keeps routing to drivers the scan never saw. The
-// command-execution chokepoint therefore fails closed for include-bearing
-// configs unless the resolved git version is known to be >= 2.45
-// (protocol.git.allow, the core.gitProxy kill, needs no version support and
-// is unaffected by this gate).
+// attr.tree — the blanket attribute-routing kill for include-bearing configs —
+// exists only since git 2.45; older git silently ignores the pin and hidden
+// drivers stay live, so the chokepoint fails closed unless git >= 2.45
+// (specs/domains/workspace.md).
 
 // attrTreeMinGitVersion is the oldest git that honors attr.tree.
 var attrTreeMinGitVersion = gitVersion{major: 2, minor: 45}
@@ -40,10 +34,9 @@ func (v gitVersion) lessThan(o gitVersion) bool {
 	return v.major < o.major || (v.major == o.major && v.minor < o.minor)
 }
 
-// parseGitVersion extracts (major, minor) from `git --version` output. It
-// accepts both the canonical "git version 2.50.1 (Apple Git-157)" spelling
-// and a bare "2.45.0" token, and refuses anything without a leading
-// major.minor pair — an unparsable version must fail closed, never guess.
+// parseGitVersion extracts (major, minor) from `git --version` output —
+// canonical or bare "2.45.0" spelling — refusing anything unparsable: fail
+// closed, never guess.
 func parseGitVersion(output string) (gitVersion, error) {
 	s := strings.TrimSpace(output)
 	if rest, ok := strings.CutPrefix(s, "git version "); ok {
@@ -69,38 +62,26 @@ func parseGitVersion(output string) (gitVersion, error) {
 }
 
 var (
-	// gitVersionMu guards the lazy resolution of the git version below. It
-	// replaces the sync.Once this gate used to carry: a Once freezes the
-	// FIRST probe outcome whatever it is, so a transient failure (git not
-	// yet on PATH in a freshly launched Finder app before shell-env
-	// expansion completes, an AV lock on Windows) would fail every
-	// include-bearing-repo git operation for the rest of the process
-	// lifetime. The mutex plus resolvedGitVersion retries failures and
-	// caches only completed resolutions.
+	// gitVersionMu guards lazy resolution below — deliberately not a sync.Once:
+	// a Once freezes the FIRST outcome, so a transient probe failure (git not
+	// yet on PATH, an AV lock) would fail include-bearing repos for the process lifetime; the mutex retries, caching only completed resolutions.
 	gitVersionMu sync.Mutex
 
-	// resolvedGitVersion reports that a version was parsed — the verdict in
-	// resolvedGitVersionErr (nil when attr.tree-capable) is then final for
-	// the process lifetime, since the machine's git version does not
-	// change. It stays false on probe or parse failure, so the next call
-	// retries.
+	// resolvedGitVersion marks a parsed version: the verdict in
+	// resolvedGitVersionErr is then final for the process lifetime; false on
+	// probe/parse failure — retry.
 	resolvedGitVersion bool
 
 	resolvedGitVersionErr error
 )
 
-// gitVersionProbeTimeout bounds each `git --version` probe. The probe
-// normally completes in single-digit milliseconds; the bound exists so a
-// hung git binary (wedged AV scan, unresponsive filesystem) fails the gate
-// instead of blocking callers indefinitely — exec.CommandContext kills the
-// probe once the deadline passes, and the next call retries.
+// gitVersionProbeTimeout bounds each `git --version` probe (normally
+// milliseconds) so a hung binary fails the gate instead of blocking callers.
 const gitVersionProbeTimeout = 5 * time.Second
 
-// gitVersionOutputFn is the seam unit tests use to inject `git --version`
-// output (mirroring scanGitConfigFn). Production resolves the real binary
-// once, through the same hardened sysproc.GitCmd chokepoint every other git
-// spawn uses — `git --version` reads no repository config and executes no
-// config-driven program, so it needs no repo-scoped neutralization.
+// gitVersionOutputFn is the tests' seam for `git --version` output (mirroring
+// scanGitConfigFn); production spawns through sysproc.GitCmd — no repo config
+// is read, so no repo-scoped neutralization.
 var gitVersionOutputFn = func(ctx context.Context) (string, error) {
 	cmd, err := sysproc.GitCmd(ctx, "--version")
 	if err != nil {
@@ -115,13 +96,9 @@ var gitVersionOutputFn = func(ctx context.Context) (string, error) {
 	return out.String(), nil
 }
 
-// requireAttrTreeCapableGit returns nil when the resolved git version is
-// known to honor attr.tree (>= 2.45), and a fail-closed error otherwise —
-// including when the version cannot be resolved at all (git missing from
-// PATH, unparsable output). A completed resolution (any verdict) is cached
-// for the process lifetime; probe and parse failures are treated as
-// transient and retried on the next call. Callers invoke this only on the
-// include-bearing path where the attr.tree pin is load-bearing.
+// requireAttrTreeCapableGit returns nil when git is known to honor attr.tree
+// (>= 2.45) and fails closed otherwise, including an unresolvable version. A
+// completed resolution is cached for the process lifetime; failures retry. Only invoked on the include-bearing path, where the pin is load-bearing.
 func requireAttrTreeCapableGit() error {
 	gitVersionMu.Lock()
 	defer gitVersionMu.Unlock()

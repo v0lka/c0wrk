@@ -49,33 +49,24 @@ type ApplicationConfig struct {
 	VectorSearchWaitFunc builtins.VectorSearchWaitFunc
 	// VectorSearchWaitTimeout bounds how long vector-search callers (the
 	// semantic_search tool and RAG hint injection) wait for index readiness
-	// before returning an actionable error / skipping hints
-	// (vector_index.search_wait_timeout_ms; 0 = fail fast). The desktop
-	// search closure enforces it; passed through to per-session
-	// orchestrators for the RAG-hint bound.
+	// before an actionable error / hint skip
+	// (vector_index.search_wait_timeout_ms; 0 = fail fast).
 	VectorSearchWaitTimeout time.Duration
 	// VectorSearchWaitDisabled marks an EXPLICIT fail-fast
-	// (vector_index.search_wait_timeout_ms: 0). The desktop layer sets it
-	// after the config defaults have resolved "unset" to 3000ms, so a zero
-	// timeout here is unambiguously the user's choice — the orchestrator
-	// layer cannot tell "unset" (keep 3s default) from "explicit 0" (wait
-	// zero) without this flag.
+	// (vector_index.search_wait_timeout_ms: 0): the desktop layer sets it
+	// after config defaults resolved "unset" to 3000ms, so a zero timeout
+	// here is unambiguously the user's choice, not the default.
 	VectorSearchWaitDisabled bool
 
 	// FileChangeNotifyFunc is called after a file-mutating tool (write_file,
-	// edit_file, bash_exec) completes successfully. The executor context
-	// carries the session's workspace root, so the implementation can route
-	// the debounced re-indexing to THAT root's vector manager (ADR-080).
-	// It triggers incremental re-indexing so that subsequent searches
-	// reflect the change without waiting for the filesystem watcher. Nil
-	// disables the hook.
+	// edit_file, bash_exec) completes successfully; the executor context
+	// carries the session's workspace root, so the implementation routes the
+	// debounced re-indexing to THAT root's vector manager (ADR-080).
 	FileChangeNotifyFunc func(ctx context.Context)
 
-	// FileChangedWorkspaceEmitter is called alongside FileChangeNotifyFunc to
-	// emit the workspace:tree_changed event so the frontend (research panel,
-	// file tree, etc.) refreshes its view after agent-initiated file writes.
-	// Nil is safe — the event is best-effort; the filesystem watcher handles
-	// manual edits.
+	// FileChangedWorkspaceEmitter runs alongside FileChangeNotifyFunc to emit
+	// workspace:tree_changed so the frontend refreshes after agent-initiated
+	// writes. Best-effort; the filesystem watcher covers manual edits.
 	FileChangedWorkspaceEmitter func()
 }
 
@@ -85,87 +76,77 @@ type Application struct {
 	builder   *core.OrchestratorBuilder
 	manager   *session.Manager
 	persister *session.EventPersister
-	// tokenPersist coalesces session-token updates and writes them through the
-	// persister's single writer, off the emitter's goroutine. Nil when no
-	// session store is configured.
+	// tokenPersist coalesces session-token updates through the persister's
+	// single writer, off the emitter's goroutine. Nil without a session store.
 	tokenPersist *tokenPersister
 	titleGen     *session.TitleGenerator
 	logger       *slog.Logger
 
-	// agentDir (~/.c0wrk) locates the model-profile custom-profile store used to
-	// resolve the effective profile on every builder-config conversion.
+	// agentDir (~/.c0wrk) locates the model-profile custom-profile store used
+	// to resolve the effective profile on every builder-config conversion.
 	agentDir string
 
-	// emitFunc is the combined session-event emitter (UI + persistence).
-	// Exposed via EmitSessionEvent so desktop-layer callbacks (e.g. plan
-	// approval) can emit events that survive app restarts.
+	// emitFunc is the combined session-event emitter (UI + persistence);
+	// exposed via EmitSessionEvent so desktop callbacks can emit events that
+	// survive app restarts.
 	emitFunc func(session.Event)
 
 	// goalProposer is the desktop goal-approval flow injected onto every
-	// per-session orchestrator by the factory. Set via SetGoalProposer after
-	// construction (desktop wires it once its pending-confirmation map is ready).
+	// per-session orchestrator by the factory; set via SetGoalProposer once
+	// desktop's pending-confirmation map is ready.
 	goalProposer coretools.GoalProposer
 
-	// goalSuggestionProposer is the desktop goal-mode suggestion card flow
-	// injected onto every per-session orchestrator by the factory. Set via
-	// SetGoalSuggestionProposer after construction (mirrors goalProposer).
+	// goalSuggestionProposer mirrors goalProposer for the goal-mode
+	// suggestion card flow.
 	goalSuggestionProposer core.GoalSuggestionProposer
 
 	// hitlHandler is captured for the orchestrator factory closure.
 	hitlHandler agent.HITLHandler
 
 	// autoRetryIntervals is the published snapshot of every provider's
-	// auto_retry_seconds (ADR-065), keyed by logical provider name. The
-	// session-manager resolver reads it lock-free via atomic load; FrontendAPI
-	// republishes it on every committed LLM config mutation. The map is
-	// immutable once stored — the pointer swap is the only synchronization
-	// (reading the live config maps from the resolver would race Settings
-	// saves, which replace them under configMu).
+	// auto_retry_seconds (ADR-065), keyed by logical provider name —
+	// immutable once stored; the pointer swap is the only synchronization.
+	// See specs/decisions/065-auto-resend-retryable-errors.md.
 	autoRetryIntervals atomic.Pointer[map[string]int]
 
-	// vectorRootsPtr late-binds the per-root vector-index registry (ADR-080).
-	// The registry lives on FrontendAPI (it emits UI events and resolves the
-	// Git-panel focus), which desktop constructs after the Application; the
+	// vectorRootsPtr late-binds the per-root vector-index registry (ADR-080),
+	// which lives on FrontendAPI (constructed after the Application);
 	// registered search closures resolve it at call time and surface the
 	// still-loading error until SetVectorRoots lands. Nil before wiring.
 	vectorRootsPtr atomic.Pointer[VectorRoots]
 
 	// builderConfigProvider produces the BuilderConfig every new session's
-	// orchestrator is built from, once wired by NewFrontendAPI: the conversion
-	// runs under FrontendAPI's configMu on the live config (see
-	// sessionBuilderConfig). Nil before that wiring — in that window no Wails
-	// call goroutine exists, so the factory converts the startup config
-	// directly and cannot race a Settings save.
+	// orchestrator is built from, once wired by NewFrontendAPI: the
+	// conversion must run under FrontendAPI's configMu — a factory invoked
+	// on Wails call goroutines converts the live pointer unlocked only
+	// before that wiring, where no Settings save can race it.
 	builderConfigProvider atomic.Pointer[func() *core.BuilderConfig]
 }
 
 // SetBuilderConfigProvider wires the lock-respecting config snapshot the
-// session-orchestrator factory converts (see builderConfigProvider and
-// sessionBuilderConfig). Called once from NewFrontendAPI; startup-only, not
-// meant for concurrent callers.
+// session-orchestrator factory converts (see builderConfigProvider).
+// Startup-only, called once from NewFrontendAPI.
 func (a *Application) SetBuilderConfigProvider(fn func() *core.BuilderConfig) {
 	a.builderConfigProvider.Store(&fn)
 }
 
 // sessionBuilderConfig returns the BuilderConfig a new session's orchestrator
-// is built from. After Init wired the provider, the conversion runs
-// under FrontendAPI's configMu: the factory is invoked on Wails call
-// goroutines, concurrently with Settings saves that mutate the shared live
-// config's maps in place under the same lock, so converting the live pointer
-// unlocked is a fatal concurrent-map-access crash. Before that wiring the
-// startup config is converted directly (the NewApplication behavior this
-// snapshot path replaces): Init wires the provider INSIDE its critical
-// section, before it raises the seedPublished flag that admits guardless RPC
-// readers (see FrontendAPILifecycle.Init), so a session factory on a call
-// goroutine can never reach this fallback while a settings save could race it.
+// is built from. After Init wired the provider, the conversion runs under
+// FrontendAPI's configMu: the factory is invoked on Wails call goroutines,
+// concurrently with Settings saves that mutate the shared live config's maps
+// in place under the same lock — converting the live pointer unlocked is a
+// fatal concurrent-map-access crash. Before that wiring the startup config is
+// converted directly: Init wires the provider inside its critical section,
+// before raising the seedPublished flag that admits guardless RPC readers.
+// See specs/domains/session-lifecycle.md (§ BuilderConfig provider under
+// FrontendAPI's configMu).
 func (a *Application) sessionBuilderConfig(startupCfg *config.Config) *core.BuilderConfig {
 	if fn := a.builderConfigProvider.Load(); fn != nil {
 		if cfg := (*fn)(); cfg != nil {
 			return cfg
 		}
-		// The provider's nil means the FrontendAPI config was never wired
-		// (mis-wired test/startup); fail loud here rather than nil-deref on
-		// the caller's first field access.
+		// Fail loud rather than nil-deref on the caller's first field
+		// access: nil here means the FrontendAPI config was never wired.
 		a.log().Error("builder config provider returned nil — startup wiring is broken")
 		return nil
 	}
@@ -191,18 +172,16 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	}
 
 	// 1. Event persister (SQLite persistence, separate from UI emission).
-	// Start its single-writer goroutine so Persist never runs SQLite I/O on the
-	// event-emit goroutine.
 	app.persister = session.NewEventPersister(cfg.SessionStore)
 	app.persister.StartWriter()
 
 	// 2. Combined emit function: UI emission + persistence.
 	//
 	// Persistence is offloaded to the persister's single-writer goroutine, so
-	// this (the emit goroutine) never blocks on SQLite. Terminal events double as
-	// a durability checkpoint: the write queue (and any coalesced token updates)
-	// is drained at task end so a completed task's messages are on disk before
-	// the app can be killed.
+	// this (the emit goroutine) never blocks on SQLite. Terminal events double
+	// as a durability checkpoint: the write queue (and coalesced token
+	// updates) is drained at task end so a completed task's messages are on
+	// disk before the app can be killed.
 	emitFunc := func(evt session.Event) {
 		if cfg.UIEmitFunc != nil {
 			cfg.UIEmitFunc(evt)
@@ -220,11 +199,9 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	// 3. OrchestratorBuilder (owns registry, gateway, router, judge).
 	builderCfg := ToBuilderConfig(cfg.Config, loadModelProfilesCatalog(app.agentDir, app.log()), app.log())
 	// Managed venv interpreter (imports markitdown) enables vision-assisted
-	// document conversion. Machine-local fact, resolved LAZILY: the
-	// tool-manager installs the venv asynchronously after startup, so probing
-	// eagerly here would see an empty path on fresh installs and silently
-	// disable vision for the whole app run. The probe runs at the read_file
-	// document wrapper's first converter init instead.
+	// document conversion. Resolved LAZILY — the tool-manager installs the
+	// venv asynchronously after startup, so an eager probe would see an empty
+	// path on fresh installs and silently disable vision for the whole run.
 	markitdownPython := func() string {
 		return toolmanager.VenvPythonPath(config.ToolsDir(cfg.AgentDir))
 	}
@@ -235,14 +212,12 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	}
 	app.builder = builder
 
-	// 3a. Vector search (per-root router, ADR-080). The router late-binds the
+	// 3a. Vector search (per-root router, ADR-080): late-binds the
 	// FrontendAPI-owned registry (SetVectorRoots) and resolves the workspace
 	// root from the executor context — the session's own tree for agent-side
-	// calls (semantic_search tool + RAG hints), the Git-panel focus when the
-	// context carries no root. Registered unconditionally, matching the
-	// singleton era where desktop always supplied closures: the pre-wiring
-	// window surfaces the still-loading error instead. An injected
-	// cfg.VectorSearchFunc (tests) still takes precedence.
+	// calls, the Git-panel focus otherwise. Registered unconditionally: the
+	// pre-wiring window surfaces the still-loading error. An injected
+	// cfg.VectorSearchFunc (tests) wins.
 	if cfg.VectorSearchFunc != nil {
 		builder.RegisterVectorSearch(cfg.VectorSearchFunc, cfg.VectorSearchWaitFunc, cfg.VectorSearchWaitTimeout, cfg.VectorSearchWaitDisabled)
 	} else {
@@ -252,18 +227,16 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 
 	// 3b. Skill discovery directories. The builder creates a per-session
 	// SkillManager on each Build() and always prepends the current project's
-	// `.agents/skills` directory (see core/builder.go). Here we only resolve
-	// and register the shared base dirs from config.
+	// `.agents/skills` directory (see core/builder.go); here only the shared
+	// base dirs from config are resolved and registered.
 	if len(cfg.Config.Skills.Dirs) > 0 {
 		skillDirs := resolveCatalogDirs(cfg.Config.Skills.Dirs, cfg.AgentDir, config.ExpandEnvVars, cfg.Logger)
 		builder.SetSkillDirs(skillDirs)
 	}
 
-	// 3c. Subagent Profile discovery directories. Mirrors the skill dirs
-	// wiring: the builder creates a per-session AgentManager on each Build()
-	// and always prepends the current project's `.agents/agents` directory
-	// (see core/builder.go). Here we resolve and register the shared base
-	// dirs from config (defaults applied in config.ApplyDefaults).
+	// 3c. Subagent Profile discovery directories — mirrors the skill dirs
+	// wiring (the builder prepends the project's `.agents/agents` per Build();
+	// defaults applied in config.ApplyDefaults).
 	if len(cfg.Config.Agents.Dirs) > 0 {
 		agentDirs := resolveCatalogDirs(cfg.Config.Agents.Dirs, cfg.AgentDir, config.ExpandEnvVars, cfg.Logger)
 		builder.SetAgentDirs(agentDirs)
@@ -274,23 +247,14 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 		builder.ToolRegistry().SetConfirmFunc(cfg.ConfirmFunc)
 	}
 
-	// 4a. Post-execute hook: after a file-mutating tool (write_file, edit_file,
-	// bash_exec) completes successfully, notify the vector index manager so it
-	// triggers debounced incremental re-indexing. Also emit the
-	// workspace:tree_changed event so the frontend (research panel, file tree,
-	// etc.) refreshes its view after agent-initiated file writes. This is
-	// essential because the filesystem watcher (fsnotify/FSEvents) has latency
-	// on macOS and may miss same-process writes — the post-execute hook fires
-	// synchronously after the tool returns, ensuring the frontend is notified
-	// without delay.
+	// 4a. Post-execute hook: after a successful file-mutating tool (write_file,
+	// edit_file, bash_exec), notify the vector index manager (debounced
+	// incremental re-indexing) and emit workspace:tree_changed — the
+	// synchronous hook covers the latency window fsnotify cannot.
 	if cfg.FileChangeNotifyFunc != nil {
 		notifyFn := cfg.FileChangeNotifyFunc
 		emitFn := cfg.FileChangedWorkspaceEmitter
 		builder.ToolRegistry().SetPostExecuteHook(func(ctx context.Context, toolName string, res sdktools.ToolResult, execErr error) {
-			// Only notify on a genuine successful file mutation. Skip error
-			// results (policy deny, tool error) and non-nil execution errors
-			// (confirmation denied, context cancellation, confirm-func failure)
-			// where no file was actually modified.
 			if execErr != nil || res.IsError {
 				return
 			}
@@ -306,11 +270,8 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 
 	// 4b. Smart Approve judge observer: the strict judge evaluates an
 	// escalated call BEFORE any confirmation card exists, so the session
-	// status must say a judge is working instead of implying a pending user
-	// response. The observer resolves the session from the executor context
-	// and emits the transient tool_judge_started/finished session events
-	// (activity-tracked via the session emitter). Session registries inherit
-	// the observer through Clone.
+	// status must say a judge is working — the observer emits the transient
+	// tool_judge_started/finished events. See specs/contracts/event-catalog.md.
 	builder.ToolRegistry().SetJudgeObserver(func(ctx context.Context, phase coretools.JudgePhase, toolName string) {
 		sessionID := session.SessionIDFromContext(ctx)
 		if sessionID == "" {
@@ -320,17 +281,11 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 		app.manager.EmitJudgePhase(sessionID, phase == coretools.JudgePhaseStarted, toolName)
 	})
 
-	// 4c. Autonomy-decision observer: an automatic decision taken without a
-	// human — a confirmation-gated call the registry resolved (tool_confirm in
-	// silent mode, assisted_deny in assisted mode), or a step-limit boundary
-	// the backend resolved (step_limit) — must be visible and auditable, never
-	// a silent skip. The observer resolves the session from the executor
-	// context and emits the persisted `autonomy_decision` session event
-	// (OWASP ASI10: the trajectory must stay reconstructable). Session
-	// registries inherit the observer through Clone, so per-session clones
-	// report their own decisions too. The executor context is forwarded so a
-	// subagent's decision carries its delegation/plan-step scope and renders
-	// inside the subagent's chat block, not the main stream.
+	// 4c. Autonomy-decision observer: a decision taken without a human must be
+	// visible and auditable, never a silent skip (OWASP ASI10 — the trajectory
+	// must stay reconstructable). The executor context is forwarded so a
+	// subagent's decision renders inside the subagent's chat block.
+	// See specs/architecture/security-model.md.
 	builder.ToolRegistry().SetAutonomyDecisionObserver(func(ctx context.Context, decision coretools.AutonomyDecision) {
 		if app.manager == nil {
 			return
@@ -356,22 +311,21 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 			return nil, errors.New("builder config unavailable (provider returned nil)")
 		}
 		// The lazy python probe is consumed at tool registration (builder
-		// creation); propagate it here as well so any future Build-side
-		// consumer sees the closure instead of a zero value.
+		// creation); propagate it so any future Build-side consumer sees the
+		// closure instead of a zero value.
 		orchCfg.MarkitdownPythonPath = markitdownPython
 		orch, err := builder.Build(orchCfg, emitter, logger, workspacePath, bbFactory, app.hitlHandler, dumpWriter, stepDumpTracker)
 		if err != nil {
 			return nil, err
 		}
-		// Inject the goal proposer so goal-mode derivation (propose_goal) can
-		// reach the desktop approval flow. Nil is valid — goal mode simply
-		// fails fast when invoked.
+		// Inject the goal proposer so propose_goal can reach the desktop
+		// approval flow; nil is valid (goal mode fails fast when invoked).
 		if app.goalProposer != nil {
 			orch.SetGoalProposer(app.goalProposer)
 		}
 		// Inject the goal-suggestion proposer so the post-routing suggestion
-		// gate can reach the desktop pending card. Nil is valid — the gate
-		// stays disabled (plain Conductor path, classifier never consulted).
+		// gate can reach the desktop pending card; nil keeps the gate
+		// disabled (plain Conductor path).
 		if app.goalSuggestionProposer != nil {
 			orch.SetGoalSuggestionProposer(app.goalSuggestionProposer)
 		}
@@ -381,9 +335,6 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	// 6. Session manager.
 	manager := session.NewManager(factory, emitFunc, cfg.AgentDir)
 	if cfg.SessionStore != nil {
-		// Coalesce the per-LLM-call token reports into at most one UPDATE per
-		// session per interval, written through the persistence single writer so
-		// the emitter's goroutine never waits on SQLite.
 		app.tokenPersist = newTokenPersister(
 			cfg.SessionStore,
 			app.persister.SubmitWrite,
@@ -398,13 +349,12 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	}
 	// Launch environment-info collection in the background. envInfo is
 	// optional (SendMessage/ResumeTask tolerate nil) and only enriches the
-	// system prompt once ready — collecting it synchronously here blocked
-	// cold startup on ~7 subprocess probes (~0.75s).
+	// system prompt once ready — collecting it synchronously blocked cold
+	// startup on ~7 subprocess probes (~0.75s).
 	manager.StartEnvInfoCollection()
 	manager.SetMaxSummaryLen(cfg.Config.Orchestration.MaxSummaryLength)
-	// Annotate agent quality metrics with the active Model Profiles profile (if
-	// any). Resolution warnings are already surfaced at load time by
-	// config.ResolveAndLoad, so they are dropped here.
+	// Annotate agent quality metrics with the active Model Profiles profile;
+	// resolution warnings were already surfaced at load time.
 	modelProfilesCatalog := loadModelProfilesCatalog(app.agentDir, app.log())
 	modelProfile, _ := effectiveModelProfilesConfig(cfg.Config, modelProfilesCatalog)
 	manager.SetModelProfile(modelProfile, activeModelProfile(cfg.Config.ModelProfiles, modelProfilesCatalog))
@@ -412,17 +362,11 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	if cfg.SessionStore != nil {
 		manager.SetSessionStore(cfg.SessionStore)
 	}
-	// Auto-retry resolver: resolves a provider name (the logical config key
-	// carried by *llm.Error.Provider) to its auto_retry_seconds interval.
-	// The resolver reads the ATOMIC snapshot published from the live config
-	// (publishAutoRetryIntervals): the session manager calls it without
-	// configMu, so reading the live config maps here would race Settings
-	// saves (which replace those maps under configMu — a fatal
-	// concurrent-map-access crash). FrontendAPI republishes the snapshot on
-	// every committed mutation, so interval changes still apply to the NEXT
-	// failure that arms a timer. Fixed providers (anthropic, chatgpt) have
-	// no auto_retry_seconds field and always resolve to 0: no automatic
-	// retry, only the manual resume banner.
+	// Auto-retry resolver: resolves a provider name to its auto_retry_seconds
+	// interval from the ATOMIC snapshot — the manager calls it without
+	// configMu, and reading the live config maps would race Settings saves
+	// (a fatal concurrent-map-access crash). Fixed providers resolve to 0.
+	// See specs/decisions/065-auto-resend-retryable-errors.md.
 	app.publishAutoRetryIntervals(cfg.Config)
 	manager.SetAutoRetryResolver(func(provider string) int {
 		return app.autoRetryIntervalSnapshot()[provider]
@@ -452,19 +396,15 @@ func (a *Application) Builder() *core.OrchestratorBuilder {
 	return a.builder
 }
 
-// SetGoalProposer sets the goal-proposer hook that the orchestrator factory
-// injects onto every per-session orchestrator. Desktop calls this after
-// construction, once its pending-confirmation map + emitter are ready, so the
-// proposer is in place before any session's orchestrator is built.
+// SetGoalProposer sets the goal-proposer hook the orchestrator factory
+// injects onto every per-session orchestrator; desktop calls it after
+// construction, so the proposer is in place before any orchestrator is built.
 func (a *Application) SetGoalProposer(proposer coretools.GoalProposer) {
 	a.goalProposer = proposer
 }
 
-// SetGoalSuggestionProposer sets the goal-mode suggestion proposer hook that
-// the orchestrator factory injects onto every per-session orchestrator.
-// Desktop calls this after construction, once its pending-suggestion map +
-// emitter are ready, so the proposer is in place before any session's
-// orchestrator is built.
+// SetGoalSuggestionProposer mirrors SetGoalProposer for the goal-mode
+// suggestion card flow.
 func (a *Application) SetGoalSuggestionProposer(proposer core.GoalSuggestionProposer) {
 	a.goalSuggestionProposer = proposer
 }
@@ -475,12 +415,9 @@ func (a *Application) TitleGenerator() *session.TitleGenerator {
 }
 
 // EvaluateJudge performs an on-demand judge evaluation for a pending tool
-// confirmation using the SHARED registry's judge, which is bound to the
-// builder's global active provider/model. Prefer EvaluateJudgeForSession for
-// evaluations that belong to a live session: it pins the verdict to the
-// session's own provider/model so manual and automatic judge evaluations
-// cannot disagree across models. Returns the verdict, reasoning (prefixed
-// with "SAFE: " when allowed), and any error.
+// confirmation using the SHARED registry's judge (bound to the builder's
+// global active provider/model). Prefer EvaluateJudgeForSession for live
+// sessions — see specs/decisions/028-session-pinned-judge.md.
 func (a *Application) EvaluateJudge(ctx context.Context, toolName string, input json.RawMessage, taskContext string) (verdict sdktools.JudgeVerdict, reasoning string, err error) {
 	if err := a.builder.WaitReady(ctx); err != nil {
 		return sdktools.VerdictConfirm, "", fmt.Errorf("judge not available: %w", err)
@@ -497,14 +434,12 @@ func (a *Application) EvaluateJudge(ctx context.Context, toolName string, input 
 	return evaluateJudgeWith(ctx, judge, tool, toolName, input, taskContext)
 }
 
-// EvaluateJudgeForSession performs an on-demand judge evaluation for a pending
-// tool confirmation using the SESSION-pinned judge: the judge bound to the
-// session's own router, so the manual "Judge" action on a confirmation card
-// evaluates on the same provider and model the session runs on — exactly like
-// automatic escalations (session-pinning invariant, ADR-028). Falls back to
-// the shared registry's judge (EvaluateJudge) when the session is unknown,
-// has no orchestrator or registry yet, or its judge is not bound, so a manual
-// evaluation never fails merely because session context is unavailable.
+// EvaluateJudgeForSession performs an on-demand judge evaluation using the
+// SESSION-pinned judge — the judge bound to the session's own router, so a
+// manual "Judge" action evaluates on the same provider/model the session runs
+// on, exactly like automatic escalations (ADR-028). Falls back to the shared
+// registry's judge when the session is unknown or unbound.
+// See specs/decisions/028-session-pinned-judge.md.
 func (a *Application) EvaluateJudgeForSession(ctx context.Context, sessionID, toolName string, input json.RawMessage, taskContext string) (verdict sdktools.JudgeVerdict, reasoning string, err error) {
 	if sessionID != "" && a.manager != nil {
 		if sess, ok := a.manager.GetSession(sessionID); ok {
@@ -522,21 +457,17 @@ func (a *Application) EvaluateJudgeForSession(ctx context.Context, sessionID, to
 }
 
 // evaluateJudgeWith runs a single judge evaluation and prefixes the reasoning
-// for safe and unsafe verdicts so the UI can display contextual info: a
-// "SAFE: " prefix contextualizes an allow, and an "UNSAFE: " prefix turns a
-// deliberate VerdictDeny into an explicit recommendation to REJECT the call
-// on the OPEN confirmation card (the advisory judge never decides — the
-// operator stays free to allow; see evaluateJudgeWith callers in
-// desktop/event_handlers.go).
+// for safe/unsafe verdicts: "SAFE: " contextualizes an allow, "UNSAFE: " turns
+// a deliberate VerdictDeny into an explicit rejection recommendation on the
+// OPEN card (the advisory judge never decides — the operator stays free to
+// allow).
 //
-// Shell-exec tools (bash_exec/posh_exec) get the deterministic flowsh digest
-// attached to ctx first (the Ask-Agent advisory path): the advisory judge
-// renders it as its in-prompt "Static Analysis Report" block, so a manual
-// judge evaluation sees the same evidence the strict judge and the tool's own
-// Judge consume. The registered tool instance rides along so an
-// operator-configured shell invocation override (declared shell kind) picks
-// the analysis dialect. The digest never overrides the verdict — it is
-// evidence.
+// Shell-exec tools get the deterministic flowsh digest attached to ctx first
+// (the Ask-Agent advisory path renders it as its "Static Analysis Report"
+// block — the same evidence the strict judge and the tool's own Judge
+// consume); the registered tool instance rides along so an operator-configured
+// shell invocation override picks the analysis dialect. Evidence, never a
+// verdict override.
 func evaluateJudgeWith(ctx context.Context, judge *sdktools.ToolJudge, tool sdktools.Tool, toolName string, input json.RawMessage, taskContext string) (sdktools.JudgeVerdict, string, error) {
 	ctx = coretools.AttachShellAnalysisForTool(ctx, tool, toolName, input, nil)
 	verdict, reasoning, err := judge.Judge(ctx, toolName, input, taskContext)
@@ -552,15 +483,11 @@ func evaluateJudgeWith(ctx context.Context, judge *sdktools.ToolJudge, tool sdkt
 	return verdict, reasoning, nil
 }
 
-// GetMCPStatus returns the status of all MCP servers. It is non-blocking so the
-// settings dialog does not stall during the first seconds of startup while the
-// MCP gateway is still discovering remote servers.
-//
-// While MCP startup is in flight (!MCPStartupDone()), it returns a single
-// placeholder entry (Name "_gateway", Starting true) that the frontend renders
-// as a neutral "Starting…" state rather than an error. Once startup finishes,
-// if the gateway failed to start the same placeholder surfaces the error;
-// otherwise it returns the live per-server status from the gateway.
+// GetMCPStatus returns the status of all MCP servers, non-blocking so the
+// settings dialog does not stall during gateway startup. While startup is in
+// flight it returns the "_gateway" placeholder the frontend renders as a
+// neutral "Starting…" state; a failed gateway surfaces its error the same way.
+// See specs/domains/tool-system/mcp-gateway.md.
 func (a *Application) GetMCPStatus() []mcp.ServerStatus {
 	if !a.builder.MCPStartupDone() {
 		return []mcp.ServerStatus{{
@@ -587,17 +514,16 @@ func (a *Application) ListTools() []sdktools.ToolDescriptor {
 }
 
 // GroupPolicies returns the live group→policy map enforced by the shared
-// tool registry (what security.groups resolved to after the builder applied
-// them). Callers use it to report each tool's EFFECTIVE policy — the same
+// tool registry, so callers report each tool's EFFECTIVE policy — the same
 // map Execute consults — instead of re-deriving it from config.
+// See specs/decisions/024-group-policies.md.
 func (a *Application) GroupPolicies() map[sdktools.ToolGroup]sdktools.ToolPolicy {
 	return a.builder.ToolRegistry().GroupPolicies()
 }
 
 // Shutdown stops all managed resources (manager, persistence pipeline, MCP
-// gateway). Each step logs its duration as it completes — this runs on the
-// main goroutine during app shutdown, and the per-step records keep a slow
-// teardown attributable from the session log.
+// gateway). This runs on the main goroutine during app shutdown; per-step
+// duration logs keep a slow teardown attributable.
 func (a *Application) Shutdown() {
 	shutdownStart := time.Now()
 	shutdownStep := func(name string) {
@@ -628,10 +554,9 @@ func (a *Application) Shutdown() {
 	shutdownStep("stopMCPGateway")
 }
 
-// terminalPersistTypes lists the task-terminal event types after which the async
-// persistence pipeline is drained. Draining here — rather than on every event —
-// keeps the emit path non-blocking during a run while still making a finished
-// task's messages durable promptly.
+// terminalPersistTypes lists the task-terminal event types after which the
+// async persistence pipeline is drained — keeping the emit path non-blocking
+// during a run while making a finished task's messages durable promptly.
 var terminalPersistTypes = map[string]bool{
 	"task_complete":         true,
 	"task_failed_resumable": true,
@@ -650,13 +575,10 @@ type errJudgeNotAvailable string
 
 func (e errJudgeNotAvailable) Error() string { return string(e) }
 
-// resolveCatalogDirs converts a list of configured skill, agent, or command
-// directories into absolute paths. Leading `~` and `${ENV_VAR}` are expanded;
-// remaining relative paths are resolved against agentDir. Entries that expand
-// to an empty string after substitution are dropped.
-//
-// log is used to emit warnings on non-critical resolution failures (e.g.,
-// missing home directory for tilde expansion). If nil, warnings are suppressed.
+// resolveCatalogDirs converts a list of configured skill/agent/command
+// directories into absolute paths: leading `~` and `${ENV_VAR}` expand,
+// relative paths resolve against agentDir, empty results drop. log receives
+// warnings on non-critical resolution failures; nil suppresses them.
 func resolveCatalogDirs(dirs []string, agentDir string, expandEnv func(string) string, log *slog.Logger) []string {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -680,9 +602,8 @@ func resolveCatalogDirs(dirs []string, agentDir string, expandEnv func(string) s
 }
 
 // expandTilde replaces a leading `~` or `~/` in p with the user's home
-// directory. Paths that do not start with `~` are returned unchanged.
-// When home is empty, a leading `~` is left intact so the caller can decide
-// how to handle the failure (e.g. treat it as a relative path).
+// directory. With an empty home, a leading `~` is left intact so the caller
+// decides how to handle the failure.
 func expandTilde(p, home string) string {
 	if home == "" || p == "" {
 		return p
@@ -698,9 +619,9 @@ func expandTilde(p, home string) string {
 	return p
 }
 
-// EmitSessionEvent emits a session event through the combined UI + persistence
-// path. Desktop-layer callbacks (e.g. plan approval) use this instead of the
-// raw UI emitter so events survive app restarts.
+// EmitSessionEvent emits a session event through the combined UI +
+// persistence path so it survives app restarts. See
+// specs/contracts/desktop-frontend.md.
 func (a *Application) EmitSessionEvent(evt session.Event) {
 	if a.emitFunc != nil {
 		a.emitFunc(evt)
@@ -710,8 +631,7 @@ func (a *Application) EmitSessionEvent(evt session.Event) {
 // EmitToolConfirm routes a tool-confirmation request through the live session
 // emitter so the activity tracker (and the runtime-status snapshot read on
 // session switches) reports "Awaiting confirmation..." while the agent
-// goroutine blocks on the user's decision. Desktop's confirm callback calls
-// this instead of the raw UI emitter.
+// goroutine blocks on the user's decision. See specs/contracts/event-catalog.md.
 func (a *Application) EmitToolConfirm(sessionID string, payload session.ToolConfirmPayload) {
 	if a.manager != nil {
 		a.manager.EmitToolConfirm(sessionID, payload)
@@ -721,9 +641,9 @@ func (a *Application) EmitToolConfirm(sessionID string, payload session.ToolConf
 }
 
 // LastToolCallID returns the most recently emitted tool_call_id for a session
-// (and its tool name). The desktop tool-confirmation callback uses it to
-// attach the matching tool_call_id to the tool_confirm payload so the frontend
-// can correlate a confirmation with the exact tool_call event.
+// (and its tool name), so the desktop tool-confirmation callback can attach
+// the matching id to the tool_confirm payload and the frontend can correlate
+// the confirmation with the exact tool_call event.
 func (a *Application) LastToolCallID(sessionID string) (id, tool string) {
 	if a.manager == nil {
 		return "", ""
@@ -732,8 +652,9 @@ func (a *Application) LastToolCallID(sessionID string) (id, tool string) {
 }
 
 // buildAutoRetryIntervals derives the provider→interval snapshot from a
-// config. The returned map is immutable by convention — every consumer of the
-// published pointer treats it read-only.
+// config; the returned map is immutable by convention — every consumer of
+// the published pointer treats it read-only.
+// See specs/decisions/065-auto-resend-retryable-errors.md.
 func buildAutoRetryIntervals(cfg *config.Config) map[string]int {
 	if cfg == nil {
 		return map[string]int{}
@@ -749,8 +670,8 @@ func buildAutoRetryIntervals(cfg *config.Config) map[string]int {
 }
 
 // publishAutoRetryIntervals rebuilds and stores the atomic snapshot from the
-// given config. Called at Application construction and after every committed
-// LLM config mutation.
+// given config — at Application construction and after every committed LLM
+// config mutation. See specs/decisions/065-auto-resend-retryable-errors.md.
 func (a *Application) publishAutoRetryIntervals(cfg *config.Config) {
 	snapshot := buildAutoRetryIntervals(cfg)
 	a.autoRetryIntervals.Store(&snapshot)

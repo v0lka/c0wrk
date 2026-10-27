@@ -72,8 +72,7 @@ type pendingGoalProposalEntry struct {
 	payload   session.GoalProposalPayload
 }
 
-// pendingGoalSuggestionEntry wraps the goal-suggestion response channel with
-// the session ID and payload, mirroring pendingGoalProposalEntry for the
+// pendingGoalSuggestionEntry mirrors pendingGoalProposalEntry for the
 // post-routing goal-mode suggestion card.
 type pendingGoalSuggestionEntry struct {
 	ch        chan goalSuggestionResponse
@@ -81,37 +80,17 @@ type pendingGoalSuggestionEntry struct {
 	payload   session.GoalSuggestionPayload
 }
 
-// wakeReloadDelay is how long deferredWakeReload waits between detecting a
-// power-state wake and re-navigating the frontend. The reload cannot run
-// inline inside the NSWorkspaceDidWake observer block: on macOS 26 the
-// notification fires mid-resume while the OS is still bringing the web-content
-// process back, and calling WindowReloadApp synchronously at that point races
-// the OS's own process restoration and silently kills the app. Deferring past
-// the resume window (~1.5s) moves the reload off the notification callback so
-// it no longer collides with the OS, while still refreshing a
-// suspended-but-alive render surface. See ADR-018.
+// wakeReloadDelay defers the post-wake reload past the OS's resume window, so
+// it no longer races the mid-resume web-content restoration on macOS 26.
+// See specs/decisions/018-macos-webview-recovery.md.
 const wakeReloadDelay = 1500 * time.Millisecond
 
-// deferredWakeReload re-navigates the frontend to the start URL after a
-// power-state wake, with a delay and context-liveness guards so it is safe to
-// call from the synchronous NSWorkspace wake observer (which runs on the main
-// thread during resume). It:
-//   - returns immediately to the caller (it spawns a goroutine);
-//   - waits wakeReloadDelay, but cancels early if the app context is done
-//     (shutdown), via select;
-//   - re-checks a.wailsCtx().Err() once more after the wait, so a shutdown that
-//     began during the delay never triggers a reload of a torn-down context.
-//
-// The delay is essential: calling the reload inline inside the wake observer
-// races the OS's mid-resume web-content process and silently kills the app.
-// The 10-second debounce (lastWake) is applied by the caller and is
-// independent of this delay.
-//
-// reloadFrontend issues a NATIVE -[WKWebView reload]. If the web-content
-// process actually died (rather than just suspending), the runtime-injected
-// -webViewWebContentProcessDidTerminate: hook (powerstate_darwin.go) has
-// already reloaded via -[WKWebView reload]; the native reload here is then a
-// harmless second reload of the same view.
+// deferredWakeReload re-navigates the frontend after a power-state wake;
+// safe to call from the synchronous wake observer (main thread, mid-resume):
+// it spawns a goroutine, waits wakeReloadDelay (cancellable via the app
+// context) and re-checks the context before reloading, so a shutdown during
+// the delay never reloads a torn-down webview. The caller applies a separate
+// 10s debounce. Design rationale: specs/decisions/018-macos-webview-recovery.md.
 func (a *App) deferredWakeReload() {
 	if a.wailsCtx() == nil {
 		return
@@ -135,18 +114,13 @@ func (a *App) deferredWakeReload() {
 	}()
 }
 
-// reloadFrontend re-navigates the frontend after a power-state wake. It prefers
-// a NATIVE -[WKWebView reload] (reloadWebviewNative) over Wails's
-// WindowReloadApp: Wails's helper is evaluateJavaScript("window.location.href
-// = startURL") (Wails v2.12.0 darwin frontend.go:214, WailsContext.m:451),
-// which cannot restore a post-wake blank webview — it is a no-op when the URL
-// is unchanged and cannot run until the SUSPENDED web-content process fully
-// resumes. Because this machine's sleep suspends rather than kills the process,
-// -webViewWebContentProcessDidTerminate: does NOT fire on wake, so a native
-// reload is the only reliable recovery primitive. On non-darwin builds
-// reloadWebviewNative returns false and WindowReloadApp is used (the bug is
-// macOS/WKWebView-specific). Tests inject a fake via a.reloadAppFn, which
-// takes precedence over both paths. Mirrors the a.wailsEmit override pattern.
+// reloadFrontend re-navigates the frontend after a wake: the NATIVE
+// -[WKWebView reload] first (the only primitive that revives a
+// suspended/blank webview — WindowReloadApp is a no-op when the URL is
+// unchanged and cannot run until the suspended process resumes), falling
+// back to Wails's helper on non-darwin; a.reloadAppFn (test seam) takes
+// precedence over both. Full rationale in
+// specs/decisions/018-macos-webview-recovery.md.
 func (a *App) reloadFrontend(ctx context.Context) {
 	if a.reloadAppFn != nil {
 		a.reloadAppFn(ctx)
@@ -158,22 +132,11 @@ func (a *App) reloadFrontend(ctx context.Context) {
 	wailsRuntime.WindowReloadApp(ctx)
 }
 
-// DomReady is the Wails OnDomReady hook: it fires from the webview once the
-// document is ready, which is necessarily after Wails has finished setting up
-// the window on the platform UI loop.
-//
-// That ordering is the point. Every other reveal happens from the OnStartup
-// goroutine, which Wails launches *before* it finishes window setup — the
-// hidden-window race this app hit was exactly a window operation from that
-// goroutine being overtaken by a later one from the setup path. Creating the
-// window visible (main.go) is the fix; this hook is the guarantee, the one
-// reveal that can never be raced by window setup.
-//
-// It also fires again on every frontend reload (see reloadFrontend), which is
-// harmless: the only reload source is the macOS power-state wake recovery
-// (registerPowerWakeObserver is a no-op elsewhere), where having the window
-// come forward — showWindow now reveals AND raises/focuses — is the expected
-// outcome, not a stray focus steal.
+// DomReady is the Wails OnDomReady hook: it fires after Wails has finished
+// window setup, making it the one reveal that can never be overtaken by that
+// setup (reveal ordering documented in specs/architecture/data-flow.md).
+// It fires again on every frontend reload — wake recovery only, where
+// raise/focus is the expected outcome.
 func (a *App) DomReady(ctx context.Context) {
 	a.log().Debug("frontend DOM ready")
 	a.showWindow(ctx)
@@ -194,65 +157,29 @@ func (a *App) Startup(ctx context.Context) {
 		}
 	}()
 
-	// ══════════════════════════════════════════════════════════════════
-	// STARTUP MANIFEST — Critical Path Time Budget: <500ms (subsequent runs)
-	//
-	// NOTE: On first run, Phase 2 may take 3–10 minutes while the
-	// tool-manager downloads and installs required external tools
-	// (rg, uv, markitdown). Subsequent runs skip via .versions check.
-	//
-	// CRITICAL PATH (blocks UI):
-	//   Phase 1: shell_env + logger      — budget: 50ms
-	//   Phase 2: config + tools          — budget: 100ms (parallel)
-	//   Phase 3: database + terminal     — budget: 100ms (parallel)
-	//   Phase 4: stores + preload        — budget: 100ms
-	//   Phase 5: application + api       — budget: 150ms
-	//   → EventBackendReady emitted here ←
-	//
-	// BACKGROUND (non-blocking, starts after EventBackendReady):
-	//   - ONNX embedder + vector index manager
-	//   - MCP gateway (already async inside builder)
-	//   - LLM router (already async inside builder)
-	//
-	// RULES:
-	//   1. New subsystems MUST go in BACKGROUND unless they absolutely
-	//      require completion before EventBackendReady.
-	//   2. Any change that adds >50ms to a critical phase MUST be
-	//      justified in a code review comment.
-	//   3. Run with LOG_LEVEL=INFO to see per-phase timing.
-	//
-	// Each phase body lives as a method on *App in startup_phases.go (W-24).
-	// ══════════════════════════════════════════════════════════════════
+	// Phase bodies live as methods in startup_phases.go; the phase map,
+	// budgets and the background-vs-critical rule are documented in
+	// specs/architecture/data-flow.md. Exception to the budget: first-run
+	// Phase 2 may block for minutes on the tool-manager install (ADR-100).
 
 	startTime := time.Now()
 
-	// Capture GOMEMLIMIT exactly as the Go runtime saw it at PROCESS START.
-	// The runtime reads GOMEMLIMIT once, before main runs, so only a value
-	// present HERE was actually applied. config.LoadShellEnvironment (Phase 1)
-	// later sources the user's login shell and os.Setenv's any missing var —
-	// on a Finder-launched macOS app that can inject a GOMEMLIMIT exported in
-	// ~/.zshrc which the runtime never read. Deferring the soft-limit decision
-	// to such a var would leave NO limit in force, so setupMemorySoftLimit uses
-	// only this captured value (see memlimit.go).
+	// Capture GOMEMLIMIT as the runtime saw it at PROCESS START: Phase 1's
+	// shell-env load can later inject a value the runtime never applied —
+	// setupMemorySoftLimit must decide on the runtime's value only (see memlimit.go).
 	runtimeSeenGomemlimit := os.Getenv("GOMEMLIMIT")
 
 	a.setContext(ctx)
 
 	// ── Restore maximized window state ───────────────────────────────
-	// The window SIZE is already restored via wails.Run options in main.go
-	// (LoadWindowBounds seeds Width/Height). The maximized flag cannot be
-	// expressed in those options, so it is re-applied here once the Wails
-	// context exists. Best-effort: a missing/invalid state file is a no-op.
+	// The size is restored by main.go's wails.Run options; the maximized
+	// flag cannot be expressed there, so it is re-applied once the context
+	// exists. Best-effort.
 	a.restoreMaximizedWindow()
 
-	// Register the native file-drop listener. The DragAndDrop option in main.go
-	// enables Wails' drag-and-drop plumbing; OnFileDrop subscribes to it and
-	// forwards the dropped absolute paths to the frontend as a files:dropped
-	// event. DisableWebViewDrop (also set in main.go) ensures the webview never
-	// navigates to/open the file — this callback is the sole delivery channel.
-	// The nil guards mirror the other wailsRuntime registrations: ctx is always
-	// non-nil here (Wails passes a live context), but a.emit additionally guards
-	// a.wailsCtx() so a late drop during teardown is dropped harmlessly instead of panic.
+	// Native file-drop listener: the sole delivery channel for dropped paths
+	// (the webview's own drop is disabled) — see specs/contracts/event-catalog.md
+	// (files:dropped); a.emit's ctx guard drops a late teardown drop harmlessly.
 	wailsRuntime.OnFileDrop(ctx, func(x, y int, paths []string) {
 		if len(paths) == 0 {
 			return
@@ -279,16 +206,11 @@ func (a *App) Startup(ctx context.Context) {
 	log.Info("startup phase complete", "phase", "logger", "elapsed_ms", time.Since(startTime).Milliseconds())
 
 	// ── Phase 2: Config + Dependencies + Tools (parallel) ─────────────
-	// On first run, tool downloads may take 3–10 minutes. Subsequent runs
-	// check the .versions file and return in <100ms.
 	resolved, toolsBinPath, toolsInstalled, toolsOK := a.initConfigAndDeps(ctx, log)
 	log.Info("startup phase complete", "phase", "config", "elapsed_ms", time.Since(startTime).Milliseconds(), "tools_installed", toolsInstalled)
 	if !toolsOK {
-		// Same contract as the buildApplication failure return below: this
-		// window exits Startup before buildFrontendAPI, so the seed must be
-		// published (empty) here or every guardless RPC spins forever in
-		// seedAcquire on a live webview. A failed first-run tool download is
-		// a supported outcome, not a crash.
+		// Same empty-seed contract as the buildApplication failure return
+		// below — a failed first-run tool download is a supported outcome.
 		_ = a.frontendAPI().Lifecycle().Init(backend.FrontendAPIConfig{})
 		return
 	}
@@ -309,31 +231,22 @@ func (a *App) Startup(ctx context.Context) {
 	configLoadErrors := resolved.LoadErrors
 	// agentDir and logDir are already computed in phase 0
 
-	// Arm the hard shutdown deadline from config now, before any teardown path
-	// can run. Shutdown reads it (shutdownDeadline()); an unset (0) value
-	// resolves to the built-in default — the same mapping
-	// EffectiveShutdownDeadline hands the GPU-relaunch handover budget.
+	// Arm the hard shutdown deadline before any teardown path can run; the
+	// same mapping EffectiveShutdownDeadline hands the GPU-relaunch handover.
 	a.setShutdownHardDeadline(EffectiveShutdownDeadline(cfg.Shutdown.HardDeadline))
 
 	logLevel := cfg.LogLevel
 	log, sessionLogger = a.maybeReinitLogger(logLevel, sessionLogger, log, logDir)
 
-	// Crash forensics: a surviving liveness marker means the previous
-	// instance never reached a clean shutdown (crash, kill, power loss).
-	// Reported after the logger reinit so the warning lands in the session
-	// log of THIS run even when a non-default log_level swapped the file.
+	// Crash forensics: report a surviving liveness marker now — after the
+	// logger reinit, so the warning lands in THIS run's session log. See
+	// specs/domains/crash-logging.md.
 	crashlog.ReportUncleanShutdown(log, logDir)
 
 	// ── GC memory soft limit (runtime.memory_soft_limit_mb) ──────────
-	// A GOMEMLIMIT-style soft GC target caps the heap's steady-state
-	// growth: with the default GOGC=100, the live-heap spike of a full
-	// project re-index roughly doubles the resident set and hands it back
-	// to the OS only lazily. Set once here — after config load and the
-	// logger re-init (so the decision is logged to the right log) and
-	// strictly before background indexing starts (Phase 6), so the limit
-	// governs the very first indexing pass. An explicit GOMEMLIMIT env
-	// var takes priority over AUTO mode; a shell-injected one does not; see
-	// memlimit.go.
+	// Set after config + logger re-init (the decision must land in the right
+	// log) and before background indexing, so it governs the very first
+	// indexing pass. Priority rules in memlimit.go.
 	setupMemorySoftLimit(cfg.Runtime.MemorySoftLimitMB, runtimeSeenGomemlimit, log)
 
 	// ── Phase 3: Database + Terminal Manager (parallel) ───────────────
@@ -361,9 +274,9 @@ func (a *App) Startup(ctx context.Context) {
 	var projectMgr *project.Manager
 	if projStore != nil {
 		projectMgr = project.NewManager(projStore, agentDir, log)
-		// No Project is deferred until after LLM config validation (Phase 5).
-		// On a clean first run, we must not create infrastructure before
-		// verifying that the app is usable.
+		// No Project is deferred until after LLM config validation (Phase 5):
+		// a clean first run must not create infrastructure before the app is
+		// known usable.
 	}
 	cachedProjects := a.preloadProjectsAndSessions(projectMgr, sessStore, log)
 	log.Info("startup phase complete", "phase", "preload", "elapsed_ms", time.Since(startTime).Milliseconds())
@@ -380,31 +293,25 @@ func (a *App) Startup(ctx context.Context) {
 	vectorReady := make(chan struct{})
 	var vectorOnce sync.Once
 	// Bound for vector-search readiness waits (vector_index.search_wait_
-	// timeout_ms; unset → 3000 via config defaults, explicit 0 = fail fast).
-	// Governs both the semantic_search tool callbacks and the RAG-hint wait.
+	// timeout_ms; unset → 3000 via config defaults, explicit 0 = fail fast),
+	// governing both the semantic_search callbacks and the RAG-hint wait.
 	vectorSearchWaitTimeout := time.Duration(derefInt(cfg.VectorIndex.SearchWaitTimeoutMs)) * time.Millisecond
-	// Explicit fail-fast: the config layer already resolved "unset" to
-	// 3000ms, so a zero reaching here is unambiguously the user's
-	// search_wait_timeout_ms: 0 — carried as an explicit flag because the
-	// orchestrator layer treats a bare zero timeout as "unset" (3s default).
+	// Explicit fail-fast flag: a bare zero reads as "unset" (3s default) in
+	// the orchestrator layer, so the user's explicit 0 must be carried
+	// separately.
 	vectorSearchWaitDisabled := cfg.VectorIndex.SearchWaitTimeoutMs != nil && *cfg.VectorIndex.SearchWaitTimeoutMs == 0
 
-	// File-change notification: called by the PostExecuteHook after a
-	// file-mutating tool completes. Triggers debounced incremental
-	// re-indexing so subsequent searches reflect the change without waiting
-	// for the filesystem watcher (which has latency on macOS and may miss
+	// File-change notification after a file-mutating tool completes: debounced
+	// incremental re-indexing (the watcher has latency and may miss
 	// same-process writes). The executor context carries the session's
-	// workspace root, so the notification re-indexes THAT root's manager
-	// (ADR-080) — a background session's writes refresh its own tree, not
-	// whatever tree the Git panel focuses. Safe before the vector factory is
-	// wired: the registry lookup is a no-op without a live manager.
+	// workspace root (ADR-080), so a background session refreshes its own
+	// tree; a no-op without a live manager.
 	fileChangeNotify := func(ctx context.Context) {
 		a.frontendAPI().Lifecycle().NotifyVectorFileChange(sdktools.WorkspacePathFrom(ctx))
 	}
 
-	// Workspace tree changed emitter: called alongside fileChangeNotify to
-	// emit the workspace:tree_changed event so the frontend (research panel,
-	// file tree, etc.) refreshes its view after agent-initiated file writes.
+	// Emitted alongside fileChangeNotify so frontend surfaces refresh their
+	// view after agent-initiated writes.
 	fileChangedWorkspaceEmitter := func() {
 		a.emit("workspace:tree_changed")
 	}
@@ -427,28 +334,18 @@ func (a *App) Startup(ctx context.Context) {
 		FileChangedWorkspaceEmitter: fileChangedWorkspaceEmitter,
 	}, log, startTime)
 	if err != nil {
-		// Publish an EMPTY seed before returning: seedPublished is what
-		// admits the guardless RPCs, and a window whose Startup failed before
-		// buildFrontendAPI would otherwise leave every one of them spinning
-		// forever in seedAcquire at 100% of a core. The zero value makes each
-		// nil guard fail cleanly instead ("not initialized" errors), matching
-		// the app's existing degraded-startup behavior.
+		// Publish an EMPTY seed before returning: seedPublished is what admits
+		// the guardless RPCs — without it, a window whose Startup failed here
+		// leaves every one of them spinning forever in seedAcquire.
 		_ = a.frontendAPI().Lifecycle().Init(backend.FrontendAPIConfig{})
 		return
 	}
 
-	// Register the goal-proposal resolver so the RPC-based path
-	// (FrontendAPI.ConfirmGoal/CancelGoal) and the event-based path both
-	// funnel through a single resolution on the desktop pending map.
+	// One resolution funnel per prompt kind, shared by the event and RPC paths.
 	application.Manager().SetGoalProposalResolver(func(requestID, decision, condition, verify, verificationMode string) bool {
 		return a.resolveGoalProposal(requestID, decision, condition, verify, verificationMode)
 	})
 	application.SetGoalSuggestionProposer(goalSuggestionProposer)
-
-	// Register the goal-suggestion resolver so the RPC-based path
-	// (FrontendAPI.AcceptGoalSuggestion/DeclineGoalSuggestion) and the
-	// event-based path both funnel through a single resolution on the desktop
-	// pending map.
 	application.Manager().SetGoalSuggestionResolver(func(requestID, decision string) bool {
 		return a.resolveGoalSuggestion(requestID, decision)
 	})
@@ -474,53 +371,36 @@ func (a *App) Startup(ctx context.Context) {
 			return a.wailsCtx()
 		},
 		QuitApp: func() {
-			// quitApp is invoked exclusively by ApplyUpdate after the staged
-			// updater is already launched, so this is the single point where
-			// the desktop layer learns "this quit belongs to a pending
-			// self-update". Arm the marker before quitting so the close
-			// guard (should the quit be intercepted) can flag the context.
+			// Reached only from ApplyUpdate after the staged updater is
+			// launched — arm the marker first so an intercepted quit can be
+			// flagged as self-update context.
 			a.markUpdateQuit()
 			wailsRuntime.Quit(a.wailsCtx())
 		},
 	}, configLoadErrors, projStore, log, startTime)
 
-	// Late-bind the per-root vector registry (ADR-080) onto the Application:
-	// the search closures registered on the orchestrator builder resolve it
-	// at call time — the session's workspace root from the executor context
-	// for agent-side calls, the Git-panel focus for user-facing search.
+	// Late-bind the per-root vector registry (ADR-080): the search closures
+	// resolve it at call time (session workspace root for agent calls,
+	// Git-panel focus for user search). See
+	// specs/decisions/081-vector-per-root-registry.md.
 	application.SetVectorRoots(a.frontendAPI().Lifecycle().VectorRoots())
 
-	// ── Embedded local model: restore only ──────────────────────────
-	// Reads manifest.json into the supervisor and emits the initial
-	// embedded_llm:state snapshot. No download, no network, no probe and no
-	// model load: startup never depends on the network and never blocks on the
-	// multi-gigabyte weight load (see initEmbeddedLLM).
+	// ── Embedded local model: restore only (see initEmbeddedLLM) ────
 	a.initEmbeddedLLM(log)
 
-	// ── ChatGPT subscription auth: keychain restore only ─────────────
-	// Constructs the token manager and loads persisted credentials; the live
-	// token source is mirrored into the builder seam for EVERY restored
-	// state (mode-independent — the seam is inert in api_key mode), and the
-	// router is rebuilt when a signed-in account is restored and the config
-	// selects oauth mode. No network, no
-	// browser, no refresh: an expired-but-restored token is renewed lazily
-	// on the first request that needs it (Token's skew-aware refresh).
+	// ── ChatGPT subscription auth: keychain restore only (see initChatGPTAuth) ──
 	a.initChatGPTAuth(log)
 
 	a.wireWailsEventListeners(log, uiEmitFunc)
 
 	// ── Session restoration resolver ─────────────────────────────────
-	// Lazy session restoration (projectID -> workspace path) is wired inside
-	// buildFrontendAPI above with a deadline-bounded store read, so restoring a
-	// session or looking up a terminal's workspace path cannot hang behind a
-	// write storm on the shared SQLite connection. It is deliberately NOT
-	// overridden here: a second resolver built on projectMgr.GetProject (which
-	// reads with context.Background()) would shadow the bounded one and
-	// reintroduce the very hang the bound guards against.
+	// Wired inside buildFrontendAPI with a deadline-bounded store read, and
+	// deliberately NOT overridden here: a resolver on projectMgr.GetProject
+	// (context.Background()) would shadow it and reintroduce the hang.
 
 	// ── Ensure No Project (only when LLM is configured) ──────────────
-	// On a clean first run with no config, we must not create projects
-	// or sessions — the frontend will show the settings dialog instead.
+	// A clean first run must create no projects/sessions — the frontend
+	// shows the settings dialog instead.
 	if cfg.LLM.DefaultModel != "" && projectMgr != nil {
 		created, err := projectMgr.EnsureNoProject()
 		if err != nil {
@@ -540,45 +420,17 @@ func (a *App) Startup(ctx context.Context) {
 	// when LLM is unconfigured.
 	a.emitBackendReady(cachedProjects, projectMgr, cfg.LLM.DefaultModel == "", log)
 
-	// ── Web access sidecar (browser mirror, ADR-101) ─────────────────
-	// Mounted only when web_access.enabled: constructs internal/webaccess
-	// over the live FrontendAPI (reflection dispatch target), the embedded
-	// SPA tree and the CSP middleware, registers the emit event tap, and
-	// starts the loopback listener. Fail-soft: a failed mount logs and the
-	// desktop app carries on (see initWebAccess).
+	// ── Web access sidecar (browser mirror, ADR-101; see initWebAccess) ──
 	a.initWebAccess(cfg, log)
 
 	log.Info("startup complete \u2014 backend ready", "total_elapsed_ms", time.Since(startTime).Milliseconds())
 
 	// ── Phase 6: macOS power-state wake recovery ──────────────────────
-	// On macOS 26 (Tahoe) the WKWebView's rendering surface is left blank
-	// after the system or the displays wake from sleep: the web content
-	// process is suspended/killed by the OS while the Go backend keeps
-	// running. Wails v2 does not forward
-	// webViewWebContentProcessDidTerminate, so without this the window would
-	// stay blank until a manual restart. Reload the frontend on wake — the
-	// frontend is designed to survive a full reload (sessionRuntime state
-	// reconciliation + the on-mount listProjects() safety-net RPC), and the
-	// Go backend (DB, stores, sessions) persists across it. Rationale: see specs/decisions/018-macos-webview-recovery.md.
-	//
-	// The reload is deferred (deferredWakeReload) rather than invoked inline:
-	// the NSWorkspaceDidWake observer block runs synchronously on the main
-	// thread mid-resume, while the OS is still restoring the web-content
-	// process. Calling the reload inline at that point races the OS and
-	// silently kills the app. deferredWakeReload spawns a goroutine that waits
-	// wakeReloadDelay, is cancellable via a.wailsCtx().Done() (shutdown), and
-	// re-checks a.wailsCtx().Err() before reloading.
-	//
-	// Both paths use a NATIVE -[WKWebView reload] (reloadFrontend on the wake
-	// path; the IMP in powerstate_darwin.go on the death path). Wails's
-	// WindowReloadApp is an evaluateJavaScript("window.location.href =
-	// startURL") call that cannot restore a post-wake blank webview (no-op
-	// when URL unchanged; cannot run until the suspended process resumes), so
-	// it is used only as a non-darwin fallback. The wake path catches process
-	// SUSPENSION (alive but blank render surface); the runtime-injected
-	// -webViewWebContentProcessDidTerminate: hook catches process DEATH. If
-	// the process died, the hook has already reloaded; the wake-path native
-	// reload is then a harmless second reload of the same view.
+	// On macOS 26 the webview's render surface is left blank after a wake
+	// (suspended web-content process; Wails does not forward the termination
+	// hook). Reload on wake — the frontend survives a full reload, the Go
+	// backend persists across it. The wake path catches SUSPENSION, the
+	// injected hook catches DEATH: specs/decisions/018-macos-webview-recovery.md.
 	var lastWake atomic.Int64
 	registerPowerWakeObserver(log, func() {
 		now := time.Now().UnixNano()
@@ -600,29 +452,17 @@ func (a *App) Startup(ctx context.Context) {
 	// ── Background: Vector Index ─────────────────────────────────────
 	a.startVectorIndexBackground(agentDir, cfg, vectorReady, &vectorOnce, startTime, log)
 
-	// ── Background: Update check ────────────────────────────────────
-	// Runs a single best-effort "check for updates" after the backend is
-	// ready. Deliberately NO updater.CleanupStaleUpdaters here — the reap
-	// moved to main.go, behind the single-instance lock. Delegates to
-	// FrontendAPI.RunBackgroundUpdateCheck (the sole auto-check path: honours
-	// operator + user gates, respects the interval, caches the result so a
-	// discovered update is downloadable). Never blocks or breaks startup.
+	// ── Background: Update check (see startUpdateCheckerBackground) ─
 	a.startUpdateCheckerBackground(log)
 
-	// ── Background: git auto-fetch ticker ───────────────────────────
-	// Starts the periodic background git fetch loop (git.auto_fetch_interval,
-	// default 2m) once the backend is ready. Infrastructure-only; stopped by
-	// FrontendAPILifecycle.Cleanup on shutdown. See startAutoFetchBackground.
+	// ── Background: git auto-fetch ticker (see startAutoFetchBackground) ──
 	a.startAutoFetchBackground()
 }
 
 // Shutdown is called when the Wails app is shutting down.
 func (a *App) Shutdown(ctx context.Context) {
-	// This hook runs on the main goroutine after the Wails main loop stops,
-	// so every slow step here is a frozen, beach-balling app for the user.
-	// Each phase therefore logs its duration as it completes (INFO, elapsed
-	// since the shutdown started), so a slow teardown is attributable from
-	// the session log alone.
+	// Runs on the main goroutine after the Wails main loop stops — every slow
+	// step is a frozen app, so each logs its duration as it completes.
 	shutdownStart := time.Now()
 	shutdownStep := func(name string) {
 		a.log().Info("shutdown step complete",
@@ -630,18 +470,11 @@ func (a *App) Shutdown(ctx context.Context) {
 			"step_ms", time.Since(shutdownStart).Milliseconds())
 	}
 
-	// Arm one hard watchdog over the WHOLE teardown. Each step below is
-	// individually bounded, but a broken cancellation path must not be able to
-	// keep the process alive on quit. When the deadline expires the watchdog
-	// logs at Error and forces the process to exit, so the app always closes
-	// within a bounded time — the failure it prevents is the silent one where
-	// the session log ends at "blackboard persistence workers stopped" and
-	// "application shutdown: complete" never appears, so the user must kill the
-	// process. Disarmed by the deferred stop on every normal return.
-	// Route the forced exit through crashlog.ForceExit so a legitimate but
-	// forced quit still removes the liveness marker and writes its closing exit
-	// banner — the hooks main() runs on a normal return, which os.Exit here
-	// would skip (making the next launch misreport this quit as a crash).
+	// One hard watchdog over the WHOLE teardown (disarmed by the deferred stop
+	// on normal return): a broken cancellation path must not keep the process
+	// alive past the deadline. The forced exit rides crashlog.ForceExit so a
+	// forced-but-legitimate quit still cleans the liveness marker. See
+	// specs/domains/crash-logging.md.
 	shutdownExit := func() { crashlog.ForceExit(0) }
 	if a.shutdownExitFn != nil {
 		shutdownExit = func() { a.shutdownExitFn(0) }
@@ -649,10 +482,8 @@ func (a *App) Shutdown(ctx context.Context) {
 	watchdog := startShutdownWatchdog(a.shutdownDeadline(), a.log(), shutdownExit)
 	defer watchdog.stop()
 
-	// Make every quit visible in the session log: a Wails quit (window close
-	// button, Cmd+Q, updater-triggered quit) runs this hook, and without an
-	// explicit record the log just ends mid-activity — indistinguishable
-	// from a crash (the exact ambiguity that motivated crash logging).
+	// Make every quit visible in the session log — without this record the
+	// log just ends mid-activity, indistinguishable from a crash.
 	a.log().Info("application shutdown: starting graceful shutdown")
 
 	// Flush any events still queued in the batcher and stop its loop before
@@ -661,37 +492,24 @@ func (a *App) Shutdown(ctx context.Context) {
 	a.stopEventBatcher()
 	shutdownStep("stopEventBatcher")
 
-	// Release the notification service resources — on Linux this closes the
-	// D-Bus session-bus connection held by InitializeNotifications; on
-	// macOS/Windows the Wails cleanup is a stub. Safe when notifications were
-	// never initialized. See notifications.go cleanupNotifications.
+	// Release notification service resources (see cleanupNotifications); safe
+	// when notifications were never initialized.
 	a.cleanupNotifications(ctx)
 	shutdownStep("cleanupNotifications")
 
-	// Persist the final window geometry so a normal quit preserves the size
-	// even if no resize fired this session. Best-effort: a torn-down context
-	// makes this a no-op, and the debounced frontend saves already captured
-	// any prior resize.
-	// Persist the snapshot captured while the window was alive (the close
-	// guard); a direct read here would hit the already-destroyed window on
-	// Linux and clobber the correct persisted geometry (see
-	// persistWindowBoundsAtShutdown).
+	// Persist the window-geometry snapshot captured while the window was
+	// alive: a direct read here would hit the already-destroyed window on
+	// Linux and clobber the correct persisted geometry.
 	a.persistWindowBoundsAtShutdown(a.log())
 	shutdownStep("saveWindowBounds")
 
-	// Stop the embedded local-model server (llama-server) if one is running.
-	// It runs BEFORE the judge drain and the store closes: the loaded weights
-	// hold gigabytes of RAM/VRAM, so they are released while the rest of the
-	// teardown is still working rather than after it. Idempotent, bounded, and
-	// a failure is logged rather than fatal (see stopEmbeddedLLM).
+	// Release the model's RAM/VRAM early, while the rest of the teardown is
+	// still working (see stopEmbeddedLLM).
 	a.stopEmbeddedLLM(ctx)
 	shutdownStep("stopEmbeddedLLM")
 
-	// Stop the browser web-access sidecar if one is mounted: close the
-	// loopback listener and every browser WebSocket before the judge drain
-	// and the store closes, so a connected tab sees its stream end while the
-	// app is still winding down. Bounded at ~3s and fail-soft (see
-	// stopWebAccess) — a quit never hangs on a stateless listener.
+	// Close the sidecar before the judge drain/store close so connected tabs
+	// see their stream end cleanly (see stopWebAccess).
 	a.stopWebAccess(ctx)
 	shutdownStep("stopWebAccess")
 
@@ -747,18 +565,14 @@ func (a *App) Shutdown(ctx context.Context) {
 		a.pendingGoalProposals.Delete(key)
 		return true
 	})
-	// Shutdown resolves a pending goal-suggestion with the SHUTDOWN signal —
-	// never a synthetic decline: an app quit is not a user answer, so the
-	// gate must fail open (plain path, NO session suppression) instead of
-	// misreading the drain as an explicit "no" and silently suppressing every
-	// future suggestion in the session. See drainPendingGoalSuggestions.
+	// The goal-suggestion drain signals SHUTDOWN, never a synthetic decline —
+	// an app quit is not a user answer (fail-open; see drainPendingGoalSuggestions
+	// and specs/domains/goal-mode.md).
 	a.drainPendingGoalSuggestions()
 	shutdownStep("pendingActionDrains")
 
-	// Close-path reads go through the locked accessors: Shutdown runs on the
-	// platform main goroutine and can race a still-running Startup (the
-	// first-run tool install keeps Startup busy for minutes) — see the
-	// block comment on App.
+	// Close-path reads go through the locked accessors: Shutdown can race a
+	// still-running Startup (first-run tool install) — see App's block comment.
 	if fa := a.frontendAPI(); fa != nil {
 		fa.Lifecycle().Cleanup()
 	}
@@ -782,23 +596,18 @@ func (a *App) Shutdown(ctx context.Context) {
 
 	a.log().Info("application shutdown: complete", "total_ms", time.Since(shutdownStart).Milliseconds())
 
-	// The session log is the sink of a.logger; it closes only after the last
-	// record is written so the "complete" bracket (and the db.Close error
-	// above) are persisted instead of silently dropped into a closed file.
+	// The session log closes only after the last record is written, so the
+	// "complete" bracket is persisted rather than dropped into a closed file.
 	if sl := a.sessionLog(); sl != nil {
 		_ = sl.Close()
 	}
 }
 
 // drainPendingGoalSuggestions resolves every pending goal-suggestion card
-// with the SHUTDOWN signal (goalSuggestionResponse.Shutdown), which the
-// adapter surfaces as errGoalSuggestionShutdown — an error, not a user
-// decline. The core gate fails open on any error: the plain path continues
-// (and dies with the teardown) and session suppression is NOT engaged.
-// Extracted from Shutdown so the not-a-decline contract has a direct unit
-// test; the other pending-action drains stay inline because their synthetic
-// responses (deny/cancel) are already the documented semantics of those
-// prompts.
+// with the SHUTDOWN signal — an error, not a user decline, so the core gate
+// fails open with no session suppression (specs/domains/goal-mode.md).
+// Extracted for a direct unit test; the other drains stay inline (their
+// deny/cancel responses are the prompts' documented semantics).
 func (a *App) drainPendingGoalSuggestions() {
 	a.pendingGoalSuggestions.Range(func(key, value any) bool {
 		if e, ok := value.(*pendingGoalSuggestionEntry); ok {
@@ -812,10 +621,9 @@ func (a *App) drainPendingGoalSuggestions() {
 	})
 }
 
-// wireWailsEventListeners subscribes to Wails frontend events for tool confirmations,
-// judge requests, ask-user responses, and step-limit responses. Each handler
-// body is extracted into desktop/event_handlers.go (W-23) so it can be
-// unit-tested without a running Wails runtime.
+// wireWailsEventListeners subscribes to the Wails frontend HITL events; each
+// handler body lives in desktop/event_handlers.go so it is unit-testable
+// without a running Wails runtime.
 func (a *App) wireWailsEventListeners(log *slog.Logger, uiEmitFunc func(session.Event)) {
 	wailsRuntime.EventsOn(a.wailsCtx(), backend.EventToolConfirmResponse, func(data ...any) {
 		payload, ok := extractPayload("tool confirmation response", data, log)

@@ -34,36 +34,28 @@ type FrontendAPI struct {
 	// Config state
 	config   *config.Config
 	configMu sync.RWMutex
-	// seedPublished is the Init-publication flag for guardless seed-field
-	// readers: Init stores true inside its one configMu critical section, as
-	// soon as the seed fields are written (see Init), and seedAcquire waits
-	// on it. The atomic Release/Acquire pair — not the RWMutex barrier — is
-	// what orders those readers against the publication.
+	// seedPublished is the Init-publication flag guardless seed-field readers
+	// wait on via seedAcquire; the atomic pair — not the RWMutex barrier — is
+	// what orders them against Init's writes. Full protocol at Init.
 	seedPublished    atomic.Bool
 	configPath       string
 	configLoadErrors []string
-	// modelProfilesGateResp caches the EFFECTIVE Model Profiles gate reported as
-	// ConfigResponse.model_profiles. Resolving it needs the profile catalog, which is
-	// read from disk, so caching keeps GetConfig a pure in-memory read (it runs
-	// on every settings open — see the GUARANTEE on collectAllModels). Seeded at
-	// construction and refreshed by refreshModelProfilesGateLocked at every Model Profiles
-	// mutation. Only the two gate toggles and the resolved active id (which shares
-	// the cache's inputs exactly) are served from this cache; the block's fresh
-	// identity half (verbatim active/suggested ids) is filled FRESH by GetConfig from
-	// pure reads, so a default-model change needs no cache refresh. Guarded by configMu.
+	// modelProfilesGateResp caches the EFFECTIVE Model Profiles gate
+	// (ConfigResponse.model_profiles): the two toggles plus the resolved
+	// active id, refreshed on every Model Profiles mutation so GetConfig
+	// stays a pure in-memory read; the identity half (verbatim active/suggested
+	// ids) is filled fresh by GetConfig. Guarded by configMu.
+	// See specs/domains/model-profiles.md.
 	modelProfilesGateResp ModelProfilesSettingsResponse
-	// modelProfilesNotices carries one-shot Model Profiles profile notices (e.g. "the
-	// active profile was deleted; switched to generic") for the NEXT
-	// GetModelProfiles call. Guarded by configMu; drained on read.
+	// modelProfilesNotices carries one-shot Model Profiles profile notices
+	// (e.g. "the active profile was deleted; switched to generic") for the
+	// NEXT GetModelProfiles call. Guarded by configMu; drained on read.
 	modelProfilesNotices []string
 	// saveMu serializes full config-save sequences for writers that must not
 	// hold configMu across slow work (persist → No-Project provisioning →
-	// judge/router rebuild, currently UpdateLLMConfig). configMu above guards
-	// the config fields themselves; saveMu guards the ORDER of saves so
-	// debounced updates apply strictly sequentially — a later save never
-	// mutates f.config while an earlier save is still persisting/rebuilding.
-	// It is acquired BEFORE configMu (saveMu → configMu), and readers such as
-	// GetConfig never take it, so they stay responsive throughout a save.
+	// judge/router rebuild, currently UpdateLLMConfig). It guards save ORDER
+	// (acquired BEFORE configMu: saveMu → configMu) so debounced updates apply
+	// strictly sequentially, and is never taken by readers.
 	saveMu sync.Mutex
 
 	// Persistence stores
@@ -76,11 +68,11 @@ type FrontendAPI struct {
 	logLevel      string
 
 	// webviewGpuRunning/Source capture what THIS launch resolved (canonical
-	// policy and the deciding layer), derived once in Init — the same formula
-	// main.go's wails.Run options used, before any SetWebviewGpuPolicy could
-	// mutate the state file. "Restart required" is the pending-vs-running
-	// delta. Written once under configMu (see the seed-field comment above);
+	// policy and the deciding layer), derived once in Init from the same
+	// DeriveWebviewGpuRun inputs main.go's wails.Run options used. "Restart
+	// required" is the pending-vs-running delta. Written once under configMu;
 	// readers snapshot both under configMu.RLock.
+	// See specs/domains/webview-gpu-policy.md.
 	webviewGpuRunning       string
 	webviewGpuRunningSource string
 
@@ -102,24 +94,19 @@ type FrontendAPI struct {
 	gitStatusFn  func(root string) (map[string]GitStatusEntry, error)
 	gitIgnoredFn func(root string) (map[string]bool, error)
 	// readProcessRSSFn, when non-nil, overrides the resident-set-size read
-	// behind GetProcessMemory (frontend_api_system.go). Test-only seam (nil
-	// in production, where readProcessRSS from processmem.go runs), mirroring
+	// behind GetProcessMemory. Test-only seam (nil in production), mirroring
 	// gitStatusFn.
 	readProcessRSSFn func() (uint64, error)
-	// readSystemFontsFn, when non-nil, overrides the desktop-environment
-	// font reads behind GetSystemFonts (frontend_api_system.go). Test-only
-	// seam (nil in production, where readSystemFonts from
-	// systemfont_linux.go / systemfont_other.go runs), mirroring
-	// readProcessRSSFn.
+	// readSystemFontsFn, when non-nil, overrides the desktop-environment font
+	// reads behind GetSystemFonts. Test-only seam (nil in production),
+	// mirroring readProcessRSSFn.
 	readSystemFontsFn func() (systemFontPair, error)
 	// listFontFamiliesFn, when non-nil, overrides the installed-font-family
-	// enumeration behind ListFontFamilies (frontend_api_system.go). Test-only
-	// seam (nil in production, where listFontFamilies from fontlist_linux.go
-	// / fontlist_other.go runs), mirroring readSystemFontsFn.
+	// enumeration behind ListFontFamilies. Test-only seam (nil in production),
+	// mirroring readProcessRSSFn.
 	listFontFamiliesFn func(monospace bool) ([]string, error)
-	// fetchPaperOriginalFn, when non-nil, replaces the
-	// papers.FetchOriginalHTML call behind FetchPaperOriginal
-	// (frontend_api_papers_source.go). Test-only seam (nil in production),
+	// fetchPaperOriginalFn, when non-nil, replaces the papers.FetchOriginalHTML
+	// call behind FetchPaperOriginal. Test-only seam (nil in production),
 	// mirroring gitStatusFn, so the RPC's plumbing is testable without the
 	// network.
 	fetchPaperOriginalFn func(ctx context.Context, client *http.Client, libraryRoot string, rec papers.PaperRecord) papers.FetchResult
@@ -127,22 +114,19 @@ type FrontendAPI struct {
 	// only one network operation runs at a time per app instance.
 	remoteOpMu sync.Mutex
 
-	// Auto-fetch funnel state (see frontend_api_git_autofetch.go).
-	// autoFetchMu guards lastAutoFetchAt — the timestamp of the last
-	// automatic fetch ATTEMPT, stamped whenever a trigger gets past the
-	// static gates (config / active project / is-a-repo), whatever the
-	// fetch outcome. All automatic triggers share one
-	// autoFetchMinInterval window through it, so a burst of triggers can
-	// never hammer the remote even when every attempt fails fast.
+	// Auto-fetch funnel state (see frontend_api_git_autofetch.go and
+	// specs/domains/git-auto-fetch.md). autoFetchMu guards lastAutoFetchAt —
+	// the shared min-interval stamp, taken on every attempt that passes the
+	// static gates, whatever the outcome — so a burst of triggers can never
+	// hammer the remote.
 	autoFetchMu     sync.Mutex
 	lastAutoFetchAt time.Time
 
-	// Periodic auto-fetch loop state (the git.auto_fetch_interval ticker,
-	// see frontend_api_git_autofetch.go). autoFetchLoopMu guards
+	// Periodic auto-fetch ticker lifecycle (see frontend_api_git_autofetch.go
+	// and specs/domains/git-auto-fetch.md). autoFetchLoopMu guards
 	// autoFetchLoopCancel / autoFetchLoopDone so StartAutoFetch starts at
-	// most one loop and Cleanup can stop it from any goroutine. It is
-	// separate from autoFetchMu above, which guards only the shared
-	// min-interval timestamp of the fetch funnel.
+	// most one loop and Cleanup can stop it from any goroutine — separate
+	// from autoFetchMu (the min-interval stamp).
 	autoFetchLoopMu     sync.Mutex
 	autoFetchLoopCancel context.CancelFunc
 	autoFetchLoopDone   chan struct{}
@@ -157,9 +141,8 @@ type FrontendAPI struct {
 	// seam (0 in production), mirroring autoFetchIntervalOverride.
 	autoFetchDisabledRecheckOverride time.Duration
 
-	// autoFetchTickFn, when non-nil, replaces the autoFetchOnce call made
-	// by the periodic ticker loop. Test-only seam (nil in production) so
-	// loop tests observe ticks without touching git or the network.
+	// autoFetchTickFn, when non-nil, replaces the autoFetchOnce call made by
+	// the periodic ticker loop. Test-only seam (nil in production).
 	autoFetchTickFn func(trigger string)
 
 	// Project
@@ -170,63 +153,50 @@ type FrontendAPI struct {
 	activeProjectMu   sync.RWMutex
 
 	// Git-panel focus target (ADR-080's GitPanelTarget consumption): the
-	// worktree every git RPC operates on, as the project checkout or one of
-	// its worktrees. Empty = the project checkout (the default). Set only
-	// through SetGitPanelFocus, which validates membership in the active
-	// project's worktree list. Guarded by gitFocusMu, separately from
-	// activeProjectMu: the two change on different cadences (project switches
-	// vs. explicit panel focus switches) and neither write ever holds both.
+	// worktree every git RPC operates on; empty = the project checkout. Set
+	// only through SetGitPanelFocus, which validates membership in the active
+	// project's worktree list (the focus model is specified in
+	// specs/domains/session-worktrees.md). Guarded by gitFocusMu, separate
+	// from activeProjectMu: different change cadences, neither write ever
+	// holds both.
 	gitFocusMu   sync.RWMutex
 	gitFocusPath string
 
-	// managedTreeMu serializes the short critical sections that must not
-	// interleave once managed worktrees are shared (ADR-082): a deletion's
-	// [count co-owners → own-row removal → release tree] protocol (against
-	// BOTH adoptions and other deletions — two simultaneous deletions of the
-	// last two co-owners must not both skip the release) and an adoption's
-	// [commit binding → re-validate tree] pair. Without it, an adoption that
-	// validated the tree could commit its binding after the deleter counted
-	// zero remaining owners, and the release would remove the tree out from
-	// under the freshly committed session — which, being in memory, would
-	// not re-run the restore ensurer until restart. Held only across the DB
-	// count/writes plus one or two git calls; never across task cancellation,
-	// terminal stops, or vector cleanup. A wait is bounded in practice (the
-	// adoption side holds it under the creation's managedProvisionTimeout
-	// context), so a wedged git delays — but never deadlocks — concurrent
-	// deletions and adoption commits.
+	// managedTreeMu serializes the shared-worktree critical sections (ADR-082):
+	// the deletion's [count co-owners → own-row removal → release tree] and the
+	// adoption's [commit binding → re-validate tree] must not interleave — see
+	// specs/decisions/082-shared-managed-worktrees.md. Held only across the DB
+	// count/writes plus one or two git calls, never across task cancellation,
+	// terminal stops, or vector cleanup; a wait is bounded in practice (the
+	// adoption side holds it under managedProvisionTimeout), so a wedged git
+	// delays but never deadlocks.
 	managedTreeMu sync.Mutex
 	// bindInFlight holds the session ids with a workspace bind currently in
-	// flight (the send-time consumption window): one bind at a time per
-	// session, so a second concurrent send carrying a workspace choice is
-	// refused (ErrBindInProgress) instead of racing the same fresh window.
-	// The frontend refuses such sends itself; this is the backend backstop.
-	// Zero-value-ready (sync.Map) — struct-literal-constructed test
-	// instances need no initialization.
+	// flight (the send-time consumption window): a second concurrent send
+	// carrying a workspace choice is refused (ErrBindInProgress) instead of
+	// racing the same fresh window — the backend backstop to the frontend's
+	// own refusal. Zero-value-ready (sync.Map).
 	bindInFlight sync.Map
 
 	// switchMu serializes the whole SwitchProject body (teardown → vector →
 	// watcher → activate → event). Wails runs each binding call in its own
-	// goroutine, so two rapid CHAT↔CODE toggles used to interleave inside the
-	// backend: a slower earlier switch could overwrite activeProjectID AFTER a
-	// later switch had completed, leaving the backend on the older project
-	// while the frontend (whose switch chain is serialized) believes the newer
-	// one. Every subsequent ListDirectory against the frontend's rootPath then
-	// fails containment ("path outside project workspace") and @-file
-	// completions in the chat input stay empty until an app restart.
-	// Acquisition is bounded by switchLockTimeout (see acquireSwitchLock) so a
-	// wedged in-flight switch yields an error instead of an unbounded wait.
+	// goroutine, so without it a slower earlier switch could overwrite
+	// activeProjectID after a later switch completed — the backend ends on
+	// the older project while the frontend (whose switch chain is serialized)
+	// believes the newer; every ListDirectory then fails containment and
+	// @-file completions stay empty until an app restart. Acquisition is
+	// bounded (switchLockTimeout, see acquireSwitchLock); the section hold by
+	// switchSectionTimeout.
 	switchMu sync.Mutex
 
 	// switchLockTimeoutOverride, when > 0, replaces switchLockTimeout as the
 	// deadline for acquiring switchMu. Test-only seam (0 in production).
 	switchLockTimeoutOverride time.Duration
 
-	// researchSeedMu serializes c0wrk-owned pack seeding. The startup
-	// seedGlobalPacks run writes the GLOBAL .agents/{skills,agents}
-	// directories; a concurrent writer targeting the same destination would
-	// race the pack staging swap (one rename failing on the vanished source),
-	// so the whole run is serialized. The lock is coarse (process-wide)
-	// because seeding is millisecond-scale local IO.
+	// researchSeedMu serializes c0wrk-owned pack seeding (seedGlobalPacks —
+	// see specs/decisions/056-research-always-on-global-seeding.md): a
+	// concurrent writer would race the pack staging swap, so the whole run is
+	// serialized process-wide; seeding is millisecond-scale local IO.
 	researchSeedMu sync.Mutex
 
 	// switchInProgressHook is a test-only seam invoked inside SwitchProject
@@ -259,15 +229,12 @@ type FrontendAPI struct {
 	// Guarded by activeProjectMu so it stays in sync with project switches.
 	activeComparisonsRoot string
 
-	// Research hypothesis mutations. researchRootsMu guards researchRootMus,
-	// which holds one mutex per research root path. Each per-root mutex
-	// serializes the whole load→mutate→write chain of the UpdateHypothesis /
-	// CreateHypothesis RPCs (Wails runs each binding call in its own
-	// goroutine) so concurrent calls on one root cannot interleave their
-	// read-modify-write of card+graph (lost updates) or duplicate the max+1
-	// H-NNN id assignment of CreateHypothesis. Per-root granularity keeps
-	// mutations on unrelated projects concurrent. In-process only — a second
-	// app instance sharing a workspace has no cross-process lock.
+	// Research hypothesis mutations. researchRootsMu guards researchRootMus —
+	// one mutex per research root path, each serializing the whole
+	// load→mutate→write chain of the UpdateHypothesis / CreateHypothesis RPCs
+	// (no lost updates, no duplicated max+1 H-NNN id); per-root granularity
+	// keeps unrelated projects concurrent. In-process only — no cross-process
+	// lock against a second app instance on the same workspace.
 	researchRootsMu sync.Mutex
 	researchRootMus map[string]*sync.Mutex
 
@@ -279,14 +246,13 @@ type FrontendAPI struct {
 	skillCacheMu          sync.Mutex
 
 	// Skill directory watchers monitor global skill dirs (outside any
-	// workspace) for changes so the autocomplete / ListSkills cache stays
-	// fresh without an app restart. Workspace-local skills are covered by
-	// the workspace watcher above.
+	// workspace) so the autocomplete / ListSkills cache stays fresh without
+	// an app restart; workspace-local skills ride the workspace watcher above.
 	skillWatchers   []*workspace.Watcher
 	skillWatchersMu sync.Mutex
 
-	// Agent cache (invalidated on project switch). Mirrors the skill cache for
-	// Subagent Profile (AGENT.md) discovery.
+	// Agent cache (invalidated on project switch). Mirrors the skill cache
+	// for Subagent Profile (AGENT.md) discovery.
 	agentCache            []AgentDescriptorDTO
 	agentCacheGen         uint64 // atomic — bumped to invalidate
 	agentCacheGenSnapshot uint64
@@ -294,7 +260,7 @@ type FrontendAPI struct {
 	agentCacheMu          sync.Mutex
 
 	// Agent directory watchers monitor global Subagent Profile dirs (outside
-	// any workspace) for changes. Mirrors skillWatchers.
+	// any workspace). Mirrors skillWatchers.
 	agentWatchers   []*workspace.Watcher
 	agentWatchersMu sync.Mutex
 
@@ -312,92 +278,80 @@ type FrontendAPI struct {
 	commandDirs []string
 
 	// Command directory watchers monitor global command dirs (outside any
-	// workspace) for changes. Mirrors skillWatchers.
+	// workspace). Mirrors skillWatchers.
 	commandWatchers   []*workspace.Watcher
 	commandWatchersMu sync.Mutex
 
-	// Vector search: the per-root registry (ADR-080). One manager per
-	// workspace root, created on demand through the late-bound factory;
-	// vectorRootsMu guards the lazy construction of the registry itself
-	// (the registry's own state carries its internal lock). Sessions route
-	// through the executor context's workspace; user-facing RPCs route
-	// through the Git-panel focus stored inside the registry.
+	// Vector search: the per-root registry (ADR-081) — one manager per
+	// workspace root, created on demand through the late-bound factory; the
+	// registry's routing split (sessions via the executor context, user RPCs
+	// via the Git-panel focus) is specified in
+	// specs/decisions/081-vector-per-root-registry.md. vectorRootsMu guards
+	// the lazy construction of the registry itself.
 	vectorRoots   *VectorRoots
 	vectorRootsMu sync.Mutex
 
 	// pruneStaleBranchesInFlight single-flights the background stale-branch
 	// index cleanup (pruneAbsentBranchVectorIndexes): rapid project toggles
-	// each fire a detached goroutine, and a second concurrent sweep of the
-	// same storage roots would only duplicate work — the skip is silent,
-	// the running sweep reads fresh git state anyway.
+	// each fire a detached goroutine, and a second concurrent sweep would only
+	// duplicate work (the skip is silent; the running sweep reads fresh git
+	// state anyway).
 	pruneStaleBranchesInFlight atomic.Bool
 
 	// purgeBranchLaunchFn is a test seam (nil in production) overriding the
-	// launch of the detached delete-triggered branch purge. Tests swap it
-	// for a synchronous call so the purge completes before the RPC returns,
-	// keeping the DeleteBranch hook test deterministic without timing-based
-	// polling.
+	// launch of the detached delete-triggered branch purge; tests swap it for
+	// a synchronous call so the purge completes before the RPC returns.
 	purgeBranchLaunchFn func(fn func())
 
-	// vectorSetupMu guards deferredVectorProject — the handshake that lets a
-	// project switch whose vector-index setup was skipped (the manager
-	// factory was still being built by the background ONNX init) be applied
-	// later, once the factory is wired in via SetVectorRootsFactory. Acquired
-	// OUTSIDE vectorRootsMu (vectorSetupMu → vectorRootsMu) and OUTSIDE
-	// switchMu (switchMu → vectorSetupMu) to keep one global lock order.
+	// vectorSetupMu guards deferredVectorProject — the handshake that applies a
+	// switch whose vector setup was skipped (factory not yet wired) later, via
+	// SetVectorRootsFactory. Acquired OUTSIDE vectorRootsMu and switchMu
+	// (vectorSetupMu last) to keep one global lock order.
 	vectorSetupMu sync.Mutex
 	// deferredVectorProject is the project whose vector-index setup was
-	// skipped because the vector registry was not yet ready (background
-	// ONNX init still in flight). Drained once by InitVectorIndexForActiveProject
-	// when the factory becomes available. Nil when no setup is pending.
+	// skipped because the factory was not ready yet; drained once by
+	// InitVectorIndexForActiveProject. Nil when nothing is pending.
 	deferredVectorProject *project.ProjectInfo
 
-	// vectorEmbedderInfo records the embedder's execution-provider facts for
-	// vector-index status payloads (effective/requested provider, CUDA
-	// verification verdict). Written once by desktop's background init and
-	// read by every VectorIndexStatus producer; guarded by vectorRootsMu to
-	// avoid a third lock for the same lifecycle.
+	// vectorEmbedderInfo records the embedder's execution-provider facts
+	// (effective/requested provider, CUDA verdict) for vector-index status
+	// payloads. Written once by desktop's background init, read by every
+	// status producer; guarded by vectorRootsMu to avoid a third lock.
 	vectorEmbedderInfo VectorEmbedderInfo
 
-	// Self-update state. updateMu guards lastCheckResult and
-	// downloadedArchivePath, which carry data across the stateful
+	// Self-update state: updateMu guards lastCheckResult and
+	// downloadedArchivePath across the stateful
 	// CheckForUpdates → DownloadUpdate → ApplyUpdate RPC sequence.
 	updateMu              sync.Mutex
 	lastCheckResult       *updater.Result
 	downloadedArchivePath string
 
-	// Embedded local-model subsystem state: the storage layout, the
-	// core/embeddedllm supervisor and installer, the cached manifest snapshot
-	// and the in-flight-install flag. A value field with its own two mutexes,
-	// constructed lazily on first use — see frontend_api_embedded.go for the
-	// lock order and the RPC surface.
+	// Embedded local-model subsystem state: storage layout, the
+	// core/embeddedllm supervisor and installer, the cached manifest
+	// snapshot, the in-flight-install flag. Value field with its own two
+	// mutexes, lazily constructed — see frontend_api_embedded.go.
 	embedded embeddedLLMState
 
 	// ChatGPT subscription-auth subsystem state: the providerauth token
-	// manager, the in-flight browser sign-in run and its last error. A value
-	// field with its own mutex, constructed by InitChatGPTAuth on the startup
-	// path — see frontend_api_auth.go for the lock order and the RPC surface.
+	// manager, the in-flight browser sign-in run, its last error. Value
+	// field with its own mutex, constructed by InitChatGPTAuth on the
+	// startup path — see frontend_api_auth.go.
 	chatgptAuth chatgptAuthState
 
 	// Terminal
 	terminalManager TerminalManager
 
 	// managedForkCommit, when non-nil, replaces the store fork call used by
-	// ForkSession's managed branch. Test-only seam (nil in production, where
-	// store.ForkSessionWithBinding runs) letting rollback tests fail the
-	// persistence step after the fork tree was provisioned, mirroring
-	// gitStatusFn and friends.
+	// ForkSession's managed branch. Test-only seam (nil in production)
+	// letting rollback tests fail persistence after the fork tree was
+	// provisioned; mirrors gitStatusFn and friends.
 	managedForkCommit func(ctx context.Context, srcID, dstID string, binding *session.WorkspaceBinding, cloner session.ForkReviewCloner) (*session.SessionInfo, error)
 
 	// bindEvictHook, when non-nil, replaces the in-memory eviction both bind
 	// paths perform after persisting the workspace binding. Test-only seam
-	// (nil in production, where Manager.EvictSessionCarryingAttachments runs
-	// and its capture is re-staged onto the restored session) letting the
-	// rollback tests replay the interleavings the guards exclude: an
-	// eviction refusal after the persist (rollback + compensation e2e,
-	// shared-tree survival) and the adoption↔deletion losing race (the tree
-	// removed at the excluded point, caught by the post-bind re-validation).
-	// Same pattern as managedForkCommit and gitStatusFn.
+	// (nil in production) replaying the interleavings the guards exclude: an
+	// eviction refusal after the persist, and the adoption↔deletion losing
+	// race. Same pattern as managedForkCommit and gitStatusFn.
 	bindEvictHook func(id string) (*session.PendingAttachmentSnapshot, error)
 
 	// Injected Wails callbacks (set by desktop during construction).
@@ -407,49 +361,43 @@ type FrontendAPI struct {
 	// ApplyUpdate after launching the self-update re-exec. Nil in tests.
 	quitApp func()
 	// onExperimentalChanged is the desktop hook invoked by
-	// UpdateExperimentalFeatures after a SUCCESSFUL experimental-gate
-	// persist: the web-access sidecar mount follows the gate live instead of
-	// waiting for the next launch (ADR-101). Installed through the
-	// FrontendAPIConfig seam inside Init — alongside the other seed fields
-	// and before the seedPublished flag — so seedAcquire gives every toggle
-	// RPC the happens-before edge and no install can race a toggle already
-	// in flight. Nil (tests, backend-only builds) makes the toggle a pure
-	// config+router operation.
+	// UpdateExperimentalFeatures after a SUCCESSFUL experimental-gate persist
+	// (ADR-101) — the web-access sidecar mount follows the master gate live.
+	// Installed inside Init alongside the other seed fields, before the
+	// seedPublished flag. Nil keeps the toggle a pure config+router
+	// operation. See specs/decisions/101-browser-web-access.md.
 	onExperimentalChanged func(enabled bool)
 
-	// builderOverride, when non-nil, replaces f.app.Builder() in the builder()
-	// accessor. Used by tests to substitute a fake appBuilder so config/MCP
-	// mutations can be verified without the real LLM router or MCP gateway.
+	// builderOverride, when non-nil, replaces f.app.Builder() in the builder
+	// accessor. Test-only seam substituting a fake appBuilder so config/MCP
+	// mutations are verifiable without the real router or gateway.
 	builderOverride appBuilder
 
 	// Embedded-context refresh state. The /props context read-back lands the
 	// corrected llm.models window while Server.Load is on the request path,
-	// where a SYNCHRONOUS router rebuild is forbidden (it would swap the
-	// router under the request that triggered the load); instead the persist
-	// schedules rebuildAfterEmbeddedConfigChange through
-	// scheduleEmbeddedRouterRefresh, which runs it on its own goroutine once
-	// the persist has released its locks. embeddedRefreshScheduled owns the
-	// single-flight window and embeddedRefreshDirty records a change that
-	// landed while a refresh was already running, so the loop reruns once
-	// more and no correction is ever lost between two loads. Both guarded by
-	// embeddedRefreshMu.
+	// where a SYNCHRONOUS router rebuild is forbidden (see
+	// specs/domains/embedded-llm.md); the persist instead schedules
+	// rebuildAfterEmbeddedConfigChange on its own goroutine.
+	// embeddedRefreshScheduled owns the single-flight window and
+	// embeddedRefreshDirty records a change that landed mid-refresh, so the
+	// loop reruns once more and no correction is lost between loads. Both
+	// guarded by embeddedRefreshMu.
 	embeddedRefreshMu        sync.Mutex
 	embeddedRefreshScheduled bool
 	embeddedRefreshDirty     bool
 	embeddedRefreshDispatch  func(func())
 
 	// displayWindowPush, when non-nil (tests), replaces the default
-	// session-manager fan-out of the corrected display context window — the
-	// same injection shape as embeddedRefreshDispatch. Production leaves it
-	// nil; pushDisplayContextWindow then routes through app.Manager().
+	// session-manager fan-out of the corrected display context window (the
+	// pushDisplayContextWindow path — see specs/domains/embedded-llm.md).
+	// Production leaves it nil.
 	displayWindowPush func(model string, window int)
 
-	// activeSessionCount reports how many sessions currently carry live
-	// background work. It is the agent-idle seam the service gate
-	// (serviceEmbeddedGate) waits on: production wires it to the session
-	// manager in installServiceLLMGate, and a nil value — tests, a headless
-	// embedding without a manager — reads as "no agent is running", which
-	// keeps the gate inert rather than blocking on a manager nobody wired.
+	// activeSessionCount reports how many sessions carry live background work
+	// — the agent-idle seam the embedded service gate waits on (see
+	// specs/domains/embedded-llm.md, wired by installServiceLLMGate). Nil
+	// (tests, headless embedding) reads as "no agent is running", keeping the
+	// gate inert.
 	activeSessionCount func() int
 }
 
@@ -481,27 +429,25 @@ type FrontendAPIConfig struct {
 	EmitEvent       func(string, ...any)
 	AppCtx          func() context.Context
 	// QuitApp triggers a graceful application quit (wired to wailsRuntime.Quit
-	// in desktop). Used by ApplyUpdate after launching the self-update re-exec
+	// in desktop), used by ApplyUpdate after launching the self-update re-exec
 	// so the updater process — which waits for the parent PID to die — can
-	// proceed while Wails Shutdown hooks still run. Nil in tests (no-op).
+	// proceed while Wails Shutdown hooks run. Nil in tests (no-op).
 	QuitApp func()
 	// OnExperimentalChanged is the desktop hook invoked by
 	// UpdateExperimentalFeatures after a SUCCESSFUL experimental-gate persist
-	// (ADR-101): the web-access sidecar mount follows the master gate live
-	// instead of waiting for the next launch. It rides the same construction
-	// seam as AppCtx/QuitApp — wired by desktop inside buildFrontendAPI and
-	// consumed by Init together with the other seed fields, so the write is
-	// ordered before the seedPublished flag and every toggle RPC's
-	// seedAcquire sees it. Nil (tests, backend-only builds) keeps the toggle
-	// a pure config+router operation.
+	// (ADR-101) — the web-access sidecar mount follows the master gate live.
+	// Rides the same construction seam as AppCtx/QuitApp, consumed by Init
+	// with the other seed fields, so the write is ordered before the
+	// seedPublished flag. Nil keeps the toggle a pure config+router
+	// operation. See specs/decisions/101-browser-web-access.md.
 	OnExperimentalChanged func(enabled bool)
 	// WebviewGpuStderrObserved mirrors what main.go resolved at launch: the
-	// crash capture installed successfully (and was not opted out of), so the
-	// DMABUF watchdog can see this run's stderr. The launch-policy formula
-	// (DeriveWebviewGpuRun) must consume the SAME fact main's wails.Run
-	// options consumed, or the Settings RPC's running snapshot would report a
-	// policy this launch does not actually run with. Zero value (false) is
-	// the safe direction: an unobserved run demotes fresh auto to never.
+	// crash capture installed (and was not opted out of). The Init
+	// running-policy snapshot must consume the SAME fact the wails.Run
+	// options did, or the Settings report would name a policy this launch
+	// does not run with. Zero value (false) is the safe direction (an
+	// unobserved run demotes fresh auto to never).
+	// See specs/domains/webview-gpu-policy.md.
 	WebviewGpuStderrObserved bool
 }
 
@@ -512,13 +458,10 @@ func NewFrontendAPI(cfg FrontendAPIConfig) *FrontendAPI {
 
 // installServiceLLMGate routes the session manager's one-shot service LLM
 // requests (session title generation) through the embedded readiness gate.
-//
-// Installed unconditionally: the gate resolves the active model per call and
-// returns at once for every provider that is always listening, so a machine
-// without the local model pays one config read and nothing else. It is a method
-// (rather than inline code) because the manager is created before any
-// FrontendAPI exists, so this is the one place the two can meet — and a wiring
-// line nobody can observe is a wiring line that silently goes missing.
+// Installed unconditionally — the gate costs one config read for providers
+// that are always listening; it is a method because the manager is built
+// inside NewApplication before any FrontendAPI exists, and an unobservable
+// wiring line silently goes missing. See specs/domains/embedded-llm.md.
 func (f *FrontendAPI) installServiceLLMGate() {
 	if f.appCell() == nil {
 		return
@@ -529,13 +472,11 @@ func (f *FrontendAPI) installServiceLLMGate() {
 	}
 }
 
-// warnIfSeedDirUndiscovered emits a startup warning when the compiled-in
-// global directory the c0wrk packs are seeded into (config.SkillsDir /
-// config.AgentsDir off the agent dir) is NOT among the effective configured
-// discovery dirs the skill/agent watchers use. Discovery follows the
-// configured list, so a custom list that omits the global directory silently
-// orphans every seeded pack. Best-effort and non-fatal — an empty seedDir
-// (no agent dir) is a no-op, since nothing is seeded then.
+// warnIfSeedDirUndiscovered warns at startup when the compiled-in global
+// directory the c0wrk packs are seeded into is NOT among the effective
+// configured discovery dirs the skill/agent watchers use — a custom list
+// that omits it silently orphans every seeded pack. Best-effort, non-fatal;
+// an empty seedDir (nothing seeded) is a no-op.
 func warnIfSeedDirUndiscovered(lg *slog.Logger, kind, seedDir string, discovered []string) {
 	if lg == nil || seedDir == "" {
 		return
@@ -551,42 +492,31 @@ func warnIfSeedDirUndiscovered(lg *slog.Logger, kind, seedDir string, discovered
 }
 
 // FrontendAPILifecycle holds infrastructure/lifecycle methods that must NOT
-// be exposed as Wails RPC methods — Init (the #52 seed publication, callable
-// only by desktop startup / NewFrontendAPI) and SetConfigLoadState included.
-// FrontendAPI owns a pointer to this struct;
-// desktop accesses it via FrontendAPI.Lifecycle() which acts as a benign RPC
-// getter (returns a struct pointer — Wails does not recursively bind methods
-// on returned objects).
+// be exposed as Wails RPC methods (Init and SetConfigLoadState included).
+// FrontendAPI owns a pointer; desktop reaches it via FrontendAPI.Lifecycle(),
+// a benign RPC getter — Wails does not recursively bind methods on returned
+// struct pointers.
 type FrontendAPILifecycle struct {
 	f *FrontendAPI
 }
 
-// Lifecycle returns the lifecycle accessor for infrastructure methods that
-// should not be directly callable from the frontend.
+// Lifecycle returns the accessor for infrastructure methods that must not be
+// directly callable from the frontend.
 func (f *FrontendAPI) Lifecycle() *FrontendAPILifecycle {
 	return &FrontendAPILifecycle{f: f}
 }
 
-// appCell reads the app seed field under configMu. Wails RPC entry points use
-// it as their nil guard (see Init for the publication invariant): before Init
-// it returns nil and the guard errors out without touching any other seed
-// field; after Init the RLock is ordered after the publication critical
-// section, so every plain seed-field read that follows it in the same call
-// chain is ordered after the publication too.
+// appCell reads the app seed field under configMu — the nil guard of the
+// guarded RPC entry points (see Init for the publication invariant).
 func (f *FrontendAPI) appCell() *Application {
 	f.configMu.RLock()
 	defer f.configMu.RUnlock()
 	return f.app
 }
 
-// seedAcquire performs the Init-publication acquire on behalf of entry points
-// that read seed fields without an app nil guard (see Init for the full
-// invariant). It waits on the seedPublished flag that Init stores inside its
-// publication critical section, as soon as the seed fields are written; the
-// atomic Store/Load pair is the
-// happens-before edge that orders every plain seed-field read the caller
-// makes afterwards after Init's writes. On an already-initialized instance
-// (the only steady-state case) it is a single atomic load.
+// seedAcquire performs the Init-publication acquire for entry points that
+// read seed fields without an app nil guard — it waits on the seedPublished
+// flag (see Init). Single atomic load in steady state.
 func (f *FrontendAPI) seedAcquire() {
 	for !f.seedPublished.Load() {
 		// Park briefly instead of a hot Gosched spin: the WAIT is unbounded
@@ -598,61 +528,43 @@ func (f *FrontendAPI) seedAcquire() {
 }
 
 // Init wires an already-allocated FrontendAPI in place and returns it. It
-// lives on FrontendAPILifecycle — NOT directly on FrontendAPI — because every
-// exported FrontendAPI method is promoted onto desktop.App and bound as a
-// frontend-callable Wails RPC; Init is a startup-only infrastructure operation
-// (it republishes every seed field of the LIVE app instance) and must never
-// be callable from the renderer — the same charter as SetConfigLoadState (see
-// the FrontendAPILifecycle doc). The desktop App embeds a *FrontendAPI seed
-// (allocated once in NewApp) whose pointer the Wails binding dispatch re-reads
-// on every promoted-method call; startup must therefore INITIALIZE that seed
-// instead of swapping in a different pointer, so no reader ever observes two
-// distinct values (the data race recorded as review finding #52). Callers that
-// need a standalone instance use NewFrontendAPI.
+// lives on FrontendAPILifecycle because every exported FrontendAPI method is
+// bound as a frontend-callable Wails RPC, and Init is startup-only
+// infrastructure. The desktop App embeds a *FrontendAPI seed whose pointer
+// the binding dispatch re-reads on every call, so startup must INITIALIZE
+// that seed in place instead of swapping the pointer — no reader may observe
+// two distinct values (review finding #52). Standalone instances use
+// NewFrontendAPI.
 func (l *FrontendAPILifecycle) Init(cfg FrontendAPIConfig) *FrontendAPI {
 	f := l.f
-	// Publish every seed field under ONE configMu critical section, then
-	// raise the seedPublished flag. THIS instance is already reachable when
-	// Init runs: the desktop App embeds this seed from NewApp onward, so a
-	// Wails binding goroutine may serve a frontend RPC while Startup is still
-	// here. A structural happens-before (initializing the seed before the
-	// dispatcher can serve any RPC) is not achievable — Init consumes the
-	// Application/DB/stores that Startup builds only after wails.Run has
-	// begun dispatching RPCs — so the ordering is carried by two explicit
-	// synchronization points:
+	// Publish every seed field under ONE configMu critical section, then raise
+	// seedPublished. THIS instance is already reachable when Init runs (the App
+	// embeds this seed from NewApp onward), so a Wails binding goroutine may
+	// serve an RPC while Startup is still here — a structural happens-before is
+	// not achievable, so the ordering rests on two explicit synchronization
+	// points:
 	//
-	//   - Guarded entries read through appCell(): before Init the guard sees
-	//     nil and returns an error WITHOUT touching any other seed field
-	//     (short-circuit discipline of every nil guard); once this critical
-	//     section has run, the RLock inside appCell is ordered after the
-	//     Unlock below, so every plain seed-field read that follows it in the
-	//     call chain is ordered too (the canonical write-under-Lock /
-	//     read-under-RLock pattern).
-	//   - Guardless entries call seedAcquire() first: it waits on the
-	//     seedPublished flag stored immediately after this Unlock. The
-	//     atomic Store/Load pair is the happens-before edge that orders the
-	//     caller's subsequent plain seed-field reads after every write in
-	//     this critical section. The flag deliberately goes up BEFORE the
-	//     rest of Init runs (provider wiring, trust registry, pack seeding,
-	//     watchers): those steps only READ seed fields on the Init goroutine
-	//     (program order) and the goroutines Init creates from here on
-	//     inherit the ordering by creation.
+	//   - Guarded entries read through appCell(): before Init the nil guard
+	//     errors out WITHOUT touching other seed fields; after this section,
+	//     appCell's RLock is ordered after the Unlock below, so every plain
+	//     seed-field read later in the call chain is ordered too.
+	//   - Guardless entries call seedAcquire(): it waits on the seedPublished
+	//     flag stored immediately after this Unlock; the atomic pair is the
+	//     happens-before edge for the caller's subsequent plain reads. The
+	//     flag goes up BEFORE the rest of Init (wiring, trust registry, pack
+	//     seeding, watchers): those steps only READ seed fields on the Init
+	//     goroutine, and goroutines created from here inherit the ordering by
+	//     creation.
 	//
 	// Every Wails RPC entry point performs one of the two acquires before its
-	// first seed-field read; helper methods that touch seed fields carry the
-	// same acquire so they stay independently safe. Non-RPC goroutines are
-	// ordered by creation: Init itself runs on the OnStartup goroutine, and
-	// watcher/supervisor/background goroutines are created only after the
-	// flag is up. FrontendAPILifecycle.Cleanup re-checks seedPublished with a
-	// bare Load — deliberately NOT a blocking seedAcquire, see Cleanup —
+	// first seed-field read; helpers touching seed fields carry the same
+	// acquire; non-RPC goroutines are ordered by creation. Cleanup re-checks
+	// seedPublished with a bare Load, deliberately NOT a blocking seedAcquire,
 	// because shutdown may run on a different goroutine than Startup.
 	//
-	// Except config and logLevel (written only under configMu — here and in
-	// the config-save / SetLogLevel paths) and watcher (watcherMu on project
-	// switches), the seed fields are written ONLY here, exactly once;
-	// configPath likewise. One acquire per goroutine therefore orders them
-	// for the process lifetime. FrontendAPI values constructed directly in
-	// tests never race an Init, so their plain field writes stay lock-free.
+	// Except config/logLevel (written under configMu) and watcher (watcherMu),
+	// the seed fields are written ONLY here, exactly once; test-constructed
+	// FrontendAPI values never race an Init.
 	f.configMu.Lock()
 	f.app = cfg.App
 	f.logger = cfg.Logger
@@ -668,9 +580,9 @@ func (l *FrontendAPILifecycle) Init(cfg FrontendAPIConfig) *FrontendAPI {
 	f.agentDir = cfg.AgentDir
 	// Derive the webview GPU run snapshot inside the same critical section
 	// (issue #34): the running policy must reflect the state file as it was
-	// at launch, not after any Settings write. The stderr-observation flag
-	// comes from the desktop layer (main's capture install outcome) so the
-	// snapshot matches the wails.Run resolution exactly.
+	// at launch, not after any Settings write; the stderr-observation flag
+	// comes from desktop so the snapshot matches the wails.Run resolution.
+	// See specs/domains/webview-gpu-policy.md.
 	run := DeriveWebviewGpuRun(runtime.GOOS, cfg.AgentDir, cfg.WebviewGpuStderrObserved, f.logger)
 	f.webviewGpuRunning, f.webviewGpuRunningSource = run.Policy, run.Source
 	f.terminalManager = cfg.TerminalManager
@@ -678,25 +590,19 @@ func (l *FrontendAPILifecycle) Init(cfg FrontendAPIConfig) *FrontendAPI {
 	f.appCtx = cfg.AppCtx
 	f.quitApp = cfg.QuitApp
 	f.onExperimentalChanged = cfg.OnExperimentalChanged
-	// Wire the session-orchestrator factory's config source (the factory was
-	// closed over inside NewApplication, before this FrontendAPI existed) to a
-	// lock-respecting conversion. The factory runs on Wails call goroutines,
+	// Wire the session-orchestrator factory's config source to a
+	// lock-respecting conversion: the factory runs on Wails call goroutines,
 	// concurrently with Settings saves that mutate f.config's maps IN PLACE
-	// under configMu (SetModelConfig, UpdateMCPServers, …), so it must convert
-	// under the same lock instead of ranging the live maps unlocked — a fatal
-	// concurrent map read/write. toBuilderConfigLocked additionally attaches
-	// the embedded loader seam; that is a no-op while nothing is installed,
-	// and the builder-level default seam (syncEmbeddedBuilderSeam) still backs
-	// sessions built before any install.
+	// under configMu, so it must convert under the same lock instead of
+	// ranging the live maps unlocked. toBuilderConfigLocked also attaches the
+	// embedded loader seam (inert while nothing is installed).
 	//
 	// The wiring MUST happen inside this critical section, BEFORE the
-	// seedPublished store below: the flag admits every guardless RPC, and an
-	// early CreateSession between the store and a post-Unlock wiring would
-	// take the factory's unlocked startup-config fallback — ranging the live
-	// shared config's maps while a settings save mutates them. With the
-	// provider in place first, that window cannot exist.
-	// SetBuilderConfigProvider itself is a lock-free atomic store on the
-	// Application, so holding configMu here cannot deadlock it.
+	// seedPublished store below: an early CreateSession between the store and
+	// a post-Unlock wiring would take the factory's unlocked startup-config
+	// fallback — ranging the live maps while a settings save mutates them.
+	// SetBuilderConfigProvider itself is a lock-free atomic store, so holding
+	// configMu here cannot deadlock it.
 	if cfg.App != nil {
 		f.app.SetBuilderConfigProvider(func() *core.BuilderConfig {
 			f.configMu.RLock()
@@ -709,42 +615,31 @@ func (l *FrontendAPILifecycle) Init(cfg FrontendAPIConfig) *FrontendAPI {
 	}
 	// Publication point for seedAcquire: raised as soon as the sixteen seed
 	// fields are written — BEFORE the remaining in-critical-section work —
-	// so helpers Init itself calls (refreshModelProfilesGateLocked →
-	// modelProfilesCatalog → modelProfilesStore) pass their own seedAcquire
-	// instead of deadlocking on a flag only Init can raise. Readers released
-	// by the flag see every seed field above (program order within this
-	// critical section); the gate-cache refresh below is configMu-guarded for
-	// its own readers, so a guardless RPC released here cannot observe it at
-	// all.
+	// so helpers Init itself calls (which pass their own seedAcquire) do not
+	// deadlock on a flag only Init can raise. Readers released here see every
+	// seed field above.
 	f.seedPublished.Store(true)
 
-	// Seed the effective Model Profiles gate cache (ConfigResponse.model_profiles) so GetConfig
-	// stays a pure in-memory read. Every later Model Profiles mutation
-	// refreshes it via refreshModelProfilesGateLocked. Folded into the same
-	// critical section as the seed-field publication above (the refresh
-	// reads f.config, which the writes above have just published).
+	// Seed the effective Model Profiles gate cache (ConfigResponse.model_profiles)
+	// so GetConfig stays a pure in-memory read; every later Model Profiles
+	// mutation refreshes it. Folded into the same critical section as the
+	// seed publication (the refresh reads f.config). See
+	// specs/domains/model-profiles.md.
 	f.refreshModelProfilesGateLocked()
 	f.configMu.Unlock()
 
 	// Mirror the trusted-repo list into the process-wide git trust registry
-	// (core/gittrust), which core/workspace consults to decide whether a
-	// repository may spawn raw git. Nothing is trusted when config is nil or
-	// the list is empty (fail-closed).
+	// (core/gittrust) — fail-closed when config is nil or the list is empty.
 	f.syncGitTrustRegistry()
 
-	// Seed the c0wrk-owned packs into the GLOBAL agent directories
-	// (~/.c0wrk/.agents/{skills,agents}) BEFORE the directory watchers are
-	// created, so the freshly created directories are watched on this launch.
-	// The seeding is idempotent: missing entries are written and pack-marked
-	// outdated ones upgraded, while user-owned directories are preserved.
+	// Seed the c0wrk-owned packs into the GLOBAL agent directories BEFORE the
+	// directory watchers are created, so the fresh directories are watched on
+	// this launch. Idempotent, user-owned dirs preserved — see
+	// specs/decisions/056-research-always-on-global-seeding.md.
 	f.seedGlobalPacks()
 
-	// The c0wrk packs are seeded into the compiled-in global dirs
-	// (config.SkillsDir / config.AgentsDir off the agent dir). Discovery and
-	// the watchers below follow the CONFIGURED dir lists, so warn when the
-	// global dir is absent — a custom `skills.dirs`/`agents.dirs` list that
-	// omits it silently orphans every seeded pack. Best-effort and non-fatal;
-	// the seeding target is unchanged.
+	// Discovery and the watchers below follow the CONFIGURED dir lists; warn
+	// when the compiled-in seed dir is absent (see warnIfSeedDirUndiscovered).
 	seedSkillsDir, seedAgentsDir := "", ""
 	if cfg.AgentDir != "" {
 		seedSkillsDir = config.SkillsDir(cfg.AgentDir)
@@ -764,7 +659,7 @@ func (l *FrontendAPILifecycle) Init(cfg FrontendAPIConfig) *FrontendAPI {
 
 	// Start watchers for global Subagent Profile directories. Mirrors the
 	// skill watchers: changes invalidate the agent cache and emit
-	// agents:changed so the frontend #-autocomplete refreshes.
+	// agents:changed so the frontend autocomplete refreshes.
 	if cfg.Config != nil && len(cfg.Config.Agents.Dirs) > 0 {
 		dirs := resolveCatalogDirs(cfg.Config.Agents.Dirs, cfg.AgentDir, config.ExpandEnvVars, f.logger)
 		f.startAgentsWatchers(dirs)
@@ -775,9 +670,8 @@ func (l *FrontendAPILifecycle) Init(cfg FrontendAPIConfig) *FrontendAPI {
 
 	// Start watchers for global custom command directories (ADR-096). Mirrors
 	// the skill watchers: changes invalidate the command cache and emit
-	// commands:changed so the frontend autocomplete refreshes. The resolved
-	// list also seeds ListCommands's discovery — the backend owns command
-	// scanning (core never consumes commands).
+	// commands:changed. The resolved list also seeds ListCommands's discovery
+	// — the backend owns command scanning (core never consumes commands).
 	if cfg.Config != nil && len(cfg.Config.Commands.Dirs) > 0 {
 		dirs := resolveCatalogDirs(cfg.Config.Commands.Dirs, cfg.AgentDir, config.ExpandEnvVars, f.logger)
 		f.setCommandBaseDirs(dirs)
@@ -786,8 +680,6 @@ func (l *FrontendAPILifecycle) Init(cfg FrontendAPIConfig) *FrontendAPI {
 		f.setCommandBaseDirs(nil)
 	}
 
-	// Route the session manager's one-shot service LLM requests (session title
-	// generation) through the embedded readiness gate.
 	f.installServiceLLMGate()
 
 	// Wire the managed-worktree lifecycle owner into the session manager's
@@ -799,49 +691,32 @@ func (l *FrontendAPILifecycle) Init(cfg FrontendAPIConfig) *FrontendAPI {
 }
 
 // SetConfigLoadState sets the config loading state for display by GetConfig.
-// Called by desktop after initial config loading.
-// Moved to FrontendAPILifecycle to avoid exposure on the Wails RPC surface.
+// Called by desktop after initial config loading; on the Lifecycle like Init
+// to stay off the Wails RPC surface.
 func (l *FrontendAPILifecycle) SetConfigLoadState(errors []string) {
-	// OnStartup runs on its own Wails goroutine while bound RPCs (GetConfig,
-	// the only reader of this field, reads it under configMu.RLock) may
-	// already be served on other goroutines — so this writer takes the same
-	// lock every other configLoadErrors writer holds.
+	// OnStartup runs on its own Wails goroutine while bound RPCs may already
+	// be served — this writer takes the same configMu lock every other
+	// configLoadErrors writer holds.
 	l.f.configMu.Lock()
 	l.f.configLoadErrors = errors
 	l.f.configMu.Unlock()
 }
 
 // webAccessLoadWarningPrefix is the shared prefix of every warning the
-// web_access section produces — the load pipeline ("web_access: bind …",
-// "web_access ignored (…)", "web_access.tls unusable (…)") and the runtime
-// recompute (config.WebAccessLoadWarnings, the same text source) alike. No
-// other section's warning carries it, which makes it the exact cut the
-// refresh below replaces on.
+// web_access section produces — the exact cut the refresh below replaces on;
+// no other section's warning carries it.
 const webAccessLoadWarningPrefix = "web_access"
 
-// RefreshWebAccessLoadWarnings recomputes the web_access section's
-// contribution to the config-load-warning channel (GetConfig().config_errors
-// → the Settings "Configuration warning" banner, ADR-102): every entry with
-// the webAccessLoadWarningPrefix is dropped and the warnings the CURRENT
-// state draws (config.WebAccessLoadWarnings, gate conjunction included) are
-// appended, so an HTTP→HTTPS flip, a re-bind, or the enable toggle moves the
-// banner with the live section instead of freezing it on the launch-time
-// snapshot. Warnings from every other load-pipeline section (autonomy
-// migration, MCP timeouts, …) are preserved untouched — this is a surgical
-// replacement of one section's slice, never a clear-all (unlike the settings
-// writers that nil the whole channel once their own section validated).
-//
-// The method lives on the Lifecycle (not the FrontendAPI surface) by the
-// SetConfigLoadState precedent: a Wails-bindable method would widen the RPC
-// surface for no reason. Callers (desktop's web-access control RPCs) MUST
-// invoke it OUTSIDE webAccessMu — it takes configMu, and
-// UpdateExperimentalFeatures already holds configMu while taking webAccessMu,
-// so acquiring configMu under webAccessMu would close an ABBA cycle. The
-// desktop-owned section mutation itself stays unguarded by configMu — see
-// the whole-file window documented at SetWebAccessEnabled: a concurrent
-// GetConfig between the mutation and this refresh can observe the new
-// section beside the old warning — the pre-existing staleness this method
-// exists to bound, narrowed to one RPC-gap.
+// RefreshWebAccessLoadWarnings recomputes the web_access section's warnings
+// in the config-load-warning channel so the Settings banner live-follows the
+// transport (ADR-102): every webAccessLoadWarningPrefix entry is dropped and
+// the CURRENT state's warnings are appended — a surgical one-section
+// replacement, never a clear-all. The desktop control RPCs MUST invoke it
+// OUTSIDE webAccessMu (it takes configMu; UpdateExperimentalFeatures holds
+// configMu while taking webAccessMu, so the reverse order is an ABBA cycle).
+// A concurrent GetConfig across the mutation+refresh gap can see the new
+// section beside the old warning — the staleness this method bounds.
+// See specs/domains/web-access.md.
 func (l *FrontendAPILifecycle) RefreshWebAccessLoadWarnings() {
 	l.f.configMu.Lock()
 	defer l.f.configMu.Unlock()
@@ -862,7 +737,7 @@ func (l *FrontendAPILifecycle) RefreshWebAccessLoadWarnings() {
 }
 
 // ctx returns the application context, falling back to context.Background()
-// when the appCtx callback is not configured (e.g. in tests).
+// when appCtx is not configured (tests).
 func (f *FrontendAPI) ctx() context.Context {
 	f.seedAcquire()
 	if f.appCtx != nil {
@@ -873,10 +748,8 @@ func (f *FrontendAPI) ctx() context.Context {
 
 // serviceLLMTimeout returns the configured timeout for one-shot "service"
 // LLM requests (session title, commit message, prompt optimization) —
-// i.e. requests that are not part of the main chat loop. It reads the
-// ServiceLLMRequestTimeout config value (seconds) and falls back to the
-// default of 600s (10 min) when config is unset or the value is zero, so the
-// frontend never hangs on an unresponsive provider even before config load.
+// never part of the main chat loop. Falls back to 600s when config is unset
+// or zero, so the frontend never hangs on an unresponsive provider.
 func (f *FrontendAPI) serviceLLMTimeout() time.Duration {
 	f.configMu.RLock()
 	cfg := f.config
@@ -888,7 +761,7 @@ func (f *FrontendAPI) serviceLLMTimeout() time.Duration {
 }
 
 // EmitSessionEvent emits a session-scoped event through the combined UI +
-// persistence path (delegates to Application). Used by desktop-layer
+// persistence path (delegates to Application) — used by desktop-layer
 // callbacks (e.g. plan approval) so events survive app restarts.
 func (f *FrontendAPI) EmitSessionEvent(evt session.Event) {
 	f.seedAcquire()
@@ -899,44 +772,22 @@ func (f *FrontendAPI) EmitSessionEvent(evt session.Event) {
 
 // switchLockTimeout bounds how long SwitchProject waits to acquire switchMu
 // before failing with errSwitchLockTimeout instead of blocking indefinitely
-// behind an in-flight switch. Tests override it via
-// FrontendAPI.switchLockTimeoutOverride.
+// behind an in-flight switch.
 const switchLockTimeout = 5 * time.Second
 
 // switchSectionTimeout bounds how long a switch may HOLD switchMu once
-// acquired. Per-operation store deadlines (storeOpTimeout,
-// sessionStoreOpTimeout, restoreDBReadTimeout, terminalPathLookupTimeout) cap
-// each round-trip separately, but the switch's critical section performs a
-// SEQUENCE of them whose failures are deliberately soft (best-effort
-// persistence warns and continues), so on a saturated machine — a worktree
-// full reindex saturating disk I/O while every store op queues behind the
-// shared SQLite pool — the holds stack up to minutes even though no single
-// step is unbounded. Every store round-trip in the critical section is
-// derived from one ctx carrying this deadline (see SwitchProject and
-// switchStoreOpCtx; the vector leg's root-resolution listing rides the same
-// ctx via switchProjectSetupVector → ApplyFocus → resolveRootPlan →
-// ListProjectsCtx), so no store read can outlive the section. Two known
-// waits inside the section are deliberately NOT derived from it:
-//   - createSessionForProject pre-checks the deadline (switchCtx.Err) and
-//     then runs the deadline-less full orchestrator build — a build that
-//     started with budget left still runs to completion and can hold
-//     switchMu past this timeout;
-//   - the vector leg's ManagerForRoot can wait out an in-flight eviction
-//     drain for up to vectorRootsEvictWait (25s, time-bounded).
-//
-// Overruns still surface: a hold at or above switchHeldWarnThreshold logs a
-// WARN with the total, which keeps the section observable exactly where the
-// deadline does not reach. This is what lets a wedged switch fail fast
-// enough for the NEXT switch's 5s acquireSwitchLock to recover the UI
-// instead of compounding into "Another project switch is still finishing"
-// loops.
+// acquired: the section runs a SEQUENCE of soft-failing ops, so per-op store
+// deadlines alone would let holds stack under a saturated machine — every
+// store round-trip in it derives from one ctx carrying this deadline. Two
+// waits are deliberately NOT derived from it: createSessionForProject's
+// deadline-less orchestrator build (pre-checked; may hold past this) and the
+// vector leg's ManagerForRoot eviction-drain wait (vectorRootsEvictWait).
+// Overruns still surface as a WARN at switchHeldWarnThreshold, letting the
+// next bounded acquireSwitchLock recover the UI.
 const switchSectionTimeout = 30 * time.Second
 
-// switchHeldWarnThreshold is the hold duration at or above which SwitchProject
-// logs a WARN after releasing switchMu. It names switches that ate a
-// significant slice of the acquisition budget while staying under
-// switchSectionTimeout — the observable precursor of the busy-loop failure
-// mode above.
+// switchHeldWarnThreshold is the hold duration at or above which
+// SwitchProject logs a WARN after releasing switchMu.
 const switchHeldWarnThreshold = 3 * time.Second
 
 const gitRepoCacheTTL = 30 * time.Second
@@ -949,11 +800,10 @@ type gitRepoCacheEntry struct {
 	expiry time.Time
 }
 
-// isGitRepo reports whether dir is inside a git work tree. Results are
-// cached for gitRepoCacheTTL to avoid repeated git process spawning during
-// rapid file-tree refresh cycles. The cache is a ViewModel concern — the
-// underlying workspace.IsGitRepo is stateless per ADR-009.
-// Returns false for No Project (no git operations).
+// isGitRepo reports whether dir is inside a git work tree, cached for
+// gitRepoCacheTTL to avoid repeated git spawning during rapid file-tree
+// refresh cycles (see specs/domains/git-auto-fetch.md). Returns false for
+// No Project.
 func (f *FrontendAPI) isGitRepo(dir string) bool {
 	if f.isNoProject() {
 		return false
@@ -997,33 +847,25 @@ func (f *FrontendAPI) isGitRepo(dir string) bool {
 }
 
 // isNoProject reports whether the active project is the "No Project"
-// pseudo-project. Thread-safe.
+// pseudo-project.
 func (f *FrontendAPI) isNoProject() bool {
 	f.activeProjectMu.RLock()
 	defer f.activeProjectMu.RUnlock()
 	return f.activeProjectID == project.NoProjectID
 }
 
-// Cleanup releases resources owned by FrontendAPI.
-// Called from desktop.Shutdown.
-// Moved to FrontendAPILifecycle to avoid exposure on the Wails RPC surface.
-//
-// Every step logs its duration as it completes: this runs on the main
-// goroutine during app shutdown, so a slow step is a frozen app, and the
-// per-step records make the slow one attributable from the session log.
-// NOTE: f.sessionLogger is deliberately NOT closed here — it is the same
-// *logger.SessionLogger the desktop App owns and closes at the very end of
-// App.Shutdown; closing it here silenced every later shutdown record
-// (applicationShutdown timings, db.Close errors, the "complete" bracket).
+// Cleanup releases resources owned by FrontendAPI (desktop.Shutdown; on the
+// Lifecycle to stay off the Wails RPC surface). Every step logs its duration
+// — this runs on the main goroutine, so a slow step is a frozen app and the
+// per-step records make it attributable. NOTE: f.sessionLogger is
+// deliberately NOT closed here — desktop owns it and closes it at the very
+// end of App.Shutdown; closing it here silenced every later shutdown record.
 func (l *FrontendAPILifecycle) Cleanup() {
 	// Deliberately NOT seedAcquire: a blocking wait would hang Shutdown on
-	// any seed Init never published — a quit racing a slow startup phase
-	// (first-run tool installs can take minutes, and the shutdown watchdog
-	// kills slow shutdowns), or a hand-constructed instance in tests. When
-	// the seed is unpublished nothing has been published to clean up; the
-	// bare Load(false) path reads no seed fields, so there is no race. When
-	// it reads true, the atomic pair orders every plain read below after
-	// Init's publication exactly like seedAcquire does.
+	// any seed Init never published (a quit racing a slow startup phase, or
+	// a hand-constructed test instance). Unpublished seed = nothing to clean
+	// up and no seed fields read; a true reading orders every plain read
+	// below exactly like seedAcquire does.
 	if !l.f.seedPublished.Load() {
 		return
 	}
@@ -1035,13 +877,10 @@ func (l *FrontendAPILifecycle) Cleanup() {
 			"step_ms", time.Since(cleanupStart).Milliseconds())
 	}
 	// Cancel an in-flight ChatGPT browser sign-in FIRST: its loopback
-	// listener and its goroutine must not outlive the teardown. The stop is
-	// marked REQUESTED — a quit is a deliberate stop of the flow, not a
-	// fault of it — so the run closes with the quiet `cancelled` event
-	// instead of recording a bogus last_error nobody will ever read (the
-	// process is exiting; the recorder dies with it). The run's own failure
-	// branch does the bookkeeping whenever it unblocks, so this is
-	// fire-and-forget — non-blocking by construction.
+	// listener and goroutine must not outlive the teardown. The stop is
+	// marked REQUESTED — a quit closes with the quiet cancelled event, and
+	// the run's own failure branch does the bookkeeping (fire-and-forget,
+	// non-blocking by construction).
 	f.chatgptAuth.mu.Lock()
 	if f.chatgptAuth.inFlight && f.chatgptAuth.cancel != nil {
 		f.chatgptAuth.cancelRequested = true
@@ -1049,9 +888,9 @@ func (l *FrontendAPILifecycle) Cleanup() {
 	}
 	f.chatgptAuth.mu.Unlock()
 	// Stop the periodic auto-fetch ticker first so no new background fetch
-	// starts while the rest of the backend tears down. Non-blocking: an
-	// in-flight fetch is already bounded by remoteGitCmdTimeout and
-	// cancelled through f.ctx() (see frontend_api_git_autofetch.go).
+	// starts while the rest of the backend tears down (non-blocking; an
+	// in-flight fetch is bounded by remoteGitCmdTimeout — see
+	// specs/domains/git-auto-fetch.md).
 	f.stopAutoFetchLoop()
 	cleanupStep("stopAutoFetchLoop")
 	if f.terminalManager != nil {
@@ -1100,9 +939,8 @@ func (f *FrontendAPI) log() *slog.Logger {
 	return slog.Default()
 }
 
-// vectorRootsRegistry returns the per-root vector-index registry, creating it
-// on first use. Tests may pre-set f.vectorRoots directly; production gets it
-// from NewFrontendAPI.
+// vectorRootsRegistry returns the per-root vector-index registry, creating
+// it on first use (tests may pre-set f.vectorRoots).
 func (f *FrontendAPI) vectorRootsRegistry() *VectorRoots {
 	f.vectorRootsMu.Lock()
 	defer f.vectorRootsMu.Unlock()
@@ -1112,50 +950,42 @@ func (f *FrontendAPI) vectorRootsRegistry() *VectorRoots {
 	return f.vectorRoots
 }
 
-// SetVectorRootsFactory wires the manager factory the desktop background ONNX
-// init produced, together with the readiness channel (closed once the init
-// settles, success or known-unavailable) and the once-guarded embedder close
-// run by ShutdownAll after every manager is down.
-// Thread-safe; may be called from any goroutine.
-// Moved to FrontendAPILifecycle to avoid exposure on the Wails RPC surface.
+// SetVectorRootsFactory wires the manager factory the desktop background
+// ONNX init produced, together with the readiness channel (closed once the
+// init settles) and the once-guarded embedder close run by ShutdownAll.
+// On the Lifecycle to stay off the Wails RPC surface.
 func (l *FrontendAPILifecycle) SetVectorRootsFactory(factory func() (*vectorindex.Manager, error), ready <-chan struct{}, closeEmbedder func() error) {
 	l.f.vectorRootsRegistry().SetFactory(factory, ready, closeEmbedder)
 }
 
 // VectorRoots exposes the per-root registry for desktop-side wiring (the
 // Application's late-bound router needs the same instance).
-// Moved to FrontendAPILifecycle to avoid exposure on the Wails RPC surface.
 func (l *FrontendAPILifecycle) VectorRoots() *VectorRoots {
 	return l.f.vectorRootsRegistry()
 }
 
 // NotifyVectorFileChange triggers debounced incremental re-indexing on the
 // manager of the given workspace root ("" = the focus root) — the
-// file-mutating post-execute hook's entry point. A root with no live manager
+// file-mutating post-execute hook's entry point; a root with no live manager
 // is a no-op (it indexes from scratch when next routed to).
-// Moved to FrontendAPILifecycle to avoid exposure on the Wails RPC surface.
 func (l *FrontendAPILifecycle) NotifyVectorFileChange(root string) {
 	l.f.vectorRootsRegistry().NotifyFileChangeForRoot(root)
 }
 
-// SetVectorEmbedderInfo records the embedder's execution-provider facts
-// (effective/requested provider, CUDA/OpenVINO verification verdicts) for
-// inclusion in every subsequent VectorIndexStatus payload. Called once by
-// desktop's background vector init after the embedder creation outcome is
-// known — including the unavailable paths, where the info makes the failure
-// self-explanatory in the status (which provider was asked for and why it did
-// not come up). Thread-safe.
+// SetVectorEmbedderInfo records the embedder's execution-provider facts for
+// every subsequent VectorIndexStatus payload. Called once by desktop's
+// background vector init — including the unavailable paths, where the info
+// makes the failure self-explanatory in the status.
 func (l *FrontendAPILifecycle) SetVectorEmbedderInfo(info VectorEmbedderInfo) {
 	l.f.vectorRootsMu.Lock()
 	l.f.vectorEmbedderInfo = info
 	l.f.vectorRootsMu.Unlock()
 }
 
-// applyEmbedderInfo fills the execution-provider fields of a VectorIndexStatus
-// from the stored embedder info. Called by every status producer before
-// emitting, so the provider facts stay consistent across all status variants
-// (success, unavailable, failure-reason). Zero-value fields remain empty and
-// are omitted from the JSON payload.
+// applyEmbedderInfo fills the execution-provider fields of a
+// VectorIndexStatus from the stored embedder info; called by every status
+// producer before emitting so the facts stay consistent across variants.
+// Zero-value fields stay empty and are omitted from the JSON payload.
 func (f *FrontendAPI) applyEmbedderInfo(st *VectorIndexStatus) {
 	f.vectorRootsMu.Lock()
 	info := f.vectorEmbedderInfo
@@ -1171,24 +1001,16 @@ func (f *FrontendAPI) applyEmbedderInfo(st *VectorIndexStatus) {
 	st.DeviceID = info.DeviceID
 }
 
-// InitVectorIndexForActiveProject applies a project-switch vector setup that was
-// skipped because the vector manager factory was not yet wired in. It is called
-// by the desktop background ONNX goroutine immediately after handing the
-// factory to the registry (SetVectorRootsFactory).
-//
-// Why it is needed: the frontend issues its first SwitchProject on
-// backend:ready, which almost always arrives BEFORE the background ONNX init
-// finishes (embedder load + factory construction). switchProjectSetupVector then
-// sees FactoryReady() == false and skips setup, so the startup project's index
-// is never built and semantic search stays unavailable until the user manually
-// switches projects. This drains the setup deferred by that skipped switch.
-//
-// It serializes with SwitchProject via switchMu, so it runs either entirely
-// before the in-flight switch (the deferred slot is then empty and the switch's
-// own setup observes the now-ready registry) or entirely after it (the deferred
-// slot holds the destination project and is applied here). It is a no-op when
-// nothing was deferred (the switch won the race and initialized the index
-// itself), for No Project (CHAT mode), and when no project is active.
+// InitVectorIndexForActiveProject drains the project-switch vector setup
+// deferred while the manager factory was still being built (see
+// deferredVectorProject and specs/decisions/081-vector-per-root-registry.md).
+// The frontend's first SwitchProject on backend:ready usually beats the
+// background ONNX init, so switchProjectSetupVector skips and defers; this is
+// called right after the factory lands. It serializes with SwitchProject via
+// switchMu — it runs entirely before the in-flight switch (empty deferred
+// slot; the switch's own setup sees the ready registry) or after it (the slot
+// holds the destination and is applied here). No-op when nothing was
+// deferred, for No Project, and when no project is active.
 func (l *FrontendAPILifecycle) InitVectorIndexForActiveProject() {
 	f := l.f
 	if f == nil || !f.vectorRootsRegistry().FactoryReady() {
@@ -1206,9 +1028,9 @@ func (l *FrontendAPILifecycle) InitVectorIndexForActiveProject() {
 		return
 	}
 
-	// Only apply when the deferred project is still the active one. A
-	// superseding switch (serialized behind switchMu above) would have already
-	// run its own setup and cleared the deferred slot.
+	// Only apply when the deferred project is still the active one: a
+	// superseding switch (serialized behind switchMu above) would already
+	// have run its own setup and cleared the deferred slot.
 	f.activeProjectMu.RLock()
 	activeID := f.activeProjectID
 	f.activeProjectMu.RUnlock()

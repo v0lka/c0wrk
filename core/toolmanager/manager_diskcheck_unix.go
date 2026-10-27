@@ -9,25 +9,16 @@ import (
 	"syscall"
 )
 
-// checkDiskSpace verifies that at least minFree bytes are available on the
-// volume containing path. Uses syscall.Statfs on Unix platforms.
-//
-// Decision (2026-06-21): the caller (EnsureCriticalTools) creates
-// directories before calling this function, so path always exists.
-// Pre-existing non-existence (ENOENT/ENOTDIR) is treated as non-critical
-// (best-effort check). Real filesystem errors are logged but not surfaced
-// as fatal — the download will fail with a clearer error if space runs out.
+// checkDiskSpace verifies minFree bytes free on path's volume (statfs).
+// Best-effort: the caller creates the directories first, so a missing path
+// (ENOENT/ENOTDIR) is non-critical, and real statfs errors are logged, not
+// fatal — a real shortage fails later with a clearer download error.
 func checkDiskSpace(path string, minFree int64, logger *slog.Logger) error {
 	var stat syscall.Statfs_t
 	if err := syscall.Statfs(path, &stat); err != nil {
 		if os.IsNotExist(err) {
-			// Path doesn't exist — caller should have created directories
-			// first. Non-critical; the download will fail with a clearer
-			// error if space is insufficient.
 			return nil
 		}
-		// Real filesystem error (permission denied, I/O error, etc.).
-		// Logged at warn level for diagnostics; the check is best-effort.
 		if logger != nil {
 			logger.Warn("disk space check unavailable", "path", path, "error", err)
 		}

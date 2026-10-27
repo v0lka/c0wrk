@@ -27,9 +27,8 @@ type InstallResult struct {
 	Installed bool   // false if already up-to-date (version matched)
 }
 
-// Installer handles the extraction and installation of tool archives and the
-// bootstrap of Python environments. The interface exists so tests can
-// substitute a mock implementation.
+// Installer extracts/installs tool archives and bootstraps Python
+// environments; an interface so tests can substitute a mock.
 type Installer interface {
 	InstallStaticBinary(archivePath string, tool ToolSpec, binDir string) (*InstallResult, error)
 	InstallPythonPackage(ctx context.Context, tool ToolSpec, toolsDir string, binDir string) (*InstallResult, error)
@@ -38,26 +37,23 @@ type Installer interface {
 // FSInstaller is the production Installer that operates on the local filesystem.
 type FSInstaller struct{}
 
-// NewFSInstaller creates a new FSInstaller.
 func NewFSInstaller() *FSInstaller {
 	return &FSInstaller{}
 }
 
-// InstallStaticBinary extracts the archive at archivePath and places the
-// binary (identified by tool.BinPathInArchive) into binDir/<tool.BinName>.
-// Supports .tar.gz and .zip archives.
+// InstallStaticBinary extracts archivePath and places the binary identified
+// by tool.BinPathInArchive at binDir/<tool.BinName> (.tar.gz / .zip).
 func (i *FSInstaller) InstallStaticBinary(archivePath string, tool ToolSpec, binDir string) (*InstallResult, error) {
 	dst := filepath.Join(binDir, tool.BinName)
 	if runtime.GOOS == "windows" {
 		dst += ".exe"
 	}
 
-	// If the binary already exists at the destination, skip re-install.
+	// The destination-exists short-circuit: an existing binary → no reinstall.
 	if _, err := os.Stat(dst); err == nil {
 		return &InstallResult{ToolName: tool.Name, BinPath: dst, Installed: false}, nil
 	}
 
-	// Extract to a temp directory.
 	tmpDir, err := os.MkdirTemp("", "c0wrk-tool-"+tool.Name+"-*")
 	if err != nil {
 		return nil, fmt.Errorf("tool %q: creating temp dir: %w", tool.Name, err)
@@ -77,20 +73,15 @@ func (i *FSInstaller) InstallStaticBinary(archivePath string, tool ToolSpec, bin
 		return nil, fmt.Errorf("tool %q: unsupported archive format: %s", tool.Name, filepath.Ext(archivePath))
 	}
 
-	// Locate the binary inside the extracted tree. Archives use different
-	// layouts (subdir vs. flat) and Windows adds an ".exe" suffix, so try
-	// the declared path and a flat fallback, each with/without ".exe".
 	src, ok := resolveBinaryInTree(tmpDir, tool.BinPathInArchive, tool.BinName, runtime.GOOS)
 	if !ok {
 		return nil, fmt.Errorf("tool %q: binary %q not found in archive (looked for %s)", tool.Name, tool.BinName, tool.BinPathInArchive)
 	}
 
-	// Ensure binDir exists.
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		return nil, fmt.Errorf("tool %q: creating bin dir: %w", tool.Name, err)
 	}
 
-	// Copy the binary to binDir.
 	if err := copyFile(src, dst, 0o755); err != nil {
 		return nil, fmt.Errorf("tool %q: copying binary: %w", tool.Name, err)
 	}
@@ -98,8 +89,8 @@ func (i *FSInstaller) InstallStaticBinary(archivePath string, tool ToolSpec, bin
 	return &InstallResult{ToolName: tool.Name, BinPath: dst, Installed: true}, nil
 }
 
-// InstallPythonPackage bootstraps a Python environment and installs the
-// package via uv. Requires the uv binary to already exist in binDir.
+// InstallPythonPackage bootstraps the managed Python via uv (install → venv
+// → pip) and writes the wrapper; uv must already exist in binDir.
 func (i *FSInstaller) InstallPythonPackage(ctx context.Context, tool ToolSpec, toolsDir, binDir string) (*InstallResult, error) {
 	uvBin := filepath.Join(binDir, "uv")
 	if runtime.GOOS == "windows" {
@@ -109,7 +100,6 @@ func (i *FSInstaller) InstallPythonPackage(ctx context.Context, tool ToolSpec, t
 		return nil, errors.New("uv is not installed; uv must be bootstrapped before Python packages")
 	}
 
-	// Check if markitdown wrapper already exists.
 	wrapperName := tool.BinName
 	if runtime.GOOS == "windows" {
 		wrapperName += ".cmd"
@@ -142,15 +132,11 @@ func (i *FSInstaller) InstallPythonPackage(ctx context.Context, tool ToolSpec, t
 		return nil, fmt.Errorf("tool %q: uv venv failed: %w\n%s", tool.Name, err, out)
 	}
 
-	// Step 3: Install the package. Use findPythonInDir on the venv to get the
-	// platform-correct python path (venv/bin/python3 on Unix, venv/Scripts/python.exe on Windows).
+	// Step 3: Install the package.
 	venvPython := findPythonInDir(venvDir, tool.PythonVersion, runtime.GOOS)
 	if venvPython == "" {
 		return nil, fmt.Errorf("tool %q: python binary not found in venv %s", tool.Name, venvDir)
 	}
-	// Prefer the fully pinned requirements lock (exact audited versions for
-	// every transitive dependency); fall back to the floating PipSpec when the
-	// tool declares no lock.
 	lockPath, err := writeRequirementsLock(tool, toolsDir)
 	if err != nil {
 		return nil, err
@@ -169,28 +155,25 @@ func (i *FSInstaller) InstallPythonPackage(ctx context.Context, tool ToolSpec, t
 	return &InstallResult{ToolName: tool.Name, BinPath: wrapperPath, Installed: true}, nil
 }
 
-// writeRequirementsLock materializes the tool's pinned requirements lock as
-// <toolsDir>/<name>-lock.txt so `uv pip install -r` can consume it. The lock
-// content comes from the repo-embedded ToolSpec.RequirementsLock (trusted,
-// checksum-audited at review time), not from the network. Returns "" when the
-// tool declares no lock — the caller then falls back to the floating PipSpec.
+// writeRequirementsLock materializes the repo-embedded
+// ToolSpec.RequirementsLock (trusted, audited at review time — never network)
+// as <toolsDir>/<name>-lock.txt for `uv pip install -r`; "" when the tool
+// declares no lock (caller falls back to the floating PipSpec).
 func writeRequirementsLock(tool ToolSpec, toolsDir string) (string, error) {
 	if tool.RequirementsLock == "" {
 		return "", nil
 	}
 	lockPath := filepath.Join(toolsDir, tool.Name+"-lock.txt")
-	// Atomic + FIFO/symlink-safe: the fixed <name>-lock.txt path is
-	// pre-plantable, and a bare os.WriteFile would block on a planted FIFO
-	// and write through a planted symlink.
+	// Atomic + FIFO/symlink-safe: the fixed path is pre-plantable — a bare
+	// os.WriteFile would block on a planted FIFO and write through a symlink.
 	if err := safeio.WriteFileAtomic(lockPath, []byte(tool.RequirementsLock), 0o644); err != nil {
 		return "", fmt.Errorf("tool %q: writing requirements lock: %w", tool.Name, err)
 	}
 	return lockPath, nil
 }
 
-// pipInstallArgs builds the `uv pip install` argument list for the venv
-// interpreter: `-r <lockPath>` when lockPath is non-empty (pinned install),
-// otherwise the floating pipSpec.
+// pipInstallArgs builds the `uv pip install` args: `-r <lockPath>` when
+// lockPath is non-empty (pinned install), else the floating pipSpec.
 func pipInstallArgs(venvPython, lockPath, pipSpec string) []string {
 	args := []string{"pip", "install", "--python", venvPython}
 	if lockPath != "" {
@@ -199,30 +182,18 @@ func pipInstallArgs(venvPython, lockPath, pipSpec string) []string {
 	return append(args, pipSpec)
 }
 
-// findPythonInDir searches dir for a Python interpreter binary, preferring an
-// exact version match when pythonVersion is non-empty.
-//
-// The interpreter location depends on both the directory's provenance and the
-// host platform:
-//
-//   - uv-managed install (uv python install --install-dir <dir>): the version
-//     lives under <dir>/cpython-<version>-<platform>/. On Unix the interpreter
-//     is at <version-dir>/bin/python3; on Windows python-build-standalone
-//     places "python.exe" at the version-dir root — there is no "bin"
-//     subdirectory (see uv's executable_path_from_base, which returns
-//     base/python.exe on Windows vs base/bin/python3 on Unix).
-//   - virtual environment (uv venv <dir>): <dir>/bin/python3 on Unix,
-//     <dir>/Scripts/python.exe on Windows.
-//
-// The goos parameter ("windows" vs anything else) makes the lookup testable
-// on any host platform, mirroring resolveBinaryInTree.
+// findPythonInDir locates a Python interpreter in dir, preferring an exact
+// version match when pythonVersion is non-empty. Layout follows provenance
+// and platform: uv-managed install under <dir>/cpython-<version>-<platform>/
+// (bin/python3 on Unix; Windows python-build-standalone ships "python.exe"
+// at the version-dir root, no "bin" — see uv's executable_path_from_base);
+// a venv is bin/python3 / Scripts/python.exe. goos keeps it host-testable.
 func findPythonInDir(dir, pythonVersion, goos string) string {
 	var names []string
 	var subDirs []string
 	if goos == "windows" {
-		// python-build-standalone ships only "python.exe" (never "python3.exe").
-		// A managed install places it at the version-dir root; a venv places it
-		// under "Scripts". "bin" is a defensive last resort.
+		// python-build-standalone ships only "python.exe": version-dir root
+		// for managed installs, "Scripts" for venvs; "bin" defensive last resort.
 		names = []string{"python.exe"}
 		subDirs = []string{"", "Scripts", "bin"}
 	} else {
@@ -263,13 +234,11 @@ func findPythonInDir(dir, pythonVersion, goos string) string {
 	return ""
 }
 
-// createWrapper creates a shell script that invokes the Python module.
-// pythonBin must be the absolute path to the Python interpreter (already
-// resolved by the caller via findPythonInDir).
+// createWrapper writes the module-invoking wrapper script; pythonBin must be
+// the absolute interpreter path (resolved by the caller via findPythonInDir).
 func createWrapper(wrapperPath, pythonBin, moduleName string) error {
-	// Atomic + FIFO/symlink-safe: the fixed wrapper path under the (user-owned)
-	// bin dir is pre-plantable, and a bare os.WriteFile would block on a
-	// planted FIFO and write through a planted symlink.
+	// Atomic + FIFO/symlink-safe: the fixed wrapper path is pre-plantable — a
+	// bare os.WriteFile would block on a planted FIFO and write through a link.
 	write := func(content []byte) error {
 		return safeio.WriteFileAtomic(wrapperPath, content, 0o755)
 	}
@@ -282,11 +251,9 @@ func createWrapper(wrapperPath, pythonBin, moduleName string) error {
 	return write([]byte(content))
 }
 
-// resolveBinaryInTree locates the extracted binary by trying the declared
-// in-archive path and a flat fallback. On Windows (goos == "windows") it
-// prefers the ".exe" variant because upstream archives ship executables
-// with that suffix. The goos parameter makes the lookup testable on any
-// host platform. Returns the resolved path and whether a match was found.
+// resolveBinaryInTree locates the extracted binary: declared in-archive path
+// first, then a flat fallback; ".exe" wins on Windows (upstream ships that
+// suffix). Returns the path and whether a match was found.
 func resolveBinaryInTree(tmpDir, binPathInArchive, binName, goos string) (string, bool) {
 	bases := []string{
 		filepath.Join(tmpDir, binPathInArchive),
@@ -306,19 +273,16 @@ func resolveBinaryInTree(tmpDir, binPathInArchive, binName, goos string) (string
 	return "", false
 }
 
-// maxExtractEntryBytes caps the decompressed size of a single archive entry as
-// defense-in-depth against zip bombs. Downloads are SHA256-verified, but a
-// checksum-valid-but-malicious archive could still exhaust disk on extraction.
+// maxExtractEntryBytes caps one decompressed entry (zip-bomb defense):
+// SHA256 verifies bytes, not intent — a checksum-valid archive can still
+// exhaust disk on extraction.
 const maxExtractEntryBytes = 512 << 20 // 512 MiB
 
-// maxDownloadBytes caps the size of a downloaded tool archive as
-// defense-in-depth against disk exhaustion if a TLS path (e.g. an opted-in
-// corporate proxy) is compromised. The archive is SHA256-verified after the
-// copy, so this cap only bounds the bytes written before verification rejects
-// a substituted-but-unforged response.
+// maxDownloadBytes caps a downloaded archive, bounding the bytes written
+// before SHA256 verification rejects a substituted-but-unforged response
+// (e.g. over a compromised TLS path such as an opted-in corporate proxy).
 const maxDownloadBytes int64 = 1 << 30 // 1 GiB
 
-// pathExists reports whether a file exists at path (file or otherwise).
 func pathExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
@@ -447,20 +411,16 @@ func copyFile(src, dst string, mode os.FileMode) (err error) {
 	}
 	defer func() {
 		if cerr := in.Close(); cerr != nil {
-			// On a read-only file, Close errors indicate filesystem
-			// anomalies; capture and return when no prior error exists.
+			// A Close error on the read side signals an FS anomaly; join with
+			// any prior error.
 			err = errors.Join(err, cerr)
 		}
 	}()
 
 	// Stage into a uniquely named sibling temp and rename into place: the
-	// fixed final path is pre-plantable with a dangling symlink, which a
-	// bare os.Create would follow and truncate OUTSIDE ~/.c0wrk (the Lstat
-	// "already installed" probe upstream follows links too, so it misses the
-	// dangling case). The random temp name leaves nothing to pre-plant, and
-	// the rename replaces a planted entry itself instead of writing through
-	// it. The destination is only ever replaced by a complete copy — a
-	// failed copy leaves the previous file untouched.
+	// fixed final path is pre-plantable with a dangling symlink a bare
+	// os.Create would follow outside ~/.c0wrk (the upstream Lstat probe misses
+	// dangling links); the rename replaces a plant, a failed copy keeps the old file.
 	tmp, err := os.CreateTemp(filepath.Dir(dst), "."+filepath.Base(dst)+".tmp-*")
 	if err != nil {
 		return err

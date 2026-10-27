@@ -16,7 +16,8 @@ import (
 const commandFileExt = ".md"
 
 // commandFrontmatter is the YAML frontmatter schema of a command template
-// file (ADR-096). Unknown keys are ignored; every field is optional.
+// file; unknown keys are ignored, every field is optional.
+// See specs/domains/commands.md (ADR-096).
 type commandFrontmatter struct {
 	Description string `yaml:"description"`
 	Agent       string `yaml:"agent"`
@@ -24,15 +25,11 @@ type commandFrontmatter struct {
 }
 
 // ListCommands returns the custom command descriptors for /-autocomplete and
-// send-time template expansion (ADR-096): the project-local .agents/commands
-// directory (highest precedence, when a project is active) plus the configured
-// global command dirs in priority order. The first file claiming a name wins;
-// results are cached and invalidated on project switches and by the
-// global-dir watchers. Command discovery is backend-owned — core never
-// consumes commands — so this scan mirrors ListSkills structurally without
-// going through the builder.
+// send-time template expansion (ADR-096): project-local .agents/commands
+// first, then the configured global dirs; first name wins. Cache-served;
+// invalidated on project switches and by the global-dir watchers. Discovery
+// is backend-owned (core never consumes commands). See specs/domains/commands.md.
 func (f *FrontendAPI) ListCommands() []CommandDescriptorDTO {
-	// Snapshot active project info for the cache key (same pattern as ListSkills).
 	f.activeProjectMu.RLock()
 	wsPath := f.activeProjectPath
 	f.activeProjectMu.RUnlock()
@@ -42,7 +39,6 @@ func (f *FrontendAPI) ListCommands() []CommandDescriptorDTO {
 		projectCommandDir = config.ProjectCommandsPath(wsPath)
 	}
 
-	// Check cache: valid if gen matches and project path hasn't changed.
 	gen := atomic.LoadUint64(&f.commandCacheGen)
 	f.commandCacheMu.Lock()
 	if f.commandCache != nil && f.commandCacheGenSnapshot == gen && f.commandCacheProjectDir == projectCommandDir {
@@ -54,7 +50,6 @@ func (f *FrontendAPI) ListCommands() []CommandDescriptorDTO {
 
 	result := f.scanCommands(projectCommandDir, f.commandBaseDirs())
 
-	// Store cache.
 	f.commandCacheMu.Lock()
 	f.commandCache = result
 	f.commandCacheGenSnapshot = gen
@@ -64,38 +59,29 @@ func (f *FrontendAPI) ListCommands() []CommandDescriptorDTO {
 	return result
 }
 
-// setCommandBaseDirs stores the resolved global command directories for
-// ListCommands's discovery. Called once at startup with the same resolved
-// list the watchers get: like the watchers, the list is fixed until the next
-// app restart (the accepted skills/agents trade-off — directories configured
-// later are picked up on restart).
+// setCommandBaseDirs stores the resolved global command directories, once at
+// startup with the same resolved list the watchers get: fixed until restart
+// (the accepted skills/agents trade-off).
 func (f *FrontendAPI) setCommandBaseDirs(dirs []string) {
 	f.commandWatchersMu.Lock()
 	defer f.commandWatchersMu.Unlock()
 	f.commandDirs = append([]string(nil), dirs...)
 }
 
-// commandBaseDirs returns the stored resolved global command directories.
 func (f *FrontendAPI) commandBaseDirs() []string {
 	f.commandWatchersMu.Lock()
 	defer f.commandWatchersMu.Unlock()
 	return f.commandDirs
 }
 
-// invalidateCommandCache bumps the generation counter so the next ListCommands
-// call re-scans the command directories.
 func (f *FrontendAPI) invalidateCommandCache() {
 	atomic.AddUint64(&f.commandCacheGen, 1)
 }
 
-// startCommandsWatchers creates a debounced file watcher for each existing
-// global command directory. When any change is detected the command cache is
-// invalidated and a commands:changed event is emitted so the frontend
-// autocomplete refreshes. Non-existent directories are silently skipped; the
-// caller may create them later, but changes inside them won't be detected
-// until an app restart — the same accepted trade-off as the skill watchers.
-// Commands are flat .md files, so — unlike skills — no subdirectory watches
-// are needed.
+// startCommandsWatchers watches each existing global command directory
+// (debounced): cache invalidation plus a commands:changed event. Missing
+// directories are skipped until an app restart — the accepted trade-off.
+// Commands are flat .md files, so unlike skills no subdirectory watches.
 func (f *FrontendAPI) startCommandsWatchers(dirs []string) {
 	f.seedAcquire()
 	f.commandWatchersMu.Lock()
@@ -118,8 +104,6 @@ func (f *FrontendAPI) startCommandsWatchers(dirs []string) {
 	}
 }
 
-// closeCommandsWatchers stops all command directory watchers. Safe to call
-// multiple times.
 func (f *FrontendAPI) closeCommandsWatchers() {
 	f.commandWatchersMu.Lock()
 	defer f.commandWatchersMu.Unlock()
@@ -129,12 +113,10 @@ func (f *FrontendAPI) closeCommandsWatchers() {
 	f.commandWatchers = nil
 }
 
-// scanCommands discovers command template files across the precedence-ordered
-// directory list: the project-local dir first (highest priority, may be empty
-// when no project is active), then the resolved global dirs in config order.
-// The first file claiming a name wins; every returned name is unique. The
-// result is always non-nil so the cache can distinguish "scanned, empty"
-// from "never scanned".
+// scanCommands walks the precedence-ordered dir list (project-local first,
+// then global dirs in config order); the first file claiming a name wins. The
+// result is always non-nil so the cache can tell "scanned, empty" from
+// "never scanned".
 func (f *FrontendAPI) scanCommands(projectDir string, baseDirs []string) []CommandDescriptorDTO {
 	dirs := make([]string, 0, len(baseDirs)+1)
 	if projectDir != "" {
@@ -177,12 +159,10 @@ func (f *FrontendAPI) scanCommands(projectDir string, baseDirs []string) []Comma
 	return result
 }
 
-// parseCommandFile reads one command template file and fills the descriptor:
-// the optional YAML frontmatter supplies description/agent/model, the
-// remaining body is the template. Read failures drop the file (ok=false);
-// frontmatter parse failures are fail-soft — the command stays listed with
-// empty metadata (mirroring the capability-mode load philosophy), with a
-// warning on log.
+// parseCommandFile reads one command template file: optional frontmatter
+// supplies description/agent/model, the rest is the template. A read failure
+// drops the file; an unparsable frontmatter is fail-soft (warning, empty
+// metadata, body still ships). See specs/domains/commands.md.
 func parseCommandFile(path, name string, log *slog.Logger) (CommandDescriptorDTO, bool) {
 	content, err := os.ReadFile(path)
 	if err != nil {
@@ -193,8 +173,6 @@ func parseCommandFile(path, name string, log *slog.Logger) (CommandDescriptorDTO
 	body := text
 	if fm, rest, has := splitFrontmatter(text); has {
 		if err := yaml.Unmarshal([]byte(fm), &meta); err != nil {
-			// The file is user config: a broken frontmatter must be visible
-			// but never disqualify the command (the body may still be fine).
 			if log != nil {
 				log.Warn("command frontmatter unparsable; metadata ignored", "path", path, "error", err)
 			}
@@ -202,9 +180,9 @@ func parseCommandFile(path, name string, log *slog.Logger) (CommandDescriptorDTO
 		}
 		body = rest
 	}
-	// Trim the leading newlines left by the frontmatter delimiter (both LF
-	// and CRLF flavors) and the trailing whitespace; the first line's
-	// indentation is preserved.
+	// Trim the leading newlines the frontmatter delimiter leaves (LF and
+	// CRLF) and the trailing whitespace; the first line's indentation
+	// survives.
 	body = strings.TrimLeft(body, "\r\n")
 	body = strings.TrimRight(body, " \t\n\r")
 	return CommandDescriptorDTO{
@@ -216,11 +194,10 @@ func parseCommandFile(path, name string, log *slog.Logger) (CommandDescriptorDTO
 	}, true
 }
 
-// splitFrontmatter splits a leading YAML frontmatter block off content: the
-// first line must be exactly "---", followed by YAML lines terminated by a
-// second exactly-"---" line. It returns the inner YAML text and everything
-// after the closing delimiter. A missing or unterminated frontmatter yields
-// has=false and the full content as the body.
+// splitFrontmatter splits a leading YAML frontmatter block off content (the
+// first line exactly "---", closed by a second exactly-"---" line) and
+// returns the inner YAML plus the remainder. Missing or unterminated →
+// has=false, full content as the body.
 func splitFrontmatter(content string) (fm, body string, has bool) {
 	first, rest, found := cutLine(content)
 	if !found || strings.TrimRight(first, "\r") != "---" {
@@ -230,8 +207,6 @@ func splitFrontmatter(content string) (fm, body string, has bool) {
 	for {
 		line, restAfter, found := cutLine(rest)
 		if !found {
-			// Unterminated frontmatter is a broken file; the conservative
-			// reading is "no frontmatter" — the body is the full content.
 			return "", content, false
 		}
 		if strings.TrimRight(line, "\r") == "---" {
@@ -255,11 +230,10 @@ func cutLine(s string) (line, rest string, found bool) {
 	return s[:idx], s[idx+1:], true
 }
 
-// validCommandName reports whether name can be invoked through the chat
-// input's /-grammar: non-empty ASCII letters, digits, underscore, hyphen —
-// the same character class the backend mention scanner tolerates (core's
-// isMentionNameByte). Anything else cannot be typed as a ref and is skipped
-// at discovery.
+// validCommandName reports whether name is invocable through the chat input's
+// /-grammar: the mention scanner's character class (ASCII letters, digits,
+// underscore, hyphen). Anything else cannot be typed as a ref and is skipped
+// at discovery. See specs/domains/commands.md.
 func validCommandName(name string) bool {
 	if name == "" {
 		return false

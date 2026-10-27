@@ -8,9 +8,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// processAlive reports whether a process with the given pid exists. Signal 0
-// performs existence and permission checks only — it never delivers a
-// signal. EPERM means the process exists but belongs to another user.
+// processAlive reports whether a pid exists: signal 0 delivers nothing and
+// EPERM still proves existence (another user's process).
 func processAlive(pid int) bool {
 	if pid <= 0 {
 		return false

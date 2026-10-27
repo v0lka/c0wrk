@@ -1,12 +1,8 @@
-// Package papers — writer layer.
-//
-// This file renders a PaperRecord's three artifacts back to Markdown and
-// persists them atomically. It follows core/research's rootwriter.go: every
-// target is symlink-resolved and containment-checked against the library root
-// through pathutil BEFORE a temp file is staged, then all staged files are
-// renamed into place — so a failure leaves the prior content byte-for-byte
-// unchanged and a symlinked paper directory can never redirect a write outside
-// the library.
+// Package papers — writer layer: renders a PaperRecord's three artifacts back
+// to Markdown and persists them atomically; every write target is
+// symlink-resolved and containment-checked against the library root before any
+// temp file is staged.
+// See specs/domains/papers.md (atomic, containment-checked paper writes).
 package papers
 
 import (
@@ -26,10 +22,9 @@ import (
 	"github.com/v0lka/sp4rk/safeio"
 )
 
-// paperFrontOut is the serialized shape of paper.md's front matter. It mirrors
-// PaperRecord's identity fields (the note/appraisal-derived lists live in their
-// own artifacts) and omits empty fields so a sparse record still yields a clean
-// card.
+// paperFrontOut is the serialized shape of paper.md's front matter: the
+// PaperRecord identity fields only (note/appraisal-derived lists live in their
+// own artifacts), with empty fields omitted so a sparse record yields a clean card.
 type paperFrontOut struct {
 	ID          string       `yaml:"id,omitempty"`
 	Slug        string       `yaml:"slug,omitempty"`
@@ -46,14 +41,11 @@ type paperFrontOut struct {
 	Anchors     []Anchor     `yaml:"anchors,omitempty"`
 }
 
-// ---------------------------------------------------------------------------
-// Rendering
-// ---------------------------------------------------------------------------
+// --- Rendering --------------------------------------------------------------
 
-// RenderPaperMD renders rec's paper.md card, returning the document and an
-// error. It is the inverse of ParsePaperMD. A YAML marshal failure is returned
-// rather than silently emitting a card whose entire front matter is empty (every
-// identity field dropped).
+// RenderPaperMD renders rec's paper.md card; the inverse of ParsePaperMD. A
+// YAML marshal failure is returned rather than silently emitting a card whose
+// entire front matter is empty.
 func RenderPaperMD(rec PaperRecord) (string, error) {
 	out := paperFrontOut{
 		ID:          rec.ID,
@@ -123,21 +115,12 @@ func RenderAppraisalMD(rec PaperRecord) string {
 	return b.String()
 }
 
-// ---------------------------------------------------------------------------
-// Persistence
-// ---------------------------------------------------------------------------
+// --- Persistence ------------------------------------------------------------
 
-// WritePaper atomically writes rec's three artifacts into libraryRoot/<slug>/.
-// The slug is rec.ResolvedSlug() (the explicit slug, else one derived from the
-// title or id). The library root and the paper directory are created when
-// absent, and every write target is containment-checked against the library
-// root, so a symlinked paper directory cannot redirect the write outside the
-// library. A record that yields no valid slug is rejected.
-//
-// "Atomic" means atomic-ish, exactly like the research writer: every file is
-// first staged as a temp file in its resolved target directory and only renamed
-// into place after all three are staged, so a staging failure leaves every
-// target untouched.
+// WritePaper atomically writes rec's three artifacts into
+// libraryRoot/<slug>/, creating the directories when absent; a record with no
+// valid slug is rejected.
+// See specs/domains/papers.md (atomic, containment-checked paper writes).
 func WritePaper(libraryRoot string, rec PaperRecord) error {
 	slug := rec.ResolvedSlug()
 	if slug == "" {
@@ -160,17 +143,12 @@ func WritePaper(libraryRoot string, rec PaperRecord) error {
 	return writeFilesAtomic(libraryRoot, files)
 }
 
-// ---------------------------------------------------------------------------
-// Flashcards persistence (append-only review)
-// ---------------------------------------------------------------------------
+// --- Flashcards persistence (append-only review) ----------------------------
 
-// WriteFlashcards atomically writes deck as libraryRoot/<slug>/flashcards.md,
-// creating the paper directory when absent. The target is symlink-resolved and
-// containment-checked against the library root through writeFilesAtomic, so a
-// symlinked paper directory can never redirect the write outside the library.
-// It is the public deck-writer API (the inverse of ParseFlashcards, paired with
-// RenderFlashcards); keeping it exported is intentional even though the running
-// app currently only appends reviews through RecordCardReview.
+// WriteFlashcards atomically writes deck as libraryRoot/<slug>/flashcards.md
+// (creating the paper directory when absent): the public deck-writer API, the
+// inverse of ParseFlashcards paired with RenderFlashcards.
+// See specs/domains/papers.md (atomic, containment-checked paper writes).
 func WriteFlashcards(libraryRoot, slug string, deck Deck) error {
 	if !ValidSlug(slug) {
 		return fmt.Errorf("flashcard write rejected: unsafe slug %q", slug)
@@ -183,21 +161,17 @@ func WriteFlashcards(libraryRoot, slug string, deck Deck) error {
 }
 
 // RecordCardReview appends a self-grade to a paper's flashcards.md and updates
-// the card's Stage, then writes the whole document atomically and
-// containment-checked against the library root. The deck must already exist:
-// the review is an append onto an authored document, never a fresh deck, so a
-// missing flashcards.md is an error. The deck is read and validated before
-// anything is created, so an unknown card id (no row), an unknown grade, a
-// review log with no grade column, or a missing deck is rejected without
-// writing a byte or conjuring a stray paper directory.
+// the card's Stage, writing the whole document atomically. The review is an
+// append onto an authored deck (a missing flashcards.md is an error).
+// Fail-closed validation order: see specs/domains/papers.md
+// (RecordFlashcardReview invariant).
 func RecordCardReview(libraryRoot, slug, cardID string, grade Grade, date string) error {
 	if !ValidSlug(slug) {
 		return fmt.Errorf("flashcard review rejected: unsafe slug %q", slug)
 	}
 	target := artifactPath(libraryRoot, slug, FlashcardFileName)
-	// Read (and thereby validate the deck's existence) before creating
-	// anything. The read goes through safeio so a non-regular deck path is
-	// refused (fail closed) instead of blocking the review RPC forever.
+	// Read (validating the deck's existence) before creating anything; safeio
+	// refuses a non-regular deck path instead of blocking the review RPC forever.
 	content, err := safeio.ReadFile(target)
 	if err != nil {
 		return fmt.Errorf("flashcard review rejected: no deck to review: %w", err)
@@ -214,8 +188,8 @@ func RecordCardReview(libraryRoot, slug, cardID string, grade Grade, date string
 	return writeFilesAtomic(libraryRoot, map[string][]byte{target: []byte(updated)})
 }
 
-// paperDirPath is the single construction site for a paper directory path.
-// Every artifact path derives from it, and each resulting target is separately
+// paperDirPath is the single construction site for a paper directory path;
+// every artifact path derives from it, and each target is separately
 // containment-checked before it is written.
 func paperDirPath(libraryRoot, slug string) string {
 	return filepath.Join(libraryRoot, slug)
@@ -226,11 +200,9 @@ func artifactPath(libraryRoot, slug, name string) string {
 	return filepath.Join(paperDirPath(libraryRoot, slug), name)
 }
 
-// ensurePaperDir creates the library root (when absent) and the paper's own
-// directory, and verifies through pathutil that the paper directory stays
-// inside the resolved library root. It returns the resolved paper directory.
-// It fails closed: an empty root, an unsafe slug, an unresolvable root, or a
-// containment mismatch is an error.
+// ensurePaperDir creates the library root (when absent) and the paper's
+// directory, and returns the containment-verified resolved directory.
+// See specs/domains/papers.md (atomic, containment-checked paper writes).
 func ensurePaperDir(libraryRoot, slug string) (string, error) {
 	if libraryRoot == "" {
 		return "", errors.New("paper write rejected: empty library root")
@@ -259,23 +231,14 @@ func ensurePaperDir(libraryRoot, slug string) (string, error) {
 	return dir, nil
 }
 
-// writeFilesAtomic writes a group of files "atomic-ish": every file is first
-// staged as a temp file in its own directory (0600 → chmod 0644), and only
-// after all files are fully staged are they renamed into place. Staging before
-// the first rename means a staging failure (disk full, permissions) leaves
-// every target untouched. The rename phase is guarded against a partial
-// outcome (the same contract as core/research/writer.go): every existing
-// target is first moved aside to a same-directory backup, and a failure while
-// moving aside or committing any rename rolls the whole set back to the
-// byte-for-byte original state (backups renamed back, newly created targets
-// removed) — including entries whose own rename never ran, because phase 1
-// already robbed them of their originals.
-//
-// root is the containment root (paper artifacts stay strictly inside the
-// library). Every target is symlink-resolved and checked against the resolved
-// root BEFORE any staging, and the resolved target is what is written, so a
-// symlinked intermediate directory cannot redirect the write outside the
-// library.
+// writeFilesAtomic writes a group of files atomically: every target is
+// symlink-resolved and containment-checked against root before staging, all
+// targets are staged as temp files (0600 → chmod 0644) before the first
+// rename, and a failure in either phase rolls the whole set back to the
+// byte-for-byte original state (existing targets are parked at same-directory
+// backups, so entries whose own rename never ran still get their originals
+// restored). Same contract as core/research/writer.go.
+// See specs/domains/papers.md (atomic, containment-checked paper writes).
 // stagedFile tracks one file of a writeFilesAtomic set through its phases:
 // the resolved target, the staged temp holding the new contents, and — once
 // the original has been moved aside — the backup it is parked at ("" while
@@ -337,9 +300,8 @@ func writeFilesAtomic(root string, files map[string][]byte) error {
 	}
 
 	// Phase 1 — move every existing original aside to a same-directory backup,
-	// so the commit below never destroys a pre-image it cannot restore. A
-	// failure here rolls the already-moved entries back, leaving every target
-	// untouched.
+	// so the commit below never destroys a pre-image it cannot restore; a
+	// failure here rolls the already-moved entries back.
 	for i := range staged {
 		backup, err := backupTargetPath(staged[i].target)
 		if err == nil {
@@ -357,10 +319,9 @@ func writeFilesAtomic(root string, files map[string][]byte) error {
 	}
 
 	// Phase 2 — commit: rename every staged temp onto its now-free target. A
-	// failure rolls the WHOLE set back (see rollbackStaged), not just the
-	// committed prefix: entries after the failing index lost their originals
-	// to phase 1 and need their backups renamed back even though their own
-	// rename never ran (rollbackStaged tolerates never-committed entries).
+	// failure rolls the WHOLE set back, not just the committed prefix: entries
+	// after the failing index lost their originals to phase 1 and need their
+	// backups restored even though their own rename never ran.
 	for i := range staged {
 		if err := os.Rename(staged[i].tmp, staged[i].target); err != nil {
 			return fmt.Errorf("committing %q: %w", staged[i].target, errors.Join(err, rollbackStaged(staged)))
@@ -378,14 +339,12 @@ func writeFilesAtomic(root string, files map[string][]byte) error {
 }
 
 // rollbackStaged restores every entry of a partially committed writeFilesAtomic
-// set to its pre-write state: an entry whose temp was already renamed onto the
-// target gets the new contents moved back to the temp name (the deferred
-// cleanup removes them) and its original — parked at the backup — renamed back
-// into place; an entry that was never committed just needs its original (if
-// any) renamed back; an entry for a brand-new file loses its partial
-// creation. It returns nil on full success, or the joined errors of every
-// failed restore — a non-nil result means some file may be left missing or
-// replaced, which the caller MUST surface alongside the original failure.
+// set to its pre-write state (a committed entry gets its original renamed back
+// over the new contents, which move to the temp name for the deferred cleanup;
+// a never-committed entry just gets its original back; a brand-new file loses
+// its partial creation). It returns the joined errors of every failed restore —
+// non-nil means some file may be left missing or replaced, which the caller
+// MUST surface alongside the original failure.
 func rollbackStaged(staged []stagedFile) error {
 	var restoreErrs []error
 	for i := range staged {
@@ -397,11 +356,10 @@ func rollbackStaged(staged []stagedFile) error {
 				restoreErrs = append(restoreErrs, fmt.Errorf("removing rolled-back new file %q: %w", s.target, err))
 			}
 		default:
-			// Original parked at the backup. Whatever now sits at the target
-			// (the committed temp, or nothing) makes way for it; the displaced
-			// bytes are moved to the temp name for the deferred cleanup instead
-			// of being removed, so a later failure still leaves them
-			// inspectable.
+			// Original parked at the backup: whatever now sits at the target
+			// makes way for it, and the displaced bytes move to the temp name
+			// (deferred cleanup) rather than being removed, so they stay
+			// inspectable on a later failure.
 			if err := os.Rename(s.target, s.tmp); err != nil && !errors.Is(err, fs.ErrNotExist) {
 				restoreErrs = append(restoreErrs, fmt.Errorf("displacing rolled-back contents of %q: %w", s.target, err))
 				continue
@@ -416,9 +374,8 @@ func rollbackStaged(staged []stagedFile) error {
 
 // backupTargetPath returns a fresh, currently-unused same-directory path to
 // park a target's original at while its replacement is committed
-// (.<base>.bak-<random>). The dot prefix keeps the parked original invisible
-// to the paper listing/globbing paths, which match on the original names, and
-// the .bak suffix keeps it out of every *.md match.
+// (.<base>.bak-<random>): dot-prefixed so the parked original is invisible to
+// the paper listing/globbing paths, and .bak-suffixed so it never matches *.md.
 func backupTargetPath(target string) (string, error) {
 	dir, base := filepath.Dir(target), filepath.Base(target)
 	var randBytes [4]byte
@@ -436,10 +393,9 @@ func backupTargetPath(target string) (string, error) {
 
 // resolveTargetWithinRoot symlink-resolves the containment root and the
 // target's directory (the file itself may not exist yet) and re-checks
-// pathutil.IsWithinPath immediately before the caller stages and renames. It
-// returns the resolved target path — the on-disk location the caller may safely
-// write. It fails closed: an unresolvable root/directory or any containment
-// mismatch is an error.
+// containment immediately before the caller stages and renames, returning the
+// resolved target path.
+// See specs/domains/papers.md (atomic, containment-checked paper writes).
 func resolveTargetWithinRoot(root, target string) (string, error) {
 	if root == "" {
 		return "", errors.New("paper write rejected: empty containment root")

@@ -8,237 +8,164 @@ import (
 )
 
 // ResolveInput is everything a resolution is derived from: the machine facts
-// (`MachineProfile`, which is sufficient on its own) plus the two memory-aware
-// refinements the planner needs.
-//
-// An input carrying only the embedded profile is the DERIVED-BUDGET view: the
-// gate still runs, but it prices the host pool from the RAM probe and classifies
-// the accelerator axis statically, because nothing measured it (see
-// gateBudgetsFor and deviceAxisState). It keeps the RAM-tiered context ladder
-// rather than delegating to the runtime's fit pass, so the plan still carries a
-// concrete context to persist.
-//
-// `Topology` is what turns the resolution into a MEASURED one. When it is present
-// the gate and the planner spend the machine's real device and host budgets,
-// which is the whole point of the probe — an 8 GiB laptop with a 24 GiB card and
-// a 128 GiB unified machine stop being ranked by a number that describes neither
-// of them.
+// (`MachineProfile`, sufficient alone as the DERIVED-BUDGET view) plus the two
+// memory-aware refinements that turn it into a MEASURED one. See
+// specs/domains/embedded-llm.md (Hardware probe → resolution).
 type ResolveInput struct {
-	// MachineProfile carries Platform, Backend, RAMGiB, the GPU generation, the
-	// host CPU capabilities and any fit verdict the caller already has.
+	// MachineProfile carries the probed machine facts: platform, backend, RAM,
+	// GPU generation, host CPU capabilities, any fit verdict.
 	MachineProfile
-	// Topology is the post-install device-memory probe result. NIL means "not
-	// probed", which is not the same as a topology reporting no devices: the
-	// first is an UNREADABLE accelerator budget (the gate degrades to the host
-	// pool and says so), the second is a measured answer that there is nothing
-	// to offload to (the gate prices the host-resident shape and refuses a host
-	// pool too small for it). Passing the zero MemoryTopology would report the
-	// second fact about a machine that only answered the first.
+	// Topology is the post-install device-memory probe result. NIL is "not
+	// probed" — not the same fact as a zero topology reporting no devices; the
+	// distinction decides whether the accelerator budget is unreadable or
+	// measured-absent. See specs/domains/embedded-llm.md (Memory plan).
 	Topology *MemoryTopology
-	// Tuning is the operator override vocabulary (plan.go). Its zero value is
-	// the all-Auto plan: the runtime's fit pass sizes layers and context, the
-	// KV precision escalates to whatever fits, and one slot is served.
+	// Tuning is the operator override vocabulary (plan.go); its zero value is
+	// the all-Auto plan.
 	Tuning Tuning
 	// Engine selects the runtime family this resolution is for. The ZERO value
 	// is the llama family — every pre-existing caller and test keeps its
 	// meaning — while the config layer resolves `embedded_llm.engine: auto`
-	// through ResolveEngine BEFORE calling Resolve and passes the resolved
-	// engine explicitly. EngineMTPLX switches the whole flow to the MLX pack
-	// (mlxplan.go): a different artifact set, a different planner, and a
-	// single-pool gate.
+	// through ResolveEngine BEFORE calling Resolve. EngineMTPLX switches the
+	// whole flow to the MLX pack (mlxplan.go).
 	Engine Engine
 }
 
 // Resolution is the pure output of a ResolveInput: everything the installer
-// downloads and everything the supervisor passes to llama-server.
+// downloads and everything the supervisor passes to llama-server. See
+// specs/domains/embedded-llm.md (Hardware probe → resolution).
 type Resolution struct {
-	// Assets is the ordered install set: runtime, cudart (Windows CUDA only),
-	// model, mmproj. The order is the download order and the order progress is
-	// reported in.
+	// Assets is the ordered install set (runtime, cudart on Windows CUDA,
+	// model, mmproj); the order is the download and progress order.
 	Assets []Asset
-	// Backend is the backend the artifacts were ACTUALLY resolved for, after
-	// the architecture and pin-availability rules in effectiveBackend. It can
-	// differ from the probed Hardware.Backend: an Intel Mac, a non-x64 machine
-	// that reported CUDA, and a Windows machine whose driver maps to a CUDA tag
-	// this pin has no archive for all resolve to something else. This is the
-	// value the manifest and the informational Settings label must record —
-	// recording the probed backend would describe an install that is not on
-	// disk.
+	// Backend is what the artifacts were ACTUALLY resolved for,
+	// post-degradation — the value the manifest and the Settings label must
+	// record. See specs/domains/embedded-llm.md.
 	Backend Backend
 	// Packing is the weights quantization to download.
 	Packing Packing
-	// PackingReason is WHY that packing was chosen. It is recorded because
-	// every non-default value is a degradation of some kind — a backend with no
-	// PQ2_0 kernels, a pin that predates an AVX-512 fix, a GPU generation that
-	// decodes PTQ1_0 faster, or a budget PQ2_0 does not fit — and a degraded
-	// install must state its reason rather than leave the user to infer it from
-	// a file size. PackingReasonDefault means nothing fired.
+	// PackingReason is why that packing was chosen: every non-default value is
+	// a recorded degradation, never inferred from a file size. See
+	// specs/domains/embedded-llm.md.
 	PackingReason PackingReason
-	// GPU is the accelerator generation the plan was made for, or
-	// GPUFamilyUnknown when no device probe answered. It is part of the
-	// resolution because the packing and the compatibility guards both read it,
-	// and because an installer that learns it only after staging a runtime needs
-	// to know whether the plan already had it.
+	// GPU is the accelerator generation the plan was made for
+	// (GPUFamilyUnknown when no probe answered); the packing and the guards
+	// read it, and the post-staging refinement must know whether the plan
+	// already had one.
 	GPU GPUFamily
-	// Guards are the backend compatibility decisions in force for this machine
-	// (compat.go's table, derived from the pinned model's KNOWN_ISSUES), each
-	// with its typed reason, upstream issue citation and an Applied flag saying
-	// whether the plan actually changed because of it. Empty on a machine no
-	// documented failure covers — the common case.
+	// Guards are the compatibility decisions in force (compat.go's table),
+	// each with an Applied flag saying whether the plan changed because of it.
+	// Empty on a machine no documented failure covers — the common case.
 	Guards []GuardDecision
-	// Layers is the -ngl value: 0 on an Intel Mac and on the CPU build,
-	// nglAllGPU on every GPU-backed build.
-	//
-	// It mirrors Memory.Layers, and under a fit-sized plan (Memory.Fit) the
-	// runtime chooses the layer count itself, so this field reads 0 and the
-	// launcher MUST consult Memory.EmitsLayers() rather than passing it.
+	// Layers is the -ngl value; it mirrors Memory.Layers and reads 0 under a
+	// fit-sized plan, so the launcher MUST consult Memory.EmitsLayers(). See
+	// specs/domains/embedded-llm.md.
 	Layers int
-	// ContextSize is the -c value: RAM-tiered, always positive, and never the
-	// model's full training context (which is memory-unaware and OOMs a
-	// constrained machine once -ngl offloads the KV cache).
-	//
-	// It mirrors Memory.ContextSize, and under a fit-sized plan it is 0 — the
-	// runtime sizes the context and Memory.FitMinContext is the floor it is
-	// held to. A consumer that persists this value (the manifest, and through
-	// it the llm.models context_window override) must therefore treat a
-	// fit-sized plan as "no concrete context to record", not as "context 0".
+	// ContextSize is the -c value; it mirrors Memory.ContextSize and reads 0
+	// under a fit-sized plan. A consumer persisting it (the manifest, and
+	// through it the llm.models context_window override) must treat that as
+	// "no concrete context to record", not as "context 0". See
+	// specs/domains/embedded-llm.md.
 	ContextSize int
-	// Memory is the resolved launch shape and the arithmetic behind it: the
-	// fit-exclusivity decision, the KV precision (possibly escalated), the
-	// projected device and host footprints, the budgets they were gated
-	// against, and the human-readable Notes. Layers, ContextSize and Packing
-	// above are projections of it, kept for the callers that predate the
-	// memory model.
+	// Memory is the resolved launch shape and the arithmetic behind it;
+	// Layers, ContextSize and Packing above are projections of it. See
+	// specs/domains/embedded-llm.md.
 	Memory MemoryPlan
-	// ImageMaxTokens is --image-max-tokens: imageMaxTokensCapped on
-	// Metal/Vulkan/CPU to keep vision prefill latency sane, and
-	// ImageMaxTokensUncapped on CUDA/ROCm. Uncapped means the flag is omitted
-	// entirely.
+	// ImageMaxTokens is --image-max-tokens: capped on Metal/Vulkan/CPU,
+	// uncapped (flag omitted entirely) on CUDA/ROCm. See
+	// specs/domains/embedded-llm.md.
 	ImageMaxTokens int
-	// NeedsCudart reports whether the set carries the paired CUDA runtime DLL
-	// archive (Windows CUDA only), so the installer can surface it as its own
-	// component with its own progress bar.
+	// NeedsCudart reports the paired Windows-CUDA DLL archive, which the
+	// installer surfaces as its own component.
 	NeedsCudart bool
-	// Engine is the runtime family this resolution provisions: the zero value
-	// (llama) for every pre-existing caller, EngineMTPLX for the MLX pack. The
-	// manifest and the Settings label record it next to Backend, which under
-	// the mtplx engine stays BackendMetal — the accelerator MLX actually runs
-	// on — while Engine is the difference a reader needs first.
+	// Engine is the provisioned runtime family; the manifest and the Settings
+	// label record it next to Backend, which under the mtplx engine stays
+	// BackendMetal (the accelerator MLX actually runs on) while Engine carries
+	// the difference a reader needs first.
 	Engine Engine
 }
 
-// Launch-flag policy derived from a Resolution. Every value mirrors the fork's
-// demo scripts (scripts/common.sh), so c0wrk provisions and launches exactly
-// what upstream would have on the same machine.
+// Launch-flag policy: every value mirrors the pinned fork's demo scripts
+// (scripts/common.sh), so c0wrk provisions and launches what upstream would
+// have on the same machine.
 const (
 	// nglAllGPU offloads every layer to the GPU.
 	nglAllGPU = 99
 	// nglCPUOnly keeps the model in system RAM.
 	nglCPUOnly = 0
 
-	// imageMaxTokensCapped downscales large images to roughly this many vision
-	// tokens. A 12 MP photo is ~4000 vision tokens, and prefilling that on
-	// Metal/Vulkan/CPU costs far more than the fine detail is worth.
+	// imageMaxTokensCapped bounds large images (~4000 vision tokens for a
+	// 12 MP photo) to keep prefill affordable on Metal/Vulkan/CPU.
 	imageMaxTokensCapped = 1024
 	// ImageMaxTokensUncapped means "do not pass --image-max-tokens at all".
 	// CUDA and ROCm run uncapped, and an explicit 0 override means the same.
 	ImageMaxTokensUncapped = 0
 
-	// contextTierTop is the largest context this resolver ever emits, reached
-	// only above 71 GiB of RAM. The model's own training context is roughly
-	// twice this and is deliberately unreachable: asking for it is
-	// memory-unaware and OOMs constrained machines.
+	// contextTierTop is the largest context the resolver emits, reached only
+	// above 71 GiB of RAM; the model's ~2x training context is deliberately
+	// unreachable — memory-unaware, and an OOM on constrained machines.
 	contextTierTop = 131072
 )
 
-// ErrInsufficientRAM is the typed refusal of ADR-067 D6's flat 16 GiB floor.
-//
-// Deprecated: the floor is gone. The gate that replaced it prices BOTH memory
-// pools (see ErrInsufficientMemory and memoryGate in plan.go), because a floor
-// keyed on system RAM alone refused an 8 GiB laptop with a 32 GiB accelerator
-// and admitted a 32 GiB machine with an 8 GiB one. This sentinel is kept so a
-// caller that only cares about the host pool can still match it: every
-// *InsufficientMemoryError whose HOST budget overflowed unwraps to it, and one
-// whose accelerator overflowed does not.
+// ErrInsufficientRAM is deprecated: ADR-067 D6's flat 16 GiB floor is gone,
+// and the combined gate prices both pools instead. Kept so a caller matching
+// only the host pool still works: every *InsufficientMemoryError whose HOST
+// budget overflowed unwraps to it. See specs/domains/embedded-llm.md.
 var ErrInsufficientRAM = errors.New("insufficient system RAM for the embedded LLM")
 
-// cudaTagsNewestFirst lists the pinned CUDA asset tags newest first. When a
-// platform has no archive for the probed tag, Resolve clamps DOWN this list: a
-// binary built against an older CUDA runs on a newer driver, never the reverse.
+// cudaTagsNewestFirst is the pinned CUDA asset tags, newest first; Resolve
+// clamps DOWN it when the probed tag has no archive for the platform — an
+// older-toolkit binary runs on a newer driver, never the reverse. See
+// specs/domains/embedded-llm.md.
 var cudaTagsNewestFirst = []Backend{BackendCUDA133, BackendCUDA128, BackendCUDA124}
 
-// AssetTable is the artifact-registry seam Resolve consults. The default
-// implementation delegates to the compile-time pinned registry in registry.go;
-// tests substitute a fake to exercise the fail-closed paths without touching
-// the pins. Resolution itself performs no I/O either way — the registry is a
-// table of constants.
+// AssetTable is the artifact-registry seam Resolve consults: production
+// delegates to the compile-time pins in registry.go, tests substitute a fake.
+// The registry is a table of constants — resolution performs no I/O either
+// way. See specs/domains/embedded-llm.md.
 type AssetTable interface {
-	// RuntimeAsset reports whether a llama-server archive is pinned for a
-	// platform+backend pair. Resolve uses it to decide whether a probed backend
-	// is provisionable at all.
+	// RuntimeAsset reports whether a runtime archive is pinned for the
+	// platform+backend pair — whether a probed backend is provisionable.
 	RuntimeAsset(platform string, backend Backend) (Asset, bool)
-	// ArtifactSet returns the complete ordered install set (runtime, cudart
-	// when the pair needs one, model, mmproj), or an error wrapping
-	// ErrArtifactNotPinned rather than a partial set.
+	// ArtifactSet returns the complete ordered install set, or an error
+	// wrapping ErrArtifactNotPinned — never a partial set.
 	ArtifactSet(platform string, backend Backend, packing Packing) ([]Asset, error)
 }
 
-// assetTable is the registry the exported Resolve consults. It is never nil:
-// the pinned registry is the package-level default.
+// assetTable is the pinned-registry default behind the exported Resolve;
+// tests drive fail-closed branches through resolveWith without touching it.
 var assetTable AssetTable = pinnedRegistry{}
 
 // pinnedRegistry adapts the compile-time registry functions to AssetTable.
 type pinnedRegistry struct{}
 
-// RuntimeAsset implements AssetTable.
 func (pinnedRegistry) RuntimeAsset(platform string, backend Backend) (Asset, bool) {
 	return RuntimeAsset(platform, backend)
 }
 
-// ArtifactSet implements AssetTable.
 func (pinnedRegistry) ArtifactSet(platform string, backend Backend, packing Packing) ([]Asset, error) {
 	return ArtifactSet(platform, backend, packing)
 }
 
 // Resolve derives the complete install and launch plan for a machine. It is a
-// PURE function: no I/O, no probing, no clock. That is what makes the whole
-// platform x backend x RAM x topology x tuning matrix table-testable.
-//
-// Refusals, in order:
-//
-//   - an unreadable total system RAM -> ErrRAMUnknown (fail-closed: a capacity
-//     gate must never pass on a guess)
-//   - an override the planner cannot honour -> ErrTuningInvalid
-//   - a packing with no measured residency -> ErrMemoryNotMeasured
-//   - a machine whose memory no modelled shape fits -> ErrInsufficientMemory,
-//     BEFORE any asset is planned. This is the combined, unified-aware gate
-//     that replaced ADR-067 D6's flat RAM floor; see memoryGate.
-//   - no pinned artifact for the platform at all -> ErrArtifactNotPinned
-//
-// A probed backend that this pin cannot serve is NOT a refusal: Resolve
-// degrades to the best build the platform actually has (see effectiveBackend),
-// because a working CPU install beats an actionable error on a machine that
-// could have run the model.
+// PURE function — no I/O, no probing, no clock — so the whole platform x
+// backend x RAM x topology x tuning matrix is table-testable. Its refusal
+// order and its degrade-never-refuse backend rule are specified in
+// specs/domains/embedded-llm.md (Hardware probe → resolution).
 func Resolve(in ResolveInput) (Resolution, error) {
 	return resolveWith(assetTable, in)
 }
 
-// ResolveMachine is the three-input convenience form of Resolve: the machine's
-// GPU generation, its CPU capabilities, its measured memory fit, its device
-// topology and every tuning override all read as unset, so the plan carries no
-// GPU-generation packing preference, only the statically decidable
-// compatibility guards, and the derived-budget launch shape. Callers that can
-// answer more — an installer with a device probe, a fit gate with a memory
-// topology, an operator who pinned a context — use ResolveProfile or Resolve.
+// ResolveMachine is the three-input convenience form of Resolve: GPU
+// generation, host capabilities, measured fit, topology and tuning all read as
+// unset. Callers that can answer more use ResolveProfile or Resolve.
 func ResolveMachine(platform string, backend Backend, ramGiB float64) (Resolution, error) {
 	return ResolveProfile(MachineProfile{Platform: platform, Backend: backend, RAMGiB: ramGiB})
 }
 
 // MachineProfile is everything c0wrk can know about a machine when it plans an
 // install. Only the first three fields are mandatory; the rest are refinements
-// whose zero values mean "not measured" and are handled conservatively (see
-// CPUFeature and BudgetFit, whose zero values are deliberately Unknown rather
-// than a false assertion).
+// whose zero values mean "not measured" and are handled conservatively.
 type MachineProfile struct {
 	// Platform is the "<goos>-<goarch>" key (Hardware.Platform).
 	Platform string
@@ -247,42 +174,30 @@ type MachineProfile struct {
 	Backend Backend
 	// RAMGiB is total system RAM in GiB (Hardware.RAMGiB).
 	RAMGiB float64
-	// GPU is the accelerator generation, from ClassifyGPU over a device probe.
+	// GPU is the accelerator generation, from ClassifyGPU over a device probe;
 	// GPUFamilyUnknown keeps the default packing and fires no GPU-specific
 	// guard.
 	GPU GPUFamily
-	// Host carries the CPU capabilities the packing decision reads. The zero
+	// Host carries the CPU capabilities the packing decision reads; the zero
 	// value means "no CPU-feature probe answered".
 	Host HostCaps
 	// FitsPQ2_0 is the verdict of the device-memory fit gate. FitUnknown — the
 	// zero value — means capacity was not measured and must not justify a
-	// downgrade. Resolution never guesses it: the gate that projects the
-	// footprint against the probed budget (memory.go over topology.go) owns the
-	// measurement and supplies the verdict.
+	// downgrade: the gate that projects the footprint against the probed
+	// budget (memory.go over topology.go) owns the measurement.
 	FitsPQ2_0 BudgetFit
 	// CUDA12Userland is the probe verdict on the CUDA 12.x load-time libraries
-	// (libcudart.so.12 + libcublas.so.12; Hardware.CUDA12Userland carries the
-	// measured value). It gates the Linux half of the #222 guard: the
-	// substituted cuda-12.8 build dynamically links that userland, so the
-	// substitution is safe only when the libraries are genuinely there
-	// (present). absent — including a ".so.12" symlink onto a 13-series ELF —
-	// means the fallback could not load here and the plan keeps 13.3; unknown
-	// means the probe could not decide, and the substitution must not fire on
-	// a guess.
-	//
-	// The zero value IS unknown, the conservative side: a caller that has not
-	// probed the userland is indistinguishable from one the probe could not
-	// answer. The Linux substitution then keeps the probed backend and the
-	// guard is recorded unapplied; Windows and every non-#222 guard are
+	// (libcudart.so.12 + libcublas.so.12). It gates the Linux half of the #222
+	// guard: present fires the substitution, absent and unknown both keep the
+	// probed 13.3 backend and record the guard unapplied — the zero value is
+	// unknown, the conservative side. Windows and every non-#222 guard are
 	// decided without the verdict (Windows bundles its CUDA runtime in the
-	// cudart companion archive, so no userland probe applies).
+	// cudart companion archive). See specs/domains/embedded-llm.md.
 	CUDA12Userland CUDA12Userland
 }
 
 // ResolveProfile is Resolve for a caller that knows the machine but has no
-// device-memory topology to gate against and no tuning to apply. It is pure
-// like Resolve: no I/O, no probing, no clock — the profile is a value the
-// caller already has.
+// device-memory topology to gate against and no tuning to apply.
 func ResolveProfile(profile MachineProfile) (Resolution, error) {
 	return Resolve(ResolveInput{MachineProfile: profile})
 }
@@ -292,24 +207,20 @@ func resolveProfileWith(table AssetTable, profile MachineProfile) (Resolution, e
 	return resolveWith(table, ResolveInput{MachineProfile: profile})
 }
 
-// resolveWith is Resolve against an explicit registry. The exported wrapper
-// pins the compile-time table; tests pass a stub to drive the fail-closed
+// resolveWith is Resolve against an explicit registry: the exported wrapper
+// pins the compile-time table, tests pass a stub to drive the fail-closed
 // branches without touching package state.
 func resolveWith(table AssetTable, in ResolveInput) (Resolution, error) {
-	// Total system RAM is a HARD input, and the check is first: an unreadable
-	// size refuses rather than letting a capacity gate pass on a guess. The
-	// probe reports ErrRAMUnknown for it, and so does a caller that passed a
-	// profile it never filled in — both are "unknown", and unknown is not
-	// "big enough".
+	// Total system RAM is a HARD input, and the check is first — unknown is
+	// not "big enough". See specs/domains/embedded-llm.md.
 	if in.RAMGiB <= 0 && (in.Topology == nil || in.Topology.HostRAMGiB <= 0) {
 		return Resolution{}, fmt.Errorf("%w: the memory gate needs a total to derive a host budget from",
 			ErrRAMUnknown)
 	}
 
 	// The mtplx engine branches here, before any llama machinery runs: its
-	// artifact set, planner and gate are all different (mlxplan.go). Every
-	// llama-side rule below — backends, packings, guards, topology — is
-	// deliberately not consulted on this path.
+	// artifact set, planner and gate are all different (mlxplan.go), and every
+	// llama-side rule below is deliberately not consulted on this path.
 	if in.Engine == EngineMTPLX {
 		return resolveMLX(table, in)
 	}
@@ -318,8 +229,7 @@ func resolveWith(table AssetTable, in ResolveInput) (Resolution, error) {
 
 	// The GPU generation is classified from the probed inventory when the
 	// caller did not supply one, BEFORE the compatibility guards run: the
-	// guards are about the silicon that answered the probe, and a caller that
-	// has a topology but no classification should still get them.
+	// guards are about the silicon that answered the probe.
 	gpu := in.GPU
 	if gpu == GPUFamilyUnknown && in.Topology != nil {
 		gpu = ClassifyGPUs(in.Topology.Devices)
@@ -327,19 +237,16 @@ func resolveWith(table AssetTable, in ResolveInput) (Resolution, error) {
 	effective, guards := applyCompatGuards(table, in.Platform, effective, gpu, in.CUDA12Userland)
 
 	// Normalize ONCE, here, so the gate and the planner price the same machine.
-	// `Plan` normalizes too, but it has no RAM total to fall back on — a
-	// topology carrying an inventory and no derived budgets is one a caller
-	// assembled, and the profile's RAMGiB is the same figure its HostRAMGiB is
-	// documented to carry.
+	// `Plan` normalizes too, but it has no RAM total to fall back on.
 	if in.Topology != nil {
 		normalized := normalizeTopology(*in.Topology, in.RAMGiB)
 		in.Topology = &normalized
 	}
 
-	// THE GATE — before a single asset is planned, and so before any caller can
-	// create a directory or fetch a byte. It replaced ADR-067 D6's flat RAM
-	// floor: see memoryGate for why measuring one pool was wrong in both
-	// directions at once.
+	// THE GATE — before a single asset is planned, and so before any caller
+	// can create a directory or fetch a byte: the combined two-pool gate that
+	// replaced ADR-067 D6's flat RAM floor. See specs/domains/embedded-llm.md
+	// (The combined memory gate).
 	profile, err := PinnedMemoryProfile()
 	if err != nil {
 		return Resolution{}, fmt.Errorf("embeddedllm: memory profile: %w", err)
@@ -350,13 +257,12 @@ func resolveWith(table AssetTable, in ResolveInput) (Resolution, error) {
 	}
 
 	// The gate OWNS the fit measurement, so it supplies the verdict
-	// `decidePacking`'s rule 3 is waiting for (`MachineProfile.FitsPQ2_0`).
-	// Without this the planner picks PQ2_0 for a machine the gate only admitted
-	// at PTQ1_0, downloads the larger weights, and then has no packing left to
-	// downgrade to. It is applied only when it CHANGES the answer, so a more
-	// specific trigger that already selected PTQ1_0 — Vulkan's missing kernels,
-	// an AVX-512 host on a pre-#245 pin, an Ada card — keeps its own reason
-	// instead of being relabelled as a capacity finding.
+	// `decidePacking`'s rule 3 is waiting for (`MachineProfile.FitsPQ2_0`):
+	// without this a machine the gate only admitted at PTQ1_0 would download
+	// PQ2_0 with nothing left to downgrade to. Applied only when it CHANGES
+	// the answer, so a more specific PTQ1_0 trigger — Vulkan's missing
+	// kernels, an AVX-512 host on a pre-#245 pin, an Ada card — keeps its own
+	// reason instead of being relabelled as a capacity finding.
 	if in.Tuning.Packing == "" && in.FitsPQ2_0 != FitInsufficient &&
 		gate.viable.packing == PackingPTQ1_0 &&
 		packingFor(effective, gpu, in.FitsPQ2_0, in.Host) == PackingPQ2_0 {
@@ -393,15 +299,10 @@ func resolveWith(table AssetTable, in ResolveInput) (Resolution, error) {
 // resolveMLX is the mtplx engine's resolution path: the pinned engine stack
 // (managed CPython + the closed wheel set) plus the pinned MLX pack, planned
 // by PlanMLX against the measured single-pool budget. The AssetTable seam is
-// not consulted — the engine tables are this package's own mlxpins.go, and
-// the pinnedRegistry's llama tables describe a different runtime — so a test
-// that needs to vary the engine set swaps the package-level pins the way the
-// validator teeth tests do.
-//
-// The compatibility guards do not run here: compat.go's table is derived from
-// the pinned llama.cpp fork's KNOWN_ISSUES, and none of its rows describes an
-// MLX failure. Guards arriving on an mtplx resolution would be a transcription
-// error, not safety.
+// not consulted — the engine tables are this package's own mlxpins.go — and
+// the compatibility guards do not run: compat.go's table is derived from the
+// pinned llama.cpp fork's KNOWN_ISSUES, none of which describes an MLX
+// failure, so guards on an mtplx resolution would be a transcription error.
 func resolveMLX(_ AssetTable, in ResolveInput) (Resolution, error) {
 	if in.Platform != PlatformDarwinARM64 {
 		return Resolution{}, fmt.Errorf("%w: engine %q needs %q, got %q (use engine %q)",
@@ -434,18 +335,14 @@ func resolveMLX(_ AssetTable, in ResolveInput) (Resolution, error) {
 // planMemory resolves the launch shape and the packing decision TOGETHER,
 // because the two are mutually dependent: the packing chooses the footprint,
 // and a footprint that does not fit is precisely the measurement
-// `decidePacking`'s rule 3 is waiting for (`FitsPQ2_0 == FitInsufficient`).
-//
-// Resolution closes that loop with ONE bounded retry rather than a fixed point:
-// plan the derived packing, and if the measured budgets refuse it, re-decide
-// the packing with that refusal as the fit verdict and plan once more. A second
-// refusal is final — PTQ1_0 is the smallest packing this model ships, so there
-// is nothing left to downgrade to. This is what makes ADR-067 D2's "PTQ1_0 when
-// memory is short" a measurement instead of a heuristic.
-//
-// An explicit `Tuning.Packing` short-circuits the loop: the operator named a
-// quantization, so nothing is re-decided, and a budget that cannot serve it is
-// reported as infeasible rather than answered with a different packing.
+// `decidePacking`'s rule 3 is waiting for. Resolution closes that loop with
+// ONE bounded retry rather than a fixed point — plan the derived packing, and
+// if the measured budgets refuse it, re-decide the packing with that refusal
+// as the fit verdict and plan once more; a second refusal is final, PTQ1_0
+// being the smallest packing this model ships. This is what makes ADR-067
+// D2's "PTQ1_0 when memory is short" a measurement instead of a heuristic. An
+// explicit `Tuning.Packing` short-circuits the loop: a budget that cannot
+// serve it is reported as infeasible, never answered with a different packing.
 func planMemory(in ResolveInput, effective Backend, gpu GPUFamily, profile ModelMemoryProfile, gate gateVerdict) (MemoryPlan, PackingDecision, error) {
 	if in.Tuning.Packing != "" {
 		decision := PackingDecision{Packing: in.Tuning.Packing, Reason: PackingReasonOperatorOverride}
@@ -461,8 +358,7 @@ func planMemory(in ResolveInput, effective Backend, gpu GPUFamily, profile Model
 	case !errors.Is(err, ErrMemoryPlanInfeasible):
 		return MemoryPlan{}, decision, err
 	case decision.Packing != PackingPQ2_0 || in.FitsPQ2_0 == FitInsufficient:
-		// Already the smallest packing, or the caller had already measured it
-		// as not fitting: the refusal stands.
+		// Already the smallest packing, or already measured as not fitting.
 		return MemoryPlan{}, decision, err
 	}
 
@@ -500,21 +396,16 @@ func planOnce(in ResolveInput, effective Backend, gpu GPUFamily, decision Packin
 	return Plan(*in.Topology, profile, tuning, effective, gpu)
 }
 
-// ramOnlyPlan is the fallback for a caller that never ran the device probe: the
-// RAM-tiered context, the platform+backend layer policy, and no feasibility
-// gate, because there is no measured budget to gate against.
-//
-// It deliberately does NOT hand sizing to the runtime's fit pass, even though
-// `Offload` is Auto and fit needs no topology of c0wrk's to do its job. The
-// reason is the consumer, not the runtime: a fit-sized plan has no concrete
-// context, and the resolved context is what the manifest records and what
-// becomes the `llm.models` `context_window` override — deterministically, at
-// config-read time, when the server is not running and cannot be asked. A RAM
-// tier is a worse estimate than a measured budget but a better one than
-// nothing, so an unmeasured machine keeps the estimate it always had.
-//
-// Explicit overrides are still honoured; only the gate and the fit delegation
-// are missing, and the plan says so in its Notes.
+// ramOnlyPlan is the fallback for a caller that never ran the device probe:
+// the RAM-tiered context, the platform+backend layer policy, and no
+// feasibility gate. It deliberately does NOT hand sizing to the runtime's fit
+// pass, even though fit needs no topology of c0wrk's: a fit-sized plan has no
+// concrete context, and the resolved context is what the manifest records and
+// what becomes the `llm.models` `context_window` override — deterministically,
+// at config-read time, when the server is not running and cannot be asked. A
+// RAM tier is a worse estimate than a measured budget but better than nothing.
+// Explicit overrides are still honoured; the plan says in its Notes what is
+// missing.
 func ramOnlyPlan(in ResolveInput, effective Backend, gpu GPUFamily, tuning Tuning, gate gateVerdict) (MemoryPlan, error) {
 	packing := tuning.Packing
 	if packing == "" {
@@ -539,13 +430,11 @@ func ramOnlyPlan(in ResolveInput, effective Backend, gpu GPUFamily, tuning Tunin
 		contextSize = tuning.Context.Tokens
 	}
 
-	// The defaults above are PLATFORM-derived, not memory-derived: `layersFor`
-	// offloads everything on Apple Silicon and on every GPU build, and the KV
-	// cache starts at f16. On a machine whose pool cannot serve that shape they
-	// are exactly the at-load failure the gate exists to prevent — the gate
-	// admitted this machine because SOME modelled shape fits, and a plan that
-	// then emits a different one has thrown the measurement away. So both yield
-	// to the gate's verdict wherever the operator did not pin them.
+	// The defaults above are PLATFORM-derived, not memory-derived. The gate
+	// admitted this machine because SOME modelled shape fits; a plan that then
+	// emits a different one has thrown the measurement away — exactly the
+	// at-load failure the gate exists to prevent. So offload and KV yield to
+	// the gate's verdict wherever the operator did not pin them.
 	var degradeNotes []string
 	if !tuning.Offload.explicit() && !gate.viable.offloaded && layers != nglCPUOnly {
 		layers = nglCPUOnly
@@ -570,9 +459,8 @@ func ramOnlyPlan(in ResolveInput, effective Backend, gpu GPUFamily, tuning Tunin
 		fitMinContext = *tuning.FitMinContext
 	}
 	// The two checkpoint knobs resolve exactly as planShape resolves them, so
-	// the RAM-tiered fallback and a measured plan render the same flags from
-	// the same overrides. An unusable figure is refused, not defaulted — the
-	// caller's Validate would otherwise catch what this path quietly changed.
+	// the fallback and a measured plan render the same flags; an unusable
+	// figure is refused, not quietly defaulted.
 	ctxCheckpoints, err := planCtxCheckpoints(tuning)
 	if err != nil {
 		return MemoryPlan{}, err
@@ -594,10 +482,8 @@ func ramOnlyPlan(in ResolveInput, effective Backend, gpu GPUFamily, tuning Tunin
 		SplitMode:      tuning.SplitMode,
 		GPUFamily:      gpu,
 
-		// The gate's budgets, so the plan reports the capacity it was actually
-		// weighed against rather than two zeroes. They are DERIVED here, not
-		// measured — that is what the Note below says — but a report with no
-		// numbers at all invites a reader to assume none were computed.
+		// The gate's (DERIVED, not measured) budgets, so the plan reports the
+		// capacity it was actually weighed against rather than two zeroes.
 		DeviceBudgetMiB: gate.budgets.deviceMiB,
 		HostBudgetMiB:   gate.budgets.hostMiB,
 
@@ -615,10 +501,10 @@ func ramOnlyPlan(in ResolveInput, effective Backend, gpu GPUFamily, tuning Tunin
 	return plan, nil
 }
 
-// explicitLayers renders an explicit offload override as the -ngl value it asks
-// for, clamped to the range the flag accepts. The runtime treats any value at
-// or above the model's offloadable layer count as "all", so clamping here
-// cannot lose an offload the operator asked for.
+// explicitLayers renders an explicit offload override as the -ngl value it
+// asks for, clamped to the range the flag accepts; any value at or above the
+// model's offloadable layer count means "all", so the clamp cannot lose an
+// offload the operator asked for.
 func explicitLayers(offload Offload) int {
 	switch offload.Mode {
 	case OffloadAll:
@@ -638,30 +524,17 @@ func explicitLayers(offload Offload) int {
 	return nglCPUOnly
 }
 
-// applyCompatGuards folds the compatibility table's backend substitutions into
-// an already-degraded backend, and returns the decisions with their Applied
-// flags set — including the ones that could NOT be applied, which stay in the
-// record as guidance.
-//
-// Only GuardActionPreferBackend is acted on here, and only when the pin
-// actually publishes the substituted backend's runtime archive for this
-// platform: a guard that swapped in an unpinned build would turn a documented
-// upstream failure into c0wrk's own ErrArtifactNotPinned, which helps nobody.
-// Packing substitutions are not folded here either — decidePacking reads the
-// same GPU family and the substituted backend directly, so the packing follows
-// the backend it ends up with (a ROCm→Vulkan substitution yields PTQ1_0
-// because Vulkan has no PQ2_0 kernels, exactly as upstream's workaround for
-// #223 prescribes).
-//
-// The Linux #222 substitution additionally requires a CUDA 12.x userland the
-// cuda-12.8 build can load against (cu12 == CUDA12Present): absent means the
-// fallback would fail at load time on this machine — the trap the probe exists
-// for, a ".so.12" symlink onto a 13-series ELF included — and unknown means
-// nobody measured it, which is not evidence of safety. Both keep the probed
-// 13.3 backend and record the decision with Applied=false and guidance saying
-// why, so the plan stays honest without breaking a working build. The Windows
-// half of #222 (and every other guard) is decided without the verdict: Windows
-// bundles its CUDA runtime in the cudart companion archive.
+// applyCompatGuards folds the guard table's backend substitutions into an
+// already-degraded backend and sets the decisions' Applied flags — including
+// on the ones that could NOT be applied, which stay in the record as guidance.
+// A substitution must be pinned for the platform (an unpinned swap would turn
+// a documented upstream failure into c0wrk's own ErrArtifactNotPinned), and
+// the Linux #222 substitution additionally requires the probed CUDA12Userland
+// verdict to be present — absent or unknown both keep the probed backend and
+// record the decision unapplied. Packing is not folded here: decidePacking
+// reads the substituted backend directly, so the packing follows the backend
+// the plan ends up with. See specs/domains/embedded-llm.md (Backend
+// compatibility guards).
 func applyCompatGuards(table AssetTable, platform string, backend Backend, gpu GPUFamily, cu12 CUDA12Userland) (Backend, []GuardDecision) {
 	decisions := CompatibilityGuards(backend, gpu, platform)
 	effective := backend
@@ -702,22 +575,10 @@ func applyCompatGuards(table AssetTable, platform string, backend Backend, gpu G
 }
 
 // effectiveBackend maps the PROBED backend onto the backend this machine can
-// actually be provisioned with. Four rules, applied in order:
-//
-//  1. Metal exists only on Apple Silicon. An Intel Mac has no Metal compute
-//     path for this runtime and gets the CPU build.
-//  2. CUDA and ROCm archives are published for x64 only, so a non-amd64
-//     platform that reported one of them gets the CPU build
-//     (linux-arm64 + CUDA -> cpu).
-//  3. A CUDA tag with no archive for this platform clamps DOWN to the nearest
-//     older pinned tag. This pin has no Windows cuda-12.8 archive, so a Windows
-//     machine whose driver reports 12.8 or 13.0-13.2 is provisioned with the
-//     12.4 build, which its newer driver still runs.
-//  4. Anything else without a pinned archive falls back to the CPU build,
-//     which every supported platform pins.
-//
-// If even the CPU build is missing the platform is not supported at all, and
-// ArtifactSet fails closed with ErrArtifactNotPinned.
+// actually be provisioned with: Metal only on Apple Silicon, x64-only CUDA/ROCm
+// archives elsewhere, CUDA tags clamped DOWN to the nearest older pinned tag,
+// and the CPU build — which every supported platform pins — as the universal
+// fallback. See specs/domains/embedded-llm.md.
 func effectiveBackend(table AssetTable, platform string, backend Backend) Backend {
 	if backend == BackendMetal && platform != PlatformDarwinARM64 {
 		return BackendCPU
@@ -734,13 +595,11 @@ func effectiveBackend(table AssetTable, platform string, backend Backend) Backen
 	return backend
 }
 
-// clampCUDABackend returns the newest pinned CUDA tag that is not newer than
-// the probed one, or BackendCPU when the platform has no CUDA archive at all.
-//
-// Clamping only ever goes DOWN: CUDA drivers are backwards compatible with
-// binaries built against an older toolkit, while a binary built for a newer
-// toolkit will not load on an older driver. Choosing 13.3 for a 12.8 driver
-// would produce a runtime that fails at load time.
+// clampCUDABackend returns the newest pinned CUDA tag not newer than the
+// probed one, or BackendCPU when the platform has no CUDA archive at all.
+// Clamping only ever goes DOWN: an older-toolkit binary runs on a newer
+// driver, a newer-toolkit binary does not load on an older driver. See
+// specs/domains/embedded-llm.md.
 func clampCUDABackend(table AssetTable, platform string, backend Backend) Backend {
 	if _, ok := table.RuntimeAsset(platform, backend); ok {
 		return backend
@@ -757,76 +616,56 @@ func clampCUDABackend(table AssetTable, platform string, backend Backend) Backen
 	return BackendCPU
 }
 
-// PackingReason is the typed cause of a packing choice. Every value except
-// PackingReasonDefault describes a reason the smaller, lower-precision PTQ1_0
-// was chosen over PQ2_0, and each one cites the fact that justifies it — a
-// missing kernel, a documented segfault, a measured throughput table or a
-// measured budget. It is persisted in the manifest and mirrored into the
-// Settings status DTO, so a downgrade is legible to the user instead of
-// inferable from a file size.
+// PackingReason is the typed cause of a packing choice: every non-default
+// value records why the smaller, lower-precision PTQ1_0 was taken over PQ2_0,
+// persisted to the manifest and mirrored into the Settings status DTO so a
+// downgrade is legible instead of inferable from a file size. See
+// specs/domains/embedded-llm.md.
 type PackingReason string
 
 const (
-	// PackingReasonDefault is PQ2_0 with nothing against it: the backend has
-	// PQ2_0 kernels, the pin is not known to crash this CPU, the GPU generation
-	// does not decode PTQ1_0 faster, and no measured budget was exceeded.
+	// PackingReasonDefault is PQ2_0 with nothing against it.
 	PackingReasonDefault PackingReason = "default"
 
 	// PackingReasonNoPQ2_0Kernels is Vulkan, the one backend the fork ships
-	// without PQ2_0 (group-128) kernels. This is a capability fact, not a
-	// trade-off: PQ2_0 on Vulkan would run dequantized, and KNOWN_ISSUES #238
-	// documents exactly that failure mode as "silently runs on the CPU ... at
-	// under 2 tokens per second" while the log still claims full offload.
+	// without PQ2_0 (group-128) kernels — a capability fact, not a trade-off;
+	// PQ2_0 there would run dequantized (#238: silently on the CPU, "under 2
+	// tokens per second").
 	PackingReasonNoPQ2_0Kernels PackingReason = "no_pq2_0_kernels"
 
-	// PackingReasonAVX512PQ2_0Segfault is an AVX-512 host on a pin that
-	// predates PR #245. KNOWN_ISSUES "CPU crash on load (AVX-512 CPUs)":
-	// "PQ2_0 segfaults while loading on CPUs with AVX-512, including AMD Zen 4
-	// and Zen 5 ... It crashes even with all layers offloaded to a GPU"
-	// (reports #180, #204, #219, Bonsai-demo #182; fixed in source by #245).
+	// PackingReasonAVX512PQ2_0Segfault is an AVX-512 host on a pin predating
+	// PR #245: PQ2_0 segfaults at load even with all layers offloaded
+	// (reports #180, #204, #219, Bonsai-demo #182).
 	PackingReasonAVX512PQ2_0Segfault PackingReason = "avx512_pq2_0_segfault"
 
-	// PackingReasonPQ2_0DoesNotFit is a measured device budget that PQ2_0
-	// exceeds. The model card names PTQ1_0 "the pick wherever memory is
-	// tightest": 5.95 GB against PQ2_0's 7.21 GB, 17% less weight data.
+	// PackingReasonPQ2_0DoesNotFit is a measured device budget PQ2_0 exceeds;
+	// the model card names PTQ1_0 "the pick wherever memory is tightest"
+	// (5.95 GB against 7.21 GB).
 	PackingReasonPQ2_0DoesNotFit PackingReason = "pq2_0_does_not_fit"
 
-	// PackingReasonGPUGenerationDecode is an accelerator generation the model
-	// card measures as PTQ1_0-faster for DECODE: "PTQ1_0 is the faster decode
-	// on the Ada-generation cards and the L4", confirmed by every Ada row of
-	// its Cross-Platform Throughput table (RTX 6000 Ada 90.4 vs 82.8 TG128,
-	// RTX 4090 91.1 vs 81.2, L40S 81.8 vs 74.4, L4 32.1 vs 29.8). Prompt
-	// processing still favours PQ2_0 everywhere, so this is a genuine trade and
-	// is recorded as one — an agent workload is decode-dominated, which is the
-	// side this rule optimizes.
+	// PackingReasonGPUGenerationDecode is a generation the model card measures
+	// as PTQ1_0-faster for DECODE (the Ada rows: 6000 Ada 90.4 vs 82.8 TG128,
+	// 4090 91.1 vs 81.2, L40S 81.8 vs 74.4, L4 32.1 vs 29.8). Prompt
+	// processing favours PQ2_0 everywhere, so this is a recorded trade — an
+	// agent workload is decode-dominated, the side this rule optimizes.
 	PackingReasonGPUGenerationDecode PackingReason = "gpu_generation_decode"
 
-	// PackingReasonOperatorOverride is an explicit `Tuning.Packing`: the
-	// operator named a quantization, so the table above is not consulted for
-	// the value — though it still is for the record, and the memory gate still
-	// has to be able to project the chosen packing (an unmeasured one is
-	// refused with ErrMemoryNotMeasured rather than estimated from a file
-	// size).
+	// PackingReasonOperatorOverride is an explicit `Tuning.Packing`: the table
+	// is not consulted for the value, but the memory gate must still be able
+	// to project it (unmeasured is refused, never estimated).
 	PackingReasonOperatorOverride PackingReason = "operator_override"
 
-	// PackingReasonMLXPack is the mtplx engine: the MLX pack ships exactly one
-	// quantization, so there is no packing decision to make — the reason
-	// records that absence rather than leaving a zero Packing unexplained
-	// (ADR-092).
+	// PackingReasonMLXPack is the mtplx engine: one quantization ships, so the
+	// reason records that absence rather than a zero Packing (ADR-092).
 	PackingReasonMLXPack PackingReason = "mlx_pack"
 )
 
-// PackingInput is the packing decision's whole input: the backend the plan
-// settled on, the accelerator generation, the memory-fit verdict, the host CPU
-// capabilities and the build number of the pinned runtime.
-//
-// It is a struct rather than a parameter list because the decision has five
-// axes and grows them slowly; a sixth axis must not silently reorder anyone's
-// arguments. decidePacking is pure over it, which is what makes the whole
-// matrix table-testable without a machine to test on.
+// PackingInput is the packing decision's whole input — a struct, not a
+// parameter list, so a sixth axis cannot silently reorder anyone's arguments;
+// decidePacking is pure over it, which is what makes the whole matrix
+// table-testable without a machine.
 type PackingInput struct {
-	// Backend is the EFFECTIVE backend (after degradation and the compatibility
-	// guards), since that is the build whose kernels will actually run.
+	// Backend is the EFFECTIVE backend — the build whose kernels will run.
 	Backend Backend
 	// GPU is the accelerator generation, GPUFamilyUnknown when unmeasured.
 	GPU GPUFamily
@@ -834,9 +673,9 @@ type PackingInput struct {
 	FitsPQ2_0 BudgetFit
 	// Host is the CPU capability set; the zero value means "not probed".
 	Host HostCaps
-	// RuntimeBuild is the pinned fork build (parseRuntimeBuild over RuntimeTag),
-	// or 0 when the tag is not recognized. Zero compares below every fix
-	// threshold, i.e. an unrecognizable pin is treated as unfixed.
+	// RuntimeBuild is the pinned fork build, or 0 when the tag is not
+	// recognized: zero compares below every fix threshold, i.e. an
+	// unrecognizable pin is treated as unfixed.
 	RuntimeBuild int
 }
 
@@ -847,30 +686,12 @@ type PackingDecision struct {
 	Reason  PackingReason
 }
 
-// decidePacking is the packing table. PTQ1_0 is chosen when ANY of four
-// conditions holds, and the reason reported is the highest-precedence one that
-// fired; otherwise PQ2_0, the default.
-//
-// Precedence, highest first:
-//
-//  1. Vulkan — no PQ2_0 kernels at all. A capability fact outranks every
-//     trade-off, and no other rule can rescue it.
-//  2. An AVX-512 host on a pin predating #245 — PQ2_0 SEGFAULTS at load. A
-//     crash outranks a capacity or throughput argument because those are
-//     degradations and this is a failure. The host verdict is tri-state and
-//     Unknown counts as AVX-512-capable: an unprobed machine takes the packing
-//     that cannot crash.
-//  3. PQ2_0 does not fit the measured budget — capacity outranks throughput,
-//     because a packing that does not fit cannot be slow.
-//  4. The GPU generation decodes PTQ1_0 faster (Ada and the L4).
-//
-// Note what is NOT here: a RAM heuristic. Installed RAM never downgrades the
-// packing on its own, because RAM is not the constraint that PQ2_0 can exceed
-// — the accelerator budget is, and rule 3 is that constraint as measured by
-// the fit gate rather than guessed from a system-memory size. A laptop at the
-// bottom of the gate's viable range and a 128 GiB workstation with a small
-// discrete GPU can both legitimately land on rule 3, and a 128 GiB machine with
-// a 48 GB Ada card lands on rule 4 instead.
+// decidePacking is the packing table: PTQ1_0 when ANY of four triggers fires,
+// reported at the highest-precedence one that did — Vulkan's missing kernels,
+// an AVX-512 host on a pre-#245 pin, a measured budget PQ2_0 does not fit, a
+// generation that decodes PTQ1_0 faster. There is deliberately no RAM-based
+// downgrade: RAM is not the constraint PQ2_0 can exceed, the accelerator
+// budget is. See specs/domains/embedded-llm.md.
 func decidePacking(in PackingInput) PackingDecision {
 	switch {
 	case in.Backend == BackendVulkan:
@@ -890,14 +711,10 @@ func decidePacking(in PackingInput) PackingDecision {
 	}
 }
 
-// packingFor selects the weights quantization for a machine, against the
-// compile-time pin. It is decidePacking with the pin's build number filled in —
-// the form the resolver calls, and the form whose four inputs name the four
-// things upstream documents a packing decision for: the backend's kernels, the
-// accelerator generation, the measured memory fit and the host CPU.
-//
-// There is no RAM-based downgrade in here, and that is a deliberate absence
-// rather than an oversight: see decidePacking's closing note.
+// packingFor is decidePacking with the pin's build number filled in — the
+// resolver's form, whose four inputs are the four things upstream documents a
+// packing decision for. No RAM-based downgrade, by design. See
+// specs/domains/embedded-llm.md.
 func packingFor(backend Backend, gpu GPUFamily, fitsPQ2_0 BudgetFit, host HostCaps) Packing {
 	return decidePacking(PackingInput{
 		Backend:      backend,
@@ -908,18 +725,12 @@ func packingFor(backend Backend, gpu GPUFamily, fitsPQ2_0 BudgetFit, host HostCa
 	}).Packing
 }
 
-// layersFor returns the -ngl value. The platform decides first, exactly in the
-// order the demo's bonsai_llama_ngl does:
-//
-//   - An Intel Mac gets no offload at all — it has no Metal compute path for
-//     this runtime.
-//   - Apple Silicon always offloads every layer. Note this holds even when the
-//     effective backend came out as CPU: the macOS arm64 archive IS the Metal
-//     build (see the registry), so a CPU-labelled resolution on Apple Silicon
-//     still runs on the GPU.
-//
-// Everywhere else the backend decides: all layers on a GPU-backed build, none
-// on the CPU build.
+// layersFor returns the -ngl value, the platform deciding first exactly as the
+// fork demo's bonsai_llama_ngl does. An Intel Mac gets no offload; Apple
+// Silicon always offloads every layer — INCLUDING when the effective backend
+// came out as CPU, because the macOS arm64 archive IS the Metal build, so a
+// CPU-labelled resolution on Apple Silicon still runs on the GPU. Everywhere
+// else the backend decides.
 func layersFor(platform string, backend Backend) int {
 	switch {
 	case platform == PlatformDarwinAMD64:
@@ -933,9 +744,9 @@ func layersFor(platform string, backend Backend) int {
 	}
 }
 
-// imageMaxTokensFor returns the --image-max-tokens value. CUDA and ROCm run
-// uncapped (fast datacenter GPUs absorb the vision prefill); Metal, Vulkan and
-// CPU cap large images to keep latency reasonable.
+// imageMaxTokensFor returns the --image-max-tokens value: CUDA and ROCm run
+// uncapped (fast datacenter GPUs absorb the vision prefill), everything else
+// caps large images to keep latency reasonable.
 func imageMaxTokensFor(backend Backend) int {
 	if backend.IsCUDA() || backend == BackendROCm {
 		return ImageMaxTokensUncapped
@@ -943,26 +754,12 @@ func imageMaxTokensFor(backend Backend) int {
 	return imageMaxTokensCapped
 }
 
-// contextSizeFor returns the -c value for a RAM size in GiB.
-//
-// The context is never left unspecified and never set to the model's full
-// training context: that request is memory-unaware, and with -ngl offloading
-// the KV cache it picks the maximum and OOMs constrained machines. Instead the
-// cap is sized to installed RAM, with this hybrid-attention model's FP16 KV
-// cost at roughly 64 KiB per token:
-//
-//	RAM (GiB)   context
-//	<= 11        8192
-//	<= 23       16384
-//	<= 35       32768
-//	<= 71       65536
-//	>  71      131072
-//
-// ramGiB is floored to a whole GiB before comparison, matching the integer
-// arithmetic of the demo script these tiers come from. It matters on Linux,
-// where MemTotal is reported slightly below the nominal size: a machine
-// advertised as 24 GB reads ~23.x GiB and belongs to the 16384 tier, not the
-// next one up. Flooring is also the conservative direction — it never grants a
+// contextSizeFor returns the -c value for a RAM size in GiB: never left
+// unspecified, and never the model's full training context — that request is
+// memory-unaware and OOMs a constrained machine once -ngl offloads the KV
+// cache. ramGiB is floored to a whole GiB before comparison, matching the
+// demo script's integer arithmetic: a machine advertised as 24 GB reads
+// ~23.x GiB on Linux and stays in the 16384 tier, and flooring never grants a
 // larger context than the demo would.
 func contextSizeFor(ramGiB float64) int {
 	wholeGiB := int(ramGiB)
@@ -980,9 +777,9 @@ func contextSizeFor(ramGiB float64) int {
 	}
 }
 
-// hasCudart reports whether an install set carries the paired CUDA runtime DLL
-// archive. It is derived from the set itself rather than recomputed from the
-// platform and backend, so the flag can never disagree with what is downloaded.
+// hasCudart reports the paired CUDA runtime DLL archive, derived from the set
+// itself rather than recomputed from platform and backend, so the flag can
+// never disagree with what is downloaded.
 func hasCudart(assets []Asset) bool {
 	return slices.ContainsFunc(assets, func(a Asset) bool {
 		return a.Component == ComponentCudart

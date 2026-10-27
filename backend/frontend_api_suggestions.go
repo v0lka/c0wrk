@@ -10,14 +10,12 @@ import (
 	"github.com/v0lka/c0wrk/core"
 )
 
-// This file owns the RPC surface of the prompt-suggestions bridge (ADR-088):
-// the read path the chat input uses to restore an active suggestion set on
-// session open/switch, and the config gate toggle. Generation, persistence,
-// and the session-scoped "prompt_suggestions" event live in backend/session
-// (prompt_suggest.go); this layer only READS persisted active sets and
-// decides WHICH context the addressed session is served from. Like the rest
-// of the subsystem, the read path is fail-open: it never errors the RPC, it
-// degrades to an empty set.
+// RPC surface of the prompt-suggestions bridge (ADR-088): the restore read
+// path and the config gate toggle. Generation, persistence, and the
+// session-scoped "prompt_suggestions" event live in backend/session
+// (prompt_suggest.go); this layer only READS persisted active sets, routed
+// by session content, fail-open like the whole subsystem.
+// See specs/domains/prompt-suggestions.md.
 
 // promptSuggestionsProjectScan bounds the new-session lookup: the project's
 // newest N sessions are scanned newest-first for an active next_task set —
@@ -30,53 +28,38 @@ const promptSuggestionsProjectScan = 10
 // The response source values (PromptSuggestionsResponse.Source): which
 // context the backend decided the suggestions belong to.
 const (
-	// promptSuggestionsSourceContinuation: the addressed session has a
-	// transcript — its own goal_advance set is offered.
+	// The addressed session has a transcript — its own goal_advance set.
 	promptSuggestionsSourceContinuation = "continuation"
-	// promptSuggestionsSourceNewSession: the addressed session is empty or
-	// brand-new — the project's freshest next_task set is offered.
+	// The addressed session is empty or brand-new — the project's freshest
+	// next_task set.
 	promptSuggestionsSourceNewSession = "new_session"
-	// promptSuggestionsSourceNone: nothing to offer (a No-Project/CHAT
-	// window, or no store at all).
+	// Nothing to offer (a No-Project/CHAT window, or no store at all).
 	promptSuggestionsSourceNone = "none"
 )
 
 // PromptSuggestionsResponse is the GetPromptSuggestions payload: the active
-// suggestion set the chat input offers for the addressed session, plus the
-// backend's routing decision. Rows are returned as persisted — in the
-// new_session case their session_id names the ORIGINATING session, not the
-// addressed one; the frontend consumes id/kind/text and never re-keys the
-// set by row session_id.
+// set offered for the addressed session plus the routing decision. Rows are
+// returned as persisted — in the new_session case their session_id names the
+// ORIGINATING session; the frontend consumes id/kind/text only.
 type PromptSuggestionsResponse struct {
-	// SessionID is the addressed session, verbatim.
-	SessionID string `json:"session_id"`
-	// ProjectID is the addressed project, verbatim ("" when absent).
-	ProjectID string `json:"project_id,omitempty"`
-	// Source reports the routing decision: "continuation" (session with
-	// content → its own goal_advance set), "new_session" (empty/new session
-	// → the project's freshest next_task set) or "none" (No-Project/CHAT
-	// window, or no store). Source names the context that was CONSULTED, not
-	// the row count — it is set even when Suggestions is empty.
+	SessionID string `json:"session_id"`           // addressed session, verbatim
+	ProjectID string `json:"project_id,omitempty"` // addressed project, verbatim
+	// Source names the context CONSULTED, not the row count — set even when
+	// Suggestions is empty.
 	Source string `json:"source"`
-	// Suggestions is the active set as persisted (never nil; empty when
-	// nothing is active in the consulted context).
+	// The active set as persisted (never nil).
 	Suggestions []core.PromptSuggestion `json:"suggestions"`
 }
 
 // GetPromptSuggestions returns the active prompt-suggestion set the chat
 // input offers for the addressed session (the ADR-088 D8 restore path).
-// The backend routes by session content: a session with a transcript offers
-// its own goal_advance (continuation) set; an empty or brand-new session
-// offers the project's freshest next_task set (newest-first scan over the
-// project window, the same 10 sessions D3 generates over); a No-Project
-// (CHAT) session offers nothing — CHAT has no project window. The branch
-// decision is made by CONTENT, not by row availability: a content session
-// with no active continuation set stays on the continuation branch with an
-// empty set rather than falling through to the project window.
-//
-// Read-only getter: returns the response only, no error. Every store read
-// failure degrades to "no suggestions" with a Debug log (the subsystem's
-// fail-open contract, ADR-088 D9).
+// Routing is by session CONTENT, not row availability: a transcript session
+// stays on the continuation branch even with an empty set (never falling
+// through to the project window); an empty/new session draws the project's
+// freshest next_task set; a No-Project (CHAT) session offers nothing. The
+// read path is fail-open — every store read failure degrades to an empty
+// set with a Debug log (ADR-088 D9).
+// See specs/domains/prompt-suggestions.md.
 func (f *FrontendAPI) GetPromptSuggestions(sessionID, projectID string) PromptSuggestionsResponse {
 	f.seedAcquire()
 	resp := PromptSuggestionsResponse{
@@ -170,13 +153,10 @@ func promptSuggestionsOfKind(rows []core.PromptSuggestion, kind core.SuggestionK
 }
 
 // SetPromptSuggestionsEnabled toggles the prompt_suggestions.enabled gate
-// (ADR-088) and persists it to config.yaml. A request matching the stored
-// EFFECTIVE value is a no-op (the nil default counts as on, so enabling an
-// unset config writes nothing), and a failed disk write rolls the in-memory
-// value back so the rejected toggle is indistinguishable from a rejected
-// request. On success the session manager's outcome gate is flipped in the
-// same beat — the change takes effect without a restart — and the
-// config:updated announcement lets config consumers re-read the value.
+// (ADR-088) and persists it. A request matching the stored EFFECTIVE value
+// is a no-op (nil default counts as on); a failed disk write rolls the
+// in-memory value back. On success the manager's outcome gate flips in the
+// same beat (no restart) and config:updated is announced.
 func (f *FrontendAPI) SetPromptSuggestionsEnabled(enabled bool) error {
 	f.configMu.Lock()
 	defer f.configMu.Unlock()

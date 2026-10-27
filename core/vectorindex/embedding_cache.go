@@ -28,12 +28,12 @@ const (
 	embeddingCacheHeaderSize        = 10 // magic (4) + version (2) + dimension (4)
 	embeddingCacheChecksumSize      = sha256.Size
 
-	// Prune hysteresis and accounting-refresh cadence. While tracked bytes
-	// stay below embeddingCachePruneAtPercent of the cap, prune takes a fast
-	// path and skips the directory walk entirely. A walk that does run evicts
-	// oldest entries down to embeddingCacheEvictToPercent of the cap; the
-	// headroom between the two thresholds keeps a cache running near the cap
-	// from walking — and evicting — on every resolved embedding batch.
+	// Prune hysteresis and accounting-refresh cadence. Below
+	// embeddingCachePruneAtPercent of the cap, prune takes the fast path and
+	// skips the walk entirely; a walk evicts down to
+	// embeddingCacheEvictToPercent — the headroom amortizes near-cap prunes.
+	// embeddingCacheReconcileEveryPuts bounds accounting drift from external
+	// filesystem changes (analogous to fullHashRevalidationEvery).
 	embeddingCachePruneAtPercent = int64(95)
 	embeddingCacheEvictToPercent = int64(90)
 	// embeddingCacheReconcileEveryPuts forces a full walk (which reconciles
@@ -99,28 +99,25 @@ type embeddingCache struct {
 	logger      *slog.Logger
 
 	// trackedBytes mirrors the on-disk size of every .vec entry, maintained
-	// incrementally by put/get mutations so prune can decide whether a full
-	// directory walk is needed without performing one. Every walk reconciles
-	// it back to the walked truth, so bounded drift (external deletions,
-	// failed removals) cannot accumulate indefinitely. Guarded by mu.
-	trackedBytes int64
-	// accountingSeeded reports whether trackedBytes is known to reflect the
-	// actual tree. A freshly constructed cache has never walked its root, so
-	// the first prune must run the walk once to seed the counter — SetProject
-	// performs exactly that walk on project switch.
-	accountingSeeded bool
-	// putsSinceReconcile counts successful puts since the last walk; a walk
-	// is forced every reconcileEveryPuts puts as a drift backstop. Guarded
+	// incrementally so prune can decide whether a walk is needed without
+	// performing one; every walk reconciles it to walked truth, so bounded
+	// drift (external deletions, failed removals) cannot accumulate. Guarded
 	// by mu.
+	trackedBytes int64
+	// accountingSeeded reports whether trackedBytes reflects the actual tree;
+	// a fresh cache has never walked its root, so the first prune (or
+	// SetProject's seed walk) must seed the counter.
+	accountingSeeded bool
+	// putsSinceReconcile counts successful puts since the last walk (the
+	// forced-walk drift backstop). Guarded by mu.
 	putsSinceReconcile int
 	// seedInFlight reports whether the one-shot background accounting seed
-	// (seedAccountingAsync) is currently walking the tree. While it is set,
-	// synchronous prunes defer to that walk instead of stacking a second one
-	// — the embed path calls prune while holding the service write lock and
-	// must never block behind a full directory walk (prune therefore uses
-	// TryLock, not Lock). Unlike mu-guarded accounting state, this flag is
-	// atomic because the seed goroutine sets it before taking mu, while
-	// pruneLocked reads it under mu.
+	// (seedAccountingAsync) is walking the tree; while set, synchronous
+	// prunes defer to that walk instead of stacking a second one (the embed
+	// path calls prune while holding the service write lock and must never
+	// block behind a full walk — hence TryLock). Atomic, unlike the
+	// mu-guarded accounting state: the seed goroutine sets it before taking
+	// mu.
 	seedInFlight atomic.Bool
 	// reconcileEveryPuts is the forced-walk cadence; a separate field (set
 	// from embeddingCacheReconcileEveryPuts) so tests can tighten it.
@@ -249,14 +246,10 @@ func (c *embeddingCache) prune() {
 		return
 	}
 	// Never block: the embed path calls prune while holding the service write
-	// lock, so blocking here would stall every queued search behind it. TryLock
-	// keeps the call non-blocking. If the lock is momentarily held by a get/put
-	// mutation, skipping is safe — the next batch's prune retries; if it is
-	// held by a concurrent prune or the brief reconcile step of the seed walk
-	// (which scans the tree WITHOUT the lock — see seedAccountingAsync), that
-	// holder performs the same evict/reconcile. pruneLocked's seedInFlight
-	// check still covers the window between the seed flag being set and the
-	// seed goroutine acquiring mu.
+	// lock, so a blocking wait would stall every queued search. Skipping is
+	// safe — the next batch's prune retries, and a concurrent prune or the
+	// seed walk's reconcile step performs the same evict/reconcile.
+	// pruneLocked's seedInFlight check covers the flag-set-to-lock window.
 	if !c.mu.TryLock() {
 		return
 	}
@@ -265,17 +258,14 @@ func (c *embeddingCache) prune() {
 }
 
 // seedAccountingAsync starts the cache's one-shot accounting seed walk on a
-// background goroutine. SetProject calls this instead of a synchronous prune
-// so the first walk after a fresh construction — potentially hundreds of
-// thousands of stat calls against a warm 512 MiB cache — never runs under
-// the service write lock (which would stall every search and every
-// SetProject/SwitchBranch behind it) nor under c.mu (which the embed path's
-// get/put take while holding the service write lock, so holding it across the
-// traversal would stall searches behind indexing just the same). The tree is
-// therefore scanned WITHOUT the lock and only the cheap reconcile/evict is
-// applied under it. At most one seed walk is in flight at a time; a failed
-// walk (unreadable root) leaves the accounting unseeded so a later seed or
-// prune retries it, preserving pruneLocked's retry semantics.
+// background goroutine. The first walk after a fresh construction —
+// potentially hundreds of thousands of stat calls against a warm cache —
+// must run neither under the service write lock (which would stall every
+// search and every SetProject/SwitchBranch) nor under c.mu (the embed path's
+// get/put take it under the same service lock). The tree is therefore scanned
+// WITHOUT the lock; only the cheap reconcile/evict is applied under it. At
+// most one seed walk is in flight; a failed walk leaves the accounting
+// unseeded so a later seed or prune retries.
 func (c *embeddingCache) seedAccountingAsync() {
 	if c == nil {
 		return
@@ -294,12 +284,11 @@ func (c *embeddingCache) seedAccountingAsync() {
 		if c.accountingSeeded {
 			return
 		}
-		// The scan ran without c.mu, so a put that landed during it may not be
-		// reflected in total; trackedBytes is reconciled to the walked truth
-		// here, the same bounded-drift model the periodic reconcile relies on —
-		// the entry is still on disk, so the next walk counts it, and the fast
-		// path only ever delays eviction by a few entries. The in-flight flag
-		// stays set for the whole function so synchronous prunes keep deferring.
+		// The scan ran without c.mu, so a put during it may be missing from
+		// total; reconcile to walked truth — the entry is still on disk and
+		// the next walk counts it, so the fast path only delays eviction.
+		// The in-flight flag stays set for the whole function so synchronous
+		// prunes keep deferring.
 		c.applyWalkLocked(files, total)
 	}()
 }
@@ -358,18 +347,15 @@ type embeddingCacheFile struct {
 }
 
 func (c *embeddingCache) pruneLocked() {
-	// Defer to an in-flight background seed walk: the embed path calls prune
-	// while holding the service write lock, and blocking behind the walk (via
-	// mu) would reintroduce exactly the stall seedAccountingAsync exists to
-	// remove. The seed walk performs the same walk/evict/reconcile this
-	// prune would.
+	// Defer to an in-flight background seed walk: it performs the same
+	// walk/evict/reconcile, and blocking behind it (via mu) would
+	// reintroduce exactly the stall seedAccountingAsync exists to remove.
 	if c.seedInFlight.Load() {
 		return
 	}
-	// Fast path: while the tracked tree size stays below the prune-at
-	// threshold and the accounting is seeded and fresh enough, skip the
-	// directory walk entirely. This is what keeps cold indexing — one prune
-	// per resolved batch — from walking a growing tree once per batch.
+	// Fast path: below the prune-at threshold with seeded, fresh-enough
+	// accounting, skip the walk — this keeps cold indexing (one prune per
+	// resolved batch) from walking a growing tree once per batch.
 	if c.accountingSeeded &&
 		c.trackedBytes < c.maxBytes*embeddingCachePruneAtPercent/100 &&
 		c.putsSinceReconcile < c.reconcileEveryPuts {
@@ -378,25 +364,23 @@ func (c *embeddingCache) pruneLocked() {
 	c.walkLocked()
 }
 
-// walkLocked performs the full directory walk: it evicts oldest entries down
-// to the low-water mark and reconciles the incremental accounting with the
-// walked truth. The caller must hold c.mu (and must not be deferring to an
-// in-flight seed — see pruneLocked).
+// walkLocked evicts oldest entries down to the low-water mark and reconciles
+// the incremental accounting with the walked truth. The caller must hold c.mu
+// (and must not be deferring to an in-flight seed — see pruneLocked).
 func (c *embeddingCache) walkLocked() {
 	files, total, err := scanCacheTree(c.root)
 	if err != nil {
-		// Walk failed: leave the accounting untouched so the next prune
-		// retries the walk rather than trusting a stale counter.
+		// Leave the accounting untouched: the next prune retries the walk
+		// rather than trusting a stale counter.
 		return
 	}
 	c.applyWalkLocked(files, total)
 }
 
 // scanCacheTree walks root and returns every ".vec" entry with its size and
-// modification time, plus their total size. It performs no locking — the
-// traversal is read-only (the expensive part: potentially hundreds of
-// thousands of stat calls), and the result is reconciled under c.mu by
-// applyWalkLocked.
+// modification time, plus their total size. Lock-free by design — the
+// traversal (potentially hundreds of thousands of stats) is the expensive
+// part, and the result is reconciled under c.mu by applyWalkLocked.
 func scanCacheTree(root string) (files []embeddingCacheFile, total int64, err error) {
 	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr == nil && !entry.IsDir() && filepath.Ext(path) == ".vec" {

@@ -10,12 +10,13 @@ import (
 	"github.com/v0lka/sp4rk/orchestration"
 )
 
-// ErrMCPAuthorizationState identifies a failed durable authorization-state preparation.
-// Callers must preserve the task and retry, never recover by starting a fresh task.
+// ErrMCPAuthorizationState marks a failed durable authorization-state
+// preparation: preserve the task for retry, never fresh-start it
+// (specs/contracts/backend-core.md).
 var ErrMCPAuthorizationState = errors.New("MCP authorization state unavailable; retry this task")
 
-// prepareTaskMCP resolves durable task intent and snapshots current modes before
-// any execution. The returned context is shared by the resume wave and main loop.
+// prepareTaskMCP resolves durable task intent and snapshots current modes
+// before execution; the context is shared by the resume wave and main loop.
 func (o *Orchestrator) prepareTaskMCP(ctx context.Context, bb orchestration.Blackboard, extra []string) (context.Context, error) {
 	taskID := ""
 	if pbb, ok := bb.(PersistableBlackboard); ok {
@@ -42,7 +43,7 @@ func (o *Orchestrator) prepareTaskMCP(ctx context.Context, bb orchestration.Blac
 			}
 		}
 	} else {
-		// Explicitly nonpersistent callers retain task-local ephemeral intent.
+		// Nonpersistent callers: task-local ephemeral intent only.
 		o.recordMCPMentions(taskID, extra)
 		names = o.mcpMentionsFor(taskID)
 		if taskID == "" {
@@ -50,9 +51,9 @@ func (o *Orchestrator) prepareTaskMCP(ctx context.Context, bb orchestration.Blac
 		}
 	}
 	names = slices.Clone(names)
-	// The session context (o.isNoProject) selects chat_mode vs code_mode per
-	// server; the snapshot is taken once here so reconfiguration cannot change
-	// a running task's authorization (in-flight contexts keep their set).
+	// The mode snapshot is taken once so reconfiguration cannot change a
+	// running task's authorization; the session context picks chat vs code
+	// per server (specs/contracts/backend-core.md).
 	modes := capabilityModesForSession(o.currentMCPCapabilityModes(), o.sessionCapabilityContext())
 	ctx = WithUserMCPServers(ctx, names)
 	return tools.WithGatedMCPServers(ctx, gatedMCPServerSet(modes, names)), nil

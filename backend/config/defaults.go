@@ -12,49 +12,36 @@ import (
 // defaultProtectedTools is the default list of tools whose output is always preserved during pruning.
 var defaultProtectedTools = []string{"store_fact", "search_facts"}
 
-// defaultSkillDirs is the default list of skill discovery directories used when
-// the `skills.dirs` config key is omitted. Order is precedence: the c0wrk
-// global directory (`~/.c0wrk/.agents/skills`) outranks the user's
-// `~/.agents/skills`, so a c0wrk-managed skill wins over a same-named user
-// skill. The current project's `.agents/skills` directory is always scanned
-// automatically (see core/builder.go) and does NOT need to be listed here.
+// defaultSkillDirs is the default skill-discovery list (`skills.dirs`
+// omitted): c0wrk global outranks user, so a c0wrk-managed skill wins over a
+// same-named user one; the project's `.agents/skills` is scanned
+// automatically, not listed. See
+// specs/decisions/056-research-always-on-global-seeding.md.
 var defaultSkillDirs = []string{
 	"~/.c0wrk/.agents/skills",
 	"~/.agents/skills",
 }
 
-// defaultAgentDirs is the default list of Subagent Profile discovery
-// directories used when the `agents.dirs` config key is omitted. Mirrors
-// defaultSkillDirs for AGENT.md files: the c0wrk global directory
-// (`~/.c0wrk/.agents/agents`) outranks the user's `~/.agents/agents`. The
-// current project's `.agents/agents` directory is always scanned
-// automatically (see core/builder.go).
+// defaultAgentDirs mirrors defaultSkillDirs for AGENT.md discovery
+// (`agents.dirs` omitted); the project's `.agents/agents` is auto-scanned.
 var defaultAgentDirs = []string{
 	"~/.c0wrk/.agents/agents",
 	"~/.agents/agents",
 }
 
-// defaultCommandDirs is the default list of custom command discovery
-// directories used when the `commands.dirs` config key is omitted. Mirrors
-// defaultSkillDirs for command template files: the c0wrk global directory
-// (`~/.c0wrk/.agents/commands`) outranks the user's `~/.agents/commands`.
-// The current project's `.agents/commands` directory is always scanned
-// automatically (see backend/frontend_api_commands.go) and does NOT need to
-// be listed here.
+// defaultCommandDirs mirrors defaultSkillDirs for command templates
+// (`commands.dirs` omitted); the project's `.agents/commands` is auto-scanned.
 var defaultCommandDirs = []string{
 	"~/.c0wrk/.agents/commands",
 	"~/.agents/commands",
 }
 
-// defaultModelProfilesAlwaysPresent is the default always-present tool allow-list
-// exposed when the model-profile essential-tools variant is active. It balances a
-// minimal schema footprint against enough capability to navigate, edit,
-// search, and finalize tasks, and it pins the tools the ReAct loop itself
-// depends on — reading user attachments and activated-skill resources, and
-// paging through a truncated tool result (read_attachment, read_skill_resource,
-// tool_result_read) plus the step checklist (update_checklist) — so an active
-// profile never leaves a session unable to finish its loop. MCP-backed tools
-// are layered on separately at runtime.
+// defaultModelProfilesAlwaysPresent is the model-profile essential-tools
+// allow-list: a minimal schema footprint with enough capability to
+// navigate/edit/search/finalize, pinning the ReAct loop's own dependencies
+// (attachment and skill-resource reads, tool_result_read, update_checklist).
+// MCP-backed tools layer on separately at runtime. See
+// specs/domains/model-profiles.md.
 var defaultModelProfilesAlwaysPresent = []string{
 	"read_file",
 	"read_attachment",
@@ -75,9 +62,8 @@ var defaultModelProfilesAlwaysPresent = []string{
 	"finish",
 }
 
-// intPtr returns a pointer to v. It is the constructor for the *int config
-// knobs whose documented contract distinguishes an absent key (nil → default)
-// from an explicit zero ("0 disables"); a plain int cannot express that.
+// intPtr constructs the *int knobs whose contract distinguishes an absent
+// key (nil → default) from an explicit zero ("0 disables").
 func intPtr(v int) *int { return &v }
 
 // ApplyDefaults sets default values for zero-value fields in the configuration.
@@ -106,20 +92,14 @@ func ApplyDefaults(cfg *Config) {
 		cfg.Commands.Dirs = append([]string(nil), defaultCommandDirs...)
 	}
 
-	// Subagent concurrency cap. 4 is a safe default: enough parallelism to
-	// overlap independent work, few enough to avoid a burst of simultaneous
-	// LLM calls / tool executions and the event-rate spike they cause.
-	// Any value <= 0 resolves to the default (see AgentsConfig
-	// MaxParallelSubagents) so a negative typo can never silently mean
-	// "unlimited" downstream — the conductor treats a non-positive cap as
-	// no cap at all.
+	// Subagent concurrency cap; <= 0 resolves back to 4 because the conductor
+	// treats a non-positive cap as uncapped (no cap at all).
 	if cfg.Agents.MaxParallelSubagents <= 0 {
 		cfg.Agents.MaxParallelSubagents = 4
 	}
 
-	// LLM retry defaults — keep this in sync with the sp4rk Router defaults
-	// (github.com/v0lka/sp4rk/llm/router.go) so config-driven and code-driven values agree.
-	// Retries cover transient failures: HTTP 429/502/503/529 and network blips.
+	// LLM retry defaults — kept in sync with the sp4rk Router defaults
+	// (sp4rk/llm/router.go); they cover transient failures (429/502/503/529, blips).
 	if cfg.LLM.Retry.MaxRetries == 0 {
 		cfg.LLM.Retry.MaxRetries = 3
 	}
@@ -130,20 +110,15 @@ func ApplyDefaults(cfg *Config) {
 		cfg.LLM.Retry.MaxBackoff = "30s"
 	}
 
-	// ChatGPT auth mode defaults to the static API key — the historical
-	// behavior. Every consumer also reads the empty mode as "api_key", so a
-	// programmatically built config that bypassed ApplyDefaults behaves the
-	// same; seeding here mainly makes the persisted value explicit.
+	// ChatGPT auth mode defaults to the static API key; consumers also read
+	// empty as "api_key" — this just makes the persisted value explicit.
 	if cfg.LLM.ChatGPT.Auth.Mode == "" {
 		cfg.LLM.ChatGPT.Auth.Mode = ChatGPTAuthModeAPIKey
 	}
 
-	// Embedded LLM idle-unload defaults. Both are pointers so an explicit
-	// `enabled: false` / `minutes: N` in YAML is respected rather than
-	// overwritten by the default. The rest of the section is app-written
-	// install state whose zero values ARE the documented not-installed
-	// defaults (installed: false, port: 0, empty packing/backend/model_file/
-	// runtime_version/installed_at), so nothing else needs seeding here.
+	// Embedded LLM idle-unload defaults; pointers so explicit YAML is
+	// respected. The rest of the section is app-written install state (its
+	// zero values ARE the not-installed defaults).
 	if cfg.EmbeddedLLM.AutoUnload.Enabled == nil {
 		autoUnload := true
 		cfg.EmbeddedLLM.AutoUnload.Enabled = &autoUnload
@@ -153,27 +128,18 @@ func ApplyDefaults(cfg *Config) {
 		cfg.EmbeddedLLM.AutoUnload.Minutes = &minutes
 	}
 
-	// embedded_llm.tuning is deliberately NOT seeded, and the omission is the
-	// whole point: every one of its knobs is a pointer so that "the operator
-	// never wrote this" stays distinguishable from "the operator wrote auto"
-	// (and, for `cache_ram_mib` and `fit`, from an explicit 0 / false — which
-	// mean something different again). Materializing the defaults here would
-	// collapse that distinction on the first save and silently change which
-	// memory plan gets built. The zero TuningConfig — every knob absent — IS
-	// the documented all-Auto default, and the planner's own defaults
-	// (embeddedllm.DefaultParallel, embeddedllm.DefaultFitMinContext) are where
-	// the resolved values live. See TuningConfig.
+	// embedded_llm.tuning is deliberately NOT seeded: pointer knobs keep
+	// "never wrote this" distinct from "wrote auto" (and from an explicit
+	// 0/false); materializing defaults would collapse that on the first save.
+	// The zero TuningConfig IS the all-Auto default. See TuningConfig.
 
 	// Executor defaults
 	if cfg.Executor.MaxRetries == 0 {
 		cfg.Executor.MaxRetries = 2
 	}
 	if cfg.Executor.OutputTokenReserve == 0 {
-		// 8192: modern coding/reasoning models regularly emit multi-thousand-
-		// token tool-call replies; a smaller reserve risks truncated responses
-		// and premature context-window overflow aborts. Only affects the
-		// context-window validation budget (input side), so the cost on large
-		// windows is negligible.
+		// 8192: modern models emit multi-thousand-token tool-call replies;
+		// a smaller reserve risks truncation. Input-side budget only.
 		cfg.Executor.OutputTokenReserve = 8192
 	}
 
@@ -211,12 +177,9 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.Executor.Compaction.SafetyMarginPercent == 0 {
 		cfg.Executor.Compaction.SafetyMarginPercent = 5
 	}
-	// Compression-ratio forecast seeds for manual-compaction prediction. Zero
-	// fields are left unset here: the core layer resolves them to sp4rk's
-	// conservative defaults (0.3 / 0.15 / 0.3) — mirroring what the prediction
-	// already does for a zero CompactionForecast. Applying them here would
-	// double-default and make an explicit "0" (an invalid ratio) indistinguishable
-	// from "unset".
+	// Forecast seeds left unset: core resolves sp4rk's conservative defaults
+	// (0.3 / 0.15 / 0.3); applying here would double-default and blur an
+	// explicit "0" (invalid ratio) vs "unset".
 
 	// Compaction thresholds defaults
 	if cfg.Executor.Compaction.Thresholds.PredictivePercent == 0 {
@@ -368,11 +331,9 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.ToolLimits.WebSearchMaxResults == 0 {
 		cfg.ToolLimits.WebSearchMaxResults = 5
 	}
-	// Glob limits (runaway-walk protection): mirrors builtins.DefaultGlobLimits.
-	// The fields are *int so an explicit `0` means "disabled/no budget" while an
-	// absent key (nil) takes the default — following the llmRequestTimeout
-	// precedent for a knob documented as "0 disables". A plain int cannot tell
-	// "absent" from "explicit 0", so it could never honor that contract.
+	// Glob limits (runaway-walk protection), mirroring
+	// builtins.DefaultGlobLimits: *int so explicit 0 = disabled, nil =
+	// default (the "0 disables" contract a plain int cannot express).
 	if cfg.ToolLimits.GlobMaxEntries == nil {
 		cfg.ToolLimits.GlobMaxEntries = intPtr(500000)
 	}
@@ -380,12 +341,9 @@ func ApplyDefaults(cfg *Config) {
 		cfg.ToolLimits.GlobMaxResults = intPtr(10000)
 	}
 
-	// Per-tool Stage 1 truncation defaults (applied before token budget).
-	// These limits trigger output fragmentation: when tool output exceeds the
-	// limit, it is truncated and a nudge with a cache hash is appended so the
-	// LLM can read the full result in fragments via tool_result_read.
-	// Set conservative values so fragmentation activates for realistic
-	// large-output scenarios (e.g. reading files >2000 lines).
+	// Per-tool Stage 1 truncation (before the token budget): over-limit
+	// output is truncated with a cache-hash nudge for tool_result_read
+	// paging; conservative values so fragmentation activates realistically.
 	if cfg.ToolLimits.PerToolTruncation == nil {
 		cfg.ToolLimits.PerToolTruncation = map[string]ToolTruncationConfig{
 			"read_file":       {MaxLines: 2000, MaxBytes: 0},
@@ -417,15 +375,11 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.Timeouts.ToolCallTimeout == nil {
 		cfg.Timeouts.ToolCallTimeout = intPtr(300)
 	}
-	// The ceiling's exempt tool-name set: the knob is deliberately left nil
-	// when absent. Nil threads through configadapter → builder → orchestrator
-	// → ConductorConfig (all nil-guarded) and sp4rk then applies its OWN
-	// built-in exempt set at execution time (agent/tool_watchdog.go), so the
-	// default can never drift and — because the whole config struct is what
-	// gets serialized on save — is never materialized into config.yaml, where
-	// a first save would otherwise freeze the 2026-10 default against future
-	// sp4rk updates. An explicit list survives verbatim; an explicit empty
-	// list survives as a non-nil empty slice ("no exemptions").
+	// The ceiling's exempt tool-name set is left nil when absent: nil
+	// threads nil-guarded to sp4rk, which applies its OWN built-in exempt
+	// set at execution time (agent/tool_watchdog.go) — no drift, and never
+	// frozen into config.yaml on a first save. An explicit list survives
+	// verbatim (an explicit empty list = no exemptions).
 	if cfg.Timeouts.WebFetchTimeout == 0 {
 		cfg.Timeouts.WebFetchTimeout = 30
 	}
@@ -441,13 +395,8 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.Timeouts.PersistenceTimeout == 0 {
 		cfg.Timeouts.PersistenceTimeout = 5
 	}
-	// LLMRequestTimeout deliberately gets NO 0→600 coercion (ADR-071): 0 is
-	// the default and means "no opinion" — under the adaptive request budget
-	// the trained per-model budgets govern, and the legacy fixed semantics
-	// (0 behaving as 600 s) live inside the budget resolver's kill-switch-off
-	// path and the shared HTTP client's fallback instead. Only a positive
-	// operator value reaches the builder, where it acts as a fixed,
-	// never-escalated override.
+	// LLMRequestTimeout gets NO 0→600 coercion (ADR-071): 0 = "no opinion"
+	// under the adaptive budgets; only a positive value is a fixed override.
 	if cfg.Timeouts.AdaptiveBudget.Enabled == nil {
 		enabled := true
 		cfg.Timeouts.AdaptiveBudget.Enabled = &enabled
@@ -459,11 +408,8 @@ func ApplyDefaults(cfg *Config) {
 		cfg.Timeouts.GitCommitTimeout = 300
 	}
 
-	// Shutdown defaults: the hard teardown watchdog. It is the last-resort
-	// bound so the process always exits; a broken cancellation path that
-	// ignores the per-step budgets must not keep the app alive forever. 60 s
-	// sits above the embedded local model's worst-case stop ceiling (~46 s), so
-	// a normal quit during a cold load is not force-exited mid-stop.
+	// Shutdown hard-teardown watchdog — the last-resort exit bound; 60 s sits
+	// above the embedded model's ~46 s worst-case stop ceiling.
 	if cfg.Shutdown.HardDeadline == 0 {
 		cfg.Shutdown.HardDeadline = 60
 	}
@@ -487,11 +433,8 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.GoalLoop.Verification == "" {
 		cfg.GoalLoop.Verification = "independent"
 	}
-	// Goal-mode suggestion defaults: the feature is on unless explicitly
-	// disabled (pointer-bool nil = enabled); the classifier is consulted
-	// from complexity 3 upward — complexity-1-2 requests (greetings, factual
-	// questions, simple edits) are virtually never goals, so consulting
-	// them wastes an LLM call.
+	// Goal-mode suggestion on unless disabled (pointer-bool nil = enabled);
+	// consulted from complexity 3 up — lower complexity is never a goal.
 	if cfg.GoalLoop.Suggest.MinComplexity == 0 {
 		cfg.GoalLoop.Suggest.MinComplexity = 3
 	}
@@ -504,10 +447,8 @@ func ApplyDefaults(cfg *Config) {
 		cfg.VectorIndex.Hybrid = &trueVal
 	}
 
-	// Hybrid RRF tuning: zero-valued ints fall back to built-in defaults
-	// in vectorindex.ResolveHybridConfig, so only set them when the user
-	// provided an explicit non-zero value. The pointer-float thresholds
-	// default to the built-in score-gate values when unset.
+	// Hybrid RRF tuning: zero ints fall back to built-in defaults in
+	// vectorindex.ResolveHybridConfig; pointer-floats to the score gates.
 	hybridDefaults := vectorindex.DefaultHybridConfig()
 	if cfg.VectorIndex.HybridVectorScoreFloor == nil {
 		floor := hybridDefaults.VectorScoreFloor
@@ -522,10 +463,8 @@ func ApplyDefaults(cfg *Config) {
 		cfg.VectorIndex.HybridLexicalScoreRatio = &ratio
 	}
 
-	// File-size and chunk-size limits. Zero falls back to the vectorindex
-	// package defaults (4 MiB / 1500 chars). These are applied here (not in
-	// NewManager/NewService) so they are visible in the resolved config the
-	// frontend can inspect, matching the hybrid-threshold pattern above.
+	// File-size and chunk-size limits fall back to the vectorindex defaults;
+	// applied HERE so the resolved config the frontend inspects shows them.
 	if cfg.VectorIndex.MaxFileSize == 0 {
 		cfg.VectorIndex.MaxFileSize = vectorindex.DefaultMaxIndexableFileSize
 	}
@@ -536,12 +475,8 @@ func ApplyDefaults(cfg *Config) {
 		cfg.VectorIndex.MaxChunksPerFile = vectorindex.DefaultMaxChunksPerFile
 	}
 
-	// Indexing/search tuning knobs. Zero falls back to the vectorindex
-	// package defaults — the historical hardcoded values — so a config
-	// without a vector_index block resolves to exactly the pre-knob
-	// behaviour. SearchWaitTimeoutMs is a pointer-int: nil (unset) resolves
-	// to the 3000 ms default, while an explicit 0 is preserved as the
-	// "fail fast" sentinel and must NOT be defaulted here.
+	// Indexing/search knobs: zero falls back to the vectorindex defaults;
+	// SearchWaitTimeoutMs is pointer-int (nil → 3000 ms, explicit 0 = fail fast).
 	if cfg.VectorIndex.EmbeddingBatchSize == 0 {
 		cfg.VectorIndex.EmbeddingBatchSize = vectorindex.DefaultEmbeddingBatchSize
 	}
@@ -557,10 +492,8 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.VectorIndex.ChunkOverlap == 0 {
 		cfg.VectorIndex.ChunkOverlap = vectorindex.DefaultChunkOverlap
 	}
-	// Content-filter defaults are materialized so the resolved config the
-	// frontend inspects shows the effective policy. Pointer bools default
-	// to true; numeric thresholds to the package defaults. Explicit user
-	// values (including explicit false) are preserved.
+	// Content-filter defaults materialized so the resolved config shows the
+	// effective policy; pointer bools default true (explicit false preserved).
 	filterDefaults := vectorindex.DefaultContentFilterConfig()
 	if cfg.VectorIndex.ContentFilter.Enabled == nil {
 		enabled := filterDefaults.Enabled
@@ -607,20 +540,15 @@ func ApplyDefaults(cfg *Config) {
 		v := vectorindex.DefaultParkCapacity
 		cfg.VectorIndex.ParkCapacity = &v
 	}
-	// ParkBudgetMb is a pointer-int64: nil (unset) resolves to the default
-	// of 1024 MiB, while an explicit negative is preserved as the
-	// "budget disabled" sentinel (park_capacity alone bounds the LRU). An
-	// explicit 0 is NOT defaulted here — validate() rejects it as ambiguous.
+	// ParkBudgetMb: pointer-int64, nil → 1024 MiB default; explicit negative =
+	// budget disabled; explicit 0 rejected by validate() as ambiguous.
 	if cfg.VectorIndex.ParkBudgetMb == nil {
 		v := vectorindex.DefaultParkBudgetBytes >> 20
 		cfg.VectorIndex.ParkBudgetMb = &v
 	}
 
-	// Execution provider. The empty string (a config written before the
-	// knob existed, or no vector_index block at all) normalizes to "auto".
-	// DeviceID has no defaulting to do: its zero value (0) is already the
-	// valid "first GPU" default; only invalid negatives are rejected by
-	// validate().
+	// Execution provider: empty normalizes to "auto"; DeviceID's 0 is already
+	// the valid "first GPU" (only negatives are rejected).
 	if cfg.VectorIndex.ExecutionProvider == "" {
 		cfg.VectorIndex.ExecutionProvider = VectorIndexProviderAuto
 	}
@@ -636,26 +564,17 @@ func ApplyDefaults(cfg *Config) {
 		cfg.Proxy.SetGlobalEnv = &trueVal
 	}
 
-	// Model Profiles profile persist defaults. The section carries only the master
-	// toggle and the active profile id (ModelProfilesPersistConfig): the master toggle
-	// defaults to false (manual only — no auto-detection), and the active
-	// profile defaults to the model-agnostic "generic" profile. The 25
-	// variant knobs are no longer seeded here — they come from the active
-	// profile's catalog entry at resolve time (ResolveModelProfilesConfig), where the
-	// generic profile carries the researched defaults (reasoning_effort
-	// "medium", loop thresholds 2/3/3/5/4, context 6/5/80/2/16384, the
-	// default always-present list). A legacy inline small_llm.* section is
-	// ignored at load and dropped on the next save.
+	// Model Profiles persistence carries only the master toggle (default
+	// false — manual only) and the active profile ("generic"); the variant
+	// knobs come from the catalog at resolve time (ResolveModelProfilesConfig).
+	// A legacy inline small_llm.* section is ignored and dropped on next save.
 	if cfg.ModelProfiles.ActiveProfile == "" {
 		cfg.ModelProfiles.ActiveProfile = ModelProfilesGenericProfileID
 	}
 
-	// E2S execution-mode defaults. Like the Model Profiles profile the section is
-	// seeded unconditionally (zero → default) so the values stay visible and
-	// editable while the mode itself stays a no-op until experimental.enabled
-	// is true (there is no separate e2s master toggle). The byte limit mirrors
-	// core/e2s.DefaultStateByteLimit so the domain default and the config
-	// default cannot drift apart.
+	// E2S execution-mode defaults, seeded unconditionally so values stay
+	// visible/editable while the mode stays a no-op until experimental.enabled
+	// (no separate toggle); the byte limit mirrors core/e2s.DefaultStateByteLimit.
 	if cfg.E2S.MaxSteps == 0 {
 		cfg.E2S.MaxSteps = 50
 	}
@@ -686,12 +605,8 @@ func ApplyDefaults(cfg *Config) {
 		cfg.E2S.Tools.Preset = E2SToolsPresetCore
 	}
 
-	// Self-update defaults. Enabled is the master switch and defaults to true
-	// (a pointer-bool so an explicit `enabled: false` in YAML is respected
-	// rather than overwritten by the default). AutoCheck governs the automatic
-	// background poll and likewise defaults to true. CheckInterval defaults to
-	// 6h, a conservative cadence that avoids hammering the GitHub
-	// unauthenticated rate limit while still surfacing new releases promptly.
+	// Self-update: Enabled/AutoCheck pointer-bools default true (explicit
+	// false respected); CheckInterval 6h avoids GitHub rate limiting.
 	if cfg.Updates.Enabled == nil {
 		enabled := true
 		cfg.Updates.Enabled = &enabled
@@ -704,13 +619,8 @@ func ApplyDefaults(cfg *Config) {
 		cfg.Updates.CheckInterval = "6h"
 	}
 
-	// Git auto-fetch defaults. AutoFetch is the master gate for every
-	// automatic fetch trigger (app startup, project switch, window focus,
-	// periodic ticker) and defaults to true (a pointer-bool so an explicit
-	// `auto_fetch: false` in YAML is respected rather than overwritten by the
-	// default). AutoFetchInterval defaults to 2m; the raw string is parsed by
-	// the consumer, and an explicit "0" is preserved here — it disables only
-	// the periodic ticker, leaving the event-driven triggers on.
+	// Git auto-fetch: AutoFetch gates every automatic trigger (default true);
+	// AutoFetchInterval 2m, consumer-parsed; explicit "0" disables only the ticker.
 	if cfg.Git.AutoFetch == nil {
 		autoFetch := true
 		cfg.Git.AutoFetch = &autoFetch
@@ -719,26 +629,20 @@ func ApplyDefaults(cfg *Config) {
 		cfg.Git.AutoFetchInterval = "2m"
 	}
 
-	// Notification banner lifetime defaults to -1: let the notification
-	// daemon decide, which is the behavior that shipped before the setting
-	// existed. A pointer-int because 0 is a MEANINGFUL value here ("never
-	// expire"), so the Go zero value cannot double as "unset".
+	// Notification banner lifetime defaults to -1 ("daemon decides");
+	// pointer-int because 0 is MEANINGFUL ("never expire"), not "unset".
 	if cfg.Notifications.BannerTimeoutSeconds == nil {
 		bannerTimeout := NotificationBannerTimeoutDaemonDefault
 		cfg.Notifications.BannerTimeoutSeconds = &bannerTimeout
 	}
 
-	// Runtime defaults need no mutation: runtime.memory_soft_limit_mb is a
-	// tri-state int whose zero value already IS the default (0 = auto — the
-	// desktop layer derives the soft limit from physical RAM, see
-	// desktop/memlimit.go; >0 = explicit MiB; -1 = off). Documented here so
-	// default hunters find it; the AUTO value (0) and the OFF sentinel (-1)
-	// are validated in validate().
+	// Runtime needs no mutation: memory_soft_limit_mb is tri-state and its
+	// zero value IS the default (0 = auto from physical RAM, desktop/memlimit.go;
+	// -1 = off), validated in validate(). Documented for default hunters.
 
-	// shell_exec defaults: an active launch-shape override without a
-	// declared shell is seeded with the tool's platform-default kind
-	// (bash_exec → bash, posh_exec → powershell) — the overwhelmingly common
-	// override (a Homebrew bash, a login zsh, a pwsh replacement) keeps the
+	// shell_exec defaults: an active launch-shape override without a declared
+	// shell is seeded with the tool's platform-default kind (bash_exec → bash,
+	// posh_exec → powershell) — the overwhelmingly common override keeps the
 	// tool's native syntax family. An INVALID explicit kind is not handled
 	// here: normalizeShellExec (load pipeline) warns and resets the section.
 	if cfg.ShellExec.BashExec.OverrideActive() && cfg.ShellExec.BashExec.Shell == "" {
@@ -748,24 +652,20 @@ func ApplyDefaults(cfg *Config) {
 		cfg.ShellExec.PoshExec.Shell = DefaultShellKindPosh
 	}
 
-	// web_access defaults. The section is OFF by default — the zero Enabled
-	// (an absent section, or an explicit `enabled: false`) never starts the
-	// sidecar. Only the bind address is seeded, so the persisted shape always
-	// names the explicit loopback default even for an operator who only flips
-	// `enabled` on; port 0 (auto) and the empty token (minted once at the
-	// first start, then persisted) are the zero values by design. An UNSAFE
-	// enabled section is not handled here: normalizeWebAccess (load pipeline)
-	// warns and resets the section.
+	// web_access defaults: OFF by default (a zero Enabled never starts the
+	// sidecar); only the bind is seeded so the persisted shape names the
+	// loopback default; port 0 (auto) and the empty token (minted once, then
+	// persisted) are zero values by design. An UNSAFE enabled section is left
+	// to normalizeWebAccess (load pipeline).
 	if cfg.WebAccess.Bind == "" {
 		cfg.WebAccess.Bind = DefaultWebAccessBind
 	}
 }
 
-// defaultToolGroupPolicies is the single source of truth for the configurable
-// security tool groups (everything except the reserved ToolGroupSystem) and
-// their default policies: reads run without confirmation; anything that
-// mutates local state, executes commands, or crosses a process/network
-// boundary requires user confirmation.
+// defaultToolGroupPolicies is the single source of truth for the
+// configurable security tool groups' default policies: reads run without
+// confirmation; anything mutating local state, executing commands, or
+// crossing a process/network boundary requires user confirmation.
 var defaultToolGroupPolicies = map[string]string{
 	ToolGroupLocalRead:   GroupPolicyAllow,
 	ToolGroupRemoteRead:  GroupPolicyAllow,
@@ -787,10 +687,8 @@ var sortedToolGroupNames = func() []string {
 	return names
 }()
 
-// IsConfigurableToolGroup reports whether name is one of the configurable
-// security tool groups (every declared group except the reserved "system"
-// group, which policy configuration must never touch). It is the single
-// predicate behind config validation and runtime security-settings updates.
+// IsConfigurableToolGroup reports whether name is a configurable group
+// (all but the reserved "system"); the predicate behind validation + updates.
 func IsConfigurableToolGroup(name string) bool {
 	_, ok := defaultToolGroupPolicies[name]
 	return ok

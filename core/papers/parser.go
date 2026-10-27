@@ -1,17 +1,6 @@
-// Package papers — content parsing layer.
-//
-// This file holds everything that turns paper artifact TEXT into the model
-// types: the YAML front-matter reader (with a tolerant line-scanner fallback),
-// the Markdown table reader, and the pure functions that extract claims,
-// red flags, uncertainty, and the appraisal verdict. The two thin filesystem
-// orchestrators at the bottom (ParsePaperDir / ParseLibraryDir) are the only
-// routines here that touch disk, and they only READ — the writer layer owns
-// all mutation.
-//
-// Parsing is deliberately best-effort and total: every artifact is optional,
-// every table is optional, and a malformed or truncated document yields the
-// fields that could be recovered rather than an error. This mirrors the
-// research parser: a partially written paper must still render usefully.
+// Package papers — content parsing layer: front matter, Markdown tables,
+// and the claim/appraisal extractors. Best-effort and total (specs/domains/
+// papers.md); only ParsePaperDir/ParseLibraryDir touch disk, read-only.
 package papers
 
 import (
@@ -31,21 +20,11 @@ import (
 	"github.com/v0lka/sp4rk/safeio"
 )
 
-// ---------------------------------------------------------------------------
-// Front matter
-// ---------------------------------------------------------------------------
+// --- Front matter ---
 
-// frontMatter splits a Markdown document into its YAML front matter — the block
-// between the leading "---" fence and the next fence ("---" or "...") — and the
-// body. ok is false when the document does not open with a front-matter fence,
-// in which case fm is empty and body is the whole input. A leading UTF-8 BOM is
-// tolerated.
-//
-// Either delimiter terminates the block, so a card written by the package
-// writer (`---` … `---`, the shape the study-paper skill documents) splits
-// correctly and its body reaches the caller. An unterminated fence is recovered
-// best-effort: the remainder is treated as front matter (a truncated card must
-// not lose its fields) and the body is empty.
+// frontMatter splits a document into its YAML front matter ("---"/"..."
+// delimited) and body; ok is false without an opening fence. An
+// unterminated fence recovers best-effort: remainder = front matter.
 func frontMatter(content string) (fm, body string, ok bool) {
 	s := strings.TrimPrefix(content, "\ufeff")
 	lines := strings.Split(s, "\n")
@@ -56,9 +35,8 @@ func frontMatter(content string) (fm, body string, ok bool) {
 		return "", content, false
 	}
 	for i := 1; i < len(lines); i++ {
-		// Any fence line closes the block — "---" or "...". Without this a
-		// `---`-delimited card never terminates and its body (and the
-		// documented title fallback) is lost.
+		// Any fence line closes the block — "---" or "..." — so a
+		// `---`-delimited card terminates and its body survives.
 		if k := fenceKind(lines[i]); k != fenceNone {
 			return strings.Join(lines[1:i], "\n"), strings.Join(lines[i+1:], "\n"), true
 		}
@@ -85,9 +63,8 @@ const (
 	fenceClose
 )
 
-// paperFrontMatter is the decoded shape of paper.md's front matter. Every field
-// is optional; unknown keys are ignored, and the tolerant scalar/list types
-// accept both the canonical block form and hand-written shorthands.
+// paperFrontMatter is the decoded shape of paper.md's front matter: fields
+// optional, unknown keys ignored, tolerant scalar/list types.
 type paperFrontMatter struct {
 	ID          string         `yaml:"id"`
 	Slug        string         `yaml:"slug"`
@@ -104,10 +81,8 @@ type paperFrontMatter struct {
 	Anchors     anchorList     `yaml:"anchors"`
 }
 
-// parseFrontMatter decodes a front-matter block. It prefers a real YAML decode
-// (which handles nested identifiers/anchors and quoting); when that fails — a
-// hand-edited or truncated block — it falls back to a line scanner that
-// recovers the scalar fields it can.
+// parseFrontMatter prefers a real YAML decode; on failure it falls back
+// to the tolerant line scanner.
 func parseFrontMatter(fm string) paperFrontMatter {
 	fm = strings.TrimSpace(fm)
 	if fm == "" {
@@ -120,9 +95,8 @@ func parseFrontMatter(fm string) paperFrontMatter {
 	return parseFrontMatterFallback(fm)
 }
 
-// parseFrontMatterFallback recovers scalar front-matter fields from a block
-// that is not valid YAML, by scanning "key: value" lines. List-valued keys are
-// split on commas/semicolons. It never errors: unparseable lines are skipped.
+// parseFrontMatterFallback recovers "key: value" scalar fields from a block
+// that is not valid YAML; unparseable lines are skipped.
 func parseFrontMatterFallback(fm string) paperFrontMatter {
 	var meta paperFrontMatter
 	for _, raw := range strings.Split(fm, "\n") {
@@ -186,10 +160,8 @@ func parseFrontMatterFallback(fm string) paperFrontMatter {
 	return meta
 }
 
-// splitLineKeyValue splits a "key: value" line into its parts. The key must be
-// a bare token (no whitespace); a line without a colon, or with whitespace in
-// the key, is not a key/value line. Surrounding quotes on the value are
-// stripped so both `title: "X"` and `title: X` parse identically.
+// splitLineKeyValue splits a "key: value" line: the key must be a bare
+// token; value quotes are stripped so `title: "X"` == `title: X`.
 func splitLineKeyValue(line string) (key, value string, ok bool) {
 	i := strings.Index(line, ":")
 	if i <= 0 {
@@ -238,9 +210,8 @@ func leadingDigits(s string) string {
 // qualifier-prefixed year ("c. 2017", "circa 2017") is recovered.
 var fullYearRe = regexp.MustCompile(`\d{4}`)
 
-// recoverYear extracts a year from a scalar value: a leading digit run when
-// present ("2017", "2017-06"), else the first four-digit run anywhere
-// ("c. 2017" → 2017). ok is false when no year can be recovered.
+// recoverYear extracts a year: the leading digit run ("2017-06" → 2017),
+// else the first four-digit run anywhere ("c. 2017" → 2017).
 func recoverYear(s string) (int, bool) {
 	if d := leadingDigits(s); d != "" {
 		if n, err := strconv.Atoi(d); err == nil {
@@ -255,13 +226,10 @@ func recoverYear(s string) (int, bool) {
 	return 0, false
 }
 
-// ---------------------------------------------------------------------------
-// Tolerant YAML scalar/list types
-// ---------------------------------------------------------------------------
+// --- Tolerant YAML scalar/list types ---
 
-// stringList is a []string that also accepts a single scalar (comma/semicolon
-// separated) or a YAML flow list, so hand-written front matter does not have to
-// use the canonical block-list form.
+// stringList accepts a single scalar (comma/semicolon separated) or a flow
+// list, so hand-written front matter needs no canonical block form.
 type stringList []string
 
 // UnmarshalYAML implements yaml.Unmarshaler.
@@ -289,9 +257,8 @@ func (l *stringList) UnmarshalYAML(node *yaml.Node) error {
 	}
 }
 
-// flexibleInt is an int that also accepts a quoted scalar or a date-like
-// scalar ("2017", "2017-06", "c. 2017"), recovering the year when one is
-// present.
+// flexibleInt accepts a quoted or date-like scalar, recovering the year
+// when one is present.
 type flexibleInt int
 
 // UnmarshalYAML implements yaml.Unmarshaler.
@@ -359,9 +326,8 @@ func (l *identifierList) UnmarshalYAML(node *yaml.Node) error {
 	}
 }
 
-// parseIdentifierToken parses a bare identifier scalar. A "scheme:value" token
-// with an identifier-like scheme splits into its parts; a URL keeps its scheme
-// as "url"; anything else is stored as a bare value.
+// parseIdentifierToken parses a bare identifier scalar: "scheme:value" with
+// an identifier-like scheme splits; a URL keeps scheme "url"; else bare value.
 func parseIdentifierToken(s string) (Identifier, bool) {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -380,9 +346,8 @@ func parseIdentifierToken(s string) (Identifier, bool) {
 	return Identifier{Value: s}, true
 }
 
-// isSchemeToken reports whether s is a plausible identifier-scheme tag (short,
-// alphanumeric with hyphens/underscores, no dots so it does not swallow a
-// domain-like value).
+// isSchemeToken: short alphanumeric tag with hyphens/underscores, no dots
+// (must not swallow a domain-like value).
 func isSchemeToken(s string) bool {
 	if s == "" || len(s) > 16 {
 		return false
@@ -427,15 +392,10 @@ func (l *anchorList) UnmarshalYAML(node *yaml.Node) error {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// paper.md parsing
-// ---------------------------------------------------------------------------
+// --- paper.md parsing ---
 
-// ParsePaperMD parses a paper.md document — its YAML front matter plus the
-// optional Markdown body — into a PaperRecord. It is best-effort: a document
-// with no front matter, or with malformed front matter, still parses, carrying
-// whatever fields could be recovered. When the front matter declares no title,
-// the body's first ATX heading is used as a fallback.
+// ParsePaperMD parses paper.md best-effort (specs/domains/papers.md); a
+// missing title falls back to the body's first ATX heading.
 func ParsePaperMD(content string) PaperRecord {
 	fm, body, _ := frontMatter(content)
 	rec := recordFromFrontMatter(parseFrontMatter(fm))
@@ -488,9 +448,8 @@ func recordFromFrontMatter(meta paperFrontMatter) PaperRecord {
 	return rec
 }
 
-// normalizeAnchors trims anchor fields and drops fully-empty anchors. It
-// returns nil rather than an empty slice when nothing survives, so the zero
-// value stays canonical.
+// normalizeAnchors trims fields, drops fully-empty anchors, and returns nil
+// (not an empty slice) so the zero value stays canonical.
 func normalizeAnchors(in []Anchor) []Anchor {
 	if len(in) == 0 {
 		return nil
@@ -536,22 +495,18 @@ func appendUnique(list []string, v string) []string {
 	return append(list, v)
 }
 
-// ---------------------------------------------------------------------------
-// Markdown tables
-// ---------------------------------------------------------------------------
+// --- Markdown tables ---
 
-// mdTable is a parsed Markdown table: the heading it sits under (nearest ATX
-// heading above it, if any), its header cells, and its data rows.
+// mdTable is a parsed Markdown table: its nearest preceding ATX heading,
+// header cells, and data rows.
 type mdTable struct {
 	Heading string
 	Header  []string
 	Rows    [][]string
 }
 
-// parseTables extracts every Markdown table from content, tagging each with the
-// nearest preceding heading. A contiguous run of |-prefixed lines forms a table
-// only when it contains a separator row after a header row; a |-prefixed run
-// without one is skipped.
+// parseTables extracts every Markdown table, tagged with its nearest
+// preceding heading; a |-run without a header+separator shape is skipped.
 func parseTables(content string) []mdTable {
 	lines := strings.Split(content, "\n")
 	var tables []mdTable
@@ -649,9 +604,8 @@ func isSeparatorRow(cells []string) bool {
 	return true
 }
 
-// pickTable selects the table for an artifact: the first table whose header
-// contains every header token, else the first table sitting under a heading
-// that contains any heading token. ok is false when neither matches.
+// pickTable selects an artifact's table: all header tokens matched, else a
+// heading token matched; ok=false when neither.
 func pickTable(tables []mdTable, headerTokens, headingTokens []string) (mdTable, bool) {
 	for _, t := range tables {
 		if headerHasAll(t.Header, headerTokens) {
@@ -702,10 +656,8 @@ func headingHasAny(heading string, tokens []string) bool {
 	return false
 }
 
-// columnIndex returns the index of the first header cell matching any name, or
-// -1 when none matches. Matching is case-insensitive with per-token anchored
-// or substring semantics (see columnNameMatches), mirroring the frontend
-// twin's regexes in frontend/src/lib/flashcards.ts.
+// columnIndex returns the first header cell matching any name (-1 when none),
+// mirroring the frontend twin's regexes in frontend/src/lib/flashcards.ts.
 func columnIndex(header []string, names ...string) int {
 	for i, h := range header {
 		hn := strings.ToLower(strings.Trim(h, "*_` "))
@@ -718,14 +670,9 @@ func columnIndex(header []string, names ...string) int {
 	return -1
 }
 
-// looseColumnTokens match as plain substrings, mirroring the frontend twin's
-// UNANCHORED regex alternatives in frontend/src/lib/flashcards.ts (FRONT_COL
-// /front|question|prompt/, BACK_COL /back|answer/, GRADE_COL
-// /grade|rating|result/, DATE_COL /date|when/) — so `Questions`, `Answers`,
-// `Grades`, and `Dates` headers resolve on both sides. Every other token
-// keeps the word-boundary anchor (the frontend's `\b…\b` alternatives:
-// tag/label/ref/due, and the remaining tokens this matcher also serves);
-// "id" stays start-anchored (frontend `/^id\b/`).
+// looseColumnTokens match as plain substrings, mirroring the frontend
+// twin's UNANCHORED regexes (flashcards.ts) so `Questions`/`Grades` etc.
+// resolve on both sides; other tokens stay boundary-anchored.
 var looseColumnTokens = map[string]struct{}{
 	"front":    {},
 	"question": {},
@@ -739,15 +686,11 @@ var looseColumnTokens = map[string]struct{}{
 	"when":     {},
 }
 
-// columnNameMatches reports whether a cleaned, lower-cased header cell matches
-// a column-name token. The tokens in looseColumnTokens match as
-// case-insensitive substrings, so `Questions` matches `question` exactly as
-// the frontend twin's unanchored /front|question|prompt/ does
-// (frontend/src/lib/flashcards.ts pickColumn). Every other token must sit on
-// both word boundaries, so "Reference" does not match "ref" and "Tags" does
-// not match "tag". The token "id" is additionally anchored to the START of the
-// cell (mirroring the frontend's `/^id\b/`), so "Card ID" does not resolve to
-// the id column.
+// columnNameMatches: loose tokens as substrings, others on both word
+// boundaries ("Reference" ≠ "ref", "Tags" ≠ "tag"), "id" anchored to the
+// cell start. Go↔frontend parity with flashcards.ts is a two-sided
+// contract.
+// See specs/domains/papers.md (Invariants).
 func columnNameMatches(hn, name string) bool {
 	n := strings.ToLower(strings.Trim(name, "*_` "))
 	if n == "" {
@@ -780,9 +723,8 @@ func columnNameMatches(hn, name string) bool {
 	return false
 }
 
-// isWordByte reports whether b is a word character for the purposes of
-// columnNameMatches (ASCII letters, digits, and underscore — the same class the
-// frontend's `\b` word boundary uses).
+// isWordByte reports whether b is a word character (ASCII letters, digits,
+// underscore — the frontend `\b` class).
 func isWordByte(b byte) bool {
 	return b == '_' ||
 		(b >= 'a' && b <= 'z') ||
@@ -790,9 +732,8 @@ func isWordByte(b byte) bool {
 		(b >= '0' && b <= '9')
 }
 
-// colOr returns columnIndex(header, names...) when it resolves, else the
-// positional fallback index (when in range), else -1 — so a table with
-// non-standard headers still yields data by column position.
+// colOr resolves columnIndex, else the positional fallback (when in range),
+// so non-standard headers still yield data by column position.
 func colOr(header []string, fallback int, names ...string) int {
 	if i := columnIndex(header, names...); i >= 0 {
 		return i
@@ -811,12 +752,9 @@ func cellAt(row []string, idx int) string {
 	return strings.TrimSpace(row[idx])
 }
 
-// ---------------------------------------------------------------------------
-// Table cell escaping (shared contract with the writer)
-// ---------------------------------------------------------------------------
+// --- Table cell escaping (shared contract with the writer) ---
 
-// splitCells splits a single Markdown table row (with leading/trailing pipes)
-// into its trimmed, unescaped cell values.
+// splitCells splits a table row into its trimmed, unescaped cell values.
 func splitCells(row string) []string {
 	row = strings.TrimSpace(strings.TrimRight(row, "\r"))
 	row = strings.TrimPrefix(row, "|")
@@ -846,9 +784,8 @@ func splitUnescapedPipes(s string) []string {
 	return append(parts, s[start:])
 }
 
-// joinCells re-joins trimmed cells into a pipe-delimited Markdown row with the
-// canonical surrounding spaces. Each cell is escaped so a value containing a
-// pipe or newline cannot corrupt the row; splitCells reverses the escape.
+// joinCells re-joins trimmed cells into a canonical pipe-delimited row,
+// escaping pipes/newlines; splitCells reverses the escape.
 func joinCells(cells []string) string {
 	esc := make([]string, len(cells))
 	for i, c := range cells {
@@ -857,10 +794,8 @@ func joinCells(cells []string) string {
 	return "| " + strings.Join(esc, " | ") + " |"
 }
 
-// escapeCell shields a logical value so it can live inside a single Markdown
-// table row: a raw newline becomes the "<br>" fold marker and a literal pipe
-// becomes "\|". unescapeCell reverses both on parse. (A value that literally
-// contains the marker text is a documented, accepted limitation.)
+// escapeCell makes a value safe in one table row (newline → "<br>", pipe
+// → "\|"); a value containing the marker text is an accepted limitation.
 func escapeCell(v string) string {
 	v = strings.ReplaceAll(v, "\r\n", "\n")
 	v = strings.ReplaceAll(v, "\r", "\n")
@@ -876,23 +811,17 @@ func unescapeCell(v string) string {
 	return v
 }
 
-// ---------------------------------------------------------------------------
-// note.md parsing
-// ---------------------------------------------------------------------------
+// --- note.md parsing ---
 
-// ParseNote parses a note.md document into its three artifact lists — claims
-// (claim→evidence), red flags, and uncertainty. It is best-effort: a missing or
-// unrecognized table yields a nil list rather than an error.
+// ParseNote parses note.md into claims, red flags, and uncertainties —
+// best-effort: a missing/unrecognized table yields nil.
 func ParseNote(content string) (claims []Claim, redFlags []RedFlag, uncertainties []Uncertainty) {
 	tables := parseTables(content)
 	return parseClaims(tables), parseRedFlags(tables), parseUncertainties(tables)
 }
 
-// parseClaims extracts the claim→evidence table. Columns are resolved
-// exclusively (each pick excludes the indices already claimed), so on the
-// bundled note template's §5 matrix — whose "claim" and "evidence" headers sit
-// in different cells that both contain the word "claim" — the Evidence column
-// cannot re-select the Claim cell.
+// parseClaims extracts the claim→evidence table; columns resolve
+// exclusively, so headers sharing the word "claim" cannot double-select.
 func parseClaims(tables []mdTable) []Claim {
 	t, ok := pickTable(tables, []string{"claim"}, []string{"claim", "assertion", "finding"})
 	if !ok {
@@ -961,17 +890,13 @@ func parseUncertainties(tables []mdTable) []Uncertainty {
 	return out
 }
 
-// ---------------------------------------------------------------------------
-// appraisal.md parsing
-// ---------------------------------------------------------------------------
+// --- appraisal.md parsing ---
 
 // keyValue is one recovered key/value pair from an appraisal sheet.
 type keyValue struct{ key, value string }
 
-// ParseAppraisal parses an appraisal.md document into its verdict and
-// confidence. It accepts either a Field|Value table or free-form
-// "Verdict: ..." / "**Confidence:** ..." lines. Missing or unrecognized
-// documents yield empty values.
+// ParseAppraisal parses appraisal.md into verdict and confidence (a
+// Field|Value table or free-form lines); unrecognized input → empty.
 func ParseAppraisal(content string) (Verdict, Confidence) {
 	var verdict, conf string
 	for _, kv := range scanKeyValues(content) {
@@ -1051,20 +976,12 @@ func normalizeKey(s string) string {
 	return strings.ToLower(cleanKey(s))
 }
 
-// ---------------------------------------------------------------------------
-// Whole-record assembly
-// ---------------------------------------------------------------------------
+// --- Whole-record assembly ---
 
-// ParsePaper combines a paper's three artifact documents into one record. It is
-// the pure core of ParsePaperDir, exposed so callers (and tests) holding
-// artifact content can parse without touching disk. The paper.md card supplies
-// the identity fields; note.md supplies claims/red flags/uncertainty; and
-// appraisal.md supplies the verdict/confidence — which, being the dedicated
-// appraisal sheet, wins over a conflicting value in the front matter. The
-// verdict override is applied only when the appraisal value resolves to a
-// canonical constant, so a template/placeholder value that merely parses as
-// text (e.g. the option list `accept / weak accept / …`) can never overwrite
-// the card's own verdict.
+// ParsePaper combines the three artifacts; the appraisal sheet's verdict/
+// confidence win over the front matter, but the verdict override applies
+// only to canonical constants — a template placeholder can never overwrite
+// the card's verdict (specs/domains/papers.md).
 func ParsePaper(paperMD, noteMD, appraisalMD string) PaperRecord {
 	rec := ParsePaperMD(paperMD)
 	rec.Claims, rec.RedFlags, rec.Uncertainties = ParseNote(noteMD)
@@ -1090,24 +1007,14 @@ func isCanonicalVerdict(v Verdict) bool {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Filesystem orchestrators (read-only)
-// ---------------------------------------------------------------------------
+// --- Filesystem orchestrators (read-only) ---
 
-// maxArtifactBytes bounds a single paper-artifact read: the library is
-// user-selected content and every parse feeds read-only UI paths, so an
-// oversized artifact must not be read whole into memory — safeio.ReadFile is
-// an unbounded io.ReadAll. A file over the cap is reported as a read failure,
-// which ParsePaperDir's best-effort handling skips.
+// maxArtifactBytes bounds one artifact read (safeio.ReadFile is
+// unbounded); oversize is a read failure that best-effort parsing skips.
 const maxArtifactBytes = 8 << 20
 
-// readFile reads a file's contents. A missing artifact is a normal partial
-// state, so fs.ErrNotExist yields ("", false, nil); any other error (a
-// permission failure, a corrupted/dangling symlink, or a path that is itself a
-// directory) is a genuine failure and is propagated rather than silently folded
-// into "artifact absent". Parsing is rendering-only; mutation lives in the
-// writer, which uses its own strict reads. An artifact over maxArtifactBytes
-// is likewise a failure: its read would otherwise be unbounded.
+// readFile: fs.ErrNotExist is a normal partial state (absent ≠ error);
+// any other read error — and an oversize file — is a genuine failure.
 func readFile(path string) (body string, ok bool, err error) {
 	if info, statErr := os.Stat(path); statErr == nil && info.Size() > maxArtifactBytes {
 		return "", false, fmt.Errorf("reading paper artifact %q: file exceeds the %d byte read cap", path, maxArtifactBytes)
@@ -1122,20 +1029,15 @@ func readFile(path string) (body string, ok bool, err error) {
 	return string(data), true, nil
 }
 
-// ParsePaperDir parses a single paper directory. It is fully best-effort: each
-// of the three artifacts is optional, so a directory carrying only paper.md (or
-// even nothing) parses cleanly into a record holding whatever was present. Only
-// a missing or unreadable directory itself, or an artifact that exists but
-// cannot be read, is an error.
+// ParsePaperDir parses one paper directory, fully best-effort; only a
+// missing/unreadable directory or an unreadable artifact is an error.
 func ParsePaperDir(dir string) (*PaperRecord, error) {
 	rec, _, err := parsePaperDir(dir)
 	return rec, err
 }
 
-// parsePaperDir is ParsePaperDir plus a presence flag: had reports whether the
-// directory carried at least one of the three artifacts. ParseLibraryDir uses
-// it to skip stray non-paper directories. A missing artifact is not an error; an
-// artifact that exists but cannot be read is propagated.
+// parsePaperDir adds a presence flag (any of the three artifacts) so
+// ParseLibraryDir can skip stray non-paper directories.
 func parsePaperDir(dir string) (*PaperRecord, bool, error) {
 	info, err := os.Stat(dir)
 	if err != nil {
@@ -1160,10 +1062,8 @@ func parsePaperDir(dir string) (*PaperRecord, bool, error) {
 
 	rec := ParsePaper(paperMD, noteMD, appraisalMD)
 	rec.Dir = dir
-	// Derive a fallback identity from the directory name: its base is the slug
-	// the writer used, and may also be a P-NNN id. When neither yields a
-	// canonical id the directory-derived slug is used, so the record always
-	// carries a deterministic, non-empty id (the frontend keys records on it).
+	// Directory-name fallback identity: the record always carries a
+	// deterministic, non-empty id (the frontend keys records on it).
 	base := filepath.Base(dir)
 	if rec.Slug == "" {
 		rec.Slug = base
@@ -1178,12 +1078,8 @@ func parsePaperDir(dir string) (*PaperRecord, bool, error) {
 	return &rec, hasPaper || hasNote || hasAppraisal, nil
 }
 
-// ParseLibraryDir parses a paper-library root directory: every non-hidden paper
-// subdirectory, each parsed by ParsePaperDir. Directories carrying none of the
-// three artifacts are skipped (they are not papers), and an unparsable paper is
-// skipped rather than failing the whole library. Only an unreadable root path
-// is an error. The returned library is sorted deterministically by ID then
-// slug.
+// ParseLibraryDir parses artifact-carrying subdirectories, skipping stray
+// dirs and unparsable papers; the result is sorted deterministically.
 func ParseLibraryDir(root string) (*PaperLibrary, error) {
 	info, err := os.Stat(root)
 	if err != nil {

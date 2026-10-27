@@ -18,25 +18,25 @@ import (
 	"github.com/v0lka/sp4rk/safeio"
 )
 
-// Config holds HTTP/HTTPS proxy settings.
+// Config holds HTTP/HTTPS proxy settings (consumed per
+// specs/contracts/core-sp4rk.md, "Consumed from core/proxy").
 type Config struct {
 	Enabled    bool
 	URL        string   // scheme://user:password@host:port
 	BypassList []string // hostnames/IPs to skip proxy
 	TLSCertDir string   // directory with .pem/.crt CA certs
 
-	// SetGlobalEnv, when true, mutates HTTP_PROXY/HTTPS_PROXY/NO_PROXY/SSL_CERT_DIR
-	// in the process environment so subprocesses inherit the proxy settings.
-	// The zero value is false; c0wrk's config layer defaults it to true when a
-	// proxy is enabled (backward compat). Mutating global env affects every
-	// child process and other Go libraries that read these vars, so prefer the
-	// explicitly threaded *http.Client returned by BuildClient where possible.
+	// SetGlobalEnv exports the proxy into HTTP_PROXY/HTTPS_PROXY/NO_PROXY/
+	// SSL_CERT_DIR so child processes inherit it — which reaches every child
+	// and every reader of those vars (c0wrk's config layer defaults it to
+	// true when a proxy is enabled). Prefer the explicitly threaded client
+	// from BuildClient where possible.
 	SetGlobalEnv bool
 }
 
-// BuildTransport creates an *http.Transport configured with the given proxy settings.
-// It sets up proxy routing, bypass list, and custom TLS CA certificates.
-// Returns nil transport (no error) if proxy is disabled.
+// BuildTransport creates an *http.Transport configured with the given proxy
+// settings (proxy routing, bypass list, custom CA certs), or nil with no
+// error when the proxy is disabled. See specs/contracts/core-sp4rk.md.
 func BuildTransport(cfg Config, logger *slog.Logger) (*http.Transport, error) {
 	if !cfg.Enabled || cfg.URL == "" {
 		return nil, nil
@@ -78,8 +78,9 @@ func BuildTransport(cfg Config, logger *slog.Logger) (*http.Transport, error) {
 	return transport, nil
 }
 
-// BuildClient creates an *http.Client configured with proxy settings and
-// the given timeout. Returns nil (no error) if proxy is disabled.
+// BuildClient creates an *http.Client with the proxy transport and the given
+// timeout, or nil with no error when the proxy is disabled.
+// See specs/contracts/core-sp4rk.md.
 func BuildClient(cfg Config, timeout time.Duration, logger *slog.Logger) (*http.Client, error) {
 	transport, err := BuildTransport(cfg, logger)
 	if err != nil {
@@ -94,13 +95,11 @@ func BuildClient(cfg Config, timeout time.Duration, logger *slog.Logger) (*http.
 	}, nil
 }
 
-// SetEnvVars sets HTTP_PROXY, HTTPS_PROXY, NO_PROXY, and SSL_CERT_DIR
-// environment variables based on the proxy configuration.
-// These are inherited by child processes (e.g. bash_exec children, MCP stdio
-// servers). Credentials embedded in the proxy URL (user:password@) are
-// stripped before the variables are set, so child processes inherit the proxy
-// routing without the secret; the authenticated URL itself is applied only
-// in-process via BuildClient/BuildTransport.
+// SetEnvVars exports HTTP(S)_PROXY, NO_PROXY, and SSL_CERT_DIR so child
+// processes inherit the proxy routing (specs/contracts/core-sp4rk.md).
+// Credentials embedded in the proxy URL are stripped first — see
+// stripCredentials; the authenticated URL applies only in-process via
+// BuildClient/BuildTransport.
 func SetEnvVars(cfg Config) {
 	if !cfg.Enabled || cfg.URL == "" {
 		ClearEnvVars()
@@ -123,7 +122,8 @@ func SetEnvVars(cfg Config) {
 	}
 }
 
-// ClearEnvVars removes proxy-related environment variables.
+// ClearEnvVars removes the exported proxy environment variables
+// (specs/contracts/core-sp4rk.md).
 func ClearEnvVars() {
 	_ = os.Unsetenv("HTTP_PROXY")
 	_ = os.Unsetenv("HTTPS_PROXY")
@@ -134,14 +134,13 @@ func ClearEnvVars() {
 	_ = os.Unsetenv("SSL_CERT_DIR")
 }
 
-// MaskURL replaces the password in a proxy URL with "***" for safe display.
-// Returns the original string if parsing fails.
+// MaskURL replaces the password in a proxy URL with "***" for safe display,
+// returning the original string when parsing fails (specs/contracts/core-sp4rk.md).
 //
-// Scheme-less URLs carrying credentials (e.g. "user:secret@proxy.lan:3128" —
-// accepted everywhere else in this package via parseProxyURL) are masked too:
-// url.Parse reads them as an opaque URL whose "scheme" is the username and
-// reports no User info, so they are re-parsed with the scheme parseProxyURL
-// would add and rendered back in the original scheme-less form.
+// Scheme-less URLs carrying credentials are masked too: url.Parse reads them
+// as opaque (the username becomes the "scheme", no User info), so they are
+// re-parsed with the scheme parseProxyURL would add and rendered back in the
+// original scheme-less form.
 func MaskURL(rawURL string) string {
 	if rawURL == "" {
 		return ""
@@ -166,8 +165,7 @@ func MaskURL(rawURL string) string {
 	if masked == "" {
 		return rawURL
 	}
-	// Strip the scheme added only for parsing, so the masked value keeps the
-	// shape the user wrote.
+	// Strip the scheme added only for parsing, so the masked value keeps the shape the user wrote.
 	return strings.TrimPrefix(masked, "http://")
 }
 
@@ -182,12 +180,11 @@ func maskUserInfo(u *url.URL) string {
 	return masked.String()
 }
 
-// stripCredentials removes the userinfo component (user:password@) from a
-// proxy URL so the value can be exported to the process environment without
-// leaking the proxy credential to child processes (bash_exec children, MCP
-// stdio servers). If the URL carries no userinfo or cannot be parsed, it is
-// returned unchanged. This complements MaskURL, which masks the password for
-// display rather than removing it for export.
+// stripCredentials removes the userinfo (user:password@) from a proxy URL so
+// the value can be exported to the process environment without leaking the
+// proxy secret to child processes. An unparseable or credential-less URL is
+// returned unchanged. This complements MaskURL, which masks for display
+// rather than removing for export.
 func stripCredentials(rawURL string) string {
 	parsed, err := parseProxyURL(rawURL)
 	if err != nil || parsed.User == nil {
@@ -210,11 +207,11 @@ func parseProxyURL(rawURL string) (*url.URL, error) {
 
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
-		// *url.Error embeds the full raw URL — including any userinfo — in
-		// its message, so returning it verbatim would leak the proxy password
-		// into logs and RPC errors (this error is wrapped by BuildTransport
-		// and surfaced by the builder's proxy-rebuild paths). Surface only
-		// the underlying reason; it never carries the URL.
+		// *url.Error embeds the full raw URL — userinfo included — in its
+		// message, so returning it verbatim would leak the proxy password
+		// into logs and RPC errors (the error is wrapped by BuildTransport
+		// and surfaced by the proxy-rebuild paths). Surface only the
+		// underlying reason; it never carries the URL.
 		var uerr *url.Error
 		if errors.As(err, &uerr) && uerr.Err != nil {
 			return nil, uerr.Err
@@ -224,7 +221,6 @@ func parseProxyURL(rawURL string) (*url.URL, error) {
 
 	switch parsed.Scheme {
 	case "http", "https", "socks5":
-		// valid
 	default:
 		return nil, fmt.Errorf("unsupported proxy scheme %q (use http, https, or socks5)", parsed.Scheme)
 	}
@@ -236,16 +232,14 @@ func parseProxyURL(rawURL string) (*url.URL, error) {
 	return parsed, nil
 }
 
-// BypassMatcher reports whether a target host must skip the proxy and dial
-// directly. It is the single authority on bypass semantics — the proxy
-// transport's own Proxy function (BuildTransport) and the per-provider TLS
-// resolvers (core/llmtls, ADR-054 "bypass re-arms the pin") must never
-// diverge. Entries are matched case-insensitively; "*.example.com" matches
-// every subdomain.
+// BypassMatcher is the single authority on proxy-bypass semantics: the proxy
+// transport's own Proxy function and the per-provider TLS resolvers
+// (core/llmtls — ADR-054's "bypass re-arms the pin") must never diverge.
+// Entries match case-insensitively; "*.example.com" matches every subdomain.
 //
-// A zero BypassMatcher matches nothing, so dial policy degenerates to
-// "everything goes through the proxy", and it is safe to construct one via
-// the zero value + Assign in hot paths.
+// The zero value matches nothing (dial policy degenerates to "everything
+// proxied"); it is safe to construct one via the zero value + Assign in hot
+// paths. See specs/decisions/054-per-provider-tls-pinning.md.
 type BypassMatcher struct {
 	set map[string]struct{}
 }
@@ -276,8 +270,7 @@ func (m *BypassMatcher) Assign(bypassList []string) {
 }
 
 // Matches reports whether host (lowercased, no port) is on the bypass list,
-// including wildcard entries ("*.example.com"). Same semantics as the proxy
-// transport's internal Proxy function.
+// including wildcard entries ("*.example.com").
 func (m BypassMatcher) Matches(host string) bool {
 	host = strings.ToLower(host)
 	if _, ok := m.set[host]; ok {
@@ -295,7 +288,6 @@ func (m BypassMatcher) Matches(host string) bool {
 }
 
 // parseProxyURL parses and validates a proxy URL string.
-
 // buildTLSConfig creates a *tls.Config with custom CA certificates loaded from certDir.
 // If certDir is empty, returns nil (default system pool will be used).
 func buildTLSConfig(certDir string, logger *slog.Logger) (*tls.Config, error) {

@@ -14,43 +14,31 @@ import (
 )
 
 // errGoalSuggestNoCaller is returned when the orchestrator has no LLM caller
-// to classify with (direct-constructed test orchestrators); the gate treats
-// it as no-suggestion.
+// to classify with (direct-constructed test orchestrators); the gate
+// fail-opens to no-suggestion.
 var errGoalSuggestNoCaller = errors.New("goal suggest: no LLM caller")
 
 // GoalSuggestion is the goal-mode suitability classifier's verdict for one
-// fresh user message (see Orchestrator.SuggestGoalMode). Suggest=true means
-// goal mode is OBVIOUSLY the better fit for the request — the orchestrator may
-// then offer the user to activate it before the task starts. Suggest=true is
-// honored ONLY together with ExplicitCriteria: the request must EXPLICITLY
-// state at least one verifiable done-criterion in its own text; a goal merely
-// implied by the task's formulation (every "implement X" implies "X works")
-// never qualifies — the suggestion gate fail-closes on a missing or false
-// explicit_criteria (a suggested-but-unexplicit verdict is a no-suggestion).
-// Reason is a short user-facing explanation (in the user's language); empty
-// when Suggest=false.
+// fresh user message; suggest=true is honored only with explicit_criteria
+// (the request must itself state a done-criterion) and the gate fail-closes
+// otherwise. Contract: specs/domains/goal-mode.md (suggestion flow).
 type GoalSuggestion struct {
 	Suggest          bool   `json:"suggest"`
 	ExplicitCriteria bool   `json:"explicit_criteria"`
 	Reason           string `json:"reason"`
 }
 
-// GoalSuggester is the orchestrator-side seam for the goal-mode suitability
-// classifier. The production implementation rides the session's LLM caller
-// through the shared serviceCall pipeline; tests inject a stub. A nil field
-// on Orchestrator resolves to the production implementation (mirroring the
-// goalVerifier seam).
+// GoalSuggester is the classifier seam: production rides the session's LLM
+// caller through the shared serviceCall pipeline; a nil Orchestrator field
+// resolves to it (mirroring the goalVerifier seam); tests inject a stub.
 type GoalSuggester func(ctx context.Context, message string, routing *router.RoutingDecision) (GoalSuggestion, error)
 
-// GoalSuggestionProposer bridges the orchestrator's post-routing suggestion
-// gate to the desktop UI. The production implementation (desktop layer,
-// mirroring the goal-proposal adapter) emits a goal_suggestion session event,
-// renders a pending-action card, and BLOCKS until the user answers — an
-// accepted suggestion must turn goal mode on before the task starts, so the
-// gate cannot continue speculatively. Err on the returned pair means the wait
-// failed (context cancelled, UI unavailable, shutdown drain) — the gate fails
-// OPEN to the plain Conductor path and never suppresses future suggestions;
-// (false, nil) is a USER decline and engages the session-scoped suppression.
+// GoalSuggestionProposer bridges the post-routing suggestion gate to the
+// desktop UI: emits a goal_suggestion event, renders a pending-action card,
+// and BLOCKS until the user answers. Err (cancelled wait, UI unavailable,
+// shutdown drain) fails the gate OPEN with no suppression; (false, nil) is a
+// user decline and engages session-scoped suppression.
+// specs/decisions/086-goal-mode-suggestion.md.
 type GoalSuggestionProposer interface {
 	ProposeGoalSuggestion(ctx context.Context, sessionID string, suggestion GoalSuggestion) (accepted bool, err error)
 }
@@ -73,13 +61,9 @@ const (
 )
 
 // parseGoalSuggestion extracts the classifier's JSON verdict. The zero value
-// is a valid "no suggestion" (Go JSON decoding of a malformed or absent
-// "suggest" field yields false), so a model that answers garbage fails closed
-// to no-offer; oneshot.ParseJSON still fails on a response with no JSON at
-// all, which the caller treats as fail-open to the normal path. The same
-// zero-value rule covers the required explicit_criteria field: a suggest=true
-// verdict that omits it decodes as ExplicitCriteria=false and the gate
-// fail-closes to no-offer.
+// is a valid "no suggestion" (absent/malformed fields decode false), so a
+// garbage answer fail-closes to no-offer; a response with no JSON at all
+// still errors, which the caller fail-opens.
 func parseGoalSuggestion(resp *llm.ChatResponse) (GoalSuggestion, error) {
 	s, err := oneshot.ParseJSON[GoalSuggestion](resp)
 	if err != nil {
@@ -103,10 +87,9 @@ func goalSuggestRoutingContext(routing *router.RoutingDecision) string {
 }
 
 // suggestGoalModeWithCaller is the production classifier pass: one one-shot
-// service call (ServiceKindGoalSuggest) over the embedded goal_suggest prompt
-// with the user's request as the user turn. Errors (transport, unparseable
-// JSON after the nudge loop) are returned to the caller, which fails OPEN to
-// the normal execution path — the suggestion feature can never break a send.
+// service call (ServiceKindGoalSuggest) over the embedded goal_suggest prompt.
+// Errors are returned to the caller, which fails OPEN — the feature can never
+// break a send.
 func suggestGoalModeWithCaller(
 	ctx context.Context,
 	caller oneshot.Caller,
@@ -130,20 +113,12 @@ func suggestGoalModeWithCaller(
 	return serviceCall(ctx, metrics, logger, ServiceKindGoalSuggest, model, caller, req, parseGoalSuggestion, oneshot.Options[GoalSuggestion]{})
 }
 
-// SuggestGoalMode runs the goal-mode suitability classifier for a fresh user
-// message that has already been routed. The verdict gates whether the
-// orchestrator offers goal-mode activation to the user before the task starts
-// (HandleMessage's post-routing gate).
-//
-// Contract:
-//   - The classifier rides the session's own LLM caller (o.llm — the same
-//     logging/dump-wrapped caller every per-step call uses) under the shared
-//     oneshot service pipeline, so per-kind telemetry and the service-call
-//     log record apply.
-//   - A nil goalSuggester seam resolves to the production implementation; a
-//     stub installed by tests always wins.
-//   - A nil caller (direct-constructed orchestrators in tests) is an error —
-//     the gate fails open to the normal path.
+// SuggestGoalMode runs the goal-mode suitability classifier for a fresh,
+// already-routed user message; the verdict gates the pre-task activation
+// offer (HandleMessage's post-routing gate). It rides the session's own LLM
+// caller under the shared oneshot service pipeline; a nil goalSuggester seam
+// resolves to the production implementation and a nil caller fails open.
+// Gate contract: specs/domains/goal-mode.md (suggestion flow).
 func (o *Orchestrator) SuggestGoalMode(ctx context.Context, message string, routing *router.RoutingDecision) (GoalSuggestion, error) {
 	if fn := o.goalSuggester; fn != nil {
 		return fn(ctx, message, routing)
@@ -155,13 +130,8 @@ func (o *Orchestrator) SuggestGoalMode(ctx context.Context, message string, rout
 }
 
 // goalSuggestionApplicable reports the cheap, LLM-free preconditions of the
-// post-routing goal-mode suggestion gate. The gate applies ONLY on the plain
-// Conductor path's FRESH tasks: explicit goals (/goal or the toggle) return
-// through the goal branch before routing, E2S requests return through the E2S
-// branch before routing, continuations carry their own workflow (and the
-// fast-path skips the router, leaving no fresh classification to reason
-// about), and review-mode turns are corrections to an existing loop — never
-// goal material.
+// post-routing suggestion gate (fresh plain-Conductor tasks only). The full
+// precondition list: specs/decisions/086-goal-mode-suggestion.md (D2).
 func (o *Orchestrator) goalSuggestionApplicable(opts HandleOptions) bool {
 	if opts.Goal || opts.ReviewMode || opts.TaskID != "" {
 		return false
@@ -184,11 +154,8 @@ func (o *Orchestrator) goalSuggestionApplicable(opts HandleOptions) bool {
 	return o.goalSuggestionProposer != nil
 }
 
-// goalSuggestRoutingEligible applies the advisory routing preconditions: the
-// classifier is consulted only for domains that can plausibly carry a goal
-// (general is conversational/unclear by definition) and at or above the
-// configured complexity floor. Both are cost gates in front of the LLM call —
-// the classifier's own judgment decides the actual offer.
+// goalSuggestRoutingEligible applies the advisory routing preconditions
+// (domain ≠ general, complexity floor) — cost gates before the LLM call.
 func (o *Orchestrator) goalSuggestRoutingEligible(routing *router.RoutingDecision) bool {
 	if routing == nil {
 		return false
@@ -200,10 +167,9 @@ func (o *Orchestrator) goalSuggestRoutingEligible(routing *router.RoutingDecisio
 }
 
 // runGoalSuggestionGate runs the classifier and, on an obvious fit backed by
-// done-criteria the request explicitly states, blocks on the user's answer.
-// Fail-open contract: every error path returns
-// gateNoSuggestion (the plain Conductor path continues, suppression stays
-// armed); only an explicit user decline returns gateDeclined.
+// explicit done-criteria, blocks on the user's answer. Fail-open contract
+// (errors → gateNoSuggestion, suppression stays armed): an explicit decline
+// is the only gateDeclined. specs/decisions/086-goal-mode-suggestion.md.
 func (o *Orchestrator) runGoalSuggestionGate(ctx context.Context, sessionID, message string, routing *router.RoutingDecision) goalSuggestGateOutcome {
 	suggestion, err := o.SuggestGoalMode(ctx, message, routing)
 	if err != nil {
@@ -215,17 +181,13 @@ func (o *Orchestrator) runGoalSuggestionGate(ctx context.Context, sessionID, mes
 		return gateNoSuggestion
 	}
 	if !suggestion.ExplicitCriteria {
-		// The offer must rest on done-criteria the request itself states: an
-		// implicit goal (anything "implement X" implies "X works") is not
-		// goal material — fail closed to the plain path, suppression stays
-		// armed (this is not a user decline).
+		// Fail closed (not a user decline — no suppression).
 		o.logDebug("goal suggest: classifier suggested, but the request states no explicit done-criteria")
 		return gateNoSuggestion
 	}
 	accepted, err := o.goalSuggestionProposer.ProposeGoalSuggestion(ctx, sessionID, suggestion)
 	if err != nil {
-		// UI unavailable / cancelled wait / shutdown drain — fail open, and
-		// do NOT treat it as a decline (no suppression).
+		// Fail open, and NOT as a decline (no suppression).
 		o.logDebug("goal suggest: proposal wait failed — continuing as a plain task", "error", err)
 		return gateNoSuggestion
 	}

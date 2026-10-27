@@ -18,28 +18,19 @@ import (
 )
 
 // Worktree primitives: the safe git-worktree service every higher layer
-// (backend ownership coordinator, session restore, the Git panel) goes
-// through. Every git invocation is routed through GitCmdInRepo's scan
-// pipeline (gitCmdInRepoScanned), so the full spawn-layer hardening —
-// fresh config scan, neutralizing argv, hooks/filters/transport
-// neutralization, trusted-repo opt-out — applies to worktree operations
-// exactly as it does to status/diff/commit. Worktrees are especially
-// sensitive here: `git worktree add` performs a checkout (clean/smudge
-// filters, post-checkout hook) and reads config from BOTH the common dir
-// and the per-worktree `config.worktree` overlay — all covered by the
-// scanner.
+// (backend ownership coordinator, session restore, the Git panel) goes through;
+// every invocation rides GitCmdInRepo's scan pipeline — `git worktree add`'s
+// checkout and its config.worktree overlay reads included. See
+// specs/domains/workspace.md, session-worktrees.md.
 
-// ---------------------------------------------------------------------------
-// Kinds, entry model
-// ---------------------------------------------------------------------------
+// --- Kinds, entry model ----------------------------------------------------
 
 // WorktreeKind classifies one entry of `git worktree list`.
 type WorktreeKind string
 
 const (
-	// WorktreeMain is the repository's primary checkout (the "local"
-	// workspace of a project). Exactly one per repository; a bare
-	// repository reports its gitdir as the main entry with Bare=true.
+	// WorktreeMain is the repository's primary checkout (the "local" workspace
+	// of a project) — one per repo; a bare repository reports its gitdir with Bare=true.
 	WorktreeMain WorktreeKind = "main"
 	// WorktreeManaged is a linked worktree in the legacy checkout-local
 	// container or a repository-marked app-data/custom container.
@@ -49,9 +40,8 @@ const (
 	WorktreeExternal WorktreeKind = "external"
 )
 
-// WorktreeInfo is one structured entry of the repository's worktree list.
-// Branch is the short branch name ("main"), empty for detached or bare
-// entries. Locked/Prunable carry git's reasons verbatim when present.
+// WorktreeInfo is one entry of the repository's worktree list; Branch is
+// the short name ("" for detached/bare), Locked/Prunable carry git's reasons.
 type WorktreeInfo struct {
 	Path           string       `json:"path"`
 	Name           string       `json:"name"` // base name of Path
@@ -72,10 +62,8 @@ func (w WorktreeInfo) IsLinked() bool {
 	return w.Kind == WorktreeManaged || w.Kind == WorktreeExternal
 }
 
-// BranchHolders maps each checked-out branch to the worktree path holding
-// it. git refuses to check the same branch out in two worktrees; this map
-// is how the primitives make that refusal explicit BEFORE spawning a
-// doomed `git worktree add`.
+// BranchHolders maps each checked-out branch to the worktree path holding it,
+// making git's one-branch-one-worktree refusal explicit BEFORE a doomed add.
 func BranchHolders(trees []WorktreeInfo) map[string]string {
 	holders := make(map[string]string, len(trees))
 	for _, w := range trees {
@@ -86,9 +74,8 @@ func BranchHolders(trees []WorktreeInfo) map[string]string {
 	return holders
 }
 
-// FindWorktree returns the entry whose path equals target (compared as
-// clean absolute paths), or nil when target is not a worktree of this
-// repository.
+// FindWorktree returns the entry whose path equals target (clean absolute
+// paths), or nil when target is not a worktree of this repository.
 func FindWorktree(trees []WorktreeInfo, target string) *WorktreeInfo {
 	clean := filepath.Clean(target)
 	for i := range trees {
@@ -99,23 +86,19 @@ func FindWorktree(trees []WorktreeInfo, target string) *WorktreeInfo {
 	return nil
 }
 
-// ---------------------------------------------------------------------------
-// Explicit failure taxonomy
-// ---------------------------------------------------------------------------
+// --- Explicit failure taxonomy ---------------------------------------------
 
 // Worktree operation failures are explicit and matchable with errors.Is;
 // StateError carries git's verbatim reason where one exists.
 var (
-	// ErrWorktreeMalformed: git's `worktree list --porcelain` output
-	// violated the documented format. Fail-closed: the listing is refused
-	// rather than silently truncated.
+	// ErrWorktreeMalformed: `worktree list --porcelain` violated the
+	// documented format; refused, never silently truncated.
 	ErrWorktreeMalformed = errors.New("malformed git worktree output")
 	// ErrWorktreeExists: the target path already exists. Creation never
 	// overwrites foreign directories (--force is never passed to add).
 	ErrWorktreeExists = errors.New("worktree path already exists")
-	// ErrWorktreePathInvalid: structural path validation failed (relative,
-	// unclean, contains the repository, inside .git, a linked worktree, the
-	// managed container itself, or has a symlinked ancestor).
+	// ErrWorktreePathInvalid: structural validation failed (relative, unclean,
+	// contains the repo, inside .git, a linked worktree, the container, symlinked ancestor).
 	ErrWorktreePathInvalid = errors.New("invalid worktree path")
 	// ErrBranchBusy: the branch is checked out in another worktree.
 	ErrBranchBusy = errors.New("branch is checked out in another worktree")
@@ -130,9 +113,8 @@ var (
 	// ErrWorktreeDirty: the worktree has uncommitted changes; removal
 	// requires an explicit loss confirmation (Force).
 	ErrWorktreeDirty = errors.New("worktree has uncommitted changes")
-	// ErrWorktreePrunable: the worktree's directory is gone but its
-	// administrative metadata remains; pruning is required before the path
-	// can be reused.
+	// ErrWorktreePrunable: the directory is gone but its metadata remains;
+	// prune before the path can be reused.
 	ErrWorktreePrunable = errors.New("worktree is prunable (stale metadata)")
 	// ErrWorktreeMain: the target is the repository's main worktree, which
 	// can never be removed as a worktree.
@@ -140,17 +122,15 @@ var (
 	// ErrWorktreeNotLinked: the target is not a linked worktree of this
 	// repository (foreign directory or the checkout itself).
 	ErrWorktreeNotLinked = errors.New("path is not a linked worktree of this repository")
-	// ErrWorktreeBranchMismatch: an existing worktree at the target is on a
-	// different branch than the pinned one; recreate never silently
-	// retargets a tree.
+	// ErrWorktreeBranchMismatch: the existing tree at target is on a
+	// different branch; recreate never silently retargets.
 	ErrWorktreeBranchMismatch = errors.New("worktree is on a different branch than requested")
 	// ErrRefInvalid: a branch or start-point ref failed validation.
 	ErrRefInvalid = errors.New("invalid ref name")
 )
 
-// StateError attaches a verbatim reason (locked/prunable text, git stderr)
-// to a sentinel so callers can errors.Is the sentinel and errors.As the
-// reason out in one match.
+// StateError attaches a verbatim reason (locked/prunable text, git stderr) to
+// a sentinel so callers can errors.Is the sentinel and errors.As the reason.
 type StateError struct {
 	// Sentinel is the matching ErrWorktree* (or generic) error.
 	Sentinel error
@@ -167,18 +147,12 @@ func (e *StateError) Error() string {
 
 func (e *StateError) Unwrap() error { return e.Sentinel }
 
-// ---------------------------------------------------------------------------
-// Per-repo serialization of conflicting operations
-// ---------------------------------------------------------------------------
+// --- Per-repo serialization of conflicting operations ----------------------
 
-// git serializes its own worktree metadata writes, but two concurrent
-// `git worktree add` invocations for the SAME branch can interleave
-// check-then-create with each other, leaving the loser with a raw exit
-// code instead of an explicit verdict. The primitives serialize all
-// mutating worktree operations per repository (process-wide: one desktop
-// process) and run their validation inside the serialized section, so
-// concurrent conflicting creates cannot BOTH succeed and every failure is
-// a typed error.
+// Two concurrent `git worktree add` calls for the SAME branch can interleave
+// check-then-create, leaving the loser a raw exit code instead of a verdict.
+// Mutating primitives therefore serialize per repo and validate inside the
+// serialized section (specs/domains/workspace.md).
 var (
 	worktreeOpsMu    sync.Mutex
 	worktreeOpsLocks = make(map[string]*sync.Mutex)
@@ -197,15 +171,10 @@ func lockWorktreeOps(repoRoot string) func() {
 	return mu.Unlock
 }
 
-// ---------------------------------------------------------------------------
-// Hardened git runner (operation-scoped scan reuse)
-// ---------------------------------------------------------------------------
+// --- Hardened git runner (operation-scoped scan reuse) ---------------------
 
-// runWorktreeGit executes one git invocation inside a logical worktree
-// operation. scan is the operation's memo (created over repoRoot or over a
-// worktree path — the command's working directory is always scan.path),
-// reusing one config scan across the operation's invocations, exactly as
-// GitCmdInRepo sanctions for multi-invocation operations.
+// runWorktreeGit runs one git invocation inside a logical worktree operation,
+// reusing its scan memo (review [15], specs/decisions/033-git-subprocess-hardening.md).
 func runWorktreeGit(ctx context.Context, scan *gitScanMemo, args ...string) (string, error) {
 	cmd, err := gitCmdInRepoScanned(ctx, scan, args...)
 	if err != nil {
@@ -227,15 +196,11 @@ func runWorktreeGit(ctx context.Context, scan *gitScanMemo, args ...string) (str
 	return stdout.String(), nil
 }
 
-// ---------------------------------------------------------------------------
-// Listing
-// ---------------------------------------------------------------------------
+// --- Listing ----------------------------------------------------------------
 
-// ListWorktrees returns the structured worktree list of the repository at
-// repoRoot: the main checkout ("local" discovery), app-managed trees under
-// <repoRoot>/.worktrees, and external linked worktrees elsewhere. Output
-// that violates the porcelain format fails closed with an error matching
-// ErrWorktreeMalformed — never a silently truncated list.
+// ListWorktrees returns the structured worktree list of the repository at repoRoot
+// (main checkout, managed trees, external linked worktrees); malformed porcelain
+// output fails closed with ErrWorktreeMalformed.
 func ListWorktrees(ctx context.Context, repoRoot string) ([]WorktreeInfo, error) {
 	root, err := cleanRepoRoot(repoRoot)
 	if err != nil {
@@ -254,17 +219,10 @@ func ListWorktrees(ctx context.Context, repoRoot string) ([]WorktreeInfo, error)
 	return trees, nil
 }
 
-// parseWorktreePorcelain strictly parses `git worktree list --porcelain`
-// output. Grammar (git-worktree docs): entries separated by blank lines;
-// each entry starts `worktree <absolute-path>` followed by `HEAD <sha>`
-// and any of `branch <ref>` | `detached`, `bare`, `locked [reason]`,
-// `prunable [reason]` — except a bare repository, whose entry is only
-// `worktree <path>` + `bare` (git emits no HEAD there). Deviations —
-// unknown attribute, entry missing its worktree line or its HEAD line
-// (when not bare), non-absolute path, empty stream — are
-// ErrWorktreeMalformed. Fail-closed matters: a partially parsed list would
-// silently hide trees that the branch-occupancy and ownership checks
-// depend on.
+// parseWorktreePorcelain strictly parses `git worktree list --porcelain`:
+// blank-line-separated entries of `worktree <abs-path>`, `HEAD <sha>`, and
+// `branch|detached|bare|locked|prunable [reason]` (bare: no HEAD); any deviation
+// is ErrWorktreeMalformed — a partial list would hide trees the checks need.
 func parseWorktreePorcelain(out string) ([]WorktreeInfo, error) {
 	var trees []WorktreeInfo
 	var cur *WorktreeInfo
@@ -272,11 +230,8 @@ func parseWorktreePorcelain(out string) ([]WorktreeInfo, error) {
 		if cur == nil {
 			return nil
 		}
-		// A bare repository emits `worktree <path>` + `bare` with NO HEAD
-		// line (verified on git 2.55.0, with and without commits) — only a
-		// non-bare entry must carry HEAD (review [95]; the package doc at
-		// the top of the file documents the bare main entry with
-		// Bare=true).
+		// A bare repository emits `worktree <path>` + `bare` with NO HEAD line
+		// (verified on git 2.55.0) — only non-bare entries must carry HEAD.
 		if cur.Path == "" || (cur.Head == "" && !cur.Bare) {
 			return fmt.Errorf("%w: entry missing worktree/HEAD line", ErrWorktreeMalformed)
 		}
@@ -336,9 +291,9 @@ func parseWorktreePorcelain(out string) ([]WorktreeInfo, error) {
 	return trees, nil
 }
 
-// classifyWorktrees stamps each entry's Kind against the repository root:
-// the first (primary) entry is the main checkout; linked entries in legacy
-// or repository-marked containers are managed; all others are external.
+// classifyWorktrees stamps each entry's Kind against the repository root: the
+// first (primary) entry is main; linked entries in managed containers are
+// managed; all others external.
 func classifyWorktrees(trees []WorktreeInfo, root string) {
 	for i := range trees {
 		if i == 0 {
@@ -353,9 +308,7 @@ func classifyWorktrees(trees []WorktreeInfo, root string) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Creation
-// ---------------------------------------------------------------------------
+// --- Creation ---------------------------------------------------------------
 
 // AddWorktreeOptions selects what `git worktree add` checks out at target.
 type AddWorktreeOptions struct {
@@ -371,19 +324,11 @@ type AddWorktreeOptions struct {
 	Detached bool
 }
 
-// AddWorktree creates a linked worktree at target (absolute, not yet
-// existing) in the repository at repoRoot, serialized against every other
-// mutating worktree operation on the same repository. Validations run
-// before git, inside the serialized section: structural path safety
-// (absolute, clean, not the checkout or an ancestor of it, not inside
-// .git, not the managed container, not inside another linked worktree, no
-// symlinked ancestor — foreign directories are never overwritten, and
-// --force is never passed) and branch occupancy (the same branch cannot be
-// checked out in two worktrees; creating over an existing ref or checking
-// out a held branch fails explicitly). Managed targets additionally
-// install the `/.worktrees/` exclusion in the common dir's info/exclude
-// (never .gitignore). The returned info is the verified post-add list
-// entry.
+// AddWorktree creates a linked worktree at target in the repository at repoRoot,
+// serialized per repository; structural path safety and branch occupancy are
+// validated inside the serialized section, before git runs. Managed targets
+// install the `/.worktrees/` exclusion in the common dir's info/exclude (never
+// .gitignore); the returned info is the verified post-add entry. See specs/domains/workspace.md.
 func AddWorktree(ctx context.Context, repoRoot, target string, opts AddWorktreeOptions) (WorktreeInfo, error) {
 	root, err := cleanRepoRoot(repoRoot)
 	if err != nil {
@@ -395,8 +340,7 @@ func AddWorktree(ctx context.Context, repoRoot, target string, opts AddWorktreeO
 }
 
 // addWorktreeLocked is AddWorktree's body; the caller holds the per-repo
-// worktree-operation lock (RecreateWorktree reuses it while already
-// holding the lock — the lock is not reentrant).
+// worktree-operation lock (RecreateWorktree reuses it — not reentrant).
 func addWorktreeLocked(ctx context.Context, root, target string, opts AddWorktreeOptions) (WorktreeInfo, error) {
 	if err := validateWorktreeTarget(root, target); err != nil {
 		return WorktreeInfo{}, err
@@ -416,9 +360,8 @@ func addWorktreeLocked(ctx context.Context, root, target string, opts AddWorktre
 	if err != nil {
 		return WorktreeInfo{}, err
 	}
-	// The target must not be inside another linked worktree (nested
-	// worktrees would confuse ownership; the managed container is a
-	// top-level child of the checkout).
+	// The target must not be inside another linked worktree (nested worktrees
+	// would confuse ownership; the managed container is a top-level child).
 	for _, w := range trees {
 		if !w.IsLinked() {
 			continue
@@ -435,15 +378,10 @@ func addWorktreeLocked(ctx context.Context, root, target string, opts AddWorktre
 		}
 	}
 
-	// No --force in any form: a pre-existing target was rejected above, and
-	// if the filesystem changes underneath, git's own refusal stands.
-	// Argv shapes (verified against git 2.5x):
-	//   create:   worktree add -b <branch> -- <target> [<startpoint>]
-	//   checkout: worktree add -- <target> <branch>
-	//   detached: worktree add --detach -- <target> [<startpoint>]
-	// Without an explicit commit-ish after the path, git creates a branch
-	// named after the target's basename — never what a caller pinned — so
-	// the branch argument is always passed explicitly.
+	// No --force in any form: a pre-existing target was rejected above, and if
+	// the filesystem changes underneath, git's own refusal stands. Without an
+	// explicit commit-ish after the path, git names a branch after the target's
+	// basename — never what a caller pinned — so the branch arg is always passed.
 	args := []string{"worktree", "add"}
 	if opts.Detached {
 		args = append(args, "--detach")
@@ -483,10 +421,8 @@ func addWorktreeLocked(ctx context.Context, root, target string, opts AddWorktre
 }
 
 // validateBranchAvailability enforces one-branch-one-worktree inside the
-// serialized section: creating over an existing ref and checking out a
-// branch another worktree holds are explicit errors before git runs. A
-// checkout-mode add also requires the branch to exist — creation never
-// invents branches; restoring a pinned branch is RecreateWorktree's job.
+// serialized section, before git runs: creating over an existing ref or
+// checking out a held branch is an explicit error; a checkout-mode add requires the branch to exist (creation never invents branches).
 func validateBranchAvailability(ctx context.Context, scan *gitScanMemo, trees []WorktreeInfo, opts AddWorktreeOptions) error {
 	if holder, busy := BranchHolders(trees)[opts.Branch]; busy {
 		return fmt.Errorf("%w: %s held by %s", ErrBranchBusy, opts.Branch, holder)
@@ -519,11 +455,8 @@ func branchExists(ctx context.Context, scan *gitScanMemo, branch string) (bool, 
 	return strings.TrimSpace(out) != "", nil
 }
 
-// BranchExists reports whether a LOCAL branch (refs/heads/<branch>) exists
-// in the repository at repoRoot. Like the primitives' internal check it
-// verifies the exact ref, never DWIM resolution — a tag or a remote-tracking
-// ref of the same name does not count, so the answer is exactly what
-// "create this branch" vs "check this branch out" deciders need.
+// BranchExists reports whether a LOCAL branch (refs/heads/<branch>) exists at
+// repoRoot — the exact ref, never DWIM: a same-named tag or remote ref doesn't count.
 func BranchExists(ctx context.Context, repoRoot, branch string) (bool, error) {
 	root, err := cleanRepoRoot(repoRoot)
 	if err != nil {
@@ -556,13 +489,9 @@ func classifyAddFailure(err error, target string) error {
 	return fmt.Errorf("git worktree add %s: %w", target, err)
 }
 
-// validateWorktreeTarget enforces the structural path rules shared by add
-// and recreate: absolute and lexically clean; not the repository checkout
-// itself nor an ancestor of it; not inside the repository's .git; not the
-// managed container itself; no existing ancestor may be a symlink (a
-// symlinked prefix would relocate the tree on disk — the same refusal
-// config.ManagedWorktreePath applies to the container); and the target
-// must not exist: creation never overwrites foreign directories.
+// validateWorktreeTarget enforces the structural path rules shared by add and
+// recreate (specs/domains/workspace.md): absolute and clean; not the checkout,
+// its ancestor, .git, or the managed container; no symlinked existing ancestor; and the target must not exist — foreign directories are never overwritten.
 func validateWorktreeTarget(root, target string) error {
 	if !filepath.IsAbs(target) || filepath.Clean(target) != target {
 		return fmt.Errorf("%w: target must be an absolute clean path, got %q", ErrWorktreePathInvalid, target)
@@ -606,10 +535,8 @@ func validateWorktreeTarget(root, target string) error {
 	return nil
 }
 
-// validateRefName rejects ref spellings that could be interpreted as git
-// options or refname metacharacters. Defense in depth on top of the `--`
-// separator (argv after `--` is never option-parsed, but a leading-dash
-// branch would still be ambiguous in every other git invocation).
+// validateRefName rejects ref spellings interpretable as git options or refname
+// metacharacters — defense in depth over `--` (a leading-dash branch stays ambiguous).
 func validateRefName(ref string) error {
 	if ref == "" || ref == "HEAD" || ref == "@" ||
 		strings.HasPrefix(ref, "-") || strings.HasPrefix(ref, "/") ||
@@ -632,25 +559,15 @@ func validateRefName(ref string) error {
 	return nil
 }
 
-// ---------------------------------------------------------------------------
-// Recreate (session restore)
-// ---------------------------------------------------------------------------
+// --- Recreate (session restore) ---------------------------------------------
 
-// RecreateWorktree guarantees a worktree exists at target on the pinned
-// branch, for restoring a session whose tree is gone. Cases:
-//
-//   - target is a live worktree on branch → returned as-is (no-op);
-//   - target is a live worktree on ANOTHER branch →
-//     ErrWorktreeBranchMismatch (restore never silently retargets a tree
-//     that someone else may be using);
-//   - target's directory is gone but stale metadata remains (prunable) →
-//     metadata pruned, tree re-created from the existing branch;
-//   - target absent and branch exists → tree created from the branch;
-//   - branch does not exist → ErrBranchMissing (restore never creates or
-//     resurrects branches).
-//
-// No path here deletes the branch: branch lifetime belongs to git and the
-// user, never to worktree housekeeping.
+// RecreateWorktree guarantees a worktree exists at target on the pinned branch,
+// for restoring a session whose tree is gone. A live tree on the branch returns
+// as-is; on another branch it is ErrWorktreeBranchMismatch (never silently
+// retargeted); prunable metadata is pruned and the tree re-created; an absent
+// target with an existing branch is created; a missing branch is ErrBranchMissing
+// — restore never creates branches, and no path deletes one (branch lifetime
+// belongs to git and the user).
 func RecreateWorktree(ctx context.Context, repoRoot, target, branch string) (WorktreeInfo, error) {
 	root, err := cleanRepoRoot(repoRoot)
 	if err != nil {
@@ -669,9 +586,8 @@ func RecreateWorktree(ctx context.Context, repoRoot, target, branch string) (Wor
 	}
 	if entry := FindWorktree(trees, target); entry != nil {
 		if entry.Prunable {
-			// Directory gone, metadata stale: clear it so the path can be
-			// re-created below. Prune only ever removes entries whose
-			// directory is already missing — live trees are untouched.
+			// Directory gone, metadata stale: prune only removes entries
+			// whose directory is already missing — live trees untouched.
 			if _, err := runWorktreeGit(ctx, newGitScanMemo(root), "worktree", "prune"); err != nil {
 				return WorktreeInfo{}, fmt.Errorf("pruning stale worktree metadata for %s: %w", target, err)
 			}
@@ -686,13 +602,10 @@ func RecreateWorktree(ctx context.Context, repoRoot, target, branch string) (Wor
 	return addWorktreeLocked(ctx, root, target, AddWorktreeOptions{Branch: branch})
 }
 
-// ---------------------------------------------------------------------------
-// Removal
-// ---------------------------------------------------------------------------
+// --- Removal -----------------------------------------------------------------
 
-// RemoveWorktreeOptions governs removal decisions that belong to the
-// caller: dirty-tree loss confirmation (Force) and locked-tree unlock
-// (Unlock). Neither is ever taken implicitly.
+// RemoveWorktreeOptions governs removal decisions that belong to the caller:
+// dirty-tree loss confirmation (Force) and locked-tree unlock (Unlock).
 type RemoveWorktreeOptions struct {
 	// Force confirms the loss of uncommitted changes in the tree.
 	Force bool
@@ -700,14 +613,9 @@ type RemoveWorktreeOptions struct {
 	Unlock bool
 }
 
-// RemoveWorktree removes the linked worktree at target from the repository
-// at repoRoot, serialized per repository. The main worktree and foreign
-// paths are refused (ErrWorktreeMain / ErrWorktreeNotLinked); locked trees
-// fail with ErrWorktreeLocked unless the caller explicitly authorized
-// unlocking; dirty trees fail with ErrWorktreeDirty unless the caller
-// confirmed the loss. The branch the tree was on is NEVER deleted — branch
-// lifetime belongs to git and the user, not to worktree housekeeping (a
-// session may be deleted while its branch still holds unmerged work).
+// RemoveWorktree removes the linked worktree at target, serialized per repo:
+// main/foreign paths are refused, locked trees need Unlock, dirty trees need
+// Force. The branch the tree was on is NEVER deleted — it may hold unmerged work.
 func RemoveWorktree(ctx context.Context, repoRoot, target string, opts RemoveWorktreeOptions) error {
 	root, err := cleanRepoRoot(repoRoot)
 	if err != nil {
@@ -762,11 +670,9 @@ func RemoveWorktree(ctx context.Context, repoRoot, target string, opts RemoveWor
 	return nil
 }
 
-// worktreeDirty reports whether the worktree at path has uncommitted
-// changes or untracked files — git's own criterion for refusing
-// `git worktree remove` without --force. The status runs rooted at the
-// worktree so its config chain (common dir + config.worktree overlay) is
-// scanned by the hardened runner like any other repo-scoped call.
+// worktreeDirty reports uncommitted changes or untracked files — git's own
+// criterion for refusing `worktree remove` without --force; rooted at the
+// worktree so its full config chain is scanned.
 func worktreeDirty(ctx context.Context, path string) (bool, error) {
 	out, err := runWorktreeGit(ctx, newGitScanMemo(path), "status", "--porcelain")
 	if err != nil {
@@ -775,12 +681,8 @@ func worktreeDirty(ctx context.Context, path string) (bool, error) {
 	return strings.TrimSpace(out) != "", nil
 }
 
-// WorktreeDirty is the exported read-only probe of worktreeDirty: it
-// applies the same dirty classification the removal primitive applies at
-// removal time (uncommitted changes or untracked files) without touching
-// anything, so a caller can decide a would-be-blocked removal BEFORE its
-// destructive pre-flight (the session-deletion pre-flight's non-destructive
-// block probe, review [161]).
+// WorktreeDirty is the exported read-only probe of worktreeDirty — the same
+// classification the removal applies, for non-destructive pre-checks (review [161]).
 func WorktreeDirty(ctx context.Context, path string) (bool, error) {
 	return worktreeDirty(ctx, path)
 }
@@ -803,13 +705,11 @@ func classifyRemoveFailure(err error, target string) error {
 	return fmt.Errorf("git worktree remove %s: %w", target, err)
 }
 
-// ---------------------------------------------------------------------------
-// Prune
-// ---------------------------------------------------------------------------
+// --- Prune -------------------------------------------------------------------
 
-// PruneWorktrees removes administrative metadata of worktrees whose
-// directories no longer exist (`git worktree prune`), serialized per
-// repository. It never touches live worktrees and never deletes branches.
+// PruneWorktrees removes administrative metadata of worktrees whose directories
+// no longer exist (`git worktree prune`), serialized per repo; live trees and
+// branches untouched.
 func PruneWorktrees(ctx context.Context, repoRoot string) error {
 	root, err := cleanRepoRoot(repoRoot)
 	if err != nil {
@@ -823,21 +723,16 @@ func PruneWorktrees(ctx context.Context, repoRoot string) error {
 	return nil
 }
 
-// ---------------------------------------------------------------------------
-// Managed-container exclusion (common info/exclude)
-// ---------------------------------------------------------------------------
+// --- Managed-container exclusion (common info/exclude) ----------------------
 
-// worktreesExcludePattern is the single line appended to the common dir's
-// info/exclude when a managed tree is created. Anchored to the repository
-// root and directory-only: it hides the container from `git status` of the
-// main checkout without touching any tracked .gitignore.
+// worktreesExcludePattern is appended to the common dir's info/exclude when a
+// managed tree is created: repo-root-anchored, directory-only — hides the
+// container from `git status` without touching tracked .gitignore.
 const worktreesExcludePattern = "/" + core.WorktreesRelativePath + "/"
 
 // ensureWorktreesExcluded idempotently appends worktreesExcludePattern to
-// <common-dir>/info/exclude when target is inside the managed container.
-// The exclude file lives in the COMMON dir (shared by every worktree of
-// the repository); .gitignore is never read or modified — the container is
-// c0wrk infrastructure, not repository content the user tracks.
+// <common-dir>/info/exclude when target is inside the managed container;
+// .gitignore is never touched — the container is c0wrk infrastructure.
 func ensureWorktreesExcluded(ctx context.Context, scan *gitScanMemo, root, target string) error {
 	container := filepath.Join(root, core.WorktreesRelativePath)
 	within, err := pathutil.IsWithinPath(container, target)
@@ -859,19 +754,12 @@ func ensureWorktreesExcluded(ctx context.Context, scan *gitScanMemo, root, targe
 		common = filepath.Join(root, common)
 	}
 	infoDir := filepath.Join(common, "info")
-	// Directory creation must not be redirected out of the repository
-	// (review [41], repo-arrives-as-files threat model): MkdirAllReal creates
-	// only real directories — a link swapped into a component it creates, or
-	// a dangling link at any component, is refused — but it RESOLVES
-	// pre-existing links by design, so ordinary operator/system ancestors
-	// (macOS /var → /private/var, a symlinked home) keep working. A link
-	// shipped inside the repository is therefore enforced HERE, after
-	// creation: when the common dir lives under the repo root, every
-	// component below the root is re-verified as a real directory, so a
-	// planted link at info (or .git) is refused instead of being resolved
-	// into an exclude write outside the repository. A common dir outside the
-	// root is git's own .git-file indirection (linked worktrees), not
-	// repository-controlled content, and keeps the plain MkdirAllReal path.
+	// MkdirAllReal refuses links it creates but RESOLVES pre-existing ones
+	// (macOS /var, symlinked homes), so a link planted inside the repository is
+	// enforced HERE, after creation: below the repo root every component is
+	// re-verified as a real directory (review [41]) — a planted link at info
+	// (or .git) cannot become an exclude write outside the repository; a common
+	// dir outside the root is git's own indirection, not repo content.
 	if err := safeio.MkdirAllReal(infoDir, 0o755); err != nil {
 		return fmt.Errorf("creating %s: %w", infoDir, err)
 	}
@@ -883,11 +771,9 @@ func ensureWorktreesExcluded(ctx context.Context, scan *gitScanMemo, root, targe
 		}
 	}
 	excludePath := filepath.Join(infoDir, "exclude")
-	// safeio.ReadFile refuses a non-regular target (review [38]): a planted
-	// FIFO would otherwise block the open forever, hanging the managed-tree
-	// provisioning path — the same reason the config scan reads through
-	// safeio. A missing file (or a dangling link at the final component) is
-	// the expected first-run case and is treated as empty.
+	// safeio.ReadFile refuses non-regular targets (review [38]) — a planted FIFO
+	// would block the open forever. Missing (or dangling final link) is the
+	// expected first-run case, treated as empty.
 	existing, err := safeio.ReadFile(excludePath)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("reading %s: %w", excludePath, err)
@@ -902,11 +788,8 @@ func ensureWorktreesExcluded(ctx context.Context, scan *gitScanMemo, root, targe
 		updated = append(updated, '\n')
 	}
 	updated = append(updated, []byte(worktreesExcludePattern+"\n")...)
-	// Atomic replace within the same directory: a crash mid-write can
-	// never leave a truncated exclude file behind. safeio.WriteFileAtomic
-	// stages through a randomly named temp (no plantable fixed path) and
-	// the rename replaces a symlink at exclude itself instead of writing
-	// through it.
+	// Atomic same-directory replace: a crash cannot leave a truncated exclude
+	// file; the rename replaces a symlink at exclude instead of writing through.
 	if err := safeio.WriteFileAtomic(excludePath, updated, 0o644); err != nil {
 		return fmt.Errorf("updating %s: %w", excludePath, err)
 	}

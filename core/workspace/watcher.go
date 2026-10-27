@@ -13,14 +13,12 @@ import (
 	"github.com/v0lka/sp4rk/pathutil"
 )
 
-// defaultDebounce is the debounce interval for file system events.
-// 200ms balances responsiveness with avoiding excessive re-processing
-// of rapid consecutive file changes (e.g., editor save + format).
+// defaultDebounce balances responsiveness against re-processing rapid
+// consecutive changes (e.g. editor save + format).
 const defaultDebounce = 200 * time.Millisecond
 
-// ChangeHandler is invoked (debounced) with the set of changed file/directory
-// paths accumulated during the debounce window. The slice may be empty when
-// events carried no usable path (e.g. some Chmod/Rename events).
+// ChangeHandler is invoked (debounced) with the changed file/directory paths
+// accumulated during the debounce window; may be empty for pathless events.
 type ChangeHandler func(changedPaths []string)
 
 // Watcher watches directories for file system changes and calls onChange when changes occur.
@@ -30,19 +28,13 @@ type Watcher struct {
 	onChange ChangeHandler
 	mu       sync.Mutex
 	watched  map[string]bool
-	// extraRoots are additional admitted roots for the under-root gate: paths
-	// under the primary root OR any extra root pass WatchDir/WatchTree
-	// validation. Needed when a watched subtree legitimately lives outside the
-	// primary root — e.g. a managed session worktree whose .research artifact
-	// tree must be watched while the watcher stays rooted at the project
-	// checkout. Populated only via AllowRoot.
+	// extraRoots are additional admitted roots for the under-root gate:
+	// WatchDir/WatchTree accept the primary root OR any extra root — for subtrees
+	// legitimately outside it (a managed worktree's .research tree at checkout root).
 	extraRoots map[string]bool
-	// recursiveRoots are directory roots whose entire subtree must be watched.
-	// The event loop auto-adds any directory created within a recursive root
-	// so newly-created subdirectories (e.g. a new R-NNN research project) are
-	// detected without a manual WatchDir call. fsnotify is NOT recursive, even
-	// on macOS (the FSEvents backend filters to explicitly-added directories),
-	// so recursive watching must be implemented by adding every directory.
+	// recursiveRoots are roots whose entire subtree must be watched: the event
+	// loop auto-adds directories created inside them (fsnotify is NOT recursive,
+	// even on macOS) — new subdirectories are detected without a WatchDir call.
 	recursiveRoots map[string]bool
 	done           chan struct{}
 	closeOnce      sync.Once
@@ -57,10 +49,8 @@ func (w *Watcher) log() *slog.Logger {
 	return slog.Default()
 }
 
-// NewWatcher creates a Watcher that watches the root directory and calls onChange
-// (debounced at 200ms) on any change. The accumulated changed paths are passed
-// to onChange so consumers can decide whether a change is relevant to them
-// (e.g. skip re-indexing for .git-internal churn).
+// NewWatcher creates a Watcher on root that calls onChange (debounced) with
+// the accumulated changed paths, so consumers can decide relevance.
 func NewWatcher(root string, onChange ChangeHandler, loggers ...*slog.Logger) (*Watcher, error) {
 	if onChange == nil {
 		return nil, errors.New("onChange callback must not be nil")
@@ -99,26 +89,13 @@ func NewWatcher(root string, onChange ChangeHandler, loggers ...*slog.Logger) (*
 	}
 	w.watched[absRoot] = true
 
-	// Also watch the .git entry so that index changes (staging/unstaging)
-	// trigger the same onChange callback used by the file tree. The vector
-	// indexer ignores .git, so the consumer (backend) filters .git paths before
-	// triggering re-indexing — keeping this watch for file-tree refresh only.
-	//
-	// For a LINKED worktree <root>/.git is a regular "gitdir:" pointer file,
-	// not a directory, and the tree's own git metadata — the index (staging)
-	// and HEAD (commits, ref updates) — lives in the per-worktree git
-	// directory the pointer names (<common>/worktrees/<name>), which sits
-	// OUTSIDE the watched root whenever the root follows the session (a
-	// managed worktree in the agent-dir container). Watch the resolved
-	// directory instead: without it, agent-side git operations in a managed
-	// tree produced no events at all and the tree's git badges / Git-panel
-	// state went stale until an unrelated working-tree event (see
-	// specs/domains/workspace.md, Filesystem Watcher). Only the per-worktree
-	// directory is watched — the same single-level shape a checkout-rooted
-	// watcher had on its own <checkout>/.git (index/HEAD churn surfaces at
-	// that level; refs/ and logs/ subdirectories were never watched either).
-	// Best-effort: a resolve or fsnotify failure is logged and skipped — the
-	// working-tree watch above still covers content churn.
+	// Also watch the .git entry so staging/HEAD churn reaches the same onChange
+	// (the backend filters .git paths before re-indexing — file-tree refresh
+	// only). For a LINKED worktree <root>/.git is a "gitdir:" pointer file and
+	// the real metadata lives in the named per-worktree directory outside the
+	// watched root, so the resolved directory is watched instead — the same
+	// single-level shape as a checkout's own <checkout>/.git. Best-effort — see
+	// specs/domains/workspace.md (Filesystem Watcher).
 	gitDir, err := resolveGitDirAt(absRoot)
 	if err != nil {
 		w.log().Debug("failed to resolve .git entry for watching", "root", absRoot, "error", err)
@@ -132,18 +109,14 @@ func NewWatcher(root string, onChange ChangeHandler, loggers ...*slog.Logger) (*
 	return w, nil
 }
 
-// Root returns the watcher's primary root directory (absolute). It is fixed
-// at construction and never mutated, so no locking is required. Callers use
-// it to detect whether a re-scope target already matches the live root
-// (e.g. the backend WatchDirectory RPC re-issued on every FileTreePanel
-// mount) and keep the existing watcher instead of tearing it down.
+// Root returns the watcher's primary root (absolute). Fixed at construction (no
+// locking needed); callers compare it to a re-scope target to keep the watcher.
 func (w *Watcher) Root() string {
 	return w.root
 }
 
-// eventLoop reads fsnotify events, accumulates their paths during a debounce
-// window, and flushes them to onChange. All state (pending paths + timer) is
-// confined to this single goroutine, so no extra synchronization is needed.
+// eventLoop reads fsnotify events, accumulates paths during a debounce window,
+// and flushes them to onChange; all state is confined to this one goroutine.
 func (w *Watcher) eventLoop() {
 	var pending map[string]struct{}
 	var timer *time.Timer
@@ -161,53 +134,21 @@ func (w *Watcher) eventLoop() {
 				return
 			}
 			w.log().Debug("fsnotify event", "op", event.Op.String(), "path", event.Name)
-			// Attribute-only events (fsnotify Chmod — kqueue NOTE_ATTRIB on
-			// BSD/macOS, IN_ATTRIB on Linux) carry no content change. On macOS
-			// every git invocation that opens .git/index for reading produces
-			// one (observed with git 2.50.1 + fsnotify v1.9.0), so without this
-			// filter a plain `git status`/`git diff` refresh keeps the watcher —
-			// and every workspace:tree_changed consumer — firing forever in a
-			// self-sustaining loop (each flush triggers the git re-fetches whose
-			// index reads emit the next Chmod). Skip them entirely: a pure Chmod
-			// must neither enter the pending set nor restart the debounce window
-			// (a Chmod storm would otherwise postpone every real event's flush
-			// indefinitely). A Chmod ORed with a write-ish op still passes —
-			// kqueue reports NOTE_ATTRIB alongside most real mutations. (The
-			// Windows backend never emits Chmod; the filter below covers it.)
+			// Pure Chmod events carry no content change but every git index read
+			// emits one on macOS — without this filter a read-only git refresh
+			// loops the watcher forever. Skip entirely (no pending entry, no
+			// debounce restart); a Chmod ORed with a write-ish op still passes, and
+			// Windows never emits Chmod. See specs/domains/workspace.md.
 			if event.Op&fsnotify.Chmod != 0 &&
 				event.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Remove|fsnotify.Rename) == 0 {
 				continue
 			}
-			// Directory Write suppression: on Windows (and kqueue) a Write
-			// event whose path IS a directory does not mean that a file named
-			// like the directory was written. NTFS reports
-			// FILE_ACTION_MODIFIED for a directory whenever one of its direct
-			// entries changes (the directory's last-write time), and
-			// ReadDirectoryChangesW delivers it under the
-			// FILE_NOTIFY_CHANGE_LAST_WRITE filter — fsnotify's own docs
-			// recommend filtering out "Write events whose path refers to a
-			// directory" when only file content matters.
-			//
-			// The check must cover EVERY directory, not just the watched
-			// ones: a change inside an unwatched subdirectory of a watched
-			// parent (e.g. the reflog append to .git/logs/HEAD during `git
-			// commit` — only .git's top level is watched) updates that
-			// subdirectory's own last-write time, which the parent watch
-			// stream reports as a Write on the subdirectory's path. NTFS
-			// defers directory-mtime updates (kqueue/inotify surface the
-			// same metadata change as an attribute event, i.e. Chmod, which
-			// the pure-Chmod filter above already skips), so the echo can
-			// LAG the child events by seconds and land inside a much later
-			// debounce window — this is what re-armed the git-refresh loop
-			// under the Windows CI runner even after the watched-dir-only
-			// suppression (a single Write on .git/logs right after read-only
-			// git commands had run).
-			//
-			// No information is lost: we watch directories non-recursively,
-			// so every real change inside a watched directory arrives as its
-			// own Create/Remove/Rename/Write event on the CHILD path, and
-			// staging/unstaging still wakes the file tree (the .git watch
-			// keeps its file-level index events).
+			// A Write whose path IS a directory is directory-mtime churn (NTFS
+			// FILE_ACTION_MODIFIED; kqueue/inotify similar), not a file write —
+			// suppress it. The check covers EVERY directory: a child's change bumps
+			// an unwatched subdirectory's mtime, reported by the parent watch as a
+			// Write that can LAG the child events by seconds (re-armed the git
+			// refresh loop on Windows CI). Nothing is lost — real changes arrive as child-path events. See specs/domains/workspace.md.
 			if event.Has(fsnotify.Write) &&
 				!event.Has(fsnotify.Create|fsnotify.Remove|fsnotify.Rename) &&
 				w.pathIsDirectory(event.Name) {
@@ -220,47 +161,26 @@ func (w *Watcher) eventLoop() {
 				}
 				pending[event.Name] = struct{}{}
 			}
-			// Auto-expand: when a directory is created inside a recursive
-			// root, add it (and its subtree) to the watch list so changes in
-			// newly-created subdirectories are detected. fsnotify is not
-			// recursive, so this is required to keep a recursively-watched
-			// tree complete as it grows.
+			// Auto-expand: a Create inside a recursive root adds the new directory
+			// (and subtree), keeping a growing recursively-watched tree complete.
 			if event.Has(fsnotify.Create) && event.Name != "" {
 				w.maybeAutoAddDir(event.Name)
 			}
-			// Forget watches on deleted/renamed directories (review [71]):
-			// fsnotify watches inodes, so when a watched directory is
-			// unlinked the kernel drops its watch while watched[path] stays
-			// true — and because the auto-add above short-circuits on that
-			// map, a directory deleted and recreated at the same path was
-			// never re-watched, silently losing all change detection for
-			// the recreated subtree. Dropping the stale entry lets the
-			// Create of the recreated directory re-register it.
+			// Forget watches on deleted directories (review [71]): the kernel drops
+			// an unlinked directory's watch while watched[path] stays true, short-
+			// circuiting the auto-add — dropping the entry lets the recreate's
+			// Create re-register it.
 			if event.Has(fsnotify.Remove) && event.Name != "" {
 				w.forgetWatchedDir(event.Name)
 			} else if event.Has(fsnotify.Rename) && event.Name != "" {
-				// Drop the stale watched entries for the old path (and
-				// its watched descendants): they short-circuit every
-				// re-watch path, so a directory recreated at the old
-				// path would otherwise stay silently unwatched (review
-				// [71]). Unlike Remove, the fsnotify watches are NOT
-				// closed here.
-				//
-				// The destination side deliberately gets NO recovery: on
-				// fsnotify v1, moving a watched directory itself makes
-				// fsnotify handle IN_MOVE_SELF in its own read loop by
-				// REMOVING the watch (kernel watch + bookkeeping) at an
-				// ordering we cannot observe, so any re-registration of
-				// the moved path raced that removal and intermittently
-				// lost all detection for the moved directory (the interim
-				// pairing attempt won some interleavings and was silently
-				// stripped in others). A renamed explicit watch therefore
-				// recovers only through a recreate at the old path (the
-				// Create re-registers, review [71]) or through
-				// recursive-root auto-add at the destination (best-effort,
-				// subject to the same MOVE_SELF race); a watch registered
-				// via WatchDir must be re-issued by its owner after a
-				// move.
+				// Drop stale watched entries for the old path (reviews [71]): they
+				// short-circuit every re-watch path. Unlike Remove, no fsnotify
+				// closes here — on fsnotify v1 a moved watched directory has its
+				// watch removed by fsnotify's own IN_MOVE_SELF handling at an
+				// unobservable ordering, so re-registration raced it and
+				// intermittently lost all detection. Recovery is recreate-at-old-
+				// path or recursive-root auto-add; WatchDir watches are re-issued
+				// by their owner.
 				w.forgetRenamedWatched(event.Name)
 			}
 			// (Re)start the debounce window.
@@ -292,13 +212,8 @@ func (w *Watcher) eventLoop() {
 	}
 }
 
-// pathIsDirectory reports whether path currently refers to a directory.
-// Watched paths are answered from the watch list without a syscall (only
-// directories are ever added there); anything else costs one os.Stat —
-// negligible at fsnotify's event rate. The event loop uses this to drop the
-// directory-echo Write events described in its comment block; a missing path
-// (deleted between event and stat) classifies as a file so the event still
-// reaches consumers, matching the pre-suppression behaviour.
+// pathIsDirectory reports whether path currently refers to a directory; watched
+// paths answer from the watch list without a syscall, a missing path is a file.
 func (w *Watcher) pathIsDirectory(path string) bool {
 	if path == "" {
 		return false
@@ -325,17 +240,10 @@ func keysOf(m map[string]struct{}) []string {
 	return out
 }
 
-// WatchTree recursively watches a directory and all of its subdirectories,
-// marking it as a "recursive root" so that directories created inside it
-// later are automatically added (see maybeAutoAddDir). This is required
-// because fsnotify is not recursive — even on macOS the FSEvents backend only
-// reports events for explicitly-added directories. Use this for subtrees that
-// must be watched as a whole (e.g. the .research artifact tree), in contrast
-// to WatchDir which watches a single directory non-recursively.
-//
-// Best-effort: unreadable or missing subdirectories are skipped rather than
-// failing the whole call. Idempotent: calling it twice on the same root is a
-// no-op. The path must be under the workspace root.
+// WatchTree recursively watches dir, marking it a "recursive root" whose
+// later-created subdirectories are auto-added (fsnotify is not recursive, even
+// on macOS) — for subtrees watched as a whole (e.g. .research) vs WatchDir's
+// single non-recursive directory. Best-effort, idempotent, under-root only.
 func (w *Watcher) WatchTree(path string) error {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
@@ -353,8 +261,7 @@ func (w *Watcher) WatchTree(path string) error {
 }
 
 // addTreeLocked adds dir and every subdirectory beneath it to the fsnotify
-// watch list. The caller must hold w.mu. Missing or unreadable directories
-// are skipped (best-effort).
+// watch list. The caller must hold w.mu; missing dirs are skipped (best-effort).
 func (w *Watcher) addTreeLocked(dir string) {
 	if !w.watched[dir] {
 		if err := w.watcher.Add(dir); err != nil {
@@ -380,10 +287,8 @@ func (w *Watcher) addTreeLocked(dir string) {
 	})
 }
 
-// maybeAutoAddDir adds path to the watch list when it is a directory created
-// inside a recursive root. Called from the event loop on fsnotify.Create
-// events so a growing recursively-watched tree (e.g. a new R-NNN research
-// project) stays fully watched.
+// maybeAutoAddDir adds a directory created inside a recursive root to the
+// watch list (event loop, on Create) so a growing tree stays fully watched.
 func (w *Watcher) maybeAutoAddDir(path string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -402,8 +307,7 @@ func (w *Watcher) maybeAutoAddDir(path string) {
 		return
 	}
 	w.watched[path] = true
-	// The new directory may already contain subdirectories (e.g. a research
-	// project created with its hypotheses/ folder in one step); add them too.
+	// The new directory may already contain subdirectories; add them too.
 	w.addTreeLocked(path)
 }
 
@@ -418,22 +322,14 @@ func (w *Watcher) isWithinRecursiveRootLocked(path string) bool {
 	return false
 }
 
-// forgetRenamedWatched drops the stale watched entries a RENAMED directory
-// left behind: the path itself and every watched descendant below it. These
-// entries short-circuit both re-registration paths (the event loop's
-// maybeAutoAddDir and the WatchTree/WatchDir early-outs), so a directory
-// recreated at the renamed-away path would never be re-watched and its
-// change detection would silently die (the same failure shape review [71]
-// fixed for Remove). Unlike forgetWatchedDir this does NOT close the
-// fsnotify watches: fsnotify handles a moved directory's IN_MOVE_SELF in
-// its own read loop — removing the moved watch (kernel watch included) at
-// an ordering we cannot observe (see the Rename handling in the event
-// loop) — so closing anything here would race that removal. Leaving a
-// now-stale kernel watch briefly alive is harmless: the watched-map drops
-// are what unblock re-registration. Mirrors forgetWatchedDir's
-// no-early-return shape: a watched descendant can exist even when the
-// renamed path itself was never in the map. The scan is a bounded map walk
-// per Rename event.
+// forgetRenamedWatched drops the watched entries a RENAMED directory left
+// behind (itself plus watched descendants) — they short-circuit every
+// re-registration path, so a directory recreated at the old path would never
+// be re-watched (the Remove-side failure shape, review [71]). Unlike
+// forgetWatchedDir it does NOT close fsnotify watches: fsnotify removes a
+// moved directory's watch itself (IN_MOVE_SELF) at an unobservable ordering,
+// and closing here would race that (see the event loop). No early return — a
+// watched descendant can exist when the path itself never registered.
 func (w *Watcher) forgetRenamedWatched(path string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -446,32 +342,18 @@ func (w *Watcher) forgetRenamedWatched(path string) {
 	}
 }
 
-// forgetWatchedDir drops a DELETED directory — and every watched descendant
-// BENEATH it — from the watch list so a tree recreated at the same path is
-// re-registered by the event loop's auto-add instead of being
-// short-circuited by stale entries (review [71]). Forgetting only the exact
-// path would leave stale entries for descendants whose kernel watches died
-// with the deleted inode: the Remove event fires only for the deleted
-// directory itself, and both registration paths skip any path already
-// present in w.watched — so a recreated subtree with surviving stale entries
-// would never be re-watched and its changes would silently go unreported.
-// Best-effort: the kernel already dropped the watches when the directories
-// were unlinked, so the fsnotify Removes typically error — logged at Debug
-// and skipped, exactly like UnwatchTree's teardown. Renames take the
-// forgetRenamedWatched path instead: the stale map entries must go (they
-// would short-circuit every re-watch path), while the destination side has
-// no reliable recovery on fsnotify v1 (see the Rename handling in the event
-// loop for the IN_MOVE_SELF race that rules it out).
+// forgetWatchedDir drops a DELETED directory and every watched descendant from
+// the watch list so a tree recreated at the path is re-registered by the event
+// loop's auto-add (review [71]): the Remove event names only the deleted
+// directory, and stale descendant entries would short-circuit both registration
+// paths forever. Best-effort — the kernel already dropped the watches, so the
+// fsnotify Removes typically error (Debug, skipped); renames take
+// forgetRenamedWatched (its doc explains the split).
 func (w *Watcher) forgetWatchedDir(path string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	// No early return when path itself is not (or no longer) in w.watched: a
-	// Remove event can name a directory whose own registration was skipped
-	// best-effort (a WatchTree walk hitting a transient error) while watched
-	// descendants DID register. Their stale entries must still be dropped —
-	// both re-registration paths short-circuit on them, so a recreated
-	// descendant would stay silently unwatched (review [71]). The scan is a
-	// bounded map walk per Remove event.
+	// No early return when path itself never registered: descendants may have,
+	// and their stale entries short-circuit re-registration too (review [71]).
 	for watched := range w.watched {
 		within, withinErr := pathutil.IsWithinPath(path, watched)
 		if withinErr != nil || !within {
@@ -507,14 +389,8 @@ func (w *Watcher) WatchDir(path string) error {
 	return nil
 }
 
-// UnwatchTree removes a recursively-watched directory tree from the watch
-// list. It removes the root from recursiveRoots and unwatches every directory
-// that was added as part of the recursive watch (the root itself and all
-// subdirectories beneath it). This is the inverse of [Watcher.WatchTree].
-//
-// Best-effort: fsnotify Remove errors are logged at Debug level and skipped
-// so a partially-removed tree does not abort the call. Idempotent: calling it
-// on a root that was never watched (or already unwatched) is a no-op.
+// UnwatchTree is the inverse of [Watcher.WatchTree]: it drops the root from
+// recursiveRoots and unwatches every watched directory at or beneath it.
 func (w *Watcher) UnwatchTree(path string) error {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
@@ -572,12 +448,9 @@ func (w *Watcher) Close() error {
 	return err
 }
 
-// AllowRoot admits an additional root for the under-root gate: WatchDir and
-// WatchTree accept paths under the watcher's primary root OR any allowed
-// extra root. Needed when a watched subtree legitimately lives outside the
-// primary root — a managed session worktree (kept in the agent-dir container,
-// outside the checkout) whose .research artifact tree must be watched while
-// the watcher stays rooted at the project checkout. Idempotent.
+// AllowRoot admits an additional root for the under-root gate — for watched
+// subtrees legitimately outside the primary root (a managed session worktree's
+// .research tree while the watcher roots at the checkout). Idempotent.
 func (w *Watcher) AllowRoot(path string) error {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
@@ -589,12 +462,9 @@ func (w *Watcher) AllowRoot(path string) error {
 	return nil
 }
 
-// isUnderRoot checks whether absPath is under (or equal to) the root directory
-// or any admitted extra root (see AllowRoot).
-// Uses the centralized containment primitive so symlink-escaped paths (e.g.
-// macOS /var → /private/var) are resolved consistently with the rest of the
-// codebase, per the path-centralization convention. Callers must not hold
-// w.mu — the WatchDir/WatchTree gates run it before taking the lock.
+// isUnderRoot checks absPath against the root and any admitted extra root via
+// the centralized containment primitive (symlink-escaped paths resolve
+// consistently). It takes w.mu itself, so callers must not hold it.
 func (w *Watcher) isUnderRoot(absPath string) bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()

@@ -24,13 +24,11 @@ import (
 	"github.com/v0lka/sp4rk/safeio"
 )
 
-// sanitizeRe matches characters that are not alphanumeric, hyphens, or underscores.
 var sanitizeRe = regexp.MustCompile(`[^a-zA-Z0-9_-]`)
 
-// embeddingCommitWindowSize bounds the number of already-embedded documents
-// retained and handed to chromem in one commit. Inference batching is managed
-// independently by documentAccumulator, so this limit controls only commit
-// memory and cancellation latency.
+// embeddingCommitWindowSize is the chromem commit window; the ≤200-doc bound, the
+// accumulator's inference tail, and the sidecar publish-after-commit rule are
+// specified in specs/domains/workspace.md (Vector Index, memory program).
 const embeddingCommitWindowSize = 200
 
 // collectionName returns a deterministic, sanitized collection name for a branch.
@@ -65,9 +63,8 @@ func (s *Service) SwitchBranch(ctx context.Context, branchName string) error {
 		return nil
 	}
 
-	// ADR-064: the persistent DB is opened per branch (SetProject prepares the
-	// layout but no longer opens it), so a real project is identified by a
-	// non-empty storage path rather than an already-open DB.
+	// ADR-064: SetProject prepares the layout but opens no DB, so a real project is
+	// a non-empty storage path (specs/decisions/064-branch-scoped-lazy-vector-index-open.md).
 	if s.current.projectPath == "" {
 		return errors.New("no project initialized; call SetProject first")
 	}
@@ -81,13 +78,12 @@ func (s *Service) SwitchBranch(ctx context.Context, branchName string) error {
 		}
 	}
 
-	// ADR-064 step (a): drop the outgoing branch's residents BEFORE opening the
-	// incoming one, so the switch peaks at one branch's working set instead of
-	// two. Its hashes were persisted just above, so nothing is lost.
+	// ADR-064 step (a): release the outgoing residents BEFORE the incoming open so a
+	// switch peaks at one branch's working set (specs/decisions/064-branch-scoped-lazy-vector-index-open.md).
 	s.releaseBranchResidentsLocked()
 
-	// Open the branch-scoped chromem DB root. NewPersistentDB decodes only this
-	// branch's collection — never the other branches' (ADR-064).
+	// Branch-scoped open: NewPersistentDB decodes only this branch's collection
+	// (ADR-064).
 	db, err := s.openBranchDBLocked(branchName)
 	if err != nil {
 		return err
@@ -96,32 +92,21 @@ func (s *Service) SwitchBranch(ctx context.Context, branchName string) error {
 	name := collectionName(branchName)
 	col, err := db.GetOrCreateCollection(name, nil, s.embeddingFunc)
 	if err != nil {
-		// Deliberately do NOT publish db: a half-open state (db resident,
-		// collection nil) would be parked by parkCurrentLocked — which gates on
-		// db != nil — and estimateStateBytes sizes a parked state from its
-		// COLLECTION, so the documents this db already decoded would be counted
-		// as 0 bytes and the park budget could never evict them. takeParkedLocked
-		// would then restore that state without reopening it (db != nil), leaving
-		// a collection-less current. Keeping the state fully closed instead
-		// upholds the fail-closed contract ADR-064 documents for EVERY failed
-		// open, not only a failed NewPersistentDB — GetOrCreateCollection reaches
-		// chromem's CreateCollection, which persists the collection metadata file
-		// and so genuinely fails on a full or read-only volume (exactly the
-		// condition a multi-GB index runs into).
+		// Deliberately do NOT publish db: a half-open state (db resident, collection nil)
+		// parks at ~0 bytes — parkCurrentLocked gates on db != nil while estimateStateBytes
+		// sizes from the COLLECTION — and takeParkedLocked would restore it collection-less.
+		// Keep the state fully closed; GetOrCreateCollection genuinely fails on full volumes.
 		return fmt.Errorf("getting or creating collection %q: %w", name, err)
 	}
 	s.current.db = db
 
-	// Open this branch's lexical index; the previous branch's was already closed
-	// by releaseBranchResidentsLocked above. It lives under the project's
-	// vector_index storage root (set by SetProject), alongside the chromem DB —
-	// a state without a storage root or project id (the in-memory No Project
-	// state) gets no lexical persistence at all.
+	// Open this branch's lexical index (the previous branch's was closed by
+	// releaseBranchResidentsLocked above); a state without a storage root or
+	// project id (in-memory No Project) gets no lexical persistence.
 	if s.current.projectPath != "" && s.current.projectID != "" {
 		lexDir := filepath.Join(s.current.projectPath, "lexical", lexicalBranchDirName(branchName))
-		// Ensure the parent directory (…/{projectID}/lexical/) exists as a
-		// real directory (a planted symlink must not redirect the index);
-		// bleve's New() creates the leaf (branch) directory itself.
+		// Real parent dir only (a planted symlink must not redirect the index);
+		// bleve's New() creates the leaf directory itself.
 		if mkErr := ensureRealDir(filepath.Dir(lexDir), 0o750); mkErr != nil {
 			s.logger.Warn("failed to create lexical parent directory", "path", lexDir, "error", mkErr)
 		} else {
@@ -143,46 +128,25 @@ func (s *Service) SwitchBranch(ctx context.Context, branchName string) error {
 	return nil
 }
 
-// readFileFn is a safeio.ReadFile indirection used by ValidateCollection's
-// slow path. It exists purely as a test seam: tests swap it for a counting
-// wrapper to assert that the stat-based fast path skips content reads entirely
-// for unchanged files. Production code must not reassign it. The safeio
-// default (regular-file-only, non-blocking) means the seam's production value
-// cannot hang on a FIFO planted at a candidate path.
+// readFileFn is a safeio.ReadFile indirection — a test-only seam for asserting the
+// stat fast path skips content reads; production must not reassign it. safeio's
+// regular-file-only default cannot hang on a FIFO planted at a candidate path.
 var readFileFn = safeio.ReadFile
 
 // fileHashEntrySep separates the components of a file-hash sidecar value.
 const fileHashEntrySep = "|"
 
-// fullHashRevalidationEvery bounds how many consecutive ValidateCollection
-// passes may rely on the stat-based fast-path before one pass skips it and
-// re-reads + re-hashes every file. This is the backstop that catches content
-// rewrites preserving both size and mtime (see the fast-path comment in
-// ValidateCollection). 20 keeps the amortized revalidation cost at ~5% of a
-// pass while bounding the detection window to ~20 incremental passes.
+// fullHashRevalidationEvery bounds how many consecutive ValidateCollection passes may
+// ride the stat fast-path (size+mtime as a content proxy) before one pass re-reads and
+// re-hashes every file — the backstop for rewrites preserving both size and mtime; 20
+// keeps amortized revalidation at ~5% of a pass with a ≤20-pass detection window.
+// See specs/domains/workspace.md (ValidateCollection stat fast-path backstop).
 const fullHashRevalidationEvery = 20
 
-// parseFileHashEntry parses a file-hash sidecar value. New-format values are
-// "hash|size|mtimeUnixNano", "hash|size|mtimeUnixNano|chunkerFP" or
-// "hash|size|mtimeUnixNano|chunkerFP|chunkSet", where size is the file size
-// in bytes recorded at index time, mtimeUnixNano is the file's ModTime in
-// Unix-nanoseconds recorded at index time, the optional chunkerFP is the
-// chunker-configuration fingerprint the file was chunked under (see
-// ChunkerFingerprint; absent for intermediate-format entries written before
-// the fingerprint existed — retrieve it separately via
-// fileHashEntryChunkerFP), and the optional chunkSet is the set of committed
-// chunk indices for the file (see encodeChunkIndices; absent for entries
-// whose committed set is unknown — retrieve it separately via
-// fileHashEntryChunkSet). A 5-field value is accepted only when its chunkSet
-// field parses; anything else malformed makes ok false and the caller must
-// fall back to the full read+hash comparison. Legacy values are the bare
-// content hash with no separators and parse the same way (ok false).
-//
-// Back-compat: an OLDER binary (parser without the chunkSet field) rejects
-// any 5-field value via its "len(parts) must be 3 or 4" guard, i.e. treats
-// it as a legacy bare hash — slower (full read+hash, one redundant re-index
-// pass that rewrites the entry) but correct. TestFileHashEntry_OldParser…
-// in filehash_sidecar_test.go pins that grammar.
+// parseFileHashEntry parses a sidecar value in any format up to v5; malformed values
+// and legacy bare hashes return ok=false (caller falls back to full read+hash).
+// Grammar, strictness, and older-binary back-compat: specs/domains/workspace.md,
+// sidecar entry format v5. Field accessors: fileHashEntryChunkerFP, fileHashEntryChunkSet.
 func parseFileHashEntry(entry string) (hash string, size, mtimeUnixNano int64, ok bool) {
 	parts := strings.Split(entry, fileHashEntrySep)
 	if len(parts) < 3 || len(parts) > 5 {
@@ -197,13 +161,9 @@ func parseFileHashEntry(entry string) (hash string, size, mtimeUnixNano int64, o
 		return parts[0], 0, 0, false
 	}
 	if len(parts) == 5 {
-		// Strict grammar: a 5th field that is not a valid chunk set
-		// downgrades the whole entry to legacy (full read+hash fallback)
-		// instead of silently carrying an unusable set. Use the
-		// allocation-free validity check: parseFileHashEntry runs once per
-		// file on the per-pass stat fast path and does not need the set, so
-		// materializing one here would generate O(files × chunkCount)
-		// throwaway ints.
+		// A 5th field that does not parse as a chunk set downgrades the entry to legacy
+		// rather than carrying an unusable set; the allocation-free validity check keeps
+		// this O(files) fast path from materializing throwaway sets (see validChunkIndicesField).
 		if !validChunkIndicesField(parts[4]) {
 			return parts[0], 0, 0, false
 		}
@@ -211,11 +171,8 @@ func parseFileHashEntry(entry string) (hash string, size, mtimeUnixNano int64, o
 	return parts[0], size, mtime, true
 }
 
-// validChunkIndicesField reports whether field is a well-formed 5th sidecar
-// field WITHOUT materializing the index set (unlike parseChunkIndices, which
-// allocates a []int of size N for the contiguous form). The grammar is
-// identical to parseChunkIndices; only the list form ("L:…") allocates, and
-// only its split parts.
+// validChunkIndicesField checks the 5th sidecar field's grammar without materializing
+// the set (parseChunkIndices's contiguous form allocates a []int of size N).
 func validChunkIndicesField(field string) bool {
 	if field == "" {
 		return false
@@ -240,11 +197,9 @@ func validChunkIndicesField(field string) bool {
 	return err == nil && n >= 0 && n <= maxChunkSetEntries
 }
 
-// fileHashEntryChunkerFP returns the chunker-configuration fingerprint field
-// of a sidecar entry, or "" when the entry has none (legacy bare hashes and
-// intermediate "hash|size|mtime" entries written before the fingerprint
-// existed). Callers treat "" as "configuration unknown — exempt from
-// fingerprint-based staleness" rather than "default configuration".
+// fileHashEntryChunkerFP returns the entry's chunker fingerprint, or "" when absent
+// (legacy/intermediate entries). "" means "configuration unknown — exempt from
+// fingerprint-based staleness", never "default configuration".
 func fileHashEntryChunkerFP(entry string) string {
 	parts := strings.Split(entry, fileHashEntrySep)
 	if len(parts) != 4 && len(parts) != 5 {
@@ -253,24 +208,19 @@ func fileHashEntryChunkerFP(entry string) string {
 	return parts[3]
 }
 
-// chunkSetListPrefix marks the explicit-list form ("L:0,1,3") of the 5th
-// sidecar field; a bare decimal N is the contiguous form (0..N-1).
+// chunkSetListPrefix marks the explicit-list form of the 5th sidecar field; a bare
+// decimal N is the contiguous form (idxset codec, specs/decisions/049-vector-index-memory-reduction.md).
 const chunkSetListPrefix = "L:"
 
-// maxChunkSetEntries bounds the number of indices parseChunkIndices may
-// materialize. Legitimate sets are bounded by maxChunksPerFile (default
-// 4000); the cap only stops a corrupt or hand-edited sidecar value (e.g.
-// "9999999999") from turning a parse into an allocation bomb. Oversized or
-// malformed values downgrade the entry to legacy, and callers fall back to
-// enumerating the collection.
+// maxChunkSetEntries caps parseChunkIndices materialization: a corrupt or hand-edited
+// set value must not become an allocation bomb. Oversized values downgrade the entry
+// to legacy (specs/decisions/049-vector-index-memory-reduction.md).
 const maxChunkSetEntries = 1 << 20
 
-// encodeChunkIndices serializes a set of committed chunk indices (the 5th
-// sidecar field). A contiguous run 0..N-1 encodes as the bare count "N"
-// (empty set → "0"); any gapped set — chunks missing because the
-// poisoned-text fallback dropped them — encodes as "L:0,1,3" with the
-// surviving indices in ascending order. The input order is irrelevant
-// (encode sorts and de-duplicates); parseChunkIndices inverts it.
+// encodeChunkIndices serializes a committed chunk-index set as the 5th sidecar field:
+// contiguous 0..N-1 → "N", gapped (poison-dropped chunks) → "L:0,1,3" ascending — the
+// idxset codec in specs/decisions/049-vector-index-memory-reduction.md. Input order is
+// irrelevant (sorted and de-duplicated); parseChunkIndices inverts it.
 func encodeChunkIndices(indices []int) string {
 	sorted := make([]int, len(indices))
 	copy(sorted, indices)
@@ -298,11 +248,9 @@ func encodeChunkIndices(indices []int) string {
 	return b.String()
 }
 
-// parseChunkIndices parses the 5th sidecar field in either encoded form
-// (bare count "N" for a contiguous 0..N-1 set, "L:0,1,3" for a gapped set).
-// ok is false for the empty string, non-numeric or negative values, an empty
-// or malformed list, and sets above maxChunkSetEntries; callers must then
-// treat the entry's chunk set as unknown.
+// parseChunkIndices decodes the 5th sidecar field ("N" contiguous, "L:0,1,3" gapped);
+// ok is false for empty, malformed, or oversized values — callers must then treat the
+// entry's chunk set as unknown.
 func parseChunkIndices(field string) ([]int, bool) {
 	if field == "" {
 		return nil, false
@@ -336,10 +284,9 @@ func parseChunkIndices(field string) ([]int, bool) {
 	return indices, true
 }
 
-// chunkIndexFromID extracts the chunk index from a DocumentID
-// ("<pathHash>:<idx>", see DocumentID). ok is false for IDs outside that
-// grammar (hand-built test documents, foreign writers), in which case the
-// file's committed chunk set must be treated as unknown.
+// chunkIndexFromID extracts the chunk index from a DocumentID ("<pathHash>:<idx>");
+// ok is false for IDs outside that grammar (hand-built/foreign docs) — treat the
+// file's committed chunk set as unknown.
 func chunkIndexFromID(id string) (int, bool) {
 	i := strings.LastIndexByte(id, ':')
 	if i < 0 {
@@ -352,10 +299,9 @@ func chunkIndexFromID(id string) (int, bool) {
 	return n, true
 }
 
-// fileHashEntryChunkSet returns the committed chunk-index set recorded in a
-// sidecar entry's 5th field. ok is false for every older format (legacy bare
-// hash, 3-field, 4-field) and for malformed values; callers must then
-// enumerate the collection instead of deriving IDs arithmetically.
+// fileHashEntryChunkSet returns the entry's committed chunk-index set; ok is false for
+// every older format and malformed values — callers fall back to enumerating the
+// collection (specs/domains/workspace.md, enumeration without materialization).
 func fileHashEntryChunkSet(entry string) ([]int, bool) {
 	parts := strings.Split(entry, fileHashEntrySep)
 	if len(parts) != 5 {
@@ -364,8 +310,7 @@ func fileHashEntryChunkSet(entry string) ([]int, bool) {
 	return parseChunkIndices(parts[4])
 }
 
-// fileHashEntryHash returns the content-hash component of a sidecar value
-// regardless of whether the value is new-format or a legacy bare hash.
+// fileHashEntryHash returns the entry's content hash (any format).
 func fileHashEntryHash(entry string) string {
 	if hash, _, _, ok := parseFileHashEntry(entry); ok {
 		return hash
@@ -373,41 +318,20 @@ func fileHashEntryHash(entry string) string {
 	return entry
 }
 
-// ChunkerFingerprint returns a short stable fingerprint of the chunker
-// configuration (max chunk size + overlap — the two ChunkerConfig inputs
-// that determine how a file's content is split — plus the content-filter
-// policy that decides whether a file is chunked at all). It is embedded as
-// the 4th field of new sidecar entries so ValidateCollection can detect
-// files whose chunks were produced under a different chunking configuration
-// (vector_index.chunk_overlap / max_chunk_size / content_filter changes) and
-// re-chunk them even though their content hash is unchanged. Including the
-// content-filter fingerprint means a policy change also invalidates the
-// stat fast-path for affected files, so previously-indexed files that the
-// new policy excludes are re-read, re-evaluated, and their documents
-// removed (they stop being "seen"); identical re-chunks then hit the
-// content-addressed embedding cache instead of ONNX.
+// ChunkerFingerprint fingerprints the chunker configuration (max chunk size + overlap +
+// content-filter policy) for sidecar field 4: a config change re-chunks files despite an
+// unchanged content hash, a policy flip re-evaluates excluded files (reported deleted),
+// identical re-chunks hit the embedding cache (specs/decisions/036-vector-index-embedding-optimization-policy.md).
 func ChunkerFingerprint(maxChunkSize, overlap int, contentPolicy string) string {
 	sum := sha256.Sum256([]byte(fmt.Sprintf("v2|max=%d|overlap=%d|filter=%s", maxChunkSize, overlap, contentPolicy)))
 	return hex.EncodeToString(sum[:6]) // 12 hex chars, plenty for a config fingerprint
 }
 
-// fileHashEntryFromMetadata composes the sidecar value for a document.
-// processFile stats every file it reads and records "file_size" and
-// "file_mtime_unix_nano" metadata, so the preferred output is the new-format
-// "hash|size|mtimeUnixNano|chunkerFP" entry that lets ValidateCollection
-// classify the file as unchanged from stat alone (and detect chunker-config
-// changes). chunkerFP is the active fingerprint the document was indexed
-// under; pass "" for entries rebuilt from collection metadata whose chunker
-// configuration is unknown (migration/fallback paths) — such entries are
-// exempt from fingerprint-based staleness. chunkSet is the encoded set of
-// committed chunk indices (see encodeChunkIndices; "" = set unknown — the
-// entry then carries no 5th field and collectDocumentIDs falls back to the
-// collection Query). The 5th field is only written when the 4th (chunkerFP)
-// is present, keeping the field grammar positional. When the size/mtime
-// metadata is absent — legacy documents written before the upgrade, or
-// hand-built documents — the legacy bare-hash value is returned;
-// ValidateCollection still honors it via the full read+hash comparison, and
-// the entry is upgraded to the new format the next time the file is indexed.
+// fileHashEntryFromMetadata composes a sidecar value from document metadata — the v5
+// format when size/mtime metadata is present, the legacy bare hash otherwise (upgraded
+// on the file's next index pass); "" chunkerFP/chunkSet mean unknown (no field written;
+// exempt from fingerprint staleness), and the 5th field requires the 4th, keeping the
+// grammar positional (specs/domains/workspace.md, sidecar entry format v5).
 func fileHashEntryFromMetadata(md map[string]string, chunkerFP, chunkSet string) string {
 	hash := md["content_hash"]
 	size, mtime := md["file_size"], md["file_mtime_unix_nano"]
@@ -424,14 +348,10 @@ func fileHashEntryFromMetadata(md map[string]string, chunkerFP, chunkSet string)
 	return entry
 }
 
-// fileHashInfo is a file's per-file indexing fact sheet: the content hash,
-// size, and mtime recorded from the same stat+read that produced the file's
-// chunks. These fields used to ride on every chunk's metadata map (read back
-// from a "representative" chunk); they now travel explicitly from
-// processFile to the sidecar write, and committed chromem documents carry
-// only the four chunk-position metadata fields (see strippedForCommit).
-// The sidecar JSON on disk is unchanged: fileHashEntryFromMetadata renders
-// the exact same "hash|size|mtimeUnixNano[|chunkerFP[|chunkSet]]" value.
+// fileHashInfo is a file's per-file fact sheet (hash/size/mtime from the same
+// stat+read that produced its chunks), carried explicitly to the sidecar write — the
+// commit-time strip removes per-file bookkeeping from chromem documents
+// (specs/decisions/049-vector-index-memory-reduction.md).
 type fileHashInfo struct {
 	filePath string
 	hash     string
@@ -439,12 +359,9 @@ type fileHashInfo struct {
 	mtime    string // mtime in Unix nanoseconds, decimal string
 }
 
-// fileHashInfoFromMetadata extracts the per-file sidecar facts from a
-// document's metadata map — the pre-upgrade carrier, still used by the
-// standalone AddDocuments path whose callers pass documents with full
-// metadata (the indexer pipeline and tests). ok is false when the map
-// carries no content hash; such documents cannot produce a sidecar entry
-// and are skipped (ValidateCollection then reconciles the file from disk).
+// fileHashInfoFromMetadata extracts per-file facts from document metadata — the
+// pre-upgrade carrier still used by standalone AddDocuments and tests. ok is false
+// without a content hash: no sidecar entry, ValidateCollection reconciles from disk.
 func fileHashInfoFromMetadata(md map[string]string) (fileHashInfo, bool) {
 	fp, hash := md["file_path"], md["content_hash"]
 	if fp == "" || hash == "" {
@@ -458,9 +375,7 @@ func fileHashInfoFromMetadata(md map[string]string) (fileHashInfo, bool) {
 	}, true
 }
 
-// entry renders the sidecar value for this file under the given chunker
-// fingerprint and committed chunk-index set encoding (see
-// fileHashEntryFromMetadata for the format).
+// entry renders this file's sidecar value (see fileHashEntryFromMetadata).
 func (info fileHashInfo) entry(chunkerFP, chunkSet string) string {
 	return fileHashEntryFromMetadata(map[string]string{
 		"content_hash":         info.hash,
@@ -469,12 +384,9 @@ func (info fileHashInfo) entry(chunkerFP, chunkSet string) string {
 	}, chunkerFP, chunkSet)
 }
 
-// ValidateCollection checks stored file hashes against current files on disk.
-// It returns lists of stale (modified), new, and deleted file paths.
-// workspacePath is the root directory to walk for source files. checker is the
-// ignore resolver (over .gitignore + .aiignore) the caller already built for
-// this workspace; ValidateCollection reuses it so its walk applies exactly the
-// same filtering as the Indexer's IndexFull walk (preventing reindex loops).
+// ValidateCollection checks stored hashes against disk and returns stale, new, and
+// deleted paths. checker is the caller's ignore resolver, reused so this walk applies
+// exactly the IndexFull filtering — a divergence would reindex in a loop.
 func (s *Service) ValidateCollection(ctx context.Context, workspacePath string, checker ignore.IgnoreChecker) (staleFiles, newFiles, deletedFiles []string, err error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -483,7 +395,6 @@ func (s *Service) ValidateCollection(ctx context.Context, workspacePath string, 
 		return nil, nil, nil, errors.New("no collection available; call SwitchBranch first")
 	}
 
-	// Get stored file hashes from the collection.
 	cacheStarted := time.Now()
 	storedHashes, err := s.getCollectionFileHashes()
 	s.telemetry.observe(StageCacheLookup, len(storedHashes), time.Since(cacheStarted))
@@ -491,23 +402,16 @@ func (s *Service) ValidateCollection(ctx context.Context, workspacePath string, 
 		return nil, nil, nil, fmt.Errorf("getting collection file hashes: %w", err)
 	}
 
-	// Periodic full-hash revalidation: the stat fast-path below trusts
-	// size+mtime as a content proxy, so a rewrite that preserves both would
-	// otherwise escape detection until the file next really changes. Every
-	// fullHashRevalidationEvery-th validation pass skips the fast-path
-	// entirely and re-reads + re-hashes every file, catching such rewrites
-	// eventually. The counter is atomic because this function runs under the
-	// read lock; validation passes are serialized per indexer in practice,
-	// so concurrent calls could at worst force the revalidation twice.
+	// Periodic full-hash revalidation (see fullHashRevalidationEvery). The counter is
+	// atomic only for race-freedom under the read lock; passes are serialized per
+	// indexer in practice, so concurrency can at worst force revalidation twice.
 	forceFullHash := s.current.validationsSinceFullHash.Add(1) >= fullHashRevalidationEvery
 	if forceFullHash {
 		s.current.validationsSinceFullHash.Store(0)
 	}
 
-	// Track which stored files we've seen on disk.
 	seen := make(map[string]bool, len(storedHashes))
 
-	// Walk workspace files using the same filtering as walkProjectFiles.
 	absRoot, absErr := filepath.Abs(workspacePath)
 	if absErr != nil {
 		return nil, nil, nil, fmt.Errorf("resolving workspace path: %w", absErr)
@@ -538,41 +442,21 @@ func (s *Service) ValidateCollection(ctx context.Context, workspacePath string, 
 			return nil //nolint:nilerr // skip unresolvable paths
 		}
 
-		// Size guard: skip oversized files before the full os.ReadFile. Like
-		// binary/empty files they are never added to the collection, so
-		// excluding them here avoids an infinite reindex loop on every pass.
-		// The NUL-byte binary check below cannot recognize every binary format
-		// (ONNX/safetensors protobufs have readable headers), so the size
-		// limit is the reliable backstop against loading a multi-hundred-MB
-		// asset into memory just to hash it. The limit is configurable via
-		// vector_index.max_file_size (default 4 MiB).
+		// Size guard: skipped files are never indexed, so skipping here too avoids an
+		// infinite reindex loop. The size limit backstops the NUL-byte check, which
+		// cannot recognize every binary format (ONNX/safetensors have readable headers).
 		info, infoErr := d.Info()
 		if infoErr == nil && tooLargeForIndex(info.Size(), s.maxFileSize) {
 			return nil //nolint:nilerr // skip oversized files
 		}
 
-		// Fast path (stat-based unchanged detection): when the sidecar entry
-		// is current-format ("hash|size|mtimeUnixNano|chunkerFP") and the
-		// size and mtime recorded at index time still match the file's
-		// stat, the content is HEURISTICALLY the same bytes that were
-		// indexed — same length and same modification time almost always
-		// mean an untouched file, but a rewrite that preserves both (an
-		// archive extraction restoring archived mtimes, some file-sync
-		// tools) escapes detection here. The periodic full-hash
-		// revalidation above catches such a rewrite within
-		// fullHashRevalidationEvery passes instead of letting it survive
-		// until the file next changes. The entry's chunker fingerprint
-		// must also match the active chunker configuration; on a config
-		// change the file needs re-chunking and falls through. The file
-		// necessarily passed the oversized/binary/empty guards back then,
-		// so we can mark it seen WITHOUT the header pre-read, the full
-		// os.ReadFile, or the SHA-256 pass. This is what keeps the
-		// 1s-debounced incremental pass (triggered after every file edit)
-		// from re-reading and re-hashing the entire workspace each time.
-		// Legacy bare-hash entries, fingerprint-less intermediate entries,
-		// any size/mtime mismatch, a failed d.Info, or a forced full-hash
-		// pass fall through to the full-read comparison below, which also
-		// upgrades the entry the next time the file is indexed.
+		// Stat fast path: a current-format entry whose recorded size+mtime still match
+		// (and whose chunker fingerprint matches the active config) marks the file seen
+		// with no read and no hash — what keeps the 1s-debounced incremental pass from
+		// re-hashing the workspace. It is a heuristic: size+mtime-preserving rewrites
+		// escape until the periodic full-hash pass (fullHashRevalidationEvery). Falls
+		// through on legacy/fingerprint-less entries, any mismatch, a failed d.Info, or
+		// a forced full-hash pass; the full-read comparison upgrades the entry next index.
 		if !forceFullHash && info != nil {
 			if stored, exists := storedHashes[absPath]; exists {
 				if _, size, mtime, ok := parseFileHashEntry(stored); ok &&
@@ -584,10 +468,8 @@ func (s *Service) ValidateCollection(ctx context.Context, workspacePath string, 
 			}
 		}
 
-		// Bounded header pre-read: reject multi-GB binary assets before the
-		// full os.ReadFile. Binary and empty files are never added to the
-		// collection by processFile, so reporting them as "new" every pass
-		// would cause an infinite reindexing loop.
+		// Header pre-read rejects multi-GB binaries before the full read; binary and
+		// empty files are never indexed, so reporting them new every pass would loop.
 		binary, bErr := isBinaryHeader(absPath)
 		if bErr != nil {
 			return nil //nolint:nilerr // skip unreadable files
@@ -604,15 +486,11 @@ func (s *Service) ValidateCollection(ctx context.Context, workspacePath string, 
 			return nil //nolint:nilerr // skip empty files
 		}
 
-		// Content policy: files the filter excludes are intentionally not
-		// part of the collection. Returning without marking the file seen
-		// means a previously-indexed file that the active policy now
-		// excludes (e.g. content_filter.enabled flipped) is reported as
-		// deleted so its documents and sidecar entry are removed; a
-		// never-indexed excluded file never enters newFiles. The check
-		// runs on the same raw bytes processFile filters, and the filter
-		// config is part of the chunker fingerprint, so the stat fast-path
-		// above only shortcuts files whose verdict cannot have changed.
+		// Content policy: an excluded file is reported deleted (not seen) so its
+		// documents and sidecar entry are removed, and never enters newFiles. The
+		// check runs on the same bytes processFile filters, and the filter config
+		// feeds the chunker fingerprint, so the fast path only shortcuts files whose
+		// verdict cannot have changed.
 		if _, skip := DetectContentSkip(content, s.contentFilter); skip {
 			return nil //nolint:nilerr // excluded by content policy
 		}
@@ -624,13 +502,8 @@ func (s *Service) ValidateCollection(ctx context.Context, workspacePath string, 
 			if fileHashEntryHash(stored) != currentHash {
 				staleFiles = append(staleFiles, absPath)
 			} else if entryFP := fileHashEntryChunkerFP(stored); entryFP != "" && entryFP != s.chunkerFingerprint {
-				// Content unchanged, but the stored chunks were produced
-				// under a different chunker configuration (vector_index.
-				// chunk_overlap / max_chunk_size changed since the file was
-				// indexed): report stale so the file is re-chunked. Entries
-				// without a fingerprint are exempt — their configuration is
-				// unknown, and forcing a re-chunk of every legacy file in
-				// one pass would cost a full re-embed for no user action.
+				// Content unchanged but chunked under another configuration: re-chunk.
+				// Fingerprint-less entries are exempt (see fileHashEntryChunkerFP).
 				staleFiles = append(staleFiles, absPath)
 			}
 		} else {
@@ -643,7 +516,6 @@ func (s *Service) ValidateCollection(ctx context.Context, workspacePath string, 
 		return nil, nil, nil, fmt.Errorf("walking workspace %s: %w", workspacePath, walkErr)
 	}
 
-	// Files in collection but not on disk are deleted.
 	for storedPath := range storedHashes {
 		if !seen[storedPath] {
 			deletedFiles = append(deletedFiles, storedPath)
@@ -653,9 +525,8 @@ func (s *Service) ValidateCollection(ctx context.Context, workspacePath string, 
 	return staleFiles, newFiles, deletedFiles, nil
 }
 
-// GetCollectionFiles returns all unique file paths and their sidecar entries
-// (content hash, or "hash|size|mtimeUnixNano" for new-format entries) stored
-// in the current collection.
+// GetCollectionFiles returns all unique file paths and their raw sidecar entries
+// (see parseFileHashEntry for the value grammar).
 func (s *Service) GetCollectionFiles() (map[string]string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -663,16 +534,10 @@ func (s *Service) GetCollectionFiles() (map[string]string, error) {
 	return s.getCollectionFileHashes()
 }
 
-// getCollectionFileHashes returns the file→sidecar-entry map from the sidecar
-// store, avoiding an embedding-bearing collection Query on every validation
-// pass. Values are content hashes for legacy entries or
-// "hash|size|mtimeUnixNano" for new-format entries (see parseFileHashEntry);
-// callers that only need the hash should go through fileHashEntryHash.
-// Caller must hold at least s.mu.RLock(). The returned map is a defensive
-// copy: it may outlive the lock and must not race the in-place mutations done
-// by upsertFileHashes/removeFileHashes under the write lock. The sidecar is
-// loaded (or migrated) in SwitchBranch; if it is somehow nil, we fall back to
-// a one-shot query.
+// getCollectionFileHashes returns the file→entry map from the in-memory sidecar,
+// avoiding an embedding-bearing Query per validation pass. The map is a defensive
+// copy: it may outlive the lock while upsertFileHashes/removeFileHashes mutate the
+// original under the write lock. A nil sidecar falls back to a one-shot query.
 func (s *Service) getCollectionFileHashes() (map[string]string, error) {
 	if s.current.collection == nil {
 		return nil, errors.New("no collection available")
@@ -684,33 +549,22 @@ func (s *Service) getCollectionFileHashes() (map[string]string, error) {
 		}
 		return out, nil
 	}
-	// Fallback (e.g. collection built before sidecar existed): enumerate via
-	// Query. This may pay an embedding cost (when the embedding dimension is
-	// unknown), so loadFileHashes populates the sidecar eagerly in
-	// SwitchBranch to keep this path cold.
+	// Fallback for a collection built before the sidecar existed; the Query may pay
+	// an embedding cost, so SwitchBranch loads the sidecar eagerly to keep this cold.
 	return s.current.queryCollectionFileHashes(context.Background(), s.unitQueryVector())
 }
 
-// queryCollectionFileHashes enumerates stored file hashes directly from this
-// state's chromem collection via a broad query. When unitVec is non-nil (a
-// dimension-sized unit vector, see Service.unitQueryVector) the query runs
-// through QueryEmbedding — no ONNX inference; nil keeps the embedding-bearing
-// text Query (dimension unknown). Used only for the one-time sidecar
-// migration (or the rare fallback). Caller must hold the owning Service's mu
-// (at least RLock). ctx propagates cancellation to the underlying Query
-// (e.g. service shutdown while the background migration is in flight).
+// queryCollectionFileHashes enumerates this state's collection hashes (see
+// queryCollectionFileHashesFrom); unitVec swaps the text Query for a no-ONNX
+// QueryEmbedding when the dimension is known. Caller must hold at least RLock.
 func (ps *projectState) queryCollectionFileHashes(ctx context.Context, unitVec []float32) (map[string]string, error) {
 	return queryCollectionFileHashesFrom(ctx, ps.collection, unitVec)
 }
 
-// queryCollectionFileHashesFrom is queryCollectionFileHashes against an
-// explicitly captured collection reference. The migration's background
-// goroutine captures ps.collection under the write lock and then enumerates
-// the captured reference WITHOUT the lock (see migrateFileHashes), so the
-// heavy phase must not re-read ps.collection. chromem serializes access to
-// the collection internally; a state closed mid-query only drops the ps
-// reference, and the migration's post-query staleness re-check discards the
-// result.
+// queryCollectionFileHashesFrom enumerates an explicitly captured collection: the
+// migration captures ps.collection under the write lock and queries it WITHOUT the
+// lock (chromem serializes internally); a state closed mid-query only drops the
+// reference, and the post-query staleness re-check discards the result.
 func queryCollectionFileHashesFrom(ctx context.Context, col *chromem.Collection, unitVec []float32) (map[string]string, error) {
 	count := col.Count()
 	if count == 0 {
@@ -734,25 +588,14 @@ func queryCollectionFileHashesFrom(ctx context.Context, col *chromem.Collection,
 		if fp == "" {
 			continue
 		}
-		// Documents committed after the content/metadata strip carry no
-		// content_hash at all — they cannot produce a sidecar entry. Skip
-		// them: their entry is (or will be) written by the indexing write
-		// path from the explicit per-file facts (see fileHashInfo), and a
-		// fabricated empty entry would make ValidateCollection flag the
-		// file forever.
+		// Stripped documents carry no content_hash; skip them — the write path owns
+		// their entries, and a fabricated empty one would flag the file forever.
 		if r.Metadata["content_hash"] == "" {
 			continue
 		}
-		// Keep one hash per file (all chunks of a file share the same hash
-		// and size/mtime metadata, so composing from any chunk is fine).
-		// The chunker configuration these chunks were produced under is
-		// not recoverable from metadata, so no fingerprint is attached:
-		// the entry stays exempt from fingerprint-based staleness until
-		// the file is next indexed. The committed chunk-index set is not
-		// recorded either — the 5th field is positional after the
-		// fingerprint, so an entry without a fingerprint cannot carry
-		// one; collectDocumentIDs falls back to the Query path for
-		// migrated entries until the file's next index pass.
+		// One entry per file: all chunks share hash and size/mtime. Fingerprint and
+		// chunk set are not recoverable from committed metadata, so migrated entries
+		// are fingerprint-less/set-less (exempt) until the file's next index pass.
 		fileHashes[fp] = fileHashEntryFromMetadata(r.Metadata, "", "")
 	}
 
@@ -768,13 +611,10 @@ func (ps *projectState) fileHashesPath() string {
 	return filepath.Join(ps.projectPath, "file_hashes_"+collectionName(ps.currentBranch)+".json")
 }
 
-// contentlessMarkerPath returns the on-disk path of the content-less
-// migration marker for this state's branch — a zero-byte sentinel next to
-// the branch's file-hash sidecar. Its presence means every sidecar-tracked
-// document of this collection has been rewritten in the content-less commit
-// shape (no chunk text, metadata narrowed to commitMetadataKeys — see
-// strippedForCommit), so the one-time migration never runs again. Caller
-// must hold s.mu.
+// contentlessMarkerPath returns the zero-byte content-less migration marker's path —
+// its presence certifies every document of this collection stripped, so the one-time
+// migration never replays (specs/decisions/049-vector-index-memory-reduction.md).
+// Caller must hold s.mu.
 func (ps *projectState) contentlessMarkerPath() string {
 	if ps.projectPath == "" || ps.currentBranch == "" {
 		return ""
@@ -782,10 +622,8 @@ func (ps *projectState) contentlessMarkerPath() string {
 	return filepath.Join(ps.projectPath, "contentless_"+collectionName(ps.currentBranch)+".done")
 }
 
-// contentlessMarkerExists reports whether this state's content-less migration
-// marker is present on disk (the collection is certified stripped). Used to
-// decide whether an empty sidecar is trustworthy (see loadFileHashes). Caller
-// must hold s.mu.
+// contentlessMarkerExists reports the marker's presence; it gates whether an empty
+// sidecar is trustworthy (see loadFileHashes). Caller must hold s.mu.
 func contentlessMarkerExists(ps *projectState) bool {
 	marker := ps.contentlessMarkerPath()
 	if marker == "" {
@@ -795,33 +633,23 @@ func contentlessMarkerExists(ps *projectState) bool {
 	return err == nil
 }
 
-// loadFileHashes populates the CURRENT state's fileHashes for the active
-// branch from the sidecar on disk. If the sidecar is absent, the backfill is
-// deferred to a short-lived background goroutine (see migrateFileHashes) so
-// SwitchBranch never pays the embedding cost of enumerating the collection
-// synchronously — that cost used to block the whole service for the duration
-// of one ONNX inference on the upgrade / first-switch path. Caller must hold
-// s.mu (write).
+// loadFileHashes populates the current state's sidecar from disk; when absent, the
+// backfill defers to a background goroutine (see migrateFileHashes) so SwitchBranch
+// never pays the embedding-bearing enumeration synchronously. Caller must hold s.mu
+// (write).
 func (s *Service) loadFileHashes() {
 	ps := s.current
 
-	// Settle the content-less migration for whatever branch state the sidecar
-	// load leaves behind: re-trigger it for the new branch (marker missing,
-	// non-empty collection), write the marker synchronously for an empty
-	// collection, or close the signal channel when the marker already exists
-	// or the state is in-memory. Runs on every exit path below while the
-	// caller still holds s.mu.
+	// Settle the content-less migration for whatever state the load leaves behind —
+	// on every exit path, under the caller's lock.
 	defer s.maybeMigrateContentlessLocked()
 
 	// Reset the backfill-failure flag: this load either trusts a usable on-disk
 	// sidecar or starts a fresh backfill (which re-sets the flag on failure).
 	ps.fileHashMigrationFailed.Store(false)
 
-	// Cancel any in-flight migration left over from a previous branch and
-	// reset its signal channel. The branch's content-less migration is
-	// abandoned the same way — its documents belong to the outgoing
-	// collection, and the deferred trigger above re-evaluates it for the
-	// incoming branch.
+	// Cancel any in-flight backfill/content-less migration left over from the previous
+	// branch; the deferred trigger above re-evaluates the latter for the incoming one.
 	if ps.migrationCancel != nil {
 		ps.migrationCancel()
 		ps.migrationCancel = nil
@@ -831,15 +659,11 @@ func (s *Service) loadFileHashes() {
 		ps.contentlessCancel = nil
 	}
 
-	// Fast path: a usable sidecar exists on disk. An EMPTY sidecar for a
-	// non-empty collection is trusted only once the collection is certified
-	// content-less (the migration marker exists) — a stripped collection's
-	// backfill can recover no hashes, so re-running it every open would be
-	// pure waste, and the next index pass repopulates the sidecar from the
-	// files. While the marker is ABSENT an empty sidecar is NOT trusted: it is
-	// either the empty placeholder a previous backfill installed while in
-	// flight, or a backfill that failed and left no entries — so the backfill
-	// below re-settles it (see fileHashMigrationFailed).
+	// Trust protocol: an EMPTY sidecar is trusted only when the marker certifies the
+	// collection stripped (its backfill could never recover hashes; re-running per open
+	// is waste). With the marker absent, empty means an in-flight placeholder or a
+	// failed backfill (fileHashMigrationFailed) — never trusted, always re-settled.
+	// See specs/domains/workspace.md (file-hash sidecar trust protocol).
 	if path := ps.fileHashesPath(); path != "" {
 		if data, err := safeio.ReadFile(path); err == nil {
 			var m map[string]string
@@ -854,8 +678,7 @@ func (s *Service) loadFileHashes() {
 		}
 	}
 
-	// An empty collection has nothing to migrate; IndexFull will populate the
-	// sidecar via upsertFileHashes, so start empty and settled.
+	// Nothing to migrate; IndexFull populates the sidecar via upsertFileHashes.
 	if ps.collection == nil || ps.collection.Count() == 0 {
 		ps.fileHashes = make(map[string]string)
 		ps.fileHashMigrationPending.Store(false)
@@ -863,14 +686,9 @@ func (s *Service) loadFileHashes() {
 		return
 	}
 
-	// Non-empty collection with no sidecar (first run after the sidecar
-	// upgrade, or a branch whose collection was built elsewhere). Defer the
-	// single-embedding backfill to a background goroutine; IndexIncremental
-	// waits on migrationCh before calling ValidateCollection, so the empty map
-	// never causes a spurious full re-embed. The goroutine is bound to ps
-	// (NOT re-read from s.current): if this state is parked or evicted before
-	// the goroutine runs, it must settle ITS OWN flags rather than a newer
-	// project's.
+	// Non-empty collection, no sidecar: defer the backfill (IndexIncremental waits on
+	// migrationCh, so the empty map never triggers a spurious full re-embed). Bound the
+	// goroutine to ps, not s.current: a parked/evicted state must settle its own flags.
 	ps.fileHashes = make(map[string]string)
 	ps.fileHashMigrationPending.Store(true)
 	done := make(chan struct{})
@@ -882,34 +700,25 @@ func (s *Service) loadFileHashes() {
 	go s.migrateFileHashes(mctx, ps, branch, done)
 }
 
-// migrateFileHashes is the background sidecar backfill: it enumerates the
-// chromem collection once (a single embedding of the query vector) and adopts
-// the result into ps.fileHashes. ps is the state that started the migration; if
-// its ctx is cancelled (park / eviction / close) or its branch changes before
-// completion, the result is discarded. Binding the migration to ps — rather
-// than re-reading s.current — lets an orphaned migration settle its own flags
-// without clobbering a newer project. The caller must NOT hold s.mu. Closes
-// done when settled.
+// migrateFileHashes is the background backfill: one embedding-bearing enumeration,
+// adopted into ps.fileHashes or discarded on cancellation/branch change. Bound to ps
+// so an orphaned migration settles its own flags without clobbering a newer project.
+// The caller must NOT hold s.mu. Closes done when settled.
 func (s *Service) migrateFileHashes(ctx context.Context, ps *projectState, branch string, done chan struct{}) {
 	defer s.migrationWG.Done()
 	defer close(done)
 
-	// clearIfCurrent clears the pending flag only when THIS migration is still
-	// the one registered on ps. A restore may have re-run loadFileHashes and
-	// installed a replacement migration (ps.migrationCh changed) while we were
-	// blocked on the lock; clearing the flag unconditionally here would then
-	// clobber the replacement's in-flight state and let parkCurrentLocked skip
-	// a legitimate sidecar save. The caller must hold s.mu.
+	// Clear the pending flag only while THIS migration is still registered on ps: a
+	// restore may have installed a replacement while we waited on the lock, and an
+	// unconditional clear would let parkCurrentLocked skip a legitimate sidecar save.
 	clearIfCurrentLocked := func() {
 		if ps.migrationCh == done {
 			ps.fileHashMigrationPending.Store(false)
 		}
 	}
 
-	// Phase 1 — under the write lock: staleness check and collection capture.
-	// The branch may have changed (or the state been parked/closed) while we
-	// waited for the write lock; abandon a stale migration rather than
-	// overwriting another branch's sidecar.
+	// Phase 1 (write lock): re-check staleness and capture the collection — a stale
+	// migration must not overwrite another branch's sidecar.
 	s.mu.Lock()
 	if ctx.Err() != nil || ps.currentBranch != branch || ps.collection == nil {
 		clearIfCurrentLocked()
@@ -919,14 +728,9 @@ func (s *Service) migrateFileHashes(ctx context.Context, ps *projectState, branc
 	col := ps.collection
 	s.mu.Unlock()
 
-	// The heavy phase runs WITHOUT the lock, mirroring migrateContentless:
-	// chromem serializes access to the captured collection internally, and the
-	// phase-2 staleness re-check discards the result if anything swapped the
-	// state meanwhile. Holding the write lock across the embedding-bearing
-	// enumeration stalled every state transition AND Close() — which must take
-	// the same lock to reach its cancellation calls — for the whole query on a
-	// large collection (observed: 6s on the c0wrk repo, i.e. the entire
-	// grey-window relaunch budget when a fresh instance quit mid-backfill).
+	// Heavy phase without the lock (mirrors migrateContentless): chromem serializes
+	// the captured collection, and phase 2 re-checks staleness. Holding the write lock
+	// here once stalled every transition AND Close() for the whole query (6s observed).
 	hashes, qErr := queryCollectionFileHashesFrom(ctx, col, s.unitQueryVector())
 
 	// Phase 2 — re-acquire for the adoption.
@@ -935,18 +739,16 @@ func (s *Service) migrateFileHashes(ctx context.Context, ps *projectState, branc
 
 	if qErr != nil {
 		if ps.migrationCh == done {
-			// The backfill did not complete: ps.fileHashes stays the untrusted
-			// empty placeholder. Flag it so park/eviction never persists that
-			// empty sidecar and the content-less migration does not certify the
-			// collection from it.
+			// Backfill failed: ps.fileHashes stays the untrusted placeholder. Flag it so
+			// park/eviction never persists an empty sidecar and the content-less
+			// migration does not certify the collection from it.
 			ps.fileHashMigrationFailed.Store(true)
 		}
 		s.logger.Warn("failed to migrate file-hash sidecar from collection", "error", qErr)
 		clearIfCurrentLocked()
 		return
 	}
-	// Re-check after the embedding-bearing Query in case we raced a switch or
-	// a close during the unlocked query.
+	// Re-check after the unlocked query (switch/close may have raced it).
 	if ctx.Err() != nil || ps.currentBranch != branch || ps.collection == nil {
 		clearIfCurrentLocked()
 		return
@@ -955,12 +757,9 @@ func (s *Service) migrateFileHashes(ctx context.Context, ps *projectState, branc
 	ps.fileHashMigrationPending.Store(false)
 	ps.fileHashMigrationFailed.Store(false)
 	if len(hashes) == 0 {
-		// A non-empty collection with zero recoverable hashes means every
-		// committed document was already stripped (its metadata no longer
-		// carries content_hash) OR the sidecar was lost and the documents are
-		// content-less by construction. Either way the sidecar cannot be
-		// rebuilt from the collection here; warn so a lost sidecar is visible
-		// (the files will be re-embedded on the next validation pass).
+		// Zero hashes on a non-empty collection: everything stripped, or a lost sidecar
+		// with content-less documents. Either way it cannot be rebuilt here — warn so a
+		// lost sidecar (full re-embed on next validation) is visible.
 		s.logger.Warn("file-hash sidecar migration produced no entries for a non-empty collection; "+
 			"if the sidecar was lost the project will be re-indexed",
 			"branch", branch, "documents", ps.collection.Count())
@@ -971,10 +770,9 @@ func (s *Service) migrateFileHashes(ctx context.Context, ps *projectState, branc
 	s.logger.Info("file-hash sidecar migrated from collection", "branch", branch, "files", len(hashes))
 }
 
-// WaitFileHashMigration blocks until any background sidecar migration for the
-// current branch has settled. IndexIncremental uses it so ValidateCollection
-// sees the full hash map instead of re-embedding every file. The caller must
-// NOT hold s.mu.
+// WaitFileHashMigration blocks until the current branch's sidecar backfill settles;
+// IndexIncremental waits so ValidateCollection sees the full map. Caller must NOT
+// hold s.mu.
 func (s *Service) WaitFileHashMigration(ctx context.Context) error {
 	ch := func() chan struct{} {
 		s.mu.RLock()
@@ -999,22 +797,15 @@ func closedChan() chan struct{} {
 	return c
 }
 
-// contentlessProbeGapTolerance bounds how many consecutive GetByID misses may
-// end the chunk-index scan of a sidecar entry whose committed chunk-index set
-// is unknown (legacy entries written without the 5th field). Chunks dropped by
-// the poisoned-text fallback leave isolated holes in an otherwise contiguous
-// run, so the scan bridges short gaps instead of stopping at the first miss.
-// The tolerance applies only AFTER the first committed chunk is found; a
-// leading run of dropped chunks does not end the scan (see migrateContentless).
+// contentlessProbeGapTolerance bounds the consecutive GetByID misses that may end a
+// legacy entry's (set-less) chunk-index scan: poison-dropped chunks leave isolated
+// holes, so the scan bridges short gaps — but only after the first hit; a leading run
+// of dropped chunks must not end the scan (see migrateContentless).
 const contentlessProbeGapTolerance = 8
 
-// writeContentlessMarker best-effort writes the zero-byte migration marker.
-// A failed write never fails the caller: it only costs one no-op probe pass
-// on the next open. The write is FIFO/symlink-safe (safeio.WriteFileAtomic):
-// the marker path is deterministic under the storage root, and a bare
-// os.WriteFile would block on a planted FIFO — under s.mu, wedging the whole
-// service — and write through a planted symlink. Caller must hold s.mu (the
-// path derives from the current state's branch).
+// writeContentlessMarker best-effort writes the marker; failure only costs one no-op
+// probe pass next open. safeio.WriteFileAtomic keeps the deterministic path FIFO- and
+// symlink-safe (a planted FIFO would wedge the service under s.mu).
 func (s *Service) writeContentlessMarker(path string) {
 	if path == "" {
 		return
@@ -1025,23 +816,15 @@ func (s *Service) writeContentlessMarker(path string) {
 	}
 }
 
-// maybeMigrateContentlessLocked settles the one-time content-less migration
-// for the current branch: it starts the background rewrite when the
-// collection is non-empty and the marker (see contentlessMarkerPath) is
-// absent, writes the marker synchronously for an empty collection (every
-// future commit is content-less by construction — see strippedForCommit — so
-// a later full index must not pay a pointless probe pass), and closes the
-// settle channel when there is nothing to do (marker present, or an
-// in-memory state with no persistence). It runs at the end of loadFileHashes
-// — i.e. on every branch switch and sidecar reload — and on the park-restore
-// path of SetProject (where SwitchBranch early-returns and would otherwise
-// never re-trigger a migration cancelled by the park). Caller must hold s.mu
-// (write).
+// maybeMigrateContentlessLocked settles the one-time content-less migration (lifecycle
+// in specs/decisions/049-vector-index-memory-reduction.md): background rewrite when
+// non-empty and unmarked, synchronous marker for an empty collection, settle channel
+// otherwise. Runs at the end of loadFileHashes and on SetProject's park-restore path —
+// the only triggers a park-cancelled migration gets. Caller must hold s.mu (write).
 func (s *Service) maybeMigrateContentlessLocked() {
 	ps := s.current
 
-	// Abandon any in-flight migration from a previous evaluation of this or
-	// another branch: its documents belong to the state it snapshotted.
+	// Abandon any in-flight migration: its documents belong to the state it snapshotted.
 	if ps.contentlessCancel != nil {
 		ps.contentlessCancel()
 		ps.contentlessCancel = nil
@@ -1053,14 +836,12 @@ func (s *Service) maybeMigrateContentlessLocked() {
 
 	marker := ps.contentlessMarkerPath()
 	if marker == "" || ps.collection == nil {
-		// In-memory state (no persistence) or no branch/collection: nothing
-		// to migrate, ever, for this state.
+		// In-memory or branch-less state: nothing to migrate, ever.
 		settle()
 		return
 	}
 	if _, err := os.Stat(marker); err == nil {
-		// Already migrated: never run again (this is the steady state for
-		// every collection created after the content-less switch).
+		// Already migrated — the steady state; never run again.
 		settle()
 		return
 	} else if !errors.Is(err, fs.ErrNotExist) {
@@ -1076,12 +857,9 @@ func (s *Service) maybeMigrateContentlessLocked() {
 		return
 	}
 
-	// Non-empty collection without a marker: defer the rewrite to a
-	// background goroutine bound to ps (NOT re-read from s.current), exactly
-	// like the file-hash backfill below it. The goroutine first waits for
-	// the sidecar to settle, so a collection that still needs its file-hash
-	// backfill is enumerated for the sidecar FIRST (its full per-file
-	// metadata intact) and stripped afterwards.
+	// Non-empty and unmarked: defer the rewrite to a ps-bound goroutine that waits
+	// for the sidecar first — stripping before the backfill would destroy the
+	// full metadata the backfill feeds on.
 	done := make(chan struct{})
 	ps.contentlessCh = done
 	branch := ps.currentBranch
@@ -1091,36 +869,22 @@ func (s *Service) maybeMigrateContentlessLocked() {
 	go s.migrateContentless(mctx, ps, branch, done)
 }
 
-// migrateContentless is the one-time background rewrite of a legacy
-// collection to the content-less commit shape: for every sidecar-tracked
-// file it probes the stored chunks via GetByID (arithmetic over the entry's
-// committed chunk-index set when present, gap-tolerant scan otherwise) and
-// re-commits each document that still carries chunk text with the SAME ID,
-// the SAME vector, metadata narrowed to commitMetadataKeys and Content=""
-// (chromem replaces documents[doc.ID] atomically and overwrites the per-doc
-// gob in place, so the collection stays queryable and consistent at every
-// instant). On completion the marker is written and the freed memory is
-// returned to the OS. ps is the state that started the migration; if its ctx
-// is cancelled (park / eviction / close / branch switch) or its branch or
-// collection changes before completion, the result is abandoned WITHOUT the
-// marker — the next open replays the idempotent probe, skipping documents
-// already stripped. The heavy phase (probing + window assembly) deliberately
-// does NOT hold s.mu: chromem serializes collection access internally, so
-// searches and switches keep running; only each bounded window flush takes
-// the read lock, making it atomic against RebuildCollection / park /
-// closeStateLocked (which hold the write lock and would otherwise race a
-// flush with the collection delete). The caller must NOT hold s.mu. Closes
-// done when settled.
+// migrateContentless is the one-time rewrite of a legacy collection to the content-less
+// shape (protocol: specs/decisions/049-vector-index-memory-reduction.md): probe each
+// sidecar-tracked file's chunks, re-commit the fat ones with the SAME ID/vector and
+// stripped content/metadata — chromem replaces each gob atomically, so the collection
+// stays queryable at every instant. Cancellation abandons WITHOUT the marker (the next
+// open replays; stripped docs are skipped for free). The heavy phase holds no lock;
+// only each window flush takes the read lock, atomic against RebuildCollection / park /
+// closeStateLocked (a delete-and-recreate must never interleave and resurrect ghost
+// gobs). The caller must NOT hold s.mu. Closes done when settled.
 func (s *Service) migrateContentless(ctx context.Context, ps *projectState, branch string, done chan struct{}) {
 	defer s.migrationWG.Done()
 	defer close(done)
 
-	// The migration walks the sidecar, so it must not start before the
-	// sidecar itself has settled: a deferred file-hash backfill (collection
-	// without a sidecar file) enumerates each document's FULL metadata, and
-	// stripping first would destroy the content_hash it feeds on. Capture
-	// the channel under the read lock; a re-entrant loadFileHashes can only
-	// swap it after cancelling our ctx, so the wait always terminates.
+	// Wait for the sidecar to settle first: the backfill enumerates FULL metadata,
+	// and stripping first would destroy the content_hash it feeds on. A re-entrant
+	// loadFileHashes can only swap the channel after cancelling our ctx, so we terminate.
 	if ch := func() chan struct{} {
 		s.mu.RLock()
 		defer s.mu.RUnlock()
@@ -1133,20 +897,16 @@ func (s *Service) migrateContentless(ctx context.Context, ps *projectState, bran
 		}
 	}
 
-	// A failed sidecar backfill leaves ps.fileHashes as an untrusted empty
-	// placeholder: the migration cannot distinguish "nothing trackable" from
-	// "the backfill did not complete", and the marker it would write forbids
-	// replay — so certifying the collection would permanently keep the fat
-	// legacy documents of a collection that was never actually empty. Abandon
-	// without the marker; the next open replays. (park/eviction already refuse
-	// to persist the empty placeholder — see fileHashMigrationFailed.)
+	// A failed backfill leaves an untrusted empty placeholder the migration cannot
+	// distinguish from "nothing trackable" — and its marker would forbid replay,
+	// permanently keeping the fat documents. Abandon without the marker; replay next
+	// open (park/eviction likewise refuse the placeholder — fileHashMigrationFailed).
 	if ps.fileHashMigrationFailed.Load() {
 		return
 	}
 
-	// Snapshot the sidecar entries and the collection pointer. The snapshot
-	// is immutable for the rest of the pass; per-window re-checks below
-	// verify the live state still matches it.
+	// Snapshot entries + collection pointer; per-window re-checks verify the live
+	// state still matches.
 	s.mu.RLock()
 	if ctx.Err() != nil || ps.currentBranch != branch || ps.collection == nil {
 		s.mu.RUnlock()
@@ -1160,19 +920,14 @@ func (s *Service) migrateContentless(ctx context.Context, ps *projectState, bran
 	s.mu.RUnlock()
 
 	if len(entries) == 0 {
-		// Nothing sidecar-tracked. Reaching here means the backfill above
-		// either completed successfully (so "empty" genuinely means no
-		// content-bearing document — documents whose metadata never carried
-		// content_hash are invisible to the sidecar by design) or was not
-		// needed; a failed backfill returned before this point. The commit
-		// path owns every future document, so the marker still applies.
+		// Nothing sidecar-tracked: the backfill completed (or was unneeded — a failed
+		// one returned above), so "empty" is genuine and the marker applies.
 		s.finishContentless(ctx, ps, branch, 0, 0)
 		return
 	}
 
-	// probeCap bounds the legacy-entry scan: the indexer never commits more
-	// than max_chunks_per_file chunks for a file, so this many indices covers
-	// every chunk it could hold (see contentlessProbeGapTolerance).
+	// probeCap covers every chunk a file can hold (the indexer caps at
+	// max_chunks_per_file).
 	probeCap := s.maxChunksPerFile
 	if probeCap <= 0 {
 		probeCap = DefaultMaxChunksPerFile
@@ -1187,15 +942,10 @@ func (s *Service) migrateContentless(ctx context.Context, ps *projectState, bran
 	window := make([]chromem.Document, 0, embeddingCommitWindowSize)
 	probed, stripped := 0, 0
 
-	// flush re-commits one bounded window under the READ lock. Holding the
-	// lock (not merely checking flags) makes every flush atomic against
-	// RebuildCollection / parkCurrentLocked / closeStateLocked — a delete-
-	// and-recreate can never interleave with a flush and resurrect ghost gob
-	// files in a recreated collection directory. The chromem call runs on a
-	// cancellation-stripped context: once the pre-checks pass inside the
-	// critical section, the window must commit fully, or the marker would
-	// certify a half-stripped collection. The error is context.Canceled when
-	// the state went stale (silent abandon) or the wrapped commit error.
+	// flush re-commits one window under the READ lock (see doc: atomic vs
+	// RebuildCollection/park/close). The commit runs on a cancellation-stripped ctx:
+	// once the pre-checks pass, the window must commit fully or the marker would
+	// certify a half-stripped collection. Staleness surfaces as context.Canceled.
 	flush := func() error {
 		if len(window) == 0 {
 			return nil
@@ -1216,7 +966,6 @@ func (s *Service) migrateContentless(ctx context.Context, ps *projectState, bran
 		return nil
 	}
 
-	// add stages one stripped document, flushing a full window as it fills.
 	add := func(doc chromem.Document) error {
 		window = append(window, doc)
 		if len(window) < embeddingCommitWindowSize {
@@ -1225,10 +974,8 @@ func (s *Service) migrateContentless(ctx context.Context, ps *projectState, bran
 		return flush()
 	}
 
-	// abandon surfaces non-cancellation failures: a cancelled or superseded
-	// migration is an expected lifecycle event, a genuine commit error deserves
-	// a WARN. No marker is written either way, so the next open replays the
-	// idempotent probe.
+	// abandon WARNs only genuine commit errors — cancellation is a normal lifecycle
+	// event. No marker either way, so the next open replays.
 	abandon := func(err error) {
 		s.mu.Lock()
 		silent := ctx.Err() != nil || ps.currentBranch != branch || ps.collection == nil
@@ -1245,14 +992,12 @@ func (s *Service) migrateContentless(ctx context.Context, ps *projectState, bran
 		}
 		entry := entries[fp]
 
-		// handle probes one stored chunk and stages it for stripping when
-		// it still carries chunk text; documents committed by the current
-		// (post-upgrade) code are already content-less and skipped for free.
+		// handle probes one chunk, staging it for stripping when still fat; post-upgrade
+		// documents are already content-less and skip for free.
 		handle := func(i int) error {
 			doc, err := col.GetByID(ctx, DocumentID(fp, i))
 			if err != nil {
-				// Not stored (deleted after the entry was written, or the
-				// gap-tolerant scan ran past the file's chunk count): skip.
+				// Miss: deleted since, or the scan ran past the chunk count.
 				return nil //nolint:nilerr // a probe miss is not an error
 			}
 			probed++
@@ -1265,8 +1010,7 @@ func (s *Service) migrateContentless(ctx context.Context, ps *projectState, bran
 		}
 
 		if set, ok := fileHashEntryChunkSet(entry); ok {
-			// Current-format entry: the committed chunk-index set is known,
-			// probe exactly those indices — no misses, no guessing.
+			// Known set: probe exactly those indices.
 			for _, i := range set {
 				if err := handle(i); err != nil {
 					abandon(err)
@@ -1275,14 +1019,8 @@ func (s *Service) migrateContentless(ctx context.Context, ps *projectState, bran
 			}
 			continue
 		}
-		// Legacy entry (no 5th field): scan chunk indices from 0 upward, bounded
-		// by the configured per-file cap (probeCap — the indexer never commits
-		// more than max_chunks_per_file chunks, so the range is exhaustive).
-		// After the first committed chunk, stop once
-		// contentlessProbeGapTolerance consecutive misses are seen (bridging
-		// isolated poison-dropped holes). BEFORE the first hit, keep scanning
-		// to the cap so a leading run of dropped chunks (a garbage file head)
-		// cannot hide the committed chunks beyond it.
+		// Legacy set-less entry: exhaustive scan to probeCap with the gap-tolerant stop
+		// of contentlessProbeGapTolerance (applied only after the first hit — see its doc).
 		misses, hits := 0, 0
 		for i := 0; i < probeCap; i++ {
 			doc, err := col.GetByID(ctx, DocumentID(fp, i))
@@ -1317,12 +1055,8 @@ func (s *Service) migrateContentless(ctx context.Context, ps *projectState, bran
 	s.finishContentless(ctx, ps, branch, probed, stripped)
 }
 
-// finishContentless finalizes a completed migration: it clears the pending
-// flag, re-verifies the state is still the one that started the migration,
-// writes the marker, and schedules the freeOSMemory seam (the probe/strip
-// cycle churns the whole collection's documents; the transient spike is
-// handed back to the OS right away, off the service lock — same as the park
-// eviction path). Caller must NOT hold s.mu.
+// finishContentless re-verifies the state, writes the marker, and hands the
+// probe/strip churn back to the OS via freeOSMemory off the lock. Caller must NOT hold s.mu.
 func (s *Service) finishContentless(ctx context.Context, ps *projectState, branch string, probed, stripped int) {
 	s.mu.Lock()
 	if ctx.Err() != nil || ps.currentBranch != branch || ps.collection == nil {
@@ -1337,11 +1071,9 @@ func (s *Service) finishContentless(ctx context.Context, ps *projectState, branc
 	go s.freeOSMemory()
 }
 
-// WaitContentlessMigration blocks until the current branch's background
-// content-less migration has settled. IndexIncremental uses it so its
-// deletions and re-indexing never interleave with the migration's
-// ID-preserving re-commits (which would otherwise resurrect just-deleted
-// legacy documents). The caller must NOT hold s.mu.
+// WaitContentlessMigration blocks until the migration settles; IndexIncremental waits
+// so its deletes/re-indexes never interleave with the ID-preserving re-commits
+// (specs/decisions/049-vector-index-memory-reduction.md). Caller must NOT hold s.mu.
 func (s *Service) WaitContentlessMigration(ctx context.Context) error {
 	ch := func() chan struct{} {
 		s.mu.RLock()
@@ -1359,9 +1091,8 @@ func (s *Service) WaitContentlessMigration(ctx context.Context) error {
 	}
 }
 
-// saveFileHashes atomically writes this state's sidecar to disk. Caller must
-// hold the owning Service's mu (write). Missing project/branch or a nil map is
-// a no-op.
+// saveFileHashes atomically writes the sidecar; missing project/branch or a nil map is
+// a no-op. Caller must hold the owning Service's mu (write).
 func (ps *projectState) saveFileHashes() error {
 	path := ps.fileHashesPath()
 	if path == "" || ps.fileHashes == nil {
@@ -1371,46 +1102,27 @@ func (ps *projectState) saveFileHashes() error {
 	if err != nil {
 		return fmt.Errorf("marshaling file hashes: %w", err)
 	}
-	// Atomic + FIFO/symlink-safe: the "<path>.tmp" staging name was a fixed,
-	// pre-plantable path whose bare os.WriteFile blocked forever on a planted
-	// FIFO — under s.mu, wedging the whole service and (via Service.Close)
-	// shutdown — and wrote through a planted symlink. WriteFileAtomic stages
-	// under a randomized name and replaces the final entry itself.
+	// FIFO/symlink-safe: the former fixed "<path>.tmp" staging name was pre-plantable
+	// (a planted FIFO wedged the service and shutdown under s.mu); WriteFileAtomic
+	// stages under a randomized name.
 	if err := safeio.WriteFileAtomic(path, data, 0o644); err != nil {
 		return fmt.Errorf("writing file-hash sidecar: %w", err)
 	}
 	return nil
 }
 
-// upsertFileHashesFiltered records file_path→sidecar entry for the given
-// documents into the in-memory sidecar. The per-file facts (content hash,
-// size, mtime) are extracted from each file's representative document
-// metadata via fileHashInfoFromMetadata — the standalone AddDocuments path
-// whose callers still pass full metadata — and rendered by
-// composeFileHashEntryInfo as new-format
-// "hash|size|mtimeUnixNano|chunkerFP|chunkSet" entries when the documents
-// carry the size/mtime metadata processFile records, or the legacy bare
-// hash otherwise (upgraded on the file's next index pass). Documents whose
-// metadata carries no content hash are skipped: they cannot produce a
-// meaningful entry, and ValidateCollection reconciles their files from
-// disk. The committed chunk-index set (5th field) is derived from the
-// documents' IDs ("<pathHash>:<idx>", see DocumentID); IDs in droppedIDs
-// (the poisoned-text fallback) are excluded, so the set mirrors exactly the
-// chunks the collection holds. When the file already has a set-bearing entry
-// (an earlier AddDocuments call for the same file), the new indices are
-// UNIONED with the recorded set rather than replacing it, so a file committed
-// across two calls is not truncated. A file whose every chunk was dropped
-// still gets an entry (with the empty set "0") — otherwise ValidateCollection
-// would report it as new on every pass and re-index it forever.
+// upsertFileHashesFiltered records file→entry rows for the given documents into the
+// in-memory sidecar (facts via fileHashInfoFromMetadata, rendering via
+// composeFileHashEntryInfo). Hash-less documents are skipped (ValidateCollection
+// reconciles their files from disk). The 5th-field chunk set derives from document IDs
+// with droppedIDs (poison-dropped chunks) excluded, and UNIONs any existing set so a
+// file committed across two AddDocuments calls is not truncated; a fully dropped file
+// still gets its "0" entry — otherwise it would re-index forever.
 //
-// It deliberately does NOT persist on every call: a
-// single index pass issues one upsert per batch (addDocumentBatchSize docs),
-// so persisting here would write the full map to disk N times per pass
-// (O(batches × files) I/O). The map is flushed at lifecycle boundaries
-// (SwitchBranch, SetProject, Rebuild, Close) and after migration. If the
-// process crashes in between, the next SwitchBranch reads a slightly stale
-// sidecar and ValidateCollection reconciles the diff against the persistent
-// chromem collection. Caller must hold s.mu (write).
+// Persistence is deliberately deferred to lifecycle boundaries (SwitchBranch,
+// SetProject, Rebuild, Close, post-migration): one upsert per batch would rewrite the
+// whole map O(batches × files) per pass; a crash costs a stale sidecar that
+// ValidateCollection reconciles. Caller must hold s.mu (write).
 func (s *Service) upsertFileHashesFiltered(docs []chromem.Document, droppedIDs map[string]struct{}) {
 	if s.current.fileHashes == nil {
 		s.current.fileHashes = make(map[string]string)
@@ -1436,12 +1148,9 @@ func (s *Service) upsertFileHashesFiltered(docs []chromem.Document, droppedIDs m
 		fu.ids = append(fu.ids, d.ID)
 	}
 	for fp, fu := range perFile {
-		// Merge with any committed set already recorded for this file. A file's
-		// chunks may reach the service through more than one AddDocuments call
-		// (the method does not enforce one-call-per-file), and a straight
-		// overwrite would record only the last call's indices — under-
-		// representing the collection, so sidecarDocumentIDs would under-delete
-		// and RebuildLexical v2 emit too few lexical documents.
+		// Merge with any recorded set: a file may span several AddDocuments calls, and
+		// an overwrite would record only the last call's indices — under-deleting via
+		// sidecarDocumentIDs and starving RebuildLexical v2.
 		ids := fu.ids
 		if existing, ok := s.current.fileHashes[fp]; ok {
 			if prevSet, prevOK := fileHashEntryChunkSet(existing); prevOK {
@@ -1456,11 +1165,9 @@ func (s *Service) upsertFileHashesFiltered(docs []chromem.Document, droppedIDs m
 	}
 }
 
-// upsertFileHashEntryInfo records ONE file's sidecar entry from its explicit
-// per-file facts and the IDs of the chunks that actually committed (possibly
-// none, when every chunk was poison-dropped). It is the single-file form of
-// upsertFileHashesFiltered used by the streaming index accumulator's publish
-// step. Caller must hold s.mu (write).
+// upsertFileHashEntryInfo records ONE file's entry — the single-file form of
+// upsertFileHashesFiltered used by the streaming accumulator's publish step.
+// Caller must hold s.mu (write).
 func (s *Service) upsertFileHashEntryInfo(info fileHashInfo, committedIDs []string) {
 	if info.filePath == "" {
 		return
@@ -1471,13 +1178,9 @@ func (s *Service) upsertFileHashEntryInfo(info fileHashInfo, committedIDs []stri
 	s.current.fileHashes[info.filePath] = s.composeFileHashEntryInfo(info, committedIDs)
 }
 
-// composeFileHashEntryInfo builds one file's sidecar value from its explicit
-// per-file facts and the IDs of the chunks that committed. When every ID
-// carries the DocumentID grammar, the 5th field records the committed index
-// set (contiguous "N", gapped "L:0,1,3", empty "0" for a fully
-// poison-dropped file); IDs outside that grammar (hand-built test documents,
-// foreign writers) leave the set unknown — no 5th field, and
-// collectDocumentIDs falls back to enumerating the collection.
+// composeFileHashEntryInfo renders one file's entry; any ID outside the DocumentID
+// grammar (hand-built/foreign docs) leaves the set unknown — no 5th field, enumeration
+// falls back to the collection Query.
 func (s *Service) composeFileHashEntryInfo(info fileHashInfo, committedIDs []string) string {
 	indices := make([]int, 0, len(committedIDs))
 	known := true
@@ -1496,9 +1199,8 @@ func (s *Service) composeFileHashEntryInfo(info fileHashInfo, committedIDs []str
 	return info.entry(s.chunkerFingerprint, chunkSet)
 }
 
-// removeFileHashes drops the given file paths from the in-memory sidecar. Like
-// upsertFileHashes it does not persist per call; the map is flushed at lifecycle
-// boundaries. Caller must hold s.mu (write).
+// removeFileHashes drops paths from the in-memory sidecar (persisted at lifecycle
+// boundaries, like upsertFileHashesFiltered). Caller must hold s.mu (write).
 func (s *Service) removeFileHashes(paths []string) {
 	if s.current.fileHashes == nil || len(paths) == 0 {
 		return
@@ -1529,20 +1231,17 @@ func (s *Service) RebuildCollection(ctx context.Context) error {
 		return fmt.Errorf("creating fresh collection %q: %w", name, err)
 	}
 	s.current.collection = col
-	// Publish: the fresh collection replaces the old one (possibly nil → non-nil
-	// when the branch was never opened), and the lock-free UI status reader must
-	// see it without waiting on the indexing that follows.
+	// Publish immediately: the lock-free UI status reader must see the fresh
+	// collection without waiting on the indexing that follows.
 	s.publishIndexAvailabilityLocked()
-	// Reset the sidecar: a rebuilt collection is empty until re-indexed. Also
-	// drop any in-flight migration: there is nothing left to backfill.
+	// Reset the sidecar (a rebuilt collection is empty until re-indexed) and drop
+	// the in-flight backfill: nothing left to migrate.
 	if s.current.migrationCancel != nil {
 		s.current.migrationCancel()
 		s.current.migrationCancel = nil
 	}
-	// The in-flight content-less migration is abandoned the same way, and
-	// the fresh collection gets the marker immediately: it is empty and
-	// every future commit is content-less by construction, so reopening must
-	// not probe it again.
+	// The content-less migration is abandoned the same way; the fresh collection gets
+	// its marker immediately — empty, and every future commit is content-less.
 	if s.current.contentlessCancel != nil {
 		s.current.contentlessCancel()
 		s.current.contentlessCancel = nil
@@ -1560,41 +1259,25 @@ func (s *Service) RebuildCollection(ctx context.Context) error {
 	return nil
 }
 
-// BatchEmbedder embeds a batch of text documents in a single (internally
-// chunked) inference pass. It is implemented by sp4rk's embedding.Embedder
-// (EmbedDocuments); ServiceConfig.BatchEmbedder wires it into AddDocuments so
-// documents are embedded BEFORE the chromem commit, letting chromem-go skip
-// its per-document embedding calls (v0.7.0 AddDocument treats a pre-populated
-// Document.Embedding as final and only normalizes + persists it). Query-side
-// embedding keeps going through the chromem EmbeddingFunc.
+// BatchEmbedder embeds documents in one internally-chunked inference pass (sp4rk's
+// embedding.Embedder). Wiring it into AddDocuments embeds before the commit so chromem
+// skips per-document embedding (a pre-populated Document.Embedding is final); queries
+// keep using the chromem EmbeddingFunc (specs/decisions/036-vector-index-embedding-optimization-policy.md).
 type BatchEmbedder interface {
 	EmbedDocuments(ctx context.Context, texts []string) ([][]float32, error)
 }
 
-// commitMetadataKeys are the only metadata keys a committed chromem document
-// retains — the four chunk-position fields content reconstruction and result
-// shaping need (file_path, start_line, end_line, language). Every other key
-// processFile records (content_hash, file_size, file_mtime_unix_nano,
-// file_name, last_modified) is per-file bookkeeping that now lives only in
-// the file-hash sidecar (see fileHashInfo).
+// commitMetadataKeys are the only metadata keys a committed document retains — the
+// chunk-position fields; all per-file bookkeeping lives in the sidecar (commit-time
+// strip, specs/decisions/049-vector-index-memory-reduction.md).
 var commitMetadataKeys = [4]string{"file_path", "start_line", "end_line", "language"}
 
-// strippedForCommit returns the commit view of docs for chromem:
-//
-//   - Content is dropped from every document that carries a pre-populated
-//     Embedding — the embedder already consumed the text, so persisting it
-//     again would double the collection's disk footprint for zero readers
-//     (content is reconstructed lazily from the source file; see
-//     contentResolver). Documents WITHOUT an embedding keep their content:
-//     chromem's AddDocument embeds via the document text on this legacy
-//     path, and stripping it would embed the empty string.
-//   - Metadata is narrowed to commitMetadataKeys unconditionally, so the
-//     stored gob shape is identical on both paths.
-//
-// The input slice is left untouched: callers keep reading per-file metadata
-// from their originals after the commit (upsertFileHashesFiltered derives
-// the sidecar entries from them), and test assertions on the caller's docs
-// stay valid. The returned documents share only the embedding slices.
+// strippedForCommit returns the commit view of docs: content dropped wherever an
+// embedding is already present (persisting consumed text doubles disk for zero
+// readers — content reconstructs from the source; WITHOUT an embedding the text must
+// stay or chromem would embed ""), and metadata narrowed to commitMetadataKeys so
+// both paths store the same gob shape. The input slice is untouched — callers (and
+// tests) keep reading per-file metadata from their originals.
 func strippedForCommit(docs []chromem.Document) []chromem.Document {
 	out := make([]chromem.Document, len(docs))
 	for i, d := range docs {
@@ -1622,13 +1305,10 @@ func narrowCommitMetadata(md map[string]string) map[string]string {
 	return narrowed
 }
 
-// commitEmbeddedDocuments persists one bounded window of documents whose
-// embeddings have already been populated and mirrors the same IDs into the
-// lexical index. It deliberately does not update the file-hash sidecar: the
-// streaming index accumulator publishes a file hash only after every chunk of
-// that file has either committed or been deliberately dropped by the poisoned-
-// text fallback.
-// Caller must hold s.mu (write lock).
+// commitEmbeddedDocuments persists one pre-embedded window and mirrors the IDs into
+// the lexical index. It does NOT touch the sidecar: the accumulator publishes a file
+// hash only after all its chunks committed or were poison-dropped. Caller must hold
+// s.mu (write lock).
 func (s *Service) commitEmbeddedDocuments(ctx context.Context, vecDocs []chromem.Document, lexDocs []lexical.Doc) error {
 	if len(vecDocs) == 0 {
 		return nil
@@ -1659,32 +1339,12 @@ func (s *Service) commitEmbeddedDocuments(ctx context.Context, vecDocs []chromem
 	return nil
 }
 
-// AddDocuments adds documents to the current collection and mirrors them
-// to the per-branch lexical index. Chromem commits first; lexical errors
-// are logged but not returned, since the reconciliation loop in the
-// manager will repair drift via RebuildLexical on the next project open.
-//
-// Oversized vecDocs are processed in fixed-size commit windows (at most
-// embeddingCommitWindowSize each). This standalone API also embeds each
-// window in configured-capacity chunks. The indexer uses documentAccumulator
-// instead, carrying its inference tail across file and commit boundaries while
-// preserving the same commit bound. Both paths check cancellation between
-// bounded operations.
-//
-// When a BatchEmbedder is configured, each sub-batch is embedded up-front
-// (see embedSubBatch) in chunks of at most the configured embedding batch
-// size, and the vectors are assigned to Document.Embedding before the
-// chromem call — chromem then performs zero embedding inferences and only
-// normalizes + persists. A nil BatchEmbedder keeps the legacy path where
-// chromem embeds each document individually.
-//
-// What chromem persists is the strippedForCommit view of each sub-batch:
-// content is dropped from documents with a pre-populated embedding (the
-// batch path) and metadata is narrowed to the four chunk-position fields on
-// every path; the caller's docs slice is never mutated, so the sidecar
-// upsert below still reads the full per-file metadata. See strippedForCommit
-// and contentResolver for the reconstruction side.
-// Caller must hold s.mu (write lock).
+// AddDocuments commits documents to chromem first and mirrors them to the lexical
+// index best-effort (dual-write invariant, specs/domains/workspace.md — RebuildLexical
+// repairs drift). Windows of ≤embeddingCommitWindowSize documents are embedded
+// up-front when a BatchEmbedder is configured (see embedSubBatch); chromem persists
+// the strippedForCommit view and the caller's slice is never mutated. A nil
+// BatchEmbedder keeps the legacy per-document path. Caller must hold s.mu (write lock).
 func (s *Service) AddDocuments(ctx context.Context, vecDocs []chromem.Document, lexDocs []lexical.Doc) error {
 	if s.current.collection == nil {
 		return errors.New("no collection available")
@@ -1693,10 +1353,8 @@ func (s *Service) AddDocuments(ctx context.Context, vecDocs []chromem.Document, 
 		return nil
 	}
 
-	// droppedIDs accumulates documents that could not be embedded even via
-	// the per-text fallback (see embedSubBatch). They are excluded from the
-	// chromem commit AND from the lexical upsert below so the two indexes
-	// never diverge.
+	// droppedIDs: documents the per-text fallback could not embed — excluded from
+	// BOTH the chromem commit and the lexical upsert so the indexes never diverge.
 	var droppedIDs map[string]struct{}
 
 	for start := 0; start < len(vecDocs); start += embeddingCommitWindowSize {
@@ -1735,26 +1393,15 @@ func (s *Service) AddDocuments(ctx context.Context, vecDocs []chromem.Document, 
 			return fmt.Errorf("adding %d documents (offset %d of %d): %w", len(sub), start, len(vecDocs), commitErr)
 		}
 	}
-	// Record the file-hash sidecar only after the full batch commits, not per
-	// sub-batch: ValidateCollection reconciles a file solely by comparing its
-	// on-disk hash to the sidecar hash (it never counts a file's chunks), so
-	// recording the hash after a partial commit — some sub-batches succeeded
-	// before a later one failed — would mark a half-indexed file as
-	// up-to-date. Its still-missing chunks would never be re-embedded and the
-	// file would be permanently under-indexed. Recording once, after every
-	// sub-batch has committed, restores the original all-or-nothing semantics
-	// while keeping embedding sub-batched. All chunks of a file share one
-	// hash; upsert is idempotent. The 5th field records the committed
-	// chunk-index set derived from the IDs, with dropped (poisoned) chunks
-	// excluded.
+	// The sidecar records only after EVERY sub-batch commits: a hash written after a
+	// partial commit would mark a half-indexed file up-to-date whose missing chunks
+	// were never re-embedded (publish-after-commit rule, specs/domains/workspace.md).
 	s.upsertFileHashesFiltered(vecDocs, droppedIDs)
 
 	if s.current.lexical != nil && len(lexDocs) > 0 {
 		if len(droppedIDs) > 0 {
-			// Clamp the capacity at zero: today's callers pass lexDocs
-			// mirroring vecDocs 1:1 (same IDs), so droppedIDs can never
-			// outnumber lexDocs — but a negative make capacity panics, and
-			// the invariant is not enforced at this boundary.
+			// Callers pass lexDocs mirroring vecDocs 1:1, so droppedIDs cannot outnumber
+			// lexDocs — clamp anyway: a negative make capacity panics.
 			filtered := make([]lexical.Doc, 0, max(len(lexDocs)-len(droppedIDs), 0))
 			for _, d := range lexDocs {
 				if _, drop := droppedIDs[d.ID]; drop {
@@ -1775,35 +1422,16 @@ func (s *Service) AddDocuments(ctx context.Context, vecDocs []chromem.Document, 
 	return nil
 }
 
-// embedSubBatch pre-populates the Embedding field of every document in sub
-// that does not already carry one, so the subsequent chromem AddDocuments
-// call performs zero embedding inferences and only normalizes + persists
-// (chromem-go v0.7.0 AddDocument skips c.embed for a non-empty
-// Document.Embedding). Documents that already have an embedding are passed
-// through untouched — exactly as chromem would treat them on the legacy
-// path.
-//
-// The collected texts are embedded in chunks of at most the configured
-// embedding batch size (EmbeddingBatchSize, mirroring the embedder's ONNX
-// batch session capacity): each EmbedDocuments call maps to at most one
-// full batch inference. ctx is checked per chunk and forwarded to
-// EmbedDocuments, so cancellation interrupts the sub-batch between chunks
-// (the embedder itself is ctx-aware and aborts a pending chunk).
-//
-// Content-triggered failures are isolated rather than aborting the whole
-// index pass: when a chunk fails as a unit, every text is retried on its
-// own (see embedChunkPerText) and only the texts that also fail
-// individually are dropped from the returned document set (each logged at
-// WARN). This keeps one pathological chunk — e.g. content that trips a
-// tokenizer bug — from permanently blocking indexing of everything batched
-// with it. Systemic failures (every text in a chunk failing individually)
-// still return an error: a broken embedder must abort the pass, not
-// silently drop the entire batch.
-//
-// Returns the documents to commit (sub itself when nothing was dropped;
-// the input slice is never reordered) and the IDs of dropped documents so
-// the caller can exclude them from the lexical upsert as well.
-// Caller must hold s.mu (write lock).
+// embedSubBatch pre-populates Embedding for every document missing one (chromem then
+// performs zero embedding inferences; already-embedded documents pass through
+// untouched), embedding the texts in chunks of the configured batch capacity — one
+// EmbedDocuments call per full batch inference, cancellable between chunks.
+// Content-triggered failures are isolated, not pass-fatal: a failed chunk retries
+// per-text (see embedChunkPerText) and only individually-failing texts are dropped
+// (WARN) — one pathological chunk must not block its batch; a chunk failing entirely
+// individually means a broken embedder and aborts the pass (isolation contract:
+// specs/domains/workspace.md). Returns the commit set (input never reordered) and
+// dropped IDs. Caller must hold s.mu (write lock).
 func (s *Service) embedSubBatch(ctx context.Context, sub []chromem.Document) ([]chromem.Document, map[string]struct{}, error) {
 	texts := make([]string, 0, len(sub))
 	targets := make([]int, 0, len(sub))
@@ -1940,14 +1568,10 @@ func (s *Service) resolveEmbeddingChunk(ctx context.Context, texts []string) (ve
 	return vecs, failed, nil
 }
 
-// embedChunkPerText isolates failures inside a chunk whose batched
-// EmbedDocuments call failed: each text is embedded individually, texts
-// that also fail alone are logged at WARN and recorded in failedTargets
-// (keyed by their absolute index in the sub-batch's texts slice), and the
-// successfully embedded texts keep their vectors. It returns an error only
-// when EVERY text fails individually — that signature means the embedder
-// itself is broken (it fails identically for any input), in which case the
-// whole index pass must abort rather than silently drop the batch.
+// embedChunkPerText retries a failed chunk text-by-text; individual failures are
+// WARN-logged and recorded in failedTargets (absolute indices into the sub-batch's
+// texts slice). An error returns only when EVERY text fails — the broken-embedder
+// signature that must abort the pass (specs/domains/workspace.md, failure isolation).
 func (s *Service) embedChunkPerText(ctx context.Context, chunk []string, start, total int, failedTargets map[int]struct{}) ([][]float32, error) {
 	vecs := make([][]float32, len(chunk))
 	var firstErr error
@@ -1984,9 +1608,8 @@ func (s *Service) embedChunkPerText(ctx context.Context, chunk []string, start, 
 	return vecs, nil
 }
 
-// DeleteDocumentsByIDs removes documents with the given IDs from the current
-// chromem collection and from the lexical index (best-effort).
-// Caller must hold s.mu (write lock).
+// DeleteDocumentsByIDs removes documents from chromem and best-effort from the
+// lexical index (dual-write invariant). Caller must hold s.mu (write lock).
 func (s *Service) DeleteDocumentsByIDs(ctx context.Context, ids []string) error {
 	if s.current.collection == nil {
 		return errors.New("no collection available")
@@ -2015,18 +1638,12 @@ func DocumentID(filePath string, chunkIndex int) string {
 	return fmt.Sprintf("%s:%d", pathHash, chunkIndex)
 }
 
-// sidecarDocumentIDs derives the chromem document IDs for the given file
-// paths arithmetically from the sidecar's committed chunk-index sets:
-// DocumentID is a pure function of path and chunk index, so a file whose
-// entry carries its set (5th field) needs no collection Query — which would
-// materialize every document in the collection, embedding vectors included.
-// ok is false unless EVERY requested path has an entry carrying a known set
-// (legacy entries, migrated collections, and hand-built documents lack it);
-// the caller then falls back to the Query enumeration. The set mirrors the
-// collection exactly: it is written only after the corresponding documents
-// committed (or were deliberately poison-dropped) and removed together with
-// the documents (removeFileHashes / RebuildCollection). Caller must hold at
-// least s.mu.RLock(); the incremental path calls this under the write lock.
+// sidecarDocumentIDs derives document IDs arithmetically from committed chunk sets —
+// no collection Query (which would materialize every document, vectors included);
+// ok is false unless EVERY path has a known set (enumeration without materialization,
+// specs/decisions/049-vector-index-memory-reduction.md). The set mirrors the collection:
+// written only after commit, removed with the documents. Caller must hold at least
+// s.mu.RLock().
 func (s *Service) sidecarDocumentIDs(filePaths []string) ([]string, bool) {
 	if s.current.fileHashes == nil || len(filePaths) == 0 {
 		return nil, false
@@ -2048,10 +1665,9 @@ func (s *Service) sidecarDocumentIDs(filePaths []string) ([]string, bool) {
 	return ids, true
 }
 
-// collectionUniqueFileCount returns the number of unique files in the collection.
-// Caller must hold at least s.mu (read or write). It reads the in-memory map
-// length directly (no defensive copy) since it stays under the lock; only the
-// rare nil-map case falls back to a query.
+// collectionUniqueFileCount reads the in-memory sidecar length directly (no copy
+// needed under the lock); the rare nil-map case falls back to a query. Caller must
+// hold at least s.mu.
 func (s *Service) collectionUniqueFileCount() int {
 	if s.current.fileHashes != nil {
 		return len(s.current.fileHashes)

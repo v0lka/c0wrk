@@ -8,14 +8,10 @@ import (
 )
 
 // ParseMCPDuration parses an MCP server duration string (`timeout` /
-// `call_timeout`) into a time.Duration. An empty string resolves to 0 — the
-// "unset, fall back to the engine default" signal. A non-empty value must parse
-// as a positive Go duration.
-//
-// It is the single source of truth for the MCP-duration rule, shared by the
-// load-time warning (normalizeMCPTimeouts), the UI save-path validation
-// (validateMCPServerConfig) and the config→builder adapter (parseMCPDuration),
-// so all three agree on exactly which values are valid.
+// `call_timeout`) into a time.Duration: empty resolves to 0 — the "unset,
+// fall back to the engine default" signal — and a non-empty value must parse
+// as a positive Go duration. The shared duration rule:
+// specs/decisions/063-mcp-tool-timeouts.md.
 func ParseMCPDuration(raw string) (time.Duration, error) {
 	if raw == "" {
 		return 0, nil
@@ -31,24 +27,14 @@ func ParseMCPDuration(raw string) (time.Duration, error) {
 }
 
 // normalizeMCPTimeouts validates every configured MCP server's `timeout` /
-// `call_timeout` and returns a load warning for each invalid one. It is
-// FAIL-SOFT: a bad duration is reported, never fatal, and the raw string is
-// left untouched — the config→builder adapter resolves it to 0 (the engine
-// default) at build time — so a hand-edited typo can never prevent a server
-// from starting. The load pipeline is the SINGLE production surfacing point: it
-// is what feeds the UI's `configLoadErrors` channel, which the builder adapter
-// cannot reach. Concretely, config.ResolveAndLoad calls LoadWithResult and then
-// both copies the returned LoadResult.LoadErrors into configLoadErrors and logs
-// each at WARN — so the ADR-063 / mcp-gateway "logged warning" claim holds on
-// the production path. The builder adapter (ToBuilderConfig → parseMCPDuration)
-// logs nothing for an invalid value, so a bad duration yields exactly one WARN
-// line, not two. (config.Load is the error-only convenience wrapper and drops
-// these warnings, so callers that must surface them go through
-// LoadWithResult/ResolveAndLoad; the frontend config→builder rebuild paths —
-// frontend_api_config.go / frontend_api_mcp.go — start from an already-validated
-// config, so no warning is needed there.)
-//
-// Must run after ApplyDefaults and before validate, mirroring normalizeShellExec.
+// `call_timeout` and returns a load warning for each invalid one — fail-soft,
+// the raw string left untouched (the config→builder adapter resolves it to 0
+// at build time), so a hand-edited typo can never prevent a server from
+// starting (specs/decisions/063-mcp-tool-timeouts.md). The load pipeline is
+// the single production surfacing point: it feeds the UI's configLoadErrors
+// channel and logs each warning at WARN, while the builder adapter logs
+// nothing — a bad duration yields exactly one WARN line. Must run after
+// ApplyDefaults and before validate, mirroring normalizeShellExec.
 func normalizeMCPTimeouts(cfg *Config) []string {
 	if len(cfg.MCP.Servers) == 0 {
 		return nil

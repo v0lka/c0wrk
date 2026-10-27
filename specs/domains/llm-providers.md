@@ -104,7 +104,15 @@ The probe is best-effort and non-fatal: only OpenAI-compatible providers are que
 
 **Latency & safety.** The probe fires on an internal goroutine with a 3-second per-leg timeout and a detached context, so it never blocks session creation or a model switch even when an LM Studio base URL is unreachable. The discovered metadata written to the runtime tier (tier 1.5) sets `OutputLimit` to `min(32768, window/4)` — mirroring the sp4rk SDK's built-in fallback of 32768 so self-hosted models are not regressed (neither LM Studio nor vLLM expose a per-model output cap), but clamped to at most a quarter of the discovered window so a small-context model cannot disable compaction (an `OutputLimit` larger than the context window drives `EffectiveMax` negative) — and `TokenizerType` to `approximate`.
 
+**Subscription-auth exclusion.** The lazy self-hosted context-window probe EXCLUDES subscription-auth (oauth) entries: probing them would stamp the entry's retained static API key onto requests to the vendor's keyless probe paths, leaking a key the operator believed unused (`lookupOpenAIProviderBaseURL` skips every `SubscriptionAuth` entry; extends [ADR-074](../decisions/074-chatgpt-subscription-auth.md) D2/D6 to the probe surface; the subscription catalog comes from `FetchChatGPTModels`, never the probe). Host locality is deliberately not filtered — a public self-hosted server is probed like a local one.
+
+**Display-window correction.** The lazy self-hosted server probe's late display-window correction is MODEL-SCOPED (`backend/session/emitter.go` `SetDisplayContextWindowForModel`): an update whose model differs from the last reported model is dropped (a stale window must not corrupt a switched model's display), and when a fill was already reported on the session root a refreshed `context_fill` is re-broadcast so an idle status bar corrects immediately (no events arrive after a task ends). This is the generic probe's counterpart to the embedded model's push seam (`pushDisplayContextWindow`, see [Backend-Owned Embedded Provider](#backend-owned-embedded-provider)).
+
 **Settings-facing resolution.** UI paths that must never block resolve model metadata through the registry's network-free `ModelRegistry.ResolveLocal` (sp4rk): `GetConfig`'s `AllModels` enrichment (`backend/frontend_api_config.go` `collectAllModels`) serves overrides, built-ins, fuzzy matches, and cached entries (including LM Studio probe results written via `SetRuntimeMetadata` to the runtime tier 1.5, which `ResolveLocal` also serves) purely from memory, returning fallback defaults for unknown models. Runtime resolution keeps the full `Resolve` path (network tiers, guarded by a negative cache that suppresses repeat failed probes). The network-free `GetConfig` invariant is specified in [../contracts/desktop-frontend.md](../contracts/desktop-frontend.md).
+
+## Local Google Protocol Remap
+
+Locally-served Google checkpoints (Gemma/Gemini on an OpenAI-compatible server) must speak `chat_completions`: those servers do not answer `:generateContent` (they return a misleading `200 OK` + empty body). `core/builder.go` `remapLocalGoogleProtocols` pins the protocol in tier-1 overrides, PROTOCOL-ONLY: zero scalars inherit from lower tiers so the lazy probe's tier-1.5 runtime window is never shadowed; an explicit user protocol is never clobbered; idempotent. The adaptive-budget wire rule (URL wire only when EVERY enabled model carries an explicit google override) depends on this remap — the tier-1 pin is what keeps a Google-named checkpoint on an OpenAI-compatible server from ever satisfying that check and being routed over the google wire (`budgetWire` reads the same tier-1 overrides).
 
 ## Output-Token Reserve
 
@@ -345,6 +353,10 @@ Only the inference path is wrapped. The Fetch Models listing and the lazy contex
 
 See [embedded-llm.md](embedded-llm.md) for the install/supervision side and [ADR-066](../decisions/066-embedded-llm-runtime.md) for the decision record.
 
+## Config Save Discipline
+
+Config-mutating RPCs (`backend/frontend_api_config.go` — `UpdateLLMConfig`, `UpdateProxySettings`) follow one save discipline: `f.saveMu` serializes whole save sequences (mutation → persist → propagate never interleave between two calls); `f.configMu` covers only candidate validation, the atomic YAML commit/rollback and snapshotting; provisioning and judge/router rebuilds run OUTSIDE `configMu` (rebuilds under a shared RLock on a fresh snapshot), because Go's RWMutex stops admitting readers once a writer queues — holding `configMu` across a rebuild freezes every `GetConfig`/settings RPC for the rebuild's duration.
+
 ## ChatGPT Subscription Auth
 
 The `chatgpt` provider has two authentication modes, selected by `llm.chatgpt.auth.mode` and nothing else:
@@ -370,6 +382,8 @@ The token manager is owned by the backend layer that runs the browser flow, so i
 - **builder-level default** — `OrchestratorBuilder.SetSubscriptionTokenSource`, the net covering every build whose config carries no source of its own — most importantly the per-session routers, whose `BuilderConfig` is converted deep inside the session factory where the manager is not in scope. Without this default those routers would run the signed-out posture while the user is signed in.
 
 The backend mirrors the live auth state into the seam (`syncChatGPTBuilderSeam`: the live manager when signed in, the zero value on sign-out or construction failure) and follows it with `rebuildRouterAfterChatGPTAuthChange` (judge + `UpdateModelOverrides` + router rebuild, under the same `configMu.RLock` snapshot discipline as `UpdateLLMConfig`) so the change reaches the already-cached router; per-session routers pick the seam up when they are next built.
+
+**The auth-mode switch in `UpdateLLMConfig` syncs the seam first.** An auth-mode switch to oauth must sync the builder's subscription-auth seam to the LIVE auth manager before the router rebuild (`toBuilderConfigLocked` carries no OAuth token source), or the rebuilt router serves the signed-out stand-in while the keychain holds a signed-in account — `UpdateLLMConfig` therefore calls `syncChatGPTBuilderSeam` before `RebuildJudge`/`RebuildRouter`.
 
 `subscriptionAuthEntry` turns the marker into the entry's auth shape:
 

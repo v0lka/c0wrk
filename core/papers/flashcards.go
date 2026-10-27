@@ -1,16 +1,9 @@
-// Package papers — flashcards model, parser, renderer and scheduler.
-//
-// The study-paper skill writes a deck as `flashcards.md` (see
-// skills/study-paper/assets/flashcards.md): a plain Markdown document with a
-// card table (| ID | Front | Back | Anchor | Tag | Stage |) and an append-only
-// review log (| ID | Date | Grade | Next due |). This file holds the pure
-// logic over that text — parse, render, and the fixed interval scheduler — with
-// no I/O. The writer layer (writer.go) owns the atomic, containment-checked
-// persistence; the backend exposes a mutation RPC on top of it.
-//
-// Everything here mirrors the frontend's lib/flashcards.ts and
-// lib/spacedRepetition.ts so the review a reader sees and the review the
-// backend records agree.
+// Package papers — flashcards model, parser, renderer and scheduler: the pure
+// logic over the study-paper skill's flashcards.md deck (a card table plus an
+// append-only review log), no I/O. writer.go owns persistence; the backend
+// exposes a mutation RPC on top. The rules mirror the frontend's
+// lib/flashcards.ts and spacedRepetition.ts so reader and backend review agree.
+// See specs/domains/papers.md (flashcards invariants).
 
 package papers
 
@@ -74,10 +67,9 @@ type Deck struct {
 	Reviews []ReviewEntry `json:"reviews"`
 }
 
-// NormalizeStage folds a raw stage token to its canonical value; an unknown or
-// blank token maps to StageNew. Emphasis/punctuation are stripped via the shared
-// value-normalizer, so a `**review**` cell folds like `review` — matching the
-// frontend twin's normalizeStage.
+// NormalizeStage folds a raw stage token to its canonical value; unknown or
+// blank maps to StageNew. Emphasis/punctuation are stripped via the shared
+// value-normalizer, matching the frontend twin's normalizeStage.
 func NormalizeStage(raw string) FlashcardStage {
 	switch normalizeValueToken(raw) {
 	case "learning", "learn":
@@ -89,10 +81,9 @@ func NormalizeStage(raw string) FlashcardStage {
 	}
 }
 
-// NormalizeGrade folds a raw grade token to its canonical value; an unknown or
-// blank token maps to "" (an ungraded review row). Emphasis/punctuation are
-// stripped via the shared value-normalizer, so a "`good`" cell folds like
-// `good` — matching the frontend twin's normalizeGrade.
+// NormalizeGrade folds a raw grade token to its canonical value; unknown or
+// blank maps to "" (an ungraded review row). Emphasis/punctuation are stripped
+// via the shared value-normalizer, matching the frontend twin's normalizeGrade.
 func NormalizeGrade(raw string) Grade {
 	switch normalizeValueToken(raw) {
 	case "again":
@@ -108,9 +99,7 @@ func NormalizeGrade(raw string) Grade {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Column detection (shared with the frontend parser)
-// ---------------------------------------------------------------------------
+// --- Column detection (shared with the frontend parser) ---------------------
 
 func headerMatches(header []string, names ...string) bool {
 	return columnIndex(header, names...) >= 0
@@ -127,14 +116,11 @@ func isReviewHeader(header []string) bool {
 	return headerMatches(header, "grade", "rating", "result") || headerMatches(header, "next", "due")
 }
 
-// ---------------------------------------------------------------------------
-// Parsing
-// ---------------------------------------------------------------------------
+// --- Parsing ----------------------------------------------------------------
 
-// ParseFlashcards parses a flashcards.md document into its deck. Best-effort
-// and total: a document with no recognizable table yields an empty deck, and a
-// data row without an id (when the deck carries an id column) is not a card row
-// — see isCardRow, the identity shared with the writer.
+// ParseFlashcards parses a flashcards.md document into its deck, best-effort
+// and total: no recognizable table yields an empty deck; a data row without an
+// id (when the deck carries an id column) is not a card row — see isCardRow.
 func ParseFlashcards(content string) Deck {
 	var deck Deck
 	for _, t := range parseTables(content) {
@@ -150,19 +136,17 @@ func ParseFlashcards(content string) Deck {
 }
 
 // isCardRow is the single card-row identity shared by the reader (parseCards)
-// and the writer (ApplyReview): a table data row — the header and separator rows
-// are already excluded — is a card row when its id cell is non-empty, or when
-// the table carries no id column at all. It mirrors frontend/src/lib/
-// flashcards.ts so both sides see the same deck.
+// and the writer (ApplyReview), mirroring frontend/src/lib/flashcards.ts: a
+// data row is a card row when its id cell is non-empty or the table carries no
+// id column at all.
 func isCardRow(cells []string, idIdx int) bool {
 	return idIdx < 0 || cellAt(cells, idIdx) != ""
 }
 
 func parseCards(t mdTable) []Card {
-	// The id column is resolved by name only (no positional fallback): an absent
-	// id column stays absent and yields empty card ids, exactly as the frontend
-	// twin does (pickColumn returns -1), so a `| Front | Back |` deck has the
-	// same card identities on both sides.
+	// The id column is resolved by name only (no positional fallback, like the
+	// frontend's pickColumn): an absent id column yields empty card ids, so a
+	// `| Front | Back |` deck has the same card identities on both sides.
 	idIdx := columnIndex(t.Header, "id")
 	frontIdx := colOr(t.Header, 0, "front", "question", "prompt")
 	backIdx := colOr(t.Header, 1, "back", "answer")
@@ -233,10 +217,9 @@ func containsInt(list []int, v int) bool {
 	return false
 }
 
-// cellNamesAnyField reports whether a single raw header cell matches, by name,
-// any of the review log's canonical fields (id, date, grade, or next-due).
-// Such a column is semantically owned by its named field: ApplyReview's
-// positional fallback must never write a different field's value into it.
+// cellNamesAnyField reports whether a raw header cell names any of the review
+// log's canonical fields; such a column is owned by that field — ApplyReview's
+// positional fallback must never write another field's value into it.
 func cellNamesAnyField(cell string) bool {
 	hn := strings.ToLower(strings.Trim(cell, "*_` "))
 	for _, n := range []string{"id", "date", "when", "grade", "rating", "result", "next", "due"} {
@@ -247,16 +230,13 @@ func cellNamesAnyField(cell string) bool {
 	return false
 }
 
-// ---------------------------------------------------------------------------
-// Rendering
-// ---------------------------------------------------------------------------
+// --- Rendering --------------------------------------------------------------
 
-// RenderFlashcards renders a deck to a canonical flashcards.md document. It is
-// the inverse of ParseFlashcards for the two data tables (the skill's prose
-// sections are not reproduced — the writer's mutation PATH instead edits the
-// existing document in place; see ApplyReview). This is public, spec-owned API
-// (specs/contracts/desktop-frontend.md names the RenderFlashcards/ParseFlashcards
-// pair) and is exercised by the round-trip tests.
+// RenderFlashcards renders a deck to a canonical flashcards.md document, the
+// inverse of ParseFlashcards for the two data tables (the skill's prose
+// sections are not reproduced — the writer's mutation path edits the existing
+// document in place; see ApplyReview). Public, spec-owned API
+// (specs/contracts/desktop-frontend.md).
 func RenderFlashcards(deck Deck) string {
 	var b strings.Builder
 	b.WriteString("# Flashcards\n\n")
@@ -275,9 +255,7 @@ func RenderFlashcards(deck Deck) string {
 	return b.String()
 }
 
-// ---------------------------------------------------------------------------
-// Scheduling (mirrors frontend lib/spacedRepetition.ts)
-// ---------------------------------------------------------------------------
+// --- Scheduling (mirrors frontend lib/spacedRepetition.ts) ------------------
 
 // IntervalScheduleDays is the skill's default interval ladder, in days.
 var IntervalScheduleDays = []int{1, 3, 7, 16, 35}
@@ -386,9 +364,7 @@ func addDays(date string, days int) string {
 	return t.AddDate(0, 0, days).Format("2006-01-02")
 }
 
-// ---------------------------------------------------------------------------
-// Surgical in-place update (pure)
-// ---------------------------------------------------------------------------
+// --- Surgical in-place update (pure) ----------------------------------------
 
 // tableBlock is a contiguous run of Markdown table lines, half-open [start, end).
 type tableBlock struct{ start, end int }
@@ -412,10 +388,9 @@ func tableBlocks(lines []string) []tableBlock {
 }
 
 // ApplyReview edits a flashcards.md document in place: it appends a review-log
-// row for cardID graded on date and updates that card's Stage cell, leaving all
-// other content (including the skill's prose) byte-for-byte intact. It fails
-// closed when the deck has no card row for cardID, no review-log table, or a
-// review-log header without a grade column (which could not record the grade).
+// row for cardID graded on date and updates that card's Stage cell, leaving
+// all other content (including the skill's prose) byte-for-byte intact.
+// Fail-closed on no card row, no review-log table, or no grade column.
 func ApplyReview(content, cardID string, grade Grade, date string) (string, error) {
 	if strings.TrimSpace(cardID) == "" {
 		return "", errors.New("flashcard review rejected: empty card id")
@@ -464,7 +439,6 @@ func ApplyReview(content, cardID string, grade Grade, date string) (string, erro
 		return "", fmt.Errorf("flashcard review rejected: card %q not found in the deck", cardID)
 	}
 
-	// Replay the card's log to schedule the new review.
 	entries := reviewsForCardID(ParseFlashcards(content).Reviews, cardID)
 	next, nextDue := ScheduleAfter(StateFromReviews(entries), grade, date)
 
@@ -479,21 +453,18 @@ func ApplyReview(content, cardID string, grade Grade, date string) (string, erro
 		newCardLine = joinCells(cells)
 	}
 
-	// Build the review row against the log's own header, resolving each field to
-	// a DISTINCT column (columnIndexExcept excludes the indices already claimed)
-	// so a `next`/`due` header can never reclaim the grade cell. A log whose
-	// header carries no grade-like column cannot record the grade at all, so the
-	// review is rejected rather than persisted with the grade silently dropped.
+	// Build the review row against the log's own header, resolving each field
+	// to a DISTINCT column (columnIndexExcept excludes claimed indices) so a
+	// `next`/`due` header can never reclaim the grade cell; a log without a
+	// grade-like column is rejected rather than persisting a dropped grade.
 	rHeader := splitCells(cleanLine(lines[reviewBlock.start]))
 	if !headerMatches(rHeader, "grade", "rating", "result") {
 		return "", errors.New("flashcard review rejected: review log has no grade column")
 	}
-	// A positional fallback slot is only safe when the header cell at that
-	// position matches NO canonical review-log field by name: a cell that names
-	// another field (e.g. `Grade` at position 1 of a `| ID | Grade |` log)
-	// belongs to that field alone, so an unidentified field must not write into
-	// it — its value is omitted instead of landing in (or displacing) another
-	// field's column.
+	// A positional fallback slot is only safe when the header cell there names
+	// NO canonical review-log field: a cell that names another field (e.g.
+	// `Grade` at position 1 of a `| ID | Grade |` log) belongs to that field
+	// alone, so an unidentified field omits its value instead of landing in it.
 	ownedByFieldName := make([]bool, len(rHeader))
 	for i, cell := range rHeader {
 		ownedByFieldName[i] = cellNamesAnyField(cell)

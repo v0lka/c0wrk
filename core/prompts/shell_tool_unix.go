@@ -2,21 +2,11 @@
 
 package prompts
 
-// shellToolName returns the name of the shell-execution tool registered on
-// this platform. On Unix it is bash_exec; on Windows (see
-// shell_tool_windows.go) it is posh_exec.
-//
-// The core package keeps a test-only equivalent (shellname_unix_test.go /
-// shellname_windows_test.go) because core cannot be imported here without a
-// circular dependency (core already imports core/prompts); production core
-// code resolves the shell tool via its `execute` capability group. The
-// literal strings match the tool-name constants in core/toolnames.go
-// (ToolBashExec / ToolPoshExec).
-//
-// SubstituteShellTool uses it to resolve the {shell_tool} placeholder in
-// embedded prompt markdown so platform-specific tool-priority guidance
-// always references the tool that is actually registered for the current
-// platform.
+// shellToolName returns the platform's shell-execution tool name; the literal
+// must match core/toolnames.go's ToolBashExec. Core keeps only a test-only
+// equivalent (shellname_*_test.go) — core cannot import this package (core
+// already imports core/prompts), and production core code resolves the shell
+// tool via its `execute` capability group.
 func shellToolName() string {
 	return "bash_exec"
 }

@@ -13,41 +13,22 @@ import (
 	"github.com/v0lka/sp4rk/agent"
 )
 
-// Goal-verifier unit topology.
-//
-// The verifier runs as an ISOLATED Conductor pass on a throwaway seeded
-// MapBlackboard, so its run has no PersistableBlackboard to hang the usual
-// delegation-spec / step-result persistence off. Its units are therefore
-// recorded through a units.Ledger instead — scoped to the goal task the
-// verifier is judging, under a dedicated namespace, and parented under a
-// single verifier unit. That keeps the verifier's durable records visible to a
-// later ledger scoped to the same task while its LLM view stays the isolated
-// blackboard (the live task's incomplete state is never read by the verifier).
+// Goal-verifier unit topology: the verifier runs as an ISOLATED Conductor pass
+// on a throwaway seeded MapBlackboard, so its units persist through a units.Ledger
+// (goal task scope, dedicated namespace, one parent unit). See specs/decisions/048-unified-recovery-ledger.md.
 const (
-	// verifierUnitNamespace scopes the verifier's units so their ids never
-	// collide with the mainline's (namespace "") units under the same task.
+	// verifierUnitNamespace keeps the verifier's unit ids from colliding with
+	// the mainline's (namespace "") under the same task.
 	verifierUnitNamespace = "goal_verification"
-	// verifierUnitID is the id of the goal-verification parent unit. Every
-	// delegation the verifier spawns is parented under it, so the verifier's
-	// units are both namespaced AND parent-linked as verifier units.
+	// verifierUnitID is the parent unit every verifier delegation links to.
 	verifierUnitID = "goal_verification"
 )
 
-// unitSink persists a Conductor run's units through a units.Ledger instead of
-// the task store's delegation / step-result tables. It is the isolated-context
-// counterpart to the persistent-blackboard wiring: a run whose blackboard is a
-// throwaway seeded MapBlackboard (the goal verifier) still records the
-// delegations it spawns — their rebuild spec at registration and their resume
-// checkpoint at settle — as durable unit records, parented under a parent unit
-// and scoped to a namespace.
-//
-// The sink writes ONLY to the ledger. It never makes the run's own blackboard
-// durable, so the run's LLM view stays exactly what it was — the live task's
-// incomplete state cannot leak in through persistence.
-//
-// All writes are best-effort: a ledger failure is logged, never propagated, so
-// losing a checkpoint degrades resumability rather than the current run (the
-// same contract wireDelegationSpecSink honors for the mainline path).
+// unitSink persists a Conductor run's units through a units.Ledger — the
+// isolated-context counterpart to the persistent-blackboard wiring: a run on
+// a throwaway seeded MapBlackboard still records its delegations (rebuild
+// spec at registration, checkpoint at settle); writes are best-effort —
+// logged, never propagated. See specs/decisions/048-unified-recovery-ledger.md.
 type unitSink struct {
 	ledger units.Ledger
 	// parentID is the unit every delegation registered on a root registry is
@@ -56,14 +37,11 @@ type unitSink struct {
 	logger   *slog.Logger
 
 	mu sync.Mutex
-	// known holds the ids this sink registered (via the spec sink). record()
-	// ignores ids the sink never began, so a plan-step or an unrelated
-	// blackboard write can never synthesize a phantom unit.
+	// known holds the ids this sink began; record() ignores others, so a
+	// plan-step or unrelated blackboard write cannot synthesize a phantom unit.
 	known map[string]struct{}
 }
 
-// newUnitSink builds a ledger-bound sink whose top-level delegations are
-// parented under parentID.
 func newUnitSink(ledger units.Ledger, parentID string, logger *slog.Logger) *unitSink {
 	return &unitSink{
 		ledger:   ledger,
@@ -74,15 +52,10 @@ func newUnitSink(ledger units.Ledger, parentID string, logger *slog.Logger) *uni
 }
 
 // newVerifierUnitSink builds the ledger-bound sink for one goal-verification
-// pass. It scopes a fresh ledger to the goal task + verifier namespace, records
-// the pass itself as a goal_verification parent unit (so a delegation's parent
-// link resolves to a real record), and returns a sink whose delegations are
-// parented under it.
-//
-// It returns nil when there is no task id (an in-memory-only run has nothing to
-// persist under) — the caller then leaves deps.unitSink nil and RunConductor
-// falls back to its blackboard-derived wiring. store may be nil: the ledger
-// then degrades to best-effort in-memory operation.
+// pass: a ledger scoped to the goal task + verifier namespace, with the pass
+// itself recorded as the goal_verification parent unit. Returns nil when
+// taskID is empty (RunConductor then uses blackboard-derived wiring); a nil
+// store degrades to in-memory operation.
 func newVerifierUnitSink(taskID string, store units.Store, gs *goal.GoalState, logger *slog.Logger) *unitSink {
 	if taskID == "" {
 		return nil
@@ -108,10 +81,8 @@ func newVerifierUnitSink(taskID string, store units.Store, gs *goal.GoalState, l
 	return newUnitSink(ledger, verifierUnitID, logger)
 }
 
-// wire installs the sink on a delegation registry: every RegisterTask records a
-// subagent unit parented under parentID (the verifier unit for the root
-// registry, the delegating subagent's unit id for a child registry). A nil sink
-// or registry is a no-op, so callers can wire unconditionally.
+// wire installs the sink on a delegation registry: parentID is the verifier
+// unit for the root registry, the delegating subagent's unit id for a child.
 func (s *unitSink) wire(registry *tools.DelegationRegistry, parentID string) {
 	if s == nil || registry == nil {
 		return
@@ -121,9 +92,8 @@ func (s *unitSink) wire(registry *tools.DelegationRegistry, parentID string) {
 	})
 }
 
-// begin records a newly-registered delegation as a running subagent unit: its
-// rebuild spec, its parent link (parentID) and its depth. The id is tracked so
-// record() can update the same unit when the delegation settles.
+// begin records a newly-registered delegation as a running subagent unit
+// (rebuild spec, parent link, depth), tracking its id for record().
 func (s *unitSink) begin(parentID string, spec tools.DelegationSpec) {
 	if s == nil || spec.Task.ID == "" {
 		return
@@ -149,9 +119,8 @@ func (s *unitSink) begin(parentID string, spec tools.DelegationSpec) {
 	s.mu.Unlock()
 }
 
-// record persists a settled unit's resume checkpoint (the ReAct steps) and its
-// terminal status, inferred from execErr (paused / failed / completed). Ids the
-// sink never began are ignored, so a plan-step or unrelated id is a no-op.
+// record persists a settled unit's resume checkpoint (the ReAct steps) and
+// its terminal status, inferred from execErr.
 func (s *unitSink) record(id string, execErr error, steps []agent.Step) {
 	if s == nil || id == "" {
 		return
@@ -178,16 +147,10 @@ func (s *unitSink) warn(op, id string, err error) {
 	}
 }
 
-// unitStatusFor maps a settled outcome's error onto the durable unit status.
-//
-// A cooperative pause is a recoverable checkpoint (paused, not failed). A
-// CANCELLATION is an abandonment, not a failure of the unit: a graceful app
-// exit or a task cancel leaves the delegation mid-flight, exactly like the
-// crash the ledger's `interrupted` status exists for. Mapping it to `failed`
-// would make the unit terminal, so the resume funnel would DROP the in-flight
-// delegated work instead of relaunching it fresh — whether abandoned work is
-// recovered would then depend only on whether the exit was graceful. Any other
-// non-nil error is a failure; a nil error is a completion.
+// unitStatusFor maps a settled outcome's error onto the durable unit status:
+// cancellation (graceful or not) is an abandonment — `interrupted`, never
+// `failed` — so the resume funnel relaunches it fresh; nil is a completion.
+// See specs/domains/orchestration/delegation.md (unit record).
 func unitStatusFor(execErr error) units.UnitStatus {
 	switch {
 	case isPaused(execErr):

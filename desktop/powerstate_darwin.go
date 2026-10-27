@@ -20,23 +20,20 @@ extern void c0wrkOnPowerWake(void);
 // recovered, so the previously-silent death surfaces in the slog log.
 extern void c0wrkLogWebviewRecovery(char *reason);
 
-// NOTE ON API: the WKNavigationDelegate protocol exposes exactly ONE
-// web-content-process-termination hook:
-//   - (void)webViewWebContentProcessDidTerminate:(WKWebView *)webView;
-// (macOS 10.11+). There is no public -webView:webContentProcessDidTerminateWithReason:
-// selector in WebKit's headers. Wails v2.12.0 does not implement even this
-// one hook, so a killed renderer leaves the window blank. This file fills
-// that gap by attaching the selector to the real WailsContext class at
-// runtime (see c0wrkInstallWebviewRecovery).
+// NOTE ON API: WKNavigationDelegate exposes exactly ONE
+// web-content-process-termination hook, -webViewWebContentProcessDidTerminate:
+// (macOS 10.11+); there is no public -webView:webContentProcessDidTerminateWithReason:
+// selector, and Wails v2.12.0 implements not even this one — a killed renderer
+// leaves the window blank. This file attaches the selector to the real
+// WailsContext class at runtime (see c0wrkInstallWebviewRecovery).
 
 // Minimal WailsContext surface for this translation unit. The full class is
-// implemented in the Wails module (github.com/wailsapp/wails/v2) and linked
-// into the binary ONLY by `wails build` (via the generated main) — never by
-// plain `go build`/`go test`. Only the accessors are referenced here, and
-// Objective-C property access compiles to dynamic message sends
-// (objc_msgSend(self, "shuttingDown") / "webview"): that emits NO link-time
-// reference to _OBJC_CLASS_$_WailsContext. That matters — a compile-time
-// @implementation WailsContext (Category) WOULD emit such a symbol, leaving
+// implemented in the Wails module and linked into the binary ONLY by
+// `wails build` (via the generated main) — never by plain `go build`/`go test`.
+// Only the accessors are referenced here, and Obj-C property access compiles
+// to dynamic message sends (objc_msgSend(self, "shuttingDown") / "webview"):
+// that emits NO link-time reference to _OBJC_CLASS_$_WailsContext, which a
+// compile-time @implementation WailsContext (Category) WOULD emit — leaving
 // it unresolved under `go build ./...` / `go test ./...` on darwin and
 // breaking macOS CI. Resolving the class by name via objc_getClass and
 // attaching the method via class_addMethod keeps the standard Go toolchain
@@ -49,11 +46,10 @@ extern void c0wrkLogWebviewRecovery(char *reason);
 @end
 
 // c0wrkLastRecoveryTime timestamps the most recent web-content-process
-// recovery. It debounces reload storms: WebKit may post the delegate callback
-// several times in quick succession (repeated wake-related kills), and the
-// recovery itself can transiently re-trigger. Main-thread-only access — the
-// WKNavigationDelegate callback and the dispatch_async below both target the
-// main queue, so no lock is required.
+// recovery, debouncing reload storms (WebKit may post the delegate callback
+// several times in quick succession, and a recovery can transiently
+// re-trigger). Main-thread-only access — the WKNavigationDelegate callback
+// and the dispatch_async below both target the main queue, so no lock.
 static NSTimeInterval c0wrkLastRecoveryTime = 0.0;
 
 // c0wrkRecoveryDebounceSeconds is the minimum interval between recovery
@@ -63,16 +59,13 @@ static const NSTimeInterval c0wrkRecoveryDebounceSeconds = 3.0;
 // c0wrkWebContentProcessDidTerminateIMP is the IMP attached to WailsContext as
 // -webViewWebContentProcessDidTerminate:. WebKit invokes it when the
 // web-content process dies (crash, memory ceiling, or an OS-initiated kill
-// such as the post-sleep suspension on macOS 26). The real API carries no
-// termination reason, so a descriptive cause is reported to the log.
-//
-// It (a) bails when shuttingDown is set, (b) debounces via
-// c0wrkLastRecoveryTime, and (c) dispatches -[WKWebView reload] to the main
-// queue so the reload never runs synchronously inside the WebKit callback that
-// reported the death. reload is used instead of Wails's WindowReloadApp (which
-// runs evaluateJavaScript and cannot revive a dead process — a dead process
-// has no JS runtime): reload relaunches the web-content process and re-fetches
-// the wails:// start URL. shuttingDown is re-checked inside the block in case
+// such as the post-sleep suspension on macOS 26); the real API carries no
+// termination reason. It (a) bails when shuttingDown is set, (b) debounces
+// via c0wrkLastRecoveryTime, and (c) dispatches -[WKWebView reload] to the
+// main queue so the reload never runs synchronously inside the WebKit
+// callback that reported the death. reload is used instead of Wails's
+// WindowReloadApp — an evaluateJavaScript call cannot revive a dead process
+// (no JS runtime) — and shuttingDown is re-checked inside the block in case
 // teardown began between the gate and the dispatch.
 static void c0wrkWebContentProcessDidTerminateIMP(id self, SEL _cmd, WKWebView *terminatedWebView) {
     (void)_cmd;
@@ -101,11 +94,9 @@ static void c0wrkWebContentProcessDidTerminateIMP(id self, SEL _cmd, WKWebView *
 }
 
 // c0wrkFindWKWebViewInView recursively searches an NSView hierarchy for the
-// first WKWebView. The c0wrk app is single-window with one webview; this is
-// how the wake-reload path reaches it. The -webViewWebContentProcessDidTerminate:
-// IMP receives self and can read ctx.webview directly, but the Go wake callback
-// has no such handle — so it locates the webview through the window hierarchy
-// at wake time (long after startup, the webview always exists).
+// first WKWebView (the app is single-window with one webview). The IMP can
+// read ctx.webview directly, but the Go wake callback has no such handle — it
+// locates the webview through the window hierarchy at wake time.
 static WKWebView *c0wrkFindWKWebViewInView(NSView *view) {
     if (view == nil) {
         return nil;
@@ -122,27 +113,16 @@ static WKWebView *c0wrkFindWKWebViewInView(NSView *view) {
     return nil;
 }
 
-// c0wrkReloadWebview forces a native -[WKWebView reload] on the main thread.
-// It is the wake-path counterpart to the -webViewWebContentProcessDidTerminate:
-// recovery: both reload the webview NATIVELY. Wails's WindowReloadApp is an
-// evaluateJavaScript("window.location.href = startURL") call (Wails v2.12.0
-// darwin frontend.go:214, WailsContext.m:451), which is the WRONG primitive
-// for post-wake recovery:
-//   - It cannot run until the SUSPENDED web-content process fully resumes; a
-//     call during the resume window may be queued then dropped.
-//   - When the webview is already at the start URL, re-assigning
-//     window.location.href to the same value is a no-op in WebKit — no fresh
-//     load, so the volatile-marked render surface is never rebuilt.
-// Because this machine's sleep SUSPENDS (does not kill) the web-content
-// process, -webViewWebContentProcessDidTerminate: does NOT fire on wake, so
-// this native reload is the only reliable recovery primitive. reload always
-// re-fetches the current request and rebuilds the render surface at the native
-// level, independent of JS-runtime and URL state. The outcome (webview found
-// vs not found) is logged from the dispatched block so the result is never
-// silent. Declared static — like c0wrkInstallWebviewRecovery and
-// c0wrkRegisterWakeObserver — because cgo's //export path compiles the
-// preamble into multiple object files; a non-static definition would collide
-// (duplicate symbol). cgo can call static C functions directly.
+// c0wrkReloadWebview forces a native -[WKWebView reload] on the main thread —
+// the wake-path counterpart of the termination-hook recovery. Wails's
+// WindowReloadApp (evaluateJavaScript) is the wrong primitive: it cannot run
+// until the suspended web-content process resumes, and re-assigning the same
+// URL is a no-op in WebKit. This machine's sleep suspends rather than kills
+// the process, so the termination hook does NOT fire on wake and this native
+// reload is the only reliable recovery; the outcome is logged from the
+// dispatched block, never silent. Declared static (like the other helpers
+// here): cgo's //export path compiles the preamble into multiple object
+// files, and a non-static definition would collide.
 static void c0wrkReloadWebview(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
         WKWebView *wv = nil;
@@ -162,18 +142,14 @@ static void c0wrkReloadWebview(void) {
 }
 
 // c0wrkInstallWebviewRecovery attaches the web-content-process-termination
-// hook to the real WailsContext class at runtime. Returns:
-//   0 — hook installed (the normal case under Wails v2.12.0).
-//   1 — WailsContext class not found (e.g. a future Wails rename); the hook
-//       is skipped and the wake path (desktop/startup.go) remains as a
-//       best-effort fallback for the suspended-render case.
-//   2 — WailsContext already implements the selector (a future Wails that
-//       forwards the hook natively); its implementation is left in place.
+// hook to the real WailsContext class at runtime. Returns 0 = installed (the
+// normal case under Wails v2.12.0), 1 = class not found (a future Wails
+// rename; the wake path remains as best-effort fallback), 2 = WailsContext
+// already implements the selector (its implementation is left in place).
 //
 // Called from registerPowerWakeObserver during Startup, by which point Wails
 // has loaded WailsContext and installed it as the webview's navigation
-// delegate (WailsContext.m: setNavigationDelegate:self). class_addMethod
-// mutates the class's method table, which the runtime consults at every
+// delegate. class_addMethod mutates the method table consulted at every
 // message dispatch, so the hook takes effect on the already-created instance
 // immediately.
 static int c0wrkInstallWebviewRecovery(void) {
@@ -191,12 +167,12 @@ static int c0wrkInstallWebviewRecovery(void) {
     return 0;
 }
 
-// c0wrkRegisterWakeObserver registers NSWorkspace notification-center
-// observers for both system wake (NSWorkspaceDidWakeNotification) and display
-// wake (NSWorkspaceScreensDidWakeNotification, macOS 10.15+). The block runs
-// on the thread that posts the notification — the main thread for NSWorkspace
-// power notifications — and forwards to Go via c0wrkOnPowerWake. The observer
-// is retained by the notification center for the lifetime of the app.
+// c0wrkRegisterWakeObserver registers NSWorkspace observers for system wake
+// (NSWorkspaceDidWakeNotification) and display wake
+// (NSWorkspaceScreensDidWakeNotification, macOS 10.15+). The block runs on
+// the posting thread — the main thread for NSWorkspace power notifications —
+// and forwards to Go via c0wrkOnPowerWake; the observer is retained by the
+// notification center for the app's lifetime.
 static void c0wrkRegisterWakeObserver(void) {
     @autoreleasepool {
         NSNotificationCenter *nc = [[NSWorkspace sharedWorkspace] notificationCenter];
@@ -222,38 +198,29 @@ import (
 	"sync/atomic"
 )
 
-// powerWakeHandler holds the Go-side recovery callback invoked when macOS
-// reports a power-state wake. It is set in Startup before the native observer
-// is registered and read from the cgo-invoked c0wrkOnPowerWake on wake, hence
-// the atomic for safe cross-thread access (the observer block runs on the main
-// thread, which is not synchronized with Startup's writer goroutine).
+// powerWakeHandler holds the Go-side callback invoked on a power-state wake:
+// set in Startup before the observer registers, read from the cgo-invoked
+// c0wrkOnPowerWake on the main thread — hence the atomic.
 var powerWakeHandler atomic.Pointer[func()]
 
-// recoveryLogger holds the slog logger used by c0wrkLogWebviewRecovery to
-// report WKWebView web-content-process terminations. It is set in
-// registerPowerWakeObserver (which receives the app logger) so the Obj-C
-// IMP — a cgo callback that cannot receive an injected logger — can log
-// without resorting to a package global. Read atomically because the callback
-// fires on the main thread, unsynchronized with the Startup writer.
+// recoveryLogger is the logger behind c0wrkLogWebviewRecovery, set by
+// registerPowerWakeObserver: the Obj-C IMP is a cgo callback that cannot
+// receive an injected logger. Atomic — the callback fires on the main thread.
 var recoveryLogger atomic.Pointer[slog.Logger]
 
-// registerPowerWakeObserver registers native macOS observers that fire when
-// the system or the displays wake from sleep (invoking onPowerWake on each
-// wake), arms the logger used by the web-content-process recovery path, and
-// installs the WKNavigationDelegate web-content-process-termination hook on
-// the real WailsContext class via runtime method injection. No-op on
+// registerPowerWakeObserver arms the macOS wake observers (invoking
+// onPowerWake per wake), the recovery logger, and the
+// web-content-process-termination hook injected into WailsContext. No-op on
 // non-darwin builds — see powerstate_other.go.
 func registerPowerWakeObserver(log *slog.Logger, onPowerWake func()) {
 	handler := onPowerWake
 	powerWakeHandler.Store(&handler)
 	recoveryLogger.Store(log)
 
-	// Attach -webViewWebContentProcessDidTerminate: to WailsContext. Done by
-	// runtime method injection (objc_getClass + class_addMethod) rather than a
-	// compile-time Obj-C category so the desktop package links cleanly under
-	// the standard Go toolchain — a category would emit an unresolved
-	// _OBJC_CLASS_$_WailsContext symbol (that class is linked only by
-	// `wails build`). See specs/decisions/018-macos-webview-recovery.md.
+	// Runtime method injection rather than a compile-time Obj-C category, so
+	// the package links under the standard Go toolchain (a category would
+	// emit an unresolved _OBJC_CLASS_$_WailsContext). See
+	// specs/decisions/018-macos-webview-recovery.md.
 	switch int(C.c0wrkInstallWebviewRecovery()) {
 	case 0:
 		log.Info("installed WKWebView web-content-process recovery hook on WailsContext")
@@ -289,16 +256,11 @@ func c0wrkLogWebviewRecovery(reason *C.char) {
 	}
 }
 
-// reloadWebviewNative forces a NATIVE -[WKWebView reload] on the main thread.
-// It is the wake-path recovery primitive: Wails's WindowReloadApp is an
-// evaluateJavaScript("window.location.href = startURL") call that cannot
-// restore a post-wake blank webview (no-op when URL unchanged; cannot run
-// until the suspended process resumes). See powerstate_darwin.go and ADR-018.
-// The reload is dispatched to the main queue inside the C helper and returns
-// immediately to the caller; the result is logged from the block. Returns
-// true so reloadFrontend knows a native reload was issued and skips the
-// JS-based fallback. On non-darwin builds the stub returns false (the bug is
-// macOS/WKWebView-specific).
+// reloadWebviewNative issues a NATIVE -[WKWebView reload] (dispatched on the
+// main queue inside the C helper, which returns immediately; the result is
+// logged from the block) — the only primitive that revives a suspended/blank
+// webview, see specs/decisions/018-macos-webview-recovery.md. Returns true so
+// reloadFrontend skips the JS fallback; the non-darwin stub returns false.
 func reloadWebviewNative() bool {
 	C.c0wrkReloadWebview()
 	return true

@@ -1,11 +1,8 @@
 package core
 
-// Tool name constants used across core to refer to specific built-in or MCP
-// tools by name. Centralizing these prevents drift and silent typos when the
-// planner or step configurator references a tool string in multiple files.
-//
-// The values mirror the names registered by github.com/v0lka/sp4rk/tools/builtins.RegisterBuiltinTools
-// and the internal-tool list in core/tools/registry.go.
+// Tool name constants used across core to refer to built-in or MCP tools by
+// name — one definition prevents drift and silent typos. The values mirror
+// sp4rk's RegisterBuiltinTools and core/tools/registry.go's internal list.
 const (
 	// Internal infrastructure tools (always allowed, bypass policy).
 	ToolFinish              = "finish"
@@ -44,22 +41,13 @@ const (
 	ToolWebFetch  = "web_fetch"
 )
 
-// FileMutatingTools is the set of tool names that can modify files on disk.
-// The PostExecuteHook uses this to decide whether to notify the vector index
-// manager of a potential content change after tool execution. The shell-exec
-// tool (`bash_exec` on Unix, `posh_exec` on Windows — mutually exclusive per
-// host) is included because it can mutate files in ways the in-process
-// write_file/edit_file tools cannot (e.g. sed, git checkout, build artifacts),
-// and the file watcher alone may miss some of those changes.
-//
-// Cost note: the resulting debounced incremental pass is NOT free even when no
-// files changed — ValidateCollection reads and hashes every indexable file in
-// the workspace (O(files) disk/CPU). The 1s debounce coalesces rapid bursts
-// (e.g. a batch of edits) but NOT isolated bash_exec calls (each test run, git
-// status, or build triggers one full sweep). For large repos this is non-
-// trivial churn on a hot path. The tradeoff (freshness of search results after
-// shell-driven changes) is considered worth the per-call O(files) sweep;
-// revisit if profiling shows indexer pressure during heavy coding sessions.
+// FileMutatingTools is the set of tool names that can modify files on disk; the
+// PostExecuteHook uses it to notify the vector index manager. The shell tool is
+// included: it mutates files in ways the in-process write/edit tools cannot
+// (sed, git checkout, build artifacts). Cost: each sweep is O(files) even with
+// no changes and the 1s debounce coalesces bursts but not isolated shell calls —
+// accepted for search freshness; revisit on indexer pressure.
+// See specs/domains/workspace.md (file-change trigger set).
 var FileMutatingTools = map[string]bool{
 	ToolWriteFile: true,
 	ToolEditFile:  true,
@@ -67,23 +55,12 @@ var FileMutatingTools = map[string]bool{
 	ToolPoshExec:  true,
 }
 
-// NoProjectDisabledTools is the set of tool names that are blocked from both
-// listing and execution when the current project is "No Project" (__no_project__).
-//
-// Only semantic_search is disabled: without a project there is no vector index
-// (the subsystem stays off for No Project sessions), so a query would either
-// fail or return stale results from the previous CODE-mode project. ripgrep
-// and glob were historically disabled here as "code-oriented" tools, but CHAT
-// sessions legitimately use them beyond code (OS config, DevOps, dotfiles),
-// so they are now allowed under the normal security.groups policies.
-//
-// Note: edit_file and write_file are intentionally NOT in this list. In No Project
-// (CHAT) mode, write/edit operations are constrained to the per-session isolated
-// workspace or temp directory by the Judge layer (judgeWriteInSessionRoots). This
-// enables editing arbitrary files within the session workspace (including
-// .c0wrk/plans/ for Plan Review) without exposing the broader filesystem. CHAT
-// mode was never strictly read-only — bash_exec has always been allowed for
-// session-scoped command execution.
+// NoProjectDisabledTools is blocked from listing and execution in No Project
+// (CHAT) mode. Only semantic_search: no project, no vector index — a query
+// would fail or return the previous CODE project's stale results (ripgrep/glob
+// stay allowed under normal group policies). write/edit are NOT listed — the
+// Judge constrains their targets to the session workspace (judgeWriteInSessionRoots);
+// CHAT was never strictly read-only. See specs/domains/orchestration/conductor.md (No-Project tool set).
 var NoProjectDisabledTools = map[string]bool{
 	ToolSemanticSearch: true,
 }

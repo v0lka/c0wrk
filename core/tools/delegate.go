@@ -21,20 +21,14 @@ Outputs: progress events per subagent; blocking tasks return output here, async 
 Example: two independent refactors as two tasks without depends_on — they run in parallel.
 Anti-example: no re-delegation from inside a subagent unless allow_redelegate is set; not for sequential steps (chain via depends_on or run inline); delegating does not replace reading key files.`
 
-// maxDelegationBatchSize bounds how many tasks a single delegate call may
-// carry. The concurrency cap (agents.max_parallel_subagents) limits how many
-// RUN at once, but a call requesting hundreds of tasks would still queue
-// hundreds of subagent goroutines and register hundreds of units — a cheap
-// resource-exhaustion vector. Beyond this bound the model must split the work
-// across several delegate calls. The schema's maxItems mirrors this constant
-// so the model sees the constraint up front; the runtime error below names it
-// explicitly when exceeded.
+// maxDelegationBatchSize bounds one delegate call: the concurrency cap limits
+// how many subagents RUN at once, not how many a single call may queue, so an
+// unbounded batch would still register hundreds of goroutines and units. The
+// schema's maxItems mirrors this constant.
 const maxDelegationBatchSize = 16
 
-// delegateSchemaTemplate is the delegate tool's JSON schema. The
-// tasks[].tools group-token enum is injected from the SDK group table at
-// construction time (see delegateGroupEnumJSON) so it can never drift from
-// what the resolver accepts.
+// delegateSchemaTemplate is the delegate tool's JSON schema; the tasks[].tools
+// group enum is injected at construction so it cannot drift from the resolver.
 const delegateSchemaTemplate = `{
 	"type": "object",
 	"properties": {
@@ -69,13 +63,9 @@ const delegateSchemaTemplate = `{
 	"required": ["tasks"]
 }`
 
-// delegateGroupEnumJSON renders the tasks[].tools enum values as a
-// comma-separated JSON fragment: every capability-group token the delegation
-// resolver accepts. It is derived from sdktools.AllToolGroups — the same
-// table parseToolGroupToken (core/conductor.go) validates against — in both
-// spellings: the ToolGroup value (underscore form) and its kebab-case twin.
-// A hardcoded literal here would be a third copy of the group vocabulary
-// that could silently drift from the resolver.
+// delegateGroupEnumJSON renders every group token the delegation resolver
+// accepts, derived from sdktools.AllToolGroups in both spellings — a literal
+// here would be a third copy of the vocabulary able to drift.
 func delegateGroupEnumJSON() string {
 	seen := make(map[string]struct{}, 16)
 	var tokens []string
@@ -102,13 +92,9 @@ type DelegationTask struct {
 	Mode               string   `json:"mode,omitempty"`
 	MaxSteps           int      `json:"max_steps,omitempty"`
 	AllowRedelegate    bool     `json:"allow_redelegate,omitempty"`
-	// Agent names a Subagent Profile (an .agents/agents/<name>/AGENT.md file).
-	// When set, the launcher resolves the profile and applies it: the agent's
-	// body replaces the orchestrator system prompt (the shared project-context
-	// prefix is preserved), and the profile's tool preference / max-steps /
-	// model / allow-redelegate override the task fields. Empty = no profile
-	// (the legacy behavior). An unknown name fails fast (delegate validation
-	// rejects it before any subagent launches).
+	// Agent names a Subagent Profile applied by the launcher (prompt, tools,
+	// max-steps, model, allow-redelegate); unknown names fail validation
+	// before any launch. See specs/domains/orchestration/delegation.md.
 	Agent string `json:"agent,omitempty"`
 }
 
@@ -120,34 +106,27 @@ type DelegationResult struct {
 	Error  error
 }
 
-// DelegationLauncher builds and runs subagents for the delegate tool.
-// The implementation lives in the core layer and knows how to construct
-// an Executor, ContextManager, scoped emitter, and tool set for each task.
+// DelegationLauncher builds and runs subagents for the delegate tool; the
+// implementation lives in the core layer.
 type DelegationLauncher interface {
 	Launch(ctx context.Context, tasks []DelegationTask, registry *DelegationRegistry) []DelegationResult
-	// CompletedStep reports the blackboard's successful StepResult for a
-	// delegation id, when one exists. The delegate tool uses it for its
-	// duplicate guard: a task id that already settled must be refused and
-	// replayed instead of re-run as a fresh subagent.
+	// CompletedStep feeds the duplicate guard: a delegation id that already
+	// settled must be refused and replayed, never re-run.
+	// See specs/contracts/conductor-tools.md (delegate).
 	CompletedStep(id string) (DelegationCompletedStep, bool)
 }
 
-// DelegationCompletedStep is the settled outcome of a delegation id that
-// already carries a successful StepResult on the blackboard (settled by the
-// auto-resume wave or an earlier leg of the task): enough to replay the entry
-// in a registry so co-launched dependents still resolve.
+// DelegationCompletedStep is the settled outcome (auto-resume wave or an
+// earlier leg) replayed into the registry so co-launched dependents resolve.
 type DelegationCompletedStep struct {
 	Output string
 	Steps  []agent.Step
 }
 
-// AgentResolver looks up a Subagent Profile by name. It is injected into the
-// Conductor context (and inherited by subagent contexts) so the launcher can
-// resolve the `agent` field of a DelegationTask to a full *agents.Agent profile.
-// Returns (nil, false) when the name is unknown — validateDelegationTasks turns
-// that into a fail-fast error before any subagent launches. Nil (no resolver in
-// context) means profiles are unavailable: a non-empty `agent` field is then
-// rejected, so a delegate call never silently ignores a requested profile.
+// AgentResolver looks up a Subagent Profile by name (see
+// specs/domains/orchestration/delegation.md). Unknown names fail validation
+// before any launch; with no resolver in context a requested profile is
+// rejected rather than silently ignored.
 type AgentResolver func(name string) (*agents.Agent, bool)
 
 // DelegateTool launches subagents via a DelegationLauncher injected through context.
@@ -203,32 +182,23 @@ func (t *DelegateTool) Execute(ctx context.Context, input json.RawMessage) (sdkt
 		return sdktools.ErrorResult("delegate tool: no delegation launcher in context (not running inside a Conductor)"), nil
 	}
 
-	// Orthogonality guard: when a plan is declared on the blackboard, delegate
-	// is disabled — execute_plan is the only execution path for plan steps.
-	// delegate is for plan-less task optimization only. The PlanChecker is nil
-	// in subagent contexts, so this guard is inert for redelegation.
+	// Orthogonality: once a plan is declared, execute_plan is the only
+	// execution path (specs/contracts/conductor-tools.md). The checker is nil
+	// in subagent contexts, so redelegation is unaffected.
 	if pc := PlanCheckerFrom(ctx); pc != nil && pc.HasDeclaredPlan() {
 		return sdktools.ErrorResult("delegate is disabled while a plan is declared — use execute_plan to execute plan steps. delegate is for plan-less task optimization only."), nil
 	}
 
-	// Resolve the agent-profile resolver (if any) before validation so a
-	// non-empty `agent` field can be checked for existence up front. Absent
-	// resolver → any requested profile is rejected (fail fast rather than
-	// silently ignoring it).
+	// Resolve the profile resolver first so existence is checked up front.
 	agentResolver := AgentResolverFrom(ctx)
 	if err := validateDelegationTasks(params.Tasks, registry, agentResolver); err != nil {
 		return sdktools.ErrorResult("delegate validation failed: %v", err), nil
 	}
 
-	// Duplicate guard — BEFORE registration, so a refusal never re-fires the
-	// spec sink (RegisterTask) and shifts the persisted created_at ordering:
-	// a task id that already carries a SUCCESSFUL StepResult on the
-	// blackboard (e.g. settled by the auto-resume wave before this run
-	// started, or completed in a prior leg of the task) must not silently
-	// re-run as a fresh subagent — that would duplicate the work. The settled
-	// result is replayed into the registry via Register (which carries no
-	// spec sink) so co-launched dependents still resolve, and the caller gets
-	// a factual refusal pointing at the existing output.
+	// Duplicate guard, BEFORE registration so a refusal never re-fires the
+	// spec sink: an id already settled on the blackboard (auto-resume wave or
+	// a prior leg) is replayed via Register (no sink) so dependents resolve,
+	// and refused as fresh work.
 	results := make([]DelegationResult, 0, len(params.Tasks))
 	runnable := make([]DelegationTask, 0, len(params.Tasks))
 	for _, task := range params.Tasks {
@@ -316,16 +286,10 @@ func buildDelegateToolResult(results []DelegationResult) sdktools.ToolResult {
 	return sdktools.ToolResult{Content: sb.String()}
 }
 
-// validateDelegationTools validates a delegation task's `tools` field: nil
-// (omit), the strings ""/"all"/"read-only", or a non-empty array of
-// capability-group tokens (kebab or underscore spelling; canonicalized by the
-// resolver). An empty array is rejected rather than resolved to a system-only
-// grant — an empty grant list is a degenerate request that would otherwise
-// silently strip every working tool from the subagent; a deliberate
-// system-only grant is expressed as ["system"]. Any other shape fails with a
-// message listing the valid values — the alternative (silently degrading to
-// the safe minimum at launch time) hides a broken toolset request from the
-// Conductor.
+// validateDelegationTools validates the `tools` field: nil, ""/"all"/"read-only",
+// or a non-empty group-token array. An empty array is rejected, not silently
+// resolved to a system-only grant (["system"] says that); any other shape
+// fails loudly — a silently degraded toolset would hide a broken request.
 func validateDelegationTools(v any) error {
 	switch t := v.(type) {
 	case nil:
@@ -380,12 +344,9 @@ func validateDelegationGroupToken(s string) error {
 	return nil
 }
 
-// validateDelegationTasks checks IDs are unique within the batch, depends_on
-// references exist (in the batch or the registry), the combined graph is
-// acyclic, modes are valid, and — when an AgentResolver is present — every
-// non-empty `agent` field names a known Subagent Profile. A non-empty agent
-// with no resolver in context is rejected so a requested profile is never
-// silently ignored.
+// validateDelegationTasks enforces the delegate contract — unique ids,
+// resolvable depends_on, acyclic combined graph, valid modes, resolvable
+// agent profiles. See specs/domains/orchestration/delegation.md.
 func validateDelegationTasks(tasks []DelegationTask, registry *DelegationRegistry, agentResolver AgentResolver) error {
 	if len(tasks) > maxDelegationBatchSize {
 		return fmt.Errorf("too many tasks: %d (max %d per delegate call) — split the work across multiple delegate calls", len(tasks), maxDelegationBatchSize)
@@ -415,17 +376,11 @@ func validateDelegationTasks(tasks []DelegationTask, registry *DelegationRegistr
 		if mode != "blocking" && mode != "async" {
 			return fmt.Errorf("task %q: mode must be \"blocking\" or \"async\", got %q", task.ID, mode)
 		}
-		// Validate the tools request up front: unknown strings/groups fail the
-		// whole delegate call with a message listing the valid values, instead
-		// of launching a subagent whose toolset silently collapsed to the
-		// always-granted system group (fail-closed, but loud).
+		// Unknown tools/groups fail the whole call loudly — never a silently
+		// collapsed toolset.
 		if err := validateDelegationTools(task.Tools); err != nil {
 			return fmt.Errorf("task %q: %w", task.ID, err)
 		}
-		// Validate the agent profile name up front so an unknown name fails
-		// fast (no subagent launches) with a clear message. When no resolver
-		// is present (profiles unavailable), a requested profile is rejected
-		// rather than silently ignored.
 		if task.Agent != "" {
 			if agentResolver == nil {
 				return fmt.Errorf("task %q: agent %q requested but no agent resolver is configured (Subagent Profiles unavailable)", task.ID, task.Agent)
@@ -444,11 +399,8 @@ func validateDelegationTasks(tasks []DelegationTask, registry *DelegationRegistr
 			if _, inBatch := ids[dep]; !inBatch && !registry.Has(dep) {
 				return fmt.Errorf("task %q: depends_on references unknown delegation %q", task.ID, dep)
 			}
-			// An async task cannot be a dependency — it returns immediately
-			// and runs in the background, so dependents would never see it
-			// "completed" within the Launch wave loop. Check both the current
-			// batch and the registry (cross-batch: the async task may have
-			// been registered in a previous delegate call).
+			// An async dependency can never be observed "completed" by the
+			// wave loop (delegation.md); check batch and registry alike.
 			if depTask, ok := findTaskByID(tasks, dep); ok {
 				depMode := depTask.Mode
 				if depMode == "" {
@@ -476,10 +428,8 @@ func validateDelegationTasks(tasks []DelegationTask, registry *DelegationRegistr
 	return nil
 }
 
-// detectDelegationCycle checks the combined graph (new tasks + registry's
-// existing delegations) for cycles via DFS. Returns a cycle description or "".
-// Registry delegations are treated as already-validated roots; only edges
-// from the new tasks are walked.
+// detectDelegationCycle DFS-checks the combined graph; registry delegations
+// are already-validated roots, so only new-task edges are walked.
 func detectDelegationCycle(tasks []DelegationTask, registry *DelegationRegistry) string {
 	adj := make(map[string][]string)
 	for _, task := range tasks {
@@ -559,12 +509,9 @@ func DelegationLauncherFrom(ctx context.Context) DelegationLauncher {
 	return nil
 }
 
-// PlanChecker reports whether a plan has been declared on the blackboard.
-// Used by delegate to enforce orthogonality: once a plan is declared, delegate
-// is disabled and execute_plan is the only execution path for plan steps.
-// The PlanChecker is injected only into the Conductor's context — subagent
-// contexts do not carry it (subagentCtx strips Conductor-only values), so the
-// guard is inert for subagent redelegation.
+// PlanChecker enforces the plan/delegate orthogonality
+// (specs/contracts/conductor-tools.md); subagent contexts strip it, so
+// redelegation is unaffected.
 type PlanChecker interface {
 	HasDeclaredPlan() bool
 }
@@ -588,10 +535,8 @@ func PlanCheckerFrom(ctx context.Context) PlanChecker {
 
 type agentResolverKey struct{}
 
-// WithAgentResolver injects the resolver into the context so buildSubAgentTask
-// can resolve the `agent` field of a DelegationTask. The resolver is inherited
-// by subagent contexts (it is NOT stripped by subagentCtx), so a redelegating
-// subagent can itself delegate to a named agent profile.
+// WithAgentResolver injects the profile resolver; unlike the Conductor-only
+// handles it is NOT stripped by subagentCtx, so redelegation can name profiles.
 func WithAgentResolver(ctx context.Context, resolver AgentResolver) context.Context {
 	return context.WithValue(ctx, agentResolverKey{}, resolver)
 }

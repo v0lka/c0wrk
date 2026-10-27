@@ -12,10 +12,9 @@ import (
 	"github.com/v0lka/sp4rk/safeio"
 )
 
-// osa runs a JavaScript-for-Automation (JXA) program via osascript, passing the
-// trailing args as argv to the program's run(argv) function. It returns the
-// program's stdout with trailing newlines trimmed. osascript is cgo-free
-// (spawned via os/exec) and available on every stock macOS install.
+// osa runs a JavaScript-for-Automation (JXA) program via osascript, passing
+// the trailing args as argv to run(argv) and returning stdout with trailing
+// newlines trimmed.
 func osa(ctx context.Context, script string, args ...string) (string, error) {
 	cmdArgs := append([]string{"-l", "JavaScript", "-e", script}, args...)
 	out, err := exec.CommandContext(ctx, "osascript", cmdArgs...).Output()
@@ -25,20 +24,16 @@ func osa(ctx context.Context, script string, args ...string) (string, error) {
 	return strings.TrimRight(string(out), "\n"), nil
 }
 
-// pasteboardExpr is the JXA expression that resolves the NSPasteboard the
-// clipboard helpers below read from and write to. Production uses the general
-// (system) pasteboard. The darwin clipboard tests override it to a private,
-// uniquely-named pasteboard so they can exercise the real osascript/AppKit
-// path WITHOUT ever reading or writing the user's actual system clipboard (a
-// previous version staged its fixtures on the general pasteboard, which
-// silently overwrote — and could race — whatever the user had copied).
+// pasteboardExpr resolves the NSPasteboard the helpers below read from and
+// write to — the general (system) pasteboard in production. Darwin tests
+// override it to a private uniquely-named pasteboard so they exercise the
+// real osascript/AppKit path without ever touching the user's clipboard.
 var pasteboardExpr = "$.NSPasteboard.generalPasteboard"
 
-// clipboardImage reads image data from the macOS pasteboard. It prefers
-// public.png and falls back to public.tiff (the format used by screenshots),
-// converting TIFF to PNG via NSBitmapImageRep. ok is true only when image data
-// is present. The returned bytes are always PNG so processImage decodes a
-// format it supports (png) regardless of the pasteboard's native encoding.
+// clipboardImage reads image data from the macOS pasteboard: public.png
+// preferred, public.tiff (screenshots) converted via NSBitmapImageRep. The
+// bytes are always PNG so processImage decodes a format it supports; ok is
+// true only when image data is present.
 func clipboardImage(ctx context.Context) (data []byte, mediaType string, ok bool, err error) {
 	// Create a temp file that the JXA program writes the PNG into; Go reads it
 	// back. This avoids round-tripping binary data through osascript's stdout.
@@ -81,10 +76,9 @@ func clipboardImage(ctx context.Context) (data []byte, mediaType string, ok bool
 }
 
 // clipboardFiles reads file URLs (public.file-url) from the pasteboard — the
-// content placed by Finder's "Copy" / "Copy <file>" commands. ok is true only
-// when at least one file URL is present. Non-file URLs (e.g. a copied https
-// link from a browser, exposed as a public.url NSURL) are skipped so they fall
-// through to the text path instead of being treated as non-existent file paths.
+// content placed by Finder's "Copy" commands. Non-file URLs (a copied browser
+// link) are skipped so they fall through to the text path instead of becoming
+// non-existent file paths; ok is true only when at least one file URL is present.
 func clipboardFiles(ctx context.Context) (paths []string, ok bool, err error) {
 	script := `function run(){
 		ObjC.import('AppKit');
@@ -94,11 +88,9 @@ func clipboardFiles(ctx context.Context) (paths []string, ok bool, err error) {
 		var out=[];
 		for(var i=0;i<urls.count;i++){
 			var u=urls.objectAtIndex(i);
-			// Skip non-file URLs (e.g. a copied web link). A web URL's .path is
-			// non-nil but points at a non-existent file, which would yield a
-			// confusing failed-attachment and lose the URL text the user wanted.
-			// NOTE: isFileURL is a Obj-C BOOL exposed as a JS boolean property
-			// (not a method), so it is read WITHOUT parentheses.
+			// A web URL's .path is non-nil but points nowhere — skipping keeps the URL
+			// text on the text path. isFileURL is an Obj-C BOOL exposed as a JS
+			// property (not a method): read WITHOUT parentheses.
 			if(!u.isFileURL){ continue; }
 			var p=u.path;
 			if(!p.isNil()){ out.push(p.js); }

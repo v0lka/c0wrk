@@ -1,15 +1,9 @@
 // Package e2s implements the E2S (explicit-state) execution mode: the
-// externalized state Σ ("sigma"), its fixed core schema, the per-step action
-// contract, and the merge operator Σₜ⊕ΔΣₜ (ApplyPatch, see merge.go) that
-// folds a model-emitted state patch into the state under strict validation —
-// plus the driver loop (loop.go) that runs the protocol on raw sp4rk
-// primitives.
-//
-// The domain layer in this file and merge.go is deliberately free of LLM,
-// tool, and transport dependencies: everything there is pure data and pure
-// logic, so it can be unit-tested, persisted (encoding/json round-trips),
-// and reused by any driver loop. The loop/driver files (loop.go, prompt.go,
-// steptool.go) do import sp4rk's llm/tools/agent packages by design.
+// externalized state Σ, its fixed core schema, the per-step action contract,
+// the merge operator Σₜ⊕ΔΣₜ (ApplyPatch, merge.go), and the driver loop
+// (loop.go). The domain layer (types.go, merge.go) is pure data and logic;
+// the driver files (loop.go, prompt.go, steptool.go) import sp4rk by design.
+// See specs/domains/e2s.md.
 package e2s
 
 import (
@@ -21,9 +15,8 @@ import (
 	"time"
 )
 
-// Status is the lifecycle status of an E2S run. The single source of truth is
-// the core Σ key "status"; the E2SState.Status field is a typed, derived copy
-// kept in sync by ApplyPatch.
+// StateStatus is the lifecycle status of an E2S run; the source of truth is
+// the core Σ "status" key — E2SState.Status is a derived copy (ApplyPatch).
 type StateStatus string
 
 // The closed set of legal lifecycle statuses.
@@ -55,10 +48,9 @@ func StateStatuses() []StateStatus {
 	return []StateStatus{StateStatusActive, StateStatusPaused, StateStatusMet, StateStatusFailed, StateStatusCancelled}
 }
 
-// The fixed core Σ keys — the schema every E2S state is built around. The key
-// set and the JSON type of each key are frozen: a patch may update a core key
-// only with a value of the same JSON type, and may never delete or re-type
-// it. Keys outside this set are extensions (mutable; see StatePatch).
+// The fixed core Σ keys. The set and each key's JSON type are frozen:
+// update-only, same-type, never deleted or re-typed; every other key is a
+// mutable extension (see StatePatch). See specs/domains/e2s.md.
 const (
 	CoreKeyObjective    = "objective"     // string — the task objective
 	CoreKeyChecklist    = "checklist"     // array — mutable working checklist
@@ -70,14 +62,11 @@ const (
 	CoreKeyStatus       = "status"        // Status string — lifecycle status
 )
 
-// NotesFileName is the file name of the E2S scratchpad inside the session
-// temp directory: the overflow channel for raw data that does not fit the
-// byte-capped Σ (long tool output, dumps, excerpts). Σ stores the distilled
-// facts plus pointers into the file; the file stores the evidence. The full
-// path is derived by Config.withDefaults (<TempDir>/NotesFileName) and
-// rendered into the Workspace section of the system prompt with its usage
-// rules; no dedicated tool exists — the model reaches it through the
-// ordinary write_file/read_file security gates.
+// NotesFileName is the E2S scratchpad file name inside the session temp
+// directory — the overflow channel for raw data beyond the byte-capped Σ
+// (distilled facts + pointers in Σ, evidence in the file); withDefaults
+// derives <TempDir>/NotesFileName and the model uses the ordinary gates.
+// See specs/domains/e2s.md.
 const NotesFileName = "e2s-notes.md"
 
 // coreTypeKind is the internal JSON-type marker used by coreTypes.
@@ -89,9 +78,9 @@ const (
 	coreTypeStatus coreTypeKind = "status"
 )
 
-// coreTypes maps every core key to its required JSON type. The reference
-// decoding is JSON (the model emits JSON), so accepted Go shapes are the
-// post-encoding/json shapes: string for strings, []any for arrays.
+// coreTypes maps every core key to its required JSON type; the model emits
+// JSON, so accepted Go shapes are the post-encoding/json shapes (string,
+// []any).
 var coreTypes = map[string]coreTypeKind{
 	CoreKeyObjective:    coreTypeString,
 	CoreKeyChecklist:    coreTypeArray,
@@ -115,10 +104,9 @@ func IsCoreKey(key string) bool {
 }
 
 // SchemaFingerprint returns a stable content hash of the core schema (sorted
-// key→type pairs). It is stamped on every E2SState so persisted states can be
-// checked against the schema they were created with: a fingerprint mismatch
-// means the state predates a schema change and must not be silently patched
-// (ApplyPatch rejects it, see ErrSchemaMismatch).
+// key→type pairs), stamped on every E2SState: a mismatch means the state
+// predates a schema change and must not be silently patched (ApplyPatch
+// rejects it).
 func SchemaFingerprint() string {
 	h := sha256.New()
 	for _, k := range CoreKeys() {
@@ -131,16 +119,14 @@ func SchemaFingerprint() string {
 }
 
 // E2SState is the externalized state Σ of an E2S run plus its bookkeeping
-// metadata. Sigma is the state the model reads and patches each turn; the
-// remaining fields are runtime bookkeeping. The type round-trips through
-// encoding/json for persistence.
+// metadata; round-trips through encoding/json for persistence.
+// See specs/domains/e2s.md.
 type E2SState struct {
-	// Sigma is the state map Σ. Core keys follow the fixed schema above;
-	// every other key is an extension (mutable, null tombstone deletes).
+	// Sigma is the state map Σ: core keys per the fixed schema above, every
+	// other key a mutable extension (null tombstone deletes).
 	Sigma map[string]any `json:"sigma"`
-	// Schema is the SchemaFingerprint stamped at creation. An empty value
-	// skips the fingerprint check (hand-built states); ApplyPatch rejects a
-	// non-empty mismatch.
+	// Schema is the SchemaFingerprint stamped at creation; empty skips the
+	// check (hand-built states), a mismatch is rejected by ApplyPatch.
 	Schema string `json:"schema"`
 	// TurnCount is the number of applied patches (one per turn).
 	TurnCount int `json:"turn_count"`
@@ -152,10 +138,9 @@ type E2SState struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-// NewE2SState builds the canonical initial state for a run: the objective is
-// set, the status is active, every list-valued core key exists as an empty
-// array, and the schema fingerprint is stamped. now is recorded as both
-// CreatedAt and UpdatedAt; a zero now means time.Now().UTC().
+// NewE2SState builds the canonical initial state for a run: objective set,
+// status active, list-valued core keys as empty arrays, schema fingerprint
+// stamped. Zero now means time.Now().UTC().
 func NewE2SState(objective string, now time.Time) E2SState {
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -179,23 +164,18 @@ func NewE2SState(objective string, now time.Time) E2SState {
 	}
 }
 
-// StepAction is the validated action half of an e2s_step call: a tool call
-// (tool+args) or a finish (finish+answer). The struct itself is declared in
-// steptool.go alongside ParseStepCall (the runtime envelope that produces
-// it); the domain contract it must satisfy is enforced by Validate below.
-//
-// StepAction contract violations.
+// StepAction contract violations (the struct lives in steptool.go; the
+// domain contract is enforced by StepAction.Validate).
 var (
 	// ErrActionEmpty: the action names no tool (neither a target tool nor
 	// "finish").
 	ErrActionEmpty = errors.New("e2s: step action names no tool")
-	// ErrActionNoAnswer: a finish action without an answer to deliver.
+	// ErrActionNoAnswer: a finish action without an answer.
 	ErrActionNoAnswer = errors.New("e2s: finish action requires an answer")
 )
 
-// Validate enforces the exactly-one-of action contract: a step is either a
-// tool call (a non-empty tool name other than "finish") or a finish (tool ==
-// FinishActionName with a non-empty answer) — never an empty action.
+// Validate enforces the exactly-one-of action contract: a tool call or a
+// finish with a non-empty answer — never an empty action.
 func (a StepAction) Validate() error {
 	if a.Tool == "" {
 		return ErrActionEmpty
@@ -206,15 +186,8 @@ func (a StepAction) Validate() error {
 	return nil
 }
 
-// StatePatch is the state delta ΔΣₜ emitted by the model for one turn. The
-// merge operator Σₜ⊕ΔΣₜ (ApplyPatch) folds it into Σ with these semantics:
-//
-//   - a nil (JSON null) value deletes the key from Σ (no-op for absent keys);
-//   - a core-key value must match the key's fixed JSON type (updates only —
-//     deletion and re-typing of core keys are rejected);
-//   - a non-core key is added or updated in place (extensions are mutable;
-//     deletion via null remains the universal tombstone for extension keys).
-//
-// Patches are JSON-shaped: values must be encodable, and array/object values
-// must use []any / map[string]any (the shapes encoding/json produces).
+// StatePatch is the per-turn state delta ΔΣₜ. ApplyPatch folds it into Σ:
+// null deletes (tombstone), core keys update-only with the key's fixed JSON
+// type, extensions add/update in place. Values must be JSON-shaped —
+// []any / map[string]any. See specs/domains/e2s.md.
 type StatePatch map[string]any

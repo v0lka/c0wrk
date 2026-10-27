@@ -1,17 +1,7 @@
 // Package goal defines the Goal domain: the user's declared success condition,
-// the budget that constrains how much work the agent may spend reaching it, and
-// the runtime state machine that tracks progress toward (or away from) that
-// condition.
-//
-// A Goal is the persistent answer to "are we done yet?". The orchestrator
-// consults GoalState after each turn to decide whether to continue, pause, or
-// stop. The Verdict captures the most recent machine- or user-declared outcome
-// of attempting to verify the condition, along with the evidence backing it.
-//
-// Zero-values are meaningful throughout this package:
-//   - A GoalBudget with MaxTurns == 0 means "unlimited" — the goal imposes no
-//     turn cap.
-//   - A nil LastVerdict means no verification has been performed yet.
+// the budget constraining the work spent reaching it, and the turn-by-turn
+// runtime state machine. Zero-values are meaningful (MaxTurns == 0 is
+// unlimited; a nil LastVerdict is "not verified yet"). See specs/domains/goal-mode.md.
 package goal
 
 import (
@@ -19,54 +9,30 @@ import (
 	"time"
 )
 
-// VerificationMode selects how the goal loop will verify that the goal's
-// success condition has been met. It is chosen at derivation time (in the
-// propose_goal contract) and stored on GoalState so every turn, the verifier,
-// and the user-facing status share a single notion of what "verified" means.
-//
-// The recognized values are string constants so they round-trip cleanly through
-// JSON/YAML and stay human-readable in logs. NormalizeVerificationMode is the
-// single source of truth for valid values and for the empty -> default mapping.
+// VerificationMode selects how the goal loop verifies the success condition;
+// chosen at derivation time and stored on GoalState so every turn, the
+// verifier and the user-facing status share one notion of "verified".
+// NormalizeVerificationMode is the single source of truth for valid values.
 const (
-	// VerificationModeExecutable (default): the verify clause is expected to be
-	// an executable predicate — a test run, a command, or a check the agent (or
-	// verifier) runs and whose pass/fail decides the verdict.
-	VerificationModeExecutable = "executable"
+	VerificationModeExecutable = "executable" // default: run the verify clause; its pass/fail decides
 
-	// VerificationModeReDerivation: the goal is verified by re-deriving it from
-	// the conversation state and comparing the result against the committed
-	// condition, rather than by executing the verify clause as a command.
-	VerificationModeReDerivation = "re_derivation"
+	VerificationModeReDerivation = "re_derivation" // re-derive the goal from conversation state and compare
 )
 
-// GoalStatus is the lifecycle state of a goal. It is a string enum so it
-// round-trips cleanly through JSON/YAML and is human-readable in logs.
-//
-// State transitions are driven by the orchestrator/reflector and are not
-// enforced inside this package; the values are documented here to make the
-// intended state machine explicit:
-//
-//	active        — goal is in force; the agent is working toward it. A
-//	                 cooperative pause (universal pause signal) leaves the goal
-//	                 active — resume re-enters the loop and continues.
-//	met           — the condition has been satisfied (terminal success).
-//	exhausted     — the budget was consumed without meeting the condition
-//	                 (terminal failure: turns/tokens/deadline hit).
-//	blocked_idle  — the agent cannot make further progress and is idle,
-//	                 awaiting external input or a changed situation.
-//	cancelled     — the goal was abandoned by the user (terminal).
+// GoalStatus is the goal's lifecycle state, a string enum that round-trips
+// through JSON/YAML. Transitions are driven by the orchestrator/reflector,
+// not enforced here (specs/domains/goal-mode.md).
 type GoalStatus string
 
 const (
-	StatusActive      GoalStatus = "active"
-	StatusMet         GoalStatus = "met"
-	StatusExhausted   GoalStatus = "exhausted"
-	StatusBlockedIdle GoalStatus = "blocked_idle"
-	StatusCancelled   GoalStatus = "cancelled"
+	StatusActive      GoalStatus = "active"       // in force; a cooperative pause leaves it active
+	StatusMet         GoalStatus = "met"          // condition satisfied (terminal success)
+	StatusExhausted   GoalStatus = "exhausted"    // budget consumed unmet (terminal failure)
+	StatusBlockedIdle GoalStatus = "blocked_idle" // idle, awaiting external input; resumable, not terminal
+	StatusCancelled   GoalStatus = "cancelled"    // abandoned by the user (terminal)
 )
 
 // IsTerminal reports whether the status is a terminal (non-resumable) state.
-// Met, exhausted, and cancelled are terminal; active and blocked_idle are not.
 func (s GoalStatus) IsTerminal() bool {
 	switch s {
 	case StatusMet, StatusExhausted, StatusCancelled:
@@ -76,11 +42,8 @@ func (s GoalStatus) IsTerminal() bool {
 	}
 }
 
-// GoalBudget caps the resources the agent may spend pursuing a goal.
-//
-// This is a turn-only cap: MaxTurns == 0 imposes no turn limit. The agent stops
-// when the turn budget that IS set is exceeded (e.g. MaxTurns == 5 allows five
-// turns).
+// GoalBudget caps the resources the agent may spend pursuing a goal: a
+// turn-only cap where MaxTurns == 0 imposes no limit (specs/domains/goal-mode.md).
 type GoalBudget struct {
 	MaxTurns int `json:"max_turns"` // 0 = unlimited
 }
@@ -90,17 +53,9 @@ func (b GoalBudget) IsUnlimited() bool {
 	return b.MaxTurns == 0
 }
 
-// GoalEvidence is a single piece of evidence supporting a verdict. Evidence is
-// what makes a verdict trustworthy rather than a bare assertion: each entry
-// points at something concrete the agent (or user) can inspect.
-//
-// Type categorizes the evidence. Recognized categories:
-//
-//	test_output — output of a test run (Ref = test name/id or command).
-//	file        — a file on disk (Ref = path).
-//	command     — a shell command and its output (Ref = command string).
-//	qualitative — a human judgment with no machine-checkable artifact
-//	               (Ref is free text, e.g. a user confirmation).
+// GoalEvidence is a single piece of evidence backing a verdict — each entry
+// points at something concrete the agent or user can inspect. The recognized
+// Type categories ride the field comment below.
 type GoalEvidence struct {
 	Type    string `json:"type"`    // test_output | file | command | qualitative
 	Ref     string `json:"ref"`     // artifact reference (path, command, id, or note)
@@ -115,14 +70,9 @@ const (
 	EvidenceTypeQualitative = "qualitative"
 )
 
-// Verdict is the outcome of the most recent attempt to verify whether the goal
-// has been met. It records the declared status, the evidence backing it, and a
-// human-readable reason.
-//
-// Status is a free-form string rather than a GoalStatus because a verdict may
-// describe partial outcomes (e.g. "met_with_caveats") that do not map cleanly
-// onto the goal's terminal lifecycle states. The orchestrator maps verdict
-// statuses onto GoalStatus values.
+// Verdict is the outcome of the most recent attempt to verify the goal.
+// Status is free-form rather than a GoalStatus because verdicts may describe
+// partial outcomes; the orchestrator maps them onto GoalStatus.
 type Verdict struct {
 	Status     string         `json:"status"`      // declared outcome (e.g. "met", "not_met", "partial")
 	Evidence   []GoalEvidence `json:"evidence"`    // supporting artifacts
@@ -130,77 +80,45 @@ type Verdict struct {
 	DeclaredAt time.Time      `json:"declared_at"` // when the verdict was recorded
 }
 
-// GoalState is the full runtime state of a goal. It is the object the
-// orchestrator mutates and persists turn-by-turn.
-//
-// Condition is the declarative success condition ("what does done look like?").
-// VerifyClause is the machine-/agent-checkable predicate used to test the
-// condition. The two are kept separate because a natural-language condition is
-// useful for display and user edits, while the verify clause drives automated
-// checking.
+// GoalState is the full runtime state of a goal, mutated and persisted
+// turn-by-turn (specs/domains/goal-mode.md).
 type GoalState struct {
 	Condition    string `json:"condition"`     // natural-language success condition
 	VerifyClause string `json:"verify_clause"` // checkable predicate for the condition
-	// VerificationMode selects how the condition is verified. It is chosen at
-	// derivation time and threaded through propose_goal; the empty value means
-	// the default (VerificationModeExecutable). Use NormalizeVerificationMode
-	// when ingesting a mode from any untrusted source so this field never holds
-	// an invalid value.
+	// VerificationMode selects how the condition is verified; empty means the
+	// default. Normalize at every untrusted ingestion boundary.
 	VerificationMode string     `json:"verification_mode"`
 	Budget           GoalBudget `json:"budget"`       // resource caps (zero = unlimited)
 	TurnCount        int        `json:"turn_count"`   // turns spent so far
 	Status           GoalStatus `json:"status"`       // current lifecycle state
 	LastVerdict      *Verdict   `json:"last_verdict"` // most recent self-evaluation verdict (nil = none yet)
-	// LastError records the reason the most recent goal-loop turn FAILED with an
-	// error (an LLM/provider/transport or execution failure), or "" when the
-	// last turn completed cleanly. It lets the loop halt a persistently-errored
-	// turn as a RESUMABLE failure — carrying the concrete cause so the UI shows
-	// WHY the run stopped and Resume can retry — instead of misclassifying the
-	// errored turn as an idle turn (blocked_idle) or a bare "partial". It is
-	// cleared to "" at the top of every clean turn, so it always describes the
-	// immediately-preceding failure.
+	// LastError records why the most recent goal-loop turn failed, or "" after
+	// a clean turn (cleared at the top of every turn) — it keeps a persistently-
+	// errored turn a RESUMABLE halt instead of blocked_idle (goal-mode.md).
 	LastError string `json:"last_error"`
-	// LastErrorTyped is the error VALUE behind LastError (ADR-065 follow-up):
-	// runGoalTurns sets it next to the string so the loop's terminal mapping
-	// (goalLoopResult) can preserve the typed chain for the session manager's
-	// auto-retry classifier (errors.As on *llm.Error). It is process-local
-	// state — never persisted (json:"-") and never read after a restore; the
-	// string LastError remains the only persistence/display form, so a
-	// restored goal degrades to the manual banner exactly as before.
+	// LastErrorTyped is the error VALUE behind LastError: goalLoopResult
+	// forwards it as HandleResult.Err so the session manager's auto-retry
+	// classifier can errors.As the typed chain. Process-local — never
+	// persisted, never read after a restore
+	// (specs/decisions/065-auto-resend-retryable-errors.md).
 	LastErrorTyped error `json:"-"`
-	// LastVerification records the outcome of the independent verifier on the
-	// most recent "met" verdict attempt: "" (no verification ran / a fresh
-	// turn), "confirmed", "rejected", or "off" (verification disabled). It is
-	// the single marker the goal loop threads through emitGoalStatus (the
-	// goal_status event meta) and renderGoalModeVolatile (the next-turn prompt
-	// rejection notice). It is reset to "" at the top of each agent turn so the
-	// marker only describes the immediately-preceding met attempt.
+	// LastVerification is the independent verifier's marker for the most
+	// recent "met" attempt: "" / "confirmed" / "rejected" / "off" — threaded
+	// through emitGoalStatus and the next-turn notice; reset each turn (one-shot).
 	LastVerification string `json:"last_verification"`
-	// LastVerificationReason and LastVerificationEvidence carry the independent
-	// verifier's structured outcome (reason + evidence) for the most recent
-	// "met" verification attempt, paired with LastVerification. They are reset
-	// alongside LastVerification at the top of each agent turn (one-shot, same
-	// lifecycle). When the verifier confirms the goal, they hold WHY it was
-	// confirmed and the concrete artifacts backing that confirmation, so
-	// emitGoalStatus can surface them in the goal_status event and the UI can
-	// show the verifier's reasoning rather than a bare "confirmed" marker.
+	// LastVerificationReason and LastVerificationEvidence carry the verifier's
+	// structured outcome for the most recent "met" attempt, paired with
+	// LastVerification (one-shot, reset at the top of each agent turn) so the
+	// UI shows the verifier's reasoning and artifacts, not a bare marker.
 	LastVerificationReason   string         `json:"last_verification_reason"`
 	LastVerificationEvidence []GoalEvidence `json:"last_verification_evidence"`
 	CreatedAt                time.Time      `json:"created_at"` // when the goal was created
 }
 
 // NormalizeVerificationMode maps a verification-mode string to its canonical
-// form. It is the single source of truth for what counts as a valid mode and
-// for the empty -> default mapping:
-//
-//   - "" (omitted) maps to VerificationModeExecutable (the default).
-//   - VerificationModeExecutable / VerificationModeReDerivation pass through
-//     unchanged.
-//   - any other value returns an error.
-//
-// Call this at every boundary where a verification mode enters the goal domain
-// (propose_goal tool input, the user-edited approval response, deserialized
-// state) so GoalState.VerificationMode never holds an invalid value.
+// form — the single source of truth for valid values: "" maps to the default
+// (VerificationModeExecutable), the two valid modes pass through, anything
+// else errors. Call at every boundary where a mode enters the goal domain.
 func NormalizeVerificationMode(mode string) (string, error) {
 	switch mode {
 	case "":

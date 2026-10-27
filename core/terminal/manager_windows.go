@@ -1,9 +1,9 @@
 //go:build windows
 
-// Package terminal provides PTY-based shell session management for the desktop UI.
-//
-// On Windows the manager is backed by the ConPTY (Pseudo Console) API, which
-// exposes a Unix-PTY-like read/write/resize interface around a child process.
+// Package terminal provides PTY-based shell session management for the
+// desktop UI. On Windows the manager is backed by the ConPTY (Pseudo Console)
+// API, which exposes a Unix-PTY-like read/write/resize interface around a
+// child process.
 package terminal
 
 import (
@@ -20,23 +20,19 @@ import (
 	"github.com/UserExistsError/conpty"
 )
 
-// sameEnvKey reports whether two environment variable names denote the same
-// variable. Windows names are case-insensitive but case-preserving: the
-// inherited block (GetEnvironmentStrings) may spell a variable differently
-// than our built-ins or the user's terminal.env keys (e.g. inherited `Path`
-// vs configured `path`), and per-name comparisons must fold case or
-// differently-cased duplicates slip into the ConPTY env block with
-// child-side lookup order undefined. buildTermEnv funnels every
-// inherited-entry filter and every terminal.env replacement through this
-// predicate so the child env block never receives two entries for one
-// variable.
+// sameEnvKey folds case when comparing Windows env names: the inherited
+// block (GetEnvironmentStrings) may spell a variable differently than the
+// built-ins or the user's terminal.env keys (inherited `Path` vs configured
+// `path`), and per-name comparisons must fold case or differently-cased
+// duplicates slip into the ConPTY env block with child-side lookup order
+// undefined. buildTermEnv funnels every inherited-entry filter and every
+// terminal.env replacement through this predicate.
 func sameEnvKey(a, b string) bool {
 	return strings.EqualFold(a, b)
 }
 
-// resolveWindowsShell picks the shell binary to spawn under the pseudo console.
-// It prefers Windows PowerShell (powershell.exe, ships with every Windows
-// install) and falls back to cmd.exe. The returned args string may be empty.
+// resolveWindowsShell picks the shell to spawn under the pseudo console:
+// Windows PowerShell when present, else cmd.exe. The returned args may be empty.
 func resolveWindowsShell() (path, args string, err error) {
 	if p, lookErr := exec.LookPath("powershell.exe"); lookErr == nil {
 		return p, "-NoLogo", nil
@@ -47,9 +43,8 @@ func resolveWindowsShell() (path, args string, err error) {
 	return "", "", errors.New("no suitable Windows shell found (powershell.exe or cmd.exe)")
 }
 
-// quoteWindowsCommandLine quotes an executable path for inclusion as the first
-// token of a ConPTY command line. ConPTY parses its command line via the
-// standard argv splitting rules, so a path containing spaces must be quoted.
+// quoteWindowsCommandLine quotes an executable path for use as the first
+// ConPTY command-line token, which the standard argv splitting rules parse.
 func quoteWindowsCommandLine(path string) string {
 	if strings.ContainsAny(path, " \t") && !strings.HasPrefix(path, `"`) {
 		return `"` + path + `"`
@@ -57,10 +52,9 @@ func quoteWindowsCommandLine(path string) string {
 	return path
 }
 
-// Manager owns ConPTY-backed shell instances keyed by session ID.
-//
-// The Manager struct itself is declared in manager_common.go; this file
-// extends the platform-specific Session and provides the ConPTY wrappers.
+// Manager owns ConPTY-backed shell instances keyed by session ID. The struct
+// itself is declared in manager_common.go; this file extends the
+// platform-specific Session with the ConPTY wrappers.
 
 // Session represents a single ConPTY-backed shell session.
 type Session struct {
@@ -70,15 +64,12 @@ type Session struct {
 	mu     sync.Mutex // per-session mutex for ConPTY I/O (avoids serializing writes across sessions)
 }
 
-// NewManager creates a new terminal manager.
-// The rootCtx is the application lifecycle context — cancelling it triggers
-// cleanup of all active terminal sessions.
-// The emit callback streams raw ConPTY output; onExit is fired when a shell
-// process exits on its own (not on explicit Stop/StopAll). Both are optional
-// (nil → no-op).
-// userEnv (optional, may be nil) carries user-configured environment variables
-// (config `terminal.env`) set on every shell process; values win over the
-// inherited environment and built-in defaults.
+// NewManager creates a new terminal manager. rootCtx is the application
+// lifecycle context — cancelling it cleans up every active session. emit
+// streams raw ConPTY output and onExit fires on natural shell exit (not on
+// explicit Stop/StopAll); both are optional (nil → no-op). userEnv (optional)
+// carries config `terminal.env` variables set on every shell process; values
+// win over the inherited environment and built-in defaults.
 func NewManager(rootCtx context.Context, logger *slog.Logger, emit func(sessionID string, data []byte), onExit func(sessionID string), userEnv map[string]string) *Manager {
 	if logger == nil {
 		logger = slog.Default()
@@ -150,7 +141,6 @@ func (m *Manager) Start(sessionID, workDir string) error {
 }
 
 // Write sends data to the ConPTY stdin of the given session.
-// Uses a per-session mutex so writes across different sessions don't serialize.
 func (m *Manager) Write(sessionID string, data []byte) error {
 	m.mu.Lock()
 	sess, exists := m.sessions[sessionID]
@@ -168,7 +158,6 @@ func (m *Manager) Write(sessionID string, data []byte) error {
 }
 
 // Resize updates the ConPTY size for the given session.
-// Uses a per-session mutex so resizes across different sessions don't serialize.
 func (m *Manager) Resize(sessionID string, cols, rows int) error {
 	m.mu.Lock()
 	sess, exists := m.sessions[sessionID]
@@ -186,9 +175,9 @@ func (m *Manager) Resize(sessionID string, cols, rows int) error {
 }
 
 // teardown releases all resources owned by a session: it cancels the context
-// and closes the ConPTY (which terminates the child process and releases all
-// handles). It must only be called by the goroutine that just removed the
-// session from m.sessions, so cleanup is never performed twice.
+// and closes the ConPTY (terminating the child and releasing all handles).
+// It must only be called by the goroutine that just removed the session from
+// m.sessions, so cleanup never runs twice.
 func (m *Manager) teardown(sess *Session, sessionID string) {
 	sess.cancel()
 	if err := sess.cpty.Close(); err != nil {
@@ -262,13 +251,12 @@ func (m *Manager) readLoop(ctx context.Context, sessionID string, cpty *conpty.C
 		}
 	}
 
-	// Clean up the session when the process exits naturally. Stop() cannot
+	// Clean up the session when the process exits naturally: Stop() cannot
 	// reclaim the context/handles once the session is gone from the map, so
-	// readLoop must mirror its teardown to avoid leaking the per-session
-	// context and ConPTY handles. An explicit Stop/StopAll removes the session
-	// from the map first, so this readLoop observes a missing or mismatched
-	// session and must stay silent: emitting the "session ended" marker or
-	// firing onExit here would mark a healthy replacement shell dead.
+	// readLoop must mirror its teardown. An explicit Stop/StopAll removes the
+	// session (or replaces it) first, so this path observes a missing or
+	// mismatched session and must stay silent — the "session ended" marker
+	// and onExit here would mark a healthy replacement shell dead.
 	m.mu.Lock()
 	sess, exists := m.sessions[sessionID]
 	naturalExit := exists && sess.cpty == cpty

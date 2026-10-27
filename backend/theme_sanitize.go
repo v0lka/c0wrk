@@ -8,32 +8,14 @@ import (
 	"github.com/gorilla/css/scanner"
 )
 
-// Theme CSS sanitization.
-//
-// Imported themes are injected verbatim into a global <style> element in the
-// webview, so a theme file is untrusted input. Rather than enumerating
-// resource-referencing constructs (@import, url(), image-set(), escaped
-// identifiers, …) and rejecting them one by one, the sanitizer parses the
-// whole document with a real CSS tokenizer and keeps ONLY what a theme may
-// legitimately contain:
-//
-//   - the `/* c0wrk-theme: <name> | <dark|light> */` metadata header comment;
-//   - ordinary comments and whitespace (dropped from the output);
-//   - exactly one top-level `:root { … }` rule whose declarations are
-//     exclusively custom-property assignments (`--token: value;`) plus at
-//     most one `color-scheme: dark|light;` declaration;
-//   - values built from identifiers, hashes (#hex), numbers, dimensions,
-//     percentages, quoted strings, commas, `!important`, data:-only url()
-//     tokens, and a small allowlist of functions (rgb/rgba/hsl/hsla/hwb,
-//     var, calc, min/max/clamp) with balanced parentheses.
-//
-// Every other construct — at-rules (including @import, @media, @theme),
-// ordinary declarations, selectors other than :root, any function outside
-// the allowlist (image-set(), -webkit-image-set(), env(), …), non-data:
-// url() tokens, unbalanced parens, HTML CDO/CDC tokens — is rejected
-// outright. The canonical output cannot reference any resource and cannot
-// style anything outside custom properties, removing the entire class of
-// resource-referencing tricks instead of enumerating them.
+// Theme CSS sanitization: a theme file is untrusted input injected verbatim
+// into the webview, so the sanitizer parses the whole document with a real
+// CSS tokenizer and keeps ONLY what a theme may legitimately contain — the
+// metadata header comment, one top-level :root rule of custom-property
+// declarations (plus at most one color-scheme), and allowlisted token values.
+// Everything else is rejected outright; the canonical output cannot reference
+// any resource or style anything outside custom properties.
+// See specs/domains/theming.md (validation rules).
 
 // sanitizeThemeCSS parses a theme document and returns its canonical
 // sanitized form: the metadata header comment (when present) followed by a
@@ -441,19 +423,16 @@ func (p *themeCSSParser) parseFunctionArgs(b *strings.Builder, pendingSpace *boo
 	}
 }
 
-// containsEscape reports whether a token value still carries a raw CSS escape
-// sequence (a backslash followed by hex digits or any character). The
-// tokenizer keeps escapes verbatim in IDENT/STRING/URL token values, so a
-// backslash in a KEPT token means the token's text was never validated in its
-// decoded form: the webview would decode `\7d ` back to `}` (or any other
-// structural character) after the canonical output is injected, closing the
-// :root block early and re-enabling arbitrary rule injection — including
-// external url() fetches — from inside a "validated" theme. The theme surface
-// only needs literal tokens, so any escape is rejected outright (fail closed).
+// containsEscape reports a raw CSS escape in a token value. The tokenizer
+// keeps escapes verbatim, so a backslash in a KEPT token means its text was
+// never validated in decoded form: the webview would decode `\7d ` back to
+// `}` after injection, closing the :root block early and re-enabling rule
+// injection — including external url() fetches. The theme surface only needs
+// literal tokens, so any escape is rejected (fail closed).
 func containsEscape(v string) bool { return strings.Contains(v, "\\") }
 
-// errThemeEscape builds the rejection error for a kept token that carries a
-// CSS escape sequence; where names the position the token appeared in.
+// errThemeEscape builds the rejection error for a kept token carrying a CSS
+// escape sequence.
 func errThemeEscape(value, where string) error {
 	return fmt.Errorf("token %s contains a CSS escape sequence, which is not allowed in theme %s", quote(truncate(value)), where)
 }
@@ -468,10 +447,8 @@ func isDataURLToken(tok string) bool {
 	return strings.HasPrefix(inner, "data:")
 }
 
-// quote wraps a value in single quotes for error messages.
 func quote(v string) string { return "'" + v + "'" }
 
-// truncate shortens a token value for error messages.
 func truncate(v string) string {
 	if len(v) > 40 {
 		return v[:40] + "…"

@@ -28,33 +28,19 @@ import (
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
-// contextKey is a type for context keys in the session package.
 type contextKey string
 
-// SessionIDKey is the context key for the session ID.
 const SessionIDKey contextKey = "session_id"
 
-// restoreDBReadTimeout bounds the store reads at the head of a lazy
-// session restore (the session row) plus the compaction forecast's app_state
-// load/save (manager_compaction.go). The session's project-workspace read is
-// performed by the project resolver, which applies its own deadline where it
-// is installed (desktop buildFrontendAPI), so it is bounded separately. All
-// the bounded reads share the app's single SQLite connection with all writes
-// of all active sessions; without a deadline a read queuing behind a write
-// storm parks the restore — and, via the restoreInFlight single-flight, every
-// concurrent waiter — indefinitely. Fifteen seconds is orders of magnitude
-// above the normal point-read latency and turns contention into a prompt,
-// retryable error instead of a hang.
+// restoreDBReadTimeout bounds every lazy-restore store read (session row,
+// history, continuation anchor, compaction forecast) against the app's single
+// shared SQLite pool: contention must surface as a retryable error, not park
+// the restore — and via the restoreInFlight single-flight, every waiter.
 const restoreDBReadTimeout = 15 * time.Second
 
-// ensureWorktreeTimeout bounds one managed-workspace ensure during lazy
-// restore (git worktree list/recreate). Unlike the DB read above, this
-// operation writes: recreating a tree materializes a full checkout, which on
-// a large repository and a cold disk can take real time. Two minutes is a
-// ceiling against a wedged git, not an expected duration; the underlying git
-// spawns are hardened and serialized per repository, so expiry turns a stuck
-// restore into a prompt, retryable error without leaving the manager waiting
-// forever.
+// ensureWorktreeTimeout bounds the managed-workspace ensure during lazy
+// restore (a git worktree list/recreate, which materializes a full checkout).
+// Two minutes is a ceiling against a wedged git, not an expected duration.
 const ensureWorktreeTimeout = 2 * time.Minute
 
 // ContextWithSessionID returns a new context with the session ID attached.
@@ -103,23 +89,15 @@ type Session struct {
 	lastCompletedTaskID string                         // tracks last completed task for continuations
 	mu                  sync.RWMutex
 	// mu guards the mutable session fields below and the orchestrator/emitter
-	// references. It is an RWMutex so read-mostly accessors (e.g. the
-	// task-launch autonomy re-pin, which only reads orchestrator) can take a
-	// read lock; writers keep using Lock/Unlock.
+	// references; an RWMutex so read-mostly accessors can take a read lock.
 	pendingAttachments      []orchestration.Attachment // user-attached files staged via AttachFiles, flushed into the blackboard on the next SendMessage (guarded by mu)
 	pendingImageAttachments []ImageAttachment          // user-attached images staged via AttachFiles, snapshotted into ContentBlocks on the next SendMessage (guarded by mu)
 }
 
-// pauseOwner distinguishes who requested a pause of the session's running
-// task. PauseSession (the user) and the manual-compaction flow drive the
-// exact same mechanism — the pausing window flag plus the orchestrator's
-// cooperative pause signal — so the shared flag alone cannot tell them
-// apart. The owner recorded at request time lets the compaction flow's
-// auto-resume resume ONLY a pause it armed itself; a user-initiated pause is
-// never stolen, whichever side armed first: a later PauseSession overwrites
-// the owner, and the compaction arming leaves an existing user owner in
-// place. The task therefore stays paused after compaction whenever the user
-// asked for the paused state.
+// pauseOwner distinguishes who armed the shared pausing mechanism (user vs
+// the manual-compaction flow): the flow's auto-resume resumes ONLY a pause it
+// still owns, so an explicit user pause always survives a racing compaction.
+// See specs/domains/session-lifecycle.md (Pause ownership).
 type pauseOwner int
 
 const (
@@ -128,14 +106,10 @@ const (
 	pauseOwnerCompaction            // CompactSessionContext — the flow paused a running task for the compaction window
 )
 
-// ImageAttachment represents a user-attached image that has been processed
-// (decoded, optionally resized) and saved to the session's images directory.
-// Unlike document attachments (orchestration.Attachment, converted to markdown),
-// images are passed to the LLM as image content blocks rather than read-only
-// text context. The Base64Data is held in memory only until the next SendMessage
-// snapshots it into ContentBlocks; the persisted copy lives on disk at FilePath
-// and is reconstructed from there on restart (thumbnail + path are stored in
-// ChatMessage.Metadata, never the full base64).
+// ImageAttachment is a user-attached image processed and saved to the
+// session's images directory. Unlike document attachments it reaches the LLM
+// as an image content block; only thumbnail + on-disk path are persisted
+// (specs/domains/session-lifecycle.md, File Attachments).
 type ImageAttachment struct {
 	ID           string `json:"id"`
 	OriginalName string `json:"original_name"`
@@ -146,30 +120,24 @@ type ImageAttachment struct {
 	SizeBytes    int64  `json:"size_bytes"`
 }
 
-// sessionTempDir returns the temp directory path for a session.
 func sessionTempDir(agentDir, projectID, sessionID string) string {
 	return config.SessionTempDir(agentDir, projectID, sessionID)
 }
 
-// OrchestratorFactory creates a new Orchestrator with the given emitter, logger, workspace path,
-// and optional BlackboardFactory.
-// The workspace path is the project workspace directory so the worktree factory can
-// capture the correct project workspace.
-// bbFactory may be nil, in which case the orchestrator uses an in-memory MapBlackboard.
-// Returns an error if the orchestrator cannot be created.
+// OrchestratorFactory builds the session's Orchestrator. The workspace path is
+// the project workspace (so the worktree factory captures it); a nil bbFactory
+// means an in-memory MapBlackboard.
 type OrchestratorFactory func(emitter core.Emitter, logger *slog.Logger, workspacePath string, bbFactory core.BlackboardFactory, dumpWriter io.Writer, stepDumpTracker *orchestration.StepDumpTracker) (*core.Orchestrator, error)
 
-// TokenPersistFunc is called with cumulative session token totals after each LLM call.
-// The sessionID parameter identifies which session the tokens belong to.
-// fillPercent is the conductor's context-window fill percent (0-100).
+// TokenPersistFunc is called with cumulative session token totals after each
+// LLM call; fillPercent is the conductor's context-window fill percent (0-100).
 type TokenPersistFunc func(sessionID string, inputTokens, outputTokens int, model, family string, fillPercent float64)
 
 // ProjectResolverFunc resolves a project ID to its workspace directory path.
 type ProjectResolverFunc func(projectID string) (workspacePath string, err error)
 
 // toolCallIDEntry records the most recent tool_call_id emitted for a session,
-// alongside its tool name so the confirmation callback can sanity-check the
-// match (the last tool_call's name must equal the confirmed tool's name).
+// plus its tool name for the confirmation callback's sanity check.
 type toolCallIDEntry struct {
 	id   string
 	tool string
@@ -178,21 +146,13 @@ type toolCallIDEntry struct {
 // Manager manages multiple agent sessions.
 type Manager struct {
 	sessions map[string]*Session
-	// restoreInFlight deduplicates concurrent lazy restores of the same session
-	// ID (single-flight). Keyed by session ID; value is a channel closed when
-	// the in-progress restore finishes. Guarded by mu. Without this, many
-	// goroutines racing to restore the same session each open the log/dump
-	// files independently; on Windows the resulting concurrent open/close
-	// churn leaves the OS file lock briefly held even after every handle is
-	// closed, breaking TempDir cleanup.
+	// restoreInFlight single-flights lazy restores of one session ID (waiters
+	// block on a channel closed when it finishes); without it, racing restores
+	// churn log/dump open/close until Windows TempDir cleanup breaks.
 	restoreInFlight map[string]chan struct{}
-	// restoreParked parks NEW lazy restores of a session while an external
-	// mutation (the session-promotion flow) owns the session: the evict →
-	// move → store-commit window must not be interleaved with a restore that
-	// would rebuild the session from the pre-commit store state. Keyed by
-	// session ID; value is a channel closed when the reservation is released.
-	// Guarded by mu. Waiters blocked here re-run their restore attempt from
-	// scratch once the window closes.
+	// restoreParked parks NEW lazy restores while the session-promotion flow
+	// owns the session; waiters re-run their restore from scratch once released
+	// (specs/domains/session-lifecycle.md, Session Promotion).
 	restoreParked        map[string]chan struct{}
 	mu                   sync.RWMutex
 	orchestratorFactory  OrchestratorFactory
@@ -215,124 +175,80 @@ type Manager struct {
 	// promoteRename is the fault-injection seam for MoveSessionStorage's
 	// renames; in-package tests assign it directly. nil = os.Rename.
 	promoteRename func(oldpath, newpath string) error
-	// serviceLLMGate, when set, is invoked BEFORE a one-shot service LLM
-	// request's timeout context is created, and must return once whatever the
-	// request needs in order to be served is ready. It exists for the embedded
-	// local model: a cold weight load takes longer than the service timeout, so
-	// a budget armed first would be consumed by the load and the request would
-	// fail instead of waiting. Guarded by mu.
-	//
-	// Consequence, deliberate per ADR-066 D13: serviceLLMTimeout bounds the
-	// REQUEST only, never the gate. The production gate
-	// (backend.ensureEmbeddedReadyForLLMRequest) can wait
-	// embeddedllm.DefaultLoadWaitTimeout — derived from the supervisor's own
-	// ready budget, as that constant's doc states — so a caller must not assume
-	// the whole one-shot call fits inside serviceLLMTimeout.
+	// serviceLLMGate gates a one-shot service LLM request BEFORE its timeout
+	// context is armed — a cold embedded-model load must never be charged to
+	// serviceLLMTimeout (specs/domains/embedded-llm.md; ADR-066 D13). A gate
+	// failure skips the request; nil is the posture for always-on providers.
 	serviceLLMGate  func(context.Context) error
 	projectResolver ProjectResolverFunc // resolves projectID -> workspacePath for lazy session restoration
-	// workspaceEnsurer guarantees the execution workspace named by a restored
-	// managed binding physically exists before the orchestrator is built on
-	// top of it (ADR-080). Installed by the backend FrontendAPI, which owns
-	// the worktrees.Owner coordinator. A managed restore without an ensurer
-	// fails closed: the manager must never point a session at a missing tree
-	// and must never fall back to the project checkout. Guarded by mu.
+	// workspaceEnsurer recreates a restored managed worktree before the
+	// orchestrator is built on it (ADR-080); managed restores fail closed
+	// without one and never fall back to the project checkout
+	// (specs/domains/session-lifecycle.md, Workspace Binding).
 	workspaceEnsurer WorkspaceEnsurer
 	fileTracker      *FileCoherenceTracker
 	converter        *markitdown.Converter // lazy-init markitdown converter for AttachFiles
 	converterMu      sync.Mutex            // guards lazy converter initialization
 	modelProfiles    ModelProfilesMetaInfo // Model Profiles profile annotating agent_metrics events (guarded by mu)
 
-	// ignoreCache caches per-root ignore.Resolver instances so the directory
-	// tree is walked only once per root (not on every SendMessage). The key
-	// is the symlink-resolved absolute root path. Resolvers are immutable
-	// after construction so they are safe for concurrent use once cached.
+	// ignoreCache caches one ignore.Resolver per symlink-resolved root so the
+	// directory tree is walked once per root, not per SendMessage.
 	ignoreCache sync.Map // string (resolved root) → *ignore.Resolver
 
-	// ignoreResolverBuild constructs an ignore.Resolver for root, deriving the
-	// (cancellable) walk from the supplied context. It defaults to
-	// ignore.NewResolverContext and is overridable in tests to substitute a
-	// deterministic barrier for the timing-dependent real walk. Callers must go
-	// through startIgnoreBuild rather than touching this field directly.
+	// ignoreResolverBuild defaults to ignore.NewResolverContext; overridable in
+	// tests. Callers must go through startIgnoreBuild.
 	ignoreResolverBuild func(ctx context.Context, root string) (*ignore.Resolver, error)
 
-	// caseInsensitiveCache caches the filesystem case-sensitivity probe
-	// result per resolved workspace root. Case-sensitivity is a property of
-	// the filesystem mount and cannot change mid-session, so the probe (which
-	// creates and deletes a temporary .probe file) must run at most once per
-	// root rather than on every SendMessage/ResumeSession. The key is the
-	// symlink-resolved absolute path; each value is a *caseInsensitiveProbe.
-	// LoadOrStore guarantees exactly one probe per root: the goroutine that
-	// wins the race performs the probe and closes the probe's done channel,
-	// while every concurrent caller waits on that channel and reuses the
-	// result instead of re-probing.
+	// caseInsensitiveCache caches the per-root case-sensitivity probe for the
+	// manager lifetime, sharing one in-flight probe among concurrent callers
+	// (specs/architecture/security-model.md, Filesystem case sensitivity).
 	caseInsensitiveCache sync.Map // string (resolved path) → *caseInsensitiveProbe
 
-	// detectCaseInsensitiveFn is the filesystem case-sensitivity probe invoked
-	// by detectCaseInsensitive. It defaults to pathutil.DetectCaseInsensitive
-	// and is overridable in tests to assert call counts (the probe has no
-	// other controllable side effect). Callers must go through
-	// detectCaseInsensitive rather than touching this field directly.
+	// detectCaseInsensitiveFn defaults to pathutil.DetectCaseInsensitive;
+	// overridable in tests to assert call counts. Go through detectCaseInsensitive.
 	detectCaseInsensitiveFn func(path string) bool
 
-	// shuttingDown is set to true at the very start of Shutdown() so that the
-	// SendMessage/Resume goroutines, when they observe their context cancelled,
-	// can distinguish an app shutdown from a user-initiated cancellation. During
-	// shutdown the in-progress task is left untouched by the goroutine (it is
-	// NOT marked cancelled) so it stays resumable; Shutdown itself then
-	// checkpoints it as paused via persistPauseIfUnfinished.
+	// shuttingDown lets the SendMessage/Resume goroutines tell an app shutdown
+	// from a user cancellation: on shutdown the task stays resumable and
+	// Shutdown checkpoints it as paused (specs/domains/session-lifecycle.md).
 	shuttingDown atomic.Bool
 
-	// lastToolCallIDs maps sessionID → the most recently emitted tool_call_id
-	// (plus its tool name) for that session. The emitter's ToolCall sink writes
-	// here; the desktop confirmation callback reads here to attach the matching
-	// tool_call_id to the tool_confirm payload. Entries are overwritten on every
-	// ToolCall — only the latest is needed because tool confirmation fires
-	// sequentially, right after the triggering ToolCall, in the same goroutine.
+	// lastToolCallIDs maps sessionID → the most recent tool_call_id (+ tool
+	// name) for the tool_confirm payload (specs/contracts/event-catalog.md);
+	// only the latest entry is kept — confirmation fires right after the call.
 	lastToolCallIDs sync.Map // sessionID → toolCallIDEntry
 
-	// goalProposalResolver delivers a user decision to a blocked goal-proposal
-	// channel held by the desktop layer. It is set by desktop after
-	// buildGoalProposalCallback registers its pending map, so that BOTH the
-	// event-based path (handleGoalProposalResponse) and the RPC-based path
-	// (FrontendAPI.ConfirmGoal/CancelGoal) funnel through a single resolution.
-	// Nil (before desktop wiring) makes ResolveGoalProposal a no-op.
+	// goalProposalResolver delivers a user decision to the desktop layer's
+	// blocked goal-proposal channel, so the event-based and RPC-based answer
+	// paths funnel through one resolution; nil → ResolveGoalProposal no-op.
 	goalProposalResolver func(requestID, decision, condition, verify, verificationMode string) bool
 
-	// goalSuggestionResolver delivers a user decision to a blocked
-	// goal-suggestion channel held by the desktop layer — the same two-path
-	// funnel as goalProposalResolver (event-based handleGoalSuggestionResponse
-	// and RPC-based AcceptGoalSuggestion/DeclineGoalSuggestion).
-	// Nil (before desktop wiring) makes ResolveGoalSuggestion a no-op.
+	// goalSuggestionResolver is goalProposalResolver's twin for goal
+	// suggestions (same two-path funnel; nil → ResolveGoalSuggestion no-op).
 	goalSuggestionResolver func(requestID, decision string) bool
 
 	logger *slog.Logger
 
 	// bg tracks manager-owned background goroutines so Shutdown can join them
-	// (see background.go). spawnBackground refuses new work once Shutdown has
-	// closed the tracker.
+	// (see background.go); spawn refuses new work once Shutdown closed it.
 	bg *backgroundTracker
 
-	// shutdownCtx is cancelled at the very start of Shutdown. Long-lived,
-	// best-effort background work (session title generation) derives from it,
-	// so a shutdown aborts that work promptly instead of leaving it to run out
-	// its own LLM timeout against a torn-down backend.
+	// shutdownCtx is cancelled at the very start of Shutdown so long-lived
+	// best-effort work (title generation) aborts instead of running out its
+	// LLM timeout against a torn-down backend.
 	shutdownCtx    context.Context
 	shutdownCancel context.CancelFunc
 
-	// blackboards collects every PersistentBlackboard built by the per-session
-	// BlackboardFactory so Shutdown can stop their persistence workers. A task
-	// that never reaches a terminal finalizer (paused or abandoned) would
-	// otherwise leave the worker goroutine blocked on its channel. Guarded by
-	// mu.
+	// blackboards collects every PersistentBlackboard the manager built so
+	// Shutdown can stop their persistence workers; a task that never reaches a
+	// terminal finalizer would otherwise leave its worker blocked
+	// (specs/domains/session-lifecycle.md).
 	blackboards []*PersistentBlackboard
 
-	// autoRetryResolver maps a provider name (the logical config key carried
-	// by *llm.Error.Provider) to that provider's auto-resend interval in
-	// seconds (0 = disabled). Wired by the backend Application to the live
-	// LLM config, so Settings changes apply to the next surfaced deadline.
-	// Guarded by mu. There is NO backend timer (ADR-065): the deadline is
-	// only stamped into the task_failed_resumable payload; the UI owns the
-	// countdown and the resume-on-zero.
+	// autoRetryResolver maps a provider name to its auto-resend interval in
+	// seconds (0 = disabled); no backend timer exists — the deadline is only
+	// stamped into the task_failed_resumable payload; the UI owns the countdown
+	// (specs/decisions/065-auto-resend-retryable-errors.md).
 	autoRetryResolver func(provider string) int
 }
 
@@ -353,10 +269,8 @@ func (m *Manager) log() *slog.Logger {
 	return slog.Default()
 }
 
-// slowShutdownWaitThreshold marks a shutdown wait worth its own log record.
-// The session manager runs on the main goroutine during app shutdown, so any
-// wait this long is a visible app freeze; the record names the wait that
-// burned it.
+// slowShutdownWaitThreshold marks a shutdown wait worth its own log record:
+// the manager runs on the main goroutine, so a wait this long freezes the app.
 const slowShutdownWaitThreshold = 250 * time.Millisecond
 
 // NewManager creates a new session Manager.
@@ -382,31 +296,23 @@ func NewManager(factory OrchestratorFactory, emitFunc func(Event), agentDir stri
 	return m
 }
 
-// spawnBackground runs fn on a background goroutine tracked by the manager, so
-// Shutdown waits for it before returning. It reports false (running nothing)
-// once Shutdown has closed the tracker, letting the caller fall back to a
-// synchronous path.
-//
-// Deprecated shell kept for existing tests; production call sites should use
-// spawnBackgroundNamed so a shutdown join timeout can attribute the straggler.
+// spawnBackground runs fn on a tracked background goroutine, reporting false
+// once Shutdown closed the tracker so the caller can fall back to a sync path.
+// Deprecated shell for existing tests; use spawnBackgroundNamed.
 func (m *Manager) spawnBackground(fn func()) bool {
 	return m.spawnBackgroundNamed("", fn)
 }
 
 // spawnBackgroundNamed is spawnBackground with an attribution name: on a join
-// timeout, stopBackground logs the names still in flight, and the straggler
-// goroutine dump identifies the exact blocked call path.
+// timeout, the alive-names log and the straggler dump identify the exact
+// blocked call path.
 func (m *Manager) spawnBackgroundNamed(name string, fn func()) bool {
 	return m.bg.spawn(name, fn)
 }
 
-// trackBlackboard registers a PersistentBlackboard built or restored by the
-// manager so Shutdown can stop its persistence worker. Blackboards whose
-// worker already exited (their task reached a terminal finalizer) are pruned
-// on the way in: they are dead weight for Shutdown, and keeping them would
-// grow the slice without bound in a long-lived process — one entry per task,
-// hundreds of tasks per active session. Live workers (running or paused
-// tasks) are kept; stopping those is exactly what Shutdown is for.
+// trackBlackboard registers a PersistentBlackboard so Shutdown stops its
+// persistence worker; already-exited workers are pruned on the way in so the
+// slice cannot grow without bound in a long-lived process.
 func (m *Manager) trackBlackboard(pb *PersistentBlackboard) {
 	if pb == nil {
 		return
@@ -424,11 +330,8 @@ func (m *Manager) trackBlackboard(pb *PersistentBlackboard) {
 }
 
 // restoreBlackboardTracked restores a persisted blackboard and registers it
-// with the manager so Shutdown stops its persistence worker. Every
-// manager-side RestoreBlackboard call must go through this helper: a restored
-// blackboard spawns its own persistence worker, and an untracked one whose
-// task never reaches a terminal finalizer (paused or abandoned, e.g. along
-// the resume paths) would leak that worker past Shutdown.
+// with the manager; every manager-side RestoreBlackboard must go through here
+// or an abandoned task leaks its persistence worker past Shutdown.
 func (m *Manager) restoreBlackboardTracked(taskID, sessionID string, store core.TaskPersistence, logger *slog.Logger, opts ...orchestration.MapBlackboardOption) (*PersistentBlackboard, error) {
 	pbb, err := RestoreBlackboard(taskID, sessionID, store, logger, opts...)
 	if pbb != nil {
@@ -437,31 +340,16 @@ func (m *Manager) restoreBlackboardTracked(taskID, sessionID string, store core.
 	return pbb, err
 }
 
-// stopBackground closes the background tracker (refusing any further spawn),
-// waits for every in-flight manager-owned goroutine, and then stops the
-// persistence worker of every blackboard the manager built.
-//
-// Both phases share one stopTimeout budget: each blackboard is stopped with
-// the time remaining after the tracker join, so N stuck workers add up to at
-// most one stopTimeout in total instead of N × stopTimeout.
-//
-// Waiting is bounded: a goroutine that ignores its cancellation (e.g. a stuck
-// filesystem walk) does not extend shutdown past the budget. A task goroutine
-// whose join in Shutdown timed out may still restore a blackboard and
-// register it after a snapshot was taken, so the stop loop re-drains the
-// registry until it stays empty; once the deadline has passed, the exhausted
-// budget makes the extra Shutdown calls return without waiting, keeping the
-// loop bounded.
-//
-// It is called once, from Shutdown.
+// stopBackground joins the manager-owned background goroutines, then stops
+// every tracked blackboard's persistence worker under ONE shared stopTimeout
+// budget — re-draining until the registry stays empty, abandoning leftovers
+// with a WARN once it passes (specs/domains/session-lifecycle.md).
 func (m *Manager) stopBackground() {
 	deadline := time.Now().Add(m.stopTimeout)
 	bgStart := time.Now()
 	if !m.bg.closeAndWait(m.stopTimeout) {
-		// Every tracked goroutine is cancellation-driven, so reaching here
-		// means a cancellation path is broken. Name the survivors (spawn
-		// attribution) and dump their stacks so the next occurrence lands
-		// as a precise bug report instead of an anonymous 10 s freeze.
+		// Every tracked goroutine is cancellation-driven, so reaching here means
+		// a cancellation path is broken; name the survivors and dump stacks.
 		alive := m.bg.aliveNames()
 		m.log().Warn("timed out waiting for background goroutines to stop",
 			"ms", time.Since(bgStart).Milliseconds(), "alive", alive)
@@ -494,21 +382,10 @@ func (m *Manager) stopBackground() {
 		m.log().Info("shutdown: blackboard persistence workers stopped",
 			"blackboards", len(blackboards), "ms", time.Since(bbStart).Milliseconds())
 
-		// The re-drain exists because a task goroutine whose join timed out
-		// above may still restore a blackboard and register it AFTER the
-		// snapshot was taken. A straggler that keeps (re-)registering must not
-		// spin this loop forever: once the single shared deadline has passed,
-		// abandon whatever is left with a WARN instead of looping. The batch
-		// just drained was already stopped with whatever budget remained (a
-		// non-positive remainder makes pb.Shutdown return immediately), so the
-		// loop is bounded by the same stopTimeout as every other wait.
-		//
-		// The deadline is SHARED with the background-goroutine join above, so a
-		// join that consumed the whole budget reaches here already expired. On
-		// the first pass the batch is therefore the ordinary set of persistence
-		// workers — not "late-registered" ones — so the message only says
-		// "late-registered" from the second pass on, where a blackboard really
-		// was registered after a snapshot.
+		// A straggler whose join timed out may still register a blackboard after
+		// the snapshot, hence the re-drain; the single shared deadline (also
+		// consumed by the join above) bounds it. "Late-registered" is only
+		// true from the second pass on.
 		if time.Now().After(deadline) {
 			reason := "persistence workers"
 			if drainPass > 1 {
@@ -521,18 +398,11 @@ func (m *Manager) stopBackground() {
 	}
 }
 
-// stopSessionBlackboards stops and forgets the persistence workers of every
-// blackboard the manager tracked for the given session. DeleteSession calls
-// it: a deleted session's task can no longer reach a terminal finalizer (a
-// paused task's worker deliberately outlives the pause), so without this each
-// deleted session would leak its blocked worker goroutine — plus its retained
-// blackboard and SQLite-backed adapter — in m.blackboards until Shutdown.
-// The stop is bounded by the same stopTimeout budget stopBackground uses, and
-// the drain re-loops because a task goroutine settling concurrently with the
-// deletion may still register (restore) another blackboard for this session
-// after the snapshot below was taken. Mirrors stopBackground; called from
-// DeleteSession only, so Shutdown's own drain remains the sole owner of the
-// process-exit path.
+// stopSessionBlackboards stops the persistence workers of every blackboard
+// tracked for the given session: a deleted session's task can no longer reach
+// a terminal finalizer, so without this each deleted session leaks its worker
+// (plus blackboard and adapter) until Shutdown. Same stopTimeout budget and
+// re-drain as stopBackground.
 func (m *Manager) stopSessionBlackboards(sessionID string) {
 	deadline := time.Now().Add(m.stopTimeout)
 	for {
@@ -558,10 +428,8 @@ func (m *Manager) stopSessionBlackboards(sessionID string) {
 		for _, pb := range sessionBBs {
 			pb.Shutdown(time.Until(deadline))
 		}
-		// Bounded re-drain: a straggler that keeps registering blackboards for
-		// this session must not spin this loop forever — once the shared
-		// deadline has passed, abandon the rest with a WARN (a non-positive
-		// remainder makes the next Shutdown call return immediately anyway).
+		// Bounded re-drain: once the shared deadline passes, abandon the rest
+		// with a WARN instead of spinning.
 		if time.Now().After(deadline) {
 			m.log().Warn("delete: blackboard stop deadline exceeded; abandoning late-registered persistence workers",
 				"session_id", sessionID, "blackboards", len(sessionBBs))
@@ -608,9 +476,8 @@ func (m *Manager) SetTokenPersist(fn TokenPersistFunc) {
 	m.tokenPersist = fn
 }
 
-// SetTaskStore sets the TaskStore used to persist orchestration tasks.
-// When set, CreateSession will construct a BlackboardFactory that creates
-// PersistentBlackboard instances backed by this store.
+// SetTaskStore sets the TaskStore used to persist orchestration tasks; when
+// set, CreateSession builds PersistentBlackboard-backed sessions from it.
 func (m *Manager) SetTaskStore(store TaskStore) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -624,15 +491,10 @@ func (m *Manager) SetEnvInfo(info *sdktools.EnvInfo) {
 	m.envInfo = info
 }
 
-// StartEnvInfoCollection launches environment-info collection in a background
-// goroutine and stores the result via SetEnvInfo when ready. It is safe to call
-// SendMessage/ResumeTask concurrently — they tolerate a nil envInfo until the
-// collection completes. WaitEnvInfo allows callers (notably tests) to block
-// until the result is available.
-//
-// Calling this method more than once is a no-op: the underlying goroutine is
-// launched exactly once (guarded by envInfoOnce), so envInfoDone is closed a
-// single time and never panics on a double close.
+// StartEnvInfoCollection launches environment-info collection on a background
+// goroutine and stores the result via SetEnvInfo; SendMessage and ResumeTask
+// tolerate a nil envInfo until it completes. A second call is absorbed
+// by envInfoOnce.
 func (m *Manager) StartEnvInfoCollection() {
 	m.envInfoOnce.Do(func() {
 		collect := func() {
@@ -647,11 +509,8 @@ func (m *Manager) StartEnvInfoCollection() {
 	})
 }
 
-// WaitEnvInfo blocks until the background environment-info collection finishes
-// (or ctx is cancelled). It returns nil once envInfo is ready, or ctx.Err() if
-// the context expires first. Because StartEnvInfoCollection closes envInfoDone
-// via defer (even on panic), WaitEnvInfo never blocks forever after collection
-// has been started.
+// WaitEnvInfo blocks until collection finishes (or ctx is cancelled);
+// envInfoDone is closed via defer, so it never blocks forever once started.
 func (m *Manager) WaitEnvInfo(ctx context.Context) error {
 	select {
 	case <-m.envInfoDone:
@@ -668,14 +527,10 @@ func (m *Manager) SetMaxSummaryLen(n int) {
 	m.maxSummaryLen = n
 }
 
-// SetModelProfile records the Model Profiles profile sessions run under, so
-// "agent_metrics" events can be grouped by the active optimization variants.
-// The profile entry is the catalog entry the persisted model_profiles.active_profile
-// resolves to (callers resolve it via backend.activeModelProfile) and carries
-// the id + kind reported in the payload — reported even when the master
-// toggle is off. Metrics collection itself is profile-independent; the
-// profile only annotates the payload. Applies to emitters created after the
-// call.
+// SetModelProfile records the Model Profiles profile sessions run under so
+// agent_metrics events can be grouped by the active variants; annotated even
+// when the master toggle is off (specs/domains/model-profiles.md). Applies to
+// emitters created after the call.
 func (m *Manager) SetModelProfile(cfg config.ModelProfilesConfig, profile config.ModelProfile) {
 	info := modelProfileFromConfig(cfg, profile)
 	m.mu.Lock()
@@ -683,19 +538,10 @@ func (m *Manager) SetModelProfile(cfg config.ModelProfilesConfig, profile config
 	m.mu.Unlock()
 }
 
-// SetE2SSettings refreshes the E2S execution-mode settings on every live
-// session orchestrator so a runtime experimental-features toggle takes effect
-// on sessions built before the change. The builder seeds config.E2S once at
-// Build, and the orchestrator factory reads the live config only for sessions
-// built afterwards, so an already-built orchestrator would otherwise keep the
-// stale gate (leaving an enabled E2S mode unusable until restart). Mirrors
-// SetModelProfile. Safe while a session's task is running.
-//
-// A session's orchestrator pointer is set in the Session literal before the
-// session is published in m.sessions and is never reassigned afterwards, so
-// reading it under m.mu alone is race-free (the same immutability contract the
-// orchestratorFactory relies on); the per-orchestrator override applied here
-// is itself atomic.
+// SetE2SSettings refreshes the E2S settings on every live session orchestrator:
+// the builder seeds config.E2S once at Build, so an already-built orchestrator
+// would keep a stale gate until restart. Safe while a task runs — the
+// orchestrator pointer is published once and never reassigned.
 func (m *Manager) SetE2SSettings(settings core.E2SSettings) {
 	m.mu.RLock()
 	orchestrators := make([]*core.Orchestrator, 0, len(m.sessions))
@@ -710,16 +556,10 @@ func (m *Manager) SetE2SSettings(settings core.E2SSettings) {
 	}
 }
 
-// SetModelProfilesSettings refreshes the model-profile settings on every live session
-// orchestrator so a runtime ModelProfiles change (master toggle, profile switch,
-// essential-tools variant flip, or the experimental gate) reaches sessions
-// built before the change. Mirrors SetE2SSettings: the builder seeds
-// config.ModelProfiles once at Build and the orchestrator factory reads the live config
-// only for sessions built afterwards, so an already-built orchestrator would
-// otherwise keep the stale build-time snapshot — e.g. the goal-mode guard
-// reading a narrowing the operator has since disabled, refusing a goal until an
-// app restart. Safe while a session's task is running — the per-orchestrator
-// override is atomic.
+// SetModelProfilesSettings refreshes the model-profile settings on every live
+// session orchestrator (master toggle, profile switch, essential-tools flip);
+// otherwise sessions keep the stale build-time snapshot, e.g. a goal refused
+// by a since-disabled narrowing. Mirrors SetE2SSettings.
 func (m *Manager) SetModelProfilesSettings(settings core.ModelProfilesSettings) {
 	m.mu.RLock()
 	orchestrators := make([]*core.Orchestrator, 0, len(m.sessions))
@@ -742,8 +582,7 @@ func (m *Manager) modelProfile() ModelProfilesMetaInfo {
 }
 
 // SetServiceLLMTimeout sets the timeout for one-shot "service" LLM requests
-// performed by the manager itself (currently session title generation). A
-// value <= 0 leaves the default (10 min) in place.
+// (session title generation); <= 0 leaves the default (10 min) in place.
 func (m *Manager) SetServiceLLMTimeout(d time.Duration) {
 	if d <= 0 {
 		return
@@ -754,10 +593,7 @@ func (m *Manager) SetServiceLLMTimeout(d time.Duration) {
 }
 
 // SetServiceLLMGate installs the pre-dispatch readiness gate for one-shot
-// service LLM requests (see serviceLLMGate). It is called with the manager's
-// shutdown context and must block until the request can be served; returning an
-// error skips the request rather than issuing it against something not ready.
-// A nil gate is the normal posture for every provider that is always listening.
+// service LLM requests (see serviceLLMGate); a failure skips the request.
 func (m *Manager) SetServiceLLMGate(fn func(context.Context) error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -795,18 +631,16 @@ func (m *Manager) SetProjectResolver(fn ProjectResolverFunc) {
 }
 
 // SetWorkspaceEnsurer installs the managed-workspace ensurer used during lazy
-// restore (see WorkspaceEnsurer). Restores of managed sessions fail closed
-// until an ensurer is installed.
+// restore (see WorkspaceEnsurer); managed restores fail closed without one.
 func (m *Manager) SetWorkspaceEnsurer(fn WorkspaceEnsurer) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.workspaceEnsurer = fn
 }
 
-// getOrRestoreSession looks up a session in the in-memory map. If not found and
-// a session store + project resolver are configured, it lazily restores the
-// session from the database, creating a fully-functional Session object.
-// Returns (nil, nil) when the session genuinely does not exist.
+// getOrRestoreSession looks up a session in the in-memory map, lazily
+// restoring it from the database when a session store + project resolver are
+// configured. Returns (nil, nil) when the session genuinely does not exist.
 func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 	// Fast path: check in-memory map.
 	m.mu.RLock()
@@ -814,12 +648,9 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 		m.mu.RUnlock()
 		return sess, nil
 	}
-	// Shutdown choke point: once Shutdown has begun, never resurrect a
-	// session from the store. The drain loop above removed sessions from
-	// m.sessions after closing their file handles; a restore here would
-	// re-insert a session (with fresh log/dump handles nobody will close)
-	// and let callers (ResumeTask, sendMessage follow-ups, racing Wails
-	// calls) spawn task goroutines that outlive the join-and-wait teardown.
+	// Shutdown choke point: once Shutdown has begun, never resurrect a session
+	// from the store — its drain closed the file handles; a re-inserted
+	// session would leak fresh ones plus task goroutines that outlive teardown.
 	if m.shuttingDown.Load() {
 		m.mu.RUnlock()
 		return nil, nil
@@ -838,17 +669,8 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 		return nil, nil
 	}
 
-	// Load session metadata from the persistent store, then resolve the
-	// project workspace — both go through the app's shared SQLite pool
-	// (see OpenDatabase). WAL plus a multi-connection pool let these reads
-	// proceed alongside an active agent's writes, but a saturated pool (many
-	// concurrent readers) can still make a read wait for a connection;
-	// context.Background() would wait indefinitely, so bound the session read
-	// with a generous deadline (the resolver's own project read is separately
-	// deadline-bounded where it is installed, in buildFrontendAPI) and let the
-	// caller surface a retryable error instead of hanging. Restore is
-	// side-effect-free up to this point, so a timeout simply aborts cleanly and
-	// a later attempt retries from scratch.
+	// Bounded by restoreDBReadTimeout (see its doc): the restore is still
+	// side-effect-free, so a timeout aborts cleanly and a retry starts over.
 	restoreReadCtx, restoreReadCancel := context.WithTimeout(context.Background(), restoreDBReadTimeout)
 	info, err := store.LoadSession(restoreReadCtx, id)
 	if err != nil {
@@ -876,49 +698,30 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 		workspacePath = binding.WorkspacePath
 	}
 
-	// For No Project, each session gets its own isolated workspace.
-	// The resolver above returns the project-level workspace which is
-	// shared, but No Project sessions must use per-session workspaces
-	// (the same logic as CreateSession). Re-derive it here so that
-	// lazily restored sessions use the correct directory.
+	// No Project: re-derive the per-session isolated workspace exactly like
+	// CreateSession so lazily restored sessions use the correct directory.
 	if info.ProjectID == project.NoProjectID {
 		workspacePath = config.NoProjectSessionWorkspace(m.agentDir, id)
-		// Ensure the path is always absolute so tools and prompts receive
-		// a stable, fully qualified workspace directory.
 		if absPath, absErr := filepath.Abs(workspacePath); absErr == nil {
 			workspacePath = absPath
 		} else {
 			m.log().Warn("failed to resolve absolute workspace path for restored session",
 				"session_id", id, "path", workspacePath, "error", absErr)
 		}
-		// MkdirAllReal, not os.MkdirAll: a dangling or swapped-in symlink on
-		// any component must fail the (best-effort) recreation instead of
-		// writing through the link outside the workspace (review finding
-		// #101).
+		// MkdirAllReal, not os.MkdirAll: refuse to recreate through a dangling
+		// or swapped-in symlink (review finding #101).
 		if mkErr := safeio.MkdirAllReal(workspacePath, 0o755); mkErr != nil {
 			m.log().Warn("failed to recreate per-session workspace on restore", "session_id", id, "error", mkErr)
 		}
 	}
 
-	// Single-flight reservation: if another goroutine is already restoring
-	// this same session, wait for it instead of opening duplicate log/dump
-	// files. On Windows, many concurrent open/close cycles on the same file
-	// cause "process cannot access the file" during TempDir cleanup even when
-	// every handle is closed — CloseHandle returns before the OS file lock is
-	// actually released (compounded by Defender real-time scanning on CI
-	// runners). Serializing restores so only one goroutine ever opens the
-	// files eliminates the contention at the source.
 	m.mu.Lock()
 	if existing, ok := m.sessions[id]; ok {
 		m.mu.Unlock()
 		return existing, nil
 	}
-	// External mutation window (session promotion): a ReserveRestores
-	// reservation parks new restores while the promotion owns the session
-	// (the evict → move → store-commit span). Wait for the release, then
-	// restart from scratch: the store state this restore is about to read
-	// and the workspace it is about to materialize are both rewritten by the
-	// time the window closes, so a fresh attempt is the only correct shape.
+	// Session-promotion window (restoreParked): wait for the release, then
+	// restart — both the store state and the workspace are rewritten by then.
 	if parkCh, parked := m.restoreParked[id]; parked {
 		m.mu.Unlock()
 		<-parkCh
@@ -940,10 +743,8 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 	m.restoreInFlight[id] = waitCh
 	m.mu.Unlock()
 
-	// finishRestore releases the reservation and wakes any waiters. It MUST be
-	// invoked on every return path below this point (success and error),
-	// otherwise concurrent and subsequent restores of the same session would
-	// block forever.
+	// finishRestore releases the reservation and wakes waiters; it MUST run on
+	// every return path below or later restores block forever.
 	finishRestore := func() {
 		m.mu.Lock()
 		delete(m.restoreInFlight, id)
@@ -951,17 +752,11 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 		close(waitCh)
 	}
 
-	// Managed binding: guarantee the session-owned tree exists before anything
-	// is built on top of it (ADR-080). The ensurer validates the stored Git
-	// identity against the repository and recreates a missing tree from the
-	// pinned branch; any failure aborts the restore explicitly. A managed
-	// session must never silently fall back to the project checkout, and a
-	// missing branch or retargeted tree must surface as an error the user can
-	// act on, not as an orchestrator pointed at a path that merely looks
-	// right. This runs INSIDE the single-flight window so concurrent restores
-	// of the same session execute the (per-repo serialized) git operation
-	// once, and after the No-Project re-derivation above so it can never run
-	// for a CHAT session (whose binding is nil).
+	// Managed binding: the ensurer guarantees the session-owned tree exists
+	// before anything is built on it — fail-closed, never falling back to the
+	// project checkout (specs/domains/session-lifecycle.md, Workspace Binding).
+	// Inside the single-flight window and after the No-Project re-derivation,
+	// so never for a CHAT session.
 	if binding != nil && binding.Kind == WorkspaceManagedWorktree {
 		if ensurer == nil {
 			finishRestore()
@@ -977,12 +772,8 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 		if recreated {
 			m.log().Warn("recreated missing session worktree during restore",
 				"session_id", id, "worktree", binding.WorktreeName, "branch", binding.Branch)
-			// phase "orchestration" is the chat-visibility discriminator for
-			// service events (event-catalog): this warning must render as a
-			// chat row and persist across reloads, not stay a transient
-			// activity label — the user must see that uncommitted data was
-			// lost even when the restore happened while the session was not
-			// mounted.
+			// phase "orchestration" makes this a persisted chat row, not a
+			// transient activity label (specs/contracts/event-catalog.md).
 			m.emitFunc(Event{
 				SessionID: id,
 				Type:      "service",
@@ -994,14 +785,12 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 		}
 	}
 
-	// Create session logger.
 	logger, logFile, err := m.createSessionLogger(info.ProjectID, id)
 	if err != nil {
 		finishRestore()
 		return nil, fmt.Errorf("failed to create session logger: %w", err)
 	}
 
-	// Create event emitter for the session.
 	emitter := NewEventEmitter(id, m.emitFunc)
 	// Record each emitted tool_call_id so the desktop confirmation callback can
 	// attach the matching id to the tool_confirm payload.
@@ -1012,7 +801,6 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 	modelProfiles := m.modelProfile()
 	emitter.SetModelProfile(modelProfiles)
 
-	// Snapshot mutable fields under read lock.
 	m.mu.RLock()
 	factory := m.orchestratorFactory
 	persistFn := m.tokenPersist
@@ -1020,14 +808,12 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 	maxSumLen := m.maxSummaryLen
 	m.mu.RUnlock()
 
-	// Wire token persistence callback if configured.
 	if persistFn != nil {
 		emitter.SetTokenPersist(func(inputTokens, outputTokens int, model, family string, fillPercent float64) {
 			persistFn(id, inputTokens, outputTokens, model, family, fillPercent)
 		})
 	}
 
-	// Build BlackboardFactory if task persistence is configured.
 	var bbFactory core.BlackboardFactory
 	var adapter *TaskStoreAdapter
 	if ts != nil {
@@ -1053,10 +839,8 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 		}
 	}
 
-	// Create LLM dump file when DEBUG logging is enabled.
 	dumpFile, stepDumpTracker := m.openDumpArtifacts(info.ProjectID, id)
 
-	// Create orchestrator.
 	orchestrator, err := factory(emitter, logger, workspacePath, bbFactory, dumpFile, stepDumpTracker)
 	if err != nil {
 		if logFile != nil {
@@ -1072,8 +856,8 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 		return nil, fmt.Errorf("failed to create orchestrator for restored session: %w", err)
 	}
 
-	// Configure No Project mode: disable index-dependent tools (semantic_search
-	// — no vector index exists without a project).
+	// No Project mode: disable index-dependent tools (no vector index exists
+	// without a project).
 	if info.ProjectID == project.NoProjectID {
 		orchestrator.SetNoProjectMode()
 	}
@@ -1098,13 +882,9 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 		})
 	}
 
-	// Restore full conversation history from persistent storage so the router
-	// and Conductor see all previous messages across backend restarts.
-	// Bounded like the head read: this runs inside the restoreInFlight
-	// single-flight window, so an unbounded read queuing behind a write storm
-	// would park the restore — and every concurrent waiter on the same
-	// session — indefinitely, exactly what the head-read deadline exists to
-	// prevent. Failure stays non-fatal (warn + continue, as before).
+	// Restore the conversation history, bounded by restoreDBReadTimeout like
+	// the head read; failure is non-fatal
+	// (specs/domains/session-lifecycle.md, Conversation History).
 	if m.sessionStore != nil {
 		historyCtx, historyCancel := context.WithTimeout(context.Background(), restoreDBReadTimeout)
 		storedMsgs, loadErr := m.sessionStore.LoadMessages(historyCtx, id)
@@ -1120,15 +900,12 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 		}
 	}
 
-	// Restore the EWMA-calibrated compression-ratio forecast (persisted after
-	// each manual compaction) so the calibration survives restarts; a missing
-	// or unparsable state leaves the config seed untouched.
+	// Restore the persisted EWMA compaction-forecast calibration
+	// (specs/domains/memory/compaction.md).
 	m.loadCompactionForecast(orchestrator)
 
-	// Restore the continuation anchor from the task store so the next user
-	// message continues the previous task (restored blackboard + conversation
-	// history) instead of starting a fresh task. Mirrors the in-memory
-	// behavior where lastCompletedTaskID survives between messages.
+	// Restore the continuation anchor (lastCompletedTaskID) so the next message
+	// continues the previous task (specs/domains/session-lifecycle.md).
 	var restoredTaskID string
 	if ts != nil {
 		anchorCtx, anchorCancel := context.WithTimeout(context.Background(), restoreDBReadTimeout)
@@ -1143,17 +920,14 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 		}
 	}
 
-	// Parse creation time from stored info.
 	createdAt, parseErr := time.Parse(time.RFC3339, info.CreatedAt)
 	if parseErr != nil {
 		createdAt = time.Now().UTC()
 	}
 
-	// Create session temp directory.
 	tempDir := sessionTempDir(m.agentDir, info.ProjectID, id)
-	// MkdirAllReal, not os.MkdirAll: a dangling or swapped-in symlink on any
-	// component of the agent-dir tree fails creation instead of redirecting
-	// the session temp dir (review finding #101).
+	// MkdirAllReal, not os.MkdirAll: refuse a dangling or swapped-in symlink
+	// (review finding #101).
 	if mkErr := safeio.MkdirAllReal(tempDir, 0o755); mkErr != nil {
 		m.log().Warn("failed to create session temp directory", "session_id", id, "temp_dir", tempDir, "error", mkErr)
 	}
@@ -1178,22 +952,13 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 		lastCompletedTaskID: restoredTaskID,
 	}
 
-	// Double-check under write lock: in normal operation (single-flight
-	// reservation above) this is unreachable for concurrent restores of the
-	// same ID, but it guards against the rare case where the session was
-	// inserted by a code path that bypassed the reservation.
-	//
-	// The shuttingDown re-check closes the TOCTOU window with Shutdown: the
-	// entry-time check above ran BEFORE the slow restore work (store loads,
-	// orchestrator build, file opens), so Shutdown may have begun — and its
-	// drain loop already removed sessions and closed their handles — in the
-	// meantime. Inserting here would resurrect the session with fresh
-	// log/dump handles nobody will close and re-open the exact hole the
-	// choke point exists to prevent.
+	// Double-check under the write lock: unreachable through the single-flight
+	// reservation, but guards against an insert that bypassed it. The
+	// shuttingDown re-check closes the TOCTOU window with Shutdown — the
+	// entry-time check ran before the slow restore work.
 	m.mu.Lock()
 	if existing, ok := m.sessions[id]; ok {
 		m.mu.Unlock()
-		// Clean up the duplicate we just created.
 		if logFile != nil {
 			_ = logFile.Close()
 		}
@@ -1239,18 +1004,15 @@ func (m *Manager) ListSessionsByProject(projectID string) ([]SessionInfo, error)
 }
 
 // ListSessionsByProjectCtx is the caller-deadline variant of
-// ListSessionsByProject. It exists so the project-switch critical section can
-// derive every store round-trip from ONE switch-scoped deadline: individually
-// bounded reads still sum to minutes of switchMu hold time when the shared
-// SQLite pool is saturated and every one of them burns its full budget. See
-// SwitchProject's switchSectionTimeout.
+// ListSessionsByProject: the project-switch critical section derives every
+// store round-trip from ONE switch-scoped deadline, since bounded reads still
+// sum to minutes of switchMu hold time under a saturated pool.
 func (m *Manager) ListSessionsByProjectCtx(ctx context.Context, projectID string) ([]SessionInfo, error) {
 	m.mu.RLock()
 	store := m.sessionStore
 	m.mu.RUnlock()
 
 	if store == nil {
-		// Fallback: filter in-memory sessions by project
 		all := m.ListSessions()
 		result := make([]SessionInfo, 0)
 		for _, s := range all {
@@ -1261,18 +1023,12 @@ func (m *Manager) ListSessionsByProjectCtx(ctx context.Context, projectID string
 		return result, nil
 	}
 
-	// Bounded like the restore head-read (restoreDBReadTimeout): this read
-	// backs the synchronous session-list / project-switch RPCs and shares the
-	// app's single SQLite pool; without a deadline a read queuing behind a
-	// write storm hangs the RPC indefinitely instead of surfacing a retryable
-	// error. When called through the switch path, ctx carries the (stricter)
-	// switch-section deadline on top of this per-op bound.
+	// Bounded by restoreDBReadTimeout; the switch path's ctx is stricter on top.
 	sessions, err := store.ListSessionsByProject(ctx, projectID)
 	if err != nil {
 		return nil, err
 	}
 
-	// Overlay in-memory active state from live sessions.
 	m.mu.RLock()
 	for i := range sessions {
 		if s, ok := m.sessions[sessions[i].ID]; ok {
@@ -1287,13 +1043,10 @@ func (m *Manager) ListSessionsByProjectCtx(ctx context.Context, projectID string
 	return sessions, nil
 }
 
-// ListSessionsAll returns metadata for the sessions of ALL projects in a
-// single list — the data source for cross-project indicators. It mirrors
-// ListSessionsByProject without the project filter: rows come from
-// store.ListSessions (every project, ordered pinned first, then by effective
-// activity — newest first), with the live in-memory Active/Pinned state
-// overlaid on top. With no persistent store configured it falls back to the
-// in-memory session list (also all projects, newest first).
+// ListSessionsAll returns session metadata for ALL projects — the source for
+// cross-project indicators. Rows come from store.ListSessions (pinned first,
+// then effective activity) with live Active/Pinned overlaid; without a store
+// it falls back to the in-memory list.
 func (m *Manager) ListSessionsAll() ([]SessionInfo, error) {
 	m.mu.RLock()
 	store := m.sessionStore
@@ -1301,11 +1054,8 @@ func (m *Manager) ListSessionsAll() ([]SessionInfo, error) {
 
 	var sessions []SessionInfo
 	if store == nil {
-		// Fallback: in-memory sessions across all projects.
 		sessions = m.ListSessions()
 	} else {
-		// Bounded like ListSessionsByProject above — same shared-pool
-		// contention surface (cross-project live-sessions indicator).
 		listCtx, listCancel := context.WithTimeout(context.Background(), restoreDBReadTimeout)
 		var err error
 		sessions, err = store.ListSessions(listCtx)
@@ -1314,7 +1064,6 @@ func (m *Manager) ListSessionsAll() ([]SessionInfo, error) {
 			return nil, err
 		}
 
-		// Overlay in-memory active state from live sessions.
 		m.mu.RLock()
 		for i := range sessions {
 			if s, ok := m.sessions[sessions[i].ID]; ok {
@@ -1327,10 +1076,8 @@ func (m *Manager) ListSessionsAll() ([]SessionInfo, error) {
 		m.mu.RUnlock()
 	}
 
-	// The cross-project indicator surfaces only LIVE work. An archived session
-	// is never live — a lingering in_progress/paused/failed task must not
-	// resurrect it into the list — so drop archived rows before returning,
-	// regardless of the store/no-store source above.
+	// The cross-project indicator surfaces only live work: drop archived rows
+	// so a lingering task state cannot resurrect an archived session into it.
 	filtered := make([]SessionInfo, 0, len(sessions))
 	for _, s := range sessions {
 		if !s.Archived {
@@ -1347,8 +1094,8 @@ func (m *Manager) CreateSession(projectID, workspacePath string) (*SessionInfo, 
 }
 
 // CreateSessionFromDraft commits a prepared execution workspace into a runtime
-// session. Managed Git provisioning is the caller's responsibility; this method
-// cannot change the selected workspace or branch after creation.
+// session; managed Git provisioning is the caller's responsibility, and the
+// workspace/branch cannot change after creation.
 func (m *Manager) CreateSessionFromDraft(draft SessionDraft, repositoryPath string) (*SessionInfo, error) {
 	projectID, id := draft.ProjectID, draft.ID
 	if id == "" || filepath.Base(id) != id || strings.ContainsAny(id, "\\/\x00") || id == "." || id == ".." {
@@ -1368,9 +1115,9 @@ func (m *Manager) CreateSessionFromDraft(draft SessionDraft, repositoryPath stri
 	if binding != nil {
 		workspacePath = binding.WorkspacePath
 	}
-	// Per-phase timing (DEBUG only) so session-creation latency can be
-	// pinpointed in real-world environments where MCP gateways, large skill
-	// directories, or slow filesystems add overhead not visible in unit tests.
+	// Per-phase timing (DEBUG only): field session-creation latency is driven
+	// by MCP gateways, large skill directories, or slow filesystems unit tests
+	// never see.
 	overallStart := time.Now()
 
 	var phaseT0, phaseT1 time.Time
@@ -1392,31 +1139,25 @@ func (m *Manager) CreateSessionFromDraft(draft SessionDraft, repositoryPath stri
 	// For No Project, each session gets its own isolated workspace.
 	if projectID == project.NoProjectID {
 		workspacePath = config.NoProjectSessionWorkspace(m.agentDir, id)
-		// Ensure the path is always absolute so tools and prompts receive
-		// a stable, fully qualified workspace directory.
 		if absPath, absErr := filepath.Abs(workspacePath); absErr == nil {
 			workspacePath = absPath
 		} else {
 			m.log().Warn("failed to resolve absolute workspace path for new session",
 				"session_id", id, "path", workspacePath, "error", absErr)
 		}
-		// MkdirAllReal, not os.MkdirAll: refuse to create the per-session
-		// workspace through a dangling or swapped-in symlink (review finding
-		// #101); a pre-existing operator-symlinked tree resolves as intent.
+		// MkdirAllReal: refuse a dangling or swapped-in symlink (review finding #101).
 		if err := safeio.MkdirAllReal(workspacePath, 0o755); err != nil {
 			return nil, fmt.Errorf("failed to create per-session workspace: %w", err)
 		}
 	}
 	phaseMark("workspace_setup")
 
-	// Create session-specific logger
 	logger, logFile, err := m.createSessionLogger(projectID, id)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create session logger: %w", err)
 	}
 	phaseMark("logger")
 
-	// Create EventEmitter for this session
 	emitter := NewEventEmitter(id, m.emitFunc)
 	// Record each emitted tool_call_id so the desktop confirmation callback can
 	// attach the matching id to the tool_confirm payload.
@@ -1427,7 +1168,6 @@ func (m *Manager) CreateSessionFromDraft(draft SessionDraft, repositoryPath stri
 	modelProfiles := m.modelProfile()
 	emitter.SetModelProfile(modelProfiles)
 
-	// Snapshot mutable fields under read lock
 	m.mu.RLock()
 	factory := m.orchestratorFactory
 	persistFn := m.tokenPersist
@@ -1435,14 +1175,12 @@ func (m *Manager) CreateSessionFromDraft(draft SessionDraft, repositoryPath stri
 	maxSumLen := m.maxSummaryLen
 	m.mu.RUnlock()
 
-	// Wire token persistence callback if configured
 	if persistFn != nil {
 		emitter.SetTokenPersist(func(inputTokens, outputTokens int, model, family string, fillPercent float64) {
 			persistFn(id, inputTokens, outputTokens, model, family, fillPercent)
 		})
 	}
 
-	// Build BlackboardFactory if task persistence is configured
 	var bbFactory core.BlackboardFactory
 	var adapter *TaskStoreAdapter
 	if ts != nil {
@@ -1468,14 +1206,12 @@ func (m *Manager) CreateSessionFromDraft(draft SessionDraft, repositoryPath stri
 		}
 	}
 
-	// Create LLM request/response dump file when DEBUG logging is enabled
 	dumpFile, stepDumpTracker := m.openDumpArtifacts(projectID, id)
 
-	// Create orchestrator using the factory (called outside the lock — can be slow)
+	// The factory runs outside the lock — it can be slow.
 	phaseStart()
 	orchestrator, err := factory(emitter, logger, workspacePath, bbFactory, dumpFile, stepDumpTracker)
 	if err != nil {
-		// Close the log file since we're not creating the session
 		if logFile != nil {
 			_ = logFile.Close()
 		}
@@ -1489,13 +1225,12 @@ func (m *Manager) CreateSessionFromDraft(draft SessionDraft, repositoryPath stri
 	}
 	phaseMark("orchestrator_build")
 
-	// Configure No Project mode: disable index-dependent tools (semantic_search
-	// — no vector index exists without a project).
+	// No Project mode: disable index-dependent tools (no vector index exists
+	// without a project).
 	if projectID == project.NoProjectID {
 		orchestrator.SetNoProjectMode()
 	}
 
-	// Wire task persistence into core orchestrator for continuations
 	if adapter != nil {
 		orchestrator.SetTaskStore(adapter)
 		emitFn := m.emitFunc
@@ -1517,13 +1252,11 @@ func (m *Manager) CreateSessionFromDraft(draft SessionDraft, repositoryPath stri
 
 	// Create session temp directory
 	tempDir := sessionTempDir(m.agentDir, projectID, id)
-	// MkdirAllReal: refuse a dangling or swapped-in symlink (review finding #101); a
-	// pre-existing operator-symlinked tree resolves as intent.
+	// MkdirAllReal: refuse a dangling or swapped-in symlink (review finding #101).
 	if err := safeio.MkdirAllReal(tempDir, 0o755); err != nil {
 		m.log().Warn("failed to create session temp directory", "session_id", id, "temp_dir", tempDir, "error", err)
 	}
 
-	// Create session
 	session := &Session{
 		ID:               id,
 		ProjectID:        projectID,
@@ -1542,12 +1275,10 @@ func (m *Manager) CreateSessionFromDraft(draft SessionDraft, repositoryPath stri
 		active:           false,
 	}
 
-	// Store session
 	m.mu.Lock()
 	m.sessions[id] = session
 	m.mu.Unlock()
 
-	// Emit session created event
 	m.emitFunc(Event{
 		SessionID: id,
 		Type:      "session_created",
@@ -1558,9 +1289,8 @@ func (m *Manager) CreateSessionFromDraft(draft SessionDraft, repositoryPath stri
 		},
 	})
 
-	// Log total CreateSession wall-clock time (always at INFO so it shows up
-	// without DEBUG). If >250ms, log at WARN so a regression in this
-	// critical-path method is visible by default.
+	// Log total CreateSession wall-clock time; >250ms is a WARN so a
+	// regression in this critical-path method is visible by default.
 	totalElapsed := time.Since(overallStart)
 	switch {
 	case totalElapsed > time.Second:
@@ -1586,28 +1316,21 @@ func (m *Manager) CreateSessionFromDraft(draft SessionDraft, repositoryPath stri
 
 // createSessionLogger creates a logger for a specific session.
 // Returns the logger, the file handle (for cleanup), and an error.
+// See specs/domains/session-lifecycle.md (§ Link-Safe Creation of Session
+// File Artifacts).
 func (m *Manager) createSessionLogger(projectID, sessionID string) (*slog.Logger, *os.File, error) {
 	logDir := config.SessionLogsDir(m.agentDir, projectID, sessionID)
-	// Create the log directory as a chain of REAL directories under the
-	// agent directory as the containment boundary: a link planted anywhere
-	// in the path — at <sessionDir>/logs or deeper — that resolves OUTSIDE
-	// ~/.c0wrk is REFUSED, and session creation aborts instead of
-	// redirecting the session log (LLM prompts/responses, tool output)
-	// outside the agent tree (review finding #59). The agent dir is the
-	// boundary (not the session dir) because the session chain may not
-	// exist yet at first lazy log creation. Links resolving inside
-	// ~/.c0wrk, and a symlinked agent dir itself, remain operator intent;
-	// a dangling or swapped-in link still fails as before.
+	// MkdirAllRealWithin makes the agent dir the containment boundary: an
+	// escaping link planted anywhere in the path is refused, aborting session
+	// creation instead of redirecting the log out of ~/.c0wrk (review finding
+	// #59). The agent dir is the boundary because the session chain may not
+	// exist yet at first lazy creation; in-tree links stay operator intent.
 	if err := safeio.MkdirAllRealWithin(m.agentDir, logDir, 0o755); err != nil {
 		return nil, nil, fmt.Errorf("failed to create log directory: %w", err)
 	}
 
-	// Create log file for this session. O_NOFOLLOW (unix): safeio.OpenFileNoFollow
-	// fails a symlink at the final component with ELOOP instead of following
-	// it. On Windows no O_NOFOLLOW equivalent exists without new dependencies
-	// (see the safeio parity note): the final symlink is still resolved there
-	// — tempered by Windows requiring elevated/dev-mode rights to create
-	// symlinks.
+	// OpenFileNoFollow fails a final-component symlink with ELOOP; Windows has
+	// no O_NOFOLLOW, tempered by symlink creation requiring elevated rights.
 	logFile := config.SessionLogPath(m.agentDir, projectID, sessionID)
 	file, err := safeio.OpenFileNoFollow(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
@@ -1620,27 +1343,16 @@ func (m *Manager) createSessionLogger(projectID, sessionID string) (*slog.Logger
 	return slog.New(handler), file, nil
 }
 
-// openDumpArtifacts creates the DEBUG-mode LLM dump file and the per-step
-// dump tracker for a session. Both are best-effort debugging aids: any
-// failure logs a warning and disables the artifact (nil) instead of failing
-// the session.
-//
-// Both paths produce real directories and refuse links where resolution is
-// not wanted: the dumps/steps directories go through safeio.MkdirAllReal (a
-// dangling or swapped-in symlink is refused — os.MkdirAll would follow a
-// link) and the dump file itself is opened O_NOFOLLOW (safeio.OpenFile adds
-// O_NONBLOCK and a post-open regularity fstat but still FOLLOWS a symlink at
-// the final component, so the redirection would already have happened by the
-// time the fstat ran).
+// openDumpArtifacts creates the DEBUG-mode LLM dump file and the per-step dump
+// tracker. Both are best-effort: a failure warns and disables the artifact
+// (nil) instead of failing the session. The dump file is opened O_NOFOLLOW —
+// plain safeio.OpenFile would follow a final-component symlink before its
+// regularity fstat could catch the redirection.
 func (m *Manager) openDumpArtifacts(projectID, sessionID string) (*os.File, *orchestration.StepDumpTracker) {
 	if !strings.EqualFold(m.logLevelValue(), "DEBUG") {
 		return nil, nil
 	}
 	dumpPath := config.SessionDumpPath(m.agentDir, projectID, sessionID)
-	// Containment boundary is the agent dir: a planted …/<sid>/dumps →
-	// <outside> link is refused instead of redirecting the LLM dump out of
-	// ~/.c0wrk (review finding #59), while in-tree operator links and a
-	// symlinked agent dir itself resolve as intent.
 	if mkErr := safeio.MkdirAllRealWithin(m.agentDir, filepath.Dir(dumpPath), 0o755); mkErr != nil {
 		m.log().Warn("failed to create dumps directory", "session_id", sessionID, "error", mkErr)
 		return nil, nil
@@ -1650,14 +1362,9 @@ func (m *Manager) openDumpArtifacts(projectID, sessionID string) (*os.File, *orc
 		m.log().Warn("failed to create LLM dump file", "session_id", sessionID, "error", err)
 		return nil, nil
 	}
-	// Per-step dump tracker uses a "steps" subdirectory. Pre-create it as a
-	// real directory (NewStepDumpTracker's own os.MkdirAll would follow a
-	// planted symlink); a refused directory disables step dumps, like a
-	// failed dump file above.
+	// Pre-create the "steps" subdirectory as a real directory: the tracker's
+	// own os.MkdirAll would follow a planted symlink; a refusal disables step dumps.
 	stepDumpDir := config.SessionStepDumpDir(m.agentDir, projectID, sessionID)
-	// Same containment as the dumps dir above — the boundary is the agent
-	// dir, so an escaping link planted at ANY component of the steps path
-	// (dumps or steps alike) is refused (review finding #59).
 	if mkErr := safeio.MkdirAllRealWithin(m.agentDir, stepDumpDir, 0o755); mkErr != nil {
 		m.log().Warn("failed to create step dump directory", "session_id", sessionID, "error", mkErr)
 		return dumpFile, nil
@@ -1686,37 +1393,23 @@ func (m *Manager) SetLogLevel(level string) {
 	m.logLevel = level
 }
 
-// logLevelValue returns the current log level under m.mu. SetLogLevel writes
-// m.logLevel under the write lock from a Wails RPC goroutine while sessions
-// are created/restored on other goroutines, so every read must take the same
-// lock (a plain read of a string field concurrently with a write is a data
-// race).
+// logLevelValue returns the current log level under m.mu: SetLogLevel writes
+// from a Wails RPC goroutine while sessions are created on others, so reads
+// must take the same lock.
 func (m *Manager) logLevelValue() string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.logLevel
 }
 
-// DeleteSession removes a session, cancelling any active task.
-// DeleteSession removes an in-memory session: it cancels and joins any
-// running task, closes the session's resources (orchestrator, log/dump
-// handles), purges tracking state, removes the session's internal files
-// under the agent dir, and emits session_deleted.
-//
-// Deletion never RESTORES: a session that is not in memory is not this
-// manager's to clean up, and restoring one just to delete it would be a
-// resurrection with real side effects — for a managed-worktree session
-// (ADR-080) the restore's workspace ensurer re-provisions the very tree the
-// caller may have just released. Callers deleting store-only sessions own
-// their store-row and file cleanup (see FrontendAPI.DeleteSessionWithOptions
-// and its store-only fallback). Returns "session not found" for sessions
-// that are not in memory.
+// DeleteSession removes an in-memory session: cancel + join the running task,
+// close resources, purge tracking state, remove files, emit session_deleted.
+// Deletion never RESTORES — a managed restore would re-provision the tree the
+// caller may have just released (specs/domains/session-lifecycle.md);
+// store-only sessions are the caller's fallback (FrontendAPI).
 func (m *Manager) DeleteSession(id string) error {
-	// Capture the logger BEFORE taking m.mu: the close-error branches below
-	// run while m.mu's WRITE lock is held, and m.log() takes m.mu.RLock —
-	// sync.RWMutex is not reentrant, so logging inside the critical section
-	// would deadlock the goroutine while it still holds the write lock,
-	// freezing every other manager operation.
+	// Capture the logger BEFORE m.mu: the close-error branches run under the
+	// WRITE lock and m.log() takes RLock — sync.RWMutex is not reentrant.
 	logger := m.log()
 	m.mu.Lock()
 	session, exists := m.sessions[id]
@@ -1725,13 +1418,10 @@ func (m *Manager) DeleteSession(id string) error {
 		return fmt.Errorf("session not found: %s", id)
 	}
 
-	// Cancel any active task and grab the done channels for waiting. An
-	// in-flight manual-compaction flow is cancelled too and flagged via
-	// deleting: without this a compacting session (session.active is already
-	// false — the flow paused the task) would be torn down here while
-	// runSessionCompaction still runs with no owner, and its phase-5
-	// auto-resume would resurrect the just-deleted session (fresh orchestrator
-	// + log/dump handles + task) after session_deleted was emitted.
+	// Cancel any active task and grab the done channels. The in-flight
+	// compaction flow is cancelled too and flagged via deleting: otherwise a
+	// compacting session is torn down while runSessionCompaction still runs,
+	// and its auto-resume would resurrect the deleted session.
 	session.mu.Lock()
 	var doneCh chan struct{}
 	if session.active && session.cancel != nil {
@@ -1755,10 +1445,8 @@ func (m *Manager) DeleteSession(id string) error {
 			logger.Warn("timed out waiting for task goroutine to stop", "session_id", id)
 		}
 	}
-	// Join the compaction flow BEFORE the orchestrator/file teardown below:
-	// the flow drives m.CompactConversationHistory on this orchestrator and
-	// must be gone (its compactCancel unblocks it; it skips its tail phases
-	// once deleting is set) before cleanup. Bounded by the same stopTimeout.
+	// Join the compaction flow BEFORE teardown: it drives this orchestrator's
+	// compaction and must be gone before cleanup. Bounded by stopTimeout.
 	if compactDone != nil {
 		select {
 		case <-compactDone:
@@ -1767,24 +1455,17 @@ func (m *Manager) DeleteSession(id string) error {
 		}
 	}
 
-	// Now safely remove the session from the map.
 	m.mu.Lock()
 	session.mu.Lock()
 	// Close per-step dump files via orchestrator cleanup (idempotent).
 	if session.orchestrator != nil {
 		session.orchestrator.Cleanup()
 	}
-	// Close the per-step dump tracker: the orchestrator does NOT own it (its
-	// Cleanup deliberately leaves session-layer resources alone), so without
-	// this every executed step's open dump-file handle leaks until process
-	// exit — and on Windows the still-open files make the session-dir removal
-	// below fail. CloseAll is idempotent.
 	if session.stepDumpTracker != nil {
 		if err := session.stepDumpTracker.CloseAll(); err != nil {
 			logger.Warn("failed to close per-step dump files", "session_id", id, "error", err)
 		}
 	}
-	// Close log file if it exists
 	if session.logFile != nil {
 		if err := session.logFile.Close(); err != nil {
 			logger.Warn("failed to close session log file", "session_id", id, "error", err)
@@ -1799,32 +1480,21 @@ func (m *Manager) DeleteSession(id string) error {
 	delete(m.sessions, id)
 	m.mu.Unlock()
 
-	// Stop the session's blackboard persistence workers. A paused/deleted
-	// task never reaches a terminal finalizer, so its worker would otherwise
-	// stay blocked on its channel (holding the blackboard and its SQLite
-	// adapter) until app shutdown — one leaked goroutine per deleted session,
-	// plus one more per prior pause→resume cycle. Called after the task and
-	// compaction joins above so no settling goroutine can still hand out a
-	// new blackboard for this session's live task; the helper re-drains in
-	// case one lands in the window anyway.
+	// Stop the session's blackboard persistence workers (see
+	// stopSessionBlackboards).
 	m.stopSessionBlackboards(id)
 
-	// Purge file coherence state for this session.
 	m.fileTracker.PurgeSession(id)
 
-	// Remove all internal files belonging to this session: logs, dumps, temp,
-	// and plans. For No Project sessions the session directory also contains the
-	// isolated per-session workspace, which is removed here too. Regular
-	// projects share a project-scoped workspace (<projectDir>/Workspace) that
-	// lives outside the session directory and is only removed when the project
-	// itself is deleted. ArchiveSession deliberately keeps these files so an
-	// archived session can be restored.
+	// Remove all internal session files (logs, dumps, temp, plans). For No
+	// Project this includes the isolated per-session workspace; regular
+	// projects share a project-scoped workspace removed only with the project.
+	// ArchiveSession keeps these files so an archived session restores.
 	sessionDir := config.SessionDir(m.agentDir, session.ProjectID, id)
 	if err := os.RemoveAll(sessionDir); err != nil {
 		m.log().Warn("failed to remove session directory", "session_id", id, "dir", sessionDir, "error", err)
 	}
 
-	// Emit session deleted event
 	m.emitFunc(Event{
 		SessionID: id,
 		Type:      "session_deleted",
@@ -1833,17 +1503,14 @@ func (m *Manager) DeleteSession(id string) error {
 		},
 	})
 
-	// Drop the per-session tool_call_id tracking entry.
 	m.lastToolCallIDs.Delete(id)
 
 	return nil
 }
 
 // LastToolCallID returns the most recently emitted tool_call_id for a session
-// along with its tool name, or empty strings if none has been recorded. The
-// desktop confirmation callback uses this to attach the matching tool_call_id
-// to the tool_confirm payload so the frontend can correlate the confirmation
-// with the exact tool_call event (rather than matching by tool name).
+// with its tool name, or empty strings if none — the confirmation callback's
+// tool_confirm correlation (specs/contracts/event-catalog.md).
 func (m *Manager) LastToolCallID(sessionID string) (id, tool string) {
 	if v, ok := m.lastToolCallIDs.Load(sessionID); ok {
 		if entry, ok := v.(toolCallIDEntry); ok {
@@ -1853,9 +1520,8 @@ func (m *Manager) LastToolCallID(sessionID string) (id, tool string) {
 	return "", ""
 }
 
-// GetSession returns a session by ID.
-// If the session is not in memory but exists in the persistent store,
-// it is lazily restored.
+// GetSession returns a session by ID, lazily restoring it from the persistent
+// store if it is not in memory.
 func (m *Manager) GetSession(id string) (*Session, bool) {
 	sess, err := m.getOrRestoreSession(id)
 	if err != nil {
@@ -1865,11 +1531,9 @@ func (m *Manager) GetSession(id string) (*Session, bool) {
 	return sess, sess != nil
 }
 
-// HasSession reports whether the session is live in memory WITHOUT the lazy
-// restore GetSession performs. Deletion flows use it to decide between the
-// in-memory cleanup path and the store-only fallback without ever
-// resurrecting a session (restoring a managed session re-provisions its
-// worktree — see DeleteSession).
+// HasSession reports whether the session is live in memory WITHOUT GetSession's
+// lazy restore — deletion flows use it so a lookup never resurrects
+// (and re-provisions) a session (specs/domains/session-worktrees.md).
 func (m *Manager) HasSession(id string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -1878,10 +1542,8 @@ func (m *Manager) HasSession(id string) bool {
 }
 
 // SessionProjectID returns the project ID of a session LIVE IN MEMORY without
-// the lazy restore GetSession performs (memory-only read, like HasSession).
-// Use it when a store row may be missing but a resident session's identity is
-// still authoritative — e.g. a best-effort SaveSession that never landed
-// (review re-follow-up: GetSessionWorkspace membership fallback).
+// GetSession's lazy restore; use it when a store row may be missing but a
+// resident session's identity is still authoritative.
 func (m *Manager) SessionProjectID(id string) (string, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -1901,30 +1563,13 @@ func (m *Manager) GetSessionWorkspacePath(id string) (string, bool) {
 	return sess.WorkspacePath, true
 }
 
-// WorkspacePathFor returns the workspace path for a session WITHOUT the full
-// lazy restore performed by GetSession: no orchestrator build, no session
-// insertion into m.sessions, no event wiring. In-memory sessions are read
-// directly; otherwise exactly two point reads hit the store (the session row
-// and the project workspace via the resolver).
-//
-// This exists for read-only RPC surfaces — most notably StartTerminal — where
-// triggering a full restore caused a real-world hang: the restore path's DB
-// reads used context.Background() and share the app's single SQLite
-// connection with every write of every active session (message persistence,
-// task/blackboard saves). Under a bash_exec storm from concurrent sessions
-// those reads could queue behind the write load for minutes, and the
-// restoreInFlight single-flight then parked every retry on the same stuck
-// restore — the terminal spinner never cleared.
-//
-// The ctx bounds the session-row read (sql.DB pool waits honor it), and the
-// project resolver is itself deadline-bounded (installed in desktop startup
-// via buildFrontendAPI), so callers can turn contention into a prompt,
-// retryable error instead of an indefinite hang. The No Project per-session
-// workspace derivation mirrors
-// getOrRestoreSession, including directory creation — the caller needs a
-// usable working directory.
+// WorkspacePathFor returns a session's workspace path WITHOUT the full lazy
+// restore: no orchestrator build, no session insertion, no event wiring —
+// read-only RPC surfaces must never trigger a restore whose store reads can
+// park on a saturated SQLite pool (specs/domains/session-worktrees.md). The
+// ctx bounds the session-row read; the No Project derivation mirrors
+// getOrRestoreSession, including directory creation.
 func (m *Manager) WorkspacePathFor(ctx context.Context, id string) (string, bool) {
-	// Fast path: in-memory session.
 	m.mu.RLock()
 	sess, ok := m.sessions[id]
 	var workspacePath string
@@ -1936,9 +1581,7 @@ func (m *Manager) WorkspacePathFor(ctx context.Context, id string) (string, bool
 		return workspacePath, true
 	}
 
-	// Read-only slow path: store + resolver snapshots, no restore side
-	// effects. Snapshot under read lock, use outside it (same pattern as
-	// getOrRestoreSession).
+	// Read-only slow path: snapshot store + resolver under the lock, use outside.
 	m.mu.RLock()
 	store := m.sessionStore
 	resolver := m.projectResolver
@@ -1965,16 +1608,13 @@ func (m *Manager) WorkspacePathFor(ctx context.Context, id string) (string, bool
 		workspacePath = binding.WorkspacePath
 	}
 
-	// For No Project, each session gets its own isolated workspace — re-derive
-	// it here exactly like getOrRestoreSession so a path lookup never points a
-	// terminal at the shared project-level directory.
+	// No Project: re-derive the per-session workspace like getOrRestoreSession.
 	if info.ProjectID == project.NoProjectID {
 		workspacePath = config.NoProjectSessionWorkspace(m.agentDir, id)
 		if absPath, absErr := filepath.Abs(workspacePath); absErr == nil {
 			workspacePath = absPath
 		}
-		// MkdirAllReal: refuse a dangling or swapped-in symlink (review finding #101); a
-		// pre-existing operator-symlinked tree resolves as intent.
+		// MkdirAllReal: refuse a dangling or swapped-in symlink (review finding #101).
 		if mkErr := safeio.MkdirAllReal(workspacePath, 0o755); mkErr != nil {
 			m.log().Warn("failed to ensure per-session workspace on path lookup",
 				"session_id", id, "error", mkErr)
@@ -2032,7 +1672,6 @@ func (m *Manager) RenameSession(id, name string) error {
 	session.Name = name
 	session.mu.Unlock()
 
-	// Emit session renamed event
 	m.emitFunc(Event{
 		SessionID: id,
 		Type:      "session_renamed",
@@ -2058,23 +1697,15 @@ func (m *Manager) ArchiveSession(id string) error {
 
 	session.mu.Lock()
 	archiving := !session.Archived
-	// The toggle's target is fixed HERE, under this lock: the final write at
-	// the end of the function assigns this absolute value instead of
-	// re-reading and re-flipping the field. The stop/CancelUnfinishedTask
-	// block between the two sections can wait up to stopTimeout, so Wails can
-	// interleave a duplicate ArchiveSession in that window; a second
-	// `session.Archived = !session.Archived` would apply the concurrent
-	// writer's flip too, netting TWO flips for two archive requests of the
-	// same pre-state and desynchronizing the manager from the single store
-	// toggle. Assigning the captured target is idempotent instead.
+	// The toggle's target is fixed HERE, under this lock: the stop/finish
+	// block below can wait up to stopTimeout, so Wails can interleave a
+	// duplicate ArchiveSession there. Re-flipping would double-apply the
+	// concurrent flip and desync the store toggle; the captured target is idempotent.
 	target := archiving
 	session.mu.Unlock()
 
-	// Archiving a session that still has a running or unfinished task must first
-	// stop and settle it: an archived session is read-only (ErrSessionArchived),
-	// so it must not keep a task running in the background or retain a resumable
-	// unfinished task that can no longer be resumed. DeleteSession applies the
-	// same cancellation to the active-task case.
+	// Archiving a session with a running or unfinished task first stops and
+	// settles it: an archived session is read-only (specs/domains/session-lifecycle.md).
 	if archiving {
 		session.mu.Lock()
 		var doneCh chan struct{}
@@ -2101,30 +1732,23 @@ func (m *Manager) ArchiveSession(id string) error {
 		default:
 			select {
 			case <-doneCh:
-				// The task goroutine has fully settled, so its temp files are no
-				// longer in use and can be removed immediately.
 				removeTempDir()
 			case <-time.After(m.stopTimeout):
-				// Cancellation is cooperative: a long-running tool call may not
-				// return within stopTimeout. Do NOT remove the temp dir now — the
-				// goroutine may still be writing into it. Defer the removal until
-				// it actually finishes so archiving never destroys a still-running
-				// task's scratch files.
+				// Cancellation is cooperative: never remove a possibly still-in-use
+				// temp dir; defer until the goroutine actually finishes.
 				m.log().Warn("timed out waiting for task goroutine to stop before archiving; deferring temp cleanup", "session_id", id)
 				if !m.spawnBackgroundNamed("deferred-temp-dir-removal session="+id, func() {
 					<-doneCh
 					removeTempDir()
 				}) {
-					// Shutdown already closed the tracker; the directory is
-					// left to the OS temp cleanup rather than racing a
-					// torn-down manager's filesystem teardown.
+					// Shutdown already closed the tracker; leave the directory to OS
+					// temp cleanup rather than racing a torn-down manager.
 					m.log().Debug("shutdown in progress; skipping deferred temp dir removal", "session_id", id)
 				}
 			}
 		}
 
-		// Discard any unfinished (paused/failed) task so the archived session has
-		// no lingering resume banner or resumable state.
+		// Discard any unfinished task: an archived session keeps no resumable state.
 		if err := m.CancelUnfinishedTask(id); err != nil {
 			m.log().Warn("failed to discard unfinished task before archiving", "session_id", id, "error", err)
 		}
@@ -2135,7 +1759,6 @@ func (m *Manager) ArchiveSession(id string) error {
 	archived := session.Archived
 	session.mu.Unlock()
 
-	// Emit session archived/unarchived event
 	eventType := "session_unarchived"
 	if archived {
 		eventType = "session_archived"
@@ -2167,7 +1790,6 @@ func (m *Manager) PinSession(id string) error {
 	pinned := session.Pinned
 	session.mu.Unlock()
 
-	// Emit session pinned/unpinned event
 	eventType := "session_unpinned"
 	if pinned {
 		eventType = "session_pinned"
@@ -2184,9 +1806,8 @@ func (m *Manager) PinSession(id string) error {
 	return nil
 }
 
-// emitResumableIfUnfinished, GetBlackboardState, and the BlackboardState
-// helper type live in manager_execution.go. They share the *Manager and
-// *Session types defined in this file (W-21 file split).
+// emitResumableIfUnfinished, GetBlackboardState and the BlackboardState type
+// live in manager_execution.go (W-21 file split; types shared with this file).
 
 // GetOrchestrator returns the orchestrator for a session (for testing/advanced use).
 func (s *Session) GetOrchestrator() *core.Orchestrator {
@@ -2209,10 +1830,9 @@ func (s *Session) IsCompacting() bool {
 	return s.compacting
 }
 
-// DumpFile returns a duplicated file handle for the session's LLM dump file,
-// or nil if DEBUG is disabled. The caller owns the returned handle and must
-// close it when done. Duping ensures that background goroutines (title generation,
-// ToolJudge) have independent handles that survive session deletion.
+// DumpFile returns a duplicated handle for the session's LLM dump file (nil
+// when DEBUG is disabled); the caller owns and closes it. Duping gives
+// background goroutines handles that survive session deletion.
 func (s *Session) DumpFile() *os.File {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -2227,8 +1847,7 @@ func (s *Session) DumpFile() *os.File {
 }
 
 // EmitSessionEvent emits a session-scoped event through the manager's emit
-// pipeline (event persister included). Used by recovery flows that need to
-// emit events outside of a live session goroutine.
+// pipeline (persister included) for flows outside a live session goroutine.
 func (m *Manager) EmitSessionEvent(sessionID, eventType string, data any) {
 	m.emitFunc(Event{
 		SessionID: sessionID,
@@ -2237,44 +1856,22 @@ func (m *Manager) EmitSessionEvent(sessionID, eventType string, data any) {
 	})
 }
 
-// Shutdown closes all sessions and releases resources.
-// This should be called when the application is shutting down.
-//
-// On graceful shutdown, every task that was still running is checkpointed as
-// paused (not cancelled) so it can be resumed after restart — the
-// persistPauseIfUnfinished call runs after the task goroutines have stopped.
-//
-// Shutdown also joins the manager-owned background goroutines (the async
-// ignore-resolver build, deferred session temp-dir removals, best-effort
-// title generation — see background.go) and stops the persistence worker of
-// every blackboard the manager built, so nothing it spawned can touch the
-// filesystem or the store after it returns. The budget for those waits is the
-// same stopTimeout used for task goroutines.
-//
-// The conductor's compositeTrajectoryStore is NOT tracked here: it is created
-// per run inside RunConductor, every Sync spawns only a bounded writer, and
-// the run's final Flush drains it before the run returns — so it is already
-// transitively joined through the session task goroutine's done channel.
+// Shutdown closes all sessions and releases resources: running tasks are
+// checkpointed as paused (resumable), manager-owned background goroutines are
+// joined and every tracked blackboard's persistence worker stopped under one
+// stopTimeout budget (specs/domains/session-lifecycle.md, Invariants). The
+// conductor's compositeTrajectoryStore is NOT tracked here: it is created per
+// run, and the run's final Flush drains it before the goroutine returns.
 func (m *Manager) Shutdown() {
-	// Signal that we are shutting down BEFORE cancelling any task. The
-	// SendMessage/Resume goroutines check this flag when they observe their
-	// context cancelled: on shutdown they leave the task in_progress (so it
-	// can be resumed after restart) instead of marking it cancelled.
+	// Mark shutdown BEFORE cancelling anything: the send/resume goroutines key
+	// off this when their context is cancelled.
 	m.shuttingDown.Store(true)
 
-	// Abort best-effort background work that derives from the manager's
-	// lifetime (session title generation) before tearing sessions down, so it
-	// cannot outlive the backend it writes to.
 	m.shutdownCancel()
 
-	// Collect sessions and done channels under lock.
-	//
-	// NOTE: every session must be added to pendingList, not just the active
-	// ones. Idle sessions (session.done == nil) still hold open logFile and
-	// dumpFile handles that must be closed before the process exits —
-	// otherwise Windows cannot delete them and TempDir cleanup fails with
-	// "process cannot access the file". The done channel is optional and only
-	// waited on for sessions that had an in-flight task at shutdown time.
+	// Every session goes into pendingList, not just active ones: idle sessions
+	// still hold open log/dump handles that must close before process exit or
+	// Windows TempDir cleanup fails. doneCh is waited on only for in-flight tasks.
 	type pending struct {
 		session       *Session
 		doneCh        chan struct{}
@@ -2282,10 +1879,7 @@ func (m *Manager) Shutdown() {
 	}
 	m.mu.Lock()
 	pendingList := make([]pending, 0, len(m.sessions))
-	// activeIDs collects the IDs of sessions that had a running task at
-	// shutdown time. After the task goroutines have stopped, each of these is
-	// checkpointed as paused (instead of being left as a stale in_progress or
-	// cancelled) so it survives restart as a clearly resumable task.
+	// activeIDs: still-running tasks, checkpointed as paused once goroutines settle.
 	activeIDs := make([]string, 0, len(m.sessions))
 	for id, session := range m.sessions {
 		session.mu.Lock()
@@ -2293,16 +1887,13 @@ func (m *Manager) Shutdown() {
 		if session.orchestrator != nil {
 			session.orchestrator.Cleanup()
 		}
-		// Cancel any active task
 		if session.active && session.cancel != nil {
 			session.cancel()
 			activeIDs = append(activeIDs, id)
 		}
-		// Cancel an in-flight manual compaction too: its flow goroutine
-		// (compactDone) must not outlive Shutdown — its LLM calls, marker
-		// persistence and especially its auto-resume would run against a
-		// torn-down backend (the flow itself gates its tail phases on
-		// shuttingDown, this cancellation unblocks it promptly).
+		// Cancel an in-flight manual compaction too: its flow goroutine must not
+		// outlive Shutdown (its LLM calls and auto-resume would run against a
+		// torn-down backend); this unblocks it.
 		if session.compactCancel != nil {
 			session.compactCancel()
 		}
@@ -2317,20 +1908,12 @@ func (m *Manager) Shutdown() {
 	}
 	m.mu.Unlock()
 
-	// Wait for active task goroutines AND manual-compaction flow goroutines
-	// to finish outside any lock. The compaction goroutine observes the
-	// cancelled compactCancel, skips its shutdown-gated tail phases (marker
-	// persistence, auto-resume) and exits; waiting bounds it by the same
-	// stopTimeout as tasks.
+	// Wait for task and compaction goroutines outside any lock; the compaction
+	// flow skips its shutdown-gated tail phases and exits.
 	taskWaitStart := time.Now()
 	slowWaits := 0
-	// All waits share ONE stopTimeout budget, mirroring stopBackground below:
-	// each wait gets the deadline remainder instead of a fresh stopTimeout, so
-	// N sessions with stuck goroutines cost at most one stopTimeout of frozen
-	// quit, not N × stopTimeout. Once the budget is gone the remaining waits
-	// are skipped — every waited goroutine is cancellation-driven, and a
-	// straggler that ignored its cancellation for the whole budget is exactly
-	// what this bound exists to cap.
+	// All waits share ONE stopTimeout budget: N stuck goroutines cost at most
+	// one stopTimeout of frozen quit; past the budget, remaining waits are skipped.
 	budgetDeadline := time.Now().Add(m.stopTimeout)
 	budgetExhaustedWarned := false
 	waitShutdownGoroutine := func(kind string, doneCh chan struct{}) {
@@ -2365,20 +1948,14 @@ func (m *Manager) Shutdown() {
 		"sessions", len(pendingList), "slow_waits", slowWaits,
 		"ms", time.Since(taskWaitStart).Milliseconds())
 
-	// Join manager-owned background goroutines BEFORE closing session file
-	// handles: the title-generation goroutine writes through a session dump
-	// file, so it must be gone (or have given up) before that handle is
-	// closed. Bounded by stopTimeout, like the task-goroutine waits above.
+	// Join background goroutines BEFORE closing session file handles: title
+	// generation writes through a session dump file. Bounded by stopTimeout.
 	m.stopBackground()
 
 	// Close file handles for ALL sessions (idle and active) after any active
 	// goroutines have stopped.
 	for _, p := range pendingList {
 		p.session.mu.Lock()
-		// Close the per-step dump tracker too: the orchestrator's Cleanup
-		// deliberately does not own it (session-layer resource), and without
-		// this every executed step leaks an open *os.File past quit — and on
-		// Windows the open files block the session/temp-dir removal. Idempotent.
 		if p.session.stepDumpTracker != nil {
 			_ = p.session.stepDumpTracker.CloseAll()
 		}
@@ -2391,33 +1968,18 @@ func (m *Manager) Shutdown() {
 		p.session.mu.Unlock()
 	}
 
-	// Graceful shutdown: checkpoint each task that was still running as paused
-	// (instead of cancelled) so it can be resumed after restart. Done after the
-	// goroutines have stopped and emitted any final state so we do not race a
-	// pending persist. persistPauseIfUnfinished is a no-op for tasks that are
-	// no longer in_progress (e.g. they completed/failed just before shutdown).
+	// Checkpoint still-running tasks as paused AFTER the goroutines settled,
+	// so no pending persist races.
 	for _, id := range activeIDs {
 		m.persistPauseIfUnfinished(id)
 	}
 }
 
 // convertChatMessagesToLLM converts stored ChatMessages to llm.Message format,
-// reconstructing the conversation history exactly as the router and Conductor
-// saw it during the live session:
-//
-//   - "user" rows keep only user/assistant conversational content; the raw
-//     text is normalized with the same preprocessing the orchestrator applied
-//     live (@file → fileref:// URIs).
-//   - Consecutive "assistant" rows are collapsed to the most recent one: the
-//     store records every intermediate step output (assistant_done) plus the
-//     final task output (task_complete), while the live history keeps only
-//     the final output per exchange.
-//   - "error" and "task_cancelled" rows are converted to the same assistant
-//     notes that recordConversationOutcome appends live, so failed and
-//     cancelled exchanges survive a restart identically.
-//
-// Other roles (tool calls, thoughts, status, etc.) are non-conversational and
-// skipped.
+// reconstructing the conversation history exactly as the live session saw it:
+// user rows re-preprocessed, consecutive assistant rows collapsed to the final
+// output, error/cancelled rows becoming the live outcome notes, other roles
+// skipped (specs/domains/session-lifecycle.md, Conversation History).
 func (m *Manager) convertChatMessagesToLLM(msgs []ChatMessage, workspacePath string) []llm.Message {
 	result := make([]llm.Message, 0, len(msgs))
 	appendAssistant := func(lm llm.Message) {
@@ -2430,17 +1992,11 @@ func (m *Manager) convertChatMessagesToLLM(msgs []ChatMessage, workspacePath str
 	for _, msg := range msgs {
 		switch msg.Role {
 		case "user":
-			// The store keeps the raw text (with /skill and @file markers)
-			// for display; the live history stored the preprocessed form.
 			// Skill and agent names are unknown at restore time, so only the
-			// @file normalization is applied. Relative @file paths are
-			// resolved against the session workspace, mirroring the live
-			// preprocessing.
+			// @file normalization re-applies; relative paths resolve against
+			// the session workspace, mirroring live preprocessing.
 			lm := llm.Message{Role: "user", Content: core.PreprocessMessageText(msg.Content, nil, nil, nil, workspacePath)}
-			// Reconstruct image content blocks from persisted metadata
-			// (thumbnail + on-disk path). The DB stores only the path, never
-			// the full base64, so the image data is reloaded from
-			// session/images/{uuid}.jpg here.
+			// Reconstruct image content blocks from persisted metadata (thumbnail + path).
 			if blocks := reconstructImageBlocks(msg.Metadata, m.log()); len(blocks) > 0 {
 				lm.ContentBlocks = blocks
 			}
@@ -2462,11 +2018,9 @@ func (m *Manager) convertChatMessagesToLLM(msgs []ChatMessage, workspacePath str
 		case "task_cancelled":
 			appendAssistant(llm.Message{Role: "assistant", Content: core.HistoryNoteCancelled})
 		case compactMarkerRole:
-			// A manual compaction marker: the embedded snapshot IS the full
-			// LLM-visible history at that point, so everything accumulated
-			// before it is dropped and the snapshot becomes the seed. Rows
-			// after the marker (later exchanges) append on top. Markers
-			// without a snapshot (older rows) are no-ops.
+			// Compaction marker: the snapshot IS the history at that point —
+			// earlier rows drop, later ones append; no-snapshot markers are
+			// no-ops (specs/domains/memory/compaction.md).
 			if snapshot := compactedHistoryFromMarker(msg.Metadata); snapshot != nil {
 				result = append(result[:0], snapshot...)
 			}
@@ -2477,13 +2031,10 @@ func (m *Manager) convertChatMessagesToLLM(msgs []ChatMessage, workspacePath str
 	return result
 }
 
-// reconstructImageBlocks reads image attachments persisted in a user message's
-// Metadata (thumbnail + on-disk path) and reconstructs them as LLM image
-// content blocks by reading and base64-encoding each saved file. This is the
-// restart-reconstruction half of the image attachment lifecycle: the DB stores
-// only the thumbnail + path (never the full base64), so the image data is
-// reloaded from session/images/{uuid}.jpg on history restore. Missing or
-// unreadable files are logged and skipped so a single vanished image does not
+// reconstructImageBlocks rebuilds LLM image content blocks from the thumbnail
+// + path persisted in a user message's Metadata — the restart half of the
+// image lifecycle (specs/domains/session-lifecycle.md, File Attachments).
+// Missing or unreadable files are skipped so one vanished image cannot
 // break the whole history restore.
 func reconstructImageBlocks(metadata json.RawMessage, log *slog.Logger) []llm.ContentBlock {
 	if len(metadata) == 0 {
@@ -2530,16 +2081,11 @@ func extractPersistedError(msg ChatMessage) string {
 	return "unknown error"
 }
 
-// markitdownPythonPath resolves the managed venv interpreter that can import
-// markitdown (toolmanager layout), used by the attachment converter for
-// vision-assisted conversion. The probe runs on each converter-init ATTEMPT
-// (init fails and retries while the CLI is still missing), but the resolved
-// path is frozen into the converter once init succeeds — it lives for the
-// manager's lifetime. In practice this is equivalent to "probed once at
-// first converter init": the CLI and its venv are installed by a single
-// tool-manager operation, so by the time the CLI resolves the venv exists
-// too. Should the probe nevertheless see an incomplete install, vision stays
-// disabled for this app run (plain conversion is unaffected).
+// markitdownPythonPath resolves the managed venv interpreter used by the
+// attachment converter for vision-assisted conversion. The probe runs on each
+// converter-init attempt, but the resolved path is frozen into the converter
+// once init succeeds; an incomplete install leaves vision disabled for this
+// app run (plain conversion is unaffected).
 func (m *Manager) markitdownPythonPath() string {
 	return toolmanager.VenvPythonPath(config.ToolsDir(m.agentDir))
 }
@@ -2547,7 +2093,7 @@ func (m *Manager) markitdownPythonPath() string {
 // resolveSessionVision returns markitdown vision connection parameters for the
 // model currently active on the session's orchestrator, or nil when the
 // session has no orchestrator (not yet restored) or the active model must not
-// be used for captioning. Called PER DOCUMENT by AttachFiles.
+// caption. Called PER DOCUMENT by AttachFiles.
 func (m *Manager) resolveSessionVision(s *Session) *markitdown.VisionOptions {
 	if s == nil {
 		return nil

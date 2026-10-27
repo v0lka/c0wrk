@@ -7,52 +7,31 @@ import (
 )
 
 // This file owns the auto-unload budget: an idle model is a multi-gigabyte
-// resident process that the user is not actively using, so it is stopped after
-// a configurable period of inactivity (ADR-066 D5 — unload means terminating
-// the process, which is what actually returns the RAM/VRAM).
+// resident process, so it is stopped after a configurable period of inactivity
+// (ADR-066 D5 — unload means terminating the process, which is what returns
+// the RAM/VRAM). Two rules shape the bookkeeping, and the deferral is bounded
+// by WALL TIME rather than a count of deferrals; the full contract lives in
+// specs/domains/embedded-llm.md (Key Files: idle.go):
 //
-// The one rule that is easy to get wrong, and the reason this bookkeeping lives
-// in its own file:
+//	Weight-load time is NOT idle time — the budget is stamped when a load
+//	COMPLETES and again when a request finishes; the timer never runs
+//	against a model that is not loaded.
 //
-//	Weight-load time is NOT idle time.
-//
-// Loading 6.7 GiB of weights can take minutes. If lastActivity were stamped when
-// a Load STARTS, that load would arrive with most of the operator's budget
-// already spent, and a model the user has not yet sent a single request to would
-// be unloaded almost immediately. So the budget is stamped when a load COMPLETES
-// (server.go, Load step 7) and again when a request finishes (MarkActivity,
-// called by the ensure-loaded transport). The timer never runs against a model
-// that is not loaded.
-//
-// The sibling rule, and the reason the in-flight count lives beside the stamp:
-//
-//	A request in flight is not idle either.
-//
-// Stamping on completion alone cannot express it. The budget is an operator knob
-// validated down to one minute, and a single streamed generation can plausibly
-// outlive an aggressive one — so the transport also counts the requests it has
-// open (BeginRequest/EndRequest) and an expiry that lands mid-request defers
-// itself by a bounded grace instead of stopping the server out from under its own
-// answer. The stamp on completion is what restarts the FULL budget afterwards.
-//
-// The deferral is bounded too, and the bound is WALL TIME rather than a count of
-// deferrals: one deferral episode may not outlast a full idle budget, after which
-// the unload proceeds anyway and says so at Warn. A count that is never released
-// — a response body nobody closed — therefore costs at most one extra full idle
-// budget instead of pinning gigabytes resident for the lifetime of the process.
+//	A request in flight is not idle either — BeginRequest/EndRequest count
+//	open requests, and an expiry landing mid-request defers itself by a
+//	bounded grace instead of killing the generation; a never-released count
+//	(a response body nobody closed) therefore costs at most one extra full
+//	idle budget instead of pinning gigabytes resident forever.
 
 // AutoUnload is the operator's idle policy — the in-memory shape of
 // embedded_llm.auto_unload.
 type AutoUnload struct {
-	// Enabled false disables the timer entirely: the model stays resident until
-	// an explicit Unload, a Remove, or app shutdown.
+	// Enabled false disables the timer entirely: the model stays resident
+	// until an explicit Unload, a Remove, or app shutdown.
 	Enabled bool
-	// Idle is the inactivity budget after which the process is stopped. It is
-	// clamped into [a minute-scale default, MaxAutoUnloadMinutes] by normalized:
-	// a value below one minute becomes the default, which mirrors the config rule
-	// that rejects a non-positive minutes value even while the timer is disabled
-	// — re-enabling it must never activate a dead budget — and the ceiling keeps
-	// an "effectively never" figure from wrapping (see autoUnloadBudget).
+	// Idle is the inactivity budget; normalized() clamps it into
+	// [minute-scale default, MaxAutoUnloadMinutes] so re-enabling the timer
+	// can never activate a dead or wrapping budget (see autoUnloadBudget).
 	Idle time.Duration
 }
 
@@ -78,15 +57,12 @@ func NewAutoUnload(enabled bool, minutes int) AutoUnload {
 	return AutoUnload{Enabled: enabled, Idle: autoUnloadBudget(minutes)}.normalized()
 }
 
-// autoUnloadBudget converts persisted minutes into a budget. It is TOTAL: the
-// `time.Duration(minutes) * time.Minute` multiply wraps above
-// MaxAutoUnloadMinutes, and a wrapped result can be a positive budget of tens of
-// seconds — or, at the residues of the 2^11 divisor of the minutes→nanoseconds
-// factor, single-digit microseconds — so an operator's "effectively never"
+// autoUnloadBudget converts persisted minutes into a budget, TOTAL against
+// int64 wrap: above MaxAutoUnloadMinutes the minutes→nanoseconds multiply
+// wraps into a small positive duration, so an operator's "effectively never"
 // would silently invert into "unload immediately", every message paying a
-// multi-minute cold load. Values above the ceiling are therefore converted as
-// the ceiling, and a non-positive count is left at zero for normalized() to
-// replace with the default.
+// multi-minute cold load. Values above the ceiling convert as the ceiling; a
+// non-positive count stays zero for normalized() to replace with the default.
 func autoUnloadBudget(minutes int) time.Duration {
 	switch {
 	case minutes <= 0:
@@ -98,17 +74,11 @@ func autoUnloadBudget(minutes int) time.Duration {
 	}
 }
 
-// normalized clamps an unusable budget into the modelled range instead of
-// leaving it at zero. Zero would mean "unload immediately" once the timer is
-// armed, which is the opposite of what an operator who wrote nothing expects;
-// the ceiling exists for the same reason at the other end — see
-// autoUnloadBudget. It is the single place the clamp is applied, so a policy
-// assembled by hand (a struct literal, a runtime SetAutoUnload) is bounded the
-// same way as one built from config.
-//
-// A budget inside the range is left alone: the config layer validates the
-// persisted minutes, and a caller that wants a sub-minute budget (a test) means
-// it.
+// normalized clamps an unusable budget into the modelled range: zero would
+// mean "unload immediately" once the timer is armed, and the ceiling guards
+// the other end (see autoUnloadBudget). It is the single place the clamp is
+// applied, so a hand-assembled policy is bounded the same way as one built
+// from config. An in-range budget is left alone.
 func (p AutoUnload) normalized() AutoUnload {
 	switch {
 	case p.Idle <= 0:
@@ -120,38 +90,30 @@ func (p AutoUnload) normalized() AutoUnload {
 }
 
 // idleTimer is the auto-unload bookkeeping: the last activity stamp, the live
-// policy and the single timer that acts on them.
-//
-// It has its own mutex and never reaches back into the Server, so the lock order
-// is always Server.mu → idleTimer.mu. The expiry callback is supplied by the
-// caller on every arm and runs on the timer goroutine.
+// policy and the single timer that acts on them. Its mutex is strictly inside
+// Server.mu (the lock order never inverts) and never reaches back into the
+// Server; the expiry callback is supplied on every arm and runs on the timer
+// goroutine.
 type idleTimer struct {
 	mu     sync.Mutex
 	seeded bool
 	pol    AutoUnload
 	last   time.Time
 	timer  *time.Timer
-	// gen counts activity stamps. The idle path decides to unload outside the
-	// lock (Unload re-acquires both the gate and Server.mu), so it carries the
-	// generation it decided on and the unload is abandoned if activity moved in
-	// between — a request that finished exactly at the deadline must not have
-	// the model pulled out from under the next one.
+	// gen counts activity stamps: the idle path decides to unload outside the
+	// lock, carries the generation it decided on, and the unload is abandoned
+	// if activity moved in between — a request finishing exactly at the
+	// deadline must not lose the model for the next one.
 	gen uint64
-	// graceUntil is non-zero while an expiry has been DEFERRED because a request
-	// was in flight: the budget ran out, but stopping the server would have
-	// killed a generation mid-answer, so the timer was re-armed for this long
-	// instead. remaining reports it, so a status surface shows the deferral
+	// graceUntil is non-zero while an expiry is DEFERRED for a request in
+	// flight; remaining reports it, so a status surface shows the deferral
 	// rather than a stale zero.
 	graceUntil time.Time
-	// deferSince stamps the START of the current deferral episode — the first
-	// expiry that was deferred while a request was in flight. It is the
+	// deferSince stamps the START of the current deferral episode — the
 	// wall-time bound on deferring: an episode may not outlast one full idle
-	// budget, because the thing it is waiting for may be an in-flight count that
-	// is never released (a response body nobody closed), and an unbounded
-	// deferral would pin the model resident for the lifetime of the process.
-	// Zero means no episode is running; stopLocked clears it, so real activity
-	// (mark), a disarm and a policy change all end the episode, while armGrace
-	// preserves it across the re-arms that continue one.
+	// budget, or a never-released in-flight count would pin the model
+	// resident for the lifetime of the process. Zero means no episode;
+	// stopLocked clears it (mark, disarm, setPolicy), armGrace preserves it.
 	deferSince time.Time
 }
 
@@ -188,10 +150,9 @@ func (t *idleTimer) setPolicy(policy AutoUnload, now time.Time, armed bool, onEx
 	t.armLocked(now, onExpire)
 }
 
-// mark stamps activity and, when armed, (re)starts the budget from that stamp.
-// It also ends any deferred grace — and with it the deferral episode's
-// wall-time bound, which stopLocked clears: a completed request is exactly the
-// event the grace was waiting for, and the full budget restarts from this stamp.
+// mark stamps activity and (re)starts the budget from that stamp, ending any
+// deferred grace: a completed request is exactly the event the grace was
+// waiting for.
 func (t *idleTimer) mark(now time.Time, armed bool, onExpire func()) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -204,24 +165,17 @@ func (t *idleTimer) mark(now time.Time, armed bool, onExpire func()) {
 	}
 }
 
-// armGrace re-arms the timer for a bounded grace period WITHOUT touching the
-// activity stamp: the budget has run out, but a request is in flight and the
-// unload is deferred rather than cancelled. The deferral is re-checked when the
-// grace expires, so a long generation keeps deferring it while the model is
-// genuinely being used.
-//
-// The re-checks are bounded by wall time, not by their number: the FIRST
-// deferral of an episode stamps deferSince and the re-arms that continue it keep
-// that stamp, so a leaked in-flight count — one that is never released — stops
-// being deferred once the episode has lasted a full idle budget (see
-// deferElapsed and onIdleExpired) and ends in an unload then, rather than one
-// grace later, and rather than never.
+// armGrace re-arms the timer for a bounded grace WITHOUT touching the activity
+// stamp: the budget ran out, a request is in flight, so the unload defers. The
+// re-checks are bounded by WALL TIME, not by count: the episode's first
+// deferral stamps deferSince and the re-arms that continue it keep that stamp,
+// so a leaked in-flight count stops being deferred once the episode has lasted
+// a full idle budget.
 func (t *idleTimer) armGrace(now time.Time, grace time.Duration, armed bool, onExpire func()) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	// stopTimerLocked, NOT stopLocked: the episode this call continues must keep
-	// its start stamp, or every re-arm would grant itself a fresh wall-time
-	// budget and the bound would never be reached.
+	// stopTimerLocked, NOT stopLocked: the continued episode keeps its start
+	// stamp, or every re-arm would grant itself a fresh wall-time budget.
 	t.stopTimerLocked()
 	if !armed || !t.pol.Enabled || grace <= 0 {
 		t.graceUntil = time.Time{}
@@ -235,11 +189,10 @@ func (t *idleTimer) armGrace(now time.Time, grace time.Duration, armed bool, onE
 	t.timer = time.AfterFunc(grace, onExpire)
 }
 
-// deferElapsed reports how long the CURRENT deferral episode has been running:
-// zero when no expiry has been deferred since the last real activity, a disarm
-// or a policy change. onIdleExpired compares it against the idle budget — an
-// episode that has already lasted that long is not waiting for a generation any
-// more, it is waiting for an in-flight count that will never be released.
+// deferElapsed reports how long the CURRENT deferral episode has been running;
+// onIdleExpired compares it against the idle budget — an episode that long is
+// waiting for an in-flight count that will never be released, not for a
+// generation.
 func (t *idleTimer) deferElapsed(now time.Time) time.Duration {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -252,11 +205,10 @@ func (t *idleTimer) deferElapsed(now time.Time) time.Duration {
 	return 0
 }
 
-// armLocked creates the timer for whatever budget is left. t.mu must be held.
-//
-// It ALWAYS leaves a timer behind when the policy can fire at all, including the
-// spent-budget case (armed at zero, so the callback runs at once): `armed` is
-// reported from t.timer, and the callback trusts that report.
+// armLocked creates the timer for whatever budget is left; t.mu must be held.
+// It ALWAYS leaves a timer behind when the policy can fire at all, including
+// the spent-budget case (armed at zero): `armed` is reported from t.timer and
+// the callback trusts that report.
 func (t *idleTimer) armLocked(now time.Time, onExpire func()) {
 	if !t.pol.Enabled || t.pol.Idle <= 0 {
 		return
@@ -268,15 +220,13 @@ func (t *idleTimer) armLocked(now time.Time, onExpire func()) {
 	if wait < 0 {
 		wait = 0
 	}
-	// A spent budget is ARMED AT ZERO rather than fired inline. The callback
-	// re-validates under this same mutex and only acts on a timer it finds armed
-	// — remaining reports `armed` from t.timer, and onIdleExpired bails on !armed
-	// — so a bare `go onExpire()` here is rejected by its own guard: enabling the
-	// policy (or shortening it below the time already spent) on a long-idle model
-	// would neither unload it nor leave a timer armed behind, and nothing re-arms
-	// afterwards. AfterFunc always runs the callback on its own goroutine, which
-	// is what the zero-delay arm needs as well: the caller holds Server.mu and the
-	// unload has to acquire it.
+	// A spent budget is ARMED AT ZERO rather than fired inline: the callback
+	// re-validates under this mutex and acts only on a timer it finds armed,
+	// so a bare fire here would leave nothing armed and nothing re-arming
+	// (enabling the policy on a long-idle model would neither unload it nor
+	// re-arm). AfterFunc runs the callback on its own goroutine, which the
+	// zero-delay arm needs anyway: the caller holds Server.mu, which the
+	// unload has to acquire.
 	t.timer = time.AfterFunc(wait, onExpire)
 }
 
@@ -306,13 +256,10 @@ func (t *idleTimer) stopTimerLocked() {
 	}
 }
 
-// remaining reports the budget left before an auto-unload. ok is false when no
-// timer is armed — the policy is disabled, or the model is not loaded — which is
-// what lets a caller distinguish "60 minutes left" from "this never unloads".
-//
-// While an expiry is deferred for an in-flight request (armGrace), the answer is
-// the grace left rather than the budget left: the budget is already spent, and
-// reporting 0 there would hide the deferral from every reader.
+// remaining reports the budget left before an auto-unload; ok is false when no
+// timer is armed, which distinguishes "60 minutes left" from "this never
+// unloads". While an expiry is deferred (armGrace) the answer is the grace
+// left — the budget is already spent, and 0 would hide the deferral.
 func (t *idleTimer) remaining(now time.Time) (time.Duration, bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -379,18 +326,12 @@ func (s *Server) AutoUnloadPolicy() AutoUnload {
 	return s.idlePolicyLocked()
 }
 
-// MarkActivity records that the model was just used, restarting the idle budget.
-//
-// The ensure-loaded transport calls it when a response COMPLETES, not when a
-// request is sent: a long generation is activity, and charging it to the budget
-// would unload a model mid-conversation. Marking while the model is not loaded
-// only updates the stamp — the timer runs against a loaded model, so a stamp
-// made before a load cannot arm anything.
-//
-// Completion is only half of that guarantee: a generation LONGER than the whole
-// budget would still expire before it completes, so the in-flight count below is
-// what the expiry checks first. The stamp is what restarts the full budget once
-// the request is over.
+// MarkActivity records that the model was just used, restarting the idle
+// budget. The ensure-loaded transport calls it when a response COMPLETES — a
+// long generation is activity — but completion is only half the guarantee: a
+// generation longer than the whole budget needs the in-flight count, which the
+// expiry checks first; the stamp restarts the full budget afterwards. Marking
+// while the model is not loaded only updates the stamp.
 func (s *Server) MarkActivity() {
 	if s == nil {
 		return
@@ -402,16 +343,11 @@ func (s *Server) MarkActivity() {
 }
 
 // BeginRequest records that a request against the embedded model is now in
-// flight. The ensure-loaded transport calls it immediately before it sends one
-// and EndRequest when that request's response is finished, so the pair brackets
-// the whole exchange — headers, streamed body and all.
-//
-// It is the second half of "a long generation is activity": MarkActivity stamps
-// on completion, which cannot help a request that outlives the entire budget, so
-// the idle expiry defers itself while this count is positive (onIdleExpired). The
-// deferral is capped at ONE EXTRA FULL IDLE BUDGET of wall time, so a count this
-// pair never releases — a response body nobody closed — delays the unload by at
-// most that much instead of pinning the model resident for the process lifetime.
+// flight; EndRequest releases it when that request's response is finished, so
+// the pair brackets the whole exchange — headers, streamed body and all. The
+// second half of "a long generation is activity": the idle expiry defers while
+// the count is positive, capped at ONE EXTRA FULL IDLE BUDGET of wall time, so
+// a count this pair never releases delays the unload by at most that much.
 func (s *Server) BeginRequest() {
 	if s == nil {
 		return
@@ -419,10 +355,9 @@ func (s *Server) BeginRequest() {
 	s.inFlight.Add(1)
 }
 
-// EndRequest releases one in-flight request. It is idempotent at zero: a count
-// that has already been released cannot go negative, which would under-count the
-// requests that follow it and leave a genuine long generation with no deferral
-// protecting it.
+// EndRequest releases one in-flight request; a count already at zero stays
+// there — going negative would under-count later requests and leave a genuine
+// long generation with no deferral protecting it.
 func (s *Server) EndRequest() {
 	if s == nil {
 		return
@@ -490,39 +425,27 @@ func (s *Server) recordActivityLocked() {
 	s.idle.mark(s.now(), s.stateLocked() == StateLoaded, s.onIdleExpired)
 }
 
-// idleGracePeriod is how far an idle expiry defers itself while a request is in
-// flight. It is a re-check interval rather than a second budget: the deferral is
-// re-armed on every expiry for as long as requests are open, so a long generation
-// is never cut short. The re-checks are bounded by wall time (deferSince), so a
-// leaked in-flight count — a response body nobody ever closed — ends in an unload
-// after AT MOST ONE EXTRA FULL IDLE BUDGET instead of pinning gigabytes resident
-// for the lifetime of the process.
+// idleGracePeriod is how far an idle expiry defers itself while a request is
+// in flight — a re-check interval, not a second budget: the deferral re-arms
+// on every expiry for as long as requests are open, and the re-checks are
+// bounded by wall time (deferSince), so a leaked in-flight count ends in an
+// unload after at most one extra full idle budget.
 const idleGracePeriod = 30 * time.Second
 
 // onIdleExpired is the timer callback: the budget ran out, so the process is
-// stopped.
+// stopped. It re-checks everything under the lock first, because the callback
+// acts on a decision the timer made earlier and three things can have changed:
+// the model is no longer loaded; the timer is no longer ARMED (a model just
+// exempted must not be unloaded by a stale tick); or activity landed and
+// already re-armed a fresh budget (left > 0), making this callback the stale
+// one.
 //
-// It re-checks everything under the lock first, because the callback acts on a
-// decision the timer made earlier and three things can have changed since:
-//
-//   - the model is no longer loaded (an Unload or a crash got there first);
-//   - the timer is no longer ARMED: the operator disabled the policy — or
-//     disarmed it another way — in the window between the tick and this
-//     callback, and a model just exempted must not be unloaded by the stale tick;
-//   - activity landed and already re-armed a fresh budget (left > 0), which
-//     makes this callback the stale one.
-//
-// A request in flight defers the unload by a bounded grace instead: stopping the
-// server now would kill a generation mid-answer, which is the exact outcome
-// MarkActivity's completion stamp exists to prevent. The deferral is bounded by
-// WALL TIME — one episode may not outlast a full idle budget — so an in-flight
-// count that is never released delays the unload by at most that much and then
-// loses it, with the leaked count named at Warn.
-//
-// The unload itself carries the activity generation this callback decided on and
-// is abandoned if activity moved in the meantime, because Unload has to
-// re-acquire both the gate and Server.mu — a window a request finishing exactly
-// at the deadline would otherwise lose its model in.
+// A request in flight defers the unload by a bounded grace instead — the exact
+// outcome MarkActivity's completion stamp exists to prevent. The deferral is
+// bounded by WALL TIME, so a never-released in-flight count delays the unload
+// at most one extra full budget, with the leaked count named at Warn. The
+// unload carries the activity generation decided on and is abandoned if
+// activity moved while Unload re-acquired the gate and Server.mu.
 func (s *Server) onIdleExpired() {
 	s.mu.Lock()
 	now := s.now()
@@ -561,29 +484,22 @@ func (s *Server) onIdleExpired() {
 }
 
 // deferIdleUnload re-arms the idle timer for one grace period because a request
-// is still being served. It deliberately does NOT stamp activity: the budget
-// stays spent, so the unload lands one grace after the last request completes
-// rather than a full budget after it. MarkActivity — which the transport calls on
-// completion — is what grants the fresh budget.
-//
-// deferred is how long the current episode has already been deferring, logged so
-// an operator watching a long generation can see how much of the wall-time bound
-// (one full idle budget) it has used.
+// is still being served. It deliberately does NOT stamp activity — the budget
+// stays spent, so the unload lands one grace after the last request completes;
+// MarkActivity is what grants the fresh budget. deferred (logged) is how long
+// the current episode has already been deferring, against the wall-time bound
+// of one full idle budget.
 func (s *Server) deferIdleUnload(inFlight int64, deferred time.Duration) {
 	s.mu.Lock()
 	loaded := s.stateLocked() == StateLoaded
 	s.idlePolicyLocked()
-	// The budget is RE-READ under the lock, because the decision to defer was
-	// made outside it: onIdleExpired releases s.mu before it reads the in-flight
-	// count, and a request that completes in that window stamps activity BEFORE
-	// it releases the count (activityBody.finish() runs before end()) — so the
-	// fresh FULL budget mark() armed can already be in place while this call
-	// still sees a positive count. armGrace begins with stopTimerLocked, which
-	// stops whatever is armed, so deferring unconditionally here would throw that
-	// budget away for a 30 s grace and unload the model 30 s after genuine
-	// activity: the next request would pay a multi-minute cold load. This is the
-	// same staleness the `left > 0` guard in onIdleExpired rejects, re-checked at
-	// the only place that can still act on the stale read.
+	// The budget is RE-READ under the lock: the defer decision was made
+	// outside it, and a request completing in that window stamps activity
+	// BEFORE releasing the count (activityBody.finish() runs before end()),
+	// so a fresh FULL budget may already be armed while the count still reads
+	// positive — and armGrace would throw it away for a 30 s grace. Same
+	// staleness the left > 0 guard in onIdleExpired rejects, re-checked at the
+	// only place that can still act on the stale read.
 	if left, _ := s.idle.remaining(s.now()); left > 0 {
 		s.mu.Unlock()
 		s.logger().Debug("an idle deferral was superseded by the fresh budget activity armed; keeping that budget",

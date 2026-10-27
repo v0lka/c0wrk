@@ -10,99 +10,51 @@ import (
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
-// ErrToolTimeout is returned (wrapped with the tool name by the dispatch site)
-// from Loop.Run when a single action's tool call does not complete within
-// Config.ToolCallTimeout. It is the SAME sentinel the sp4rk executor surfaces
-// (agent.ErrToolTimeout), so a host matching either name observes the identical
-// timeout class; the E2S loop's own dispatch has no way to reach the executor's
-// watchdog, so it reuses the sentinel rather than minting a parallel one.
+// ErrToolTimeout — a single action's tool call exceeded Config.ToolCallTimeout
+// (wrapped with the tool name at the dispatch site); aliases the sp4rk
+// executor's sentinel, which the E2S dispatch cannot reach.
 var ErrToolTimeout = agent.ErrToolTimeout
 
-// defaultToolWatchdogInterval is the cadence at which the E2S dispatch watchdog
-// polls the cooperative pause checker while a tool call is in flight. It is
-// deliberately short so a pause is observed within a fraction of a second even
-// when the underlying tool is blocked (a blocking syscall cannot be interrupted,
-// so the watchdog must poll). It mirrors the executor's tool watchdog cadence.
+// defaultToolWatchdogInterval is the watchdog's pause-poll cadence while a
+// tool call is in flight — deliberately short, because a blocked syscall
+// cannot be interrupted and the pause must be polled.
 const defaultToolWatchdogInterval = 250 * time.Millisecond
 
 // toolCallTimeoutExemptTools names the E2S-available tools exempt from
-// Config.ToolCallTimeout. They block inside Execute by design — on a human
-// (ask_user) or on sub-work (a blocking delegate running its subagents to
-// completion) — so a raw wall clock would fail a perfectly healthy run at the
-// ceiling. Mirrors the sp4rk executor's default exemption set, narrowed to the
-// tools E2S actually exposes (the plan-workflow tools declare_plan/execute_plan
-// are stripped from the E2S catalog, and propose_goal with the goal-only set).
-// Deliberately NOT operator-configurable: the timeouts.toolCallTimeoutExempt-
-// Tools knob applies only to the Conductor/executor loops — the experimental
-// E2S state loop keeps this narrowed built-in default.
+// Config.ToolCallTimeout — they block inside Execute by design (on a human,
+// or on blocking delegate sub-work), so a wall clock would fail a healthy
+// run. Deliberately NOT operator-configurable: the timeouts knob covers
+// only the Conductor/executor loops.
 var toolCallTimeoutExemptTools = map[string]struct{}{
 	"ask_user": {},
 	"delegate": {},
 }
 
-// toolCallOutcome carries the result of the detached Registry.Execute call back
-// to executeToolCall. The channel it travels on is buffered (capacity 1) so the
-// producing goroutine always sends and exits, even when executeToolCall has
-// already returned via the pause/timeout/cancel arms — that is what keeps the
-// goroutine from leaking on the abandoned paths.
+// toolCallOutcome carries the detached Registry.Execute result back to
+// executeToolCall; its channel is buffered (capacity 1) so the producer
+// always sends and exits, even on abandoned pause/timeout/cancel paths.
 type toolCallOutcome struct {
 	result sdktools.ToolResult
 	err    error
 }
 
 // executeToolCall dispatches a single E2S action through l.registry.Execute
-// while remaining responsive to signals that must interrupt a stuck call. It
-// runs the tool in its own goroutine and selects over four events:
+// while staying responsive to interrupting signals (see specs/domains/e2s.md
+// for the full contract): the call runs on a detached, panic-recovering
+// goroutine and select races completion, ctx.Done() (→ ctx.Err()), the pause
+// checker polled every l.watchdogInterval (→ ErrPaused — c0wrk pause does
+// not cancel ctx, so the poll is the only mid-call observation), and
+// Config.ToolCallTimeout (→ ErrToolTimeout; zero disables, exempt tools
+// unbounded).
 //
-//   - the tool completing normally — its result (and error) are returned as-is;
-//   - ctx.Done() — the run's context was cancelled or its deadline elapsed
-//     (shutdown/cancel), returning ctx.Err();
-//   - the cooperative pause checker tripping (polled every
-//     l.watchdogInterval, default defaultToolWatchdogInterval) — returning
-//     ErrPaused so the caller can emit a resumable checkpoint. c0wrk pause does
-//     NOT cancel ctx, so this poll is the only way a pause is observed while a
-//     tool is blocked;
-//   - cfg.ToolCallTimeout elapsing — returning ErrToolTimeout. A zero timeout
-//     (the default) disables this arm, and a tool named in
-//     toolCallTimeoutExemptTools (ask_user, a blocking delegate) is never
-//     bounded at all, so an interactive or long-running call cannot fail the
-//     run at the ceiling.
-//
-// IMPORTANT: the underlying tool call is asked to stop — not preempted — when
-// the pause, timeout, or cancellation arm fires: it runs on a child of ctx that
-// is cancelled on every abandon path (a pause, a timeout, or a cancellation —
-// plus the deferred cancel on any OTHER exit), so a
-// still-pending interactive prompt or blocking sub-work is dismissed rather than
-// orphaned and a late "Allow" cannot execute a mutation with no owning run
-// (mirrors the sp4rk executor). ctx itself is never cancelled here. Because Go
-// cannot preempt a blocked syscall, a tool already past its last cancellation
-// check — or parked in an uninterruptible call — can still run to completion in
-// its detached goroutine; only the WAIT is abandoned. Callers must therefore
-// treat the tool's side effects as having possibly occurred, and must not assume
-// the call was stopped. The goroutine itself is bounded: it ends as soon as
-// Execute returns or panics (its send on the size-1 channel never blocks), so no
-// goroutine leaks once the tool finishes — the one case that can outlive the run
-// is a tool that never returns, which no watchdog can reclaim.
-//
-// A panic inside l.registry.Execute is recovered on the detached goroutine
-// (where the call now runs) and delivered as the outcome's error, preserving
-// the process-level panic containment that held when the call ran inline on
-// the guarded Run goroutine — an unrecovered panic on this goroutine would
-// abort the whole host.
-//
-// Mirrors the sp4rk executor's (*Executor).executeToolCall so the E2S path —
-// which bypasses the executor entirely — carries the same
-// "no single tool call may block the loop indefinitely" guarantee. It must be
-// called from the Run goroutine (the PauseChecker and ToolCallTimeout config
-// fields are read here without synchronization, matching their set-before-Run
-// contract). The registry must be non-nil; executeSingle only reaches this path
-// when l.registry != nil.
+// Abandoning the wait cancels only the call's child context: the tool is
+// asked to stop, never preempted — a tool past its last cancellation check
+// may still complete detached, so its side effects must be treated as
+// possibly having occurred. Mirrors the sp4rk executor's watchdog; must run
+// on the Run goroutine, registry non-nil.
 func (l *Loop) executeToolCall(ctx context.Context, name string, input json.RawMessage) (sdktools.ToolResult, error) {
-	// Derive a cancellable context for the tool call so the abandon paths can
-	// dismiss a still-pending call (a confirmation card, an ask_user prompt,
-	// blocking sub-work) instead of orphaning it — the same guarantee the sp4rk
-	// executor's watchdog provides. ctx itself is never cancelled here — only
-	// this child, and the deferred cancel releases it on every exit.
+	// A cancellable child so abandon paths dismiss a still-pending call
+	// instead of orphaning it; ctx itself is never cancelled here.
 	callCtx, cancelCall := context.WithCancel(ctx)
 	defer cancelCall()
 
@@ -117,15 +69,9 @@ func (l *Loop) executeToolCall(ctx context.Context, name string, input json.RawM
 		done <- toolCallOutcome{result: res, err: err}
 	}()
 
-	// A tool that has ALREADY completed must win over an arm that happens to be
-	// ready at the same instant: select picks uniformly at random among ready
-	// cases, so entering the blocking loop with both `done` and ctx.Done() (or
-	// the pause tick, or the timeout) ready could discard a finished tool's real
-	// result and report the call as cancelled, paused, or timed out instead.
-	// A tool that has ALREADY completed must win over any arm: select picks
-	// uniformly at random among ready cases, so a completion ready at the same
-	// instant as ctx.Done()/a pause tick/the timeout must be drained first, or a
-	// finished tool's real result would be discarded (see drainToolResult).
+	// A completion already delivered must win over any arm: select picks
+	// uniformly among ready cases, so drain before blocking
+	// (see drainToolResult).
 	if res, ok, err := drainToolResult(done); ok {
 		return res, err
 	}
@@ -143,10 +89,8 @@ func (l *Loop) executeToolCall(ctx context.Context, name string, input json.RawM
 		tickCh = ticker.C
 	}
 
-	// The timeout arm is armed only when a positive ceiling is configured AND
-	// the tool is not exempt; otherwise the timer channel stays nil (disabled).
-	// A zero value means "no timeout", preserving the pre-watchdog behavior for
-	// callers that do not opt in.
+	// The timeout arm arms only for a positive ceiling on a non-exempt tool;
+	// zero means "no timeout".
 	var timeoutCh <-chan time.Time
 	if l.cfg.ToolCallTimeout > 0 {
 		if _, exempt := toolCallTimeoutExemptTools[name]; !exempt {
@@ -167,16 +111,15 @@ func (l *Loop) executeToolCall(ctx context.Context, name string, input json.RawM
 			}
 			return sdktools.ToolResult{}, ctx.Err()
 		case <-tickCh:
-			// Mirror the step-boundary precedence: a cancelled/deadline run
-			// must report cancellation, never pause, when the pause tick and
-			// ctx.Done() are ready in the same selection.
+			// Step-boundary precedence: cancellation beats pause when both
+			// arms are ready in the same selection.
 			if err := ctx.Err(); err != nil {
 				if res, ok, dErr := drainToolResult(done); ok {
 					return res, dErr
 				}
 				return sdktools.ToolResult{}, err
 			}
-			// A tool that completed on this tick must win over the pause.
+			// A completion on this tick beats the pause.
 			if res, ok, dErr := drainToolResult(done); ok {
 				return res, dErr
 			}
@@ -185,23 +128,21 @@ func (l *Loop) executeToolCall(ctx context.Context, name string, input json.RawM
 				return sdktools.ToolResult{}, ErrPaused
 			}
 		case <-timeoutCh:
-			// Mirror the pause-tick arm: a cancelled/deadline run must report
-			// cancellation, not a timeout, when the ceiling and ctx.Done() are
-			// ready in the same selection.
+			// Cancellation beats timeout when both arms are ready in the same
+			// selection.
 			if err := ctx.Err(); err != nil {
 				if res, ok, dErr := drainToolResult(done); ok {
 					return res, dErr
 				}
 				return sdktools.ToolResult{}, err
 			}
-			// A tool that completed at the ceiling must win over the timeout.
+			// A completion at the ceiling beats the timeout.
 			if res, ok, dErr := drainToolResult(done); ok {
 				return res, dErr
 			}
 			l.log().Debug("e2s tool watchdog: tool call exceeded the configured timeout",
 				"tool", name, "timeout", l.cfg.ToolCallTimeout.String())
-			// Cancel the tool's own context so a pending prompt / blocking
-			// sub-work is dismissed rather than orphaned.
+			// Dismiss a pending prompt / blocking sub-work (don't orphan it).
 			cancelCall()
 			return sdktools.ToolResult{}, ErrToolTimeout
 		}
@@ -209,9 +150,7 @@ func (l *Loop) executeToolCall(ctx context.Context, name string, input json.RawM
 }
 
 // drainToolResult non-blockingly receives an already-delivered tool result so
-// every blocking arm can honour a completion ready at the same instant the arm
-// fires (select picks uniformly among ready cases). Mirrors the sp4rk
-// executor's helper.
+// a blocking arm honours a completion ready at the same instant it fires.
 func drainToolResult(done <-chan toolCallOutcome) (sdktools.ToolResult, bool, error) {
 	select {
 	case out := <-done:

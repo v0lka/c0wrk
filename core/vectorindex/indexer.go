@@ -38,28 +38,23 @@ const (
 	// IndexStateReady indicates the index is ready for queries.
 	IndexStateReady IndexState = "ready"
 	// IndexStateUnavailable indicates vector indexing is unavailable for the
-	// active project: asynchronous initialization failed (e.g. the persistent
-	// DB could not be opened, or the git branch collection could not be
-	// switched), or an indexing pass failed while no collection exists to
-	// fall back on. Search then returns a clean "no collection" error. The
-	// frontend renders the state honestly — an "Index unavailable" pill in
-	// IndexingStatus with the reindex action disabled (no busy spinner; a
-	// reindex cannot repair a missing collection) — on top of the dormant
-	// idle dots derived by indexPhaseStatus.deriveDotStatus. A branch change
-	// or project switch re-opens the collection and clears the state.
+	// active project (a failed open/init, or a failed pass with no collection
+	// left to fall back on); search returns a clean "no collection" error and
+	// the UI renders the state honestly — reindex disabled — until a branch
+	// change or project switch re-opens the collection. See
+	// specs/domains/workspace.md (Vector Index).
 	IndexStateUnavailable IndexState = "unavailable"
 	// IndexStateLoading indicates the branch-scoped persistent DB is being
-	// OPENED (ADR-064) and no indexing pass has started yet. It carries no
-	// progress fraction and is rendered as a plain "Preparing index…" — never
-	// the "indexing"/"building" shape — so the UI does not claim to be indexing
-	// while it is only opening.
+	// OPENED (ADR-064) before any indexing pass has started: no progress
+	// fraction, rendered as a plain "Preparing index…", never the
+	// indexing/building shape. See specs/domains/workspace.md.
 	IndexStateLoading IndexState = "loading"
 )
 
 // IndexPhase describes which side(s) of the dual index are being produced
-// for a given progress event. Hybrid indexing normally reports PhaseBoth;
-// the lazy BM25 backfill (RebuildLexical) reports PhaseLexical so the UI
-// can distinguish it from a cold-start embedding pass.
+// for a given progress event; PhaseLexical distinguishes the lazy BM25
+// backfill (RebuildLexical) from a cold-start embedding pass. The phase is
+// surfaced via the vector_index:status event. See specs/domains/workspace.md.
 type IndexPhase string
 
 const (
@@ -112,12 +107,10 @@ type IndexerConfig struct {
 	// (read/hash/chunk — pure I/O+CPU work) in parallel with the embedding
 	// consumer, so one file's ONNX inference overlaps the next file's disk
 	// read and chunking. 1 reproduces the historical strictly serial
-	// pipeline; 0 (or unset) defaults to DefaultPrepWorkers (2). It bounds
-	// only the prep stage: a single consumer still drives
-	// Service.AddDocuments, keeping embedding single-threaded under the
-	// service write lock exactly as before. ChunkFn and HashFn must be safe
-	// for concurrent use (the defaults are pure functions over the file's
-	// bytes).
+	// pipeline; 0 (or unset) defaults to DefaultPrepWorkers. It bounds only
+	// the prep stage: a single consumer still drives Service.AddDocuments,
+	// keeping embedding single-threaded under the service write lock.
+	// ChunkFn and HashFn must be safe for concurrent use.
 	PrepWorkers int
 	OnProgress  ProgressCallback
 	Logger      *slog.Logger
@@ -140,11 +133,11 @@ type Indexer struct {
 	logger           *slog.Logger
 	telemetry        *Telemetry
 
-	// ignoreMu guards ignoreRoot / ignoreChecker, a cache of the workspace's
-	// ignore.Resolver (.gitignore + .aiignore, root and nested) built once
-	// (during the first walk or watcher filter) and reused thereafter, so the
-	// watcher does not re-walk the workspace on every debounce flush. The
-	// cache is per-project: the Indexer is recreated on SwitchProject.
+	// ignoreMu guards ignoreRoot / ignoreChecker, the per-project cache of
+	// the workspace's ignore.Resolver (.gitignore + .aiignore, root and
+	// nested), so the walk and the watcher filter share one source of truth
+	// instead of re-walking per debounce flush; the Indexer — and this cache
+	// with it — is recreated on SwitchProject.
 	ignoreMu      sync.RWMutex
 	ignoreRoot    string
 	ignoreChecker ignore.IgnoreChecker
@@ -206,21 +199,15 @@ func NewIndexer(cfg IndexerConfig) *Indexer {
 // lexical index.
 func (idx *Indexer) IndexFull(ctx context.Context, workspacePath string) (err error) {
 	// MarkNotReady atomically captures a readiness generation; RestoreReady
-	// uses it to avoid racing with a concurrent project switch. Together
-	// they guarantee readiness is ALWAYS restored on exit — including
-	// cancellation and batch-add error paths that previously returned
-	// without SetReady(true), leaving WaitReady callers blocked forever.
+	// uses it to restore readiness on EVERY exit, including the cancellation
+	// and batch-add error paths that once returned without SetReady(true),
+	// leaving WaitReady callers blocked forever.
 	readyGen := idx.service.MarkNotReady()
 	defer idx.service.RestoreReady(readyGen)
 	// Emit a terminal progress event on any non-nil return so the UI does not
-	// keep showing stale "indexing N/M" progress after the pass is cancelled
-	// or fails. With a collection present the previous data is still
-	// queryable, so the terminal state is "ready". With NO collection (a
-	// failed branch open or init failure left nothing behind) announcing
-	// "ready" would claim queryable data that does not exist — mirror
-	// notifyInitFailure's terminal "unavailable" instead, so the pill stays
-	// honest and the reindex action stays disabled. On success the explicit
-	// onProgress below handles it and err stays nil.
+	// keep showing stale pass progress: "ready" when a queryable collection
+	// remains, "unavailable" when nothing exists to query. On success the
+	// explicit onProgress below handles it. See specs/domains/workspace.md.
 	defer func() {
 		if err != nil {
 			if idx.service.GetCollection() == nil {
@@ -264,22 +251,10 @@ func (idx *Indexer) IndexFull(ctx context.Context, workspacePath string) (err er
 // collection against disk, then updates only changed/new/deleted files
 // across both the vector collection and the lexical index.
 func (idx *Indexer) IndexIncremental(ctx context.Context, workspacePath string) (err error) {
-	// MarkNotReady atomically captures a readiness generation; RestoreReady
-	// uses it to avoid racing with a concurrent project switch. Together
-	// they guarantee readiness is ALWAYS restored on exit — including
-	// cancellation and batch-add error paths that previously returned
-	// without SetReady(true), leaving WaitReady callers blocked forever.
 	readyGen := idx.service.MarkNotReady()
 	defer idx.service.RestoreReady(readyGen)
-	// Emit a terminal progress event on any non-nil return so the UI does not
-	// keep showing stale "reindexing N/M" progress after the pass is
-	// cancelled or fails. With a collection present the previous data is
-	// still queryable, so the terminal state is "ready". With NO collection
-	// (a failed branch open or init failure left nothing behind) announcing
-	// "ready" would claim queryable data that does not exist — mirror
-	// notifyInitFailure's terminal "unavailable" instead, so the pill stays
-	// honest and the reindex action stays disabled. On success the explicit
-	// onProgress below handles it and err stays nil.
+	// Same terminal progress contract as IndexFull: "ready" vs "unavailable"
+	// by collection presence. See specs/domains/workspace.md.
 	defer func() {
 		if err != nil {
 			if idx.service.GetCollection() == nil {
@@ -290,18 +265,19 @@ func (idx *Indexer) IndexIncremental(ctx context.Context, workspacePath string) 
 		}
 	}()
 
-	// Wait for any background file-hash migration (first run after the sidecar
-	// upgrade, or a branch whose collection was built elsewhere) so
-	// ValidateCollection sees the full hash map instead of re-embedding every
-	// file. IndexFull is unaffected: an empty collection has nothing to migrate.
+	// Wait for the background file-hash migration (first run after the
+	// sidecar upgrade, or a branch whose collection was built elsewhere) so
+	// ValidateCollection sees the full hash map instead of re-embedding
+	// every file. IndexFull is unaffected: an empty collection has nothing
+	// to migrate. See specs/decisions/049-vector-index-memory-reduction.md.
 	if err := idx.service.WaitFileHashMigration(ctx); err != nil {
 		return fmt.Errorf("waiting for file-hash migration: %w", err)
 	}
 	// Same gate for the content-less migration: its ID-preserving re-commits
 	// must not interleave with this pass's deletions and re-indexing, or a
 	// just-deleted legacy document could be resurrected from the migration's
-	// probe snapshot. Empty collections carry the marker from the start, so
-	// this never delays a cold-start full index.
+	// probe snapshot. Empty collections carry the marker from the start.
+	// See specs/decisions/049-vector-index-memory-reduction.md.
 	if err := idx.service.WaitContentlessMigration(ctx); err != nil {
 		return fmt.Errorf("waiting for content-less migration: %w", err)
 	}
@@ -369,10 +345,9 @@ func (idx *Indexer) IndexIncremental(ctx context.Context, workspacePath string) 
 	filesToIndex = append(filesToIndex, stale...)
 	filesToIndex = append(filesToIndex, newFiles...)
 
-	// progressStart counts the deletions already processed above;
-	// countSkipped makes files that fail preparation still advance progress,
-	// matching the former serial loop's semantics (the incremental
-	// denominator always reaches totalChanges).
+	// progressStart counts the deletions already processed above; countSkipped
+	// keeps the incremental denominator reaching totalChanges (see the field
+	// docs on indexPipelineOpts).
 	if _, perr := idx.indexPrepared(ctx, filesToIndex, indexPipelineOpts{
 		state:         IndexStateReindexing,
 		total:         totalChanges,
@@ -393,50 +368,29 @@ func (idx *Indexer) IndexIncremental(ctx context.Context, workspacePath string) 
 
 // HandleBranchSwitch handles a git branch change by switching the collection
 // and re-indexing as needed. It reports whether the switch ran a FULL
-// indexing pass (the empty-target-branch case); the common switch — to an
-// already-indexed branch, including the same-branch no-op where SwitchBranch
-// early-returns — reconciles incrementally and reports false, so callers can
-// skip the post-full-pass memory scavenge (Manager.freeOSMemoryAfterFullIndex).
+// indexing pass (the empty-target-branch case); every other switch — including
+// the same-branch no-op where SwitchBranch early-returns — reconciles
+// incrementally and reports false, so callers can skip the post-full-pass
+// memory scavenge (Manager.freeOSMemoryAfterFullIndex).
 func (idx *Indexer) HandleBranchSwitch(ctx context.Context, workspacePath, newBranch string) (bool, error) {
 	// MarkNotReady captures the gen so RestoreReady (called by the delegated
 	// IndexFull/IndexIncremental's own defer) only restores readiness if no
-	// SetReady(false) has intervened. SwitchBranch failure returns before the
-	// delegation, so we also need to restore here.
+	// SetReady(false) has intervened; SwitchBranch failure returns before the
+	// delegation, so this defer is the only restore on that path.
 	readyGen := idx.service.MarkNotReady()
 	defer idx.service.RestoreReady(readyGen)
 
-	// ADR-064 turned a branch switch into a real open: SwitchBranch releases the
-	// outgoing branch's residents and then gob-decodes the target branch's own
-	// chromem DB, which takes seconds on a large branch (it was an O(1)
-	// GetOrCreateCollection on an already-fully-decoded DB before). Announce the
-	// honest pre-open state for that window, exactly as initProject does for the
-	// project-open path, so the status bar does not keep showing the previous
-	// pass's green "Index ready" while the collection is nil and readiness is
-	// dropped — and so a search whose bounded WaitReady expires inside the decode
-	// reports "index not yet ready (loading)" instead of the self-contradictory
-	// "(ready)".
-	//
-	// The guard is the exact negation of SwitchBranch's own early-return
-	// condition (`branch == currentBranch && collection != nil`), so the
-	// announcement fires for precisely the calls that really open — never for
-	// the same-branch no-op, where it would only flicker the pill. Mirroring the
-	// callee instead of comparing branch names alone also covers a retry after a
-	// FAILED open, which leaves currentBranch naming a branch whose collection
-	// is already gone. Both reads are harmless if another switch interleaves:
-	// the worst case is one extra or one missing announcement, and that switch
-	// announces for itself.
-	//
-	// A FAILED open emits the terminal `unavailable` (below), mirroring the
-	// deferred terminal emissions of IndexFull/IndexIncremental. Leaving the
-	// announcement in place instead parked the status bar on "Preparing
-	// index…" until the next branch change or project switch — for a user who
-	// does not switch, the whole session, with the search panel claiming
-	// results will "appear automatically when ready". The historical reason
-	// not to emit `unavailable` (IndexingStatus rendered it as a fake
-	// "Indexing…" 0% bar) is gone: the pill now renders `unavailable` honestly
-	// and the reindex action is disabled under it (a reindex cannot repair a
-	// failed open anyway — there is no collection to validate or add to). The
-	// next branch change or project switch retries.
+	// ADR-064 made a branch switch a real open: SwitchBranch releases the
+	// outgoing branch's residents and gob-decodes the target branch's own
+	// chromem DB (seconds on a large branch), so announce the honest pre-open
+	// state for that window, exactly as initProject does. The guard is the
+	// exact negation of SwitchBranch's early return, so it fires precisely
+	// for the calls that really open — never the same-branch no-op — and
+	// still covers a retry after a FAILED open, which leaves currentBranch
+	// naming a branch whose collection is gone; both reads are harmless if
+	// another switch interleaves (it announces for itself). A FAILED open
+	// emits the terminal `unavailable` below. See specs/domains/workspace.md
+	// (pre-open status).
 	if idx.service.CurrentBranchName() != newBranch || idx.service.GetCollection() == nil {
 		idx.onProgress(PhaseOpen, IndexStateLoading, 0, 0, "")
 	}
@@ -461,12 +415,12 @@ func (idx *Indexer) HandleBranchSwitch(ctx context.Context, workspacePath, newBr
 }
 
 // sanitizeChunkContent replaces undecodable UTF-8 byte sequences with U+FFFD
-// so the chunker/tokenizer can process the bytes. It reports whether anything
-// was replaced. Callers MUST hash the RAW bytes first (ValidateCollection
-// re-hashes raw bytes for unchanged-file detection), then pass the content
-// through here before chunking, so every path that derives chunk boundaries
-// (processFile, lexicalDocsForSidecarFile) sees the same bytes and reproduces
-// the same deterministic IDs.
+// so the tokenizer can process the bytes, reporting whether anything was
+// replaced. Protocol owner: callers MUST hash the RAW bytes first
+// (ValidateCollection re-hashes raw bytes for unchanged-file detection), then
+// sanitize before chunking, so every chunk-boundary derivation (processFile,
+// lexicalDocsForSidecarFile) sees the same bytes and reproduces the same
+// deterministic IDs.
 func sanitizeChunkContent(content []byte) ([]byte, bool) {
 	if utf8.Valid(content) {
 		return content, false
@@ -478,31 +432,22 @@ func sanitizeChunkContent(content []byte) ([]byte, bool) {
 // parallel chromem and lexical document slices keyed by the same shared
 // document ID.
 func (idx *Indexer) processFile(filePath string) ([]chromem.Document, []lexical.Doc, error) {
-	// Size guard (stat once; reused below for lastModified): reject oversized
-	// files before any full read. isBinaryHeader's NUL heuristic cannot catch
-	// every binary format — ONNX/safetensors protobufs begin with readable
-	// ASCII and contain no NUL in their header — so without this guard a
-	// multi-hundred-MB model file would be loaded whole by os.ReadFile and
-	// explode memory during chunking. The limit (idx.maxFileSize) is
-	// configurable via vector_index.max_file_size.
-	//
-	// This read-time check is the universal backstop: walkProjectFiles and
-	// ValidateCollection also apply the same limit as an optimization (so
-	// oversized files never enter the pipeline), but processFile may be
-	// reached via paths that bypass the walk — e.g. a debounced incremental
-	// reindex triggered by a watcher event on a file that grew past the limit.
-	// This check guarantees no oversized file is ever fully read regardless of
-	// the caller.
+	// Size guard (stat once; reused below for lastModified): the universal
+	// backstop that no oversized file is ever fully read, from any caller —
+	// the NUL-header binary check cannot recognize protobuf-format binaries
+	// (readable ASCII, no NUL), which would otherwise be loaded whole and
+	// explode memory during chunking (see DefaultMaxIndexableFileSize; the
+	// walk and ValidateCollection apply the same limit only as an
+	// optimization).
 	info, statErr := os.Stat(filePath)
 	if statErr != nil {
 		return nil, nil, fmt.Errorf("stat file %s: %w", filePath, statErr)
 	}
-	// Only regular files are read. walkProjectFiles and ValidateCollection
-	// already filter non-regular entries, but processFile may be reached via a
-	// watcher event that bypasses the walk: a FIFO/socket/device planted at a
+	// Only regular files are read: processFile may be reached via a watcher
+	// event that bypasses the walk, and a FIFO/socket/device planted at a
 	// workspace path would otherwise block the read-open — and hang the
-	// indexing pass, plus any shutdown join waiting on it — indefinitely.
-	// os.Stat never blocks, so the skip costs nothing and no open is attempted.
+	// pass plus any shutdown join waiting on it — indefinitely. os.Stat
+	// never blocks, so the skip costs nothing and no open is attempted.
 	if !info.Mode().IsRegular() {
 		idx.logger.Debug("skipping non-regular file", "path", filePath)
 		return nil, nil, nil
@@ -513,9 +458,9 @@ func (idx *Indexer) processFile(filePath string) ([]chromem.Document, []lexical.
 		return nil, nil, nil
 	}
 
-	// Bounded header pre-read for binary detection: reject multi-GB binary
-	// assets (e.g. .onnx, .safetensors, .psd) before loading them fully into
-	// memory. isBinaryHeader reads at most binaryHeaderSize bytes.
+	// Bounded header pre-read rejects multi-GB binary assets (.onnx,
+	// .safetensors, .psd) before they are loaded fully into memory; see
+	// isBinaryHeader.
 	binary, bErr := isBinaryHeader(filePath)
 	if bErr != nil {
 		return nil, nil, fmt.Errorf("reading file %s: %w", filePath, bErr)
@@ -533,12 +478,10 @@ func (idx *Indexer) processFile(filePath string) ([]chromem.Document, []lexical.
 		return nil, nil, nil
 	}
 
-	// Content policy is evaluated on the SAME raw bytes ValidateCollection
-	// reads, so the skip verdict is identical on both paths regardless of
-	// UTF-8 validity (the detector tolerates invalid sequences
-	// deterministically). Skipped files produce no documents; the raw-hash
-	// sidecar entry is simply never written, and validation treats the file
-	// as intentionally excluded.
+	// Content policy runs on the SAME raw bytes ValidateCollection reads, so
+	// the skip verdict is identical on both paths regardless of UTF-8
+	// validity; a skipped file produces no documents and its raw-hash sidecar
+	// entry is simply never written.
 	if reason, skip := DetectContentSkip(content, idx.contentFilter); skip {
 		idx.logger.Info("skipping file by content policy", "path", filePath, "reason", reason)
 		return nil, nil, nil
@@ -546,23 +489,10 @@ func (idx *Indexer) processFile(filePath string) ([]chromem.Document, []lexical.
 
 	hash := idx.hashFn(content)
 
-	// The embedding tokenizer (sugarme/tokenizer v0.3.0, via sp4rk) panics
-	// on text that is not valid UTF-8 — its NormalizedString alignment
-	// bookkeeping breaks on undecodable byte sequences. Files in legacy
-	// single-byte encodings (Windows-1251, Latin-1) or with corrupted bytes
-	// pass the NUL-header binary check above, so sanitize the content before
-	// chunking: undecodable sequences are replaced with U+FFFD (the same
-	// lossy conversion sp4rk's Tokenizer.Encode applies as a last resort,
-	// so chunk text stays consistent end-to-end). The hash above
-	// intentionally covers the RAW on-disk bytes: ValidateCollection
-	// re-hashes raw bytes for unchanged-file detection, and hashing anything
-	// else would mark every sanitized file stale on the next pass.
-	//
-	// This MUST be the same hash-raw-then-sanitize-then-chunk sequence the
-	// sidecar-driven lexical rebuild uses (lexicalDocsForSidecarFile): both
-	// derive the deterministic DocumentID from the chunk boundaries, which
-	// only coincide when both chunk the SANITIZED bytes. Sharing this helper
-	// keeps the two paths from drifting.
+	// The embedding tokenizer (via sp4rk) panics on invalid UTF-8, and such
+	// bytes pass the NUL-header check above, so sanitize before chunking
+	// (see sanitizeChunkContent for the hash-raw-first protocol this shares
+	// with the sidecar-driven lexical rebuild).
 	sanitized, wasSanitized := sanitizeChunkContent(content)
 	if wasSanitized {
 		idx.logger.Debug("sanitizing non-UTF-8 file content before indexing", "path", filePath)
@@ -574,16 +504,10 @@ func (idx *Indexer) processFile(filePath string) ([]chromem.Document, []lexical.
 		return nil, nil, fmt.Errorf("chunking file %s: %w", filePath, err)
 	}
 
-	// Chunk-count guard: a pathological chunker result — most often a
-	// data-format file (BPE vocab/merges JSON, lockfiles, minified assets)
-	// that the structure-aware splitter fragments into tens of thousands of
-	// tiny chunks — would otherwise be handed to AddDocuments and hang/OOM
-	// the embedder (30k ONNX passes). The cap turns such a file into a clean
-	// skip logged at WARN, leaving the rest of the index pass intact. It is
-	// also a second line of defense against future chunker regressions.
-	// Embedding is bounded by the configured inference batch and the separate
-	// embeddingCommitWindowSize, so the cap's job is to catch the pathological
-	// batch; the default (4000) sits above any legitimate source file.
+	// Chunk-count guard: a pathological chunker result (a data-format file
+	// fragmented into tens of thousands of tiny chunks) would hang/OOM the
+	// embedder via AddDocuments; the cap turns it into a clean WARN skip.
+	// See the canonical rationale on DefaultMaxChunksPerFile.
 	if len(chunks) > idx.maxChunksPerFile {
 		idx.logger.Warn("skipping file: chunk count exceeds per-file cap",
 			"path", filePath, "chunks", len(chunks), "cap", idx.maxChunksPerFile)
@@ -594,11 +518,10 @@ func (idx *Indexer) processFile(filePath string) ([]chromem.Document, []lexical.
 	// info is guaranteed non-nil here: processFile returned early above if the
 	// opening os.Stat failed, so lastModified is always populated.
 	lastModified := info.ModTime().UTC().Format("2006-01-02T15:04:05Z")
-	// file_size + file_mtime_unix_nano feed the file-hash sidecar's
-	// "hash|size|mtimeUnixNano" entries so ValidateCollection can classify
-	// the file as unchanged from stat alone (no ReadFile + SHA-256) on
-	// incremental passes. Recorded from the SAME stat that guarded the read,
-	// so the entry always describes the exact bytes that were hashed.
+	// file_size + file_mtime_unix_nano feed the sidecar's stat-only
+	// unchanged-file classification (no ReadFile + SHA-256 on incremental
+	// passes); recorded from the SAME stat that guarded the read, so the
+	// entry always describes the exact bytes hashed.
 	sizeMeta := strconv.FormatInt(info.Size(), 10)
 	mtimeMeta := strconv.FormatInt(info.ModTime().UnixNano(), 10)
 
@@ -646,17 +569,14 @@ type prepUnit struct {
 // streamPreparedFiles fans file preparation out across idx.prepWorkers
 // goroutines and returns the stream of finished units. Preparation is pure
 // I/O+CPU work — stat, binary-header check, read, hash, chunk; processFile
-// never touches the service or other shared state, and the default chunk/hash
-// functions are pure functions over the file's bytes — so files are prepared
-// concurrently while the single consumer embeds earlier batches. Workers pull
-// paths from an unbuffered input channel, which bounds in-flight preparation
-// to at most prepWorkers files.
+// never touches the service or other shared state — so files are prepared
+// concurrently while the single consumer embeds earlier batches; the
+// unbuffered input channel bounds in-flight preparation to prepWorkers files.
 //
-// The returned stream is closed after every path has been prepared, skipped,
-// or dropped due to cancellation. Every send and the feeder select on
-// ctx.Done(), so a consumer that returns early (after cancelling ctx) never
-// deadlocks the pool: the feeder stops feeding, workers abandon in-flight
-// sends, and all goroutines exit.
+// The stream closes after every path has been prepared, skipped, or dropped:
+// every send and the feeder select on ctx.Done(), so a consumer that returns
+// early never deadlocks the pool — the feeder stops feeding, workers abandon
+// in-flight sends, all goroutines exit.
 func (idx *Indexer) streamPreparedFiles(ctx context.Context, paths []string, skipLogLabel string) <-chan prepUnit {
 	in := make(chan string)
 	out := make(chan prepUnit)
@@ -743,25 +663,24 @@ type pendingDocument struct {
 type pendingFile struct {
 	total     int
 	completed int
-	// info carries this file's per-file sidecar facts (content hash, size,
-	// mtime), captured from the first chunk's metadata before any commit.
-	// It replaces the former "representative chunk document": the committed
-	// documents no longer store these fields (see strippedForCommit), so
-	// the sidecar publish step consumes the explicit structure instead of
-	// a metadata map.
+	// info carries this file's sidecar facts (hash, size, mtime), captured
+	// from the first chunk's metadata: committed documents no longer store
+	// them (see strippedForCommit), so the sidecar publish step consumes
+	// this structure instead of a metadata map.
 	info fileHashInfo
-	// committedIDs collects the IDs of this file's chunks that actually
-	// committed to chromem, in commit order. Poison-dropped chunks never
-	// reach pendingCommit, so their indices are absent — the sidecar's 5th
-	// field (see composeFileHashEntryInfo) then records the gapped set.
+	// committedIDs lists the chunks that actually committed to chromem, in
+	// order; poison-dropped chunks never reach pendingCommit, so their
+	// indices are absent — the sidecar's 5th field (see
+	// composeFileHashEntryInfo) then records the gapped set.
 	committedIDs []string
 	published    bool
 }
 
 // documentAccumulator decouples ONNX inference batches from chromem commit
-// windows. pendingInference is kept below one configured inference batch
-// between Add calls, while pendingCommit is kept below one bounded commit
-// window between inference drains.
+// windows (embedding optimization policy: see
+// specs/decisions/036-vector-index-embedding-optimization-policy.md).
+// pendingInference stays below one configured inference batch between Add
+// calls, pendingCommit below one bounded commit window between drains.
 type documentAccumulator struct {
 	service          *Service
 	telemetry        *Telemetry
@@ -895,20 +814,16 @@ func (a *documentAccumulator) publishFileIfComplete(file *pendingFile) {
 // indexPrepared runs one indexing pass over paths: a bounded pool of
 // idx.prepWorkers goroutines prepares files (read/hash/chunk) while this
 // single consumer streams their documents through one configured-capacity
-// inference accumulator and a separate bounded chromem commit window. The
-// inference tail crosses file and commit boundaries and is flushed only once,
-// at the end of the pass. Embedding stays single-threaded, and the caller must
-// already hold the service write lock, exactly as the former serial loops did.
-// PrepWorkers=1 reproduces serial file preparation while retaining full
-// inference batches.
+// inference accumulator and a separate bounded chromem commit window; the
+// inference tail flushes once, at pass end. Embedding stays single-threaded,
+// and the caller must already hold the service write lock.
 //
-// It returns the number of files counted toward pass progress. Per-file prep
-// failures are logged and skipped; ctx cancellation aborts the pass with an
-// error wrapping ctx.Err(); an AddDocuments failure aborts the pass.
+// Returns the number of files counted toward pass progress: per-file prep
+// failures are logged and skipped; ctx cancellation and AddDocuments failures
+// abort the pass.
 func (idx *Indexer) indexPrepared(ctx context.Context, paths []string, o indexPipelineOpts) (int, error) {
-	// Derive a cancellable context so the prep pool is released promptly when
-	// this consumer returns early (cancellation or a batch-add failure):
-	// the feeder and every worker send select on ctx.Done.
+	// Derived cancellable context: the prep pool is released promptly when
+	// this consumer returns early (feeder and worker sends select on it).
 	poolCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -953,10 +868,9 @@ func (idx *Indexer) indexPrepared(ctx context.Context, paths []string, o indexPi
 		progress++
 		idx.onProgress(PhaseBoth, o.state, progress, o.total, unit.path)
 	}
-	// The stream ended. When ctx was cancelled mid-pass the workers drop
-	// their remaining paths without emitting units, so the loop above can
-	// exit through range-end instead of the per-unit check — surface the
-	// cancellation here so a cancelled pass ALWAYS reports an error.
+	// A cancelled pass can also exit through range-end (workers drop
+	// remaining paths without emitting units), so surface cancellation here:
+	// a cancelled pass ALWAYS reports an error.
 	if err := ctx.Err(); err != nil {
 		return progress, fmt.Errorf("%s: %w", o.cancelMsg, err)
 	}
@@ -981,48 +895,33 @@ func (idx *Indexer) indexPrepared(ctx context.Context, paths []string, o indexPi
 }
 
 // lexicalSkipNoFingerprint and lexicalSkipUnknownSet are the skip reasons the
-// incremental pass will NOT repair: a fingerprint-less / set-less entry stays
-// that way (ValidateCollection's stat fast path keeps treating the file as
-// seen), so no later pass writes its lexical documents. Any such skip forces
-// RebuildLexical to also run the collection-enumeration fallback, which
-// recovers those files' chunks from stored metadata.
+// incremental pass will NOT repair (the stat fast path keeps treating such
+// files as seen), so any such skip forces RebuildLexical to also run the
+// collection-enumeration fallback, recovering those chunks from metadata.
 const (
 	lexicalSkipNoFingerprint = "entry carries no chunker fingerprint"
 	lexicalSkipUnknownSet    = "committed chunk set unknown"
 )
 
 // lexicalSkipUnrepairable reports whether reason is a skip the incremental
-// pass will not repair (see lexicalSkipNoFingerprint / lexicalSkipUnknownSet).
-// A "content changed", "file unreadable", "chunker failure" or "chunk set
-// exceeds re-chunked count" skip IS repaired when the incremental pass next
-// re-indexes the file, so it does not force the fallback.
+// pass will not repair (see lexicalSkipNoFingerprint / lexicalSkipUnknownSet);
+// every other skip cause is repaired when the pass re-indexes the file.
 func lexicalSkipUnrepairable(reason string) bool {
 	return reason == lexicalSkipNoFingerprint || reason == lexicalSkipUnknownSet
 }
 
-// RebuildLexical rebuilds the per-branch lexical index from scratch. It is
-// used as a one-time backfill when a project that was indexed before the
-// BM25 upgrade is opened (the manager invokes it when the chromem collection
-// is non-empty but the lexical index is empty).
+// RebuildLexical rebuilds the per-branch lexical index from scratch: the
+// one-time backfill the manager runs when a pre-BM25-upgrade project opens
+// with a non-empty chromem collection but an empty lexical index. The v2
+// path is sidecar-driven and ONNX-free (bounded reads + hash checks +
+// re-chunks reproducing the stored boundaries, ADR-049); an empty or
+// ineligible sidecar falls back to collection enumeration. Changed files are
+// skipped — the incremental pass rewrites their entries. See
+// specs/decisions/049-vector-index-memory-reduction.md and
+// specs/domains/workspace.md (dual-write invariant).
 //
-// The v2 path is sidecar-driven and ONNX-free: it walks the file-hash
-// sidecar, re-reads and re-hashes each file from disk, and — when the file
-// is unchanged (hash match) and was chunked under the active chunker
-// configuration (fingerprint match) — re-chunks it, which reproduces the
-// exact stored chunk boundaries and therefore the same deterministic
-// document IDs (see DocumentID), and upserts the chunks into bleve in
-// windows. Files that changed since indexing (or whose entry cannot certify
-// the current chunker configuration) are skipped with a debug log: their
-// lexical entries are (re)written by the incremental pass when it re-indexes
-// them. When the sidecar yields nothing usable — an empty sidecar (the
-// transitional pre-sidecar state) or zero eligible entries (a sidecar
-// backfilled from legacy documents carries no fingerprints) — the method
-// falls back to the old collection-enumeration path, which recovers chunk
-// boundaries from the stored metadata instead of re-chunking.
-//
-// The caller must not hold s.mu; lexical upsert windows are committed under
-// the write lock internally to prevent concurrent mutation of the lexical
-// index.
+// The caller must not hold s.mu; lexical upsert windows commit under the
+// write lock internally.
 func (idx *Indexer) RebuildLexical(ctx context.Context) error {
 	lex := idx.service.GetLexical()
 	if lex == nil {
@@ -1040,9 +939,8 @@ func (idx *Indexer) RebuildLexical(ctx context.Context) error {
 		return nil
 	}
 
-	// The sidecar is the v2 driving table; wait for its one-time backfill
-	// (collection without a sidecar file) so the snapshot below is complete
-	// instead of the empty placeholder.
+	// The sidecar is the v2 driving table; wait for its one-time backfill so
+	// the snapshot below is complete, not the empty placeholder.
 	if err := idx.service.WaitFileHashMigration(ctx); err != nil {
 		return fmt.Errorf("waiting for file-hash migration before lexical rebuild: %w", err)
 	}
@@ -1068,16 +966,12 @@ func (idx *Indexer) RebuildLexical(ctx context.Context) error {
 
 	batch := make([]lexical.Doc, 0, addDocumentBatchSize)
 	processed, skipped, unrepairable := 0, 0, 0
-	// flush commits one window of lexical documents under the service write
-	// lock (bleve mutation convention; the read/hash/chunk prep above stays
-	// lock-free so searches are not blocked for the pass duration). The
-	// captured lex pointer is re-validated under that lock before the upsert:
-	// a concurrent branch/project switch or Service.Close closed (or
-	// replaced) the index under the same lock, and bleveIndex has no internal
-	// synchronization — upserting into the closed index would dereference its
-	// nil'd field. Aborting the rebuild is safe: the new index state is
-	// (re)built by whoever swapped it in, and the incremental pass re-writes
-	// anything still missing.
+	// flush commits one lexical window under the service write lock (bleve
+	// mutation convention; prep stays lock-free so searches are not blocked).
+	// The captured lex pointer is re-validated under that lock: a concurrent
+	// switch/Close nils bleveIndex — which has no internal synchronization —
+	// so a replaced index aborts the rebuild; the swapped-in state is rebuilt
+	// by its owner and the incremental pass rewrites anything still missing.
 	flush := func() error {
 		if len(batch) == 0 {
 			return nil
@@ -1125,16 +1019,11 @@ func (idx *Indexer) RebuildLexical(ctx context.Context) error {
 	}
 
 	if processed == 0 || unrepairable > 0 {
-		// Every entry was ineligible, OR at least one entry was skipped for a
-		// reason the incremental pass will NOT repair (a fingerprint-less /
-		// set-less legacy row — the mixed-sidecar case: some entries carry the
-		// active fingerprint, others were backfilled without one). The
-		// incremental pass leaves such files alone (ValidateCollection's stat
-		// fast path still treats them as seen), so their lexical documents
-		// would never be written. Fall back to the collection enumeration,
-		// which recovers chunk boundaries from stored metadata; it re-upserts
-		// the sidecar-eligible files too (same deterministic IDs, idempotent),
-		// so every stored chunk gets a lexical entry in one pass.
+		// Either nothing was eligible, or an unrepairable skip occurred (the
+		// mixed-sidecar case), and the incremental pass leaves such files
+		// alone — fall back to collection enumeration, which re-upserts the
+		// eligible files too (same deterministic IDs, idempotent), so every
+		// stored chunk gets a lexical entry in one pass.
 		idx.logger.Info("lexical rebuild: sidecar left files without a usable fingerprint/set; using collection enumeration",
 			"sidecar_files", len(paths), "skipped", skipped, "unrepairable", unrepairable)
 		return idx.rebuildLexicalFromCollection(ctx, lex, col, count)
@@ -1150,23 +1039,16 @@ func (idx *Indexer) RebuildLexical(ctx context.Context) error {
 }
 
 // lexicalDocsForSidecarFile re-derives one sidecar-tracked file's lexical
-// documents without touching the collection (zero ONNX): it reads and hashes
-// the file from disk and, when the bytes are unchanged since indexing
-// (hash match) and the entry certifies the ACTIVE chunker configuration
-// (fingerprint match — the fingerprint covers max chunk size, overlap, and
-// the content-filter policy, so a matching entry implies the binary/empty/
-// policy verdicts of index time still hold), re-chunks the bytes. Because
-// DocumentID is a pure function of path and chunk index and the chunker is
-// deterministic, the re-chunk reproduces the exact stored chunk boundaries
-// and IDs. Only the entry's committed chunk-index set (5th field) is
-// emitted, mirroring the chunks the collection holds (poison-dropped chunks
-// were never committed — nor lexically indexed — in the first place).
+// documents without touching the collection (zero ONNX) — the v2 RebuildLexical
+// path of ADR-049: bounded read + hash check, then a re-chunk under the ACTIVE
+// chunker configuration (the fingerprint covers max chunk size, overlap and
+// the content-filter policy, so a match implies the index-time verdicts still
+// hold); deterministic DocumentIDs make the re-chunk reproduce the stored
+// boundaries. Only the entry's committed chunk-index set is emitted, mirroring
+// the collection (poison-dropped chunks were never lexically indexed).
 //
-// The returned reason is "" when the file was processed; any non-empty value
-// is a human-readable skip cause (changed file, fingerprint mismatch or
-// unknown, unreadable file, chunker failure, drifted chunk set). Skipped
-// files are re-indexed — and their lexical entries rewritten — by the
-// incremental pass.
+// The returned reason is "" on success; non-empty is a human-readable skip
+// cause, and the incremental pass re-indexes — and rewrites — skipped files.
 func (idx *Indexer) lexicalDocsForSidecarFile(filePath, entry string) (docs []lexical.Doc, reason string) {
 	entryFP := fileHashEntryChunkerFP(entry)
 	if entryFP == "" {
@@ -1188,10 +1070,9 @@ func (idx *Indexer) lexicalDocsForSidecarFile(filePath, entry string) (docs []le
 		return nil, "content changed since indexing"
 	}
 
-	// Sanitize exactly as processFile did before chunking, or the re-chunk
-	// would split on different rune/byte positions for a non-UTF-8 file and
-	// emit text for a shifted span (breaking the "same deterministic IDs"
-	// invariant). See sanitizeChunkContent.
+	// Sanitize exactly as processFile did (see sanitizeChunkContent), or the
+	// re-chunk splits on different rune/byte positions and breaks the
+	// deterministic-ID invariant.
 	content, _ = sanitizeChunkContent(content)
 
 	chunks, err := idx.chunkFn(filePath, content, idx.maxChunkSize, idx.overlap)
@@ -1202,9 +1083,8 @@ func (idx *Indexer) lexicalDocsForSidecarFile(filePath, entry string) (docs []le
 		return nil, "chunk count exceeds per-file cap"
 	}
 	// The fingerprint matched, so the re-chunk must reproduce the stored
-	// boundaries; a chunk set reaching past the re-chunked output means the
-	// sidecar entry is corrupt or foreign — skip rather than emit IDs that
-	// no longer match the collection.
+	// boundaries; a set reaching past the re-chunked output means a corrupt
+	// or foreign entry — skip rather than emit stale IDs.
 	maxIdx := 0
 	for _, i := range set {
 		if i > maxIdx {
@@ -1227,42 +1107,32 @@ func (idx *Indexer) lexicalDocsForSidecarFile(filePath, entry string) (docs []le
 	return docs, ""
 }
 
-// rebuildLexicalFromCollection is the collection-enumeration form of the
-// lexical backfill (the pre-sidecar path, kept as the transitional fallback
-// of RebuildLexical): it enumerates the chromem collection once and mirrors
-// every document into the lexical index. It recovers chunk boundaries from
-// each document's STORED metadata, so it is correct for collections whose
-// chunker configuration is unknown — at the cost of materializing the whole
-// collection (embedding vectors included) in one Query.
+// rebuildLexicalFromCollection is the collection-enumeration fallback of
+// RebuildLexical (the pre-sidecar transitional path, ADR-049): one collection
+// enumeration mirrors every document into the lexical index, recovering chunk
+// boundaries from STORED metadata — correct for unknown chunker
+// configurations, at the cost of materializing the whole collection in one
+// Query.
 //
-// Concurrency: the enumeration runs under a SHORT read lock (so a concurrent
-// park/close cannot free the collection mid-Query), and the materialized
-// results are then reconstructed and upserted WITHOUT the lock, each bleve
-// upsert window taking the write lock only around the lex.Upsert call. This
-// mirrors the v2 sidecar path and keeps searches from being blocked for the
-// whole pass (which now also includes per-file disk reads).
-//
+// Concurrency: a SHORT read lock covers only the enumeration (a concurrent
+// park/close cannot free the collection mid-Query); reconstruction and the
+// bleve windows run without it, so searches are not blocked for the pass.
 // The caller must not hold s.mu.
 func (idx *Indexer) rebuildLexicalFromCollection(ctx context.Context, lex lexical.Index, col *chromem.Collection, count int) error {
 	idx.onProgress(PhaseLexical, IndexStateIndexing, 0, count, "")
 	idx.logger.Info("starting lexical backfill (collection enumeration)", "chunks", count)
 
-	// chromem has no ListAll API; a single-space query returns all docs
-	// ranked by similarity (the ranking is irrelevant here — we only need
-	// to enumerate every document for the lexical backfill). Prefer the
-	// embedding-free unit-vector enumeration when the dimension is known.
-	// Held under a short read lock so a concurrent park/close cannot free the
-	// collection mid-Query; released before any reconstruction or upsert.
+	// chromem has no ListAll; a single-space query enumerates every document
+	// (the ranking is irrelevant). Prefer the embedding-free unit-vector
+	// enumeration when the dimension is known (ADR-049); the read lock covers
+	// only this query.
 	//
-	// The document count is re-sampled INSIDE that lock, immediately before
-	// the query: the caller's count was read far earlier — before the
-	// file-hash migration wait and the sidecar walk — and a concurrent
-	// incremental pass may have deleted documents in that window. A stale
-	// count exceeding the live count makes chromem hard-error ("nResults
-	// must be <= the number of documents in the collection"), leaving the
-	// lexical backfill permanently failing; a count of 0 (the collection
-	// emptied entirely) errors too ("nResults must be > 0"). The earlier
-	// count is used only for the initial progress event above.
+	// The count is re-sampled INSIDE the lock, immediately before the query:
+	// the caller's count predates the migration wait and sidecar walk, and a
+	// stale count exceeding the live count makes chromem hard-error
+	// ("nResults must be <= the number of documents"), permanently failing
+	// the backfill; 0 errors too. The earlier count feeds only the initial
+	// progress event.
 	idx.service.mu.RLock()
 	liveCount := col.Count()
 	if liveCount == 0 {
@@ -1283,14 +1153,9 @@ func (idx *Indexer) rebuildLexicalFromCollection(ctx context.Context, lex lexica
 		return fmt.Errorf("enumerating collection for lexical rebuild: %w", err)
 	}
 
-	// upsertWindow commits one bleve window under the service write lock (the
-	// bleve mutation convention); the reconstruction around it stays lock-free
-	// so searches are not blocked for the pass duration. The captured lex is
-	// re-validated under that lock before the upsert — a concurrent
-	// branch/project switch or Service.Close closed (or replaced) the index
-	// under the same lock, and upserting into the closed index would
-	// dereference bleveIndex's nil'd field (same mechanism as the sidecar
-	// path's flush).
+	// upsertWindow commits one bleve window under the service write lock with
+	// the same re-validation as the sidecar path's flush (a concurrent
+	// switch/Close would otherwise upsert into a closed, nil'd index).
 	upsertWindow := func(window []lexical.Doc) error {
 		started := time.Now()
 		idx.service.AcquireWriteLock()
@@ -1304,14 +1169,11 @@ func (idx *Indexer) rebuildLexicalFromCollection(ctx context.Context, lex lexica
 		return upErr
 	}
 
-	// Documents committed with a pre-populated embedding store no content
-	// (see strippedForCommit); their text is reconstructed from the source
-	// file. One resolver serves the whole pass, so each file is read at
-	// most once (bounded by the configured max file size). Documents whose
-	// file is missing or unreadable are skipped rather than indexed with
-	// the placeholder marker — bleve entries with placeholder text would
-	// surface as bogus lexical hits; the deletion reconciliation removes
-	// such documents on the next incremental pass anyway.
+	// Content-less documents (see strippedForCommit) are reconstructed from
+	// the source file; one resolver serves the pass, so each file is read at
+	// most once. Missing/unreadable sources are skipped, not indexed with
+	// the placeholder — that text would surface as bogus lexical hits (the
+	// deletion reconciliation removes such documents next pass anyway).
 	resolver := newContentResolver(idx.maxFileSize, idx.maxChunkSize)
 	skippedUnreadable := 0
 
@@ -1363,16 +1225,11 @@ func (idx *Indexer) rebuildLexicalFromCollection(ctx context.Context, lex lexica
 }
 
 // collectDocumentIDs enumerates document IDs for the given file paths. When
-// every requested file's sidecar entry carries its committed chunk-index set
-// (5th field), the IDs are derived arithmetically via DocumentID — a pure
-// function of path and chunk index — with no collection Query. The Query it
-// replaces is a full-collection enumeration: chromem materializes every
-// document AND copies every embedding vector into the result set, so on large
-// collections this was the dominant cost of each incremental pass's deletion
-// step. Entries without a set (legacy sidecars, migrated collections,
-// hand-built documents) keep the Query path below. The caller must hold the
-// service write lock (IndexIncremental does), which also guards the sidecar
-// map read.
+// every sidecar entry carries its committed chunk-index set, the IDs derive
+// arithmetically from DocumentID — no collection Query, the
+// full-materialization cost ADR-049 removed from the incremental deletion
+// step; entries without a set keep the Query fallback. The caller must hold
+// the service write lock, which also guards the sidecar map read.
 func (idx *Indexer) collectDocumentIDs(ctx context.Context, filePaths []string) ([]string, error) {
 	col := idx.service.GetCollection()
 	if col == nil {
@@ -1391,12 +1248,10 @@ func (idx *Indexer) collectDocumentIDs(ctx context.Context, filePaths []string) 
 	return idx.collectDocumentIDsViaQuery(ctx, filePaths)
 }
 
-// collectDocumentIDsViaQuery is the Query-based enumeration collectDocumentIDs
-// falls back to when a requested file's sidecar entry lacks its committed
-// chunk-index set: one broad enumeration over the whole collection, filtered
-// to the requested file paths. Like every sibling enumeration site it uses the
-// embedding-free unit-vector query (QueryEmbedding) when the dimension is
-// known, so enumeration costs no ONNX inference.
+// collectDocumentIDsViaQuery is the Query-based enumeration
+// collectDocumentIDs falls back to when an entry lacks its committed chunk
+// set: one broad enumeration filtered to the requested paths, via the
+// embedding-free unit-vector query when the dimension is known (ADR-049).
 func (idx *Indexer) collectDocumentIDsViaQuery(ctx context.Context, filePaths []string) ([]string, error) {
 	col := idx.service.GetCollection()
 	if col == nil {
@@ -1435,10 +1290,9 @@ func (idx *Indexer) collectDocumentIDsViaQuery(ctx context.Context, filePaths []
 
 // walkProjectFiles walks the workspace and returns all indexable file paths.
 // checker must be pre-built by the caller (the Indexer caches it) so the walk
-// and the watcher filter share one source of truth. Files and directories
-// ignored by .gitignore or .aiignore (root and nested, resolved via checker)
-// are skipped, as are hidden (leading-dot) entries. Binary content is not
-// detected here — it is a read-time guard applied in processFile.
+// and the watcher filter share one source of truth. Ignored (.gitignore /
+// .aiignore, root and nested) and hidden entries are skipped; binary content
+// is a read-time guard in processFile, not detected here.
 func walkProjectFiles(root string, checker ignore.IgnoreChecker, maxFileSize int64) ([]string, error) {
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
@@ -1467,10 +1321,8 @@ func walkProjectFiles(root string, checker ignore.IgnoreChecker, maxFileSize int
 		}
 
 		// Skip oversized files at walk time so they never enter the pipeline
-		// (and never appear as "new" on every incremental pass, which would
-		// otherwise cause a redundant reindex). This is an optimization: the
-		// universal guarantee — that no file above the limit is ever fully
-		// read — is enforced by processFile's read-time backstop. A stat
+		// (and never reappear as "new" each pass). An optimization only — the
+		// universal guarantee is processFile's read-time backstop. A stat
 		// failure is treated as skip-safe.
 		if info, infoErr := d.Info(); infoErr == nil && tooLargeForIndex(info.Size(), maxFileSize) {
 			return nil
@@ -1491,18 +1343,17 @@ func walkProjectFiles(root string, checker ignore.IgnoreChecker, maxFileSize int
 	return files, nil
 }
 
-// noopIgnoreChecker is an IgnoreChecker that ignores nothing. It is the
-// fail-open fallback when an ignore.Resolver cannot be built for a root (e.g.
-// the root vanished mid-index): rather than indexing nothing, the indexer
-// proceeds and applies only the universal hidden-dot guard.
+// noopIgnoreChecker is the fail-open fallback when an ignore.Resolver cannot
+// be built for a root (e.g. the root vanished mid-index): index every
+// non-hidden path rather than nothing.
 type noopIgnoreChecker struct{}
 
 func (noopIgnoreChecker) Ignored(string, bool) bool { return false }
 
-// buildIgnoreChecker constructs an ignore resolver over .gitignore + .aiignore
-// (root and nested) for root. On failure it returns a fail-open
-// noopIgnoreChecker together with the error so callers can log once without
-// re-attempting on every debounce flush.
+// buildIgnoreChecker constructs an ignore resolver (.gitignore + .aiignore,
+// root and nested) for root; on failure it returns a fail-open
+// noopIgnoreChecker plus the error, so callers log once without re-attempting
+// on every debounce flush.
 func buildIgnoreChecker(root string) (ignore.IgnoreChecker, error) {
 	r, err := ignore.NewResolver(root)
 	if err != nil {
@@ -1511,13 +1362,11 @@ func buildIgnoreChecker(root string) (ignore.IgnoreChecker, error) {
 	return r, nil
 }
 
-// resolverFor returns the cached ignore resolver for root, building and caching
-// it on first use. The Indexer (and thus the cache) is recreated on every
-// SwitchProject, so the workspace is walked at most once per active project
-// instead of once per watcher debounce flush. A mid-session edit of .gitignore
-// or .aiignore is not picked up until the next source-driven index pass
-// triggers a cache miss — acceptable, since a stale filter only risks a
-// harmless no-op reindex that the walker then drops.
+// resolverFor returns the cached ignore resolver for root, building it on
+// first use; the cache is per-project (recreated on SwitchProject), so the
+// workspace is walked at most once per project instead of once per debounce
+// flush. A mid-session edit of .gitignore/.aiignore lands on the next
+// source-driven pass — a stale filter risks only a harmless no-op reindex.
 func (idx *Indexer) resolverFor(root string) ignore.IgnoreChecker {
 	idx.ignoreMu.RLock()
 	if idx.ignoreRoot == root && idx.ignoreChecker != nil {
@@ -1539,9 +1388,7 @@ func (idx *Indexer) resolverFor(root string) ignore.IgnoreChecker {
 }
 
 // IsAnyIndexablePath reports whether at least one of changedPaths is indexable
-// under root, reusing the Indexer's cached ignore resolver. It is the
-// watcher-facing check and avoids re-walking the workspace on every debounce
-// flush.
+// under root, reusing the cached ignore resolver (the watcher-facing check).
 func (idx *Indexer) IsAnyIndexablePath(changedPaths []string, root string) bool {
 	c := idx.resolverFor(root)
 	for _, p := range changedPaths {
@@ -1553,12 +1400,11 @@ func (idx *Indexer) IsAnyIndexablePath(changedPaths []string, root string) bool 
 }
 
 // isIndexablePath is the core single-path check with a pre-built ignore
-// resolver. It avoids os.Stat by inspecting path segments directly, so it
-// works for both file and directory change events. A path is not indexable
-// when any segment is hidden (leading dot) or when the resolver reports the
-// path (or an ancestor directory) as ignored — the resolver walks ancestor
-// directories with directory semantics, so "once a directory is ignored, so
-// are its contents" holds in a single call.
+// resolver. It avoids os.Stat by inspecting path segments, so it works for
+// both file and directory change events: a path is not indexable when any
+// segment is hidden (leading dot) or the resolver reports it (or an ancestor)
+// as ignored — the resolver walks ancestors with directory semantics, so
+// "once a directory is ignored, so are its contents" holds in one call.
 func isIndexablePath(absPath, root string, checker ignore.IgnoreChecker) bool {
 	relPath, err := filepath.Rel(root, absPath)
 	if err != nil {
@@ -1583,56 +1429,44 @@ func isIndexablePath(absPath, root string, checker ignore.IgnoreChecker) bool {
 	return !checker.Ignored(absPath, false)
 }
 
-// isHiddenName reports whether name is a hidden entry — one whose base name
-// begins with a dot. This is the universal guard layered on top of the ignore
-// resolver: hidden directories (e.g. .git, .cache, .idea) and hidden files
-// (e.g. .DS_Store) are never indexed regardless of ignore-file contents.
+// isHiddenName reports whether name is a hidden entry (leading dot) — the
+// universal guard on top of the resolver: hidden dirs (.git, .cache) and
+// files (.DS_Store) are never indexed regardless of ignore-file contents.
 func isHiddenName(name string) bool {
 	return strings.HasPrefix(name, ".")
 }
 
 // binaryHeaderSize is the number of leading bytes inspected for binary
-// detection. It matches git's heuristic and is small enough that reading it
-// from a multi-GB file is effectively free.
+// detection (git's heuristic; effectively free to read even on multi-GB files).
 const binaryHeaderSize = 512
 
-// DefaultMaxIndexableFileSize is the default upper bound on a file's size (in
-// bytes) for it to be read fully into memory for chunking and embedding. Files
-// larger than this are skipped at walk, validation, and read time. The limit is
-// necessary because the NUL-byte binary check (isBinaryHeader) cannot recognize
-// every binary format: ONNX and safetensors models are protobuf whose leading
-// bytes are readable ASCII field names with no NUL, so a multi-hundred-MB
-// model.onnx would otherwise be loaded whole by os.ReadFile and explode memory
-// during chunking (a 522 MB model yields ~400k chunks). 4 MiB is generous for
-// genuine source code while excluding the large binary assets that cause the
-// hang; it is overridable via vector_index.max_file_size.
+// DefaultMaxIndexableFileSize caps how much of a file is ever read for
+// indexing (walk, validation, and read time all enforce it). The NUL-byte
+// binary check cannot recognize every binary format — ONNX and safetensors
+// are protobuf with readable-ASCII headers — so a multi-hundred-MB model
+// would otherwise be loaded whole and explode memory during chunking (a
+// 522 MB model yields ~400k chunks). 4 MiB is generous for source code;
+// overridable via vector_index.max_file_size.
 const DefaultMaxIndexableFileSize int64 = 4 * 1024 * 1024 // 4 MiB
 
-// DefaultMaxChunkSize is the default maximum chunk size in characters passed
-// to the chunker. It is sized to fit within the embedding model's context
-// window (MaxSeqLength 512 tokens ≈ ~2000 chars) with room for overlap.
-// Overridable via vector_index.max_chunk_size.
+// DefaultMaxChunkSize is the default chunker input bound in characters, sized
+// to the embedding model's context window (512 tokens ≈ ~2000 chars) with
+// room for overlap; overridable via vector_index.max_chunk_size.
 const DefaultMaxChunkSize = 1500
 
-// DefaultMaxChunksPerFile is the default upper bound on the number of chunks a
-// single file may contribute to one index pass. A file that exceeds this is
-// skipped wholesale, because its chunks are accumulated into AddDocuments and
-// a runaway count (tens of thousands from a data-format file that the
-// structure-aware splitter fragments per-entry — e.g. a HuggingFace BPE
-// vocab/merges tokenizer.json) hangs/OOMs the embedder. Embedding is bounded
-// by the configured inference batch and embeddingCommitWindowSize, so the cap
-// remains a backstop that turns a pathological file into a clean
-// skip rather than a tight per-call limit. The default (4000) sits above the
-// worst legitimate source file — a 4 MiB file chunked at 1500 chars yields
-// ~3230 chunks — so no real source file is dropped, while the 30k-chunk data
-// files that actually cause the hang are still caught.
+// DefaultMaxChunksPerFile caps the chunks one file may contribute to a pass;
+// exceeding it skips the file wholesale. Embedding is bounded by the
+// inference batch and embeddingCommitWindowSize, so the cap is a backstop
+// against a pathological count (a HuggingFace BPE vocab/merges tokenizer.json
+// fragments into tens of thousands of chunks that would hang/OOM the
+// embedder). 4000 sits above the worst legitimate source file (a 4 MiB file
+// at 1500 chars yields ~3230 chunks), so no real source file is dropped.
 const DefaultMaxChunksPerFile = 4000
 
 // DefaultChunkOverlap is the default character overlap between adjacent
-// chunks handed to the chunker. The historical hardcoded value (200); now the
-// config-layer default for vector_index.chunk_overlap. Kept in the vectorindex
-// package (like the other chunk defaults) so backend/config can reference it
-// without duplicating the number.
+// chunks: the historical hardcoded value (200), now the config-layer default
+// for vector_index.chunk_overlap, kept here so backend/config need not
+// duplicate the number.
 const DefaultChunkOverlap = 200
 
 // tooLargeForIndex reports whether a file of the given byte size exceeds the
@@ -1652,14 +1486,12 @@ func containsNullByte(b []byte) bool {
 	return false
 }
 
-// isBinaryHeader reports whether the file at filePath begins with binary
-// content (a NUL byte within the first binaryHeaderSize bytes). It reads at
-// most binaryHeaderSize bytes and never loads the whole file, so it is safe to
-// call on very large files — this is the walk/read-time guard that prevents
-// multi-GB binary assets (e.g. .onnx, .safetensors, .psd) from being fully
-// read into memory before rejection. An open error is returned to the caller
-// so it can decide whether to skip or fail; short reads (fewer bytes than
-// requested) are normal and are scanned over whatever was read.
+// isBinaryHeader reports whether the file begins with binary content (a NUL
+// byte within the first binaryHeaderSize bytes). It reads at most
+// binaryHeaderSize bytes, so it is safe on very large files — the walk/read-
+// time guard that rejects multi-GB binary assets before a full read. An open
+// error is returned for the caller to skip or fail; short reads are normal
+// and scanned over whatever arrived.
 func isBinaryHeader(filePath string) (bool, error) {
 	f, err := safeio.Open(filePath)
 	if err != nil {
@@ -1667,9 +1499,8 @@ func isBinaryHeader(filePath string) (bool, error) {
 	}
 	defer func() { _ = f.Close() }()
 	header := make([]byte, binaryHeaderSize)
-	// io.ReadFull returns io.EOF only when zero bytes were read and
-	// io.ErrUnexpectedEOF when fewer than len(header) bytes were read — both
-	// are expected here; n holds the bytes actually read, which is all we scan.
+	// io.ReadFull's EOF/ErrUnexpectedEOF are both expected (short files); n
+	// holds the bytes actually read, which is all we scan.
 	n, _ := io.ReadFull(f, header)
 	return containsNullByte(header[:n]), nil
 }

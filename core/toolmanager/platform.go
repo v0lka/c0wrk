@@ -1,7 +1,6 @@
-// Package toolmanager manages the lifecycle of external CLI tools required
-// by c0wrk at runtime. It downloads, installs, and version-tracks tools such
-// as ripgrep, uv, and markitdown into a managed tools directory under
-// the agent directory (~/.c0wrk/tools/).
+// Package toolmanager manages the lifecycle of the external CLI tools c0wrk
+// needs at runtime — downloading, installing, and version-tracking rg, uv,
+// and markitdown into ~/.c0wrk/tools/.
 package toolmanager
 
 import (
@@ -10,27 +9,17 @@ import (
 	"runtime"
 )
 
-// Platform returns the canonical OS/arch string used as URL map keys.
-// Format: "<os>-<arch>", e.g. "darwin-arm64".
+// Platform returns the canonical "<os>-<arch>" URL-map key, e.g. "darwin-arm64".
 func Platform() string {
 	return fmt.Sprintf("%s-%s", runtime.GOOS, runtime.GOARCH)
 }
 
 // PlatformTriple returns the upstream release naming convention used in
-// archive file names and internal archive directory paths.
-// Format: "<arch>-<vendor>-<os>[-<abi>]", e.g. "aarch64-apple-darwin".
-// Unsupported platforms receive a synthetic "<goarch>-<goos>" fallback;
-// the caller should handle missing tool URLs/checksums for those platforms.
-//
-// Decision (2026-06-21): this function uses a fallback for unsupported
-// platforms (synthetic GOARCH-GOOS triple) rather than returning an error.
-// This ensures the tool-manager doesn't block startup on unknown platforms;
-// tools without URLs for the platform are simply skipped. If a new platform
-// needs explicit support, add its triple to the switch and verify upstream
-// URLs exist.
-//
-// logger is used to emit a warning on the unsupported-platform fallback path.
-// If nil, no warning is logged.
+// archive names and in-archive paths (e.g. "aarch64-apple-darwin").
+// Unsupported platforms get a synthetic <goarch>-<goos> fallback instead of
+// an error — an unknown platform must not block startup; its tools have no
+// URLs/checksums and are skipped. Supporting one: add the triple and verify
+// the upstream URLs. logger (nil-safe) warns on the fallback path.
 func PlatformTriple(logger *slog.Logger) string {
 	switch {
 	case runtime.GOOS == "darwin" && runtime.GOARCH == "amd64":
@@ -44,9 +33,6 @@ func PlatformTriple(logger *slog.Logger) string {
 	case runtime.GOOS == "windows" && runtime.GOARCH == "amd64":
 		return "x86_64-pc-windows-msvc"
 	}
-	// Fallback for platforms not explicitly listed. The caller will
-	// receive a synthetic triple and can proceed — tool URLs/checksums
-	// will be empty for this platform, causing the tool to be skipped.
 	if logger != nil {
 		logger.Warn("unsupported platform, using fallback triple",
 			"os", runtime.GOOS, "arch", runtime.GOARCH)

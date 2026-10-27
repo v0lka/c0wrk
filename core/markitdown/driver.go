@@ -1,71 +1,13 @@
 package markitdown
 
-// visionDriverScript is executed by the managed venv Python interpreter to run
-// markitdown with LLM-assisted image captioning. The markitdown 0.1.4 CLI
-// exposes no LLM flags — llm_client/llm_model/llm_prompt are constructor-only
-// Python kwargs — so vision-assisted conversion must go through the library
-// API instead of the plain CLI.
-//
-// The script is a fixed constant: connection parameters arrive exclusively
-// via the MARKITDOWN_LLM_* environment variables set by visionEnv (keeping the
-// API key out of argv), and the only positional argument is the file path.
-//
-// The embedded client is a minimal stdlib-only implementation of the OpenAI
-// SDK surface markitdown consumes: chat.completions.create(model, messages)
-// returning an object shaped like choices[0].message.content. The venv does
-// not ship the `openai` package (markitdown[all] does not pull it in), so
-// urllib.request is used directly; it validates TLS certificates by default
-// and honors http_proxy/https_proxy environment variables, which the app sets
-// globally when a proxy is configured (see core/proxy SetEnvVars).
-//
-// markitdown 0.1.4 captions images ONLY inside pptx decks (and standalone
-// image files). Its PDF converter is pure pdfminer text extraction — embedded
-// images are dropped entirely — and its docx/html converters truncate base64
-// data URIs to inert stubs. The driver therefore adds two post-processing
-// passes so the vision model actually SEES document images:
-//
-//   - PDF pass (pdfminer + Pillow, both venv-resident): walks page
-//     XObjects, extracts embedded images (DCTDecode/JPXDecode pass-through,
-//     FlateDecode raw-sample reconstruction for DeviceGray/DeviceRGB/
-//     DeviceCMYK at 8bpc, and Flate-wrapped DCT/JPX chains; array-form
-//     color spaces — ICCBased/CalGray/CalRGB — are skipped), and appends an
-//     "## Embedded images" section with one LLM caption per unique image
-//     (deduplicated by content hash). Every decoded path is BOUNDED —
-//     pdfminer's get_data() is never used, because it materializes the full
-//     filter-chain expansion (a crafted FlateDecode/LZW stream declaring
-//     tiny dimensions can expand gigabytes); FlateDecode streams are
-//     decompressed through a cap derived from the declared dimensions or
-//     the physical stream size, other filter chains (LZW, RunLength,
-//     predictors, encrypted documents) are skipped as unsupported, and the
-//     child's address space is capped via RLIMIT_AS (POSIX) as a catch-all
-//     so any remaining bomb degrades to a caption-less image instead of an
-//     OOM.
-//   - data-URI pass: the conversion runs with keep_data_uris=True so
-//     docx/html/epub embedded images survive as markdown data-URI images;
-//     each base64 blob is replaced in place by
-//     ![caption](embedded-image-N) — the model gets the description AND the
-//     context is spared megabytes of base64. Images that already carry alt
-//     text (markitdown's own pptx captioning, or a docx/html alt attribute)
-//     keep that text and are NOT re-captioned, so a pptx picture costs one
-//     LLM round-trip, not two. Every data:image/* mime type is stripped,
-//     not just the raster types Pillow can decode — an EMF or SVG payload
-//     is replaced with a neutral label rather than leaked verbatim.
-//
-// Cost and abuse bounds, shared across markitdown's internal captioning and
-// both passes: every unique image (deduplicated by content hash) is captioned
-// — there is deliberately no per-document call cap — images smaller than 32px
-// in either dimension are ignored as decorations, and images are normalized
-// (RGB JPEG, longest side ≤ 2048px) before upload. The outer bound is the
-// Go-side per-file vision deadline shared with the plain-CLI fallback (see
-// Converter.convert).
-//
-// Failure semantics: every pass is individually exception-guarded and every
-// per-image captioning error is caught, so a broken vision endpoint (or an
-// unsupported image encoding) yields a converted document without captions
-// rather than a failed conversion. Only the base markitdown conversion can
-// fail the driver as a whole — and that falls back to the plain CLI on the
-// Go side (see Converter.convert). Diagnostic warnings go to stderr, which
-// the Go side logs at debug level without polluting the document body.
+// visionDriverScript is executed by the managed venv Python interpreter to
+// run markitdown with LLM-assisted image captioning: the 0.1.4 CLI exposes
+// no LLM flags, so conversion goes through the library API — params arrive
+// via MARKITDOWN_LLM_* env vars (never argv), the client is a minimal
+// stdlib-only OpenAI-compatible one. markitdown captions only pptx images,
+// so the script adds a bounded-decode PDF pass and a data-URI replacement
+// pass; only a base-conversion failure fails the driver (plain-CLI fallback
+// on the Go side). Bounds and egress: specs/domains/session-lifecycle.md.
 const visionDriverScript = `import base64, hashlib, io, json, os, re, sys, urllib.request, zlib
 
 # Bound the child's address space so a decompression bomb (a crafted PDF
@@ -397,9 +339,8 @@ if sys.argv[1].lower().endswith(".pdf"):
 sys.stdout.write(_markdown)
 `
 
-// visionEnvName* are the environment variables the driver script reads.
-// Namespaced with the MARKITDOWN_ prefix to avoid colliding with generic
-// OPENAI_API_KEY semantics the child might otherwise inherit.
+// visionEnvName* are the env vars the driver reads, MARKITDOWN_-prefixed so
+// a generic OPENAI_API_KEY in the child's environment is never picked up.
 const (
 	visionEnvAPIKey  = "MARKITDOWN_LLM_API_KEY"
 	visionEnvBaseURL = "MARKITDOWN_LLM_BASE_URL"

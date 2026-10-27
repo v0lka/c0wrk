@@ -37,9 +37,8 @@ type Delegation struct {
 	CompletedAt time.Time
 }
 
-// DelegationKind classifies what a registered delegation spec represents. The
-// spec emitted at register time carries it so a unit-ledger writer can stamp
-// the matching unit kind without decoding the task.
+// DelegationKind classifies a registered spec so the unit-ledger writer can
+// stamp the unit kind without decoding the task.
 type DelegationKind string
 
 const (
@@ -49,44 +48,34 @@ const (
 	DelegationKindPlanStep DelegationKind = "plan_step"
 )
 
-// DelegationSpec is the persistable form of a delegation task: everything the
-// system needs to rebuild and re-launch the subagent after a pause — without
-// any LLM decision. The registry fires its spec sink (when wired) at
-// RegisterTask time, so the spec survives even if the run later pauses or the
-// app exits. Top-level delegations carry an empty ParentID and Depth 0;
-// sub-delegations (allow_redelegate) reference the delegating subagent's step
-// ID and an incremented depth so a resume wave can order children before
-// parents.
+// DelegationSpec is the persistable rebuild spec fired by the sink at
+// RegisterTask time — everything a resume needs to relaunch without an LLM
+// decision (specs/domains/orchestration/delegation.md, unit ledger). Empty
+// ParentID / Depth 0 = top-level; children carry the delegating step ID and
+// an incremented depth so resume orders them first.
 type DelegationSpec struct {
 	Task     DelegationTask `json:"task"`
 	ParentID string         `json:"parent_id,omitempty"`
 	Depth    int            `json:"depth,omitempty"`
-	// Kind classifies the spec (a delegated subagent vs a plan step) so a
-	// unit-ledger writer can stamp the right unit kind at register time. Empty
-	// is treated as DelegationKindSubagent.
+	// Kind classifies the spec for the unit ledger; empty means subagent.
 	Kind DelegationKind `json:"kind,omitempty"`
 }
 
-// DelegationRegistry tracks active and completed delegations for one
-// Conductor run. It is injected into the Conductor context at launch and
-// does not outlive the run. Child registries (for allow_redelegate) are
-// created with an incremented depth to enforce the recursion cap.
+// DelegationRegistry tracks one Conductor run's delegations; it does not
+// outlive the run. Child registries carry an incremented depth (recursion cap).
 type DelegationRegistry struct {
 	mu          sync.Mutex
 	delegations map[string]*Delegation
-	// order records registration order; All() iterates it because Go map
-	// iteration is randomized. Delegations are never removed from the map
-	// (only cancelFuncs are), so order always stays in sync with the keys.
+	// order records registration order (map iteration is random); entries are
+	// never removed, so it stays in sync with the keys.
 	order       []string
 	cancelFuncs map[string]context.CancelFunc
 	depth       int
-	// parentID is the step ID of the delegating subagent for child registries
-	// (allow_redelegate), empty for the root registry. It stamps every spec
-	// emitted by the sink so a resume wave can order children before parents.
+	// parentID stamps child registries' specs with the delegating step ID so
+	// resume orders children before parents; empty on the root.
 	parentID string
-	// specSink, when non-nil, is invoked once per RegisterTask with the full
-	// persistable spec. Wired by the launcher (which owns the task store);
-	// plan-step local registries and test registries leave it nil.
+	// specSink is invoked per RegisterTask with the full spec; wired by the
+	// launcher, left nil by plan-step and test registries.
 	specSink func(DelegationSpec)
 }
 
@@ -99,9 +88,8 @@ func NewDelegationRegistry() *DelegationRegistry {
 	}
 }
 
-// NewDelegationRegistryWithDepth creates a registry at the given depth.
-// Used for recursive delegation (allow_redelegate) where child registries
-// track sub-delegations at an incremented depth.
+// NewDelegationRegistryWithDepth creates a child registry for recursive
+// delegation (allow_redelegate) at an incremented depth.
 func NewDelegationRegistryWithDepth(depth int) *DelegationRegistry {
 	return &DelegationRegistry{
 		delegations: make(map[string]*Delegation),
@@ -117,11 +105,8 @@ func (r *DelegationRegistry) Depth() int {
 	return r.depth
 }
 
-// SetSpecSink wires a persistence callback fired by RegisterTask with the full
-// delegation spec. parentID stamps specs emitted by this registry: "" for the
-// root (top-level) registry, or the delegating subagent's step ID for a child
-// registry. The sink must be installed before RegisterTask calls and must not
-// block (persistence implementations make it best-effort).
+// SetSpecSink wires the persistence callback; parentID stamps emitted specs.
+// Install before any RegisterTask; must not block (persistence is best-effort).
 func (r *DelegationRegistry) SetSpecSink(parentID string, sink func(DelegationSpec)) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -129,20 +114,14 @@ func (r *DelegationRegistry) SetSpecSink(parentID string, sink func(DelegationSp
 	r.specSink = sink
 }
 
-// RegisterTask registers a full delegation task (delegate-tool form) and
-// fires the spec sink when one is wired, persisting everything a later resume
-// needs to rebuild the subagent. The registry entry itself stays lean (ID,
-// summary, deps, mode) — the full task lives on in the emitted spec. The
-// emitted spec is stamped DelegationKindSubagent.
+// RegisterTask registers the delegate-tool form and fires the spec sink; the
+// entry stays lean (ID/summary/deps/mode) — the full task lives in the spec.
 func (r *DelegationRegistry) RegisterTask(t DelegationTask) error {
 	return r.RegisterTaskKind(DelegationKindSubagent, t)
 }
 
-// RegisterTaskKind is RegisterTask with an explicit unit kind. The plan-step
-// path registers its steps with DelegationKindPlanStep so the register-time
-// unit-ledger writer records them as plan-step units; the delegate tool uses
-// RegisterTask (DelegationKindSubagent). The registry entry itself stays lean
-// (ID, summary, deps, mode) — the full task lives on in the emitted spec.
+// RegisterTaskKind is RegisterTask with an explicit unit kind (plan steps
+// register DelegationKindPlanStep for the unit ledger).
 func (r *DelegationRegistry) RegisterTaskKind(kind DelegationKind, t DelegationTask) error {
 	if t.Mode == "" {
 		t.Mode = "blocking"
@@ -165,7 +144,9 @@ func (r *DelegationRegistry) RegisterTaskKind(kind DelegationKind, t DelegationT
 }
 
 // Register adds a new delegation as "pending". Returns an error if the ID
-// is already registered.
+// is already registered. Unlike RegisterTask it fires no spec sink — the
+// delegate duplicate-guard replay uses it so the unit ledger is not
+// re-written. See specs/contracts/conductor-tools.md (delegate).
 func (r *DelegationRegistry) Register(id, summary string, dependsOn []string, mode string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -208,10 +189,8 @@ func (r *DelegationRegistry) Complete(id, output string, execErr error, steps []
 	if !ok {
 		return
 	}
-	// Don't overwrite a Cancelled status — Cancel may have been called
-	// concurrently with the async goroutine's context-done path. The
-	// cancellation is intentional and should take precedence. A Paused status
-	// is likewise terminal for this run and must not be clobbered.
+	// Cancelled/Paused are intentional terminal states for this run and take
+	// precedence over a racing completion.
 	if d.Status == DelegationStatusCancelled || d.Status == DelegationStatusPaused {
 		return
 	}
@@ -227,11 +206,8 @@ func (r *DelegationRegistry) Complete(id, output string, execErr error, steps []
 	delete(r.cancelFuncs, id)
 }
 
-// CompletePaused marks a delegation as paused — a recoverable checkpoint. It
-// stores the subagent's partial trajectory (steps) so a resumed run can seed
-// its executor and continue from where it stopped. Distinct from Complete,
-// which maps any non-nil error to "failed": a cooperative pause is a
-// checkpoint, not a failure.
+// CompletePaused marks the recoverable checkpoint, storing the partial
+// trajectory a resume seeds from — a cooperative pause is not a failure.
 func (r *DelegationRegistry) CompletePaused(id, output string, steps []agent.Step) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -272,10 +248,8 @@ func (r *DelegationRegistry) Cancel(id string) {
 	r.mu.Unlock()
 }
 
-// Get returns a snapshot copy of the delegation with the given ID, or nil if not found.
-// A copy is returned (not the internal pointer) because callers read fields like
-// Steps and Output from goroutines separate from the one that writes them —
-// returning the pointer would be a data race.
+// Get returns a snapshot copy, not the internal pointer — callers read Steps
+// and Output from goroutines other than the writer's.
 func (r *DelegationRegistry) Get(id string) *Delegation {
 	r.mu.Lock()
 	defer r.mu.Unlock()

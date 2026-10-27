@@ -8,67 +8,49 @@ import (
 	"strconv"
 )
 
-// Loopback port allocation for the embedded server.
-//
-// The persisted port (embedded_llm.port, mirrored into manifest.json) is a
-// PREFERENCE, not a reservation: nothing holds it between an install and the
-// next load, and loopback is shared with every other local process — another
-// app, a dev server, or a llama-server left behind by a crashed run. Spawning
-// onto a taken port is worse than a plain failure: the readiness probe would
-// be answered by the FOREIGN listener and the supervisor would report "loaded"
-// for a model it never started, and every request would then carry the prompt
-// to that unrelated process.
-//
-// So the port is re-checked immediately before each spawn and walks upward
-// until it finds one that can actually be bound.
+// Loopback port allocation for the embedded server. The persisted port is a
+// PREFERENCE, not a reservation — nothing holds it between install and load,
+// and loopback is shared with every other local process. Spawning onto a
+// taken port is worse than a plain failure: the FOREIGN listener would answer
+// the readiness probe, the supervisor would report "loaded" for a model it
+// never started. So the port is re-checked immediately before each spawn and
+// walks upward until one can actually be bound. See specs/domains/
+// embedded-llm.md (Port allocation).
 
 // Loopback port bounds. They mirror backend/config's EmbeddedLLMMinPort and
 // EmbeddedLLMMaxPort, which validate() enforces on the persisted value; core
-// cannot import that package (layering), so the range is repeated here as the
-// authority on what the supervisor may bind.
+// cannot import that package (layering), so the range is repeated here.
 const (
-	// MinLoopbackPort is the lowest bindable port. The privileged range below
-	// it is excluded: binding there would need root, which the app never has.
+	// MinLoopbackPort is the lowest bindable port: below it needs root, which
+	// the app never has.
 	MinLoopbackPort = 1024
 	// MaxLoopbackPort is the highest valid TCP port.
 	MaxLoopbackPort = 65535
 )
 
 // ErrNoFreePort reports that the upward scan reached MaxLoopbackPort without
-// finding a bindable port. It means the loopback range is exhausted — a
-// pathological machine state, not a transient collision.
+// finding a bindable port — a pathological machine state, not a transient
+// collision.
 var ErrNoFreePort = errors.New("no free loopback port for the embedded LLM")
 
-// PortProber reports whether a loopback port can be bound right now. It is the
-// injection seam for the scan: tests substitute it to stage a collision
-// deterministically instead of occupying real ports.
+// PortProber reports whether a loopback port can be bound right now — the
+// injection seam tests substitute to stage a collision deterministically
+// instead of occupying real ports.
 type PortProber func(ctx context.Context, port int) bool
 
 // SearchFreePort returns the first bindable loopback port at or above
-// preferred, scanning upward one port at a time.
+// preferred, scanning upward. A preferred OUTSIDE [MinLoopbackPort,
+// MaxLoopbackPort] is CLAMPED in, not failed — the persisted preference is
+// only a hint: the low clamp covers the 0 "not allocated yet" sentinel, the
+// high clamp covers the hand-edited manifest.json ReadManifest does not
+// range-validate (without it the loop never runs and exhaustion names an
+// inverted range). Bounded, so it terminates with ErrNoFreePort; nil probe
+// selects the production prober; ctx is checked per candidate.
 //
-// A preferred OUTSIDE [MinLoopbackPort, MaxLoopbackPort] is CLAMPED into it
-// rather than failing: the caller wants a usable port, and the persisted
-// preference is only a hint. Clamping the low end (including the 0 "not
-// allocated yet" sentinel) starts the scan at MinLoopbackPort; clamping the
-// high end — the case a hand-edited or corrupted manifest.json produces, since
-// ReadManifest performs no range validation — starts it at MaxLoopbackPort.
-// Without the high clamp the loop below would never execute and the exhaustion
-// message would name an inverted range ("every port from 99999 to 65535 is
-// taken"), misdiagnosing a bad preference as port exhaustion.
-//
-// The scan is bounded by MaxLoopbackPort, so it always terminates — exhaustion
-// is reported as ErrNoFreePort.
-//
-// probe nil selects the production prober. ctx bounds the whole scan and is
-// checked per candidate, so a cancelled load stops probing instead of walking
-// the remaining range.
-//
-// The result is a port that was free when it was probed, not a reservation: it
-// is released before the server binds it, so a racing process can still take it
-// in between. Probing as late as possible (immediately before the spawn) is
-// what keeps that window small; the readiness probe is the backstop that turns
-// a lost race into a reported failure instead of a false "loaded".
+// The result was free when probed, not reserved — it is released before the
+// server binds, so a racing process can take it; probing as late as possible
+// keeps that window small, and the readiness probe is the backstop against a
+// false "loaded".
 func SearchFreePort(ctx context.Context, preferred int, probe PortProber) (int, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -90,23 +72,18 @@ func SearchFreePort(ctx context.Context, preferred int, probe PortProber) (int, 
 		ErrNoFreePort, start, MaxLoopbackPort)
 }
 
-// loopbackPortFree is the production prober: bind the port on loopback and
-// release it again. A successful bind is the same test llama-server itself
-// applies, so it accounts for the socket options the server uses (notably
-// SO_REUSEADDR, which makes a lingering TIME_WAIT socket bindable) instead of
-// guessing from a dial — a dial cannot distinguish "free" from "filtered", and
-// would happily connect to the very foreign listener the scan exists to avoid.
-//
-// A listening socket that never accepted a connection leaves no TIME_WAIT
-// entry behind, so a long scan stays cheap.
+// loopbackPortFree is the production prober: bind and release — the same test
+// llama-server applies, so a lingering TIME_WAIT socket is judged as the
+// server (SO_REUSEADDR) would judge it, where a dial cannot tell "free" from
+// "filtered". A listening socket that never accepted leaves no TIME_WAIT, so
+// long scans stay cheap; the release (no fd-passing to the child) is
+// deliberate.
 func loopbackPortFree(ctx context.Context, port int) bool {
 	address := net.JoinHostPort(LoopbackHost, strconv.Itoa(port))
 	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", address)
 	if err != nil {
 		return false
 	}
-	// The port is deliberately released here rather than handed to the child:
-	// llama-server binds its own socket, and there is no fd-passing path to it.
 	_ = listener.Close()
 	return true
 }

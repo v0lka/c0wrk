@@ -5,11 +5,6 @@ import (
 	"github.com/v0lka/sp4rk/llm"
 )
 
-// ---------------------------------------------------------------------------
-// DTO types exposed to the frontend via Wails bindings.
-// These types were previously defined in the desktop/ package.
-// ---------------------------------------------------------------------------
-
 // ConfigResponse is the typed response for GetConfig, with sanitized (masked) API keys.
 type ConfigResponse struct {
 	Loaded        bool                          `json:"loaded"`
@@ -20,65 +15,44 @@ type ConfigResponse struct {
 	Proxy         ProxySettingsResponse         `json:"proxy"`
 	Experimental  ExperimentalSettingsResponse  `json:"experimental"`
 	ModelProfiles ModelProfilesSettingsResponse `json:"model_profiles"`
-	// PromptSuggestions mirrors the prompt_suggestions.enabled gate
-	// (ADR-088) through SuggestionsEnabled() — nil config = on. False when
-	// the config is not loaded.
+	// PromptSuggestions mirrors prompt_suggestions.enabled — see
+	// PromptSuggestionsSettingsResponse.
 	PromptSuggestions PromptSuggestionsSettingsResponse `json:"prompt_suggestions"`
 	VectorIndex       VectorIndexSettingsResponse       `json:"vector_index"`
 }
 
 // PromptSuggestionsSettingsResponse exposes the prompt_suggestions.enabled
-// gate (ADR-088) to the settings UI: the effective feature switch, mirrored
-// through PromptSuggestionsConfig.SuggestionsEnabled() (nil config = on).
-// False when the config is not loaded.
+// gate via SuggestionsEnabled() — nil config = on, unloaded config = false
+// (ADR-088, specs/domains/prompt-suggestions.md).
 type PromptSuggestionsSettingsResponse struct {
 	Enabled bool `json:"enabled"`
 }
 
-// ExperimentalSettingsResponse exposes the master experimental-features switch
-// to the settings UI. It carries no feature-specific state by design — the
-// switch is all-or-nothing and gates every experimental feature (currently the
-// E2S execution mode). Model Profiles is NOT gated by this switch; it carries
-// its own manual master toggle (model_profiles.enabled).
+// ExperimentalSettingsResponse exposes the all-or-nothing experimental master
+// switch (ADR-068); Model Profiles carries its own toggle
+// (model_profiles.enabled) and is not gated by it.
 type ExperimentalSettingsResponse struct {
 	Enabled bool `json:"enabled"`
 }
 
-// ModelProfilesSettingsResponse exposes the EFFECTIVE (resolved) Model Profiles profile state
-// to the settings UI, not the raw persisted config. Enabled mirrors the
-// resolved master toggle (model_profiles.enabled, carried through verbatim — the
-// experimental-features switch does not affect it); EssentialToolsEnabled
-// mirrors the resolved essential-tools variant sub-toggle. Both are false when
-// the config is not loaded.
-//
-// ActiveProfileID and SuggestedProfileID are the advisory identity half,
-// filled FRESH by GetConfig from pure in-memory reads (the stored active id
-// and the default-model suggestion). They exist so a background consumer —
-// the toolbar gate hook — can read profile identity WITHOUT calling
-// GetModelProfiles: that RPC is a CONSUMING read which drains the one-shot
-// profile notices (e.g. the active-profile-deletion fallback explanation)
-// that Settings is the intended audience for. GetModelProfiles remains the
-// full catalog surface for Settings.
+// ModelProfilesSettingsResponse exposes the EFFECTIVE (resolved) Model
+// Profiles state for the settings UI (specs/domains/model-profiles.md). The
+// identity fields are filled fresh from pure in-memory reads so a background
+// consumer can read them WITHOUT calling GetModelProfiles — that RPC is a
+// consuming read that drains one-shot profile notices meant for Settings.
 type ModelProfilesSettingsResponse struct {
 	Enabled               bool `json:"enabled"`
 	EssentialToolsEnabled bool `json:"essential_tools_enabled"`
-	// ActiveProfileID is the STORED active profile id, verbatim — "" when the
-	// config is not loaded. A dangling id stays visible; the resolver warning
-	// that explains the generic fallback surfaces through GetModelProfiles.
+	// ActiveProfileID is the STORED active profile id, verbatim (dangling ids
+	// stay visible; the explanation surfaces via GetModelProfiles).
 	ActiveProfileID string `json:"active_profile,omitempty"`
-	// ResolvedProfileID is the id the resolver actually resolved the stored
-	// active id to: identical to ActiveProfileID on a direct catalog hit, the
-	// replacement id when the stored id is a retired predefined spelling
-	// (config.FindModelProfileResolvingLegacy), and "generic" on the soft
-	// fallback. It is served from the cached gate rather than filled fresh —
-	// resolution needs the profile catalog, a disk read
-	// refreshModelProfilesGateLocked already performs on every Model Profiles
-	// mutation — so GetConfig stays a pure in-memory read. Value-wise
-	// decisions ("is the effective profile already X?") must compare against
-	// this id, never the verbatim one. "" when the config is not loaded.
+	// ResolvedProfileID is what the stored active id actually resolved to
+	// (same id, retired-spelling replacement, or "generic" soft fallback) —
+	// value-wise decisions must compare against THIS id, never the verbatim
+	// one. Served from the cached gate so GetConfig stays in-memory-only.
 	ResolvedProfileID string `json:"resolved_profile_id,omitempty"`
-	// SuggestedProfileID is the predefined profile the DEFAULT model suggests,
-	// nil when nothing matches. Advisory only; never auto-applied.
+	// SuggestedProfileID is the predefined profile the default model suggests
+	// (advisory only; never auto-applied).
 	SuggestedProfileID *string `json:"suggested_profile_id,omitempty"`
 }
 
@@ -88,12 +62,9 @@ type ReasoningInfo struct {
 	Default string   `json:"default"` // family default (e.g. "high")
 }
 
-// ModelInfo pairs a model name with its resolved family and reasoning metadata.
-// Provider is the config key of the provider that exposes this model
-// ("anthropic", "chatgpt", or a named openai_compatible provider). The composite
-// model identifier "Provider/Name" uniquely identifies the (provider, model)
-// pair so the frontend can disambiguate models that share the same bare Name
-// across providers, while still displaying the bare Name to the user.
+// ModelInfo pairs a model name with its resolved family and reasoning
+// metadata. The composite "Provider/Name" identifier disambiguates models
+// sharing a bare Name across providers while the UI still shows the bare Name.
 type ModelInfo struct {
 	Name      string         `json:"name"`
 	Provider  string         `json:"provider"`
@@ -111,12 +82,9 @@ type ConfigLLMResponse struct {
 	ChatGPT             ConfigProviderFull            `json:"chatgpt"`
 	AllModels           []ModelInfo                   `json:"all_models"`   // flat list of all enabled models with family + reasoning metadata
 	ModelsReady         bool                          `json:"models_ready"` // false during async LLM init; true once registry is wired
-	// AutoRetryMaxSeconds is the inclusive upper bound for per-provider
-	// auto_retry_seconds (ADR-065) — the SAME bound validate() and the
-	// UpdateLLMConfig RPC path enforce. Exposed so the Settings form clamps
-	// its input against the backend's actual limit instead of a duplicated
-	// frontend constant (single source of truth; a backend limit change
-	// propagates with the next config load, no frontend release needed).
+	// AutoRetryMaxSeconds is the inclusive per-provider auto_retry_seconds
+	// bound the same as validate()/UpdateLLMConfig enforce (ADR-065), so the
+	// form clamps against the backend's real limit instead of a constant.
 	AutoRetryMaxSeconds int `json:"auto_retry_max_seconds"`
 }
 
@@ -125,23 +93,17 @@ type ConfigProviderFull struct {
 	APIKey  string   `json:"api_key"`
 	BaseURL string   `json:"base_url,omitempty"`
 	Models  []string `json:"models"` // enabled models for this provider
-	// TLSFingerprint exposes the per-provider SPKI pin (ADR-054): non-empty =
-	// only the pinned key is accepted; empty = system CA verification. Only
-	// compatible providers carry one.
+	// TLSFingerprint is the per-provider SPKI pin (ADR-054): non-empty = only
+	// the pinned key is accepted; empty = system CA verification.
 	TLSFingerprint string `json:"tls_fingerprint,omitempty"`
-	// AutoRetrySeconds exposes the per-provider session-layer auto-retry
-	// interval: 0 = disabled. Only compatible providers carry one; the fixed
-	// anthropic/chatgpt providers always report 0.
+	// AutoRetrySeconds is the per-provider auto-retry interval, 0 = disabled
+	// (fixed anthropic/chatgpt providers always report 0).
 	AutoRetrySeconds int `json:"auto_retry_seconds,omitempty"`
-	// TimeoutClass exposes the adaptive request budget's class override for
-	// compatible providers (ADR-071 D3): "local" | "remote"; empty = infer.
-	// The fixed anthropic/chatgpt providers and the reserved embedded
-	// provider always report "".
+	// TimeoutClass is the adaptive budget's class override (ADR-071 D3):
+	// "local" | "remote"; empty = infer.
 	TimeoutClass string `json:"timeout_class,omitempty"`
-	// AuthMode exposes the CHATGPT provider's authentication mode:
-	// "api_key" (default) | "oauth" (ChatGPT subscription auth via browser
-	// sign-in). Only the chatgpt entry carries it; every other provider
-	// leaves it empty.
+	// AuthMode is the chatgpt provider's auth mode: "api_key" (default) |
+	// "oauth" (ADR-074); every other provider leaves it empty.
 	AuthMode string `json:"auth_mode,omitempty"`
 }
 
@@ -152,12 +114,9 @@ type ConfigSearchResp struct {
 	BaseURL  string `json:"base_url"`
 }
 
-// VectorIndexSettingsResponse holds the vector-index embedding settings for
-// the frontend: which ONNX Runtime execution provider the embedder runs on
-// ("auto" | "cpu" | "cuda") and the GPU device index used when the provider
-// resolves to CUDA. Changing these requires an app restart to take effect —
-// the embedder is created once per process — so the update path only
-// validates and persists them; it never touches the vector manager.
+// VectorIndexSettingsResponse holds the embedder execution-provider settings
+// (ADR-045): validation+persist only, since the embedder is created once per
+// process and a change takes effect after an app restart.
 type VectorIndexSettingsResponse struct {
 	ExecutionProvider string `json:"execution_provider"`
 	DeviceID          int    `json:"device_id"`
@@ -183,87 +142,63 @@ type ProviderConfigRequest struct {
 	APIKey  string   `json:"api_key,omitempty"`
 	BaseURL string   `json:"base_url,omitempty"`
 	Models  []string `json:"models,omitempty"`
-	// TLSFingerprint is the base64(SHA-256(SPKI DER)) pin (ADR-054); the pin
-	// is the only verification override. nil = keep the persisted pin
-	// (debounced partial saves must not drop it); non-nil = apply verbatim,
-	// so an explicit empty string CLEARS the pin (back to system CA
-	// verification). Only meaningful for compatible providers.
+	// TLSFingerprint is the SPKI pin (ADR-054). nil = keep the persisted pin
+	// (debounced partial saves must not drop it); non-nil applies verbatim,
+	// so an explicit "" CLEARS it. Compatible providers only.
 	TLSFingerprint *string `json:"tls_fingerprint,omitempty"`
-	// AutoRetrySeconds is the per-provider session-layer auto-retry interval
-	// (compatible providers only). nil = keep the persisted interval
-	// (debounced partial saves must not drop it); non-nil = apply verbatim,
-	// so an explicit 0 DISABLES the retry timer. Not mapped into the router:
-	// the timer lives in the c0wrk session layer, so it only round-trips
-	// through config. Ignored for the fixed anthropic/chatgpt providers.
+	// AutoRetrySeconds: nil = keep the persisted interval; non-nil applies
+	// verbatim, so an explicit 0 DISABLES the timer. Config round-trip only
+	// (the timer lives in the c0wrk session layer); compatible providers.
 	AutoRetrySeconds *int `json:"auto_retry_seconds,omitempty"`
-	// TimeoutClass is the adaptive request budget's class override for
-	// compatible providers (ADR-071 D3): "local" | "remote". nil = keep the
-	// persisted value (debounced partial saves must not drop it); non-nil =
-	// apply verbatim, so an explicit empty string CLEARS the override (back
-	// to class inference). validate() rejects anything but the enum; the
-	// fixed anthropic/chatgpt providers and the reserved embedded provider
-	// have no such knob and ignore it.
+	// TimeoutClass (ADR-071 D3): nil = keep; non-nil applies verbatim after
+	// enum validation, so an explicit "" CLEARS the override.
 	TimeoutClass *string `json:"timeout_class,omitempty"`
-	// AuthMode selects how the CHATGPT provider authenticates: "api_key"
-	// (the static llm.chatgpt.api_key — the historical behavior) or "oauth"
-	// (ChatGPT subscription auth via browser sign-in). nil = keep the
-	// persisted mode (debounced partial saves must not flip it); non-nil
-	// applies verbatim after enum validation. Only meaningful for the
-	// chatgpt provider; other providers ignore it.
+	// AuthMode selects chatgpt auth: "api_key" (static key) or "oauth"
+	// (ADR-074). nil = keep the persisted mode; non-nil applies after enum
+	// validation. Other providers ignore it.
 	AuthMode *string `json:"auth_mode,omitempty"`
 }
 
-// ChatGPTSignInResponse is the synchronous answer of StartChatGPTSignIn: the
-// authorization URL the FRONTEND opens in the system browser
-// (runtime.BrowserOpenURL). The flow continues in the background; later
-// transitions arrive through the chatgpt_auth:state event.
+// ChatGPTSignInResponse is StartChatGPTSignIn's answer: the authorization URL
+// the frontend opens; later transitions arrive via chatgpt_auth:state
+// (specs/decisions/074-chatgpt-subscription-auth.md).
 type ChatGPTSignInResponse struct {
-	// AuthURL is the issuer's authorization endpoint URL (PKCE S256 + state
-	// included) with the loopback redirect already bound.
+	// AuthURL is the issuer's authorization endpoint (PKCE S256 + state,
+	// loopback redirect pre-bound).
 	AuthURL string `json:"auth_url"`
 }
 
-// ChatGPTAuthStatusResponse is the snapshot GetChatGPTAuthStatus serves. It
-// carries identity fields and the configured mode only — no OAuth token
-// value ever crosses this boundary.
+// ChatGPTAuthStatusResponse is the GetChatGPTAuthStatus snapshot — identity
+// and configured mode only, never a token value (ADR-074).
 type ChatGPTAuthStatusResponse struct {
-	// SignedIn reports whether credentials exist for the provider (the
-	// keychain's answer; no refresh is attempted).
+	// SignedIn reports stored credentials exist (the keychain's answer; no
+	// refresh is attempted).
 	SignedIn bool `json:"signed_in"`
-	// Email is the account's email claim, when the identity is known.
+	// Email / AccountID / ExpiresAt (RFC3339) describe the signed-in
+	// account, when known.
 	Email string `json:"email,omitempty"`
 	// AccountID is the ChatGPT account id backing the subscription.
 	AccountID string `json:"account_id,omitempty"`
-	// ExpiresAt is the stored access token's expiry (RFC3339), when signed
-	// in and the expiry is known.
+	// ExpiresAt is the stored access token's expiry, when known.
 	ExpiresAt string `json:"expires_at,omitempty"`
 	// Mode is the configured chatgpt auth mode: "api_key" | "oauth".
 	Mode string `json:"mode"`
-	// InFlight reports whether a browser sign-in flow is currently running.
-	// It is the authoritative busy flag: a remounted auth panel (collapsed
-	// accordion, reopened settings) restores its Waiting/Cancel posture
-	// from THIS field instead of losing the run to a missed `pending`
-	// event, and a Start refused with "already in progress" is always
-	// backed by a visible Cancel.
+	// InFlight is the authoritative busy flag: a remounted panel restores
+	// its posture from THIS field, not a possibly missed `pending` event.
 	InFlight bool `json:"in_flight"`
-	// LastError names the last FAILED sign-in attempt's cause, the
-	// subsystem construction failure when the keychain is unavailable, or a
-	// non-fatal restore problem surfaced at startup (an unreadable or
-	// incomplete stored record — the manager stays usable and signing in
-	// again replaces the record). Empty when none of those ran.
+	// LastError names the last failed sign-in, a keychain-unavailable
+	// construction failure, or a non-fatal restore problem; "" when none.
 	LastError string `json:"last_error,omitempty"`
 }
 
-// ChatGPTModelPresetResponse is the curated ChatGPT (Codex) model preset
-// GetChatGPTModelPreset serves — the models the subscription backend serves
-// that c0wrk's registry knows, ordered most capable first.
+// ChatGPTModelPresetResponse is the curated ChatGPT (Codex) preset — the
+// models c0wrk's registry knows, most capable first (ADR-074).
 type ChatGPTModelPresetResponse struct {
 	Models []ChatGPTModelPresetEntry `json:"models"`
 }
 
-// ChatGPTModelPresetEntry is one preset model. Metadata is fail-soft: zeros
-// when the async model registry is not wired yet (the name is then the whole
-// entry, exactly like collectAllModels' pre-registry behavior).
+// ChatGPTModelPresetEntry is one preset model; metadata is fail-soft zeros
+// until the async model registry wires up.
 type ChatGPTModelPresetEntry struct {
 	Name string `json:"name"`
 	// ContextWindow / OutputLimit come from the model registry (tokens).
@@ -272,60 +207,44 @@ type ChatGPTModelPresetEntry struct {
 	Reasoning     bool `json:"reasoning,omitempty"`
 }
 
-// ChatGPTAuthEventData is the chatgpt_auth:state event payload. Exactly one
-// flow transition per event; the fields are state-dependent (AuthURL on
-// pending only, the identity snapshot on success, Error on error only) and
-// never include a secret.
+// ChatGPTAuthEventData is the chatgpt_auth:state payload: exactly one flow
+// transition per event, state-dependent fields, never a secret
+// (specs/contracts/event-catalog.md).
 type ChatGPTAuthEventData struct {
 	// State is one of pending | success | error | cancelled.
 	State string `json:"state"`
-	// AuthURL (pending only) is the authorization URL the frontend opens in
-	// the system browser.
+	// AuthURL (pending only) is the authorization URL the frontend opens.
 	AuthURL string `json:"auth_url,omitempty"`
 	// Error (error only) is the actionable failure cause.
 	Error string `json:"error,omitempty"`
-	// Email / AccountID / ExpiresAt (success only) describe the signed-in
-	// account; ExpiresAt is RFC3339.
+	// Email / AccountID / ExpiresAt (success only); ExpiresAt is RFC3339.
 	Email     string `json:"email,omitempty"`
 	AccountID string `json:"account_id,omitempty"`
 	ExpiresAt string `json:"expires_at,omitempty"`
 }
 
-// ListProviderModelsRequest is the payload for ListProviderModels.
-//
-// Provider is required. APIKey / BaseURL / Type are optional draft overrides
-// from the settings UI so a compatible provider that has not been persisted
-// yet (first-run, or no default_model selected so saves are held back) can
-// still fetch its model list. Empty / masked APIKey falls back to the saved
-// key when the provider already exists in config.
+// ListProviderModelsRequest carries optional draft overrides so an
+// unpersisted compatible provider can still fetch its model list; an empty
+// or masked APIKey falls back to the saved key.
 type ListProviderModelsRequest struct {
 	Provider string `json:"provider"`
 	APIKey   string `json:"api_key,omitempty"`
 	BaseURL  string `json:"base_url,omitempty"`
-	// Type is the transport: "openai" or "anthropic". Empty means derive from
-	// the saved provider, or default to "openai" for an unknown provider.
+	// Type is the transport: "openai" | "anthropic"; empty derives from the
+	// saved provider or defaults to "openai".
 	Type string `json:"type,omitempty"`
 	// TLSFingerprint is the draft pin override (ADR-054) so "Fetch Models"
-	// reaches a self-pinned endpoint before the provider is persisted. nil =
-	// fall back to the saved value; non-nil applies verbatim.
+	// reaches a self-pinned endpoint before persistence; nil = saved value.
 	TLSFingerprint *string `json:"tls_fingerprint,omitempty"`
 }
 
-// GetProviderTLSCertificateRequest asks the backend to connect to a
-// provider's endpoint (draft BaseURL, or the persisted one when empty) and
-// return the certificate fingerprint the server currently presents — the
-// settings UI "Get" button. No verification happens on this connection: the
-// fingerprint IS the thing being fetched.
-//
-// The request deliberately carries NO fingerprint field: the button is
-// unconditional with respect to any configured pin (ADR-054). It always
-// reports what the endpoint serves right now, whether or not the provider
-// already has a pin, and whatever the caller does with the result is the
-// user's decision.
+// GetProviderTLSCertificateRequest asks the backend to connect (draft
+// BaseURL, else the persisted one) and report the certificate the server
+// presents right now — deliberately unverified and pin-independent
+// (ADR-054, specs/decisions/054-per-provider-tls-pinning.md).
 type GetProviderTLSCertificateRequest struct {
 	Provider string `json:"provider"`
-	// BaseURL is the DRAFT base URL from the settings form; empty = use the
-	// provider's persisted base_url.
+	// BaseURL is the DRAFT base URL from the settings form; empty = persisted.
 	BaseURL string `json:"base_url,omitempty"`
 }
 
@@ -335,10 +254,9 @@ type TLSCertificateResponse struct {
 	Fingerprint string `json:"fingerprint"`
 }
 
-// ModelConfigResponse returns a single model's configurable parameters: the
-// currently-effective values (override value when set, otherwise the built-in
-// default) plus the built-in factory defaults so the UI can show what would
-// change. HasOverride is true when an entry exists in config.LLM.Models.
+// ModelConfigResponse returns one model's effective values (override or
+// built-in default) plus the factory defaults; HasOverride mirrors an entry
+// in config.LLM.Models.
 type ModelConfigResponse struct {
 	Model                string                `json:"model"`
 	ContextWindow        int                   `json:"context_window"`
@@ -356,15 +274,10 @@ type ModelConfigResponse struct {
 	HasOverride          bool                  `json:"has_override"`
 }
 
-// ModelConfigRequest holds the per-model parameter overrides submitted from the
-// Configure dialog. The backend stores only fields that differ from the
-// built-in default (and removes the entry entirely when everything matches).
-//
-// TokenizerType/Family/Protocol use "" as "inherit": SetModelConfig records the
-// built-in default (also "") for a matching value, so no override entry is
-// persisted. Capabilities uses a nil pointer as "inherit": nil records the
-// built-in capability set (no override persisted), while a non-nil value
-// overrides all four flags atomically.
+// ModelConfigRequest holds per-model overrides; only fields differing from
+// the built-in default are stored (entry removed when everything matches).
+// ""/nil string and capability fields mean "inherit" — a matching value
+// records no override entry.
 type ModelConfigRequest struct {
 	ContextWindow int                    `json:"context_window"`
 	OutputLimit   int                    `json:"output_limit"`
@@ -397,58 +310,36 @@ type ProxySettingsRequest struct {
 	TLSCertDir string   `json:"tls_cert_dir"`
 }
 
-// SecuritySettingsResponse holds security settings for the frontend. The
-// tool-security schema is group-based (security.groups): the frontend edits
-// exactly the seven configurable groups — per-tool policies no longer exist.
+// SecuritySettingsResponse holds the group-based security settings
+// (security.groups; specs/architecture/security-model.md).
 type SecuritySettingsResponse struct {
-	// Groups maps the configurable tool-group names (config.ToolGroup*) to
-	// their policy (and, for the "execute" group only, a command blocklist).
-	// GetSecuritySettings always returns the full set of seven groups;
-	// UpdateSecuritySettings replaces the stored set with what it receives.
+	// Groups maps the seven configurable groups to their policies;
+	// UpdateSecuritySettings replaces the stored set wholesale.
 	Groups                     map[string]GroupPolicyResponse `json:"groups"`
 	AutoApproveWorkspaceWrites bool                           `json:"auto_approve_workspace_writes"`
-	// AutonomyMode is the unified autonomy posture (security.autonomy_mode):
-	// "standard" (default — every prompt reaches a human), "assisted" (the
-	// strict OWASP ASI judge resolves escalated calls), or "silent"
-	// (unattended operation via the silent_mode sub-policies). It replaces
-	// the former Smart Approve / silent-mode master-switch pair of keys.
+	// AutonomyMode is the unified autonomy posture: "standard" | "assisted" |
+	// "silent" (security.autonomy_mode).
 	AutonomyMode string `json:"autonomy_mode"`
-	// SilentMode is the silent-mode sub-policy container
-	// (security.silent_mode). Its policies are live only while AutonomyMode
-	// is "silent". UpdateSecuritySettings replaces the stored value with
-	// what it receives (validated against the sub-policy enums).
+	// SilentMode is the silent_mode container, live only in "silent" mode.
 	SilentMode SilentModeResponse `json:"silent_mode"`
-	// JudgeAvailable reports whether the strict judge is configured and ready.
-	// Read-only: the frontend uses it to disable the assisted/silent judge-
-	// dependent options when no judge is operational (e.g. no LLM model
-	// configured). Always sent; the backend ignores any incoming value
-	// during updates.
+	// JudgeAvailable is read-only; the backend ignores any incoming value.
 	JudgeAvailable bool `json:"judge_available"`
 }
 
-// GroupPolicyResponse holds one tool group's policy for the frontend. It
-// mirrors config.GroupPolicyConfig: a policy from the group enum
-// ("allow"|"user_confirm"|"deny") and — execute group only — a regex
-// blocklist of shell commands forced to confirmation.
+// GroupPolicyResponse mirrors config.GroupPolicyConfig: a group-enum policy
+// ("allow"|"user_confirm"|"deny") plus — execute group only — a command
+// blocklist forced to confirmation.
 type GroupPolicyResponse struct {
 	Policy string `json:"policy"`
-	// Blocklist is serialized WITHOUT omitempty so the nil-vs-empty
-	// distinction survives the JSON round trip — the settings UI echoes
-	// GetSecuritySettings output straight back into UpdateSecuritySettings
-	// on every save. There are no predefined patterns: nil (JSON null) and
-	// an explicit empty array both mean "no patterns". Non-execute groups
-	// serialize null, which the update path ignores.
+	// Blocklist has no omitempty so the nil-vs-empty distinction survives
+	// the settings UI's echo of GetSecuritySettings output back into
+	// UpdateSecuritySettings; both spellings mean "no patterns".
 	Blocklist []string `json:"blocklist"`
 }
 
-// SilentModeResponse is the frontend view of security.silent_mode: the
-// container for the four unattended-operation sub-policies (live only while
-// the autonomy mode is "silent" — see SecuritySettingsResponse.AutonomyMode).
-// Each sub-policy Mode uses that sub-policy's config enum (see
-// config.SilentToolConfirm*, SilentUserConfirm*, SilentStepLimit*,
-// SilentAskUser*).
-// UpdateSecuritySettings validates the modes against the same enums the
-// config loader uses.
+// SilentModeResponse is the frontend view of security.silent_mode: the four
+// unattended-operation sub-policies, each Mode validated against the same
+// config enum the loader uses (ADR-053).
 type SilentModeResponse struct {
 	ToolConfirm SilentSubPolicyResponse `json:"tool_confirm"`
 	UserConfirm SilentSubPolicyResponse `json:"user_confirm"`
@@ -462,35 +353,24 @@ type SilentSubPolicyResponse struct {
 	Mode string `json:"mode"`
 }
 
-// ModelProfilesResponse is the model-profile profile catalog view for the settings
-// picker: every profile (predefined ∪ custom) with its 25 knob values, the
-// persisted active profile id (config.yaml model_profiles.active_profile), the
-// suggested profile id (a normalized match of the default model name against
-// the predefined slugs; null when nothing matches), and the read-only picker
-// universe (builtin_tools / tool_groups) read from the live tool registry.
+// ModelProfilesResponse is the settings-picker catalog view: profiles with
+// their knob values, stored/suggested ids, the live-registry picker universe,
+// and the notice channel (specs/domains/model-profiles.md).
 type ModelProfilesResponse struct {
-	// Enabled is the global master toggle (config.yaml model_profiles.enabled) reported
-	// verbatim — it is NOT a value of any profile. False when config is not
-	// yet initialized.
+	// Enabled is the global master toggle verbatim — not a profile value.
 	Enabled bool `json:"enabled"`
-	// Profiles is the full catalog: predefined entries first (catalog order),
-	// then custom entries in store order. Always non-nil ([] not null).
+	// Profiles: predefined first (catalog order), then custom. Always non-nil.
 	Profiles []ModelProfileDTO `json:"profiles"`
-	// ActiveID is the STORED active profile id, reported verbatim — including
-	// a dangling id after an external store edit; the resolver then falls
-	// back to generic and says so in Warnings.
+	// ActiveID is the STORED id, verbatim — dangling ids stay visible and
+	// the generic fallback is explained in Warnings.
 	ActiveID string `json:"active_id"`
-	// SuggestedProfileID is nil (JSON null) when no predefined profile
-	// matches the default model name.
+	// SuggestedProfileID is nil when no predefined profile matches.
 	SuggestedProfileID *string                    `json:"suggested_profile_id"`
 	BuiltinTools       []ModelProfilesBuiltinTool `json:"builtin_tools"`
 	ToolGroups         []ModelProfilesToolGroup   `json:"tool_groups"`
-	// ProtectedTools lists the orchestration tools the backend always keeps
-	// regardless of any selection, so the UI can render them as locked chips.
+	// ProtectedTools are the orchestration tools always kept (locked chips).
 	ProtectedTools []string `json:"protected_tools"`
-	// Warnings carries store-load warnings, resolver warnings (dangling
-	// active id → generic fallback) and one-shot notices (e.g. "the active
-	// profile was deleted; switched to generic"). Always non-nil.
+	// Warnings: store-load warnings, resolver warnings, one-shot notices.
 	Warnings []string `json:"warnings"`
 }
 
@@ -503,9 +383,8 @@ type ModelProfileDTO struct {
 	Values ModelProfileValues `json:"values"`
 }
 
-// ModelProfileValues carries the 25 knob values of one profile. The master
-// enabled toggle is NOT here: it is a config.yaml field (model_profiles.enabled), not a
-// profile value.
+// ModelProfileValues carries one profile's knob values; the master toggle is
+// a config.yaml field, not a profile value.
 type ModelProfileValues struct {
 	EssentialTools ModelProfilesEssentialToolsValues `json:"essential_tools"`
 	SystemPrompt   ModelProfilesSystemPromptResp     `json:"system_prompt"`
@@ -522,28 +401,22 @@ type ModelProfilesEssentialToolsValues struct {
 	CompactDescriptions bool     `json:"compact_descriptions"`
 }
 
-// ModelProfileUpdateRequest is the update payload for UpdateModelProfile. Only
-// the two request-level fields are optional: nil Name keeps the stored display
-// name and nil Config keeps the stored values. A non-nil Config replaces the
-// WHOLE 25-knob value set (no per-section merge).
+// ModelProfileUpdateRequest: nil Name/Config keep the stored values; a
+// non-nil Config replaces the WHOLE value set (no per-section merge).
 type ModelProfileUpdateRequest struct {
 	Name   *string             `json:"name"`
 	Config *ModelProfileValues `json:"config"`
 }
 
-// ModelProfilesBuiltinTool describes one pin-able built-in tool for the
-// always-present picker: its registry name plus the description the UI renders
-// in the entry's hover tooltip.
+// ModelProfilesBuiltinTool is one pin-able built-in tool for the
+// always-present picker (registry name + tooltip description).
 type ModelProfilesBuiltinTool struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 }
 
-// ModelProfilesToolGroup describes a functional cluster of built-in tools offered
-// as one atomic picker entry: picking the cluster pins every still-selectable
-// member at once. The UI renders Title and Description in the entry's tooltip
-// and lists Tools alongside them. Members are already restricted to the picker
-// universe reported in BuiltinTools.
+// ModelProfilesToolGroup is a cluster of built-in tools pinned atomically as
+// one picker entry; members are already restricted to the picker universe.
 type ModelProfilesToolGroup struct {
 	ID          string   `json:"id"`
 	Title       string   `json:"title"`
@@ -596,8 +469,6 @@ type ModelProfilesCompactionResp struct {
 	TriggerPercent int `json:"trigger_percent"`
 }
 
-// FileNode represents a file or directory entry in the workspace tree.
-// Defined in core/workspace; re-exported here as a type alias for ViewModel convenience.
 type FileNode = workspace.FileNode
 
 // FileIconResponse holds the icon and color for a single file or directory.
@@ -606,60 +477,30 @@ type FileIconResponse struct {
 	IconColor string `json:"icon_color"`
 }
 
-// GitStatusEntry describes the git status of a single file.
-// Defined in core/workspace; re-exported here as a type alias for ViewModel convenience.
 type GitStatusEntry = workspace.GitStatusEntry
 
-// DiffStat reports the number of added and deleted lines in a diff.
-// Defined in core/workspace; re-exported here as a type alias for ViewModel convenience.
 type DiffStat = workspace.DiffStat
 
-// Branch represents a local git branch.
-// Defined in core/workspace; re-exported here as a type alias for ViewModel convenience.
 type Branch = workspace.Branch
 
-// BranchInfo describes the current branch and its upstream tracking state.
-// Defined in core/workspace; re-exported here as a type alias for ViewModel convenience.
 type BranchInfo = workspace.BranchInfo
 
-// BranchBase represents a ref usable as a start-point for CreateBranch.
-// Defined in core/workspace; re-exported here as a type alias for ViewModel convenience.
 type BranchBase = workspace.BranchBase
 
-// CommitFile describes a single file changed by a commit.
-// Defined in core/workspace; re-exported here as a type alias for ViewModel convenience.
 type CommitFile = workspace.CommitFile
 
-// StashEntry describes a single entry in the stash list.
-// Defined in core/workspace; re-exported here as a type alias for ViewModel convenience.
 type StashEntry = workspace.StashEntry
 
-// GitHistoryCommit describes a commit for the unified history+graph view.
-// Defined in core/workspace; re-exported here as a type alias for ViewModel convenience.
 type GitHistoryCommit = workspace.GitHistoryCommit
 
-// GitHistoryPage is a single page of the unified commit history for the
-// frontend's incremental (scroll/load-more) loading. Defined in
-// core/workspace; re-exported here as a type alias for ViewModel convenience.
 type GitHistoryPage = workspace.GitHistoryPage
 
-// HunkDiffInfo describes a single diff hunk with staging status and raw
-// diff text. Defined in core/workspace; re-exported here as a type alias
-// for ViewModel convenience.
 type HunkDiffInfo = workspace.HunkDiffInfo
 
-// MergeRebaseState reports whether a merge or rebase is in progress.
-// Defined in core/workspace; re-exported here as a type alias for ViewModel convenience.
 type MergeRebaseState = workspace.MergeRebaseState
 
-// ReviewHunk describes a single unified-diff hunk for the code-review page.
-// Defined in core/workspace; re-exported here as a type alias for ViewModel
-// convenience.
 type ReviewHunk = workspace.ReviewHunk
 
-// ReviewFileDiff groups the uncommitted hunks of a single file for the
-// code-review page. Defined in core/workspace; re-exported here as a type
-// alias for ViewModel convenience.
 type ReviewFileDiff = workspace.ReviewFileDiff
 
 // SessionTokensResponse holds token usage statistics for a session.
@@ -669,11 +510,9 @@ type SessionTokensResponse struct {
 	Model             string  `json:"model"`
 	Family            string  `json:"family"`
 	FillPercent       float64 `json:"fill_percent"`
-	// UsedTokens/MaxTokens are the conductor's live context-window usage
-	// ("N of M"). They come from the in-memory emitter snapshot (present only
-	// while the session is in memory, e.g. mid-task) — the persisted session
-	// row does not carry them. Zero when only persisted state is available;
-	// the frontend keeps its last live values in that case.
+	// UsedTokens/MaxTokens are the live "N of M" context usage from the
+	// in-memory emitter snapshot; zero from persisted-only state, where the
+	// frontend keeps its last live values.
 	UsedTokens int `json:"used_tokens,omitempty"`
 	MaxTokens  int `json:"max_tokens,omitempty"`
 }
@@ -695,80 +534,49 @@ type ProjectUIStateResponse struct {
 	UpdatedAt      string   `json:"updated_at"`
 }
 
-// ToolInfo represents a tool with its metadata, source, security group, and
-// effective policy for the frontend. Policy is derived from the tool's GROUP
-// on the live registry — per-tool configuration does not exist, so the value
-// is display-only.
+// ToolInfo carries a tool's metadata, source, capability group, and effective
+// policy — policy derives from the GROUP (ADR-024) and is display-only.
 type ToolInfo struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	Source      string `json:"source"`
-	// Group is the tool's capability group (one of the config.ToolGroup*
-	// names except the reserved "system" group — system tools are filtered
-	// out of the list entirely).
+	// Group is a config.ToolGroup* name; "system" tools are filtered out.
 	Group string `json:"group"`
-	// Policy is the effective group policy ("allow"|"user_confirm"|"deny")
-	// enforced by the shared tool registry for this tool's group.
+	// Policy is the effective group policy ("allow"|"user_confirm"|"deny").
 	Policy string `json:"policy"`
 }
 
 // VectorEmbedderInfo carries the embedder's execution-provider facts from the
-// one-shot desktop background init into every VectorIndexStatus payload. It is
-// written once (embedder creation outcome) and never mutated afterwards, so the
-// values stay consistent across all subsequent status emissions.
+// one-shot background init; written once, never mutated (ADR-045/089/090).
 type VectorEmbedderInfo struct {
-	// EffectiveProvider is the provider inference actually runs on: "cpu",
-	// "cuda" or "openvino" — "auto" is resolved at embedder creation and
-	// never leaks here.
+	// EffectiveProvider is what inference runs on ("cpu" | "cuda" |
+	// "openvino") — "auto" is resolved at creation, never leaks here.
 	EffectiveProvider string
 
-	// RequestedProvider is the config value passed to the embedder:
-	// "auto" | "cpu" | "cuda" | "openvino". Diverges from
-	// EffectiveProvider for every "auto" request (auto is resolved to the
-	// winner at creation — auto→cuda and auto→openvino are successes,
-	// auto→cpu is Auto's expected degradation) and for an explicit
-	// "cuda"/"openvino" degrading to CPU after init failure — only the
-	// latter is a fallback, and only that path sets FallbackReason.
+	// RequestedProvider is the config value; it diverges from
+	// EffectiveProvider for every "auto" request (always resolved) and for
+	// an explicit provider degrading to CPU — only that sets FallbackReason.
 	RequestedProvider string
 
-	// FallbackReason carries why an explicit "cuda" or "openvino" request
-	// degraded to the CPU provider (provider init failure text). Empty
-	// otherwise — the "auto" degradation cause is WARN-logged at startup
-	// and is not part of the status payload. Surfaced in the status for
-	// diagnostics.
+	// FallbackReason is the init-failure text of an explicit
+	// cuda/openvino→cpu degradation; the auto degradation is WARN-logged.
 	FallbackReason string
 
-	// CUDAVerified is the external nvidia-smi verdict — true when the driver
-	// lists this process among CUDA compute apps. Nil when the probe did not
-	// run (CPU embedder, embedder unavailable, probe skipped).
+	// CUDAVerified is the nvidia-smi verdict; nil when the probe did not run.
 	CUDAVerified *bool
 
-	// OVDevice is the external xpu-smi verdict of the device class the
-	// OpenVINO provider actually drives: "gpu" when sustained inference
-	// moved the Intel GPU's compute-utilization counter, "cpu" when the
-	// probe ran and saw no GPU activity (the plugin picked a CPU device).
-	// Empty when unverified — no probe ran (non-openvino embedder,
-	// embedder unavailable) or xpu-smi could not answer (absent, failed,
-	// timed out); a missing verdict is never reported as "cpu".
+	// OVDevice is the xpu-smi verdict ("gpu" | "cpu"); empty when unverified
+	// — a missing verdict is never "cpu".
 	OVDevice string
 
-	// DeviceID is the ONNX device index the embedder was created with
-	// (vector_index.device_id). Paired with the provider fields so a future
-	// UI can detect restart-pending: the config's device_id diverging from
-	// this value means the running embedder predates the config change.
-	// 0 is the valid "first GPU" default, not a "missing" marker — the
-	// desktop init always writes it alongside RequestedProvider, which is
-	// what keeps IsZero sound despite 0 being indistinguishable from the
-	// zero value.
+	// DeviceID is the ONNX device index; 0 is a valid "first GPU" default,
+	// so populated-ness rides the provider fields (keeping IsZero sound).
 	DeviceID int
 }
 
-// IsZero reports whether any fact has been recorded. True when the background
-// init has not (yet) populated the info — e.g. no embedder exists at all.
-// DeviceID participates in the check for non-zero values only: 0 is a valid
-// device index (first GPU) and cannot alone distinguish "recorded" from
-// "missing"; the desktop init always records RequestedProvider together with
-// DeviceID, so the provider fields carry the populated/not-populated signal.
+// IsZero reports the background init has not populated the info (e.g. no
+// embedder exists); 0 is a valid DeviceID, so populated-ness rides the
+// provider fields.
 func (i VectorEmbedderInfo) IsZero() bool {
 	return i.EffectiveProvider == "" && i.RequestedProvider == "" &&
 		i.FallbackReason == "" && i.CUDAVerified == nil && i.OVDevice == "" && i.DeviceID == 0
@@ -785,66 +593,26 @@ type VectorIndexStatus struct {
 	Phase        string   `json:"phase"`   // "both" | "embedding" | "lexical" | "open" (the ADR-064 pre-open `loading` state)
 	Indices      []string `json:"indices"` // e.g. ["vector", "lexical"
 
-	// ExecutionProvider is the ONNX Runtime execution provider the embedder
-	// effectively runs on: "cpu", "cuda" or "openvino" — never "auto"
-	// ("auto" is resolved once, at embedder creation; the winner is
-	// reported here). Empty when no embedder exists (model files missing
-	// or creation failed). Comparing it with RequestedExecutionProvider
-	// classifies the outcome (ADR-045): an explicit "cuda"/"openvino"
-	// landing on "cpu" is a fallback; an "auto" request always diverges
-	// (it is resolved to a winner), so auto→cuda and auto→openvino are
-	// successes and auto→cpu is Auto's expected degradation.
+	// ExecutionProvider / RequestedExecutionProvider / ProviderFallbackReason /
+	// CUDAVerified / OVDevice / DeviceID mirror VectorEmbedderInfo field for
+	// field (same semantics; ADR-045). DeviceID is omitted when 0 — read
+	// absence as 0.
 	ExecutionProvider string `json:"execution_provider,omitempty"`
 
-	// RequestedExecutionProvider is the config value (auto|cpu|cuda|
-	// openvino) the embedder was created with. Diverges from
-	// ExecutionProvider for every "auto" request (auto is resolved to the
-	// winner) and for an explicit "cuda"/"openvino" degrading to CPU after
-	// init failure (WARN + runtime_error toast) — only the latter is a
-	// fallback.
 	RequestedExecutionProvider string `json:"requested_execution_provider,omitempty"`
 
-	// CUDAVerified is the external nvidia-smi verdict, set only when the
-	// effective provider is "cuda" and the startup verification probe ran:
-	// true = the driver lists this process among CUDA compute apps; false =
-	// absent (possible silent CPU fallback inside the CUDA-capable build).
-	// Nil when no probe ran (CPU embedder, embedder unavailable, or the
-	// embedder never initialized).
 	CUDAVerified *bool `json:"cuda_verified,omitempty"`
 
-	// OVDevice is the external xpu-smi verdict of the device class the
-	// OpenVINO provider actually drives, set only when the effective
-	// provider is "openvino": "gpu" = sustained inference moved the Intel
-	// GPU's compute-utilization counter; "cpu" = the probe ran and saw no
-	// GPU activity. Empty when unverified — no probe ran (non-openvino
-	// embedder, embedder unavailable) or xpu-smi could not answer (absent,
-	// failed, timed out); a missing verdict is never reported as "cpu".
 	OVDevice string `json:"ov_device,omitempty"`
 
-	// ProviderFallbackReason explains why an explicit "cuda" or "openvino"
-	// request degraded to the CPU provider (provider init failure text).
-	// Empty when the requested provider was honored — and empty on the
-	// auto→cpu degradation path, whose concrete cause is WARN-logged at
-	// startup and does not travel in the status payload.
 	ProviderFallbackReason string `json:"provider_fallback_reason,omitempty"`
 
-	// DeviceID is the ONNX device index the running embedder was created
-	// with (vector_index.device_id at embedder-creation time). Surfaced for
-	// restart-pending detection: comparing it with the live config's
-	// device_id shows the running embedder predates a config change (the
-	// embedder and its ONNX session are created once per process — ADR-045).
-	// Omitted when 0 (the default "first GPU") — a UI treating 0 as the
-	// default must read absence as 0.
 	DeviceID int `json:"device_id,omitempty"`
 }
 
-// VectorStoreEntry represents a single chunk from the vector store for the frontend.
-//
-// VectorScore/LexicalScore/VectorRank/LexicalRank are optional per-side
-// attribution fields populated by hybrid (RRF) and per-side searches.
-// Pure vector results populate VectorScore/VectorRank; pure lexical
-// results populate LexicalScore/LexicalRank; hybrid results may populate
-// any subset depending on which retriever returned the document.
+// VectorStoreEntry is one chunk from the vector store; the Score/Rank fields
+// are per-side attribution — vector-only populates Vector*, lexical Lexical*,
+// hybrid any subset.
 type VectorStoreEntry struct {
 	FilePath     string  `json:"file_path"`
 	FileName     string  `json:"file_name"`
@@ -859,15 +627,10 @@ type VectorStoreEntry struct {
 	LexicalRank  int     `json:"lexical_rank,omitempty"`
 }
 
-// SearchRequest is the request payload for SearchVectorStore.
-//
-// Mode accepts "hybrid" | "vector" | "lexical"; empty/unknown defaults
-// to "hybrid" (with auto-fallback to vector-only when the lexical index
-// is empty or unavailable).
-//
-// FilePattern is a doublestar glob against the chunk's file_path (e.g.
-// "**/*.go", "src/**"). MustMatch is a list of literal substrings that
-// must all appear in a chunk's content for it to be returned.
+// SearchRequest is the SearchVectorStore payload. Mode "hybrid" | "vector" |
+// "lexical"; empty/unknown defaults to hybrid (auto-falls back to vector-only
+// when the lexical index is unavailable). FilePattern is a doublestar glob on
+// file_path; MustMatch lists literal substrings every chunk must carry.
 type SearchRequest struct {
 	Query       string   `json:"query"`
 	TopK        int      `json:"top_k"`
@@ -876,19 +639,13 @@ type SearchRequest struct {
 	Mode        string   `json:"mode"`
 }
 
-// GPUDeviceResponse describes one GPU visible to a driver stack, for the
-// vector-index settings UI (populating the execution-provider device
-// picker). It mirrors embedding.GPUDevice as a plain DTO rather than
-// re-exporting the SDK type through the Wails bindings, keeping the
-// frontend contract owned by this package.
+// GPUDeviceResponse is one GPU for the execution-provider device picker,
+// mirrored as a plain DTO so the contract stays in this package.
 type GPUDeviceResponse struct {
 	Index int    `json:"index"`
 	Name  string `json:"name"`
-	// Provider names the execution provider the device belongs to —
-	// "cuda" for nvidia-smi-enumerated devices, "openvino" for Intel
-	// devices enumerated through vulkaninfo. The picker's device index is
-	// scoped to the provider: the same index 0 under "cuda" and "openvino"
-	// names different hardware.
+	// Provider scopes the index: "cuda" and "openvino" enumerate
+	// independently — the same index names different hardware.
 	Provider string `json:"provider"`
 }
 
@@ -899,9 +656,7 @@ type OptimizePromptResponse struct {
 	UsedContext     bool     `json:"used_context"`
 }
 
-// ---------------------------------------------------------------------------
 // Blackboard Viewer DTOs
-// ---------------------------------------------------------------------------
 
 // BlackboardStateResponse holds the current blackboard state for the frontend viewer.
 type BlackboardStateResponse struct {
@@ -930,11 +685,8 @@ type BlackboardPlanStepResponse struct {
 	DependsOn   []string `json:"depends_on"`
 }
 
-// BlackboardStepResponse is a simplified step result for the blackboard viewer.
-// The full output (body) is intentionally excluded: it can be large and would
-// bloat the GetBlackboardState payload. The viewer fetches a single step's full
-// output on demand via GetStepOutput, and matches step outputs against a search
-// query via SearchBlackboardStepOutputs.
+// BlackboardStepResponse omits the step body on purpose — it can be large;
+// the viewer fetches it on demand via GetStepOutput / SearchBlackboardStepOutputs.
 type BlackboardStepResponse struct {
 	StepID  string `json:"step_id"`
 	Summary string `json:"summary"`
@@ -960,9 +712,8 @@ type BlackboardFactResponse struct {
 	Author   string   `json:"author"`
 }
 
-// BlackboardAttachmentResponse is a metadata-only view of a user-attached file
-// for the blackboard viewer. The markdown content is intentionally excluded so
-// large attachments do not bloat the API response.
+// BlackboardAttachmentResponse is a metadata-only attachment view (the
+// markdown body is excluded to bound the payload).
 type BlackboardAttachmentResponse struct {
 	ID           string `json:"id"`
 	OriginalName string `json:"original_name"`
@@ -977,18 +728,17 @@ type SkillDescriptorDTO struct {
 	Description string `json:"description"`
 }
 
-// AgentDescriptorDTO is a lightweight Subagent Profile descriptor exposed to
-// the frontend for #-autocomplete. Mirrors SkillDescriptorDTO.
+// AgentDescriptorDTO is a lightweight Subagent Profile descriptor for the
+// /-autocomplete (ADR-076: `#` is no longer a trigger). Mirrors
+// SkillDescriptorDTO.
 type AgentDescriptorDTO struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 }
 
-// CommandDescriptorDTO is a custom command descriptor exposed to the frontend
-// for /-autocomplete and send-time template expansion (ADR-096). The full
-// template ships in the descriptor: expansion happens in the chat-input send
-// path, which needs the body; command files are small, so a separate
-// GetCommand RPC is not warranted.
+// CommandDescriptorDTO is a custom-command descriptor for /-autocomplete and
+// send-time template expansion (ADR-096): the body ships in the descriptor
+// because expansion happens in the send path.
 type CommandDescriptorDTO struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`

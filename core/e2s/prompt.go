@@ -15,26 +15,20 @@ import (
 )
 
 // SkillSection is one activated skill body injected into the E2S system
-// prompt. The host (which owns skill resolution) supplies the parsed sections;
-// the loop treats them as directives to follow, mirroring the orchestrator's
-// "Active Skills" section.
+// prompt; the host owns skill resolution, the loop treats the section as a
+// directive (the orchestrator's "Active Skills" analog).
 type SkillSection struct {
 	Name        string
 	Description string
 	Body        string
 }
 
-// BuildSystemPrompt assembles the E2S system prompt P: the compact core
-// directive from core/prompts/e2s.md (role + E2S protocol; cfg.SystemPrompt
-// overrides it — the Model Profiles Lite swap), followed by the security
-// directives (the unconditional VerificationMandate and the config-gated
-// InjectionDefense, mirroring the Conductor's prefix — SECURITY.md mandates
-// them for every model-facing loop), the workspace sections, the Available
-// Tools catalog (from the registry descriptors), and the active-skill
-// sections. The
-// composition is deterministic and session-stable: the same config and
-// descriptor set always produce the same prompt, so provider-side prefix
-// caching applies across the loop's fresh one-shot dialogs.
+// BuildSystemPrompt assembles the E2S system prompt: the core directive
+// (cfg.SystemPrompt overrides — the Model Profiles Lite swap), the security
+// directives, the workspace sections, the Available Tools catalog, and the
+// active-skill sections. Deterministic per config + descriptors, so
+// provider-side prefix caching holds across the loop's fresh one-shot
+// dialogs (specs/domains/e2s.md).
 func BuildSystemPrompt(cfg Config, descriptors []sdktools.ToolDescriptor) string {
 	core := cfg.SystemPrompt
 	if core == "" {
@@ -52,12 +46,10 @@ func BuildSystemPrompt(cfg Config, descriptors []sdktools.ToolDescriptor) string
 	return sb.String()
 }
 
-// workspaceSection renders the workspace/temp-directory containment sections,
-// mirroring the orchestrator's Workspace block, plus the scratchpad block:
-// when cfg.NotesPath is set (derived from TempDir by withDefaults) it names
-// the scratchpad file and states the overflow discipline — raw evidence goes
-// to the file, Σ keeps distilled facts and pointers, the final answer draws
-// on both.
+// workspaceSection renders the workspace/temp containment sections plus the
+// scratchpad block: when cfg.NotesPath is set it names the file and states
+// the overflow discipline — raw evidence to the file, distilled facts and
+// pointers in Σ (specs/domains/e2s.md).
 func workspaceSection(cfg Config) string {
 	if cfg.WorkspacePath == "" {
 		return ""
@@ -77,12 +69,10 @@ func workspaceSection(cfg Config) string {
 	return sb.String()
 }
 
-// availableToolsSection renders the catalog of tools the action dispatch can
-// target. Descriptors are sorted by name for a stable, cache-friendly list;
-// each entry carries its purpose line and the compact description-free input
-// schema (compactSchema) — the model dispatches free-form action.args
-// objects, so without the schema it cannot know parameter names and guesses
-// wrong ones that Go's json.Unmarshal then silently ignores.
+// availableToolsSection renders the dispatchable tool catalog, sorted by
+// name (cache-friendly); each entry carries its purpose line and the compact
+// description-free input schema — without it the model guesses parameter
+// names that json.Unmarshal silently ignores (specs/domains/e2s.md).
 func availableToolsSection(descriptors []sdktools.ToolDescriptor) string {
 	if len(descriptors) == 0 {
 		return "\n\n## Available Tools\nNone — call " + FinishActionName + " with your best answer."
@@ -111,22 +101,12 @@ func availableToolsSection(descriptors []sdktools.ToolDescriptor) string {
 }
 
 // compactSchema renders a tool's input schema as COMPACT, description-free
-// JSON: every "description" key is stripped from the whole schema tree (the
-// tool's purpose is already rendered as the catalog entry's one-line
-// summary, so the schema-level prose is bulk without information the model
-// cannot get elsewhere). Everything else is preserved VERBATIM — property
-// names, required, enum values, types, and all constraint metadata (the
-// ADR-040 lesson: the model dispatches action.args by exact parameter name,
-// so any metadata loss or renaming would push it toward wrong argument
-// names that Go's json.Unmarshal then silently ignores).
-//
-// The result is deterministic: parsing into generic values and re-marshaling
-// sorts object keys alphabetically (stable for a given build), which keeps
-// the rendered catalog — and therefore the provider-side prefix cache over
-// the loop's fresh one-shot dialogs — reproducible. Numbers are carried
-// through as literals (json.Decoder.UseNumber), so a constraint like
-// min/max lengths re-renders byte-identically. An empty/unparseable schema
-// renders as "".
+// JSON: only "description" keys are stripped; property names, required,
+// enums, types, and constraints survive VERBATIM — the model dispatches
+// action.args by exact parameter name (ADR-040). Parsing + re-marshaling
+// sorts keys and UseNumber carries numbers as literals, so the render — and
+// the provider prefix cache over it — stays reproducible. Empty/unparseable
+// schema renders as "".
 func compactSchema(schema json.RawMessage) string {
 	if strings.TrimSpace(string(schema)) == "" {
 		return ""
@@ -144,10 +124,8 @@ func compactSchema(schema json.RawMessage) string {
 	return string(data)
 }
 
-// stripSchemaDescriptions returns a copy of the parsed schema tree with
-// every "description" object key removed at any nesting depth (properties,
-// items, oneOf/anyOf branches). Scalars, arrays, and every other key pass
-// through untouched.
+// stripSchemaDescriptions copies the parsed schema tree minus every
+// "description" key at any depth; everything else passes through untouched.
 func stripSchemaDescriptions(v any) any {
 	switch t := v.(type) {
 	case map[string]any:
@@ -191,17 +169,12 @@ func skillsSection(skills []SkillSection) string {
 	return sb.String()
 }
 
-// BuildUserMessage renders the per-turn user message: the current turn
-// number against the run's budget, the full working state Σₜ as compact
-// JSON, and the latest observation Oₜ. This message (plus the system prompt)
-// is the ENTIRE request — previous turns never leak in, keeping the context
-// bounded at O(1).
-//
-// maxTurns > 0 renders "[turn N of M]" and, once the remaining budget
-// enters the warning window (the greater of 20% of the budget or 3 turns),
-// appends an explicit wrap-up directive — the model cannot pace itself
-// against a budget it cannot see. maxTurns <= 0 falls back to the legacy
-// bare "[turn N]" (unbudgeted runs).
+// BuildUserMessage renders the per-turn user message — turn header, full Σₜ
+// as compact JSON, latest Oₜ. It (plus the system prompt) is the ENTIRE
+// request: previous turns never leak, context stays O(1). maxTurns > 0 adds
+// the "[turn N of M]" header and the wrap-up directive inside the warning
+// window; maxTurns <= 0 renders the legacy bare "[turn N]".
+// See specs/domains/e2s.md.
 func BuildUserMessage(state map[string]any, observation string, turn, maxTurns int) string {
 	var sb strings.Builder
 	sb.WriteString(turnHeader(turn, maxTurns))
@@ -249,11 +222,10 @@ func turnHeader(turn, maxTurns int) string {
 	return fmt.Sprintf("[turn %d of %d]", turn, maxTurns)
 }
 
-// BuildCorrectionSuffix renders the corrective tail appended to the user
-// message for the bounded retry after an invalid e2s_step call. The error
-// line names the violation; the envelope literals re-show the exact shapes
-// (regular action and finish) so the retry can copy the form instead of
-// re-guessing it.
+// BuildCorrectionSuffix renders the corrective tail appended for the bounded
+// retry after an invalid e2s_step call: the error names the violation, the
+// envelope literals re-show the exact shapes so the retry copies the form.
+// See specs/domains/e2s.md.
 func BuildCorrectionSuffix(validationErr error) string {
 	return "\n<correction>\nYour previous turn was INVALID and was not applied. Error:\n" +
 		validationErr.Error() +
@@ -262,12 +234,11 @@ func BuildCorrectionSuffix(validationErr error) string {
 		"\nRespond now with one corrected `" + StepToolName + "` call following the E2S protocol exactly.\n</correction>\n"
 }
 
-// untrustedWrap wraps an observation from an untrusted source (MCP, web,
-// filesystem) in untrusted-content boundary tags. It delegates to the canonical
-// SDK helper so the MANDATORY tag-breakout sanitization (security.StripUntrustedTags)
-// and attribute escaping apply exactly as on the orchestrator/engine path — a
-// literal </untrusted-content> in tool output must not be able to close the
-// boundary early (SECURITY.md "Tag-breakout protection is mandatory").
+// untrustedWrap wraps an untrusted-source observation in untrusted-content
+// boundary tags via the canonical SDK helper, so the mandatory tag-breakout
+// sanitization (StripUntrustedTags) applies exactly as on the orchestrator
+// path — a literal closing tag must not end the boundary early.
+// See specs/architecture/security-model.md.
 func untrustedWrap(source, content string) string {
 	return security.WrapUntrustedContent(content, source, nil)
 }

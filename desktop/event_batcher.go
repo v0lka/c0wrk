@@ -8,56 +8,34 @@ import (
 	"github.com/v0lka/c0wrk/backend/session"
 )
 
-// Batch transport constants. eventBatchEventName MUST match EVENT_BATCH_NAME in
+// Batch transport constants; delivery rules in specs/contracts/event-catalog.md
+// (Event Batching). eventBatchEventName MUST match EVENT_BATCH_NAME in
 // frontend/src/api/runtime.ts — the frontend dispatcher keys off it.
 const (
-	// eventBatchEventName is the single Wails event name under which batched
-	// events are delivered. Its payload is a batchEnvelope.
-	eventBatchEventName = "c0wrk:events:batch"
+	eventBatchEventName = "c0wrk:events:batch" // single delivery event name; payload is a batchEnvelope
 
-	// eventBatchInterval bounds the added latency of a queued event (~one
-	// frame at 60Hz) and, therefore, the maximum flush rate.
-	eventBatchInterval = 16 * time.Millisecond
+	eventBatchInterval = 16 * time.Millisecond // added latency (~one 60Hz frame); also the max flush rate
 
-	// eventBatchMaxEvents / eventBatchMaxBytes force an early flush so a burst
-	// (a streaming turn, terminal throughput) cannot grow the queue — and the
-	// per-flush payload — without bound.
+	// force an early flush so a burst (streaming turn, terminal throughput)
+	// cannot grow the queue — or the per-flush payload — without bound
 	eventBatchMaxEvents = 256
 	eventBatchMaxBytes  = 256 * 1024
 
-	// eventBatchBaseSize is the nominal byte cost of an event that doesn't
-	// supply a size hint.
-	eventBatchBaseSize = 512
+	eventBatchBaseSize = 512 // nominal byte cost of an event without a size hint
 )
 
-// EventBatcher coalesces and batches frontend events so the Wails/AppKit main
-// thread performs ONE evaluateJavaScript call per flush instead of one per
-// event. Streaming turns can emit dozens of events per second (assistant_chunk,
-// session_tokens, context_fill, ...); dispatching each one individually forces
-// a synchronous JS evaluation on the main thread for every event, which is the
-// dominant driver of UI jank during long runs.
-//
-// Two delivery classes share one ordered queue:
-//
-//   - Transient ("latest-wins") events (see sessionEventCoalesceKey) collapse:
-//     two ADJACENT queue entries sharing a coalesce key are merged, keeping the
-//     last payload. This is safe because those events carry a full snapshot
-//     (e.g. assistant_chunk ships accumulated_content, not a delta) so dropping
-//     the intermediates loses no state.
-//   - Content events are appended verbatim, preserving order and delivering
-//     every event exactly once.
-//
-// Flushing happens on a ~16ms timer, on a size threshold (event count OR byte
-// budget), on demand for "barrier" events (task settlement / HITL prompts, see
-// isImmediateFlushEvent), and finally at shutdown. A flush emits a single
-// c0wrk:events:batch event whose payload is a batchEnvelope (see
-// batchEnvelope); the frontend runtime dispatcher fans it back out to the
-// per-event subscribers, so handler semantics are unchanged.
-//
-// Ordering guarantee: entries are emitted in queue order, and a coalescing
-// merge only ever touches the queue TAIL, so the relative order of content and
-// transient events is preserved (a chunk can never jump ahead of the
-// assistant_done that settled the previous stream).
+// EventBatcher coalesces and batches frontend events so the main thread
+// performs ONE evaluateJavaScript call per flush instead of one per event —
+// per-event dispatch being the dominant driver of streaming jank. Two
+// delivery classes share one ordered queue: transient latest-wins events (see
+// sessionEventCoalesceKey) collapse adjacent queue entries sharing a coalesce
+// key (safe: they carry full snapshots, not deltas), content events queue
+// verbatim. Flushes run on the ~16ms timer, on a size threshold, on barrier
+// events (isImmediateFlushEvent), and at shutdown; the envelope is fanned back
+// out by the frontend dispatcher with unchanged handler semantics. A merge
+// only ever touches the queue TAIL, so relative order is preserved (a chunk
+// can never jump ahead of the assistant_done that settled the stream).
+// See specs/contracts/event-catalog.md (Event Batching).
 type EventBatcher struct {
 	// emit is the raw transport (App.emit). It is invoked outside the batcher
 	// lock so a slow evaluation can never block producers.
@@ -158,12 +136,9 @@ func (b *EventBatcher) Enqueue(name string, args []any, coalesceKey string, barr
 		return
 	}
 	if coalesceKey != "" && len(b.queue) > 0 {
-		// Require the event name to match as well: the merge overwrites Args
-		// while keeping the queued Name, so merging events with different
-		// names would deliver one payload under the other's name. The
-		// session-scoped coalesce key already prevents this for session
-		// events; the name check makes cross-name merges impossible by
-		// construction for any producer.
+		// The name must match too: the merge overwrites Args but keeps the
+		// queued Name, so a cross-name merge would deliver one payload under
+		// the other's name.
 		if last := &b.queue[len(b.queue)-1]; last.coalesceKey == coalesceKey && last.Name == name {
 			last.Args = args
 			b.mu.Unlock()
@@ -187,7 +162,7 @@ func (b *EventBatcher) Enqueue(name string, args []any, coalesceKey string, barr
 	}
 }
 
-// flush drains the queue and emits it as one envelope. A no-op when empty.
+// flush drains the queue and emits it as one envelope.
 func (b *EventBatcher) flush() {
 	b.mu.Lock()
 	if len(b.queue) == 0 {
@@ -209,13 +184,12 @@ func (b *EventBatcher) emitSingle(ev batchedEvent) {
 }
 
 // Flush forces an immediate synchronous flush of everything currently queued.
-// Safe to call from any goroutine.
 func (b *EventBatcher) Flush() {
 	b.flush()
 }
 
-// Stop flushes any pending events and terminates the background loop exactly
-// once. Events enqueued afterwards are delivered synchronously.
+// Stop flushes pending events and terminates the background loop; events
+// enqueued afterwards are delivered synchronously.
 func (b *EventBatcher) Stop() {
 	b.once.Do(func() {
 		b.mu.Lock()
@@ -237,14 +211,12 @@ func (b *EventBatcher) requestFlush() {
 // --- event classification -------------------------------------------------
 
 // sessionEventCoalesceKey returns the latest-wins coalescing key for a session
-// event, or "" when the event is content (must be delivered verbatim, in
-// order). The batcher queue is shared by every session, so the key is scoped
-// by session ID first: transient events collapse by session+type, refined by
-// their stream discriminator where one exists (plan_step_id / step_id) so two
-// concurrent streams — in the same session or across sessions — never clobber
-// each other. Without the session ID in the key, two sessions streaming
-// concurrently would merge into each other's queue entries and deliver one
-// session's payload under the other session's event name.
+// event, or "" for content (delivered verbatim, in order). The queue is shared
+// by every session, so the key is scoped by session ID first, refined by the
+// stream discriminator (plan_step_id / step_id) — without it, two concurrent
+// streams would merge into each other's queue entries and deliver one
+// session's payload under the other's event name.
+// See specs/contracts/event-catalog.md (Event Batching).
 func sessionEventCoalesceKey(sessionID, eventType string, data any) string {
 	switch eventType {
 	case "assistant_chunk", "context_fill", "step_todo_update", "session_tokens", "agent_metrics":
@@ -287,13 +259,12 @@ func eventStreamDiscriminator(eventType string, data any) string {
 	return ""
 }
 
-// isImmediateFlushEvent reports whether a session event must be flushed right
-// away rather than waiting for the ~16ms tick: task settlement (so the UI
-// leaves the running state without a perceptible delay) and the HITL prompts
-// whose handlers block a live task until the user answers. hitl_resolved
-// rides the same class: it settles an open prompt on every surface, and a
-// confirmation card that lags one tick behind the resume of the task it was
-// blocking reads as a ghost.
+// isImmediateFlushEvent reports whether a session event must flush right away
+// instead of waiting for the ~16ms tick: task settlement (the UI must leave
+// the running state without perceptible delay) and the HITL prompts whose
+// handlers block a live task. hitl_resolved rides the same class — it settles
+// an open prompt on every surface, and a confirmation card lagging one tick
+// behind the task it unblocked reads as a ghost.
 func isImmediateFlushEvent(eventType string) bool {
 	switch eventType {
 	case "task_complete", "task_cancelled", "error", "task_failed_resumable",
@@ -317,9 +288,7 @@ func (a *App) sessionEventBatcher() *EventBatcher {
 	return a.batcherPtr.Load()
 }
 
-// emitBatchedEvent enqueues one frontend event through the batcher. sizeHint
-// bounds the envelope's byte budget; pass the payload size for large events
-// (terminal output) and 0 otherwise.
+// emitBatchedEvent enqueues one frontend event through the batcher (see Enqueue).
 func (a *App) emitBatchedEvent(name string, args []any, coalesceKey string, barrier bool, sizeHint int) {
 	a.sessionEventBatcher().Enqueue(name, args, coalesceKey, barrier, sizeHint)
 }
@@ -334,9 +303,8 @@ func (a *App) flushEvents() {
 	}
 }
 
-// stopEventBatcher flushes pending events and terminates the batcher. Called
-// from Shutdown so no queued event is lost on quit; events emitted afterwards
-// are delivered synchronously.
+// stopEventBatcher flushes pending events and terminates the batcher on
+// shutdown; events emitted afterwards are delivered synchronously.
 func (a *App) stopEventBatcher() {
 	if b := a.batcherPtr.Load(); b != nil {
 		b.Stop()

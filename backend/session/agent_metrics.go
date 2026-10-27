@@ -1,11 +1,6 @@
-// Agent quality metrics aggregation.
-//
-// The executor already reports loop-detector activity through
-// ExecutorDiagnostic events (same_tool_repeat_nudge, fruitless_abort, …).
-// metricsState taps that stream — plus step and token accounting — and
-// aggregates it into the "agent_metrics" payload emitted on task finish or
-// abort, so the effect of Model Profiles (and any other) profiles can be measured
-// against data instead of impressions.
+// Agent quality metrics aggregation: metricsState taps the executor's
+// ExecutorDiagnostic stream plus step/token accounting into the "agent_metrics"
+// payload (specs/contracts/event-catalog.md, agent_metrics).
 package session
 
 import (
@@ -14,11 +9,9 @@ import (
 	"github.com/v0lka/c0wrk/backend/config"
 )
 
-// metricsState accumulates per-session agent quality counters. A single
-// instance is shared by an EventEmitter and all of its scoped copies
-// (WithPlanStepID / WithRetryAttempt), so delegated subagent activity counts
-// into the session totals — mirroring how tokenState is shared. Safe for
-// concurrent use.
+// metricsState accumulates per-session agent quality counters, shared by an
+// EventEmitter and all its scoped copies (WithPlanStepID / WithRetryAttempt)
+// so delegated subagent activity counts into the session totals.
 type metricsState struct {
 	mu               sync.Mutex
 	parseErrors      int
@@ -29,10 +22,9 @@ type metricsState struct {
 	modelProfiles    ModelProfilesMetaInfo
 }
 
-// observeDiagnostic maps an executor diagnostic event name onto the counters.
-// Only loop-detector nudges, hard aborts and parse-quality events are quality
-// signals; informational diagnostics (executor_finish_nudge,
-// pre_compaction_nudge, checklist_* and friends) are ignored.
+// observeDiagnostic maps an executor diagnostic event name onto the counters;
+// informational diagnostics (executor_finish_nudge, pre_compaction_nudge,
+// checklist_* and friends) are not quality signals and are ignored.
 func (m *metricsState) observeDiagnostic(event string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -69,12 +61,10 @@ func (m *metricsState) observeStep() {
 	m.steps++
 }
 
-// observeToolResult classifies a single tool result and counts "invalid tool
-// call" errors — model-produced calls the executor rejected as malformed or
-// structurally invalid (parse failures, unknown tools, malformed batches).
-// Runtime failures (shell errors, missing files) and security/policy/HITL
-// refusals are intentionally excluded: they are not invalid *calls*, they are
-// invalid (or disallowed) *operations*.
+// observeToolResult counts "invalid tool call" errors — model-produced calls
+// the executor rejected as malformed or structurally invalid, distinct from
+// runtime failures and policy refusals
+// (specs/contracts/event-catalog.md, agent_metrics).
 func (m *metricsState) observeToolResult(isError bool, content string) {
 	if !isError || !isInvalidToolCall(content) {
 		return
@@ -92,8 +82,7 @@ func (m *metricsState) setModelProfiles(info ModelProfilesMetaInfo) {
 }
 
 // snapshot renders the accumulated counters as the "agent_metrics" payload
-// and resets them, so the next task run in the same session starts from zero:
-// one agent_metrics event covers exactly one task run.
+// and resets them: one event covers exactly one task run.
 func (m *metricsState) snapshot(finish string, outputTokens int) AgentMetricsData {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -128,15 +117,10 @@ func modelProfilesInfoSnapshot(info ModelProfilesMetaInfo) ModelProfilesMetaInfo
 	}
 }
 
-// modelProfileFromConfig derives the Model Profiles profile snapshot a session
-// runs under. The profile entry identifies the active profile (id + kind)
-// and is reported regardless of the master toggle — which profile is active
-// is independent of whether its optimizations are applied. Variants lists
-// every optimization that is actually active — the master toggle AND the
-// variant's own sub-toggle must both be on, mirroring how the builder
-// applies them. Works regardless of whether the profile is enabled:
-// metrics collection is a common layer, the profile only annotates the
-// payload.
+// modelProfileFromConfig derives the Model Profiles snapshot a session runs
+// under: profile identity is reported regardless of the master toggle, while
+// Variants lists only optimizations active under BOTH the toggle and the
+// variant's own sub-toggle (specs/domains/model-profiles.md).
 func modelProfileFromConfig(cfg config.ModelProfilesConfig, profile config.ModelProfile) ModelProfilesMetaInfo {
 	info := ModelProfilesMetaInfo{
 		Enabled:     cfg.Enabled,

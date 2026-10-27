@@ -12,11 +12,10 @@ import (
 )
 
 // webviewGpuPolicy is the effective hardware-acceleration policy for the
-// Linux webview — the value WebKit ultimately receives — deliberately
-// decoupled from Wails' enum ordering (see wailsWebviewGpuPolicy for why the
-// conversion is not the identity). The canonical string alphabet (env var,
-// persisted setting, Settings UI, RPCs) lives in backend/webview_gpu.go; this
-// enum is the Wails-bound leaf of that pipeline.
+// Linux webview — the Wails-bound leaf of the pipeline whose canonical string
+// alphabet (env var, persisted setting, Settings UI, RPCs) lives in
+// backend/webview_gpu.go — deliberately decoupled from Wails' enum ordering
+// (see wailsWebviewGpuPolicy). See specs/domains/webview-gpu-policy.md.
 type webviewGpuPolicy int
 
 const (
@@ -52,24 +51,14 @@ func webviewGpuPolicyFromCanonical(canonical string) webviewGpuPolicy {
 }
 
 // wailsWebviewGpuPolicy converts the policy into the linux.WebviewGpuPolicy
-// value to hand to Wails.
-//
-// Wails v2.16.0 (the version pinned in go.mod) carries a mismatch between
-// its Go enum and its C layer: internal/frontend/desktop/linux/window.c
-// (SetupWebview) maps the integer to WebKit policies as 0→ALWAYS,
-// 1→ON_DEMAND, 2→NEVER, while the Go enum orders OnDemand=0, Always=1,
-// Never=2 — so passing the like-named constants silently swaps always and
-// on-demand at runtime. The mapping below compensates for that, so the
-// policy named on the env var is the one WebKit actually receives:
-//
-//	desired always    → Go OnDemand(0) → C case 0 → WEBKIT_…POLICY_ALWAYS
-//	desired on-demand → Go Always(1)   → C case 1 → WEBKIT_…POLICY_ON_DEMAND
-//	desired never     → Go Never(2)    → C case 2 → WEBKIT_…POLICY_NEVER
-//
-// Re-verify against window.c whenever Wails is upgraded: if upstream ever
-// aligns the C switch with the Go enum, the two non-default arms here must
-// be swapped back (or dropped) and the tests in webview_gpu_policy_test.go
-// updated to match.
+// value handed to Wails, compensating for the pinned Wails v2.16.0's
+// Go-enum/C-layer mismatch: window.c (SetupWebview) maps the integer as
+// 0→ALWAYS, 1→ON_DEMAND, 2→NEVER while the Go enum orders OnDemand=0,
+// Always=1, Never=2 — like-named constants would silently swap always and
+// on-demand at runtime. This is the single place aware of the mismatch;
+// re-verify against window.c on every Wails upgrade and update
+// webview_gpu_policy_test.go (numeric + enum-order canary pins).
+// See specs/domains/webview-gpu-policy.md.
 func (p webviewGpuPolicy) wailsWebviewGpuPolicy() linux.WebviewGpuPolicy {
 	switch p {
 	case gpuPolicyAlways:
@@ -82,12 +71,12 @@ func (p webviewGpuPolicy) wailsWebviewGpuPolicy() linux.WebviewGpuPolicy {
 }
 
 // WebviewGpuPolicyOptions returns the Linux-specific Wails options carrying
-// the hardware-acceleration policy for this launch. It returns nil on
-// non-Linux platforms — the option only feeds the WebKitGTK frontend, so
-// macOS and Windows keep behaving exactly as before. stderrObserved reports
-// whether this launch has a usable stderr capture (see DeriveWebviewGpuRun):
-// without one a fresh-auto launch is demoted to never, because the failure
-// watchdog could never detect the resulting grey window.
+// the hardware-acceleration policy for this launch, or nil off Linux (the
+// option only feeds the WebKitGTK frontend, so macOS and Windows keep
+// behaving exactly as before). stderrObserved reports whether this launch has
+// a usable stderr capture: without one, fresh auto is demoted to never
+// (DeriveWebviewGpuRun) because the failure watchdog could never detect the
+// resulting grey window. See specs/domains/webview-gpu-policy.md.
 func WebviewGpuPolicyOptions(agentDir string, stderrObserved bool, logger *slog.Logger) *linux.Options {
 	return webviewGpuPolicyOptions(runtime.GOOS, agentDir, stderrObserved, logger)
 }
@@ -104,8 +93,7 @@ func webviewGpuPolicyOptions(goos, agentDir string, stderrObserved bool, logger 
 		return nil
 	}
 	// Single launch-time read of the state file: the consumed setting rides
-	// along in the result, so the Debug record below needs no second load
-	// (a second read could also observe a state file the first did not).
+	// along, and a second read could observe a different state than the first.
 	run := backend.DeriveWebviewGpuRun(goos, agentDir, stderrObserved, logger)
 	resolved := webviewGpuPolicyFromCanonical(run.Policy)
 	switch run.Source {
@@ -113,10 +101,10 @@ func webviewGpuPolicyOptions(goos, agentDir string, stderrObserved bool, logger 
 		logger.Info("webview GPU policy override",
 			"env", backend.WebviewGpuPolicyEnvVar, "value", run.Policy)
 	case backend.WebviewGpuSourceAutoUnobserved:
-		// Explicit diagnostic for the demotion (review finding #155.2): a
-		// silent accelerated default without any failure detection would
-		// leave a broken grey window as the first symptom. The user keeps an
-		// explicit override (env or setting) to force acceleration anyway.
+		// Explicit Warn for the demotion: a silent accelerated default with no
+		// failure detection would surface as a broken grey window first; the
+		// user keeps an explicit override (env or setting) to force
+		// acceleration anyway.
 		logger.Warn("webview GPU policy pinned to never: fresh auto without a usable stderr capture "+
 			"(the DMABUF watchdog cannot observe this run; set C0WRK_WEBVIEW_GPU_POLICY or the Settings choice to override)",
 			"policy", run.Policy, "setting", run.Setting)

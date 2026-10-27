@@ -13,34 +13,23 @@ import (
 	wailsLogger "github.com/wailsapp/wails/v2/pkg/logger"
 )
 
-// wailsLogAdapter bridges Wails' logger.Logger interface to an slog.Logger
-// backed by a persistent wails.log file so that Wails-internal fatal errors
-// (e.g. RPC serialization failures) are captured on disk before the process
-// exits. A nil delegate (before session logger init) is tolerated — messages
-// are written to the fallback file only.
+// wailsLogAdapter bridges Wails' logger.Logger to a persistent wails.log,
+// capturing Wails-internal fatal errors (specs/domains/crash-logging.md).
 type wailsLogAdapter struct {
 	logger *slog.Logger
 	file   *os.File
-	// delegate is read by write (invoked from Wails logger callbacks on any
-	// goroutine) and written by SetDelegate during Startup, so it must be
-	// accessed atomically. This mirrors recoveryLogger in powerstate_darwin.go.
+	// delegate is written by SetDelegate during Startup and read by write
+	// from Wails logger callbacks on any goroutine — hence atomic.
 	delegate atomic.Pointer[slog.Logger]
 }
 
-// NewWailsLogger creates a Wails Logger that writes to <logDir>/wails.log.
-// An optional delegate is used for duplicate delivery once a session logger
-// is available (messages go to both the persistent file and the delegate).
+// NewWailsLogger creates a Wails Logger writing to <logDir>/wails.log; the
+// delegate arrives later via SetDelegate.
 func NewWailsLogger(logDir string) (*wailsLogAdapter, error) {
-	// MkdirAllReal + OpenFileNoFollow (instead of the symlink-following
-	// MkdirAll/safeio.OpenFile): a symlink planted at the wails.log file
-	// itself must not redirect the app's log stream into an arbitrary
-	// user-writable file outside ~/.c0wrk (no-follow on the final component —
-	// unix; on Windows the safeio parity note applies, tempered by Windows
-	// requiring elevated/dev-mode rights to create symlinks);
-	// MkdirAllReal refuses a dangling link and resolves an
-	// operator-symlinked logs directory as intent. Failure fails closed
-	// to "no Wails log file": the caller warns and Wails falls back to its
-	// own default logger.
+	// MkdirAllReal + OpenFileNoFollow, not the symlink-following defaults: a
+	// planted symlink at the wails.log file must not redirect the app's log
+	// stream outside ~/.c0wrk (MkdirAllReal still treats an operator-symlinked
+	// logs dir as intent). Failure fails closed to "no Wails log file".
 	if err := safeio.MkdirAllReal(logDir, 0o750); err != nil {
 		return nil, fmt.Errorf("creating wails log directory: %w", err)
 	}
@@ -54,9 +43,7 @@ func NewWailsLogger(logDir string) (*wailsLogAdapter, error) {
 	return &wailsLogAdapter{logger: slogLogger, file: file}, nil
 }
 
-// SetDelegate sets an optional slog.Logger that also receives messages.
-// When set, Wails internal log messages (including fatal errors) are
-// duplicated to both the persistent wails.log file and the delegate.
+// SetDelegate arms duplicate delivery to the session logger.
 func (w *wailsLogAdapter) SetDelegate(l *slog.Logger) {
 	w.delegate.Store(l)
 }
@@ -88,12 +75,8 @@ func (w *wailsLogAdapter) Error(message string) {
 	w.write(slog.LevelError, strings.TrimRight(message, "\n"))
 }
 
-// Fatal logs the message at Error level but intentionally does NOT call
-// os.Exit, diverging from Wails' default logger contract. For a desktop GUI
-// app, staying alive after a Wails-internal fatal (e.g. an RPC serialization
-// failure) is preferable to an abrupt crash — the error is captured to disk
-// so it is not lost, and the top-level panic recovery in main.go remains the
-// last-resort safety net for truly unrecoverable states.
+// Fatal logs at Error but does NOT os.Exit (diverging from Wails' contract):
+// a GUI app is better left alive; main.go's recover stays the last resort.
 func (w *wailsLogAdapter) Fatal(message string) {
 	w.write(slog.LevelError, strings.TrimRight(message, "\n"))
 }

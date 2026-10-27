@@ -47,10 +47,9 @@ func isClipboardFormatAvailable(format uint) bool {
 	return r != 0
 }
 
-// withClipboard opens the clipboard, runs fn, and always closes it. Returns the
-// OpenClipboard error if the clipboard cannot be opened (e.g. another app holds
-// it open). GetClipboardData handles obtained inside fn are owned by the
-// clipboard and must NOT be freed by the caller.
+// withClipboard opens the clipboard, runs fn, and always closes it, returning
+// the OpenClipboard error when another app holds it open. Handles obtained
+// inside fn are owned by the clipboard and must NOT be freed by the caller.
 func withClipboard(fn func() error) error {
 	r, _, e := procOpenClipboard.Call(0)
 	if r == 0 {
@@ -62,9 +61,8 @@ func withClipboard(fn func() error) error {
 	return fn()
 }
 
-// globalBytes locks an HGLOBAL returned by GetClipboardData and copies out its
-// bytes. The handle is owned by the clipboard; only a transient lock/copy is
-// performed.
+// globalBytes locks an HGLOBAL from GetClipboardData and copies out its
+// bytes; the handle is owned by the clipboard.
 func globalBytes(h uintptr) ([]byte, error) {
 	size, _, _ := procGlobalSize.Call(h)
 	if size == 0 {
@@ -74,21 +72,18 @@ func globalBytes(h uintptr) ([]byte, error) {
 	if ptr == 0 {
 		return nil, errors.New("GlobalLock failed")
 	}
-	// Copy the bytes while the handle is still locked. The clipboard HGLOBAL
-	// is GMEM_MOVEABLE: once the lock count drops to zero the OS may relocate
-	// the memory, so returning a slice into unlocked memory would be a
-	// use-after-unlock for the caller. GlobalUnlock failure is non-actionable
-	// and the lock is released by the OS on clipboard close.
+	// Copy while locked: the clipboard HGLOBAL is GMEM_MOVEABLE, so once the
+	// lock count drops the OS may relocate the memory — a slice into unlocked
+	// memory would be use-after-unlock. GlobalUnlock failure is non-actionable
+	// (the OS releases the lock on clipboard close).
 	defer func() { _, _, _ = procGlobalUnlock.Call(h) }()
 	buf := unsafe.Slice((*byte)(unsafe.Pointer(ptr)), size)
 	return append([]byte(nil), buf...), nil
 }
 
-// clipboardImage reads a CF_DIB device-independent bitmap from the clipboard and
-// re-encodes it as PNG. Re-encoding to PNG (rather than passing the raw BMP
-// through) keeps the media type consistent with processImage, which only
-// decodes png/jpeg/gif/webp and would otherwise leave a BMP-named-but-stored
-// mismatch. ok is true only when a bitmap is present.
+// clipboardImage reads a CF_DIB bitmap and re-encodes it as PNG so the media
+// type matches processImage (png/jpeg/gif/webp only); ok is true only when a
+// bitmap is present.
 func clipboardImage(ctx context.Context) (data []byte, mediaType string, ok bool, err error) {
 	_ = ctx // syscalls are not cancellable; accepted for seam uniformity.
 	if !isClipboardFormatAvailable(cfDIB) {
@@ -126,9 +121,8 @@ func clipboardImage(ctx context.Context) (data []byte, mediaType string, ok bool
 	return out.Bytes(), "image/png", true, nil
 }
 
-// dibToBMP prepends a BITMAPFILEHEADER to a CF_DIB payload, producing a complete
-// BMP byte stream suitable for x/image/bmp.Decode. The pixel-data offset is
-// computed from the BITMAPINFOHEADER (biSize) and the palette size.
+// dibToBMP prepends a BITMAPFILEHEADER to a CF_DIB payload, producing a
+// complete BMP byte stream for x/image/bmp.Decode.
 func dibToBMP(dib []byte) ([]byte, error) {
 	const fileHeaderSize = 14
 	if len(dib) < 40 {
@@ -162,9 +156,8 @@ func dibToBMP(dib []byte) ([]byte, error) {
 	return bmp, nil
 }
 
-// clipboardFiles reads file paths from a CF_HDROP on the clipboard — the content
-// placed by Explorer's "Copy" command. ok is true only when at least one file is
-// present.
+// clipboardFiles reads file paths from a CF_HDROP — Explorer's "Copy"
+// content; ok is true only when at least one file is present.
 func clipboardFiles(ctx context.Context) (paths []string, ok bool, err error) {
 	_ = ctx // syscalls are not cancellable; accepted for seam uniformity.
 	if !isClipboardFormatAvailable(cfHDROP) {

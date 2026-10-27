@@ -12,14 +12,11 @@ package desktop
 
 // x11_swallow_display is the private activation connection whose protocol
 // errors are swallowed — a best-effort activation must never abort the app
-// through Xlib's default handler, which exits the process. Any other display
-// is forwarded to the handler installed before ours (GTK's).
-//
-// The handler is installed exactly ONCE, for the lifetime of the process.
-// Re-installing it per call was a latent self-reference bug: the second
-// XSetErrorHandler returned x11_swallow_handler itself, so x11_prev_handler
-// pointed at the swallower and any error on a display other than the private
-// one recursed until the thread's stack was gone.
+// through Xlib's default handler, which exits the process; other displays are
+// forwarded to the previously installed handler (GTK's). Installed exactly
+// ONCE per process — re-installing per call made x11_prev_handler point at
+// the swallower itself and recurse on any other display. See
+// specs/domains/frontend/system-notifications.md (X connection lifetime).
 static Display *x11_swallow_display = NULL;
 static int (*x11_prev_handler)(Display *, XErrorEvent *) = NULL;
 static int x11_handler_installed = 0;
@@ -46,8 +43,8 @@ static unsigned long x11_property_time(XEvent *ev) {
 	return (unsigned long)ev->xproperty.time;
 }
 
-// x11_cardinal_list reads a format-32 property; the caller XFree()s the
-// result. Returns NULL for absent/mismatched properties.
+// x11_cardinal_list reads a format-32 property; caller XFree()s the result.
+// NULL for absent/mismatched properties.
 static unsigned long *x11_cardinal_list(Display *d, Window w, Atom prop, unsigned long *nitems) {
 	Atom actual = None;
 	int fmt = 0;
@@ -66,10 +63,9 @@ static unsigned long *x11_cardinal_list(Display *d, Window w, Atom prop, unsigne
 }
 
 // x11_is_normal_window reports whether w is an EWMH _NET_WM_WINDOW_TYPE_NORMAL
-// window. A Wails/GTK process may own several X windows carrying its
-// _NET_WM_PID (e.g. a leftover splash/utility window); only the NORMAL one
-// is the user-visible main window and the correct activation target.
-// window_type is the pre-interned _NET_WM_WINDOW_TYPE atom.
+// window — the user-visible main window and correct activation target (a
+// Wails/GTK process owns several X windows carrying its _NET_WM_PID, e.g. the
+// splash). window_type is the pre-interned _NET_WM_WINDOW_TYPE atom.
 static int x11_is_normal_window(Display *d, Window w, Atom window_type) {
 	Atom actual = None;
 	int fmt = 0;
@@ -95,15 +91,12 @@ static int x11_is_normal_window(Display *d, Window w, Atom window_type) {
 
 
 // x11_activate maps/raises the window and asks the WM (EWMH
-// _NET_ACTIVE_WINDOW, source indication 2 = pager) to make it the active
-// window: raise, deiconify, focus. A pager-sourced request carries
-// taskbar-click semantics and is honored by EWMH window managers (KWin,
-// mutter, xfwm4, …) even against focus stealing prevention — exactly the
-// case of a notification click arriving at an unfocused application.
-// The direct XSetInputFocus afterwards reproduces the empirically verified
-// xdotool windowactivate sequence: even a WM that still denies the EWMH
-// request loses the X input focus to the window.
-// ts is a fresh server timestamp when one was obtainable, else 0.
+// _NET_ACTIVE_WINDOW, source indication 2 = pager — taskbar-click semantics,
+// honored even against focus stealing prevention) to make it the active
+// window, then takes the X input focus directly (the empirically verified
+// xdotool windowactivate sequence). ts is a fresh server timestamp when one
+// was obtainable, else 0. See
+// specs/domains/frontend/system-notifications.md (Click → window activation).
 static void x11_activate(Display *d, Window root, Window w, unsigned long ts) {
 	XEvent e;
 	Atom net_active = XInternAtom(d, "_NET_ACTIVE_WINDOW", False);
@@ -148,8 +141,9 @@ import (
 )
 
 // x11ActivationMu serializes activation attempts so the shared private X
-// connection (x11Conn) is single-flight. Acquired with TryLock — see
-// x11ActivateOwnWindow for why an activation must never queue.
+// connection (x11Conn) is single-flight; taken with TryLock, never Lock —
+// queueing behind an in-flight activation would stall the caller (the D-Bus
+// signal pump). See specs/domains/frontend/system-notifications.md.
 var x11ActivationMu sync.Mutex
 
 // x11ActivateDebug, when non-nil, receives step diagnostics from
@@ -169,31 +163,20 @@ func x11Debug(format string, args ...any) {
 	x11ActivateDebug(format, args...)
 }
 
-// x11ActivateOwnWindow raises and focuses this process's own top-level
-// window over a private X11 connection using EWMH pager-source activation
-// (see x11_activate in the preamble).
-//
-// It exists because the Wails runtime's Linux WindowUnminimise maps to
-// gtk_window_present, which carries the timestamp of the application's LAST
-// user interaction (0 when there was none since the window was created) —
-// a request from a non-focused application with a stale/zero timestamp is
-// exactly what focus stealing prevention (KWin's default policy) rejects,
-// leaving the taskbar entry merely flashing ("demands attention").
-//
-// The window is located via _NET_WM_PID == os.Getpid() over the root's
-// _NET_CLIENT_LIST because Wails v2 exposes no window-handle accessor.
-//
-// Fail-soft by design: any failure (no DISPLAY, a Wayland session, no
-// matching window) returns false and showWindow falls back to the Wails
-// present() path.
+// x11ActivateOwnWindow raises and focuses this process's own top-level window
+// over a private X11 connection using EWMH pager-source activation. The Wails
+// runtime's Linux WindowUnminimise (gtk_window_present) carries the
+// application's LAST-interaction timestamp, which focus stealing prevention
+// rejects from a non-focused app — the taskbar entry merely flashes. The own
+// window is located via _NET_WM_PID over the root's _NET_CLIENT_LIST (Wails
+// exposes no window-handle accessor). Fail-soft: any failure returns false
+// and showWindow falls back to the Wails present() path.
+// See specs/domains/frontend/system-notifications.md (Click → window activation).
 func x11ActivateOwnWindow() bool {
 	// TryLock, never Lock: an activation already in flight may be blocked
-	// inside Xlib (the window manager can hold a server grab during the very
-	// un-minimize animation this activation triggers). Queueing behind it
-	// would block this goroutine too — and the caller is the D-Bus signal
-	// pump, whose goroutine must keep reading or every later notification
-	// click is silently dropped. A skipped activation simply falls back to
-	// the Wails present() path.
+	// inside Xlib (the WM's server grab), and the caller is the D-Bus signal
+	// pump — a skipped activation simply falls back to the Wails present()
+	// path.
 	if !x11ActivationMu.TryLock() {
 		x11Debug("activation already in flight; skipping")
 		return false
@@ -232,10 +215,8 @@ func x11ActivateOwnWindow() bool {
 	pid := C.ulong(os.Getpid())
 	pidAtom := C.XInternAtom(d, pidName, C.False)
 
-	// Fast path: the window this process activated last time, still managed
-	// and still ours. Re-validating the cache is one property read; the walk
-	// below costs up to two per managed window on the display, on EVERY
-	// activation — and a notification click runs one.
+	// Fast path: the window activated last time, still managed and still
+	// ours — one property read vs the per-window walk on every activation.
 	if cached := x11CachedTarget(d, list, pidAtom, pid); cached != 0 {
 		x11Debug("activating cached window %d", uint64(cached))
 		C.x11_activate(d, root, cached, x11ServerTimestamp(d, root))
@@ -278,15 +259,12 @@ func x11ActivateOwnWindow() bool {
 }
 
 // x11TargetWindow caches the own-window XID discovered by the last successful
-// activation, so a repeat activation skips the per-window property walk.
-// Guarded by x11ActivationMu together with x11Conn.
+// activation; guarded by x11ActivationMu together with x11Conn.
 var x11TargetWindow C.ulong
 
-// x11CachedTarget returns the cached own-window XID when it is still valid,
-// else 0 (clearing the cache). Validity is two checks against the CURRENT
-// client list: the window is still managed, and it still carries this
-// process's _NET_WM_PID — the second guards against an XID the server has
-// recycled to another client since the last activation.
+// x11CachedTarget returns the cached own-window XID when still valid — still
+// in the CURRENT client list and still carrying this process's _NET_WM_PID
+// (an XID-recycle guard) — else 0, clearing the cache.
 func x11CachedTarget(d *C.Display, list []C.ulong, pidAtom C.Atom, pid C.ulong) C.ulong {
 	if x11TargetWindow == 0 {
 		return 0
@@ -313,23 +291,14 @@ func x11WindowPID(d *C.Display, w C.ulong, pidAtom C.Atom) C.ulong {
 }
 
 // x11Conn is the process-wide private X11 activation connection, opened
-// lazily on first use and deliberately NEVER closed.
-//
-// It used to be opened and closed per call. XCloseDisplay performs a
-// synchronous round trip, and under KWin it was observed to block forever:
-// the window manager grabs the X server for the un-minimize animation that
-// our own activation request just triggered, and the close never completes.
-// The blocked call held x11ActivationMu and — because the notification click
-// callback runs on the godbus signal-pump goroutine — stopped the pump, after
-// which godbus silently discarded every subsequent ActionInvoked signal and
-// notification clicks stopped working entirely for the rest of the run.
-//
-// Keeping one connection removes the close from the hot path altogether.
-// Cost: one X connection for the process lifetime, and a server restart would
-// leave it stale — but GDK's own connection dies with the server first, so
-// the process is gone either way.
-//
-// Guarded by x11ActivationMu; only x11ActivateOwnWindow touches it.
+// lazily on first use and deliberately NEVER closed: XCloseDisplay performs a
+// synchronous round trip that a WM holding a server grab (KWin's un-minimize
+// animation — triggered by the activation itself) blocks forever, which once
+// stalled the godbus signal pump and killed notification clicks for the rest
+// of the run. A server restart would leave the connection stale, but GDK's
+// own connection dies first, so the process is gone either way. Guarded by
+// x11ActivationMu. See specs/domains/frontend/system-notifications.md
+// (X connection lifetime).
 var x11Conn *C.Display
 
 // x11Display returns the private activation connection, opening it on first
@@ -349,10 +318,10 @@ func x11Display() *C.Display {
 }
 
 // x11ServerTimestamp returns a fresh server timestamp via a PropertyNotify
-// roundtrip on a scratch window — the same technique as
-// gdk_x11_get_server_time. Used as the activation timestamp so the request
-// compares as newer than the user's latest interaction; returns 0
-// (CurrentTime) on failure, which EWMH still permits for pager requests.
+// roundtrip on a scratch window (the gdk_x11_get_server_time technique), so
+// the activation request compares as newer than the user's latest
+// interaction; 0 (CurrentTime) on failure, which EWMH still permits for
+// pager requests.
 func x11ServerTimestamp(d *C.Display, root C.ulong) C.ulong {
 	sw := C.XCreateSimpleWindow(d, root, 0, 0, 1, 1, 0, 0, 0)
 	if sw == 0 {

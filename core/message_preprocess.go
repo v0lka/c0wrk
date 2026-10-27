@@ -7,60 +7,37 @@ import (
 )
 
 // fileRefPattern matches @path references in either form: a single-quoted
-// path (@'my file.go', the canonical form for paths with spaces) or a bare
-// path with optional backslash-escaped spaces (@my\ file.go, the legacy
-// form). An optional line/line-range anchor may follow; the anchor accepts
-// GitHub-style forms: #N, #N-M (legacy bare-number) and #LN, #LN-LN (e.g.
-// #L20-L36). The quoted alternative must come first so a quoted ref is
+// path (@'my file.go') or a bare path with backslash-escaped spaces (@my\
+// file.go, legacy), plus an optional GitHub-style line anchor (#N, #N-M,
+// #LN, #LN-LN). The quoted alternative must come first so a quoted ref is
 // consumed as one token instead of falling through to the bare-path alt.
 var fileRefPattern = regexp.MustCompile(`(?:^|\s)@((?:'[^']+'|(?:[^\s\\]|\\.)+)(?:#L?\d+(?:-L?\d+)?)?)`)
 
 // lineAnchorSuffixRe matches a trailing GitHub-style line/line-range anchor
-// (#N, #N-M, #LN, #LN-LN) at the end of an @file reference path. Unlike an
-// optional-anchored pattern it only matches when an actual anchor is present,
-// so FindStringIndex returns nil for plain paths and a real match otherwise.
-// It is used to split the anchor off the path so the path portion can be
-// resolved to an absolute form while the anchor is re-attached verbatim.
+// (#N, #N-M, #LN, #LN-LN) at the end of an @file reference: unlike an
+// optional-anchored pattern it only matches when an anchor is actually
+// present, so it cleanly splits the anchor off the path.
 var lineAnchorSuffixRe = regexp.MustCompile(`#L?\d+(?:-L?\d+)?$`)
 
 // multiSpaceRe collapses runs of 2+ spaces into one.
 var multiSpaceRe = regexp.MustCompile(`  +`)
 
 // PreprocessMessageText transforms a user message for the orchestrator:
-//  1. Strips /-mention references for skills, subagent profiles, and MCP
-//     servers (ADR-076): the plain form "/name" — stripped when the name
-//     appears in activeSkills, activeAgents, OR activeMCPServers (the three
-//     catalogs sharing one trigger) — and the collision-qualified forms
-//     "/agent: id", "/skill: id", and "/mcp: id", with or without a space
-//     after the colon (the spaced form is what the dropdown inserts
-//     canonically).
-//  2. Converts @file-path references to fileref:// URIs, resolving each
-//     relative path against workspacePath so the LLM receives unambiguous
-//     absolute paths. Both the quoted (@'my file.go') and the legacy
-//     backslash-escaped (@my\ file.go) forms are recognized. POSIX-absolute
-//     and home-relative (~/...) paths are left unchanged; Windows drive
-//     (C:\…) and UNC (\\server\…) paths are absolute in their own dialect —
-//     canonicalized to forward-slash form and never joined with the
-//     workspace. Relative paths are left unchanged when workspacePath is
-//     empty.
+// strips /-mention references (plain + collision-qualified, the three
+// catalogs sharing one trigger) and converts @file-path references to
+// fileref:// URIs resolved against workspacePath. The mention grammar and the
+// fail-closed, catalog-gated strip: specs/decisions/076-unified-slash-mentions.md.
+// The path resolution rules (quoted/legacy-escaped forms, POSIX/~ vs
+// Windows-dialect absolutes, relative-joins-workspace):
+// specs/decisions/095-chat-file-reference-path-semantics.md.
 //
-// Stripping is catalog-gated and fail-closed: only names the caller threaded
-// (the send path extracted them from the text and partitioned them against
-// the catalogs) are removed; any other /-token is preserved verbatim.
-// "#" is no longer a mention trigger — "#foo" is always plain text now, and
-// the "#" in a GitHub-style line anchor like @file#L20 belongs to the file
-// ref either way.
-//
-// The leading "/goal" command is not special-cased here: "goal" is a command
-// name, not a catalog name, so a "/goal …" prefix survives preprocessing and
+// "/goal" is deliberately not special-cased here: "goal" is a command name,
+// not a catalog name, so a "/goal …" prefix survives preprocessing and
 // DetectAndStripGoalMode — which runs on the processed text — still sees it,
-// including the case where a stripped ref ahead of it ("/explore /goal …")
-// exposes the command at the start of the processed text.
+// including when a stripped ref ahead of it exposes the command at the start.
 func PreprocessMessageText(text string, activeSkills, activeAgents, activeMCPServers []string, workspacePath string) string {
-	// Strip /-mention references (plain + qualified, skills ∪ agents ∪ MCP servers).
 	result := stripMentionRefs(text, activeSkills, activeAgents, activeMCPServers)
 
-	// Convert @file references to fileref:// URIs.
 	result = fileRefPattern.ReplaceAllStringFunc(result, func(match string) string {
 		// Preserve leading whitespace.
 		prefix := ""
@@ -69,28 +46,19 @@ func PreprocessMessageText(text string, activeSkills, activeAgents, activeMCPSer
 			prefix = trimmed[:1]
 			trimmed = trimmed[1:]
 		}
-		// Remove the @ prefix.
 		path := strings.TrimPrefix(trimmed, "@")
-		// Normalize the path form. A trailing GitHub-style line anchor
-		// (#N, #L20-L36, …) is split off first so it survives both the
-		// unquoting of the @'…' form and the unescaping of the legacy
-		// backslash-escaped form, and is re-attached unchanged.
 		path = normalizeFileRefPath(path)
-		// Resolve to an absolute path relative to the workspace.
 		path = resolveFileRefPath(path, workspacePath)
 		return prefix + "fileref://" + path
 	})
 
-	// Collapse multiple spaces into one.
 	result = multiSpaceRe.ReplaceAllString(result, " ")
 	return strings.TrimSpace(result)
 }
 
-// Qualified-mention markers (ADR-076): "/agent:", "/skill:", and "/mcp:"
-// prefix a collision-qualified mention whose id follows the colon, with or
-// without a space ("/agent: code-reviewer", "/agent:code-reviewer"). The
-// markers are case-sensitive, like every name lookup here — a collision is an
-// exact, case-sensitive name match (issue #110).
+// Qualified-mention markers (ADR-076): "/agent:", "/skill:", "/mcp:" prefix a
+// collision-qualified mention, with or without a space after the colon. Names
+// are matched case-sensitively (a collision is an exact name match, issue #110).
 const (
 	qualifiedAgentMarker = "agent"
 	qualifiedSkillMarker = "skill"
@@ -113,15 +81,10 @@ func isRefBoundarySpace(c byte) bool {
 	return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f'
 }
 
-// stripMentionRefs removes every /-mention reference from text in a single
-// left-to-right pass: plain "/name" for names in activeSkills ∪ activeAgents
-// ∪ activeMCPServers and qualified "/agent: id" / "/skill: id" / "/mcp: id"
-// (spaced or unspaced colon) for ids in the respective catalog. Surrounding
-// whitespace is left in place — PreprocessMessageText's multi-space collapse
-// and final trim reduce it — so stripping preserves the prose exactly like
-// the former per-name regexes. With all three catalogs empty the text is
-// returned unchanged (fail-closed: an unknown or unthreaded mention is never
-// stripped).
+// stripMentionRefs removes every strippable /-mention in one left-to-right
+// pass (specs/decisions/076-unified-slash-mentions.md: the single-scanner
+// grammar). Whitespace is left in place — the multi-space collapse and final
+// trim reduce it; with all catalogs empty the text is returned unchanged.
 func stripMentionRefs(text string, activeSkills, activeAgents, activeMCPServers []string) string {
 	if len(activeSkills) == 0 && len(activeAgents) == 0 && len(activeMCPServers) == 0 {
 		return text
@@ -155,23 +118,14 @@ func stripMentionRefs(text string, activeSkills, activeAgents, activeMCPServers 
 }
 
 // mentionRefEnd reports whether a strippable /-mention starts at text[i]
-// (which the caller has already verified is a '/' at a token boundary) and
-// returns the index just past it. It parses exactly one candidate:
-//
-//   - Qualified: "/agent: id", "/skill: id", or "/mcp: id" — an optional
-//     single space or tab after the colon (the canonical dropdown emission
-//     uses the space), then the id, which must end at whitespace or
-//     end-of-text. The id is looked up in the marker's own catalog; a
-//     mismatched catalog or an unknown id is preserved verbatim.
-//   - Plain: "/name" — the name must end at whitespace or end-of-text and
-//     match any catalog (skills ∪ agents ∪ mcp servers; the kind distinction
-//     is the send path's partitioning job, the text strip is kind-agnostic).
-//
-// A "/" that starts no strippable mention — including "/agent:" with a
-// missing, non-boundary, or unknown id — returns ok=false and the caller
-// emits the byte verbatim. The ":" of a qualified attempt also breaks the
-// plain form's trailing boundary, so no partial "/agent" fragment of
-// "/agent: id" can ever be stripped by the plain path.
+// (a '/' at a token boundary) and returns the index just past it. It parses
+// exactly one candidate — qualified "/agent: id" / "/skill: id" / "/mcp: id"
+// (optional space/tab, id ending at a boundary, looked up in the marker's own
+// catalog) or plain "/name" (exact membership in any catalog; the kind
+// distinction is the send path's partitioning job). ok=false leaves the byte
+// verbatim; the ":" of a qualified attempt also breaks the plain form's
+// trailing boundary, so no partial "/agent" fragment of "/agent: id" can
+// ever be stripped by the plain path.
 func mentionRefEnd(text string, i int, skills, agents, mcpServers map[string]struct{}) (int, bool) {
 	j := i + 1
 	for j < len(text) && isMentionNameByte(text[j]) {
@@ -229,18 +183,10 @@ func mentionRefEnd(text string, i int, skills, agents, mcpServers map[string]str
 	return i, false
 }
 
-// normalizeFileRefPath normalizes the path portion of an @file reference to
-// its literal form. Two input forms are supported:
-//
-//   - Single-quoted (@'my file.go'): the content between the quotes is taken
-//     verbatim — spaces need no escaping and backslashes are literal.
-//   - Bare with backslash-escaped spaces (@my\ file.go, the legacy form):
-//     each `\ ` escape is unescaped to a plain space.
-//
-// A trailing GitHub-style line anchor (#N, #N-M, #LN, #LN-LN) — which may
-// sit after the closing quote (@'f.go'#L20) or inside it (@'f.go#L20') — is
-// split off before normalization and re-attached verbatim, so it never
-// interferes with quote detection or path resolution.
+// normalizeFileRefPath normalizes an @file reference's path portion to its
+// literal form: quoted content verbatim, legacy `\ ` escapes unescaped, and a
+// trailing GitHub-style line anchor split off and re-attached verbatim.
+// specs/decisions/095-chat-file-reference-path-semantics.md.
 func normalizeFileRefPath(refPath string) string {
 	anchor := ""
 	if loc := lineAnchorSuffixRe.FindStringIndex(refPath); loc != nil {
@@ -254,30 +200,12 @@ func normalizeFileRefPath(refPath string) string {
 }
 
 // resolveFileRefPath resolves an @file reference's path portion so the LLM
-// prompt contains unambiguous absolute paths.
-//
-// The path may carry a trailing GitHub-style line anchor (#N, #N-M, #LN,
-// #LN-LN) which is split off before resolution and re-attached verbatim.
-//
-// Resolution rules:
-//   - POSIX-absolute (leading "/") and home-relative (leading "~/") paths
-//     are left as-is — they are already unambiguous.
-//   - Windows drive-rooted ("C:\…") and UNC ("\\server\share\…") paths are
-//     absolute in their own dialect: they are canonicalized to the
-//     forward-slash URI form (NormalizeAbsPath) and never joined with the
-//     workspace — independent of workspacePath, so the shape does not change
-//     between chat (no workspace) and CODE mode.
-//   - Relative paths are joined with workspacePath when it is non-empty;
-//     with an empty workspace there is nothing to resolve against and the
-//     path is returned unchanged.
-//
-// The result is the path component of a fileref:// URI, which is a logical
-// identifier rather than an OS filesystem path. The POSIX-oriented path
-// package is therefore used instead of filepath: it always emits forward
-// slashes and is platform-independent, whereas filepath.Join would produce
-// OS-native separators (backslashes on Windows) and filepath.IsAbs would
-// reject Unix-style absolute paths on Windows — both breaking the URI.
-// Absolute-dialect detection is lexical (IsAbsolutePath) for the same reason.
+// prompt carries unambiguous absolute paths. Resolution rules (POSIX/~ left
+// as-is, Windows drive/UNC canonicalized to forward slashes and never joined
+// with the workspace, relative joined with workspacePath) and the rationale
+// for the POSIX path package over filepath (a fileref:// URI is a logical
+// identifier, not an OS path):
+// specs/decisions/095-chat-file-reference-path-semantics.md.
 func resolveFileRefPath(refPath, workspacePath string) string {
 	// Split a trailing line anchor (#N, #L20-L36, …) so path.Join does
 	// not treat it as a path component.
@@ -314,18 +242,12 @@ func resolveFileRefPath(refPath, workspacePath string) string {
 // whitespace or end-of-string so it does not false-match "/goals-report".
 var goalModePrefixRe = regexp.MustCompile(`^/goal(?:\s+|$)`)
 
-// DetectAndStripGoalMode inspects a (preprocessed) user message for a leading
-// "/goal" command. When present, it returns the message with the command
-// stripped (trimmed) and isGoal=true; the caller sets HandleOptions.Goal so
-// HandleMessage dispatches to the multi-turn goal loop. When absent, the
-// message is returned unchanged and isGoal=false.
-//
-// The detection runs on the already-preprocessed text (after /-mention
-// stripping and @file conversion) so a "/goal /skill-name …" invocation still
-// works: the mention ref is stripped first, then /goal is detected. An empty
-// remainder after stripping (e.g. a bare "/goal") is returned empty with
-// isGoal=true — the orchestrator's deriveGoal will ground the goal from the
-// (empty) message.
+// DetectAndStripGoalMode inspects a (preprocessed) message for a leading
+// "/goal" command — one of goal mode's two explicit entry points (specs/domains/goal-mode.md) —
+// returning it stripped (trimmed) with isGoal=true. It runs on the
+// already-preprocessed text so "/goal /skill-name …" still works (076); an
+// empty remainder (bare "/goal") returns empty with isGoal=true — deriveGoal
+// grounds the goal from the (empty) message.
 func DetectAndStripGoalMode(text string) (cleaned string, isGoal bool) {
 	if !goalModePrefixRe.MatchString(text) {
 		return text, false

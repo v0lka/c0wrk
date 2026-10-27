@@ -9,9 +9,8 @@ import (
 	"github.com/v0lka/sp4rk/safeio"
 )
 
-// physicalMemoryBytes returns the machine's total physical RAM from
-// /proc/meminfo's MemTotal line (reported in kB by the kernel). Used by the
-// AUTO memory-soft-limit mode (see memlimit.go).
+// physicalMemoryBytes reads total physical RAM from /proc/meminfo MemTotal —
+// the AUTO soft-limit input (specs/decisions/049-vector-index-memory-reduction.md).
 func physicalMemoryBytes() (int64, bool) {
 	data, err := safeio.ReadFile("/proc/meminfo")
 	if err != nil {
@@ -21,7 +20,6 @@ func physicalMemoryBytes() (int64, bool) {
 		if !strings.HasPrefix(line, "MemTotal:") {
 			continue
 		}
-		// Format: "MemTotal:       16384256 kB"
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
 			return 0, false

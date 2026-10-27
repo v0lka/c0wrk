@@ -15,16 +15,13 @@ const (
 	themeTypeLight = "light"
 )
 
-// maxThemeCSSSize is the maximum accepted theme CSS size: 512 KiB. Themes are
-// plain variable-definition stylesheets; anything larger is either malformed
-// or embedding heavy assets (which the url() validation already rejects).
+// maxThemeCSSSize is the maximum accepted theme CSS size: 512 KiB — anything
+// larger is malformed or carrying assets. See specs/domains/theming.md.
 const maxThemeCSSSize = 512 * 1024
 
-// reservedThemeIDs are theme identifiers owned by the built-in themes. An
-// imported theme can never take one of these slugs. `default-dark` /
-// `default-light` name the built-ins themselves; `dark` / `light` are the
-// data-theme attribute keys the built-ins write, so a custom slug named
-// `light` or `dark` could alias the built-in override blocks.
+// reservedThemeIDs are the built-in themes' own slugs plus the `dark`/`light`
+// data-theme attribute keys, so an import can never alias a built-in block.
+// See specs/domains/theming.md.
 var reservedThemeIDs = map[string]struct{}{
 	"default-dark":  {},
 	"default-light": {},
@@ -32,13 +29,10 @@ var reservedThemeIDs = map[string]struct{}{
 	"light":         {},
 }
 
-// ThemeDTO is a lightweight user-theme descriptor exposed to the frontend.
-// ID is the stable slug (the CSS file name stem inside the themes directory);
-// Type is one of "dark" or "light". CSS carries the theme body and is
-// populated by both ImportThemeFromPath and ListThemes — the frontend
-// activates a custom theme from either the import result or a list entry
-// without a second RPC, and keeps its own persisted cache for the pre-paint
-// apply.
+// ThemeDTO is a user-theme descriptor for the frontend: ID is the stable slug
+// (the installed CSS file's name stem), Type is "dark" or "light", and CSS
+// carries the theme body so activation needs no second RPC.
+// See specs/domains/theming.md.
 type ThemeDTO struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
@@ -46,22 +40,16 @@ type ThemeDTO struct {
 	CSS  string `json:"css"`
 }
 
-// themeHeaderRe matches the metadata header comment that must open a theme
-// file: `/* c0wrk-theme: <name> | <dark|light> */`. The keyword and the type
-// keyword are matched case-insensitively; the name is free text. The regex is
-// anchored to the start of the file (leading whitespace allowed) — a marker
-// elsewhere in the body is not a header and is ignored.
+// themeHeaderRe matches the metadata header that must OPEN a theme file:
+// `/* c0wrk-theme: <name> | <dark|light> */`, anchored to the file start — a
+// marker elsewhere in the body is not a header. See specs/domains/theming.md.
 var themeHeaderRe = regexp.MustCompile(`(?is)^\s*/\*\s*c0wrk-theme\s*:\s*(.+?)\s*\|\s*(dark|light)\s*\*/`)
 
-// colorSchemeRe matches a `color-scheme: dark|light` declaration in the CSS
-// body. The character preceding `color-scheme` must not be a word character
-// or a hyphen so the `prefers-color-scheme` media feature does not
-// false-positive as a type declaration.
+// colorSchemeRe matches a `color-scheme: dark|light` body declaration; the
+// preceding character may not be a word character or hyphen, so the
+// `prefers-color-scheme` media feature cannot pose as a type declaration.
+// See specs/domains/theming.md.
 var colorSchemeRe = regexp.MustCompile(`(?i)(?:^|[^-\w])color-scheme\s*:\s*["']?(dark|light)\b`)
-
-// themeImportRe and the url() regex previously used by ValidateThemeCSS are
-// gone: validation is now structural (see sanitizeThemeCSS), not a chain of
-// pattern rejections.
 
 // Slug normalization helpers: disallowed character runs and repeated hyphens
 // both collapse to a single hyphen.
@@ -70,16 +58,9 @@ var (
 	slugDashesRe     = regexp.MustCompile(`-{2,}`)
 )
 
-// ParseThemeCSS extracts a theme's display name and type from its CSS source
-// using the fallback chain:
-//
-//  1. name/type from the `/* c0wrk-theme: <name> | <dark|light> */` header;
-//  2. name falls back to a prettified file name (nord.css → "Nord");
-//  3. type falls back to a `color-scheme: dark|light` declaration in the body;
-//  4. type finally falls back to "dark".
-//
-// It never fails — a theme without recognizable metadata still lists under a
-// derived name and defaults to the dark type.
+// ParseThemeCSS extracts a theme's display name and type via the spec's
+// fallback chain (metadata header → prettified file name → `color-scheme:`
+// declaration → "dark"); it never fails. See specs/domains/theming.md.
 func ParseThemeCSS(filename, content string) (name, typ string) {
 	name, typ = "", ""
 	if m := themeHeaderRe.FindStringSubmatch(content); m != nil {
@@ -99,19 +80,10 @@ func ParseThemeCSS(filename, content string) (name, typ string) {
 	return name, typ
 }
 
-// ValidateThemeCSS checks that a CSS document is safe to install as a user
-// theme. Themes are injected into the webview as a global <style> element, so
-// the document is untrusted input: it is parsed with a real CSS tokenizer and
-// must consist solely of custom-property declarations on a single :root rule
-// (plus the metadata header comment and one optional color-scheme
-// declaration). Values may reference only literal tokens, data: URLs, and a
-// small allowlist of functions — every resource-referencing construct
-// (@import, url(), image-set(), escaped identifiers, …) is rejected by
-// construction rather than by enumeration. See sanitizeThemeCSS.
-//
-// The document must also declare both --color-background and
-// --color-foreground (the minimal contract the frontend relies on) and stay
-// within maxThemeCSSSize.
+// ValidateThemeCSS gates a CSS document for install as a user theme (the
+// webview injects it, so it is untrusted input): structural sanitization via
+// sanitizeThemeCSS, the --color-background/--color-foreground requirement,
+// and the maxThemeCSSSize cap. See specs/domains/theming.md.
 func ValidateThemeCSS(content string) error {
 	if len(content) > maxThemeCSSSize {
 		return fmt.Errorf("theme CSS is too large: %d bytes (limit %d)", len(content), maxThemeCSSSize)
@@ -120,11 +92,8 @@ func ValidateThemeCSS(content string) error {
 	return err
 }
 
-// themeSlug derives the stable theme identifier from a CSS file name: the
-// base name without extension, lowercased, restricted to [a-z0-9-] with runs
-// of disallowed characters collapsed to single hyphens and edge hyphens
-// trimmed. It returns an error when the result is empty or collides with a
-// reserved built-in theme id.
+// themeSlug derives the stable theme id from a CSS file name (the spec's slug
+// rules); an empty or reserved id is an error. See specs/domains/theming.md.
 func themeSlug(filename string) (string, error) {
 	base := strings.ToLower(filepath.Base(filename))
 	base = strings.TrimSuffix(base, ".css")
@@ -140,10 +109,9 @@ func themeSlug(filename string) (string, error) {
 	return base, nil
 }
 
-// prettyThemeName turns a theme file name into a human-friendly display name:
-// the extension is dropped, `-`/`_` become spaces, and every word is
-// capitalized (nord.css → "Nord", solarized-light.css → "Solarized Light").
-// Names that normalize to nothing fall back to "Theme".
+// prettyThemeName prettifies a file name into a display name ("nord.css" →
+// "Nord"); a name that normalizes to nothing falls back to "Theme".
+// See specs/domains/theming.md.
 func prettyThemeName(filename string) string {
 	base := filepath.Base(filename)
 	if ext := filepath.Ext(base); ext != "" {

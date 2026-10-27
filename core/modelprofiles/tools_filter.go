@@ -1,31 +1,8 @@
-// Package modelProfiles implements tool-set selection for running the conductor
-// against a "small" LLM. Small models are disproportionately penalized by
-// large tool schemas (every prompt carries the full JSON schema of every
-// advertised tool), so narrowing the visible tool set reduces both token
-// overhead and decision fatigue.
-//
-// Selection is purely static: SelectTools unions the user's always-present
-// list, the protected ReAct-mandatory tools (the completion channel, fact
-// memory, the human-interaction channel, the step checklist, and the
-// read/recovery tools the loop needs), every MCP-sourced tool, and any
-// turn-scoped extra-guaranteed names the caller passes (e.g. delegate when
-// the user explicitly requested subagents). There is no quantitative budget,
-// no router matching, and no domain-specific allow-listing — the user
-// decides which tools are essential; this function only assembles their
-// selection.
-//
-// Every tool in the selection is guaranteed and never trimmed: the pins are
-// explicit user choices, MCP tools are user-installed integrations, and the
-// protected set carries the loop's completion channel and its read/recovery
-// tools — dropping any of them would silently break pinned workflows,
-// user-installed MCP servers, or the conductor loop's ability to terminate or
-// to read back what it produced. SelectTools never fails and never drops a
-// selected tool.
-//
-// All functions in this package are pure and deterministic — no LLM, embedding,
-// or network calls. They are factored out so they can be unit-tested in
-// isolation and applied at a single, well-defined point in the orchestration
-// lifecycle (once per task, before the ReAct loop).
+// Package modelProfiles implements tool-set selection for a small/mid-size
+// conductor LLM: a static, guaranteed union of the user's pins, the
+// protected ReAct-mandatory tools, every MCP tool, and turn-scoped extra
+// guarantees — pure, deterministic, once per task (specs/domains/
+// model-profiles.md, Essential Tools).
 package modelprofiles
 
 import (
@@ -34,22 +11,13 @@ import (
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
-// finishToolName is the mandatory completion channel. It is ALWAYS preserved
-// regardless of the selected set — without it the conductor loop cannot
-// terminate.
+// finishToolName is the completion channel — without it the loop cannot
+// terminate, so it is always preserved.
 const finishToolName = "finish"
 
-// protectedToolNames are retained regardless of the always-present list: the
-// tools a session's ReAct loop itself depends on and can never do without —
-// the completion channel (finish), the fact memory (store/search), the
-// human-interaction channel (ask_user), the step checklist
-// (update_checklist), and the read/recovery tools that keep the loop
-// productive: reading a user-attached file, reading an activated skill's
-// resource, and paging through a tool result truncated by the token-budget
-// transport (read_attachment, read_skill_resource, tool_result_read). They
-// are guaranteed in every session whatever the active profile pins. MCP
-// tools are likewise always kept (they are user-installed and not part of the
-// orchestration-noise problem).
+// protectedToolNames are retained in every session regardless of the
+// profile's pins — the ReAct loop's own minimum plus the read/recovery
+// tools; MCP tools are likewise always kept (specs/domains/model-profiles.md).
 var protectedToolNames = map[string]struct{}{
 	finishToolName:        {},
 	"store_fact":          {},
@@ -61,15 +29,9 @@ var protectedToolNames = map[string]struct{}{
 	"tool_result_read":    {},
 }
 
-// ProtectedToolNames returns the sorted names of the ReAct-mandatory tools
-// that SelectTools always keeps regardless of the always-present input: the
-// completion channel (finish), the fact memory (store/search_facts), the
-// human-interaction channel (ask_user), the step checklist
-// (update_checklist), and the read/recovery tools the loop needs
-// (read_attachment, read_skill_resource, tool_result_read). Exposed so UI
-// layers can surface these as permanently present ("locked") alongside the
-// user's always-present list. The result is deterministic (sorted) and freshly
-// allocated.
+// ProtectedToolNames returns the sorted, freshly allocated names of the
+// always-kept tools, for UI layers that render them as permanently present
+// ("locked") chips.
 func ProtectedToolNames() []string {
 	out := make([]string, 0, len(protectedToolNames))
 	for n := range protectedToolNames {
@@ -79,20 +41,12 @@ func ProtectedToolNames() []string {
 	return out
 }
 
-// SelectTools assembles the model-profile tool set as a static union of:
-//
-//   - the user's always-present pins,
-//   - the protected orchestration tools,
-//   - every MCP-sourced tool (user-installed),
-//   - the caller's extraGuaranteed names — turn-scoped tools this task's
-//     directives require (e.g. delegate when the user explicitly requested
-//     subagents; like the MCP class the guarantee is per-call, never static).
-//
-// The full descriptor list is swept once in registry order, deduplicated by
-// name (first occurrence wins), and every surviving descriptor is emitted in
-// registry order. A guaranteed name matching nothing registered is silently
-// ignored (a guarantee cannot invent a tool). There is no slot budget: the
-// result is exactly the selection described above, nothing more, nothing less.
+// SelectTools assembles the tool set as a static union of the user's
+// always-present pins, the protected tools, every MCP-sourced tool, and the
+// caller's turn-scoped extraGuaranteed names — emitted in registry order,
+// deduplicated by name (first wins); unknown guaranteed names are silently
+// ignored, and there is no slot budget. See the Essential Tools section of
+// specs/domains/model-profiles.md.
 func SelectTools(all []sdktools.ToolDescriptor, alwaysPresent []string, extraGuaranteed ...string) []sdktools.ToolDescriptor {
 	guaranteedNames := make(map[string]struct{}, len(alwaysPresent)+len(protectedToolNames)+len(extraGuaranteed))
 	for _, n := range alwaysPresent {

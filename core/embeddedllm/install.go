@@ -37,10 +37,8 @@ const (
 	StageDone        = "done"
 )
 
-// Progress is one per-component install update. Every component of the
-// resolved set reports its own stream, so the UI can show a separate bar for
-// the runtime, the Windows CUDA runtime DLLs, the weights and the projector
-// (ADR-066 D9).
+// Progress is one per-component install update; each component reports its own
+// stream so the UI can bar it separately (ADR-066 D9). See specs/domains/embedded-llm.md.
 type Progress struct {
 	Component  Component `json:"component"`
 	Stage      string    `json:"stage"`
@@ -48,142 +46,70 @@ type Progress struct {
 	BytesTotal int64     `json:"bytes_total"`
 }
 
-// InstallProgressFunc receives one Progress update per component and stage.
-// It may be nil. The type is named apart from download.go's ProgressFunc —
-// that one reports raw (done, total) byte counts for a single artifact, this
-// one reports the component-and-stage stream the install UI renders.
+// InstallProgressFunc receives one Progress update per component and stage; may
+// be nil. Distinct from download.go's ProgressFunc (raw single-artifact bytes).
 type InstallProgressFunc func(Progress)
 
-// Manifest is <models>/bonsai-2-27b/manifest.json — the durable record of what
-// was installed. Startup trusts THIS, not the network and not a probe: reading
-// it is the only disk work the boot path performs for this subsystem.
-//
-// It is written once, atomically, and only after every component has been
-// downloaded, SHA256-verified and (for the runtime) extracted, signed and
-// smoke-tested. A failed install therefore never leaves a manifest describing
-// bytes that are not on disk.
+// Manifest is the durable install record — written once, atomically, only after
+// every component is verified and the runtime proven to run, so startup can
+// trust it as its only disk work here. See specs/domains/embedded-llm.md.
 type Manifest struct {
 	Packing        Packing `json:"packing"`
 	Backend        Backend `json:"backend"`
 	RuntimeVersion string  `json:"runtime_version"`
-	// Checksums maps each verified artifact to its SHA256 digest. The llama
-	// family's components are single artifacts and key by component name; the
-	// mtplx family's multi-file components (the wheel set, the weight pack)
-	// key EVERY file by its file name — one digest per file, never one digest
-	// standing in for a whole component (checksumKey).
+	// Checksums: artifact -> SHA256, keyed by checksumKey — component name on the
+	// llama family, the FILE name for every file of mtplx's multi-file components.
 	Checksums map[string]string `json:"checksums"`
 	Port      int               `json:"port"`
 
-	// Engine is the runtime family this manifest describes. Empty on a
-	// manifest written before the field existed — every pre-existing install
-	// is a llama-family install, and readers must treat empty as llama, never
-	// as "unknown engine".
+	// Engine is the runtime family described here; empty (a pre-field manifest)
+	// means llama, never "unknown engine".
 	Engine Engine `json:"engine,omitempty"`
-	// PythonVersion is the managed CPython the mtplx engine was provisioned
-	// with (empty on the llama family).
+	// PythonVersion / PackRevision are the mtplx engine's extra pins (empty on
+	// the llama family, whose pin is RuntimeVersion + the per-asset checksums).
 	PythonVersion string `json:"python_version,omitempty"`
-	// PackRevision is the pinned Hugging Face revision the mtplx engine's
-	// weight pack was verified against (empty on the llama family, whose pin
-	// is RuntimeVersion + the per-asset checksums).
-	PackRevision string `json:"pack_revision,omitempty"`
+	PackRevision  string `json:"pack_revision,omitempty"`
 
-	// ContextSize is the LAST KNOWN EFFECTIVE context of this installation —
-	// the number the `llm.models."Bonsai 2 27B".context_window` override is
-	// generated from, and the value a launch falls back to when no plan was
-	// recorded.
-	//
-	// It is a record that is *corrected*, not a decision that is *frozen*:
-	// install writes the planner's figure, and every successful load overwrites
-	// it with the context the server itself reports through `/props` (see
-	// `Server.recordEffectiveContext`). That readback is what keeps the tier-1
-	// config override honest — `contracts`/`llm-providers.md` gives a tier-1
-	// override precedence over the tier-1.5 lazy probe, so a stale one could
-	// never be corrected by the probe and would silently misreport the model's
-	// real window forever.
-	//
-	// A FIT-SIZED plan has no concrete context to record (the runtime's own fit
-	// pass chooses it at launch, and `MemoryPlan.ContextSize` is 0 there), so
-	// the install records `FitMinContext` — the floor fit is held to — as the
-	// estimate the override needs, and the first successful load replaces it
-	// with the measured value. It never records 0: a zero override means "leave
-	// the existing one alone" to `SyncEmbeddedLLMProvider`, and a zero context
-	// in a manifest would read as a lost tier.
+	// ContextSize is the LAST KNOWN EFFECTIVE context — install writes the
+	// planner's figure (FitMinContext for a fit-sized plan, never 0); every
+	// successful load corrects it from `/props`. See specs/domains/embedded-llm.md.
 	ContextSize int `json:"context_size"`
 
 	ModelFile   string `json:"model_file"`
 	InstalledAt string `json:"installed_at"` // RFC 3339
 
 	// Topology is the device-memory snapshot the recorded plan was made from —
-	// the accelerators the provisioned runtime could see, whether their memory
-	// aliases host RAM, and the two budgets the memory gate was allowed to
-	// spend. It is persisted for two reasons. A load re-probes only
-	// opportunistically and must fail SOFT, so the snapshot is what a wedged or
-	// absent driver query falls back to; and a support bundle carries the
-	// machine's real shape as measured at provision time rather than as guessed
-	// from a backend name.
-	//
-	// Nil means "no probe ever answered" — a first install whose runtime would
-	// not enumerate its devices, or a manifest written before this field
-	// existed. A reader must treat nil as UNKNOWN, never as "no accelerator":
-	// `MemoryTopology`'s own contract is that its zero value means unknown, and
-	// a zero budget read as a fact is the refusal the combined gate exists to
-	// avoid.
+	// what a fail-soft load falls back to and a support bundle reports. Nil is
+	// UNKNOWN, never "no accelerator" (the zero-budget refusal the gate avoids).
 	Topology *MemoryTopology `json:"topology,omitempty"`
 
-	// Plan is the launch shape LAST APPLIED to this installation: every
-	// flag-bearing value `LaunchSpec` renders, the two footprints it expected,
-	// the budgets it was gated against, and the human-readable `Notes` saying
-	// why each non-default decision was made. `Server.launchSpec` builds the
-	// shape half of a launch from it, so a load reproduces the decision the
-	// install made instead of re-deriving a different one from a coarser policy.
-	//
-	// Nil means "no plan was recorded" — a manifest written before this field
-	// existed — and a load then falls back to the pure policy in resolve.go
-	// (explicit `-ngl`, `-fit off`, the manifest's `ContextSize`). Persisting
-	// the plan rather than re-deriving it at load is deliberate: re-deriving
-	// would need the operator's `Tuning`, and `tuning` is an operator SETTING
-	// the sink carries verbatim, not install state a record may copy — a second
-	// copy would be a second source of truth that goes stale on the first edit.
+	// Plan is the launch shape LAST APPLIED, from which a load rebuilds the same
+	// shape (nil → the resolve.go policy). Persisted, not re-derived — that would
+	// need the operator's Tuning, a SETTING never copied into a record.
 	Plan *MemoryPlan `json:"plan,omitempty"`
 
-	// PackingReason says WHY this packing was chosen. It is recorded because
-	// every value other than "default" is a degradation of some kind — a backend
-	// with no PQ2_0 kernels, a pin that predates an upstream fix, a GPU
-	// generation that decodes the smaller packing faster, or a measured budget
-	// PQ2_0 did not fit — and a degraded install must state its reason instead
-	// of leaving the user to infer it from a file size. Empty on a manifest
-	// written before this field existed, which readers must treat as "unknown",
-	// never as "default".
+	// PackingReason states WHY a non-default packing was chosen; every such value
+	// is a degradation and must say so. Empty (pre-field manifest) = unknown.
 	PackingReason PackingReason `json:"packing_reason,omitempty"`
 
-	// GPUFamily is the accelerator generation the plan was classified as, empty
-	// when no device probe answered. Recorded so a support bundle carries the
-	// silicon the guards and the packing rule were reasoning about.
+	// GPUFamily is the accelerator generation the plan was classified as, so a
+	// support bundle names the silicon the guards reasoned about.
 	GPUFamily GPUFamily `json:"gpu_family,omitempty"`
 
-	// Guards are the backend compatibility decisions that were in force when
-	// this install was planned — each with its typed reason, its severity, its
-	// upstream issue citation, its guidance, and an Applied flag saying whether
-	// the plan actually changed because of it. They are persisted, not just
-	// returned, because the whole point is that a degraded install stays
-	// visible: a guard that fired is a fact about THIS install and must still be
-	// readable after the process that made it exited.
+	// Guards are the compatibility decisions in force at planning, persisted so
+	// a degraded install stays explainable after the deciding process exited.
 	Guards []GuardDecision `json:"guards,omitempty"`
 }
 
-// ErrNotInstalled reports that no manifest exists, i.e. the model is not
-// installed. It is a normal state, not a fault.
+// ErrNotInstalled reports that no manifest exists — a normal state, not a fault.
 var ErrNotInstalled = errors.New("embedded LLM is not installed")
 
-// ErrSmokeTestFailed reports that the freshly provisioned llama-server did not
-// run. On macOS the cause is almost always Gatekeeper still blocking an
-// unsigned binary; on Linux with a GPU backend it is missing CUDA 12 runtime
-// libraries. The wrapped message carries the platform-appropriate fix.
+// ErrSmokeTestFailed reports that the fresh llama-server did not run — Gatekeeper
+// on macOS, missing CUDA 12 libraries on Linux; the wrapper carries the fix.
 var ErrSmokeTestFailed = errors.New("the provisioned llama-server did not run")
 
-// ReadManifest loads the manifest at path. A missing file is reported as
-// ErrNotInstalled rather than a generic OS error, because "not installed" is
-// the state it encodes.
+// ReadManifest loads the manifest at path; a missing file is ErrNotInstalled,
+// not a generic OS error.
 func ReadManifest(path string) (Manifest, error) {
 	data, err := safeio.ReadFile(path)
 	if err != nil {
@@ -199,47 +125,27 @@ func ReadManifest(path string) (Manifest, error) {
 	return m, nil
 }
 
-// manifestTempPattern is the shape of the sibling temporary file the atomic write
-// renames from. The `*` makes the name UNIQUE PER WRITE: Installer.Install holds
-// no supervisor gate while Server.recordEffectiveContext writes under one, so two
-// writers can overlap, and a shared fixed name would let one of them rename a file
-// the other is still writing — promoting a torn manifest that the next ReadManifest
-// then fails on, reporting the model as not installed until a reinstall.
+// manifestTempPattern is the sibling temporary the atomic write renames from;
+// `*` makes it UNIQUE PER WRITE — writers overlap (see manifestTempStaleAfter).
 const manifestTempPattern = ManifestFileName + ".*.tmp"
 
-// manifestTempPrefix and manifestTempSuffix let a test — and the cleanup,
-// sweepStaleManifestTemps — recognise a leftover temporary without knowing the
-// random middle os.CreateTemp picked.
+// manifestTempPrefix and manifestTempSuffix let sweepStaleManifestTemps and tests
+// recognise a leftover without knowing the random middle os.CreateTemp picked.
 const (
 	manifestTempPrefix = ManifestFileName + "."
 	manifestTempSuffix = ".tmp"
 )
 
-// manifestTempStaleAfter is how old a leftover temporary must be before
-// sweepStaleManifestTemps will remove it.
-//
-// The age gate is what keeps the sweep safe against the very concurrency the
-// unique name exists for: Installer.Install holds no supervisor gate while
-// Server.recordEffectiveContext writes under one, so two writers CAN overlap, and
-// an unconditional sweep would delete a temporary another writer is between
-// creating and renaming — failing its write, which is the torn-manifest outcome
-// this pattern was introduced to prevent. A manifest write is a few kilobytes, a
-// sync and a rename, so a minute is orders of magnitude beyond one and still far
-// short of the "forever" a crashed writer's leftover would otherwise last.
+// manifestTempStaleAfter is how old a leftover temporary must be before the
+// sweep removes it. The age gate is the concurrency safety: writers CAN overlap,
+// so an unconditional sweep could delete a live temporary and re-create the torn
+// manifest the unique name prevents; a minute is orders beyond one write.
 const manifestTempStaleAfter = time.Minute
 
-// writeManifest persists m atomically: bytes land in a uniquely named sibling
-// temporary file and are renamed over the target, so a crash mid-write leaves the
-// previous manifest intact instead of a truncated one, and a concurrent writer
-// cannot interleave with this one. Every error path attempts temporary cleanup;
-// a failed cleanup is reported alongside the original write/promotion error.
-//
-// The one path that cannot clean up after itself is a crash BETWEEN CreateTemp and
-// the rename, so the write begins by sweeping leftovers of that shape out of the
-// directory (sweepStaleManifestTemps) — otherwise a uniquely named temporary is
-// also a permanently leaked one, since nothing else knows its name.
-//
-// logger may be nil, which discards: the package's rule for an uninjected logger.
+// writeManifest persists m atomically — unique sibling temporary, rename over
+// the target, cleanup on every error path — beginning with sweepStaleManifestTemps
+// (a crash between CreateTemp and the rename leaks an unknowable name). Shape:
+// specs/domains/embedded-llm.md.
 func writeManifest(path string, m Manifest, logger *slog.Logger) error {
 	return writeManifestWithOps(path, m, logger, promoteManifest, os.Remove)
 }
@@ -260,8 +166,8 @@ func writeManifestWithOps(path string, m Manifest, logger *slog.Logger, promote 
 	if err := mkdirAll(dir); err != nil {
 		return err
 	}
-	// The temporary this write is about to create does not exist yet, so the
-	// sweep can only ever see PREVIOUS writers' leftovers — never this call's own.
+	// This call's temporary does not exist yet, so the sweep only ever sees
+	// PREVIOUS writers' leftovers.
 	sweepStaleManifestTemps(dir, logger)
 	tmp, err := os.CreateTemp(dir, manifestTempPattern)
 	if err != nil {
@@ -284,16 +190,11 @@ func cleanupManifestTemp(name string, cause error, remove func(string) error) er
 	return cause
 }
 
-// A promotion rename can fail transiently on Windows: two concurrent
-// writeManifest callers promote onto the SAME manifest.json (Install holds no
-// supervisor gate while Server.recordEffectiveContext writes under one), and
-// one MoveFileEx(REPLACE_EXISTING) can hold the destination while it swaps,
-// answering Access denied to the other for a moment; a real-time scanner
-// holding a freshly written temporary does the same. The lock is momentary —
-// neither file is permanently unavailable — so a short bounded backoff turns
-// the collision into a successful promotion instead of a failed manifest
-// write, which is exactly what the concurrent-writers test pins. Off Windows
-// the classifier always answers false and the first attempt decides.
+// A promotion rename can fail transiently on Windows — a concurrent promotion of
+// the same manifest.json or a real-time scanner holding the fresh temporary
+// answers Access denied for a moment. The unavailability is momentary, so a
+// bounded backoff makes the collision succeed (pinned by the concurrent-writers
+// test); off Windows the classifier always answers false.
 const (
 	// manifestPromoteAttempts bounds the promotion retry budget.
 	manifestPromoteAttempts = 8
@@ -303,15 +204,12 @@ const (
 	manifestPromoteBackoff = 2 * time.Millisecond
 )
 
-// manifestPromotionMu prevents this process's writers from colliding while
-// replacing a manifest. Temp creation/write/sync stays concurrent. External
-// sharing handles still use the bounded retry; no destination is removed.
+// manifestPromotionMu serializes this process's promotions; temp creation/write
+// stays concurrent and external sharing still takes the bounded retry.
 var manifestPromotionMu sync.Mutex
 
-// promoteManifest renames the fully written temporary over the target manifest,
-// serializing in-process promotions and retrying transient Windows sharing
-// errors with the same bounded backoff. Failure leaves the destination intact
-// and returns the final rename error for the caller's cleanup/reporting.
+// promoteManifest renames the written temporary over the target under
+// manifestPromotionMu with bounded Windows retries; failure keeps the destination.
 func promoteManifest(tmp, path string, logger *slog.Logger) error {
 	manifestPromotionMu.Lock()
 	defer manifestPromotionMu.Unlock()
@@ -336,14 +234,8 @@ func promoteManifestWithOps(tmp, path string, logger *slog.Logger, rename func(s
 }
 
 // sweepStaleManifestTemps removes the temporaries a crashed writeManifest left
-// behind in dir, reporting each removal at Debug.
-//
-// It is best-effort in both directions: an unreadable directory or an unremovable
-// entry is logged and skipped, because a leftover temporary costs a few kilobytes
-// of disk and must never fail the manifest write that happened to notice it. Only
-// entries whose name is the temporary shape AND whose modification time is older
-// than manifestTempStaleAfter are touched — never the manifest itself, never a
-// directory, and never a concurrent writer's live temporary.
+// behind in dir — best-effort both ways (log-and-skip) — touching only entries
+// of the temporary shape older than manifestTempStaleAfter, never live writers.
 func sweepStaleManifestTemps(dir string, logger *slog.Logger) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -379,10 +271,8 @@ func sweepStaleManifestTemps(dir string, logger *slog.Logger) {
 	}
 }
 
-// isManifestTempName reports whether name is the shape os.CreateTemp produces from
-// manifestTempPattern: the manifest's own name, a random middle, and the temporary
-// suffix. The manifest itself does not match, and neither does a name with nothing
-// between the prefix and the suffix.
+// isManifestTempName reports whether name has the os.CreateTemp shape from
+// manifestTempPattern; the manifest itself, and empty middles, do not match.
 func isManifestTempName(name string) bool {
 	return len(name) > len(manifestTempPrefix)+len(manifestTempSuffix) &&
 		strings.HasPrefix(name, manifestTempPrefix) &&
@@ -390,8 +280,7 @@ func isManifestTempName(name string) bool {
 }
 
 // writeAndClose writes data to f and closes it whichever way the write goes, so
-// the rename always operates on a complete file and no descriptor leaks on the
-// error path.
+// the rename sees a complete file and no descriptor leaks on the error path.
 func writeAndClose(f *os.File, data []byte) error {
 	if _, err := f.Write(data); err != nil {
 		_ = f.Close()
@@ -407,27 +296,10 @@ func writeAndClose(f *os.File, data []byte) error {
 	return nil
 }
 
-// recordableContext is the context a MANIFEST may carry for a plan.
-//
-// A planner-computed shape has one: `MemoryPlan.ContextSize` is always positive
-// when `Fit` is false, because with fit off nothing else would size it. A
-// FIT-SIZED shape does not — `ContextSize` is 0 there by definition, since the
-// runtime's own fit pass chooses the value at launch — but a manifest still owes
-// its readers a number: `ContextSize` is what the `llm.models` `context_window`
-// override is generated from, and a 0 there means "leave the existing override
-// alone" rather than "the window is zero", so the honest figure would be lost.
-//
-// `FitMinContext` is that figure. It is the floor fit is held to (`-fitc`), so
-// it is the smallest context the launch can legitimately end up with, and the
-// first successful load replaces it with the value the server actually reports
-// through `/props` — see `Manifest.ContextSize` and
-// `Server.recordEffectiveContext`. Recording the floor instead of 0 is the
-// conservative direction in both uses: an override that under-reports the window
-// costs compaction headroom, while one that claims 0 costs the model its place
-// in the context accounting entirely.
-//
-// fallback is the value a plan-less resolution already carries (`Resolution.
-// ContextSize`), used when the plan is absent and for the RAM-tiered path.
+// recordableContext is the context a manifest may carry for a plan: the
+// planner's own value for a computed shape, FitMinContext — the floor fit is
+// held to — for a fit-sized one whose ContextSize is 0 by definition, fallback
+// otherwise. Never 0: see Manifest.ContextSize / specs/domains/embedded-llm.md.
 func recordableContext(plan MemoryPlan, fallback int) int {
 	if plan.Fit {
 		if plan.FitMinContext > 0 {
@@ -441,16 +313,12 @@ func recordableContext(plan MemoryPlan, fallback int) int {
 	return fallback
 }
 
-// InstallState is the durable install record handed to the config layer. It
-// maps one-to-one onto config.EmbeddedLLMConfig plus the resolved context
-// tier, and it is the ONLY channel through which this subsystem reaches
-// config.yaml — core never imports backend/config (backend/config sits above
-// core and already imports core packages, so an import back would cycle).
+// InstallState is the durable install record handed to the config layer — the
+// ONLY channel from this subsystem into config.yaml (an import back would cycle).
+// See specs/domains/embedded-llm.md.
 type InstallState struct {
-	// Engine is the runtime family that was provisioned. Installs set it
-	// explicitly for BOTH families; the zero value is unset/invalid input
-	// (config spelling "" means auto, and validity is ResolveEngine's call —
-	// mlxpins.go), never a silent "llama".
+	// Engine is the family that was provisioned, set explicitly for BOTH
+	// families; the zero value is unset input, never a silent "llama".
 	Engine         Engine
 	Packing        Packing
 	Backend        Backend
@@ -465,64 +333,35 @@ type InstallState struct {
 	PythonVersion string
 	PackRevision  string
 
-	// AutoUnloadEnabled and AutoUnloadMinutes are the DEFAULTS the install
-	// establishes. The sink must apply them only where the operator has not
-	// chosen explicitly (config.AutoUnloadConfig keeps both as pointers, so
-	// "unset" is distinguishable from "explicitly false"), and must never
-	// overwrite an existing choice: installing the model does not reset a
-	// tuned idle budget.
+	// AutoUnloadEnabled / AutoUnloadMinutes are the DEFAULTS an install
+	// establishes: the sink applies them only onto unset knobs — installing
+	// never resets a tuned idle budget.
 	AutoUnloadEnabled bool
 	AutoUnloadMinutes int
 
-	// There are deliberately NO memory-tuning defaults here. `Tuning`'s zero
-	// value IS the all-Auto plan, and config.TuningConfig keeps every knob a
-	// pointer precisely so "the operator never wrote this" stays
-	// distinguishable from "the operator wrote auto" — so an install that
-	// shipped defaults for the sink to apply would collapse that distinction
-	// on the first provision. What the sink owes the tuning section is
-	// narrower and stronger: carry it through verbatim (see ConfigSink).
+	// Deliberately NO memory-tuning defaults: TuningConfig's pointer knobs keep
+	// "never written" distinct from "written auto" and an install must not
+	// collapse that — the sink carries tuning verbatim (see ConfigSink).
 }
 
-// ConfigSink persists install state into config.yaml. The backend layer
-// supplies the implementation (backend/frontend_api_embedded.go):
-//
-//   - ApplyInstalled writes embedded_llm.* from state, (re)applies the
-//     auto-unload defaults without overwriting explicit operator values, calls
-//     Config.SyncEmbeddedLLMProvider(state.ContextSize) so the backend-owned
-//     llm.openai_compatible.embedded entry and the llm.models context_window
-//     override are generated from the authoritative state, persists, and
-//     rebuilds the router.
-//   - ApplyRemoved clears embedded_llm.installed and the informational fields,
-//     migrates llm.default_model off "embedded/Bonsai 2 27B" (otherwise the
-//     next load fails validation and the next settings save is rejected as
-//     dangling), calls SyncEmbeddedLLMProvider(0) so the provider entry is
-//     dropped, and persists.
-//
-// BOTH rewrite embedded_llm.* wholesale, so both must carry the two
-// operator-owned sub-sections through unchanged: `auto_unload` (applying
-// state.AutoUnload* to unset knobs only) and `tuning` (verbatim — it is a
-// setting, not a record, so neither provisioning nor uninstalling the model
-// may reset the memory plan the operator chose).
-//
-// Both must be idempotent: Install and Remove may be retried after a partial
-// failure.
+// ConfigSink persists install state into config.yaml; the backend supplies the
+// implementation. ApplyInstalled registers the state (provider entry, context
+// override, auto-unload defaults onto unset knobs only); ApplyRemoved clears the
+// install and migrates llm.default_model off the embedded model. BOTH rewrite
+// embedded_llm.* wholesale, must carry the operator-owned `auto_unload` and
+// `tuning` sections through unchanged, and must be idempotent (retries after a
+// partial failure). Contract: specs/domains/embedded-llm.md.
 type ConfigSink interface {
 	ApplyInstalled(ctx context.Context, state InstallState) error
 	ApplyRemoved(ctx context.Context) error
 }
 
-// CommandRunner executes one external command and returns its combined output.
-// It exists so the macOS provisioning steps (xattr, codesign, the --version
-// smoke test) are testable on every platform without those binaries present.
-//
-// opts carries the launch configuration (see RunOptions): the smoke test passes
-// one (the launch environment), every other call site passes nil and runs bare.
+// CommandRunner executes one external command and returns its combined output,
+// so the provisioning steps are testable without the platform binaries present.
 type CommandRunner func(ctx context.Context, name string, opts *RunOptions, args ...string) (string, error)
 
-// RunOptions is the launch configuration a CommandRunner call can carry beyond
-// the command itself. A nil pointer means "no opinion": the child inherits the
-// parent's environment and working directory. The fields mirror exec.Cmd's
-// semantics one-to-one.
+// RunOptions is the launch configuration a CommandRunner call can carry; nil
+// means "no opinion" — the child inherits the parent's env and working directory.
 type RunOptions struct {
 	// Env is the child's complete environment; nil inherits the parent's.
 	Env []string
@@ -530,39 +369,21 @@ type RunOptions struct {
 	Dir string
 }
 
-// maxCommandOutputBytes caps what one provisioning command may contribute to the
-// captured output. The output is diagnostic only — runBounded wraps it into an
-// error message and the smoke test logs it — so an uncapped buffer is an
-// unbounded allocation driven by an external process.
+// maxCommandOutputBytes caps one command's captured output: it is diagnostic
+// only, so an uncapped buffer is an external process driving our allocation.
 const maxCommandOutputBytes = 1 << 20
 
-// defaultCommandRunner is the production runner. Every call site bounds it with
-// its own context timeout, so a wedged codesign cannot stall the install.
+// defaultCommandRunner is the production runner; every call site bounds it with
+// its own context timeout. A deadline alone does not bound the call, so two more
+// bounds live here:
 //
-// A context deadline alone does not bound the call, which is why two more bounds
-// live here:
+//   - cmd.WaitDelay: Stdout is a pipe, so a grandchild holding the write end
+//     keeps cmd.Run blocked after the child exited — stranding the install
+//     goroutine and everything it serializes (probe layer: same hazard, same value).
+//   - limitedWriter's byte cap (io.LimitReader does not fit: cmd.Stdout is a Writer).
 //
-//   - cmd.WaitDelay. Killing the child is not enough to end the read: Stdout is
-//     not an *os.File, so os/exec copies the child's output through a pipe, and a
-//     grandchild that inherited the write end keeps that copy blocked long after
-//     the child is gone. cmd.Run would then never return — and it runs on the
-//     goroutine that owns the whole install for its duration, so that goroutine is
-//     stranded for the lifetime of the process and whatever it serializes stays
-//     serialized with it. No caller-side convention recovers that: a release
-//     written as a defer never runs, and one written on the exit paths is never
-//     reached. This is the hazard hardware.go's probe layer documents, and it
-//     takes the same value.
-//   - a cap on the captured bytes (limitedWriter — the write-side twin of
-//     io.LimitReader, which does not fit because cmd.Stdout is a Writer).
-//
-// The child is spawned without a console window: since the smoke test became
-// universal, this runner also executes llama-server, whose Windows build is a
-// console-subsystem binary that would otherwise flash a console window (and
-// steal focus) on every install click. HideConsole is a no-op off Windows, so
-// the xattr/codesign calls are unaffected.
-//
-// opts configures the launch (env/dir); nil means "no opinion" — the child
-// inherits the parent's environment and working directory.
+// The child is spawned without a console window too: this runner also executes
+// llama-server, whose Windows console-subsystem build would flash one per click.
 func defaultCommandRunner(ctx context.Context, name string, opts *RunOptions, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	sysproc.HideConsole(cmd)
@@ -581,20 +402,16 @@ func defaultCommandRunner(ctx context.Context, name string, opts *RunOptions, ar
 
 	err := cmd.Run()
 	if errors.Is(err, exec.ErrWaitDelay) {
-		// The command itself exited successfully — ErrWaitDelay replaces a nil
-		// exit status, never a real one — and only its output had to be abandoned
-		// because something else kept the pipe open. The exit status is the
-		// authority on whether xattr, codesign or --version worked, so this is not
-		// a failure; the captured output may simply be short.
+		// The command exited successfully — ErrWaitDelay replaces a nil exit
+		// status, never a real one; only abandoned output was lost.
 		return out.String(), nil
 	}
 	return out.String(), err
 }
 
-// limitedWriter captures at most limit bytes and counts the rest. Write always
-// reports the full length: a short write would fail os/exec's copy and turn a
-// successful command into an error. It is mutex-guarded because os/exec may copy
-// stdout and stderr concurrently into the same writer.
+// limitedWriter captures at most limit bytes and counts the rest; Write always
+// reports the full length (a short write fails os/exec's copy) under w.mu —
+// stdout/stderr may copy concurrently.
 type limitedWriter struct {
 	mu      sync.Mutex
 	buf     bytes.Buffer
@@ -628,10 +445,9 @@ func (w *limitedWriter) String() string {
 	return w.buf.String() + fmt.Sprintf("\n[... %d further output bytes dropped ...]", w.dropped)
 }
 
-// Auto-unload defaults established by an install. The minutes value mirrors
-// config.EmbeddedLLMDefaultAutoUnloadMinutes; core cannot import that constant
-// (see InstallState), so it is declared here and pinned equal by
-// TestEmbeddedAutoUnloadDefaultsMatchCore in backend/config.
+// Auto-unload defaults an install establishes; the minutes value mirrors
+// config.EmbeddedLLMDefaultAutoUnloadMinutes (core cannot import it), pinned
+// equal by backend/config's test.
 const (
 	DefaultAutoUnloadEnabled = true
 	DefaultAutoUnloadMinutes = 60
@@ -644,94 +460,62 @@ const (
 	smokeTestTimeout    = 60 * time.Second
 )
 
-// macOS provisioning helpers, invoked by absolute path. Both ship with the base
-// system, so there is nothing to resolve — and resolving through PATH would let
-// an attacker-controlled PATH element substitute a binary that runs during an
-// install click. See provisionDarwin.
+// macOS provisioning helpers, invoked by absolute path — see provisionDarwin for
+// why PATH resolution is not an option here.
 const (
 	darwinXattr    = "/usr/bin/xattr"
 	darwinCodesign = "/usr/bin/codesign"
 )
 
-// toolMissing reports whether a provisioning helper is simply not installed. An
-// absolute path is not resolved through exec.LookPath, so a missing one surfaces
-// as fs.ErrNotExist from the spawn rather than as exec.ErrNotFound; both mean the
-// same thing here, and both stay a warning rather than a failure — the smoke test
-// is the authority on whether the runtime runs.
+// toolMissing reports whether a provisioning helper is simply not installed —
+// an absolute path surfaces fs.ErrNotExist where LookPath gives exec.ErrNotFound;
+// either way a warning: the smoke test is the authority on runnability.
 func toolMissing(err error) bool {
 	return errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrNotExist)
 }
 
-// Extraction guards. Defence-in-depth against a checksum-valid-but-malicious
-// archive, mirroring core/toolmanager's posture but sized for this subsystem:
-// the tool-manager's 512 MiB per-entry cap is below a single CUDA runtime
-// library in these archives (ADR-066, "Not a tool-manager extension"), so the
-// caps are per-entry 2 GiB and per-archive 8 GiB — far above the ~1.5 GiB a
-// fully extracted runtime actually occupies.
+// Extraction guards: defence-in-depth against a checksum-valid-but-malicious
+// archive. Sized for this subsystem rather than core/toolmanager's (its 512 MiB
+// per-entry cap is below one CUDA runtime library), per ADR-066.
 const (
 	maxExtractEntryBytes int64 = 2 << 30
 	maxExtractTotalBytes int64 = 8 << 30
 )
 
-// Installer orchestrates Install and Remove over a Layout.
-//
-// The zero value is not usable; build one with NewInstaller. Every external
-// effect is reachable through a field, so the whole flow is testable without
-// a network, without multi-gigabyte artifacts and without macOS binaries:
-// Downloader (HTTP client, free-space probe), Probe (hardware), RunCommand
-// (xattr/codesign/smoke test), AllocatePort and Now.
+// Installer orchestrates Install and Remove over a Layout. The zero value is not
+// usable — build one with NewInstaller; every external effect is a field, so the
+// whole flow tests without a network, artifacts or platform binaries.
 type Installer struct {
 	// Layout is the on-disk footprint. Required.
 	Layout Layout
-	// Sink persists install state into config.yaml. Required by Install and
-	// Remove: an install that cannot be registered would leave bytes on disk
-	// with no provider, and a removal that cannot clear the config would leave
-	// a provider pointing at nothing.
+	// Sink persists install state into config.yaml — required: no bytes without
+	// a provider, no provider without bytes.
 	Sink ConfigSink
-	// Logger receives the subsystem's diagnostics. nil → a discard logger
-	// (never the global slog.Default), matching the package's own
-	// no-global-logging rule.
+	// Logger receives the subsystem's diagnostics; nil → a discard logger,
+	// never the global slog.Default.
 	Logger *slog.Logger
 	// Downloader fetches and verifies artifacts. nil → NewDownloader(nil, Logger).
 	Downloader *Downloader
 	// Probe reads the machine's RAM and accelerator. nil → ProbeHardware.
 	Probe func(ctx context.Context, logger *slog.Logger) (Hardware, error)
-	// ProbeDevices reads the accelerator INVENTORY of a provisioned runtime, so
-	// an install can learn the GPU generation — which the packing rule and the
-	// compatibility guards both need — instead of guessing it from the backend.
-	// nil → ProbeDevices (the package function). Fail-soft like every other
-	// probe here: an answer of false leaves the plan on its statically
-	// decidable guards, it never fails an install.
+	// ProbeDevices reads a provisioned runtime's accelerator inventory so the
+	// install learns the GPU generation the packing rule and guards need.
+	// nil → ProbeDevices. Fail-soft: a false answer never fails an install.
 	ProbeDevices func(ctx context.Context, binaryPath string, logger *slog.Logger) (MemoryTopology, bool)
 	// RunCommand executes xattr/codesign/--version. nil → defaultCommandRunner.
 	RunCommand CommandRunner
-	// AllocatePort reserves a free loopback port. nil → ephemeralLoopbackPort.
-	// The supervisor (server.go) owns port persistence and the pre-load
-	// collision re-check; it may substitute a richer allocator.
+	// AllocatePort reserves a free loopback port. nil → ephemeralLoopbackPort;
+	// server.go owns persistence and the pre-load collision re-check.
 	AllocatePort func(ctx context.Context) (int, error)
-	// Stop terminates a running server before Install replaces the runtime tree
-	// it executes from, and before Remove deletes its files. nil is legal and
-	// means "no supervisor is wired yet" — both then proceed, and the OS
-	// releases the files when the process exits.
+	// Stop terminates a running server before Install retires the runtime tree
+	// it executes from and before Remove deletes its files. nil is legal — both
+	// proceed, and the OS releases the files at process exit.
 	Stop func(ctx context.Context) error
-	// StopTimeout bounds Install's step-0 Stop. Zero — the default — inherits
-	// the caller's context, deadline and all: an install run on a
-	// never-deadlined context then waits out whatever holds the supervisor.
-	//
-	// A caller that wires Stop to a supervisor SHOULD set it, because
-	// Server.Stop acquires the single-instance gate FIRST and an in-flight Load
-	// holds that gate for up to DefaultReadyTimeout (15 min). An expired budget
-	// is not a worse outcome than the wait: it is what makes the supervisor's
-	// no-gate force path reachable at all, so a resident child is terminated on
-	// the force path's own detached budget instead of being waited out — and
-	// step 0 runs before plan, so an unbounded wait here is an install bar stuck
-	// at 0% with no progress event ever emitted.
-	//
-	// This is NOT Server.StopTimeout, which is the graceful window between the
-	// termination signal and the kill. This one bounds the whole step-0 call,
-	// gate wait included. Remove's stop is left to the ctx its caller passes
-	// (the backend wraps the entire Remove in the same budget), so the field
-	// governs step 0 only.
+	// StopTimeout bounds Install's step-0 Stop alone — the whole call, gate wait
+	// included (0, the default, inherits the caller's ctx). SHOULD be set with a
+	// supervisor-wired Stop: the gate can be held a full ready budget, step 0
+	// precedes the first progress event, and expiry is what makes the no-gate
+	// force path reachable. NOT Server.StopTimeout. See specs/domains/embedded-llm.md.
 	StopTimeout time.Duration
 	// Now stamps InstalledAt. nil → time.Now.
 	Now func() time.Time
@@ -741,33 +525,28 @@ type Installer struct {
 	HostOS string
 }
 
-// NewInstaller returns an Installer with production defaults for the given
-// layout. Wire Sink before calling Install or Remove.
+// NewInstaller returns an Installer with production defaults; wire Sink before
+// Install or Remove.
 func NewInstaller(layout Layout, logger *slog.Logger) *Installer {
 	return &Installer{Layout: layout, Logger: logger}
 }
 
 // InstallOptions parameterises one install run.
 type InstallOptions struct {
-	// Port is the loopback port to persist. Zero means "allocate a free one".
+	// Port is the loopback port to persist; zero allocates a free one.
 	Port int
 	// Platform overrides the probed "<goos>-<goarch>" key. Empty → probed.
 	Platform string
-	// Backend overrides the probed accelerator. Empty → probed. Resolution
-	// still degrades an override it cannot serve.
+	// Backend overrides the probed accelerator; resolution still degrades an
+	// override it cannot serve. Empty → probed.
 	Backend Backend
-	// Engine selects the runtime family to provision. The ZERO value is the
-	// llama family (every pre-existing caller keeps its meaning); the config
-	// layer resolves `embedded_llm.engine: auto` through ResolveEngine before
-	// calling Install and passes the resolved engine explicitly. EngineMTPLX
-	// runs the MLX provisioning flow (install_mlx.go).
+	// Engine selects the runtime family; the ZERO value is llama. The config
+	// layer resolves `auto` through ResolveEngine first; EngineMTPLX runs the
+	// MLX flow (install_mlx.go).
 	Engine Engine
-	// Tuning is the operator's memory-plan override the plan is made from —
-	// the same `embedded_llm.tuning` the preflight CheckMemoryBudget call
-	// carried, so the plan the install prices, persists and launches is the
-	// plan the operator configured (the mtplx engine's `context.mode: exact`
-	// lives or dies by this; the llama family replans from the live setting
-	// at load instead). The zero value is the all-Auto plan.
+	// Tuning is the operator's memory-plan override the plan is made from — the
+	// same `embedded_llm.tuning` the preflight gate priced (the llama family
+	// replans from the live setting at load). Zero = the all-Auto plan.
 	Tuning Tuning
 	// Progress receives one update per component and stage. May be nil.
 	Progress InstallProgressFunc
@@ -782,16 +561,9 @@ type InstallReport struct {
 	ServerBinary string
 	ModelFile    string
 
-	// Guards is the complete compatibility record of this install: every
-	// decision the guard table made for this machine, whether c0wrk acted on it
-	// (Applied=true, e.g. a CUDA 13.3 plan swapped to 12.8 before anything was
-	// downloaded) or could only disclose it (Applied=false, e.g. a substitution
-	// discovered after the runtime archive was already staged, or an advisory
-	// whose workaround trades away something the user may want to keep).
-	//
-	// It is the same list the Manifest persists, lifted to the top level because
-	// a degraded install is the first thing a caller should be able to see
-	// without walking the report's nested records.
+	// Guards is the complete compatibility record — applied decisions and
+	// disclosures alike, the same list the Manifest persists, lifted so a caller
+	// sees a degraded install without walking nested records.
 	Guards []GuardDecision
 
 	// PackingReason is why the installed packing is what it is, lifted from the
@@ -801,45 +573,11 @@ type InstallReport struct {
 
 // Install provisions the pinned runtime and weights for this machine.
 //
-// A resident server is stopped BEFORE the first numbered step, symmetrically
-// with Remove: it executes out of the runtime tree step 7 retires (on Windows
-// renaming a live process's own tree and working directory is refused
-// outright), and the gigabytes it holds would otherwise be priced as
-// unavailable by step 1's probe and step 2's memory gate. That stop is bounded
-// by StopTimeout when the caller set one; Remove's is bounded by the ctx its
-// caller passes instead.
-//
-// The order is fixed and each step is a gate. The numbering starts at 1 because
-// the stop above is step 0 — a precondition the rest of the sequence relies on,
-// not one of the install's own gates:
-//
-//  1. hardware probe — RAM is a hard input (ErrRAMUnknown refuses);
-//  2. Resolve — the combined memory gate is its FIRST check, so a machine
-//     whose memory no modelled shape fits plans no assets, creates no
-//     directory and downloads nothing (ErrInsufficientMemory, naming both
-//     pools with both numbers);
-//  3. a whole-set disk guard, before the first byte is fetched;
-//  4. port allocation, persisted in both the manifest and the config;
-//  5. the runtime archives (and the Windows CUDA companion): download with
-//     resume and per-component progress → SHA256 verification gate → extract
-//     into a staging tree;
-//  6. runtime provisioning: quarantine-clear + ad-hoc codesign on macOS, then
-//     a --version smoke test on EVERY platform, all against the staged tree —
-//     before the weights, so an unrunnable runtime (Gatekeeper, missing CUDA
-//     12 libraries) fails in seconds instead of after a multi-gigabyte
-//     download;
-//  7. the staged runtime replaces the previous one — the old tree is retired
-//     only after every new byte is secured and proven to run;
-//  8. the weights (model, mmproj): download → SHA256 verification gate,
-//     straight to their final paths;
-//  9. manifest.json, written atomically and only now;
-//
-// 10. the config sink, which registers the provider entry.
-//
-// A failure at any step leaves no manifest and registers no provider: a
-// half-installed model is never visible to the router. Bytes that DID verify
-// are deliberately kept — they are cache hits for the next attempt, which is
-// what makes a multi-gigabyte install resumable rather than restartable.
+// A resident server is stopped FIRST (step 0), symmetrically with Remove; the
+// fixed gate order after it, the bounded stop and the force path are specified
+// in specs/domains/embedded-llm.md. Any-step failure leaves no manifest and no
+// provider — a half-installed model is never visible to the router — while
+// verified bytes stay as cache hits, making the install resumable, not restartable.
 func (in *Installer) Install(ctx context.Context, opts InstallOptions) (*InstallReport, error) {
 	if in == nil {
 		return nil, errors.New("embeddedllm: nil Installer")
@@ -852,34 +590,18 @@ func (in *Installer) Install(ctx context.Context, opts InstallOptions) (*Install
 		return nil, err
 	}
 
-	// Step 0, and the reason it precedes the probe: a server that is still
-	// resident executes out of the runtime tree this install is about to retire,
-	// and holds the very memory the gate below is about to price. Stopping first
-	// is what makes a repair safe on Windows (renaming a live process's own tree
-	// and working directory is ERROR_ACCESS_DENIED there) and honest everywhere
-	// else. It is a no-op when nothing is running.
-	//
-	// The wait is BOUNDED by StopTimeout when the caller set one, and the bound
-	// is the difference between a repair and a stall: the supervisor's Stop
-	// takes its single-instance gate first, and a Load that claimed that gate
-	// before this install did can hold it for DefaultReadyTimeout (15 min) —
-	// which, step 0 running before plan and therefore before the first
-	// install_progress event, would present as an install bar at 0% that never
-	// moves while every other embedded operation refuses. An EXPIRED budget is
-	// not a failure mode, it is the force path: core then stops the resident
-	// child without the gate, on a detached budget of its own, so the model is
-	// terminated rather than waited out. Only a stop that finds no child to kill
-	// — a Load still reading the manifest or scanning for a port — reports the
-	// gate timeout as an error, and that error is the whole truth.
+	// Step 0: stop a resident server before anything else — it executes out of
+	// the tree this install retires and holds the memory the gates below price.
+	// Bounded-stop/force-path semantics: Installer.StopTimeout / the embedded-LLM spec.
 	if in.Stop != nil {
 		if err := in.stopBeforeInstall(ctx); err != nil {
 			return nil, fmt.Errorf("embeddedllm: stopping the inference server before installation: %w", err)
 		}
 	}
 
-	// The mtplx engine branches here — AFTER the step-0 stop (its rebuild
-	// replaces the tree a resident server would execute from, exactly like the
-	// llama path) and BEFORE any llama probe/pack/guard machinery runs.
+	// The mtplx engine branches after the step-0 stop (its rebuild replaces the
+	// tree a resident server executes from) and before any llama probe/pack/guard
+	// machinery.
 	if opts.Engine == EngineMTPLX {
 		return in.installMLX(ctx, opts)
 	}
@@ -904,11 +626,6 @@ func (in *Installer) Install(ctx context.Context, opts InstallOptions) (*Install
 		}
 	}
 
-	// Phase order is deliberate: the runtime is downloaded, extracted,
-	// provisioned (macOS signing where applicable) and smoke-tested BEFORE the
-	// multi-gigabyte weights are fetched, so a runtime that cannot execute
-	// (Gatekeeper, a missing GPU library) fails the install in seconds instead
-	// of after an hour of downloading.
 	runtimeAssets, weightAssets := splitRuntimeAssets(res.Assets)
 	checksums := make(map[string]string, len(res.Assets))
 
@@ -928,26 +645,16 @@ func (in *Installer) Install(ctx context.Context, opts InstallOptions) (*Install
 		return nil, err
 	}
 
-	// The staged runtime can now answer the device probe, which is the last
-	// moment a refinement is still cheap: the multi-gigabyte weights have not
-	// been fetched yet. A first install learns its GPU generation here (a
-	// repair already learned it in plan), so the generation-aware packing rule
-	// and the device-dependent guards apply to the weights that are about to be
-	// downloaded. A guard that wants a DIFFERENT RUNTIME is past its moment —
-	// the archive is on disk and signed — so it is recorded as guidance rather
-	// than silently dropped.
+	// The staged runtime can now answer the device probe — the last cheap
+	// moment to refine, before the weights are fetched. A guard wanting a
+	// DIFFERENT runtime is past its moment and becomes guidance; a memory
+	// refusal stops the install; a refinement keeps the topology+plan pair
+	// describing one another (see refineWithStagedDevices).
 	res, weightAssets, refinedTopology, err := in.refineWithStagedDevices(ctx, platform, hw, res, serverBinary, weightAssets)
 	if err != nil {
-		// The measured budget refused the machine after the runtime was staged:
-		// stop before the multi-gigabyte weights are fetched.
 		return nil, err
 	}
 	if refinedTopology != nil {
-		// The staged runtime answered, and the resolution that goes with it was
-		// refined by that answer, so the pair the manifest records is the pair
-		// the weights about to be downloaded were chosen for. A repair keeps the
-		// topology plan() measured off the pre-existing tree; a first install
-		// learns it here.
 		topology = refinedTopology
 	}
 
@@ -960,11 +667,6 @@ func (in *Installer) Install(ctx context.Context, opts InstallOptions) (*Install
 		return nil, err
 	}
 	installedAt := in.now().UTC().Format(time.RFC3339)
-	// The plan is recorded because a load must reproduce the shape this
-	// machine was provisioned for, and it can only do that from a record: the
-	// operator's `tuning` is a setting the sink carries verbatim, not install
-	// state a manifest may copy, so re-deriving the plan at load would need a
-	// second source of truth that goes stale on the first edit.
 	plan := res.Memory
 	manifest := Manifest{
 		Packing:        res.Packing,
@@ -1011,10 +713,8 @@ func (in *Installer) Install(ctx context.Context, opts InstallOptions) (*Install
 		AutoUnloadMinutes: DefaultAutoUnloadMinutes,
 	}
 	if err := in.Sink.ApplyInstalled(ctx, state); err != nil {
-		// The bytes are fine and the manifest describes them accurately; only
-		// the registration failed. Removing the manifest again would throw away
-		// a correct record, so the error is returned as-is and a retry is
-		// idempotent (the downloads are cache hits, the manifest is rewritten).
+		// Bytes and manifest are correct; only registration failed. No rollback
+		// — a retry is idempotent (cache-hit downloads, manifest rewritten).
 		return nil, fmt.Errorf("embeddedllm: registering the installed model in config: %w", err)
 	}
 
@@ -1034,11 +734,9 @@ func (in *Installer) Install(ctx context.Context, opts InstallOptions) (*Install
 	}, nil
 }
 
-// stopBeforeInstall performs Install's step-0 stop, under StopTimeout when one
-// is set and under the caller's ctx alone otherwise. The caller has already
-// checked Stop for nil. The helper exists so the bound cannot be lost by a future
-// edit to the call site, and so the derived context is cancelled as soon as the
-// stop returns instead of living for the rest of a multi-gigabyte install.
+// stopBeforeInstall applies StopTimeout to the step-0 stop — as a helper, so a
+// future call-site edit cannot lose the bound — cancelling the derived context
+// when the stop returns.
 func (in *Installer) stopBeforeInstall(ctx context.Context) error {
 	if in.StopTimeout <= 0 {
 		return in.Stop(ctx)
@@ -1048,34 +746,13 @@ func (in *Installer) stopBeforeInstall(ctx context.Context) error {
 	return in.Stop(stopCtx)
 }
 
-// plan runs the pure gates — the hardware probe, the memory gate and
-// resolution — and returns both results together with the platform key the plan
-// was made for. The memory refusal lives inside Resolve as its first check, so
-// nothing is planned and nothing is downloaded on a machine that cannot hold
-// the model.
-//
-// The DEVICE PROBE is an optional refinement, and plan tries to obtain it
-// without spending anything: a repair or a reinstall still has the previously
-// provisioned runtime on disk, which can answer `--list-devices` before a
-// single byte is downloaded. When it answers, the plan is refined with BOTH
-// halves of the answer — the classified GPU generation, so the
-// backend-substituting compatibility guards (KNOWN_ISSUES #197, #223) and the
-// generation-aware packing rule apply to the artifacts about to be fetched
-// rather than to a record written after the fact, AND the measured memory
-// budgets, so the gate and the launch shape are priced against the card that is
-// actually there. A first install has no binary to ask and keeps
-// GPUFamilyUnknown here; Install probes the staged runtime later and refines
-// what is still refinable.
-//
-// Without a topology the gate does NOT fall back to a RAM floor. It derives the
-// host budget from the RAM probe with the same reserve policy a topology
-// carries, and classifies the accelerator axis statically: a backend whose
-// memory is independent of host RAM (a discrete CUDA or ROCm card on amd64)
-// leaves the device side UNREADABLE, which degrades the gate to the host pool
-// and says so in `MemoryPlan.Notes` rather than refusing — that refusal is the
-// bug this gate replaced. A unified or absent accelerator is priced from the RAM
-// probe alone, which measures both. FitsPQ2_0 is still left Unknown, so no
-// capacity downgrade is ever inferred from an unmeasured budget.
+// plan runs the pure gates — hardware probe, memory gate (Resolve's first
+// check), resolution — and the optional DEVICE PROBE, obtained for free from a
+// still-present previous runtime so guards and the packing rule classify the
+// artifacts about to be fetched. A first install keeps GPUFamilyUnknown here;
+// Install refines from the staged runtime later. Without a topology the gate
+// derives the host budget from RAM and leaves the device side unreadable —
+// degraded, never refused, never a capacity downgrade (FitsPQ2_0 stays Unknown).
 func (in *Installer) plan(ctx context.Context, opts InstallOptions) (Hardware, string, Resolution, *MemoryTopology, error) {
 	hw, err := in.probe()(ctx, in.logger())
 	if err != nil {
@@ -1090,9 +767,8 @@ func (in *Installer) plan(ctx context.Context, opts InstallOptions) (Hardware, s
 		backend = opts.Backend
 	}
 
-	// The CUDA 12.x userland verdict rides with the profile so BOTH passes —
-	// this statically decidable one and the device-aware refinement below —
-	// gate the Linux #222 substitution on the same measured fact.
+	// The CUDA 12.x userland verdict rides with the profile so both passes gate
+	// the Linux #222 substitution on the same measured fact.
 	profile := MachineProfile{
 		Platform:       platform,
 		Backend:        backend,
@@ -1104,28 +780,22 @@ func (in *Installer) plan(ctx context.Context, opts InstallOptions) (Hardware, s
 		return Hardware{}, "", Resolution{}, nil, fmt.Errorf("embeddedllm: %w", err)
 	}
 
-	// probed is returned only when it INFORMED the resolution that goes with
-	// it. A topology the re-plan rejected is still a true measurement, but
-	// recording it beside a plan that was not made from it would break the pair
-	// the manifest promises — and a load's fail-soft path reads them as one
-	// fact. Losing the measurement costs a support bundle one line; a
-	// mismatched pair costs a launch shape nobody reasoned about.
+	// probed is returned only when it INFORMED the resolution: the manifest
+	// promises a topology+plan pair a load's fail-soft path reads as one fact,
+	// and a mismatched pair costs a launch shape nobody reasoned about.
 	var probed *MemoryTopology
 	if topology, ok := in.memoryTopologyFromBinary(ctx, in.existingServerBinary(res.Backend)); ok {
 		gpu := ClassifyGPUs(topology.Devices)
 		profile.GPU = gpu
 		refined, refineErr := Resolve(ResolveInput{MachineProfile: profile, Topology: &topology})
 		if refineErr != nil {
-			// A MEMORY refusal is not "lost information" — it is the measured
-			// budget saying this machine cannot hold the model, discovered
-			// before a single byte was fetched. It must stop the install
-			// rather than fall back to a plan that would OOM at load.
+			// A MEMORY refusal is the measured budget refusing the machine —
+			// it must stop the install, not fall back to a plan that OOMs.
 			if errors.Is(refineErr, ErrInsufficientMemory) {
 				return Hardware{}, "", Resolution{}, nil, fmt.Errorf("embeddedllm: %w", refineErr)
 			}
-			// Anything else: the first plan is valid and the refinement only
-			// adds information. Losing it degrades to the guards that are
-			// statically decidable.
+			// Anything else: the first plan stays valid; only the extra
+			// information is lost, degrading to the statically decidable guards.
 			in.logger().Debug("embedded LLM device-aware re-plan skipped",
 				"gpu_family", gpu, "error", refineErr)
 			res.GPU = gpu
@@ -1144,10 +814,8 @@ func (in *Installer) plan(ctx context.Context, opts InstallOptions) (Hardware, s
 	return hw, platform, res, probed, nil
 }
 
-// existingServerBinary returns the llama-server of an already-provisioned
-// runtime for a backend, or "" when there is none. It exists so a repair or a
-// reinstall can answer the device probe before downloading anything, and it
-// never creates anything: a missing tree is the normal first-install case.
+// existingServerBinary returns an already-provisioned runtime's llama-server,
+// or "" — letting a repair answer the device probe before any download.
 func (in *Installer) existingServerBinary(backend Backend) string {
 	runtimeDir, err := in.Layout.RuntimeDir(backend)
 	if err != nil {
@@ -1163,18 +831,11 @@ func (in *Installer) existingServerBinary(backend Backend) string {
 	return binary
 }
 
-// memoryTopologyFromBinary asks a provisioned runtime what accelerator memory
-// it can see. It is FAIL-SOFT in every direction, like the probe it wraps: no
-// binary, a hung one or an unrecognized inventory all yield (zero, false), and
-// the caller keeps the plan it already had. A memory measurement refines a
-// plan; it is never a precondition of one.
-//
-// It returns the whole topology rather than only the GPU generation it used to,
-// because the two consumers of the probe need different halves of it and the
-// probe is expensive enough to run once: the compatibility guards and the
-// packing rule need the FAMILY, and the memory gate needs the BUDGETS. A first
-// install has no binary to ask, so its gate runs on the derived host budget and
-// treats the device side as unreadable — see gateBudgetsFor.
+// memoryTopologyFromBinary asks a provisioned runtime what accelerator memory it
+// can see — FAIL-SOFT in every direction (no binary, a hung one, an unrecognized
+// inventory all yield false, keeping the caller's plan). The whole topology is
+// returned because its consumers need different halves: FAMILY for the guards
+// and packing rule, BUDGETS for the memory gate.
 func (in *Installer) memoryTopologyFromBinary(ctx context.Context, binaryPath string) (MemoryTopology, bool) {
 	if binaryPath == "" {
 		return MemoryTopology{}, false
@@ -1190,9 +851,8 @@ func (in *Installer) memoryTopologyFromBinary(ctx context.Context, binaryPath st
 	return topology, true
 }
 
-// guardIDsForLog renders the guards that a plan change acted on, for one log
-// line. Only the applied ones are interesting there: the record itself carries
-// every decision, applied or not.
+// guardIDsForLog renders the applied guard IDs for one log line; the record
+// itself carries every decision.
 func guardIDsForLog(decisions []GuardDecision) string {
 	ids := make([]string, 0, len(decisions))
 	for _, decision := range decisions {
@@ -1206,45 +866,15 @@ func guardIDsForLog(decisions []GuardDecision) string {
 	return strings.Join(ids, ",")
 }
 
-// refineWithStagedDevices is the second, device-aware pass over a plan: it
-// probes the freshly staged runtime, classifies the accelerator, and folds what
-// that reveals into the resolution BEFORE the weights are fetched.
-//
-// It never downloads. Four outcomes, in increasing order of what could still be
-// changed:
-//
-//   - no answer (no probe, an unrecognized inventory, or a plan that already
-//     knew its GPU family): the resolution is returned untouched;
-//   - a guard or the packing rule wants something different and the BACKEND is
-//     unchanged: the refined resolution and its weight assets are returned, so
-//     the weights that are about to be downloaded are the right ones. This is
-//     the case the refinement exists for — an Ada card that should get PTQ1_0,
-//     or #223's garbled-output guard on a machine whose iGPU only a device
-//     probe could name;
-//   - a guard wants a DIFFERENT BACKEND: the runtime archive for the planned
-//     backend is already staged, signed and smoke-tested, so the substitution
-//     is recorded as guidance instead of applied. The install completes and the
-//     record says why it may not work, which is the difference between a
-//     documented upstream failure and a mystery;
-//   - the measured budget REFUSES the machine: ErrInsufficientMemory is returned
-//     and the install stops. This is the one failure, and it is not "lost
-//     information" — it is the same verdict `Installer.plan` treats as a hard
-//     stop when the same Resolve produces it before anything is staged. Both
-//     passes run the same host-budget arithmetic today, so the branch is not
-//     reachable in practice; making it a stop rather than a Debug line keeps that
-//     equivalence from being load-bearing, because a future divergence would
-//     otherwise spend an hour downloading multi-gigabyte weights for a machine
-//     the measured topology has just refused.
-//
-// Guards are merged rather than replaced, so a decision that WAS applied in
-// plan (a static one, like #222) keeps its Applied flag and its place in the
-// record.
-//
-// The third result is the measured `MemoryTopology` — non-nil ONLY in the second
-// and third outcomes' successful form, i.e. only when the returned resolution
-// was actually refined by it, so the caller can persist a topology and a plan
-// that describe one another. A branch that kept the resolution it came in with
-// returns nil and the caller keeps whatever `plan` measured.
+// refineWithStagedDevices is the second, device-aware pass over a plan — run
+// after the runtime is staged, BEFORE the weights are fetched; it never
+// downloads. Outcomes: no answer → untouched; a guard or packing change with an
+// unchanged BACKEND → the refined resolution and its weight assets (the case
+// the refinement exists for); a guard wanting a DIFFERENT BACKEND → recorded as
+// guidance, the archive already staged and signed; a measured memory refusal →
+// the install stops. Guards merge rather than replace, so a statically applied
+// decision keeps its Applied flag; the returned topology is non-nil ONLY when
+// the returned resolution was refined by it — a pair describing one another.
 func (in *Installer) refineWithStagedDevices(ctx context.Context, platform string, hw Hardware,
 	res Resolution, serverBinary string, weightAssets []Asset,
 ) (Resolution, []Asset, *MemoryTopology, error) {
@@ -1268,8 +898,7 @@ func (in *Installer) refineWithStagedDevices(ctx context.Context, platform strin
 		if errors.Is(err, ErrInsufficientMemory) {
 			return res, nil, nil, fmt.Errorf("embeddedllm: %w", err)
 		}
-		// Anything else: the unrefined plan is valid and only the extra
-		// information is lost.
+		// Anything else: the unrefined plan stays valid; only information is lost.
 		in.logger().Debug("embedded LLM device-aware refinement skipped",
 			"gpu_family", gpu, "error", err)
 		res.GPU = gpu
@@ -1291,19 +920,16 @@ func (in *Installer) refineWithStagedDevices(ctx context.Context, platform strin
 		in.logger().Info("embedded LLM packing refined by the device probe",
 			"gpu_family", gpu, "packing", refined.Packing, "reason", refined.PackingReason)
 	}
-	// The measurement is returned only here, where the resolution that goes
-	// with it was actually refined by it. Every earlier branch keeps the plan
-	// it came in with, so it keeps the topology (if any) that plan was made
-	// from — see Installer.plan for why the pair must not be split.
+	// Returned only where the resolution was actually refined by the topology —
+	// earlier branches keep the plan, and its topology, they came in with.
 	measured := topology
 	return res, weights, &measured, nil
 }
 
-// markGuardsUnappliable rewrites a set of decisions that were computed for a
-// substitution c0wrk is no longer able to make: the runtime archive is already
-// on disk. Every backend substitution loses its Applied flag and gains the
-// reason it could not be applied, so the record explains itself instead of
-// looking like an oversight.
+// markGuardsUnappliable rewrites decisions computed for a substitution that is
+// no longer possible (the runtime archive is already on disk): backend
+// substitutions lose their Applied flag and gain the reason, so the record
+// explains itself instead of looking like an oversight.
 func markGuardsUnappliable(decisions []GuardDecision) []GuardDecision {
 	marked := make([]GuardDecision, 0, len(decisions))
 	for _, decision := range decisions {
@@ -1318,9 +944,8 @@ func markGuardsUnappliable(decisions []GuardDecision) []GuardDecision {
 	return marked
 }
 
-// splitRuntimeAssets separates the runtime archives (the server build plus the
-// Windows CUDA companion) from the weights (model, mmproj). The two groups are
-// fetched in different phases — see Install.
+// splitRuntimeAssets separates the runtime archives from the weights; the two
+// groups are fetched in different phases.
 func splitRuntimeAssets(assets []Asset) (runtimeAssets, weightAssets []Asset) {
 	runtimeAssets = make([]Asset, 0, 2)
 	weightAssets = make([]Asset, 0, 2)
@@ -1334,9 +959,8 @@ func splitRuntimeAssets(assets []Asset) (runtimeAssets, weightAssets []Asset) {
 	return runtimeAssets, weightAssets
 }
 
-// prepareStaging clears and recreates the tree a runtime is extracted into. A
-// staging tree left behind by a previous failed attempt would mix old and new
-// bytes, so extraction always starts from an empty directory.
+// prepareStaging clears and recreates the extraction tree — a leftover staging
+// tree would mix old and new bytes.
 func (in *Installer) prepareStaging(staging string) error {
 	if err := in.removeOwned(staging); err != nil {
 		return err
@@ -1344,11 +968,10 @@ func (in *Installer) prepareStaging(staging string) error {
 	return mkdirAll(staging)
 }
 
-// fetchComponents downloads and verifies each asset, recording its digest in
-// checksums under checksumKey's per-artifact key. When staging is non-empty the
-// assets are runtime archives: each is extracted into the staging tree, and its
-// StageDone is deferred to provisionRuntime so the component's stream ends when
-// the runtime is actually usable rather than when its bytes landed.
+// fetchComponents downloads and verifies each asset, recording its digest under
+// checksumKey. Non-empty staging means runtime archives: extract into the
+// staging tree, deferring StageDone to provisionRuntime so the component's
+// stream ends when the runtime is usable, not when bytes landed.
 func (in *Installer) fetchComponents(ctx context.Context, opts InstallOptions, assets []Asset,
 	staging string, checksums map[string]string,
 ) error {
@@ -1378,13 +1001,10 @@ func (in *Installer) fetchComponents(ctx context.Context, opts InstallOptions, a
 	return nil
 }
 
-// checksumKey is the manifest.Checksums key one verified artifact records its
-// digest under. The llama family's components are each ONE artifact and keep
-// their historical component-name key (existing manifests and their readers
-// keep their shape). The mtplx family introduced MULTI-artifact components —
-// a 46-file wheel set and a 16-file pack — and keying those by component would
-// collapse each to the digest of whichever file downloaded last, a manifest
-// entry that describes nothing: every file records its own digest by name.
+// checksumKey is the manifest.Checksums key for one verified artifact: the
+// historical component-name key on the llama family, whose components are
+// single artifacts; the FILE name on mtplx's multi-artifact components, which
+// would otherwise collapse into whichever file downloaded last.
 func checksumKey(asset Asset) string {
 	switch asset.Component {
 	case ComponentEngineWheels, ComponentMLXPack:
@@ -1394,13 +1014,9 @@ func checksumKey(asset Asset) string {
 	}
 }
 
-// fetchOne downloads one artifact and enforces the verification gate.
-//
-// Downloader.Download already refuses to promote unverified bytes, so this is
-// a second, independent gate rather than a re-hash of a multi-gigabyte file:
-// a result that is not marked verified, or whose digest differs from the pin,
-// aborts the install. Fail-closed is the only acceptable behaviour here
-// (ASI04) — "probably fine" is how an unverified binary ends up executed.
+// fetchOne downloads one artifact through the verification gate — a second,
+// independent check beyond Downloader.Download's own no-promotion rule.
+// Fail-closed (ASI04): "probably fine" is how an unverified binary executes.
 func (in *Installer) fetchOne(ctx context.Context, opts InstallOptions, asset Asset) (string, error) {
 	dst, err := in.Layout.Destination(asset)
 	if err != nil {
@@ -1409,10 +1025,8 @@ func (in *Installer) fetchOne(ctx context.Context, opts InstallOptions, asset As
 	return in.fetchOneTo(ctx, opts, asset, dst)
 }
 
-// fetchOneTo is fetchOne with the destination given, for an artifact fetched
-// somewhere other than its final layout path — the mtplx pack is staged and
-// swapped whole so a mid-fetch failure can never mix two pack revisions
-// (install_mlx.go). The verification gate is identical.
+// fetchOneTo is fetchOne with the destination given — the mtplx pack is staged
+// and swapped whole so a mid-fetch failure cannot mix two pack revisions.
 func (in *Installer) fetchOneTo(ctx context.Context, opts InstallOptions, asset Asset, dst string) (string, error) {
 	in.emit(opts, Progress{Component: asset.Component, Stage: StageDownloading,
 		BytesDone: 0, BytesTotal: asset.SizeBytes})
@@ -1440,16 +1054,9 @@ func (in *Installer) fetchOneTo(ctx context.Context, opts InstallOptions, asset 
 	return result.SHA256, nil
 }
 
-// provisionRuntime provisions the staged runtime, smoke-tests it on every
-// platform, swaps it into place, locates the server binary and closes out the
-// runtime components' progress streams.
-//
-// The macOS-only halves (quarantine-clear and ad-hoc codesign) run first when
-// the host is darwin; the --version smoke test runs on EVERY platform. The
-// order matters: a Linux CUDA runtime that cannot load its libraries and a
-// macOS binary Gatekeeper still blocks are the same failure — an unrunnable
-// runtime — and both must fail the install here, in seconds, before the
-// multi-gigabyte weights are fetched.
+// provisionRuntime provisions the staged runtime, smoke-tests it on EVERY
+// platform, swaps it into place and closes out the runtime components' progress
+// streams — an unrunnable runtime must fail here, in seconds, before the weights.
 func (in *Installer) provisionRuntime(ctx context.Context, opts InstallOptions, res Resolution,
 	runtimeAssets []Asset,
 ) (string, error) {
@@ -1484,23 +1091,14 @@ func (in *Installer) provisionRuntime(ctx context.Context, opts InstallOptions, 
 }
 
 // provisionDarwin clears the download quarantine from the whole runtime tree,
-// applies an ad-hoc signature to every Mach-O image in it, and proves the
-// result actually executes.
-//
-// Why: artifacts fetched outside a browser still carry
-// com.apple.quarantine, and arm64 macOS refuses to execute an image whose
-// signature is missing or invalid. The pinned fork archives are unsigned CI
-// builds, so both steps are required before llama-server will run at all.
-//
-// Both helpers are invoked by ABSOLUTE path. They are part of the base system,
-// and resolving them through PATH instead would let a PATH element an attacker
-// controls (a hijacked shell profile plus an app relaunch — the app loads the
-// login shell's environment at startup) substitute a `codesign` that runs
-// arbitrary code during a later install click.
-//
-// A missing helper is still a warning, not a failure: the smoke test is the
-// authority on whether the runtime runs, and refusing to install on a machine
-// without /usr/bin/codesign would be a worse outcome than trying.
+// ad-hoc signs every Mach-O image in it, and proves the result executes:
+// non-browser downloads still carry com.apple.quarantine, and arm64 macOS
+// refuses images with a missing or invalid signature — the pinned archives are
+// unsigned CI builds. The helpers run by ABSOLUTE PATH: the app loads the login
+// shell's environment, so a hijacked PATH element could otherwise substitute a
+// `codesign` running arbitrary code during an install click. A missing helper
+// is a warning — the smoke test is the authority on runnability.
+// See specs/domains/embedded-llm.md (macOS provisioning helpers run by absolute path).
 func (in *Installer) provisionDarwin(ctx context.Context, backend Backend, runtimeDir string) error {
 	if err := in.runBounded(ctx, macOSCommandTimeout, darwinXattr, "-cr", runtimeDir); err != nil {
 		if toolMissing(err) {
@@ -1532,20 +1130,11 @@ func (in *Installer) provisionDarwin(ctx context.Context, backend Backend, runti
 	return in.smokeTest(ctx, backend, runtimeDir)
 }
 
-// smokeTest runs "llama-server --version" against the staged tree and turns a
-// failure into an actionable message. On macOS the overwhelmingly likely cause
-// is Gatekeeper; on Linux a GPU-accelerated build it is missing CUDA 12
-// runtime libraries. "the install failed" with no next step is not an
-// acceptable outcome for a user who just downloaded 7 GiB.
-//
-// The binary runs under the LAUNCH environment — the same launchEnv the
-// supervisor's spawn builds, with the runtime's binary directory prepended to
-// the platform's dynamic-library search path, and with the same working
-// directory — so the smoke test exercises the loader path the resident server
-// will use. A Linux CUDA or ROCm build that resolves its sibling libraries
-// through the launch-provided search path would otherwise fail this test (and
-// with it the whole install) with a library-not-found error the real launch
-// would never hit.
+// smokeTest runs "llama-server --version" against the staged tree, turning a
+// failure into an actionable message. It runs under the LAUNCH environment —
+// launchEnv plus the binary dir on the dynamic-library search path — exercising
+// the loader path the resident server will use; anything else would false-fail.
+// See specs/domains/embedded-llm.md (the smoke test runs in the launch environment).
 func (in *Installer) smokeTest(ctx context.Context, backend Backend, runtimeDir string) error {
 	binary, err := ServerBinaryPath(runtimeDir, in.hostOS())
 	if err != nil {
@@ -1572,14 +1161,9 @@ func (in *Installer) smokeTest(ctx context.Context, backend Backend, runtimeDir 
 }
 
 // smokeTestHint is the platform- and backend-specific next step appended to a
-// failed smoke test. The backend names the build that failed; on Linux the
-// CUDA builds are the ones whose failure mode is an environment problem
-// (missing CUDA 12 runtime libraries) rather than a broken download, so the
-// hint points there. Windows CUDA builds are excluded: they ship their CUDA
-// runtime as a bundled companion archive and never consult the system CUDA
-// userland (ADR-073), so a Windows failure cannot be the missing-libraries
-// case — the generic run-the-binary diagnostics below name the real suspects
-// (a missing MSVC runtime, an incomplete extraction, a Defender block).
+// failed smoke test. Linux CUDA builds fail on the environment (missing CUDA 12
+// runtime libraries), so the hint points there; Windows CUDA builds are excluded
+// — their CUDA ships bundled, never the system userland (ADR-073).
 func (in *Installer) smokeTestHint(backend Backend, runtimeDir string) string {
 	switch {
 	case in.hostOS() == "darwin":
@@ -1603,10 +1187,8 @@ func (in *Installer) smokeTestHint(backend Backend, runtimeDir string) string {
 	}
 }
 
-// promoteRuntime swaps the staged tree into place. The previous tree is
-// retired rather than deleted first, so a failed rename rolls back instead of
-// leaving the install with no runtime at all — the subsystem's version of
-// "secure the new bytes before destroying the old".
+// promoteRuntime swaps the staged tree into place; the previous tree is retired
+// before deletion so a failed rename can roll back.
 func (in *Installer) promoteRuntime(backend Backend) (string, error) {
 	final, err := in.Layout.RuntimeDir(backend)
 	if err != nil {
@@ -1649,10 +1231,8 @@ func (in *Installer) promoteRuntime(backend Backend) (string, error) {
 	return final, nil
 }
 
-// RemoveScope names what a Remove deletes. The scope only chooses WHICH
-// embedded-LLM bytes are deleted — the manifest and the config registration
-// are cleared under every scope, so a partial removal leaves a cache, never a
-// half-registered install.
+// RemoveScope names what a Remove deletes — the manifest and the config
+// registration are cleared under every scope regardless.
 type RemoveScope string
 
 const (
@@ -1672,8 +1252,8 @@ const (
 	RemoveProjection RemoveScope = "projection"
 )
 
-// valid reports whether s is one of the four known scopes. The zero value is
-// deliberately invalid: a caller that forgot to choose must not get "all".
+// valid reports whether s is a known scope; the zero value is deliberately
+// invalid — a caller that forgot to choose must not get "all".
 func (s RemoveScope) valid() bool {
 	switch s {
 	case RemoveAll, RemoveRuntime, RemoveWeights, RemoveProjection:
@@ -1683,10 +1263,8 @@ func (s RemoveScope) valid() bool {
 	}
 }
 
-// ParseRemoveScope maps a wire-scope string onto a RemoveScope. The empty
-// string means RemoveAll — the historical, scope-less removal — so an older
-// caller (or a generated binding invoked without the argument) keeps its
-// meaning. Anything else unknown is refused, never defaulted.
+// ParseRemoveScope maps a wire-scope string: empty means RemoveAll (the
+// historical form), anything else unknown is refused, never defaulted.
 func ParseRemoveScope(scope string) (RemoveScope, error) {
 	if scope == "" {
 		return RemoveAll, nil
@@ -1699,16 +1277,12 @@ func ParseRemoveScope(scope string) (RemoveScope, error) {
 	return parsed, nil
 }
 
-// Leftovers reports which embedded-LLM artifacts are still on disk. While an
-// install is recorded these fields are not interesting (everything present is
-// accounted for by the manifest); their use is the NOT-installed state, where
-// they describe what a scoped removal left behind — a cache a reinstall
-// re-verifies, or bytes a further removal can reclaim.
+// Leftovers reports which embedded-LLM artifacts remain on disk — meaningful only
+// when NOT installed: what a scoped removal left behind (cache, or reclaimables).
 type Leftovers struct {
-	// Runtime — at least one "llama-*" tree (installed, staged or retired) or
-	// the archive staging area exists under the runtimes root.
+	// Runtime — a "llama-*"/"mtplx-*" tree or the archive staging area exists.
 	Runtime bool
-	// Weights — at least one pinned model GGUF exists in the model root.
+	// Weights — a pinned model GGUF or the mtplx pack exists in the model root.
 	Weights bool
 	// Projection — the vision projector GGUF exists in the model root.
 	Projection bool
@@ -1724,26 +1298,16 @@ func (in *Installer) Remove(ctx context.Context) error {
 }
 
 // ErrNoProjectionOnMLX reports RemoveProjection against an mtplx install: the
-// vision tower is inside the pack, so there is no separate projector artifact
-// to remove. Callers hid the scope in the UI for this engine; the refusal is
-// the fail-closed backstop.
+// vision tower lives inside the pack. Callers hide the scope; this is the
+// fail-closed backstop.
 var ErrNoProjectionOnMLX = errors.New("embeddedllm: the mtplx engine has no separate vision projector to remove")
 
-// RemoveWithScope stops a running server and removes the parts of the
-// installation the scope names, plus — under EVERY scope — the manifest and
-// the config registration. A partial removal is therefore uniform: the
-// on-disk state becomes "not installed", and whatever the scope spared is a
-// cache, not an install. A later Install verifies the surviving artifacts
-// against their pins and re-downloads only what is missing (the downloader's
-// verified-cache fast path).
-//
-// The config is cleared even when a deletion failed, and the deletion error is
-// returned afterwards: a leftover directory wastes disk and a retry reclaims
-// it, while a config that still claims an install whose files are gone points
-// the router at a dead provider. Deletions are gated on Layout.Owns, so no
-// path outside the two embedded-LLM trees can be removed — in particular never
-// the flat embedding-model files that share <agentDir>/models and never
-// anything under <toolsDir>/bin.
+// RemoveWithScope stops a running server and removes what the scope names, plus
+// — under EVERY scope — the manifest and the config registration: the on-disk
+// state becomes "not installed" and whatever the scope spared is a cache, not
+// an install. The config clears even when a deletion failed (a config claiming
+// gone files points the router at a dead provider); deletions are gated on
+// Layout.Owns — never the shared embedding-model files or <toolsDir>/bin.
 func (in *Installer) RemoveWithScope(ctx context.Context, scope RemoveScope) error {
 	if in == nil {
 		return errors.New("embeddedllm: nil Installer")
@@ -1762,15 +1326,12 @@ func (in *Installer) RemoveWithScope(ctx context.Context, scope RemoveScope) err
 	}
 
 	var errs []error
-	// The recorded engine is read BEFORE the manifest goes: the scope's
-	// meaning (projection is llama-only) depends on it, and the manifest is
-	// the authority until it is deleted.
+	// The recorded engine is read BEFORE the manifest goes — the scope's
+	// meaning (projection is llama-only) depends on it.
 	engine := in.recordedEngine()
-	// The manifest goes with EVERY scope: it is install state, not artifact
-	// bytes, and a record describing files a scoped removal just deleted — or
-	// one describing an install coexisting with no runtime tree — would point
-	// the supervisor at bytes that may no longer be there. It goes FIRST, so
-	// the on-disk state is "not installed" before anything else happens.
+	// The manifest goes with EVERY scope, FIRST: it is install state, not
+	// artifact bytes, and a record describing deleted files would point the
+	// supervisor at bytes that may no longer exist.
 	if manifest, err := in.Layout.ManifestPath(); err != nil {
 		errs = append(errs, err)
 	} else if err := in.removeOwned(manifest); err != nil {
@@ -1819,9 +1380,8 @@ func (in *Installer) RemoveWithScope(ctx context.Context, scope RemoveScope) err
 	return errors.Join(errs...)
 }
 
-// recordedEngine reads the engine the on-disk manifest describes. A missing
-// manifest (or one written before the field existed) is the llama family —
-// the only family that could have written such a manifest.
+// recordedEngine reads the manifest's engine; a missing or pre-field manifest is
+// the llama family — the only family that could have written it.
 func (in *Installer) recordedEngine() Engine {
 	manifestPath, err := in.Layout.ManifestPath()
 	if err != nil {
@@ -1834,8 +1394,8 @@ func (in *Installer) recordedEngine() Engine {
 	return manifest.Engine
 }
 
-// removeScopeRuntimeTrees is RemoveWithScope's runtime half: every llama-* tree
-// plus the archive staging area. Returns the number of trees deleted.
+// removeScopeRuntimeTrees is RemoveWithScope's runtime half: every engine's
+// runtime trees plus the archive staging area. Returns the trees deleted.
 func (in *Installer) removeScopeRuntimeTrees(errs *[]error) int {
 	removed, err := in.removeRuntimeTrees()
 	if err != nil {
@@ -1850,8 +1410,7 @@ func (in *Installer) removeScopeRuntimeTrees(errs *[]error) int {
 }
 
 // removeScopeWeights is RemoveWithScope's weights half: both pinned packings'
-// GGUFs AND the mtplx engine's whole pack directory, so the cleanup reaches
-// weights an install did not record too.
+// GGUFs and the mtplx pack directory, reaching weights an install never recorded.
 func (in *Installer) removeScopeWeights(errs *[]error) {
 	for _, packing := range []Packing{PackingPQ2_0, PackingPTQ1_0} {
 		file, ferr := in.Layout.ModelFile(packing)
@@ -1881,12 +1440,9 @@ func (in *Installer) removeScopeProjection(errs *[]error) {
 	}
 }
 
-// DetectLeftovers reports which embedded-LLM artifacts are on disk right now.
-// It is a cheap existence scan — one directory listing and per-file stats,
-// never a walk of multi-gigabyte trees and never a hash — so the status read
-// can afford it. It reports what EXISTS; whether those bytes are still wanted
-// is the caller's question (it differs between an installed model and a
-// not-installed one with residue).
+// DetectLeftovers reports which embedded-LLM artifacts exist right now — a cheap
+// scan of listings and stats, never a walk, never a hash. It reports existence
+// only; whether the bytes are still wanted is the caller's question.
 func (in *Installer) DetectLeftovers() (Leftovers, error) {
 	var lo Leftovers
 	entries, err := os.ReadDir(in.Layout.RuntimesRoot)
@@ -1924,9 +1480,8 @@ func (in *Installer) DetectLeftovers() (Leftovers, error) {
 	return lo, nil
 }
 
-// removeRuntimeTrees deletes every "llama-*" tree under the runtime root —
-// the installed one, plus any .staging or .old leftover from an interrupted
-// install — and reports how many were removed.
+// removeRuntimeTrees deletes every engine's runtime tree under the runtime root
+// — installed, staged or retired — and reports how many were removed.
 func (in *Installer) removeRuntimeTrees() (int, error) {
 	entries, err := os.ReadDir(in.Layout.RuntimesRoot)
 	if err != nil {
@@ -1944,9 +1499,8 @@ func (in *Installer) removeRuntimeTrees() (int, error) {
 			!strings.HasPrefix(entry.Name(), mlxRuntimePrefix) {
 			continue
 		}
-		// Built through the layout's containment-checked join, then deleted
-		// through the single gated primitive: neither step can reach outside
-		// the runtime root.
+		// Containment-checked join + the single gated primitive: neither step
+		// can reach outside the runtime root.
 		target, jerr := in.Layout.safeJoin(in.Layout.RuntimesRoot, entry.Name())
 		if jerr != nil {
 			errs = append(errs, jerr)
@@ -1961,10 +1515,9 @@ func (in *Installer) removeRuntimeTrees() (int, error) {
 	return removed, errors.Join(errs...)
 }
 
-// removeOwned deletes path only when the layout owns it. It is the single
-// destructive primitive in this subsystem, so the agent-isolation invariant
-// (nothing under <toolsDir>/bin, nothing outside the two trees) is enforced in
-// exactly one place.
+// removeOwned deletes path only when the layout owns it — the subsystem's single
+// destructive primitive, where the agent-isolation invariant (nothing under
+// <toolsDir>/bin, nothing outside the two trees) is enforced once.
 func (in *Installer) removeOwned(path string) error {
 	if path == "" {
 		return errors.New("embeddedllm: refusing to delete an empty path")
@@ -1982,11 +1535,10 @@ func (in *Installer) removeOwned(path string) error {
 	return nil
 }
 
-// checkWholeSetDiskSpace refuses up front when the volume cannot hold the
-// entire resolved set plus headroom, so a doomed 7 GiB download fails in
-// milliseconds instead of after an hour. Measurement failure is best-effort
-// and non-fatal, matching the Downloader's per-artifact guard: a genuinely
-// full disk still fails safely on ENOSPC, which leaves a resumable partial.
+// checkWholeSetDiskSpace refuses up front when the volume cannot hold the whole
+// resolved set plus headroom, so a doomed 7 GiB download fails in milliseconds.
+// Measurement failure is non-fatal: a genuinely full disk still fails safely on
+// ENOSPC, leaving a resumable partial.
 func (in *Installer) checkWholeSetDiskSpace(assets []Asset) error {
 	required := RequiredFreeBytes(TotalBytes(assets))
 	free, err := in.freeSpace()(in.Layout.ModelRoot)
@@ -2007,10 +1559,9 @@ func (in *Installer) checkWholeSetDiskSpace(assets []Asset) error {
 
 // ── extraction ──
 
-// extractArchive unpacks a .tar.gz/.tgz or .zip archive into destDir. Entries
-// are containment-checked through pathutil, so a traversal entry is skipped
-// rather than written outside the tree, and both a per-entry and a total
-// decompressed-size cap bound a checksum-valid-but-malicious archive.
+// extractArchive unpacks a .tar.gz/.tgz or .zip into destDir: entries are
+// containment-checked (a traversal entry is skipped, not written) and bounded
+// by the per-entry and total size caps.
 func extractArchive(archivePath, destDir string) error {
 	switch {
 	case strings.HasSuffix(archivePath, ".tar.gz"), strings.HasSuffix(archivePath, ".tgz"):
@@ -2121,9 +1672,8 @@ func extractZip(archivePath, destDir string) error {
 }
 
 // extractTarget resolves one archive entry name against destDir and reports
-// whether it may be written. Containment is decided by pathutil, never by an
-// inline prefix comparison; an escaping entry is skipped, matching the
-// tool-manager's behaviour.
+// whether it may be written — containment decided by pathutil, never an inline
+// prefix comparison.
 func extractTarget(destDir, name string) (target string, writable bool, err error) {
 	if name == "" {
 		return "", false, nil
@@ -2174,8 +1724,8 @@ func writeExtractEntry(target string, src io.Reader, mode fs.FileMode, quota *ex
 }
 
 // createExtractSymlink reproduces an in-archive symlink, refusing a target that
-// would escape destDir: a symlink pointing outside the tree would let the
-// runtime load (or let a later deletion follow) an arbitrary path.
+// would escape destDir — it could redirect the runtime's loads, or a later
+// deletion, to an arbitrary path.
 func createExtractSymlink(destDir, target, linkname string) error {
 	if linkname == "" {
 		return nil
@@ -2191,11 +1741,9 @@ func createExtractSymlink(destDir, target, linkname string) error {
 	if !within {
 		return fmt.Errorf("archive symlink %q points outside the runtime tree", linkname)
 	}
-	// The managed-CPython archive (python-build-standalone) carries no
-	// directory entries at all, and its first entry is a symlink deep inside
-	// the tree (python/bin/2to3). The parent must therefore be created lazily
-	// here, exactly like writeExtractEntry does for a regular file, or
-	// os.Symlink fails with ENOENT before anything else has made the path.
+	// The managed-CPython archive carries no directory entries and its first
+	// entry is a symlink deep inside the tree, so the parent must be created
+	// lazily here, like writeExtractEntry does for regular files.
 	if err := mkdirAll(filepath.Dir(target)); err != nil {
 		return err
 	}
@@ -2206,10 +1754,9 @@ func createExtractSymlink(destDir, target, linkname string) error {
 	return nil
 }
 
-// machOImages lists the files in a macOS runtime tree that need a signature:
-// the llama-* executables and the dylibs they load. arm64 macOS refuses to
-// execute an image without a valid signature, so signing only the server would
-// leave it unable to load its own libraries.
+// machOImages lists the macOS runtime tree's Mach-O images — the llama-*
+// executables and the dylibs they load. Signing only the server would leave it
+// unable to load its own libraries.
 func machOImages(runtimeDir string) ([]string, error) {
 	var images []string
 	walkErr := filepath.WalkDir(runtimeDir, func(path string, d fs.DirEntry, err error) error {
@@ -2219,9 +1766,8 @@ func machOImages(runtimeDir string) ([]string, error) {
 		if d.IsDir() || !needsAdHocSignature(d.Name()) {
 			return nil
 		}
-		// An entry whose containment cannot be resolved is skipped instead of
-		// signed: signing is a mutation, and fail-closed is the only acceptable
-		// default for a path this subsystem did not itself write.
+		// An entry whose containment cannot be resolved is skipped, not signed:
+		// signing is a mutation, so fail-closed is the only default.
 		within, werr := pathutil.IsWithinPath(runtimeDir, path)
 		if werr != nil || !within {
 			return nil //nolint:nilerr // skipping an unverifiable entry is the safe outcome
@@ -2315,9 +1861,8 @@ func (in *Installer) allocatePort(ctx context.Context) (int, error) {
 }
 
 // ephemeralLoopbackPort asks the OS for a free loopback port by binding :0 and
-// reading the assignment back. It is the production allocator, used whenever
-// Installer.AllocatePort is nil; the install flow persists the port it returns,
-// and server.go's EnsurePort seam may substitute a different one before a spawn.
+// reading the assignment back — the production allocator behind a nil
+// Installer.AllocatePort; server.go's EnsurePort may substitute one pre-spawn.
 func ephemeralLoopbackPort(ctx context.Context) (int, error) {
 	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
 	if err != nil {
