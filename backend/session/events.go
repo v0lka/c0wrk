@@ -372,8 +372,10 @@ type AgentMetricsData struct {
 	// InvalidToolCalls counts results the executor classified as an invalid
 	// tool call — distinct from runtime errors and policy refusals.
 	InvalidToolCalls int `json:"invalid_tool_calls"`
-	// Nudges/Aborts break down executor loop-detector outcomes by kind.
+	// Nudges counts corrective nudges from the executor loop detectors,
+	// broken down by detector kind.
 	Nudges AgentMetricsCounters `json:"nudges"`
+	// Aborts counts hard loop-breaker aborts, broken down by detector kind.
 	Aborts AgentMetricsCounters `json:"aborts"`
 	// Steps counts executor steps (conductor plus sharing subagents).
 	Steps int `json:"steps"`

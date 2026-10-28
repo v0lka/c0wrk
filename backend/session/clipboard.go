@@ -110,6 +110,8 @@ func (m *Manager) PasteFromClipboard(ctx context.Context, sessionID string, supp
 	return PasteResult{Kind: PasteKindEmpty}, nil
 }
 
+// pasteImage stages clipboard image bytes as an image attachment
+// (vision-gated); rejection fills Rejected.
 func (m *Manager) pasteImage(sessionID string, imgData []byte, mediaType string, supportsVision bool) (PasteResult, error) {
 	if !supportsVision {
 		return PasteResult{Kind: PasteKindImage, Rejected: pasteImageVisionRejected}, nil

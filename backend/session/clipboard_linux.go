@@ -24,8 +24,6 @@ func clipboardHelper() string {
 // runHelper runs a clipboard front-end and returns its stdout; a non-zero exit
 // (e.g. the requested MIME type is not on the clipboard) becomes
 // errNoClipboardType — "not present", not a hard failure.
-var errNoClipboardType = errors.New("clipboard type not available")
-
 func runHelper(ctx context.Context, tool string, args ...string) ([]byte, error) {
 	out, err := exec.CommandContext(ctx, tool, args...).Output()
 	if err != nil {
@@ -33,6 +31,8 @@ func runHelper(ctx context.Context, tool string, args ...string) ([]byte, error)
 	}
 	return out, nil
 }
+
+var errNoClipboardType = errors.New("clipboard type not available")
 
 // clipboardImage reads a PNG image from the clipboard ("image/png" via either
 // front-end); ok is true only when image bytes are present.

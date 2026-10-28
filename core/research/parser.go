@@ -29,10 +29,11 @@ var hidRe = regexp.MustCompile(`(?i)H-?(\d+)`)
 var ridRe = regexp.MustCompile(`(?i)R-?(\d+)`)
 
 // NormalizeID canonicalizes a hypothesis identifier to its zero-padded,
-// hyphenated, upper-case form ("H-001"), accepting "H001"/"H-001"/"H1" and
-// returning "" for input with no identifier. Padding to three digits keeps a
-// hand-written spelling and the writer-generated one of the same number from
-// coexisting as distinct graph nodes: "H-1" and "H-001" are one hypothesis.
+// hyphenated, upper-case form ("H-001"), accepting "H001"/"H-001"/"H1"
+// (case-insensitive) and returning "" for input with no identifier. Padding
+// to three digits keeps a hand-written spelling and the writer-generated one
+// of the same number from coexisting as distinct graph nodes: "H-1" and
+// "H-001" are one hypothesis.
 func NormalizeID(raw string) string {
 	m := hidRe.FindStringSubmatch(raw)
 	if m == nil {
@@ -48,8 +49,8 @@ func NormalizeID(raw string) string {
 // NormalizeResearchID canonicalizes a research identifier to its hyphenated,
 // upper-case form ("R-001") without zero-padding: the id is taken verbatim
 // from the brief and compared numerically (compareResearchIDs), so "R-2" and
-// "R-002" stay distinct spellings of distinct directories. Returns "" for
-// input with no identifier.
+// "R-002" stay distinct spellings of distinct directories. Accepts
+// "R001"/"R-001", case-insensitive; returns "" for input with no identifier.
 func NormalizeResearchID(raw string) string {
 	m := ridRe.FindStringSubmatch(raw)
 	if m == nil {

@@ -147,7 +147,8 @@ func WritePaper(libraryRoot string, rec PaperRecord) error {
 
 // WriteFlashcards atomically writes deck as libraryRoot/<slug>/flashcards.md
 // (creating the paper directory when absent): the public deck-writer API, the
-// inverse of ParseFlashcards paired with RenderFlashcards.
+// inverse of ParseFlashcards paired with RenderFlashcards — intentionally
+// exported even though in-app appends go through RecordCardReview.
 // See specs/domains/papers.md (atomic, containment-checked paper writes).
 func WriteFlashcards(libraryRoot, slug string, deck Deck) error {
 	if !ValidSlug(slug) {

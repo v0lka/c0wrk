@@ -695,8 +695,10 @@ type TuningConfig struct {
 	// checkpoints are off), explicit 0 disables the cache.
 	// 0..embeddedllm.MaxTuningMiB.
 	CacheRAMMiB *int `yaml:"cache_ram_mib,omitempty"`
-	// CtxCheckpoints overrides `--ctx-checkpoints`; rendered explicitly so an
-	// inherited LLAMA_ARG_CTX_CHECKPOINTS env value cannot decide it.
+	// CtxCheckpoints overrides `--ctx-checkpoints`, the per-slot KV snapshot
+	// count; rendered explicitly so an inherited LLAMA_ARG_CTX_CHECKPOINTS
+	// env value cannot decide it. Absent = embeddedllm.DefaultCtxCheckpoints
+	// (32); an explicit 0 disables the snapshots.
 	// 0..MaxTuningCtxCheckpoints.
 	CtxCheckpoints *int `yaml:"ctx_checkpoints,omitempty"`
 	// CacheIdleSlots is `--cache-idle-slots`/`--no-cache-idle-slots`: false

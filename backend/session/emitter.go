@@ -36,12 +36,12 @@ type tokenState struct {
 	lastFamily          string // last model family used
 	// displayContextWindow, when > 0, makes ContextFill present fill relative
 	// to the real advertised window instead of the executor's internal
-	// "effective max"; lastEffectiveMax caches that internal basis so
-	// ContextCompaction rescales its percentages to the display basis.
-	// See specs/domains/memory/compaction.md.
+	// "effective max". See specs/domains/memory/compaction.md.
 	displayContextWindow int
-	lastEffectiveMax     int
-	tokenPersist         func(inputTokens, outputTokens int, model, family string, fillPercent float64) // callback to persist tokens
+	// lastEffectiveMax caches the executor's internal "effective max" so
+	// ContextCompaction rescales its percentages to the display basis.
+	lastEffectiveMax int
+	tokenPersist     func(inputTokens, outputTokens int, model, family string, fillPercent float64) // callback to persist tokens
 }
 
 // toolCallIDGen holds a shared monotonic counter for generating unique tool_call_id values

@@ -251,12 +251,11 @@ func (m *Manager) readLoop(ctx context.Context, sessionID string, cpty *conpty.C
 		}
 	}
 
-	// Clean up the session when the process exits naturally: Stop() cannot
-	// reclaim the context/handles once the session is gone from the map, so
-	// readLoop must mirror its teardown. An explicit Stop/StopAll removes the
-	// session (or replaces it) first, so this path observes a missing or
-	// mismatched session and must stay silent — the "session ended" marker
-	// and onExit here would mark a healthy replacement shell dead.
+	// Natural exit: readLoop mirrors Stop's teardown — Stop cannot reclaim
+	// the context/handles for a session it did not remove itself. An explicit
+	// Stop/StopAll removed the map entry first, so a missing or mismatched
+	// session stays silent: marker and onExit would kill a healthy replacement.
+	// See specs/domains/terminal.md (Natural-exit protocol).
 	m.mu.Lock()
 	sess, exists := m.sessions[sessionID]
 	naturalExit := exists && sess.cpty == cpty

@@ -228,7 +228,7 @@ func runLiteratureHelper(pythonPath, scriptPath, seed, paperDir string) *PaperLi
 		"--",
 		seed,
 	)
-	cmd.Stdout = io.Discard
+	cmd.Stdout = io.Discard // --out writes the payload to the file
 	cmd.Stderr = &stderr
 
 	err := cmd.Run()
