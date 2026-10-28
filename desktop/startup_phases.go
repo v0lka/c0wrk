@@ -1213,7 +1213,7 @@ func (a *App) startVectorIndexBackground(
 		// content_filter) participates in the chunker fingerprint, so policy
 		// changes re-validate sidecars.
 		contentFilter := cfg.VectorIndex.ContentFilter.ResolveContentFilter()
-		// Per-root registry (ADR-080), built on demand through this factory.
+		// Per-root registry (ADR-081), built on demand through this factory.
 		// CloseFn stays nil on every per-root manager: the ONNX runtime is
 		// process-global and shared, so an LRU eviction must never close it —
 		// the registry's ShutdownAll closes the embedder exactly once (see

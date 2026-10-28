@@ -7,12 +7,14 @@ import (
 
 // OpenAI-compatible captioning endpoints and provider-type tags — markitdown
 // captions only over Chat Completions, so which provider types expose a
-// surface is fixed: see specs/domains/session-lifecycle.md.
+// surface is fixed: see specs/domains/session-lifecycle.md. The native
+// anthropic type takes no custom BaseURL; a custom BaseURL marks an
+// anthropic_compatible proxy, which has no surface.
 const (
 	visionOpenAIDefaultBaseURL   = "https://api.openai.com/v1"    // official root when a provider sets no BaseURL
 	visionAnthropicCompatBaseURL = "https://api.anthropic.com/v1" // native anthropic provider's OpenAI SDK compatibility layer
 	visionProviderTypeOpenAI     = "openai"                       // chatgpt + openai_compatible — speak Chat Completions
-	visionProviderTypeAnthropic  = "anthropic"                    // native (no custom BaseURL); a custom BaseURL marks an anthropic_compatible proxy — no surface
+	visionProviderTypeAnthropic  = "anthropic"                    // native provider type
 )
 
 // newMarkitdownVisionResolver builds the per-document vision resolver for

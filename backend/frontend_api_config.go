@@ -2001,10 +2001,10 @@ func (f *FrontendAPI) GetModelConfig(model string) (ModelConfigResponse, error) 
 // SetModelConfig persists per-model overrides from the Configure dialog.
 // Only fields differing from the built-in default are stored (others take
 // their "inherit" sentinel; when everything matches, the entry is dropped —
-// specs/domains/embedded-llm.md). request_timeout (ADR-071), which the
-// dialog does not own, is carried through untouched. The change is persisted
-// and the router rebuilt; enum fields are validated against the curated sets
-// (the backend is the enforcement boundary).
+// specs/domains/llm-providers.md, resolution tiers). request_timeout
+// (ADR-071), which the dialog does not own, is carried through untouched.
+// The change is persisted and the router rebuilt; enum fields are validated
+// against the curated sets (the backend is the enforcement boundary).
 func (f *FrontendAPI) SetModelConfig(model string, req ModelConfigRequest) error {
 	f.configMu.Lock()
 	defer f.configMu.Unlock()
@@ -2054,7 +2054,7 @@ func (f *FrontendAPI) SetModelConfig(model string, req ModelConfigRequest) error
 
 	// Record the "inherit" sentinel for any field matching the built-in
 	// default: the override stays partial and unset fields inherit from the
-	// tiers below (specs/domains/embedded-llm.md).
+	// tiers below (specs/domains/llm-providers.md, resolution tiers).
 	var newCW, newOL int
 	var newTok, newFam, newProto string
 	var newCaps *llm.ModelCapabilities

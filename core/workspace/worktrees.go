@@ -422,7 +422,8 @@ func addWorktreeLocked(ctx context.Context, root, target string, opts AddWorktre
 
 // validateBranchAvailability enforces one-branch-one-worktree inside the
 // serialized section, before git runs: creating over an existing ref or
-// checking out a held branch is an explicit error; a checkout-mode add requires the branch to exist (creation never invents branches).
+// checking out a held branch is an explicit error; a checkout-mode add
+// requires the branch to exist (creation never invents branches).
 func validateBranchAvailability(ctx context.Context, scan *gitScanMemo, trees []WorktreeInfo, opts AddWorktreeOptions) error {
 	if holder, busy := BranchHolders(trees)[opts.Branch]; busy {
 		return fmt.Errorf("%w: %s held by %s", ErrBranchBusy, opts.Branch, holder)
@@ -491,7 +492,9 @@ func classifyAddFailure(err error, target string) error {
 
 // validateWorktreeTarget enforces the structural path rules shared by add and
 // recreate (specs/domains/workspace.md): absolute and clean; not the checkout,
-// its ancestor, .git, or the managed container; no symlinked existing ancestor; and the target must not exist — foreign directories are never overwritten.
+// its ancestor, .git, or the managed container; no symlinked existing
+// ancestor; and the target must not exist — foreign directories are never
+// overwritten.
 func validateWorktreeTarget(root, target string) error {
 	if !filepath.IsAbs(target) || filepath.Clean(target) != target {
 		return fmt.Errorf("%w: target must be an absolute clean path, got %q", ErrWorktreePathInvalid, target)

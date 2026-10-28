@@ -184,6 +184,7 @@ func (b *EventBatcher) emitSingle(ev batchedEvent) {
 }
 
 // Flush forces an immediate synchronous flush of everything currently queued.
+// Safe to call from any goroutine.
 func (b *EventBatcher) Flush() {
 	b.flush()
 }

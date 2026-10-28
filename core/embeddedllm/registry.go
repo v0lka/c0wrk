@@ -21,8 +21,9 @@ import (
 )
 
 // RuntimeTag is the pinned PrismML-Eng/llama.cpp fork release — stock rejects
-// PQ2_0/PTQ1_0 and corrupts plain Q2_0 (ADR-066 D1). A bump re-records every
-// URL+checksum below and needs a CVE review of the old→new range.
+// PQ2_0/PTQ1_0 and corrupts plain Q2_0 (ADR-066, Forces #1). A bump
+// re-records every URL+checksum below and needs a CVE review of the old→new
+// range (ADR-066 D11).
 const RuntimeTag = "prism-b10735-842b188"
 
 // ModelRevision is the pinned Hugging Face revision of the weights repository.

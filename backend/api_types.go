@@ -629,8 +629,9 @@ type VectorStoreEntry struct {
 
 // SearchRequest is the SearchVectorStore payload. Mode "hybrid" | "vector" |
 // "lexical"; empty/unknown defaults to hybrid (auto-falls back to vector-only
-// when the lexical index is unavailable). FilePattern is a doublestar glob on
-// file_path; MustMatch lists literal substrings every chunk must carry.
+// when the lexical index is empty or unavailable). FilePattern is a
+// doublestar glob on file_path; MustMatch lists literal substrings every
+// chunk must carry.
 type SearchRequest struct {
 	Query       string   `json:"query"`
 	TopK        int      `json:"top_k"`

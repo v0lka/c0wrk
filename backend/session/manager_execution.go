@@ -497,9 +497,16 @@ func (m *Manager) SendMessage(ctx context.Context, id, text string, activeSkills
 type SendClassification int
 
 const (
-	SendFresh       SendClassification = iota // no task running/paused: started a new task (or re-entered the prior completed one)
-	SendNudgeResume                           // resumed a paused task, injected as a trailing user nudge
-	SendLive                                  // queued into a running task as a live interjection
+	// SendFresh means no task was running or paused when the message arrived —
+	// it started a new task (or, on a continuation, re-entered the prior
+	// completed task).
+	SendFresh SendClassification = iota
+	// SendNudgeResume means the message resumed a paused task and is injected
+	// as a trailing user nudge.
+	SendNudgeResume
+	// SendLive means the message was queued into a running task as a live
+	// interjection.
+	SendLive
 )
 
 // SendOption customizes one SendMessage/SendMessageClassified dispatch without
@@ -564,9 +571,20 @@ func (m *Manager) SendMessageClassified(ctx context.Context, id, text string, ac
 type liveAction int
 
 const (
-	liveActionNone     liveAction = iota // keep queued — a later request (resume/follow-up/fresh) delivers them; paused & failed/resumable outcomes
-	liveActionFollowUp                   // take the leftovers into a continuation task (already persisted+rendered, no re-presentation); successful completion
-	liveActionDiscard                    // drop the queue — a user-stopped run's undelivered message must not leak into a future request
+	// liveActionNone keeps the queue: the messages remain queued and a later
+	// request (resume, follow-up, or a fresh task) delivers them. Used for
+	// paused and failed/resumable outcomes — the next entry point drains the
+	// queue at its first step boundary.
+	liveActionNone liveAction = iota
+	// liveActionFollowUp takes the leftovers and launches a continuation task
+	// carrying them (they were already persisted + rendered, so the follow-up
+	// skips re-presentation). Used when the task completed successfully
+	// without delivering them.
+	liveActionFollowUp
+	// liveActionDiscard drops the queue: the user stopped the run, and an
+	// undelivered message in a cancelled exchange must not leak into a future
+	// request. Used for user-initiated cancellation.
+	liveActionDiscard
 )
 
 // liveSendRejectionLocked returns the error rejecting a live send (message

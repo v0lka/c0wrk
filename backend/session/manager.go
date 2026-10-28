@@ -32,10 +32,13 @@ type contextKey string
 
 const SessionIDKey contextKey = "session_id"
 
-// restoreDBReadTimeout bounds every lazy-restore store read (session row,
-// history, continuation anchor, compaction forecast) against the app's single
-// shared SQLite pool: contention must surface as a retryable error, not park
-// the restore — and via the restoreInFlight single-flight, every waiter.
+// restoreDBReadTimeout bounds the manager-side lazy-restore store reads
+// (session row, history, continuation anchor, compaction forecast) against
+// the app's single shared SQLite pool: contention must surface as a retryable
+// error, not park the restore — and via the restoreInFlight single-flight,
+// every waiter. The project-workspace read is bounded separately: the project
+// resolver applies its own deadline where it is installed (desktop
+// buildFrontendAPI).
 const restoreDBReadTimeout = 15 * time.Second
 
 // ensureWorktreeTimeout bounds the managed-workspace ensure during lazy
@@ -1567,8 +1570,9 @@ func (m *Manager) GetSessionWorkspacePath(id string) (string, bool) {
 // restore: no orchestrator build, no session insertion, no event wiring —
 // read-only RPC surfaces must never trigger a restore whose store reads can
 // park on a saturated SQLite pool (specs/domains/session-worktrees.md). The
-// ctx bounds the session-row read; the No Project derivation mirrors
-// getOrRestoreSession, including directory creation.
+// ctx bounds the session-row read; the project-workspace read is bounded
+// separately where the resolver is installed. The No Project derivation
+// mirrors getOrRestoreSession, including directory creation.
 func (m *Manager) WorkspacePathFor(ctx context.Context, id string) (string, bool) {
 	m.mu.RLock()
 	sess, ok := m.sessions[id]

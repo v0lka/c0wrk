@@ -180,6 +180,9 @@ func ProbeDevices(ctx context.Context, binaryPath string, logger *slog.Logger) (
 
 	out, err := runProbeCommand(ctx, binaryPath, listDevicesArg)
 	if err != nil {
+		// An absent binary is the normal "not installed yet" case and is not
+		// logged: the ladder treats it as "keep looking", exactly as the
+		// accelerator probe does.
 		logProbeFailure(logger, binaryPath, err)
 		return MemoryTopology{}, false
 	}

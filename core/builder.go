@@ -63,8 +63,10 @@ type OrchestratorBuilder struct {
 	// sessionModelRegistries: the same live-set pattern for
 	// UpdateModelOverrides metadata pushes. Guarded by b.mu.
 	sessionModelRegistries map[*llm.ModelRegistry]struct{}
-	// mcpWorkDir is recorded by SetMCPWorkDir, applied by runMCPInit/publishMCPGateway
-	// (record-and-apply, so SetMCPWorkDir never blocks on MCP startup). Guarded by b.mu.
+	// mcpWorkDir is recorded by SetMCPWorkDir and applied either at gateway
+	// assignment (runMCPInit/publishMCPGateway) or immediately by
+	// SetMCPWorkDir when a gateway is already live (record-and-apply, so
+	// SetMCPWorkDir never blocks on MCP startup). Guarded by b.mu.
 	mcpWorkDir    string
 	llmRouter     *llm.Router
 	modelRegistry *llm.ModelRegistry

@@ -917,8 +917,11 @@ memory-only lookup inline): `emitAgentMetrics`, `ExecutionWindow`,
 task-terminal callbacks and frontend polls; a lazy restore there would
 resurrect a just-deleted or merely-viewed session (the store row still
 exists), rebuilding an orchestrator and reopening log/dump handles nobody
-closes. Only explicit user-intent entry points (`SendMessage`/`ResumeTask`/
-`CancelTask`/`PauseSession`) lazily restore.
+closes. Lazy restore runs only from mutating user-intent entry points — the
+named four (`SendMessage`/`ResumeTask`/`CancelTask`/`PauseSession`) plus the
+attachment/clipboard/compaction surfaces that share the same
+`getOrRestoreSession` gate (attachment staging, `pasteImage`,
+`PendingMessageMetadata`, `CompactSessionContext`).
 
 ### Session Pause / Resume / Nudge
 
@@ -1355,8 +1358,8 @@ are created link-safe (`backend/session/manager.go`, via
 (`safeio.MkdirAllReal`, or `safeio.MkdirAllRealWithin` with the agent dir —
 not the session dir — as the containment boundary), the final file component
 opened `O_NOFOLLOW` (`safeio.OpenFileNoFollow`) in `Manager.createSessionLogger`,
-`openDumpArtifacts`, `getOrRestoreSession`, `CreateSessionFromDraft`,
-`WorkspacePathFor`. An escaping planted symlink is refused and the operation
+`openDumpArtifacts`, `getOrRestoreSession`, `CreateSessionFromDraft`. An
+escaping planted symlink is refused and the operation
 degrades (or aborts) — it never redirects output out of `~/.c0wrk`. There is
 no Windows equivalent for `O_NOFOLLOW` (tempered by symlink creation requiring
 elevated rights). In-tree links and a symlinked agent dir itself resolve as

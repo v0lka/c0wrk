@@ -148,7 +148,8 @@ func (w *Watcher) eventLoop() {
 			// suppress it. The check covers EVERY directory: a child's change bumps
 			// an unwatched subdirectory's mtime, reported by the parent watch as a
 			// Write that can LAG the child events by seconds (re-armed the git
-			// refresh loop on Windows CI). Nothing is lost — real changes arrive as child-path events. See specs/domains/workspace.md.
+			// refresh loop on Windows CI). Nothing is lost — real changes arrive
+			// as child-path events. See specs/domains/workspace.md.
 			if event.Has(fsnotify.Write) &&
 				!event.Has(fsnotify.Create|fsnotify.Remove|fsnotify.Rename) &&
 				w.pathIsDirectory(event.Name) {

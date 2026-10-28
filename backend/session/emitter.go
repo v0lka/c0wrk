@@ -1149,7 +1149,7 @@ func (e *EventEmitter) SetModelProfile(info ModelProfilesMetaInfo) {
 	e.metrics.setModelProfiles(info)
 }
 
-// EmitAgentMetrics emits "agent_metrics" (see specs/domains/frontend/events.md)
+// EmitAgentMetrics emits "agent_metrics" (see specs/contracts/event-catalog.md)
 // covering exactly one task run, and resets the counters + execution window.
 // finish describes the terminal state ("full", "partial", "failed",
 // "aborted" or "cancelled"). Returns the emitted payload.

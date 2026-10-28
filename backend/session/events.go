@@ -361,7 +361,8 @@ type SkillsActivatedData struct {
 
 // AgentMetricsData is the typed Data payload for "agent_metrics", emitted once
 // per task finish/abort — executor quality counters so profile effects can be
-// measured against data. See specs/domains/frontend/events.md.
+// measured against data. See specs/domains/model-profiles.md (and the
+// specs/contracts/event-catalog.md row).
 type AgentMetricsData struct {
 	// Finish: "full" | "partial" | "failed" | "aborted" | "cancelled".
 	Finish string `json:"finish"`

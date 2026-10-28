@@ -912,8 +912,9 @@ func (a *App) GetWebAccessInfo() WebAccessInfo {
 }
 
 // The warning-channel refresh (ADR-102): transport-affecting control RPCs —
-// enable, connection, TLS, and certificate regeneration (a fresh valid pair
-// heals a warned-unusable section, CS #67) — recompute the section's
+// enable, connection, TLS, the insecure-LAN opt-in (the accepted-risk warning
+// rides the flag), and certificate regeneration (a fresh valid pair heals a
+// warned-unusable section, CS #67) — recompute the section's
 // config-load-warning contribution AFTER their webAccessMu critical section,
 // outside the lock on purpose (see RefreshWebAccessLoadWarnings for the
 // lock-order rule). The refresh is idempotent, so it also runs after

@@ -339,8 +339,9 @@ func resolveMLX(_ AssetTable, in ResolveInput) (Resolution, error) {
 // ONE bounded retry rather than a fixed point — plan the derived packing, and
 // if the measured budgets refuse it, re-decide the packing with that refusal
 // as the fit verdict and plan once more; a second refusal is final, PTQ1_0
-// being the smallest packing this model ships. This is what makes ADR-067
-// D2's "PTQ1_0 when memory is short" a measurement instead of a heuristic. An
+// being the smallest packing this model ships. This is what makes ADR-066
+// D2's "PTQ1_0 whenever memory is short" a measurement instead of a heuristic
+// (that memory clause superseded by the measured gate, ADR-067 D6). An
 // explicit `Tuning.Packing` short-circuits the loop: a budget that cannot
 // serve it is reported as infeasible, never answered with a different packing.
 func planMemory(in ResolveInput, effective Backend, gpu GPUFamily, profile ModelMemoryProfile, gate gateVerdict) (MemoryPlan, PackingDecision, error) {

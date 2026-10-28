@@ -379,7 +379,7 @@ func (a *App) Startup(ctx context.Context) {
 		},
 	}, configLoadErrors, projStore, log, startTime)
 
-	// Late-bind the per-root vector registry (ADR-080): the search closures
+	// Late-bind the per-root vector registry (ADR-081): the search closures
 	// resolve it at call time (session workspace root for agent calls,
 	// Git-panel focus for user search). See
 	// specs/decisions/081-vector-per-root-registry.md.

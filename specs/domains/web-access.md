@@ -75,6 +75,8 @@ type WebAccessInfo struct {
     ConfiguredPort int    `json:"configured_port"` // the persisted port pin: 0 = auto
     ConfiguredBind string `json:"configured_bind"` // the persisted bind pin: '' = the 127.0.0.1 default
     BindIsLoopback bool   `json:"bind_is_loopback"`// config.IsLoopbackBind over the configured bind — the exposure class the UI banners key on
+    AllowInsecureLAN bool `json:"allow_insecure_lan"` // the persisted `web_access.allow_insecure_lan` opt-in — the operator's named accepted risk for a plain-HTTP non-loopback section
+    AllowInsecureLANRequired bool `json:"allow_insecure_lan_required"` // state-only hint: would these pins be refused if the section were enabled (ValidateWebAccessExposure over the snapshot with Enabled forced true — the predicate every boundary applies)
     Token          string `json:"token"`           // the live token, or the configured one for the next start ('' only before the very first start)
     TokenPinned    bool   `json:"token_pinned"`    // a persistent token is stored in config.yaml (true from the first start on)
     TLSEnabled     bool   `json:"tls_enabled"`     // the persisted tls.enabled switch (ADR-102) — operator intent; the URL field carries the running sidecar's actual scheme

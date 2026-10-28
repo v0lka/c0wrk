@@ -102,9 +102,17 @@ var errGoalDerivationCancelled = errors.New("goal derivation cancelled by user")
 type derivationFailureOutcome int
 
 const (
-	derivationBubble        derivationFailureOutcome = iota // the wait was interrupted (context cancelled / deadline exceeded); the error bubbles
-	derivationCleanExit                                     // end the task with the request acknowledged as the output (user cancel, or a genuine failure on the explicit entry)
-	derivationFallbackPlain                                 // suggested entry + a genuine failure: leave the result unbuilt so HandleMessage falls back to the plain Conductor path
+	// derivationBubble — the wait itself was interrupted (context cancelled
+	// or deadline exceeded); the error bubbles to the caller.
+	derivationBubble derivationFailureOutcome = iota
+	// derivationCleanExit — end the task with the request acknowledged as the
+	// output (user cancel, or a genuine failure on the explicit entry, whose
+	// historical behavior this preserves).
+	derivationCleanExit
+	// derivationFallbackPlain — suggested entry + a genuine derivation
+	// failure: leave the result unbuilt so HandleMessage can fall back to the
+	// plain Conductor path (the accepted task must still get done).
+	derivationFallbackPlain
 )
 
 // classifyDerivationFailure maps a derivation error onto the outcome. The

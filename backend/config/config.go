@@ -495,8 +495,10 @@ type ModelOverride struct {
 	Protocol      string                 `yaml:"protocol,omitempty"`
 	Capabilities  *llm.ModelCapabilities `yaml:"capabilities,omitempty"`
 	// RequestTimeout is the per-model FIXED deadline in seconds (ADR-071 D5):
-	// positive = armed exactly, never escalated; 0 = the adaptive budget
-	// governs; validate() bounds it to [0, 3600].
+	// positive = armed exactly, never escalated; 0 (unset) = "no opinion":
+	// the adaptive budget governs (or, with the adaptive_budget kill-switch
+	// off, the global timeouts.llmRequestTimeout); validate() bounds it to
+	// [0, 3600].
 	RequestTimeout int `yaml:"request_timeout,omitempty"`
 }
 
@@ -1392,9 +1394,18 @@ const (
 // posture replacing the former autonomy booleans. The core mirror
 // (core.AutonomyMode*) is pinned to this dictionary by configadapter_test.
 const (
-	AutonomyModeStandard = "standard" // default: every interactive prompt (confirmations, step limits, ask_user, review) reaches a human
-	AutonomyModeAssisted = "assisted" // the strict OWASP ASI judge resolves escalated calls; only a strict ALLOW skips the UI
-	AutonomyModeSilent   = "silent"   // unattended: the silent-mode sub-policies resolve interactive prompts without a human
+	// AutonomyModeStandard is the default posture: every interactive prompt
+	// (tool confirmations, step-limit cards, ask_user, review prompt)
+	// reaches a human.
+	AutonomyModeStandard = "standard"
+	// AutonomyModeAssisted lets the strict OWASP ASI judge resolve escalated
+	// calls (the former Smart Approve toggle): only a strict ALLOW skips the
+	// UI; every other outcome still asks the user.
+	AutonomyModeAssisted = "assisted"
+	// AutonomyModeSilent is the unattended posture (the former
+	// security.silent_mode.enabled=true): the four silent-mode sub-policies
+	// resolve the interactive prompts without a human.
+	AutonomyModeSilent = "silent"
 )
 
 // Mode values accepted by security.silent_mode.tool_confirm.mode: how a
@@ -1566,7 +1577,9 @@ type SilentModeConfig struct {
 	// persisted.
 	LegacyEnabled *bool `yaml:"enabled,omitempty" json:"-"`
 
-	ToolConfirm SilentSubPolicyConfig `yaml:"tool_confirm"` // resolves a call that would open a confirmation card; default "judge"
+	// ToolConfirm resolves a tool call that would open a confirmation card.
+	// Default mode: "judge".
+	ToolConfirm SilentSubPolicyConfig `yaml:"tool_confirm"`
 	// UserConfirm refines the ToolConfirm terminal for a fail-closed CONFIRM
 	// outcome ("confirm" executes unattended, "escalate" opens the card,
 	// "deny" auto-denies); default "deny".
@@ -1982,11 +1995,26 @@ type ModelProfilesConfig struct {
 	// variant sub-toggle. Default: false.
 	Enabled bool `yaml:"enabled"`
 
-	EssentialTools EssentialToolsConfig        `yaml:"essential_tools"` // narrows the visible tool set to cut schema/token overhead
-	SystemPrompt   SystemPromptConfig          `yaml:"system_prompt"`   // lite/few-shot/scaffold variants shrink the system prompt
-	Sampling       ModelProfilesSamplingConfig `yaml:"sampling"`        // deterministic, lower-effort sampling for smaller models
-	LoopHardening  LoopHardeningConfig         `yaml:"loop_hardening"`  // tighter circuit-breakers catch small-model loops sooner
-	Context        ModelProfilesContextConfig  `yaml:"context"`         // tighter compaction/pruning, larger output reserve
+	// EssentialTools narrows the visible tool set to a curated subset to
+	// reduce the schema/token overhead injected into every prompt.
+	EssentialTools EssentialToolsConfig `yaml:"essential_tools"`
+
+	// SystemPrompt applies prompt-simplification variants (lite, few-shot,
+	// reasoning scaffold) to shrink the system prompt size.
+	SystemPrompt SystemPromptConfig `yaml:"system_prompt"`
+
+	// Sampling overrides LLM sampling parameters for more deterministic,
+	// lower-effort generation suitable for smaller models.
+	Sampling ModelProfilesSamplingConfig `yaml:"sampling"`
+
+	// LoopHardening tightens the executor circuit-breaker thresholds so a
+	// small model that repeats itself or fails to make progress is
+	// nudged/aborted sooner, conserving the token budget.
+	LoopHardening LoopHardeningConfig `yaml:"loop_hardening"`
+
+	// Context applies aggressive context management: tighter compaction and
+	// pruning, plus a larger output reserve.
+	Context ModelProfilesContextConfig `yaml:"context"`
 }
 
 // EssentialToolsConfig narrows the tool set visible to a smaller model,

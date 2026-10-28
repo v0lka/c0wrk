@@ -10,24 +10,30 @@ import (
 // specs/domains/llm-providers.md (per-kind telemetry).
 type ServiceKind string
 
+// ServiceKind labels the one-shot service call sites for per-kind telemetry.
+// The two suggest kinds are the post-routing goal-mode suitability classifier
+// (ADR-086) and the chat-input follow-up prompt suggestions (ADR-088).
 const (
 	ServiceKindTitle             ServiceKind = "title"                // session-title generation
 	ServiceKindCommitMessage     ServiceKind = "commit_message"       // commit-message generation
 	ServiceKindOptimizeExtract   ServiceKind = "optimize_extract"     // prompt optimizer: translate/extract step
 	ServiceKindOptimizeRewrite   ServiceKind = "optimize_rewrite"     // prompt optimizer: rewrite step
 	ServiceKindCompactionSummary ServiceKind = "compaction_summarize" // context-compaction summarization
-	ServiceKindGoalSuggest       ServiceKind = "goal_suggest"         // post-routing goal-mode suitability classifier (ADR-086)
-	ServiceKindPromptSuggest     ServiceKind = "prompt_suggest"       // chat-input follow-up prompt suggestions (ADR-088)
+	ServiceKindGoalSuggest       ServiceKind = "goal_suggest"         // goal-mode suitability classifier
+	ServiceKindPromptSuggest     ServiceKind = "prompt_suggest"       // follow-up prompt suggestions
 )
 
 // ServiceOutcome classifies the terminal result of a service call.
 type ServiceOutcome string
 
+// ServiceOutcome classifies the terminal result of a service call. Fallback
+// and Error are non-transport outcomes; the Router owns transport failures
+// and they surface as TransportError.
 const (
 	ServiceOutcomeOK             ServiceOutcome = "ok"              // first-or-retried parse success
-	ServiceOutcomeFallback       ServiceOutcome = "fallback"        // nudge loop exhausted, degraded value returned
-	ServiceOutcomeError          ServiceOutcome = "error"           // terminal refusal or pre-call cancellation, non-transport
-	ServiceOutcomeTransportError ServiceOutcome = "transport_error" // the underlying LLM call failed (the Router owns retry)
+	ServiceOutcomeFallback       ServiceOutcome = "fallback"        // nudge loop exhausted, degraded value
+	ServiceOutcomeError          ServiceOutcome = "error"           // terminal refusal or pre-call cancel
+	ServiceOutcomeTransportError ServiceOutcome = "transport_error" // the underlying LLM call failed
 )
 
 // ServiceKindMetrics is the aggregate telemetry for one ServiceKind.

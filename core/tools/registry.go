@@ -1020,7 +1020,7 @@ func (r *ToolRegistry) silentToolTerminal(ctx context.Context, tool sdktools.Too
 }
 
 // silentJudgeDecide runs the strict judge for a silent-mode escalation with no
-// canonical backstop (ADR-053 decision 1c); user_confirm resolves the fail-closed
+// canonical backstop (ADR-053 D4); user_confirm resolves the fail-closed
 // outcomes (ADR-072). Memoization is DENY-only — protocol on the judgeMemo field.
 func (r *ToolRegistry) silentJudgeDecide(ctx context.Context, tool sdktools.Tool, name, source string, input json.RawMessage, reason string, code sdktools.JudgeReasonCode, severity sdktools.JudgeSeverity, mode, userConfirm string, strictJudge *sdktools.ToolJudge, judgeObserver JudgeObserver) (sdktools.ToolResult, error) {
 	reasoning := "Strict judge is unavailable; " + reason

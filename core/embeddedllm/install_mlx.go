@@ -338,8 +338,8 @@ func (in *Installer) mlxPipInstall(ctx context.Context, stagedPython, workDir st
 
 // mlxSmoke proves the pinned engine imports in the provisioned interpreter
 // before the multi-gigabyte pack is fetched — deliberately NOT MLX/Metal:
-// the readiness poll is the GPU proof, and a Metal context here would hold
-// memory the gate just priced (ADR-092 D2). Child: mlxChildEnv, -I.
+// the readiness poll is the GPU proof (ADR-092 D2), and a Metal context here
+// would hold memory the gate just priced (ADR-092 D4). Child: mlxChildEnv, -I.
 func (in *Installer) mlxSmoke(ctx context.Context, stagedPython, workDir string) error {
 	smokeCtx, cancel := context.WithTimeout(ctx, mlxSmokeTimeout)
 	defer cancel()

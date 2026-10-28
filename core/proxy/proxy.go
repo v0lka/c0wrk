@@ -287,7 +287,6 @@ func (m BypassMatcher) Matches(host string) bool {
 	return false
 }
 
-// parseProxyURL parses and validates a proxy URL string.
 // buildTLSConfig creates a *tls.Config with custom CA certificates loaded from certDir.
 // If certDir is empty, returns nil (default system pool will be used).
 func buildTLSConfig(certDir string, logger *slog.Logger) (*tls.Config, error) {

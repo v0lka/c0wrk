@@ -430,7 +430,7 @@ func DialogStatePath(agentDir string) string {
 
 // ModelProfilesPath returns the operator-authored custom model profiles —
 // user data with independent lifecycle, created lazily by the first save.
-// See modelProfiles_profiles_store.go for the format.
+// See model_profiles_store.go for the format.
 func ModelProfilesPath(agentDir string) string {
 	return filepath.Join(agentDir, "model-profiles.yaml")
 }

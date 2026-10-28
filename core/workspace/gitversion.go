@@ -64,7 +64,8 @@ func parseGitVersion(output string) (gitVersion, error) {
 var (
 	// gitVersionMu guards lazy resolution below — deliberately not a sync.Once:
 	// a Once freezes the FIRST outcome, so a transient probe failure (git not
-	// yet on PATH, an AV lock) would fail include-bearing repos for the process lifetime; the mutex retries, caching only completed resolutions.
+	// yet on PATH, an AV lock) would fail include-bearing repos for the
+	// process lifetime; the mutex retries, caching only completed resolutions.
 	gitVersionMu sync.Mutex
 
 	// resolvedGitVersion marks a parsed version: the verdict in
@@ -98,7 +99,8 @@ var gitVersionOutputFn = func(ctx context.Context) (string, error) {
 
 // requireAttrTreeCapableGit returns nil when git is known to honor attr.tree
 // (>= 2.45) and fails closed otherwise, including an unresolvable version. A
-// completed resolution is cached for the process lifetime; failures retry. Only invoked on the include-bearing path, where the pin is load-bearing.
+// completed resolution is cached for the process lifetime; failures retry.
+// Only invoked on the include-bearing path, where the pin is load-bearing.
 func requireAttrTreeCapableGit() error {
 	gitVersionMu.Lock()
 	defer gitVersionMu.Unlock()

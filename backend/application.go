@@ -109,7 +109,7 @@ type Application struct {
 	// See specs/decisions/065-auto-resend-retryable-errors.md.
 	autoRetryIntervals atomic.Pointer[map[string]int]
 
-	// vectorRootsPtr late-binds the per-root vector-index registry (ADR-080),
+	// vectorRootsPtr late-binds the per-root vector-index registry (ADR-081),
 	// which lives on FrontendAPI (constructed after the Application);
 	// registered search closures resolve it at call time and surface the
 	// still-loading error until SetVectorRoots lands. Nil before wiring.
@@ -212,7 +212,7 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	}
 	app.builder = builder
 
-	// 3a. Vector search (per-root router, ADR-080): late-binds the
+	// 3a. Vector search (per-root router, ADR-081): late-binds the
 	// FrontendAPI-owned registry (SetVectorRoots) and resolves the workspace
 	// root from the executor context — the session's own tree for agent-side
 	// calls, the Git-panel focus otherwise. Registered unconditionally: the
