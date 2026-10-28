@@ -31,7 +31,7 @@ func callStartFrom(ctx context.Context) time.Time {
 }
 
 // Goal-mode-only system tools; StripGoalModeTools strips them from non-goal
-// runs. See specs/domains/tool-system/builtins.md (Goal-Mode-Only Tools).
+// runs. See specs/domains/tool-system/builtins.md (Goal-Mode Tools).
 var goalModeTools = map[string]struct{}{
 	"propose_goal":         {},
 	"declare_goal_status":  {},

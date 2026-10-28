@@ -1,6 +1,7 @@
 // Package papers — content parsing layer: front matter, Markdown tables,
-// and the claim/appraisal extractors. Best-effort and total (specs/domains/
-// papers.md); only ParsePaperDir/ParseLibraryDir touch disk, read-only.
+// and the claim/appraisal extractors. Best-effort and total; only
+// ParsePaperDir/ParseLibraryDir touch disk, read-only.
+// See specs/domains/papers.md.
 package papers
 
 import (

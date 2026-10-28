@@ -60,7 +60,7 @@ var FileMutatingTools = map[string]bool{
 // would fail or return the previous CODE project's stale results (ripgrep/glob
 // stay allowed under normal group policies). write/edit are NOT listed — the
 // Judge constrains their targets to the session workspace (judgeWriteInSessionRoots);
-// CHAT was never strictly read-only. See specs/domains/orchestration/conductor.md (No-Project tool set).
+// CHAT was never strictly read-only. See specs/domains/orchestration/conductor.md (Lifecycle).
 var NoProjectDisabledTools = map[string]bool{
 	ToolSemanticSearch: true,
 }

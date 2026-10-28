@@ -6,7 +6,7 @@ Per-session PTY-backed shells (`core/terminal.Manager`): one live terminal per s
 
 ## Key Files
 
-- `core/terminal/manager.go` - `Manager` (Start/Write/Resize/Stop/StopAll), the `readLoop` reader goroutine, and the natural-exit protocol (unix build tag; `manager_windows.go` is the Windows counterpart, `manager_common.go` the shared pieces)
+- `core/terminal/manager.go` - `Manager` (Start/Write/Resize/Stop/StopAll), the `readLoop` reader goroutine, and the natural-exit protocol (non-Windows `!windows` build tag; `manager_windows.go` is the Windows counterpart, `manager_common.go` the shared pieces)
 - `internal/shellresolver/` - resolves the login shell the PTY runs
 - `backend/frontend_api_terminal.go` - the desktop RPC surface and session-scoped terminal output events
 

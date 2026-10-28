@@ -131,7 +131,7 @@ func (o *Orchestrator) SuggestGoalMode(ctx context.Context, message string, rout
 
 // goalSuggestionApplicable reports the cheap, LLM-free preconditions of the
 // post-routing suggestion gate (fresh plain-Conductor tasks only). The full
-// precondition list: specs/decisions/086-goal-mode-suggestion.md (D2).
+// precondition list: specs/decisions/086-goal-mode-suggestion.md (Decision 2).
 func (o *Orchestrator) goalSuggestionApplicable(opts HandleOptions) bool {
 	if opts.Goal || opts.ReviewMode || opts.TaskID != "" {
 		return false

@@ -350,7 +350,7 @@ type LaunchSpec struct {
 // and context nobody decided. Every argv-bound numeric field is bounded both
 // ends — limits.go ceilings (also enforced in backend/config, so a hand-edited
 // config.yaml cannot walk around them) and maxTrainingContext.
-// specs/domains/embedded-llm.md (Load flow, Validate).
+// specs/domains/embedded-llm.md (Load / serve / unload, Validate).
 func (spec LaunchSpec) Validate() error {
 	if spec.Engine == EngineMTPLX {
 		return spec.mlxValidate()
@@ -458,7 +458,7 @@ func (spec LaunchSpec) validateFitExclusivity() error {
 
 // validateContext is the `-c` rule: ceiling maxTrainingContext (nothing above
 // it is representable), zero means "fit decides" and is accepted only when fit
-// is on, negative is refused. specs/domains/embedded-llm.md (Load flow).
+// is on, negative is refused. specs/domains/embedded-llm.md (Load / serve / unload).
 func (spec LaunchSpec) validateContext() error {
 	switch {
 	case spec.ContextSize < 0:
@@ -1289,7 +1289,7 @@ type resolvedLaunch struct {
 // disk. SHAPE half: Manifest.Plan, or the resolve.go policy for a pre-plan
 // manifest, then OPTIONALLY refined by a bounded load-time device probe —
 // FAIL-SOFT in every direction (a load must not fail because a driver query
-// wedged). Full contract: specs/domains/embedded-llm.md (Load flow).
+// wedged). Full contract: specs/domains/embedded-llm.md (Load / serve / unload).
 func (s *Server) launchSpec(ctx context.Context, manifest Manifest, port int) (resolvedLaunch, error) {
 	if manifest.Engine == EngineMTPLX {
 		return s.launchSpecMLX(manifest, port)
@@ -1412,7 +1412,7 @@ func (s *Server) launchIdentity(manifest Manifest, port int) (LaunchSpec, error)
 // by a fresh measurement when cheaply available, else unchanged. NEVER fails,
 // never blocks beyond LoadProbeTimeout — every refinement failure keeps the
 // stored decision (a measurement refines; the accept/reject gate ran at
-// install, behind a user action). specs/domains/embedded-llm.md (Load flow).
+// install, behind a user action). specs/domains/embedded-llm.md (Load / serve / unload).
 func (s *Server) effectivePlan(ctx context.Context, manifest Manifest, binary string) (*MemoryPlan, *MemoryTopology) {
 	stored := manifest.Plan
 	snapshot := manifest.Topology
@@ -1460,7 +1460,7 @@ func (s *Server) effectivePlan(ctx context.Context, manifest Manifest, binary st
 // plan to the artifacts on disk. The packing is PINNED to the manifest's —
 // the one input a re-plan must not re-decide: a different packing prices
 // bytes that are not there (a packing change is an install decision).
-// specs/domains/embedded-llm.md (Load flow).
+// specs/domains/embedded-llm.md (Load / serve / unload).
 func (s *Server) replan(manifest Manifest, topology MemoryTopology) (MemoryPlan, error) {
 	profile, err := PinnedMemoryProfile()
 	if err != nil {

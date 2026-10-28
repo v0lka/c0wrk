@@ -244,7 +244,7 @@ that is not hand-converted silently drops those settings on the next Save
 
 ### 8. The Settings RPC's groups payload is a wholesale replacement
 
-The Settings RPC's groups payload (`UpdateSecuritySettings`) must carry the COMPLETE set of configurable groups: the result replaces the stored map wholesale, and a partial payload would silently weaken security (an omitted group resolves fail-safe to `user_confirm` — weaker than a configured `deny`; omitting `execute` strips the live shell blocklist).
+The Settings RPC's groups payload (`UpdateSecuritySettings`) must carry the COMPLETE set of configurable groups: the result replaces the stored map wholesale, and a partial payload would silently weaken security (an omitted group resolves fail-safe to `user_confirm` — weaker than a configured `deny`; omitting `execute` strips the live shell blocklist). This is enforced, not aspirational: `UpdateSecuritySettings` rejects a partial payload fail-closed via the completeness check in `responseToGroupPolicies` (`backend/frontend_api_config.go`), and the behavior is pinned by test.
 
 ## Consequences
 

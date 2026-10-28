@@ -245,7 +245,7 @@ var goalModePrefixRe = regexp.MustCompile(`^/goal(?:\s+|$)`)
 // DetectAndStripGoalMode inspects a (preprocessed) message for a leading
 // "/goal" command — one of goal mode's two explicit entry points (specs/domains/goal-mode.md) —
 // returning it stripped (trimmed) with isGoal=true. It runs on the
-// already-preprocessed text so "/goal /skill-name …" still works (076); an
+// already-preprocessed text so "/goal /skill-name …" still works (ADR-076); an
 // empty remainder (bare "/goal") returns empty with isGoal=true — deriveGoal
 // grounds the goal from the (empty) message.
 func DetectAndStripGoalMode(text string) (cleaned string, isGoal bool) {

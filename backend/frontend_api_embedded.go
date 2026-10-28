@@ -649,7 +649,7 @@ func (f *FrontendAPI) emitEmbeddedLLMState(state embeddedllm.State, port int, me
 // the manifest (what is on disk) over the informational config copy. The two
 // error fields are deliberately split — Error is the supervisor's own cause and
 // only while the state IS error (the status-bar surface); InstallError is the
-// last failed install run (Settings-only). See specs/domains/embedded-llm.md.
+// last failed install run (Settings-only).
 func (f *FrontendAPI) embeddedStatePayload(state embeddedllm.State, port int, message string) EmbeddedLLMStateData {
 	manifest, hasManifest := f.embedded.installRecord()
 	cfg := f.embeddedConfig()

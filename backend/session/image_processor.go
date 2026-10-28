@@ -40,7 +40,7 @@ const (
 // Reads an image file, decodes it (png/jpeg/gif/webp), and returns a
 // base64-encoded copy plus a small JPEG thumbnail data URI; oversize images
 // are downscaled and re-encoded as JPEG. The read is safeio-capped
-// (FIFO/device refusal, size bound). See specs/domains/session-lifecycle.md.
+// (FIFO/device refusal, size bound).
 func processImage(path string) (base64Data, mediaType, thumbnailDataURI string, sizeBytes int64, err error) {
 	raw, err := readImageFileCapped(path, maxImageFileBytes)
 	if err != nil {

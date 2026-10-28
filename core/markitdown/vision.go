@@ -31,8 +31,9 @@ func (v *VisionOptions) complete() bool {
 }
 
 // CacheKey is the vision identity in conversion-cache keys — a conversion
-// from a DIFFERENT vision model must never be served (specs/domains/
-// tool-system/builtins.md); "" when vision is not applied.
+// from a DIFFERENT vision model must never be served; "" when vision is not
+// applied.
+// See specs/domains/tool-system/builtins.md.
 func (v *VisionOptions) CacheKey() string {
 	if v == nil || !v.complete() {
 		return ""

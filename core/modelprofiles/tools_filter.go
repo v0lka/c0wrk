@@ -1,8 +1,8 @@
 // Package modelProfiles implements tool-set selection for a small/mid-size
 // conductor LLM: a static, guaranteed union of the user's pins, the
 // protected ReAct-mandatory tools, every MCP tool, and turn-scoped extra
-// guarantees — pure, deterministic, once per task (specs/domains/
-// model-profiles.md, Essential Tools).
+// guarantees — pure, deterministic, once per task.
+// See specs/domains/model-profiles.md (Essential Tools).
 package modelprofiles
 
 import (

@@ -709,7 +709,7 @@ func (f *FrontendAPI) chatGPTOutboundHTTPClient(timeout time.Duration) *http.Cli
 
 // pushChatGPTManagerProxyClientLocked re-points the published manager's
 // token-endpoint client at the CURRENT effective proxy configuration
-// (protocol at chatgptAuthState.pushMu; see specs/domains/llm-providers.md).
+// (protocol at chatgptAuthState.pushMu).
 // Caller holds chatgptAuth.mu; the install runs outside it. Skipped for a
 // manager without the seam (test fakes).
 func (f *FrontendAPI) pushChatGPTManagerProxyClientLocked() {

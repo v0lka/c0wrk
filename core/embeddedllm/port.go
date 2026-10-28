@@ -14,8 +14,8 @@ import (
 // taken port is worse than a plain failure: the FOREIGN listener would answer
 // the readiness probe, the supervisor would report "loaded" for a model it
 // never started. So the port is re-checked immediately before each spawn and
-// walks upward until one can actually be bound. See specs/domains/
-// embedded-llm.md (Port allocation).
+// walks upward until one can actually be bound.
+// See specs/domains/embedded-llm.md (Port allocation).
 
 // Loopback port bounds. They mirror backend/config's EmbeddedLLMMinPort and
 // EmbeddedLLMMaxPort, which validate() enforces on the persisted value; core
