@@ -33,8 +33,12 @@ const (
 	// belt over core's per-command 2s bounds, so wedged probe helpers still
 	// return an actionable error instead of hanging the settings dialog.
 	embeddedProbeTimeout = 30 * time.Second
-	// embeddedStopTimeout bounds every stop-shaped call this surface waits for
-	// (all four of them), covering the GATE ACQUISITION only: an in-flight load
+	// embeddedStopTimeout bounds every supervisor stop this surface waits for —
+	// the shutdown stop, UnloadEmbeddedLLM, the stop RemoveEmbeddedLLM runs
+	// first, and the step-0 stop a background install performs before its first
+	// numbered step (traveling to core as Installer.StopTimeout rather than a
+	// wrapped context, because the install's own context stays deadline-free for
+	// the download) — covering the GATE ACQUISITION only: an in-flight load
 	// holds the supervisor's single-instance gate for minutes and the app
 	// context carries no deadline. Scoping and core's force path:
 	// specs/domains/embedded-llm.md.
