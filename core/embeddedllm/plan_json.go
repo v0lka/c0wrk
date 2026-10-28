@@ -4,7 +4,9 @@ import "encoding/json"
 
 // UnmarshalJSON decodes into a fresh value so neither absent fields nor
 // invalid JSON partially overwrite an earlier plan on a reused receiver;
-// unset knobs fall back to the pinned defaults (specs/domains/embedded-llm.md).
+// unset knobs fall back to the pinned defaults, while an explicit zero/false
+// stays an operator choice, not an omission sentinel
+// (specs/domains/embedded-llm.md).
 func (p *MemoryPlan) UnmarshalJSON(data []byte) error {
 	type planJSON MemoryPlan // no methods: avoid recursively calling this decoder
 	decoded := planJSON{

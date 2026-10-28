@@ -62,10 +62,11 @@ type ServiceConfig struct {
 	// AddDocuments: each sub-batch's contents are embedded up-front via
 	// EmbedDocuments (chunks of ≤EmbeddingBatchSize texts) and assigned to
 	// Document.Embedding BEFORE the chromem commit, so chromem-go skips its
-	// per-document embedding calls — removing the one-inference-per-chunk
-	// bottleneck for the vector and lexical sides alike. nil keeps the legacy
-	// per-doc path (tests rely on it); query-side embedding always goes
-	// through EmbeddingFunc.
+	// per-document embedding calls (chromem-go ≥ v0.7.0 persists a
+	// pre-populated `Document.Embedding` as-is) — removing the
+	// one-inference-per-chunk bottleneck for the vector and lexical sides
+	// alike. nil keeps the legacy per-doc path (tests rely on it);
+	// query-side embedding always goes through EmbeddingFunc.
 	BatchEmbedder BatchEmbedder
 
 	// HybridConfig tunes Reciprocal Rank Fusion (RRF k, fanout) and the

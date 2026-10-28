@@ -79,18 +79,26 @@ func (l *loggingEmitter) SetCurrentStepID(id string) {
 	}
 }
 
+// SetDisplayContextWindow delegates to the inner emitter if it supports
+// display-context-window injection (the orchestrator's advertised model
+// window routed through the logging wrapper).
 func (l *loggingEmitter) SetDisplayContextWindow(window int) {
 	if s, ok := l.inner.(DisplayContextWindowSetter); ok {
 		s.SetDisplayContextWindow(window)
 	}
 }
 
+// SetDisplayContextWindowForModel delegates to the inner emitter if it
+// supports model-scoped window injection (the lazy probe's late-arriving
+// runtime window refreshes the status bar through the logging wrapper).
 func (l *loggingEmitter) SetDisplayContextWindowForModel(model string, window int) {
 	if s, ok := l.inner.(DisplayContextWindowForModelSetter); ok {
 		s.SetDisplayContextWindowForModel(model, window)
 	}
 }
 
+// SetLastModel delegates to the inner emitter if it supports last-model
+// injection (immediate context_fill sync on the selected model/family).
 func (l *loggingEmitter) SetLastModel(model, family string) {
 	if s, ok := l.inner.(LastModelSetter); ok {
 		s.SetLastModel(model, family)

@@ -95,7 +95,8 @@ func classifyServiceOutcome(err, lastParseErr error, transportErrors int) Servic
 }
 
 // logServiceCall emits the unified per-call record — Debug on success, Warn on
-// every degraded outcome — carrying only low-cardinality classifier fields:
+// every degraded outcome (deliberate; revisit on release telemetry) —
+// carrying only low-cardinality classifier fields:
 // no raw output, no provider error text (both echo untrusted input).
 // See specs/domains/llm-providers.md (service calls).
 func logServiceCall(logger *slog.Logger, kind ServiceKind, model string, outcome ServiceOutcome, attempts int, duration time.Duration) {

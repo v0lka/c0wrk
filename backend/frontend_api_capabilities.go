@@ -33,6 +33,7 @@ type CapabilitiesInfo struct {
 
 // capabilitiesSnapshot is a coherent copy of the capabilities section plus
 // the configured MCP server names, taken under one configMu read lock.
+// Safe on a nil config: every map comes back empty (never nil).
 type capabilitiesSnapshot struct {
 	caps config.CapabilitiesConfig
 	// mcp carries capabilities.mcp with stale names (no longer configured)

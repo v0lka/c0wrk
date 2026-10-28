@@ -36,6 +36,9 @@ type VerificationSink interface {
 	// Declare records an outcome as the most recent one. Implementations must
 	// be safe for the single-threaded per-turn tool call that invokes this.
 	Declare(v VerificationOutcome)
+
+	// Last returns the most recently declared outcome, or nil if none has
+	// been declared since the sink was created/injected.
 	Last() *VerificationOutcome
 }
 

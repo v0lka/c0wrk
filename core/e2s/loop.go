@@ -49,8 +49,9 @@ type Result struct {
 	// Answer is the finish payload (empty for non-finished terminations).
 	Answer string `json:"answer"`
 	// Status is the terminal disposition.
-	Status   RunStatus `json:"status"`
-	Finished bool      `json:"finished"`
+	Status RunStatus `json:"status"`
+	// Finished mirrors Status == RunStatusFinished.
+	Finished bool `json:"finished"`
 	// State is the final working state Σ (the Snapshot's Sigma).
 	State map[string]any `json:"state"`
 	// Snapshot is the full domain state — the resumable checkpoint.
