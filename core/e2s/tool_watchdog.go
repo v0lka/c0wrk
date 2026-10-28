@@ -11,8 +11,9 @@ import (
 )
 
 // ErrToolTimeout — a single action's tool call exceeded Config.ToolCallTimeout
-// (wrapped with the tool name at the dispatch site); aliases the sp4rk
-// executor's sentinel, which the E2S dispatch cannot reach.
+// (wrapped with the tool name at the dispatch site); the E2S dispatch has
+// no way to reach the executor's watchdog, so it reuses the sp4rk
+// executor's sentinel.
 var ErrToolTimeout = agent.ErrToolTimeout
 
 // defaultToolWatchdogInterval is the watchdog's pause-poll cadence while a

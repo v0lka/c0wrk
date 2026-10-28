@@ -354,7 +354,7 @@ func (f *FrontendAPI) UpdateMCPServers(servers map[string]config.MCPServerConfig
 
 	// --- Heavy work below runs OUTSIDE configMu (readers stay responsive) ---
 	// saveMu is still held, so concurrent UpdateMCPServers calls are
-	// serialized; the propagation is bounded (mcpReconfigureTimeout), whose
+	// serialized; the propagation is bounded by mcpReconfigureTimeout, a
 	// ctx the gateway reconfigure's server.Connect honours.
 	if b != nil {
 		reconfigureCtx, cancel := context.WithTimeout(context.Background(), mcpReconfigureTimeout)

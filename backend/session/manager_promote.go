@@ -14,8 +14,8 @@ import (
 // Drops the in-memory session without touching on-disk state (handles
 // closed, trackers purged, active task/compaction refused, restore waited
 // out); the next GetSession re-restores, picking up the caller's project
-// change. See specs/domains/session-lifecycle.md; no-capture wrapper:
-// EvictSessionCarryingAttachments.
+// change. See specs/domains/session-lifecycle.md; the capturing variant
+// is EvictSessionCarryingAttachments.
 func (m *Manager) EvictSession(id string) error {
 	_, err := m.EvictSessionCarryingAttachments(id)
 	return err

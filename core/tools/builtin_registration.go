@@ -157,7 +157,9 @@ func RegisterBuiltinTools(registry *ToolRegistry, cfg BuiltinToolsConfig) error 
 		registry.Register(builtins.NewVectorSearchTool(cfg.VectorSearchFunc, cfg.VectorSearchWaitFunc))
 	}
 
-	// Ask user: nil callback registers the tool so calls resolve to the
+	// Ask user: registered only when AskUserFunc is set — nil = not
+	// registered at all (see the field doc). When silent mode disables
+	// ask_user, the callback is nilled below so calls resolve to the
 	// explicit "not available" result instead of a missing-tool error
 	// (specs/architecture/security-model.md, Silent Mode).
 	if cfg.AskUserFunc != nil {

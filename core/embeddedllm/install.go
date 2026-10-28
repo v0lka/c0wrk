@@ -50,9 +50,10 @@ type Progress struct {
 // be nil. Distinct from download.go's ProgressFunc (raw single-artifact bytes).
 type InstallProgressFunc func(Progress)
 
-// Manifest is the durable install record — written once, atomically, only after
-// every component is verified and the runtime proven to run, so startup can
-// trust it as its only disk work here. See specs/domains/embedded-llm.md.
+// Manifest is the durable install record — written once, atomically, only
+// after every component is verified and the runtime proven to run. Startup
+// can trust it outright (never the network, never a probe); reading it is
+// the boot path's only disk work here. See specs/domains/embedded-llm.md.
 type Manifest struct {
 	Packing        Packing `json:"packing"`
 	Backend        Backend `json:"backend"`

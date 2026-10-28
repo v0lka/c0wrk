@@ -188,10 +188,14 @@ type App struct {
 	updateQuitAt atomic.Value // time.Time
 
 	// activeSessionsFn, when non-nil, replaces the backend active-session
-	// lookup in the close guard; quitFn replaces wailsRuntime.Quit in
-	// ConfirmExit — test seams, nil in production.
+	// lookup in the close guard. Lets tests exercise the guard without a
+	// live backend application. Production wiring keeps it nil.
 	activeSessionsFn func() []session.ActiveSessionInfo
-	quitFn           func(ctx context.Context)
+
+	// quitFn, when non-nil, replaces wailsRuntime.Quit in ConfirmExit. Lets
+	// tests observe the confirmed quit without a live Wails runtime.
+	// Production wiring keeps it nil.
+	quitFn func(ctx context.Context)
 
 	// shutdownHardDeadline is the hard budget for the WHOLE Shutdown
 	// teardown, set from config (shutdown.hardDeadline) during Startup; zero
