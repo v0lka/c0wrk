@@ -9,28 +9,15 @@ import (
 	"strings"
 )
 
-// Per-branch artifact pruning. The ADR-064 storage layout gives every git
-// branch its own on-disk artifacts under a project's (or a managed worktree's)
-// vector-index storage root:
-//
-//	<root>/branches/<collectionName(branch)>/   chromem DB root — the VECTOR index
-//	<root>/lexical/<lexicalBranchDirName>/      bleve index — the LEXICAL index
-//	<root>/file_hashes_<collectionName>.json    per-branch file-hash sidecar
-//	<root>/contentless_<collectionName>.done    per-branch migration marker
-//
-// Branches disappear from the local clone over time (merged and deleted on the
-// remote, dropped by hand, worktrees pruned), but their index artifacts are
-// never re-opened and silently accumulate. PruneMissingBranchData removes BOTH
-// indexes — the chromem vector DB root and the bleve lexical directory — plus
-// the branch's sidecar and marker for every branch that is absent from the
-// caller-supplied list of the repository's existing local branches. The backend
-// calls it in the background on every project switch; the caller enumerates the
-// storage roots (the project checkout's own root plus every managed worktree's
-// root) and lists the branches once per repository with
-// `git for-each-ref refs/heads`. DeleteBranchData is the targeted counterpart:
-// the backend fires it right after a Git-panel branch deletion, so the deleted
-// branch's artifacts are removed immediately instead of waiting for the next
-// switch sweep.
+// Per-branch artifact pruning. ADR-064's storage layout gives every git
+// branch its own on-disk artifacts under a project's (or managed worktree's)
+// vector-index storage root — the chromem DB root, the bleve lexical
+// directory, the file-hash sidecar and the content-less marker (see
+// layout.go and specs/decisions/064-branch-scoped-lazy-vector-index-open.md).
+// Branches disappear from the local clone over time (merged and deleted
+// remotely, dropped by hand, worktrees pruned), but their artifacts are never
+// re-opened and silently accumulate; the sweep and targeted purge below
+// remove them. See specs/domains/workspace.md (Stale-branch index cleanup).
 
 const (
 	// lexicalDirName is the storage subdirectory holding the per-branch
@@ -53,43 +40,18 @@ var (
 	defaultSyntheticLexicalDirName = lexicalBranchDirName(DefaultBranch)
 )
 
-// PruneMissingBranchData removes the per-branch artifacts of every branch that
-// is absent from keepBranches under the storage root projectPath, returning
-// how many on-disk artifacts were removed. It deletes, per absent branch, BOTH
-// indexes (the chromem vector DB root under branches/ and the bleve lexical
-// directory under lexical/) plus the branch's file-hash sidecar and
-// content-less marker. The content-addressed embedding cache is
-// branch-independent by design and is never touched.
-//
-// Keeping is decided on the sanitized identities, not on recovered branch
-// names: the branch ⇒ directory mapping is lossy, so a directory is removed
-// only when NO branch in keepBranches (and no protected identity) maps to it —
-// a sanitized-name collision between a deleted and an existing branch keeps
-// the shared directory. Three identities are always kept: the synthetic
-// DefaultBranch ("branch_default" collection / "default" lexical dir, which a
-// real branch named "default" also maps to), the legacy-migration orphan root
-// (branches/_orphan), and — defensively — the ACTIVE branch of a live state
-// rooted at projectPath, whose artifacts the running service may currently
-// hold open even when the caller's branch list missed it (a checked-out
-// branch cannot normally be absent, but the prune must stay harmless if the
-// refs were changed underneath it).
-//
-// Parked states whose branch is absent are dropped from the park LRU with
-// their handles released (mirroring DeleteProjectData: the migration is
-// cancelled, the sidecar is deliberately NOT flushed — the directory is about
-// to disappear — and migrationWG bookkeeping stays with Close). Parked states
-// of other branches, other projects and other storage paths are untouched.
-//
-// The operation is fail-soft and best-effort: a missing storage root is a
-// silent no-op that creates nothing; unreadable directories and per-entry
-// removal failures (a concurrent open handle on Windows, a racing removal)
-// are logged at Debug and skipped, so the next switch retries them. Callers
-// treat the returned count as advisory telemetry only. Safe to call
-// concurrently with a live service on the same storage: only artifacts of
-// absent branches are removed, and a live service holds open handles solely
-// for branches that were checked out at some point — all of which stay in the
-// keep set unless deleted from the refs after the fact (the same graceful
-// degradation a manual `git branch -D` exhibits today).
+// PruneMissingBranchData removes the per-branch artifacts of every branch
+// absent from keepBranches under the storage root projectPath — BOTH indexes
+// plus the sidecar and content-less marker — returning how many artifacts
+// were removed. The full contract lives in specs/domains/workspace.md
+// (Stale-branch index cleanup): keeping is decided on sanitized identities
+// (a sanitizer collision keeps the shared directory); the synthetic default,
+// the legacy _orphan root and the live state's active branch are never
+// pruned; parked states of pruned branches are evicted with handles released
+// (no sidecar flush); the branch-independent embedding cache is untouched;
+// the operation is fail-soft (Debug-logged skips, retried by the next sweep)
+// and safe to run concurrently with a live service on the same storage. The
+// count is advisory telemetry.
 func (s *Service) PruneMissingBranchData(projectPath string, keepBranches []string) int {
 	if projectPath == "" {
 		return 0
@@ -188,40 +150,19 @@ func pruneBranchDataFS(logger *slog.Logger, target string, keepCollections, keep
 	return removed
 }
 
-// DeleteBranchData removes the per-branch artifacts of exactly one branch
-// under the storage root projectPath — BOTH indexes (the chromem vector DB
-// root under branches/ and the bleve lexical directory under lexical/) plus
-// the branch's file-hash sidecar and content-less marker — returning how many
-// on-disk artifacts were removed. It is the targeted counterpart of
-// PruneMissingBranchData: the backend fires it right after a git branch
-// deletion made through the Git panel, so the branch's data is cleaned up
-// immediately instead of waiting for the next project-switch sweep.
+// DeleteBranchData removes the per-branch artifacts of exactly one branch —
+// BOTH indexes plus the file-hash sidecar and content-less marker — returning
+// how many artifacts were removed. It is the targeted counterpart of
+// PruneMissingBranchData, fired right after a Git-panel branch deletion
+// instead of waiting for the next project-switch sweep (surgical, idempotent,
+// silent by the same quiet-failure contract). See specs/domains/workspace.md
+// (Deleted-branch index cleanup).
 //
-// branch is the branch's short name (refs/heads spelling). The caller passes
-// the repository's surviving local branches (listed AFTER the deletion) so
-// the lossy branch ⇒ directory mapping can be respected: when a surviving
-// branch sanitizes to the same collection or lexical identity, that shared
-// artifact is kept — the collision rule of PruneMissingBranchData, applied
-// per identity (the collection identity also guards the sidecar pair, which
-// is keyed on it). A stale list that still names the deleted branch is
-// filtered out defensively.
-//
-// Three identities are never touched: the synthetic DefaultBranch (a real
-// branch literally named "default" sanitizes to it and is indistinguishable
-// on disk), the legacy-migration orphan root, and — defensively — the branch
-// of a live state rooted at projectPath (git refuses deleting a checked-out
-// branch, but the refs may have changed underneath the service). Parked
-// states of the deleted branch rooted at projectPath leave the park LRU with
-// their handles released (no sidecar flush, mirroring both the sweep and
-// DeleteProjectData), so a later return never revives a state whose
-// directories are gone.
-//
-// The operation is fail-soft, best-effort and idempotent: a missing storage
-// root or already-absent artifact removes nothing (and is not counted),
-// per-entry removal failures are logged at Debug and skipped, and the
-// embedding cache is never touched (branch-independent by design). Safe to
-// call concurrently with the sweep or a live service on the same storage —
-// the same graceful degradation documented on PruneMissingBranchData.
+// branch is the short (refs/heads) name; remainingBranches (listed AFTER the
+// deletion) drives the lossy-sanitizer collision guard per identity — an
+// artifact shared with a surviving branch stays (the collection identity also
+// guards the sidecar pair, which is keyed on it) — and a stale list still
+// naming the deleted branch is filtered out defensively.
 func (s *Service) DeleteBranchData(projectPath, branch string, remainingBranches []string) int {
 	if projectPath == "" || branch == "" {
 		return 0

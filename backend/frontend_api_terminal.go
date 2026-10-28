@@ -10,20 +10,13 @@ import (
 	"github.com/v0lka/sp4rk/pathutil"
 )
 
-// terminalPathLookupTimeout bounds the session workspace lookup in
-// StartTerminal/StartTerminalInDir. The lookup is read-only (see
-// Manager.WorkspacePathFor) but still shares the app's single SQLite
-// connection with every write of every active session; the bound turns
-// connection-pool queuing into a prompt, retryable error instead of an
-// indefinitely spinning terminal loader.
+// terminalPathLookupTimeout bounds the session workspace lookup: read-only, but it
+// shares the app's single SQLite connection with every active session's writes, so
+// the bound turns connection-pool queuing into a prompt, retryable error.
 const terminalPathLookupTimeout = 10 * time.Second
 
-// StartTerminal starts a new PTY-backed shell for the given session.
-// Terminals are kept alive per-session for the whole app lifetime (the UI
-// persists one xterm.js instance per session and never stops the PTY on
-// session/project switches), so a start request for a session that already
-// has an active terminal is treated as a reattach: it returns nil and the
-// caller's terminal attaches to the live output stream.
+// StartTerminal starts a PTY-backed shell for the session; an already-active terminal
+// makes this a reattach (returns nil). See specs/domains/session-lifecycle.md.
 func (f *FrontendAPI) StartTerminal(sessionID string) error {
 	if f.terminalManager == nil {
 		return errors.New("terminal manager not initialized")
@@ -32,7 +25,6 @@ func (f *FrontendAPI) StartTerminal(sessionID string) error {
 		return errors.New("session manager not initialized")
 	}
 
-	// Reattach: the PTY is already running for this session.
 	if f.terminalManager.IsActive(sessionID) {
 		return nil
 	}
@@ -48,14 +40,9 @@ func (f *FrontendAPI) StartTerminal(sessionID string) error {
 	return nil
 }
 
-// workspacePathForTerminal resolves the session's workspace path through the
-// read-only Manager.WorkspacePathFor lookup. Deliberately NOT
-// GetSessionWorkspacePath: that helper lazily restores the session, building
-// a full orchestrator per start — and its unbounded store reads, serialized
-// behind active sessions' writes on the single SQLite connection, are what
-// made terminal starts hang for minutes while bash_exec storms ran. On
-// timeout or store failure the bool is false and the caller reports a
-// retryable error.
+// workspacePathForTerminal resolves the session workspace through the read-only
+// Manager.WorkspacePathFor — NOT GetSessionWorkspacePath, whose lazy restore builds
+// a full orchestrator per start and hung terminal starts behind the shared pool.
 func (f *FrontendAPI) workspacePathForTerminal(sessionID string) (string, bool) {
 	f.seedAcquire()
 	ctx, cancel := context.WithTimeout(context.Background(), terminalPathLookupTimeout)
@@ -63,11 +50,8 @@ func (f *FrontendAPI) workspacePathForTerminal(sessionID string) (string, bool) 
 	return f.app.Manager().WorkspacePathFor(ctx, sessionID)
 }
 
-// StartTerminalInDir starts a PTY-backed shell for the given session in the
-// specified working directory. The workDir must be within the session's
-// workspace path (path containment check). If a terminal is already active
-// for the session it is stopped first so the new shell can start in the
-// requested directory.
+// StartTerminalInDir restarts the session's PTY in workDir (must be within the session
+// workspace); an already-active terminal is stopped first. See specs/domains/session-lifecycle.md.
 func (f *FrontendAPI) StartTerminalInDir(sessionID, workDir string) error {
 	if f.terminalManager == nil {
 		return errors.New("terminal manager not initialized")
@@ -89,8 +73,6 @@ func (f *FrontendAPI) StartTerminalInDir(sessionID, workDir string) error {
 		return errors.New("working directory is outside the session workspace")
 	}
 
-	// Stop any existing terminal so the manager can start a fresh one in the
-	// new directory. Stop is a no-op when no terminal is active.
 	if f.terminalManager.IsActive(sessionID) {
 		if err := f.terminalManager.Stop(sessionID); err != nil {
 			return fmt.Errorf("failed to stop existing terminal: %w", err)
@@ -145,8 +127,8 @@ func (f *FrontendAPI) GetTerminalHistory(sessionID string) ([]session.TerminalCo
 	if f.store == nil {
 		return []session.TerminalCommand{}, nil
 	}
-	// Bounded like the sibling workspace lookup above (terminalPathLookupTimeout):
-	// the same store over the same shared pool must not park the history load.
+	// Bounded like workspacePathForTerminal: the same shared pool must not park
+	// the history load.
 	ctx, cancel := context.WithTimeout(f.ctx(), terminalPathLookupTimeout)
 	defer cancel()
 	commands, err := f.store.LoadTerminalCommands(ctx, sessionID, 100)

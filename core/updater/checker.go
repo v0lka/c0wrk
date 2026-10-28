@@ -81,8 +81,8 @@ type Config struct {
 	HTTPTimeout    time.Duration // per-request timeout; defaults to 15s
 }
 
-// Checker queries GitHub for the latest release and decides whether an update
-// is available for a given platform. It is safe for concurrent use after
+// Checker queries GitHub for the latest release and decides whether an
+// update is available for a given platform; safe for concurrent use after
 // construction.
 type Checker struct {
 	cfg     Config
@@ -95,12 +95,10 @@ type Checker struct {
 }
 
 // NewChecker returns a Checker backed by the given HTTP client. A nil client
-// is replaced by a default client honouring Config.HTTPTimeout, which is how a
-// caller wires in a proxy-aware client built via the proxy package
-// (proxy.BuildClient) — corporate proxies are therefore never bypassed.
-//
-// The detected runtime platform is used by default; override it with
-// WithPlatform (mainly for tests).
+// is replaced by a default honouring Config.HTTPTimeout; passing a
+// proxy-aware client built via proxy.BuildClient is how corporate proxies
+// and custom CA bundles are honoured rather than bypassed. The detected
+// runtime platform is used by default; override it with WithPlatform.
 func NewChecker(cfg Config, client *http.Client, logger *slog.Logger) *Checker {
 	cfg.Owner = defaultString(cfg.Owner, defaultOwner)
 	cfg.Repo = defaultString(cfg.Repo, defaultRepo)
@@ -125,9 +123,9 @@ func NewChecker(cfg Config, client *http.Client, logger *slog.Logger) *Checker {
 	}
 }
 
-// NewCheckerWithProxy builds an HTTP client from a proxy.Config (so enterprise
-// proxies and custom CA bundles are respected) and returns a Checker using it.
-// When the proxy is disabled, a plain client with Config.HTTPTimeout is used.
+// NewCheckerWithProxy builds the HTTP client from a proxy.Config and returns
+// a Checker using it; with the proxy disabled a plain client with
+// Config.HTTPTimeout is used.
 func NewCheckerWithProxy(cfg Config, proxyCfg proxy.Config, logger *slog.Logger) (*Checker, error) {
 	client, err := proxy.BuildClient(proxyCfg, cfg.HTTPTimeout, logger)
 	if err != nil {
@@ -150,9 +148,10 @@ func (c *Checker) WithPlatform(goos, goarch string) *Checker {
 }
 
 // WithFlavor overrides the packaging flavor used for asset selection.
-// Returns the receiver for chaining. Flavors only diverge on linux/amd64
-// (cpu vs cuda13 vs openvino, ADR-045/ADR-046); on every other platform the
-// flavor is ignored because the release matrix ships a single archive there.
+// Flavors only diverge on linux/amd64 (cpu vs cuda13 vs openvino,
+// ADR-046/ADR-089); on every other platform the release matrix ships a
+// single archive and the flavor is ignored. Returns the receiver for
+// chaining.
 func (c *Checker) WithFlavor(flavor Flavor) *Checker {
 	c.flavor = flavor
 	return c
@@ -259,12 +258,10 @@ type githubRelease struct {
 	Assets      []ReleaseAsset `json:"assets"`
 }
 
-// isUpdateAvailable reports whether latest is strictly newer than current.
-//
-// Both tags are normalised to the strict vMAJOR.MINOR.PATCH form that
-// golang.org/x/mod/semver requires (see normalizeTag). A current version that
-// is not valid semver (e.g. the "dev" default for local builds) is treated as
-// "unknown", so any valid published release is offered.
+// isUpdateAvailable reports whether latest is strictly newer than current,
+// both normalized to the strict semver form (see normalizeTag). A current
+// version that is not valid semver (e.g. the "dev" default for local builds)
+// counts as unknown, so any valid published release is offered.
 func isUpdateAvailable(current, latest string) bool {
 	cur := normalizeTag(current)
 	lat := normalizeTag(latest)
@@ -278,8 +275,8 @@ func isUpdateAvailable(current, latest string) bool {
 	return semver.Compare(lat, cur) > 0
 }
 
-// isSkippedVersion reports whether latest matches the version the user chose to
-// skip. Comparison uses canonical semver forms so "1.2.0" and "v1.2.0" are
+// isSkippedVersion reports whether latest matches the version the user chose
+// to skip, compared on canonical semver forms so "1.2.0" and "v1.2.0" are
 // treated identically.
 func isSkippedVersion(latest, skipped string) bool {
 	if skipped == "" {
@@ -291,12 +288,11 @@ func isSkippedVersion(latest, skipped string) bool {
 }
 
 // normalizeTag converts a release tag to the strict vMAJOR.MINOR.PATCH form
-// that golang.org/x/mod/semver requires: it adds the leading "v" when missing
-// and pads numeric tags lacking the minor/patch components with ".0"
-// (c0wrk release tags look like "v0.7-beta", which semver.IsValid rejects as
-// "v0.7" has no patch). Non-numeric strings (e.g. the "dev" default for local
-// builds) stay invalid semver and keep their "unknown version" semantics. The
-// empty string is passed through unchanged.
+// that golang.org/x/mod/semver requires: it adds a missing leading "v" and
+// pads numeric tags lacking minor/patch with ".0" (release tags look like
+// "v0.7-beta", which strict semver rejects for the missing patch).
+// Non-numeric tags (e.g. the "dev" default for local builds) stay invalid
+// semver and keep their "unknown version" semantics. "" passes through.
 func normalizeTag(s string) string {
 	if s == "" {
 		return ""

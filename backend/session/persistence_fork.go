@@ -12,41 +12,24 @@ import (
 	"github.com/google/uuid"
 )
 
-// ForkReviewCloner copies review data from the source session to the forked
-// session within the fork transaction (tx). It is invoked inside ForkSession's
-// transaction so a review-copy failure aborts the entire fork (rolled back). A
-// nil callback skips review cloning. The review store implements it via
-// CloneReviewTx, sharing the caller's transaction because both stores are
-// backed by the same *sql.DB.
+// Copies review data into the forked session inside ForkSession's
+// transaction — a review-copy failure aborts the whole fork. Nil skips
+// review cloning. See specs/domains/session-lifecycle.md (§ Session
+// Forking).
 type ForkReviewCloner func(ctx context.Context, tx *sql.Tx, srcSessionID, dstSessionID string) error
 
-// ForkSession creates a deep, independent copy of a session and all of its
-// associated data — messages, terminal commands, work directories, tasks and
-// their steps/facts/attachments/trajectory/goal state/delegation specs — with
-// freshly generated identifiers (new session id, new task ids, regenerated
-// work-directory UUIDs) so the fork shares no rows with the original.
-//
-// Runtime counters (tokens, fill percent) and the model/family fields are
-// reset: the fork keeps the conversation history but starts with fresh runtime
-// accounting. The fork is created in the same project as the source and named
-// "<source name> (fork N)" where N is the smallest positive integer making the
-// name unique within the project.
-//
-// If cloneReview is non-nil it is run inside the same transaction so that the
-// whole fork (session + tasks + review) commits atomically; on any error the
-// fork is rolled back and the source is left untouched.
-//
-// The caller is responsible for ensuring the source session has no unfinished
-// tasks (use GetUnfinishedTask) before calling this method; the store performs
-// a faithful copy regardless of task status.
+// Deep, independent copy with fresh identifiers (no shared rows), runtime
+// accounting reset, "<source> (fork N)"; one atomic transaction. Caller
+// enforces the no-unfinished-task guard. See
+// specs/domains/session-lifecycle.md (§ Session Forking).
 func (s *SQLiteSessionStore) ForkSession(ctx context.Context, srcID string, cloneReview ForkReviewCloner) (*SessionInfo, error) {
 	return s.ForkSessionWithBinding(ctx, srcID, "", nil, cloneReview)
 }
 
-// ForkSessionWithBinding persists a fork after its destination workspace has
-// been prepared. Managed sources require a distinct managed binding; the Git
-// lifecycle owner creates the derived branch from source HEAD before calling.
-// dstID may be preallocated by that owner; an empty id allocates a fresh UUID.
+// Persists a fork after its destination workspace has been prepared;
+// managed sources require a distinct managed binding (the Git lifecycle
+// owner creates the derived branch first). See
+// specs/domains/session-lifecycle.md (§ Session Execution Workspace Binding).
 func (s *SQLiteSessionStore) ForkSessionWithBinding(ctx context.Context, srcID, dstID string, binding *WorkspaceBinding, cloneReview ForkReviewCloner) (*SessionInfo, error) {
 	if srcID == "" {
 		return nil, errors.New("source session id is required")
@@ -88,7 +71,7 @@ func (s *SQLiteSessionStore) ForkSessionWithBinding(ctx context.Context, srcID, 
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// 1. New session row (fresh runtime accounting: tokens/fill/model/family reset).
+	// 1. New session row (runtime accounting reset).
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO sessions (id, project_id, name, created_at, last_active_at, archived, pinned, total_input_tokens, total_output_tokens, model, family, fill_percent, workspace_binding)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -97,9 +80,8 @@ func (s *SQLiteSessionStore) ForkSessionWithBinding(ctx context.Context, srcID, 
 		return nil, fmt.Errorf("failed to insert forked session: %w", err)
 	}
 
-	// 2. Messages — autoincrement id; content/metadata/timestamps preserved.
-	// The tool_call_id correlation lives inside the tool_calls/metadata JSON and
-	// is self-consistent within a copied message set, so no id rewriting is needed.
+	// 2. Messages — tool_call_id correlation is self-consistent JSON within
+	// the copied set; no id rewriting.
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO session_messages (session_id, role, content, reasoning_content, tool_calls, metadata, created_at)
 		SELECT ?, role, content, reasoning_content, tool_calls, metadata, created_at
@@ -126,14 +108,13 @@ func (s *SQLiteSessionStore) ForkSessionWithBinding(ctx context.Context, srcID, 
 		return nil, err
 	}
 
-	// 5. Tasks and their child tables — new task id per task, preserving NULL
-	// completed_at and all blackboard/plan/trajectory data.
+	// 5. Tasks and child tables — new task id per task; NULL completed_at
+	// and all blackboard/plan/trajectory data preserved.
 	if err := s.forkTasks(ctx, tx, srcID, newSessionID); err != nil {
 		return nil, err
 	}
 
-	// 6. Optional review clone — runs inside the same transaction so the whole
-	// fork (session + tasks + review) commits atomically or rolls back together.
+	// 6. Optional review clone — same transaction, all-or-nothing with the fork.
 	if cloneReview != nil {
 		if err := cloneReview(ctx, tx, srcID, newSessionID); err != nil {
 			return nil, fmt.Errorf("failed to clone review: %w", err)
@@ -154,9 +135,8 @@ func (s *SQLiteSessionStore) ForkSessionWithBinding(ctx context.Context, srcID, 
 	return created, nil
 }
 
-// forkSessionWorkDirs copies all work directories of the source session to the
-// fork, regenerating the UUID primary key for each row. The unique
-// (session_id, path) index cannot collide because the session id differs.
+// Copies the source's work directories with a regenerated UUID PK per row
+// (the unique (session_id, path) index cannot collide across sessions).
 func (s *SQLiteSessionStore) forkSessionWorkDirs(ctx context.Context, tx *sql.Tx, srcID, newSessionID string) error {
 	rows, err := tx.QueryContext(ctx,
 		`SELECT path, description, created_at FROM session_work_directories WHERE session_id = ? ORDER BY created_at`,
@@ -189,13 +169,9 @@ func (s *SQLiteSessionStore) forkSessionWorkDirs(ctx context.Context, tx *sql.Tx
 	return nil
 }
 
-// forkTasks copies every task of the source session into the fork, generating a
-// fresh task id for each and remapping the dependent rows (steps, facts,
-// attachments, trajectory, goal state, delegation specs) onto it. Step-level
-// identifiers (step ids, delegation ids) are preserved verbatim — only the
-// task id is remapped — so the fork's own resume wave can still correlate
-// delegation specs with step results. completed_at NULL is preserved
-// naturally via INSERT ... SELECT.
+// Copies every task under a fresh task id, remapping dependent rows onto
+// it; step-level identifiers survive verbatim — only the task id is
+// remapped — so the fork's resume wave can still correlate specs.
 func (s *SQLiteSessionStore) forkTasks(ctx context.Context, tx *sql.Tx, srcID, newSessionID string) error {
 	rows, err := tx.QueryContext(ctx,
 		`SELECT id FROM tasks WHERE session_id = ? ORDER BY created_at`,
@@ -273,9 +249,8 @@ func (s *SQLiteSessionStore) forkTasks(ctx context.Context, tx *sql.Tx, srcID, n
 			return fmt.Errorf("failed to copy task trajectory for %q: %w", oldTaskID, err)
 		}
 
-		// task_goal_state — goal-loop state (PK = task_id). Preserved so the
-		// fork keeps the goal history/context of its task, matching the
-		// "deep, independent copy" contract.
+		// task_goal_state (PK = task_id) — the fork keeps the goal history
+		// of its task.
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO task_goal_state (task_id, goal_state, updated_at)
 			SELECT ?, goal_state, updated_at FROM task_goal_state WHERE task_id = ?`,
@@ -284,8 +259,8 @@ func (s *SQLiteSessionStore) forkTasks(ctx context.Context, tx *sql.Tx, srcID, n
 			return fmt.Errorf("failed to copy task goal state for %q: %w", oldTaskID, err)
 		}
 
-		// task_e2s_state — E2S execution state Σ (PK = task_id). Preserved so
-		// the fork keeps the same resumable Σ snapshot as its source task.
+		// task_e2s_state (PK = task_id) — the fork keeps the same resumable
+		// Σ snapshot as its source task. See specs/domains/e2s.md.
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO task_e2s_state (task_id, e2s_state, updated_at)
 			SELECT ?, e2s_state, updated_at FROM task_e2s_state WHERE task_id = ?`,
@@ -294,12 +269,9 @@ func (s *SQLiteSessionStore) forkTasks(ctx context.Context, tx *sql.Tx, srcID, n
 			return fmt.Errorf("failed to copy task e2s state for %q: %w", oldTaskID, err)
 		}
 
-		// task_delegations — persisted delegation specs, the input of the
-		// system auto-resume wave. delegation_id/parent_id reference step
-		// ids, which this fork preserves verbatim, so a plain row copy keeps
-		// the fork's own Resume able to rebuild paused subagents. Without
-		// this copy a forked task could carry paused steps whose specs are
-		// gone — the wave would silently find nothing to relaunch.
+		// task_delegations — the auto-resume wave's input; the step ids it
+		// references survive verbatim, so a plain copy keeps the fork's
+		// Resume able to rebuild paused subagents.
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO task_delegations (task_id, delegation_id, parent_id, depth, spec, created_at)
 			SELECT ?, delegation_id, parent_id, depth, spec, created_at
@@ -315,13 +287,9 @@ func (s *SQLiteSessionStore) forkTasks(ctx context.Context, tx *sql.Tx, srcID, n
 	return nil
 }
 
-// resolveForkName returns the next "<baseName> (fork N)" name within the
-// project, picking N as one greater than the highest existing fork number. A
-// single query scans the project's session names; names that don't match the
-// "<baseName> (fork <number>)" shape are ignored, so fork-of-fork names
-// ("A (fork 1) (fork 1)") and base names with LIKE metacharacters are handled
-// correctly. On a query error it falls back to "(fork 1)" rather than blocking
-// the fork.
+// Returns the next "<baseName> (fork N)" name, N = highest existing fork
+// number + 1 (see specs/domains/session-lifecycle.md, § Session Forking);
+// non-matching names are ignored, query errors fall back to "(fork 1)".
 func (s *SQLiteSessionStore) resolveForkName(ctx context.Context, projectID, baseName string) string {
 	const forkPrefix = " (fork "
 	const forkSuffix = ")"

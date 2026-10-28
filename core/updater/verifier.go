@@ -11,19 +11,18 @@ import (
 	"github.com/v0lka/sp4rk/safeio"
 )
 
-// ErrChecksumMismatch is returned when an archive's computed SHA256 digest does
-// not equal the digest recorded for its asset in the SHA256SUMS file. This is a
-// fail-closed condition: the caller MUST delete the archive.
+// ErrChecksumMismatch: the archive's digest differs from its SHA256SUMS entry —
+// fail-closed, the caller MUST delete the archive
+// (specs/decisions/023-auto-update.md).
 var ErrChecksumMismatch = errors.New("checksum mismatch")
 
-// Verifier checks the integrity of a downloaded archive against a checksums
-// file. It is an interface so the verification strategy can evolve (e.g. a
-// future signature-based verifier) without changing the downloader.
+// Verifier checks a downloaded archive against a checksums file; an interface
+// so a signature-based strategy can replace SHA256 without touching the
+// downloader (specs/decisions/023-auto-update.md).
 type Verifier interface {
-	// Verify confirms that the archive at archivePath matches the entry for
-	// assetName in the SHA256SUMS file at sumsPath. It returns nil on success
-	// and a non-nil error (wrapping ErrChecksumNotFound, ErrChecksumMismatch,
-	// or a read error) on any failure.
+	// Verify reports whether archivePath matches assetName's entry in the
+	// SHA256SUMS file at sumsPath; a non-nil error wraps ErrChecksumNotFound,
+	// ErrChecksumMismatch, or a read error.
 	Verify(archivePath, assetName, sumsPath string) error
 }
 
@@ -66,11 +65,9 @@ func (SHA256Verifier) Verify(archivePath, assetName, sumsPath string) error {
 	return nil
 }
 
-// equalFoldHex compares two hex strings. SHA256SUMS files may use either case,
-// so the comparison is case-insensitive for the expected value while the
-// computed value is always lowercase. The decoded bytes are compared with
-// crypto/subtle.ConstantTimeCompare to avoid timing leaks on the integrity
-// check.
+// equalFoldHex compares two hex strings case-insensitively (SHA256SUMS may use
+// either case; the computed value is always lowercase), decoded and compared
+// with crypto/subtle.ConstantTimeCompare to avoid timing leaks.
 func equalFoldHex(a, b string) bool {
 	if len(a) != sha256HexLen || len(b) != sha256HexLen {
 		return false

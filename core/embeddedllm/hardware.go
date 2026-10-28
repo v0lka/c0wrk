@@ -3,16 +3,13 @@
 // Ternary-Bonsai-2-27B weights, configured for the machine's actual hardware
 // and served as a loopback OpenAI-compatible endpoint.
 //
-// This file owns the hardware probe: total system RAM and the accelerator
-// backend the runtime archive must be built for. The probe is the only
-// I/O-performing half of resolution — deriving the packing, the launch flags
-// and the context size from a probe result is a pure function in resolve.go.
-//
-// Detection order and every numeric policy here mirror the fork's own demo
-// scripts (PrismML-Eng/Bonsai-demo scripts/common.sh: bonsai_llama_ngl,
-// bonsai_image_max_tokens, bonsai_ctx_default, pq2_0_ready_backend), so that
-// c0wrk provisions exactly what the upstream demo would have provisioned on
-// the same machine. See specs/domains/embedded-llm.md and ADR-066.
+// This file owns the hardware probe — total system RAM and the accelerator
+// backend the runtime archive must be built for. It is the only
+// I/O-performing half of resolution; deriving the packing, launch flags and
+// context size is a pure function in resolve.go. Detection order and numeric
+// policy mirror the fork's own demo scripts (PrismML-Eng/Bonsai-demo
+// scripts/common.sh), so c0wrk provisions exactly what the upstream demo
+// would on the same machine. See specs/domains/embedded-llm.md and ADR-066.
 package embeddedllm
 
 import (
@@ -107,119 +104,81 @@ const (
 	CUDA12Unknown CUDA12Userland = "unknown"
 )
 
-// Hardware is the probe result: everything resolution may depend on.
-//
-// It answers "which archive do I download, and how big a context can this
-// machine hold", and it deliberately carries NO device-memory field: at probe
-// time the runtime is not on disk yet, so there is nothing to ask what it can
-// see. Accelerator memory is a second, LATER probe over the installed binary —
-// `ProbeDevices` and `MemoryTopology` in topology.go, which is why the two
-// results are kept apart rather than folded into one struct.
+// Hardware is the probe result: everything resolution may depend on. It
+// answers "which archive do I download, and how big a context can this machine
+// hold" — and deliberately carries NO device-memory field: at probe time the
+// runtime is not on disk yet, so there is nothing to ask. Accelerator memory
+// is the second, LATER probe over the installed binary (ProbeDevices and
+// MemoryTopology in topology.go), which is why the two results stay apart.
 type Hardware struct {
-	// Platform is the "<goos>-<goarch>" key (the toolmanager.Platform()
-	// shape), e.g. "darwin-arm64", "windows-amd64".
+	// Platform is the "<goos>-<goarch>" key (the toolmanager.Platform() shape).
 	Platform string
 	// Arch is the bare GOARCH: "amd64" | "arm64".
 	Arch string
 	// RAMGiB is total system RAM in GiB (bytes / 2^30), not GB.
 	RAMGiB float64
-	// Backend is the probed accelerator; BackendCPU when nothing else was
-	// found. It reports what was DETECTED, before the x64-only rule of
-	// effectiveBackend is applied.
+	// Backend is the probed accelerator — what was DETECTED, before the
+	// x64-only rule of effectiveBackend is applied; BackendCPU when nothing
+	// else was found.
 	Backend Backend
-	// CUDATag is the driver-derived CUDA asset tag ("12.4" | "12.8" |
-	// "13.3"), empty when the backend is not CUDA.
+	// CUDATag is the driver-derived CUDA asset tag, empty when not CUDA.
 	CUDATag string
-	// CUDA12Userland is the tri-state verdict on the CUDA 12.x userland
-	// (libcudart.so.12 + libcublas.so.12 with matching DT_SONAMEs). present
-	// requires BOTH libraries to be genuine .12 ELFs; absent covers both "no
-	// candidate found" and "found but it is really a .13 ELF" — the two cases
-	// a CUDA 12.x build treats identically (dlopen fails either way). unknown
-	// covers the cases the probe refuses to guess about: ldconfig itself
-	// missing, or a candidate that could not be inspected (unreadable file,
-	// ELF without a DT_SONAME, unparsable ELF).
+	// CUDA12Userland is the tri-state verdict on the CUDA 12.x load-time
+	// userland (see the CUDA12Userland constants).
 	CUDA12Userland CUDA12Userland
 }
 
-// probeCommandTimeout bounds a single external accelerator-probe invocation.
-// A healthy nvidia-smi or nvcc answers in tens of milliseconds; the cap exists
-// so a wedged driver can never stall installation. It matches the budget the
-// vector-index GPU probe uses (embedding.gpuProbeTimeout). On timeout the
-// context kills the child and the probe reports failure — it never hangs.
+// probeCommandTimeout bounds a single external probe invocation so a wedged
+// driver can never stall installation; it matches the vector-index GPU probe
+// budget. On timeout the context kills the child — the probe never hangs.
 const probeCommandTimeout = 2 * time.Second
 
-// probeWaitDelay is how long a probe may keep its output pipes open after the
-// process itself is gone. Killing the child is not enough to bound the read:
-// a grandchild that inherited stdout — a driver helper, or a shell's own
-// `sleep` — keeps the pipe's write end open, and the copy that feeds
-// cmd.Output would block until IT exits, long after probeCommandTimeout fired.
-// The delay makes the documented bound real: once it expires, os/exec closes
-// the pipes and Wait returns (with exec.ErrWaitDelay), which every caller here
-// already treats as "the probe did not answer".
+// probeWaitDelay bounds how long a probe may keep its output pipes open after
+// the process is gone: a grandchild that inherited stdout keeps the write end
+// open and the copy feeding cmd.Output would block until IT exits. Once it
+// expires, os/exec closes the pipes and Wait returns (exec.ErrWaitDelay),
+// which every caller treats as "the probe did not answer".
 const probeWaitDelay = 500 * time.Millisecond
 
 // probeCommandAttempts and probeCommandRetryBackoff bound the one retry
-// runProbeCommand allows: a bounded number of re-execs, spaced by a short
-// backoff, all inside the single probeCommandTimeout budget. Four attempts
-// (three retries) with a 20 ms gap is far more than the transient ETXTBSY
-// window needs — the writer's descriptor is gone within microseconds of the
-// write — while still keeping the worst case (~60 ms) negligible against the
-// 2 s cap.
+// runProbeCommand allows (the transient ETXTBSY window), all inside the single
+// probeCommandTimeout budget.
 const (
 	probeCommandAttempts     = 4
 	probeCommandRetryBackoff = 20 * time.Millisecond
 )
 
-// gibibyte is the divisor turning a byte count into GiB. The fork's demo
+// gibibyte is the divisor turning a byte count into GiB; the fork's demo
 // scripts divide by exactly this value, so the RAM tiers line up with them.
 const gibibyte = 1 << 30
 
-// errProbeToolAbsent marks a probe helper that is simply not installed. It is
-// a normal outcome, never a failure: the detection ladder treats it as "keep
-// looking" and the caller decides whether to log it.
+// errProbeToolAbsent marks a probe helper that is simply not installed — a
+// normal outcome; the detection ladder treats it as "keep looking".
 var errProbeToolAbsent = errors.New("probe tool not found in PATH")
 
 // ErrRAMUnknown is returned when total system RAM cannot be determined. The
-// memory gate is a safety gate and its HOST budget is derived from this figure
-// on every path — measured topology or not — so an unreadable RAM size refuses
-// the install instead of assuming the machine is big enough. An unreadable
-// DEVICE budget is the opposite case and is deliberately not fatal: see
-// deviceUnreadable in plan.go.
+// memory gate derives its HOST budget from this figure on every path, so an
+// unreadable RAM size refuses the install; an unreadable DEVICE budget is the
+// opposite case and is deliberately not fatal (deviceUnreadable in plan.go).
 var ErrRAMUnknown = errors.New("cannot determine total system RAM")
 
-// cudaVersionRE matches the CUDA-version field of the nvidia-smi header table.
-// Two spellings exist and BOTH must be accepted: drivers up to the 5xx series
-// print "CUDA Version: 12.4", while newer drivers (610.x) renamed the column to
-// "CUDA UMD Version: 13.3" and no longer emit the legacy field at all. Matching
-// only the legacy spelling is what silently dropped a CUDA-capable machine to
-// the Vulkan rung of the detection ladder (and thus to the PTQ1_0 packing).
-// nvidia-smi prints "N/A" or "[Not Supported]" there when the driver reports no
-// CUDA support, which simply does not match.
+// cudaVersionRE matches the CUDA-version field of the nvidia-smi header table,
+// accepting BOTH spellings: pre-6xx drivers print "CUDA Version: 12.4", newer
+// drivers (610.x) print "CUDA UMD Version: 13.3" and no longer emit the legacy
+// field — matching only the legacy spelling is what silently dropped a
+// CUDA-capable machine to the Vulkan rung (and thus to the PTQ1_0 packing).
 var cudaVersionRE = regexp.MustCompile(`CUDA (?:UMD )?Version:\s*(\d+)\.(\d+)`)
 
 // nvccReleaseRE matches "Cuda compilation tools, release 12.4, V12.4.131".
 var nvccReleaseRE = regexp.MustCompile(`release\s+(\d+)\.(\d+)`)
 
 // ProbeHardware detects total RAM and the accelerator backend, in the fork's
-// fixed precedence order:
-//
-//  1. nvidia-smi          -> CUDA driver version -> asset tag
-//  2. nvcc --version      -> CUDA toolkit fallback when nvidia-smi is absent
-//  3. rocminfo/rocm-smi/hipcc -> rocm
-//  4. vulkaninfo          -> vulkan
-//  5. darwin/arm64        -> metal
-//  6. otherwise           -> cpu
-//
-// First hit wins. A detected CUDA version older than the oldest pinned asset
-// tag is NOT a hit: the ladder keeps looking, because provisioning an archive
-// the driver cannot load would fail later with a far less useful error.
-//
-// RAM is a hard requirement, not a best-effort signal: if it cannot be read,
-// ProbeHardware returns ErrRAMUnknown rather than guessing, because the memory
-// gate derives its host budget from it.
-//
-// logger may be nil, in which case a discard logger is used. ctx governs
-// cancellation of every external probe; nil is treated as context.Background().
+// fixed first-hit precedence order (nvidia-smi → nvcc → ROCm tools →
+// vulkaninfo → Metal on darwin/arm64 → CPU). A detected CUDA version older
+// than the oldest pinned asset tag is NOT a hit — provisioning an archive the
+// driver cannot load would fail later with a far less useful error. RAM is a
+// hard requirement: unreadable RAM returns ErrRAMUnknown rather than guessing.
+// See specs/domains/embedded-llm.md (Hardware probe → resolution).
 func ProbeHardware(ctx context.Context, logger *slog.Logger) (Hardware, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -349,28 +308,19 @@ func backendFromCUDAOutput(nvidiaSMI, nvcc string) (Backend, string, bool) {
 // ─────────────────────────────────────────────────────────────────────────────
 // CUDA 12 userland probe: would a CUDA 12.x build find its libraries?
 
-// CUDA 12.x runtime archives are published for linux/amd64 only (see
-// x64Only), which is the only platform this probe classifies. darwin loads no
-// libcudart at all and Windows names its import libraries *.lib, so a verdict
-// there would be fiction; the probe reports unknown rather than pretend.
+// CUDA 12.x runtime archives are published for linux/amd64 only (see x64Only),
+// the only platform this probe classifies; elsewhere it reports unknown rather
+// than pretend. The libraries checked are libcudart.so.12 and libcublas.so.12
+// — what a CUDA 12.x launcher must find at load time — and the SONAME, not the
+// path, is the ground truth: a ".so.12" path can be a symlink onto a
+// 13-series ELF that dlopen would refuse to register.
 var cuda12UserlandProbeSupported = runtime.GOOS == "linux" && runtime.GOARCH == "amd64"
 
-// The libraries checked are libcudart.so.12 and libcublas.so.12 — the shared
-// objects a CUDA 12.x build's launcher dynamically links and therefore must
-// find at load time. The soname — not the path — is the ground truth: a
-// "libcudart.so.12" path can be a symlink whose target is a 13-series ELF (a
-// packaging accident that leaves ldconfig listing only ".so.13" entries while
-// ".so.12" paths still resolve), and dlopen would then fail. Reading the
-// soname settles what the loader would actually register.
-
-// cuda12UserlandFallbackGlobs are fixed fallback locations checked in addition
-// to ldconfig's cache. The cache can under-report exactly the files this probe
-// exists to arbitrate: where a mis-packaged ".so.12" symlink points at a
-// ".so.13" ELF, the cache carries only ".so.13" entries and the ".so.12"
-// candidates would be missed entirely. The fallbacks merge with — never
-// replace — ldconfig's answers. cuda*/ and the multiarch directory cover the
-// common distro layouts; anything exotic is expected to be in ldconfig's
-// cache anyway.
+// cuda12UserlandFallbackGlobs are fixed fallback locations merged with — never
+// replacing — ldconfig's cache: where a mis-packaged ".so.12" symlink points
+// at a ".so.13" ELF, the cache carries only ".so.13" entries and the ".so.12"
+// candidates would be missed entirely. cuda*/ and the multiarch directory
+// cover the common distro layouts; anything exotic is expected in the cache.
 var cuda12UserlandFallbackGlobs = []string{
 	"/usr/lib/x86_64-linux-gnu/libcudart.so.12*",
 	"/usr/lib/x86_64-linux-gnu/libcublas.so.12*",
@@ -496,11 +446,8 @@ func classifyCUDA12Userland(cudart, cublas cuda12LibVerdict, haveLdconfig bool) 
 }
 
 // runLdconfigCache runs `ldconfig -p` and returns its raw stdout. The bool is
-// false when ldconfig itself is missing or failed — the machine may still have
-// the libraries, so this downgrades a later "no candidate found" to unknown
-// rather than absent. It reuses the shared probe budget: a wedged ldconfig is
-// exactly the "driver tool that cannot answer" case probeCommandTimeout
-// exists for.
+// false when ldconfig itself is missing or failed — a later "no candidate
+// found" then downgrades to unknown rather than absent.
 func runLdconfigCache(ctx context.Context, logger *slog.Logger) (string, bool) {
 	out, err := runProbeCommand(ctx, "ldconfig", "-p")
 	if err != nil {
@@ -543,11 +490,9 @@ func parseLdconfigEntries(out string) map[string][]string {
 
 // cuda12UserlandCandidates merges the discovery sources for one library into
 // a de-duplicated candidate list: ldconfig's cache first (the loader's own
-// view, and first-seen there wins at load time), then the fixed fallback
-// globs. globFn is filepath.Glob in production; tests inject a resolver over
-// fixture directories instead. A failing glob is skipped — discovery is
-// best-effort across independent sources, and one bad pattern must not
-// discard the others.
+// view), then the fixed fallback globs. globFn is filepath.Glob in production;
+// tests inject a resolver over fixture directories. A failing glob is skipped —
+// discovery is best-effort across independent sources.
 func cuda12UserlandCandidates(lib string, ldcache map[string][]string, globFn func(string) ([]string, error)) []string {
 	seen := map[string]bool{}
 	var candidates []string
@@ -572,13 +517,10 @@ func cuda12UserlandCandidates(lib string, ldcache map[string][]string, globFn fu
 	return candidates
 }
 
-// elfSONAME reads the DT_SONAME of the shared object at path. ok is false for
-// every case the verdict must not guess about: an unreadable file, a non-ELF,
-// a truncated or otherwise unparsable object, and a stripped object with no
-// DT_SONAME at all. The library is parsed through the open descriptor
-// (os.File is an io.ReaderAt), so the kernel faults in only the ELF header,
-// section table and .dynamic/.dynstr pages instead of reading a potentially
-// very large library into memory.
+// elfSONAME reads the DT_SONAME of the shared object at path; ok is false for
+// every case the verdict must not guess about (unreadable, non-ELF, truncated,
+// stripped of DT_SONAME). Parsing goes through the open descriptor, so only
+// the header/section/dynamic pages fault in, never the whole library.
 func elfSONAME(path string) (string, bool) {
 	f, err := safeio.Open(path)
 	if err != nil {
@@ -608,14 +550,10 @@ func logProbeFailure(logger *slog.Logger, tool string, err error) {
 	}
 }
 
-// logCUDAProbeMiss records a probe that ran but yielded no usable CUDA version,
-// together with a bounded excerpt of its output. The nvidia-smi header is the
-// exact field this package parses, and a driver release can rename that column
-// (610.x prints "CUDA UMD Version" where older drivers print "CUDA Version"),
-// so without the raw header a future rename is indistinguishable from "this is
-// not a CUDA machine" — which is precisely how a CUDA-capable host silently
-// fell through to the Vulkan rung. Debug-only, and bounded by
-// cudaProbeExcerptLines so a support bundle stays readable.
+// logCUDAProbeMiss records a probe that ran but yielded no usable CUDA
+// version, with a bounded output excerpt: a driver renaming that header column
+// is otherwise indistinguishable from "this is not a CUDA machine" — precisely
+// how a CUDA-capable host once fell through to the Vulkan rung. Debug-only.
 func logCUDAProbeMiss(logger *slog.Logger, tool, out string) {
 	logger.Debug("embedded LLM CUDA probe found no usable version",
 		"tool", tool, "output", excerptLines(out, cudaProbeExcerptLines))
@@ -744,19 +682,14 @@ func commandAvailable(name string) bool {
 // runProbeCommand runs an external probe and returns its stdout. An absent
 // tool yields errProbeToolAbsent, which callers treat as "keep looking".
 //
-// A probe may exec a freshly written artefact — the fake runtime the tests
-// stage, or a system tool a package manager is mid-replace — and the kernel
-// answers execve with ETXTBSY ("text file busy") for as long as ANY process
-// still holds that file open for writing. That window belongs to the writer,
-// not to this probe, and it is transient by construction: it closes the
-// instant the writer's descriptor goes away. Every caller here is fail-soft,
-// so letting an ETXTBSY through would misreport a momentary kernel hiccup as
-// the definitive "this tool did not answer" — for ProbeDevices that reads as a
-// machine with no accelerator at all. The spawn, and only the spawn, is
-// therefore retried on that one transient errno, inside the same
-// probeCommandTimeout budget. Nothing that is not ETXTBSY is retried, and
-// ETXTBSY is raised before the child ever runs, so a retry can never repeat a
-// child's side effects.
+// The spawn — and only the spawn — is retried on ETXTBSY: a probe may exec a
+// freshly written artefact (a test-staged fake, a package manager mid-replace)
+// and the kernel refuses execve for as long as ANY process holds that file
+// open for writing. The window is transient by construction and raised before
+// the child ever runs, so a retry cannot repeat side effects, while letting it
+// through would misreport a momentary hiccup as the definitive "this tool did
+// not answer" — for ProbeDevices, a machine with no accelerator at all.
+// Nothing else is retried; the loop stays inside probeCommandTimeout.
 func runProbeCommand(ctx context.Context, name string, args ...string) (string, error) {
 	bin, err := exec.LookPath(name)
 	if err != nil {
@@ -780,10 +713,8 @@ func runProbeCommand(ctx context.Context, name string, args ...string) (string, 
 	}
 }
 
-// runProbeOnce performs one bounded, console-suppressed spawn. A failure here
-// may be the kernel's pre-exec ETXTBSY refusal (the child never ran) or a real
-// error from the child, and the caller distinguishes the two; nothing is
-// retried that is not the former.
+// runProbeOnce performs one bounded, console-suppressed spawn; a failure may
+// be the kernel's pre-exec ETXTBSY refusal (retryable) or a real child error.
 func runProbeOnce(ctx context.Context, bin string, args []string) (string, error) {
 	cmd := exec.CommandContext(ctx, bin, args...)
 	// Bound the read as well as the process: see probeWaitDelay.
@@ -799,13 +730,10 @@ func runProbeOnce(ctx context.Context, bin string, args []string) (string, error
 	return string(out), nil
 }
 
-// isTransientExecError reports whether err is the kernel refusing an execve
-// because the target is momentarily held open for writing (ETXTBSY). It is the
-// ONLY condition runProbeCommand retries: it is provably transient, and it is
-// raised before the child runs, so re-execing cannot duplicate anything. A
-// missing, non-executable or denied binary is a real answer and is returned
-// unchanged. On Windows ETXTBSY is never produced by a spawn, so this is
-// effectively always false there — which is exactly the intended behaviour.
+// isTransientExecError reports whether err is the kernel's pre-exec ETXTBSY
+// refusal — the ONLY condition runProbeCommand retries. A missing,
+// non-executable or denied binary is a real answer, returned unchanged. On
+// Windows a spawn never produces ETXTBSY, so this is always false there.
 func isTransientExecError(err error) bool {
 	return errors.Is(err, syscall.ETXTBSY)
 }

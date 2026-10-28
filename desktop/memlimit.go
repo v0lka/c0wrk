@@ -5,21 +5,16 @@ import (
 	"runtime/debug"
 )
 
-// GC memory soft limit for the desktop app.
-//
-// Problem being solved: with the default GOGC=100 the Go runtime lets the
-// heap grow to ~2x the live set before collecting, so a full project
-// re-index (chunk buffers + embedding batches + chromem/bleve documents)
-// leaves the resident set at twice its steady state, and the scavenger
-// returns the excess to the OS only lazily. Two levers fix this:
-//
-//  1. debug.SetMemoryLimit — a GOMEMLIMIT-style SOFT limit (a GC target,
-//     not a hard cap: the heap may exceed it under live-set pressure, the
-//     GC just runs more often) — applied once at startup, after config load
-//     and before background indexing starts (see startup.go).
-//  2. debug.FreeOSMemory — forced GC + scavenge after the transient spikes
-//     (full indexing passes, park evictions, the content-less migration; see
-//     core/vectorindex's single freeOSMemory seam).
+// GC memory soft limit for the desktop app. With the default GOGC=100 the Go
+// runtime lets the heap grow to ~2x the live set before collecting, so a full
+// project re-index (chunk buffers + embedding batches + index documents)
+// roughly doubles the resident set, and the scavenger returns the excess to
+// the OS only lazily. Two levers fix that: debug.SetMemoryLimit — a
+// GOMEMLIMIT-style SOFT limit (a GC target, not a hard cap), applied once at
+// startup after config load and before background indexing — and
+// debug.FreeOSMemory — forced GC + scavenge after the transient spikes (see
+// core/vectorindex's single freeOSMemory seam).
+// See specs/decisions/049-vector-index-memory-reduction.md.
 
 const (
 	// memLimitAutoFractionDenom is the denominator of the share of physical
@@ -51,10 +46,9 @@ type memoryLimitDecision struct {
 	Source string
 }
 
-// computeAutoMemoryLimit returns clamp(totalRAM/2, 2 GiB, 8 GiB). A zero or
-// negative totalRAM (unknown RAM) clamps to the 2 GiB floor — the most
-// conservative value that still bounds the GOGC overlay. Pure function; unit
-// tested on 4/8/16/64 GB inputs.
+// computeAutoMemoryLimit returns clamp(totalRAM/2, 2 GiB, 8 GiB); unknown RAM
+// (≤ 0) clamps to the 2 GiB floor — the most conservative value that still
+// bounds the GOGC overlay. See specs/decisions/049-vector-index-memory-reduction.md.
 func computeAutoMemoryLimit(totalRAMBytes int64) int64 {
 	half := totalRAMBytes / memLimitAutoFractionDenom
 	if half < memLimitAutoMinBytes {
@@ -66,22 +60,15 @@ func computeAutoMemoryLimit(totalRAMBytes int64) int64 {
 	return half
 }
 
-// resolveMemoryLimit decides the soft memory limit from the three inputs,
-// in precedence order:
-//
-//  1. runtime.memory_soft_limit_mb: -1 — OFF, nothing is set.
-//  2. An explicit positive config value (>0 MiB) wins — app-specific config
-//     is the most specific expression of intent for THIS app, so it also
-//     overrides a GOMEMLIMIT env var (logged as an override).
-//  3. AUTO mode (0/unset): a GOMEMLIMIT env var that the Go runtime actually
-//     saw at PROCESS START takes priority — the runtime already applied it,
-//     and overriding an operator-level env setting from inside the app would
-//     silently discard it. Only a value present before the login shell is
-//     sourced counts: a GOMEMLIMIT injected later by shell-env loading was
-//     never read by the runtime, so it does NOT defer here — that case falls
-//     through to the RAM-derived limit. Callers pass that captured value as
-//     gomemlimitEnv (see setupMemorySoftLimit). Without a runtime-seen env
-//     var, the limit is derived from physical RAM.
+// resolveMemoryLimit decides the soft memory limit in the fixed precedence
+// OFF (-1) → explicit config (>0 MiB; beats GOMEMLIMIT, override logged) →
+// GOMEMLIMIT env (preempts AUTO: the runtime already applied it at process
+// start) → AUTO (derived from physical RAM). See
+// specs/decisions/049-vector-index-memory-reduction.md and
+// specs/domains/workspace.md. Only a GOMEMLIMIT the runtime saw BEFORE the
+// login shell is sourced counts (passed as gomemlimitEnv, see
+// setupMemorySoftLimit); a shell-injected value was never read by the runtime
+// and does not defer here.
 func resolveMemoryLimit(cfgSoftLimitMB int, totalRAMBytes int64, gomemlimitEnv string) memoryLimitDecision {
 	switch {
 	case cfgSoftLimitMB < 0: // -1 = off sentinel (validation rejects < -1)
@@ -104,10 +91,11 @@ func resolveMemoryLimit(cfgSoftLimitMB int, totalRAMBytes int64, gomemlimitEnv s
 }
 
 // applyMemorySoftLimit applies the decision through the injectable setter
-// (runtime/debug.SetMemoryLimit in production; a recorder in tests) and logs
-// what was decided. The decision is never silent: every branch logs
-// source=auto|config|env|off and total_ram_mib, so the effective GC target is
-// always machine-parseable in the startup/session log regardless of source.
+// (debug.SetMemoryLimit in production; a recorder in tests) and logs it —
+// every branch logs source and total_ram_mib, so the effective GC target is
+// machine-parseable in the startup log regardless of source
+// (specs/domains/workspace.md: the resolution order is fixed and every branch
+// is logged).
 func applyMemorySoftLimit(
 	decision memoryLimitDecision,
 	totalRAMBytes int64,
@@ -162,14 +150,13 @@ func applyMemorySoftLimit(
 	}
 }
 
-// setupMemorySoftLimit is the startup entry point: resolve the decision from
-// the loaded config, the machine's physical RAM, and runtimeSeenGomemlimit —
-// the GOMEMLIMIT value the Go runtime actually saw at process start, captured
-// in Startup BEFORE the login shell is sourced (a shell-exported GOMEMLIMIT
-// the runtime never read must not spuriously defer the decision) — then apply
-// it. Called from Startup right after Phase 2 (config load + logger re-init)
-// and strictly before background indexing begins, so the limit governs the
-// very first indexing pass.
+// setupMemorySoftLimit is the startup entry point: resolve (see
+// resolveMemoryLimit) and apply. runtimeSeenGomemlimit is the GOMEMLIMIT the
+// Go runtime actually saw at process start, captured in Startup BEFORE the
+// login shell is sourced — a shell-exported value the runtime never read must
+// not spuriously defer the decision. Called right after config load and
+// strictly before background indexing, so the limit governs the very first
+// indexing pass.
 func setupMemorySoftLimit(cfgSoftLimitMB int, runtimeSeenGomemlimit string, log *slog.Logger) {
 	totalRAM, ramKnown := physicalMemoryBytes()
 	decision := resolveMemoryLimit(cfgSoftLimitMB, totalRAM, runtimeSeenGomemlimit)

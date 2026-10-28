@@ -20,74 +20,65 @@ import (
 // provided, indicating vector search is intentionally not configured.
 var ErrEmbeddingDisabled = errors.New("vector search disabled: no embedding function provided")
 
-// Resource-consumption defaults for indexing/search. These are the historical
-// hardcoded values, now exposed as config defaults (vector_index.* in
-// config.yaml). backend/config/defaults.go references them so a config without
-// a vector_index block resolves to exactly the pre-knob behaviour.
+// Resource-consumption defaults for indexing/search — the historical hardcoded
+// values, now exposed as vector_index.* config defaults; backend/config/
+// defaults.go references them, so a config without the block resolves to
+// exactly the pre-knob behaviour.
 const (
 	// DefaultDebounce is the watcher debounce window before one incremental
-	// index pass runs (vector_index.debounce_ms). It coalesces bursts of
-	// file-change events into a single pass.
+	// pass runs (vector_index.debounce_ms), coalescing file-change bursts
+	// into a single pass.
 	DefaultDebounce = 1 * time.Second
 
-	// DefaultPrepWorkers is the default number of parallel file-preparation
-	// workers in the indexing pipeline (vector_index.prep_workers): the
-	// read/hash/chunk stage overlaps with embedding, while embedding itself
-	// stays single-threaded under the service write lock.
+	// DefaultPrepWorkers is the number of parallel file-preparation workers
+	// (vector_index.prep_workers): read/hash/chunk overlaps with embedding,
+	// which stays single-threaded under the service write lock.
 	DefaultPrepWorkers = 2
 
-	// DefaultSearchWaitTimeout is the default bound for how long search waits
-	// for index readiness (vector_index.search_wait_timeout_ms). The explicit
-	// 0 "fail fast" sentinel is applied only at the config layer, never here.
+	// DefaultSearchWaitTimeout is the default readiness-wait bound for search
+	// (vector_index.search_wait_timeout_ms); the explicit 0 "fail fast"
+	// sentinel is applied only at the config layer, never here.
 	DefaultSearchWaitTimeout = 3 * time.Second
 
 	// DefaultEmbeddingCacheMaxBytes caps each project's branch-independent
 	// content-addressed embedding cache at 512 MiB.
 	DefaultEmbeddingCacheMaxBytes int64 = 512 << 20
 
-	// DefaultParkCapacity is the default number of recently-closed projects
-	// whose vector-index state is kept resident in RAM (see
-	// vector_index.park_capacity). 3 balances the memory cost (a parked
-	// project keeps its chromem DB + bleve index in memory) against the
-	// avoided chromem gob-decode + index reload on the return path.
+	// DefaultParkCapacity (vector_index.park_capacity): balances the memory
+	// cost of resident parked states against the avoided chromem gob-decode
+	// on the return path.
 	DefaultParkCapacity = 3
 
-	// DefaultParkBudgetBytes is the default cumulative byte budget of the
-	// park LRU (vector_index.park_budget_mb, expressed in MiB there):
-	// 1024 MiB. A parked state keeps its chromem documents (one vector
-	// each) and its bleve lexical index resident; once the summed estimated
-	// footprint (see Service estimateStateBytes) of the parked states
-	// crosses the budget, the oldest are evicted, so RAM-rich machines can
-	// raise it alongside park_capacity. The config-layer disable sentinel
-	// is negative; resolved bytes <= 0 keep park_capacity as the only bound.
+	// DefaultParkBudgetBytes (vector_index.park_budget_mb): the summed
+	// estimateStateBytes of the parked states is kept under this budget, so
+	// RAM-rich machines can raise it alongside park_capacity; negative (the
+	// config disable sentinel) leaves park_capacity as the only bound. See
+	// specs/decisions/049-vector-index-memory-reduction.md.
 	DefaultParkBudgetBytes int64 = 1024 << 20
 )
 
 // DefaultEmbeddingBatchSize mirrors sp4rk's embedding.DefaultBatchSize — the
 // fixed row capacity of the embedder's persistent batch ONNX session
-// (vector_index.embedding_batch_size). Assigned (not duplicated) so the two
+// (vector_index.embedding_batch_size). Assigned, not duplicated, so the two
 // can never drift.
 const DefaultEmbeddingBatchSize = embedding.DefaultBatchSize
 
-// shutdownIndexGracePeriod is the maximum time Shutdown waits for background
-// init/indexing goroutines to exit after cancelling their contexts. Context
-// cancellation normally unblocks them within milliseconds (the embedder is
-// ctx-aware), but a goroutine stuck in non-interruptible work — most notably a
-// synchronous chromem gob-decode (init) or ONNX inference call (indexing) that
-// ignores ctx.Done() — cannot be interrupted. Rather than block app shutdown
-// forever (which would leave the user with no option but to force-kill the
-// process), Shutdown waits for this period, then proceeds and skips the
-// blocking service.Close()/closeFn(), letting the OS reclaim the resources.
+// shutdownIndexGracePeriod bounds Shutdown's wait for background init/indexing
+// goroutines after cancellation. A goroutine stuck in non-interruptible work
+// (a synchronous chromem gob-decode or ONNX inference ignoring ctx.Done())
+// cannot be interrupted, so Shutdown waits this period, then proceeds and
+// skips the blocking service.Close()/closeFn(), letting the OS reclaim.
 //
-// SwitchProject deliberately does NOT drain the init goroutine on this (or any)
-// bound: it only cancels the previous init (initCancel) and relies on
-// initProject's per-step ctx checks plus s.mu for serialization, so the
-// project-switch RPC never blocks on a stuck init. See SwitchProject.
+// SwitchProject deliberately never drains the init goroutine on this (or any)
+// bound: it only cancels the previous init and relies on initProject's
+// per-step ctx checks plus s.mu for serialization, so the project-switch RPC
+// never blocks on a stuck init. See SwitchProject.
+// See specs/domains/workspace.md (bounded shutdown drain).
 const shutdownIndexGracePeriod = 10 * time.Second
 
-// ManagerConfig holds configuration for creating a Manager.
-// The caller creates the embedder and passes EmbeddingFunc; ManagerConfig no longer
-// depends on model paths, making the package usable with any embedding backend.
+// ManagerConfig holds configuration for creating a Manager. The caller creates
+// the embedder and passes EmbeddingFunc; the config no longer depends on model
+// paths, so the package works with any embedding backend.
 type ManagerConfig struct {
 	EmbeddingFunc    chromem.EmbeddingFunc // Required: embedding function for vector storage
 	BatchEmbedder    BatchEmbedder         // Optional: batched document embedding; nil = legacy per-doc path via chromem
@@ -100,10 +91,10 @@ type ManagerConfig struct {
 	MaxChunksPerFile int                   // Optional: defaults to DefaultMaxChunksPerFile (4000)
 
 	// ContentFilter controls deterministic early rejection of generated,
-	// minified, and pathological files before chunking. Nil selects
-	// DefaultContentFilterConfig; a non-nil config is used exactly as
-	// supplied. The resolved policy feeds the chunker fingerprint, so
-	// policy changes invalidate sidecar entries like chunk-size changes.
+	// minified, and pathological files before chunking; nil selects
+	// DefaultContentFilterConfig, non-nil is used exactly as supplied. The
+	// resolved policy feeds the chunker fingerprint, so policy changes
+	// invalidate sidecar entries like chunk-size changes.
 	ContentFilter *ContentFilterConfig
 
 	// IgnoreFiles selects which ignore files the indexing walks honour:
@@ -126,12 +117,10 @@ type ManagerConfig struct {
 	IncludeSubmodules bool
 
 	// EmbeddingBatchSize is the fixed row capacity of the embedder's batch
-	// ONNX session (sp4rk embedding.EmbedderConfig.BatchSize). The embedder
-	// itself is constructed by the caller (desktop startup), which sets the
-	// same value there; the Manager forwards it to the Service, where it is
-	// stored for the upcoming batched-embedding path. 0 (or unset) defaults
-	// to DefaultEmbeddingBatchSize (32) — identical to the previous
-	// behaviour, where sp4rk applied its own default.
+	// ONNX session (sp4rk embedding.EmbedderConfig.BatchSize); the embedder
+	// is constructed by the caller (desktop startup) with the same value,
+	// and the Manager forwards it to the Service. 0 →
+	// DefaultEmbeddingBatchSize (32).
 	EmbeddingBatchSize int
 
 	// EmbeddingCacheFingerprint identifies model/tokenizer bytes and all
@@ -144,49 +133,39 @@ type ManagerConfig struct {
 	EmbeddingCacheMaxBytes int64
 
 	// PrepWorkers is the number of parallel file-preparation workers
-	// (read/hash/chunk) in the indexing pipeline, forwarded to the
-	// per-project IndexerConfig.PrepWorkers in initProject; 0 (or unset)
-	// defaults to DefaultPrepWorkers (2). 1 reproduces the historical
-	// strictly serial pipeline.
+	// (read/hash/chunk), forwarded to IndexerConfig.PrepWorkers in
+	// initProject; 0 → DefaultPrepWorkers (2), 1 = the historical strictly
+	// serial pipeline.
 	PrepWorkers int
 
 	// Debounce is how long file-change notifications wait before a single
-	// incremental index pass runs, coalescing bursts of watcher events.
-	// 0 (or unset) defaults to DefaultDebounce (1s, the historical value).
+	// incremental pass runs; 0 → DefaultDebounce (1s, the historical value).
 	Debounce time.Duration
 
 	// ChunkOverlap is the character overlap between adjacent chunks, passed
-	// into the per-project IndexerConfig.Overlap. 0 (or unset) defaults to
-	// DefaultChunkOverlap (200, the historical value).
+	// into IndexerConfig.Overlap; 0 → DefaultChunkOverlap (200, historical).
 	ChunkOverlap int
 
-	// SearchWaitTimeout bounds how long search callers may wait for the
-	// index to become ready. Stored on the Manager for the search-path
-	// wiring (a later task); 0 means "fail fast" — do not wait at all — so
-	// no default is applied here. The config layer resolves an unset key to
-	// DefaultSearchWaitTimeout (3s), so production wiring always carries an
-	// explicit value.
+	// SearchWaitTimeout bounds how long search callers may wait for index
+	// readiness; 0 means "fail fast" — no default here, the config layer
+	// resolves an unset key to DefaultSearchWaitTimeout, so production
+	// wiring always carries an explicit value.
 	SearchWaitTimeout time.Duration
 
 	// ParkCapacity is the max number of recently-closed projects whose
-	// vector-index state (chromem DB + lexical index + file-hash sidecar) is
-	// kept resident in RAM so returning to them skips the chromem gob-decode
-	// (vector_index.park_capacity). 0 (or negative) disables parking,
-	// reproducing the historical reopen-every-switch behaviour. NO default is
-	// applied here: the config layer resolves an unset key to
-	// DefaultParkCapacity (3) while an explicit 0 stays 0, so this field's
-	// zero value deliberately means "disabled" for zero-value literals
-	// (tests). Production always carries the resolved value.
+	// vector-index state stays resident so returning skips the chromem
+	// gob-decode (vector_index.park_capacity); 0/negative disables parking.
+	// No default here — the config layer resolves unset → DefaultParkCapacity
+	// (so zero means "disabled" for zero-value literals). See
+	// specs/domains/workspace.md (park LRU).
 	ParkCapacity int
 
-	// ParkBudgetBytes is the cumulative byte budget for the park LRU
-	// (vector_index.park_budget_mb → bytes, resolved by desktop startup):
-	// right after a state is parked, the oldest parked states are evicted
-	// while the summed estimated footprint exceeds the budget — the
-	// effective bound is min(ParkCapacity, ParkBudgetBytes). 0 (or
-	// negative — the config-layer disable sentinel) applies ParkCapacity
-	// alone; like ParkCapacity, NO default is applied here. Forwarded
-	// verbatim to ServiceConfig.ParkBudgetBytes.
+	// ParkBudgetBytes is the cumulative byte budget of the park LRU
+	// (vector_index.park_budget_mb → bytes): the effective bound is
+	// min(ParkCapacity, ParkBudgetBytes); ≤0 (the config disable sentinel)
+	// applies ParkCapacity alone. NO default here; forwarded verbatim to
+	// ServiceConfig.ParkBudgetBytes. See
+	// specs/decisions/049-vector-index-memory-reduction.md.
 	ParkBudgetBytes int64
 
 	Logger    *slog.Logger
@@ -197,21 +176,18 @@ type ManagerConfig struct {
 type ProjectCallbacks struct {
 	OnProgress ProgressCallback
 	// OnFailure is invoked when asynchronous project initialization fails on
-	// an init-fatal step (persistent DB open, branch detection, branch
-	// collection switch), so the caller can surface a terminal status — e.g.
-	// emit EventVectorIndexStatus{State: "unavailable"} — reflecting that
-	// vector search is disabled for the active project.
-	//
-	// Failures are otherwise swallowed inside the init goroutine because
-	// SwitchProject has already returned (init runs off the RPC path). It is
-	// NOT called for the non-fatal git-monitor creation/start failures: those
-	// leave search functional (only branch-switch re-indexing degrades).
+	// an init-fatal step (DB open, branch detect, branch collection switch)
+	// so the caller can surface the terminal "unavailable" status
+	// (specs/domains/workspace.md, pre-open announcement). Other failures are
+	// swallowed inside the init goroutine — SwitchProject has already
+	// returned. NOT called for non-fatal git-monitor creation/start failures:
+	// those leave search functional (only branch-switch re-indexing degrades).
 	OnFailure func(err error)
 }
 
-// Manager owns the full lifecycle of vector indexing:
-// service management, per-project indexing, git monitoring, and orderly shutdown.
-// The embedder lifecycle is managed by the caller via ManagerConfig.CloseFn.
+// Manager owns the full vector-indexing lifecycle: service management,
+// per-project indexing, git monitoring, orderly shutdown. The embedder
+// lifecycle is the caller's, via ManagerConfig.CloseFn.
 type Manager struct {
 	service *Service
 
@@ -226,18 +202,16 @@ type Manager struct {
 	// afterFunc is an immutable instance-local timer factory for tests; nil
 	// uses time.AfterFunc. Set it before any file notifications or workers.
 	afterFunc func(time.Duration, func()) *time.Timer
-	// debounce is the configured watcher debounce window (ManagerConfig.Debounce
-	// via vector_index.debounce_ms). Zero falls back to DefaultDebounce at arm
-	// time (see effectiveDebounce) so zero-value Manager literals — used by
-	// tests and older constructions — keep the historical 1s behaviour.
+	// debounce is the configured watcher debounce window
+	// (ManagerConfig.Debounce); zero falls back to DefaultDebounce at arm
+	// time (effectiveDebounce), so zero-value Manager literals keep the
+	// historical 1s behaviour.
 	debounce time.Duration
-	// indexing coalesces trailing incremental passes. Embedding itself is
-	// serialized by the service write lock (IndexIncremental → AddDocuments
-	// holds s.mu), so two concurrent passes can never embed at once; this flag
-	// has the narrower job of avoiding a redundant trailing pass: while a pass
-	// is in flight, a newly-armed debounce re-arms itself instead of launching
-	// a serial no-op pass once the in-flight one finishes, coalescing
-	// late-arriving changes into a single final run.
+	// indexing coalesces trailing incremental passes: embedding is already
+	// serialized by the service write lock, so this flag's narrower job is
+	// avoiding a redundant trailing pass — while a pass is in flight a
+	// newly-armed debounce re-arms instead of launching a serial no-op,
+	// coalescing late-arriving changes into a single final run.
 	indexing atomic.Bool
 
 	logger    *slog.Logger
@@ -253,10 +227,9 @@ type Manager struct {
 	branch       string
 
 	// workspacePath is the active project's workspace, stored during
-	// SwitchProject so that NotifyFileChange can trigger incremental
-	// indexing without the caller needing to supply the path each time.
-	// This enables the PostExecuteHook (which doesn't have access to the
-	// workspace path) to request a re-index after file-mutating tools.
+	// SwitchProject so NotifyFileChange can trigger incremental indexing
+	// without the caller supplying the path (the PostExecuteHook has no
+	// access to it).
 	workspacePath string
 
 	// Chunk and hash functions for indexing.
@@ -276,57 +249,45 @@ type Manager struct {
 	excludePatterns   []string
 	includeSubmodules bool
 
-	// chunkOverlap is the resolved character overlap between adjacent chunks
-	// (ManagerConfig.ChunkOverlap via vector_index.chunk_overlap), passed
-	// into the per-project IndexerConfig.Overlap in initProject.
+	// chunkOverlap is the resolved character overlap between adjacent chunks,
+	// passed into IndexerConfig.Overlap in initProject.
 	chunkOverlap int
 
-	// embeddingBatchSize is the resolved embedder batch row capacity
-	// (ManagerConfig.EmbeddingBatchSize via
-	// vector_index.embedding_batch_size), forwarded to the Service (see
-	// ServiceConfig.EmbeddingBatchSize).
+	// embeddingBatchSize is the resolved batch row capacity, forwarded to the
+	// Service (see ServiceConfig.EmbeddingBatchSize).
 	embeddingBatchSize int
 
 	// prepWorkers is the resolved number of parallel file-preparation
-	// workers in the indexing pipeline (ManagerConfig.PrepWorkers via
-	// vector_index.prep_workers), forwarded to the per-project
-	// IndexerConfig.PrepWorkers in initProject.
+	// workers, forwarded to IndexerConfig.PrepWorkers in initProject.
 	prepWorkers int
 
-	// searchWaitTimeout bounds how long search callers may wait for the
-	// index to become ready (ManagerConfig.SearchWaitTimeout via
-	// vector_index.search_wait_timeout_ms). Reserved: stored for the
-	// search-path wiring (a later task). 0 means "fail fast".
+	// searchWaitTimeout bounds how long search callers may wait for index
+	// readiness; reserved for the search-path wiring. 0 means "fail fast".
 	searchWaitTimeout time.Duration
 
-	// indexingWG tracks ALL background indexing goroutines launched by the
-	// Manager (the initProject-launched full/incremental pass and any
-	// Reindex goroutine). These goroutines hold the service write lock during
-	// AddDocuments, so Shutdown must wait for them before calling
-	// service.Close() (which needs the same lock). See Shutdown.
+	// indexingWG tracks ALL background indexing goroutines (the
+	// initProject-launched pass and any Reindex/debounce/branch-switch
+	// goroutine). They hold the service write lock during AddDocuments, so
+	// Shutdown must join them before service.Close(). See Shutdown and
+	// addIndexingWork for the Add-vs-Wait ordering rule.
 	indexingWG sync.WaitGroup
 
-	// initCancel cancels the in-flight async project initialization
-	// (initProject), which runs SetProject + SwitchBranch + indexer setup +
-	// background indexing + git monitor off the SwitchProject RPC path.
-	// The next SwitchProject / Shutdown cancels it so a stale init can't
-	// touch a freshly-switched (or closed) service. Set under m.mu.
+	// initCancel cancels the in-flight async init (initProject); the next
+	// SwitchProject / Shutdown cancels it so a stale init can't touch a
+	// freshly-switched (or closed) service. Set under m.mu.
 	initCancel context.CancelFunc
-	// initWG tracks the initProject goroutine. Only Shutdown waits on it (and
-	// only in bounded fashion) before closing the service, so the init
-	// goroutine never operates on a closed service. SwitchProject cancels
-	// initCtx but does NOT wait on initWG: initProject checks initCtx before
-	// each mutating step and aborts early when cancelled (e.g. by a rapid
-	// follow-up SwitchProject), and s.mu serializes any residual overlap.
+	// initWG tracks the initProject goroutine. Only Shutdown waits on it
+	// (bounded), so the init goroutine never operates on a closed service.
+	// SwitchProject cancels initCtx but never waits: initProject aborts at
+	// its per-step ctx checks and s.mu serializes any residual overlap.
 	initWG sync.WaitGroup
 
 	// wgMu guards wgClosed and serializes every indexingWG.Add against
-	// Shutdown's indexingWG.Wait: sync.WaitGroup forbids a positive Add
-	// concurrent with Wait (fatal "Add called concurrently with Wait" panic),
-	// so late work registration (Reindex, a debounce-fired incremental pass,
-	// a git-monitor branch switch) must go through addIndexingWork, which is
-	// refused once Shutdown has sealed the manager via sealIndexingWork. An
-	// Add therefore either happens-before the Wait or never happens.
+	// Shutdown's Wait: a positive Add concurrent with Wait is a fatal
+	// sync.WaitGroup misuse, so late work registration goes through
+	// addIndexingWork, refused once Shutdown sealed the manager — an Add
+	// therefore either happens-before the Wait or never happens.
+	// See specs/domains/workspace.md (indexing-work seal).
 	wgMu sync.Mutex
 	// wgClosed is set by Shutdown (under wgMu) before it drains indexingWG.
 	wgClosed bool
@@ -335,9 +296,8 @@ type Manager struct {
 	closeFn func() error
 
 	// shutdownGrace overrides shutdownIndexGracePeriod when non-zero, so
-	// tests can verify the bounded-wait Shutdown logic — and that SwitchProject
-	// ignores this bound entirely (it never drains initWG) — without waiting
-	// the full 10 s production default.
+	// tests verify the bounded-wait Shutdown logic without waiting the full
+	// 10 s production default.
 	shutdownGrace time.Duration
 }
 
@@ -387,21 +347,16 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 	if prepWorkers <= 0 {
 		prepWorkers = DefaultPrepWorkers
 	}
-	// Debounce and SearchWaitTimeout are stored raw (no default applied
-	// here): Debounce falls back to DefaultDebounce at arm time via
-	// effectiveDebounce so zero-value Manager literals keep the historical
-	// 1s behaviour, and SearchWaitTimeout 0 is the explicit "fail fast"
-	// sentinel for the search-path wiring.
+	// Debounce and SearchWaitTimeout are stored raw (no default here):
+	// Debounce falls back at arm time (effectiveDebounce), SearchWaitTimeout
+	// 0 is the explicit "fail fast" sentinel.
 
-	// The chunker fingerprint is derived from the RESOLVED chunking
-	// configuration (maxChunkSize + chunkOverlap + the resolved content
-	// filter policy), the exact inputs the per-project Indexer chunks
-	// files with, so sidecar entries record the configuration that
-	// produced their chunks. When the config later changes
-	// (vector_index.chunk_overlap / max_chunk_size / content_filter.*),
-	// the fingerprint no longer matches and ValidateCollection re-chunks
-	// the affected files (or removes them, when the new content policy
-	// excludes a previously-indexed file).
+	// The chunker fingerprint derives from the RESOLVED chunking
+	// configuration (maxChunkSize + chunkOverlap + resolved content-filter
+	// policy) — the exact inputs the per-project Indexer chunks files with —
+	// so a later config change (vector_index.chunk_overlap / max_chunk_size /
+	// content_filter.*) invalidates sidecar entries and ValidateCollection
+	// re-chunks the affected files.
 	svc, err := NewService(ServiceConfig{
 		EmbeddingFunc:             cfg.EmbeddingFunc,
 		BatchEmbedder:             cfg.BatchEmbedder,
@@ -480,36 +435,26 @@ func (m *Manager) IsAnyIndexablePath(changedPaths []string) bool {
 }
 
 // SwitchProject sets up vector indexing for the given project and workspace.
-//
-// For a CODE project the heavy initialization — preparing the storage layout,
-// detecting the branch, opening the ACTIVE branch's persistent chromem DB
-// (which synchronously gob-decodes that branch's documents into RAM — see
-// ADR-064; no other branch is ever decoded), creating the indexer, launching
-// background indexing, and starting the git branch monitor — runs in a
-// background goroutine (see initProject) so it does not block the frontend's
-// project-load waterfall. SwitchProject returns once the previous project is
-// torn down and readiness is dropped; vector search then gates on WaitReady
-// until init + indexing settle. For No Project (CHAT mode) the teardown +
-// reset stays fully synchronous.
+// For a CODE project the heavy initialization — storage layout, branch
+// detect, the branch-scoped chromem DB open (ADR-064), indexer creation,
+// background indexing, the git monitor — runs in a background goroutine
+// (initProject); SwitchProject returns once the previous project is torn down
+// and readiness is dropped, and search gates on WaitReady. For No Project
+// (CHAT mode) the teardown + reset stays fully synchronous.
+// See specs/domains/workspace.md (vector index lifecycle).
 func (m *Manager) SwitchProject(projectID, workspacePath, vectorIndexFullPath string, cbs ProjectCallbacks, embeddingCachePaths ...string) error {
-	// No Project (CHAT mode): the vector index subsystem is fully disabled.
-	// Tear down any previous project's in-flight indexing and reset the
-	// service to an empty in-memory state so stale documents from a
-	// previously-active CODE project cannot leak into search results or RAG
-	// hints. No embedder is loaded, no persistent DB directory is created,
-	// no git branch is detected, and no indexing goroutine or git monitor is
-	// started.
+	// No Project (CHAT mode): the subsystem is fully disabled — tear down any
+	// previous project's in-flight indexing and reset the service to an empty
+	// in-memory state so stale documents cannot leak into search results or
+	// RAG hints. No embedder, no persistent DB, no branch detect, no indexing
+	// goroutine or git monitor.
 	if projectID == core.NoProjectID {
-		// Cancel any in-flight async init from a prior CODE project before
-		// resetting the service, so it can't (re)set a collection/db after we
-		// go in-memory below. We do NOT wait for that goroutine to drain:
-		// initCancel is called here, and initProject checks ctx before each
-		// mutating step, so the orphaned goroutine aborts without touching the
-		// new state — while the s.mu lock it may still hold serializes
-		// naturally with SetProject below, bounding the effective wait to the
-		// actual DB work rather than a fixed grace. Keeping the drain off this
-		// path means a fresh No-Project switch returns immediately even while a
-		// prior init is still unwinding. Only Shutdown waits on initWG (bounded).
+		// Cancel any in-flight async init before resetting, so it can't
+		// (re)set a collection/db after we go in-memory. We do NOT wait for
+		// it to drain: the orphaned init aborts at its next ctx check, and
+		// the s.mu it may hold serializes naturally with SetProject below —
+		// a fresh No-Project switch returns immediately. Only Shutdown waits
+		// on initWG (bounded).
 		m.mu.Lock()
 		if m.initCancel != nil {
 			m.initCancel()
@@ -534,31 +479,20 @@ func (m *Manager) SwitchProject(projectID, workspacePath, vectorIndexFullPath st
 		// Drop readiness before the (possibly deferred) reset below so a search
 		// issued in the interim never serves the outgoing project's collection.
 		m.service.SetReady(false)
-		// Non-blocking: the reset is cheap, but it needs the service write lock,
-		// which an in-flight branch-scoped DB open (initProject's SwitchBranch,
-		// ADR-064) holds for its entire chromem gob-decode of the ACTIVE branch
-		// — seconds on a large branch, and minutes on a pre-ADR-064 index that
-		// decoded every branch collection. Waiting for it here held the backend's
-		// switchMu for that whole window, so every later CHAT/CODE toggle died on
-		// its bounded acquire — the "clicking CHAT does nothing for minutes"
-		// failure. ResetForNoProject returns at once and lets the lock holder (or
-		// the background applier it kicks) apply the reset.
+		// Non-blocking: the reset needs the service write lock, which an
+		// in-flight branch-scoped DB open (ADR-064) holds for its entire
+		// gob-decode — waiting here used to hold the backend's switchMu and
+		// kill every CHAT/CODE toggle on its bounded acquire. See
+		// ResetForNoProject.
 		m.service.ResetForNoProject(projectID)
 		return nil
 	}
 
-	// Displace any previous project. Cancel its async init's context before
-	// touching shared state; the cancelled init aborts at its next ctx check
-	// (see initProject) and can no longer race on m.indexer / m.gitMonitor /
-	// the service. We deliberately do NOT wait for it to drain here: doing so
-	// would put the previous project's branch-scoped chromem gob-decode (up to
-	// the 10 s grace) back on the project-switch RPC path and freeze the UI
-	// during a rapid double-switch. Serialization is instead provided by
-	// initCancel plus initProject's per-step ctx checks, and any residual
-	// mutual exclusion comes from s.mu — the new init goroutine launched
-	// below blocks on s.mu in the background until an orphaned one releases
-	// it, so it never blocks the RPC.
-	// Only Shutdown waits on initWG (bounded) before closing the service.
+	// Displace any previous project: cancel its async init's context first —
+	// the cancelled init aborts at its next ctx check. We deliberately do NOT
+	// wait for it: draining would put the previous project's gob-decode back
+	// on the switch RPC path. initCancel + per-step ctx checks serialize, and
+	// residual exclusion comes from s.mu; only Shutdown waits on initWG.
 	m.mu.Lock()
 	if m.initCancel != nil {
 		m.initCancel()
@@ -581,28 +515,20 @@ func (m *Manager) SwitchProject(projectID, workspacePath, vectorIndexFullPath st
 
 	m.stopDebounce()
 
-	// Drop the previous project's readiness synchronously so a search RPC
-	// issued right after SwitchProject returns blocks on WaitReady instead of
-	// racing the async init. initProject (or, on failure, its SetReady(true)
-	// fallback) restores readiness.
+	// Drop readiness synchronously so a search RPC issued right after
+	// SwitchProject returns blocks on WaitReady instead of racing the async
+	// init; initProject (or its failure fallback) restores readiness.
 	m.service.SetReady(false)
 
-	// Launch project initialization off the RPC path. initProject opens the
-	// persistent chromem DB (the dominant cost — gob-decoding every document
-	// of every branch collection into RAM), then detects the branch, switches
-	// the branch collection (bleve.Open), creates the indexer, launches a
-	// background indexing goroutine, and starts the git branch monitor. None
-	// of that needs to block the frontend's project-load waterfall: vector
-	// search gates on WaitReady, which only unblocks once init + indexing
-	// settle. The next SwitchProject / Shutdown cancels initCtx; the goroutine
-	// aborts at its next ctx check.
+	// Launch project initialization off the RPC path: initProject opens the
+	// persistent chromem DB (the dominant cost — gob-decoding the active
+	// branch's documents), detects the branch, switches the branch
+	// collection, creates the indexer, and starts background indexing + the
+	// git monitor; search gates on WaitReady until init + indexing settle.
 	//
-	// Error semantics: init failures (chromem open, branch detect, bleve
-	// open) are logged here, not returned, because SwitchProject has already
-	// returned. Vector indexing is an optional, asynchronously-loaded
-	// subsystem; a failed init leaves search returning clean "no collection"
-	// errors instead of blocking the whole project switch. This is a
-	// deliberate softening of the prior hard-failure behavior.
+	// Error semantics: init failures are logged here, not returned —
+	// SwitchProject has already returned, and a failed init leaves search
+	// returning clean "no collection" errors (deliberate softening).
 	initCtx, initCancel := context.WithCancel(context.Background())
 	m.mu.Lock()
 	m.initCancel = initCancel
@@ -618,64 +544,50 @@ func (m *Manager) SwitchProject(projectID, workspacePath, vectorIndexFullPath st
 }
 
 // initProject performs the asynchronous portion of SwitchProject for a CODE
-// project: prepare the storage layout, detect the git branch, open that
-// branch's persistent chromem DB and collection, create the indexer, launch
-// background indexing, and start the git branch monitor. It runs off the
-// SwitchProject RPC path so the frontend's project-load waterfall is not
-// blocked by chromem's synchronous gob-decode of the active branch's documents
-// (ADR-064: only the active branch is decoded, never all of them). ctx is
-// checked between steps so a follow-up SwitchProject / Shutdown (which cancels
-// it) aborts a stale init early instead of doing needless work.
-//
-// Failures are logged (not returned): SwitchProject has already returned, and
-// vector indexing is optional. On failure readiness is flipped to true so
-// WaitReady callers unblock and search returns a clear "no collection" error
-// instead of hanging.
+// project: prepare the storage layout, detect the branch, open that branch's
+// persistent chromem DB and collection, create the indexer, launch background
+// indexing, start the git monitor — off the RPC path (ADR-064 decodes only
+// the active branch). ctx is checked between steps so a follow-up
+// SwitchProject / Shutdown aborts a stale init early. Failures are logged
+// (not returned); readiness flips true so WaitReady callers unblock into a
+// clear "no collection" error.
 func (m *Manager) initProject(ctx context.Context, projectID, workspacePath, vectorIndexFullPath, embeddingCachePath string, cbs ProjectCallbacks) {
 	defer m.initWG.Done()
 
-	// INVARIANT: every mutating step below is preceded by a ctx check (or, for
-	// a step that cannot be pre-empted once entered, followed immediately by
-	// one). Before the init touches shared state — the service's project/
-	// collection, m.indexer, m.workspacePath, m.gitMonitor, or the background
-	// goroutines — it must observe a live ctx; if a follow-up SwitchProject /
-	// Shutdown cancelled it, the orphaned init bails out instead of clobbering
-	// the new project's state. This is what lets SwitchProject skip waiting on
+	// INVARIANT: every mutating step below is preceded by a ctx check (or,
+	// for a step that cannot be pre-empted once entered, immediately followed
+	// by one), so an orphaned init bails out instead of clobbering the newer
+	// project's state — this is what lets SwitchProject skip waiting on
 	// initWG entirely. Publications additionally re-check ctx UNDER m.mu
-	// (publishInitState, installGitMonitor): SwitchProject cancels initCancel
-	// while holding m.mu, so the check-then-publish pair is atomic with the
-	// cancellation point and no window remains in which a cancelled init can
-	// install stale state.
+	// (publishInitState, installGitMonitor): SwitchProject cancels
+	// initCancel while holding m.mu, so check-then-publish is atomic with
+	// the cancellation point.
+	// See specs/domains/workspace.md (init publication protocol).
 	if err := ctx.Err(); err != nil {
 		m.logger.Info("vector index init cancelled before start", "project", projectID)
 		return
 	}
 
-	// Announce the pre-open state BEFORE the open. Until the first progress
-	// callback the frontend has no status at all: the status bar renders
-	// nothing (IndexingStatus hides itself on the default "idle" state) and the
-	// search panel claims no project is selected. ADR-064 made the open
-	// branch-scoped — SetProject only prepares the layout, SwitchBranch decodes
-	// the ONE active branch — so the open is seconds rather than minutes.
-	// It is still not indexing, so the status is a distinct "loading/open" state
-	// (no progress fraction), rendered as a plain "Preparing index…" rather than
-	// a fake "Indexing" with an empty 0/0 bar; the manager's own status agrees,
-	// so GetVectorIndexStatus matches the event.
+	// Announce the pre-open state BEFORE the open: until the first progress
+	// callback the frontend has no status at all. ADR-064 made the open
+	// branch-scoped (seconds, not minutes), but it is still not indexing —
+	// the status is the distinct "loading/open" state, rendered as a plain
+	// "Preparing index…", never a fake "Indexing" 0/0 bar; the manager's own
+	// status agrees so GetVectorIndexStatus matches the event
+	// (specs/domains/workspace.md, pre-open announcement).
 	m.setStatus(map[string]any{"state": IndexStateLoading, "phase": PhaseOpen})
 	if cbs.OnProgress != nil {
 		cbs.OnProgress(PhaseOpen, IndexStateLoading, 0, 0, "")
 	}
 
-	// SetProject prepares the storage layout (and runs the one-time legacy
-	// migration); it no longer opens the DB. SwitchBranch below performs the
-	// branch-scoped open, decoding only the active branch, and holds the service
-	// write lock for that duration. Its outcome is checked against ctx
-	// immediately afterwards.
+	// SetProject prepares the layout (and runs the one-time legacy
+	// migration); SwitchBranch performs the branch-scoped open under the
+	// write lock. Its outcome is checked against ctx immediately afterwards.
 	if err := m.service.SetProject(projectID, vectorIndexFullPath, embeddingCachePath); err != nil {
-		// If the init was cancelled while SetProject ran, this failure belongs
-		// to an orphaned init: a newer project already owns readiness, so do NOT
-		// flip it. Calling notifyInitFailure or SetReady(true) here would clear
-		// the new project's not-ready state and let a search race its init.
+		// A cancellation landing during SetProject belongs to an orphaned
+		// init: a newer project owns readiness — do NOT flip it (that would
+		// clear the new project's not-ready state and let a search race its
+		// init).
 		if cerr := ctx.Err(); cerr != nil {
 			m.logger.Info("vector index init cancelled during open; ignoring open failure",
 				"project", projectID, "error", err)
@@ -696,15 +608,12 @@ func (m *Manager) initProject(ctx context.Context, projectID, workspacePath, vec
 	}
 
 	// Detect branch. CurrentBranch returns DefaultBranch for non-git
-	// directories; git-on-PATH is already verified synchronously by the
-	// backend before SwitchProject is called, so a failure here indicates a
-	// genuinely broken repo.
+	// directories; git-on-PATH is verified synchronously by the backend
+	// before SwitchProject, so a failure here indicates a broken repo.
 	branch, err := CurrentBranch(ctx, workspacePath)
 	if err != nil {
-		// A cancellation that landed while the git subprocess ran surfaces as
-		// a step failure; it belongs to an orphaned init and must not flip the
-		// newer project's readiness (the same rule as the SetProject path
-		// above).
+		// A cancellation landing during the git subprocess belongs to an
+		// orphaned init and must not flip the newer project's readiness.
 		if cerr := ctx.Err(); cerr != nil {
 			m.logger.Info("vector index init cancelled during branch detect; ignoring failure",
 				"project", projectID, "error", err)
@@ -721,15 +630,11 @@ func (m *Manager) initProject(ctx context.Context, projectID, workspacePath, vec
 		return
 	}
 
-	// Create indexer with a wrapped progress callback that also updates
-	// the Manager's internal status for GetVectorIndexStatus. The indexer is
-	// kept in a local until SwitchBranch succeeds: only then is it published
-	// to m.indexer. This prevents NotifyFileChange / debounce / Reindex from
-	// arming an incremental pass against a service whose collection is still
-	// nil (SwitchBranch opens it), which on every file change would otherwise
-	// drive doomed passes logging "no collection available" until the next
-	// SwitchProject. The background indexing goroutine and git-monitor
-	// callback below capture this local via closure, so they are unaffected.
+	// Create the indexer with a wrapped progress callback that also updates
+	// the Manager's status for GetVectorIndexStatus. It stays local until
+	// SwitchBranch succeeds — only then is it published to m.indexer — so
+	// NotifyFileChange / debounce / Reindex cannot arm a pass against a nil
+	// collection. The goroutine and monitor below capture it via closure.
 	m.setStatus(map[string]any{"branch": branch})
 	indexer := NewIndexer(IndexerConfig{
 		Service:           m.service,
@@ -751,10 +656,8 @@ func (m *Manager) initProject(ctx context.Context, projectID, workspacePath, vec
 
 	// Switch to branch collection (opens the per-branch bleve index).
 	if switchErr := m.service.SwitchBranch(ctx, branch); switchErr != nil {
-		// A cancellation that landed while the bleve index was opening
-		// surfaces as a step failure; it belongs to an orphaned init and must
-		// not flip the newer project's readiness (the same rule as the
-		// SetProject path above).
+		// A cancellation landing while the bleve index opened belongs to an
+		// orphaned init and must not flip the newer project's readiness.
 		if cerr := ctx.Err(); cerr != nil {
 			m.logger.Info("vector index init cancelled during branch switch; ignoring failure",
 				"project", projectID, "error", switchErr)
@@ -772,25 +675,16 @@ func (m *Manager) initProject(ctx context.Context, projectID, workspacePath, vec
 	}
 
 	// SwitchBranch succeeded: publish the indexer + workspace now that the
-	// collection is live and incremental passes can do useful work. The
-	// publication is atomic with the cancellation point: SwitchProject cancels
-	// initCancel while holding m.mu, so re-checking ctx under the same lock
-	// closes the check-to-publish TOCTOU window. Without it, a cancel landing
-	// between the check above and the Lock() would let this orphaned init
-	// install its indexer, workspace, and a fresh uncancelled indexCancel over
-	// the newer project's already-torn-down state (and the background
-	// goroutine below would then index workspace A into project B's
-	// collection).
-	// indexCancel stays owned by the Manager (m.indexCancel): the next
-	// SwitchProject / Shutdown cancels the background pass through it.
+	// collection is live. publishInitState re-checks ctx under m.mu, closing
+	// the check-to-publish TOCTOU window; indexCancel stays owned by the
+	// Manager (the next SwitchProject / Shutdown cancels through it).
 	indexCtx, _, published := m.publishInitState(ctx, projectID, workspacePath, indexer)
 	if !published {
 		return
 	}
 
-	// Start background indexing. Tracked by indexingWG so Shutdown can wait
-	// for it (bounded) before calling service.Close() — the goroutine holds
-	// the service write lock during AddDocuments, which Close() also needs.
+	// Start background indexing; tracked by indexingWG so Shutdown can join
+	// it (bounded) before service.Close().
 	m.indexingWG.Add(1)
 	go func() {
 		defer m.indexingWG.Done()
@@ -799,21 +693,16 @@ func (m *Manager) initProject(ctx context.Context, projectID, workspacePath, vec
 		if col == nil || col.Count() == 0 {
 			m.logger.Info("empty collection, running full index", "project", projectID)
 			idxErr = indexer.IndexFull(indexCtx, workspacePath)
-			// A full pass allocates the whole corpus transiently (chunk
-			// buffers, embedding batches, chromem/bleve documents); return
-			// the spike to the OS right here instead of waiting for the
-			// scavenger. Runs in this background goroutine holding no
-			// locks — IndexFull's AddDocuments released the service write
-			// lock before returning. Gated on success: a cancelled or failed
-			// pass (switch/Shutdown, batch error) allocated little and must
-			// not burn a stop-the-world GC cycle.
+			// Return the transient whole-corpus allocations here instead of
+			// waiting for the scavenger — success-gated: a cancelled or
+			// failed pass allocated little and must not burn a
+			// stop-the-world GC cycle. No locks held.
 			if idxErr == nil {
 				m.freeOSMemoryAfterFullIndex()
 			}
 		} else {
-			// Reconciliation: if the chromem collection has data but the
-			// lexical index is empty (e.g. the project was indexed before
-			// the BM25 upgrade, or a previous dual-write failed), backfill
+			// Reconciliation: collection has data but the lexical index is
+			// empty (pre-BM25 project, or a failed dual-write) — backfill
 			// the lexical side first so hybrid search works immediately.
 			lexCount, lexCountErr := m.service.LexicalCount()
 			if lexCountErr != nil {
@@ -842,12 +731,11 @@ func (m *Manager) initProject(ctx context.Context, projectID, workspacePath, vec
 		}
 	}()
 
-	// Start git branch monitor. Guard this (the last mutating step) with a ctx
-	// check too: an orphaned init must not install its git monitor over the new
-	// project's — initCancel cancellation is what makes the check fail here.
-	// NewGitMonitor allocates an fsnotify watcher and runs a git subprocess
-	// after this check, so the publication re-checks ctx under m.mu (see
-	// installGitMonitor) to stay atomic with the cancellation point.
+	// Start the git branch monitor — the last mutating step, guarded by a ctx
+	// check like the rest: an orphaned init must not install its monitor over
+	// the new project's. NewGitMonitor allocates an fsnotify watcher + spawns
+	// git after this check, so the publication re-checks under m.mu
+	// (installGitMonitor).
 	if err := ctx.Err(); err != nil {
 		m.logger.Info("vector index init cancelled before git monitor", "project", projectID)
 		return
@@ -874,17 +762,13 @@ func (m *Manager) initProject(ctx context.Context, projectID, workspacePath, vec
 	}
 }
 
-// publishInitState installs the per-project indexer state — the indexer, the
-// workspace path, and the background-indexing context — as the Manager's
-// active state, creating that context itself so the caller cannot leak it on
-// the abort path. The publication is atomic with init cancellation:
-// SwitchProject cancels initCancel while holding m.mu, so re-checking ctx
-// under the same lock closes the check-to-publish TOCTOU window — a cancel
-// landing between initProject's unlocked pre-check and this publication
-// aborts without installing stale state over the newer project's teardown.
-// It returns the background-indexing context, its cancel function, and
-// whether the state was published; when false, indexCancel has already been
-// called and nothing was installed.
+// publishInitState installs the per-project indexer state (indexer, workspace
+// path, background-indexing context), creating that context itself so the
+// caller cannot leak it on the abort path. The publication re-checks ctx
+// under m.mu, making it atomic with init cancellation — a cancel landing
+// between initProject's unlocked check and this publication aborts without
+// installing stale state. Returns the context, its cancel, and whether
+// anything was installed.
 func (m *Manager) publishInitState(ctx context.Context, projectID, workspacePath string, indexer *Indexer) (context.Context, context.CancelFunc, bool) {
 	indexCtx, indexCancel := context.WithCancel(context.Background())
 	m.mu.Lock()
@@ -901,16 +785,11 @@ func (m *Manager) publishInitState(ctx context.Context, projectID, workspacePath
 	return indexCtx, indexCancel, true
 }
 
-// installGitMonitor publishes gitMon as the Manager's git branch monitor
-// unless the init context was cancelled between initProject's last unlocked
-// check and this publication — the same check-to-publish atomicity
-// publishInitState applies. SwitchProject cancels initCancel and stops the
-// previous monitor while holding m.mu, so the re-check under the same lock is
-// race-free. A monitor that is not installed (a stale one, created after a
-// rapid project switch cancelled this init) is stopped before returning:
-// NewGitMonitor already allocated its fsnotify watcher, and leaving it
-// running would leak the watcher plus its event loop for the app's lifetime.
-// It reports whether the monitor was installed.
+// installGitMonitor publishes gitMon unless the init context was cancelled
+// between the last unlocked check and this publication (same check-to-publish
+// atomicity as publishInitState). An uninstalled monitor is stopped before
+// returning — NewGitMonitor already allocated its fsnotify watcher, which
+// would otherwise leak.
 func (m *Manager) installGitMonitor(ctx context.Context, projectID string, gitMon *GitMonitor) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -924,10 +803,8 @@ func (m *Manager) installGitMonitor(ctx context.Context, projectID string, gitMo
 }
 
 // NotifyFileChange triggers debounced incremental indexing for the active
-// project's workspace. The workspace path is stored during SwitchProject, so
-// callers (watcher callback, PostExecuteHook) don't need to supply it.
-// No-op when no indexer is configured (e.g. No Project / CHAT mode) or when
-// the workspace path is empty.
+// project's workspace (stored during SwitchProject); no-op with no indexer
+// configured (No Project / CHAT mode) or an empty workspace path.
 func (m *Manager) NotifyFileChange() {
 	m.mu.RLock()
 	idx := m.indexer
@@ -946,12 +823,10 @@ func (m *Manager) NotifyFileChange() {
 	m.debounceMu.Unlock()
 }
 
-// scheduleIncrementalLocked arms the configured debounce
-// (vector_index.debounce_ms, default 1s) that runs one incremental index
-// pass. The fired callback (runIncrementalGuarded) re-reads the active
-// indexer/workspace/context under m.mu, so a project switch between arming and
-// firing is honored rather than indexing a stale workspace. The caller must
-// hold m.debounceMu.
+// scheduleIncrementalLocked arms the debounce that runs one incremental pass;
+// the fired callback (runIncrementalGuarded) re-reads the active indexer /
+// workspace / context under m.mu, so a project switch between arming and
+// firing is honored. The caller must hold m.debounceMu.
 func (m *Manager) scheduleIncrementalLocked() {
 	m.debounceTimer = m.armIncremental()
 }
@@ -966,10 +841,8 @@ func (m *Manager) armIncremental() *time.Timer {
 }
 
 // effectiveDebounce returns the configured watcher debounce window, falling
-// back to DefaultDebounce (1s, the historical hardcoded value) when it is
-// zero. The fallback happens here — at arm time — rather than in NewManager so
-// zero-value Manager literals (used by tests and older constructions) keep the
-// historical behaviour.
+// back to DefaultDebounce at arm time so zero-value Manager literals keep the
+// historical 1s behaviour.
 func (m *Manager) effectiveDebounce() time.Duration {
 	if m.debounce > 0 {
 		return m.debounce
@@ -977,28 +850,18 @@ func (m *Manager) effectiveDebounce() time.Duration {
 	return DefaultDebounce
 }
 
-// runIncrementalGuarded runs a single incremental pass unless one is already in
-// flight, in which case it re-arms a debounce to coalesce trailing changes into
-// one final run.
-//
-// On every fire it re-reads the active indexer, workspace path, and index
-// context together under m.mu. This is what makes a debounce-fired pass safe
-// across SwitchProject/Reindex/CancelIndexing: the context is the project's
-// cancellable index context, so cancelling it (on project switch/shutdown)
-// aborts an in-flight IndexIncremental at its next ctx.Err() check instead of
-// letting a stale pass apply an old project's diff to a freshly-switched
-// project's collection. Re-reading idx/ws (rather than capturing them in the
-// timer closure) additionally ensures a re-armed trailing pass targets the
-// current project, not the one active when the change arrived.
-//
-// Note: this guard does NOT provide embedding serialization on its own —
-// IndexIncremental holds the service write lock around AddDocuments, which is
-// what guarantees peak concurrency of 1. The guard's value is coalescing
-// (fewer trailing passes) plus the cancellation safety above.
+// runIncrementalGuarded runs a single incremental pass unless one is already
+// in flight (then it re-arms the debounce to coalesce trailing changes). On
+// every fire it re-reads the active indexer, workspace, and index context
+// under m.mu, so the pass is safe across SwitchProject/Reindex/CancelIndexing:
+// cancelling the context aborts an in-flight pass instead of applying an old
+// project's diff to a fresh collection, and a re-armed pass targets the
+// current project. It does NOT serialize embedding — IndexIncremental holds
+// the service write lock around AddDocuments; the guard's value is coalescing
+// plus cancellation safety.
 func (m *Manager) runIncrementalGuarded() {
 	if m.indexing.Load() {
-		// A pass is in flight: re-arm rather than launching a redundant
-		// trailing pass that would find no new changes.
+		// A pass is in flight: re-arm instead of a redundant trailing pass.
 		m.debounceMu.Lock()
 		m.debounceTimer = m.armIncremental()
 		m.debounceMu.Unlock()
@@ -1015,13 +878,10 @@ func (m *Manager) runIncrementalGuarded() {
 	if idx == nil || ws == "" {
 		return
 	}
-	// A failed branch open (or init failure) left no collection to validate or
-	// update: the pass would fail at ValidateCollection/AddDocuments and its
-	// deferred terminal emission would only re-publish the "unavailable" state
-	// the failed open already announced. Skip the doomed pass — no tree walk,
-	// no MarkNotReady churn. The next successful SwitchBranch (branch change
-	// or project switch) reinstates the collection, reconciles the whole
-	// workspace, and resumes the passes.
+	// A failed branch open left no collection: the pass would only re-publish
+	// the "unavailable" state the failed open already announced — skip the
+	// doomed pass; the next successful SwitchBranch reinstates and resumes
+	// (specs/domains/workspace.md, failed-open handling).
 	if m.service.GetCollection() == nil {
 		m.logger.Info("incremental indexing skipped: no collection (index unavailable)")
 		return
@@ -1030,13 +890,10 @@ func (m *Manager) runIncrementalGuarded() {
 		ctx = context.Background()
 	}
 	m.indexing.Store(true)
-	// The debounce-fired pass IS background indexing work and must be joined
-	// by Shutdown's bounded drain like every other pass: a pass can fire
-	// inside the debounce window just before (or while) the user quits, and
-	// without the registration Shutdown would close the service while (or
-	// after) it still uses it. The guarded Add refuses the pass when Shutdown
-	// already sealed the manager (a timer re-armed before being stopped can
-	// fire late), so a late fire can never touch a closing service.
+	// The debounce-fired pass IS background indexing work: register it
+	// (refusal-guarded) so Shutdown's bounded drain covers it — a pass can
+	// fire just before the user quits, and a timer re-armed before being
+	// stopped can fire late into shutdown.
 	if !m.addIndexingWork() {
 		m.indexing.Store(false)
 		m.logger.Info("incremental indexing skipped: manager shutting down")
@@ -1090,12 +947,11 @@ func (m *Manager) wrapProgress(userFn ProgressCallback) ProgressCallback {
 	}
 }
 
-// notifyInitFailure surfaces an asynchronous init-project failure to the
-// caller (when it registered OnFailure) and records a terminal "unavailable"
-// state internally so GetIndexStatus reflects that vector search is disabled
-// for the active project rather than a stale prior state. It is called from
-// initProject's init-fatal paths (DB open / branch detect / branch switch);
-// the caller then flips readiness to true so WaitReady unblocks.
+// notifyInitFailure surfaces an async init failure to the caller (OnFailure)
+// and records the terminal "unavailable" state so GetIndexStatus reflects
+// that vector search is disabled for the active project, not a stale prior
+// state. Called from initProject's init-fatal paths; the caller then flips
+// readiness to true so WaitReady unblocks.
 func (m *Manager) notifyInitFailure(cbs ProjectCallbacks, err error) {
 	m.statusMu.Lock()
 	m.currentState = IndexStateUnavailable
@@ -1156,9 +1012,7 @@ func (m *Manager) GetIndexStatus() IndexStatus {
 	}
 }
 
-// SearchWaitTimeout returns the configured bound for how long search callers
-// may wait for index readiness (ManagerConfig.SearchWaitTimeout,
-// vector_index.search_wait_timeout_ms). The raw value is returned: 0 is the
+// SearchWaitTimeout returns the configured readiness-wait bound raw: 0 is the
 // explicit "fail fast" sentinel, so callers must special-case it rather than
 // pass it to context.WithTimeout.
 func (m *Manager) SearchWaitTimeout() time.Duration {
@@ -1166,9 +1020,9 @@ func (m *Manager) SearchWaitTimeout() time.Duration {
 }
 
 // NotReadyMessage renders an actionable message from an index-status snapshot
-// for callers whose bounded wait for readiness expired. It includes the
-// current state, progress percentage, and the file being indexed (when known)
-// so the model can retry semantic_search later or fall back to ripgrep/glob.
+// for callers whose bounded readiness wait expired — current state, progress,
+// current file — so the model can retry semantic_search later or fall back
+// to ripgrep/glob.
 func NotReadyMessage(st IndexStatus) string {
 	state := string(st.State)
 	if state == "" {
@@ -1192,53 +1046,41 @@ func NotReadyMessage(st IndexStatus) string {
 }
 
 // NotReadyError returns an error carrying the actionable not-ready message
-// built from the current index status. Used by search call sites whose
-// bounded wait (vector_index.search_wait_timeout_ms) expired, so the caller
-// learns how far indexing got instead of a bare deadline error.
+// from the current index status, for search call sites whose bounded wait
+// expired — the caller learns how far indexing got, not a bare deadline error.
 func (m *Manager) NotReadyError() error {
 	return errors.New(NotReadyMessage(m.GetIndexStatus()))
 }
 
-// freeOSMemoryAfterFullIndex returns the transient allocations of a
-// completed FULL indexing pass to the OS through the service's immutable
-// instance-local freeOSMemory dependency (runtime/debug.FreeOSMemory — a forced
-// GC cycle plus scavenge), the SAME dependency the park-eviction and content-less
-// migration paths use (see service.go). Tests inject it before creating workers,
-// so one service's recorder cannot affect another service's full pass.
-// Incremental passes deliberately do NOT call it: they allocate
-// proportionally to the changed files, and a forced full GC per debounce
-// flush would burn CPU for no memory win. Call only from background
-// goroutines, never under s.mu or m.mu — FreeOSMemory blocks for a full GC
-// cycle and would stall every lock holder.
+// freeOSMemoryAfterFullIndex returns the transient allocations of a completed
+// FULL pass to the OS via the service's immutable instance-local freeOSMemory
+// dependency (runtime/debug.FreeOSMemory; tests inject it per service).
+// Incremental passes deliberately do NOT call it: no spike to return, and a
+// forced GC per debounce flush would burn CPU. Never under s.mu or m.mu —
+// FreeOSMemory blocks for a full GC cycle.
 func (m *Manager) freeOSMemoryAfterFullIndex() {
 	m.service.freeOSMemory()
 }
 
-// handleBranchSwitch reacts to a branch change reported by the git monitor:
-// it delegates to the indexer's HandleBranchSwitch and returns the transient
-// allocation spike of a completed FULL pass to the OS (see
-// freeOSMemoryAfterFullIndex). The scavenge is gated on the switch actually
-// having run a full pass — matching the two sibling call sites, which also
-// require a successful full pass: the common switch (an already-indexed
-// target branch, including the same-branch no-op where SwitchBranch
-// early-returns and the incremental pass finds nothing to do) allocates
-// almost nothing, and an unconditional stop-the-world GC per branch hop
-// would freeze the whole app (in-flight LLM streaming included) for no
-// memory win.
+// handleBranchSwitch reacts to a branch change reported by the git monitor
+// and returns the transient allocation spike of a completed FULL pass to the
+// OS. The scavenge is gated on the switch actually running a full pass,
+// matching the sibling call sites: the common switch (already-indexed target,
+// or the same-branch no-op) allocates almost nothing, and an unconditional
+// stop-the-world GC per branch hop would freeze the whole app (in-flight LLM
+// streaming included) for no memory win.
 func (m *Manager) handleBranchSwitch(ctx context.Context, indexer *Indexer, workspacePath, newBranch string) {
 	// A stale monitor callback — a HEAD change debounced across a project
-	// switch or a shutdown — must not mutate the newly-switched project's
-	// index or touch a closed service: ctx is the originating project's index
-	// context, cancelled by the next SwitchProject/Shutdown, so a
-	// cancellation here means this callback no longer owns the live state.
+	// switch or shutdown — must not mutate the new project's index or touch
+	// a closed service: ctx is the originating project's index context,
+	// cancelled by the next SwitchProject/Shutdown.
 	if err := ctx.Err(); err != nil {
 		m.logger.Info("branch switch dropped: index context no longer live",
 			"branch", newBranch, "cause", context.Cause(ctx))
 		return
 	}
-	// Join the indexing work set (refused once Shutdown sealed it) so an
-	// in-flight switch is covered by the bounded Shutdown drain instead of
-	// racing service.Close().
+	// Join the indexing work set (refused once Shutdown sealed it) so the
+	// switch is covered by Shutdown's bounded drain.
 	if !m.addIndexingWork() {
 		m.logger.Info("branch switch dropped: manager shutting down", "branch", newBranch)
 		return
@@ -1255,15 +1097,11 @@ func (m *Manager) handleBranchSwitch(ctx context.Context, indexer *Indexer, work
 	}
 }
 
-// Reindex triggers a full reindex of the vector index for the active project.
-// It reconciles the current index against the workspace, re-indexing only
-// changed/new/deleted files; when no index exists yet (empty collection) it
-// falls back to a full build from scratch. The workspace path is the one stored
-// during SwitchProject and is read together with the indexer so a pass always
-// targets the project the indexer belongs to.
-//
-// Returns an error if no indexer is currently configured (i.e. no project has
-// been activated yet).
+// Reindex reconciles the active project's index against the workspace
+// (only changed/new/deleted files; empty collection → full build). The
+// workspace path is the one stored during SwitchProject and is read together
+// with the indexer, so a pass always targets the project the indexer belongs
+// to. Errors when no indexer is configured yet.
 func (m *Manager) Reindex(ctx context.Context) error {
 	m.mu.RLock()
 	idx := m.indexer
@@ -1296,9 +1134,8 @@ func (m *Manager) Reindex(ctx context.Context) error {
 	m.indexCtx = indexCtx
 	m.mu.Unlock()
 
-	// The Add must be refusal-guarded against a concurrent Shutdown's Wait
-	// (sync.WaitGroup misuse is fatal); a refused registration means the
-	// manager is closing and no pass may start.
+	// Refusal-guarded against a concurrent Shutdown's Wait (fatal WaitGroup
+	// misuse); refusal means the manager is closing and no pass may start.
 	if !m.addIndexingWork() {
 		return errors.New("vector index manager is shutting down; reindex refused")
 	}
@@ -1306,13 +1143,10 @@ func (m *Manager) Reindex(ctx context.Context) error {
 		defer m.indexingWG.Done()
 		col := m.service.GetCollection()
 		if col == nil {
-			// A failed branch open (or init failure) left nothing to build
-			// into: IndexFull would fail at AddDocuments and only re-publish
-			// the "unavailable" state the failed open already announced. The
-			// UI keeps this action disabled in that state; a programmatic
-			// caller gets a successful no-op with this log line — there is
-			// nothing to refuse work FOR, and the next successful
-			// SwitchBranch rebuilds the collection.
+			// A failed branch open left nothing to build into — a successful
+			// no-op instead of re-publishing the announced "unavailable"
+			// state; the next successful SwitchBranch rebuilds
+			// (specs/domains/workspace.md, failed-open handling).
 			m.logger.Info("reindex skipped: no collection (index unavailable)")
 			return
 		}
@@ -1320,9 +1154,7 @@ func (m *Manager) Reindex(ctx context.Context) error {
 		if col.Count() == 0 {
 			m.logger.Info("empty collection, running full index")
 			idxErr = idx.IndexFull(indexCtx, workspacePath)
-			// Same rationale as the initProject pass above (including the
-			// success gate): a completed full build's transient allocations go
-			// back to the OS immediately; no locks are held here.
+			// Same rationale and success gate as the initProject pass.
 			if idxErr == nil {
 				m.freeOSMemoryAfterFullIndex()
 			}
@@ -1342,23 +1174,15 @@ func (m *Manager) Reindex(ctx context.Context) error {
 	return nil
 }
 
-// Shutdown performs orderly cleanup: cancel indexing and async init, stop
-// monitor, close service, and close the embedder via CloseFn (if provided).
-//
-// Both the async init goroutine and any background indexing goroutines are
-// waited for with a bounded grace period (shutdownIndexGracePeriod). If either
-// does not exit within the grace after its context is cancelled — e.g. it is
-// stuck inside non-interruptible work such as chromem's gob-decode (init),
-// os.ReadFile, or a synchronous ONNX inference call (indexing) — the blocking
-// service.Close()/closeFn() are skipped. A stuck goroutine may hold the
-// service write lock or the embedder mutex, which Close() needs, so waiting
-// would hang shutdown forever. The OS reclaims the leaked resources when the
-// process exits.
+// Shutdown performs orderly cleanup: cancel indexing and async init, stop the
+// monitor, close the service, close the embedder via CloseFn. Both goroutine
+// groups are waited for with a bounded grace (shutdownIndexGracePeriod); a
+// goroutine stuck in non-interruptible work (chromem gob-decode, os.ReadFile,
+// synchronous ONNX inference) holds a lock Close needs, so on timeout the
+// blocking Close()/closeFn() are skipped — the OS reclaims at process exit.
 func (m *Manager) Shutdown() {
-	// Cancel the async init goroutine first and wait for it to exit before
-	// closing the service, so it can't touch a closed service. initProject
-	// checks ctx between steps and aborts after its current step (the chromem
-	// open, which is not itself interruptible) completes.
+	// Cancel the async init first so it cannot touch a closed service;
+	// initProject aborts after its current (non-interruptible) step.
 	m.mu.Lock()
 	if m.initCancel != nil {
 		m.initCancel()
@@ -1378,25 +1202,19 @@ func (m *Manager) Shutdown() {
 
 	m.stopDebounce()
 
-	// Seal the indexing work registry BEFORE any Wait: sync.WaitGroup forbids
-	// a positive Add concurrent with Wait, so every late registration (a
-	// Reindex RPC, a debounce-fired incremental pass, a git-monitor branch
-	// switch landing mid-shutdown) is refused from here on instead of racing
-	// the drain below. The initProject pass's own Add needs no guard: it runs
-	// on the init goroutine, which is joined via initWG before indexingWG is
-	// waited on, so that Add always happens-before the Wait.
+	// Seal the indexing work registry BEFORE any Wait: a positive Add
+	// concurrent with Wait is fatal, so every late registration (a Reindex
+	// RPC, a debounce-fired pass, a mid-shutdown branch switch) is refused
+	// from here on. The initProject pass's own Add needs no guard: the init
+	// goroutine is joined via initWG first, so its Add happens-before this.
 	m.sealIndexingWork()
 
 	grace := m.initDrainGrace()
 
-	// Wait for the async init goroutine, bounded by the grace period.
-	// initProject launches the background indexing goroutine, so it must exit
-	// first to know whether indexing was even started. initProject's heavy step
-	// — SwitchBranch's gob-decode of the active branch's documents into RAM
-	// (ADR-064) — is synchronous and not ctx-interruptible; an unbounded Wait
-	// would hang app shutdown if it stalled on a large or corrupt DB. Bound it
-	// instead: if it does not exit within the grace, skip the blocking
-	// Close()/closeFn().
+	// The init goroutine must exit first: initProject launches the background
+	// indexing goroutine, so Shutdown must know whether indexing even started.
+	// Its heavy step (the branch-scoped gob-decode, ADR-064) is not
+	// ctx-interruptible; an unbounded Wait would hang app shutdown.
 	initClean := m.waitBounded(&m.initWG, grace, "init")
 
 	// Only wait for indexing if init exited cleanly — otherwise indexing may
@@ -1404,11 +1222,8 @@ func (m *Manager) Shutdown() {
 	// service write lock that Close() needs.
 	indexClean := initClean && m.waitBounded(&m.indexingWG, grace, "indexing")
 
-	// Close resources only when both goroutine groups drained cleanly. A stuck
-	// goroutine may still hold the service write lock (during AddDocuments) or
-	// the embedder mutex (during synchronous ONNX inference), which
-	// Close()/closeFn() need; waiting would deadlock. Let the OS reclaim the
-	// leaked resources when the process exits.
+	// Close only when both groups drained cleanly — a stuck goroutine may
+	// still hold the locks Close()/closeFn() need; the OS reclaims at exit.
 	if indexClean {
 		if m.service != nil {
 			if err := m.service.Close(); err != nil {
@@ -1423,12 +1238,9 @@ func (m *Manager) Shutdown() {
 	}
 }
 
-// initDrainGrace resolves the grace period for bounding an init/indexing
-// goroutine drain. It returns the test-overridable m.shutdownGrace when set,
-// falling back to the production default shutdownIndexGracePeriod. The bound
-// applies only to Shutdown now — SwitchProject no longer drains initWG, so a
-// stuck init goroutine (blocked in the non-interruptible chromem gob-decode)
-// cannot hang a project switch either way.
+// initDrainGrace resolves the drain grace: the test-overridable
+// shutdownGrace when set, else shutdownIndexGracePeriod. SwitchProject never
+// drains initWG, so a stuck init cannot hang a project switch either way.
 func (m *Manager) initDrainGrace() time.Duration {
 	if m.shutdownGrace != 0 {
 		return m.shutdownGrace
@@ -1436,13 +1248,11 @@ func (m *Manager) initDrainGrace() time.Duration {
 	return shutdownIndexGracePeriod
 }
 
-// addIndexingWork registers one background indexing goroutine with
-// indexingWG on behalf of a late launcher (Reindex, a debounce-fired pass, a
-// git-monitor branch switch). It reports whether the registration happened:
-// a false return means Shutdown already sealed the manager (wgClosed), and
-// the caller must NOT launch the goroutine — that is what keeps every Add
-// strictly ordered against Shutdown's indexingWG.Wait instead of racing it
-// (a concurrent positive Add and Wait are a fatal sync.WaitGroup misuse).
+// addIndexingWork registers one background indexing goroutine for a late
+// launcher (Reindex, a debounce-fired pass, a git-monitor branch switch). A
+// false return means Shutdown already sealed the manager and the caller must
+// NOT launch — that is what keeps every Add strictly ordered against
+// Shutdown's Wait instead of racing it (a fatal sync.WaitGroup misuse).
 func (m *Manager) addIndexingWork() bool {
 	m.wgMu.Lock()
 	defer m.wgMu.Unlock()
@@ -1453,23 +1263,18 @@ func (m *Manager) addIndexingWork() bool {
 	return true
 }
 
-// sealIndexingWork marks the manager as closed for new indexing work. It must
-// be called by Shutdown before it drains indexingWG, so any later
-// addIndexingWork is refused rather than racing the Wait.
+// sealIndexingWork marks the manager closed for new indexing work; Shutdown
+// must call it before draining indexingWG.
 func (m *Manager) sealIndexingWork() {
 	m.wgMu.Lock()
 	m.wgClosed = true
 	m.wgMu.Unlock()
 }
 
-// waitBounded waits for wg to drain or for grace to elapse, whichever is first.
-// It returns true if the waitgroup drained cleanly within the grace period, or
-// false if it timed out — in which case the caller must skip any blocking
-// cleanup that depends on those goroutines having exited. This bounds the
-// drain for goroutines that may be stuck inside non-interruptible work
-// (chromem gob-decode, os.ReadFile, or synchronous ONNX inference) so a single
-// stuck goroutine can never hang app shutdown. (SwitchProject no longer uses
-// it: it never waits on initWG.)
+// waitBounded waits for wg to drain or grace to elapse; false means the
+// caller must skip blocking cleanup that depends on those goroutines having
+// exited. This bounds the drain for goroutines stuck in non-interruptible
+// work so a single stuck goroutine can never hang app shutdown.
 func (m *Manager) waitBounded(wg *sync.WaitGroup, grace time.Duration, what string) bool {
 	done := make(chan struct{})
 	go func() {

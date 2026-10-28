@@ -28,9 +28,9 @@ func extractPayload(eventName string, data []any, log *slog.Logger) (map[string]
 	return payload, true
 }
 
-// parseConfirmDecision converts the JSON decision field (which may arrive as a
-// JSON number → float64, an int, or a string) into a sdktools.ConfirmationResponse.
-// Returns ok=false on missing/unrecognized values and logs a warning.
+// parseConfirmDecision converts the JSON decision field (JSON number →
+// float64, an int, or a string) into a sdktools.ConfirmationResponse;
+// ok=false on missing/unrecognized values, with a warning logged.
 func parseConfirmDecision(payload map[string]any, log *slog.Logger) (sdktools.ConfirmationResponse, bool) {
 	decisionVal, ok := payload["decision"]
 	if !ok {
@@ -61,9 +61,8 @@ func parseConfirmDecision(payload map[string]any, log *slog.Logger) (sdktools.Co
 	}
 }
 
-// numericConfirmDecision converts an integer confirmation decision and rejects
-// values outside the valid ConfirmationResponse enum range, mirroring the
-// validation the string branch already applies to its known enum values.
+// numericConfirmDecision converts an integer decision and rejects values
+// outside the ConfirmationResponse enum range.
 func numericConfirmDecision(v int, log *slog.Logger) (sdktools.ConfirmationResponse, bool) {
 	d := sdktools.ConfirmationResponse(v)
 	if d < sdktools.ConfirmAllowOnce || d > sdktools.ConfirmDenyAndStop {
@@ -73,9 +72,8 @@ func numericConfirmDecision(v int, log *slog.Logger) (sdktools.ConfirmationRespo
 	return d, true
 }
 
-// parseStepLimitResponse validates a frontend-supplied step-limit response
-// string against the known enum values. Returns ok=false on unrecognized
-// values, mirroring parseConfirmDecision's defense-in-depth discipline.
+// parseStepLimitResponse validates a step-limit response string against the
+// known enum values; ok=false on unrecognized values.
 func parseStepLimitResponse(v string) (agent.StepLimitResponse, bool) {
 	switch v {
 	case string(agent.StepLimitAllowOnce):
@@ -91,13 +89,10 @@ func parseStepLimitResponse(v string) (agent.StepLimitResponse, bool) {
 	}
 }
 
-// parsePlanApprovalDecision validates a frontend-supplied plan-review
-// decision string against the known values (PlanApprovalResponsePayload in
-// the event catalog: approve / request_changes / abandon). Returns ok=false
-// on missing or unrecognized values, mirroring parseStepLimitResponse's
-// defense-in-depth discipline: an unrecognized decision is a malformed
-// response, not an implicit rejection, so the pending approval stays alive
-// for a valid retry instead of being consumed.
+// parsePlanApprovalDecision validates a plan-review decision string against
+// the event-catalog values (approve / request_changes / abandon); ok=false on
+// missing/unrecognized. An unrecognized decision is a malformed response, not
+// an implicit rejection — the pending approval stays alive for a valid retry.
 func parsePlanApprovalDecision(v string) (string, bool) {
 	switch v {
 	case "approve", "request_changes", "abandon":
@@ -107,12 +102,9 @@ func parsePlanApprovalDecision(v string) (string, bool) {
 	}
 }
 
-// parseGoalProposalDecision validates a frontend-supplied goal-proposal
-// decision string against the accepted enum (goalProposalResponse: approve /
-// cancel). Returns ok=false on missing or unrecognized values, mirroring
-// parsePlanApprovalDecision's defense-in-depth discipline: an unrecognized
-// decision is a malformed response, not an implicit cancel, so the pending
-// proposal stays alive for a valid retry instead of being consumed.
+// parseGoalProposalDecision validates a goal-proposal decision (approve /
+// cancel) under the same discipline: ok=false on unrecognized values leaves
+// the pending proposal alive instead of consuming it as an implicit cancel.
 func parseGoalProposalDecision(v string) (string, bool) {
 	switch v {
 	case "approve", "cancel":
@@ -155,18 +147,11 @@ func confirmDecisionString(resp sdktools.ConfirmationResponse) string {
 	}
 }
 
-// emitHitlResolved broadcasts the settlement of one pending HITL prompt to
-// every surface — the desktop webview AND all web-access browser tabs —
-// through the standard emit funnel (buildUIEmitFunc → batcher → a.emit →
-// event tap). This is the multi-surface convergence point for HITL answers:
-// a surface that did not perform the resolution (a second browser tab, a
-// side-by-side window, the webview while the user works in a browser)
-// retires its card on this event instead of waiting for the next
-// session-switch / focus-resync reconcile, and a surface that raced the
-// resolution learns the EFFECTIVE (first-responder) decision. Skipped at
-// Debug when no transport exists (a bare &App{} in unit tests): production
-// paths always run after Startup, so the guard only avoids noise where the
-// event could not be delivered anyway.
+// emitHitlResolved broadcasts one HITL settlement to every surface (webview +
+// web-access tabs) so they retire their open card and learn the effective
+// first-responder decision — the multi-surface convergence documented for
+// hitl_resolved in specs/contracts/event-catalog.md. Skipped at Debug when no
+// transport exists (a bare &App{} in unit tests).
 func (a *App) emitHitlResolved(sessionID string, kind session.HitlResolvedKind, id, decision string) {
 	if a.wailsCtx() == nil && a.wailsEmit == nil {
 		a.log().Debug("hitl_resolved skipped: no emit transport", "kind", string(kind), "id", id)
@@ -183,12 +168,10 @@ func (a *App) emitHitlResolved(sessionID string, kind session.HitlResolvedKind, 
 	})
 }
 
-// deliverResponse performs the best-effort buffered send shared by every
-// HITL response handler and reports whether the decision was DELIVERED. A
-// full channel means a receiver is gone or a faster responder already won —
-// the response is dropped, and the caller must not broadcast it as the
-// effective settlement (hitl_resolved carries the decision that actually
-// drove the agent).
+// deliverResponse performs the best-effort buffered send shared by every HITL
+// response handler and reports whether the decision was DELIVERED: a full
+// channel means the receiver is gone or a faster responder won, so the caller
+// must not broadcast the dropped response as the effective settlement.
 func deliverResponse[T any](ch chan T, resp T) bool {
 	select {
 	case ch <- resp:
@@ -198,9 +181,8 @@ func deliverResponse[T any](ch chan T, resp T) bool {
 	}
 }
 
-// handleToolConfirmResponse is the body of the EventToolConfirmResponse listener.
-// Extracted from wireWailsEventListeners (W-23) so it can be unit-tested without
-// a live Wails runtime.
+// handleToolConfirmResponse is the body of the EventToolConfirmResponse
+// listener (extracted so it is unit-testable without a live Wails runtime).
 func (a *App) handleToolConfirmResponse(payload map[string]any, log *slog.Logger) {
 	requestID, ok := stringField(payload, "confirm_id", "tool confirmation response", log)
 	if !ok {
@@ -243,26 +225,21 @@ func (a *App) handleToolConfirmResponse(payload map[string]any, log *slog.Logger
 		log.Warn("failed to resolve persisted tool_confirm message", "confirm_id", requestID, "error", err)
 	}
 
-	// Tell every surface the prompt is settled (multi-surface HITL
-	// convergence — see emitHitlResolved). Emitted AFTER the channel send and
-	// the pending-map delete so a surface reacting to the event can never
-	// re-answer a live entry: a late tool_confirm_response finds no pending
-	// confirmation and logs its first-responder-wins warning. Only a
-	// DELIVERED decision is broadcast — the event's contract says the payload
-	// carries the effective first-responder decision, and a response dropped
-	// on a full channel never became one.
+	// Emitted AFTER the channel send and the pending-map delete so a reacting
+	// surface can never re-answer a live entry; only a DELIVERED decision is
+	// broadcast (the payload carries the effective decision — see
+	// deliverResponse).
 	if sent {
 		a.emitHitlResolved(confirmData.sessionID, session.HitlResolvedToolConfirm, requestID, confirmDecisionString(resp))
 	}
 }
 
-// handleToolJudgeRequest is the body of the EventToolJudgeRequest listener.
-// It looks up the pending confirmation metadata and spawns runJudgeEvaluation
-// asynchronously so the event listener returns promptly. An in-flight marker
-// keyed by confirm_id drops repeat frames while an evaluation is still
-// running: first-responder-wins protects the response DELIVERY, but without
-// the marker a second frame (a double-click, a scripted client) would fan out
-// a second full-budget LLM evaluation that could only lose the response race.
+// handleToolJudgeRequest is the body of the EventToolJudgeRequest listener:
+// it looks up the pending confirmation and spawns runJudgeEvaluation
+// asynchronously. The beginJudgeEvaluation marker drops repeat frames —
+// first-responder-wins protects only the DELIVERY, so a second frame
+// (double-click, scripted client) would fan out a second full-budget LLM
+// evaluation that could only lose the response race.
 func (a *App) handleToolJudgeRequest(payload map[string]any, uiEmit func(session.Event), log *slog.Logger) {
 	confirmID, ok := stringField(payload, "confirm_id", "tool judge request", log)
 	if !ok {
@@ -293,11 +270,9 @@ func (a *App) handleToolJudgeRequest(payload map[string]any, uiEmit func(session
 	}()
 }
 
-// beginJudgeEvaluation claims the confirm_id's in-flight slot: true means the
-// caller owns the evaluation and must release it through
-// finishJudgeEvaluation; false means an evaluation for this confirm_id is
-// already running and a repeat request is dropped. The marker closes the gap
-// first-responder-wins leaves open — it protects the spawn, not the delivery.
+// beginJudgeEvaluation claims the confirm_id's in-flight slot (true = caller
+// owns it and must release via finishJudgeEvaluation; false = already
+// running, repeat dropped).
 func (a *App) beginJudgeEvaluation(confirmID string) bool {
 	_, loaded := a.judgeInFlight.LoadOrStore(confirmID, struct{}{})
 	return !loaded
@@ -350,11 +325,9 @@ func (a *App) runJudgeEvaluation(confirmID string, pendingData *pendingConfirmDa
 	judgeCtx, judgeCancel := context.WithTimeout(parentCtx, 120*time.Second)
 	defer judgeCancel()
 
-	// Inject session dump writer for judge LLM call observability, then
-	// enrich the judge context with the session's security scope (workspace,
-	// temp dir, EnvInfo, auxiliary work directories as allowed roots) so the
-	// judge LLM knows the session's directory scope — explicit and implicit
-	// additional work directories included.
+	// Inject the session dump writer (judge-call observability), then enrich
+	// the judge context with the session's security scope so the judge LLM
+	// sees the session's directory scope (explicit + implicit work dirs).
 	sess, sessOK := app.Manager().GetSession(pendingData.sessionID)
 	if sessOK {
 		if dumpFile := sess.DumpFile(); dumpFile != nil {
@@ -366,10 +339,9 @@ func (a *App) runJudgeEvaluation(confirmID string, pendingData *pendingConfirmDa
 
 	responsePayload := session.JudgeResponsePayload{ConfirmID: confirmID}
 
-	// Session-pinned judge evaluation (ADR-028): the manual "Judge" action on
-	// a confirmation card must evaluate on the session's own provider/model —
-	// the same judge automatic escalations use — falling back to the shared
-	// registry's judge when the session context is unavailable.
+	// Session-pinned judge evaluation (ADR-028): the manual "Judge" action
+	// evaluates on the session's own provider/model — the same judge
+	// automatic escalations use. See specs/decisions/028-session-pinned-judge.md.
 	_, reasoning, err := app.EvaluateJudgeForSession(judgeCtx, pendingData.sessionID, pendingData.toolName, pendingData.input, pendingData.taskContext)
 	if err != nil {
 		log.Warn("judge: evaluation failed", "confirm_id", confirmID, "tool", pendingData.toolName, "error", err)
@@ -420,10 +392,9 @@ func (a *App) handleAskUserResponse(payload map[string]any, log *slog.Logger) {
 		log.Warn("failed to resolve persisted ask_user message", "request_id", requestID, "error", err)
 	}
 
-	// Multi-surface convergence (see emitHitlResolved): the answers themselves
-	// are agent-owned payload, not UI state, so the event carries no decision —
-	// every other surface only needs to retire its open ask-user form. Only a
-	// delivered response settles the card on other surfaces.
+	// Multi-surface convergence (see emitHitlResolved): answers are
+	// agent-owned payload, so the event carries no decision — other surfaces
+	// only need to retire the open ask-user form.
 	if sent {
 		a.emitHitlResolved(entry.sessionID, session.HitlResolvedAskUser, requestID, "")
 	}
@@ -481,10 +452,9 @@ func (a *App) handlePlanApprovalResponse(payload map[string]any, log *slog.Logge
 }
 
 // resolveGoalProposal delivers a user decision to a blocked goal-proposal
-// channel and marks the persisted goal_proposal message resolved. Returns true
-// when a pending proposal was found and resolved, false otherwise. Shared by
-// the event-based path (handleGoalProposalResponse) and the RPC-based path
-// (FrontendAPI.ConfirmGoal/CancelGoal, via the manager resolver).
+// channel and marks the persisted goal_proposal message resolved; true when a
+// pending proposal was found. One funnel for the event path
+// (handleGoalProposalResponse) and the RPC path (ConfirmGoal/CancelGoal).
 func (a *App) resolveGoalProposal(requestID, decision, condition, verify, verificationMode string) bool {
 	if requestID == "" {
 		return false
@@ -505,9 +475,6 @@ func (a *App) resolveGoalProposal(requestID, decision, condition, verify, verifi
 		Verify:           verify,
 		VerificationMode: verificationMode,
 	}
-	// A full channel means the receiver is gone or a faster responder won:
-	// the decision is dropped and must not be broadcast as the settlement
-	// below; only the stale entry is cleaned up.
 	sent := deliverResponse(entry.ch, resp)
 	a.pendingGoalProposals.Delete(requestID)
 
@@ -523,20 +490,17 @@ func (a *App) resolveGoalProposal(requestID, decision, condition, verify, verifi
 		a.log().Warn("failed to resolve persisted goal_proposal message", "request_id", requestID, "error", err)
 	}
 
-	// Multi-surface convergence (see emitHitlResolved). Emitted HERE — in the
-	// shared resolver — so both the event-based path (handleGoalProposalResponse)
-	// and the RPC-based path (FrontendAPI.ConfirmGoal/CancelGoal via the
-	// manager resolver) broadcast the settlement. Only a delivered decision is
-	// broadcast — the payload carries the effective decision.
+	// Emitted HERE — in the shared resolver — so both the event and RPC paths
+	// broadcast the settlement (see emitHitlResolved); only a delivered
+	// decision is broadcast.
 	if sent {
 		a.emitHitlResolved(entry.sessionID, session.HitlResolvedGoalProposal, requestID, decision)
 	}
 	return true
 }
 
-// handleGoalProposalResponse is the body of the EventGoalProposalResponse listener.
-// Extracted from wireWailsEventListeners so it can be unit-tested without a live
-// Wails runtime.
+// handleGoalProposalResponse is the body of the EventGoalProposalResponse
+// listener (extracted so it is unit-testable without a live Wails runtime).
 func (a *App) handleGoalProposalResponse(payload map[string]any, log *slog.Logger) {
 	requestID, ok := stringField(payload, "request_id", "goal_proposal response", log)
 	if !ok {
@@ -559,11 +523,10 @@ func (a *App) handleGoalProposalResponse(payload map[string]any, log *slog.Logge
 }
 
 // resolveGoalSuggestion delivers a user decision to a blocked goal-suggestion
-// channel and marks the persisted goal_suggestion message resolved. Returns
-// true when a pending suggestion was found and resolved, false otherwise.
-// Shared by the event-based path (handleGoalSuggestionResponse) and the
-// RPC-based path (FrontendAPI.AcceptGoalSuggestion/DeclineGoalSuggestion, via
-// the manager resolver).
+// channel and marks the persisted goal_suggestion message resolved; true when
+// a pending suggestion was found. One funnel for the event path
+// (handleGoalSuggestionResponse) and the RPC path
+// (AcceptGoalSuggestion/DeclineGoalSuggestion).
 func (a *App) resolveGoalSuggestion(requestID, decision string) bool {
 	if requestID == "" {
 		return false
@@ -578,9 +541,6 @@ func (a *App) resolveGoalSuggestion(requestID, decision string) bool {
 		return false
 	}
 
-	// A full channel means the receiver is gone or a faster responder won:
-	// the decision is dropped and must not be broadcast as the settlement
-	// below; only the stale entry is cleaned up.
 	sent := deliverResponse(entry.ch, goalSuggestionResponse{Decision: decision})
 	a.pendingGoalSuggestions.Delete(requestID)
 
@@ -593,12 +553,9 @@ func (a *App) resolveGoalSuggestion(requestID, decision string) bool {
 		a.log().Warn("failed to resolve persisted goal_suggestion message", "request_id", requestID, "error", err)
 	}
 
-	// Multi-surface convergence (see emitHitlResolved). Emitted HERE — in the
-	// shared resolver — so both the event-based path
-	// (handleGoalSuggestionResponse) and the RPC-based path
-	// (FrontendAPI.AcceptGoalSuggestion/DeclineGoalSuggestion via the manager
-	// resolver) broadcast the settlement. Only a delivered decision is
-	// broadcast — the payload carries the effective decision.
+	// Emitted HERE — in the shared resolver — so both the event and RPC paths
+	// broadcast the settlement (see emitHitlResolved); only a delivered
+	// decision is broadcast.
 	if sent {
 		a.emitHitlResolved(entry.sessionID, session.HitlResolvedGoalSuggestion, requestID, decision)
 	}
@@ -606,8 +563,7 @@ func (a *App) resolveGoalSuggestion(requestID, decision string) bool {
 }
 
 // handleGoalSuggestionResponse is the body of the EventGoalSuggestionResponse
-// listener. Extracted from wireWailsEventListeners so it can be unit-tested
-// without a live Wails runtime.
+// listener (extracted so it is unit-testable without a live Wails runtime).
 func (a *App) handleGoalSuggestionResponse(payload map[string]any, log *slog.Logger) {
 	requestID, ok := stringField(payload, "request_id", "goal_suggestion response", log)
 	if !ok {
@@ -625,9 +581,8 @@ func (a *App) handleGoalSuggestionResponse(payload map[string]any, log *slog.Log
 }
 
 // parseAskUserAnswers extracts the typed answers slice from the untyped JSON
-// payload. Missing or malformed entries are silently skipped — the question
-// IDs are owned by the orchestrator and unrecognized IDs would be rejected
-// upstream anyway.
+// payload; malformed entries are skipped (unrecognized question IDs are
+// rejected upstream anyway).
 func parseAskUserAnswers(payload map[string]any) coretools.AskUserResponse {
 	var resp coretools.AskUserResponse
 

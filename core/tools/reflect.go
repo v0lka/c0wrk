@@ -23,9 +23,8 @@ type ReflectionResult struct {
 	ActionPlan      string `json:"action_plan"`
 }
 
-// ReflectionRunner builds the trajectory, invokes the Reflector, persists the
-// reflection to the blackboard, and emits the OnReflected event.
-// The implementation lives in the core layer.
+// ReflectionRunner runs a reflection: trajectory → Reflector → blackboard
+// persist → OnReflected event. See specs/contracts/conductor-tools.md.
 type ReflectionRunner interface {
 	Reflect(ctx context.Context, scope, delegationID string) (ReflectionResult, error)
 }

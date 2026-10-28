@@ -11,7 +11,6 @@ import (
 
 const defaultActivityCap = 200
 
-// writeRecord tracks a single write operation for the activity log.
 type writeRecord struct {
 	Path      string
 	SessionID string
@@ -19,13 +18,11 @@ type writeRecord struct {
 	Sig       sdktools.FileSig
 }
 
-// FileCoherenceTracker detects cross-session file conflicts by tracking
-// per-session file signatures and comparing them before read/write operations.
-// It implements sdktools.FileCoherenceChecker.
-//
-// Lock ordering: t.mu must be acquired BEFORE t.fileMu to avoid deadlocks.
-// pruneOrphanFileMutexesLocked follows this ordering (caller holds t.mu,
-// then it acquires t.fileMu internally).
+// FileCoherenceTracker detects cross-session file conflicts by comparing
+// per-session file signatures before read/write operations
+// (specs/domains/session-lifecycle.md); it implements
+// sdktools.FileCoherenceChecker. Lock ordering: t.mu BEFORE t.fileMu —
+// pruneOrphanFileMutexesLocked relies on it (holds t.mu, takes t.fileMu).
 type FileCoherenceTracker struct {
 	mu           sync.RWMutex
 	snapshots    map[string]map[string]sdktools.FileSig // sessionID -> path -> sig
@@ -36,16 +33,12 @@ type FileCoherenceTracker struct {
 	nameResolver func(string) string
 }
 
-// fileLockEntry is a per-path mutex plus a reference count of every Lock
-// (holder or waiter) that resolved this entry. The refcount is what keeps the
-// entry alive while a lock is held or waited on: pruning must never delete an
-// entry whose mutex is (or may be) locked, because Unlock re-resolves the
-// entry by path — a deleted entry would no-op the Unlock and leave the mutex
-// locked forever, blocking the next Lock on that path (or, after a fresh
-// entry is created, break same-path exclusivity entirely). The count is
-// incremented under fileMu at Lock time and decremented at Unlock time, so a
-// nonzero count exactly covers the lock's hold window, including the span
-// between Lock and the first snapshot/activity record for the path.
+// fileLockEntry is a per-path mutex plus a refcount of every Lock (holder or
+// waiter) that resolved it. A nonzero refcount covers the whole hold/wait
+// window: pruning must never delete a pinned entry, because Unlock
+// re-resolves the entry by path — a deleted entry would no-op the Unlock and
+// strand the mutex locked (or break same-path exclusivity once a fresh entry
+// is created).
 type fileLockEntry struct {
 	mu   sync.Mutex
 	refs int
@@ -63,9 +56,7 @@ func NewFileCoherenceTracker(nameResolver func(string) string) *FileCoherenceTra
 	}
 }
 
-// Lock acquires a per-file mutex for the given path. The resolved entry is
-// pinned by the refcount for the whole hold window, so a concurrent prune
-// cannot remove it out from under the matching Unlock.
+// Lock acquires the per-file mutex for the given path.
 func (t *FileCoherenceTracker) Lock(path string) {
 	t.fileMu.Lock()
 	e, ok := t.fileMutexes[path]
@@ -78,11 +69,8 @@ func (t *FileCoherenceTracker) Lock(path string) {
 	e.mu.Lock()
 }
 
-// Unlock releases the per-file mutex for the given path. The entry is still
-// guaranteed to be in the map — the Lock that acquired it pinned it with its
-// refcount, and pruning skips pinned entries — so the exact mutex that was
-// locked is the one unlocked (no no-op on a pruned entry, no unlock of a
-// replacement mutex). Unmatched Unlock calls (no prior Lock) are ignored.
+// Unlock releases the per-file mutex for the given path; unmatched Unlock
+// calls (no prior Lock) are ignored.
 func (t *FileCoherenceTracker) Unlock(path string) {
 	t.fileMu.Lock()
 	e, ok := t.fileMutexes[path]
@@ -95,9 +83,8 @@ func (t *FileCoherenceTracker) Unlock(path string) {
 	t.fileMu.Unlock()
 }
 
-// CheckRead checks if the file at path changed since this session last read it.
-// Always updates the session's snapshot to the current on-disk state.
-// Returns nil on first read or when the file has not changed.
+// CheckRead checks whether the file changed since this session last read it,
+// updating the session's snapshot; nil on first read or unchanged.
 func (t *FileCoherenceTracker) CheckRead(ctx context.Context, path string) *sdktools.CoherenceConflict {
 	sessionID := SessionIDFromContext(ctx)
 	if sessionID == "" {
@@ -124,7 +111,6 @@ func (t *FileCoherenceTracker) CheckRead(ctx context.Context, path string) *sdkt
 		return nil
 	}
 
-	// File changed since last read — find who modified it
 	modifiedBy, modifiedAt := t.findLastWriter(path, sessionID)
 
 	return &sdktools.CoherenceConflict{
@@ -149,7 +135,6 @@ func (t *FileCoherenceTracker) CheckWrite(ctx context.Context, path string) *sdk
 	t.mu.RUnlock()
 
 	if !hasPrev {
-		// No prior read — session has no stale knowledge to conflict on.
 		return nil
 	}
 
@@ -218,7 +203,6 @@ func (t *FileCoherenceTracker) RecordDelete(ctx context.Context, path string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	// Remove path from all sessions' snapshots.
 	for sid := range t.snapshots {
 		delete(t.snapshots[sid], path)
 	}
@@ -250,13 +234,9 @@ func (t *FileCoherenceTracker) PurgeSession(sessionID string) {
 	t.pruneOrphanFileMutexesLocked()
 }
 
-// pruneOrphanFileMutexesLocked removes per-path mutexes for paths that are
-// no longer referenced by any session's snapshot map, have no remaining
-// entries in the activity log, AND are not currently pinned by a Lock (a
-// nonzero refcount covers the whole hold/wait window between Lock and
-// Unlock — deleting a pinned entry would strand the lock held forever and
-// break same-path exclusivity, since Unlock re-resolves the entry by path).
-// The caller must hold t.mu.
+// pruneOrphanFileMutexesLocked removes per-path mutexes referenced by no
+// session's snapshot map or activity entry; pinned entries (refs > 0 — see
+// fileLockEntry) survive. The caller must hold t.mu.
 func (t *FileCoherenceTracker) pruneOrphanFileMutexesLocked() {
 	t.fileMu.Lock()
 	defer t.fileMu.Unlock()
@@ -277,9 +257,6 @@ func (t *FileCoherenceTracker) pruneOrphanFileMutexesLocked() {
 			continue
 		}
 		if e.refs > 0 {
-			// Held or waited-on: the Lock that pinned it still has its Unlock
-			// ahead of it. Leave the entry in place; it becomes prunable once
-			// the refcount drops back to zero.
 			continue
 		}
 		delete(t.fileMutexes, path)
@@ -314,7 +291,6 @@ func (t *FileCoherenceTracker) removeSnapshot(sessionID, path string) {
 
 func (t *FileCoherenceTracker) appendActivity(r writeRecord) {
 	if len(t.activity) >= t.activityCap {
-		// Drop oldest entry.
 		copy(t.activity, t.activity[1:])
 		t.activity = t.activity[:len(t.activity)-1]
 	}

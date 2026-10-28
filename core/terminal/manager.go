@@ -17,10 +17,9 @@ import (
 	"github.com/v0lka/c0wrk/internal/shellresolver"
 )
 
-// sameEnvKey reports whether two environment variable names denote the same
-// variable. Unix names are case-sensitive: inherited entries always use the
-// exact spelling of the configured or built-in key they collide with, so
-// byte equality is sufficient (and stricter than any fold).
+// sameEnvKey reports whether two env-var names denote the same variable.
+// Unix names are case-sensitive: inherited entries always carry the exact
+// spelling of a configured or built-in key, so byte equality suffices.
 func sameEnvKey(a, b string) bool {
 	return a == b
 }
@@ -34,15 +33,9 @@ type Session struct {
 	mu       sync.Mutex    // per-session mutex for PTY I/O (avoids serializing writes across sessions)
 }
 
-// NewManager creates a new terminal manager.
-// The rootCtx is the application lifecycle context — cancelling it triggers
-// cleanup of all active terminal sessions.
-// The emit callback streams raw PTY output; onExit is fired when a shell
-// process exits on its own (not on explicit Stop/StopAll). Both are optional
-// (nil → no-op).
-// userEnv (optional, may be nil) carries user-configured environment variables
-// (config `terminal.env`) set on every shell process; values win over the
-// inherited environment and built-in defaults.
+// NewManager creates a Manager. rootCtx is the app lifecycle context
+// (cancelling it tears down every session); emit, onExit and userEnv are
+// optional (nil → no-op / none) with their contracts documented on Manager.
 func NewManager(rootCtx context.Context, logger *slog.Logger, emit func(sessionID string, data []byte), onExit func(sessionID string), userEnv map[string]string) *Manager {
 	if logger == nil {
 		logger = slog.Default()
@@ -63,8 +56,8 @@ func NewManager(rootCtx context.Context, logger *slog.Logger, emit func(sessionI
 	}
 }
 
-// Start creates a new PTY-backed shell for the given session ID.
-// The workDir is used as the shell's working directory.
+// Start creates a new PTY-backed shell for sessionID with workDir as the
+// shell's working directory.
 func (m *Manager) Start(sessionID, workDir string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -80,11 +73,6 @@ func (m *Manager) Start(sessionID, workDir string) error {
 	if workDir != "" {
 		cmd.Dir = workDir
 	}
-
-	// Set terminal-specific environment variables so the shell knows its
-	// capabilities (cursor movement, colors, completion menus, etc.).
-	// Without TERM the shell defaults to "dumb" and advanced features like
-	// zsh autosuggestions and tab-completion menus render incorrectly.
 	cmd.Env = buildTermEnv(m.userEnv)
 
 	ptmx, err := pty.Start(cmd)
@@ -93,15 +81,14 @@ func (m *Manager) Start(sessionID, workDir string) error {
 		return fmt.Errorf("failed to start pty: %w", err)
 	}
 
-	// Ensure initial terminal size is set — some shells wait for a valid size
-	// before emitting a prompt.
+	// Set an initial size — some shells withhold the prompt until the PTY has one.
 	_ = pty.Setsize(ptmx, &pty.Winsize{Cols: 80, Rows: 24})
 
 	sess := &Session{cmd: cmd, ptmx: ptmx, cancel: cancel, readDone: make(chan struct{})}
 	m.sessions[sessionID] = sess
 
-	// Stop cancels/closes the PTY to end this worker. The completion signal
-	// includes callbacks; Stop itself must not join a callback that calls Stop.
+	// readDone fires only after readLoop's callbacks return; Stop must never
+	// join it — a callback can itself call Stop and deadlock.
 	go func() {
 		defer close(sess.readDone)
 		m.readLoop(ctx, sessionID, ptmx)
@@ -112,7 +99,6 @@ func (m *Manager) Start(sessionID, workDir string) error {
 }
 
 // Write sends data to the PTY stdin of the given session.
-// Uses a per-session mutex so writes across different sessions don't serialize.
 func (m *Manager) Write(sessionID string, data []byte) error {
 	m.mu.Lock()
 	sess, exists := m.sessions[sessionID]
@@ -130,7 +116,6 @@ func (m *Manager) Write(sessionID string, data []byte) error {
 }
 
 // Resize updates the PTY size for the given session.
-// Uses a per-session mutex so resizes across different sessions don't serialize.
 func (m *Manager) Resize(sessionID string, cols, rows int) error {
 	m.mu.Lock()
 	sess, exists := m.sessions[sessionID]
@@ -147,10 +132,9 @@ func (m *Manager) Resize(sessionID string, cols, rows int) error {
 	return nil
 }
 
-// teardown releases all resources owned by a session: it cancels the context
-// (which kills the process via exec.CommandContext), closes the PTY fd, and
-// signals the shell to terminate. It must only be called by the goroutine that
-// just removed the session from m.sessions, so cleanup is never performed twice.
+// teardown releases all session resources: cancel (killing the process via
+// exec.CommandContext), PTY close, child kill. Single-owner: only the
+// goroutine that just removed the session from m.sessions may call it.
 func (m *Manager) teardown(sess *Session, sessionID string) {
 	sess.cancel()
 	if err := sess.ptmx.Close(); err != nil {
@@ -161,13 +145,9 @@ func (m *Manager) teardown(sess *Session, sessionID string) {
 			m.logger.Warn("failed to kill shell process", "session_id", sessionID, "error", err)
 		}
 	}
-	// Reap the child: on Unix an exited child stays a zombie (defunct) until
-	// its parent Wait()s, and the Go runtime does not auto-reap. teardown is
-	// the single owner of the session lifecycle — it is called exactly once,
-	// by the goroutine that just removed the session from the map — so this
-	// is the one place a Wait can never race another Wait. The child was just
-	// killed (or already exited on its own), so Wait returns promptly; the
-	// collected status is almost always "signal: killed" and not interesting.
+	// Reap the child: the Go runtime does not auto-reap on Unix, and teardown
+	// being the single lifecycle owner makes this the one Wait that can never
+	// race another. Wait is prompt (child just killed/exited) and uninteresting.
 	_ = sess.cmd.Wait()
 }
 
@@ -212,8 +192,7 @@ func (m *Manager) IsActive(sessionID string) bool {
 	return exists
 }
 
-// readLoop continuously reads from the PTY and emits output events.
-// It exits when the PTY is closed or the context is cancelled.
+// readLoop reads the PTY until it closes or ctx is cancelled, emitting output.
 func (m *Manager) readLoop(ctx context.Context, sessionID string, ptmx *os.File) {
 	buf := make([]byte, 4096)
 	for {
@@ -237,13 +216,11 @@ func (m *Manager) readLoop(ctx context.Context, sessionID string, ptmx *os.File)
 		}
 	}
 
-	// Clean up the session when the process exits naturally. Stop() cannot
-	// reclaim the fd/context once the session is gone from the map, so
-	// readLoop must mirror its teardown to avoid leaking the PTY fd and the
-	// per-session context. An explicit Stop/StopAll removes the session from
-	// the map first, so this readLoop observes a missing or mismatched session
-	// and must stay silent: emitting the "session ended" marker or firing
-	// onExit here would mark a healthy replacement shell dead.
+	// Natural exit: readLoop mirrors Stop's teardown — Stop cannot reclaim
+	// the fd/context for a session it did not remove itself. An explicit
+	// Stop/StopAll removed the map entry first, so a missing or mismatched
+	// session stays silent: marker and onExit would kill a healthy replacement.
+	// See specs/domains/terminal.md (Natural-exit protocol).
 	m.mu.Lock()
 	sess, exists := m.sessions[sessionID]
 	naturalExit := exists && sess.ptmx == ptmx

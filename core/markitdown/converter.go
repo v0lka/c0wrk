@@ -1,15 +1,9 @@
-// Package markitdown converts supported documents to Markdown by shelling out
-// to the managed markitdown CLI (pre-installed at ~/.c0wrk/tools/bin and
-// prepended to PATH during application startup).
-//
-// Optionally, when constructed with the managed venv Python path and given
-// per-document VisionOptions, conversions run through the markitdown library
-// API via an embedded Python driver so images embedded in documents are
-// captioned by the active vision-capable LLM (see ConvertWithVision).
-//
-// A single *Converter is safe for concurrent use: it carries only immutable
-// configuration (a logger, a per-call timeout, and an optional interpreter
-// path) and each Convert invocation spawns its own subprocess.
+// Package markitdown converts supported documents to Markdown via the
+// managed markitdown CLI (specs/domains/tool-manager.md), optionally through
+// the library API via an embedded Python driver so embedded images are
+// captioned by the active vision-capable LLM (ConvertWithVision; specs/
+// domains/session-lifecycle.md, Data Egress). Concurrency-safe: immutable
+// configuration only, one subprocess per conversion.
 package markitdown
 
 import (
@@ -28,10 +22,9 @@ import (
 	"github.com/v0lka/c0wrk/internal/sysproc"
 )
 
-// supportedExts is the whitelist of document/text extensions that the
-// markitdown CLI can convert. Entries carry no leading dot and are stored in
-// canonical lowercase form. Both ".htm" and ".html" are present because the
-// CLI accepts both spellings.
+// supportedExts is the lowercase, dotless whitelist of extensions the
+// markitdown CLI converts (.htm and .html both present — the CLI accepts
+// both spellings).
 var supportedExts = []string{
 	"pdf", "docx", "pptx", "xlsx", "odt",
 	"html", "htm",
@@ -39,9 +32,7 @@ var supportedExts = []string{
 	"txt", "md", "json", "xml", "rst",
 }
 
-// supportedExtSet is an O(1) lookup view over supportedExts. It is built once
-// at package initialisation; SupportedExtensions always returns a copy so the
-// package whitelist itself remains immutable.
+// supportedExtSet is an O(1) lookup view over supportedExts, built at init.
 var supportedExtSet = func() map[string]struct{} {
 	m := make(map[string]struct{}, len(supportedExts))
 	for _, e := range supportedExts {
@@ -50,19 +41,16 @@ var supportedExtSet = func() map[string]struct{} {
 	return m
 }()
 
-// SupportedExtensions returns the file extensions (without a leading dot) that
-// the markitdown converter accepts. The returned slice is a defensive copy;
-// callers may mutate it without affecting the package whitelist.
+// SupportedExtensions returns the accepted extensions (no leading dot) as a
+// defensive copy.
 func SupportedExtensions() []string {
 	out := make([]string, len(supportedExts))
 	copy(out, supportedExts)
 	return out
 }
 
-// IsSupported reports whether the file at path has an extension that markitdown
-// can convert. The check is case-insensitive and tolerates a leading dot on the
-// extension (e.g. both ".MD" and "md" match). Files with no extension, or an
-// extension outside the whitelist (e.g. ".mp3", ".jpg"), report false.
+// IsSupported reports whether path's extension is convertible (case- and
+// leading-dot tolerant).
 func IsSupported(path string) bool {
 	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(path), "."))
 	if ext == "" {
@@ -72,36 +60,26 @@ func IsSupported(path string) bool {
 	return ok
 }
 
-// Converter shells out to the markitdown CLI to convert supported documents
-// into Markdown. When constructed with a managed venv Python path AND given
-// per-call VisionOptions (see ConvertWithVision), it instead runs the
-// markitdown library through an embedded Python driver so embedded images can
-// be captioned by a vision-capable LLM.
+// Converter converts supported documents to Markdown, optionally through the
+// vision driver (see ConvertWithVision).
 type Converter struct {
 	log        *slog.Logger
 	timeout    time.Duration
 	pythonPath string // managed venv interpreter for vision-assisted conversion; "" disables it
 }
 
-// Options configures a Converter. Logger and Timeout mirror the original
-// NewConverter parameters; PythonPath additionally enables vision-assisted
-// conversion by pointing at the managed venv interpreter that has the
-// markitdown package importable (see toolmanager.VenvPythonPath). An empty
-// PythonPath keeps the Converter fully functional for plain conversions —
-// ConvertWithVision then degrades to the plain CLI path.
+// Options configures a Converter; PythonPath (the managed venv interpreter,
+// toolmanager.VenvPythonPath) enables vision-assisted conversion — empty
+// keeps plain conversions fully functional.
 type Options struct {
 	Logger     *slog.Logger
 	Timeout    time.Duration
 	PythonPath string
 }
 
-// NewConverter returns a Converter backed by the markitdown CLI. It verifies
-// that markitdown is resolvable on PATH; the returned error is wrapped with %w
-// so callers can detect a missing binary via errors.Is(err, exec.ErrNotFound).
-//
-// A nil logger is replaced with a discard handler so the Converter never panics
-// on a logging call. A non-positive timeout disables the per-call deadline,
-// leaving cancellation entirely to the caller's context.
+// NewConverter verifies markitdown is resolvable on PATH (errors.Is(err,
+// exec.ErrNotFound) detects a missing binary); a nil logger becomes a
+// discard handler, a non-positive timeout leaves cancellation to ctx.
 func NewConverter(opts Options) (*Converter, error) {
 	logger := opts.Logger
 	if logger == nil {
@@ -113,98 +91,51 @@ func NewConverter(opts Options) (*Converter, error) {
 	return &Converter{log: logger, timeout: opts.Timeout, pythonPath: opts.PythonPath}, nil
 }
 
-// Convert converts the file at path to Markdown by running the markitdown CLI.
-//
-// The caller's context governs cancellation. When the Converter has a positive
-// timeout it is merged with ctx as a deadline (the sooner of the two wins), so
-// a single runaway conversion cannot outlive the configured budget.
-//
-// On success the trimmed stdout is returned as markdown. A non-zero exit, a
-// missing file, or an unsupported format each yield a wrapped error. The
-// underlying cause is always reachable via errors.Is / errors.As — missing
-// files wrap the os.Stat error, cancellation wraps context.Canceled or
-// context.DeadlineExceeded, and CLI failures wrap the exec error with short
-// bounded excerpts of the command's captured stdout and stderr.
+// Convert converts path to Markdown via the markitdown CLI; a positive
+// timeout merges with ctx (sooner wins) and every failure wraps its cause
+// (os.Stat, context cancellation, or exec + bounded stream excerpts).
 func (c *Converter) Convert(ctx context.Context, path string) (string, error) {
 	return c.convert(ctx, path, nil)
 }
 
-// ConvertWithVision converts the file at path like Convert, additionally
-// passing connection parameters for a vision-capable LLM so markitdown can
-// describe images embedded in the document (e.g. pictures in pptx decks).
-//
-// Per-document semantics: callers resolve vision options for THE CURRENT
-// active model on every call (see VisionResolver); the Converter applies — or
-// ignores — whatever it receives, so a mid-session model switch takes effect
-// on the very next conversion.
-//
-// Degradation is always graceful and toward the current behavior:
-//   - nil or incomplete options → plain CLI conversion;
-//   - no PythonPath configured → plain CLI conversion (logged at debug);
-//   - driver failure (non-zero exit, import error, …) → the conversion is
-//     retried once via the plain CLI and only that error can surface.
-//
-// The vision attempt runs under an elevated per-file deadline (at least
-// visionTimeoutFloor): captioning performs one LLM round-trip per embedded
-// image, which routinely exceeds the plain 2-minute conversion budget. That
-// deadline is a single budget for the whole vision-assisted conversion: a
-// driver failure falls back to the plain CLI on the SAME derived context, so
-// the retry only gets whatever budget remains — a vision attempt that
-// exhausted (or exceeded) the deadline never unlocks a fresh full plain
-// conversion window.
+// ConvertWithVision converts like Convert, additionally passing connection
+// parameters for a vision-capable LLM so embedded images are captioned.
+// Options resolve per document (VisionResolver); degradation is always
+// toward plain CLI — nil/incomplete options or no PythonPath convert
+// plainly, a driver failure retries plainly on the SAME shared deadline
+// (specs/domains/session-lifecycle.md).
 func (c *Converter) ConvertWithVision(ctx context.Context, path string, vision *VisionOptions) (string, error) {
 	return c.convert(ctx, path, vision)
 }
 
-// visionTimeoutFloor is the minimum per-file deadline for vision-assisted
-// conversion — the budget covers the vision attempt AND the plain-CLI
-// fallback that may follow it. Each embedded image costs one LLM round-trip
-// (seconds each), so a deck with dozens of pictures legitimately needs more
-// than the plain conversion budget.
+// visionTimeoutFloor is the minimum per-file deadline for the vision attempt
+// AND its plain-CLI fallback (each embedded image costs one LLM round-trip).
 const visionTimeoutFloor = 5 * time.Minute
 
-// MaxConversionOutputBytes caps how much subprocess output (converted stdout
-// plus diagnostics stderr) the converter buffers. Converting a large or
-// hostile document must not grow the desktop process's memory without bound
-// (the previous bytes.Buffer/CombinedOutput capture was unbounded). A
-// conversion whose output exceeds the cap FAILS with a clear error rather
-// than truncating silently — a silently-truncated markdown document would be
-// indistinguishable from a complete one.
-//
-// Exported so consumers of conversion results can size their reads to exactly
-// the largest legal result: the read_file document cache persists converted
-// markdown to disk and reads entries back with
-// safeio.ReadFileLimited(…, MaxConversionOutputBytes) — the safeio default
-// cap would refuse entries between the two limits and silently disable the
-// cache for the largest documents it exists for.
+// MaxConversionOutputBytes caps buffered subprocess output; a conversion
+// over the cap FAILS rather than truncating silently. The read_file document
+// cache sizes its disk reads with safeio.ReadFileLimited(…, this value) —
+// the two sides must move together.
+// See specs/domains/tool-system/builtins.md (Document Conversion).
 const MaxConversionOutputBytes = int64(32 << 20)
 
 // maxConverterOutputBytes is MaxConversionOutputBytes as the int the bounded
 // capture buffers are sized with.
 const maxConverterOutputBytes = int(MaxConversionOutputBytes)
 
-// maxErrorStreamBytes bounds how much of a captured subprocess stream
-// (stdout or stderr) is embedded into an error string or log record. The
-// capture buffers may legally hold up to maxConverterOutputBytes (32 MiB)
-// per stream — far too much to paste into an error message that callers
-// persist and render. The head of the stream carries the diagnostic: CLI
-// tracebacks and module errors state their failing reason early.
+// maxErrorStreamBytes bounds how much of a captured stream an error/log
+// record embeds — the head carries the diagnostic.
 const maxErrorStreamBytes = 2 << 10
 
-// streamExcerpt returns the first maxErrorStreamBytes bytes of s with any
-// invalid UTF-8 replaced by U+FFFD (subprocess stderr is not guaranteed to
-// be valid UTF-8, and an error excerpt must stay diagnosable instead of
-// collapsing to empty), never
-// splitting a multi-byte UTF-8 rune at the cut point.
+// streamExcerpt returns at most maxErrorStreamBytes bytes of s, UTF-8-safe:
+// invalid bytes become U+FFFD and the cut never splits a rune.
 func streamExcerpt(s string) string {
 	if len(s) <= maxErrorStreamBytes {
 		return strings.ToValidUTF8(s, "\uFFFD")
 	}
 	cut := s[:maxErrorStreamBytes]
-	// Trim at most one rune split by the cut point: walk the tail back over
-	// continuation bytes to the enclosing lead byte. An invalid byte ANYWHERE
-	// else must not shrink the excerpt (it cannot be fixed by trimming) — it
-	// is replaced by U+FFFD below instead.
+	// Trim at most the one rune split by the cut point; an invalid byte
+	// anywhere else cannot be fixed by trimming and becomes U+FFFD below.
 	for i := 0; i < utf8.UTFMax-1 && cut != ""; i++ {
 		if utf8.ValidString(cut) {
 			break
@@ -217,11 +148,8 @@ func streamExcerpt(s string) string {
 	return strings.ToValidUTF8(cut, "\uFFFD")
 }
 
-// boundedBuffer is an io.Writer that buffers at most max bytes and then
-// fails the write — which breaks the subprocess's stdout/stderr copy and
-// therefore surfaces through cmd.Run — instead of buffering without bound.
-// overflow records that the cap was hit so the caller can report a precise
-// error rather than a generic copy failure.
+// boundedBuffer buffers at most max bytes, then fails the write (surfacing
+// through cmd.Run); overflow marks that the cap was hit for a precise error.
 type boundedBuffer struct {
 	max      int
 	buf      bytes.Buffer
@@ -241,9 +169,8 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 
 func (b *boundedBuffer) String() string { return b.buf.String() }
 
-// convert implements both Convert and ConvertWithVision. See those methods
-// for the documented semantics; this helper owns the mode selection, the
-// vision fallback chain, and the shared validation.
+// convert implements both Convert and ConvertWithVision: mode selection,
+// the vision fallback chain, and shared validation live here.
 func (c *Converter) convert(ctx context.Context, path string, vision *VisionOptions) (string, error) {
 	start := time.Now()
 
@@ -262,9 +189,7 @@ func (c *Converter) convert(ctx context.Context, path string, vision *VisionOpti
 			c.log.Debug("markitdown: no managed python configured, using plain conversion", "path", path)
 		default:
 			// One derived context bounds the vision attempt AND the plain
-			// fallback together: withDeadline (context.WithTimeout) only ever
-			// shortens, so the fallback sees just the remaining budget
-			// instead of a fresh full conversion window.
+			// fallback — the deadline only shortens, never resets.
 			budget := c.timeout
 			if budget > 0 && budget < visionTimeoutFloor {
 				budget = visionTimeoutFloor
@@ -276,14 +201,8 @@ func (c *Converter) convert(ctx context.Context, path string, vision *VisionOpti
 			if err == nil {
 				return markdown, nil
 			}
-			// The driver failed as a whole (not per-image captioning, which
-			// markitdown already swallows internally): degrade to the plain
-			// CLI so a broken vision endpoint never makes document conversion
-			// WORSE than it is today. The fallback shares the remaining
-			// budget of the same deadline, so a hung vision endpoint costs at
-			// most one vision budget per file. Only a simultaneous plain
-			// failure (or the exhausted shared deadline) surfaces to the
-			// caller.
+			// The driver failed as a whole (per-image failures are swallowed
+			// inside markitdown): plain-CLI fallback on the same budget.
 			c.log.Warn("markitdown: vision-assisted conversion failed, falling back to plain conversion",
 				"path", path,
 				"duration", time.Since(start),
@@ -297,11 +216,8 @@ func (c *Converter) convert(ctx context.Context, path string, vision *VisionOpti
 }
 
 // runVisionDriver executes the embedded Python driver with the vision
-// connection parameters in the child's environment. The caller supplies the
-// context carrying the shared vision budget (see convert). Only stdout
-// becomes the converted markdown; stderr — Python warnings, deprecation
-// notices, driver diagnostics — is kept out of the document body and
-// surfaced solely in logs and error messages.
+// connection parameters in the child's environment (shared budget from
+// convert); only stdout becomes the markdown, stderr stays in logs/errors.
 func (c *Converter) runVisionDriver(ctx context.Context, path string, vision *VisionOptions, start time.Time) (string, error) {
 	cmd := exec.CommandContext(ctx, c.pythonPath, "-c", visionDriverScript, path)
 	sysproc.HideConsole(cmd) // avoid flashing console windows on Windows (GUI app)
@@ -346,9 +262,8 @@ func (c *Converter) runVisionDriver(ctx context.Context, path string, vision *Vi
 
 	markdown := strings.TrimSpace(stdout.String())
 	if diag := strings.TrimSpace(stderr.String()); diag != "" {
-		// The driver loads the full markitdown surface (PIL, pdfminer, bs4),
-		// which routinely emits warnings; keep them reachable for
-		// troubleshooting without polluting the document.
+		// The driver loads PIL/pdfminer/bs4, which routinely emit warnings;
+		// keep them in the debug log, out of the document.
 		c.log.Debug("markitdown vision driver emitted stderr", "path", path, "stderr", streamExcerpt(diag))
 	}
 	c.log.Debug("markitdown vision conversion succeeded",
@@ -406,10 +321,8 @@ func (c *Converter) runPlainCLI(ctx context.Context, path string, start time.Tim
 			"output", streamExcerpt(strings.TrimSpace(out.String())),
 			"stderr", streamExcerpt(strings.TrimSpace(errOut.String())),
 		)
-		// Surface BOTH captured streams: the CLI writes its real diagnostics
-		// (tracebacks, module errors) to stderr, and an error that carries
-		// only stdout leaves failures undiagnosable. Bounded excerpts only —
-		// the buffers may hold up to 32 MiB per stream.
+		// Surface BOTH streams — stderr carries the CLI's real diagnostics;
+		// bounded excerpts only (buffers may hold 32 MiB per stream).
 		if stderr := streamExcerpt(strings.TrimSpace(errOut.String())); stderr != "" {
 			return "", fmt.Errorf("markitdown: conversion failed: %w: %s (stderr: %s)",
 				err, streamExcerpt(strings.TrimSpace(out.String())), stderr)
@@ -427,9 +340,8 @@ func (c *Converter) runPlainCLI(ctx context.Context, path string, start time.Tim
 	return markdown, nil
 }
 
-// withDeadline merges the caller's context with the given per-call timeout
-// (the sooner deadline wins). A non-positive timeout leaves cancellation to
-// the caller's context alone.
+// withDeadline merges ctx with the per-call timeout (sooner deadline wins);
+// a non-positive timeout leaves cancellation to ctx alone.
 func (c *Converter) withDeadline(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
 	if timeout <= 0 {
 		return ctx, func() {}

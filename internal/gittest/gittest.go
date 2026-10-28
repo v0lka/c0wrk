@@ -1,24 +1,14 @@
 // Package gittest builds disposable git repositories seeded with canary
-// scripts for the GitSpawn neutralization integration tests.
+// scripts for the GitSpawn neutralization tests — a repository arriving as
+// plain files with .git intact can carry command-bearing config keys git
+// executes on ordinary read-only operations
+// (specs/decisions/033-git-subprocess-hardening.md). Each canary appends to a
+// marker file and then behaves benignly; every scenario asserts the marker
+// never appears AND the c0wrk command still returned a usable result.
 //
-// The threat model under test: a repository that arrives as plain files with
-// its .git directory intact (archive, shared drive, USB — `git clone` does
-// not transfer .git/config but archive distribution does) can carry
-// command-bearing config keys (fsmonitor, hooks, clean/smudge/process
-// filters, merge drivers, textconv) that git executes on ordinary read-only
-// operations such as status and diff.
-//
-// Each fixture plants a "canary" — a shell script that appends a line to a
-// marker file and then behaves benignly (passthrough for pipeline filters,
-// exit 0/1 for hooks and drivers). The tests assert two things for every
-// scenario: the marker file never appears (no canary was ever executed) and
-// the c0wrk command still returned a usable result (neutralization does not
-// break legitimate operation).
-//
-// The fixture scripts are POSIX shell; every test built on this package
-// skips on Windows via RequirePOSIXShell. The package shell-outs to the
-// real `git` binary for repository setup only — setup always runs BEFORE any
-// hostile config is planted, so no fixture setup can trigger a canary.
+// Fixtures are POSIX shell (skip Windows via RequirePOSIXShell); all setup
+// git calls run BEFORE any hostile config is planted, so setup can never
+// fire a canary.
 package gittest
 
 import (
@@ -71,10 +61,9 @@ exit 1
 	// FSMonitorBody is for core.fsmonitor canaries: record and exit 0.
 	FSMonitorBody = HookBody
 
-	// passthroughBody is a legit filter stand-in (LFS-like): it behaves
-	// like a well-behaved identity filter but logs its invocations to its
-	// own file so tests can also pin that c0wrk does not execute ANY
-	// config-declared filter, legit or not.
+	// passthroughBody is a legit (LFS-like) identity filter that logs its
+	// invocations, pinning that c0wrk executes NO config-declared filter,
+	// legit or not.
 	passthroughBody = `#!/bin/sh
 printf 'RAN\n' >> %q
 exec cat
@@ -157,12 +146,10 @@ func (c *Canary) RequireNotFired(t *testing.T) {
 	}
 }
 
-// RequireArmed fails the test when the marker file exists BEFORE the tested
-// operation begins — i.e. guards against vacuous fixtures where the canary
-// already fired during setup.
+// RequireArmed fails the test when the marker already exists BEFORE the
+// tested operation begins — a vacuous fixture whose canary fired during setup.
 func (c *Canary) RequireArmed(t *testing.T) {
 	t.Helper()
-	// Armed means: no marker yet, ready to detect an execution.
 	if c.Fired(t) {
 		t.Fatalf("canary fired before the operation under test; marker content:\n%s", c.Content(t))
 	}
@@ -192,23 +179,20 @@ type Repo struct {
 	Root string
 }
 
-// InitRepo creates root, runs `git init -b main` in it, sets a fixed commit
-// identity, and makes an initial commit containing a single tracked file
-// "file.txt" with the given initial content. All of this happens before any
-// hostile configuration exists, so setup itself can never fire a canary.
+// InitRepo creates root, runs `git init -b main`, sets a fixed commit
+// identity, and commits a tracked file.txt with the given content — all
+// before any hostile configuration exists (setup never fires a canary).
 func InitRepo(t *testing.T, root, initialContent string) *Repo {
 	t.Helper()
 	RequireGit(t)
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatalf("gittest: creating repo dir: %v", err)
 	}
-	// Canonicalize the fixture root (symlink-resolved), mirroring how the
-	// production project manager registers an external workspace
-	// (filepath.EvalSymlinks). git reports canonical paths — macOS resolves
-	// /var -> /private/var, Windows resolves 8.3 short names (RUNNER~1) to
-	// long names — so a fixture root that is only lexically clean makes every
-	// path comparison against git's own output (worktree listings, resolved
-	// .git dirs, project-checkout identity) diverge on those platforms.
+	// Canonicalize the fixture root like the production project manager does
+	// (filepath.EvalSymlinks): git reports canonical paths — macOS resolves
+	// /var -> /private/var, Windows expands 8.3 short names — so a
+	// lexically-clean root makes every comparison against git's own output
+	// (worktree listings, resolved .git dirs) diverge on those platforms.
 	resolved, err := filepath.EvalSymlinks(root)
 	if err != nil {
 		t.Fatalf("gittest: resolving repo dir %s: %v", root, err)
@@ -217,11 +201,9 @@ func InitRepo(t *testing.T, root, initialContent string) *Repo {
 	r.Git(t, "init", "-b", "main")
 	r.Git(t, "config", "user.email", "c0wrk-fixture@example.invalid")
 	r.Git(t, "config", "user.name", "c0wrk fixture")
-	// Fixture determinism: a machine whose global config enables commit
-	// signing (or any other environment-sensitive commit knob) must not
-	// break fixture commits — repo-local keys beat the global ones. The
-	// extra key is inert for the scanner (commit.* is not a command-bearing
-	// section family it parses).
+	// Repo-local keys beat the user's global ones, so commit signing enabled
+	// in global config cannot break fixture commits (commit.* is inert for
+	// the scanner).
 	r.Git(t, "config", "commit.gpgsign", "false")
 	r.Write(t, "file.txt", initialContent)
 	r.Git(t, "add", ".")
@@ -229,12 +211,9 @@ func InitRepo(t *testing.T, root, initialContent string) *Repo {
 	return r
 }
 
-// TempDir returns the symlink-resolved form of t.TempDir(). Fixtures that
-// compare a temp path against git's own output, or feed it to the worktree
-// primitives (which reject symlinked ancestors and compare against git's
-// canonical listings), must use this resolved form: on macOS /var is a
-// symlink to /private/var and on Windows the short 8.3 name in %TEMP% differs
-// from the long name git reports.
+// TempDir returns the symlink-resolved form of t.TempDir() — same canonical
+// path rule as InitRepo: macOS /var -> /private/var and Windows 8.3 short
+// names differ from the long names git reports.
 func TempDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -267,9 +246,9 @@ func (r *Repo) Write(t *testing.T, rel, content string) {
 	}
 }
 
-// AppendConfig appends an INI fragment to .git/config. This is the
-// "config planting" primitive: call it only after repository setup is
-// complete so setup commands never observe the hostile keys.
+// AppendConfig appends an INI fragment to .git/config — the config-planting
+// primitive; call only after setup so setup commands never observe the
+// hostile keys.
 func (r *Repo) AppendConfig(t *testing.T, iniFragment string) {
 	t.Helper()
 	f, err := os.OpenFile(r.GitDirFile("config"), os.O_APPEND|os.O_WRONLY, 0o644)
@@ -283,8 +262,7 @@ func (r *Repo) AppendConfig(t *testing.T, iniFragment string) {
 }
 
 // Git runs a setup git command in the repository and fails the test on
-// error. Setup-only: never call this after planting hostile config unless
-// the command is intentionally exercised against it.
+// error — setup-only once hostile config is planted.
 func (r *Repo) Git(t *testing.T, args ...string) string {
 	t.Helper()
 	cmd := exec.CommandContext(context.Background(), "git", args...)

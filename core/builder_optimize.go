@@ -27,30 +27,19 @@ type extractResult struct {
 }
 
 // errOptimizeUnparseable marks optimize-rewrite parse failures so the final
-// oneshot refusal (which wraps the last parse error) can be recognized and
-// re-surfaced with the operator-facing advice. Transport errors never carry
-// this sentinel.
+// oneshot refusal can be recognized and re-surfaced with operator-facing
+// advice; transport errors never carry it.
 var errOptimizeUnparseable = errors.New("optimized prompt unparseable")
 
 // optimizeRewriteRetryHint restates the marker contract inside the oneshot
-// "[System]" nudge (verbatim from the previous manual retry feedback; the
-// failed output itself rides the assistant echo).
+// "[System]" nudge; the failed output itself rides the assistant echo.
 const optimizeRewriteRetryHint = "Your output MUST be a clear, actionable prompt wrapped between the markers:\n" +
 	"### OPTIMIZED_PROMPT_START\n<your prompt>\n### OPTIMIZED_PROMPT_END\n" +
 	"Place NOTHING before the start marker and NOTHING after the end marker."
 
-// OptimizePrompt runs a 3-step prompt optimization pipeline:
-//  1. Translate the prompt to English and extract semantic keywords (LLM) —
-//     a oneshot call with the JSON parse; an unparseable extraction falls
-//     back to the original prompt after the standard nudge loop.
-//  2. Search the vector index for relevant codebase context (optional, skipped when unavailable).
-//  3. Rewrite the prompt using the translated text and codebase context (LLM) —
-//     a oneshot call with the marker parse and legacy heuristic fallback.
-//
-// Both calls run under the oneshot service policy (temperature 0.3 / 0.5,
-// reasoning tier minimal resolved per active model); the retry loop is the
-// client's — the manual c0wrk retry loops are gone, and transport failures
-// are never retried here (the Router owns provider retry).
+// OptimizePrompt runs the 3-step prompt optimization pipeline (translate/
+// extract keywords, optional vector-context lookup, rewrite) as two oneshot
+// service calls — specs/domains/llm-providers.md (one-shot service calls).
 func (b *OrchestratorBuilder) OptimizePrompt(ctx context.Context, userPrompt string) (*OptimizePromptResult, error) {
 	b.mu.RLock()
 	router := b.llmRouter
@@ -62,9 +51,8 @@ func (b *OrchestratorBuilder) OptimizePrompt(ctx context.Context, userPrompt str
 	}
 	model := bareActiveModel(router)
 
-	// Step A: Translate + extract keywords. An unparseable extraction falls
-	// back to the zero result — translated=="" keeps the original prompt and
-	// no keywords skips the context step (the historical fallback behavior).
+	// Step A: Translate + extract keywords. The zero result keeps the
+	// original prompt and skips the context step.
 	extracted, err := b.optimizeExtract(ctx, router, model, userPrompt)
 	if err != nil {
 		return nil, fmt.Errorf("optimize prompt: translate/extract: %w", err)
@@ -120,10 +108,7 @@ func (b *OrchestratorBuilder) OptimizePrompt(ctx context.Context, userPrompt str
 	}, nil
 }
 
-// optimizeExtract issues the translate/extract one-shot: oneshot.ParseJSON
-// over all candidate response fields, OnFailureFallback to the zero
-// extractResult after the standard two-nudge loop, transport errors returned
-// as-is. It is a separate method so that tests can inject a mock caller.
+// optimizeExtract is a separate method so tests can inject a mock caller.
 func (b *OrchestratorBuilder) optimizeExtract(ctx context.Context, caller oneshot.Caller, model, userPrompt string) (extractResult, error) {
 	req := llm.ChatRequest{
 		Messages: []llm.Message{
@@ -142,10 +127,9 @@ func (b *OrchestratorBuilder) optimizeExtract(ctx context.Context, caller onesho
 	})
 }
 
-// optimizeRewrite issues the rewrite one-shot with the marker parse and the
-// legacy heuristic fallback. Parse failures ride the client's two-nudge loop;
-// the final refusal is re-surfaced with the operator-facing advice, while
-// transport errors pass through wrapped as "optimize prompt: rewrite".
+// optimizeRewrite issues the rewrite one-shot; the final parse refusal is
+// re-surfaced with operator-facing advice, transport errors wrapped as
+// "optimize prompt: rewrite".
 func (b *OrchestratorBuilder) optimizeRewrite(ctx context.Context, caller oneshot.Caller, model, userPrompt string) (string, error) {
 	req := llm.ChatRequest{
 		Messages: []llm.Message{
@@ -172,11 +156,9 @@ func (b *OrchestratorBuilder) optimizeRewrite(ctx context.Context, caller onesho
 	return result, nil
 }
 
-// optimizeRewriteParse extracts the optimized prompt: markers first
-// (extractOptimizedPrompt — any candidate field, first hit wins), then the
-// legacy heuristic fallback. A response with neither markers nor usable text
-// is a retryable parse failure; the Warn diagnostic mirrors the previous
-// manual loop's empty-output log (no raw model output in logs).
+// optimizeRewriteParse extracts the optimized prompt: markers first, then the
+// legacy heuristic fallback. Neither markers nor usable text is a retryable
+// parse failure; the Warn diagnostic carries no raw model output.
 func (b *OrchestratorBuilder) optimizeRewriteParse() oneshot.Parse[string] {
 	return func(resp *llm.ChatResponse) (string, error) {
 		if optimized := extractOptimizedPrompt(resp); optimized != "" {

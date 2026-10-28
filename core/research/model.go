@@ -1,22 +1,9 @@
 // Package research parses the Iterative Engineering Research Methodology file
-// catalog (research root index, per-project briefs, the hypothesis graph, and
-// individual hypothesis cards) into an in-memory model that powers the
-// Research panel and the research-status overview.
-//
-// The package is split in two:
-//
-//   - model.go  — the domain types plus pure derived logic (status/ID
-//     normalization, graph traversal, metric computation). No I/O.
-//   - parser.go — content parsing (Markdown tables, Mermaid diagrams) and the
-//     thin filesystem orchestrators (ParseProject / ParseResearchRoot). The
-//     only side effect in the whole package is reading the given paths.
-//
-// All structural logic is exposed as pure functions over strings or already
-// parsed structs so it can be unit-tested in isolation without touching disk.
-//
-// Zero-values are meaningful: an empty HypothesisGraph is a valid partial
-// state (a freshly initialized research with no hypotheses yet), and Metrics
-// computed from it are all zero.
+// catalog (index, briefs, hypothesis graph, cards) into the in-memory model
+// behind the Research panel: model.go — domain types and pure derived logic
+// (no I/O); parser.go — content parsing and the thin read-only filesystem
+// orchestrators. Structural logic is pure and unit-testable without disk.
+// Zero-values are meaningful: an empty graph is a valid partial state.
 package research
 
 import (
@@ -24,40 +11,31 @@ import (
 	"strings"
 )
 
-// HypothesisStatus is the lifecycle state of a hypothesis card. It is a string
-// enum so it round-trips cleanly through JSON and matches the methodology's
-// status vocabulary (see the research-hypothesis skill).
-//
-// Note the spelling difference between sources: hypothesis cards and the
-// catalog table use the hyphenated form "in-progress", while the Mermaid
-// diagram's CSS class is the underscored "in_progress". NormalizeStatus maps
-// both spellings to the canonical StatusInProgress constant.
+// HypothesisStatus is the lifecycle state of a hypothesis card (a string enum
+// matching the methodology's vocabulary). Note the spelling split: cards and
+// the catalog use "in-progress", the Mermaid CSS class "in_progress" —
+// NormalizeStatus maps both to StatusInProgress.
 type HypothesisStatus string
 
 const (
-	// StatusOpen: the hypothesis has been formulated but no experiment has
-	// started yet.
+	// StatusOpen: formulated, no experiment started yet.
 	StatusOpen HypothesisStatus = "open"
 
-	// StatusInProgress: an experiment is actively running against the
-	// hypothesis.
+	// StatusInProgress: an experiment is actively running.
 	StatusInProgress HypothesisStatus = "in-progress"
 
-	// StatusConfirmed: the verification criterion was met (terminal).
+	// StatusConfirmed: verification criterion met (terminal).
 	StatusConfirmed HypothesisStatus = "confirmed"
 
-	// StatusRefuted: the hypothesis was falsified (terminal).
+	// StatusRefuted: falsified (terminal).
 	StatusRefuted HypothesisStatus = "refuted"
 
-	// StatusCancelled: the hypothesis was abandoned without a verdict
-	// (terminal).
+	// StatusCancelled: abandoned without a verdict (terminal).
 	StatusCancelled HypothesisStatus = "cancelled"
 )
 
-// IsTerminal reports whether the status is terminal — i.e. the hypothesis
-// will no longer transition. Confirmed, refuted, and cancelled are terminal;
-// open and in-progress are active. An unrecognized status is treated as
-// non-terminal (the parser does not know it is finished).
+// IsTerminal: confirmed/refuted/cancelled. An unrecognized status is
+// non-terminal (the parser cannot know it is finished).
 func (s HypothesisStatus) IsTerminal() bool {
 	switch s {
 	case StatusConfirmed, StatusRefuted, StatusCancelled:
@@ -67,19 +45,15 @@ func (s HypothesisStatus) IsTerminal() bool {
 	}
 }
 
-// IsActive reports whether the hypothesis is on the active front line — open
-// or in-progress. This is the set the research-status skill calls the
-// "current front".
+// IsActive: open or in-progress — the research-status skill's "current front".
 func (s HypothesisStatus) IsActive() bool {
 	return s == StatusOpen || s == StatusInProgress
 }
 
-// NormalizeStatus canonicalizes a status token drawn from any source (card
-// table, catalog column, or Mermaid CSS class). It lowercases the input,
-// maps the Mermaid "in_progress" spelling to "in-progress", and validates it
-// against the known vocabulary. An unrecognized value is returned verbatim
-// (lower-cased) so callers can still render it; it is simply not one of the
-// five constants above.
+// NormalizeStatus canonicalizes a status token from any source: lower-cased,
+// the Mermaid "in_progress" spelling mapped to "in-progress". An
+// unrecognized value is returned verbatim so callers can still render it —
+// it simply matches no IsTerminal/IsActive predicate.
 func NormalizeStatus(raw string) HypothesisStatus {
 	s := strings.ToLower(strings.TrimSpace(raw))
 	// Mermaid CSS classes use underscores; everything else uses hyphens.
@@ -90,67 +64,51 @@ func NormalizeStatus(raw string) HypothesisStatus {
 	case StatusOpen, StatusInProgress, StatusConfirmed, StatusRefuted, StatusCancelled:
 		return HypothesisStatus(s)
 	default:
-		// Unknown: return as-is (untyped) so it is not lost, but it will not
-		// match any IsTerminal/IsActive predicate.
 		return HypothesisStatus(s)
 	}
 }
 
-// HypothesisNode is a single hypothesis parsed from an H-NNN.md card and
-// reconciled with its graph/catalog entries. It is the atomic unit of the
-// hypothesis DAG.
-//
-// Parents holds the canonical hyphenated IDs ("H-001") of the hypotheses
-// whose results led to this one; it is empty for root hypotheses. The slice
-// is sorted and de-duplicated by the parser.
+// HypothesisNode is one hypothesis parsed from an H-NNN.md card and
+// reconciled with its graph/catalog entries — the atomic unit of the DAG.
+// Parents holds the canonical IDs of the hypotheses whose results led to
+// this one (empty for roots); sorted and de-duplicated by the parser.
 type HypothesisNode struct {
-	// ID is the canonical hypothesis identifier, e.g. "H-001" (hyphenated,
-	// zero-padded to three digits per the methodology).
+	// ID is the canonical identifier ("H-001").
 	ID string `json:"id"`
 
-	// Title is the short, human-readable label used in graph nodes and
-	// catalog entries.
+	// Title is the short human-readable label.
 	Title string `json:"title"`
 
-	// Status is the normalized lifecycle status of the hypothesis.
 	Status HypothesisStatus `json:"status"`
 
-	// Parents lists the parent hypothesis IDs (canonical hyphenated form).
 	Parents []string `json:"parents,omitempty"`
 
-	// Timebox is the raw timebox field from the card (ISO 8601 duration or
-	// calendar dates), preserved verbatim for rendering.
+	// Timebox is the card's raw timebox value, preserved verbatim.
 	Timebox string `json:"timebox,omitempty"`
 
-	// Completed is the card's completion date (YYYY-MM-DD), set when the
-	// hypothesis reaches a terminal status (confirmed / refuted / cancelled).
-	// Empty while the hypothesis is open or in-progress.
+	// Completed is the card's completion date (YYYY-MM-DD); empty while
+	// open/in-progress.
 	Completed string `json:"completed,omitempty"`
 
-	// Result is the recorded finding from the card's Result section (the
-	// **Finding:** value). Empty until the experiment completes.
+	// Result is the card's recorded finding (**Finding:** value).
 	Result string `json:"result,omitempty"`
 
-	// Statement is the falsifiable assertion from the card's
-	// "## Statement" section, preserved verbatim.
+	// Statement is the card's "## Statement" body, preserved verbatim.
 	Statement string `json:"statement,omitempty"`
 
-	// VerificationCriterion is the "what constitutes confirmation" text from
-	// the card's "## Verification Criterion" section, preserved verbatim.
+	// VerificationCriterion is the card's "## Verification Criterion" body.
 	VerificationCriterion string `json:"verification_criterion,omitempty"`
 
-	// ExperimentNotes is the body of the card's "## Experiment Notes"
-	// section, preserved verbatim.
+	// ExperimentNotes is the card's "## Experiment Notes" body.
 	ExperimentNotes string `json:"experiment_notes,omitempty"`
 
 	// Decision is the iteration decision (continue / pivot / kill / fork)
-	// from the card's **Decision** field row. Empty while undecided.
+	// from the card's **Decision** row; empty while undecided.
 	Decision string `json:"decision,omitempty"`
 }
 
-// HypothesisEdge is a directed parent→child relationship in the hypothesis
-// DAG. The semantics, per the research-hypothesis skill, are "the result of
-// From led to the formulation of To".
+// HypothesisEdge is a directed parent→child edge: per the research-hypothesis
+// skill, "the result of From led to the formulation of To".
 type HypothesisEdge struct {
 	// From is the parent hypothesis ID (canonical hyphenated form).
 	From string `json:"from"`
@@ -159,14 +117,10 @@ type HypothesisEdge struct {
 	To string `json:"to"`
 }
 
-// HypothesisGraph is the parsed DAG of hypotheses: the node set plus the
-// explicit edges drawn in the Mermaid diagram (and/or inferred from card
-// Parents fields). Nodes are kept sorted by ID for deterministic output;
-// each node's Parents field is kept consistent with the edge set.
-//
-// A HypothesisGraph is valid in partial states — an empty graph (no nodes,
-// no edges) represents a freshly initialized research that has not yet
-// formulated its first hypothesis.
+// HypothesisGraph is the parsed DAG: nodes plus edges drawn in the diagram
+// and/or inferred from card Parents. Nodes stay sorted; Parents stays
+// consistent with the edge set. Valid in partial states — an empty graph is
+// a freshly initialized research.
 type HypothesisGraph struct {
 	// Nodes is the set of hypothesis nodes, sorted by ID.
 	Nodes []*HypothesisNode `json:"nodes"`
@@ -186,9 +140,8 @@ func (g *HypothesisGraph) Node(id string) *HypothesisNode {
 	return nil
 }
 
-// Roots returns the root hypotheses — nodes with no parents. A node is a root
-// when it has no Parents entries and no incoming edge. The result is sorted by
-// ID. For an empty graph the result is nil.
+// Roots returns parent-less nodes (no Parents, no incoming edge), sorted;
+// nil for an empty graph.
 func (g *HypothesisGraph) Roots() []*HypothesisNode {
 	incoming := make(map[string]struct{}, len(g.Nodes))
 	for _, e := range g.Edges {
@@ -210,14 +163,10 @@ func (g *HypothesisGraph) Roots() []*HypothesisNode {
 	return roots
 }
 
-// levels computes, for every node, the length of the longest path from any
-// root to that node (a root has level 0). It is the foundation for both graph
-// depth (max level) and graph breadth (max width per level).
-//
-// The methodology guarantees a DAG, but the parser defends against malformed
-// input (e.g. a cycle introduced by a hand-edited graph) with a recursion
-// stack: a node currently being resolved is treated as level 0 for that
-// branch, breaking the cycle rather than recursing forever.
+// levels computes each node's longest path from any root (root = 0) — the
+// basis for graph depth and breadth. The methodology guarantees a DAG, but a
+// cycle in malformed input is broken by treating an in-resolution node as
+// level 0 rather than recursing forever.
 func (g *HypothesisGraph) levels() map[string]int {
 	// child → parents, derived from explicit edges.
 	parentsOf := make(map[string][]string, len(g.Nodes))
@@ -240,8 +189,7 @@ func (g *HypothesisGraph) levels() map[string]int {
 		inProgress[id] = true
 		defer delete(inProgress, id)
 
-		// Seed from explicit edges, then fold in any Parents declared on the
-		// node itself (a card may list a parent that has no drawn edge).
+		// Explicit edges first, then Parents declared on the node itself.
 		ps := parentsOf[id]
 		if n := g.Node(id); n != nil {
 			ps = append(ps, n.Parents...)
@@ -264,39 +212,31 @@ func (g *HypothesisGraph) levels() map[string]int {
 	return level
 }
 
-// Metrics are the computed progress indicators for a research project, as
-// defined by the research-status skill (Step 3). All fields are meaningful
-// for partial states: a research with no hypotheses yields all-zero metrics.
+// Metrics are the computed progress indicators defined by the research-status
+// skill (specs/domains/research.md). All fields are meaningful for partial
+// states: no hypotheses → all zero.
 type Metrics struct {
-	// Total is the total number of hypotheses in the graph.
 	Total int `json:"total"`
 
-	// ByStatus counts hypotheses grouped by lifecycle status. The map is
-	// non-nil even when empty.
+	// ByStatus counts by lifecycle status (non-nil even when empty).
 	ByStatus map[HypothesisStatus]int `json:"by_status"`
 
-	// ConfirmationRate is confirmed / (confirmed + refuted), in [0, 1]. It
-	// excludes open, in-progress, and cancelled hypotheses. It is 0 when no
-	// hypothesis has reached a confirmed/refuted verdict.
+	// ConfirmationRate is confirmed / (confirmed + refuted); 0 before any
+	// verdict (open/in-progress/cancelled excluded).
 	ConfirmationRate float64 `json:"confirmation_rate"`
 
-	// Depth is the longest root→leaf path measured in edges. A lone root has
-	// depth 0; an empty graph has depth 0.
+	// Depth is the longest root→leaf path in edges (0 for a lone root).
 	Depth int `json:"depth"`
 
-	// Breadth is the maximum number of non-terminal (active) nodes sharing a
-	// single depth level — i.e. the widest active layer of parallel
-	// investigation. It is 0 when no active nodes exist.
+	// Breadth is the widest depth level of non-terminal nodes; 0 when none.
 	Breadth int `json:"breadth"`
 
-	// ActiveFront is the sorted list of IDs of hypotheses that are open or
-	// in-progress — the current leading edge of the research.
+	// ActiveFront is the sorted set of open/in-progress hypothesis IDs.
 	ActiveFront []string `json:"active_front,omitempty"`
 }
 
-// ComputeMetrics derives the progress metrics from a parsed hypothesis graph.
-// It is a pure function over the graph (no I/O) and is safe to call on a
-// partial/empty graph. The returned ByStatus map is always non-nil.
+// ComputeMetrics derives the metrics from a graph (pure; safe on empty); the
+// ByStatus map is always non-nil.
 func ComputeMetrics(g *HypothesisGraph) Metrics {
 	m := Metrics{ByStatus: make(map[HypothesisStatus]int)}
 	if g == nil || len(g.Nodes) == 0 {
@@ -318,9 +258,8 @@ func ComputeMetrics(g *HypothesisGraph) Metrics {
 			activeFront = append(activeFront, n.ID)
 		}
 	}
-	// Numeric H-NNN order (compareHypothesisIDs), matching the graph's own node
-	// order: lexicographic sort would put H-1000 before H-999, flipping the
-	// "leading entry" ActiveFront[0] that RecommendNextStep targets.
+	// Numeric order: lexicographic would put H-1000 before H-999, flipping
+	// the leading entry RecommendNextStep targets.
 	sort.Slice(activeFront, func(i, j int) bool { return compareHypothesisIDs(activeFront[i], activeFront[j]) < 0 })
 	m.ActiveFront = activeFront
 
@@ -351,52 +290,36 @@ func ComputeMetrics(g *HypothesisGraph) Metrics {
 	return m
 }
 
-// LogKind is the category of a research-log entry. It is a string enum so it
-// round-trips cleanly through JSON and matches the research log's kind
-// vocabulary (see ParseLog). Each entry in a project's log.md is tagged with
-// exactly one kind.
+// LogKind is a research-log entry's category (ParseLog's kind vocabulary);
+// each log.md entry carries exactly one.
 type LogKind string
 
 const (
-	// LogKindExperiment records the outcome of an experiment run against a
-	// hypothesis.
+	// LogKindExperiment: outcome of an experiment run.
 	LogKindExperiment LogKind = "experiment"
 
-	// LogKindDecision records an iteration decision (continue / pivot / kill /
-	// fork) made after reviewing results.
+	// LogKindDecision: iteration decision after reviewing results.
 	LogKindDecision LogKind = "decision"
 
-	// LogKindStatusChange records a hypothesis status transition.
+	// LogKindStatusChange: hypothesis status transition.
 	LogKindStatusChange LogKind = "status_change"
 
-	// LogKindNote records a free-form observation or note.
+	// LogKindNote: free-form observation.
 	LogKindNote LogKind = "note"
 )
 
-// ResearchLogEntry is a single timestamped entry parsed from a project's
-// log.md file. It is the atomic unit of the research-history timeline.
-//
-// ID is the stable, 1-based ordinal assigned by ParseLog in file order (logs
-// are append-only, so the ordinal is stable for a given file). HypothesisID is
-// the canonical identifier ("H-001") of the hypothesis the entry pertains to;
-// it is empty for entries that are not tied to a specific hypothesis (e.g.
-// project-level decisions or notes). CreatedAt is the raw timestamp token
-// (ISO 8601) preserved verbatim, mirroring how cards preserve their Timebox.
+// ResearchLogEntry is one timestamped log.md entry. ID is the stable 1-based
+// ordinal assigned by ParseLog in file order (append-only, so stable per
+// file); HypothesisID is empty for project-scoped entries; CreatedAt is the
+// raw ISO 8601 token preserved verbatim.
 type ResearchLogEntry struct {
-	// ID is the 1-based ordinal of the entry in the log (assigned by ParseLog).
 	ID string `json:"id"`
 
-	// Kind is the entry's category: experiment, decision, status_change, or
-	// note.
 	Kind LogKind `json:"kind"`
 
-	// HypothesisID is the canonical hypothesis identifier ("H-001") this entry
-	// refers to, or empty when the entry is project-scoped.
 	HypothesisID string `json:"hypothesis_id,omitempty"`
 
-	// Message is the free-form body of the entry (may span multiple lines).
 	Message string `json:"message"`
 
-	// CreatedAt is the raw timestamp token from the log entry heading.
 	CreatedAt string `json:"created_at"`
 }

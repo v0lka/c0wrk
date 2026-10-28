@@ -64,38 +64,30 @@ func (f *FrontendAPI) GetConfig() ConfigResponse {
 		Experimental: ExperimentalSettingsResponse{
 			Enabled: f.config.Experimental.Enabled,
 		},
-		// The EFFECTIVE Model Profiles gate (the master toggle resolved against
-		// the active profile), precomputed by
-		// refreshModelProfilesGateLocked so this read path performs NO disk I/O — see the
-		// GUARANTEE on collectAllModels.
+		// The EFFECTIVE Model Profiles gate, precomputed by
+		// refreshModelProfilesGateLocked — see the GUARANTEE on collectAllModels
+		// and specs/contracts/desktop-frontend.md.
 		ModelProfiles: f.modelProfilesGateResp,
-		// The EFFECTIVE prompt-suggestions gate (prompt_suggestions.enabled,
-		// ADR-088): nil config = on, mirrored through SuggestionsEnabled().
+		// The EFFECTIVE prompt-suggestions gate (ADR-088): nil config = on —
+		// see specs/contracts/desktop-frontend.md.
 		PromptSuggestions: PromptSuggestionsSettingsResponse{
 			Enabled: f.config.PromptSuggestions.SuggestionsEnabled(),
 		},
 	}
 
-	// The gate block's ACTIVE/SUGGESTED identity half is filled FRESH (pure
-	// in-memory reads of the stored active id and the default-model
-	// suggestion) rather than served from modelProfilesGateResp, so a
-	// default-model change is visible without waiting for the next Model
-	// Profiles mutation to refresh the cache — and so background consumers
-	// never need the notice-consuming GetModelProfiles (see
-	// ModelProfilesSettingsResponse). ResolvedProfileID deliberately stays
-	// the cached value: resolving it needs the profile catalog (a disk
-	// read), and its inputs change only through the mutations that already
-	// refresh the cache.
+	// The identity half (active/suggested) is filled FRESH — pure in-memory
+	// reads, so a default-model change is visible without a Model Profiles
+	// mutation; ResolvedProfileID stays cached (resolving it needs the
+	// catalog on disk). See specs/contracts/desktop-frontend.md
+	// (ModelProfilesSettingsResponse).
 	resp.ModelProfiles.ActiveProfileID = f.config.ModelProfiles.ActiveProfile
 	if id := suggestModelProfileID(f.config.LLM.DefaultModel); id != "" {
 		resp.ModelProfiles.SuggestedProfileID = &id
 	}
 
-	// Populate AllModels: flat list of all enabled models.
-	// Always build from the per-provider config lists so the frontend sees
-	// configured models immediately, even before the async ModelRegistry
-	// finishes initializing. When the registry is ready, enrich with family
-	// and reasoning metadata.
+	// Populate AllModels from the per-provider config lists so configured
+	// models appear before the async ModelRegistry initializes; network-free
+	// metadata enrichment per specs/contracts/desktop-frontend.md.
 	b := f.builder()
 	var reg *llm.ModelRegistry
 	if b != nil {
@@ -107,9 +99,9 @@ func (f *FrontendAPI) GetConfig() ConfigResponse {
 	return resp
 }
 
-// HasDefaultModel reports whether a default LLM model is configured. It is a
-// cheap probe for UI flows (e.g. the settings close check) that only need this
-// single fact and must not pay for a full GetConfig response.
+// HasDefaultModel reports whether a default LLM model is configured — the
+// cheap single-fact probe for UI flows that must not pay for a full GetConfig
+// response. See specs/contracts/desktop-frontend.md.
 func (f *FrontendAPI) HasDefaultModel() bool {
 	f.configMu.RLock()
 	defer f.configMu.RUnlock()
@@ -121,9 +113,8 @@ func (f *FrontendAPI) HasDefaultModel() bool {
 	return f.config.LLM.DefaultModel != ""
 }
 
-// experimentalFeaturesEnabled reports whether experimental features are
-// currently enabled. It returns false when the config is not yet initialized
-// (fail-closed: gated features stay hidden/off).
+// experimentalFeaturesEnabled reports whether experimental features are on;
+// fail-closed (false when the config is not yet initialized).
 func (f *FrontendAPI) experimentalFeaturesEnabled() bool {
 	f.configMu.RLock()
 	defer f.configMu.RUnlock()
@@ -134,10 +125,9 @@ func (f *FrontendAPI) experimentalFeaturesEnabled() bool {
 func (f *FrontendAPI) buildLLMResponse() ConfigLLMResponse {
 	resp := ConfigLLMResponse{
 		DefaultModel: f.config.LLM.DefaultModel,
-		// The clamping bound for the Settings form's auto-retry interval
-		// input: the same constant validate() and UpdateLLMConfig enforce
-		// (ADR-065). Published so the frontend has a single source of truth
-		// instead of a duplicated constant.
+		// The clamping bound for the Settings form's auto-retry interval input,
+		// published as the single source of truth (ADR-065,
+		// specs/decisions/065-auto-resend-retryable-errors.md).
 		AutoRetryMaxSeconds: config.MaxAutoRetrySeconds(),
 		Anthropic: ConfigProviderFull{
 			APIKey: maskAPIKey(f.config.LLM.Anthropic.APIKey),
@@ -146,11 +136,10 @@ func (f *FrontendAPI) buildLLMResponse() ConfigLLMResponse {
 		ChatGPT: ConfigProviderFull{
 			APIKey: maskAPIKey(f.config.LLM.ChatGPT.APIKey),
 			Models: f.config.LLM.ChatGPT.Models,
-			// The auth mode round-trips so the settings UI renders the
-			// active mode; the empty stored value reads as api_key (the
-			// config layer's default semantics), so the response always
-			// carries an explicit mode. No secret travels with it — the
-			// OAuth tokens live in the OS keychain and never enter config.
+			// The auth mode round-trips so the UI renders the active mode
+			// (empty stored value reads as api_key); no secret travels —
+			// OAuth tokens live in the OS keychain.
+			// See specs/decisions/074-chatgpt-subscription-auth.md.
 			AuthMode: chatGPTAuthModeOrAPIKey(f.config.LLM.ChatGPT.Auth.Mode),
 		},
 		OpenAICompatible:    make(map[string]ConfigProviderFull, len(f.config.LLM.OpenAICompatible)),
@@ -180,25 +169,14 @@ func (f *FrontendAPI) buildLLMResponse() ConfigLLMResponse {
 }
 
 // collectAllModels iterates all enabled provider models and builds ModelInfo
-// entries. When reg is non-nil, family and reasoning metadata are resolved
-// from the registry. When reg is nil (registry not yet initialized), models
-// are returned without metadata so the frontend still sees configured models.
+// entries (family/reasoning metadata from reg when non-nil), keyed by
+// composite (provider, model) so two providers exposing the same bare name
+// both appear.
 //
-// GUARANTEE: collectAllModels is network-free — it resolves every model via
-// ModelRegistry.ResolveLocal, which serves overrides, built-ins, fuzzy
-// matches, and cached entries purely from memory and returns fallback
-// defaults for unknown models. No HTTP probes, no registered sources, no
-// blocking I/O. GetConfig must remain a pure in-memory read: it runs on every
-// settings open, and a model list containing an unknown model must not stall
-// the UI behind a network timeout. The only disk-backed datum GetConfig reports
-// — the effective Model Profiles gate (`ConfigResponse.model_profiles`) — is precomputed by
-// refreshModelProfilesGateLocked at construction and on each Model Profiles mutation
-// (under configMu), so the read path never reads the profile catalog.
-//
-// Entries are keyed by composite (provider, model) so that two providers
-// exposing the same bare model name both appear — the frontend uses the
-// composite "provider/name" value to select a specific provider while
-// displaying the bare model name.
+// GUARANTEE: network-free — everything resolves from memory via
+// ModelRegistry.ResolveLocal (specs/domains/llm-providers.md,
+// specs/contracts/desktop-frontend.md); the Model Profiles gate is
+// precomputed by refreshModelProfilesGateLocked.
 func (f *FrontendAPI) collectAllModels(reg *llm.ModelRegistry) []ModelInfo {
 	// GetAllProviderConfigs returns providers in deterministic order
 	// (anthropic, chatgpt, then sorted openai_compatible, then sorted anthropic_compatible).
@@ -249,16 +227,12 @@ func (f *FrontendAPI) collectAllModels(reg *llm.ModelRegistry) []ModelInfo {
 // UpdateLLMConfig updates the full LLM configuration atomically:
 // default model, each provider's models list, and API keys.
 //
-// Locking layout: the whole update runs under saveMu so debounced saves apply
-// strictly in submission order (mutation → persist → rebuild never interleave
-// between two calls). configMu protects candidate validation, the atomic YAML
-// commit/rollback, and the capture of the committed default. The expensive
-// follow-up work (No-Project provisioning) runs with configMu released, and
-// the judge/router rebuilds run under a shared configMu.RLock with a freshly
-// re-snapshotted config: RLock readers are never convoyed behind a rebuild,
-// yet writers are excluded between snapshot and rebuild so the router can
-// never be rolled back to a snapshot that predates a concurrent config
-// writer's changes.
+// Locking layout: saveMu serializes whole save sequences (mutation → persist
+// → rebuild never interleave); configMu covers validation, the atomic
+// commit/rollback and the default capture; provisioning and the judge/router
+// rebuilds run outside it (rebuilds under a shared RLock on a fresh snapshot —
+// readers never convoyed, concurrent writers never rolled back).
+// See specs/domains/llm-providers.md (Config Save Discipline).
 func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 	f.seedAcquire()
 	f.saveMu.Lock()
@@ -344,13 +318,11 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 		if req.ChatGPT.APIKey != "" && req.ChatGPT.APIKey != maskedAPIKey {
 			candidate.ChatGPT.APIKey = req.ChatGPT.APIKey
 		}
-		// The auth mode is an explicit two-state switch, not a nullable
-		// override: nil keeps the persisted mode (debounced partial saves
-		// must not flip it), while a non-nil value must name a real mode —
-		// an empty or misspelled string is rejected here rather than
-		// silently falling back to key auth while the operator believes
-		// subscription auth is on (the same fail-closed stance the config
-		// loader's validate() takes). The value carries no secret.
+		// An explicit two-state switch, not a nullable override: nil keeps the
+		// persisted mode (debounced partial saves must not flip it); a
+		// non-nil value must name a real mode — fail-closed, the same stance
+		// the loader's validate() takes.
+		// See specs/decisions/074-chatgpt-subscription-auth.md.
 		if req.ChatGPT.AuthMode != nil {
 			switch mode := *req.ChatGPT.AuthMode; mode {
 			case config.ChatGPTAuthModeAPIKey, config.ChatGPTAuthModeOAuth:
@@ -363,26 +335,17 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 		}
 	}
 
-	// The `embedded` provider record is BACKEND-OWNED: it is generated from the
-	// authoritative embedded_llm state and is not part of the UI's draft. A
-	// request that carries openai_compatible REPLACES the whole map, so a draft
-	// that never saw the generated entry (a stale settings dialog, a provider
-	// deletion, a hand-built request) would silently delete the local model —
-	// re-inject it from the authoritative state after the candidate is built
-	// and before it is validated. This also removes the record when the model
-	// has been uninstalled, keeping the two sections consistent in both
-	// directions.
-	//
-	// contextWindow is 0 on purpose: this path performs no hardware probe and
-	// no network I/O (the server may well be stopped), so an existing
-	// llm.models context_window override is left exactly as the install path
-	// wrote it.
+	// The `embedded` provider record is BACKEND-OWNED: a request carrying
+	// openai_compatible REPLACES the whole map, so a draft that never saw the
+	// generated entry would silently delete the local model — re-inject it
+	// (or drop it after uninstall) after the candidate is built, before
+	// validation (specs/domains/embedded-llm.md). contextWindow is 0: no
+	// probe/network here, so any llm.models override stays as install wrote it.
 	candidate.SyncEmbeddedProvider(f.config.EmbeddedLLM, 0)
 
-	// A first-run config intentionally has no default until setup finishes.
-	// Once a default exists, however, every candidate must still resolve after
-	// all requested provider/model replacements have been applied. Validate
-	// before committing so a dangling replacement cannot change any state.
+	// A first-run config has no default until setup finishes; once one
+	// exists, every candidate must still resolve. Validate before committing
+	// so a dangling replacement cannot change any state.
 	if candidate.DefaultModel != "" {
 		if _, _, err := candidate.ResolveDefaultModelProvider(); err != nil {
 			f.configMu.Unlock()
@@ -391,24 +354,19 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 	}
 
 	// Reject out-of-range auto_retry_seconds (ADR-065) and invalid
-	// timeout_class (ADR-071 D3) before anything is committed: the same bounds
-	// Load enforces. The Settings UI clamps its own inputs, but this RPC is a
-	// trust boundary for arbitrary callers (devtools, future scripts), so
-	// neither can be assumed — and an invalid value would only be caught at the
-	// next Load, which rolls the whole config back to defaults.
+	// timeout_class (ADR-071) before anything is committed — the same bounds
+	// Load enforces; this RPC is a trust boundary for arbitrary callers, and
+	// an invalid value would only fail at the next Load (whole-config rollback).
 	for name, oc := range candidate.OpenAICompatible {
 		if oc.AutoRetrySeconds < 0 || oc.AutoRetrySeconds > config.MaxAutoRetrySeconds() {
 			f.configMu.Unlock()
 			return fmt.Errorf("invalid LLM configuration: openai_compatible %q auto_retry_seconds must be within [0, %d], got %d",
 				name, config.MaxAutoRetrySeconds(), oc.AutoRetrySeconds)
 		}
-		// timeout_class (ADR-071 D3) is the same trust boundary: the shared
-		// validator applies the full rule (enum AND the reserved-name guard for
-		// the backend-owned `embedded` provider). An invalid value would be
-		// persisted verbatim and then fail validate() on the next Load, which
-		// rolls the ENTIRE config back to defaults (providers, keys, settings).
-		// Save does not run validate(), so this gate must mirror the Load-time
-		// one exactly — hence the single shared function.
+		// The shared validator applies the full timeout_class rule (enum plus
+		// the reserved-name guard on `embedded`) — the one gate Load and this
+		// boundary share, since Save does not run validate
+		// (specs/decisions/071-adaptive-llm-request-budgets.md D3).
 		if err := config.ValidateProviderTimeoutClass(name, oc.TimeoutClass); err != nil {
 			f.configMu.Unlock()
 			return fmt.Errorf("invalid LLM configuration: %w", err)
@@ -428,29 +386,24 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 
 	f.config.LLM = candidate
 
-	// Republish the auto-retry interval snapshot (ADR-065) from the committed
-	// candidate BEFORE the persist: the session-layer resolver reads it
-	// lock-free, and doing it under configMu keeps the snapshot exactly in
-	// lockstep with f.config.LLM — a failed persist rolls f.config.LLM back
-	// below, and this same path republishes the restored previous state.
+	// Republish the auto-retry snapshot BEFORE the persist, under configMu:
+	// the session-layer resolver reads it lock-free, and a failed persist
+	// republishes the restored state on the same path.
 	if f.app != nil {
 		f.app.publishAutoRetryIntervals(f.config)
 	}
 
-	// Persist while configMu is held so a failed disk write can restore the
-	// exact prior LLM state before any reader, rebuild, or frontend RPC result
-	// observes the candidate. Defer the config-updated event until the write
-	// succeeds: a failed update must be indistinguishable from a rejected
-	// request to consumers.
+	// Persist under configMu so a failed write restores the prior state before
+	// any reader observes the candidate; the config-updated event waits for
+	// success — a failed update must be indistinguishable from a rejection.
 	if err := config.Save(f.config, f.configPath); err != nil {
 		f.config.LLM = previous
 		if f.app != nil {
 			f.app.publishAutoRetryIntervals(f.config)
 		}
 		// Release configMu before returning: a failed persist must leave the
-		// config stack as usable as a rejected request. Holding the lock here
-		// would deadlock every GetConfig/Settings RPC on the first persist
-		// failure (full disk, missing directory, permissions).
+		// stack as usable as a rejected request — holding the lock would
+		// deadlock every GetConfig/Settings RPC on the first persist failure.
 		f.configMu.Unlock()
 		return fmt.Errorf("failed to persist LLM config: %w", err)
 	}
@@ -469,26 +422,19 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 	f.configLoadErrors = nil
 	f.configMu.Unlock()
 
-	// Ensure No Project exists now that the app is usable.
-	// On a clean first run this is the first time the pseudo-project
-	// is created — it was deferred during startup to avoid provisioning
-	// infrastructure before configuration validation.
-	//
-	// Guard on a non-empty default model: during initial LLM setup the
-	// frontend may debounce-save partial edits before the user has selected
-	// a model. Creating No Project and switching on every keystroke would
-	// disrupt the file panel while the settings dialog is still open.
+	// Ensure No Project exists now that the app is usable (deferred during
+	// startup to avoid provisioning before config validation). Guarded on a
+	// non-empty default model so the debounced partial saves of initial setup
+	// do not create and switch projects on every keystroke while the settings
+	// dialog is open.
 	if f.projectManager != nil && defaultModel != "" {
 		created, err := f.projectManager.EnsureNoProject()
 		if err != nil {
 			f.log().Warn("failed to ensure No Project after config update", "error", err)
 		}
-		// Only refresh the project list when No Project was just created
-		// on first-run setup. The frontend's loadAndActivate auto-selects
-		// the first project only when no project is active, so emitting
-		// backend:ready here lands the user in CHAT mode on first run
-		// without disrupting an already-active project/session on
-		// mid-session config edits.
+		// Emit backend:ready only when No Project was just created: the
+		// frontend auto-selects the first project then, landing first-run
+		// users in CHAT mode without disrupting an active project.
 		if err == nil && created {
 			if projects, pErr := f.projectManager.ListProjects(); pErr == nil {
 				f.emitEvent(EventBackendReady, projects)
@@ -498,25 +444,16 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 		}
 	}
 
-	// Rebuild judge and LLM router via the backend builder so new sessions
-	// use the updated provider immediately. The snapshot is taken fresh here
-	// rather than carried over from the mutation phase, and configMu.RLock is
-	// held across snapshot + rebuild: config writers that mutate and rebuild
-	// under configMu.Lock (UpdateModelProfile, SetModelConfig) cannot run
-	// in between, so this rebuild can never apply a snapshot that predates
-	// their changes and roll the router back. RLock stays shared with
-	// readers, so GetConfig is still never convoyed behind the rebuild, and
-	// RebuildJudge/RebuildRouter are core calls that never re-enter
-	// FrontendAPI, so holding the RLock across them cannot deadlock.
+	// Rebuild judge and router on a FRESH snapshot; configMu.RLock spans
+	// snapshot + rebuild so a concurrent config writer's changes are never
+	// rolled back, while readers stay shared (no convoy) and the core calls
+	// never re-enter FrontendAPI (no deadlock).
 	if b := f.builder(); b != nil {
-		// An auth-mode switch to oauth must find the builder's
-		// subscription-auth seam mirroring the LIVE manager before the
-		// rebuild runs: the per-build conversion (toBuilderConfigLocked)
-		// carries no OAuth token source, so without this sync a switch to
-		// oauth after an api_key-mode restore would rebuild the router with
-		// the signed-out stand-in even though the keychain holds a signed-in
-		// account. The sync takes NO config lock (see
-		// syncChatGPTBuilderSeam) and is a no-op when nothing is signed in.
+		// An auth-mode switch to oauth must sync the builder's
+		// subscription-auth seam to the LIVE manager before the rebuild —
+		// toBuilderConfigLocked carries no OAuth token source, so without
+		// this the router would serve the signed-out stand-in.
+		// See specs/domains/llm-providers.md (ChatGPT Subscription Auth).
 		f.syncChatGPTBuilderSeam()
 		f.configMu.RLock()
 		fresh := f.toBuilderConfigLocked()
@@ -540,11 +477,9 @@ func (f *FrontendAPI) UpdateSearchSettings(settings SearchSettingsRequest) error
 		return errors.New("config not initialized")
 	}
 
-	// Validate BEFORE any mutation: a rejected request must leave both the
-	// in-memory config and the YAML file untouched (the file stays loadable,
-	// so a restart cannot brick the app on a bad value). The error text
-	// mirrors the load-time validate() wording so the user gets the same
-	// actionable guidance in the settings UI as on startup.
+	// Validate BEFORE any mutation: a rejected request leaves the in-memory
+	// config and YAML untouched; the error wording mirrors load-time
+	// validate() so the settings UI shows the same guidance as a bad YAML.
 	provider := strings.ToLower(settings.Provider)
 	baseURL := strings.TrimSpace(settings.BaseURL)
 	if provider == "searxng" && baseURL == "" {
@@ -558,7 +493,6 @@ func (f *FrontendAPI) UpdateSearchSettings(settings SearchSettingsRequest) error
 
 	f.config.Search.Provider = settings.Provider
 	f.config.Search.BaseURL = baseURL
-	// Only update API key if it's not the masked placeholder
 	if settings.APIKey != "" && settings.APIKey != maskedAPIKey {
 		f.config.Search.APIKey = settings.APIKey
 	}
@@ -578,10 +512,9 @@ func (f *FrontendAPI) UpdateSearchSettings(settings SearchSettingsRequest) error
 }
 
 // UpdateVectorIndexSettings updates the vector-index embedding settings
-// (ONNX Runtime execution provider + GPU device id). It deliberately has NO
-// hot application: the embedder is created once per process (after
-// EventBackendReady), so the new provider/device only takes effect after an
-// app restart. This RPC validates, mutates, and persists — nothing else.
+// (execution provider + device id); deliberately NO hot application — the
+// embedder is created once per process, so a change needs a restart.
+// See specs/domains/workspace.md.
 func (f *FrontendAPI) UpdateVectorIndexSettings(settings VectorIndexSettingsResponse) error {
 	f.configMu.Lock()
 	defer f.configMu.Unlock()
@@ -590,11 +523,8 @@ func (f *FrontendAPI) UpdateVectorIndexSettings(settings VectorIndexSettingsResp
 		return errors.New("config not initialized")
 	}
 
-	// Validate BEFORE any mutation: a rejected request must leave both the
-	// in-memory config and the YAML file untouched (the file stays loadable,
-	// so a restart cannot brick the app on a bad value). The error text
-	// mirrors the load-time validate() wording so the user gets the same
-	// actionable guidance in the settings UI as on startup.
+	// Validate BEFORE any mutation: a rejected request leaves the in-memory
+	// config and YAML untouched; error wording mirrors load-time validate().
 	switch settings.ExecutionProvider {
 	case config.VectorIndexProviderAuto, config.VectorIndexProviderCPU, config.VectorIndexProviderCUDA, config.VectorIndexProviderOpenVINO:
 		// valid
@@ -749,24 +679,18 @@ func (f *FrontendAPI) UpdateIndexingSettings(req IndexingSettingsRequest) error 
 }
 
 // proxyRebuildTimeout bounds the propagation phase of a proxy settings change
-// (builder readiness + the MCP gateway reconfigure). It matches the budget
-// runMCPInit gives MCP startup.
+// (builder readiness + MCP gateway reconfigure) — the runMCPInit budget.
 const proxyRebuildTimeout = 30 * time.Second
 
 // UpdateProxySettings updates proxy configuration at runtime and propagates
-// the change to all subsystems (LLM providers, web tools, MCP, child processes).
+// it to all subsystems (LLM providers, web tools, MCP, child processes).
 //
-// Locking contract (mirrors UpdateLLMConfig): saveMu serializes whole save
-// sequences, while configMu is held only for the field mutation and the disk
-// write — never across the propagation below. RebuildProxy restarts the MCP
-// gateway and rebuilds the router and judge, each waiting on builder
-// readiness with its own 30-second budget; holding the configMu WRITE lock
-// across that blocks every concurrent GetConfig and, because Go's RWMutex
-// stops admitting readers once a writer is queued, freezes the whole
-// settings dialog for as long as the rebuild takes. The disk write stays
-// inside the lock — it is a bounded local atomic rewrite, and keeping it
-// there keeps the in-memory state and the persisted file consistent for
-// concurrent readers.
+// Locking contract (mirrors UpdateLLMConfig): saveMu serializes save
+// sequences; configMu covers only the mutation and disk write, never the
+// propagation — a queued writer already stops Go's RWMutex readers, so
+// holding it across the gateway restart and rebuilds would freeze every
+// GetConfig. The bounded local write stays inside.
+// See specs/domains/llm-providers.md (Config Save Discipline).
 func (f *FrontendAPI) UpdateProxySettings(settings ProxySettingsRequest) error {
 	f.saveMu.Lock()
 	defer f.saveMu.Unlock()
@@ -779,20 +703,11 @@ func (f *FrontendAPI) UpdateProxySettings(settings ProxySettingsRequest) error {
 
 	f.config.Proxy.Enabled = settings.Enabled
 	// Preserve the existing URL ONLY when the incoming value is the masked
-	// form returned by GetConfig's proxy section (proxy.MaskURL replaces the
-	// password with "***"). The frontend round-trips the displayed (masked)
-	// URL verbatim when
-	// only another field (enabled/bypass/cert-dir) is edited, so without this
-	// guard the real password would be silently overwritten with "***" and the
-	// next proxy connection would fail to authenticate. Mirrors the
-	// maskedAPIKey preserve guard used for API keys above.
-	//
-	// The comparison is against the mask ALONE — never "any empty value":
-	// treating an empty URL as preserve-round-trip would also swallow the
-	// user CLEARING the field, leaving the old credentials persisted and
-	// dialing while the frontend reports the proxy inactive. An empty
-	// incoming value is never the masked form (MaskURL("") is ""), so it
-	// clears the URL as intended.
+	// form GetConfig returned (the frontend round-trips it verbatim when only
+	// another field is edited — otherwise "***" would become the stored
+	// password). The comparison is against the mask ALONE: MaskURL("") is "",
+	// so an empty incoming value still clears the URL — swallowing a clear
+	// would keep old credentials dialing while the UI reports no proxy.
 	if settings.URL != proxy.MaskURL(f.config.Proxy.URL) {
 		f.config.Proxy.URL = settings.URL
 	}
@@ -801,11 +716,8 @@ func (f *FrontendAPI) UpdateProxySettings(settings ProxySettingsRequest) error {
 	}
 	f.config.Proxy.TLSCertDir = settings.TLSCertDir
 
-	// Persist (and announce) while configMu is still held: the write is a
-	// bounded local atomic rewrite, and keeping it inside keeps the
-	// in-memory state and the file consistent for readers. A failure is
-	// warned about and the change stays live in memory — the pre-existing
-	// contract of this RPC, unchanged here.
+	// Persist (and announce) under configMu — a bounded local write; a
+	// failure is warn-only and the change stays live in memory.
 	if err := f.persistConfig(); err != nil {
 		f.log().Warn("failed to persist proxy settings", "error", err)
 	}
@@ -816,18 +728,11 @@ func (f *FrontendAPI) UpdateProxySettings(settings ProxySettingsRequest) error {
 	bcfg := f.toBuilderConfigLocked()
 	f.configMu.Unlock()
 
-	// --- Heavy work below runs OUTSIDE configMu (readers stay responsive) ---
-	// saveMu is still held, so concurrent UpdateProxySettings calls are
-	// serialized and a later save never propagates before an earlier one.
-	//
-	// The propagation is bounded. RebuildProxy passes this context to the MCP
-	// gateway reconfigure, which reconnects every changed server AND retries
-	// every previously-failed one — and a failed HTTP server is retried with
-	// no deadline of its own, so an endpoint that went unreachable while the
-	// proxy was on can stall the whole propagation for minutes. The budget
-	// matches the one runMCPInit gives MCP startup. Expiry only aborts the
-	// gateway step: RebuildProxy logs it and still rebuilds the router and
-	// the judge, which carry their own budgets.
+	// --- Heavy work below runs OUTSIDE configMu (readers stay responsive);
+	// saveMu still held, so a later save never propagates before an earlier
+	// one. Bounded: RebuildProxy reconfigures the MCP gateway, which retries
+	// previously-failed servers with no deadline of their own (the
+	// runMCPInit budget); expiry aborts only the gateway step.
 	var rebuildErr error
 	if b != nil {
 		rebuildCtx, cancel := context.WithTimeout(context.Background(), proxyRebuildTimeout)
@@ -838,19 +743,11 @@ func (f *FrontendAPI) UpdateProxySettings(settings ProxySettingsRequest) error {
 		}
 	}
 
-	// The ChatGPT auth manager's token-endpoint client rides the same
-	// effective proxy configuration (see chatGPTOutboundHTTPClient): re-point
-	// it at the NEW configuration so an OAuth refresh after a proxy change
-	// takes the new route instead of the transport captured at startup. The
-	// push runs even when the rebuild above failed: the settings change is
-	// already live in memory and persisted, so every other outbound client
-	// follows the new configuration — leaving the auth manager on the old
-	// transport would desynchronize it until the next successful update. The
-	// push runs under the auth lock with the client built inside it (see
-	// pushChatGPTManagerProxyClientLocked); the catalog fetch builds its
-	// client per call and needs no push. A nil manager (auth unavailable or
-	// the restore still in flight — the restore's own post-publication push
-	// covers that case) or a mock without the seam is skipped.
+	// The auth manager's token-endpoint client rides the same effective
+	// proxy: re-point it even when the rebuild above failed — the change is
+	// already live everywhere else, and leaving the manager on the old
+	// transport would desynchronize it until the next successful update.
+	// A nil manager (auth unavailable, restore in flight) is skipped.
 	f.chatgptAuth.mu.Lock()
 	f.pushChatGPTManagerProxyClientLocked()
 	f.chatgptAuth.mu.Unlock()
@@ -861,52 +758,23 @@ func (f *FrontendAPI) UpdateProxySettings(settings ProxySettingsRequest) error {
 	return nil
 }
 
-// runExperimentalChangedHook invokes the installed desktop hook. The hook
-// is written once, inside Init's seed critical section (the
-// FrontendAPIConfig seam, ADR-101) and before the seedPublished flag, so
-// every caller here has passed seedAcquire first and the plain read is
-// ordered after the install — no lock is needed. The hook itself runs
-// SYNCHRONOUSLY on the caller's goroutine — the same contract
-// SetWebAccessEnabled has on the desktop side — so the toggle RPC returns
-// only after the sidecar transition it caused landed (start errors are
-// already logged fail-soft by the hook, never fatal). There is no
-// lock-order cycle: UpdateExperimentalFeatures holds configMu while the
-// hook takes the desktop's webAccessMu, and no desktop path takes configMu
-// back (the web_access section is desktop-owned).
+// runExperimentalChangedHook invokes the installed desktop hook (the
+// FrontendAPIConfig seam, specs/decisions/101-browser-web-access.md),
+// installed once inside Init's seed critical section so callers that passed
+// seedAcquire read it unlocked. It runs SYNCHRONOUSLY on the caller's
+// goroutine; lock order configMu → webAccessMu, never reversed.
 func (f *FrontendAPI) runExperimentalChangedHook(enabled bool) {
 	if hook := f.onExperimentalChanged; hook != nil {
 		hook(enabled)
 	}
 }
 
-// UpdateExperimentalFeatures toggles the master experimental-features switch
-// at runtime. It persists the change and rebuilds the LLM router so the
-// gated features (the E2S execution mode — the embedded-model gate is
-// frontend-only and needs no rebuild) take effect for new sessions without
-// an app restart. Model Profiles is not gated by this switch, so this method
-// never touches its persisted master toggle (model_profiles.enabled).
-//
-// The desktop hook (OnExperimentalChanged) fires only on a SUCCESSFUL
-// persist: the sidecar's lifecycle follows persisted operator intent. A
-// rejected disk write is returned as an error with the in-memory gate rolled
-// back, so the applied gate (what GetConfig serves) and the persisted state
-// never diverge.
-//
-// Recorded trade-off: the configMu critical section spans the synchronous
-// desktop sidecar transition (runExperimentalChangedHook →
-// applyExperimentalWebAccess). The hook must stay inside the critical
-// section that flipped the in-memory gate so no configMu reader can observe
-// the gate already flipped while the sidecar still serves the old state;
-// the transition itself is bounded — the sidecar stop budget on the
-// gate-OFF direction, a fast mount on gate-ON — so the worst-case convoy
-// for other configMu contenders (settings setters, embeddedConfig() readers
-// on the LLM request path) is one stop budget, and only when the gate is
-// switched off while the sidecar's graceful stop is slow. The one-way lock
-// order configMu → webAccessMu (desktop code never takes configMu) keeps
-// the nesting deadlock-free. Splitting the flip from the transition (async
-// mount/stop with completion via a state event) would close even that
-// convoy window but is a contract change needing an ADR amendment —
-// deliberately not taken.
+// UpdateExperimentalFeatures toggles the master experimental-features switch:
+// persist, rebuild the router (the E2S gate) and push the gate onto live
+// orchestrators. The desktop hook fires only on a successful persist and
+// stays INSIDE the configMu critical section, so no reader sees the gate
+// flipped while the sidecar still serves the old state. Lock order configMu
+// → webAccessMu, one-way — specs/decisions/101-browser-web-access.md.
 func (f *FrontendAPI) UpdateExperimentalFeatures(enabled bool) error {
 	f.seedAcquire()
 	f.configMu.Lock()
@@ -926,10 +794,6 @@ func (f *FrontendAPI) UpdateExperimentalFeatures(enabled bool) error {
 		return fmt.Errorf("persisting experimental features toggle: %w", err)
 	}
 
-	// Rebuild the LLM router so the E2S execution mode is applied or removed
-	// immediately. The builder config carries the effective E2S settings,
-	// reused below to refresh the live orchestrators. Model Profiles is not
-	// gated by this switch, so no Model Profiles state is recomputed or pushed.
 	builderCfg := f.toBuilderConfigLocked()
 	if b := f.builder(); b != nil {
 		if err := b.RebuildRouter(builderCfg); err != nil {
@@ -938,28 +802,20 @@ func (f *FrontendAPI) UpdateExperimentalFeatures(enabled bool) error {
 	}
 
 	// Push the refreshed E2S gate onto already-built session orchestrators —
-	// otherwise the mode stays disabled there (stale config.E2S) until an app
-	// restart even though the live config now enables it.
+	// otherwise the mode stays stale there until an app restart.
 	if app := f.app; app != nil {
 		if mgr := app.Manager(); mgr != nil {
 			mgr.SetE2SSettings(builderCfg.E2S)
 		}
 	}
 
-	// The desktop hook fires LAST, after the persist landed: the
-	// sidecar transition it drives is the visible consequence of the
-	// persisted gate (a failed persist returned above).
 	f.runExperimentalChangedHook(enabled)
 
-	// The gate flip moves the section's exposure-warning state: the plain-
-	// HTTP warning is suppressed while the gate is closed and restored when
-	// it opens (the conjunction now lives INSIDE config.WebAccessLoadWarnings,
-	// so load and every recompute share one condition). The sidecar
-	// transition above does not touch the config_errors channel, so this
-	// method is the one place the flip's warning contribution is recomputed.
-	// The splice is done INLINE — this method already holds configMu, and
-	// RefreshWebAccessLoadWarnings re-takes it (self-deadlock); it mirrors
+	// The gate flip moves the section's exposure-warning state; recompute the
+	// config_errors contribution here, INLINE (this method holds configMu and
+	// RefreshWebAccessLoadWarnings re-takes it — self-deadlock), mirroring
 	// that method exactly: prefix-filter, then append the fresh slice.
+	// See specs/decisions/102-web-access-tls.md (decision 8).
 	fresh := config.WebAccessLoadWarnings(f.config.WebAccess, f.config.Experimental.Enabled)
 	kept := make([]string, 0, len(f.configLoadErrors)+len(fresh))
 	for _, w := range f.configLoadErrors {
@@ -974,18 +830,16 @@ func (f *FrontendAPI) UpdateExperimentalFeatures(enabled bool) error {
 	return nil
 }
 
-// GetSecuritySettings returns current security settings for the UI. The
-// response is group-based: every configurable tool group (seven of them — the
-// reserved "system" group is never configurable and never included) is
-// returned with its policy and, for the execute group, its command blocklist.
+// GetSecuritySettings returns the group-based security settings for the UI:
+// every configurable tool group (seven; the reserved "system" group is never
+// included) with its policy and the execute command blocklist.
 func (f *FrontendAPI) GetSecuritySettings() SecuritySettingsResponse {
 	f.configMu.RLock()
 	defer f.configMu.RUnlock()
 
 	if f.config == nil {
-		// No config loaded yet: surface the canonical defaults so the UI has
-		// a complete group set to render (ApplyDefaults is idempotent and
-		// pure — the canonical source of the seven groups and their policies).
+		// No config yet: render the canonical defaults (ApplyDefaults is
+		// idempotent and pure) so the UI has a complete group set.
 		var defaults config.Config
 		config.ApplyDefaults(&defaults)
 		return SecuritySettingsResponse{
@@ -1007,14 +861,9 @@ func (f *FrontendAPI) GetSecuritySettings() SecuritySettingsResponse {
 }
 
 // groupPoliciesToResponse converts config group policies into the frontend
-// response shape, deep-copying blocklist slices so the caller cannot mutate
-// the live config through the returned map. The execute blocklist is stored
-// as its effective value — there are no predefined patterns any more, so
-// what is stored is what applies — while the nil-vs-empty distinction is
-// preserved across the JSON boundary: nil (unset) serializes as null and an
-// explicitly emptied list as [], so a UI round trip (the settings tab saves
-// exactly what it loaded) cannot change the user's choice. Both mean "no
-// patterns".
+// shape, deep-copying blocklist slices so the caller cannot mutate the live
+// config. The nil-vs-empty blocklist distinction round-trips (null vs []) so
+// a UI save cannot change the user's editor state; both mean "no patterns".
 func groupPoliciesToResponse(groups map[string]config.GroupPolicyConfig) map[string]GroupPolicyResponse {
 	out := make(map[string]GroupPolicyResponse, len(groups))
 	for name, g := range groups {
@@ -1041,12 +890,10 @@ func silentModeToResponse(sm config.SilentModeConfig) SilentModeResponse {
 	}
 }
 
-// responseToSilentMode validates a frontend silent-mode payload and converts it
-// into config form. An unset (empty) mode is filled with its default so a
-// partial payload is not an error, but an explicit value must be a valid enum —
-// mirroring config.validate so a UI-sourced value can never store what the
-// loader would reject on the next start. An invalid payload returns an error
-// and the caller mutates nothing.
+// responseToSilentMode validates a frontend silent-mode payload: unset modes
+// take their defaults, explicit values must be valid enums — mirroring
+// config.validate so a UI-sourced value can never store what the loader would
+// reject. See specs/decisions/072-silent-mode-user-confirm-policy.md.
 func responseToSilentMode(r SilentModeResponse) (config.SilentModeConfig, error) {
 	sm := config.SilentModeConfig{
 		ToolConfirm: config.SilentSubPolicyConfig{Mode: r.ToolConfirm.Mode},
@@ -1061,13 +908,10 @@ func responseToSilentMode(r SilentModeResponse) (config.SilentModeConfig, error)
 	return sm, nil
 }
 
-// responseToAutonomyMode validates a frontend autonomy-mode payload against
-// the security.autonomy_mode enum — mirroring config validation so a
-// UI-sourced value can never store what the loader would reject (or warn and
-// fail-safe) on the next start. An empty mode is tolerated as "keep the
-// stored value": a payload from a frontend build predating the enum must not
-// silently weaken (or fortify) the stored posture. An explicit but unknown
-// value is an error and the caller mutates nothing.
+// responseToAutonomyMode validates against the security.autonomy_mode enum,
+// mirroring config validation so a UI-sourced value can never store what the
+// loader would reject. Empty means "keep the stored value" — transitional
+// tolerance for frontends predating the enum.
 func responseToAutonomyMode(mode string) (string, error) {
 	switch mode {
 	case "":
@@ -1082,29 +926,15 @@ func responseToAutonomyMode(mode string) (string, error) {
 	}
 }
 
-// UpdateSecuritySettings updates security settings at runtime. The incoming
-// groups map REPLACES the stored one and must be the COMPLETE set of the
-// seven configurable groups — a partial payload is rejected (it would
-// silently weaken security: an omitted group resolves fail-safe to
-// user_confirm, weaker than a configured deny, and omitting execute would
-// strip the live shell blocklist). Validation mirrors config file
-// validation: only the fixed set of configurable groups is accepted, the
-// reserved "system" group is rejected, policies must use the group enum, a
-// blocklist is an execute-only feature, and blocklist patterns must compile.
-// An invalid payload mutates nothing. The blocklist is empty by default and
-// purely user-authored, so what the payload carries is what gets stored. The
-// autonomy mode must use the security.autonomy_mode enum (an empty payload
-// value keeps the stored posture) and the silent-mode sub-policies are
-// validated against their enums; both are replaced
-// likewise. Delivery is split (per-task autonomy pinning): group policies,
-// auto-approval, the execute blocklist, and the ask_user registration reach
-// live sessions immediately, while the autonomy posture updates the shared
-// registry only — each session clone re-pins it at its next task launch
-// (fresh send or resume), so a running task is never flipped mid-run. A
-// changed execute-group blocklist re-registers the shell tool so the edit
-// applies without an app restart; the re-registration runs first and is
-// atomic, so its failure rolls the config back with no partially-applied
-// state.
+// UpdateSecuritySettings updates security settings at runtime. The groups map
+// REPLACES the stored one and must be the COMPLETE set of the seven
+// configurable groups — a partial payload would silently weaken security
+// (omitted groups fail safe to user_confirm; the reserved "system" group is
+// rejected — specs/decisions/024-group-policies.md). Delivery is split — see
+// specs/architecture/security-model.md: policies and blocklist reach live
+// sessions immediately, the autonomy posture only the shared registry. A
+// changed execute blocklist re-registers the shell tool first, atomically.
+// See specs/decisions/024-group-policies.md (§8, wholesale groups replacement).
 func (f *FrontendAPI) UpdateSecuritySettings(settings SecuritySettingsResponse) error {
 	f.configMu.Lock()
 	defer f.configMu.Unlock()
@@ -1128,9 +958,8 @@ func (f *FrontendAPI) UpdateSecuritySettings(settings SecuritySettingsResponse) 
 		return err
 	}
 
-	// Replace the full group set so config stays in sync with the registry.
-	// prevSecurity snapshots the previous block so a failed shell-tool
-	// re-registration below can roll the whole replacement back.
+	// Replace the full group set; prevSecurity snapshots the block so a
+	// failed shell-tool re-registration below rolls the whole change back.
 	prevSecurity := f.config.Security
 	f.config.Security.Groups = newGroups
 	f.config.Security.AutoApproveWorkspaceWrites = settings.AutoApproveWorkspaceWrites
@@ -1144,15 +973,10 @@ func (f *FrontendAPI) UpdateSecuritySettings(settings SecuritySettingsResponse) 
 	// Apply policies to the shared tool registry via the backend builder.
 	if b := f.builder(); b != nil {
 		builderCfg := f.toBuilderConfigLocked()
-		// Re-register the shell tool FIRST: the blocklist is compiled into
-		// the tool instance at registration, so runtime edits need it to
-		// take effect without an app restart. The call is atomic (a compile
-		// failure leaves the previously registered tool in place), so on
-		// error the config is restored and no layer is left half-applied —
-		// the old blocklist stays live and matches the rolled-back config.
-		// nil and an explicitly emptied list compare equal (both mean "no
-		// patterns"), so toggling between them does not re-register
-		// anything; only a real pattern change does.
+		// Re-register the shell tool FIRST: the blocklist is compiled into the
+		// tool instance, so runtime edits need re-registration. Atomic — on
+		// error the config is restored with nothing half-applied; nil and an
+		// emptied list compare equal, so toggling re-registers nothing.
 		if !slices.Equal(
 			prevSecurity.Groups[config.ToolGroupExecute].Blocklist,
 			newGroups[config.ToolGroupExecute].Blocklist,
@@ -1176,27 +1000,24 @@ func (f *FrontendAPI) UpdateSecuritySettings(settings SecuritySettingsResponse) 
 // Shell execution settings (the shell_exec launch-shape override)
 // ---------------------------------------------------------------------------
 
-// ShellExecToolSettings is one shell-exec tool's launch-shape override as seen
-// by the UI: the argv template (exactly one "{command}" element) and the
-// declared shell. An empty Command keeps the built-in launch shape.
+// ShellExecToolSettings is one shell-exec tool's launch-shape override: the
+// argv template (exactly one "{command}" element) and the declared shell.
 type ShellExecToolSettings struct {
 	Command []string `json:"command"`
 	Shell   string   `json:"shell"`
 }
 
-// ShellExecSettingsResponse is the shell_exec section surface for the
-// Settings UI. BashExec applies on Unix (bash_exec), PoshExec on Windows
-// (posh_exec) — exactly one is live per platform, both are editable so the
-// UI can render the full section.
+// ShellExecSettingsResponse is the shell_exec section surface for the Settings
+// UI: exactly one of BashExec/PoshExec is live per platform, both editable so
+// the UI renders the full section.
 type ShellExecSettingsResponse struct {
 	BashExec ShellExecToolSettings `json:"bash_exec"`
 	PoshExec ShellExecToolSettings `json:"posh_exec"`
 }
 
-// GetShellExecSettings returns the stored shell_exec launch-shape override
-// for the Settings UI. An uninitialized config renders the built-in defaults
-// (no override). Command slices are deep-copied so the caller cannot mutate
-// the live config through the response.
+// GetShellExecSettings returns the stored shell_exec launch-shape override;
+// an uninitialized config renders the built-in defaults. Command slices are
+// deep-copied. See specs/contracts/desktop-frontend.md.
 func (f *FrontendAPI) GetShellExecSettings() ShellExecSettingsResponse {
 	f.configMu.RLock()
 	defer f.configMu.RUnlock()
@@ -1217,10 +1038,9 @@ func shellExecToolToResponse(tool config.ShellExecToolConfig) ShellExecToolSetti
 	return ShellExecToolSettings{Command: command, Shell: tool.Shell}
 }
 
-// responseToShellExecTool validates a UI payload for one tool's override: the
-// argv template shape (config.ValidateShellExecCommand) and the closed shell
-// enum (config.ValidateShellKind). An empty command means "no override" and is
-// always valid (a stray shell value without a command is ignored).
+// responseToShellExecTool validates one tool's override (argv template shape
+// + closed shell enum); an empty command means "no override" and is always
+// valid. See specs/contracts/desktop-frontend.md.
 func responseToShellExecTool(settings ShellExecToolSettings) (config.ShellExecToolConfig, error) {
 	if len(settings.Command) == 0 {
 		return config.ShellExecToolConfig{}, nil
@@ -1237,13 +1057,10 @@ func responseToShellExecTool(settings ShellExecToolSettings) (config.ShellExecTo
 }
 
 // UpdateShellExecSettings replaces the shell_exec launch-shape override and
-// applies it without an app restart by re-registering the shell tool. The
-// payload is validated first (argv template shape + closed shell enum) and an
-// invalid payload mutates nothing. Re-registration runs the same atomic path
-// as the blocklist update (UpdateShellBlocklist — it re-registers the shell
-// tool with the stored blocklist plus the new override), so its failure rolls
-// the section back: the previously registered tool stays live and matches the
-// rolled-back config. A no-change payload re-registers nothing.
+// applies it without a restart by re-registering the shell tool (the same
+// atomic path as the blocklist update — failure rolls the section back). An
+// invalid payload mutates nothing; a no-change payload re-registers nothing.
+// See specs/contracts/desktop-frontend.md, specs/decisions/058-shell-execution-override.md.
 func (f *FrontendAPI) UpdateShellExecSettings(settings ShellExecSettingsResponse) error {
 	f.configMu.Lock()
 	defer f.configMu.Unlock()
@@ -1287,16 +1104,12 @@ func (f *FrontendAPI) UpdateShellExecSettings(settings ShellExecSettingsResponse
 	return nil
 }
 
-// responseToGroupPolicies validates a frontend groups payload and converts it
-// into config group policies, deep-copying blocklist slices. The rules mirror
-// config.validate — the fixed set of configurable groups, the policy enum,
-// execute-only blocklists, and blocklist pattern compilation — so a UI-sourced
-// update can never store what the config loader would reject on the next
-// start. The payload must carry the COMPLETE set of configurable groups: the
-// result replaces the stored map wholesale, and a partial payload would
-// silently weaken security (an omitted group resolves fail-safe to
-// user_confirm — weaker than a configured deny; omitting execute strips the
-// live shell blocklist).
+// responseToGroupPolicies validates a frontend groups payload into config
+// group policies, deep-copying blocklists; the rules mirror config.validate
+// (fixed group set, policy enum, execute-only blocklists, pattern
+// compilation) so a UI-sourced update can never store what the loader would
+// reject. The payload must carry the COMPLETE set: it replaces the stored
+// map wholesale, and a partial one would silently weaken security.
 func responseToGroupPolicies(groups map[string]GroupPolicyResponse) (map[string]config.GroupPolicyConfig, error) {
 	out := make(map[string]config.GroupPolicyConfig, len(groups))
 	for name, g := range groups {
@@ -1335,20 +1148,16 @@ func responseToGroupPolicies(groups map[string]GroupPolicyResponse) (map[string]
 			}
 		}
 		entry := config.GroupPolicyConfig{Policy: g.Policy}
-		// Preserve nil vs empty distinction: a missing blocklist means
-		// "unset" (no patterns), an explicit empty array means "no
-		// patterns" — semantically identical now that no predefined list
-		// exists, but the stored shape still round-trips the user's
-		// editor state.
+		// Preserve nil vs empty: the stored shape round-trips the user's
+		// editor state (see groupPoliciesToResponse).
 		if g.Blocklist != nil {
 			entry.Blocklist = make([]string, len(g.Blocklist))
 			copy(entry.Blocklist, g.Blocklist)
 		}
 		out[name] = entry
 	}
-	// Completeness: the map replaces the stored one, so every configurable
-	// group must be present — a partial payload is a fail-closed error, never
-	// a silent weakening of omitted groups.
+	// Completeness: a partial payload is a fail-closed error, never a silent
+	// weakening of omitted groups.
 	if names := config.SortedToolGroupNames(); len(out) != len(names) {
 		missing := make([]string, 0, len(names))
 		for _, name := range names {
@@ -1364,28 +1173,16 @@ func responseToGroupPolicies(groups map[string]GroupPolicyResponse) (map[string]
 	return out, nil
 }
 
-// GetModelProfiles returns the model-profile profile catalog for the settings
-// picker: every profile (predefined ∪ custom store under f.agentDir) with its
-// 25 knob values, the stored active profile id, the suggested profile id
-// (normalized default-model match against the predefined slugs; null when
-// nothing matches), the read-only picker universe (builtin_tools /
-// tool_groups) read from the live tool registry, and warnings — store-load
-// warnings, resolver warnings (dangling active id → generic fallback) and
-// one-shot notices such as "the active profile was deleted; switched to
-// generic". When config is not yet initialized the profiles are still
-// returned (the catalog is independent of config.yaml); active_id is empty
-// and suggested_profile_id is null.
+// GetModelProfiles returns the model-profile catalog (predefined ∪ custom)
+// for the settings picker: every profile's 25 knob values, the stored active
+// id, the suggested id, the read-only picker universe from the live tool
+// registry, and warnings (store, resolver, one-shot notices). Returned even
+// before config is initialized. See specs/domains/model-profiles.md.
 func (f *FrontendAPI) GetModelProfiles() ModelProfilesResponse {
 	f.seedAcquire()
-	// Picker universe (built-in tools + workflow clusters) comes from the live
-	// tool registry, not from config, so it is read here. Both this registry
-	// call and the catalog load below do I/O (the latter reads
-	// ~/.c0wrk/model-profiles.yaml) — they run BEFORE the config lock is
-	// taken, exactly like modelProfilesGoalBlocked, so the exclusive lock is
-	// held only for the notice drain and the config field copies below
-	// (holding it across disk I/O and the tool-registry lock would block
-	// every other config read and mutation for the whole read, and would
-	// order configMu before the tool-registry lock).
+	// The picker universe comes from the live tool registry and the catalog
+	// load below does I/O — both run BEFORE the config lock (like
+	// modelProfilesGoalBlocked), which then guards only the field copies.
 	builtinTools, toolGroups := f.modelProfilesPickerData()
 
 	resp := ModelProfilesResponse{
@@ -1397,9 +1194,7 @@ func (f *FrontendAPI) GetModelProfiles() ModelProfilesResponse {
 	}
 
 	// Fresh store read so runtime-created/deleted custom profiles show up
-	// without a restart; store warnings surface in the response. The catalog
-	// (predefined ∪ custom) is independent of config.yaml, so it is returned
-	// even before the config is initialized.
+	// without a restart; the catalog is independent of config.yaml.
 	catalog, storeWarnings := config.LoadModelProfilesCatalog(f.agentDir)
 	for _, w := range storeWarnings {
 		f.log().Warn("model-profile profile warning", "warning", w)
@@ -1409,9 +1204,8 @@ func (f *FrontendAPI) GetModelProfiles() ModelProfilesResponse {
 		resp.Profiles = append(resp.Profiles, modelProfileToDTO(p))
 	}
 
-	// Lock (not RLock): the one-shot notices are drained on read. Everything
-	// that performs I/O (picker data, catalog load) has already run; the lock
-	// now guards only the config field reads and the notice drain.
+	// Lock (not RLock): the one-shot notices are drained on read; all I/O
+	// already ran above.
 	f.configMu.Lock()
 	defer f.configMu.Unlock()
 
@@ -1419,7 +1213,6 @@ func (f *FrontendAPI) GetModelProfiles() ModelProfilesResponse {
 		return resp
 	}
 
-	// Global master toggle, reported verbatim (it is not a profile value).
 	resp.Enabled = f.config.ModelProfiles.Enabled
 
 	// Stored view, verbatim: a dangling id stays visible while the resolver
@@ -1442,19 +1235,14 @@ func (f *FrontendAPI) GetModelProfiles() ModelProfilesResponse {
 	return resp
 }
 
-// modelProfilesSuggestSuffixTokens lists the trailing marketing/instruction suffixes
-// stripped (with their "-" separator) from BOTH the model name and the
-// predefined slug before comparison: "Qwen3.8-27B-Instruct" and the slug
-// "qwen3.8-27b" normalize to the same token.
+// Trailing suffixes stripped (with "-") from BOTH the model name and the
+// predefined slug before comparison — see specs/domains/model-profiles.md.
 var modelProfilesSuggestSuffixTokens = []string{"instruct", "it", "latest", "free"}
 
-// normalizeModelProfilesModelToken canonicalizes a model name or profile slug for the
-// suggestion match: lowercase, keep only the last path segment after "/"
-// (provider prefixes such as "Qwen/" or "openrouter/qwen/"), drop any
-// ":"-separated decoration inside that segment (openrouter's ":free"),
-// strip trailing suffix tokens (see modelProfilesSuggestSuffixTokens), then drop every
-// remaining non-alphanumeric character so separator styles ("qwen3.8-27b",
-// "qwen3_8_27b") collapse together.
+// normalizeModelProfilesModelToken canonicalizes a model name or profile slug
+// for the suggestion match: lowercase, last "/" segment, drop ":"-decoration,
+// strip suffix tokens (see modelProfilesSuggestSuffixTokens), drop
+// non-alphanumerics. Grammar specified in specs/domains/model-profiles.md.
 func normalizeModelProfilesModelToken(s string) string {
 	s = strings.ToLower(strings.TrimSpace(s))
 	if i := strings.LastIndex(s, "/"); i >= 0 {
@@ -1482,33 +1270,20 @@ func normalizeModelProfilesModelToken(s string) string {
 	return b.String()
 }
 
-// modelProfilesSuggestAliasIDs maps a model whose shipping name shares no token
-// with the architecture it is derived from to the predefined profile slug that
-// fits it. The embedded local model ("Bonsai 2 27B") is a rebrand of
-// Qwen/Qwen3.8-27B; it suggests its own dedicated "bonsai.2-27b" profile.
-// Normalizing the rebrand yields "bonsai227b" — the same token the dedicated
-// slug normalizes to — so containment would reach it too, but the identity
-// entry stays: it states the derivation once, keyed off the
-// config.EmbeddedLLMModelName constant (so a model rename moves the key with
-// it), and it outranks containment for the exact name. The bare name and the
-// composite "embedded/Bonsai 2 27B" id both resolve to the same key. An alias
-// stays a HINT: nothing here flips model_profiles.enabled or changes
-// active_profile (ADR-066 D8).
+// modelProfilesSuggestAliasIDs maps a model whose shipping name shares no
+// token with its architecture to the predefined profile slug that fits it:
+// the embedded "Bonsai 2 27B" (a Qwen3.8-27B rebrand) → "bonsai.2-27b",
+// keyed off config.EmbeddedLLMModelName so a rename moves the key; identity
+// outranks containment. A HINT only — nothing is auto-applied.
+// See specs/domains/model-profiles.md.
 var modelProfilesSuggestAliasIDs = map[string]string{
 	normalizeModelProfilesModelToken(config.EmbeddedLLMModelName): "bonsai.2-27b",
 }
 
-// suggestModelProfileID returns the predefined profile whose slug best matches
-// the configured default model name, or "" when nothing matches. "generic"
-// is never suggested — it is the model-agnostic fallback the picker already
-// offers. The match is containment on the normalized tokens (model name
-// contains the slug), so vendor decorations ("Qwen/Qwen3.8-27B",
-// "qwen3.8-27b-instruct-2507") still land on "qwen3.8-27b"; the longest
-// matching slug wins so a more specific profile beats a shorter one. A model
-// listed in modelProfilesSuggestAliasIDs is matched by identity instead and
-// therefore outranks containment (an exact alias is strictly more specific than
-// a substring); an alias whose target is missing from the predefined catalog
-// yields no suggestion rather than a dangling id.
+// suggestModelProfileID returns the predefined profile whose slug best
+// matches the default model name (containment on normalized tokens, longest
+// slug wins; identity aliases outrank; "generic" never suggested), or "" when
+// nothing matches. Specified in specs/domains/model-profiles.md.
 func suggestModelProfileID(defaultModel string) string {
 	norm := normalizeModelProfilesModelToken(defaultModel)
 	if norm == "" {
@@ -1539,21 +1314,19 @@ func suggestModelProfileID(defaultModel string) string {
 	return best
 }
 
-// modelProfilesCatalog loads the full model-profile profile catalog (predefined ∪ custom
+// modelProfilesCatalog loads the full profile catalog (predefined ∪ custom
 // store under f.agentDir), logging store-level warnings. Reads are fresh so a
-// custom profile saved at runtime applies on the next config conversion
-// without a restart; the store file is tiny and conversions are not hot paths.
+// runtime profile change applies without a restart; conversions are not hot.
 func (f *FrontendAPI) modelProfilesCatalog() []config.ModelProfile {
 	f.seedAcquire()
 	return loadModelProfilesCatalog(f.agentDir, f.log())
 }
 
-// refreshModelProfilesGateLocked recomputes the cached effective Model Profiles gate reported
-// as ConfigResponse.model_profiles. Callers must hold configMu for WRITING. The profile
-// catalog (a disk read) is resolved only here — at construction and on the rare
-// Model Profiles mutations — never on the GetConfig read path, which just
-// serves the cached value (keeping GetConfig a pure in-memory read, per the
-// GUARANTEE on collectAllModels).
+// refreshModelProfilesGateLocked recomputes the cached effective gate served
+// as ConfigResponse.model_profiles. Callers must hold configMu for WRITING;
+// the catalog (a disk read) is resolved only here, never on the GetConfig
+// read path (see the GUARANTEE on collectAllModels).
+// See specs/domains/model-profiles.md.
 func (f *FrontendAPI) refreshModelProfilesGateLocked() {
 	if f.config == nil {
 		f.modelProfilesGateResp = ModelProfilesSettingsResponse{}
@@ -1573,34 +1346,23 @@ func (f *FrontendAPI) refreshModelProfilesGateLocked() {
 	}
 }
 
-// modelProfilesGoalBlocked reports whether goal mode must be refused because the
-// model-profile essential-tools narrowing is active: the master ModelProfiles toggle AND the
-// active profile's essential-tools variant both on (Model Profiles is not gated
-// by the experimental-features switch, so the master toggle alone decides). The
-// profile is resolved against
-// the live catalog so a runtime profile switch takes effect without a restart.
-// Returns false when no config is loaded (fail-open, matching every other
-// runtime config read): a not-yet-loaded config must never block a request on
-// principle.
+// modelProfilesGoalBlocked reports whether goal mode is refused because the
+// essential-tools narrowing is active (resolved master toggle AND variant —
+// specs/domains/model-profiles.md). Fail-open on an unloaded config.
 func (f *FrontendAPI) modelProfilesGoalBlocked() bool {
-	// Cheap shunt under the read lock: no config, or the master toggle
-	// persisted off, can never block — skip the catalog read too. The config
-	// pointer is set once at construction and never swapped (only its fields
-	// are mutated in place), so the short hold is safe.
+	// Cheap shunt under the read lock: no config or master-off can never
+	// block — skip the catalog read too. The config pointer is never
+	// swapped, so the short hold is safe.
 	f.configMu.RLock()
 	shunt := f.config == nil || !f.config.ModelProfiles.Enabled
 	f.configMu.RUnlock()
 	if shunt {
 		return false
 	}
-	// modelProfilesCatalog() does file I/O (reads ~/.c0wrk/model-profiles.yaml) — load it
-	// OUTSIDE the config lock, then resolve the effective profile UNDER the
-	// read lock. Resolving under the lock is required for race-freedom:
-	// effectiveModelProfilesConfig reads cfg.ModelProfiles, and the setters
-	// (SetModelProfilesEnabled / SelectModelProfile) mutate that SAME field IN
-	// PLACE under the write lock, so reading it from a detached pointer would be
-	// a data race. (This is not a safe "config swap": the config is never
-	// swapped, only mutated.)
+	// The catalog does file I/O — load it OUTSIDE the lock, then resolve the
+	// effective profile UNDER the read lock: the setters mutate
+	// cfg.ModelProfiles in place under the write lock, so reading a detached
+	// pointer would be a data race.
 	catalog := f.modelProfilesCatalog()
 	f.configMu.RLock()
 	defer f.configMu.RUnlock()
@@ -1611,13 +1373,10 @@ func (f *FrontendAPI) modelProfilesGoalBlocked() bool {
 	return profile.Enabled && profile.EssentialTools.Enabled
 }
 
-// modelProfilesPickerData returns the read-only picker universe for the
-// always-present picker: every registered built-in tool that is neither
-// MCP-sourced nor goal-mode-only, with its description, plus the workflow
-// clusters (each restricted to that universe). Both slices are non-nil, so JSON
-// serializes them as []. Returns empty slices when the application is
-// unavailable (before construction, or in unit tests built without an
-// Application).
+// modelProfilesPickerData returns the read-only picker universe (every
+// registered built-in that is neither MCP-sourced nor goal-mode-only, plus
+// the workflow clusters restricted to it); non-nil so JSON serializes [].
+// See specs/domains/model-profiles.md.
 func (f *FrontendAPI) modelProfilesPickerData() ([]ModelProfilesBuiltinTool, []ModelProfilesToolGroup) {
 	if f.appCell() == nil {
 		return []ModelProfilesBuiltinTool{}, []ModelProfilesToolGroup{}
@@ -1627,27 +1386,11 @@ func (f *FrontendAPI) modelProfilesPickerData() ([]ModelProfilesBuiltinTool, []M
 }
 
 // builtinToolInfos extracts the picker universe from a descriptor list, sorted
-// by name, each with its registry description. Two classes of built-in are
-// excluded because pinning them would be inert:
-//
-//   - MCP tools — the essential-tools selection always keeps them implicitly,
-//     so pinning one is a no-op;
-//   - goal-mode-only tools (propose_goal / declare_goal_status /
-//     declare_verification) — they are stripped from every non-goal run before
-//     the selection runs (tools.StripGoalModeTools) and the selection is not
-//     applied in goal mode at all, so their availability never depends on the
-//     user's selection.
-//
-// Everything else is returned, including the reserved system/orchestration
-// group and the protected tools (modelprofiles.ProtectedToolNames) — the latter are
-// the selection's un-narrowable members, so the picker subtracts the
-// already-allowed set before offering an entry (see ModelProfilesEssentialToolsResp).
-// Deterministic (sorted) and freshly allocated so callers may mutate it.
-//
-// The description is the tool's registry text verbatim: every built-in — c0wrk
-// and sp4rk alike — follows the purpose/when-to-use/inputs/outputs/example/
-// anti-example rubric (guarded in core/tools and sp4rk/tools/builtins), so the
-// UI can reformat it into markdown for the picker's hover tooltip.
+// by name. MCP tools and goal-mode-only tools are excluded (pinning them is
+// inert — specs/domains/model-profiles.md); everything else is returned,
+// including the reserved system group and the protected tools (the selection's
+// un-narrowable members). Freshly allocated; descriptions are the registry
+// text verbatim (the UI reformats them into markdown tooltips).
 func builtinToolInfos(descriptors []sdktools.ToolDescriptor) []ModelProfilesBuiltinTool {
 	out := make([]ModelProfilesBuiltinTool, 0, len(descriptors))
 	for _, d := range descriptors {
@@ -1660,10 +1403,9 @@ func builtinToolInfos(descriptors []sdktools.ToolDescriptor) []ModelProfilesBuil
 	return out
 }
 
-// modelProfilesToolGroups projects the workflow-cluster catalog onto the picker
-// universe: a cluster is kept when at least one of its members is in the
-// universe (members are filtered to it), and a cluster with no surviving member
-// is dropped. The result is freshly allocated.
+// modelProfilesToolGroups projects the workflow-cluster catalog onto the
+// picker universe: a cluster survives when at least one member does.
+// See specs/domains/model-profiles.md.
 func modelProfilesToolGroups(tools []ModelProfilesBuiltinTool) []ModelProfilesToolGroup {
 	registered := make(map[string]struct{}, len(tools))
 	for _, t := range tools {
@@ -1691,8 +1433,8 @@ func modelProfilesToolGroups(tools []ModelProfilesBuiltinTool) []ModelProfilesTo
 	return out
 }
 
-// modelProfilesStore reads the custom profile store (fail-soft), logging store-level
-// warnings. Mutations operate on this fresh snapshot.
+// modelProfilesStore reads the custom profile store (fail-soft), logging
+// store-level warnings; mutations operate on the fresh snapshot.
 func (f *FrontendAPI) modelProfilesStore() (custom []config.ModelProfile, storePath string) {
 	f.seedAcquire()
 	storePath = config.ModelProfilesPath(f.agentDir)
@@ -1703,22 +1445,16 @@ func (f *FrontendAPI) modelProfilesStore() (custom []config.ModelProfile, storeP
 	return custom, storePath
 }
 
-// applyModelProfilesChange is the uniform post-mutation tail shared by the profile
-// CRUD/select methods. Callers must hold configMu and call it only after a
-// successful write; it (1) clears the config load-warnings channel so a stale
-// "damaged store"/"dangling active id" warning stops being served by GetConfig
-// once the mutation fixed the condition, (2) announces the change
-// (config:updated), (3) rebuilds the LLM router so the effective profile
-// applies to new sessions without a restart, and (4) refreshes the session
-// manager's Model Profiles snapshot so later agent_metrics events are annotated
-// with the new profile.
+// applyModelProfilesChange is the post-mutation tail shared by the profile
+// CRUD/select methods (callers hold configMu, after a successful write):
+// clear stale load warnings, emit config:updated, rebuild the router, refresh
+// the session manager's snapshot. See specs/domains/model-profiles.md.
 func (f *FrontendAPI) applyModelProfilesChange() {
 	f.seedAcquire()
 	f.configLoadErrors = nil
 	f.emitConfigUpdated()
-	// Recompute the cached effective gate that GetConfig serves (this method
-	// runs under configMu.Lock), so the goal-mode block the settings UI mirrors
-	// tracks the just-applied change.
+	// Recompute the cached effective gate GetConfig serves (runs under
+	// configMu.Lock) so the UI's goal-mode block tracks the change.
 	f.refreshModelProfilesGateLocked()
 	builderCfg := f.toBuilderConfigLocked()
 	if b := f.builder(); b != nil {
@@ -1731,24 +1467,19 @@ func (f *FrontendAPI) applyModelProfilesChange() {
 			modelProfilesCatalog := f.modelProfilesCatalog()
 			modelProfile, _ := effectiveModelProfilesConfig(f.config, modelProfilesCatalog)
 			mgr.SetModelProfile(modelProfile, activeModelProfile(f.config.ModelProfiles, modelProfilesCatalog))
-			// Push the refreshed ModelProfiles settings onto already-built orchestrators
-			// so the runtime change takes effect there without an app restart —
-			// otherwise the goal-mode guard (and the essential-tools filter)
-			// would keep the stale build-time snapshot until the session is
-			// rebuilt. Mirrors the E2S push.
+			// Push the refreshed settings onto live orchestrators so the
+			// goal-mode guard and essential-tools filter track the change —
+			// mirrors the E2S push.
 			mgr.SetModelProfilesSettings(core.ModelProfilesSettingsFromBuilderConfig(builderCfg.ModelProfiles))
 		}
 	}
 }
 
-// CreateModelProfile duplicates the catalog profile baseID under a new display
-// name as a custom profile and persists it to the custom store
-// (~/.c0wrk/model-profiles.yaml). An empty baseID means the generic profile.
-// The name must be non-empty and unique against every predefined and custom
-// profile name; the id is derived from the name. The active profile is NOT
-// changed (select explicitly afterwards). Returns the new profile id.
-// Validation runs before any write; the store save is atomic, so a failure
-// leaves nothing behind.
+// CreateModelProfile duplicates catalog profile baseID under a new display
+// name as a custom profile (empty baseID = generic) and persists it. The name
+// must be unique across predefined ∪ custom; the active profile is not
+// changed; validation runs before the atomic write. Returns the new id.
+// See specs/domains/model-profiles.md.
 func (f *FrontendAPI) CreateModelProfile(baseID, name string) (string, error) {
 	f.configMu.Lock()
 	defer f.configMu.Unlock()
@@ -1776,15 +1507,10 @@ func (f *FrontendAPI) CreateModelProfile(baseID, name string) (string, error) {
 	return created.ID, nil
 }
 
-// UpdateModelProfile updates the CUSTOM profile id. Only the two request-level
-// fields are optional: a nil Name keeps the stored display name, a nil Config
-// keeps the stored 25 knob values. A supplied Config is a WHOLE-VALUE
-// replacement — all 25 knobs are overwritten by the request (the values DTO
-// carries no per-leaf pointers, so there is no per-section merge). Predefined
-// profiles are read-only (duplicate one to customize it) and unknown ids are
-// rejected. Validation runs before any mutation, and the store save is an
-// atomic full rewrite, so an invalid payload or a failed write leaves the
-// stored state untouched.
+// UpdateModelProfile updates the CUSTOM profile id: nil Name/Config keep the
+// stored values; a supplied Config is a whole-value replacement of all 25
+// knobs. Predefined profiles are read-only; validation runs before the atomic
+// write. See specs/domains/model-profiles.md.
 func (f *FrontendAPI) UpdateModelProfile(id string, req ModelProfileUpdateRequest) error {
 	f.configMu.Lock()
 	defer f.configMu.Unlock()
@@ -1805,9 +1531,8 @@ func (f *FrontendAPI) UpdateModelProfile(id string, req ModelProfileUpdateReques
 		return fmt.Errorf("the model-profile profile %q does not exist in the profile catalog", id)
 	}
 
-	// Next name: trimmed, non-empty, unique against every OTHER profile name
-	// (predefined ∪ custom, self excluded). The store save re-validates the
-	// full set — including the name-length bound — before writing a byte.
+	// Next name: trimmed, non-empty, unique against every OTHER profile
+	// (predefined ∪ custom, self excluded).
 	nextName := custom[idx].Name
 	if req.Name != nil {
 		nextName = strings.TrimSpace(*req.Name)
@@ -1845,12 +1570,9 @@ func (f *FrontendAPI) UpdateModelProfile(id string, req ModelProfileUpdateReques
 	return nil
 }
 
-// DeleteModelProfile removes the CUSTOM profile id from the store. Predefined
-// profiles are undeletable and unknown ids are rejected. Deleting the ACTIVE
-// profile first falls back to generic in config.yaml (persisted before the
-// store write, rolled back if the config persist fails) and records a one-shot
-// notice that the next GetModelProfiles reports as a warning alongside the
-// switched active id.
+// DeleteModelProfile removes the CUSTOM profile id; predefined and unknown
+// ids are rejected. Deleting the active profile falls back to generic in
+// config.yaml and records a one-shot notice. See specs/domains/model-profiles.md.
 func (f *FrontendAPI) DeleteModelProfile(id string) error {
 	f.configMu.Lock()
 	defer f.configMu.Unlock()
@@ -1867,10 +1589,9 @@ func (f *FrontendAPI) DeleteModelProfile(id string) error {
 		return fmt.Errorf("the model-profile profile %q does not exist in the profile catalog", id)
 	}
 
-	// Deleting the active profile switches config.yaml to generic FIRST: if
-	// the config persist fails the in-memory id is restored and the store is
-	// never touched; if the store delete then fails, config.yaml merely points
-	// at generic while the profile still exists — a benign, retry-safe state.
+	// Switch config.yaml to generic FIRST: a failed persist restores the id
+	// and never touches the store; a failed store delete after that leaves
+	// config pointing at generic while the profile exists — benign, retry-safe.
 	wasActive := f.config.ModelProfiles.ActiveProfile == id
 	if wasActive {
 		if f.configPath == "" {
@@ -1895,11 +1616,9 @@ func (f *FrontendAPI) DeleteModelProfile(id string) error {
 	return nil
 }
 
-// SelectModelProfile makes id the active model-profile profile and persists the
-// choice to config.yaml (model_profiles.active_profile). The id must exist in the
-// catalog (predefined ∪ custom); a failed disk write rolls the in-memory
-// state back so the rejected selection is indistinguishable from a rejected
-// request.
+// SelectModelProfile makes id the active profile and persists it to
+// config.yaml; the id must exist in the catalog; a failed write rolls the
+// in-memory state back. See specs/domains/model-profiles.md.
 func (f *FrontendAPI) SelectModelProfile(id string) error {
 	f.configMu.Lock()
 	defer f.configMu.Unlock()
@@ -1930,12 +1649,10 @@ func (f *FrontendAPI) SelectModelProfile(id string) error {
 	return nil
 }
 
-// SetModelProfilesEnabled toggles the global Model Profiles master switch (model_profiles.enabled) and
-// persists it to config.yaml. The master toggle is the only switch — Model
-// Profiles is not gated by the experimental-features switch, so both turning it
-// on and off are always allowed. A request matching the stored value is a
-// no-op, and a failed disk write rolls the in-memory value back so the rejected
-// toggle is indistinguishable from a rejected request.
+// SetModelProfilesEnabled toggles the global master switch
+// (model_profiles.enabled) and persists it — the feature's only switch, not
+// gated by experimental features. A matching request is a no-op; a failed
+// write rolls back. See specs/domains/model-profiles.md.
 func (f *FrontendAPI) SetModelProfilesEnabled(enabled bool) error {
 	f.configMu.Lock()
 	defer f.configMu.Unlock()
@@ -1970,9 +1687,8 @@ func modelProfileToDTO(p config.ModelProfile) ModelProfileDTO {
 	}
 }
 
-// modelProfileConfigToValues converts the profile-level 25-knob struct into
-// the JSON-tagged values DTO. AlwaysPresent is normalized to a non-nil slice
-// so JSON serialization yields [] instead of null.
+// modelProfileConfigToValues converts the 25-knob struct into the values DTO;
+// AlwaysPresent is normalized to a non-nil slice so JSON yields [].
 func modelProfileConfigToValues(c config.ModelProfileConfig) ModelProfileValues {
 	return ModelProfileValues{
 		EssentialTools: ModelProfilesEssentialToolsValues{
@@ -2015,8 +1731,8 @@ func modelProfileConfigToValues(c config.ModelProfileConfig) ModelProfileValues 
 	}
 }
 
-// modelProfilesValuesToProfileConfig converts the values DTO into the profile-level
-// 25-knob struct for validation/persistence via config.NewModelProfile.
+// modelProfilesValuesToProfileConfig converts the values DTO into the 25-knob
+// struct for validation/persistence via config.NewModelProfile.
 func modelProfilesValuesToProfileConfig(r ModelProfileValues) config.ModelProfileConfig {
 	return config.ModelProfileConfig{
 		EssentialTools: config.EssentialToolsConfig{
@@ -2072,14 +1788,12 @@ func (f *FrontendAPI) SetLogLevel(level string) error {
 	f.configMu.Lock()
 	defer f.configMu.Unlock()
 
-	// Validate the level
 	level = strings.ToUpper(level)
 	switch level {
 	case "DEBUG", "INFO", "WARN", "ERROR":
 		f.logLevel = level
-		// The sibling call sites nil-check before use (CS #48): a shell app
-		// can have f.app non-nil with no manager yet, and either bare
-		// dereference would panic the RPC.
+		// Nil-checked like the sibling call sites: a shell app can have f.app
+		// non-nil with no manager yet; a bare dereference would panic the RPC.
 		if f.app != nil {
 			if m := f.app.Manager(); m != nil {
 				m.SetLogLevel(level)
@@ -2097,14 +1811,11 @@ func (f *FrontendAPI) SetLogLevel(level string) error {
 	}
 }
 
-// GetNotificationBannerTimeout returns how long a delivered OS notification
-// banner stays on screen, in seconds: -1 (the notification daemon's own
-// default), 0 (never expire — stays until clicked or dismissed) or an
-// explicit positive lifetime.
-//
-// Fail-safe: an unloaded config answers -1 (the pre-setting behavior) rather
-// than 0, because the Go zero value would otherwise silently mean "banners
-// never go away".
+// GetNotificationBannerTimeout returns how long an OS notification banner
+// stays on screen, in seconds: -1 (daemon default), 0 (never expire) or an
+// explicit lifetime. Fail-safe: an unloaded config answers -1, never the Go
+// zero value (which would silently mean "banners never go away"). See
+// specs/domains/frontend/system-notifications.md.
 func (f *FrontendAPI) GetNotificationBannerTimeout() int {
 	f.configMu.RLock()
 	defer f.configMu.RUnlock()
@@ -2136,14 +1847,11 @@ func (f *FrontendAPI) SetNotificationBannerTimeout(seconds int) error {
 	return nil
 }
 
-// ListProviderModels returns available model names for a given provider.
-// For Anthropic: returns hardcoded list from model registry.
-// For ChatGPT/OpenAI Compatible: fetches from the provider's API.
-//
-// Draft credentials on req (api_key, base_url, type) are merged into a
-// throwaway BuilderConfig copy so the settings UI can list models for a
-// compatible provider that is not yet persisted — e.g. first-run setup
-// where saves are blocked until a default_model is chosen.
+// ListProviderModels returns available model names for a provider (Anthropic:
+// registry list; ChatGPT/OpenAI-compatible: provider API). Draft credentials
+// on req are merged into a throwaway BuilderConfig copy so the settings UI
+// can list models for a not-yet-persisted provider. See
+// specs/contracts/desktop-frontend.md.
 func (f *FrontendAPI) ListProviderModels(req ListProviderModelsRequest) ([]string, error) {
 	if req.Provider == "" {
 		return nil, errors.New("provider is required")
@@ -2168,41 +1876,14 @@ func (f *FrontendAPI) ListProviderModels(req ListProviderModelsRequest) ([]strin
 	return b.ListProviderModels(context.Background(), req.Provider, cfg)
 }
 
-// GetProviderTLSCertificate connects to the provider's endpoint and returns
-// the SPKI fingerprint of the certificate the server currently presents —
-// the settings UI "Get" button (ADR-054). The connection performs only the
-// TLS handshake: no HTTP request, no API key. Verification is deliberately
-// skipped, because the fingerprint IS what is being fetched; the user pins
-// the result afterwards.
-//
-// The call is UNCONDITIONAL with respect to any configured pin: the request
-// carries no fingerprint, nothing here reads the provider's persisted pin,
-// and the result is the same whether the provider is already pinned or not.
-// Pressing the button always answers "what is this endpoint serving right
-// now?".
-//
-// baseURL from the request (the draft form value) wins over the persisted
-// provider base_url; ${VAR} is expanded for both, like every other dial
-// path.
-//
-// The probe dials the endpoint DIRECTLY (it does not consult the configured
-// HTTP proxy), so while the proxy dials for this host — the proxy is
-// effective AND the host is not on proxy.bypass_list — a fetched pin would
-// be inert the moment it is saved, and the call is rejected up front with an
-// actionable error instead. For a bypassed host the probe answers a
-// meaningful question: the host dials directly, so the pin it fetches
-// applies (ADR-054, "bypass re-arms the pin").
-//
-// The request's base_url is dialed as given: like ListProviderModels, this
-// RPC sends a network request to a host taken from the (local, single-user)
-// settings form — an accepted parity trade-off recorded in ADR-054 §5, not
-// an SSRF surface new with this feature.
-//
-// Locking contract: the effective proxy state, the bypass list, and the
-// persisted base URL are snapshotted under configMu.RLock, and the lock is
-// RELEASED before the handshake. Holding configMu across a network call (up
-// to llmtls.FetchFingerprintTimeout) would block every concurrent GetConfig
-// and freeze the settings dialog.
+// GetProviderTLSCertificate dials the provider's endpoint and returns the
+// SPKI fingerprint it currently presents — handshake only, no HTTP, no API
+// key, verification deliberately skipped (the fingerprint IS the payload) —
+// unconditional with respect to any configured pin. The draft base_url wins
+// over the persisted one (${VAR} expanded like every dial path). The probe
+// dials DIRECTLY, so an effective, non-bypassed proxy is refused up front
+// (the pin would be inert); snapshotted under configMu.RLock, released
+// before the handshake. See specs/decisions/054-per-provider-tls-pinning.md.
 func (f *FrontendAPI) GetProviderTLSCertificate(req GetProviderTLSCertificateRequest) (TLSCertificateResponse, error) {
 	if req.Provider == "" {
 		return TLSCertificateResponse{}, errors.New("provider is required")
@@ -2236,9 +1917,8 @@ func (f *FrontendAPI) GetProviderTLSCertificate(req GetProviderTLSCertificateReq
 	if raw == "" {
 		return TLSCertificateResponse{}, fmt.Errorf("provider %q has no base URL configured", req.Provider)
 	}
-	// Env-var expansion (${VAR}) — the same treatment every other dial path
-	// gives the base URL; a persisted `${LLM_BASE_URL}` would otherwise be
-	// parsed as a literal (and fail) by url.Parse inside FetchFingerprint.
+	// ${VAR} expansion — every dial path's treatment; a persisted
+	// "${LLM_BASE_URL}" would otherwise fail url.Parse inside FetchFingerprint.
 	raw = config.ExpandEnvVars(raw)
 
 	if proxyEnabled {
@@ -2258,12 +1938,9 @@ func (f *FrontendAPI) GetProviderTLSCertificate(req GetProviderTLSCertificateReq
 }
 
 // resolveTLSFingerprint applies the pointer sentinel for the per-provider
-// TLS pin (ADR-054) on the API boundary: nil means "keep the persisted pin",
-// which is what a debounced partial save from the settings dialog sends when
-// only credentials or the model list changed — without this, every such save
-// would silently clear the pin. A non-nil pointer applies verbatim, so an
-// explicit empty string is the deliberate "clear the pin" signal (back to
-// system CA verification).
+// TLS pin (ADR-054): nil keeps the persisted pin (a debounced partial save
+// must not silently clear it); non-nil applies verbatim (explicit "" clears).
+// See specs/contracts/desktop-frontend.md.
 func resolveTLSFingerprint(requested *string, persisted string, providerExists bool) string {
 	if requested != nil {
 		return *requested
@@ -2275,12 +1952,8 @@ func resolveTLSFingerprint(requested *string, persisted string, providerExists b
 }
 
 // resolveAutoRetrySeconds applies the pointer sentinel for the per-provider
-// session-layer auto-retry interval (compatible providers only): nil means
-// "keep the persisted interval", which is what a debounced partial save from
-// the settings dialog sends when only credentials or the model list changed —
-// without this, every such save would silently reset the timer. A non-nil
-// pointer applies verbatim, so an explicit 0 is the deliberate "disable the
-// retry timer" signal.
+// auto-retry interval (ADR-065): nil keeps the persisted value; non-nil
+// applies verbatim (explicit 0 disables). See specs/domains/llm-providers.md.
 func resolveAutoRetrySeconds(requested *int, persisted int, providerExists bool) int {
 	if requested != nil {
 		return *requested
@@ -2292,12 +1965,9 @@ func resolveAutoRetrySeconds(requested *int, persisted int, providerExists bool)
 }
 
 // resolveTimeoutClass applies the pointer sentinel for the per-provider
-// adaptive-budget class override (ADR-071 D3): nil means "keep the persisted
-// class", which is what a debounced partial save from the settings dialog
-// sends — the UI has no timeout_class editor yet, so without this every such
-// save would silently clear a hand-edited override and flip the provider back
-// to class inference. A non-nil pointer applies verbatim, so an explicit empty
-// string is the deliberate "infer the class" signal.
+// timeout_class override (ADR-071 D3): nil keeps the persisted value; non-nil
+// applies verbatim (explicit "" = infer). See
+// specs/decisions/071-adaptive-llm-request-budgets.md.
 func resolveTimeoutClass(requested *string, persisted string, providerExists bool) string {
 	if requested != nil {
 		return *requested
@@ -2312,6 +1982,7 @@ func resolveTimeoutClass(requested *string, persisted string, providerExists boo
 // UI into cfg so ListProviderModels can resolve providers that exist only in
 // the frontend draft (not yet written to config.yaml). cfg must be a
 // throwaway ToBuilderConfig result — this mutates its ProviderConfigs map.
+// See specs/contracts/desktop-frontend.md, specs/domains/llm-providers.md.
 func applyListProviderModelsOverrides(cfg *core.BuilderConfig, req ListProviderModelsRequest) error {
 	existing, exists := cfg.LLM.ProviderConfigs[req.Provider]
 
@@ -2363,10 +2034,8 @@ func applyListProviderModelsOverrides(cfg *core.BuilderConfig, req ListProviderM
 }
 
 // validTokenizerTypes enumerates the TokenizerType values the Configure dialog
-// may select. It mirrors the switch in llm.NewTokenCounter (tokencount.go); the
-// tiktoken/<encoding> forms are enumerated explicitly rather than accepting any
-// "tiktoken/" prefix because the dialog offers a fixed, curated list (no free
-// text). Keep in sync with NewTokenCounter if a new encoding is added.
+// may select (mirrors llm.NewTokenCounter; enumerated explicitly because the
+// dialog offers a fixed, curated list). Keep in sync with NewTokenCounter.
 var validTokenizerTypes = map[string]struct{}{
 	"approximate":          {},
 	"tiktoken/o200k_base":  {},
@@ -2374,9 +2043,8 @@ var validTokenizerTypes = map[string]struct{}{
 	"anthropic-api":        {},
 }
 
-// validFamilies enumerates the ModelFamily values the Configure dialog may
-// select. Built from the llm.Family* string constants so this stays in sync
-// with DetectFamily automatically.
+// validFamilies enumerates the ModelFamily values the dialog may select,
+// built from the llm.Family* constants (stays in sync with DetectFamily).
 var validFamilies = map[string]struct{}{
 	string(llm.FamilyAnthropic):      {},
 	string(llm.FamilyOpenAIFlagship): {},
@@ -2391,9 +2059,8 @@ var validFamilies = map[string]struct{}{
 	string(llm.FamilyDefault):        {},
 }
 
-// validProtocols enumerates the APIProtocol values the Configure dialog may
-// select. Built from the llm.Protocol* string constants so this stays in sync
-// with DetectProtocol automatically.
+// validProtocols enumerates the APIProtocol values the dialog may select,
+// built from the llm.Protocol* constants (stays in sync with DetectProtocol).
 var validProtocols = map[string]struct{}{
 	string(llm.ProtocolChatCompletions): {},
 	string(llm.ProtocolResponses):       {},
@@ -2401,23 +2068,11 @@ var validProtocols = map[string]struct{}{
 	string(llm.ProtocolGoogle):          {},
 }
 
-// modelFamilyDefault and modelProtocolDefault were removed: ResolveBuiltInModel
-// always resolves Family/Protocol (via resolveFamily/resolveProtocol in the
-// SDK) for known, fuzzy-matched, and unknown models alike, so defMeta.Family
-// and defMeta.Protocol are always populated directly. Callers use those fields
-// inline.
-
-// GetModelConfig returns a single model's configurable parameters: the
-// currently-effective values (override value when set, otherwise the built-in
-// default) and the built-in factory defaults. Used by the per-model Configure
-// dialog to pre-fill inputs and show what would change.
-//
-// Effective-value rule: a config override field of 0/""/nil means "inherit
-// default", so the effective value is the override's set value or, when unset,
-// the built-in default resolved via llm.ResolveBuiltInModel (network-free:
-// built-in catalog or the 128000/32768 fallback for unknown models).
-// ResolveBuiltInModel always resolves Family/Protocol (including detected
-// values for unknown models), so those fields are never empty.
+// GetModelConfig returns a single model's configurable parameters — the
+// currently-effective values (override when set, otherwise the built-in
+// default) and the factory defaults — for the Configure dialog's pre-fill.
+// An override field of 0/""/nil means "inherit"; llm.ResolveBuiltInModel
+// resolves network-free and always fills Family/Protocol.
 func (f *FrontendAPI) GetModelConfig(model string) (ModelConfigResponse, error) {
 	f.configMu.RLock()
 	defer f.configMu.RUnlock()
@@ -2428,9 +2083,7 @@ func (f *FrontendAPI) GetModelConfig(model string) (ModelConfigResponse, error) 
 
 	defMeta, _ := llm.ResolveBuiltInModel(model)
 
-	// defMeta.Capabilities is a pointer (nil = inherit); the response DTO
-	// carries the effective value type. ResolveBuiltInModel always resolves
-	// to non-nil capabilities (catalog or the optimistic fallback), but guard
+	// ResolveBuiltInModel always resolves non-nil capabilities today; guard
 	// so a future nil-returning path degrades to all-false instead of panicking.
 	defCaps := llm.ModelCapabilities{}
 	if defMeta.Capabilities != nil {
@@ -2478,21 +2131,13 @@ func (f *FrontendAPI) GetModelConfig(model string) (ModelConfigResponse, error) 
 	return resp, nil
 }
 
-// SetModelConfig persists per-model parameter overrides from the Configure
-// dialog. Only fields that differ from the built-in default are stored (a field
-// equal to the default is recorded as its "inherit" sentinel — 0 for ints, ""
-// for strings, nil for the capabilities pointer); when every field matches the
-// default the model's entry is removed entirely so config.yaml stays minimal.
-// The one field this dialog does not own — request_timeout, a hand-edited
-// config.yaml key (ADR-071 D5) — is carried through from the persisted entry
-// untouched, so a Configure save never drops it.
-// The change is persisted and the LLM router rebuilt so the new values take
-// effect immediately.
-//
-// TokenizerType/Family/Protocol are validated against curated enum sets — the
-// dialog offers a fixed dropdown list (no free text), and the backend is the
-// enforcement boundary so a stale or tampered client cannot persist an invalid
-// enum string.
+// SetModelConfig persists per-model overrides from the Configure dialog.
+// Only fields differing from the built-in default are stored (others take
+// their "inherit" sentinel; when everything matches, the entry is dropped —
+// specs/domains/llm-providers.md, resolution tiers). request_timeout
+// (ADR-071), which the dialog does not own, is carried through untouched.
+// The change is persisted and the router rebuilt; enum fields are validated
+// against the curated sets (the backend is the enforcement boundary).
 func (f *FrontendAPI) SetModelConfig(model string, req ModelConfigRequest) error {
 	f.configMu.Lock()
 	defer f.configMu.Unlock()
@@ -2501,18 +2146,16 @@ func (f *FrontendAPI) SetModelConfig(model string, req ModelConfigRequest) error
 		return errors.New("config not initialized")
 	}
 
-	// ContextWindow/OutputLimit must be positive integers. The Input has
-	// min={1} but that is advisory only; a negative would otherwise be
-	// persisted verbatim to config.yaml as nonsensical state.
+	// ContextWindow/OutputLimit must be positive: the Input's min={1} is
+	// advisory only, and a negative would persist as nonsensical state.
 	if req.ContextWindow < 1 || req.OutputLimit < 1 {
 		return fmt.Errorf("context window and output limit must be positive integers, got %d/%d",
 			req.ContextWindow, req.OutputLimit)
 	}
 
-	// The same ceiling config.validate enforces at load. Save does not run
-	// validate, so an out-of-range window persisted here would surface only on
-	// the next launch — where the failed validation discards the whole config
-	// and the next save overwrites it with defaults (total data loss).
+	// The same ceiling config.validate enforces at load; Save does not run
+	// validate, so an out-of-range window would surface only at the next
+	// launch — whose failed validation discards the whole config.
 	if req.ContextWindow > config.MaxModelContextWindow {
 		return fmt.Errorf("context window %d is not valid; must be within 1-%d tokens",
 			req.ContextWindow, config.MaxModelContextWindow)
@@ -2542,11 +2185,9 @@ func (f *FrontendAPI) SetModelConfig(model string, req ModelConfigRequest) error
 		defCaps = *defMeta.Capabilities
 	}
 
-	// Record the "inherit" sentinel for any field that matches the built-in
-	// default — buildRouter seeds the override PARTIAL (only explicitly set
-	// fields), and the registry treats a zero/empty sentinel as "inherit from
-	// lower tiers", so storing the default value verbatim would be redundant.
-	// Capabilities is compared by value (nil = inherit).
+	// Record the "inherit" sentinel for any field matching the built-in
+	// default: the override stays partial and unset fields inherit from the
+	// tiers below (specs/domains/llm-providers.md, resolution tiers).
 	var newCW, newOL int
 	var newTok, newFam, newProto string
 	var newCaps *llm.ModelCapabilities
@@ -2574,17 +2215,12 @@ func (f *FrontendAPI) SetModelConfig(model string, req ModelConfigRequest) error
 		f.config.LLM.Models = make(map[string]config.ModelOverride)
 	}
 
-	// This dialog has no editor for request_timeout — it is a hand-edited
-	// config.yaml key (ADR-071 D5) — so the RPC must carry the persisted value
-	// through untouched. The entry is rebuilt "from scratch" below, and a
-	// hand-authored deadline would otherwise silently vanish; when it is the
-	// entry's ONLY field, the "everything matches the default" branch would
-	// delete the whole entry.
+	// The dialog has no editor for request_timeout (ADR-071) — a hand-edited
+	// key the rebuilt entry must carry through untouched, or an all-defaults
+	// save would delete the whole entry.
 	existing := f.config.LLM.Models[model]
 
 	if newCW == 0 && newOL == 0 && newTok == "" && newFam == "" && newProto == "" && newCaps == nil && existing.RequestTimeout == 0 {
-		// Everything matches the built-in default — drop the override so the
-		// model resolves purely from the built-in catalog.
 		delete(f.config.LLM.Models, model)
 	} else {
 		f.config.LLM.Models[model] = config.ModelOverride{
@@ -2616,28 +2252,25 @@ func (f *FrontendAPI) SetModelConfig(model string, req ModelConfigRequest) error
 	return nil
 }
 
-// persistConfig saves the current in-memory config to disk. Every successful
-// config mutation funnels through here, so it is also the single point that
-// announces config changes to the frontend (see emitConfigUpdated).
+// persistConfig saves the in-memory config to disk — the funnel every
+// successful config mutation goes through, and the single point announcing
+// config changes (see emitConfigUpdated, specs/contracts/event-catalog.md).
 func (f *FrontendAPI) persistConfig() error {
 	if f.configPath == "" || f.config == nil {
 		return errors.New("config path or config not set")
 	}
 	err := config.Save(f.config, f.configPath)
-	// Announce even when the disk write failed: the in-memory config (what
-	// GetConfig serves) has already changed, so refetching consumers stay
-	// consistent with what the backend will report.
+	// Announce even when the disk write failed: the in-memory config GetConfig
+	// serves has already changed (specs/contracts/event-catalog.md).
 	f.emitConfigUpdated()
 	return err
 }
 
-// emitConfigUpdated notifies the frontend that the config was mutated via an
-// Update* RPC. Dispatched on a fresh goroutine because persistConfig runs
-// under whatever lock its caller holds (configMu.Lock for most setters), and
-// emitEvent is a synchronous Wails webview dispatch — a config lock must
-// never be held across it (readers such as GetConfig would convoy behind the
-// event delivery). Nil-guarded: most tests exercise persistConfig without
-// wiring emitEvent.
+// emitConfigUpdated notifies the frontend of a config mutation. Dispatched on
+// a fresh goroutine: persistConfig runs under its caller's configMu and
+// emitEvent is a synchronous Wails dispatch that must never run under it.
+// Nil-guarded: most tests exercise persistConfig without wiring emitEvent.
+// See specs/contracts/event-catalog.md.
 func (f *FrontendAPI) emitConfigUpdated() {
 	f.seedAcquire()
 	if f.emitEvent == nil {

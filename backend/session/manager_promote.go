@@ -11,47 +11,26 @@ import (
 	"github.com/v0lka/sp4rk/orchestration"
 )
 
-// EvictSession drops an in-memory session WITHOUT touching any on-disk state:
-// per-step dump files are closed through the orchestrator's idempotent
-// cleanup, the session log/LLM-dump file handles are closed, and the session
-// plus its tracking entries (file-coherence, last tool_call_id) are purged
-// from the manager. The next GetSession lazily re-restores the session from
-// the store — at that point any project change already committed by the caller
-// takes effect (NoProjectMode is derived from project_id at orchestrator-build
-// time), which is exactly what the session-promotion flow needs.
-//
-// Deletion is NOT performed here: logs, dumps, workspace — everything on disk
-// survives. A session with a running task or an in-flight manual compaction is
-// refused (its goroutines still hold open state); a session that is not in
-// memory returns nil — eviction is idempotent.
-//
-// A concurrently starting lazy restore is waited out first (single-flight
-// reservation), so a restore that began before the eviction can never
-// re-insert the session after it is dropped.
-// EvictSession drops an in-memory session without touching on-disk state.
-// See EvictSessionCarryingAttachments — this wrapper discards the attachment
-// capture for callers that do not carry staged state across the eviction.
+// Drops the in-memory session without touching on-disk state (handles
+// closed, trackers purged, active task/compaction refused, restore waited
+// out); the next GetSession re-restores, picking up the caller's project
+// change. See specs/domains/session-lifecycle.md; the capturing variant
+// is EvictSessionCarryingAttachments.
 func (m *Manager) EvictSession(id string) error {
 	_, err := m.EvictSessionCarryingAttachments(id)
 	return err
 }
 
-// EvictSessionCarryingAttachments evicts the in-memory session exactly like
-// EvictSession AND returns the staged (pending) attachments the session held,
-// CAPTURED under the same critical section that deletes the session: the
-// manager write lock is held from the restore wait through the capture to the
-// map delete, so a staging append racing the eviction either commits before
-// the capture (and is carried) or re-validates against the manager only after
-// the delete is visible (and re-stages on the restored session — see
-// appendPendingAttachments). No interleaving can lose the file, which the
-// bind flow's separate snapshot-then-evict pair could not guarantee.
+// Evicts like EvictSession AND returns the staged attachments, captured
+// under the same critical section that deletes the session: a racing
+// staging append either commits before the capture or re-stages on the
+// restored session — no interleaving loses the file.
 func (m *Manager) EvictSessionCarryingAttachments(id string) (*PendingAttachmentSnapshot, error) {
 	if id == "" {
 		return nil, errors.New("session id is required")
 	}
-	// Wait out any in-flight restore of this session, then evict under the
-	// write lock. The loop re-checks because another goroutine may start a new
-	// restore the moment we release the lock to wait.
+	// Wait out any in-flight restore, then evict under the write lock; the
+	// loop re-checks (a new restore may start the moment the lock releases).
 	for {
 		m.mu.Lock()
 		waitCh, inflight := m.restoreInFlight[id]
@@ -77,17 +56,15 @@ func (m *Manager) EvictSessionCarryingAttachments(id string) (*PendingAttachment
 		sess.mu.Unlock()
 		return nil, fmt.Errorf("session %s has a manual compaction in flight; it cannot be evicted", id)
 	}
-	// Capture the staged attachments BEFORE any teardown, under the same
-	// m.mu hold that will delete the session (the loss-proof ordering
-	// documented above).
+	// Capture staged attachments BEFORE any teardown, under the same m.mu
+	// hold that deletes the session (loss-proof ordering above).
 	snap := &PendingAttachmentSnapshot{
 		Docs:   make([]orchestration.Attachment, len(sess.pendingAttachments)),
 		Images: make([]ImageAttachment, len(sess.pendingImageAttachments)),
 	}
 	copy(snap.Docs, sess.pendingAttachments)
 	copy(snap.Images, sess.pendingImageAttachments)
-	// Idempotent per-step dump cleanup via the orchestrator (same call
-	// DeleteSession makes), then the plain file handles.
+	// Per-step dump cleanup via the orchestrator, then the plain file handles.
 	if sess.orchestrator != nil {
 		sess.orchestrator.Cleanup()
 	}
@@ -104,33 +81,21 @@ func (m *Manager) EvictSessionCarryingAttachments(id string) (*PendingAttachment
 	sess.mu.Unlock()
 
 	delete(m.sessions, id)
-	// Mirror DeleteSession's tracking purges so a stale entry cannot outlive
-	// the evicted identity.
 	m.fileTracker.PurgeSession(id)
 	m.lastToolCallIDs.Delete(id)
 	return snap, nil
 }
 
-// ReserveRestores parks new lazy restores of the session until the returned
-// release function is called. It closes the gap EvictSession cannot: a
-// restore that STARTS after the eviction but before the caller's store
-// commit would rebuild the session from the pre-commit state (CHAT owner,
-// stale workspace paths — and, worse, it would recreate the source session
-// directory a later file-level undo needs to rename back into). The
-// reservation waits out any restore already in flight (the same single-
-// flight loop EvictSession uses), then blocks every new attempt; a blocked
-// GetSession restarts its restore from scratch once the window closes, so it
-// observes the post-mutation store state. The caller MUST invoke release —
-// defer it — otherwise lazy restores of the session park forever.
-//
-// Used by the session-promotion flow; not part of the general lifecycle.
+// Parks new lazy restores until release: one starting between the eviction
+// and the store commit would rebuild from pre-commit state (and recreate
+// the undo's source directory). In-flight restores are waited out; caller
+// MUST release (defer). See specs/domains/session-lifecycle.md (§ Promotion).
 func (m *Manager) ReserveRestores(id string) (func(), error) {
 	if id == "" {
 		return nil, errors.New("session id is required")
 	}
-	// Wait out any in-flight restore first (same loop as EvictSession): the
-	// reservation must start from a quiesced session — nothing mid-restore,
-	// and nothing allowed to start until release.
+	// Wait out in-flight restores first (same loop as EvictSession): the
+	// reservation must start from a quiesced session.
 	for {
 		m.mu.Lock()
 		waitCh, inflight := m.restoreInFlight[id]
@@ -152,32 +117,14 @@ func (m *Manager) ReserveRestores(id string) (func(), error) {
 	}, nil
 }
 
-// MoveSessionStorage physically relocates a CHAT session's on-disk state into
-// a CODE project's layout, using the same derived paths every other subsystem
-// (DeleteSession, restore, dump tracker) computes from (agentDir, projectID,
-// sessionID):
-//
-//	<agentDir>/projects/__no_project__/<sid>   → <agentDir>/projects/<dst>/<sid>
-//	<agentDir>/projects/<dst>/<sid>/workspace  → <agentDir>/projects/<dst>/Workspace
-//
-// Both hops are renames within ~/.c0wrk/projects (one filesystem — atomic on
-// the platforms this app ships on). The destination session directory must not
-// exist; the destination Workspace must be empty or absent (a freshly created
-// internal project's Workspace is exactly that) — a non-empty destination
-// workspace is refused rather than merged. The pre-created empty Workspace is
-// removed only via os.Remove, which fails on any non-empty directory, so a
-// surprise can never be deleted.
-//
-// A missing SOURCE directory is not an error: a session that was created but
-// never materialized (never opened, never sent a message) simply has nothing
-// to move — the destination project's Workspace already exists and the store
-// update carries the rest. Any other failure rolls the completed hops back
-// best-effort so the caller's own compensation (project-row removal) finds the
-// original layout intact.
-//
-// The caller must have evicted the session and stopped its terminal first:
-// open handles and a PTY cwd inside the moved tree are the failure modes this
-// cannot fix.
+// Moves a CHAT session's on-disk state into the CODE layout: the session
+// directory projects/__no_project__/<sid> → projects/<dst>/<sid>, then its
+// workspace → the project's canonical Workspace slot (two renames, one
+// filesystem — atomic). The destination session dir must not exist; the
+// destination Workspace must be empty or absent (nothing non-empty is ever
+// deleted); a missing source is not an error; other failures roll back
+// best-effort. Caller must have evicted the session and stopped its
+// terminal first. See specs/domains/session-lifecycle.md (§ Promotion).
 func (m *Manager) MoveSessionStorage(id, srcProjectID, dstProjectID string) error {
 	if id == "" {
 		return errors.New("session id is required")
@@ -191,11 +138,8 @@ func (m *Manager) MoveSessionStorage(id, srcProjectID, dstProjectID string) erro
 
 	srcDir := config.SessionDir(m.agentDir, srcProjectID, id)
 	dstSessionDir := config.SessionDir(m.agentDir, dstProjectID, id)
-	// config.NoProjectWorkspaceSegment is the "workspace" segment the No
-	// Project session manager creates; the CODE project workspace uses
-	// config.WorkspaceSegment ("Workspace") via ProjectWorkspacePath. After
-	// hop 1 the workspace lives at <dstSessionDir>/workspace, so hop 2 renames
-	// from the DESTINATION session dir, not the old No Project location.
+	// No Project workspace uses NoProjectWorkspaceSegment, CODE uses
+	// WorkspaceSegment; hop 2 renames from the DESTINATION dir.
 	dstWorkspace := config.ProjectWorkspacePath(m.agentDir, dstProjectID)
 
 	if _, err := os.Lstat(dstSessionDir); err == nil {
@@ -227,9 +171,8 @@ func (m *Manager) MoveSessionStorage(id, srcProjectID, dstProjectID string) erro
 	}
 
 	// Hop 2: lift the per-session workspace into the project's canonical
-	// Workspace slot (it now sits at <dstSessionDir>/workspace). os.Remove
-	// refuses a non-empty directory, so a destination Workspace that somehow
-	// has content aborts the move instead of being deleted.
+	// Workspace slot; os.Remove refuses non-empty directories, so content
+	// there aborts the move instead of being deleted.
 	innerWorkspace := filepath.Join(dstSessionDir, config.NoProjectWorkspaceSegment)
 	if err := os.Remove(dstWorkspace); err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
@@ -244,8 +187,8 @@ func (m *Manager) MoveSessionStorage(id, srcProjectID, dstProjectID string) erro
 	return nil
 }
 
-// renameOr returns the injected rename seam (promoteRename, assigned directly
-// by in-package tests for fault injection) or the real os.Rename.
+// The injected rename seam (promoteRename, assigned by in-package tests for
+// fault injection) or the real os.Rename.
 func (m *Manager) renameOr(fallback func(oldpath, newpath string) error) func(oldpath, newpath string) error {
 	if m.promoteRename != nil {
 		return m.promoteRename
@@ -253,20 +196,10 @@ func (m *Manager) renameOr(fallback func(oldpath, newpath string) error) func(ol
 	return fallback
 }
 
-// UndoMoveSessionStorage reverses a completed MoveSessionStorage: the lifted
-// project Workspace returns to <session dir>/workspace and the session
-// directory returns under __no_project__. It is the file-level half of the
-// promotion compensation — the caller runs it when the store update failed so
-// the files and the database agree again, before deleting the (still rowless
-// or to-be-deleted) destination project. The No Project project row itself is
-// never deleted, so the restored layout is immediately valid again.
-//
-// A session that never materialized on disk has nothing to undo: when BOTH
-// the source and the destination session directories are missing, the undo
-// is trivially successful and returns nil — the same settled answer
-// MoveSessionStorage gives for the missing source (a source that is already
-// home with the destination gone is equally settled). Only an ambiguous,
-// half-moved layout — both directories present — is an error.
+// Reverses a completed MoveSessionStorage — the file-level compensation
+// half. Settled layouts return nil (both directories missing; source
+// already home); only both PRESENT — an ambiguous half-move — errors. See
+// specs/domains/session-lifecycle.md (§ Promotion).
 func (m *Manager) UndoMoveSessionStorage(id, dstProjectID string) error {
 	if id == "" {
 		return errors.New("session id is required")
@@ -288,20 +221,16 @@ func (m *Manager) UndoMoveSessionStorage(id, dstProjectID string) error {
 		return fmt.Errorf("cannot inspect destination session directory: %w", dstErr)
 	}
 	if srcStat != nil && dstStat == nil {
-		// The session directory is already home (the move never happened,
-		// or a previous undo already completed): there is nothing left to
-		// move back.
+		// Already home (the move never happened, or a previous undo
+		// completed): nothing to move back.
 		return nil
 	}
 	if srcStat == nil && dstStat == nil {
-		// A session that never materialized on disk: nothing to undo — the
-		// same settled answer MoveSessionStorage gives for a missing source.
 		return nil
 	}
 	if srcStat != nil {
-		// Both directories exist: an ambiguous, half-moved layout (e.g. a
-		// lazy restore recreated the source mid-promotion) that no blind
-		// rename may resolve.
+		// Both directories exist: ambiguous half-moved layout (e.g. a lazy
+		// restore recreated the source mid-promotion).
 		return fmt.Errorf("source session directory %s already exists; cannot undo into it", srcDir)
 	}
 

@@ -7,9 +7,9 @@ import (
 	"github.com/v0lka/c0wrk/backend/project"
 )
 
-// ResolveSessionContexts constructs boundary DTOs without Git operations or
-// runtime mutation. A nil Git target follows execution; an explicit target can
-// focus the local checkout or another managed tree of the same project.
+// ResolveSessionContexts builds the boundary DTOs (project identity, execution
+// workspace, Git-panel target) without Git operations or runtime mutation —
+// see specs/domains/session-worktrees.md.
 func ResolveSessionContexts(info SessionInfo, repositoryPath, chatWorkspace string, target *GitPanelTarget) (*SessionContexts, error) {
 	binding, err := NormalizeWorkspaceBinding(info.ProjectID, repositoryPath, info.WorkspaceBinding)
 	if err != nil {
@@ -32,9 +32,8 @@ func ResolveSessionContexts(info SessionInfo, repositoryPath, chatWorkspace stri
 		return nil, errors.New("git panel target belongs to another project")
 	}
 	if target.WorkspacePath != repositoryPath {
-		// A target is the project checkout or one of the project's managed
-		// trees. Recognition is project-scoped so a new-container tree is
-		// accepted whether or not its repository marker is present.
+		// Project-scoped, marker-independent managed-tree recognition —
+		// specs/domains/session-worktrees.md.
 		if _, err := config.ManagedWorktreeNameFromPathProject(repositoryPath, info.ProjectID, target.WorkspacePath); err != nil {
 			return nil, errors.New("git panel target is not a project checkout or managed tree")
 		}

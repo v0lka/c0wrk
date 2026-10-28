@@ -13,19 +13,13 @@ import (
 	"github.com/v0lka/sp4rk/safeio"
 )
 
-// This file implements the content parsing layer of the research package.
-//
-// The pure parsers (ParseBrief, ParseCard, ParseMermaidGraph, ParseCatalog,
-// ParseIndex, ParsePriorArtCount) take already-read file contents and return
-// structured data with no side effects, so they can be unit-tested with plain
-// string fixtures. BuildGraph merges those sources into a single
-// HypothesisGraph, and the thin orchestrators ParseProject / ParseResearchRoot
-// are the only functions that touch the filesystem — and even they only ever
-// read the given paths.
+// This file implements the content-parsing layer of the research package:
+// pure parsers over already-read file contents (unit-testable with plain
+// string fixtures), BuildGraph merging them into one HypothesisGraph, and
+// the thin orchestrators ParseProject/ParseResearchRoot — the only functions
+// touching the filesystem, and they only ever read.
 
-// ──────────────────────────────────────────────────────────────────────────
-// ID / list helpers
-// ──────────────────────────────────────────────────────────────────────────
+// -- ID / list helpers --
 
 // hidRe matches a hypothesis identifier in either spelling: "H001" (Mermaid
 // node ID) or "H-001" (card / catalog). Case-insensitive.
@@ -35,11 +29,9 @@ var hidRe = regexp.MustCompile(`(?i)H-?(\d+)`)
 var ridRe = regexp.MustCompile(`(?i)R-?(\d+)`)
 
 // NormalizeID canonicalizes a hypothesis identifier to its zero-padded,
-// hyphenated, upper-case form ("H-001"). It accepts both "H001" and "H-001"
-// spellings with or without zero padding ("H1", "H-1" — a hand-written
-// spelling of H-001), case-insensitive, and returns "" for input that
-// contains no identifier. Padding to three digits (growing beyond for
-// numbers ≥ 1000) keeps a hand-written spelling and the writer-generated one
+// hyphenated, upper-case form ("H-001"), accepting "H001"/"H-001"/"H1"
+// (case-insensitive) and returning "" for input with no identifier. Padding
+// to three digits keeps a hand-written spelling and the writer-generated one
 // of the same number from coexisting as distinct graph nodes: "H-1" and
 // "H-001" are one hypothesis.
 func NormalizeID(raw string) string {
@@ -55,12 +47,10 @@ func NormalizeID(raw string) string {
 }
 
 // NormalizeResearchID canonicalizes a research identifier to its hyphenated,
-// upper-case form (e.g. "R-001"), preserving the numeric spelling. Unlike
-// NormalizeID it does NOT zero-pad: a research project's id is taken verbatim
-// from its brief and compared numerically by compareResearchIDs, so "R-2" and
-// "R-002" are distinct spellings of distinct directories rather than one
-// canonical id. It accepts both "R001" and "R-001" spellings,
-// case-insensitive, and returns "" for input that contains no identifier.
+// upper-case form ("R-001") without zero-padding: the id is taken verbatim
+// from the brief and compared numerically (compareResearchIDs), so "R-2" and
+// "R-002" stay distinct spellings of distinct directories. Accepts
+// "R001"/"R-001", case-insensitive; returns "" for input with no identifier.
 func NormalizeResearchID(raw string) string {
 	m := ridRe.FindStringSubmatch(raw)
 	if m == nil {
@@ -69,9 +59,8 @@ func NormalizeResearchID(raw string) string {
 	return "R-" + m[1]
 }
 
-// researchIDNumber extracts the numeric part of a canonical research ID
-// ("R-010" → 10, "R10" → 10). It returns ok=false when the ID carries no
-// R-NNN number (an unrecognized/unparsed identifier).
+// researchIDNumber extracts the numeric part of a research ID ("R-010" → 10);
+// ok=false when the ID carries no R-NNN number.
 func researchIDNumber(id string) (int, bool) {
 	m := ridRe.FindStringSubmatch(id)
 	if m == nil {
@@ -84,13 +73,11 @@ func researchIDNumber(id string) (int, bool) {
 	return n, true
 }
 
-// compareResearchIDs orders research IDs numerically (R-2 before R-10) rather
-// than lexicographically ("R-10" would sort before "R-2"), with a
-// lexicographic tie-break so the order stays deterministic for equal numbers
-// (e.g. two directories normalizing to the same R-NNN after a copy) and for
-// IDs without a numeric part. Numeric order is what "highest-numbered R-NNN"
-// consumers (PickActiveProject fallback, ActiveProjectDir) rely on: unpadded
-// manual directory names must not flip the selection.
+// compareResearchIDs orders research IDs numerically (R-2 before R-10), with
+// a lexicographic tie-break for equal numbers (duplicate R-NNN directories
+// after a copy) and for IDs without a numeric part. The "highest-numbered"
+// consumers (PickActiveProject fallback, ActiveProjectDir) rely on this:
+// unpadded directory names must not flip the selection.
 func compareResearchIDs(a, b string) int {
 	na, aok := researchIDNumber(a)
 	nb, bok := researchIDNumber(b)
@@ -106,9 +93,8 @@ func compareResearchIDs(a, b string) int {
 	}
 }
 
-// hypothesisIDNumber extracts the numeric part of a hypothesis ID
-// ("H-010" → 10, "H10" → 10). It returns ok=false when the ID carries no
-// H-NNN number (an unrecognized/unparsed identifier).
+// hypothesisIDNumber extracts the numeric part of a hypothesis ID ("H-010" →
+// 10); ok=false when the ID carries no H-NNN number.
 func hypothesisIDNumber(id string) (int, bool) {
 	m := hidRe.FindStringSubmatch(id)
 	if m == nil {
@@ -121,15 +107,11 @@ func hypothesisIDNumber(id string) (int, bool) {
 	return n, true
 }
 
-// compareHypothesisIDs orders hypothesis IDs numerically (H-2 before H-10)
-// rather than lexicographically ("H-10" would sort before "H-2"), with a
-// lexicographic tie-break so the order stays deterministic for equal numbers
-// and for IDs without a numeric part — mirroring compareResearchIDs. Numeric
-// order is what "leading entry" consumers (RecommendNextStep's first
-// ActiveFront ID) and the graph's node display order rely on: canonical
-// zero-padded spellings sort identically either way, but H-999 and H-1000
-// (and any unpadded spelling surviving in a hand-edited file) must not flip
-// the selection.
+// compareHypothesisIDs orders hypothesis IDs numerically (H-2 before H-10),
+// lexicographic tie-break — mirroring compareResearchIDs. "Leading entry"
+// consumers (RecommendNextStep's first ActiveFront ID) and graph display
+// order rely on it: H-999 vs H-1000 (and any unpadded spelling surviving in
+// a hand-edited file) must not flip the selection.
 func compareHypothesisIDs(a, b string) int {
 	na, aok := hypothesisIDNumber(a)
 	nb, bok := hypothesisIDNumber(b)
@@ -145,9 +127,8 @@ func compareHypothesisIDs(a, b string) int {
 	}
 }
 
-// parseParentList extracts the canonical parent IDs from a free-form string
-// such as "H-001, H-002" or "—". It returns a sorted, de-duplicated slice
-// (possibly empty). Non-identifier tokens (em-dashes, "none", etc.) are
+// parseParentList extracts canonical parent IDs from a free-form string
+// ("H-001, H-002"), sorted and de-duplicated; non-identifier tokens are
 // dropped.
 func parseParentList(raw string) []string {
 	matches := hidRe.FindAllStringSubmatch(raw, -1)
@@ -171,11 +152,10 @@ func parseParentList(raw string) []string {
 	return parents
 }
 
-// splitCells splits a single Markdown table row (with leading/trailing pipes)
-// into its trimmed cell values. Pipes escaped as "\|" (the escape the writer
-// layer emits for cell values that contain a literal pipe) are NOT split on,
-// and each cell is unescaped back to its logical value (see unescapeCell), so
-// writer → parser round-trips preserve pipes and multi-line values exactly.
+// splitCells splits a Markdown table row into its trimmed cell values.
+// Escaped pipes ("\|" — the writer's escapeCell output) are not split on, and
+// each cell is unescaped back to its logical value, so writer → parser
+// round-trips preserve pipes and multi-line values exactly.
 func splitCells(row string) []string {
 	row = strings.TrimSpace(row)
 	row = strings.TrimPrefix(row, "|")
@@ -192,9 +172,8 @@ func splitCells(row string) []string {
 	return cells
 }
 
-// splitUnescapedPipes splits s on "|" characters that are not preceded by a
-// backslash. A "\|" pair stays inside the surrounding cell; the unescape step
-// then reduces it to a literal pipe.
+// splitUnescapedPipes splits on "|" not preceded by a backslash; the
+// unescape step later reduces the kept "\|" pair to a literal pipe.
 func splitUnescapedPipes(s string) []string {
 	parts := make([]string, 0, strings.Count(s, "|")+1)
 	start := 0
@@ -209,15 +188,12 @@ func splitUnescapedPipes(s string) []string {
 	return append(parts, s[start:])
 }
 
-// restoreLiteralBR reverses escapeLiteralBR (writer.go): the HTML-entity
-// spelling "&lt;br&gt;" that shields a literal "<br>" marker from the
-// newline fold is restored to the literal marker text, and the doubly-escaped
-// "&amp;lt;br&gt;" a value that literally contained the entity spelling is
-// restored to "&lt;br&gt;". It must run AFTER the "<br>" → "\n" unfolding.
-// The single-shield replacement runs FIRST and the double-shield one SECOND:
-// "&amp;lt;br&gt;" does not itself contain "&lt;br&gt;", so ordering them the
-// other way would let the first replacement's own output be consumed by the
-// second, over-restoring the double shield to "<br>".
+// restoreLiteralBR reverses escapeLiteralBR: the entity spelling shielding a
+// literal "<br>" is restored to the marker text, and the doubly-escaped
+// spelling to "&lt;br&gt;". It runs AFTER the "<br>" → "\n" unfold, and the
+// single-shield replacement runs FIRST: "&amp;lt;br&gt;" does not contain
+// "&lt;br&gt;", so the other order would let the first replacement's output
+// be consumed by the second, over-restoring to "<br>".
 func restoreLiteralBR(v string) string {
 	if !strings.Contains(v, "&lt;br&gt;") && !strings.Contains(v, "&amp;lt;br&gt;") {
 		return v
@@ -226,11 +202,9 @@ func restoreLiteralBR(v string) string {
 	return strings.ReplaceAll(v, "&amp;lt;br&gt;", "&lt;br&gt;")
 }
 
-// unfoldBR converts the writer's newline fold marker "<br>" back into a real
-// newline and restores a shielded literal "<br>" (see restoreLiteralBR).
-// Values written into any single-line context (table cells, the
-// **Finding:** line, Mermaid labels) carry folded newlines; this restores the
-// logical multi-line value on parse.
+// unfoldBR converts the writer's "<br>" fold marker back into a real newline
+// and restores a shielded literal "<br>" (restoreLiteralBR), recovering the
+// logical multi-line value written into any single-line context.
 func unfoldBR(v string) string {
 	if !strings.Contains(v, "<br>") && !strings.Contains(v, "&lt;br&gt;") && !strings.Contains(v, "&amp;lt;br&gt;") {
 		return v
@@ -239,10 +213,9 @@ func unfoldBR(v string) string {
 	return restoreLiteralBR(v)
 }
 
-// unescapeCell reverses the writer's escapeCell (writer.go): "\|" becomes a
-// literal pipe, "<br>" a newline, and a shielded literal "<br>"
-// ("&lt;br&gt;") the marker text itself — so a value that was escaped to fit
-// the single-line Markdown-row contract parses back to its original form.
+// unescapeCell reverses the writer's escapeCell — "\|" → pipe, "<br>" →
+// newline, the shielded spelling restored — so an escaped value parses back
+// to its original form.
 func unescapeCell(v string) string {
 	if !strings.Contains(v, `\|`) && !strings.Contains(v, "<br>") && !strings.Contains(v, "&lt;br&gt;") && !strings.Contains(v, "&amp;lt;br&gt;") {
 		return v
@@ -280,32 +253,26 @@ func dashToEmpty(v string) string {
 	return v
 }
 
-// ──────────────────────────────────────────────────────────────────────────
-// Section / field extraction (shared by brief and card parsers)
-// ──────────────────────────────────────────────────────────────────────────
+// -- Section / field extraction (shared by brief and card parsers) --
 
-// sectionHeadingLower returns the lower-cased text of a level-2 Markdown
-// heading line ("## Name"), or "" if the line is not a level-2 heading. Only
-// exactly two leading hashes followed by a space count, so deeper headings
-// ("### ...") do not act as section boundaries.
+// sectionHeadingLower returns the lower-cased text of a level-2 heading line,
+// or "" otherwise. Exactly two leading hashes: deeper headings ("### ...")
+// never act as section boundaries.
 func sectionHeadingLower(line string) string {
 	trimmed := strings.TrimSpace(line)
 	const marker = "## "
 	if !strings.HasPrefix(trimmed, marker) {
 		return ""
 	}
-	// Exclude deeper headings: "### X" does not start with "## " (3rd char differs).
+	// Exclude deeper headings ("### X" does not start with "## ").
 	return strings.ToLower(strings.TrimSpace(strings.TrimPrefix(trimmed, marker)))
 }
 
 // extractSection returns the trimmed body of the first section whose heading
-// contains the given (case-insensitive) name, or "" if absent. A section is a
-// "## Name" block running until the next level-2 heading, a horizontal rule
-// ("---"), or end of input.
-//
-// Implemented as a line scan rather than a single regex so that consecutive
-// sections are all found (a regex terminator would consume the next heading's
-// "## " marker and skip every other section).
+// contains the name (case-insensitive), or "" if absent: a "## Name" block
+// ending at the next level-2 heading, "---", or end of input. A line scan,
+// not a regex — a regex terminator would consume the next heading's marker
+// and skip every other section.
 func extractSection(content, heading string) string {
 	heading = strings.ToLower(strings.TrimSpace(heading))
 	var (
@@ -333,11 +300,9 @@ func extractSection(content, heading string) string {
 	return strings.TrimSpace(body.String())
 }
 
-// extractField extracts the value cell of a row in a two-column Markdown table
-// whose first cell is **fieldName** (Markdown bold), e.g. "| **Status** | open |".
-// Returns "" if the field is absent. It splits through splitCells, so values
-// written with escaped pipes / folded newlines (writer escapeCell) are
-// unescaped to their logical form.
+// extractField returns the value cell of the "| **Field** | value |" row for
+// fieldName ("" if absent), unescaping through splitCells so writer-escaped
+// values come back in logical form.
 func extractField(content, fieldName string) string {
 	target := "**" + fieldName + "**"
 	for _, line := range strings.Split(content, "\n") {
@@ -353,13 +318,10 @@ func extractField(content, fieldName string) string {
 	return ""
 }
 
-// ──────────────────────────────────────────────────────────────────────────
-// Brief
-// ──────────────────────────────────────────────────────────────────────────
+// -- Brief --
 
-// Brief holds the structured fields parsed from a research brief
-// (R-NNN/brief.md). Unknown or absent fields are left empty; the parser never
-// fails for partial briefs.
+// Brief holds the structured fields parsed from R-NNN/brief.md; absent fields
+// stay empty (the parser never fails on partial briefs).
 type Brief struct {
 	ID                string `json:"id"`
 	Title             string `json:"title"`
@@ -375,24 +337,21 @@ type Brief struct {
 // briefTitleRe matches the brief H1 "# [R-NNN] Title".
 var briefTitleRe = regexp.MustCompile(`(?m)^#\s+\[(R-?\d+)\]\s*(.*)$`)
 
-// ParseBrief parses a research brief's Markdown content into a Brief. It is
-// best-effort: missing fields are left empty. The ID is derived from the H1
-// bracket; if the H1 is absent the ID is empty but the rest is still parsed.
+// ParseBrief parses brief Markdown into a Brief, best-effort. The ID comes
+// from the H1 bracket; the rest still parses when the H1 is absent.
 func ParseBrief(content string) Brief {
 	b := Brief{}
 	if m := briefTitleRe.FindStringSubmatch(content); m != nil {
 		b.ID = NormalizeResearchID(m[1])
 		b.Title = strings.TrimSpace(m[2])
 	}
-	// ID fallback: the canonical H1 is "# [R-NNN] Title", but some briefs use a
-	// descriptive H1 ("# Research Brief: ...") and carry the ID only in the
-	// Identifier table field. Fall back to that field when the H1 had no bracket.
+	// ID fallback: descriptive H1s ("# Research Brief: ...") carry the ID only
+	// in the Identifier table field.
 	if b.ID == "" {
 		b.ID = NormalizeResearchID(extractField(content, "Identifier"))
 	}
-	// Title fallback: when the H1 is descriptive rather than the bracket form,
-	// use the H1 text (with common "Research Brief:"/"Brief:" prefixes stripped)
-	// as the title so the panel shows a meaningful label.
+	// Title fallback: strip common prefixes from a descriptive H1 so the panel
+	// shows a meaningful label.
 	if b.Title == "" {
 		b.Title = briefTitleFromH1(content)
 	}
@@ -535,32 +494,24 @@ func extractFinding(content string) string {
 	return strings.Join(kept, "\n")
 }
 
-// ──────────────────────────────────────────────────────────────────────────
-// Hypothesis graph sources: Mermaid diagram + catalog table
-// ──────────────────────────────────────────────────────────────────────────
+// -- Hypothesis graph sources: Mermaid diagram + catalog table --
 
 // mermaidBlockRe captures the body of a ```mermaid fenced code block.
 var mermaidBlockRe = regexp.MustCompile("(?ms)```mermaid\\s*\\n(.*?)```")
 
-// mermaidNodeRe matches a Mermaid node definition: H001["H-001: Title"]:::class.
-// Group 1 = node ID (H001 form), group 2 = quoted label, group 3 = optional
-// CSS class (status). The class marker is ":::" (two-or-more colons, matched
-// greedily so the three-colon Mermaid syntax is captured).
+// mermaidNodeRe matches a Mermaid node definition H001["H-001: Title"]:::class
+// (groups: node ID, quoted label, optional CSS class; the greedy ::: capture
+// takes the three-colon Mermaid syntax).
 var mermaidNodeRe = regexp.MustCompile(`\b(H\d+)\s*\["([^"]*)"\]\s*(?:::+([A-Za-z_]+))?`)
 
 // mermaidEdgeRe matches a Mermaid edge: H001 --> H002.
 var mermaidEdgeRe = regexp.MustCompile(`\b(H\d+)\s*-->\s*(H\d+)\b`)
 
-// unescapeMermaidLabel reverses the writer's escapeMermaidLabel (writer.go):
-// "#quot;" becomes a literal double quote, "#124;" a literal pipe, "<br>" a
-// newline, and a shielded literal "<br>" ("&lt;br&gt;") the marker text
-// itself. The escapes exist so a label containing those characters still
-// matches mermaidNodeRe / mermaidNodeLineRe (whose label group is [^"]* and
-// whose line is single-line) while parsing back to the original title.
-// Round-trip contract: real newlines, pipes, quotes, and literal "<br>" text
-// all survive the escape → unescape cycle exactly (the writer shields the
-// marker on write). A literal "#quot;"/"#124;" that pre-dates the write
-// drifts once to the character it encodes and is stable from then on.
+// unescapeMermaidLabel reverses the writer's escapeMermaidLabel: "#quot;" →
+// quote, "#124;" → pipe, "<br>" → newline, the shielded spelling restored.
+// Real newlines, pipes, quotes, and literal "<br>" text survive the escape →
+// unescape cycle exactly; a literal "#quot;"/"#124;" that pre-dates the write
+// drifts once to its character and is stable from then on.
 func unescapeMermaidLabel(v string) string {
 	if !strings.Contains(v, "#quot;") && !strings.Contains(v, "#124;") && !strings.Contains(v, "<br>") && !strings.Contains(v, "&lt;br&gt;") && !strings.Contains(v, "&amp;lt;br&gt;") {
 		return v
@@ -578,11 +529,9 @@ type mermaidNode struct {
 	status HypothesisStatus
 }
 
-// ParseMermaidGraph extracts nodes and edges from the Mermaid diagram inside a
-// graph.md file. It returns the node descriptors (keyed by canonical ID) and
-// the directed edges (canonical from/to IDs). A missing or empty Mermaid block
-// yields empty (non-nil) results — never an error, since an empty graph is a
-// valid partial state.
+// ParseMermaidGraph extracts nodes and edges from graph.md's Mermaid diagram
+// (canonical IDs). A missing or empty block yields empty results — an empty
+// graph is a valid partial state, never an error.
 func ParseMermaidGraph(content string) ([]mermaidNode, []HypothesisEdge) {
 	block := ""
 	if m := mermaidBlockRe.FindStringSubmatch(content); m != nil {
@@ -592,9 +541,8 @@ func ParseMermaidGraph(content string) ([]mermaidNode, []HypothesisEdge) {
 		return nil, nil
 	}
 
-	// Strip Mermaid line comments (lines whose first non-space chars are "%%"),
-	// so commented-out example nodes/edges in the graph template are not parsed
-	// as real structure.
+	// Strip Mermaid "%%" comments so commented-out template nodes/edges are
+	// not parsed as real structure.
 	var kept strings.Builder
 	for _, line := range strings.Split(block, "\n") {
 		if strings.HasPrefix(strings.TrimSpace(line), "%%") {
@@ -613,8 +561,7 @@ func ParseMermaidGraph(content string) ([]mermaidNode, []HypothesisEdge) {
 		if id == "" {
 			continue
 		}
-		// Undo the writer's label escaping (#quot;/#124;/<br>) so the parsed
-		// title is the logical value, not the escaped diagram spelling.
+		// Undo the writer's label escaping so the title is the logical value.
 		label := unescapeMermaidLabel(m[2])
 		title := label
 		// Labels look like "H-001: Short title"; strip the leading ID.
@@ -663,10 +610,10 @@ type catalogRow struct {
 	parents []string
 }
 
-// ParseCatalog parses the Hypothesis Catalog table from a graph.md file. Rows
-// without a parseable hypothesis ID (header, separator, placeholder) are
-// skipped. The expected columns are: ID | Hypothesis | Status | Decision |
-// Parent(s); extra/missing trailing columns are tolerated.
+// ParseCatalog parses the Hypothesis Catalog table from graph.md, skipping
+// rows without a parseable ID (header, separator, placeholder). Expected
+// columns: ID | Hypothesis | Status | Decision | Parent(s); trailing
+// extras tolerated.
 func ParseCatalog(content string) []catalogRow {
 	rows := make([]catalogRow, 0)
 	for _, line := range strings.Split(content, "\n") {
@@ -698,15 +645,11 @@ func ParseCatalog(content string) []catalogRow {
 	return rows
 }
 
-// BuildGraph reconciles the three structural sources of a hypothesis graph —
-// the Mermaid diagram, the catalog table, and the parsed cards — into a single
-// HypothesisGraph. Merge priority for per-node fields is card > catalog >
-// Mermaid (the most authoritative source wins). Edges are the union of the
-// Mermaid edges and every declared parent relationship, so the graph stays
-// complete even when the diagram was not updated but a card lists its parents.
-//
-// All inputs are optional; passing all-empty inputs yields an empty (but
-// valid) graph.
+// BuildGraph reconciles the three structural sources — Mermaid diagram,
+// catalog table, parsed cards — into one HypothesisGraph. Per-node field
+// priority is card > catalog > Mermaid; edges are the union of drawn edges
+// and declared parents, so the graph stays complete even when the diagram
+// lagged the cards. All inputs optional; all-empty yields a valid empty graph.
 func BuildGraph(mermaidNodes []mermaidNode, mermaidEdges []HypothesisEdge, catalog []catalogRow, cards []HypothesisNode) HypothesisGraph {
 	g := HypothesisGraph{}
 	index := make(map[string]*HypothesisNode)
@@ -785,8 +728,7 @@ func BuildGraph(mermaidNodes []mermaidNode, mermaidEdges []HypothesisEdge, catal
 		}
 	}
 
-	// Edges: union of Mermaid edges and every node's declared parents, so the
-	// edge set is consistent with the Parents fields even for partial graphs.
+	// Edges: union of drawn edges and declared parents.
 	edgeSet := make(map[string]struct{})
 	addEdge := func(from, to string) {
 		if from == "" || to == "" || from == to {
@@ -808,10 +750,9 @@ func BuildGraph(mermaidNodes []mermaidNode, mermaidEdges []HypothesisEdge, catal
 		}
 	}
 
-	// Reconcile each node's Parents with the final edge set so the two stay
-	// consistent even when a partial card omitted its parents but the Mermaid
-	// diagram drew the edge. Parents becomes the union of declared parents and
-	// the From-IDs of all edges pointing at the node.
+	// Reconcile each node's Parents with the final edge set (partial cards +
+	// drawn edges): Parents becomes the union of declared parents and the
+	// From-IDs of all incoming edges.
 	parentsFromEdges := make(map[string]map[string]struct{})
 	for _, e := range g.Edges {
 		set, ok := parentsFromEdges[e.To]
@@ -844,8 +785,7 @@ func BuildGraph(mermaidNodes []mermaidNode, mermaidEdges []HypothesisEdge, catal
 		n.Parents = merged
 	}
 
-	// Deterministic ordering — numeric H-NNN order (compareHypothesisIDs), so
-	// H-2 precedes H-10 and any unpadded spelling sorts by its number.
+	// Deterministic numeric ordering (compareHypothesisIDs).
 	sort.Slice(g.Nodes, func(i, j int) bool { return compareHypothesisIDs(g.Nodes[i].ID, g.Nodes[j].ID) < 0 })
 	sort.Slice(g.Edges, func(i, j int) bool {
 		if c := compareHypothesisIDs(g.Edges[i].From, g.Edges[j].From); c != 0 {
@@ -856,9 +796,7 @@ func BuildGraph(mermaidNodes []mermaidNode, mermaidEdges []HypothesisEdge, catal
 	return g
 }
 
-// ──────────────────────────────────────────────────────────────────────────
-// Index + prior art
-// ──────────────────────────────────────────────────────────────────────────
+// -- Index + prior art --
 
 // IndexEntry is one row of the research-root index (index.md): a research
 // project's identifier, title, and relative link to its brief.
@@ -871,11 +809,9 @@ type IndexEntry struct {
 // indexLinkRe matches a Markdown link whose target is a brief.md file.
 var indexLinkRe = regexp.MustCompile(`\[([^\]]+)\]\(([^)]*brief\.md)\)`)
 
-// ParseIndex parses the research-root index into a list of entries. It prefers
-// Markdown links to brief.md (extracting title and relative path) and derives
-// the research ID from the link target or text. When no links are present it
-// falls back to bare R-NNN tokens in the document. The result is
-// de-duplicated and order-preserved.
+// ParseIndex parses the research-root index into de-duplicated, order-
+// preserved entries: brief.md links preferred (title + path; ID from target
+// or text), bare R-NNN tokens as fallback.
 func ParseIndex(content string) []IndexEntry {
 	entries := make([]IndexEntry, 0)
 	seen := make(map[string]struct{})
@@ -914,19 +850,12 @@ func ParseIndex(content string) []IndexEntry {
 	return entries
 }
 
-// ParsePriorArtCount counts the cataloged entries in a prior-art.md file. It
-// supports two layouts that appear in practice:
-//
-//  1. The canonical numbered table (| # | Source | Type | Annotation | Relevance |):
-//     a row whose first cell is a number is one entry. This cleanly excludes
-//     the header, separator, and the "*No entries yet*" placeholder.
-//  2. A grouped-prose layout using "### N.M Name" subsection headings under
-//     "## N. Category" sections — an alternative some researches prefer over
-//     the table. Each such heading is one entry.
-//
-// The table layout is counted first; only when it yields zero entries is the
-// heading layout counted, so a canonical catalog is never mis-counted by stray
-// subsection headings. Returns 0 for an empty or placeholder-only catalog.
+// ParsePriorArtCount counts the cataloged entries in prior-art.md across the
+// two layouts seen in practice: the canonical numbered table (a numeric first
+// cell = one entry) and grouped prose ("### N.M Name" headings under
+// "## N. Category"). The table is counted first; only a zero count falls back
+// to headings, so a canonical catalog is never mis-counted by stray
+// subsection headings. 0 for an empty or placeholder-only catalog.
 func ParsePriorArtCount(content string) int {
 	count := parsePriorArtTableCount(content)
 	if count > 0 {
@@ -935,16 +864,13 @@ func ParsePriorArtCount(content string) int {
 	return len(priorArtHeadingRe.FindAllString(content, -1))
 }
 
-// priorArtHeadingRe matches a numbered subsection heading like "### 1.2 Name" —
-// the entry layout used by grouped-prose prior-art catalogs. It requires at
-// least one non-space character after the number so "### 1.2" alone (a draft
-// stub) is not double-counted, and it is anchored to the line start so prose
-// mentioning "1.2" is ignored.
+// priorArtHeadingRe matches "### N.M Name" (grouped-prose layout): a non-space
+// character is required after the number (a "### 1.2" stub is not an entry)
+// and the match is line-anchored (prose mentioning "1.2" is ignored).
 var priorArtHeadingRe = regexp.MustCompile(`(?m)^###\s+\d+\.\d+\s+\S`)
 
 // parsePriorArtTableCount counts numbered rows in the canonical prior-art
-// table (the "#" column). It is the primary counting strategy; the
-// subsection-heading layout is a fallback handled by ParsePriorArtCount.
+// table; ParsePriorArtCount owns the heading-layout fallback.
 func parsePriorArtTableCount(content string) int {
 	count := 0
 	for _, line := range strings.Split(content, "\n") {
@@ -975,31 +901,18 @@ func isNumeric(s string) bool {
 	return true
 }
 
-// ──────────────────────────────────────────────────────────────────────────
-// Research log
-// ──────────────────────────────────────────────────────────────────────────
+// -- Research log --
 
-// logEntryHeadingRe matches a research-log entry heading of the form
-//
-//	## <kind> <created_at> [<hypothesis-id>]
-//
-// e.g. "## experiment 2025-04-02T10:15:00Z H-001". Group 1 is the kind token,
-// group 2 is the raw timestamp, and group 3 (optional) is the hypothesis
-// identifier in either "H-001" or "H001" spelling (case-insensitive). The
-// message body is the block of lines following the heading until the next
-// heading or end of file.
-//
-// The trailing (?:\s+.*)? tolerates free-form annotation after the structural
-// tokens (e.g. "## experiment 2025-04-02T10:15:00Z H-001 (final pass)"): the
-// log is model-authored free text following a skill template, and a strict
-// end-anchor would silently drop the whole entry AND its body from the
-// Research panel. The annotation itself is ignored — only the three
-// structural groups are captured.
+// logEntryHeadingRe matches a research-log entry heading
+// "## <kind> <created_at> [<hypothesis-id>]" (groups: kind, raw timestamp,
+// optional H-NNN). The trailing (?:\s+.*)? tolerates free-form annotation —
+// the log is model-authored free text following a skill template, and a
+// strict end-anchor would silently drop the whole entry AND its body. The
+// annotation itself is ignored.
 var logEntryHeadingRe = regexp.MustCompile(`(?i)^##\s+(\S+)\s+(\S+)(?:\s+(H-?\d+))?(?:\s+.*)?$`)
 
-// normalizeLogKind canonicalizes a log-kind token to its LogKind constant.
-// It returns ok=false for an unrecognized kind, which the parser treats as
-// "not an entry heading" (best-effort, never an error).
+// normalizeLogKind canonicalizes a log-kind token; ok=false reads as "not an
+// entry heading" (best-effort, never an error).
 func normalizeLogKind(raw string) (LogKind, bool) {
 	k := LogKind(strings.ToLower(strings.TrimSpace(raw)))
 	switch k {
@@ -1010,40 +923,29 @@ func normalizeLogKind(raw string) (LogKind, bool) {
 	}
 }
 
-// timestampDateRe matches an ISO-8601 date prefix (YYYY-MM-DD) — the minimum
-// component every log timestamp carries, whether the token is a bare date
-// ("2025-04-02") or a full datetime ("2025-04-02T10:15:00Z").
+// timestampDateRe matches an ISO-8601 date prefix (YYYY-MM-DD) — bare dates
+// and full datetimes both carry it.
 var timestampDateRe = regexp.MustCompile(`\d{4}-\d{2}-\d{2}`)
 
-// looksLikeTimestamp is a light sanity check used to avoid treating a message
-// line that happens to start with "## <word> <word>" as a new entry. A real
-// timestamp token always carries an ISO-8601 date prefix (e.g. "2025-04-02" or
-// "2025-04-02T10:15:00Z"), whereas a prose fragment or a bare ordinal
-// ("## note 5") does not. Requiring a full date — rather than merely "contains
-// a digit" — keeps such bare ordinals from being mistaken for a timestamp.
+// looksLikeTimestamp keeps a "## <word> <word>" message line from being taken
+// for an entry: a bare ordinal ("## note 5") has no ISO-8601 date prefix, so
+// requiring a full date — not merely a digit — rejects it.
 func looksLikeTimestamp(s string) bool {
 	return timestampDateRe.MatchString(s)
 }
 
-// ParseLog parses a research-log file (log.md) into a chronological list of
-// entries. It is best-effort and never returns an error: a missing, empty, or
-// malformed file yields an empty (non-nil) slice, and unrecognized lines are
-// simply ignored. Entries are returned in file order with a 1-based ordinal ID
-// assigned by position (logs are append-only, so ordinals are stable).
-//
-// The expected format is a series of level-2 headings, one per entry:
+// ParseLog parses log.md into a chronological list of entries, best-effort
+// and never an error: a missing/empty/malformed file yields an empty slice
+// and unrecognized lines are ignored. Entries carry a stable 1-based ordinal
+// (file order; the log is append-only). Expected format — level-2 headings,
+// one per entry:
 //
 //	## experiment 2025-04-02T10:15:00Z H-001
 //	Recovered 97% of modules on the first pass.
 //
-//	## decision 2025-04-03T09:00:00Z
-//	Continue deepening the current front.
-//
-// The heading is "<kind> <created_at> [<hypothesis-id>]"; everything following
-// it (up to the next heading) is the message. kind is one of experiment,
-// decision, status_change, or note (case-insensitive). created_at is preserved
-// verbatim. An optional hypothesis ID ("H-001" / "H001") is normalized to the
-// canonical hyphenated form; entries without one are project-scoped.
+// kind ∈ {experiment, decision, status_change, note} (case-insensitive),
+// created_at verbatim, the optional hypothesis ID normalized; entries without
+// one are project-scoped; everything up to the next heading is the message.
 func ParseLog(content string) []ResearchLogEntry {
 	entries := make([]ResearchLogEntry, 0)
 	if strings.TrimSpace(content) == "" {
@@ -1069,10 +971,8 @@ func ParseLog(content string) []ResearchLogEntry {
 
 	for _, line := range strings.Split(content, "\n") {
 		trimmed := strings.TrimSpace(line)
-		// A level-2 heading line is reserved for entry headings; it is never
-		// folded into the preceding entry's message. Lines that do not start
-		// with "## " (including deeper "### " sub-headings inside a message)
-		// are message text.
+		// Level-2 headings are reserved for entry headings; deeper "### " lines
+		// inside a message stay message text.
 		if strings.HasPrefix(trimmed, "## ") {
 			// Any heading terminates the current entry, valid or not.
 			flush()
@@ -1089,9 +989,8 @@ func ParseLog(content string) []ResearchLogEntry {
 					}
 				}
 			}
-			// Invalid entry heading (unknown kind, non-timestamp token, or a
-			// bare "## "): current stays nil, so the skipped entry's body is
-			// ignored until the next valid heading.
+			// Invalid heading: current stays nil, so the body is ignored until
+			// the next valid heading.
 			continue
 		}
 		if current != nil {
@@ -1103,24 +1002,17 @@ func ParseLog(content string) []ResearchLogEntry {
 	return entries
 }
 
-// ──────────────────────────────────────────────────────────────────────────
-// Filesystem orchestrators
-// ──────────────────────────────────────────────────────────────────────────
+// -- Filesystem orchestrators --
 
-// ResearchProject is the parsed view of a single R-NNN research project: its
-// brief, the reconciled hypothesis graph, the computed metrics, and bookkeeping
-// flags (whether the synthesis report exists, how many prior-art entries are
-// cataloged). It is what the Research panel renders for one project.
+// ResearchProject is the parsed view of one R-NNN project — brief, reconciled
+// graph, metrics, bookkeeping flags — as the Research panel renders it.
 type ResearchProject struct {
 	ID string `json:"id"`
-	// Dir is the absolute path of the project directory this project was
-	// parsed from — the directory that actually holds its brief.md,
-	// hypotheses/, etc. It is threaded through by ParseProject/ParseResearchRoot
-	// so mutation entry points (ActiveProjectDir) resolve the SAME directory
-	// the parser read, instead of re-deriving it by matching directory names
-	// against the (brief-preferred) ID — a brief/dir ID mismatch or duplicate
-	// R-NNN directory names must not redirect mutations to a sibling project.
-	// Empty for hand-constructed models that were never parsed from disk.
+	// Dir is the absolute directory the project was parsed from, threaded
+	// through by ParseProject/ParseResearchRoot so mutation entry points
+	// resolve the SAME directory the parser read — a brief/dir ID mismatch
+	// or duplicate R-NNN names must not redirect mutations to a sibling
+	// project. Empty for never-parsed, hand-constructed models.
 	Dir           string             `json:"dir,omitempty"`
 	Brief         Brief              `json:"brief"`
 	Graph         HypothesisGraph    `json:"graph"`
@@ -1137,21 +1029,17 @@ type ResearchRoot struct {
 	Path     string             `json:"path"`
 	Index    []IndexEntry       `json:"index"`
 	Projects []*ResearchProject `json:"projects"`
-	// ActiveProjectID is the current active R-NNN (the latest index entry,
-	// else the highest-numbered project directory). It is the single source of
-	// truth shared by the orchestrator's research-awareness context and the
-	// frontend Research panel, so both layers always agree on which project is
-	// "active". Computed once at parse time (see PickActiveProject). Empty when
-	// no project exists yet (a fresh research root).
+	// ActiveProjectID is the active R-NNN (latest index entry, else
+	// highest-numbered directory) — the single source of truth shared by the
+	// orchestrator context and the frontend panel, computed once at parse
+	// time (PickActiveProject). Empty on a fresh research root.
 	ActiveProjectID string `json:"active_project_id,omitempty"`
 }
 
-// PickActiveProject selects the current active R-NNN from a parsed research
-// root: the latest index entry (chronological append order) when an index
-// exists, otherwise the highest-numbered project directory. Returns nil when
-// no project exists. It is the canonical selection rule shared by the
-// orchestrator (research-awareness context) and the frontend (Research panel),
-// so both never disagree on which project is active.
+// PickActiveProject selects the active R-NNN: the latest index entry when an
+// index exists, else the highest-numbered project directory — the canonical
+// selection rule shared by the orchestrator and the frontend panel
+// (specs/domains/research.md). Returns nil when no project exists.
 func PickActiveProject(root *ResearchRoot) *ResearchProject {
 	if root == nil {
 		return nil
@@ -1165,22 +1053,20 @@ func PickActiveProject(root *ResearchRoot) *ResearchProject {
 			}
 		}
 	}
-	// Fallback: ParseResearchRoot sorts projects in numeric R-NNN order
-	// (compareResearchIDs — R-2 before R-10), so the last is the
-	// highest-numbered R-NNN even for unpadded directory names.
+	// Fallback: projects are sorted numerically (compareResearchIDs), so the
+	// last is the highest-numbered R-NNN even for unpadded names.
 	if len(root.Projects) > 0 {
 		return root.Projects[len(root.Projects)-1]
 	}
 	return nil
 }
 
-// maxArtifactBytes bounds a single RESEARCH artifact read. The research root
-// is workspace content (<workspace>/.research is repository-controlled) and
-// every parse feeds read-only status RPCs, so an oversized (hostile or
-// accidental) artifact must not be read whole into memory — safeio.ReadFile
-// is an unbounded io.ReadAll. 8 MiB is far above any real brief, card, graph,
-// log or report; a file over the cap is treated as unreadable (skipped by the
-// tolerant reader, refused by the strict one).
+// maxArtifactBytes bounds a single RESEARCH artifact read: the root is
+// workspace content feeding read-only status RPCs, and safeio.ReadFile is an
+// unbounded io.ReadAll, so an oversized (hostile or accidental) artifact must
+// not be read whole. 8 MiB is far above any real artifact; over-cap files are
+// treated as unreadable (skipped by the tolerant reader, refused by the
+// strict one).
 const maxArtifactBytes = 8 << 20
 
 // oversizedArtifact reports whether path exists and is larger than the
@@ -1191,13 +1077,11 @@ func oversizedArtifact(path string) bool {
 	return err == nil && info.Size() > maxArtifactBytes
 }
 
-// readFile reads a file's contents, returning ("", false) when the file is
-// missing rather than an error — missing optional artifacts are a normal
-// partial state, not a failure. Rendering-only (parser) paths use this
-// tolerant form; mutation (writer) paths must use readFileStrict instead so
-// an unreadable-but-present file is never mistaken for a missing one.
-// An artifact over maxArtifactBytes is likewise treated as unreadable: its
-// read would otherwise be unbounded.
+// readFile reads a file's contents, returning ("", false) when missing —
+// missing optional artifacts are a normal partial state. Rendering (parser)
+// paths use this tolerant form; mutation paths must use readFileStrict so an
+// unreadable-but-present file is never mistaken for a missing one. Over-cap
+// artifacts are likewise "unreadable".
 func readFile(path string) (string, bool) {
 	if oversizedArtifact(path) {
 		return "", false
@@ -1212,16 +1096,13 @@ func readFile(path string) (string, bool) {
 	return string(data), true
 }
 
-// readFileStrict reads a file's contents for a mutation (read-modify-write)
-// path. Like readFile, a missing file is ("", nil) — a missing optional
-// artifact is a normal partial state the writer may create. Every other
-// read error (permissions, a Windows sharing violation, transient I/O) is
-// returned so the caller aborts the mutation: the tolerant readFile would
-// report such a file as absent, and the subsequent atomic rename would
-// silently replace its unreadable prior content — log.md truncated to a
-// single new entry, index.md rewritten as a bare skeleton. RESEARCH
-// artifacts are persisted agent memory (SECURITY.md, ASI06); treating
-// "cannot read" as "does not exist" is a data-loss path, so it fails closed.
+// readFileStrict reads a file's contents for a mutation path. Like readFile,
+// a missing file is ("", nil) — the writer may create it. Every other read
+// error is returned so the mutation aborts: treating "cannot read" as "does
+// not exist" would let the atomic rename silently replace unreadable prior
+// content (log.md truncated to one entry, index.md rewritten as a skeleton).
+// RESEARCH artifacts are persisted agent memory (SECURITY.md, ASI06) — this
+// fails closed.
 func readFileStrict(path string) (string, error) {
 	if oversizedArtifact(path) {
 		return "", fmt.Errorf("reading %s: artifact exceeds the %d byte read cap", path, maxArtifactBytes)
@@ -1237,11 +1118,9 @@ func readFileStrict(path string) (string, error) {
 	}
 }
 
-// ParseProject parses a single research project directory (R-NNN-...). It is
-// fully best-effort: every artifact is optional, so a freshly initialized
-// project (no graph, no cards, no report) parses cleanly into a project with
-// an empty graph and zero metrics. Only a missing or unreadable directory
-// itself is an error.
+// ParseProject parses one R-NNN project directory, fully best-effort: every
+// artifact is optional (a fresh project parses with an empty graph and zero
+// metrics); only a missing/unreadable directory is an error.
 func ParseProject(projectPath string) (*ResearchProject, error) {
 	info, err := os.Stat(projectPath)
 	if err != nil {
@@ -1285,13 +1164,10 @@ func ParseProject(projectPath string) (*ResearchProject, error) {
 	}, nil
 }
 
-// listHypothesisCards returns the full paths of every H-*.md card file under
-// dir, sorted by base name for determinism, or nil when dir is missing or
-// unreadable. It enumerates the directory directly (os.ReadDir) rather than
-// using filepath.Glob, so glob metacharacters in the directory PATH itself —
-// e.g. a workspace rooted under a directory literally named "[proj]" — are
-// treated literally instead of as a pattern (which would silently match
-// nothing and drop every card).
+// listHypothesisCards returns every H-*.md path under dir, sorted by base
+// name (nil when dir is missing/unreadable). os.ReadDir, not filepath.Glob:
+// glob metacharacters in the directory PATH itself (a workspace under
+// "[proj]") must match literally, or every card would silently vanish.
 func listHypothesisCards(dir string) []string {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -1315,11 +1191,9 @@ func listHypothesisCards(dir string) []string {
 	return paths
 }
 
-// loadCards reads every H-*.md card under dir, parsing each and skipping any
-// that fail to parse (a malformed card must not break the whole graph). The
-// returned slice is in card-file-name order (lexicographic, from
-// listHypothesisCards); callers that need canonical numeric H-NNN order
-// (BuildGraph) re-sort via compareHypothesisIDs. Missing directory → nil.
+// loadCards reads and parses every card, skipping failures (a malformed card
+// must not break the whole graph); file-name order — numeric-order callers
+// re-sort via compareHypothesisIDs.
 func loadCards(dir string) []HypothesisNode {
 	paths := listHypothesisCards(dir)
 	if len(paths) == 0 {
@@ -1378,11 +1252,9 @@ func ParseResearchRoot(rootPath string) (*ResearchRoot, error) {
 		root.Projects = append(root.Projects, project)
 	}
 
-	// Numeric R-NNN order (R-2 before R-10 — compareResearchIDs), with the
-	// parsed directory as the tie-break so duplicate IDs (two directories
-	// normalizing to the same R-NNN after a copy) keep a deterministic order:
-	// PickActiveProject's "last = active" then resolves to one stable
-	// directory (the same one ActiveProjectDir returns via ResearchProject.Dir).
+	// Numeric R-NNN order with the parsed directory as tie-break, so
+	// duplicate IDs keep a deterministic order and PickActiveProject's
+	// "last = active" resolves to the directory ActiveProjectDir returns.
 	sort.Slice(root.Projects, func(i, j int) bool {
 		if c := compareResearchIDs(root.Projects[i].ID, root.Projects[j].ID); c != 0 {
 			return c < 0
@@ -1390,8 +1262,7 @@ func ParseResearchRoot(rootPath string) (*ResearchRoot, error) {
 		return root.Projects[i].Dir < root.Projects[j].Dir
 	})
 
-	// Compute the active project once at parse time so every consumer
-	// (orchestrator research context, frontend panel) reads the same value.
+	// Computed once at parse time so every consumer reads the same value.
 	if active := PickActiveProject(root); active != nil {
 		root.ActiveProjectID = active.ID
 	}

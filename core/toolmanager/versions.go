@@ -10,15 +10,13 @@ import (
 	"github.com/v0lka/sp4rk/safeio"
 )
 
-// versionsFileName is the name of the JSON file that tracks installed tool
-// versions within the tools directory.
+// versionsFileName tracks installed tool versions inside the tools directory.
 const versionsFileName = ".versions"
 
 // ToolVersions maps tool names to their installed version strings.
 type ToolVersions map[string]string
 
-// ReadVersions reads the .versions JSON file from toolsDir. If the file does
-// not exist, it returns an empty ToolVersions map without error.
+// ReadVersions reads .versions; a missing file yields an empty map, nil error.
 func ReadVersions(toolsDir string) (ToolVersions, error) {
 	path := filepath.Join(toolsDir, versionsFileName)
 	data, err := safeio.ReadFile(path)
@@ -35,11 +33,9 @@ func ReadVersions(toolsDir string) (ToolVersions, error) {
 	return tv, nil
 }
 
-// WriteVersions atomically writes the ToolVersions as JSON to toolsDir. The
-// staging temp is created under a randomized name (safeio.WriteFileAtomic),
-// so the write-open cannot be redirected by a FIFO or symlink planted at the
-// deterministic "<file>.tmp" name the previous implementation used, and the
-// rename replaces such a planted entry itself instead of writing through it.
+// WriteVersions writes atomically via safeio.WriteFileAtomic — the randomized
+// staging name defeats a FIFO/symlink planted at the old deterministic
+// "<file>.tmp" path; the rename replaces a plant instead of writing through it.
 func WriteVersions(toolsDir string, versions ToolVersions) error {
 	path := filepath.Join(toolsDir, versionsFileName)
 
