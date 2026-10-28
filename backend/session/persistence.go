@@ -204,7 +204,8 @@ func (s *SQLiteSessionStore) createTables() error {
 	CREATE INDEX IF NOT EXISTS idx_session_messages_session_role ON session_messages(session_id, role);
 	CREATE INDEX IF NOT EXISTS idx_sessions_project_id ON sessions(project_id);
 	-- Composite indexes let the effective-activity MAX(created_at) probes in
-	-- sessionEffectiveActivitySQL resolve index-only per session.
+	-- sessionEffectiveActivitySQL resolve index-only (O(log n) per session)
+	-- instead of scanning every row of each session on every list call.
 	CREATE INDEX IF NOT EXISTS idx_session_messages_session_created ON session_messages(session_id, created_at);
 
 	CREATE TABLE IF NOT EXISTS tasks (
@@ -263,10 +264,12 @@ func (s *SQLiteSessionStore) createTables() error {
 		updated_at TIMESTAMP NOT NULL
 	);
 
-	-- task_e2s_state persists the E2S execution state (Σ + bookkeeping) after
-	-- every applied state patch so an interrupted run resumes with it; the
-	-- CREATE TABLE IF NOT EXISTS is the additive migration. See
-	-- specs/domains/e2s.md.
+	-- task_e2s_state mirrors task_goal_state for the E2S (explicit-state)
+	-- execution mode: the JSON-marshaled e2s.E2SState (Σ + bookkeeping) of a
+	-- task, persisted after every applied state patch so an interrupted run
+	-- survives app restart and resumes with the restored Σ. The CREATE TABLE
+	-- IF NOT EXISTS is the migration for databases created before E2S existed:
+	-- it adds the table on the next open without touching any existing row.
 	CREATE TABLE IF NOT EXISTS task_e2s_state (
 		task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
 		e2s_state TEXT NOT NULL,
@@ -283,11 +286,15 @@ func (s *SQLiteSessionStore) createTables() error {
 		PRIMARY KEY (task_id, delegation_id)
 	);
 
-	-- task_units is the durable per-unit ledger (core/units): kind, topology,
-	-- status, rebuild spec and resume checkpoint per unit, keyed by task +
-	-- namespace + unit id so a mainline and an isolated (goal-verifier)
-	-- ledger can share one task. Additive migration. See
-	-- specs/domains/orchestration/delegation.md.
+	-- task_units is the durable per-unit ledger (core/units). A unit is one
+	-- execution unit — a plan step, a delegated subagent, a goal-verification
+	-- pass — carrying its kind, topology (parent/depth), lifecycle status, a
+	-- rebuild spec and a resume checkpoint. It is keyed by task + namespace +
+	-- unit id so a mainline ledger and an isolated ledger (e.g. the goal
+	-- verifier) can share one task without their ids colliding. The CREATE
+	-- TABLE IF NOT EXISTS is the migration for databases created before the
+	-- unit ledger existed: it adds the table on the next open without touching
+	-- any existing row (additive only).
 	CREATE TABLE IF NOT EXISTS task_units (
 		task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
 		unit_id TEXT NOT NULL,
@@ -343,10 +350,15 @@ func (s *SQLiteSessionStore) createTables() error {
 	);
 	CREATE UNIQUE INDEX IF NOT EXISTS idx_session_bookmarks_session_event ON session_bookmarks(session_id, event_key);
 
-	-- prompt_suggestions holds the generated follow-up prompts (ADR-088); the
-	-- active set of one (session, kind) is replaced atomically. Additive
-	-- migration; session deletion cascades, a fork does not copy the rows.
-	-- See specs/domains/prompt-suggestions.md.
+	-- prompt_suggestions holds the generated follow-up prompts (ADR-088) the
+	-- chat input offers after a task finishes with outcome full or partial.
+	-- One row per suggestion; SavePromptSuggestions replaces the active set of
+	-- one (session, kind) atomically (previous active rows → stale, new rows
+	-- in), so at most one active set per (session, kind) exists. The CREATE
+	-- TABLE IF NOT EXISTS is the additive migration for databases created
+	-- before prompt suggestions existed — it adds the table on the next open
+	-- without touching any existing row. Session deletion cascades via the FK;
+	-- a fork does not copy the rows.
 	CREATE TABLE IF NOT EXISTS prompt_suggestions (
 		id         TEXT PRIMARY KEY,
 		session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,

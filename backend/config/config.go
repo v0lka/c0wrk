@@ -184,9 +184,10 @@ type RuntimeConfig struct {
 // VectorIndexConfig holds vector / hybrid search runtime settings.
 //
 // Hybrid is a pointer-bool (unset = true); false consults only the chromem
-// index (bleve opened, not queried). The HybridRRFK / HybridFanout* /
-// Hybrid*Score* fields tune RRF and pre-fusion noise suppression (zero/nil =
-// built-in defaults); see specs/decisions/013-rrf-pre-fusion-score-thresholds.md.
+// index (bleve opened, not queried). HybridRRFK / HybridFanout* tune RRF
+// (zero = built-in defaults); the Hybrid*Score* pointer fields suppress
+// noise-tail hits before fusion (unset = built-in defaults, explicit 0 =
+// gate disabled). See specs/decisions/013-rrf-pre-fusion-score-thresholds.md.
 type VectorIndexConfig struct {
 	Hybrid *bool `yaml:"hybrid"`
 

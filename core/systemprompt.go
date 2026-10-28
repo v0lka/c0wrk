@@ -339,15 +339,15 @@ func formatRequestedAgents(ctx context.Context) string {
 	// names are kept (the user explicitly asked for them) but have no
 	// description, surfacing a possible mismatch rather than hiding it.
 	descriptors := AvailableAgentsFromContext(ctx)
-	byName := make(map[string]string, len(descriptors))
+	descBy := make(map[string]string, len(descriptors))
 	for _, d := range descriptors {
-		byName[d.Name] = d.Description
+		descBy[d.Name] = d.Description
 	}
 
 	var roster strings.Builder
 	for _, name := range requested {
 		roster.WriteString("- " + name)
-		if desc := byName[name]; desc != "" {
+		if desc, ok := descBy[name]; ok && desc != "" {
 			roster.WriteString(": " + desc)
 		}
 		roster.WriteString("\n")
