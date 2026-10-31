@@ -293,8 +293,8 @@ func (m *Manager) probeBinaryVersion(ctx context.Context, binPath string) (strin
 	return string(out), nil
 }
 
-// versionInOutput is deliberately substring containment ("14.1.1" matches
-// "14.1.10") — the safe direction: bytes are SHA256-pinned, so the probe only
+// versionInOutput is deliberately substring containment ("15.2.0" matches
+// "15.2.00") — the safe direction: bytes are SHA256-pinned, so the probe only
 // catches a stale/wrong binary that survived an install, not version schemes.
 func versionInOutput(output, want string) bool {
 	return strings.Contains(output, want)
