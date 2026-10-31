@@ -9,6 +9,7 @@ import { relativePath } from '@/lib/localFileLink'
 import { formatFileRefPath } from '@/lib/parseReferences'
 import { parseUnifiedDiff, buildDisplayLines } from '@/lib/diffParser'
 import { Markdown } from '@/lib/markdownConfig'
+import { restoreScrollTop } from '@/lib/fileViewerUtils'
 import { Button } from '@/components/ui/button'
 import { FileViewerContextMenu } from '@/components/fileViewer/FileViewerContextMenu'
 import {
@@ -63,10 +64,9 @@ export function CodeMirrorFileViewer(props: CodeMirrorViewerProps) {
             highlightLine={highlightLine}
           />
         ) : (
-          <Markdown
+          <MarkdownPreviewPane
+            path={activeFile}
             content={content}
-            className="flex-1 overflow-auto custom-scrollbar p-4"
-            baseFilePath={activeFile}
             workspaceRoot={workspacePath}
           />
         )}
@@ -105,6 +105,17 @@ function CodeMirrorEditor({ content, language, diff, highlightLine }: CodeMirror
   // below so CodeMirror re-measures line heights for the new metrics.
   const monoFontFamily = useFontStore((s) => s.monoFontFamily)
 
+  // -- Reading-position memory (session scope) ---------------------------
+  // The file-viewer twin of ChatScrollManager + chatStore.scrollPositions:
+  // a passive scroll listener keeps scrollStateRef fresh; the position is
+  // saved while the view is still alive — when the reused view re-targets
+  // another tab, and when this component unmounts (the floating viewer
+  // auto-collapses on outside focus, which unmounts the whole content) —
+  // and restored on mount and after each re-target, so re-expanding the
+  // viewer resumes where reading stopped instead of jumping back to the top.
+  const scrollStateRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null)
+  const activePathRef = useRef<string | null>(activeFile)
+
   // Create EditorView on mount, destroy on unmount
   useEffect(() => {
     if (!containerRef.current) return
@@ -134,7 +145,36 @@ function CodeMirrorEditor({ content, language, diff, highlightLine }: CodeMirror
 
     viewRef.current = view
 
+    const scrollDOM = view.scrollDOM
+    const onScroll = () => {
+      scrollStateRef.current = { scrollTop: scrollDOM.scrollTop, scrollHeight: scrollDOM.scrollHeight }
+    }
+    scrollDOM.addEventListener('scroll', onScroll, { passive: true })
+
+    // Restore the saved reading position — the live scroll DOM died with the
+    // previous unmount (viewer collapse / tab close). restoreScrollTop scales
+    // a stale offset when the file changed between save and restore, and the
+    // browser clamps the rest. The highlightLine effect below runs AFTER this
+    // one (effect definition order), so an explicit open-at-line still wins.
+    const saved = activePathRef.current
+      ? useFileViewerStore.getState().scrollPositions[activePathRef.current]
+      : undefined
+    if (saved) {
+      const top = restoreScrollTop(saved, scrollDOM.scrollHeight)
+      scrollDOM.scrollTop = top
+      // The browser fires the scroll event for a programmatic scroll later
+      // (jsdom never does): sync the ref immediately so a collapse in the
+      // same frame cannot save the pre-restore value.
+      scrollStateRef.current = { scrollTop: top, scrollHeight: scrollDOM.scrollHeight }
+    }
+
     return () => {
+      // Save BEFORE destroy() — afterwards the scrollDOM is gone and the
+      // listener can no longer refresh the ref.
+      const path = activePathRef.current
+      const state = scrollStateRef.current
+      if (path && state) useFileViewerStore.getState().saveScrollPosition(path, state)
+      scrollDOM.removeEventListener('scroll', onScroll)
       view.destroy()
       viewRef.current = null
     }
@@ -172,6 +212,29 @@ function CodeMirrorEditor({ content, language, diff, highlightLine }: CodeMirror
       changes: { from: 0, to: view.state.doc.length, insert: content },
     })
   }, [content])
+
+  // Re-target the reading position when the reused view switches tabs: save
+  // the outgoing path's position (the scroll-listener ref still holds it),
+  // then restore the incoming path's saved one. A single EditorView serves
+  // every code tab (only the doc is replaced), so without this the scroll
+  // offset would be one shared blob across all tabs. Runs after the content
+  // effect above (definition order) so the restore lands on the new document.
+  useEffect(() => {
+    const outgoing = activePathRef.current
+    if (outgoing && outgoing !== activeFile && scrollStateRef.current) {
+      useFileViewerStore.getState().saveScrollPosition(outgoing, scrollStateRef.current)
+    }
+    activePathRef.current = activeFile
+
+    const view = viewRef.current
+    if (!view || !activeFile) return
+    const saved = useFileViewerStore.getState().scrollPositions[activeFile]
+    if (!saved) return
+    const top = restoreScrollTop(saved, view.scrollDOM.scrollHeight)
+    view.scrollDOM.scrollTop = top
+    // Sync immediately — see the mount-effect restore for why.
+    scrollStateRef.current = { scrollTop: top, scrollHeight: view.scrollDOM.scrollHeight }
+  }, [activeFile])
 
   // Load language asynchronously and reconfigure compartment
   useEffect(() => {
@@ -290,5 +353,86 @@ function CodeMirrorEditor({ content, language, diff, highlightLine }: CodeMirror
         onClose={closeContextMenu}
       />
     </>
+  )
+}
+
+/**
+ * The markdown PREVIEW branch of the viewer with its own reading-position
+ * memory — the same save-on-unmount / restore-on-bind contract as
+ * CodeMirrorEditor (see that component's block), so the preview scroll also
+ * survives viewer collapse and tab re-targets, and the source/preview toggle
+ * swaps between two independently remembered positions for the same file.
+ *
+ * The scrolling element is Markdown's own root (the overflow-auto class lands
+ * there), so the listener binds to the wrapper's first element child rather
+ * than the wrapper itself.
+ */
+function MarkdownPreviewPane({ path, content, workspaceRoot }: {
+  path: string | null
+  content: string
+  workspaceRoot: string | null
+}) {
+  const scrollStateRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null)
+  const scrollElRef = useRef<Element | null>(null)
+  const onScrollRef = useRef<(() => void) | null>(null)
+  const pathRef = useRef<string | null>(path)
+
+  // Save the outgoing path's position and restore the incoming path's on
+  // every path change (first bind included — the restore is what survives a
+  // viewer collapse that unmounted the preview).
+  useEffect(() => {
+    const outgoing = pathRef.current
+    if (outgoing && outgoing !== path && scrollStateRef.current) {
+      useFileViewerStore.getState().saveScrollPosition(outgoing, scrollStateRef.current)
+    }
+    pathRef.current = path
+
+    const el = scrollElRef.current
+    if (!el || !path) return
+    const saved = useFileViewerStore.getState().scrollPositions[path]
+    if (!saved) return
+    const top = restoreScrollTop(saved, el.scrollHeight)
+    el.scrollTop = top
+    // Sync immediately — the programmatic-scroll event lands later (or, in
+    // jsdom, never); see CodeMirrorEditor's mount-effect restore.
+    scrollStateRef.current = { scrollTop: top, scrollHeight: el.scrollHeight }
+  }, [path])
+
+  // Save while the element still exists when the preview unmounts (viewer
+  // collapse, a switch to a code tab, or the source toggle). The save reads
+  // the listener-fed ref, not the element, so the ref-detach commit phase
+  // that precedes this cleanup is harmless.
+  useEffect(() => () => {
+    const outgoing = pathRef.current
+    const state = scrollStateRef.current
+    if (outgoing && state) useFileViewerStore.getState().saveScrollPosition(outgoing, state)
+  }, [])
+
+  const attachWrapper = useCallback((wrapper: HTMLDivElement | null) => {
+    const prevEl = scrollElRef.current
+    const prevListener = onScrollRef.current
+    if (prevEl && prevListener) prevEl.removeEventListener('scroll', prevListener)
+    scrollElRef.current = null
+    onScrollRef.current = null
+    if (!wrapper) return
+    const el = wrapper.firstElementChild
+    if (!el) return
+    const onScroll = () => {
+      scrollStateRef.current = { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight }
+    }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    scrollElRef.current = el
+    onScrollRef.current = onScroll
+  }, [])
+
+  return (
+    <div ref={attachWrapper} className="flex flex-1 min-h-0">
+      <Markdown
+        content={content}
+        className="flex-1 overflow-auto custom-scrollbar p-4"
+        baseFilePath={path}
+        workspaceRoot={workspaceRoot}
+      />
+    </div>
   )
 }

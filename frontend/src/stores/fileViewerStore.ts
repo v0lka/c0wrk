@@ -55,6 +55,17 @@ interface FileViewerState {
   pinned: boolean
   highlightLine: number | null // transient: line to scroll to and highlight
   fileIcons: Record<string, FileIconData>
+  /**
+   * Per-file reading positions (keyed by file path), the file-viewer twin of
+   * chatStore's `scrollPositions`: written when the viewer content unmounts
+   * (collapse / tab close) or re-targets another tab, restored on the next
+   * mount / tab activation — so a collapsed-and-re-expanded viewer (the
+   * floating viewer auto-collapses on outside focus) resumes where reading
+   * stopped instead of jumping back to the top. In-memory only — session
+   * scope, never persisted (deliberately absent from `partialize`, like the
+   * chat's reading positions).
+   */
+  scrollPositions: Record<string, { scrollTop: number; scrollHeight: number }>
 }
 
 interface FileViewerActions {
@@ -79,6 +90,8 @@ interface FileViewerActions {
   setFileIcon: (path: string, icon: string, iconColor: string) => void
   setHighlightLine: (line: number) => void
   clearHighlightLine: () => void
+  saveScrollPosition: (path: string, position: { scrollTop: number; scrollHeight: number }) => void
+  clearScrollPosition: (path: string) => void
   closeAllFiles: () => void
   restoreProjectFiles: (openTabs: string[], activeFile: string | null) => void
 }
@@ -116,6 +129,7 @@ export const useFileViewerStore = create<FileViewerState & FileViewerActions>()(
       pinned: false,
       highlightLine: null,
       fileIcons: {},
+      scrollPositions: {},
 
       openFile: (path) => {
         const { openTabs } = get()
@@ -209,6 +223,7 @@ export const useFileViewerStore = create<FileViewerState & FileViewerActions>()(
         const newTabs = s.openTabs.filter(p => p !== path)
         const { [path]: _, ...restFiles } = s.files
         const { [path]: __, ...restIcons } = s.fileIcons
+        const { [path]: _scroll, ...restScroll } = s.scrollPositions
 
         let newActive = s.activeFile
         if (s.activeFile === path) {
@@ -226,6 +241,9 @@ export const useFileViewerStore = create<FileViewerState & FileViewerActions>()(
           activeFile: newActive,
           files: restFiles,
           fileIcons: restIcons,
+          // A closed tab's reading position dies with it — re-opening the file
+          // is a fresh read starting at the top.
+          scrollPositions: restScroll,
           // An unpinned (floating) viewer auto-collapses once it has no open
           // tabs — an empty floating panel would just obscure the chat, so it
           // recedes to the slim docked rail until a file is opened again. When
@@ -237,11 +255,14 @@ export const useFileViewerStore = create<FileViewerState & FileViewerActions>()(
       closeOthersFiles: (keepPath) => set((s) => {
         const keepFile = s.files[keepPath]
         const keepIcon = s.fileIcons[keepPath]
+        const keepScroll = s.scrollPositions[keepPath]
         return {
           openTabs: [keepPath],
           activeFile: keepPath,
           files: keepFile ? { [keepPath]: keepFile } : {},
           fileIcons: keepIcon ? { [keepPath]: keepIcon } : {},
+          // Keep the invariant that scrollPositions ⊆ open tabs (see closeFile).
+          scrollPositions: keepScroll ? { [keepPath]: keepScroll } : {},
         }
       }),
 
@@ -340,11 +361,27 @@ export const useFileViewerStore = create<FileViewerState & FileViewerActions>()(
 
       clearHighlightLine: () => set({ highlightLine: null }),
 
+      // Reading-position memory (see scrollPositions). A no-op write when the
+      // position is unchanged keeps the map reference stable (React #185 —
+      // the same convention as chatStore.saveScrollPosition).
+      saveScrollPosition: (path, position) => set((s) => {
+        const prev = s.scrollPositions[path]
+        if (prev && prev.scrollTop === position.scrollTop && prev.scrollHeight === position.scrollHeight) return s
+        return { scrollPositions: { ...s.scrollPositions, [path]: position } }
+      }),
+
+      clearScrollPosition: (path) => set((s) => {
+        if (!(path in s.scrollPositions)) return s
+        const { [path]: _pos, ...rest } = s.scrollPositions
+        return { scrollPositions: rest }
+      }),
+
       closeAllFiles: () => set((s) => ({
         files: {},
         openTabs: [],
         activeFile: null,
         fileIcons: {},
+        scrollPositions: {},
         // Same empty-auto-collapse rule as closeFile: an unpinned viewer with
         // no tabs recedes to the docked rail instead of floating empty.
         ...(!s.pinned ? { collapsed: true } : {}),
@@ -366,10 +403,28 @@ export const useFileViewerStore = create<FileViewerState & FileViewerActions>()(
           if (icon) nextIcons[tab] = icon
         }
 
+        // Reading positions follow the tab set: a restore replaces the tab
+        // list wholesale (per-project viewer state), so entries for paths no
+        // longer open are pruned instead of accumulating stale keys across
+        // project switches. The live map reference is kept when nothing was
+        // pruned (reference-stable no-op, React #185).
+        const nextScrollPositions: Record<string, { scrollTop: number; scrollHeight: number }> = {}
+        let pruned = false
+        for (const key of Object.keys(s.scrollPositions)) {
+          const position = s.scrollPositions[key]
+          if (!position) continue
+          if (uniqueTabs.includes(key)) {
+            nextScrollPositions[key] = position
+          } else {
+            pruned = true
+          }
+        }
+
         if (
           s.openTabs.length === uniqueTabs.length
           && s.openTabs.every((tab, i) => tab === uniqueTabs[i])
           && s.activeFile === normalizedActive
+          && !pruned
         ) {
           return s
         }
@@ -379,6 +434,7 @@ export const useFileViewerStore = create<FileViewerState & FileViewerActions>()(
           activeFile: normalizedActive,
           files: nextFiles,
           fileIcons: nextIcons,
+          scrollPositions: pruned ? nextScrollPositions : s.scrollPositions,
           // Empty-auto-collapse rule (matches closeFile/closeAllFiles): an
           // unpinned viewer restoring zero tabs recedes to the docked rail.
           ...(!s.pinned && uniqueTabs.length === 0 ? { collapsed: true } : {}),

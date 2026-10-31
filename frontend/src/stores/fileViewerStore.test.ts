@@ -90,3 +90,117 @@ describe('fileViewerStore.setFileImage', () => {
     expect(persisted.openTabs).toContain(path)
   })
 })
+
+// Reading positions (session scope): the file-viewer twin of chatStore's
+// scrollPositions — written on viewer unmount / tab re-target, restored on the
+// next mount / activation. In-memory only; entries die with their tab.
+describe('fileViewerStore.scrollPositions', () => {
+  beforeEach(() => {
+    useFileViewerStore.setState({ files: {}, openTabs: [], activeFile: null, scrollPositions: {} })
+  })
+
+  it('saves a position per path and overwrites it on a later save', () => {
+    const store = useFileViewerStore.getState()
+    store.saveScrollPosition('/a.ts', { scrollTop: 4200, scrollHeight: 10000 })
+    store.saveScrollPosition('/b.ts', { scrollTop: 0, scrollHeight: 500 })
+    store.saveScrollPosition('/a.ts', { scrollTop: 5000, scrollHeight: 12000 })
+
+    const positions = useFileViewerStore.getState().scrollPositions
+    expect(positions['/a.ts']).toEqual({ scrollTop: 5000, scrollHeight: 12000 })
+    expect(positions['/b.ts']).toEqual({ scrollTop: 0, scrollHeight: 500 })
+  })
+
+  it('keeps the map reference when the saved position is unchanged (React #185)', () => {
+    const store = useFileViewerStore.getState()
+    store.saveScrollPosition('/a.ts', { scrollTop: 4200, scrollHeight: 10000 })
+    const before = useFileViewerStore.getState().scrollPositions
+
+    store.saveScrollPosition('/a.ts', { scrollTop: 4200, scrollHeight: 10000 })
+
+    expect(useFileViewerStore.getState().scrollPositions).toBe(before)
+  })
+
+  it('clear removes only the targeted entry; clearing a missing path keeps the reference', () => {
+    const store = useFileViewerStore.getState()
+    store.saveScrollPosition('/a.ts', { scrollTop: 1, scrollHeight: 10 })
+    store.saveScrollPosition('/b.ts', { scrollTop: 2, scrollHeight: 20 })
+    const before = useFileViewerStore.getState().scrollPositions
+
+    store.clearScrollPosition('/missing')
+    expect(useFileViewerStore.getState().scrollPositions).toBe(before)
+
+    store.clearScrollPosition('/a.ts')
+    const positions = useFileViewerStore.getState().scrollPositions
+    expect(positions['/a.ts']).toBeUndefined()
+    expect(positions['/b.ts']).toEqual({ scrollTop: 2, scrollHeight: 20 })
+  })
+
+  it('drops the closed tab position on closeFile but keeps other tabs', () => {
+    useFileViewerStore.getState().openFile('/a.ts')
+    useFileViewerStore.getState().openFile('/b.ts')
+    useFileViewerStore.getState().saveScrollPosition('/a.ts', { scrollTop: 42, scrollHeight: 100 })
+    useFileViewerStore.getState().saveScrollPosition('/b.ts', { scrollTop: 7, scrollHeight: 200 })
+
+    useFileViewerStore.getState().closeFile('/a.ts')
+
+    const positions = useFileViewerStore.getState().scrollPositions
+    expect(positions['/a.ts']).toBeUndefined()
+    expect(positions['/b.ts']).toEqual({ scrollTop: 7, scrollHeight: 200 })
+  })
+
+  it('keeps only the surviving tab position on closeOthersFiles', () => {
+    useFileViewerStore.getState().openFile('/a.ts')
+    useFileViewerStore.getState().openFile('/b.ts')
+    useFileViewerStore.getState().saveScrollPosition('/a.ts', { scrollTop: 42, scrollHeight: 100 })
+    useFileViewerStore.getState().saveScrollPosition('/b.ts', { scrollTop: 7, scrollHeight: 200 })
+
+    useFileViewerStore.getState().closeOthersFiles('/b.ts')
+
+    expect(useFileViewerStore.getState().scrollPositions).toEqual({
+      '/b.ts': { scrollTop: 7, scrollHeight: 200 },
+    })
+  })
+
+  it('resets all positions on closeAllFiles', () => {
+    useFileViewerStore.getState().openFile('/a.ts')
+    useFileViewerStore.getState().saveScrollPosition('/a.ts', { scrollTop: 42, scrollHeight: 100 })
+
+    useFileViewerStore.getState().closeAllFiles()
+
+    expect(useFileViewerStore.getState().scrollPositions).toEqual({})
+  })
+
+  it('prunes stale entries on restoreProjectFiles, keeping the live reference when nothing is stale', () => {
+    // A stale /a.ts entry next to the restored /b.ts tab set → pruned.
+    useFileViewerStore.setState({
+      openTabs: ['/b.ts'],
+      activeFile: '/b.ts',
+      files: { '/b.ts': { content: '', loading: false } },
+      scrollPositions: {
+        '/a.ts': { scrollTop: 5, scrollHeight: 50 },
+        '/b.ts': { scrollTop: 6, scrollHeight: 60 },
+      },
+    })
+
+    useFileViewerStore.getState().restoreProjectFiles(['/b.ts'], '/b.ts')
+
+    expect(useFileViewerStore.getState().scrollPositions).toEqual({
+      '/b.ts': { scrollTop: 6, scrollHeight: 60 },
+    })
+
+    // A restore that only ADDS a tab (nothing stale) keeps the same map
+    // reference (reference-stable no-op for the positions slice).
+    const before = useFileViewerStore.getState().scrollPositions
+    useFileViewerStore.getState().restoreProjectFiles(['/b.ts', '/c.ts'], '/b.ts')
+    expect(useFileViewerStore.getState().scrollPositions).toBe(before)
+  })
+
+  it('never persists reading positions (session scope, like the chat)', () => {
+    useFileViewerStore.getState().openFile('/a.ts')
+    useFileViewerStore.getState().saveScrollPosition('/a.ts', { scrollTop: 42, scrollHeight: 100 })
+
+    const partialize = useFileViewerStore.persist.getOptions().partialize
+    const persisted = partialize!(useFileViewerStore.getState()) as Record<string, unknown>
+    expect('scrollPositions' in persisted).toBe(false)
+  })
+})
