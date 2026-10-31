@@ -61,9 +61,11 @@ interface FileViewerState {
    * (collapse / tab close) or re-targets another tab, restored on the next
    * mount / tab activation — so a collapsed-and-re-expanded viewer (the
    * floating viewer auto-collapses on outside focus) resumes where reading
-   * stopped instead of jumping back to the top. In-memory only — session
-   * scope, never persisted (deliberately absent from `partialize`, like the
-   * chat's reading positions).
+   * stopped instead of jumping back to the top. Entries exist only for open
+   * tabs: `saveScrollPosition` ignores closed paths, so a late save from the
+   * still-mounted viewer can never resurrect an entry a close action removed.
+   * In-memory only — session scope, never persisted (deliberately absent from
+   * `partialize`, like the chat's reading positions).
    */
   scrollPositions: Record<string, { scrollTop: number; scrollHeight: number }>
 }
@@ -91,7 +93,6 @@ interface FileViewerActions {
   setHighlightLine: (line: number) => void
   clearHighlightLine: () => void
   saveScrollPosition: (path: string, position: { scrollTop: number; scrollHeight: number }) => void
-  clearScrollPosition: (path: string) => void
   closeAllFiles: () => void
   restoreProjectFiles: (openTabs: string[], activeFile: string | null) => void
 }
@@ -361,19 +362,19 @@ export const useFileViewerStore = create<FileViewerState & FileViewerActions>()(
 
       clearHighlightLine: () => set({ highlightLine: null }),
 
-      // Reading-position memory (see scrollPositions). A no-op write when the
-      // position is unchanged keeps the map reference stable (React #185 —
-      // the same convention as chatStore.saveScrollPosition).
+      // Reading-position memory (see scrollPositions). Only OPEN tabs may hold
+      // a position: a closed tab's entry dies with it (closeFile /
+      // closeOthersFiles / closeAllFiles), so saves for paths no longer in
+      // openTabs are ignored — otherwise the still-mounted viewer's unmount or
+      // re-target save would resurrect an entry the close action just removed.
+      // A no-op write when the position is unchanged keeps the map reference
+      // stable (React #185 — the same convention as
+      // chatStore.saveScrollPosition).
       saveScrollPosition: (path, position) => set((s) => {
+        if (!s.openTabs.includes(path)) return s
         const prev = s.scrollPositions[path]
         if (prev && prev.scrollTop === position.scrollTop && prev.scrollHeight === position.scrollHeight) return s
         return { scrollPositions: { ...s.scrollPositions, [path]: position } }
-      }),
-
-      clearScrollPosition: (path) => set((s) => {
-        if (!(path in s.scrollPositions)) return s
-        const { [path]: _pos, ...rest } = s.scrollPositions
-        return { scrollPositions: rest }
       }),
 
       closeAllFiles: () => set((s) => ({

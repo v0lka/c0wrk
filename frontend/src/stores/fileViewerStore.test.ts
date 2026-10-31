@@ -100,6 +100,7 @@ describe('fileViewerStore.scrollPositions', () => {
   })
 
   it('saves a position per path and overwrites it on a later save', () => {
+    useFileViewerStore.setState({ openTabs: ['/a.ts', '/b.ts'] })
     const store = useFileViewerStore.getState()
     store.saveScrollPosition('/a.ts', { scrollTop: 4200, scrollHeight: 10000 })
     store.saveScrollPosition('/b.ts', { scrollTop: 0, scrollHeight: 500 })
@@ -111,6 +112,7 @@ describe('fileViewerStore.scrollPositions', () => {
   })
 
   it('keeps the map reference when the saved position is unchanged (React #185)', () => {
+    useFileViewerStore.setState({ openTabs: ['/a.ts'] })
     const store = useFileViewerStore.getState()
     store.saveScrollPosition('/a.ts', { scrollTop: 4200, scrollHeight: 10000 })
     const before = useFileViewerStore.getState().scrollPositions
@@ -120,19 +122,20 @@ describe('fileViewerStore.scrollPositions', () => {
     expect(useFileViewerStore.getState().scrollPositions).toBe(before)
   })
 
-  it('clear removes only the targeted entry; clearing a missing path keeps the reference', () => {
-    const store = useFileViewerStore.getState()
-    store.saveScrollPosition('/a.ts', { scrollTop: 1, scrollHeight: 10 })
-    store.saveScrollPosition('/b.ts', { scrollTop: 2, scrollHeight: 20 })
+  it('ignores saves for paths that are not open tabs (a close is never resurrected)', () => {
+    // The mounted viewer's unmount/re-target save fires AFTER closeFile has
+    // removed the entry — the guard must keep it removed.
+    useFileViewerStore.setState({
+      openTabs: ['/b.ts'],
+      scrollPositions: { '/a.ts': { scrollTop: 1, scrollHeight: 10 } },
+    })
     const before = useFileViewerStore.getState().scrollPositions
 
-    store.clearScrollPosition('/missing')
-    expect(useFileViewerStore.getState().scrollPositions).toBe(before)
+    useFileViewerStore.getState().saveScrollPosition('/a.ts', { scrollTop: 99, scrollHeight: 100 })
 
-    store.clearScrollPosition('/a.ts')
-    const positions = useFileViewerStore.getState().scrollPositions
-    expect(positions['/a.ts']).toBeUndefined()
-    expect(positions['/b.ts']).toEqual({ scrollTop: 2, scrollHeight: 20 })
+    expect(useFileViewerStore.getState().scrollPositions).toBe(before)
+    expect(useFileViewerStore.getState().scrollPositions['/a.ts'])
+      .toEqual({ scrollTop: 1, scrollHeight: 10 })
   })
 
   it('drops the closed tab position on closeFile but keeps other tabs', () => {

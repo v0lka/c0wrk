@@ -217,10 +217,22 @@ describe('CodeMirrorFileViewer — reading positions', () => {
     primeStore('/f.ts')
     useFileViewerStore.getState().saveScrollPosition('/f.ts', { scrollTop: 500, scrollHeight: 2000 })
 
-    // Effects run in definition order: the mount effect restores first, the
-    // highlight effect (defined later) may re-scroll after — an explicit
-    // open-at-line must never land BEFORE the restore.
+    // Direct ordering proof: jsdom's CodeMirror scrollIntoView is a geometry
+    // no-op, so a final-scrollTop assertion cannot falsify the order — record
+    // the restore's scrollTop write and the highlight's scrollIntoView
+    // request and compare their global invocation order instead.
+    const scrollTopSpy = vi.spyOn(window.Element.prototype, 'scrollTop', 'set')
+    const scrollIntoViewSpy = vi.spyOn(EditorView, 'scrollIntoView')
     const container = await renderViewer({ highlightLine: 10 })
+
+    expect(scrollIntoViewSpy).toHaveBeenCalledTimes(1)
+    const restoreIdx = scrollTopSpy.mock.calls.findIndex(([top]) => top === 500)
+    expect(restoreIdx).toBeGreaterThanOrEqual(0)
+    const restoreOrder = scrollTopSpy.mock.invocationCallOrder[restoreIdx]
+    const highlightOrder = scrollIntoViewSpy.mock.invocationCallOrder[0]
+    expect(restoreOrder).toBeDefined()
+    expect(highlightOrder).toBeDefined()
+    expect(restoreOrder!).toBeLessThan(highlightOrder!)
     expect(viewOf(container).scrollDOM.scrollTop).toBe(500)
   })
 
