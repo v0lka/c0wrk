@@ -1,43 +1,16 @@
-// Package papers provides c0wrk's paper-study skill-pack: a versioned,
-// embed-bundled set of the built-in research-paper skills (currently the
-// single `study-paper` skill). FrontendAPI.seedGlobalPacks seeds it into the
-// global c0wrk skills directory (`~/.c0wrk/.agents/skills`) once per launch,
-// before the skill watchers start; RESEARCH is always on for real projects, so
-// there is no per-project enable step. The global copy wins the same-name
-// skill discovery chain over a `~/.agents` namesake (a project-local copy
-// still outranks it), so the active study-paper skill always knows c0wrk's
-// paper-library conventions. (The RESEARCH mode seeds its own methodology pack
-// the same way; see core/research/skillpack.go.)
-// The per-session SkillManager scans that whole discovery chain — the
-// project-local .agents/skills first, then the c0wrk global directory the pack
-// seeds into, then ~/.agents — so a seeded skill enters the router catalog
-// without a catalog change.
+// Package papers provides c0wrk's paper-study skill-pack: the versioned,
+// embed-bundled `study-paper` skill, seeded once per launch by
+// FrontendAPI.seedGlobalPacks into the c0wrk GLOBAL skills directory
+// (~/.c0wrk/.agents/skills) before the skill watchers start; the global copy
+// outranks a same-named ~/.agents skill in discovery (a project-local copy
+// still wins).
 //
 // Seeding is idempotent, crash-safe, and non-destructive to user-authored or
-// user-edited skills. Classification compares the CONTENT HASH of the on-disk
-// tree against the embedded pack (never mtime/size, never the marker alone):
-//   - Writes are staged into a hidden sibling temp directory and swapped in
-//     with a single rename, so an interrupted run can never leave a
-//     truncated tree at the destination; leftovers from a hard kill are
-//     swept on the next run.
-//   - A directory whose content equals the pack is Current and left
-//     untouched; a missing or stale `.seed-version` marker on such a
-//     directory is re-stamped (an interrupted legacy write left complete
-//     content without a marker).
-//   - A pack-marked truncated subset of the pack (an interrupted write) is
-//     repaired, never classified Current.
-//   - A pack-marked directory at the current version whose content diverges
-//     from the pack was edited locally (or its marker was spoofed): it is
-//     preserved untouched and reported as Modified — never silently
-//     overwritten, never reported as the current pack.
-//   - A pack-marked directory from an older pack version is overwritten in
-//     full (a pack upgrade) and re-marked.
-//   - An existing directory with NO marker whose content differs from the
-//     pack is user-owned and never clobbered.
-//
+// user-edited skills (content-hash classification — the action table lives on
+// classifySeed). See specs/domains/papers.md (global skill-pack seeding
+// invariant) and specs/decisions/056-research-always-on-global-seeding.md.
 // The classification/staging core is a deliberate mirror of
-// core/research/seedstaging.go (see that file's header); the two copies must
-// be kept in sync when the algorithm changes.
+// core/research/seedstaging.go; keep the two copies in sync.
 package papers
 
 import (
@@ -55,11 +28,10 @@ import (
 	"github.com/v0lka/sp4rk/safeio"
 )
 
-// skillPackFS embeds the paper-study skill directories (each containing a
-// SKILL.md plus its references/, assets/ and scripts/ subtrees). The directive
-// uses a plain directory embed so dotfiles/underscore-prefixed files (e.g.
-// stray .DS_Store) are excluded by the embed rules, keeping the bundle
-// deterministic.
+// skillPackFS embeds the paper-study skill directories (each a SKILL.md plus
+// its references/, assets/ and scripts/ subtrees). The plain directory embed
+// excludes dotfiles/underscore-prefixed files (e.g. stray .DS_Store), keeping
+// the bundle deterministic.
 //
 //go:embed skills
 var skillPackFS embed.FS
@@ -69,10 +41,9 @@ var skillPackFS embed.FS
 const embedRoot = "skills"
 
 // CurrentSeedVersion is the pack version stamped into each seeded skill's
-// sidecar marker. Bump this when the embedded skill content changes and
-// existing seeded copies should be refreshed on the next startup. It is
-// deliberately separate from the research pack's version (see
-// core/research.CurrentSeedVersion) so the two packs bump independently.
+// sidecar marker; bump it to refresh existing seeded copies on the next
+// startup. Deliberately independent of the research pack's version so the two
+// packs bump separately (specs/domains/papers.md, configuration table).
 const CurrentSeedVersion = "5"
 
 // seedVersionFile is the sidecar marker filename written into every seeded
@@ -111,14 +82,11 @@ func SkillNames() []string {
 }
 
 // SeedSkills materializes the embedded paper-study skill-pack into
-// destSkillsDir. destSkillsDir is the project-local skills directory
-// (config.ProjectSkillsPath(workspacePath)); it is created if missing. The
-// destination must be a real, writable filesystem path.
-//
-// The function is safe to call repeatedly (idempotent): see the package docs
-// for the classification rules. It never overwrites a directory that lacks a
-// pack marker unless its content is byte-identical to the pack (in which case
-// only the marker is re-stamped).
+// destSkillsDir, creating it if missing. The startup seed passes the c0wrk
+// GLOBAL skills dir (config.SkillsDir — ADR-056), not a project-local path.
+// Idempotent and non-destructive (classification rules: package docs and
+// specs/domains/papers.md); a marker-less directory is overwritten only when
+// its content is byte-identical to the pack (marker re-stamped).
 func SeedSkills(destSkillsDir string, logger *slog.Logger) (*SeedResult, error) {
 	if destSkillsDir == "" {
 		return nil, errors.New("papers.SeedSkills: destSkillsDir is empty")
@@ -188,9 +156,8 @@ func seedOne(name, target string, logger *slog.Logger) (seedAction, error) {
 		return actionCurrent, nil
 	}
 	// actionSeed / actionUpdate: stage the full tree in a hidden sibling dir
-	// and swap it into place atomically. The staging tree is complete (and
-	// the old directory is moved aside, not deleted first), so an
-	// interruption leaves the target either fully old or fully new.
+	// and swap it into place; an interruption leaves the target either fully
+	// old or fully new (see stageAndSwap).
 	if err := stageAndSwap(name, target, CurrentSeedVersion, func(stagingDir string) error {
 		return writeEmbedTree(name, stagingDir)
 	}); err != nil {

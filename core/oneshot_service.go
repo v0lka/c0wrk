@@ -6,10 +6,8 @@ import (
 	"github.com/v0lka/sp4rk/llm"
 )
 
-// serviceOutputTokenBudget leaves room for reasoning before a short answer.
-// The floor matches the existing commit-message budget; it is a ceiling on
-// generated tokens, not a request to generate that many. A zero ceiling stays
-// unspecified so the router/compaction strategy retains ownership of it.
+// serviceOutputTokenBudget raises a sub-2048 positive output ceiling to 2048
+// when reasoning stays enabled; zero stays unspecified. See specs/domains/llm-providers.md (service calls).
 func serviceOutputTokenBudget(maxTokens int, effort string) int {
 	const reasoningOutputFloor = 2048
 	if maxTokens > 0 && maxTokens < reasoningOutputFloor && effort != "" &&
@@ -19,80 +17,46 @@ func serviceOutputTokenBudget(maxTokens int, effort string) int {
 	return maxTokens
 }
 
-// The oneshot service-call policy: the fixed per-kind contract for c0wrk's
-// auxiliary LLM calls (title, commit message, prompt-optimizer
-// extract/rewrite, compaction summarization, goal-mode suitability,
-// prompt-suggestion generation). Every call in this class goes
-// through the sp4rk oneshot client, and its sampling and reasoning come from
-// THIS policy — not from the Model Profiles reasoningEffort seed and not from
-// ad-hoc per-site values.
-//
-// Precedence for these calls: oneshot policy > profile reasoningEffort seed >
-// family default. The seed (OrchestratorBuilder.reasoningEffort, seeded from
-// model_profiles.sampling.reasoning_effort) keeps governing the main
-// execution loop (executor, reflector, router); service calls
-// deliberately bypass it so a "deep reasoning" profile cannot inflate short
-// auxiliary compositions.
-//
-// Temperatures are policy-pinned explicit values — an explicit value wins
-// over any profile, and the Router strips sampling for models that
-// authoritatively cannot take the parameter, so the pins are capability-safe
-// (no 400s on reasoning-locked endpoints). Compaction summaries stay on the
-// router's deterministic profile instead (CallPurposeCompaction, no explicit
-// temperature) — the same posture as before this policy existed.
+// The oneshot service-call policy pins sampling and reasoning for every
+// auxiliary LLM call, overriding the Model Profiles reasoningEffort seed —
+// precedence: oneshot policy > profile seed > family default; temperature pins
+// are capability-safe (the Router strips them where the model can't take them).
+// See specs/domains/model-profiles.md (oneshot service calls).
 var (
 	oneshotTempTitle       = 0.3
 	oneshotTempCommit      = 0.3
 	oneshotTempExtract     = 0.3
 	oneshotTempRewrite     = 0.5
 	oneshotTempGoalSuggest = 0.2
-	// oneshotTempPromptSuggest — creative composition (three diverse follow-up
-	// prompts), not classification: a warmer pin trades determinism for
-	// suggestion variety, which the feature wants.
+	// oneshotTempPromptSuggest — creative composition (three diverse prompts),
+	// not classification: a warmer pin buys suggestion variety.
 	oneshotTempPromptSuggest = 0.7
 )
 
 // Reasoning tiers of the oneshot service policy, resolved per active model
-// through serviceReasoningEffort:
-//   - title / commit message: off — short structured compositions; reasoning
-//     adds latency and tokens without improving them, and on effort-seeded
-//     families the server default is the strongest effort.
-//   - prompt-optimizer extract/rewrite: minimal — the cheapest non-disabled
-//     effort; the rewrite benefits from a sliver of deliberation.
-//   - compaction summarization (both sites): minimal.
-//   - goal-mode suitability: minimal — same rationale as the optimizer.
-//   - prompt-suggestion generation: minimal — same rationale; the call runs
-//     async off the send path, so its latency is not user-visible.
+// through serviceReasoningEffort: title/commit off; the rest minimal.
+// See specs/domains/model-profiles.md (oneshot service calls).
 const (
 	oneshotTierTitle      = llm.ReasoningTierOff
 	oneshotTierCommit     = llm.ReasoningTierOff
 	oneshotTierOptimize   = llm.ReasoningTierMinimal
 	oneshotTierCompaction = llm.ReasoningTierMinimal
-	// oneshotTierGoalSuggest — the suitability judgment benefits from a sliver
-	// of deliberation (mirroring the optimizer tiers); the call sits in the
-	// send path, so anything stronger would tax every candidate message.
+	// oneshotTierGoalSuggest — a sliver of deliberation, mirroring the
+	// optimizer; the call sits in the send path.
 	oneshotTierGoalSuggest = llm.ReasoningTierMinimal
-	// oneshotTierPromptSuggest — same rationale as the optimizer: the
-	// generation quality of three short follow-up prompts benefits from a
-	// sliver of deliberation, while the call runs async off the send path
-	// (ADR-088 D9), so latency is not user-visible anyway.
+	// oneshotTierPromptSuggest — same rationale, and the call runs async off
+	// the send path (ADR-088 D9), so latency is not user-visible anyway.
 	oneshotTierPromptSuggest = llm.ReasoningTierMinimal
 )
 
-// serviceReasoningEffort resolves an oneshot service-call reasoning tier into
-// the native wire spelling for the given (bare) model name: catalog-first
-// family detection — llm.ResolveBuiltInModel is authoritative for models it
-// knows, including architecture aliases a name-based detection cannot see
-// (e.g. "Bonsai 2 27B" → qwen) — with llm.DetectFamily as the name-based
-// fallback, then llm.ReasoningForCall. It returns "" (send no reasoning field
-// at all) for an empty model or an unknown model/family, the same
-// fail-closed-no-field contract llm.ReasoningForCall documents.
+// serviceReasoningEffort resolves a service tier into the model's native wire
+// spelling: catalog-first family detection (llm.ResolveBuiltInModel, then
+// llm.DetectFamily) → llm.ReasoningForCall; "" sends no reasoning field.
+// See specs/domains/model-profiles.md (oneshot service calls).
 func serviceReasoningEffort(model string, tier llm.ReasoningTier) string {
 	if model == "" || tier == "" {
 		return ""
 	}
-	// Catalog-first family detection; the name-based fallback stands when the
-	// catalog does not know the model (or knows it without a family).
 	family := string(llm.DetectFamily(model))
 	if meta, ok := llm.ResolveBuiltInModel(model); ok && meta.Family != "" {
 		family = meta.Family
@@ -109,14 +73,9 @@ func bareActiveModel(router *llm.Router) string {
 	return llm.BareModel(router.ActiveModel())
 }
 
-// compactionSummarizeContent passes the summary text through unchanged: any
-// content is a valid summary (the compaction strategy owns its quality
-// judgment), so the nudge loop has nothing to repair on a well-formed
-// response. A nil response never reaches this function — oneshot.Do itself
-// treats (nil, nil) as a parse failure — so the nil branch here is
-// unreachable defensive code; the observable behavior for that input is
-// three attempts and a final refusal, not an empty summary. Transport
-// errors are returned as-is.
+// compactionSummarizeContent passes the summary through unchanged — the
+// compaction strategy owns summary quality. The nil branch is defensive only
+// (oneshot.Do treats (nil, nil) as a parse failure).
 func compactionSummarizeContent(resp *llm.ChatResponse) (string, error) {
 	if resp == nil {
 		return "", nil

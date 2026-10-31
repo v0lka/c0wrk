@@ -9,20 +9,15 @@ import (
 	"github.com/v0lka/c0wrk/core/tools"
 )
 
-// Per-server MCP mode values ("auto" | "manual" | "disabled"), mirrored from
-// backend/config — core never imports backend/config, so the enum is
-// duplicated here. The values arrive per context via core.CapabilityModes
-// (capabilities.mcp.<name>.chat_mode / code_mode); "disabled" is mirrored
-// next to the gateway mapping in builder_mcp.go (mcpModeDisabled); these two
-// join it for the gating side.
+// Per-server MCP mode values, mirrored from backend/config (core never imports
+// it); "disabled" is builder_mcp.go's mcpModeDisabled — these join it for gating.
 const (
 	mcpModeAuto   = "auto"
 	mcpModeManual = "manual"
 )
 
 // mcpSessionContext selects which side of a CapabilityModes entry a session
-// reads: CHAT (No Project) sessions apply chat_mode, CODE sessions apply
-// code_mode.
+// reads: CHAT (No Project) → chat_mode, CODE → code_mode.
 type mcpSessionContext int
 
 const (
@@ -30,11 +25,8 @@ const (
 	mcpSessionCode
 )
 
-// capabilityModesForSession projects a per-capability CapabilityModes map
-// through a session context into the flat name→mode map the gating consumes.
-// Shared by every capability kind (MCP servers, skills, agents). Empty
-// projections (both contexts unset, or every selected mode empty) yield nil:
-// consumers treat a missing entry as auto (always available).
+// capabilityModesForSession projects the two-slot map through a session context
+// into the flat name→mode map; nil = all-auto. See specs/domains/capabilities.md.
 func capabilityModesForSession(modes map[string]CapabilityModes, ctx mcpSessionContext) map[string]string {
 	if len(modes) == 0 {
 		return nil
@@ -55,9 +47,8 @@ func capabilityModesForSession(modes map[string]CapabilityModes, ctx mcpSessionC
 	return flat
 }
 
-// currentMCPCapabilityModes returns the orchestrator's current per-server
-// capability snapshot: the resolver's live snapshot when wired, else the
-// static map the constructor was built with.
+// currentMCPCapabilityModes returns the current per-server capability
+// snapshot: the live resolver's when wired, else the constructor's static map.
 func (o *Orchestrator) currentMCPCapabilityModes() map[string]CapabilityModes {
 	if o.config.MCPServerModesResolver != nil {
 		return o.config.MCPServerModesResolver()
@@ -65,8 +56,8 @@ func (o *Orchestrator) currentMCPCapabilityModes() map[string]CapabilityModes {
 	return o.config.MCPServerModes
 }
 
-// sessionCapabilityContext reports which capability context this
-// orchestrator's session runs in: CHAT (No Project) or CODE (real project).
+// sessionCapabilityContext reports the session's capability context: CHAT
+// (No Project) or CODE (real project). See specs/domains/capabilities.md.
 func (o *Orchestrator) sessionCapabilityContext() mcpSessionContext {
 	if o.isNoProject {
 		return mcpSessionChat
@@ -74,19 +65,9 @@ func (o *Orchestrator) sessionCapabilityContext() mcpSessionContext {
 	return mcpSessionCode
 }
 
-// gatedMCPServerSet computes the set of MCP server names whose tools are
-// gated OFF for a task:
-//
-//   - every "disabled" server — defense-in-depth: the builder already omits
-//     disabled servers from the gateway config so they are never dialed, and
-//     this covers stale tool registrations left by a reconfigure race;
-//   - every "manual" server the user did NOT mention in the task's messages.
-//
-// "auto" servers and servers absent from the mode map (gateway-only
-// registrations) stay enabled. The task's allowed set is the complement:
-// auto ∪ (manual ∩ mentioned). A nil/empty result means nothing is gated —
-// the common case when no manual/disabled servers are configured, so callers
-// treat it as a zero-regression no-op.
+// gatedMCPServerSet computes the names gated OFF for a task — "disabled" plus
+// unmentioned "manual" servers, as the gated complement (absent name stays
+// allowed); nil/empty means nothing is gated. See specs/domains/tool-system/mcp-gateway.md (mention gating).
 func gatedMCPServerSet(modes map[string]string, mentioned []string) map[string]bool {
 	if len(modes) == 0 {
 		return nil
@@ -115,10 +96,8 @@ func gatedMCPServerSet(modes map[string]string, mentioned []string) map[string]b
 	return gated
 }
 
-// filterGatedMCPTools removes the MCP-sourced descriptors of gated-off
-// servers from a descriptor list. Non-MCP tools and MCP tools of allowed
-// servers pass through untouched. A nil/empty gated set returns the input
-// unchanged.
+// filterGatedMCPTools strips the MCP-sourced descriptors of gated-off servers
+// from a descriptor list (gate layer 1). See specs/domains/tool-system/mcp-gateway.md (mention gating).
 func filterGatedMCPTools(descs []sdktools.ToolDescriptor, gated map[string]bool) []sdktools.ToolDescriptor {
 	if len(gated) == 0 || len(descs) == 0 {
 		return descs
@@ -133,23 +112,16 @@ func filterGatedMCPTools(descs []sdktools.ToolDescriptor, gated map[string]bool)
 	return out
 }
 
-// stripGatedMCPTools is the launcher-side mirror of filterGatedMCPTools: it
-// reads the task's gated set from the context (attached at the task boundary by
-// prepareTaskMCP) so the delegation launcher's subagent toolsets — built
-// from the RAW registry list, bypassing the orchestrator's filtered view —
-// apply exactly the same source filter. Without a gated set in the context it
-// is a no-op.
+// stripGatedMCPTools is the launcher-side mirror of filterGatedMCPTools (gate
+// layer 2): subagent toolsets come from the RAW registry list, so the same
+// filter re-applies. See specs/domains/tool-system/mcp-gateway.md (mention gating).
 func stripGatedMCPTools(ctx context.Context, descs []sdktools.ToolDescriptor) []sdktools.ToolDescriptor {
 	return filterGatedMCPTools(descs, tools.GatedMCPServersFromContext(ctx))
 }
 
-// applyMCPModeGating snapshots current modes and filters descriptors for direct
-// callers. Production task entry uses prepareTaskMCP once, then filters every
-// catalog with stripGatedMCPTools so reconfiguration cannot change a running
-// task's authorization snapshot. The session context (o.isNoProject) selects
-// each server's chat_mode or code_mode before the gated-set computation. A nil
-// resolver uses the constructor's static MCPServerModes map. When nothing is
-// gated, both the list and context pass through unchanged.
+// applyMCPModeGating snapshots modes and filters descriptors for DIRECT callers;
+// production entry uses prepareTaskMCP once + per-catalog stripGatedMCPTools.
+// See specs/domains/capabilities.md (session-kind context).
 func (o *Orchestrator) applyMCPModeGating(ctx context.Context, descs []sdktools.ToolDescriptor, mentioned []string) ([]sdktools.ToolDescriptor, context.Context) {
 	modes := capabilityModesForSession(o.currentMCPCapabilityModes(), o.sessionCapabilityContext())
 	gated := gatedMCPServerSet(modes, mentioned)
@@ -160,17 +132,14 @@ func (o *Orchestrator) applyMCPModeGating(ctx context.Context, descs []sdktools.
 	return filterGatedMCPTools(descs, gated), tools.WithGatedMCPServers(ctx, gated)
 }
 
-// mcpMentionSet is the immutable value stored per task in the mcpMentions
-// sync.Map: a sorted, deduplicated name slice behind a POINTER so the map's
-// CompareAndSwap (which requires comparable values) compares the pointer,
-// never the slice — copy-on-write merge under contention.
+// mcpMentionSet is the immutable per-task value in the mcpMentions sync.Map:
+// a sorted, deduplicated slice behind a POINTER (CompareAndSwap compares pointers).
 type mcpMentionSet struct {
 	names []string
 }
 
 // recordMCPMentions retains monotonic task intent for explicitly nonpersistent
-// orchestrators. Persistent tasks use prepareTaskMCP and never fall back to this
-// ephemeral store after a durable read or write failure.
+// orchestrators; persistent tasks use prepareTaskMCP, never this ephemeral fallback.
 func (o *Orchestrator) recordMCPMentions(taskID string, mentioned []string) {
 	if taskID == "" || len(mentioned) == 0 {
 		return

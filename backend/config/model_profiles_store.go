@@ -16,40 +16,16 @@ import (
 	"github.com/v0lka/sp4rk/safeio"
 )
 
-// Persistence layer for custom ModelProfiles profiles: a versioned YAML file at
-// ~/.c0wrk/model-profiles.yaml (path from ModelProfilesPath) holding the
-// operator-authored profiles alongside the hard-coded predefined catalog
-// from modelProfiles_profiles.go.
-//
-// Format (version 1):
-//
-//	version: 1
-//	profiles:
-//	  - id: my-tuned-profile
-//	    name: My Tuned Profile
-//	    kind: custom
-//	    config: { ...the 25 profile knobs... }
-//
-// Loading is fail-soft by design: a fully broken file (unreadable,
-// unparseable, wrong version) degrades to an empty profile list with a
-// warning instead of failing startup, and a partially broken file keeps
-// its valid entries while the broken ones are discarded with per-entry
-// warnings. Saving is fail-closed: the whole set is validated before any
-// byte is written, and the write itself is an atomic tmp+rename full
-// rewrite (mirroring Save), so a half-written file can never exist.
-//
-// A full rewrite re-emits only the set it is handed, so — to avoid
-// destroying content a fail-soft load would have hidden — the writer first
-// refuses to overwrite a file it cannot fully interpret (foreign format
-// version, unparseable YAML, or an entry the current validator rejects);
-// see ensureStoreWritable. Real save errors leave the on-disk file
-// untouched.
+// Persistence layer for custom ModelProfiles profiles: the versioned YAML
+// store at ~/.c0wrk/model-profiles.yaml holding the operator-authored
+// profiles beside the compiled-in predefined catalog. Format, fail-soft
+// load, and fail-closed atomic save are specified in
+// specs/domains/model-profiles.md; the pre-write guard is ensureStoreWritable.
 
 // modelProfilesFormatVersion is the only file format version this build
-// understands. A file with any other version value is treated as
-// uninterpretable: load degrades to an empty list with a warning, and save
-// refuses to overwrite it (see ensureStoreWritable) so the file content is
-// left untouched for a newer build to read.
+// understands; any other version is uninterpretable — load degrades to an
+// empty list with a warning, save refuses to overwrite (see
+// ensureStoreWritable) so a newer build can still read the file.
 const modelProfilesFormatVersion = 1
 
 // modelProfileNameMaxLength bounds a custom profile display name, measured in
@@ -64,14 +40,11 @@ type modelProfilesFile struct {
 	Profiles []ModelProfile `yaml:"profiles"`
 }
 
-// LoadCustomModelProfiles reads the custom profiles from path (fail-soft).
-// It never returns an error: a missing file is the pristine "no custom
-// profiles" state, and any brokenness — unreadable file, YAML parse
-// failure, unsupported version, invalid entry, id/name collision with the
-// predefined catalog or within the file — degrades to dropping the
-// offending entries and reporting each drop as a warning string. The
-// caller surfaces warnings in the UI; the returned profiles are validated
-// clones safe to hand out.
+// LoadCustomModelProfiles reads the custom profiles from path, fail-soft and
+// never an error (specs/domains/model-profiles.md): a missing file is the
+// pristine state, and any brokenness drops the offending entries, each
+// reported as a warning string for the UI. The returned profiles are
+// validated clones safe to hand out.
 func LoadCustomModelProfiles(path string) (profiles []ModelProfile, warnings []string) {
 	data, err := safeio.ReadFile(path)
 	if err != nil {
@@ -110,20 +83,14 @@ func LoadCustomModelProfiles(path string) (profiles []ModelProfile, warnings []s
 	return profiles, warnings
 }
 
-// ensureStoreWritable is the pre-write guard for SaveCustomModelProfiles. A
-// save is a full-set rewrite, so writing over a file this build cannot fully
-// interpret would silently destroy the bytes it cannot represent. The guard
-// reads the existing file and refuses (before any temp file is created) when:
-//
-//   - the file is not valid YAML — uninterpretable, do not clobber;
-//   - the file carries a format version other than the current one — a newer
-//     build's document (forward-compat data loss; the version note above);
-//   - the file holds an entry the current validator rejects — a fail-soft load
-//     would drop it, and a full rewrite would then erase it (the pruning
-//     hazard).
-//
-// A missing file is the pristine "nothing to preserve" state and passes. The
-// check reads only the on-disk file; it never inspects the set being saved.
+// ensureStoreWritable is the pre-write guard for SaveCustomModelProfiles: a
+// full-set rewrite over a file this build cannot fully interpret would
+// silently destroy the bytes it cannot represent. Refuses (before any temp
+// file is created) when the file is not valid YAML, carries a foreign format
+// version, or holds an entry the current validator rejects — a fail-soft
+// load would drop it and the rewrite would erase it. A missing (or empty)
+// file passes. The check reads only the on-disk file, never the set being
+// saved.
 func ensureStoreWritable(path string) error {
 	data, err := safeio.ReadFile(path)
 	if err != nil {
@@ -163,14 +130,12 @@ func ensureStoreWritable(path string) error {
 }
 
 // SaveCustomModelProfiles validates the entire set and writes it to path as
-// an atomic full rewrite (write to a .tmp sibling, then rename — mirroring
-// Save for config.yaml). Unlike loading, saving is fail-closed: any
-// invalid entry or id/name collision (with the predefined catalog or
-// within the set) aborts the save with an error and leaves the file
-// untouched, and a pre-existing file this build cannot fully interpret is
-// refused outright (see ensureStoreWritable) rather than silently pruned by
-// the full rewrite. Saving an empty set is legal and writes a version marker
-// with an empty list; the file is created lazily here if it does not exist yet.
+// an atomic full rewrite (tmp + rename). Saving is fail-closed, unlike
+// loading: an invalid entry or collision aborts with the file untouched, and
+// an uninterpretable pre-existing file is refused outright via
+// ensureStoreWritable rather than silently pruned
+// (specs/domains/model-profiles.md). An empty set is legal; the file is
+// created lazily here.
 func SaveCustomModelProfiles(path string, profiles []ModelProfile) error {
 	if err := ensureStoreWritable(path); err != nil {
 		return err
@@ -200,17 +165,14 @@ func SaveCustomModelProfiles(path string, profiles []ModelProfile) error {
 		return fmt.Errorf("model profiles: failed to marshal: %w", err)
 	}
 
-	// Write atomically via safeio: the temporary file carries a randomized
-	// name (no plantable fixed "<path>.tmp" — a FIFO planted there blocked
-	// the write-open forever, and a symlink was followed into an arbitrary
-	// write target), and the final rename replaces a planted symlink at path
-	// itself instead of writing through it (same pattern as Save).
-	//
-	// The mode is an unconditional 0o600, matching Save: WriteFileAtomic
-	// publishes the staging file with an exact fchmod and no umask
-	// filtering, so a literal 0o644 would silently widen the file on hosts
-	// whose umask used to keep it tighter. The store lives next to the
-	// secrets-bearing config.yaml and gets the same owner-only hardening.
+	// Write atomically via safeio: a randomized temp name (no plantable fixed
+	// "<path>.tmp" — a planted FIFO blocked the write-open forever, a planted
+	// symlink was followed into an arbitrary write target), and a final
+	// rename that replaces a planted symlink at path instead of writing
+	// through it. The mode is an unconditional 0o600, matching Save:
+	// WriteFileAtomic publishes the staging file with an exact fchmod, so a
+	// literal 0o644 would silently widen the file next to the
+	// secrets-bearing config.yaml.
 	if err := safeio.WriteFileAtomic(path, data, 0o600); err != nil {
 		return fmt.Errorf("model profiles: failed to write file: %w", err)
 	}
@@ -218,14 +180,11 @@ func SaveCustomModelProfiles(path string, profiles []ModelProfile) error {
 }
 
 // CreateCustomModelProfile builds a new custom profile for name+cfg with a
-// generated id. The name must be unique against the predefined catalog
-// names and the existing custom profile names (existing is the currently
-// stored custom set, e.g. from LoadCustomModelProfiles); the id is derived
-// deterministically from the name (lowercase slug, see
-// generateCustomModelProfileID) and deduplicated against every predefined
-// and existing custom id, so it is stable across save→load round-trips —
-// the id is written to the file once and never regenerated. Values are
-// validated by NewModelProfile.
+// generated id. The name must be unique against the predefined catalog and
+// the stored custom set (existing); the id is a deterministic slug of the
+// name (generateCustomModelProfileID), deduplicated against every known id —
+// written to the file once and never regenerated. Values are validated by
+// NewModelProfile.
 func CreateCustomModelProfile(name string, cfg ModelProfileConfig, existing []ModelProfile) (ModelProfile, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -256,13 +215,12 @@ func CreateCustomModelProfile(name string, cfg ModelProfileConfig, existing []Mo
 	return NewModelProfile(id, name, ModelProfileKindCustom, cfg)
 }
 
-// DeleteCustomModelProfile removes the custom profile with the given id from
-// the file at path and persists the remainder atomically. It returns the
-// remaining profiles. Deleting an id that is not stored (including any
-// predefined id — the file only ever holds customs) is an error and leaves
-// the file untouched. Warnings from the internal fail-soft load are
-// irrelevant here: entries a load would discard are already absent from
-// the stored set this function operates on.
+// DeleteCustomModelProfile removes the stored custom profile with the given
+// id from the file at path and persists the remainder atomically, returning
+// it. An unstored id (including any predefined id — the file only ever holds
+// customs) is an error and leaves the file untouched. Fail-soft load
+// warnings are irrelevant here: entries a load would discard are already
+// absent from the stored set.
 func DeleteCustomModelProfile(path, id string) ([]ModelProfile, error) {
 	profiles, _ := LoadCustomModelProfiles(path)
 	remaining := make([]ModelProfile, 0, len(profiles))
@@ -284,13 +242,12 @@ func DeleteCustomModelProfile(path, id string) ([]ModelProfile, error) {
 }
 
 // validateCustomModelProfile is the shared load/save gate for one stored
-// profile. It enforces everything NewModelProfile enforces (id slug, name,
-// kind, the 25 knob values) plus the store-level rules: the entry must be
-// kind=custom (the file never stores predefined entries), the name must
-// respect modelProfileNameMaxLength, and the id/name must not collide with
-// the ids/names registered in seenIDs/seenNames (pre-seeded with the
-// predefined catalog by the callers). On success the profile is registered
-// in both maps and a validated, defensively cloned copy is returned.
+// profile: everything NewModelProfile enforces plus the store-level rules —
+// kind=custom only (the file never stores predefined entries), the
+// modelProfileNameMaxLength bound, and no id/name collision with the
+// seenIDs/seenNames namespaces the callers pre-seed with the predefined
+// catalog. On success the entry is registered in both maps and a validated,
+// defensively cloned copy is returned.
 func validateCustomModelProfile(raw ModelProfile, seenIDs, seenNames map[string]struct{}) (ModelProfile, error) {
 	if raw.Kind != ModelProfileKindCustom {
 		return ModelProfile{}, fmt.Errorf("profile %q has kind %q but the profile file only stores custom profiles", raw.ID, raw.Kind)
@@ -327,12 +284,10 @@ func validateCustomModelProfile(raw ModelProfile, seenIDs, seenNames map[string]
 var modelProfileNameSlugSeparators = regexp.MustCompile(`[^a-z0-9]+`)
 
 // generateCustomModelProfileID derives a fresh profile id from a display
-// name: the name is lowercased, every non-[a-z0-9] run collapses to a
-// single '-' separator, and the result is trimmed — yielding ids that
-// satisfy modelProfileIDPattern ("My Tuned Model 2" → "my-tuned-model-2",
-// "Феникс" → "" → the "profile" fallback). If the slug is already taken,
-// "-2", "-3", … suffixes are tried; past a sanity cap the suffix becomes
-// time-based so generation always terminates with a unique, valid id.
+// name: lowercased, every non-[a-z0-9] run collapsed to a single '-'
+// separator, trimmed ("Феникс" → "" → the "profile" fallback). A taken slug
+// gets "-2", "-3", … suffixes; past the sanity cap the suffix goes
+// time-based, so generation always terminates unique and pattern-valid.
 func generateCustomModelProfileID(name string, taken map[string]struct{}) string {
 	base := strings.Trim(modelProfileNameSlugSeparators.ReplaceAllString(strings.ToLower(name), "-"), "-")
 	if base == "" {

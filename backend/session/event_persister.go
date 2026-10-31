@@ -9,26 +9,21 @@ import (
 	"time"
 )
 
-// EventPersister persists chat-visible events to the session store (SQLite).
-// It is decoupled from the UI — the desktop layer is responsible for emitting
-// Wails events separately.
+// EventPersister persists chat-visible events to the session store (SQLite);
+// the desktop layer emits Wails events separately.
 type EventPersister struct {
 	store  SessionStore
 	mu     sync.RWMutex
 	logger *slog.Logger
 
-	// writer is the dedicated single-writer goroutine that performs store
-	// writes off the caller's goroutine. Nil until StartWriter is called; while
-	// nil, writes run inline (see SubmitWrite), which keeps the persister fully
-	// synchronous for unit tests and any embedder that does not opt into async
-	// persistence. Guarded by mu.
+	// writer is the dedicated single-writer goroutine for store writes. Nil
+	// until StartWriter; while nil, writes run inline (see SubmitWrite) —
+	// fully synchronous for unit tests and embedders that never opt in.
 	writer *singleWriter
 
-	// assistantMu guards lastAssistantContent: per-session tracking of the most
-	// recent assistant_done content. Used to dedup task_complete against the
-	// streamed answer in the implicit text-only finish path (where the executor
-	// emits assistant_done AND sets Output), so the final answer is not
-	// persisted — and therefore not rendered — twice on session reload.
+	// assistantMu guards lastAssistantContent — per-session last assistant_done
+	// content, used to dedup task_complete against the streamed answer so the
+	// final answer is not persisted twice on reload.
 	assistantMu          sync.Mutex
 	lastAssistantContent map[string]string
 }
@@ -56,9 +51,8 @@ func (p *EventPersister) SetLogger(l *slog.Logger) {
 	p.logger = l
 }
 
-// Persist saves a chat-visible event to the session store.
-// Transient events (session_tokens, etc.) are silently skipped.
-// Errors are logged but never returned — persistence is best-effort.
+// Persist saves a chat-visible event to the session store; transient events
+// are silently skipped and errors are logged, never returned (best-effort).
 func (p *EventPersister) Persist(evt Event) {
 	if p.store == nil {
 		return
@@ -67,10 +61,9 @@ func (p *EventPersister) Persist(evt Event) {
 	var role, content string
 
 	// Reset per-session assistant tracking on a new user message or session
-	// deletion so the task_complete dedup (below) is scoped to the current
-	// task only and cannot false-positive against a prior task's streamed
-	// answer. session_deleted also prevents unbounded growth of the
-	// lastAssistantContent map in the long-lived persister singleton.
+	// deletion: the task_complete dedup (below) must not false-positive
+	// against a prior task's streamed answer, and the map must not grow
+	// unboundedly in the long-lived singleton.
 	if evt.Type == "message_received" || evt.Type == "session_deleted" {
 		p.assistantMu.Lock()
 		delete(p.lastAssistantContent, evt.SessionID)
@@ -118,11 +111,9 @@ func (p *EventPersister) Persist(evt Event) {
 				return // no output field — nothing to persist
 			}
 		}
-		// Dedup: in the implicit text-only finish path the executor streams
-		// the answer via assistant_done (persisted above) AND sets it as
-		// Output, so task_complete would otherwise persist a duplicate
-		// assistant row — rendering the final answer twice on reload. Skip
-		// when the output matches the last streamed assistant content.
+		// In the implicit text-only finish path the executor streams the answer
+		// via assistant_done AND sets it as Output; skip when the output
+		// matches the last streamed content, or the row duplicates on reload.
 		if output != "" {
 			p.assistantMu.Lock()
 			last := p.lastAssistantContent[evt.SessionID]
@@ -133,12 +124,8 @@ func (p *EventPersister) Persist(evt Event) {
 		}
 		role = "assistant"
 		content = output
-		// Guard against empty output: a task that completes with
-		// no content must still persist a message so that session
-		// continuations can see the full conversation history.
-		// Without this, an empty-output completion is silently
-		// dropped from the message store, breaking continuation
-		// context.
+		// A task completing with no content still needs a row, or session
+		// continuations lose the conversation context.
 		if content == "" {
 			content = "[Task completed]"
 		}
@@ -161,9 +148,8 @@ func (p *EventPersister) Persist(evt Event) {
 	case "plan_step_complete":
 		role = "plan_step_complete"
 	case "plan_step_paused":
-		// Cooperative pause checkpoint: persisted with its full metadata
-		// (step_id, duration, optional error) so the paused step reappears
-		// after a session reload and the Resume flow has a durable record.
+		// Cooperative pause checkpoint: persisted with its metadata so the
+		// paused step reappears after a reload.
 		role = "plan_step_paused"
 	case "retry":
 		role = "retry"
@@ -172,9 +158,8 @@ func (p *EventPersister) Persist(evt Event) {
 	case "subagent_complete":
 		role = "subagent_complete"
 	case "subagent_paused":
-		// Cooperative pause checkpoint for a delegated subagent: persisted
-		// with its metadata (step_id, duration) so the pause survives a
-		// reload; the delegation is recoverable via Resume, not lost.
+		// Cooperative pause checkpoint for a delegated subagent; survives a
+		// reload, recoverable via Resume.
 		role = "subagent_paused"
 	case "task_failed_resumable":
 		role = "task_failed_resumable"
@@ -185,10 +170,8 @@ func (p *EventPersister) Persist(evt Event) {
 	case "step_limit":
 		role = "step_limit"
 	case EventAutonomyDecision:
-		// Automatic (no-human) security decisions are persisted so the audit
-		// trail survives a reload — the trajectory must stay reconstructable
-		// (OWASP ASI10). Unlike tool_judge_started/finished (transient activity
-		// telemetry), this row is durable: it records WHAT was auto-decided.
+		// Durable audit row (unlike the transient judge telemetry): see
+		// specs/contracts/event-catalog.md.
 		role = EventAutonomyDecision
 	case "task_cancelled":
 		role = "task_cancelled"
@@ -206,84 +189,46 @@ func (p *EventPersister) Persist(evt Event) {
 	case "agent_metrics":
 		role = "status"
 	case "step_todo_update":
-		// Checklist updates use replace semantics (see the write path below):
-		// the previous row for this step_id is dropped and the new one takes a
-		// fresh stream position, so the checklist is never pinned to its first
-		// update and the row count stays bounded at one row per step.
+		// Replace semantics bound the checklist to one row per step; see
+		// specs/domains/session-lifecycle.md.
 		role = "step_todo_update"
 	case "session_tokens",
 		"assistant_chunk", "context_fill", "finishing",
 		"message_received", "blackboard_updated",
 		"tool_judge_response", "session_created", "session_deleted",
 		"session_renamed",
-		// Strict-judge (Smart Approve) phase telemetry: transient activity
-		// labels for a judge run that predates any confirmation card —
-		// persisting them would replay stale "judge working" rows on reload.
 		"tool_judge_started", "tool_judge_finished",
-		// Tool confirmations are transient by design: the pending-confirm
-		// channel map is process-local, so a persisted row could never be
-		// resolved after a restart and would render as a dead card on reload.
 		"tool_confirm",
 		"goal_progress",
-		// Manual-compaction lifecycle: the marker row (with the compacted
-		// history snapshot) is persisted directly by the manager's flow
-		// (persistCompactionMarker), not via the event pipeline. Persisting
-		// these transient events would duplicate the marker card on reload.
 		"compaction_started", "compaction_finished",
-		// UI-only state events emitted with a SessionID. These drive live UI
-		// updates (attachment chips, sidebar pin/archive toggles) but carry no
-		// conversational content — persisting them would store the raw JSON
-		// payload as an event_unknown message row (content = metadata) that
-		// renders as garbage JSON text on session reload.
 		"attachments:changed",
 		"session_pinned", "session_unpinned",
 		"session_archived", "session_unarchived",
-		// Task activation is pure start-side UI state (it drives the
-		// live-sessions indicator via the desktop sessions:changed mirror);
-		// the durable task record is the task store's own row, so persisting
-		// this event would only add one dead event_unknown card per task on
-		// reload.
 		"task_started",
-		// Work-unit settlement is transient: the durable source is the unit
-		// ledger surfaced via GetSessionRuntimeStatus.work_units, so persisting
-		// this event would only add a dead row on reload.
 		"work_unit_settled",
-		// E2S execution-state Σ snapshots are live-only UI events: the
-		// frontend Execution State panel renders them in real time and has no
-		// persisted restore, so a row would store the full Σ JSON as an
-		// event_unknown message (content = metadata) that renders as garbage
-		// on reload — one dead row per E2S turn.
 		"e2s_state":
-		return // transient — no persistence needed
+		// Transient — each event's durable source is named in its
+		// specs/contracts/event-catalog.md row; persisting would add one dead
+		// event_unknown card per event on reload.
+		return
 	case "plan_review_ready":
 		role = "plan_review"
 	case "goal_status":
-		// Persist the full goal state snapshot so the frontend can rebuild the
-		// goal store (status-bar badge + settled goal card verdict) and re-render
-		// the turn-transition notice after a session reload. goal_progress stays
-		// transient — the snapshot already carries turn/budget telemetry.
+		// Full goal-state snapshot so the frontend rebuilds the goal store
+		// after a reload; goal_progress stays transient (turn/budget telemetry).
 		role = "goal_status"
 	case "goal_proposal":
-		// Persist the goal-proposal pending action so it reappears via
-		// GetPendingActions after a reload (the agent remains blocked until
-		// the user confirms/cancels via the goal_proposal_response flow).
+		// Pending action persists so it reappears via GetPendingActions after
+		// a reload; see specs/contracts/event-catalog.md.
 		role = "goal_proposal"
 	case "goal_suggestion":
-		// Persist the goal-mode suggestion pending action so the offer (and
-		// its outcome, via the resolved metadata) survives reloads — mirroring
-		// goal_proposal. The gate blocks the task until the user answers via
-		// the goal_suggestion_response flow.
+		// Pending action survives reloads, mirroring goal_proposal.
 		role = "goal_suggestion"
 	case "context_compaction":
-		// Auto compaction (executor fill-trigger / conductor compact-on-start):
-		// a durable record of a history mutation. The row renders as the
-		// compaction card on session reload — keeping the event transient lost
-		// the card on every session switch (the chat store's history merge
-		// keeps only persisted rows) and on app restart. The MANUAL flow emits
-		// no context_compaction event — its live card comes from
-		// compaction_finished and its durable record is the richer marker row
-		// (persistCompactionMarker, carrying the compacted-history snapshot) —
-		// so no duplication arises.
+		// AUTO compactions persist a durable row (the card must survive
+		// switches/restarts); the MANUAL flow's marker is persisted by the
+		// manager instead. See specs/contracts/event-catalog.md and
+		// specs/domains/memory/compaction.md.
 		role = "context_compaction"
 		switch d := evt.Data.(type) {
 		case ContextCompactionEventData:
@@ -294,14 +239,9 @@ func (p *EventPersister) Persist(evt Event) {
 			content = fmt.Sprintf("Context compacted from %.0f%% to %.0f%%", bp, ap)
 		}
 	case "memory_read":
-		// A memory read renders as a compact "memory read" card in the chat
-		// stream. The row must survive session switches (the chat store's
-		// history merge keeps only persisted rows) and app restarts, so it
-		// persists as a durable row — the frontend already maps the role
-		// through roleToType and renders it via the 'memory_read' DisplayItem.
-		// Content carries the human-readable summary so the restored card
-		// matches the live one; metadata keeps the raw payload ({step_num,
-		// content}) with the plan-step nesting hint.
+		// Durable row: the card must survive switches/restarts (the history
+		// merge keeps only persisted rows). Content carries the summary;
+		// metadata keeps the raw payload with the plan-step nesting hint.
 		role = "memory_read"
 		if d, ok := evt.Data.(map[string]any); ok {
 			if c, ok := d["content"].(string); ok {
@@ -309,9 +249,8 @@ func (p *EventPersister) Persist(evt Event) {
 			}
 		}
 	default:
-		// Unknown event types are persisted with a generic role so they survive
-		// session reloads. The frontend can still show them (or ignore them).
-		// Log so schema drift between emitters and the persister is visible.
+		// Generic role so unknown types survive reloads; logged so schema
+		// drift between emitters and the persister is visible.
 		p.log().Warn("persisting unknown event type with generic role", "type", evt.Type, "session", evt.SessionID)
 		role = "event_unknown"
 	}
@@ -332,23 +271,21 @@ func (p *EventPersister) Persist(evt Event) {
 		metadata = json.RawMessage("{}")
 	}
 
-	// For non-assistant roles, use metadata as content if content is empty.
-	// Exception: for "thought" events, empty content is valid (reasoning lives in metadata).
+	// Non-assistant roles fall back to metadata as content; "thought" may be
+	// empty (reasoning lives in metadata).
 	if content == "" && role != "thought" {
 		content = string(metadata)
 	}
 
-	// The store writes below are offloaded to the dedicated single-writer
-	// goroutine (when one is running, see SubmitWrite) so the goroutine emitting
-	// the UI event never blocks on SQLite. Every mapping/dedup decision above
-	// still runs synchronously on the caller, preserving the exact emit order.
+	// Store writes are offloaded to the single-writer goroutine (see
+	// SubmitWrite) so the emitting goroutine never blocks on SQLite; the
+	// mapping/dedup decisions above stay synchronous, preserving emit order.
 	createdAt := time.Now().UTC().Format(time.RFC3339)
 	store := p.store
 
 	if role == "step_todo_update" {
-		// Replace semantics: drop the prior row for this step_id and insert the
-		// new one at the current stream position. The step_id is recovered from
-		// the event data here rather than carried across the switch.
+		// Replace semantics: the step_id is recovered from the event data here
+		// rather than carried across the switch.
 		var stepID string
 		if d, ok := evt.Data.(map[string]any); ok {
 			if sid, ok := d["step_id"].(string); ok {
@@ -356,10 +293,8 @@ func (p *EventPersister) Persist(evt Event) {
 			}
 		}
 		p.SubmitWrite(func() {
-			// Bounded like every other direct store call (restoreDBReadTimeout):
-			// this is the single-writer goroutine, so one unbounded write
-			// queuing behind a saturated pool would wedge ALL event
-			// persistence (the queue then grows past queueHighWater).
+			// Bounded (restoreDBReadTimeout): an unbounded write here would
+			// wedge ALL event persistence behind a saturated pool.
 			ctx, cancel := context.WithTimeout(context.Background(), restoreDBReadTimeout)
 			defer cancel()
 			if err := store.ReplaceStepTodoUpdate(ctx, evt.SessionID, stepID, ChatMessage{
@@ -392,17 +327,14 @@ func (p *EventPersister) Persist(evt Event) {
 	})
 }
 
-// queueHighWater is the pending-write depth at which a warning is logged. It is
-// not a hard limit: the queue is unbounded so that a burst of events (e.g. many
-// subagents emitting concurrently) is never dropped and the emit path is never
-// blocked — the warning only surfaces a pathological write/consume imbalance.
+// queueHighWater is the pending-write depth at which a warning is logged — not
+// a hard limit: the queue is unbounded so bursts are never dropped; the warning
+// only surfaces a pathological write/consume imbalance.
 const queueHighWater = 4096
 
-// singleWriter serializes store writes onto one dedicated goroutine. It makes
-// the caller's Submit non-blocking (a mutex-guarded append) so the event-emit
-// path never waits on SQLite, while guaranteeing that SQLite only ever sees one
-// writer at a time and that no write is lost: the queue is drained on Flush and
-// on Close, and a Submit that races shutdown is run inline rather than dropped.
+// singleWriter serializes store writes onto one dedicated goroutine: Submit is
+// a non-blocking append, SQLite sees one writer at a time, and no write is
+// lost (drained on Flush/Close; a Submit racing shutdown runs inline).
 type singleWriter struct {
 	mu              sync.Mutex
 	cond            *sync.Cond
@@ -500,9 +432,8 @@ func (w *singleWriter) runOp(op func()) {
 	op()
 }
 
-// StartWriter launches the dedicated single-writer goroutine. After this call,
-// Persist schedules its store writes on that goroutine and returns immediately,
-// so the goroutine emitting the UI event never blocks on SQLite. Idempotent.
+// StartWriter launches the single-writer goroutine; afterwards Persist
+// schedules store writes and returns immediately. Idempotent.
 func (p *EventPersister) StartWriter() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -513,8 +444,7 @@ func (p *EventPersister) StartWriter() {
 }
 
 // SubmitWrite schedules op on the single-writer goroutine, or runs it inline
-// when no writer is running (unit tests / non-desktop embedders). It never
-// blocks on SQLite I/O.
+// when no writer is running. Never blocks on SQLite I/O.
 func (p *EventPersister) SubmitWrite(op func()) {
 	p.mu.RLock()
 	w := p.writer
@@ -526,9 +456,8 @@ func (p *EventPersister) SubmitWrite(op func()) {
 	w.Submit(op)
 }
 
-// Flush blocks until every write submitted before this call has been processed
-// (a no-op when no writer is running). It is the durability checkpoint used at
-// task completion and during shutdown.
+// Flush blocks until every previously submitted write is processed (no-op
+// without a writer); the durability checkpoint for task completion/shutdown.
 func (p *EventPersister) Flush() {
 	p.mu.RLock()
 	w := p.writer

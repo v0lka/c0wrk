@@ -1,14 +1,9 @@
-// Package units defines the durable per-unit record contract shared by the
-// mainline Conductor (backed by the persistent blackboard) and isolated
-// execution contexts (such as the goal verifier).
-//
-// A "unit" is one durable record of an execution unit — a plan step, a
-// delegated subagent, a goal-verification pass, and so on. Every unit carries
-// its kind, parent/depth topology, lifecycle status, a rebuild spec (enough to
-// re-launch it without an LLM decision) and a resume checkpoint (the ReAct
-// step trajectory it can resume from). One write/read API (Ledger) is used by
-// both the mainline and isolated constructors, so units persisted under a task
-// are visible to every ledger scoped to that task.
+// Package units defines the durable per-unit record shared by the mainline
+// Conductor (persistent blackboard) and isolated execution contexts (the
+// goal verifier): kind, parent/depth topology, lifecycle status, an opaque
+// rebuild spec (Spec) and resume checkpoint (Steps), behind one Ledger/Store
+// API scoped per task. See specs/decisions/048-unified-recovery-ledger.md
+// and specs/domains/orchestration/delegation.md (Durable Unit Ledger).
 package units
 
 import (
@@ -72,16 +67,10 @@ func (s UnitStatus) Valid() bool {
 }
 
 // Terminal reports whether s is a status a unit cannot leave (a terminal
-// outcome): completed or failed.
-//
-// `interrupted` is deliberately NON-terminal: it marks a unit left unfinished
-// by a crash/app exit, and the resume funnel must relaunch it rather than
-// replay it as a finished outcome. Relaunching does not always mean from
-// scratch: an interrupted unit whose record still carries a checkpoint is
-// resumed from it (see Resumable), because Checkpoint and the abandonment
-// settle are independent writes; only a checkpoint-less interrupted unit
-// starts fresh. The funnel's classification (resumeUnit.terminal) is defined
-// in terms of this method, so this is the single definition of "finished".
+// outcome): completed or failed. This is the single definition of "finished"
+// (the resume funnel's classification is defined in terms of it); interrupted
+// is deliberately non-terminal — the funnel relaunches such a unit, never
+// replays it as an outcome. See specs/decisions/048-unified-recovery-ledger.md.
 func (s UnitStatus) Terminal() bool {
 	switch s {
 	case UnitStatusCompleted, UnitStatusFailed:
@@ -91,35 +80,28 @@ func (s UnitStatus) Terminal() bool {
 	}
 }
 
-// InFlight reports whether s is a status a unit occupies while it is still
-// executing or awaiting execution (pending or running). It is the predicate the
-// "settle an abandoned unit on read" path uses: only an in-flight unit on a
-// non-executing task was abandoned by a crash/app exit.
+// InFlight reports whether s is still executing or awaiting execution
+// (pending/running) — the "abandoned in flight" predicate of the
+// settle-on-read path. See specs/decisions/048-unified-recovery-ledger.md.
 func (s UnitStatus) InFlight() bool {
 	return s == UnitStatusPending || s == UnitStatusRunning
 }
 
-// Resumable reports whether s is a status whose durable checkpoint (when the
-// record carries one) must be resumed instead of discarded: pending, running,
-// or interrupted. It widens InFlight with interrupted because the two durable
-// writes are independent — Ledger.Checkpoint persists rec.Steps without
-// touching the status, and the crash/app-exit abandonment sweep
-// (SettleUnitStatusIfInFlight) later flips the still in-flight unit to
-// interrupted while preserving the Steps column — so an interrupted unit CAN
-// carry a usable checkpoint. The resume funnel normalizes such a unit to
-// paused so it resumes from that checkpoint rather than relaunching fresh and
-// re-running the trajectory's side effects. paused is excluded because it
-// already IS the resumed-from-checkpoint status; terminal statuses carry an
-// outcome, not a checkpoint.
+// Resumable reports whether a durable checkpoint (when the record carries
+// one) must be resumed rather than discarded: pending, running, interrupted.
+// Checkpoint and the abandonment sweep are independent writes, so an
+// interrupted unit can still carry a usable checkpoint; the funnel treats
+// checkpoint + non-terminal status as paused (resume, not fresh relaunch).
+// See specs/decisions/048-unified-recovery-ledger.md.
 func (s UnitStatus) Resumable() bool {
 	return s == UnitStatusPending || s == UnitStatusRunning || s == UnitStatusInterrupted
 }
 
-// Container reports whether the kind is a CONTAINER record — a unit that groups
-// other units (the task root, a goal-verification pass) rather than being
-// relaunchable execution work itself. Containers are excluded wherever units
-// are enumerated as work: the resume funnel never relaunches them, and the
-// session-runtime snapshot must not surface (or settle) them either.
+// Container reports whether the kind groups other units (the task root, a
+// goal-verification pass) rather than being relaunchable work; containers are
+// excluded wherever units are enumerated as work — the resume funnel never
+// relaunches them and the session-runtime snapshot never settles them.
+// See specs/decisions/048-unified-recovery-ledger.md.
 func (k UnitKind) Container() bool {
 	switch k {
 	case UnitKindTask, UnitKindGoalVerification:
@@ -130,12 +112,9 @@ func (k UnitKind) Container() bool {
 }
 
 // UnitRecord is the durable, self-contained record of one execution unit.
-//
-// Spec and Steps are opaque JSON blobs owned by the caller: Spec carries the
-// rebuild spec (everything needed to re-launch the unit) and Steps carries the
-// resume checkpoint (a JSON-encoded []agent.Step). The ledger never inspects
-// them beyond persisting and returning them verbatim, so new unit kinds can
-// ride the same record without a schema change.
+// Spec (rebuild spec) and Steps (resume checkpoint, a JSON []agent.Step) are
+// opaque JSON owned by the caller — persisted and returned verbatim, so new
+// unit kinds ride the same record. See specs/decisions/048-unified-recovery-ledger.md.
 type UnitRecord struct {
 	ID        string          `json:"id"`
 	TaskID    string          `json:"task_id"`
@@ -150,38 +129,28 @@ type UnitRecord struct {
 	UpdatedAt time.Time       `json:"updated_at"`
 }
 
-// Store is the persistence seam a Ledger writes through. It is a facade over
-// the orchestrator's task storage: the mainline blackboard's store and an
-// isolated context's task store both satisfy it, so a unit written by either
-// is readable by the other when they target the same task.
-//
-// This is the single write/read API: SaveUnit upserts a whole record (spec +
-// status + steps), SettleUnitStatusIfInFlight performs a column-scoped
-// conditional status transition, and LoadUnits returns every unit persisted
-// under a task, across all namespaces. Implementations live outside this
-// package so the contract stays free of storage dependencies.
+// Store is the persistence seam a Ledger writes through: the mainline
+// blackboard's store and an isolated context's task store both satisfy it,
+// so units written by either are readable by the other for the same task.
+// See specs/decisions/048-unified-recovery-ledger.md.
 type Store interface {
 	// SaveUnit inserts or replaces a unit record (keyed by task + namespace +
 	// id). It must be safe for concurrent use.
 	SaveUnit(rec UnitRecord) error
-	// SettleUnitStatusIfInFlight transitions the unit identified by
-	// (taskID, namespace, id) to status, updating ONLY its status column, and
-	// reports whether the row was actually transitioned. The write is applied
-	// only while the unit is still in flight (pending/running), so it is
-	// idempotent under concurrent callers — exactly one of them observes the
-	// transition and emits, the rest are no-ops — and because it never rewrites
-	// spec/steps/topology it cannot drop another writer's rebuild spec or resume
-	// checkpoint the way SaveUnit's whole-record upsert can. An id that does not
-	// exist, or is already out of flight, reports (false, nil).
+	// SettleUnitStatusIfInFlight transitions (taskID, namespace, id) to
+	// status — ONLY the status column, only while the unit is still in
+	// flight. Idempotent under racing callers and unable to drop another
+	// writer's spec/checkpoint (unlike SaveUnit's whole-record upsert);
+	// reports (false, nil) for a missing or out-of-flight id.
 	SettleUnitStatusIfInFlight(taskID, namespace, id string, status UnitStatus) (bool, error)
 	// LoadUnits returns every unit persisted for a task, ordered by creation
 	// time. It returns an empty slice (not an error) when none exist.
 	LoadUnits(taskID string) ([]UnitRecord, error)
 }
 
-// Ledger is the per-task unit ledger. The mainline Conductor and isolated
-// contexts (e.g. the goal verifier) share this API; each is scoped to one task
-// and one namespace so their unit ids never collide.
+// Ledger is the per-task unit ledger shared by the mainline Conductor and
+// isolated contexts (e.g. the goal verifier); each is scoped to one task and
+// one namespace so their unit ids never collide.
 type Ledger interface {
 	// Begin registers a new unit record. It stamps the ledger's task and
 	// namespace, defaults an empty status to pending, and returns an error when
@@ -205,10 +174,9 @@ var ErrUnitNotFound = errors.New("units: unit not found")
 // ErrUnitIDRequired is returned by Begin when the record carries no id.
 var ErrUnitIDRequired = errors.New("units: unit id is required")
 
-// StoreFrom extracts the durable unit Store from an arbitrary value (for
-// example a task-persistence adapter that exposes a UnitStore() method). It
-// returns nil when v is nil or does not provide one, so callers can pass the
-// result straight to NewLedger and get a best-effort in-memory ledger.
+// StoreFrom extracts the durable unit Store from a value exposing
+// UnitStore() (e.g. a task-persistence adapter); nil when absent, so callers
+// can pass the result straight to NewLedger for best-effort in-memory use.
 func StoreFrom(v any) Store {
 	if p, ok := v.(interface{ UnitStore() Store }); ok {
 		return p.UnitStore()
@@ -216,25 +184,20 @@ func StoreFrom(v any) Store {
 	return nil
 }
 
-// ledger is the default Ledger implementation. It keeps an in-memory overlay
-// of every write so it works with no store at all, and persists each write
-// through the store when one is present.
+// ledger is the default Ledger implementation: an in-memory overlay of every
+// write, persisted through the store when one is present.
 type ledger struct {
 	mu        sync.Mutex
 	store     Store
 	taskID    string
 	namespace string
-	// mem holds this ledger's own writes, keyed by key(id) — the namespace is
-	// part of the key, so a mainline ledger (namespace "") and an isolated one
-	// (the goal verifier) cannot resolve each other's same-id units.
+	// mem holds this ledger's own writes, keyed by key(id); the namespace in
+	// the key keeps ledgers of different namespaces from cross-resolving ids.
 	mem map[string]UnitRecord
 	// loaded caches the store's records for this task after the first by-id
-	// lookup that misses mem, keyed like mem. It makes a batch of Begin /
-	// Checkpoint / Settle calls (a plan arm registering every step, a resume
-	// wave settling every abandoned unit) pay ONE task-wide store read instead
-	// of one per call. List always reads the store, so it stays authoritative
-	// for a full enumeration; a record another writer adds after this ledger's
-	// first read is not visible to get.
+	// miss, so a batch of writes pays ONE task-wide store read. List always
+	// reads the store and stays authoritative for full enumeration; a record
+	// another writer adds after the first read is not visible to get.
 	loaded   map[string]UnitRecord
 	loadedOK bool
 }
@@ -242,15 +205,11 @@ type ledger struct {
 // key is the in-memory identity of a unit: its namespace qualifies its id.
 func (l *ledger) key(id string) string { return l.namespace + "\x00" + id }
 
-// NewLedger builds a unit ledger scoped to one task and namespace. This is the
-// ISOLATED constructor: an isolated execution context (such as the goal
-// verifier) passes its task store, the task it belongs to, and a namespace
-// that keeps its unit ids distinct from the mainline's.
-//
-// store may be nil — or a value that does not provide unit persistence — in
-// which case the ledger degrades to best-effort in-memory operation: units
-// round-trip within the process but are not durable. Pass units.StoreFrom(...)
-// to extract a store from a task-persistence adapter.
+// NewLedger builds a unit ledger scoped to one task and namespace — the
+// ISOLATED constructor (e.g. the goal verifier); the namespace keeps its ids
+// distinct from the mainline's. A nil store (or a value without unit
+// persistence) degrades to best-effort in-memory operation; extract a store
+// with units.StoreFrom(...). See specs/decisions/048-unified-recovery-ledger.md.
 func NewLedger(store Store, taskID, namespace string) Ledger {
 	return &ledger{
 		store:     store,
@@ -260,16 +219,12 @@ func NewLedger(store Store, taskID, namespace string) Ledger {
 	}
 }
 
-// Begin implements Ledger.
-//
-// Re-registration is idempotent for the durable record: a unit can be
-// registered more than once for the same task (the plan arm re-registers every
-// step on each execute_plan, a resumed run re-registers its delegates), and the
-// record it lands on may already carry a rebuild spec, a resume checkpoint, a
-// settled status and a creation timestamp. Begin therefore preserves what the
-// caller did not supply instead of clobbering it — overwriting a checkpoint, or
-// re-stamping created_at, would make the single durable record assert something
-// untrue and shift created_at-ordered reads.
+// Begin implements Ledger. Re-registration is idempotent for the durable
+// record: a unit may be registered again (the plan arm re-registers every
+// step, a resumed run re-registers its delegates), and Begin preserves what
+// the caller did not restate — overwriting a checkpoint or re-stamping
+// created_at would make the durable record assert something untrue.
+// See specs/decisions/048-unified-recovery-ledger.md.
 func (l *ledger) Begin(rec UnitRecord) error {
 	if rec.ID == "" {
 		return ErrUnitIDRequired
@@ -391,11 +346,10 @@ func (l *ledger) update(id string, fn func(*UnitRecord)) error {
 }
 
 // get returns the unit with the given id in the ledger's OWN namespace,
-// preferring the in-memory overlay, then the cached store load, then the store.
-// Namespace equality is required in every tier: an id is only unique within a
-// namespace, so a mainline ledger (namespace "") must never resolve a
-// goal-verifier unit that happens to share the id — resolving it would settle
-// (and persist) the WRONG row, leaving the intended one un-settled.
+// preferring the in-memory overlay, then the cached store load, then the
+// store. Namespace equality holds in every tier: ids are only unique within
+// a namespace, so a same-id unit from another namespace must never resolve
+// here — that would settle the WRONG row. See specs/decisions/048-unified-recovery-ledger.md.
 func (l *ledger) get(id string) (UnitRecord, bool) {
 	k := l.key(id)
 
@@ -429,8 +383,8 @@ func (l *ledger) get(id string) (UnitRecord, bool) {
 	return rec, ok
 }
 
-// persist writes rec through the store when one is configured. A nil store is
-// a no-op so the ledger still works in-memory.
+// persist writes rec through the store when one is configured; a nil store
+// keeps the ledger in-memory.
 func (l *ledger) persist(rec UnitRecord) error {
 	if l.store == nil {
 		return nil

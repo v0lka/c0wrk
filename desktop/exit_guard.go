@@ -12,40 +12,36 @@ import (
 )
 
 // EventAppExitRequested is the global event emitted when a quit attempt is
-// intercepted because sessions have live work. Payload:
-// {"sessions": [{id, name, compacting, hung}], "update_pending": bool}. The
-// frontend answers through the ConfirmExit RPC — there is no response event,
-// because the decision must reach the process that owns the exit-confirmed
-// flag. See specs/contracts/event-catalog.md (Global Events).
+// intercepted because sessions have live work; the frontend answers through
+// the ConfirmExit RPC (no response event — the decision must reach the
+// process owning the exit-confirmed flag).
+// See specs/contracts/event-catalog.md (app:exit_requested).
 const EventAppExitRequested = "app:exit_requested"
 
-// exitGuardPayload is the payload of app:exit_requested. JSON keys are
-// snake_case, mirroring the other backend → frontend event payloads.
+// exitGuardPayload is the payload of app:exit_requested; snake_case keys,
+// mirroring the other backend → frontend payloads.
 type exitGuardPayload struct {
 	Sessions []session.ActiveSessionInfo `json:"sessions"`
-	// UpdatePending reports that the intercepted quit was issued by
-	// ApplyUpdate (a self-update restart in progress), so the confirmation
-	// modal presents restart context instead of a plain quit.
+	// UpdatePending: the intercepted quit was issued by ApplyUpdate (a
+	// self-update restart in progress), so the modal presents restart context.
 	UpdatePending bool `json:"update_pending"`
 }
 
-// updateQuitSlack extends the window during which an armed update-quit
-// marker still counts as pending, covering the staged updater's 500ms PID
-// poll granularity plus minor scheduling delay.
+// updateQuitSlack covers the staged updater's 500ms PID poll granularity plus
+// minor scheduling delay.
 const updateQuitSlack = 10 * time.Second
 
-// markUpdateQuit records that the updater-driven quit was issued (see the
-// QuitApp closure in startup.go). Time-based on purpose: if the user cancels
-// the interception, the marker self-expires once the staged updater has given
-// up waiting, so a much later quit is never presented as an update restart.
+// markUpdateQuit records that the updater-driven quit was issued. Time-based
+// on purpose: a cancelled interception self-expires once the staged updater
+// gives up waiting, so a much later quit is never presented as an update
+// restart. See specs/contracts/desktop-frontend.md (Close guard).
 func (a *App) markUpdateQuit() {
 	a.updateQuitAt.Store(time.Now())
 }
 
-// updateQuitPending reports whether an updater-driven quit is still live:
-// armed and within the staged updater's parent-wait window (plus slack).
-// After the window a parent quit no longer completes the update, so the
-// close guard must not claim update context anymore.
+// updateQuitPending reports whether an updater-driven quit is still within
+// the staged updater's parent-wait window (plus slack); past it, a parent
+// quit no longer completes the update and must not claim update context.
 func (a *App) updateQuitPending() bool {
 	v, ok := a.updateQuitAt.Load().(time.Time)
 	if !ok || v.IsZero() {
@@ -54,30 +50,21 @@ func (a *App) updateQuitPending() bool {
 	return time.Since(v) <= updater.StagedUpdaterShutdownWait+updateQuitSlack
 }
 
-// ShouldPreventClose implements the Wails OnBeforeClose hook: it decides
-// whether a quit attempt must be intercepted while sessions have live work.
-// On every platform the close button, Cmd+Q / the OS quit path, and
-// runtime.Quit all funnel through OnBeforeClose — so this single hook guards
-// the whole quit surface, but it also means the confirmed quit re-enters it:
-// ConfirmExit arms a.exitConfirmed first, and this hook lets that attempt
-// through instead of intercepting it again — as does the webview-GPU
-// watchdog's post-relaunch quit (gpuFallbackQuit): the sessions it would
-// protect are auto-resumed in the relaunched instance, while the dialog
-// itself would render into the grey webview being replaced.
-//
-// An intercepted attempt tears nothing down. The hook emits
-// app:exit_requested (with the active-session list) and returns
-// prevent=true; the frontend shows a confirmation modal, and a user "quit
-// anyway" calls ConfirmExit to quit for real, so the regular Shutdown path
-// (window bounds, pending-action drain, backend cleanup) still runs.
+// ShouldPreventClose implements the Wails OnBeforeClose hook: every quit path
+// (close button, Cmd+Q / OS quit, runtime.Quit) funnels through it, so this
+// one hook guards the whole quit surface — including the confirmed-quit
+// re-entry, allowed through by the a.exitConfirmed flag, and the webview-GPU
+// watchdog's post-relaunch quit (the sessions it would protect are
+// auto-resumed in the relaunched instance, and the dialog would render into
+// the grey webview being replaced). An intercepted attempt tears nothing
+// down: it emits app:exit_requested (with the active-session list) and
+// returns prevent=true; "quit anyway" calls ConfirmExit, so the regular
+// Shutdown path still runs.
+// See specs/contracts/desktop-frontend.md (Close guard).
 func (a *App) ShouldPreventClose(_ context.Context) bool {
-	// Snapshot the window geometry while the window is guaranteed alive: this
-	// hook runs on every quit path BEFORE Wails destroys the window, whereas
-	// OnShutdown runs after the destroy on Linux — reading geometry there
-	// returns the creation default and would clobber the persisted value (see
-	// captureWindowGeometry). Captured on every pass, including the
-	// exit-confirmed re-entry, so a resize made while the confirmation modal
-	// was open is still reflected.
+	// Geometry must be snapshotted while the window is alive — this hook runs
+	// on every quit path before Wails destroys it (see captureWindowGeometry);
+	// on every pass, so a resize made under the open modal is still reflected.
 	a.captureWindowGeometry()
 
 	if a.exitConfirmed.Load() {
@@ -91,10 +78,9 @@ func (a *App) ShouldPreventClose(_ context.Context) bool {
 
 	a.log().Info("quit intercepted: sessions have live work", "count", len(active))
 
-	// The confirmation modal lives in the webview. Make sure the window is
-	// visible — the quit may arrive while it is hidden — then deliver the
-	// request. a.emit tolerates a nil ctx (Startup not run yet) by dropping
-	// the event with a warning, but that window cannot have active sessions.
+	// The confirmation modal lives in the webview: reveal the window before
+	// delivering the request (a.emit tolerates a nil ctx by dropping the
+	// event, but that window cannot have active sessions).
 	if a.wailsCtx() != nil {
 		a.showWindow(a.wailsCtx())
 	}
@@ -120,11 +106,10 @@ func (a *App) lookupActiveSessions() []session.ActiveSessionInfo {
 	return app.Manager().ActiveSessions()
 }
 
-// ConfirmExit is the frontend-callable counterpart to an intercepted quit:
-// the user confirmed quitting despite active sessions. It arms the
-// exit-confirmed bypass and triggers a graceful Wails quit, which re-enters
-// OnBeforeClose (allowed through by the flag) and then runs the normal
-// Shutdown sequence.
+// ConfirmExit is the frontend-callable counterpart to an intercepted quit: it
+// arms the exit-confirmed bypass and triggers a graceful Wails quit, which
+// re-enters OnBeforeClose (allowed through by the flag) and runs the normal
+// Shutdown sequence. See specs/contracts/desktop-frontend.md (ConfirmExit).
 func (a *App) ConfirmExit() error {
 	if a.wailsCtx() == nil {
 		return errors.New("ConfirmExit: application context is not initialized")

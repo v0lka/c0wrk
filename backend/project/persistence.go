@@ -68,16 +68,12 @@ func (s *SQLiteProjectStore) createTables() error {
 		return err
 	}
 
-	// The legacy research_root column is intentionally retained physically: a
-	// DROP is destructive, irreversible and fail-hard (it can abort startup),
-	// and the DTO no longer reads or writes the column, so keeping it costs
-	// nothing while preserving backward/forward compatibility for a downgrade.
-	// No migration is performed for it here.
+	// The legacy research_root column is retained physically: a DROP is
+	// destructive and fail-hard, the DTO no longer touches it, and keeping
+	// it costs nothing while preserving downgrade compatibility.
 
-	// Migration: add nullable research_pins column to projects for persisting
-	// the per-project pinned research artifacts (documents + hypothesis cards)
-	// as a JSON blob across app restarts. Idempotent — skipped when the column
-	// already exists.
+	// Migration: nullable research_pins column (per-project pinned research
+	// artifacts as JSON); idempotent.
 	if !s.columnExists("projects", "research_pins") {
 		if _, err := s.db.ExecContext(context.Background(),
 			`ALTER TABLE projects ADD COLUMN research_pins TEXT`); err != nil {
@@ -99,9 +95,8 @@ func (s *SQLiteProjectStore) columnExists(table, column string) bool {
 	return rows.Next()
 }
 
-// researchPinsValue serializes pins to JSON for the research_pins column. An
-// empty value (no research documents, no hypothesis cards, no paper pins) maps
-// to nil so the column stores NULL.
+// researchPinsValue serializes pins for the research_pins column; an empty
+// set maps to nil so the column stores NULL.
 func researchPinsValue(pins ResearchPins) (any, error) {
 	if len(pins.Research) == 0 && len(pins.Hypotheses) == 0 && len(pins.Papers) == 0 {
 		return nil, nil
@@ -300,9 +295,8 @@ func (s *SQLiteProjectStore) LoadUIState(ctx context.Context, projectID string) 
 	return &state, nil
 }
 
-// SaveSavedSessionID updates ONLY the saved_session_id column of a project's
-// UI state, preserving any previously persisted open_tabs/active_file. When no
-// row exists yet, one is inserted with empty open tabs and no active file.
+// SaveSavedSessionID updates ONLY saved_session_id, preserving any persisted
+// open_tabs/active_file; with no row yet it inserts one with empty tabs.
 func (s *SQLiteProjectStore) SaveSavedSessionID(ctx context.Context, projectID, sessionID string) error {
 	updatedAt := time.Now().UTC().Format(time.RFC3339)
 	_, err := s.db.ExecContext(ctx, `
@@ -359,9 +353,8 @@ func (s *SQLiteProjectStore) Close() error {
 	return nil
 }
 
-// isUniqueConstraintError reports whether err is a SQLite UNIQUE-constraint
-// violation (extended code SQLITE_CONSTRAINT_UNIQUE = 2067). Used to translate
-// duplicate (owner, path) inserts into ErrWorkDirAlreadyExists.
+// isUniqueConstraintError reports a SQLite UNIQUE violation (extended code
+// 2067) so duplicate work-directory inserts map to ErrWorkDirAlreadyExists.
 func isUniqueConstraintError(err error) bool {
 	var sqliteErr *sqlite.Error
 	if errors.As(err, &sqliteErr) {
@@ -370,10 +363,9 @@ func isUniqueConstraintError(err error) bool {
 	return false
 }
 
-// SaveProjectWorkDir inserts a project-scoped work directory record. If rec.ID
-// is empty a new UUID is generated; if CreatedAt is empty the current time is
-// used. Inserting a record with an existing ID is an error (upsert is not
-// supported — use UpdateProjectWorkDirDescription to mutate).
+// SaveProjectWorkDir inserts a project-scoped record, generating ID/CreatedAt
+// when empty. An existing ID is an error (no upsert — mutate via
+// UpdateProjectWorkDirDescription).
 func (s *SQLiteProjectStore) SaveProjectWorkDir(ctx context.Context, projectID string, rec WorkDirectoryRecord) error {
 	if rec.ID == "" {
 		rec.ID = uuid.New().String()
@@ -425,10 +417,9 @@ func (s *SQLiteProjectStore) ListProjectWorkDirs(ctx context.Context, projectID 
 	return recs, nil
 }
 
-// UpdateProjectWorkDirDescription updates the human-readable description of a
-// project-scoped work directory by ID. projectID is required as a scope guard:
-// only a record owned by that project can be mutated, so a stale or
-// cross-scope ID cannot affect another project's row.
+// UpdateProjectWorkDirDescription updates a work directory's description;
+// projectID is the scope guard — a cross-scope ID cannot touch another
+// project's row.
 func (s *SQLiteProjectStore) UpdateProjectWorkDirDescription(ctx context.Context, projectID, id, description string) error {
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE project_work_directories SET description = ? WHERE id = ? AND project_id = ?`,
@@ -439,9 +430,8 @@ func (s *SQLiteProjectStore) UpdateProjectWorkDirDescription(ctx context.Context
 	return nil
 }
 
-// DeleteProjectWorkDir removes a project-scoped work directory by ID. projectID
-// is required as a scope guard so a cross-scope ID cannot delete another
-// project's record.
+// DeleteProjectWorkDir removes a work directory by ID; projectID is the
+// scope guard against cross-scope deletes.
 func (s *SQLiteProjectStore) DeleteProjectWorkDir(ctx context.Context, projectID, id string) error {
 	_, err := s.db.ExecContext(ctx,
 		`DELETE FROM project_work_directories WHERE id = ? AND project_id = ?`, id, projectID)

@@ -23,40 +23,37 @@ type SessionLogger struct {
 func Init(level, logDir string) (*SessionLogger, error) {
 	parsedLevel, levelErr := parseLevel(level)
 
-	// Create the log directory as a chain of REAL directories under the
-	// agent directory (the log dir's parent) as the containment boundary: a
-	// link planted at ~/.c0wrk/logs → <outside> is REFUSED and startup
-	// logging fails closed instead of redirecting every session log outside
-	// ~/.c0wrk (review finding #77). A symlinked agent directory itself —
-	// and any link resolving inside it — remains operator intent; a
-	// dangling or swapped-in link still fails as before.
+	// MkdirAllRealWithin (bounded by the agent dir): a link planted at
+	// ~/.c0wrk/logs is refused and startup logging fails closed instead of
+	// redirecting session logs outside ~/.c0wrk (review finding #77); a
+	// symlinked agent directory itself remains operator intent.
+	// See specs/architecture/security-model.md (Fixed-Path ~/.c0wrk State
+	// Hardening).
 	if err := safeio.MkdirAllRealWithin(filepath.Dir(logDir), logDir, 0o750); err != nil {
 		return nil, fmt.Errorf("failed to create log directory: %w", err)
 	}
 
-	// Generate session file path with timestamp
 	timestamp := time.Now().Format("2006-01-02T15-04-05")
 	sessionFile := filepath.Join(logDir, fmt.Sprintf("session-%s.log", timestamp))
 
-	// Open log file with O_NOFOLLOW (unix): a symlink planted at the
-	// predictable session-<ts>.log name must not redirect the write (the
-	// plain safeio.OpenFile fstat guard runs after the open and would see
-	// the regular link target). On Windows the safeio parity note applies —
-	// the final symlink is still resolved there — tempered by Windows
-	// requiring elevated/dev-mode rights to create symlinks.
+	// O_NOFOLLOW: a symlink planted at the predictable session-<ts>.log name
+	// must not redirect the write (plain safeio.OpenFile's post-open fstat
+	// would see the regular link target). On Windows a final symlink is
+	// still resolved (safeio parity note), tempered by symlink creation
+	// requiring elevated/dev-mode rights there.
+	// See specs/architecture/security-model.md (Fixed-Path ~/.c0wrk State
+	// Hardening).
 	file, err := safeio.OpenFileNoFollow(sessionFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open log file: %w", err)
 	}
 
-	// Create JSON handler with the parsed level
 	opts := &slog.HandlerOptions{
 		Level: parsedLevel,
 	}
 	handler := slog.NewJSONHandler(file, opts)
 	logger := slog.New(handler)
 
-	// Log warning if level was invalid
 	if levelErr != nil {
 		logger.Warn("invalid log level specified, defaulting to INFO", "level", level)
 	}
@@ -72,7 +69,7 @@ func (s *SessionLogger) Logger() *slog.Logger {
 	return s.logger
 }
 
-// Close flushes and closes the log file. Safe to call multiple times.
+// Close flushes and closes the log file.
 func (s *SessionLogger) Close() error {
 	if s.file != nil {
 		f := s.file
@@ -82,10 +79,8 @@ func (s *SessionLogger) Close() error {
 	return nil
 }
 
-// parseLevel converts a string level to slog.Level.
-// Delegates to slog.Level.UnmarshalText which accepts "DEBUG", "INFO",
-// "WARN", "ERROR" (case-insensitive) and numeric levels.
-// Returns an error if the level is unrecognized.
+// parseLevel converts a level name ("DEBUG"…"ERROR", case-insensitive, or
+// numeric) to slog.Level via slog.Level.UnmarshalText.
 func parseLevel(level string) (slog.Level, error) {
 	var l slog.Level
 	if err := l.UnmarshalText([]byte(level)); err != nil {

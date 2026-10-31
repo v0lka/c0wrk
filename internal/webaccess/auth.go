@@ -5,11 +5,10 @@
 // cookie, the brute-force limiter, and the requireAuth gate shared by every
 // authenticated route.
 //
-// Secrets discipline: the token exists in exactly three places — inside this
-// process (memory), in the POST body of a login attempt, and on the operator
-// side (wherever the desktop UI shows it). It is never logged (only the
-// redactToken digest), never echoed in a response, and never accepted via
-// URL — the login is POST-body only, and requests authenticate by cookie.
+// Secrets discipline: the token exists in exactly three places — this
+// process's memory, a login POST body, and the operator side. Never logged
+// (only the redactToken digest), never echoed in a response, never accepted
+// via URL — login is POST-body only; requests authenticate by cookie.
 
 package webaccess
 
@@ -33,9 +32,8 @@ const (
 	loginMaxAttempts = 10
 	// loginWindow is the fixed window of the limiter.
 	loginWindow = time.Minute
-	// sessionCookieTTL — the cookie is a session cookie by default (dies
-	// with the browser); no Max-Age is set. The constant documents the
-	// choice and keeps it greppable.
+	// sessionCookieTTL — a session cookie (dies with the browser); no
+	// Max-Age is set. The constant documents the choice.
 	sessionCookieTTL = 0
 )
 
@@ -83,14 +81,12 @@ func (l *loginLimiter) allow(key string, now time.Time) bool {
 	return b.count <= l.max
 }
 
-// succeed clears the key's bucket after a SUCCESSFUL login. The limiter
+// succeed clears the key's bucket after a SUCCESSFUL login: the limiter
 // exists to make wrong-guess brute force expensive, and a success proves
-// the client holds the secret — its spent attempts no longer belong in the
-// window. On the default loopback bind every local process shares one
-// per-IP bucket, so counting successes would let the operator's own rapid
-// re-logins (ten in a minute) lock their browser out of login; resetting
-// keeps the legitimate path unbound while every wrong guess still burns an
-// attempt it cannot recover.
+// the client holds the secret. On the default loopback bind every local
+// process shares one per-IP bucket, so counting successes would let the
+// operator's own rapid re-logins lock their browser out; resetting keeps
+// the legitimate path unbound while wrong guesses still burn attempts.
 func (l *loginLimiter) succeed(key string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -116,8 +112,8 @@ func clientKey(r *http.Request) string {
 }
 
 // constantTimeEqual compares two secrets in constant time regardless of
-// length, by comparing fixed-size digests instead of the raw values (a raw
-// subtle.ConstantTimeCompare leaks length mismatch through its early return).
+// length, via fixed-size digests (a raw subtle.ConstantTimeCompare leaks
+// length mismatch through its early return).
 func constantTimeEqual(a, b string) bool {
 	ha := sha256.Sum256([]byte(a))
 	hb := sha256.Sum256([]byte(b))
@@ -147,16 +143,13 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 
 // sameOriginGate rejects a state-changing request whose Origin header is
 // present and does not exactly match scheme://r.Host — the exact-equality
-// check the /ws upgrade already enforces, extended to the POST routes
-// (/api/rpc, /api/login). SameSite=Strict separates SITES, not origins: a
-// page served from any other port of the same host shares the cookie jar,
-// and a preflight-free no-cors POST would ride the session cookie straight
-// into a handler that parses the body regardless of its content type.
-// A MISSING Origin stays allowed — browsers attach Origin to every POST
-// (fetch spec), so only non-browser clients (curl, scripting) omit it, and
-// such a client carries the session cookie only by having logged in
-// deliberately; refusing them would break every non-browser consumer for no
-// security gain.
+// check the /ws upgrade enforces, extended to the POST routes.
+// SameSite=Strict separates SITES, not origins: another port of the same
+// host shares the cookie jar, and a preflight-free no-cors POST would ride
+// the session cookie into a body-parsing handler. A MISSING Origin stays
+// allowed — browsers attach Origin to every POST, so only non-browser
+// clients omit it, and such a client holds the cookie only by having logged
+// in deliberately.
 func (s *Server) sameOriginGate(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Origin") != "" && !s.sameOrigin(r) {
@@ -167,13 +160,11 @@ func (s *Server) sameOriginGate(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// jsonContentTypeGate requires the JSON media type on a route whose body is
-// always JSON (/api/rpc). A cross-origin no-cors request cannot carry
-// Content-Type: application/json — the fetch CORS safelist restricts no-cors
-// bodies to form/text encodings — so the header doubles as a CSRF
-// discriminator on top of sameOriginGate. The official shim sends it on
-// every call, including zero-argument ones. Charset and other media-type
-// parameters are accepted (parsed via mime.ParseMediaType).
+// jsonContentTypeGate requires the JSON media type on /api/rpc. A
+// cross-origin no-cors request cannot carry Content-Type:
+// application/json — the fetch CORS safelist restricts no-cors bodies to
+// form/text encodings — so the header doubles as a CSRF discriminator on
+// top of sameOriginGate. Charset and other parameters are accepted.
 func jsonContentTypeGate(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
@@ -187,14 +178,12 @@ func jsonContentTypeGate(next http.HandlerFunc) http.HandlerFunc {
 
 // handleTransport answers the bootstrap question the SPA shell asks first:
 // which transport am I on — and, once the tab holds a valid session, where
-// the event channel is. The payload is split by authentication: an
+// the event channel is. The payload splits by authentication: an
 // unauthenticated caller learns ONLY that this origin serves the web
-// transport (no session-presence oracle, no /ws path disclosure — both are
-// meaningless before login and were a free banner-grab surface on a LAN
-// bind), while an authenticated caller gets the full {ws, authenticated}
-// answer the shim needs to open its event socket. The SPA's probe treats a
-// missing ws field as the default /ws, so the split changes nothing on the
-// wire for legitimate flows (frontend/src/api/runtime.ts).
+// transport (no session-presence oracle, no /ws disclosure — a free
+// banner-grab surface on a LAN bind); the SPA's probe treats a missing ws
+// field as the default /ws, so the split changes nothing for legitimate
+// flows (frontend/src/api/runtime.ts).
 func (s *Server) handleTransport(w http.ResponseWriter, r *http.Request) {
 	if !s.hasSessionCookie(r) {
 		writeJSON(w, http.StatusOK, transportPublic{Transport: "web"})
@@ -228,9 +217,9 @@ type loginRequest struct {
 
 // handleLogin exchanges the auth token for the session cookie.
 // 400 malformed body · 401 wrong token · 429 rate limited · 200 + cookie.
-// The limiter counts only requests that arrive with a parseable body: a
-// script flooding malformed requests must not drain the shared per-IP
-// window and lock the operator's own browser out of login.
+// The limiter counts only parseable-body requests: a malformed-flood script
+// must not drain the shared per-IP window and lock the operator's browser
+// out of login.
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	body, ok := s.readJSONBody(w, r, maxBodyBytes)
 	if !ok {
@@ -253,10 +242,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusUnauthorized, "invalid token")
 		return
 	}
-	// Success clears the limiter bucket: a client that just proved it holds
-	// the secret starts from a clean window (the loopback bucket is shared
-	// by every local process — counting successes would let the operator's
-	// own re-logins trigger the limit; see loginLimiter.succeed).
+	// Success clears the limiter bucket (the loopback bucket is shared by
+	// every local process — see loginLimiter.succeed).
 	s.limiter.succeed(clientKey(r))
 	http.SetCookie(w, &http.Cookie{
 		Name:     cookieName,
@@ -266,9 +253,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteStrictMode,
 		// Secure rides the transport (ADR-102): set exactly when the sidecar
 		// terminates TLS, omitted on plain HTTP — byte-identical to the
-		// pre-ADR-102 behavior there. HttpOnly/SameSite=Strict, the
-		// per-launch session secret and the token gate stay the compensations
-		// on both transports.
+		// pre-ADR-102 behavior there.
 		Secure: s.tls != nil,
 		MaxAge: sessionCookieTTL,
 	})

@@ -22,9 +22,8 @@ Anti-example: a plan whose step 2 "implement" omits depends_on though it consume
 // The implementation lives in the core layer.
 type PlanPublisher interface {
 	Publish(ctx context.Context, tasks []PlanTaskInput) (planPath string, err error)
-	// LastPlanMarkdown returns the markdown content from the most recent
-	// Publish call. Used by declare_plan to pass the content to the approval
-	// callback without re-reading from disk.
+	// LastPlanMarkdown hands the approval callback the content Publish just
+	// wrote, without re-reading from disk.
 	LastPlanMarkdown() string
 }
 
@@ -35,43 +34,24 @@ type PlanTaskInput struct {
 	Summary     string   `json:"summary"`
 	Description string   `json:"description"`
 	DependsOn   []string `json:"depends_on,omitempty"`
-	// Agent optionally names a Subagent Profile to execute this step with.
-	// The publisher copies it onto the resulting PlanStep so the execution
-	// layer (Conductor) can resolve and apply the profile. See declare_plan's
-	// schema for the user-facing description.
+	// Agent names a Subagent Profile for this step; the publisher copies it
+	// onto the PlanStep (specs/contracts/conductor-tools.md).
 	Agent string `json:"agent,omitempty"`
 }
 
-// PlanContinuation is an OPTIONAL capability of the PlanChecker: it reports
-// whether the CURRENT Conductor run resumed a task whose already-declared plan
-// still has unreached (not successfully completed) steps. Implemented by the
-// core conductorLauncher and detected by declare_plan via a type assertion, so
-// this package stays decoupled from core: when the capability reports true,
-// declare_plan returns a soft "plan already approved — continue with
-// execute_plan" hint instead of publishing a replacement plan.
+// PlanContinuation is an OPTIONAL PlanChecker capability: the current run
+// resumed a task whose declared plan still has unreached steps, so re-declaring
+// must yield a soft execute_plan hint instead of a replacement plan. Detected
+// by type assertion; implemented by the core conductorLauncher.
+// See specs/contracts/conductor-tools.md (declare_plan).
 type PlanContinuation interface {
 	PlanContinuation() bool
 }
 
-// planAbandoner is an OPTIONAL capability of the PlanPublisher: it lets
-// declare_plan react to the user abandoning a plan at the approval prompt.
-// Publishing a plan for review marks the run's plan workflow active (see
-// conductorPublisher.Publish), which disables delegate, rejects a standalone
-// (empty step_id) checklist, and lets execute_plan run the plan's steps — all
-// correct while the plan awaits approval, but wrong once the user abandons it.
-// The implementation therefore does two things: it releases the workflow so
-// the model can act plan-less again, and it settles the abandoned plan's steps
-// so the plan panel does not leave them pending forever (the run is no longer
-// plan-active, so the finish-fallback sweep no longer reaches them).
-//
-// It is deliberately a parameterless, one-directional capability: the only
-// transition declare_plan ever needs to trigger is abandonment. Re-activation
-// is owned by Publish (every publish marks the workflow active), so no
-// SetPlanWorkflowActive(true) path exists to drift out of use.
-//
-// Implemented by the core conductorPublisher and detected by declare_plan via
-// a type assertion, so this package stays decoupled from core: a publisher
-// that does not implement it (or a nil publisher) is simply left as-is.
+// planAbandoner is an OPTIONAL PlanPublisher capability for the approval
+// prompt's "abandon": it releases the run's plan workflow and settles the
+// abandoned plan's steps. Deliberately one-directional — re-activation is
+// owned by Publish. See specs/contracts/conductor-tools.md (declare_plan).
 type planAbandoner interface {
 	AbandonPlan()
 }
@@ -82,9 +62,9 @@ type DeclarePlanTool struct {
 	approvalFunc ApprovalFunc
 }
 
-// ApprovalFunc is called when declare_plan runs in await_approval mode.
-// Returns the user's decision: "approve", "request_changes" (with feedback),
-// or "abandon". If nil, await_approval mode is unavailable.
+// ApprovalFunc resolves await_approval: "approve", "request_changes"
+// (+feedback), or "abandon"; nil makes that mode unavailable
+// (specs/contracts/conductor-tools.md).
 type ApprovalFunc func(ctx context.Context, planPath, planMarkdown string) (decision string, feedback string, err error)
 
 // NewDeclarePlanTool creates the declare_plan tool. approvalFunc may be nil;
@@ -128,11 +108,9 @@ type declarePlanInput struct {
 	Tasks []PlanTaskInput `json:"tasks"`
 }
 
-// validatePlanTasks checks that every task has a non-empty id, summary, and
-// description, that task ids are unique within the plan, and that every
-// depends_on entry (direct or transitive) references an id declared in the
-// same plan. All violations are collected and reported together so the caller
-// can fix the whole plan in one revision. Returns nil when the plan is valid.
+// validatePlanTasks checks required fields, id uniqueness, depends_on
+// declaration and reference resolution; all violations report together so one
+// revision fixes the whole plan (specs/contracts/conductor-tools.md).
 func validatePlanTasks(tasks []PlanTaskInput) error {
 	var problems []string
 	// ids maps each declared non-empty id to the 1-based number of its first
@@ -149,12 +127,10 @@ func validatePlanTasks(tasks []PlanTaskInput) error {
 		if strings.TrimSpace(task.Description) == "" {
 			problems = append(problems, fmt.Sprintf("task %d: missing required field %q", num, "description"))
 		}
-		// Mandatory declaration: every task must state depends_on explicitly.
-		// JSON absence and null both unmarshal to a nil slice, while an
-		// explicit "no dependencies" declaration ([]) unmarshals to a non-nil
-		// empty slice — so nil here means the field was never declared. This
-		// duplicates the schema-level required check (registry Gate 1) so the
-		// rule also holds for direct Execute paths.
+		// Mandatory depends_on (specs/decisions/069-plan-step-dependencies-mandatory.md):
+		// JSON absence and null both unmarshal to nil, so nil means undeclared;
+		// the explicit [] independence declaration unmarshals non-nil. Re-checks
+		// registry Gate 1 for direct Execute paths.
 		if task.DependsOn == nil {
 			problems = append(problems, fmt.Sprintf("task %d: depends_on is required on every task — declare [] (empty array) when the task has no dependencies", num))
 		}
@@ -182,20 +158,16 @@ func validatePlanTasks(tasks []PlanTaskInput) error {
 	if len(problems) > 0 {
 		return errors.New("validation error: invalid plan tasks. Fix these issues and call declare_plan again:\n- " + strings.Join(problems, "\n- "))
 	}
-	// Acyclicity: depends_on must form a DAG. A cycle or self-dependency
-	// passes reference resolution but can never be satisfied — execute_plan
-	// would report it as an "upstream failure" instead of a malformed plan,
-	// hiding the real fix (re-declare without the cycle).
+	// A cycle passes reference resolution but can never be satisfied —
+	// execute_plan would misreport it as an upstream failure.
 	if cycle := planDependencyCycle(tasks); cycle != "" {
 		return errors.New("validation error: invalid plan tasks. Fix these issues and call declare_plan again:\n- " + cycle)
 	}
 	return nil
 }
 
-// planDependencyCycle detects dependency cycles (including
-// self-dependencies) via Kahn's algorithm and renders the offending ids; ""
-// when the graph is a DAG. Ids are matched trimmed, exactly as the reference
-// resolution in validatePlanTasks matches them.
+// planDependencyCycle finds cycles (incl. self-dependencies) via Kahn's
+// algorithm; ids matched trimmed, like validatePlanTasks's resolution.
 func planDependencyCycle(tasks []PlanTaskInput) string {
 	const selfDep = "task %q depends on itself — remove the self-referencing depends_on entry"
 	ids := make([]string, len(tasks))
@@ -251,12 +223,9 @@ func planDependencyCycle(tasks []PlanTaskInput) string {
 	return fmt.Sprintf("depends_on contains a dependency cycle involving: %s — a plan must be a DAG (reorder or remove the cyclic depends_on entries)", strings.Join(stuck, ", "))
 }
 
-// planExecutionWaves partitions a valid plan's steps into execution waves:
-// wave 1 holds every dependency-free step, wave N+1 holds the steps whose
-// prerequisites all live in waves <= N (Kahn's algorithm by layers). Each wave
-// is therefore the maximal set of steps that may run concurrently, and the
-// steps inside a wave keep their declaration order. Acyclicity is guaranteed
-// upstream by validatePlanTasks, which rejects cyclic plans before this runs.
+// planExecutionWaves layers the validated DAG into execution waves
+// (specs/contracts/conductor-tools.md, wave echo); steps keep declaration
+// order inside a wave, and acyclicity is guaranteed by validatePlanTasks.
 func planExecutionWaves(tasks []PlanTaskInput) [][]string {
 	n := len(tasks)
 	index := make(map[string]int, n)
@@ -350,9 +319,8 @@ func (t *DeclarePlanTool) Execute(ctx context.Context, input json.RawMessage) (s
 	if mode != "present" && mode != "await_approval" {
 		return sdktools.ErrorResult("validation error: mode must be \"present\" or \"await_approval\", got %q", mode), nil
 	}
-	// Schema-level validation runs before the continuation guard and before
-	// Publish, so a malformed plan never reaches the filesystem, the
-	// blackboard, or the approval flow — even on a resumed task.
+	// Validate before the continuation guard and Publish: a malformed plan
+	// reaches no filesystem, blackboard, or approval flow.
 	if err := validatePlanTasks(params.Tasks); err != nil {
 		return sdktools.ErrorResult("%s", err), nil
 	}
@@ -362,14 +330,10 @@ func (t *DeclarePlanTool) Execute(ctx context.Context, input json.RawMessage) (s
 		return sdktools.ErrorResult("declare_plan: no plan publisher in context (not running inside a Conductor)"), nil
 	}
 
-	// Continuation guard: this Conductor run resumed a task whose approved
-	// plan still has unreached steps. The plan on the blackboard is still
-	// authoritative — re-declaring would replace the approved roadmap and
-	// reset step progress. Return a soft (non-error) hint pointing back to
-	// execute_plan, which resumes the remaining steps and skips the ones that
-	// already succeeded. Detected via the optional PlanContinuation capability
-	// on the context's PlanChecker (implemented by the core conductorLauncher),
-	// so plain Conductor runs are unaffected.
+	// Continuation guard: on a resumed task the declared plan is still
+	// authoritative — re-declaring would reset step progress — so return a
+	// soft execute_plan hint. Detected via the optional PlanContinuation
+	// capability on the PlanChecker.
 	if pc := PlanCheckerFrom(ctx); pc != nil {
 		if cont, ok := pc.(PlanContinuation); ok && cont.PlanContinuation() {
 			return sdktools.ToolResult{Content: "A plan has already been declared and approved for this resumed task — do not re-declare it. Call execute_plan to continue the remaining steps (already-completed steps are skipped automatically)."}, nil
@@ -381,9 +345,8 @@ func (t *DeclarePlanTool) Execute(ctx context.Context, input json.RawMessage) (s
 		return sdktools.ErrorResult("declare_plan: failed to publish plan: %v", err), nil
 	}
 
-	// Echo the plan's execution waves back to the model so a mis-declared
-	// dependency graph is visible before execute_plan runs. Steps were already
-	// validated (validatePlanTasks guarantees a DAG), so the layering is total.
+	// Echo the waves so an under-specified graph is visible before
+	// execute_plan; the DAG is validated, so layering is total.
 	waves := planExecutionWaves(params.Tasks)
 	waveEcho := formatExecutionWaves(waves)
 
@@ -417,19 +380,10 @@ func (t *DeclarePlanTool) Execute(ctx context.Context, input json.RawMessage) (s
 		msg += "\n\nRevise the plan and call declare_plan again with the updated tasks."
 		return sdktools.ToolResult{Content: msg}, nil
 	case "abandon":
-		// Release the plan workflow this run acquired when the plan was
-		// published for review (conductorPublisher.Publish marks it declared)
-		// AND settle the abandoned plan's steps as terminal. An abandoned plan
-		// must not leave the run locked: delegate stays disabled, a standalone
-		// (empty step_id) checklist is rejected, execute_plan is willing to run
-		// the abandoned draft, and — because the run is no longer plan-active —
-		// the finish-fallback sweep would never reach the abandoned plan's
-		// steps, so they would otherwise stay "pending" in the plan panel
-		// forever. The plan itself stays on the blackboard as a historical
-		// artifact (not cleared here). approve/present (Publish already marked)
-		// and request_changes (the model re-declares, so delegate correctly
-		// stays disabled) leave the workflow active. Detected via the optional
-		// planAbandoner capability, so a publisher without it is unaffected.
+		// Release the run's plan workflow and settle the abandoned plan's
+		// steps (planAbandoner, specs/contracts/conductor-tools.md): the run
+		// is no longer plan-active, so nothing else would ever reach them.
+		// The plan stays on the blackboard as a historical artifact.
 		if ab, ok := publisher.(planAbandoner); ok {
 			ab.AbandonPlan()
 		}

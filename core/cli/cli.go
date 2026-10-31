@@ -1,12 +1,7 @@
 // Package cli implements the unified command-line parser for the c0wrk
-// binary: a single place that turns raw argv (os.Args[1:]) into a Request
-// naming the action the process should perform.
-//
-// Parsing is fail-closed: any argument that is not a recognized flag is an
-// error naming that argument, and the --self-update re-exec plumbing
-// validates its companion flags only when --self-update is the selected
-// action. The package is pure (no logger, no global state); the only
-// dependencies are the standard library and core/version.
+// binary: raw argv (os.Args[1:]) → a Request naming the action to perform.
+// Fail-closed (an unrecognized argument is an error naming it); pure package
+// (stdlib + core/version only). Grammar and invariants: specs/domains/cli.md.
 package cli
 
 import (
@@ -29,19 +24,18 @@ const (
 	ActionHelp
 	// ActionVersion prints the version banner.
 	ActionVersion
-	// ActionSelfUpdate runs the staging self-updater. Internal re-exec
-	// plumbing: hidden from the user-facing help output.
+	// ActionSelfUpdate runs the staging self-updater — hidden re-exec
+	// plumbing, never listed in help.
 	ActionSelfUpdate
 )
 
 // SelfUpdateRequest carries the companion values of a --self-update
-// invocation. It is populated exactly when Action is ActionSelfUpdate.
+// invocation (populated exactly when Action is ActionSelfUpdate).
 type SelfUpdateRequest struct {
-	// PID is the process id of the parent (old) app that launched the
-	// staging updater; the updater waits for it to exit before swapping.
+	// PID is the parent (old) app's process id; the updater waits for its
+	// exit before swapping.
 	PID int
-	// Stage is the staging directory holding the update archive (and the
-	// updater binary itself).
+	// Stage is the staging directory (update archive + updater binary).
 	Stage string
 	// Target is the install root to replace.
 	Target string
@@ -55,15 +49,11 @@ type Request struct {
 }
 
 // Parse converts raw command-line arguments (os.Args[1:]) into a Request.
-//
-// The first recognized action flag wins; later action flags are ignored.
-// Repeated flags take the last value. Companion flags (--pid, --stage,
-// --target) may appear anywhere on the line; their presence is validated
-// only once the whole line is parsed — required when --self-update is the
-// selected action, an error anywhere else. Value errors (a missing or empty
-// value, a non-positive --pid) abort the scan immediately. Any unknown
-// argument — an unrecognized flag, a bare positional, or a companion without
-// --self-update — is an error naming the argument.
+// The first action flag wins, value flags take the last occurrence, and the
+// companion flags (--pid/--stage/--target) are validated only after the
+// full scan — required when --self-update is selected, an error anywhere
+// else; value errors abort the scan immediately. Any unrecognized argument
+// is an error naming it. Grammar: specs/domains/cli.md.
 func Parse(args []string) (Request, error) {
 	req := Request{Action: ActionRun}
 	chosen := false
@@ -149,7 +139,7 @@ func Parse(args []string) (Request, error) {
 }
 
 // nextArg consumes and returns the value following args[*i] (a flag's
-// argument), reporting whether one exists. Ported from core/updater.
+// argument), reporting whether one exists.
 func nextArg(args []string, i *int) (string, bool) {
 	if *i+1 >= len(args) {
 		return "", false
@@ -158,9 +148,8 @@ func nextArg(args []string, i *int) (string, bool) {
 	return args[*i], true
 }
 
-// parseInt parses a strict positive integer: decimal digits only (so a
-// leading '+' or '-' is rejected), with strconv.Atoi providing the
-// platform-int overflow bound. Ported from core/updater.parseInt.
+// parseInt parses a strict positive integer: decimal digits only, with
+// strconv.Atoi providing the platform-int overflow bound.
 func parseInt(s string) (int, error) {
 	if s == "" {
 		return 0, errors.New("not a positive integer")
@@ -170,8 +159,8 @@ func parseInt(s string) (int, error) {
 			return 0, errors.New("not a positive integer")
 		}
 	}
-	// strconv.Atoi rejects values outside the platform int range, closing the
-	// overflow wrap that a hand-rolled accumulation would allow on long input.
+	// Atoi rejects values beyond the platform int range — the overflow bound
+	// a hand-rolled accumulation would lack.
 	n, err := strconv.Atoi(s)
 	if err != nil || n <= 0 {
 		return 0, errors.New("not a positive integer")
@@ -179,8 +168,8 @@ func parseInt(s string) (int, error) {
 	return n, nil
 }
 
-// helpText is the user-facing usage. --self-update and its companion flags
-// are internal re-exec plumbing and deliberately not listed.
+// helpText is the user-facing usage; --self-update and its companions are
+// hidden re-exec plumbing (specs/domains/cli.md).
 const helpText = `Usage: c0wrk [flags]
 
 Flags:
@@ -193,8 +182,7 @@ func PrintHelp(w io.Writer) {
 	_, _ = fmt.Fprint(w, helpText)
 }
 
-// PrintVersion writes the one-line version banner to w, sourced from the
-// build-time metadata in core/version.
+// PrintVersion writes the one-line version banner (core/version metadata).
 func PrintVersion(w io.Writer) {
 	_, _ = fmt.Fprintf(w, "c0wrk %s (commit %s, built %s)\n", version.Version, version.GitCommit, version.BuildDate)
 }

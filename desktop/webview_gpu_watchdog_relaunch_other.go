@@ -7,9 +7,8 @@ import (
 	"log/slog"
 )
 
-// relaunchDetachedSelf is unreachable: NewWebviewGpuWatchdog arms only on
-// Linux. It exists so the watchdog file compiles unchanged on macOS and
-// Windows.
+// relaunchDetachedSelf is the non-Linux compile stub: the GPU watchdog never
+// arms off Linux (specs/domains/webview-gpu-policy.md).
 func relaunchDetachedSelf(*slog.Logger) error {
 	return errors.New("webview GPU watchdog relaunch is Linux-only")
 }

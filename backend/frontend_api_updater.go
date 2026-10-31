@@ -44,9 +44,7 @@ type UpdateSettings struct {
 	// CurrentVersion echoes the running build version for display.
 	CurrentVersion string `json:"current_version"`
 	// OperatorEnabled reflects the operator-level master gate (config.yaml
-	// updates.enabled). When false, the entire update subsystem is disabled by
-	// an administrator: CheckForUpdates reports no update, the background
-	// auto-check never runs, and the UI disables all update affordances.
+	// updates.enabled); when false the entire update subsystem is disabled.
 	OperatorEnabled bool `json:"operator_enabled"`
 }
 
@@ -57,22 +55,18 @@ type UpdateProgress struct {
 	Total int64 `json:"total"`
 }
 
-// downloadTimeout caps a single archive download. It matches the generous
-// fallback used by updater.NewDownloader so the proxy client honours the same
-// bound.
+// downloadTimeout caps a single archive download — the generous fallback
+// updater.NewDownloader uses, so the proxy client honours the same bound.
 const downloadTimeout = 10 * time.Minute
 
-// updaterStartProbeDelay bounds the post-Start liveness probe in ApplyUpdate.
-// A healthy staged updater is guaranteed to still be running this long (its
-// first action is waiting for the quitting app), so an exit inside the window
-// proves the child was killed before it could do anything (macOS amfid
-// asynchronously SIGKILLs an exec whose signature does not validate outside
-// the original bundle) and the quit must be aborted.
+// updaterStartProbeDelay bounds the post-Start liveness probe in ApplyUpdate:
+// a healthy staged updater is guaranteed still to be running this long, so an
+// exit inside the window proves the child was killed before doing anything
+// (macOS amfid kills asynchronously). See specs/decisions/023-auto-update.md.
 const updaterStartProbeDelay = 1 * time.Second
 
-// autoCheckEnabled reports whether automatic background checks are enabled,
-// reading updates.auto_check from config.yaml. Defaults to true when unset
-// (nil pointer), matching the ApplyDefaults convention.
+// autoCheckEnabled reports whether automatic background checks are enabled
+// (updates.auto_check; defaults to true when unset).
 func (f *FrontendAPI) autoCheckEnabled() bool {
 	f.configMu.RLock()
 	defer f.configMu.RUnlock()
@@ -82,10 +76,9 @@ func (f *FrontendAPI) autoCheckEnabled() bool {
 	return *f.config.Updates.AutoCheck
 }
 
-// loadSkippedVersion reads the user-dismissed release tag from update_state.json
-// (the authoritative runtime-state home). Returns "" when the file is missing,
-// unreadable, or the field is unset — never returns an error so a missing state
-// file never blocks the update flow.
+// loadSkippedVersion reads the user-dismissed release tag from
+// update_state.json; "" when missing or unreadable — a missing state file
+// never blocks the update flow.
 func (f *FrontendAPI) loadSkippedVersion() string {
 	f.seedAcquire()
 	if f.agentDir == "" {
@@ -95,11 +88,9 @@ func (f *FrontendAPI) loadSkippedVersion() string {
 	return state.SkippedVersion
 }
 
-// operatorUpdateCheckEnabled reports whether the operator-level master gate
-// (config.yaml updates.enabled) permits the update subsystem. It defaults to
-// true when the config is unset, matching derefBoolDefaultTrue semantics.
-// This is the SOLE enable/disable switch: when false, CheckForUpdates reports
-// no update and the background auto-check never runs.
+// operatorUpdateCheckEnabled reports whether the operator master gate
+// (updates.enabled) permits the update subsystem — the SOLE switch; false
+// means CheckForUpdates reports no update and the auto-check never runs.
 func (f *FrontendAPI) operatorUpdateCheckEnabled() bool {
 	f.configMu.RLock()
 	cfg := f.config
@@ -110,9 +101,8 @@ func (f *FrontendAPI) operatorUpdateCheckEnabled() bool {
 	return *cfg.Updates.Enabled
 }
 
-// proxyConfigForUpdater builds a proxy.Config from the current application
-// config under the config read-lock, mirroring the conversion in
-// configadapter.ToBuilderConfig.
+// proxyConfigForUpdater builds a proxy.Config from the current config under
+// the read lock (mirrors configadapter.ToBuilderConfig's conversion).
 func (f *FrontendAPI) proxyConfigForUpdater() proxy.Config {
 	f.configMu.RLock()
 	defer f.configMu.RUnlock()
@@ -128,19 +118,16 @@ func (f *FrontendAPI) proxyConfigForUpdater() proxy.Config {
 	}
 }
 
-// emitUpdateError emits a structured update:error event with a message and
-// logs it. The payload is a map[string]string so the frontend can render it
-// without a bespoke type guard.
+// emitUpdateError emits a structured update:error event and logs it; the
+// payload is a map so the frontend renders it without a bespoke type guard.
 func (f *FrontendAPI) emitUpdateError(msg string) {
 	f.seedAcquire()
 	f.log().Error("update error", "error", msg)
 	f.emitEvent(EventUpdateError, map[string]string{"message": msg})
 }
 
-// sumsURLFor derives the SHA256SUMS download URL from an asset's
-// browser_download_url. Both live under the same
-// `…/releases/download/<tag>/` prefix; the sums file is always named
-// SHA256SUMS (see .github/workflows/release.yml).
+// sumsURLFor derives the SHA256SUMS URL from an asset's browser_download_url
+// — same `…/releases/download/<tag>/` prefix, fixed SHA256SUMS name.
 func sumsURLFor(assetURL string) string {
 	idx := strings.LastIndex(assetURL, "/")
 	if idx < 0 {
@@ -149,12 +136,10 @@ func sumsURLFor(assetURL string) string {
 	return assetURL[:idx+1] + "SHA256SUMS"
 }
 
-// checkAndCache performs a single update check against GitHub using the
-// configured proxy-aware client, then caches the result (under updateMu) so a
-// subsequent DownloadUpdate can proceed without re-checking. It is the single
-// check path shared by the manual CheckForUpdates RPC and the background
-// auto-check — ensuring every discovered update is downloadable regardless of
-// which path found it.
+// checkAndCache performs one update check and caches the result (under
+// updateMu) so a subsequent DownloadUpdate proceeds without re-checking —
+// the single check path shared by the manual RPC and the background
+// auto-check, so every discovered update is downloadable.
 func (f *FrontendAPI) checkAndCache(ctx context.Context, skippedVersion string) (updater.Result, error) {
 	checker, err := updater.NewCheckerWithProxy(
 		updater.Config{
@@ -179,13 +164,10 @@ func (f *FrontendAPI) checkAndCache(ctx context.Context, skippedVersion string) 
 }
 
 // CheckForUpdates queries GitHub for the latest release and reports whether an
-// update is available for the current platform. The result is cached so the
-// subsequent DownloadUpdate call does not need to re-check. Emits
-// update:available, update:none, or update:error.
-//
-// The operator-level master gate (config.yaml updates.enabled) is the sole
-// enable/disable switch: when it is false, this method short-circuits and
-// reports no update (without touching the network).
+// update is available; the result is cached for DownloadUpdate. Emits
+// update:available, update:none, or update:error. Short-circuits to "no
+// update" without touching the network when the operator master gate
+// (updates.enabled) is off.
 func (f *FrontendAPI) CheckForUpdates() (*UpdateInfo, error) {
 	f.seedAcquire()
 	current := version.Version
@@ -220,17 +202,12 @@ func (f *FrontendAPI) CheckForUpdates() (*UpdateInfo, error) {
 	return info, nil
 }
 
-// GetLastUpdateCheck returns the update-check result cached by the most
-// recent CheckForUpdates / RunBackgroundUpdateCheck call in this session, or
-// nil when no check has run (or the latest check found nothing / the operator
-// gate is off).
-//
-// Why this exists: the startup auto-check emits update:available roughly a
-// second after the backend becomes ready — exactly when the frontend may not
-// have subscribed to global events yet, so the event (and with it the update
-// toast) is silently lost. The backend keeps the authoritative cached result
-// (checkAndCache), so the frontend can pull it once after mounting and on
-// backend:ready, making the toast independent of event-delivery timing.
+// GetLastUpdateCheck returns the result cached by the most recent check, or
+// nil. The startup auto-check emits update:available roughly a second after
+// the backend is ready — exactly when the frontend may not have subscribed
+// yet, silently losing the toast; the frontend pulls this once after
+// mounting to make the toast independent of event-delivery timing (the
+// recovery-pull of specs/decisions/023-auto-update.md).
 func (f *FrontendAPI) GetLastUpdateCheck() (*UpdateInfo, error) {
 	f.seedAcquire()
 	if !f.operatorUpdateCheckEnabled() {
@@ -253,10 +230,9 @@ func (f *FrontendAPI) GetLastUpdateCheck() (*UpdateInfo, error) {
 	}, nil
 }
 
-// DownloadUpdate fetches and integrity-verifies the release archive selected by
-// the most recent CheckForUpdates into the update-staging directory. Progress
-// is streamed as update:progress events. Emits update:downloaded on success or
-// update:error on failure.
+// DownloadUpdate fetches and integrity-verifies the release archive selected
+// by the most recent check into the update-staging directory, streaming
+// update:progress events; emits update:downloaded or update:error.
 func (f *FrontendAPI) DownloadUpdate() error {
 	f.seedAcquire()
 	f.updateMu.Lock()
@@ -272,10 +248,8 @@ func (f *FrontendAPI) DownloadUpdate() error {
 	stagingDir := config.UpdateStagingDir(f.agentDir)
 	sumsURL := sumsURLFor(result.AssetURL)
 
-	// Build a proxy-aware HTTP client (mirroring CheckForUpdates via
-	// checkAndCache) so the archive download honours corporate proxies and
-	// custom CA bundles — a nil client would fall back to a bare transport and
-	// silently fail behind a proxy.
+	// Proxy-aware client (mirroring CheckForUpdates): a nil client would fall
+	// back to a bare transport and silently fail behind a proxy.
 	client, err := proxy.BuildClient(f.proxyConfigForUpdater(), downloadTimeout, f.log())
 	if err != nil {
 		f.emitUpdateError("build proxy client: " + err.Error())
@@ -305,15 +279,12 @@ func (f *FrontendAPI) DownloadUpdate() error {
 	return nil
 }
 
-// ApplyUpdate prepares the self-update re-exec: it stages a copy of the
-// running binary, copies the downloaded archive next to it, and launches the
-// staging updater as a detached process. The updater waits for this process to
-// exit (via --pid), then atomically swaps the install tree and relaunches.
-//
-// After launching the updater, ApplyUpdate triggers a coordinated graceful
-// quit (wailsRuntime.Quit) so the Wails Shutdown hooks run before the process
-// exits — it never force-exits. Returns an error (without quitting) when any
-// preparation step fails.
+// ApplyUpdate prepares the self-update re-exec (the two-process dance of
+// specs/decisions/023-auto-update.md): stages a copy of the running binary
+// with the downloaded archive beside it and launches the staging updater
+// detached (it waits for this process to exit via --pid, then swaps and
+// relaunches). A coordinated graceful quit follows so the Wails Shutdown
+// hooks run; preparation failures return an error without quitting.
 func (f *FrontendAPI) ApplyUpdate() error {
 	f.seedAcquire()
 	f.updateMu.Lock()
@@ -357,12 +328,9 @@ func (f *FrontendAPI) ApplyUpdate() error {
 	f.log().Info("launching self-update re-exec",
 		"updater", updaterPath, "pid", pid, "target", target)
 
-	// The updater's own diagnostics (slog on stderr, ApplySelfUpdate errors
-	// from main.go) previously went to /dev/null: cmd.Stdout/Stderr were nil,
-	// so a failing self-update left NO trace and could not be diagnosed after
-	// the fact. Capture both streams in a file inside the staging dir — it
-	// survives until cleanupStaging (success) or the 24h-gated reap, giving
-	// every failed attempt a readable record.
+	// Capture the updater's own diagnostics in a file inside the staging dir
+	// (previously /dev/null: a failing self-update left NO trace). It
+	// survives until cleanupStaging (success) or the 24h-gated reap.
 	updaterLogPath := filepath.Join(stagingDir, "updater-output.log")
 	updaterLog, err := os.Create(updaterLogPath)
 	if err != nil {
@@ -372,9 +340,9 @@ func (f *FrontendAPI) ApplyUpdate() error {
 	defer func() { _ = updaterLog.Close() }()
 
 	// Launch the staging updater detached so it survives this process's exit.
-	// The updater polls the parent PID until it dies, then swaps + relaunches.
-	// context.Background() is intentional: the app context is cancelled on the
-	// graceful quit that follows, which would kill a CommandContext tied to it.
+	// context.Background() is intentional: the app context is cancelled by
+	// the graceful quit that follows, which would kill a CommandContext tied
+	// to it.
 	cmd := exec.CommandContext(context.Background(), updaterPath, args...)
 	cmd.Stdout = updaterLog
 	cmd.Stderr = updaterLog
@@ -385,15 +353,11 @@ func (f *FrontendAPI) ApplyUpdate() error {
 		return err
 	}
 
-	// Detect an updater that died the moment it was exec'd. On macOS the exec
-	// kill is ASYNCHRONOUS: amfid validates the binary after Start() returns
-	// and SIGKILLs the process (e.g. an ad-hoc signature that only validates
-	// inside the original .app bundle), so a plain Start() success proves
-	// nothing. Wait briefly for the child to exit: a healthy updater is
-	// guaranteed to still be alive here (its first action is waiting for THIS
-	// process to quit, which has not happened yet), so an exit inside the
-	// probe window means the update will never happen — abort the quit and
-	// tell the user instead of silently closing the app.
+	// Detect an updater that died the moment it was exec'd (the asynchronous
+	// macOS kill described on updaterStartProbeDelay). A healthy updater is
+	// guaranteed still alive here — its first action is waiting for THIS
+	// process to quit — so an exit inside the probe window means the update
+	// will never happen: abort the quit and tell the user.
 	waitCh := make(chan error, 1)
 	go func() { waitCh <- cmd.Wait() }()
 	select {
@@ -408,20 +372,17 @@ func (f *FrontendAPI) ApplyUpdate() error {
 		// about to exit anyway, so no goroutine leak needs handling.
 	}
 
-	// Coordinated quit: let the frontend/Wails shut down gracefully so the
-	// process exits naturally and the waiting updater proceeds. We do NOT
-	// os.Exit here — that would skip Shutdown hooks.
+	// Coordinated quit: do NOT os.Exit — that would skip the Shutdown hooks
+	// the waiting updater relies on.
 	if f.quitApp != nil {
 		f.quitApp()
 	}
 	return nil
 }
 
-// SkipVersion records that the user dismissed the given release tag, so the
-// checker suppresses it until a newer release is published. An empty version
-// clears the skip. Persists immediately to update_state.json (preserving the
-// last-check timestamp) and invalidates any cached check result so the next
-// CheckForUpdates reflects it.
+// SkipVersion records that the user dismissed the given release tag (empty
+// clears the skip); persists to update_state.json preserving the last-check
+// timestamp and invalidates the cached result.
 func (f *FrontendAPI) SkipVersion(ver string) error {
 	f.seedAcquire()
 	if f.agentDir == "" {
@@ -445,10 +406,8 @@ func (f *FrontendAPI) SkipVersion(ver string) error {
 	return nil
 }
 
-// GetUpdateSettings returns the current self-update preferences (auto-check,
-// skipped version) plus the running version for display and the operator-level
-// master gate (operator_enabled) so the UI can reflect an
-// administrator-disabled state.
+// GetUpdateSettings returns the self-update preferences, the running version,
+// and the operator master gate so the UI can reflect a disabled state.
 func (f *FrontendAPI) GetUpdateSettings() UpdateSettings {
 	return UpdateSettings{
 		AutoCheck:       f.autoCheckEnabled(),
@@ -458,20 +417,18 @@ func (f *FrontendAPI) GetUpdateSettings() UpdateSettings {
 	}
 }
 
-// SetUpdateSettings persists the auto-check preference to config.yaml
-// (updates.auto_check) and returns the resolved settings. An explicit false is
-// honoured (never reset to the default). Invalidates any cached check result
-// so the next CheckForUpdates reflects the new gate.
+// SetUpdateSettings persists the auto-check preference (updates.auto_check)
+// and returns the resolved settings; an explicit false is honoured and the
+// cached check result is invalidated.
 func (f *FrontendAPI) SetUpdateSettings(autoCheck bool) (UpdateSettings, error) {
 	f.configMu.Lock()
 	defer f.configMu.Unlock()
 	if f.config == nil {
 		return UpdateSettings{}, errors.New("config not initialized")
 	}
-	// Snapshot the previous value so it can be restored if the persist fails —
-	// otherwise the in-memory config would hold the unpersisted value and the
-	// UI's revert-on-failure (GetUpdateSettings) would read it back, silently
-	// keeping the rejected change.
+	// Snapshot the previous value to restore if the persist fails — otherwise
+	// the in-memory config would hold the unpersisted value and the UI's
+	// revert-on-failure read would silently keep the rejected change.
 	prev := f.config.Updates.AutoCheck
 	f.config.Updates.AutoCheck = &autoCheck
 	if err := f.persistConfig(); err != nil {
@@ -487,9 +444,8 @@ func (f *FrontendAPI) SetUpdateSettings(autoCheck bool) (UpdateSettings, error) 
 	f.updateMu.Unlock()
 
 	f.log().Info("update settings saved", "auto_check", autoCheck)
-	// The write lock is still held here, so read the operator gate directly
-	// from f.config instead of operatorUpdateCheckEnabled() (which takes the
-	// read lock and would deadlock).
+	// The write lock is held: read the operator gate directly — the
+	// read-locking helper would deadlock.
 	operatorEnabled := f.config.Updates.Enabled == nil || *f.config.Updates.Enabled
 	return UpdateSettings{
 		AutoCheck:       autoCheck,
@@ -508,15 +464,11 @@ const backgroundCheckTimeout = 20 * time.Second
 const defaultCheckInterval = 6 * time.Hour
 
 // RunBackgroundUpdateCheck performs a single gated background update check,
-// intended to be called once at startup (from desktop) in a goroutine. It is
-// the SOLE automatic check path: it honours the operator master gate
-// (config.yaml updates.enabled) and the auto-check preference (config.yaml
-// updates.auto_check), respects the check interval and skipped version
-// recorded in update_state.json, caches the result via checkAndCache (so any
-// discovered update is immediately downloadable), and emits update:available
-// when one is found.
-//
-// Network failures are swallowed (logged at debug) and never break startup.
+// intended to be called once at startup in a goroutine — the SOLE automatic
+// check path (operator gate, auto-check preference, interval and skipped
+// version from update_state.json; result cached via checkAndCache). Network
+// failures are swallowed (debug) and never break startup. See
+// specs/decisions/023-auto-update.md.
 func (f *FrontendAPI) RunBackgroundUpdateCheck() {
 	f.seedAcquire()
 	log := f.log()
@@ -528,9 +480,8 @@ func (f *FrontendAPI) RunBackgroundUpdateCheck() {
 		return
 	}
 
-	// Auto-check gate (config.yaml): respect the updates.auto_check
-	// preference — when false only the automatic background poll is
-	// suppressed; manual checks from the UI still work.
+	// Auto-check gate: when false only the background poll is suppressed;
+	// manual checks from the UI still work.
 	if !f.autoCheckEnabled() {
 		log.Debug("automatic update check disabled by config (updates.auto_check=false)")
 		return
@@ -561,11 +512,10 @@ func (f *FrontendAPI) RunBackgroundUpdateCheck() {
 	defer cancel()
 	result, err := f.checkAndCache(checkCtx, state.SkippedVersion)
 
-	// Record that a check was attempted (success or failure) so a transient
-	// network blip does not cause a retry storm on every startup. Re-read the
-	// state just before saving: the network check above can take up to
-	// backgroundCheckTimeout, and a SkipVersion call completed during that
-	// window must not be clobbered by the stale pre-check snapshot.
+	// Record that a check was attempted so a transient blip does not cause a
+	// retry storm on every startup. Re-read the state just before saving: the
+	// check can take up to backgroundCheckTimeout, and a SkipVersion landing
+	// in that window must not be clobbered by the stale snapshot.
 	fresh, _ := updater.LoadState(statePath) // any read error → keep pre-check snapshot
 	skipped := state.SkippedVersion
 	if fresh.SkippedVersion != "" {
@@ -577,7 +527,7 @@ func (f *FrontendAPI) RunBackgroundUpdateCheck() {
 	}
 
 	if err != nil {
-		// Network / rate-limit / parse error: silent skip. Never emit a
+		// Network / rate-limit / parse error: silent skip — never a
 		// user-facing error event from the background path.
 		log.Debug("automatic update check failed (silent skip)", "error", err)
 		return

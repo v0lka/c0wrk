@@ -1,8 +1,7 @@
-// Package lexical provides a BM25-based lexical index backed by bleve.
-//
-// The package registers a custom token filter "c0wrk_camel_case" at init time
-// and exposes an Index interface for upserting and querying documents by
-// shared IDs (the same IDs used by the chromem vector collection).
+// Package lexical provides a BM25-based lexical index backed by bleve: a
+// custom camelCase-splitting token filter registered at init time, and an
+// Index over the document IDs shared with the chromem vector collection.
+// See specs/domains/workspace.md (Vector Index).
 package lexical
 
 import (
@@ -27,10 +26,8 @@ func init() {
 	}
 }
 
-// camelCaseFilter splits tokens on case/letter-digit boundaries so that
-// identifiers like camelCase, HTMLParser, and foo123bar each yield the
-// component subwords. It replaces the input token with its parts; if a
-// token cannot be split, it is passed through unchanged.
+// camelCaseFilter replaces each token with its subwords split on case/letter-
+// digit boundaries (camelCase, HTMLParser, foo123bar); unsplit tokens pass through.
 type camelCaseFilter struct{}
 
 func camelCaseFilterConstructor(_ map[string]interface{}, _ *registry.Cache) (analysis.TokenFilter, error) {
@@ -62,12 +59,8 @@ func (f *camelCaseFilter) Filter(input analysis.TokenStream) analysis.TokenStrea
 	return out
 }
 
-// splitIdentifier splits an identifier-like token on:
-//   - lower -> upper  (camelCase  -> camel, Case)
-//   - upperN -> upper lower (HTMLParser -> HTML, Parser)
-//   - letter <-> digit (foo123bar -> foo, 123, bar)
-//
-// Returns a slice with a single element if no split is applied.
+// splitIdentifier splits an identifier-like token on lower→upper,
+// upperN→upper-lower (acronyms), and letter↔digit boundaries; one element = no split.
 func splitIdentifier(term []byte) [][]byte {
 	if len(term) == 0 {
 		return nil

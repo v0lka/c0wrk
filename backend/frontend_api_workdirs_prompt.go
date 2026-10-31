@@ -24,21 +24,13 @@ const promptAutoWorkDirDescription = "auto-detected from prompt"
 // this separate pass expands it against the current user's home directory.
 var homeRelativeRe = regexp.MustCompile(`~[A-Za-z0-9_.\-]*(?:/[A-Za-z0-9/_.\-~]+)?`)
 
-// autoAddPromptWorkDirs scans the user's prompt text for local filesystem paths
-// and adds every existing directory as a session-scoped auxiliary working
-// directory. This makes directories the user mentions in prose (e.g. "the build
-// output is in /opt/build") automatically available as containment roots and
-// appears in the system prompt's "Additional Work Directories" section.
-//
-// Only paths that exist on disk and are directories are added; non-existent
-// paths and regular files are skipped. Paths already recorded for the session
-// (deduplicated by canonical path) are not re-added. Broadly-scoped paths — the
-// filesystem/volume root, the home-directory root, and top-level system
-// directories — are skipped (see [isSensitiveWorkDir]) so a mere mention of
-// "~", "/", "/etc", etc. does not silently make a whole subtree a containment
-// root. The whole operation is best-effort: any per-path error is logged and
-// skipped, and a failure never blocks the user's message. Emits a single
-// workdirs:changed event when at least one directory was added.
+// autoAddPromptWorkDirs scans the user's prompt text for local filesystem
+// paths and adds every existing directory as a session-scoped auxiliary work
+// directory, so prose-mentioned directories become containment roots. Existing
+// directories only; already-recorded and broadly-scoped paths (see
+// [isSensitiveWorkDir]) are skipped; best-effort end to end — a failure never
+// blocks the message. Emits one workdirs:changed when anything was added.
+// See specs/architecture/security-model.md.
 func (f *FrontendAPI) autoAddPromptWorkDirs(sessionID, text string) {
 	f.seedAcquire()
 	if f.store == nil || strings.TrimSpace(text) == "" {
@@ -50,9 +42,6 @@ func (f *FrontendAPI) autoAddPromptWorkDirs(sessionID, text string) {
 		return
 	}
 
-	// Deduplicate against directories already recorded for the session so a
-	// repeated mention (or a re-send) does not hit the unique-constraint error
-	// or create redundant rows.
 	existing := make(map[string]struct{})
 	{
 		ctx, cancel := context.WithTimeout(f.ctx(), 5*time.Second)
@@ -71,13 +60,13 @@ func (f *FrontendAPI) autoAddPromptWorkDirs(sessionID, text string) {
 	for _, c := range candidates {
 		resolved, err := resolveWorkDirPath(c)
 		if err != nil {
-			continue // non-existent or not a directory — skip per the policy.
+			continue
 		}
 		if isSensitiveWorkDir(resolved) {
-			continue // broad system/home/root path — do not silently widen scope.
+			continue
 		}
 		if _, ok := existing[resolved]; ok {
-			continue // already recorded for this session.
+			continue
 		}
 		ctx, cancel := context.WithTimeout(f.ctx(), 5*time.Second)
 		err = f.store.SaveSessionWorkDir(ctx, sessionID, project.WorkDirectoryRecord{
@@ -102,12 +91,9 @@ func (f *FrontendAPI) autoAddPromptWorkDirs(sessionID, text string) {
 	}
 }
 
-// isSensitiveWorkDir reports whether an auto-discovered work-directory path
-// grants such broad access that it must never be added silently from a prompt
-// mention: the filesystem/volume root, the user's home-directory root, or a
-// top-level system directory. Narrowly-scoped subdirectories (e.g. /opt/build)
-// are not in the set and remain auto-addable — the concern is only a mention
-// of a path that would make an entire broad subtree a containment root.
+// isSensitiveWorkDir reports whether a path is too broad to add silently from
+// a prompt mention: the filesystem/volume root, the home root, or a top-level
+// system directory. Narrow subdirectories (/opt/build) stay auto-addable.
 func isSensitiveWorkDir(resolved string) bool {
 	resolved = filepath.Clean(resolved)
 	// Filesystem/volume root ("/", "C:\").
@@ -130,13 +116,11 @@ func isSensitiveWorkDir(resolved string) bool {
 	return false
 }
 
-// extractPromptPathCandidates extracts local path-like tokens from prompt text:
-// absolute POSIX/Windows-drive paths via [sdktools.ExtractPaths] (which skips a
-// "/" that follows a path-component character, so embedded relative separators
-// like the "/src" in "frontend/src" are not mistaken for absolute paths), plus
-// home-relative "~/..." tokens expanded against the current user's home
-// directory. Results are cleaned but NOT yet checked for existence; callers
-// filter via [resolveWorkDirPath].
+// extractPromptPathCandidates extracts local path-like tokens: absolute
+// POSIX/Windows-drive paths via [sdktools.ExtractPaths] (which skips a "/"
+// following a path-component character, so "frontend/src" yields nothing)
+// plus home-relative "~/..." tokens expanded against the user's home.
+// Cleaned but NOT existence-checked; callers filter via [resolveWorkDirPath].
 func extractPromptPathCandidates(text string) []string {
 	seen := make(map[string]struct{})
 	var out []string

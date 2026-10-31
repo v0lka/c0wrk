@@ -10,11 +10,9 @@ import (
 )
 
 // ListAgents returns lightweight descriptors for all available Subagent
-// Profiles (AGENT.md), including project-local agents from the active
-// project's .agents/agents directory. Mirrors ListSkills: results are cached;
-// the cache is invalidated when the active project changes or when an agent
-// directory watcher detects a change. Hidden agents are excluded so the
-// public #-autocomplete roster shows only user-visible profiles.
+// Profiles (AGENT.md), including project-local agents. Mirrors ListSkills:
+// cached, invalidated on project switch or watcher change; hidden agents
+// excluded from the public roster. See specs/domains/capabilities.md.
 func (f *FrontendAPI) ListAgents() []AgentDescriptorDTO {
 	b := f.builder()
 	if b == nil {
@@ -68,18 +66,15 @@ func (f *FrontendAPI) invalidateAgentCache() {
 
 // RefreshAgents forces a re-discovery of every Subagent Profile directory
 // and returns the fresh (hidden-excluded) descriptors — the manual path
-// behind the Capabilities tab's refresh button. Mirrors RefreshSkills: the
-// generation bump makes this call always re-scan, covering directories
-// created after startup that the watchers never see.
+// behind the Capabilities tab's refresh button (the generation bump makes it
+// always re-scan). See specs/domains/capabilities.md.
 func (f *FrontendAPI) RefreshAgents() []AgentDescriptorDTO {
 	f.invalidateAgentCache()
 	return f.ListAgents()
 }
 
-// startAgentsWatchers creates a debounced file watcher for each existing
-// Subagent Profile directory. When any change is detected the agent cache is
-// invalidated and an agents:changed event is emitted so the frontend
-// #-autocomplete refreshes. Mirrors startSkillsWatchers.
+// startAgentsWatchers creates a debounced watcher per existing Subagent
+// Profile directory; a change invalidates the cache and emits agents:changed.
 func (f *FrontendAPI) startAgentsWatchers(dirs []string) {
 	f.seedAcquire()
 	f.agentWatchersMu.Lock()
@@ -98,9 +93,9 @@ func (f *FrontendAPI) startAgentsWatchers(dirs []string) {
 			f.log().Warn("failed to watch agent directory", "dir", dir, "error", err)
 			continue
 		}
-		// Watch each immediate subdirectory so modifications to an existing
-		// agent's AGENT.md are detected on platforms where fsnotify does not
-		// watch recursively (e.g. Linux inotify).
+		// Watch each immediate subdirectory so edits to an existing agent's
+		// AGENT.md are detected where fsnotify does not watch recursively
+		// (e.g. Linux inotify).
 		if entries, err := os.ReadDir(dir); err == nil {
 			for _, entry := range entries {
 				if entry.IsDir() {

@@ -9,15 +9,12 @@ import (
 // BudgetInput carries the per-request facts the budget formula consumes
 // (ADR-071 D7).
 type BudgetInput struct {
-	// BodyBytes is the size of the marshaled request body. est_in is derived
-	// from it as ceil(bytes/BytesPerTokenEstimate) — erring toward a larger
-	// input estimate.
+	// BodyBytes is the marshaled request body size; est_in derives from it
+	// (ADR-071 D7), erring toward a larger input estimate.
 	BodyBytes int
-	// OutputLimit is the EXPLICIT per-model generation ceiling from
-	// llm.models.<name>.output_limit. Zero or negative means no override is set,
-	// so the observed p85 output is used without an upper clamp (the clamp only
-	// ever bounds a value that is already below the model's real ceiling, so
-	// omitting it is safe; the wiring does not resolve the built-in metadata).
+	// OutputLimit is the EXPLICIT llm.models.<name>.output_limit ceiling; zero
+	// or negative applies no upper clamp — the wiring deliberately does not
+	// resolve built-in metadata (ADR-071 D7).
 	OutputLimit int
 }
 
@@ -30,22 +27,11 @@ type rates struct{ in, out float64 }
 // is degenerate by construction and the degradation ladder takes over.
 const MinFitSamples = 3
 
-// ResolveDeadline resolves the deadline for one LLM request (ADR-071 D5), in
-// priority order:
-//
-//  1. PerModelRequestTimeout > 0 — fixed, never escalated;
-//  2. GlobalRequestTimeout > 0 — fixed, never escalated;
-//  3. the adaptive budget: DefaultWarmupBudget while the key holds fewer than
-//     WarmupMinSamples samples, then the trained budget (estimate + any latched
-//     escalation, D9);
-//  4. the kill-switch off — the legacy fixed regime: GlobalRequestTimeout
-//     when positive, else LegacyFixedBudget ("no opinion" never means "no
-//     deadline", D11).
-//
-// Key is the budget key the caller resolved for this request (wire-extracted
-// model, or the provider-level fallback); Class bounds the adaptive budget.
-// Warmup carries no escalation by design (D4): until evidence exists the
-// deadline is exactly today's behavior.
+// ResolveDeadline resolves one LLM request's deadline in the ADR-071 D5
+// priority order: per-model fixed override, global fixed override, adaptive
+// (warmup until WarmupMinSamples, then trained estimate + latched escalation),
+// else the legacy fixed regime with the kill-switch off. Warmup never
+// escalates (D4). Full ordering: specs/decisions/071-adaptive-llm-request-budgets.md.
 func (t *BudgetTable) ResolveDeadline(in ResolverInput) time.Duration {
 	if !in.AdaptiveEnabled {
 		if in.GlobalRequestTimeout > 0 {
@@ -79,40 +65,25 @@ func (t *BudgetTable) ResolveDeadline(in ResolverInput) time.Duration {
 	return budget
 }
 
-// ResolverInput carries the operator-owned deadline opinions for one request.
-// All durations are resolved values (seconds in config; callers convert).
+// ResolverInput carries the operator-owned deadline opinions for one request;
+// all durations are resolved values (seconds in config; callers convert).
 type ResolverInput struct {
 	Class Class
-	// Key is the budget key: the wire-extracted model name, or the
-	// provider-level fallback key when extraction failed.
-	Key string
+	Key   string // wire-extracted model name, or the provider-level fallback
 	// BodyBytes and OutputLimit feed the budget formula (see BudgetInput).
-	BodyBytes   int
-	OutputLimit int
-	// PerModelRequestTimeout is llm.models.<name>.request_timeout: a positive
-	// value is a fixed deadline that is never escalated (D5).
-	PerModelRequestTimeout time.Duration
-	// GlobalRequestTimeout is timeouts.llmRequestTimeout: a positive value is
-	// a fixed deadline that is never escalated (D5).
-	GlobalRequestTimeout time.Duration
-	// AdaptiveEnabled mirrors timeouts.adaptive_budget.enabled (D11).
-	AdaptiveEnabled bool
+	BodyBytes              int
+	OutputLimit            int
+	PerModelRequestTimeout time.Duration // >0: fixed, never escalated (D5)
+	GlobalRequestTimeout   time.Duration // >0: fixed, never escalated (D5)
+	AdaptiveEnabled        bool          // mirrors timeouts.adaptive_budget.enabled (D11)
 }
 
-// estimate computes the trained adaptive budget for the key (ADR-071 D6/D7),
-// unescalated but already clamped to the class envelope:
-//
-//  1. the two-parameter fit priced at p85 — the main path;
-//  2. a size-normalized p85 percentile of observed durations — when the fit
-//     is degenerate (too few effective samples, rank-deficient or non-positive
-//     rates);
-//  3. the class floor — when no sample carries token information at all.
-//
-// Rung 3 is the reading of D6's "class constants": data that cannot inform
-// size at all leaves only the class envelope, and the floor is its minimum
-// defensible budget. D9's escalation bounds the harm of a floor that is too
-// tight, and the percentile rung (which works from durations alone) covers
-// every degenerate-but-informative case short of this one.
+// estimate computes the trained adaptive budget (ADR-071 D6/D7), unescalated
+// but clamped to the class envelope, down the degradation ladder: the p85-
+// priced two-parameter fit, then a size-normalized duration percentile when
+// the fit is degenerate, then the class floor when no sample carries token
+// information — the envelope's minimum defensible budget, with D9 escalation
+// bounding the harm of a floor set too tight.
 func (t *BudgetTable) estimate(key string, class Class, in BudgetInput) time.Duration {
 	samples := t.snapshot(key)
 	estIn := estInputTokens(in.BodyBytes)
@@ -130,14 +101,10 @@ func (t *BudgetTable) estimate(key string, class Class, in BudgetInput) time.Dur
 	return class.Floor()
 }
 
-// fitRates fits duration ≈ in·r_in + out·r_out over the size-carrying samples
-// by ordinary least squares, then prices both rates at the p85 of the
-// per-sample duration/fitted ratios, so the priced rates predict the duration
-// 85% of observed calls stay under (ADR-071 D6). Zero-token samples are
-// excluded up front: they carry no size information and would only bias the
-// intercepts. ok is false on the degenerate paths — fewer than MinFitSamples
-// effective samples, a rank-deficient (collinear) design, or non-positive /
-// non-finite rates — and the caller degrades down the ladder.
+// fitRates fits duration ≈ in·r_in + out·r_out by OLS, then prices both rates
+// at the p85 of the per-sample duration/fitted ratios (ADR-071 D6). Zero-token
+// samples are excluded (no size information, biased intercepts). ok is false
+// on the degenerate paths; the caller degrades down the ladder.
 func fitRates(samples []Sample) (rates, bool) {
 	var (
 		sxx, soo, sio, sdIn, sdOut float64
@@ -193,11 +160,10 @@ func isSaneRate(v float64) bool {
 	return !math.IsNaN(v) && !math.IsInf(v, 0) && v > 0
 }
 
-// normalizedPercentile is ladder rung two (ADR-071 D6): the p85 of observed
-// per-token durations, renormalized against the current request's estimated
-// size (est_in + out_reserve) instead of the historical sizes. ok is false
-// when no sample carries token information — the ladder then ends at the
-// class constants.
+// normalizedPercentile is ladder rung two (ADR-071 D6): the p85 per-token
+// duration, renormalized against the current request's estimated size. ok is
+// false when no sample carries token information (ladder ends at the class
+// constants).
 func normalizedPercentile(samples []Sample, estTokens int) (time.Duration, bool) {
 	perToken := make([]float64, 0, len(samples))
 	for _, s := range samples {
@@ -221,13 +187,9 @@ func estInputTokens(bodyBytes int) int {
 	return (bodyBytes + BytesPerTokenEstimate - 1) / BytesPerTokenEstimate
 }
 
-// outputReserve is out_reserve of ADR-071 D7: the model's observed p85 output,
-// never below MinOutputReserve, never above the explicit generation ceiling
-// when one is set (llm.models.<name>.output_limit).
-// The p85 spans every retained sample's output (zero-output samples included;
-// at an 85th percentile they can only pull the reserve down when more than
-// 15% of outputs are zero, which is itself evidence of a small-output
-// workload). An unset OutputLimit applies no upper clamp.
+// outputReserve is out_reserve of ADR-071 D7: the observed p85 output clamped
+// to [MinOutputReserve, OutputLimit]; zero-output samples only pull it down
+// past the 15% mark (small-output workload evidence).
 func outputReserve(samples []Sample, outputLimit int) int {
 	outs := make([]float64, 0, len(samples))
 	for _, s := range samples {
@@ -282,18 +244,12 @@ func percentile(vals []float64, p float64) float64 {
 }
 
 // secondsToDuration converts float seconds to a Duration, saturating instead
-// of overflowing: a pathological fit can produce an astronomically large raw
-// budget, and the class clamp — not int64 wraparound — must be what bounds it.
-//
-// The saturation ceiling is derived in INTEGER arithmetic. Computing it in
-// float — float64(math.MaxInt64) / float64(time.Second) — rounds math.MaxInt64
-// UP to 2^63 (the nearest float64), so the back-conversion
-// sec * float64(time.Second) reaches exactly 2^63, which is out of int64 range.
-// That out-of-range float→int conversion is implementation-defined: amd64 and
-// Windows produce math.MinInt64 (a NEGATIVE duration, defeating the clamp),
-// while arm64 saturates to math.MaxInt64. The integer quotient is strictly
-// below 2^63, so the product is always representable and the result is
-// identical on every architecture.
+// of overflowing: the class clamp — not int64 wraparound — must bound a
+// pathological fit. The ceiling is derived in INTEGER arithmetic: the float
+// form rounds math.MaxInt64 up to 2^63, and the out-of-range float→int
+// conversion is implementation-defined (amd64/Windows yield math.MinInt64 —
+// a NEGATIVE duration defeating the clamp — while arm64 saturates); the
+// integer quotient stays representable on every architecture.
 func secondsToDuration(sec float64) time.Duration {
 	if math.IsNaN(sec) || sec <= 0 {
 		return 0

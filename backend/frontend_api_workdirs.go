@@ -10,24 +10,17 @@ import (
 	"github.com/v0lka/c0wrk/backend/project"
 )
 
-// Scope values accepted by the auxiliary-work-directory RPC methods. Scope
-// determines which persistence table (project- or session-scoped) owns the
-// record.
+// Scope values for the auxiliary-work-directory RPCs; selects the persistence table.
+// See specs/contracts/desktop-frontend.md (Work Directories).
 const (
-	workDirScopeProject = "project"
-	workDirScopeSession = "session"
+	workDirScopeProject = "project" // project-scoped records
+	workDirScopeSession = "session" // session-scoped records
 )
 
-// resolveWorkDirPath normalizes a work-directory path to a canonical form:
-// absolute, cleaned, and symlink-resolved. Stored paths participate in
-// security containment (allowed roots), which compares them against resolved
-// tool inputs, so a non-canonical root (relative path, trailing slash,
-// symlinked prefix) would silently fail the containment match. The path must
-// exist on disk and be a directory; EvalSymlinks requires existence, so it
-// runs after the existence check.
-//
-// Shared by the explicit AddWorkDirectory RPC and the prompt-driven auto-add
-// so both produce the same canonical form.
+// resolveWorkDirPath normalizes a work-directory path to the canonical stored form
+// (absolute, cleaned, symlink-resolved): stored paths feed security containment
+// against resolved tool inputs, so a non-canonical root would silently fail the
+// match. Must exist on disk. See specs/architecture/security-model.md (Session Roots).
 func resolveWorkDirPath(path string) (string, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -75,10 +68,8 @@ func (f *FrontendAPI) ListSessionWorkDirectories(sessionID string) ([]project.Wo
 	return recs, nil
 }
 
-// AddWorkDirectory adds an auxiliary directory. scope is "project" or "session";
-// ownerID is the projectID or sessionID accordingly. The directory must exist
-// on disk; project-scoped directories are not available for the No Project
-// pseudo-project.
+// AddWorkDirectory adds an auxiliary directory; scope selects the project- or
+// session-scoped persistence. See specs/contracts/desktop-frontend.md (Work Directories).
 func (f *FrontendAPI) AddWorkDirectory(scope, ownerID, path, description string) error {
 	f.seedAcquire()
 	path = strings.TrimSpace(path)
@@ -131,19 +122,15 @@ func (f *FrontendAPI) AddWorkDirectory(scope, ownerID, path, description string)
 
 	f.emitWorkDirsChanged()
 
-	// Intake scan (text-only, exec-free): warn when the added directory is a
-	// repository with a dangerous .git/config. Clean or non-git directories
-	// emit nothing. Only the add path scans — description edits and removals
-	// do not open a new workspace. See frontend_api_gitconfig_risk.go.
+	// Intake scan: warns when the added directory is a repository with a dangerous
+	// .git/config (only the add path scans). See specs/decisions/033-git-subprocess-hardening.md.
 	f.notifyGitConfigRisk(GitConfigRiskSourceWorkdir, path)
 
 	return nil
 }
 
-// UpdateWorkDirectoryDescription updates the description of an existing
-// directory. scope is "project" or "session"; ownerID is the projectID or
-// sessionID (used as a scope guard so a cross-scope ID cannot mutate another
-// owner's record); id is the record ID.
+// UpdateWorkDirectoryDescription updates an existing directory's description;
+// ownerID doubles as a scope guard, so a cross-scope ID cannot mutate another owner.
 func (f *FrontendAPI) UpdateWorkDirectoryDescription(scope, ownerID, id, description string) error {
 	f.seedAcquire()
 	description = strings.TrimSpace(description)
@@ -174,9 +161,7 @@ func (f *FrontendAPI) UpdateWorkDirectoryDescription(scope, ownerID, id, descrip
 	return nil
 }
 
-// DeleteWorkDirectory removes a directory. scope is "project" or "session";
-// ownerID is the projectID or sessionID (used as a scope guard); id is the
-// record ID.
+// DeleteWorkDirectory removes a directory; ownerID doubles as a scope guard.
 func (f *FrontendAPI) DeleteWorkDirectory(scope, ownerID, id string) error {
 	f.seedAcquire()
 	switch scope {
@@ -202,10 +187,8 @@ func (f *FrontendAPI) DeleteWorkDirectory(scope, ownerID, id string) error {
 	return nil
 }
 
-// emitWorkDirsChanged emits the global workdirs:changed event so the frontend
-// refreshes its auxiliary-directory list. No-op when the Wails emitter has not
-// been wired yet (e.g. very early in startup) — mirrors how other global events
-// are dispatched through the injected emitEvent callback.
+// emitWorkDirsChanged emits the global workdirs:changed event.
+// See specs/contracts/event-catalog.md.
 func (f *FrontendAPI) emitWorkDirsChanged() {
 	f.seedAcquire()
 	if f.emitEvent != nil {

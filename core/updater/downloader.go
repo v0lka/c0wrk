@@ -30,8 +30,9 @@ type DownloadResult struct {
 
 // Downloader fetches a release asset and its SHA256SUMS file into a staging
 // directory and verifies the archive's integrity before declaring success.
-// Every failure path is fail-closed: a checksum error removes the archive so a
-// partial/corrupt artifact is never left behind to be applied.
+// Every failure path is fail-closed: a checksum error removes the archive so
+// a partial/corrupt artifact is never left behind to be applied
+// (specs/decisions/023-auto-update.md).
 type Downloader struct {
 	Client   *http.Client // HTTP client used for both fetches
 	Verifier Verifier     // integrity verifier; defaults to SHA256Verifier
@@ -56,12 +57,11 @@ func NewDownloader(client *http.Client, verifier Verifier) *Downloader {
 // Download fetches the asset at assetURL and the checksums at sumsURL into
 // stagingDir, then verifies the asset. On success the archive lives at
 // stagingDir/<assetName> and the sums at stagingDir/SHA256SUMS. The progress
-// callback receives (bytesDone, bytesTotal) for the asset download at ~100ms
-// intervals; it may be nil.
-//
-// Context cancellation aborts in-flight HTTP reads cleanly: the request is
-// created with the context, so a cancelled context surfaces as an error from
-// the body read and the partial tmp file is removed.
+// callback receives (bytesDone, bytesTotal) for the asset download at
+// ~100ms intervals; it may be nil. Context cancellation aborts in-flight
+// HTTP reads cleanly: the request is created with the context, so a
+// cancelled context surfaces as an error from the body read and the partial
+// tmp file is removed.
 func (d *Downloader) Download(ctx context.Context, assetURL, sumsURL, assetName, stagingDir string, progress func(done, total int64)) (*DownloadResult, error) {
 	// The asset name is attacker-influenceable data (it comes from the GitHub
 	// release API, which a compromised release or a MITM proxy could control).
@@ -72,9 +72,6 @@ func (d *Downloader) Download(ctx context.Context, assetURL, sumsURL, assetName,
 		return nil, fmt.Errorf("invalid asset name %q: must be a plain filename", assetName)
 	}
 
-	// Enforce HTTPS-only on both the asset and checksum URLs before any network
-	// I/O: a compromised API response or MITM proxy must not downgrade the
-	// fetch to plain HTTP (defense-in-depth alongside the fail-closed SHA256).
 	if err := securehttp.RequireHTTPS(assetURL); err != nil {
 		return nil, err
 	}
@@ -84,11 +81,10 @@ func (d *Downloader) Download(ctx context.Context, assetURL, sumsURL, assetName,
 
 	// The staging root must be created as REAL directories: a link swapped
 	// into a created component at the fixed ~/.c0wrk/update-staging path
-	// would otherwise redirect the verified release archive and SHA256SUMS —
-	// written below via tmp-file + rename — outside the agent dir.
-	// MkdirAllReal refuses a dangling or swapped-in link (and any
-	// non-directory component); a pre-existing operator-symlinked tree
-	// resolves as intent.
+	// would redirect the verified release archive and SHA256SUMS — written
+	// below via tmp-file + rename — outside the agent dir. MkdirAllReal
+	// refuses a dangling or swapped-in link (and any non-directory
+	// component); a pre-existing operator-symlinked tree resolves as intent.
 	if err := safeio.MkdirAllReal(stagingDir, 0o755); err != nil {
 		return nil, fmt.Errorf("creating staging dir %q: %w", stagingDir, err)
 	}
@@ -96,8 +92,8 @@ func (d *Downloader) Download(ctx context.Context, assetURL, sumsURL, assetName,
 	archivePath := filepath.Join(stagingDir, safeName)
 	sumsPath := filepath.Join(stagingDir, sumsFilename)
 
-	// Download both files atomically (tmp + rename). The asset is fetched
-	// first so its progress is reported; the sums file is small.
+	// The asset is fetched first so its progress is reported; the sums file
+	// is small.
 	n, err := d.fetchFile(ctx, assetURL, archivePath, progress)
 	if err != nil {
 		return nil, err
@@ -108,8 +104,6 @@ func (d *Downloader) Download(ctx context.Context, assetURL, sumsURL, assetName,
 		return nil, err
 	}
 
-	// Fail-closed verification: on any verification failure, delete the
-	// archive and report the error.
 	if err := d.Verifier.Verify(archivePath, safeName, sumsPath); err != nil {
 		_ = os.Remove(archivePath)
 		return nil, fmt.Errorf("verifying asset %q: %w", safeName, err)
@@ -123,8 +117,9 @@ func (d *Downloader) Download(ctx context.Context, assetURL, sumsURL, assetName,
 	}, nil
 }
 
-// fetchFile downloads url into destPath using an atomic tmp-file + rename so a
-// crash or cancellation never leaves a half-written file at the final path.
+// fetchFile downloads url into destPath using an atomic sibling tmp-file +
+// rename (same directory, so the rename stays on one filesystem) so a crash
+// or cancellation never leaves a half-written file at the final path.
 // progress is throttled at progressInterval; it may be nil.
 func (d *Downloader) fetchFile(ctx context.Context, rawURL, destPath string, progress func(int64, int64)) (int64, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, http.NoBody)
@@ -141,8 +136,6 @@ func (d *Downloader) fetchFile(ctx context.Context, rawURL, destPath string, pro
 		return 0, fmt.Errorf("downloading %s: HTTP %d", rawURL, resp.StatusCode)
 	}
 
-	// Write to a sibling tmp file so the rename is atomic on the same
-	// filesystem. A random suffix avoids collisions across concurrent fetches.
 	tmpPath, err := tmpSiblingPath(destPath)
 	if err != nil {
 		return 0, fmt.Errorf("staging tmp file for %s: %w", destPath, err)
@@ -191,7 +184,8 @@ func (d *Downloader) fetchFile(ctx context.Context, rawURL, destPath string, pro
 }
 
 // tmpSiblingPath returns a path next to destPath (same directory, so the
-// rename is atomic) with a random suffix.
+// rename is atomic) with a random suffix — no collisions across concurrent
+// fetches.
 func tmpSiblingPath(destPath string) (string, error) {
 	var buf [8]byte
 	if _, err := rand.Read(buf[:]); err != nil {
@@ -201,8 +195,9 @@ func tmpSiblingPath(destPath string) (string, error) {
 	return filepath.Join(dir, "."+base+"."+hex.EncodeToString(buf[:])+".tmp"), nil
 }
 
-// progressWriter wraps an io.Writer and emits progress callbacks at
-// ~100ms intervals to avoid flooding the event channel during fast downloads.
+// progressWriter wraps an io.Writer, emitting progress callbacks at
+// ~progressInterval to avoid flooding the event channel during fast
+// downloads.
 type progressWriter struct {
 	writer    io.Writer
 	progress  func(done, total int64)

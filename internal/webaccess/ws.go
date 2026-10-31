@@ -1,25 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // ws.go — the /ws event channel: RFC6455 handshake and a minimal frame
-// codec, hand-rolled on the stdlib because the sidecar's dependency set is
-// stdlib + backend/config by contract (no websocket library).
-//
-// Admission is layered: requireAuth (session cookie) runs before this
-// handler in the route table; the same-origin Origin check runs here —
+// codec, hand-rolled on the stdlib (the sidecar's dependency contract bans
+// a websocket library). Admission is layered: requireAuth (session cookie)
+// runs before this handler; the same-origin Origin check runs here —
 // browsers always send Origin on a WebSocket handshake, and a mismatched or
-// missing one is a cross-site hijack attempt (cookie-based auth alone would
-// otherwise ride along on any page's behalf).
-//
-// Stage-1 scope: text frames in and out, ping/pong/close handled, control
-// frames interleaved with fragmented messages, fragment total capped. No
-// compression (permessage-deflate is never offered). A dead peer is
-// reclaimed when a write fails, when the read loop errors, or when the peer
-// stays silent past the keepalive window: the server pings every client on
-// a fixed interval and the read pump arms a liveness deadline around each
-// frame read — any inbound frame re-arms it — so a peer that completes the
-// handshake and then goes silent (or trickles bytes) can no longer pin its
-// connection and its two goroutines indefinitely (http.Server IdleTimeout
-// does not cover hijacked conns).
+// missing one is a cross-site hijack attempt (cookie auth alone would ride
+// along on any page's behalf). Scope: text frames in and out,
+// ping/pong/close handled, control frames interleaved with fragmented
+// messages, fragment total capped, no compression. Dead-peer reclaim
+// (keepalive ping + read-pump liveness deadline — IdleTimeout does not
+// cover hijacked conns) is documented at wsPingLoop/wsReadPump.
 
 package webaccess
 
@@ -58,19 +49,18 @@ const (
 	// is pinged this often, and its pong (or any other frame) re-arms the
 	// read pump's liveness deadline.
 	wsPingInterval = 30 * time.Second
-	// wsReadIdleTimeout is that liveness window: how long the read pump waits
-	// for ANY frame before declaring the peer dead. It deliberately exceeds
-	// two ping intervals, so one lost ping/pong exchange must not tear down a
-	// live-but-idle tab, while a truly dead or silent peer is reclaimed in
-	// bounded time instead of pinning the conn and its goroutines forever.
+	// wsReadIdleTimeout is that liveness window: how long the read pump
+	// waits for ANY frame before declaring the peer dead. Deliberately more
+	// than two ping intervals — one lost ping/pong exchange must not tear
+	// down a live-but-idle tab — while a dead peer is reclaimed in bounded
+	// time.
 	wsReadIdleTimeout = 75 * time.Second
 	// maxWSConns caps simultaneous websocket connections: each carries three
-	// goroutines and a 1024-frame outbox, so a leaked tab fan-out must stay
-	// bounded. The cap is a slot RESERVATION taken before the hijack (see
-	// handleWS): once the ResponseWriter is hijacked an HTTP error can no
-	// longer be written, so an over-cap handshake must be refused while the
-	// writer is still alive. Authenticated tabs that exceed the cap get 503
-	// and reconnect with backoff.
+	// goroutines and an outbox, so a leaked tab fan-out must stay bounded.
+	// The cap is a slot RESERVATION taken before the hijack (handleWS): an
+	// HTTP error can no longer be written once hijacked, so an over-cap
+	// handshake is refused while the writer is alive. Authenticated tabs
+	// beyond the cap get 503 and reconnect with backoff.
 	maxWSConns = 16
 	// hostResolveBudget bounds one DNS lookup on the wildcard-bind Host gate
 	// (hostAllowed → nameServes): a wedged resolver must not stall the
@@ -153,10 +143,9 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Capacity must be reserved while the ResponseWriter is still alive:
-	// after Hijack an HTTP status can no longer be written, so an over-cap
-	// handshake has to be refused BEFORE the connection is taken over. The
-	// reservation converts into the registration below (registerWS consumes
-	// it); every failure path between here and there releases it.
+	// after Hijack an HTTP status can no longer be written. The reservation
+	// converts into the registration below; every failure path in between
+	// releases it.
 	if !s.tryReserveWSSlot() {
 		writeJSONError(w, http.StatusServiceUnavailable, "too many websocket connections")
 		return
@@ -183,15 +172,13 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		closing: make(chan struct{}),
 	}
 	// Register BEFORE the 101 goes on the wire. A client that has observed
-	// the 101 may broadcast immediately (the web shim subscribes the moment
-	// the socket opens), and a hub snapshot taken before registration would
-	// legally drop that frame under at-most-once semantics — a delivery hole
-	// with no client-side remedy. With this ordering, registration strictly
-	// precedes the handshake write, so any broadcast triggered by the 101 is
-	// guaranteed to snapshot the connection; frames landing between
-	// registration and pump start queue in the bounded outbox and the write
-	// pump drains them right after the handshake, keeping 101-first wire
-	// ordering intact.
+	// the 101 may broadcast immediately (the shim subscribes on socket
+	// open), and a hub snapshot taken before registration would legally drop
+	// that frame under at-most-once semantics — a delivery hole with no
+	// client-side remedy. Registration strictly precedes the handshake
+	// write, so any broadcast triggered by the 101 snapshots the connection;
+	// frames landing before pump start queue in the outbox and the write
+	// pump drains them right after, keeping 101-first wire ordering intact.
 	s.registerWS(c)
 	if err := wsWriteHandshake(conn, key); err != nil {
 		c.Close() //nolint:errcheck // nothing left to report to a dead peer
@@ -245,15 +232,13 @@ func tokenListContains(h http.Header, name, want string) bool {
 }
 
 // sameOrigin reports whether the request's Origin header (mandatory on
-// browser websocket handshakes) matches the request host exactly — scheme
-// and host:port. Missing Origin is a non-browser client; the handshake is
-// rejected because cookie credentials make every origin potentially hostile.
-// The Host header itself is additionally checked against the configured
-// bind (or the loopback set / the actually-served addresses on a wildcard
-// bind — see hostAllowed): an Origin==Host pair whose host is a rebound
-// DNS name would otherwise pass the equality check. This is
-// defense-in-depth on top of the host-scoped SameSite=Strict cookie — a
-// rebinding attacker without the cookie is already rejected by requireAuth.
+// browser websocket handshakes) matches the request host exactly. Missing
+// Origin is a non-browser client; rejected because cookie credentials make
+// every origin potentially hostile. The Host is additionally checked
+// against the configured bind (hostAllowed): an Origin==Host pair on a
+// rebound DNS name would otherwise pass the equality — defense-in-depth on
+// top of the host-scoped SameSite=Strict cookie (a rebinding attacker
+// without the cookie is already rejected by requireAuth).
 func (s *Server) sameOrigin(r *http.Request) bool {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
@@ -269,15 +254,13 @@ func (s *Server) sameOrigin(r *http.Request) bool {
 	return canonicalOrigin(origin) == canonicalOrigin(scheme+"://"+r.Host)
 }
 
-// canonicalOrigin reduces an origin — scheme://host or scheme://host:port —
-// to scheme://host, carrying the port only when it is not the scheme's
-// default. Browsers serialize the Origin header WITHOUT the default port
-// (:80 on http, :443 on https), while a typed Host header can retain it;
-// without this normalization the explicit-default-port spelling of the SAME
-// origin would be misread as cross-origin — fail-closed, but it 403s the
-// operator's own browser on login and the WS handshake. Malformed input is
-// returned unchanged and simply never matches a well-formed counterpart
-// (fail-closed, as the exact-compare it replaces).
+// canonicalOrigin reduces an origin to scheme://host, carrying the port
+// only when it is not the scheme's default. Browsers serialize Origin
+// WITHOUT the default port (:80/:443) while a typed Host header can retain
+// it; without this the explicit-default-port spelling of the SAME origin
+// would 403 the operator's own browser on login and the WS handshake.
+// Malformed input is returned unchanged and simply never matches
+// (fail-closed).
 func canonicalOrigin(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" {
@@ -295,27 +278,17 @@ func canonicalOrigin(raw string) string {
 }
 
 // hostAllowed reports whether a Host header value (host or host:port) names
-// an address this server actually serves — the DNS-rebinding backstop behind
-// sameOrigin.
-//
-// A NON-wildcard bind keeps the exact-match rule: the Host must equal the
-// configured bind, be "localhost", or be a loopback IP literal — no network
-// lookups on that path.
-//
-// A WILDCARD bind (the unspecified "0.0.0.0"/"::") names every interface, so
-// the old behavior accepted ANY Host — an Origin==Host pair on a rebound DNS
-// name sailed through the same-origin equality. Now the wildcard branch
-// requires the Host to name an address the listener genuinely serves:
-//   - a loopback IP literal or "localhost" (machine-local access), or
-//   - an IP literal among the serving addresses snapshotted at Start
-//     (net.InterfaceAddrs()), or
-//   - a hostname that RESOLVES (bounded, cached) into one of those serving
-//     addresses — the legitimate mDNS/DNS way in ("my-mac.local"); a rebound
-//     attacker name resolves somewhere else and fails.
-//
-// The cookie's host scope stays the primary gate for the wildcard class, as
-// for every class this check alone cannot cover; this closes the hole where
-// the same-origin equality itself was spoofable.
+// an address this server actually serves — the DNS-rebinding backstop
+// behind sameOrigin. A NON-wildcard bind keeps the exact-match rule: the
+// configured bind, "localhost", or a loopback IP literal — no lookups. A
+// WILDCARD bind ("0.0.0.0"/"::") names every interface and once accepted
+// ANY Host — an Origin==Host pair on a rebound DNS name sailed through the
+// equality; now the Host must name a genuinely served address: a loopback
+// IP literal or "localhost", an IP among the serving addresses snapshotted
+// at Start, or a hostname that RESOLVES (bounded, cached) into one of them
+// — the legitimate mDNS way in ("my-mac.local"); a rebound name resolves
+// elsewhere and fails. The cookie's host scope stays the primary gate this
+// check cannot cover; this closes the spoofable-equality hole.
 func (s *Server) hostAllowed(hostHeader string) bool {
 	if s.cfg.Bind != "0.0.0.0" && s.cfg.Bind != "::" {
 		host := hostOnly(hostHeader)
@@ -363,12 +336,11 @@ func (s *Server) ipServed(ip net.IP) bool {
 }
 
 // nameServes reports whether hostname resolves into a serving address, with
-// a bounded TTL cache: the resolve is a network round trip on the request
-// path (the same-origin gate), so its result is remembered — positives
-// briefly (an interface address can change), negatives very briefly (the
-// rebinding window must not be propped open by a long negative TTL). The
-// cache is a performance shim, never authority: dropping it wholesale at
-// hostCacheMax keeps it bounded without an eviction ordering to maintain.
+// a bounded TTL cache: the resolve is a network round trip on the
+// same-origin gate, so its result is remembered — positives briefly (an
+// interface address can change), negatives very briefly (the rebinding
+// window must not be propped open). The cache is a performance shim, never
+// authority: dropped wholesale at hostCacheMax, no eviction ordering.
 func (s *Server) nameServes(hostname string) bool {
 	key := strings.ToLower(hostname)
 	now := time.Now()
@@ -493,11 +465,9 @@ func (s *Server) closeAllWS() {
 	}
 }
 
-// BroadcastText fans one text frame out to every connected browser. The
-// frame is enqueued on each client's bounded outbox (never written on the
-// caller's goroutine): a slow client fills its own queue and is aborted on
-// overflow, so one wedged tab can neither block nor lose other clients'
-// delivery. Per-client FIFO order is preserved end-to-end.
+// BroadcastText fans one text frame out to every connected browser via the
+// per-client bounded outboxes — never written on the caller's goroutine
+// (the backpressure contract lives in broadcast.go).
 func (s *Server) BroadcastText(data []byte) {
 	for _, c := range s.liveConns() {
 		c.enqueue(data)
@@ -530,10 +500,10 @@ func (s *Server) liveConns() []*WSConn {
 	return conns
 }
 
-// Close tears the connection down (idempotent) and unregisters it. The
-// best-effort close frame keeps graceful per-client paths (read-loop end,
-// protocol close) clean; it is bounded by wsWriteTimeout. The server stop
-// path uses abort instead — shutdown must never wait on a peer-bound write.
+// Close tears the connection down (idempotent) and unregisters it; the
+// best-effort close frame keeps graceful per-client paths clean (bounded by
+// wsWriteTimeout). The server stop path uses abort — shutdown never waits
+// on a peer-bound write.
 func (c *WSConn) Close() {
 	c.closed.Do(func() {
 		c.srv.unregisterWS(c)
@@ -543,11 +513,10 @@ func (c *WSConn) Close() {
 	})
 }
 
-// abort tears the connection down without the best-effort close frame —
-// the abrupt variant used when a client is dropped for backpressure
-// overflow. It never writes (the write path may be wedged) and therefore
-// never blocks the producer goroutine that calls it; the client sees the
-// socket die and reconnects with backoff.
+// abort tears the connection down WITHOUT the close frame — the abrupt
+// variant for a backpressure drop. It never writes (the write path may be
+// wedged), so it never blocks the producer goroutine; the client sees the
+// socket die and reconnects.
 func (c *WSConn) abort() {
 	c.closed.Do(func() {
 		c.srv.unregisterWS(c)
@@ -594,13 +563,11 @@ func (c *WSConn) writeFrame(opcode byte, payload []byte) error {
 	return c.bw.Flush()
 }
 
-// wsReadPump drains frames until the peer goes away. Every message is
-// delivered to the inbound callback (if wired); the goroutine carries its
-// own recover so a misbehaving callback cannot take the process down. A
-// liveness deadline is armed around every frame read and re-armed by every
-// successfully read frame (a pong, an event, an inbound HITL reply — any
-// traffic counts), so a peer that goes silent past wsReadIdleTimeout errors
-// the read with a timeout and the connection is reclaimed.
+// wsReadPump drains frames until the peer goes away, delivering every
+// message to the inbound callback (if wired); the goroutine carries its own
+// recover. A liveness deadline is armed around every frame read and
+// re-armed by every successfully read frame (any traffic counts), so a peer
+// silent past wsReadIdleTimeout is reclaimed.
 func (s *Server) wsReadPump(c *WSConn) {
 	defer func() {
 		if p := recover(); p != nil {
@@ -629,13 +596,10 @@ func (s *Server) wsReadPump(c *WSConn) {
 	}
 }
 
-// wsPingLoop sends a protocol-level ping every wsPingInterval until the
-// connection is torn down. The peer's pong (browsers answer automatically)
-// re-arms the read pump's liveness deadline — this is the server-side half
-// of the keepalive pair that reclaims a peer which completed the handshake
-// and then went silent. A failed ping write means the peer is gone: the
-// connection is aborted (no graceful close frame to a wedged socket) and
-// the loop exits.
+// wsPingLoop sends a protocol-level ping every wsPingInterval — the
+// server-side half of the keepalive pair (the peer's pong re-arms the read
+// pump's liveness deadline). A failed ping write means the peer is gone:
+// abort (no graceful close to a wedged socket) and exit.
 func (s *Server) wsPingLoop(c *WSConn) {
 	ticker := time.NewTicker(wsPingInterval)
 	defer ticker.Stop()
@@ -742,8 +706,6 @@ func (c *WSConn) readFrame() (fin bool, opcode byte, payload []byte, err error) 
 		length = binary.BigEndian.Uint64(ext[:])
 	}
 	if opcode&0x8 != 0 && length > wsMaxControlPayload {
-		// RFC6455 §5.5: control frames (opcode high bit set) MUST have a
-		// payload of 125 bytes or less.
 		return false, 0, nil, errWSProtocol
 	}
 	if length > wsMaxMessageSize {

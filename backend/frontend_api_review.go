@@ -72,7 +72,6 @@ func (f *FrontendAPI) SaveReviewFileComment(sessionID, filePath, body string) (s
 	return id, nil
 }
 
-// DeleteReviewComment removes a single review comment by id.
 func (f *FrontendAPI) DeleteReviewComment(id string) error {
 	f.seedAcquire()
 	if f.reviewStore == nil {
@@ -130,30 +129,20 @@ func (f *FrontendAPI) ClearReview(sessionID string) error {
 	return nil
 }
 
-// GetReviewDiff returns ALL uncommitted changes (staged and unstaged tracked
+// GetReviewDiff returns ALL uncommitted changes (staged + unstaged tracked
 // changes plus untracked files) for the active project's repository, grouped
-// per file with 5 lines of context per hunk. It builds the combined diff via
-// workspace.BuildReviewDiff and parses the result into per-file hunk
-// snapshots for the review page.
-//
-// This is a read-only RPC: it emits no events. It returns an empty slice
-// (never an error) when no project is active, the project is No Project,
-// the workspace is not a git repository, or the working tree is clean.
+// per file with 5 context lines per hunk. Read-only (no events); an empty
+// slice — never an error — for no project, non-git, or a clean tree.
+// See specs/domains/review.md.
 func (f *FrontendAPI) GetReviewDiff() ([]ReviewFileDiff, error) {
 	f.activeProjectMu.RLock()
 	projectPath := f.activeProjectPath
 	f.activeProjectMu.RUnlock()
 
-	// Read-only and non-fatal: no active project, No Project mode, or a
-	// non-git workspace all yield an empty result rather than an error.
 	if projectPath == "" || f.isNoProject() || !f.isGitRepo(projectPath) {
 		return []ReviewFileDiff{}, nil
 	}
 
-	// BuildReviewDiff combines `git diff -U5 HEAD` (staged + unstaged
-	// tracked changes) with a per-file `git diff --no-index` for every
-	// untracked file. `git diff HEAD` alone omits untracked files because
-	// they have no index entry, so they are emitted separately here.
 	ctx, cancel := context.WithTimeout(f.ctx(), gitCmdTimeout)
 	defer cancel()
 	out, err := workspace.BuildReviewDiff(ctx, projectPath, 5)
@@ -164,20 +153,12 @@ func (f *FrontendAPI) GetReviewDiff() ([]ReviewFileDiff, error) {
 	return workspace.ParseReviewDiff(out), nil
 }
 
-// GetCommitDiff returns the per-file hunk diff introduced by a single commit
-// (the patch relative to its first parent), grouped per file with 5 lines of
-// context per hunk. It runs `git diff-tree --no-commit-id -p --root -U5 -M
-// <sha>` and parses the result into the same per-file hunk snapshot shape as
-// GetReviewDiff, so the review page can render a commit's changes in
-// read-only mode.
-//
-// Root commits (no parent) are diffed against an empty tree (--root) so every
-// file appears as added. Merge commits yield an empty slice (git diff-tree
-// does not emit a patch for merges by default), matching GetCommitFiles.
-//
-// This is a read-only RPC: it emits no events. Returns an error when no
-// project is active, the project is No Project, the sha is empty/invalid, or
-// the git command fails.
+// GetCommitDiff returns the per-file hunk diff a single commit introduces
+// (patch vs first parent) in the GetReviewDiff shape, so the review page can
+// render a commit read-only. Root commits diff against an empty tree (--root);
+// merge commits yield an empty slice (diff-tree emits no merge patch),
+// matching GetCommitFiles. Read-only; errors for no project, No Project, an
+// empty/invalid sha, or a git failure.
 func (f *FrontendAPI) GetCommitDiff(sha string) ([]ReviewFileDiff, error) {
 	commit := strings.TrimSpace(sha)
 	if commit == "" {

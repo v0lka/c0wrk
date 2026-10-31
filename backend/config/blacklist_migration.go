@@ -2,15 +2,12 @@ package config
 
 import "slices"
 
-// legacyDefaultExecuteGroupBlacklist returns the pattern list that the
-// pre-rename `security.groups.execute.blacklist` key shipped as its default.
-// The app no longer seeds any predefined patterns — security.groups.execute.
-// blocklist is empty by default and purely user-authored — so this list
-// exists ONLY for the one-time load migration: it lets the loader recognize
-// a legacy list that is exactly the old shipped default and drop it (the
-// effective blocklist is empty either way), while a customized legacy list
-// is carried over to blocklist. Never use it for anything else; it is frozen
-// history, not a living default.
+// legacyDefaultExecuteGroupBlacklist returns the pattern list the pre-rename
+// `security.groups.execute.blacklist` key shipped as its default — frozen
+// history, used ONLY by the one-time load migration to recognize (and drop)
+// a still-default legacy list while carrying a customized one over to
+// blocklist. The blocklist is empty by default and purely user-authored:
+// specs/architecture/security-model.md (Shell Command Analysis).
 func legacyDefaultExecuteGroupBlacklist() []string {
 	return []string{
 		"rm\\s+-rf\\s+/",
@@ -94,24 +91,13 @@ func legacyDefaultExecuteGroupBlacklist() []string {
 }
 
 // migrateLegacyGroupBlacklists performs the one-time load migration from the
-// pre-rename `blacklist` yaml key to `blocklist`. It runs right after yaml
-// decoding, before ApplyDefaults and validate:
-//
-//   - a legacy blacklist on the execute group that DIFFERS from the shipped
-//     legacy default (legacyDefaultExecuteGroupBlacklist) is moved into
-//     Blocklist — the user customized the list, so the customization
-//     survives; the next Save persists it under the new `blocklist` key;
-//   - a legacy blacklist equal to the legacy default, or absent (nil), is
-//     dropped: the effective blocklist is empty either way, and keeping the
-//     stale patterns pinned in config.yaml would defeat the removal of the
-//     predefined list;
-//   - a legacy blacklist on any other group is dropped (it was rejected by
-//     validation before the rename anyway);
-//   - an explicit `blocklist` key always wins: when both keys are present
-//     the legacy value is discarded without overwriting it.
-//
-// The legacy field is cleared unconditionally so the stale `blacklist` key
-// disappears from the file at the next Save.
+// pre-rename `blacklist` yaml key to `blocklist`, right after yaml decoding,
+// before ApplyDefaults and validate (specs/architecture/security-model.md):
+// a customized execute-group list moves into Blocklist (persisted under the
+// new key at the next Save), a list equal to the shipped legacy default — or
+// absent — is dropped, other groups' lists are dropped, and an explicit
+// `blocklist` key always wins. The legacy field is cleared unconditionally
+// so the stale `blacklist` key disappears from the file at the next Save.
 func migrateLegacyGroupBlacklists(groups map[string]GroupPolicyConfig) {
 	for name, group := range groups {
 		if group.LegacyBlacklist == nil {
@@ -129,12 +115,10 @@ func migrateLegacyGroupBlacklists(groups map[string]GroupPolicyConfig) {
 }
 
 // samePatternSet reports whether two pattern lists hold the same entries
-// regardless of order. The legacy default is compared against the stored list
-// only to tell "user customized the list" apart from "the shipped default is
-// still in effect": regex-list order does not change which patterns match, so
-// a reordered list is still the default and must be dropped rather than
-// carried over. Sorted copies keep the comparison exact for multisets — an
-// added, removed or duplicated pattern still counts as a customization.
+// regardless of order: regex-list order does not change which patterns
+// match, so a reordered legacy list still counts as the untouched shipped
+// default (dropped, not carried over), while any added, removed or
+// duplicated pattern counts as a customization.
 func samePatternSet(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

@@ -13,14 +13,10 @@ import (
 )
 
 // ListThemes returns descriptors for all user themes installed in the global
-// themes directory (~/.c0wrk/themes/*.css), sorted by display name. A missing
-// directory yields an empty (non-nil) slice — a fresh install has no themes
-// yet and the frontend selector must render an empty list, not an error.
-//
-// Every file is re-sanitized on read (defense in depth: a hand-edited or
-// hand-dropped file that no longer passes the sanitizer is skipped rather
-// than shipped to the webview) and must stay within maxThemeCSSSize, the
-// same cap the import path enforces.
+// themes directory, sorted by display name; a missing directory yields an
+// empty (non-nil) slice. Every file is re-sanitized on read (defense in
+// depth) and must stay within maxThemeCSSSize.
+// See specs/domains/theming.md.
 func (f *FrontendAPI) ListThemes() []ThemeDTO {
 	f.seedAcquire()
 	themesDir := config.ThemesDir(f.agentDir)
@@ -34,19 +30,14 @@ func (f *FrontendAPI) ListThemes() []ThemeDTO {
 		if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".css") {
 			continue
 		}
-		// Enforce the documented size cap on this ingestion path too
-		// (mirroring importThemeFromPath): a hand-dropped oversized file
-		// must not be read into memory, tokenized, and shipped to the
-		// webview just because it bypassed the importer.
 		info, err := entry.Info()
 		if err != nil {
 			f.log().Warn("failed to stat theme file", "file", entry.Name(), "error", err)
 			continue
 		}
-		// A hand-dropped non-regular entry (FIFO/socket/device) named *.css
-		// must be skipped: reading it would block the synchronous ListThemes
-		// RPC forever. entry.Info() is a non-blocking stat, so the skip is
-		// decided without ever opening the file.
+		// A non-regular entry (FIFO/socket/device) named *.css must be
+		// skipped: reading it would block this synchronous RPC forever, and
+		// entry.Info() decides that without ever opening the file.
 		if !info.Mode().IsRegular() {
 			f.log().Warn("skipping non-regular theme entry", "file", entry.Name())
 			continue
@@ -63,9 +54,8 @@ func (f *FrontendAPI) ListThemes() []ThemeDTO {
 		}
 		id, err := themeSlug(entry.Name())
 		if err != nil {
-			// Unusable slugs should not happen for files that were installed
-			// through the import flow, but a hand-dropped file with a
-			// reserved or unusable name must not break the whole listing.
+			// A hand-dropped file with an unusable name must not break the
+			// whole listing.
 			f.log().Warn("skipping theme with invalid file name", "file", entry.Name(), "error", err)
 			continue
 		}
@@ -81,31 +71,24 @@ func (f *FrontendAPI) ListThemes() []ThemeDTO {
 	return themes
 }
 
-// importThemeFromPath reads a CSS file from a user-chosen path, validates it
-// as a theme, and installs it into the global themes directory under the slug
-// derived from its file name. Importing a file whose slug already exists
-// overwrites the installed copy — this is the update path for a user theme,
-// and the theme id stays stable across updates.
+// importThemeFromPath validates a CSS file from a user-chosen path and
+// installs it under the slug of its file name; re-import overwrites — the
+// update path, with the theme id kept stable. What is installed is the
+// CANONICAL SANITIZED CSS, never the raw source.
 //
-// What is installed is the CANONICAL SANITIZED CSS, not the raw source: the
-// stored theme (and everything the frontend later injects from it) is
-// structurally incapable of referencing any resource. The returned DTO
-// describes the installed theme and carries the sanitized body.
-//
-// This is deliberately NOT a method on FrontendAPI: `desktop.App` embeds
-// *FrontendAPI, so every exported method is auto-bound to the renderer. A
-// path-taking import would be directly callable from compromised renderer
-// JS with any filesystem path; the sole entry point is the native picker
-// (desktop.App.PickAndImportThemes).
+// Deliberately NOT an exported FrontendAPI method: desktop.App embeds
+// *FrontendAPI, so exported methods are auto-bound to the renderer, and a
+// path-taking import must not be callable from compromised renderer JS —
+// the sole entry point is the native picker (desktop.App.PickAndImportThemes).
+// See specs/domains/theming.md.
 func (f *FrontendAPI) importThemeFromPath(path string) (ThemeDTO, error) {
 	f.seedAcquire()
 	if strings.TrimSpace(path) == "" {
 		return ThemeDTO{}, errors.New("theme path is empty")
 	}
-	// Enforce the documented size cap BEFORE reading: the cap exists so a
-	// multi-gigabyte file cannot be slurped into memory, and the full-file
-	// allocation itself is the DoS — reading first and rejecting afterwards
-	// would defeat it (the same stat-before-read defense ListThemes applies).
+	// The size cap is enforced BEFORE reading: the full-file allocation
+	// itself is the DoS, so reading first and rejecting afterwards would
+	// defeat it.
 	info, err := os.Stat(path)
 	if err != nil {
 		return ThemeDTO{}, fmt.Errorf("failed to stat theme file: %w", err)
@@ -113,11 +96,9 @@ func (f *FrontendAPI) importThemeFromPath(path string) (ThemeDTO, error) {
 	if info.Size() > maxThemeCSSSize {
 		return ThemeDTO{}, fmt.Errorf("invalid theme CSS: theme CSS is too large: %d bytes (limit %d)", info.Size(), maxThemeCSSSize)
 	}
-	// safeio refuses a non-regular file (the native picker cannot select a
-	// FIFO, but a path passed programmatically could point at one) instead of
-	// blocking the import RPC on an open that waits for a writer forever. The
-	// length is re-checked after the read: the file may have grown since the
-	// stat above.
+	// safeio refuses a non-regular file instead of blocking the RPC on an
+	// open that waits for a writer forever; the length is re-checked after
+	// the read — the file may have grown since the stat.
 	raw, err := safeio.ReadFile(path)
 	if err != nil {
 		return ThemeDTO{}, fmt.Errorf("failed to read theme file: %w", err)
@@ -135,23 +116,17 @@ func (f *FrontendAPI) importThemeFromPath(path string) (ThemeDTO, error) {
 	}
 
 	themesDir := config.ThemesDir(f.agentDir)
-	// The themes directory is created as REAL directories only: a dangling
-	// link, a non-directory component, or a link swapped into a created
-	// component fails the import closed instead of redirecting it. A
-	// PRE-EXISTING symlinked themes dir resolves as operator intent (the
-	// macOS /var → /private/var class) and the install lands inside the
-	// operator's chosen target — deletion, the destructive direction, keeps
-	// its own strict refusal (see DeleteTheme).
+	// Created as REAL directories only: a dangling link or a link swapped
+	// into a created component fails the import closed. A pre-existing
+	// symlinked themes dir resolves as operator intent (macOS /var class);
+	// deletion keeps its own strict refusal (see DeleteTheme).
 	if err := safeio.MkdirAllReal(themesDir, 0o755); err != nil {
 		return ThemeDTO{}, fmt.Errorf("failed to create themes directory: %w", err)
 	}
 	dest := filepath.Join(themesDir, id+".css")
-	// Install via safeio's atomic replace: the data lands in a uniquely named
-	// temp file (there is no plantable fixed "<dest>.tmp" — a FIFO planted at
-	// that deterministic name used to block the write-open forever), which is
-	// then renamed over dest. The rename replaces an entry at dest itself
-	// instead of writing through it, and a failed write leaves the previous
-	// copy of the theme intact.
+	// Atomic replace: the data lands in a uniquely named temp file (no
+	// plantable fixed "<dest>.tmp") renamed over dest — the rename replaces
+	// the entry itself, and a failed write leaves the previous copy intact.
 	if err := safeio.WriteFileAtomic(dest, []byte(content), 0o644); err != nil {
 		return ThemeDTO{}, fmt.Errorf("failed to install theme file: %w", err)
 	}
@@ -169,14 +144,9 @@ type ThemeImportResult struct {
 	Error string    `json:"error,omitempty"`
 }
 
-// importThemesFromPaths imports several CSS files in one call, preserving the
-// input order in the results. Each file is validated and installed
-// independently: one invalid file never blocks the others — its result carries
-// the failure while the rest of the batch still installs. An empty input
-// yields an empty (non-nil) slice.
-//
-// Not a FrontendAPI method for the same reason as importThemeFromPath: the
-// renderer must only reach the import flow through the native picker.
+// importThemesFromPaths imports several CSS files in input order; each file
+// is independent — one invalid file never blocks the others. Unexported for
+// the same renderer-binding reason as importThemeFromPath.
 func (f *FrontendAPI) importThemesFromPaths(paths []string) []ThemeImportResult {
 	results := make([]ThemeImportResult, 0, len(paths))
 	for _, path := range paths {
@@ -190,21 +160,17 @@ func (f *FrontendAPI) importThemesFromPaths(paths []string) []ThemeImportResult 
 	return results
 }
 
-// ImportThemesFromPaths is the exported bridge used by desktop.App's native
-// picker (PickAndImportThemes) to run a batch import with the user-picked
-// paths. It must stay unexposed from the FrontendAPI method set so the Wails
-// binding generator never publishes a path-taking RPC to the renderer.
+// ImportThemesFromPaths is the exported bridge desktop.App's native picker
+// calls; it must stay off the FrontendAPI method set so the Wails binding
+// generator never publishes a path-taking RPC to the renderer.
 func ImportThemesFromPaths(f *FrontendAPI, paths []string) []ThemeImportResult {
 	return f.importThemesFromPaths(paths)
 }
 
-// DeleteTheme removes an installed user theme by its id (the themeSlug of its
-// CSS file name, exactly as ListThemes derives it). The themes directory is
-// scanned for the entry whose slug matches, so a hand-dropped file whose
-// on-disk name is not in canonical slug form (`My Theme.css` → id
-// `my-theme`) is deletable too. Zero matches fail as "does not exist";
-// multiple matches (two file names slugifying to the same id) are rejected
-// rather than guessing which file to remove.
+// DeleteTheme removes an installed user theme by its id, scanning the themes
+// directory for the entry whose slug matches — so a hand-dropped
+// non-canonical file name is deletable too. Zero matches fail as "does not
+// exist"; multiple matches are rejected rather than guessing which to remove.
 func (f *FrontendAPI) DeleteTheme(id string) error {
 	f.seedAcquire()
 	slug, err := themeSlug(id)
@@ -213,11 +179,9 @@ func (f *FrontendAPI) DeleteTheme(id string) error {
 	}
 	themesDir := config.ThemesDir(f.agentDir)
 	// The themes directory must be a REAL directory before anything is read
-	// or unlinked through it: a symlink planted at ~/.c0wrk/themes would
-	// redirect both the scan and the os.Remove below into the link target,
-	// deleting a file OUTSIDE ~/.c0wrk (out-of-containment unlink). Unlike
-	// the import path there is nothing to create here — a missing directory
-	// just means the theme does not exist.
+	// or unlinked through it: a planted symlink would redirect the scan and
+	// the os.Remove below into its target — an out-of-containment unlink.
+	// Nothing is created here; a missing directory means the theme is absent.
 	fi, err := os.Lstat(themesDir)
 	if err != nil {
 		return fmt.Errorf("theme %q does not exist", id)

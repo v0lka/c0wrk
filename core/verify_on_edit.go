@@ -16,8 +16,8 @@ import (
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
-// verifyOnEditDefaultTimeout is the fallback for an empty or invalid
-// executor.verify_on_edit.timeout config value.
+// verifyOnEditDefaultTimeout is the fallback for an empty/invalid
+// executor.verify_on_edit.timeout. See specs/domains/verify-on-edit.md.
 const verifyOnEditDefaultTimeout = 2 * time.Minute
 
 // exitStatusRe matches Go's exec.ExitError text ("exit status N"), which the
@@ -25,9 +25,8 @@ const verifyOnEditDefaultTimeout = 2 * time.Minute
 // output on both halves of the build-tagged split.
 var exitStatusRe = regexp.MustCompile(`exit status (\d+)$`)
 
-// parseVerifyOnEditTimeout parses the user-configured duration string. Empty
-// or invalid values fall back to verifyOnEditDefaultTimeout (invalid values
-// are logged by the caller-side constructor, not here).
+// parseVerifyOnEditTimeout parses the configured duration; empty or invalid
+// falls back to the default (invalid logs at the caller). See specs/domains/verify-on-edit.md.
 func parseVerifyOnEditTimeout(raw string) (time.Duration, bool) {
 	if strings.TrimSpace(raw) == "" {
 		return verifyOnEditDefaultTimeout, true
@@ -39,27 +38,12 @@ func parseVerifyOnEditTimeout(raw string) (time.Duration, bool) {
 	return d, true
 }
 
-// buildEditVerifyRunner builds the agent.EditVerifyRunner handed to the
-// executor (SetVerifyOnEdit) when executor.verify_on_edit.enabled is true.
-//
-// The runner executes the USER-CONFIGURED command (config.yaml, never the
-// model) through the session registry's platform shell tool (bash_exec on
-// Unix, posh_exec on Windows — tools.ShellExecToolName) via
-// ExecuteUnattended: group-deny policy, the command blocklist, and
-// symlink/SSRF hard reasons still block, while interactive confirmation is
-// skipped — the user already approved the command by configuring it. The
-// output is returned raw; truncation to MaxOutputChars happens in the SDK
-// hook (agent/verify_on_edit).
-//
-// bashMaxTimeout (from timeouts.bashMaxTimeout, <= 0 = unknown) clamps the
-// configured timeout: the bash tool silently enforces its own MaxTimeout on
-// every command, so without this clamp a larger verify_on_edit.timeout would
-// never take effect and the timeout note would point at a dead knob. The
-// clamp is applied here — with a warning — so the effective limit is visible
-// in the log and echoed in EditVerifyResult.Timeout.
-//
-// Returns nil when the feature is not configured, which leaves the executor
-// completely unhooked (identical behavior to a disabled build).
+// buildEditVerifyRunner builds the agent.EditVerifyRunner behind
+// executor.verify_on_edit (SetVerifyOnEdit): the USER-CONFIGURED command runs
+// through the platform shell tool via ExecuteUnattended — confirmation skipped
+// (configuring IS the approval; hard gates intact) — timeout clamped to
+// timeouts.bashMaxTimeout (warned; echoed in the result). Nil when not
+// configured (executor completely unhooked). See specs/domains/verify-on-edit.md.
 func buildEditVerifyRunner(
 	registry *tools.ToolRegistry,
 	workspace string,
@@ -84,8 +68,7 @@ func buildEditVerifyRunner(
 	timeoutStr := timeout.String()
 
 	return func(ctx context.Context) agent.EditVerifyResult {
-		// Attach the session workspace so the bash tool's working_directory
-		// validation and cwd resolution behave exactly as for model calls.
+		// Attach the session workspace: cwd validation behaves as for model calls.
 		ctx = sdktools.WithWorkspacePathNoProbe(ctx, workspace)
 
 		input, err := json.Marshal(map[string]string{
@@ -105,8 +88,7 @@ func buildEditVerifyRunner(
 			return agent.EditVerifyResult{Err: fmt.Errorf("verify-on-edit: %w", err), Timeout: timeout}
 		}
 		if res.IsError {
-			// Timeout: the shell tool marks a deadline kill distinctly (the
-			// marker text is identical for bash_exec and posh_exec).
+			// Deadline kill — the marker is identical for bash_exec and posh_exec.
 			if strings.Contains(res.Content, "[Process killed: timeout exceeded]") {
 				return agent.EditVerifyResult{
 					Output:   res.Content,
@@ -115,8 +97,7 @@ func buildEditVerifyRunner(
 					Timeout:  timeout,
 				}
 			}
-			// Blocked by policy/blocklist, or non-zero exit. Extract the exit
-			// code from the trailing exec error the shell tool appends.
+			// Policy/blocklist block or non-zero exit: parse the trailing exit status.
 			return agent.EditVerifyResult{
 				Output:   res.Content,
 				ExitCode: parseExitStatus(res.Content),
@@ -127,8 +108,8 @@ func buildEditVerifyRunner(
 	}
 }
 
-// parseVerifyOnEditDurationLogged wraps parseVerifyOnEditTimeout with a
-// warning when the configured value is invalid (fallback applied).
+// parseVerifyOnEditDurationLogged warns when the configured value is invalid
+// and the default is applied.
 func parseVerifyOnEditDurationLogged(raw string, logger *slog.Logger) (time.Duration, bool) {
 	d, ok := parseVerifyOnEditTimeout(raw)
 	if !ok && logger != nil {
@@ -138,12 +119,9 @@ func parseVerifyOnEditDurationLogged(raw string, logger *slog.Logger) (time.Dura
 	return d, ok
 }
 
-// verifyOnEditForMode gates the edit-verification runner by orchestrator
-// mode: nil in No Project (CHAT) mode — CHAT exposes no file-edit tools, so
-// verification can never be meaningful there — and the configured runner
-// otherwise. Goal-loop suppression is handled separately: specialized passes
-// via RunConductor's systemPromptOverride check, plain goal turns via
-// defaultGoalTurnRunner.
+// verifyOnEditForMode gates the runner by mode: nil in CHAT (no file-edit
+// tools, so verification can never be meaningful); goal-loop and specialized
+// passes suppress separately. See specs/domains/verify-on-edit.md (suppression).
 func (o *Orchestrator) verifyOnEditForMode() agent.EditVerifyRunner {
 	if o.isNoProject {
 		return nil
@@ -151,9 +129,8 @@ func (o *Orchestrator) verifyOnEditForMode() agent.EditVerifyRunner {
 	return o.verifyOnEdit
 }
 
-// parseExitStatus extracts the exit code from a bash tool failure payload
-// ("...output...\nexit status N"). Returns -1 when no exit status is present
-// (e.g. policy blocks, signal kills).
+// parseExitStatus extracts the exit code from the shell tool's trailing
+// "exit status N"; -1 when absent (policy blocks, signal kills).
 func parseExitStatus(content string) int {
 	if m := exitStatusRe.FindStringSubmatch(strings.TrimRight(content, "\n")); m != nil {
 		var code int

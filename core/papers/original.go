@@ -1,19 +1,7 @@
-// Package papers — original-HTML ("paper.html") fetcher layer.
-//
-// This file downloads a paper's best HTML rendition (arxiv.org/html/<id>,
-// falling back to ar5iv.labs.arxiv.org/html/<id>), sanitizes the document,
-// localizes its images, and persists paper.html plus assets/ into the paper's
-// directory. Persistence mirrors writer.go: every target is symlink-resolved
-// and containment-checked against the library root through pathutil BEFORE a
-// staging directory is created, and the staged files are renamed into place
-// only after everything is staged — so a fetch or staging failure leaves the
-// prior paper.html byte-for-byte unchanged and a symlinked paper directory can
-// never redirect a write outside the library.
-//
-// The fetcher is stateless (no package-level mutable state), so it needs no
-// mutex of its own; callers that mutate a paper library concurrently must
-// serialize the mutation through their own per-research-root mutex (the
-// backend's researchMutationMu), exactly as they do for WritePaper.
+// Package papers — original-HTML ("paper.html") fetcher layer: fetch,
+// sanitize, localize images, persist atomically and containment-checked
+// (specs/domains/papers.md). Concurrent mutators serialize through their
+// per-research-root mutex, as for WritePaper.
 package papers
 
 import (
@@ -54,19 +42,17 @@ const (
 	originalAssetsBackupDirName = ".assets-old"
 )
 
-// Rendition endpoints, in preference order: arXiv's native LaTeXML HTML first,
-// the ar5iv mirror as fallback. The hosts of these endpoints are also the hard
-// allowlist: a redirect (or an image URL) that leaves them is refused, so the
-// fetcher can never be steered at an arbitrary host.
+// Rendition endpoints (native LaTeXML HTML first, ar5iv mirror fallback);
+// their hosts are the hard allowlist — a redirect or image URL that leaves
+// them is refused.
 const (
 	arxivHTMLEndpoint = "https://arxiv.org/html/"
 	ar5ivHTMLEndpoint = "https://ar5iv.labs.arxiv.org/html/"
 )
 
-// Fetch caps and timeouts. The HTML and per-image byte caps are enforced while
-// streaming the body (LimitReader), so an oversized response is cut off, not
-// buffered; the image-count cap skips (and de-references) images beyond the
-// limit rather than failing the whole document.
+// Fetch caps and timeouts; the byte caps are enforced while streaming (an
+// oversized response is cut off, not buffered) and the image-count cap
+// de-references rather than fails the document (specs/domains/papers.md).
 const (
 	originalDocTimeout   = 60 * time.Second
 	originalImageTimeout = 20 * time.Second
@@ -75,9 +61,8 @@ const (
 	maxOriginalImages    = 200     // images localized per document
 	maxOriginalRedirects = 5       // redirect hops per request
 
-	// maxOriginalDataURIBytes caps an inline `data:` image URI kept verbatim in
-	// the saved document (base64 text, so ~4/3 the decoded image size; a URI
-	// over the cap is dropped like any other unusable image).
+	// maxOriginalDataURIBytes caps an inline `data:` image URI kept verbatim
+	// (base64 ≈ 4/3 the decoded size); over the cap it is dropped.
 	maxOriginalDataURIBytes = 2 << 20 // 2 MiB
 )
 
@@ -101,9 +86,8 @@ const (
 	// (DNS, dial, timeout); nothing was written.
 	FetchStatusOffline FetchStatus = "offline"
 
-	// FetchStatusError: the fetch failed for another reason (unexpected HTTP
-	// status, oversized/undecodable document, rejected slug or containment
-	// violation, filesystem failure). FetchResult.Err carries the cause.
+	// FetchStatusError: any other failure (HTTP status, oversize/undecodable
+	// document, rejected slug, containment, filesystem); Err carries the cause.
 	FetchStatusError FetchStatus = "error"
 )
 
@@ -117,9 +101,8 @@ type FetchResult struct {
 	// FetchStatusNoArxiv.
 	ArxivID string `json:"arxiv_id,omitempty"`
 
-	// ResolvedURL is the URL that actually produced the document (after
-	// redirects); empty unless Status is FetchStatusOK (or a fetch got far
-	// enough to have one before failing).
+	// ResolvedURL is the post-redirect URL that produced the document; empty
+	// unless a fetch got far enough to have one.
 	ResolvedURL string `json:"resolved_url,omitempty"`
 
 	// AssetsKept counts images downloaded and written under assets/.
@@ -133,19 +116,10 @@ type FetchResult struct {
 	Err error `json:"-"`
 }
 
-// FetchOriginalHTML fetches rec's best HTML rendition from arXiv (native
-// arxiv.org/html, falling back to the ar5iv mirror), sanitizes it, localizes
-// its images, and persists paper.html plus assets/ into
-// libraryRoot/<rec.ResolvedSlug()>/ atomically and containment-checked against
-// libraryRoot. client may be nil (a default bounded client is built); when
-// given it is cloned, so the caller's value is never mutated.
-//
-// The outcome is typed rather than a bare error: not_found, no_arxiv, and
-// offline are expected conditions, not failures. A record with no usable
-// arXiv identifier yields FetchStatusNoArxiv without touching disk or network.
-//
-// Callers that mutate the paper library concurrently must serialize this with
-// their per-research-root mutation mutex, as they do for WritePaper.
+// FetchOriginalHTML fetches, sanitizes, localizes, and persists the best
+// rendition; the typed outcome treats not_found / no_arxiv / offline as
+// expected conditions (no id → no_arxiv, no disk/network). client is
+// cloned, never mutated (specs/domains/papers.md).
 func FetchOriginalHTML(ctx context.Context, client *http.Client, libraryRoot string, rec PaperRecord) FetchResult {
 	return fetchOriginalHTML(ctx, client, []string{arxivHTMLEndpoint, ar5ivHTMLEndpoint}, libraryRoot, rec)
 }
@@ -207,18 +181,15 @@ func fetchOriginalHTML(ctx context.Context, client *http.Client, endpoints []str
 			AssetsSkipped: skipped,
 		}
 	}
-	// Every endpoint was tried without a document. A network-level failure
-	// anywhere means completeness is unknowable, so offline wins over
-	// not_found.
+	// A network-level failure anywhere means completeness is unknowable, so
+	// offline wins over not_found.
 	if offlineErr != nil {
 		return FetchResult{Status: FetchStatusOffline, ArxivID: id, Err: offlineErr}
 	}
 	return FetchResult{Status: FetchStatusNotFound, ArxivID: id}
 }
 
-// ---------------------------------------------------------------------------
-// arXiv identifier normalization
-// ---------------------------------------------------------------------------
+// --- arXiv identifier normalization ---
 
 // arxivIDNewRe matches a modern arXiv id: YYMM.NNNNN with an optional version
 // suffix (1706.03762, 2401.12345v2).
@@ -232,14 +203,9 @@ var arxivIDOldRe = regexp.MustCompile(`^[a-z-]+(\.[A-Z]{2})?/\d{7}(v\d+)?$`)
 // (/abs/, /html/, /pdf/).
 var arxivURLPathPrefixes = []string{"abs", "html", "pdf"}
 
-// NormalizeArxivID extracts and normalizes the arXiv identifier from a
-// record's identifiers: the first identifier whose scheme folds to "arxiv".
-// The value is accepted in bare form ("1706.03762"), prefixed form
-// ("arXiv:1706.03762"), and URL form ("https://arxiv.org/abs/1706.03762v2",
-// "arxiv.org/html/hep-th/9901001"); an optional version suffix (vN) is kept.
-// The identifier text itself is never fetched — it is only used to build URLs
-// onto the fixed allowlisted endpoints — so a hostile URL-shaped value cannot
-// steer the fetch. Input that carries no well-formed id yields "".
+// NormalizeArxivID extracts the first "arxiv"-scheme identifier (bare,
+// prefixed, or URL form); the text only ever builds URLs onto the fixed
+// allowlisted endpoints, so a hostile value cannot steer the fetch.
 func NormalizeArxivID(idents []Identifier) string {
 	for _, ident := range idents {
 		if strings.ToLower(strings.TrimSpace(ident.Scheme)) != "arxiv" {
@@ -299,9 +265,7 @@ func slicesContains(list []string, s string) bool {
 	return false
 }
 
-// ---------------------------------------------------------------------------
-// Bounded fetching
-// ---------------------------------------------------------------------------
+// --- Bounded fetching ---
 
 // httpStatusError marks a non-200 response so the rendition loop can tell a
 // missing document (404/410) from other failures.
@@ -325,9 +289,8 @@ func allowedHostsOf(endpoints []string) map[string]struct{} {
 	return allowed
 }
 
-// boundedClient clones base (or starts from a default client), then forces a
-// per-request timeout and a redirect policy that bounds hops and refuses any
-// host outside allowed. The base client is never mutated.
+// boundedClient clones base (never mutating it) and forces the per-request
+// timeout plus a redirect policy bounded to the allowlisted hosts.
 func boundedClient(base *http.Client, allowed map[string]struct{}, timeout time.Duration) *http.Client {
 	var c *http.Client
 	if base == nil {
@@ -349,10 +312,8 @@ func boundedClient(base *http.Client, allowed map[string]struct{}, timeout time.
 	return c
 }
 
-// fetchBounded GETs rawURL with c, enforcing the hard byte cap while reading,
-// and returns the body plus the FINAL URL (after redirects) — the base the
-// document's relative image URLs must resolve against. A non-200 status is an
-// *httpStatusError; transport failures surface as-is for classification.
+// fetchBounded GETs rawURL under the byte cap, returning the body plus the
+// FINAL (post-redirect) URL — the base relative image URLs resolve against.
 func fetchBounded(ctx context.Context, c *http.Client, rawURL string, limit int64) (body []byte, finalURL string, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, http.NoBody)
 	if err != nil {
@@ -380,10 +341,9 @@ func fetchBounded(ctx context.Context, c *http.Client, rawURL string, limit int6
 	return body, resp.Request.URL.String(), nil
 }
 
-// isOfflineErr reports whether err is a network-level failure (DNS, dial,
-// refused, reset, timeout) as opposed to an HTTP-status or policy error. A
-// *url.Error counts only when its CAUSE is network-level, so a redirect-policy
-// rejection (wrapped in *url.Error by the transport) is not misread as offline.
+// isOfflineErr reports network-level failures (DNS, dial, reset, timeout);
+// a *url.Error counts only when its CAUSE is network-level, so a
+// redirect-policy rejection is not misread as offline.
 func isOfflineErr(err error) bool {
 	if err == nil {
 		return false
@@ -414,14 +374,11 @@ func isOfflineCause(err error) bool {
 	return errors.Is(err, context.DeadlineExceeded)
 }
 
-// ---------------------------------------------------------------------------
-// Sanitization + image localization
-// ---------------------------------------------------------------------------
+// --- Sanitization + image localization ---
 
-// strippedElements are removed wholesale from the fetched document. They are
-// defense in depth: the saved copy is meant to be self-contained and inert, so
-// scripts, stylesheets, resource links, and nested browsing contexts go away
-// even though the bytes are already local.
+// strippedElements are removed wholesale — the saved copy must be inert
+// (scripts, stylesheets, resource links, nested browsing contexts), even
+// though the bytes are already local.
 var strippedElements = map[string]struct{}{
 	"script": {},
 	"style":  {},
@@ -433,16 +390,10 @@ var strippedElements = map[string]struct{}{
 // element — the actual document, as opposed to arXiv's site chrome around it.
 const arxivDocumentClass = "ltx_document"
 
-// stripArxivChrome reduces the document to the paper's own content. arXiv's
-// HTML renditions wrap <article class="ltx_document"> in heavy site chrome: a
-// report-issue <dialog>, an announcement banner, the sticky
-// arxiv-html-header menu, the table-of-contents navbar, and an
-// arxiv-html-footer (ar5iv mirrors the layout with ltx_page_header /
-// ltx_page_footer wrappers). The saved paper.html must begin at the paper
-// itself (its title heading), so every body-level subtree except the article
-// is dropped — which also spares the asset pass the chrome's logo/banner
-// images. A document with no recognizable article is left untouched
-// (fail-soft: unknown shapes keep the whole-document behavior).
+// stripArxivChrome reduces the document to its own <article>: the arXiv/
+// ar5iv site chrome is dropped body-level (sparing the asset pass its
+// images); no recognizable article → untouched, fail-soft (specs/domains/
+// papers.md).
 func stripArxivChrome(tree *html.Node) {
 	var body, article *html.Node
 	var find func(n *html.Node)
@@ -474,9 +425,8 @@ func stripArxivChrome(tree *html.Node) {
 	body.AppendChild(article)
 }
 
-// hasClassToken reports whether n carries token in its class attribute,
-// matched as a whitespace-separated token ("ltx_document ltx_authors_1line"
-// contains "ltx_document"; "ltx_documentation" does not).
+// hasClassToken reports whether n's class attribute carries token as a
+// whitespace-separated token ("ltx_documentation" does not match).
 func hasClassToken(n *html.Node, token string) bool {
 	for _, a := range n.Attr {
 		if a.Key != "class" {
@@ -491,16 +441,11 @@ func hasClassToken(n *html.Node, token string) bool {
 	return false
 }
 
-// localizeOriginal parses the fetched HTML, cuts the arXiv site chrome away,
-// strips the banned elements, rewrites every embedded resource — <img src>,
-// <object data> (LaTeXML's SVG figures), <embed src> — to a local
-// assets/<name>, and downloads each with c (bounded by maxOriginalImageSize).
-// An inline `data:` URI is kept verbatim. Relative URLs resolve against the
-// FINAL document URL; absolute URLs must stay on the allowed hosts. A resource
-// that fails, exceeds its cap, exceeds the count cap, or leaves the allowlist
-// keeps its element but loses its attribute — an honest missing placeholder,
-// never a broken remote URL. It returns the rendered document, the downloaded
-// assets keyed by file name, and the kept/skipped counts.
+// localizeOriginal cuts the site chrome, strips banned elements, and
+// rewrites embedded resources (<img src>, <object data>, <embed src>) to
+// local assets/<name>. A failing/capped/off-allowlist resource loses its
+// attribute but keeps its element — an honest placeholder, never a broken
+// remote URL.
 func localizeOriginal(ctx context.Context, c *http.Client, body []byte, docURL string, allowed map[string]struct{}) (doc []byte, assets map[string][]byte, kept, skipped int, err error) {
 	base, err := url.Parse(docURL)
 	if err != nil {
@@ -566,9 +511,7 @@ func (l *localizer) visit(n, parent *html.Node) {
 		case "img":
 			l.localizeResource(n, "src")
 		case "object":
-			// LaTeXML emits SVG figures as
-			// <object type="image/svg+xml" data="…">; the data attribute
-			// carries the embedded resource's URL.
+			// LaTeXML emits SVG figures as <object data="…">.
 			l.localizeResource(n, "data")
 		case "embed":
 			l.localizeResource(n, "src")
@@ -577,15 +520,9 @@ func (l *localizer) visit(n, parent *html.Node) {
 	l.walk(n)
 }
 
-// localizeResource rewrites (or removes) one embedded-resource attribute — an
-// <img src>, an <object data> (LaTeXML's SVG figures), or an <embed src> — to
-// a local assets/<name> and downloads it with c (bounded by
-// maxOriginalImageSize). A `data:` URI is already self-contained bytes inside
-// the document, so it is kept verbatim (bounded by maxOriginalDataURIBytes),
-// never fetched or host-checked. On any failure the element keeps its shape
-// but loses the attribute — an honest missing placeholder, never a broken
-// remote URL. An <img srcset> is always dropped: it can only point at remote
-// renditions.
+// localizeResource rewrites one resource attribute to assets/<name>; a
+// `data:` URI is self-contained (kept verbatim, bounded, never fetched);
+// <img srcset> is always dropped.
 func (l *localizer) localizeResource(n *html.Node, attr string) {
 	if n.Data == "img" {
 		removeAttr(n, "srcset")
@@ -640,10 +577,9 @@ func isDataURI(src string) bool {
 	return err == nil && u.Scheme == "data"
 }
 
-// resolve absolutizes src against the document URL and checks it against the
-// allowlist. When the URL was already localized, it returns the assigned name
-// with ok=true and name non-empty (the dedup fast path); when the URL is
-// unusable, ok=false.
+// resolve absolutizes src against the document URL and checks the
+// allowlist; an already-localized URL returns its assigned name (dedup
+// fast path), an unusable one ok=false.
 func (l *localizer) resolve(src string) (resolved, name string, ok bool) {
 	u, err := l.base.Parse(src)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
@@ -680,9 +616,8 @@ func (l *localizer) assignName(resolved string) string {
 	return name
 }
 
-// sanitizeAssetName folds a URL path segment into a safe single path
-// component: [A-Za-z0-9._-] kept, everything else collapsed to "_", no
-// leading dot (no hidden files), length-capped preserving the extension.
+// sanitizeAssetName folds a URL path segment into one safe component
+// ([A-Za-z0-9._-], no leading dot, length-capped keeping the extension).
 func sanitizeAssetName(base string) string {
 	var b strings.Builder
 	for _, r := range base {
@@ -737,23 +672,13 @@ func removeAttr(n *html.Node, key string) {
 	n.Attr = kept
 }
 
-// ---------------------------------------------------------------------------
-// Persistence
-// ---------------------------------------------------------------------------
+// --- Persistence ---
 
-// persistOriginal stages doc plus assets into a temp directory inside the
-// paper's own directory (same filesystem, so renames are atomic), then swaps
-// them into place with a backup (the shape stageAndSwap uses): the existing
-// assets/ tree is renamed aside into a hidden backup sibling — not deleted —
-// the new assets directory is renamed in, and paper.html is renamed LAST as
-// the commit point. When that final rename fails, the assets swap is rolled
-// back from the backup, so the still-current paper.html keeps resolving its
-// own images; the backup is deleted only after paper.html has committed.
-// Every final target is symlink-resolved and containment-checked against
-// libraryRoot BEFORE staging (resolveTargetWithinRoot / pathutil.IsWithinPath),
-// so a symlinked paper directory can never redirect a write outside the
-// library and any failure before the first rename leaves the prior content
-// untouched.
+// persistOriginal stages into a temp dir inside the paper dir (same
+// filesystem → atomic renames) and swaps in with a backup: assets/ renamed
+// aside, new assets in, paper.html renamed LAST as the commit point (its
+// failure rolls the swap back). Targets are containment-checked before
+// staging (specs/domains/papers.md).
 func persistOriginal(libraryRoot, slug string, doc []byte, assets map[string][]byte) error {
 	paperDir, err := ensurePaperDir(libraryRoot, slug)
 	if err != nil {
@@ -802,10 +727,8 @@ func persistOriginal(libraryRoot, slug string, doc []byte, assets map[string][]b
 		return nil
 	}
 
-	// Swap the assets with a backup so a failed paper.html rename (the commit
-	// point, below) can restore the tree the current paper.html still
-	// references: the existing assets directory — stale or not — is renamed
-	// aside, never deleted up front.
+	// The existing assets dir is renamed aside (never deleted up front) so a
+	// failed paper.html commit below can restore it.
 	assetsBackup := filepath.Join(paperDir, originalAssetsBackupDirName)
 	hadOldAssets := isDir(assetsTarget)
 	if hadOldAssets {

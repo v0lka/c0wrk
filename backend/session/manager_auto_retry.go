@@ -7,17 +7,11 @@ import (
 	"github.com/v0lka/sp4rk/llm"
 )
 
-// autoRetryStatusCodes lists the HTTP status codes whose LLM failures make a
-// failed task eligible for automatic resend (ADR-065): rate limiting (429)
-// and transient provider overload (529 — Anthropic-specific, mapped by
-// errTypeForStatus). The list is deliberately backend-local and unexported —
-// surfacing it as a user-facing (frontend/config) knob is a future
-// extension; today the only per-provider tuning is auto_retry_seconds on
-// compatible providers.
+// autoRetryStatusCodes: the HTTP statuses making a failed task eligible for
+// automatic resend — 429 (rate limit) and 529 (provider overload).
+// Deliberately backend-local (specs/domains/llm-providers.md, ADR-065).
 var autoRetryStatusCodes = []int{429, 529}
 
-// isAutoRetryableStatus reports whether the HTTP status code carried by an
-// *llm.Error qualifies for automatic resend.
 func isAutoRetryableStatus(code int) bool {
 	for _, c := range autoRetryStatusCodes {
 		if code == c {
@@ -27,14 +21,10 @@ func isAutoRetryableStatus(code int) bool {
 	return false
 }
 
-// isAutoRetryableCause reports whether an *llm.Error qualifies for
-// automatic resend. Two independent transports carry the retryable class:
-// the HTTP status code (openai_compatible, and anthropic gateways that
-// return a non-JSON body so the SDK surfaces RequestError) and the
-// transport-independent ErrKind classification (anthropic_compatible: the
-// SDK parses the JSON error body into APIError, which carries NO status, so
-// ErrKind=rate_limit / overloaded derived from the provider's own
-// "rate_limit_error" / "overloaded_error" type fields is the only signal).
+// isAutoRetryableCause reports whether an *llm.Error qualifies for automatic
+// resend; the class rides two transports — the HTTP status (429/529) and the
+// ErrKind classification the anthropic SDK derives from the JSON error body
+// (APIError carries no status) — see specs/domains/llm-providers.md.
 func isAutoRetryableCause(llmErr *llm.Error) bool {
 	if isAutoRetryableStatus(llmErr.StatusCode) {
 		return true
@@ -42,18 +32,12 @@ func isAutoRetryableCause(llmErr *llm.Error) bool {
 	return llmErr.ErrKind == llm.ErrKindRateLimit || llmErr.ErrKind == llm.ErrKindOverloaded
 }
 
-// SetAutoRetryResolver sets the callback that resolves a provider name (as
-// carried by *llm.Error.Provider — the logical config key of a compatible
-// provider) to its configured auto-resend interval in seconds. The backend
-// Application wires this to the live LLM config (an immutable snapshot —
-// see Application.publishAutoRetryIntervals), so Settings saves take
-// effect for the NEXT failure that surfaces a deadline. A nil resolver (or
-// a resolver returning 0 — fixed providers have no auto_retry_seconds
-// field) disables the auto-resend entirely.
-//
-// There is NO backend timer (ADR-065): the backend only classifies the
-// terminal failure and stamps the deadline into the task_failed_resumable
-// payload; the UI owns the countdown and the resume-on-zero (resumeTask).
+// SetAutoRetryResolver sets the callback resolving a provider name (the
+// logical config key carried by *llm.Error.Provider) to its auto-resend
+// interval in seconds; a nil resolver or a 0 answer (fixed providers have no
+// auto_retry_seconds) disables the auto-resend entirely. NO backend timer
+// exists (ADR-065, specs/domains/llm-providers.md): the UI owns the countdown
+// and the resume.
 func (m *Manager) SetAutoRetryResolver(fn func(provider string) int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -72,14 +56,10 @@ func (m *Manager) autoRetryInterval(provider string) int {
 	return fn(provider)
 }
 
-// maybeAutoRetryAt inspects the terminal failure cause and, when it
-// qualifies (a classified *llm.Error with a retryable class — rate limit
-// or overload — from a provider whose resolved interval is > 0), returns
-// the auto-resend deadline as unix seconds (now + the provider's interval).
-// Returns 0 when the cause does not qualify: the banner renders without a
-// deadline and the user's manual Resume/Cancel decision is the only path.
-// The caller stamps the returned deadline into the task_failed_resumable
-// payload; NOTHING is scheduled on the backend — the UI owns the countdown.
+// maybeAutoRetryAt classifies the terminal failure cause and returns the
+// auto-resend deadline as unix seconds, or 0 when it does not qualify. The
+// caller stamps the deadline into the task_failed_resumable payload; nothing
+// is scheduled on the backend (specs/domains/llm-providers.md, ADR-065).
 func (m *Manager) maybeAutoRetryAt(cause error) int64 {
 	if cause == nil {
 		return 0

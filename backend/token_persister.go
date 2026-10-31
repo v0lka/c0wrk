@@ -7,10 +7,8 @@ import (
 	"time"
 )
 
-// Coalescing window for session-token persistence. The emitter reports
-// cumulative token totals after every LLM call; writing each report straight to
-// SQLite would issue one UPDATE per call for a value that only ever needs its
-// latest state. Coalescing keeps at most one write per session per interval.
+// Coalescing window: the emitter reports cumulative token totals after every LLM call;
+// only the latest state per session needs to reach SQLite — one write per interval.
 const (
 	tokenPersistInterval = time.Second
 	tokenPersistTimeout  = 2 * time.Second
@@ -21,15 +19,10 @@ type tokenStore interface {
 	UpdateSessionTokens(ctx context.Context, id string, inputTokens, outputTokens int, model, family string, fillPercent float64) error
 }
 
-// tokenPersister coalesces the high-frequency session-token updates reported by
-// the session emitter into at most one UPDATE per session per flush interval,
-// and runs those writes off the reporting goroutine.
-//
-// The latest report per session always wins, so a burst of updates collapses to
-// a single row write; Close flushes the pending map so a task's final totals are
-// captured even between ticks. Writes are routed through the shared persistence
-// single writer (submit), so they are serialized with event persistence instead
-// of contending for SQLite's write lock.
+// tokenPersister coalesces the session emitter's high-frequency token updates into at
+// most one UPDATE per session per flush interval, run off the reporting goroutine.
+// The latest report per session wins; Close flushes the pending map so final totals
+// survive between ticks. Writes route through the shared persistence single writer (submit).
 type tokenPersister struct {
 	store    tokenStore
 	submit   func(func())
@@ -76,9 +69,8 @@ func newTokenPersister(store tokenStore, submit func(func()), interval, timeout 
 	return t
 }
 
-// Record stores the latest token totals for a session, replacing any value
-// recorded since the last flush. It never touches the database, so it is safe
-// to call on the emitter's goroutine.
+// Record replaces the session's pending totals; it never touches the database
+// and is safe on the emitter's goroutine.
 func (t *tokenPersister) Record(sessionID string, inputTokens, outputTokens int, model, family string, fillPercent float64) {
 	if sessionID == "" {
 		return
@@ -94,15 +86,13 @@ func (t *tokenPersister) Record(sessionID string, inputTokens, outputTokens int,
 	t.mu.Unlock()
 }
 
-// Flush submits the coalesced updates collected so far to the single writer. It
-// returns without waiting for them to complete (the shared writer's Flush is the
-// barrier used at task end / shutdown).
+// Flush submits the coalesced updates without waiting; the shared writer's Flush
+// is the barrier used at task end / shutdown.
 func (t *tokenPersister) Flush() {
 	t.flush()
 }
 
-// Close stops the periodic flusher and performs a final flush of any pending
-// updates. Idempotent.
+// Close stops the periodic flusher and performs a final flush of pending updates.
 func (t *tokenPersister) Close() {
 	t.closeOnce.Do(func() {
 		close(t.stop)

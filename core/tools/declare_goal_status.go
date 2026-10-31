@@ -18,28 +18,19 @@ Outputs: the verdict is recorded and the current turn ends.
 Example: status "met" with evidence citing the artifacts your work produced (changed files, command output you observed).
 Anti-example: not for intermediate progress (report in replies); never more than once per turn; never as your own verification pass; "not_met" means keep working next turn, "blocked" means external input is required.`
 
-// GoalStatusSink is the context-injected destination for self-evaluation
-// verdicts. The goal loop (runGoalLoop) injects a concrete sink into the
-// per-turn context; declare_goal_status writes structured verdicts into it so
-// the loop reads them as typed objects rather than parsing ToolResult.Content
-// (which is a plain string, and PostExecuteHook skips internal tools anyway).
-//
-// The implementation lives in a higher layer; the tool only knows the interface.
+// GoalStatusSink is the context-injected destination for structured
+// self-evaluation verdicts (typed goal.Verdict). See specs/domains/goal-mode.md.
 type GoalStatusSink interface {
-	// Declare records a verdict as the most recent one. Implementations must
-	// be safe for the single-threaded per-turn tool call that invokes this.
+	// Declare records the verdict as the most recent one.
 	Declare(v goal.Verdict)
 	// Last returns the most recently declared verdict, or nil if none has been
 	// declared since the sink was created/injected.
 	Last() *goal.Verdict
 }
 
-// DeclareGoalStatusTool captures a self-evaluation verdict via the
-// context-injected GoalStatusSink. It is an internal tool
-// (PolicyAlwaysAllow, bypasses the tool judge) because it is a coordination
-// primitive for the goal loop, not a user-facing capability. It is a no-op
-// outside a goal-loop run (the sink will be nil), matching declare_plan's and
-// propose_goal's pattern.
+// DeclareGoalStatusTool captures the agent's self-evaluation verdict via the
+// context-injected GoalStatusSink — a goal-loop coordination primitive; outside
+// a goal loop (nil sink) it returns an error. See specs/domains/goal-mode.md.
 type DeclareGoalStatusTool struct {
 	*sdktools.BaseTool
 }
@@ -99,19 +90,13 @@ func (t *DeclareGoalStatusTool) Execute(ctx context.Context, input json.RawMessa
 	status := params.Status
 	switch status {
 	case "met", "not_met", "blocked":
-		// valid
 	default:
 		return sdktools.ErrorResult("validation error: status must be \"met\", \"not_met\", or \"blocked\", got %q", status), nil
 	}
 
-	// Evidence mandate: declaring the goal met REQUIRES non-empty evidence.
-	// Enforced at the tool boundary so a bare "done" can never terminate the
-	// goal loop without a concrete, inspectable artifact backing it.
-	//
-	// The tool executor does NOT validate inputs against the JSON schema, so a
-	// `met` verdict must be rejected both when evidence is absent AND when an
-	// entry is present but empty (e.g. evidence:[{}] or evidence:[{"ref":""}]) —
-	// otherwise a bare assertion could terminate the loop with no real artifact.
+	// Evidence mandate: a "met" verdict requires complete evidence entries;
+	// rejected here (the executor skips JSON-schema validation) so absent arrays
+	// and present-but-empty entries fail alike — see specs/domains/goal-mode.md.
 	if status == "met" {
 		if len(params.Evidence) == 0 {
 			return sdktools.ToolResult{
@@ -142,9 +127,7 @@ func (t *DeclareGoalStatusTool) Execute(ctx context.Context, input json.RawMessa
 	}
 	sink.Declare(verdict)
 
-	// Short confirmation string. The structured verdict is delivered via the
-	// sink; this Content is just for the transcript so the agent sees its
-	// declaration was captured.
+	// Transcript-only Content — the verdict itself travels via the sink.
 	var summary string
 	switch status {
 	case "met":

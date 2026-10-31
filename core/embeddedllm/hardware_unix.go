@@ -10,17 +10,12 @@ import (
 	"github.com/v0lka/sp4rk/safeio"
 )
 
-// platformTotalRAMBytes reads total physical RAM in bytes.
-//
-// darwin: "sysctl -n hw.memsize" — the same source the fork's demo script
-// reads in bonsai_ctx_default. There is no portable syscall for it that also
-// compiles on Linux, so the probe shells out under the bounded probe budget.
-//
-// linux: MemTotal from /proc/meminfo, which the kernel reports in kilobytes.
-//
-// Any other GOOS is unsupported: c0wrk ships darwin, linux and windows only,
-// and an unreadable RAM size must fail closed (see ErrRAMUnknown) rather than
-// let the memory gate derive a host budget out of nothing.
+// platformTotalRAMBytes reads total physical RAM in bytes: darwin shells out
+// to "sysctl -n hw.memsize" (no portable syscall), linux reads MemTotal from
+// /proc/meminfo (kilobytes). Any other GOOS is unsupported: an unreadable RAM
+// size must fail closed (ErrRAMUnknown), never let the memory gate derive a
+// host budget from nothing. See specs/domains/embedded-llm.md (Hardware
+// probe → resolution).
 func platformTotalRAMBytes(ctx context.Context) (uint64, error) {
 	if runtime.GOOS == "darwin" {
 		return darwinTotalRAMBytes(ctx)

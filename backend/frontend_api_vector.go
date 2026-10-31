@@ -27,22 +27,11 @@ type vectorIndexTarget struct {
 }
 
 // resolveVectorIndexTarget resolves the effective vector-index target for
-// project p. A managed-worktree session of p (the saved session of the
-// project at switch time) targets that session's OWN tree root with a
-// worktree-scoped storage dir — index and search route per session workspace
-// root, the branch is resolved from that root by the manager's async init,
-// and concurrent sessions on different trees keep disjoint persisted index
-// state. Every other case — local sessions, no resolvable session, or a
-// session workspace that is not a managed tree of this project — keeps the
-// project checkout with the project storage dir: the default local-project
-// flow, unchanged. Membership is decided by containment (the tree must live
-// inside THIS project's .worktrees container), never by comparing paths to
-// the checkout.
-//
-// This is the INITIAL Git-panel-focus resolution at project switch: the
-// resolved root is handed to the per-root registry (ApplyFocus), which owns
-// the manager for it. It no longer re-points a shared singleton — sessions
-// route through their own task context, the user's search follows the focus.
+// project p: a managed-worktree session of p targets its OWN tree root with
+// worktree-scoped storage; every other case keeps the checkout. Membership is
+// decided by containment inside THIS project's .worktrees container. This is
+// the INITIAL focus resolution at project switch (the root is handed to
+// ApplyFocus). See specs/domains/workspace.md (session-workspace routing).
 func (f *FrontendAPI) resolveVectorIndexTarget(switchCtx context.Context, p *project.ProjectInfo) vectorIndexTarget {
 	base := vectorIndexTarget{
 		workspacePath: p.WorkspacePath,
@@ -51,14 +40,11 @@ func (f *FrontendAPI) resolveVectorIndexTarget(switchCtx context.Context, p *pro
 	if p.IsNoProject || f.appCell() == nil || f.app.Manager() == nil {
 		return base
 	}
-	// Both reads below are bounded by terminalPathLookupTimeout, as this
-	// function's siblings require: Manager.WorkspacePathFor's contract makes
-	// the CALLER bound the session-row read, and the shared SQLite pool can
-	// otherwise park SwitchProject (switchMu held) indefinitely. The bound is
-	// derived from the switch-section deadline (switchSectionTimeout) so a
-	// saturated pool cannot stack this budget on top of every other
-	// round-trip in the critical section. A timeout degrades to base — the
-	// project checkout — which is already the fail-soft default of every
+	// Both reads below are bounded by terminalPathLookupTimeout:
+	// Manager.WorkspacePathFor's contract makes the CALLER bound the
+	// session-row read, and the bound derives from the switch-section
+	// deadline so a saturated pool cannot stack budgets inside the critical
+	// section. A timeout degrades to base — the fail-soft default of every
 	// negative branch here.
 	ctx, cancel := context.WithTimeout(switchCtx, terminalPathLookupTimeout)
 	defer cancel()
@@ -82,14 +68,11 @@ func (f *FrontendAPI) resolveVectorIndexTarget(switchCtx context.Context, p *pro
 	return target
 }
 
-// managedWorktreeVectorTarget derives the worktree-scoped vector target for
-// workspace ws when ws is a managed worktree of project p's checkout, and
-// reports whether it is. The workspace is the tree root itself; the storage
-// root is <project vector index>/worktrees/<name> (config owns the layout).
-// The embedding cache is per-tree too (WorktreeEmbeddingCachePath): with
-// per-root managers a checkout manager and a tree manager run concurrently,
-// and the cache accounting walks its root recursively, so a shared root is
-// no longer safe.
+// managedWorktreeVectorTarget derives the worktree-scoped vector target when
+// ws is a managed worktree of project p's checkout (the workspace is the tree
+// root itself; storage <project vector index>/worktrees/<name>). The cache is
+// per-tree too: a checkout manager and a tree manager run concurrently, and
+// the cache accounting walks its root recursively, so a shared root is unsafe.
 func (f *FrontendAPI) managedWorktreeVectorTarget(p *project.ProjectInfo, ws string) (vectorIndexTarget, bool) {
 	f.seedAcquire()
 	name, err := config.ManagedWorktreeNameFromPath(p.WorkspacePath, ws)
@@ -122,12 +105,11 @@ func (f *FrontendAPI) storedProjectRoot(projectID string) (string, bool) {
 }
 
 // deleteWorktreeVectorIndex releases a managed tree's per-root manager and
-// removes the tree's persisted vector-index state — its whole worktree-scoped
-// storage root plus its per-tree embedding cache. Best-effort by design: the
-// tree is already gone, so leftover index data is only disk garbage.
-// The registry Release must happen FIRST: it shuts the manager down (dropping
-// its open chromem handles so the directory removal works on Windows too)
-// before DeleteProjectData wipes the storage.
+// removes its persisted vector-index state (worktree-scoped storage root plus
+// per-tree embedding cache). Best-effort by design — the tree is already gone.
+// The registry Release happens FIRST: it shuts the manager down (dropping open
+// chromem handles) before DeleteProjectData wipes the storage, so the removal
+// works on Windows too.
 func (f *FrontendAPI) deleteWorktreeVectorIndex(repoRoot, projectID, name string, releasedPath ...string) {
 	f.seedAcquire()
 	vr := f.vectorRootsRegistry()
@@ -141,14 +123,11 @@ func (f *FrontendAPI) deleteWorktreeVectorIndex(repoRoot, projectID, name string
 		root = canonicalWorktreeRoot(releasedPath[0])
 	}
 	mgr := vr.Release(root)
-	// Legacy rows keep a symlinked (or otherwise unresolved) ancestor in
-	// their stored root: AGENT routing keys a tree's live manager under the
-	// raw stored spelling (the session's WorkspacePath re-derives from the
-	// stored row and canonicalRoot does not resolve symlinks), while the
-	// repo root here is the canonical form the deletion flows present.
-	// Release the stored spelling too, so the delete shuts the
-	// legacy-keyed manager down as well — a miss returns nil. Fail-soft:
-	// an unreadable project row only skips the second key.
+	// Legacy rows keep a symlinked ancestor in their stored root: AGENT
+	// routing keys a tree's live manager under the raw stored spelling, while
+	// the repo root here is canonical. Release the stored spelling too, so the
+	// delete shuts the legacy-keyed manager down as well. Fail-soft: an
+	// unreadable project row only skips the second key.
 	if stored, ok := f.storedProjectRoot(projectID); ok && stored != repoRoot {
 		alt, altErr := config.ManagedWorktreePath(stored, name)
 		if altErr != nil {
@@ -169,9 +148,9 @@ func (f *FrontendAPI) deleteWorktreeVectorIndex(repoRoot, projectID, name string
 	}
 	clean, disposable := mgr, false
 	if clean == nil {
-		// No live manager ever routed to this tree in this app run, but
-		// persisted data from a previous run may exist; any manager can
-		// remove it (DeleteProjectData is a plain fs + park-slot operation).
+		// No live manager ever routed here this run, but persisted data from
+		// a previous run may exist; any manager can remove it (a plain fs
+		// + park-slot operation).
 		clean, disposable = vr.ManagerForCleanup()
 	}
 	switch {
@@ -202,14 +181,11 @@ func (f *FrontendAPI) deleteWorktreeVectorIndex(repoRoot, projectID, name string
 			"project", projectID, "worktree", name)
 	}
 
-	// The per-tree embedding cache lives INSIDE the tree's storage root
-	// (WorktreeEmbeddingCachePath → <storage>/embedding_cache), so the
-	// DeleteProjectData removal above already dropped it. The explicit
-	// removal stays as belt-and-braces, and the LEGACY sibling location used
-	// by builds before the containment fix (issue #137 step 1) is removed
-	// too: trees provisioned by those builds carry seed copies there that
-	// nothing ever read — drop them so the stale directories do not outlive
-	// the tree.
+	// The per-tree cache lives INSIDE the tree's storage root, so the
+	// DeleteProjectData removal above already dropped it; the explicit removal
+	// stays as belt-and-braces. The LEGACY sibling location (pre-containment-
+	// fix builds, issue #137 step 1) is removed too: those trees carry seed
+	// copies nothing ever read.
 	if cache, cerr := config.WorktreeEmbeddingCachePath(f.agentDir, projectID, name); cerr == nil {
 		if err := os.RemoveAll(cache); err != nil {
 			f.log().Warn("vector index: failed to remove released worktree embedding cache",
@@ -226,30 +202,10 @@ func (f *FrontendAPI) deleteWorktreeVectorIndex(repoRoot, projectID, name string
 
 // seedWorktreeEmbeddingCache populates a freshly provisioned worktree's
 // content-addressed embedding cache from the project checkout's cache, so the
-// tree's first index pass reuses the embeddings the checkout already computed
-// instead of re-running ONNX inference over near-identical content. A session
-// worktree is 99-100% byte-identical to the branch point, and the cache — not
-// the branch collections — is the layer where that identity is reusable:
-// entries are keyed by (format version, embedding fingerprint, chunk text
-// hash) with paths deliberately excluded from the key, and every embed path
-// (full or incremental) consults the cache before the model.
-//
-// Correctness: entries carry a trailing checksum, so a partially copied or
-// torn file decodes as a cold miss, never as a wrong vector; the fingerprint
-// covers the model/tokenizer bytes and every vector-producing parameter, so a
-// model swap turns the seed into dead weight the per-root FIFO prune evicts.
-// The per-tree cache keeps its single-owner-directory model (ADR-081): the
-// seed runs once, synchronously, in the provisioning RPC — after the session
-// row is persisted and before the RPC returns, so the frontend's immediate
-// focus move cannot build the tree's vector manager (and install its cache
-// instance) until the copied state is already in place. The checkout's
-// manager may concurrently write or prune the source; the tolerant copier
-// treats a vanished or unreadable entry as the cold miss it is.
-//
-// Contract: best-effort and idempotent — never fails the caller. A skipped or
-// partial seed only means the tree's first index pass runs cold. Call from
-// the provisioning flows after their success point (create and fork); the
-// recreate path needs no call (its cache root survives the lost tree).
+// tree's first index pass reuses the checkout's embeddings. Best-effort and
+// idempotent — a skipped or partial seed only means a cold first pass; runs
+// once, synchronously, in the provisioning RPC, before the frontend's focus
+// move can build the tree's manager. See specs/domains/session-worktrees.md.
 func (f *FrontendAPI) seedWorktreeEmbeddingCache(projectID, worktreeName string) {
 	f.seedAcquire()
 	src := config.ProjectEmbeddingCachePath(f.agentDir, projectID)
@@ -300,13 +256,11 @@ func (f *FrontendAPI) seedWorktreeEmbeddingCache(projectID, worktreeName string)
 
 // copyEmbeddingCacheTree mirrors src's fanout tree (two-level hex dirs of
 // .vec entries; only regular files are meaningful) into dst, which must not
-// exist. Tolerant by design: the source is a live cache the checkout's
-// manager may be writing or pruning concurrently, so per-file failures are
-// skipped — a missing entry is a cold miss downstream, and a torn copy fails
-// the entry's checksum at read time. Directory and file modes match the
-// cache's own writer (0o750 dirs, 0o600 files). Returns the copied entry
-// count and byte size; the error is the first fatal walk error (an unreadable
-// source directory), not a per-file skip.
+// exist. Tolerant by design — the source is a live cache the checkout's
+// manager may write or prune concurrently, so per-file failures are skipped
+// (a missing entry is a cold miss downstream; a torn copy fails the entry's
+// checksum at read time). Modes match the cache's own writer (0o750 dirs,
+// 0o600 files); the error is the first fatal walk error, not a per-file skip.
 func copyEmbeddingCacheTree(src, dst string) (filesCopied int, bytesCopied int64, err error) {
 	err = filepath.WalkDir(src, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -342,10 +296,9 @@ func copyEmbeddingCacheTree(src, dst string) (filesCopied int, bytesCopied int64
 	return filesCopied, bytesCopied, err
 }
 
-// copyFileExact copies one regular file, creating dstPath exclusively with
-// the source's permission bits. A failed copy removes the partial so the
-// destination never holds a half-written entry under a name a later copy
-// would consider done.
+// copyFileExact copies one regular file, creating dstPath exclusively with the
+// source's permission bits; a failed copy removes the partial, so a later copy
+// never sees a half-written entry as done.
 func copyFileExact(dstPath, srcPath string, perm os.FileMode) error {
 	in, err := os.Open(srcPath)
 	if err != nil {
@@ -364,22 +317,16 @@ func copyFileExact(dstPath, srcPath string, perm os.FileMode) error {
 	return out.Close()
 }
 
-// SearchVectorStore searches the vector store for the given request, routed
-// to the Git-panel FOCUS tree's manager (ADR-080): the user's search follows
-// the tree the panel displays, not the last session that was driven. Session
-// tools route separately, through their task context (vector_roots.go).
-//
-// When req.Query is empty it browses arbitrary chunks (no semantic
-// ordering) through BrowseWithFilter. Otherwise it dispatches to
-// Service.HybridSearch with the requested mode (hybrid | vector |
-// lexical; empty defaults to hybrid with auto-fallback to vector when
-// the lexical index is empty).
-//
-// req.TopK defaults to 50 when <= 0.
+// SearchVectorStore searches the vector store, routed to the Git-panel FOCUS
+// tree's manager — the user's search follows the tree the panel displays (see
+// specs/domains/workspace.md, session-workspace routing). An empty req.Query
+// browses arbitrary chunks through BrowseWithFilter; otherwise it dispatches
+// to Service.HybridSearch with the requested mode (hybrid | vector | lexical;
+// empty defaults to hybrid with auto-fallback to vector when the lexical
+// index is empty). req.TopK defaults to 50 when <= 0.
 func (f *FrontendAPI) SearchVectorStore(req SearchRequest) ([]VectorStoreEntry, error) {
-	// No Project (CHAT mode): the vector index is disabled. Return empty
-	// results (not an error) so the frontend renders an empty state rather
-	// than attempting a search against a dormant subsystem.
+	// No Project (CHAT mode): the vector index is disabled. Empty results,
+	// not an error, so the frontend renders an empty state.
 	if f.isNoProject() {
 		return []VectorStoreEntry{}, nil
 	}
@@ -398,14 +345,12 @@ func (f *FrontendAPI) SearchVectorStore(req SearchRequest) ([]VectorStoreEntry, 
 
 	var results []vectorindex.SearchResult
 
-	// Defense-in-depth: bound the readiness wait inside HybridSearch /
-	// BrowseWithFilter with the same knob that bounds the semantic_search
-	// tool (vector_index.search_wait_timeout_ms), so the RPC can never block
-	// unboundedly while a full index is stuck. The fail-fast sentinel (0)
-	// skips waiting entirely: it dispatches to the NoWait variants, so a
-	// not-ready index errors immediately AND an incremental pass starting
-	// between the readiness state and the call cannot block the RPC until
-	// the pass finishes.
+	// Defense-in-depth: bound the readiness wait with the same knob that
+	// bounds the semantic_search tool (vector_index.search_wait_timeout_ms),
+	// so the RPC can never block unboundedly while a full index is stuck. The
+	// fail-fast sentinel (0) dispatches to the NoWait variants: a not-ready
+	// index errors immediately AND a pass starting between the readiness
+	// state and the call cannot block the RPC.
 	ctx := f.ctx()
 	failFast := false
 	if wait := vm.SearchWaitTimeout(); wait > 0 {
@@ -437,15 +382,12 @@ func (f *FrontendAPI) SearchVectorStore(req SearchRequest) ([]VectorStoreEntry, 
 		}
 	}
 	if err != nil {
-		// Fail-fast dispatch observed a not-ready index (including the
-		// pass-started-after-gate race): surface the actionable index
-		// status (progress, current file) instead of a bare error.
+		// Fail-fast observed a not-ready index (including the
+		// pass-started-after-gate race): surface the actionable status.
 		if errors.Is(err, vectorindex.ErrNotReady) {
 			return nil, vm.NotReadyError()
 		}
-		// The bound expired while waiting for readiness: surface the
-		// actionable index status (progress, current file) instead of a
-		// bare deadline error.
+		// The wait bound expired before readiness: same actionable status.
 		if !vectorSvc.IsReady() {
 			return nil, vm.NotReadyError()
 		}
@@ -504,8 +446,8 @@ func (f *FrontendAPI) GetVectorIndexStatus() VectorIndexStatus {
 }
 
 // vectorIndexStatusFromManager builds the wire status from a manager's live
-// index state (progress fraction, active indices). Embedder-info enrichment
-// stays with the callers via applyEmbedderInfo.
+// index state; embedder-info enrichment stays with the callers via
+// applyEmbedderInfo.
 func (f *FrontendAPI) vectorIndexStatusFromManager(vm *vectorindex.Manager) VectorIndexStatus {
 	st := vm.GetIndexStatus()
 	result := VectorIndexStatus{
@@ -538,16 +480,11 @@ func (f *FrontendAPI) vectorIndexStatusFromManager(vm *vectorindex.Manager) Vect
 	return result
 }
 
-// ReindexVectorIndex forces a full reindex of the FOCUS tree's vector index.
-// It reconciles the existing index against the workspace, re-indexing
-// changed/new/deleted files; when no index exists yet (empty collection) it
-// falls back to a full build from scratch. The pass runs in the background and
-// streams progress through vector_index:status events.
-//
-// It returns an error when the vector index is unavailable: No Project (CHAT
-// mode, indexing is disabled), no focus root resolved (no project switch has
-// pointed the Git panel anywhere yet), or the embedding backend is still
-// loading / failed to load.
+// ReindexVectorIndex forces a full reindex of the FOCUS tree's vector index,
+// reconciling it against the workspace (full build when no index exists). The
+// pass runs in the background and streams progress through
+// vector_index:status events; an error is returned when the index is
+// unavailable (No Project, no focus root, embedder still loading or failed).
 func (f *FrontendAPI) ReindexVectorIndex() error {
 	// No Project (CHAT mode): the vector index is disabled — nothing to reindex.
 	if f.isNoProject() {
@@ -563,39 +500,18 @@ func (f *FrontendAPI) ReindexVectorIndex() error {
 }
 
 // ListVectorIndexGPUs enumerates the GPUs visible on the machine for the
-// vector-index settings UI (populating the execution-provider device
-// picker). It is the lazy, on-demand counterpart to the startup GPU probe:
-// the UI calls it when the picker is opened, instead of the backend probing
-// unconditionally at startup.
+// vector-index settings device picker — the lazy, on-demand counterpart to the
+// startup probe. Delegates to embedding.ListGPUDevices: NVIDIA via nvidia-smi
+// (provider "cuda"), Intel via vulkaninfo (provider "openvino", always
+// device_id 0 — the only value the plugin surface accepts; see
+// specs/domains/workspace.md).
 //
-// The call delegates to embedding.ListGPUDevices, which merges two external
-// probe sources under the same bounded probe budget (gpuProbeTimeout, 2s
-// each):
-//   - NVIDIA GPUs via nvidia-smi (provider "cuda") — exactly the pre-OpenVINO
-//     behavior;
-//   - Intel GPUs via vulkaninfo --summary (provider "openvino"), the hardware
-//     the OpenVINO execution provider runs on. Entries always carry index 0:
-//     the plugin-based OpenVINO surface accepts only device_id 0 and resolves
-//     the concrete Intel device itself, so 0 is the only valid device_id — the
-//     entry exists to show that the Intel hardware is present and what the
-//     driver calls it.
-//
-// so the RPC can never block the UI thread indefinitely on a wedged driver.
-//
-// Semantics:
-//   - no probe tool found in PATH → an empty, non-nil slice with a nil
-//     error. Absence of both driver userspaces means "no GPUs to offer",
-//     not a failure — the picker renders an empty/CPU-only state.
-//   - probe tool(s) found but the invocation(s) fail (driver down,
-//     non-zero exit, probe timeout) and no source answered → nil slice
-//     with the wrapped error, so the UI distinguishes "no hardware" from
-//     "hardware present, probe failed". A healthy source wins over a
-//     failing one: a partial device list with a nil error is preferred
-//     over hiding working hardware behind a broken driver stack.
-//
-// The result is independent of the running embedder: it reflects what the
-// drivers report right now, not what the embedder was created with (the
-// embedder's facts travel in VectorIndexStatus via applyEmbedderInfo).
+// No probe tool in PATH → an empty, non-nil slice with a nil error ("no GPUs
+// to offer", not a failure). Probes found but failing with no source
+// answering → nil slice with the wrapped error, so the UI distinguishes "no
+// hardware" from "hardware present, probe failed"; a healthy source wins over
+// a failing one. Independent of the running embedder — its facts travel in
+// VectorIndexStatus via applyEmbedderInfo.
 func (f *FrontendAPI) ListVectorIndexGPUs() ([]GPUDeviceResponse, error) {
 	devices, err := embedding.ListGPUDevices(f.ctx())
 	if err != nil {

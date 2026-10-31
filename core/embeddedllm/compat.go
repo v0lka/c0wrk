@@ -1,39 +1,12 @@
 // Backend compatibility guards: the machine-class failures the pinned runtime
 // documents about ITSELF, turned into decisions c0wrk makes before it spends a
 // multi-gigabyte download on a plan that is known to crash, hang, abort — or
-// quietly produce garbage.
-//
-// Everything here is derived from two upstream documents of record for the
-// pinned model and runtime, fetched and read on 2026-09-25 against the pin in
-// registry.go (`RuntimeTag` = prism-b10735-842b188):
-//
-//   - KNOWN_ISSUES.md in the pinned weights repository
-//     (huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf, "Last checked:
-//     2026-09-23"), which lists each failure with its workaround, its status
-//     and the upstream issue number;
-//   - the model card in the same repository ("Choosing a Packing" and the
-//     "Cross-Platform Throughput" table), which measures the two packings per
-//     GPU generation.
-//
-// Every constant below cites the issue it encodes. A guard is NEVER invented
-// from a hunch: if upstream has not documented the failure, it is not a guard.
-// The corollary is that this file must be re-read at every pin bump — a fixed
-// upstream issue means a guard that should stop firing, and a stale guard is a
-// needless degradation. `specs/domains/embedded-llm.md` records that duty.
-//
-// Two design rules follow from the failures themselves:
-//
-//  1. A guard is DATA, not control flow. `CompatibilityGuards` is a pure table
-//     lookup returning decisions with a typed reason, a severity, an issue
-//     citation and human guidance. Nothing in this file downloads, spawns or
-//     mutates anything, so the whole backend x GPU x platform matrix is
-//     table-testable and the same table can be read by the resolver (to apply
-//     it) and by the install report (to disclose it).
-//  2. A degradation is never silent. The resolver and the installer record
-//     every decision they act on — and every decision they could NOT act on —
-//     in `Resolution.Guards`, `InstallReport.Guards`, the on-disk `Manifest`
-//     and the Settings status DTO. "It works, but not the way you think" is
-//     exactly the state a user must be able to see.
+// quietly produce garbage. A guard is never invented from a hunch: every one
+// cites its upstream document of record (KNOWN_ISSUES.md and the model card in
+// the pinned weights repository), this file must be re-read at every pin bump,
+// and no degradation is ever silent — every decision a plan acts on, or cannot
+// act on, is recorded. Sources, per-guard rows and the design rules are in
+// specs/domains/embedded-llm.md (Backend compatibility guards).
 package embeddedllm
 
 import (
@@ -46,144 +19,92 @@ import (
 // GPU generation vocabulary
 // ---------------------------------------------------------------------------
 
-// GPUFamily is the accelerator GENERATION a device description identifies.
-//
-// It exists because the decisions this package makes about an accelerator are
-// generation-shaped, not backend-shaped, and two independent consumers read
-// the same answer:
-//
-//   - the packing decision, because the pinned model's card MEASURES the two
-//     ternary packings per GPU generation (see prefersPTQ1_0Decode);
-//   - the compatibility guards, because KNOWN_ISSUES documents its failures
-//     against named parts rather than backends (RDNA2 on ROCm, gfx1151 on
-//     Windows HIP, Intel Arc on Vulkan);
-//   - the memory planner (plan.go), because memory.go's profile was measured on
-//     ONE family and the family is what prices the uncertainty of a
-//     device/host split nobody measured (splitAllowanceMiB).
-//
-// The vocabulary covers the classes those decisions name, plus the generations
-// the throughput table measures so that a recognized card is never reported as
-// Unknown. Anything else — an unmodelled part, a description no rule matches —
-// is GPUFamilyUnknown, which fires no GPU-specific guard, keeps the default
-// packing and pays the largest memory allowance. Unknown is therefore not "no
-// GPU": it is "nothing to decide, and nothing measured".
-//
-// Classification reads the DESCRIPTION string the runtime prints for a device
-// (`--list-devices`, or the `-lv 4` parameter dump), never the backend: the
-// backend says which archive was downloaded, the description says which
-// silicon answered.
+// GPUFamily is the accelerator GENERATION a device description identifies —
+// the axis the packing decision, the guards and the memory planner's split
+// allowance all decide on. Classification reads the DESCRIPTION string the
+// runtime prints for a device, never the backend: the backend says which
+// archive was downloaded, the description says which silicon answered.
+// GPUFamilyUnknown means "nothing recognized": no GPU-specific guard, the
+// default packing, the largest memory allowance — not "no GPU". See
+// specs/domains/embedded-llm.md (Backend compatibility guards).
 type GPUFamily string
 
 const (
-	// GPUFamilyUnknown is an accelerator no rule below recognizes, or no
-	// accelerator at all.
+	// GPUFamilyUnknown is an accelerator no rule recognizes, or no accelerator
+	// at all.
 	GPUFamilyUnknown GPUFamily = ""
 
-	// GPUFamilyAppleSilicon is an Apple M-series part (Metal). The model card's
-	// only Apple throughput row is measured on PQ2_0, so this family keeps the
-	// default packing; it is named so the classifier's answer is explicit rather
-	// than falling through to Unknown, and because it is the family every figure
-	// in memory.go was measured on.
+	// GPUFamilyAppleSilicon is an Apple M-series part (Metal) — the family
+	// every memory.go figure was measured on; it keeps the default packing
+	// (the model card's only Apple row is measured on PQ2_0).
 	GPUFamilyAppleSilicon GPUFamily = "apple-silicon"
 
-	// GPUFamilyNVIDIAAda is NVIDIA's Ada Lovelace generation: the RTX 40-series,
-	// the RTX x000 Ada workstation cards, and the L4/L40/L40S inference cards.
-	// Model card, "Choosing a Packing": "PTQ1_0 is the faster decode on the
-	// Ada-generation cards and the L4" — measured TG128 PTQ1_0 > PQ2_0 on every
-	// Ada row (RTX 6000 Ada 90.4 vs 82.8, RTX 4090 91.1 vs 81.2, L40S 81.8 vs
-	// 74.4, L4 32.1 vs 29.8), because batch-1 decode there is bound by memory
-	// bandwidth and PTQ1_0 moves 17% less weight data per step.
+	// GPUFamilyNVIDIAAda is Ada Lovelace: RTX 40-series, the RTX x000 Ada
+	// workstation cards, L4/L40/L40S. The one family the model card measures
+	// as PTQ1_0-faster for decode (every Ada row agrees).
 	GPUFamilyNVIDIAAda GPUFamily = "nvidia-ada"
 
-	// GPUFamilyNVIDIABlackwell is NVIDIA's Blackwell generation (RTX 50-series,
-	// RTX PRO Blackwell, B100/B200/GB200). PQ2_0 decodes faster here: RTX 5090
-	// 129.9 vs 120.5, RTX PRO 6000 Blackwell 124.8 vs 117.9.
+	// GPUFamilyNVIDIABlackwell is Blackwell (RTX 50-series, RTX PRO Blackwell,
+	// B100/B200/GB200); PQ2_0 decodes faster (5090: 129.9 vs 120.5 TG128).
 	GPUFamilyNVIDIABlackwell GPUFamily = "nvidia-blackwell"
 
-	// GPUFamilyNVIDIAHopper is H100/H200/GH200. PQ2_0 decodes faster: H100 SXM
-	// 113.9 vs 86.9 TG128 — batch-1 decode is limited by instruction throughput
-	// and launch overhead rather than bandwidth, so the cheaper-to-unpack 2-bit
-	// slot representation wins.
+	// GPUFamilyNVIDIAHopper is H100/H200/GH200; PQ2_0 decodes faster (H100 SXM
+	// 113.9 vs 86.9) — decode there is instruction-throughput-bound, so the
+	// cheaper-to-unpack 2-bit slot wins.
 	GPUFamilyNVIDIAHopper GPUFamily = "nvidia-hopper"
 
-	// GPUFamilyNVIDIAAmpere is A100/A30/A40/A10 and the RTX 30-series. The model
-	// card names A100 explicitly on the PQ2_0 side (73.9 vs 54.7 TG128);
-	// consumer Ampere is not in the table and is grouped here because nothing
-	// documents a PTQ1_0 advantage for it.
+	// GPUFamilyNVIDIAAmpere is A100/A30/A40/A10 and the RTX 30-series; the card
+	// names A100 on the PQ2_0 side (73.9 vs 54.7), and nothing documents a
+	// PTQ1_0 edge for consumer Ampere.
 	GPUFamilyNVIDIAAmpere GPUFamily = "nvidia-ampere"
 
-	// GPUFamilyAMDRDNA2 is AMD's RDNA 2 generation (gfx1030-gfx1036: the RX
-	// 6000 series and the Radeon Pro W6000 series). KNOWN_ISSUES: "ROCm/HIP
-	// aborts on consumer RDNA2 GPUs (for example gfx1030)", workaround "none yet
-	// on HIP; try the Vulkan build", status open (Bonsai-demo #197).
+	// GPUFamilyAMDRDNA2 is RDNA 2 (gfx1030-gfx1036, RX 6000 / Radeon Pro
+	// W6000). KNOWN_ISSUES: ROCm/HIP aborts on consumer RDNA2 (Bonsai-demo
+	// #197); workaround "none yet on HIP; try the Vulkan build".
 	GPUFamilyAMDRDNA2 GPUFamily = "amd-rdna2"
 
-	// GPUFamilyAMDRDNA3 is AMD's discrete RDNA 3 generation (gfx1100-gfx1103,
-	// the RX 7000 series). No documented failure names it, so no guard keys on
-	// it; it exists so a recognized card is not reported as Unknown, and so the
-	// integrated RDNA 3.5 part below can be told apart from it.
+	// GPUFamilyAMDRDNA3 is discrete RDNA 3 (gfx1100-gfx1103, RX 7000). No
+	// documented failure names it; it exists so a recognized card is not
+	// Unknown, and so the RDNA 3.5 iGPU below is distinguishable from it.
 	GPUFamilyAMDRDNA3 GPUFamily = "amd-rdna3"
 
-	// GPUFamilyAMDGFX1151 is the RDNA 3.5 integrated GPU of the Strix Halo /
-	// Ryzen AI Max APUs (gfx1151). KNOWN_ISSUES: "PQ2_0 produces garbled output
-	// on Windows HIP with gfx1151 (Strix Halo integrated GPU). CPU (-ngl 0)
-	// output is correct", status open (#223).
-	//
-	// It is keyed on the gfx target rather than folded into RDNA 3 because the
-	// documented failure is that one part: folding the two would degrade a
-	// working RX 7000 on Windows HIP to protect a broken iGPU. The cost is
-	// coverage — a Windows HIP description often carries no gfx token at all
-	// ("AMD Radeon(TM) Graphics"), and an unrecognized Strix Halo iGPU then
-	// classifies as Unknown, so #223's guard cannot fire. That is the honest
-	// limit of description-based classification, and it is recorded in the
-	// domain spec rather than papered over with a broader rule.
+	// GPUFamilyAMDGFX1151 is the RDNA 3.5 iGPU of Strix Halo / Ryzen AI Max
+	// (gfx1151). KNOWN_ISSUES: PQ2_0 produces garbled output on Windows HIP
+	// there (#223); CPU output is correct. Keyed on the gfx target rather than
+	// folded into RDNA 3 because the failure is that one part — folding would
+	// degrade working RX 7000 cards. The coverage cost (a Windows HIP
+	// description often names no gfx token, so the guard cannot fire) is the
+	// honest limit of description-based classification, recorded in the domain
+	// spec rather than papered over with a broader rule.
 	GPUFamilyAMDGFX1151 GPUFamily = "amd-gfx1151"
 
 	// GPUFamilyIntelArc is an Intel Arc discrete or integrated GPU.
-	// KNOWN_ISSUES: "PTQ1_0 on Vulkan can hang Intel Arc GPUs after about 1,900
-	// tokens", workaround "run on CPU for now", status open (#192). Vulkan is
-	// the only backend c0wrk ships for Intel GPUs and Vulkan always resolves to
-	// PTQ1_0, so this family plus Vulkan is exactly the documented condition.
-	//
-	// The same honesty rule as gfx1151's governs coverage: a description must
-	// NAME the part. The Mesa Vulkan driver names the Xe2 iGPUs without the Arc
-	// brand — "Intel(R) Graphics (ARL)" (Arrow Lake) or "Intel(R) Graphics
-	// (LNL)" (Lunar Lake) — so the parenthesized generation code is the
-	// classifying token (captured verbatim from the project's live Linux Vulkan
-	// host: "Vulkan0: Intel(R) Graphics (ARL) (72035 MiB, 64832 MiB free)").
-	// The bare spelling of the same parts — "Intel(R) Graphics", the shape the
-	// OpenCL driver prints, with no generation suffix — names no generation and
-	// classifies as Unknown.
+	// KNOWN_ISSUES: PTQ1_0 on Vulkan can hang Arc after about 1,900 tokens
+	// (#192) — and c0wrk's Vulkan installs always resolve to PTQ1_0, so this
+	// family plus Vulkan is exactly the documented condition. A description
+	// must NAME the part: the Mesa Vulkan driver names the Xe2 iGPUs by
+	// parenthesized generation code ("Intel(R) Graphics (ARL)", "(LNL)"),
+	// which is the classifying token (captured verbatim from the project's
+	// live Linux Vulkan host); the bare OpenCL spelling names no generation
+	// and classifies as Unknown.
 	GPUFamilyIntelArc GPUFamily = "intel-arc"
 )
 
-// gpuRules is the classification table, applied in order: the first rule with a
-// matching pattern wins. Order is load-bearing, and every inversion below is
-// deliberate:
-//
-//   - Apple and Intel Arc come first because their tokens ("Apple M", "Arc")
-//     are unambiguous and cannot appear inside an NVIDIA or AMD product name.
-//   - The gfx1151 rule precedes the RDNA 3 rule: both are AMD, and the one part
-//     a correctness guard names must not be swallowed by the broader
-//     `gfx11xx` pattern that also covers discrete RDNA 3.
-//   - The Ada rule precedes Blackwell: "RTX 5000 Ada" and "RTX 4000 Ada" are
-//     Ada workstation cards whose names contain a 50xx/40xx number, so the
-//     explicit "ada" token must be matched before any digit-shaped Blackwell
-//     pattern.
-//   - Generations are ordered newest-first within a vendor, so a driver string
-//     naming two generations lands on the newer one.
+// gpuRules is the classification table, applied in order — the first match
+// wins, and the order is load-bearing: unambiguous vendor tokens (Apple, Arc)
+// first; gfx1151 before the broader gfx11xx RDNA 3 pattern; the explicit
+// "ada" token before any digit-shaped Blackwell pattern ("RTX 5000 Ada"
+// contains a 50xx number); newest-first within a vendor, so a driver string
+// naming two generations lands on the newer one.
 var gpuRules = []struct {
 	family   GPUFamily
 	patterns []*regexp.Regexp
 }{
 	{GPUFamilyAppleSilicon, gpuPatterns(`apple\s+m\d`, `apple silicon`)},
-	// The ARL/LNL tokens are the Mesa Vulkan generation codes for the Xe2 iGPUs:
-	// "Intel(R) Graphics (ARL)" (Arrow Lake) and "(LNL)" (Lunar Lake) carry no
-	// "Arc" brand to match, so the generation code is the token (the ARL name is
-	// captured verbatim from the project's live Linux Vulkan host). The bare
-	// OpenCL spelling of the same parts — "Intel(R) Graphics" — carries no code
-	// and stays deliberately unrecognized: no rule keys on a name that does not
-	// name the part.
+	// ARL/LNL are the Mesa Vulkan generation codes for the Xe2 iGPUs — no
+	// "Arc" brand to match, so the code is the token. The bare OpenCL spelling
+	// ("Intel(R) Graphics") carries no code and stays deliberately
+	// unrecognized: no rule keys on a name that does not name the part.
 	{GPUFamilyIntelArc, gpuPatterns(`\barc\b`, `\bxe2\b`, `\barl\b`, `\blnl\b`, `\bb[357]\d0\b`, `\ba[357]\d0\b`)},
 	{GPUFamilyAMDGFX1151, gpuPatterns(`\bgfx1151\b`, `strix halo`, `ryzen ai max`, `radeon 80[56]0s`)},
 	{GPUFamilyAMDRDNA3, gpuPatterns(`\bgfx11\d{2}\b`, `\brx\s*7\d{3}\b`, `rdna ?3`)},
@@ -195,9 +116,9 @@ var gpuRules = []struct {
 		`\brtx\s*30\d{2}\b`)},
 }
 
-// gpuPatterns compiles case-insensitive device-description matchers. Patterns
-// are word-boundary anchored wherever a bare number could otherwise match
-// inside a longer token.
+// gpuPatterns compiles case-insensitive device-description matchers,
+// word-boundary anchored wherever a bare number could match inside a longer
+// token.
 func gpuPatterns(exprs ...string) []*regexp.Regexp {
 	patterns := make([]*regexp.Regexp, 0, len(exprs))
 	for _, expr := range exprs {
@@ -206,13 +127,9 @@ func gpuPatterns(exprs ...string) []*regexp.Regexp {
 	return patterns
 }
 
-// ClassifyGPU maps one accelerator description — the `Description` half of a
-// `DeviceMemory` entry, i.e. the runtime's own name for the device — onto a
-// GPUFamily. An empty or unrecognized description yields GPUFamilyUnknown.
-//
-// It is pure and total: no I/O, no failure, and no allocation beyond the
-// result. The price of totality is the coverage limit documented on
-// GPUFamilyAMDGFX1151.
+// ClassifyGPU maps one accelerator description — the runtime's own name for
+// the device — onto a GPUFamily; empty or unrecognized yields
+// GPUFamilyUnknown. Pure and total.
 func ClassifyGPU(description string) GPUFamily {
 	trimmed := strings.TrimSpace(description)
 	if trimmed == "" {
@@ -228,20 +145,12 @@ func ClassifyGPU(description string) GPUFamily {
 	return GPUFamilyUnknown
 }
 
-// ClassifyGPUs folds a device inventory into the one family a plan is made for:
-// the first device with a recognized family wins, in the order the runtime
-// printed it (which is its own preference order). An inventory with nothing
-// recognizable — including an empty one — is GPUFamilyUnknown.
-//
-// Each device is classified from both identity strings the runtime reports for
-// it, description first: a backend that prints a terse description still carries
-// a slot name ("HIP0", "MTL0"), and a description that names no part is
-// sometimes accompanied by one that does.
-//
-// A mixed-vendor machine (an Intel iGPU beside an NVIDIA card, say) is not
-// modelled: the runtime would tensor-split across both and the two families can
-// want different packings. Taking the first recognized device is the
-// deterministic choice and matches how the probe orders its output.
+// ClassifyGPUs folds an inventory into the one family a plan is made for: the
+// first recognized device wins, in the order the runtime printed it, each
+// device classified from description first and then slot name ("HIP0",
+// "MTL0"). A mixed-vendor machine is not modelled — the runtime would
+// tensor-split across two families that can want different packings — so the
+// first recognized device is the deterministic choice.
 func ClassifyGPUs(devices []DeviceMemory) GPUFamily {
 	for _, device := range devices {
 		if family := ClassifyGPU(device.Description); family != GPUFamilyUnknown {
@@ -254,27 +163,19 @@ func ClassifyGPUs(devices []DeviceMemory) GPUFamily {
 	return GPUFamilyUnknown
 }
 
-// ClassifyTopology is ClassifyGPUs over a probed topology: the family of the
-// accelerator a plan will actually use. A failed probe carries no devices and
-// classifies as Unknown, which is the caller's signal to keep the plan it
-// already had — never a claim that the machine has no accelerator.
+// ClassifyTopology is ClassifyGPUs over a probed topology. A failed probe
+// classifies as Unknown — the caller's signal to keep the plan it already
+// had, never a claim that the machine has no accelerator.
 func ClassifyTopology(topology MemoryTopology) GPUFamily {
 	return ClassifyGPUs(topology.Devices)
 }
 
-// prefersPTQ1_0Decode reports whether the pinned model's card measures PTQ1_0
-// as the faster DECODE on this family. Only Ada qualifies — "PTQ1_0 is the
-// faster decode on the Ada-generation cards and the L4" — and every Ada row of
-// the throughput table agrees: RTX 6000 Ada 90.4 vs 82.8 TG128, RTX 4090 91.1
-// vs 81.2, L40S 81.8 vs 74.4, L4 32.1 vs 29.8. Batch-1 decode there is bound
-// by memory bandwidth, and PTQ1_0 moves 17% less weight data per step.
-//
-// The families the card puts on the PQ2_0 side return false: H100 SXM 113.9 vs
-// 86.9, A100 SXM 73.9 vs 54.7, RTX 5090 129.9 vs 120.5, RTX PRO 6000
-// Blackwell 124.8 vs 117.9 — batch-1 decode there is limited by instruction
-// throughput and launch overhead instead. Prompt processing is not consulted
-// because "Prompt processing, being compute-bound, favors PQ2_0 everywhere",
-// and an agent workload is decode-dominated.
+// prefersPTQ1_0Decode reports whether the model card measures PTQ1_0 as the
+// faster DECODE on this family — Ada only, every Ada row of the throughput
+// table agreeing (batch-1 decode there is memory-bandwidth-bound, and PTQ1_0
+// moves 17% less weight data per step). Prompt processing is not consulted:
+// being compute-bound, it favours PQ2_0 everywhere, and an agent workload is
+// decode-dominated. See specs/domains/embedded-llm.md.
 func (g GPUFamily) prefersPTQ1_0Decode() bool {
 	return g == GPUFamilyNVIDIAAda
 }
@@ -283,17 +184,14 @@ func (g GPUFamily) prefersPTQ1_0Decode() bool {
 // Host capability vocabulary
 // ---------------------------------------------------------------------------
 
-// CPUFeature is a tri-state CPU capability verdict. It is tri-state on purpose:
-// "we did not look" must be distinguishable from "the CPU does not have it",
-// because the two have opposite safe defaults for the one rule that reads it
-// (an unprobed AVX-512 host is treated as AVX-512-capable, since the failure
-// it guards is a segfault).
+// CPUFeature is a tri-state CPU capability verdict, on purpose: "we did not
+// look" must be distinguishable from "the CPU does not have it" — the two
+// have opposite safe defaults for the segfault-guarding rule that reads it.
 type CPUFeature int
 
 const (
-	// CPUFeatureUnknown means no probe answered. It is the zero value, so a
-	// caller that supplies no host information at all lands here rather than
-	// accidentally asserting absence.
+	// CPUFeatureUnknown means no probe answered: the zero value, so a caller
+	// supplying no host information lands here rather than asserting absence.
 	CPUFeatureUnknown CPUFeature = iota
 	// CPUFeatureAbsent means a probe answered "this CPU does not have it".
 	CPUFeatureAbsent
@@ -301,31 +199,24 @@ const (
 	CPUFeaturePresent
 )
 
-// HostCaps is the CPU-side capability set the packing decision reads.
-//
-// AVX-512 is the only field today, and it exists for one documented failure:
-// KNOWN_ISSUES "CPU crash on load (AVX-512 CPUs)" — "PQ2_0 segfaults while
-// loading on CPUs with AVX-512, including AMD Zen 4 and Zen 5 (Ryzen AI 300
-// series, Strix Halo) and some server and virtualised CPUs. It crashes even
-// with all layers offloaded to a GPU." Fixed in source by PR #245 (merged
-// 2026-09-23; reports #180, #204, #219, Bonsai-demo #182), which makes the
-// rule pin-dependent — see minBuildWithAVX512PQ2_0Fix.
-//
-// EXTENSION POINT: c0wrk ships no CPU-feature probe yet, so production passes
-// the zero value and every field reads CPUFeatureUnknown. That is safe with
-// the current pin (which contains #245, so the rule cannot fire) and
-// conservative with an older one (Unknown is treated as Present, i.e. PTQ1_0).
-// A future `/proc/cpuinfo` flags or CPUID probe fills this in without touching
-// the decision, which is already a pure function of the value.
+// HostCaps is the CPU-side capability set the packing decision reads. AVX-512
+// is the only field, and it exists for one documented failure — PQ2_0
+// segfaults while loading on AVX-512 CPUs, even with all layers offloaded —
+// fixed in source by PR #245, which makes the rule pin-dependent (see
+// minBuildWithAVX512PQ2_0Fix). EXTENSION POINT: c0wrk ships no CPU-feature
+// probe yet, so production passes the zero value — safe with the current pin
+// (it contains #245, the rule cannot fire) and conservative with an older one
+// (Unknown counts as Present, i.e. PTQ1_0); a future /proc/cpuinfo or CPUID
+// probe fills this in without touching the decision, already a pure function
+// of the value.
 type HostCaps struct {
 	// AVX512 is the host's AVX-512 verdict. Unknown is treated as Present by
 	// decidePacking whenever the pin predates the #245 fix.
 	AVX512 CPUFeature
 }
 
-// hasAVX512 reports whether the host must be treated as AVX-512-capable. The
-// unknown case resolves to true: the guarded failure is a segfault at load, so
-// an unprobed machine takes the packing that cannot crash.
+// hasAVX512 treats Unknown as capable: the guarded failure is a segfault at
+// load, so an unprobed machine takes the packing that cannot crash.
 func (h HostCaps) hasAVX512() bool {
 	return h.AVX512 != CPUFeatureAbsent
 }
@@ -335,27 +226,22 @@ func (h HostCaps) hasAVX512() bool {
 // ---------------------------------------------------------------------------
 
 // BudgetFit is the verdict of "does this packing fit the memory the machine
-// actually has?". Like CPUFeature it is tri-state, and for the same reason: a
-// bool's zero value would assert "does not fit" for every caller that has not
-// measured anything, silently degrading the packing on machines that were never
-// probed.
-//
-// The measurement itself belongs to the device-memory topology (topology.go's
-// budgets) and the model's memory profile (memory.go's projections). This type
-// only carries the verdict, so the packing decision stays a pure function and
-// the gate that produces the verdict can evolve independently.
+// actually has?" — tri-state like CPUFeature for the same reason: a bool's
+// zero value would assert "does not fit" for every unprobed caller. The
+// measurement belongs to topology.go's budgets and memory.go's projections;
+// this type only carries the verdict, so the packing decision stays a pure
+// function.
 type BudgetFit int
 
 const (
-	// FitUnknown means no budget was measured, so capacity cannot justify a
-	// downgrade. It is the zero value and the conservative default: it keeps
-	// the packing the backend and GPU generation asked for.
+	// FitUnknown means no budget was measured; the conservative default that
+	// keeps the packing the backend and GPU generation asked for.
 	FitUnknown BudgetFit = iota
 	// FitSufficient means the packing was projected to fit its budget.
 	FitSufficient
-	// FitInsufficient means the packing was projected NOT to fit, which is the
-	// model card's own reason to reach for PTQ1_0: "the pick wherever memory is
-	// tightest" (5.95 GB against PQ2_0's 7.21 GB).
+	// FitInsufficient means the packing was projected NOT to fit — the model
+	// card's own reason to reach for PTQ1_0 ("the pick wherever memory is
+	// tightest").
 	FitInsufficient
 )
 
@@ -363,62 +249,48 @@ const (
 // Guard decisions
 // ---------------------------------------------------------------------------
 
-// GuardID names one compatibility guard. The ids are stable strings: they are
-// persisted in the install manifest and rendered in Settings, so renaming one
-// is a user-visible change, not a refactor.
+// GuardID names one compatibility guard. The ids are stable strings persisted
+// in the install manifest and rendered in Settings, so renaming one is a
+// user-visible change, not a refactor.
 type GuardID string
 
 const (
 	// GuardCUDA133Crash covers KNOWN_ISSUES "CUDA 13.3 builds crash on some
-	// systems. On Linux this is a segfault; on Windows the server prints its
-	// banner and exits without a message." Documented workaround: "use the CUDA
-	// 12.8 build on Linux or the CUDA 12.4 build on Windows." Status: open
-	// (PrismML-Eng/llama.cpp#222).
+	// systems" — a Linux segfault, a Windows banner-then-exit. Workaround: the
+	// 12.8 build on Linux, 12.4 on Windows. Open (PrismML-Eng/llama.cpp#222).
 	GuardCUDA133Crash GuardID = "cuda-13.3-crash"
 
 	// GuardROCmRDNA2Abort covers KNOWN_ISSUES "ROCm/HIP aborts on consumer
-	// RDNA2 GPUs (for example gfx1030)." Documented workaround: "none yet on
-	// HIP; try the Vulkan build." Status: open
-	// (PrismML-Eng/Bonsai-demo#197).
+	// RDNA2 GPUs (for example gfx1030)"; workaround "try the Vulkan build".
+	// Open (PrismML-Eng/Bonsai-demo#197).
 	GuardROCmRDNA2Abort GuardID = "rocm-rdna2-abort"
 
-	// GuardWindowsHIPGFX1151Garbled covers KNOWN_ISSUES "PQ2_0 produces garbled
-	// output on Windows HIP with gfx1151 (Strix Halo integrated GPU). CPU
-	// (-ngl 0) output is correct." Documented workaround: "-ngl 0, or the
-	// Vulkan build with PTQ1_0." Status: open (PrismML-Eng/llama.cpp#223).
-	//
-	// This is the one guard whose failure mode is CORRECTNESS rather than
-	// availability: the server starts, answers, and the answer is garbage. On a
-	// unified-memory iGPU it would look like a model-quality problem, so it is
-	// guarded before the install rather than diagnosed after it.
+	// GuardWindowsHIPGFX1151Garbled covers KNOWN_ISSUES "PQ2_0 produces
+	// garbled output on Windows HIP with gfx1151"; workaround "-ngl 0, or the
+	// Vulkan build with PTQ1_0". Open (PrismML-Eng/llama.cpp#223). The one
+	// guard whose failure mode is CORRECTNESS rather than availability: the
+	// server starts, answers, and the answer is garbage — so it is guarded
+	// before the install rather than diagnosed after it.
 	GuardWindowsHIPGFX1151Garbled GuardID = "windows-hip-gfx1151-garbled"
 
 	// GuardVulkanIntelArcHang covers KNOWN_ISSUES "PTQ1_0 on Vulkan can hang
-	// Intel Arc GPUs after about 1,900 tokens." Documented workaround: "run on
-	// CPU for now." Status: open (PrismML-Eng/llama.cpp#192).
-	//
-	// Advisory, not a substitution: c0wrk's Vulkan installs always resolve to
-	// PTQ1_0 (Vulkan has no PQ2_0 kernels), so every Intel Arc Vulkan install
-	// is in scope, and the only documented workaround gives up GPU acceleration
-	// entirely. That trade is the user's, so the guard records and discloses it
-	// instead of making it silently. Live validation on an integrated Arrow
-	// Lake-P Xe2 iGPU (2026-10, recorded in the domain spec) fixed the real
-	// axis: the trigger is PROMPT size — a ~2,090-token prompt lost the Vulkan
-	// device ~57 s into prefill and the llama-server process aborted — while
-	// 3,072 generated tokens ran clean, so the failure is a crash of the
-	// server, not a late-answer stall a short answer might dodge.
+	// Intel Arc GPUs after about 1,900 tokens"; workaround "run on CPU for
+	// now". Open (PrismML-Eng/llama.cpp#192). Advisory, not a substitution:
+	// every Intel Arc Vulkan install is in scope (Vulkan has no PQ2_0
+	// kernels), and the only documented workaround gives up GPU acceleration
+	// entirely — a trade the guard discloses rather than makes. Live
+	// validation on an integrated Arrow Lake-P Xe2 iGPU (2026-10, recorded in
+	// the domain spec) fixed the real axis: the trigger is PROMPT size — a
+	// ~2,090-token prompt lost the device mid-prefill and aborted the server,
+	// while 3,072 generated tokens ran clean.
 	GuardVulkanIntelArcHang GuardID = "vulkan-intel-arc-hang"
 
 	// GuardWindowsCUDANoStart covers KNOWN_ISSUES "Windows CUDA builds don't
-	// start on some CPUs; the Windows CPU-only build does." Documented
-	// workaround: "use the CPU-only build while this is investigated." Status:
-	// open (PrismML-Eng/llama.cpp#241).
-	//
-	// Advisory because it is not statically decidable: "some CPUs" names no
-	// CPUID, no driver version and no card, so no table can predict it. What
-	// the guard can do is make sure the fallback is already written down in the
-	// install record when a Windows CUDA server prints its banner and exits,
-	// instead of leaving the user to rediscover it.
+	// start on some CPUs; the Windows CPU-only build does"; workaround "use
+	// the CPU-only build". Open (PrismML-Eng/llama.cpp#241). Advisory because
+	// it is not statically decidable — "some CPUs" names no CPUID, no driver
+	// version and no card — so the guard's job is the fallback already written
+	// down in the install record when the banner-then-exit happens.
 	GuardWindowsCUDANoStart GuardID = "windows-cuda-no-start"
 )
 
@@ -426,14 +298,14 @@ const (
 type GuardAction string
 
 const (
-	// GuardActionPreferBackend substitutes the runtime archive's backend. It is
-	// only actionable while the plan is still on paper: once a runtime has been
-	// downloaded and staged, the substitution becomes guidance.
+	// GuardActionPreferBackend substitutes the runtime archive's backend —
+	// actionable only while the plan is on paper; once a runtime is staged,
+	// the substitution becomes guidance.
 	GuardActionPreferBackend GuardAction = "prefer_backend"
 
-	// GuardActionPreferPacking substitutes the weights packing. Actionable
-	// until the weights are downloaded, which is later than the runtime, so a
-	// guard discovered by the post-staging device probe can still apply one.
+	// GuardActionPreferPacking substitutes the weights packing — actionable
+	// until the weights download, later than the runtime, so a guard
+	// discovered by the post-staging device probe can still apply one.
 	GuardActionPreferPacking GuardAction = "prefer_packing"
 
 	// GuardActionAdvisory changes nothing and says something: the failure is
@@ -442,8 +314,8 @@ const (
 	GuardActionAdvisory GuardAction = "advisory"
 )
 
-// GuardReason is the typed cause behind a decision — the "why" a UI can render
-// without parsing prose, and the axis a test can assert on.
+// GuardReason is the typed cause behind a decision — the "why" a UI can
+// render without parsing prose, and the axis a test can assert on.
 type GuardReason string
 
 const (
@@ -455,28 +327,26 @@ const (
 	// path (Bonsai-demo #197: ROCm/HIP aborts on consumer RDNA2).
 	GuardReasonProcessAbort GuardReason = "process_abort"
 
-	// GuardReasonGarbledOutput is documented WRONG OUTPUT: the server runs and
-	// the tokens are nonsense (#223: PQ2_0 on Windows HIP with gfx1151).
-	// Classified apart from the crash reasons because nothing else about the
-	// install looks wrong — this is the failure that would otherwise be
-	// attributed to the model.
+	// GuardReasonGarbledOutput is documented WRONG OUTPUT (#223): the server
+	// runs and the tokens are nonsense — classified apart from the crash
+	// reasons because nothing else about the install looks wrong.
 	GuardReasonGarbledOutput GuardReason = "garbled_output"
 
-	// GuardReasonHang is the documented "hang" classification (#192: PTQ1_0
-	// on Vulkan with Intel Arc, after about 1,900 tokens). Live validation on
-	// Arrow Lake measured the failure as a device-lost abort of the server
-	// during PROMPT processing rather than a stall, so the guidance carries
-	// the measured mode while the enum keeps the upstream name.
+	// GuardReasonHang keeps the upstream "hang" name (#192); live validation
+	// on Arrow Lake measured the failure as a device-lost abort during PROMPT
+	// processing rather than a stall, so the guidance carries the measured
+	// mode while the enum keeps the upstream name.
 	GuardReasonHang GuardReason = "hang"
 
-	// GuardReasonFailsToStart is a documented start failure with no statically
-	// identifiable trigger (#241: Windows CUDA builds on some CPUs).
+	// GuardReasonFailsToStart is a documented start failure with no
+	// statically identifiable trigger (#241: Windows CUDA builds on some
+	// CPUs).
 	GuardReasonFailsToStart GuardReason = "fails_to_start"
 )
 
-// GuardSeverity ranks how bad the guarded failure is, for display and for
-// triage. It is derived from the reason, never chosen per-guard by hand, so
-// the two cannot drift apart.
+// GuardSeverity ranks how bad the guarded failure is, for display and triage;
+// derived from the reason, never chosen per-guard by hand, so the two cannot
+// drift apart.
 type GuardSeverity string
 
 const (
@@ -490,9 +360,9 @@ const (
 	GuardSeverityWarning GuardSeverity = "warning"
 )
 
-// severityFor ranks a typed reason. Every reason maps to a severity, and a
-// reason with no mapping is critical: an unranked failure must never be
-// rendered as the mildest thing on the list.
+// severityFor derives the severity from the typed reason; an unmapped reason
+// is critical, because an unranked failure must never render as the mildest
+// thing on the list. See specs/domains/embedded-llm.md.
 func severityFor(reason GuardReason) GuardSeverity {
 	switch reason {
 	case GuardReasonHang, GuardReasonFailsToStart:
@@ -504,9 +374,9 @@ func severityFor(reason GuardReason) GuardSeverity {
 	}
 }
 
-// GuardDecision is one guard's verdict for one machine. It is JSON-serializable
+// GuardDecision is one guard's verdict for one machine, JSON-serialized
 // because it is persisted in the install `Manifest` and mirrored into the
-// Settings status DTO: the record of a degraded install has to outlive the
+// Settings status DTO — the record of a degraded install must outlive the
 // process that made it.
 type GuardDecision struct {
 	// Guard is the stable id of the guard that fired.
@@ -514,21 +384,20 @@ type GuardDecision struct {
 	// Action is what the guard asks for: a backend substitution, a packing
 	// substitution, or advice.
 	Action GuardAction `json:"action"`
-	// Reason is the typed cause. Never empty — a decision without a reason is
+	// Reason is the typed cause, never empty — a decision without a reason is
 	// indistinguishable from a bug, and "no guard silently changes behavior
 	// without recording a reason" is an invariant of this subsystem.
 	Reason GuardReason `json:"reason"`
 	// Severity ranks the guarded failure for display.
 	Severity GuardSeverity `json:"severity"`
-	// Issue is the upstream citation, "<repo>#<number>"
-	// (e.g. "PrismML-Eng/llama.cpp#222"). It is data, not only a comment, so a
-	// rendered guard is traceable to the report that justifies it.
+	// Issue is the upstream citation, "<repo>#<number>" — data, not only a
+	// comment, so a rendered guard is traceable to the report that justifies
+	// it.
 	Issue string `json:"issue"`
-	// Applied reports whether c0wrk actually changed the plan because of this
-	// decision. It is set by the consumer (the resolver, the installer), never
-	// by the table: the table describes what SHOULD happen, Applied records
-	// what DID. A decision with Applied=false is still surfaced — that is the
-	// whole point of the field.
+	// Applied reports whether the plan actually changed — set by the consumer
+	// (the resolver, the installer), never by the table, which describes what
+	// SHOULD happen while Applied records what DID. A false Applied is still
+	// surfaced; that is the whole point of the field.
 	Applied bool `json:"applied"`
 	// Backend is the substituted backend, set only for GuardActionPreferBackend.
 	Backend Backend `json:"backend,omitempty"`
@@ -539,27 +408,20 @@ type GuardDecision struct {
 	Guidance string `json:"guidance"`
 }
 
-// CompatibilityGuards is the guard table: a pure lookup of
-// (backend, GPU family, platform) onto every decision that applies, in table
-// order (most severe first). It performs no I/O and never fails; a machine that
-// matches nothing returns a nil slice, which is the common and healthy case.
-//
-// backend is the EFFECTIVE backend (what c0wrk would provision), gpu is
-// ClassifyGPUs' answer for the machine's accelerator (GPUFamilyUnknown when no
-// device probe answered), and platform is the "<goos>-<goarch>" key.
-//
-// The returned decisions carry Applied=false; the consumer sets it when it acts
-// on one.
+// CompatibilityGuards is the guard table: a pure lookup of the EFFECTIVE
+// backend, GPU family (GPUFamilyUnknown when no probe answered) and platform
+// onto every decision that applies, in table order (most severe first). No
+// I/O, never fails; a machine that matches nothing returns a nil slice — the
+// common and healthy case. Returned decisions carry Applied=false; the
+// consumer sets it when it acts on one. See specs/domains/embedded-llm.md
+// (Backend compatibility guards).
 func CompatibilityGuards(backend Backend, gpu GPUFamily, platform string) []GuardDecision {
 	var decisions []GuardDecision
 
-	// #222 — CUDA 13.3 builds crash on some systems: a segfault on Linux, a
-	// banner-then-exit on Windows. Upstream's workaround names the fallback per
-	// OS, and c0wrk pins both (linux cuda-12.8, windows cuda-12.4), so the
-	// substitution is exact. A CUDA 13.3 driver still runs an older-toolkit
-	// build — that is the same backwards-compatibility rule clampCUDABackend
-	// already relies on when an archive is missing — so downgrading costs
-	// nothing but an unpinned-newer toolkit.
+	// #222 — CUDA 13.3 builds crash on some systems (Linux segfault, Windows
+	// banner-then-exit). Upstream's workaround names the fallback per OS and
+	// c0wrk pins both (linux cuda-12.8, windows cuda-12.4); a 13.3 driver
+	// still runs an older-toolkit build, so downgrading costs nothing.
 	if backend == BackendCUDA133 {
 		switch platform {
 		case PlatformLinuxAMD64:
@@ -583,10 +445,9 @@ func CompatibilityGuards(backend Backend, gpu GPUFamily, platform string) []Guar
 		}
 	}
 
-	// Bonsai-demo #197 — ROCm/HIP aborts on consumer RDNA2 GPUs (gfx1030). No
-	// HIP workaround exists, so the guard switches to the Vulkan build, which
-	// the same document recommends and which c0wrk pins for both ROCm-capable
-	// platforms. Vulkan resolves to PTQ1_0, the packing Vulkan has kernels for.
+	// Bonsai-demo #197 — ROCm/HIP aborts on consumer RDNA2 (gfx1030); no HIP
+	// workaround exists, so the guard switches to the pinned Vulkan build,
+	// which resolves to PTQ1_0.
 	if backend == BackendROCm && gpu == GPUFamilyAMDRDNA2 {
 		decisions = append(decisions, GuardDecision{
 			Guard:    GuardROCmRDNA2Abort,
@@ -598,13 +459,11 @@ func CompatibilityGuards(backend Backend, gpu GPUFamily, platform string) []Guar
 		})
 	}
 
-	// #223 — PQ2_0 produces GARBLED OUTPUT on Windows HIP with gfx1151 (Strix
-	// Halo's iGPU); CPU output is correct. Of the two documented workarounds
-	// ("-ngl 0, or the Vulkan build with PTQ1_0") the guard applies the Vulkan
-	// build, because at plan time a different runtime archive costs nothing
-	// extra while -ngl 0 would give up GPU acceleration on a machine whose
-	// unified memory is its whole point. The -ngl 0 alternative stays in the
-	// guidance so a user who prefers it can see it.
+	// #223 — PQ2_0 garbles output on Windows HIP with gfx1151. Of the two
+	// documented workarounds the guard applies Vulkan+PTQ1_0: at plan time a
+	// different archive costs nothing extra, while -ngl 0 would surrender GPU
+	// acceleration on a machine whose unified memory is its whole point. The
+	// -ngl 0 alternative stays in the guidance.
 	if backend == BackendROCm && gpu == GPUFamilyAMDGFX1151 && platform == PlatformWindowsAMD64 {
 		decisions = append(decisions, GuardDecision{
 			Guard:    GuardWindowsHIPGFX1151Garbled,
@@ -616,11 +475,10 @@ func CompatibilityGuards(backend Backend, gpu GPUFamily, platform string) []Guar
 		})
 	}
 
-	// #192 — PTQ1_0 on Vulkan can hang Intel Arc GPUs after about 1,900
-	// prompt tokens (live-validated 2026-10: a device-lost abort of the
-	// server mid-prefill, not a generation stall — see the constant's doc
-	// comment and the domain spec's validation note). Advisory: the guard
-	// does not substitute the CPU build on the user's behalf.
+	// #192 — PTQ1_0 on Vulkan loses the Intel Arc GPU on a large PROMPT
+	// (live-validated 2026-10: a device-lost abort mid-prefill, not a
+	// generation stall). Advisory: the guard does not substitute the CPU
+	// build on the user's behalf.
 	if backend == BackendVulkan && gpu == GPUFamilyIntelArc {
 		decisions = append(decisions, GuardDecision{
 			Guard:    GuardVulkanIntelArcHang,
@@ -632,9 +490,8 @@ func CompatibilityGuards(backend Backend, gpu GPUFamily, platform string) []Guar
 	}
 
 	// #241 — Windows CUDA builds don't start on some CPUs while the Windows
-	// CPU-only build does. Advisory: the trigger is unidentified upstream, so
-	// nothing can be predicted here, but the fallback belongs in the record
-	// before the failure rather than after it.
+	// CPU-only build does. Advisory: the trigger is unidentified upstream, but
+	// the fallback belongs in the record before the failure, not after.
 	if platform == PlatformWindowsAMD64 && backend.IsCUDA() {
 		decisions = append(decisions, GuardDecision{
 			Guard:    GuardWindowsCUDANoStart,
@@ -651,13 +508,10 @@ func CompatibilityGuards(backend Backend, gpu GPUFamily, platform string) []Guar
 	return decisions
 }
 
-// mergeGuardDecisions appends the entries of extra whose Guard id is not
-// already present in base, preserving base's order and its Applied flags.
-//
-// It exists because one install can learn about a machine twice — once from the
-// static half of the table at plan time and once from a device probe after the
-// runtime is staged — and the record must contain each guard once, with the
-// flag from the pass that actually acted on it.
+// mergeGuardDecisions merges the two passes' records — the static plan-time
+// half and the post-staging device probe — keeping each guard once, in base's
+// order, with the Applied flag from the pass that actually acted on it. See
+// specs/domains/embedded-llm.md.
 func mergeGuardDecisions(base, extra []GuardDecision) []GuardDecision {
 	merged := base
 	for _, candidate := range extra {
@@ -684,32 +538,23 @@ func guardDecisionPresent(decisions []GuardDecision, id GuardID) bool {
 // ---------------------------------------------------------------------------
 
 // minBuildWithAVX512PQ2_0Fix is the first fork build c0wrk can PROVE contains
-// PR #245, the fix for "PQ2_0 segfaults while loading on CPUs with AVX-512".
-//
-// The proof is two-sided and both sides are recorded in
-// specs/domains/embedded-llm.md's pin-bump note: build 10709 (published
-// 2026-09-18) demonstrably predates the fix, which merged 2026-09-23, and the
-// CVE review of the 26-commit range 9a9394a..842b188 records #245 as landing
-// inside it, so the current pin 10735 demonstrably contains it. Builds in
-// between are unproven, so the threshold is the proven one and an unproven
-// build is treated as predating the fix.
-//
-// That asymmetry is deliberate: treating an unfixed build as fixed segfaults
-// the install at load, while treating a fixed build as unfixed only selects the
-// smaller, slower-decoding packing. Raise this constant only with evidence
-// (a release note, or the merge commit's position in the tag range), never to
-// make a downgrade go away.
+// PR #245: b10709 demonstrably predates the merge, and the CVE-reviewed range
+// 9a9394a..842b188 demonstrably contains it — the evidence is recorded in
+// specs/domains/embedded-llm.md's pin-bump note, and builds in between are
+// treated as predating the fix. The asymmetry is deliberate: a fixed build
+// treated as unfixed only selects the smaller, slower packing; the reverse
+// segfaults at load. Raise only with evidence, never to make a downgrade go
+// away.
 const minBuildWithAVX512PQ2_0Fix = 10735
 
-// runtimeBuildRE matches the pinned fork release tag shape, "prism-b<build>-<commit>"
-// (RuntimeTag = "prism-b10735-842b188"). The build number is a commit counter,
-// not a date: b10709 → b10735 is exactly the 26-commit range the pin bump's
-// CVE review counted.
+// runtimeBuildRE matches the pinned fork release tag shape,
+// "prism-b<build>-<commit>"; the build number is a commit counter, not a
+// date (b10709 → b10735 is exactly the 26-commit range the pin bump's CVE
+// review counted).
 var runtimeBuildRE = regexp.MustCompile(`^prism-b(\d+)-[0-9a-f]{7,40}$`)
 
-// parseRuntimeBuild extracts the build number from a fork release tag. ok is
-// false for any other shape, which callers must treat as "unproven" (0) rather
-// than as "new".
+// parseRuntimeBuild extracts the build number; ok=false for any other shape,
+// which callers must treat as "unproven" (0), never as "new".
 func parseRuntimeBuild(tag string) (int, bool) {
 	match := runtimeBuildRE.FindStringSubmatch(strings.TrimSpace(tag))
 	if match == nil {
@@ -722,10 +567,9 @@ func parseRuntimeBuild(tag string) (int, bool) {
 	return build, true
 }
 
-// pinnedRuntimeBuild is the build number of the pin in registry.go, or 0 when
-// RuntimeTag has a shape this file does not recognize. Zero compares below
-// every threshold, so an unrecognizable pin gets the conservative treatment —
-// the same direction as an unproven one.
+// pinnedRuntimeBuild is the pin's build number, or 0 when the tag shape is
+// unrecognized — zero compares below every threshold, the same conservative
+// direction as an unproven build.
 func pinnedRuntimeBuild() int {
 	build, _ := parseRuntimeBuild(RuntimeTag)
 	return build

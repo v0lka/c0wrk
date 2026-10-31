@@ -5,40 +5,26 @@ import (
 	"strings"
 )
 
-// absolutePathRe matches a path that is absolute in a GOOS-independent sense
-// (mirroring isAbsolutePath in frontend/src/lib/localFileLink.ts):
-//   - POSIX: a leading "/" ("/abs/path/x.go");
-//   - Windows drive-rooted: ^[A-Za-z]:[\\/] ("C:\x", "d:/y") — the required
-//     separator keeps the drive-relative "C:x" relative;
-//   - Windows UNC: ^[\\/]{2} ("\\server\share\x").
+// absolutePathRe matches a GOOS-independent absolute path (mirroring
+// isAbsolutePath in frontend/src/lib/localFileLink.ts): POSIX "/", drive
+// "^[A-Za-z]:[\\/]" ("C:x" stays relative), UNC. See specs/decisions/095-chat-file-reference-path-semantics.md.
 var absolutePathRe = regexp.MustCompile(`^(?:/|[A-Za-z]:[\\/]|[\\/]{2})`)
 
-// IsAbsolutePath reports whether p is an absolute path in any dialect an
-// @file reference may carry: POSIX leading "/", Windows drive-rooted
-// ("C:\…"), or Windows UNC ("\\server\…"). The check is purely lexical — no
-// filesystem access and no OS dependency — so the same text classifies the
-// same way on every platform, which is what the fileref:// URI contract
-// needs: the URI is a logical identifier, not an OS path. Home-relative
-// paths ("~/…") are intentionally not absolute here; the resolver treats
-// them as their own category.
+// IsAbsolutePath reports whether p is absolute in any dialect an @file reference
+// may carry — purely lexical (no fs access, no OS dependency), so the same text
+// classifies identically on every platform (the fileref URI is a logical
+// identifier); "~" is deliberately not absolute. See specs/decisions/095-chat-file-reference-path-semantics.md.
 func IsAbsolutePath(p string) bool {
 	return absolutePathRe.MatchString(p)
 }
 
 // NormalizeAbsPath returns the canonical forward-slash form of an absolute
-// path for use as the path component of a fileref:// URI. Every backslash
-// becomes a forward slash and dot segments are removed, with ".." clamped at
-// the path's anchored root so it can never rise above the filesystem root,
-// the drive root, or the UNC share. Canonical output forms:
-//
-//	POSIX: /a/b/c
-//	drive: C:/a/b/c               (no leading slash before the drive letter)
-//	UNC:   //server/share/a/b     (the double-slash prefix is preserved)
-//
-// The semantics mirror normalizeAbsolute in frontend/src/lib/localFileLink.ts,
-// which consumes these URI paths. The ".." clamp is deliberate: a plain
-// path.Clean would pop across the anchor ("C:\..\x" → "../x", erasing the
-// drive) and collapse the UNC "//" marker into a single slash.
+// path for a fileref:// URI (POSIX /a/b/c, drive C:/a/b/c, UNC
+// //server/share/a/b): backslashes become slashes, dot segments are removed,
+// ".." clamped at the anchored root — never a plain path.Clean, which pops
+// across the anchor ("C:\..\x" → "../x", erasing the drive) and collapses the
+// UNC "//" marker. Mirrors normalizeAbsolute in frontend/src/lib/localFileLink.ts.
+// See specs/decisions/095-chat-file-reference-path-semantics.md.
 func NormalizeAbsPath(p string) string {
 	s := strings.ReplaceAll(p, "\\", "/")
 	switch {
@@ -53,9 +39,7 @@ func NormalizeAbsPath(p string) string {
 		// POSIX: the leading slash is the anchor.
 		return "/" + cleanAbsSegments(s[1:], 0)
 	}
-	// Not absolute — clean as far as a relative path allows. NormalizeAbsPath
-	// is intended for absolute inputs (IsAbsolutePath), so this fallback only
-	// keeps the function total for direct callers.
+	// Not absolute — clean as far as a relative path allows (total for direct callers).
 	return cleanAbsSegments(s, 0)
 }
 
@@ -66,9 +50,8 @@ func isDriveLetterByte(b byte) bool {
 }
 
 // cleanAbsSegments removes empty and "." segments and resolves ".." against
-// the remaining ones, never popping below floor segments — the anchored root
-// (filesystem root, drive root, or UNC server/share pair). It mirrors
-// normalizeSegments in frontend/src/lib/localFileLink.ts.
+// the remainder, never popping below the floor segments (the anchored root).
+// Mirrors normalizeSegments in frontend/src/lib/localFileLink.ts.
 func cleanAbsSegments(tail string, floor int) string {
 	parts := strings.Split(tail, "/")
 	segs := make([]string, 0, len(parts))

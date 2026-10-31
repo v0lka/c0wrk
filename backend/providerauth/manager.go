@@ -23,25 +23,19 @@ const persistedAuthVersion = 2
 // ErrNotSignedIn reports that Token was called with no stored credentials.
 var ErrNotSignedIn = errors.New("providerauth: not signed in")
 
-// persistedAuth is the JSON shape stored in the SecretStore. It contains
-// secrets and must never be logged.
-//
-// The shape is DELIBERATELY minimal: the refresh token plus the parsed
-// identity — never the access or ID token. OS keychain bridges cap secret
-// sizes far below a full ChatGPT token set (go-keyring's darwin backend
-// shells out to `security add-generic-password` with a 4096-byte command
-// budget, and its Windows backend caps the credential blob at 2560 bytes),
-// while the access and ID tokens alone are multi-kilobyte JWTs. A restored
-// sign-in reconstructs the live token set with one refresh round-trip on
-// first use, so nothing durable is lost by leaving them out.
+// persistedAuth is the JSON shape stored in the SecretStore; it holds
+// secrets and is never logged. DELIBERATELY minimal — refresh token + parsed
+// identity only, never the multi-KB access/ID JWTs: keychain bridges cap
+// secret sizes far below a full token set, and one refresh round-trip
+// reconstructs the live set on first use. Minimal-secret contract:
+// specs/domains/llm-providers.md (ChatGPT Subscription Auth).
 type persistedAuth struct {
 	Version      int    `json:"version"`
 	Provider     string `json:"provider"`
 	RefreshToken string `json:"refresh_token,omitempty"`
 	// Tokens is the legacy v1 full-token-set shape, read for one-way
-	// migration only: a v1 secret written before the size fix is accepted
-	// through its refresh token and rewritten as the minimal v2 secret on
-	// the next persist. Never written anymore.
+	// migration only (through its refresh token; the next persist rewrites
+	// v2). Never written.
 	Tokens   *Tokens   `json:"tokens,omitempty"`
 	Identity *Identity `json:"identity,omitempty"`
 }
@@ -65,18 +59,13 @@ type ManagerConfig struct {
 	ExpirySkew time.Duration
 }
 
-// TokenManager owns the OAuth token lifecycle of one subscription provider:
-// browser sign-in, proactive refresh before expiry (with skew), persistence
-// to the SecretStore, and sign-out. It implements llm.TokenSource.
-//
-// Concurrency: Token, SignIn, SignOut, and Refresh are safe for concurrent
-// use. A refresh is single-flight — concurrent callers wait on one network
-// round-trip and share its result, so at most one refresh is in flight at any
-// time — and the wait is context-aware: a waiter whose ctx is cancelled stops
-// waiting immediately instead of queueing on a lock held across the network
-// round-trip (the refresh itself runs WITHOUT the state lock; its commit is
-// guarded by a generation counter so a sign-out that raced the network call
-// can never be overwritten by the stale refresh result).
+// TokenManager owns the OAuth token lifecycle of one subscription provider
+// (sign-in, skewed proactive refresh, SecretStore persistence, sign-out) and
+// implements llm.TokenSource. Token/SignIn/SignOut/Refresh are
+// concurrency-safe: refresh is single-flight and ctx-aware, its commit
+// generation-guarded so a raced sign-out or newer sign-in is never
+// overwritten. See specs/domains/llm-providers.md (ChatGPT Subscription
+// Auth).
 type TokenManager struct {
 	profile Profile
 	store   SecretStore
@@ -89,27 +78,21 @@ type TokenManager struct {
 	// tokens/identity are the live credential state; guarded by mu.
 	tokens   *Tokens
 	identity *Identity
-	// loadWarning carries a NON-FATAL restore problem: the stored record is
-	// unreadable (malformed JSON) or incomplete (no refresh token). The
-	// manager starts signed out but stays fully usable — the next sign-in
-	// REPLACES the record and a sign-out DELETES it — so a corrupt keychain
-	// entry is recoverable from inside the app instead of bricking both
-	// auth RPCs. Empty when the restore was clean.
+	// loadWarning carries a NON-FATAL restore problem (unreadable or
+	// incomplete stored record): the manager starts signed out but stays
+	// fully usable — recoverable from inside the app. Empty when the
+	// restore was clean.
 	loadWarning string
 	// generation is bumped on every credential lifecycle transition
-	// (successful sign-in, sign-out, sign-in rollback). An in-flight
-	// refresh snapshots the generation when it starts and discards its
-	// result if the generation moved while its network call ran — the
-	// refreshed tokens of a superseded epoch must neither serve requests
-	// nor be persisted over the newer state.
+	// (sign-in, sign-out, sign-in rollback). An in-flight refresh snapshots
+	// it and discards its result if it moved — a superseded epoch's tokens
+	// neither serve requests nor reach the store.
 	generation uint64
-	// refreshDone is non-nil while a refresh is in flight; it is closed when
-	// that refresh fully concludes. Waiters select on it (or their own
-	// ctx.Done()) instead of blocking on mu. refreshDoneSeq identifies WHICH
-	// refresh the channel belongs to; refreshErr/refreshErrSeq carry that
-	// refresh's outcome so waiters woken by it share the SAME error instead
-	// of each starting a redundant retry of their own (single-flight covers
-	// the failure path too).
+	// refreshDone is non-nil while a refresh is in flight and closed when it
+	// concludes; waiters select on it (or ctx.Done()) instead of blocking on
+	// mu. refreshDoneSeq identifies WHICH refresh the channel belongs to;
+	// refreshErr/refreshErrSeq share that refresh's outcome with waiters
+	// (single-flight covers the failure path too).
 	refreshDone    chan struct{}
 	refreshDoneSeq uint64
 	refreshErr     error
@@ -157,20 +140,11 @@ func NewTokenManager(cfg ManagerConfig) (*TokenManager, error) {
 	return m, nil
 }
 
-// load restores persisted credentials, if any. The persisted secret is
-// refresh-token-only (see persistedAuth), so a restored manager starts with
-// no access token and refreshes on its first Token call.
-//
-// Two failure classes are distinguished:
-//   - a FAILING STORE (the OS keychain service is unreachable) is returned
-//     as an error: the manager cannot be constructed because every later
-//     operation (sign-in, sign-out, refresh persist) would fail the same
-//     way, and the caller surfaces the actionable construction error.
-//   - an UNUSABLE RECORD (malformed JSON, or a record with no refresh
-//     token) is NOT fatal: the manager starts signed out with the problem
-//     recorded in loadWarning (see LoadWarning) and remains fully usable —
-//     the next sign-in overwrites the record and a sign-out deletes it —
-//     so a corrupt entry is recoverable from inside the app.
+// load restores persisted credentials. The secret is refresh-token-only
+// (persistedAuth), so a restored manager refreshes on its first Token call.
+// A FAILING store is a construction error (every later operation would fail
+// the same way); an UNUSABLE record only starts the manager signed out with
+// loadWarning set — recoverable in-app.
 func (m *TokenManager) load() error {
 	raw, err := m.store.Get(m.profile.secretKey())
 	if errors.Is(err, ErrSecretNotFound) {
@@ -203,20 +177,16 @@ func (m *TokenManager) load() error {
 }
 
 // LoadWarning reports the non-fatal restore problem found by the
-// constructor, if any: the stored record was unreadable or incomplete, so
-// the manager started signed out although the keychain itself works. The
-// warning names the remediation (sign in again to replace the record).
+// constructor (unreadable/incomplete record — the keychain itself works);
+// the text names the remediation.
 func (m *TokenManager) LoadWarning() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.loadWarning
 }
 
-// SetHTTPClient replaces the client used for token-endpoint calls. It lets
-// the host re-point the manager at a new outbound configuration (e.g. a
-// proxy settings change) without reconstructing the manager and losing the
-// live credential state; a nil client is ignored (keep the current one).
-// Safe for concurrent use with Token/SignIn/SignOut/Refresh.
+// SetHTTPClient re-points the token-endpoint client (e.g. a proxy change)
+// without reconstructing the manager; nil is ignored.
 func (m *TokenManager) SetHTTPClient(client *http.Client) {
 	if client == nil {
 		return
@@ -226,25 +196,18 @@ func (m *TokenManager) SetHTTPClient(client *http.Client) {
 	m.mu.Unlock()
 }
 
-// maxTokenRefreshRounds bounds the refresh round-trips a single Token call
-// may start before giving up with an actionable error. One round is the
-// normal contract ("refreshing it first when it is within the expiry
-// skew"); the headroom covers re-entries after a superseded epoch (a
-// concurrent sign-in/sign-out discarded the round's commit) while still
-// stopping the pathological loop where every renewal lands back inside the
-// skew — a short-lived-token issuer or a host/issuer clock skew would
-// otherwise spin on the token endpoint until the caller's deadline.
+// maxTokenRefreshRounds bounds the refresh round-trips one Token/Refresh
+// call may start. One is the normal contract; the headroom covers
+// superseded-epoch re-entries, and the bound stops a renewal that keeps
+// landing back inside the skew (short token TTL, host/issuer clock skew)
+// from spinning on the token endpoint.
 const maxTokenRefreshRounds = 3
 
-// Token returns a currently valid access token, refreshing it first when it
-// is within the expiry skew. It implements sp4rk's llm.TokenSource: the ctx
-// is honored during a renewal round-trip AND while waiting for another
-// caller's in-flight renewal to conclude (a waiter never blocks on a lock
-// held across the network), and the returned BearerToken carries the
-// ChatGPT-Account-Id and originator headers the provider stamps onto
-// outgoing requests. Renewals are bounded per call (maxTokenRefreshRounds):
-// a refresh whose result still lands inside the expiry skew fails with an
-// actionable error instead of spinning.
+// Token returns a currently valid access token, refreshing within the
+// expiry skew (llm.TokenSource; single-flight and ctx-aware — see the
+// TokenManager doc and specs/domains/llm-providers.md). The BearerToken
+// carries the ChatGPT-Account-Id and originator headers; renewals are
+// bounded per call (maxTokenRefreshRounds).
 func (m *TokenManager) Token(ctx context.Context) (llm.BearerToken, error) {
 	refreshRounds := 0
 	for {
@@ -256,18 +219,14 @@ func (m *TokenManager) Token(ctx context.Context) (llm.BearerToken, error) {
 		if m.validLocked() {
 			bt := m.bearerTokenLocked()
 			m.mu.Unlock()
-			// Even a served-from-memory token honors an already-expired
-			// context: a caller whose deadline passed while waiting behind
-			// another caller's refresh must not ride that refresh's result.
+			// An already-expired ctx is honored even on a served-from-memory
+			// token: a caller must not ride a refresh it outwaited.
 			if err := ctx.Err(); err != nil {
 				return llm.BearerToken{}, err
 			}
 			return bt, nil
 		}
 		if done := m.refreshDone; done != nil {
-			// Another caller's refresh is in flight: wait for its completion
-			// or our own cancellation, then re-evaluate the (possibly
-			// refreshed) state under the lock.
 			waitedSeq := m.refreshDoneSeq
 			m.mu.Unlock()
 			select {
@@ -276,8 +235,7 @@ func (m *TokenManager) Token(ctx context.Context) (llm.BearerToken, error) {
 				return llm.BearerToken{}, ctx.Err()
 			}
 			// Share THAT refresh's outcome: a failed refresh answers every
-			// waiter with the same error (single-flight covers failures too)
-			// instead of letting each waiter start its own retry.
+			// waiter with the same error (single-flight covers failures too).
 			m.mu.Lock()
 			if m.tokens == nil {
 				m.mu.Unlock()
@@ -310,12 +268,10 @@ func (m *TokenManager) Token(ctx context.Context) (llm.BearerToken, error) {
 		m.refreshDone = make(chan struct{})
 		m.refreshDoneSeq = seq
 		m.refreshErr = nil
-		// Snapshot the epoch AND its refresh token + client in ONE critical
-		// section: reading the token inside refreshEpoch (after the unlock)
-		// would let a SignIn committing in the gap hand this round-trip the
-		// NEWER account's refresh token while the commit check still discards
-		// the result — with a rotating-refresh issuer that invalidates the
-		// newer account's token server-side for nothing.
+		// Snapshot epoch + refresh token + client in ONE critical section:
+		// reading the token after the unlock would spend a newer sign-in's
+		// (rotating) refresh token on a round-trip whose commit is discarded
+		// anyway — invalidating that token server-side for nothing.
 		gen := m.generation
 		refreshToken := m.tokens.RefreshToken
 		client := m.client
@@ -335,28 +291,17 @@ func (m *TokenManager) Token(ctx context.Context) (llm.BearerToken, error) {
 		if err != nil {
 			return llm.BearerToken{}, err
 		}
-		// Loop: re-validate the refreshed state under the lock (it may have
-		// been superseded by a concurrent lifecycle transition).
+		// Loop: re-validate — the refreshed state may have been superseded.
 	}
 }
 
-// SignIn runs the browser OAuth flow and persists the issued credentials
-// (the refresh token and parsed identity only — see persistedAuth; the
-// multi-kilobyte access/ID JWTs never reach the SecretStore).
-// The browser flow runs WITHOUT the manager lock, so Token() callers keep
-// getting their (possibly ErrNotSignedIn) answer instead of blocking for the
-// whole interactive sign-in. The store write happens before the in-memory
-// update, so a failing keychain (e.g. Linux without a Secret Service) aborts
-// the sign-in with an actionable error instead of leaving unpersisted
-// credentials behind.
-//
-// Cancellation is honored around the commit: if ctx was cancelled before the
-// keychain write started, the sign-in refuses without touching the store; if
-// it was cancelled while the (potentially prompt-blocked) write ran, the
-// newly written credentials are rolled back — the previous account is
-// restored when one existed, the record is deleted otherwise — and the
-// cancellation error is returned, so an accepted Cancel can never conclude
-// as a successful, durably signed-in account.
+// SignIn runs the browser OAuth flow and persists the minimal secret
+// (persistedAuth). The flow runs WITHOUT the manager lock — Token callers
+// keep getting answers during the interactive sign-in — and the store write
+// precedes the in-memory update, so a failing keychain aborts the sign-in
+// rather than leaving unpersisted credentials. Cancellation is honored
+// around the commit: refused before the write, rolled back after it, so an
+// accepted Cancel can never conclude as a durably signed-in account.
 func (m *TokenManager) SignIn(ctx context.Context, opener BrowserOpener) (*SignInResult, error) {
 	m.mu.Lock()
 	client := m.client
@@ -370,9 +315,7 @@ func (m *TokenManager) SignIn(ctx context.Context, opener BrowserOpener) (*SignI
 		return nil, err
 	}
 	if result.Tokens.RefreshToken == "" {
-		// The persisted secret is refresh-token-only, so a sign-in the
-		// issuer issued no refresh token for cannot be restored after a
-		// restart — it must not be reported as a signed-in account.
+		// A refresh-token-less sign-in cannot be restored after a restart.
 		return nil, errors.New("providerauth: the issuer issued no refresh token; this sign-in cannot be persisted, retry it")
 	}
 	if err := ctx.Err(); err != nil {
@@ -389,37 +332,25 @@ func (m *TokenManager) SignIn(ctx context.Context, opener BrowserOpener) (*SignI
 	m.generation++
 	m.loadWarning = "" // the new credentials replace whatever the warning was about
 	if err := m.persistLocked(); err != nil {
-		// Fail the sign-in: tokens that cannot be persisted must not be
-		// treated as a signed-in account.
+		// Unpersistable tokens are not a signed-in account.
 		m.tokens = prevTokens
 		m.identity = prevIdentity
 		m.generation++
-		// The failed store write leaves the PREVIOUS keychain record in
-		// place — when that record is what the load warning described
-		// (unreadable or incomplete), the warning still names the
-		// remediation and must survive the failed sign-in instead of
-		// silently clearing the status.
+		// The failed write leaves the PREVIOUS keychain record in place, so
+		// a load warning describing it must survive instead of being
+		// silently cleared.
 		m.loadWarning = prevWarning
 		m.mu.Unlock()
 		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
 		// The cancellation was accepted while the store write was blocked
-		// (e.g. a keychain unlock prompt). The write may have landed, so the
-		// commit must be rolled back consistently: restore the previous
-		// account's record when one existed, delete the record otherwise.
-		// The rollback is best-effort — a keychain that just failed to
-		// answer in time may fail again — and any rollback failure is
-		// logged (never returned in place of the cancellation, which is the
-		// operator's requested outcome).
-		//
-		// Unlike the persist-failure branch above, the load warning is NOT
-		// restored here: persistLocked already SUCCEEDED, so the previous
-		// keychain record is gone (overwritten by the new credentials, then
-		// deleted or re-persisted by the rollback) — a warning describing
-		// that dead record would be wrong. The warning was also necessarily
-		// empty whenever a previous account existed (a signed-in manager
-		// carries no load warning).
+		// (e.g. a keychain unlock prompt); the write may have landed, so the
+		// commit is rolled back (previous record restored, else deleted).
+		// The rollback is best-effort; its failure is logged, never returned
+		// in place of the cancellation. Unlike the persist-failure branch,
+		// the load warning is NOT restored: persistLocked succeeded, so the
+		// record it described is gone.
 		m.tokens = prevTokens
 		m.identity = prevIdentity
 		m.generation++
@@ -440,11 +371,8 @@ func (m *TokenManager) SignIn(ctx context.Context, opener BrowserOpener) (*SignI
 	return result, nil
 }
 
-// rollbackStoreLocked restores the persisted record to the in-memory
-// credentials AFTER a rolled-back sign-in: the previous account is written
-// back when one existed, and the record is deleted when the manager was
-// signed out before the sign-in. Caller holds m.mu (the in-memory state has
-// already been restored by the caller).
+// rollbackStoreLocked re-persists (or deletes) the record to match the
+// already-restored in-memory credentials. Caller holds m.mu.
 func (m *TokenManager) rollbackStoreLocked() error {
 	if m.tokens == nil {
 		err := m.store.Delete(m.profile.secretKey())
@@ -464,31 +392,21 @@ func identityField(id *Identity, get func(*Identity) string) string {
 	return get(id)
 }
 
-// SignOut clears the persisted credentials and the in-memory state. It is
-// idempotent: signing out while already signed out succeeds.
-//
-// The store record is deleted UNDER the state lock, and the lock is held
-// across the delete and the memory clear: a refresh that already started its
-// network round-trip snapshots the generation before the delete and discards
-// its (stale) result at commit time instead of re-persisting the cleared
-// credentials — so a sign-out that reports success can never leave a
-// durable credential behind that a racing refresh resurrects.
+// SignOut clears the persisted credentials and the in-memory state;
+// idempotent. The delete runs UNDER the state lock so a refresh racing the
+// round-trip discards its stale result at commit time instead of
+// resurrecting the cleared credentials.
 func (m *TokenManager) SignOut() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.generation++
 	err := m.store.Delete(m.profile.secretKey())
 	if err != nil && !errors.Is(err, ErrSecretNotFound) {
-		// The delete failed: the stored record is still there, so the load
-		// warning describing it must survive too — the memory clear below
-		// does NOT run on this path (a failed sign-out keeps the manager
-		// signed in), and the warning keeps naming the remediation until
-		// the next successful delete or a replacement sign-in.
+		// The delete failed: the record — and the load warning describing
+		// it — must survive; the manager stays signed in.
 		return err
 	}
-	// The record is gone (deleted, or never existed): the warning about it
-	// is obsolete. Cleared only after a successful delete, mirroring the
-	// tokens/identity clear.
+	// The record is gone (or never existed): its warning is obsolete.
 	m.loadWarning = ""
 	m.tokens = nil
 	m.identity = nil
@@ -516,19 +434,13 @@ func (m *TokenManager) Status() AccountStatus {
 	return st
 }
 
-// Refresh forces a token refresh regardless of the current expiry. Use it
-// when a provider rejected a still-unexpired token. Concurrent callers wait
-// for one in-flight refresh and share its FAILURE; a waiter whose waited
-// refresh SUCCEEDED performs its own round-trip (the success is not shared —
-// each Refresh call means "rotate now"). A caller whose ctx is cancelled
-// stops waiting for the in-flight refresh. A refresh whose epoch was
-// discarded mid-round-trip (superseded by a sign-in or sign-out) is not
-// reported as success: the loop re-evaluates the current state — a
-// signed-out manager answers ErrNotSignedIn, and a newer epoch's
-// credentials are rotated in a follow-up round (each Refresh call means
-// rotate-now, so a superseded round does not leave the newer epoch
-// untouched; the re-evaluation is bounded by maxTokenRefreshRounds, turning
-// endless supersession into an actionable error instead of a spin).
+// Refresh forces a token refresh regardless of expiry; use it when a
+// provider rejected a still-unexpired token. Failure is shared across
+// waiters; success is NOT — every call means "rotate now". A superseded
+// epoch (raced sign-in/sign-out) is not success: the loop re-evaluates
+// (signed out → ErrNotSignedIn; a newer epoch rotates in a follow-up
+// round), bounded by maxTokenRefreshRounds so endless supersession becomes
+// an error, not a spin.
 func (m *TokenManager) Refresh(ctx context.Context) error {
 	refreshRounds := 0
 	for {
@@ -545,8 +457,6 @@ func (m *TokenManager) Refresh(ctx context.Context) error {
 			case <-ctx.Done():
 				return ctx.Err()
 			}
-			// Share that refresh's outcome (see Token): a failed refresh
-			// answers every waiter with the same error.
 			m.mu.Lock()
 			if m.refreshDone == nil && m.refreshErr != nil && m.refreshErrSeq == waitedSeq {
 				err := m.refreshErr
@@ -566,9 +476,7 @@ func (m *TokenManager) Refresh(ctx context.Context) error {
 		m.refreshDone = make(chan struct{})
 		m.refreshDoneSeq = seq
 		m.refreshErr = nil
-		// Same one-section snapshot as Token's refresher: gen, token and
-		// client are captured together so the round-trip spends this
-		// epoch's token only.
+		// Same one-section snapshot as Token: this epoch's token only.
 		gen := m.generation
 		refreshToken := m.tokens.RefreshToken
 		client := m.client
@@ -581,12 +489,9 @@ func (m *TokenManager) Refresh(ctx context.Context) error {
 		m.refreshErrSeq = seq
 		done := m.refreshDone
 		m.refreshDone = nil
-		// Distinguish a COMMITTED refresh (the generation still matches this
-		// epoch — the rotation landed and nothing else happened since) from
-		// a DISCARDED one (superseded mid-round-trip): only the discarded
-		// case re-evaluates. Without this check the loop would re-enter the
-		// refresher branch after every successful commit and spin forever
-		// (a committed refresh leaves tokens non-nil and refreshDone unset).
+		// Only a DISCARDED refresh re-evaluates; a committed one leaves
+		// tokens non-nil and refreshDone unset, so re-entering the loop
+		// would spin forever.
 		superseded := err == nil && m.generation != gen
 		m.mu.Unlock()
 		if done != nil {
@@ -596,13 +501,8 @@ func (m *TokenManager) Refresh(ctx context.Context) error {
 			return err
 		}
 		if !superseded {
-			// The refresh committed for this epoch: done.
 			return nil
 		}
-		// Superseded: loop and re-evaluate the current state — a signed-out
-		// manager answers ErrNotSignedIn, a newer epoch's credentials serve
-		// as-is (and the loop bound above turns endless supersession into
-		// an actionable error).
 	}
 }
 
@@ -617,16 +517,11 @@ func (m *TokenManager) validLocked() bool {
 	return m.now().Add(m.skew).Before(m.tokens.Expiry)
 }
 
-// refreshEpoch performs one refresh round-trip for the credential epoch gen,
-// using the refresh token and client snapshotted TOGETHER with gen by the
-// caller (one lock hold — see Token/Refresh): the round-trip can never spend
-// a newer epoch's token. The network call runs WITHOUT the state lock (so
-// Token waiters observe the in-flight channel instead of queueing on the
-// mutex); the commit re-takes the lock and is discarded when the generation
-// moved while the call ran — a sign-out or a new sign-in superseded this
-// epoch, and its tokens must neither serve requests nor reach the store. A
-// discarded epoch returns nil: the caller re-evaluates the current state
-// (signed out → ErrNotSignedIn, newer credentials → served as-is).
+// refreshEpoch performs one refresh round-trip for credential epoch gen
+// (token and client snapshotted together with it — this epoch's token
+// only). The network call runs WITHOUT the state lock; the commit
+// re-takes it and is discarded (returning nil) when the generation moved —
+// the caller then re-evaluates the current state.
 func (m *TokenManager) refreshEpoch(ctx context.Context, gen uint64, refreshToken string, client *http.Client) error {
 	if refreshToken == "" {
 		return fmt.Errorf("%w: no refresh token stored", ErrReauthRequired)
@@ -644,10 +539,8 @@ func (m *TokenManager) refreshEpoch(ctx context.Context, gen uint64, refreshToke
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.generation != gen || m.tokens == nil {
-		// Stale epoch: the credentials were cleared or replaced while the
-		// network call ran. Discard the refreshed tokens entirely —
-		// persisting them would resurrect a signed-out account or overwrite
-		// a newer sign-in.
+		// Stale epoch: discard — persisting would resurrect a signed-out
+		// account or overwrite a newer sign-in.
 		return nil
 	}
 	updated := resp.tokens(m.now())
@@ -661,8 +554,6 @@ func (m *TokenManager) refreshEpoch(ctx context.Context, gen uint64, refreshToke
 	}
 	m.tokens = updated
 
-	// A failed persist degrades durability, not availability: the refreshed
-	// token still serves this session, and the warning names the store issue.
 	if err := m.persistLocked(); err != nil {
 		m.logger.Warn("provider token refresh persist failed",
 			"provider", m.profile.ProviderID, "error", err)
@@ -694,10 +585,8 @@ func (m *TokenManager) bearerTokenLocked() llm.BearerToken {
 	return bt
 }
 
-// persistLocked writes the current credentials to the SecretStore. Caller
-// holds m.mu. Only the minimal restorable secret is written (see
-// persistedAuth): the refresh token and the parsed identity. The live
-// access and ID tokens stay in memory for this session alone.
+// persistLocked writes the minimal restorable secret (persistedAuth) to the
+// SecretStore. Caller holds m.mu; the live access/ID tokens stay in memory.
 func (m *TokenManager) persistLocked() error {
 	auth := persistedAuth{
 		Version:      persistedAuthVersion,

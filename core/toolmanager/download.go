@@ -24,8 +24,8 @@ type DownloadResult struct {
 	ArchiveBytes int64  // size of the downloaded archive
 }
 
-// progressWriter wraps an io.Writer and calls a progress callback at ~100ms
-// intervals to avoid flooding the event channel during fast downloads.
+// progressWriter flushes progress at ~100ms intervals so fast downloads
+// don't flood the event channel.
 type progressWriter struct {
 	writer    io.Writer
 	progress  func(done, total int64)
@@ -48,42 +48,33 @@ func (pw *progressWriter) Write(p []byte) (int, error) {
 type DownloadMode int
 
 const (
-	// DownloadOnline allows network downloads; the local cache is consulted
-	// first and a verified cache hit skips the request entirely.
+	// Network allowed; the cache is consulted first — a verified hit skips
+	// the request entirely.
 	DownloadOnline DownloadMode = iota
-	// DownloadCacheOnly restricts Download to local disk: a cached archive
-	// that passes SHA256 verification is returned; anything else fails fast
-	// with an error wrapping ErrCacheUnavailable. No network I/O is ever
-	// performed. This is what keeps app startup fully functional offline.
+	// Local disk only: a SHA256-verified cached archive or a fast
+	// ErrCacheUnavailable failure — never any network I/O.
 	DownloadCacheOnly
 )
 
-// ErrCacheUnavailable reports that DownloadCacheOnly mode found no cached
-// archive (or one that failed checksum verification). Callers can test for
-// it with errors.Is to distinguish "offline and not cached" from transient
-// download failures.
+// ErrCacheUnavailable: DownloadCacheOnly found no verifiable cached archive.
+// errors.Is it to tell "offline and not cached" from transient failures.
 var ErrCacheUnavailable = errors.New("cached archive unavailable")
 
-// Downloader handles HTTP downloads for tool archives with checksum verification
-// and cache-resume support. The progress callback receives (bytesDone, bytesTotal)
-// during the download; it may be nil if progress reporting is not needed.
-// The interface exists so tests can substitute a mock implementation.
+// Downloader fetches tool archives with checksum verification and cache
+// support; progress may be nil. An interface so tests can substitute a mock.
 type Downloader interface {
 	Download(ctx context.Context, tool ToolSpec, cacheDir string, mode DownloadMode, progress func(int64, int64)) (*DownloadResult, error)
 }
 
-// HTTPDownloader is the production Downloader that fetches archives from
-// public URLs and verifies their SHA256 checksums.
+// HTTPDownloader is the production Downloader: public URLs + SHA256 checks.
 type HTTPDownloader struct {
 	Client *http.Client
 }
 
-// NewHTTPDownloader creates an HTTPDownloader with the given client. If client
-// is nil, a client with a 5-minute timeout is created to prevent hung startup.
-// The client (supplied or default) is shallow-copied and gets the per-hop
-// HTTPS-only redirect policy (securehttp.SecureHTTPClient): a public tool
-// archive is never allowed to follow a redirect onto a plaintext origin
-// (loopback http excepted), and the hop chain is capped.
+// NewHTTPDownloader; a nil client becomes a 5-minute-timeout client. The
+// client (supplied or default) is shallow-copied and gets the per-hop
+// HTTPS-only redirect policy (securehttp.SecureHTTPClient), so a public
+// archive fetch can never follow a redirect onto plaintext.
 func NewHTTPDownloader(client *http.Client) *HTTPDownloader {
 	if client == nil {
 		client = &http.Client{Timeout: 5 * time.Minute}
@@ -91,13 +82,9 @@ func NewHTTPDownloader(client *http.Client) *HTTPDownloader {
 	return &HTTPDownloader{Client: securehttp.SecureHTTPClient(client)}
 }
 
-// Download fetches the archive for the given tool and platform. It writes the
-// archive to cacheDir/<ArchiveName>. If the file already exists and its
-// checksum matches, the download is skipped (cache hit).
-// In DownloadCacheOnly mode no network request is ever made: a verified cache
-// hit is returned, anything else fails fast with an error wrapping
-// ErrCacheUnavailable. The progress callback receives (bytesDone, bytesTotal)
-// with throttle at ~100ms intervals; may be nil.
+// Download fetches tool.URLs[platform] into cacheDir/<ArchiveName>, returning
+// a verified cache hit when one exists. Mode and progress semantics are
+// documented on DownloadMode; a CacheOnly miss wraps ErrCacheUnavailable.
 func (d *HTTPDownloader) Download(ctx context.Context, tool ToolSpec, cacheDir string, mode DownloadMode, progress func(int64, int64)) (*DownloadResult, error) {
 	platform := Platform()
 	rawURL, ok := tool.URLs[platform]
@@ -107,13 +94,10 @@ func (d *HTTPDownloader) Download(ctx context.Context, tool ToolSpec, cacheDir s
 
 	archivePath := filepath.Join(cacheDir, tool.ArchiveName)
 
-	// Check cache: if the file exists and checksum matches, skip download.
-	// The probe is Lstat-based and refuses non-regular entries: os.Stat
-	// follows a symlink, so a DANGLING symlink planted at this deterministic
-	// path reported "absent" and fell through to a bare create that wrote
-	// through the link; with Lstat, any non-regular plant (dangling symlink,
-	// FIFO, device) is removed (the link itself — never its target) and
-	// re-downloaded like a checksum mismatch.
+	// The cache check is Lstat-based and refuses non-regular entries: a
+	// dangling symlink planted at this deterministic path once reported
+	// "absent" under os.Stat and a bare create wrote through the link; any
+	// non-regular plant is removed (never its target) and re-downloaded.
 	if info, statErr := os.Lstat(archivePath); statErr == nil {
 		if info.Mode().IsRegular() && d.verifyChecksum(archivePath, tool, platform) {
 			return &DownloadResult{
@@ -123,13 +107,11 @@ func (d *HTTPDownloader) Download(ctx context.Context, tool ToolSpec, cacheDir s
 				ArchiveBytes: 0,
 			}, nil
 		}
-		// Checksum mismatch, or a non-regular plant — delete and re-download.
 		_ = os.Remove(archivePath)
 	}
 
-	// CacheOnly mode stops here: nothing on disk can satisfy the request and
-	// the network is off-limits. The verified checksum requirement carries
-	// over from the online path — an unverified cache is never trusted.
+	// CacheOnly stops here: nothing verifiable on disk, network off-limits —
+	// an unverified cache is never trusted.
 	if mode == DownloadCacheOnly {
 		return nil, fmt.Errorf("tool %q: %w", tool.Name, ErrCacheUnavailable)
 	}
@@ -160,11 +142,9 @@ func (d *HTTPDownloader) Download(ctx context.Context, tool ToolSpec, cacheDir s
 		return nil, fmt.Errorf("tool %q: HTTP %d from %s", tool.Name, resp.StatusCode, rawURL)
 	}
 
-	// Download into a uniquely named temp in the cache dir and rename into
-	// place. The fixed archivePath is pre-plantable with a dangling symlink,
-	// which a bare os.Create here followed and truncated OUTSIDE ~/.c0wrk;
-	// the random temp name leaves nothing to pre-plant, and the rename
-	// replaces a planted entry itself instead of writing through it.
+	// Download into a uniquely named temp and rename into place: the fixed
+	// archivePath is pre-plantable with a dangling symlink a bare os.Create
+	// would follow; the rename replaces a plant instead of writing through it.
 	tmp, err := os.CreateTemp(cacheDir, tool.ArchiveName+".tmp-*")
 	if err != nil {
 		return nil, fmt.Errorf("tool %q: creating archive temp file: %w", tool.Name, err)
@@ -172,7 +152,6 @@ func (d *HTTPDownloader) Download(ctx context.Context, tool ToolSpec, cacheDir s
 	tmpName := tmp.Name()
 	defer func() { _ = os.Remove(tmpName) }() // no-op after a successful rename
 
-	// Wire up progress tracking if Content-Length is known.
 	var writer io.Writer = tmp
 	if resp.ContentLength > 0 && progress != nil {
 		pw := &progressWriter{
@@ -215,16 +194,11 @@ func (d *HTTPDownloader) Download(ctx context.Context, tool ToolSpec, cacheDir s
 	}, nil
 }
 
-// verifyChecksum reads the file at path and compares its SHA256 against the
-// expected checksum in the tool spec. Fail-closed: if no checksum is
-// registered for the platform, verification FAILS (returns false) rather than
-// silently accepting an unverified binary (ASI04-R2 — supply-chain integrity).
-// Every StaticBinary tool MUST declare a checksum for every supported platform.
+// verifyChecksum compares the file's SHA256 with the spec checksum; a
+// missing platform registration fails closed (see ToolSpec.Checksums).
 func (d *HTTPDownloader) verifyChecksum(path string, tool ToolSpec, platform string) bool {
 	expected := tool.Checksums[platform]
 	if expected == "" {
-		// No checksum registered for this platform — refuse to install an
-		// unverified binary rather than silently skipping verification.
 		return false
 	}
 

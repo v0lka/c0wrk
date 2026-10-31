@@ -96,6 +96,19 @@ All methods on `*desktop.App` (promoted from `*backend.FrontendAPI`) are callabl
 | `GetAttachments`    | sessionID                | ([]AttachmentInfo, error)     | Get the session's staged (pending) attachments (documents + images) as metadata-only values |
 | `PasteFromClipboard`| sessionID, supportsVision | (PasteResult, error)        | Paste from system clipboard; stages image/files/text attachments and returns the full pending list + paste kind (`image`/`files`/`text`/`empty`) |
 
+**`PasteResult.Rejected` sentinel (`pasteImageVisionRejected`).** A raw clipboard image staged for a non-vision model returns `Rejected` = the sentinel literal `vision_unsupported` — not a human-readable message; the frontend maps this exact literal to its rejection banner so the copy lives in one place. Real processing errors carry their own error text verbatim (sentinel defined in `backend/session/clipboard.go`).
+
+### Bookmarks (`backend/frontend_api_bookmarks.go`)
+
+| Method           | Parameters                    | Returns                       | Description |
+| ---------------- | ----------------------------- | ----------------------------- | ----------- |
+| `AddBookmark`    | sessionID, eventKey, title    | (SessionBookmark, error)      | Persist a chat-event bookmark; returns the created record |
+| `ListBookmarks`  | sessionID                     | ([]SessionBookmark, error)    | The session's bookmarks (oldest first) |
+| `DeleteBookmark` | sessionID, bookmarkID         | error                         | Delete a bookmark |
+| `RenameBookmark` | sessionID, bookmarkID, title  | error                         | Rename a bookmark in place |
+
+**`event_key` ownership.** Chat-event bookmarks: the backend (`AddBookmark`/`ListBookmarks`/`DeleteBookmark`/`RenameBookmark`) treats `event_key` as an opaque frontend-owned key — produced and consumed by the frontend's `groupMessages` (DisplayItem key); the backend only scopes storage by session and validates non-emptiness. Navigation and preview semantics stay frontend-owned.
+
 ### Project (`backend/frontend_api_project.go`)
 
 | Method                   | Parameters                  | Returns                         | Description |
@@ -264,6 +277,8 @@ Every git RPC in this table resolves its repository root through the **Git-panel
 | `AbortRebase`          | —                       | error                         | Abort an in-progress rebase |
 | `ResetToCommit`        | sha, mode               | error                         | Reset HEAD to a commit (mode: soft, mixed, hard) |
 | `GetRebaseMergeState`  | —                       | (MergeRebaseState, error)     | Get in-progress merge/rebase state |
+
+**`GetDiffStats` keying.** Returns added/deleted counts for every file with uncommitted changes (`git diff --numstat HEAD`; staged+unstaged vs HEAD) keyed by absolute path `filepath.Join(repoRoot, numstatPath)` — the GitStatus key convention, so the frontend enriches status entries by direct key equality. Binary files report zero ("-" numstat fields). Untracked files are not included (git diff does not report them). Empty map (non-nil) on a clean tree.
 
 ### Git Auto-Fetch (`backend/frontend_api_git_autofetch.go`)
 

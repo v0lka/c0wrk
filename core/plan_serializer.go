@@ -20,23 +20,10 @@ func RandomSuffix() string {
 	return hex.EncodeToString(b)
 }
 
-// SerializePlan converts a Plan to markdown for user review.
-// Each step renders as:
-//
-//	# Step N (id): summary
-//
-//	Depends on: step_1, step_2
-//
-//	<description>
-//
-// The step header carries the step ID (`# Step N (id): summary`) so the human
-// reviewer sees the identifiers that DependsOn references target and empty or
-// malformed IDs stand out. Immediately below the header, the "Depends on" line
-// prints that step's dependencies (comma-separated), or exactly
-// "Depends on: (none)" when it has none — this makes the flattened plan's edges
-// explicit even when the DAG is rendered as a linear list. Only ID, Summary,
-// DependsOn, and Description are included; other fields (Profile, Agent, etc.)
-// are hidden.
+// SerializePlan renders the plan-approval markdown: per step a "# Step N (id):
+// summary" header, its "Depends on:" line, then the description — the
+// reviewer-facing edges of ADR-047/069 (specs/decisions/047-plan-step-dependencies.md).
+// Only ID, Summary, DependsOn, and Description are rendered; other fields hidden.
 func SerializePlan(plan *orchestration.Plan) string {
 	if plan == nil || len(plan.Steps) == 0 {
 		return ""
