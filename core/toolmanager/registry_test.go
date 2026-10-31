@@ -83,8 +83,8 @@ func TestManagedTools_MarkitdownIsPythonPackage(t *testing.T) {
 		if tool.Type != PythonPackage {
 			t.Errorf("markitdown has type %s, want python_package", tool.Type)
 		}
-		if tool.PipSpec != "markitdown[all]==0.1.4" {
-			t.Errorf("markitdown PipSpec = %q, want markitdown[all]==0.1.4", tool.PipSpec)
+		if tool.PipSpec != "markitdown[all]==0.1.9" {
+			t.Errorf("markitdown PipSpec = %q, want markitdown[all]==0.1.9", tool.PipSpec)
 		}
 		if tool.RequirementsLock == "" {
 			t.Error("markitdown has empty RequirementsLock (fully pinned lock expected)")

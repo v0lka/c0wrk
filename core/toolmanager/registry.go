@@ -7,7 +7,7 @@ import (
 )
 
 // markitdownLock is the fully pinned requirements lock for the
-// markitdown[all]==0.1.4 tree (regeneration command recorded in the file
+// markitdown[all]==0.1.9 tree (regeneration command recorded in the file
 // header; OSV-reviewed), pinning every transitive dependency at the audited
 // versions. See specs/domains/tool-manager.md.
 //
@@ -77,57 +77,57 @@ func ManagedTools(logger *slog.Logger) ([]ToolSpec, error) {
 	tools := []ToolSpec{
 		{
 			Name:             "uv",
-			Version:          "0.12.1",
+			Version:          "0.13.6",
 			Type:             StaticBinary,
 			Description:      "Python package and project manager (bootstrapper for markitdown)",
 			BinName:          "uv",
 			ArchiveName:      "uv-" + triple + ".tar.gz",
 			BinPathInArchive: "uv-" + triple + "/uv",
 			URLs: map[string]string{
-				"darwin-amd64":  "https://github.com/astral-sh/uv/releases/download/0.12.1/uv-x86_64-apple-darwin.tar.gz",
-				"darwin-arm64":  "https://github.com/astral-sh/uv/releases/download/0.12.1/uv-aarch64-apple-darwin.tar.gz",
-				"linux-amd64":   "https://github.com/astral-sh/uv/releases/download/0.12.1/uv-x86_64-unknown-linux-musl.tar.gz",
-				"linux-arm64":   "https://github.com/astral-sh/uv/releases/download/0.12.1/uv-aarch64-unknown-linux-gnu.tar.gz",
-				"windows-amd64": "https://github.com/astral-sh/uv/releases/download/0.12.1/uv-x86_64-pc-windows-msvc.zip",
+				"darwin-amd64":  "https://github.com/astral-sh/uv/releases/download/0.13.6/uv-x86_64-apple-darwin.tar.gz",
+				"darwin-arm64":  "https://github.com/astral-sh/uv/releases/download/0.13.6/uv-aarch64-apple-darwin.tar.gz",
+				"linux-amd64":   "https://github.com/astral-sh/uv/releases/download/0.13.6/uv-x86_64-unknown-linux-musl.tar.gz",
+				"linux-arm64":   "https://github.com/astral-sh/uv/releases/download/0.13.6/uv-aarch64-unknown-linux-gnu.tar.gz",
+				"windows-amd64": "https://github.com/astral-sh/uv/releases/download/0.13.6/uv-x86_64-pc-windows-msvc.zip",
 			},
 			Checksums: map[string]string{
-				"darwin-amd64":  "69d9f9a00337f25a50dcb13882052da08b8469bac11091c98c5694c3c6721467",
-				"darwin-arm64":  "77d2906988e8074fd43f2f329ec452ebbf9b0c257ba1c66451c71de70a6baf42",
-				"linux-amd64":   "47823f814693bab8623308341369190de30b5c621eec5b1ee20352eae8c7982c",
-				"linux-arm64":   "769d373e146692c639b5fbaae33b331c297a32e03d30448772051902df52bbf4",
-				"windows-amd64": "8fcb0cb46e1229065e344758980924e569bef5882ef45f46fada8fb24e06b74a",
+				"darwin-amd64":  "63ba17fdda55ad1a230d4b37fc6017ffa10c23688c83818bd3bfdf914c652a02",
+				"darwin-arm64":  "60fbd5c8a1ed681845eea28d9d622fcde03c51e91a43465b64a1e17db1ed3472",
+				"linux-amd64":   "5d61f26b6c7213779eda90edc6971ea6b0b796bfb8d49a574c8ad69b59838548",
+				"linux-arm64":   "229e194255c7958d86d56e8790d969a6f74736592133f0dfd0076f754c642c1d",
+				"windows-amd64": "a2a8820d5eea32f08ef467ef3b7f66883a9b076d5737a2fc2fbb5f458d1bb50f",
 			},
 		},
 		{
 			Name:             "rg",
-			Version:          "14.1.1",
+			Version:          "15.2.0",
 			Type:             StaticBinary,
 			Description:      "Fast recursive regex content search (ripgrep)",
 			BinName:          "rg",
-			ArchiveName:      "ripgrep-14.1.1-" + triple + ".tar.gz",
-			BinPathInArchive: "ripgrep-14.1.1-" + triple + "/rg",
+			ArchiveName:      "ripgrep-15.2.0-" + triple + ".tar.gz",
+			BinPathInArchive: "ripgrep-15.2.0-" + triple + "/rg",
 			URLs: map[string]string{
-				"darwin-amd64":  "https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-x86_64-apple-darwin.tar.gz",
-				"darwin-arm64":  "https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-aarch64-apple-darwin.tar.gz",
-				"linux-amd64":   "https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-x86_64-unknown-linux-musl.tar.gz",
-				"linux-arm64":   "https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-aarch64-unknown-linux-gnu.tar.gz",
-				"windows-amd64": "https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-x86_64-pc-windows-msvc.zip",
+				"darwin-amd64":  "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-apple-darwin.tar.gz",
+				"darwin-arm64":  "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-aarch64-apple-darwin.tar.gz",
+				"linux-amd64":   "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-unknown-linux-musl.tar.gz",
+				"linux-arm64":   "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-aarch64-unknown-linux-gnu.tar.gz",
+				"windows-amd64": "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-pc-windows-msvc.zip",
 			},
 			Checksums: map[string]string{
-				"darwin-amd64":  "fc87e78f7cb3fea12d69072e7ef3b21509754717b746368fd40d88963630e2b3",
-				"darwin-arm64":  "24ad76777745fbff131c8fbc466742b011f925bfa4fffa2ded6def23b5b937be",
-				"linux-amd64":   "4cf9f2741e6c465ffdb7c26f38056a59e2a2544b51f7cc128ef28337eeae4d8e",
-				"linux-arm64":   "c827481c4ff4ea10c9dc7a4022c8de5db34a5737cb74484d62eb94a95841ab2f",
-				"windows-amd64": "d0f534024c42afd6cb4d38907c25cd2b249b79bbe6cc1dbee8e3e37c2b6e25a1",
+				"darwin-amd64":  "af7825fcc69a2afc7a7aea55fc9af90e26421d8f20fe59df32e233c0b8a231c1",
+				"darwin-arm64":  "3750b2e93f37e0c692657da574d7019a101c0084da05a790c83fd335bad973e4",
+				"linux-amd64":   "33e15bcf1624b25cdd2a55813a47a2f95dbe126268203e76aa6a585d1e7b149c",
+				"linux-arm64":   "a740b91c82eaf9914cfedd353572f2791cbe0162c84101ee0951058f4dcbc90d",
+				"windows-amd64": "71b2fef860abe467217a538ff31de02f5258807c0129f771846f87bd029aafc5",
 			},
 		},
 		{
 			Name:             "markitdown",
-			Version:          "0.1.4",
+			Version:          "0.1.9",
 			Type:             PythonPackage,
 			Description:      "Convert various file formats to Markdown (infrastructure-only: installed via uv for the document-conversion pipeline, invoked through VenvPythonPath; never model-invokable)",
 			BinName:          "markitdown",
-			PipSpec:          "markitdown[all]==0.1.4",
+			PipSpec:          "markitdown[all]==0.1.9",
 			RequirementsLock: markitdownLock,
 			PythonVersion:    "3.12",
 			// PythonPackage tools use uv for bootstrap; URLs/Checksums are nil.

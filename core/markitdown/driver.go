@@ -1,7 +1,7 @@
 package markitdown
 
 // visionDriverScript is executed by the managed venv Python interpreter to
-// run markitdown with LLM-assisted image captioning: the 0.1.4 CLI exposes
+// run markitdown with LLM-assisted image captioning: the 0.1.9 CLI exposes
 // no LLM flags, so conversion goes through the library API — params arrive
 // via MARKITDOWN_LLM_* env vars (never argv), the client is a minimal
 // stdlib-only OpenAI-compatible one. markitdown captions only pptx images,

@@ -6,4 +6,4 @@
 #
 # Regenerate the lock whenever this file or the pinned markitdown
 # version changes, and re-run the OSV vulnerability check on the result.
-markitdown[all]==0.1.4
+markitdown[all]==0.1.9

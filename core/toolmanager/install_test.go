@@ -13,7 +13,7 @@ import (
 // was declared without it. The verified upstream layouts are:
 //
 //	uv  -> flat:            uv.exe
-//	rg  -> subdir:          ripgrep-14.1.1-x86_64-pc-windows-msvc/rg.exe
+//	rg  -> subdir:          ripgrep-15.2.0-x86_64-pc-windows-msvc/rg.exe
 //
 // resolveBinaryInTree must locate the ".exe" variant on Windows regardless of
 // whether the archive uses a flat or subdirectory layout.
@@ -36,9 +36,9 @@ func TestResolveBinaryInTree_WindowsExe(t *testing.T) {
 		},
 		{
 			name:               "rg subdir rg.exe",
-			binPathInArchive:   "ripgrep-14.1.1-x86_64-pc-windows-msvc/rg",
+			binPathInArchive:   "ripgrep-15.2.0-x86_64-pc-windows-msvc/rg",
 			binName:            "rg",
-			relBinaryInArchive: "ripgrep-14.1.1-x86_64-pc-windows-msvc/rg.exe",
+			relBinaryInArchive: "ripgrep-15.2.0-x86_64-pc-windows-msvc/rg.exe",
 			wantSuffix:         "rg.exe",
 		},
 	}
