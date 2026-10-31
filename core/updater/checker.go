@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/v0lka/c0wrk/core/proxy"
+	"github.com/v0lka/c0wrk/internal/securehttp"
 	"golang.org/x/mod/semver"
 )
 
@@ -97,7 +98,10 @@ type Checker struct {
 // NewChecker returns a Checker backed by the given HTTP client. A nil client
 // is replaced by a default client honouring Config.HTTPTimeout, which is how a
 // caller wires in a proxy-aware client built via the proxy package
-// (proxy.BuildClient) — corporate proxies are therefore never bypassed.
+// (proxy.BuildClient) — corporate proxies are therefore never bypassed. The
+// client is shallow-copied and gets the per-hop HTTPS-only redirect policy
+// (securehttp.SecureHTTPClient), so a redirect cannot downgrade the
+// release-API fetch to plaintext.
 //
 // The detected runtime platform is used by default; override it with
 // WithPlatform (mainly for tests).
@@ -116,7 +120,7 @@ func NewChecker(cfg Config, client *http.Client, logger *slog.Logger) *Checker {
 	goos, goarch := CurrentPlatform()
 	return &Checker{
 		cfg:     cfg,
-		client:  client,
+		client:  securehttp.SecureHTTPClient(client),
 		logger:  logger,
 		goos:    goos,
 		goarch:  goarch,

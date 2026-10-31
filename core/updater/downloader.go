@@ -4,60 +4,16 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"time"
 
+	"github.com/v0lka/c0wrk/internal/securehttp"
 	"github.com/v0lka/sp4rk/safeio"
 )
-
-// errNonHTTPS is returned when a download URL is not HTTPS-only. The update
-// channel must be end-to-end encrypted: a compromised API response or a MITM
-// proxy must not be able to downgrade the archive/checksum fetch to plain HTTP.
-// (SHA256 verification pins the archive to the released bytes but does not
-// prove release authorship; HTTPS-only transport is defense-in-depth against
-// plaintext downgrade and matches the SECURITY.md claim.)
-var errNonHTTPS = errors.New("update download URL must use HTTPS")
-
-// requireHTTPS rejects any URL whose scheme is not https, with a single
-// exception for loopback addresses (127.0.0.1, ::1, localhost). Loopback
-// traffic never traverses the network, so the downgrade/MITM threat the HTTPS
-// rule defends against does not apply — and this keeps the package testable
-// with httptest.NewServer. SHA256 verification pins the archive to the released
-// bytes but does not prove release authorship; HTTPS-only transport is
-// defense-in-depth matching the SECURITY.md claim of HTTPS-only asset/checksum
-// URLs.
-func requireHTTPS(rawURL string) error {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return fmt.Errorf("parse url %q: %w", rawURL, err)
-	}
-	if u.Scheme == "https" {
-		return nil
-	}
-	if u.Scheme == "http" && isLoopbackHost(u.Hostname()) {
-		return nil
-	}
-	return fmt.Errorf("%w: %q", errNonHTTPS, rawURL)
-}
-
-// isLoopbackHost reports whether host is a loopback address or the "localhost"
-// name (which always resolves to loopback per RFC 6761).
-func isLoopbackHost(host string) bool {
-	if host == "localhost" {
-		return true
-	}
-	if ip := net.ParseIP(host); ip != nil {
-		return ip.IsLoopback()
-	}
-	return false
-}
 
 // progressInterval is the minimum interval between progress callbacks. It keeps
 // the event channel from being flooded during fast downloads (mirrors
@@ -82,7 +38,11 @@ type Downloader struct {
 }
 
 // NewDownloader creates a Downloader. If client is nil a client with a
-// generous timeout is used. If verifier is nil SHA256Verifier is used.
+// generous timeout is used. If verifier is nil SHA256Verifier is used. The
+// client (supplied or default) is shallow-copied and gets the per-hop
+// HTTPS-only redirect policy (securehttp.SecureHTTPClient):
+// securehttp.RequireHTTPS guards the initial URLs, and the policy guards
+// every redirect hop after them.
 func NewDownloader(client *http.Client, verifier Verifier) *Downloader {
 	if client == nil {
 		client = &http.Client{Timeout: 10 * time.Minute}
@@ -90,7 +50,7 @@ func NewDownloader(client *http.Client, verifier Verifier) *Downloader {
 	if verifier == nil {
 		verifier = SHA256Verifier{}
 	}
-	return &Downloader{Client: client, Verifier: verifier}
+	return &Downloader{Client: securehttp.SecureHTTPClient(client), Verifier: verifier}
 }
 
 // Download fetches the asset at assetURL and the checksums at sumsURL into
@@ -115,10 +75,10 @@ func (d *Downloader) Download(ctx context.Context, assetURL, sumsURL, assetName,
 	// Enforce HTTPS-only on both the asset and checksum URLs before any network
 	// I/O: a compromised API response or MITM proxy must not downgrade the
 	// fetch to plain HTTP (defense-in-depth alongside the fail-closed SHA256).
-	if err := requireHTTPS(assetURL); err != nil {
+	if err := securehttp.RequireHTTPS(assetURL); err != nil {
 		return nil, err
 	}
-	if err := requireHTTPS(sumsURL); err != nil {
+	if err := securehttp.RequireHTTPS(sumsURL); err != nil {
 		return nil, err
 	}
 
