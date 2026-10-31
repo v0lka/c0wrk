@@ -18,22 +18,14 @@ import (
 	"github.com/v0lka/sp4rk/safeio"
 )
 
-// ProgressCallback is called during tool installation to report progress
-// to the UI. toolName is the tool being installed, stage describes the
-// current phase ("download", "extract", "python_bootstrap"), bytesDone
-// and bytesTotal are the download progress (0/0 when not applicable).
+// ProgressCallback reports install progress to the UI: toolName, stage
+// ("download", "extract", "python_bootstrap"), download bytes (0/0 if N/A).
 type ProgressCallback func(toolName, stage string, bytesDone, bytesTotal int64)
 
-// Manager orchestrates the download, installation, and version-tracking of
-// managed external tools. It is the single public API consumed by the desktop
-// startup layer.
-//
-// Manager is not safe for concurrent use. The startup layer runs a first
-// EnsureCriticalTools pass with AllowNetwork=false during synchronous startup
-// and, when tools are left not Ready, a second blocking pass with
-// AllowNetwork=true under the tool-install splash (ADR-100). The two runs
-// must be sequenced (the offline pass completes before the network pass
-// starts) — they must never overlap.
+// Manager orchestrates download, installation, and version-tracking of the
+// managed tools; the desktop startup layer is the only consumer, sequencing
+// the two EnsureCriticalTools passes — never overlapped.
+// See specs/domains/tool-manager.md and specs/decisions/100-blocking-first-run-tool-install.md.
 type Manager struct {
 	ToolsDir  string // e.g. ~/.c0wrk/tools/
 	BinDir    string // e.g. ~/.c0wrk/tools/bin/
@@ -47,18 +39,14 @@ type Manager struct {
 
 // ManagerConfig holds optional configuration for NewManager.
 type ManagerConfig struct {
-	// HTTPClient is used for tool archive downloads. If nil, a client with
-	// a 5-minute timeout is created.
+	// HTTPClient is used for archive downloads; nil → a 5-minute-timeout client.
 	HTTPClient *http.Client
 	// ProgressCallback is called during tool installation.
 	ProgressCallback ProgressCallback
 }
 
-// NewManager creates a Manager with production HTTP downloader and filesystem
-// installer. toolsDir, binDir, and pythonDir should come from the canonical
-// config path helpers (config.ToolsDir, config.ToolsBinDir, config.ToolsPythonDir)
-// to ensure a single source of truth for directory layout. If logger is nil,
-// a discard logger is used.
+// NewManager builds a Manager with the production downloader/installer; the
+// dirs must come from the canonical config path helpers; nil logger → discard.
 func NewManager(toolsDir, binDir, pythonDir string, logger *slog.Logger, cfg ManagerConfig) *Manager {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
@@ -80,12 +68,9 @@ func NewManager(toolsDir, binDir, pythonDir string, logger *slog.Logger, cfg Man
 
 // EnsureOptions controls how EnsureCriticalTools acquires missing tools.
 type EnsureOptions struct {
-	// AllowNetwork permits reaching the network (archive downloads, Python
-	// bootstrap via uv). When false, reconciliation is strictly local:
-	// static binaries install only from an already-cached, SHA256-verified
-	// archive, and tools that would need the network are reported as
-	// deferred. This is what keeps app startup fully functional offline —
-	// a hard product requirement, not a tradeoff.
+	// AllowNetwork=false restricts reconciliation to local disk — cached,
+	// SHA256-verified archives only; network-needing tools are deferred
+	// (errNeedsNetwork). See specs/domains/tool-manager.md.
 	AllowNetwork bool
 }
 
@@ -97,45 +82,29 @@ type ToolStatus struct {
 	Err       error // why the tool is not Ready; nil iff Ready
 }
 
-// errNeedsNetwork marks a tool that needs network access and was therefore
-// skipped by an offline (AllowNetwork=false) run; the startup layer re-runs
-// EnsureCriticalTools with AllowNetwork=true in a second, blocking pass.
+// errNeedsNetwork marks a tool skipped by an offline (AllowNetwork=false)
+// run and deferred to the startup layer's network pass.
 var errNeedsNetwork = errors.New("requires network access; deferred to the network reconciliation pass")
 
-// EnsureCriticalTools reconciles the managed tool registry against the local
-// install. Per-tool failures are isolated in the returned statuses instead of
-// aborting the run, so one unavailable tool never prevents the others from
-// being installed.
-//
-// The startup layer calls it twice: first with AllowNetwork=false during
-// synchronous startup (local disk work only — existing binaries are probed,
-// cached archives are installed), then, if any tool is left not Ready, with
-// AllowNetwork=true in a second synchronous pass under the tool-install
-// splash (ADR-100). The method itself carries no startup policy — whether a
-// failed network pass is fatal to the app is the startup layer's decision.
-//
-// Structural failures (directory creation, disk-space guard, registry
-// resolution) are returned as the error; per-tool outcomes come back as
-// statuses. Successful installs are persisted to .versions immediately, so a
-// partially completed run resumes on the next launch.
+// EnsureCriticalTools reconciles the managed registry against the local
+// install: per-tool failures are isolated in the returned statuses, structural
+// failures return the error, and each success persists to .versions at once so
+// a partial run resumes. Startup policy (sequencing, fatality) is the caller's.
+// See specs/domains/tool-manager.md.
 func (m *Manager) EnsureCriticalTools(ctx context.Context, opts EnsureOptions) ([]ToolStatus, error) {
 	cacheDir := filepath.Join(m.ToolsDir, ".cache")
 
-	// Create required directories FIRST so the disk-space check below
-	// has a valid path to stat. Without this, on first run Statfs would
-	// receive ENOENT for ~/.c0wrk/tools/ and silently skip the check.
-	// The parent ~/.c0wrk/ exists by now (created during Phase 1 logger init).
-	// The roots must be REAL directories: a dangling or swapped-in symlink
-	// at the fixed .cache, python or bin path is refused instead of followed,
-	// so archive downloads, extraction and venv writes stay inside ~/.c0wrk
-	// (a pre-existing operator-symlinked tree resolves as intent).
+	// Dirs first: checkDiskSpace needs an existing path (first-run ENOENT
+	// silently skips the check); the parent exists after Phase 1. MkdirAllReal
+	// refuses a dangling or swapped-in symlink at the fixed .cache/python/bin
+	// paths so downloads, extraction and venv writes stay inside ~/.c0wrk
+	// (a pre-existing operator symlink resolves as intent).
 	for _, dir := range []string{m.BinDir, cacheDir, m.PythonDir} {
 		if err := safeio.MkdirAllReal(dir, 0o755); err != nil {
 			return nil, fmt.Errorf("creating directory %s: %w", dir, err)
 		}
 	}
 
-	// Check available disk space (now that the tools directory exists).
 	if err := checkDiskSpace(m.ToolsDir, 200*1024*1024, m.Logger); err != nil {
 		return nil, fmt.Errorf("insufficient disk space: %w", err)
 	}
@@ -157,8 +126,6 @@ func (m *Manager) EnsureCriticalTools(ctx context.Context, opts EnsureOptions) (
 		status := m.reconcileTool(ctx, tool, versions[tool.Name], cacheDir, opts)
 		if status.Ready && status.Installed {
 			versions[tool.Name] = tool.Version
-			// Persist after each successful install so partial progress is
-			// saved and the next launch skips the completed tools.
 			if writeErr := WriteVersions(m.ToolsDir, versions); writeErr != nil {
 				m.Logger.Warn("failed to write versions file", "error", writeErr)
 			}
@@ -176,31 +143,25 @@ func (m *Manager) EnsureCriticalTools(ctx context.Context, opts EnsureOptions) (
 	return statuses, nil
 }
 
-// reconcileTool brings one tool to its pinned version. Contract: a
-// pinned-version change always forces a reinstall; a stale or missing binary
-// is detected even when .versions claims a match; and stale artifacts are
-// only destroyed once the bytes that replace them are secured — an offline
-// failure must never leave the machine with less than it had before.
+// reconcileTool brings one tool to its pinned version under the spec's
+// reconciliation guarantees (forced reinstall on pin change, probe-backed
+// staleness detection, secure-bytes-before-destroy).
+// See specs/domains/tool-manager.md.
 func (m *Manager) reconcileTool(ctx context.Context, tool ToolSpec, installed, cacheDir string, opts EnsureOptions) ToolStatus {
 	status := ToolStatus{Tool: tool, Ready: true}
 
 	if installed == tool.Version {
-		// Verify the binary still exists on disk — the version file
-		// could be stale if the user manually deleted the binary.
+		// .versions can outlive the binary (manual deletion) — verify on disk.
 		binPath := m.binaryPath(tool.Name, tool.Type)
 		if _, statErr := os.Stat(binPath); statErr == nil {
 			if tool.Type != StaticBinary || m.binaryVersionMatches(ctx, tool, binPath) {
 				m.Logger.Debug("tool already up-to-date", "tool", tool.Name, "version", tool.Version)
 				return status
 			}
-			// The .versions file can also mask a stale binary: a prior
-			// install may have been short-circuited by the
-			// destination-exists check in InstallStaticBinary, leaving
-			// the old binary in place while the version file already
-			// records the new one. For static binaries the actual version
-			// is verified; a probe mismatch falls through to a reinstall
-			// attempt below (the old binary stays in place until
-			// replacement bytes are secured).
+			// .versions can also mask a stale binary: a prior install short-
+			// circuited by InstallStaticBinary's destination-exists check left
+			// the old binary under the new version. A probe mismatch falls
+			// through to a reinstall; the old binary stays until secured.
 			m.Logger.Warn("fast-path version probe mismatch, reinstalling", "tool", tool.Name)
 		} else {
 			m.Logger.Warn("version file present but binary missing, re-installing", "tool", tool.Name)
@@ -211,8 +172,6 @@ func (m *Manager) reconcileTool(ctx context.Context, tool ToolSpec, installed, c
 	if installErr := m.installOne(ctx, tool, cacheDir, opts); installErr != nil {
 		status.Ready = false
 		status.Err = installErr
-		// Per-tool isolation: log and move on — remaining tools must still
-		// be reconciled, and app startup must not be blocked.
 		m.Logger.Error("tool install failed; continuing with remaining tools",
 			"tool", tool.Name, "error", installErr)
 		return status
@@ -221,9 +180,8 @@ func (m *Manager) reconcileTool(ctx context.Context, tool ToolSpec, installed, c
 	return status
 }
 
-// NeedsInstall returns the tools that need to be installed (version mismatch
-// or missing binary). The caller can use this to decide whether to show a
-// splash screen before starting the actual download/install work.
+// NeedsInstall returns tools with a version mismatch or a missing binary —
+// the startup layer's splash-screen decision input.
 func (m *Manager) NeedsInstall() ([]ToolSpec, error) {
 	versions, err := ReadVersions(m.ToolsDir)
 	if err != nil {
@@ -247,10 +205,8 @@ func (m *Manager) NeedsInstall() ([]ToolSpec, error) {
 	return needed, nil
 }
 
-// GetToolPath returns the absolute path to a managed tool's binary.
-// typ must match the tool's ToolType (StaticBinary or PythonPackage)
-// to resolve the correct file extension on Windows.
-// Returns empty string if the tool is not managed or not installed.
+// GetToolPath returns the managed binary path, or "" if not managed or not
+// installed. typ must match the spec's ToolType (Windows extension).
 func (m *Manager) GetToolPath(name string, typ ToolType) string {
 	p := m.binaryPath(name, typ)
 	if _, err := os.Stat(p); err == nil {
@@ -259,9 +215,8 @@ func (m *Manager) GetToolPath(name string, typ ToolType) string {
 	return ""
 }
 
-// binaryPath returns the expected binary path for a managed tool.
-// For PythonPackage tools on Windows, the wrapper script uses .cmd;
-// for StaticBinary tools, the executable uses .exe.
+// binaryPath is the expected binary path (.cmd wrapper for PythonPackage on
+// Windows, .exe for StaticBinary).
 func (m *Manager) binaryPath(name string, typ ToolType) string {
 	p := filepath.Join(m.BinDir, name)
 	if runtime.GOOS == "windows" {
@@ -279,14 +234,12 @@ func (m *Manager) PrependToPATH() string {
 	return m.BinDir
 }
 
-// reportProgress calls the ProgressCallback if set.
 func (m *Manager) reportProgress(toolName, stage string, bytesDone, bytesTotal int64) {
 	if m.ProgressCallback != nil {
 		m.ProgressCallback(toolName, stage, bytesDone, bytesTotal)
 	}
 }
 
-// installOne installs a single tool.
 func (m *Manager) installOne(ctx context.Context, tool ToolSpec, cacheDir string, opts EnsureOptions) error {
 	switch tool.Type {
 	case StaticBinary:
@@ -297,12 +250,8 @@ func (m *Manager) installOne(ctx context.Context, tool ToolSpec, cacheDir string
 		if err := m.installStatic(ctx, tool, cacheDir, mode); err != nil {
 			return err
 		}
-		// Post-install verification (fail-closed): run the freshly installed
-		// binary and require the pinned version to appear in its output
-		// before the install is acknowledged. A binary that cannot report
-		// the expected version must not let the .versions file record the
-		// install as successful — the fresh binary is removed, the version
-		// entry is not persisted, and the next startup retries.
+		// Fail-closed post-install probe: a binary that can't report the pinned
+		// version is removed, .versions untouched — the next run retries.
 		binPath := m.binaryPath(tool.Name, tool.Type)
 		out, probeErr := m.probeBinaryVersion(ctx, binPath)
 		if probeErr == nil && !versionInOutput(out, tool.Version) {
@@ -316,8 +265,7 @@ func (m *Manager) installOne(ctx context.Context, tool ToolSpec, cacheDir string
 		return nil
 	case PythonPackage:
 		if !opts.AllowNetwork {
-			// The uv bootstrap and pip install require the network; nothing
-			// local can satisfy a missing or outdated Python package.
+			// Nothing local can satisfy a missing/outdated package — uv needs the network.
 			return fmt.Errorf("tool %q: %w", tool.Name, errNeedsNetwork)
 		}
 		return m.installPython(ctx, tool)
@@ -326,17 +274,13 @@ func (m *Manager) installOne(ctx context.Context, tool ToolSpec, cacheDir string
 	}
 }
 
-// versionProbeTimeout bounds a single --version probe invocation. Real tool
-// --version calls complete in milliseconds; the generous ceiling only guards
-// against a wedged binary stalling startup indefinitely.
+// versionProbeTimeout bounds one --version probe: real calls finish in
+// milliseconds; the ceiling only stops a wedged binary from stalling startup.
 const versionProbeTimeout = 10 * time.Second
 
-// probeBinaryVersion runs the binary at binPath with --version and returns
-// its combined output. The probe runs under a timeout so a hung binary cannot
-// stall startup, and hides the console window on Windows (GUI app). The child
-// inherits the parent environment. On a non-zero exit (or start failure) the
-// collected output is still returned alongside the error so callers can log
-// or inspect it.
+// probeBinaryVersion runs binPath with --version and returns its combined
+// output: timeout-bounded, console hidden on Windows; on failure the
+// collected output still comes back alongside the error.
 func (m *Manager) probeBinaryVersion(ctx context.Context, binPath string) (string, error) {
 	probeCtx, cancel := context.WithTimeout(ctx, versionProbeTimeout)
 	defer cancel()
@@ -349,15 +293,9 @@ func (m *Manager) probeBinaryVersion(ctx context.Context, binPath string) (strin
 	return string(out), nil
 }
 
-// versionInOutput reports whether the expected version string appears in the
-// probe output — the fail-closed post-install contract: the install only
-// counts as successful when the expected version string is present.
-//
-// The check is substring containment by design; a pinned "14.1.1" also
-// matches "14.1.10". Accepting that superset is the safe direction here
-// because the downloaded bytes are SHA256-pinned anyway — the probe's job is
-// to catch a stale/wrong binary that survived an install, not to parse
-// upstream version schemes.
+// versionInOutput is deliberately substring containment ("14.1.1" matches
+// "14.1.10") — the safe direction: bytes are SHA256-pinned, so the probe only
+// catches a stale/wrong binary that survived an install, not version schemes.
 func versionInOutput(output, want string) bool {
 	return strings.Contains(output, want)
 }
@@ -366,9 +304,8 @@ func versionInOutput(output, want string) bool {
 // binary that dumps garbage cannot flood them.
 const maxProbeLogBytes = 512
 
-// truncForLog shortens arbitrary command output for inclusion in a log line
-// or error message. The cut backs up to a UTF-8 rune boundary so the result
-// stays valid UTF-8 even when the boundary lands mid-rune.
+// truncForLog caps output for logs/errors; the cut backs up to a rune
+// boundary so the result stays valid UTF-8.
 func truncForLog(s string) string {
 	if len(s) <= maxProbeLogBytes {
 		return s
@@ -380,11 +317,9 @@ func truncForLog(s string) string {
 	return s[:cut] + "…(truncated)"
 }
 
-// binaryVersionMatches reports whether the static binary at binPath — run
-// with --version — reports the version pinned in the tool spec. Probe errors
-// are treated as a mismatch (fail-closed): the caller responds with a
-// reinstall, never with an error, so a probe hiccup degrades to a cheap
-// cached re-extraction instead of failing app startup.
+// binaryVersionMatches probes binPath for the version pinned in the tool
+// spec. Probe errors count as a mismatch (fail-closed): the caller answers
+// with a reinstall — a cheap cached re-extraction — never with an error.
 func (m *Manager) binaryVersionMatches(ctx context.Context, tool ToolSpec, binPath string) bool {
 	out, err := m.probeBinaryVersion(ctx, binPath)
 	if err != nil {
@@ -400,21 +335,17 @@ func (m *Manager) binaryVersionMatches(ctx context.Context, tool ToolSpec, binPa
 	return true
 }
 
-// installStatic downloads (or cache-hits) the pinned archive and extracts the
-// binary. The stale destination binary is removed only AFTER the replacement
-// archive is secured on disk: an offline cache miss must leave the previous
-// binary in place rather than strip the machine of a possibly still
-// functional tool. This ordering is what lets the offline startup phase
-// attempt a fix from cache with zero risk. mode is DownloadCacheOnly in the
-// offline startup pass (no network I/O) and DownloadOnline otherwise.
+// installStatic secures the archive (download or verified cache hit), then
+// removes the stale destination binary and extracts — secure-bytes-before-
+// destroy. See specs/domains/tool-manager.md.
 func (m *Manager) installStatic(ctx context.Context, tool ToolSpec, cacheDir string, mode DownloadMode) error {
 	downloadProgress := func(done, total int64) {
 		m.reportProgress(tool.Name, "download", done, total)
 	}
 	result, err := m.Downloader.Download(ctx, tool, cacheDir, mode, downloadProgress)
 	if err != nil && mode == DownloadOnline {
-		// Retry once for transient failures. CacheOnly failures are
-		// deterministic (nothing on disk) — retrying would be noise.
+		// One retry for transient failures; a CacheOnly failure is
+		// deterministic (nothing cached) — retrying would be noise.
 		m.Logger.Warn("download failed, retrying", "tool", tool.Name, "error", err)
 		result, err = m.Downloader.Download(ctx, tool, cacheDir, mode, downloadProgress)
 	}
@@ -423,9 +354,8 @@ func (m *Manager) installStatic(ctx context.Context, tool ToolSpec, cacheDir str
 	}
 	m.Logger.Debug("archive ready", "tool", tool.Name, "downloaded", result.Downloaded)
 
-	// Replacement bytes are secured — now clear the destination so the
-	// installer's exists short-circuit cannot leave the stale binary in
-	// place while .versions already records the new version.
+	// Bytes secured — clear the destination so the installer's exists
+	// short-circuit cannot leave a stale binary under the recorded new version.
 	m.removeStaleStaticBinary(tool)
 
 	m.reportProgress(tool.Name, "extract", 0, 0)
@@ -437,11 +367,9 @@ func (m *Manager) installStatic(ctx context.Context, tool ToolSpec, cacheDir str
 	return nil
 }
 
-// cleanupOldArchives removes cached archives for the given tool that don't
-// match the current ArchiveName. This prevents stale version archives from
-// accumulating in ~/.c0wrk/tools/.cache/ across version bumps.
+// cleanupOldArchives removes cached archives of past versions (tool-name
+// prefix, not the current ArchiveName) so bumps don't accumulate.
 func (m *Manager) cleanupOldArchives(tool ToolSpec, cacheDir string) {
-	// List all files in cacheDir matching the tool's prefix (tool name).
 	entries, err := os.ReadDir(cacheDir)
 	if err != nil {
 		return // cache dir doesn't exist or is unreadable — nothing to clean
@@ -451,12 +379,9 @@ func (m *Manager) cleanupOldArchives(tool ToolSpec, cacheDir string) {
 			continue
 		}
 		name := entry.Name()
-		// Skip the current archive.
 		if name == tool.ArchiveName {
 			continue
 		}
-		// Remove archives that start with the tool name prefix
-		// (e.g. "uv-", "ripgrep-").
 		if strings.HasPrefix(name, tool.Name+"-") || strings.HasPrefix(name, tool.Name+".") {
 			path := filepath.Join(cacheDir, name)
 			if err := os.Remove(path); err != nil {
@@ -466,13 +391,9 @@ func (m *Manager) cleanupOldArchives(tool ToolSpec, cacheDir string) {
 	}
 }
 
-// installPython bootstraps a Python environment and installs the package.
-// The stale wrapper and virtual environment are removed immediately before
-// the bootstrap runs — never earlier in the reconciliation — so a network
-// failure cannot strip an existing (old-version) environment that would
-// otherwise keep working. The offline startup phase never reaches this
-// function at all (PythonPackage installs are deferred when network access
-// is not allowed).
+// installPython removes the stale wrapper+venv immediately before the
+// bootstrap (never earlier — a network failure must not strip a working old
+// environment); the offline pass never reaches it. See specs/domains/tool-manager.md.
 func (m *Manager) installPython(ctx context.Context, tool ToolSpec) error {
 	m.reportProgress(tool.Name, "python_bootstrap", 0, 0)
 	m.removeStalePythonEnv(tool)
@@ -483,16 +404,10 @@ func (m *Manager) installPython(ctx context.Context, tool ToolSpec) error {
 	return nil
 }
 
-// removeStalePythonEnv deletes the wrapper script and the virtual environment
-// for a Python-package tool so that a version bump triggers a full rebootstrap.
-// The uv-managed Python interpreter (python/install/) is intentionally left
-// intact: it is shared and reinstalled idempotently by `uv python install`.
-//
-// Called from installPython immediately before InstallPythonPackage runs:
-// the wrapper-existence short-circuit in InstallPythonPackage would otherwise
-// skip the upgrade, leaving the previously installed (possibly vulnerable)
-// package version in the venv while the .versions file already records the new
-// version — a silent security gap.
+// removeStalePythonEnv deletes the wrapper and venv so a version bump forces
+// a full rebootstrap — a kept wrapper would ride InstallPythonPackage's
+// existence short-circuit past the upgrade (a silent security gap). The
+// uv-managed interpreter (python/install/) stays, reinstalled idempotently.
 func (m *Manager) removeStalePythonEnv(tool ToolSpec) {
 	wrapperPath := m.binaryPath(tool.Name, tool.Type)
 	if err := os.Remove(wrapperPath); err != nil && !os.IsNotExist(err) {
@@ -504,14 +419,9 @@ func (m *Manager) removeStalePythonEnv(tool ToolSpec) {
 	}
 }
 
-// removeStaleStaticBinary deletes the installed binary for a StaticBinary
-// tool. Call sites: installStatic (right before extraction — the installer
-// short-circuits on an existing destination, so without removal the old
-// binary would survive the "upgrade" while .versions already records the new
-// version) and installOne's post-install verification (a binary that failed
-// the version probe must not linger on disk). The reconciliation loop never
-// removes the binary ahead of the download: an offline cache miss must leave
-// the previous binary in place.
+// removeStaleStaticBinary deletes the installed binary — only once the
+// replacement bytes are secured or the post-install probe has failed; never
+// ahead of the download, so an offline cache miss keeps the working binary.
 func (m *Manager) removeStaleStaticBinary(tool ToolSpec) {
 	binPath := m.binaryPath(tool.Name, tool.Type)
 	if err := os.Remove(binPath); err != nil && !os.IsNotExist(err) {
@@ -519,15 +429,9 @@ func (m *Manager) removeStaleStaticBinary(tool ToolSpec) {
 	}
 }
 
-// VenvPythonPath returns the absolute path of the Python interpreter inside
-// the managed markitdown virtual environment (<toolsDir>/python/venv), or ""
-// when the venv (or the interpreter inside it) does not exist. The layout is
-// owned by this package (see InstallPythonPackage), so this is the canonical
-// way for other layers to obtain the interpreter that can `import markitdown`
-// — required for vision-assisted conversion, which must go through the
-// markitdown Python API rather than the CLI.
-//
-// Pure filesystem probing; no installation is triggered.
+// VenvPythonPath returns the managed venv interpreter or "" when absent —
+// the canonical access for other layers' vision-assisted conversion; pure
+// probing, never installs. See specs/domains/tool-manager.md.
 func VenvPythonPath(toolsDir string) string {
 	venvDir := filepath.Join(toolsDir, "python", "venv")
 	return findPythonInDir(venvDir, "", runtime.GOOS)

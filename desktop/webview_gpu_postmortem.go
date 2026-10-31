@@ -13,27 +13,18 @@ import (
 	"github.com/v0lka/sp4rk/safeio"
 )
 
-// gpuWaylandProtocolErrorMarker and gpuWaylandEPROTO identify GDK's fatal
-// Wayland dispatch failure: `Gdk-Message: Error 71 (Protocol error)
-// dispatching to Wayland display.` The format string is untranslated while
-// the strerror text in parentheses is localized, so both halves are matched
-// on the same line. 71 is EPROTO — the compositor rejected a request (the
-// accelerated WebKit compositor on NVIDIA); other errnos (EPIPE when the
-// compositor itself goes away) are not a GPU-policy signal.
+// Together the markers identify GDK's fatal Wayland EPROTO dispatch failure
+// (the strerror half is localized, the format half is not; other errnos are
+// not a GPU-policy signal). See specs/domains/webview-gpu-policy.md.
 const (
 	gpuWaylandProtocolErrorMarker = "dispatching to Wayland display"
 	gpuWaylandEPROTO              = "Error 71 ("
 )
 
 // ApplyWebviewGpuCrashFallback is the next-start post-mortem for the GPU
-// failure class the in-run watchdog cannot see: on Wayland the accelerated
-// policy can make GDK hit a fatal protocol error and exit(1) the process
-// before DomReady, so no scan ever runs and every launch dies the same way.
-// When the PREVIOUS run's stderr segment ended without a clean exit banner
-// and carries that error, the auto-fallback to never is persisted before
-// this launch resolves its policy. Same gate as the watchdog (Linux, fresh
-// auto, usable capture, no explicit env override). Must be called after
-// crashlog.Install and before WebviewGpuPolicyOptions / NewWebviewGpuWatchdog.
+// failure class the in-run watchdog cannot see: when the previous run died
+// on a fatal Wayland protocol error, the auto-fallback to never persists
+// before policy resolution (specs/domains/webview-gpu-policy.md).
 func ApplyWebviewGpuCrashFallback(agentDir, logDir string, stderrObserved bool, logger *slog.Logger) {
 	applyWebviewGpuCrashFallback(runtime.GOOS, os.Getenv(backend.WebviewGpuPolicyEnvVar),
 		agentDir, logDir, stderrObserved, logger, time.Now)
@@ -71,11 +62,9 @@ func applyWebviewGpuCrashFallback(goos, envRaw, agentDir, logDir string, stderrO
 	}
 }
 
-// previousRunDiedOnWaylandProtocolError splits the tail of stderr.log into
+// previousRunDiedOnWaylandProtocolError splits the stderr.log tail into
 // runs by the crashlog banners and inspects the run before the current one
-// (whose banner Install has just written): it must lack a clean exit banner
-// and contain the EPROTO Wayland dispatch failure. Read errors and a tail
-// without the current banner return false.
+// (specs/domains/webview-gpu-policy.md).
 func previousRunDiedOnWaylandProtocolError(path string) bool {
 	data := readStderrTail(path, gpuWatchdogMaxTailBytes)
 	runBanner := []byte(crashlog.RunBannerPrefix)

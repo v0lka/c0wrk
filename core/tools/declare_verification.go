@@ -18,10 +18,9 @@ Outputs: the verdict is stored for the goal loop to read.
 Example: confirmed true, reason naming the checks run, evidence citing the command and its passing output.
 Anti-example: not for mid-task checks (run them directly as you work); never confirm without evidence; declaring is not a substitute for running the checks.`
 
-// VerificationOutcome is the structured result of an independent verification
-// pass. It mirrors goal.Verdict in shape but is a distinct type so the goal
-// loop's self-evaluation verdict (agent judging its own work) is never
-// confused with the verifier's external verdict.
+// VerificationOutcome mirrors goal.Verdict in shape but is a distinct type:
+// the verifier's external verdict must never be confused with the agent's
+// self-evaluation.
 type VerificationOutcome struct {
 	Confirmed  bool                `json:"confirmed"`
 	Reason     string              `json:"reason"`
@@ -29,28 +28,23 @@ type VerificationOutcome struct {
 	DeclaredAt time.Time           `json:"declared_at"`
 }
 
-// VerificationSink is the context-injected destination for verifier verdicts.
-// The verification pass injects a concrete sink into the per-turn context;
-// declare_verification writes structured outcomes into it so the loop reads
-// them as typed objects rather than parsing ToolResult.Content (which is a
-// plain string, and PostExecuteHook skips internal tools anyway).
-//
-// The implementation lives in a higher layer; the tool only knows the interface.
+// VerificationSink is the context-injected destination for verifier verdicts,
+// read back as typed objects — ToolResult.Content is a plain string and
+// PostExecuteHook skips internal tools (specs/domains/goal-mode.md). The
+// implementation lives in a higher layer.
 type VerificationSink interface {
 	// Declare records an outcome as the most recent one. Implementations must
 	// be safe for the single-threaded per-turn tool call that invokes this.
 	Declare(v VerificationOutcome)
-	// Last returns the most recently declared outcome, or nil if none has been
-	// declared since the sink was created/injected.
+
+	// Last returns the most recently declared outcome, or nil if none has
+	// been declared since the sink was created/injected.
 	Last() *VerificationOutcome
 }
 
-// DeclareVerificationTool captures a verifier verdict via the
-// context-injected VerificationSink. It is an internal tool
-// (PolicyAlwaysAllow, bypasses the tool judge) because it is a coordination
-// primitive for the verification pass, not a user-facing capability. It is a
-// no-op outside a verification run (the sink will be nil), matching
-// declare_goal_status's and propose_goal's pattern.
+// DeclareVerificationTool captures the verifier's verdict via the
+// context-injected sink; a no-op outside a verification run
+// (specs/domains/goal-mode.md).
 type DeclareVerificationTool struct {
 	*sdktools.BaseTool
 }
@@ -106,15 +100,10 @@ func (t *DeclareVerificationTool) Execute(ctx context.Context, input json.RawMes
 		return sdktools.ParseInputError(err)
 	}
 
-	// Evidence mandate: confirming the goal REQUIRES non-empty evidence. This
-	// mirrors declare_goal_status's "met" enforcement so a bare "done" can
-	// never pass verification without a concrete, inspectable artifact backing
-	// it.
-	//
-	// The tool executor does NOT validate inputs against the JSON schema, so a
-	// confirmed verdict must be rejected both when evidence is absent AND when
-	// an entry is present but empty (e.g. evidence:[{}] or evidence:[{"ref":""}])
-	// — otherwise a bare assertion could pass verification with no real artifact.
+	// Evidence mandate (specs/domains/goal-mode.md): a confirmed verdict needs
+	// concrete artifacts, and since the executor does not schema-validate
+	// inputs, both absent evidence and present-but-empty entries (e.g.
+	// [{}]) are rejected here.
 	if params.Confirmed {
 		if len(params.Evidence) == 0 {
 			return sdktools.ToolResult{
@@ -145,9 +134,7 @@ func (t *DeclareVerificationTool) Execute(ctx context.Context, input json.RawMes
 	}
 	sink.Declare(outcome)
 
-	// Short confirmation string. The structured outcome is delivered via the
-	// sink; this Content is just for the transcript so the agent sees its
-	// declaration was captured.
+	// Transcript echo only — the structured outcome travels via the sink.
 	var summary string
 	switch {
 	case params.Confirmed:

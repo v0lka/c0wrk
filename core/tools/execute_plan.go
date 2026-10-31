@@ -16,11 +16,9 @@ Outputs: the execution run — per-task progress events and a completion report 
 Example: a plan where task 2 declares depends_on ["task_1"] and runs after it; to retry only task 2 after it failed, call execute_plan with {"steps": ["task_2"]}.
 Anti-example: do not call to delegate a single task (delegate does that); not before the roadmap is approved; never implement unapproved additions.`
 
-// PlanStepExecutor builds and runs all steps of a declared plan in DAG order
-// with parallelism. The implementation lives in the core layer
-// (conductorLauncher.Execute). stepIDs, when non-empty, forces those steps
-// (and their transitive dependents) to re-run; otherwise a second call resumes
-// by skipping already-successful steps.
+// PlanStepExecutor runs a declared plan's steps in DAG order with parallelism
+// (conductorLauncher); non-empty stepIDs forces those steps and their
+// dependents to re-run, empty resumes. See specs/contracts/conductor-tools.md.
 type PlanStepExecutor interface {
 	Execute(ctx context.Context, stepIDs []string) ([]PlanStepResult, error)
 }

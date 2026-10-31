@@ -17,12 +17,9 @@ Outputs: a pending goal proposal confirmed or declined by the user; once confirm
 Example: condition "go test ./... passes for package core", verify "run go test ./core and check exit 0", before a bug-fix task.
 Anti-example: no vague conditions ("improve the code") — unverifiable; do not re-propose mid-task (declare_goal_status is the update path); not for read-only questions.`
 
-// GoalProposal is the {condition, verify} pair the agent submits for sign-off.
-//
-// VerificationMode selects how the condition is to be verified (see
-// goal.VerificationMode* constants). It is optional and defaults to
-// goal.VerificationModeExecutable when omitted. The value round-trips through
-// GoalProposalResponse so a user edit at sign-off is honored.
+// GoalProposal is the {condition, verify} pair the agent submits for sign-off;
+// an omitted VerificationMode defaults to goal.VerificationModeExecutable and
+// the sign-off response round-trips user edits. See specs/domains/goal-mode.md.
 type GoalProposal struct {
 	Condition        string `json:"condition"`
 	Verify           string `json:"verify"`
@@ -30,11 +27,6 @@ type GoalProposal struct {
 }
 
 // GoalProposalResponse is the user's decision on a proposed goal.
-//
-// Decision is one of:
-//   - "approve":           the user accepted the goal. Condition/Verify carry
-//     the (possibly edited) approved values.
-//   - "cancel":            the user rejected the goal outright.
 type GoalProposalResponse struct {
 	Decision         string `json:"decision"`                    // "approve", "cancel"
 	Condition        string `json:"condition,omitempty"`         // set when Decision == "approve" (edited values)
@@ -42,17 +34,15 @@ type GoalProposalResponse struct {
 	VerificationMode string `json:"verification_mode,omitempty"` // set when Decision == "approve" (edited value); echoes proposal when unchanged
 }
 
-// GoalProposer is the backend hook that submits a goal proposal to the user and
-// blocks until the user responds. The implementation (which emits the
-// goal_proposal event and waits on a pending-confirmation channel) lives in the
-// backend layer; the tool only knows the interface.
+// GoalProposer submits a goal proposal to the user and blocks until they
+// respond (goal_proposal event). See specs/domains/goal-mode.md.
 type GoalProposer interface {
 	Propose(ctx context.Context, proposal GoalProposal) (GoalProposalResponse, error)
 }
 
 // ProposeGoalTool submits a {condition, verify} goal proposal and blocks for
-// user approval. It is an internal tool (PolicyAlwaysAllow, bypasses the tool
-// judge) because it is a coordination primitive, not a user-facing capability.
+// user approval — a coordination primitive, not a user-facing capability.
+// See specs/domains/goal-mode.md.
 type ProposeGoalTool struct {
 	*sdktools.BaseTool
 }
@@ -107,10 +97,8 @@ func (t *ProposeGoalTool) Execute(ctx context.Context, input json.RawMessage) (s
 		return sdktools.ErrorResult("validation error: verify must not be empty"), nil
 	}
 
-	// Normalize the optional verification mode (default executable) and reject
-	// unknown values at the tool boundary so GoalState can never hold an
-	// invalid mode. The normalized value is carried through to the proposal so
-	// the (possibly edited) response round-trips the canonical form.
+	// Normalize + reject unknown modes at the tool boundary so GoalState can
+	// never hold an invalid mode; the canonical form rides the proposal.
 	normalizedMode, verr := goal.NormalizeVerificationMode(params.VerificationMode)
 	if verr != nil {
 		return sdktools.ErrorResult("validation error: %v", verr), nil
@@ -129,8 +117,7 @@ func (t *ProposeGoalTool) Execute(ctx context.Context, input json.RawMessage) (s
 
 	switch resp.Decision {
 	case "approve":
-		// If the user edited the condition/verify, echo the approved values so
-		// the agent commits to the user's wording rather than its own.
+		// Echo the user's edited wording so the agent commits to it.
 		if resp.Condition != "" && resp.Condition != params.Condition {
 			return sdktools.ToolResult{
 				Content: fmt.Sprintf("Goal approved with edits. Condition: %s | Verify: %s", resp.Condition, coalesce(resp.Verify, params.Verify)),

@@ -9,13 +9,9 @@ import (
 	"github.com/v0lka/sp4rk/skills"
 )
 
-// appBuilder captures the subset of *core.OrchestratorBuilder used by
-// FrontendAPI. The interface lets tests substitute a fake builder so config
-// and MCP mutations can be verified without exercising the real LLM router,
-// proxy stack, or MCP gateway. (W-20)
-//
-// *core.OrchestratorBuilder satisfies this interface — see the verification
-// at the bottom of this file.
+// appBuilder captures the subset of *core.OrchestratorBuilder used by FrontendAPI
+// so tests can substitute a fake builder without the real LLM router, proxy stack,
+// or MCP gateway; the compile-time assertion below pins the real builder.
 type appBuilder interface {
 	RebuildJudge(*core.BuilderConfig)
 	RebuildRouter(*core.BuilderConfig) error
@@ -42,22 +38,16 @@ type appBuilder interface {
 	JudgeAvailable() bool
 }
 
-// builder returns the appBuilder used by FrontendAPI. Tests inject a fake by
-// setting f.builderOverride; production code falls through to the wrapped
-// *core.OrchestratorBuilder. Returns nil when neither is available so callers
-// must nil-check.
+// builder returns the appBuilder used by FrontendAPI: f.builderOverride in tests,
+// otherwise the wrapped *core.OrchestratorBuilder. Nil when neither exists, so
+// callers must nil-check.
 func (f *FrontendAPI) builder() appBuilder {
 	if f.builderOverride != nil {
 		return f.builderOverride
 	}
-	// seedAcquire, NOT appCell: builder() is reached from code that already
-	// holds configMu (UpdateMCPServers and applyModelProfilesChange under the
-	// write lock, GetConfig/ListProviderModels under RLock), and sync.RWMutex
-	// is not reentrant — an RLock here would self-deadlock against the held
-	// write lock and block behind any queued writer from the read paths.
-	// seedAcquire provides the same happens-before edge for the plain f.app
-	// read (it is a single atomic load once Init has published) without
-	// touching configMu.
+	// seedAcquire, NOT appCell: callers already hold configMu (write- and RLock
+	// paths alike) and sync.RWMutex is not reentrant — an RLock would self-deadlock.
+	// seedAcquire gives the same happens-before edge for the plain f.app read.
 	f.seedAcquire()
 	if f.app == nil {
 		return nil

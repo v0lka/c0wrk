@@ -7,26 +7,14 @@ import (
 )
 
 const (
-	// throughputWindowCap is the maximum number of per-call output-rate
-	// samples retained per session (a sliding window over the most recent
-	// LLM calls).
-	throughputWindowCap = 64
-	// throughputMinSamples is the sample count below which no median is
-	// reported. A median over one or two calls is noise, not signal.
-	throughputMinSamples = 3
+	throughputWindowCap  = 64 // sliding-window size over the most recent per-call output rates
+	throughputMinSamples = 3  // below this the median is noise, not signal (reported as 0)
 )
 
 // sessionThroughputWindow maintains a per-session sliding window of per-call
-// output-token rates (output tokens / wall-clock seconds) and reports their
-// median. It is fed by the UsageTracker's timed observer, so one sample is
-// recorded per successful timed LLM call.
-//
-// Calls with zero output tokens or a non-positive duration are skipped: they
-// carry no meaningful rate (empty completions, degenerate clocks) and would
-// drag the median toward zero.
-//
-// Thread-safe: the session UsageTracker fans out to observers from arbitrary
-// goroutines (conductor steps, delegated subagents share one TrackingCaller).
+// output-token rates and reports their median; fed by the UsageTracker's timed
+// observer (specs/domains/llm-providers.md, token accounting & throughput
+// seam). Observers fan out from arbitrary goroutines, hence the mutex.
 type sessionThroughputWindow struct {
 	mu      sync.Mutex
 	samples []float64 // ring buffer of rates, len == cap
@@ -34,15 +22,13 @@ type sessionThroughputWindow struct {
 	count   int       // number of valid samples (<= cap)
 }
 
-// newSessionThroughputWindow returns an empty window with the default
-// capacity and minimum-sample threshold.
 func newSessionThroughputWindow() *sessionThroughputWindow {
 	return &sessionThroughputWindow{samples: make([]float64, throughputWindowCap)}
 }
 
-// record adds one call's output rate to the window and returns the resulting
-// (median, sampleCount). Calls with outputTokens <= 0 or duration <= 0 are
-// skipped — the window is left untouched and its current view is returned.
+// record adds one call's output rate and returns the resulting (median,
+// samples); calls with non-positive tokens or duration return the current
+// view untouched.
 func (w *sessionThroughputWindow) record(outputTokens int, duration time.Duration) (median float64, samples int) {
 	if outputTokens <= 0 || duration <= 0 {
 		return w.median()
@@ -60,11 +46,9 @@ func (w *sessionThroughputWindow) record(outputTokens int, duration time.Duratio
 	return w.median()
 }
 
-// median returns the median output rate over the window and the number of
-// samples currently in it. When fewer than throughputMinSamples samples are
-// recorded, the median is reported as 0 (unavailable) while the sample count
-// still reflects reality, so consumers can distinguish "warming up" from
-// "no data".
+// median returns the median output rate over the window and the sample count;
+// below throughputMinSamples the median is 0 (unavailable) while the count
+// still reflects reality, so consumers can tell "warming up" from "no data".
 func (w *sessionThroughputWindow) median() (median float64, samples int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()

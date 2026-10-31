@@ -12,14 +12,9 @@ import (
 	"github.com/v0lka/sp4rk/orchestration"
 )
 
-// ---------------------------------------------------------------------------
-// PersistableBlackboard — interface for blackboards that support persistence
-// ---------------------------------------------------------------------------
-
-// PersistableBlackboard extends orchestration.Blackboard with persistence lifecycle methods.
-// The orchestrator uses this interface (via type assertion) to drive task
-// completion / failure / routing without depending on the concrete type
-// that lives in backend/session.
+// PersistableBlackboard extends orchestration.Blackboard with persistence
+// lifecycle methods (the concrete type lives in backend/session).
+// See specs/domains/memory/blackboard.md.
 type PersistableBlackboard interface {
 	orchestration.Blackboard
 	SetEmitter(emitter Emitter)
@@ -29,52 +24,39 @@ type PersistableBlackboard interface {
 	FailTask()
 	CancelTask()
 	// PauseTask marks the in-progress task as paused, persisting a resumable
-	// checkpoint. Like CancelTask it writes synchronously so the status change
-	// is guaranteed before the method returns.
+	// checkpoint; like CancelTask it writes synchronously before returning.
 	PauseTask()
 	ReactivateTask()
 	TaskID() string
 }
 
-// BlackboardRestoreFunc restores a PersistableBlackboard from persistence.
-// Returns nil, nil if the task is not found.
+// BlackboardRestoreFunc restores a PersistableBlackboard from persistence;
+// nil, nil when the task is not found. See specs/domains/memory/blackboard.md.
 type BlackboardRestoreFunc func(taskID, sessionID string, store TaskPersistence, logger *slog.Logger, opts ...orchestration.MapBlackboardOption) (PersistableBlackboard, error)
 
-// DelegationSpecReader is an optional PersistableBlackboard capability
-// exposing the task's persisted delegation specs. The Resume auto-resume wave
-// type-asserts against it to rebuild paused delegates; blackboards without
-// the capability simply have no resumable delegates (plan-only tasks).
+// DelegationSpecReader is an optional PersistableBlackboard capability exposing
+// the task's persisted delegation specs (the Resume auto-resume wave asserts for it).
 type DelegationSpecReader interface {
 	DelegationSpecs() []tools.DelegationSpec
 }
 
-// UnitStoreProvider is an optional PersistableBlackboard capability exposing
-// the durable unit store backing the task's blackboard. NewBlackboardLedger
-// type-asserts against it to build the mainline unit ledger; a blackboard
-// without the capability (or whose store has no unit persistence) yields a
-// best-effort in-memory ledger.
+// UnitStoreProvider is an optional PersistableBlackboard capability exposing the
+// durable unit store (absent capability / store = in-memory ledger fallback).
+// See specs/decisions/048-unified-recovery-ledger.md.
 type UnitStoreProvider interface {
 	UnitStore() units.Store
 }
 
-// UnitLedgerProvider is an optional PersistableBlackboard capability exposing
-// the blackboard's cached mainline unit ledger. NewBlackboardLedger prefers it
-// so every caller shares one ledger (and its in-memory overlay).
+// UnitLedgerProvider is an optional capability exposing the blackboard's cached
+// mainline ledger (all callers share one). See specs/decisions/048-unified-recovery-ledger.md.
 type UnitLedgerProvider interface {
 	UnitLedger() units.Ledger
 }
 
-// NewBlackboardLedger builds the MAINLINE unit ledger from a persistent
-// blackboard. It derives the ledger's task from the blackboard's TaskID() and
-// its store from the optional UnitStoreProvider capability, so units it writes
-// land in the same task as an isolated context's ledger and are readable by
-// both.
-//
-// It never fails: a nil blackboard, a blackboard without the store capability,
-// or a store without unit persistence all yield a best-effort in-memory
-// ledger, so callers need not special-case persistence availability. When the
-// blackboard exposes a cached ledger (UnitLedgerProvider) that instance is
-// returned so all callers share one ledger.
+// NewBlackboardLedger builds the MAINLINE unit ledger: task from TaskID(),
+// store from the optional UnitStoreProvider capability, cached ledger
+// preferred — it never fails, degrading to a best-effort in-memory ledger.
+// See specs/decisions/048-unified-recovery-ledger.md.
 func NewBlackboardLedger(bb PersistableBlackboard) units.Ledger {
 	if bb == nil {
 		return units.NewLedger(nil, "", "")
@@ -91,13 +73,9 @@ func NewBlackboardLedger(bb PersistableBlackboard) units.Ledger {
 	return units.NewLedger(store, bb.TaskID(), "")
 }
 
-// ---------------------------------------------------------------------------
-// TaskPersistence — core-side abstraction for task storage
-// ---------------------------------------------------------------------------
-
-// TaskPersistence provides persistent storage for task state.
-// Implementations must be safe for concurrent use.
-// This interface lives in core/ to avoid a dependency from core -> backend.
+// TaskPersistence is the core-side task-storage abstraction — implementations
+// live in backend/session (core must not import backend); implementations
+// must be safe for concurrent use. See specs/domains/memory/blackboard.md.
 type TaskPersistence interface {
 	// PersistMCPMentions atomically unions server names into durable task intent.
 	PersistMCPMentions(ctx context.Context, taskID string, names []string) error
@@ -111,32 +89,23 @@ type TaskPersistence interface {
 	PersistCompletion(taskID, finalOutput string, attemptCount int) error
 	PersistFailure(taskID string) error
 	PersistCancellation(taskID string) error
-	// PersistPause marks an in-progress task as paused so it survives app
-	// restart as a resumable checkpoint.
+	// PersistPause marks an in-progress task as paused (resumable checkpoint).
 	PersistPause(taskID string) error
 	PersistFacts(taskID string, facts []orchestration.Fact) error
-	// PersistAttachments persists the full attachments list for a task so that
-	// user-attached files survive app restart and are rehydrated on continuation.
+	// PersistAttachments persists the full attachments list (rehydrated on continuation).
 	PersistAttachments(taskID string, attachments []orchestration.Attachment) error
-	// SaveTrajectory persists the Conductor's full []agent.Step trajectory for a
-	// task so it survives app restart.
+	// SaveTrajectory persists the Conductor's full []agent.Step trajectory (survives restart).
 	SaveTrajectory(taskID string, steps []agent.Step) error
-	// LoadTrajectory restores the Conductor's []agent.Step trajectory for a task.
-	// Returns nil, nil when no trajectory has been persisted.
+	// LoadTrajectory restores the task's []agent.Step trajectory; nil, nil when none persisted.
 	LoadTrajectory(taskID string) ([]agent.Step, error)
-	// PersistGoalState persists the goal-loop's *goal.GoalState for a task so a
-	// paused/active goal survives app restart and resumes into the loop.
+	// PersistGoalState persists the goal-loop's *goal.GoalState (survives restart; resumes into the loop).
 	PersistGoalState(taskID string, gs *goal.GoalState) error
-	// LoadGoalState restores the goal-loop's *goal.GoalState for a task.
-	// Returns nil, nil when no goal state has been persisted.
+	// LoadGoalState restores the task's *goal.GoalState; nil, nil when none persisted.
 	LoadGoalState(taskID string) (*goal.GoalState, error)
-	// PersistDelegationSpec persists a delegation's full task spec (everything
-	// needed to rebuild the subagent) so a paused delegation survives the end
-	// of its Conductor run and can be resumed by the system without any LLM
-	// decision.
+	// PersistDelegationSpec persists a delegation's full rebuild spec, so a
+	// paused delegation resumes without any LLM decision.
 	PersistDelegationSpec(taskID string, spec tools.DelegationSpec) error
-	// LoadDelegationSpecs restores all delegation specs persisted for a task.
-	// Returns nil, nil when none have been persisted.
+	// LoadDelegationSpecs restores all persisted delegation specs; nil, nil when none.
 	LoadDelegationSpecs(taskID string) ([]tools.DelegationSpec, error)
 	// Restoration
 	LoadTaskState(taskID string) (*TaskState, error)
@@ -144,10 +113,6 @@ type TaskPersistence interface {
 	// Task lifecycle
 	ReactivateTask(taskID string) error
 }
-
-// ---------------------------------------------------------------------------
-// TaskState — restored state from persistence
-// ---------------------------------------------------------------------------
 
 // TaskState holds the restored state of a persisted task.
 type TaskState struct {
@@ -162,9 +127,8 @@ type TaskState struct {
 	Facts           []orchestration.Fact       // keyword-tagged facts
 	Attachments     []orchestration.Attachment // user-attached files converted to markdown
 	GoalState       *goal.GoalState            // goal-loop state (nil for non-goal tasks)
-	// Delegations holds the persisted delegation specs (task text, tools,
-	// agent profile, mode, deps, parent/depth) so the system can rebuild and
-	// auto-resume paused delegates on Resume. Empty for plan-only tasks.
+	// Delegations holds the persisted delegation specs so Resume can rebuild
+	// and auto-resume paused delegates; empty for plan-only tasks.
 	Delegations []tools.DelegationSpec
 	Status      string // "in_progress", "completed", "failed", "cancelled", "paused"
 }

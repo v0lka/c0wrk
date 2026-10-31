@@ -7,8 +7,8 @@ import (
 	"sync"
 )
 
-// LLMTitleCaller is the interface for making LLM calls for title generation.
-// This avoids importing github.com/v0lka/sp4rk/llm in the backend layer.
+// LLMTitleCaller makes LLM title calls without importing sp4rk/llm into the
+// backend layer.
 type LLMTitleCaller interface {
 	GenerateTitle(ctx context.Context, userMessage string, activeSkills []string) (string, error)
 }
@@ -20,13 +20,11 @@ type TitleGenerator struct {
 	logger *slog.Logger
 }
 
-// NewTitleGenerator creates a new TitleGenerator.
-// If caller is nil, only fallback title generation is used.
+// NewTitleGenerator creates a TitleGenerator; nil caller = fallback-only titles.
 func NewTitleGenerator(caller LLMTitleCaller) *TitleGenerator {
 	return &TitleGenerator{caller: caller}
 }
 
-// log returns the generator's logger, falling back to slog.Default().
 func (g *TitleGenerator) log() *slog.Logger {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
@@ -36,7 +34,6 @@ func (g *TitleGenerator) log() *slog.Logger {
 	return slog.Default()
 }
 
-// SetLogger sets the logger for the title generator.
 func (g *TitleGenerator) SetLogger(l *slog.Logger) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -44,9 +41,7 @@ func (g *TitleGenerator) SetLogger(l *slog.Logger) {
 }
 
 // Generate produces a title for the given user message.
-// It tries LLM-based generation first, falling back to extracting first words.
 func (g *TitleGenerator) Generate(ctx context.Context, userMessage string, activeSkills []string) string {
-	// Try LLM-based title generation
 	if g.caller != nil {
 		title, err := g.caller.GenerateTitle(ctx, userMessage, activeSkills)
 		if err != nil {
@@ -60,12 +55,10 @@ func (g *TitleGenerator) Generate(ctx context.Context, userMessage string, activ
 		}
 	}
 
-	// Fallback: first few words
 	title := fallbackTitle(userMessage)
 	return truncateTitle(title)
 }
 
-// truncateTitle ensures title doesn't exceed 60 runes.
 func truncateTitle(title string) string {
 	runes := []rune(title)
 	if len(runes) > 60 {
@@ -74,7 +67,6 @@ func truncateTitle(title string) string {
 	return title
 }
 
-// fallbackTitle creates a simple title from the first few words of a message.
 func fallbackTitle(message string) string {
 	words := strings.Fields(message)
 	if len(words) == 0 {

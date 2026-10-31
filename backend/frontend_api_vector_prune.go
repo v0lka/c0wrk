@@ -8,28 +8,18 @@ import (
 	"github.com/v0lka/c0wrk/core/vectorindex"
 )
 
-// Background stale-branch index cleanup. Every git branch a repository ever
-// had leaves per-branch artifacts in the vector-index storage of the project
-// checkout AND of every managed worktree whose tree ever indexed it: the
-// chromem vector DB root under branches/, the bleve lexical directory under
-// lexical/, and the branch's file-hash sidecar and content-less marker
-// (core/vectorindex owns the layout). When the branch disappears from the
-// local clone — merged and deleted on the remote, dropped by hand, worktree
-// pruned — nothing ever re-opens those artifacts and they silently
-// accumulate. On every project switch (the same fire-and-forget seam the
-// auto-fetch funnel rides) a detached goroutine lists the repository's
-// existing local branches once — refs/heads is shared by all worktrees, so
-// the list covers branches checked out in managed trees — and sweeps every
-// storage root of the project, deleting BOTH indexes of every branch that is
-// absent. Silent by contract, exactly like the auto-fetch quiet-failure
-// convention: Debug-only logs, no events, no toasts, never a step that can
-// fail or delay the switch. Details: specs/domains/workspace.md.
+// Background stale-branch index cleanup: branches that disappear from the
+// local clone leave per-branch vector-index artifacts in the project
+// checkout's storage root and every managed-worktree storage root, and
+// nothing ever re-opens them. The switch-triggered sweep (below) and the
+// delete-triggered purge (purgeBranchIndexData) remove them — silent by the
+// auto-fetch quiet-failure contract.
+// See specs/domains/workspace.md.
 
 // pruneAbsentBranchVectorIndexes removes the stored indexes of branches
-// absent from the local clone, across the project checkout's vector-index
-// storage root and every managed-worktree storage root under it. Best-effort
-// and silent: every skip and failure path is a Debug log. Safe to call on a
-// detached goroutine — the switch that fires it has already committed.
+// absent from the local clone, across the checkout's storage root and every
+// managed-worktree storage root under it. Best-effort and silent; safe on a
+// detached goroutine — the firing switch has already committed.
 func (f *FrontendAPI) pruneAbsentBranchVectorIndexes(p *project.ProjectInfo) {
 	if p == nil || p.IsNoProject {
 		return
@@ -135,24 +125,14 @@ func (f *FrontendAPI) purgeDeletedBranchIndexes(branch string) {
 }
 
 // purgeBranchIndexData removes the stored index data of a just-deleted branch
-// — BOTH indexes plus the sidecar pair — across the project checkout's
-// vector-index storage root and every managed-worktree storage root. It is
-// the delete-triggered counterpart of pruneAbsentBranchVectorIndexes: a
-// Git-panel branch deletion fires it so the branch's artifacts go away
-// immediately instead of waiting for the next switch sweep.
-//
-// The surviving-branch list is taken AFTER the git deletion (the caller's
-// ordering), because DeleteBranchData needs it for the lossy-sanitizer
-// collision guard; a listing failure skips the whole purge with a Debug log —
-// the next switch sweep catches the branch up, the purge never guesses.
-//
-// Deliberately NOT single-flighted, unlike the switch sweep: the purge is
-// surgical and idempotent, and it must run even while a sweep is in flight —
-// that sweep may have listed the refs before the deletion and would otherwise
-// keep the branch's data until the next switch. Concurrent purge and sweep
-// are safe (both fail-soft; DeleteBranchData's removals tolerate racing
-// no-ops). Silent by the same contract as the sweep: Debug-only logs, no
-// events, no toasts, never a failure path of the caller.
+// across the checkout's and every managed-worktree storage root — the
+// delete-triggered counterpart of the switch sweep, fired by a Git-panel
+// branch deletion so the artifacts go away immediately. The surviving-branch
+// list is taken AFTER the git deletion (DeleteBranchData needs it for the
+// lossy-sanitizer collision guard); a listing failure skips the whole purge.
+// Deliberately NOT single-flighted: it must run even while a sweep is in
+// flight, whose ref listing may predate the deletion.
+// See specs/domains/workspace.md.
 func (f *FrontendAPI) purgeBranchIndexData(p *project.ProjectInfo, branch string) {
 	if p == nil || p.IsNoProject || branch == "" {
 		return
@@ -200,10 +180,8 @@ func (f *FrontendAPI) purgeBranchIndexData(p *project.ProjectInfo, branch string
 	roots = append(roots, viRoot)
 	roots = append(roots, worktreeStorageNames(viRoot)...)
 	for _, root := range roots {
-		// DeleteBranchData is fail-soft internally (missing root or
-		// already-absent artifacts remove nothing; per-entry failures are
-		// Debug-logged and skipped); a zero return needs no log — most
-		// deletions purge data from only some of the storage roots.
+		// DeleteBranchData is fail-soft internally; a zero return needs no
+		// log — most deletions purge data from only some of the roots.
 		if removed := mgr.Service().DeleteBranchData(root, branch, remaining); removed > 0 {
 			f.log().Debug("vector index: purged index data of the deleted branch",
 				"project", p.ID, "branch", branch, "storage", root, "artifacts_removed", removed)

@@ -4,72 +4,49 @@ import (
 	"strings"
 )
 
-// RecommendNextStep derives the single recommended next research action for a
-// research project from its current phase — encoded entirely in the project's
-// hypothesis-graph metrics and report flag. It is a pure function (no I/O)
-// mirroring the lifecycle vocabulary of the research-* skills, and it is safe
-// to call on a nil project (a research root with no active R-NNN yet), which
-// yields the research-init setup recommendation.
-
-// ActionKind identifies the recommended next research action. Its value is
-// also the name of the research-* skill that implements the action, so the
-// dashboard can both display the kind and route a "/<skill>" invocation with
-// the same token.
+// ActionKind identifies the recommended next action; its value is also the
+// name of the research-* skill implementing it, so the dashboard displays and
+// routes "/<skill>" with the same token.
 type ActionKind string
 
 const (
-	// ActionInit initializes the first research project (no active R-NNN yet).
+	// ActionInit: initialize the first R-NNN project.
 	ActionInit ActionKind = "research-init"
 
-	// ActionHypothesize formulates the first hypothesis (no hypotheses yet).
+	// ActionHypothesize: formulate the first hypothesis.
 	ActionHypothesize ActionKind = "research-hypothesis"
 
-	// ActionExperiment runs an experiment against the leading open/in-progress
-	// hypothesis on the active front.
+	// ActionExperiment: experiment on the leading front hypothesis.
 	ActionExperiment ActionKind = "research-experiment"
 
-	// ActionDecision reviews terminal results to choose the next direction
-	// (continue / pivot / kill / fork) — reached once all hypotheses are
-	// decided and the synthesis report already exists.
+	// ActionDecision: next direction once all decided and the report exists.
 	ActionDecision ActionKind = "research-decision"
 
-	// ActionSynthesize concludes the project by writing the final report —
-	// reached when all hypotheses are decided and no report exists yet.
+	// ActionSynthesize: final report once all decided and none written.
 	ActionSynthesize ActionKind = "research-synthesis"
 )
 
-// Recommendation is the single recommended next research action: the action
-// kind, the target hypothesis (or "" when the action is not hypothesis-scoped),
-// a human-readable rationale, and the research-* skill that implements it.
+// Recommendation is the single recommended next action: kind, target
+// hypothesis ("" when not hypothesis-scoped), rationale, implementing skill.
 type Recommendation struct {
-	// Action is the recommended action kind (one of the Action* constants).
 	Action ActionKind `json:"action"`
 
-	// Target is the hypothesis ID the action operates on, or "" when the
-	// action is not scoped to a single hypothesis (init/hypothesize/decide/
-	// synthesize).
 	Target string `json:"target,omitempty"`
 
-	// Reason is a short human-readable rationale for the recommendation.
 	Reason string `json:"reason"`
 
-	// Skill is the research-* skill that implements the action. It equals
-	// Action but is kept as a separate field so the dashboard can route the
-	// skill without interpreting the action kind.
+	// Skill equals Action (kept separate so callers can route the skill
+	// without interpreting the kind).
 	Skill string `json:"skill"`
 }
 
-// RecommendNextStep derives the recommendation for a project. A nil project
-// means "no active research project yet" and recommends research-init.
+// RecommendNextStep derives the project-wide recommendation (pure; nil-safe).
+// Phase precedence:
 //
-// The phase precedence is:
-//
-//  1. no project        → research-init
-//  2. no hypotheses     → research-hypothesis
-//  3. active front      → research-experiment on the front's first
-//     open/in-progress hypothesis
-//  4. all terminal      → research-synthesis (no report yet) or
-//     research-decision (report already written)
+//  1. no project    → research-init
+//  2. no hypotheses → research-hypothesis
+//  3. active front  → research-experiment on the front's first open/in-progress
+//  4. all terminal  → research-synthesis (no report) / research-decision (reported)
 func RecommendNextStep(project *ResearchProject) Recommendation {
 	if project == nil {
 		return Recommendation{
@@ -89,8 +66,7 @@ func RecommendNextStep(project *ResearchProject) Recommendation {
 	}
 
 	if len(m.ActiveFront) > 0 {
-		// ActiveFront is sorted by ID; the first entry is the front's leading
-		// open/in-progress hypothesis.
+		// Sorted by ID; [0] is the front's leading hypothesis.
 		target := m.ActiveFront[0]
 		return Recommendation{
 			Action: ActionExperiment,
@@ -115,23 +91,11 @@ func RecommendNextStep(project *ResearchProject) Recommendation {
 	}
 }
 
-// RecommendNextStepForHypothesis derives the recommendation like
-// RecommendNextStep, but scoped to a specific hypothesis: when a particular
-// hypothesis is selected (the dashboard's current card), the next action
-// targets THAT hypothesis rather than the project-wide front. It is a pure
-// function (no I/O), like RecommendNextStep.
-//
-// The hypothesis-scoped precedence is:
-//
-//  1. no project, no/unknown hypothesis ID, or a hypothesis that is not in
-//     the project's graph → the plain RecommendNextStep result
-//  2. open / in-progress hypothesis → research-experiment on it (it is on
-//     the active front by definition)
-//  3. terminal hypothesis with no recorded Decision → research-decision on
-//     it (its results await an iteration decision: continue / pivot / kill /
-//     fork)
-//  4. otherwise (a terminal hypothesis already carrying a Decision) → the
-//     plain RecommendNextStep result
+// RecommendNextStepForHypothesis scopes the recommendation to one hypothesis
+// (the dashboard's selected card): open/in-progress → research-experiment on
+// it; terminal without a recorded Decision → research-decision on it;
+// anything else (nil project, unknown ID, decision already recorded) falls
+// back to the project-wide result. Contract: specs/domains/research.md.
 func RecommendNextStepForHypothesis(project *ResearchProject, hypothesisID string) Recommendation {
 	if project == nil {
 		return RecommendNextStep(nil)

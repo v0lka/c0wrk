@@ -7,19 +7,12 @@ import (
 	"github.com/v0lka/sp4rk/skills"
 )
 
-// Builder-side capability plumbing for the skill and agent catalogs: the
-// same immutable-snapshot pattern the MCP server modes use (b.mcpModes —
-// published once at construction, republished by reconfigure paths, read
-// only through cloning getters). core never imports backend/config, so the
-// enum values arrive as plain strings mirroring config constants.
+// Builder-side capability plumbing for the skill and agent catalogs — the
+// same immutable-snapshot pattern the MCP server modes use (published once,
+// republished on reconfigure, read through cloning getters).
 
-// capabilityModesFromConfig projects a capabilities section (skills or
-// agents) into the builder's immutable snapshot map. Entries whose two
-// contexts are BOTH empty are omitted: capabilityModesForSession treats a
-// missing entry as auto (always available), and the config load path has
-// already normalized every configured entry to canonical mode values
-// (backend/config normalizeCapabilities). The input map is never retained —
-// the snapshot is a private clone.
+// capabilityModesFromConfig projects a capabilities section into the builder's
+// immutable snapshot (both-empty entries omitted — absent = auto). See specs/domains/capabilities.md.
 func capabilityModesFromConfig(entries map[string]CapabilityModes) map[string]CapabilityModes {
 	if len(entries) == 0 {
 		return nil
@@ -37,34 +30,24 @@ func capabilityModesFromConfig(entries map[string]CapabilityModes) map[string]Ca
 	return modes
 }
 
-// currentSkillModes returns an independent current policy snapshot for the
-// skill catalog. Mirrors currentMCPServerModes.
+// currentSkillModes returns an independent snapshot of the skill-catalog modes.
 func (b *OrchestratorBuilder) currentSkillModes() map[string]CapabilityModes {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	return maps.Clone(b.skillModes)
 }
 
-// currentAgentModes returns an independent current policy snapshot for the
-// subagent catalog. Mirrors currentMCPServerModes.
+// currentAgentModes returns an independent snapshot of the subagent-catalog modes.
 func (b *OrchestratorBuilder) currentAgentModes() map[string]CapabilityModes {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	return maps.Clone(b.agentModes)
 }
 
-// UpdateCapabilities republishes all three capability mode snapshots (MCP
-// servers, skills, agents) from cfg — the runtime-edit counterpart of the
-// constructor projection, mirroring the single-line mcpModes republication
-// ReconfigureMCP performs. It is a pure in-memory write under b.mu: no
-// gateway work, no readiness wait, no network — mode edits are policy, not
-// topology (ADR-084), so the gateway keeps its current dial set (a newly
-// both-disabled server stays dialed until the next full reconfigure or
-// restart, which is that ADR's declared behavior) while live orchestrators
-// pick the fresh snapshots up at the next task entry through the resolver
-// getters. The snapshots are private clones built by the projection helpers,
-// so later mutation of the caller's config maps cannot leak in. A nil skill
-// or agent section publishes nil — a cleared section gates nothing.
+// UpdateCapabilities republishes all three capability snapshots from cfg — a
+// pure in-memory write under b.mu (mode edits are policy, not topology,
+// ADR-084: no gateway work; orchestrators pick snapshots up at next task
+// entry). A nil section gates nothing. See specs/domains/capabilities.md.
 func (b *OrchestratorBuilder) UpdateCapabilities(cfg *BuilderConfig) {
 	b.mu.Lock()
 	b.mcpModes = mcpServerModesFromConfig(cfg)
@@ -73,12 +56,8 @@ func (b *OrchestratorBuilder) UpdateCapabilities(cfg *BuilderConfig) {
 	b.mu.Unlock()
 }
 
-// implicitSkillDescriptors filters the skill catalog down to the skills
-// implicit discovery (the router) may see: auto-mode entries and names
-// absent from the modes map. Manual skills stay resolvable for explicit
-// /-mentions but are invisible to router matching; disabled skills are gone
-// entirely. A nil/empty modes map returns the input unchanged (the
-// zero-regression default).
+// implicitSkillDescriptors filters the skill catalog to implicit (router)
+// visibility — auto or absent only. See specs/domains/capabilities.md (skills).
 func implicitSkillDescriptors(descs []skills.SkillDescriptor, modes map[string]string) []skills.SkillDescriptor {
 	if len(modes) == 0 || len(descs) == 0 {
 		return descs
@@ -94,12 +73,8 @@ func implicitSkillDescriptors(descs []skills.SkillDescriptor, modes map[string]s
 	return out
 }
 
-// availableAgentDescriptors filters the discovered subagent catalog down to
-// the agents implicit discovery (the "Available Subagents" roster) may
-// render: auto-mode entries and names absent from the modes map. Manual
-// agents stay resolvable for explicit /-mentions but are hidden from the
-// roster; disabled agents are gone entirely. A nil/empty modes map returns
-// the input unchanged.
+// availableAgentDescriptors filters the discovered subagent catalog to implicit
+// roster visibility — auto or absent only. See specs/domains/capabilities.md (subagents).
 func availableAgentDescriptors(descs []sdkagents.AgentDescriptor, modes map[string]string) []sdkagents.AgentDescriptor {
 	if len(modes) == 0 || len(descs) == 0 {
 		return descs
@@ -115,11 +90,8 @@ func availableAgentDescriptors(descs []sdkagents.AgentDescriptor, modes map[stri
 	return out
 }
 
-// implicitCapabilityName reports whether a capability name may enter through
-// IMPLICIT discovery given the task's flat mode snapshot: auto (or absent
-// from the map) yes; manual and disabled no. Explicit mentions follow a
-// different rule (see mentionedCapabilityNames): manual passes, only
-// disabled is refused.
+// implicitCapabilityName: auto (or absent) passes implicit discovery; manual
+// and disabled do not (mentions differ — manual passes, disabled refused).
 func implicitCapabilityName(name string, modes map[string]string) bool {
 	switch modes[name] {
 	case mcpModeManual, mcpModeDisabled:
@@ -128,12 +100,8 @@ func implicitCapabilityName(name string, modes map[string]string) bool {
 	return true
 }
 
-// implicitSkillNames filters routing-derived skill names through the
-// implicit-discovery rule: manual and disabled entries are dropped, auto
-// (and absent-from-map) names pass. Used on router-matched names (a
-// belt-and-braces pass over the already-filtered catalog) and on a RESTORED
-// routing decision, whose matched list may predate a capability change. A
-// nil/empty modes map returns the input unchanged.
+// implicitSkillNames applies the implicit-discovery rule to routing-derived names
+// (router matches + RESTORED routing decisions). See specs/domains/capabilities.md (skills).
 func implicitSkillNames(names []string, modes map[string]string) []string {
 	if len(modes) == 0 || len(names) == 0 {
 		return names
@@ -147,11 +115,8 @@ func implicitSkillNames(names []string, modes map[string]string) []string {
 	return out
 }
 
-// mentionedCapabilityNames filters explicitly-mentioned capability names for
-// a task: auto and manual pass (a manual mention is exactly how a manual
-// capability activates), disabled is dropped — a mention of a disabled
-// capability is ignored, never an error and never an activation. A
-// nil/empty modes map returns the input unchanged.
+// mentionedCapabilityNames filters explicitly-mentioned names: auto and manual
+// pass, disabled is dropped (never an activation). See specs/domains/capabilities.md.
 func mentionedCapabilityNames(names []string, modes map[string]string) []string {
 	if len(modes) == 0 || len(names) == 0 {
 		return names

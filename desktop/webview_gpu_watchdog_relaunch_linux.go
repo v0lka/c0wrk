@@ -11,12 +11,9 @@ import (
 	"syscall"
 )
 
-// relaunchDetachedSelf spawns the current executable detached from this
-// process's session so the relaunched app survives the quitting instance
-// (same shape as the updater's relaunchApp). The child carries
-// GpuRelaunchWaitEnvVar=1: mainImpl waits for this instance's advisory lock
-// to release before starting up, so the spawn-then-quit ordering below
-// cannot race the fresh instance into the single-instance relay exit.
+// relaunchDetachedSelf spawns the current executable detached (new session)
+// so the relaunched app survives the quitting instance; the child carries
+// GpuRelaunchWaitEnvVar=1 (specs/domains/webview-gpu-policy.md).
 func relaunchDetachedSelf(logger *slog.Logger) error {
 	exe, err := os.Executable()
 	if err != nil {
@@ -24,9 +21,8 @@ func relaunchDetachedSelf(logger *slog.Logger) error {
 	}
 	cmd := exec.CommandContext(context.Background(), exe)
 	cmd.Env = append(os.Environ(), GpuRelaunchWaitEnvVar+"=1")
-	// Detach so the relaunched app survives this process's exit; stdio stays
-	// unconnected — the child's crashlog.Install re-captures fd 1/2 into a
-	// fresh stderr.log of its own.
+	// Stdio stays unconnected: the child's crashlog.Install re-captures fd 1/2
+	// into a fresh stderr.log of its own.
 	cmd.Stdin = nil
 	cmd.Stdout = nil
 	cmd.Stderr = nil

@@ -17,13 +17,12 @@ import (
 	"github.com/v0lka/sp4rk/orchestration"
 )
 
-// TaskStoreAdapter adapts a TaskStore to the core.TaskPersistence interface.
-// It handles JSON serialization of core types for storage.
+// Adapts a TaskStore to core.TaskPersistence, handling JSON serialization of
+// core types at the boundary. See specs/contracts/backend-core.md.
 type TaskStoreAdapter struct {
 	store TaskStore
 }
 
-// NewTaskStoreAdapter creates a new adapter wrapping the given TaskStore.
 func NewTaskStoreAdapter(store TaskStore) *TaskStoreAdapter {
 	return &TaskStoreAdapter{store: store}
 }
@@ -31,22 +30,16 @@ func NewTaskStoreAdapter(store TaskStore) *TaskStoreAdapter {
 // compile-time check
 var _ core.TaskPersistence = (*TaskStoreAdapter)(nil)
 
-// storeCallTimeout bounds every TaskStoreAdapter store call. The
-// core.TaskPersistence interface predates context threading — its methods
-// take no ctx, so the adapter cannot forward a caller's deadline — and all
-// its store calls share the app's single SQLite pool with every active
-// session's writes. Without a bound, database/sql waits for a free pooled
-// connection with NO deadline, so one saturated pool parks the synchronous
-// terminal finalizers (CompleteTask/FailTask/CancelTask run directly on the
-// caller's goroutine via persistSynchronously) and the task UI stays
-// "running" forever. The same bound the restore head-reads use turns
-// contention into a prompt, retryable error instead.
+// BOUNDS EVERY adapter store call: core.TaskPersistence predates context
+// threading (no ctx to forward) and all calls share the app's single SQLite
+// pool — an unbounded pool-wait would park the synchronous terminal
+// finalizers and the task UI would stay "running" forever. Same bound as
+// the restore head-reads: contention becomes a prompt, retryable error.
+// See specs/contracts/backend-core.md (TaskStoreAdapter store-call deadline).
 const storeCallTimeout = restoreDBReadTimeout
 
-// boundedStoreCtx returns a deadline-bounded context for one adapter store
-// call. Call it per call site and `defer cancel()` — the calls are
-// synchronous, so the cancel releases the context's timer as soon as the
-// store call returns.
+// Deadline-bounded context for one adapter store call; call per call site
+// with `defer cancel()` (the calls are synchronous).
 func boundedStoreCtx() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), storeCallTimeout)
 }
@@ -56,7 +49,6 @@ var (
 	emptyJSONArray  = json.RawMessage("[]")
 )
 
-// PersistNewTask creates a new task record with status "in_progress".
 func (a *TaskStoreAdapter) PersistNewTask(taskID, sessionID, originalRequest string) error {
 	ctx, cancel := boundedStoreCtx()
 	defer cancel()
@@ -82,7 +74,6 @@ func (a *TaskStoreAdapter) LoadMCPMentions(ctx context.Context, taskID string) (
 	return a.store.LoadMCPMentions(ctx, taskID)
 }
 
-// PersistPlan JSON-marshals the plan and updates the task record.
 func (a *TaskStoreAdapter) PersistPlan(taskID string, plan *orchestration.Plan) error {
 	data, err := json.Marshal(plan)
 	if err != nil {
@@ -93,7 +84,6 @@ func (a *TaskStoreAdapter) PersistPlan(taskID string, plan *orchestration.Plan) 
 	return a.store.UpdateTaskPlan(ctx, taskID, data)
 }
 
-// PersistRouting JSON-marshals the routing decision and updates the task record.
 func (a *TaskStoreAdapter) PersistRouting(taskID string, routing *router.RoutingDecision) error {
 	data, err := json.Marshal(routing)
 	if err != nil {
@@ -104,7 +94,6 @@ func (a *TaskStoreAdapter) PersistRouting(taskID string, routing *router.Routing
 	return a.store.UpdateTaskRouting(ctx, taskID, data)
 }
 
-// PersistStepResult creates a TaskStepRecord with JSON-marshaled steps.
 func (a *TaskStoreAdapter) PersistStepResult(taskID, stepID, summary, fullOutput, errorText string, steps []agent.Step) error {
 	stepsData, err := json.Marshal(steps)
 	if err != nil {
@@ -123,7 +112,6 @@ func (a *TaskStoreAdapter) PersistStepResult(taskID, stepID, summary, fullOutput
 	})
 }
 
-// PersistReflection JSON-marshals the reflection and appends it to the task record.
 func (a *TaskStoreAdapter) PersistReflection(taskID string, r orchestration.Reflection) error {
 	data, err := json.Marshal(r)
 	if err != nil {
@@ -134,21 +122,18 @@ func (a *TaskStoreAdapter) PersistReflection(taskID string, r orchestration.Refl
 	return a.store.AddTaskReflection(ctx, taskID, data)
 }
 
-// PersistCompletion marks the task as completed.
 func (a *TaskStoreAdapter) PersistCompletion(taskID, finalOutput string, attemptCount int) error {
 	ctx, cancel := boundedStoreCtx()
 	defer cancel()
 	return a.store.CompleteTask(ctx, taskID, finalOutput, attemptCount)
 }
 
-// PersistFailure marks the task as failed.
 func (a *TaskStoreAdapter) PersistFailure(taskID string) error {
 	ctx, cancel := boundedStoreCtx()
 	defer cancel()
 	return a.store.FailTask(ctx, taskID)
 }
 
-// PersistCancellation marks the task as cancelled.
 func (a *TaskStoreAdapter) PersistCancellation(taskID string) error {
 	ctx, cancel := boundedStoreCtx()
 	defer cancel()
@@ -163,14 +148,12 @@ func (a *TaskStoreAdapter) PersistPause(taskID string) error {
 	return a.store.PauseTask(ctx, taskID)
 }
 
-// ReactivateTask reactivates a completed task back to in_progress.
 func (a *TaskStoreAdapter) ReactivateTask(taskID string) error {
 	ctx, cancel := boundedStoreCtx()
 	defer cancel()
 	return a.store.ReactivateTask(ctx, taskID)
 }
 
-// PersistFacts JSON-marshals facts and stores them for a task.
 func (a *TaskStoreAdapter) PersistFacts(taskID string, facts []orchestration.Fact) error {
 	data, err := json.Marshal(facts)
 	if err != nil {
@@ -181,7 +164,6 @@ func (a *TaskStoreAdapter) PersistFacts(taskID string, facts []orchestration.Fac
 	return a.store.SaveFacts(ctx, taskID, data)
 }
 
-// PersistAttachments JSON-marshals attachments and stores them for a task.
 func (a *TaskStoreAdapter) PersistAttachments(taskID string, attachments []orchestration.Attachment) error {
 	data, err := json.Marshal(attachments)
 	if err != nil {
@@ -192,8 +174,6 @@ func (a *TaskStoreAdapter) PersistAttachments(taskID string, attachments []orche
 	return a.store.SaveAttachments(ctx, taskID, data)
 }
 
-// SaveTrajectory JSON-marshals the full Conductor step trajectory and stores it
-// for a task, inserting or replacing any previously persisted trajectory.
 func (a *TaskStoreAdapter) SaveTrajectory(taskID string, steps []agent.Step) error {
 	data, err := json.Marshal(steps)
 	if err != nil {
@@ -204,8 +184,7 @@ func (a *TaskStoreAdapter) SaveTrajectory(taskID string, steps []agent.Step) err
 	return a.store.SaveTrajectory(ctx, taskID, data)
 }
 
-// LoadTrajectory loads the Conductor step trajectory for a task and unmarshals
-// it into []agent.Step. Returns nil, nil when no trajectory has been persisted.
+// Returns nil, nil when no trajectory has been persisted.
 func (a *TaskStoreAdapter) LoadTrajectory(taskID string) ([]agent.Step, error) {
 	ctx, cancel := boundedStoreCtx()
 	defer cancel()
@@ -223,8 +202,6 @@ func (a *TaskStoreAdapter) LoadTrajectory(taskID string) ([]agent.Step, error) {
 	return steps, nil
 }
 
-// PersistGoalState JSON-marshals the goal-loop state and stores it for a task,
-// inserting or replacing any previously persisted goal state.
 func (a *TaskStoreAdapter) PersistGoalState(taskID string, gs *goal.GoalState) error {
 	data, err := json.Marshal(gs)
 	if err != nil {
@@ -235,8 +212,7 @@ func (a *TaskStoreAdapter) PersistGoalState(taskID string, gs *goal.GoalState) e
 	return a.store.SaveGoalState(ctx, taskID, data)
 }
 
-// LoadGoalState loads the goal-loop state for a task and unmarshals it into a
-// *goal.GoalState. Returns nil, nil when no goal state has been persisted.
+// Returns nil, nil when no goal state has been persisted (non-goal tasks).
 func (a *TaskStoreAdapter) LoadGoalState(taskID string) (*goal.GoalState, error) {
 	ctx, cancel := boundedStoreCtx()
 	defer cancel()
@@ -254,10 +230,8 @@ func (a *TaskStoreAdapter) LoadGoalState(taskID string) (*goal.GoalState, error)
 	return &gs, nil
 }
 
-// PersistE2SState JSON-marshals the E2S execution state (Σ + bookkeeping) and
-// stores it for a task, inserting or replacing any previously persisted state.
-// Called after every applied state patch so an interrupted run checkpoints its
-// Σ and survives app restart.
+// Called after every applied state patch so an interrupted run checkpoints
+// its Σ and survives app restart.
 func (a *TaskStoreAdapter) PersistE2SState(taskID string, st *e2s.E2SState) error {
 	data, err := json.Marshal(st)
 	if err != nil {
@@ -268,9 +242,7 @@ func (a *TaskStoreAdapter) PersistE2SState(taskID string, st *e2s.E2SState) erro
 	return a.store.SaveE2SState(ctx, taskID, data)
 }
 
-// LoadE2SState loads the E2S execution state for a task and unmarshals it into
-// an *e2s.E2SState. Returns nil, nil when no E2S state has been persisted
-// (non-E2S tasks).
+// Returns nil, nil when no E2S state has been persisted (non-E2S tasks).
 func (a *TaskStoreAdapter) LoadE2SState(taskID string) (*e2s.E2SState, error) {
 	ctx, cancel := boundedStoreCtx()
 	defer cancel()
@@ -288,9 +260,7 @@ func (a *TaskStoreAdapter) LoadE2SState(taskID string) (*e2s.E2SState, error) {
 	return &st, nil
 }
 
-// PersistDelegationSpec JSON-marshals the delegation spec (task text, tools,
-// agent profile, mode, deps, parent/depth) and stores it for a task so a
-// paused delegation can be rebuilt and resumed by the system.
+// Stored so a paused delegation can be rebuilt and resumed by the system.
 func (a *TaskStoreAdapter) PersistDelegationSpec(taskID string, spec tools.DelegationSpec) error {
 	data, err := json.Marshal(spec)
 	if err != nil {
@@ -308,8 +278,7 @@ func (a *TaskStoreAdapter) PersistDelegationSpec(taskID string, spec tools.Deleg
 	})
 }
 
-// LoadDelegationSpecs loads the delegation specs for a task and unmarshals
-// them into []tools.DelegationSpec. Returns nil, nil when none are persisted.
+// Returns nil, nil when none are persisted.
 func (a *TaskStoreAdapter) LoadDelegationSpecs(taskID string) ([]tools.DelegationSpec, error) {
 	ctx, cancel := boundedStoreCtx()
 	defer cancel()
@@ -331,9 +300,8 @@ func (a *TaskStoreAdapter) LoadDelegationSpecs(taskID string) ([]tools.Delegatio
 	return specs, nil
 }
 
-// LoadTaskState loads a task and its steps from the store, deserializes JSON back
-// to core types, and returns a populated *core.TaskState.
-// Returns nil, nil if the task is not found.
+// Rebuilds a populated *core.TaskState from the store; nil, nil when the
+// task is not found.
 func (a *TaskStoreAdapter) LoadTaskState(taskID string) (*core.TaskState, error) {
 	ctx, cancel := boundedStoreCtx()
 	defer cancel()
@@ -353,7 +321,6 @@ func (a *TaskStoreAdapter) LoadTaskState(taskID string) (*core.TaskState, error)
 		Status:          rec.Status,
 	}
 
-	// Unmarshal routing decision
 	if len(rec.RoutingDecision) > 0 && string(rec.RoutingDecision) != "{}" {
 		var routing router.RoutingDecision
 		if err := json.Unmarshal(rec.RoutingDecision, &routing); err != nil {
@@ -362,7 +329,6 @@ func (a *TaskStoreAdapter) LoadTaskState(taskID string) (*core.TaskState, error)
 		state.RoutingDecision = &routing
 	}
 
-	// Unmarshal plan
 	if len(rec.Plan) > 0 && string(rec.Plan) != "{}" {
 		var plan orchestration.Plan
 		if err := json.Unmarshal(rec.Plan, &plan); err != nil {
@@ -371,14 +337,12 @@ func (a *TaskStoreAdapter) LoadTaskState(taskID string) (*core.TaskState, error)
 		state.Plan = &plan
 	}
 
-	// Unmarshal reflections
 	if len(rec.Reflections) > 0 && string(rec.Reflections) != "[]" {
 		if err := json.Unmarshal(rec.Reflections, &state.Reflections); err != nil {
 			return nil, fmt.Errorf("unmarshal reflections: %w", err)
 		}
 	}
 
-	// Load step records
 	ctx2, cancel2 := boundedStoreCtx()
 	defer cancel2()
 	stepRecords, err := a.store.LoadTaskSteps(ctx2, taskID)
@@ -400,7 +364,6 @@ func (a *TaskStoreAdapter) LoadTaskState(taskID string) (*core.TaskState, error)
 			Error:      errVal,
 		}
 
-		// Unmarshal steps
 		if len(sr.Steps) > 0 && string(sr.Steps) != "[]" {
 			if err := json.Unmarshal(sr.Steps, &result.Steps); err != nil {
 				return nil, fmt.Errorf("unmarshal steps for %s: %w", sr.StepID, err)
@@ -410,7 +373,6 @@ func (a *TaskStoreAdapter) LoadTaskState(taskID string) (*core.TaskState, error)
 		state.StepResults[sr.StepID] = result
 	}
 
-	// Load facts
 	ctx3, cancel3 := boundedStoreCtx()
 	defer cancel3()
 	factsJSON, err := a.store.LoadFacts(ctx3, taskID)
@@ -423,7 +385,6 @@ func (a *TaskStoreAdapter) LoadTaskState(taskID string) (*core.TaskState, error)
 		}
 	}
 
-	// Load attachments
 	ctx4, cancel4 := boundedStoreCtx()
 	defer cancel4()
 	attachmentsJSON, err := a.store.LoadAttachments(ctx4, taskID)
@@ -461,8 +422,6 @@ func (a *TaskStoreAdapter) LoadTaskState(taskID string) (*core.TaskState, error)
 	return state, nil
 }
 
-// GetUnfinishedTaskID returns the ID of the most recent in-progress task for the
-// given session, or "" if none exists.
 func (a *TaskStoreAdapter) GetUnfinishedTaskID(sessionID string) (string, error) {
 	ctx, cancel := boundedStoreCtx()
 	defer cancel()
@@ -476,57 +435,45 @@ func (a *TaskStoreAdapter) GetUnfinishedTaskID(sessionID string) (string, error)
 	return rec.ID, nil
 }
 
-// GetLatestTaskID returns the ID of the most recent task for the session,
-// regardless of status, or "" if none exists. Unlike GetUnfinishedTaskID it is
-// status-agnostic, so it still locates a task whose row was flipped to a
-// terminal status (e.g. cancelled/completed) by CancelTask. Used when a caller
-// needs the latest task row regardless of its lifecycle state.
+// Status-agnostic counterpart of GetUnfinishedTaskID: still locates a task
+// whose row was flipped to a terminal status (e.g. by CancelTask).
 func (a *TaskStoreAdapter) GetLatestTaskID(sessionID string) (string, error) {
 	ctx, cancel := boundedStoreCtx()
 	defer cancel()
 	return a.store.GetLatestTaskID(ctx, sessionID)
 }
 
-// ---------------------------------------------------------------------------
-// Durable unit ledger facade (core/units.Store)
-// ---------------------------------------------------------------------------
+// Durable unit ledger facade (core/units.Store).
 
-// unitTaskStore is the optional unit-persistence capability a TaskStore may
-// implement. It is asserted rather than added to the TaskStore interface so
-// stores that predate the unit ledger — and their test doubles — keep
-// compiling unchanged; a store without it simply has no durable unit storage.
+// Optional unit-persistence capability a TaskStore may implement; asserted
+// rather than added to the interface so pre-ledger stores — and their test
+// doubles — keep compiling unchanged.
 type unitTaskStore interface {
 	SaveTaskUnit(ctx context.Context, rec TaskUnitRecord) error
 	LoadTaskUnits(ctx context.Context, taskID string) ([]TaskUnitRecord, error)
 }
 
-// unitStoreFacade adapts a task store's optional unit persistence to the
-// core/units.Store contract — the facade over existing storage that the unit
-// ledger writes through. It reuses the store's SQLite session database (the
-// same connection pool and tasks-table lifecycle as every other task record).
+// Adapts a task store's optional unit persistence to the core/units.Store
+// contract, reusing the store's SQLite session database.
 type unitStoreFacade struct {
 	us unitTaskStore
 }
 
-// SaveUnit persists a unit record (spec + status + steps) for a task.
 func (f *unitStoreFacade) SaveUnit(rec units.UnitRecord) error {
 	ctx, cancel := boundedStoreCtx()
 	defer cancel()
 	return f.us.SaveTaskUnit(ctx, toTaskUnitRecord(rec))
 }
 
-// unitStatusSettler is the optional targeted-status capability a unit task
-// store may implement. When present, the facade settles through a single
-// column-scoped conditional UPDATE (SQLiteSessionStore implements it);
-// otherwise it falls back to a whole-record load-mutate-save, which is correct
-// but — like SaveUnit — can drop a concurrent writer's spec/steps.
+// Optional targeted-status capability: the facade settles through a single
+// column-scoped conditional UPDATE when present; otherwise a whole-record
+// load-mutate-save, correct but able to drop a concurrent writer's spec/steps.
 type unitStatusSettler interface {
 	SettleTaskUnitStatusIfInFlight(ctx context.Context, taskID, namespace, unitID, status string) (bool, error)
 }
 
-// SettleUnitStatusIfInFlight implements units.Store: it transitions a unit's
-// status only while the unit is still in flight (pending/running), touching the
-// status column alone.
+// Transitions a unit's status only while it is still in flight
+// (pending/running), touching the status column alone.
 func (f *unitStoreFacade) SettleUnitStatusIfInFlight(taskID, namespace, id string, status units.UnitStatus) (bool, error) {
 	if ss, ok := f.us.(unitStatusSettler); ok {
 		ctx, cancel := boundedStoreCtx()
@@ -556,7 +503,6 @@ func (f *unitStoreFacade) SettleUnitStatusIfInFlight(taskID, namespace, id strin
 	return false, nil
 }
 
-// LoadUnits returns every unit persisted under a task, across all namespaces.
 func (f *unitStoreFacade) LoadUnits(taskID string) ([]units.UnitRecord, error) {
 	ctx, cancel := boundedStoreCtx()
 	defer cancel()
@@ -571,12 +517,10 @@ func (f *unitStoreFacade) LoadUnits(taskID string) ([]units.UnitRecord, error) {
 	return out, nil
 }
 
-// UnitStore returns the durable unit store backing this task store, or nil
-// when the underlying store does not provide unit persistence. The nil return
-// is the graceful-degradation signal: a core/units ledger built on it falls
-// back to best-effort in-memory operation. This is the ISOLATED-context entry
-// point — an isolated executor (e.g. the goal verifier) wraps its task store
-// with NewTaskStoreAdapter and calls this to obtain a store for units.NewLedger.
+// The durable unit store backing this task store, or nil when the store
+// has no unit persistence (graceful degradation — a ledger built on nil
+// falls back to best-effort in-memory). The ISOLATED-context entry point
+// (the goal verifier). See specs/decisions/048-unified-recovery-ledger.md.
 func (a *TaskStoreAdapter) UnitStore() units.Store {
 	if us, ok := a.store.(unitTaskStore); ok {
 		return &unitStoreFacade{us: us}
@@ -584,7 +528,6 @@ func (a *TaskStoreAdapter) UnitStore() units.Store {
 	return nil
 }
 
-// toTaskUnitRecord maps a core/units record onto its persisted form.
 func toTaskUnitRecord(rec units.UnitRecord) TaskUnitRecord {
 	return TaskUnitRecord{
 		TaskID:    rec.TaskID,
@@ -601,7 +544,6 @@ func toTaskUnitRecord(rec units.UnitRecord) TaskUnitRecord {
 	}
 }
 
-// fromTaskUnitRecord maps a persisted unit back onto its core/units form.
 func fromTaskUnitRecord(rec TaskUnitRecord) units.UnitRecord {
 	return units.UnitRecord{
 		ID:        rec.UnitID,

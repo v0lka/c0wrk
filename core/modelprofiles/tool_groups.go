@@ -1,15 +1,8 @@
 package modelprofiles
 
-// ToolGroupDef describes a functional cluster of orchestration tools offered by
-// the always-present picker (settings UI). The picker presents the cluster as a
-// single entry that pins every member at once, so a workflow is never added
-// only in part — e.g. the plan-step tool without the plan-declaration tool.
-// (Individual members can still be removed one chip at a time afterwards; the
-// guarantee is about how a cluster is added.)
-//
-// The catalog is static data (no registry access); every member name is a
-// built-in tool the backend validates against the live registry before the
-// cluster reaches the UI.
+// ToolGroupDef is one workflow cluster the always-present picker offers as
+// a single entry pinning every member at once; members are validated
+// against the live registry (specs/domains/model-profiles.md).
 type ToolGroupDef struct {
 	// ID is a stable, URL-safe cluster identifier.
 	ID string
@@ -18,24 +11,14 @@ type ToolGroupDef struct {
 	// Description explains the capability the cluster grants the agent; the
 	// picker renders it (alongside the member list) in the entry's tooltip.
 	Description string
-	// Tools are the member tool names, in display order. All members are
-	// listed in the picker's tooltip; selecting the cluster pins each member
-	// that is still selectable.
+	// Tools are the member names in display order; selecting the cluster
+	// pins each still-selectable member.
 	Tools []string
 }
 
-// toolGroupCatalog is the ordered workflow-cluster catalog. It groups only the
-// tools that are useless in isolation — the planning and subagent/reflection
-// workflows — so the picker can offer them atomically. Capability areas whose
-// tools stand alone (files, search, web, memory, shell) are deliberately left
-// ungrouped and offered individually: narrowing a read-only agent to file reads
-// without file writes is a legitimate choice.
-//
-// Goal-mode tools (propose_goal, declare_goal_status, declare_verification) have
-// no cluster and are excluded from the picker universe entirely: they are never
-// narrowable (they are stripped from every non-goal run before the selection
-// runs, and the selection is not applied in goal mode), so a cluster around them
-// would be an inert control. See backend/frontend_api_config.go builtinToolInfos.
+// toolGroupCatalog groups only tools useless in isolation; standalone areas
+// stay ungrouped and goal-mode tools are excluded (never narrowable — a
+// cluster would be inert; specs/domains/model-profiles.md).
 var toolGroupCatalog = []ToolGroupDef{
 	{
 		ID:    "plan",
@@ -56,9 +39,8 @@ var toolGroupCatalog = []ToolGroupDef{
 	},
 }
 
-// ToolGroupCatalog returns the ordered workflow-cluster catalog as a fresh
-// copy, so callers cannot mutate the package-level definitions. The result is
-// freshly allocated (including each Tools slice).
+// ToolGroupCatalog returns a fresh deep copy of the catalog (including each
+// Tools slice).
 func ToolGroupCatalog() []ToolGroupDef {
 	out := make([]ToolGroupDef, 0, len(toolGroupCatalog))
 	for _, g := range toolGroupCatalog {

@@ -14,23 +14,19 @@ import (
 )
 
 // This file is the ONLY place that knows where embedded-LLM bytes live on
-// disk. Every path is derived from a Layout, and a Layout is built from roots
-// handed in by the layer that owns c0wrk's directory layout
-// (backend/config/paths.go RuntimesDir / EmbeddedModelDir, which read the
-// cross-layer constants in core/pathsegments.go). core/embeddedllm cannot
-// import either package — root core imports this package, and backend/config
-// sits above core — so it never re-derives "<agentDir>/runtimes" itself.
-//
-// Containment is delegated to pathutil.IsWithinPath everywhere. There is no
-// strings.HasPrefix / filepath.Rel containment in this subsystem (AGENTS.md
-// path rules).
+// disk: every path is derived from a Layout built from roots the centralized
+// path API resolved (backend/config/paths.go, over core/pathsegments.go
+// constants) — this package cannot import either, so it never re-derives
+// "<agentDir>/runtimes" itself. Containment is delegated to
+// pathutil.IsWithinPath everywhere (AGENTS.md path rules).
+// See specs/domains/embedded-llm.md (Key Files: layout.go).
 
-// Layout-internal names. These are subsystem-private segments (the shape of
-// one installed runtime, the manifest file name); the top-level directory
-// names belong to the centralized path API, not here.
+// Layout-internal names: subsystem-private segments (the shape of one
+// installed runtime, the manifest file name); the top-level directory names
+// belong to the centralized path API, not here.
 const (
-	// ManifestFileName is the durable install record inside the model root.
-	// Startup trusts this file, not the network and not a probe.
+	// ManifestFileName is the durable install record inside the model root;
+	// startup trusts this file, not the network and not a probe.
 	ManifestFileName = "manifest.json"
 
 	// ServerBinaryName is the inference server executable inside a runtime
@@ -41,20 +37,17 @@ const (
 	// "llama-<RuntimeTag>-<backend>".
 	runtimeDirPrefix = "llama-"
 
-	// downloadsDirName is the archive staging area under the runtime root.
-	// Downloaded runtime/cudart archives (and their resumable .part files)
-	// live here until they are extracted; weights are downloaded straight to
-	// their final path because the archive IS the file.
+	// downloadsDirName is the archive staging area under the runtime root:
+	// archives and their resumable .part files live here until extracted;
+	// weights go straight to their final path because the archive IS the file.
 	downloadsDirName = "downloads"
 
-	// stagingSuffix marks a runtime tree that is being (re)built. It is swapped
-	// into place only after every byte is verified and, on macOS, signed and
-	// smoke-tested — the "secure the new bytes before destroying the old"
-	// invariant.
+	// stagingSuffix marks a tree being (re)built — swapped into place only
+	// after every byte is verified (and on macOS signed and smoke-tested).
 	stagingSuffix = ".staging"
 
-	// retiredSuffix marks the previous runtime tree during the swap, so a
-	// failed rename can be rolled back instead of leaving no runtime at all.
+	// retiredSuffix marks the previous tree during the swap, so a failed
+	// rename can be rolled back instead of leaving no runtime at all.
 	retiredSuffix = ".old"
 )
 
@@ -64,10 +57,9 @@ const (
 var ErrLayoutInvalid = errors.New("invalid embedded-LLM storage layout")
 
 // Layout is the on-disk footprint of the embedded-LLM subsystem: a runtime
-// root holding one "llama-<tag>-<backend>" tree per provisioned backend, and
-// a model root holding the GGUF weights plus manifest.json.
-//
-// The zero value is invalid; build one with NewLayout.
+// root (one "llama-<tag>-<backend>" tree per provisioned backend, plus the
+// mtplx engine tree) and model roots holding the GGUF weights plus
+// manifest.json. The zero value is invalid; build one with NewLayout.
 //
 // Nothing here is ever placed under the tool-manager's <toolsDir>/bin: that
 // directory is prepended to the agent's PATH by Manager.PrependToPATH(), which
@@ -78,11 +70,9 @@ type Layout struct {
 	RuntimesRoot string
 	// ModelRoot is <agentDir>/models/bonsai-2-27b — config.EmbeddedModelDir.
 	ModelRoot string
-	// MLXModelRoot is <agentDir>/models/bonsai-2-27b-mlx —
-	// config.EmbeddedMLXModelDir: the mtplx engine's weight pack lives here,
-	// in its own tree, because the two engines' weights are different bytes
-	// for the same model and a scoped removal must be able to take one
-	// without the other.
+	// MLXModelRoot is <agentDir>/models/bonsai-2-27b-mlx — the mtplx weight
+	// pack's own tree, because the two engines' weights are different bytes
+	// for the same model and a scoped removal must take one without the other.
 	MLXModelRoot string
 }
 
@@ -134,13 +124,11 @@ func RuntimeDirName(backend Backend) string {
 // "mtplx-<MTPLXVersion>".
 const mlxRuntimePrefix = "mtplx-"
 
-// MLXRuntimeDirName is the directory name of one provisioned mtplx runtime.
-// Like the llama name it changes with the pin, so a bump never reuses a stale
-// tree. The tree is RELOCATABLE plain files (a pinned CPython, the wheels
-// installed into it, and the pack pointer) — there is no llama-style
-// staging/retire swap, because the engine has no binary whose replacement
-// races a resident process: the step-0 stop guarantees nothing executes from
-// the tree while a rebuild replaces it (ADR-092 records the deviation).
+// MLXRuntimeDirName is the directory name of one provisioned mtplx runtime;
+// like the llama name it changes with the pin, so a bump never reuses a stale
+// tree. The tree is RELOCATABLE plain files — no llama-style staging/retire
+// swap, because nothing executes from it while a rebuild replaces it (the
+// step-0 stop; ADR-092 records the deviation).
 func MLXRuntimeDirName() string {
 	return mlxRuntimePrefix + MTPLXVersion
 }
@@ -240,12 +228,10 @@ func (l Layout) ManifestPath() (string, error) {
 
 // Destination is the on-disk path one asset is fetched to — its FINAL layout
 // path (the mtplx pack stages elsewhere and swaps in whole; fetchOneTo takes
-// an explicit destination).
-//
-// Weights (model, mmproj) are downloaded straight to their final path inside
-// the model root: the artifact IS the file, so there is nothing to extract and
-// the Downloader's verify-then-promote already makes the destination atomic.
-// Runtime archives are staged in DownloadsDir and extracted from there.
+// an explicit destination). Weights go straight to their final path in the
+// model root: the artifact IS the file, and the Downloader's
+// verify-then-promote already makes the destination atomic. Runtime archives
+// stage in DownloadsDir and are extracted from there.
 func (l Layout) Destination(asset Asset) (string, error) {
 	switch asset.Component {
 	case ComponentModel, ComponentMMProj:
@@ -277,11 +263,10 @@ func (l Layout) ModelFile(packing Packing) (string, error) {
 	return l.safeJoin(l.ModelRoot, asset.ArchiveName)
 }
 
-// Owns reports whether p lies inside one of the two embedded-LLM trees. It is
-// the guard every destructive operation goes through: Remove deletes a path
-// only when Owns accepts it, so no code path in this subsystem can delete
-// anything outside the layout — in particular never the flat embedding-model
-// files that share <agentDir>/models, and never anything under <toolsDir>/bin.
+// Owns reports whether p lies inside one of the embedded-LLM trees — the guard
+// every destructive operation goes through, so no code path in this subsystem
+// can delete anything outside the layout: never the flat embedding-model files
+// sharing <agentDir>/models, never anything under <toolsDir>/bin.
 func (l Layout) Owns(p string) bool {
 	if l.RuntimesRoot == "" || l.ModelRoot == "" || l.MLXModelRoot == "" || p == "" {
 		return false
@@ -298,17 +283,12 @@ func (l Layout) Owns(p string) bool {
 	return false
 }
 
-// OwnsModel reports whether p lies inside the MODEL root — the weights tree the
-// install writes the GGUFs and manifest.json into.
-//
-// It is the containment check a launch applies to the recorded model file before
-// that path becomes the `-m` argv element. The manifest is an ordinary file in
-// the agent's own directory, so without this a tampered record could point the
-// launch at an arbitrary GGUF and have it served under the pinned model's
-// trusted identity — a model swap the provider name and the install-time digests
-// both claim cannot happen. The binary half of the identity already has the
-// equivalent discipline (ServerBinaryPath walks the runtime tree); this is the
-// weights half.
+// OwnsModel reports whether p lies inside the MODEL root — the containment
+// check a launch applies to the recorded model file before it becomes the
+// `-m` argv element: without it a tampered install record could point the
+// launch at an arbitrary GGUF served under the pinned model's trusted
+// identity (the binary half has the equivalent discipline in ServerBinaryPath).
+// See specs/domains/embedded-llm.md (Load / serve / unload).
 func (l Layout) OwnsModel(p string) bool {
 	if l.ModelRoot == "" || p == "" {
 		return false
@@ -352,9 +332,9 @@ func (l Layout) EnsureRoots() error {
 	// effect (review fix): MkdirAllReal resolves pre-existing links by
 	// contract — an operator-symlinked agent dir must keep working — but the
 	// roots carry multi-gigabyte install writes and the matching Remove
-	// deletions, so a link planted AT a root, or at the shared models
-	// parent, must stop here, before scaffolding lands in its target. A
-	// missing component is fine (created below); a symlinked one is not.
+	// deletions, so a link planted AT a root, or at the shared models parent,
+	// must stop here, before scaffolding lands in its target. A missing
+	// component is fine (created below); a symlinked one is not.
 	for _, dir := range []string{l.RuntimesRoot, filepath.Dir(l.ModelRoot), l.ModelRoot,
 		filepath.Dir(l.MLXModelRoot), l.MLXModelRoot, downloads} {
 		rel, rerr := filepath.Rel(filepath.Dir(dir), dir)
@@ -407,12 +387,10 @@ func (l Layout) safeJoin(root, name string) (string, error) {
 	return joined, nil
 }
 
-// ServerBinaryPath locates the llama-server executable inside an installed
-// runtime tree. The pinned archives nest it (build/bin/llama-server) rather
-// than putting it at the root, and the depth differs per platform, so it is
-// found by a deterministic lexical walk instead of a hard-coded join.
-//
-// goos selects the ".exe" suffix; an empty goos means the host.
+// ServerBinaryPath locates llama-server inside an installed runtime tree by a
+// deterministic lexical walk — the pinned archives nest it (build/bin) at a
+// platform-dependent depth, so no hard-coded join. goos selects the ".exe"
+// suffix; an empty goos means the host.
 func ServerBinaryPath(runtimeDir, goos string) (string, error) {
 	if goos == "" {
 		goos = runtime.GOOS

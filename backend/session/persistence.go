@@ -34,18 +34,13 @@ type SessionInfo struct {
 	Model             string            `json:"model"`
 	Family            string            `json:"family"`
 	FillPercent       float64           `json:"fill_percent"`
-	// HasUnfinishedTask is true when the session has an in-progress, paused,
-	// or failed task. GetUnfinishedTask defines the authoritative status list
-	// that the correlated subqueries below must mirror. Such sessions cannot
-	// be forked (the fork would duplicate a half-completed execution state).
-	// Populated via a correlated subquery.
+	// HasUnfinishedTask marks a session with an in-progress/paused/failed
+	// task (the fork guard); UnfinishedTaskStatus carries which one for the
+	// UI. GetUnfinishedTask defines the authoritative status list the SQL
+	// subqueries must mirror. See specs/domains/session-lifecycle.md.
 	HasUnfinishedTask bool `json:"has_unfinished_task"`
-	// UnfinishedTaskStatus is the status ('in_progress', 'paused', or
-	// 'failed') of the session's most recent unfinished task, or "" when the
-	// session has none. It mirrors the same status list as HasUnfinishedTask,
-	// letting the UI distinguish a failed task from a running or paused one,
-	// including after an app restart. Only the session list queries populate
-	// it; other readers (LoadSession, in-memory fallbacks) leave it "".
+	// UnfinishedTaskStatus is filled only by the session list queries; other
+	// readers leave it "".
 	UnfinishedTaskStatus string `json:"unfinished_task_status"`
 }
 
@@ -86,13 +81,9 @@ type SessionBookmark struct {
 type SessionStore interface {
 	// Session CRUD
 	SaveSession(ctx context.Context, info SessionInfo) error
-	// BindSessionWorkspace writes the execution-workspace binding of a session
-	// that is still FRESH — the single sanctioned binding mutation. The
-	// freshness guard (no transcript rows, no task rows) is part of the
-	// UPDATE's WHERE, so the check and the write are one atomic statement;
-	// a guard refusal fails with ErrSessionNotFresh (a missing session fails
-	// with a not-found error). The session-lifecycle owner provisions the
-	// managed tree first and passes the full binding.
+	// BindSessionWorkspace is the single sanctioned binding mutation for a
+	// FRESH session; the freshness guard is atomic in the UPDATE's WHERE
+	// (refusal: ErrSessionNotFresh). See specs/domains/session-lifecycle.md.
 	BindSessionWorkspace(ctx context.Context, sessionID, projectID string, binding *WorkspaceBinding) error
 	LoadSession(ctx context.Context, id string) (*SessionInfo, error)
 	ListSessions(ctx context.Context) ([]SessionInfo, error)
@@ -110,28 +101,18 @@ type SessionStore interface {
 
 	// Message operations
 	SaveMessage(ctx context.Context, msg ChatMessage) error
-	// ReplaceStepTodoUpdate persists a step_todo_update checklist message with
-	// replace semantics: every existing step_todo_update row for the same
-	// (session, step_id) is deleted and msg is inserted as a fresh row. Exactly
-	// one checklist row per step therefore survives, taking the latest update's
-	// position in the stream (new id / created_at) instead of being pinned to the
-	// first one — matching the frontend's chatStore.upsertChecklistMessage, which
-	// drops the stale row and appends the new one. Growth stays bounded at one
-	// row per step (the Conductor emits an update after every tool call).
+	// ReplaceStepTodoUpdate persists a step_todo_update message with replace
+	// semantics (one row per (session, step_id)). See
+	// specs/domains/session-lifecycle.md.
 	ReplaceStepTodoUpdate(ctx context.Context, sessionID, stepID string, msg ChatMessage) error
 	LoadMessages(ctx context.Context, sessionID string) ([]ChatMessage, error)
-	// LoadSessionHistory returns the session's full content history in
-	// ascending (created_at, id) order — every persisted row except the
-	// non-content activity roles (thinking, step_done) that the chat never
-	// renders (frontend groupMessages drops both). There is no pagination:
-	// the caller loads the whole session in one call.
+	// LoadSessionHistory returns the full content history in one unpaginated
+	// call. See specs/domains/session-lifecycle.md.
 	LoadSessionHistory(ctx context.Context, sessionID string) (messages []ChatMessage, err error)
 	DeleteMessages(ctx context.Context, sessionID string) error
-	// ResolvePendingMessage patches the metadata of the most recent message
-	// with the given role whose metadata[matchField] == matchValue, merging
-	// the extra fields. Used to mark HITL messages (tool_confirm, ask_user,
-	// step_limit, plan_review) as resolved after the user responds, so they
-	// don't reappear as pending on session reload.
+	// ResolvePendingMessage marks a HITL message resolved by patching its
+	// metadata (most recent match wins). See
+	// specs/domains/session-lifecycle.md.
 	ResolvePendingMessage(ctx context.Context, sessionID, role, matchField, matchValue string, extra map[string]any) error
 
 	// Terminal command history
@@ -474,18 +455,11 @@ func (s *SQLiteSessionStore) createTables() error {
 	}
 
 	// Migration: normalize session_messages.created_at to UTC (Z-suffixed
-	// RFC3339). LoadMessages orders by lexicographic TEXT comparison of
-	// created_at, which only matches chronological order when every writer
-	// stores the same format. SendMessage historically persisted user
-	// messages with a LOCAL-time RFC3339 string (e.g. "...T15:30:00+03:00"
-	// in MSK) while every other writer stored UTC "Z" strings — so in any
-	// timezone east of UTC every user row sorted after all other rows of the
-	// same chat, rendering ALL user messages at the end of the history on
-	// reload (the corrupted order is persisted, so a restart did not help).
-	// strftime understands both offset-suffixed and Z-suffixed inputs and
-	// emits normalized UTC, healing legacy rows in place. Rows already in
-	// canonical form (or unparseable — strftime returns NULL) are left
-	// untouched, making the UPDATE idempotent and safe to run on every start.
+	// RFC3339). Ordering is lexicographic TEXT, so SendMessage's historic
+	// LOCAL-time RFC3339 user rows sorted after every other row of the same
+	// chat in east-of-UTC timezones (persisted corruption — restart did not
+	// help). strftime parses both forms and emits UTC, healing rows in place;
+	// canonical or unparseable rows are left untouched, so this is idempotent.
 	if _, err := s.db.ExecContext(context.Background(), `
 		UPDATE session_messages
 		SET created_at = strftime('%Y-%m-%dT%H:%M:%SZ', created_at)
@@ -589,15 +563,11 @@ func (s *SQLiteSessionStore) LoadSession(ctx context.Context, id string) (*Sessi
 	return &info, nil
 }
 
-// sessionEffectiveActivitySQL is the shared effective-activity expression used
-// by the session list queries: the timestamp of the session's most recent
-// persisted event (a chat message or a terminal command), falling back to the
-// stored sessions.last_active_at, then to sessions.created_at. The two inner
-// SELECTs are scalar subqueries (exactly one row each, NULL when the session
-// has no such events); the outer aggregate MAX ignores NULLs — unlike SQLite's
-// scalar max(a, b), which returns NULL when any argument is NULL. All timestamp
-// writers store UTC (Z-suffixed) RFC3339, so the lexicographic string
-// comparison used here and in ORDER BY matches chronological order.
+// sessionEffectiveActivitySQL is the shared effective-activity expression of
+// the session list queries (newest persisted chat message / terminal command,
+// falling back to last_active_at, then created_at). The outer aggregate MAX is
+// required because SQLite's scalar max(a, b) returns NULL when any argument is
+// NULL. See specs/domains/session-lifecycle.md (§ Session Activity Semantics).
 const sessionEffectiveActivitySQL = `COALESCE(
 			(SELECT MAX(ts) FROM (
 				SELECT MAX(sm.created_at) AS ts FROM session_messages sm WHERE sm.session_id = sessions.id
@@ -613,21 +583,15 @@ const sessionEffectiveActivitySQL = `COALESCE(
 // id ASC so equal timestamps always yield the same order.
 const sessionListOrderSQL = `ORDER BY pinned DESC, effective_activity DESC, created_at DESC, id ASC`
 
-// unfinishedTaskStatusSQL is the scalar companion to the HasUnfinishedTask
-// EXISTS-probe in the session list queries: it yields the status of the
-// session's most recent unfinished task (in_progress, paused, or failed —
-// the same list GetUnfinishedTask matches), or the empty string when the
-// session has none. COALESCE is required because a scalar subquery over zero
-// rows evaluates to NULL, which cannot be scanned into a Go string.
+// unfinishedTaskStatusSQL is the scalar companion of the HasUnfinishedTask
+// EXISTS-probe: the latest unfinished task's status, or "" when none.
+// COALESCE is required — a scalar subquery over zero rows yields NULL, which
+// cannot be scanned into a Go string.
 const unfinishedTaskStatusSQL = `COALESCE((SELECT tasks.status FROM tasks WHERE tasks.session_id = sessions.id AND tasks.status IN ('in_progress', 'paused', 'failed') ORDER BY tasks.created_at DESC LIMIT 1), '')`
 
 // ListSessions returns all sessions ordered by effective activity (newest
-// first). Effective activity is the timestamp of the session's most recent
-// persisted event (chat message or terminal command), not merely the last
-// SendMessage time; when a session has no events it falls back to the stored
-// last_active_at, then to created_at. The stored last_active_at column and the
-// write path are untouched — SessionInfo.LastActiveAt carries the computed
-// value.
+// first); SessionInfo.LastActiveAt carries the computed value and the stored
+// column is untouched. See specs/domains/session-lifecycle.md.
 func (s *SQLiteSessionStore) ListSessions(ctx context.Context) ([]SessionInfo, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, project_id, name, created_at,
@@ -817,40 +781,19 @@ func (s *SQLiteSessionStore) SaveMessage(ctx context.Context, msg ChatMessage) e
 	return s.insertMessage(ctx, s.db, msg)
 }
 
-// ReplaceStepTodoUpdate persists a step_todo_update checklist message with
-// replace semantics: every existing step_todo_update row for the same
-// (session, step_id) is deleted and msg is then inserted as a new row. Exactly
-// one checklist row per step survives, positioned at the latest update (new id
-// and created_at) rather than pinned to the first update — matching the
-// frontend's chatStore.upsertChecklistMessage, which removes the stale row and
-// appends the new one. The Conductor emits a checklist update after every tool
-// call, so this is what bounds session_messages growth: one row per step.
-//
-// The SELECT, all DELETEs and the INSERT run inside a SINGLE transaction, so
-// the replace is atomic: either the stale rows are replaced by msg or nothing
-// changes. This matters because the delete-then-insert window would otherwise
-// leave a step with no checklist row at all if the INSERT failed (e.g.
-// SQLITE_FULL, SQLITE_BUSY) after the DELETEs had already committed — a silent
-// loss of a persisted UI row. The transaction is opened with BEGIN IMMEDIATE on
-// a pinned connection (mirroring AddTaskReflection) so a deferred→write upgrade
-// under WAL cannot fail with SQLITE_BUSY_SNAPSHOT and drop the row.
-//
-// Matching is done on metadata.step_id in Go (the same approach as
-// ResolvePendingMessage) rather than via SQL json_extract, so it does not depend
-// on the JSON1 extension being compiled into the driver. stepID may be empty for
-// a standalone checklist (Conductor without a plan); all empty-step_id updates
-// then collapse onto a single row.
+// ReplaceStepTodoUpdate persists a step_todo_update message with replace
+// semantics (one row per (session, step_id); atomic single transaction).
+// Matching runs on metadata.step_id in Go (no JSON1 dependency); an empty
+// stepID is a standalone checklist — all such updates collapse onto one row.
+// See specs/domains/session-lifecycle.md.
 func (s *SQLiteSessionStore) ReplaceStepTodoUpdate(ctx context.Context, sessionID, stepID string, msg ChatMessage) error {
-	// BEGIN IMMEDIATE prevents SQLITE_BUSY / SQLITE_BUSY_SNAPSHOT on a
-	// deferred→write upgrade in WAL mode, mirroring AddTaskReflection. A
-	// deferred BEGIN takes only a read snapshot; if another connection commits
-	// before this transaction first writes, that write fails with
-	// SQLITE_BUSY_SNAPSHOT — which busy_timeout does NOT retry — rolling the
-	// whole replace back and silently dropping the checklist row. Concurrent
-	// writers are real (the PersistentBlackboard background persister writes
-	// the same DB on another goroutine). The raw BEGIN/COMMIT is pinned to a
-	// single pooled connection via s.db.Conn so the SELECT, the DELETEs and
-	// the INSERT all run on the connection that holds the write lock.
+	// BEGIN IMMEDIATE prevents SQLITE_BUSY_SNAPSHOT on a deferred→write
+	// upgrade in WAL mode (busy_timeout does NOT retry it): a deferred BEGIN
+	// takes only a read snapshot, and a concurrent commit before the first
+	// write — the PersistentBlackboard persister is a real concurrent writer
+	// — would roll back the replace and drop the row. The raw BEGIN/COMMIT is
+	// pinned to one pooled connection (s.db.Conn) so the whole replace runs
+	// on the lock-holding connection (mirroring AddTaskReflection).
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to acquire step_todo_update connection: %w", err)
@@ -930,12 +873,9 @@ func (s *SQLiteSessionStore) ReplaceStepTodoUpdate(ctx context.Context, sessionI
 	return nil
 }
 
-// LoadMessages loads all messages for a session ordered by creation time. The
-// auto-increment id is a deterministic tiebreaker for same-second inserts:
-// created_at has second granularity (RFC3339), and adjacent rows written within
-// one second — e.g. a compaction marker followed by a resumed task's first
-// row — must keep their insertion order (the marker reseed in Manager is
-// order-sensitive).
+// LoadMessages loads all messages ordered by creation time; the auto-increment
+// id breaks ties for same-second inserts (order matters — e.g. a compaction
+// marker must precede the resumed task's first row).
 func (s *SQLiteSessionStore) LoadMessages(ctx context.Context, sessionID string) ([]ChatMessage, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, session_id, role, content, reasoning_content, tool_calls, metadata, created_at
@@ -990,28 +930,17 @@ func (s *SQLiteSessionStore) LoadMessages(ctx context.Context, sessionID string)
 }
 
 // nonContentMessageRolesSQL lists the persisted roles that never produce a
-// display item (frontend groupMessages: 'thinking' and 'step_done' fall through
-// with no case). The history read path filters them out so a session's payload
-// and frontend store stay bounded by real content rather than per-step activity
-// noise. They are still persisted (the executor emits them every step) — only
-// the read path drops them.
+// display item (frontend groupMessages drops both). They are still persisted
+// — only the read path drops them.
 const nonContentMessageRolesSQL = `('thinking', 'step_done')`
 
-// LoadSessionHistory returns the session's full content history in ascending
-// (created_at, id) order, excluding the non-content activity roles
-// (nonContentMessageRolesSQL). id is the deterministic tiebreaker for
-// same-second rows (created_at has second granularity). Unlike LoadMessages it
-// drops the thinking/step_done noise.
+// LoadSessionHistory returns the session's full content history, excluding
+// the non-content activity roles; id breaks same-second ties.
 //
-// DELIBERATE TRADE-OFF — no numeric bound remains. This is a single
-// unpaginated read: the former paged reader applied a default limit (200) and
-// a max limit (2000), and those limits were intentionally REMOVED, because the
-// FULL row set is required to restore the plan timeline (the plan declaration
-// and every step row must be present on first paint). There is therefore no
-// LIMIT here and no ceiling enforced anywhere on this call path — a
-// pathological session transfers and processes its entire transcript in one
-// call. The bound was dropped on purpose; re-introducing one must preserve
-// timeline restore rather than re-adding a blind LIMIT.
+// DELIBERATE TRADE-OFF — no numeric bound: the former 200/2000 limits were
+// removed because plan-timeline restore needs the FULL row set on first
+// paint. Re-introducing one must preserve timeline restore, not re-add a
+// blind LIMIT. See specs/domains/session-lifecycle.md.
 func (s *SQLiteSessionStore) LoadSessionHistory(ctx context.Context, sessionID string) ([]ChatMessage, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, session_id, role, content, reasoning_content, tool_calls, metadata, created_at
@@ -1067,11 +996,10 @@ func (s *SQLiteSessionStore) DeleteMessages(ctx context.Context, sessionID strin
 	return nil
 }
 
-// ResolvePendingMessage patches the metadata of the most recent message with
-// the given role whose metadata JSON contains matchField==matchValue, merging
-// the extra map into the existing metadata. If no matching message is found,
-// the call is a no-op (not an error) — the message may not have been persisted
-// (e.g. event fired while persister was busy) or may already have been resolved.
+// ResolvePendingMessage patches the metadata of the most recent matching
+// message; a missing match is a no-op, not an error (the message may never
+// have been persisted or may already be resolved). See
+// specs/domains/session-lifecycle.md.
 func (s *SQLiteSessionStore) ResolvePendingMessage(ctx context.Context, sessionID, role, matchField, matchValue string, extra map[string]any) error {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, metadata FROM session_messages
@@ -1109,12 +1037,8 @@ func (s *SQLiteSessionStore) ResolvePendingMessage(ctx context.Context, sessionI
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("error iterating messages: %w", err)
 	}
-	// Release the read cursor before the UPDATE below so it does not keep a
-	// pool connection checked out for the duration of the write. The read and
-	// the write are separate autocommit transactions either way (WAL lets a
-	// writer proceed without blocking readers), but freeing the cursor promptly
-	// keeps connections available under concurrency. The deferred Close below
-	// is an idempotent safety net.
+	// Release the read cursor before the UPDATE so the pool connection is not
+	// held through the write; the deferred Close is an idempotent safety net.
 	if cerr := rows.Close(); cerr != nil {
 		s.log().Warn("failed to close database rows", "error", cerr)
 	}
@@ -1196,10 +1120,9 @@ func (s *SQLiteSessionStore) LoadTerminalCommands(ctx context.Context, sessionID
 	return commands, nil
 }
 
-// SaveSessionWorkDir inserts a session-scoped work directory record. If rec.ID
-// is empty a new UUID is generated; if CreatedAt is empty the current time is
-// used. Inserting a record with an existing ID is an error (upsert is not
-// supported — use UpdateSessionWorkDirDescription to mutate).
+// SaveSessionWorkDir inserts a session-scoped work directory record (UUID and
+// timestamp generated when empty; existing ID is an error — no upsert, mutate
+// via UpdateSessionWorkDirDescription).
 // isUniqueConstraintError reports whether err is a SQLite UNIQUE-constraint
 // violation (extended code SQLITE_CONSTRAINT_UNIQUE = 2067). Used to translate
 // duplicate (owner, path) inserts into project.ErrWorkDirAlreadyExists.
@@ -1288,8 +1211,7 @@ func (s *SQLiteSessionStore) DeleteSessionWorkDir(ctx context.Context, sessionID
 }
 
 // SaveBookmark inserts a chat-event bookmark and returns the persisted record
-// (with generated ID/CreatedAt when the caller left them empty). Returning the
-// record lets callers observe the generated fields without a follow-up read.
+// so callers observe the generated ID/CreatedAt without a follow-up read.
 func (s *SQLiteSessionStore) SaveBookmark(ctx context.Context, b SessionBookmark) (SessionBookmark, error) {
 	if b.ID == "" {
 		b.ID = uuid.New().String()
@@ -1364,25 +1286,18 @@ func (s *SQLiteSessionStore) RenameBookmark(ctx context.Context, sessionID, id, 
 	return nil
 }
 
-// PromptSuggestion rows (core.PromptSuggestion, ADR-088 D7) represent one
-// generated follow-up prompt the chat input can offer after a task finishes
-// with outcome full or partial. Rows hang off their session: deleting the
-// session deletes its suggestions (ON DELETE CASCADE) and a fork does not
-// copy them. This store is the persistence boundary: SQLite keeps kind,
-// status and created_at as TEXT (RFC 3339 for the timestamp), so the save
-// path formats and the list path parses — the in-memory rows the callers
-// see always carry the core types.
+// PromptSuggestion rows (ADR-088 D7) hang off their session (delete cascades;
+// a fork does not copy them). This store is the persistence boundary: SQLite
+// keeps kind/status/created_at as TEXT, so the save path formats and the list
+// path parses — callers always see core types. See
+// specs/domains/prompt-suggestions.md.
 
-// Lifecycle statuses of a prompt suggestion row (ADR-088 D7). active rows are
-// the set the chat input offers; accepted/dismissed are terminal per-row
-// outcomes reported by the frontend; stale marks a set replaced by a fresher
-// generation pass — dead weight removed by the next replace and by the
-// session-delete cascade.
+// Lifecycle statuses of a prompt suggestion row (ADR-088 D7).
 const (
-	SuggestionStatusActive    = "active"
-	SuggestionStatusAccepted  = "accepted"
-	SuggestionStatusDismissed = "dismissed"
-	SuggestionStatusStale     = "stale"
+	SuggestionStatusActive    = "active"    // the set the chat input offers
+	SuggestionStatusAccepted  = "accepted"  // terminal outcome reported by the frontend
+	SuggestionStatusDismissed = "dismissed" // terminal outcome reported by the frontend
+	SuggestionStatusStale     = "stale"     // replaced by a fresher pass; pruned on the next replace
 )
 
 // isValidSuggestionKind reports whether kind is one of the two suggestion
@@ -1392,27 +1307,14 @@ func isValidSuggestionKind(kind core.SuggestionKind) bool {
 }
 
 // SavePromptSuggestions atomically replaces the active suggestion set of one
-// (session, kind) with suggs (ADR-088 D7). Inside a single transaction the
-// stale generation left by the previous replace is deleted, the previous
-// active rows are marked stale and the new rows are inserted as active — so
-// at most one active set per (session, kind) exists at any time and row
-// growth stays bounded at the current plus the previous generation (stale
-// rows are dead weight no reader queries). Terminal accepted/dismissed rows
-// are never touched by a replace.
-//
-// suggs is one generation pass, so every row must carry the same non-empty
-// SessionID and the same valid Kind (SuggestionKindNextTask or
-// SuggestionKindGoalAdvance) and a non-empty Text; an empty set is rejected —
-// a pass that yields nothing simply does not call the store. The per-pass
-// size cap (D7, maxSuggestionsPerPass) is the caller's contract, not the
-// store's. Row IDs are always regenerated and Status forced to active;
-// CreatedAt is normalized to one timestamp for the whole pass — the first
-// row's non-zero value, else now (UTC) — keeping the ListPromptSuggestions
-// order deterministic. The normalized time is persisted as an RFC 3339
-// string; the returned rows carry it as a time.Time.
-//
-// The returned slice holds the rows as persisted (fresh IDs, the pass
-// timestamp, active status), in the given order.
+// (session, kind): the previous stale generation is deleted, the previous
+// active rows are staled, the new rows inserted — at most one active set per
+// (session, kind), and terminal accepted/dismissed rows are never touched.
+// suggs is one generation pass: same non-empty SessionID, one valid Kind,
+// non-empty Texts; an empty set is rejected (the per-pass size cap is the
+// caller's contract). IDs are regenerated, Status forced active, CreatedAt
+// normalized to one pass timestamp; the returned slice holds the rows as
+// persisted. See specs/domains/prompt-suggestions.md.
 func (s *SQLiteSessionStore) SavePromptSuggestions(ctx context.Context, suggs []core.PromptSuggestion) ([]core.PromptSuggestion, error) {
 	if len(suggs) == 0 {
 		return nil, errors.New("prompt suggestion set is empty")
@@ -1460,9 +1362,8 @@ func (s *SQLiteSessionStore) SavePromptSuggestions(ctx context.Context, suggs []
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// Drop the dead stale generation left by the previous replace BEFORE
-	// staling the current active set, so exactly one stale generation — the
-	// one this replace creates — exists per (session, kind).
+	// Drop the previous stale generation BEFORE staling the current set, so
+	// exactly one stale generation exists per (session, kind).
 	if _, err := tx.ExecContext(ctx, `
 		DELETE FROM prompt_suggestions
 		WHERE session_id = ? AND kind = ? AND status = ?`,
@@ -1494,13 +1395,10 @@ func (s *SQLiteSessionStore) SavePromptSuggestions(ctx context.Context, suggs []
 }
 
 // ListPromptSuggestions returns the session's active suggestion set — both
-// kinds, ADR-088 D7 — newest generation first and in insertion order within a
-// generation, the order the chat input's cycle keys assume. Accepted,
-// dismissed and stale rows are never returned. Returns an empty (non-nil)
-// slice when the session has no active suggestions. The persisted RFC 3339
-// created_at strings are parsed back into time.Time; a row with an
-// unparseable timestamp fails the whole read (the subsystem's fail-open
-// callers degrade to no suggestions).
+// kinds — newest generation first, insertion order within a generation (the
+// order the chat input's cycle keys assume). An unparseable timestamp fails
+// the whole read (callers fail open to no suggestions). See
+// specs/domains/prompt-suggestions.md.
 func (s *SQLiteSessionStore) ListPromptSuggestions(ctx context.Context, sessionID string) ([]core.PromptSuggestion, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, session_id, task_id, kind, text, status, created_at
@@ -1539,13 +1437,10 @@ func (s *SQLiteSessionStore) ListPromptSuggestions(ctx context.Context, sessionI
 	return suggestions, nil
 }
 
-// SetPromptSuggestionStatus persists a terminal per-row outcome reported by
-// the frontend (ADR-088 D7/D8): accepted (the suggestion was inserted into
-// the input as a draft) or dismissed (Esc). The update is guarded on the row
-// still being active, so a report racing a fresher generation pass — or
-// naming an unknown id — is a silent no-op with a nil error, per the
-// fail-open contract (D9). active/stale are generation-owned states and
-// rejected here.
+// SetPromptSuggestionStatus persists a terminal per-row outcome (accepted or
+// dismissed), guarded on the row still being active — a stale generation's
+// report or an unknown id is a silent no-op, per the fail-open contract.
+// See specs/domains/prompt-suggestions.md.
 func (s *SQLiteSessionStore) SetPromptSuggestionStatus(ctx context.Context, id, status string) error {
 	if status != SuggestionStatusAccepted && status != SuggestionStatusDismissed {
 		return fmt.Errorf("invalid prompt suggestion status %q: only accepted or dismissed can be reported", status)
@@ -1607,11 +1502,9 @@ type TaskDelegationRecord struct {
 	CreatedAt    time.Time       `json:"created_at"`
 }
 
-// TaskUnitRecord is a persisted durable unit (core/units.UnitRecord): one
-// execution unit with its kind, parent/depth topology, lifecycle status, a
-// rebuild spec and a resume checkpoint. Namespace keeps a mainline ledger and
-// an isolated ledger (e.g. the goal verifier) from colliding on unit ids while
-// both write under the same task.
+// TaskUnitRecord is a persisted durable unit (core/units.UnitRecord);
+// namespace keeps a mainline and an isolated (goal-verifier) ledger from
+// colliding on unit ids. See specs/domains/orchestration/delegation.md.
 type TaskUnitRecord struct {
 	TaskID    string          `json:"task_id"`
 	UnitID    string          `json:"unit_id"`
@@ -1843,10 +1736,9 @@ func (s *SQLiteSessionStore) CancelTask(ctx context.Context, taskID string) erro
 	return nil
 }
 
-// PauseTask marks an in-progress task as paused. Unlike the terminal statuses
-// (completed/failed/cancelled), a paused task clears completed_at (it is not
-// finished) and is matched by GetUnfinishedTask so it survives app restart as
-// a resumable checkpoint.
+// PauseTask marks an in-progress task paused: completed_at is cleared and
+// GetUnfinishedTask matches it, so it survives restart as a resumable
+// checkpoint.
 func (s *SQLiteSessionStore) PauseTask(ctx context.Context, taskID string) error {
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE tasks SET status = 'paused', completed_at = NULL WHERE id = ?`,
@@ -1947,9 +1839,8 @@ func (s *SQLiteSessionStore) LoadTaskSteps(ctx context.Context, taskID string) (
 	return steps, nil
 }
 
-// GetUnfinishedTask returns the most recent unfinished (in-progress, paused, or
-// failed) task for a session, or nil if none. A paused task is resumable: it
-// represents a cooperative pause checkpoint that survives app restart.
+// GetUnfinishedTask returns the session's most recent unfinished (in-progress,
+// paused, or failed) task, or nil if none.
 func (s *SQLiteSessionStore) GetUnfinishedTask(ctx context.Context, sessionID string) (*TaskRecord, error) {
 	var task TaskRecord
 	var routingDec, plan, reflections string
@@ -2198,9 +2089,8 @@ func (s *SQLiteSessionStore) LoadDelegationSpecs(ctx context.Context, taskID str
 	return recs, nil
 }
 
-// SaveTaskUnit inserts or replaces a durable unit (core/units.UnitRecord) for a
-// task, keyed by task + namespace + unit id. An empty checkpoint is coerced to
-// an empty JSON array so the column always holds valid JSON.
+// SaveTaskUnit inserts or replaces a durable unit keyed by task + namespace +
+// unit id; an empty checkpoint is coerced to a valid empty JSON array.
 func (s *SQLiteSessionStore) SaveTaskUnit(ctx context.Context, rec TaskUnitRecord) error {
 	steps := rec.Steps
 	if len(steps) == 0 {
@@ -2219,11 +2109,10 @@ func (s *SQLiteSessionStore) SaveTaskUnit(ctx context.Context, rec TaskUnitRecor
 	return nil
 }
 
-// SettleTaskUnitStatusIfInFlight transitions a unit's status ONLY while it is
-// still in flight (pending/running), leaving spec/steps/created_at untouched.
-// It reports whether a row was actually transitioned, so concurrent callers
-// racing to settle the same abandoned unit have exactly one winner. The
-// in-flight source set mirrors units.UnitStatus.InFlight.
+// SettleTaskUnitStatusIfInFlight transitions a unit ONLY while in flight
+// (pending/running), leaving spec/steps/created_at untouched; the bool gives
+// concurrent settlers of one abandoned unit exactly one winner. The in-flight
+// set mirrors units.UnitStatus.InFlight.
 func (s *SQLiteSessionStore) SettleTaskUnitStatusIfInFlight(ctx context.Context, taskID, namespace, unitID, status string) (bool, error) {
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE task_units SET status = ?, updated_at = ?

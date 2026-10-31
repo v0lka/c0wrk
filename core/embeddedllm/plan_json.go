@@ -2,11 +2,11 @@ package embeddedllm
 
 import "encoding/json"
 
-// UnmarshalJSON preserves the launch policy of manifests written before the
-// checkpoint knobs existed. Missing fields inherit the pinned runtime defaults;
-// explicit zero and false remain operator choices, not omission sentinels.
-// Decode into a fresh value so neither absent fields nor invalid JSON retain or
-// partially overwrite an earlier plan on a reused receiver.
+// UnmarshalJSON decodes into a fresh value so neither absent fields nor
+// invalid JSON partially overwrite an earlier plan on a reused receiver;
+// unset knobs fall back to the pinned defaults, while an explicit zero/false
+// stays an operator choice, not an omission sentinel
+// (specs/domains/embedded-llm.md).
 func (p *MemoryPlan) UnmarshalJSON(data []byte) error {
 	type planJSON MemoryPlan // no methods: avoid recursively calling this decoder
 	decoded := planJSON{

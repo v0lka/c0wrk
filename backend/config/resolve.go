@@ -28,25 +28,21 @@ func CreateDefault(path string) (*Config, error) {
 	return cfg, nil
 }
 
-// ResolveAndLoad determines the config file path, creates the agent directory,
-// loads the config, and returns the resolved result.
-// The only accepted document is the primary ~/.c0wrk/config.yaml: a missing
-// file is created from defaults; a broken file surfaces its load errors and
-// keeps the parsed values when only validation failed. There is deliberately
-// NO fallback to ./config.yaml in the process working directory — a
-// directory-planted file would otherwise be adopted silently (MCP commands to
-// spawn, security policies, provider endpoints) whenever the primary file is
-// absent or broken. On total failure it returns a default config with load
-// errors populated.
+// ResolveAndLoad determines the config file path, creates the agent
+// directory, loads the config, and returns the resolved result. The only
+// accepted document is the primary ~/.c0wrk/config.yaml — deliberately NO
+// fallback to ./config.yaml in the process working directory, which a
+// directory-planted file would ride into (MCP commands to spawn, security
+// policies, provider endpoints). A missing file is created from defaults; a
+// validation-only failure keeps the parsed values; total failure returns a
+// default config with load errors populated.
 func ResolveAndLoad(log *slog.Logger) *ResolvedConfig {
 	agentDir := AgentDir()
 	// The agent-data root must be usable as a real directory tree:
-	// MkdirAllReal only ever creates real directories — a dangling link, a
-	// non-directory component, or a link swapped into a created component is
-	// refused loudly (log + load error) and no config is created or loaded
-	// through a redirected tree — while an operator-symlinked ~/.c0wrk
-	// resolves, keeping every derived path (the config with plaintext
-	// provider keys, the database, projects, logs, themes) inside the
+	// MkdirAllReal refuses a dangling link, a non-directory component, or a
+	// link swapped into a created component, while an operator-symlinked
+	// ~/.c0wrk resolves — keeping every derived path (the config with
+	// plaintext provider keys, the database, projects, logs) inside the
 	// operator's chosen target.
 	if err := safeio.MkdirAllReal(agentDir, 0o755); err != nil {
 		log.Error("agent directory is not a real directory — refusing to create or load any config through it",
@@ -62,9 +58,6 @@ func ResolveAndLoad(log *slog.Logger) *ResolvedConfig {
 	}
 
 	configPath := ConfigPath(agentDir)
-
-	// If the primary config file does not exist, create a default config at
-	// the primary path.
 	if _, statErr := os.Stat(configPath); os.IsNotExist(statErr) {
 		log.Info("no config file found, creating default config", "path", configPath)
 		cfg, createErr := CreateDefault(configPath)
@@ -94,14 +87,13 @@ func ResolveAndLoad(log *slog.Logger) *ResolvedConfig {
 			log.Error("failed to load config: result is nil")
 		}
 		if result != nil && result.Config != nil {
-			// The document parsed but failed validate(). Keep the PARSED
-			// config: discarding it for defaults would silently reset every
-			// operator setting — providers and API keys, the security-group
-			// policies and the execute blocklist, trusted repos — and the
-			// next save would persist those defaults over config.yaml,
-			// making the loss permanent. The load errors below surface the
-			// specific validation failure; the app keeps running on the
-			// operator's real values until the file is fixed.
+			// Parsed but failed validate(): keep the parsed config —
+			// discarding it for defaults would reset every operator setting
+			// (providers and API keys, security policies, the execute
+			// blocklist, trusted repos), and the next save would persist
+			// that loss permanently. The load errors surface the specific
+			// failure; the app keeps running on the real values until the
+			// file is fixed.
 			log.Warn("config validation failed; keeping the parsed configuration so operator settings are not reset — fix the reported problem in config.yaml")
 			resolved.Config = result.Config
 			resolved.LoadErrors = result.LoadErrors

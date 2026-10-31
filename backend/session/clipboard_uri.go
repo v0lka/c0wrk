@@ -6,22 +6,10 @@ import (
 )
 
 // parseFileURIList parses a text/uri-list or x-special/gnome-copied-files
-// payload (as produced by wl-paste / xclip on Linux) into filesystem paths.
-//
-// It is a pure string transformation with no system dependency, so it is kept
-// build-tag-free (and therefore unit-testable on every platform) even though
-// the only caller, clipboardFiles in clipboard_linux.go, is Linux-specific.
-// Build tags gate clipboard *probing* (which touches the system), not parsing.
-//
-// Accepted shapes:
-//
-//   - text/uri-list: one "file://" URI per line.
-//   - x-special/gnome-copied-files: a leading "copy"/"cut" operation header
-//     followed by one "file://" URI per line (the header is ignored).
-//
-// Non-file:// lines and lines that fail to URL-parse are skipped
-// silently. Returns the decoded filesystem paths in source order (empty slice
-// when no file URI is present).
+// payload (as produced by wl-paste / xclip) into filesystem paths: the GNOME
+// "copy"/"cut" header is ignored; non-file:// and unparseable lines are
+// skipped silently, source order preserved. Pure string transformation, no
+// system dependency — kept build-tag-free, unit-testable on every platform.
 func parseFileURIList(raw string) []string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -41,11 +29,8 @@ func parseFileURIList(raw string) []string {
 		if perr != nil {
 			continue
 		}
-		// url.Parse already percent-decodes the path into u.Path; applying
-		// url.PathUnescape here would decode it a second time and corrupt
-		// filenames that legitimately contain a literal percent (e.g. a file
-		// named "100%.txt" arrives as "file:///…/100%25.txt" and u.Path is
-		// already "…/100%.txt").
+		// url.Parse already percent-decodes the path into u.Path; unescaping
+		// again would corrupt names with a literal "%" (e.g. "100%25.txt").
 		if u.Path != "" {
 			paths = append(paths, u.Path)
 		}

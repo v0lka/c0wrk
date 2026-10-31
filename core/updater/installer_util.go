@@ -31,19 +31,17 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	return out.Close()
 }
 
-// cleanupStaleMaxAge bounds the reap: any temp artifact (or anything inside
-// it) modified within this window is considered potentially LIVE — an update
-// download in progress or a staged apply pending its relaunch — and is left
-// alone. A genuine leftover is older than any sane update cycle; a manual
-// CleanupStaleUpdaters racing an in-flight update (review finding #37) can
-// only be younger than the bound.
+// cleanupStaleMaxAge bounds the reap: an artifact (or anything inside it)
+// modified within this window may be a LIVE update — a download in progress or
+// a staged apply pending relaunch — and is left alone; a manual
+// CleanupStaleUpdaters racing an in-flight update can only be younger.
+// See specs/decisions/023-auto-update.md.
 const cleanupStaleMaxAge = 24 * time.Hour
 
-// cleanupTempGlobs removes entries in the OS temp directory matching any of
-// the given glob patterns, skipping everything younger than
-// cleanupStaleMaxAge (measured on the entry itself and its direct children —
-// a download or a staged apply keeps touching files inside). Errors are
-// logged at debug level and otherwise ignored (best-effort cleanup).
+// cleanupTempGlobs removes OS-temp entries matching the given globs, skipping
+// anything younger than cleanupStaleMaxAge (dated on the entry and its direct
+// children — an in-flight update keeps touching files inside). Best-effort:
+// errors are logged at debug and ignored.
 func cleanupTempGlobs(base string, log *slog.Logger, patterns ...string) {
 	tempDir, err := filepath.EvalSymlinks(base)
 	if err != nil {
@@ -73,12 +71,10 @@ func cleanupTempGlobs(base string, log *slog.Logger, patterns ...string) {
 }
 
 // cleanupTempEntryLive reports whether the entry — or, for directories, any
-// of its direct children — was modified within cleanupStaleMaxAge. Unreadable
-// entries are treated as live (fail-open for the skip decision: a reap must
-// not delete what it cannot date). A regular-file artifact is decided on its
-// own mtime only: ReadDir would always fail with ENOTDIR, and the fail-open
-// rule would then exempt file-shaped leftovers (e.g. the Windows
-// c0wrk-updater.exe this cleanup exists to reap) forever.
+// direct child — was modified within cleanupStaleMaxAge. Unreadable entries
+// count as live (a reap must not delete what it cannot date); regular files
+// are dated on their own mtime only, else the fail-open rule would exempt
+// file-shaped leftovers (the Windows c0wrk-updater.exe) forever.
 func cleanupTempEntryLive(path string) bool {
 	info, err := os.Stat(path)
 	if err != nil {

@@ -1,31 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// certgen.go — self-signed certificate generation for the web-access sidecar
-// (ADR-102): the Generate control writes the fixed app-owned PEM pair, a
-// leaf certificate scoped to the currently pinned bind address.
-//
-// The file is deliberately STDLIB-ONLY (crypto/x509, crypto/ecdsa,
-// encoding/pem, os) — the same isolation rule the package's import-hygiene
-// test enforces for the whole sidecar core.
-//
-// Security posture (ADR-102 decision 3):
-//   - ECDSA P-256 key, self-signed leaf: KeyUsage DigitalSignature,
-//     ExtKeyUsage ServerAuth, BasicConstraintsValid with IsCA=false, a fresh
-//     crypto/rand 128-bit serial per generation.
-//   - 825-day validity — the longest leaf validity mainstream browsers still
-//     honor. A long-lived install can silently cross the expiry; the desktop
-//     surface computes cert_status=expired and regeneration is the fix.
-//   - SANs cover the pinned bind (certSANs): {localhost, 127.0.0.1, ::1}
-//     always, plus the bind's browser-facing hosts — a wildcard bind adds
-//     the machine's non-loopback global unicast addresses (bounded,
-//     best-effort), a specific IP names itself.
-//   - Atomic publication: both files are fully staged in the target
-//     directory (fsync'd, exact fchmod — the published mode survives any
-//     ambient umask) and renamed into place; the private key is published
-//     0600, the certificate 0644. A crash between the two renames can pair
-//     a new key with the previous certificate — the mount refuses such a
-//     pair fail-closed (ADR-102 decision 2) and regeneration is the fix;
-//     a plaintext fallback never is.
+// certgen.go — self-signed certificate generation for the web-access
+// sidecar (ADR-102): the Generate control writes the fixed app-owned PEM
+// pair, a leaf scoped to the currently pinned bind. Deliberately
+// STDLIB-ONLY, like the whole sidecar core (nodeps_test.go). Key
+// properties — ECDSA P-256 leaf, ServerAuth, 825-day validity, SANs
+// covering the pinned bind, atomic staged publication (key first, exact
+// 0600/0644), the mismatch/refusal/regeneration flow:
+// specs/domains/web-access.md, specs/decisions/102-web-access-tls.md
+// (decisions 2, 3, 5).
 
 package webaccess
 
@@ -51,21 +34,15 @@ import (
 const webAccessCertValidity = 825 * 24 * time.Hour
 
 // GenerateWebAccessCertificate generates the app-owned self-signed pair for
-// bind and publishes it atomically: the certificate at certPath (0644) and
-// the matching ECDSA P-256 key at keyPath (0600). bind must be a valid
-// sidecar bind (config.IsValidWebAccessBind): the certificate's SANs are
-// derived from it (certSANs), so the browser-facing host of the CURRENT bind
-// is always covered — regenerating after a bind change is the documented
-// mismatch fix (ADR-102 decision 5).
+// bind and publishes it atomically: certPath 0644, keyPath 0600. bind must
+// be a valid sidecar bind — the SANs derive from it (certSANs), so the
+// browser-facing host of the CURRENT bind is always covered; regeneration
+// after a bind change is the documented mismatch fix (ADR-102 decision 5).
 //
-// The function never reads pre-existing files (a pure overwrite of the
-// standard pair it owns) and never creates parent directories — callers pass
-// the fixed app-owned locations (config.WebAccessCertPath /
-// config.WebAccessKeyPath under the agent dir), which exist by the time the
-// desktop surface can be clicked. It never flips web_access.tls.enabled and
-// never touches operator-authored paths; the persistence of the pair's paths
-// into the config section and the sidecar hot-restart are the desktop
-// layer's side of the Generate control (ADR-102 decision 3).
+// A pure overwrite of the pair it owns: no reads of pre-existing files, no
+// parent-directory creation, no flip of web_access.tls.enabled; persisting
+// the paths and the hot-restart are the desktop layer's side (ADR-102
+// decision 3).
 func GenerateWebAccessCertificate(bind, certPath, keyPath string) error {
 	if certPath == "" || keyPath == "" {
 		return errors.New("webaccess: tls: certificate and key paths are required")
@@ -89,10 +66,10 @@ func GenerateWebAccessCertificate(bind, certPath, keyPath string) error {
 	}
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
-	// Stage both files completely, then publish — the key first, so a crash
+	// Stage both files completely, then publish — key first, so a crash
 	// mid-publication leaves a NEW key with the OLD certificate: a mismatch
 	// the sidecar refuses fail-closed (ADR-102 decision 2), never a listener
-	// serving a certificate whose key nobody holds anymore.
+	// whose key nobody holds.
 	if err := writeFileAtomic(keyPath, keyPEM, 0o600); err != nil {
 		return err
 	}
@@ -100,9 +77,8 @@ func GenerateWebAccessCertificate(bind, certPath, keyPath string) error {
 		return err
 	}
 	// Both renames are in: fsync the directory entry too, so a power loss
-	// cannot revert the renames or land the mixed state. Best-effort — the
-	// pair is already published and readable, a sync failure here only
-	// narrows the crash-durability window the staged-file syncs closed.
+	// cannot revert them. Best-effort — the pair is already published; a
+	// failure here only narrows the crash-durability window.
 	if d, derr := os.Open(filepath.Dir(certPath)); derr == nil {
 		_ = d.Sync() //nolint:errcheck // best-effort durability
 		_ = d.Close()
@@ -110,22 +86,14 @@ func GenerateWebAccessCertificate(bind, certPath, keyPath string) error {
 	return nil
 }
 
-// certSANs maps a validated sidecar bind to the certificate's SAN set — the
-// four bind classes (ADR-102 decision 3, as amended for the wildcard class):
-//
-//  1. the "localhost" name         → the loopback set;
-//  2. a loopback IP literal        → the loopback set;
-//  3. a wildcard bind (0.0.0.0/::) → the loopback set PLUS the machine's
-//     non-loopback global unicast addresses (bounded, best-effort — see
-//     interfaceUnicastIPs): a wildcard bind serves every interface, and the
-//     address the browser on the LAN actually opens is one of them, so the
-//     generated pair covers it instead of guaranteeing a mismatch screen;
-//  4. a specific non-loopback IP   → the loopback set PLUS the bind itself,
-//     the host the browser actually opens.
-//
-// The loopback set {localhost, 127.0.0.1, ::1} is always present so the
-// default loopback bind keeps working and any bind stays reachable as
-// localhost from the machine itself.
+// certSANs maps a validated sidecar bind to the certificate's SAN set
+// (ADR-102 decision 3, as amended — specs/domains/web-access.md):
+// "localhost"/loopback → the loopback set; a wildcard bind (0.0.0.0/::) →
+// the loopback set PLUS the machine's non-loopback global unicast
+// addresses (bounded, best-effort — interfaceUnicastIPs: the address a LAN
+// browser actually opens); a specific non-loopback IP → the loopback set
+// PLUS itself. The loopback set is always present so any bind stays
+// reachable as localhost from the machine itself.
 func certSANs(bind string) (dnsNames []string, ips []net.IP, err error) {
 	dnsNames = []string{"localhost"}
 	// Cap 3: the loopback pair, plus the bind itself for the specific-IP class.
@@ -142,16 +110,13 @@ func certSANs(bind string) (dnsNames []string, ips []net.IP, err error) {
 		return dnsNames, ips, nil
 	}
 	if ip.IsUnspecified() {
-		// Wildcard bind: the machine's LAN-reachable addresses join the SAN
-		// set so the primary LAN use case (open https://<LAN-IP>:port from
-		// another device) gets a cert that covers the address actually
-		// opened. The set is sorted and capped HERE, at the consumption
-		// point, so the certificate body is deterministic regardless of the
-		// enumeration source. An address beyond the cap (or a host whose
-		// interface table cannot be read) still surfaces as
-		// cert_status=mismatch with regeneration the documented fix — the
-		// amendment narrows the gap for the common topology, it does not
-		// attempt to close it entirely.
+		// Wildcard bind: LAN-reachable addresses join the SAN set so the
+		// primary use case (open https://<LAN-IP>:port from another device)
+		// gets a cert covering the address actually opened. Sorted and
+		// capped HERE, at the consumption point, so the certificate body is
+		// deterministic regardless of enumeration source; beyond-cap
+		// addresses still surface as cert_status=mismatch (regeneration the
+		// fix).
 		lan := webAccessInterfaceIPs()
 		sort.Slice(lan, func(i, j int) bool { return lan[i].String() < lan[j].String() })
 		if len(lan) > wildcardIPSANCaps {
@@ -170,10 +135,10 @@ func certSANs(bind string) (dnsNames []string, ips []net.IP, err error) {
 }
 
 // wildcardIPSANCaps bounds the interface-derived IP SAN set for a wildcard
-// bind: a certificate carrying dozens of SANs is a size/parsing hazard, and
-// a machine with more than this many non-loopback global unicast addresses
-// is far outside the sidecar's target topology — the leftover addresses stay
-// covered by the documented mismatch+regeneration flow.
+// bind: dozens of SANs are a size/parsing hazard, and a host with more
+// non-loopback global unicast addresses than this is far outside the
+// sidecar's target topology — leftovers stay covered by the
+// mismatch+regeneration flow.
 const wildcardIPSANCaps = 8
 
 // webAccessInterfaceIPs is the wildcard-bind address source, behind a
@@ -182,12 +147,11 @@ const wildcardIPSANCaps = 8
 var webAccessInterfaceIPs = interfaceUnicastIPs
 
 // interfaceUnicastIPs enumerates the machine's non-loopback, non-link-local
-// global unicast addresses — the addresses a browser on the LAN can actually
-// open a wildcard-bound sidecar under. Best-effort by contract: any error
-// (or an empty table) degrades to nil, i.e. the loopback-only SAN set of the
-// pre-amendment behavior, never a failed Generate. IPv4-mapped forms are
-// normalized to their 4-byte encoding; the consumer (certSANs) owns the
-// deterministic sort and the wildcardIPSANCaps cap.
+// global unicast addresses — what a LAN browser can actually open a
+// wildcard-bound sidecar under. Best-effort by contract: any error or empty
+// table degrades to nil (the loopback-only SAN set), never a failed
+// Generate. IPv4-mapped forms are normalized to 4 bytes; the consumer
+// (certSANs) owns the deterministic sort and cap.
 func interfaceUnicastIPs() []net.IP {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
@@ -228,9 +192,8 @@ func certTemplate(bind string) (*x509.Certificate, error) {
 	if err != nil {
 		return nil, fmt.Errorf("webaccess: tls: generating serial: %w", err)
 	}
-	// Backdate one hour for clock skew between this machine and wherever the
-	// pair is consumed; the tolerance costs nothing and spares the operator
-	// an acausal-certificate browser error.
+	// Backdate one hour for clock skew; the tolerance costs nothing and
+	// spares the operator an acausal-certificate browser error.
 	notBefore := time.Now().Add(-time.Hour)
 	return &x509.Certificate{
 		SerialNumber:          serial,

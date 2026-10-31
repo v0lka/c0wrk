@@ -10,45 +10,32 @@ import (
 	_ "modernc.org/sqlite" // register SQLite driver
 )
 
-// Connection-pool sizing for the shared SQLite database.
-//
-// SQLite in WAL mode supports any number of concurrent READERS alongside a
-// single writer, so the pool no longer needs to be pinned to one connection.
-// A small pool lets read-only RPCs (session/message/workspace loads) proceed
-// while an active agent's writes are in flight, instead of queueing behind
-// them on a shared connection. Hot-path writes are additionally serialized
-// through a dedicated single-writer goroutine (see session.EventPersister), so
-// the pool never has to arbitrate a stampede of concurrent writers.
-//
-// These are deliberately modest: the workload is a single desktop app, and each
-// pooled connection carries its own SQLite page cache.
+// Connection-pool sizing for the shared SQLite database. WAL allows
+// concurrent readers beside one writer, so a small pool lets read-only RPCs
+// proceed while an agent's writes are in flight; hot-path writes are
+// additionally serialized through a dedicated single-writer goroutine
+// (session.EventPersister). The numbers stay modest: one desktop app, and
+// each pooled connection carries its own SQLite page cache.
 const (
 	maxOpenConns = 8
 	maxIdleConns = 4
 )
 
 // Connection-scoped PRAGMAs applied to EVERY pooled connection via the DSN.
-//
-// Unlike journal_mode (a database-level property persisted in the file header),
-// busy_timeout and foreign_keys are PER-CONNECTION settings. Setting them once
-// with a single ExecContext was only correct while the pool was pinned to one
-// connection; with a real pool every new connection must receive them, which is
-// exactly what the driver's `_pragma` DSN parameter does (it runs the pragma on
-// each new connection, see modernc.org/sqlite applyQueryParams).
+// Unlike journal_mode (a database-level property), busy_timeout and
+// foreign_keys are per-connection: the driver's `_pragma` DSN parameter runs
+// them on each new connection — a single one-shot ExecContext was only
+// correct under a one-connection pool.
 const (
 	pragmaBusyTimeout = "busy_timeout(5000)"
 	pragmaForeignKeys = "foreign_keys(1)"
 )
 
-// OpenDatabase opens a SQLite database at dbPath, sizes the connection pool,
-// and applies recommended PRAGMAs (WAL journal mode, foreign keys, busy
-// timeout). Callers own the returned *sql.DB and must close it when done.
-//
-// WAL is enabled best-effort and then CONFIRMED at runtime: the resulting
-// journal_mode is read back and logged, so a silently non-WAL database is
-// visible instead of assumed. A WAL failure (e.g. an unsupported filesystem) is
-// logged as a warning and does not fail the open — the database keeps working
-// in its default journal mode.
+// OpenDatabase opens a SQLite database at dbPath, sizes the pool, and applies
+// WAL + the per-connection PRAGMAs. Callers own the returned *sql.DB and must
+// close it. WAL is best-effort and then CONFIRMED at runtime (the journal_mode
+// is read back and logged); a WAL failure logs a warning and keeps the default
+// journal mode rather than failing the open.
 func OpenDatabase(dbPath string, logger *slog.Logger) (*sql.DB, error) {
 	if logger == nil {
 		logger = slog.Default()
@@ -62,9 +49,8 @@ func OpenDatabase(dbPath string, logger *slog.Logger) (*sql.DB, error) {
 	db.SetMaxOpenConns(maxOpenConns)
 	db.SetMaxIdleConns(maxIdleConns)
 
-	// WAL is a persistent database property, so setting it once is enough for
-	// every pooled connection. The pragma returns the resulting mode; read it
-	// back to confirm the mode actually took effect.
+	// WAL is a persistent database property — setting it once is enough. The
+	// pragma returns the resulting mode; read it back to confirm it took.
 	var journalMode string
 	if err := db.QueryRowContext(context.Background(), "PRAGMA journal_mode=WAL").Scan(&journalMode); err != nil {
 		logger.Warn("failed to enable WAL mode", "error", err)

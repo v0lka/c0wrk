@@ -12,50 +12,41 @@ import (
 )
 
 // Heavy git subprocesses (git status --porcelain -uall, git ls-files
-// --others --ignored) are the dominant cost of a single ListDirectory /
-// GetGitStatus round-trip. Both are repo-root keyed and were recomputed on
-// every call, so a rapid file-tree refresh or a burst of frontend polls
-// spawned the same process repeatedly. The two caches below memoize their
-// results per repo root, mirroring the existing gitRepoCache pattern
-// (mu-guarded, TTL, bounded eviction) and are invalidated event-first:
-// mutating git RPCs (via emitGitStatusChanged), the workspace watcher
-// debounce, and a project switch.
+// --others --ignored) dominate a ListDirectory / GetGitStatus round-trip.
+// The two caches below memoize them per repo root (mu-guarded, TTL, bounded
+// eviction) and are invalidated event-first: mutating git RPCs (via
+// emitGitStatusChanged), the watcher debounce, and a project switch.
 const (
-	// gitStatusCacheTTL bounds how long a computed git-status snapshot is
-	// reused. Short: the working tree changes constantly while editing, and
-	// the watcher plus every mutating git RPC invalidate explicitly.
+	// gitStatusCacheTTL stays short: the tree changes constantly while
+	// editing, and the watcher plus every mutating git RPC invalidate anyway.
 	gitStatusCacheTTL = 10 * time.Second
-	// gitIgnoredCacheTTL bounds how long the git-ignored path set is reused.
-	// Longer than the status TTL because the ignore set only changes when an
-	// ignore-rule file or the tracked file set changes — both of which
-	// invalidate explicitly.
+	// gitIgnoredCacheTTL runs longer: the ignore set changes only when an
+	// ignore-rule file or the tracked file set changes — both invalidate
+	// explicitly.
 	gitIgnoredCacheTTL = 30 * time.Second
 	// gitCacheMaxSize bounds each repo-keyed cache so memory stays finite on
 	// long-lived instances that visit many work directories.
 	gitCacheMaxSize = 100
 )
 
-// gitStatusCacheEntry holds a cached git-status snapshot with expiry.
 type gitStatusCacheEntry struct {
 	status map[string]GitStatusEntry
 	expiry time.Time
 }
 
-// gitIgnoredCacheEntry holds a cached git-ignored path set with expiry.
 type gitIgnoredCacheEntry struct {
 	ignored map[string]bool
 	expiry  time.Time
 }
 
-// gitIgnoreRuleFiles is the set of file names whose modification invalidates
-// the git-ignored path cache. Mirrors the session package's ignoreFileNames.
+// gitIgnoreRuleFiles invalidates the ignored-path cache; mirrors the session
+// package's ignoreFileNames.
 var gitIgnoreRuleFiles = map[string]struct{}{
 	".gitignore": {},
 	".aiignore":  {},
 	".ignore":    {},
 }
 
-// hasIgnoreRuleChange reports whether any changed path is an ignore-rule file.
 func hasIgnoreRuleChange(changedPaths []string) bool {
 	for _, p := range changedPaths {
 		if _, ok := gitIgnoreRuleFiles[filepath.Base(p)]; ok {
@@ -65,9 +56,8 @@ func hasIgnoreRuleChange(changedPaths []string) bool {
 	return false
 }
 
-// evictOldestGitEntries bounds a repo-keyed cache by dropping the entries with
-// the earliest expiry once the map exceeds max. The caller must hold the map's
-// mutex.
+// evictOldestGitEntries bounds a repo-keyed cache by dropping the earliest-
+// expiry entries once the map exceeds max. The caller holds the map's mutex.
 func evictOldestGitEntries[V any](m map[string]V, expiry func(V) time.Time, maxSize int) {
 	if len(m) <= maxSize {
 		return
@@ -92,11 +82,9 @@ func (f *FrontendAPI) runGitStatus(repoRoot string) (map[string]GitStatusEntry, 
 	if f.gitStatusFn != nil {
 		return f.gitStatusFn(repoRoot)
 	}
-	// f.ctx() is the application context — no deadline, cancelled only at
-	// shutdown — and GitStatus spawns git with no internal bound, so a
-	// wedged git would hang the GetGitStatus RPC indefinitely. Bound it
-	// with the same 30s budget every other local git call gets (review
-	// [176]); expiry surfaces as the RPC's ordinary git-failure path.
+	// f.ctx() has no deadline, and GitStatus spawns git with no internal
+	// bound — a wedged git would hang the RPC. Bound with the shared 30s
+	// git budget (review [176]); expiry is the ordinary git-failure path.
 	ctx, cancel := context.WithTimeout(f.ctx(), gitCmdTimeout)
 	defer cancel()
 	return workspace.GitStatus(ctx, repoRoot)
@@ -114,24 +102,19 @@ func (f *FrontendAPI) runGitIgnoredPaths(repoRoot string) (map[string]bool, erro
 	return workspace.GitIgnoredPaths(ctx, repoRoot)
 }
 
-// gitCacheKey normalizes a repo-root cache key to the canonical (symlink-
-// resolved) form, failing soft to the cleaned input (see
-// canonicalWorktreeRoot): the population and invalidation sites hand in
-// different forms on a legacy registration row — GetGitStatus keys off the
-// raw stored project path its caller passed, while the mutating git RPCs
-// emit the focus root gitFocusRoots resolved — and a plain string key would
-// strand an entry the invalidation can never reach (a stale snapshot until
-// the TTL lapses).
+// gitCacheKey canonicalizes a repo-root cache key (symlink-resolved, failing
+// soft to the cleaned input): population and invalidation hand in different
+// forms (raw stored project path vs resolved focus root), and a plain string
+// key would strand an entry invalidation can never reach.
+// See specs/domains/workspace.md (per-root result caches for git RPCs).
 func gitCacheKey(repoRoot string) string {
 	return canonicalWorktreeRoot(filepath.Clean(repoRoot))
 }
 
 // cachedGitStatus returns the git status for repoRoot, reusing a snapshot
-// computed within gitStatusCacheTTL. Errors are not cached so a transient git
-// failure is retried on the next call. The returned map is always a shallow
-// copy (maps.Clone) owned by the caller: mutating it can never corrupt the
-// cached snapshot other readers share. Cost is one map allocation per call —
-// negligible against the git subprocess the cache saves.
+// within gitStatusCacheTTL. Errors are not cached (a transient git failure
+// retries on the next call); the returned map is a caller-owned maps.Clone,
+// so mutation can never corrupt the snapshot other readers share.
 func (f *FrontendAPI) cachedGitStatus(repoRoot string) (map[string]GitStatusEntry, error) {
 	if repoRoot == "" {
 		return nil, errors.New("empty repo root")
@@ -165,11 +148,9 @@ func (f *FrontendAPI) cachedGitStatus(repoRoot string) (map[string]GitStatusEntr
 	return maps.Clone(status), nil
 }
 
-// cachedGitIgnoredPaths returns the git-ignored path set for repoRoot, reusing
-// a result computed within gitIgnoredCacheTTL. Errors are not cached so a
-// transient git failure is retried on the next call. The returned map is
-// always a shallow copy (maps.Clone) owned by the caller — the same
-// read-isolation contract as cachedGitStatus.
+// cachedGitIgnoredPaths returns the git-ignored set for repoRoot under the
+// same contract as cachedGitStatus (errors not cached, caller-owned Clone),
+// on gitIgnoredCacheTTL.
 func (f *FrontendAPI) cachedGitIgnoredPaths(repoRoot string) (map[string]bool, error) {
 	if repoRoot == "" {
 		return nil, errors.New("empty repo root")
@@ -203,16 +184,13 @@ func (f *FrontendAPI) cachedGitIgnoredPaths(repoRoot string) (map[string]bool, e
 	return maps.Clone(ignored), nil
 }
 
-// invalidateGitCaches evicts both cached git snapshots for a single repo root.
-// It is the invalidation hook for mutating git operations, which all funnel
-// through emitGitStatusChanged.
+// invalidateGitCaches evicts both snapshots for one repo root; the hook every
+// mutating git operation reaches via emitGitStatusChanged.
 func (f *FrontendAPI) invalidateGitCaches(repoRoot string) {
 	f.invalidateGitStatusCache(repoRoot)
 	f.invalidateGitIgnoredCache(repoRoot)
 }
 
-// invalidateGitStatusCache evicts only the status snapshot for repoRoot; the
-// working tree may have changed (a file was saved/created/removed).
 func (f *FrontendAPI) invalidateGitStatusCache(repoRoot string) {
 	if repoRoot == "" {
 		return
@@ -222,8 +200,6 @@ func (f *FrontendAPI) invalidateGitStatusCache(repoRoot string) {
 	f.gitStatusCacheMu.Unlock()
 }
 
-// invalidateGitIgnoredCache evicts only the ignored-path snapshot for repoRoot;
-// an ignore-rule file changed.
 func (f *FrontendAPI) invalidateGitIgnoredCache(repoRoot string) {
 	if repoRoot == "" {
 		return
@@ -233,9 +209,9 @@ func (f *FrontendAPI) invalidateGitIgnoredCache(repoRoot string) {
 	f.gitIgnoredCacheMu.Unlock()
 }
 
-// invalidateGitCachesOnWatcher handles a debounced watcher batch for the active
-// repo: any tree change can alter the working-tree status, and an edit to an
-// ignore-rule file additionally invalidates the ignored-path set.
+// invalidateGitCachesOnWatcher routes a debounced watcher batch: any tree
+// change can alter the status; an ignore-rule edit also drops the
+// ignored-path set.
 func (f *FrontendAPI) invalidateGitCachesOnWatcher(repoRoot string, changedPaths []string) {
 	if repoRoot == "" {
 		return
@@ -257,15 +233,10 @@ func (f *FrontendAPI) invalidateAllGitCaches() {
 	f.gitIgnoredCache = nil
 	f.gitIgnoredCacheMu.Unlock()
 
-	// The Git-panel focus belongs to the previous project's repository; a
-	// stale override would resolve every PATHLESS git RPC (commit, stage
-	// all, stash, pull/push/fetch, reset) into the previous project's
-	// repository during the window between this switch and the frontend's
-	// asynchronous focus re-apply — wrong-repo commit/push/reset (review
-	// [78]). Drop it so resolution falls back to the new project's checkout;
-	// the frontend re-applies the focus right after the switch (and the
-	// focus path of the NEW project is revalidated against the live
-	// worktree list at that point, so a focused external linked tree
-	// restores correctly).
+	// The Git-panel focus belongs to the previous project's repository: a
+	// stale override would resolve every pathless git RPC into the old repo
+	// until the frontend's asynchronous focus re-apply lands — wrong-repo
+	// commit/push/reset (review [78]). Drop it; the new focus path is
+	// revalidated against the live worktree list when re-applied.
 	f.setGitFocusPath("")
 }

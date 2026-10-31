@@ -10,9 +10,9 @@ import (
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
-// BuilderConfig holds all configuration that the OrchestratorBuilder needs.
-// It is defined in core so that core never imports backend/config.
-// The backend layer constructs a BuilderConfig from *config.Config via ToBuilderConfig.
+// BuilderConfig carries everything the OrchestratorBuilder needs, converted
+// from backend config by ToBuilderConfig; it lives in core because core never
+// imports backend/config. See specs/architecture/layers.md.
 type BuilderConfig struct {
 	LLM           BuilderLLMConfig
 	Router        BuilderRouterConfig
@@ -30,41 +30,25 @@ type BuilderConfig struct {
 	Timeouts      BuilderTimeoutsConfig
 	Proxy         proxy.Config
 
-	// EmbeddedLLM wires the embedded local model's ensure-loaded transport into
-	// its router entry. The zero value is the normal posture — no embedded
-	// supervisor is configured, and every provider entry is built exactly as
-	// before. See BuilderEmbeddedLLMConfig.
+	// EmbeddedLLM wires the embedded model's ensure-loaded transport into the
+	// router build (zero value = no embedded supervisor; see the type below).
 	EmbeddedLLM BuilderEmbeddedLLMConfig
 
 	// SubscriptionAuth wires the ChatGPT subscription token source into the
-	// router entry marked BuilderProviderConfig.SubscriptionAuth. The zero
-	// value is the normal posture (api_key configs never consult it); see
-	// BuilderSubscriptionAuthConfig.
+	// marked router entry (zero value = the api_key posture; see the type below).
 	SubscriptionAuth BuilderSubscriptionAuthConfig
 
-	// ShellExec carries the optional operator override of the shell-exec
-	// tool's launch shape (nil = built-in default). BashExec is consumed on
-	// Unix, PoshExec on Windows — exactly one is live per platform (the
-	// build-tag split in core/tools/shelltool_*.go). The declared shell kind
-	// drives the tool description (the prompt channel that informs every
-	// agent able to call the tool), the PowerShell-only UTF-8 bootstrap, and
-	// the flowsh analysis dialect. Values arrive pre-validated from the
-	// backend config layer (fail-soft load); a nil entry is the normal
-	// no-override posture.
+	// ShellExec carries the operator's shell-exec launch-shape override
+	// (nil = built-in default; exactly one of BashExec/PoshExec is live per
+	// platform). What the declared shell kind drives is specified in
+	// specs/domains/tool-system/builtins.md (Shell Invocation Override).
 	ShellExec BuilderShellExecConfig
 
-	// MarkitdownPythonPath lazily resolves the managed venv interpreter that
-	// can `import markitdown` (toolmanager.VenvPythonPath). It enables
-	// vision-assisted document conversion: the read_file document wrapper
-	// invokes it when initializing its markitdown converter, which then runs
-	// an embedded Python driver (instead of the CLI) when the active model is
-	// vision-capable. The lazy probe exists because the tool-manager installs
-	// the venv asynchronously after app startup — probing at builder creation
-	// would permanently disable vision on fresh installs. A nil probe or an
-	// empty result disables vision-assisted conversion; plain CLI conversion
-	// is unaffected. Injected by the backend as a closure over
-	// toolmanager.VenvPythonPath — a machine-local filesystem fact, not a
-	// runtime-editable setting.
+	// MarkitdownPythonPath lazily resolves the managed venv interpreter for
+	// vision-assisted document conversion (nil probe or empty result disables
+	// vision; plain CLI conversion is unaffected). Injected by the backend as
+	// a closure over toolmanager.VenvPythonPath — a machine-local filesystem
+	// fact, not a config setting. See specs/contracts/backend-core.md.
 	MarkitdownPythonPath func() string
 
 	// ExpandEnvVars resolves ${ENV_VAR} patterns in a string.
@@ -76,45 +60,34 @@ type BuilderConfig struct {
 // Model Profiles profile
 // ---------------------------------------------------------------------------
 
-// BuilderModelProfilesConfig mirrors config.ModelProfilesConfig for the subset of the
-// profile that core consumes. core never imports backend/config, so values are
-// copied via ToBuilderConfig. Only the master toggle and the variants wired in
-// this step (Sampling, LoopHardening) are represented.
+// BuilderModelProfilesConfig mirrors config.ModelProfilesConfig for the subset
+// the orchestrator consumes (values copied via ToBuilderConfig; core never
+// imports backend/config). Variant semantics: specs/domains/model-profiles.md.
 type BuilderModelProfilesConfig struct {
-	// Enabled is the master toggle. When false every variant sub-toggle is
-	// ignored and behavior is identical to the un-profiled baseline.
+	// Enabled is the master toggle; when off, behavior is identical to the
+	// un-profiled baseline.
 	Enabled bool
 
-	// EssentialTools narrows the conductor's advertised tool set to an
-	// always-present subset to reduce per-prompt schema overhead for small
-	// models.
+	// EssentialTools narrows the advertised tool set for small models.
 	EssentialTools BuilderModelProfilesEssentialConfig
 
-	// Sampling overrides LLM sampling parameters (temperature, top_p,
-	// reasoning effort) for more deterministic, lower-effort generation.
+	// Sampling overrides LLM sampling parameters for low-effort generation.
 	Sampling BuilderModelProfilesSampling
 
-	// LoopHardening tightens the executor circuit-breaker thresholds so a
-	// small model that repeats itself or makes no progress is caught sooner.
+	// LoopHardening tightens the executor circuit-breaker thresholds.
 	LoopHardening BuilderLoopHardening
 
-	// Context applies aggressive context management: tighter compaction,
-	// stricter tool-output pruning, and a larger output token reserve.
+	// Context applies aggressive context management (tighter compaction,
+	// stricter tool-output pruning, larger output reserve).
 	Context BuilderModelProfilesContext
 
-	// SystemPrompt applies prompt-simplification variants (currently the Lite
-	// core-directive swap) to shrink the system prompt injected for a small
-	// model. When Lite is active, buildSystemPromptWith trades the verbose
-	// OrchestratorSystem directive for the compact OrchestratorSystemLite.
+	// SystemPrompt applies prompt-simplification variants (the Lite swap).
 	SystemPrompt BuilderModelProfilesSystemPromptConfig
 }
 
-// ModelProfilesSettingsFromBuilderConfig projects the core-layer BuilderModelProfilesConfig onto
-// the orchestrator's runtime ModelProfilesSettings. It is the single mapping between the
-// two shapes: Build() uses it to populate OrchestratorConfig.ModelProfiles, and the
-// backend uses it to push a refreshed snapshot onto already-built orchestrators
-// (via (*Orchestrator).SetModelProfilesSettings) after a runtime ModelProfiles change. Keeping one
-// mapping means the build-time and runtime-refreshed values can never diverge.
+// ModelProfilesSettingsFromBuilderConfig is the single mapping from the
+// builder-layer config onto the runtime ModelProfilesSettings — Build() and the
+// backend's runtime refresh both go through it, so the two can never diverge.
 func ModelProfilesSettingsFromBuilderConfig(cfg BuilderModelProfilesConfig) ModelProfilesSettings {
 	return ModelProfilesSettings{
 		Enabled: cfg.Enabled,
@@ -136,68 +109,47 @@ func ModelProfilesSettingsFromBuilderConfig(cfg BuilderModelProfilesConfig) Mode
 }
 
 // BuilderModelProfilesSystemPromptConfig holds the prompt-simplification variant
-// overrides for the model-profile profile. Lite is the variant master toggle (it
-// mirrors config.SystemPromptConfig, which has no separate Enabled field, so
-// Enabled is not duplicated here). Lite swaps the core directive, FewShot
-// appends worked ReAct examples, ReasoningScaffold appends the
-// structured-thought template. Each is only honored when the variant is active
-// (master ModelProfiles.Enabled on AND Lite on); FewShot and ReasoningScaffold
-// additionally require Lite, since the examples and scaffold are tailored to
-// the lite directive.
+// overrides. Lite is the variant master toggle (config.SystemPromptConfig has no
+// separate Enabled field, so it is not duplicated here); FewShot and
+// ReasoningScaffold additionally require Lite — they are tailored to it.
+// Semantics: specs/domains/model-profiles.md.
 type BuilderModelProfilesSystemPromptConfig struct {
-	// Lite swaps the verbose OrchestratorSystem core directive for the compact
-	// OrchestratorSystemLite directive. The shared sections (family overlay,
-	// verification mandate, injection defense, workspace, env, AGENTS.md,
-	// skills) are appended UNCHANGED.
+	// Lite swaps the verbose core directive for the compact Lite counterpart;
+	// every shared section is appended UNCHANGED.
 	Lite bool
 
-	// FewShot appends the OrchestratorLiteFewShot worked-example block. Only
-	// applied when Lite is active.
+	// FewShot appends the worked-example block (Lite required).
 	FewShot bool
 
-	// ReasoningScaffold appends the OrchestratorLiteScaffold three-step
-	// thought template. Only applied when Lite is active.
+	// ReasoningScaffold appends the three-step thought template (Lite required).
 	ReasoningScaffold bool
 }
 
 // BuilderModelProfilesSampling holds the sampling-variant overrides. Every
-// parameter uses zero as the "not set" sentinel: an unset field inherits the
-// per-family vendor preset (prompt.DefaultSampling) instead of clobbering it,
-// so enabling the variant with no explicit values is a behavioral no-op.
+// parameter uses zero as the "not set" sentinel: unset fields inherit the
+// per-family vendor preset end-to-end, so enabling the variant with no explicit
+// values is a behavioral no-op. Per-parameter ranges: specs/domains/model-profiles.md.
 type BuilderModelProfilesSampling struct {
 	// Enabled gates this variant (in addition to the master ModelProfiles.Enabled).
 	Enabled bool
 
-	// Temperature sets generation temperature (lower = more deterministic).
-	// 0 (unset) inherits the vendor preset; positive values override it via
-	// the LLM router's SamplingFunc when the variant is enabled.
+	// Temperature: generation temperature; 0 inherits the vendor preset.
 	Temperature float64
 
-	// TopP sets nucleus-sampling probability mass. 0 (unset) inherits the
-	// vendor preset; values in (0, 1] override it via the router's
-	// SamplingFunc when the variant is enabled.
+	// TopP: nucleus-sampling probability mass, (0, 1]; 0 inherits.
 	TopP float64
 
-	// TopK sets top-k sampling. 0 (unset) inherits the vendor preset; values
-	// >= 1 override it via the router's SamplingFunc when the variant is
-	// enabled.
+	// TopK: top-k sampling, >= 1; 0 inherits.
 	TopK int
 
-	// RepetitionPenalty penalizes repeated tokens. 0 (unset) inherits the
-	// vendor preset; values in [1, 2] override it via the router's
-	// SamplingFunc when the variant is enabled.
+	// RepetitionPenalty: [1, 2]; 0 inherits.
 	RepetitionPenalty float64
 
-	// PresencePenalty penalizes tokens already present in the context — the
-	// OpenAI-schema anti-repetition lever (Qwen card: 0–2, instruct default
-	// 1.5; higher values increase language mixing). 0 (unset) inherits the
-	// vendor preset (no family preset sets it, so the field is not sent);
-	// values in (0, 2] override it via the router's SamplingFunc when the
-	// variant is enabled.
+	// PresencePenalty: the OpenAI-schema anti-repetition lever, (0, 2]; 0
+	// inherits (no family preset sets it, so the field is not sent).
 	PresencePenalty float64
 
-	// ReasoningEffort controls reasoning depth: "" (inherit) | "off" | "low" |
-	// "medium". When non-empty it seeds the builder-level default; per-request
+	// ReasoningEffort: "" (inherit) | "off" | "low" | "medium"; per-request
 	// overrides (HandleOptions.ReasoningEffort) still take precedence.
 	ReasoningEffort string
 }
@@ -282,34 +234,22 @@ type BuilderProviderConfig struct {
 	APIKey       string   // raw value (may contain ${ENV_VAR})
 	BaseURL      string   // raw value
 	Models       []string // enabled models for this one provider
-	// TLSFingerprint is the base64(SHA-256(SPKI DER)) pin for this
-	// provider's endpoint (self-signed servers). The pin IS the switch
-	// (ADR-054): empty = system verification, non-empty = a per-provider
-	// pinned HTTP client (see core/llmtls) that accepts ONLY the pinned
-	// certificate. There is no accept-any-certificate mode. An effective
-	// HTTP proxy overrides the pin on every dial path.
+	// TLSFingerprint is the base64(SHA-256(SPKI DER)) pin: the pin IS the
+	// switch (empty = system verification; there is no accept-any mode).
+	// See specs/domains/llm-providers.md (TLS pinning, incl. the proxy override).
 	TLSFingerprint string
 	// OutputTokenReserve overrides the output-token budget for every model of
-	// this provider (0 = inherit the global executor.output_token_reserve).
-	// It is seeded into the model-registry overrides as ModelMetadata.OutputLimit,
-	// so it drives both the context-window reserve and the executor MaxTokens
-	// ceiling. A per-model llm.models output_limit still wins over it.
+	// this provider (0 = inherit the global reserve); a per-model
+	// llm.models output_limit still wins. See specs/domains/llm-providers.md.
 	OutputTokenReserve int
-	// TimeoutClass is the operator's llm.<provider>.timeout_class override for
-	// the adaptive request budget (ADR-071 D3): "local" | "remote" (the
-	// embedded class is fixed by the reserved provider name). Empty = infer:
-	// the reserved name "embedded" wins first, then a loopback base_url is
-	// local, everything else remote. Consumed by llmbudget.Classify at entry
-	// build; an unrecognized value was already rejected by the config
-	// validation and degrades to the empty (infer) reading here.
+	// TimeoutClass is the llm.<provider>.timeout_class override for the
+	// adaptive request budget: "local" | "remote" (empty = infer; the
+	// reserved "embedded" entry's class is fixed). See specs/domains/llm-providers.md.
 	TimeoutClass string
-	// SubscriptionAuth marks this entry as authenticating with a ChatGPT
-	// subscription (browser OAuth) instead of the static APIKey. Set by
-	// ToBuilderConfig when llm.chatgpt.auth.mode is "oauth" — never by any
-	// other path. providerEntryFromConfig turns the marker into the entry's
-	// TokenSource + RequireStreaming (see BuilderSubscriptionAuthConfig);
-	// with the marker off, the entry is built exactly as before the mode
-	// existed, so api_key configs are byte-for-byte historical.
+	// SubscriptionAuth marks the entry as ChatGPT-subscription (browser OAuth)
+	// auth; set only by ToBuilderConfig in oauth mode. With the marker off the
+	// entry is built byte-for-byte as before the mode existed.
+	// See specs/domains/llm-providers.md.
 	SubscriptionAuth bool
 }
 
@@ -341,11 +281,9 @@ type BuilderModelOverride struct {
 	Family        string
 	Protocol      string
 	Capabilities  *llm.ModelCapabilities
-	// RequestTimeout is llm.models.<name>.request_timeout in seconds
-	// (ADR-071 D5): a positive value is a FIXED per-model deadline — it is
-	// never escalated and short-circuits the adaptive estimate. 0 = no
-	// opinion (the adaptive budget governs; under the kill-switch the global
-	// timeout does). The backend config validation bounds it to [0, 3600].
+	// RequestTimeout is llm.models.<name>.request_timeout in seconds: a
+	// positive value is a FIXED deadline, never escalated; 0 = no opinion
+	// (the adaptive budgets govern). See specs/domains/llm-providers.md.
 	RequestTimeout int
 }
 
@@ -402,28 +340,19 @@ type BuilderCompactionConfig struct {
 	ObservationTruncate int
 	SafetyMarginPercent int
 
-	// Forecast carries the compression-ratio forecasts for the LLM-backed
-	// manual-compaction strategies. They seed the orchestrator's EWMA
-	// calibration state (refined after each manual compaction); zero fields
-	// fall back to sp4rk's conservative defaults. The forecast affects ONLY
-	// the predicted reclaim number shown in the compact menu — never whether
-	// a strategy is available (that is an exact structural verdict).
+	// Forecast seeds the LLM-backed strategies' predicted reclaim (EWMA-
+	// calibrated per compaction); it never affects availability, which is an
+	// exact structural verdict. See specs/domains/memory/compaction.md.
 	Forecast BuilderCompactionForecast
 }
 
-// BuilderCompactionForecast holds the compression-ratio forecast seeds for
-// manual compaction prediction. Each ratio is the expected fraction of a
-// summarized block's input tokens that the summary occupies.
+// BuilderCompactionForecast holds the forecast seeds: the expected fraction of
+// a summarized block's input tokens its summary occupies. Defaults and
+// calibration: specs/domains/memory/compaction.md.
 type BuilderCompactionForecast struct {
-	// SummarizationRatio feeds the "summarization" strategy and hierarchical's
-	// middle zone (default 0.3).
-	SummarizationRatio float64
-	// HierarchicalDistantRatio feeds hierarchical's distant zone — one
-	// aggressive summary over a large block (default 0.15).
-	HierarchicalDistantRatio float64
-	// HierarchicalMiddleRatio feeds hierarchical's middle zone — per-block
-	// summaries (default 0.3).
-	HierarchicalMiddleRatio float64
+	SummarizationRatio       float64 // "summarization" + hierarchical middle (default 0.3)
+	HierarchicalDistantRatio float64 // hierarchical distant zone (default 0.15)
+	HierarchicalMiddleRatio  float64 // hierarchical middle zone (default 0.3)
 }
 
 // BuilderSlidingWindow configures sliding-window compaction.
@@ -486,94 +415,62 @@ type BuilderCircuitBreaker struct {
 // Security
 // ---------------------------------------------------------------------------
 
-// Mode values of the unified autonomy posture (security.autonomy_mode).
-// Core owns this vocabulary; backend/config re-declares the same strings as
-// its config enum (core never imports backend/config) —
-// backend/configadapter_test.go pins the two dictionaries against each
-// other so neither side can rename a value alone.
+// Mode values of the unified autonomy posture (security.autonomy_mode). Core
+// owns this vocabulary; backend/config re-declares the same strings and
+// backend/configadapter_test.go pins the two dictionaries against each other.
+// See specs/architecture/security-model.md.
 const (
-	// AutonomyModeStandard is the default posture: every interactive prompt
-	// (tool confirmations, step-limit cards, ask_user, review prompt)
-	// reaches a human.
-	AutonomyModeStandard = "standard"
-	// AutonomyModeAssisted lets the strict OWASP ASI judge resolve escalated
-	// calls (the former Smart Approve toggle): only a strict ALLOW skips the
-	// UI; every other outcome still asks the user.
-	AutonomyModeAssisted = "assisted"
-	// AutonomyModeSilent is the unattended posture (the former
-	// silent_mode.enabled=true): the four silent-mode sub-policies resolve
-	// the interactive prompts without a human.
-	AutonomyModeSilent = "silent"
+	AutonomyModeStandard = "standard" // default: every interactive prompt reaches a human
+	AutonomyModeAssisted = "assisted" // the strict judge resolves escalated calls (former Smart Approve)
+	AutonomyModeSilent   = "silent"   // unattended: the four silent-mode sub-policies answer
 )
 
 // BuilderSecurityConfig holds security settings.
 type BuilderSecurityConfig struct {
 	InjectionDefenseEnabled bool
 
-	// Groups maps tool-group names (the sdktools.Group* values) to their
-	// policy. This is the security schema (security.groups in config.yaml):
-	// the registry resolves every non-system tool's policy from its
-	// capability group alone — per-tool policy overrides do not exist.
-	// The reserved "system" group is not configurable and never appears here.
+	// Groups is the security schema (security.groups): the registry resolves
+	// every non-system tool's policy from its capability group alone; the
+	// reserved "system" group never appears here. See
+	// specs/decisions/024-group-policies.md.
 	Groups map[string]BuilderGroupPolicy
 
-	// AutoApproveWorkspaceWrites, when true, auto-executes local_write tools
-	// whose targets resolve inside the session workspace without user
-	// confirmation.
+	// AutoApproveWorkspaceWrites auto-executes local_write tools whose targets
+	// resolve inside the session workspace without user confirmation.
 	AutoApproveWorkspaceWrites bool
 
-	// AutonomyMode is the unified autonomy posture
-	// (security.autonomy_mode): AutonomyModeStandard | AutonomyModeAssisted |
-	// AutonomyModeSilent. It replaces the former Smart Approve /
-	// silent-mode master-switch pair of bools; the registry-facing booleans
-	// are derived from it by SmartApproveEnabled / SilentModeEnabled (and
-	// the AskUserDisabled predicate) below. An empty or unknown value
-	// behaves as standard — fail-safe (the config loader maps unknown values
-	// onto standard with a warning before they ever reach here).
+	// AutonomyMode is the unified posture (standard | assisted | silent); the
+	// registry-facing booleans below derive from it. Empty/unknown behaves as
+	// standard (the config loader maps unknowns before they ever reach here).
 	AutonomyMode string
 
-	// SilentMode is the silent-mode sub-policy container
-	// (security.silent_mode). Its policies are live only while AutonomyMode
-	// is "silent"; then they decide how the confirmation, step-limit,
-	// ask_user, and review-prompt prompts resolve without a human. Pushed to
-	// the registry alongside the group policies.
+	// SilentMode is the silent-mode sub-policy container; live only while
+	// AutonomyMode is "silent". See specs/architecture/security-model.md.
 	SilentMode BuilderSilentModeConfig
 
-	// AgentsMDMaxBytes caps the AGENTS.md content read from the workspace before
-	// it is injected into the system prompt. 0 means use the default (65536).
-	// A negative value disables the cap entirely. The cap applies to the
-	// combined content of all AGENTS.md sources.
+	// AgentsMDMaxBytes caps the combined AGENTS.md content injected into the
+	// system prompt: 0 = default (65536), negative = no cap.
 	AgentsMDMaxBytes int
 
-	// AgentsMDSearchPaths holds extra absolute paths (outside the workspace)
-	// to search for AGENTS.md files, in priority order. Content from these
-	// paths is concatenated ahead of the workspace-root AGENTS.md. Each path
-	// points directly at an AGENTS.md file. Missing files are silently skipped.
+	// AgentsMDSearchPaths holds extra absolute AGENTS.md file paths searched
+	// (in priority order) ahead of the workspace root; missing files are skipped.
 	AgentsMDSearchPaths []string
 }
 
-// SilentModeEnabled reports whether the unattended posture is active — the
-// derived replacement of the former silent_mode.enabled bool (live only in
-// the "silent" autonomy mode).
+// SilentModeEnabled reports the unattended posture (live only in "silent").
 func (s BuilderSecurityConfig) SilentModeEnabled() bool {
 	return s.AutonomyMode == AutonomyModeSilent
 }
 
-// SmartApproveEnabled reports whether the strict judge resolves escalated
-// calls — the derived replacement of the former Smart Approve bool. Silent
-// implies it: the "silent" mode routes confirmation-gated calls through the
-// judge via the tool_confirm sub-policy, and the registry's silent path
-// takes precedence over Smart Approve anyway (smartApproveOrConfirm checks
-// the silent posture first), so the flag is inert there.
+// SmartApproveEnabled reports whether the strict judge resolves escalated calls
+// (assisted; silent implies it — silent routes them through the judge anyway).
 func (s BuilderSecurityConfig) SmartApproveEnabled() bool {
 	return s.AutonomyMode == AutonomyModeAssisted || s.AutonomyMode == AutonomyModeSilent
 }
 
-// AskUserDisabled reports whether the unattended posture is on AND its
-// ask_user sub-policy disables the tool. The "disable" value is the shared
-// core/tools.SilentAskUserDisable vocabulary constant (mirroring the config
-// enum SilentAskUserDisable; core does not import backend/config) — pinned
-// against the config enum by backend/configadapter_test.go.
+// AskUserDisabled reports whether the unattended posture's ask_user sub-policy
+// disables the tool ("disable" == core/tools.SilentAskUserDisable, pinned
+// against the config enum by backend/configadapter_test.go).
 func (s BuilderSecurityConfig) AskUserDisabled() bool {
 	return s.SilentModeEnabled() && s.SilentMode.AskUser == tools.SilentAskUserDisable
 }
@@ -586,15 +483,11 @@ type BuilderGroupPolicy struct {
 	Blocklist []string
 }
 
-// BuilderSilentModeConfig is the core mirror of security.silent_mode: the
-// container for the unattended-operation sub-policies. The former Enabled bool
-// is gone — whether the policies are live is derived from
-// BuilderSecurityConfig.AutonomyMode ("silent"). UserConfirm is the
-// refinement of ToolConfirm for a fail-closed (CONFIRM) tool_confirm outcome
-// (see tools.SilentModeState). The sub-policy mode strings are the config enum
-// values passed through verbatim; core never imports backend/config, so it
-// does not reference the enum constants. ApplyDefaults has already seeded
-// every mode before conversion.
+// BuilderSilentModeConfig is the core mirror of security.silent_mode: the four
+// unattended-operation sub-policies (mode strings are the config enum values
+// verbatim; live only while AutonomyMode is "silent"; UserConfirm refines
+// ToolConfirm for a fail-closed CONFIRM outcome). ApplyDefaults seeds every
+// mode before conversion. See specs/architecture/security-model.md.
 type BuilderSilentModeConfig struct {
 	ToolConfirm string
 	UserConfirm string
@@ -608,13 +501,9 @@ type BuilderSkillsConfig struct {
 }
 
 // BuilderCapabilitiesConfig carries the per-capability activation modes for
-// the skill and agent catalogs (capabilities.skills / capabilities.agents in
-// config.yaml), one CapabilityModes entry per named skill/agent. MCP servers
-// carry their modes on BuilderMCPServer instead. An entry absent from a map —
-// or present with both contexts empty — is "auto" in every context: implicit
-// discovery and explicit mentions both work (the zero-regression default).
-// core never imports backend/config, so the shape and the enum values mirror
-// config.CapabilityModes by value.
+// the skill and agent catalogs (MCP servers carry theirs on BuilderMCPServer);
+// an entry absent from a map is "auto" in every context. Enum/shape mirroring:
+// specs/domains/capabilities.md.
 type BuilderCapabilitiesConfig struct {
 	Skills map[string]CapabilityModes
 	Agents map[string]CapabilityModes
@@ -641,13 +530,9 @@ type BuilderMCPConfig struct {
 	DefaultWorkDir string
 }
 
-// CapabilityModes is one capability entry's activation modes, one per
-// execution context: ChatMode applies to CHAT sessions (No Project), CodeMode
-// to CODE sessions (a real project). Both carry the MCP server mode enum —
-// "auto", "manual" or "disabled" (mcpModeAuto / mcpModeManual /
-// mcpModeDisabled) — and an empty value IS "auto" (the default). core never
-// imports backend/config, so the shape and the enum values mirror
-// config.CapabilityModes by value.
+// CapabilityModes is one capability entry's activation modes per execution
+// context (CHAT vs CODE): "auto" | "manual" | "disabled"; empty IS "auto".
+// See specs/domains/capabilities.md.
 type CapabilityModes struct {
 	ChatMode string
 	CodeMode string
@@ -663,15 +548,10 @@ type BuilderMCPServer struct {
 	Headers   map[string]string
 	WorkDir   string
 
-	// ChatMode / CodeMode are the per-server activation modes for CHAT
-	// (No Project) and CODE (real project) sessions respectively: "auto" |
-	// "manual" | "disabled", with empty behaving as "auto". A server disabled
-	// in BOTH contexts is skipped by configToGatewayConfig and never dialed;
-	// every other combination stays in the gateway config, with manual's
-	// on-demand behavior layered above the gateway. The adapter carries the
-	// values verbatim from config.Capabilities.MCP; core never imports
-	// backend/config, so the enum values mirror the config constants by
-	// string value.
+	// ChatMode / CodeMode are the per-server activation modes for CHAT / CODE
+	// sessions ("auto" | "manual" | "disabled"; empty = "auto"). A server
+	// disabled in BOTH contexts is never dialed. See
+	// specs/domains/tool-system/mcp-gateway.md.
 	ChatMode string
 	CodeMode string
 
@@ -710,15 +590,13 @@ type BuilderGoalLoopConfig struct {
 	Suggest GoalSuggestSettings
 }
 
-// BuilderE2SConfig mirrors config.E2SConfig for the subset core consumes. core
-// never imports backend/config, so the values are copied via ToBuilderConfig,
-// where Enabled is mapped from the experimental gate (fail-closed). A zero
-// value means "disabled with loop defaults" — core falls back to the core/e2s
-// Config defaults for every numeric field.
+// BuilderE2SConfig mirrors config.E2SConfig for the subset core consumes
+// (copied via ToBuilderConfig; Enabled mapped from the experimental gate,
+// fail-closed). A zero value means "disabled with loop defaults" — the core/e2s
+// Config defaults apply. See specs/domains/e2s.md.
 type BuilderE2SConfig struct {
-	// Enabled is the effective availability of the E2S execution mode
-	// (experimental.enabled). When false the mode is rejected fail-closed; the
-	// numeric fields below are then inert.
+	// Enabled is the effective E2S availability (experimental.enabled); when
+	// false the mode is rejected fail-closed and the knobs below are inert.
 	Enabled bool
 	// MaxSteps caps the number of turns (patch+action cycles) per run.
 	MaxSteps int
@@ -739,19 +617,15 @@ type BuilderE2SConfig struct {
 	// thresholds (identical consecutive actions before a nudge / an abort).
 	RepeatNudgeThreshold int
 	RepeatAbortThreshold int
-	// Tools narrows the E2S available-tool catalog (preset + allow/deny).
-	// See filterE2SToolsByConfig in core/orchestrator_e2s.go — the filter
-	// runs before the E2S plan/delegation stripping, and the resulting
-	// catalog is the dispatch contract (filtered-out names are rejected
-	// fail-closed at action dispatch).
+	// Tools narrows the E2S available-tool catalog (preset + allow/deny); the
+	// filtered catalog is the dispatch contract (filtered-out names are
+	// rejected fail-closed at action dispatch). See filterE2SToolsByConfig in
+	// core/orchestrator_e2s.go and specs/domains/e2s.md.
 	Tools BuilderE2SToolsConfig
 }
 
-// E2S tool-catalog preset values (mirrored by backend/config's
-// E2SToolsPresetCore / E2SToolsPresetAll — core never imports backend/config,
-// so the two constant sets must stay in sync; the config layer validates the
-// value at load, and the core filter treats anything but "all" as core —
-// fail-closed to the narrower surface).
+// E2S tool-catalog preset values (mirrored by backend/config's constants — the
+// two sets must stay in sync; unknown values fail closed to the "core" surface).
 const (
 	// E2SToolsPresetCore keeps the local_read + local_write + execute +
 	// remote_read capability groups plus the E2S system plumbing tools.
@@ -761,8 +635,7 @@ const (
 )
 
 // BuilderE2SToolsConfig mirrors config.E2SToolsConfig — the E2S tool-catalog
-// narrowing knobs. core never imports backend/config, so the values are
-// copied field-by-field via ToBuilderConfig.
+// narrowing knobs (deny wins over the preset and allow; see specs/domains/e2s.md).
 type BuilderE2SToolsConfig struct {
 	// Preset selects the base catalog: "core" (default) or "all". Any other
 	// value is treated as core (fail-closed to the narrower surface).
@@ -788,15 +661,12 @@ type BuilderToolLimitsConfig struct {
 	GlobMaxEntries int
 	GlobMaxResults int
 
-	// GlobLimitsExplicit reports that the glob config is explicitly customized
-	// — at least one of the three glob knobs (entries, results, timeout)
-	// resolved to a non-default value, which post-ApplyDefaults can only mean
-	// the operator set it (including the explicit "0 disables"). It selects the
-	// no-fallback glob constructor in core/tools so an explicitly all-zero
-	// config ("0 disables" on all three knobs, the documented contract) is
-	// honored verbatim instead of being silently replaced by sp4rk's defaults;
-	// false keeps NewGlobToolWithLimits's zero-struct→defaults fallback (the
-	// runaway-walk safety net for a fully-unset / never-populated config).
+	// GlobLimitsExplicit reports the glob config was explicitly customized
+	// (at least one of the three knobs non-default post-ApplyDefaults): it
+	// selects the no-fallback glob constructor so an explicit all-zero config
+	// ("0 disables" on all three knobs) is honored verbatim instead of the
+	// zero-struct→defaults fallback for a never-populated config.
+	// See specs/domains/tool-system/builtins.md (Limits Configuration).
 	GlobLimitsExplicit bool
 
 	// Per-tool Stage 1 truncation (line/byte-based, applied before token budget).
@@ -821,25 +691,19 @@ type BuilderTimeoutsConfig struct {
 	GlobTimeout     int // seconds; wall-clock budget for a single glob walk (0 = no timeout)
 	ToolCallTimeout int // seconds; ceiling for a single tool call in the ReAct loop (0 = disabled). Installed on the main conductor executor and every subagent executor.
 	// ToolCallTimeoutExemptTools replaces the per-tool-call ceiling's exempt
-	// set (tool NAMES, threaded to the main executor via
-	// orchestration.ConductorConfig and to every subagent executor via
-	// SetToolCallTimeoutExempt). nil keeps sp4rk's built-in default exempt set
-	// (agent.DefaultToolCallTimeoutExemptTools); an explicit list — possibly
-	// empty — replaces it wholesale, so an operator can extend the exemption
-	// to long-running tools the default does not know (e.g. MCP-backed tools
-	// with no internal timeout).
+	// set (tool NAMES threaded to the main and every subagent executor):
+	// nil keeps sp4rk's built-in default; an explicit list — possibly empty —
+	// replaces it wholesale.
 	ToolCallTimeoutExemptTools []string
 	WebFetchTimeout            int
 	WebFetchProxyTimeout       int // seconds; per-attempt web fetch timeout when the proxy is enabled
 	WebFetchRetries            int // retry count (not seconds); each retry doubles the active web fetch timeout
 	WebSearchTimeout           int
 	LLMRequestTimeout          int
-	// AdaptiveBudgetEnabled mirrors timeouts.adaptive_budget.enabled
-	// (ADR-071 D11, default true). When false NO llmbudget transport is
-	// installed on any provider entry and every client is built exactly as
-	// before the feature existed — the legacy fixed regime. When true, a
-	// positive LLMRequestTimeout is still a fixed override fed to the
-	// resolver, while 0 means "no opinion" and the adaptive budgets govern.
+	// AdaptiveBudgetEnabled mirrors timeouts.adaptive_budget.enabled (default
+	// true): false installs no budget transport (the legacy fixed regime);
+	// true lets a positive LLMRequestTimeout act as a fixed override while 0
+	// defers to the adaptive budgets. See specs/domains/llm-providers.md.
 	AdaptiveBudgetEnabled bool
 }
 
@@ -848,51 +712,30 @@ type BuilderTimeoutsConfig struct {
 // ---------------------------------------------------------------------------
 
 // BuilderEmbeddedLLMConfig carries the embedded local model's runtime seam into
-// the router build. The embedded server is supervised by core/embeddedllm, but
-// the *instance* is owned by the layer that knows the storage layout, so it is
-// injected here — exactly like MarkitdownPythonPath and ExpandEnvVars.
-//
-// What it changes: the provider entry named ProviderName gets an
-// embeddedllm.EnsureLoadedTransport on its ProviderEntry.HTTPClient, so the
-// first request to an idle-unloaded model transparently starts it and every
-// completed response restarts the idle budget. That same entry is also the only
-// one built with llm.ReasoningWireChatTemplateKwargs, because the supervised
-// server is the pinned llama.cpp fork that reads enable_thinking exclusively
-// from chat_template_kwargs. Every other entry — and every other dial path
-// (Fetch Models, the lazy context probe) — is untouched.
-//
-// This is the PER-BUILD form. OrchestratorBuilder also holds one as its default
-// (SetEmbeddedLLM), which buildRouter applies to any config that carries no
-// Loader of its own — see embeddedSeam. The default exists because not every
-// BuilderConfig is converted by a caller that can reach the supervisor: the
-// per-session orchestrator is built from one converted inside the session
-// factory, and without the default that router would dispatch requests to a
-// cold model's dead socket.
+// the router build: the provider entry named ProviderName gets an
+// embeddedllm.EnsureLoadedTransport on its ProviderEntry.HTTPClient (a request
+// to an idle-unloaded model transparently starts it; a completed response
+// restarts the idle budget) and is the only entry built with
+// llm.ReasoningWireChatTemplateKwargs (the pinned llama.cpp fork reads
+// enable_thinking exclusively from chat_template_kwargs). This is the
+// PER-BUILD form; OrchestratorBuilder also holds one as its default
+// (SetEmbeddedLLM) so per-session routers — whose BuilderConfig is converted
+// where the supervisor is unreachable — still get the seam. See
+// specs/domains/llm-providers.md and specs/domains/embedded-llm.md.
 type BuilderEmbeddedLLMConfig struct {
-	// ProviderName is the router entry the transport guards. The backend injects
-	// config.EmbeddedLLMProviderName ("embedded"); core deliberately does not
-	// hardcode the literal, so an unset name guards nothing rather than guessing.
+	// ProviderName is the router entry the transport guards (backend-injected;
+	// deliberately not hardcoded — an unset name guards nothing).
 	ProviderName string
 
-	// Loader is the supervisor seam. nil disables the transport entirely, which
-	// is the posture until the app owns a server instance.
-	//
-	// In production this is NOT a *Server but backend.embeddedLoaderRef — a
-	// small value type that resolves the supervisor lazily, at call time, and
-	// also carries the two optional capabilities the transport probes for
-	// (embeddedllm.RequestTracker and embeddedllm.PortSource). It is a ref
-	// rather than a direct pointer for an ordering reason: the router is first
-	// built before the embedded subsystem exists, and the per-session router is
-	// built from a config converted while the backend's config lock is held,
-	// where taking the subsystem's lock would invert the documented lock order.
-	// Resolving at call time lets the seam be attached before the supervisor
-	// exists and still reach the real one later.
-	//
-	// A *Server also satisfies the interface (and both optional capabilities),
-	// so tests may hand one over directly.
+	// Loader is the supervisor seam; nil disables the transport. In production
+	// it is backend.embeddedLoaderRef — resolved lazily at call time because
+	// the router is built before the embedded subsystem exists and the
+	// per-session conversion holds the backend config lock (taking the
+	// subsystem's lock there would invert the documented lock order).
+	// See specs/domains/embedded-llm.md.
 	Loader embeddedllm.Loader
 
-	// LoadWaitTimeout bounds how long one request waits for a cold load.
+	// LoadWaitTimeout bounds one request's wait for a cold load;
 	// <= 0 → embeddedllm.DefaultLoadWaitTimeout.
 	LoadWaitTimeout time.Duration
 }
@@ -905,35 +748,21 @@ func (c BuilderEmbeddedLLMConfig) guards(name string) bool {
 	return c.Loader != nil && c.ProviderName != "" && c.ProviderName == name
 }
 
-// BuilderSubscriptionAuthConfig carries the subscription-auth token source
-// into the router build. The token manager is owned by the layer that runs the
-// browser OAuth flow (backend/providerauth), so it is injected here — exactly
-// like BuilderEmbeddedLLMConfig's Loader.
-//
-// What it changes: the provider entry whose BuilderProviderConfig carries
-// SubscriptionAuth (ToBuilderConfig sets it on the chatgpt entry when
-// llm.chatgpt.auth.mode is "oauth") gets TokenSource + RequireStreaming on its
-// llm.ProviderEntry. The static APIKey then never reaches the wire: the token
-// source's credentials override it on every request, and a signed-out user
-// gets an actionable "sign in with ChatGPT" error instead of a silent fallback
-// to the key.
-//
-// This is the PER-BUILD form. OrchestratorBuilder also holds one as its default
-// (SetSubscriptionTokenSource), which buildRouter applies to any config that
-// carries no TokenSource of its own — the same net that covers the per-session
-// router, whose BuilderConfig is converted where the token manager is not in
-// scope (see SetEmbeddedLLM for the identical reasoning).
+// BuilderSubscriptionAuthConfig carries the subscription-auth token source into
+// the router build: the entry whose BuilderProviderConfig carries
+// SubscriptionAuth gets TokenSource + RequireStreaming, so the static APIKey
+// never reaches the wire. This is the PER-BUILD form; OrchestratorBuilder also
+// holds one as its default (SetSubscriptionTokenSource) covering the
+// per-session routers. See specs/domains/llm-providers.md.
 type BuilderSubscriptionAuthConfig struct {
-	// ProviderName is the router entry the token source serves. The backend
-	// injects "chatgpt"; core deliberately does not hardcode the literal, so
-	// an unset name serves nothing rather than guessing.
+	// ProviderName is the router entry the token source serves (backend-
+	// injected; deliberately not hardcoded — an unset name serves nothing).
 	ProviderName string
 
-	// TokenSource supplies per-request OAuth bearer credentials (it is the
-	// backend's providerauth.TokenManager in production). nil means signed
-	// out: the subscription-marked entry keeps its place in the router — the
-	// models stay visible and selectable — but every request fails with the
-	// actionable "sign in with ChatGPT" error.
+	// TokenSource supplies per-request OAuth bearer credentials (the backend's
+	// providerauth.TokenManager in production); nil means signed out — the
+	// entry stays listed but every request fails with the actionable
+	// "sign in with ChatGPT" error.
 	TokenSource llm.TokenSource
 }
 

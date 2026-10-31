@@ -12,27 +12,24 @@ import (
 	"github.com/v0lka/sp4rk/tools/mcp"
 )
 
-// MCPServerStatusInfo is the GetMCPStatus wire shape: the live gateway
-// status of one server plus its configured per-context activation modes —
-// a c0wrk-level concept the sp4rk ServerStatus does not carry. The embedded
-// status keeps its JSON keys (embedding flattens), so chat_mode / code_mode
-// are the only additions and existing frontend payloads stay valid.
+// MCPServerStatusInfo is the GetMCPStatus wire shape: the live gateway status
+// of one server plus its configured per-context activation modes (a c0wrk-level
+// concept sp4rk's ServerStatus does not carry). See
+// specs/decisions/084-per-capability-chat-code-activation-modes.md.
 type MCPServerStatusInfo struct {
 	mcp.ServerStatus
-	// ChatMode / CodeMode are the normalized capabilities.mcp.<name>
-	// activation modes for the two contexts ("auto" | "manual" | "disabled";
-	// the legacy single mode folded into both). Always set by the merge;
-	// "auto"/"auto" only on the synthetic gateway-starting placeholder,
-	// which the frontend renders by its `starting` flag anyway.
+	// ChatMode / CodeMode are the normalized capabilities.mcp.<name> modes
+	// for the two contexts ("auto" | "manual" | "disabled"; the legacy single
+	// mode folded into both). Both-auto only on the synthetic gateway-starting
+	// placeholder, which the frontend renders by its `starting` flag anyway.
 	ChatMode string `json:"chat_mode"`
 	CodeMode string `json:"code_mode"`
 }
 
-// mcpCapabilityModes resolves the normalized per-context activation modes
-// for one server name from the capabilities.mcp section. A missing entry or
-// empty field resolves to "auto", matching the load pipeline; entries whose
-// name is outside mcp.servers cannot reach here (the load path drops them)
-// and are treated exactly like a missing entry.
+// mcpCapabilityModes resolves the normalized per-context activation modes for
+// one server name; a missing entry or empty field resolves to "auto",
+// matching the load pipeline (a name outside mcp.servers cannot reach here —
+// the load path drops it).
 func mcpCapabilityModes(caps map[string]config.CapabilityModes, name string) (chatMode, codeMode string) {
 	modes := caps[name]
 	return config.NormalizeMCPServerMode(modes.ChatMode), config.NormalizeMCPServerMode(modes.CodeMode)
@@ -40,25 +37,18 @@ func mcpCapabilityModes(caps map[string]config.CapabilityModes, name string) (ch
 
 // mcpModesDisabled reports whether BOTH per-context modes are "disabled" —
 // the only combination under which the server is never dialed and renders
-// neutrally. A single disabled context keeps the server live for the other
-// one, so the live status stays meaningful.
+// neutrally.
 func mcpModesDisabled(chatMode, codeMode string) bool {
 	return chatMode == config.MCPServerModeDisabled && codeMode == config.MCPServerModeDisabled
 }
 
 // GetMCPStatus returns the status of every CONFIGURED MCP server so the
-// settings UI always renders the full configuration, unavailable servers
-// included (shown with a red indicator). Configured names missing from the
-// live gateway status — the gateway is missing entirely, failed to start, or
-// dropped a server — are synthesized as disconnected entries. A DISABLED
-// server is rendered NEUTRALLY instead: it is intentionally not dialed, so
-// it never surfaces as an error/unavailable state (see
-// mergeConfiguredMCPServers). While gateway startup is still in flight (the
-// "_gateway" starting placeholder) nothing is merged: availability is
-// genuinely unknown, and the frontend refreshes on the mcp:ready event once
-// startup completes. The configured servers and their modes are captured
-// under a single configMu read lock (mcpConfigSnapshot), so the merged
-// response always reflects one moment of the config.
+// settings UI renders the full configuration, unavailable servers included.
+// Configured names missing from the live status are synthesized as
+// disconnected entries; a server disabled in BOTH contexts renders NEUTRALLY
+// (see mergeConfiguredMCPServers). While the gateway-starting placeholder is
+// up nothing is merged; the frontend refreshes on mcp:ready. Servers and
+// modes are captured under one configMu read lock (mcpConfigSnapshot).
 // Returns an empty slice if the backend application is not initialized.
 func (f *FrontendAPI) GetMCPStatus() []MCPServerStatusInfo {
 	if f.appCell() == nil {
@@ -85,23 +75,14 @@ func isMCPStartupPlaceholder(status []mcp.ServerStatus) bool {
 	return len(status) == 1 && status[0].Name == "_gateway" && status[0].Starting
 }
 
-// mergeConfiguredMCPServers enriches the live gateway status with the
-// configured per-context activation modes (capabilities.mcp.<name>),
-// appends a synthesized entry for every configured server absent from
-// status, then sorts the result by name. This keeps the settings list a
-// mirror of the configuration even when the gateway cannot report a server
-// itself (failed startup, gateway missing, config ahead of a failed
-// reconfigure).
-//
-// A server disabled in BOTH contexts is INERT, not broken, and must render
-// neutrally:
-//   - a configured-but-absent name synthesizes an entry WITHOUT the usual
-//     "unavailable" error (absence is exactly what "never dialed" produces);
-//   - a name a stale gateway still reports (a reconfigure that failed
-//     mid-flight can leave the old connection behind) is neutralized — the
-//     config modes are authoritative, so connected/tools/error are cleared
-//     and the frontend renders the entry by its modes instead of a
-//     live-looking or red state.
+// mergeConfiguredMCPServers enriches the live status with the configured
+// per-context modes, synthesizes an entry for every configured server absent
+// from status, and sorts by name — the settings list stays a mirror of the
+// configuration even when the gateway cannot report a server itself. A
+// server disabled in BOTH contexts is INERT, not broken, and renders
+// neutrally (see specs/decisions/084-per-capability-chat-code-activation-modes.md):
+// the synthesized entry carries no "unavailable" error, and a stale gateway
+// entry is neutralized — the config modes are authoritative.
 func mergeConfiguredMCPServers(status []mcp.ServerStatus, configured map[string]config.MCPServerConfig, caps map[string]config.CapabilityModes) []MCPServerStatusInfo {
 	merged := make([]MCPServerStatusInfo, 0, len(status)+len(configured))
 	present := make(map[string]bool, len(status))
@@ -154,10 +135,9 @@ func (f *FrontendAPI) GetMCPServers() map[string]config.MCPServerConfig {
 	return f.configMCPServersCopy()
 }
 
-// configMCPServersCopy deep-copies the configured MCP servers (args, env and
-// headers cloned) so the map can leave the config lock without exposing the
-// live config to external modification. Callers MUST hold configMu; a nil
-// config yields an empty map.
+// configMCPServersCopy deep-copies the configured MCP servers (args, env,
+// headers cloned) so the map can leave the config lock. Callers MUST hold
+// configMu; a nil config yields an empty map.
 func (f *FrontendAPI) configMCPServersCopy() map[string]config.MCPServerConfig {
 	servers := f.configMCPServers()
 	result := make(map[string]config.MCPServerConfig, len(servers))
@@ -185,11 +165,9 @@ func (f *FrontendAPI) configMCPServersCopy() map[string]config.MCPServerConfig {
 }
 
 // mcpConfigSnapshot returns a coherent one-lock view of the configured MCP
-// servers (deep-copied) and their capabilities.mcp activation modes (stale
-// names removed). Both maps are captured under a single configMu read lock,
-// so a concurrent UpdateMCPServers / UpdateCapabilityModes cannot land
-// between them and make a consumer merge servers from one moment with modes
-// from another. Safe on a nil config: both maps come back empty (never nil).
+// servers (deep-copied) and their capabilities.mcp activation modes, so a
+// consumer never merges servers from one moment with modes from another.
+// Safe on a nil config: both maps come back empty (never nil).
 func (f *FrontendAPI) mcpConfigSnapshot() (servers map[string]config.MCPServerConfig, caps map[string]config.CapabilityModes) {
 	f.configMu.RLock()
 	defer f.configMu.RUnlock()
@@ -197,13 +175,9 @@ func (f *FrontendAPI) mcpConfigSnapshot() (servers map[string]config.MCPServerCo
 }
 
 // MCPMentionableServer is the minimal identity of one configured MCP server
-// for the chat input's @-completion and the send path: name plus the
-// per-context activation modes (capabilities.mcp.<name>). It deliberately
-// carries NOTHING else — command args, env and headers can embed secrets,
-// and none of them is needed to mention a server. The modes let the
-// consumer decide mentionability (chat manual servers are the
-// mention-triggered ones; disabled in both contexts are inert) without
-// another round-trip.
+// for the chat input's completion and the send path: name plus per-context
+// modes. Deliberately NOTHING else — command args, env and headers can embed
+// secrets, and none of it is needed to mention a server.
 type MCPMentionableServer struct {
 	Name     string `json:"name"`
 	ChatMode string `json:"chat_mode"`
@@ -211,12 +185,9 @@ type MCPMentionableServer struct {
 }
 
 // GetMCPMentionableServers returns every configured MCP server as a
-// secret-free {name, chat_mode, code_mode} triple, sorted by name. It is the
-// lightweight read behind the chat-input completion and the send path — no
-// transport details, no gateway status, no credentials. Modes are normalized
-// (empty/invalid resolve to "auto"), matching the load pipeline. Servers and
-// modes are captured under a single configMu read lock (mcpConfigSnapshot),
-// so the listing always reflects one moment of the config.
+// secret-free triple, sorted by name — the lightweight read behind the chat
+// input's completion and the send path. Modes are normalized exactly like the
+// load pipeline; captured under one configMu read lock.
 // Returns an empty slice if config is not initialized.
 func (f *FrontendAPI) GetMCPMentionableServers() []MCPMentionableServer {
 	servers, caps := f.mcpConfigSnapshot()
@@ -238,11 +209,10 @@ func (f *FrontendAPI) GetMCPMentionableServers() []MCPMentionableServer {
 }
 
 // GetToolList returns all registered tools with source, security group, and
-// effective policy info. System-group tools (internal orchestration tools)
-// are filtered out — classification is by the descriptor's group, never by
-// tool name. The policy is read from the LIVE registry group-policy map (the
-// same map Execute consults), so the list reflects what is actually enforced
-// after runtime updates, not a re-derivation from config.
+// effective policy info. System-group tools are filtered out — classification
+// is by the descriptor's group, never by tool name — and the policy is read
+// from the LIVE registry group-policy map (the same map Execute consults), so
+// the list reflects what is actually enforced.
 func (f *FrontendAPI) GetToolList() []ToolInfo {
 	if f.appCell() == nil {
 		return []ToolInfo{}
@@ -279,11 +249,9 @@ func buildToolInfos(
 }
 
 // effectiveGroupPolicy renders the effective policy for a tool group as the
-// config enum string ("allow"|"user_confirm"|"deny"). Missing entries and
-// unrecognized values fail safe to user_confirm, exactly like
-// core/tools.ToolRegistry.groupPolicy (a raw map index is NOT enough — the
-// ToolPolicy zero value is PolicyAlwaysAllow, so an absent group would
-// otherwise render as "allow").
+// config enum string. Missing entries and unrecognized values fail safe to
+// user_confirm — the ToolPolicy zero value is PolicyAlwaysAllow, so a raw map
+// index would render an absent group as "allow".
 func effectiveGroupPolicy(policies map[sdktools.ToolGroup]sdktools.ToolPolicy, group sdktools.ToolGroup) string {
 	if p, ok := policies[group]; ok {
 		switch p {
@@ -296,28 +264,20 @@ func effectiveGroupPolicy(policies map[sdktools.ToolGroup]sdktools.ToolPolicy, g
 	return config.GroupPolicyUserConfirm
 }
 
-// mcpReconfigureTimeout bounds the propagation phase of an MCP server config
-// change. It matches the budget proxyRebuildTimeout and runMCPInit give MCP
-// work: ReconfigureMCP reconnects every changed server and retries every
-// previously-failed one, and a failed HTTP server is retried with no
-// deadline of its own.
+// mcpReconfigureTimeout bounds the propagation phase of an MCP config change —
+// ReconfigureMCP reconnects changed servers and retries previously-failed
+// ones, which have no deadline of their own.
 const mcpReconfigureTimeout = 30 * time.Second
 
 // UpdateMCPServers updates MCP server configuration and hot-reloads the
-// gateway. The payload is a full replacement of mcp.servers; a server absent
-// from it is deleted, and its capabilities.mcp entry is trimmed with it so
-// no stored modes outlive their server.
+// gateway. The payload is a full replacement of mcp.servers: a server absent
+// from it is deleted, its capabilities.mcp entry trimmed with it.
 //
 // Locking contract (mirrors UpdateProxySettings): saveMu serializes whole
-// save sequences, while configMu is held only for the field mutation and the
-// disk write — never across the ReconfigureMCP propagation. Reconfigure
-// reconnects every changed server and retries every previously-failed one
-// with no deadline of its own; holding the configMu WRITE lock across it
-// blocks every concurrent GetConfig and — because Go's RWMutex stops
-// admitting readers once a writer is queued — freezes the whole settings
-// dialog for as long as the reconfigure takes (observed at 169 s when an
-// unreachable endpoint was retried). The disk write stays inside the lock:
-// it is a bounded local atomic rewrite.
+// save sequences; configMu covers only the field mutation and the bounded
+// disk write, never the ReconfigureMCP propagation — a queued writer stops
+// RWMutex readers, so the write lock across reconfigure would freeze the
+// settings dialog (observed at 169 s behind an unreachable endpoint).
 func (f *FrontendAPI) UpdateMCPServers(servers map[string]config.MCPServerConfig) error {
 	// Validate config first
 	for name, cfg := range servers {
@@ -339,10 +299,10 @@ func (f *FrontendAPI) UpdateMCPServers(servers map[string]config.MCPServerConfig
 	newMCP := make(map[string]config.MCPServerConfig, len(servers))
 	for name, cfg := range servers {
 		srv := cfg
-		// The wire format no longer carries mode (json:"-"), so a Wails
-		// caller cannot set it; wiping it here also keeps a Go-native caller
-		// from resurrecting the legacy YAML key — activation modes live in
-		// capabilities.mcp now (UpdateCapabilityModes).
+		// The wire format no longer carries mode (json:"-"); wiping it here
+		// also keeps a Go-native caller from resurrecting the legacy YAML
+		// key — activation modes live in capabilities.mcp
+		// (UpdateCapabilityModes).
 		srv.Mode = ""
 		if cfg.Args != nil {
 			srv.Args = make([]string, len(cfg.Args))
@@ -364,14 +324,12 @@ func (f *FrontendAPI) UpdateMCPServers(servers map[string]config.MCPServerConfig
 	}
 	f.config.MCP.Servers = newMCP
 
-	// capabilities.mcp is keyed by server name, and the replacement above
-	// orphans the entry of every server the payload dropped (a nil payload
-	// orphans all of them). Trim the stale names before persisting — Save
-	// writes the section verbatim, so a deleted server's modes would
-	// otherwise survive on disk and silently re-attach to a future server
-	// of the same name. Survivors keep their stored modes; an emptied
-	// section becomes nil so it disappears from the YAML entirely, the same
-	// shape the load normalization and UpdateCapabilityModes leave it in.
+	// The replacement above orphans the capabilities.mcp entry of every server
+	// the payload dropped. Trim the stale names before persisting — Save
+	// writes the section verbatim, so a deleted server's modes would otherwise
+	// survive on disk and silently re-attach to a future server of the same
+	// name. Survivors keep their modes; an emptied section becomes nil so it
+	// disappears from the YAML entirely.
 	validModes := make(map[string]config.CapabilityModes, len(f.config.Capabilities.MCP))
 	for name, modes := range f.config.Capabilities.MCP {
 		if _, known := newMCP[name]; known {
@@ -396,12 +354,8 @@ func (f *FrontendAPI) UpdateMCPServers(servers map[string]config.MCPServerConfig
 
 	// --- Heavy work below runs OUTSIDE configMu (readers stay responsive) ---
 	// saveMu is still held, so concurrent UpdateMCPServers calls are
-	// serialized and a later save never propagates before an earlier one.
-	//
-	// The propagation is bounded: ReconfigureMCP hands this context to the
-	// gateway reconfigure, whose server.Connect honours it, so one
-	// unreachable endpoint can no longer stall the update (and the dialog)
-	// indefinitely.
+	// serialized; the propagation is bounded by mcpReconfigureTimeout, a
+	// ctx the gateway reconfigure's server.Connect honours.
 	if b != nil {
 		reconfigureCtx, cancel := context.WithTimeout(context.Background(), mcpReconfigureTimeout)
 		err := b.ReconfigureMCP(reconfigureCtx, bcfg)
@@ -434,9 +388,9 @@ func validateMCPServerConfig(name string, cfg config.MCPServerConfig) error {
 		return fmt.Errorf("server %q: unsupported transport: %q", name, transport)
 	}
 
-	// Activation modes are not validated here: the wire format no longer
-	// carries mode, and the per-context values are validated on their own
-	// save path (UpdateCapabilityModes → config.ValidateCapabilities).
+	// Activation modes are not validated here: the wire no longer carries
+	// mode, and the per-context values are validated on their own save path
+	// (UpdateCapabilityModes → config.ValidateCapabilities).
 
 	if err := validateMCPTimeout(name, "timeout", cfg.Timeout); err != nil {
 		return err
@@ -450,9 +404,8 @@ func validateMCPServerConfig(name string, cfg config.MCPServerConfig) error {
 
 // validateMCPTimeout rejects a non-empty timeout / call_timeout that does not
 // parse as a Go duration or is non-positive. Empty is allowed — the server
-// falls back to the mcp package default (and call_timeout to timeout). Shares
-// the duration rule with the load path and the builder adapter through
-// config.ParseMCPDuration, so all three agree on exactly which values are valid.
+// falls back to the mcp package default. Shares the duration rule with the
+// load path and the builder adapter through config.ParseMCPDuration.
 func validateMCPTimeout(name, field, raw string) error {
 	if _, err := config.ParseMCPDuration(raw); err != nil {
 		return fmt.Errorf("server %q: invalid %s %q: %w", name, field, raw, err)

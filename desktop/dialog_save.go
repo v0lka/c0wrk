@@ -12,22 +12,16 @@ import (
 	"github.com/v0lka/sp4rk/safeio"
 )
 
-// SaveMessageAsMarkdown opens a native save-file dialog and writes content to
-// the chosen path as a Markdown document. The dialog defaults to the active
-// project's directory (falling back to the last used dialog location) and
-// pre-fills a .md filename; the chosen path is normalized to end in .md so
-// the saved file is always a Markdown document. When that normalization
-// changes the confirmed name, an existing normalized file is never
-// overwritten silently (the dialog's overwrite prompt covered the literal
-// name) — the write fails and the user re-picks (see resolveWritePath).
-//
-// Returns the absolute path of the written file, or "" when the user cancels
-// the dialog — mirroring PickDirectory's ("", nil) cancel contract.
-//
-// This must remain on App (not FrontendAPI) because it requires the Wails
-// context. The native save dialog is itself the user's explicit consent for
-// the write (including overwrite confirmation), so no additional confirmation
-// gate applies; the content is chat text the user already sees on screen.
+// SaveMessageAsMarkdown opens a native save-file dialog and writes content as
+// a Markdown document: the dialog defaults to the active project directory
+// (else the last used location) with a .md filename pre-filled, and the chosen
+// path is normalized to end in .md — a normalization that changed the
+// confirmed name never overwrites an existing file silently (the dialog's
+// overwrite prompt covered only the literal name; see resolveWritePath).
+// Returns the written path, or "" on cancel (PickDirectory's contract). This
+// must remain on App (it requires the Wails context); the native dialog is
+// itself the user's consent for the write, so no extra confirmation gate
+// applies.
 func (a *App) SaveMessageAsMarkdown(content string) (string, error) {
 	if a.wailsCtx() == nil {
 		return "", errors.New("SaveMessageAsMarkdown: application context is not initialized")
@@ -40,9 +34,8 @@ func (a *App) SaveMessageAsMarkdown(content string) (string, error) {
 			{DisplayName: "Markdown (*.md)", Pattern: "*.md"},
 		},
 	}
-	// DefaultDirectory must reference an existing directory or the runtime
-	// returns an error without showing any dialog (fs.DirExists check inside
-	// SaveFileDialog). pickSaveDialogDir only returns paths verified to exist.
+	// DefaultDirectory must exist or the runtime errors without showing any
+	// dialog; pickSaveDialogDir only returns verified-existing paths.
 	if dir := pickSaveDialogDir(a.ActiveProjectDir(), LoadDialogState(a.agentDir()).LastDirectory); dir != "" {
 		options.DefaultDirectory = dir
 	}
@@ -51,7 +44,6 @@ func (a *App) SaveMessageAsMarkdown(content string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("save dialog failed: %w", err)
 	}
-	// On cancel SaveFileDialog returns ("", nil).
 	if path == "" {
 		return "", nil
 	}
@@ -62,9 +54,9 @@ func (a *App) SaveMessageAsMarkdown(content string) (string, error) {
 	}
 	// Guarded write (safeio.OpenFile): the open is non-blocking and fstat-
 	// checked for regularity, so a FIFO planted at the chosen path is refused
-	// instead of blocking this Wails RPC goroutine forever inside open(2). A
-	// symlink at the user-chosen path keeps its historical follow-through
-	// semantics: the picker is the user's explicit choice of target.
+	// instead of blocking this Wails RPC goroutine inside open(2). A symlink
+	// keeps its historical follow-through: the picker is the user's explicit
+	// choice of target.
 	f, err := safeio.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {
 		return "", fmt.Errorf("failed to write markdown file: %w", err)
@@ -78,15 +70,14 @@ func (a *App) SaveMessageAsMarkdown(content string) (string, error) {
 	}
 
 	// Remember the directory so the next native dialog opens where the user
-	// last worked — the same UX memory PickDirectory maintains. Best-effort.
+	// last worked (the same UX memory PickDirectory maintains); best-effort.
 	rememberDialogDirectory(a.agentDir(), filepath.Dir(path), a.log())
 	return path, nil
 }
 
-// pickSaveDialogDir chooses the default directory for the save dialog: the
-// active project directory when it is set and still exists on disk, otherwise
-// the last used dialog directory (already validated by LoadDialogState). Both
-// inputs may be "".
+// pickSaveDialogDir chooses the save dialog's default directory: the active
+// project directory when set and still existing, else the last used dialog
+// directory (already validated by LoadDialogState). Both inputs may be "".
 func pickSaveDialogDir(projectDir, lastDir string) string {
 	if projectDir != "" {
 		if info, err := os.Stat(projectDir); err == nil && info.IsDir() {
@@ -96,9 +87,9 @@ func pickSaveDialogDir(projectDir, lastDir string) string {
 	return lastDir
 }
 
-// ensureMarkdownExtension appends the .md extension when the chosen path does
-// not already end with it (case-insensitive). Platform save dialogs do not
-// reliably append the filter extension, so the .md guarantee lives here.
+// ensureMarkdownExtension appends .md when the chosen path does not already
+// end with it (case-insensitive) — platform save dialogs do not reliably
+// append the filter extension, so the .md guarantee lives here.
 func ensureMarkdownExtension(path string) string {
 	if strings.HasSuffix(strings.ToLower(path), ".md") {
 		return path
@@ -106,13 +97,12 @@ func ensureMarkdownExtension(path string) string {
 	return path + ".md"
 }
 
-// resolveWritePath normalizes the dialog-chosen path to a Markdown filename
-// and guards the one case the native dialog's overwrite confirmation cannot
-// cover: when the .md normalization changes the name, the user confirmed the
-// literal name, so an already-existing normalized file must never be
-// overwritten silently — the write fails instead and the user re-picks. A
-// name confirmed verbatim (including dialogs that appended .md themselves)
-// goes through, as does a normalized name that does not exist yet.
+// resolveWritePath guards the one case the dialog's overwrite confirmation
+// cannot cover: when .md normalization CHANGES the name, the user confirmed
+// the literal name, so an existing normalized file is never overwritten
+// silently — the write fails and the user re-picks. A verbatim-confirmed name
+// (including dialogs that appended .md themselves) goes through, as does a
+// normalized name that does not exist yet.
 func resolveWritePath(chosen string) (string, error) {
 	normalized := ensureMarkdownExtension(chosen)
 	if normalized == chosen {

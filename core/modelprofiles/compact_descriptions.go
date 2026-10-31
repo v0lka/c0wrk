@@ -4,13 +4,10 @@ import (
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
-// compactDescriptions maps builtin tool names to one-line descriptions used
-// when the active profile's essential_tools.compact_descriptions knob is
-// enabled. Full rubric descriptions (purpose/when-to-use/inputs/outputs/
-// example/anti-example, 480-1100 chars) are ideal for large models but cost
-// real prompt budget on small local ones; these one-liners keep the
-// disambiguation (the "vs neighbor" hint) while dropping the long form.
-// Unknown tools (e.g. MCP) keep their original description.
+// compactDescriptions holds the one-line descriptions swapped in for known
+// builtins when essential_tools.compact_descriptions is on (they keep the
+// "vs neighbor" disambiguation, drop the long rubric); unknown tools (e.g.
+// MCP) keep their full description. See specs/domains/model-profiles.md.
 var compactDescriptions = map[string]string{
 	// sp4rk builtins — files
 	"read_file":        "Read a file by path (paginated; pdf/docx/html convert to markdown). Use once the exact path is known — find paths with glob/list_directory first.",
@@ -72,10 +69,8 @@ func CompactDescription(name string) string {
 	return compactDescriptions[name]
 }
 
-// ApplyCompactDescriptions returns a copy of the descriptor list with every
-// known builtin's Description replaced by its compact one-liner. Descriptors
-// of unknown tools (e.g. MCP-sourced) are passed through untouched. The input
-// slice and its descriptors are never mutated.
+// ApplyCompactDescriptions returns a copy of the descriptor list with known
+// builtins' descriptions replaced; unknown tools pass through untouched.
 func ApplyCompactDescriptions(in []sdktools.ToolDescriptor) []sdktools.ToolDescriptor {
 	out := make([]sdktools.ToolDescriptor, len(in))
 	copy(out, in)

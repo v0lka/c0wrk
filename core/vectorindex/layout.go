@@ -12,25 +12,16 @@ import (
 	"github.com/v0lka/sp4rk/safeio"
 )
 
-// Layout (ADR-064). A project's vector-index storage root
-// (<project>/vector_index/) is laid out as:
-//
-//	<root>/branches/<collectionName(branch)>/   chromem DB root for ONE branch
-//	<root>/lexical/<branch>/                    bleve lexical index (unchanged)
-//	<root>/embedding_cache/                     content-addressed embed cache
-//	<root>/file_hashes_<collectionName>.json    per-branch file-hash sidecar
-//	<root>/contentless_<collectionName>.done    per-branch migration marker
-//
-// Each branch owns a STABLE chromem DB root under branches/, so
-// chromem.NewPersistentDB — which eagerly gob-decodes every collection in the
-// directory it is given — only ever decodes the ACTIVE branch. Before ADR-064
-// the DB root was the storage root itself, so every open decoded EVERY branch
-// collection (one per git branch), which on a large multi-branch index took
-// minutes while holding the service write lock.
-//
-// The storage root is never handed to chromem again, so lexical/ and
-// embedding_cache/ can never be mistaken for collections (they would be
-// skipped anyway, but this removes the coupling entirely).
+// Storage layout (ADR-064). A project's vector-index storage root
+// (<project>/vector_index/) holds one STABLE chromem DB root per branch under
+// branches/<collectionName(branch)>/, so chromem.NewPersistentDB — which
+// eagerly gob-decodes every collection in the directory it is given — decodes
+// only the ACTIVE branch (before ADR-064 every open decoded every branch's
+// collection, minutes on a large multi-branch index, all under the write
+// lock). The storage root itself is never handed to chromem again, so
+// lexical/ and embedding_cache/ can never be parsed as collections. See
+// specs/decisions/064-branch-scoped-lazy-vector-index-open.md and
+// specs/domains/workspace.md.
 
 const (
 	// branchRootsDirName is the storage subdirectory holding the per-branch
@@ -39,47 +30,44 @@ const (
 
 	// orphanBranchRootName is a non-branch pseudo-name under branches/ that
 	// receives legacy collection directories whose name could not be
-	// recovered during the one-time migration. It matches no real branch, so
-	// it is never opened; the affected branch is simply re-indexed.
+	// recovered during the one-time migration; it matches no real branch, so
+	// it is kept on disk, never loaded, and the affected branch is
+	// re-indexed.
 	orphanBranchRootName = "_orphan"
 
-	// legacyCollectionDirNameLen is the length of chromem's per-collection
-	// directory name (hash2hex => 8 lowercase hex characters). It is used
-	// ONLY by the one-time legacy-layout migration to recognize the stray
-	// collection directories that used to sit directly under the storage root.
+	// legacyCollectionDirNameLen is chromem's per-collection directory name
+	// length (hash2hex => 8 lowercase hex chars), used ONLY by the one-time
+	// legacy-layout migration to recognize stray root-level collection
+	// directories.
 	legacyCollectionDirNameLen = 8
 
 	// collectionNamePrefix is what collectionName prepends to the sanitized
-	// branch name, so every real branch identity — chromem collection name,
-	// file-hash sidecar, content-less marker and branch root alike — starts
-	// with it. The one-time legacy migration requires it of a name recovered
-	// from disk (see isSafeBranchRootName).
+	// branch name, so every real branch identity — collection name, sidecar,
+	// marker and branch root alike — starts with it; the one-time legacy
+	// migration requires it of a name recovered from disk (see
+	// isSafeBranchRootName).
 	collectionNamePrefix = "branch_"
 
 	// chromemMetadataFileName mirrors chromem-go's per-collection metadata
-	// file name: metadataFileName ("00000000") plus the ".gob" extension it
-	// appends for uncompressed DBs. It is read ONLY by the one-time legacy
-	// migration, to recover a collection's name from disk without replicating
-	// chromem's directory hashing. If chromem ever changes this encoding, the
-	// affected directories land under branches/_orphan/ and their branches are
-	// re-indexed — degraded, never wrong.
+	// file name; read ONLY by the legacy migration to recover a collection's
+	// name without replicating chromem's directory hashing. If chromem ever
+	// changes this encoding, the affected directories land under
+	// branches/_orphan/ — degraded, never wrong.
 	chromemMetadataFileName = "00000000.gob"
 )
 
 // chromemCollectionMetadata mirrors the anonymous struct chromem gob-encodes
-// into a collection's metadata file ({Name string; Metadata map[string]string}).
-// gob matches fields by name, so decoding into this named struct is valid.
-// Only Name is used by the migration.
+// into a collection's metadata file; gob matches fields by name, so decoding
+// into this named struct is valid. Only Name is used by the migration.
 type chromemCollectionMetadata struct {
 	Name     string
 	Metadata map[string]string
 }
 
-// branchRootPath returns the stable chromem DB root directory for a branch
-// under a project's vector-index storage root. It is keyed by
-// collectionName(branch) — the same identity used for the branch's file-hash
-// sidecar and content-less marker — so the mapping branch => directory is
-// deterministic and needs no chromem-internal hashing.
+// branchRootPath returns the stable chromem DB root for a branch, keyed by
+// collectionName(branch) — the same identity as the file-hash sidecar and
+// content-less marker — so branch ⇒ directory is deterministic and needs no
+// chromem-internal hashing.
 func branchRootPath(projectPath, branch string) string {
 	return filepath.Join(projectPath, branchRootsDirName, collectionName(branch))
 }
@@ -101,9 +89,8 @@ func isLegacyCollectionDirName(name string) bool {
 }
 
 // readLegacyCollectionName recovers the collection name recorded in a legacy
-// collection directory's metadata file, or "" when the file is missing or
-// unreadable. Caller must NOT hold s.mu longer than necessary; the read is a
-// single small-file decode.
+// collection directory's metadata file, "" when the file is missing or
+// unreadable (the read is a single small-file decode).
 func readLegacyCollectionName(dir string) string {
 	f, err := safeio.Open(filepath.Join(dir, chromemMetadataFileName))
 	if err != nil {
@@ -117,30 +104,25 @@ func readLegacyCollectionName(dir string) string {
 	return md.Name
 }
 
-// isSafeBranchRootName reports whether name may be used as a single path
-// segment under branches/. The migration recovers the name by decoding a
-// chromem metadata file and then joins it into a destination path, so it is
-// accepted only in the exact shape collectionName produces: the "branch_"
-// prefix followed by a non-empty run entirely within sanitizeRe's allowed set
-// ([A-Za-z0-9_-]). Anything else — unreadable or foreign metadata, a
-// corrupted gob, a name carrying a separator or a ".." element, or a
-// sanitized-but-unprefixed value that is not a branch identity and would
-// otherwise let foreign metadata squat an arbitrary name under branches/ — is
-// rejected and routed to the orphan root instead of being trusted as a path.
+// isSafeBranchRootName reports whether name may become a single path segment
+// under branches/. The migration decodes a chromem metadata file and joins
+// the recovered name into a destination path, so only the exact shape
+// collectionName produces is accepted — the "branch_" prefix followed by a
+// non-empty run entirely within sanitizeRe's allowed set ([A-Za-z0-9_-]).
+// Anything else — unreadable or foreign metadata, a corrupted gob, a name
+// carrying a separator or a ".." element — would let foreign metadata squat
+// an arbitrary name under branches/ and is rejected to the orphan root.
 func isSafeBranchRootName(name string) bool {
 	rest, ok := strings.CutPrefix(name, collectionNamePrefix)
 	return ok && rest != "" && rest == sanitizeRe.ReplaceAllString(rest, "")
 }
 
-// migrateLegacyLayoutLocked re-homes every legacy collection directory that
-// still sits directly under the project's storage root into its per-branch DB
-// root (branches/<collectionName>/<hash2hex>/), so that opening a branch can
-// decode exactly one collection. The migration is idempotent and cheap —
-// directory renames only, never per-document work — and a no-op once no legacy
-// directories remain. A legacy directory whose name cannot be recovered is
-// moved under branches/_orphan/ (kept on disk, never loaded).
-//
-// The caller must hold s.mu.
+// migrateLegacyLayoutLocked re-homes every legacy collection directory still
+// sitting directly under the storage root into branches/<collectionName>/, so
+// opening a branch decodes exactly one collection (ADR-064). Idempotent and
+// cheap — directory renames only; an unrecoverable name moves under
+// branches/_orphan/. The caller must hold s.mu. See
+// specs/decisions/064-branch-scoped-lazy-vector-index-open.md.
 func (s *Service) migrateLegacyLayoutLocked(projectPath string) {
 	entries, err := os.ReadDir(projectPath)
 	if err != nil {
@@ -155,9 +137,9 @@ func (s *Service) migrateLegacyLayoutLocked(projectPath string) {
 			continue
 		}
 		src := filepath.Join(projectPath, e.Name())
-		// The recovered name becomes a path segment, so it is trusted only in
-		// the shape collectionName wrote it in; anything else — missing or
-		// foreign metadata, a corrupted gob — is parked under the orphan root.
+		// The recovered name becomes a path segment: trust only the shape
+		// collectionName writes; anything else is parked under the orphan
+		// root.
 		name := readLegacyCollectionName(src)
 		if !isSafeBranchRootName(name) {
 			name = orphanBranchRootName
