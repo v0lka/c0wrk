@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/v0lka/c0wrk/internal/securehttp"
 	"github.com/v0lka/sp4rk/safeio"
 )
 
@@ -70,12 +71,15 @@ type HTTPDownloader struct {
 	Client *http.Client
 }
 
-// NewHTTPDownloader; a nil client becomes a 5-minute-timeout client.
+// NewHTTPDownloader; a nil client becomes a 5-minute-timeout client. The
+// client (supplied or default) is shallow-copied and gets the per-hop
+// HTTPS-only redirect policy (securehttp.SecureHTTPClient), so a public
+// archive fetch can never follow a redirect onto plaintext.
 func NewHTTPDownloader(client *http.Client) *HTTPDownloader {
 	if client == nil {
 		client = &http.Client{Timeout: 5 * time.Minute}
 	}
-	return &HTTPDownloader{Client: client}
+	return &HTTPDownloader{Client: securehttp.SecureHTTPClient(client)}
 }
 
 // Download fetches tool.URLs[platform] into cacheDir/<ArchiveName>, returning
@@ -83,8 +87,8 @@ func NewHTTPDownloader(client *http.Client) *HTTPDownloader {
 // documented on DownloadMode; a CacheOnly miss wraps ErrCacheUnavailable.
 func (d *HTTPDownloader) Download(ctx context.Context, tool ToolSpec, cacheDir string, mode DownloadMode, progress func(int64, int64)) (*DownloadResult, error) {
 	platform := Platform()
-	url, ok := tool.URLs[platform]
-	if !ok || url == "" {
+	rawURL, ok := tool.URLs[platform]
+	if !ok || rawURL == "" {
 		return nil, fmt.Errorf("tool %q: no download URL for platform %q", tool.Name, platform)
 	}
 
@@ -112,8 +116,19 @@ func (d *HTTPDownloader) Download(ctx context.Context, tool ToolSpec, cacheDir s
 		return nil, fmt.Errorf("tool %q: %w", tool.Name, ErrCacheUnavailable)
 	}
 
+	// Enforce the HTTPS-only transport invariant on the initial URL before any
+	// network I/O (the invariant is shared with core/updater via
+	// internal/securehttp): the per-hop redirect policy sees only hops, so
+	// without this check a plain http:// spec URL would reach the network
+	// unguarded. The check sits after the CacheOnly early-return on purpose —
+	// the invariant governs the network channel, and offline mode performs no
+	// network I/O.
+	if err := securehttp.RequireHTTPS(rawURL); err != nil {
+		return nil, fmt.Errorf("tool %q: %w", tool.Name, err)
+	}
+
 	// Download.
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, http.NoBody)
 	if err != nil {
 		return nil, fmt.Errorf("tool %q: creating request: %w", tool.Name, err)
 	}
@@ -124,7 +139,7 @@ func (d *HTTPDownloader) Download(ctx context.Context, tool ToolSpec, cacheDir s
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("tool %q: HTTP %d from %s", tool.Name, resp.StatusCode, url)
+		return nil, fmt.Errorf("tool %q: HTTP %d from %s", tool.Name, resp.StatusCode, rawURL)
 	}
 
 	// Download into a uniquely named temp and rename into place: the fixed
