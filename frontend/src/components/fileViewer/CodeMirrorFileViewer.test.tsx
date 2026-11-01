@@ -15,6 +15,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act } from 'react'
+import type { ReactElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { EditorView } from '@codemirror/view'
 
@@ -33,12 +34,13 @@ vi.mock('@/components/fileViewer/FileViewerContextMenu', () => ({
   FileViewerContextMenu: () => null,
 }))
 
-// The Markdown preview stub keeps the test light: the preview pane binds its
-// scroll listener to Markdown's rendered ROOT (first element child of the
-// wrapper), so any single-root element reproduces the contract.
+// The Markdown preview stub keeps the test light. The preview's scroll
+// container is the pane's OWN wrapper div (it binds the hook directly), so
+// the stub's DOM shape is irrelevant — markdown-root only serves as a
+// locator for its scrollable parent in the preview tests.
 vi.mock('@/lib/markdownConfig', () => ({
-  Markdown: ({ content, className }: { content: string; className?: string }) => (
-    <div data-testid="markdown-root" className={className}>{content}</div>
+  Markdown: ({ content }: { content: string }) => (
+    <div data-testid="markdown-root">{content}</div>
   ),
 }))
 
@@ -59,27 +61,46 @@ function pinGeometry(scrollHeight: number, clientHeight: number) {
   clientHeightSpy.mockReturnValue(clientHeight)
 }
 
-async function renderViewer(props: {
+type ViewerProps = {
   content?: string
   language?: string
   diff?: string
   highlightLine?: number | null
-} = {}): Promise<HTMLElement> {
+}
+
+let lastViewerProps: ViewerProps = {}
+
+function viewerElement(props: ViewerProps): ReactElement {
+  return (
+    <CodeMirrorFileViewer
+      content={props.content ?? LONG_TEXT}
+      language={props.language ?? 'typescript'}
+      diff={props.diff}
+      highlightLine={props.highlightLine ?? null}
+    />
+  )
+}
+
+async function renderViewer(props: ViewerProps = {}): Promise<HTMLElement> {
   const container = document.createElement('div')
   document.body.replaceChildren(container)
   const root = createRoot(container)
   activeRoot = root
+  lastViewerProps = props
   await act(async () => {
-    root.render(
-      <CodeMirrorFileViewer
-        content={props.content ?? LONG_TEXT}
-        language={props.language ?? 'typescript'}
-        diff={props.diff}
-        highlightLine={props.highlightLine ?? null}
-      />,
-    )
+    root.render(viewerElement(props))
   })
   return container
+}
+
+// Re-render the SAME root with new props — how FileViewerContent silently
+// refreshes a tab's content prop on workspace:tree_changed without changing
+// the active file.
+async function rerenderViewer(props: Partial<ViewerProps>): Promise<void> {
+  lastViewerProps = { ...lastViewerProps, ...props }
+  await act(async () => {
+    activeRoot!.render(viewerElement(lastViewerProps))
+  })
 }
 
 function viewOf(container: HTMLElement): EditorView {
@@ -193,6 +214,84 @@ describe('CodeMirrorFileViewer — reading positions', () => {
       .toEqual({ scrollTop: 300, scrollHeight: 2000 })
   })
 
+  it('does not write the outgoing geometry under a never-scrolled tab (re-target then close)', async () => {
+    primeStore('/a.ts')
+    const container = await renderViewer()
+    const view = viewOf(container)
+
+    act(() => {
+      view.scrollDOM.scrollTop = 300
+      view.scrollDOM.dispatchEvent(new Event('scroll'))
+    })
+
+    // Switch to /b.ts, which has never been scrolled and has no saved
+    // entry: restore() finds nothing to restore and must DROP the ref that
+    // still carries /a's geometry, so no later save can write it under
+    // /b's key.
+    await act(async () => {
+      useFileViewerStore.setState({
+        activeFile: '/b.ts',
+        openTabs: ['/a.ts', '/b.ts'],
+        files: {
+          '/a.ts': { content: LONG_TEXT, loading: false },
+          '/b.ts': { content: LONG_TEXT, loading: false },
+        },
+      })
+    })
+    expect(useFileViewerStore.getState().scrollPositions['/a.ts'])
+      .toEqual({ scrollTop: 300, scrollHeight: 2000 })
+
+    // /b is never scrolled; collapsing the viewer (unmount save) must not
+    // fabricate a /b entry out of /a's geometry.
+    await unmountViewer()
+    expect(useFileViewerStore.getState().scrollPositions['/b.ts']).toBeUndefined()
+
+    // Re-opening /b resumes from the top, not from /a's offset.
+    const remounted = await renderViewer()
+    expect(viewOf(remounted).scrollDOM.scrollTop).toBe(0)
+  })
+
+  it('keeps the live reading position when a byte-identical re-target is followed by a same-tab refresh', async () => {
+    // /b carries a stale saved entry from an earlier read in this session.
+    primeStore('/a.ts')
+    useFileViewerStore.setState({
+      openTabs: ['/a.ts', '/b.ts'],
+      files: {
+        '/a.ts': { content: LONG_TEXT, loading: false },
+        '/b.ts': { content: LONG_TEXT, loading: false },
+      },
+    })
+    useFileViewerStore.getState().saveScrollPosition('/b.ts', { scrollTop: 900, scrollHeight: 2000 })
+
+    const container = await renderViewer()
+    const view = viewOf(container)
+    act(() => {
+      view.scrollDOM.scrollTop = 300
+      view.scrollDOM.dispatchEvent(new Event('scroll'))
+    })
+
+    // Re-target onto /b, whose bytes are identical to what the view already
+    // shows: the hook's path effect restores /b's saved offset, but the
+    // content effect skips the doc swap (nothing to change) — it must still
+    // consume the path so the refresh below is not misclassified.
+    await act(async () => {
+      useFileViewerStore.setState({ activeFile: '/b.ts' })
+    })
+    expect(view.scrollDOM.scrollTop).toBe(900)
+
+    // The user reads back up; then /b changes on disk and the silent
+    // per-tab refresh swaps the doc under the SAME activeFile.
+    act(() => {
+      view.scrollDOM.scrollTop = 100
+      view.scrollDOM.dispatchEvent(new Event('scroll'))
+    })
+    await rerenderViewer({ content: `${LONG_TEXT}\nappended` })
+
+    // The live reading position wins — the stale saved offset (900) must
+    // not be re-applied by a misclassified re-target.
+    expect(view.scrollDOM.scrollTop).toBe(100)
+  })
+
   it('scales the restored offset when the content height changed between save and restore', async () => {
     primeStore('/f.ts')
     const container = await renderViewer()
@@ -239,13 +338,15 @@ describe('CodeMirrorFileViewer — reading positions', () => {
   it('saves and restores the markdown preview scroll across unmount/remount', async () => {
     primeStore('/f.md')
     const container = await renderViewer({ language: 'Markdown' })
-    const preview = container.querySelector('[data-testid="markdown-root"]')
-    expect(preview).not.toBeNull()
+    // The pane's own wrapper div is the scroll container; the stubbed
+    // Markdown root only serves as the locator for it.
+    const previewScroll = container.querySelector('[data-testid="markdown-root"]')?.parentElement
+    expect(previewScroll).not.toBeNull()
 
     pinGeometry(1500, 600)
     act(() => {
-      preview!.scrollTop = 700
-      preview!.dispatchEvent(new Event('scroll'))
+      previewScroll!.scrollTop = 700
+      previewScroll!.dispatchEvent(new Event('scroll'))
     })
     expect(useFileViewerStore.getState().scrollPositions['/f.md']).toBeUndefined()
 
@@ -254,7 +355,7 @@ describe('CodeMirrorFileViewer — reading positions', () => {
       .toEqual({ scrollTop: 700, scrollHeight: 1500 })
 
     const remounted = await renderViewer({ language: 'Markdown' })
-    const preview2 = remounted.querySelector('[data-testid="markdown-root"]')
-    expect(preview2!.scrollTop).toBe(700)
+    const previewScroll2 = remounted.querySelector('[data-testid="markdown-root"]')?.parentElement
+    expect(previewScroll2!.scrollTop).toBe(700)
   })
 })

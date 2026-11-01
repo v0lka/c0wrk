@@ -9,8 +9,8 @@ import { relativePath } from '@/lib/localFileLink'
 import { formatFileRefPath } from '@/lib/parseReferences'
 import { parseUnifiedDiff, buildDisplayLines } from '@/lib/diffParser'
 import { Markdown } from '@/lib/markdownConfig'
-import { restoreScrollTop } from '@/lib/fileViewerUtils'
 import { Button } from '@/components/ui/button'
+import { useReadingPosition } from '@/components/fileViewer/useReadingPosition'
 import { FileViewerContextMenu } from '@/components/fileViewer/FileViewerContextMenu'
 import {
   diffDecorationField,
@@ -84,102 +84,6 @@ export function CodeMirrorFileViewer(props: CodeMirrorViewerProps) {
       />
     </div>
   )
-}
-
-/**
- * Shared reading-position memory for the viewer's two scrolling hosts (the
- * CodeMirror view and the markdown preview) — the file-viewer twin of
- * ChatScrollManager + chatStore.scrollPositions. Owns the listener-fed scroll
- * ref and the save/restore effects: the outgoing path's position is saved on
- * every path change (tab re-target) and again on unmount (viewer collapse /
- * tab close), the incoming path's saved position is restored with
- * proportional scaling (restoreScrollTop). Source and preview share one
- * store slot per file, and saves are gated to open tabs in the store, so a
- * close action's removal can never be resurrected from either host.
- *
- * The caller feeds the scrolling element to bindScrollElement (a passive
- * listener keeps the ref fresh; the restore writes el.scrollTop on the bound
- * element). The CodeMirror view is created inside a later effect, so its
- * path effect finds no element and defers the restore — the mount bind
- * performs it; the preview binds via a commit-phase ref callback (before
- * effects) and its path effect restores directly.
- */
-function useReadingPosition(path: string | null): {
-  bindScrollElement: (el: Element | null) => void
-  restore: () => void
-} {
-  const scrollStateRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null)
-  const pathRef = useRef<string | null>(path)
-  const scrollElRef = useRef<Element | null>(null)
-  const onScrollRef = useRef<(() => void) | null>(null)
-  // Set when the path effect ran before any element was bound: the next
-  // bind performs the deferred restore.
-  const pendingRestoreRef = useRef(false)
-
-  // Re-anchor the bound element to the current path's saved position;
-  // restoreScrollTop scales a stale offset when the file changed between
-  // save and restore, and the browser clamps the rest.
-  const restore = useCallback(() => {
-    const el = scrollElRef.current
-    const current = pathRef.current
-    if (!el || !current) return
-    const saved = useFileViewerStore.getState().scrollPositions[current]
-    if (!saved) return
-    const top = restoreScrollTop(saved, el.scrollHeight)
-    el.scrollTop = top
-    // Sync immediately — the programmatic-scroll event lands later (or, in
-    // jsdom, never): a collapse in the same frame cannot save the
-    // pre-restore value.
-    scrollStateRef.current = { scrollTop: top, scrollHeight: el.scrollHeight }
-  }, [])
-
-  const bindScrollElement = useCallback((el: Element | null) => {
-    const prevEl = scrollElRef.current
-    const prevListener = onScrollRef.current
-    if (prevEl && prevListener) prevEl.removeEventListener('scroll', prevListener)
-    scrollElRef.current = null
-    onScrollRef.current = null
-    if (!el) return
-    const onScroll = () => {
-      scrollStateRef.current = { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight }
-    }
-    el.addEventListener('scroll', onScroll, { passive: true })
-    scrollElRef.current = el
-    onScrollRef.current = onScroll
-    if (pendingRestoreRef.current) {
-      pendingRestoreRef.current = false
-      restore()
-    }
-  }, [restore])
-
-  // Save the outgoing path's position and restore the incoming path's on
-  // every path change. With no element bound yet the restore is deferred to
-  // the bind (see pendingRestoreRef).
-  useEffect(() => {
-    const outgoing = pathRef.current
-    if (outgoing && outgoing !== path && scrollStateRef.current) {
-      useFileViewerStore.getState().saveScrollPosition(outgoing, scrollStateRef.current)
-    }
-    pathRef.current = path
-
-    if (!scrollElRef.current) {
-      pendingRestoreRef.current = path !== null
-      return
-    }
-    restore()
-  }, [path, restore])
-
-  // Save while the element still exists when the host unmounts (viewer
-  // collapse, tab close). The save reads the listener-fed ref, not the
-  // element, so the ref-detach commit phase that precedes this cleanup is
-  // harmless.
-  useEffect(() => () => {
-    const outgoing = pathRef.current
-    const state = scrollStateRef.current
-    if (outgoing && state) useFileViewerStore.getState().saveScrollPosition(outgoing, state)
-  }, [])
-
-  return { bindScrollElement, restore }
 }
 
 // CodeMirrorEditor wraps a single CodeMirror EditorView and updates it
@@ -282,6 +186,16 @@ function CodeMirrorEditor({ content, language, diff, highlightLine }: CodeMirror
     const view = viewRef.current
     if (!view) return
 
+    // Consume the path BEFORE the byte-identical early return below: a
+    // re-target onto identical bytes must still mark the path consumed, or
+    // the next same-tab refresh would be misclassified as a re-target and
+    // restore() would overwrite the live reading position with the stale
+    // saved offset. A byte-identical re-target itself needs no re-anchor —
+    // the shared hook's path effect already restored against an identical
+    // document.
+    const retargeted = contentPathRef.current !== activeFile
+    contentPathRef.current = activeFile
+
     const currentDoc = view.state.doc.toString()
     if (currentDoc === content) return
 
@@ -292,10 +206,7 @@ function CodeMirrorEditor({ content, language, diff, highlightLine }: CodeMirror
     // shared hook's restore runs before this swap): re-anchor the incoming
     // path's position against the new document. A same-tab refresh must not
     // re-anchor — the live reading position wins over the stale saved one.
-    if (contentPathRef.current !== activeFile) {
-      contentPathRef.current = activeFile
-      restore()
-    }
+    if (retargeted) restore()
   }, [content, activeFile, restore])
 
   // Load language asynchronously and reconfigure compartment
@@ -421,16 +332,17 @@ function CodeMirrorEditor({ content, language, diff, highlightLine }: CodeMirror
 /**
  * The markdown PREVIEW branch of the viewer with reading-position memory —
  * the same save-on-unmount / restore-on-bind contract as CodeMirrorEditor,
- * shared through useReadingPosition (see that hook), so the preview scroll
- * also survives viewer collapse and tab re-targets. Source and preview share
- * ONE store slot per file — the toggle carries the single position across
- * the panes (restoreScrollTop re-anchors it to the other pane's height), it
- * does not keep two independent positions.
+ * shared through useReadingPosition, so the preview scroll also survives
+ * viewer collapse and tab re-targets. Source and preview share ONE store
+ * slot per file — the toggle carries the single position across the panes
+ * (restoreScrollTop re-anchors it to the other pane's height), it does not
+ * keep two independent positions.
  *
- * The scrolling element is Markdown's own root (the overflow-auto class lands
- * there), so the listener binds to the wrapper's first element child rather
- * than the wrapper itself. The ref callback runs in the commit phase, before
- * effects, so the hook's path effect finds the element and restores directly.
+ * The wrapper div is the scroll container itself (overflow-auto + padding
+ * live here) and binds the hook directly via a commit-phase ref callback —
+ * before effects, so the hook's path effect finds the element and restores
+ * directly. Markdown renders INSIDE it as plain flowing content: nothing
+ * here depends on Markdown's internal DOM shape.
  */
 function MarkdownPreviewPane({ path, content, workspaceRoot }: {
   path: string | null
@@ -439,15 +351,17 @@ function MarkdownPreviewPane({ path, content, workspaceRoot }: {
 }) {
   const { bindScrollElement } = useReadingPosition(path)
 
-  const attachWrapper = useCallback((wrapper: HTMLDivElement | null) => {
-    bindScrollElement(wrapper ? wrapper.firstElementChild : null)
+  const attachScrollContainer = useCallback((el: HTMLDivElement | null) => {
+    bindScrollElement(el)
   }, [bindScrollElement])
 
   return (
-    <div ref={attachWrapper} className="flex flex-1 min-h-0">
+    <div
+      ref={attachScrollContainer}
+      className="flex-1 min-h-0 overflow-auto custom-scrollbar p-4"
+    >
       <Markdown
         content={content}
-        className="flex-1 overflow-auto custom-scrollbar p-4"
         baseFilePath={path}
         workspaceRoot={workspaceRoot}
       />
