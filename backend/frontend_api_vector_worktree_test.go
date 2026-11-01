@@ -114,6 +114,12 @@ func newVectorWorktreeHarness(t *testing.T) *vectorWorktreeHarness {
 			EmbeddingFunc: func(context.Context, string) ([]float32, error) {
 				return make([]float32, 4), nil
 			},
+			// Widened shutdown drain: Shutdown skips Close() when the
+			// production 10s grace expires on a loaded runner, and the
+			// skipped Close leaves the lexical .zap store open — Windows
+			// then cannot unlink the TempDir (a CI-only flake). Two minutes
+			// absorbs any realistic scheduling stall while staying bounded.
+			ShutdownGrace: 2 * time.Minute,
 		})
 	}, ready, nil)
 	api.vectorRoots = roots

@@ -206,6 +206,16 @@ func (a *App) handleToolConfirmResponse(payload map[string]any, log *slog.Logger
 		return
 	}
 
+	// Delete from the pending map BEFORE delivering: the channel send
+	// handshakes with a waiting consumer (the WS inbound delivery test
+	// receives the decision and immediately asserts the entry is gone), so
+	// the delete must happen-before the send to keep that observation
+	// deterministic. It also strengthens the invariant the resolved event
+	// below relies on — no reacting surface can re-answer an entry that is
+	// already deleted — and loses nothing: the entry was Load-ed above, so
+	// a concurrent duplicate response can no longer deliver twice anyway.
+	a.pendingConfirmations.Delete(requestID)
+
 	sent := deliverResponse(confirmData.ch, resp)
 	if !sent {
 		log.Warn("confirmation response dropped: channel full",
@@ -213,8 +223,6 @@ func (a *App) handleToolConfirmResponse(payload map[string]any, log *slog.Logger
 			"tool", confirmData.toolName,
 			"decision", resp)
 	}
-
-	a.pendingConfirmations.Delete(requestID)
 
 	// Mark the persisted tool_confirm message as resolved so it doesn't
 	// reappear as pending on session reload.
@@ -377,12 +385,18 @@ func (a *App) handleAskUserResponse(payload map[string]any, log *slog.Logger) {
 		return
 	}
 
+	// Delete BEFORE delivering — same ordering as handleToolConfirmResponse:
+	// the channel send handshakes with the waiting consumer, and any
+	// post-receive observation of the pending map must not see the entry
+	// (the deleted-alive window is also what the resolved-event invariant
+	// below relies on).
+	a.pendingAskUser.Delete(requestID)
+
 	sent := deliverResponse(entry.ch, resp)
 	if !sent {
 		log.Warn("ask_user response dropped: channel full or receiver gone",
 			"request_id", requestID)
 	}
-	a.pendingAskUser.Delete(requestID)
 
 	// Mark the persisted ask_user message as resolved so it doesn't reappear
 	// as pending on session reload.
@@ -428,12 +442,16 @@ func (a *App) handlePlanApprovalResponse(payload map[string]any, log *slog.Logge
 		return
 	}
 
+	// Delete BEFORE delivering — same ordering as handleToolConfirmResponse
+	// (the delete must happen-before the channel send so a waiting consumer
+	// never observes a deleted-alive entry).
+	a.pendingPlanApprovals.Delete(requestID)
+
 	sent := deliverResponse(entry.ch, planApprovalResponse{Decision: decision, Feedback: feedback})
 	if !sent {
 		log.Warn("plan approval response dropped: channel full or receiver gone",
 			"request_id", requestID)
 	}
-	a.pendingPlanApprovals.Delete(requestID)
 
 	// Mark the persisted plan_review message as resolved so it doesn't
 	// reappear as pending on session reload.
@@ -475,8 +493,11 @@ func (a *App) resolveGoalProposal(requestID, decision, condition, verify, verifi
 		Verify:           verify,
 		VerificationMode: verificationMode,
 	}
-	sent := deliverResponse(entry.ch, resp)
+	// Delete BEFORE delivering — same ordering as handleToolConfirmResponse
+	// (happen-before the channel send; a waiting consumer must never observe
+	// a deleted-alive entry).
 	a.pendingGoalProposals.Delete(requestID)
+	sent := deliverResponse(entry.ch, resp)
 
 	// Mark the persisted goal_proposal message as resolved so it doesn't
 	// reappear as pending on session reload.

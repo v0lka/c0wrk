@@ -633,9 +633,13 @@ func TestBuildUIEmitFunc_SessionRenamedEmitsGlobal(t *testing.T) {
 			NewName: "Meaningful Title",
 		},
 	})
-	// Events flow through the batching transport; force the flush so the
-	// assertions see the delivered envelope.
-	a.flushEvents()
+	// Events flow through the batching transport; stop (drain + join the
+	// flusher goroutine) so the assertions see every delivered envelope
+	// deterministically — a plain flush drains under the batcher's mutex but
+	// emits outside it, so the background flusher can take the queue and
+	// still be mid-emit when the recorder snapshots (the CI flake this
+	// family of tests used to carry).
+	a.stopEventBatcher()
 
 	events := flattenEmittedBatches(t, rec.snapshot())
 	if len(events) != 2 {
@@ -669,7 +673,7 @@ func TestBuildUIEmitFunc_NonRenameEmitsOnlyScoped(t *testing.T) {
 
 	// A regular event must emit only the session-scoped event, no global echo.
 	emit(session.Event{SessionID: "s1", Type: "finishing"})
-	a.flushEvents()
+	a.stopEventBatcher()
 
 	events := flattenEmittedBatches(t, rec.snapshot())
 	if len(events) != 1 {
@@ -703,7 +707,7 @@ func TestBuildUIEmitFunc_TaskLifecycleEmitsSessionsChanged(t *testing.T) {
 			emit := a.buildUIEmitFunc()
 
 			emit(session.Event{SessionID: "s1", Type: eventType})
-			a.flushEvents()
+			a.stopEventBatcher()
 
 			events := flattenEmittedBatches(t, rec.snapshot())
 			if len(events) != 2 {
@@ -736,7 +740,7 @@ func TestBuildUIEmitFunc_NonLifecycleEmitsNoSessionsChanged(t *testing.T) {
 	emit := a.buildUIEmitFunc()
 
 	emit(session.Event{SessionID: "s1", Type: "finishing"})
-	a.flushEvents()
+	a.stopEventBatcher()
 
 	events := flattenEmittedBatches(t, rec.snapshot())
 	if len(events) != 1 {

@@ -280,17 +280,39 @@ const versionProbeTimeout = 10 * time.Second
 
 // probeBinaryVersion runs binPath with --version and returns its combined
 // output: timeout-bounded, console hidden on Windows; on failure the
-// collected output still comes back alongside the error.
+// collected output still comes back alongside the error. A transient spawn
+// refusal (ETXTBSY on Unix; antivirus/sharing on Windows) is retried a
+// bounded number of times — the startup fast path treats ANY probe failure
+// as "reinstall", so swallowing a transient refusal here used to convert a
+// healthy install into a spurious download (observed as a CI flake: the
+// freshly copied uv.exe was refused once, the failing downloader surfaced
+// "network unavailable", and the fast-path assertion failed).
+const (
+	probeTransientAttempts = 3
+	probeRetryBackoff      = 100 * time.Millisecond
+)
+
 func (m *Manager) probeBinaryVersion(ctx context.Context, binPath string) (string, error) {
 	probeCtx, cancel := context.WithTimeout(ctx, versionProbeTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(probeCtx, binPath, "--version")
-	sysproc.HideConsole(cmd) // avoid flashing console windows on Windows (GUI app)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return string(out), fmt.Errorf("running %s --version: %w", binPath, err)
+	var out []byte
+	var err error
+	for attempt := 1; ; attempt++ {
+		cmd := exec.CommandContext(probeCtx, binPath, "--version")
+		sysproc.HideConsole(cmd) // avoid flashing console windows on Windows (GUI app)
+		out, err = cmd.CombinedOutput()
+		if err == nil {
+			return string(out), nil
+		}
+		if attempt >= probeTransientAttempts || !isTransientSpawnError(err) {
+			break
+		}
+		select {
+		case <-probeCtx.Done():
+		case <-time.After(probeRetryBackoff):
+		}
 	}
-	return string(out), nil
+	return string(out), fmt.Errorf("running %s --version: %w", binPath, err)
 }
 
 // versionInOutput is deliberately substring containment ("15.2.0" matches

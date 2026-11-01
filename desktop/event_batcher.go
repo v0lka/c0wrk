@@ -294,16 +294,6 @@ func (a *App) emitBatchedEvent(name string, args []any, coalesceKey string, barr
 	a.sessionEventBatcher().Enqueue(name, args, coalesceKey, barrier, sizeHint)
 }
 
-// flushEvents synchronously delivers everything currently queued. It is used
-// by tests to observe queued events deterministically; task-completion
-// boundaries are handled in production by the batcher's barrier flag (see
-// isImmediateFlushEvent), not by calling this.
-func (a *App) flushEvents() {
-	if b := a.batcherPtr.Load(); b != nil {
-		b.Flush()
-	}
-}
-
 // stopEventBatcher flushes pending events and terminates the batcher on
 // shutdown; events emitted afterwards are delivered synchronously.
 func (a *App) stopEventBatcher() {

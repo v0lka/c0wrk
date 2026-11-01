@@ -168,6 +168,17 @@ type ManagerConfig struct {
 	// specs/decisions/049-vector-index-memory-reduction.md.
 	ParkBudgetBytes int64
 
+	// ShutdownGrace overrides the shutdown drain grace (0 = the production
+	// shutdownIndexGracePeriod). Tests that create managers with PERSISTED
+	// storage and then remove it (TempDir) should set a generous grace:
+	// Shutdown skips Close() when the bounded drain expires — by design for
+	// app shutdown (the OS reclaims) — and the skipped Close leaves store
+	// files open, which a Windows TempDir cleanup then cannot unlink
+	// (observed as a CI-only flake). A large-but-bounded grace keeps the
+	// drain bounded while making the skip path unreachable for realistic
+	// CI scheduling stalls.
+	ShutdownGrace time.Duration
+
 	Logger    *slog.Logger
 	Telemetry *Telemetry
 }
@@ -295,9 +306,11 @@ type Manager struct {
 	// closeFn is called during Shutdown to release the embedder (if provided).
 	closeFn func() error
 
-	// shutdownGrace overrides shutdownIndexGracePeriod when non-zero, so
-	// tests verify the bounded-wait Shutdown logic without waiting the full
-	// 10 s production default.
+	// shutdownGrace overrides shutdownIndexGracePeriod when non-zero
+	// (ManagerConfig.ShutdownGrace): in-package tests shrink it to verify
+	// the bounded-wait Shutdown logic without the full 10 s production
+	// default, while out-of-package fixtures with persisted storage widen
+	// it so the skip-Close leak path stays unreachable on CI runners.
 	shutdownGrace time.Duration
 }
 
@@ -398,6 +411,7 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 		ignoreFiles:        cfg.IgnoreFiles,
 		excludePatterns:    cfg.ExcludePatterns,
 		includeSubmodules:  cfg.IncludeSubmodules,
+		shutdownGrace:      cfg.ShutdownGrace,
 	}, nil
 }
 
