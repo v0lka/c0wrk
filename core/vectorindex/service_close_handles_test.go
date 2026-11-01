@@ -16,6 +16,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"github.com/v0lka/sp4rk/pathutil"
 )
 
 func TestServiceCloseReleasesFailedPassHandles(t *testing.T) {
@@ -69,7 +71,13 @@ func TestServiceCloseReleasesFailedPassHandles(t *testing.T) {
 }
 
 // openHandlesUnder walks the process FD table and returns links pointing
-// inside dir. Skips (rather than fails) where /dev/fd is unavailable.
+// inside dir. Containment must be decided with pathutil.IsWithinPath, never
+// a bare filepath.Rel comparison: the test binary inherits descriptors from
+// its parent (GitHub-hosted Linux runners hold /dev/null and cgroup files
+// open), and Rel(persistDir, "/dev/null") is a "../.."-prefixed relative
+// path that a naive rel != ".." check counts as contained — a false leak.
+// Only a descriptor pointing INTO the persistence dir is a Close() leak.
+// Skips (rather than fails) where /dev/fd is unavailable.
 func openHandlesUnder(t *testing.T, dir string) []string {
 	t.Helper()
 	entries, err := os.ReadDir("/dev/fd")
@@ -82,7 +90,12 @@ func openHandlesUnder(t *testing.T, dir string) []string {
 		if err != nil {
 			continue
 		}
-		if rel, err := filepath.Rel(dir, link); err == nil && rel != ".." && !filepath.IsAbs(rel) {
+		// FD targets like "pipe:[123]" or "anon_inode:..." are never files
+		// under dir; IsWithinPath requires absolute operands.
+		if !filepath.IsAbs(link) {
+			continue
+		}
+		if within, err := pathutil.IsWithinPath(dir, link); err == nil && within {
 			hits = append(hits, link)
 		}
 	}
