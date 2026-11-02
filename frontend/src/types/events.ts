@@ -637,11 +637,23 @@ export interface ToolManagerToolInfo { readonly name: string; readonly version: 
 
 export interface ToolManagerStartData { readonly tools: readonly ToolManagerToolInfo[] }
 
+/** Tool install stage; `done`/`failed` are terminal for the tool. */
+export type ToolManagerStage =
+  | 'download' // archive transfer — bytes reported
+  | 'extract' // archive extraction — no bytes
+  | 'verify' // post-install version probe — no bytes
+  | 'python_bootstrap' // uv bootstrap — `detail` names the sub-step
+  | 'done' // terminal: installed; probe-verified (static) or bootstrap-complete (Python — no probe)
+  | 'failed' // terminal for the pass — `error` carries the cause
+
 export interface ToolManagerProgressData {
   readonly tool: string
-  readonly stage: 'download' | 'extract' | 'python_bootstrap'
+  readonly stage: ToolManagerStage
   readonly bytes_done: number
   readonly bytes_total: number
+  readonly detail?: string // python_bootstrap sub-step
+  readonly error?: string // failed: truncated install cause
+  readonly tools_total?: number // splash denominator, stamped on every event
 }
 
 export interface ToolManagerDoneData {
@@ -1850,12 +1862,15 @@ export function isToolManagerStartData(d: unknown): d is ToolManagerStartData {
   return isObj(d) && Array.isArray(d.tools) && d.tools.every(isToolManagerToolInfo)
 }
 
-const VALID_TOOL_STAGES = new Set(['download', 'extract', 'python_bootstrap'])
+const VALID_TOOL_STAGES = new Set(['download', 'extract', 'verify', 'python_bootstrap', 'done', 'failed'])
 
 export function isToolManagerProgressData(d: unknown): d is ToolManagerProgressData {
   return isObj(d) && typeof d.tool === 'string' && typeof d.stage === 'string' &&
     VALID_TOOL_STAGES.has(d.stage) &&
-    typeof d.bytes_done === 'number' && typeof d.bytes_total === 'number'
+    typeof d.bytes_done === 'number' && typeof d.bytes_total === 'number' &&
+    (d.detail === undefined || typeof d.detail === 'string') &&
+    (d.error === undefined || typeof d.error === 'string') &&
+    (d.tools_total === undefined || typeof d.tools_total === 'number')
 }
 
 

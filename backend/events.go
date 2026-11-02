@@ -35,6 +35,11 @@ const EventConfigUpdated = "config:updated"
 // carrying the tools to install; the frontend shows the install splash.
 const EventToolManagerStart = "tool_manager:start"
 
+// EventToolManagerProgress is emitted during one tool's install: the current
+// stage, transfer bytes, the splash denominator, and the terminal done/failed
+// outcome (specs/contracts/event-catalog.md).
+const EventToolManagerProgress = "tool_manager:progress"
+
 // EventToolManagerDone is emitted when all managed-tool installations complete.
 const EventToolManagerDone = "tool_manager:done"
 

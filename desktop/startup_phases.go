@@ -137,14 +137,7 @@ func (a *App) initTools(ctx context.Context, log *slog.Logger) (toolsBinPath str
 	pythonDir := config.ToolsPythonDir(agentDir)
 
 	mgr := toolmanager.NewManager(toolsDir, binDir, pythonDir, log, toolmanager.ManagerConfig{
-		ProgressCallback: func(toolName, stage string, bytesDone, bytesTotal int64) {
-			a.emit("tool_manager:progress", map[string]any{
-				"tool":        toolName,
-				"stage":       stage,
-				"bytes_done":  bytesDone,
-				"bytes_total": bytesTotal,
-			})
-		},
+		ProgressCallback: a.emitToolManagerProgress,
 	})
 
 	// Safety-net reveal before the tool-install splash and backend:ready need
@@ -160,6 +153,23 @@ func (a *App) initTools(ctx context.Context, log *slog.Logger) (toolsBinPath str
 		return "", false
 	}
 	return mgr.PrependToPATH(), installed
+}
+
+// emitToolManagerProgress forwards one manager progress report to the
+// frontend, stamping the splash denominator: Wails drops events emitted
+// before the webview subscribes, so tool_manager:start can be lost and every
+// progress event must self-describe the total
+// (specs/contracts/event-catalog.md, tool_manager:progress).
+func (a *App) emitToolManagerProgress(p toolmanager.ToolProgress) {
+	a.emit(backend.EventToolManagerProgress, map[string]any{
+		"tool":        p.Tool,
+		"stage":       p.Stage,
+		"bytes_done":  p.BytesDone,
+		"bytes_total": p.BytesTotal,
+		"detail":      p.Detail,
+		"error":       p.Error,
+		"tools_total": a.toolSplashTotal.Load(),
+	})
 }
 
 // toolEnsurer is the manager seam of the startup tool orchestration:
@@ -218,6 +228,9 @@ func (a *App) reconcileToolsWithSplash(ctx context.Context, log *slog.Logger, mg
 		for i, t := range needed {
 			toolNames[i] = map[string]string{"name": t.Name, "version": t.Version}
 		}
+		// Every progress event carries the splash denominator — the start
+		// event itself can be lost to the webview-subscription race.
+		a.toolSplashTotal.Store(int64(len(needed)))
 		a.emit(backend.EventToolManagerStart, map[string]any{
 			"tools": toolNames,
 		})
@@ -254,6 +267,7 @@ func (a *App) reconcileToolsWithSplash(ctx context.Context, log *slog.Logger, mg
 			for i, s := range notReady {
 				toolNames[i] = map[string]string{"name": s.Tool.Name, "version": s.Tool.Version}
 			}
+			a.toolSplashTotal.Store(int64(len(notReady)))
 			a.emit(backend.EventToolManagerStart, map[string]any{
 				"tools": toolNames,
 			})

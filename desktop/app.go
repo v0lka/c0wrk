@@ -167,6 +167,13 @@ type App struct {
 	// resolve managed binaries (rg, uv, markitdown).
 	toolsBinPath string
 
+	// toolSplashTotal is the splash denominator emitted with every
+	// tool_manager:progress event: Wails drops events emitted before the
+	// webview subscribes, so tool_manager:start can be lost and each progress
+	// event must self-describe the total. Written by reconcileToolsWithSplash
+	// (needsInstall list length), read by initTools' progress closure.
+	toolSplashTotal atomic.Int64
+
 	// exitConfirmed bypasses the close guard (ShouldPreventClose) once the
 	// user confirmed quitting despite active sessions; Wails routes every
 	// quit path through OnBeforeClose, so the confirmed quit must not be

@@ -184,8 +184,11 @@ Phase 2: config + tools (parallel, up to 3-10 min on first run)
       │     toast; no network pass, no blocking
       └─ tools not Ready / positively missing → PASS 2: BLOCKING network
             EnsureCriticalTools(AllowNetwork:true) under the splash
-            ├─ download → emit tool_manager:progress(bytes_done, bytes_total)
-            ├─ extract / python_bootstrap
+            ├─ per-tool progress: emit tool_manager:progress(stage,
+            │   bytes_done, bytes_total, detail?, error?, tools_total) —
+            │   download bytes, extract, verify (post-install probe),
+            │   python_bootstrap sub-steps; every install ends in a terminal
+            │   done or failed event
             ├─ emit tool_manager:done(counts) — exactly once per launch, on
             │   the deciding pass, before any fatal modal
             ├─ structural network failure → native fatal modal (error text)

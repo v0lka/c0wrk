@@ -6,9 +6,18 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 )
+
+// stepRecorder returns an InstallPythonPackage step callback appending each
+// reported sub-step to dst, so tests can assert the bootstrap sequence.
+func stepRecorder(dst *[]string) func(detail string) {
+	return func(detail string) {
+		*dst = append(*dst, detail)
+	}
+}
 
 // pinLineRe matches a locked requirement line: "name==version" optionally
 // followed by an environment marker (universal locks carry per-platform
@@ -209,7 +218,8 @@ func TestInstallPythonPackage_UsesRequirementsLock(t *testing.T) {
 		t.Fatal("markitdown not found in ManagedTools(nil)")
 	}
 
-	res, err := NewFSInstaller().InstallPythonPackage(context.Background(), tool, toolsDir, binDir)
+	var steps []string
+	res, err := NewFSInstaller().InstallPythonPackage(context.Background(), tool, toolsDir, binDir, stepRecorder(&steps))
 	if err != nil {
 		t.Fatalf("InstallPythonPackage: %v", err)
 	}
@@ -218,6 +228,12 @@ func TestInstallPythonPackage_UsesRequirementsLock(t *testing.T) {
 	}
 	if _, err := os.Stat(res.BinPath); err != nil {
 		t.Errorf("wrapper not created at %s: %v", res.BinPath, err)
+	}
+	// The three bootstrap sub-steps are announced in execution order — the
+	// splash renders them as live sub-stage labels.
+	wantSteps := []string{DetailInterpreter, DetailVenv, DetailPackages}
+	if !slices.Equal(steps, wantSteps) {
+		t.Errorf("bootstrap sub-steps = %q, want %q", steps, wantSteps)
 	}
 
 	// The lock must be materialized in toolsDir with byte-exact content.
@@ -270,7 +286,7 @@ func TestInstallPythonPackage_FallsBackToPipSpec(t *testing.T) {
 		PythonVersion: "3.12",
 	}
 
-	res, err := NewFSInstaller().InstallPythonPackage(context.Background(), tool, toolsDir, binDir)
+	res, err := NewFSInstaller().InstallPythonPackage(context.Background(), tool, toolsDir, binDir, nil)
 	if err != nil {
 		t.Fatalf("InstallPythonPackage: %v", err)
 	}

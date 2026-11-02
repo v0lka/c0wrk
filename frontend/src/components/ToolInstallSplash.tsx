@@ -1,8 +1,8 @@
 import { useMemo } from 'react'
 import { cn } from '@/lib/utils'
 import { formatVersion } from '@/lib/formatters'
-import type { ToolManagerToolInfo, ToolManagerProgressData } from '@/types/events'
-import { Download, PackageOpen } from 'lucide-react'
+import type { ToolManagerProgressData, ToolManagerStage, ToolManagerToolInfo } from '@/types/events'
+import { CheckCircle2, Download, PackageOpen, XCircle } from 'lucide-react'
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -23,28 +23,48 @@ function pct(done: number, total: number): number {
   return Math.min(100, Math.round((done / total) * 100))
 }
 
-// ── Per-tool progress bar ───────────────────────────────────────────────────
+// ── Stage vocabulary (backend ToolProgress.Stage / .Detail) ────────────────
 
-const STAGE_LABELS: Record<string, string> = {
+const STAGE_LABELS: Record<ToolManagerStage, string> = {
   download: 'Downloading',
   extract: 'Extracting',
+  verify: 'Verifying',
   python_bootstrap: 'Bootstrapping Python',
+  done: 'Done',
+  failed: 'Failed',
 }
 
+const DETAIL_LABELS: Record<string, string> = {
+  interpreter: 'Fetching interpreter',
+  venv: 'Creating venv',
+  packages: 'Installing packages',
+}
+
+type RowState = 'pending' | 'active' | 'done' | 'failed'
+
+function rowState(p?: ToolManagerProgressData): RowState {
+  if (!p) return 'pending'
+  if (p.stage === 'done') return 'done'
+  if (p.stage === 'failed') return 'failed'
+  return 'active'
+}
+
+// ── Per-tool progress bar ───────────────────────────────────────────────────
+
 function ToolProgressRow({ tool, progress }: { tool: ToolManagerToolInfo; progress?: ToolManagerProgressData }) {
-  const hasProgress = progress !== undefined
-  const done = hasProgress && progress.bytes_total > 0 && progress.bytes_done >= progress.bytes_total
-  const active = hasProgress && progress.bytes_total > 0 && !done
+  const state = rowState(progress)
+  const known = !!progress && progress.bytes_total > 0
+  const stageLabel = progress && state === 'active' ? STAGE_LABELS[progress.stage] : undefined
+  const detailLabel = progress?.detail ? DETAIL_LABELS[progress.detail] ?? progress.detail : undefined
 
   return (
-    <div className="flex items-center gap-3 py-1.5">
-      {/* Icon */}
-      {!hasProgress
-        ? <Download className="size-4 text-muted-foreground/50 shrink-0" />
-        : done
-          ? <PackageOpen className="size-4 text-success shrink-0" />
-          : <Download className="size-4 text-primary shrink-0 animate-pulse" />
-      }
+    <div className="flex items-center gap-3 py-1.5" data-testid={`tool-row-${tool.name}`}>
+      {/* Status icon: a download arrow while working, the install verdict
+          once the tool reached a terminal state. */}
+      {state === 'pending' && <Download className="size-4 text-muted-foreground/50 shrink-0" />}
+      {state === 'active' && <Download className="size-4 text-primary shrink-0 animate-pulse" />}
+      {state === 'done' && <PackageOpen className="size-4 text-success shrink-0" />}
+      {state === 'failed' && <XCircle className="size-4 text-destructive shrink-0" />}
 
       {/* Tool name + version */}
       <div className="flex flex-col min-w-0 flex-1">
@@ -59,23 +79,29 @@ function ToolProgressRow({ tool, progress }: { tool: ToolManagerToolInfo; progre
           )}
         </div>
 
-        {/* Stage & bytes */}
-        {progress && (
+        {/* Stage / sub-step / bytes; the verdict lives on the right. */}
+        {stageLabel && (
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <span>{STAGE_LABELS[progress.stage] ?? progress.stage}</span>
-            {progress.bytes_total > 0 && (
-              <span>
+            <span>{stageLabel}</span>
+            {detailLabel && <span className="truncate">· {detailLabel}</span>}
+            {known && (
+              <span className="tabular-nums">
                 {formatBytes(progress.bytes_done)} / {formatBytes(progress.bytes_total)}
               </span>
             )}
-            {progress.bytes_total <= 0 && <span>...</span>}
+            {!known && !detailLabel && <span>…</span>}
           </div>
+        )}
+        {state === 'failed' && progress?.error && (
+          <span className="text-xs text-destructive truncate" title={progress.error}>
+            {progress.error}
+          </span>
         )}
       </div>
 
-      {/* Progress bar + percentage */}
+      {/* Progress bar + verdict */}
       <div className="flex items-center gap-2 shrink-0 w-24">
-        {active && (
+        {state === 'active' && known && (
           <>
             <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
               <div
@@ -88,15 +114,21 @@ function ToolProgressRow({ tool, progress }: { tool: ToolManagerToolInfo; progre
             </span>
           </>
         )}
-        {done && !active && (
-          <span className="text-xs text-success ml-auto">Done</span>
+        {state === 'active' && !known && (
+          // No byte count exists for this stage — pulse instead of a lying
+          // percentage (same posture as EmbeddedProgressRow).
+          <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
+            <div className="h-full w-1/3 animate-pulse rounded-full bg-primary" />
+          </div>
         )}
-        {!hasProgress && (
-          <span className="text-xs text-muted-foreground ml-auto">Pending</span>
+        {state === 'done' && (
+          <span className="text-xs text-success ml-auto flex items-center gap-1">
+            <CheckCircle2 className="size-3.5" />
+            Done
+          </span>
         )}
-        {hasProgress && !done && !active && (
-          <span className="text-xs text-muted-foreground ml-auto">Starting…</span>
-        )}
+        {state === 'failed' && <span className="text-xs text-destructive ml-auto">Failed</span>}
+        {state === 'pending' && <span className="text-xs text-muted-foreground ml-auto">Pending</span>}
       </div>
     </div>
   )
@@ -104,19 +136,28 @@ function ToolProgressRow({ tool, progress }: { tool: ToolManagerToolInfo; progre
 
 // ── Main component ──────────────────────────────────────────────────────────
 
-export function ToolInstallSplash({ tools, progressMap }: {
+export function ToolInstallSplash({ tools, progressMap, toolsTotal = 0 }: {
   tools: readonly ToolManagerToolInfo[]
   progressMap: Map<string, ToolManagerProgressData>
+  /** Splash denominator stamped by the backend onto every progress event —
+   *  the authoritative total even when tool_manager:start was lost and the
+   *  visible list is still the incrementally derived one. */
+  toolsTotal?: number
 }) {
   // Memoize the tools list in display order.
   const toolList = useMemo(() => tools, [tools])
 
-  // All tools are either done (tracked in progressMap) or we're still waiting.
-  // Every tool in the list that has been mentioned in a progress event is "active".
-  const allDone = progressMap.size > 0 && toolList.every(t => {
-    const p = progressMap.get(t.name)
-    return p && p.bytes_done > 0 && p.bytes_done >= p.bytes_total
-  })
+  // "Ready" means the tool's install reported its terminal done — a row that
+  // merely started is not ready. The denominator prefers the stamped total.
+  const total = Math.max(toolList.length, toolsTotal)
+  const doneCount = useMemo(() => {
+    let n = 0
+    for (const t of toolList) {
+      if (progressMap.get(t.name)?.stage === 'done') n++
+    }
+    return n
+  }, [toolList, progressMap])
+  const allDone = progressMap.size > 0 && total > 0 && doneCount >= total
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background">
@@ -148,21 +189,16 @@ export function ToolInstallSplash({ tools, progressMap }: {
         </div>
 
         {/* Overall progress bar */}
-        {!allDone && toolList.length > 0 && (
+        {!allDone && total > 0 && (
           <div className="mt-6">
             <div className="h-2 overflow-hidden rounded-full bg-muted">
               <div
                 className="h-full rounded-full bg-primary transition-all duration-300"
-                style={{
-                  width: `${pct(
-                    progressMap.size,
-                    toolList.length,
-                  )}%`,
-                }}
+                style={{ width: `${pct(doneCount, total)}%` }}
               />
             </div>
             <p className="mt-2 text-xs text-muted-foreground text-center">
-              {progressMap.size} of {toolList.length} tools ready
+              {doneCount} of {total} tools ready
             </p>
           </div>
         )}
