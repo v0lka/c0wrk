@@ -41,10 +41,10 @@ func (f *FrontendAPI) DeleteProject(id string) error {
 		return errors.New("project subsystem not initialized")
 	}
 	// Validate the id BEFORE any destructive work: the manager rejects the
-	// No Project pseudo-project, but only one layer below — the session
-	// teardown loop and the vector release below must never run for it (or
-	// for an empty id), or a forged RPC deletes every loaded CHAT session's
-	// on-disk workspace and THEN fails with the manager's rejection.
+	// No Project pseudo-project one layer below, but the session teardown
+	// loop and the vector release here must never run for it (or an empty
+	// id) — a forged RPC would otherwise delete every loaded CHAT session's
+	// on-disk workspace and THEN fail.
 	if id == "" || id == project.NoProjectID {
 		return errors.New("cannot delete the No Project pseudo-project")
 	}
@@ -53,18 +53,12 @@ func (f *FrontendAPI) DeleteProject(id string) error {
 		return err
 	}
 
-	// Per-root vector managers (ADR-080) are released FIRST — shutdown drops
+	// Per-root vector managers (ADR-081) are released FIRST — shutdown drops
 	// their open chromem handles so the directory removal below works on
-	// Windows too. Managed-session worktree indexes live under
-	// <projectVI>/worktrees/<name> with the per-tree embedding cache inside
-	// that storage (<projectVI>/worktrees/<name>/embedding_cache): drop each
-	// worktree storage explicitly, then the project root removes everything
-	// left. Any live manager can run the deletion (it is a
-	// plain fs + park-slot operation); without one there is nothing this app
-	// run can be holding open, so the best-effort pass is skipped exactly
-	// like the nil-manager case before it. Releasing before removal is the
-	// invariant: the removal inside projectManager.DeleteProject would
-	// otherwise fail on the still-open Windows handles and orphan the index.
+	// Windows too: drop each managed worktree storage explicitly, then the
+	// project root removes the rest. Releasing before removal is the
+	// invariant: projectManager.DeleteProject would otherwise fail on the
+	// still-open Windows handles and orphan the index.
 	viRoot := config.ProjectVectorIndexPath(f.agentDir, id)
 	if released := f.vectorRootsRegistry().ReleaseProject(id); len(released) > 0 {
 		for _, e := range worktreeStorageNames(viRoot) {
@@ -74,11 +68,10 @@ func (f *FrontendAPI) DeleteProject(id string) error {
 	}
 
 	// Stop and clean up all in-memory sessions for the project BEFORE removing
-	// the project directory. This cancels any active tasks and closes log/dump
-	// file handles so no open handles remain when the project tree is deleted,
-	// and removes each session's internal files. Store-only sessions have no
-	// open handles; their files are removed together with the project directory
-	// by DeleteProject below.
+	// the project directory: cancels active tasks, closes log/dump handles, and
+	// removes each session's internal files so no open handles remain when the
+	// project tree is deleted. Store-only sessions have no open handles; their
+	// files go with the directory below.
 	if f.app != nil {
 		if manager := f.app.Manager(); manager != nil {
 			for _, s := range manager.ListSessions() {
@@ -106,12 +99,11 @@ func (f *FrontendAPI) DeleteProject(id string) error {
 	}
 	f.activeProjectMu.Unlock()
 
-	// The Git-panel focus belongs to the deleted project's repository; a
-	// stale override would resolve every PATHLESS git RPC into the removed
-	// (or, for an external workspace, still-on-disk) tree between this
-	// deletion and the frontend's asynchronous focus re-apply — wrong-repo
-	// commit/push/reset. invalidateAllGitCaches is the same funnel the
-	// project switch uses: cache drop + focus clear in one step.
+	// A stale Git-panel focus would resolve every PATHLESS git RPC into the
+	// removed (or, for an external workspace, still-on-disk) tree between
+	// this deletion and the frontend's asynchronous focus re-apply —
+	// wrong-repo commit/push/reset. invalidateAllGitCaches is the same funnel
+	// the project switch uses: cache drop + focus clear in one step.
 	f.invalidateAllGitCaches()
 
 	// Stop watcher if this was the active project
@@ -152,10 +144,9 @@ func (f *FrontendAPI) ListProjects() ([]project.ProjectInfo, error) {
 
 // ActiveProjectDir returns the workspace directory of the currently active
 // project, intended as the default location for user-facing native file
-// dialogs (e.g. Save Message as Markdown). It returns "" when no project is
-// active or when the No Project pseudo-project is active — its workspace is
-// c0wrk-internal data storage (~/.c0wrk/projects/__no_project__/), not a
-// directory the user considers "the project directory".
+// dialogs. It returns "" when no project is active or when No Project is
+// active — its workspace is c0wrk-internal data storage, not a directory the
+// user considers "the project directory".
 func (f *FrontendAPI) ActiveProjectDir() string {
 	f.activeProjectMu.RLock()
 	defer f.activeProjectMu.RUnlock()
@@ -182,8 +173,6 @@ func (f *FrontendAPI) SaveProjectUIState(req ProjectUIStateRequest) error {
 		OpenTabs:       req.OpenTabs,
 		ActiveFile:     req.ActiveFile,
 	})
-	// A resolution failure must not clobber the pointer: keep the original
-	// value instead of normalizing to empty on a transient store error.
 	resolved, err := f.resolveSavedSessionForProject(context.Background(), state.ProjectID, state.SavedSessionID)
 	if err != nil {
 		f.log().Warn("failed to resolve saved session for project UI state; keeping original value", "project", state.ProjectID, "error", err)
@@ -200,11 +189,10 @@ func (f *FrontendAPI) SaveProjectUIState(req ProjectUIStateRequest) error {
 }
 
 // SaveProjectActiveSession persists ONLY the selected session for a project,
-// leaving any previously saved open tabs / active file untouched. Used by the
-// frontend when the user switches sessions inside a project — a full
-// SaveProjectUIState would race with (and clobber) the tab state owned by the
-// file viewer. When no UI-state row exists yet, one is created with empty
-// open tabs.
+// leaving any previously saved open tabs / active file untouched — a full
+// SaveProjectUIState from the session-switch path would race with (and
+// clobber) the tab state owned by the file viewer. When no UI-state row
+// exists yet, one is created with empty open tabs.
 func (f *FrontendAPI) SaveProjectActiveSession(projectID, sessionID string) error {
 	f.seedAcquire()
 	projectID = strings.TrimSpace(projectID)
@@ -216,8 +204,8 @@ func (f *FrontendAPI) SaveProjectActiveSession(projectID, sessionID string) erro
 	}
 
 	// Validate the project exists: project_ui_state.project_id has a foreign
-	// key to projects(id), so inserting for an unknown project would fail with
-	// an opaque constraint error.
+	// key to projects(id), so inserting for an unknown project would fail
+	// with an opaque constraint error.
 	p, err := f.projectManager.GetProject(projectID)
 	if err != nil {
 		return fmt.Errorf("failed to load project: %w", err)
@@ -228,11 +216,6 @@ func (f *FrontendAPI) SaveProjectActiveSession(projectID, sessionID string) erro
 
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID != "" {
-		// Never persist a selection that resolve would reject (unknown or
-		// archived session); normalize to empty so the next project switch
-		// falls back to the latest live session. A resolution ERROR is
-		// propagated instead of writing anything: persisting "" after a
-		// transient store failure would clobber a valid saved pointer.
 		resolved, err := f.resolveSavedSessionForProject(context.Background(), projectID, sessionID)
 		if err != nil {
 			return fmt.Errorf("failed to resolve session selection: %w", err)
@@ -271,8 +254,6 @@ func (f *FrontendAPI) GetProjectUIState(projectID string) (*ProjectUIStateRespon
 	normalized := normalizeProjectUIState(*state)
 	resolved, err := f.resolveSavedSessionForProject(context.Background(), projectID, normalized.SavedSessionID)
 	if err != nil {
-		// Read path: a transient resolution failure must not blank the saved
-		// pointer in the response (nor trigger the normalization write-back).
 		f.log().Warn("failed to resolve saved session for persisted project UI state", "project", projectID, "error", err)
 	} else {
 		normalized.SavedSessionID = resolved
@@ -292,11 +273,10 @@ func (f *FrontendAPI) GetProjectUIState(projectID string) (*ProjectUIStateRespon
 	}, nil
 }
 
-// GetLastActiveProjectID returns the ID of the project that was active at the
-// last SwitchProject call (persisted in app_state, including the No Project
-// pseudo-project ID). The frontend uses it after an app restart to restore the
-// previously active project. Returns an empty string when nothing was
-// persisted yet or persistence is unavailable.
+// GetLastActiveProjectID returns the ID of the project active at the last
+// SwitchProject call (persisted in app_state, including No Project); the
+// frontend restores it after an app restart. Empty when nothing was
+// persisted or persistence is unavailable.
 func (f *FrontendAPI) GetLastActiveProjectID() string {
 	f.seedAcquire()
 	if f.projStore == nil {
@@ -313,31 +293,27 @@ func (f *FrontendAPI) GetLastActiveProjectID() string {
 }
 
 // SwitchProject activates a project, setting it as the current workspace.
-//
-// Design invariant: the application operates with a single active project at any
-// time. The file watcher, vector indexer, terminal manager, and session workspace
-// resolution all assume single-project context. Concurrent project access is not
-// supported — switching tears down the previous project's resources before
-// activating the new one.
+// Design invariant: exactly ONE active project at any time — the file
+// watcher, vector indexer, terminal manager and session workspace resolution
+// all assume single-project context; switching tears down the previous
+// project's resources before activating the new one.
 func (f *FrontendAPI) SwitchProject(id string) error {
 	f.seedAcquire()
 	if f.projectManager == nil {
 		return errors.New("project subsystem not initialized")
 	}
 
-	// Serialize the entire switch (see switchMu in frontend_api.go): rapid
-	// toggles arrive on separate goroutines and must not interleave
-	// teardown/activate — otherwise the backend can end on the OLDER switch
-	// while the frontend's serialized chain already moved on, a desync under
-	// which every ListDirectory (and with it @-file completion) fails
-	// containment until an app restart.
+	// Serialize the whole switch (see switchMu): rapid toggles arrive on
+	// separate goroutines and must not interleave teardown/activate —
+	// otherwise the backend ends on the OLDER switch while the frontend
+	// already moved on, a desync under which every ListDirectory fails
+	// containment until restart.
 	if err := f.acquireSwitchLock(); err != nil {
-		// Surface the failure: the frontend's toggle swallows a rejected switch
-		// (switchProjectWithState) and expects the global runtime_error listener
-		// to explain it, so a bounded-acquire failure that emits nothing is an
-		// invisible dead button. Mirrors the git-not-found path below (and is
-		// nil-guarded like the other early-startup emitters, since the injected
-		// callback may not be wired yet in tests).
+		// Surface the failure: the frontend's toggle swallows a rejected
+		// switch and expects the global runtime_error listener to explain it
+		// (error_code project_switch_busy, see
+		// specs/contracts/event-catalog.md); nil-guarded like the other
+		// early-startup emitters.
 		if f.emitEvent != nil {
 			f.emitEvent(EventRuntimeError, map[string]string{
 				"id":         uuid.New().String(),
@@ -347,13 +323,11 @@ func (f *FrontendAPI) SwitchProject(id string) error {
 		}
 		f.log().Warn("SwitchProject: timed out waiting for an in-flight switch",
 			"project", id, "error", err)
-		// The holder has already outlived the whole acquisition budget —
-		// exactly the wedged-switch state this error exists to surface, and
-		// one that has been reported in the wild without any way to name the
-		// stuck step (the reporting machine is a user box, unreachable for
-		// live debugging). Dump the goroutines while the holder is still
-		// parked: the holder's own stack names the exact line. Best-effort
-		// diagnostics; never alters the switch outcome.
+		// The holder has already outlived the whole acquisition budget — the
+		// wedged-switch state this error exists to surface, reported in the
+		// wild with no way to name the stuck step. Dump the goroutines while
+		// the holder is parked; best-effort diagnostics, never alters the
+		// switch outcome.
 		f.dumpBusySwitchHolders(id)
 		return err
 	}
@@ -373,24 +347,18 @@ func (f *FrontendAPI) SwitchProject(id string) error {
 	}
 
 	// Idempotency: skip the full switch if the same project is already
-	// active. The project:switched event is still emitted so a frontend
-	// whose local activeProjectId went stale (e.g. a concurrent toggle
-	// interleave or a switch RPC that failed after backend-side
-	// activation) reconciles to the backend's authoritative state via its
-	// useProjectLoader subscription. Without the event, a desynced
-	// frontend stays desynced: every later toggle that reaches the
-	// backend takes this early return, ListDirectory then rejects the
-	// frontend's rootPath ("path outside project workspace") and @-file
-	// completions stay empty until an app restart.
+	// active, but STILL re-emit project:switched so a frontend whose local
+	// activeProjectId went stale reconciles via its useProjectLoader
+	// subscription — without the event it stays desynced (ListDirectory then
+	// rejects its rootPath; @-file completions stay empty until restart).
 	f.activeProjectMu.RLock()
 	alreadyActive := f.activeProjectID == id
 	f.activeProjectMu.RUnlock()
 	if alreadyActive {
 		f.log().Info("SwitchProject: project already active, skipping", "project", id)
-		// Re-emit so a desynced frontend reconciles (see the comment above).
-		// A lookup failure here is rare (e.g. a race with project deletion),
-		// but without a log it is undiagnosable why the frontend never
-		// repaired itself — so warn instead of failing silently.
+		// Re-emit so a desynced frontend reconciles (see above). A lookup
+		// failure here is rare (e.g. a race with project deletion) but must
+		// be visible — warn instead of failing silently.
 		p, err := func() (*project.ProjectInfo, error) {
 			opCtx, cancel := f.switchStoreOpCtx(switchCtx)
 			defer cancel()
@@ -403,11 +371,10 @@ func (f *FrontendAPI) SwitchProject(id string) error {
 			f.log().Warn("SwitchProject: project not found while already active; skipped project:switched re-emit", "project", id)
 		default:
 			f.emitEvent(EventProjectSwitched, p)
-			// Re-run the intake scan on the already-active path too
-			// (review [57]): a .git/config planted since the last scan
-			// must warn on the next re-selection, not only after a real
-			// switch. Cheap (a bounded text parse) and detection-only —
-			// the spawn layer re-scans per invocation regardless.
+			// Re-run the intake scan on the already-active path too: a
+			// .git/config planted since the last scan must warn on the next
+			// re-selection. Cheap, detection-only (see
+			// frontend_api_gitconfig_risk.go).
 			f.notifyGitConfigRisk(GitConfigRiskSourceProject, p.WorkspacePath)
 		}
 		return nil
@@ -425,15 +392,11 @@ func (f *FrontendAPI) SwitchProject(id string) error {
 		return fmt.Errorf("project not found: %s", id)
 	}
 
-	// CODE mode requires git; No Project (CHAT mode) does not.
-	// Return an ERROR (alongside the runtime_error event that drives the
-	// UI toast): switchProjectWithState treats a rejected RPC as "switch
-	// did not happen" and leaves the frontend's activeProjectId on the
-	// previous project. Returning nil here used to let the frontend flip
-	// its own store to a project the backend never activated — a
-	// frontend/backend desync under which ListDirectory persistently
-	// rejects the frontend's rootPath and @-file completions die until
-	// an app restart.
+	// CODE mode requires git; No Project (CHAT mode) does not. Return an
+	// ERROR (alongside the runtime_error toast event): the frontend treats a
+	// rejected RPC as "switch did not happen" — returning nil here let it
+	// flip to a project the backend never activated, a desync under which
+	// ListDirectory persistently rejects its rootPath.
 	if !p.IsNoProject && !gitOnPath() {
 		f.emitEvent(EventRuntimeError, map[string]string{
 			"id":         uuid.New().String(),
@@ -444,31 +407,25 @@ func (f *FrontendAPI) SwitchProject(id string) error {
 		return errors.New("git is required for CODE mode")
 	}
 
-	// Teardown persists the PREVIOUS project's state and cancels its in-flight
-	// indexing; it stays first. Everything that can still fail (vector setup)
-	// runs BEFORE both the watcher swap and the activation commit below, so a
-	// failure leaves activeProjectID/activeProjectPath AND the live watcher on
-	// the previous project — the backend never half-switches, and the frontend
-	// (which treats a non-nil RPC error as "switch did not happen") cannot
-	// diverge from the backend.
+	// Teardown persists the PREVIOUS project's state and stays first; every
+	// still-fallible step (vector setup) runs BEFORE the watcher swap and the
+	// activation commit, so a failure leaves activeProjectID/activeProjectPath
+	// AND the live watcher on the previous project — the backend never
+	// half-switches, and the frontend (non-nil error = "switch did not
+	// happen") cannot diverge.
 	f.switchProjectTeardown(switchCtx, id)
-	// The fallible vector setup runs before the watcher swap on purpose: the
-	// two steps are independent, and a vector failure here leaves the previous
-	// watcher untouched (still scoped to the still-active project) instead of
-	// closing it and starting one scoped to a project that never activated.
+	// Vector setup before the watcher swap: the steps are independent, and a
+	// vector failure leaves the previous watcher untouched instead of closing
+	// it and starting one for a project that never activated.
 	if err := f.switchSetupVector(switchCtx, p); err != nil {
 		return err
 	}
-	// The active session's workspace resolves ONCE, here, and feeds BOTH
-	// steps: the watcher root (setupWatcher's CODE branch) and the tracked
-	// research/papers/comparisons roots (activate's derivation). Resolving
-	// independently per step re-ran the bounded store reads twice and opened
-	// a desync window: a transient store failure (or a concurrent
-	// last-activity write) between the two resolutions could root the
-	// watcher at the session tree while the emit roots fell back to the
-	// checkout — or the reverse — leaving research/papers events unrouted
-	// until the next WatchDirectory self-healed. One resolution, one
-	// snapshot, no window.
+	// The active session's workspace resolves ONCE, here, feeding BOTH the
+	// watcher root and the tracked research/papers/comparisons roots:
+	// resolving per step re-ran bounded store reads and opened a desync
+	// window (watcher rooted at the session tree while the emit roots fell
+	// back to the checkout, or the reverse — research/papers events unrouted
+	// until the next WatchDirectory self-healed).
 	sessionWS, hasSessionWS := f.switchProjectSetupWatcher(switchCtx, p)
 
 	// All fallible steps succeeded: commit the activation. From here on the
@@ -477,33 +434,26 @@ func (f *FrontendAPI) SwitchProject(id string) error {
 	f.switchProjectActivate(switchCtx, p, sessionWS, hasSessionWS)
 	f.applySavedProjectSwitchState(switchCtx, p.ID)
 
-	// c0wrk-owned packs (research-*/study-paper skills, research agent
-	// profile) are seeded into the GLOBAL agent directories once per launch
-	// (see seedGlobalPacks) — a project switch seeds nothing.
+	// c0wrk-owned packs are seeded into the GLOBAL agent directories once per
+	// launch (seedGlobalPacks) — a project switch seeds nothing.
 
 	f.emitEvent(EventProjectSwitched, p)
 
-	// Intake scan (text-only, exec-free): warn the user when the freshly
-	// opened workspace's .git/config carries dangerous keys. Emits nothing
-	// for a clean config. See frontend_api_gitconfig_risk.go.
+	// Intake scan (text-only, exec-free): warn when the freshly opened
+	// workspace's .git/config carries dangerous keys; silent for a clean
+	// config. See frontend_api_gitconfig_risk.go.
 	f.notifyGitConfigRisk(GitConfigRiskSourceProject, p.WorkspacePath)
 
 	// Kick the auto-fetch funnel on the REAL-switch path only (the
-	// already-active early return above deliberately skips it — the project
-	// was already fetched-for when it was switched to). Fire-and-forget:
-	// every gate (config, No Project, repo check, shared 60s min-interval,
-	// TryLock against manual remote ops) plus the quiet-failure contract
-	// live inside autoFetchOnce. App-startup restoration rides along for
-	// free: the frontend replays the last active project through this same
-	// SwitchProject call.
+	// already-active early return skips it). Fire-and-forget — every gate plus
+	// the quiet-failure contract live inside autoFetchOnce; app-startup
+	// restoration rides along (the frontend replays the last project through
+	// this same call). See specs/domains/git-auto-fetch.md.
 	go f.autoFetchOnce(autoFetchTriggerSwitch)
 
-	// Same real-switch seam, same fire-and-forget silence: sweep BOTH
-	// indexes (chromem vector roots + bleve lexical dirs, plus per-branch
-	// sidecars) of every git branch — checkout storage and every managed
-	// worktree storage — that no longer exists in the local clone. Debug
-	// logs only; a skipped, failed or partial sweep never surfaces in the
-	// UI and never affects the switch outcome. See
+	// Same real-switch seam, same fire-and-forget silence: sweep the vector +
+	// lexical indexes of every git branch that no longer exists locally.
+	// Debug logs only; never affects the switch outcome. See
 	// pruneAbsentBranchVectorIndexes and specs/domains/workspace.md.
 	go f.pruneAbsentBranchVectorIndexes(p)
 
@@ -516,19 +466,14 @@ func gitOnPath() bool {
 	return err == nil
 }
 
-// errSwitchLockTimeout is returned by SwitchProject when switchMu cannot be
-// acquired within switchLockTimeout. Exposed as a sentinel so callers/tests
-// can detect the bounded-wait failure specifically.
+// errSwitchLockTimeout reports a switch that could not acquire switchMu
+// within switchLockTimeout — the bounded-wait sentinel.
 var errSwitchLockTimeout = errors.New("project switch timed out waiting for in-flight switch")
 
 // acquireSwitchLock acquires switchMu, waiting at most switchLockTimeout (or
-// the switchLockTimeoutOverride seam) for any in-flight switch to finish.
-//
-// It polls with TryLock rather than blocking on Lock so a switch wedged behind
-// a stuck predecessor surfaces a bounded, actionable error instead of hanging
-// the RPC goroutine forever — an unbounded wait leaves the frontend's
-// project-load waterfall hung with no feedback and no way to recover short of
-// an app restart.
+// the override seam). It polls TryLock rather than blocking on Lock: a switch
+// wedged behind a stuck predecessor must surface a bounded, actionable error,
+// not hang the RPC goroutine (and the frontend's project-load waterfall).
 func (f *FrontendAPI) acquireSwitchLock() error {
 	timeout := switchLockTimeout
 	if f.switchLockTimeoutOverride > 0 {
@@ -551,14 +496,10 @@ func (f *FrontendAPI) acquireSwitchLock() error {
 	}
 }
 
-// dumpBusySwitchHolders writes a bounded all-goroutine stack dump to the log
-// after a switch failed to acquire switchMu. Every step inside the switch's
-// critical section is individually bounded, so a hold that outlives the whole
-// acquisition budget means either deadline stacking under a saturated store
-// (several soft-failing ops each burning their budget) or a blocking call the
-// deadlines do not reach — and only the holder's stack distinguishes them.
-// The dump is capped (maxBusySwitchDumpBytes), emitted at WARN next to the
-// timeout line the user already sees, and never changes the switch outcome.
+// dumpBusySwitchHolders writes a bounded all-goroutine stack dump after a
+// switch failed to acquire switchMu: every section step is individually
+// bounded, so a hold outliving the whole budget means deadline stacking or an
+// unreachable blocking call — only the holder's stack distinguishes them.
 func (f *FrontendAPI) dumpBusySwitchHolders(projectID string) {
 	buf := make([]byte, maxBusySwitchDumpBytes)
 	n := runtime.Stack(buf, true)
@@ -568,15 +509,14 @@ func (f *FrontendAPI) dumpBusySwitchHolders(projectID string) {
 		"stacks", string(buf[:n]))
 }
 
-// maxBusySwitchDumpBytes caps the diagnostic goroutine dump. A desktop
-// process rarely exceeds a few hundred goroutines; the cap keeps the pathological
-// case (thousands of parked goroutines) from flooding the log.
+// maxBusySwitchDumpBytes caps the diagnostic goroutine dump against the
+// pathological thousands-of-parked-goroutines case flooding the log.
 const maxBusySwitchDumpBytes = 512 * 1024
 
-// switchSetupVector runs the vector-index setup for a project switch, honoring
-// the test-only switchProjectSetupVectorFn seam (nil in production). It lets a
-// test drive the fallible pre-watcher step to verify the switch stays atomic
-// on failure. ctx is the switch-section deadline (see switchSectionTimeout).
+// switchSetupVector runs the vector-index setup for a project switch,
+// honoring the test-only switchProjectSetupVectorFn seam (nil in production)
+// that drives the fallible pre-watcher step to verify the switch stays
+// atomic on failure. ctx is the switch-section deadline.
 func (f *FrontendAPI) switchSetupVector(ctx context.Context, p *project.ProjectInfo) error {
 	if f.switchProjectSetupVectorFn != nil {
 		return f.switchProjectSetupVectorFn(ctx, p)
@@ -593,26 +533,22 @@ func (f *FrontendAPI) switchProjectTeardown(ctx context.Context, newID string) {
 		f.persistCurrentProjectSwitchState(ctx, previousProjectID)
 	}
 
-	// Per-root managers (ADR-080): no indexing is cancelled here. Every live
+	// Per-root managers (ADR-081): no indexing is cancelled here. Every live
 	// manager serves its own tree — a background session on the outgoing
-	// project keeps searching its own index — and the focus move below
-	// (switchProjectSetupVector → ApplyFocus) does not kill the outgoing
-	// tree's in-flight build either. Manager teardown happens only on
-	// release/deletion (Release/ReleaseProject/ShutdownAll).
+	// project keeps searching its own index — and the focus move below does
+	// not kill the outgoing tree's in-flight build. Manager teardown happens
+	// only on release/deletion. See specs/decisions/081-vector-per-root-registry.md.
 	_ = previousProjectID
 }
 
 // trackedSessionRoots derives the research/papers/comparisons roots a project
-// switch tracks for the watcher callbacks, from an ALREADY-RESOLVED active
-// session workspace (the same snapshot switchProjectSetupWatcher rooted the
-// watcher with): <session-workspace>/.research when a session workspace
-// resolved, <checkout>/.research otherwise — the effectiveResearchRoot
-// protocol without a second resolution. The papers/comparisons derivation
-// stays GUARDED: an empty effective research root (No Project, or a project
-// without a workspace) must leave both roots EMPTY — the watcher emit gates
-// treat "" as "root not tracked", while filepath.Join("", "papers") would
-// silently produce the RELATIVE "papers"/"comparisons" and break that
-// cross-goroutine contract for every consumer.
+// switch tracks (ADR-099), from the ALREADY-RESOLVED active-session workspace
+// (the same snapshot that rooted the watcher): <session-workspace>/.research
+// when one resolved, <checkout>/.research otherwise. The papers/comparisons
+// derivation stays GUARDED: an empty effective research root must leave both
+// roots EMPTY — the watcher emit gates treat "" as "not tracked", while
+// filepath.Join("", "papers") would silently produce a relative path and
+// break that contract.
 func trackedSessionRoots(p *project.ProjectInfo, sessionWS string, hasSessionWS bool) (researchRoot, papersRoot, comparisonsRoot string) {
 	if p == nil || p.IsNoProject || p.WorkspacePath == "" {
 		return "", "", ""
@@ -628,13 +564,12 @@ func trackedSessionRoots(p *project.ProjectInfo, sessionWS string, hasSessionWS 
 	return researchRoot, config.PaperLibraryPathIn(researchRoot), config.ComparisonsPathIn(researchRoot)
 }
 
-// switchProjectActivate sets the new project as active and updates related state.
-// sessionWS/hasSessionWS carry the active-session workspace resolution the
-// watcher setup already made (switchProjectSetupWatcher returns it), so the
-// session-following roots derive from the SAME snapshot the watcher root was
-// chosen from — resolving them independently here would re-run the bounded
-// store reads and open a desync window between the watcher root and the
-// tracked emit roots.
+// switchProjectActivate sets the new project as active and updates related
+// state. sessionWS/hasSessionWS carry the active-session workspace resolution
+// switchProjectSetupWatcher already made, so the session-following roots
+// derive from the SAME snapshot the watcher root was chosen from (ADR-099) —
+// resolving independently here would re-run the bounded store reads and open
+// a desync window between the watcher root and the tracked emit roots.
 func (f *FrontendAPI) switchProjectActivate(switchCtx context.Context, p *project.ProjectInfo, sessionWS string, hasSessionWS bool) {
 	f.seedAcquire()
 	// Derive the session-following roots BEFORE the lock: the tracked-root
@@ -646,24 +581,11 @@ func (f *FrontendAPI) switchProjectActivate(switchCtx context.Context, p *projec
 	f.activeProjectMu.Lock()
 	f.activeProjectID = p.ID
 	f.activeProjectPath = p.WorkspacePath
-	// Track the active research root so the workspace watcher callback can
-	// emit research:file_changed events for file modifications inside it.
-	// The root follows the active session, so the incremental update path
-	// works across a restart, a project switch, and a session switch into a
-	// managed worktree.
-	// Always assign (including "") so switching to No Project clears a stale
-	// research root from the previously-active project and stops cross-project
-	// research:file_changed events.
+	// The three roots follow the active session (ADR-099 — see the field
+	// docs in frontend_api.go); always assigned (including "") so switching
+	// to No Project clears a stale root and stops cross-project events.
 	f.activeResearchRoot = researchRoot
-	// Track the paper-library root (<effective research root>/papers)
-	// independently of the active R-NNN, so the workspace watcher can emit
-	// papers:changed even before any project exists — the library is a global
-	// subdirectory of the research root that outlives any R-NNN. Empty for the
-	// No Project pseudo-project (empty effective research root).
 	f.activePapersRoot = papersRoot
-	// Track the comparisons root (<effective research root>/comparisons) with
-	// the same independence from the active R-NNN: comparisons is a global
-	// sibling of the paper library and must always be watched for a real project.
 	f.activeComparisonsRoot = comparisonsRoot
 	f.activeProjectMu.Unlock()
 
@@ -695,30 +617,17 @@ func (f *FrontendAPI) switchProjectActivate(switchCtx context.Context, p *projec
 	}
 }
 
-// switchProjectSetupWatcher creates a file watcher for the new project.
-// The watcher root FOLLOWS the active session in BOTH modes: for No Project
-// (CHAT mode) each session has an isolated workspace
-// (~/.c0wrk/projects/__no_project__/<sid>/workspace/) and scoping to it —
-// rather than the shared project dir — is what excludes other sessions and
-// session-infra directories (plans/, temp/, logs); for CODE mode the root is
-// the active session's workspace when one resolves (its managed worktree for
-// a bound session), falling back to the project checkout. fsnotify is NOT
-// recursive (it only reports events for explicitly-added directories, even
-// on macOS), so the root choice decides what is watched at all.
-//
-// The watcher is created here for the active session (if any) and re-scoped
-// on every session switch via WatchDirectory — the active session is
-// activeSessionWorkspace's rule: the persisted user selection when one
-// resolves, else the most recently active non-archived session. When no
-// session exists yet (fresh CHAT start), creation is deferred until the first
-// session is activated — WatchDirectory creates the watcher lazily.
-//
-// The CODE branch RETURNS the active-session workspace it resolved, and the
-// caller threads that same snapshot into switchProjectActivate so the tracked
-// research/papers/comparisons roots derive from ONE resolution (see
-// SwitchProject). The No Project branch returns ("", false): the
-// research/papers roots are unavailable for No Project by protocol
-// (researchRootWithBoundary returns ""), so there is no snapshot to thread.
+// switchProjectSetupWatcher creates a file watcher for the new project; the
+// root FOLLOWS the ACTIVE SESSION in both modes (No Project: the isolated
+// per-session workspace; CODE: the bound managed worktree, else the checkout)
+// — see specs/domains/workspace.md (Filesystem Watcher). fsnotify is NOT
+// recursive, so the root choice decides what is watched at all. Creation
+// happens here for the active session and re-scopes on every session switch
+// via WatchDirectory (lazily deferred when no session exists yet). The CODE
+// branch RETURNS the session-workspace snapshot it resolved, and the caller
+// threads it into switchProjectActivate so the tracked research/papers/
+// comparisons roots derive from ONE resolution (ADR-099); No Project returns
+// ("", false) — those roots are unavailable by protocol.
 func (f *FrontendAPI) switchProjectSetupWatcher(switchCtx context.Context, p *project.ProjectInfo) (sessionWS string, hasSessionWS bool) {
 	f.seedAcquire()
 	// For No Project, resolve the session workspace before acquiring the lock
@@ -743,15 +652,12 @@ func (f *FrontendAPI) switchProjectSetupWatcher(switchCtx context.Context, p *pr
 		return "", false
 	}
 
-	// CODE mode: the watcher root follows the ACTIVE SESSION — the managed
-	// worktree a session is bound to, the checkout otherwise (the same
-	// resolution activeSessionWorkspace documents; the file tree re-roots at
-	// the same workspace on every session switch). Resolved BEFORE watcherMu:
-	// the resolver queries the session manager/store, which must not hold
-	// watcherMu (the same ordering rule the No-Project branch follows) — and
-	// before switchProjectActivate commits the new project, so the tracked
-	// emit roots still hold the PREVIOUS project's values here; the callback
-	// snapshots them per batch under activeProjectMu.
+	// CODE mode: the watcher root follows the ACTIVE SESSION — the bound
+	// managed worktree, else the checkout. Resolved BEFORE watcherMu (the
+	// resolver queries the session manager/store, which must not hold it)
+	// and before switchProjectActivate commits the new project, so the
+	// tracked emit roots still hold the PREVIOUS project's values here; the
+	// callback snapshots them per batch under activeProjectMu.
 	watchRoot := p.WorkspacePath
 	sessionWS, hasSessionWS = f.activeSessionWorkspace(p.ID)
 	if hasSessionWS && sessionWS != "" {
@@ -765,17 +671,15 @@ func (f *FrontendAPI) switchProjectSetupWatcher(switchCtx context.Context, p *pr
 	return sessionWS, hasSessionWS
 }
 
-// reScopeCodeWatcherLocked tears down the current watcher and creates a new
-// one rooted at watchRoot — the CODE-mode counterpart of the No-Project
-// re-scope. The root follows the active session (its managed worktree when
-// one is bound, the checkout otherwise), and the callback routes the per-root
-// consumers (git status/ignore caches, vector NotifyFileChange) at watchRoot —
-// the tree the events actually come from — never at the project checkout.
-// checkoutResearchRoot is the checkout's canonical <workspace>/.research,
-// watched recursively regardless of where the root moved (see
-// watchResearchTreesLocked). The caller must hold f.watcherMu and must have
-// resolved watchRoot WITHOUT holding it (the resolver queries the session
-// manager/store).
+// reScopeCodeWatcherLocked tears down the current watcher and re-roots it at
+// watchRoot — the CODE-mode counterpart of the No-Project re-scope. The root
+// follows the active session (specs/domains/workspace.md), and the callback
+// routes the per-root consumers (git status/ignore caches, vector
+// NotifyFileChange) at watchRoot — the tree the events actually come from —
+// never at the checkout. checkoutResearchRoot is the checkout's canonical
+// <workspace>/.research, watched recursively wherever the root moved (see
+// watchResearchTreesLocked). Caller holds f.watcherMu and must have resolved
+// watchRoot WITHOUT holding it (the resolver queries the session manager/store).
 func (f *FrontendAPI) reScopeCodeWatcherLocked(watchRoot, checkoutResearchRoot string) error {
 	f.seedAcquire()
 	if watchRoot == "" {
@@ -786,10 +690,9 @@ func (f *FrontendAPI) reScopeCodeWatcherLocked(watchRoot, checkoutResearchRoot s
 		f.watcher = nil
 	}
 	watcher, err := workspace.NewWatcher(watchRoot, func(changedPaths []string) {
-		// Snapshot the active project fields under the lock to avoid a data
-		// race between this callback (fsnotify goroutine) and project
-		// switches / research active-project changes (main thread). Reading
-		// these fields without the lock violated Go's memory model.
+		// Snapshot the active project fields under the lock: this callback
+		// runs on the fsnotify goroutine against main-thread switches —
+		// unlocked reads violated Go's memory model.
 		f.activeProjectMu.RLock()
 		snapProjectID := f.activeProjectID
 		snapResearchRoot := f.activeResearchRoot
@@ -798,50 +701,42 @@ func (f *FrontendAPI) reScopeCodeWatcherLocked(watchRoot, checkoutResearchRoot s
 		f.activeProjectMu.RUnlock()
 
 		// research:file_changed for paths inside the tracked research root;
-		// the returned flag annotates workspace:tree_changed so the
-		// frontend's full-refetch path can skip when the incremental path
-		// (useResearchFileWatcher) handles the update.
+		// the flag annotates workspace:tree_changed so the frontend can skip
+		// the full refetch when the incremental path handles the update.
 		researchScoped := f.emitResearchFileChanged(snapResearchRoot, snapProjectID, changedPaths)
 		// papers:changed for the paper library / comparisons roots — tracked
-		// independently of the active R-NNN so card edits still refresh
-		// Papers / Compare before any R-NNN exists.
+		// independently of the active R-NNN (ADR-099).
 		f.emitPapersChanged(snapPapersRoot, snapComparisonsRoot, snapProjectID, changedPaths)
 		f.emitEvent(EventWorkspaceTreeChanged, map[string]bool{
 			"research_scoped": researchScoped,
 		})
 
-		// An ignore-rule file (.gitignore/.aiignore/.ignore) change anywhere
-		// under a watched root makes the cached ignore resolver stale. Evict
-		// the affected roots so the next task rebuilds them (async, lazy) —
-		// without this, ignore edits are invisible until restart.
+		// An ignore-rule file change anywhere under a watched root makes the
+		// cached ignore resolver stale; evict the affected roots so the next
+		// task rebuilds them (async, lazy) — else ignore edits are invisible
+		// until restart.
 		if f.app != nil && f.app.Manager() != nil {
 			f.app.Manager().InvalidateIgnoreCache(changedPaths)
 		}
 
 		// Git status/ignore caches are keyed by repository root: route the
-		// invalidation at the WATCHED root. With the root following the
-		// active session, a managed tree's churn refreshes that tree's Git
-		// panel state, not the checkout's. See frontend_api_gitcache.go.
+		// invalidation at the WATCHED root, so a managed tree's churn
+		// refreshes that tree's Git panel state. See frontend_api_gitcache.go.
 		f.invalidateGitCachesOnWatcher(watchRoot, changedPaths)
 
-		// Project-local skills (<workspace>/.agents/skills) and agents
-		// (<workspace>/.agents/agents) live under the watched workspace, so
-		// a change may have added/removed/modified them — invalidate both
-		// caches so the next ListSkills / ListAgents rescans.
+		// Project-local skills/agents/commands live under the watched
+		// workspace's .agents/ — invalidate the caches so the next
+		// ListSkills / ListAgents / ListCommands rescans.
 		f.invalidateSkillCache()
 		f.invalidateAgentCache()
-		// Project-local commands live under <workspace>/.agents/commands —
-		// same reasoning. Invalidate the command cache so ListCommands rescans.
 		f.invalidateCommandCache()
 
 		// Only trigger vector re-indexing when at least one changed path is
-		// indexable — churn inside ignored locations (.git maintenance,
-		// .DS_Store, node_modules) must not wake the indexer into a wasted
-		// ValidateCollection pass (including a wasted ONNX inference). The
-		// notification targets the WATCHED root's manager only (per-root
-		// registry, ADR-081): with the root following the active session, a
-		// managed tree's churn never wakes the checkout's manager, and vice
-		// versa.
+		// indexable — churn inside ignored locations must not wake the
+		// indexer into a wasted ValidateCollection pass (including a wasted
+		// ONNX inference). The notification targets the WATCHED root's
+		// manager only (per-root registry, ADR-081): a managed tree's churn
+		// never wakes the checkout's manager, and vice versa.
 		if vm := f.vectorRootsRegistry().LiveManager(watchRoot); vm != nil && vm.IsAnyIndexablePath(changedPaths) {
 			vm.NotifyFileChange()
 		}
@@ -856,14 +751,11 @@ func (f *FrontendAPI) reScopeCodeWatcherLocked(watchRoot, checkoutResearchRoot s
 
 // watchResearchTreesLocked registers the recursive research-tree watches on a
 // freshly built CODE watcher: the checkout's canonical <workspace>/.research
-// and the watched root's own .research when the two differ. Either tree may
-// live outside the watcher root (a managed tree's research lives in the
-// agent-dir container; the checkout's lives outside a tree-rooted watcher),
-// so each is admitted via AllowRoot first — an inert extra entry for in-root
-// trees. Registration creates NOTHING on disk (Issue 52: a project switch
+// and the watched root's own .research when they differ. Either tree may sit
+// outside the watcher root, so each is admitted via AllowRoot (inert for
+// in-root trees). Registration creates NOTHING on disk (Issue 52: a switch
 // must not materialize .research in the user's repository) — a missing tree
-// is only marked recursive, and its first write auto-adds it (the watcher's
-// recursive-root mechanics, core/workspace/watcher.go).
+// is only marked recursive; its first write auto-adds it.
 func (f *FrontendAPI) watchResearchTreesLocked(w *workspace.Watcher, watchRoot, checkoutResearchRoot string) {
 	roots := make([]string, 0, 2)
 	if checkoutResearchRoot != "" {
@@ -882,18 +774,13 @@ func (f *FrontendAPI) watchResearchTreesLocked(w *workspace.Watcher, watchRoot, 
 	}
 }
 
-// emitResearchFileChanged checks whether any of the changed paths fall inside
-// the research directory and, if so, emits a research:file_changed event
-// carrying the project ID and comma-separated paths. It returns true when at
-// least one path was research-scoped, so the caller can annotate
-// workspace:tree_changed and the frontend can skip a redundant full status
-// refetch (the incremental path via useResearchFileWatcher handles it).
-//
-// The caller must pass already-snapshotted researchRoot and projectID values
-// (read under activeProjectMu) to avoid the data race between the fsnotify
-// callback goroutine and project switches / research active-project changes on
-// the main thread. DRY-extracted from the CODE-mode and No-Project watcher
-// callbacks.
+// emitResearchFileChanged emits research:file_changed for changed paths
+// inside the tracked research root, returning true when at least one path
+// was research-scoped so the caller can annotate workspace:tree_changed and
+// the frontend can skip a redundant full refetch (the incremental
+// useResearchFileWatcher path handles it). Caller passes researchRoot and
+// projectID already snapshotted under activeProjectMu (fsnotify callback vs
+// main-thread switches).
 func (f *FrontendAPI) emitResearchFileChanged(researchRoot, projectID string, changedPaths []string) bool {
 	f.seedAcquire()
 	if researchRoot == "" {
@@ -920,13 +807,10 @@ func (f *FrontendAPI) emitResearchFileChanged(researchRoot, projectID string, ch
 	return true
 }
 
-// reScopeNoProjectWatcher tears down the current watcher (if any) and creates a
-// new one scoped to root, which must be a No Project session workspace. Each
-// chat session has an isolated workspace, so the watcher root must follow the
-// active session to detect its file changes while ignoring other sessions and
-// session-infra directories. The directory is created if missing so the watcher
-// can be set up even before the session workspace exists on disk (e.g. fresh
-// start, or a session whose workspace has not been materialized yet).
+// reScopeNoProjectWatcher tears down the current watcher (if any) and scopes
+// a new one to root, which must be a No Project session workspace (each chat
+// session has an isolated workspace). The directory is created if missing so
+// the watcher can be set up before the workspace exists on disk.
 func (f *FrontendAPI) reScopeNoProjectWatcher(root string) error {
 	f.watcherMu.Lock()
 	defer f.watcherMu.Unlock()
@@ -948,8 +832,8 @@ func (f *FrontendAPI) reScopeNoProjectWatcherLocked(root string) error {
 		return fmt.Errorf("failed to create session workspace for watcher: %w", err)
 	}
 	watcher, err := workspace.NewWatcher(root, func(changedPaths []string) {
-		// Snapshot the active project fields under the lock (see CODE-mode
-		// callback for rationale).
+		// Snapshot the active project fields under the lock (see the
+		// CODE-mode callback).
 		f.activeProjectMu.RLock()
 		snapProjectID := f.activeProjectID
 		snapResearchRoot := f.activeResearchRoot
@@ -958,21 +842,19 @@ func (f *FrontendAPI) reScopeNoProjectWatcherLocked(root string) error {
 		f.activeProjectMu.RUnlock()
 
 		researchScoped := f.emitResearchFileChanged(snapResearchRoot, snapProjectID, changedPaths)
-		// No Project has no paper library or comparisons dir
-		// (activePapersRoot/activeComparisonsRoot are empty), so this is a
-		// no-op here; kept for parity with the CODE-mode callback.
+		// No Project has no paper library or comparisons dir (both roots
+		// empty) — a no-op, kept for parity with the CODE-mode callback.
 		f.emitPapersChanged(snapPapersRoot, snapComparisonsRoot, snapProjectID, changedPaths)
 		f.emitEvent(EventWorkspaceTreeChanged, map[string]bool{
 			"research_scoped": researchScoped,
 		})
 
-		// Invalidate skill cache in case project-local skills changed.
+		// Invalidate the skill/agent/command caches — project-local entries
+		// live under the session workspace's .agents/.
 		f.invalidateSkillCache()
-		// Invalidate agent cache in case project-local agents changed.
 		f.invalidateAgentCache()
-		// Invalidate command cache in case project-local commands changed.
 		f.invalidateCommandCache()
-		// Same ignore-cache invalidation as CODE mode (see switchProjectSetupWatcher).
+		// Same ignore-cache invalidation as CODE mode.
 		if f.app != nil && f.app.Manager() != nil {
 			f.app.Manager().InvalidateIgnoreCache(changedPaths)
 		}
@@ -985,25 +867,20 @@ func (f *FrontendAPI) reScopeNoProjectWatcherLocked(root string) error {
 }
 
 // switchProjectSetupVector aligns the vector index with the switched-to
-// project (ADR-080). The registry owns one manager per workspace root;
-// switching a project moves the Git-panel FOCUS to the project's effective
-// target — the saved session's managed tree when one exists, the checkout
-// otherwise (resolveVectorIndexTarget) — creating that root's manager on
-// demand. No live manager is torn down: background sessions keep searching
-// their own trees regardless of the focus. For No Project (CHAT mode) vector
-// indexing is fully disabled: the focus is cleared and an unavailable status
-// is emitted; no index is built.
+// project (ADR-081): the Git-panel FOCUS moves to the project's effective
+// target — the saved session's managed tree, else the checkout — creating
+// that root's manager on demand; no live manager is torn down (background
+// sessions keep searching their own trees). No Project (CHAT mode) disables
+// vector indexing entirely: focus cleared, unavailable status emitted. See
+// specs/decisions/081-vector-per-root-registry.md.
 func (f *FrontendAPI) switchProjectSetupVector(switchCtx context.Context, p *project.ProjectInfo) error {
 	f.seedAcquire()
-	// Handshake with the background ONNX init: the manager factory is built
-	// asynchronously (its own goroutine, after EventBackendReady) and is
-	// usually NOT ready when the frontend fires its first SwitchProject on
-	// backend:ready. Rather than silently dropping the setup (which left the
-	// startup project unindexed until the user manually switched projects),
-	// record the project so InitVectorIndexForActiveProject applies it once
-	// the factory is wired in. The read-and-record is atomic under
-	// vectorSetupMu so it cannot race that drain. Lock order:
-	// vectorSetupMu → the registry's internal lock (FactoryReady).
+	// Handshake with the background ONNX init: the factory is usually NOT
+	// ready when the frontend fires its first SwitchProject on backend:ready;
+	// record the project so InitVectorIndexForActiveProject drains it once
+	// the factory lands, instead of silently dropping the setup. Read-and-
+	// record is atomic under vectorSetupMu (lock order: vectorSetupMu → the
+	// registry's internal lock).
 	vr := f.vectorRootsRegistry()
 	f.vectorSetupMu.Lock()
 	if !vr.FactoryReady() {
@@ -1030,15 +907,12 @@ func (f *FrontendAPI) switchProjectSetupVector(switchCtx context.Context, p *pro
 		return nil
 	}
 
-	// Fail-soft: a focus that cannot be indexed (unresolvable root, factory
-	// failure) must not fail the project switch — the vector_index:status
-	// stream carries the actionable state instead.
-	//
+	// Fail-soft: a focus that cannot be indexed must not fail the project
+	// switch — the vector_index:status stream carries the state instead.
 	// switchCtx flows into ApplyFocus so the vector leg's one store
-	// round-trip (root resolution → ListProjectsCtx) is derived from the
-	// section deadline like every other store op in the switch; the manager
-	// build and the eviction-drain wait stay time-bounded, not ctx-bounded
-	// (see switchSectionTimeout for the honest exception list).
+	// round-trip rides the section deadline like every other switch store op;
+	// the manager build and the eviction-drain wait stay time-bounded, not
+	// ctx-bounded (see switchSectionTimeout).
 	target := f.resolveVectorIndexTarget(switchCtx, p)
 	if err := vr.ApplyFocus(switchCtx, canonicalRoot(target.workspacePath)); err != nil {
 		f.log().Warn("vector focus unavailable for project target",
@@ -1048,12 +922,9 @@ func (f *FrontendAPI) switchProjectSetupVector(switchCtx context.Context, p *pro
 }
 
 // progressFraction calculates indexing progress as a fraction in [0, 1].
-//
-// It deliberately mirrors the Progress value returned by GetVectorIndexStatus
-// (FilesIndexed / TotalFiles) and the frontend contract: IndexingStatus.tsx
-// renders the bar as `progress * 100` percent. Returning a 0–100 percentage
-// here would push the bar to 100% as soon as ~1% of files were indexed and
-// pin it there (the track clips an over-wide fill) until indexing finished.
+// It deliberately mirrors the Progress value of GetVectorIndexStatus and the
+// frontend contract (IndexingStatus.tsx renders progress * 100 percent) — a
+// 0–100 percentage would pin the bar at 100% after ~1% of files.
 func progressFraction(indexed, total int) float64 {
 	if total == 0 {
 		return 0
@@ -1120,11 +991,10 @@ func projectUIStateEqual(a, b project.ProjectUIState) bool {
 	return true
 }
 
-// persistCurrentProjectSwitchState stores switch state for the current project.
-// Backend is not authoritative for open tabs/selected session, so this method
-// only validates and normalizes already persisted state (non-destructive).
-// switchCtx is the switch-section deadline; every store round-trip derives
-// from it so a saturated pool burns the section budget once, not once per op.
+// persistCurrentProjectSwitchState re-normalizes the current project's
+// already persisted switch state (non-destructive — the backend is not
+// authoritative for open tabs/selected session). switchCtx is the
+// switch-section deadline.
 func (f *FrontendAPI) persistCurrentProjectSwitchState(switchCtx context.Context, projectID string) {
 	f.seedAcquire()
 	if strings.TrimSpace(projectID) == "" {
@@ -1148,8 +1018,6 @@ func (f *FrontendAPI) persistCurrentProjectSwitchState(switchCtx context.Context
 	normalized := normalizeProjectUIState(*state)
 	resolved, err := f.resolveSavedSessionForProject(switchCtx, projectID, normalized.SavedSessionID)
 	if err != nil {
-		// Keep the original pointer: normalizing to empty after a transient
-		// store failure would clobber a valid saved selection.
 		f.log().Warn("failed to resolve saved session for current project switch state", "project", projectID, "error", err)
 	} else {
 		normalized.SavedSessionID = resolved
@@ -1161,12 +1029,10 @@ func (f *FrontendAPI) persistCurrentProjectSwitchState(switchCtx context.Context
 	}
 }
 
-// applySavedProjectSwitchState resolves and persists deterministic session fallback
-// for the destination project after switching:
-// 1) use restored saved session when valid
-// 2) otherwise select latest session for project
-// 3) otherwise create a new project-scoped session
-// switchCtx is the switch-section deadline (see switchSectionTimeout).
+// applySavedProjectSwitchState resolves the destination project's
+// deterministic session fallback (saved → latest → create; see
+// resolveSessionFallback) and persists the result. switchCtx is the
+// switch-section deadline (see switchSectionTimeout).
 func (f *FrontendAPI) applySavedProjectSwitchState(switchCtx context.Context, projectID string) {
 	f.seedAcquire()
 	if strings.TrimSpace(projectID) == "" {
@@ -1193,9 +1059,6 @@ func (f *FrontendAPI) applySavedProjectSwitchState(switchCtx context.Context, pr
 
 	resolvedSessionID, changed, err := f.resolveSessionFallback(switchCtx, projectID, normalized.SavedSessionID)
 	if err != nil {
-		// Persist nothing on a resolution error: falling back to the latest
-		// session after a transient store failure would overwrite a valid
-		// saved pointer with the wrong value.
 		f.log().Warn("failed to resolve project switch state; leaving persisted state untouched", "project", projectID, "error", err)
 		return
 	}
@@ -1233,10 +1096,8 @@ func (f *FrontendAPI) resolveSessionFallback(switchCtx context.Context, projectI
 }
 
 // resolveLatestSessionForProject returns the session with the most recent
-// effective activity. ListSessionsByProject exposes that effective activity as
-// SessionInfo.LastActiveAt: the newest persisted session event (chat message
-// or terminal command), falling back to the stored last_active_at, then to
-// created_at.
+// effective activity — SessionInfo.LastActiveAt (the newest persisted session
+// event), falling back to the stored last_active_at, then created_at.
 func (f *FrontendAPI) resolveLatestSessionForProject(switchCtx context.Context, projectID string) string {
 	if strings.TrimSpace(projectID) == "" {
 		return ""
@@ -1274,11 +1135,9 @@ func (f *FrontendAPI) createSessionForProject(switchCtx context.Context, project
 		return ""
 	}
 	if err := switchCtx.Err(); err != nil {
-		// The switch-section deadline is spent; skip the fallback creation —
-		// CreateSession builds a full orchestrator (MCP gateway, skill scans)
-		// with no internal deadline, so starting it here could hold switchMu
-		// far past switchSectionTimeout. The frontend falls back to its own
-		// default session selection instead.
+		// CreateSession builds a full orchestrator with no internal deadline
+		// and could hold switchMu far past the section budget; skip and let
+		// the frontend fall back to its own session selection.
 		f.log().Warn("switch section deadline spent; skipping fallback session creation",
 			"project", projectID, "error", err)
 		return ""
@@ -1318,10 +1177,9 @@ func (f *FrontendAPI) createSessionForProject(switchCtx context.Context, project
 	return created.ID
 }
 
-// resolveNoProjectSessionWorkspace returns the workspace path of the most
-// recently active session for the No Project, or an empty string if no
-// session exists yet. Used to scope the file watcher to the session-specific
-// directory instead of the shared __no_project__/ base.
+// resolveNoProjectSessionWorkspace returns the most recently active No
+// Project session's workspace ("" when none) so the file watcher scopes to
+// the session directory instead of the shared __no_project__/ base.
 func (f *FrontendAPI) resolveNoProjectSessionWorkspace(switchCtx context.Context) string {
 	if f.appCell() == nil || f.app.Manager() == nil {
 		return ""
@@ -1334,12 +1192,10 @@ func (f *FrontendAPI) resolveNoProjectSessionWorkspace(switchCtx context.Context
 	if err != nil || len(sessions) == 0 {
 		return ""
 	}
-	// ListSessionsByProject returns sessions sorted by last_active_at desc,
-	// so sessions[0] is the most recently active. Resolve its workspace via the
-	// READ-ONLY WorkspacePathFor lookup, never GetSessionWorkspacePath: the
-	// latter lazily restores the session (full orchestrator build + unbounded
-	// store reads) inside SwitchProject while switchMu is held, which is the
-	// hang WorkspacePathFor was introduced to avoid.
+	// Sessions arrive sorted by last_active_at desc, so sessions[0] is the
+	// most recent. Resolve via the READ-ONLY WorkspacePathFor, never
+	// GetSessionWorkspacePath: the latter lazily restores the session (full
+	// orchestrator build) under switchMu — the hang it exists to avoid.
 	ctx, cancel := context.WithTimeout(switchCtx, terminalPathLookupTimeout)
 	defer cancel()
 	ws, ok := f.app.Manager().WorkspacePathFor(ctx, sessions[0].ID)
@@ -1349,14 +1205,11 @@ func (f *FrontendAPI) resolveNoProjectSessionWorkspace(switchCtx context.Context
 	return ws
 }
 
-// resolveSavedSessionForProject validates a saved session pointer against the
-// project's sessions: it resolves only when the session still exists, belongs
-// to the project, and is not archived. A resolution ERROR is distinct from a
-// negative answer: callers must not treat a transient store failure as
-// "pointer is stale", because normalizing to empty in that case would clobber
-// a perfectly valid saved selection. switchCtx bounds the store round-trip —
-// the switch path passes the switch-section deadline, non-switch callers pass
-// context.Background() (the session manager applies its own per-op bound).
+// resolveSavedSessionForProject resolves a saved session pointer only when
+// the session exists, belongs to the project, and is not archived. A
+// resolution ERROR is distinct from a negative answer — callers must not
+// treat a transient store failure as "pointer is stale" (normalizing to
+// empty would clobber a valid selection). switchCtx bounds the store call.
 func (f *FrontendAPI) resolveSavedSessionForProject(switchCtx context.Context, projectID, savedSessionID string) (string, error) {
 	savedSessionID = strings.TrimSpace(savedSessionID)
 	if savedSessionID == "" {
@@ -1382,14 +1235,10 @@ func (f *FrontendAPI) resolveSavedSessionForProject(switchCtx context.Context, p
 		}
 	}
 
-	// No manager-level fallback here: ListSessionsByProject is authoritative
-	// for "exists, belongs to the project, not archived". The old
-	// manager.GetSession fallback fired exactly for the sessions the loop
-	// already rejects — an archived row or a cross-project pointer — and
-	// RESTORED each one (full orchestrator build, managed-worktree
-	// re-provision) only to reject it, on UI paths and inside SwitchProject
-	// under switchMu. A store-only session is resolved by the loop without
-	// any restore; nothing else can legitimately answer "usable".
+	// No manager-level fallback: ListSessionsByProject is authoritative for
+	// "exists, belongs, not archived". The old GetSession fallback restored
+	// (full orchestrator build) exactly the rows the loop rejects, under
+	// switchMu on the switch path. Store-only sessions resolve in the loop.
 
 	return "", nil
 }

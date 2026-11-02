@@ -23,9 +23,9 @@ import (
 // conversion when the Manager lazily initializes its converter.
 const attachmentConvertTimeout = 2 * time.Minute
 
-// AttachmentInfo is a JSON-friendly, metadata-only view of a pending
-// attachment. The converted markdown content is intentionally excluded so it is
-// never leaked to the UI (only the orchestrator reads it via the blackboard).
+// AttachmentInfo is a metadata-only view of a pending attachment; the
+// converted markdown is excluded so it never reaches the UI (only the
+// orchestrator reads it via the blackboard).
 type AttachmentInfo struct {
 	ID           string `json:"id"`
 	OriginalName string `json:"original_name"`
@@ -33,13 +33,12 @@ type AttachmentInfo struct {
 	SizeBytes    int64  `json:"size_bytes"`
 	IsImage      bool   `json:"is_image"`
 	Thumbnail    string `json:"thumbnail,omitempty"` // JPEG data URI for image attachments
-	// Path is the on-disk location of a staged image attachment (absent for
-	// documents). The UI mirrors it into the optimistic user-message metadata
-	// so image thumbnails render immediately instead of after a reload.
+	// Path is the on-disk location of a staged image (absent for documents);
+	// the UI mirrors it into the optimistic user-message metadata so
+	// thumbnails render immediately.
 	Path string `json:"path,omitempty"`
-	// MediaType is the staged image's MIME type (e.g. "image/png"; absent for
-	// documents). Together with Path it lets the UI build a complete
-	// StoredImageMetadata record optimistically.
+	// MediaType is the staged image's MIME type; with Path it lets the UI
+	// build a complete StoredImageMetadata record optimistically.
 	MediaType string `json:"media_type,omitempty"`
 }
 
@@ -50,10 +49,9 @@ type AttachmentFailure struct {
 	Error string `json:"error"`
 }
 
-// AttachmentsChangedData is the payload of the "attachments:changed" session
-// event. Attachments is the full current pending list — the UI replaces its
-// store on every event. Failed carries per-file failures from the most recent
-// attach operation (absent on remove/send-clear events).
+// AttachmentsChangedData is the payload of "attachments:changed". Attachments
+// is the full current pending list (the UI replaces its store); Failed carries
+// the most recent attach operation's per-file failures.
 type AttachmentsChangedData struct {
 	Attachments []AttachmentInfo    `json:"attachments"`
 	Failed      []AttachmentFailure `json:"failed,omitempty"`
@@ -86,11 +84,9 @@ func toAttachmentInfos(attachments []orchestration.Attachment) []AttachmentInfo 
 	return out
 }
 
-// combinedAttachmentInfos builds a unified, metadata-only AttachmentInfo list
-// from both document attachments (markitdown-converted) and image attachments
-// (processed images). Image entries carry IsImage=true and a JPEG thumbnail
-// data URI so the UI can render image chips. The caller must pass
-// freshly-snapshotted slices (or hold session.mu).
+// combinedAttachmentInfos builds the unified metadata-only list from document
+// and image attachments; the caller must pass freshly-snapshotted slices (or
+// hold session.mu).
 func combinedAttachmentInfos(docs []orchestration.Attachment, images []ImageAttachment) []AttachmentInfo {
 	out := toAttachmentInfos(docs)
 	for _, img := range images {
@@ -108,10 +104,9 @@ func combinedAttachmentInfos(docs []orchestration.Attachment, images []ImageAtta
 	return out
 }
 
-// imageAttachmentsToContentBlocks converts staged ImageAttachments into LLM
-// image content blocks for the context window. Each block carries the base64
-// image data and its media type. Returns nil when there are no images so the
-// HandleOptions.PendingImages field stays zero-valued (no image content).
+// imageAttachmentsToContentBlocks converts staged images into LLM image
+// content blocks; nil when there are no images so HandleOptions.PendingImages
+// stays zero-valued.
 func imageAttachmentsToContentBlocks(images []ImageAttachment) []llm.ContentBlock {
 	if len(images) == 0 {
 		return nil
@@ -128,9 +123,8 @@ func imageAttachmentsToContentBlocks(images []ImageAttachment) []llm.ContentBloc
 }
 
 // StoredImageMetadata is the per-image record persisted in ChatMessage.Metadata
-// so image attachments survive a backend restart. Only the thumbnail (data URI)
-// and the on-disk file path are stored — never the full base64 image data —
-// keeping the DB row small. The file at Path is read and re-encoded on restore.
+// so images survive a restart: only the thumbnail and the on-disk path — never
+// the full base64 data; restore re-reads and re-encodes the file at Path.
 type StoredImageMetadata struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
@@ -139,39 +133,32 @@ type StoredImageMetadata struct {
 	MediaType string `json:"media_type"`
 }
 
-// StoredImagesMetadata is the top-level metadata blob persisted in
-// ChatMessage.Metadata for user messages carrying image attachments. It is the
-// legacy image-only shape; richer messages use UserMessageMetadata.
+// StoredImagesMetadata is the legacy image-only metadata blob; richer messages
+// use UserMessageMetadata.
 type StoredImagesMetadata struct {
 	Images []StoredImageMetadata `json:"images"`
 }
 
 // StoredAttachmentMeta is the per-document record persisted in
-// ChatMessage.Metadata: just enough (name/format/size) to render a chip for an
-// already-sent document attachment on reload. The converted markdown content is
-// never persisted here — it lives only in the blackboard for the active task.
+// ChatMessage.Metadata — enough (name/format/size) to render a chip on reload;
+// the converted markdown lives only in the blackboard for the active task.
 type StoredAttachmentMeta struct {
 	OriginalName string `json:"original_name"`
 	Format       string `json:"format"`
 	SizeBytes    int64  `json:"size_bytes"`
 }
 
-// UserMessageMetadata is the unified metadata blob persisted in
-// ChatMessage.Metadata for a user message. It combines the goal flag, image
-// attachments (thumbnail + on-disk path), and document attachment summaries.
-// Every field is omitempty so a message carrying a single signal serializes to
-// just that field — e.g. an image-only message stays {"images":[...]} (matching
-// StoredImagesMetadata) for backward compatibility.
+// UserMessageMetadata is the unified metadata blob for a user message (goal
+// flag + images + document summaries). Every field is omitempty so an
+// image-only message keeps the legacy {"images":[...]} shape.
 type UserMessageMetadata struct {
 	Goal        bool                   `json:"goal,omitempty"`
 	Images      []StoredImageMetadata  `json:"images,omitempty"`
 	Attachments []StoredAttachmentMeta `json:"attachments,omitempty"`
 }
 
-// imageAttachmentsToStoredImages maps staged image attachments to their
-// persisted StoredImageMetadata form (thumbnail + on-disk path, never the full
-// base64 data). Shared by the standalone image-only blob and the merged
-// user-message metadata so the per-image mapping lives in one place.
+// imageAttachmentsToStoredImages maps staged images to their persisted form;
+// shared by the image-only blob and the merged user-message metadata.
 func imageAttachmentsToStoredImages(images []ImageAttachment) []StoredImageMetadata {
 	out := make([]StoredImageMetadata, 0, len(images))
 	for _, img := range images {
@@ -186,10 +173,8 @@ func imageAttachmentsToStoredImages(images []ImageAttachment) []StoredImageMetad
 	return out
 }
 
-// imageAttachmentsToMetadata builds the persistable metadata blob (JSON) for a
-// set of staged image attachments. Returns nil when there are no images so the
-// ChatMessage.Metadata field stays empty for image-free messages. Produces the
-// legacy {"images":[...]} shape used when a message carries images only.
+// imageAttachmentsToMetadata builds the legacy {"images":[...]} blob for an
+// image-only message; nil when there are no images.
 func imageAttachmentsToMetadata(images []ImageAttachment) json.RawMessage {
 	if len(images) == 0 {
 		return nil
@@ -201,14 +186,11 @@ func imageAttachmentsToMetadata(images []ImageAttachment) json.RawMessage {
 	return data
 }
 
-// PendingMessageMetadata returns the unified persistable metadata blob (JSON)
-// for a user message about to be sent: the goal flag OR-ed with the session's
-// staged image and document attachments. Returns nil when none of the three
-// signals are present (no goal, no images, no docs) so ChatMessage.Metadata
-// stays empty. Read before SendMessage snapshots and clears the pending lists.
-//
-// Backward compatibility: a message carrying images only (no goal, no docs)
-// delegates to imageAttachmentsToMetadata so the blob is exactly {"images":[...]}.
+// PendingMessageMetadata returns the persistable metadata blob for a user
+// message about to be sent (goal flag OR the staged attachments); nil when
+// none are present. Read before SendMessage snapshots and clears the lists.
+// Image-only messages delegate to imageAttachmentsToMetadata so the blob is
+// exactly {"images":[...]}.
 func (m *Manager) PendingMessageMetadata(sessionID string, goal bool) (json.RawMessage, error) {
 	session, err := m.getOrRestoreSession(sessionID)
 	if err != nil {
@@ -218,8 +200,8 @@ func (m *Manager) PendingMessageMetadata(sessionID string, goal bool) (json.RawM
 		return nil, fmt.Errorf("get message metadata: session %q not found", sessionID)
 	}
 
-	// Snapshot both pending lists under a single lock so the blob reflects one
-	// consistent point in time (the lists are cleared by SendMessage right after).
+	// Snapshot both pending lists under one lock (SendMessage clears them
+	// right after).
 	session.mu.Lock()
 	images := make([]ImageAttachment, len(session.pendingImageAttachments))
 	copy(images, session.pendingImageAttachments)
@@ -260,15 +242,10 @@ func (m *Manager) PendingMessageMetadata(sessionID string, goal bool) (json.RawM
 	return data, nil
 }
 
-// HasPendingAttachments reports whether the session has staged (not yet
-// flushed) document or image attachments. Used by the live-send gate: a
-// message sent while a task is running cannot carry attachments (they are
-// flushed into the blackboard/context only at task start), so the frontend
-// API rejects the send and asks the user to wait for pause/completion.
-//
-// This is a memory-only lookup — it never restores a session as a side effect
-// (mirroring GetSessionRuntimeStatus) and returns false when the session is
-// not in memory or has no staged attachments.
+// HasPendingAttachments backs the live-send gate: a message sent while a task
+// is running cannot carry attachments (they flush only at task start), so the
+// frontend API rejects the send. Memory-only — no lazy restore; false when the
+// session is not resident or has nothing staged.
 func (m *Manager) HasPendingAttachments(sessionID string) bool {
 	m.mu.RLock()
 	sess := m.sessions[sessionID]
@@ -281,17 +258,12 @@ func (m *Manager) HasPendingAttachments(sessionID string) bool {
 	return len(sess.pendingAttachments) > 0 || len(sess.pendingImageAttachments) > 0
 }
 
-// PendingAttachmentSnapshot carries a session's staged (not yet flushed)
-// document and image attachments across an in-memory eviction. The pending
-// lists live only on the in-memory Session struct and are never persisted.
-// The only production producer is the capture inside
-// Manager.EvictSessionCarryingAttachments: the snapshot is taken under the
-// eviction's own critical section, so everything staged up to that point
-// rides along into the lazily restored session (the send's metadata read and
-// task-start snapshot still see it, via RestorePendingAttachments). Never
-// build a separate snapshot-then-evict pair around a plain eviction —
-// attachments staged between the two calls would be silently lost; that
-// race window is exactly why the capture lives inside the eviction.
+// PendingAttachmentSnapshot carries a session's staged attachments across an
+// in-memory eviction (the pending lists are memory-only). The only production
+// producer is the capture inside Manager.EvictSessionCarryingAttachments,
+// taken under the eviction's own critical section — never build a separate
+// snapshot-then-evict pair: anything staged between the two calls would be
+// silently lost.
 type PendingAttachmentSnapshot struct {
 	Docs   []orchestration.Attachment
 	Images []ImageAttachment
@@ -302,13 +274,10 @@ func (s *PendingAttachmentSnapshot) Empty() bool {
 	return s == nil || (len(s.Docs) == 0 && len(s.Images) == 0)
 }
 
-// SnapshotPendingAttachments copies the session's staged attachments into a
-// transferable snapshot. Test/inspection helper: no production flow calls
-// it, and it must never substitute the capture-carrying eviction — a
-// snapshot taken outside EvictSessionCarryingAttachments's critical section
-// misses anything staged in the race window. Memory-only: it never restores
-// a session as a side effect and returns an empty snapshot when the session
-// is not in memory (nothing staged, or nothing in memory to stage).
+// SnapshotPendingAttachments is a test/inspection helper: no production flow
+// calls it, and it must never substitute the capture-carrying eviction (a
+// snapshot outside the eviction's critical section misses the race window).
+// Memory-only; nil when the session is not resident.
 func (m *Manager) SnapshotPendingAttachments(sessionID string) *PendingAttachmentSnapshot {
 	m.mu.RLock()
 	sess := m.sessions[sessionID]
@@ -327,17 +296,12 @@ func (m *Manager) SnapshotPendingAttachments(sessionID string) *PendingAttachmen
 	return snap
 }
 
-// RestorePendingAttachments re-stages a snapshot taken before an eviction on
-// the (lazily restored) session. Concurrently STAGED attachments are kept by
-// the staging side itself (appendPendingAttachments re-validates manager
-// membership after each append), and the restore side re-validates its OWN
-// append the same way: a second eviction racing the restore (the retrying
-// send's bind of the still-fresh window) would otherwise leave the snapshot
-// items on the orphaned object with no one left to re-stage them — the
-// second eviction's capture already ran before the items landed. Restoring
-// an empty snapshot is a no-op. The session is restored on demand, so this
-// must run only while the caller knows the restore is wanted (right after
-// the eviction whose flow keeps the attachments alive).
+// RestorePendingAttachments re-stages a pre-eviction snapshot on the lazily
+// restored session. Both sides re-validate manager membership after each
+// append: a second eviction racing the restore (the retrying send's bind)
+// would otherwise strand the snapshot items on the orphaned object — its
+// capture ran before the items landed. Call only when the restore is wanted
+// (right after the eviction whose flow keeps the attachments alive).
 func (m *Manager) RestorePendingAttachments(sessionID string, snap *PendingAttachmentSnapshot) error {
 	if snap.Empty() {
 		return nil
@@ -352,15 +316,13 @@ func (m *Manager) RestorePendingAttachments(sessionID string, snap *PendingAttac
 	return m.restorePendingAttachments(sessionID, sess, snap)
 }
 
-// restorePendingAttachments appends the snapshot under the membership
-// re-validation loop appendPendingAttachments runs: append under sess.mu,
-// then re-check manager membership AFTER sess.mu is released (never under
-// it: eviction takes m.mu → sess.mu, and inverting the order could
-// deadlock); on a mismatch the lazily restored session gets the snapshot
-// (the held-IDs dedupe keeps either settling order from staging a file
-// twice). The separated session parameter mirrors
-// appendPendingAttachments's signature so tests can drive the
-// orphaned-handle race deterministically.
+// restorePendingAttachments appends under sess.mu, then re-checks manager
+// membership AFTER sess.mu is released (never under it: eviction takes
+// m.mu → sess.mu — inverting the order could deadlock); on a mismatch the
+// lazily restored session gets the snapshot (the held-IDs dedupe prevents
+// double-staging in either settling order). The separated session parameter
+// mirrors appendPendingAttachments so tests can drive the orphaned-handle
+// race deterministically.
 func (m *Manager) restorePendingAttachments(sessionID string, sess *Session, snap *PendingAttachmentSnapshot) error {
 	for attempt := 0; ; attempt++ {
 		sess.mu.Lock()
@@ -412,19 +374,15 @@ func pendingAttachmentIDs(sess *Session) map[string]bool {
 	return ids
 }
 
-// appendPendingAttachments stages items on the session identified by
-// sessionID, guaranteeing they land on the session CURRENTLY registered under
-// that id — never on an orphaned in-memory object. The send-time workspace
-// bind evicts the in-memory session between its attachment snapshot and the
-// eviction itself; an append racing into that window would otherwise die with
-// the evicted object and silently lose the user's file. The re-validation
-// re-checks manager membership AFTER sess.mu is released (never under it:
-// eviction takes m.mu → sess.mu, and inverting the order could deadlock) and
-// re-stages on the lazily restored session when the object was evicted
-// mid-append — mirroring RestorePendingAttachments. Returns the pending-list
-// infos captured under the same critical section as the append plus the LIVE
-// session (which may differ from the passed one), so callers emit UI feedback
-// and derive follow-up state from what actually holds the items.
+// appendPendingAttachments stages items on the session CURRENTLY registered
+// under sessionID — never an orphaned in-memory object: the send-time
+// workspace bind evicts the in-memory session mid-flow, and an append racing
+// into that window would die with the evicted object. Membership is
+// re-checked AFTER sess.mu is released (see restorePendingAttachments for
+// the lock order) and the append re-staged on the lazily restored session on
+// a mismatch. Returns the infos captured under the append's critical section
+// plus the LIVE session, so callers derive UI feedback from what actually
+// holds the items.
 func (m *Manager) appendPendingAttachments(sessionID string, sess *Session, docs []orchestration.Attachment, images []ImageAttachment) ([]AttachmentInfo, *Session, error) {
 	for attempt := 0; ; attempt++ {
 		var infos []AttachmentInfo
@@ -473,13 +431,10 @@ func (m *Manager) appendPendingAttachments(sessionID string, sess *Session, docs
 	}
 }
 
-// EmitStagedAttachmentsLost reports a failed RestorePendingAttachments to the
-// UI. The staged files did not survive the workspace switch, so the backend's
-// pending lists are empty while the frontend chips may still show them; the
-// event carries the session's current pending list (the authoritative memory
-// state — typically empty) plus a per-file failure naming every snapshot item,
-// so the UI drops the stale chips and the user knows to re-attach. Best
-// effort: the send is rejected with the same information in its error text.
+// EmitStagedAttachmentsLost reports a failed RestorePendingAttachments: the
+// staged files did not survive the workspace switch, so the event carries the
+// current (typically empty) pending list plus a per-file failure naming every
+// snapshot item, letting the UI drop stale chips and the user re-attach.
 func (m *Manager) EmitStagedAttachmentsLost(sessionID string, snap *PendingAttachmentSnapshot) {
 	if snap.Empty() {
 		return
@@ -496,10 +451,8 @@ func (m *Manager) EmitStagedAttachmentsLost(sessionID string, snap *PendingAttac
 	m.emitAttachmentsChanged(sessionID, infos, failures)
 }
 
-// emitAttachmentsChanged emits an "attachments:changed" event for the given
-// session, carrying the current pending list (and optional failures). This is
-// the single emit point so the payload shape stays consistent across
-// attach/remove/send-clear operations.
+// emitAttachmentsChanged is the single emit point for "attachments:changed"
+// so the payload shape stays consistent across attach/remove/send-clear.
 func (m *Manager) emitAttachmentsChanged(sessionID string, attachments []AttachmentInfo, failures []AttachmentFailure) {
 	m.emitFunc(Event{
 		SessionID: sessionID,
@@ -511,19 +464,16 @@ func (m *Manager) emitAttachmentsChanged(sessionID string, attachments []Attachm
 	})
 }
 
-// converterOrInit returns the lazily-initialized markitdown converter, creating
-// it on first use with the manager's logger and attachmentConvertTimeout. The
-// markitdown binary must be resolvable on PATH; a missing binary yields a
-// wrapped error the caller can surface.
+// converterOrInit lazily creates the markitdown converter (manager logger +
+// attachmentConvertTimeout); a missing binary yields a wrapped error.
 func (m *Manager) converterOrInit() (*markitdown.Converter, error) {
 	m.converterMu.Lock()
 	defer m.converterMu.Unlock()
 	if m.converter != nil {
 		return m.converter, nil
 	}
-	// The venv interpreter enabling vision-assisted conversion is resolved
-	// lazily on every init attempt: at startup the tool-manager may not have
-	// finished installing markitdown yet.
+	// The venv interpreter is re-resolved on every init attempt: the
+	// tool-manager may not have finished installing markitdown yet.
 	c, err := markitdown.NewConverter(markitdown.Options{
 		Logger:     m.log(),
 		Timeout:    attachmentConvertTimeout,
@@ -536,18 +486,11 @@ func (m *Manager) converterOrInit() (*markitdown.Converter, error) {
 	return c, nil
 }
 
-// AttachFiles converts each supported file at the given paths to markdown via
-// markitdown, stages the resulting attachments on the session (to be flushed
-// into the blackboard on the next SendMessage), and returns metadata for the
-// successfully attached files.
-//
-// An "attachments:changed" event is emitted after each successful conversion
-// (incremental UI feedback) and once more at the end carrying any per-file
-// failures in the Failed field. The method returns a non-nil error only for
-// system-level failures (session not found, converter init). File-level
-// failures (unsupported format, conversion error) are reported via the event
-// payload — not as an error — so partial success does not discard the attached
-// files or trigger a generic error toast.
+// AttachFiles converts each supported file via markitdown and stages the
+// result on the session (flushed into the blackboard at the next SendMessage).
+// An "attachments:changed" event is emitted after each success and once at
+// the end carrying per-file failures; file-level failures ride the event
+// payload, NOT the error, so partial success keeps the attached files.
 func (m *Manager) AttachFiles(ctx context.Context, sessionID string, paths []string) ([]AttachmentInfo, error) {
 	session, err := m.getOrRestoreSession(sessionID)
 	if err != nil {
@@ -563,9 +506,8 @@ func (m *Manager) AttachFiles(ctx context.Context, sessionID string, paths []str
 	for _, path := range paths {
 		ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(path), "."))
 
-		// Image path: process, save to session/images/, stage as an
-		// ImageAttachment (kept separate from document attachments — images
-		// are passed to the LLM as image content blocks, not markdown context).
+		// Image path: stage as an ImageAttachment — images go to the LLM as
+		// image content blocks, not markdown context.
 		if isImageFormat(ext) {
 			if err := m.attachImage(session, sessionID, path, imagesDir, ""); err != nil {
 				failures = append(failures, AttachmentFailure{
@@ -603,9 +545,8 @@ func (m *Manager) AttachFiles(ctx context.Context, sessionID string, paths []str
 			continue
 		}
 
-		// Per-document vision resolution: inspect the session's CURRENTLY
-		// active model so attachments convert with the model selected right
-		// now (a mid-session model switch applies to the next document).
+		// Per-document vision resolution against the session's CURRENTLY active
+		// model (a mid-session switch applies to the next document).
 		vision := m.resolveSessionVision(session)
 		markdown, convErr := converter.ConvertWithVision(ctx, path, vision)
 		if convErr != nil {
@@ -628,9 +569,8 @@ func (m *Manager) AttachFiles(ctx context.Context, sessionID string, paths []str
 
 		infos, live, stageErr := m.appendPendingAttachments(sessionID, session, []orchestration.Attachment{att}, nil)
 		if stageErr != nil {
-			// The append lost a workspace-switch race twice (or could not
-			// re-stage): surface it as a per-file failure instead of
-			// silently dropping the file.
+			// The append lost the workspace-switch race twice (or could not
+			// re-stage): per-file failure, not a silent drop.
 			failures = append(failures, AttachmentFailure{
 				Path:  filepath.Base(path),
 				Error: stageErr.Error(),
@@ -639,17 +579,15 @@ func (m *Manager) AttachFiles(ctx context.Context, sessionID string, paths []str
 		}
 		session = live
 
-		// Incremental UI feedback: emit after each successful conversion so
-		// chips appear one-by-one rather than all-at-once after a long batch.
+		// Emit after each conversion so chips appear one-by-one, not all at
+		// once after a long batch.
 		m.emitAttachmentsChanged(sessionID, infos, nil)
 	}
 
-	// Surface any per-file failures in a final event. The attachments field
-	// is the full current pending list so the UI store stays consistent.
-	// Memory-only authoritative read, shared with the return value: the loop
-	// above may have re-staged a racing append onto a lazily restored
-	// session, so the local reference is not guaranteed to be the registered
-	// one — one read keeps the event and the return consistent.
+	// Final event carries the full current pending list (authoritative
+	// memory-only read shared with the return: the loop may have re-staged a
+	// racing append onto a restored session, so the local reference may be
+	// stale).
 	result, err := m.GetSessionAttachments(sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("list staged attachments: %w", err)
@@ -660,36 +598,29 @@ func (m *Manager) AttachFiles(ctx context.Context, sessionID string, paths []str
 	return result, nil
 }
 
-// attachImage processes a single image file (decode, optional resize, JPEG
-// re-encode, thumbnail), saves the processed copy to the session's images
-// directory as {uuid}.jpg, and stages it as an ImageAttachment on the session.
-// It emits an incremental "attachments:changed" event on success. The returned
-// error describes why the image could not be attached and is surfaced by the
-// caller as a per-file failure (not a method-level error) so partial success
-// is preserved.
+// attachImage processes a single image (decode, optional resize, JPEG
+// re-encode, thumbnail), saves it to the session's images directory as
+// {uuid}.jpg, and stages it as an ImageAttachment. The error is surfaced by
+// the caller as a per-file failure, not a method-level error, so partial
+// success is preserved.
 //
-// displayName overrides OriginalName when non-empty (used by the clipboard
-// paste path, whose temp file has an ugly "c0wrk-clip-*" name). When empty,
-// OriginalName falls back to filepath.Base(path) — the real filename for the
-// picker and drag-and-drop paths.
+// displayName overrides OriginalName when non-empty (the clipboard paste
+// path's "c0wrk-clip-*" temp file); empty falls back to filepath.Base(path).
 func (m *Manager) attachImage(session *Session, sessionID, path, imagesDir, displayName string) error {
 	base64Data, mediaType, thumbURI, sizeBytes, err := processImage(path)
 	if err != nil {
 		return err
 	}
 
-	// The images directory is a fixed, prompt-disclosed path under the
-	// session dir (~/.c0wrk/projects/<pid>/<sid>/images), so both operations
-	// below keep the write inside the agent tree: MkdirAllRealWithin (the
-	// agent dir is the boundary) only ever creates real directories and
-	// REFUSES any pre-existing link in the path that resolves outside
-	// ~/.c0wrk (review finding #48), while links resolving inside the agent
-	// tree and a symlinked agent dir itself remain operator intent; and
+	// The images directory is a fixed, prompt-disclosed path under the session
+	// dir, and both writes stay inside the agent tree: MkdirAllRealWithin (the
+	// agent dir is the boundary) only creates real directories and REFUSES a
+	// pre-existing link resolving outside ~/.c0wrk (review finding #48) —
+	// links inside the tree and a symlinked agent dir stay operator intent;
 	// safeio.WriteFile opens the final component O_NOFOLLOW (os.WriteFile
-	// follows a symlink at imgPath and truncates its target; on Windows the
-	// safeio parity note applies — the final symlink is still resolved —
-	// tempered by Windows requiring elevated/dev-mode rights to create
-	// symlinks).
+	// would follow a symlink at imgPath and truncate its target; on Windows
+	// the final symlink is still resolved, tempered by symlink creation
+	// requiring elevated/dev-mode rights).
 	if err := safeio.MkdirAllRealWithin(m.agentDir, imagesDir, 0o755); err != nil {
 		return fmt.Errorf("create images dir: %w", err)
 	}
@@ -697,9 +628,9 @@ func (m *Manager) attachImage(session *Session, sessionID, path, imagesDir, disp
 	imgID := uuid.NewString()
 	imgPath := filepath.Join(imagesDir, imgID+imageFileExtension(mediaType))
 
-	// Decode the processed base64 back to bytes for on-disk persistence. The
-	// file is the source of truth for restart reconstruction; the in-memory
-	// Base64Data is held only until the next SendMessage snapshots it.
+	// Decode the processed base64 for on-disk persistence: the file is the
+	// source of truth for restart reconstruction; in-memory Base64Data lives
+	// only until the next SendMessage snapshots it.
 	imgBytes, err := base64.StdEncoding.DecodeString(base64Data)
 	if err != nil {
 		return fmt.Errorf("decode processed image: %w", err)
@@ -725,7 +656,7 @@ func (m *Manager) attachImage(session *Session, sessionID, path, imagesDir, disp
 
 	infos, _, stageErr := m.appendPendingAttachments(sessionID, session, nil, []ImageAttachment{imgAtt})
 	if stageErr != nil {
-		// The processed copy was already written; staging failed, so nothing
+		// The file was already written; with staging failed nothing
 		// references it — remove it or it orphans until session deletion.
 		if rmErr := os.Remove(imgPath); rmErr != nil && !os.IsNotExist(rmErr) {
 			m.log().Debug("failed to remove unstageable image file", "path", imgPath, "error", rmErr)
@@ -737,10 +668,9 @@ func (m *Manager) attachImage(session *Session, sessionID, path, imagesDir, disp
 	return nil
 }
 
-// RemovePendingAttachment removes a staged attachment from the session by ID.
-// It does not touch attachments already flushed into the blackboard. Returns
-// nil if the attachment was not found among the pending ones. Emits an
-// "attachments:changed" event with the remaining pending attachments.
+// RemovePendingAttachment removes a staged attachment by ID (already-flushed
+// attachments are untouched); nil when the ID is not staged. Emits
+// "attachments:changed" with the remaining list.
 func (m *Manager) RemovePendingAttachment(sessionID, attachmentID string) error {
 	session, err := m.getOrRestoreSession(sessionID)
 	if err != nil {
@@ -761,9 +691,8 @@ func (m *Manager) RemovePendingAttachment(sessionID, attachmentID string) error 
 			break
 		}
 	}
-	// Not a document attachment — check the staged image attachments. Removing
-	// a pending image also deletes its on-disk copy (only pending images have
-	// one; already-sent images are reconstructed from DB metadata on restart).
+	// Removing a pending image also deletes its on-disk copy (only pending
+	// images have one; already-sent images are reconstructed from DB metadata).
 	if !found {
 		for i, img := range session.pendingImageAttachments {
 			if img.ID == attachmentID {
@@ -791,17 +720,11 @@ func (m *Manager) RemovePendingAttachment(sessionID, attachmentID string) error 
 	return nil
 }
 
-// GetSessionAttachments returns a defensive copy of the session's staged
-// (pending) attachments as metadata-only AttachmentInfo values, for UI chips.
-// Includes both document attachments and image attachments.
-//
-// MEMORY-ONLY lookup (sessionByID, no lazy restore): this backs the frontend's
-// attachment-chips effect, which re-fires on EVERY session switch — including
-// switches to sessions that were never opened this app run. Restoring there
-// would build a full orchestrator and open log/dump/step-dump handles nobody
-// closes, for a session that has no staged pending attachments to show by
-// definition (staging is in-memory state). A session that is not resident
-// simply has no chips: return an empty list.
+// GetSessionAttachments returns a defensive metadata-only copy of the staged
+// attachments for UI chips. MEMORY-ONLY lookup (sessionByID, no lazy
+// restore): the chips effect re-fires on EVERY session switch, and restoring
+// there would build an orchestrator and open handles nobody closes for a
+// session that by definition has nothing staged (staging is in-memory).
 func (m *Manager) GetSessionAttachments(sessionID string) ([]AttachmentInfo, error) {
 	session, ok := m.sessionByID(sessionID)
 	if !ok || session == nil {
@@ -813,11 +736,9 @@ func (m *Manager) GetSessionAttachments(sessionID string) ([]AttachmentInfo, err
 	return combinedAttachmentInfos(session.pendingAttachments, session.pendingImageAttachments), nil
 }
 
-// PendingImageAttachments returns a defensive copy of the session's staged
-// (pending) image attachments, carrying the full ImageAttachment data
-// (including FilePath and MediaType) needed to persist thumbnail + path in
-// ChatMessage.Metadata. Used by the frontend API before SendMessage snapshots
-// and clears the pending list.
+// PendingImageAttachments returns a defensive copy of the staged images with
+// the full data (FilePath/MediaType) needed to persist thumbnail + path in
+// ChatMessage.Metadata; read before SendMessage clears the list.
 func (m *Manager) PendingImageAttachments(sessionID string) ([]ImageAttachment, error) {
 	session, err := m.getOrRestoreSession(sessionID)
 	if err != nil {

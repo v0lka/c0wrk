@@ -1,20 +1,9 @@
-// Package updater implements the atomic self-update machinery for c0wrk-desktop.
-//
-// The self-update protocol is a two-process dance designed so the running
-// application never replaces its own executable while executing it:
-//
-//  1. The running app calls PrepareSelfUpdate, which copies the current binary
-//     into a staging directory and returns the path to the staging "updater".
-//  2. The running app re-executes that staging updater copy with the flags
-//     --self-update --pid <PID> --stage <dir> --target <installdir>, then exits.
-//  3. On the second invocation main.go detects --self-update and calls
-//     ApplySelfUpdate BEFORE starting the Wails loop: it waits for the parent
-//     PID to die, extracts the staged update archive, performs an atomic swap
-//     (current install tree → <root>.old backup, new tree → install root),
-//     relaunches the new app, and cleans up. The Wails lifecycle never runs.
-//
-// The .old backup is retained after a successful swap so a user can roll back
-// manually if the new version fails to start.
+// Package updater implements the atomic self-update machinery for
+// c0wrk-desktop: a two-process re-exec dance (the running app stages a copy
+// of itself and quits; the staging updater waits for the parent to die,
+// extracts the archive, swaps the install tree keeping a .old rollback
+// backup, relaunches and cleans up) so the app never replaces its own
+// executable while executing it. See specs/decisions/023-auto-update.md.
 package updater
 
 import (
@@ -39,15 +28,13 @@ import (
 )
 
 // ErrNonStandardLocation is returned by DiscoverInstallRoot when the running
-// binary lives in a location that is unsafe to update in place (a temporary
-// directory, a Downloads folder, or a read-only path).
+// binary lives somewhere unsafe to update in place (temp dir, Downloads,
+// read-only path) — the in-place install is left untouched.
 var ErrNonStandardLocation = errors.New("running from a non-standard location; install the app properly before updating")
 
 // StagedUpdaterShutdownWait is how long a launched staging updater waits for
-// the parent process to exit before giving up (and exiting itself). Exported
-// so other layers can reason about the window in which a parent quit still
-// completes a pending self-update (e.g. the desktop close guard's
-// update_pending payload flag).
+// the parent process to exit before giving up; exported so other layers (the
+// desktop close guard's update_pending flag) can reason about that window.
 const StagedUpdaterShutdownWait = 60 * time.Second
 
 // shutdownTimeout is how long ApplySelfUpdate waits for the parent PID to exit
@@ -57,12 +44,10 @@ var shutdownTimeout = StagedUpdaterShutdownWait
 // pollInterval is how often the PID-death waiter re-checks the parent.
 var pollInterval = 500 * time.Millisecond
 
-// maxDownloadBytes caps the size of a downloaded update archive or checksum
-// file as defense-in-depth against disk exhaustion if a TLS path (e.g. an
-// opted-in corporate proxy) is compromised. Downloads are SHA256-verified
-// after the copy, so this cap only bounds the bytes written to disk before
-// verification rejects a substituted-but-unforged response. Generous enough to
-// accept the largest legitimate release asset.
+// maxDownloadBytes caps a downloaded archive or checksum file as
+// defense-in-depth against disk exhaustion on a compromised TLS path;
+// downloads are SHA256-verified after the copy, so the cap only bounds the
+// bytes written to disk before verification rejects the response.
 const maxDownloadBytes int64 = 1 << 30 // 1 GiB
 
 // maxExtractEntryBytes caps the decompressed size of a single archive entry as
@@ -74,13 +59,10 @@ const maxExtractEntryBytes int64 = 512 << 20 // 512 MiB
 // starting a GUI process.
 var relaunchFn = relaunchApp
 
-// DiscoverInstallRoot resolves the install root for the running binary and
-// validates that it is a standard, writable location.
-//
-// On macOS the root is the enclosing .app bundle; on Linux/Windows it is the
-// directory containing the binary. A non-standard location (temp, Downloads,
-// read-only) yields ErrNonStandardLocation so the in-place install is left
-// untouched.
+// DiscoverInstallRoot resolves the install root for the running binary (the
+// enclosing .app bundle on macOS, the binary's directory elsewhere) and
+// validates it is a standard, writable location; otherwise
+// ErrNonStandardLocation leaves the in-place install untouched.
 func DiscoverInstallRoot() (string, error) {
 	root, err := findInstallRoot()
 	if err != nil {
@@ -108,11 +90,10 @@ func validateStandardLocation(root string) error {
 	if hasDownloadsComponent(lower) {
 		return fmt.Errorf("%w: %s is inside a Downloads folder", ErrNonStandardLocation, abs)
 	}
-	// Reject read-only locations: the swap renames entries in BOTH the install
-	// root and its parent, so both must be writable. Probing the parent is the
-	// critical check (e.g. on macOS /Applications may be admin-only even when
-	// the .app bundle interior is user-writable); the self-check additionally
-	// catches a genuinely read-only install dir.
+	// Reject read-only locations: the swap renames entries in BOTH the
+	// install root and its parent, so both must be writable (the parent is
+	// the critical check — e.g. an admin-only /Applications on macOS); the
+	// self-check catches a genuinely read-only install dir.
 	if !isWritable(abs) {
 		return fmt.Errorf("%w: %s is not writable", ErrNonStandardLocation, abs)
 	}
@@ -120,21 +101,19 @@ func validateStandardLocation(root string) error {
 	if !isWritable(parent) {
 		return fmt.Errorf("%w: %s is not writable (cannot rename install tree)", ErrNonStandardLocation, parent)
 	}
-	// The target must actually be the install root, not merely a writable
-	// directory: a bare dev binary placed in an arbitrary folder (a project
-	// directory, ~/Documents, etc.) must not be "validated" into swapping that
-	// whole folder out and later deleting its .old backup. On macOS the marker
-	// is the .app suffix; on Linux/Windows it is the canonical app binary.
+	// The target must actually be an install root, not merely a writable
+	// directory: a bare dev binary in an arbitrary folder must not be
+	// "validated" into swapping that folder out and later deleting its .old
+	// backup.
 	if !hasInstallMarker(abs) {
 		return fmt.Errorf("%w: %s does not look like an install root", ErrNonStandardLocation, abs)
 	}
 	return nil
 }
 
-// hasDownloadsComponent reports whether any path element equals "downloads".
-// It accepts both '/' and '\' as path separators so the check is portable
-// across platforms and robust to paths that have not been normalized to the
-// OS-native separator (e.g. forward-slash paths on Windows).
+// hasDownloadsComponent reports whether any path element equals "downloads",
+// accepting both separators so un-normalized paths (e.g. forward slashes on
+// Windows) are covered too.
 func hasDownloadsComponent(lowerPath string) bool {
 	for _, part := range strings.FieldsFunc(lowerPath, func(r rune) bool {
 		return r == '/' || r == '\\'
@@ -147,10 +126,8 @@ func hasDownloadsComponent(lowerPath string) bool {
 }
 
 // pathContains reports whether candidate is strictly nested under base (not
-// equal to it), comparing cleaned absolute paths. Both are assumed already
-// cleaned. Containment uses the centralized pathutil.IsWithinPath; equality is
-// decided on the symlink-resolved prefixes so a candidate that is the same
-// location as base (including through a symlink) is not "contained".
+// equal), via pathutil.IsWithinPath; equality is decided on symlink-resolved
+// prefixes so the same location through a symlink is not "contained".
 func pathContains(candidate, base string) bool {
 	if base == "" {
 		return false
@@ -163,8 +140,8 @@ func pathContains(candidate, base string) bool {
 		pathutil.ResolveExistingPrefix(filepath.Clean(base))
 }
 
-// isWritable reports whether the given directory is writable by attempting to
-// create (and immediately remove) a probe file. The root must exist.
+// isWritable probes dir by creating and immediately removing a temp file; the
+// directory must exist.
 func isWritable(dir string) bool {
 	probe, err := os.CreateTemp(dir, ".c0wrk-wprobe-*")
 	if err != nil {
@@ -177,8 +154,8 @@ func isWritable(dir string) bool {
 }
 
 // PrepareSelfUpdate copies the current executable into a fresh staging
-// directory and returns the path to the staging "updater" binary. The caller is
-// expected to launch that binary with --self-update flags and then exit.
+// directory and returns the staging "updater" path to launch with the
+// --self-update flags before exiting (specs/decisions/023-auto-update.md).
 func PrepareSelfUpdate() (stagingDir, updaterPath string, err error) {
 	exe, err := os.Executable()
 	if err != nil {
@@ -208,26 +185,24 @@ func SelfUpdateArgs(pid int, stageDir, targetDir string) []string {
 	}
 }
 
-// ApplySelfUpdate executes the staged update: wait for the parent PID to exit,
-// extract the staged archive, atomically swap the install tree (keeping a .old
-// backup), relaunch the new app, and clean up staging artifacts. The request is
-// the parsed --self-update command line (core/cli); ApplySelfUpdate is intended
-// to run from main.go before the Wails lifecycle starts.
+// ApplySelfUpdate executes the staged update: wait for the parent PID to
+// exit, extract the staged archive, atomically swap the install tree
+// (keeping a .old backup), relaunch the new app, and clean up staging.
+// Runs from main.go before the Wails lifecycle starts
+// (specs/decisions/023-auto-update.md); req is the parsed --self-update
+// command line (core/cli).
 func ApplySelfUpdate(req cli.SelfUpdateRequest, log *slog.Logger) error {
 	if log == nil {
 		log = slog.Default()
 	}
 	log.Info("self-update starting", "pid", req.PID, "stage", req.Stage, "target", req.Target)
 
-	// Reject an obviously invalid target before any destructive step, then
-	// re-run the full standard-location validation. The production caller
-	// already computed the target via DiscoverInstallRoot, but ApplySelfUpdate
-	// must not trust a crafted or buggy --target: re-checking here rejects temp
-	// dirs, Downloads, read-only paths, and any target that does not look like
-	// an install root (a .app bundle on macOS, or a directory containing the
-	// canonical app binary on Linux/Windows). Together these stop a
-	// `--target $HOME` or `--target ~/projects/acme` from renaming an unrelated
-	// directory and later deleting its .old backup.
+	// Reject an obviously invalid target, then re-run the full
+	// standard-location validation: ApplySelfUpdate must not trust a crafted
+	// or buggy --target — temp dirs, Downloads, read-only paths and any
+	// directory that does not look like an install root are all rejected, so
+	// a `--target $HOME` cannot rename an unrelated directory and later
+	// delete its .old backup.
 	cleanTarget := filepath.Clean(req.Target)
 	switch filepath.Base(cleanTarget) {
 	case ".", "..", string(filepath.Separator):
@@ -265,11 +240,9 @@ func ApplySelfUpdate(req cli.SelfUpdateRequest, log *slog.Logger) error {
 		return err
 	}
 
-	// The .old path is handed to swapInstallTrees, which clears a stale backup
-	// from a previous attempt only AFTER the new tree has been staged beside
-	// the install root. This ordering keeps the previous last-known-good
-	// rollback target intact if the staging copy fails (e.g. out-of-disk on a
-	// cross-filesystem move).
+	// The stale .old backup is cleared only AFTER the new tree has been staged
+	// beside the install root, so a failed staging copy keeps the
+	// last-known-good rollback target intact.
 	oldBackup := req.Target + ".old"
 
 	if err := swapInstallTrees(req.Target, newTree, oldBackup); err != nil {
@@ -280,46 +253,34 @@ func ApplySelfUpdate(req cli.SelfUpdateRequest, log *slog.Logger) error {
 
 	// Relaunch the freshly installed app from its new location.
 	if err := relaunchFn(req.Target, log); err != nil {
-		// Relaunch failed: keep the .old backup and staging artifacts so the
-		// user (or a retry) can recover. Do not treat relaunch failure as fatal
-		// to the swap itself — the files are correctly in place.
+		// Relaunch failure is non-fatal to the swap — the files are correctly
+		// in place; keep .old and staging artifacts so the user (or a retry)
+		// can recover.
 		log.Warn("relaunch failed; .old backup retained for manual rollback", "error", err)
 	}
 
-	// Clean up the staging directory (the updater binary + extracted archive).
-	// On platforms where the running binary cannot self-delete (Windows), the
-	// caller/main is responsible for best-effort cleanup; here we still attempt
-	// it.
+	// Best-effort staging cleanup; on platforms where the running binary
+	// cannot self-delete (Windows), the caller/main covers cleanup.
 	cleanupStaging(req.Stage, log)
 
 	log.Info("self-update complete")
 	return nil
 }
 
-// swapInstallTrees performs the atomic swap. The new tree is first materialized
-// as a sibling of the install root (targetDir + ".new") so that the only
-// operations touching the live install path are single renames within one
-// filesystem — each individually atomic. This keeps a cross-filesystem copy
-// failure from ever leaving the install tree half-overwritten.
-//
-// Sequence:
-//  1. moveDir newTree → stagedNew (sibling). On a single filesystem this is a
-//     rename; across filesystems it is a copy+remove. If it fails, stagedNew is
-//     discarded and the live install tree is untouched.
-//  2. Clear any stale oldBackup (previous .old) — only now, so a failure in
-//     step 1 leaves the last-known-good rollback target intact.
-//  3. Rename the current install root → oldBackup (atomic).
-//  4. Rename stagedNew → targetDir (atomic: both are siblings on one volume).
-//
-// A failure between 3 and 4 rolls oldBackup back into targetDir — which is safe
-// because after step 3 the target path is free (no ENOTEMPTY).
+// swapInstallTrees performs the atomic swap: the new tree is first
+// materialized as a sibling of the install root (targetDir + ".new") so the
+// only operations touching the live install path are single renames within
+// one filesystem — each individually atomic, so a cross-filesystem copy
+// failure can never leave the install tree half-overwritten. A stale .old
+// backup is cleared only after the new tree has staged successfully, and any
+// failure after the current tree moves to .old rolls the backup back (the
+// target path is free, no ENOTEMPTY). See specs/decisions/023-auto-update.md.
 func swapInstallTrees(targetDir, newTree, oldBackup string) (retErr error) {
 	if _, err := os.Stat(newTree); err != nil {
 		return fmt.Errorf("new tree missing: %w", err)
 	}
 
-	// Stage 1: materialize the new tree beside the install root. A cross-fs
-	// copy can fail midway; if it does we only discard stagedNew.
+	// A cross-fs staging copy can fail midway; only stagedNew is discarded.
 	stagedNew := targetDir + ".new"
 	_ = os.RemoveAll(stagedNew) // clear any leftover from a prior attempt
 	if err := moveDir(newTree, stagedNew); err != nil {
@@ -327,10 +288,8 @@ func swapInstallTrees(targetDir, newTree, oldBackup string) (retErr error) {
 		return fmt.Errorf("stage new tree beside install root: %w", err)
 	}
 
-	// Stage 2: clear any stale .old backup from a previous attempt, then move
-	// the current install tree aside to the .old backup. The stale backup is
-	// removed only now — after the staging copy succeeded — so a failed stage
-	// (step 1) never destroys the user's last-known-good rollback target.
+	// Clear any stale .old backup — only now, after staging succeeded — then
+	// move the current install tree aside to the backup.
 	_ = os.RemoveAll(oldBackup)
 	if err := os.Rename(targetDir, oldBackup); err != nil {
 		_ = os.RemoveAll(stagedNew)
@@ -345,8 +304,7 @@ func swapInstallTrees(targetDir, newTree, oldBackup string) (retErr error) {
 		}
 	}()
 
-	// Stage 3: move the staged new tree into place. stagedNew and targetDir are
-	// siblings, so this rename is atomic on a single filesystem.
+	// stagedNew and targetDir are siblings: this rename is atomic on one fs.
 	if err := os.Rename(stagedNew, targetDir); err != nil {
 		return fmt.Errorf("move staged new tree into place: %w", err)
 	}
@@ -385,11 +343,9 @@ func findStagedArchive(stageDir string) (string, error) {
 	return "", fmt.Errorf("no update archive (.zip/.tar.gz) found in staging dir %s", stageDir)
 }
 
-// resolveNewTree locates the installable tree inside an extraction directory.
-//
-//   - macOS: the top-level *.app bundle.
-//   - Linux/Windows: the extraction directory itself (the archive root is the
-//     build/output directory).
+// resolveNewTree locates the installable tree inside an extraction
+// directory: the top-level *.app bundle on macOS, the extraction directory
+// itself on Linux/Windows (the archive root is the build output).
 func resolveNewTree(extractDir string) (string, error) {
 	return resolveNewTreePlatform(extractDir)
 }
@@ -421,10 +377,10 @@ func extractZip(src, dest string) error {
 		if err != nil {
 			return err
 		}
-		// Reproduce symlink entries as symlinks. The macOS release archive is
-		// packaged with `ditto -c -k --keepParent` precisely because the .app
-		// bundle contains framework symlinks; materializing them as regular
-		// files (the previous behavior) installs a bundle that is not launchable.
+		// Reproduce symlink entries as symlinks: the macOS archive is packaged
+		// with `ditto -c -k --keepParent` and the .app bundle's framework
+		// symlinks must stay symlinks — materializing them as regular files
+		// installs an unlaunchable bundle.
 		if f.Mode()&os.ModeSymlink != 0 {
 			linkTarget, err := readZipEntry(f)
 			if err != nil {
@@ -476,9 +432,8 @@ func copyZipFile(target string, f *zip.File) error {
 	return nil
 }
 
-// readZipEntry reads a zip entry's contents as a string, bounded to
-// maxSymlinkTargetBytes. It is only used for symlink entries, whose content is
-// the link target.
+// readZipEntry reads a zip entry's contents as a string (the link target of a
+// symlink entry), bounded to maxSymlinkTargetBytes.
 func readZipEntry(f *zip.File) (string, error) {
 	const maxSymlinkTargetBytes int64 = 4096
 	rc, err := f.Open()
@@ -496,12 +451,10 @@ func readZipEntry(f *zip.File) (string, error) {
 	return string(data), nil
 }
 
-// safeCreateSymlink creates a symlink at target pointing at linkTarget, after
-// verifying the link resolves to a path that stays inside dest. This prevents
-// a crafted archive from smuggling an escape route via a symlink (a
-// symlink-flavored zip-slip). Absolute link targets are rejected unless they
-// still resolve inside dest (which is effectively never for the archives this
-// path consumes).
+// safeCreateSymlink creates a symlink only after verifying the link resolves
+// to a path inside dest — a symlink-flavored zip-slip guard. Absolute link
+// targets are rejected unless they still resolve inside dest (effectively
+// never for the archives this path consumes).
 func safeCreateSymlink(dest, target, linkTarget string) error {
 	resolved := linkTarget
 	if !filepath.IsAbs(resolved) {
@@ -582,8 +535,8 @@ func extractTarGz(src, dest string) error {
 	return nil
 }
 
-// safeJoin joins dest with name and ensures the result stays within dest,
-// rejecting path-traversal (zip-slip / tar-slip) attempts.
+// safeJoin joins dest with name and rejects path traversal (zip-slip /
+// tar-slip) so the result stays within dest (specs/decisions/023-auto-update.md).
 func safeJoin(dest, name string) (string, error) {
 	cleaned := filepath.Clean(filepath.FromSlash(name))
 	if strings.HasPrefix(cleaned, "..") || filepath.IsAbs(cleaned) {
@@ -605,9 +558,9 @@ func safeJoin(dest, name string) (string, error) {
 	return joined, nil
 }
 
-// copyTree recursively copies src into dst (dst is created). Permissions and
-// symlinks are preserved so a cross-filesystem move of a macOS .app bundle
-// does not flatten its framework symlinks into regular files.
+// copyTree recursively copies src into dst, preserving permissions and
+// symlinks so a cross-filesystem .app bundle move keeps its framework
+// symlinks instead of flattening them into regular files.
 func copyTree(src, dst string) error {
 	info, err := os.Lstat(src)
 	if err != nil {
@@ -693,9 +646,9 @@ func stagingUpdaterName() string {
 	return name
 }
 
-// CleanupStaleUpdaters removes any leftover updater artifacts from previous
-// runs. On Windows the running updater .exe cannot self-delete, so this is the
-// primary cleanup path and is invoked at normal startup.
+// CleanupStaleUpdaters removes leftover updater artifacts from previous runs;
+// the primary cleanup path on Windows, where the running updater .exe cannot
+// self-delete, invoked at normal startup (specs/decisions/023-auto-update.md).
 func CleanupStaleUpdaters(log *slog.Logger) {
 	cleanupStaleUpdatersPlatform(log)
 }

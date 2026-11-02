@@ -9,26 +9,17 @@ import (
 	"github.com/v0lka/sp4rk/tools/mcp"
 )
 
-// ReconfigureMCP reconfigures the MCP gateway with the given config.
-// If no gateway exists, starts a new one.
+// ReconfigureMCP reconfigures the MCP gateway with the given config, starting
+// one if none exists (lifecycle: specs/domains/tool-system/mcp-gateway.md).
+// It waits on mcpDone — NOT initDone — so a Reconfigure during the first
+// seconds of startup cannot observe b.gateway == nil and race runMCPInit with
+// a duplicate gateway.
 //
-// Note: MCP startup (runMCPInit) is decoupled from initDone, so this method
-// waits on mcpDone — NOT initDone — to guarantee the initial gateway assignment
-// has completed before reading/acting on b.gateway. Otherwise a Reconfigure
-// arriving during the first ~seconds of startup could observe b.gateway == nil
-// and start a duplicate gateway that races with runMCPInit.
-//
-// LOCKING: b.mu is NEVER held across the gateway work below, only around the
-// snapshot and the publication. Both Reconfigure and StartGateway connect to
-// MCP servers over the network, and a single unreachable endpoint can hold
-// them for minutes — a previously-failed HTTP server is retried on every
-// Reconfigure, silently and with no deadline of its own. b.mu sits on the
-// GetConfig path (GetConfig takes configMu.RLock, then b.mu.RLock via
-// ModelRegistry), so holding the write lock across that work convoys every
-// config reader behind it and freezes the whole settings dialog for the
-// duration. Dropping b.mu costs nothing in consistency: the gateway
-// serializes concurrent Reconfigure calls on its own mutex, and reconfigureMu
-// below serializes this method.
+// b.mu is held only around the snapshot and publication, never the network
+// work: an unreachable endpoint can hold a dial for minutes, and b.mu sits on
+// the GetConfig path, so convoying config readers behind it would freeze the
+// settings dialog. Consistency is unaffected — the gateway serializes
+// Reconfigures on its own mutex and reconfigureMu serializes this method.
 func (b *OrchestratorBuilder) ReconfigureMCP(ctx context.Context, cfg *BuilderConfig) error {
 	// Accepted policy is authoritative even when readiness or network reconciliation fails.
 	b.mu.Lock()
@@ -36,10 +27,8 @@ func (b *OrchestratorBuilder) ReconfigureMCP(ctx context.Context, cfg *BuilderCo
 	stopping := b.mcpStopping
 	b.mu.Unlock()
 	if stopping {
-		// StopGateway has already given up on this builder; rebuilding the
-		// gateway now would race the shutdown that just declined to wait for
-		// the previous build. Callers log this as a warning — a reconfigure
-		// racing app exit is degenerate by definition.
+		// StopGateway already gave up on this builder; rebuilding would race
+		// the shutdown that declined to wait for the previous build.
 		return errors.New("mcp reconfigure rejected: builder is shutting down")
 	}
 	if err := b.waitMCPReady(ctx); err != nil {
@@ -48,22 +37,16 @@ func (b *OrchestratorBuilder) ReconfigureMCP(ctx context.Context, cfg *BuilderCo
 
 	mcpCfg := configToGatewayConfig(cfg)
 
-	// Serializes this call end to end: without it two callers that both find
-	// no gateway would each dial one and orphan the loser. Acquired BEFORE
-	// b.mu, never the other way round.
+	// Serializes this call end to end: two callers that both find no gateway
+	// would each dial one and orphan the loser. Taken BEFORE b.mu, never after.
 	b.reconfigureMu.Lock()
 	defer b.reconfigureMu.Unlock()
 
-	// Snapshot the proxy client and the gateway pointer, then RELEASE the
-	// lock before any network work. Reading b.proxyClient here under the lock
-	// also closes a data race against RebuildProxy, which writes it.
-	//
-	// The mcpStopping re-check is the load-bearing part: StopGateway may have
-	// flipped it while this call was parked in waitMCPReady above (its context
-	// is independent of shutdown), in which case acting on — or replacing —
-	// the gateway would re-dial or resurrect servers nothing will stop. Because
-	// StopGateway sets the flag before it joins mcpDone, any call that gets
-	// here after startup settles observes it.
+	// Snapshot the proxy client (also closes the race against RebuildProxy's
+	// write) and the gateway pointer, then RELEASE the lock before network
+	// work. The mcpStopping re-check is load-bearing: StopGateway may have
+	// flipped it while this call was parked in waitMCPReady, and acting on —
+	// or replacing — the gateway then would resurrect servers nothing stops.
 	b.mu.RLock()
 	mcpCfg.HTTPClient = b.proxyClient
 	gw := b.gateway
@@ -77,17 +60,16 @@ func (b *OrchestratorBuilder) ReconfigureMCP(ctx context.Context, cfg *BuilderCo
 		return gw.Reconfigure(ctx, mcpCfg, b.registry.ToolRegistry, cfg.ExpandEnvVars)
 	}
 
-	// No gateway: startup failed earlier (waitMCPReady guarantees runMCPInit
-	// has finished, so this is not the startup window). Dial outside b.mu and
-	// publish under it, mirroring runMCPInit's record-and-apply.
+	// No gateway: startup failed earlier (waitMCPReady rules out the startup
+	// window). Dial outside b.mu, publish under it (runMCPInit's pattern).
 	newGW, err := mcp.StartGateway(ctx, mcpCfg, b.registry.ToolRegistry, cfg.ExpandEnvVars, b.logger)
 	if err != nil {
 		return err
 	}
 
-	// Publish through the guarded helper (the same path runMCPInit uses): a
-	// shutdown that began while this call was dialing stops the fresh gateway
-	// instead of leaking it, and a work dir recorded meanwhile is applied.
+	// Publish through the guarded helper: a shutdown that began while dialing
+	// stops the fresh gateway instead of leaking it, and a meanwhile-recorded
+	// work dir is applied.
 	if !b.publishMCPGateway(newGW, nil) {
 		return errors.New("mcp reconfigure rejected: builder is shutting down")
 	}
@@ -101,39 +83,24 @@ func (b *OrchestratorBuilder) currentMCPServerModes() map[string]CapabilityModes
 	return maps.Clone(b.mcpModes)
 }
 
-// mcpStopStartupGrace bounds how long StopGateway waits for the still-running
-// MCP startup goroutine. Full server discovery takes seconds — spawning every
-// configured stdio server is process-start work — and StopGateway runs on the
-// app-shutdown path, so a quit during the first seconds of startup must not
-// beach-ball the main thread for the whole build just to tear the result down
-// immediately afterwards. Past the grace, the startup goroutine keeps
-// ownership of the not-yet-published gateway (see publishMCPGateway) and
-// stops it off the shutdown path.
+// mcpStopStartupGrace bounds StopGateway's wait for an in-flight MCP startup;
+// past it the startup goroutine keeps ownership of the not-yet-published
+// gateway and stops it off the shutdown path. Protocol:
+// specs/domains/tool-system/mcp-gateway.md.
 const mcpStopStartupGrace = time.Second
 
-// StopGateway stops the MCP gateway. Called during app shutdown.
-//
-// It marks the builder as shutting down under b.mu FIRST (so no gateway can be
-// published or reconfigured afterwards — a ReconfigureMCP parked in
-// waitMCPReady re-checks the flag at its publication site), then aborts an
-// in-flight MCP startup so the gateway that goroutine is still building is
-// stopped promptly, and finally joins that goroutine — for at most
-// mcpStopStartupGrace. Cancelling the startup is what keeps the join short:
-// Start abandons the remaining servers, runMCPInit stops the not-yet-published
-// gateway it built (publishMCPGateway) and closes mcpDone well inside the
-// grace. The grace still bounds a startup wedged in a connect that ignores
-// cancellation; past it, the startup goroutine retains ownership of the
-// not-yet-published gateway and stops it off the shutdown path.
+// StopGateway stops the MCP gateway (app shutdown). It first marks the builder
+// as shutting down under b.mu (no gateway can be published or reconfigured
+// afterwards), aborts the in-flight startup so the join stays short, then
+// joins within mcpStopStartupGrace. Protocol and the wedged-startup fallback:
+// specs/domains/tool-system/mcp-gateway.md.
 func (b *OrchestratorBuilder) StopGateway() error {
 	b.mu.Lock()
 	b.mcpStopping = true
 	initCancel := b.mcpInitCancel
 	b.mu.Unlock()
 
-	// Abort an in-flight MCP startup (a no-op once it has finished) so the
-	// gateway it is still building is torn down promptly and the join below is
-	// short rather than waiting out the whole server-spawn sequence on the
-	// app-shutdown thread.
+	// Abort the in-flight startup so the join below stays short.
 	if initCancel != nil {
 		initCancel()
 	}
@@ -147,9 +114,8 @@ func (b *OrchestratorBuilder) StopGateway() error {
 	b.mu.Unlock()
 
 	if waitErr != nil && gw == nil {
-		// Startup is still in flight past the grace. It keeps ownership of the
-		// not-yet-published gateway it built and stops it off this path; there
-		// is nothing published here to stop.
+		// Startup still in flight past the grace: it owns stopping the
+		// not-yet-published gateway; nothing is published here to stop.
 		b.log().Info("MCP gateway startup still in flight during shutdown; startup goroutine owns stopping the not-yet-published gateway")
 		return nil
 	}
@@ -159,20 +125,14 @@ func (b *OrchestratorBuilder) StopGateway() error {
 	return gw.Stop()
 }
 
-// SetMCPWorkDir updates the default working directory for MCP stdio server processes.
-// New or restarted MCP servers will use this directory as their cwd.
-//
-// This uses a record-and-apply pattern: it records the directory in b.mcpWorkDir
-// (so it survives and is applied by runMCPInit if the gateway has not yet been
-// assigned) and, if the gateway is already assigned, applies it immediately.
-// It intentionally does NOT wait on mcpDone: SetDefaultWorkDir is a pure field
-// write on the gateway and needs no network, so blocking here would serialise
-// this cheap call behind the (potentially multi-second) MCP server discovery
-// that runMCPInit performs. Both this method and runMCPInit take b.mu, so they
-// are serialised and the last writer of mcpWorkDir wins — for BOTH the recorded
-// field and the live gateway value, because the apply (gw.SetDefaultWorkDir) is
-// performed under b.mu too. gw.SetDefaultWorkDir takes the gateway's own mutex,
-// not b.mu, so there is no nested-lock/deadlock risk.
+// SetMCPWorkDir updates the default working directory for MCP stdio server
+// processes: recorded in b.mcpWorkDir (applied by runMCPInit when the gateway
+// is not yet assigned) and applied immediately otherwise. It deliberately does
+// NOT wait on mcpDone — the apply is a pure field write, and waiting would
+// queue this cheap call behind multi-second server discovery. Both writers
+// take b.mu, so the last writer wins for the recorded field and the live
+// gateway alike; gw.SetDefaultWorkDir takes the gateway's own mutex, so there
+// is no nested-lock risk.
 func (b *OrchestratorBuilder) SetMCPWorkDir(path string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -182,21 +142,14 @@ func (b *OrchestratorBuilder) SetMCPWorkDir(path string) {
 	}
 }
 
-// mcpModeDisabled mirrors config.MCPServerModeDisabled ("disabled"). core
-// never imports backend/config, so the enum value is duplicated here; the
-// adapter carries the config values verbatim into BuilderMCPServer.ChatMode /
-// CodeMode. mcpModeAuto / mcpModeManual (the gating-relevant siblings) live
-// in orchestrator_mcp.go next to their consumer.
+// mcpModeDisabled mirrors config.MCPServerModeDisabled; core never imports
+// backend/config, so the value is duplicated. The gating-relevant siblings
+// live in orchestrator_mcp.go next to their consumer.
 const mcpModeDisabled = "disabled"
 
-// mcpServerModesFromConfig projects the per-server MCP capability modes into
-// the orchestrator's runtime map (name → CapabilityModes). Entries whose two
-// contexts are BOTH empty are omitted: capabilityModesForSession treats a missing
-// entry as auto (always available), and the config load path has already
-// normalized every configured server to canonical mode values (backend/config
-// normalizeCapabilities), so this map only carries canonical values —
-// including "disabled", whose servers the gateway never dials but whose stale
-// registrations the orchestrator-side gating must still hide.
+// mcpServerModesFromConfig projects per-server MCP capability modes into the
+// runtime map; both-empty entries are omitted (absent = auto). Dial rule and
+// canonical values: specs/domains/capabilities.md.
 func mcpServerModesFromConfig(cfg *BuilderConfig) map[string]CapabilityModes {
 	if len(cfg.MCP.Servers) == 0 {
 		return nil
@@ -218,13 +171,10 @@ func mcpServerModesFromConfig(cfg *BuilderConfig) map[string]CapabilityModes {
 func configToGatewayConfig(cfg *BuilderConfig) mcp.GatewayConfig {
 	entries := make(map[string]mcp.ServerEntry, len(cfg.MCP.Servers))
 	for name, srv := range cfg.MCP.Servers {
-		// A server disabled in BOTH contexts is never dialed: it is omitted
-		// from the gateway config entirely, so no process is spawned and no
-		// connection is opened — neither at startup nor on reconfigure. Any
-		// other combination stays: the active session context resolves to a
-		// mode that is auto, manual, or disabled, and a disabled-in-one-
-		// context server remains dialable for the other context (its tools
-		// are withheld per task by the orchestrator's mode gating).
+		// A both-disabled server is omitted from the gateway config entirely —
+		// never spawned, never connected (specs/domains/capabilities.md, dial
+		// rule); a single-context-disabled server stays dialed for the other
+		// context and is gated per task there.
 		if srv.ChatMode == mcpModeDisabled && srv.CodeMode == mcpModeDisabled {
 			continue
 		}

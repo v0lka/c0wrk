@@ -1,14 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// dispatch.go — reflection RPC over the injected dispatch target (at runtime
-// a *backend.FrontendAPI). The web surface is "the Wails surface minus the
-// denylist": every EXPORTED method is callable with positional JSON
-// arguments, exactly like the generated wailsjs bindings call them.
-//
-// The denylist is the only reduction. A browser tab holds full control of
-// the app by design (ADR-101); entries exist solely for methods that are
-// hazards of the WEB TRANSPORT itself, each with its reason inline. Never
-// add an entry for ordinary business policy — policy belongs to the methods.
+// dispatch.go — reflection RPC over the injected dispatch target (at
+// runtime a *backend.FrontendAPI): every EXPORTED method is callable with
+// positional JSON args, exactly like the generated wailsjs bindings call
+// them. The denylist is the only reduction — entries exist solely for
+// methods that are hazards of the WEB TRANSPORT itself, each with its
+// reason inline; never an entry for ordinary business policy.
+// specs/domains/web-access.md (Invariants — denylist).
 
 package webaccess
 
@@ -36,15 +34,13 @@ var deniedMethods = map[string]string{
 	// PasteFromClipboard returns the host system clipboard to the caller.
 	// Browsers gate clipboard reads behind user gestures and permissions;
 	// exposing this RPC would hand the host clipboard to whatever the tab
-	// is running, an OS-wide exfiltration channel beyond the app's own
-	// surface. Stage-1 mirrored UIs paste via the browser's own clipboard
-	// access instead.
+	// is running — an OS-wide exfiltration channel. Mirrored UIs paste via
+	// the browser's own clipboard access instead.
 	"PasteFromClipboard": "host clipboard content is not exposed to the browser (OS-level exfiltration surface)",
 }
 
-// DefaultDenylist returns a copy of the web-transport denylist
-// (method name → reason). Exported for the surface contract test and for
-// diagnostics; the server reads the package variable directly.
+// DefaultDenylist returns a copy of the web-transport denylist (method →
+// reason); exported for the surface contract test and diagnostics.
 func DefaultDenylist() map[string]string {
 	out := make(map[string]string, len(deniedMethods))
 	for k, v := range deniedMethods {
@@ -61,10 +57,10 @@ var methodNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 var errType = reflect.TypeOf((*error)(nil)).Elem()
 
 // resolveMethod finds method on the primary dispatch target, falling back to
-// the extra surface (web-only App-level capabilities the desktop layer opted
-// into through a minimal adapter — see Options.ExtraDispatch). The denylist
-// is applied by the callers BEFORE resolution, so it governs the union.
-// Returns the zero Value when neither target exposes the method.
+// the extra surface (the minimal App-level adapter — see
+// Options.ExtraDispatch). The denylist is applied by the callers BEFORE
+// resolution, so it governs the union. Returns the zero Value when neither
+// target exposes the method.
 func (s *Server) resolveMethod(method string) reflect.Value {
 	if m := reflect.ValueOf(s.dispatch).MethodByName(method); m.IsValid() {
 		return m
@@ -83,11 +79,11 @@ func (s *Server) resolveMethod(method string) reflect.Value {
 var errBodyTooLarge = errors.New("request body too large")
 
 // uploadBodyMethods carries the per-method body-limit overrides: RPCs whose
-// positional arguments include a bulk upload payload. The key must name an
-// exported method of the dispatch target (the surface contract test pins the
-// correspondence); every method absent from the map keeps maxBodyBytes. This
-// is transport sizing for an existing backend capability, not a surface
-// change: the raised limit matches the backend's own attachment size cap.
+// positional arguments include a bulk upload payload. Keys must name
+// exported methods of the dispatch target (the surface contract test pins
+// the correspondence); absent methods keep maxBodyBytes. Transport sizing
+// for an existing backend capability, not a surface change — the raised
+// limit matches the backend's own attachment size cap.
 var uploadBodyMethods = map[string]int64{
 	// AttachFileContent carries a whole attachment as a base64 string.
 	"AttachFileContent": maxUploadBodyBytes,
@@ -117,8 +113,7 @@ func readAllLimited(w http.ResponseWriter, r *http.Request, limit int64) ([]byte
 }
 
 // handleRPC is POST /api/rpc/{method}: positional JSON args in, JSON result
-// out, uniform error envelope on every failure. Wired behind requireAuth in
-// buildHandler.
+// out, uniform error envelope on every failure. Wired behind requireAuth.
 func (s *Server) handleRPC(w http.ResponseWriter, r *http.Request) {
 	method := r.PathValue("method")
 	if !methodNameRe.MatchString(method) {
@@ -150,8 +145,8 @@ func (s *Server) handleRPC(w http.ResponseWriter, r *http.Request) {
 	mt := m.Type()
 	if mt.IsVariadic() {
 		// No FrontendAPI method is variadic today; fail closed rather than
-		// guess a spreading convention. The surface contract test fails
-		// loudly if one ever appears.
+		// guess a spreading convention (the surface contract test fails
+		// loudly if one appears).
 		writeJSONError(w, http.StatusNotImplemented, "variadic methods are not supported over the web transport")
 		return
 	}
@@ -255,10 +250,10 @@ func (s *Server) Dispatchable(method string) bool {
 
 // recoverWrap turns any panic in the wrapped handler into a 500 envelope.
 // It wraps every route (outermost) so injected middleware and the static
-// handler are covered too; JSON handlers write responses only after all
-// fallible work completes, so a pre-write panic lands cleanly in the
-// envelope. Panics are logged with the stack; never with request bodies
-// (which may contain secrets such as login tokens).
+// handler are covered too; JSON handlers write only after all fallible
+// work, so a pre-write panic lands cleanly in the envelope. Panics are
+// logged with the stack, never with request bodies (secrets such as login
+// tokens).
 func (s *Server) recoverWrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {

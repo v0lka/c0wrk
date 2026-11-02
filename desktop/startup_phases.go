@@ -34,14 +34,11 @@ import (
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-// initLogger initializes the session logger with a temporary INFO level so any
-// startup errors land on disk. Returns the active logger plus the underlying
-// SessionLogger so the caller can re-init it later if config requests a
-// different level. Errors are logged via slog.Default() but never block startup.
-//
-// Once the session logger is ready, the Wails log adapter is updated so that
-// Wails-internal messages (including fatal RPC errors) also appear in the
-// session log.
+// initLogger initializes the session logger at a temporary INFO level so
+// startup errors land on disk (maybeReinitLogger re-inits per config); once
+// ready, the Wails log adapter delegates to it so Wails-internal messages —
+// including fatal RPC errors — reach the session log. Errors are logged,
+// never fatal.
 func (a *App) initLogger(logDir string) (*slog.Logger, *logger.SessionLogger) {
 	sessionLogger, err := logger.Init("INFO", logDir)
 	if err != nil {
@@ -60,9 +57,8 @@ func (a *App) initLogger(logDir string) (*slog.Logger, *logger.SessionLogger) {
 	return log, sessionLogger
 }
 
-// maybeReinitLogger re-initializes the session logger if the configured level
-// differs from the bootstrap "INFO". On failure, the original logger is kept.
-// Returns the active logger and (possibly new) SessionLogger.
+// maybeReinitLogger re-initializes the session logger when the configured
+// level differs from the bootstrap "INFO"; the original is kept on failure.
 func (a *App) maybeReinitLogger(level string, sessionLogger *logger.SessionLogger, current *slog.Logger, logDir string) (*slog.Logger, *logger.SessionLogger) {
 	if level == "" || level == "INFO" {
 		return current, sessionLogger
@@ -74,8 +70,7 @@ func (a *App) maybeReinitLogger(level string, sessionLogger *logger.SessionLogge
 	if sessionLogger != nil {
 		if cerr := sessionLogger.Close(); cerr != nil {
 			// Log through the NEW logger (CS #46): `current` wraps the sink
-			// that was just closed, so a diagnostic routed there is silently
-			// dropped by the closed file handle.
+			// just closed, so a diagnostic routed there is silently dropped.
 			newLogger.Logger().Warn("failed to close previous session logger", "error", cerr)
 		}
 	}
@@ -88,13 +83,10 @@ func (a *App) maybeReinitLogger(level string, sessionLogger *logger.SessionLogge
 	return log, newLogger
 }
 
-// safeGo runs fn in a goroutine that recovers from any panic, logging it
-// instead of letting it propagate and crash the app. It is used for
-// startup-phase goroutines (config, tools, database, terminal manager) so that
-// a failure in one phase degrades gracefully rather than terminating the
-// process. The caller owns WaitGroup accounting: defer wg.Done() inside fn so
-// the waitgroup is released even on panic — fn's defers unwind before the
-// recovered panic reaches this recover.
+// safeGo runs fn in a goroutine that recovers from any panic and logs it —
+// a startup-phase failure degrades instead of crashing the app. The caller
+// owns WaitGroup accounting (defer wg.Done() inside fn; fn's defers unwind
+// before this recover sees the panic).
 func safeGo(log *slog.Logger, label string, fn func()) {
 	go func() {
 		defer func() {
@@ -106,17 +98,10 @@ func safeGo(log *slog.Logger, label string, fn func()) {
 	}()
 }
 
-// initConfigAndDeps loads the config file and reconciles managed tools
-// (rg, uv, markitdown) — all in parallel. Tool reconciliation aborts startup
-// only through the fatal no-tools path (see initTools); a panic during config
-// resolution (toolsOK=false, resolved nil) aborts as well.
-//
-// Returns the resolved config, the tools/bin/ directory path (empty only on
-// the two abort paths: config-resolution panic or the fatal tool-install
-// exit), whether any tool was newly installed during startup, and
-// toolsOK=false on those same abort paths.
-// The caller must prepend a non-empty toolsBinPath to PATH before subsequent
-// phases.
+// initConfigAndDeps loads the config file and reconciles the managed tools
+// (rg, uv, markitdown) in parallel. toolsOK=false + empty toolsBinPath mark
+// the two abort paths (config panic, fatal tool-install exit); otherwise the
+// caller must prepend toolsBinPath to PATH before subsequent phases.
 func (a *App) initConfigAndDeps(ctx context.Context, log *slog.Logger) (resolved *config.ResolvedConfig, toolsBinPath string, toolsInstalled, toolsOK bool) {
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -130,9 +115,6 @@ func (a *App) initConfigAndDeps(ctx context.Context, log *slog.Logger) (resolved
 	})
 	wg.Wait()
 
-	// A panic in config resolution leaves resolved nil; abort cleanly via the
-	// existing toolsOK=false path so the caller doesn't nil-deref on
-	// resolved.Config. The panic cause is already logged by the recover above.
 	if resolved == nil {
 		return nil, "", false, false
 	}
@@ -143,15 +125,10 @@ func (a *App) initConfigAndDeps(ctx context.Context, log *slog.Logger) (resolved
 	return resolved, toolsBinPath, toolsInstalled, true
 }
 
-// initTools ensures managed tools (rg, uv, markitdown) are available in
-// <agentDir>/tools/ before the app becomes usable. The first pass is offline
-// (version-probe existing binaries, install from cache); tools it cannot
-// satisfy are completed by a blocking network pass under the tool-manager
-// splash (reconcileToolsWithSplash). A network pass that still cannot deliver
-// the tools is fatal (toolFatalActions: modal + quit) — the managed tools are
-// a startup prerequisite. Returns the tools/bin/ directory path and whether
-// any tool was newly installed; ("", false) on the fatal path so the caller's
-// toolsOK=false abort holds.
+// initTools ensures the managed tools (rg, uv, markitdown) exist in
+// <agentDir>/tools/ before the app becomes usable; the two-pass reconcile and
+// its fatal/toast outcomes are specified in specs/domains/tool-manager.md
+// (ADR-100). ("", false) on the fatal path so initConfigAndDeps aborts.
 func (a *App) initTools(ctx context.Context, log *slog.Logger) (toolsBinPath string, toolsInstalled bool) {
 	agentDir := config.AgentDir()
 
@@ -170,16 +147,10 @@ func (a *App) initTools(ctx context.Context, log *slog.Logger) (toolsBinPath str
 		},
 	})
 
-	// Show the window unconditionally at the start of tool initialization.
-	// The window is already visible — main.go creates it that way on purpose
-	// (see the StartHidden note there) — so this is a no-op in a normal start.
-	// It is kept as a safety net: a window hidden or buried for any other
-	// reason must still be back before the tool-install splash and
-	// backend:ready need it. Note that showWindow now reveals AND
-	// raises/focuses (see the activation matrix on App.showWindow), so a
-	// window hidden mid-first-run comes back to the front here — expected
-	// while the user waits out the tool install.
-	// showWindow is idempotent; emitBackendReady calls it again harmlessly.
+	// Safety-net reveal before the tool-install splash and backend:ready need
+	// the window: it is already visible (main.go creates it so on purpose),
+	// but a window hidden for any other reason must come back — showWindow
+	// also raises/focuses (see App.showWindow's activation matrix).
 	a.showWindow(ctx)
 
 	installed, ok := a.reconcileToolsWithSplash(ctx, log, mgr, a.buildToolFatalActions())
@@ -206,9 +177,7 @@ type toolFatalActions struct {
 }
 
 // buildToolFatalActions returns the production fatal actions: the native
-// blocking "Tool Installation Failed" modal followed by Quit — parity with
-// the pre-ADR-032 exit. Tests inject recorders via a hand-built
-// toolFatalActions.
+// "Tool Installation Failed" modal followed by Quit. Tests inject recorders.
 func (a *App) buildToolFatalActions() toolFatalActions {
 	return toolFatalActions{
 		dialog: func(ctx context.Context, message string) {
@@ -227,18 +196,10 @@ func (a *App) buildToolFatalActions() toolFatalActions {
 }
 
 // reconcileToolsWithSplash runs the two-pass managed-tool reconciliation and
-// owns the splash lifecycle: tool_manager:start before work that may install,
-// tool_manager:done exactly once when the deciding pass ends.
-//
-// Pass one is offline (AllowNetwork=false). When tools remain not Ready
-// afterwards — or the offline pass fails structurally while tools are known
-// or suspected missing — the retry is a BLOCKING network pass under the
-// splash: the app must not come up without its managed tools. A network pass
-// that still fails (structural error, or residual not-Ready tools) is fatal:
-// the modal is shown, the app quits, and ok=false tells the caller to abort
-// startup. The single non-fatal degradation is the offline structural
-// failure over an already-complete install — a runtime_error toast, no
-// network pass, no blocking.
+// owns the splash lifecycle (tool_manager:start before installable work,
+// tool_manager:done exactly once). The pass structure, blocking network
+// retry, fatal modal+quit and the single toast degradation live in
+// specs/domains/tool-manager.md (ADR-100); ok=false aborts startup.
 func (a *App) reconcileToolsWithSplash(ctx context.Context, log *slog.Logger, mgr toolEnsurer, fatal toolFatalActions) (installed, ok bool) {
 	// Early detection: show the splash before any work whenever tools are
 	// (or may be) missing.
@@ -286,9 +247,9 @@ func (a *App) reconcileToolsWithSplash(ctx context.Context, log *slog.Logger, mg
 			return offlineInstalled > 0, true
 		}
 		if !startEmitted {
-			// NeedsInstall saw a complete install but probing disagrees
-			// (e.g. a stale binary behind a matching .versions entry) —
-			// the blocking network pass needs its splash after all.
+			// NeedsInstall saw a complete install but probing disagrees (e.g.
+			// a stale binary behind a matching .versions entry) — the
+			// blocking network pass needs its splash after all.
 			toolNames := make([]map[string]string, len(notReady))
 			for i, s := range notReady {
 				toolNames[i] = map[string]string{"name": s.Tool.Name, "version": s.Tool.Version}
@@ -366,10 +327,9 @@ func (a *App) reconcileToolsWithSplash(ctx context.Context, log *slog.Logger, mg
 	return false, false
 }
 
-// emitToolRuntimeError raises a non-fatal, user-visible toast about the
-// managed tools — the degradation path for a structurally failed offline
-// pass over an already-complete install. Fatal tool outcomes go through the
-// toolFatalActions seam (modal + quit) instead.
+// emitToolRuntimeError raises a non-fatal toast about the managed tools —
+// the degradation path for a structurally failed offline pass over an
+// already-complete install (fatal outcomes go through toolFatalActions).
 func (a *App) emitToolRuntimeError(ctx context.Context, message string) {
 	a.emit(backend.EventRuntimeError, map[string]string{
 		"id":         uuid.New().String(),
@@ -378,9 +338,9 @@ func (a *App) emitToolRuntimeError(ctx context.Context, message string) {
 	})
 }
 
-// initDatabase opens the shared SQLite connection. On failure logs the error
-// and returns nil — callers must tolerate a nil DB (downstream stores will be
-// nil too and behavior degrades gracefully rather than panicking).
+// initDatabase opens the shared SQLite connection; on failure it logs and
+// returns nil — callers must tolerate a nil DB (downstream stores are nil
+// too and behavior degrades rather than panicking).
 func (a *App) initDatabase(dbPath string, log *slog.Logger) *sql.DB {
 	db, err := backend.OpenDatabase(dbPath, log)
 	if err != nil {
@@ -391,12 +351,10 @@ func (a *App) initDatabase(dbPath string, log *slog.Logger) *sql.DB {
 }
 
 // initTerminalManager constructs the PTY-backed terminal manager. Output is
-// base64-encoded before emission to preserve raw bytes across JSON serialization
-// (string(data) would corrupt invalid UTF-8 split across read boundaries, and
-// json.Marshal replaces invalid UTF-8 with U+FFFD).
-// userEnv carries config `terminal.env` entries; ${VAR} references are expanded
-// here (backend/config convention: refs are stored raw, resolved at use time)
-// and values are never logged — they may contain user secrets.
+// base64-encoded before emission — string(data) corrupts invalid UTF-8 split
+// across read boundaries and json.Marshal replaces it with U+FFFD. userEnv
+// carries config `terminal.env` entries; ${VAR} refs are expanded here and
+// values are never logged — they may contain user secrets.
 func (a *App) initTerminalManager(log *slog.Logger, userEnv map[string]string) *terminal.Manager {
 	env := make(map[string]string, len(userEnv))
 	for k, v := range userEnv {
@@ -409,10 +367,10 @@ func (a *App) initTerminalManager(log *slog.Logger, userEnv map[string]string) *
 			a.emitBatchedEvent(eventName, []any{map[string]string{"data": encoded}}, "", false, len(encoded))
 		},
 		func(sessionID string) {
-			// Natural shell exit (user typed `exit` / shell crashed). The UI
-			// keeps the per-session terminal instance mounted and resurrects
-			// the shell lazily on next activation. Empty-object payload so it
-			// passes the frontend's null-payload event filter.
+			// Natural shell exit: the UI keeps the instance mounted and
+			// resurrects the shell lazily on next activation
+			// (specs/contracts/event-catalog.md, terminal_exited).
+			// Empty-object payload passes the frontend's null-payload filter.
 			eventName := fmt.Sprintf("session:%s:terminal_exited", sessionID)
 			a.emitBatchedEvent(eventName, []any{map[string]string{}}, "", false, 0)
 		},
@@ -420,10 +378,8 @@ func (a *App) initTerminalManager(log *slog.Logger, userEnv map[string]string) *
 	)
 }
 
-// initStores creates the project + session + review SQLite stores. Order
-// matters: the session store has an FK reference to the projects table, and
-// the review store has FK references to the sessions table, so it must be
-// initialized after the session store.
+// initStores creates the project + session + review SQLite stores; the
+// session store must precede the review store (FK references).
 func (a *App) initStores(db *sql.DB, log *slog.Logger) (*project.SQLiteProjectStore, *session.SQLiteSessionStore, *review.SQLiteReviewStore) {
 	if db == nil {
 		return nil, nil, nil
@@ -440,8 +396,6 @@ func (a *App) initStores(db *sql.DB, log *slog.Logger) (*project.SQLiteProjectSt
 	} else {
 		sessStore = s
 	}
-	// Review store is initialized AFTER the session store because its tables
-	// carry FK references to the sessions table.
 	var reviewStore *review.SQLiteReviewStore
 	if rs, err := review.NewSQLiteReviewStore(db); err != nil {
 		log.Error("failed to init review store", "error", err)
@@ -453,14 +407,15 @@ func (a *App) initStores(db *sql.DB, log *slog.Logger) (*project.SQLiteProjectSt
 }
 
 // preloadProjectsAndSessions emits projects + sessions from the most recent
-// project to the frontend before the slow NewApplication() call so the
-// sidebar populates immediately. Returns the cached project list so
-// emitBackendReady can reuse it without re-querying the database.
+// project before the slow NewApplication() call so the sidebar populates
+// immediately; the returned list is reused by emitBackendReady.
 //
-// NOTE: We intentionally do NOT set activeProjectID here — that would cause
-// SwitchProject's idempotency guard to reject the frontend's first call,
-// skipping vector index initialization. The frontend calls SwitchProject
-// after EventBackendReady which sets activeProjectID properly.
+// It deliberately does NOT set activeProjectID: that would make SwitchProject's
+// idempotency guard reject the frontend's first call (which follows
+// EventBackendReady) and skip vector index initialization — the frontend's
+// SwitchProject sets it properly.
+// See specs/domains/workspace.md (startup preload / first-SwitchProject
+// idempotency contract).
 func (a *App) preloadProjectsAndSessions(projectMgr *project.Manager, sessStore *session.SQLiteSessionStore, log *slog.Logger) []project.ProjectInfo {
 	if projectMgr == nil {
 		return nil
@@ -477,11 +432,9 @@ func (a *App) preloadProjectsAndSessions(projectMgr *project.Manager, sessStore 
 	a.emit(backend.EventProjectsLoaded, projects)
 
 	if sessStore != nil {
-		// Bounded context: this read runs synchronously inside Startup before
-		// emitBackendReady, and the startup path arms no hard watchdog — a
-		// never-deadlined context would park the OnStartup goroutine (splash
-		// forever) behind a contended SQLite pool. 5s mirrors the sibling
-		// bounded store read in buildFrontendAPI's project resolver; expiry
+		// Bounded read: this runs synchronously inside Startup, which arms no
+		// hard watchdog — a never-deadlined context would park the OnStartup
+		// goroutine (splash forever) behind a contended SQLite pool; expiry
 		// just skips the early sessions emit.
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		sessions, sErr := sessStore.ListSessionsByProject(ctx, projects[0].ID)
@@ -495,13 +448,10 @@ func (a *App) preloadProjectsAndSessions(projectMgr *project.Manager, sessStore 
 	return projects
 }
 
-// isTaskLifecycleEvent reports whether a session event marks a task
-// lifecycle transition that is session-list-visible state: activation
-// (task_started), a terminal state (task_complete, task_cancelled, error,
-// task_failed_resumable), or a cooperative pause/resume (session_paused,
-// session_resumed). Each one is mirrored into the global sessions:changed
-// push so every surface's session list refreshes behind its existing
-// debounced re-read instead of waiting for the 30s safety poll.
+// isTaskLifecycleEvent reports whether a session event is session-list
+// state: activation, a terminal state, or pause/resume. Each is mirrored
+// into the global sessions:changed push — see
+// specs/contracts/event-catalog.md (sessions:changed, task_started).
 func isTaskLifecycleEvent(eventType string) bool {
 	switch eventType {
 	case "task_started", "task_complete", "task_cancelled", "error",
@@ -513,37 +463,28 @@ func isTaskLifecycleEvent(eventType string) bool {
 }
 
 // buildUIEmitFunc returns the session-event emitter used by the orchestrator
-// and tool callbacks. It logs at debug level and forwards the typed
-// session.Event to the Wails frontend via a.emit so tests can substitute the
-// underlying transport.
+// and tool callbacks: debug-logged, forwarded to the Wails frontend via
+// a.emit so tests can substitute the transport.
 func (a *App) buildUIEmitFunc() func(session.Event) {
 	return func(evt session.Event) {
 		eventName := fmt.Sprintf("session:%s:%s", evt.SessionID, evt.Type)
-		// Route through the event batcher: transient streaming events coalesce
-		// (latest-wins) and content events queue in order, so the AppKit main
-		// thread sees one evaluateJavaScript flush per ~16ms instead of one per
-		// event. Settlement/HITL events force an immediate flush.
+		// Route through the event batcher: transient streaming events
+		// coalesce (latest-wins), content events queue in order
+		// (specs/contracts/event-catalog.md, event_batcher.go).
 		a.emitBatchedEvent(eventName, []any{evt.Data},
 			sessionEventCoalesceKey(evt.SessionID, evt.Type, evt.Data), isImmediateFlushEvent(evt.Type), 0)
-		// Task lifecycle transitions move a session between running / paused /
-		// finished in every session list (sidebar, live-sessions radar), so
-		// mirror each one into the global sessions:changed push. Enqueued in
-		// the batcher's immediate-flush (barrier) class: the lifecycle event
-		// and the list-change push land together, in queue order, without
-		// waiting for the ~16ms tick. No payload, mirroring
-		// emitSessionsChanged: consumers re-read the authoritative list via
-		// ListSessions/ListAllSessions behind their debounces.
+		// Task lifecycle transitions are session-list state: mirror each into
+		// the global sessions:changed push, in the batcher's immediate-flush
+		// (barrier) class so event and list change land together. No payload —
+		// consumers re-read the authoritative list behind their debounces.
 		if isTaskLifecycleEvent(evt.Type) {
 			a.emitBatchedEvent(backend.EventSessionsChanged, nil, "", true, 0)
 		}
-		// session_renamed is a session-list metadata change (it mirrors the
-		// global project:renamed event). Re-emit it globally so the sidebar
-		// updates the title even when the renamed session is NOT the active
-		// one — e.g. when background auto-titling completes after the user has
-		// already switched to another session. Without this, the session-scoped
-		// event has no listener and the title stays stale until a project
-		// switch or app reload. Emitted through the same batch so its ordering
-		// relative to the session-scoped counterpart is preserved.
+		// session_renamed mirrors the global project:renamed event so the
+		// sidebar updates a NON-active session's title (e.g. background
+		// auto-titling after a switch); without it the title stays stale
+		// until a project switch or reload. Same batch, so ordering vs the
+		// session-scoped event is preserved.
 		if evt.Type == "session_renamed" {
 			if rd, ok := evt.Data.(session.SessionRenamedData); ok {
 				a.emitBatchedEvent(backend.EventSessionRenamed,
@@ -554,10 +495,9 @@ func (a *App) buildUIEmitFunc() func(session.Event) {
 	}
 }
 
-// buildAskUserCallback returns the closure that turns ask_user tool invocations
-// into Wails events and waits for the frontend response. Errors out cleanly
-// when no UI context or session is available so the tool reports the
-// unavailability instead of blocking forever.
+// buildAskUserCallback returns the closure that turns ask_user tool
+// invocations into Wails events and waits for the frontend response, erroring
+// cleanly when no UI or session context is available.
 func (a *App) buildAskUserCallback(uiEmit func(session.Event)) coretools.AskUserFunc {
 	return func(ctx context.Context, req coretools.AskUserRequest) (coretools.AskUserResponse, error) {
 		if a.wailsCtx() == nil {
@@ -609,7 +549,7 @@ type goalProposalResponse struct {
 
 // buildGoalProposalCallback returns the closure that turns propose_goal's
 // sign-off request into a Wails event and waits for the frontend response
-// (event- or RPC-based). Mirrors buildPlanApprovalCallback.
+// (event- or RPC-based), mirroring buildPlanApprovalCallback.
 func (a *App) buildGoalProposalCallback(uiEmit func(session.Event)) coretools.GoalProposer {
 	return &goalProposerAdapter{ctx: a.wailsCtx(), app: a, uiEmit: uiEmit}
 }
@@ -621,29 +561,27 @@ type goalSuggestionResponse struct {
 	// Shutdown marks the teardown drain's resolution: the app is quitting and
 	// no user answer exists. The adapter surfaces it as
 	// errGoalSuggestionShutdown so the core gate fails OPEN — an app quit is
-	// not a user decline, so session-scoped suppression must not engage.
+	// not a user decline (specs/domains/goal-mode.md).
 	Shutdown bool
 }
 
 // errGoalSuggestionShutdown is returned by the adapter when a pending
-// goal-suggestion wait was resolved by the shutdown drain instead of a user
-// answer. The core gate treats every error as fail-open (plain path, no
-// suppression); the sentinel exists so the drain can produce that outcome
-// explicitly instead of masquerading as a (false, nil) user decline.
+// goal-suggestion wait was resolved by the shutdown drain; the core gate
+// fails open on any error, and the sentinel exists so the drain produces that
+// outcome explicitly instead of masquerading as a user decline.
 var errGoalSuggestionShutdown = errors.New("goal suggestion wait aborted by app shutdown")
 
 // buildGoalSuggestionCallback returns the closure that turns the orchestrator
 // gate's suggestion offer into a Wails event and waits for the frontend
-// response (event- or RPC-based). Mirrors buildGoalProposalCallback.
+// response (event- or RPC-based), mirroring buildGoalProposalCallback.
 func (a *App) buildGoalSuggestionCallback(uiEmit func(session.Event)) core.GoalSuggestionProposer {
 	return &goalSuggestionAdapter{ctx: a.wailsCtx(), app: a, uiEmit: uiEmit}
 }
 
 // goalSuggestionAdapter implements core.GoalSuggestionProposer, bridging the
 // orchestrator's post-routing suggestion gate to the desktop pending-action
-// flow. The call BLOCKS until the user answers — an accepted suggestion must
-// turn goal mode on before the task starts, so the gate cannot continue
-// speculatively.
+// flow — a BLOCKING card, because an accepted suggestion must turn goal mode
+// on before the task starts. See specs/decisions/086-goal-mode-suggestion.md.
 type goalSuggestionAdapter struct {
 	ctx    context.Context
 	app    *App
@@ -670,9 +608,9 @@ func (g *goalSuggestionAdapter) ProposeGoalSuggestion(ctx context.Context, sessi
 		sessionID: sessionID,
 		payload:   payload,
 	})
-	// Emit through the Application's combined UI + persistence path so the
-	// goal_suggestion event survives app restarts. Fall back to the raw UI
-	// emitter when the Application is not yet initialized.
+	// Persisted emit path: Application.EmitSessionEvent so the goal_suggestion
+	// event survives app restarts; raw uiEmit only before the Application
+	// exists.
 	evt := session.Event{SessionID: sessionID, Type: "goal_suggestion", Data: payload}
 	if g.app.app != nil {
 		g.app.app.EmitSessionEvent(evt)
@@ -683,10 +621,7 @@ func (g *goalSuggestionAdapter) ProposeGoalSuggestion(ctx context.Context, sessi
 	select {
 	case resp := <-ch:
 		if resp.Shutdown {
-			// The teardown drain resolved the card — NOT a user decline.
-			// Surface the sentinel so the gate fails open without engaging
-			// session suppression (the drain has already removed the entry,
-			// mirroring resolveGoalSuggestion for the normal branch).
+			// Teardown drain, not a user decline — see errGoalSuggestionShutdown.
 			return false, errGoalSuggestionShutdown
 		}
 		return resp.Decision == "accept", nil
@@ -730,9 +665,9 @@ func (g *goalProposerAdapter) Propose(ctx context.Context, proposal coretools.Go
 		sessionID: sessionID,
 		payload:   payload,
 	})
-	// Emit through the Application's combined UI + persistence path so the
-	// goal_proposal event survives app restarts. Fall back to the raw UI
-	// emitter when the Application is not yet initialized.
+	// Persisted emit path: Application.EmitSessionEvent so the goal_proposal
+	// event survives app restarts; raw uiEmit only before the Application
+	// exists.
 	evt := session.Event{SessionID: sessionID, Type: "goal_proposal", Data: payload}
 	if g.app.app != nil {
 		g.app.app.EmitSessionEvent(evt)
@@ -789,9 +724,9 @@ func (a *App) buildPlanApprovalCallback(uiEmit func(session.Event)) coretools.Ap
 			sessionID: sessionID,
 			payload:   payload,
 		})
-		// Emit through the Application's combined UI + persistence path so
-		// the plan_review_ready event survives app restarts. Fall back to
-		// the raw UI emitter when the Application is not yet initialized.
+		// Persisted emit path: Application.EmitSessionEvent so the
+		// plan_review_ready event survives app restarts; raw uiEmit only
+		// before the Application exists.
 		evt := session.Event{SessionID: sessionID, Type: "plan_review_ready", Data: payload}
 		if app := a.application(); app != nil {
 			app.EmitSessionEvent(evt)
@@ -813,9 +748,8 @@ func (a *App) buildPlanApprovalCallback(uiEmit func(session.Event)) coretools.Ap
 }
 
 // buildConfirmCallback returns the tool-confirmation closure. C-4 contract:
-// when no UI context is available we return ConfirmDenyAndStop and log a
-// warning rather than auto-approving — silently allowing in this path would
-// let any tool execute without user oversight.
+// with no UI or session context it returns ConfirmDenyAndStop and logs —
+// silently allowing here would execute tools without user oversight.
 func (a *App) buildConfirmCallback(uiEmit func(session.Event)) sdktools.ConfirmFunc {
 	return func(ctx context.Context, req sdktools.ConfirmationRequest) (sdktools.ConfirmationResponse, error) {
 		if a.wailsCtx() == nil {
@@ -834,11 +768,11 @@ func (a *App) buildConfirmCallback(uiEmit func(session.Event)) sdktools.ConfirmF
 		requestID := uuid.New().String()
 		ch := make(chan sdktools.ConfirmationResponse, 1)
 
-		// Resolve the tool_call_id of the triggering tool_call. The emitter
-		// records the most recent tool_call_id per session; since confirmation
-		// fires sequentially right after that ToolCall (same goroutine), the
-		// recorded id is the one being confirmed. The tool-name guard rejects
-		// a stale id left by a concurrent subagent call to a *different* tool.
+		// Resolve the triggering tool_call's id: the emitter records the most
+		// recent tool_call_id per session, and confirmation fires sequentially
+		// after that ToolCall (same goroutine), so the recorded id is the one
+		// being confirmed; the tool-name guard rejects a stale id from a
+		// concurrent subagent call to a different tool.
 		var toolCallID string
 		if app := a.application(); app != nil {
 			if id, tool := app.LastToolCallID(sessionID); id != "" && tool == req.ToolName {
@@ -865,10 +799,9 @@ func (a *App) buildConfirmCallback(uiEmit func(session.Event)) sdktools.ConfirmF
 			ToolCallID:   toolCallID,
 			DisableJudge: req.DisableJudge,
 		}
-		// Route through the Application so the event passes the live session
-		// emitter — keeping the runtime-status snapshot honest ("Awaiting
-		// confirmation..." instead of a stale "Running tool: ..."). Raw UI
-		// emitter only when the Application is not yet initialized.
+		// Through the Application's live session emitter so the runtime-status
+		// snapshot stays honest ("Awaiting confirmation..."); raw uiEmit only
+		// before the Application exists.
 		if app := a.application(); app != nil {
 			app.EmitToolConfirm(sessionID, payload)
 		} else {
@@ -900,22 +833,17 @@ func (a *App) buildStepLimitCallback(uiEmit func(session.Event)) agent.HITLHandl
 }
 
 // stepLimitResolver resolves a step-limit boundary autonomously under silent
-// mode (security.silent_mode enabled AND step_limit.mode = "auto"). It is the
-// adapter's injected "trajectory provider + loop judge": the trajectory comes
-// from the session emitter's recent-execution window and the judge is the
-// session-pinned ToolJudge. handled=false means "not autonomous" (silent mode
-// off, sub-policy "stop", or no session registry) — the adapter then shows the
-// interactive card, so non-silent behavior is unchanged.
+// mode (security.silent_mode AND step_limit.mode = "auto"): the trajectory
+// comes from the session emitter's recent-execution window, the judge is the
+// session-pinned ToolJudge; handled=false shows the interactive card.
 type stepLimitResolver interface {
 	ResolveSilentStepLimit(ctx context.Context, sessionID string, currentStep, maxSteps int, abortReason string) (agent.StepLimitResponse, string, bool)
 }
 
 // appStepLimitResolver adapts *App to stepLimitResolver, lazily reaching the
-// backend Application (which is created AFTER this adapter — the adapter is
-// handed to it as the HITL handler). The type is UNEXPORTED on purpose: Wails
-// auto-binds exported methods on *App, and this resolution must stay host-side
-// (a renderer-callable step-limit RPC would let compromised renderer JS drive
-// the loop judge).
+// backend Application (created after this adapter). UNEXPORTED on purpose:
+// Wails auto-binds exported methods on *App, and a renderer-callable
+// step-limit RPC would let compromised renderer JS drive the loop judge.
 type appStepLimitResolver struct{ app *App }
 
 func (r appStepLimitResolver) ResolveSilentStepLimit(ctx context.Context, sessionID string, currentStep, maxSteps int, abortReason string) (agent.StepLimitResponse, string, bool) {
@@ -951,10 +879,9 @@ func (s *stepLimitHITLAdapter) OnStepLimit(ctx context.Context, currentStep, max
 		return agent.StepLimitDeny, nil
 	}
 
-	// Silent mode + step_limit=auto: resolve the boundary autonomously from the
-	// trajectory + loop judge instead of blocking on a human. The resolver
-	// fails closed to deny internally; handled=false means silent autonomy is
-	// off, so fall through to the interactive card below.
+	// Silent mode + step_limit=auto: resolve autonomously from the trajectory
+	// + loop judge (the resolver fails closed internally); handled=false falls
+	// through to the interactive card below.
 	if s.resolver != nil {
 		if resp, _, handled := s.resolver.ResolveSilentStepLimit(ctx, sessionID, currentStep, maxSteps, reason); handled {
 			return resp, nil
@@ -1005,12 +932,10 @@ func (a *App) buildApplication(cfg backend.ApplicationConfig, log *slog.Logger, 
 	return application, nil
 }
 
-// buildFrontendAPI constructs the FrontendAPI, wires the project resolver, and
-// validates LLM provider config. Initializes the App's embedded seed instance
-// IN PLACE (a.frontendAPI()): the pointer is published once in NewApp and is
-// never swapped afterwards, so the Wails binding dispatch — which re-reads the
-// embedded pointer on every promoted-method call — can never race a
-// reassignment (review finding #52).
+// buildFrontendAPI constructs the FrontendAPI and validates LLM config. The
+// embedded seed instance is initialized IN PLACE (a.frontendAPI()): the
+// pointer is published once in NewApp and never swapped, so the Wails binding
+// dispatch can never race a reassignment (review finding #52).
 func (a *App) buildFrontendAPI(
 	application *backend.Application,
 	cfg backend.FrontendAPIConfig,
@@ -1019,20 +944,14 @@ func (a *App) buildFrontendAPI(
 	log *slog.Logger,
 	startTime time.Time,
 ) {
-	// Wire the experimental-gate live-follow hook (ADR-101) through the
-	// FrontendAPIConfig seam before Init: the backend invokes it after a
-	// successful experimental.enabled persist, so the web-access sidecar
-	// mount follows the master gate mid-session — opening the gate mounts it
-	// (when the section's own switch is on), closing it stops a running
-	// sidecar — instead of waiting for the next launch. Init consumes the
-	// hook together with the other seed fields, so the install is ordered
-	// before the seed flag and can never race a toggle RPC.
+	// Experimental-gate live-follow hook (ADR-101), installed through the
+	// FrontendAPIConfig seam before Init so it can never race a toggle RPC —
+	// see specs/domains/web-access.md.
 	cfg.OnExperimentalChanged = a.applyExperimentalWebAccess
 	a.frontendAPI().Lifecycle().Init(cfg)
-	// Capture the desktop's own handle on the live config + its path: the
-	// web-access control RPCs (App-owned, ADR-101) flip and persist the
-	// desktop-owned web_access section through it. The same pointer Init
-	// stores, so a toggle is visible to the shared live config immediately.
+	// The desktop's own handle on the live config + path: the web-access
+	// control RPCs (ADR-101) flip and persist the desktop-owned section
+	// through it; the same pointer Init stores.
 	a.setConfigRef(cfg.Config, cfg.ConfigPath)
 	log.Info("startup phase complete", "phase", "frontend_api", "elapsed_ms", time.Since(startTime).Milliseconds())
 
@@ -1066,20 +985,12 @@ func (a *App) buildFrontendAPI(
 	}
 }
 
-// emitBackendReady fires the EventBackendReady event with cached projects
-// when available, falling back to a fresh ListProjects call. The signal tells
-// the frontend that all synchronous backend subsystems are wired up.
-// showWindow is called unconditionally and is idempotent — the window is
-// created visible, so this is the last of several reveal safety nets rather
-// than the moment the window appears. Note the reveal now implies raise/focus
-// (see the activation matrix on App.showWindow): on a normal start the
-// window is already up, and when something did hide it, bringing it forward
-// here is the point.
-//
-// filterNoProject strips the No Project pseudo-project from the emitted list
-// regardless of whether projects come from cache or a fresh query.
-// This is used when LLM is unconfigured to prevent the frontend from
-// auto-loading No Project before the settings dialog is shown.
+// emitBackendReady fires EventBackendReady with cached projects (or a fresh
+// ListProjects), after the last safety-net window reveal — one of several
+// idempotent reveals, not the moment the window appears
+// (specs/architecture/data-flow.md). filterNoProject strips the No Project
+// pseudo-project when LLM is unconfigured, so the frontend cannot auto-load
+// it before the settings dialog is shown.
 func (a *App) emitBackendReady(cachedProjects []project.ProjectInfo, projectMgr *project.Manager, filterNoProject bool, log *slog.Logger) {
 	// Last safety-net reveal before the frontend is told the backend is up.
 	// Guard against nil ctx in tests (no Wails lifecycle).
@@ -1507,13 +1418,10 @@ func (l *vectorIndexLauncher) runVectorIndexInit(epoch uint64, ready chan struct
 }
 
 // verifyEmbedderGPU performs the one-shot external GPU verification after a
-// successful CUDA embedder init: it runs a single warmup inference (the CUDA
-// context is created lazily — probing right after session creation would see
-// a process the driver does not yet know about) and then asks the NVIDIA
-// driver, via nvidia-smi, whether THIS process is registered as a CUDA
-// compute app. Diagnostics only: the result never blocks startup, never fails
-// the embedder, and probe errors are treated as "unverified", not as failure.
-// Returns whether the process was found among the driver's compute apps.
+// successful CUDA embedder init (lazy CUDA context → warmup, then an
+// nvidia-smi probe of THIS process) — the cuda_verified verdict of the ADR-045
+// status contract. Diagnostics only: errors are treated as "unverified",
+// never as failure.
 func (a *App) verifyEmbedderGPU(emb *embedding.Embedder, log *slog.Logger) bool {
 	// Warmup inference materializes the CUDA context. A failure here is a
 	// strong signal the GPU path is broken end-to-end (later real searches
@@ -1527,9 +1435,8 @@ func (a *App) verifyEmbedderGPU(emb *embedding.Embedder, log *slog.Logger) bool 
 	}
 	inUse, err := embedding.GPUInUse(ctx)
 	if err != nil {
-		// Probe failure ≠ "not on GPU": treated as unverified, cuda_verified
-		// stays false, and the user still gets a WARN — a missing verdict is
-		// suspicious enough to be visible, never silent.
+		// Probe failure ≠ "not on GPU": treated as unverified, but always
+		// visible — a missing verdict is suspicious.
 		log.Warn("CUDA GPU verification probe failed",
 			"error", err,
 			"hint", "treated as unverified, not as CPU fallback")
@@ -1545,9 +1452,8 @@ func (a *App) verifyEmbedderGPU(emb *embedding.Embedder, log *slog.Logger) bool 
 	return false
 }
 
-// derefFloat returns *p when p is non-nil, else 0. Used to convert the
-// pointer-float64 hybrid thresholds from config into the value-based
-// vectorindex.HybridConfig.
+// derefFloat returns *p when non-nil, else 0 — the pointer-float64 hybrid
+// thresholds from config into vectorindex.HybridConfig.
 func derefFloat(p *float64) float64 {
 	if p == nil {
 		return 0
@@ -1555,9 +1461,8 @@ func derefFloat(p *float64) float64 {
 	return *p
 }
 
-// derefInt returns *p when p is non-nil, else 0. Used to convert the
-// pointer-int vector-index sentinel (search_wait_timeout_ms: unset → default,
-// explicit 0 → fail-fast) into a plain value for vectorindex.ManagerConfig.
+// derefInt returns *p when non-nil, else 0 — the pointer-int vector-index
+// sentinel (search_wait_timeout_ms) as a plain value.
 func derefInt(p *int) int {
 	if p == nil {
 		return 0
@@ -1565,13 +1470,11 @@ func derefInt(p *int) int {
 	return *p
 }
 
-// derefParkBudgetBytes converts vector_index.park_budget_mb (MiB) into the
-// byte budget for vectorindex.ManagerConfig. A nil pointer (unset) resolves to
-// vectorindex.DefaultParkBudgetBytes — the documented 1024 MiB default — rather
-// than 0, because the service reads a zero budget as "no byte budget" (so the
-// old derefInt64(nil)<<20 fail-open silently dropped the ceiling). A non-nil
-// value is scaled MiB→bytes verbatim, preserving the negative -1 "byte budget
-// disabled" sentinel.
+// derefParkBudgetBytes converts vector_index.park_budget_mb into bytes. A nil
+// pointer resolves to vectorindex.DefaultParkBudgetBytes (1024 MiB), not 0 —
+// the service reads a zero budget as "no byte budget", so the old
+// derefInt64(nil)<<20 fail-open silently dropped the ceiling. -1 keeps its
+// "byte budget disabled" sentinel meaning.
 func derefParkBudgetBytes(p *int64) int64 {
 	if p == nil {
 		return vectorindex.DefaultParkBudgetBytes
@@ -1579,19 +1482,14 @@ func derefParkBudgetBytes(p *int64) int64 {
 	return *p << 20
 }
 
-// startUpdateCheckerBackground runs a single best-effort automatic update
-// check in a goroutine. The check itself (operator + user gates, interval,
-// result caching, event emission) lives in FrontendAPI.RunBackgroundUpdateCheck
-// — the sole automatic-check path — so a discovered update is always
-// downloadable. It never blocks or breaks startup; network failures are
-// swallowed inside RunBackgroundUpdateCheck.
+// startUpdateCheckerBackground runs one best-effort automatic update check in
+// a goroutine; FrontendAPI.RunBackgroundUpdateCheck is the sole auto-check
+// path (gates, interval, caching).
 //
 // Deliberately NO updater.CleanupStaleUpdaters here: Startup runs only in the
-// owning (first) instance — i.e. exactly while the app-level lock is held — so
-// a reap at this point would delete the live c0wrk-update-* / c0wrk-extract-*
-// staging of a self-update that is mid-apply (the relaunch the updater itself
-// performs lands here). The only reap site is main.go's post-lock,
-// first-instance-gated call.
+// owning (first) instance — exactly while the app-level lock is held — so a
+// reap now would delete the live staging of a self-update that is mid-apply.
+// The only reap site is main.go's post-lock, first-instance-gated call.
 func (a *App) startUpdateCheckerBackground(log *slog.Logger) {
 	go func() {
 		defer func() {
@@ -1603,33 +1501,20 @@ func (a *App) startUpdateCheckerBackground(log *slog.Logger) {
 	}()
 }
 
-// startAutoFetchBackground starts the periodic git auto-fetch ticker (config
-// git.auto_fetch_interval, default 2m). It mirrors startUpdateCheckerBackground:
-// infrastructure-only, started exactly once after the backend is ready (the
-// idempotent StartAutoFetch makes a double call harmless), never blocks or
-// breaks startup, and is stopped by FrontendAPILifecycle.Cleanup on shutdown.
-// The loop re-reads the interval on every tick, so runtime config edits apply
-// without an app restart; an interval of "0" disables only the ticker while
-// the event-driven triggers (startup, project switch, window focus) stay on.
+// startAutoFetchBackground starts the periodic git auto-fetch ticker exactly
+// once after the backend is ready (mirroring startUpdateCheckerBackground);
+// stopped by FrontendAPILifecycle.Cleanup. See
+// specs/domains/git-auto-fetch.md.
 func (a *App) startAutoFetchBackground() {
 	a.frontendAPI().Lifecycle().StartAutoFetch()
 }
 
-// initEmbeddedLLM restores the embedded local-model state on the startup path.
-//
-// The whole phase is a manifest.json read plus one embedded_llm:state event: it
-// performs NO download, NO network I/O, NO hardware probe and NO model load.
-// Startup must never depend on the network (the offline-first rule the managed
-// tools follow) and must never block on a multi-gigabyte weight load, so the
-// model stays unloaded until something asks for it — an explicit
-// LoadEmbeddedLLM or the ensure-loaded transport of a request that targets it.
-// Both the install and the load are RPC-driven, and the install runs in the
-// background so its RPC does not block either.
-//
-// Cost: one stat + one small JSON read inside the agent dir, far below the 50ms
-// critical-phase budget, which is why it runs inline in Phase 5 instead of a
-// background goroutine — the restore has to be complete before the first
-// GetEmbeddedLLMStatus can report anything truthful.
+// initEmbeddedLLM restores the embedded local-model state: a manifest.json
+// read plus one embedded_llm:state event — no download, no network, no probe,
+// no model load (startup stays offline-first and never blocks on weights; see
+// specs/domains/embedded-llm.md). One stat + one small JSON read, far below
+// the phase budget — hence inline in Phase 5, complete before the first
+// GetEmbeddedLLMStatus.
 func (a *App) initEmbeddedLLM(log *slog.Logger) {
 	if a.frontendAPI() == nil {
 		return
@@ -1641,41 +1526,28 @@ func (a *App) initEmbeddedLLM(log *slog.Logger) {
 }
 
 // initChatGPTAuth constructs the ChatGPT subscription-auth token manager and
-// restores whatever credentials the OS keychain holds. Mirrors initEmbeddedLLM
-// in doing no network I/O and no browser flow — a failed construction (most
-// commonly a Linux desktop without a reachable Secret Service) records the
-// actionable error and leaves the app fully usable on api_key auth.
+// restores keychain credentials (see specs/domains/llm-providers.md, ChatGPT
+// Subscription Auth). Mirrors initEmbeddedLLM in doing no network I/O and no
+// browser flow — a failed construction records the actionable error and
+// leaves the app usable on api_key auth.
 //
 // UNLIKE initEmbeddedLLM, the restore runs on a BACKGROUND goroutine: the OS
 // keychain read is not provably bounded (a locked Linux login collection
-// makes the Secret Service unlock and wait for an interactive prompt BEFORE
-// it even looks for the c0wrk record, with no timeout and no cancellation),
-// so a synchronous restore could hold backend readiness hostage for an
-// api_key-only user who never asked for subscription auth. The frontend's
-// auth surface tolerates the gap by design: the status RPC answers the
-// signed-out posture from the zero state, the mutating RPCs (sign-in,
-// sign-out, model fetch) refuse with a transient "still reading the OS
-// keychain" error naming the moment to retry, and the late restore publishes
-// itself through the seam mirror + router rebuild and (when an account was
-// restored) the chatgpt_auth:state success correction, exactly like an
-// interactive sign-in would. The keychain read itself cannot be interrupted
-// (nothing can cancel a native keyring call); on shutdown the pre-/post-read
-// context checks inside InitChatGPTAuth simply DISCARD the restore result, so
-// a late restore never races the teardown — the goroutine itself may linger
-// on a wedged prompt until the process exits.
+// unlocks with an interactive prompt, no timeout), so a synchronous restore
+// could hold backend readiness hostage for an api_key-only user. The auth
+// surface tolerates the gap by design (status RPC answers the signed-out
+// zero state; mutating RPCs refuse transiently; the late restore publishes
+// itself like an interactive sign-in). Nothing can cancel a native keyring
+// call, so on shutdown the context checks inside InitChatGPTAuth DISCARD the
+// result — a late restore never races the teardown.
 func (a *App) initChatGPTAuth(log *slog.Logger) {
 	if a.frontendAPI() == nil {
 		return
 	}
-	// Run the restore off the startup path, through safeGo — the same
-	// panic containment every other startup-phase goroutine carries: the
-	// keyring backend is native code (the same class of surface the
-	// vector-index goroutine recovers against), and an unrecovered panic
-	// would take the whole desktop process down for a feature designed to
-	// degrade gracefully. a.wailsCtx() cancellation (app shutdown) does not
-	// interrupt the underlying keychain call itself — nothing can — but the
-	// goroutine checks it before touching FrontendAPI state, so a shutdown
-	// is never raced by a late restore.
+	// Off the startup path through safeGo — the keyring backend is native
+	// code, and an unrecovered panic would take the process down for a
+	// feature designed to degrade gracefully. Cancellation is checked before
+	// touching FrontendAPI state, so a shutdown is never raced.
 	safeGo(log, "chatgpt_auth", func() {
 		startTime := time.Now()
 		a.frontendAPI().Lifecycle().InitChatGPTAuth()
@@ -1684,49 +1556,27 @@ func (a *App) initChatGPTAuth(log *slog.Logger) {
 	})
 }
 
-// stopEmbeddedLLM stops the supervised llama-server during Shutdown, releasing
-// the RAM/VRAM the loaded weights hold. It runs early in the teardown (before
-// the judge drain and the store closes) so the gigabytes are returned while the
-// rest of the shutdown is still working, and it is idempotent: a model that was
-// never loaded, or one already stopped by the idle budget, makes it a no-op.
+// stopEmbeddedLLM stops the supervised llama-server during Shutdown,
+// releasing the weights' RAM/VRAM early in the teardown. Idempotent; a
+// failure is logged, never fatal.
 //
-// A failure is logged, never fatal — quitting must not be blocked by a server
-// that refuses to die.
+// Why "never fatal" is safe — the teardown contract (specs/domains/embedded-llm.md):
+// the supervised child is deliberately DETACHED (context.WithoutCancel, no
+// Pdeathsig/Setpgid/job-object tie), so the OS does not reclaim it when this
+// process exits. This call is the ONLY thing that terminates it, and the
+// guarantee comes from the bounded context: backend.stopEmbeddedLLM arms
+// embeddedStopTimeout (30s) around core's Stop, whose force path kills the
+// child when the single-instance gate is held by an in-flight cold load
+// (up to 15 min) — an UNBOUNDED context would hang the quit for the length
+// of the load.
 //
-// THE TEARDOWN CONTRACT, and why "never fatal" is safe: the supervised child is
-// deliberately DETACHED (core spawns it with context.WithoutCancel and sets no
-// Pdeathsig/Setpgid/job-object tie), so the OS does NOT reclaim it when this
-// process exits — an unstopped llama-server outlives c0wrk and keeps its
-// gigabytes and its loopback port until a manual kill or a reboot. This call is
-// therefore the ONLY thing that terminates it, and the guarantee comes from the
-// bounded context rather than from the OS: backend.stopEmbeddedLLM arms
-// embeddedStopTimeout (30s) around core's Stop, and Stop takes a force path when
-// it cannot acquire the supervisor's single-instance gate in time — the gate an
-// in-flight cold load holds for up to DefaultReadyTimeout (15 min) — so a busy
-// gate ends in the child being killed instead of in a stop that merely reports it
-// gave up. The force path arms its OWN budget (core's stopTimeout + killWait + 1s)
-// on a detached context, because the caller's has just expired, so the real
-// ceiling on a quit is the 30s gate wait PLUS that force budget. Handing Stop an
-// UNBOUNDED context would break all of it: the quit would then hang for the length
-// of the load, which is exactly what the budget prevents.
-//
-// What the bound does NOT promise is that a quit always ends with the child dead.
-// The guarantee it does provide is TRACKING: a stop that did not take — the wedged
-// native child sitting in an uninterruptible syscall that survives BOTH the
-// graceful signal and the kill, precisely what core's killWait exists for — makes
-// core's terminate exhaust its own budget and return an error, and both stop paths
-// then RE-ATTACH the live run handle and record StateError instead of dropping it
-// (pinned by TestForceUnloadReportsAStopThatDidNotTake and
-// TestUnloadReportsAStopThatDidNotTake in core). Shutdown logs that error here as
-// non-fatal and the app exits, so this is the ONE quit outcome that can still
-// leave llama-server running. What no quit outcome can leave is a live child the
-// supervisor has lost sight of — unrecorded, unkillable through the UI, and with a
-// second server spawned beside it on the next load.
-//
-// This is the graceful-quit path only. A crash or a SIGKILL runs neither this nor
-// Shutdown, so nothing terminates the child; the port self-heals on the next
-// launch (EnsurePort walks upward past a squatted or foreign listener) but the
-// memory does not, and no persisted state identifies the orphan.
+// What the bound does NOT promise is that the child is always dead: a stop
+// that did not take (the wedged child surviving both signal and kill) makes
+// core's terminate return an error, and both stop paths then RE-ATTACH the
+// live run handle and record StateError — tracked, never lost. Shutdown logs
+// that error non-fatally: the ONE quit outcome that can still leave
+// llama-server running. A crash or SIGKILL runs neither this nor Shutdown:
+// the port self-heals next launch, the memory does not.
 func (a *App) stopEmbeddedLLM(ctx context.Context) {
 	if a.frontendAPI() == nil {
 		return
@@ -1741,27 +1591,17 @@ func (a *App) stopEmbeddedLLM(ctx context.Context) {
 }
 
 // initWebAccess mounts the browser web-access sidecar (ADR-101) when BOTH
-// gates are open: the feature's own web_access.enabled switch AND the master
-// experimental gate (experimental.enabled — web access is an experimental
-// feature, ADR-101). This is the feature's startup mount point, by the
-// initChatGPTAuth pattern: a cheap phase helper after buildFrontendAPI
-// (the dispatch target must be wired — it is also where the live-follow hook
-// applyExperimentalWebAccess installs through the FrontendAPIConfig seam) and after
-// emitBackendReady (the mount must not delay or reorder the readiness
-// contract). Everything concrete is assembled HERE — the live FrontendAPI as
-// the reflection dispatch target, the SPA tree main.go handed over, the CSP
-// middleware, the resolved config section — and handed to internal/webaccess,
-// which knows nothing about Wails or the desktop layer.
+// gates are open: web_access.enabled AND the master experimental gate — the
+// startup mount point, by the initChatGPTAuth pattern, after buildFrontendAPI
+// and emitBackendReady so it neither delays nor reorders the readiness
+// contract; the concrete assembly (dispatch target, SPA tree, CSP middleware,
+// config section) is handed to internal/webaccess. Mid-session gate flips
+// ride the desktop hook, not a restart. See specs/domains/web-access.md.
 //
 // A closed gate is a QUIET skip (Debug): an intentionally-off feature is not
-// a failure, and flagging every default-config launch at Error would be
-// noise; the live-follow of a mid-session gate change rides the desktop hook
-// instead of a restart.
-//
-// Failure is fail-soft and LOUD: a sidecar that cannot start (config drift a
-// reload normalized away, a squatted explicit port) logs at Error and leaves
-// the app fully usable desktop-side — the web feature degrades, the desktop
-// app must not. The section stays enabled, so the next launch retries.
+// a failure. Failure is fail-soft and LOUD (Error log): the sidecar
+// degrades, the desktop app must not — the section stays enabled, so the
+// next launch retries.
 func (a *App) initWebAccess(cfg *config.Config, log *slog.Logger) {
 	if a.frontendAPI() == nil || cfg == nil {
 		return
@@ -1785,20 +1625,12 @@ func (a *App) initWebAccess(cfg *config.Config, log *slog.Logger) {
 		"elapsed_ms", time.Since(startTime).Milliseconds())
 }
 
-// stopWebAccess stops the sidecar during Shutdown, releasing the loopback
-// listener and every browser WebSocket before the heavier teardown steps run
-// (the judge drain and the store closes), so a connected tab sees its event
-// stream end while the app is still winding down — not mid-flight against a
-// half-closed backend. It runs behind webAccessMu so it cannot interleave
-// with a concurrent SetWebAccessEnabled transition.
-//
-// The stop is bounded by webAccessStopBudget (~3s) rather than the caller's
-// context alone: a quit must never hang on a sidecar, and the budget is what
-// converts a wedged graceful Shutdown into Server.Stop's force close (the
-// same contract as stopEmbeddedLLM, sized for a stateless listener instead
-// of gigabytes of weights). A failure is logged, never fatal — quitting must
-// not be blocked by a listener that refuses to die, and Server.Stop still
-// force-closes what the graceful phase could not finish.
+// stopWebAccess stops the sidecar during Shutdown (behind webAccessMu, so it
+// cannot interleave with a SetWebAccessEnabled transition) before the judge
+// drain and store close — a connected tab sees its stream end while the app
+// winds down. webAccessStopBudget (~3s) converts a wedged graceful Shutdown
+// into Server.Stop's force close; a failure is logged, never fatal (see
+// specs/domains/web-access.md).
 func (a *App) stopWebAccess(ctx context.Context) {
 	a.webAccessMu.Lock()
 	defer a.webAccessMu.Unlock()

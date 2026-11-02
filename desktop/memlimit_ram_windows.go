@@ -4,9 +4,8 @@ package desktop
 
 import "github.com/shirou/gopsutil/v4/mem"
 
-// physicalMemoryBytes returns the machine's total physical RAM via
-// gopsutil's mem.VirtualMemory. Used by the AUTO memory-soft-limit mode (see
-// memlimit.go).
+// physicalMemoryBytes returns total physical RAM via gopsutil mem.VirtualMemory, for
+// the AUTO memory-soft-limit mode (specs/decisions/049-vector-index-memory-reduction.md).
 func physicalMemoryBytes() (int64, bool) {
 	vm, err := mem.VirtualMemory()
 	if err != nil || vm == nil || vm.Total == 0 {

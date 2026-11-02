@@ -9,8 +9,8 @@ import (
 	"strings"
 )
 
-// migrateWorkspaceBindings changes only session metadata. The transaction makes
-// an interrupted upgrade retryable without half-backfilled CODE rows.
+// Metadata-only migration; the transaction makes an interrupted upgrade
+// retryable without half-backfilled CODE rows.
 func (s *SQLiteSessionStore) migrateWorkspaceBindings() error {
 	if s.columnExists("sessions", "workspace_binding") {
 		return nil
@@ -27,10 +27,8 @@ func (s *SQLiteSessionStore) migrateWorkspaceBindings() error {
 	if _, err := tx.ExecContext(ctx, `UPDATE sessions SET workspace_binding = json_object('kind', 'local', 'workspace_path', (SELECT workspace_path FROM projects WHERE projects.id = sessions.project_id)) WHERE project_id <> '__no_project__'`); err != nil {
 		return fmt.Errorf("backfill local workspace bindings: %w", err)
 	}
-	// Plain (non-unique) index: since shared managed worktrees (ADR-080,
-	// shared-tree revision) several sessions may bind to the same tree; the
-	// index only accelerates ownership lookups. migrateSharedManagedWorktrees
-	// rewrites the historical UNIQUE form left by earlier installs.
+	// Plain (non-unique) index — see migrateSharedManagedWorktrees: shared
+	// trees (ADR-082) mean several sessions per tree.
 	if _, err := tx.ExecContext(ctx, `CREATE INDEX idx_session_managed_workspace ON sessions(json_extract(workspace_binding, '$.workspace_path')) WHERE workspace_binding <> '' AND json_extract(workspace_binding, '$.kind') = 'managed_worktree'`); err != nil {
 		return fmt.Errorf("create managed workspace index: %w", err)
 	}
@@ -40,14 +38,11 @@ func (s *SQLiteSessionStore) migrateWorkspaceBindings() error {
 	return nil
 }
 
-// migrateSharedManagedWorktrees rewrites the historical UNIQUE form of
-// idx_session_managed_workspace (the one-session-per-managed-tree ownership
-// rule of ADR-080 as first accepted) into the plain lookup index the shared
-// managed-worktree semantics require: several sessions may now execute in
-// the same tree, so ownership must not be enforced by the schema. Fresh
-// databases never carry the UNIQUE form (migrateWorkspaceBindings creates
-// the plain index directly), and an interrupted rewrite is retryable — the
-// whole migration is one transaction.
+// Rewrites the historical UNIQUE form of idx_session_managed_workspace into
+// the plain lookup index shared managed-worktrees require (ADR-082):
+// several sessions may execute in one tree. Fresh databases never carry
+// the UNIQUE form; one transaction keeps an interrupted rewrite retryable.
+// See specs/domains/session-worktrees.md (§ Release).
 func (s *SQLiteSessionStore) migrateSharedManagedWorktrees() error {
 	ctx := context.Background()
 	var sqlText string
@@ -79,23 +74,12 @@ func (s *SQLiteSessionStore) migrateSharedManagedWorktrees() error {
 	return nil
 }
 
-// CountManagedWorktreeSessions counts the session rows bound to the managed
-// worktree name, excluding excludeSessionID. The count is deliberately NOT
-// scoped by project: tree names are UUID-derived and globally unique, and a
-// repository CAN be registered as several projects — every binding row then
-// holds the same tree open, so a project-scoped count would under-count and
-// let one project's last-owner deletion release a tree another project's
-// session still executes in. Archived rows are counted deliberately too: an
-// archived session can be unarchived and then executes in its tree again.
-// The deletion protocol uses this to release a shared tree only when its
-// last binding goes away.
-//
-// The workspace_binding <> "" guard skips the no-project CHAT rows whose
-// binding is the schema's DEFAULT empty string (the binding backfill
-// deliberately leaves __no_project__ rows empty): json_extract on an empty
-// binding raises "malformed JSON" in SQLite, so one such legacy row would
-// fail every co-owner count and wedge all managed-worktree session
-// deletions. The guard mirrors the partial index's own WHERE clause.
+// Counts the session rows bound to the managed tree, excluding
+// excludeSessionID — the release protocol's last-owner check. Deliberately
+// NOT project-scoped (tree names are globally unique); archived rows count.
+// See specs/domains/session-worktrees.md (§ Release). The non-empty guard
+// skips CHAT rows: json_extract on the empty default raises "malformed
+// JSON" and would wedge every deletion.
 func (s *SQLiteSessionStore) CountManagedWorktreeSessions(ctx context.Context, worktreeName, excludeSessionID string) (int, error) {
 	var n int
 	err := s.db.QueryRowContext(ctx, `
@@ -111,19 +95,11 @@ func (s *SQLiteSessionStore) CountManagedWorktreeSessions(ctx context.Context, w
 	return n, nil
 }
 
-// BindSessionWorkspace writes the execution-workspace binding of a FRESH
-// session: the one sanctioned mutation of the binding identity (SaveSession
-// refuses every other change — ADR-080 immutability). The fresh window is
-// "no transcript rows and no task rows", enforced inside the UPDATE's WHERE
-// so the check and the write are a single atomic statement; a send racing a
-// first persisted message therefore cannot slip a binding past the guard.
-// The WHERE also pins project_id (CS #29): the binding identity is derived
-// from the owning project, so a mismatched project argument must not persist
-// a cross-project binding — the row simply stays untouched and the call
-// reports ErrSessionNotFresh (or not-found) instead.
-// The binding is validated and its managed path derived exactly like
-// SaveSession's (sessionBindingJSON against the owning project), so a
-// tampered proposal fails closed before any row is touched.
+// Writes the execution-workspace binding of a FRESH session — the one
+// sanctioned mutation of the binding identity (ADR-080 immutability).
+// Fresh window and project_id pin live in the UPDATE's WHERE (atomic with
+// the write); validation matches SaveSession's — tampered proposals fail
+// closed. See specs/domains/session-lifecycle.md (§ Binding).
 func (s *SQLiteSessionStore) BindSessionWorkspace(ctx context.Context, sessionID, projectID string, binding *WorkspaceBinding) error {
 	if sessionID == "" {
 		return errors.New("session identity is required")
@@ -180,9 +156,7 @@ func (s *SQLiteSessionStore) sessionBindingJSON(ctx context.Context, info Sessio
 	return string(raw), nil
 }
 
-// sessionBindingColumns includes project root in the row, avoiding nested reads
-// while list rows hold the shared SQLite connection. COALESCE keeps CHAT
-// sessions loadable even if their pseudo-project row is absent (their binding
-// is nil and the root is unused); CODE sessions without a project row fail
-// closed at validation.
+// Carries the project root in the row to avoid nested reads while list rows
+// hold the shared SQLite connection; COALESCE keeps CHAT sessions loadable
+// without a pseudo-project row, CODE rows without one fail closed.
 const sessionBindingColumns = `workspace_binding, COALESCE((SELECT workspace_path FROM projects WHERE projects.id = sessions.project_id), '')`

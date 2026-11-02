@@ -632,6 +632,19 @@ root follows the active session" protocol, [ADR-099](../decisions/099-research-r
   content-addressed entries (never branch collections — those are
   absolute-path-keyed and tree-specific), and its failure never fails the
   provisioning flow.
+- A tool-call path argument resolving inside a managed worktree container
+  (`<root>/.worktrees`) reachable from the session's own roots escalates as
+  the canonical hard reason `managed_worktree_traversal`
+  (`worktreeTraversalHardReason` / `ReasonCodeManagedWorktreeTraversal`,
+  `core/tools/registry_worktrees.go`): the container lives inside the
+  checkout, so root containment cannot separate the checkout from sibling
+  session trees, and a local session would otherwise read/write another
+  session's isolated tree silently. Exemptions: the session's own managed
+  tree (the workspace is a child of the container), and targets already
+  out-of-root (soft containment covers those). Shell tools are untouched
+  (ordinary flowsh/judge gates); group deny is enforced upstream. The reason
+  is canonical: `allow` never executes it silently and `ExecuteUnattended`
+  blocks it.
 
 ## Configuration
 

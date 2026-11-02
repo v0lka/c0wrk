@@ -12,31 +12,22 @@ import (
 	"github.com/v0lka/sp4rk/safeio"
 )
 
-// WebviewGpuPolicyEnvVar overrides the Linux webview hardware-acceleration
-// policy with the highest precedence — above the persisted Settings choice.
-// Accepted values are case-insensitive and whitespace-tolerant:
-//
-//	always     hardware acceleration always on
-//	on-demand  hardware acceleration as requested by web contents
-//	           ("ondemand" is accepted as an alias)
-//	never      hardware acceleration always off
-//
-// An unset value falls through to the persisted setting (webview_state.json,
-// Settings → General) and its "auto" resolution; an invalid value logs a Warn
-// and also falls through. The variable has no effect on macOS and Windows.
+// WebviewGpuPolicyEnvVar overrides the Linux webview GPU policy with the
+// highest precedence: an explicit always/on-demand/never (case-insensitive,
+// "ondemand" aliased). Unset or invalid falls through to the persisted
+// setting; no effect off Linux. See specs/domains/webview-gpu-policy.md.
 const WebviewGpuPolicyEnvVar = "C0WRK_WEBVIEW_GPU_POLICY"
 
 // Canonical webview GPU-policy spellings — the alphabet of the env var, the
-// persisted setting, the Settings UI, and the RPC wire values. The Linux
-// webview receives these through desktop's Wails-enum mapping; everything
-// string-level lives here so the backend never imports the desktop layer.
+// persisted setting, the Settings UI, and the RPC wire values. String-level
+// only, so the backend never imports the desktop layer.
+// See specs/domains/webview-gpu-policy.md.
 const (
 	WebviewGpuPolicyAlways   = "always"
 	WebviewGpuPolicyOnDemand = "on-demand"
 	WebviewGpuPolicyNever    = "never"
 	// WebviewGpuPolicyAuto is a SETTING value, not an effective policy: it
-	// resolves to on-demand unless the failure watchdog has persisted an
-	// auto-fallback to never.
+	// resolves to on-demand unless the watchdog persisted an auto-fallback.
 	WebviewGpuPolicyAuto = "auto"
 )
 
@@ -47,30 +38,25 @@ const (
 	WebviewGpuSourceSetting      = "setting"
 	WebviewGpuSourceAuto         = "auto"
 	WebviewGpuSourceAutoFallback = "auto-fallback"
-	// WebviewGpuSourceAutoUnobserved names a launch where fresh auto would
-	// have resolved to the accelerated on-demand, but this run's stderr is
-	// not observable (the crash capture is unavailable), so the DMABUF
-	// watchdog could never detect a grey window — the resolution is demoted
-	// to never for the launch. Distinct from auto-fallback: nothing was
-	// detected and nothing is persisted; the next launch with a usable
-	// capture resolves on-demand again.
+	// WebviewGpuSourceAutoUnobserved: fresh auto would have resolved
+	// accelerated, but this run's stderr is not observable, so the DMABUF
+	// watchdog could never detect a grey window — demoted to never for the
+	// launch. Nothing detected, nothing persisted; the next launch with a
+	// usable capture resolves on-demand again.
 	WebviewGpuSourceAutoUnobserved = "auto-unobserved"
 )
 
-// GpuFallbackReasonDmabufFailure is the fallback reason the startup watchdog
-// writes when the captured stderr of the current run carries the DMABUF
-// renderer failure signatures (the grey/blank-window class, wails#2977).
+// GpuFallbackReasonDmabufFailure is the watchdog's fallback reason when the
+// captured run stderr carries the DMABUF grey-window signatures (wails#2977).
 const GpuFallbackReasonDmabufFailure = "dmabuf_render_failure"
 
-// GpuFallbackReasonWaylandProtocolError is the fallback reason the next-start
-// post-mortem writes when the previous fresh-auto run died on a fatal Wayland
-// protocol error (GDK exits the process before DomReady, so the in-run
-// watchdog never gets to scan).
+// GpuFallbackReasonWaylandProtocolError is the next-start post-mortem's
+// fallback reason when the previous fresh-auto run died on a fatal Wayland
+// protocol error before DomReady (the in-run watchdog never got to scan).
 const GpuFallbackReasonWaylandProtocolError = "wayland_protocol_error"
 
-// NormalizeWebviewGpuPolicy parses a WebviewGpuPolicyEnvVar value into the
-// canonical spelling. The env alphabet carries no "auto": the variable is an
-// explicit override, and auto resolution belongs to the persisted setting.
+// NormalizeWebviewGpuPolicy parses an env-override value; the env alphabet
+// carries no "auto" — the variable is an explicit override.
 func NormalizeWebviewGpuPolicy(raw string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case WebviewGpuPolicyAlways:
@@ -85,9 +71,8 @@ func NormalizeWebviewGpuPolicy(raw string) (string, error) {
 }
 
 // NormalizeWebviewGpuSetting parses a persisted webview_state.json gpu_policy
-// value — the same alphabet the Settings UI offers, plus "auto". Case-
-// insensitive and whitespace-tolerant like the env parser; "ondemand" is an
-// alias of "on-demand".
+// value — the Settings alphabet plus "auto", case-insensitive, "ondemand"
+// aliased.
 func NormalizeWebviewGpuSetting(raw string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case WebviewGpuPolicyAuto:
@@ -104,10 +89,10 @@ func NormalizeWebviewGpuSetting(raw string) (string, error) {
 }
 
 // ResolveWebviewGpuPolicy maps the persisted setting (plus the watchdog's
-// auto-mode fallback) onto the canonical effective policy, naming the layer
-// that decided it. The fallback applies only while the setting is "auto": an
-// explicit user choice is never second-guessed, and the Settings RPC clears
-// the record whenever a concrete value is persisted.
+// auto-mode fallback) onto the effective policy and its deciding layer. The
+// fallback applies only while the setting is "auto" — an explicit choice is
+// never second-guessed, and the Settings RPC clears the record on any
+// concrete value.
 func ResolveWebviewGpuPolicy(setting string, fallbackActive bool) (policy, source string) {
 	switch setting {
 	case WebviewGpuPolicyAlways:
@@ -128,19 +113,16 @@ func ResolveWebviewGpuPolicy(setting string, fallbackActive bool) (policy, sourc
 }
 
 // WebviewGpuAutoFallback records why auto mode is pinned to software
-// rendering: the watchdog detected a DMABUF renderer failure at startup and
-// relaunched the app with the never policy. The record is sticky until the
-// user acts on it — the Settings RPC clears it whenever any value is chosen,
-// and re-choosing auto is the "retry" action.
+// rendering (the watchdog's DMABUF failure). Sticky until the user acts:
+// the Settings RPC clears it on any choice; re-choosing auto is the retry.
 type WebviewGpuAutoFallback struct {
 	Policy     string `json:"policy"`      // always "never" today; kept explicit for future fallback targets
 	Reason     string `json:"reason"`      // a GpuFallbackReason* constant
 	DetectedAt string `json:"detected_at"` // RFC3339 UTC
 }
 
-// WebviewGpuState is the on-disk shape of webview_state.json. GPUPolicy is
-// the user setting ("" = nothing chosen yet → auto); AutoFallback is nil
-// unless the watchdog has fallen back.
+// WebviewGpuState is the on-disk shape of webview_state.json; GPUPolicy is
+// the user setting ("" = nothing chosen yet → auto).
 type WebviewGpuState struct {
 	GPUPolicy    string                  `json:"gpu_policy,omitempty"`
 	AutoFallback *WebviewGpuAutoFallback `json:"auto_fallback,omitempty"`
@@ -161,11 +143,10 @@ func (s WebviewGpuState) FallbackActive() bool {
 	return s.AutoFallback != nil
 }
 
-// LoadWebviewGpuState reads webview_state.json defensively: a missing file
-// (nothing chosen yet), a malformed file, or an unknown gpu_policy value all
-// resolve to the zero state (setting auto, no fallback) so a corrupt state
-// file can never prevent the app from starting. main.go calls this before
-// wails.Run to resolve the webview GPU policy.
+// LoadWebviewGpuState reads webview_state.json defensively: missing,
+// malformed, or unknown-valued all resolve to the zero state (setting auto,
+// no fallback) so a corrupt state file can never prevent startup. main.go
+// calls this before wails.Run.
 func LoadWebviewGpuState(agentDir string, logger *slog.Logger) WebviewGpuState {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
@@ -190,11 +171,9 @@ func LoadWebviewGpuState(agentDir string, logger *slog.Logger) WebviewGpuState {
 	return st
 }
 
-// SaveWebviewGpuState atomically writes webview_state.json. The write goes
-// through safeio.WriteFileAtomic: the staging file is a random-suffix sibling
-// created in the same directory, and the final rename REPLACES the directory
-// entry itself — a symlink planted at webview_state.json is replaced, never
-// written through.
+// SaveWebviewGpuState atomically writes webview_state.json via
+// safeio.WriteFileAtomic — the rename replaces the directory entry itself,
+// so a planted symlink is replaced, never written through.
 func SaveWebviewGpuState(agentDir string, st WebviewGpuState) error {
 	data, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
@@ -203,18 +182,15 @@ func SaveWebviewGpuState(agentDir string, st WebviewGpuState) error {
 	return safeio.WriteFileAtomic(config.WebviewStatePath(agentDir), data, 0o600)
 }
 
-// webviewGpuStateMu serializes read-modify-write cycles on webview_state.json.
-// Two independent writers RMW the whole file — the Settings RPC
-// (SetWebviewGpuPolicy) and the desktop watchdog's fallback persist — and both
-// go through UpdateWebviewGpuState, so a user choice landing between the
-// watchdog's load and save can neither be clobbered by it nor wipe the
-// fallback a moment before it is written back. Plain Load/Save callers stay
-// lock-free: SaveWebviewGpuState replaces the file atomically, so readers
-// always observe one complete state.
+// webviewGpuStateMu serializes read-modify-write cycles on webview_state.json:
+// the Settings RPC and the desktop watchdog's fallback persist both RMW the
+// whole file through UpdateWebviewGpuState, so neither can clobber the other's
+// change. Plain Load/Save callers stay lock-free — the atomic replace means
+// readers always observe one complete state.
 var webviewGpuStateMu sync.Mutex
 
 // UpdateWebviewGpuState applies mutate to the freshly loaded state and saves
-// the result atomically, under the webview_state.json RMW lock.
+// the result atomically, under the RMW lock.
 func UpdateWebviewGpuState(agentDir string, logger *slog.Logger, mutate func(*WebviewGpuState)) error {
 	webviewGpuStateMu.Lock()
 	defer webviewGpuStateMu.Unlock()
@@ -230,33 +206,21 @@ type WebviewGpuRun struct {
 	// decided it (env | setting | auto | auto-fallback | auto-unobserved).
 	Policy string
 	Source string
-	// Setting is the canonical persisted setting the resolution consumed
-	// ("auto" when nothing was chosen or the persisted value is unparsable).
-	// Informational — the startup Debug log reports it — and deliberately
-	// returned here so consumers never re-read webview_state.json just to
-	// log it.
+	// Setting is the canonical persisted setting the resolution consumed;
+	// returned here so consumers never re-read webview_state.json to log it.
 	Setting string
 }
 
 // DeriveWebviewGpuRun resolves the effective policy and its deciding layer
 // for a fresh launch: a valid env override wins, otherwise the persisted
-// setting (with its auto resolution). This is the single formula both
-// consumers share — desktop's wails.Run options and Init's running-policy
-// snapshot for the Settings RPCs — and the launch's single read of
-// webview_state.json: the consumed setting rides along in the result.
-//
-// goos is the host platform the resolution targets ("linux" gates the
-// demotion below — production passes runtime.GOOS, tests pass the platform
-// explicitly so the linux branch is exercised on every runner).
-// stderrObserved reports whether this launch has a usable stderr capture
-// (crashlog.Install succeeded and capture is not opted out). The DMABUF
-// watchdog detects the grey-window failure ONLY from that capture, so on
-// Linux an unobserved run must not apply the accelerated fresh-auto default:
-// enabling acceleration without any way to detect the resulting grey window
-// trades a working-but-slow UI for a broken one with no recovery path. The
-// resolution is demoted to never for the launch (source auto-unobserved,
-// explicit Warn at the call site). Explicit user choices — env or setting —
-// are never demoted, and an auto+fallback launch is already on never.
+// setting with its auto resolution. The single formula both consumers share
+// (desktop's wails.Run options and Init's running snapshot) and the launch's
+// single read of webview_state.json — the consumed setting rides along.
+// goos gates the demotion (tests pass the platform explicitly); stderrObserved
+// reports a usable stderr capture — without one, Linux must not apply the
+// accelerated fresh-auto default, since the DMABUF watchdog detects the
+// grey window ONLY from that capture. Explicit choices are never demoted.
+// See specs/domains/webview-gpu-policy.md.
 func DeriveWebviewGpuRun(goos, agentDir string, stderrObserved bool, logger *slog.Logger) WebviewGpuRun {
 	state := LoadWebviewGpuState(agentDir, logger)
 	setting := state.Setting()

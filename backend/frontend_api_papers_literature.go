@@ -20,20 +20,12 @@ import (
 	"github.com/v0lka/sp4rk/safeio"
 )
 
-// ---------------------------------------------------------------------------
-// Paper literature-neighbourhood RPC
-//
-// Runs the study-paper `literature.py` helper (stdlib-only Python 3, needs the
-// network) for a library paper through c0wrk's MANAGED Python interpreter and
-// writes the result to <paper-dir>/literature.json. The paper workspace then
-// renders that file as a DAG.
-//
-// The helper is OPTIONAL and network-bound, so this RPC is designed to always
-// resolve with an EXPLICIT outcome rather than an opaque failure: a run that
-// cannot reach the network, cannot resolve the seed, or lacks a managed Python
-// returns a status the UI renders as a message (never an empty graph). Only a
-// transport-level problem (unknown paper, containment violation) is an error.
-// ---------------------------------------------------------------------------
+// Paper literature-neighbourhood RPC: runs the study-paper `literature.py`
+// helper through c0wrk's MANAGED Python and writes <paper-dir>/literature.json.
+// The optional, network-bound helper always resolves with an EXPLICIT status
+// (rendered as a message, never an opaque failure); only an unknown paper or
+// a containment violation is an error.
+// See specs/domains/papers.md.
 
 // PaperLiteratureStatus values returned in PaperLiteratureDTO.Status.
 const (
@@ -75,22 +67,17 @@ type PaperLiteratureDTO struct {
 }
 
 // RunPaperLiterature runs the study-paper literature helper for a paper and
-// writes <paper-dir>/literature.json. It returns an explicit status for every
-// non-success outcome; an error is reserved for an unknown paper, a containment
-// violation, or a research-root change observed while waiting (see below). See
-// the block comment above for the rationale.
+// writes <paper-dir>/literature.json, returning an explicit status for every
+// non-success outcome; an error is reserved for an unknown paper, a
+// containment violation, or a concurrent research-root change.
 //
-// Concurrency: the paper is resolved and containment-checked under a SHORT hold
-// of the per-effective-research-root mutation mutex (re-loading the row so a
-// concurrent root-affecting change is rejected with errResearchRootChanged,
-// mirroring SetPaperPinned/RecordFlashcardReview). The
-// mutex is RELEASED before the network-bound helper runs: the helper writes no
-// projects row, so holding the row-mutation mutex across its whole run (up to
-// literatureRunTimeout) would head-of-line-block every pin/flashcard/research
-// mutation on the project. The single shared resource is the paper's own
-// literature.json, so concurrent lookups of the SAME paper are serialized on a
-// per-paper-directory guard instead — lookups of other papers, and the
-// projects-row writers, stay concurrent.
+// The resolve/containment check holds the per-root row-mutation mutex only
+// SHORT (re-loading the row so a root-affecting change is rejected with
+// errResearchRootChanged); it is RELEASED before the network-bound run —
+// holding it would head-of-line-block every pin/flashcard/research mutation.
+// Same-paper lookups instead serialize on a per-paper-directory guard (the
+// one shared resource is that paper's literature.json).
+// See specs/domains/papers.md.
 func (f *FrontendAPI) RunPaperLiterature(projectID, paperID string) (*PaperLiteratureDTO, error) {
 	f.seedAcquire()
 	if strings.TrimSpace(paperID) == "" {
@@ -130,10 +117,8 @@ func (f *FrontendAPI) RunPaperLiterature(projectID, paperID string) (*PaperLiter
 		}, nil
 	}
 
-	// Serialize concurrent lookups of the SAME paper on a per-directory guard
-	// (a distinct mutex key) so two "Refresh" clicks cannot interleave their
-	// atomic writes to the one shared literature.json — without holding the
-	// projects-row mutex for the run. See the method doc for the rationale.
+	// Serialize same-paper lookups: two "Refresh" clicks must not interleave
+	// their atomic writes to the one shared literature.json.
 	guard := f.researchMutationMu(paperRunMuKey(rec.Dir))
 	guard.Lock()
 	defer guard.Unlock()
@@ -149,13 +134,10 @@ func paperRunMuKey(paperDir string) string {
 }
 
 // resolvePaperForRun resolves and containment-checks the paper record for a
-// network-bound per-paper run (RunPaperLiterature, FetchPaperOriginal) under
-// a SHORT hold of the per-effective-research-root row-mutation mutex. It
-// re-loads the project row so a concurrent root-affecting change is rejected
-// with errResearchRootChanged (mirroring
-// SetPaperPinned/RecordFlashcardReview), then re-resolves the record from the
-// pre-lock, containment-checked library root. The mutex is released before the
-// network-bound run proceeds.
+// network-bound per-paper run under a SHORT hold of the row-mutation mutex:
+// the row is re-loaded so a concurrent root-affecting change is rejected with
+// errResearchRootChanged (the SetPaperPinned/RecordFlashcardReview pattern),
+// and the mutex is released before the network-bound run proceeds.
 func (f *FrontendAPI) resolvePaperForRun(projectID, paperID string, rctx *papersReadContext) (*papers.PaperRecord, error) {
 	mu := f.researchMutationMu(rctx.researchRoot)
 	mu.Lock()
@@ -180,11 +162,9 @@ func (f *FrontendAPI) resolvePaperForRun(projectID, paperID string, rctx *papers
 	return rec, nil
 }
 
-// literatureScriptPath resolves the study-paper helper script from c0wrk's
-// GLOBAL agent skills directory — the copy seeded once per launch by
-// seedGlobalPacks into config.SkillsDir(agentDir) — or "" when it is not
-// present (an explicit, honest degradation rather than a crash). A missing
-// agentDir (or an unseeded pack) yields "".
+// literatureScriptPath resolves the study-paper helper from the GLOBAL seeded
+// skills directory, or "" when absent — an explicit degradation, never an
+// error (the no_script status).
 func (f *FrontendAPI) literatureScriptPath() string {
 	f.seedAcquire()
 	if f.agentDir == "" {
@@ -226,16 +206,11 @@ func literatureSeed(rec *papers.PaperRecord) string {
 	return strings.TrimSpace(rec.Title)
 }
 
-// runLiteratureHelper is the testable seam: it invokes `pythonPath scriptPath
-// --format json --timeout <n> --out <paperDir>/literature.json -- <seed>` and
+// runLiteratureHelper is the testable seam: it invokes the helper with
+// `--format json --timeout <n> --out <paperDir>/literature.json -- <seed>` and
 // maps the process outcome to an explicit DTO. It never returns an error — a
-// failed run is data.
-//
-// The seed is passed after a `--` terminator so a seed that begins with `-`
-// (a title/identifier) is never parsed by argparse as an option, and the exit
-// code is only trusted together with its stderr marker (see
-// classifyLiteratureExit): CPython exits 1 on an uncaught exception and argparse
-// exits 2 on a usage error, so the bare codes are ambiguous.
+// failed run is data. The seed rides after a `--` terminator so a seed that
+// begins with `-` is never parsed by argparse as an option.
 func runLiteratureHelper(pythonPath, scriptPath, seed, paperDir string) *PaperLiteratureDTO {
 	outPath := filepath.Join(paperDir, papers.LiteratureFileName)
 
@@ -293,13 +268,11 @@ func runLiteratureHelper(pythonPath, scriptPath, seed, paperDir string) *PaperLi
 	}
 }
 
-// classifyLiteratureExit maps the helper's process exit code to a status,
-// keyed on the diagnostic marker the helper writes to stderr. The bare exit
-// codes are ambiguous — literature.py returns 1/2/3 for "could not resolve the
-// seed" / network failure / rate-limit-or-write-failure, but CPython also exits
-// 1 on an uncaught exception and argparse exits 2 on a usage error — so a code
-// is only accepted as the documented one when its stderr marker is present;
-// anything else is a generic error.
+// classifyLiteratureExit maps the helper's exit code to a status, keyed on the
+// diagnostic marker the helper writes to stderr: the bare codes are ambiguous
+// (literature.py uses 1/2/3, but CPython also exits 1 on an uncaught exception
+// and argparse exits 2 on usage errors), so a code is only accepted as the
+// documented one when its stderr marker is present.
 func classifyLiteratureExit(code int, stderr string) string {
 	switch code {
 	case 1:

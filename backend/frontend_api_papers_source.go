@@ -8,66 +8,44 @@ import (
 	"github.com/v0lka/c0wrk/core/papers"
 )
 
-// ---------------------------------------------------------------------------
-// Paper original-source RPC
-//
-// Fetches a library paper's original arXiv HTML rendition (native
-// arxiv.org/html, falling back to the ar5iv mirror), sanitizes and localizes
-// it (scripts stripped, images rewritten to a local assets/ dir), and persists
-// <paper-dir>/paper.html atomically — core/papers.FetchOriginalHTML owns the
-// whole pipeline (host allowlist, byte caps, containment, staging+rename).
-//
-// The fetch is OPTIONAL and network-bound, so this RPC mirrors
-// RunPaperLiterature's explicit-outcome contract: it always resolves with a
-// STATUS rather than an opaque failure, so the UI can render offline /
-// no-arXiv-id / no-rendition as messages instead of a silent empty viewer.
-// Only a transport-level problem (unknown paper, containment violation, or a
-// research-root change observed while waiting) is a Go error.
-//
-// No event is emitted synchronously: the write lands inside the watched
-// library, so the file watcher emits `papers:changed` and the caller's
-// resolved promise is its refresh signal.
-// ---------------------------------------------------------------------------
+// Paper original-source RPC: fetches a library paper's original arXiv HTML
+// rendition (arxiv.org/html, ar5iv fallback) via core/papers.FetchOriginalHTML
+// and persists <paper-dir>/paper.html atomically. Mirrors RunPaperLiterature's
+// explicit-outcome contract — every non-success is a STATUS, not an error —
+// and emits no event: the write lands inside the watched library, so the
+// watcher's papers:changed is the refresh signal.
+// See specs/domains/papers.md.
 
-// PaperOriginalStatus values returned in PaperOriginalDTO.Status. They mirror
-// papers.FetchStatus one-to-one; paperOriginalDTO folds anything else to
-// origStatusError so a future core status can never surface as success.
+// PaperOriginalDTO.Status values, mirroring papers.FetchStatus one-to-one;
+// anything unrecognized folds to origStatusError so a future core status can
+// never surface as success.
 const (
-	origStatusOK       = "ok"
-	origStatusOffline  = "offline"
-	origStatusNoArxiv  = "no_arxiv"
-	origStatusNotFound = "not_found"
-	origStatusError    = "error"
+	origStatusOK       = "ok"        // rendition fetched and written
+	origStatusOffline  = "offline"   // no endpoint reachable at the network level
+	origStatusNoArxiv  = "no_arxiv"  // the card carries no usable arXiv id
+	origStatusNotFound = "not_found" // every reachable endpoint answered 404/410
+	origStatusError    = "error"     // anything else (oversize, containment, fs)
 )
 
-// PaperOriginalDTO is the response for FetchPaperOriginal. Status is one of
-// the origStatus* values; URL is the arXiv URL that actually produced the
-// document (after redirects) and is empty unless the fetch succeeded (see
-// papers.FetchResult.ResolvedURL). Nothing was written for any status other
-// than ok.
+// PaperOriginalDTO is the FetchPaperOriginal response: Status is an
+// origStatus* value; URL is the post-redirect arXiv URL, empty unless the
+// fetch succeeded — nothing is written for any status other than ok.
+// See specs/domains/papers.md.
 type PaperOriginalDTO struct {
 	Status string `json:"status"`
 	URL    string `json:"url"`
 }
 
 // FetchPaperOriginal fetches a paper's original HTML rendition and writes
-// <paper-dir>/paper.html (+ assets/) through core/papers.FetchOriginalHTML.
-// It returns an explicit status for every non-success outcome; an error is
-// reserved for an unknown paper, a containment violation, or a research-root
-// change observed while waiting. See the block comment above for the
-// rationale.
-//
-// Concurrency: mirroring RunPaperLiterature, the paper is resolved and
-// containment-checked under a SHORT hold of the per-effective-research-root
-// mutation mutex (re-loading the row so a concurrent root move is rejected
-// with errResearchRootChanged), and the mutex
-// is RELEASED before the network-bound fetch runs — holding the row-mutation
-// mutex across a fetch (bounded per-request timeouts of 60s per document and
-// 20s per image, up to 200 images) would head-of-line-block every
-// pin/flashcard/research mutation on the project. The single shared resource
-// is the paper's own paper.html/assets output, so concurrent fetches of the
-// SAME paper are serialized on the shared per-paper-directory guard instead —
-// fetches of other papers, and the projects-row writers, stay concurrent.
+// <paper-dir>/paper.html (+ assets/) via core/papers.FetchOriginalHTML. Every
+// non-success outcome is an explicit status; a Go error is reserved for an
+// unknown paper, a containment violation, or a research-root change observed
+// while waiting. Concurrency mirrors RunPaperLiterature: the paper resolves
+// under a SHORT hold of the per-research-root mutation mutex (a concurrent
+// root move is rejected), released before the network-bound fetch — holding
+// it across the fetch would head-of-line-block every project mutation — and
+// same-paper fetches serialize on the shared per-paper-directory guard.
+// See specs/domains/papers.md.
 func (f *FrontendAPI) FetchPaperOriginal(projectID, paperID string) (*PaperOriginalDTO, error) {
 	if strings.TrimSpace(paperID) == "" {
 		return nil, errors.New("paper id or slug is required")
@@ -82,11 +60,9 @@ func (f *FrontendAPI) FetchPaperOriginal(projectID, paperID string) (*PaperOrigi
 		return nil, err
 	}
 
-	// Serialize concurrent runs targeting the SAME paper on the shared
-	// per-directory guard (a distinct mutex key, shared with
-	// RunPaperLiterature) so two clicks cannot interleave their atomic
-	// writes to the one paper directory — without holding the projects-row
-	// mutex for the fetch. See the method doc for the rationale.
+	// Same-paper runs serialize on the shared per-directory guard (distinct
+	// mutex key, shared with RunPaperLiterature) so two clicks cannot
+	// interleave their atomic writes to the one paper directory.
 	guard := f.researchMutationMu(paperRunMuKey(rec.Dir))
 	guard.Lock()
 	defer guard.Unlock()
@@ -103,9 +79,9 @@ func (f *FrontendAPI) FetchPaperOriginal(projectID, paperID string) (*PaperOrigi
 	return paperOriginalDTO(res), nil
 }
 
-// paperOriginalDTO maps a core fetch outcome to the wire DTO. It is total and
-// side-effect free: an unrecognized status folds to origStatusError so the
-// explicit-status contract can never regress into a silent success.
+// paperOriginalDTO maps a core fetch outcome to the wire DTO, folding an
+// unrecognized status to origStatusError so the explicit-status contract
+// cannot regress into a silent success. See specs/domains/papers.md.
 func paperOriginalDTO(res papers.FetchResult) *PaperOriginalDTO {
 	status := origStatusError
 	switch res.Status {

@@ -156,6 +156,16 @@ without confirmation — an accepted risk recorded in ADR-052 (the user blocklis
 recovers it). The file-tool `.git`-write gate (`git_internal_path`) described
 in this ADR is unaffected and still fires.
 
+Amended 2026-10-27 (locale pin): every hardened git process strips
+LANG/LANGUAGE/the LC_* family and appends `LC_ALL=C`
+(`internal/sysproc/git.go`, `gitLocaleEnv`/`hardenedGitEnv`): the backend's
+friendly-error matchers (`isLocalChangesOverwritten`, `isBranchAlreadyExists`
+in `backend/frontend_api_git.go`) match English stderr text and the frontend
+parses `%ad` dates with `new Date()`, which cannot read non-English
+weekday/month names — a non-English user locale silently broke both. Same
+glibc first-entry duplicate rule as GIT_EDITOR: locale variables are stripped
+before the pin is appended.
+
 ## Context
 
 c0wrk runs git constantly in CODE mode: status, diff, log, ignore filtering, branch detection, the git panel. Every one of those invocations executes inside a repository the user pointed the app at — and **a repository is attacker-controlled data**. `.git/config` is effectively a program-invocation configuration file: git executes config-driven external programs during ordinary *read-only* operations (`status`, `diff`, `add`, `checkout`, even `commit`), before any trust decision c0wrk makes. Two concrete vectors motivated this decision:

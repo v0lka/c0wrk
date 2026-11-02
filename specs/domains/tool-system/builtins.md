@@ -153,6 +153,15 @@ See [ADR-016](../../decisions/016-aiignore.md) for the rationale and the engine 
 
 **Limits** — the same `DefaultFileLimits()` caps (`MaxLineBytes`, `MaxWindowLines`) apply to converted output, and the requested line range is validated up front to prevent inverted-range panics. The converter is lazily initialized on first document read (2-minute per-file timeout; a vision-assisted attempt shares one elevated ≥5-minute budget with its plain fallback).
 
+**Conversion output cap** — `markitdown.MaxConversionOutputBytes` (32 MiB, `core/markitdown/converter.go`) is a two-sided contract: `core/markitdown` FAILS (never silently truncates) a conversion whose output exceeds the cap, and the `read_file` document-conversion cache sizes its disk reads with `safeio.ReadFileLimited(…, MaxConversionOutputBytes)` — the safeio default cap sitting between the two limits would silently disable the cache for the largest legal results. Raise both sides together.
+
+## Web Search Base-URL Validation (`web_search`)
+
+`search.base_url` is validated in two gates against two forms of the value:
+
+- **Config gate (raw value)** — `backend/config.ValidateSearchBaseURL` checks the RAW stored string at config load and at Settings save (`UpdateSearchSettings`). Searxng-only; empty fails, because `ApplyDefaults` seeds `websearch.DefaultSearxngBaseURL`; a `${ENV_VAR}` placeholder passes unresolved; otherwise the value must be an absolute http(s) URL with a host.
+- **Consumption gate (expanded value)** — the `core/tools` search-provider constructor (`CreateSearchProviderWithClient`) re-checks the EXPANDED value fail-closed, so a placeholder can never smuggle an unresolvable or non-http(s) base_url past runtime.
+
 ## Limits Configuration
 
 Per-tool output truncation is centralized in the executor's two-stage pipeline (see [../orchestration/executor.md](../orchestration/executor.md)). No individual tool performs per-tool output truncation; all truncation happens in Stage 1 → Stage 2 after the full result is cached.
@@ -197,6 +206,14 @@ discarding them. An explicit `0` on any field disables that bound; a completely
 zero `GlobLimits` (e.g. a zero-value `BuiltinToolsConfig`) falls back to
 `DefaultGlobLimits()` so an unpopulated struct cannot register an unbounded walk.
 See the sp4rk builtins spec for the engine-level detail.
+
+`GlobLimitsExplicit` (`core/builderconfig.go`, mirrored into
+`core/tools.BuiltinToolsConfig`) is the cross-layer contract between the
+backend config resolution and the `core/tools` glob constructor: it selects
+the no-fallback glob constructor when the operator explicitly customized any
+glob knob post-`ApplyDefaults`. An explicit all-zero config (`0 disables` on
+entries/results/timeout) must be honored verbatim, not silently replaced by
+sp4rk's zero-struct→defaults fallback; `false` keeps that fallback.
 
 ## Engine Behavior (canonical in sp4rk)
 

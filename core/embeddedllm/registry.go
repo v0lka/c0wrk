@@ -20,19 +20,15 @@ import (
 	"strings"
 )
 
-// RuntimeTag is the pinned PrismML-Eng/llama.cpp fork release.
-//
-// It is a fork, never upstream llama.cpp: stock rejects the PQ2_0/PTQ1_0
-// ternary packings outright and silently produces garbage on plain Q2_0
-// (ADR-066 D11). Bumping this constant requires updating every runtime and
-// cudart URL/checksum below and a CVE review of the old→new range.
+// RuntimeTag is the pinned PrismML-Eng/llama.cpp fork release — stock rejects
+// PQ2_0/PTQ1_0 and corrupts plain Q2_0 (ADR-066, Forces #1). A bump
+// re-records every URL+checksum below and needs a CVE review of the old→new
+// range (ADR-066 D11).
 const RuntimeTag = "prism-b10735-842b188"
 
 // ModelRevision is the pinned Hugging Face revision of the weights repository.
-//
-// The resolve URLs are built from this immutable commit SHA rather than a
-// floating branch name, so "the pin" cannot move under a rebuild: a branch
-// would silently re-point at whatever upstream published last.
+// The resolve URLs are built from this immutable commit SHA, not a floating
+// branch, so the pin cannot move under a rebuild.
 const (
 	modelRepoOwner = "prism-ml"
 	modelRepoName  = "Ternary-Bonsai-2-27B-gguf"
@@ -54,12 +50,9 @@ type Packing string
 const (
 	// PackingPQ2_0 is the default 6.71 GiB packing.
 	PackingPQ2_0 Packing = "PQ2_0"
-	// PackingPTQ1_0 is the 5.54 GiB packing. It is chosen when the backend has
-	// no PQ2_0 kernels (Vulkan), when the host has AVX-512 and the pin predates
-	// upstream #245 (where PQ2_0 segfaults at load), when the MEASURED device
-	// budget does not fit PQ2_0, or on the GPU generations the model card
-	// measures as PTQ1_0-faster for decode (Ada and the L4). Installed RAM alone
-	// never selects it — see decidePacking.
+	// PackingPTQ1_0 is the 5.54 GiB packing, chosen by decidePacking's four
+	// triggers — installed RAM alone never selects it
+	// (specs/domains/embedded-llm.md, Hardware probe → resolution).
 	PackingPTQ1_0 Packing = "PTQ1_0"
 )
 
@@ -71,17 +64,16 @@ const (
 	ComponentCudart  Component = "cudart" // Windows CUDA only: the paired DLL archive
 	ComponentModel   Component = "model"
 	ComponentMMProj  Component = "mmproj"
-	// mtplx-engine components (ADR-092): the managed CPython archive, the
-	// closed wheel set of the engine venv, and the MLX weight pack (vision
-	// tower and MTP head inside — no separate projector).
+	// mtplx-engine components (ADR-092): managed CPython, closed wheel set,
+	// MLX weight pack (vision tower and MTP head inside).
 	ComponentPython       Component = "python"
 	ComponentEngineWheels Component = "wheels"
 	ComponentMLXPack      Component = "pack"
 )
 
 // Platform keys use the toolmanager.Platform() shape, "<goos>-<goarch>".
-// windows-arm64 is deliberately absent: it is out of scope (ADR-066 D9), so
-// every lookup for it fails closed instead of resolving to a wrong artifact.
+// windows-arm64 is deliberately absent (out of scope, ADR-066 D9), so every
+// lookup for it fails closed.
 const (
 	PlatformDarwinAMD64  = "darwin-amd64"
 	PlatformDarwinARM64  = "darwin-arm64"
@@ -100,12 +92,9 @@ var supportedPlatforms = []string{
 	PlatformWindowsAMD64,
 }
 
-// Asset is one downloadable component with its integrity pin.
-//
-// SHA256 is fail-closed: an empty value means REFUSE the download, never
-// "skip verification" (see Downloader.Download). SizeBytes is the exact
-// expected size — it drives the disk guard, the progress total and the
-// transfer ceiling.
+// Asset is one downloadable component with its integrity pin: SHA256 is
+// fail-closed (empty REFUSES, never skips verification), SizeBytes the exact
+// expected size behind the disk guard, progress total and transfer ceiling.
 type Asset struct {
 	Component   Component
 	URL         string
@@ -115,8 +104,8 @@ type Asset struct {
 }
 
 // ErrArtifactNotPinned reports that the registry has no artifact for a
-// (platform, backend, packing) combination. It is a refusal, not a fallback:
-// callers must not substitute a neighboring platform's or backend's bytes.
+// (platform, backend, packing) combination — a refusal, never a fallback to
+// neighboring bytes.
 var ErrArtifactNotPinned = errors.New("no pinned embedded-LLM artifact")
 
 // ModelPQ2_0 and friends are the pinned weights. Sizes and SHA256 values are
@@ -135,8 +124,8 @@ var modelAssets = map[Packing]Asset{
 		"53107f530aa52eb00912263ab1ee29bd199261c87cd7b4ad4ca1318c1fe33ee3", 5946648928),
 }
 
-// mmprojAsset is the vision projector. It is installed for EVERY backend and
-// packing (ADR-066 D2), so image input works regardless of what was resolved.
+// mmprojAsset is the vision projector, installed for EVERY backend and
+// packing (ADR-066 D2) so image input always works.
 var mmprojAsset = Asset{
 	Component:   ComponentMMProj,
 	URL:         modelResolveBase + mmprojFileQ8_0,
@@ -146,30 +135,21 @@ var mmprojAsset = Asset{
 }
 
 // runtimeAssets maps platform → backend → the pinned llama-server archive.
-//
-// Windows CUDA gap (verified against the release's 23 assets): this pin ships
-// win-cuda-12.4-x64, win-cuda-13.3-x64 and win-cuda-13.4-arm64 — there is NO
-// windows cuda-12.8 archive, and no cuda-12.8 cudart either (linux does have
-// bin-linux-cuda-12.8-x64). windows-amd64 + BackendCUDA128 therefore has no
-// entry and fails closed with ErrArtifactNotPinned. Resolution must not select
-// that pair on Windows; it has to clamp to a pinned CUDA tag (12.4 or 13.3) or
-// fall back to another backend.
-//
-// ROCm on Windows is the HIP/Radeon build; ROCm and CUDA are x64-only, so
-// linux-arm64 pins CPU and Vulkan only.
+// windows-amd64 + BackendCUDA128 has NO entry and fails closed (this pin ships
+// no Windows cuda-12.8 archive — see specs/domains/embedded-llm.md). ROCm on
+// Windows is the HIP/Radeon build; ROCm and CUDA are x64-only.
 var runtimeAssets = map[string]map[Backend]Asset{
 	PlatformDarwinAMD64: {
-		// Intel Mac: no usable GPU backend, so only the CPU build is pinned.
-		// Metal is deliberately absent here — the probe only yields Metal on
-		// darwin/arm64, and an Intel Mac runs with -ngl 0.
+		// Intel Mac: no usable GPU backend, so only the CPU build is pinned
+		// (the probe yields Metal on darwin/arm64 only).
 		BackendCPU: newRuntimeAsset("llama-"+RuntimeTag+"-bin-macos-x64.tar.gz",
 			"c246b099d4c29cda21861333d2349477eba0c168a53a8ec3d770b4c300beda5e", 11552821),
 	},
 	PlatformDarwinARM64: {
 		BackendMetal: newRuntimeAsset("llama-"+RuntimeTag+"-bin-macos-arm64.tar.gz",
 			"a5c7a4d1f4f4ac7571aefdda5d1861e92ae196588dabb92525265d4c4ccbb7bb", 11509540),
-		// Same archive: the macOS arm64 build is the Metal build, and it is
-		// also what a CPU-only run on Apple Silicon uses.
+		// Same archive: the arm64 build IS the Metal build, and what a CPU-only
+		// run on Apple Silicon uses.
 		BackendCPU: newRuntimeAsset("llama-"+RuntimeTag+"-bin-macos-arm64.tar.gz",
 			"a5c7a4d1f4f4ac7571aefdda5d1861e92ae196588dabb92525265d4c4ccbb7bb", 11509540),
 	},
@@ -208,10 +188,10 @@ var runtimeAssets = map[string]map[Backend]Asset{
 	},
 }
 
-// cudartAssets maps platform → backend → the paired CUDA runtime DLL archive.
-// Windows CUDA builds do not bundle cudart, so it is a second component with
-// its own progress bar and its own checksum (ADR-066 D9). Linux CUDA links
-// against the system CUDA installation and needs no companion archive.
+// cudartAssets maps platform → backend → the paired CUDA runtime DLL archive:
+// a second component with its own progress and checksum, Windows-only because
+// the Windows CUDA builds do not bundle cudart (ADR-066 D9); Linux CUDA links
+// the system installation.
 var cudartAssets = map[string]map[Backend]Asset{
 	PlatformWindowsAMD64: {
 		BackendCUDA124: newCudartAsset("cudart-llama-bin-win-cuda-12.4-x64.zip",
@@ -259,8 +239,7 @@ func IsSupportedPlatform(platform string) bool {
 }
 
 // RuntimeAsset returns the pinned llama-server archive for a platform and
-// backend. The boolean is false — a fail-closed refusal — when the pair is not
-// pinned; callers must not substitute a different backend's bytes.
+// backend; false is the fail-closed refusal for an unpinned pair.
 func RuntimeAsset(platform string, backend Backend) (Asset, bool) {
 	a, ok := runtimeAssets[platform][backend]
 	if !ok || a.SHA256 == "" || a.URL == "" {
@@ -298,13 +277,9 @@ func SupportedPackings() []Packing {
 	return []Packing{PackingPQ2_0, PackingPTQ1_0}
 }
 
-// ArtifactSet resolves the complete, ordered download set for a machine:
-// runtime, then the paired cudart when the platform/backend needs one, then
-// the model weights, then the vision projector.
-//
-// It is fail-closed: a missing pin for any required component returns an error
-// wrapping ErrArtifactNotPinned rather than a partial set, because a partial
-// set would install a runtime that cannot serve the model.
+// ArtifactSet resolves the ordered download set: runtime, paired cudart when
+// needed, model, projector. Fail-closed — a partial set would install a
+// runtime that cannot serve the model.
 func ArtifactSet(platform string, backend Backend, packing Packing) ([]Asset, error) {
 	if !IsSupportedPlatform(platform) {
 		return nil, fmt.Errorf("%w: platform %q (supported: %s)",
@@ -338,10 +313,9 @@ func TotalBytes(assets []Asset) int64 {
 	return total
 }
 
-// ValidateRegistry self-checks every pinned asset. It is the guard that turns
-// a hand-edited pin table into a compile-adjacent failure instead of a runtime
-// supply-chain hole: every asset must carry a URL, a well-formed lowercase
-// hex SHA256, a positive exact size and a file name.
+// ValidateRegistry self-checks every pinned asset — the guard that turns a
+// hand-edited pin table into a test-time failure instead of a runtime
+// supply-chain hole. See specs/domains/embedded-llm.md (Key Files, registry.go).
 func ValidateRegistry() error {
 	return errors.Join(
 		validateTables(runtimeAssets, cudartAssets, modelAssets, mmprojAsset, supportedPlatforms),
@@ -349,10 +323,8 @@ func ValidateRegistry() error {
 	)
 }
 
-// validateTables is ValidateRegistry over explicit tables rather than the
-// package-level ones, so a test can prove the validator has teeth without
-// mutating shared registry state (which would leak into every later test in
-// the package).
+// validateTables is ValidateRegistry over explicit tables, so a test proves
+// the validator has teeth without mutating shared registry state.
 func validateTables(runtimes map[string]map[Backend]Asset, cudarts map[string]map[Backend]Asset,
 	models map[Packing]Asset, mmproj Asset, platforms []string,
 ) error {
@@ -444,9 +416,8 @@ func validateTables(runtimes map[string]map[Backend]Asset, cudarts map[string]ma
 const sha256HexLen = 32
 
 // validSHA256Hex reports whether s is a 64-character lowercase hex digest.
-// Uppercase is rejected on purpose: the pins are copied verbatim from GitHub
-// `digest` and HF LFS OID, both lowercase, and a mixed-case table entry is a
-// transcription bug worth failing on.
+// Uppercase is rejected on purpose: the pins are copied verbatim from sources
+// that are lowercase, and a mixed-case entry is a transcription bug.
 func validSHA256Hex(s string) bool {
 	if len(s) != 2*sha256HexLen {
 		return false

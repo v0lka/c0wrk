@@ -14,44 +14,24 @@ import (
 const (
 	EventStepLimit         = "step_limit"
 	EventStepLimitResponse = "step_limit_response"
-	// EventTaskStarted is emitted when a session task is ACTIVATED — the
-	// fresh, goal, E2S, and continue-interrupted dispatches all funnel
-	// through the single activation point in SendMessage, so one emission
-	// covers every way a task can start. It is the start-side counterpart of
-	// the terminal (task_complete / task_cancelled / error /
-	// task_failed_resumable) and pause/resume (session_paused /
-	// session_resumed) lifecycle events, each of which the desktop layer
-	// mirrors into the global sessions:changed push so every surface's
-	// session list (sidebar, live-sessions radar) sees the session turn
-	// running without waiting for the safety poll. The resume path announces
-	// itself through task_resumed + session_resumed instead — task_started
-	// is deliberately NOT emitted there, or one resume would push the
-	// list-change signal twice. No payload: the session-scoped envelope
-	// already names the session. Transient: never persisted (the durable
-	// task record is the task store's own row, and a persisted copy would
-	// render as a dead event_unknown card on reload).
+	// EventTaskStarted fires once per task ACTIVATION — fresh, goal, E2S and
+	// continue-interrupted dispatches all funnel through SendMessage — and the
+	// desktop layer mirrors it into the global sessions:changed push. The
+	// resume path uses task_resumed + session_resumed instead, so one resume
+	// never pushes the list change twice. No payload; transient. See
+	// specs/contracts/event-catalog.md.
 	EventTaskStarted = "task_started"
-	// EventAutonomyDecision carries an automatic (no-human) security decision
-	// taken under an automatic autonomy posture — silent
-	// (security.silent_mode) or assisted (a strict-judge DENY terminating a
-	// call before any card opened): a confirmation-gated tool call the
-	// registry resolved without a card (tool_confirm / assisted_deny), or a
-	// step-limit boundary the backend resolved without the
-	// blocking prompt (step_limit). It is the non-blocking audit record of a
-	// gate a human would otherwise have answered, so the run's trajectory stays
-	// reconstructable (OWASP ASI10). Persisted. Audit-completeness contract
-	// (§6.3): every emitted payload names its deciding sub-policy (Policy —
-	// the emit funnel defaults it from the kind when a source forgets) and
-	// shell-exec tool decisions carry the deterministic effect Signature,
-	// which doubles as the silent judge's memoization key (identical
-	// signature within a task ⇒ identical verdict).
+	// EventAutonomyDecision carries an automatic (no-human) security decision —
+	// the non-blocking, persisted audit record of a gate a human would
+	// otherwise have answered (OWASP ASI10). Payload contract (sub-policy
+	// naming, the shell-exec effect Signature doubling as the judge's
+	// memoization key): specs/contracts/event-catalog.md.
 	EventAutonomyDecision = "autonomy_decision"
 )
 
-// AutonomyDecisionData is the payload for "autonomy_decision" events — the
-// frontend/event-catalog view of one autonomous decision. It is an alias of
-// coretools.AutonomyDecision, the value the tool registry fills in and hands to
-// the host observer, so the registry and the wire contract can never drift.
+// AutonomyDecisionData is an alias of coretools.AutonomyDecision — the value
+// the registry hands the host observer — so the registry and the wire contract
+// cannot drift.
 type AutonomyDecisionData = coretools.AutonomyDecision
 
 // --- Session lifecycle event data ---
@@ -91,19 +71,14 @@ type SessionPinnedData struct {
 type MessageReceivedData struct {
 	SessionID string `json:"session_id"`
 	Text      string `json:"text"`
-	// ClientSendID, when non-empty, is the sending surface's optimistic-card
-	// id echoed back (WithClientMessageID): the sender dedups the echo by
-	// this id instead of content+time-window, so identical text sent from
-	// another surface inside the dedup window still renders. Absent on sends
-	// without an optimistic card.
+	// ClientSendID echoes the sending surface's optimistic-card id
+	// (WithClientMessageID) so the sender dedups by id, not
+	// content+time-window. Absent without an optimistic card.
 	ClientSendID string `json:"client_send_id,omitempty"`
-	// IsNudge mirrors the persisted row's is_nudge metadata stamp
-	// (mergeIsNudgeMetadata): true when the send was classified as a live
-	// interjection or a nudge-resume, absent on fresh tasks. Surfaces without
-	// an optimistic copy render their card from this event, so the flag lets
-	// them show the Nudge badge immediately instead of waiting for a history
-	// reload. The event flag and the DB stamp must agree — both are set from
-	// the same session-locked send classification.
+	// IsNudge mirrors the persisted row's is_nudge stamp so surfaces without
+	// an optimistic copy show the Nudge badge immediately; the flag and the
+	// DB stamp come from the same session-locked send classification and must
+	// agree.
 	IsNudge bool `json:"is_nudge,omitempty"`
 }
 
@@ -114,9 +89,8 @@ type TaskCompleteData struct {
 	RoutingDecision *router.RoutingDecision    `json:"routing_decision"`
 	Plan            *orchestration.Plan        `json:"plan,omitempty"`
 	Reflections     []orchestration.Reflection `json:"reflections,omitempty"`
-	// Typed success contract: Success is false for partial/failed/aborted
-	// executions that are still delivered as task_complete so the best-effort
-	// output reaches the user. Completion refines the outcome.
+	// Success is false for partial/failed/aborted executions still delivered
+	// as task_complete so the best-effort output reaches the user.
 	Success    bool   `json:"success"`
 	Completion string `json:"completion,omitempty"` // "full" | "partial" | "failed" | "aborted"
 }
@@ -126,34 +100,25 @@ type TaskCancelledData struct {
 	SessionID string `json:"session_id"`
 }
 
-// PromptSuggestionsData is the payload for the session-scoped
-// "prompt_suggestions" event (ADR-088): the session's FULL active suggestion
-// set (both kinds) as persisted — the frontend replaces its set outright.
+// PromptSuggestionsData carries the session's FULL active suggestion set
+// (both kinds, ADR-088); the frontend replaces its set outright.
 type PromptSuggestionsData struct {
 	SessionID   string                  `json:"session_id"`
 	Suggestions []core.PromptSuggestion `json:"suggestions"`
 }
 
-// TaskFailedResumableData is the payload for "task_failed_resumable" events.
-// Emitted when plan execution fails but the task can be resumed.
-// TaskID lets the persisted message be matched and resolved when the user
-// resumes or cancels (see Manager.resolveResumableTaskMessage), so the banner
-// does not reappear as pending on session reload.
+// TaskFailedResumableData is the payload for "task_failed_resumable" events;
+// TaskID lets the persisted banner message be resolved on resume/cancel.
 type TaskFailedResumableData struct {
 	Message string `json:"message"`
 	TaskID  string `json:"task_id,omitempty"`
-	// Reason carries a concise, contextual cause for the failure (e.g. an
-	// execution error or the completion outcome) so the banner can explain
-	// WHY the task is resumable rather than always showing a generic message.
+	// Reason explains WHY the task is resumable rather than a generic message.
 	Reason string `json:"reason,omitempty"`
-	// AutoRetryAt, when non-zero, is the unix timestamp (seconds) at which
-	// the UI auto-resend countdown reaches zero and the frontend re-sends
-	// the failed task (resumeTask). It is stamped only when the failure
-	// cause is a classified rate-limit/overload *llm.Error (see
-	// Manager.maybeAutoRetryAt) from a compatible provider configured with
-	// auto_retry_seconds > 0; absent (0) means no countdown is scheduled
-	// and the user's manual Resume/Cancel decision is final. There is no
-	// backend timer (ADR-065): the deadline is advisory to the UI.
+	// AutoRetryAt, when non-zero, schedules the UI's auto-resend countdown —
+	// stamped only for a classified rate-limit/overload llm.Error from a
+	// provider with auto_retry_seconds > 0. There is no backend timer
+	// (ADR-065, see specs/decisions/065-auto-resend-retryable-errors.md): the
+	// deadline is advisory; 0 means the manual decision is final.
 	AutoRetryAt int64 `json:"auto_retry_at,omitempty"`
 }
 
@@ -163,13 +128,10 @@ type ErrorData struct {
 	Error     string `json:"error"`
 }
 
-// WorkUnitSettledData is the payload for "work_unit_settled" events. It is
-// emitted when a durable execution unit is explicitly settled because the
-// resume funnel will not relaunch it — an abandoned (in-flight) unit of a task
-// that is no longer executing is settled as interrupted, so a live view can
-// align the delegate/plan-step chat block instead of leaving it "running".
-// Transient: the durable source is the unit ledger surfaced via
-// GetSessionRuntimeStatus.work_units, so the event is not persisted.
+// WorkUnitSettledData is the payload for "work_unit_settled" events — a unit
+// settled because the resume funnel will not relaunch it, so a live view can
+// align the chat block instead of leaving it "running". Transient: the durable
+// source is the unit ledger (GetSessionRuntimeStatus.work_units).
 type WorkUnitSettledData struct {
 	StepID string `json:"step_id"`
 	Status string `json:"status"`
@@ -178,13 +140,10 @@ type WorkUnitSettledData struct {
 
 // --- Tool confirmation payloads ---
 
-// ToolConfirmPayload is sent to the frontend when a tool needs user confirmation.
-// ToolCallID carries the tool_call_id of the triggering tool_call event so the
-// frontend can anchor the confirmation card precisely (instead of matching by
-// tool name, which is ambiguous when two calls share a name).
-// DisableJudge is true when the strict automatic judge already evaluated the
-// call (Smart Approve); the frontend hides the advisory "Ask Agent" button so
-// the call is not judged a second time.
+// ToolConfirmPayload is sent when a tool needs user confirmation; ToolCallID
+// anchors the card to the triggering tool_call, DisableJudge hides the
+// advisory "Ask Agent" button when the strict judge already evaluated the
+// call. See specs/contracts/event-catalog.md.
 type ToolConfirmPayload struct {
 	ConfirmID    string `json:"confirm_id"`
 	Tool         string `json:"tool"`
@@ -252,27 +211,24 @@ type PlanApprovalResponsePayload struct {
 
 // --- Goal proposal payloads ---
 
-// GoalProposalPayload is sent to the frontend when the derivation agent calls
-// propose_goal to submit a candidate {condition, verify} goal for user sign-off.
-// It surfaces as a pending action that blocks the agent until the user responds.
+// GoalProposalPayload is sent when the derivation agent calls propose_goal —
+// a pending action that blocks the agent until the user responds. See
+// specs/contracts/event-catalog.md.
 type GoalProposalPayload struct {
 	RequestID string `json:"request_id"`
 	SessionID string `json:"session_id"`
 	Condition string `json:"condition"`
 	Verify    string `json:"verify"`
-	// VerificationMode is the per-goal verification mode the derivation agent
-	// chose (see goal.VerificationMode* constants). Echoed from the proposal so
-	// the frontend can surface it and round-trip a user edit back into the
-	// resolver. Empty means the default (executable).
+	// VerificationMode echoes the derivation agent's per-goal verification mode
+	// (see goal.VerificationMode* constants) so the frontend can round-trip a
+	// user edit; empty means the default (executable).
 	VerificationMode string `json:"verification_mode,omitempty"`
 }
 
-// GoalSuggestionPayload is sent to the frontend when the post-routing
-// goal-mode suggestion gate judged a fresh task's message obviously
-// goal-suited. It surfaces as a pending action that blocks the task until the
-// user answers (accept enters the goal loop before any work starts; decline
-// continues the plain Conductor path and suppresses further suggestions for
-// the session).
+// GoalSuggestionPayload is sent when the post-routing suggestion gate judged a
+// fresh task's message goal-suited — a pending action blocking the task until
+// the user answers (accept enters the goal loop; decline continues the plain
+// Conductor path and suppresses further suggestions for the session).
 type GoalSuggestionPayload struct {
 	RequestID string `json:"request_id"`
 	SessionID string `json:"session_id"`
@@ -284,8 +240,8 @@ type GoalSuggestionPayload struct {
 // --- HITL resolution payloads ---
 
 // HitlResolvedKind identifies which kind of HITL prompt a HitlResolvedPayload
-// settles. Values mirror the frontend message types (tool_confirm, ask_user,
-// ...) so the UI can locate the exact card to retire.
+// settles; values mirror the frontend message types so the UI can retire the
+// exact card.
 type HitlResolvedKind string
 
 const (
@@ -297,18 +253,12 @@ const (
 	HitlResolvedGoalSuggestion HitlResolvedKind = "goal_suggestion"
 )
 
-// HitlResolvedData is the typed Data payload for "hitl_resolved" session
-// events — broadcast to EVERY surface (desktop webview plus all web-access
-// tabs) when a pending HITL prompt is consumed by the first responder, so a
-// surface that did not perform the resolution can retire its card immediately
-// instead of waiting for the next session switch / focus-resync reconcile.
-// ID carries the confirm_id (tool_confirm) or request_id (every other kind)
-// of the settled prompt. Decision carries the EFFECTIVE decision — the first
-// responder's answer, so a surface that raced the resolution converges on the
-// outcome that actually drove the agent rather than its own local guess;
-// empty when the prompt was consumed without a user answer. Transient (not
-// persisted): the durable resolution lives in the resolved pending message
-// row, and a restart re-reads it through GetPendingActions reconciliation.
+// HitlResolvedData is the typed Data payload for "hitl_resolved" events —
+// broadcast to EVERY surface when a pending HITL prompt is consumed by the
+// first responder, so the other surfaces retire their cards immediately;
+// Decision carries the EFFECTIVE answer a racer converges on. Transient: the
+// durable resolution lives in the resolved pending message row. See
+// specs/contracts/event-catalog.md.
 type HitlResolvedData struct {
 	Kind     HitlResolvedKind `json:"kind"`
 	ID       string           `json:"id"`
@@ -342,13 +292,12 @@ type ContextFillEventData struct {
 	MaxTokens   int     `json:"max_tokens"`
 	Status      string  `json:"status"`
 	PlanStepID  string  `json:"plan_step_id,omitempty"`
-	// SessionRootMirror marks a step-scoped event (PlanStepID set) emitted by
-	// the root conductor emitter (dynamic inline-step scope): the frontend may
-	// mirror this fill to the session-level status bar immediately instead of
-	// waiting for the session_tokens re-broadcast, which lags one executor
-	// iteration. Never set for delegated subagent emitters (WithPlanStepID
-	// copies) or session-root events — a subagent's fill must not clobber the
+	// SessionRootMirror marks a step-scoped event from the ROOT conductor
+	// emitter: the frontend may mirror the fill to the session-level status
+	// bar immediately (the session_tokens re-broadcast lags one iteration).
+	// Never set on subagent copies — their fill must not clobber the
 	// conductor's session-level fill.
+	// See specs/contracts/event-catalog.md (context_fill).
 	SessionRootMirror   bool   `json:"session_root_mirror,omitempty"`
 	SessionInputTokens  int    `json:"session_input_tokens"`
 	SessionOutputTokens int    `json:"session_output_tokens"`
@@ -356,13 +305,10 @@ type ContextFillEventData struct {
 	Family              string `json:"family"`
 }
 
-// SessionTokensEventData is the typed Data payload for "session_tokens" events.
-// UsedTokens/MaxTokens mirror the session-root (conductor) context-window fill,
-// cached by ContextFill and forwarded here alongside FillPercent so the status
-// bar can render a "N of M" tooltip without waiting for the next context_fill.
-// MedianOutputTokS/TokSSamples carry the median per-call output-token
-// throughput over the session's recent LLM calls; both are omitted until the
-// per-session sliding window reaches its minimum sample count.
+// SessionTokensEventData is the typed Data payload for "session_tokens".
+// UsedTokens/MaxTokens mirror the session-root context-window fill cached by
+// ContextFill (drives the status bar's "N of M" tooltip); the throughput
+// fields stay omitted until the sliding window reaches its minimum samples.
 type SessionTokensEventData struct {
 	SessionInputTokens  int     `json:"session_input_tokens"`
 	SessionOutputTokens int     `json:"session_output_tokens"`
@@ -383,43 +329,17 @@ type ContextCompactionEventData struct {
 }
 
 // CompactionStartedEventData is the typed Data payload for "compaction_started"
-// session events — the manual context compaction flow (CompactSessionContext)
-// has been accepted and is running. The UI locks the input and shows the
-// "Compacting" activity while it is in flight.
+// — the manual compaction flow is running (UI locks the input). See
+// specs/contracts/event-catalog.md.
 type CompactionStartedEventData struct {
 	Strategy string `json:"strategy"`
 }
 
 // CompactionFinishedEventData is the typed Data payload for
-// "compaction_finished" session events — the manual compaction flow reached a
-// terminal state. Exactly one of Success / Cancelled / Error applies: Success
-// is true when the flow completed (including the nothing-to-compact no-op);
-// Cancelled is true when the user aborted (Error is then empty and the history
-// is untouched); Error carries the failure message otherwise. NothingCompacted
-// is true when the strategy left the history unchanged (it already fits within
-// the compaction limits): the flow still succeeds, but no marker row is
-// persisted and the percentages are zero. DeferredToResume is true when such a
-// no-op was deferred to the resume of a paused unfinished task: the flow armed
-// the orchestrator's one-shot resume-compaction request before auto-resuming,
-// so the executor's context_compaction card (with the real numbers) arrives
-// from the resumed run instead of this flow's marker row. Resumed reports
-// whether the flow auto-resumed a task it had paused to reach an idle window.
-// PausedWithoutResume is true when the flow paused a task and the task was
-// left paused without the flow's auto-resume: either the auto-resume FAILED,
-// or the flow honoured a user-owned pause (a user-initiated pause is never
-// stolen — see Session.pauseOwner). A paused checkpoint remains, but
-// session_paused was suppressed while compacting — clients must re-apply the
-// paused state from this flag.
-// CompactionAvailability is the per-strategy manual-compaction prediction
-// recomputed by the orchestrator on the POST-flow history (see
-// Orchestrator.ManualCompactionAvailability): whether each strategy would
-// actually shrink the dialogue right now, how many tokens it would reclaim,
-// and whether that reclaim is exact (sliding_window) or a forecast
-// (LLM-backed). After a successful compaction or a no-op outcome the compacted
-// (unchanged) history is under every strategy's window, so all strategies
-// report available=false; for a cancelled or failed flow it is the untouched
-// history's own verdict. The UI refreshes the compact menu from it without a
-// status refetch.
+// "compaction_finished" — the manual compaction flow's terminal state.
+// Field semantics (exactly-one-of Success/Cancelled/Error, NothingCompacted,
+// DeferredToResume, PausedWithoutResume, CompactionAvailability) are specified
+// in specs/contracts/event-catalog.md and specs/domains/memory/compaction.md.
 type CompactionFinishedEventData struct {
 	Strategy               string                        `json:"strategy"`
 	Success                bool                          `json:"success"`
@@ -439,31 +359,27 @@ type SkillsActivatedData struct {
 	Skills []string `json:"skills"`
 }
 
-// AgentMetricsData is the typed Data payload for "agent_metrics" events,
-// emitted once per task finish or abort. It aggregates executor quality
-// counters collected over the whole session so the effect of Model Profiles (and
-// any other) profiles can be measured against data instead of impressions.
+// AgentMetricsData is the typed Data payload for "agent_metrics", emitted once
+// per task finish/abort — executor quality counters so profile effects can be
+// measured against data. See specs/domains/model-profiles.md (and the
+// specs/contracts/event-catalog.md row).
 type AgentMetricsData struct {
-	// Finish describes the terminal state the task ended in:
-	// "full", "partial", "failed", "aborted" (task_complete path),
-	// "cancelled" (task_cancelled) or "failed" (task_failed_resumable).
+	// Finish: "full" | "partial" | "failed" | "aborted" | "cancelled".
 	Finish string `json:"finish"`
 	// ParseErrors counts malformed model outputs that triggered a corrective
-	// nudge or an abort (tool-input parse errors and tool-call syntax leaks).
+	// nudge or an abort.
 	ParseErrors int `json:"parse_errors"`
-	// InvalidToolCalls counts tool results the executor classified as an
-	// invalid tool call (malformed input, unknown tool, or a structurally
-	// invalid batch) — distinct from runtime errors and policy refusals.
+	// InvalidToolCalls counts results the executor classified as an invalid
+	// tool call — distinct from runtime errors and policy refusals.
 	InvalidToolCalls int `json:"invalid_tool_calls"`
-	// Nudges counts corrective nudges emitted by the executor loop detectors,
+	// Nudges counts corrective nudges from the executor loop detectors,
 	// broken down by detector kind.
 	Nudges AgentMetricsCounters `json:"nudges"`
 	// Aborts counts hard loop-breaker aborts, broken down by detector kind.
 	Aborts AgentMetricsCounters `json:"aborts"`
-	// Steps counts executor steps observed in the session (conductor plus
-	// delegated subagents sharing the session metrics).
+	// Steps counts executor steps (conductor plus sharing subagents).
 	Steps int `json:"steps"`
-	// OutputTokens is the session-wide accumulated output token usage.
+	// OutputTokens is the session-wide accumulated output usage.
 	OutputTokens  int                   `json:"output_tokens"`
 	ModelProfiles ModelProfilesMetaInfo `json:"model_profiles"`
 }
@@ -484,15 +400,12 @@ type AgentMetricsCounters struct {
 // under, so metrics can be grouped by active optimization variants.
 type ModelProfilesMetaInfo struct {
 	Enabled bool `json:"enabled"`
-	// Profile is the id (slug) of the active profile the snapshot was taken
-	// from — the same id `model_profiles.active_profile` persists and GetModelProfiles
-	// reports as active_id. Reported even when the master toggle is off (the
-	// active profile is a fact independent of variant activation); empty
-	// when no profile was ever recorded.
+	// Profile is the active profile's id slug (same id
+	// `model_profiles.active_profile` persists), reported even when the master
+	// toggle is off; empty when never recorded.
 	Profile string `json:"profile,omitempty"`
-	// ProfileKind is the kind of the active profile: "predefined" or
-	// "custom" (see config.ModelProfileKind). Empty exactly when Profile is
-	// empty, so legacy payloads without profile fields keep their shape.
+	// ProfileKind is "predefined" or "custom" (config.ModelProfileKind);
+	// empty exactly when Profile is empty.
 	ProfileKind string   `json:"profile_kind,omitempty"`
 	Variants    []string `json:"variants"`
 }

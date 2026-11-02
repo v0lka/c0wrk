@@ -1,67 +1,9 @@
 // Memory-aware launch planning: the pure decision layer between "what memory
-// does this machine have" (topology.go), "what memory does this model need"
-// (memory.go) and "what flags does the runtime get" (server.go's LaunchSpec).
-//
-// Before this file existed, `Resolve` answered a memory question it had no
-// inputs for. Its whole signature was `(platform, backend, ramGiB)`, so the two
-// things it emitted that decide whether a launch survives contact with the
-// machine were derived from RAM alone:
-//
-//   - `-ngl` was a constant per platform/backend (`layersFor`: 99 or 0), and
-//   - `-c` was a five-step RAM ladder (`contextSizeFor`).
-//
-// Neither is a memory decision. A 16 GiB laptop with a 24 GiB discrete card
-// and a 128 GiB Apple Silicon machine sit in different ladder tiers and get
-// the same `-ngl 99`, while the real question — does the weights + KV + compute
-// footprint fit the pool it is about to be allocated in — was never asked.
-// This file asks it, and it asks it with the two measured halves the package
-// already had: `MemoryTopology`'s device/host budgets for capacity and
-// `ModelMemoryProfile`'s projections for requirement.
-//
-// THE INVARIANT THIS FILE KEEPS: `Plan` is PURE. No I/O, no probing, no clock,
-// no package state — every input arrives as a value and every output is a
-// function of those values, exactly like `Resolve` and `buildTopology` before
-// it. That is what keeps the whole
-// (topology × profile × tuning × backend × GPU family) matrix table-testable
-// without a runtime, a GPU or a filesystem. `TestPlanImportsNoIOPackage` and
-// `TestPlanIsPure` assert it; the second half of the pair also pins that the
-// plan ignores `MemoryTopology.ProbedAt`, the one clock-derived field in the
-// inputs.
-//
-// ─────────────────────────────────────────────────────────────────────────────
-// Fit exclusivity — the rule the whole planner is organised around
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// The pinned fork ships its own sizing pass, `--fit` (`common/fit.cpp`), which
-// adjusts *unset* arguments so the launch fits the device memory it can see.
-// It is ON by default, and it sizes both `-ngl` and `-c`. That makes it a
-// direct competitor with this planner: if both decide, whichever loses is
-// silently ignored — and the loser is not always the runtime.
-//
-// The fork resolves the competition by REFUSING the ambiguous shape. `fit.cpp`
-// throws when `--fit` is asked to size a launch whose offload the caller has
-// already pinned: the throw sites at `common/fit.cpp:183` and `:462`, `:466`,
-// `:472`, `:477`, `:480`, `:483` are all "an argument --fit would have chosen
-// is already set". Confirmed empirically against the pinned runtime: `-ngl 99`
-// together with `--fit on` ABORTS the launch rather than degrading it. A
-// planner that emitted both would turn every tuned launch into a crash.
-//
-// So exactly one of the two decides, and which one is a function of the
-// override vocabulary alone:
-//
-//	Offload == Auto AND no Devices AND SplitMode == Auto
-//	  → `-fit on`, OMIT `-ngl` entirely, pass a zero `-c`, and let fit size
-//	    both the layer count and the context. c0wrk still chooses the KV
-//	    precision (fit does not touch `-ctk`/`-ctv`) and still sets the floor
-//	    fit must respect (`-fitc`).
-//	ANY of {explicit Offload, Devices, SplitMode} set
-//	  → `-fit off`, pass those values explicitly, and COMPUTE the context here
-//	    from `ModelMemoryProfile` — because with fit off nothing else will.
-//
-// A `FitEnabled` override never breaks the rule: an explicit `false` forces the
-// second branch, and an explicit `true` next to an explicit offload loses to
-// the exclusivity rule and is recorded in `Notes` rather than silently dropped
-// or spawned into a `fit.cpp` throw.
+// this machine has" (topology.go) and "what memory this model needs"
+// (memory.go). Plan is PURE — no I/O, no probing, no clock, no package state
+// (TestPlanImportsNoIOPackage, TestPlanIsPure, which also pins that
+// MemoryTopology.ProbedAt is ignored); the fit-exclusivity rule this file is
+// organised around is specified in specs/domains/embedded-llm.md (Memory plan).
 package embeddedllm
 
 import (
@@ -73,156 +15,73 @@ import (
 )
 
 // DefaultFitMinContext is the `-fitc` floor c0wrk passes when fit sizes the
-// context.
-//
-// It is **65536**, deliberately NOT the fork's own default of 4096
-// (`-fitc, --fit-ctx N   minimum ctx size that can be set by --fit option,
-// default: 4096`). The fork's floor is a "does not crash" floor, not a "is
-// usable" one: the pinned model's own issue tracker reports empty and truncated
-// answers as *the most common* complaint against it, and the documented
-// workaround is `-n 16384` paired with "use `-c 65536`". Letting fit settle at
-// 4096 would reproduce exactly that failure on every machine tight enough for
-// fit to shrink the context — the agent would get a server that loads, answers
-// and then returns nothing useful, which is worse than a refusal because
-// nothing reports it.
-//
-// 65536 is also the tier `contextSizeFor` already grants a ≤71 GiB machine, so
-// the fit floor and the explicit ladder agree at the middle of the range
-// instead of the planner having two different ideas of "usable".
+// context: 65536, deliberately NOT the fork's own default of 4096. The
+// measurement-forced divergence (the truncated-answer failure a 4096 floor
+// reproduces, and the ladder-tier agreement) is specified in
+// specs/domains/embedded-llm.md (Memory plan).
 const DefaultFitMinContext = 65536
 
-// upstreamFitMinContext is the fork's own `-fitc` default, kept only so the
+// upstreamFitMinContext is the fork's own `-fitc` default, kept so the
 // divergence above is quotable and testable rather than a remembered number.
 const upstreamFitMinContext = 4096
 
-// DefaultParallel is the `-np` value every plan emits unless overridden.
-//
-// It is **1**, not the fork's `-1` (= auto). Measured against the pinned fork:
-//
-//   - auto/4 inflates fit's own projection from **24450 MiB to 77297 MiB** —
-//     `n_streams` becomes 4 when `kv_unified` is false, so the compute reserve
-//     is sized per stream. On a machine whose budget sits between the two
-//     numbers, `-np 4` is the difference between a launch and a `fit.cpp`
-//     refusal.
-//   - `-np` also SPLITS the context across slots: `-c 8192 -np 4` yields
-//     `n_ctx_slot 2048`. A plan that reasoned about a 65536-token context
-//     while passing `-np 4` would be provisioning four 16384-token slots —
-//     i.e. the exact truncated-answer failure `DefaultFitMinContext` exists to
-//     prevent.
-//
-// c0wrk serves one agent loop over one loopback socket and issues one request
-// at a time per server, so a single slot is not a restriction here; it is the
-// shape the memory model was measured in (`-np 1` in memory.go's reference
-// command line).
+// DefaultParallel is the `-np` value every plan emits: 1, not the fork's auto
+// default — the divergence measurements (fit's projection inflation, per-slot
+// context splitting) are in specs/domains/embedded-llm.md (Memory plan).
 const DefaultParallel = 1
 
 // DefaultCtxCheckpoints is the `--ctx-checkpoints` value every plan emits
-// unless overridden.
-//
-// It is **32**, which IS the fork's own default (`common/common.h`:
-// `int32_t n_ctx_checkpoints = 32;`, rendered as `-ctxcp, --ctx-checkpoints N
-// max number of context checkpoints to create per slot (default: 32)` at the
-// pinned tag prism-b10735-842b188). Unlike DefaultFitMinContext and
-// DefaultParallel this constant does not DIVERGE from the runtime — it pins
-// the same figure in this struct, because the flag is rendered
-// unconditionally: the runtime also reads the `LLAMA_ARG_CTX_CHECKPOINTS`
-// environment variable, and an inherited env override on the fork's side of
-// the boundary would otherwise decide a memory-bearing setting (each
-// checkpoint can hold a saved KV prefix) that no c0wrk layer chose. Rendering
-// the value explicitly makes the launch shape a property of this struct
-// rather than of the process environment.
-//
-// 0 is a legitimate operator choice ("never snapshot the KV prefix") and is
-// passed through verbatim; see Tuning.CtxCheckpoints.
+// unless overridden: 32, the fork's own figure — pinned here rather than
+// diverged, because the flag is rendered unconditionally and an inherited
+// LLAMA_ARG_CTX_CHECKPOINTS env override must not decide a memory-bearing
+// setting no c0wrk layer chose. specs/domains/embedded-llm.md (Memory plan).
 const DefaultCtxCheckpoints = 32
 
-// runtimeCacheRAMDefaultMiB is the pinned fork's own `--cache-ram` default
-// (`-cram, --cache-ram N   set the maximum cache size in MiB (default: 8192,
-// -1 - no limit, 0 - disable)`). Unlike the two defaults above it is KEPT, not
-// diverged from — but it stops being the answer the moment the measured
-// budgets hold more than it: the prompt cache lives in memory the launch was
-// already granted, and every prefix past the ceiling is re-prefilled from
-// scratch, so a flat 8192 MiB on a machine with tens of GiB to spare turns
-// each long agent step back into a cold start. It is the FLOOR of the derived
-// ceiling (see planPromptCacheCeiling): the planner only ever raises the
-// cache above it, never lowers it below it.
+// runtimeCacheRAMDefaultMiB is the pinned fork's own `--cache-ram` default,
+// kept rather than diverged from — and the FLOOR of the derived ceiling
+// (planPromptCacheCeiling): the planner only ever raises the cache above it,
+// never lowers it below it. Why a flat default turns long agent steps back
+// into cold starts is in specs/domains/embedded-llm.md (Memory plan).
 const runtimeCacheRAMDefaultMiB = 8192
 
-// Policy margins for the device/host SPLIT, which memory.go documents as
-// measured on **Metal only**. The weight, cache, recurrent-state and compute
-// terms are model+runtime properties and travel across backends; the division
-// of those terms between device and host is a property of each backend's repack
-// support, and on a backend nobody measured it the projection is an estimate.
-// These allowances are the planner's way of saying so: they are POLICY, not
-// measurement, deliberately conservative, and they are the only numbers in this
-// file that are not derived from a cited figure.
+// Policy margins for the device/host SPLIT: memory.go's split was measured on
+// Metal only, and the division of the model+runtime terms between device and
+// host is a property of each backend's repack support. These allowances are
+// POLICY, not measurement — the only numbers in this file not derived from a
+// cited figure (specs/domains/embedded-llm.md, Memory plan).
 const (
 	// unmeasuredSplitAllowanceMiB is subtracted from the device budget on a
-	// recognized GPU family whose split has not been measured (every CUDA,
-	// ROCm, Vulkan and Intel part).
+	// recognized GPU family whose split has not been measured.
 	unmeasuredSplitAllowanceMiB int64 = 1024
 	// unknownGPUAllowanceMiB is the larger deduction for a device the
-	// classifier does not recognize at all: an unknown part is unknown in both
-	// directions (split AND compute-reserve behaviour).
+	// classifier does not recognize at all — unknown in both directions.
 	unknownGPUAllowanceMiB int64 = 2048
 )
 
-// ErrMemoryPlanInfeasible reports a launch the measured budgets cannot serve at
-// ANY modelled KV precision. It is a refusal with the arithmetic in it: the
-// message names the footprint, the budget and the precision it was measured at,
-// so the UI can show why instead of a bare "not enough memory".
+// ErrMemoryPlanInfeasible reports a launch the measured budgets cannot serve
+// at any modelled KV precision; the typed refusal carries the arithmetic —
+// see InsufficientMemoryError.
 var ErrMemoryPlanInfeasible = errors.New("the embedded LLM does not fit this machine's measured memory budgets")
 
-// ErrTuningInvalid reports an override the planner cannot honour: a context
-// outside the modelled range, a partial layer count that is negative, or a
-// packing this model has no measured residency for. It is checked BEFORE any
-// feasibility arithmetic, so a typo is reported as a typo and never as a
-// machine that is too small.
+// ErrTuningInvalid reports an override the planner cannot honour. It is
+// checked BEFORE any feasibility arithmetic, so a typo is reported as a typo
+// and never as a machine that is too small.
 var ErrTuningInvalid = errors.New("invalid embedded-LLM memory tuning")
 
 // ─────────────────────────────────────────────────────────────────────────────
-// The combined memory gate
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// ADR-066 D6 refused an install below a flat 16 GiB of SYSTEM RAM. That single
-// number measured one pool, and it was wrong in both directions at once:
-//
-//   - 8 GiB of RAM beside a 32 GiB accelerator was refused outright, even
-//     though the weights, the KV cache and the compute reserve all live in
-//     VRAM and the host carries only the measured 598 MiB of spill plus one
-//     CPU compute buffer;
-//   - 32 GiB of RAM beside an 8 GiB accelerator was ADMITTED, then handed a
-//     full-offload `-ngl 99` plan nobody had priced against the card — an
-//     out-of-memory at load, with no retry.
-//
-// Both failures come from measuring one pool. The gate here prices the launch
-// against BOTH and spends them the way the machine actually does: ONE shared
-// pool when the accelerator's memory aliases system RAM (`MemoryTopology.
-// Unified`), two independent budgets when it does not. It replaces the floor
-// rather than sitting beside it, so there is no RAM threshold left to drift
-// out of agreement with the measurements — the floor is now wherever the
-// smallest shape `memory.go` has measured stops fitting, which is a fact about
-// the model and the machine rather than a round number.
+// The combined memory gate: prices the launch against BOTH pools — one shared
+// pool when MemoryTopology.Unified, two otherwise — replacing ADR-066 D6's flat
+// 16 GiB floor. specs/domains/embedded-llm.md (The combined memory gate).
 
-// ErrInsufficientMemory is the typed refusal of the combined gate: no shape
-// `memory.go` has measured — neither residency extreme, nor any packing, nor
-// any modelled KV precision — fits this machine's memory. Every refusal is an
-// `*InsufficientMemoryError` wrapping it, so a caller can match the sentinel
-// without parsing a message and still show the arithmetic.
+// ErrInsufficientMemory is the typed refusal of the combined gate; every
+// refusal is an *InsufficientMemoryError wrapping it, so a caller can match
+// the sentinel without parsing a message and still show the arithmetic.
 var ErrInsufficientMemory = errors.New("the embedded LLM does not fit this machine's memory")
 
-// InsufficientMemoryError is the refusal WITH the arithmetic in it. Its message
-// names both pools and both numbers — what the model needs and what the machine
-// has — because "not enough memory" is not actionable while "needs 9.4 GiB of
-// device memory, 6.9 GiB available" tells a user which part to change.
-//
-// It unwraps to a chain rather than to one sentinel: `ErrInsufficientMemory`
-// always, `ErrMemoryPlanInfeasible` always (the two name the same fact at
-// different layers — the gate and the planner — and a caller may match either),
-// and the deprecated `ErrInsufficientRAM` only when the HOST pool is one of the
-// pools that overflowed. That last condition is what keeps the old sentinel
-// honest: a refusal caused by a small accelerator must not report itself as
-// insufficient system RAM.
+// InsufficientMemoryError carries the arithmetic: what the model needs and
+// what the machine has, for both pools. It unwraps to ErrInsufficientMemory and
+// ErrMemoryPlanInfeasible always, and to the deprecated ErrInsufficientRAM only
+// when the HOST pool overflowed (specs/domains/embedded-llm.md, Invariants).
 type InsufficientMemoryError struct {
 	// Packing, Context, KVType and Offloaded describe the shape the numbers
 	// belong to: the closest-fitting one this machine was offered.
@@ -231,39 +90,30 @@ type InsufficientMemoryError struct {
 	KVType    KVType
 	Offloaded bool
 
-	// DeviceNeedMiB and DeviceHaveMiB are the accelerator side. Both are 0 for
-	// a machine with no accelerator, which the message says in words rather
-	// than leaving as two zeroes to interpret.
+	// DeviceNeedMiB and DeviceHaveMiB are the accelerator side; both are 0
+	// for a machine with no accelerator, which the message says in words.
 	DeviceNeedMiB int64
 	DeviceHaveMiB int64
 	// Device is the tri-state of the accelerator axis — see deviceAxisState.
 	Device deviceAxisState
 
-	// HostNeedMiB and HostHaveMiB are the system-RAM side, and
-	// HostReserveMiB is the reserve HostHaveMiB was derived with, so the
-	// message can state it rather than imply it.
+	// HostNeedMiB and HostHaveMiB are the system-RAM side; HostReserveMiB is
+	// the reserve HostHaveMiB was derived with, so the message can state it.
 	HostNeedMiB    int64
 	HostHaveMiB    int64
 	HostReserveMiB int64
 	HostRAMGiB     float64
 
-	// Unified reports whether the two pools are the same bytes. It changes the
-	// message, because on a unified machine a device figure and a host figure
-	// are two views of one pool and reading them as additive would double it.
+	// Unified reports whether the two pools are the same bytes: on a unified
+	// machine the two figures are views of one pool, never additive.
 	Unified bool
 }
 
-// Error renders both pools with both numbers, in GiB, matching llama.cpp's own
-// habit of reporting a memory breakdown the reader can check against a
-// `--list-devices` line.
-//
-// A unified machine whose accelerator footprint is non-zero gets one extra
-// clause. Its two footprints are drawn from the SAME bytes, so a reader who
-// compared the two rendered pairs independently would conclude the launch fits
-// when the pool is over — the double-counting `MemoryTopology`'s clamp exists
-// to prevent, arriving from the other direction. The clause states the sum and
-// the shortfall. A machine with NO accelerator gets no such clause: there is
-// nothing to sum with.
+// Error renders both pools with both numbers. A unified machine whose
+// accelerator footprint is non-zero gets one extra clause stating the SUM and
+// the shortfall: its two figures are drawn from the same bytes, so a reader
+// comparing the rendered pairs independently would conclude the launch fits
+// when the pool is over. A machine with no accelerator gets no such clause.
 func (e *InsufficientMemoryError) Error() string {
 	var b strings.Builder
 	b.WriteString(ErrInsufficientMemory.Error())
@@ -303,10 +153,9 @@ func (e *InsufficientMemoryError) residencyWords() string {
 	return "host-resident"
 }
 
-// shortfall renders an overflow. Under 1 GiB it is rendered in MiB, because a
-// refusal that reads "needs 8.0 GiB, 8.0 GiB available" tells the user nothing:
-// the two figures differ by an amount one decimal place cannot show, and the
-// difference is the whole reason for the refusal.
+// shortfall renders an overflow: under 1 GiB in MiB, because "needs 8.0 GiB,
+// 8.0 GiB available" hides the difference that is the whole point of the
+// refusal.
 func shortfall(mib int64) string {
 	if mib < mibPerGiBInt {
 		return fmt.Sprintf("%d MiB", mib)
@@ -353,20 +202,18 @@ func (e *InsufficientMemoryError) Unwrap() []error {
 	return chain
 }
 
-// mibGiB renders a whole-MiB figure as GiB with one decimal, the precision a
-// capacity message needs and no more: 9.4 GiB is a figure a user can compare
-// against the "8 GB" on a box, while 9623 MiB is not.
+// mibGiB renders a whole-MiB figure as GiB with one decimal — a figure a user
+// can compare against the "8 GB" on a box, which 9623 MiB is not.
 func mibGiB(mib int64) string { return gibString(float64(mib) / mibPerGiB) }
 
 // gibString renders a GiB figure with one decimal.
 func gibString(gib float64) string { return fmt.Sprintf("%.1f GiB", gib) }
 
-// deviceAxisState is the tri-state of the gate's accelerator side. It is
-// tri-state for the same reason `BudgetFit` and `CPUFeature` are: "there is no
-// accelerator" and "there is an accelerator whose memory nobody measured" are
-// different facts with OPPOSITE consequences — the first is a refusal, the
-// second must not be — and a bool's zero value would assert one of them about
-// every caller that measured nothing.
+// deviceAxisState is the tri-state of the gate's accelerator side: "no
+// accelerator" and "an accelerator whose memory nobody measured" are different
+// facts with OPPOSITE consequences — the first refuses, the second must not —
+// so a bool cannot carry it (the three consequences are tabled in
+// specs/domains/embedded-llm.md, The combined memory gate).
 type deviceAxisState int
 
 const (
@@ -377,16 +224,14 @@ const (
 	// either a probed one, or a unified pool that IS the host budget.
 	deviceKnown
 	// deviceUnreadable means an accelerator with INDEPENDENT memory exists but
-	// nothing measured its size. This is deliberately NOT fatal: refusing here
-	// would reproduce the exact failure the gate exists to remove (a small-RAM
-	// machine with a big card turned away), so the gate prices the host pool
-	// alone and records the degradation in Notes.
+	// nothing measured its size. Deliberately NOT fatal: refusing here would
+	// turn away the small-RAM machine with a big card the gate exists to
+	// admit; the host pool is priced alone, the degradation noted.
 	deviceUnreadable
 )
 
-// gateBudgets is the capacity side of one gate decision: the two budgets, how
-// much RAM was held back to derive the host one, and what is known about the
-// accelerator.
+// gateBudgets is the capacity side of one gate decision: the two budgets, the
+// reserve the host one was derived with, and what is known about the accelerator.
 type gateBudgets struct {
 	device       deviceAxisState
 	deviceMiB    int64
@@ -398,25 +243,10 @@ type gateBudgets struct {
 }
 
 // DefaultHostReserveGiB returns the system RAM the gate keeps out of the host
-// budget for a machine of this size, in GiB. It is the SAME derivation
-// topology.go applies to a probed machine — the larger of a 4 GiB floor and
-// 1/8 of RAM — exposed so a caller with no topology (the synchronous
-// pre-install refusal) and a caller with one cannot disagree about the reserve.
-//
-// The reserve is not slack. It has three named tenants, and a launch that eats
-// into it does not merely slow down:
-//
-//   - the OS and the window server, which is what the 4 GiB floor is sized for;
-//   - c0wrk itself — the Wails webview, the Go heap, the PTYs and the session
-//     store all live in this process while the model is resident;
-//   - the VECTOR INDEX, which is the tenant that scales with the project: the
-//     ONNX Runtime session, the embedding model and the in-memory index of a
-//     large workspace are all host-resident, and they are loaded whether or not
-//     the embedded LLM is.
-//
-// The 1/8 ratio above the floor is what keeps the three covered on a big
-// machine, where "everything else" is bigger too. `Tuning.HostReserveGiB`
-// overrides it — replacing the derivation, not stacking on it.
+// budget (GiB): the same derivation topology.go applies to a probed machine,
+// exposed so the no-topology refusal and a probed one cannot disagree. The
+// reserve's three named tenants are specified in
+// specs/domains/embedded-llm.md (Device memory topology probe).
 func DefaultHostReserveGiB(ramGiB float64) float64 {
 	if ramGiB <= 0 {
 		return 0
@@ -425,26 +255,15 @@ func DefaultHostReserveGiB(ramGiB float64) float64 {
 	return float64(reserve) / gibibyte
 }
 
-// gateBudgetsFor derives the two budgets the gate spends.
-//
-// With a probed topology it uses the topology's own numbers (which already
-// carry the reserve and the unified clamp) and takes the GPU family's split
-// allowance off the device side, exactly as `planBudgets` does — the gate and
-// the planner must price the same machine or one of them is lying.
-//
-// WITHOUT one it derives the host budget from the RAM probe with the same
-// reserve policy, and classifies the accelerator axis statically. That
-// classification is the whole reason an unprobed machine is not simply refused:
-// a backend whose memory is INDEPENDENT of host RAM (a discrete CUDA or ROCm
-// card on amd64) leaves the device axis unreadable, while one whose memory IS
-// host RAM (Apple Silicon's Metal, and Vulkan — which `classifyUnified` also
-// resolves to unified when unsure) can be priced from the RAM probe alone.
+// gateBudgetsFor derives the two budgets the gate spends: the topology's own
+// numbers minus the family's split allowance with a probe (as planBudgets does,
+// so gate and planner price the same machine), otherwise RAM-probe-derived
+// budgets with a statically classified accelerator axis — why an unprobed
+// machine is not simply refused is in specs/domains/embedded-llm.md
+// (The combined memory gate).
 func gateBudgetsFor(in ResolveInput, backend Backend, family GPUFamily) (gateBudgets, error) {
-	// A set override REPLACES the derived reserve; an unset one leaves it alone.
-	// The conversion is range-checked (hostReserveBytesFromGiB) instead of relying
-	// on Go's implementation-defined float→int behaviour, and NaN is refused here
-	// rather than silently skipped by a `>= 0` test — an operator typo must not
-	// vanish without a word.
+	// A set override REPLACES the derived reserve, and the conversion is
+	// range-checked (hostReserveBytesFromGiB) — see hostReserveMiB for why.
 	var overrideBytes int64
 	hasOverride := false
 	if override := in.Tuning.HostReserveGiB; override != nil {
@@ -457,8 +276,7 @@ func gateBudgetsFor(in ResolveInput, backend Backend, family GPUFamily) (gateBud
 
 	if in.Topology != nil {
 		// The topology's HostRAMGiB is documented as the SAME figure the RAM
-		// probe carries, so passing the profile's copy as the fallback is not a
-		// second opinion.
+		// probe carries, so the profile's copy is not a second opinion.
 		topology := normalizeTopology(*in.Topology, in.RAMGiB)
 		ramBytes := int64(topology.HostRAMGiB * gibibyte)
 
@@ -504,12 +322,10 @@ func gateBudgetsFor(in ResolveInput, backend Backend, family GPUFamily) (gateBud
 		reserveMiB: reserve / bytesPerMiB,
 		ramGiB:     ramGiB,
 	}
-	// The axis follows `layersFor` — the plan's OWN offload policy — rather than
-	// re-deriving one, because the gate must price the shape the plan will
-	// actually emit. That coupling matters on Apple Silicon, where the arm64
-	// archive IS the Metal build even when the effective backend came out as
-	// `cpu`: a gate keyed on `backend.gpuAccelerated()` would see "no
-	// accelerator" there and price a host-resident shape nobody launches.
+	// The axis follows `layersFor` — the plan's OWN offload policy — because
+	// the gate must price the shape the plan will actually emit. That matters
+	// on Apple Silicon, where the arm64 archive IS the Metal build even when
+	// the effective backend came out as `cpu` and nothing is offloaded.
 	switch {
 	case layersFor(in.Platform, backend) == nglCPUOnly:
 		// The CPU build, and an Intel Mac (no Metal compute path for this
@@ -525,11 +341,9 @@ func gateBudgetsFor(in ResolveInput, backend Backend, family GPUFamily) (gateBud
 			mibGiB(g.hostMiB), mibGiB(g.reserveMiB))
 	default:
 		// The plan offloads and the accelerator's memory is NOT independent of
-		// host RAM — Apple Silicon, and Vulkan, which `classifyUnified`'s rule 6
-		// also settles as unified when unsure (misclassifying a discrete card
-		// only shrinks its budget, while misclassifying a unified pool invents
-		// memory). The RAM probe therefore measured both pools, and the device
-		// budget IS the host budget.
+		// host RAM (Apple Silicon; Vulkan, which classifyUnified's rule 6 also
+		// settles as unified when unsure) — the RAM probe measured both pools,
+		// so the device budget IS the host budget.
 		g.device = deviceKnown
 		g.unified = true
 		g.deviceMiB = g.hostMiB
@@ -538,16 +352,10 @@ func gateBudgetsFor(in ResolveInput, backend Backend, family GPUFamily) (gateBud
 }
 
 // backendHasIndependentVRAM reports whether a platform+backend pair implies an
-// accelerator whose memory is NOT host RAM, which is the only shape where a
-// small RAM total can coexist with a model that does not fit in it.
-//
-// It is the static half of `classifyUnified`: CUDA and ROCm archives are
-// published for amd64 only, and `classifyUnified`'s rule 4 reads a CUDA or HIP
-// inventory on any other architecture as a Jetson/Grace-Hopper class SoC whose
-// GPU shares system memory. Vulkan is deliberately NOT here — it serves
-// discrete cards and integrated GPUs alike, and `classifyUnified`'s rule 6
-// already settles "unsure" as unified, because misclassifying a discrete card
-// only shrinks its budget while misclassifying a unified pool invents memory.
+// accelerator whose memory is NOT host RAM — the only shape where a small RAM
+// total can coexist with a model that does not fit in it; the static
+// classification and its Vulkan exclusion are specified in
+// specs/domains/embedded-llm.md (The combined memory gate).
 func backendHasIndependentVRAM(platform string, backend Backend) bool {
 	if platformArch(platform) != "amd64" {
 		return false
@@ -556,14 +364,9 @@ func backendHasIndependentVRAM(platform string, backend Backend) bool {
 }
 
 // gateOverflow prices one (device, host) footprint pair against the budgets and
-// returns how far over it is, in MiB. Zero means the shape fits.
-//
-// The unified case is the reason this is a function and not two comparisons:
-// when the pools are the same bytes, the two footprints are ADDITIVE against
-// one pool, and checking each against its own budget would pass a launch that
-// needs twice the machine's memory. The device term is still checked on its
-// own, because the topology's margin and the family's split allowance live in
-// the device budget alone.
+// returns how far over it is, in MiB; zero means the shape fits. The unified
+// additivity rule (and why the device term is still checked on its own) is
+// specified in specs/domains/embedded-llm.md (The combined memory gate).
 func (g gateBudgets) overflow(deviceMiB, hostMiB int64) int64 {
 	over := int64(0)
 	if g.device == deviceKnown && deviceMiB > g.deviceMiB {
@@ -587,8 +390,7 @@ type gateVerdict struct {
 	// viable is the cheapest shape that fit, and the one the planner should
 	// expect to land on.
 	viable gateAttempt
-	// notes carries the degradations the gate had to accept, in
-	// operator-facing prose.
+	// notes carries the degradations the gate accepted, operator-facing.
 	notes []string
 }
 
@@ -604,11 +406,9 @@ type gateAttempt struct {
 }
 
 // gateContext is the context the gate prices: the operator's exact override
-// when there is one, otherwise the `-fitc` floor. It is never the RAM ladder's
+// when there is one, otherwise the `-fitc` floor — never the RAM ladder's
 // larger tiers, because the gate answers "can this machine serve the model at
-// all", and the smallest context c0wrk is willing to serve IS the floor —
-// `DefaultFitMinContext`'s doc comment records why going below it reproduces
-// the pinned model's most-reported failure.
+// all", and the smallest context c0wrk serves IS the floor (DefaultFitMinContext).
 func gateContext(tuning Tuning) int {
 	if tuning.Context.Mode == ContextExact && tuning.Context.Tokens > 0 {
 		return tuning.Context.Tokens
@@ -619,13 +419,10 @@ func gateContext(tuning Tuning) int {
 	return DefaultFitMinContext
 }
 
-// gatePackings is the packing set the gate prices: the one the machine's own
-// decision yields, plus PTQ1_0 when that is not already it. It mirrors
-// `planMemory`'s single bounded downgrade exactly, so the gate never admits a
-// machine on a packing the planner is unable to reach.
-//
-// An operator-pinned packing is the whole set: nothing is re-decided for a
-// quantization the operator named.
+// gatePackings is the packing set the gate prices: the machine's own decision
+// plus PTQ1_0 when that is not already it, mirroring planMemory's single
+// bounded downgrade so the gate never admits a machine on a packing the
+// planner cannot reach. An operator-pinned packing is the whole set.
 func gatePackings(in ResolveInput, backend Backend, family GPUFamily) []Packing {
 	if in.Tuning.Packing != "" {
 		return []Packing{in.Tuning.Packing}
@@ -647,23 +444,16 @@ func gateKVTypes(tuning Tuning) []KVType {
 }
 
 // memoryGate is the combined, unified-aware feasibility gate. It runs FIRST in
-// `resolveWith` — before any asset is planned and before any directory is
-// created — so an undersized machine downloads nothing and leaves nothing
-// behind.
-//
-// It searches the modelled shape space (packing × KV precision × residency
-// extreme) at the smallest context c0wrk serves, and admits the machine when
-// ANY shape fits. That is the right question: the gate decides whether a
-// machine is viable at all, while `Plan` decides which viable shape is best.
-//
-// A refusal is an `*InsufficientMemoryError` naming both pools with both
-// numbers. An unreadable device budget is NOT a refusal — see deviceUnreadable.
+// `resolveWith` — before any asset is planned or directory created — so an
+// undersized machine downloads nothing. It prices the modelled shape space at
+// the smallest context c0wrk serves and admits the machine when ANY shape fits
+// (specs/domains/embedded-llm.md, The combined memory gate). An unreadable
+// device budget is NOT a refusal — see deviceUnreadable.
 func memoryGate(in ResolveInput, backend Backend, family GPUFamily, profile ModelMemoryProfile) (gateVerdict, error) {
 	g, err := gateBudgetsFor(in, backend, family)
 	if err != nil {
-		// An override no budget can be derived from (NaN, infinite, or above the
-		// ceiling). Refusing here is what makes the conversion total downstream:
-		// every later float→int of this knob is inside range by construction.
+		// An override no budget can be derived from (NaN, infinite, above the
+		// ceiling); refusing here makes every later conversion total.
 		return gateVerdict{}, err
 	}
 
@@ -671,10 +461,9 @@ func memoryGate(in ResolveInput, backend Backend, family GPUFamily, profile Mode
 	packings := gatePackings(in, backend, family)
 	kvSet := gateKVTypes(in.Tuning)
 
-	// The residency extremes worth pricing. A machine with no accelerator
-	// memory has only one, and a machine whose accelerator could not be
-	// measured is priced as if it were device-resident (which is what --fit
-	// will make it) and gated on the host pool alone.
+	// The residency extremes worth pricing: deviceAbsent prices host only, and
+	// an unmeasured accelerator is priced as device-resident (what --fit will
+	// make it) and gated on the host pool alone.
 	offloadShapes := []bool{true, false}
 	if g.device == deviceAbsent {
 		offloadShapes = []bool{false}
@@ -690,8 +479,7 @@ func memoryGate(in ResolveInput, backend Backend, family GPUFamily, profile Mode
 		in.Tuning.MMProjOffload == nil || *in.Tuning.MMProjOffload)
 	if !ok {
 		// Nothing was priced at all: every candidate was an unmeasured packing
-		// or an unsupported precision. Report it as the planner does rather
-		// than inventing numbers.
+		// or an unsupported precision. Report it as the planner does.
 		return gateVerdict{}, fmt.Errorf("%w: no modelled shape could be priced for this machine",
 			ErrMemoryNotMeasured)
 	}
@@ -702,15 +490,9 @@ func memoryGate(in ResolveInput, backend Backend, family GPUFamily, profile Mode
 }
 
 // closestAttempt prices every shape in the modelled space and returns the one
-// that overflowed the budgets by the least. An overflow of 0 means that shape
-// FITS, and because the space is walked least-lossy first (the packing set
-// starts at the machine's own, the precision set at f16, the residency set at
-// full offload) the first fit found is also the best one.
-//
-// A shape the profile has no measurement for is SKIPPED rather than refused:
-// the gate is searching for something that works, and an unmeasured candidate
-// is not this machine's problem. `Plan` still refuses an operator-PINNED
-// unmeasured packing outright, which is a different question.
+// that overflowed the budgets by the least; the space is walked least-lossy
+// first, so the first fit found is the best one. An unmeasured shape is
+// SKIPPED, not refused (Plan refuses an operator-PINNED unmeasured packing).
 func closestAttempt(
 	profile ModelMemoryProfile,
 	packings []Packing,
@@ -771,14 +553,9 @@ func insufficientMemory(g gateBudgets, best gateAttempt, ctx int) *InsufficientM
 }
 
 // CheckMemoryBudget runs the combined memory gate on its own, with no assets
-// planned and no launch shape resolved. It is the gate `Resolve` runs first,
-// exposed for a caller that must refuse BEFORE it commits to an install — the
-// desktop RPC, which refuses synchronously so a rejection is the answer to the
-// user's click rather than a toast ten minutes into a download.
-//
-// It is pure like everything else in this file: no I/O, no probing, no clock.
-// A nil `Topology` is legal and means "no device probe answered", which takes
-// the derived-budget path rather than failing.
+// planned and no launch shape resolved — the gate `Resolve` runs first, exposed
+// so the desktop RPC can refuse synchronously. A nil Topology is legal (derived
+// budgets); specs/domains/embedded-llm.md (The combined memory gate).
 func CheckMemoryBudget(in ResolveInput) error {
 	// The mtplx engine gates through its own planner: one measured pool, the
 	// pack's own terms, and the same first-check contract (mlxplan.go).
@@ -853,10 +630,9 @@ type ContextTuning struct {
 	Tokens int
 }
 
-// SplitMode is the `-sm`/`--split-mode` override. Its spellings are the
-// runtime's own (`{-sm, --split-mode {none,layer,row,tensor}}`); the zero value
-// means "unset", which is what leaves the fit-exclusivity rule free to hand
-// sizing to the runtime.
+// SplitMode is the `-sm`/`--split-mode` override, with the runtime's own
+// spellings. The zero value means "unset", which leaves the fit-exclusivity
+// rule free to hand sizing to the runtime.
 type SplitMode string
 
 const (
@@ -872,95 +648,59 @@ const (
 	SplitModeTensor SplitMode = "tensor"
 )
 
-// Tuning is the operator-facing override vocabulary for one memory plan.
-//
-// EVERY field distinguishes "unset" from "set to the default value", because
-// the difference is load-bearing: an unset `-ngl` lets the runtime's fit pass
-// size the launch, while an `-ngl` that happens to equal the value fit would
-// have chosen turns fit OFF (see the exclusivity rule in this file's header).
-// Fields with a natural zero sentinel use it (`KVType`, `Packing`, `SplitMode`,
-// `Devices`, `Context`, `Offload`); the rest are pointers.
-//
-// The zero value is the all-Auto plan: fit sizes layers and context, the KV
-// precision escalates to whatever fits, one slot, and every budget comes from
-// the probed topology.
+// Tuning is the operator-facing override vocabulary for one memory plan. EVERY
+// field distinguishes "unset" from "set to the default value", because the
+// difference is load-bearing under the fit-exclusivity rule (an unset `-ngl`
+// lets fit size the launch; an `-ngl` equal to fit's choice turns fit OFF).
+// Natural-zero-sentinel fields use it, the rest are pointers; the zero value is
+// the all-Auto plan (specs/domains/embedded-llm.md, Memory plan).
 type Tuning struct {
 	// Context overrides `-c`. ContextExact pins it; ContextAuto leaves it to
 	// the planner (which passes a zero `-c` under fit, so the runtime sizes it).
 	Context ContextTuning
-	// KVType overrides BOTH `-ctk` and `-ctv` (one value for both, because
-	// memory.go's KVType documents that a mixed pair silently drops to CPU
-	// flash attention). The zero value is Auto: escalate f16 → q8_0 → q4_0
-	// until the target context fits. An unmodelled precision is refused by
-	// ParseKVType, so Auto can never be confused with a choice.
+	// KVType overrides BOTH `-ctk` and `-ctv` (a mixed pair silently drops to
+	// CPU flash attention); zero = Auto: f16 → q8_0 → q4_0 until the target fits.
 	KVType KVType
 	// Offload overrides `-ngl`. See OffloadMode.
 	Offload Offload
-	// FitEnabled overrides `-fit`. nil lets the exclusivity rule decide; an
-	// explicit false forces `-fit off` (and the planner computes the context);
-	// an explicit true next to an explicit offload loses to the exclusivity
-	// rule and is recorded in Notes.
+	// FitEnabled overrides `-fit`: nil lets the exclusivity rule decide, an
+	// explicit false forces `-fit off`, an explicit true beside an explicit
+	// offload loses to the rule and is recorded in Notes.
 	FitEnabled *bool
-	// FitTargetMiB overrides `-fitt`, the per-device margin fit leaves free.
-	// nil (and an explicit 0) omit the flag and keep the runtime's own default
-	// of 1024 MiB. It is only emitted under fit, and it is bounded by
+	// FitTargetMiB overrides `-fitt`, the per-device margin fit leaves free;
+	// nil (and explicit 0) omit the flag. Only emitted under fit; bounded by
 	// MaxTuningMiB.
 	FitTargetMiB *int
-	// FitMinContext overrides `-fitc`, the smallest context fit may settle on.
-	// nil means DefaultFitMinContext (65536, NOT the runtime's 4096 — see that
-	// constant). It is only emitted under fit, and it doubles as the context
-	// the feasibility gate checks, because a fit run that cannot reach its own
-	// floor aborts.
+	// FitMinContext overrides `-fitc` (nil means DefaultFitMinContext); only
+	// emitted under fit, and it doubles as the context the feasibility gate
+	// checks — a fit run that cannot reach its own floor aborts.
 	FitMinContext *int
-	// KVOffload is `-kvo`/`-nkvo`. nil and an explicit true keep the KV cache
-	// on the device with the layers; false passes `-nkvo` and leaves the cache
-	// in system RAM, which trades device memory for host memory and for
-	// attention bandwidth.
+	// KVOffload is `-kvo`/`-nkvo`: nil and an explicit true keep the KV cache
+	// with the layers, false leaves it in system RAM (attention-bandwidth cost).
 	KVOffload *bool
 	// MMProjOffload is `--mmproj-offload`/`--no-mmproj-offload`. nil and an
-	// explicit true keep the vision projector's worst-case reserve on the
-	// device; false moves it to system RAM.
+	// explicit true keep the projector's worst-case reserve on the device.
 	MMProjOffload *bool
-	// Packing overrides the weights quantization. The zero value means "the
-	// backend's packing" (`packingFor`), which is the resolution outcome
-	// ADR-066 D2 describes; a set value must be one the profile has measured
-	// residency for, or the plan is refused with ErrMemoryNotMeasured rather
-	// than projected from a file size.
+	// Packing overrides the weights quantization; zero = the backend's packing
+	// (`packingFor`). Must be one the profile measured, else ErrMemoryNotMeasured.
 	Packing Packing
-	// Parallel overrides `-np`. nil means DefaultParallel (1 — see that
-	// constant for the two measurements behind it); a set value is bounded by
+	// Parallel overrides `-np`. nil means DefaultParallel; bounded by
 	// MaxTuningParallel.
 	Parallel *int
-	// CacheRAMMiB overrides `-cram`, the prompt cache ceiling. nil leaves the
-	// ceiling to the planner: it keeps the runtime's own default unless the
-	// measured budgets hold more than that beyond the expected footprint AND
-	// per-slot context checkpoints are disabled (see planPromptCacheCeiling
-	// for why enabled checkpoints keep the runtime default); 0 would disable
-	// the cache and is passed through verbatim, because disabling it is a
-	// legitimate choice. A set value is bounded by MaxTuningMiB.
+	// CacheRAMMiB overrides `-cram`, the prompt-cache ceiling: nil defers to
+	// the planner (planPromptCacheCeiling); 0 disables; bounded MaxTuningMiB.
 	CacheRAMMiB *int
-	// CtxCheckpoints overrides `--ctx-checkpoints`, the per-slot KV snapshot
-	// count. nil means DefaultCtxCheckpoints (32, the runtime's own figure —
-	// see that constant for why the pin exists); 0 disables the snapshots
-	// verbatim, because disabling them is a legitimate choice. A set value is
-	// bounded by MaxTuningCtxCheckpoints.
+	// CtxCheckpoints overrides `--ctx-checkpoints` (nil =
+	// DefaultCtxCheckpoints; 0 disables verbatim); bounded
+	// MaxTuningCtxCheckpoints.
 	CtxCheckpoints *int
 	// CacheIdleSlots is `--cache-idle-slots`/`--no-cache-idle-slots`. nil and
-	// an explicit true keep the runtime's default of saving idle slots to the
-	// prompt cache on a new task; false passes `--no-cache-idle-slots`.
+	// an explicit true keep the runtime's default of saving idle slots.
 	CacheIdleSlots *bool
-	// HostReserveGiB overrides the RAM kept out of the host budget. nil keeps
-	// the topology's own derivation (the larger of a 4 GiB floor and 1/8 of
-	// RAM). It is a planner-side budget knob, NOT a runtime flag: the pinned
-	// fork has no `--host-reserve`.
-	//
-	// A SET value is always converted, and the conversion is range-checked:
-	// NaN, an infinite or negative figure, and anything above
-	// MaxTuningHostReserveGiB are refused as ErrTuningInvalid by both the gate
-	// and the planner rather than silently ignored. The ceiling exists because a
-	// float→int conversion the result type cannot represent is
-	// implementation-defined in Go, and the amd64 result would fail the memory
-	// gate OPEN — see hostReserveMiB.
+	// HostReserveGiB overrides the RAM kept out of the host budget: nil keeps
+	// the topology's derivation, a SET value replaces it — a planner-side knob,
+	// NOT a runtime flag; out-of-range figures are refused as ErrTuningInvalid
+	// (see hostReserveMiB for the float→int hazard).
 	HostReserveGiB *float64
 	// Devices overrides `-dev`, the comma-separated offload target list. Any
 	// entry forces fit off: naming the devices is pinning the offload.
@@ -969,31 +709,21 @@ type Tuning struct {
 	SplitMode SplitMode
 }
 
-// explicitOffloadShape reports whether any override pins the offload, which is
-// the condition that forces `-fit off` and hands context sizing back to this
-// planner.
+// explicitOffloadShape reports whether any override pins the offload — the
+// condition that forces `-fit off` (the fit-exclusivity rule).
 func (t Tuning) explicitOffloadShape() bool {
 	return t.Offload.explicit() || len(t.Devices) > 0 || t.SplitMode != SplitModeAuto
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// GPU families
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// The GPUFamily vocabulary and its description classifier live in compat.go,
-// which owns them for the packing decision and the compatibility guards. This
-// file is a second CONSUMER of the same answer, and it consumes it for a
-// different reason: memory.go's profile was measured on ONE family (Apple
-// Silicon / Metal), so the family is what prices the uncertainty of a
-// device/host split nobody measured — see splitAllowanceMiB. Resolve classifies
-// a probed inventory with ClassifyGPUs before planning, so a plan and the
-// packing decision can never disagree about which silicon they are for.
+// GPU families: the vocabulary and its classifier live in compat.go; this file
+// is a second CONSUMER of the same answer — the family prices the uncertainty
+// of a device/host split nobody measured (Resolve classifies before planning).
 
 // splitAllowanceMiB is the device-budget deduction a family's unmeasured split
-// costs. Apple Silicon is the measured family and pays nothing; a recognized
-// family nobody measured pays unmeasuredSplitAllowanceMiB; an unrecognized part
-// pays unknownGPUAllowanceMiB, because unknown means unknown in both
-// directions (the split AND the compute-reserve behaviour).
+// costs: Apple Silicon (the measured family) pays nothing, a recognized family
+// nobody measured pays unmeasuredSplitAllowanceMiB, an unrecognized part pays
+// unknownGPUAllowanceMiB (specs/domains/embedded-llm.md, Memory plan).
 func splitAllowanceMiB(family GPUFamily) int64 {
 	switch family {
 	case GPUFamilyAppleSilicon:
@@ -1010,18 +740,12 @@ func splitAllowanceMiB(family GPUFamily) int64 {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // MemoryPlan is the resolved launch shape: every value the runtime needs, the
-// two footprints the plan expects to see, and the human-readable reason for
-// each non-default decision.
-//
-// It is a description, not a command line. `LaunchSpec.Args` in server.go
-// remains the only place a llama-server argv is assembled; this struct carries
-// the values that argv is built from, with omission expressed as a nil pointer
-// or a zero rather than as a pre-rendered flag.
+// two footprints the plan expects to see, and the reason for each non-default
+// decision. It is a description, not a command line — LaunchSpec.Args in
+// server.go remains the only place a llama-server argv is assembled.
 type MemoryPlan struct {
-	// Fit reports whether the runtime's own `--fit` pass sizes the layer count
-	// and the context. When true, Layers is nil and ContextSize is 0, and the
-	// launcher MUST omit `-ngl` and pass a zero `-c` — see the exclusivity
-	// rule. FitArg renders the literal `-fit` value either way.
+	// Fit reports whether the runtime's `--fit` pass sizes layers and context;
+	// when true, Layers is nil and ContextSize is 0 — the exclusivity rule.
 	Fit bool `json:"fit"`
 	// FitTargetMiB is `-fitt`. Zero omits the flag and keeps the runtime's own
 	// 1024 MiB default. Only meaningful when Fit is true.
@@ -1030,17 +754,14 @@ type MemoryPlan struct {
 	// DefaultFitMinContext or an explicit override — never the runtime's 4096.
 	// Only meaningful when Fit is true.
 	FitMinContext int `json:"fit_min_context"`
-	// Layers is `-ngl`. NIL MEANS OMIT THE FLAG ENTIRELY, which is what lets
-	// fit choose it; a non-nil value pins the offload and is accompanied by
-	// Fit == false.
+	// Layers is `-ngl`. NIL MEANS OMIT THE FLAG ENTIRELY (what lets fit choose
+	// it); a non-nil value pins the offload and is accompanied by Fit == false.
 	Layers *int `json:"layers,omitempty"`
-	// ContextSize is `-c`. Zero means "fit sizes it" and only ever occurs with
-	// Fit == true; with Fit == false the planner has computed it and it is
-	// always positive.
+	// ContextSize is `-c`. Zero means "fit sizes it" and only occurs with
+	// Fit == true; with Fit == false it is always positive.
 	ContextSize int `json:"context_size"`
-	// KVType is the resolved `-ctk`/`-ctv` precision. Never empty: Auto is
-	// resolved to a concrete member of memory.go's closed set, and the
-	// escalation that got there is recorded in Notes.
+	// KVType is the resolved `-ctk`/`-ctv` precision — never empty: Auto is
+	// resolved to a concrete member, and the escalation is recorded in Notes.
 	KVType KVType `json:"kv_type"`
 	// Packing is the weights quantization the plan was projected for.
 	Packing Packing `json:"packing"`
@@ -1052,21 +773,16 @@ type MemoryPlan struct {
 	// Parallel is `-np`. Always DefaultParallel unless overridden; see that
 	// constant for why the runtime's own auto default is unsafe here.
 	Parallel int `json:"parallel"`
-	// CacheRAMMiB is `-cram`. A non-nil value — including 0, which disables
-	// the prompt cache — is passed through verbatim. Nil omits the flag: the
-	// planner emits a derived ceiling (planPromptCacheCeiling) only when the
-	// measured budgets hold MORE than the runtime's own default beyond the
-	// expected footprint and per-slot checkpoints are disabled, so an omitted
-	// flag always means "the runtime's own number already covers the spare
-	// memory" or "the spare is held for the active slots' checkpoint storage".
+	// CacheRAMMiB is `-cram`: non-nil (including 0, which disables the prompt
+	// cache) passes through verbatim; nil omits the flag and lets the planner
+	// emit a derived ceiling when budgets hold MORE spare with checkpoints
+	// disabled (see planPromptCacheCeiling).
 	CacheRAMMiB *int `json:"cache_ram_mib,omitempty"`
-	// CtxCheckpoints is `--ctx-checkpoints`, the per-slot KV snapshot count.
-	// Always DefaultCtxCheckpoints unless overridden — 0 (snapshots disabled)
-	// included verbatim, because disabling them is a legitimate choice.
+	// CtxCheckpoints is `--ctx-checkpoints`, always DefaultCtxCheckpoints
+	// unless overridden — 0 (snapshots disabled) included verbatim.
 	CtxCheckpoints int `json:"ctx_checkpoints"`
-	// CacheIdleSlots is the resolved `--cache-idle-slots`/
-	// `--no-cache-idle-slots`. True unless explicitly disabled: idle slots are
-	// saved to the prompt cache on a new task, the runtime's own default.
+	// CacheIdleSlots is the resolved idle-slot caching spelling: true unless
+	// explicitly disabled, the runtime's own default.
 	CacheIdleSlots bool `json:"cache_idle_slots"`
 	// Devices is `-dev`. Empty omits the flag.
 	Devices []string `json:"devices,omitempty"`
@@ -1076,28 +792,22 @@ type MemoryPlan struct {
 	// bundle carries the reason behind the allowance in the budgets below.
 	GPUFamily GPUFamily `json:"gpu_family,omitempty"`
 	// DeviceBudgetMiB and HostBudgetMiB are the budgets the plan was gated
-	// against: the topology's own, after the family's split allowance (device)
-	// and after any HostReserveGiB override (host).
+	// against: the topology's own, after the split allowance and any override.
 	DeviceBudgetMiB int64 `json:"device_budget_mib"`
 	HostBudgetMiB   int64 `json:"host_budget_mib"`
 	// ExpectedDeviceMiB and ExpectedHostMiB are the projected footprints of the
-	// chosen shape, INCLUDING the vision projector's reserve (memory.go's two
-	// projections are text-only, and c0wrk always passes `--mmproj`). They are
-	// what a UI shows and what a later live check compares a real allocation
-	// against. When the offload is a PARTIAL layer count neither figure is
-	// exact: device is the full-offload upper bound and host the CPU-only upper
-	// bound, and Notes says so.
+	// chosen shape, INCLUDING the vision projector's reserve. When the offload
+	// is a PARTIAL layer count neither figure is exact: device is the
+	// full-offload bound and host the CPU-only bound, and Notes says so.
 	ExpectedDeviceMiB int64 `json:"expected_device_mib"`
 	ExpectedHostMiB   int64 `json:"expected_host_mib"`
-	// Notes is the human-readable "why", one entry per non-default decision.
-	// It is surfaced in the UI verbatim, so every entry is a sentence an
-	// operator can act on and none of them is a debug dump.
+	// Notes is the human-readable "why", one entry per non-default decision,
+	// surfaced in the UI verbatim.
 	Notes []string `json:"notes,omitempty"`
 }
 
-// FitArg renders the literal value of the `-fit` flag for this plan. It exists
-// so the exclusivity rule is checkable as the rule is stated ("`-fit on` and no
-// `-ngl`") rather than through a boolean the reader has to re-derive.
+// FitArg renders the literal value of the `-fit` flag for this plan, so the
+// exclusivity rule is checkable exactly as the rule is stated.
 func (p MemoryPlan) FitArg() string {
 	if p.Fit {
 		return "on"
@@ -1105,42 +815,26 @@ func (p MemoryPlan) FitArg() string {
 	return "off"
 }
 
-// EmitsLayers reports whether the launcher must pass `-ngl` at all. Under fit
-// it must not: an explicit `-ngl` beside `--fit on` is the ambiguous shape the
-// fork's `fit.cpp` refuses.
+// EmitsLayers reports whether the launcher must pass `-ngl` at all — under fit
+// it must not: an explicit `-ngl` beside `--fit on` aborts the launch.
 func (p MemoryPlan) EmitsLayers() bool { return p.Layers != nil }
 
 // OffloadsToDevice reports whether the plan puts any model layers on an
-// accelerator. It is the boolean every projection needs, and under fit it is a
-// PREDICTION (fit decides at launch) derived from whether the topology reported
-// any usable device budget at all.
+// accelerator. Under fit it is a PREDICTION (fit decides at launch) derived
+// from whether the topology reported any usable device budget at all.
 func (p MemoryPlan) OffloadsToDevice() bool {
 	return p.Layers == nil && p.Fit && p.DeviceBudgetMiB > 0 ||
 		p.Layers != nil && *p.Layers > 0
 }
 
-// Plan resolves a launch shape from measured inputs. It is PURE: no I/O, no
-// probing, no clock, no package state (see this file's header).
-//
-// topology is the capacity side — normally the value `ProbeDevices` returned,
-// whose zero value means "unknown" and must NOT be passed here (a caller with
-// no topology takes the derived-budget path in `Resolve` instead). profile is
-// the requirement side, normally `PinnedMemoryProfile()`. backend selects the
-// default packing, and family prices the uncertainty of a split nobody measured.
-//
-// A shape that does not fit is DEGRADED before it is refused. `planShape` is
-// the single-pass planner; Plan wraps it in a bounded ladder of relaxations,
-// least-lossy first, so a machine that can serve the model only in a smaller
-// shape gets that shape instead of an error. That ladder is what turns the old
-// "32 GiB of RAM beside an 8 GiB accelerator is admitted and then OOMs at
-// load" into a plan that fits: see relaxations.
-//
-// Refusals, in order:
-//   - an override that cannot be honoured → ErrTuningInvalid
-//   - a packing with no measured residency → ErrMemoryNotMeasured
-//   - a footprint no relaxation brings under budget → ErrInsufficientMemory
-//     (carrying both pools and both numbers), which also unwraps to
-//     ErrMemoryPlanInfeasible
+// Plan resolves a launch shape from measured inputs. It is PURE (see this
+// file's header). topology is the capacity side — its zero value means
+// "unknown" and must NOT be passed here; profile is the requirement side. A
+// shape that does not fit is DEGRADED before it is refused: planShape is the
+// single pass, wrapped in Plan's bounded least-lossy-first relaxation ladder
+// (specs/domains/embedded-llm.md, Memory plan). Refusals, in order: an
+// unhonourable override → ErrTuningInvalid; an unmeasured packing →
+// ErrMemoryNotMeasured; nothing fits after the ladder → ErrInsufficientMemory.
 func Plan(
 	topology MemoryTopology,
 	profile ModelMemoryProfile,
@@ -1161,10 +855,9 @@ func Plan(
 		return plan, err
 	}
 	// An operator who pinned the offload shape named the very thing the ladder
-	// would change. Honouring the pin and reporting the refusal beats quietly
-	// launching a different shape than the one asked for — but the refusal is
-	// still the typed both-pools one, because "which pool is short" is a fact
-	// about the machine and not about who chose the shape.
+	// would change; honouring the pin beats quietly launching a different
+	// shape than the one asked for. The refusal is still the typed both-pools
+	// one — "which pool is short" is a fact about the machine.
 	if tuning.explicitOffloadShape() {
 		return plan, insufficientForPlan(topology, profile, tuning, family, packing)
 	}
@@ -1186,36 +879,19 @@ func Plan(
 }
 
 // relaxation is one shape degradation Plan tries when the base shape does not
-// fit. `apply` returns the Tuning to re-plan with, and `note` is the
-// operator-facing sentence appended to the plan that won — a degraded install
-// states its degradation rather than leaving the user to infer it from a
-// smaller context.
+// fit. `apply` returns the Tuning to re-plan with; `note` is the
+// operator-facing sentence appended to the plan that won.
 type relaxation struct {
 	apply func(Tuning) Tuning
 	note  string
 }
 
-// relaxations is the degradation ladder, LEAST-LOSSY FIRST. Each rung trades
-// something different, and the order is the order of what c0wrk would rather
-// keep:
-//
-//  1. KV cache and the vision projector's reserve to host RAM (`-nkvo` +
-//     `--no-mmproj-offload`). Costs attention bandwidth; keeps the weights, the
-//     full context and f16 precision.
-//  2. the context, down to `DefaultFitMinContext`. Costs reach; the floor is
-//     never below 65536 because that is where the pinned model's most-reported
-//     failure starts (see DefaultFitMinContext).
-//  3. both.
-//  4. host residency (`-ngl 0`, fit off). Costs the accelerator entirely — the
-//     model runs from system RAM — but it is a MEASURED shape
-//     (`HostWeightsMiB`, `ComputeHostCPUOnlyMiB`), whereas a PARTIAL offload is
-//     not: the profile has no measurement for it, and pricing one would mean
-//     guessing at a split. A slow launch that loads beats a fast plan that
-//     cannot be verified to fit.
-//  5. host residency with the reduced context.
-//
-// Every rung re-runs `planKVType`'s own precision ladder, so the rungs compose
-// with the KV escalation rather than replacing it.
+// relaxations is the degradation ladder, LEAST-LOSSY FIRST: spill the KV cache
+// and the projector's reserve to host RAM, shrink the context to the fit
+// floor, both, host residency (a MEASURED shape — a partial offload is not,
+// and pricing one would guess at a split), host residency with the reduced
+// context. Each rung re-runs planKVType's own precision ladder rather than
+// replacing it. The rung table is in specs/domains/embedded-llm.md (Memory plan).
 func relaxations(tuning Tuning, topology MemoryTopology, profile ModelMemoryProfile) []relaxation {
 	spillable := tuning.KVOffload == nil || tuning.MMProjOffload == nil
 	shrinkable := shrinkTarget(tuning, topology, profile) > DefaultFitMinContext
@@ -1253,9 +929,9 @@ func relaxations(tuning Tuning, topology MemoryTopology, profile ModelMemoryProf
 	return out
 }
 
-// spillKVToHost moves the KV cache and the vision projector's reserve off the
-// accelerator. It leaves an operator-pinned half alone, which is why
-// `relaxations` gates the rung on either knob still being unset.
+// spillKVToHost moves the KV cache and the projector's reserve off the
+// accelerator, leaving an operator-pinned half alone (which is why
+// `relaxations` gates the rung on either knob still being unset).
 func spillKVToHost(tuning Tuning) Tuning {
 	if tuning.KVOffload == nil {
 		tuning.KVOffload = ptrBool(false)
@@ -1267,10 +943,8 @@ func spillKVToHost(tuning Tuning) Tuning {
 }
 
 // hostResident pins the offload to nothing, which by the exclusivity rule also
-// turns fit off and hands context sizing back to this planner.
-//
-// It deliberately leaves `KVOffload` and `MMProjOffload` alone: with nothing
-// offloaded there is no device side for either to move away from, and pinning
+// turns fit off. It deliberately leaves KVOffload/MMProjOffload alone: with
+// nothing offloaded there is no device side to move away from, and pinning
 // them would add two Notes asserting a relocation that did not happen.
 func hostResident(tuning Tuning) Tuning {
 	tuning.Offload = Offload{Mode: OffloadCPU}
@@ -1278,18 +952,17 @@ func hostResident(tuning Tuning) Tuning {
 }
 
 // shrinkContextToFloor pins the context to DefaultFitMinContext: the `-fitc`
-// floor under fit, and an exact `-c` on the planner-computed path. It never
-// goes below the floor — see DefaultFitMinContext for the failure that lives
-// down there.
+// floor under fit, an exact `-c` on the planner-computed path. It never goes
+// below the floor.
 func shrinkContextToFloor(tuning Tuning) Tuning {
 	tuning.FitMinContext = ptrInt(DefaultFitMinContext)
 	tuning.Context = ContextTuning{Mode: ContextExact, Tokens: DefaultFitMinContext}
 	return tuning
 }
 
-// shrinkTarget is the context a relaxation would have to beat for the
-// context rung to be worth trying: the plan's own target, derived the same way
-// `planTargetContext` derives it.
+// shrinkTarget is the context a relaxation would have to beat for the context
+// rung to be worth trying: the plan's own target, derived the same way
+// planTargetContext derives it.
 func shrinkTarget(tuning Tuning, topology MemoryTopology, profile ModelMemoryProfile) int {
 	if tuning.Context.Mode == ContextExact {
 		return tuning.Context.Tokens
@@ -1309,14 +982,9 @@ func shrinkTarget(tuning Tuning, topology MemoryTopology, profile ModelMemoryPro
 }
 
 // insufficientForPlan is the typed refusal a fully-degraded plan ends on. It
-// re-prices the modelled shape space against the planner's own budgets and
-// reports the attempt that came CLOSEST to fitting, which is the one a user can
-// act on: naming a shape that was never near the budget would only confuse.
-//
-// The search is the same one `memoryGate` runs, so a gate that admitted a
-// machine and a planner that then refused it cannot disagree about what was
-// tried — they disagree only about which budgets were spent, and that
-// difference is exactly what a refusal should surface.
+// re-prices the modelled shape space — the same search memoryGate runs, so a
+// gate that admitted and a planner that refused cannot disagree about what was
+// tried — and reports the attempt that came CLOSEST to fitting.
 func insufficientForPlan(
 	topology MemoryTopology,
 	profile ModelMemoryProfile,
@@ -1327,8 +995,7 @@ func insufficientForPlan(
 	b, err := planBudgets(topology, tuning, family)
 	if err != nil {
 		// Unreachable in practice: Plan returns a budget error from planShape
-		// before it ever asks for a refusal message. Propagating it keeps this
-		// builder total rather than inventing budgets to describe.
+		// before it ever asks for a refusal message.
 		return err
 	}
 	g := gateBudgets{
@@ -1359,15 +1026,14 @@ func insufficientForPlan(
 	case g.device == deviceAbsent || b.deviceMiB <= 0:
 		shapes = []bool{false}
 	case tuning.Offload.Mode == OffloadAll:
-		// The operator pinned the residency the refusal is about, so pricing a
-		// shape they ruled out would report numbers for a launch nobody asked
-		// for.
+		// The operator pinned the residency the refusal is about; pricing a
+		// shape they ruled out would report numbers nobody asked for.
 		shapes = []bool{true}
 	case tuning.Offload.Mode == OffloadCPU:
 		shapes = []bool{false}
 	case OffloadLayers == tuning.Offload.Mode:
-		// A partial count is the one shape the profile has no measurement for;
-		// price both extremes, which is the bound `footprint` already reports.
+		// A partial count is unmeasured; price both extremes, the bound
+		// `footprint` already reports.
 	}
 
 	best, ok := closestAttempt(profile, packings, gateKVTypes(tuning), ctx, shapes, g.overflow,
@@ -1435,8 +1101,7 @@ func planShape(
 
 	// One flag, computed once, shared by the KV gate and the expected-figure
 	// projection: a partial layer count is the one shape the measured profile
-	// does not cover, and both consumers must agree on whether they are looking
-	// at a measurement or at a bound.
+	// does not cover, and both consumers must agree on measurement vs bound.
 	partial := partialOffload(profile, layers, fit)
 
 	kv, kvNotes, err := planKVType(tuning, profile, packing, target, budgets, layers, fit, partial)
@@ -1491,11 +1156,10 @@ func planShape(
 		ExpectedHostMiB:   hostMiB,
 	}
 	// The plan ALWAYS records a concrete `-c`. Under fit that is the RAM tier
-	// (held to the `-fitc` floor — see planTargetContext), NOT "fit decides":
+	// held to the `-fitc` floor (see planTargetContext), NOT "fit decides":
 	// `--fit` adjusts only UNSET arguments, so a rendered `-c` is left alone
-	// and fit sizes the offload (`-ngl`) — while a zero would hand the context
-	// to the runtime, which sizes it up to the model's full training context
-	// regardless of available memory. An exact operator pin is honoured as-is.
+	// and fit sizes only the offload — a zero would hand the context to the
+	// runtime, which sizes it to the full training context.
 	plan.ContextSize = target
 	if fit {
 		if tuning.Context.Mode == ContextExact {
@@ -1541,12 +1205,9 @@ func planShape(
 }
 
 // planCtxCheckpoints resolves `--ctx-checkpoints`: DefaultCtxCheckpoints when
-// unset, the operator's figure verbatim otherwise — including 0, which
-// disables the per-slot KV snapshots. A value outside 0..MaxTuningCtxCheckpoints
-// is refused as ErrTuningInvalid rather than clamped or silently defaulted: a
-// negative or absurd count is a typo, and defaulting it would plan a different
-// launch than the one written — the same reason checkHostReserve refuses
-// instead of skipping an unusable figure.
+// unset, the operator's figure verbatim otherwise (0 disables). A value
+// outside 0..MaxTuningCtxCheckpoints is refused as ErrTuningInvalid rather
+// than clamped or defaulted — a typo must not plan a different launch.
 func planCtxCheckpoints(tuning Tuning) (int, error) {
 	if tuning.CtxCheckpoints == nil {
 		return DefaultCtxCheckpoints, nil
@@ -1558,37 +1219,14 @@ func planCtxCheckpoints(tuning Tuning) (int, error) {
 	return *tuning.CtxCheckpoints, nil
 }
 
-// planPromptCacheCeiling derives the `--cache-ram` value an unset
-// `cache_ram_mib` leaves the planner free to choose: the memory the measured
-// budgets hold BEYOND the launch's expected footprint, so the prompt cache
-// grows with the machine instead of sitting at the runtime's flat
-// runtimeCacheRAMDefaultMiB while tens of GiB the launch was already granted
-// sit idle — and every prefix past the ceiling is re-prefilled from scratch.
-//
-// It derives nothing while per-slot context checkpoints are enabled (any
-// nonzero resolved count). Every ACTIVE slot keeps its own saved KV-prefix
-// snapshots in host-side vectors that sit OUTSIDE the `--cache-ram`
-// accounting — the fork's cache limit prices only the cached/evicted entries
-// (server_prompt_cache in tools/server, while slot.prompt.checkpoints is the
-// live slots' own storage) — and a snapshot's bytes are bounded by nothing
-// the planner has measured, only by the slot's context. There is therefore no
-// validated reserve the spare could be granted against: the runtime's own
-// default stands, and an operator who wants a larger cache alongside
-// checkpoints pins `cache_ram_mib` explicitly. With the snapshots disabled
-// (`ctx_checkpoints: 0`) that storage is structurally zero and the spare is
-// free to grant.
-//
-// The leftover is drawn from the HOST budget. On a unified machine both
-// expected footprints spend the SAME bytes (budgets.fits' rule), so the device
-// footprint is subtracted as well; on a discrete machine the device pool is
-// the accelerator's own and the host leftover is the whole story.
-//
-// The ceiling is emitted only when it EXCEEDS the runtime's own default: this
-// path can only RAISE the cache, never lower it — a smaller ceiling is a
-// decision the operator did not make, and the flag stays omitted so the
-// runtime's own number applies. The emitted value is clamped to MaxTuningMiB
-// so a probe that reported an absurd host figure still renders a value
-// Validate accepts.
+// planPromptCacheCeiling derives the `--cache-ram` value an unset cache_ram_mib
+// leaves the planner free to choose: the memory the measured budgets hold
+// BEYOND the launch's expected footprint, emitted only when it EXCEEDS the
+// runtime's own default — this path can only raise the cache, never lower it.
+// While per-slot context checkpoints are enabled it derives nothing: the
+// snapshots sit outside the `--cache-ram` accounting, so the spare is held for
+// them. The full derivation (unified subtraction, checkpoint interplay, the
+// MaxTuningMiB clamp) is specified in specs/domains/embedded-llm.md (Memory plan).
 func planPromptCacheCeiling(b budgets, plan MemoryPlan) (value int, note string, ok bool) {
 	if plan.CtxCheckpoints != 0 {
 		return 0, "", false
@@ -1616,8 +1254,7 @@ func planPacking(tuning Tuning, backend Backend, family GPUFamily, profile Model
 	// The memory-fit axis is FitUnknown here by construction: the packing
 	// decides the footprint, so a single pass cannot know whether PQ2_0 fits
 	// before it has picked one. A fit-driven downgrade is a two-pass business
-	// (project PQ2_0, and on ErrMemoryPlanInfeasible re-plan with an explicit
-	// `tuning.Packing` of PTQ1_0) — see decidePacking.
+	// — see decidePacking.
 	packing := packingFor(backend, family, FitUnknown, HostCaps{})
 	if tuning.Packing != "" {
 		packing = tuning.Packing
@@ -1635,24 +1272,16 @@ func planPacking(tuning Tuning, backend Backend, family GPUFamily, profile Model
 type budgets struct {
 	deviceMiB int64
 	hostMiB   int64
-	// unified reports that the two pools are the SAME bytes, which makes the two
-	// footprints additive against one pool — see fits.
+	// unified reports that the two pools are the SAME bytes, making the two
+	// footprints additive — see fits.
 	unified bool
 }
 
-// fits reports whether a (device, host) footprint pair fits these budgets.
-//
-// The unified case is why this is a method and not two comparisons: it is
-// gateBudgets.overflow's rule on the planner's side of the same arithmetic. When
-// the pools are the same bytes, a shape whose two footprints EACH fit a pool can
-// still need twice the machine's memory in sum, and accepting it is what turned a
-// narrow unified-memory configuration into a failed launch — the KV escalation
-// loop settled on a precision the runtime's own `--fit` pass then could not fit
-// even at the `-fitc` floor, so the load aborted with the FitWarning marker
-// instead of escalating to q8_0 as the gate's verdict would have.
-//
-// The device term is checked on its own as well, because the topology's margin
-// and the family's split allowance live in the device budget alone.
+// fits reports whether a (device, host) footprint pair fits these budgets —
+// gateBudgets.overflow's rule on the planner's side. The unified case is why
+// this is a method and not two comparisons: footprints that EACH fit can still
+// need twice the machine's memory in sum (the device term is checked alone too,
+// for the margin and split allowance that live in the device budget).
 func (b budgets) fits(deviceMiB, hostMiB int64) bool {
 	if deviceMiB > b.deviceMiB || hostMiB > b.hostMiB {
 		return false
@@ -1663,25 +1292,11 @@ func (b budgets) fits(deviceMiB, hostMiB int64) bool {
 	return true
 }
 
-// planBudgets derives the two numbers the gate spends, from the topology's own
-// budgets plus this plan's overrides.
-//
-// The device budget loses the GPU family's split allowance: the topology's
-// 1536 MiB margin covers allocator bookkeeping on the backend the profile was
-// measured on, and nothing covers a repack split nobody measured.
-//
-// The host budget is the topology's own unless HostReserveGiB overrides it, in
-// which case it is re-derived from the topology's RAM total — the override
-// replaces the reserve policy, it does not stack on top of it. A SET override is
-// always converted, and the conversion is range-checked (hostReserveMiB) because
-// a float→int whose value the result type cannot represent is
-// implementation-defined in Go: an unusable override (NaN, negative, or above
-// MaxTuningHostReserveGiB) is refused as ErrTuningInvalid here exactly as the gate
-// refuses it, rather than being silently skipped — which is what a `>= 0` test did
-// to a NaN, making an operator typo vanish without a word.
-//
-// The topology's Unified flag is carried through so the budgets can be spent the
-// way the memory gate spends them — see budgets.fits.
+// planBudgets derives the two numbers the plan spends: the device budget loses
+// the family's split allowance (nothing measured covers a repack split); the
+// host budget is the topology's own unless HostReserveGiB replaces the reserve
+// policy (conversion range-checked as the gate's — hostReserveMiB). Unified is
+// carried through so the budgets are spent the way the gate spends them.
 func planBudgets(topology MemoryTopology, tuning Tuning, family GPUFamily) (budgets, error) {
 	device := topology.DeviceBudgetMiB() - splitAllowanceMiB(family)
 	if device < 0 {
@@ -1702,17 +1317,13 @@ func planBudgets(topology MemoryTopology, tuning Tuning, family GPUFamily) (budg
 	return budgets{deviceMiB: device, hostMiB: host, unified: topology.Unified}, nil
 }
 
-// hostReserveMiB converts the operator's host-reserve override (GiB) into the MiB
-// every budget in this file uses.
-//
-// The check is explicit because Go leaves a float→int conversion whose value the
-// result type cannot represent IMPLEMENTATION-DEFINED: this host saturates it to
-// MaxInt64 (which yields a zero host budget and a fail-closed plan), while amd64
-// conventionally produces the negative "indefinite value" — which would make
-// `host = ram − reserve` enormous and fail the memory gate OPEN on the very knob
-// meant to shrink it. NaN is refused rather than silently ignored, which is what
-// the `>= 0` guards at the call sites did to it before: an operator typo
-// vanished without a word.
+// hostReserveMiB converts the operator's host-reserve override (GiB) into the
+// MiB every budget in this file uses. The check is explicit because a float→int
+// conversion the result type cannot represent is IMPLEMENTATION-DEFINED in Go:
+// this host saturates to MaxInt64 (a zero host budget, fail-closed), while
+// amd64 conventionally yields a negative "indefinite value" that would make
+// `host = ram − reserve` enormous and fail the gate OPEN on the very knob
+// meant to shrink it — and NaN used to slip through a `>= 0` test in silence.
 func hostReserveMiB(gib float64) (int64, error) {
 	if err := checkHostReserve(gib); err != nil {
 		return 0, err
@@ -1721,8 +1332,7 @@ func hostReserveMiB(gib float64) (int64, error) {
 }
 
 // hostReserveBytesFromGiB is hostReserveMiB in the byte unit the gate's own
-// derivation uses. (topology.go's hostReserveBytes takes the RAM total in bytes
-// and applies the default reserve policy; this one converts an operator override.)
+// derivation uses (topology.go's hostReserveBytes applies the default policy).
 func hostReserveBytesFromGiB(gib float64) (int64, error) {
 	if err := checkHostReserve(gib); err != nil {
 		return 0, err
@@ -1730,10 +1340,10 @@ func hostReserveBytesFromGiB(gib float64) (int64, error) {
 	return int64(gib * gibibyte), nil
 }
 
-// checkHostReserve refuses a reserve override no total conversion can represent.
-// The ceiling is limits.go's MaxTuningHostReserveGiB, which backend/config
-// enforces on the persisted value as well: a bound that exists at only one of the
-// two layers is a bound an operator can walk around by hand-editing config.yaml.
+// checkHostReserve refuses a reserve override no total conversion can
+// represent. The ceiling is shared with backend/config so a bound at only one
+// layer is not a bound an operator can walk around by hand-editing config.yaml
+// (specs/domains/embedded-llm.md, Key Files: limits.go).
 func checkHostReserve(gib float64) error {
 	if math.IsNaN(gib) {
 		return fmt.Errorf("%w: host_reserve_gib is NaN, which no budget can be derived from", ErrTuningInvalid)
@@ -1756,29 +1366,11 @@ const mibPerGiB = float64(1024)
 
 // normalizeTopology fills in the DERIVED halves of a topology that carries an
 // inventory but no budgets — one a caller assembled rather than one
-// `ProbeDevices` returned. `MemoryTopology`'s own contract is that its zero
-// value means "unknown", never "no memory", and a zero `DeviceBudgetBytes`
-// beside a 24 GiB inventory is exactly that ambiguity: read literally it says
-// "no accelerator memory", and every consumer would degrade a machine that has
-// plenty.
-//
-// It derives the figures the way `buildTopology` does — the same reserve policy,
-// the same device margin, the same unified clamp — so a normalized topology and
-// a probed one are priced identically, and the derivation lives in one place
-// instead of being repeated by each consumer that wants to be robust.
-//
-// Two limits keep it from inventing memory:
-//
-//   - `Unified` is taken as given, never re-classified. It is the field
-//     topology.go names as the only authority on the memory model, and
-//     re-deriving it here would need a platform key `Plan` does not take.
-//   - a device pool that fits INSIDE the margin is left at 0. That is a
-//     measurement — a card too small for the runtime's own bookkeeping — not an
-//     omission, and deriving a budget for it would fabricate one.
-//
-// ramGiBFallback supplies the host total when the topology left it unset; 0
-// means "no fallback", which is what `Plan` passes because it has no other
-// source for one.
+// ProbeDevices returned — deriving the figures the way `buildTopology` does, so
+// a normalized and a probed topology are priced identically. It never invents
+// memory: `Unified` is taken as given (topology.go is the authority), and a
+// pool that fits INSIDE the margin stays 0 — a measurement, not an omission.
+// ramGiBFallback supplies the host total when unset; 0 means "no fallback".
 func normalizeTopology(topology MemoryTopology, ramGiBFallback float64) MemoryTopology {
 	if topology.HostRAMGiB <= 0 && ramGiBFallback > 0 {
 		topology.HostRAMGiB = ramGiBFallback
@@ -1803,9 +1395,8 @@ func normalizeTopology(topology MemoryTopology, ramGiBFallback float64) MemoryTo
 }
 
 // planLayers resolves `-ngl`, or nil when the runtime's fit pass must choose
-// it. Under fit the flag is OMITTED, not set to a value fit would have picked:
-// setting it is what turns fit off (and, with `--fit on`, what makes the fork
-// abort).
+// it: under fit the flag is OMITTED — setting it is what turns fit off and
+// makes the fork abort.
 func planLayers(tuning Tuning, fit bool, deviceBudgetMiB int64) (layers *int, notes []string) {
 	if fit {
 		return nil, nil
@@ -1821,9 +1412,8 @@ func planLayers(tuning Tuning, fit bool, deviceBudgetMiB int64) (layers *int, no
 			"no layer was offloaded (-ngl 0); the model runs entirely from system RAM",
 		}
 	case OffloadLayers:
-		// Clamped to the range the flag itself accepts. The runtime treats any
-		// value at or above the model's offloadable layer count as "all", so
-		// clamping here cannot lose an offload the operator asked for.
+		// Clamped to the range the flag accepts; the runtime treats any value
+		// at or above the offloadable count as "all", so no offload is lost.
 		layers := min(max(tuning.Offload.Layers, nglCPUOnly), nglAllGPU)
 		return ptrInt(layers), []string{fmt.Sprintf(
 			"the offload was pinned to %d layers (-ngl %d)", layers, layers)}
@@ -1834,9 +1424,8 @@ func planLayers(tuning Tuning, fit bool, deviceBudgetMiB int64) (layers *int, no
 		}
 	}
 
-	// Auto with fit forced off (an explicit --fit off, or an explicit device
-	// list / split mode): offload everything when there is a device to offload
-	// to, and nothing when there is not.
+	// Auto with fit forced off: offload everything when there is a device to
+	// offload to, and nothing when there is not.
 	if deviceBudgetMiB > 0 {
 		return ptrInt(nglAllGPU), nil
 	}
@@ -1845,10 +1434,9 @@ func planLayers(tuning Tuning, fit bool, deviceBudgetMiB int64) (layers *int, no
 	}
 }
 
-// planTargetContext resolves the context the plan must be able to SERVE. Under
-// fit that is the floor fit is held to (`-fitc`), because a fit run that cannot
-// reach its own minimum aborts rather than degrading; otherwise it is the
-// override, or the RAM ladder the explicit path has always used.
+// planTargetContext resolves the context the plan must be able to SERVE: the
+// floor fit is held to under fit (`-fitc` — a fit run that cannot reach its
+// own minimum aborts), otherwise the override or the RAM ladder.
 func planTargetContext(
 	tuning Tuning,
 	fit bool,
@@ -1868,11 +1456,10 @@ func planTargetContext(
 		return tokens, nil
 	}
 	if fit {
-		// The fit path renders the SAME tier ladder the explicit path does
-		// (planShape writes it into the spec), held to the `-fitc` floor: fit
-		// sizes the offload, never the context. Without this floor a tier
-		// below 65536 would reproduce the truncated-answer failure
-		// DefaultFitMinContext exists to prevent.
+		// The fit path renders the SAME tier ladder the explicit path does,
+		// held to the `-fitc` floor: fit sizes the offload, never the context
+		// (without this floor a lower tier would reproduce the truncated-answer
+		// failure DefaultFitMinContext exists to prevent).
 		ladder := ladderContextFor(topology, profile)
 		if fitMinContext > ladder {
 			ladder = fitMinContext
@@ -1882,14 +1469,11 @@ func planTargetContext(
 	return ladderContextFor(topology, profile), nil
 }
 
-// ladderContextFor is the RAM-tier context the explicit path has always used:
-// the ladder value clamped to the model's own training context. It is ALSO the
-// fit path's `-c` (see planShape): `--fit` adjusts only UNSET arguments, so a
-// rendered `-c` is left alone and fit sizes the offload (`-ngl`) — while an
-// omitted (zero) context hands the sizing to the runtime, which picks the
-// model's full training context regardless of available memory. That is the
-// failure the vendor warns about explicitly and the shape that made every agent
-// prompt a minutes-long prefill on memory-rich machines.
+// ladderContextFor is the RAM-tier context the explicit path has always used,
+// clamped to the model's own training context. It is ALSO the fit path's `-c`
+// (see planShape): `--fit` adjusts only UNSET arguments, so a rendered `-c` is
+// left alone while an omitted (zero) one hands sizing to the runtime, which
+// picks the full training context regardless of memory.
 func ladderContextFor(topology MemoryTopology, profile ModelMemoryProfile) int {
 	ladder := contextSizeFor(topology.HostRAMGiB)
 	if profile.MaxContext > 0 && ladder > profile.MaxContext {
@@ -1898,24 +1482,11 @@ func ladderContextFor(topology MemoryTopology, profile ModelMemoryProfile) int {
 	return ladder
 }
 
-// planKVType resolves `-ctk`/`-ctv`.
-//
-// An explicit override is honoured as given (and validated against memory.go's
-// closed set, which refuses `q5_0` on the measured 8x long-context slowdown and
-// the unverified `q4_1`/`iq4_nl`/`q5_1`). Auto is the ADAPTIVE path: try f16,
-// and if the target context does not fit the device budget escalate to q8_0 and
-// then q4_0, recording every escalation. The escalation is lossy in precision
-// and free in throughput — the fork's own measurements put q8_0 and q4_0 within
-// 1% of f16 on this model — so it is the right thing to spend first.
-//
-// When no precision fits, the refusal carries the arithmetic: which budget,
-// which footprint, at the least-lossy precision that was tried.
-//
-// "Fits" is budgets.fits, not two independent comparisons: on a unified-memory
-// machine the two footprints are spent from ONE pool, so gating each against its
-// own budget would accept a precision whose sum exceeds the machine — the exact
-// case the memory gate's additive rule exists to refuse, and one that turned a
-// narrow unified configuration into a failed launch instead of a degraded one.
+// planKVType resolves `-ctk`/`-ctv`. An explicit override is honoured as given
+// and validated against memory.go's closed set; Auto is the ADAPTIVE path —
+// f16, then q8_0, then q4_0 (measured within 1% of f16 throughput), recording
+// every escalation. "Fits" is budgets.fits, not two independent comparisons:
+// on a unified machine the two footprints are spent from ONE pool.
 func planKVType(
 	tuning Tuning,
 	profile ModelMemoryProfile,
@@ -1930,8 +1501,7 @@ func planKVType(
 		resolved, err := ParseKVType(string(tuning.KVType))
 		if err != nil {
 			// Both errors are wrapped, so a caller can match the tuning error
-			// (an override the planner cannot honour) or the precision error
-			// (a KV type this model does not cover) without string matching.
+			// or the precision error without string matching.
 			return "", nil, fmt.Errorf("%w: %w", ErrTuningInvalid, err)
 		}
 		return resolved, []string{fmt.Sprintf(
@@ -1940,12 +1510,10 @@ func planKVType(
 
 	offloaded := willOffload(layers, fit, budgets.deviceMiB)
 
-	// Long contexts start the precision ladder at q8_0 rather than f16. The KV
-	// cache dominates the footprint there (at 64 KiB/token, 131072 tokens is
-	// 8 GiB at f16 — half the weights), and halving it costs measured 1% of
-	// throughput on this model while freeing device capacity for the offload
-	// fit pass to keep. Below the threshold the f16 cache is small enough to
-	// stay the lossless default.
+	// Long contexts start the precision ladder at q8_0 rather than f16: the
+	// KV cache dominates the footprint there, and halving it costs measured
+	// ~1% of throughput while freeing device capacity. Below the threshold the
+	// f16 cache is small enough to stay the lossless default.
 	candidates := kvTypes
 	if target > longContextKVThreshold {
 		candidates = kvTypes[1:]
@@ -1954,11 +1522,9 @@ func planKVType(
 	var lastDev, lastHost int64
 	for _, candidate := range candidates {
 		// The exactness flag is not consulted here: this loop only compares
-		// footprints against budgets to pick a KV precision, and the bound a
-		// partial offload produces is reported once, by planFootprint. Passing
-		// the real `partial` matters even though the flag is ignored — a
-		// partial shape must be gated on the same conservative bounds the plan
-		// will later report, not on an exact figure it cannot produce.
+		// footprints against budgets to pick a precision. Passing the real
+		// `partial` still matters — a partial shape must be gated on the same
+		// conservative bounds the plan will later report.
 		deviceMiB, hostMiB, _, err := footprint(profile, packing, target, candidate, offloaded,
 			partial, tuning.KVOffload == nil || *tuning.KVOffload,
 			tuning.MMProjOffload == nil || *tuning.MMProjOffload)
@@ -1995,9 +1561,8 @@ func willOffload(layers *int, fit bool, deviceBudgetMiB int64) bool {
 
 // partialOffload reports whether the plan pins a layer count that is neither
 // "nothing" nor "everything" — the one shape memory.go's profile does not
-// cover, because its two measured residency figures are the `-ngl 0` and
-// full-offload extremes. A plan under fit is never partial: the runtime chooses
-// the count, and the projection uses the extreme it will land on.
+// cover, its two measured residencies being the extremes. A plan under fit is
+// never partial: the runtime chooses the count.
 func partialOffload(profile ModelMemoryProfile, layers *int, fit bool) bool {
 	if fit || layers == nil {
 		return false
@@ -2009,15 +1574,10 @@ func partialOffload(profile ModelMemoryProfile, layers *int, fit bool) bool {
 }
 
 // footprint projects the device and host memory one shape needs, in MiB,
-// INCLUDING the vision projector's reserve (memory.go's two projections are
-// text-only and c0wrk always passes `--mmproj`).
-//
-// exact is false when the shape is a PARTIAL layer count, which the measured
-// profile does not cover: the device figure is then the full-offload projection
-// (an upper bound — fewer layers on the device cannot cost more device memory)
-// and the host figure the CPU-only projection (an upper bound — some weights
-// moving to the device cannot cost more host memory). Both bounds err towards
-// refusal, which is the safe direction for a gate.
+// INCLUDING the vision projector's reserve (the projections are text-only and
+// c0wrk always passes `--mmproj`). When the shape is a PARTIAL layer count the
+// two figures are bounds — full-offload device, CPU-only host — both erring
+// towards refusal, the safe direction for a gate.
 func footprint(
 	profile ModelMemoryProfile,
 	packing Packing,
@@ -2098,9 +1658,8 @@ func planFootprint(
 	return deviceMiB, hostMiB, !exact, nil
 }
 
-// shapeNotes records the non-default decisions the shape itself carries. Every
-// entry is a deviation from the all-Auto plan, which is the contract the UI
-// relies on: a plan with nothing overridden has nothing to explain.
+// shapeNotes records the non-default decisions the shape itself carries — the
+// contract the UI relies on: a plan with nothing overridden explains nothing.
 func shapeNotes(tuning Tuning, plan MemoryPlan, profile ModelMemoryProfile, b budgets, topology MemoryTopology) []string {
 	var notes []string
 
@@ -2143,9 +1702,8 @@ func shapeNotes(tuning Tuning, plan MemoryPlan, profile ModelMemoryProfile, b bu
 	return notes
 }
 
-// movedKVCacheMiB is the cache size `-nkvo` relocates, for the note above. It
-// re-derives nothing: the plan already carries the precision and the context it
-// was gated at, and the caller's profile is a pure function of both.
+// movedKVCacheMiB is the cache size `-nkvo` relocates, re-derived from the
+// plan's own precision and context (the profile is a pure function of both).
 func movedKVCacheMiB(profile ModelMemoryProfile, plan MemoryPlan) int64 {
 	ctx := plan.ContextSize
 	if ctx == 0 {
@@ -2159,8 +1717,7 @@ func movedKVCacheMiB(profile ModelMemoryProfile, plan MemoryPlan) int64 {
 }
 
 // ptrInt boxes an int, so a plan can distinguish "omit `-ngl`" (nil) from
-// "`-ngl 0`" (a pointer to zero) — the difference the fit-exclusivity rule
-// turns on.
+// "`-ngl 0`" — the difference the fit-exclusivity rule turns on.
 func ptrInt(v int) *int { return &v }
 
 // ptrBool boxes a bool for the same reason: `Tuning.KVOffload == nil` means

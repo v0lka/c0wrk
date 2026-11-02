@@ -4,11 +4,8 @@ import (
 	coretools "github.com/v0lka/c0wrk/core/tools"
 )
 
-// PendingActionsResponse is the return type for GetPendingActions. It lists
-// every HITL prompt currently blocking a session's agent goroutine, keyed by
-// kind. Each entry carries the same payload the original event delivered, so
-// the frontend can reconstruct the pending-action UI without relying on the
-// event having been caught live.
+// PendingActionsResponse lists every HITL prompt currently blocking a
+// session's agent goroutine (specs/contracts/desktop-frontend.md).
 type PendingActionsResponse struct {
 	ToolConfirms    []PendingToolConfirm    `json:"tool_confirms"`
 	StepLimits      []PendingStepLimit      `json:"step_limits"`
@@ -18,7 +15,6 @@ type PendingActionsResponse struct {
 	GoalSuggestions []PendingGoalSuggestion `json:"goal_suggestions"`
 }
 
-// PendingToolConfirm describes a pending tool confirmation.
 type PendingToolConfirm struct {
 	ConfirmID    string `json:"confirm_id"`
 	Tool         string `json:"tool"`
@@ -28,7 +24,6 @@ type PendingToolConfirm struct {
 	DisableJudge bool   `json:"disable_judge,omitempty"`
 }
 
-// PendingStepLimit describes a pending step-limit prompt.
 type PendingStepLimit struct {
 	RequestID   string `json:"request_id"`
 	CurrentStep int    `json:"current_step"`
@@ -36,20 +31,17 @@ type PendingStepLimit struct {
 	Reason      string `json:"reason,omitempty"`
 }
 
-// PendingPlanApproval describes a pending plan-approval prompt.
 type PendingPlanApproval struct {
 	RequestID   string `json:"request_id"`
 	PlanPath    string `json:"plan_path"`
 	PlanContent string `json:"plan_content"`
 }
 
-// PendingAskUser describes a pending ask-user prompt.
 type PendingAskUser struct {
 	RequestID string                      `json:"request_id"`
 	Questions []coretools.AskUserQuestion `json:"questions"`
 }
 
-// PendingGoalProposal describes a pending goal-proposal sign-off prompt.
 type PendingGoalProposal struct {
 	RequestID        string `json:"request_id"`
 	Condition        string `json:"condition"`
@@ -64,21 +56,13 @@ type PendingGoalSuggestion struct {
 	Reason    string `json:"reason"`
 }
 
-// GetPendingActions returns all pending HITL prompts for a session — tool
-// confirmations, step-limit prompts, plan approvals, ask-user questions,
-// goal-proposal sign-offs, and goal-mode suggestion offers that are currently
-// blocking the session's agent goroutine. The frontend
-// calls this on session switch to resurface prompts whose events were missed
-// while the session was in the background (no live event listener caught
-// them) and to reconcile stale persisted prompts (a prompt in the DB that is
-// NOT in this response has already been resolved).
+// GetPendingActions returns all pending HITL prompts for a session; the
+// frontend sweeps it on session switch to resurface prompts missed live
+// (absent = already resolved). See specs/contracts/desktop-frontend.md.
 func (a *App) GetPendingActions(sessionID string) (*PendingActionsResponse, error) {
-	// Initialize every slice as non-nil/empty. Go's encoding/json marshals a
-	// nil slice to JSON `null` (not `[]`), and the frontend's shape guard
-	// (isPendingActionsResponse) rejects the response when any kind is null —
-	// which would silently disable HITL reconciliation on session switch.
-	// A session almost never has every kind pending at once, so without
-	// this the response was effectively always rejected.
+	// Non-nil: encoding/json marshals nil slices as JSON `null`, which the
+	// frontend's isPendingActionsResponse guard rejects — killing session-
+	// switch HITL reconciliation.
 	resp := &PendingActionsResponse{
 		ToolConfirms:    []PendingToolConfirm{},
 		StepLimits:      []PendingStepLimit{},

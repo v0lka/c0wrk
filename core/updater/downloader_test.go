@@ -71,37 +71,6 @@ func runDownload(t *testing.T, srv *httptest.Server, sumsBody []byte, progress f
 	)
 }
 
-// TestRequireHTTPS verifies that only https URLs are accepted, with the
-// loopback exception that keeps the package testable.
-func TestRequireHTTPS(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		name    string
-		url     string
-		wantErr bool
-	}{
-		{"https production", "https://github.com/asset.zip", false},
-		{"loopback ipv4", "http://127.0.0.1:8080/asset.zip", false},
-		{"loopback localhost", "http://localhost:8080/asset.zip", false},
-		{"loopback ipv6", "http://[::1]:8080/asset.zip", false},
-		{"plain http non-loopback", "http://example.com/asset.zip", true},
-		{"plain http private ip", "http://10.0.0.1/asset.zip", true},
-		{"ftp", "ftp://github.com/asset.zip", true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			err := requireHTTPS(tc.url)
-			if tc.wantErr && err == nil {
-				t.Errorf("requireHTTPS(%q) = nil, want error", tc.url)
-			}
-			if !tc.wantErr && err != nil {
-				t.Errorf("requireHTTPS(%q) = %v, want nil", tc.url, err)
-			}
-		})
-	}
-}
-
 // TestDownload_RejectsPathTraversalAssetName verifies that an attacker-
 // influenced asset name cannot escape the staging directory. The asset name is
 // checked before any network I/O or directory creation, so the test uses

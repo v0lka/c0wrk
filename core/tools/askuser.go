@@ -9,10 +9,9 @@ import (
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
-// askUserUnavailableContent is the result a nil-callback ask_user returns. It is
-// the case silent mode's ask_user sub-policy produces: the tool is registered
-// with a nil callback so a call resolves to this explicit, non-blocking result
-// instead of a missing-tool error, and the agent can never block on a question.
+// askUserUnavailableContent is what a nil-callback ask_user returns: silent
+// mode's disabled form registers the tool with a nil callback, so a call
+// resolves to this explicit non-blocking result. See specs/decisions/053-silent-mode.md.
 const askUserUnavailableContent = "ask_user is not available in this mode"
 
 const toolAskUserDescription = `Purpose: ask the user one or more questions with selectable answer options — the sole channel for user-directed questions.
@@ -166,10 +165,8 @@ func (t *AskUserTool) Execute(ctx context.Context, input json.RawMessage) (sdkto
 		}, nil
 	}
 
-	// Format response
 	var lines []string
 	for _, a := range resp.Answers {
-		// Find the question text for this answer
 		qText := a.ID
 		for _, q := range params.Questions {
 			if q.ID == a.ID {

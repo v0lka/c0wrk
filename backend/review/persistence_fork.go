@@ -9,24 +9,10 @@ import (
 	"github.com/google/uuid"
 )
 
-// CloneReview copies the per-session review buffer (status + general and hunk
-// comments) from one session to another. It is used by session forking to give
-// the fork an identical review state.
-//
-// Identifier handling:
-//   - The general comment keeps its deterministic id scheme (generalCommentID)
-//     so a later UpsertGeneralComment in the fork does not create a duplicate.
-//   - Hunk comments get fresh UUIDs.
-//
-// A source session with no review data is a no-op (returns nil). The operation
-// runs in a single transaction; on error nothing is written.
-// CloneReview copies the per-session review buffer (status + general and hunk
-// comments) from one session to another in its own transaction. It is used by
-// session forking to give the fork an identical review state.
-//
-// For atomic forking prefer CloneReviewTx, which runs on a caller-supplied
-// transaction so the clone commits or rolls back together with the rest of the
-// fork. See SQLiteSessionStore.ForkSession.
+// CloneReview copies the per-session review buffer (status + comments) to
+// another session in its own transaction; CloneReviewTx is the
+// caller-transaction variant used by session forking.
+// See specs/domains/review.md.
 func (s *SQLiteReviewStore) CloneReview(ctx context.Context, srcSessionID, dstSessionID string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -44,17 +30,10 @@ func (s *SQLiteReviewStore) CloneReview(ctx context.Context, srcSessionID, dstSe
 	return nil
 }
 
-// CloneReviewTx copies the per-session review buffer onto the caller-supplied
-// transaction, so the clone can participate in a larger atomic operation (e.g.
-// session forking). The caller owns tx and is responsible for committing or
-// rolling it back.
-//
-// Identifier handling:
-//   - The general comment keeps its deterministic id scheme (generalCommentID)
-//     so a later UpsertGeneralComment in the fork does not create a duplicate.
-//   - Hunk comments get fresh UUIDs.
-//
-// A source session with no review data is a no-op (returns nil).
+// CloneReviewTx clones the review buffer on the caller-supplied transaction —
+// the caller owns commit/rollback. General/file comments keep their
+// deterministic ids, hunk comments get fresh UUIDs; an empty source is a no-op.
+// See specs/domains/review.md.
 func (s *SQLiteReviewStore) CloneReviewTx(ctx context.Context, tx *sql.Tx, srcSessionID, dstSessionID string) error {
 	if srcSessionID == "" {
 		return errors.New("source session id is required")
@@ -93,14 +72,10 @@ func (s *SQLiteReviewStore) CloneReviewTx(ctx context.Context, tx *sql.Tx, srcSe
 		if err := rows.Scan(&kind, &filePath, &hunkID, &body, &createdAt); err != nil {
 			return fmt.Errorf("failed to scan source review comment: %w", err)
 		}
-		// Deterministic ids let a later upsert update the cloned row in place.
-		// General and file comments both have stable ids (mirroring
-		// UpsertGeneralComment / UpsertFileComment); only hunk comments (whose
-		// upsert keys on the (session_id, file_path, hunk_id) index, not the
-		// row id) get a fresh random UUID. Using a random id for file comments
-		// would break in-place updates: a subsequent UpsertFileComment on the
-		// fork would not conflict on the deterministic id and would insert a
-		// duplicate row.
+		// Deterministic ids keep a later upsert updating the cloned row in
+		// place; only hunk comments (whose upsert keys on the
+		// (session_id, file_path, hunk_id) index, not the row id) get a fresh
+		// random UUID.
 		var id string
 		switch CommentKind(kind) {
 		case KindGeneral:

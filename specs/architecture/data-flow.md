@@ -203,6 +203,8 @@ emitBackendReady():
   └─ emit backend:ready
 ```
 
+**Background-vs-critical rule** (normative): new startup subsystems MUST go in a BACKGROUND phase unless they absolutely require completion before `EventBackendReady`; any change that adds >50ms to a critical phase MUST be justified in a code review comment. Per-phase timing is visible with `LOG_LEVEL=INFO`.
+
 **Frontend state machine** during startup:
 - `splash` (initial): renders `<ToolInstallSplash />` if `tool_manager:start` received, otherwise a minimal spinner
 - `tool_manager:done` → `waiting_ready` (spinner with "Starting c0wrk…")

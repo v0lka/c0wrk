@@ -5,13 +5,9 @@ import (
 	"math"
 )
 
-// GetProcessMemory returns the resident set size (RSS) of the c0wrk desktop
-// process, in bytes. The frontend status bar polls it every few seconds to
-// render a live memory indicator; the value is informational only (no policy
-// or security decisions hang off it).
-//
-// The read goes through the readProcessRSS seam (processmem.go); tests stub
-// it via the readProcessRSSFn field on FrontendAPI.
+// GetProcessMemory returns the desktop process's RSS in bytes for the status
+// bar's live memory indicator — informational only; failures hide it silently.
+// See specs/domains/workspace.md (RSS observability).
 func (f *FrontendAPI) GetProcessMemory() (int64, error) {
 	readRSS := f.readProcessRSSFn
 	if readRSS == nil {
@@ -27,36 +23,20 @@ func (f *FrontendAPI) GetProcessMemory() (int64, error) {
 	return int64(rss), nil
 }
 
-// SystemFontsResponse is the wire shape of GetSystemFonts: the detected
-// desktop-environment font families. An empty string means "this font was
-// not found" — there is no separate availability flag, so an undetectable
-// desktop is simply the zero response.
+// SystemFontsResponse is the GetSystemFonts wire shape: an empty family means
+// "not detected" — there is no availability flag.
+// See specs/domains/frontend/fonts.md.
 type SystemFontsResponse struct {
 	UIFamily   string `json:"ui_family"`
 	MonoFamily string `json:"mono_family"`
 }
 
 // GetSystemFonts reports the desktop environment's configured UI and
-// monospace font families, when they can be detected. On Linux this reads
-// the GNOME interface fonts (org.gnome.desktop.interface font-name and
-// monospace-font-name) via gsettings; other platforms and non-GNOME desktops
-// (no gsettings / no schema) return the zero response, which the frontend
-// renders as "the settings do not exist here".
-//
-// Why the families only: the WebKitGTK webview does not follow gtk-font-name
-// (the UI font is decided by the app's own CSS), so the app has to carry the
-// system choice itself — but the point sizes and styles stay behind, because
-// c0wrk owns its type scale (14px base + the UI Scale setting) and applies
-// weight/slant through CSS. A GNOME-side change is picked up on the next
-// launch; there is no live propagation into a running WebKitGTK instance.
-//
-// The read goes through the readSystemFonts seam (systemfont_linux.go /
-// systemfont_other.go); tests stub it via the readSystemFontsFn field on
-// FrontendAPI, mirroring readProcessRSSFn above. Unavailability (a reader
-// error) zeroes the whole response and logs at Debug only — a desktop
-// without gsettings is a normal outcome, not a failure to surface. When the
-// reads succeed, each description is parsed independently: an unparsable
-// value empties only its own family.
+// monospace families (Linux: GNOME gsettings). Every undetectable outcome is
+// the zero response plus a Debug log — a normal answer, never an error — and
+// each Pango description is parsed independently: an unparsable value empties
+// only its own family. Families only: c0wrk owns its type scale and applies
+// weight/slant through CSS. See specs/domains/frontend/fonts.md.
 func (f *FrontendAPI) GetSystemFonts() SystemFontsResponse {
 	f.seedAcquire()
 	readFonts := f.readSystemFontsFn
@@ -80,37 +60,20 @@ func (f *FrontendAPI) GetSystemFonts() SystemFontsResponse {
 	return resp
 }
 
-// FontFamiliesResponse is the wire shape of ListFontFamilies: whether the
-// installed-font enumeration is usable here, and the family names when it
-// is. Available=false always pairs with an empty list — there is no
-// partial-failure state.
+// FontFamiliesResponse is the ListFontFamilies wire shape; Available=false
+// always pairs with an empty list — there is no partial-failure state.
+// See specs/domains/fonts.md.
 type FontFamiliesResponse struct {
 	Available bool     `json:"available"`
 	Families  []string `json:"families"`
 }
 
-// ListFontFamilies reports the installed font family names for the frontend
-// font picker. On Linux this enumerates fontconfig's families via `fc-list
-// --format '%{family}\n'` (fontlist_linux.go): comma-separated aliases are
-// split, trimmed, deduplicated case-insensitively keeping the first
-// spelling, and sorted case-insensitively (parseFontFamilies,
-// fontlist.go). The monospace flag narrows the enumeration to the families
-// fontconfig tags as monospace (`fc-list :mono …`) — the monospace picker
-// offers only real mono families; the interface picker passes false for the
-// full list. Other platforms — and any Linux system where fc-list is
-// missing or fails — return Available=false with an empty list, which the
-// frontend renders as "font enumeration does not exist here".
-//
-// Availability is about the MECHANISM, not the result: a successful fc-list
-// run on a fontless system is Available=true with an empty list. Why
-// families only: the picker chooses a family; weights, styles and faces are
-// resolved by the CSS font matching the family name.
-//
-// The read goes through the listFontFamilies seam (fontlist_linux.go /
-// fontlist_other.go); tests stub it via the listFontFamiliesFn field on
-// FrontendAPI, mirroring readSystemFontsFn above. A reader error is logged
-// at Debug only — a desktop without fontconfig is a normal outcome, never
-// an error surfaced to the renderer.
+// ListFontFamilies enumerates installed font families for the frontend pickers
+// (Linux: fontconfig's `fc-list`, optionally narrowed to the fontconfig-mono
+// families). Available describes the MECHANISM, not the result — a successful
+// run on a fontless system is Available=true with an empty list; every reader
+// error is {Available: false} plus a Debug log, never a renderer error.
+// See specs/domains/fonts.md.
 func (f *FrontendAPI) ListFontFamilies(monospace bool) FontFamiliesResponse {
 	f.seedAcquire()
 	listFamilies := f.listFontFamiliesFn

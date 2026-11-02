@@ -35,18 +35,18 @@ type GitMonitor struct {
 	watcher       *fsnotify.Watcher
 	onChange      func(newBranch string)
 	done          chan struct{}
-	// loopDone is closed by eventLoop on EVERY return path (done, a closed
-	// Events/Errors channel), so Stop can join the loop instead of leaving a
-	// goroutine that may still arm the debounce timer.
+	// loopDone is closed by eventLoop on EVERY return path, so Stop can join
+	// the loop instead of leaving a goroutine that may still arm the debounce
+	// timer.
 	loopDone chan struct{}
 	// loopStarted records that Start actually spawned eventLoop: Stop joins
 	// loopDone only then (a never-started monitor's loopDone would never
 	// close).
 	loopStarted atomic.Bool
-	// debounceMu guards timer and stopped. It is deliberately NOT m.mu: Stop
-	// joins loopDone while its CALLER (Manager.Shutdown/SwitchProject) holds
-	// the manager mutex, and the event loop arms the timer — sharing m.mu
-	// here would deadlock that join against a timer arm waiting for m.mu.
+	// debounceMu guards timer and stopped, and is deliberately NOT the
+	// manager mutex: Stop joins loopDone while its CALLER holds the manager
+	// mutex and the event loop arms the timer — sharing it would deadlock
+	// that join against a timer arm.
 	debounceMu sync.Mutex
 	timer      *time.Timer
 	stopped    bool
@@ -54,9 +54,9 @@ type GitMonitor struct {
 	logger     *slog.Logger
 }
 
-// CurrentBranch returns the current git branch name using the system `git` CLI.
-// For non-git directories, it returns DefaultBranch. Any unexpected git error
-// is propagated to the caller (no silent fallback).
+// CurrentBranch returns the current git branch name via the system git CLI,
+// DefaultBranch for non-git directories. Unexpected git errors propagate —
+// no silent fallback.
 func CurrentBranch(ctx context.Context, repoPath string) (string, error) {
 	// Fast-path: explicitly non-git directory.
 	gitDir := filepath.Join(repoPath, ".git")
@@ -77,14 +77,11 @@ func CurrentBranch(ctx context.Context, repoPath string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
-// runGit runs `git -C repoPath <args...>` and returns trimmed stdout on
-// success. Every invocation is routed through workspace.GitCmdInRepo, which
-// scans the config of the repository git would discover for repoPath fresh
-// on each call (no caching, so config planted mid-session is covered too)
-// and prepends per-repo neutralizing `-c` overrides for any command-bearing
-// key it finds, on top of the sysproc.GitCmd baseline. On failure, the
-// returned error includes stderr for diagnosability; a config that cannot
-// be scanned safely fails closed (no git execution for that repository).
+// runGit runs `git -C repoPath <args...>` and returns trimmed stdout. Every
+// invocation is routed through workspace.GitCmdInRepo — the hardened choke
+// point (fresh per-repo config scan + neutralizing -c overrides, fail-closed
+// on an unscannable config): see specs/decisions/033-git-subprocess-hardening.md.
+// Errors include stderr for diagnosability.
 func runGit(ctx context.Context, repoPath string, args ...string) (string, error) {
 	full := make([]string, 0, len(args)+2)
 	full = append(full, "-C", repoPath)
@@ -136,20 +133,18 @@ func NewGitMonitor(repoPath string, onChange func(newBranch string), logger *slo
 	}, nil
 }
 
-// gitDirPointerPrefix is the prefix of a linked-worktree `.git` file. In a
+// gitDirPointerPrefix is the prefix of a linked-worktree `.git` file: in a
 // linked worktree (git worktree add) `<root>/.git` is a regular file whose
-// single line is `gitdir: <path>` pointing at the worktree's private git
+// single line `gitdir: <path>` points at the worktree's private git
 // directory (typically `<main-repo>/.git/worktrees/<name>`), where HEAD,
 // the index and per-worktree refs live.
 const gitDirPointerPrefix = "gitdir: "
 
 // resolveGitDir resolves the directory that owns HEAD for the repository at
-// repoPath. For a normal checkout that is `<repoPath>/.git` (a directory);
-// for a linked worktree it is the private git directory the `.git` pointer
-// file names. Any consumer that watches or reads HEAD-level state must go
-// through this resolution — watching `<root>/.git` itself in a linked
-// worktree watches a pointer FILE that never changes while branches are
-// switched in that tree. Returns an empty string (with a nil error) when
+// repoPath: `<repoPath>/.git` for a normal checkout, the private git
+// directory a linked worktree's `.git` pointer file names otherwise —
+// watching the pointer FILE would never see a branch switch. See
+// specs/domains/workspace.md (GitMonitor). Returns "" (nil error) when
 // repoPath is not inside a git repository at all.
 func resolveGitDir(repoPath string) (string, error) {
 	dotGit := filepath.Join(repoPath, ".git")
@@ -166,10 +161,8 @@ func resolveGitDir(repoPath string) (string, error) {
 
 	// Linked worktree: `.git` is a regular file carrying a gitdir pointer.
 	// The read goes through the package's FIFO-safe primitive: a plain
-	// os.ReadFile would open a non-regular `.git` (a readerless FIFO planted
-	// in the workspace) with a blocking open and hang this monitor goroutine
-	// forever; safeio refuses it instead. The generous bound is defensive —
-	// a real pointer line is a single short path.
+	// os.ReadFile would block forever on a readerless FIFO planted at .git.
+	// The bound is defensive — a real pointer line is one short path.
 	data, err := readBounded(dotGit, 4096)
 	if err != nil {
 		return "", fmt.Errorf("reading .git pointer file: %w", err)
@@ -196,10 +189,8 @@ func resolveGitDir(repoPath string) (string, error) {
 	return target, nil
 }
 
-// Start begins watching for branch changes. It watches the git directory
-// that owns HEAD — `.git` itself for a normal checkout, or the private git
-// directory a linked worktree's `.git` pointer file names — for changes to
-// the HEAD file.
+// Start begins watching the git directory that owns HEAD (see resolveGitDir)
+// for changes to the HEAD file.
 func (m *GitMonitor) Start() error {
 	gitDir, err := resolveGitDir(m.repoPath)
 	if err != nil {
@@ -222,10 +213,10 @@ func (m *GitMonitor) Start() error {
 	return nil
 }
 
-// eventLoop reads fsnotify events and debounces branch change detection.
-// It stops the debounce timer on EVERY return path — including the closed
-// watcher-channel branches — so Stop, which joins this loop, can guarantee
-// that no armed timer fires a stale checkBranch after the monitor is gone.
+// eventLoop reads fsnotify events and debounces branch-change detection. It
+// stops the debounce timer on EVERY return path — including closed watcher
+// channels — so Stop, which joins this loop, guarantees no armed timer fires
+// a stale checkBranch after the monitor is gone.
 func (m *GitMonitor) eventLoop() {
 	defer close(m.loopDone)
 	defer m.stopDebounceTimer()
@@ -279,10 +270,9 @@ func (m *GitMonitor) stopDebounceTimer() {
 	}
 }
 
-// checkBranch reads the current branch and calls onChange if it changed.
-// A monitor stopped while the read was in flight must not fire its callback:
-// the caller has already torn the monitor down, and a stale onChange would
-// mutate state that no longer belongs to this monitor.
+// checkBranch reads the current branch and calls onChange if it changed. A
+// monitor stopped mid-read must not fire its callback: a stale onChange
+// would mutate state that no longer belongs to this monitor.
 func (m *GitMonitor) checkBranch() {
 	m.debounceMu.Lock()
 	stopped := m.stopped
@@ -317,23 +307,21 @@ func (m *GitMonitor) CurrentBranchName() string {
 
 // Stop stops the monitor and releases resources.
 func (m *GitMonitor) Stop() error {
-	// Stop any armed debounce timer first, so neither a pending nor a
-	// later-armed timer can fire a stale checkBranch across this return.
+	// Stop any armed debounce timer first: neither a pending nor a
+	// later-armed timer may fire a stale checkBranch across this return.
 	m.stopDebounceTimer()
 
 	select {
 	case <-m.done:
-		// Already stopped: the first Stop closed done, and the event loop
-		// (if it ever ran) has been joined below on that pass.
+		// Already stopped: the first Stop closed done and joined below.
 	default:
 		close(m.done)
 	}
 	err := m.watcher.Close()
 	if m.loopStarted.Load() {
 		// Join the event loop so it can no longer arm a timer after this
-		// return. The loop exits promptly: done is closed and the watcher is
-		// closed, and the loop never blocks on a lock Stop's caller holds —
-		// the debounce mutex is exclusive to this monitor.
+		// return; it exits promptly and never blocks on a lock Stop's
+		// caller holds — the debounce mutex is exclusive to this monitor.
 		<-m.loopDone
 	}
 	return err

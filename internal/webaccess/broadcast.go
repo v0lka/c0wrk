@@ -4,15 +4,13 @@
 // writer goroutine each, and the web-agnostic event tap the desktop mount
 // registers on (*desktop.App).emit's eventTap seam.
 //
-// Backpressure contract: the fan-out NEVER blocks its caller (the tap runs
-// on the desktop event goroutine) and NEVER writes on it. Each frame is
-// enqueued on the target client's outbox; a client that cannot keep up
-// fills its own bounded queue and is dropped on overflow (Warn + abrupt
-// close) — the browser reconnects with backoff and re-syncs its own state,
-// which is strictly better than stalling the app's event path or growing
-// memory without bound. Per-client FIFO order and payload bytes are
-// preserved end-to-end: one queue and one writer per client, and the frame
-// is marshaled once before fan-out.
+// Backpressure contract: the fan-out NEVER blocks its caller and NEVER
+// writes on it — a client that cannot keep up fills its own bounded queue
+// and is dropped on overflow (Warn + abrupt close; the browser reconnects
+// with backoff and re-syncs), strictly better than stalling the app's event
+// path or growing memory without bound. Per-client FIFO order and payload
+// bytes are preserved end-to-end; the frame is marshaled once before
+// fan-out. specs/domains/web-access.md (Events).
 
 package webaccess
 
@@ -20,13 +18,12 @@ import (
 	"encoding/json"
 )
 
-// wsEventQueueCap bounds one client's outbound queue (in frames). Large
-// enough to absorb a burst of coalesced desktop events during a GC pause or
-// a tab throttling window; small enough that a dead client is dropped in
-// bounded time instead of pinning memory.
+// wsEventQueueCap bounds one client's outbound queue (frames): large enough
+// to absorb a burst of coalesced events (GC pause, tab throttling), small
+// enough that a dead client is dropped in bounded time.
 const wsEventQueueCap = 1024
 
-// enqueue queues one frame for the client's writer. It never blocks: a full
+// enqueue queues one frame for the client's writer; never blocks — a full
 // queue means the client cannot keep up, so it is dropped (Warn + abort).
 // Returns whether the frame was queued.
 func (c *WSConn) enqueue(frame []byte) bool {
@@ -41,13 +38,10 @@ func (c *WSConn) enqueue(frame []byte) bool {
 	}
 }
 
-// wsWritePump drains the client's outbox, writing one text frame at a time.
-// One pump per client: writes are serialized by construction (writeFrame's
-// mutex only guards the read pump's control-frame replies), and a slow or
-// dead peer only ever delays its own queue. The pump carries its own
-// recover — nothing on the write path can take the process down — and
-// closes the connection on any exit, which also reclaims clients whose
-// writes have failed.
+// wsWritePump drains the client's outbox, one text frame at a time. One
+// pump per client: writes are serialized by construction, and a slow or
+// dead peer only delays its own queue. The pump carries its own recover and
+// closes the connection on any exit, reclaiming clients whose writes failed.
 func (s *Server) wsWritePump(c *WSConn) {
 	defer func() {
 		if p := recover(); p != nil {
@@ -69,22 +63,20 @@ func (s *Server) wsWritePump(c *WSConn) {
 
 // eventEnvelope is the wire shape of one backend event: exactly what the
 // desktop webview receives from Wails EventsEmit, as JSON. args is null
-// when the event carried no data; the browser-side shim normalizes (the
-// server does not batch or reshape — one envelope per event, in order).
+// when the event carried no data; the server never batches or reshapes —
+// one envelope per event, in order.
 type eventEnvelope struct {
 	Name string        `json:"name"`
 	Args []interface{} `json:"args"`
 }
 
 // EventTap returns the tap for the desktop event seam: a func receiving
-// (name, args) exactly as the app's emit sees them. The mount point
-// assigns it to the app's eventTap field; the signature is deliberately
-// generic — this package knows nothing about its consumers, and consumers
-// know nothing about this package.
-//
-// The returned func is safe for concurrent use, never blocks for more than
-// one bounded enqueue per live client, and never panics into its caller
-// (the desktop event path must be untouchable from the web side).
+// (name, args) exactly as the app's emit sees them; the mount point assigns
+// it to the app's eventTap field. The signature is deliberately generic —
+// this package knows nothing about its consumers, and consumers know
+// nothing about this package. Safe for concurrent use, bounded enqueue per
+// live client, never panics into its caller (the desktop event path must
+// be untouchable from the web side).
 func (s *Server) EventTap() func(name string, args []interface{}) {
 	return s.tapEvent
 }

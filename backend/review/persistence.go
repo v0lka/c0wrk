@@ -1,8 +1,8 @@
 // Package review provides SQLite-backed persistence for the per-session code
-// review buffer (a general comment plus hunk-scoped comments) and its lifecycle
-// status. The store wraps the shared application *sql.DB and is initialized
-// after the session store because review_comments/review_state carry foreign
-// keys to the sessions table.
+// review buffer (a general comment plus hunk- and file-scoped comments) and
+// its lifecycle status (specs/domains/review.md). The store wraps the shared
+// application *sql.DB and must be initialized after the session store: the
+// review tables carry foreign keys to sessions.
 package review
 
 import (
@@ -21,8 +21,7 @@ import (
 type ReviewStatus string
 
 const (
-	// StatusActive means a review is in progress (the default for any session
-	// that has not yet been submitted or approved).
+	// StatusActive means a review is in progress (the default state).
 	StatusActive ReviewStatus = "active"
 	// StatusSubmitted means the review has been handed off for resolution.
 	StatusSubmitted ReviewStatus = "submitted"
@@ -61,9 +60,8 @@ type FileComment struct {
 	CreatedAt string `json:"created_at"` // RFC 3339 formatted timestamp
 }
 
-// Review is the aggregate view of a session's review buffer returned by
-// GetReview. HunkComments and FileComments are never nil (an empty slice means
-// no comments of that kind).
+// Review is the aggregate of a session's review buffer as returned by
+// GetReview; HunkComments and FileComments are never nil.
 type Review struct {
 	SessionID      string        `json:"session_id"`
 	Status         ReviewStatus  `json:"status"`
@@ -73,18 +71,16 @@ type Review struct {
 	UpdatedAt      string        `json:"updated_at"` // RFC 3339 formatted timestamp of the last status change
 }
 
-// SQLiteReviewStore persists the per-session review buffer and status using
-// SQLite. The DB lifecycle is owned externally; Close is a no-op.
+// SQLiteReviewStore persists the per-session review buffer and status in
+// SQLite (specs/domains/review.md); the DB lifecycle is owned externally.
 type SQLiteReviewStore struct {
 	db     *sql.DB
 	logger *slog.Logger
 }
 
 // NewSQLiteReviewStore wraps an existing *sql.DB and auto-creates the review
-// tables. The caller is responsible for opening the DB and applying pragmas
-// (WAL, foreign_keys). The sessions table must be created before calling this
-// (review_comments/review_state have FKs to sessions), so initialize this store
-// after the session store.
+// tables; the caller owns opening the DB and applying pragmas (WAL,
+// foreign_keys).
 func NewSQLiteReviewStore(db *sql.DB) (*SQLiteReviewStore, error) {
 	store := &SQLiteReviewStore{db: db}
 	if err := store.createTables(); err != nil {
@@ -96,7 +92,7 @@ func NewSQLiteReviewStore(db *sql.DB) (*SQLiteReviewStore, error) {
 	return store, nil
 }
 
-// SetLogger sets an optional logger. Safe to call at any time.
+// SetLogger sets an optional logger.
 func (s *SQLiteReviewStore) SetLogger(l *slog.Logger) {
 	s.logger = l
 }
@@ -109,7 +105,6 @@ func (s *SQLiteReviewStore) log() *slog.Logger {
 	return slog.Default()
 }
 
-// Close is a no-op — the DB lifecycle is managed externally.
 func (s *SQLiteReviewStore) Close() error {
 	return nil
 }
@@ -143,12 +138,10 @@ func (s *SQLiteReviewStore) createTables() error {
 }
 
 // migrateCommentsSchema upgrades the review_comments CHECK constraint to
-// include the 'file' kind. SQLite cannot ALTER a CHECK constraint in place, so
-// for legacy databases the table is rebuilt (create new with the updated
-// constraint, copy rows, drop+rename, recreate indexes) inside a single
-// transaction. Fresh databases already get the new constraint from
-// createTables, in which case this is a no-op. The migration is idempotent: a
-// second run detects the new constraint and does nothing.
+// include the 'file' kind: SQLite cannot ALTER a CHECK constraint in place,
+// so legacy databases get a single-transaction table rebuild. Idempotent —
+// fresh databases already carry the new constraint from createTables and
+// this is a no-op.
 func (s *SQLiteReviewStore) migrateCommentsSchema() error {
 	ctx := context.Background()
 	var ddl string
@@ -162,30 +155,22 @@ func (s *SQLiteReviewStore) migrateCommentsSchema() error {
 		return nil
 	}
 
-	// Pin the rebuild to a single pooled connection. PRAGMA foreign_keys is
-	// per-connection, while *sql.DB is a connection pool — toggling the pragma
-	// via db.ExecContext would run on an arbitrary connection and BeginTx could
-	// grab a different one where foreign_keys is still ON. Acquiring a *sql.Conn
-	// guarantees the PRAGMA and the transaction share one connection, so the
-	// canonical SQLite table-rebuild pattern (foreign_keys=OFF for the rebuild,
-	// then back ON) actually holds. There are currently no inbound foreign keys
-	// referencing review_comments, but disabling defensively guards against a
-	// future inbound reference being added.
+	// Pin the rebuild to one pooled connection: PRAGMA foreign_keys is
+	// per-connection while *sql.DB is a pool, so db.ExecContext and BeginTx
+	// could land on different connections and the canonical rebuild pattern
+	// (foreign_keys=OFF for the rebuild, then back ON) would not hold.
+	// Disabling FKs is defensive — review_comments has no inbound FKs today.
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to acquire connection for migration: %w", err)
 	}
-	// Release the connection back to the pool when the migration is done. The
-	// PRAGMA restore below also runs on this same connection via conn.
 	defer func() { _ = conn.Close() }()
 
 	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys=OFF`); err != nil {
 		return fmt.Errorf("failed to disable foreign keys for migration: %w", err)
 	}
-	// Always re-enable foreign keys on exit, even on the error path. This defer
-	// is registered before the rollback defer, so LIFO ordering runs rollback
-	// first (a no-op after a successful commit) then the PRAGMA restore — both
-	// on the same pinned connection.
+	// Re-enable foreign keys on every exit path; registered before the
+	// rollback defer, so LIFO runs rollback first, then this restore.
 	defer func() {
 		if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys=ON`); err != nil {
 			s.log().Error("failed to re-enable foreign keys after migration", "err", err)
@@ -229,10 +214,9 @@ func (s *SQLiteReviewStore) migrateCommentsSchema() error {
 	return nil
 }
 
-// containsFileKind reports whether a CREATE TABLE statement's CHECK constraint
-// already includes the 'file' kind. Matching the full constraint clause (not
-// just the 'file' literal) avoids false positives from a future column name,
-// comment, or default value that happens to contain 'file'.
+// containsFileKind reports whether the review_comments DDL already includes
+// the 'file' kind; matching the full constraint clause (not the bare literal)
+// avoids false positives from a future identifier containing 'file'.
 func containsFileKind(createSQL string) bool {
 	return strings.Contains(createSQL, "IN ('general','hunk','file')")
 }
@@ -242,8 +226,8 @@ func nowRFC3339() string {
 	return time.Now().UTC().Format(time.RFC3339)
 }
 
-// GetReview loads the review buffer and status for a session. A session with no
-// persisted review returns an active review with no comments rather than nil.
+// GetReview loads the review buffer and status for a session; a session with
+// no persisted review returns an empty active review rather than nil.
 func (s *SQLiteReviewStore) GetReview(ctx context.Context, sessionID string) (*Review, error) {
 	if sessionID == "" {
 		return nil, errors.New("session id is required")
@@ -349,9 +333,8 @@ func (s *SQLiteReviewStore) UpsertGeneralComment(ctx context.Context, sessionID,
 	return nil
 }
 
-// UpsertHunkComment inserts or replaces the comment for a single (file, hunk)
-// pair and returns the resulting comment id. The id is stable across updates
-// (existing rows are mutated in place), so callers can later DeleteComment(id).
+// UpsertHunkComment inserts or replaces one (file, hunk) comment and returns
+// its id — stable across updates, so callers can later DeleteComment(id).
 func (s *SQLiteReviewStore) UpsertHunkComment(ctx context.Context, sessionID, filePath, hunkID, body string) (string, error) {
 	if sessionID == "" {
 		return "", errors.New("session id is required")
@@ -383,11 +366,8 @@ func (s *SQLiteReviewStore) UpsertHunkComment(ctx context.Context, sessionID, fi
 	return id, nil
 }
 
-// UpsertFileComment inserts or replaces the comment for a single file and
-// returns the resulting comment id. The id is deterministic
-// (sessionID + ":file:" + filePath) and stable across updates, so a second call
-// for the same file mutates the existing row in place. An empty body removes
-// the file comment.
+// UpsertFileComment inserts or replaces a file's comment and returns its
+// deterministic id (fileCommentID), stable across updates.
 func (s *SQLiteReviewStore) UpsertFileComment(ctx context.Context, sessionID, filePath, body string) (string, error) {
 	if sessionID == "" {
 		return "", errors.New("session id is required")
@@ -463,8 +443,8 @@ func (s *SQLiteReviewStore) ClearComments(ctx context.Context, sessionID string)
 	return nil
 }
 
-// ClearReview resets the whole review for a session: removes all comments and
-// the status row. A subsequent GetReview returns an empty active review.
+// ClearReview removes all comments and the status row for a session; the
+// next GetReview returns an empty active review.
 func (s *SQLiteReviewStore) ClearReview(ctx context.Context, sessionID string) error {
 	if sessionID == "" {
 		return errors.New("session id is required")

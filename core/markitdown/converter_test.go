@@ -474,7 +474,7 @@ func buildPDFWithImage(text string, jpegBytes []byte, w, h int) []byte {
 }
 
 // TestConvertWithVision_PDFEmbeddedImageCaptioned pins the PDF image pass:
-// markitdown 0.1.4 drops embedded PDF images entirely (pdfminer text only),
+// markitdown 0.1.9 drops embedded PDF images entirely (pdfminer text only),
 // so the driver must extract the DCTDecode XObject itself, caption it via the
 // vision endpoint, and append an "## Embedded images" section to the text —
 // otherwise the agent never sees image content from a PDF.

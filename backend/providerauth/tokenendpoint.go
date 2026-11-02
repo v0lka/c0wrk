@@ -12,9 +12,8 @@ import (
 	"time"
 )
 
-// maxTokenErrorBody bounds how much of a token-endpoint error body is read
-// for diagnostics (error bodies never contain issued secrets, but stay
-// bounded regardless).
+// maxTokenErrorBody bounds the token-endpoint error body read for
+// diagnostics (error bodies carry no issued secrets, but stay bounded).
 const maxTokenErrorBody = 4 << 10
 
 // maxTokenResponseBody bounds successful token responses.
@@ -94,9 +93,8 @@ func (f *Flow) exchange(ctx context.Context, code, verifier, redirectURI string)
 	return postTokenForm(ctx, f.client, f.profile, form)
 }
 
-// refreshTokens redeems a refresh token for a fresh token set at the
-// profile's token endpoint. When the endpoint omits a new refresh token the
-// caller must keep the previous one.
+// refreshTokens redeems a refresh token for a fresh token set. When the
+// endpoint omits a new refresh token the caller must keep the previous one.
 func refreshTokens(ctx context.Context, client *http.Client, profile Profile, refreshToken string) (*tokenResponse, error) {
 	form := url.Values{
 		"grant_type":    {"refresh_token"},
@@ -106,10 +104,9 @@ func refreshTokens(ctx context.Context, client *http.Client, profile Profile, re
 	return postTokenForm(ctx, client, profile, form)
 }
 
-// postTokenForm submits a token-endpoint form and decodes the reply. All
-// requests carry the originator header; failures return either a
-// *TokenEndpointError (structured OAuth error) or a transport error, and
-// never echo submitted form values (which include secrets).
+// postTokenForm submits a token-endpoint form and decodes the reply.
+// Failures return a *TokenEndpointError or a transport error and never echo
+// the submitted form values (they include secrets).
 func postTokenForm(ctx context.Context, client *http.Client, profile Profile, form url.Values) (*tokenResponse, error) {
 	if client == nil {
 		client = defaultHTTPClient()

@@ -38,7 +38,7 @@ Manages the lifecycle of user sessions: creation, message handling, task executi
 - `frontend/src/hooks/useFileDrop.ts` — native `files:dropped` subscription, drag overlay, and webview-navigation suppression
 - `frontend/src/hooks/useStageAttachments.ts` — shared picker/drop attachment staging with vision filtering
 - `backend/frontend_api_attachment.go` — FrontendAPI attachment RPC surface
-- `core/markitdown/converter.go` — markdown conversion of attached files (shells out to the managed `markitdown` CLI, ADR-010); `core/markitdown/vision.go` + `driver.go` — optional vision-assisted conversion via the markitdown Python API (embedded stdlib-only OpenAI-compatible client; the CLI exposes no LLM flags), per-document `VisionOptions` resolved from the currently active model. markitdown 0.1.4 captions only pptx images internally, so the driver adds two passes: PDF-embedded-image extraction (pdfminer XObject walk + Pillow decode) appended as an `## Embedded images` section, and data-URI replacement for docx/html/epub (converts with `keep_data_uris=True`, captions each blob, strips the base64 from the output); `core/visionresolver.go` — model/provider → vision-params mapping (vision capability gate via `ModelRegistry.ResolveLocal`; anthropic_compatible proxies excluded — no OpenAI-compatible surface)
+- `core/markitdown/converter.go` — markdown conversion of attached files (shells out to the managed `markitdown` CLI, ADR-010); `core/markitdown/vision.go` + `driver.go` — optional vision-assisted conversion via the markitdown Python API (embedded stdlib-only OpenAI-compatible client; the CLI exposes no LLM flags), per-document `VisionOptions` resolved from the currently active model. markitdown 0.1.9 captions only pptx images internally, so the driver adds two passes: PDF-embedded-image extraction (pdfminer XObject walk + Pillow decode) appended as an `## Embedded images` section, and data-URI replacement for docx/html/epub (converts with `keep_data_uris=True`, captions each blob, strips the base64 from the output); `core/visionresolver.go` — model/provider → vision-params mapping (vision capability gate via `ModelRegistry.ResolveLocal`; anthropic_compatible proxies excluded — no OpenAI-compatible surface)
 - `core/tools/read_file_doc.go` — read_file document wrapper; vision resolver attached to the task context by the Orchestrator, conversion cache key includes the vision identity
 - `backend/session/title.go` — auto title generation via LLM
 - `backend/frontend_api_session.go` — FrontendAPI session methods
@@ -119,6 +119,19 @@ User clicks "New Chat" (or first message in empty state)
       implicit creation on send/paste/attach/terminal-mode goes through
       the same call)
 ```
+
+#### BuilderConfig provider under FrontendAPI's configMu
+
+The `BuilderConfig` for every new session's orchestrator must be produced under
+FrontendAPI's `configMu` once `NewFrontendAPI` wires the provider
+(`Application.SetBuilderConfigProvider` → `builderConfigProvider`, consumed by
+`Application.sessionBuilderConfig` in `backend/application.go`): the session
+factory runs on Wails call goroutines concurrently with Settings saves that
+mutate the shared live config's maps in place under `configMu`, so converting
+the live config pointer unlocked is a fatal concurrent-map-access crash.
+`Init` wires the provider inside its critical section before raising
+`seedPublished` (admitting guardless RPC readers); before that wiring the
+startup config is converted directly and cannot race a save.
 
 ### Project Switch Session Restoration
 
@@ -529,7 +542,7 @@ Image attachments survive a backend restart. Before `SendMessage` snapshots and 
 
 #### Vision-assisted Document Conversion — Data Egress
 
-When vision assistance is active (managed venv installed + the currently active model is vision-capable + provider credentials present), document conversion does not just produce local markdown: images **embedded in the document** are base64-encoded and sent to the active LLM provider's endpoint for captioning. Coverage per format (markitdown 0.1.4 captions only pptx internally, so the driver adds two post-processing passes):
+When vision assistance is active (managed venv installed + the currently active model is vision-capable + provider credentials present), document conversion does not just produce local markdown: images **embedded in the document** are base64-encoded and sent to the active LLM provider's endpoint for captioning. Coverage per format (markitdown 0.1.9 captions only pptx internally, so the driver adds two post-processing passes):
 
 - **pptx** — pictures captioned by markitdown's own `llm_caption` integration.
 - **pdf** — markitdown's PDF converter is pure pdfminer text extraction and drops images entirely; the driver walks page XObjects itself (pdfminer + Pillow, both venv-resident; DCTDecode/JPXDecode pass-through, FlateDecode raw-sample reconstruction for DeviceGray/RGB/CMYK and ICCBased at 8bpc) and appends an `## Embedded images` section with one caption per unique image (content-hash deduplication).
@@ -687,6 +700,16 @@ persisted non-terminal `GoalState` is loaded and passed to
 - The universal pause signal is installed fresh for the resumed request (`installPauseSignal`) and cleared on exit, so a stale signal from the prior run cannot affect a future request.
 
 See [goal-mode.md](goal-mode.md) for the full goal-mode lifecycle, budgets, anti-spin, and the [Pause is Session-Level](goal-mode.md#pause-is-session-level-universal-pause-signal) section.
+
+#### Resume-side image-block re-injection
+
+On resume paths (goal `resumeGoalLoop` and plain `Resume`) image blocks are
+re-derived EVERY turn from the ORIGINAL request (`imageBlocksForRequest`,
+`core/orchestrator_goal.go` / `core/orchestrator.go`): the helper matches by
+exact content against the recorded history, and the history holds only the
+original user message (the wave summary / fallback note never enter stored
+history) — the key must be the original request (`bb.GetOriginalRequest`),
+otherwise a resumed image-bearing task loses its images.
 
 #### Unified recovery ledger
 
@@ -881,6 +904,24 @@ shared deadline (the same `stopTimeout` spent by the background-goroutine join).
 Once it expires the loop abandons the remaining persistence workers with a WARN
 (from the second pass on it words them "late-registered"; a first-pass abort —
 the join consumed the whole budget — keeps the plain wording).
+
+### Read-Path Restore Policy (Memory-Only Lookups)
+
+Read-path restore policy: status/metrics/display lookups resolve sessions via
+the memory-only `sessionByID` funnel (`backend/session/manager_execution.go`) —
+never `getOrRestoreSession` (`GetSessionRuntimeStatus` performs the identical
+memory-only lookup inline): `emitAgentMetrics`, `ExecutionWindow`,
+`GetSessionRuntimeStatus`, `LiveTokenSnapshot`, `GetBlackboardState`,
+`ActiveSessions`, and the terminal-emission claim
+(`emitTaskCancelledUnlessShuttingDown` → `claimTaskTerminal`) run from
+task-terminal callbacks and frontend polls; a lazy restore there would
+resurrect a just-deleted or merely-viewed session (the store row still
+exists), rebuilding an orchestrator and reopening log/dump handles nobody
+closes. Lazy restore runs only from mutating user-intent entry points — the
+named four (`SendMessage`/`ResumeTask`/`CancelTask`/`PauseSession`) plus the
+attachment/clipboard/compaction surfaces that share the same
+`getOrRestoreSession` gate (attachment staging, `pasteImage`,
+`PendingMessageMetadata`, `CompactSessionContext`).
 
 ### Session Pause / Resume / Nudge
 
@@ -1308,6 +1349,21 @@ unexported key type in `sp4rk/agent/context.go`; read back with
 `agent.DumpWriterFromContext`). The writers are injected at
 the call sites: `SendMessage` for title generation and
 `desktop/event_handlers.go` for ToolJudge.
+
+### Link-Safe Creation of Session File Artifacts
+
+Session file artifacts (logs, LLM/step dumps, temp dirs, No-Project workspaces)
+are created link-safe (`backend/session/manager.go`, via
+`sp4rk/safeio`): directories as chains of REAL directories
+(`safeio.MkdirAllReal`, or `safeio.MkdirAllRealWithin` with the agent dir —
+not the session dir — as the containment boundary), the final file component
+opened `O_NOFOLLOW` (`safeio.OpenFileNoFollow`) in `Manager.createSessionLogger`,
+`openDumpArtifacts`, `getOrRestoreSession`, `CreateSessionFromDraft`. An
+escaping planted symlink is refused and the operation
+degrades (or aborts) — it never redirects output out of `~/.c0wrk`. There is
+no Windows equivalent for `O_NOFOLLOW` (tempered by symlink creation requiring
+elevated rights). In-tree links and a symlinked agent dir itself resolve as
+operator intent (the boundary is the fully resolved root).
 
 ## Core Types
 

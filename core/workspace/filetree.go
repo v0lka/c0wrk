@@ -16,17 +16,15 @@ func IsHidden(name string) bool {
 	return strings.HasPrefix(name, ".")
 }
 
-// IconResolver is called for non-directory entries during listing to obtain
-// icon and icon color strings. It receives the os.FileInfo already obtained
-// via DirEntry.Info(), avoiding a second os.Stat call at the caller.
+// IconResolver obtains icon/color for a non-directory entry; it receives the
+// fs.FileInfo already obtained via DirEntry.Info(), so callers need no extra
+// os.Stat.
 type IconResolver func(info fs.FileInfo) (icon string, color string)
 
-// ListDirFlat returns the immediate children of a directory, sorted
-// directories first then alphabetically. Files/directories in ignoredPaths
-// are included but flagged with GitIgnored=true.
-//
-// An optional IconResolver may be supplied; when non-nil it is called for
-// each non-directory entry to populate Icon and IconColor.
+// ListDirFlat returns the immediate children of absDir, directories first,
+// each group alphabetical. Entries in ignoredPaths are included but flagged
+// GitIgnored=true; a non-nil IconResolver populates Icon/IconColor for
+// non-directory entries.
 func ListDirFlat(absDir string, ignoredPaths map[string]bool, opts ...ListDirOption) ([]FileNode, error) {
 	cfg := listDirConfig{}
 	for _, o := range opts {
@@ -70,16 +68,10 @@ func ListDirFlat(absDir string, ignoredPaths map[string]bool, opts ...ListDirOpt
 	return nodes, nil
 }
 
-// ListDirRecursive returns a flat list of all files and directories found
-// recursively under absDir. Within each directory level, directories are
-// listed before files and both groups are sorted alphabetically. The .git
-// directory and its contents are excluded. Files/directories in ignoredPaths
-// are included but flagged with GitIgnored=true.
-//
-// An optional IconResolver may be supplied via WithIconResolver; when non-nil
-// it is called for each non-directory entry to populate Icon and IconColor.
-// An optional *slog.Logger may be supplied via WithLogger; when non-nil it is
-// used to log warnings for unreadable paths encountered during the walk.
+// ListDirRecursive returns a flat list of everything found under absDir
+// (per level directories before files, both alphabetical; .git excluded).
+// Entries in ignoredPaths are included but flagged GitIgnored=true;
+// WithIconResolver fills icon/color, WithLogger logs unreadable paths.
 func ListDirRecursive(absDir string, ignoredPaths map[string]bool, opts ...ListDirOption) ([]FileNode, error) {
 	cfg := listDirConfig{}
 	for _, o := range opts {
@@ -87,18 +79,16 @@ func ListDirRecursive(absDir string, ignoredPaths map[string]bool, opts ...ListD
 	}
 
 	// Non-nil even for an empty walk: a nil slice serializes to `null` over
-	// the Wails binding, which the frontend's shape guard treats as invalid
-	// and degrades to `[]` — making a missing directory indistinguishable
-	// from an empty one. `[]` keeps the "empty" signal explicit.
+	// the Wails binding, which the frontend's shape guard degrades to `[]`,
+	// making a missing directory indistinguishable from an empty one.
 	nodes := make([]FileNode, 0)
 	walkErr := filepath.WalkDir(absDir, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			if path == absDir {
-				// The walk root itself is missing or unreadable. Unlike
-				// nested paths (skipped below), swallowing this would return
-				// (empty, nil), letting callers cache an "empty workspace"
-				// for a directory that may simply not exist yet. Surface the
-				// error so callers retry once the directory materializes.
+				// The walk root itself is missing/unreadable. Swallowing it
+				// would return (empty, nil) and let callers cache an "empty
+				// workspace" for a directory that may not exist yet; surface
+				// the error so they retry once it materializes.
 				return walkErr
 			}
 			if cfg.logger != nil {
@@ -157,9 +147,7 @@ type listDirConfig struct {
 // ListDirOption configures listing behavior.
 type ListDirOption func(*listDirConfig)
 
-// WithIconResolver provides an icon resolver that is called for each
-// non-directory entry. The fs.FileInfo is obtained from the DirEntry
-// during the walk, avoiding a second os.Stat call at the caller.
+// WithIconResolver sets the resolver applied to non-directory entries.
 func WithIconResolver(r IconResolver) ListDirOption {
 	return func(c *listDirConfig) { c.resolver = r }
 }

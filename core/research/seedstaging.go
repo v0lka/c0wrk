@@ -1,26 +1,9 @@
-// seedstaging.go implements the crash-safe, hash-verified seeding core shared
-// by the research skill-pack (skillpack.go) and agent-pack (agentpack.go).
-// It closes two review findings (review-post-v0.7.3.md):
-//
-//   - [58] crash window: the previous write order (clear target → write tree →
-//     write marker) could be interrupted mid-tree, leaving a marker-less or
-//     truncated directory that the next seeding misclassified ("Preserved"
-//     when the marker was missing) and never repaired. Every write now lands
-//     in a hidden sibling staging directory swapped into place by a single
-//     rename ([58]b), so an interrupted run can never leave a partial tree at
-//     the target; staging/backup leftovers from a hard kill are swept on the
-//     next run. Writing the marker FIRST ([58]a) is deliberately avoided: that
-//     ordering alone opens a "marker + truncated tree" window that the next
-//     seeding would classify as Current.
-//
-//   - [44] marker spoofing: classification compares the CONTENT HASH of the
-//     on-disk tree against the embedded pack ([44]a/[58]c) instead of trusting
-//     the marker alone (and never mtime/size heuristics). Consequences: a
-//     directory whose content equals the pack is Current regardless of marker
-//     state; a pack-marked truncated subset of the pack is repaired (never
-//     reported Current — the marker-first trap); a pack-marked same-version
-//     tree that diverges from the pack content is a local edit (or a spoofed
-//     marker) and is preserved untouched and reported as Modified.
+// seedstaging.go is the crash-safe, hash-verified seeding core shared by
+// skillpack.go and agentpack.go: every write lands in a hidden sibling
+// staging directory swapped in by a single rename, and classification
+// compares CONTENT HASHES against the embedded pack (never mtime/size, never
+// the marker alone). Full rules: specs/domains/research.md (seeding
+// invariants).
 
 package research
 
@@ -51,30 +34,26 @@ const (
 	actionModified                   // pack-marked but content diverges (user edit or spoofed marker); left untouched
 )
 
-// seedWriteFile is the file-write primitive used by all seeding writes. It is
-// a package-level seam so tests can inject write failures mid-tree (crash
-// injection); production always uses os.WriteFile.
+// seedWriteFile is the write primitive for all seeding writes — a seam so
+// tests can inject mid-tree write failures; production uses os.WriteFile.
 var seedWriteFile = os.WriteFile
 
 // diskSeedState is the on-disk state of one seeding target, computed by
-// content comparison against the embedded pack — never by mtime/size, which a
-// same-length rewrite or a restored backup would fool.
+// content comparison — never mtime/size, which a same-length rewrite fools.
 type diskSeedState struct {
 	exists    bool
 	hasMarker bool
 	version   string
 	// hash is the content hash of the on-disk tree (dot entries excluded).
 	hash string
-	// truncated reports that the on-disk files are a strict subset of the
-	// pack: every present file is byte-identical to its pack counterpart and
-	// at least one pack file is missing — the signature of an interrupted
-	// tree write, not of a user edit.
+	// truncated: the on-disk files are a strict subset of the pack (every
+	// present file byte-identical, at least one missing) — an interrupted
+	// tree write, not a user edit.
 	truncated bool
 }
 
-// inspectSeedTarget compares the on-disk target against the embedded pack
-// subtree and returns the disk state together with the pack's content hash.
-// A missing target reports a zero-valued state (exists=false).
+// inspectSeedTarget returns the target's disk state plus the pack's content
+// hash; a missing target reports the zero value (exists=false).
 func inspectSeedTarget(fsys fs.FS, root, name, target string) (st diskSeedState, packHash string, err error) {
 	info, serr := os.Stat(target)
 	if serr != nil {
@@ -113,23 +92,10 @@ func inspectSeedTarget(fsys fs.FS, root, name, target string) (st diskSeedState,
 }
 
 // classifySeed maps a disk state to the seeding action plus whether the
-// version marker should be re-stamped. Content hashes decide; the marker only
-// contributes an ownership signal ([58]c):
-//
-//   - missing directory                       → Seed
-//   - content == pack                         → Current (marker re-stamped when
-//     missing or stale — a legacy interrupted write left complete content
-//     without a marker)
-//   - marker present + truncated pack subset  → Update (repair an interrupted
-//     write; the "marker + truncated tree" state is NEVER Current, which is
-//     exactly the trap of the marker-first [58]a ordering)
-//   - no marker + content differs             → Preserve (user-owned; never
-//     clobbered)
-//   - marker == current + content differs     → Modified (user edit on top of
-//     the pack, or a spoofed marker [44]; preserved and reported honestly
-//     instead of masquerading as the current pack)
-//   - marker != current + content differs     → Update (documented pack
-//     upgrade: full overwrite)
+// version marker should be re-stamped: content hashes decide, the marker
+// contributes only an ownership signal. The full mapping (Seed / Current /
+// repair-Update / Preserve / Modified / upgrade-Update) is specified in
+// specs/domains/research.md (seeding invariants).
 func classifySeed(st diskSeedState, packHash, currentVersion string) (seedAction, bool) {
 	if !st.exists {
 		return actionSeed, false
@@ -149,12 +115,10 @@ func classifySeed(st diskSeedState, packHash, currentVersion string) (seedAction
 	return actionUpdate, false
 }
 
-// stageAndSwap materializes one pack entry crash-safely: it writes the full
-// tree (plus the version marker) into a hidden sibling staging directory and
-// swaps the staging directory into place with renames only. An interruption
-// can therefore leave at most an orphaned hidden staging/backup directory —
-// swept by sweepSeedLeftovers on the next run — never a partial tree at the
-// target.
+// stageAndSwap materializes one pack entry crash-safely: the full tree plus
+// marker is written into a hidden sibling staging directory and swapped in
+// with renames only — an interruption leaves at most an orphaned staging/
+// backup dir (swept next run), never a partial tree (specs/domains/research.md).
 func stageAndSwap(name, target, version string, writeTree func(stagingDir string) error) error {
 	parent := filepath.Dir(target)
 	staging, err := os.MkdirTemp(parent, "."+name+".seed-tmp-")
@@ -205,13 +169,10 @@ func stageAndSwap(name, target, version string, writeTree func(stagingDir string
 	return nil
 }
 
-// writeMarkerAtomic stamps the pack version marker into dir via a temp file +
-// rename, so an interrupted write can never leave a truncated marker behind.
-// The staging temp is created by safeio.WriteFileAtomic under a randomized
-// name, so the write-open cannot be redirected by a FIFO or symlink planted
-// at the deterministic "<dir>/.seed-version.tmp" name the previous
-// implementation used (the rename replaces such an entry itself instead of
-// following it).
+// writeMarkerAtomic stamps the version marker via temp file + rename. The
+// staging temp uses a randomized name (safeio.WriteFileAtomic), so the
+// write-open cannot be redirected by a FIFO/symlink planted at the
+// deterministic temp name a previous implementation used.
 func writeMarkerAtomic(dir, version string) error {
 	if err := safeio.WriteFileAtomic(filepath.Join(dir, seedVersionFile), []byte(version), 0o644); err != nil {
 		return fmt.Errorf("write marker file: %w", err)
@@ -219,10 +180,8 @@ func writeMarkerAtomic(dir, version string) error {
 	return nil
 }
 
-// sweepSeedLeftovers removes hidden staging (".<name>.seed-tmp-*") and backup
-// (".<name>.seed-old") directories left in parentDir by an interrupted
-// previous run. Only dot-prefixed names matching the seeding naming scheme
-// are touched; user content is never considered.
+// sweepSeedLeftovers removes the hidden ".<name>.seed-tmp-*"/".seed-old"
+// dirs an interrupted run left behind; only seeding-scheme names are touched.
 func sweepSeedLeftovers(parentDir string) {
 	entries, err := os.ReadDir(parentDir)
 	if err != nil {
@@ -239,10 +198,9 @@ func sweepSeedLeftovers(parentDir string) {
 	}
 }
 
-// packFileSet loads the embedded pack subtree for one entry (skill or agent
-// profile) as a rel-path → content map. Rel paths use forward slashes so they
-// compare equal to diskFileSet keys. Dot entries are skipped (the embed
-// directive already excludes them; this keeps both sides symmetric).
+// packFileSet loads the embedded subtree for one entry as a rel-path →
+// content map (forward-slash keys, matching diskFileSet); dot entries skipped
+// on both sides.
 func packFileSet(fsys fs.FS, root, name string) (map[string][]byte, error) {
 	srcRoot := path.Join(root, name)
 	files := make(map[string][]byte)
@@ -273,9 +231,8 @@ func packFileSet(fsys fs.FS, root, name string) (map[string][]byte, error) {
 	return files, nil
 }
 
-// diskFileSet loads the on-disk tree at dir as a rel-path → content map.
-// Dot entries are skipped: the .seed-version marker, .DS_Store noise, and the
-// marker temp file never influence classification.
+// diskFileSet loads the on-disk tree at dir (dot entries — marker, noise —
+// skipped, so they never influence classification).
 func diskFileSet(dir string) (map[string][]byte, error) {
 	dfs := os.DirFS(dir)
 	files := make(map[string][]byte)
@@ -295,12 +252,9 @@ func diskFileSet(dir string) (map[string][]byte, error) {
 		if strings.HasPrefix(d.Name(), ".") {
 			return nil
 		}
-		// Skip every non-regular entry before reading: fs.ReadFile would open
-		// a FIFO (or socket/device) with a plain blocking open and hang the
-		// startup seeding forever on a readerless pipe. A symlink is likewise
-		// never followed — the pack hash classifies only genuine regular
-		// content, which also keeps the classification stable for such
-		// entries instead of failing the whole scan.
+		// Skip non-regular entries before reading: fs.ReadFile would block
+		// forever opening a readerless FIFO at startup, and a symlink must not
+		// be followed — the hash classifies genuine regular content only.
 		if !d.Type().IsRegular() {
 			return nil
 		}
@@ -317,10 +271,8 @@ func diskFileSet(dir string) (map[string][]byte, error) {
 	return files, nil
 }
 
-// hashFileSet renders the deterministic content hash of a rel-path → content
-// file set: entries sorted by path, each framed by length prefixes so
-// path/content boundaries are unambiguous. Two file sets hash equal iff they
-// contain the same (path → bytes) pairs.
+// hashFileSet renders the deterministic content hash of a file set (sorted
+// paths, length-prefixed frames); two sets hash equal iff identical.
 func hashFileSet(files map[string][]byte) string {
 	rels := make([]string, 0, len(files))
 	for rel := range files {

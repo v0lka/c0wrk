@@ -37,11 +37,8 @@ type authNamespace struct {
 }
 
 // ParseIDTokenClaims extracts Identity from a JWT ID token WITHOUT verifying
-// its signature. This is deliberate: the token is received directly from the
-// issuer's token endpoint over TLS during the code exchange or a refresh, so
-// its origin is already trusted; nothing here ever accepts a token from a
-// less-trusted channel. Callers must not use this function on tokens from
-// untrusted input.
+// its signature — the token arrives only from the issuer's token endpoint
+// over TLS, never from untrusted input (specs/domains/llm-providers.md).
 func ParseIDTokenClaims(idToken string) (*Identity, error) {
 	claims, err := decodeJWTClaims(idToken)
 	if err != nil {

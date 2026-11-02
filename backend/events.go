@@ -6,6 +6,9 @@ package backend
 //
 // Frontend subscribes to global events via their string name and to session
 // events via the `session:${id}:${type}` convention (see frontend/src/api/runtime.ts).
+// Every event is cataloged with payload, emission site and consumer in
+// specs/contracts/event-catalog.md — the authoritative reference; these doc
+// comments carry only the local delta.
 
 // ---------------------------------------------------------------------------
 // Wails event names emitted TO the frontend
@@ -21,20 +24,15 @@ const EventRuntimeError = "runtime_error"
 // EventBackendReady is emitted when the Go backend finishes initialization.
 const EventBackendReady = "backend:ready"
 
-// EventConfigUpdated is emitted after a config mutation is persisted (any
-// Update* RPC that writes config.yaml: LLM, search, proxy, security,
-// Model Profiles, model overrides, MCP servers, log level, the experimental
-// toggle, trusted git repos, update preferences). No payload — consumers
-// re-read the config via GetConfig. Dispatched asynchronously from
-// persistConfig (backend/frontend_api_config.go) so the Wails dispatch never
-// runs under configMu. Its purpose is recovery for consumers whose initial
-// GetConfig landed during the startup race or failed transiently: they stay
-// "not latched" and retry on this event instead of waiting for a restart.
+// EventConfigUpdated is emitted after a config mutation is persisted — no
+// payload, consumers re-read via GetConfig. Dispatched asynchronously from
+// persistConfig so the Wails dispatch never runs under configMu; it is the
+// retry trigger for consumers whose initial GetConfig landed during the
+// startup race.
 const EventConfigUpdated = "config:updated"
 
 // EventToolManagerStart is emitted before managed-tool downloads begin,
-// carrying the list of tools that need to be installed or updated.
-// The frontend uses it to show the tool-install splash screen.
+// carrying the tools to install; the frontend shows the install splash.
 const EventToolManagerStart = "tool_manager:start"
 
 // EventToolManagerDone is emitted when all managed-tool installations complete.
@@ -52,126 +50,90 @@ const EventProjectDeleted = "project:deleted"
 // EventProjectRenamed is emitted when a project is renamed.
 const EventProjectRenamed = "project:renamed"
 
-// EventSessionRenamed is emitted when a session is renamed (either manually
-// or via background auto-titling). Unlike the session-scoped
-// `session:{id}:session_renamed` orchestration event, this global event lets
-// the sidebar update a session's title even when it is not the active session
-// (mirrors EventProjectRenamed).
+// EventSessionRenamed is emitted when a session is renamed (manual or
+// auto-titled). Unlike the session-scoped orchestration event, this global
+// one lets the sidebar update any session's title.
 const EventSessionRenamed = "session:renamed"
 
 // EventProjectSwitched is emitted when the active project changes.
 const EventProjectSwitched = "project:switched"
 
-// EventGitConfigRisk is emitted when a project switch or an added auxiliary
-// work directory opens a repository whose .git/config carries dangerous keys
-// (command-bearing filters, merge drivers, textconv, fsmonitor, hooksPath,
-// include directives, ...). The payload is a GitConfigRiskData listing every
-// detected key with a human-readable description plus the standing notice
-// that repository-defined hooks do not run inside c0wrk. A clean config emits
-// nothing. Emitted from notifyGitConfigRisk
-// (backend/frontend_api_gitconfig_risk.go).
+// EventGitConfigRisk is emitted when a project switch or added work directory
+// opens a repository whose .git/config carries dangerous keys; the payload
+// lists every detected key plus the notice that repository-defined hooks do
+// not run inside c0wrk. A clean config emits nothing. Emitted from
+// notifyGitConfigRisk (backend/frontend_api_gitconfig_risk.go).
 const EventGitConfigRisk = "project:git_config_risk"
 
 // EventWorkspaceTreeChanged is emitted when filesystem changes are detected
 // in the active workspace.
 const EventWorkspaceTreeChanged = "workspace:tree_changed"
 
-// EventFilesDropped is emitted when one or more files are dragged and dropped
-// onto the application window. The payload is a map carrying the absolute
-// paths of the dropped files under the "paths" key. The webview's own
-// drag-and-drop handling is disabled (options.DragAndDrop.DisableWebViewDrop)
-// so dropped files never navigate or open inside the webview; this event is
-// the sole delivery channel for the dropped paths.
+// EventFilesDropped is emitted for files dragged onto the window; the payload
+// carries the absolute paths under "paths". The webview's own drag-and-drop
+// is disabled (dropped files never navigate inside it), making this event the
+// sole delivery channel.
 const EventFilesDropped = "files:dropped"
 
 // EventSkillsChanged is emitted when skill directories outside the workspace
-// (e.g. ~/.agents/skills, ~/.c0wrk/.agents/skills) are modified. Workspace-
-// local skill changes are surfaced via EventWorkspaceTreeChanged instead.
+// change; workspace-local changes surface via EventWorkspaceTreeChanged.
 const EventSkillsChanged = "skills:changed"
 
 // EventAgentsChanged is emitted when Subagent Profile directories outside the
-// workspace (e.g. ~/.agents/agents, ~/.c0wrk/.agents/agents) are modified.
-// Workspace-local agent changes are surfaced via EventWorkspaceTreeChanged
-// instead. Mirrors EventSkillsChanged for AGENT.md discovery.
+// workspace change; mirrors EventSkillsChanged for AGENT.md discovery.
 const EventAgentsChanged = "agents:changed"
 
 // EventCommandsChanged is emitted when custom command directories outside the
-// workspace (e.g. ~/.agents/commands, ~/.c0wrk/.agents/commands) are modified.
-// Workspace-local command changes are surfaced via EventWorkspaceTreeChanged
-// instead. Mirrors EventSkillsChanged for command template discovery (ADR-096).
+// workspace change; mirrors EventSkillsChanged for command templates (ADR-096).
 const EventCommandsChanged = "commands:changed"
 
-// EventGitStatusChanged is emitted when the git staging area changes
-// (stage, unstage, commit). The payload is the repository path so the
-// frontend knows which project was affected.
+// EventGitStatusChanged is emitted when the git staging area changes; the
+// payload is the repository path so the frontend knows which project moved.
 const EventGitStatusChanged = "git:status_changed"
 
 // EventWorkDirsChanged is emitted when an auxiliary working directory is
-// added, updated, or removed (project- or session-scoped) so the frontend
-// refreshes its directory list.
+// added, updated, or removed so the frontend refreshes its directory list.
 const EventWorkDirsChanged = "workdirs:changed"
 
 // EventSessionsLoaded is emitted when all sessions have been loaded from disk.
 const EventSessionsLoaded = "sessions:loaded"
 
-// EventSessionsChanged is emitted after every successful session mutation
-// that changes a session list: create (the RPC and the SwitchProject fallback
-// creation — the fork paths' own tree creation is covered by the fork clause
-// below), fork (plain and managed), delete, archive, pin, CHAT→project
-// promotion, and project deletion (which cascades its sessions). Task lifecycle
-// transitions count as list-visible state too: the desktop emitter re-issues
-// this event for every task_started / task_complete / task_cancelled /
-// error / task_failed_resumable / session_paused / session_resumed it
-// forwards (desktop/startup_phases.go buildUIEmitFunc), so the live-sessions
-// radar and every sidebar refresh within their debounce window instead of on
-// the 30s safety poll. No payload — consumers re-read the list via
-// ListSessions/ListAllSessions, mirroring EventWorkDirsChanged. Emitted
-// through the shared f.emitEvent funnel
-// (backend/frontend_api_session.go emitSessionsChanged) and, for the task
-// lifecycle mirror, through the desktop event batcher's immediate-flush
-// class so it lands alongside the triggering session-scoped event.
+// EventSessionsChanged is emitted after every list-affecting session mutation
+// and, via the desktop task-lifecycle mirror (buildUIEmitFunc), for every
+// forwarded task transition — surfaces refresh within their debounce window
+// instead of the 30s safety poll. No payload: consumers re-read via
+// ListSessions/ListAllSessions. Emitted through the shared emitEvent funnel
+// (emitSessionsChanged).
 const EventSessionsChanged = "sessions:changed"
 
-// EventSessionEvent is the prefix for session-scoped orchestration events.
-// Actual events use the pattern session:{id}:{type}.
+// EventSessionEvent is the prefix for session-scoped orchestration events
+// (actual events: session:{id}:{type}).
 const EventSessionEvent = "session:event"
 
 // EventVectorIndexStatus is emitted when the vector index state or progress changes.
 const EventVectorIndexStatus = "vector_index:status"
 
-// EventMCPReady is emitted (once) when the MCP gateway startup goroutine
-// finishes — whether servers connected successfully or failed. It lets the MCP
-// settings dialog refresh its transient "Starting…" placeholder into the real
-// per-server status without manual polling. Emitted from the desktop layer
-// (startMCPReadyNotifier), which waits on the builder's WaitMCPStartup.
+// EventMCPReady is emitted once when the MCP gateway startup goroutine
+// finishes (success or failure), letting the settings dialog replace its
+// "Starting…" placeholder without polling. Emitted from the desktop layer
+// (startMCPReadyNotifier).
 const EventMCPReady = "mcp:ready"
 
-// EventResearchChanged is emitted on a RESEARCH mutation for a project — a
-// switched active R-NNN (SetActiveResearch) or a deleted research project
-// (DeleteResearch). RESEARCH is always on for real projects, so there is no
-// enable/disable action; the payload is a map[string]string carrying the
-// "project_id" and the "action" ("active_changed" / "project_deleted") so the
-// frontend can refresh the Research panel and project list. See
-// specs/contracts/event-catalog.md.
+// EventResearchChanged is emitted on a RESEARCH mutation for a project (active
+// R-NNN switched or research project deleted). RESEARCH is always on for real
+// projects — there is no enable/disable action. Payload: project_id + action.
 const EventResearchChanged = "research:changed"
 
 // EventResearchFileChanged is emitted when a file inside the research
-// directory changes (hypothesis cards, brief, prior-art, graph, etc.).
-// The payload is a map[string]string carrying the "project_id" and "paths"
-// (comma-separated list of changed file paths) so the frontend can
-// incrementally update the hypothesis graph without a full status refetch.
+// directory changes; payload project_id + paths, so the frontend can update
+// the hypothesis graph incrementally.
 const EventResearchFileChanged = "research:file_changed"
 
-// EventPapersChanged is emitted when a file inside the active project's paper
-// library (<research-root>/papers/) changes — a paper card, note, or appraisal
-// being written or edited. The payload is a map[string]string carrying the
-// "project_id" and "paths" (comma-separated list of changed absolute paths) so
-// the Papers panel can refresh incrementally. Unlike research:file_changed
-// (scoped to the research artifact tree), this event fires whenever the paper
-// library changes, because the library is a global subdirectory of the
-// research root that lives independently of any active R-NNN project (see
-// specs/domains/research.md). Emitted from the workspace
-// watcher callback in backend/frontend_api_project.go via emitPapersChanged.
+// EventPapersChanged is emitted when a file in the paper library changes. The
+// library is a global subdirectory of the research root that lives
+// independently of the active R-NNN project — unlike research:file_changed,
+// which is scoped to the research artifact tree. Emitted via
+// emitPapersChanged.
 const EventPapersChanged = "papers:changed"
 
 // ---------------------------------------------------------------------------
@@ -202,36 +164,22 @@ const EventUpdateNone = "update:none"
 // Embedded local-model events (emitted by FrontendAPI embedded-LLM methods)
 // ---------------------------------------------------------------------------
 
-// EventEmbeddedLLMInstallProgress reports one per-component step of an
-// embedded-LLM install (runtime, cudart, model, mmproj × downloading,
-// verifying, extracting, signing, done). The payload is an
-// EmbeddedLLMProgressData. It is a global event with a bare name (not
-// session-scoped): the install belongs to the machine, not to a conversation.
-// Emitted from the background install run started by InstallEmbeddedLLM
-// (backend/frontend_api_embedded.go). See specs/contracts/event-catalog.md.
+// EventEmbeddedLLMInstallProgress reports one per-component install step. A
+// global event with a bare name: the install belongs to the machine, not to a
+// conversation.
 const EventEmbeddedLLMInstallProgress = "embedded_llm:install_progress"
 
 // EventEmbeddedLLMState reports the supervision state of the embedded local
-// model (not_installed | installed | loading | loaded | unloading | error) plus
-// the install record the UI shows. The payload is an EmbeddedLLMStateData. It
-// fires on every observable transition of core/embeddedllm.Server, once at
-// startup after the manifest restore, and after an install, a removal or an
-// auto-unload policy change. A failure is additionally reported through the
-// existing EventRuntimeError toast when it happened in the background (an
-// install run), where no RPC is left to carry the error. See
-// specs/contracts/event-catalog.md.
+// model plus the install record. It fires on every observable transition,
+// once at startup after the manifest restore, and after an install, a removal
+// or an auto-unload policy change; a background failure additionally raises
+// EventRuntimeError (no RPC is left to carry it).
 const EventEmbeddedLLMState = "embedded_llm:state"
 
-// EventChatGPTAuthState reports a transition of the ChatGPT subscription
-// sign-in flow (pending | success | error | cancelled). The payload is a
-// ChatGPTAuthEventData. It is a global event with a bare name (not
-// session-scoped): the account belongs to the app, not to a conversation.
-// Emitted from the background sign-in run started by StartChatGPTSignIn
-// (backend/frontend_api_auth.go): "pending" carries the authorization URL the
-// frontend opens in the system browser (via runtime.BrowserOpenURL),
-// "success" carries the signed-in identity snapshot, and "error"/"cancelled"
-// close the flow. The synchronous sign-out does not emit — its RPC return is
-// the report. See specs/contracts/event-catalog.md.
+// EventChatGPTAuthState reports a transition of the ChatGPT sign-in flow. A
+// global event with a bare name: the account belongs to the app, not to a
+// conversation. The synchronous sign-out does not emit — its RPC return is
+// the report.
 const EventChatGPTAuthState = "chatgpt_auth:state"
 
 // ---------------------------------------------------------------------------

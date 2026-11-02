@@ -17,127 +17,40 @@ import (
 	"github.com/v0lka/sp4rk/safeio"
 )
 
-// This file implements a safe, exec-free reader for a repository's .git/config
-// (see the GitSpawn vulnerability class: a repo that arrives as files with its
-// .git directory intact can carry command-bearing config keys that git executes
-// on ordinary operations — status/diff/add/commit/merge — without any user
-// interaction, because `git clone` deliberately does not transfer config but
-// archive/USB/shared-drive distribution does).
-//
-// Scope (per the GitSpawn remediation plan): the INI subset under the
-// command-relevant section families — core, attr, extensions (model-only:
-// objectformat/worktreeConfig), filter.<name>, merge.<name>, diff.<name>,
-// plus the transport (credential) and signing (commit/gpg/user) families
-// described below.
-// include/includeIf directives are parsed, logged and recorded but
-// deliberately NOT followed by the key scanner: the included files' contents
-// are unknown, so a config with includes must be treated as partially
-// invisible. (ResolveIncludes is the one exception — it follows the directives
-// for trust fingerprinting only, never for key neutralization; see its doc.)
-// NeutralizingOverrides compensates on three fronts: per-name -c pins for
-// every command-bearing driver key visible in the scanned config (a pinned
-// driver is a fixed benign command no matter which routing source — the
-// in-tree .gitattributes included — routes paths to it); core.attributesFile=
-// (empty) for that routing source, plus the attribute-routing FILES git
-// reads without any kill-switch — .git/info/attributes and the
-// core.attributesFile target — which are themselves scanned and every routed
-// driver name they contain is pinned the same way (-c overrides beat file
-// config no matter where, including an included file, the driver is
-// defined); and attr.tree (object-format aware) as the narrow fallback for
-// the one case per-name pins cannot cover — include directives that may
-// hide driver definitions whose names the scan never sees. An attribute
-// source that exists but cannot be scanned makes the whole scan fail closed
-// (see review-post-v0.7.3 finding [1]); the attr.tree fallback's collateral
-// (benign eol/text attributes disabled) is documented with finding [56].
-//
-// Linked worktrees are scanned with merge semantics ([2] of the same
-// review): the worktree gitdir's commondir file resolves the common dir,
-// whose config — plus the optional config.worktree overlay when
-// extensions.worktreeConfig is enabled — is exactly what git reads there.
-//
-// The network-transport keys the Git panel's remote RPCs (pull/push/fetch)
-// reach — core.sshCommand, core.askPass, core.gitProxy, credential.helper
-// and credential.<url>.helper — and the external diff drivers
-// (diff.external, diff.<n>.command), which plain `git diff` executes by
-// default, are in scope as well with per-key neutralizations
-// (post-v0.7.3 review findings [40]/[55]; every value canary-verified on
-// git 2.50.1). core.gitProxy has no neutralizable value of its own (empty
-// included) and is killed through the transport family instead
-// (-c protocol.git.allow=never); core.worktree redirects tracked-file
-// writes outside the workspace and no -c form beats it, so it is
-// neutralized by the GIT_WORK_TREE env pin GitCmdInRepo applies when the
-// finding is present (the one channel that outranks the config key). The
-// only command-bearing core key left without any override is core.pager:
-// c0wrk always pipes git output and a pager only runs on a terminal.
-// Include-bearing configs additionally derive name-independent pins
-// (core.sshCommand=ssh, core.askPass=, credential.helper=, diff.external=)
-// for the keys an included file may set invisibly, and GitCmdInRepo fails
-// closed for them on git older than 2.45, where attr.tree — the only cover
-// for include-hidden attribute-routed drivers — is silently ignored.
-//
-// Baseline-covered signing keys, reported for the full intake picture: the
-// commit-signing vectors (commit.gpgsign, gpg.format, gpg.program,
-// user.signingkey) are neutralized unconditionally by the sysproc.GitCmd
-// baseline (-c commit.gpgsign=false on every invocation, see step_2 of the
-// remediation), so per-repo detection adds nothing actionable for c0wrk's
-// local operation set — no overrides are derived. Findings are emitted with
-// BaselineCovered=true (fsmonitor, hooksPath, editor are the other members of
-// this family) so the intake scanner shows the full picture from this single
-// source. commit.gpgsign is additionally truthy-gated: gpgsign=false (the
-// value c0wrk's own fixtures and a safety-minded user write) is already the
-// baseline's pin and must keep a config Clean. The siblings
-// (gpg.format, gpg.program, user.signingkey) are marked Inert by
-// ScanGitConfig when no config layer arms commit.gpgsign — dead
-// configuration cannot execute, so Clean() ignores them and the intake
-// warning stays off for repositories that merely document a signing setup.
-//
-// Neutralization values are not invented here — every emitted override comes
-// from the canary-verified semantics of the GitSpawn neutralization study
-// (git 2.50.1): attr.tree=<empty tree> kills ALL attribute-routed vectors;
-// filter.<n>.process= (empty) plus clean=cat/smudge=cat disarms a named filter
-// (process= alone would fall back to attacker-supplied clean/smudge);
-// merge.<n>.driver="false %O %A %B" resolves conflicts without executing the
-// attacker driver; diff.<n>.textconv=cat renders diffs as passthrough.
-//
-// Guarantees of the parser: it never spawns a process, never follows symlinks
-// beyond opening the single config file, caps the input size, never panics on
-// malformed input, and over-reports rather than under-reports on constructs it
-// is lenient about (git itself refuses malformed configs wholesale, so a
-// construct we mis-read is one git would not execute either — and every
-// malformed line is recorded in Errors so callers can fail closed).
+// Exec-free reader/neutralizer for untrusted repositories' .git/config (the
+// GitSpawn vulnerability class): parses the command-relevant INI subset,
+// records include/includeIf directives without following them (only
+// ResolveIncludes follows them — for trust fingerprinting, never key
+// neutralization), and derives the per-repo `-c` neutralizing overrides
+// GitCmdInRepo prepends to every git invocation. Posture: fail closed on
+// anything unscannable, over-report on anything parsed leniently (git
+// refuses malformed configs wholesale); malformed lines land in Errors.
+// Threat model, scan scope, values: specs/decisions/033-git-subprocess-hardening.md;
+// trust binding: specs/decisions/034-git-trust-opt-out.md,
+// specs/decisions/070-git-semantic-trust.md.
 
-// EmptyTreeSHA1 is the SHA-1 of the empty git tree. Forcing
-// -c attr.tree=<EmptyTreeSHA1> makes git read .gitattributes from the empty
-// tree instead of the worktree, which neutralizes every attribute-routed
-// command vector (clean/smudge/process filters, merge drivers, textconv,
-// external diff drivers). Verified: attr.tree="" (empty) is NOT safe, and
-// invalid hashes are silent no-ops — only this exact hash (or the SHA-256
-// equivalent, see EmptyTreeSHA256) may be used.
+// EmptyTreeSHA1 is the SHA-1 of the empty git tree — the attr.tree value that
+// neutralizes every attribute-routed command vector. Only this exact hash
+// qualifies: attr.tree="" is NOT safe and invalid hashes are silent no-ops
+// (specs/decisions/033-git-subprocess-hardening.md).
 const EmptyTreeSHA1 = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
-// EmptyTreeSHA256 is the SHA-256 of the empty git tree — the attr.tree value
-// that neutralizes attribute routing on repositories created with
-// extensions.objectformat=sha256. Verified against git 2.50.1: the SHA-1
-// constant is a silent no-op there (invalid hash → no attr.tree behavior at
-// all), while this hash kills worktree .gitattributes routing exactly like
-// EmptyTreeSHA1 does on SHA-1 repositories. ScanGitConfig selects between
-// the two via the repository's extensions.objectformat (fail-closed when the
-// format is unknown — see [1]d of the post-v0.7.3 review).
+// EmptyTreeSHA256 is the attr.tree value for extensions.objectformat=sha256
+// repositories, where the SHA-1 constant is a verified silent no-op;
+// ScanGitConfig selects between the two via the resolved object format,
+// fail-closed when unknown (specs/decisions/033-git-subprocess-hardening.md).
 const EmptyTreeSHA256 = "6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321"
 
-// maxGitConfigBytes caps how much of a .git/config (or .git gitdir pointer
-// file) is read. Real-world configs are a few KiB; anything larger is hostile
-// input, not configuration to be parsed.
+// maxGitConfigBytes caps how much of a .git/config (or gitdir pointer file)
+// is read: real configs are a few KiB; anything larger is hostile input.
 const maxGitConfigBytes = 4 << 20 // 4 MiB
 
 const maxGitDirPointerBytes = 4096
 
 // Include-resolution bounds for ResolveIncludes: a hostile repo can chain
-// includes arbitrarily deep or wide. The depth cap, the total file count cap,
-// and the per-file size cap (maxGitConfigBytes, shared with the primary
-// config read) together bound the work so a trust/recheck scan can never be
-// driven into unbounded I/O. These are deliberately generous — real include
-// trees are shallow and small — while still terminating on adversarial input.
+// includes arbitrarily deep or wide, so these caps bound the trust/recheck
+// scan's I/O — deliberately generous for real include trees, still
+// terminating on adversarial input (per-file size: maxGitConfigBytes).
 const (
 	maxIncludeDepth = 10
 	maxIncludeFiles = 64
@@ -178,25 +91,20 @@ const (
 
 const attrTreeKey = "attr.tree"
 
-// gitProxyAllowKey is the protocol-allowlist key that gates the git://
-// transport family core.gitProxy hijacks. Unlike the driver keys there is
-// no way to neutralize the proxy command itself (an empty core.gitProxy
-// falls back to the environment/git's default proxy handling, not to
-// "none"), but `-c protocol.git.allow=never` kills the whole transport
-// (verified on git 2.50.1: `git fetch` fails with "transport 'git' not
-// allowed" and the armed proxy never executes). ext:: and other exotic
-// transports are already blocked by git's own defaults.
+// gitProxyAllowKey gates the git:// transport family core.gitProxy hijacks:
+// the proxy command has no neutralizing value (empty falls back to git's
+// default proxy handling, not "none"); `-c protocol.git.allow=never` kills
+// the whole transport (specs/decisions/033-git-subprocess-hardening.md).
 const gitProxyAllowKey = "protocol.git.allow"
 
 // gitProxyDenyValue is the only verified "no transport of this family may
 // be used at all" value for gitProxyAllowKey.
 const gitProxyDenyValue = "never"
 
-// attributesFileKey is the config key git reads an additional attributes
-// routing file from (core.attributesFile). Unlike hooks or fsmonitor it has
-// no dedicated "off" switch, but an EMPTY value set via -c disables the
-// source entirely (verified against git 2.50.1) — and -c beats the key no
-// matter which file (config, included file) defined it.
+// attributesFileKey names an additional attributes routing file; it has no
+// dedicated "off" switch — an EMPTY -c value disables the source entirely,
+// and -c beats the key no matter which file defined it (verified git 2.50.1;
+// specs/decisions/033-git-subprocess-hardening.md).
 const attributesFileKey = "core.attributesFile"
 
 // GitConfigOverride is a single neutralizing `-c key=value` override for one
@@ -207,19 +115,17 @@ type GitConfigOverride struct {
 }
 
 // Argv renders the override as the single argv element that follows a `-c`
-// flag ("key=value"). An empty Value renders as "key=" (empty-string value),
-// which is exactly how an armed process filter is disarmed.
+// flag ("key=value"); an empty Value renders as "key=" — exactly how an armed
+// process filter is disarmed.
 func (o GitConfigOverride) Argv() string {
 	return o.Key + "=" + o.Value
 }
 
 // errUnrenderableOverrideKey marks a neutralizing override whose key cannot
-// be expressed as a `-c` argv element. Git splits every `-c` argument at the
-// FIRST `=`, so a key that itself contains `=` (a subsection like
-// `[filter "a=b"]`, legal in git config and in .gitattributes values) would
-// shift that boundary: the emitted pin `filter.a=b.process=` is parsed as key
-// `filter.a` with value `b.process=`, and the intended key is never pinned —
-// the repository-controlled command stays armed (review [21], fail-open).
+// be expressed as a `-c` argv element: git splits a `-c` argument at the
+// FIRST `=`, so a key containing `=` (a subsection like `[filter "a=b"]`)
+// would land its pin under a prefix key and leave the command-bearing key
+// armed (review [21], fail-open).
 func errUnrenderableOverrideKey(key string) error {
 	return fmt.Errorf("git config override key %q contains '=' (subsection with '='?) and cannot be expressed as a -c argv element; rename the config subsection or remove the command-bearing key", key)
 }
@@ -228,27 +134,22 @@ func errUnrenderableOverrideKey(key string) error {
 type GitConfigInfo struct {
 	// GitDir is the resolved git directory the config belongs to ("" when no
 	// .git was found). For a linked worktree this is the per-worktree
-	// directory (<main>/.git/worktrees/<name>); the shared repository state
-	// lives in CommonDir.
+	// directory (<main>/.git/worktrees/<name>); the shared state is CommonDir.
 	GitDir string
-	// CommonDir is the shared git directory (the target of the worktree's
-	// commondir file). It equals GitDir for normal repositories and is ""
-	// when no .git was found at all.
+	// CommonDir is the shared git directory (the worktree's commondir target);
+	// equals GitDir for normal repositories, "" when no .git was found.
 	CommonDir string
-	// ConfigPath is the config file that was parsed ("" when none was found).
-	// With worktree merge semantics this is the common config; a parsed
+	// ConfigPath is the config file that was parsed ("" when none); with
+	// worktree merge semantics this is the common config — a parsed
 	// config.worktree overlay is reported in WorktreeConfigPath.
 	ConfigPath string
-	// WorktreeConfigPath is the per-worktree config.worktree overlay that was
-	// parsed and merged on top of the common config ("" when absent or when
-	// extensions.worktreeConfig is disabled, in which case git ignores the
-	// file entirely).
+	// WorktreeConfigPath is the per-worktree config.worktree overlay parsed
+	// and merged on top of the common config ("" when absent, or when
+	// extensions.worktreeConfig is disabled and git ignores the file).
 	WorktreeConfigPath string
-	// ObjectFormat is the repository's object format resolved from
-	// core.repositoryformatversion + extensions.objectformat ("sha1" or
-	// "sha256"). It selects the empty-tree constant used for the attr.tree
-	// kill (see EmptyTreeSHA1 / EmptyTreeSHA256). Empty until the full
-	// ScanGitConfig pipeline has validated the format.
+	// ObjectFormat is the repository's object format ("sha1"/"sha256"),
+	// resolved by ScanGitConfig; it selects the attr.tree empty-tree
+	// constant. Empty until the full pipeline validates the format.
 	ObjectFormat string
 	// Findings lists every dangerous key occurrence, in file order (merged
 	// worktree-overlay last-wins for identical keys).
@@ -259,74 +160,58 @@ type GitConfigInfo struct {
 	// Errors lists malformed constructs (the parser continues past them).
 	Errors []GitConfigError
 
-	// --- parser-captured state (not dangerous by itself, needed to model
-	// how git itself reads the repository; merged with last-wins semantics
-	// across config layers) ---
+	// --- parser-captured state (not dangerous by itself; models how git
+	// itself reads the repository; layers last-wins across config layers) ---
 
 	// repositoryFormatVersion is core.repositoryformatversion (default 0).
 	repositoryFormatVersion int64
 	// repositoryFormatVersionSet reports whether core.repositoryformatversion
 	// was parsed from THIS layer. Layering is presence-based, not value-based:
-	// a later config layer that omits the key must not clobber an earlier
-	// layer's value with the zero default (git keeps the earlier value).
+	// a later layer that omits the key must not clobber an earlier layer's
+	// value with the zero default (git keeps the earlier value).
 	repositoryFormatVersionSet bool
 	// objectFormat is the lowercased extensions.objectformat ("" when unset).
 	objectFormat string
-	// objectFormatSet reports whether extensions.objectformat was parsed from
-	// this layer (see repositoryFormatVersionSet for why presence matters).
+	// objectFormatSet: parsed from this layer (presence layers — see
+	// repositoryFormatVersionSet).
 	objectFormatSet bool
-	// worktreeConfigEnabled reports extensions.worktreeConfig=true, the
+	// worktreeConfigEnabled reports extensions.worktreeConfig=true — the
 	// switch that makes git read config.worktree in linked worktrees.
 	worktreeConfigEnabled bool
-	// worktreeConfigEnabledSet reports whether extensions.worktreeConfig was
-	// parsed from this layer.
+	// worktreeConfigEnabledSet: parsed from this layer (presence layers).
 	worktreeConfigEnabledSet bool
 	// attributesFilePath is the last core.attributesFile value ("", or the
 	// verbatim path before ~/ and relative resolution).
 	attributesFilePath string
-	// attributesFilePathSet reports whether core.attributesFile was parsed
-	// from this layer.
+	// attributesFilePathSet: parsed from this layer (presence layers).
 	attributesFilePathSet bool
 
-	// rawSources captures the raw bytes of every source the scan read, in a
-	// stable order (common config, config.worktree overlay, then the
-	// attribute routing sources). Snapshot/Fingerprint serialize these into
-	// a canonical diff-able identity for trust-time snapshots.
+	// rawSources captures the raw bytes of every scanned source; the trust
+	// snapshot/fingerprint bind to these bytes
+	// (specs/decisions/034-git-trust-opt-out.md).
 	rawSources []gitConfigSource
 
-	// worktreeOverlay retains the standalone parse of the config.worktree
-	// overlay ScanGitConfig performed before merging it into this info (nil
-	// when no overlay is in play). WorktreeOverlayClean judges the overlay's
-	// own keys, includes and errors from it — the same read the merged model
-	// was built from, so the gate never re-reads the file (and the
-	// include-directive warning fires exactly once per scan).
+	// worktreeOverlay retains the standalone overlay parse (nil when none):
+	// WorktreeOverlayClean judges it from this same read — no re-read, and
+	// the include warning fires exactly once per scan.
 	worktreeOverlay *GitConfigInfo
 
-	// includeSources captures the raw bytes of every include/includeIf
-	// target resolved by ResolveIncludes, in a stable, deterministic order
-	// (directive order, depth-first). It is populated lazily — only the
-	// trust/recheck path calls ResolveIncludes — so the per-invocation spawn
-	// scan never pays for following includes (ADR-033 rejects following them
-	// there). Snapshot/Fingerprint serialize these after rawSources, binding
-	// the trust decision to the included files' bytes as well.
+	// includeSources captures the raw bytes of every include target
+	// ResolveIncludes resolved, populated lazily — only the trust/recheck
+	// path follows includes (ADR-033). Serialized after rawSources
+	// (specs/decisions/034-git-trust-opt-out.md).
 	includeSources []gitConfigSource
 
-	// records retains EVERY config entry the parser dispatched, in file
-	// order (section, subsection, key, value, boolean form, line). Findings
-	// keep only the dangerous subset; records keep the full picture so the
-	// semantic snapshot layer can re-derive it: every record is classified
-	// (classifyGitConfigRecord) and only DANGEROUS ones are serialized into
-	// SemanticSnapshot/SemanticFingerprint. Source indexes the config layer
-	// (into rawSources) the record was parsed from.
+	// records retains EVERY dispatched config entry; classified at
+	// serialization time, only DANGEROUS ones enter the semantic identity
+	// (specs/decisions/070-git-semantic-trust.md). Source = rawSources index
+	// of the layer the record was parsed from.
 	records []gitConfigRecord
 }
 
 // NeutralizingArgvErr is NeutralizingArgv with the spawn gate attached: a
-// rendered set whose key contains `=` is refused instead of silently
-// under-neutralizing. The command-bearing key stays armed in the repository,
-// so spawning git would run with a dead neutralization — fail closed and let
-// the caller surface the actionable error (mirrors the scan's own
-// fail-closed contract; see errUnrenderableOverrideKey).
+// set whose key contains `=` is refused instead of silently
+// under-neutralizing (see errUnrenderableOverrideKey).
 func (info *GitConfigInfo) NeutralizingArgvErr() ([]string, error) {
 	overrides := info.NeutralizingOverrides()
 	if len(overrides) == 0 {
@@ -343,9 +228,8 @@ func (info *GitConfigInfo) NeutralizingArgvErr() ([]string, error) {
 }
 
 // GitConfigFinding describes one dangerous key occurrence discovered in a
-// repository's .git/config. It is the single source of truth for the intake
-// scanner: every command-bearing key parsed from the in-scope section families
-// produces a finding, whether or not it needs a per-repo override.
+// repository's .git/config: every command-bearing key parsed from the
+// in-scope section families produces a finding, override-worthy or not.
 type GitConfigFinding struct {
 	// Kind classifies the vector; one of the GitConfigFinding* constants.
 	Kind string
@@ -367,57 +251,46 @@ type GitConfigFinding struct {
 	// Description is a human-readable explanation of what the key does, its
 	// reachability from c0wrk's git usage, and how it is neutralized.
 	Description string
-	// BaselineCovered reports that the key is already neutralized on every
-	// c0wrk git invocation by the unconditional sysproc.GitCmd baseline
-	// (-c core.fsmonitor=false, -c core.hooksPath=<safe dir>,
-	// GIT_EDITOR=true), so it needs no per-repo override.
+	// BaselineCovered reports that the sysproc.GitCmd baseline (-c
+	// core.fsmonitor=false, core.hooksPath=<safe dir>, GIT_EDITOR=true)
+	// already neutralizes the key on every invocation; no per-repo override.
 	BaselineCovered bool
-	// Inert reports that the finding cannot execute in this configuration.
-	// The signing siblings (gpg.format, gpg.program, user.signingkey) are
-	// emitted whenever present, but git only runs a signing program when
-	// commit.gpgsign is ARMED — without it the siblings are dead
-	// configuration, so ScanGitConfig flags them inert and Clean() ignores
-	// them (a repository that merely documents a signing setup stays
-	// warning-free). Inert findings still render in the intake payload when
-	// a warning fires for another reason.
+	// Inert reports the finding cannot execute: the signing siblings are
+	// dead unless a layer arms commit.gpgsign — Clean() ignores them, intake
+	// stays warning-free; they still render when another finding warns
+	// (specs/domains/workspace.md, Git integration).
 	Inert bool
 	// Overrides are the verified per-repo `-c` neutralizations for this
-	// finding. Empty when none is needed or none is verified (the
-	// description explains which case applies).
+	// finding; empty when none is needed or none is verified.
 	Overrides []GitConfigOverride
 }
 
-// GitConfigInclude records an include/includeIf directive. The referenced file
-// is deliberately not read: an included config can define additional
-// command-bearing keys, so any recorded include means the visible config is an
-// incomplete view and the workspace must be treated with corresponding
-// suspicion (NeutralizingOverrides compensates with the attribute-routing
-// kill, but unknown filter names remain unneutralizable — this is a
-// detection-grade signal, not a mitigation).
+// GitConfigInclude records an include/includeIf directive. The referenced
+// file is deliberately not read: any recorded include means the visible
+// config is an incomplete view — detection-grade, not mitigation
+// (specs/decisions/034-git-trust-opt-out.md).
 type GitConfigInclude struct {
 	Conditional bool   // true for includeIf
 	Condition   string // includeIf condition (e.g. "gitdir:~/x/**"); "" for include
 	Path        string // unexpanded path value as written
 	Line        int    // 1-based line number
-	// SourceDir is the absolute directory of the config file that contained
-	// the directive (git resolves a relative include path against it). Empty
-	// for results produced by the pure parser (parseGitConfigData), which has
-	// no file of its own; ScanGitConfigFile fills it.
+	// SourceDir is the absolute directory of the config file containing the
+	// directive (relative include paths resolve against it); empty from the
+	// pure parser, filled by ScanGitConfigFile.
 	SourceDir string
 }
 
-// GitConfigError is a malformed construct. git itself refuses to run with a
-// malformed config ("fatal: bad config line N"), so Errors non-empty means the
-// file would fail git wholesale — but callers scanning untrusted workspaces
-// should still fail closed.
+// GitConfigError is a malformed construct. git refuses malformed configs
+// wholesale ("fatal: bad config line N"), but callers scanning untrusted
+// workspaces should still fail closed.
 type GitConfigError struct {
 	Line    int // 1-based line number
 	Message string
 }
 
-// gitConfigSource is one raw config/routing source read by the scan, kept for
-// Snapshot/Fingerprint so a trust decision can be bound to the exact bytes
-// the user reviewed rather than re-read (and re-race) the filesystem later.
+// gitConfigSource is one raw scanned source; trust binds to the exact bytes
+// the user reviewed instead of re-reading (and re-racing) the filesystem
+// (specs/decisions/034-git-trust-opt-out.md).
 type gitConfigSource struct {
 	// kind is a stable short label for the diff header ("config",
 	// "config.worktree", "info/attributes", "core.attributesFile").
@@ -428,11 +301,10 @@ type gitConfigSource struct {
 	data []byte
 }
 
-// Clean reports that the config is fully visible (no include directives, no
-// parse errors) and carries no dangerous keys. Inert findings (the signing
-// siblings without an armed commit.gpgsign) are ignored: dead configuration
-// cannot execute, and warning on it would cry wolf. Only a Clean result
-// allows the caller to skip per-repo neutralization without suspicion.
+// Clean reports the config is fully visible (no includes, no parse errors)
+// and carries no dangerous keys; Inert (dead) findings are ignored. Only a
+// Clean result lets the caller skip per-repo neutralization without
+// suspicion (specs/decisions/033-git-subprocess-hardening.md).
 func (info *GitConfigInfo) Clean() bool {
 	if info == nil {
 		return true
@@ -445,31 +317,16 @@ func (info *GitConfigInfo) Clean() bool {
 	return len(info.Includes) == 0 && len(info.Errors) == 0
 }
 
-// WorktreeOverlayClean reports whether the per-worktree config.worktree
-// overlay — which git reads live for this worktree whenever
-// extensions.worktreeConfig is enabled in the common config — contributes
-// nothing dangerous beyond the common configuration: no include directive
-// (an unreviewed source the scanner deliberately does not follow), no parse
-// error, and no key that is a live (non-inert) finding in the merged model
-// this info carries. It is the spawn layer's per-invocation check for
-// trusted repositories' linked worktrees, whose overlay a repository-level
-// trust decision can never bind: the trust snapshot scans the trust root
-// (common config, main checkout, attribute routing), and the overlay lives
-// in the worktree's own git dir, readable and plantable at any time —
-// including after the trust decision. Raw git may run from the worktree
-// only while its overlay stays as inert as the configuration the user
-// reviewed.
-//
-// The overlay is judged from the standalone parse ScanGitConfig retained
-// before merging it (same read the merged model was built from — no second
-// read of the file, and the include-directive warning fires exactly once).
-// Inert findings are compared through the merged model's classification: a
-// key the overlay merely shares with dead configuration (signing siblings
-// without an armed commit.gpgsign anywhere) stays clean, while any key that
-// is live in any layer — including a trusted common-config key the overlay
-// re-arms with a new value — is not. An info without an overlay in play is
-// trivially clean; an info that names an overlay its scan did not retain is
-// not clean (fail closed — the overlay's content cannot be proven safe).
+// WorktreeOverlayClean reports whether the worktree's own config.worktree
+// overlay (read live whenever extensions.worktreeConfig is enabled)
+// contributes nothing dangerous beyond the common configuration — no
+// includes, no parse errors, no key live in the merged model. The spawn
+// layer's gate for trusted repositories' linked worktrees: the trust
+// snapshot scans the trust root and can never bind the overlay, which is
+// plantable in the worktree's git dir at any time
+// (specs/decisions/034-git-trust-opt-out.md). Judged from the standalone
+// parse retained before merging; any key live in any layer is not clean,
+// and a missing retained parse fails closed.
 func (info *GitConfigInfo) WorktreeOverlayClean() bool {
 	if info == nil || info.WorktreeConfigPath == "" {
 		return true
@@ -495,14 +352,10 @@ func (info *GitConfigInfo) WorktreeOverlayClean() bool {
 	return true
 }
 
-// Snapshot returns a canonical, diff-able byte representation of every source
-// the scan read — the common config, the config.worktree overlay, and the
-// attribute routing sources (info/attributes plus any core.attributesFile
-// target), followed by any include/includeIf targets resolved by
-// ResolveIncludes. Each source is prefixed with a stable header naming its
-// kind and path, so DiffGitConfigSnapshots can attribute a change to the
-// right file. A nil info yields nil. The representation is deterministic for
-// a given set of sources and is what Fingerprint hashes.
+// Snapshot returns a canonical, diff-able serialization of every scanned
+// source under a stable "===== kind (path) =====" header, so
+// DiffGitConfigSnapshots can attribute changes; nil info → nil. This is
+// what Fingerprint hashes (specs/decisions/034-git-trust-opt-out.md).
 func (info *GitConfigInfo) Snapshot() []byte {
 	if info == nil {
 		return nil
@@ -517,9 +370,9 @@ func (info *GitConfigInfo) Snapshot() []byte {
 	return []byte(b.String())
 }
 
-// writeSnapshotSource serializes one source under a stable "===== kind (path)
-// =====" header, ensuring a trailing newline so the next header always starts
-// on its own line.
+// writeSnapshotSource serializes one source under a stable
+// "===== kind (path) =====" header, newline-terminated so the next header
+// always starts on its own line.
 func writeSnapshotSource(b *strings.Builder, src gitConfigSource) {
 	fmt.Fprintf(b, "===== %s (%s) =====\n", src.kind, src.path)
 	b.Write(src.data)
@@ -528,21 +381,17 @@ func writeSnapshotSource(b *strings.Builder, src gitConfigSource) {
 	}
 }
 
-// Fingerprint returns the SHA-256 hex digest of Snapshot(): a stable identity
-// for the exact configuration the user reviewed at trust time. Comparing the
-// fingerprint of a later scan against the stored value detects any drift in
-// the config, its worktree overlay, the attribute routing sources, or any
-// resolved include target.
+// Fingerprint returns the SHA-256 hex digest of Snapshot(): the identity of
+// the configuration the user reviewed — any drift in any scanned source
+// changes it (specs/decisions/034-git-trust-opt-out.md).
 func (info *GitConfigInfo) Fingerprint() string {
 	sum := sha256.Sum256(info.Snapshot())
 	return hex.EncodeToString(sum[:])
 }
 
-// DiffGitConfigSnapshots returns a human-readable unified diff between two
-// snapshots (the previously-trusted state and the current scan). It is "" when
-// the two snapshots are byte-identical. The diff is line-based over the whole
-// canonical snapshot text, so it naturally covers the config, the worktree
-// overlay, and the attribute routing sources in one stream.
+// DiffGitConfigSnapshots returns a unified diff between two snapshots (""
+// when byte-identical), one stream over the canonical text covering every
+// source (specs/decisions/034-git-trust-opt-out.md).
 func DiffGitConfigSnapshots(previous, current []byte) string {
 	if bytes.Equal(previous, current) {
 		return ""
@@ -554,23 +403,14 @@ func DiffGitConfigSnapshots(previous, current []byte) string {
 
 // --- semantic snapshot: drift detection over classified records ---
 //
-// The byte-level Snapshot/Fingerprint bind trust to the exact bytes of every
-// scanned source, which makes ANY edit — including the benign churn a git
-// user legitimately produces — a trust-drift event. The semantic layer
-// narrows the identity to what the configuration MEANS for c0wrk's git
-// operations: every retained record is classified (classifyGitConfigRecord)
-// and only DANGEROUS ones are serialized, so branch/alias bookkeeping (the
-// explicit allowlist — the only records that can neither execute a command
-// nor redirect how git reads the repository) no longer trips drift
-// detection, while every other change — a command key, a structural key, an
-// unknown key, or any edit to an attribute routing source — still does. The
-// serialization reuses the Snapshot source-header format
-// (writeSnapshotSource), so DiffGitConfigSnapshots attributes semantic
-// drift to the right source unchanged.
+// The byte-level identity makes ANY edit (including inert branch/alias
+// churn) a trust-drift event; the semantic layer narrows it to what the
+// configuration MEANS: only DANGEROUS classified records serialize, in
+// Snapshot()'s header format so diffs attribute unchanged
+// (specs/decisions/070-git-semantic-trust.md).
 
-// Source-kind labels for the attribute routing sources scanAttributeSources
-// attaches and the include targets ResolveIncludes reads (the same strings
-// written into the snapshot diff headers).
+// Source-kind labels for the attribute routing sources and include targets
+// (the strings written into the snapshot diff headers).
 const (
 	sourceKindInfoAttributes     = "info/attributes"
 	sourceKindCoreAttributesFile = "core.attributesFile"
@@ -579,8 +419,7 @@ const (
 )
 
 // gitConfigRecord is one retained config entry: every key line the parser
-// dispatched, in file order, with the section context it was read under. It
-// is the raw material of the semantic snapshot layer.
+// dispatched, in file order — the raw material of the semantic snapshot.
 type gitConfigRecord struct {
 	// Section is the lowercased section name ("core", "branch", ...).
 	Section string
@@ -596,17 +435,14 @@ type gitConfigRecord struct {
 	Boolean bool
 	// Line is the 1-based line number of the occurrence.
 	Line int
-	// Source is the index into GitConfigInfo.rawSources of the config layer
-	// this record was parsed from. parseGitConfigData always produces 0
-	// (the record's own info has exactly one config source when it is
-	// attached); mergeGitConfigInfo shifts the worktree overlay's records
-	// when it appends the overlay's source.
+	// Source is the rawSources index of the layer this record was parsed
+	// from: always 0 from parseGitConfigData; mergeGitConfigInfo shifts the
+	// overlay's records when it appends the overlay's source.
 	Source int
 }
 
 // gitConfigRecordClass classifies a retained record for the semantic
-// snapshot: INERT records are safe to leave out of the identity, DANGEROUS
-// records must appear in it.
+// snapshot: INERT may be left out of the identity, DANGEROUS must appear.
 type gitConfigRecordClass int
 
 const (
@@ -614,24 +450,19 @@ const (
 	gitConfigRecordDangerous
 )
 
-// semanticInertSections is the explicit allowlist of sections whose EVERY
-// key is inert. The allowlist is deliberately tiny and closed: a section
-// that is not listed here — every command-bearing key, the structural
-// core.worktree and include/includeif directives, and any key c0wrk does
-// not know about — classifies DANGEROUS, fail-closed. branch.* is
-// remote-tracking bookkeeping and alias.* only expands when git is invoked
-// through the alias name, which c0wrk never does (it invokes git by
-// subcommand with a fixed argv); neither can execute a command on c0wrk's
-// behalf or redirect what git reads.
+// semanticInertSections is the explicit allowlist of sections whose every
+// key is inert: branch.* is remote-tracking bookkeeping, alias.* only
+// expands when git is invoked through the alias name (c0wrk never does).
+// Tiny and CLOSED — anything unlisted classifies DANGEROUS, fail-closed;
+// it may only shrink (specs/decisions/070-git-semantic-trust.md).
 var semanticInertSections = map[string]bool{
 	"branch": true,
 	"alias":  true,
 }
 
-// classifyGitConfigRecord applies the inert allowlist: a record whose
-// section is listed in semanticInertSections (checked case-insensitively;
-// subsections are ignored — branch.<name>.* is inert whatever the branch is
-// called) is INERT; every other record is DANGEROUS.
+// classifyGitConfigRecord applies the inert allowlist (case-insensitive
+// section match, subsections ignored); every non-listed record is
+// DANGEROUS (specs/decisions/070-git-semantic-trust.md).
 func classifyGitConfigRecord(r gitConfigRecord) gitConfigRecordClass {
 	if semanticInertSections[strings.ToLower(r.Section)] {
 		return gitConfigRecordInert
@@ -639,31 +470,22 @@ func classifyGitConfigRecord(r gitConfigRecord) gitConfigRecordClass {
 	return gitConfigRecordDangerous
 }
 
-// SemanticSnapshot returns a canonical, diff-able byte representation of the
-// DANGEROUS subset of the scan, in the same format as Snapshot(): one
-// "===== kind (path) =====" header per source (writeSnapshotSource),
-// followed by the source's semantic content — one canonical line per
-// DANGEROUS record for config layers, and the full raw bytes for the sources
-// that are dangerous as a whole (attribute routing files, which have no
-// per-key neutralization, and include targets, which the scanner
-// deliberately does not key-scan). A nil info yields nil.
-//
-// The representation is deterministic for a given set of records and
-// sources: every record line is a pure function of the parsed record, each
-// record is exactly one line (values are escaped, so a hostile value cannot
-// span or forge lines), and sources serialize in their stable scan order.
-// It is what SemanticFingerprint hashes, and DiffGitConfigSnapshots works
-// on semantic snapshots unchanged.
+// SemanticSnapshot returns a canonical, diff-able serialization of the
+// DANGEROUS subset, in Snapshot()'s source-header format: one canonical
+// line per DANGEROUS record for config layers, verbatim bytes for sources
+// dangerous as a whole (attribute routing, include targets — not
+// key-scanned). Every layer keeps its header; record lines are escaped, so
+// a hostile value cannot span or forge lines; deterministic
+// (specs/decisions/070-git-semantic-trust.md). Nil info → nil.
 func (info *GitConfigInfo) SemanticSnapshot() []byte {
 	if info == nil {
 		return nil
 	}
 	var b strings.Builder
 	if len(info.rawSources) == 0 {
-		// A pure-parse result (parseGitConfigData without
-		// ScanGitConfigFile's source attachment): serialize the dangerous
-		// records under a synthetic header so they still have a stable
-		// identity. No records, no header — there is no source to name.
+		// A pure-parse result (no source attachment): serialize the
+		// dangerous records under a synthetic header for a stable identity;
+		// no records, no header — there is no source to name.
 		if lines := semanticRecordLines(info.records, 0); len(lines) > 0 {
 			writeSnapshotSource(&b, gitConfigSource{kind: "config", data: []byte(strings.Join(lines, "\n") + "\n")})
 		}
@@ -671,16 +493,12 @@ func (info *GitConfigInfo) SemanticSnapshot() []byte {
 	}
 	for i, src := range info.rawSources {
 		if isAttributeRoutingSourceKind(src.kind) {
-			// Attribute routing sources are dangerous as a whole (no
-			// per-key neutralization exists): the raw bytes stay in the
-			// identity unchanged.
+			// Dangerous as a whole: the raw bytes stay in the identity.
 			writeSnapshotSource(&b, src)
 			continue
 		}
-		// A config layer: its header always appears (every scanned source
-		// stays represented, so diff attribution is stable even when a
-		// layer currently carries no dangerous records), with only the
-		// DANGEROUS records under it.
+		// A config layer: the header always appears (stable diff
+		// attribution), carrying only its DANGEROUS records.
 		writeSnapshotSource(&b, gitConfigSource{
 			kind: src.kind,
 			path: src.path,
@@ -688,28 +506,23 @@ func (info *GitConfigInfo) SemanticSnapshot() []byte {
 		})
 	}
 	for _, src := range info.includeSources {
-		// Include targets are config files the scanner deliberately does
-		// not key-scan (ADR-033), so every record they may carry is
-		// potentially dangerous: the raw bytes stay in the identity.
+		// Include targets are deliberately not key-scanned (ADR-033): the
+		// raw bytes stay in the identity.
 		writeSnapshotSource(&b, src)
 	}
 	return []byte(b.String())
 }
 
 // SemanticFingerprint returns the SHA-256 hex digest of SemanticSnapshot():
-// a stable identity for the dangerous semantic content the scan saw.
-// Comparing the fingerprint of a later scan against the stored value detects
-// semantic drift — any change outside the inert branch/alias allowlist,
-// including attribute-routing and include-target edits — while tolerating
-// the branch/alias churn a git user legitimately produces.
+// the identity the trust lifecycle keys on — semantic drift evicts, inert
+// churn refreshes (specs/decisions/070-git-semantic-trust.md).
 func (info *GitConfigInfo) SemanticFingerprint() string {
 	sum := sha256.Sum256(info.SemanticSnapshot())
 	return hex.EncodeToString(sum[:])
 }
 
-// semanticRecordLines renders the canonical lines of the DANGEROUS records
-// parsed from the config layer with the given rawSources index, in file
-// order. Inert records (and records of other layers) are left out.
+// semanticRecordLines renders the canonical lines of the given layer's
+// DANGEROUS records in file order (inert and other layers' records left out).
 func semanticRecordLines(records []gitConfigRecord, source int) []string {
 	var lines []string
 	for i := range records {
@@ -723,10 +536,8 @@ func semanticRecordLines(records []gitConfigRecord, source int) []string {
 }
 
 // canonicalGitConfigRecordLine renders one record as a single deterministic
-// line: `[section "sub"] key = value`. A bare boolean key renders without
-// the "= value" part (git reads it as boolean true — distinct from an empty
-// value, which renders as "key ="). Section and key names are already
-// lowercased by the parser; the subsection stays verbatim.
+// line `[section "sub"] key = value`; a bare boolean key renders without
+// "= value" (distinct from an empty value, "key =").
 func canonicalGitConfigRecordLine(r gitConfigRecord) string {
 	var b strings.Builder
 	b.WriteByte('[')
@@ -750,10 +561,8 @@ func canonicalGitConfigRecordLine(r gitConfigRecord) string {
 }
 
 // escapeSnapshotRecordText escapes the bytes that would break the
-// one-record-one-line invariant — backslash, newline, carriage return —
-// into their backslash-letter forms. Escaping the backslash first keeps the
-// mapping reversible; the function is a pure function of its input, so the
-// serialization stays deterministic.
+// one-record-one-line invariant (backslash first, keeping the mapping
+// reversible).
 func escapeSnapshotRecordText(s string) string {
 	if !strings.ContainsAny(s, "\\\n\r") {
 		return s
@@ -774,36 +583,26 @@ func escapeSnapshotRecordText(s string) string {
 	return b.String()
 }
 
-// isAttributeRoutingSourceKind reports whether a snapshot source kind labels
-// an attribute routing source (info/attributes or a core.attributesFile
-// target). Those sources are dangerous as a whole and are serialized into
-// the semantic snapshot verbatim.
+// isAttributeRoutingSourceKind: sources dangerous as a whole, serialized
+// verbatim into the semantic snapshot.
 func isAttributeRoutingSourceKind(kind string) bool {
 	return kind == sourceKindInfoAttributes || kind == sourceKindCoreAttributesFile
 }
 
 // --- raw-snapshot recovery: v1→v2 trust-record migration ---
 //
-// Trust records written before the semantic layer (v1) store only the raw
-// byte-level fingerprint and its snapshot. Rebasing the trust lifecycle onto
-// the semantic fingerprint needs each such record's semantic identity
-// recovered from the snapshot it stored — deliberately WITHOUT re-scanning
-// the repository (the recovered identity must describe the bytes the user
-// actually reviewed at trust time, not whatever the repository carries now)
-// and without a git binary (snapshots are plain text).
+// v1 records carry only the raw fingerprint + snapshot; the semantic
+// identity is recovered from the STORED snapshot — never by re-scanning the
+// repository (specs/decisions/070-git-semantic-trust.md).
 
-// isConfigLayerSourceKind reports whether a snapshot source kind labels a
-// config layer (common config or worktree overlay) — the sources whose
-// semantic content is the canonical DANGEROUS record lines, as opposed to
-// the sources serialized verbatim (attribute routing files, include targets).
+// isConfigLayerSourceKind: config layers serialize as canonical DANGEROUS
+// record lines; everything else (attribute routing, includes) verbatim.
 func isConfigLayerSourceKind(kind string) bool {
 	return kind == "config" || kind == "config.worktree"
 }
 
-// isKnownSnapshotSourceKind reports whether kind is a label the scanner
-// writes into snapshot headers. Recovery fails closed on anything else: a
-// snapshot carrying an unknown kind was not produced by this scanner, so its
-// semantic content cannot be recovered faithfully.
+// isKnownSnapshotSourceKind: recovery fails closed on unknown kinds — a
+// snapshot carrying one was not produced by this scanner.
 func isKnownSnapshotSourceKind(kind string) bool {
 	switch kind {
 	case "config", "config.worktree",
@@ -814,12 +613,9 @@ func isKnownSnapshotSourceKind(kind string) bool {
 	return false
 }
 
-// parseSnapshotHeader parses one "===== kind (path) =====" snapshot header
-// line into its kind and path. It reports false for any other line — the
-// delimiter spaces and the trailing " =====" are part of the match, so a
-// config-file line that merely resembles a header stays data. The kind may
-// itself contain parentheses ("include (unreadable)"), so the split lands on
-// the LAST " (".
+// parseSnapshotHeader parses one "===== kind (path) =====" line; any other
+// line stays data. The kind may contain parentheses ("include
+// (unreadable)"), so the split lands on the LAST " (".
 func parseSnapshotHeader(line string) (kind, path string, ok bool) {
 	const prefix = "===== "
 	const suffix = " ====="
@@ -842,13 +638,9 @@ type snapshotSection struct {
 	data []byte
 }
 
-// splitSnapshotSections splits a snapshot (Snapshot() output) into its
-// per-source sections. Data bytes are never validated — they are the raw
-// file content the snapshot captured, reproduced byte-exactly here (each
-// section's data ends with a newline, as writeSnapshotSource guarantees).
-// Errors when the text is not a well-formed snapshot: a non-empty snapshot
-// must start with a source header, every header must be well-formed, and
-// every kind must be one of the labels the scanner writes.
+// splitSnapshotSections splits a snapshot into per-source sections; data
+// bytes are reproduced verbatim. Errors on non-well-formed snapshots (fail
+// closed — specs/decisions/070-git-semantic-trust.md).
 func splitSnapshotSections(snapshot []byte) ([]snapshotSection, error) {
 	var (
 		sections []snapshotSection
@@ -888,15 +680,11 @@ func splitSnapshotSections(snapshot []byte) ([]snapshotSection, error) {
 	return sections, nil
 }
 
-// semanticSnapshotFromSnapshot reconstructs the semantic snapshot content of
-// a stored RAW snapshot: every config layer is re-parsed (parseGitConfigData
-// is a pure function of its bytes) and re-serialized as its DANGEROUS
-// canonical record lines, while attribute routing and include sections stay
-// verbatim — the exact split SemanticSnapshot applies at scan time. For a
-// snapshot produced by ScanGitConfig + ResolveIncludes the reconstruction is
-// byte-identical to the scan's SemanticSnapshot(), because each layer's
-// canonical lines are a pure function of the layer's raw bytes and the
-// verbatim sections are carried over unchanged.
+// semanticSnapshotFromSnapshot reconstructs the semantic snapshot of a
+// stored RAW snapshot: config layers re-parse and re-serialize as DANGEROUS
+// canonical lines, attribute routing and includes stay verbatim —
+// byte-identical to SemanticSnapshot() for scanner-produced snapshots
+// (specs/decisions/070-git-semantic-trust.md).
 func semanticSnapshotFromSnapshot(raw []byte, loggers ...*slog.Logger) ([]byte, error) {
 	logger := slog.Default()
 	if len(loggers) > 0 && loggers[0] != nil {
@@ -909,8 +697,7 @@ func semanticSnapshotFromSnapshot(raw []byte, loggers ...*slog.Logger) ([]byte, 
 	var b strings.Builder
 	for _, sec := range sections {
 		if !isConfigLayerSourceKind(sec.kind) {
-			// Attribute routing sources and include targets are dangerous
-			// as a whole: the raw bytes stay in the identity verbatim.
+			// Dangerous as a whole: verbatim, like SemanticSnapshot().
 			writeSnapshotSource(&b, gitConfigSource(sec))
 			continue
 		}
@@ -925,15 +712,9 @@ func semanticSnapshotFromSnapshot(raw []byte, loggers ...*slog.Logger) ([]byte, 
 }
 
 // SemanticFingerprintFromSnapshot recovers the semantic fingerprint of a
-// stored RAW snapshot — the migration path for v1 trust records, which
-// predate the semantic layer. It returns the semantic fingerprint (the same
-// value SemanticFingerprint reports for a scan of the same configuration)
-// together with the semantic snapshot bytes it hashes, so the caller can
-// store both content-addressed. An error means the snapshot lacks structure
-// the recovery can interpret (not a snapshot, an unknown source kind): the
-// caller must fail closed and evict the trust rather than carry an
-// unverifiable one over. An optional logger receives the same parser warnings
-// as ScanGitConfig; when omitted the default logger is preserved.
+// stored RAW snapshot (the v1→v2 migration path), returning fingerprint +
+// bytes. An error means fail closed and evict — never carry an
+// unverifiable trust over (specs/decisions/070-git-semantic-trust.md).
 func SemanticFingerprintFromSnapshot(raw []byte, loggers ...*slog.Logger) (fingerprint string, semantic []byte, err error) {
 	semantic, err = semanticSnapshotFromSnapshot(raw, loggers...)
 	if err != nil {
@@ -944,35 +725,15 @@ func SemanticFingerprintFromSnapshot(raw []byte, loggers ...*slog.Logger) (finge
 }
 
 // ResolveIncludes follows the config's include/includeIf directives for
-// fingerprinting only, reading each target's raw bytes into includeSources so
-// Snapshot/Fingerprint bind the trust decision to the included files too.
-//
-// Scope: unlike the key scanner, which deliberately never follows includes
-// (ADR-033 — an included file's command-bearing keys stay invisible and are
-// compensated by the attr.tree kill), this reads included files purely to
-// fingerprint their bytes, closing the include-hidden drift gap: a post-trust
-// change to any file git reads revokes the trust. It never parses an included
-// file for dangerous keys, never changes NeutralizingOverrides, and is called
-// only from the trust/recheck RPCs — the per-invocation spawn scan stays free
-// of include-following (a hostile repo cannot amplify the hot path's I/O).
-//
-// Condition handling is deliberately conservative (fail-closed): both include
-// and includeIf targets are fingerprinted regardless of their condition. An
-// includeIf whose condition is currently false still contributes its bytes, so
-// a change to it revokes trust — over-reporting in the safe direction, exactly
-// matching the parser's over-report-rather-than-under-report guarantee. This
-// avoids reimplementing git's wildmatch() for the gitdir/onbranch/hasconfig
-// conditions, a wrong implementation of which would SKIP a file git actually
-// reads (the dangerous direction).
-//
-// Bounds and failure handling: recursion is depth-limited (maxIncludeDepth),
-// the total file count is limited (maxIncludeFiles), and each file is size-
-// capped (maxGitConfigBytes) and must be a regular file (safeio.Open
-// refuses FIFOs/devices without blocking). A missing target contributes an
-// empty source so its later appearance changes the fingerprint; an unreadable,
-// oversized, or non-regular target contributes a fixed marker source. None of
-// these is an error — a repo with an unreadable include remains scannable and
-// trustable, and any later change to that target's state still shows as drift.
+// FINGERPRINTING ONLY: target bytes land in includeSources so
+// Snapshot/Fingerprint bind trust to the included files too. It never parses
+// an included file for keys, never changes NeutralizingOverrides, and runs
+// only on the trust/recheck path — the spawn scan never follows includes
+// (ADR-033; specs/decisions/034-git-trust-opt-out.md). Targets fingerprint
+// regardless of condition (a change to a conditionally-inactive file must
+// still revoke trust; reimplementing wildmatch() risks skipping a file git
+// reads). Bounded; missing → empty source, unreadable → marker, never an
+// error, so later changes still show as drift.
 func (info *GitConfigInfo) ResolveIncludes(loggers ...*slog.Logger) {
 	if info == nil {
 		return
@@ -989,9 +750,8 @@ func (info *GitConfigInfo) ResolveIncludes(loggers ...*slog.Logger) {
 	r.resolveIncludes(info.Includes, 0)
 }
 
-// includeResolver walks include directives depth-first, reading targets and
-// recursing into an included file's own include records, while bounding depth,
-// file count, and per-file size and breaking cycles via a visited set.
+// includeResolver walks include directives depth-first (bounded depth, file
+// count, and per-file size; cycles broken via the visited set).
 type includeResolver struct {
 	logger  *slog.Logger
 	visited map[string]bool // absolute resolved target paths already handled
@@ -1029,14 +789,13 @@ func (r *includeResolver) read(inc *GitConfigInclude, depth int) {
 	data, err := readCapped(target, maxGitConfigBytes)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
-		// A missing include is inert (git ignores it); record an empty
-		// source so its later appearance still changes the fingerprint.
+		// A missing include is inert for git; an empty source makes its
+		// later appearance still show as drift.
 		r.info.includeSources = append(r.info.includeSources, gitConfigSource{kind: sourceKindInclude, path: target})
 		return
 	case err != nil:
-		// Unreadable, oversized, or non-regular: record a marker so a
-		// change to the target's state still shows as drift, without making
-		// the repo untrustable.
+		// Unreadable, oversized, or non-regular: record a marker so state
+		// changes still show as drift, without failing the repo.
 		r.logger.Warn("git config include target could not be fingerprinted", "path", target, "error", err)
 		r.info.includeSources = append(r.info.includeSources, gitConfigSource{kind: sourceKindIncludeUnreadable, path: target})
 		return
@@ -1044,9 +803,8 @@ func (r *includeResolver) read(inc *GitConfigInclude, depth int) {
 
 	r.info.includeSources = append(r.info.includeSources, gitConfigSource{kind: sourceKindInclude, path: target, data: data})
 
-	// Recurse into the included file's own include directives so a transitive
-	// change anywhere in the tree revokes trust. The included file is parsed
-	// only for its include records, never for dangerous keys.
+	// Recurse into the included file's own includes (parsed for include
+	// records only, never dangerous keys) so transitive changes revoke trust.
 	sub := parseGitConfigData(string(data), r.logger)
 	subDir := filepath.Dir(target)
 	for i := range sub.Includes {
@@ -1055,11 +813,9 @@ func (r *includeResolver) read(inc *GitConfigInclude, depth int) {
 	r.resolveIncludes(sub.Includes, depth+1)
 }
 
-// resolveIncludePath resolves an include directive's path value the way git
-// does for include.path/includeIf.<condition>.path: a leading ~/ expands
-// against the home directory, and a relative path resolves against the
-// directory of the config file that contained the directive. Returns "" for a
-// blank value; the result is always filepath.Clean-ed.
+// resolveIncludePath resolves an include path the way git does: a leading ~/
+// expands against the home directory, a relative path against the containing
+// config's directory. "" for a blank value; always filepath.Clean-ed.
 func resolveIncludePath(path, sourceDir string) string {
 	value := strings.TrimSpace(path)
 	if value == "" {
@@ -1072,11 +828,9 @@ func resolveIncludePath(path, sourceDir string) string {
 	return filepath.Clean(value)
 }
 
-// expandHomeTilde expands a leading "~" or "~/" to the current user's home
-// directory. Unresolvable homes (and the "~user/" form, which requires a user
-// database lookup) are left verbatim — the target simply will not exist, which
-// is a safe no-op for fingerprinting. Mirrors git's tilde expansion for the
-// current user only.
+// expandHomeTilde expands "~"/"~/" to the current user's home directory;
+// unresolvable homes and "~user/" stay verbatim (a safe no-op: the target
+// just will not exist).
 func expandHomeTilde(path string) string {
 	if path == "~" {
 		if home, err := os.UserHomeDir(); err == nil {
@@ -1107,13 +861,12 @@ const (
 	diffInsert
 )
 
-// maxLCSCells bounds the O(mn) LCS table for the minimal diff. Git configs are
-// small (tens to hundreds of lines); beyond this the fallback
-// common-prefix/suffix diff keeps the operation memory-safe and still correct.
+// maxLCSCells bounds the O(mn) LCS table; beyond it the fallback
+// common-prefix/suffix diff keeps the operation memory-safe and correct.
 const maxLCSCells = 1_000_000
 
-// maxDiffBytes caps the emitted diff so a pathological config change can never
-// turn the warning payload into a megabyte blob.
+// maxDiffBytes caps the emitted diff, so drift can never bloat the warning
+// payload (specs/decisions/034-git-trust-opt-out.md).
 const maxDiffBytes = 32 << 10
 
 // unifiedDiff renders a unified diff (context 3, truncated to maxDiffBytes)
@@ -1177,9 +930,8 @@ func lcsDiffOps(a, b []string) []diffOp {
 	return ops
 }
 
-// trimDiffOps is the memory-safe fallback for very large inputs: it keeps the
-// common prefix and suffix and treats everything in between as deleted+added.
-// Coarser than the LCS diff but always correct.
+// trimDiffOps is the memory-safe fallback: common prefix/suffix kept,
+// everything in between deleted+added — coarser but always correct.
 func trimDiffOps(a, b []string) []diffOp {
 	p := 0
 	for p < len(a) && p < len(b) && a[p] == b[p] {
@@ -1205,11 +957,9 @@ func trimDiffOps(a, b []string) []diffOp {
 	return ops
 }
 
-// renderUnifiedDiff groups an edit script into hunks (3 lines of context) and
-// renders them as a unified diff with @@ range headers. Changes whose context
-// regions overlap or touch (their equal-gap is within 2*ctx lines) share one
-// hunk, so the output never repeats context across overlapping hunks — the
-// standard unified-diff grouping a patch-style consumer expects.
+// renderUnifiedDiff groups an edit script into hunks (3 context lines, @@
+// range headers); changes whose context regions overlap or touch share one
+// hunk, so context never repeats — standard unified-diff grouping.
 func renderUnifiedDiff(ops []diffOp) string {
 	const ctx = 3
 	var out strings.Builder
@@ -1220,15 +970,11 @@ func renderUnifiedDiff(ops []diffOp) string {
 			i++
 			continue
 		}
-		// The hunk starts ctx lines of context before the first change.
 		start, back := i, 0
 		for start > 0 && ops[start-1].kind == diffEqual && back < ctx {
 			start--
 			back++
 		}
-		// Extend across every change reachable within the shared context
-		// window: consecutive changes merge when their equal-gap is at most
-		// 2*ctx (their trailing/leading context lines would otherwise overlap).
 		last := i
 		for {
 			end := last
@@ -1279,9 +1025,8 @@ func renderUnifiedDiff(ops []diffOp) string {
 	return out.String()
 }
 
-// lineNumberBefore returns the 1-based line number (in the old or new file,
-// per isOld) of the line at ops[pos]. Delete lines count only toward the old
-// numbering, insert lines only toward the new; equal lines count toward both.
+// lineNumberBefore returns the 1-based old/new line number at ops[pos]
+// (deletes count only old-ward, inserts only new-ward, equals both).
 func lineNumberBefore(ops []diffOp, pos int, isOld bool) int {
 	n := 1
 	for k := 0; k < pos; k++ {
@@ -1302,76 +1047,18 @@ func lineNumberBefore(ops []diffOp, pos int, isOld bool) int {
 }
 
 // NeutralizingOverrides derives the per-repo neutralizing `-c` set from the
-// findings — the Layer-2 additions that go on top of the unconditional
-// sysproc.GitCmd baseline when running git inside this repository:
-//
-//   - one filter.<n>.process= + filter.<n>.clean=cat + filter.<n>.smudge=cat
-//     triple per armed filter name (process= alone would fall back to
-//     attacker-supplied clean/smudge),
-//
-//   - merge.<n>.driver="false %O %A %B" per custom merge driver,
-//
-//   - diff.<n>.textconv=cat per armed textconv,
-//
-//   - attr.tree=<empty tree> ONLY when include directives were recorded
-//     (post-v0.7.3 review [56]): a per-name pin neutralizes every KNOWN
-//     driver wherever it is routed from — the in-tree .gitattributes source
-//     included — so the blanket kill is not needed for visible keys, and it
-//     disables benign attributes too (eol/text normalization), making CRLF
-//     repositories report falsely-modified files and whole-file numstat
-//     diffs (empirically confirmed on git 2.50.1 with a `* text=auto`
-//     repository). Includes are the one case per-name pins cannot cover: an
-//     included file may define a filter whose name the scan never sees,
-//     routed from the in-tree .gitattributes — only attr.tree kills that
-//     source (the info/attributes and core.attributesFile sources are
-//     scanned and pinned instead). The empty-tree constant matches the
-//     repository's object format (SHA-1 or SHA-256); on SHA-256 repositories
-//     the SHA-1 hash is a silent no-op, so ScanGitConfig resolves
-//     ObjectFormat (fail-closed) and this derivation selects EmptyTreeSHA256
-//     accordingly.
-//
-//   - core.attributesFile= (empty) whenever the key is set or any include
-//     directive was recorded: attr.tree does NOT cover this routing source,
-//     and an empty value disables it (verified: git 2.50.1 respects
-//     core.attributesFile from repository config, and the -c override beats
-//     it no matter which file — including an included one — set it).
-//
-//   - for every filter/merge/diff routing discovered in .git/info/attributes
-//     or the core.attributesFile file (sources attr.tree does not cover),
-//     the same per-name neutralization as for visible config keys: the -c
-//     overrides beat file config regardless of where the routed driver is
-//     defined — including an included file the scanner cannot read.
-//
-//   - diff.external= (empty) per configured default external diff command:
-//     plain `git diff` executes it BY DEFAULT — --ext-diff is NOT required
-//     and --no-ext-diff is what disables it (verified on git 2.50.1). The
-//     empty kill is fail-closed: an invocation without --no-ext-diff errors
-//     instead of executing the armed value; c0wrk's patch-producing diff
-//     call sites pass --no-ext-diff, so their output stays usable.
-//
-//   - diff.<n>.command= (empty) per named external diff driver, which the
-//     git diff porcelain likewise executes by default for paths routed to
-//     it via the diff attribute. The per-key empty kill is the whole story:
-//     -c beats file config wherever the driver is defined, so every routing
-//     source — in-tree .gitattributes, info/attributes,
-//     core.attributesFile — is closed without attr.tree ([56]).
-//
-//   - the transport keys the Git panel's remote RPCs reach:
-//     core.sshCommand=ssh restores the default ssh binary for ssh://
-//     remotes (an empty value aborts the fetch with "cannot run :" —
-//     "ssh" keeps remote operations working); core.askPass= disables the
-//     askpass helper; credential.helper= (empty) resets the accumulated
-//     helper list — an empty value resets, and the -c layer is read after
-//     every file, so the reset lands after all file-configured helpers —
-//     plus a per-URL credential.<url>.helper= pin as belt-and-braces
-//     against url-match normalization subtleties.
-//
-// Only core.pager and core.worktree produce no -c override: the pager is
-// never spawned on a terminal (c0wrk always pipes git output), and the
-// worktree key cannot be beaten by -c at all — GitCmdInRepo neutralizes it
-// through the GIT_WORK_TREE env pin when the finding is present. The
-// result is deduplicated and sorted by key for deterministic output; nil
-// for a clean config.
+// findings — the Layer-2 additions on top of the sysproc.GitCmd baseline:
+// per-name pins for every armed filter (process= + clean/smudge=cat), merge
+// driver ("false %O %A %B"), textconv (cat) and external diff driver (empty
+// — plain `git diff` executes these by default); the transport keys
+// (core.sshCommand=ssh, core.askPass=, credential.helper= + per-URL pin);
+// core.attributesFile= plus per-name pins for the attribute sources attr.tree
+// does not cover; and the blanket attr.tree=<object-format empty tree> ONLY
+// for include-bearing configs, where per-name pins cannot see every driver
+// name (collateral disclosed via AttributesInterpretationDisabled).
+// core.pager needs no override (pagers need a terminal); core.worktree has
+// no -c beat (see NeedsWorkTreeEnvPin). Deduplicated, sorted; nil when clean.
+// Values and canary verification: specs/decisions/033-git-subprocess-hardening.md.
 func (info *GitConfigInfo) NeutralizingOverrides() []GitConfigOverride {
 	if info == nil {
 		return nil
@@ -1382,11 +1069,9 @@ func (info *GitConfigInfo) NeutralizingOverrides() []GitConfigOverride {
 		f := &info.Findings[i]
 		switch f.Kind {
 		case GitConfigFindingFilter:
-			// Narrow mode ([56]): the per-name pins below neutralize the
-			// driver wherever it is routed from — the in-tree .gitattributes
-			// source included — so no blanket attr.tree kill is derived for
-			// visible filters (it would disable benign eol/text attributes
-			// too; see the attr.tree bullet above).
+			// Narrow mode ([56]): per-name pins cover every routing source,
+			// so no blanket attr.tree kill (it would disable benign
+			// eol/text attributes too).
 			filterNames[f.Subsection] = true
 		case GitConfigFindingMergeDriver:
 			set["merge."+f.Subsection+".driver"] = neutralMergeDriverValue
@@ -1394,35 +1079,26 @@ func (info *GitConfigInfo) NeutralizingOverrides() []GitConfigOverride {
 			set["diff."+f.Subsection+".textconv"] = neutralPassthroughValue
 		case GitConfigFindingDiffCommand:
 			// External diff drivers execute on plain `git diff` by default
-			// (verified on git 2.50.1: --ext-diff is NOT what gates them —
-			// --no-ext-diff is what disables them). diff.external is
-			// config-driven, not attribute-routed, so the per-key empty
-			// kill is its whole story; named diff.<n>.command drivers are
-			// likewise fully covered by the per-key empty kill: the -c
-			// override beats file config wherever the driver is defined,
-			// so every routing source is closed without attr.tree ([56]).
+			// (--no-ext-diff is what disables them); the per-key empty kill
+			// covers every routing source without attr.tree ([56]).
 			if f.Subsection == "" {
 				set["diff.external"] = ""
 			} else {
 				set["diff."+f.Subsection+".command"] = ""
 			}
 		case GitConfigFindingSSHCommand:
-			// Verified (git 2.50.1): "ssh" restores the default binary and
-			// a fetch proceeds (connection attempts come from the real
-			// ssh); an empty value aborts with "cannot run :" instead.
+			// "ssh" restores the default binary and keeps remotes working;
+			// an empty value would abort them ("cannot run :").
 			set["core.sshCommand"] = "ssh"
 		case GitConfigFindingAskPass:
 			set["core.askPass"] = ""
 		case GitConfigFindingGitProxy:
-			// The proxy command itself cannot be neutralized (any value,
-			// empty included, still resolves to a command path); the
-			// verified kill is the transport-family allowlist entry, which
-			// makes the git:// operation fail closed instead.
+			// The proxy command cannot be neutralized; kill the transport
+			// family instead — the operation fails closed.
 			set[gitProxyAllowKey] = gitProxyDenyValue
 		case GitConfigFindingCredential:
-			// An empty value resets the accumulated helper list and the
-			// -c layer is read after every file, so the reset covers
-			// generic and URL-specific helpers alike; the per-URL pin is
+			// The -c layer is read after every file, so the empty reset
+			// lands after all configured helpers; the per-URL pin is
 			// belt-and-braces against url-match normalization subtleties.
 			set["credential.helper"] = ""
 			if f.Subsection != "" {
@@ -1431,13 +1107,11 @@ func (info *GitConfigInfo) NeutralizingOverrides() []GitConfigOverride {
 		case GitConfigFindingAttrTree:
 			set[attrTreeKey] = info.emptyTreeHash()
 		case GitConfigFindingAttributesFile:
-			// Verified (git 2.50.1): an empty value disables the
-			// core.attributesFile routing source entirely.
+			// Empty disables the routing source entirely (verified).
 			set[attributesFileKey] = ""
 		case GitConfigFindingAttrRouting:
-			// Routing sources attr.tree cannot cover are closed by pinning
-			// the routed name: -c overrides beat file config wherever the
-			// driver is defined (config, included file, or nowhere).
+			// Sources attr.tree cannot cover: pin the routed name (-c beats
+			// file config wherever the driver is defined).
 			switch f.Key {
 			case "filter":
 				filterNames[f.Subsection] = true
@@ -1455,39 +1129,23 @@ func (info *GitConfigInfo) NeutralizingOverrides() []GitConfigOverride {
 		set["filter."+name+".smudge"] = neutralPassthroughValue
 	}
 	if len(info.Includes) > 0 {
-		// The only case where driver names may be unknown to the scan: an
-		// included file can define a filter whose name the scanner never
-		// sees, routed from the in-tree .gitattributes — a routing source
-		// with no per-name pin possible. The blanket kill stays engaged for
-		// it, with the documented benign-attribute collateral (review [56]:
-		// CRLF/eol normalization off → falsely-modified statuses and
-		// inflated numstat on text-normalized repositories).
+		// The one case per-name pins cannot cover: an included file may
+		// define a driver whose name the scan never sees — the blanket kill
+		// stays engaged, with its documented collateral (review [56]).
 		set[attrTreeKey] = info.emptyTreeHash()
 	}
 	if len(info.Includes) > 0 {
-		// The config is not fully visible: an included file may set
-		// core.attributesFile where the scan cannot see it. The empty -c
-		// override beats every file-level definition of the key.
+		// The config is not fully visible: an included file may set any of
+		// these keys unseen. Name-independent pins (same values the finding
+		// path derives) — deliberately NOT unconditional, since a -c pin
+		// beats the user's own global config. An include-hidden
+		// core.gitProxy kills the transport family like the finding path
+		// (review [147]).
 		set[attributesFileKey] = ""
-		// Name-independent kills for the command-bearing keys an included
-		// file may arm invisibly (post-v0.7.3-style reachability): the
-		// values reuse exactly what the finding-driven path pins for each
-		// key. Deliberately NOT unconditional — a -c pin beats the user's
-		// own global config too, so these fire only for include-bearing
-		// configs, where the alternative is executing unseen commands.
-		// credential.helper= (empty) resets the accumulated list and
-		// covers URL-specific helpers set in included files as well.
 		set["core.sshCommand"] = "ssh"
 		set["core.askPass"] = ""
 		set["credential.helper"] = ""
 		set["diff.external"] = ""
-		// core.gitProxy is command-bearing exactly like the keys above, and
-		// the proxy command itself cannot be neutralized — the finding path
-		// pins the transport-family allowlist, so the include branch must
-		// too: an include-hidden core.gitProxy with a git:// remote would
-		// otherwise execute the attacker's proxy command on the next
-		// Fetch/Pull instead of failing closed with "transport not allowed"
-		// (review [147]).
 		set[gitProxyAllowKey] = gitProxyDenyValue
 	}
 	if len(set) == 0 {
@@ -1505,14 +1163,11 @@ func (info *GitConfigInfo) NeutralizingOverrides() []GitConfigOverride {
 	return out
 }
 
-// AttributesInterpretationDisabled reports whether the derived neutralizing
-// set engages the blanket attr.tree kill — the state where benign attributes
-// (eol/text normalization) stop applying for c0wrk's git operations (the
-// review-[56] collateral: CRLF repositories show falsely-modified files and
-// whole-file numstat diffs). In narrow mode this is false: visible drivers
-// are pinned by name and attributes keep working. True only while include
-// directives make driver names unknowable, or the repository's own config
-// sets attr.tree (which the override then pins to the empty tree).
+// AttributesInterpretationDisabled reports whether the derived set engages
+// the blanket attr.tree kill — the review-[56] collateral where benign
+// eol/text attributes stop applying. False in narrow mode; true only for
+// include-bearing configs or a repo-set attr.tree
+// (specs/decisions/033-git-subprocess-hardening.md).
 func (info *GitConfigInfo) AttributesInterpretationDisabled() bool {
 	if info == nil {
 		return false
@@ -1527,17 +1182,11 @@ func (info *GitConfigInfo) AttributesInterpretationDisabled() bool {
 
 // NeedsWorkTreeEnvPin reports whether the spawn environment's GIT_WORK_TREE
 // must be pinned to the discovered work-tree root — the one channel that
-// outranks the config key. Two conditions derive the pin: a scanned
-// core.worktree finding (the one vector no `-c` override can neutralize —
-// verified on git 2.50.1: both a value and an empty core.worktree lose to
-// the file config), and an include-bearing config (review [148]): an
-// included file the scanner deliberately does not follow can hide
-// core.worktree just as it can hide a driver, and an unpinned checkout/
-// reset/clean would write tracked files to the included file's absolute
-// path. The pin is a no-op for an honest repository — it pins exactly the
-// root git itself would discover — so include-bearing configs always derive
-// it; only an attacker-observable occurrence in the scanned config would
-// otherwise arm the key invisibly.
+// outranks the config key (no `-c` form beats core.worktree). Derived for a
+// scanned core.worktree finding and for include-bearing configs (review
+// [148]: an included file can hide the key and redirect tracked-file
+// writes); a no-op for an honest repository
+// (specs/decisions/033-git-subprocess-hardening.md).
 func (info *GitConfigInfo) NeedsWorkTreeEnvPin() bool {
 	if info == nil {
 		return false
@@ -1551,10 +1200,8 @@ func (info *GitConfigInfo) NeedsWorkTreeEnvPin() bool {
 }
 
 // emptyTreeHash returns the empty-tree hash matching the repository's object
-// format: EmptyTreeSHA256 when extensions.objectformat=sha256 was parsed or
-// resolved, EmptyTreeSHA1 otherwise. Invalid hashes are silent no-ops for
-// git, so the full ScanGitConfig pipeline refuses unknown formats (fail
-// closed) rather than falling back silently.
+// format (EmptyTreeSHA256 for sha256, EmptyTreeSHA1 otherwise); unknown
+// formats are refused upstream, since an invalid hash is a silent no-op.
 func (info *GitConfigInfo) emptyTreeHash() string {
 	if info.ObjectFormat == "sha256" || info.objectFormat == "sha256" {
 		return EmptyTreeSHA256
@@ -1576,41 +1223,16 @@ func (info *GitConfigInfo) NeutralizingArgv() []string {
 	return out
 }
 
-// ScanGitConfig safely reads and parses the git configuration of the
-// repository git itself would discover for repoRoot (text-only; it never
-// spawns a process). Discovery mirrors `git -C repoRoot`: the .git chain is
-// walked up from repoRoot, so a workspace rooted at a subdirectory of a
-// repository is covered too. .git may be a directory or a "gitdir: ..."
-// pointer file (worktrees; relative pointers resolve against the directory
-// holding the .git entry); no .git anywhere on the chain yields an empty
-// result, not an error.
-//
-// Linked worktrees ([2]a of the post-v0.7.3 review): a worktree's .git
-// points at <main>/.git/worktrees/<name>, which carries no config of its
-// own — git reads the COMMON config (<main>/.git/config) plus, when
-// extensions.worktreeConfig is enabled, the config.worktree overlay. Both
-// are scanned and merged with git's layering semantics (the worktree value
-// wins for identical keys; includes/errors union). The common dir is
-// resolved via the worktree's commondir file, mirroring
-// `git rev-parse --git-common-dir`.
-//
-// Attribute routing sources ([1]a): attr.tree only replaces the in-tree
-// .gitattributes source, so .git/info/attributes and the file named by
-// core.attributesFile are scanned as well (see scanAttributeSources). The
-// attributes mechanism has no config kill-switch, which is exactly why the
-// scan must succeed: an attribute source that exists but cannot be read
-// makes the whole scan fail closed instead of running git with invisible
-// routing.
-//
-// Object format ([1]d): core.repositoryformatversion +
-// extensions.objectformat select the empty-tree constant used for the
-// attr.tree kill (SHA-1 vs SHA-256); an unknown format or version refuses
-// the scan (fail closed) because an invalid attr.tree value is a silent
-// no-op for git.
-//
-// A missing or oversized config file inside a resolved git dir is
-// reported as an error so callers can fail closed. The optional logger
-// receives a warning line for every ignored include/includeIf directive.
+// ScanGitConfig safely reads and parses (text-only, never spawns) the config
+// of the repository git would discover for repoRoot: the .git chain walks up
+// (subdirectory workspaces covered), .git may be a directory or "gitdir:"
+// pointer, no .git → empty result; linked worktrees scan the COMMON config
+// (commondir file) plus the enabled config.worktree overlay, merged with
+// git's layering ([2]a); attribute sources ([1]a) and the object format
+// ([1]d) are validated as the attr.tree kill needs — unscannable source or
+// unknown format fails the scan closed; missing/oversized config is an
+// error; ignored includes log warnings
+// (specs/decisions/033-git-subprocess-hardening.md).
 func ScanGitConfig(repoRoot string, loggers ...*slog.Logger) (*GitConfigInfo, error) {
 	logger := slog.Default()
 	if len(loggers) > 0 && loggers[0] != nil {
@@ -1637,9 +1259,8 @@ func ScanGitConfig(repoRoot string, loggers ...*slog.Logger) (*GitConfigInfo, er
 	info.CommonDir = commonDir
 
 	if isWorktree && info.worktreeConfigEnabled {
-		// git reads config.worktree only when extensions.worktreeConfig is
-		// enabled in the common config; a planted-but-disabled file is inert
-		// and deliberately not scanned (no vector, no false findings).
+		// config.worktree only matters when extensions.worktreeConfig is
+		// enabled; a planted-but-disabled file is inert, not scanned.
 		wtPath := filepath.Join(gitDir, "config.worktree")
 		if _, statErr := os.Lstat(wtPath); statErr == nil {
 			wt, wtErr := ScanGitConfigFile(wtPath, logger)
@@ -1648,11 +1269,8 @@ func ScanGitConfig(repoRoot string, loggers ...*slog.Logger) (*GitConfigInfo, er
 			}
 			mergeGitConfigInfo(info, wt)
 			info.WorktreeConfigPath = wtPath
-			// Retain the standalone overlay parse for WorktreeOverlayClean:
-			// the spawn layer's trusted-worktree gate must judge the
-			// overlay's own keys/includes/errors, and only this parse
-			// attributes them to the overlay alone (the merged model folds
-			// them together).
+			// Retain the standalone parse for WorktreeOverlayClean — only
+			// it attributes keys/includes/errors to the overlay alone.
 			info.worktreeOverlay = wt
 		}
 	}
@@ -1678,13 +1296,9 @@ func ScanGitConfig(repoRoot string, loggers ...*slog.Logger) (*GitConfigInfo, er
 		return nil, err
 	}
 
-	// Mark the signing siblings inert when no layer of the configuration
-	// arms commit.gpgsign. This runs after the worktree-overlay merge and
-	// the attribute scan, so a commit.gpgsign=true in ANY config layer keeps
-	// the siblings armed (over-armed beats under-armed here: the spawn
-	// baseline neutralizes signing either way; this only shapes the intake
-	// warning). DetectCommitSuppression already reads the same gating off
-	// the armed finding only.
+	// Runs after the overlay merge and attribute scan, so commit.gpgsign
+	// armed in ANY layer keeps the siblings live (over-armed beats
+	// under-armed; this only shapes the intake warning).
 	markInertSigningSiblings(info)
 	return info, nil
 }
@@ -1698,11 +1312,9 @@ var signSiblingKeys = map[string]bool{
 	"user.signingkey": true,
 }
 
-// markInertSigningSiblings flags gpg.format / gpg.program /
-// user.signingkey findings as Inert when the scanned configuration carries
-// no ARMED commit.gpgsign finding in any layer. commit.gpgsign itself keeps
-// its unconditional emission (truthy-gated): it is the key that makes git
-// execute a signing program, so its presence alone is warning-worthy.
+// markInertSigningSiblings flags the signing siblings Inert when no layer
+// arms commit.gpgsign (specs/domains/workspace.md); commit.gpgsign itself
+// stays unconditionally emitted (truthy-gated).
 func markInertSigningSiblings(info *GitConfigInfo) {
 	if info == nil {
 		return
@@ -1720,13 +1332,10 @@ func markInertSigningSiblings(info *GitConfigInfo) {
 	}
 }
 
-// resolveCommonGitDir resolves the shared git directory for gitDir, mirroring
-// `git rev-parse --git-common-dir`: a commondir file inside gitDir names the
-// common dir (usually relative to gitDir); without one the repository is
-// self-contained and the common dir is gitDir itself. A worktree gitdir is
-// recognizable by its gitdir file (pointing back at the worktree root); one
-// without a readable commondir is corrupted or hostile and fails closed —
-// the common config it hides is exactly what git would execute.
+// resolveCommonGitDir resolves the shared git directory, mirroring
+// `git rev-parse --git-common-dir`: a commondir file names it; without one
+// the repository is self-contained. A worktree gitdir without a readable
+// commondir fails closed (the hidden common config is what git executes).
 func resolveCommonGitDir(gitDir string) (commonDir string, isWorktree bool, err error) {
 	commonPath := filepath.Join(gitDir, "commondir")
 	if _, err := os.Stat(commonPath); err != nil {
@@ -1759,17 +1368,13 @@ func resolveCommonGitDir(gitDir string) (commonDir string, isWorktree bool, err 
 	return target, true, nil
 }
 
-// mergeGitConfigInfo folds the overlay (a later config layer, e.g. a
-// worktree's config.worktree) into base with git's layering semantics: for
-// identical keys the overlay value wins, everything else unions. Findings
-// are deduplicated by FullKey (the surviving entry keeps the overlay's value
-// and line), includes and parse errors append (both files were really read),
-// and the parser-captured repository-model state layers by KEY PRESENCE —
-// the overlay overrides only the keys it actually sets. Presence (not
-// non-zero value) is what matters: config.worktree routinely omits
-// extensions.objectformat, and letting that omission zero out the common
-// config's "sha256" would downgrade the attr.tree empty-tree hash to SHA-1,
-// turning the blanket kill into a silent no-op on a SHA-256 repository.
+// mergeGitConfigInfo folds the overlay (a later config layer) into base with
+// git's layering semantics: overlay value wins on identical keys (findings
+// deduped by FullKey), includes/errors append, and the repository-model
+// state layers by KEY PRESENCE — the overlay overrides only keys it sets.
+// Presence is the point: config.worktree routinely omits
+// extensions.objectformat, and letting the omission zero the common "sha256"
+// would downgrade the attr.tree hash to SHA-1 — a silent no-op kill there.
 func mergeGitConfigInfo(base, overlay *GitConfigInfo) {
 	idx := make(map[string]int, len(base.Findings))
 	for i := range base.Findings {
@@ -1787,8 +1392,7 @@ func mergeGitConfigInfo(base, overlay *GitConfigInfo) {
 	base.Includes = append(base.Includes, overlay.Includes...)
 	base.Errors = append(base.Errors, overlay.Errors...)
 	// Records carry over with their source index shifted: the overlay's
-	// records were parsed from overlay.rawSources[0], which lands at index
-	// len(base.rawSources) once the overlay's sources are appended.
+	// records land at len(base.rawSources) once its sources are appended.
 	shift := len(base.rawSources)
 	base.rawSources = append(base.rawSources, overlay.rawSources...)
 	for i := range overlay.records {
@@ -1814,13 +1418,10 @@ func mergeGitConfigInfo(base, overlay *GitConfigInfo) {
 	}
 }
 
-// validateRepoFormat checks that the parsed repository model is one whose
-// attribute-routing behavior this scanner can reproduce. git refuses
-// repositoryformatversion > 1 and unknown extensions.objectformat values
-// outright; the scanner fails closed the same way, because the object format
-// decides which empty-tree hash the attr.tree kill must use and a wrong hash
-// is a silent no-op (invalid attr.tree values disable the mechanism without
-// any error).
+// validateRepoFormat fails closed on models whose attribute routing this
+// scanner cannot reproduce (repositoryformatversion > 1, unknown
+// extensions.objectformat): the format picks the attr.tree hash, and a
+// wrong hash is a silent no-op (specs/decisions/033-git-subprocess-hardening.md).
 func (info *GitConfigInfo) validateRepoFormat() error {
 	if info.repositoryFormatVersion < 0 || info.repositoryFormatVersion > 1 {
 		return fmt.Errorf("unsupported core.repositoryformatversion %d (fail closed: cannot model the repository)", info.repositoryFormatVersion)
@@ -1833,15 +1434,12 @@ func (info *GitConfigInfo) validateRepoFormat() error {
 	}
 }
 
-// scanAttributeSources scans the attribute-routing files that attr.tree
-// cannot neutralize: <commonDir>/info/attributes (which git reads for every
-// worktree of the repository) and the file named by core.attributesFile
-// (repo config; verified live on git 2.50.1). Routing directives found there
-// become findings whose neutralization pins the routed driver NAME — the -c
-// overrides beat file config regardless of where the driver is defined.
-// There is no config kill-switch for these sources, so a source that exists
-// but cannot be read is a hard error: running git with invisible routing is
-// never an option. A missing source is inert (git ignores it) and skipped.
+// scanAttributeSources scans the attribute-routing files attr.tree cannot
+// neutralize: <commonDir>/info/attributes (shared by every worktree) and the
+// core.attributesFile target; routed names become findings pinned by NAME.
+// No kill-switch exists: an unreadable source is a hard error (invisible
+// routing is never an option); a missing source is inert
+// (specs/decisions/033-git-subprocess-hardening.md).
 func scanAttributeSources(repoRoot, commonDir string, info *GitConfigInfo, logger *slog.Logger) error {
 	type source struct {
 		path, label string
@@ -1866,12 +1464,9 @@ func scanAttributeSources(repoRoot, commonDir string, info *GitConfigInfo, logge
 	return nil
 }
 
-// resolveAttributesFilePath resolves a core.attributesFile value the way git
-// resolves it for core.excludesFile: a leading ~/ expands against the home
-// directory, a relative path resolves against the working directory git runs
-// in (c0wrk always runs repo-scoped git with cmd.Dir = the repository root,
-// so repoRoot is that anchor). An unresolvable home leaves the path verbatim
-// (it will simply not exist).
+// resolveAttributesFilePath resolves core.attributesFile like git resolves
+// core.excludesFile: ~/ against home, relative against the directory git
+// runs in (repoRoot — cmd.Dir); unresolvable home stays verbatim.
 func resolveAttributesFilePath(raw, repoRoot string) string {
 	value := strings.TrimSpace(raw)
 	if value == "" {
@@ -1884,12 +1479,9 @@ func resolveAttributesFilePath(raw, repoRoot string) string {
 	return filepath.Clean(value)
 }
 
-// parseAttributesRouting extracts command-routing directives
-// (filter=<name>, merge=<name>, diff=<name>) from a gitattributes-format
-// file. Macro definition lines (e.g. "lfs filter=lfs -text") are covered by
-// the same token scan, so a name that only a macro expansion would route is
-// still pinned. Explicitly DISARMING forms (-filter=x, !filter) are not
-// findings: they turn routing off, not on.
+// parseAttributesRouting extracts command-routing directives (filter=/merge=/
+// diff=<name>) from gitattributes-format files; macro lines covered.
+// Disarming forms (-filter=x, !filter) are not findings: routing off, not on.
 func parseAttributesRouting(data, label, path string) []GitConfigFinding {
 	var findings []GitConfigFinding
 	for lineNo, raw := range strings.Split(data, "\n") {
@@ -1951,10 +1543,8 @@ func attrRoutingOverrides(attr, name string) []GitConfigOverride {
 	case "merge":
 		return []GitConfigOverride{{Key: "merge." + name + ".driver", Value: neutralMergeDriverValue}}
 	default: // diff
-		// The named diff driver is pinned on BOTH of its command-bearing
-		// keys: textconv (content rendering) and command (the external
-		// driver the git diff porcelain runs by default — verified on git
-		// 2.50.1).
+		// Both command-bearing keys are pinned: textconv and the external
+		// command the git diff porcelain runs by default.
 		return []GitConfigOverride{
 			{Key: "diff." + name + ".textconv", Value: neutralPassthroughValue},
 			{Key: "diff." + name + ".command", Value: ""},
@@ -1968,9 +1558,9 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
-// ScanGitConfigFile parses one specific git config file (text-only). A missing
-// file yields an empty result; an unreadable or oversized file yields an error
-// (fail closed). See ScanGitConfig for details.
+// ScanGitConfigFile parses one specific git config file (text-only): missing
+// yields an empty result, unreadable/oversized an error (fail closed). See
+// ScanGitConfig for details.
 func ScanGitConfigFile(configPath string, loggers ...*slog.Logger) (*GitConfigInfo, error) {
 	logger := slog.Default()
 	if len(loggers) > 0 && loggers[0] != nil {
@@ -1987,8 +1577,7 @@ func ScanGitConfigFile(configPath string, loggers ...*slog.Logger) (*GitConfigIn
 	info.ConfigPath = configPath
 	info.GitDir = filepath.Dir(configPath)
 	info.rawSources = []gitConfigSource{{kind: sourceKind(configPath), path: configPath, data: data}}
-	// Every include directive in this file resolves its (possibly relative)
-	// path against this file's directory, so record it for ResolveIncludes.
+	// Record this file's directory: includes resolve relative paths against it.
 	sourceDir := filepath.Dir(configPath)
 	for i := range info.Includes {
 		info.Includes[i].SourceDir = sourceDir
@@ -1996,9 +1585,8 @@ func ScanGitConfigFile(configPath string, loggers ...*slog.Logger) (*GitConfigIn
 	return info, nil
 }
 
-// sourceKind labels a config file path for the snapshot diff header: the
-// per-worktree overlay is distinguishable from the common config by its
-// basename; every other config file reads as the common config.
+// sourceKind labels a config path for the snapshot diff header: the
+// per-worktree overlay is distinguishable from the common config by basename.
 func sourceKind(configPath string) string {
 	if filepath.Base(configPath) == "config.worktree" {
 		return "config.worktree"
@@ -2007,23 +1595,16 @@ func sourceKind(configPath string) string {
 }
 
 // resolveGitDir resolves the git directory whose config git itself would use
-// for repoRoot: it walks up from repoRoot (after resolving symlinks, mirroring
-// git's physical discovery from the working directory) until it finds a .git
-// entry — exactly what `git -C repoRoot rev-parse` does when the workspace
-// root is a subdirectory of the repository. Skipping the walk-up would let a
-// .git-less workspace root silently skip neutralization while git happily
-// executes the parent repository's config-driven programs. .git may be a
-// directory or a "gitdir: ..." pointer file (worktrees); relative pointers
-// are resolved against the directory containing the .git entry. Returns ""
-// when no .git is found anywhere on the chain.
+// for repoRoot: walks up (symlinks resolved, mirroring git's chdir-based
+// discovery) until a .git entry — a .git-less workspace root must not
+// silently skip neutralization while git runs the parent repository's
+// config. "" when none (specs/decisions/033-git-subprocess-hardening.md).
 func resolveGitDir(repoRoot string) (string, error) {
 	if repoRoot == "" {
 		return "", errors.New("cannot resolve git dir for an empty path")
 	}
-	// Evaluate symlinks so the walk matches git's discovery, which runs from
-	// the physical working directory after chdir. On error (path missing or
-	// inaccessible) fall back to the lexical form: discovery then reports
-	// the missing .git chain as no-repo, which callers already handle.
+	// Symlinks resolved so the walk matches git's chdir-based discovery; on
+	// error fall back to the lexical form (callers handle no-repo).
 	root, err := filepath.EvalSymlinks(repoRoot)
 	if err != nil {
 		root = repoRoot
@@ -2079,25 +1660,12 @@ func resolveGitDirAt(dir string) (string, error) {
 	return target, nil
 }
 
-// ResolveWorkTreeRoot returns the work-tree root of the repository git
-// would discover from path: the first directory on path's chain that
-// carries a .git entry (a directory for plain repositories, a "gitdir:"
-// pointer file for linked worktrees) — the path `git rev-parse
-// --show-toplevel` reports, derived exec-free with the same walk-up
-// discovery as the config scan. It exists for trust attribution and
-// warning display (review [52]): the scan walks up from a subdirectory
-// workspace to the parent repository's config, so the intake warning and
-// the security.trusted_git_repos list must key on that repository root,
-// not on the scanned subdirectory path.
-//
-// The walk is deliberately LEXICAL (no symlink evaluation): the stored and
-// displayed root stays in the path form the user knows (macOS $TMPDIR
-// symlinks, symlinked workspace mounts) instead of its physical
-// /private/... spelling, and both the warning attribution and the trust
-// list normalize through this one function, so they always agree.
-// Returns "" when no .git exists anywhere on the chain — callers fall back
-// to the given path, which keeps the fail-closed pairing (an unresolvable
-// chain is warned and trusted under the exact path the user saw).
+// ResolveWorkTreeRoot returns the work-tree root git would discover from
+// path (first .git-carrying directory on the chain) — the trust-attribution
+// form: warning and trusted_git_repos key on the repository root, not the
+// scanned subdirectory (review [52]). Deliberately LEXICAL: the root stays
+// in the path form the user knows, and attribution + trust list normalize
+// through this one function so they agree. "" → callers fall back to path.
 func ResolveWorkTreeRoot(path string) string {
 	if path == "" {
 		return ""
@@ -2116,32 +1684,14 @@ func ResolveWorkTreeRoot(path string) string {
 	}
 }
 
-// ResolveGitTrustRoot returns the path form the git TRUST decision keys on
-// for path: the repository's MAIN work-tree root. For a plain repository
-// (or a workspace at a subdirectory of one) it is identical to
-// ResolveWorkTreeRoot. For a LINKED worktree — where .git is a "gitdir:"
-// pointer file — it resolves the shared git directory through the pointer
-// chain (.git file → worktree gitdir → commondir file) and returns the main
-// work-tree root the common dir lives under: the commit surface a trust
-// decision covers (the commit-family hooks in <commonDir>/hooks, the common
-// config, the signing keys) is shared by every worktree of the repository,
-// so the decision must key on the root those programs come from, not on the
-// worktree the commit happened to run in. Without this unification a
-// trusted repository's worktree stays untrusted: the commit gate detects
-// the shared hook, the dialog offers trust for the repository root, and
-// trusting it is an idempotent no-op — the "Trust this repo & commit"
-// button loops forever (the subdirectory twin of this bug is why
-// ResolveWorkTreeRoot exists, review [52]).
-//
-// The resolution stays LEXICAL like ResolveWorkTreeRoot — the stored and
-// displayed root remains in the path form the user knows — and every hop
-// DEGRADES to the ResolveWorkTreeRoot form (the original keying) when the
-// pointer chain cannot be resolved: a malformed .git pointer, a missing or
-// unreadable commondir, or a common dir not laid out as <mainRoot>/.git
-// (e.g. worktrees of a bare repository) keep keying trust on the worktree
-// root exactly as before. Nothing widens trust on an unresolvable chain;
-// it only stops being attributed to a path the commit surface does not
-// come from. Returns "" when no .git exists anywhere on the chain.
+// ResolveGitTrustRoot returns the path form the git TRUST decision keys on:
+// the repository's MAIN work-tree root. A linked worktree's commit surface
+// (hooks, common config, signing keys) is shared by every worktree, so the
+// decision must key on the root those programs come from — otherwise a
+// trusted repository's worktree stays untrusted and "Trust & commit" loops
+// (review [52]; specs/decisions/034-git-trust-opt-out.md). LEXICAL like
+// ResolveWorkTreeRoot; every hop degrades to its form when the pointer
+// chain cannot be resolved — nothing widens trust. "" when no .git exists.
 func ResolveGitTrustRoot(path string) string {
 	root := ResolveWorkTreeRoot(path)
 	if root == "" {
@@ -2155,11 +1705,9 @@ func ResolveGitTrustRoot(path string) string {
 	if err != nil || !isWorktree {
 		return root
 	}
-	// Only the standard (non-bare) layout maps back to a work-tree root
-	// lexically: the common dir lives at <mainRoot>/.git. Verify the main
-	// root really carries the .git entry before returning it, so a hostile
-	// or exotic commondir can never redirect the trust key outside a
-	// repository root.
+	// Only the standard layout maps back lexically (common dir at
+	// <mainRoot>/.git); verify the .git entry before returning, so a
+	// hostile commondir cannot redirect the trust key outside a repository.
 	if filepath.Base(commonDir) != ".git" {
 		return root
 	}
@@ -2171,12 +1719,8 @@ func ResolveGitTrustRoot(path string) string {
 }
 
 // canonicalizePathBestEffort returns the symlink-resolved spelling of path,
-// or path itself when it cannot be resolved (missing, loop, unreadable
-// ancestor). Trust comparisons probe both spellings because the two sides of
-// a trust decision often derive the same repository root through different
-// routes: user-facing paths stay in their lexical (user-known) form, while a
-// linked worktree's pointer chain carries the canonical paths git wrote into
-// it (macOS resolves /var → /private/var the same way).
+// or path itself when unresolvable — trust comparisons need both spellings
+// (user-facing paths stay lexical; worktree chains carry canonical git paths).
 func canonicalizePathBestEffort(path string) string {
 	if path == "" {
 		return ""
@@ -2188,16 +1732,14 @@ func canonicalizePathBestEffort(path string) string {
 }
 
 // TrustProbePaths returns every path form a trust decision for path may be
-// stored or checked under: the exact cleaned path, its canonical spelling,
-// the repository trust root (ResolveGitTrustRoot), the legacy work-tree root
-// (ResolveWorkTreeRoot), and the canonical spelling of both roots — deduped,
-// first occurrence first. The trust list (backend's trustedGitRepoEntryFor)
-// and the process-wide spawn registry (core/gittrust via GitCmdInRepo) probe
-// ALL of them, so a trust recorded from any path form inside the repository
-// — the project checkout, a subdirectory workspace, a linked worktree, a
-// symlinked mount — honors every other form, without prefix/subtree
-// semantics ever crossing a repository boundary (every candidate is the same
-// repository's root or the probed path itself).
+// stored or checked under: the cleaned path, its canonical spelling, both
+// resolved roots (trust root, work-tree root) and their canonical spellings
+// — deduped, first occurrence first. The backend trust list and the
+// core/gittrust spawn registry probe ALL of them, so a trust recorded under
+// any one form is honored under every other; every candidate is the same
+// repository's root or the probed path itself, so no prefix/subtree matching
+// ever crosses a repository boundary.
+// See specs/domains/workspace.md (trust path probing).
 func TrustProbePaths(path string) []string {
 	cleaned := filepath.Clean(path)
 	seen := make(map[string]struct{})
@@ -2224,12 +1766,9 @@ func TrustProbePaths(path string) []string {
 }
 
 // readCapped reads a regular file, refusing input beyond limit bytes.
-// Regularity is enforced by safeio.Open with NO Stat→Open window (review
-// [14]): a FIFO swapped in between a stat and an open by a racing local
-// adversary would otherwise defeat the guard and block the open forever,
-// hanging the synchronous intake scan on the SwitchProject RPC path.
-// Anything that is not a regular file (FIFO, device, socket, directory) is
-// refused by the fstat on the already-open descriptor.
+// safeio.Open enforces regularity with NO Stat→Open window (review [14]): a
+// racing FIFO would block the open forever on the synchronous SwitchProject
+// scan path; non-regular files are refused by the open-descriptor fstat.
 func readCapped(path string, limit int64) ([]byte, error) {
 	f, err := safeio.Open(path)
 	if err != nil {
@@ -2258,10 +1797,9 @@ type gitConfigParser struct {
 	subsection string
 }
 
-// parseGitConfigData parses git-config text into findings. It never fails:
-// malformed constructs are recorded in info.Errors and parsing continues
-// (git refuses such files wholesale, so continuing can only over-report,
-// never under-report relative to what git would execute).
+// parseGitConfigData parses git-config text into findings; it never fails —
+// malformed constructs land in info.Errors and parsing continues (git
+// refuses such files wholesale, so continuing only over-reports).
 func parseGitConfigData(data string, logger *slog.Logger) *GitConfigInfo {
 	info := &GitConfigInfo{}
 	// Strip a UTF-8 BOM if present (byte-level to keep the parser ASCII).
@@ -2342,9 +1880,8 @@ func (p *gitConfigParser) atLineEnd() bool {
 }
 
 // parseHeader parses "[section]", "[section \"sub\"]" or the old dotted
-// "[section.sub]" form. Section and key names are case-insensitive
-// (lowercased here); a quoted subsection is case-sensitive and preserved
-// verbatim; a dotted subsection is lowercased, matching git.
+// form; section/key names lowercase, quoted subsections stay verbatim and
+// case-sensitive, dotted subsections lowercase (matching git).
 func (p *gitConfigParser) parseHeader() {
 	startLine := p.line
 	p.pos++ // consume '['
@@ -2437,8 +1974,8 @@ func (p *gitConfigParser) parseQuotedSubsection() (string, bool) {
 func (p *gitConfigParser) parseEntry() {
 	startLine := p.line
 	if p.section == "" {
-		// git refuses config entries outside of any section ("bad config
-		// line") — record it so Clean() stays false and intake warns.
+		// git refuses entries outside any section — record it so Clean()
+		// stays false and intake warns.
 		p.errorf(startLine, "config entry outside of any section")
 		p.skipLine()
 		return
@@ -2462,8 +1999,7 @@ func (p *gitConfigParser) parseEntry() {
 		v, ok := p.parseValue()
 		value = v
 		if !ok {
-			// The error is already recorded; keep the partial value so
-			// the key is still reported (over-report is the safe direction).
+			// Error recorded; keep the partial value (over-report is safe).
 			p.skipLine()
 		}
 	} else {
@@ -2484,8 +2020,8 @@ func (p *gitConfigParser) parseValue() (string, bool) {
 	var b strings.Builder
 	var pending strings.Builder // whitespace outside quotes, dropped while no value content exists
 	flushPending := func() {
-		// git only appends whitespace once the value buffer is non-empty,
-		// which is how leading whitespace after '=' disappears.
+		// Whitespace appends only once the value is non-empty (leading ws
+		// after '=' disappears).
 		if b.Len() > 0 {
 			b.WriteString(pending.String())
 		}
@@ -2507,12 +2043,9 @@ func (p *gitConfigParser) parseValue() (string, bool) {
 				return b.String(), false
 			}
 		case '\\':
-			// git applies one escape switch in and out of quotes: the
-			// backslash is consumed together with the very next character
-			// (no whitespace skipping). Backslash-newline is a line
-			// continuation that vanishes while surrounding whitespace is
-			// kept (verified against git: `line1 \` + indented `line2`
-			// yields "line1 \t…line2" with all intervening ws intact).
+			// One escape switch in and out of quotes: the backslash
+			// consumes the very next character. Backslash-newline is a
+			// continuation that vanishes while surrounding ws is kept.
 			p.pos++
 			if p.pos >= len(p.data) {
 				p.errorf(p.line, "unterminated escape in value")
@@ -2538,9 +2071,8 @@ func (p *gitConfigParser) parseValue() (string, bool) {
 				flushPending()
 				b.WriteByte(e)
 			default:
-				// git refuses the whole file on unknown escapes; we
-				// record the error and keep the characters literally
-				// (over-reporting is the safe direction).
+				// git refuses the file on unknown escapes; we record the
+				// error and keep the characters (over-reporting is safe).
 				p.errorf(p.line, "unknown escape \\%c in value", e)
 				flushPending()
 				b.WriteByte('\\')
@@ -2558,13 +2090,10 @@ func (p *gitConfigParser) parseValue() (string, bool) {
 	return b.String(), true
 }
 
-// parseQuotedSegment reads one "..." segment of a value into b. git applies
-// its escape switch inside quotes too: \", \\, \n, \t, \b, and a backslash
-// before a raw newline continues the quoted value on the next line. Unknown
-// escapes are recorded as errors and kept literally (git refuses the whole
-// file there; over-reporting is the safe direction). An unterminated raw
-// newline (no backslash) makes git refuse the file; we preserve the newline
-// and keep reading, which can only over-report.
+// parseQuotedSegment reads one "..." segment: git's escape switch applies
+// inside quotes; a backslash before a raw newline continues the value.
+// Unknown escapes are recorded and kept; an unterminated raw newline makes
+// git refuse the file — it lands in Errors (over-report is the safe side).
 func (p *gitConfigParser) parseQuotedSegment(b *strings.Builder) bool {
 	p.pos++ // consume opening quote
 	for p.pos < len(p.data) {
@@ -2574,13 +2103,9 @@ func (p *gitConfigParser) parseQuotedSegment(b *strings.Builder) bool {
 			p.pos++
 			return true
 		case '\n':
-			// A raw newline inside a quoted value makes git refuse the
-			// whole file ("fatal: bad config line N" — verified on git
-			// 2.50.1), so it must land in Errors: without it a config whose
-			// only anomaly is this construct stays Clean() and the intake
-			// never warns about a config git considers broken (review
-			// [63]). The newline is kept and reading continues —
-			// over-reporting findings stays the safe direction.
+			// A raw newline makes git refuse the whole file, so it must
+			// land in Errors — without it a config whose only anomaly is
+			// this stays Clean() and intake never warns (review [63]).
 			p.errorf(p.line, "newline inside quoted value (git refuses this config)")
 			b.WriteByte('\n')
 			p.pos++
@@ -2620,10 +2145,8 @@ func (p *gitConfigParser) parseQuotedSegment(b *strings.Builder) bool {
 
 // dispatchEntry routes a parsed key to findings, include records, or silence.
 func (p *gitConfigParser) dispatchEntry(line int, key, value string, boolean bool) {
-	// Retain every dispatched entry for the semantic snapshot layer BEFORE
-	// any routing (findings, include records, silence) narrows the picture:
-	// retention is unconditional, classification happens at serialization
-	// time (classifyGitConfigRecord).
+	// Retain every dispatched entry BEFORE routing narrows the picture:
+	// retention is unconditional, classification happens at serialization.
 	p.info.records = append(p.info.records, gitConfigRecord{
 		Section:    p.section,
 		Subsection: p.subsection,
@@ -2741,10 +2264,8 @@ func (p *gitConfigParser) dispatchEntry(line int, key, value string, boolean boo
 			description = credentialHelperDescription(p.subsection)
 		}
 	case "commit":
-		// Truthy-gated: gpgsign=false is what c0wrk's own fixtures and any
-		// safety-minded configuration write; a disabled signing key must
-		// keep the config Clean rather than warn on the baseline's own
-		// pinned value. Only an ARMED (true/yes/on/1/bare) commit.gpgsign
+		// Truthy-gated: gpgsign=false (the baseline's own pin) must keep a
+		// config Clean; only an ARMED (true/yes/on/1/bare) commit.gpgsign
 		// is reported, as a baseline-covered finding with no override.
 		if key == "gpgsign" && parseBoolConfigValue(value, boolean) {
 			kind = GitConfigFindingSigning
@@ -2809,9 +2330,7 @@ func (p *gitConfigParser) dispatchEntry(line int, key, value string, boolean boo
 		finding.Overrides = []GitConfigOverride{{Key: "merge." + p.subsection + ".driver", Value: neutralMergeDriverValue}}
 	case GitConfigFindingTextConv:
 		finding.Overrides = []GitConfigOverride{{Key: "diff." + p.subsection + ".textconv", Value: neutralPassthroughValue}}
-		// The per-name pin is the whole neutralization: the -c override
-		// beats file config wherever the driver is defined, so every
-		// routing source is covered without attr.tree (review [56]).
+		// The per-name pin is the whole neutralization (review [56]).
 	case GitConfigFindingFilter:
 		finding.Overrides = []GitConfigOverride{
 			{Key: "filter." + p.subsection + ".process", Value: ""},

@@ -13,8 +13,9 @@ import (
 	"github.com/v0lka/sp4rk/pathutil"
 )
 
-// Owner uses container only for NEW trees. Existing trees resolve from the live
-// repository list or a validated persisted path, never from current config.
+// Owner provisions NEW managed trees into the configured container; existing
+// tree identities always resolve from the live repo list or a validated
+// persisted path, never from current config. See specs/domains/session-worktrees.md.
 type Owner struct {
 	log       *slog.Logger
 	container string
@@ -93,8 +94,9 @@ func (o *Owner) ProvisionBranch(ctx context.Context, repoRoot, name, branch stri
 	return o.provision(ctx, repoRoot, name, workspace.AddWorktreeOptions{Branch: branch})
 }
 
-// Path resolves existing identity independently of the configured creation root.
-// A supplied persisted path is validated even when the tree no longer exists.
+// Path resolves an existing managed tree's identity independently of the
+// configured creation root; a supplied persisted path is validated even when
+// the tree no longer exists. See specs/domains/session-worktrees.md.
 func (o *Owner) Path(ctx context.Context, repoRoot, name string, persisted ...string) (string, error) {
 	if len(persisted) > 0 && persisted[0] != "" {
 		got, err := config.ManagedWorktreeNameFromPath(repoRoot, persisted[0])
@@ -106,12 +108,11 @@ func (o *Owner) Path(ctx context.Context, repoRoot, name string, persisted ...st
 		}
 		return persisted[0], nil
 	}
-	// Validate the portable identity before listing. The legacy
-	// checkout-local container's on-disk state must NOT gate resolution: a
-	// healthy tree may live in a different (app-data / marked) container, and
-	// stray junk at the legacy path would otherwise fail a legitimate
-	// release/fork/adoption of that tree. The legacy container is consulted,
-	// and validated, only by the terminal fallback below.
+	// The legacy checkout-local container's on-disk state must not gate
+	// resolution: a healthy tree may live in a marked container, and ownership
+	// recognition is independent of current config. The legacy container is
+	// consulted, and validated, only by the terminal fallback below.
+	// See specs/domains/session-worktrees.md.
 	if err := config.ValidateManagedWorktreeName(name); err != nil {
 		return "", err
 	}
@@ -145,12 +146,9 @@ func (o *Owner) Recreate(ctx context.Context, repoRoot, name, branch string, per
 	return o.RecreateAt(ctx, repoRoot, name, branch, path)
 }
 
-// RecreateAt ensures the pinned branch at an ALREADY-RESOLVED durable path.
-// Unlike Recreate it does not re-resolve or re-recognize the path: the caller
-// has validated it (a normalized binding) and it is used exactly as recorded,
-// so a missing repository marker or legacy-container state can never block
-// recreation of a recorded tree. The primitives still enforce structural
-// validation (absolute/clean, outside the checkout, real directories).
+// RecreateAt ensures the pinned branch at an ALREADY-RESOLVED durable path: it
+// never re-resolves or re-recognizes it (the caller's normalized binding is used
+// exactly as recorded); the primitives still enforce structural validation.
 func (o *Owner) RecreateAt(ctx context.Context, repoRoot, name, branch, path string) (workspace.WorktreeInfo, error) {
 	info, err := workspace.RecreateWorktree(ctx, repoRoot, path, branch)
 	if err != nil {

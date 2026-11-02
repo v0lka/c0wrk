@@ -40,71 +40,43 @@ import (
 	"github.com/v0lka/sp4rk/tools/mcp"
 )
 
-// OrchestratorBuilder owns the shared tool registry, MCP gateway, and cached
-// LLM router. It provides Build() to create per-session Orchestrators and
-// exposes methods for runtime reconfiguration (judge, router, MCP, security).
-//
-// OrchestratorBuilder lives in core so that all sp4rk imports are confined to
-// the core layer. The backend.Application wraps it without importing sp4rk.
+// OrchestratorBuilder owns the shared tool registry, MCP gateway, and cached LLM
+// router: Build() creates per-session Orchestrators and the Rebuild*/Reconfigure*
+// methods apply runtime reconfiguration; sp4rk imports stay confined to core
+// (specs/architecture/layers.md).
 type OrchestratorBuilder struct {
 	mu       sync.RWMutex
 	mcpModes map[string]CapabilityModes // immutable snapshots published under mu
-	// skillModes / agentModes are the capability snapshots for the skill and
-	// agent catalogs (capabilities.skills / capabilities.agents) — the same
-	// immutable-snapshot pattern as mcpModes, read only via the cloning
-	// currentSkillModes / currentAgentModes getters.
+	// skillModes/agentModes: the same immutable-snapshot pattern as mcpModes for the
+	// skill/agent catalogs, read only via the cloning currentSkillModes/currentAgentModes.
 	skillModes map[string]CapabilityModes
 	agentModes map[string]CapabilityModes
-	// reconfigureMu serializes ReconfigureMCP calls end to end. Its reason to
-	// exist is the start branch: two concurrent callers that both find no
-	// gateway would each dial one, and the loser would be orphaned with its
-	// stdio subprocesses still running. Holding it across the whole call also
-	// keeps the gateway snapshot below stable, and costs nothing — the
-	// gateway already serialized concurrent Reconfigure calls on its own
-	// mutex. It is acquired BEFORE mu and never the other way round, and no
-	// config-read path ever takes it. Startup (runMCPInit) runs once, gated
-	// by mcpDone, so it does not participate.
+	// reconfigureMu serializes ReconfigureMCP end to end (two concurrent no-gateway
+	// callers would each dial one and orphan the loser's stdio subprocesses); acquired
+	// BEFORE mu, never the reverse.
 	reconfigureMu sync.Mutex
 	registry      *tools.ToolRegistry
 	gateway       *mcp.Gateway
-	// sessionRegistries tracks the per-session registry clones created by
-	// Build so runtime security-policy pushes (applySecurityPolicies) reach
-	// already-open sessions, not only sessions built after the change.
-	// Entries are added by registerSessionRegistry (Build) and removed by the
-	// orchestrator's cleanup hook (OrchestratorDeps.OnCleanup), which the
-	// session manager invokes on session delete and app shutdown. Guarded by
-	// b.mu.
+	// sessionRegistries tracks per-session registry clones so runtime security-policy
+	// pushes reach open sessions (registerSessionRegistry / cleanup hook). Guarded by b.mu.
 	sessionRegistries map[*tools.ToolRegistry]struct{}
-	// sessionModelRegistries tracks the per-session model registries created
-	// by buildRouter so runtime metadata pushes (UpdateModelOverrides — the
-	// embedded LLM context read-back being the motivating correction) reach
-	// already-open sessions, not only sessions built after the change.
-	// Entries are added by registerSessionModelRegistry (Build) and removed
-	// by the same cleanup hook that releases sessionRegistries. Guarded by
-	// b.mu.
+	// sessionModelRegistries: the same live-set pattern for
+	// UpdateModelOverrides metadata pushes. Guarded by b.mu.
 	sessionModelRegistries map[*llm.ModelRegistry]struct{}
-	// mcpWorkDir is the default working directory requested for MCP stdio
-	// server processes. It is applied to the gateway by runMCPInit (when the
-	// gateway is first assigned) or by SetMCPWorkDir (when the gateway is
-	// already assigned), using a record-and-apply pattern so SetMCPWorkDir
-	// never blocks on network-bound MCP startup. Guarded by b.mu.
+	// mcpWorkDir is recorded by SetMCPWorkDir and applied either at gateway
+	// assignment (runMCPInit/publishMCPGateway) or immediately by
+	// SetMCPWorkDir when a gateway is already live (record-and-apply, so
+	// SetMCPWorkDir never blocks on MCP startup). Guarded by b.mu.
 	mcpWorkDir    string
 	llmRouter     *llm.Router
 	modelRegistry *llm.ModelRegistry
 	logger        *slog.Logger
-	// serviceMetrics collects the per-kind counters/latency for the auxiliary
-	// one-shot service calls (issue #64): session title, commit message,
-	// prompt-optimizer extract/rewrite, compaction summarization. It is
-	// created once at construction and never mutated (only its internal
-	// aggregates are, under its own lock), so it needs no b.mu guarding and is
-	// shared into every per-session orchestrator via OrchestratorDeps.
+	// serviceMetrics collects per-kind telemetry for the one-shot service calls; locks
+	// internally (never b.mu), shared into every orchestrator via OrchestratorDeps.
 	serviceMetrics   *ServiceMetrics
 	vectorSearchFunc builtins.VectorSearchFunc
-	// vectorSearchWaitFunc is the bounded readiness waiter paired with
-	// vectorSearchFunc (OrchestratorDeps.VectorSearchWaitFunc): the RAG-hint
-	// path calls it under the same deadline as the search so readiness
-	// waiting never double-spends the knob. Set alongside vectorSearchFunc
-	// by RegisterVectorSearch. Guarded by b.mu.
+	// vectorSearchWaitFunc is the bounded readiness waiter paired with vectorSearchFunc:
+	// the RAG-hint path waits under the same deadline as the search. Guarded by b.mu.
 	vectorSearchWaitFunc builtins.VectorSearchWaitFunc
 	// vectorSearchFuncStash / vectorSearchWaitFuncStash hold the closures
 	// cleared by SetVectorSearchEnabled(false) so the matching enable
@@ -113,87 +85,50 @@ type OrchestratorBuilder struct {
 	// keeps the enable path self-contained on the builder). Guarded by b.mu.
 	vectorSearchFuncStash     builtins.VectorSearchFunc
 	vectorSearchWaitFuncStash builtins.VectorSearchWaitFunc
-	// vectorSearchWaitTimeout bounds the RAG-hint wait in per-session
-	// orchestrators (OrchestratorDeps.VectorSearchWaitTimeout), set alongside
-	// vectorSearchFunc by RegisterVectorSearch. Guarded by b.mu.
+	// vectorSearchWaitTimeout bounds the RAG-hint wait; set alongside
+	// vectorSearchFunc. Guarded by b.mu.
 	vectorSearchWaitTimeout time.Duration
-	// vectorSearchWaitDisabled carries an EXPLICIT fail-fast
-	// (vector_index.search_wait_timeout_ms: 0) through to the orchestrator:
-	// at this layer a zero timeout alone is indistinguishable from "unset"
-	// (which must keep the 3s default). Guarded by b.mu.
+	// vectorSearchWaitDisabled carries an EXPLICIT fail-fast (search_wait_timeout_ms: 0):
+	// zero alone is indistinguishable from "unset" (3s default). Guarded by b.mu.
 	vectorSearchWaitDisabled bool
-	baseSkillDirs            []string     // resolved skill directories shared across sessions (highest priority first)
-	baseAgentDirs            []string     // resolved Subagent Profile directories shared across sessions (highest priority first)
+	baseSkillDirs            []string     // resolved skill dirs shared across sessions (highest priority first)
+	baseAgentDirs            []string     // resolved Subagent Profile dirs shared across sessions (highest priority first)
 	proxyClient              *http.Client // proxy-configured HTTP client (nil = direct connection)
 
-	// embeddedLLM is the builder-level embedded-model seam: the default
-	// BuilderEmbeddedLLMConfig applied to EVERY router this builder constructs
-	// when the per-build cfg carries no Loader of its own. It exists because a
-	// BuilderConfig is built in more than one place — and the one that matters
-	// most, the per-session orchestrator factory in backend/application.go,
-	// converts the live config directly and cannot reach the supervisor. Without
-	// this default the session router would carry no ensure-loaded transport, so
-	// a chat request to a cold model would be dispatched to a loopback socket
-	// nothing is listening on. Guarded by b.mu. See SetEmbeddedLLM.
+	// embeddedLLM is the builder-level embedded-model seam: the default applied to every
+	// router built without a per-build Loader — the per-session factory has no path to the
+	// supervisor (SetEmbeddedLLM, specs/domains/embedded-llm.md). Guarded by b.mu.
 	embeddedLLM BuilderEmbeddedLLMConfig
 
-	// subscriptionAuth is the builder-level subscription-auth seam: the
-	// default BuilderSubscriptionAuthConfig applied to EVERY router this
-	// builder constructs when the per-build cfg carries no TokenSource of its
-	// own. It exists for the same reason as embeddedLLM above: the per-session
-	// orchestrator factory converts the live config where the token manager is
-	// not in scope, and without this default that router's chatgpt entry would
-	// run in the signed-out posture while the user is signed in — every
-	// request failing with "sign in with ChatGPT". Guarded by b.mu. See
-	// SetSubscriptionTokenSource.
+	// subscriptionAuth: builder-level subscription-auth seam, same pattern as embeddedLLM
+	// (SetSubscriptionTokenSource); without it cached routers run signed-out. Guarded by b.mu.
 	subscriptionAuth BuilderSubscriptionAuthConfig
 
-	// askUserFunc is the ask_user callback supplied at construction. It is
-	// retained so a runtime silent-mode toggle can re-register the ask_user
-	// tool on the shared registry — with the live callback or, when silent mode
-	// disables it, with a nil callback — without an app restart (see
-	// reconcileAskUser). Nil when the caller has no ask_user channel.
+	// askUserFunc is the ask_user callback supplied at construction, retained so a runtime
+	// silent-mode toggle can re-register live/nil (reconcileAskUser) without a restart.
 	askUserFunc tools.AskUserFunc
 
-	// Cached reasoning effort string. Empty unless seeded by the ModelProfiles
-	// sampling profile (applyModelProfilesPresets); per-request overrides flow
-	// through HandleOptions.ReasoningEffort → Orchestrator.SetReasoningEffort,
-	// which propagates to router, planner, reflector, and the sp4rk P&E engine.
+	// reasoningEffort is the cached profile seed (applyModelProfilesPresets); per-request
+	// overrides flow through HandleOptions.ReasoningEffort → Orchestrator.SetReasoningEffort.
 	reasoningEffort string
 
-	// goAsync dispatches a fire-and-forget unit of background work. In
-	// production it runs go fn(); tests override it (e.g. to run fn
-	// synchronously) so code paths that launch detached goroutines — such as
-	// buildLocalModelProbe — can be verified deterministically without timing
-	// or polling. A nil field (direct struct construction) safely falls back
-	// to real goroutines via asyncRunner.
+	// goAsync dispatches fire-and-forget background work; tests override it to run detached
+	// work synchronously. Nil falls back to real goroutines via asyncRunner.
 	goAsync func(fn func())
 
-	// Async initialization: LLM router and tool judge are initialized in the
-	// background (gated by initDone) so that NewOrchestratorBuilder returns
-	// immediately. MCP gateway startup is decoupled from initDone: it runs in
-	// its own goroutine (gated by mcpDone) so that Build()/session restore is
-	// not blocked on MCP server discovery, which can take seconds for remote
-	// servers. MCP tools register into the shared sp4rk registry live, so
-	// orchestrators built before MCP is ready simply don't advertise MCP tools
-	// until the next message (graceful degradation).
+	// Async init (specs/domains/tool-system/mcp-gateway.md): router + judge gate initDone;
+	// the MCP gateway is decoupled on mcpDone so Build()/restore never blocks on server
+	// discovery; MCP tools register live → early orchestrators don't advertise them.
 	initDone   chan struct{}
 	mcpDone    chan struct{}
 	initErr    error
 	gatewayErr error // non-nil if MCP gateway startup failed
-	// mcpStopping marks that the builder is shutting down. StopGateway sets it
-	// UNDER b.mu BEFORE it does anything else, so no gateway may be published
-	// or reconfigured after the stop decision: runMCPInit/publishMCPGateway
-	// stops (rather than publishes) a gateway it built, and ReconfigureMCP
-	// re-checks it at its publication site. Guarded by mu.
+	// mcpStopping marks builder shutdown: no gateway is published or reconfigured after
+	// StopGateway's stop decision (specs/domains/tool-system/mcp-gateway.md). Guarded by b.mu.
 	mcpStopping bool
-	// mcpInitCtx parents runMCPInit's context. StopGateway cancels it to abort
-	// an in-flight MCP startup, so the bounded join on mcpDone (which the
-	// startup goroutine performs after stopping the gateway it built) returns
-	// promptly instead of waiting out a multi-second server-spawn sequence on
-	// the app-shutdown thread. Set once in the constructor; nil on a hand-built
-	// test literal, where StopGateway skips the cancel. Never mutated after
-	// construction, so it needs no b.mu guarding.
+	// mcpInitCtx parents runMCPInit's context so StopGateway can abort an in-flight startup
+	// and join mcpDone promptly instead of waiting out a server spawn on the shutdown
+	// thread. Set once (nil on a hand-built test literal — the cancel is skipped); never mutated.
 	mcpInitCtx    context.Context
 	mcpInitCancel context.CancelFunc
 }
@@ -206,17 +141,15 @@ func (b *OrchestratorBuilder) log() *slog.Logger {
 }
 
 // ServiceMetricsSnapshot returns a copy of the per-kind telemetry for the
-// auxiliary one-shot service calls (issue #64): calls, attempts/retries, outcome
-// counts (ok/fallback/error/transport_error) and latency, keyed by ServiceKind.
-// Nil-safe — a builder without a collector (only a hand-built test literal)
-// yields an empty map.
+// one-shot service calls, keyed by ServiceKind
+// (specs/domains/llm-providers.md). Nil-safe — a builder without a collector
+// (hand-built test literal) yields an empty map.
 func (b *OrchestratorBuilder) ServiceMetricsSnapshot() map[ServiceKind]ServiceKindMetrics {
 	return b.serviceMetrics.Snapshot()
 }
 
-// asyncRunner returns the background-work dispatcher. When b.goAsync is set
-// (by tests) it is used directly; otherwise real goroutines are spawned. This
-// indirection lets tests run detached work synchronously and deterministically.
+// asyncRunner returns the background-work dispatcher: b.goAsync (tests) or
+// real goroutines, so tests run detached work synchronously and deterministically.
 func (b *OrchestratorBuilder) asyncRunner() func(func()) {
 	if b.goAsync != nil {
 		return b.goAsync
@@ -224,19 +157,12 @@ func (b *OrchestratorBuilder) asyncRunner() func(func()) {
 	return func(fn func()) { go fn() }
 }
 
-// NewOrchestratorBuilder creates the shared infrastructure: tool registry,
-// built-in tools, MCP gateway, LLM router, and tool judge.
-// The cfg is used for initial setup; runtime changes are applied via the
-// Rebuild* / Reconfigure* methods.
-//
-// MCP gateway and LLM router initialization happens asynchronously so that
-// this function returns immediately. Callers that need those components
-// (Build, GenerateTitle, etc.) block until the background init finishes.
+// NewOrchestratorBuilder creates the shared infrastructure (tool registry, built-in
+// tools, MCP gateway, LLM router, tool judge) from cfg; runtime changes go through the
+// Rebuild*/Reconfigure* methods (gateway/router init async, specs/domains/llm-providers.md).
 func NewOrchestratorBuilder(cfg *BuilderConfig, askUserFunc tools.AskUserFunc, planApprovalFunc tools.ApprovalFunc, logger *slog.Logger) (*OrchestratorBuilder, error) {
-	// Defensive default: if the caller did not provide an env-var expander,
-	// fall back to a no-op so that downstream callers (proxy/MCP/LLM config)
-	// don't panic on a nil function pointer. The real expander is supplied by
-	// the backend layer via configadapter.
+	// Defensive default: no-op expander so downstream callers (proxy/MCP/LLM
+	// config) never see a nil function pointer; the backend supplies the real one.
 	if cfg.ExpandEnvVars == nil {
 		cfg.ExpandEnvVars = func(s string) string { return s }
 	}
@@ -261,9 +187,8 @@ func NewOrchestratorBuilder(cfg *BuilderConfig, askUserFunc tools.AskUserFunc, p
 			logger.Warn("failed to build proxy client, proceeding without proxy", "error", err)
 		} else {
 			b.proxyClient = proxyClient
-			// Global env mutation (W-12). SetGlobalEnv defaults to true when the
-			// proxy is enabled (backward compat); credentials embedded in the
-			// proxy URL are stripped before export (see proxy.SetEnvVars).
+			// Global env mutation (W-12): SetGlobalEnv defaults to true when the
+			// proxy is enabled; credentials are stripped before export.
 			if cfg.Proxy.SetGlobalEnv {
 				proxy.SetEnvVars(cfg.Proxy)
 			}
@@ -283,40 +208,27 @@ func NewOrchestratorBuilder(cfg *BuilderConfig, askUserFunc tools.AskUserFunc, p
 		return nil, fmt.Errorf("registering built-in tools: %w", err)
 	}
 
-	// 1a. read_skill_resource tool is registered once with a context-aware
-	// resolver that looks up skills activated on the current request (see
-	// ActiveSkills in systemprompt.go). Per-session SkillManager instances are
-	// created lazily in Build so each session can include its project-local
-	// `.agents/skills` directory without racing with other sessions.
+	// 1a. read_skill_resource resolves over the skills activated on the current request
+	// (ActiveSkills); per-session SkillManagers are lazy in Build, so local dirs don't race.
 	b.registry.Register(skills.NewReadSkillResourceTool(activeSkillPathResolver))
 
 	// 2. Security policies (fast — synchronous)
 	b.applySecurityPolicies(cfg)
 
-	// 2a. ModelProfiles profile (fast — synchronous): caches the profile and seeds
-	// the builder-level reasoning-effort default when the sampling variant is
-	// active. Per-request overrides still win via ApplyRequestOverrides.
+	// 2a. ModelProfiles: seed the builder-level reasoning-effort default when
+	// the sampling variant is active (specs/domains/model-profiles.md).
 	b.applyModelProfilesPresets(cfg)
 
-	// 3. Start slow initialization asynchronously.
-	// MCP gateway runs in its own goroutine (mcpDone), decoupled from initDone,
-	// so Build()/session restore is not blocked on MCP server discovery.
+	// 3. Slow init (async): MCP gateway (mcpDone), LLM router + judge (initDone).
 	go b.runMCPInit(cfg)
-	// LLM router + tool judge still gate initDone so Build() waits for them.
 	go b.runAsyncInit(cfg)
 
 	return b, nil
 }
 
-// runMCPInit starts the MCP gateway in a dedicated goroutine, decoupled from
-// initDone. It registers MCP tools into the shared sp4rk registry, so
-// orchestrators built before completion simply won't advertise MCP tools until
-// the next message (graceful degradation). mcpDone is closed on exit,
-// including when startup fails or panics, so waiters never block forever.
-//
-// Once the gateway is assigned, it applies any work directory recorded by
-// SetMCPWorkDir during the startup window (record-and-apply), so a
-// SetMCPWorkDir call that arrived before the gateway existed is not lost.
+// runMCPInit starts the MCP gateway in a dedicated goroutine, decoupled from initDone
+// (specs/domains/tool-system/mcp-gateway.md); mcpDone closes on exit — failure or panic
+// included — and a startup-window work dir is applied once assigned (record-and-apply).
 func (b *OrchestratorBuilder) runMCPInit(cfg *BuilderConfig) {
 	defer close(b.mcpDone)
 	defer func() {
@@ -328,9 +240,8 @@ func (b *OrchestratorBuilder) runMCPInit(cfg *BuilderConfig) {
 		}
 	}()
 
-	// Derive the startup context from the builder's cancellable parent so
-	// StopGateway can abort an in-flight startup promptly (the timeout still
-	// caps a wedged connect).
+	// Derive the startup context from the builder's cancellable parent so StopGateway
+	// can abort an in-flight startup promptly (the timeout still caps a wedged connect).
 	base := b.mcpInitCtx
 	if base == nil {
 		base = context.Background()
@@ -340,34 +251,21 @@ func (b *OrchestratorBuilder) runMCPInit(cfg *BuilderConfig) {
 
 	// MCP Gateway (optional — failures are non-fatal)
 	mcpCfg := configToGatewayConfig(cfg)
-	// Read under the lock: MCP startup is decoupled from initDone, so a
-	// RebuildProxy that has already passed waitReady can be writing
-	// b.proxyClient concurrently with this goroutine.
+	// Under the lock: MCP startup is decoupled from initDone, so a
+	// RebuildProxy past waitReady may write b.proxyClient concurrently.
 	b.mu.RLock()
 	mcpCfg.HTTPClient = b.proxyClient
 	b.mu.RUnlock()
 	gw, err := mcp.StartGateway(ctx, mcpCfg, b.registry.ToolRegistry, cfg.ExpandEnvVars, b.logger)
 	if err != nil {
-		// MCP gateway failure is non-fatal: tools from MCP servers will be unavailable
-		// but the orchestrator can still operate with built-in tools.
 		b.log().Warn("MCP gateway startup failed", "error", err)
 	}
 	b.publishMCPGateway(gw, err)
 }
 
-// publishMCPGateway assigns the freshly built gateway (or its startup error)
-// to the builder and applies any work directory recorded by SetMCPWorkDir
-// during the startup window (record-and-apply, so a SetMCPWorkDir that
-// arrived before the gateway existed is not lost). It reports whether the
-// gateway was published: false means the builder is shutting down, in which
-// case the caller must treat the gateway as rejected (the gateway itself is
-// stopped here).
-//
-// When StopGateway has already given up waiting for this startup
-// (mcpStopping), nothing is published: this goroutine keeps ownership of the
-// fresh gateway and stops it here — off the app-shutdown path. Freshly
-// spawned stdio children exit the moment their stdin closes (bounded by the
-// server close grace in tools/mcp), so this cannot stall app exit materially.
+// publishMCPGateway assigns the freshly built gateway (or its startup error), applying
+// any startup-window work dir. False means the builder is shutting down: the gateway is
+// stopped here, off the app-shutdown path (specs/domains/tool-system/mcp-gateway.md).
 func (b *OrchestratorBuilder) publishMCPGateway(gw *mcp.Gateway, err error) bool {
 	b.mu.Lock()
 	if b.mcpStopping {
@@ -381,9 +279,6 @@ func (b *OrchestratorBuilder) publishMCPGateway(gw *mcp.Gateway, err error) bool
 	}
 	b.gateway = gw
 	b.gatewayErr = err
-	// Apply a work dir recorded by SetMCPWorkDir before the gateway was
-	// assigned (the startup window). This closes the race where SetMCPWorkDir
-	// was called first: the field is now persisted and applied here.
 	if gw != nil && b.mcpWorkDir != "" {
 		gw.SetDefaultWorkDir(b.mcpWorkDir)
 	}
@@ -391,9 +286,8 @@ func (b *OrchestratorBuilder) publishMCPGateway(gw *mcp.Gateway, err error) bool
 	return true
 }
 
-// runAsyncInit performs the slow network-dependent initialization gated by
-// initDone: LLM router creation and the tool judge. MCP gateway startup is
-// handled separately by runMCPInit (decoupled, gated by mcpDone).
+// runAsyncInit performs the slow network-dependent init gated by initDone:
+// LLM router creation and the tool judge (specs/domains/llm-providers.md).
 func (b *OrchestratorBuilder) runAsyncInit(cfg *BuilderConfig) {
 	defer close(b.initDone)
 
@@ -416,11 +310,9 @@ func (b *OrchestratorBuilder) runAsyncInit(cfg *BuilderConfig) {
 	b.rebuildJudgeInternal(cfg, b.llmRouter)
 }
 
-// waitReady blocks until async initialization completes or the context is cancelled.
-// Unlike WaitReady, this does NOT return initErr — it only waits for the init
-// goroutine to finish. Callers that need the cached router (RebuildRouter,
-// RebuildJudge, Build) should proceed with their own logic; Build constructs a
-// fresh per-session router anyway, and RebuildRouter clears initErr on success.
+// waitReady blocks until async init completes or the context is cancelled. Unlike
+// WaitReady it does NOT return initErr — callers proceeding with their own logic use
+// this; RebuildRouter clears initErr on success itself.
 func (b *OrchestratorBuilder) waitReady(ctx context.Context) error {
 	select {
 	case <-b.initDone:
@@ -430,15 +322,9 @@ func (b *OrchestratorBuilder) waitReady(ctx context.Context) error {
 	}
 }
 
-// waitMCPReady blocks until the MCP gateway startup goroutine completes (or the
-// context is cancelled). This is separate from waitReady/initDone because MCP
-// startup is intentionally decoupled from Build()/restore: the gateway can take
-// seconds to discover remote servers, and we don't want to block session
-// restore on it. Methods that must observe the gateway's final state
-// (MCPGateway, StopGateway, ReconfigureMCP) call this so the
-// "MCP is still starting" race window is closed before they read/act on b.gateway.
-// SetMCPWorkDir does NOT call this: it uses record-and-apply instead so it never
-// blocks on MCP startup (see SetMCPWorkDir/runMCPInit docs).
+// waitMCPReady blocks until the MCP startup goroutine completes (or the context is
+// cancelled) — separate from waitReady because MCP startup is decoupled. Methods that
+// must observe the gateway's final state call it; SetMCPWorkDir does not (record-and-apply).
 func (b *OrchestratorBuilder) waitMCPReady(ctx context.Context) error {
 	select {
 	case <-b.mcpDone:
@@ -448,20 +334,15 @@ func (b *OrchestratorBuilder) waitMCPReady(ctx context.Context) error {
 	}
 }
 
-// WaitReady blocks until async initialization completes or the context is cancelled.
-// Returns the init error if the initial LLM router setup failed.
-// Exported for use by the backend package.
-//
-// IMPORTANT: A nil return only guarantees the LLM router initialized successfully.
-// The MCP gateway may have failed independently — check MCPGatewayError() if MCP
-// tools are required. Gateway failures are intentionally non-fatal so the
-// orchestrator can still operate with built-in tools when MCP servers are unavailable.
+// WaitReady blocks until async init completes or the context is cancelled and returns
+// the init error if the initial LLM router setup failed. A nil return only guarantees
+// the LLM router — check MCPGatewayError() when MCP tools are required
+// (gateway failures are intentionally non-fatal).
 func (b *OrchestratorBuilder) WaitReady(ctx context.Context) error {
 	select {
 	case <-b.initDone:
-		// Read under the lock: RebuildRouter clears initErr under b.mu on
-		// success, so an unlocked read here would race that write (the
-		// close(initDone) ordering covers only runAsyncInit's own write).
+		// Under the lock: RebuildRouter clears initErr under b.mu on success,
+		// and close(initDone) ordering covers only runAsyncInit's own write.
 		b.mu.RLock()
 		err := b.initErr
 		b.mu.RUnlock()
@@ -477,10 +358,9 @@ func (b *OrchestratorBuilder) ToolRegistry() *tools.ToolRegistry {
 	return b.registry
 }
 
-// JudgeAvailable reports whether a strict OWASP ASI tool judge is configured on
-// the shared registry. Returns false when the registry or judge is nil (e.g. no
-// LLM model is available to power the judge). Used by the frontend to disable
-// the Smart Approve toggle when the judge is not operational.
+// JudgeAvailable reports whether a strict OWASP ASI tool judge is configured on the
+// shared registry (false when the registry or judge is nil); the frontend uses it to
+// disable the Smart Approve toggle.
 func (b *OrchestratorBuilder) JudgeAvailable() bool {
 	if b.registry == nil {
 		return false
@@ -488,17 +368,11 @@ func (b *OrchestratorBuilder) JudgeAvailable() bool {
 	return b.registry.GetJudge() != nil
 }
 
-// MCPGateway returns the MCP gateway, or nil if not started.
-// Waits up to 30 seconds for the MCP startup goroutine to complete (note: MCP
-// startup is decoupled from initDone/WaitReady, so it may still be in flight
-// when initDone is closed). Returns nil if the gateway failed to start or was
-// not configured.
-//
-// This is the BLOCKING variant, intended for non-UI consumers that must observe
-// the gateway's final state (e.g. Shutdown, ReconfigureMCP, StopGateway). It
-// MUST NOT be used on the UI path: a UI call during the first seconds of startup
-// would stall behind MCP server discovery. UI callers — notably GetMCPStatus —
-// use the non-blocking MCPStartupDone() + MCPGatewayNoWait() pair instead.
+// MCPGateway returns the MCP gateway (or nil), waiting up to 30 s for the startup
+// goroutine (decoupled from initDone, so it may still be in flight at that point).
+// BLOCKING variant for non-UI consumers that must observe the final gateway state —
+// MUST NOT run on the UI path; GetMCPStatus uses the non-blocking
+// MCPStartupDone() + MCPGatewayNoWait() pair instead.
 func (b *OrchestratorBuilder) MCPGateway() *mcp.Gateway {
 	waitCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -508,12 +382,8 @@ func (b *OrchestratorBuilder) MCPGateway() *mcp.Gateway {
 	return b.gateway
 }
 
-// MCPStartupDone reports whether the MCP gateway startup goroutine has finished
-// (runMCPInit closed mcpDone). It is non-blocking — a select with a default
-// fallback — and is intended for the UI status path (GetMCPStatus) so the
-// settings dialog does not hang on the (potentially multi-second) MCP server
-// discovery that happens during the first seconds of startup. Use it together
-// with MCPGatewayNoWait to distinguish "still starting" from "started".
+// MCPStartupDone reports whether the MCP startup goroutine has finished (non-blocking)
+// — the UI status path's "still starting" discriminator; pair with MCPGatewayNoWait.
 func (b *OrchestratorBuilder) MCPStartupDone() bool {
 	select {
 	case <-b.mcpDone:
@@ -523,13 +393,10 @@ func (b *OrchestratorBuilder) MCPStartupDone() bool {
 	}
 }
 
-// WaitMCPStartup blocks until the MCP gateway startup goroutine finishes
-// (runMCPInit closed mcpDone) or the context is cancelled. It is the BLOCKING
-// counterpart to the non-blocking MCPStartupDone, intended for a one-shot
-// notifier (e.g. the desktop layer emits EventMCPReady once startup completes
-// so the settings dialog can refresh its transient "Starting…" placeholder).
-// It returns nil as soon as startup is over — success or failure — so callers
-// must then use MCPGatewayError()/MCPGatewayNoWait() to observe the outcome.
+// WaitMCPStartup blocks until the MCP startup goroutine finishes or the context is
+// cancelled — the blocking counterpart of MCPStartupDone, for the desktop layer's
+// one-shot EventMCPReady notifier. Returns nil as soon as startup is over, success or
+// failure; observe the outcome via MCPGatewayError()/MCPGatewayNoWait().
 func (b *OrchestratorBuilder) WaitMCPStartup(ctx context.Context) error {
 	select {
 	case <-b.mcpDone:
@@ -539,12 +406,9 @@ func (b *OrchestratorBuilder) WaitMCPStartup(ctx context.Context) error {
 	}
 }
 
-// MCPGatewayNoWait returns the MCP gateway WITHOUT blocking on mcpDone. It
-// returns nil when startup is still in flight (mcpDone not yet closed) or when
-// the gateway failed to start / was not configured. This is the non-blocking
-// counterpart to MCPGateway, intended for callers on the UI path that must not
-// stall (e.g. GetMCPStatus). Pair it with MCPStartupDone to distinguish the
-// "still starting" state from "started and nil".
+// MCPGatewayNoWait returns the gateway WITHOUT blocking on mcpDone (nil while startup
+// is in flight or on failure/no config) — pair with MCPStartupDone to distinguish
+// "still starting" from "started and nil".
 func (b *OrchestratorBuilder) MCPGatewayNoWait() *mcp.Gateway {
 	select {
 	case <-b.mcpDone:
@@ -574,13 +438,10 @@ func (b *OrchestratorBuilder) ModelRegistry() *llm.ModelRegistry {
 	return b.modelRegistry
 }
 
-// Build creates a new per-session Orchestrator from the current config.
-// Each session gets a fresh LLM router, core agents, and context factory.
-// The shared tool registry and MCP gateway are reused across sessions.
-//
-// workspacePath, when non-empty, prepends `<workspacePath>/.agents/skills` to
-// the skill discovery dirs for this session (highest priority) so that
-// project-local skills override user-wide ones.
+// Build creates a per-session Orchestrator: a fresh LLM router, core agents and
+// context factory per session, while the tool registry and MCP gateway are shared.
+// A non-empty workspacePath prepends `<workspacePath>/.agents/skills` (highest
+// priority) to this session's skill discovery dirs.
 func (b *OrchestratorBuilder) Build(
 	cfg *BuilderConfig,
 	emitter Emitter,
@@ -591,14 +452,6 @@ func (b *OrchestratorBuilder) Build(
 	dumpWriter io.Writer,
 	stepDumpTracker *orchestration.StepDumpTracker,
 ) (*Orchestrator, error) {
-	// Wait for async initialization to complete before building an orchestrator.
-	// Timing: waitReady blocks only for the LLM router + tool judge (runAsyncInit,
-	// gated by initDone) — it does NOT wait for the MCP gateway, which runs in a
-	// separate goroutine (runMCPInit, gated by mcpDone). MCP tools register into
-	// the shared sp4rk registry live, so an orchestrator built before MCP is
-	// ready simply won't advertise MCP tools until the next message (graceful
-	// degradation), e.g. when the user creates a session shortly after app
-	// launch, before the background router/judge init has closed initDone.
 	buildStart := time.Now()
 	waitCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -614,10 +467,9 @@ func (b *OrchestratorBuilder) Build(
 	// Wrap emitter with logging
 	emitter = NewLoggingEmitter(emitter, logger)
 
-	// Build per-session LLM router + model registry. The session-scoped
-	// adaptive-budget table (ADR-071 D10) is created HERE — beside the
-	// UsageTracker that feeds it below — and handed to the router build so
-	// every provider entry's budget transport shares it.
+	// Per-session LLM router + model registry; the session-scoped
+	// adaptive-budget table is created HERE, beside the UsageTracker that
+	// feeds it (specs/decisions/071-adaptive-llm-request-budgets.md).
 	routerStart := time.Now()
 	var budgetTable *llmbudget.BudgetTable
 	if cfg.Timeouts.AdaptiveBudgetEnabled {
@@ -627,13 +479,9 @@ func (b *OrchestratorBuilder) Build(
 	if err != nil {
 		return nil, fmt.Errorf("failed to build LLM router: %w", err)
 	}
-	// Track the model registry for runtime metadata pushes (see
-	// registerSessionModelRegistry). Build can still fail after this point;
-	// the OnCleanup hook below is the only other releaser and it fires only
-	// when the orchestrator is actually returned, so release the registry on
-	// every path that does not hand it to an orchestrator — otherwise the
-	// long-lived builder's live set leaks the entry and it keeps receiving
-	// every UpdateModelOverrides push forever.
+	// Track the model registry for runtime metadata pushes (registerSessionModelRegistry).
+	// OnCleanup fires only when an orchestrator is actually returned, so release the
+	// registry on every path that does not hand it to one — else the live set leaks it.
 	modelRegOwned := false
 	defer func() {
 		if !modelRegOwned {
@@ -644,7 +492,6 @@ func (b *OrchestratorBuilder) Build(
 	if d := time.Since(routerStart); d > 50*time.Millisecond {
 		b.log().Warn("build_router slow", "elapsed_ms", d.Milliseconds())
 	}
-	// Verify at least one provider has models enabled.
 	hasModels := false
 	for _, pc := range cfg.LLM.ProviderConfigs {
 		if len(pc.Models) > 0 {
@@ -656,30 +503,19 @@ func (b *OrchestratorBuilder) Build(
 		return nil, errors.New("no active LLM provider configured - check your config.yaml")
 	}
 
-	// Create session-level UsageTracker and TrackingCaller
 	usageTracker := llm.NewUsageTracker()
-	// Adaptive request budget (ADR-071 D1): every successful call through the
-	// shared TrackingCaller — conductor steps, subagents, E2S turns — reports
-	// one sample into the session's budget table, keyed by the model the
-	// provider actually served. budgetIngestCaller sits between the tracker and
-	// the router so the learned DURATION is the single provider attempt that
-	// produced the response, not the router call (which may wrap a retry and its
-	// backoff). This is the ONLY writer of the table the entry transports read
-	// their budgets from; both ride the same session lifetime, so the table
-	// needs no separate teardown.
+	// Adaptive request budget: budgetIngestCaller sits between tracker and router so each
+	// sample's duration is the winning provider attempt; the table rides the session
+	// lifetime, so no teardown (specs/decisions/071-adaptive-llm-request-budgets.md).
 	var routerCaller llm.Caller = llmRouter
 	if budgetTable != nil {
 		routerCaller = &budgetIngestCaller{inner: llmRouter, table: budgetTable}
 	}
 	trackingCaller := llm.NewTrackingCaller(routerCaller, usageTracker)
 
-	// Register emitter as observer for session token events and persistence.
-	// Preferred seam: SessionTokenThroughputEmitter carries the median
-	// per-call output-token rate computed by a per-session sliding window fed
-	// from the UsageTracker's timed observer (every successful call through
-	// the shared TrackingCaller — conductor steps, subagents, E2S turns —
-	// reports one sample). Emitters predating the throughput seam keep the
-	// plain-totals path.
+	// Session token events: the preferred seam reports the median per-call output-token
+	// rate from a sliding window; older emitters keep the plain-totals path
+	// (specs/domains/llm-providers.md).
 	switch te := emitter.(type) {
 	case SessionTokenThroughputEmitter:
 		throughput := newSessionThroughputWindow()
@@ -709,33 +545,27 @@ func (b *OrchestratorBuilder) Build(
 	// Resolve reasoning effort for step executors
 	reasoningEffort := b.reasoningEffort
 
-	// Model Profiles context-management override: tightens compaction, tool-output
-	// pruning, and the output token reserve when both the master toggle and the
-	// context variant are enabled (no-op otherwise).
+	// Model Profiles context-management override (no-op when off).
 	exec := applyContextManagement(cfg.Executor, cfg.ModelProfiles)
 
 	// Build orchestrator config
 	orchConfig := OrchestratorConfig{
 		KeepFirst: exec.Compaction.SlidingWindow.KeepFirst,
 		KeepLast:  exec.Compaction.SlidingWindow.KeepLast,
-		// Full compaction settings (Model Profiles context overrides applied) for
-		// manual conversation-history compaction.
+		// Full compaction settings (Model Profiles overrides applied) for manual
+		// conversation-history compaction.
 		Compaction:                exec.Compaction,
 		MaxDependencyContextChars: cfg.Orchestration.MaxDependencyContextChars,
 		MaxRedelegationDepth:      cfg.Orchestration.MaxRedelegationDepth,
 		MaxParallelSubagents:      cfg.Orchestration.MaxParallelSubagents,
-		// ToolCallTimeout bounds a SINGLE tool call in the ReAct loop (0 =
-		// disabled). Threaded to the Conductor (main executor) and every
-		// subagent executor via conductorDeps.toolCallTimeout.
+		// ToolCallTimeout bounds a SINGLE tool call in the ReAct loop (0 = disabled),
+		// threaded to the Conductor and every subagent executor.
 		ToolCallTimeout: time.Duration(cfg.Timeouts.ToolCallTimeout) * time.Second,
-		// The ceiling's exempt tool-name set (nil = sp4rk's built-in default
-		// set; explicit list replaces it wholesale). Rides the same path as
-		// ToolCallTimeout: ConductorConfig for the main executor,
-		// SetToolCallTimeoutExempt for every subagent executor.
+		// The ceiling's exempt tool-name set (nil = sp4rk's built-in default; an explicit
+		// list replaces it wholesale). Rides the same path as ToolCallTimeout.
 		ToolCallTimeoutExemptTools: cfg.Timeouts.ToolCallTimeoutExemptTools,
-		// OrchestratorConfig.Model is used for model METADATA resolution
-		// (ModelRegistry.Resolve keys on the bare model name), not for routing —
-		// so strip any provider prefix from the router's composite active model.
+		// Model is for METADATA resolution (ModelRegistry.Resolve keys on the bare name),
+		// not routing — strip the provider prefix.
 		Model:                   llm.BareModel(llmRouter.ActiveModel()),
 		ReasoningEffort:         reasoningEffort,
 		HITLHandler:             hitlHandler,
@@ -745,8 +575,8 @@ func (b *OrchestratorBuilder) Build(
 		AgentsMDSearchPaths:     cfg.Security.AgentsMDSearchPaths,
 		GoalLoop: GoalLoopSettings{
 			Verification: cfg.GoalLoop.Verification,
-			// Suggest arrives from the config layer with Enabled already
-			// resolved from the pointer-bool (nil = on) — see ToBuilderConfig.
+			// Suggest arrives from the config layer with Enabled already resolved from
+			// the pointer-bool (nil = on) — see ToBuilderConfig.
 			Suggest: cfg.GoalLoop.Suggest,
 		},
 		E2S: E2SSettings{
@@ -766,15 +596,11 @@ func (b *OrchestratorBuilder) Build(
 			},
 		},
 		ModelProfiles: ModelProfilesSettingsFromBuilderConfig(cfg.ModelProfiles),
-		// Per-server MCP modes ("auto" | "manual" | "disabled") drive the
-		// task-level tool gating (manual without a mention / disabled are
-		// hidden and rejected at dispatch). Empty map = nothing gated.
+		// Per-server MCP modes drive task-level tool gating; empty map gates nothing
+		// (specs/domains/capabilities.md).
 		MCPServerModes:         mcpServerModesFromConfig(cfg),
 		MCPServerModesResolver: b.currentMCPServerModes,
-		// Per-capability skill/agent modes drive the same three-state
-		// semantics over their catalogs: auto = implicit discovery + mentions,
-		// manual = explicit /-mention only, disabled = fully unavailable.
-		// Empty maps gate nothing (zero regression).
+		// Skill/agent modes carry the same three-state semantics; empty maps gate nothing.
 		SkillModes:         capabilityModesFromConfig(cfg.Capabilities.Skills),
 		SkillModesResolver: b.currentSkillModes,
 		AgentModes:         capabilityModesFromConfig(cfg.Capabilities.Agents),
@@ -811,57 +637,40 @@ func (b *OrchestratorBuilder) Build(
 		SameToolRepeatAbortThreshold: cfg.Executor.CircuitBreaker.SameToolRepeatAbortThreshold,
 		SameToolResultSizeDelta:      cfg.Executor.CircuitBreaker.SameToolResultSizeDelta,
 	}
-	// ModelProfiles loop hardening: when enabled, override the breaker thresholds
-	// with the tighter ModelProfiles values so a looping small model is caught
-	// earlier. Thresholds absent from the profile keep their baseline.
+	// ModelProfiles loop hardening: tighter breaker thresholds when enabled
+	// (specs/domains/model-profiles.md).
 	circuitBreaker = applyLoopHardening(circuitBreaker, cfg.ModelProfiles)
 
 	// Logged LLM caller for step execution (wraps trackingCaller)
 	loggedLLM := agent.NewLoggingLLMCaller(trackingCaller, cfg.LLM.DefaultProviderName(), logger)
 	loggedLLM = agent.NewDumpCaller(loggedLLM, dumpWriter, logger)
 
-	// Per-session SkillManager: project-local `.agents/skills` is always prepended
-	// (highest priority) to the shared base dirs. This must be built per-session
-	// because the workspace path differs between concurrent sessions.
+	// Per-session SkillManager: project-local .agents/skills is always prepended (highest
+	// priority) — built per-session since workspaces differ.
 	sessionSkillMgr := b.buildSessionSkillManager(workspacePath, logger)
 
-	// Per-session AgentManager: project-local `.agents/agents` is always prepended
-	// (highest priority) to the shared base dirs. Built per-session because the
-	// workspace path differs between concurrent sessions. Mirrors the skill
-	// manager; nil-safe when no agent dirs are configured.
+	// Per-session AgentManager: mirrors the skill manager for Subagent Profiles
+	// (project-local .agents/agents prepended; nil-safe when no agent dirs are configured).
 	sessionAgentMgr := b.buildSessionAgentManager(workspacePath, logger)
 
-	// Per-session ToolRegistry clone: runtime policy mutations on a session
-	// registry must NOT leak to other concurrent sessions. The clone shares
-	// the underlying sp4rk ToolRegistry (tools themselves are stateless), but
-	// each session has its own groupPolicies view. registerSessionRegistry
-	// also records the clone as live so global security-policy pushes reach
-	// this session without a restart; its entry is released by the cleanup
-	// hook wired into OrchestratorDeps below.
+	// Per-session ToolRegistry clone: runtime policy mutations must not leak across
+	// sessions; the clone shares the sp4rk registry but has its own groupPolicies view,
+	// and registerSessionRegistry records it as live for the security push
+	// (specs/architecture/security-model.md).
 	sessionRegistry := b.registerSessionRegistry()
 
-	// Mirror the per-tool-call ceiling onto the session registry so a
-	// user-confirmation wait can be bounded just under it and yield a clean
-	// denial (the run continues) instead of letting the executor's watchdog
-	// abort the run when a human answers slowly. The ceiling itself is unchanged
-	// and still bounds the tool's actual execution. See
-	// tools.ToolRegistry.SetToolCallTimeout.
+	// Mirror the per-tool-call ceiling onto the session registry so a user-confirmation
+	// wait can be bounded just under it and yield a clean denial (the run continues)
+	// instead of the executor's watchdog aborting on a slow human answer.
 	sessionRegistry.SetToolCallTimeout(time.Duration(cfg.Timeouts.ToolCallTimeout) * time.Second)
 
-	// Session judge: bind this session's judge to the session's OWN router NOW
-	// so even the first tool escalation is evaluated on the provider/model this
-	// session runs on — not on the builder's global active model, which may
-	// have been switched by another session's model picker or the settings UI
-	// after this Build began. The judge rides the router as a plain caller, so
-	// the session's own model switches are followed with NO re-binding; global
-	// default changes never move a live session's judge.
+	// Bind the session judge to the session's OWN router — even the first escalation is
+	// judged on this session's provider/model (specs/decisions/028-session-pinned-judge.md).
 	b.bindSessionJudge(cfg, llmRouter, sessionRegistry, usageTracker)
 
-	// HITLHandler.OnToolCall is invoked by the executor before every tool call
-	// (see executor_run.go processSingleToolCall). PolicyUserConfirm tools fall
-	// through to auto-execute when ConfirmFunc is nil (CLI-mode behavior), which
-	// is the intended path — the HITL handler already intercepted at the executor
-	// level. No explicit ConfirmFunc bridge is needed.
+	// HITLHandler.OnToolCall runs before every tool call; PolicyUserConfirm tools fall
+	// through to auto-execute when ConfirmFunc is nil — intended, the HITL handler already
+	// intercepted at the executor level.
 
 	totalElapsed := time.Since(buildStart)
 	if totalElapsed > 100*time.Millisecond {
@@ -869,39 +678,30 @@ func (b *OrchestratorBuilder) Build(
 			"wait_ready_ms", waitElapsed.Milliseconds())
 	}
 
-	// Construct the lazy local-model probe for this session. It closes over the
-	// per-session model registry so the discovered context window lands exactly
-	// where Resolve will read it. The probe is a harmless no-op for cloud-only
-	// setups (their /v1/models listing omits the context-window field).
-	//
-	// The onWindow callback pushes a late-arriving probe result into the
-	// emitter's display window so the status bar corrects MID-task: the initial
-	// context_fill (emitted at HandleMessage start, before the async probe
-	// completes) carries the pre-probe window (catalog spec / fallback), and
-	// without this refresh it would stay wrong for the entire first task.
+	// Lazy local-model probe for this session, closing over the per-session model registry
+	// so the discovered window lands where Resolve reads it
+	// (specs/domains/llm-providers.md). onWindow pushes a late-arriving result into the
+	// emitter's display window so the status bar corrects MID-task.
 	localProbe := b.buildLocalModelProbe(cfg, modelReg, func(model string, window int) {
 		if setter, ok := emitter.(DisplayContextWindowForModelSetter); ok {
 			setter.SetDisplayContextWindowForModel(model, window)
 		}
 	})
-	// Probe the session's default model once at construction so the first
-	// request benefits from the real context window if it is served by an
-	// OpenAI-compatible endpoint.
+	// Probe the session's default model once at construction so the first request
+	// benefits from the real context window.
 	if defaultModel := llm.BareModel(llmRouter.ActiveModel()); defaultModel != "" {
 		localProbe(defaultModel)
 	}
 
-	// Mechanical edit verification (executor.verify_on_edit): arm the hook
-	// only when the user enabled it AND a workspace is active. The runner is
-	// built exclusively from user config — the command never originates from
-	// model output. Executed via ExecuteUnattended so group-deny and the
-	// command blocklist still apply (see core/verify_on_edit.go).
+	// Mechanical edit verification (executor.verify_on_edit): armed only when enabled AND
+	// a workspace is active — the runner is config-authored and runs via ExecuteUnattended
+	// (specs/domains/verify-on-edit.md).
 	var verifyOnEditRunner agent.EditVerifyRunner
 	if cfg.Executor.VerifyOnEdit.Enabled {
 		switch {
 		case strings.TrimSpace(cfg.Executor.VerifyOnEdit.Command) == "":
-			// The command is documented as required when the feature is on;
-			// an empty one would silently disable verification, so surface it.
+			// Documented as required when enabled; an empty one would
+			// silently disable verification, so surface it.
 			logger.Warn("verify-on-edit is enabled but executor.verify_on_edit.command is empty — verification is inactive until a command is configured")
 		case workspacePath == "":
 			logger.Debug("verify-on-edit enabled but no workspace is active — verification stays inactive for this orchestrator")
@@ -924,9 +724,9 @@ func (b *OrchestratorBuilder) Build(
 		}
 	}
 
-	// The orchestrator (and its OnCleanup hook above) is about to own the
-	// registry: ownership transfers only once construction actually returns,
-	// so even a panic inside NewOrchestrator releases the registration below.
+	// Ownership of the registry transfers to the orchestrator (via OnCleanup above) only
+	// once construction returns, so even a panic inside NewOrchestrator releases the
+	// registration below.
 	orch := NewOrchestrator(orchConfig, OrchestratorDeps{
 		Router:               coreRouter,
 		LLM:                  loggedLLM,
@@ -947,9 +747,8 @@ func (b *OrchestratorBuilder) Build(
 		TrackingCaller:       trackingCaller,
 		VectorSearchFunc:     b.vectorSearchFunc,
 		VectorSearchWaitFunc: b.vectorSearchWaitFunc,
-		// Raw configured value: 0 (fail-fast) is meaningful only to the
-		// desktop search closure, which enforces it before this bound; the
-		// orchestrator's own zero resolves to the 3s default.
+		// Raw configured value: 0 (fail-fast) is enforced by the desktop search closure
+		// before this bound; an orchestrator zero → 3s default.
 		VectorSearchWaitTimeout:  b.vectorSearchWaitTimeout,
 		VectorSearchWaitDisabled: b.vectorSearchWaitDisabled,
 		SkillManager:             sessionSkillMgr,
@@ -960,14 +759,12 @@ func (b *OrchestratorBuilder) Build(
 		StepDumpTracker:          stepDumpTracker,
 		ProviderName:             cfg.LLM.DefaultProviderName(),
 		LocalModelProbe:          localProbe,
-		// Mechanical edit verification runner (nil = disabled). Inert in No
-		// Project (CHAT) mode and goal-loop turns (see buildConductorDeps,
-		// RunConductor, defaultGoalTurnRunner).
+		// Mechanical edit verification runner (nil = disabled); inert in No-Project
+		// (CHAT) mode and goal-loop turns.
 		VerifyOnEdit:               verifyOnEditRunner,
 		VerifyOnEditMaxOutputChars: cfg.Executor.VerifyOnEdit.MaxOutputChars,
-		// Release the session registry's live-tracking entry when the
-		// session orchestrator is cleaned up, so security pushes stop reaching dead
-		// clones and the builder does not accumulate registries forever.
+		// Release the session registry's live-tracking entry on cleanup, so security
+		// pushes stop reaching dead clones.
 		OnCleanup: func() {
 			b.unregisterSessionRegistry(sessionRegistry)
 			b.unregisterSessionModelRegistry(modelReg)
@@ -977,10 +774,9 @@ func (b *OrchestratorBuilder) Build(
 	return orch, nil
 }
 
-// RebuildRouter creates a new LLM router from the given config and caches it.
-// This is called when LLM settings change at runtime.
-// On success, clears initErr so that subsequent Build calls (session creation)
-// can proceed even if the initial startup initialization failed.
+// RebuildRouter creates and caches a new LLM router from the given config (LLM settings
+// changed at runtime); on success it clears initErr so session creation can proceed even
+// if startup initialization had failed.
 func (b *OrchestratorBuilder) RebuildRouter(cfg *BuilderConfig) error {
 	waitCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -1015,32 +811,24 @@ func (b *OrchestratorBuilder) RebuildJudge(cfg *BuilderConfig) {
 }
 
 // ReconfigureMCP, StopGateway, SetMCPWorkDir, and configToGatewayConfig live
-// in builder_mcp.go to keep MCP gateway lifecycle code adjacent to its
-// configuration helpers (W-16 file split).
+// in builder_mcp.go (W-16 file split).
 
-// UpdateSecurityPolicies applies security policy overrides from config to
-// the shared registry and every live session registry, so the change is in
-// force for already-open sessions as well as future ones.
+// UpdateSecurityPolicies applies security policy overrides from config to the shared
+// registry and every live session registry, so the change is in force for already-open
+// sessions as well.
 func (b *OrchestratorBuilder) UpdateSecurityPolicies(cfg *BuilderConfig) {
 	b.applySecurityPolicies(cfg)
 }
 
-// UpdateShellBlocklist re-registers the shell-execution tool with the
-// execute-group command blocklist and the shell_exec launch-shape override
-// from cfg. The blocklist is compiled into the tool instance at construction
-// time and the invocation shapes the tool description, so runtime edits
-// (security settings UI) require re-registration to take effect without an
-// app restart. A compile failure leaves the previously registered tool in
-// place and is returned to the caller.
+// UpdateShellBlocklist re-registers the shell-execution tool with the execute-group
+// command blocklist and the shell_exec launch-shape override: the blocklist compiles
+// into the tool and shapes its description, so runtime edits need re-registration; a
+// compile failure keeps the previous tool.
 func (b *OrchestratorBuilder) UpdateShellBlocklist(cfg *BuilderConfig) error {
-	// Fail closed: a hand-built BuilderConfig whose execute group is absent, or
-	// whose blocklist was never materialized (nil), must not re-register the
-	// shell tool with an empty blocklist. ToBuilderConfig materializes an
-	// explicit empty list for a missing or nil blocklist (the shipped-default
-	// era is over: the list is user-authored and empty by default), so the
-	// production path always reaches here with a non-nil list; this guard
-	// only rejects incomplete programmatic configs. An explicitly emptied
-	// (non-nil) list is a deliberate "clear the blocklist" and is honoured.
+	// Fail closed: an absent execute group or a never-materialized (nil) blocklist must
+	// not re-register the shell tool with an empty list. ToBuilderConfig materializes an
+	// explicit empty list, so production always arrives non-nil; an explicitly emptied
+	// list is a deliberate clear.
 	execGroup, ok := cfg.Security.Groups[string(sdktools.GroupExecute)]
 	if !ok {
 		return errors.New("security config is missing the execute group; refusing to compile an empty shell blocklist")
@@ -1079,9 +867,8 @@ func (b *OrchestratorBuilder) RebuildProxy(ctx context.Context, cfg *BuilderConf
 		b.mu.Lock()
 		b.proxyClient = nil
 		b.mu.Unlock()
-		// Always clear global env on disable so a previously-set HTTP_PROXY does
-		// not linger after the user turns the proxy off, regardless of
-		// SetGlobalEnv (the user has explicitly switched proxy off).
+		// Always clear global env on disable, regardless of SetGlobalEnv — the
+		// user explicitly switched the proxy off; a stale HTTP_PROXY must not linger.
 		proxy.ClearEnvVars()
 	} else {
 		proxyClient, err := proxy.BuildClient(cfg.Proxy, time.Duration(cfg.Timeouts.WebFetchProxyTimeout)*time.Second, b.logger)
@@ -1091,10 +878,8 @@ func (b *OrchestratorBuilder) RebuildProxy(ctx context.Context, cfg *BuilderConf
 		b.mu.Lock()
 		b.proxyClient = proxyClient
 		b.mu.Unlock()
-		// Global env mutation (W-12). SetGlobalEnv defaults to true when the
-		// proxy is enabled (backward compat); credentials embedded in the proxy
-		// URL are stripped before export (see proxy.SetEnvVars). Never clear
-		// when proxy is enabled — the user may have set proxy env vars externally.
+		// Global env mutation (W-12). Never clear when the proxy is enabled —
+		// the user may have set proxy env vars externally.
 		if cfg.Proxy.SetGlobalEnv {
 			proxy.SetEnvVars(cfg.Proxy)
 		}
@@ -1141,13 +926,10 @@ func (b *OrchestratorBuilder) UpdateWebTools(cfg *BuilderConfig) error {
 	return tools.UpdateSearchToolWithClient(b.registry, cfg.Search.Provider, apiKey, baseURL, searchLimits, pc)
 }
 
-// GenerateTitle generates a concise title for a conversation using the cached LLM router.
-// The call rides the sp4rk oneshot client under the oneshot service policy:
-// temperature 0.3 and the reasoning tier resolved per active model (off),
-// overriding any Model Profiles reasoningEffort seed. The parse never fails —
-// an empty title is a valid result (the backend TitleGenerator replaces it
-// with its fallback text), so no nudge loop engages; transport errors pass
-// through as-is.
+// GenerateTitle generates a concise conversation title via the cached LLM router under
+// the sp4rk oneshot service policy (specs/domains/llm-providers.md): the parse never
+// fails — an empty title is valid (the backend replaces it with fallback text), so no
+// nudge loop engages; transport errors pass through as-is.
 func (b *OrchestratorBuilder) GenerateTitle(ctx context.Context, userMessage string, activeSkills []string) (string, error) {
 	if err := b.waitReady(ctx); err != nil {
 		return "", err
@@ -1169,9 +951,8 @@ func (b *OrchestratorBuilder) GenerateTitle(ctx context.Context, userMessage str
 	return generateTitleWithCaller(ctx, caller, b.serviceMetrics, bareActiveModel(llmRouter), b.log(), userMessage, activeSkills)
 }
 
-// generateTitleWithCaller issues the title one-shot. It is a separate function
-// so that tests can inject a mock caller and verify the request shape
-// deterministically.
+// generateTitleWithCaller issues the title one-shot. It is a separate function so tests
+// can inject a mock caller and verify the request shape deterministically.
 func generateTitleWithCaller(ctx context.Context, caller oneshot.Caller, metrics *ServiceMetrics, model string, logger *slog.Logger, userMessage string, activeSkills []string) (string, error) {
 	systemPrompt := "Generate a concise title (3-7 words) describing the primary goal for a conversation that starts with the following user message. Output ONLY the title text, no quotes, no punctuation at the end."
 	if len(activeSkills) > 0 {
@@ -1192,14 +973,10 @@ func generateTitleWithCaller(ctx context.Context, caller oneshot.Caller, metrics
 	return serviceCall(ctx, metrics, logger, ServiceKindTitle, model, caller, req, titleContent, oneshot.Options[string]{})
 }
 
-// titleContent passes the response content through unchanged: any content is
-// a valid title (the backend falls back to first-words text for an empty
-// one), so the nudge loop has nothing to repair on a well-formed response.
-// A nil response never reaches this function — oneshot.Do itself treats
-// (nil, nil) as a parse failure — so the nil branch here is unreachable
-// defensive code; the observable behavior for that input is three attempts
-// and a final refusal, not an empty title. Transport errors are returned
-// as-is by Do.
+// titleContent passes the response content through unchanged: any content is a valid
+// title (the backend falls back to first-words text), so the nudge loop has nothing to
+// repair. The nil branch is unreachable defensive code — oneshot.Do itself treats
+// (nil, nil) as a parse failure; transport errors are returned by Do.
 func titleContent(resp *llm.ChatResponse) (string, error) {
 	if resp == nil {
 		return "", nil
@@ -1207,25 +984,19 @@ func titleContent(resp *llm.ChatResponse) (string, error) {
 	return resp.Message.Content, nil
 }
 
-// conventionalCommitRe validates that a string follows the Conventional Commits
-// format: <type>[optional scope]: <description>.
-// Types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert.
-// The (?s) flag makes . match newlines so multi-line messages (with body) are
-// accepted — we only care that the first line starts with a valid type prefix.
+// conventionalCommitRe validates the Conventional Commits shape:
+// <type>[scope]: <description> over feat/fix/docs/style/refactor/perf/test/
+// build/ci/chore/revert; (?s) lets multi-line messages (with body) pass.
 var conventionalCommitRe = regexp.MustCompile(
 	`(?s)^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([^)]*\))?: .+$`,
 )
 
-// isValidConventionalCommit checks whether msg starts with a valid Conventional
-// Commits type prefix followed by a colon and a non-empty description in
-// lowercase. The lowercase requirement applies only to the first character of
-// the description line (proper nouns like "GitHub" in the middle are allowed).
+// isValidConventionalCommit checks the regex plus a lowercase first character
+// of the description line (proper nouns mid-line like "GitHub" are allowed).
 func isValidConventionalCommit(msg string) bool {
 	if !conventionalCommitRe.MatchString(msg) {
 		return false
 	}
-	// Extract the description portion (everything after "<type>(scope): ").
-	// Only the first character of the description must be lowercase.
 	idx := strings.IndexByte(msg, ':')
 	if idx < 0 {
 		return false
@@ -1241,53 +1012,33 @@ func isValidConventionalCommit(msg string) bool {
 	return descLine[0] >= 'a' && descLine[0] <= 'z'
 }
 
-// extractCommitMessage extracts the best available commit message text from an
-// LLM response via the oneshot parser toolkit: candidates in priority order —
-// resp.Message.Content, resp.Message.ReasoningContent (for DeepSeek-style
-// providers), resp.Reasoning (for OpenAI Responses API) — each after stripping
-// a wrapping markdown fence and a leading conversational preamble. This
-// handles the failure mode where small models (especially Qwen) put the
-// actual commit message into a reasoning field instead of Content.
-// Returns "" when no field yields usable text.
+// extractCommitMessage extracts the best commit-message text via the oneshot toolkit
+// (fence and preamble stripped) — covering small models that put the message into a
+// reasoning field instead of Content. "" when nothing usable.
 func extractCommitMessage(resp *llm.ChatResponse) string {
 	return oneshot.Text(resp)
 }
 
-// --- Prompt optimization extraction markers ---
-
-// optimizedPromptMarkerStart / optimizedPromptMarkerEnd are the exact strings
-// the rewrite prompt instructs the LLM to use as unambiguous boundaries around
-// the optimized prompt.  extractOptimizedPrompt searches for these markers
-// first; only when they are absent does it fall back to the old heuristic.
+// optimizedPromptMarkerStart / optimizedPromptMarkerEnd are the unambiguous boundaries
+// the rewrite prompt instructs the LLM to emit; extractOptimizedPrompt searches them
+// first, falling back to the legacy heuristic when they are absent.
 const (
 	optimizedPromptMarkerStart = "### OPTIMIZED_PROMPT_START"
 	optimizedPromptMarkerEnd   = "### OPTIMIZED_PROMPT_END"
 )
 
-// extractOptimizedPrompt extracts the optimized prompt text from an LLM
-// response. It uses a two-phase strategy:
-//
-//  1. Marker-based extraction (preferred): oneshot.Marked searches all
-//     candidate fields (Content, ReasoningContent, Reasoning) for the
-//     OPTIMIZED_PROMPT_START / OPTIMIZED_PROMPT_END markers; the first
-//     candidate carrying both markers wins (even when the text between them
-//     is empty).
-//  2. Heuristic fallback (legacy): when no markers are found at all, the
-//     oneshot toolkit strips wrapping markdown fences and common reasoning
-//     prefixes per candidate field.
-//
-// This ensures that reasoning-model outputs containing the markers are
-// extracted unambiguously, while older models that don't use markers still
-// work via the heuristic fallback.
+// extractOptimizedPrompt extracts the optimized prompt in two phases: oneshot.Marked
+// finds both markers (first candidate carrying both wins); with no markers at all, the
+// oneshot heuristic strips fences and reasoning prefixes — marker-using models extract
+// unambiguously, older models still work.
 func extractOptimizedPrompt(resp *llm.ChatResponse) string {
-	// Phase 1 — marker-based extraction. Markers were found — return
-	// whatever is between them (may be empty); do NOT fall through to the
-	// heuristic.
+	// Phase 1 — markers found: return what is between them (may be empty); do NOT
+	// fall through to the heuristic.
 	if extracted, ok := oneshot.Marked(resp, optimizedPromptMarkerStart, optimizedPromptMarkerEnd); ok {
 		return extracted
 	}
 
-	// Phase 2 — heuristic fallback (legacy, for models that don't use markers).
+	// Phase 2 — heuristic fallback (models that don't use markers).
 	for _, candidate := range oneshot.CandidateTexts(resp) {
 		stripped := strings.TrimSpace(oneshot.StripReasoningPrefix(oneshot.StripFence(candidate)))
 		if stripped != "" {
@@ -1298,16 +1049,12 @@ func extractOptimizedPrompt(resp *llm.ChatResponse) string {
 	return ""
 }
 
-// errCommitUnparseable marks commit-message parse failures so the final
-// oneshot refusal (which wraps the last parse error) can be recognized and
-// re-surfaced with the operator-facing advice. Both empty-output and
-// invalid-format responses ride the client's nudge loop.
+// errCommitUnparseable marks commit-message parse failures so the final oneshot refusal
+// (wrapping the last parse error) is recognized and re-surfaced with operator-facing advice.
 var errCommitUnparseable = errors.New("commit message unparseable")
 
 // commitMessageRetryHint restates the Conventional Commits contract inside the
-// oneshot "[System]" nudge. The failed output itself rides the assistant echo
-// message, so the nudge only has to restate the required format (the tail of
-// the previous manual retry feedback).
+// oneshot nudge; the failed output itself rides the assistant echo message.
 const commitMessageRetryHint = "The previous output did not follow the Conventional Commits format.\n" +
 	"Your output MUST start with a valid type prefix: feat, fix, docs, " +
 	"style, refactor, perf, test, build, ci, chore, or revert.\n" +
@@ -1315,17 +1062,13 @@ const commitMessageRetryHint = "The previous output did not follow the Conventio
 	"DO NOT prefix with phrases like 'this commit', 'Here is the commit message:', " +
 	"'Based on my analysis:', or similar."
 
-// buildCommitMessageRequest constructs a commit-message request under the
-// oneshot service policy: temperature pinned to 0.3 (explicit values win over
-// any profile; the Router strips sampling for models that authoritatively
-// cannot take the parameter, so the pin is capability-safe), the reasoning
-// tier resolved per active model by the caller, and the summarization purpose
-// for observability.
+// buildCommitMessageRequest constructs the commit-message request under the oneshot
+// service policy (explicit sampling values win over any profile; summarization purpose
+// for observability); the caller resolves the reasoning tier per active model.
 func buildCommitMessageRequest(diff, reasoningEffort string) llm.ChatRequest {
-	// Reasoning models count reasoning tokens against the output-token budget.
-	// 2048 comfortably covers reasoning plus a short Conventional Commits
-	// message while still capping runaway output. Non-reasoning models stop
-	// naturally well before this.
+	// Reasoning models count reasoning tokens against the output budget; 2048 covers
+	// reasoning plus a short Conventional Commits message while capping runaway output
+	// (non-reasoning models stop naturally earlier).
 	const commitMsgMaxTokens = 2048
 
 	return llm.ChatRequest{
@@ -1341,12 +1084,10 @@ func buildCommitMessageRequest(diff, reasoningEffort string) llm.ChatRequest {
 	}
 }
 
-// GenerateCommitMessage produces a Conventional Commits-formatted commit
-// message from the given staged diff using the cached LLM router. The diff
-// is typically the output of `git diff --staged`. The caller is responsible
-// for enforcing any request timeout via the supplied context. The
-// parse-retry loop is the oneshot client's (two nudges → final refusal);
-// transport failures are never retried here — the Router owns provider retry.
+// GenerateCommitMessage produces a Conventional Commits message from the
+// staged diff via the cached LLM router (specs/domains/llm-providers.md,
+// service calls): the caller owns the request timeout; the parse-retry loop
+// belongs to the oneshot client and provider retry to the Router.
 func (b *OrchestratorBuilder) GenerateCommitMessage(ctx context.Context, diff string) (string, error) {
 	if err := b.waitReady(ctx); err != nil {
 		b.log().Warn("commit message generation aborted: builder not ready",
@@ -1376,9 +1117,9 @@ func (b *OrchestratorBuilder) GenerateCommitMessage(ctx context.Context, diff st
 	return b.generateCommitMessageWithCaller(ctx, caller, providerName, bareActiveModel(llmRouter), diff)
 }
 
-// generateCommitMessageWithCaller runs the commit-message one-shot. It is a
-// separate method so that tests can inject a mock caller and verify the
-// client-owned retry behavior deterministically.
+// generateCommitMessageWithCaller runs the commit-message one-shot. It is a separate
+// method so tests can inject a mock caller and verify the client-owned retry behavior
+// deterministically.
 func (b *OrchestratorBuilder) generateCommitMessageWithCaller(
 	ctx context.Context,
 	caller oneshot.Caller,
@@ -1398,12 +1139,9 @@ func (b *OrchestratorBuilder) generateCommitMessageWithCaller(
 			return "", fmt.Errorf("the model produced an invalid commit message after "+
 				"multiple attempts; try a different model or reduce the staged diff size: %w", err)
 		}
-		// Transport error — never retried here (the Router owns provider
-		// retry). Classify the failure so operators can distinguish a
-		// too-large staged diff (context window) from a slow or unresponsive
-		// provider (deadline) or a provider-side error. This is the single
-		// place the LLM-side cause is logged; the backend RPC layer only
-		// logs its own preconditions and passes this through.
+		// Transport error — never retried here (the Router owns provider retry); classified
+		// so operators can tell an oversized diff from a deadline or provider-side error —
+		// the single place the cause is logged.
 		switch {
 		case errors.Is(err, llm.ErrContextWindowExceeded):
 			b.log().Error("commit message generation failed: staged diff exceeds model context window",
@@ -1420,23 +1158,15 @@ func (b *OrchestratorBuilder) generateCommitMessageWithCaller(
 	return message, nil
 }
 
-// commitMessageParse extracts and validates the commit message. The
-// multi-candidate extraction is the oneshot toolkit's (Content →
-// ReasoningContent → Reasoning, fence and preamble stripped); empty and
-// invalid outputs are retryable parse failures — the nudge loop shows the
-// model its own output via the assistant echo — while transport errors never
-// reach this function.
+// commitMessageParse extracts and validates the commit message; empty or invalid outputs
+// are retryable parse failures surfaced via the assistant echo.
 func (b *OrchestratorBuilder) commitMessageParse(providerName, diff string) oneshot.Parse[string] {
 	return func(resp *llm.ChatResponse) (string, error) {
 		message := extractCommitMessage(resp)
 		if message == "" {
-			// The LLM call succeeded but produced no usable text. This is
-			// the failure mode that previously surfaced as a silent no-op in
-			// the UI: with a reasoning model, a too-small output budget is
-			// consumed by reasoning tokens and the model emits no text
-			// content (status=incomplete, reason=max_output_tokens). Surface
-			// it explicitly so the UI reports an error and operators see a
-			// log entry.
+			// The call succeeded but produced no usable text — with a reasoning model a
+			// too-small output budget is consumed by reasoning tokens; surface it instead
+			// of a silent UI no-op.
 			hasReasoning := resp != nil && (resp.Message.ReasoningContent != "" || resp.Reasoning != "")
 			stopReason := ""
 			if resp != nil {
@@ -1465,10 +1195,9 @@ func (b *OrchestratorBuilder) commitMessageParse(providerName, diff string) ones
 	}
 }
 
-// ListProviderModels returns available model names for a given provider,
-// deduplicated: some endpoints (LM Studio, OpenAI-compatible gateways)
-// legitimately report the same model ID more than once, and the settings UI
-// renders the list verbatim — each name must appear exactly once.
+// ListProviderModels returns deduplicated model names for a provider: some endpoints
+// (LM Studio, OpenAI-compatible gateways) legitimately report the same ID twice, and
+// the settings UI renders the list verbatim.
 func (b *OrchestratorBuilder) ListProviderModels(ctx context.Context, provider string, cfg *BuilderConfig) ([]string, error) {
 	names, err := b.fetchProviderModels(ctx, provider, cfg)
 	if err != nil {
@@ -1477,23 +1206,17 @@ func (b *OrchestratorBuilder) ListProviderModels(ctx context.Context, provider s
 	return dedupeModelNames(names), nil
 }
 
-// fetchProviderModels resolves the raw model-name list for provider (built-in
-// registry entries or an endpoint fetch). The result may contain duplicates;
-// the public ListProviderModels applies dedup before handing the list to the
-// UI so every consumer sees each name exactly once.
+// fetchProviderModels resolves the raw model-name list (built-in registry entries or an
+// endpoint fetch); ListProviderModels dedupes before display.
 func (b *OrchestratorBuilder) fetchProviderModels(ctx context.Context, provider string, cfg *BuilderConfig) ([]string, error) {
-	// Snapshot the proxy client under the read lock once per listing call so
-	// every endpoint-fetching branch honors the same proxy settings the chat
-	// path uses (the "chatgpt" and "openai" branches previously ignored the
-	// proxy entirely), and so the read is not a data race against
-	// RebuildProxy. No lock is held across the network calls below.
+	// Snapshot the proxy client under the read lock so every listing branch honors the
+	// same proxy as the chat path, without racing RebuildProxy; no lock across network calls.
 	b.mu.RLock()
 	proxyClient := b.proxyClient
 	b.mu.RUnlock()
-	// The bypass matcher mirrors the live proxy transport's Proxy func. Both
-	// are rebuilt from the same cfg (RebuildProxy), so a stale-matcher race
-	// is bounded to a concurrent settings save and self-corrects on the next
-	// rebuild — same tolerance as every other cfg snapshot in this file.
+	// The bypass matcher mirrors the live proxy transport's Proxy func; both rebuild from
+	// the same cfg, so a stale-matcher race self-corrects on the next rebuild — same
+	// tolerance as every other cfg snapshot in this file.
 	bypass := proxy.NewBypassMatcher(cfg.Proxy.BypassList)
 	log := b.log()
 
@@ -1509,8 +1232,8 @@ func (b *OrchestratorBuilder) fetchProviderModels(ctx context.Context, provider 
 		if apiKey == "" {
 			return nil, errors.New("ChatGPT API key not configured")
 		}
-		// Fixed provider: no pin key exists (api.openai.com has a public
-		// certificate), so this only threads the dial policy.
+		// Fixed provider: no pin key exists (api.openai.com has a public certificate) —
+		// this only threads the dial policy.
 		models, err := listOpenAIModels(ctx, "", apiKey, llmtls.DirectDialClient(proxyClient, dialPolicy(proxyClient, bypass, "api.openai.com"), "", log))
 		if err != nil {
 			return nil, err
@@ -1529,19 +1252,15 @@ func (b *OrchestratorBuilder) fetchProviderModels(ctx context.Context, provider 
 			if baseURL == "" {
 				return nil, fmt.Errorf("openAI-compatible base URL not configured for provider %q", provider)
 			}
-			// Per-provider TLS override under the proxy-wins rule
-			// (ADR-054): while the proxy dials, the plain proxy client
-			// dials and the pin is ignored; a bypassed host (or no proxy)
-			// dials directly, pinned when configured, so the listing
-			// reaches self-signed endpoints exactly like the chat path.
+			// Per-provider TLS override under the proxy-wins rule — the listing reaches
+			// self-signed endpoints exactly like the chat path
+			// (specs/decisions/054-per-provider-tls-pinning.md).
 			return listOpenAIModels(ctx, baseURL, apiKey, llmtls.DirectDialClient(proxyClient, dialPolicy(proxyClient, bypass, baseURL), pc.TLSFingerprint, log))
 		case "anthropic":
 			baseURL := cfg.ExpandEnvVars(pc.BaseURL)
-			// Fixed "anthropic" provider (no BaseURL): return the built-in
-			// Claude model list. An anthropic_compatible entry (non-empty
-			// BaseURL) queries the custom endpoint's /v1/models and falls
-			// back to the built-in list on any error so the UI degrades
-			// gracefully when the endpoint is unreachable or non-standard.
+			// Fixed "anthropic" provider (no BaseURL): built-in Claude list. An
+			// anthropic_compatible entry queries /v1/models and falls back to the
+			// built-in list on any error so the UI degrades gracefully.
 			if baseURL == "" {
 				return llm.BuiltInModelNames("anthropic-api"), nil
 			}
@@ -1570,9 +1289,8 @@ func filterKnownFamilyModels(models []string) []string {
 	return result
 }
 
-// dedupeModelNames removes duplicate entries while preserving first-occurrence
-// order. No sortedness is assumed: built-in registry lists and raw endpoint
-// responses (sorted or not) both flow through here.
+// dedupeModelNames removes duplicates preserving first-occurrence order; no sortedness
+// is assumed (registry lists and raw endpoint responses both flow through).
 func dedupeModelNames(names []string) []string {
 	if len(names) < 2 {
 		return names
@@ -1590,34 +1308,19 @@ func dedupeModelNames(names []string) []string {
 }
 
 // SetEmbeddedLLM installs (or, with a zero value, withdraws) the builder-level
-// embedded-model seam applied to every router this builder constructs.
-//
-// The backend calls it from the embedded-LLM lifecycle — on the startup restore,
-// after a successful install, and on removal — each time mirroring the persisted
-// install state, exactly like the per-build injection in
-// FrontendAPI.applyEmbeddedLoader. Both produce the same value; this one is the
-// net for the router builds that do not go through it.
-//
-// Installing it here rather than only in BuilderConfig is what makes the
-// guarantee unmissable. A per-session orchestrator is built from a BuilderConfig
-// converted deep inside the session factory, which has no path to the
-// supervisor; a seam that has to be remembered at every conversion site will
-// eventually be forgotten at one, and the failure is silent — a chat request to
-// a cold model is dispatched to a loopback socket nothing is listening on.
-//
-// It does NOT rebuild anything. Callers that need the change to reach the
-// already-cached router follow it with RebuildRouter, as the embedded lifecycle
-// does; per-session routers pick it up when they are next built.
+// embedded-model seam applied to every router built without a per-build Loader — the
+// net for per-session routers built where the supervisor is out of scope
+// (specs/domains/embedded-llm.md). It rebuilds nothing: follow with RebuildRouter;
+// per-session routers pick it up at their next build.
 func (b *OrchestratorBuilder) SetEmbeddedLLM(cfg BuilderEmbeddedLLMConfig) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.embeddedLLM = cfg
 }
 
-// embeddedSeam resolves the effective embedded-model seam for a router build: an
-// explicit per-build Loader wins, otherwise the builder-level default applies.
-// buildRouter is the single place every router — cached or per-session — is
-// constructed, so resolving here is what covers both.
+// embeddedSeam resolves the effective embedded seam for one router build — an
+// explicit per-build Loader wins, else the builder-level default
+// (specs/domains/embedded-llm.md). buildRouter is the single construction point.
 func (b *OrchestratorBuilder) embeddedSeam(cfg *BuilderConfig) BuilderEmbeddedLLMConfig {
 	if cfg.EmbeddedLLM.Loader != nil && cfg.EmbeddedLLM.ProviderName != "" {
 		return cfg.EmbeddedLLM
@@ -1628,34 +1331,20 @@ func (b *OrchestratorBuilder) embeddedSeam(cfg *BuilderConfig) BuilderEmbeddedLL
 }
 
 // SetSubscriptionTokenSource installs (or, with a zero value, withdraws) the
-// builder-level subscription-auth seam applied to every router this builder
-// constructs.
-//
-// The backend calls it from the sign-in lifecycle — after a successful sign-in
-// with the live token manager, and on sign-out with the zero value — each time
-// mirroring the live auth state, exactly like syncEmbeddedBuilderSeam mirrors
-// the embedded install state. Both produce the same value; this one is the net
-// for the router builds that do not go through a per-build injection.
-//
-// The mechanism is identical to SetEmbeddedLLM's: a per-session orchestrator is
-// built from a BuilderConfig converted deep inside the session factory, which
-// has no path to the token manager, and a seam that has to be remembered at
-// every conversion site will eventually be forgotten at one — leaving a signed
-// IN user's requests failing with the signed-out error.
-//
-// It does NOT rebuild anything. Callers that need the change to reach the
-// already-cached router follow it with RebuildRouter; per-session routers pick
-// it up when they are next built.
+// builder-level subscription-auth seam — the identical mechanism to
+// SetEmbeddedLLM, without which a cached router would run signed-out while
+// the user is signed in (specs/domains/llm-providers.md). The backend calls
+// it after a successful sign-in and on sign-out. It rebuilds nothing: follow
+// with RebuildRouter; per-session routers pick it up at their next build.
 func (b *OrchestratorBuilder) SetSubscriptionTokenSource(cfg BuilderSubscriptionAuthConfig) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.subscriptionAuth = cfg
 }
 
-// subscriptionAuthSeam resolves the effective subscription-auth seam for a
-// router build: an explicit per-build TokenSource wins, otherwise the
-// builder-level default applies — the same single-resolution-point rule as
-// embeddedSeam, covering the per-session router too.
+// subscriptionAuthSeam resolves the effective subscription-auth seam: an explicit
+// per-build TokenSource wins, else the builder-level default
+// (specs/domains/llm-providers.md).
 func (b *OrchestratorBuilder) subscriptionAuthSeam(cfg *BuilderConfig) BuilderSubscriptionAuthConfig {
 	if cfg.SubscriptionAuth.TokenSource != nil && cfg.SubscriptionAuth.ProviderName != "" {
 		return cfg.SubscriptionAuth
@@ -1665,17 +1354,10 @@ func (b *OrchestratorBuilder) subscriptionAuthSeam(cfg *BuilderConfig) BuilderSu
 	return b.subscriptionAuth
 }
 
-// RegisterVectorSearch adds the semantic_search tool to the shared registry.
-// This must be called after NewOrchestratorBuilder when the vector index backend
-// is available. The searchFunc and waitFunc are provided by the desktop layer;
-// waitFunc is stored alongside searchFunc for the RAG-hint path, which calls it
-// under the same deadline as the search so readiness waiting and query
-// execution share one budget (the search closure itself never waits for
-// readiness). waitTimeout (vector_index.search_wait_timeout_ms) bounds the
-// RAG-hint wait in per-session orchestrators; waitDisabled marks an
-// EXPLICIT fail-fast (configured 0) — without it a zero waitTimeout would
-// keep the 3s OrchestratorDeps default, silently widening the user's
-// choice.
+// RegisterVectorSearch adds the semantic_search tool to the shared registry (once the
+// vector backend is available); waitFunc serves the RAG-hint path, which waits under the
+// same deadline as the search. waitDisabled marks an EXPLICIT fail-fast (configured 0) —
+// a zero waitTimeout alone would keep the 3s default.
 func (b *OrchestratorBuilder) RegisterVectorSearch(searchFunc builtins.VectorSearchFunc, waitFunc builtins.VectorSearchWaitFunc, waitTimeout time.Duration, waitDisabled bool) {
 	if searchFunc == nil {
 		return
@@ -1737,12 +1419,9 @@ func (b *OrchestratorBuilder) SetVectorSearchEnabled(enabled bool) {
 	b.vectorSearchWaitFunc = nil
 }
 
-// SetSkillDirs sets the base (shared) skill discovery directories, applied to
-// every session. Paths must already be absolute and expanded; the backend
-// layer owns path resolution (home/~, env vars, relative-to-agent-dir).
-//
-// The project-local `<workspacePath>/.agents/skills` directory is always
-// prepended automatically in Build() — do NOT include it here.
+// SetSkillDirs sets the base (shared) skill discovery directories; paths must already
+// be absolute and expanded. The project-local directory is prepended automatically in
+// Build — do NOT include it.
 func (b *OrchestratorBuilder) SetSkillDirs(dirs []string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -1756,9 +1435,9 @@ func (b *OrchestratorBuilder) GetBaseSkillDirs() []string {
 	return append([]string(nil), b.baseSkillDirs...)
 }
 
-// GetSkillDescriptors returns lightweight skill descriptors from the shared
-// base dirs and an optional project-local skill directory. This is used by
-// the frontend ListSkills API to avoid creating a full SkillManager per call.
+// GetSkillDescriptors returns lightweight skill descriptors from the shared base dirs
+// plus an optional project-local skill directory — the frontend ListSkills API's path,
+// avoiding a full SkillManager per call.
 func (b *OrchestratorBuilder) GetSkillDescriptors(projectSkillDir string) []skills.SkillDescriptor {
 	b.mu.RLock()
 	baseDirs := append([]string(nil), b.baseSkillDirs...)
@@ -1774,8 +1453,7 @@ func (b *OrchestratorBuilder) GetSkillDescriptors(projectSkillDir string) []skil
 		return nil
 	}
 
-	// Cached: skill list changes only on config reload or project switch.
-	// We rebuild on-demand; the FrontendAPI layer caches between calls.
+	// Rebuilt on demand; the FrontendAPI layer caches between calls.
 	sm := skills.NewSkillManager(dirs, b.log())
 	if err := sm.Scan(); err != nil {
 		b.log().Warn("GetSkillDescriptors scan failed", "error", err, "dirs", dirs)
@@ -1783,11 +1461,8 @@ func (b *OrchestratorBuilder) GetSkillDescriptors(projectSkillDir string) []skil
 	return sm.List()
 }
 
-// SetAgentDirs sets the base (shared) Subagent Profile discovery directories,
-// applied to every session. Paths must already be absolute and expanded; the
-// backend layer owns path resolution (home/~, env vars, relative-to-agent-dir).
-//
-// The project-local `<workspacePath>/.agents/agents` directory is always
+// SetAgentDirs sets the base (shared) Subagent Profile discovery directories;
+// paths must already be absolute and expanded. The project-local directory is
 // prepended automatically in GetAgentDescriptors — do NOT include it here.
 func (b *OrchestratorBuilder) SetAgentDirs(dirs []string) {
 	b.mu.Lock()
@@ -1803,10 +1478,9 @@ func (b *OrchestratorBuilder) GetBaseAgentDirs() []string {
 	return append([]string(nil), b.baseAgentDirs...)
 }
 
-// GetAgentDescriptors returns lightweight Subagent Profile descriptors from
-// the shared base dirs and an optional project-local agent directory. This is
-// used by the frontend ListAgents API to avoid creating a full AgentManager
-// per call. Mirrors GetSkillDescriptors.
+// GetAgentDescriptors returns lightweight Subagent Profile descriptors from the shared
+// base dirs plus an optional project-local agent directory — the frontend ListAgents
+// API's path; mirrors GetSkillDescriptors.
 func (b *OrchestratorBuilder) GetAgentDescriptors(projectAgentDir string) []agents.AgentDescriptor {
 	b.mu.RLock()
 	baseDirs := append([]string(nil), b.baseAgentDirs...)
@@ -1829,17 +1503,11 @@ func (b *OrchestratorBuilder) GetAgentDescriptors(projectAgentDir string) []agen
 	return am.List()
 }
 
-// ResolveSkillResourcePath resolves a read_skill_resource tool call's
-// (skill, path) arguments to the absolute file path the tool actually read.
-// The skill is looked up in the same discovery set a session's SkillManager
-// scans — the project-local directory first when set, then the shared base
-// dirs, highest priority first, first name occurrence wins — and the resource
-// path is resolved through skills.SafeResolvePath, the SAME traversal guard
-// the read_skill_resource tool itself applies. Used by the frontend
-// ResolveSkillResourcePath RPC so a tool-call card can open the resource in
-// the viewer. Returns an error when no skill directories are configured, the
-// skill is unknown to the catalog, or the relative path escapes the skill
-// directory; the frontend falls back to rendering the path as plain text.
+// ResolveSkillResourcePath resolves a read_skill_resource (skill, path) call to the
+// absolute file path the tool actually read — same discovery order as a session's
+// SkillManager (project-local first, first occurrence wins), same skills.SafeResolvePath
+// traversal guard. Used by the frontend RPC so a tool-call card can open the resource in
+// the viewer; errors fall back to rendering the path as plain text.
 func (b *OrchestratorBuilder) ResolveSkillResourcePath(projectSkillDir, skillName, relPath string) (string, error) {
 	if skillName == "" {
 		return "", errors.New("skill name is required")
@@ -1871,16 +1539,15 @@ func (b *OrchestratorBuilder) ResolveSkillResourcePath(projectSkillDir, skillNam
 		return "", fmt.Errorf("skill %q not found", skillName)
 	}
 
-	// context.TODO(): no session case-sensitivity flag exists on this path —
-	// IsWithinRoot falls back to the case-sensitive containment check, the
-	// same behavior SafeResolvePath's documented nil-ctx fallback gives.
+	// context.TODO(): no session case-sensitivity flag exists on this path — IsWithinRoot
+	// falls back to the case-sensitive check, the same behavior SafeResolvePath's
+	// documented nil-ctx fallback gives.
 	return skills.SafeResolvePath(context.TODO(), skillDir, relPath)
 }
 
-// buildSessionSkillManager constructs a per-session SkillManager that always
-// scans the current project's `.agents/skills` (when workspacePath is set) in
-// addition to the shared base dirs. Scan errors are logged and do not abort
-// session start-up.
+// buildSessionSkillManager constructs a per-session SkillManager that always scans the
+// project's .agents/skills (when workspacePath is set); scan errors log and never abort
+// startup.
 func (b *OrchestratorBuilder) buildSessionSkillManager(workspacePath string, logger *slog.Logger) *skills.SkillManager {
 	b.mu.RLock()
 	baseDirs := append([]string(nil), b.baseSkillDirs...)
@@ -1907,10 +1574,9 @@ func (b *OrchestratorBuilder) buildSessionSkillManager(workspacePath string, log
 	return sm
 }
 
-// buildSessionAgentManager constructs a per-session AgentManager that always
-// scans the current project's `.agents/agents` (when workspacePath is set) in
-// addition to the shared base dirs. Scan errors are logged and do not abort
-// session start-up. Mirrors buildSessionSkillManager for Subagent Profiles.
+// buildSessionAgentManager constructs a per-session AgentManager — mirrors
+// buildSessionSkillManager for Subagent Profiles (.agents/agents prepended; scan errors
+// log, never abort startup).
 func (b *OrchestratorBuilder) buildSessionAgentManager(workspacePath string, logger *slog.Logger) *agents.AgentManager {
 	b.mu.RLock()
 	baseDirs := append([]string(nil), b.baseAgentDirs...)
@@ -1937,10 +1603,9 @@ func (b *OrchestratorBuilder) buildSessionAgentManager(workspacePath string, log
 	return am
 }
 
-// activeSkillPathResolver resolves a skill name to its directory by consulting
-// the ActiveSkills set in the request context. This is the resolver used by the
-// read_skill_resource tool: only skills that were activated by the router on
-// the current request are addressable, matching the tool's documented contract.
+// activeSkillPathResolver resolves a skill name to its directory via the ActiveSkills
+// request-context set: only skills the router activated on the current request are
+// addressable.
 func activeSkillPathResolver(ctx context.Context, skillName string) (string, bool) {
 	as := ActiveSkillsFromContext(ctx)
 	if as == nil {
@@ -1954,48 +1619,13 @@ func activeSkillPathResolver(ctx context.Context, skillName string) (string, boo
 	return "", false
 }
 
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
+// Internal helpers.
 
-// buildRouter creates a fresh LLM Router + ModelRegistry from config.
-// budgetTable is the session-scoped adaptive-budget sample table (ADR-071);
-// nil (the builder-level routers: startup init, RebuildRouter, the judge)
-// installs no budget transport on any entry. modelOverridesFromConfig derives
-// the tier-1 model-metadata override map a model registry is seeded with.
-// Both buildRouter (registry construction) and UpdateModelOverrides (runtime
-// pushes into live session registries) derive their overrides through this
-// one helper so the two writers cannot drift.
-//
-// Entries are seeded PARTIAL: only the fields the user actually set in
-// cfg.LLM.Models are carried (unset scalars stay zero/empty = inherit), and
-// the registry's enrichPartialOverride fills the rest at Resolve time from
-// the tiers below (observed runtime -> built-in catalog -> cache -> fallback).
-// Merging ResolveBuiltInModel values HERE — as an earlier version did —
-// pins the catalog window (262144) or the fallback (128000) into tier 1,
-// permanently shadowing both the lazy server probe and the model's real
-// non-standard window: a user override pinning only the output limit still
-// carried a wrong context window at tier 1.
-//
-// Two post-processing passes run on the raw map, matching the seeded entries:
-//
-//   - Auto-remap of the Google protocol for Gemma/Gemini checkpoints served by
-//     a local OpenAI-compatible server (LM Studio/vLLM/Ollama). These servers
-//     expose /v1/chat/completions (and the /v1/responses, /v1/messages
-//     delegates) but NOT Google's :generateContent endpoint — which they
-//     answer with a misleading 200 OK + empty body (see the bug log). Remapping
-//     only the Google protocol → chat_completions keeps the request on an
-//     endpoint the server actually serves, while GPT-5 (Responses) and Claude
-//     (Anthropic) keep working unchanged. An explicit protocol override from
-//     cfg.LLM.Models always wins and is never clobbered.
-//
-//   - Per-provider output-token reserve: seed ModelMetadata.OutputLimit for
-//     every model of a provider that sets output_token_reserve. The registry
-//     uses OutputLimit both as the context-window reserve and as the executor
-//     MaxTokens ceiling, so a provider-level budget raises the generation
-//     ceiling for all of its models at once. Priority: per-model llm.models
-//     output_limit > per-provider output_token_reserve > global
-//     executor.output_token_reserve (the RouterConfig fallback).
+// modelOverridesFromConfig derives the tier-1 model-metadata override map; buildRouter
+// and UpdateModelOverrides both derive through this one helper so the two writers cannot
+// drift. Entries are seeded PARTIAL (unset = inherit; catalog values here would shadow
+// the lazy probe), then pass through remapLocalGoogleProtocols and
+// applyProviderOutputReserves (specs/domains/llm-providers.md).
 func modelOverridesFromConfig(cfg *BuilderConfig) map[string]llm.ModelMetadata {
 	overrides := make(map[string]llm.ModelMetadata)
 	for name, override := range cfg.LLM.Models {
@@ -2015,31 +1645,19 @@ func modelOverridesFromConfig(cfg *BuilderConfig) map[string]llm.ModelMetadata {
 	return overrides
 }
 
+// buildRouter creates a fresh LLM Router + ModelRegistry from config;
+// budgetTable is the session-scoped adaptive-budget sample table (ADR-071) —
+// nil (builder-level routers) installs no budget transport on any entry.
 func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfig, budgetTable *llmbudget.BudgetTable) (*llm.Router, *llm.ModelRegistry, error) {
 	// Snapshot proxyClient under lock to avoid data races with RebuildProxy.
 	b.mu.RLock()
 	proxyClient := b.proxyClient
 	b.mu.RUnlock()
 
-	// Only config.yaml-derived user overrides are seeded into the registry at
-	// construction (Resolution tier 1). LM Studio / local-server context-window
-	// discovery is performed lazily per-session (see Build + buildLocalModelProbe)
-	// and written into the registry via SetRuntimeMetadata (tier 1.5, ABOVE the
-	// built-in catalog) so the server's observed runtime window beats the
-	// catalog spec, while an explicit config.yaml value still wins.
-	//
-	// Entries are seeded PARTIAL: only the fields the user actually set are
-	// carried (unset scalars stay zero/empty = inherit), and the registry's
-	// enrichPartialOverride fills the rest at Resolve time from the tiers
-	// below (observed runtime -> built-in catalog -> cache -> fallback).
-	// Merging ResolveBuiltInModel values HERE — as an earlier version did —
-	// pins the catalog window (262144) or the fallback (128000) into tier 1,
-	// permanently shadowing both the lazy server probe and the model's real
-	// non-standard window: a user override pinning only the output limit still
-	// carried a wrong context window at tier 1.
-	//
-	//   - 1. User overrides (from config): seeded by modelOverridesFromConfig
-	//     below — see that helper for the partial-entry and shadowing rules.
+	// Only config.yaml-derived user overrides are seeded at construction (tier 1);
+	// local-server discovery is lazy, written via SetRuntimeMetadata above the catalog
+	// so the observed runtime window wins over the spec but not over config
+	// (specs/domains/llm-providers.md).
 	overrides := modelOverridesFromConfig(cfg)
 
 	modelRegistry := llm.NewModelRegistry(overrides)
@@ -2047,11 +1665,8 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 		modelRegistry.SetHTTPClient(proxyClient)
 	}
 
-	// Construct a dedicated HTTP client for LLM inference calls. Reasoning
-	// models can take several minutes to respond, so the LLM timeout must be
-	// much longer than the proxy/tools client (30s). Without this, the SDK
-	// falls back to http.DefaultClient which has NO timeout — a stalled
-	// upstream hangs the session indefinitely.
+	// Dedicated HTTP client for LLM inference: without the finite timeout the SDK falls
+	// back to http.DefaultClient (NO timeout) and a stalled upstream hangs the session.
 	llmClient := buildLLMHTTPClient(proxyClient, cfg.Timeouts.LLMRequestTimeout)
 	initialBackoff, err := time.ParseDuration(cfg.LLM.Retry.InitialBackoff)
 	if err != nil && cfg.LLM.Retry.InitialBackoff != "" {
@@ -2062,29 +1677,16 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 		b.log().Warn("invalid max_backoff, using default", "value", cfg.LLM.Retry.MaxBackoff, "error", err)
 	}
 
-	// Build provider entries from all enabled providers.
-	// Iterate in a deterministic order (matching backend/config allProviderEntries)
-	// to ensure the first provider in the list is predictable.
-	//
-	// The embedded seam is resolved ONCE for the whole build, not per entry: it
-	// falls back to the builder-level default when this BuilderConfig carries no
-	// Loader, which is the case for the per-session config the orchestrator
-	// factory converts (see SetEmbeddedLLM).
+	// Build provider entries in a deterministic order (matching backend/config
+	// allProviderEntries) so the first provider is predictable.
 	embedded := b.embeddedSeam(cfg)
-	// The subscription-auth seam resolves the same way (per-build wins, else
-	// the builder-level default) so the per-session router — whose config is
-	// converted where the token manager is not in scope — is covered too.
 	subscription := b.subscriptionAuthSeam(cfg)
-	// The adaptive request budget wiring (ADR-071): when the kill-switch is on
-	// and a session table was supplied, every provider entry's client gets the
-	// budget RoundTripper (on top of the pin, beneath the ensure-loaded gate).
+	// Adaptive request budget (specs/decisions/071-adaptive-llm-request-budgets.md):
+	// budget RoundTripper on top of the pin, beneath the ensure-loaded gate.
 	budget := budgetWiringFromConfig(cfg, budgetTable)
 	providers := make([]llm.ProviderEntry, 0, len(cfg.LLM.ProviderConfigs))
-	// The proxy client is non-nil exactly when the proxy is effective
-	// (proxy.enabled && proxy.url != "", the proxy.BuildClient rule); the
-	// bypass matcher re-arms the pin for hosts the operator excluded from
-	// the proxy (ADR-054). One matcher per router build — read-only after
-	// construction.
+	// Non-nil exactly when the proxy is effective (proxy.BuildClient rule); the bypass
+	// matcher re-arms the pin for bypassed hosts (ADR-054). One per build, read-only after.
 	bypass := proxy.NewBypassMatcher(cfg.Proxy.BypassList)
 	providerOrder := []string{"anthropic", "chatgpt"}
 	for _, name := range providerOrder {
@@ -2109,9 +1711,8 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 		providers = append(providers, providerEntryFromConfig(name, pc, llmClient, proxyClient, bypass, embedded, budget, subscription, cfg.ExpandEnvVars, b.log(), b))
 	}
 
-	// Model Profiles context-management override: keeps the router's token budget
-	// (safety margin, output reserve) in sync with the executor tightening
-	// applied in Build (no-op unless both toggles are enabled).
+	// Model Profiles context-management override: keeps the router's token
+	// budget in sync with the executor tightening applied in Build.
 	exec := applyContextManagement(cfg.Executor, cfg.ModelProfiles)
 
 	routerCfg := llm.RouterConfig{
@@ -2140,23 +1741,10 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 	return llmRouter, modelRegistry, nil
 }
 
-// applyProviderOutputReserves seeds ModelMetadata.OutputLimit into the model
-// overrides for every model served by a provider that sets a per-provider
-// output_token_reserve. The router treats a model's OutputLimit both as the
-// reserve subtracted from the context window during overflow validation and as
-// the executor's MaxTokens ceiling, so one provider-level knob raises the
-// generation budget for all of that provider's models at once — the right
-// granularity for self-hosted gateways (LM Studio, vLLM) whose real limits
-// differ from the built-in catalog.
-//
-// Priority: an explicit per-model llm.models output_limit always wins and is
-// never clobbered; models without any per-provider seeding keep inheriting the
-// global executor.output_token_reserve that llm.NewRouter applies as the
-// last-resort fallback. Unset (0) and negative provider values are ignored.
-// When two providers list the SAME bare model name with different reserves,
-// the lexicographically first provider name wins — iteration is over sorted
-// provider names, so the outcome does not depend on Go's randomized map
-// iteration order. The function is idempotent.
+// applyProviderOutputReserves seeds ModelMetadata.OutputLimit for every model served by
+// a provider that sets output_token_reserve (specs/domains/llm-providers.md). An
+// explicit per-model output_limit is never clobbered; unset/negative values are ignored;
+// same model from two providers → lexicographically first wins (sorted). Idempotent.
 func applyProviderOutputReserves(
 	overrides map[string]llm.ModelMetadata,
 	providerConfigs map[string]BuilderProviderConfig,
@@ -2185,42 +1773,11 @@ func applyProviderOutputReserves(
 	}
 }
 
-// remapLocalGoogleProtocols rewrites the built-in Google protocol to
-// ProtocolChatCompletions for Google-named checkpoints (Gemma / Gemini) that
-// are served by an OpenAI-compatible server (LM Studio, vLLM, Ollama, a
-// self-hosted gateway on a public host).
-//
-// Per the LM Studio endpoint matrix, OpenAI-compatible self-hosted servers
-// expose /v1/chat/completions, /v1/responses and /v1/messages — but NOT
-// Google's /models/{model}:generateContent endpoint, which they answer with a
-// 200 OK + empty body. So a Google-named model must be steered onto
-// chat_completions instead. Only the Google protocol is remapped: Responses
-// (GPT-5/Codex) and Anthropic (Claude) are served fine by these servers, so
-// they are left untouched. The override is keyed by the bare model name — the
-// same value that becomes req.Model on the wire.
-//
-// The injected override is PROTOCOL-ONLY: it pins Protocol=ChatCompletions and
-// carries the built-in Capabilities (so multimodal flag is preserved), but
-// leaves ContextWindow / OutputLimit / TokenizerType at their zero values. The
-// ModelRegistry then inherits those unset scalars from its lower non-network
-// tiers at Resolve time (observed runtime -> built-in catalog -> cache ->
-// fallback). This is essential because the lazy model probe
-// (buildLocalModelProbe) writes the model's REAL runtime context window via
-// SetRuntimeMetadata; a wholesale override that also carried the
-// catalog/fallback window (128000 for a catalog miss) would permanently shadow
-// that probe result, leaving the context-fill accounting and compaction
-// thresholds pinned to an inflated window.
-//
-// When the user already seeded a PARTIAL override for the model (a non-protocol
-// field, so its Protocol is empty), the remap MERGES into that entry — the
-// protocol is pinned and Capabilities are backfilled only when unset, while
-// every user-set field is preserved. Replacing the entry wholesale would
-// silently discard the user's tier-1 metadata.
-//
-// An explicit protocol override seeded from cfg.LLM.Models (already present in
-// overrides with a non-empty protocol) is respected: the user's choice always
-// wins and is never clobbered. The remap is idempotent, so map-iteration order
-// across providers does not affect the result.
+// remapLocalGoogleProtocols rewrites the Google protocol to chat_completions for
+// Google-named checkpoints on an OpenAI-compatible server, which cannot answer
+// :generateContent (misleading 200 OK + empty body). PROTOCOL-ONLY override: zero
+// scalars inherit from lower tiers; an explicit user protocol is never clobbered.
+// See specs/domains/llm-providers.md (Local Google Protocol Remap).
 func remapLocalGoogleProtocols(
 	overrides map[string]llm.ModelMetadata,
 	providerConfigs map[string]BuilderProviderConfig,
@@ -2231,8 +1788,7 @@ func remapLocalGoogleProtocols(
 			continue
 		}
 		for _, model := range pc.Models {
-			// Respect an explicit user override (cfg.LLM.Models) that already
-			// set a protocol — never clobber the user's choice.
+			// Respect an explicit user protocol override — never clobber.
 			existing, hasEntry := overrides[model]
 			if hasEntry && existing.Protocol != "" {
 				continue
@@ -2242,12 +1798,8 @@ func remapLocalGoogleProtocols(
 				continue
 			}
 			if hasEntry {
-				// The user seeded a PARTIAL entry (a non-protocol field, so
-				// Protocol is still empty). Merge the remap into it instead of
-				// replacing it: pin only the protocol and backfill
-				// Capabilities when the user did not set them, so the user's
-				// other tier-1 fields (context window, output limit,
-				// tokenizer, family, capabilities) survive the remap.
+				// Partial user entry: pin the protocol, backfill Capabilities
+				// only when unset, so the user's tier-1 fields survive.
 				existing.Protocol = llm.ProtocolChatCompletions
 				if existing.Capabilities == nil {
 					existing.Capabilities = base.Capabilities
@@ -2255,10 +1807,7 @@ func remapLocalGoogleProtocols(
 				overrides[model] = existing
 				continue
 			}
-			// Protocol-only override: the registry inherits the unset
-			// scalar fields (context window, output limit, tokenizer) from
-			// its lower tiers so the lazy probe result takes effect. See
-			// the function doc comment for the shadowing rationale.
+			// Unset scalars inherit from lower tiers (rationale on the doc).
 			overrides[model] = llm.ModelMetadata{
 				Protocol:     llm.ProtocolChatCompletions,
 				Capabilities: base.Capabilities,
@@ -2267,46 +1816,22 @@ func remapLocalGoogleProtocols(
 	}
 }
 
-// buildLocalModelProbe returns a LocalModelProbe that, for the given model,
-// locates its OpenAI-compatible provider and fires an asynchronous
-// context-window probe whose result is written into the per-session model
-// registry via SetRuntimeMetadata.
-//
-// Any OpenAI-compatible provider is probed — local/LAN (LM Studio), a
-// self-hosted server on a public host (vLLM/TGI/Ollama behind a domain or
-// Tailscale), and even a genuine cloud provider. The probe is harmless for the
-// cloud case: the standard /v1/models listing of a real cloud API omits the
-// per-model context-window field, so no window is discovered and the registry
-// keeps its built-in spec. Non-OpenAI providers and models not found in any
-// provider config are silent no-ops (the closure returns without spawning a
-// goroutine).
-//
-// The probe tries the LM Studio native endpoint first (runtime/loaded window)
-// and falls back to the standard OpenAI /v1/models listing (max_model_len) —
-// see probeSelfHostedContextWindow.
-//
-// The network probe runs on a detached goroutine (dispatched via b.asyncRunner)
-// with a fresh context.Background() (bounded to 3s inside each probe) so it is
-// not tied to the caller's request lifetime and never blocks HandleMessage /
-// session creation. Results land in the registry's observed-runtime tier
-// (Resolution 1.5): above the built-in catalog so the server's enforced
-// runtime window supersedes the checkpoint spec, below a config.yaml override
-// (tier 1) so the user's explicit choice always wins. onWindow, when non-nil,
-// is invoked on the same goroutine with the discovered window, letting the
-// caller refresh user-facing display state (the status bar's context max)
-// mid-task. Tests override asyncRunner to run the probe synchronously, making
-// assertions deterministic without polling.
+// buildLocalModelProbe returns a LocalModelProbe that locates the model's OpenAI-compatible
+// provider and fires an async context-window probe into the per-session registry via
+// SetRuntimeMetadata — any such provider, local or self-hosted (cloud is a harmless no-op);
+// endpoint order in probeSelfHostedContextWindow (specs/domains/llm-providers.md). Runs
+// detached so it never blocks session creation; onWindow fires on the same goroutine for
+// mid-task display refresh; tests override asyncRunner.
 func (b *OrchestratorBuilder) buildLocalModelProbe(cfg *BuilderConfig, registry *llm.ModelRegistry, onWindow func(model string, window int)) LocalModelProbe {
-	// Snapshot proxyClient under read lock once at probe construction so the
-	// closure does not touch b.mu on every invocation.
+	// Snapshot the proxy client once so the closure never touches b.mu.
 	b.mu.RLock()
 	proxyClient := b.proxyClient
 	b.mu.RUnlock()
 	log := b.log()
 	expand := cfg.ExpandEnvVars
 	goRun := b.asyncRunner()
-	// Same rationale as fetchProviderModels: the matcher is rebuilt from the
-	// same config snapshot the probe reads its providers from.
+	// Same rationale as fetchProviderModels: rebuilt from the same config
+	// snapshot the probe reads its providers from.
 	bypass := proxy.NewBypassMatcher(cfg.Proxy.BypassList)
 
 	return func(model string) {
@@ -2317,11 +1842,9 @@ func (b *OrchestratorBuilder) buildLocalModelProbe(cfg *BuilderConfig, registry 
 		if !ok {
 			return
 		}
-		// Per-provider TLS override under the proxy-wins rule (ADR-054):
-		// proxy dials → the plain proxy client; bypassed host or no proxy →
-		// a direct client, pinned when configured. Resolved here, on the
-		// caller's goroutine, so the detached probe below receives a ready
-		// client.
+		// Per-provider TLS override under the proxy-wins rule
+		// (specs/decisions/054-per-provider-tls-pinning.md); resolved here on
+		// the caller's goroutine so the detached probe receives a ready client.
 		probeClient := llmtls.DirectDialClient(proxyClient, dialPolicy(proxyClient, bypass, baseURL), tlsFingerprint, log)
 		goRun(func() {
 			window, err := probeSelfHostedContextWindow(context.Background(), baseURL, apiKey, model, probeClient)
@@ -2331,31 +1854,14 @@ func (b *OrchestratorBuilder) buildLocalModelProbe(cfg *BuilderConfig, registry 
 			if window <= 0 {
 				return
 			}
-			// SetRuntimeMetadata writes to Resolution tier 1.5 — ABOVE the
-			// built-in catalog and the lazy cache, BELOW a config.yaml
-			// override (tier 1) — so the user's explicit choice is never
-			// clobbered. A tier-3 write (SetCachedMetadata) is NOT enough:
-			// self-hosted servers routinely serve well-known checkpoints at a
-			// runtime context length far below the catalog maximum (LM Studio
-			// loads models at a user-chosen length; the catalog says 262144),
-			// and the catalog tier would permanently shadow the observed
-			// runtime window, pinning compaction budgets and the status-bar
-			// max to a window the server will never honor.
+			// Tier 1.5: above the catalog (which would permanently shadow the
+			// observed runtime window), below a config override
+			// (specs/domains/llm-providers.md).
 			//
-			// OutputLimit mirrors the model registry's built-in fallback
-			// (tier 5: 32768) so self-hosted models are not regressed — neither
-			// LM Studio nor vLLM expose a per-model output cap in their model
-			// listings — but is clamped to at most a quarter of the discovered
-			// window. An OutputLimit larger than the context window drives
-			// EffectiveMax negative and disables compaction (CheckFill reports
-			// "reject"), so without the clamp a small-context model
-			// (7B/13B commonly run at 8K/16K/32K) would grow unbounded until
-			// the API rejects it.
-			//
-			// TokenizerType is deliberately left empty: the probe observes
-			// only the window, and a synthetic "approximate" here would sit in
-			// tier 1.5 — ABOVE the built-in catalog — shadowing the exact
-			// tokenizer a well-known checkpoint carries there.
+			// OutputLimit mirrors the tier-5 fallback (32768), clamped to
+			// window/4 — a larger OutputLimit drives EffectiveMax negative
+			// and disables compaction. TokenizerType stays empty: a synthetic
+			// "approximate" would shadow the checkpoint's exact tokenizer.
 			registry.SetRuntimeMetadata(model, llm.ModelMetadata{
 				ContextWindow: window,
 				OutputLimit:   min(32768, window/4),
@@ -2369,22 +1875,14 @@ func (b *OrchestratorBuilder) buildLocalModelProbe(cfg *BuilderConfig, registry 
 	}
 }
 
-// lookupOpenAIProviderBaseURL searches the provider configs for the
-// OpenAI-compatible one that serves `model` and returns its expanded base_url,
-// api key, and per-provider TLS pin (ADR-054). The last return is false only
-// when no OpenAI-compatible provider serves the model. Host locality is
-// deliberately NOT filtered: a self-hosted server on a public host
-// (vLLM/TGI/Ollama behind a domain or Tailscale) is probed exactly like a
-// local one — the probe is a harmless no-op for a genuine cloud provider
-// whose /v1/models listing omits the context-window field.
+// lookupOpenAIProviderBaseURL finds the OpenAI-compatible provider serving `model`;
+// false only when none serves it; claims the per-provider TLS pin
+// (specs/decisions/054-per-provider-tls-pinning.md). Host locality is deliberately NOT
+// filtered — a public self-hosted server is probed like a local one.
 //
-// Subscription-auth entries (the ChatGPT oauth provider) are EXCLUDED: their
-// pinned vendor BaseURL would otherwise qualify them for the self-hosted
-// probe, which stamps the entry's retained static API key onto a request to
-// the vendor's keyless probe paths — leaking a key the operator believed
-// unused (ADR-074 D2/D6) and probing endpoints that do not answer the
-// subscription catalog anyway. Subscription metadata comes from the
-// dedicated FetchChatGPTModels catalog, never from this probe.
+// Subscription-auth (oauth) entries are EXCLUDED: probing them would stamp the retained
+// static API key onto the vendor's keyless probe paths, leaking a key the operator
+// believed unused. See specs/domains/llm-providers.md (Context Window Resolution).
 func lookupOpenAIProviderBaseURL(cfg *BuilderConfig, model string, expand func(string) string) (baseURL, apiKey, tlsFingerprint string, ok bool) {
 	for _, pc := range cfg.LLM.ProviderConfigs {
 		if pc.ProviderType != "openai" {
@@ -2412,9 +1910,8 @@ func lookupOpenAIProviderBaseURL(cfg *BuilderConfig, model string, expand func(s
 	return "", "", "", false
 }
 
-// buildLLMHTTPClient creates an *http.Client dedicated to LLM inference
-// calls. It always sets a finite Timeout so a stalled upstream cannot hang
-// the session indefinitely. When proxyClient is non-nil, its transport
+// buildLLMHTTPClient creates an *http.Client dedicated to LLM inference; it
+// always sets a finite Timeout. When proxyClient is non-nil, its transport
 // (proxy, TLS, dialer settings) is reused with the LLM-specific timeout.
 func buildLLMHTTPClient(proxyClient *http.Client, timeoutSec int) *http.Client {
 	timeout := time.Duration(timeoutSec) * time.Second
@@ -2429,32 +1926,24 @@ func buildLLMHTTPClient(proxyClient *http.Client, timeoutSec int) *http.Client {
 }
 
 // llmBudgetWiring carries the adaptive per-model LLM request budget
-// (ADR-071) into providerEntryFromConfig. The zero value is the disabled
-// posture: every entry client is built exactly as before the feature existed.
-//
-// enabled is the conjunctive gate — the transport is installed only when the
-// kill-switch is on (timeouts.adaptive_budget.enabled) AND a session-scoped
-// BudgetTable was supplied. The builder-level routers (startup init,
-// RebuildRouter, the judge) get no table: they serve service-shaped calls
-// that own their ctx deadlines, and a table without a tracker feeding it
-// would only ever arm warmup budgets.
+// (specs/decisions/071-adaptive-llm-request-budgets.md) into
+// providerEntryFromConfig; the zero value is the disabled posture.
 type llmBudgetWiring struct {
 	enabled bool
-	// table is the session-scoped sample store, shared by every entry
-	// transport of one session and fed by that session's UsageTracker
-	// timed observer. Non-nil exactly when enabled.
+	// table is the session-scoped sample store shared by every entry
+	// transport of one session; non-nil exactly when enabled.
 	table *llmbudget.BudgetTable
-	// global is timeouts.llmRequestTimeout as a duration. Under the
-	// kill-switch a positive value is a fixed, never-escalated override
-	// (ADR-071 D5); 0 is "no opinion" and the trained budgets govern.
+	// global is timeouts.llmRequestTimeout: a positive value under the
+	// kill-switch is a fixed, never-escalated override; 0 = "no opinion".
 	global time.Duration
 	// overrides are the raw llm.models entries, consulted per wire-extracted
-	// model name for the fixed request_timeout and the output_limit reserve.
+	// model name for request_timeout and the output_limit reserve.
 	overrides map[string]BuilderModelOverride
 }
 
-// budgetWiringFromConfig derives the wiring for one router build. A nil
-// budgetTable (builder-level router) always disables the transport.
+// budgetWiringFromConfig derives the wiring for one router build; a nil
+// budgetTable (builder-level router) always disables the transport — those
+// routers own their ctx deadlines (specs/domains/llm-providers.md).
 func budgetWiringFromConfig(cfg *BuilderConfig, budgetTable *llmbudget.BudgetTable) llmBudgetWiring {
 	if !cfg.Timeouts.AdaptiveBudgetEnabled || budgetTable == nil {
 		return llmBudgetWiring{}
@@ -2471,10 +1960,9 @@ func budgetWiringFromConfig(cfg *BuilderConfig, budgetTable *llmbudget.BudgetTab
 	}
 }
 
-// overridesFor resolves the per-model operator opinions for one wire-extracted
-// model name (ADR-071 D5/D7): llm.models.<name>.request_timeout as the fixed
-// deadline and llm.models.<name>.output_limit as the out-reserve ceiling.
-// Unknown model, empty map — zero values, i.e. "no opinion".
+// overridesFor resolves the per-model operator opinions for one wire-extracted model
+// name: llm.models request_timeout as the fixed deadline, output_limit as the
+// out-reserve ceiling. Unknown model → zero values ("no opinion").
 func (w llmBudgetWiring) overridesFor(model string) llmbudget.ModelOverrides {
 	ov, ok := w.overrides[model]
 	if !ok {
@@ -2490,35 +1978,18 @@ func (w llmBudgetWiring) overridesFor(model string) llmbudget.ModelOverrides {
 	return mo
 }
 
-// budgetIngestCaller feeds the session-scoped adaptive-budget table (ADR-071
-// D1) with one sample per successful LLM call, keyed by the model the provider
-// actually served. It sits BETWEEN the UsageTracker's TrackingCaller and the
-// router deliberately, because it must control the sample's DURATION:
-//
-//   - The router retries a request that died of its own armed budget (D9),
-//     sleeping an exponential backoff between attempts. A duration measured
-//     around the whole router call therefore folds the failed attempt, the
-//     backoff, and the successful attempt into one sample and inflates the
-//     fitted r_in/r_out — worst of all in exactly the escalation scenario the
-//     feature exists for. The budget transport (which wraps each provider's
-//     HTTP client) instead reports the winning attempt's own duration through
-//     the context recorder this caller installs, so a retried call is measured
-//     by the attempt that actually succeeded.
-//   - When a request takes the transport's pass-through path (a caller-owned
-//     deadline), no recorder is filled and this caller falls back to its own
-//     wall-clock measurement, exactly the pre-existing behavior.
-//
-// The tracker observes the same calls for its own totals; this caller only owns
-// the budget table write.
+// budgetIngestCaller feeds the session-scoped adaptive-budget table with one sample per
+// successful call, keyed by the model actually served. It sits BETWEEN the TrackingCaller
+// and the router so the sample's duration is the winning provider attempt, not the
+// retrying router call (specs/domains/llm-providers.md); no recorder → its own wall-clock.
 type budgetIngestCaller struct {
 	inner llm.Caller
 	table *llmbudget.BudgetTable
 }
 
-// Call delegates to the inner caller and, on success, ingests one timed sample
-// into the budget table (Ingest ignores an empty model or a non-positive
-// duration). A failed call records nothing, matching the sp4rk feed's
-// successful-calls-only contract.
+// Call delegates to the inner caller and, on success, ingests one timed
+// sample (Ingest ignores an empty model or non-positive duration); failures
+// record nothing, matching the successful-calls-only feed contract.
 func (c *budgetIngestCaller) Call(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 	rec := llmbudget.NewAttemptRecorder()
 	start := time.Now()
@@ -2534,16 +2005,10 @@ func (c *budgetIngestCaller) Call(ctx context.Context, req llm.ChatRequest) (*ll
 	return resp, nil
 }
 
-// budgetWire selects the model-extraction strategy for one provider entry
-// (ADR-071 D9). The openai and anthropic wires carry the model as a top-level
-// JSON field; only an explicitly google-protocol model speaks the gemini URL
-// shape (POST {base}/models/{model}:generateContent). Local google-protocol
-// checkpoints are remapped to chat_completions before this point
-// (remapLocalGoogleProtocols), so the URL wire is chosen ONLY when EVERY
-// enabled model of the provider carries an explicit llm.models protocol
-// override of "google" — a mixed provider keeps the JSON wire and its
-// google-wire requests degrade to the provider-level budget key (still armed,
-// never unbounded).
+// budgetWire selects the model-extraction strategy for one provider entry: the URL wire
+// is chosen only when EVERY enabled model carries an explicit "google" protocol override
+// — a mixed provider keeps the JSON wire and its google-wire requests degrade to the
+// provider-level budget key (specs/domains/llm-providers.md).
 func budgetWire(pc BuilderProviderConfig, overrides map[string]BuilderModelOverride) llmbudget.WireFormat {
 	if len(pc.Models) == 0 {
 		return llmbudget.WireJSONModel
@@ -2556,33 +2021,13 @@ func budgetWire(pc BuilderProviderConfig, overrides map[string]BuilderModelOverr
 	return llmbudget.WireURLModel
 }
 
-// attachBudgetClient wraps one provider entry's dial client with the adaptive
-// budget RoundTripper (ADR-071 D9). It must run AFTER llmtls.RouterEntryClient
-// (the budget wrapper goes on TOP of the pin: llmtls needs a concrete
-// *http.Transport beneath it to hold its tls.Config) and BEFORE the embedded
-// ensure-loaded decoration (the wrapper goes UNDER that gate, so the armed
-// deadline never covers the cold-load wait — D13).
-//
-// The kill-switch-off posture returns client untouched: no wrapper, no clone,
-// byte-for-byte the pre-ADR-071 entry.
-//
-// When enabled, the entry gets an EXPLICIT client — never the load-bearing
-// nil:
-//
-//   - pin path: the pinned client is cloned (never mutated), its Timeout is
-//     zeroed and its transport wrapped — pin beneath, budget above.
-//   - nil path (proxy dials or no pin): the shared router client is cloned,
-//     preserving its transport (the proxy transport — the whole point of the
-//     load-bearing nil) and replacing its fixed Timeout with the budget
-//     transport's ALWAYS-ARM (the stalled-upstream invariant). The clone is
-//     required because nil makes the SDK fall back to RouterConfig.HTTPClient,
-//     which carries no budget transport.
-//
-// In both paths the entry clone carries Client.Timeout = 0: with the budget
-// transport on the wire a client-level timeout would double-cap the request,
-// and on the embedded entry it is what keeps EnsureLoadedClient from arming
-// the fixed post-readiness budget that would cap inference at 600 s under a
-// trained adaptive budget of up to the class ceiling (ADR-071 D8).
+// attachBudgetClient wraps one entry's dial client with the adaptive budget RoundTripper
+// — on TOP of the TLS pin, UNDER the embedded ensure-loaded gate, so the armed deadline
+// never covers the cold-load wait (specs/decisions/071-adaptive-llm-request-budgets.md).
+// Kill-switch off → untouched; enabled → an EXPLICIT client cloned from the pin path or
+// the shared client (a plain nil would fall back to a transport-less
+// RouterConfig.HTTPClient), with Client.Timeout = 0 — the transport's always-arm is the
+// only cap.
 func (w llmBudgetWiring) attachBudgetClient(
 	client, sharedClient *http.Client,
 	name, baseURL, timeoutClass string,
@@ -2617,56 +2062,16 @@ func (w llmBudgetWiring) attachBudgetClient(
 	return &clone
 }
 
-// providerEntryFromConfig builds one llm.ProviderEntry from a provider's
-// BuilderConfig slice.
+// providerEntryFromConfig builds one llm.ProviderEntry from a provider's BuilderConfig
+// slice. Client resolution order is fixed: TLS pin (a nil is load-bearing — the SDK then
+// falls back to RouterConfig.HTTPClient with the proxy transport and the long LLM
+// timeout, specs/decisions/054-per-provider-tls-pinning.md), then the adaptive budget,
+// then the embedded ensure-loaded decoration (embedding first would hand llmtls a
+// wrapper transport that cannot hold a tls.Config).
 //
-// The per-provider TLS pin (ADR-054 — the pin is the switch) is attached as
-// ProviderEntry.HTTPClient only when the provider carries a non-empty
-// TLSFingerprint AND the proxy dials for this provider's endpoint (proxy
-// wins), i.e. the proxy is active and its bypass_list does NOT cover the
-// host. sharedClient is the router-level LLM client, so a pinned client
-// inherits the LLM request timeout.
-//
-// While the proxy dials, the entry deliberately leaves HTTPClient nil rather
-// than carrying the proxy client: nil makes the SDK fall back to
-// RouterConfig.HTTPClient, which already has the proxy transport AND the long
-// LLM timeout. Attaching the raw proxy client here would shadow it and cap
-// every inference request at the much shorter web-fetch proxy timeout. See
-// llmtls.RouterEntryClient.
-//
-// logger (may be nil) flows to llmtls for its malformed-pin and
-// custom-RoundTripper warnings.
-//
-// The embedded provider's ensure-loaded transport (embedded) is the SECOND
-// resolver on this hook, and the order is fixed: the pin rule decides whether
-// the entry carries a client at all, and the embedded transport only decorates
-// that decision (embedding it first would hand llmtls a client whose transport
-// is a wrapper, which cannot hold a tls.Config). Both resolvers clone from
-// sharedClient, so whichever applies, timeouts.llmRequestTimeout survives.
-//
-// The same guard is also the ONLY thing that sets ProviderEntry.ReasoningWire
-// and ProviderEntry.OmitReasoningHistory: the embedded llama-server spells
-// Qwen reasoning controls as chat_template_kwargs (while every other
-// openai_compatible entry keeps the vendor-default top-level spelling), and
-// its chat template rejects the reasoning_content history echo the DeepSeek
-// V4 contract adds to every assistant request message — so that entry alone
-// opts out of the echo while every other entry keeps it.
-//
-// The adaptive budget wiring (ADR-071) sits BETWEEN those two resolvers: its
-// RoundTripper wraps the client's transport on top of the pin and beneath the
-// ensure-loaded gate. When it is enabled, the entry clone carries
-// Client.Timeout = 0 — arming is the budget transport's ALWAYS-ARM, which is
-// also what keeps the embedded entry's post-readiness budget from capping a
-// trained adaptive budget at the fixed 600 s (see attachBudgetClient). When
-// the kill-switch is off the wiring is inert and every entry is byte-for-byte
-// the pre-ADR-071 shape.
-//
-// Subscription auth (BuilderProviderConfig.SubscriptionAuth, set by
-// ToBuilderConfig for llm.chatgpt.auth.mode: "oauth") is resolved through the
-// subscription seam and expressed on the entry as TokenSource +
-// RequireStreaming. With the marker off — the api_key mode — neither field is
-// ever set and the entry is built exactly as before the mode existed, whatever
-// the seam carries.
+// The embedded guard is the ONLY writer of ReasoningWire/OmitReasoningHistory
+// (specs/domains/embedded-llm.md); subscription auth resolves through the subscription
+// seam (specs/domains/llm-providers.md).
 func providerEntryFromConfig(
 	name string,
 	pc BuilderProviderConfig,
@@ -2683,38 +2088,22 @@ func providerEntryFromConfig(
 	resolvedBase := expand(pc.BaseURL)
 	policy := dialPolicy(proxyClient, bypass, resolvedBase)
 	client := llmtls.RouterEntryClient(policy, sharedClient, pc.TLSFingerprint, logger)
-	// Adaptive request budget (ADR-071): wrap on top of the pin, beneath the
-	// ensure-loaded gate. The wire is derived from the same explicit protocol
-	// overrides the registry sees; the class from the operator override and
-	// the resolved loopback shape of base_url.
+	// Wire from the same explicit protocol overrides the registry sees; class
+	// from the operator override and the resolved loopback shape of base_url.
 	client = budget.attachBudgetClient(client, sharedClient, name, resolvedBase,
 		pc.TimeoutClass, budgetWire(pc, budget.overrides), logger)
 	reasoningWire := llm.ReasoningWireVendorDefault
 	omitReasoningHistory := false
 	if embedded.guards(name) {
-		// A cold embedded model is not listening, so this entry's client must
-		// start it before the request goes out and restart the idle budget when
-		// the response completes. The clone inherits sharedClient's Timeout (or
-		// the pinned client's, which is itself cloned from sharedClient) —
-		// handing over a client without the long LLM timeout would cap inference
-		// at the web-fetch proxy budget, the exact mistake llmtls warns about.
-		// Under the adaptive budget wiring the clone's Timeout is already 0 (the
-		// budget transport arms instead), so the ensure-loaded gate adds no
-		// fixed post-readiness budget of its own and a trained adaptive budget
-		// up to the class ceiling is honored (ADR-071 D8/D13).
+		// The cold-model entry's client starts the server before the request; the clone
+		// keeps the long LLM timeout, and under the budget wiring Timeout is already 0 —
+		// no fixed post-readiness cap is added (specs/domains/embedded-llm.md).
 		client = embeddedllm.EnsureLoadedClient(client, sharedClient, embedded.Loader, embedded.LoadWaitTimeout, logger)
-		// The embedded server is the pinned PrismML-Eng/llama.cpp fork, which
-		// reads enable_thinking ONLY from chat_template_kwargs — a top-level
-		// field is silently ignored, so "Off" would not turn thinking off. This
-		// is a property of the server the supervisor spawns (never of a
-		// user-authored base URL), which is why it rides the same guard as the
-		// transport and no other entry can pick it up.
+		// The embedded server reads enable_thinking ONLY from chat_template_kwargs; a
+		// top-level field is silently ignored.
 		reasoningWire = llm.ReasoningWireChatTemplateKwargs
-		// The same template rejects the reasoning_content history echo: the
-		// DeepSeek V4 contract adds the field to EVERY replayed assistant
-		// message, and a llama.cpp chat template that does not know the
-		// variable fails the whole request on it. The embedded entry opts out;
-		// DeepSeek-style endpoints keep the echo via the zero value.
+		// The same template rejects the reasoning_content history echo —
+		// a template that doesn't know the variable fails the whole request.
 		omitReasoningHistory = true
 	}
 	tokenSource, requireStreaming := subscriptionAuthEntry(name, pc, subscription, builder)
@@ -2725,47 +2114,23 @@ func providerEntryFromConfig(
 		BaseURL:      resolvedBase,
 		Models:       pc.Models,
 		HTTPClient:   client,
-		// Zero value for every non-embedded provider: the vendor-default
-		// top-level spelling stays the answer for LM Studio/vLLM/Ollama entries
-		// an operator points at the same loopback.
-		ReasoningWire: reasoningWire,
-		// Also the guard's call: only the embedded entry opts out of the
-		// reasoning_content history echo. Every other provider keeps the
-		// DeepSeek V4 contract (reasoning_content rides every replayed
-		// assistant message) via the zero value.
+		// Zero value for non-embedded providers: the vendor-default top-level
+		// spelling stays right for LM Studio/vLLM/Ollama on the same loopback.
+		ReasoningWire:        reasoningWire,
 		OmitReasoningHistory: omitReasoningHistory,
-		// Subscription auth (nil unless BuilderProviderConfig.SubscriptionAuth
-		// is set): the token source's per-request credentials override the
-		// static APIKey on the wire, so a key that lingers in config.yaml can
-		// never act as a silent fallback. RequireStreaming marks the
-		// subscription endpoint, which accepts streaming calls only.
+		// Subscription auth: the token source's per-request credentials override the
+		// static APIKey, so a lingering config key can never act as a silent fallback.
+		// RequireStreaming marks streaming-only entries.
 		TokenSource:      tokenSource,
 		RequireStreaming: requireStreaming,
 	}
 }
 
-// subscriptionAuthEntry resolves the auth shape of one provider entry from the
-// subscription marker and the seam:
-//
-//   - marker off (api_key mode): (nil, false) unconditionally — the historical
-//     entry, byte-for-byte, whatever the seam carries. This is the AC that
-//     api_key configs never change behavior.
-//
-//   - marker on + seam serving this entry: the seam's live token source. The
-//     static APIKey stays on the entry but the provider's middleware overrides
-//     it with the subscription credentials on every request.
-//
-//   - marker on + no serving seam (signed out, or not wired yet): a DYNAMIC
-//     stand-in that consults the builder's CURRENT seam on every request (see
-//     dynamicSubscriptionSource) instead of freezing the signed-out posture of
-//     build time. The entry keeps its place in the router — models stay
-//     visible and selectable — and every request fails fast with the
-//     actionable "sign in with ChatGPT" error while nothing serves, but a
-//     later SetSubscriptionTokenSource (a sign-in) makes the SAME router serve
-//     subscription credentials without a rebuild. This is what keeps
-//     already-live session routers correct across auth lifecycle transitions:
-//     they are cached by the session factory and never rebuilt by the sign-in
-//     path.
+// subscriptionAuthEntry resolves one entry's auth shape from the marker and the seam
+// (specs/domains/llm-providers.md): marker off → (nil, false) — api_key configs are
+// byte-for-byte historical; marker on + serving seam → the live token source; marker on
+// + no seam → the dynamicSubscriptionSource stand-in, so a later sign-in serves the SAME
+// cached router without a rebuild.
 func subscriptionAuthEntry(name string, pc BuilderProviderConfig, seam BuilderSubscriptionAuthConfig, b *OrchestratorBuilder) (llm.TokenSource, bool) {
 	if !pc.SubscriptionAuth {
 		return nil, false
@@ -2776,27 +2141,22 @@ func subscriptionAuthEntry(name string, pc BuilderProviderConfig, seam BuilderSu
 	return &dynamicSubscriptionSource{builder: b, providerName: name}, true
 }
 
-// errSignInRequired is the signed-out subscription-auth failure. It is the
-// ACTIONABLE error the task demands: it names the one action that fixes it
-// (sign in with ChatGPT) rather than a bare 401 the model or user would have
-// to diagnose. It contains no token material and is safe to surface anywhere.
+// errSignInRequired is the signed-out subscription-auth failure — the actionable error
+// naming the one fix (sign in with ChatGPT); no token material, safe to surface anywhere
+// (specs/domains/llm-providers.md).
 var errSignInRequired = errors.New(
 	"the chatgpt provider is set to ChatGPT subscription auth (llm.chatgpt.auth.mode: \"oauth\") " +
 		"but no account is signed in — sign in with ChatGPT to send requests through it",
 )
 
-// dynamicSubscriptionSource is the request-time-resolved subscription
-// TokenSource handed to entries built while the seam served nothing. Each
-// Token call re-reads the owning builder's effective seam: when it now
-// serves this provider the call delegates to the live source, otherwise it
-// fails with the actionable sign-in-required error — exactly the stand-in
-// behavior, but never frozen at build time.
+// dynamicSubscriptionSource is the request-time TokenSource for entries built while the
+// seam served nothing: each Token call re-reads the builder's CURRENT seam — a later
+// sign-in serves the same cached router (specs/domains/llm-providers.md).
 type dynamicSubscriptionSource struct {
 	builder      *OrchestratorBuilder
 	providerName string
 }
 
-// Token implements llm.TokenSource.
 func (d *dynamicSubscriptionSource) Token(ctx context.Context) (llm.BearerToken, error) {
 	if d.builder != nil {
 		seam := d.builder.builderSubscriptionSeam()
@@ -2807,22 +2167,17 @@ func (d *dynamicSubscriptionSource) Token(ctx context.Context) (llm.BearerToken,
 	return llm.BearerToken{}, errSignInRequired
 }
 
-// builderSubscriptionSeam snapshots the builder-level default seam without a
-// per-config override — the resolution dynamicSubscriptionSource needs on
-// every Token call (the empty-config sentinel trick is replaced by a direct
-// accessor: no per-request BuilderConfig allocation, no reader needing to
-// know why a zero config falls through).
+// builderSubscriptionSeam snapshots the builder-level default seam for
+// dynamicSubscriptionSource's per-Token resolution (direct accessor, no
+// per-request allocation).
 func (b *OrchestratorBuilder) builderSubscriptionSeam() BuilderSubscriptionAuthConfig {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	return b.subscriptionAuth
 }
 
-// dialPolicy derives the llmtls.DialPolicy for dialing targetURL (the
-// provider base URL): the proxy is active when a proxy client exists (the
-// BuildTransport rule), and the target is bypassed per the operator's
-// proxy.bypass_list. A nil proxyClient short-circuits — with no proxy every
-// dial is direct and the bypass list is irrelevant.
+// dialPolicy derives the llmtls.DialPolicy for targetURL: proxy active when a
+// client exists and the target is not bypassed; nil client → all dials direct.
 func dialPolicy(proxyClient *http.Client, bypass proxy.BypassMatcher, targetURL string) llmtls.DialPolicy {
 	if proxyClient == nil {
 		return llmtls.ZeroDialPolicy
@@ -2834,12 +2189,13 @@ func dialPolicy(proxyClient *http.Client, bypass proxy.BypassMatcher, targetURL 
 	}
 }
 
-// hostOf extracts the hostname (no port) from a provider base URL; an empty
-// or unparseable URL yields "" which matches nothing in the bypass list, so
-// an unusual base URL simply keeps the proxy routing.
+// hostOf extracts the hostname (no port); an unparseable URL yields "" which matches
+// nothing in the bypass list, so an unusual base URL simply keeps the proxy routing.
 func hostOf(rawURL string) string {
 	return llmtls.TargetHost(rawURL)
-} // buildCoreAgents creates the core Router and Reflector.
+}
+
+// buildCoreAgents creates the core Router and Reflector.
 func (b *OrchestratorBuilder) buildCoreAgents(
 	caller agent.LLMCaller,
 	cfg *BuilderConfig,
@@ -2863,14 +2219,13 @@ func (b *OrchestratorBuilder) buildCoreAgents(
 }
 
 // buildContextFactory creates a ContextManagerFactory using the tracking caller for
-// compaction summarization (ensuring those tokens are counted in session totals).
+// compaction summarization (so those tokens count in session totals).
 func (b *OrchestratorBuilder) buildContextFactory(caller *llm.TrackingCaller, cfg *BuilderConfig, modelRegistry *llm.ModelRegistry, dumpWriter io.Writer, llmRouter *llm.Router) ContextManagerFactory {
 	var summarizeCaller agent.LLMCaller = caller
 	summarizeCaller = agent.NewDumpCaller(summarizeCaller, dumpWriter, b.logger)
 
-	// Model Profiles context-management override: tightens the compaction strategy
-	// and tool-output pruning baselines when both the master toggle and the
-	// context variant are enabled. Per-step pruning overrides (below) still
+	// Model Profiles context override: tightens the compaction strategy and pruning
+	// baselines when both toggles are enabled; per-step pruning overrides (below) still
 	// take precedence over the tightened baseline.
 	exec := applyContextManagement(cfg.Executor, cfg.ModelProfiles)
 
@@ -2913,15 +2268,12 @@ func (b *OrchestratorBuilder) buildContextFactory(caller *llm.TrackingCaller, cf
 						{Role: "system", Content: coreprompts.CompactionSummarize},
 						{Role: "user", Content: blockText},
 					},
-					// Oneshot service policy: reasoning tier minimal,
-					// resolved per call from the session router's ACTIVE
-					// model (model switches ride along) via the model
-					// catalog — the Model Profiles reasoningEffort seed does
-					// not reach service calls.
+					// Oneshot service policy: reasoning tier minimal, resolved per call from
+					// the session router's ACTIVE model (model switches ride along) — the
+					// Model Profiles seed does not reach service calls; temperature pinned
+					// to the family-safe floor (deterministic summaries).
 					ReasoningEffort: serviceReasoningEffort(bareActiveModel(llmRouter), oneshotTierCompaction),
-					// Compaction summaries are deterministic calls: no vendor
-					// preset, temperature pinned to the family-safe floor.
-					CallPurpose: llm.CallPurposeCompaction,
+					CallPurpose:     llm.CallPurposeCompaction,
 				}
 				summary, err := serviceCall(ctx, b.serviceMetrics, b.log(), ServiceKindCompactionSummary, bareActiveModel(llmRouter), summarizeCaller, req, compactionSummarizeContent, oneshot.Options[string]{})
 				if err != nil {
@@ -2974,16 +2326,11 @@ func (b *OrchestratorBuilder) buildContextFactory(caller *llm.TrackingCaller, cf
 	}
 }
 
-// newJudgeForRouter builds a ToolJudge that rides the given router: the
-// judge's one-shot calls go through the router as a plain llm.Caller with NO
-// model pinned, so every call resolves to the router's ACTIVE provider and
-// model — a session model switch (Router.SetModel) is picked up by the next
-// judge call with no re-binding. usageTracker, when non-nil, routes the
-// judge's calls through a TrackingCaller so judge token usage lands in the
-// session's accounting; pass nil for judges that must not be accounted (the
-// shared-registry fallback judge — no session tracker exists at builder
-// level). Returns nil when the router is nil — callers treat nil as "keep the
-// previous judge" (fail-safe).
+// newJudgeForRouter builds a ToolJudge riding the given router as a plain llm.Caller
+// with NO model pinned — every call resolves to the ACTIVE provider/model, so model
+// switches need no re-binding (specs/decisions/028-session-pinned-judge.md).
+// usageTracker routes judge tokens into session accounting; nil router → nil
+// ("keep the previous judge").
 func (b *OrchestratorBuilder) newJudgeForRouter(cfg *BuilderConfig, llmRouter *llm.Router, usageTracker *llm.UsageTracker) *sdktools.ToolJudge {
 	if llmRouter == nil {
 		return nil
@@ -2998,20 +2345,16 @@ func (b *OrchestratorBuilder) newJudgeForRouter(cfg *BuilderConfig, llmRouter *l
 	}, b.logger)
 }
 
-// rebuildJudgeInternal recreates the SHARED registry's judge from the builder's
-// global state. That judge is only a clone-time fallback for new sessions —
-// Build binds every session clone to a judge riding the session's own router
-// (see bindSessionJudge), so this rebuild (triggered by a default-model change
-// in the settings UI or another session's model picker) never re-binds a live
-// session's judge. The fallback judge rides the builder's cached router and is
-// not usage-tracked (no session tracker exists at builder level).
+// rebuildJudgeInternal recreates the SHARED registry's judge — only a clone-time
+// fallback for new sessions; a default-model change never re-binds a live session's
+// judge, and the fallback judge is not usage-tracked
+// (specs/architecture/security-model.md).
 func (b *OrchestratorBuilder) rebuildJudgeInternal(cfg *BuilderConfig, llmRouter *llm.Router) {
 	if b.registry == nil {
 		return
 	}
 
 	if llmRouter == nil {
-		// Try building a fresh router
 		newRouter, _, err := b.buildRouter(context.Background(), cfg, nil)
 		if err == nil && newRouter != nil {
 			llmRouter = newRouter
@@ -3032,17 +2375,11 @@ func (b *OrchestratorBuilder) rebuildJudgeInternal(cfg *BuilderConfig, llmRouter
 	}
 }
 
-// bindSessionJudge binds the SESSION registry's tool judge to the session's
-// OWN router — the per-session router Build created — replacing the
-// clone-inherited shared-registry fallback judge. The judge issues its calls
-// through the router as a plain llm.Caller with no model pinned, so it rides
-// the router's ACTIVE provider and model by construction: the session's own
-// model switch (Router.SetModel in ApplyRequestOverrides) is picked up by the
-// next judge call with NO re-binding, while a global default-model change
-// elsewhere rebuilds only the shared registry's clone-time fallback judge.
-// The session's usage tracker is passed so judge token usage lands in the
-// session's accounting. A nil judge (no router) keeps the previous binding —
-// the clone-inherited shared judge — so a session never loses a judge it had.
+// bindSessionJudge binds the SESSION registry's judge to the session's OWN router,
+// replacing the clone-inherited shared fallback — the session's model switches are
+// followed with no re-binding, while a global default-model change rebuilds only the
+// shared fallback (specs/decisions/028-session-pinned-judge.md). A nil judge keeps the
+// previous binding (a session never loses a judge it had).
 func (b *OrchestratorBuilder) bindSessionJudge(cfg *BuilderConfig, llmRouter *llm.Router, sessionRegistry *tools.ToolRegistry, usageTracker *llm.UsageTracker) {
 	judge := b.newJudgeForRouter(cfg, llmRouter, usageTracker)
 	if judge == nil {
@@ -3051,22 +2388,18 @@ func (b *OrchestratorBuilder) bindSessionJudge(cfg *BuilderConfig, llmRouter *ll
 	sessionRegistry.SetJudge(judge)
 }
 
-// judgeDumpCaller wraps the session router as the judge's llm.Caller and adds
-// context-aware LLM dump support: when a DumpWriter exists in the context, it
-// wraps the call with agent.NewDumpCaller + agent.NewLoggingLLMCaller (the
-// provider name resolved live per call) for DEBUG-level observability. It
-// forwards ActiveModel() so ToolJudge's activeModelSource probe keeps
-// resolving the tier-off reasoning spelling and per-model advisory cache keys
-// through the wrapper.
+// judgeDumpCaller wraps the session router as the judge's llm.Caller with context-aware
+// dump support (logging + dump layers under DEBUG with a DumpWriter). Forwards
+// ActiveModel() so ToolJudge's activeModelSource probe keeps resolving reasoning
+// spelling and advisory cache keys through it.
 type judgeDumpCaller struct {
 	router       *llm.Router
 	logger       *slog.Logger
 	debugEnabled bool
 }
 
-// newJudgeDumpCaller wraps the router for context-aware dump support. When
-// debug is disabled the wrapper degenerates to a pass-through caller: no
-// dump/logging layers are ever constructed.
+// newJudgeDumpCaller wraps the router for context-aware dump support; with debug
+// disabled it degenerates to a pass-through (no layers constructed).
 func newJudgeDumpCaller(llmRouter *llm.Router, logger *slog.Logger, debugEnabled bool) *judgeDumpCaller {
 	return &judgeDumpCaller{router: llmRouter, logger: logger, debugEnabled: debugEnabled}
 }
@@ -3085,15 +2418,10 @@ func (c *judgeDumpCaller) Call(ctx context.Context, req llm.ChatRequest) (*llm.C
 // ActiveModel forwards the router's active model (composite id).
 func (c *judgeDumpCaller) ActiveModel() string { return c.router.ActiveModel() }
 
-// registerSessionRegistry clones the shared registry for a new session and
-// records the clone as live. The clone and the insert happen atomically under
-// b.mu so a concurrent applySecurityPolicies push cannot slip between them:
-// either the clone is created after the parent registry was updated (it
-// inherits the new group policies and autonomy posture) or it is already
-// tracked here and receives the group-policy half of the push. The autonomy
-// posture on the clone is pinned at task launch (RefreshAutonomyPosture), not
-// pushed. The entry is released by unregisterSessionRegistry via the
-// orchestrator's cleanup hook.
+// registerSessionRegistry clones the shared registry for a new session and records it
+// live; clone + insert are atomic under b.mu, so a concurrent security push either is
+// inherited by the clone or finds it already tracked. Released by
+// unregisterSessionRegistry via the orchestrator cleanup hook.
 func (b *OrchestratorBuilder) registerSessionRegistry() *tools.ToolRegistry {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -3105,27 +2433,20 @@ func (b *OrchestratorBuilder) registerSessionRegistry() *tools.ToolRegistry {
 	return clone
 }
 
-// unregisterSessionRegistry removes a session registry from the live set. It
-// is the cleanup hook wired into every orchestrator built by Build so tracked
-// clones do not outlive their sessions.
+// unregisterSessionRegistry removes a session registry from the live set — the cleanup
+// hook wired into every orchestrator Build creates, so tracked clones do not outlive
+// their sessions.
 func (b *OrchestratorBuilder) unregisterSessionRegistry(r *tools.ToolRegistry) {
 	b.mu.Lock()
 	delete(b.sessionRegistries, r)
 	b.mu.Unlock()
 }
 
-// registerSessionModelRegistry records a freshly built per-session model
-// registry in the live set so UpdateModelOverrides pushes reach it. It runs
-// under b.mu so a concurrent push either sees the registry (and includes it)
-// or ran entirely before the registry existed — sessions built after a
-// metadata change carry the new metadata from construction, having read the
-// changed config. The gap this cannot close is the one INSIDE buildRouter:
-// the registry is constructed there, outside b.mu, a few statements before
-// registration. A push landing in that gap skips the session; the tool
-// registry's equivalent closes it by cloning under b.mu, which the model
-// registry cannot mirror cheaply — the accepted consequence is that such a
-// session re-syncs on the NEXT push, and only the motivating read-back push
-// exists today.
+// registerSessionModelRegistry records a per-session model registry in the live set so
+// UpdateModelOverrides pushes reach it. One gap is accepted: the registry is constructed
+// inside buildRouter, outside b.mu, a few statements before registration — a push landing
+// there skips the session, which then re-syncs on the next push (only the motivating
+// read-back push exists).
 func (b *OrchestratorBuilder) registerSessionModelRegistry(reg *llm.ModelRegistry) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -3135,36 +2456,25 @@ func (b *OrchestratorBuilder) registerSessionModelRegistry(reg *llm.ModelRegistr
 	b.sessionModelRegistries[reg] = struct{}{}
 }
 
-// unregisterSessionModelRegistry removes a session model registry from the
-// live set. It shares the cleanup hook with unregisterSessionRegistry so
-// tracked registries do not outlive their sessions.
+// unregisterSessionModelRegistry removes a session model registry from the live set,
+// sharing the cleanup hook with unregisterSessionRegistry.
 func (b *OrchestratorBuilder) unregisterSessionModelRegistry(reg *llm.ModelRegistry) {
 	b.mu.Lock()
 	delete(b.sessionModelRegistries, reg)
 	b.mu.Unlock()
 }
 
-// UpdateModelOverrides pushes the config-derived tier-1 model metadata into
-// every live per-session model registry, so a runtime metadata correction
-// reaches already-open sessions instead of only sessions built after it —
-// the model-registry counterpart of the security-policy push. The motivating
-// caller is the embedded LLM context read-back: the /props-reported window
-// lands in llm.models while a session built before it keeps refusing prompts
-// with the stale window unless the correction is pushed to it.
-//
-// The overrides derive from the CURRENT cfg — the same map a session built
-// right now would be seeded with — and are applied as an upsert: models the
-// cfg no longer mentions keep their stored entries. The builder-cached
-// router/registry pair is deliberately NOT touched here; RebuildRouter
-// replaces that pair wholesale and the backend always pairs the two calls.
+// UpdateModelOverrides pushes config-derived tier-1 model metadata into every live
+// per-session model registry — the model-registry counterpart of the security push
+// (specs/domains/embedded-llm.md). Applies as an upsert; the builder-cached pair is
+// untouched (RebuildRouter replaces it — the backend pairs the two calls).
 func (b *OrchestratorBuilder) UpdateModelOverrides(cfg *BuilderConfig) {
 	overrides := modelOverridesFromConfig(cfg)
 	if len(overrides) == 0 {
 		return
 	}
-	// Lock ordering is b.mu → registry mu, the same order the security push
-	// and registerSessionModelRegistry use; the registries never call back
-	// into the builder.
+	// Lock ordering is b.mu → registry mu, the same order the security push and
+	// registerSessionModelRegistry use; the registries never call back into the builder.
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	for reg := range b.sessionModelRegistries {
@@ -3172,41 +2482,16 @@ func (b *OrchestratorBuilder) UpdateModelOverrides(cfg *BuilderConfig) {
 	}
 }
 
-// applySecurityPolicies applies group-based security policies to the tool
-// registry: every non-system tool resolves its policy from its capability
-// group (the sdktools.Group* values), never from its name. The reserved
-// system group is not configurable and any entry for it is skipped
-// defensively; unknown group names are likewise skipped.
+// applySecurityPolicies applies group-based security policies to the registry: every
+// non-system tool resolves its policy from its capability GROUP, never its name
+// (ADR-024); unknown names are skipped defensively.
 //
-// Split delivery contract (per-task autonomy pinning): the shared registry
-// receives the FULL state — group policies, auto-approval, the autonomy mode,
-// and the silent-mode sub-policies — while live per-session clones receive
-// ONLY the group policies and auto-approval. Group policy is fail-closed
-// posture shared by every session: a runtime deny set in the security
-// settings UI must reach already-open sessions too, otherwise it would
-// silently fail-open on every session created before the save (the same
-// save's execute blocklist does reach them, because it re-registers the tool
-// in the shared sp4rk registry the clones embed). The autonomy posture, by
-// contrast, is pinned per task: each clone inherits it at creation and
-// re-syncs it from the shared registry at task launch (fresh send and every
-// resume path) via ToolRegistry.RefreshAutonomyPosture, so a task that
-// started interactive can never silently turn unattended mid-run, and a
-// paused task resumed after a Settings edit runs under the posture the user
-// currently sees in Settings. The pinning is bidirectional-aware: the
-// escalation direction is pinned as just described, while a TIGHTENING save
-// (a revocation to a less-permissive posture — e.g. Security back to
-// Assisted/Standard while a silent task runs) must not fail open, so each
-// live clone also receives ApplyAutonomyPostureIfTightening, which applies
-// the new posture only when it is tighter than the clone's current one. The
-// result is that a task can never silently BECOME unattended mid-run, but a
-// revocation reaches a running task immediately. applySecurityPolicies also
-// reconciles the ask_user tool's registration on the shared registry — ask_user
-// availability is tool-registration-scoped and therefore follows Settings
-// immediately (including for a running task); this is a documented boundary of
-// the pinning contract.
-//
-// The push holds b.mu across the whole update so a Build racing it cannot
-// miss the new state (see registerSessionRegistry).
+// Split delivery (specs/architecture/security-model.md): the shared registry gets the
+// FULL state; live clones get only group policies + auto-approval — the autonomy posture
+// is pinned per task and re-synced at launch via RefreshAutonomyPosture, with
+// de-escalations still reaching clones immediately (ApplyAutonomyPostureIfTightening).
+// Also reconciles ask_user registration; holds b.mu so a racing Build cannot miss the
+// new state.
 func (b *OrchestratorBuilder) applySecurityPolicies(cfg *BuilderConfig) {
 	groupPolicies := make(map[sdktools.ToolGroup]sdktools.ToolPolicy, len(cfg.Security.Groups))
 	for name, group := range cfg.Security.Groups {
@@ -3229,42 +2514,30 @@ func (b *OrchestratorBuilder) applySecurityPolicies(cfg *BuilderConfig) {
 		AskUser:     cfg.Security.SilentMode.AskUser,
 	}
 
-	// Lock ordering is b.mu → registry mu: registerSessionRegistry clones
-	// under b.mu (same order), and the registries never call back into the
-	// builder, so no reverse order exists.
+	// Lock ordering is b.mu → registry mu: registerSessionRegistry clones under b.mu
+	// (same order) and registries never call back into the builder, so no reverse
+	// order exists.
 	b.mu.Lock()
 	b.registry.ApplySecurityState(groupPolicies, autoApprove, autonomyMode, silentMode)
 	for r := range b.sessionRegistries {
-		// Group policies and auto-approval only: the autonomy posture is
-		// pinned per task (see the method comment) — a clone re-syncs an
-		// ESCALATION from the shared registry at task launch via
-		// RefreshAutonomyPosture, never mid-run. The one mid-run exception is
-		// the DE-ESCALATION (tightening) direction: a revoked unattended
-		// posture must stop auto-approving immediately, so push it here when
-		// it is tighter than the posture the clone currently holds.
+		// Group policies + auto-approval only; the posture is pinned per task. The one
+		// mid-run exception is DE-ESCALATION: a revoked unattended posture must stop
+		// auto-approving immediately.
 		r.ApplyGroupPolicies(groupPolicies, autoApprove)
 		r.ApplyAutonomyPostureIfTightening(autonomyMode, silentMode)
 	}
-	// ask_user lives in the shared sp4rk registry the session clones embed, so
-	// re-registering it here reaches live sessions immediately — a runtime
-	// silent-mode toggle must not require an app restart.
+	// ask_user lives in the shared sp4rk registry the clones embed, so re-registering
+	// reaches live sessions immediately — a runtime silent-mode toggle must not require
+	// an app restart.
 	b.reconcileAskUser(cfg)
 	b.mu.Unlock()
 }
 
-// reconcileAskUser (re)registers the ask_user tool on the shared registry with
-// the callback selected by the silent-mode ask_user sub-policy. It is the
-// runtime counterpart of the build-time logic in RegisterBuiltinTools: with
-// silent mode on and ask_user.mode "disable" the tool is registered with a NIL
-// callback, so a call resolves to the explicit "ask_user is not available in
-// this mode" result — never blocking the agent — instead of a missing-tool
-// error; turning silent mode back off restores the live callback. The tool is
-// stateless, so re-registering it is idempotent. A nil askUserFunc (CLI, or a
-// test builder) is a no-op — there is no callback channel to register. The
-// shared registry's tools are visible to every session clone, so one call here
-// reaches all live sessions.
-//
-// Callers hold b.mu (lock order b.mu → registry mu).
+// reconcileAskUser (re)registers ask_user on the shared registry with the callback the
+// silent-mode sub-policy selects: "disable" registers a NIL callback (a call resolves
+// the explicit "not available" result instead of a missing-tool error); turning silent
+// mode off restores the live callback. The shared registry's tools are visible to every
+// session clone. Callers hold b.mu.
 func (b *OrchestratorBuilder) reconcileAskUser(cfg *BuilderConfig) {
 	if b.askUserFunc == nil {
 		return
@@ -3276,11 +2549,9 @@ func (b *OrchestratorBuilder) reconcileAskUser(cfg *BuilderConfig) {
 	b.registry.Register(tools.NewAskUserTool(askUser))
 }
 
-// parseGroupPolicy maps the short config enum used by
-// security.groups.<group>.policy ("allow" | "user_confirm" | "deny", see the
-// backend/config GroupPolicy* constants) onto sdktools policy values. The
-// mapping lives here because core never imports backend/config. Anything
-// unrecognized — including an empty value — fails safe to user confirmation.
+// parseGroupPolicy maps the security.groups.<group>.policy short enum onto sdktools
+// policy values; it lives here because core never imports backend/config. Anything
+// unrecognized — including empty — fails safe to user confirmation.
 func parseGroupPolicy(policy string) sdktools.ToolPolicy {
 	switch policy {
 	case "allow":
@@ -3292,28 +2563,18 @@ func parseGroupPolicy(policy string) sdktools.ToolPolicy {
 	}
 }
 
-// applyModelProfilesPresets seeds the builder-level reasoning-effort default when
-// the ModelProfiles sampling variant is active. The remaining per-variant effects
-// (loop hardening, sampling temperature) are applied lazily in Build() and
-// buildRouter() via the pure helpers applyLoopHardening and
-// resolveSamplingFunc, which read the profile straight from the passed-in
-// *BuilderConfig. When the master toggle is off this is a no-op, so behavior
-// is identical to the un-profiled baseline.
+// applyModelProfilesPresets seeds the builder-level reasoning-effort default when the
+// ModelProfiles sampling variant is active; the other variant effects apply lazily in
+// Build/buildRouter via the pure helpers (specs/domains/model-profiles.md).
 func (b *OrchestratorBuilder) applyModelProfilesPresets(cfg *BuilderConfig) {
-	// When the sampling variant is active and supplies a reasoning effort, use
-	// it as the builder-level default. Per-request overrides
-	// (HandleOptions.ReasoningEffort → ApplyRequestOverrides →
-	// SetReasoningEffort) still take precedence at request time.
 	if cfg.ModelProfiles.Enabled && cfg.ModelProfiles.Sampling.Enabled && cfg.ModelProfiles.Sampling.ReasoningEffort != "" {
 		b.reasoningEffort = cfg.ModelProfiles.Sampling.ReasoningEffort
 	}
 }
 
-// applyLoopHardening overrides circuit-breaker thresholds with the tighter
-// ModelProfiles loop-hardening values when the variant is enabled (and the master
-// toggle is on). Only the thresholds present in the profile are overridden;
-// all others (RepeatAbortThreshold, TruncationAbortThreshold, etc.) keep their
-// baseline. When the variant is disabled the breaker is returned unchanged.
+// applyLoopHardening overrides circuit-breaker thresholds with the tighter ModelProfiles
+// values (only thresholds present in the profile; disabled → unchanged) —
+// specs/domains/model-profiles.md.
 func applyLoopHardening(cb agent.CircuitBreakerConfig, s BuilderModelProfilesConfig) agent.CircuitBreakerConfig {
 	if !s.Enabled || !s.LoopHardening.Enabled {
 		return cb
@@ -3327,13 +2588,10 @@ func applyLoopHardening(cb agent.CircuitBreakerConfig, s BuilderModelProfilesCon
 	return cb
 }
 
-// applyContextManagement tightens the executor's context-management knobs —
-// compaction (sliding-window keep-last, summarization block size, predictive
-// trigger), tool-output pruning depth, and the output token reserve — when the
-// ModelProfiles context variant is enabled (and the master toggle is on). Each knob
-// is overridden independently: a zero value in the profile means "keep the
-// executor baseline" for that knob. When the variant is disabled the executor
-// config is returned byte-for-byte unchanged.
+// applyContextManagement tightens the executor's context-management knobs (compaction,
+// pruning depth, output token reserve) when the ModelProfiles context variant is enabled;
+// each knob overrides independently (zero = baseline), disabled → unchanged
+// (specs/domains/model-profiles.md).
 func applyContextManagement(exec BuilderExecutorConfig, s BuilderModelProfilesConfig) BuilderExecutorConfig {
 	if !s.Enabled || !s.Context.Enabled {
 		return exec
@@ -3357,19 +2615,12 @@ func applyContextManagement(exec BuilderExecutorConfig, s BuilderModelProfilesCo
 	return exec
 }
 
-// resolveSamplingFunc returns the SamplingFunc for the LLM router. The
-// per-family vendor matrix preset (prompt.DefaultSampling) is always the
-// base. When the sampling variant is enabled (and the ModelProfiles master toggle
-// is on), only the fields the user set explicitly (non-zero) override the
-// preset; every unset field inherits the vendor value. A fully-unset profile
-// therefore reproduces the vendor preset exactly — enabling the variant alone
-// never degrades a family to hardcoded constants such as a constant
-// temperature, which previously broke vendor-tuned 27-30B model presets.
-//
-// prompt.SamplingConfig is converted field-by-field into llm.SamplingDefaults
-// because the llm package cannot import prompt (it would create an import
-// cycle through prompt's in-package tests). MaxTokens is deliberately not
-// forwarded: the router-level preset is sampling-only.
+// resolveSamplingFunc returns the router's SamplingFunc: the per-family
+// vendor preset is always the base, and when the sampling variant is enabled
+// only explicitly set (non-zero) fields override it — a fully-unset profile
+// reproduces the vendor preset exactly (specs/domains/llm-providers.md).
+// Conversion is field-by-field because llm cannot import prompt; MaxTokens is
+// deliberately not forwarded (the router-level preset is sampling-only).
 func resolveSamplingFunc(s BuilderModelProfilesConfig) llm.SamplingFunc {
 	override := s.Enabled && s.Sampling.Enabled
 	return func(family string) llm.SamplingDefaults {
@@ -3405,21 +2656,14 @@ func resolveSamplingFunc(s BuilderModelProfilesConfig) llm.SamplingFunc {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Config conversion helpers
-// ---------------------------------------------------------------------------
+// Config conversion helpers.
 
-// configToBuiltinToolsConfig converts BuilderConfig to BuiltinToolsConfig.
-// configToBuiltinToolsConfig maps a BuilderConfig into the tool-registration
-// config. (See the call site for the blocklist sourcing note.)
+// configToBuiltinToolsConfig maps BuilderConfig into the tool-registration
+// config.
 func configToBuiltinToolsConfig(cfg *BuilderConfig) tools.BuiltinToolsConfig {
-	// The command blocklist is sourced from the execute group
-	// (security.groups.execute.blocklist) and compiled into the shell-exec
-	// tool, whose Judge reports a match as a hard escalation naming the
-	// pattern. Presence-based and empty by default: an explicitly empty
-	// blocklist ([] in YAML) and an absent one both compile to "no patterns"
-	// (the config loader back-fills the entry, so a nil here only affects
-	// programmatically built configs).
+	// The command blocklist comes from security.groups.execute.blocklist and compiles
+	// into the shell-exec tool (a Judge match is a hard escalation naming the pattern) —
+	// empty by default (specs/domains/tool-system/builtins.md).
 	var shellBlocklist []string
 	if execGroup, ok := cfg.Security.Groups[string(sdktools.GroupExecute)]; ok {
 		shellBlocklist = execGroup.Blocklist
@@ -3470,27 +2714,18 @@ func configToBuiltinToolsConfig(cfg *BuilderConfig) tools.BuiltinToolsConfig {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Standalone model listing helpers (no receiver state needed)
-// ---------------------------------------------------------------------------
+// Standalone model listing helpers (no receiver state needed).
 
-// maxModelsListBodyLen caps the buffered size of a provider models-listing
-// response (GET /v1/models). The listing is a small JSON document; anything
-// larger means a misbehaving or hostile endpoint — the same rationale as the
-// sibling bounded reads in lmstudio_probe.go and embeddedllm/server.go. The
-// 10-second request context bounds duration, not bytes, so a loopback/LAN
-// endpoint could otherwise push unbounded data into the heap.
+// maxModelsListBodyLen caps the buffered size of a models-listing response; anything
+// larger is a misbehaving or hostile endpoint (same bounded-read rationale as
+// lmstudio_probe.go). The 10s context bounds duration, not bytes — a loopback endpoint
+// could otherwise push unbounded data into the heap.
 const maxModelsListBodyLen = 1 << 20
 
-// listOpenAIModels fetches model names from an OpenAI-compatible API.
-// httpClient may be nil (SDK default transport); fetchProviderModels threads
-// either the proxy client or a per-provider TLS-pinned client
-// (llmtls.DirectDialClient) so the listing reaches self-signed endpoints
-// exactly like the chat path (ADR-054).
-//
-// The client's transport is wrapped in a body-capping transport: the SDK
-// buffers the whole response with a bare io.ReadAll (its internal
-// requestconfig), so the maxModelsListBodyLen cap must be applied beneath it.
+// listOpenAIModels fetches model names from an OpenAI-compatible API; httpClient may be
+// nil or carry the proxy / TLS pin so the listing reaches self-signed endpoints like the
+// chat path. The transport gets a body-capping layer: the SDK buffers the whole response
+// with a bare io.ReadAll, so the cap must sit beneath it.
 func listOpenAIModels(ctx context.Context, baseURL, apiKey string, httpClient *http.Client) ([]string, error) {
 	opts := []option.RequestOption{
 		option.WithAPIKey(apiKey),
@@ -3528,12 +2763,9 @@ func listOpenAIModels(ctx context.Context, baseURL, apiKey string, httpClient *h
 	return names, nil
 }
 
-// boundedBodyTransport wraps an http.RoundTripper and caps every response
-// body at limit bytes. The openai-go SDK reads response bodies with a bare
-// io.ReadAll and offers no maximum-body option, so an oversized or endless
-// response from a UI-configurable /v1/models endpoint would otherwise grow
-// the heap unbounded (same class as the raw io.ReadAll capped in
-// listAnthropicModels).
+// boundedBodyTransport caps every response body at limit bytes: the SDK reads bodies
+// with a bare io.ReadAll and offers no maximum-body option, so an oversized response
+// from a UI-configurable endpoint would grow the heap unbounded.
 type boundedBodyTransport struct {
 	inner http.RoundTripper
 	limit int64
@@ -3550,10 +2782,9 @@ func (t *boundedBodyTransport) RoundTrip(req *http.Request) (*http.Response, err
 	return resp, nil
 }
 
-// limitErrorBody wraps a response body and fails the read once more than
-// limit bytes have been consumed, so an oversized response surfaces as an
-// actionable error ("response body exceeds ...") instead of an unbounded
-// allocation inside the caller's io.ReadAll.
+// limitErrorBody wraps a response body and fails the read once more than limit bytes
+// are consumed, so an oversized response surfaces as an actionable error instead of an
+// unbounded allocation inside the caller's io.ReadAll.
 type limitErrorBody struct {
 	rc       io.ReadCloser
 	limit    int64
@@ -3574,11 +2805,9 @@ func (b *limitErrorBody) Read(p []byte) (int, error) {
 
 func (b *limitErrorBody) Close() error { return b.rc.Close() }
 
-// listAnthropicModels fetches model names from an Anthropic-compatible API by
-// performing a raw HTTP GET to {baseURL}/v1/models (the go-anthropic SDK does
-// not expose a ListModels method). baseURL may or may not end with "/v1"; the
-// path is normalized. An optional proxy-configured httpClient is honored. The
-// "x-api-key" and "anthropic-version" headers are sent when apiKey is non-empty.
+// listAnthropicModels fetches model names via a raw GET to {baseURL}/v1/models
+// (the go-anthropic SDK exposes no ListModels); honors an optional
+// proxy/pinned httpClient, sends x-api-key/anthropic-version for a non-empty key.
 func listAnthropicModels(ctx context.Context, baseURL, apiKey string, httpClient *http.Client) ([]string, error) {
 	// Normalize the URL: ensure it ends with "/v1/models".
 	endpoint := strings.TrimRight(baseURL, "/")
@@ -3616,9 +2845,8 @@ func listAnthropicModels(ctx context.Context, baseURL, apiKey string, httpClient
 		return nil, fmt.Errorf("anthropic-compatible models endpoint returned %s", resp.Status)
 	}
 
-	// Cap+1 read: a body larger than the cap means a misbehaving or hostile
-	// endpoint — refuse it with an actionable error instead of buffering an
-	// unbounded response (the truncated tail is drained and discarded).
+	// Cap+1 read: a body larger than the cap means a misbehaving or hostile endpoint —
+	// refuse it with an actionable error instead of buffering an unbounded response.
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxModelsListBodyLen+1))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read models response: %w", err)

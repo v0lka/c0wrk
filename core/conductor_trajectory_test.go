@@ -85,13 +85,22 @@ func discardLogger() *slog.Logger {
 }
 
 // waitForTrajectoryCount polls the mock until at least `want` snapshots have
-// been persisted, failing the test on timeout. Because the DB write is async,
-// callers MUST wait before asserting on persisted state.
-func waitForTrajectoryCount(tb testing.TB, m *trajectoryTaskStore, want int, timeout time.Duration) {
+// been persisted AND the composite store's writer slot is free, failing the
+// test on timeout. Because the DB write is async, callers MUST wait before
+// asserting on persisted state. The writer-idle half is load-bearing for
+// determinism: Sync skips the persist when a write is still outstanding (the
+// one-slot best-effort contract), and the slot is released only after the
+// writer goroutine's deferred teardown — strictly after SaveTrajectory made
+// the snapshot visible in the mock. Returning on the count alone would let
+// the next Sync land inside that teardown window and be silently skipped,
+// stranding the snapshot forever (observed as a CI flake: "timed out waiting
+// for 2 persisted snapshots; got 1"). With the slot observed empty, the next
+// Sync is guaranteed to start its own write.
+func waitForTrajectoryCount(tb testing.TB, cs *compositeTrajectoryStore, m *trajectoryTaskStore, want int, timeout time.Duration) {
 	tb.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if m.count() >= want {
+		if m.count() >= want && len(cs.sem) == 0 {
 			return
 		}
 		time.Sleep(2 * time.Millisecond)
@@ -127,15 +136,15 @@ func TestCompositeTrajectoryStore_PersistsFullTrajectoryOnSync(t *testing.T) {
 
 	// Simulate the ReAct loop syncing a growing trajectory.
 	cs.Sync(trajSteps("a"))
-	waitForTrajectoryCount(t, store, 1, time.Second)
+	waitForTrajectoryCount(t, cs, store, 1, time.Second)
 	assertStepsEqual(t, store.lastSaved(), trajSteps("a"))
 
 	cs.Sync(trajSteps("a", "b"))
-	waitForTrajectoryCount(t, store, 2, time.Second)
+	waitForTrajectoryCount(t, cs, store, 2, time.Second)
 	assertStepsEqual(t, store.lastSaved(), trajSteps("a", "b"))
 
 	cs.Sync(trajSteps("a", "b", "c"))
-	waitForTrajectoryCount(t, store, 3, time.Second)
+	waitForTrajectoryCount(t, cs, store, 3, time.Second)
 	assertStepsEqual(t, store.lastSaved(), trajSteps("a", "b", "c"))
 
 	// The in-memory copy (consumed by reflect) must match.
@@ -158,7 +167,7 @@ func TestCompositeTrajectoryStore_StepsReadsMemoryImmediately(t *testing.T) {
 	assertStepsEqual(t, cs.Steps(), want)
 
 	// Drain the background write before the test ends.
-	waitForTrajectoryCount(t, store, 1, time.Second)
+	waitForTrajectoryCount(t, cs, store, 1, time.Second)
 }
 
 // TestCompositeTrajectoryStore_NonBlockingBestEffort verifies that a slow DB
@@ -186,7 +195,7 @@ func TestCompositeTrajectoryStore_NonBlockingBestEffort(t *testing.T) {
 	}
 
 	// Best-effort: at least the first write should eventually land.
-	waitForTrajectoryCount(t, store, 1, time.Second)
+	waitForTrajectoryCount(t, cs, store, 1, time.Second)
 }
 
 // TestCompositeTrajectoryStore_NilStoreDegradesToMemory verifies that without a
@@ -235,7 +244,7 @@ func TestCompositeTrajectoryStore_SaveErrorIsSwallowed(t *testing.T) {
 	assertStepsEqual(t, cs.Steps(), want)
 
 	// Wait for the failed write to complete so the goroutine exits cleanly.
-	waitForTrajectoryCount(t, store, 1, time.Second)
+	waitForTrajectoryCount(t, cs, store, 1, time.Second)
 }
 
 // TestCompositeTrajectoryStore_FlushPersistsFreshestSnapshot verifies that

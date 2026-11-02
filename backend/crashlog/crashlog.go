@@ -1,28 +1,8 @@
 // Package crashlog guarantees that the fact and the cause of ANY application
-// termination end up on disk.
-//
-// Coverage matrix (what is captured where):
-//
-//	Cause                                   | Evidence written
-//	----------------------------------------+-------------------------------------------
-//	Panic in any goroutine                  | Go runtime dump -> stderr fd -> stderr.log
-//	Runtime fatal error (OOM, deadlock)     | Go runtime dump -> stderr fd -> stderr.log
-//	SIGSEGV/SIGQUIT/SIGABRT (Go code)       | runtime dump + OS crash report (.ips)
-//	Native crash (WebKit/ONNX, cgo)         | OS crash report (.ips) only; next-start
-//	                                        | marker warning points at it
-//	SIGTERM/SIGINT/SIGHUP                   | signal line in stderr.log before re-raise
-//	SIGKILL / OS OOM-kill (uncatchable)     | marker survives -> warning at next start
-//	Clean quit (window close, updater quit) | Shutdown INFO logs + exit-code banner line
-//
-// The mechanism is deliberately low-tech: a single append-only stderr.log in
-// the app logs directory receives fd 1 and fd 2 (dup2 on Unix), so everything
-// the Go runtime and native libraries write to stderr — including panic
-// dumps that bypass os.Stderr — is persisted even for Finder-launched GUI
-// processes whose stderr would otherwise go to /dev/null.
-//
-// A liveness marker (app.running.json) is written at startup and removed only
-// on a clean exit. Its survival proves the previous instance terminated
-// abnormally; Startup reports that fact via ReportUncleanShutdown.
+// termination end up on disk as evidence: an append-only stderr.log receives
+// fd 1/2, and a liveness marker removed only on clean exit proves abnormal
+// termination at the next start. Coverage matrix, mechanism and invariants:
+// specs/domains/crash-logging.md.
 package crashlog
 
 import (
@@ -54,20 +34,17 @@ const (
 	// only on a clean exit.
 	markerName = "app.running.json"
 	// prevMarkerName stashes the previous run's marker at Install time so
-	// ReportUncleanShutdown can consume it later (Startup logs the warning
-	// once the session logger exists).
+	// ReportUncleanShutdown can consume it later.
 	prevMarkerName = "app.running.prev.json"
 )
 
-// maxStderrLogBytes is the rotation threshold for stderr.log. A var (not a
-// const) so tests can shrink it; panic dumps are a few hundred KiB at most,
-// 4 MiB keeps several of them plus chatty native-library output.
+// maxStderrLogBytes is the rotation threshold for stderr.log; a var so tests
+// can shrink it. 4 MiB keeps several panic dumps plus chatty native output.
 var maxStderrLogBytes int64 = 4 << 20
 
-// currentCapture is the process-wide capture installed by install(). It lets a
-// forced-exit path in another package (the desktop shutdown watchdog) run the
-// same clean-exit hooks main() runs on a normal return, without a handle to the
-// caller's capture. Nil until install() succeeds (or when capture is disabled).
+// currentCapture is the process-wide capture installed by install(); the
+// desktop shutdown watchdog's ForceExit runs the clean-exit hooks on it.
+// Nil until install() succeeds (or capture is disabled).
 var currentCapture atomic.Pointer[Capture]
 
 // runRecord is the JSON payload of the liveness marker.
@@ -79,10 +56,9 @@ type runRecord struct {
 	StderrLog string `json:"stderr_log"`
 }
 
-// Capture owns the process-wide crash-capture state: the redirected stdio
-// file and the liveness marker. Install creates it; all methods are
-// nil-tolerant so callers can invoke them unconditionally when Install was
-// skipped (e.g. C0WRK_DISABLE_CRASH_CAPTURE set, or Install failed).
+// Capture owns the redirected stdio file and the liveness marker. Install
+// creates it; all methods are nil-tolerant so callers can invoke them
+// unconditionally when Install was skipped or failed.
 type Capture struct {
 	file       *os.File
 	logDir     string
@@ -90,39 +66,30 @@ type Capture struct {
 	startedAt  time.Time
 }
 
-// Install arms process-wide crash capture in logDir:
-//
-//  1. stash a leftover liveness marker from a previous abnormal exit,
-//  2. rotate an oversized stderr.log,
-//  3. open stderr.log, redirect fd 1/2 into it and route the default
-//     log/slog output there as well,
-//  4. write a startup banner and a fresh liveness marker,
-//  5. log SIGTERM/SIGINT/SIGHUP before dying by their default disposition.
-//
-// Install must be called exactly once, as early as possible in main (before
-// Wails and any goroutine that might panic). The returned error means
-// capture is disabled for this run — the app must continue without it.
+// Install arms process-wide crash capture in logDir: stash any leftover
+// marker, rotate an oversized stderr.log, redirect fd 1/2 and the default
+// log output into it, write banner + liveness marker, log catchable
+// termination signals. Call exactly once, as early as possible in main; a
+// returned error means capture is disabled for this run — continue without
+// it. Mechanism and coverage: specs/domains/crash-logging.md.
 func Install(logDir string) (*Capture, error) {
 	return install(logDir, true)
 }
 
 // install is the testable core of Install. redirect=false skips the global
-// side effects (fd redirection, default logger rewiring, signal handling) so
-// tests can exercise banner/marker/rotation logic inside the test process.
+// side effects (fd redirect, logger rewiring, signal handling) in tests.
 func install(logDir string, redirect bool) (*Capture, error) {
-	// MkdirAllReal: the logs directory is created as a chain of REAL
-	// directories — a dangling link, a non-directory component, or a link
-	// swapped into a created component fails capture closed for the run (the
-	// caller warns); an operator-symlinked logs dir resolves and keeps the
-	// fd 1/2 capture and the liveness marker inside the operator's chosen
-	// tree.
+	// MkdirAllReal: only REAL directories are created — a planted or
+	// swapped-in link fails capture closed for the run instead of pointing
+	// fd 1/2 and the marker outside the operator's tree.
+	// See specs/architecture/security-model.md (Fixed-Path ~/.c0wrk State
+	// Hardening).
 	if err := safeio.MkdirAllReal(logDir, 0o750); err != nil {
 		return nil, fmt.Errorf("crashlog: creating log directory: %w", err)
 	}
 
-	// Preserve the previous run's marker before overwriting it: if the last
-	// instance died abnormally its marker is still here, and that fact is
-	// exactly what ReportUncleanShutdown needs to report at Startup.
+	// Stash (not overwrite) the previous run's marker: its survival is
+	// exactly what ReportUncleanShutdown reports at Startup.
 	if err := stashPreviousMarker(logDir); err != nil {
 		// Non-fatal: losing the stash only silences the next-start warning.
 		slog.Warn("crashlog: failed to stash previous liveness marker", "error", err)
@@ -133,14 +100,14 @@ func install(logDir string, redirect bool) (*Capture, error) {
 		slog.Warn("crashlog: failed to rotate oversized stderr log", "error", err)
 	}
 
-	// OpenFileNoFollow: the fixed stderr.log path must not have the
-	// O_CREATE (and the fd 1/2 capture) redirected through a planted
-	// symlink — the post-open fstat of plain safeio.OpenFile would see the
-	// (regular) link target and pass. A symlink fails the open with ELOOP
-	// and disables capture for this run (fail closed). On Windows the
-	// safeio parity note applies — the final symlink is still resolved
-	// there — tempered by Windows requiring elevated/dev-mode rights to
-	// create symlinks.
+	// OpenFileNoFollow: a planted symlink at the fixed stderr.log path must
+	// not receive the fd 1/2 capture (the post-open fstat of plain
+	// safeio.OpenFile would pass); ELOOP fails capture closed for the run.
+	// On Windows a final symlink is still resolved (safeio parity note),
+	// tempered by Windows requiring elevated/dev-mode rights to create
+	// symlinks.
+	// See specs/architecture/security-model.md (Fixed-Path ~/.c0wrk State
+	// Hardening).
 	file, err := safeio.OpenFileNoFollow(filepath.Join(logDir, stderrLogName),
 		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640)
 	if err != nil {
@@ -155,14 +122,13 @@ func install(logDir string, redirect bool) (*Capture, error) {
 	}
 
 	if redirect {
-		// dup2 the real descriptors: Go runtime panic/fatal dumps and native
-		// library output go straight to fd 2, bypassing the os.Stderr value.
+		// dup2: runtime panic dumps and native output bypass os.Stderr.
 		if err := redirectStdio(file); err != nil {
 			_ = file.Close()
 			return nil, fmt.Errorf("crashlog: redirecting stdio: %w", err)
 		}
-		// The default log.Logger (and thus slog.Default()) caches its writer
-		// at init; rewire it so pre-Startup slog output is persisted too.
+		// The default log.Logger caches its writer at init; rewire it so
+		// pre-Startup slog output is persisted too.
 		log.SetOutput(file)
 		watchTerminationSignals(c)
 	}
@@ -171,17 +137,14 @@ func install(logDir string, redirect bool) (*Capture, error) {
 	if err := c.writeMarker(); err != nil {
 		slog.Warn("crashlog: failed to write liveness marker", "error", err)
 	}
-	// Publish the capture so ForceExit (the forced-exit path in another
-	// package) can run the clean-exit hooks on a normal-return-less exit.
 	currentCapture.Store(c)
 	return c, nil
 }
 
-// RemoveMarker deletes the liveness marker. It must be called ONLY on clean
-// exit paths (after wails.Run returns); a surviving marker is what marks the
-// previous run as abnormally terminated. A marker whose pid belongs to
-// another instance (a concurrent start overwrote ours) is left in place so
-// that instance keeps its own liveness evidence. Nil-tolerant.
+// RemoveMarker deletes the liveness marker. Only clean exit paths may call
+// it — a surviving marker is what marks the previous run as abnormal. A
+// marker overwritten by a concurrent instance (foreign pid) is left in
+// place.
 func (c *Capture) RemoveMarker() {
 	if c == nil {
 		return
@@ -195,9 +158,8 @@ func (c *Capture) RemoveMarker() {
 	_ = os.Remove(c.markerPath)
 }
 
-// Banner prefixes bracketing every run in stderr.log. Exported so readers of
-// the capture (the webview GPU post-mortem) can split the append-only file
-// into runs without duplicating the wording.
+// Banner prefixes bracketing every run in stderr.log; exported so readers
+// (the webview GPU post-mortem) can split the append-only file into runs.
 const (
 	// RunBannerPrefix opens a run's segment (written by Install).
 	RunBannerPrefix = "=== c0wrk-desktop pid="
@@ -205,9 +167,8 @@ const (
 	ExitBannerPrefix = "=== c0wrk-desktop exit code="
 )
 
-// LogExit writes the final exit banner with the process exit code and
-// uptime, giving every run a closing bracket that pairs with the startup
-// banner. Call it in main right before os.Exit. Nil-tolerant.
+// LogExit writes the closing exit banner (exit code, uptime), pairing with
+// the startup banner. Call it in main right before os.Exit. Nil-tolerant.
 func (c *Capture) LogExit(code int) {
 	if c == nil {
 		return
@@ -218,14 +179,11 @@ func (c *Capture) LogExit(code int) {
 	_ = c.file.Sync()
 }
 
-// ForceExit runs the clean-exit hooks on the process-wide capture and exits
-// immediately: RemoveMarker (so the surviving marker cannot make the next
-// launch report this quit as an unclean shutdown) and LogExit (so the run ends
-// with its closing banner), then os.Exit(code). It is the forced-exit path —
-// the desktop shutdown watchdog's hard deadline — which cannot wait for the
-// normal main() return where those hooks otherwise run. Without it a legitimate
-// forced quit looks indistinguishable from a crash on the next launch.
-// Nil-tolerant: with no capture installed it simply exits.
+// ForceExit runs the clean-exit hooks (RemoveMarker + LogExit) on the
+// process-wide capture and then os.Exit(code) — the forced-exit path for
+// callers that cannot wait for main's normal return (the desktop shutdown
+// watchdog); without it a legitimate forced quit is indistinguishable from
+// a crash at the next launch. Nil-tolerant: with no capture it just exits.
 func ForceExit(code int) {
 	if c := currentCapture.Load(); c != nil {
 		c.RemoveMarker()
@@ -234,9 +192,7 @@ func ForceExit(code int) {
 	os.Exit(code)
 }
 
-// writeBanner records the run header: pid and build identify the process in
-// OS crash reports and let multiple runs be told apart in the append-only
-// file.
+// writeBanner records the run header (pid, build) in the append-only file.
 func (c *Capture) writeBanner() {
 	c.writeLine(RunBannerPrefix + strconv.Itoa(os.Getpid()) +
 		" version=" + version.Version + " commit=" + version.GitCommit +
@@ -256,29 +212,27 @@ func (c *Capture) writeMarker() error {
 	if err != nil {
 		return fmt.Errorf("crashlog: encoding marker: %w", err)
 	}
-	// WriteFileAtomic: the rename REPLACES the directory entry, so a
-	// symlink planted at the fixed marker path — including a DANGLING one,
-	// which stashPreviousMarker does not stash (its os.Stat reports
-	// ErrNotExist) — is replaced itself instead of being written through
-	// (which would create the link target outside ~/.c0wrk). The random-
-	// suffix staging file also leaves no plantable fixed temp path.
+	// WriteFileAtomic: the rename REPLACES a planted symlink at the fixed
+	// marker path (including a dangling one, which stashPreviousMarker does
+	// not stash) instead of writing through it; the random-suffix staging
+	// file leaves no plantable fixed temp path.
+	// See specs/architecture/security-model.md (Fixed-Path ~/.c0wrk State
+	// Hardening).
 	if werr := safeio.WriteFileAtomic(c.markerPath, data, 0o640); werr != nil {
 		return fmt.Errorf("crashlog: writing marker: %w", werr)
 	}
 	return nil
 }
 
-// writeLine appends one line with a trailing newline in a single Write call
-// (O_APPEND makes concurrent single writes atomic, so the signal handler can
-// race other writers without interleaving bytes).
+// writeLine appends one line in a single O_APPEND write, so the signal
+// handler races other writers without interleaving bytes.
 func (c *Capture) writeLine(line string) {
 	_, _ = c.file.WriteString(line + "\n")
 }
 
-// watchTerminationSignals logs catchable termination signals before dying by
-// their default disposition. SIGQUIT is intentionally NOT intercepted: the
-// Go runtime's default SIGQUIT handler dumps every goroutine's stack to
-// stderr (captured via the fd redirect) — that dump IS the crash evidence.
+// watchTerminationSignals logs SIGTERM/SIGINT/SIGHUP before their default
+// disposition. SIGQUIT is deliberately not intercepted: the runtime's
+// default handler dumps every goroutine stack to stderr — the evidence.
 func watchTerminationSignals(c *Capture) {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
@@ -306,9 +260,8 @@ func stashPreviousMarker(logDir string) error {
 	return nil
 }
 
-// rotateOversizedLog renames stderr.log to stderr.old.log (replacing any
-// previous rotation) once it exceeds maxStderrLogBytes, so the file stays
-// bounded across runs while its content is only ever moved, never dropped.
+// rotateOversizedLog renames an oversized stderr.log to stderr.old.log
+// (replacing any previous rotation); content is only moved, never dropped.
 func rotateOversizedLog(logDir string) error {
 	path := filepath.Join(logDir, stderrLogName)
 	info, err := os.Stat(path)
@@ -331,16 +284,12 @@ func rotateOversizedLog(logDir string) error {
 	return nil
 }
 
-// ReportUncleanShutdown consumes the stashed marker of a previous run. If it
-// exists, the previous instance never reached a clean exit (crash, kill,
-// power loss) and a warning with its pid, version and start time is logged,
-// pointing at stderr.log (panic dumps) and the OS crash-report directory.
-// A stashed marker whose pid is still alive means this start overlapped a
-// live instance (or the OS recycled the pid): an overlap note is logged
-// instead of a false unclean-shutdown warning. Call it from Startup after
-// the session logger exists (and after any logger reinit) so the report
-// lands in the log the user actually reads. Idempotent: the marker is
-// removed after reporting.
+// ReportUncleanShutdown consumes the stashed marker of a previous run: a
+// dead pid warns unclean shutdown (pointing at stderr.log and the OS crash
+// reports), a live pid warns a suspected concurrent instance instead. Call
+// from Startup after the session logger exists so the report lands in the
+// log the user reads; the marker is removed after reporting. Details:
+// specs/domains/crash-logging.md.
 func ReportUncleanShutdown(logger *slog.Logger, logDir string) {
 	prev := filepath.Join(logDir, prevMarkerName)
 	data, err := safeio.ReadFile(prev)
@@ -356,9 +305,6 @@ func ReportUncleanShutdown(logger *slog.Logger, logDir string) {
 		logger.Warn("previous app instance did not shut down cleanly (unparsable marker)",
 			"marker_path", prev, "error", uerr)
 	} else if rec.PID != 0 && processAlive(rec.PID) {
-		// The stashed pid still exists: two instances overlapped (or the pid
-		// was recycled by the OS). A crash cannot be concluded, so report the
-		// overlap instead of a false unclean shutdown.
 		logger.Warn("stashed liveness marker references a live process; concurrent app instance suspected",
 			"prev_pid", rec.PID,
 			"prev_version", rec.Version,
@@ -376,8 +322,7 @@ func ReportUncleanShutdown(logger *slog.Logger, logDir string) {
 }
 
 // StderrLogPath returns the absolute path of the crash-capture file for the
-// given logs directory. Useful for diagnostics surfaces that surface the
-// file location to the user.
+// given logs directory.
 func StderrLogPath(logDir string) string {
 	return filepath.Join(logDir, stderrLogName)
 }

@@ -12,76 +12,47 @@ import (
 	"github.com/v0lka/c0wrk/core/workspace"
 )
 
-// ---------------------------------------------------------------------------
-// Commit RPC — suppression-aware commit flow
-// ---------------------------------------------------------------------------
-
-// The combined commit stdout+stderr that lands in CommitResult.Output is
-// capped at gitOutputLimit with gitOutputTruncationMarker (both defined in
-// frontend_api_git.go, the shared cap for every git operation's surfaced
-// output) via the streaming limitedBuffer below.
-
 // defaultGitCommitTimeout is the fallback commit-spawn budget when the
-// config is not loaded or the value is zero. Mirrors the config default
-// (timeouts.gitCommitTimeout, 300s).
+// config is unloaded or zero; mirrors timeouts.gitCommitTimeout's default.
 const defaultGitCommitTimeout = 300 * time.Second
 
-// CommitSuppression describes what a commit in an UNTRUSTED repository
-// would have executed — the commit-family hooks git would run and the
-// armed commit signing (repo and global config) — as detected by
-// workspace.DetectCommitSuppression without spawning anything. It is the
-// payload the frontend surfaces when a commit was withheld (Suppressed is
-// non-nil) so the user can decide whether to force the hardened commit or
-// trust the repository instead.
+// CommitSuppression describes what a commit in an UNTRUSTED repository would
+// have executed — detected exec-free by workspace.DetectCommitSuppression.
+// It is the payload the frontend surfaces when a commit was withheld so the
+// user can force the hardened commit or trust the repository instead.
+// See specs/decisions/059-commit-hooks-signing-gate.md.
 type CommitSuppression struct {
-	// Hooks lists installed commit-family hooks (pre-commit,
-	// prepare-commit-msg, commit-msg, post-commit) that would fire, or the
+	// Hooks lists the installed commit-family hooks that would fire, or the
 	// single workspace.CommitSuppressionHooksPathMarker when core.hooksPath
-	// redirects hooks to a custom directory. Empty when no hooks are armed.
+	// redirects hooks elsewhere; empty when none are armed.
 	Hooks []string `json:"hooks,omitempty"`
-	// SigningRepo reports an armed commit.gpgsign in the repository config:
-	// a commit would execute the signing program (gpg or gpg.program).
+	// SigningRepo: an armed commit.gpgsign in the repository config.
 	SigningRepo bool `json:"signing_repo,omitempty"`
-	// SigningGlobal reports an armed commit.gpgsign in the git config git
-	// reads outside the repository (~/.gitconfig, the XDG global config
-	// with $XDG_CONFIG_HOME honored, and $GIT_CONFIG_GLOBAL /
-	// $GIT_CONFIG_SYSTEM when set).
+	// SigningGlobal: an armed commit.gpgsign in the config git reads outside
+	// the repository (~/.gitconfig, XDG, $GIT_CONFIG_GLOBAL/_SYSTEM).
 	SigningGlobal bool `json:"signing_global,omitempty"`
-	// RepoRoot is the repository root the trust decision records and the
-	// commit gate checks — the main work-tree root resolved by
-	// workspace.ResolveGitTrustRoot (for a commit in a linked worktree that
-	// is the main checkout the shared hooks live in; for a subdirectory
-	// workspace the repository root). The UI names exactly what trusting
-	// records instead of echoing the project workspace path. Empty only in
-	// the degenerate no-repository fallback.
+	// RepoRoot is the trust root the gate keys on (the main work-tree root,
+	// via workspace.ResolveGitTrustRoot); the UI names exactly what trusting
+	// records. Empty only in the degenerate no-repository fallback.
 	RepoRoot string `json:"repo_root,omitempty"`
 }
 
-// CommitResult is the payload of the Commit RPC. A normal (or forced)
-// commit returns the new commit's SHA plus the bounded combined stdout and
-// stderr of the git commit spawn; Output is how the UI shows hook and
-// signing output for trusted repositories (a trusted repo runs its own
-// hooks, so their output lands there). Suppressed is non-nil exactly when
-// the commit was withheld in an untrusted repository — then Sha/Output are
-// empty and no commit exists.
+// CommitResult is the payload of the Commit RPC: the new commit's SHA plus
+// the bounded combined hook/signing output — or, exactly when the commit was
+// withheld in an untrusted repository, a non-nil Suppressed with empty
+// Sha/Output and no commit created.
+// See specs/decisions/059-commit-hooks-signing-gate.md.
 type CommitResult struct {
-	// Sha is the 40-character SHA of the newly created commit (empty when
-	// Suppressed is non-nil or the call errored).
+	// Sha is the 40-character SHA of the newly created commit.
 	Sha string `json:"sha,omitempty"`
-	// Output is the bounded combined stdout+stderr of the git commit spawn,
-	// truncated past 64 KiB with an explicit marker (empty when Suppressed
-	// is non-nil).
+	// Output is the bounded combined stdout+stderr of the git commit spawn.
 	Output string `json:"output,omitempty"`
-	// Suppressed is non-nil when the commit was withheld because the
-	// untrusted repository arms commit hooks or signing and force was not
-	// requested. Nothing was executed and no commit was created.
+	// Suppressed is non-nil when armed hooks/signing withheld the commit.
 	Suppressed *CommitSuppression `json:"suppressed,omitempty"`
 }
 
-// gitCommitTimeout returns the configured budget for the git commit spawn
-// (timeouts.gitCommitTimeout, seconds — the long budget hooks, GPG signing
-// and large repositories may need) with the 300s default fallback when the
-// config is unset or the value is zero, mirroring serviceLLMTimeout.
+// gitCommitTimeout returns the configured commit-spawn budget (the long
+// budget hooks and GPG signing may need) with the 300s default fallback.
 func (f *FrontendAPI) gitCommitTimeout() time.Duration {
 	f.configMu.RLock()
 	cfg := f.config
@@ -92,44 +63,15 @@ func (f *FrontendAPI) gitCommitTimeout() time.Duration {
 	return defaultGitCommitTimeout
 }
 
-// Commit creates a git commit with the given message at the active
-// project's repository root. The message must be non-empty and is passed
-// to git as a separate argv element (never interpolated into the command
-// line).
-//
-// Untrusted repositories (the default) commit through the hardened git
-// baseline, which neutralizes hooks and signing — so committing there
-// would SILENTLY skip programs the repository installed. When
-// DetectCommitSuppression finds armed commit hooks or signing in an
-// untrusted repository and force is false, the commit is withheld instead:
-// nothing runs, no commit is created, and the result carries a non-nil
-// Suppressed description for the UI to surface. With force true the commit
-// proceeds hardened exactly as before (hooks and signing still neutralized)
-// — the explicit override.
-//
-// Trusted repositories (security.trusted_git_repos, the TrustGitRepo RPC)
-// go straight to the commit: the spawn layer runs raw git for them, so
-// their own hooks and signing EXECUTE — that is what trust means — and the
-// commit gets its own long timeout (timeouts.gitCommitTimeout, default
-// 300s; quick git probes keep the 30s budget) plus a combined stdout+stderr
-// capture so hook/signing output reaches the UI.
-//
-// The trust decision keys on the repository's TRUST ROOT (the main work-tree
-// root — the form TrustGitRepo stores and GitCmdInRepo compares, via
-// workspace.ResolveGitTrustRoot), resolved from the active workspace path: a
-// workspace opened at a subdirectory of a trusted repository, or a Git-panel
-// focus on one of its linked worktrees (whose commits execute the shared
-// hooks), must commit as trusted, not re-trigger the gate — keying the
-// worktree commit on the worktree path instead left the "Trust this repo &
-// commit" action a no-op loop against the already-stored root. The
-// suppression detection itself is walked up to the same repository by the
-// scanner (hooks/signing come from the discovered repository's common dir),
-// so its result is independent of the workspace path.
-//
-// On success the new commit's SHA is resolved (git rev-parse HEAD, 30s
-// probe budget) and git:status_changed is emitted. Errors are as before:
-// no project / No Project / empty message / git failure (stderr surfaced
-// in the error).
+// Commit creates a git commit with the given message at the active project's
+// repository root. The message is passed to git as a separate argv element.
+// Untrusted repositories commit through the hardened baseline; an armed
+// hook/signing surface withholds the commit (Suppressed, nil error) unless
+// force is set, while trusted repositories run raw git — their own hooks and
+// signing execute. The gate keys on the trust ROOT (the main work-tree root,
+// via workspace.ResolveGitTrustRoot), so a subdirectory or linked-worktree
+// workspace commits as trusted against an already-stored root.
+// See specs/decisions/059-commit-hooks-signing-gate.md.
 func (f *FrontendAPI) Commit(message string, force bool) (CommitResult, error) {
 	if !commitMsgRe.MatchString(message) {
 		return CommitResult{}, errors.New("commit message must not be empty")
@@ -140,30 +82,21 @@ func (f *FrontendAPI) Commit(message string, force bool) (CommitResult, error) {
 		return CommitResult{}, err
 	}
 
-	// Resolve the trust root the trust store keys on (see the doc comment
-	// above) — the MAIN work-tree root, which a linked worktree's commits
-	// share their hooks and common config with. No root discovered means no
-	// repository: keep the raw path so the trust check and the detection
-	// below fail closed the same way they always have.
+	// The trust store keys on the MAIN work-tree root; no root discovered
+	// means no repository, so keep the raw path and both checks fail closed.
 	trustPath := workspace.ResolveGitTrustRoot(repoPath)
 	if trustPath == "" {
 		trustPath = repoPath
 	}
 
-	// Trusted repositories commit directly: the spawn layer runs raw git
-	// for them (hooks/signing execute — the canary suite in core/workspace
-	// proves it), and they get the long commit budget. The check probes
-	// every trust-key form of repoPath — the trust root, the work-tree root
-	// (the legacy pre-worktree-unification store form), and the raw path —
-	// so both sides of this decision agree even for a workspace opened at a
-	// subdirectory or in a linked worktree.
+	// The trust check probes every key form of repoPath (trust root, legacy
+	// work-tree root, raw path) so the decision agrees across workspaces.
 	if f.gitRepoTrusted(repoPath) {
 		return f.runCommitSpawn(repoPath, message)
 	}
 
-	// Untrusted: detect (exec-free) what a commit would have executed. A
-	// detection error fails the commit closed — no commit is made on a
-	// repository whose commit surface cannot be inspected.
+	// A detection error fails the commit closed — nothing runs when the
+	// commit surface cannot be inspected.
 	hooks, signingRepo, signingGlobal, err := workspace.DetectCommitSuppression(repoPath)
 	if err != nil {
 		return CommitResult{}, fmt.Errorf("scan commit surface: %w", err)
@@ -181,25 +114,18 @@ func (f *FrontendAPI) Commit(message string, force bool) (CommitResult, error) {
 		}
 	}
 
-	// Nothing armed (or an explicit force): the plain hardened commit, now
-	// with the long commit budget and combined output capture — an
-	// untrusted repository cannot arm anything, but a forced commit on a
-	// suppressed repo still deserves the same budget (its baseline
-	// neutralization runs the same git commit) and the same visibility.
+	// Nothing armed (or an explicit force): the plain hardened commit.
 	return f.runCommitSpawn(repoPath, message)
 }
 
-// commitWaitDelay bounds how long the commit spawn may keep its output
-// pipes open after the process itself exits or the timeout kills it: a
-// hook's orphaned children inherit the pipes, and without this bound
-// cmd.Run would stall until they exit — voiding GitCommitTimeout.
+// commitWaitDelay bounds how long the commit spawn may keep its output pipes
+// open after the process exits: a hook's orphaned children inherit the pipes,
+// and without this bound cmd.Run would stall until they exit.
 const commitWaitDelay = time.Second
 
-// runCommitSpawn spawns the actual git commit: GitCmdInRepo resolves the
-// trust decision (raw git for a trusted root, the hardened baseline for
-// everything else), the spawn gets the configured commit timeout, and both
-// output streams are captured into a bounded combined Output. The SHA is
-// resolved afterwards with the standard quick-probe budget.
+// runCommitSpawn spawns the hardened-or-raw git commit (GitCmdInRepo's trust
+// decision) under the configured budget, capturing both output streams into
+// a bounded combined Output.
 func (f *FrontendAPI) runCommitSpawn(repoPath, message string) (CommitResult, error) {
 	ctx, cancel := context.WithTimeout(f.ctx(), f.gitCommitTimeout())
 	defer cancel()
@@ -211,28 +137,20 @@ func (f *FrontendAPI) runCommitSpawn(repoPath, message string) (CommitResult, er
 	cmd.Dir = repoPath
 	cmd.WaitDelay = commitWaitDelay
 
-	// Capture both streams the same way runGitCmdCombined does: two
-	// buffers, stdout first, so hook and signing output reaches the UI.
 	var out limitedBuffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
 
-	// exec.ErrWaitDelay is returned by Cmd.Run only when the process itself
-	// exited SUCCESSFULLY (exit 0) while an orphaned grandchild still held
-	// the pipes past WaitDelay — a trusted repository's hook that spawned a
-	// background process (a daemon, a watcher). The commit has landed at
-	// that point; treating the error would report a successful commit as a
-	// failure, skip the git:status_changed emission (the panel stays stale),
-	// and a retry would fail with "nothing to commit". Only the tail of the
-	// orphan's output past the delay is lost. The hardened path never hits
-	// this (no hooks run there), and the context-timeout kill surfaces as a
-	// context error, not ErrWaitDelay — those stay failures.
+	// exec.ErrWaitDelay surfaces only when the process exited SUCCESSFULLY
+	// while an orphaned grandchild (a trusted repo's hook daemon) still held
+	// the pipes past WaitDelay. The commit has landed; treating it as an
+	// error would report success as failure, skip the git:status_changed
+	// emission and make any retry fail with "nothing to commit". Only the
+	// orphan's output tail past the delay is lost.
 	if err := cmd.Run(); err != nil && !errors.Is(err, exec.ErrWaitDelay) {
 		return CommitResult{}, fmt.Errorf("git commit: %w: %s", err, out.String())
 	}
 
-	// Resolve the SHA of the commit just created so the frontend can
-	// display it. git rev-parse HEAD yields the 40-character commit SHA.
 	sha, err := f.runGitCmd(repoPath, "rev-parse", "HEAD")
 	if err != nil {
 		return CommitResult{}, fmt.Errorf("resolve new commit SHA: %w", err)
@@ -243,11 +161,10 @@ func (f *FrontendAPI) runCommitSpawn(repoPath, message string) (CommitResult, er
 	return CommitResult{Sha: sha, Output: out.String()}, nil
 }
 
-// limitedBuffer is an io.Writer that accumulates written bytes up to
-// gitOutputLimit and appends gitOutputTruncationMarker once the cap is
-// crossed; writes beyond the cap are counted but dropped. It is safe for
-// concurrent use: os/exec assigns it to both Stdout and Stderr of one
-// exec.Cmd and copies each pipe on its own goroutine.
+// limitedBuffer accumulates written bytes up to gitOutputLimit (the shared
+// git-output cap from frontend_api_git.go) and appends
+// gitOutputTruncationMarker once the cap is crossed. Concurrency-safe: os/exec
+// copies each of an exec.Cmd's output pipes on its own goroutine.
 type limitedBuffer struct {
 	mu        sync.Mutex
 	b         strings.Builder
@@ -255,7 +172,7 @@ type limitedBuffer struct {
 	truncated bool
 }
 
-// Write implements io.Writer with the 64 KiB cap.
+// Write implements io.Writer; over-cap writes count their bytes but drop them.
 func (l *limitedBuffer) Write(p []byte) (int, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -275,9 +192,9 @@ func (l *limitedBuffer) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// String returns the captured output with the truncation marker appended
-// when the cap was crossed. Trims the surrounding whitespace like
-// combinedGitOutput.
+// String returns the captured output, whitespace-trimmed like
+// combinedGitOutput, with the truncation marker appended when the cap was
+// crossed.
 func (l *limitedBuffer) String() string {
 	l.mu.Lock()
 	defer l.mu.Unlock()

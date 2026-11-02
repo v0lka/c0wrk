@@ -21,18 +21,11 @@ import (
 // Paper-library RPCs
 //
 // The literature ("papers") library is a GLOBAL subdirectory of a project's
-// research root: <research-root>/papers/<slug>/{paper.md, note.md,
-// appraisal.md}. It lives independently of any R-NNN research project — no
-// project may exist yet, and the library still works. The effective research
-// root is the project's effective research root, which follows the active
-// session (see effectiveResearchRoot).
-//
-// Papers link to research via the paper card's `research_ids` field (H-NNN
-// hypothesis ids); the read RPCs resolve each id to the owning R-NNN project(s)
-// when the research root is parseable. Pins reuse the ResearchPins container
-// (ProjectInfo.ResearchPins.Papers), stored as research-root-relative
-// forward-slash document paths (e.g. "papers/<slug>/paper.md") — the same path
-// style the research pins use.
+// research root — <research-root>/papers/<slug>/ — independent of any R-NNN
+// research project. Papers link to research via the card's research_ids
+// (H-NNN), resolved by the read RPCs when the root is parseable; pins reuse
+// the ResearchPins container as research-root-relative forward-slash paths.
+// See specs/domains/papers.md.
 // ---------------------------------------------------------------------------
 
 // PapersDTO is the response for GetPapers: the project's paper library, fully
@@ -95,10 +88,10 @@ type PaperDTO struct {
 	// Pinned reports whether this paper's card is currently pinned.
 	Pinned bool `json:"pinned"`
 
-	// LinkedResearch resolves the paper's research_ids to the R-NNN project(s)
-	// that own them. An id that resolves to no project yields one entry with an
-	// empty ResearchID; when the research root is unavailable the list is empty
-	// but the raw ResearchIDs are still returned. Always non-nil.
+	// LinkedResearch resolves the paper's research_ids to the R-NNN
+	// project(s) that own them. An id that resolves to no project yields one
+	// entry with an empty ResearchID; when the root is unavailable the list
+	// is empty but the raw ResearchIDs are still returned. Always non-nil.
 	LinkedResearch []PaperResearchLinkDTO `json:"linked_research"`
 }
 
@@ -118,11 +111,10 @@ type papersReadContext struct {
 	libraryRoot  string
 }
 
-// GetPapers returns the active project's paper library. It requires a real
-// (non-No-Project) project and enforces workspace containment on the research
-// root and the library before any read. A missing or unreadable library is not
-// an error: the response carries an empty, non-nil Papers slice so the Papers
-// panel renders an empty state.
+// GetPapers returns the project's paper library, fully normalized (non-nil
+// collections). Requires a real project and enforces workspace containment
+// before any read; a missing/unreadable library is an empty state, not an
+// error. See specs/domains/papers.md.
 func (f *FrontendAPI) GetPapers(projectID string) (*PapersDTO, error) {
 	ctx, err := f.papersReadContextFor(projectID)
 	if err != nil {
@@ -173,20 +165,13 @@ func (f *FrontendAPI) GetPaper(projectID, paperID string) (*PaperDTO, error) {
 	return &dto, nil
 }
 
-// SetPaperPinned pins (or unpins) a paper identified by its id or slug:
-// pinning records the paper card's research-root-relative document path (e.g.
-// "papers/<slug>/paper.md") in ProjectInfo.ResearchPins.Papers; unpinning
-// removes it. Both directions are idempotent. Pinning additionally requires the
-// card file to exist (no pins to phantom papers); unpinning deliberately works
-// for a paper whose card has since been deleted — or whose whole directory was
-// deleted or renamed (the stale pin is matched by its normalized path/key, not
-// only the current on-disk card path) — so stale pins stay removable. No event
-// is emitted — the caller's resolved promise is its refresh signal.
-//
-// The update serializes on the same per-effective-research-root mutex as the
-// research pin RPCs (all writers of the projects row), and merges only the
-// pins delta under that lock, so a concurrent row save cannot clobber it (or
-// vice versa).
+// SetPaperPinned pins (or unpins) a paper identified by its id or slug,
+// recording the card's research-root-relative path in
+// ProjectInfo.ResearchPins.Papers. Idempotent both ways; pinning requires the
+// card file to exist, unpinning deliberately works for a since-deleted or
+// renamed paper (stale pins matched by normalized path/key stay removable).
+// No event emitted. Serializes on the per-effective-research-root mutex,
+// merging only the pins delta under the lock. See specs/domains/papers.md.
 func (f *FrontendAPI) SetPaperPinned(projectID, paperID string, pinned bool) error {
 	f.seedAcquire()
 	if f.projStore == nil {
@@ -204,11 +189,9 @@ func (f *FrontendAPI) SetPaperPinned(projectID, paperID string, pinned bool) err
 	mu.Lock()
 	defer mu.Unlock()
 
-	// Re-load the row under the lock and persist only the pins delta. The load
-	// in papersReadContextFor ran before the mutex was acquired, so a full-row
-	// save of that snapshot would clobber whatever was committed while this RPC
-	// waited (a concurrent pin toggle, or a research-root change — guarded
-	// below).
+	// Re-load the row under the lock and persist only the pins delta — the
+	// load in papersReadContextFor ran before the mutex (see SetResearchPinned
+	// for the lost-update rationale).
 	fresh, err := f.loadProjectForResearch(projectID)
 	if err != nil {
 		return err
@@ -224,20 +207,18 @@ func (f *FrontendAPI) SetPaperPinned(projectID, paperID string, pinned bool) err
 	rec := lib.Get(paperID)
 
 	if !pinned {
-		// Unpin tolerates a paper that no longer resolves: its directory may
-		// have been deleted (lib.Get == nil) or renamed while the card kept its
-		// declared slug, so the stored pin still keys off the old path. Drop
-		// every pin referring to this paper by the resolved record's card paths
-		// and the normalized key instead of erroring on a nil record — no other
-		// RPC removes a paper pin, so a failure here orphans it forever.
+		// Unpin tolerates a paper that no longer resolves (directory deleted
+		// or renamed while the card kept its declared slug): drop every pin
+		// referring to it by the resolved card paths and the normalized key
+		// instead of erroring on a nil record — no other RPC removes a paper
+		// pin, so a failure here orphans it forever.
 		next, changed := removePaperPin(fresh.ResearchPins.Papers, paperID, rec)
 		if !changed {
 			return nil // already in the requested state
 		}
 		fresh.ResearchPins.Papers = next
-		// Bounded: this write runs under the per-root research mutation
-		// mutex, so an unbounded pool wait here head-of-line-blocks every
-		// pin/flashcard mutation on the root.
+		// Bounded by storeOpCtx (per-root mutation mutex — head-of-line
+		// blocking, see SetResearchPinned).
 		pctx, pcancel := f.storeOpCtx()
 		if err := f.projStore.SaveProject(pctx, *fresh); err != nil {
 			pcancel()
@@ -247,8 +228,8 @@ func (f *FrontendAPI) SetPaperPinned(projectID, paperID string, pinned bool) err
 		return nil
 	}
 
-	// Pinning fails closed: the paper must resolve AND its card file must exist
-	// (no pins to phantom papers).
+	// Pinning fails closed: the paper must resolve AND its card file must
+	// exist (no pins to phantom papers).
 	if rec == nil {
 		return fmt.Errorf("paper %q not found in the library", paperID)
 	}
@@ -262,7 +243,6 @@ func (f *FrontendAPI) SetPaperPinned(projectID, paperID string, pinned bool) err
 		return nil // already in the requested state
 	}
 	fresh.ResearchPins.Papers = next
-	// Bounded: same mutex head-of-line-blocking rationale as the unpin branch.
 	pctx, pcancel := f.storeOpCtx()
 	if err := f.projStore.SaveProject(pctx, *fresh); err != nil {
 		pcancel()
@@ -272,13 +252,11 @@ func (f *FrontendAPI) SetPaperPinned(projectID, paperID string, pinned bool) err
 	return nil
 }
 
-// removePaperPin removes every pin entry that refers to the paper identified by
-// key (an id, a slug, or even a stored pin path). It matches on the resolved
-// record's on-disk and declared card paths, on the slugified key, and on the
-// raw key itself. Matching these normalized forms — rather than the exact
-// on-disk card path alone — is what lets a stale pin still be removed after the
-// paper's directory was deleted (rec == nil) or renamed while the card kept its
-// declared slug. It returns the next list and whether anything changed.
+// removePaperPin removes every pin entry referring to the paper identified by
+// key (id, slug, or a stored pin path): it matches the resolved record's
+// on-disk, declared, and resolved card paths, the slugified key, and the raw
+// key — matching these normalized forms is what lets a stale pin still be
+// removed after the paper's directory was deleted (rec == nil) or renamed.
 func removePaperPin(pins []string, key string, rec *papers.PaperRecord) ([]string, bool) {
 	candidates := map[string]bool{}
 	add := func(rel string) {
@@ -307,19 +285,14 @@ func removePaperPin(pins []string, key string, rec *papers.PaperRecord) ([]strin
 	return next, changed
 }
 
-// RecordFlashcardReview records a self-grade for one flashcard of a paper: it
-// appends the grade to the paper's flashcards.md review log and updates the
-// card's Stage, then returns. The paper is resolved inside the REQUESTING
-// project's own containment-checked library (by id or slug) before any file is
-// touched, and the whole resolve→read→mutate→write chain serializes on the same
-// per-research-root mutex as the research pin RPCs, so a concurrent root
-// change cannot land the review in the wrong library. The
-// mutation itself is atomic (temp file + rename) and containment-checked in
-// core/papers (a symlinked paper directory is rejected). An unknown paper, an
-// unknown card id, or an unknown grade is rejected and leaves the deck
-// byte-for-byte unchanged. No event is emitted synchronously: the write lands
-// inside the watched library, so the file watcher emits `papers:changed` and the
-// caller's resolved promise is its refresh signal.
+// RecordFlashcardReview records a self-grade for one flashcard of a paper:
+// appends the grade to the paper's flashcards.md review log and advances the
+// card's Stage. The paper resolves inside the REQUESTING project's
+// containment-checked library; the chain serializes on the per-research-root
+// mutex, the mutation is atomic and containment-checked in core/papers, and
+// an unknown paper/card/grade leaves the deck byte-for-byte unchanged. No
+// synchronous event — the watcher emits papers:changed. See
+// specs/domains/papers.md.
 func (f *FrontendAPI) RecordFlashcardReview(projectID, paperID, cardID, grade string) error {
 	if strings.TrimSpace(paperID) == "" {
 		return errors.New("paper id or slug is required")
@@ -340,9 +313,8 @@ func (f *FrontendAPI) RecordFlashcardReview(projectID, paperID, cardID, grade st
 	mu.Lock()
 	defer mu.Unlock()
 
-	// Re-load the row under the lock and bail out when the research root moved
-	// (a root change committed while this RPC waited), so the review never
-	// lands in a stale library.
+	// Re-load the row under the lock and bail out when the research root
+	// moved, so the review never lands in a stale library.
 	fresh, err := f.loadProjectForResearch(projectID)
 	if err != nil {
 		return err
@@ -373,11 +345,8 @@ func (f *FrontendAPI) RecordFlashcardReview(projectID, paperID, cardID, grade st
 // ---------------------------------------------------------------------------
 
 // papersRootForProject returns the paper-library root for a project: the
-// "papers" subdirectory of its effective research root. It returns "" for the
-// No Project pseudo-project or a project without a workspace, where the
-// research/papers subsystems are unavailable. Used by the project switch (to
-// track the active library for the watcher) and by the watcher setup (to
-// recursively watch the library for every real project).
+// "papers" subdirectory of its effective research root ("" for No Project or
+// a workspace-less project). Used by the project switch and watcher setup.
 func (f *FrontendAPI) papersRootForProject(p *project.ProjectInfo) string {
 	root := f.effectiveResearchRoot(p)
 	if root == "" {
@@ -387,11 +356,9 @@ func (f *FrontendAPI) papersRootForProject(p *project.ProjectInfo) string {
 }
 
 // comparisonsRootForProject returns the multi-paper comparison root for a
-// project: the "comparisons" subdirectory of its effective research root. Like
-// the paper library it is a global subdirectory of the research root and is
-// watched for every real project, so a comparison artifact written before any
-// R-NNN exists still refreshes the Compare section. It returns "" for
-// the No Project pseudo-project or a project without a workspace.
+// project: the "comparisons" subdirectory of its effective research root —
+// watched for every real project, so an artifact written before any R-NNN
+// exists still refreshes the Compare section.
 func (f *FrontendAPI) comparisonsRootForProject(p *project.ProjectInfo) string {
 	root := f.effectiveResearchRoot(p)
 	if root == "" {
@@ -401,46 +368,26 @@ func (f *FrontendAPI) comparisonsRootForProject(p *project.ProjectInfo) string {
 }
 
 // effectiveResearchRoot returns the project's effective research root,
-// following the ACTIVE SESSION.
-//
-// Spec: specs/decisions/099-research-root-follows-active-session.md;
-// specs/domains/session-worktrees.md (Research/papers roots).
-//
-// Protocol — "research root follows the active session": the agent writes
-// research artifacts under <session-workspace>/.research (the session
-// Manager's researchProjectInfo derives the root from the SESSION's execution
-// workspace), so every research/papers read and mutation path must resolve
-// the SAME root. The root is <workspace-of-the-active-session>/.research,
-// where the active session is the project's USER-SELECTED session when a
-// usable selection is persisted (project_ui_state.saved_session_id — the
-// same choice the session picker, file tree, chat links and git panel
-// follow), falling back to the most recently active non-archived session;
-// resolved through the READ-ONLY
-// Manager.WorkspacePathFor lookup with project-ID membership decided exactly
-// as GetSessionWorkspace decides it (activeSessionWorkspace). It falls back
-// to the project checkout (<proj.WorkspacePath>/.research) when no session
-// workspace resolves — a fresh project without sessions, or a manager/store
-// unavailability. A local session's workspace IS the checkout, so its
-// resolution and the fallback agree by construction; a managed-worktree
-// session resolves to its own tree, which is what makes research the agent
-// writes there visible to the panel and papers surfaces (the former
-// checkout-only resolution made it invisible).
-//
-// Returns "" for nil, No Project, or a workspace-less project (RESEARCH and
-// papers are unavailable there). Containment must validate against the
-// workspace the root was derived from — use researchRootWithBoundary at
-// containment-checked sites.
+// following the ACTIVE SESSION (ADR-099): <workspace-of-the-active-session>/.research,
+// where the active session is the user-selected session when a usable
+// selection is persisted (project_ui_state.saved_session_id), falling back to
+// the most recently active non-archived session — resolved through the
+// READ-ONLY Manager.WorkspacePathFor with GetSessionWorkspace's project-ID
+// membership, else the project checkout (a local session's workspace IS the
+// checkout, so the two agree by construction; a managed tree resolving to its
+// own root is what makes worktree research visible). "" for nil, No Project,
+// or a workspace-less project. Containment must validate against the
+// workspace the root was derived from — use researchRootWithBoundary.
+// See specs/decisions/099-research-root-follows-active-session.md.
 func (f *FrontendAPI) effectiveResearchRoot(p *project.ProjectInfo) string {
 	root, _ := f.researchRootWithBoundary(p)
 	return root
 }
 
 // researchRootWithBoundary returns the project's effective research root
-// (see effectiveResearchRoot for the protocol) together with the workspace
-// its containment must be validated against: the session workspace when the
-// root followed a session — a managed tree legitimately lives in the
-// agent-dir container, OUTSIDE the checkout — or the project checkout on the
-// fallback path.
+// (see effectiveResearchRoot) with the workspace its containment must be
+// validated against — the session workspace when the root followed a session
+// (a managed tree lives OUTSIDE the checkout), the checkout on the fallback.
 func (f *FrontendAPI) researchRootWithBoundary(p *project.ProjectInfo) (root, boundary string) {
 	if p == nil || p.IsNoProject || p.WorkspacePath == "" {
 		return "", ""
@@ -452,25 +399,15 @@ func (f *FrontendAPI) researchRootWithBoundary(p *project.ProjectInfo) (root, bo
 }
 
 // activeSessionWorkspace resolves the workspace of the project's active
-// session: the USER-SELECTED session when a usable selection is persisted
-// (project_ui_state.saved_session_id — the same choice the session picker,
-// file tree, chat links and git panel follow, written by
-// SaveProjectActiveSession on every switch), falling back to the project's
-// most recently active non-archived session when no usable selection
-// resolves (fresh project, empty pointer, a pointer at an archived or
-// foreign session). Resolved through the READ-ONLY
-// Manager.WorkspacePathFor lookup — never
-// GetSessionWorkspacePath, whose lazy restore would rebuild a full
-// orchestrator on a pure path lookup (the same rule the terminal and
-// explorer paths follow). Membership is by project ID, GetSessionWorkspace's
-// rule: the store row's ProjectID, with a RESIDENT session's in-memory
-// ProjectID as the fallback when the row is missing (a session never moves
-// between projects, so both are authoritative). Both reads share one
-// terminalPathLookupTimeout-bounded context, so a saturated SQLite pool
-// degrades to the caller's fallback instead of parking the caller. Returns
-// ok=false when the manager is unavailable or no session workspace resolves
-// (including a row whose project no longer matches — a foreign session must
-// never steer the root).
+// session: the USER-SELECTED session when a usable selection is persisted,
+// falling back to the most recently active non-archived session — through the
+// READ-ONLY Manager.WorkspacePathFor, never GetSessionWorkspacePath (whose
+// lazy restore would rebuild a full orchestrator on a path lookup).
+// Membership is by project ID (store row, resident in-memory fallback); both
+// reads share one terminalPathLookupTimeout-bounded context. ok=false when
+// the manager is unavailable or nothing resolves — a foreign session must
+// never steer the root. See
+// specs/decisions/099-research-root-follows-active-session.md.
 func (f *FrontendAPI) activeSessionWorkspace(projectID string) (string, bool) {
 	if f.appCell() == nil {
 		return "", false
@@ -507,19 +444,13 @@ func (f *FrontendAPI) activeSessionWorkspace(projectID string) (string, bool) {
 }
 
 // activeSessionID resolves which of projectID's sessions is "active": the
-// persisted user selection first, the activity-latest session as the
-// fallback — ONE definition for every backend consumer (the research/papers
-// RPCs, the CODE watcher and its tracked emit roots, the WatchDirectory
-// freshness check), so a backend root can no longer disagree with the session
-// the UI shows. The saved pointer is validated against the same non-archived
+// persisted user selection first (validated against the same non-archived
 // membership list the fallback orders — one ListSessionsByProjectCtx
-// round-trip serves both — mirroring resolveSavedSessionForProject's rule
-// (exists, belongs to the project, not archived; the list query IS the
-// project-membership filter, no manager-level fallback). A selection-read
-// failure is fail-soft here: nothing is written on this path, so it degrades
-// to the activity-latest session instead of failing the resolution (the
-// do-not-clobber-a-valid-pointer rule governs SaveProjectActiveSession
-// writes, not read paths).
+// round-trip serves both), else the activity-latest session — ONE definition
+// for every backend consumer, so a backend root can no longer disagree with
+// the session the UI shows. A selection-read failure is fail-soft (nothing is
+// written on this path). See
+// specs/decisions/099-research-root-follows-active-session.md.
 func (f *FrontendAPI) activeSessionID(ctx context.Context, mgr *session.Manager, projectID string) (string, error) {
 	sessions, err := mgr.ListSessionsByProjectCtx(ctx, projectID)
 	if err != nil {
@@ -537,7 +468,7 @@ func (f *FrontendAPI) activeSessionID(ctx context.Context, mgr *session.Manager,
 
 // savedSessionIDForProject reads project_ui_state.saved_session_id — the
 // frontend's persisted selection (SaveProjectActiveSession). A missing
-// subsystem or a store error yields "" (fail-soft, Debug-logged): the caller
+// subsystem or store error yields "" (fail-soft, Debug-logged): the caller
 // falls back to the activity-latest session.
 func (f *FrontendAPI) savedSessionIDForProject(ctx context.Context, projectID string) string {
 	if f.projStore == nil {
@@ -566,10 +497,9 @@ func (f *FrontendAPI) latestSessionID(ctx context.Context, mgr *session.Manager,
 }
 
 // latestOfSessions returns the most recently active non-archived session of
-// the list: the SessionInfo.LastActiveAt ordering ListSessionsByProjectCtx
-// exposes (falling back to created_at). Archived sessions are skipped — they
-// are read-only and hidden from the picker, so they must never be selected as
-// the active one.
+// the list (the SessionInfo.LastActiveAt ordering ListSessionsByProjectCtx
+// exposes, falling back to created_at). Archived sessions are skipped — they
+// are read-only and hidden from the picker, so they must never be selected.
 func latestOfSessions(sessions []session.SessionInfo) string {
 	latestID := ""
 	var latestTS time.Time
@@ -586,26 +516,15 @@ func latestOfSessions(sessions []session.SessionInfo) string {
 	return latestID
 }
 
-// emitPapersChanged checks whether any of the changed paths fall inside the
-// paper library or the multi-paper comparisons directory and, if so, emits a
-// papers:changed event carrying the project ID and comma-separated paths. It
-// returns true when at least one path was scoped to either root.
-//
-// BOTH roots are global subdirectories of the research root (papers/ and
-// comparisons/) and BOTH are watched for every real project, so an artifact
-// written before any R-NNN exists still refreshes the UI: the
-// frontend's papers:changed handler refetches the library and bumps its sync
-// key, which the Compare section subscribes to as a refresh key.
-//
-// Like emitResearchFileChanged, this is a workspace-watcher callback scoped to
-// a subdirectory of the canonical research root of a real project: an edit to a
-// paper card or a comparison artifact emits the event regardless of which
-// research project (if any) is active.
+// emitPapersChanged checks whether any changed path falls inside the paper
+// library or comparisons directory and emits papers:changed (project ID +
+// comma-separated paths); true when at least one path matched. BOTH roots are
+// global subdirectories of the research root, watched for every real project,
+// so an artifact written before any R-NNN exists still refreshes the UI.
 //
 // The caller must pass already-snapshotted papersRoot, comparisonsRoot, and
-// projectID (read under activeProjectMu) to avoid the data race between the
-// fsnotify callback goroutine and project switches on the main thread. An empty
-// root is treated as "not applicable" and simply never matches.
+// projectID (read under activeProjectMu) — the fsnotify callback goroutine
+// races project switches otherwise. An empty root never matches.
 func (f *FrontendAPI) emitPapersChanged(papersRoot, comparisonsRoot, projectID string, changedPaths []string) bool {
 	f.seedAcquire()
 	if papersRoot == "" && comparisonsRoot == "" {
@@ -648,11 +567,10 @@ func pathWithinRoot(root, p string) bool {
 // ---------------------------------------------------------------------------
 
 // papersReadContextFor resolves the paper-library context for a project:
-// requiring a real (non-No-Project) project, deriving the effective research
-// root, and enforcing workspace containment on both the research root and the
-// library before any read (SECURITY.md — defense in depth even though the root
-// was validated at enable time). It errors for a missing/unknown project, the
-// No Project pseudo-project, or a root that escapes the workspace.
+// a real (non-No-Project) project, the effective research root, and workspace
+// containment on both root and library before any read (SECURITY.md —
+// defense in depth). Errors for a missing project, No Project, or an
+// escaping root. See specs/domains/papers.md.
 func (f *FrontendAPI) papersReadContextFor(projectID string) (*papersReadContext, error) {
 	f.seedAcquire()
 	if projectID == "" {
@@ -661,15 +579,11 @@ func (f *FrontendAPI) papersReadContextFor(projectID string) (*papersReadContext
 	if f.projectManager == nil {
 		return nil, errors.New("project subsystem not initialized")
 	}
-	// Rejects the No Project pseudo-project (papers require a real project
-	// with a workspace).
 	proj, err := f.loadProjectForResearch(projectID)
 	if err != nil {
 		return nil, err
 	}
-	// The root follows the active session (see researchRootWithBoundary);
-	// containment is validated against the workspace the root was derived
-	// from — a managed session's tree lives outside the checkout.
+	// The root follows the active session (see researchRootWithBoundary).
 	researchRoot, boundary := f.researchRootWithBoundary(proj)
 	if researchRoot == "" {
 		return nil, errors.New("project has no workspace to derive a paper library from")
@@ -692,14 +606,10 @@ func (f *FrontendAPI) papersReadContextFor(projectID string) (*papersReadContext
 	return &papersReadContext{project: proj, researchRoot: researchRoot, libraryRoot: libraryRoot}, nil
 }
 
-// parsePaperLibrary parses a library root. A library that has not been created
-// yet (the root does not exist) is the legitimate empty state and yields an
-// empty library. Any OTHER error (permissions, I/O, a stale mount, or a path
-// that is not a directory) is a genuine read failure and is returned rather
-// than silently degraded to an empty library: collapsing the two made an
-// unreadable library indistinguishable from "no papers studied yet", hiding
-// the failure from the Papers panel. The failure is also logged at Warn so it
-// is visible at the default log level.
+// parsePaperLibrary parses a library root. A not-yet-created library is the
+// legitimate empty state; any OTHER error is a genuine read failure, returned
+// rather than silently degraded — collapsing the two made an unreadable
+// library indistinguishable from "no papers studied yet". Also Warn-logged.
 func (f *FrontendAPI) parsePaperLibrary(libraryRoot string) (*papers.PaperLibrary, error) {
 	lib, err := papers.ParseLibraryDir(libraryRoot)
 	if err != nil {
@@ -742,15 +652,11 @@ func (f *FrontendAPI) toPaperDTO(rec *papers.PaperRecord, researchRoot string, p
 	}
 }
 
-// paperCardRelPath renders the pin-path form of a paper card: the paper
-// directory's path relative to the research root (forward slashes) joined with
-// the card file name, e.g. "papers/<slug>/paper.md". The slug is taken from the
-// actual directory on disk (not the record's ResolvedSlug) so the pin path
-// always matches the directory the writer and watcher use. It falls back to the
-// directory's base name when the relative path cannot be computed (the
-// containment check uses the centralized path API rather than the forbidden
-// filepath.Rel + strings.HasPrefix idiom — always use the constants/helpers
-// from config/pathutil).
+// paperCardRelPath renders the pin-path form of a paper card: the directory's
+// path relative to the research root (forward slashes) joined with the card
+// file name. The slug comes from the actual on-disk directory (not
+// ResolvedSlug) so the pin path always matches the directory the writer and
+// watcher use; falls back to the base name when the relative path fails.
 func paperCardRelPath(researchRoot string, rec *papers.PaperRecord) string {
 	dir := rec.Dir
 	rel := ""
@@ -767,10 +673,9 @@ func paperCardRelPath(researchRoot string, rec *papers.PaperRecord) string {
 	return path.Join(rel, papers.PaperFileName)
 }
 
-// researchLinkIndex maps every hypothesis id (H-NNN) in the project's research
-// root to the R-NNN project id(s) that own it. A hypothesis id can exist in
-// more than one research project, so the value is a list. An empty, disabled,
-// or unparseable root yields an empty map — the paper's raw research_ids are
+// researchLinkIndex maps every hypothesis id (H-NNN) in the research root to
+// the R-NNN project id(s) that own it (a list — one id can exist in several
+// projects). An unparseable root yields an empty map: raw research_ids are
 // still returned, they simply cannot be resolved to an R-NNN.
 func (f *FrontendAPI) researchLinkIndex(researchRoot string) map[string][]string {
 	idx := make(map[string][]string)
@@ -794,10 +699,10 @@ func (f *FrontendAPI) researchLinkIndex(researchRoot string) map[string][]string
 	return idx
 }
 
-// linksForResearchIDs resolves each paper research id (H-NNN) to the R-NNN
-// project(s) that own it, producing one link per (H-NNN, R-NNN) pair. An
-// unresolvable id yields a single link with an empty ResearchID so the frontend
-// can still surface the dangling reference. The result is always non-nil.
+// linksForResearchIDs resolves each research id (H-NNN) to the R-NNN
+// project(s) that own it — one link per (H-NNN, R-NNN) pair; an unresolvable
+// id yields a link with an empty ResearchID so the frontend surfaces the
+// dangling reference. Always non-nil.
 func linksForResearchIDs(researchIDs []string, links map[string][]string) []PaperResearchLinkDTO {
 	out := make([]PaperResearchLinkDTO, 0, len(researchIDs))
 	for _, hid := range researchIDs {

@@ -1981,6 +1981,14 @@ reaches the operator even with the Settings dialog closed. The status-bar
 indicator shows none of it — its `error` surface is the supervisor's own error
 state, and `install_error` is deliberately not read there.
 
+#### macOS provisioning helpers run by absolute path
+
+macOS provisioning helpers (`xattr`, `codesign`) are invoked by ABSOLUTE PATH, never through PATH: the app loads the login shell's environment at startup, so a hijacked PATH element could substitute a `codesign` that runs arbitrary code during an install click. A missing helper degrades to a warning; the smoke test stays the runnability authority.
+
+#### The smoke test runs in the launch environment
+
+The install's `--version` smoke test runs under the LAUNCH environment (`launchEnv` with the runtime's binary dir prepended to the platform dynamic-library search path, same working directory) so it exercises the exact loader path the resident server will use; a smoke test outside that environment would fail installs a real launch would pass.
+
 ### Remove (explicit user click only)
 
 ```

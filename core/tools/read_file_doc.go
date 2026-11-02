@@ -20,17 +20,14 @@ import (
 	"github.com/v0lka/sp4rk/safeio"
 )
 
-// docConvertTimeout is the per-file budget for a single markitdown conversion.
-// Matches the attachment conversion timeout used in manager_attachment.go.
+// docConvertTimeout is the per-file budget for one markitdown conversion; the
+// attachment flow uses the same budget.
 const docConvertTimeout = 2 * time.Minute
 
-// docConversionSubdir is the directory under the session temp dir where
-// converted markdown representations of documents are cached.
 const docConversionSubdir = "conversions"
 
-// docExts is the set of document/binary extensions that the markitdown wrapper
-// converts to markdown. Plain-text formats (txt, md, json, xml, csv, tsv, rst)
-// are deliberately excluded — they are read natively by the inner read_file.
+// docExts holds the document extensions markitdown converts; plain-text
+// formats are read natively by the inner read_file.
 var docExts = map[string]struct{}{
 	"pdf":  {},
 	"docx": {},
@@ -58,12 +55,10 @@ func isDocExt(path string) bool {
 	return ok
 }
 
-// ReadFileDocTool wraps the sp4rk ReadFileTool to transparently convert
-// document formats (pdf, docx, pptx, etc.) to markdown via the markitdown CLI.
-// Plain-text files are delegated to the inner ReadFileTool unchanged.
-//
-// It implements sdktools.ContentBackedReader so the executor caches converted
-// results in memory (content-backed) instead of streaming raw bytes from disk.
+// ReadFileDocTool wraps the sp4rk ReadFileTool, converting document formats to
+// markdown via markitdown (plain text delegates unchanged); content-backed so
+// converted results cache in memory. See specs/domains/tool-system/builtins.md
+// (Document Conversion).
 type ReadFileDocTool struct {
 	*builtins.ReadFileTool
 	limits           builtins.FileLimits
@@ -74,24 +69,12 @@ type ReadFileDocTool struct {
 	markitdownPython func() string // lazily resolves the managed venv interpreter for vision-assisted conversion; nil/"" = disabled
 }
 
-// NewReadFileDocTool creates a read_file wrapper that converts document formats
-// to markdown. The inner sp4rk ReadFileTool is created with the given limits
-// and used for plain-text files and as a fallback on conversion errors. A nil
-// logger is replaced with a discard handler so the tool never panics on a
-// logging call.
-//
-// markitdownPython lazily resolves the managed venv interpreter
-// (toolmanager.VenvPythonPath). The tool-manager installs that venv
-// asynchronously after application startup, so the path is probed at the
-// FIRST converter init (i.e. the first document read) rather than at
-// construction: a probe baked in at app start would see an empty path on
-// fresh installs and silently disable vision-assisted conversion until the
-// app restarts. A nil probe or an empty result keeps the plain CLI path.
-// When the resolved interpreter is available AND the execution context
-// carries a vision resolver whose current model is vision-capable, document
-// conversions run through the markitdown Python API so embedded images are
-// captioned by that model (per-document: the model is re-resolved on every
-// conversion).
+// NewReadFileDocTool builds the wrapper; a nil logger becomes a discard
+// handler. markitdownPython is probed at the FIRST converter init, not at
+// construction: the tool-manager installs the venv asynchronously after
+// startup, so a construction-time probe would pin vision assistance off on
+// fresh installs until restart. See specs/domains/tool-system/builtins.md
+// (Document Conversion) for the vision path.
 func NewReadFileDocTool(limits builtins.FileLimits, logger *slog.Logger, markitdownPython func() string) *ReadFileDocTool {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
@@ -104,16 +87,12 @@ func NewReadFileDocTool(limits builtins.FileLimits, logger *slog.Logger, markitd
 	}
 }
 
-// Description returns an augmented description that informs the agent about
-// supported document formats.
 func (t *ReadFileDocTool) Description() string {
 	return docFileDescription
 }
 
-// IsContentBacked reports whether the read of the file described by input
-// produces a converted markdown view that must be cached in memory.
-// Returns true only for document/binary formats (pdf, docx, etc.); plain-text
-// files delegate to the inner read_file (file-backed, the default).
+// IsContentBacked is true only for document extensions — converted markdown
+// caches in memory; plain text stays file-backed.
 func (t *ReadFileDocTool) IsContentBacked(_ context.Context, input json.RawMessage) bool {
 	var params struct {
 		Path string `json:"path"`
@@ -124,11 +103,9 @@ func (t *ReadFileDocTool) IsContentBacked(_ context.Context, input json.RawMessa
 	return isDocExt(params.Path)
 }
 
-// Execute reads a file. For document/binary formats it converts the file to
-// markdown via markitdown (cached per session), applies the requested line
-// range, and returns the window. For plain-text files it delegates to the
-// inner sp4rk ReadFileTool. On conversion failure it falls back to the inner
-// ReadFileTool with a warning prepended.
+// Execute converts document formats to markdown (session-cached) and returns
+// the requested window; plain text and conversion failures delegate to the
+// inner ReadFileTool, the latter with a warning prepended.
 func (t *ReadFileDocTool) Execute(ctx context.Context, input json.RawMessage) (sdktools.ToolResult, error) {
 	var params builtins.ReadFileInput
 	if err := json.Unmarshal(input, &params); err != nil {
@@ -141,9 +118,8 @@ func (t *ReadFileDocTool) Execute(ctx context.Context, input json.RawMessage) (s
 		return t.ReadFileTool.Execute(ctx, input)
 	}
 
-	// Validate the line range up front for the document branch, mirroring the
-	// inner read_file. Without this, an inverted range (start_line > end_line)
-	// would reach the window slicing logic and panic on an out-of-range slice.
+	// Inverted ranges are rejected up front or the window slicing below
+	// panics on an out-of-range slice.
 	if params.StartLine < 0 {
 		return sdktools.ToolResult{Content: fmt.Sprintf("validation error: start_line must be >= 1, got %d", params.StartLine), IsError: true}, nil
 	}
@@ -154,20 +130,17 @@ func (t *ReadFileDocTool) Execute(ctx context.Context, input json.RawMessage) (s
 		return sdktools.ToolResult{Content: fmt.Sprintf("validation error: start_line (%d) must not exceed end_line (%d)", params.StartLine, params.EndLine), IsError: true}, nil
 	}
 
-	// Resolve the absolute path via the SDK's exported resolver — identical to
-	// what the inner read_file uses, including workspace symlink resolution, so
-	// containment checks stay consistent across plain-text and document reads.
+	// Resolve via the SDK resolver, identical to the inner read_file including
+	// symlink handling, so containment stays consistent across both branches.
 	absPath := builtins.ResolvePath(ctx, params.Path)
 	if absPath == "" {
-		// Path resolution failed (escaped workspace) — delegate to inner tool
-		// which will produce the proper validation error.
+		// Escaped workspace: the inner tool produces the proper error.
 		return t.ReadFileTool.Execute(ctx, input)
 	}
 
 	// Get or convert the markdown, with session-temp conversion caching.
 	markdown, err := t.getOrConvert(ctx, absPath)
 	if err != nil {
-		// Graceful fallback: delegate to inner read_file with a warning.
 		t.convMu.Lock()
 		conv := t.converter
 		t.convMu.Unlock()
@@ -191,16 +164,10 @@ func (t *ReadFileDocTool) Execute(ctx context.Context, input json.RawMessage) (s
 	return sdktools.ToolResult{Content: content}, nil
 }
 
-// converterOrInit lazily initializes the markitdown converter on first use.
-// Returns an error (wrapped exec.ErrNotFound) if markitdown is not on PATH.
-// The venv interpreter path is probed HERE (not at construction): the
-// tool-manager may still be installing during early startup. When the first
-// init raced that installation (probe returned ""), the probe is RETRIED on
-// every call until it resolves — a cached empty-python converter would pin
-// vision off for the whole app run, which the constructor probe cannot
-// repair without a restart. Once a non-empty path is probed the converter
-// is frozen for the process lifetime (the CLI and its venv are installed by
-// a single tool-manager operation).
+// converterOrInit lazily builds the converter (error if markitdown is not on
+// PATH). The venv probe retries on every call until it resolves — a first
+// init that raced the tool-manager install must not pin vision off for the
+// run — and freezes once non-empty (the venv is installed by one operation).
 func (t *ReadFileDocTool) converterOrInit() (*markitdown.Converter, error) {
 	t.convMu.Lock()
 	defer t.convMu.Unlock()
@@ -210,24 +177,17 @@ func (t *ReadFileDocTool) converterOrInit() (*markitdown.Converter, error) {
 	}
 	if t.converter != nil {
 		if t.converterHasPyth || pythonPath == "" {
-			// Frozen: either the converter was already built with the
-			// interpreter (a resolved path never changes for this
-			// process), or the venv probe still comes up empty — the
-			// plain-CLI converter stays in place (vision-less but
-			// functional).
+			// Frozen: built with the interpreter, or still no path to add.
 			return t.converter, nil
 		}
-		// Cached converter built with an empty python path and the probe
-		// has NOW resolved: rebuild so the fresh-install race does not pin
-		// vision off for the whole app run.
+		// Probe has now resolved past the fresh-install race: rebuild with it.
 		c, err := markitdown.NewConverter(markitdown.Options{
 			Logger:     t.log,
 			Timeout:    docConvertTimeout,
 			PythonPath: pythonPath,
 		})
 		if err != nil {
-			// Keep the old (plain) converter — a failed rebuild must not
-			// break document reads.
+			// Keep the plain converter: a failed rebuild must not break reads.
 			return t.converter, nil
 		}
 		t.converter = c
@@ -247,17 +207,10 @@ func (t *ReadFileDocTool) converterOrInit() (*markitdown.Converter, error) {
 	return c, nil
 }
 
-// getOrConvert returns the markdown representation of the document at absPath.
-// The result is cached in <session-temp>/conversions/<sha256(path+mtime+size+vision)>.md.
-// A cache hit avoids re-running the markitdown subprocess on repeated reads
-// (including paginated reads with different line ranges).
-//
-// Vision assistance is resolved PER DOCUMENT from the execution context: the
-// resolver (attached by the orchestrator) inspects the model active at THIS
-// moment, so a mid-task model switch is honored by the next conversion. The
-// resolved vision identity (endpoint+model+prompt) participates in the cache
-// key — a document converted without captions must not be served from the
-// cache after switching to a vision-capable model, and vice versa.
+// getOrConvert returns the document's markdown, cached under the session temp
+// dir keyed by path+mtime+size+vision identity. See
+// specs/domains/tool-system/builtins.md (Document Conversion) for the cache
+// and per-document vision resolution contract.
 func (t *ReadFileDocTool) getOrConvert(ctx context.Context, absPath string) (string, error) {
 	info, err := os.Stat(absPath)
 	if err != nil {
@@ -275,20 +228,13 @@ func (t *ReadFileDocTool) getOrConvert(ctx context.Context, absPath string) (str
 	if tempDir != "" {
 		if cacheDir, ok := conversionCacheDir(tempDir); ok {
 			cacheFile := filepath.Join(cacheDir, cacheKey+".md")
-			// A symlink planted at the deterministic cache-entry name must not
-			// be followed (the read below would serve the link target's
-			// bytes): treat it as a cache miss instead.
+			// A planted symlink at the deterministic entry name is a miss,
+			// never followed.
 			if fi, lErr := os.Lstat(cacheFile); lErr != nil || fi.Mode()&os.ModeSymlink == 0 {
-				// Read the entry back with the SAME cap the converter enforces
-				// on writes (markitdown.MaxConversionOutputBytes): a conversion
-				// result is never larger than that cap by construction, so
-				// every legitimately written entry is readable. The safeio
-				// default cap (10 MiB) would refuse entries between the two
-				// limits and silently disable the cache exactly for the large
-				// documents it exists for. Anything larger than the converter
-				// cap can only be a planted or corrupt entry: ReadFileLimited
-				// refuses it and this miss falls through to a fresh conversion
-				// that overwrites it.
+				// Read back with the converter's own write cap: the safeio
+				// default would refuse exactly the large documents the cache
+				// exists for, while anything over the write cap is planted or
+				// corrupt and falls through to a fresh conversion.
 				if cached, rErr := safeio.ReadFileLimited(cacheFile, markitdown.MaxConversionOutputBytes); rErr == nil {
 					return string(cached), nil
 				}
@@ -306,14 +252,9 @@ func (t *ReadFileDocTool) getOrConvert(ctx context.Context, absPath string) (str
 		return "", err
 	}
 
-	// Persist to the conversion cache so paginated reads don't re-convert.
-	// The write is atomic (temp file + rename) so concurrent readers of the
-	// same newly-converted document cannot observe a half-written cache entry.
-	// The cache directory is verified to be a REAL directory first: both
-	// MkdirAll and the rename would follow a symlink planted at the fixed,
-	// prompt-disclosed "<session-temp>/conversions" path and materialize the
-	// cache outside the session tree, so a non-real directory disables the
-	// cache entirely (conversion still runs; only persistence is skipped).
+	// Atomic write (temp + rename) so concurrent readers never see a half
+	// entry; a non-real cache directory disables persistence entirely —
+	// MkdirAll/rename would follow a planted symlink out of the session tree.
 	if tempDir != "" {
 		cacheDir, ok := conversionCacheDir(tempDir)
 		if !ok {
@@ -334,12 +275,10 @@ func (t *ReadFileDocTool) getOrConvert(ctx context.Context, absPath string) (str
 	return markdown, nil
 }
 
-// conversionCacheDir returns the document-conversion cache directory under
-// tempDir, provided the existing entry there is a real directory. A symlink
-// (or non-directory) planted at the fixed "<tempDir>/conversions" path would
-// redirect every cache write outside the session tree and let a planted entry
-// spoof later reads, so such an entry is refused: ok=false disables the cache
-// for this call. A missing directory is acceptable — the caller creates it.
+// conversionCacheDir returns the cache dir under tempDir only if the existing
+// entry is a real directory — a planted symlink there would redirect writes
+// outside the session tree and let planted entries spoof reads. A missing
+// directory is fine; the caller creates it.
 func conversionCacheDir(tempDir string) (dir string, ok bool) {
 	cacheDir := filepath.Join(tempDir, docConversionSubdir)
 	fi, err := os.Lstat(cacheDir)
@@ -355,20 +294,15 @@ func conversionCacheDir(tempDir string) (dir string, ok bool) {
 	return cacheDir, true
 }
 
-// docCacheKey computes a deterministic cache key from the absolute file path,
-// modification time, size, and the identity of the vision configuration used
-// for the conversion. The key changes when the source file is modified or when
-// the vision configuration differs, invalidating the cached conversion.
+// docCacheKey is deterministic over path+mtime+size+vision identity, so the
+// key changes when the file or the vision configuration changes.
 func docCacheKey(absPath string, mtime, size int64, visionKey string) string {
 	h := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d\x00%d\x00%s", absPath, mtime, size, visionKey)))
 	return hex.EncodeToString(h[:])
 }
 
-// atomicWriteFile writes data to path atomically by first writing to a unique
-// temporary file in the same directory and then renaming it into place. Rename
-// is atomic on POSIX, so concurrent writers cannot produce a partially-written
-// file that a later cache hit would serve verbatim. The temporary file is
-// removed if any step fails (a no-op after a successful rename).
+// atomicWriteFile writes via a unique temp file + rename so no reader ever
+// sees a half-written entry; a failed step removes the temp file.
 func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
 	f, err := os.CreateTemp(dir, ".conv-*.tmp")
@@ -391,18 +325,11 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 	return os.Rename(tmpName, path)
 }
 
-// formatMarkdownWindow applies a line range to a markdown string and formats
-// the result with a header matching the sp4rk read_file output format.
-//
-// It honours the same limits as the inner read_file: MaxWindowLines caps the
-// requested window (defense against unbounded payloads to the LLM) and
-// MaxLineBytes truncates pathological per-line content (e.g. an embedded blob
-// in a converted table row). Range/limit semantics mirror ReadFileRange:
-//   - An unset range yields the first ReadDefaultLines lines.
-//   - start_line past the end of file returns an explicit "past end of file"
-//     message instead of silently clamping down to the last line.
-//   - The window is always clamped to [1, totalLines], and endLine is never
-//     allowed below startLine (defense-in-depth against inverted callers).
+// formatMarkdownWindow applies a line range to converted markdown with a
+// header matching the sp4rk read_file output. It mirrors ReadFileRange
+// semantics: unset range → first ReadDefaultLines lines, start past EOF
+// signals explicitly instead of clamping, and the window is clamped to
+// [1,totalLines] with endLine never below startLine.
 func formatMarkdownWindow(markdown, sourcePath string, startLine, endLine int, limits builtins.FileLimits) string {
 	filename := filepath.Base(sourcePath)
 	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(sourcePath), "."))
@@ -438,8 +365,7 @@ func formatMarkdownWindow(markdown, sourcePath string, startLine, endLine int, l
 			filename, ext, startLine, totalLines)
 	}
 
-	// Clamp end to bounds and guard against an inverted range regardless of the
-	// caller (defense-in-depth so the slice below is always valid).
+	// Clamp regardless of caller so the slice below is always valid.
 	if endLine > totalLines {
 		endLine = totalLines
 	}
@@ -449,8 +375,7 @@ func formatMarkdownWindow(markdown, sourcePath string, startLine, endLine int, l
 
 	selected := lines[startLine-1 : endLine]
 
-	// Apply the per-line byte cap, matching the inner read_file's truncation
-	// marker so converted output is no more permissive than raw file reads.
+	// Per-line cap, matching the inner read_file's truncation marker.
 	if limits.MaxLineBytes > 0 {
 		for i, ln := range selected {
 			if len(ln) > limits.MaxLineBytes {
@@ -472,15 +397,10 @@ func formatMarkdownWindow(markdown, sourcePath string, startLine, endLine int, l
 	return content
 }
 
-// truncateConvertedLine truncates a converted markdown line to at most
-// maxBytes and appends the same recovery-hinting marker used by the inner
-// read_file (builtins.writeLine). The marker points at tool_result_read's line
-// escape-hatch so an agent can request the full line explicitly. Note: for
-// content-backed (converted-document) results the cached representation may
-// already reflect this truncation, so recovery returns what the cache holds.
-// Unlike builtins.writeLine, the input here carries no trailing newline (lines
-// come from strings.Split, which strips the delimiter), so there is nothing to
-// preserve after the marker.
+// truncateConvertedLine caps a converted markdown line at maxBytes and appends
+// the inner read_file's recovery marker (tool_result_read line escape-hatch).
+// For content-backed results recovery returns what the cache holds; the input
+// has no trailing newline (strings.Split stripped it).
 func truncateConvertedLine(line string, lineNum, maxBytes int) string {
 	if len(line) <= maxBytes {
 		return line

@@ -11,28 +11,18 @@ import (
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
-// ManagedWorktreesSegment is the repository-relative directory that holds the
-// app-managed session worktrees (<repo>/.worktrees/<name>, ADR-080). It
-// duplicates core.WorktreesRelativePath — core/tools cannot import the root
-// core package (core imports core/tools; an import back would cycle) — and is
-// pinned against it by TestManagedWorktreesSegmentMatchesCore in the core
-// package, mirroring the GitSafeHooksRelativePath duplicate in
-// internal/sysproc.
+// ManagedWorktreesSegment duplicates core.WorktreesRelativePath (core/tools
+// cannot import root core — it would cycle) and is pinned against it by
+// TestManagedWorktreesSegmentMatchesCore. ADR-080.
 const ManagedWorktreesSegment = ".worktrees"
 
 // ReasonCodeManagedWorktreeTraversal classifies the hard escalation raised by
-// worktreeTraversalHardReason: a tool target that resolves inside a managed
-// worktree container reachable from the session's own roots, granting a local
-// session implicit access to another session's isolated tree. Canonical
-// (isCanonicalHardReason): an `allow` policy can never execute it silently,
-// and the verify-on-edit unattended path blocks it outright.
+// worktreeTraversalHardReason — canonical, so `allow` never executes it
+// silently and the unattended path blocks it outright.
 const ReasonCodeManagedWorktreeTraversal sdktools.JudgeReasonCode = "managed_worktree_traversal"
 
-// worktreePathKeys are the top-level input keys whose string values carry
-// filesystem targets for the built-in file tools (and file-shaped MCP tools).
-// Keying on argument names — not tool names — keeps the gate correct for
-// every current and future file tool without a registry of names; values that
-// are not path-shaped simply never resolve inside a container.
+// worktreePathKeys are the input keys carrying filesystem targets; keying on
+// argument names (not tool names) covers future file tools with no registry.
 var worktreePathKeys = map[string]bool{
 	"path":        true,
 	"file_path":   true,
@@ -41,39 +31,15 @@ var worktreePathKeys = map[string]bool{
 	"target":      true,
 }
 
-// worktreeTraversalHardReason returns a HARD confirmation reason when a tool
-// call's path arguments resolve inside a managed worktree container
-// (<root>/.worktrees) that one of the session's own roots can reach — i.e.
-// the call would read or write ANOTHER session's isolated tree through the
-// containing checkout. Returns "" when there is nothing to escalate.
-//
-// Why this is needed: the managed container lives INSIDE the repository
-// checkout (backend/config.ManagedWorktreesDir), so plain root containment
-// cannot distinguish "the checkout" from "sibling session trees inside the
-// checkout" — a local session (workspace = the checkout) would otherwise
-// reach every managed tree of the same repo without any escalation, and even
-// a managed session could reach its own tree's NESTED container
-// (<own-tree>/.worktrees). The gate restores isolation: such targets always
-// escalate (hard reason through the unified confirmation funnel; the
-// verify-on-edit unattended path blocks them outright), exactly like the
-// .git write gate keeps git internals out of silent auto-approval.
-//
-// Exemptions:
-//   - the session's OWN managed tree is normal working space: when the session
-//     workspace is itself a child of the container, targets inside the
-//     workspace are allowed (only sibling trees escalate);
-//   - a managed session reaching a sibling tree or the containing checkout's
-//     container is out-of-root and already escalates through soft containment
-//     (the checkout is not one of its roots) — this gate only covers what
-//     containment CANNOT see: containers nested inside the session's own
-//     roots.
-//
-// Shell tools are untouched, mirroring the .git gate: agent-typed shell
-// commands targeting the container flow through the ordinary shell gates
-// (flowsh criteria + judges). The deny policy is enforced by Execute before
-// this runs, so traversal never bypasses an explicit deny.
-//
-// The returned code classifies the reason (see ReasonCodeManagedWorktreeTraversal).
+// worktreeTraversalHardReason escalates (hard reason) when a tool-call path
+// resolves inside a managed worktree container reachable from the session's
+// own roots: the container lives INSIDE the checkout, so root containment
+// cannot separate "the checkout" from sibling session trees, and without this
+// gate a local session would read/write another session's isolated tree
+// silently. Exemptions: the session's own managed tree, and targets already
+// out-of-root (soft containment covers those). Shell tools are untouched —
+// they flow through the ordinary shell gates.
+// See specs/domains/session-worktrees.md (Invariants).
 func worktreeTraversalHardReason(ctx context.Context, input json.RawMessage) (string, sdktools.JudgeReasonCode) {
 	workspace := sdktools.WorkspacePathFrom(ctx)
 	roots := sdktools.SessionRoots(ctx)
@@ -99,9 +65,8 @@ func worktreeTraversalHardReason(ctx context.Context, input json.RawMessage) (st
 			if err != nil || !within {
 				continue
 			}
-			// Own-tree exemption: the session workspace is a child of THIS
-			// container (a managed session of the repo at root) and the
-			// target is inside the workspace — normal work in its own tree.
+			// Own-tree exemption: the workspace is a child of this container,
+			// so targets inside it are normal work.
 			wsInside, wsErr := pathutil.IsWithinPath(container, workspace)
 			if wsErr == nil && wsInside {
 				if own, ownErr := pathutil.IsWithinPath(workspace, resolved); ownErr == nil && own {
@@ -125,12 +90,9 @@ func worktreeTraversalHardReason(ctx context.Context, input json.RawMessage) (st
 		ManagedWorktreesSegment, strings.Join(offending, ", ")), ReasonCodeManagedWorktreeTraversal
 }
 
-// extractWorktreePathArgs returns the string values of the known path-carrying
-// top-level keys in a tool-call input. Non-string values, unknown shapes, and
-// unparseable input yield no candidates (fail-open for EXTRACTION only — the
-// gate itself is fail-closed once a candidate resolves inside a container;
-// the shared structural validator in Execute already rejects malformed input
-// for schema-carrying tools).
+// extractWorktreePathArgs returns string values of the known path keys.
+// Extraction is fail-open; the gate is fail-closed once a candidate resolves
+// inside a container, and Execute's structural validator rejects bad input.
 func extractWorktreePathArgs(input json.RawMessage) []string {
 	var parsed map[string]json.RawMessage
 	if err := json.Unmarshal(input, &parsed); err != nil {
@@ -156,12 +118,9 @@ func extractWorktreePathArgs(input json.RawMessage) []string {
 	return out
 }
 
-// resolveWorktreeTarget anchors a raw tool argument to an absolute path and
-// resolves symlinks best-effort, so a symlink planted inside the workspace
-// cannot launder a container target past the gate. A resolution failure
-// (not-yet-existing target for a write, unreadable parent) keeps the lexical
-// path — the containment check below still runs on it, so a failure never
-// silently exempts a container target.
+// resolveWorktreeTarget anchors an argument to an absolute path, resolving
+// symlinks best-effort so a planted link cannot launder a container target
+// past the gate; a failed resolution keeps the lexical path (never exempted).
 func resolveWorktreeTarget(workspace, raw string) (string, bool) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {

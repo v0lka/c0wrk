@@ -18,10 +18,8 @@ import (
 	"github.com/v0lka/c0wrk/internal/sysproc"
 )
 
-// unquoteGitPath strips surrounding double-quotes and unescapes C-style
-// escapes from a git output path. git quotes paths containing special
-// characters (spaces, tabs, non-ASCII) when core.quotePath is true (the
-// default). Returns the path unchanged if it is not quoted.
+// unquoteGitPath strips surrounding double-quotes and unescapes C-style escapes
+// from a git output path (git quotes paths when core.quotePath is on); unquoted paths pass through.
 func unquoteGitPath(path string) string {
 	if len(path) >= 2 && path[0] == '"' && path[len(path)-1] == '"' {
 		if unquoted, err := strconv.Unquote(path); err == nil {
@@ -31,9 +29,8 @@ func unquoteGitPath(path string) string {
 	return path
 }
 
-// errNotGitRepo reports whether a git command failure is due to the target
-// directory not being a git repository (as opposed to a real operational
-// error).
+// errNotGitRepo reports whether a git failure means "not a repository"
+// (stderr match) rather than a real operational error.
 func errNotGitRepo(err error, stderr string) bool {
 	var exitErr *exec.ExitError
 	if !errors.As(err, &exitErr) {
@@ -43,60 +40,24 @@ func errNotGitRepo(err error, stderr string) bool {
 	return strings.Contains(s, "not a git repository")
 }
 
-// GitCmdInRepo returns a hardened git [exec.Cmd] for `git <args...>` rooted
-// at the repository (or work tree) at repoPath. It is the repo-scoped layer
-// on top of [sysproc.GitCmd]: before every invocation the config of the
-// repository git itself would discover for repoPath is scanned fresh (no
-// caching — config planted into a repo mid-session is neutralized too; the
-// .git chain is walked up from repoPath, mirroring git's own discovery, so a
-// workspace rooted at a subdirectory of a repository is covered too) and a
-// per-repo set of `-c key=value` overrides is prepended, disarming every
-// command-bearing key the scan finds (clean/smudge/process filters, merge
-// drivers, textconv, attr.tree routing, and more — see [ScanGitConfig] and
-// GitConfigInfo.NeutralizingArgv). The sysproc baseline (fsmonitor,
-// hooksPath, commit signing, GIT_EDITOR) still applies underneath and covers
-// the global, repo-independent vectors. The one sanctioned deviation from
-// per-invocation scanning is operation-local memoization (see gitScanMemo,
-// review [15]): a single logical operation reuses the scan taken before its
-// first git invocation; sharing a scan across operations stays forbidden.
-//
-// Precedence: `-c key=value` on the command line wins over .git/config, so
-// an attacker-set key is beaten by our override without modifying the
-// repository.
-//
-// The scan is fail-closed: when the config cannot be read or parsed safely
-// (unreadable, oversized, not a regular file — a FIFO would block the open —
-// or a malformed .git pointer) an error is returned and the git command is
-// not constructed — git itself refuses such configs too, and running
-// un-neutralized is never an option. A directory with no .git anywhere on
-// its chain (plain folder, or `git diff --no-index` on a non-repo) yields an
-// empty scan and plain baseline behavior.
-//
-// The returned command defaults to cmd.Dir = repoPath so a caller that
-// forgets to set the working directory still operates inside the intended
-// repository; callers that need a different working directory (none today —
-// repoPath IS the working directory for every repo-scoped invocation) may
-// override it.
+// GitCmdInRepo returns a hardened git [exec.Cmd] for `git <args...>`: the
+// repo-scoped layer on [sysproc.GitCmd] — it scans the repository config fresh
+// per invocation, prepends the scan's neutralizing `-c key=value` overrides,
+// and fails closed on unscannable config; cmd.Dir defaults to repoPath. See
+// specs/domains/workspace.md (Git Subprocess Hardening) and
+// specs/decisions/033-git-subprocess-hardening.md (operation-local gitScanMemo).
 func GitCmdInRepo(ctx context.Context, repoPath string, args ...string) (*exec.Cmd, error) {
 	scan := newGitScanMemo(repoPath)
 	scan.logger, _ = ctx.Value(gitScanLoggerKey{}).(*slog.Logger)
 	return gitCmdInRepoScanned(ctx, scan, args...)
 }
 
-// gitScanLoggerKey carries an operation-local scanner logger. It never changes
-// the global logger or the default scanner seam.
+// gitScanLoggerKey carries an operation-local scanner logger via context.
 type gitScanLoggerKey struct{}
 
-// gitScanMemo carries ONE ScanGitConfig through a single logical operation
-// (review [15]). GitCmdInRepo scans fresh per invocation — the deliberate
-// no-caching design that neutralizes config planted mid-session — but a
-// multi-invocation operation such as BuildReviewDiff (one `git diff HEAD`,
-// one `ls-files`, plus one `git diff --no-index` per untracked file)
-// amplified that into N+2 full config re-reads per review, which a hostile
-// 4 MiB config turns into gigabytes of reads on a user-facing path. An
-// operation takes the scan before its FIRST git invocation and reuses it
-// for the rest; sharing across operations remains forbidden — freshness
-// per user operation is the security property. Not safe for concurrent use.
+// gitScanMemo carries ONE ScanGitConfig through a single logical operation —
+// the sanctioned freshness-per-operation narrowing of the no-cache rule (review
+// [15]; specs/decisions/033-git-subprocess-hardening.md). Not concurrent-safe.
 type gitScanMemo struct {
 	logger *slog.Logger
 	path   string
@@ -109,9 +70,8 @@ func newGitScanMemo(repoPath string) *gitScanMemo {
 	return &gitScanMemo{path: repoPath}
 }
 
-// scanInfo returns the memoized scan result, scanning the repository config
-// at most once per memo — the trusted-branch overlay gate and the hardened
-// path's argv derivation share one scan of the same operation.
+// scanInfo returns the memoized scan, taken at most once per operation — the
+// overlay gate and the hardened path's argv derivation share it.
 func (m *gitScanMemo) scanInfo() (*GitConfigInfo, error) {
 	if !m.done {
 		if m.logger != nil {
@@ -133,33 +93,14 @@ var scanGitConfigFn = func(repoRoot string) (*GitConfigInfo, error) {
 	return ScanGitConfig(repoRoot)
 }
 
-// trustedRootRawEligible gates a trusted spawn on the one per-worktree
-// config source a repository-level trust decision can never cover: a linked
-// worktree's own config.worktree overlay, which git reads live whenever
-// extensions.worktreeConfig is enabled. The trust snapshot scans the
-// repository trust root (common config, main checkout, attribute routing),
-// so the overlay — living in the worktree's own git dir, readable and
-// plantable at any time, including after the trust decision — is not part
-// of what the user reviewed, and raw git may run from the worktree only
-// while a fresh scan shows it contributing nothing dangerous
-// (GitConfigInfo.WorktreeOverlayClean over this operation's memoized scan).
-// Plain checkouts and subdirectory workspaces (trust root == work-tree
-// root) read no overlay on git's side, so they stay unconditionally raw —
-// exactly the decision the snapshot bound.
-//
-// Everything else — a dangerous, malformed, unreadable, or include-bearing
-// overlay — falls through to the hardened baseline below, which
-// neutralizes the overlay's keys from the same memoized scan and fails the
-// operation closed when the scan itself failed, exactly like an untrusted
-// repository.
-//
-// The gate deliberately lives BELOW the commit gate (backend Commit keys on
-// the stored trust entry alone): a spawn-layer refusal cannot re-key the
-// trust entry, so prompting from here would recreate the "Trust this repo &
-// commit" loop this trust model exists to close. The trade is honest and
-// fails safe: a trusted repository whose worktree carries a dangerous
-// overlay commits hardened from that worktree (its shared, trusted hooks
-// included) instead of executing configuration the user never reviewed.
+// trustedRootRawEligible gates a trusted spawn on the one per-worktree source
+// a repository-level trust decision can never cover: a linked worktree's own
+// config.worktree overlay, plantable after the trust decision. Raw git runs
+// from the worktree only while a fresh scan shows the overlay contributing
+// nothing dangerous; anything else — a failed scan included — takes the hardened
+// baseline below; plain checkouts stay unconditionally raw. Lives below the
+// commit gate (prompting here cannot re-key the trust entry). See
+// specs/decisions/034-git-trust-opt-out.md.
 func trustedRootRawEligible(scan *gitScanMemo) bool {
 	if ResolveGitTrustRoot(scan.path) == ResolveWorkTreeRoot(scan.path) {
 		return true
@@ -171,24 +112,15 @@ func trustedRootRawEligible(scan *gitScanMemo) bool {
 	return info.WorktreeOverlayClean()
 }
 
-// gitCmdInRepoScanned is GitCmdInRepo over an operation-scoped scan memo:
-// the memo's repository path is the command's working directory, exactly
-// like GitCmdInRepo's repoPath.
+// gitCmdInRepoScanned is GitCmdInRepo over an operation-scoped scan memo;
+// the memo's path is the command's working directory.
 func gitCmdInRepoScanned(ctx context.Context, scan *gitScanMemo, args ...string) (*exec.Cmd, error) {
-	// Trusted repository: the user explicitly opted it back into its own git
-	// configuration via security.trusted_git_repos (mirrored by backend into
-	// core/gittrust). Spawn raw git — no sysproc baseline, no per-repo
-	// NeutralizingArgv, no GIT_EDITOR pin — so the repository behaves exactly
-	// as it would outside c0wrk, hooks/filters/signing included. HideConsole
-	// is still applied by sysproc.GitCmdRaw. The comparison probes every
-	// trust-key form of scan.path (workspace.TrustProbePaths): the
-	// repository trust root (ResolveGitTrustRoot — the main work-tree root a
-	// linked worktree's commits share their hooks and common config with —
-	// the form backend stores), the work-tree root (the legacy
-	// pre-worktree-unification store form), the raw path itself, and the
-	// canonical spelling of each — so a workspace opened at a subdirectory
-	// of a trusted repository, at its root, or in one of its linked
-	// worktrees (symlinked mounts included) all agree with the stored entry.
+	// Trusted repository: spawn raw git — no baseline, no neutralizing argv,
+	// no GIT_EDITOR pin — so it behaves exactly as outside c0wrk, hooks/
+	// filters/signing included. The comparison probes every trust-key form of
+	// scan.path (TrustProbePaths: trust root, work-tree root, raw path, each
+	// canonical) so subdirectory/root/worktree workspaces of a trusted repo agree
+	// with the stored entry.
 	trustedRoot := false
 	for _, root := range TrustProbePaths(scan.path) {
 		if gittrust.IsTrusted(root) {
@@ -199,19 +131,13 @@ func gitCmdInRepoScanned(ctx context.Context, scan *gitScanMemo, args ...string)
 	if trustedRoot && trustedRootRawEligible(scan) {
 		cmd := sysproc.GitCmdRaw(ctx, args...)
 		cmd.Dir = scan.path
-		// GIT_OPTIONAL_LOCKS=0 is c0wrk's own watcher-loop prevention, not
-		// a repo-config neutralization, so it stays on the trusted path too:
-		// without it every read-only status/diff refresh opportunistically
-		// rewrites .git/index (REMOVE+CREATE under fsnotify), the watcher
-		// reports workspace:tree_changed, and the UI re-fetches git status —
-		// the self-sustaining refresh loop the hardened path already closes
-		// (see the pin below). It changes no git output and disarms nothing
-		// the user opted back into: the variable only skips OPTIONAL locks,
-		// and commands that genuinely require the index (add/commit/stash)
-		// still take their real locks. GitCmdRaw leaves cmd.Env nil (child
-		// inherits the parent environment), so the pin is layered over
-		// os.Environ() — pinGitEnv strips any inherited value first, keeping
-		// everything else exactly as it would be outside c0wrk.
+		// GIT_OPTIONAL_LOCKS=0 is c0wrk's own watcher-loop prevention, not a
+		// config neutralization, so it stays on the trusted path too: without
+		// it every read-only status/diff refresh opportunistically rewrites
+		// .git/index, which the watcher reports as workspace:tree_changed and
+		// the UI answers with more git calls — a self-sustaining loop. Only
+		// OPTIONAL locks are skipped; the pin layers over os.Environ().
+		// See specs/domains/workspace.md (GIT_OPTIONAL_LOCKS=0 pin).
 		cmd.Env = pinGitEnv(os.Environ(), "GIT_OPTIONAL_LOCKS", "0")
 		return cmd, nil
 	}
@@ -222,18 +148,14 @@ func gitCmdInRepoScanned(ctx context.Context, scan *gitScanMemo, args ...string)
 	}
 	argv, err := info.NeutralizingArgvErr()
 	if err != nil {
-		// A neutralizing key that cannot be rendered as -c key=value
-		// (a subsection containing '=') would leave the repository's
-		// command armed while git runs — refuse the spawn (review [21]).
+		// A key unrenderable as -c key=value (subsection containing '=') would
+		// leave the repository's command armed — refuse the spawn (review [21]).
 		return nil, fmt.Errorf("rendering neutralizing overrides for repo %s (fail closed): %w", scan.path, err)
 	}
 	if info != nil && len(info.Includes) > 0 {
-		// Include-bearing configs lean on the attr.tree kill for driver
-		// names hidden in included files, and attr.tree exists only since
-		// git 2.45 — older git silently ignores the key, which would leave
-		// the invisible drivers live. Fail closed instead of running git
-		// with a dead neutralization (the version is probed once and
-		// cached; see gitversion.go).
+		// Include-bearing configs lean on the attr.tree kill, which git only
+		// honors since 2.45 — older git silently ignores it, leaving hidden
+		// drivers live: fail closed (specs/domains/workspace.md; gitversion.go).
 		if err := requireAttrTreeCapableGit(); err != nil {
 			return nil, err
 		}
@@ -246,22 +168,15 @@ func gitCmdInRepoScanned(ctx context.Context, scan *gitScanMemo, args ...string)
 		return nil, err
 	}
 	if info.NeedsWorkTreeEnvPin() {
-		// core.worktree redirects where checkout/reset write tracked
-		// files, and no -c form beats it (verified on git 2.50.1) — the
-		// one channel that outranks the key is the GIT_WORK_TREE
-		// environment variable. Pin it to the work-tree root git would
-		// discover from the repository path, so writes land where the
-		// user pointed c0wrk, never at the config's absolute path.
-		// Discovery failing while a worktree finding exists means the
-		// chain changed under us — fail closed rather than spawn git
-		// honoring the hostile key.
+		// core.worktree redirects where checkout/reset write tracked files,
+		// and no -c form beats it — GIT_WORK_TREE is the one channel that outranks
+		// the key. Pin the discovered work-tree root so writes stay where the user
+		// pointed c0wrk; discovery failing with a worktree finding = chain changed
+		// under us — fail closed.
 		root := ResolveWorkTreeRoot(scan.path)
 		if root == "" {
-			// Relax ONLY when the pin was demanded by include-derived roots
-			// and NO core.worktree finding exists (the bare-repository case
-			// review [95] documents). A config carrying an actual
-			// core.worktree key with no discoverable root stays fail-closed:
-			// the hostile key must never reach git unpinned.
+			// Relax ONLY for an include-derived pin with NO core.worktree finding
+			// (the bare-repository layout review [95]); a real key never passes unpinned.
 			hasWorkTreeFinding := false
 			for i := range info.Findings {
 				if info.Findings[i].Kind == GitConfigFindingWorkTree {
@@ -274,39 +189,23 @@ func gitCmdInRepoScanned(ctx context.Context, scan *gitScanMemo, args ...string)
 					"pinning GIT_WORK_TREE for repo %s (fail closed): core.worktree is set but no work-tree root can be discovered",
 					scan.path)
 			}
-			// Include-derived pin (review [148]) with no discoverable
-			// work-tree root: a bare repository — the documented layout
-			// the worktree listing supports (review [95]). There is no
-			// work tree for tracked-file writes to land in and no honest
-			// root to pin; failing every git operation here would break
-			// the supported bare layout. Nothing to pin.
-			//
-			// This branch is defensive today: a scanned config implies a
-			// .git entry on the lexical chain, so a root is discoverable.
+			// Include-derived pin with no discoverable root: a bare repository
+			// (review [95]/[148]) — nothing to pin; failing every git operation
+			// would break the supported layout. Defensive today: a scanned config implies a discoverable root.
 		} else {
 			cmd.Env = pinGitEnv(cmd.Env, "GIT_WORK_TREE", root)
 		}
 	}
-	// GIT_OPTIONAL_LOCKS=0: read-only commands (status/diff/ls-files) must
-	// not take git's opportunistic index lock. Without it every `git status`
-	// refresh rewrites .git/index (observed as REMOVE+CREATE under fsnotify),
-	// which the workspace watcher reports as workspace:tree_changed — closing
-	// a self-sustaining loop where each watcher flush triggers the very git
-	// re-fetches that rewrite the index again (~3 events/second, disrupting
-	// e.g. text selection in the review diff). The variable only disables
-	// OPTIONAL locks; commands that genuinely require the index (add/commit/
-	// stash) still take their real locks. pinGitEnv strips any inherited value
-	// first, so a user-exported GIT_OPTIONAL_LOCKS cannot re-enable it.
+	// GIT_OPTIONAL_LOCKS=0: same watcher-loop prevention as the trusted path
+	// above; pinGitEnv strips any inherited value first.
 	cmd.Env = pinGitEnv(cmd.Env, "GIT_OPTIONAL_LOCKS", "0")
 	cmd.Dir = scan.path
 	return cmd, nil
 }
 
-// pinGitEnv replaces any inherited NAME=... entry in env with name=value,
-// appending the pin exactly once. glibc's getenv resolves duplicate names
-// to the FIRST entry, so a pin merely appended after an inherited value
-// would be silently void — the same strip-then-append reasoning as
-// sysproc's GIT_EDITOR handling (hardenedGitEnv).
+// pinGitEnv strips any inherited NAME=... entry and appends name=value once:
+// glibc's getenv resolves duplicates to the FIRST entry, so appending alone
+// is silently void (same reasoning as sysproc's hardenedGitEnv).
 func pinGitEnv(env []string, name, value string) []string {
 	out := make([]string, 0, len(env)+1)
 	for _, kv := range env {
@@ -318,16 +217,10 @@ func pinGitEnv(env []string, name, value string) []string {
 	return append(out, name+"="+value)
 }
 
-// IsGitRepo reports whether dir is inside a git work tree. This function
-// does not cache results — caching is the caller's responsibility if needed.
-// A repository whose config cannot be scanned safely is reported as not a
-// repo (fail closed): callers then take their non-repo paths, but those
-// paths are degraded rather than silently git-free — every git invocation,
-// `--no-index` included, goes through GitCmdInRepo and its fresh scan (a
-// `--no-index` run inside a repository directory still consults repo
-// config; verified on git 2.50.1: an armed diff.external executes there
-// without --no-ext-diff), so the same scan failure resurfaces as an error
-// from the fallback itself. git is never run un-neutralized (review [53]).
+// IsGitRepo reports whether dir is inside a git work tree; results are not
+// cached. An unscannable config reports "not a repo" (fail closed), but the
+// fallbacks stay degraded, not git-free — every fallback still spawns through
+// GitCmdInRepo's fresh scan, resurfacing the failure (specs/domains/workspace.md).
 func IsGitRepo(ctx context.Context, dir string) bool {
 	cmd, err := GitCmdInRepo(ctx, dir, "-C", dir, "rev-parse", "--is-inside-work-tree")
 	if err != nil {
@@ -352,23 +245,14 @@ func IsGitTracked(ctx context.Context, dir, relPath string) bool {
 }
 
 // GitStatus runs git status --porcelain in repoPath and returns a map of
-// absolute file paths to their git status entries.  Each entry captures
-// both the index (staged) and work-tree (unstaged) status when both are
-// present.  For backward compatibility the legacy Status/Staged fields
-// reflect the index side when available, falling back to the work tree.
+// absolute file paths to entries carrying both index and work-tree status;
+// legacy Status/Staged prefer the index side when set.
 func GitStatus(ctx context.Context, repoPath string) (map[string]GitStatusEntry, error) {
-	// Porcelain v1 paths are always relative to the REPOSITORY ROOT, not to
-	// the current directory (git docs: status.relativePaths "is only used
-	// by the non-porcelain commands"). Joining them onto repoPath is only
-	// correct when repoPath IS the work-tree root; for a workspace rooted
-	// at a repository subdirectory every entry would be keyed onto a
-	// non-existent path — and a root-level change whose name collides with
-	// a workspace file would make DiscardChanges revert the WRONG file
-	// (review [99]). Run the command from — and key paths onto — the
-	// work-tree root git would discover (a no-op when repoPath is already
-	// the root; changes outside the workspace then simply match no tree
-	// node). Unresolvable chains keep repoPath, matching the fail-closed
-	// pairing ResolveWorkTreeRoot documents.
+	// Porcelain v1 paths are relative to the REPOSITORY ROOT, so joining them
+	// onto repoPath is only correct at the work-tree root — from a subdirectory
+	// workspace entries would key onto non-existent paths and a colliding root-
+	// level name would make DiscardChanges revert the WRONG file (review [99]);
+	// run from — and key onto — the discovered work-tree root.
 	root := repoPath
 	if r := ResolveWorkTreeRoot(repoPath); r != "" {
 		root = r
@@ -421,8 +305,6 @@ func GitStatus(ctx context.Context, repoPath string) (map[string]GitStatusEntry,
 			continue
 		}
 
-		// Compute legacy Status/Staged: prefer index (staged) over
-		// work-tree (unstaged) for backward compatibility.
 		legacyStatus := yStatus
 		legacyStaged := false
 		if xStatus != "" {
@@ -450,11 +332,8 @@ func GitStatus(ctx context.Context, repoPath string) (map[string]GitStatusEntry,
 	return result, nil
 }
 
-// porcelainStatus maps a single git-status --porcelain status column
-// character to its letter string.  Returns empty string for unmodified.
-// 'D' (deleted) is included so that staged/work-tree deletions and
-// both-deleted (DD) merge conflicts are surfaced to consumers instead of
-// being silently skipped.
+// porcelainStatus maps one porcelain status column to its letter string, empty
+// for unmodified; 'D' is kept so deletions and DD conflicts reach consumers.
 func porcelainStatus(c byte) string {
 	switch c {
 	case 'M', 'A', 'R', 'C', 'U', 'D':
@@ -466,14 +345,9 @@ func porcelainStatus(c byte) string {
 	}
 }
 
-// GetFileDiff returns the unified diff of uncommitted changes for a file
-// within a git repository. For tracked files it concatenates staged and
-// unstaged diffs. For untracked files and non-git workspaces, it produces
-// a full-file diff via git diff --no-index.
-//
-// Callers that already know whether the path is in a git repository should
-// prefer the more specific GetFileDiffInRepo or GetFileDiffNoRepo variants
-// to avoid the redundant IsGitRepo check.
+// GetFileDiff returns the unified diff of uncommitted changes for a file:
+// staged + unstaged for tracked files, a --no-index full-file diff for
+// untracked/non-git workspaces; prefer GetFileDiffInRepo/NoRepo if known.
 func GetFileDiff(ctx context.Context, repoPath, relPath string) (string, error) {
 	if !IsGitRepo(ctx, repoPath) {
 		return GetFileDiffNoRepo(ctx, repoPath, relPath)
@@ -481,16 +355,14 @@ func GetFileDiff(ctx context.Context, repoPath, relPath string) (string, error) 
 	return GetFileDiffInRepo(ctx, repoPath, relPath)
 }
 
-// GetFileDiffInRepo returns the unified diff of uncommitted changes for a
-// file within a git repository. The caller must ensure repoPath is a git
-// repository. For tracked files it concatenates staged and unstaged diffs.
-// For untracked files it produces a full-file diff via git diff --no-index.
+// GetFileDiffInRepo returns the unified diff of uncommitted changes for a file;
+// the caller must ensure repoPath is a git repository (untracked files get a
+// full-file --no-index diff).
 func GetFileDiffInRepo(ctx context.Context, repoPath, relPath string) (string, error) {
 	var result strings.Builder
 
-	// Fresh scan per invocation here (the review [15] memo is scoped to
-	// BuildReviewDiff's multi-spawn operation; this single-file surface
-	// keeps the original per-call freshness).
+	// Fresh scan per invocation: the review [15] memo is scoped to
+	// BuildReviewDiff's multi-spawn operation only.
 	staged, err := runGitDiff(ctx, newGitScanMemo(repoPath), true, relPath)
 	if err != nil {
 		return "", fmt.Errorf("git diff --cached: %w", err)
@@ -515,9 +387,7 @@ func GetFileDiffInRepo(ctx context.Context, repoPath, relPath string) (string, e
 }
 
 // GetFileDiffNoRepo produces a full-file diff via git diff --no-index for
-// workspaces that are known not to be git repositories. The caller is
-// responsible for determining that the path is not in a git repo (e.g. via
-// a cached check) — this function does not call IsGitRepo.
+// workspaces known not to be repositories; the caller owns that knowledge.
 func GetFileDiffNoRepo(ctx context.Context, repoPath, relPath string) (string, error) {
 	diff, err := runGitDiffNoIndex(ctx, newGitScanMemo(repoPath), relPath)
 	if err != nil {
@@ -526,26 +396,16 @@ func GetFileDiffNoRepo(ctx context.Context, repoPath, relPath string) (string, e
 	return diff, nil
 }
 
-// BuildReviewDiff returns the combined unified diff of ALL uncommitted
-// changes relative to HEAD — staged and unstaged tracked changes together
-// with untracked files — for a git repository, with contextLines lines of
-// context per hunk. The result is suitable for ParseReviewDiff.
-//
-// Tracked changes come from `git diff -U{contextLines} HEAD`, which reports
-// staged and unstaged changes together. That command omits untracked files
-// (they have no index entry), so each untracked file — present in the work
-// tree but never added to the index, and not git-ignored — is diffed against
-// /dev/null via `git diff --no-index` and appended. The result is empty when
-// the working tree is clean.
-//
-// The caller must ensure repoPath is a git repository.
+// BuildReviewDiff returns the combined unified diff of ALL uncommitted changes
+// relative to HEAD — `git diff -U{contextLines} HEAD` reports staged and
+// unstaged tracked changes together but omits untracked files (no index entry),
+// so each untracked, non-ignored file is appended as a --no-index diff against
+// /dev/null. Empty for a clean tree; caller ensures repoPath is a git repo.
 func BuildReviewDiff(ctx context.Context, repoPath string, contextLines int) (string, error) {
 	var result strings.Builder
 
-	// One scan for the whole operation (review [15]): the tracked diff,
-	// the untracked listing and every per-file --no-index diff below share
-	// this memo instead of re-reading the config N+2 times. The memo dies
-	// with the operation — the next BuildReviewDiff rescans.
+	// One scan for the whole operation (review [15] — see
+	// specs/decisions/033-git-subprocess-hardening.md); it dies with it.
 	scan := newGitScanMemo(repoPath)
 
 	tracked, err := runGitDiffHead(ctx, scan, contextLines)
@@ -569,14 +429,10 @@ func BuildReviewDiff(ctx context.Context, repoPath string, contextLines int) (st
 	return result.String(), nil
 }
 
-// runGitDiffHead runs `git diff --no-ext-diff -U{contextLines} HEAD`, which
-// reports both staged and unstaged changes to tracked files relative to HEAD
-// in a single invocation. Untracked files are not included (they have no
-// index entry). --no-ext-diff disables external diff drivers (diff.external
-// and attribute-routed diff.<n>.command): the git diff porcelain executes
-// them BY DEFAULT (verified on git 2.50.1), so the flag — paired with the
-// scan's per-key -c diff.* kills on every GitCmdInRepo invocation — both
-// neutralizes the vector and keeps this call's patch output usable.
+// runGitDiffHead runs `git diff --no-ext-diff -U{contextLines} HEAD`: staged
+// and unstaged tracked changes in one invocation, untracked files excluded.
+// --no-ext-diff keeps external drivers out of the patch output (every
+// patch-producing call site passes it — specs/domains/workspace.md).
 func runGitDiffHead(ctx context.Context, scan *gitScanMemo, contextLines int) (string, error) {
 	cmd, err := gitCmdInRepoScanned(ctx, scan, "diff", "--no-ext-diff", "-U"+strconv.Itoa(contextLines), "HEAD")
 	if err != nil {
@@ -591,11 +447,8 @@ func runGitDiffHead(ctx context.Context, scan *gitScanMemo, contextLines int) (s
 	return stdout.String(), nil
 }
 
-// listUntrackedFiles returns the repository-relative paths of untracked
-// files (present in the work tree but not in the index), respecting
-// .gitignore via --exclude-standard. It runs `git ls-files --others
-// --exclude-standard -z` and splits the NUL-delimited output. Individual
-// files are listed rather than their containing directories.
+// listUntrackedFiles returns repository-relative paths of untracked files
+// (work tree, not index), honoring .gitignore; NUL-delimited, individual files.
 func listUntrackedFiles(ctx context.Context, scan *gitScanMemo) ([]string, error) {
 	cmd, err := gitCmdInRepoScanned(ctx, scan, "ls-files", "--others", "--exclude-standard", "-z")
 	if err != nil {
@@ -618,10 +471,8 @@ func listUntrackedFiles(ctx context.Context, scan *gitScanMemo) ([]string, error
 	return files, nil
 }
 
-// runGitDiff executes a git diff command and returns its output. --no-ext-diff
-// disables external diff drivers (diff.external / diff.<n>.command), which
-// the git diff porcelain executes by default (verified on git 2.50.1); the
-// scan's per-key -c diff.* kills neutralize them for every other invocation.
+// runGitDiff executes `git diff [--cached] -- <path>`; --no-ext-diff keeps
+// external diff drivers out of the patch output (see runGitDiffHead).
 func runGitDiff(ctx context.Context, scan *gitScanMemo, cached bool, relPath string) (string, error) {
 	args := []string{"diff", "--no-ext-diff"}
 	if cached {
@@ -643,12 +494,9 @@ func runGitDiff(ctx context.Context, scan *gitScanMemo, cached bool, relPath str
 	return stdout.String(), nil
 }
 
-// runGitDiffNoIndex produces a diff for an untracked file by comparing it
-// against /dev/null. git diff --no-index exits with code 1 when differences
-// exist, so we treat that as success. --no-ext-diff disables external diff
-// drivers here too: run inside the repository, --no-index still honors repo
-// config, so an armed diff.external would otherwise execute (verified on git
-// 2.50.1).
+// runGitDiffNoIndex diffs an untracked file against /dev/null; exit code 1
+// means "differences exist" and is success. --no-ext-diff stays: inside a
+// repository --no-index still consults repo config (specs/domains/workspace.md).
 func runGitDiffNoIndex(ctx context.Context, scan *gitScanMemo, relPath string) (string, error) {
 	cmd, err := gitCmdInRepoScanned(ctx, scan, "diff", "--no-ext-diff", "--no-index", "--", os.DevNull, relPath)
 	if err != nil {
@@ -670,9 +518,8 @@ func runGitDiffNoIndex(ctx context.Context, scan *gitScanMemo, relPath string) (
 	return stdout.String(), nil
 }
 
-// GitIgnoredPaths returns a set of absolute paths that are ignored by git
-// in the given directory. Returns (nil, nil) when the directory is not a
-// git repository (no filtering) or when there are no ignored paths.
+// GitIgnoredPaths returns the absolute paths git ignores in dir. A non-repo
+// directory (no filtering) or no ignored paths yields an empty map.
 func GitIgnoredPaths(ctx context.Context, dir string) (map[string]bool, error) {
 	cmd, err := GitCmdInRepo(ctx, dir, "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z")
 	if err != nil {
@@ -708,19 +555,14 @@ func GitIgnoredPaths(ctx context.Context, dir string) (map[string]bool, error) {
 }
 
 // reviewHunkHeaderRe matches a unified-diff hunk header, capturing the
-// old/new start line and (optional) count. Counts default to 1 when git
-// omits them (single-line hunk side).
+// old/new start and (optional) count; omitted counts default to 1.
 var reviewHunkHeaderRe = regexp.MustCompile(`^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@`)
 
-// ParseReviewDiff parses a multi-file unified diff — such as the output of
-// `git diff -U5 HEAD` — into per-file groups, each carrying its hunks.
-// Files are delimited by "diff --git a/<old> b/<new>" header lines: the
-// current path comes from the b/ side and OldPath is populated only for
-// renames/copies where the a/ and b/ sides differ. Paths are unquoted (git
-// quotes paths containing special characters when core.quotePath is set).
-// Returns an empty (non-nil) slice when diff is empty. The context-line
-// count of each hunk is whatever git emitted (controlled by the caller's
-// -U flag), not enforced here.
+// ParseReviewDiff parses a multi-file unified diff (e.g. `git diff -U5 HEAD`)
+// into per-file groups delimited by "diff --git" header lines: the current
+// path is the b/ side, OldPath is set only for renames/copies, paths are
+// unquoted. Empty non-nil slice for an empty diff; hunk context counts are
+// whatever git emitted (the caller's -U flag), not enforced here.
 func ParseReviewDiff(diff string) []ReviewFileDiff {
 	diff = strings.TrimSpace(diff)
 	if diff == "" {
@@ -728,9 +570,8 @@ func ParseReviewDiff(diff string) []ReviewFileDiff {
 	}
 
 	lines := strings.Split(diff, "\n")
-	// Locate the start line of each file block. A real "diff --git "
-	// header has no leading space, which distinguishes it from an
-	// identical-looking context line inside a hunk body (" diff --git ").
+	// A real "diff --git " header has no leading space, distinguishing it
+	// from an identical-looking context line inside a hunk body.
 	var blockStarts []int
 	for i, line := range lines {
 		if strings.HasPrefix(line, "diff --git ") {
@@ -761,13 +602,9 @@ func parseReviewFileBlock(lines []string) ReviewFileDiff {
 		}
 	}
 
-	// Initialise as a non-nil slice so that a file block with no @@ hunks
-	// (e.g. an empty untracked file, a mode-only change, or a pure rename
-	// without content) serialises to JSON `[]` rather than `null`. The
-	// frontend guard validates hunks with Array.isArray, which rejects null
-	// and — because isArrayOf checks every element — would otherwise discard
-	// the entire diff array, making the review page show "no changes" whenever
-	// a single content-less file is present.
+	// Non-nil so a hunk-less block (empty file, mode-only change, pure rename)
+	// serialises to JSON `[]`, not `null`: the frontend's Array.isArray guard
+	// would discard the whole diff array, showing "no changes" spuriously.
 	hunks := []ReviewHunk{}
 	i := 0
 	for i < len(lines) {
@@ -808,10 +645,8 @@ func parseReviewFileBlock(lines []string) ReviewFileDiff {
 	return file
 }
 
-// parseDiffGitHeader extracts the old (a/) and new (b/) paths from a
-// "diff --git a/<old> b/<new>" header line, stripping the a//b/ prefixes
-// and unquoting git-quoted paths. Returns empty strings when the line does
-// not conform to the expected shape.
+// parseDiffGitHeader extracts the a/ and b/ paths from a "diff --git" header
+// line, stripping prefixes and unquoting; empty strings on a malformed line.
 func parseDiffGitHeader(line string) (oldPath, newPath string) {
 	rest := strings.TrimSpace(strings.TrimPrefix(line, "diff --git "))
 	oldRaw, after, ok := nextDiffPath(rest)
@@ -825,10 +660,9 @@ func parseDiffGitHeader(line string) (oldPath, newPath string) {
 	return stripDiffPrefix(oldRaw), stripDiffPrefix(newRaw)
 }
 
-// nextDiffPath extracts the first path token from s: either a double-quoted
-// string (git escapes special characters when core.quotePath is set) or an
-// unquoted run up to the next space. It returns the unquoted token, the
-// remaining string, and whether a token was found.
+// nextDiffPath extracts the first path token from s — a double-quoted
+// (core.quotePath) or unquoted run up to the next space — returning the
+// unquoted token, the rest, and whether one was found.
 func nextDiffPath(s string) (token, rest string, ok bool) {
 	s = strings.TrimLeft(s, " ")
 	if s == "" {

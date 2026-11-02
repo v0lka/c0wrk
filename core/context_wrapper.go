@@ -62,17 +62,14 @@ func UserSkillsFromContext(ctx context.Context) []string {
 	return nil
 }
 
-// availableAgentsKey is the context key for the discovered subagent catalog.
-// It carries []agents.AgentDescriptor (the discovery-time name/description/
-// hidden representation) used by the "Available Subagents" system-prompt
-// section. Populated from AgentManager.List() after routing.
+// availableAgentsKey is the context key for the discovered subagent catalog:
+// []agents.AgentDescriptor (name/description/hidden) feeding the "Available
+// Subagents" prompt section. Populated from AgentManager.List().
 type availableAgentsKey struct{}
 
-// WithAvailableAgents returns a new context with the discovered subagent
-// descriptors attached. The list is the full catalog (including hidden
-// agents); the prompt formatter filters hidden entries for the public
-// "Available Subagents" section but keeps them resolvable for explicit
-// #mentions (see formatRequestedAgents).
+// WithAvailableAgents attaches the FULL catalog (hidden entries included);
+// the prompt formatters filter hidden entries for the public roster and
+// resolve explicit /-mention descriptions from it (formatRequestedAgents).
 func WithAvailableAgents(ctx context.Context, descriptors []agents.AgentDescriptor) context.Context {
 	return context.WithValue(ctx, availableAgentsKey{}, descriptors)
 }
@@ -87,9 +84,8 @@ func AvailableAgentsFromContext(ctx context.Context) []agents.AgentDescriptor {
 }
 
 // userAgentsKey is the context key for subagent names the user explicitly
-// requested via #agent-name mentions. It carries []string and drives the
-// "Requested Subagents" directive section. Reused by the message-preprocessor
-// wiring (populated from opts.UserAgents).
+// requested via /-mentions (ADR-076 grammar); drives the "Requested
+// Subagents" directive section, populated from HandleOptions.UserAgents.
 type userAgentsKey struct{}
 
 // WithUserAgents returns a new context with the explicitly-requested subagent
@@ -108,14 +104,10 @@ func UserAgentsFromContext(ctx context.Context) []string {
 }
 
 // userMCPServersKey is the context key for MCP server names the user
-// explicitly mentioned for this task via /-mentions (the plain form
-// "/server-name" or the collision-qualified form "/mcp: server-name"). It
-// carries []string and drives the soft "## Requested MCP Servers" prompt
-// section. A mentioned manual-mode server is enabled for the WHOLE task: the
-// allowed set is auto ∪ (manual ∩ mentioned), enforced by the descriptor
-// filter and the registry's dispatch gate (see core/orchestrator_mcp.go and
-// core/tools/mcp_gate.go). Populated from HandleOptions.UserMCPServers by
-// enrichAgentContext.
+// explicitly mentioned for this task via /-mentions (plain "/server-name" or
+// qualified "/mcp: name"); drives the soft "## Requested MCP Servers" prompt
+// section. A mention enables a manual-mode server for the WHOLE task —
+// specs/domains/tool-system/mcp-gateway.md; populated from HandleOptions.UserMCPServers.
 type userMCPServersKey struct{}
 
 // WithUserMCPServers returns a new context with the explicitly-mentioned MCP
@@ -133,8 +125,9 @@ func UserMCPServersFromContext(ctx context.Context) []string {
 	return nil
 }
 
-// CoreContextManager wraps github.com/v0lka/sp4rk/memory.ContextWindow to implement the core-level
-// ContextManager interface which adds SetTask and SetPlan(*Plan).
+// CoreContextManager wraps github.com/v0lka/sp4rk/memory.ContextWindow to satisfy core's
+// ContextManager (agent.ContextManager + SetTask); SetPlanFromPlan adapts a
+// *orchestration.Plan into the formatted SetPlan string.
 type CoreContextManager struct {
 	*sdkmemory.ContextWindow
 }
@@ -144,13 +137,12 @@ func NewCoreContextManager(cw *sdkmemory.ContextWindow) *CoreContextManager {
 	return &CoreContextManager{ContextWindow: cw}
 }
 
-// SetTask sets the task into the context window.
 func (c *CoreContextManager) SetTask(task string) {
 	c.ContextWindow.SetTask(task)
 }
 
-// ContextTracker returns the underlying ContextTokenTracker for this context manager.
-// This allows the orchestrator to wire it to the TrackingCaller per step.
+// ContextTracker exposes the tracker so the orchestrator can wire it to the
+// TrackingCaller per step.
 func (c *CoreContextManager) ContextTracker() *llm.ContextTokenTracker {
 	return c.Tracker()
 }

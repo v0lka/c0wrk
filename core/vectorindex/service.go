@@ -20,34 +20,26 @@ import (
 	"github.com/v0lka/sp4rk/safeio"
 )
 
-// ensureRealDir creates dir along with any missing parents, producing only
-// REAL directories: a dangling link, a non-directory component, or a link
-// swapped into a component being created fails closed instead of being
-// followed (including the final one). The vector-index storage root
-// (~/.c0wrk/projects/<id>/vector_index and its branches/, lexical/ and
-// embedding_cache/ subtrees) is user-dir owned and its paths are
-// deterministic, so os.MkdirAll's symlink-following Stat would let a link
-// planted there redirect the whole index — the chromem DB, the bleve lexical
-// index, the embedding cache and the file-hash sidecar — outside ~/.c0wrk;
-// a pre-existing operator-symlinked tree resolves as intent.
+// ensureRealDir creates dir and any missing parents as REAL directories only:
+// a dangling link, a non-directory component, or a link swapped into a
+// component being created fails closed instead of being followed (final
+// component included); a pre-existing operator-symlinked tree resolves as
+// intent. A planted link must not redirect the storage root outside ~/.c0wrk.
+// See specs/domains/workspace.md (storage roots are real directories only).
 func ensureRealDir(dir string, perm fs.FileMode) error {
 	return safeio.MkdirAllReal(dir, perm)
 }
 
-// newPersistentDB opens a project's persistent chromem DB. It is a package
-// variable — not a direct chromem.NewPersistentDB call — purely as a test
-// seam: tests swap it for a counting wrapper to assert that a project restored
-// from the park LRU does NOT reopen (and therefore re-gob-decode) its
-// persistent DB. Production code must never reassign it.
+// newPersistentDB is a package-variable test seam (production must never
+// reassign it): tests swap it to assert a project restored from the park LRU
+// does NOT reopen (and re-gob-decode) its persistent DB.
 var newPersistentDB = chromem.NewPersistentDB
 
-// estimateStateBytes approximates the resident memory a parked project state
-// keeps alive: one embedding vector (embeddingDimension float32s) plus a
-// coarse ~1 KiB per-document allowance covering the chromem document (content,
-// metadata, map entry) and its lock-step bleve lexical entry. It is a package
-// variable — not a method — purely as a test seam (mirroring newPersistentDB):
-// tests swap it to simulate multi-hundred-MiB states without materializing
-// them. Production code must never reassign it.
+// estimateStateBytes approximates a parked state's resident memory: one
+// embedding vector (embeddingDimension float32s) plus a coarse ~1 KiB per
+// document (chromem document + lock-step lexical entry). Package-variable
+// test seam mirroring newPersistentDB — tests simulate multi-hundred-MiB
+// states without materializing them; production must never reassign it.
 var estimateStateBytes = func(ps *projectState, embeddingDimension int) int64 {
 	if ps == nil || ps.collection == nil {
 		return 0
@@ -57,80 +49,71 @@ var estimateStateBytes = func(ps *projectState, embeddingDimension int) int64 {
 
 // ServiceConfig holds configuration for creating a Service.
 type ServiceConfig struct {
-	// freeOSMemory is an instance-local test dependency. NewService resolves
-	// nil to debug.FreeOSMemory; it is immutable after construction.
+	// freeOSMemory is an instance-local test dependency; NewService resolves
+	// nil to debug.FreeOSMemory. Immutable after construction.
 	freeOSMemory func()
 	// EmbeddingFunc is the chromem-go compatible embedding function
-	// (from Embedder.EmbeddingFunc()). Required. It is attached to every
-	// chromem collection and used for query-side embedding; when
-	// BatchEmbedder is nil it is also the document-side embedder (legacy
-	// one-inference-per-chunk path via chromem).
+	// (Embedder.EmbeddingFunc()). Required. Attached to every chromem
+	// collection for query-side embedding; also the document-side embedder
+	// when BatchEmbedder is nil (legacy per-chunk path).
 	EmbeddingFunc chromem.EmbeddingFunc
 
-	// BatchEmbedder optionally enables the batched document-embedding path
-	// in AddDocuments: the contents of each embedding sub-batch are embedded
-	// up-front via EmbedDocuments (in chunks of at most EmbeddingBatchSize
-	// texts) and assigned to Document.Embedding BEFORE the chromem commit,
-	// so chromem-go skips its per-document embedding calls entirely (v0.7.0
-	// AddDocument only normalizes + persists a pre-populated embedding).
-	// This removes the one-inference-per-chunk bottleneck for both the
-	// vector and lexical sides of indexing. nil keeps the legacy per-doc
-	// path (tests rely on it). Query-side embedding still goes through
-	// EmbeddingFunc.
+	// BatchEmbedder enables the batched document-embedding path in
+	// AddDocuments: each sub-batch's contents are embedded up-front via
+	// EmbedDocuments (chunks of ≤EmbeddingBatchSize texts) and assigned to
+	// Document.Embedding BEFORE the chromem commit, so chromem-go skips its
+	// per-document embedding calls (chromem-go ≥ v0.7.0 persists a
+	// pre-populated `Document.Embedding` as-is) — removing the
+	// one-inference-per-chunk bottleneck for the vector and lexical sides
+	// alike. nil keeps the legacy per-doc path (tests rely on it);
+	// query-side embedding always goes through EmbeddingFunc.
 	BatchEmbedder BatchEmbedder
 
-	// HybridConfig tunes Reciprocal Rank Fusion (RRF k, fanout, and
-	// pre-fusion score thresholds). A zero value disables score
-	// thresholds and uses built-in defaults for k/fanout; production
-	// wiring sets thresholds via config.VectorIndexConfig.
+	// HybridConfig tunes Reciprocal Rank Fusion (RRF k, fanout) and the
+	// pre-fusion score thresholds; zero disables thresholds and applies
+	// built-in defaults for k/fanout. Production wiring sets thresholds via
+	// config.VectorIndexConfig.
 	HybridConfig HybridConfig
 
-	// MaxFileSize is the upper bound (in bytes) on a file's size for it to
-	// be read fully into memory during validation/walk. Files above this are
-	// skipped before any full read. Defaults to DefaultMaxIndexableFileSize
-	// (4 MiB) when zero. Configurable via vector_index.max_file_size.
+	// MaxFileSize caps a file's size for full reads during validation/walk;
+	// larger files are skipped before any read. 0 →
+	// DefaultMaxIndexableFileSize (4 MiB); vector_index.max_file_size.
 	MaxFileSize int64
 
-	// MaxChunkSize is the chunker's maximum chunk size in characters, mirrored
-	// here so content reconstruction can bound a reconstructed chunk to a
-	// chunk-sized payload (see contentResolver). Defaults to DefaultMaxChunkSize
-	// (1500) when zero. Configurable via vector_index.max_chunk_size.
+	// MaxChunkSize is the chunker's max chunk size in characters, mirrored
+	// so content reconstruction bounds a chunk to a chunk-sized payload (see
+	// contentResolver). 0 → DefaultMaxChunkSize (1500);
+	// vector_index.max_chunk_size.
 	MaxChunkSize int
 
-	// MaxChunksPerFile is the indexer's per-file chunk cap, mirrored here so the
+	// MaxChunksPerFile is the indexer's per-file chunk cap, mirrored so the
 	// content-less migration's legacy-entry probe scans every index a file
-	// could have committed. Defaults to DefaultMaxChunksPerFile (4000) when
-	// zero. Configurable via vector_index.max_chunks_per_file.
+	// could have committed. 0 → DefaultMaxChunksPerFile (4000);
+	// vector_index.max_chunks_per_file.
 	MaxChunksPerFile int
 
 	// EmbeddingBatchSize is the fixed row capacity of the embedder's batch
 	// ONNX session (sp4rk embedding.EmbedderConfig.BatchSize), forwarded
-	// from ManagerConfig by the Manager. The embedder itself is constructed
-	// by the caller (desktop startup), which sets the same value there; the
-	// Service stores it for the batched-embedding path. 0 (or unset)
-	// defaults to DefaultEmbeddingBatchSize (32) — identical to the previous
-	// behaviour, where sp4rk applied its own default.
+	// from ManagerConfig; the embedder is constructed by the caller with the
+	// same value. 0 → DefaultEmbeddingBatchSize (32).
 	EmbeddingBatchSize int
 
 	// EmbeddingCacheFingerprint identifies the exact model, tokenizer,
-	// max-sequence length, output dimension, and chunk-normalization algorithm.
-	// Empty disables the persistent cache.
+	// max-sequence length, output dimension, and chunk-normalization
+	// algorithm. Empty disables the persistent cache.
 	EmbeddingCacheFingerprint string
 	// EmbeddingDimension is validated on every cache read and write.
 	EmbeddingDimension int
-	// EmbeddingCacheMaxBytes caps persistent cache entries. Non-positive
+	// EmbeddingCacheMaxBytes caps persistent cache entries; non-positive
 	// disables the cache.
 	EmbeddingCacheMaxBytes int64
 
 	// ChunkerFingerprint identifies the chunker configuration (max chunk
-	// size + overlap) that the per-project Indexer chunks files with. It is
-	// embedded as the 4th field of new file-hash sidecar entries; when the
-	// active fingerprint no longer matches an entry's (i.e. vector_index.
-	// chunk_overlap / max_chunk_size changed), ValidateCollection reports
-	// the file as stale so it is re-chunked even though its content is
-	// unchanged. Entries without a fingerprint (legacy formats) are exempt
-	// from this check. Empty defaults to the fingerprint of the package
-	// defaults (DefaultMaxChunkSize, DefaultChunkOverlap).
+	// size + overlap) embedded as the 4th field of new file-hash sidecar
+	// entries: when it stops matching an entry (vector_index.chunk_overlap /
+	// max_chunk_size changed), ValidateCollection re-chunks the file even
+	// though its content is unchanged; legacy fp-less entries are exempt.
+	// Empty → the package-default fingerprint.
 	ChunkerFingerprint string
 
 	// ContentFilter controls the same deterministic pre-chunk content policy
@@ -138,23 +121,19 @@ type ServiceConfig struct {
 	ContentFilter *ContentFilterConfig
 
 	// ParkCapacity is the maximum number of recently-closed projects whose
-	// vector-index state (chromem DB + lexical index + file-hash sidecar) is
-	// kept resident in memory so returning to them skips the expensive
-	// chromem gob-decode. 0 (or negative) disables parking and reproduces the
-	// historical behaviour where every project switch reopened the persistent
-	// DB from scratch. Resolved from vector_index.park_capacity (default 3).
+	// vector-index state (chromem DB + lexical index + file-hash sidecar)
+	// stays resident so returning to them skips the chromem gob-decode;
+	// 0/negative disables parking (the historical reopen-every-switch
+	// behaviour). Resolved from vector_index.park_capacity — no default here.
+	// See specs/domains/workspace.md (park LRU) and
+	// specs/decisions/049-vector-index-memory-reduction.md.
 	ParkCapacity int
 
-	// ParkBudgetBytes is the cumulative byte budget for the park LRU
-	// (vector_index.park_budget_mb, converted to bytes by desktop startup):
-	// right after a state is appended, the oldest parked states are evicted
-	// while the summed estimateStateBytes of the LRU exceeds the budget, so
-	// the effective bound is min(ParkCapacity, ParkBudgetBytes). Like
-	// ParkCapacity, NO default is applied here: the config layer resolves an
-	// unset key to 1024 MiB, while 0 (or negative — the config disable
-	// sentinel) keeps ParkCapacity as the only bound, which is also the
-	// zero-value behaviour for test literals. ParkCapacity <= 0 still
-	// disables parking entirely regardless of this budget.
+	// ParkBudgetBytes is the cumulative byte budget of the park LRU
+	// (vector_index.park_budget_mb → bytes): the oldest parked states are
+	// evicted while the summed estimateStateBytes exceeds it; ≤0 disables the
+	// budget (config layer: unset → 1024 MiB). See
+	// specs/decisions/049-vector-index-memory-reduction.md.
 	ParkBudgetBytes int64
 
 	// Logger for structured logging.
@@ -165,13 +144,11 @@ type ServiceConfig struct {
 }
 
 // projectState bundles every piece of mutable, per-project runtime state that
-// used to live directly on Service. SetProject swaps the whole bundle: the
-// outgoing project's state is parked (kept in RAM without closing its chromem
-// DB or bleve lexical index), so a later return to the same project restores
-// it without paying the expensive chromem gob-decode again. Every field is
-// guarded by the owning Service's mu, EXCEPT the two atomics
-// (fileHashMigrationPending, validationsSinceFullHash), which are read/written
-// without the write lock where their documentation allows.
+// used to live directly on Service. SetProject swaps the whole bundle; the
+// outgoing state is parked in RAM (chromem DB + lexical index stay open) so a
+// later return restores it without the gob-decode. Every field is guarded by
+// the owning Service's mu, EXCEPT the atomics read/written without the write
+// lock where their own docs say so.
 type projectState struct {
 	db         *chromem.DB
 	collection *chromem.Collection
@@ -182,16 +159,14 @@ type projectState struct {
 
 	currentBranch string
 
-	// fileHashes is a sidecar store mapping file_path → sidecar entry, kept in
-	// sync with the chromem collection. Entries are either a bare content
-	// hash (legacy), "hash|size|mtimeUnixNano" (intermediate format), or
-	// "hash|size|mtimeUnixNano|chunkerFP" (current format, see
-	// parseFileHashEntry in collection.go). It lets ValidateCollection compare
-	// stored state against disk WITHOUT querying the collection (which would
-	// trigger an ONNX embedding via Query) and — for current-format entries —
-	// WITHOUT reading or re-hashing unchanged files at all (stat match only).
-	// Loaded per-branch in SwitchBranch and flushed at lifecycle boundaries
-	// (not on every batch).
+	// fileHashes maps file_path → sidecar entry — legacy bare hash,
+	// "hash|size|mtime", or "hash|size|mtime|chunkerFP" (formats and parsing:
+	// parseFileHashEntry; specs/decisions/049-vector-index-memory-reduction.md).
+	// Lets ValidateCollection compare against disk WITHOUT querying the
+	// collection (which would trigger an ONNX embedding) and — current
+	// format — WITHOUT re-reading/re-hashing unchanged files (stat match
+	// only). Loaded per-branch in SwitchBranch; flushed at lifecycle
+	// boundaries, not per batch.
 	fileHashes map[string]string
 
 	// fileHashMigrationPending is true while a background sidecar backfill
@@ -199,55 +174,44 @@ type projectState struct {
 	fileHashMigrationPending atomic.Bool
 
 	// fileHashMigrationFailed is true when the last sidecar backfill for this
-	// branch failed (the collection enumeration errored), so ps.fileHashes is
-	// an untrusted empty placeholder rather than "nothing trackable". It gates
-	// two decisions: the empty sidecar is NOT persisted on park/eviction (it
-	// would make the next open trust an empty map), and the content-less
-	// migration does NOT write its marker (an empty entry set would certify a
-	// collection whose legacy documents still carry content — see finding
-	// migrateContentless). Cleared at the start of every loadFileHashes.
+	// branch failed, so ps.fileHashes is an untrusted empty placeholder: the
+	// empty map is NOT persisted on park/eviction and the content-less
+	// migration does NOT write its marker. Cleared at the start of every
+	// loadFileHashes.
 	fileHashMigrationFailed atomic.Bool
 
-	// migrationCh is closed when the current branch's sidecar has settled
-	// (loaded, empty, or migrated). WaitFileHashMigration selects on it.
-	// nil before the first SwitchBranch.
+	// migrationCh is closed when the current branch's sidecar has settled;
+	// WaitFileHashMigration selects on it. nil before the first SwitchBranch.
 	migrationCh chan struct{}
 
 	// migrationCancel cancels an in-flight migrateFileHashes goroutine
-	// (e.g. on branch switch / project switch / close).
+	// (branch switch / project switch / close).
 	migrationCancel context.CancelFunc
 
-	// embeddingCache is branch-independent and rooted inside the active
-	// project's vector-index storage. It is recreated when a fresh state is
-	// opened (not on a restore from park).
+	// embeddingCache is branch-independent, rooted in the active project's
+	// vector-index storage; recreated on a fresh open, not on a park restore.
 	embeddingCache *embeddingCache
 
-	// validationsSinceFullHash counts ValidateCollection passes since the
-	// last pass that skipped the stat-based fast-path and re-read +
-	// re-hashed every file (the periodic full-hash revalidation backstop;
-	// see fullHashRevalidationEvery). Atomic: ValidateCollection runs under
-	// the read lock, so the counter must not rely on it.
+	// validationsSinceFullHash counts ValidateCollection passes since the last
+	// full re-hash backstop (see fullHashRevalidationEvery). Atomic: the pass
+	// runs under the read lock, so the counter must not rely on it.
 	validationsSinceFullHash atomic.Int64
 
-	// sidecarReloadOnRestore is set when the state is parked while a sidecar
-	// backfill migration is still in flight (parkCurrentLocked cancels that
-	// migration, so ps.fileHashes is left as the empty placeholder). On the
-	// next restore, SetProject re-runs loadFileHashes to re-settle the sidecar
-	// (re-triggering the migration when the collection is non-empty) instead
-	// of trusting the empty placeholder — which would make ValidateCollection
-	// treat every file as new. Not guarded by mu on its own; it is only read
-	// and written while holding the owning Service's mu.
+	// sidecarReloadOnRestore is set when the state is parked with a sidecar
+	// backfill in flight (parkCurrentLocked cancels it, leaving the empty
+	// placeholder); SetProject re-runs loadFileHashes on restore instead of
+	// trusting it — which would make ValidateCollection treat every file as
+	// new. Touched only under the owning Service's mu.
 	sidecarReloadOnRestore bool
 
 	// contentlessCh is closed when this branch's one-time content-less
-	// migration has settled (completed, nothing to do, or abandoned on
-	// park/close/branch switch). WaitContentlessMigration selects on it.
-	// nil before the first SwitchBranch; closedChan when no migration is
-	// needed (marker present, empty collection, or in-memory state).
+	// migration has settled; WaitContentlessMigration selects on it. nil
+	// before the first SwitchBranch; closedChan when none is needed (marker
+	// present, empty collection, or in-memory state).
 	contentlessCh chan struct{}
 
 	// contentlessCancel cancels an in-flight migrateContentless goroutine
-	// (on branch switch / project switch / close / rebuild).
+	// (branch switch / project switch / close / rebuild).
 	contentlessCancel context.CancelFunc
 }
 
@@ -261,140 +225,117 @@ type pendingNoProjectResetRequest struct {
 
 // Service manages chromem-go collections with git-branch awareness,
 // readiness state, and vector search capabilities. It also owns a
-// per-branch bleve lexical index that is written in lock-step with the
-// chromem collection.
+// per-branch bleve lexical index written in lock-step with the chromem
+// collection.
 type Service struct {
-	// current is the active project's state. It is never nil after
-	// NewService: switching to No Project installs an empty in-memory state.
-	// It is swapped only under mu, so any method holding mu (or RLock) sees
-	// a stable state for its whole duration. The lock-free readers
-	// (GetCollection, GetDB) observe whichever state is current at that
-	// instant — exactly as the pre-park code observed the old fields.
+	// current is the active project's state, never nil after NewService
+	// (No Project installs an empty in-memory state). Swapped only under mu;
+	// the lock-free readers (GetCollection, GetDB) observe whichever state
+	// is current at that instant.
 	current *projectState
 
-	// indexAvailability is a metadata-only snapshot for UI status. Reading it
-	// must never wait for mu: indexing holds that lock across embedding and
-	// persistence, while project/session focus changes need status immediately.
+	// indexAvailability is a metadata-only snapshot for UI status; reading it
+	// must never wait for mu — indexing holds that lock across embedding and
+	// persistence, while focus changes need status immediately.
 	indexAvailability atomic.Uint32
 
-	// parked is the LRU list of recently-parked project states, oldest
-	// first (parked[0] is the eviction victim). Guarded by mu. Bounded by
-	// parkCapacity; when parkCapacity <= 0 parking is disabled and this stays
-	// empty (every switch closes the outgoing state, the historical
-	// behaviour).
+	// parked is the LRU of recently-parked states, oldest first (parked[0] is
+	// the eviction victim). Guarded by mu; empty when parking is disabled
+	// (parkCapacity <= 0 — every switch closes the outgoing state).
 	parked []*projectState
 
-	// parkCapacity is the maximum number of parked states retained. Resolved
-	// from vector_index.park_capacity (default 3). 0 (or negative) disables
-	// parking. See ServiceConfig.ParkCapacity.
+	// parkCapacity is the max number of parked states (see
+	// ServiceConfig.ParkCapacity; 0/negative disables parking).
 	parkCapacity int
 
-	// parkBudgetBytes is the cumulative byte budget for the park LRU
-	// (vector_index.park_budget_mb → bytes). 0 (or negative) disables
-	// budget-based eviction — parkCapacity alone bounds the LRU. See
-	// ServiceConfig.ParkBudgetBytes.
+	// parkBudgetBytes is the cumulative byte budget of the park LRU; ≤0
+	// leaves parkCapacity as the only bound (see ServiceConfig.ParkBudgetBytes).
 	parkBudgetBytes int64
 
 	embeddingFunc chromem.EmbeddingFunc
 	batchEmbedder BatchEmbedder
-	// migrationWG lets Close wait for the migration goroutine(s) of the
-	// current and any parked state to unwind before closing resources.
+	// migrationWG lets Close wait for the migration goroutines (current and
+	// parked states) to unwind before closing resources.
 	migrationWG sync.WaitGroup
 	mu          sync.RWMutex
 	ready       atomic.Bool
 	readyCh     chan struct{} // closed when ready becomes true; recreated on false
 	readyMu     sync.Mutex    // protects readyCh swaps + readyGen
 
-	// pendingNoProjectReset holds a No Project reset that could not be
-	// applied immediately because s.mu was held (by an in-flight SetProject
-	// open, an indexing pass, a search — TryLock fails under write and read
-	// holders alike). Nil when none is queued. Atomic because the requester
-	// records it WITHOUT taking s.mu — taking it is exactly what it cannot
-	// do. Every queued request is stamped with the openGen observed at queue
-	// time; an applier (SetProject's deferred call, or the background
-	// goroutine kicked by ResetForNoProject) applies it only while that
-	// generation is still current, so a queued request can never wipe a
-	// project opened after it was queued. See ResetForNoProject.
+	// pendingNoProjectReset holds a No Project reset that could not be applied
+	// immediately because s.mu was held (TryLock fails under write and read
+	// holders alike); nil when none is queued. Atomic because the requester
+	// records it WITHOUT taking s.mu. Requests are stamped with the openGen
+	// observed at queue time and applied only while that generation is
+	// current, so a queued reset can never wipe a project opened after it was
+	// queued. See ResetForNoProject and specs/domains/workspace.md (No
+	// Project reset).
 	pendingNoProjectReset atomic.Pointer[pendingNoProjectResetRequest]
 
-	// openGen counts SetProject invocations: SetProject bumps it BEFORE
-	// acquiring s.mu, so a value read outside the lock identifies the most
-	// recent open that was initiated. ResetForNoProject stamps queued
-	// requests with the generation it observed; appliers discard a request
-	// whose generation no longer matches (a newer SetProject supersedes it),
-	// and SetProject additionally drops strictly-older queued requests at
-	// the start of its critical section, so a queued reset never survives
-	// into — and is never applied after — an unrelated open.
+	// openGen counts SetProject invocations, bumped BEFORE acquiring s.mu, so
+	// an unlocked read identifies the most recent open initiated. Queued No
+	// Project resets carry the generation they observed; superseded/dropped
+	// per specs/domains/workspace.md (No Project reset).
 	openGen atomic.Int64
 
-	// openPending counts SetProject invocations that have started but not
-	// finished their critical section (incremented before the openGen bump,
-	// settled by the deferred finishOpenLocked while s.mu is still held).
-	// The background No Project reset applier waits on openCond until this
-	// drains to zero: while any open is in flight, a queued reset stamped
-	// with that open's generation must be applied by the open itself (as its
-	// last act) rather than before it, or the open would overwrite the reset
-	// with the state it installs. openCond is guarded by s.mu.
+	// openPending counts SetProject critical sections in flight; the
+	// background No Project applier waits on openCond until it drains, so a
+	// queued reset is applied BY the open it was stamped with, never before
+	// it. openCond is guarded by s.mu.
 	openPending atomic.Int32
 	openCond    *sync.Cond
 
-	// closed is set by Close while holding s.mu, so the background No
-	// Project reset applier (which may acquire the lock only after Close
-	// finished) never mutates a closed service.
+	// closed is set by Close under s.mu, so a background No Project applier
+	// that acquires the lock only afterwards never mutates a closed service.
 	closed atomic.Bool
-	// readyGen is bumped every time SetReady(false) / MarkNotReady is called.
-	// An indexing pass captures the gen at start (via MarkNotReady) and
-	// passes it to RestoreReady on exit; if a project switch (or any other
-	// SetReady(false)) has intervened, the gen no longer matches and
-	// RestoreReady is a no-op. This prevents a stale indexer from an
-	// outgoing project — whose defer runs late after cancellation — from
-	// prematurely marking a freshly-switched project's service as ready.
+	// readyGen is bumped by every SetReady(false)/MarkNotReady. An indexing
+	// pass captures the gen at start and passes it to RestoreReady on exit, so
+	// a stale pass from an outgoing project — its defer running late after
+	// cancellation — cannot mark a freshly-switched project ready.
+	// See specs/domains/workspace.md (readiness generation).
 	readyGen  int64
 	logger    *slog.Logger
 	telemetry *Telemetry
-	// freeOSMemory is resolved at construction and never reassigned. Eviction
+	// freeOSMemory is resolved at construction, never reassigned; eviction
 	// and migration invoke it asynchronously, outside the service lock.
 	freeOSMemory func()
 
-	// hybridConfig holds resolved RRF tuning + pre-fusion score
-	// thresholds. Threshold fields of 0 mean "disabled".
+	// hybridConfig holds resolved RRF tuning + pre-fusion score thresholds
+	// (threshold fields of 0 mean "disabled").
 	hybridConfig HybridConfig
 
-	// maxFileSize is the upper bound on a file's size for indexing. See
+	// maxFileSize is the resolved indexable-size bound; see
 	// ServiceConfig.MaxFileSize.
 	maxFileSize int64
 
-	// maxChunkSize is the resolved vector_index.max_chunk_size used to bound
-	// reconstructed chunk content (see contentResolver.maxChunkSize). See
-	// ServiceConfig.MaxChunkSize.
+	// maxChunkSize bounds reconstructed chunk content
+	// (contentResolver.maxChunkSize); see ServiceConfig.MaxChunkSize.
 	maxChunkSize int
 
-	// maxChunksPerFile is the resolved vector_index.max_chunks_per_file, the
-	// per-file chunk cap the indexer enforces. The content-less migration's
-	// legacy-entry probe uses it as its scan bound so no committed chunk is
-	// missed (see migrateContentless). See ServiceConfig.MaxChunksPerFile.
+	// maxChunksPerFile is the resolved per-file chunk cap; the content-less
+	// migration's legacy-entry probe uses it as its scan bound (see
+	// migrateContentless). See ServiceConfig.MaxChunksPerFile.
 	maxChunksPerFile int
 
 	// embeddingBatchSize is the resolved batch row capacity for the
-	// batched-embedding path. See ServiceConfig.EmbeddingBatchSize.
+	// batched-embedding path; see ServiceConfig.EmbeddingBatchSize.
 	embeddingBatchSize int
 
-	// embeddingCacheFingerprint, embeddingDimension and embeddingCacheMaxBytes
-	// configure the per-project embedding cache held in projectState; it is
-	// (re)created whenever a fresh project state is opened, not on a restore.
+	// embeddingCacheFingerprint/Dimension/MaxBytes configure the per-project
+	// embedding cache held in projectState; (re)created on a fresh open, not
+	// on a park restore.
 	embeddingCacheFingerprint string
 	embeddingDimension        int
 	embeddingCacheMaxBytes    int64
 
-	// chunkerFingerprint is the resolved chunker-configuration fingerprint
-	// embedded in new sidecar entries (see ServiceConfig.ChunkerFingerprint
-	// and the ChunkerFingerprint helper). Never empty: NewService defaults
-	// it to the package-default configuration.
+	// chunkerFingerprint is the resolved chunker fingerprint embedded in new
+	// sidecar entries; never empty (NewService defaults it to the
+	// package-default configuration).
 	chunkerFingerprint string
 
-	// contentFilter is the resolved pre-chunk content policy used by
-	// ValidateCollection to keep skipped files out of new/stale sets the
-	// same way processFile keeps them out of the collection.
+	// contentFilter is the resolved pre-chunk content policy, so
+	// ValidateCollection keeps skipped files out of new/stale sets the same
+	// way processFile keeps them out of the collection.
 	contentFilter ContentFilterConfig
 }
 
@@ -429,9 +370,8 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 	// current starts as an empty in-memory state so every accessor (including
 	// the lock-free GetCollection/GetDB) is safe before the first SetProject.
 	s.current = &projectState{}
-	// Publish the initial (empty) snapshot explicitly: every later mutation of
-	// s.current's index handles publishes, and the lock-free UI status reader
-	// must not rely on the zero value happening to match the empty state.
+	// Publish the initial snapshot explicitly: the lock-free UI status reader
+	// must not rely on the zero value matching the empty state.
 	s.publishIndexAvailabilityLocked()
 	s.openCond = sync.NewCond(&s.mu)
 	if cfg.MaxFileSize > 0 {
@@ -457,11 +397,9 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 	s.chunkerFingerprint = cfg.ChunkerFingerprint
 	if s.chunkerFingerprint == "" {
 		// Default fingerprint must describe the configuration this Service
-		// actually chunks with: when an explicit ContentFilter was supplied
-		// (but no fingerprint), derive it from that policy instead of the
-		// package default, so sidecar entries stay consistent with the
-		// effective skip rules. Production wiring (NewManager) always
-		// passes both fields derived from the same resolved config.
+		// actually chunks with: with an explicit ContentFilter but no
+		// fingerprint, derive from that policy, not the package default.
+		// Production wiring always passes both from one resolved config.
 		s.chunkerFingerprint = ChunkerFingerprint(
 			DefaultMaxChunkSize, DefaultChunkOverlap,
 			resolveContentFilterConfig(cfg.ContentFilter).Fingerprint(),
@@ -472,41 +410,26 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 	return s, nil
 }
 
-// SetProject switches to a project directory, creating a project-specific
-// subdirectory for persistence and preparing the per-branch storage layout
-// (ADR-064). It no longer opens the chromem DB: that is deferred to
-// SwitchBranch, which decodes ONLY the active branch's collection.
-//
-// Instead of unconditionally tearing the previous project down, the outgoing
-// state is parked (see parkCurrentLocked): a later call with the SAME
-// projectID and path restores it from RAM — chromem DB, lexical index and
-// file-hash sidecar intact — so a project round-trip stops paying the full
-// chromem gob-decode. When parking is disabled (park_capacity <= 0) or the
-// outgoing state is not a real project, it is closed, reproducing the
-// historical reopen-on-every-switch behaviour.
+// SetProject switches to a project directory: it prepares the per-project
+// storage layout but no longer opens the chromem DB — the branch-scoped open
+// is deferred to SwitchBranch, which decodes only the active branch's
+// collection (ADR-064). Instead of tearing the previous project down, the
+// outgoing state is parked (parkCurrentLocked); a later call with the same
+// projectID and path restores it from RAM — DB, lexical index and file-hash
+// sidecar intact. Parking disabled or not a real project → closed (the
+// historical reopen-every-switch behaviour).
+// See specs/decisions/064-branch-scoped-lazy-vector-index-open.md.
 func (s *Service) SetProject(projectID, fullPath string, embeddingCachePaths ...string) error {
-	// Mark this open as pending and stamp its generation BEFORE acquiring
-	// the write lock. The pending count keeps the background No Project
-	// applier at bay until every in-flight open has applied its own queued
-	// resets — otherwise the applier could apply a reset stamped with THIS
-	// open's generation before this open installed its state, and the open
-	// would then overwrite the reset. The generation stamp supersedes every
-	// queued reset stamped with an OLDER generation, no matter when its
-	// (lock-free) store lands — appliers re-check the generation under the
-	// lock, so a stale request can never wipe the state this call installs.
+	// Stamp this open pending + bump its generation BEFORE taking the lock
+	// (see pendingNoProjectReset/openGen); under the lock, drop older-
+	// generation queued resets — this open supersedes them — and keep a
+	// same-generation one for the deferred applier (the open's last act).
 	s.openPending.Add(1)
 	gen := s.openGen.Add(1)
 	s.mu.Lock()
-	// Drop queued No Project resets stamped with an OLDER generation FIRST:
-	// they were requested before this open began, so this open supersedes
-	// them. A request carrying THIS open's generation — queued in the window
-	// between the generation bump and the lock acquisition, or while the
-	// critical section runs — is deliberately KEPT: it was requested after
-	// this open began, so the reset wins and is applied by the deferred
-	// applier below as this open's last act.
 	s.dropSupersededNoProjectResetsLocked(gen)
-	// LIFO: the gen-scoped applier runs first (lock still held), then the
-	// pending count is settled, then the lock is released.
+	// LIFO: the gen-scoped applier runs first (lock held), then the pending
+	// count settles, then the lock releases.
 	defer s.mu.Unlock()
 	defer s.publishIndexAvailabilityLocked()
 	defer s.finishOpenLocked()
@@ -522,52 +445,43 @@ func (s *Service) SetProject(projectID, fullPath string, embeddingCachePaths ...
 	// Retire the outgoing state: park it (best case) or close it.
 	s.parkCurrentLocked()
 
-	// Fast path: restore a parked state for the same project and path. This
-	// skips newPersistentDB entirely — no gob-decode, and the collection and
-	// lexical index are the very same objects that were live before.
+	// Fast path: restore a parked state for the same project and path —
+	// no newPersistentDB, no gob-decode; the collection and lexical index
+	// are the very objects that were live before.
 	if ps := s.takeParkedLocked(projectID, fullPath); ps != nil {
 		s.current = ps
 		if ps.sidecarReloadOnRestore {
-			// The sidecar backfill was cancelled when this state was parked
-			// (see parkCurrentLocked); re-settle it — a disk read, or a fresh
-			// background migration when the collection is non-empty and no
-			// sidecar exists — so ValidateCollection sees a complete hash map
-			// rather than re-embedding every file. loadFileHashes settles the
-			// content-less migration itself (deferred
-			// maybeMigrateContentlessLocked), so the explicit call below is
-			// skipped on this path to avoid cancelling and restarting the
-			// migration it just started.
+			// The park cancelled this state's sidecar backfill; re-settle it
+			// (loadFileHashes also settles the content-less migration, so the
+			// explicit call below is skipped on this path).
 			ps.sidecarReloadOnRestore = false
 			s.loadFileHashes()
 		} else {
-			// A content-less migration cancelled by the park must replay: the
-			// marker is only written on full completion, and SwitchBranch on the
-			// restored state early-returns (same branch, live collection), so
-			// this is the re-entry point. No-op when the marker already exists
-			// or the collection is empty.
+			// A content-less migration cancelled by the park must replay
+			// here (the marker is only written on full completion, and
+			// SwitchBranch early-returns on the restored state). No-op when
+			// the marker exists or the collection is empty.
 			s.maybeMigrateContentlessLocked()
 		}
 		s.logger.Info("project restored from park", "projectID", projectID)
 		return nil
 	}
 
-	// Slow path: open a fresh state (the existing behaviour). s.current stays
-	// non-nil on every return path (an empty state on error) so the lock-free
-	// accessors never see a nil current.
+	// Slow path: open a fresh state. s.current stays non-nil on every return
+	// path (an empty state on error) so the lock-free accessors never see nil.
 	ps := &projectState{projectID: projectID, projectPath: fullPath}
 	if fullPath != "" {
 		if err := ensureRealDir(fullPath, 0o750); err != nil {
 			s.current = &projectState{}
 			return fmt.Errorf("creating project directory %s: %w", fullPath, err)
 		}
-		// ADR-064: do NOT open the persistent DB here. chromem's
-		// NewPersistentDB eagerly gob-decodes EVERY collection in the given
-		// directory, and the storage root holds one collection per git branch
-		// before migration — so opening it cost O(all branches × documents)
-		// and, on a large index, took minutes while holding s.mu. The
-		// branch-scoped open is deferred to SwitchBranch, which decodes only
-		// the active branch. Here we just run the one-time migration that
-		// re-homes legacy collection directories into their per-branch roots.
+		// Do NOT open the persistent DB here: chromem eagerly gob-decodes
+		// EVERY collection in the directory — O(all branches × documents),
+		// minutes on a large index, all under s.mu. The branch-scoped open
+		// is deferred to SwitchBranch; here we only run the one-time
+		// migration that re-homes legacy collection directories into their
+		// per-branch roots. See
+		// specs/decisions/064-branch-scoped-lazy-vector-index-open.md.
 		s.migrateLegacyLayoutLocked(fullPath)
 		if embeddingCachePath != "" {
 			within, containmentErr := pathutil.IsWithinPath(fullPath, embeddingCachePath)
@@ -583,12 +497,10 @@ func (s *Service) SetProject(projectID, fullPath string, embeddingCachePaths ...
 			s.embeddingCacheMaxBytes,
 			s.logger,
 		)
-		// Seed the cache's byte accounting off the service write lock: the
-		// first walk of a warm cache is a full directory traversal, and doing
-		// it synchronously here would stall every search behind s.mu for the
-		// duration. The background seed evicts/reconciles exactly like a
-		// synchronous prune; until it lands, prunes from the embed path take
-		// the deferred fast path (seedAccountingAsync).
+		// Seed the cache's byte accounting off the write lock: a warm cache's
+		// first walk is a full directory traversal and would stall every
+		// search behind s.mu. Until the seed lands, prunes take the deferred
+		// fast path (seedAccountingAsync).
 		ps.embeddingCache.seedAccountingAsync()
 	} else {
 		ps.db = chromem.NewDB()
@@ -599,43 +511,12 @@ func (s *Service) SetProject(projectID, fullPath string, embeddingCachePaths ...
 	return nil
 }
 
-// ResetForNoProject retires the current project's state and installs the empty
-// in-memory No Project state, WITHOUT waiting for the current s.mu holder to
-// release the lock.
-//
-// The reset itself is cheap — park/close the outgoing state, then an in-memory
-// chromem DB — but it needs the write lock, and an in-flight open holds that
-// lock for its entire chromem gob-decode: SwitchBranch's branch-scoped open
-// (ADR-064) for the active branch's documents, or — before ADR-064 —
-// SetProject's decode of EVERY branch collection, which was minutes on a large
-// index. Blocking here used to wedge the caller's project switch
-// (Manager.SwitchProject) for that whole window; the backend's switchMu was
-// held behind it, so every CHAT/CODE toggle failed after its bounded acquire
-// — the "clicking CHAT does nothing for minutes" failure. So: try the lock;
-// when it is busy, record the request and return at once. The request is
-// stamped with the current open generation and drained by exactly one of two
-// appliers:
-//
-//   - a SetProject that is still in flight applies it as its last act (the
-//     request carries that open's generation), still under the lock;
-//   - otherwise a background goroutine (kickNoProjectResetApplier) — the
-//     caller never blocks — waits until every in-flight open has drained,
-//     then takes s.mu and applies the still-current request, whatever kind
-//     of holder delayed it (an indexing pass, AddDocuments,
-//     ValidateCollection, a Browse — TryLock fails under read holders too).
-//     Without it, a request queued behind a non-SetProject holder would
-//     never land at all.
-//
-// A SetProject initiated AFTER the request supersedes it: the open bumps the
-// generation, making the request's generation strictly older, and both the
-// start-of-open drop and the appliers' generation checks discard it — a
-// queued reset therefore can never wipe a freshly opened project. A reset
-// queued AFTER an open began carries that open's generation and always wins
-// over the state the open installs.
-//
-// Readiness is dropped by the caller (Manager.SwitchProject) before this call,
-// so a search issued in the window before the queued reset lands never serves
-// the outgoing project's collection.
+// ResetForNoProject retires the current project and installs the empty
+// in-memory No Project state without waiting for the s.mu holder (the request
+// is queued, generation-stamped, delivered by the stamped in-flight open or
+// the background applier; a newer SetProject supersedes it). Readiness is
+// dropped by the caller first.
+// Full protocol: specs/domains/workspace.md (No Project reset).
 func (s *Service) ResetForNoProject(projectID string) {
 	if s.mu.TryLock() {
 		s.pendingNoProjectReset.Store(nil)
@@ -648,17 +529,9 @@ func (s *Service) ResetForNoProject(projectID string) {
 	s.kickNoProjectResetApplier()
 }
 
-// kickNoProjectResetApplier ensures a queued No Project reset eventually lands
-// even when the lock is held by something other than an in-flight SetProject
-// open. It spawns one short-lived goroutine that — unlike the caller — is
-// free to block: it waits on openCond until every in-flight open has drained
-// (an open that is merely blocked on s.mu still counts as in-flight and will
-// apply the request itself as its last act; applying it earlier would let
-// the open overwrite the reset with the state it installs), then takes s.mu
-// and applies the still-current queued request. The generation guard in
-// applyPendingNoProjectResetLocked makes the goroutine a no-op when a newer
-// SetProject has since superseded the request, and the closed guard keeps it
-// from touching a service Close already finished with.
+// kickNoProjectResetApplier spawns the goroutine that — unlike the caller —
+// may block: it waits on openCond until in-flight opens drain, then applies
+// the still-current request (no-op once superseded or the service is closed).
 func (s *Service) kickNoProjectResetApplier() {
 	go func() {
 		s.mu.Lock()
@@ -672,11 +545,10 @@ func (s *Service) kickNoProjectResetApplier() {
 	}()
 }
 
-// dropSupersededNoProjectResetsLocked removes a queued No Project reset whose
-// generation is strictly older than gen: the open that stamped gen supersedes
-// it. The caller must hold s.mu. A same-generation request (this open's
-// deferred applier consumes it) and a newer-generation request (a concurrent,
-// still-pending open owns it) are left in place.
+// dropSupersededNoProjectResetsLocked drops a queued No Project reset whose
+// generation is strictly older than gen (the open that stamped gen
+// supersedes it); same- and newer-generation requests are left in place.
+// The caller must hold s.mu.
 func (s *Service) dropSupersededNoProjectResetsLocked(gen int64) {
 	for {
 		p := s.pendingNoProjectReset.Load()
@@ -689,10 +561,9 @@ func (s *Service) dropSupersededNoProjectResetsLocked(gen int64) {
 	}
 }
 
-// finishOpenLocked settles the open-pending count at the end of a SetProject
-// critical section: when the last in-flight open drains, the background No
-// Project applier (waiting on openCond) is woken so a queued request that no
-// open will consume is still applied. The caller must hold s.mu.
+// finishOpenLocked settles the open-pending count; when the last in-flight
+// open drains, the background applier waiting on openCond is woken so a
+// request no open will consume is still applied. The caller must hold s.mu.
 func (s *Service) finishOpenLocked() {
 	if s.openPending.Add(-1) == 0 {
 		s.openCond.Broadcast()
@@ -700,12 +571,10 @@ func (s *Service) finishOpenLocked() {
 }
 
 // applyPendingNoProjectResetForGenLocked applies, as the open's last act, a
-// queued No Project reset that carries gen — one requested while THAT open
-// was in flight. The caller must hold s.mu (SetProject's deferred call).
-// A request carrying a newer generation belongs to a still-pending younger
-// open (which applies or supersedes it itself) and is left untouched; a
-// strictly older request is superseded by this open and is dropped without
-// applying.
+// queued reset carrying gen — one requested while THAT open was in flight;
+// a newer-generation request belongs to a younger open and is untouched, a
+// strictly older one is dropped. The caller must hold s.mu (SetProject's
+// deferred call).
 func (s *Service) applyPendingNoProjectResetForGenLocked(gen int64) {
 	for {
 		p := s.pendingNoProjectReset.Load()
@@ -722,14 +591,9 @@ func (s *Service) applyPendingNoProjectResetForGenLocked(gen int64) {
 	}
 }
 
-// applyPendingNoProjectResetLocked applies a queued No Project reset whose
-// generation is still current. The caller must hold s.mu (the background
-// applier does; it first waits until no open is in flight, so the current
-// generation identifies the most recently COMPLETED open and a match means
-// the request was queued after that open began and never consumed). A request
-// whose generation no longer matches the current openGen was superseded by a
-// newer SetProject and is dropped instead of wiping that open's freshly
-// installed state.
+// applyPendingNoProjectResetLocked applies a queued reset whose generation is
+// still current (background applier, under s.mu); a superseded generation is
+// dropped instead of wiping that open's state.
 func (s *Service) applyPendingNoProjectResetLocked() {
 	pending := s.pendingNoProjectReset.Swap(nil)
 	if pending == nil {
@@ -744,67 +608,50 @@ func (s *Service) applyPendingNoProjectResetLocked() {
 	s.resetForNoProjectLocked(pending.projectID)
 }
 
-// resetForNoProjectLocked installs the empty in-memory No Project state — the
-// same state SetProject(NoProjectID, "") produced: parking disabled, no
-// persistent directory, an in-memory chromem DB, no collection and no lexical
-// index. The caller must hold s.mu.
+// resetForNoProjectLocked installs the empty in-memory No Project state (the
+// same state SetProject(NoProjectID, "") produces). The caller must hold s.mu.
 func (s *Service) resetForNoProjectLocked(projectID string) {
 	s.SetReady(false)
 	s.parkCurrentLocked()
 	ps := &projectState{projectID: projectID}
 	ps.db = chromem.NewDB()
 	s.current = ps
-	// Publish the freshly installed empty state explicitly. This path is also
-	// reached from the background No Project applier (applyPendingNoProjectReset
-	// -Locked), which has no SetProject defer to publish for it.
+	// Publish the empty state explicitly: the background No Project applier
+	// reaches this path with no SetProject defer to publish for it.
 	s.publishIndexAvailabilityLocked()
 	s.logger.Info("project set for vector index", "projectID", projectID)
 }
 
-// parkCurrentLocked retires the current project state. The caller must hold
-// s.mu. It flushes the outgoing branch's file-hash sidecar (skipped while a
-// background migration is pending, exactly as SetProject did before), cancels
-// any in-flight sidecar migration, and then either parks the state — keeping
-// its chromem DB and lexical index resident — or closes it:
-//   - parking disabled (parkCapacity <= 0) or the state is not a real project
-//     (the empty in-memory No-Project state) → close it;
-//   - otherwise → push it onto the LRU, evicting the oldest state(s) when the
-//     capacity is exceeded and then, while the summed estimated resident bytes
-//     of the parked states exceed the byte budget, oldest-first until the sum
-//     fits (a state larger than the whole budget evicts everything, itself
-//     included).
-//
-// An actual eviction (by capacity or budget) schedules the freeOSMemory seam
-// asynchronously so the freed RAM is returned to the OS promptly.
-//
-// After the call s.current holds a fresh empty state (never nil, so the
-// lock-free GetCollection/GetDB readers can never dereference nil);
-// SetProject installs the incoming state.
+// parkCurrentLocked retires the current project state (caller holds s.mu): it
+// flushes the outgoing branch's file-hash sidecar (unless a migration is
+// pending or failed — the empty placeholder must not be persisted), cancels
+// in-flight migrations, then either parks the state (chromem DB + lexical
+// index stay resident) or closes it (parking disabled, or not a real
+// project). Beyond the LRU capacity and the byte budget the oldest parked
+// states are evicted; each actual eviction schedules freeOSMemory
+// asynchronously, outside the lock. After the call s.current holds a fresh
+// empty state — never nil, so the lock-free GetCollection/GetDB readers can
+// never dereference nil.
+// See specs/decisions/049-vector-index-memory-reduction.md.
 func (s *Service) parkCurrentLocked() {
 	ps := s.current
-	// Install an empty placeholder for the (brief, mu-protected) window until
-	// SetProject assigns the incoming state. Never leave s.current nil: the
-	// lock-free accessors do not take mu and would fault.
+	// Empty placeholder for the (brief, mu-protected) window until SetProject
+	// assigns the incoming state — never nil: the lock-free accessors would
+	// fault.
 	s.current = &projectState{}
 	s.publishIndexAvailabilityLocked()
 	if ps == nil {
 		return
 	}
 
-	// Persist the outgoing project's in-memory hashes before parking/closing,
-	// and cancel any in-flight sidecar migration. Skip the save while a
-	// background migration is pending: loadFileHashes seeds ps.fileHashes as an
-	// empty map during a migration, so persisting it would write an empty
-	// sidecar for the outgoing branch — the next open would then hit the
-	// (empty) sidecar fast path and re-embed every file. Mark the state so the
-	// next restore re-settles the sidecar (loadFileHashes) instead of trusting
-	// the placeholder.
+	// Persist the outgoing hashes before parking/closing, and cancel any
+	// in-flight sidecar migration. Skip the save while a migration is pending
+	// or the last one failed: loadFileHashes then seeds ps.fileHashes as an
+	// empty map, and persisting it would write an empty sidecar the next open
+	// would trust and re-embed every file over — re-settle on restore instead
+	// (sidecarReloadOnRestore).
 	if ps.fileHashes != nil && ps.currentBranch != "" {
 		if ps.fileHashMigrationPending.Load() || ps.fileHashMigrationFailed.Load() {
-			// Either a migration is still in flight, or the last one failed and
-			// ps.fileHashes is an untrusted empty placeholder: never persist it
-			// (an empty sidecar on disk would be trusted by the next open and
-			// re-embed every file); re-settle on restore instead.
 			ps.sidecarReloadOnRestore = true
 		} else if err := ps.saveFileHashes(); err != nil {
 			s.logger.Warn("failed to persist file-hash sidecar on project switch", "error", err)
@@ -814,30 +661,22 @@ func (s *Service) parkCurrentLocked() {
 		ps.migrationCancel()
 		ps.migrationCancel = nil
 	}
-	// A parked state's in-flight content-less migration is abandoned the
-	// same way: it re-triggers on the next restore (SetProject) or open
-	// (loadFileHashes → maybeMigrateContentlessLocked). Its per-window
-	// flushes take s.mu.RLock, so they cannot interleave with this critical
-	// section.
+	// A parked state's in-flight content-less migration is abandoned the same
+	// way: it re-triggers on the next restore or open. Its per-window flushes
+	// take s.mu.RLock, so they cannot interleave with this critical section.
 	if ps.contentlessCancel != nil {
 		ps.contentlessCancel()
 		ps.contentlessCancel = nil
 	}
 
 	if s.parkCapacity <= 0 || ps.projectPath == "" || ps.db == nil {
-		// Parking disabled, nothing worth keeping (the empty in-memory
-		// No-Project state), or a project whose branch-scoped DB was never
-		// opened (ADR-064 — SetProject no longer opens it): close immediately.
+		// Parking disabled, nothing worth keeping (the No-Project state), or
+		// a branch-scoped DB never opened (ADR-064): close immediately.
 		s.closeStateLocked(ps)
 		return
 	}
 
 	s.parked = append(s.parked, ps)
-	// Evict least-recently-parked states: first beyond the LRU capacity,
-	// then — while the cumulative estimated footprint of the parked states
-	// exceeds the byte budget — oldest-first until the sum fits. The
-	// effective bound is min(capacity, budget); the victim is always
-	// parked[0], the oldest.
 	evicted := false
 	for len(s.parked) > s.parkCapacity {
 		s.evictLocked(s.parked[0])
@@ -852,12 +691,9 @@ func (s *Service) parkCurrentLocked() {
 		}
 	}
 	if evicted {
-		// The freed states can hold hundreds of MiB of vectors and lexical
-		// index entries. Return them to the OS promptly: debug.FreeOSMemory
-		// forces a full GC cycle (stop-the-world), so run it in its own
-		// goroutine — the func value is captured now, the goroutine never
-		// takes s.mu, and the lock is released the moment
-		// parkCurrentLocked returns.
+		// The freed states can hold hundreds of MiB; FreeOSMemory forces a
+		// full (stop-the-world) GC cycle, so it runs in its own goroutine and
+		// never takes s.mu.
 		go s.freeOSMemory()
 	}
 }
@@ -873,10 +709,9 @@ func (s *Service) parkedBytesLocked() int64 {
 }
 
 // takeParkedLocked returns and removes the parked state matching
-// (projectID, fullPath), or nil when none matches. The caller must hold s.mu.
-// A parked entry for the same projectID but a DIFFERENT path is stale (the
-// project was moved or its storage directory recreated), so it is evicted
-// rather than restored.
+// (projectID, fullPath), or nil; a same-project entry at a DIFFERENT path is
+// stale (moved or recreated storage) and evicted rather than restored. The
+// caller must hold s.mu.
 func (s *Service) takeParkedLocked(projectID, fullPath string) *projectState {
 	for i, ps := range s.parked {
 		if ps.projectID != projectID {
@@ -894,11 +729,10 @@ func (s *Service) takeParkedLocked(projectID, fullPath string) *projectState {
 	return nil
 }
 
-// closeStateLocked releases the file handles (bleve lexical index + chromem
-// DB) held by a project state and drops its in-memory references. The caller
-// must hold s.mu. It deliberately does NOT flush the sidecar (parkCurrentLocked
-// and evictLocked do) and leaves goroutine-lifetime tracking (migrationWG) to
-// the caller.
+// closeStateLocked releases a state's file handles (lexical index + chromem
+// DB) and drops its in-memory references; it does NOT flush the sidecar
+// (parkCurrentLocked/evictLocked do) and leaves goroutine-lifetime tracking
+// (migrationWG) to the caller. The caller must hold s.mu.
 func (s *Service) closeStateLocked(ps *projectState) {
 	if ps == nil {
 		return
@@ -925,22 +759,16 @@ func (s *Service) closeStateLocked(ps *projectState) {
 }
 
 // releaseBranchResidentsLocked drops only the ACTIVE BRANCH's in-memory
-// residents — its bleve lexical index, chromem DB and collection — while
-// leaving the project identity (projectID/projectPath), the file-hash sidecar
-// and the pending no-project reset untouched. Unlike closeStateLocked it is
-// not a teardown: SwitchBranch calls it right before opening the incoming
-// branch, so a switch peaks at one branch's working set instead of two
-// (ADR-064 step (a)). Since ADR-064 every branch owns its own chromem DB, so
-// keeping the outgoing one alive across the open would hold two fully decoded
-// collections resident at once — exactly the footprint the branch-scoped layout
-// exists to avoid.
-//
-// The outgoing branch's hashes must already have been persisted (SwitchBranch
-// does that before calling this), because dropping the collection makes them
-// unrecoverable from RAM. On a subsequent open failure the state stays closed
-// — GetCollection reports nil and search fails fast — rather than silently
-// serving the previous branch's collection while the worktree is elsewhere.
-// The caller must hold s.mu.
+// residents (lexical index, chromem DB, collection), keeping the project
+// identity, the file-hash sidecar and the queued reset. Unlike
+// closeStateLocked it is not a teardown: SwitchBranch calls it right before
+// opening the incoming branch, so a switch peaks at one branch's working set
+// instead of two (every branch owns its own chromem DB since ADR-064). The
+// outgoing hashes must already be persisted (SwitchBranch does) — dropping
+// the collection makes them unrecoverable from RAM; a subsequent open failure
+// leaves the state closed (GetCollection nil, search fails fast). The caller
+// must hold s.mu.
+// See specs/decisions/064-branch-scoped-lazy-vector-index-open.md.
 func (s *Service) releaseBranchResidentsLocked() {
 	if s.current.lexical != nil {
 		if err := s.current.lexical.Close(); err != nil {
@@ -973,10 +801,8 @@ func (s *Service) evictLocked(ps *projectState) {
 	s.closeStateLocked(ps)
 }
 
-// Browse returns up to topK chunks from the current collection without semantic
-// ordering. It enumerates documents with a fixed unit-vector query (no ONNX
-// inference) when the embedding dimension is known, falling back to the space
-// query otherwise. Blocks via WaitReady if the index is not yet ready.
+// Browse returns up to topK chunks from the current collection without
+// semantic ordering; blocks via WaitReady if the index is not yet ready.
 func (s *Service) Browse(ctx context.Context, topK int) ([]SearchResult, error) {
 	return s.BrowseWithFilter(ctx, topK, "")
 }
@@ -988,23 +814,18 @@ func (s *Service) BrowseWithFilter(ctx context.Context, topK int, fileFilter str
 	return s.browseWithFilter(ctx, topK, fileFilter, true)
 }
 
-// BrowseWithFilterNoWait is the non-blocking form of BrowseWithFilter: it
-// never waits for readiness and returns ErrNotReady immediately when the
-// index is not ready. Callers that gate readiness themselves (fail-fast
-// search wiring) use this form so a pass that starts between their gate and
-// the call cannot block them until the pass finishes.
+// BrowseWithFilterNoWait is the non-blocking form: it never waits for
+// readiness and returns ErrNotReady immediately — callers that gate readiness
+// themselves (fail-fast search wiring) use it so a pass starting between
+// their gate and the call cannot block them.
 func (s *Service) BrowseWithFilterNoWait(ctx context.Context, topK int, fileFilter string) ([]SearchResult, error) {
 	return s.browseWithFilter(ctx, topK, fileFilter, false)
 }
 
-// unitQueryVector returns a unit vector along the first axis of the
-// configured embedding dimension, for embedding-free enumeration queries
-// (chromem QueryEmbedding), or nil when the dimension is unknown (0) — in
-// which case callers keep the embedding-bearing text-query path. Browse-style
-// callers promise no semantic ordering, so the arbitrary-but-deterministic
-// ranking a unit vector induces is equivalent to the space-query it replaces.
-// The dimension is fixed at construction (never mutated), so no lock is
-// required.
+// unitQueryVector returns the embedding-free enumeration query vector — a
+// unit vector along the first axis, or nil when the dimension is unknown (0),
+// which keeps callers on the text-query path; fixed at construction, no lock.
+// See specs/decisions/049-vector-index-memory-reduction.md.
 func (s *Service) unitQueryVector() []float32 {
 	if s.embeddingDimension <= 0 {
 		return nil
@@ -1042,13 +863,8 @@ func (s *Service) browseWithFilter(ctx context.Context, topK int, fileFilter str
 		topK = count
 	}
 
-	// Embedding-free enumeration: with a known embedding dimension the query
-	// vector can be a fixed unit vector instead of embedding " ", removing
-	// one ONNX inference per Browse. (QueryEmbedding also skips the query
-	// text entirely.) Ranking under a unit vector is arbitrary — Browse
-	// promises no semantic ordering — exactly like the space-query it
-	// replaces; the fileFilter below still narrows the returned set.
-	// dim == 0 (dimension unknown) keeps the embedding-bearing path.
+	// Embedding-free enumeration (see unitQueryVector): dim == 0 keeps the
+	// embedding-bearing path; the fileFilter below still narrows the set.
 	var results []chromem.Result
 	var err error
 	if unitVec := s.unitQueryVector(); unitVec != nil {
@@ -1074,29 +890,22 @@ func (s *Service) browseWithFilter(ctx context.Context, topK int, fileFilter str
 		out = append(out, sr)
 	}
 
-	// Committed documents store no chunk text; fill Content from the source
-	// files for the (already topK-bounded) returned set. Hydration reads source
-	// files, so it runs AFTER the read lock is released — holding it would
-	// block a concurrent indexing writer for the duration of the reads. One
-	// resolver per call, so each distinct file is read at most once within the
-	// cache budget.
+	// Committed documents store no chunk text; hydrate Content from the
+	// source files (final top-K only) AFTER the read lock is released —
+	// hydration reads files and must not block a concurrent indexing writer.
 	hydrateSearchContent(out, newContentResolver(s.maxFileSize, s.maxChunkSize))
 
 	return out, nil
 }
 
-// Search queries the current collection for the top-K most similar results.
-//
-// This is a thin shim that delegates to HybridSearch with Mode=ModeVector
-// so there is a single code path for glob/must-match filtering.
+// Search queries the current collection for the top-K most similar results —
+// a thin shim over HybridSearch(ModeVector) so filtering has one code path.
 func (s *Service) Search(ctx context.Context, query string, topK int) ([]SearchResult, error) {
 	return s.HybridSearch(ctx, SearchOptions{Query: query, TopK: topK, Mode: ModeVector})
 }
 
-// SearchWithFilter queries the current collection with an optional file path
-// glob filter. Blocks via WaitReady if the index is not yet ready.
-//
-// This is a thin shim that delegates to HybridSearch with Mode=ModeVector.
+// SearchWithFilter queries with an optional file-path glob — a thin shim over
+// HybridSearch(ModeVector). Blocks via WaitReady if the index is not yet ready.
 func (s *Service) SearchWithFilter(ctx context.Context, query string, topK int, filePattern string) ([]SearchResult, error) {
 	return s.HybridSearch(ctx, SearchOptions{
 		Query:       query,
@@ -1112,12 +921,9 @@ func (s *Service) IsReady() bool {
 }
 
 // ErrNotReady is returned by the NoWait search variants (HybridSearchNoWait,
-// BrowseWithFilterNoWait) when the index is not currently ready. Callers that
-// manage their own bounded readiness wait (the vector_index.
-// search_wait_timeout_ms wiring) use the NoWait forms so an incremental pass
-// starting between their readiness gate and the search can never block them;
-// they typically translate this sentinel into an actionable error via
-// Manager.NotReadyError so users learn the index progress instead.
+// BrowseWithFilterNoWait) when the index is not ready; callers with their own
+// bounded wait typically translate it via Manager.NotReadyError so users see
+// index progress instead of a bare deadline error.
 var ErrNotReady = errors.New("vector index not ready")
 
 // WaitReady blocks until the service is ready or the context is cancelled.
@@ -1166,19 +972,16 @@ func (s *Service) SetReady(ready bool) {
 		s.logger.Info("vector index set to not ready")
 	}
 	if !ready {
-		// Always bump the generation on SetReady(false), even when the
-		// state didn't transition, so a concurrent indexing pass that
-		// captured an older gen won't falsely "restore" readiness via
-		// RestoreReady after a project switch intervenes.
+		// Always bump the generation on SetReady(false), even without a
+		// transition, so a concurrent pass that captured an older gen cannot
+		// falsely restore readiness after a project switch intervenes.
 		s.readyGen++
 	}
 }
 
-// MarkNotReady atomically sets ready=false and returns the current readiness
-// generation. Indexing passes capture the returned gen and pass it to
-// RestoreReady on exit; this pairs SetReady(false) with a gen capture in a
-// single lock acquisition, avoiding the race where another goroutine calls
-// SetReady(false) between the two operations.
+// MarkNotReady atomically sets ready=false and returns the readiness
+// generation, pairing the state flip with the gen capture in one lock
+// acquisition; indexing passes pass the gen to RestoreReady on exit.
 func (s *Service) MarkNotReady() int64 {
 	s.readyMu.Lock()
 	defer s.readyMu.Unlock()
@@ -1190,11 +993,10 @@ func (s *Service) MarkNotReady() int64 {
 	return s.readyGen
 }
 
-// RestoreReady conditionally marks the service ready ONLY if gen still
-// matches the value returned by MarkNotReady at the start of the indexing
-// pass. A project switch (or any other SetReady(false)) bumps the gen, so a
-// stale indexer whose defer runs after the switch won't prematurely mark a
-// freshly-switched (or freshly-closed) project as ready.
+// RestoreReady marks the service ready ONLY if gen still matches the value
+// MarkNotReady returned at pass start; a project switch (or any other
+// SetReady(false)) bumps the gen, so a stale pass cannot mark a
+// freshly-switched (or closed) project ready.
 func (s *Service) RestoreReady(gen int64) {
 	s.readyMu.Lock()
 	defer s.readyMu.Unlock()
@@ -1207,10 +1009,9 @@ func (s *Service) RestoreReady(gen int64) {
 	}
 }
 
-// GetDB returns the underlying chromem-go DB (for use by Indexer). It is
-// lock-free on purpose: GetDB is called from the Indexer while it already
-// holds the service lock, so taking the lock here would deadlock. It reads
-// the current state pointer once and tolerates a nil current defensively.
+// GetDB returns the underlying chromem-go DB (for use by Indexer). Lock-free
+// on purpose: indexing paths already hold the service lock, so taking it here
+// would deadlock; nil-checked defensively.
 func (s *Service) GetDB() *chromem.DB {
 	ps := s.current
 	if ps == nil {
@@ -1219,16 +1020,10 @@ func (s *Service) GetDB() *chromem.DB {
 	return ps.db
 }
 
-// GetCollection returns the current collection (for use by Indexer). Like
-// GetDB it is intentionally lock-free: indexing paths hold the service write
-// lock around the passes that consume it, while the status-honesty callers
-// (the HandleBranchSwitch guard, the Reindex goroutine, and the deferred
-// terminal emissions of IndexFull/IndexIncremental) read it WITHOUT the lock
-// and treat the result as a best-effort snapshot — a concurrently switched
-// branch at worst shifts which of two adjacent states gets announced, the
-// same "one extra or one missing announcement" tolerance HandleBranchSwitch
-// documents. s.current is never nil after NewService, but the pointer is
-// read once and nil-checked defensively.
+// GetCollection returns the current collection (for use by Indexer).
+// Intentionally lock-free like GetDB; status-honesty callers read it WITHOUT
+// the lock as a best-effort snapshot (the tolerance HandleBranchSwitch
+// documents).
 func (s *Service) GetCollection() *chromem.Collection {
 	ps := s.current
 	if ps == nil {
@@ -1237,17 +1032,16 @@ func (s *Service) GetCollection() *chromem.Collection {
 	return ps.collection
 }
 
-// IndexAvailability returns the last published (vector, lexical) availability
-// snapshot without acquiring the service lock or exposing live index handles.
-// It is UI metadata only, not a readiness or authorization check for searches.
+// IndexAvailability returns the last published (vector, lexical) snapshot
+// without the service lock or live index handles — UI metadata only, not a
+// readiness or authorization check for searches.
 func (s *Service) IndexAvailability() (hasVector, hasLexical bool) {
 	flags := s.indexAvailability.Load()
 	return flags&1 != 0, flags&2 != 0
 }
 
-// publishIndexAvailabilityLocked publishes both flags atomically. Caller holds
-// s.mu; the sole exception is NewService, which calls it while the service is
-// still unshared (no other goroutine can observe the field yet). Only lifecycle
+// publishIndexAvailabilityLocked publishes both flags atomically; the caller
+// holds s.mu (sole exception NewService, still unshared). Only lifecycle
 // transitions change availability, not document writes.
 func (s *Service) publishIndexAvailabilityLocked() {
 	var flags uint32
@@ -1279,11 +1073,9 @@ func (s *Service) currentLexicalLocked() lexical.Index {
 	return s.current.lexical
 }
 
-// LexicalCount returns the number of documents in the lexical index, or
-// 0 if no lexical index is currently open. The read lock is held across the
-// Count call: bleveIndex has no internal synchronization and its Close (under
-// the write lock) nils the index, so the captured pointer must not outlive
-// the lock that serializes the close.
+// LexicalCount returns the lexical index's document count (0 when none is
+// open); the read lock spans Count — the captured pointer must not outlive
+// the lock that serializes Close.
 func (s *Service) LexicalCount() (uint64, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -1312,16 +1104,10 @@ func (s *Service) DeleteProjectData(fullPath string) error {
 	if fullPath == "" {
 		return nil
 	}
-	// If this service currently has the project open (its lexical index and
-	// chromem DB point at a directory under fullPath), release those file
-	// handles BEFORE removing the directory. Windows refuses to delete files
-	// that still have open handles (unlinkat returns "process cannot access
-	// the file"); Unix would silently unlink them and leave the service
-	// holding stale, deleted inodes. Closing first makes both platforms
-	// behave consistently and avoids dangling references to removed data.
-	// The same applies to a PARKED state for this project: its handles are
-	// still open, so it must be dropped too (otherwise a later switch back
-	// would restore a collection rooted at a deleted directory).
+	// Release this project's open handles BEFORE removing the directory —
+	// Windows refuses to delete open-handle files, Unix leaves stale inodes —
+	// and drop any PARKED state for it too: a later switch back would
+	// otherwise restore a collection rooted at a deleted directory.
 	target := filepath.Clean(fullPath)
 	s.mu.Lock()
 	if cur := s.current; cur != nil && filepath.Clean(cur.projectPath) == target {
@@ -1330,19 +1116,13 @@ func (s *Service) DeleteProjectData(fullPath string) error {
 			cur.migrationCancel = nil
 		}
 		s.closeStateLocked(cur)
-		// Reset rather than leaving the closed state installed: closeStateLocked
-		// drops the handles but keeps projectID/projectPath, and
-		// parkCurrentLocked parks any state with a non-empty path and an opened
-		// DB — the next SetProject would otherwise park this dead state into the
-		// LRU, wasting a park slot and, for any future deterministic id+path
-		// reuse, restoring a state whose collection and branch point at a
-		// directory that no longer exists. The empty placeholder mirrors
-		// parkCurrentLocked's reset state and is never parked or restorable.
+		// Reset rather than leaving the closed state installed: it keeps
+		// projectID/projectPath, and parkCurrentLocked would park this dead
+		// state into the LRU — restoring later a collection rooted at a
+		// deleted directory. The empty placeholder is never parked/restorable.
 		s.current = &projectState{}
-		// Publish the now-empty snapshot explicitly. closeStateLocked already
-		// published (it nil'd the handles), but this reset is the state the
-		// lock-free UI reader must observe, so make it explicit rather than
-		// leaning on the two flags coinciding.
+		// Publish the now-empty snapshot explicitly: this reset is the state
+		// the lock-free UI reader must observe, not a coincidence of flags.
 		s.publishIndexAvailabilityLocked()
 	}
 	if len(s.parked) > 0 {
@@ -1373,9 +1153,9 @@ func (s *Service) DeleteProjectData(fullPath string) error {
 // Close cleans up resources.
 func (s *Service) Close() error {
 	s.mu.Lock()
-	// Mark the service closed under the lock: a background No Project reset
-	// applier that acquires s.mu only after this unlock must observe it and
-	// drop any still-queued request instead of mutating the closed service.
+	// Mark closed under the lock, so a background No Project applier that
+	// acquires s.mu only afterwards drops its request instead of mutating a
+	// closed service.
 	s.closed.Store(true)
 
 	// Persist the current branch's in-memory hashes before shutdown, cancel
@@ -1392,10 +1172,8 @@ func (s *Service) Close() error {
 		}
 		s.closeStateLocked(cur)
 	}
-	// Close every parked state too: their chromem DB and lexical handles are
-	// still resident. Their sidecars were already flushed at park time (no
-	// indexing runs on a parked state), so we only cancel any migration and
-	// release the handles.
+	// Close every parked state too: sidecars were already flushed at park
+	// time, so only migrations are cancelled and handles released.
 	for _, ps := range s.parked {
 		if ps.migrationCancel != nil {
 			ps.migrationCancel()
@@ -1406,20 +1184,18 @@ func (s *Service) Close() error {
 	s.parked = nil
 	s.mu.Unlock()
 
-	// Wait for any in-flight migration goroutine (current or parked) to
-	// unwind (it aborts after seeing the cancellation / nil collection above).
-	// Must happen AFTER releasing the lock, or the goroutine would deadlock
-	// waiting for it.
+	// Wait for in-flight migration goroutines to unwind — AFTER the lock is
+	// released, or the goroutine would deadlock waiting for it.
 	s.migrationWG.Wait()
 	s.logger.Info("vector index service closed")
 	return nil
 }
 
-// resultToSearchResult converts a chromem-go Result to a SearchResult.
-// Content is passed through as-is: committed documents store no chunk text
-// (see strippedForCommit), so the caller hydrates the final top-K from the
-// source files via hydrateSearchContent. FileName is derived from FilePath —
-// documents no longer store a file_name metadata field.
+// resultToSearchResult converts a chromem-go Result to a SearchResult. Content
+// passes through as-is: committed documents store no chunk text, so the caller
+// hydrates the final top-K from source files via hydrateSearchContent;
+// FileName is derived from FilePath (documents store no file_name field).
+// See specs/decisions/049-vector-index-memory-reduction.md.
 func resultToSearchResult(r chromem.Result) SearchResult {
 	startLine, _ := strconv.Atoi(r.Metadata["start_line"])
 	endLine, _ := strconv.Atoi(r.Metadata["end_line"])

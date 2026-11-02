@@ -48,8 +48,8 @@ func TestMarkitdownLock_FullyPinned(t *testing.T) {
 		pinned++
 		if m[1] == "markitdown" {
 			sawMarkitdownPin = true
-			if m[2] != "0.1.4" {
-				t.Errorf("lock pins markitdown==%s, want 0.1.4 (registry Version)", m[2])
+			if m[2] != "0.1.9" {
+				t.Errorf("lock pins markitdown==%s, want 0.1.9 (registry Version)", m[2])
 			}
 		}
 	}
@@ -246,7 +246,7 @@ func TestInstallPythonPackage_UsesRequirementsLock(t *testing.T) {
 	if !strings.Contains(pipCall, "-r "+lockPath) {
 		t.Errorf("pip call does not install from the lock via -r: %q", pipCall)
 	}
-	if strings.Contains(pipCall, "markitdown[all]==0.1.4") {
+	if strings.Contains(pipCall, "markitdown[all]==0.1.9") {
 		t.Errorf("pip call must not use the floating PipSpec when a lock exists: %q", pipCall)
 	}
 }

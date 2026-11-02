@@ -14,30 +14,22 @@ import (
 )
 
 // ErrCompactionInFlight is returned by CompactSessionContext when a manual
-// compaction is already running for the session. The UI locks the compact
-// button while compacting, so this is the server-side backstop for racing
-// callers.
+// compaction is already running — the server-side backstop behind the UI's
+// locked compact button.
 var ErrCompactionInFlight = errors.New("session compaction is already in flight")
 
 // ErrSessionCompacting is returned by SendMessage/ResumeTask while a manual
-// context compaction is running. The compaction flow needs an idle window (it
-// waits for any running task to reach a cooperative pause checkpoint first);
-// a send or resume in that window would race the history swap. The UI mirrors
-// this by locking the input and the pause/resume controls.
+// compaction holds the idle window. See specs/domains/memory/compaction.md.
 var ErrSessionCompacting = errors.New("session is compacting context — wait for it to finish")
 
 // validCompactionStrategies lists the strategy names accepted by
-// CompactSessionContext. They mirror sp4rk's NewCompactionStrategy names; the
-// check exists so an invalid name fails fast (before any pause/resume
-// churn) with a clear error instead of failing mid-flow.
+// CompactSessionContext (mirroring sp4rk's names), so an invalid name fails
+// fast before any pause/resume churn.
 var validCompactionStrategies = []string{"sliding_window", "summarization", "hierarchical"}
 
-// compactionForecastStateKey returns the app_state key under which the
-// EWMA-calibrated compression-ratio forecast is persisted for a given model
-// (JSON-encoded sdkmemory.CompactionForecast), so the calibration survives app
-// restarts. The forecast is model-specific — different models summarize at
-// different compression ratios — so the key is scoped by model; an empty model
-// (nothing resolved yet) falls back to the legacy unscoped key.
+// compactionForecastStateKey returns the app_state key for the model-scoped
+// EWMA-calibrated compression-ratio forecast (the empty model selects the
+// legacy unscoped fallback key). See specs/domains/memory/compaction.md.
 func compactionForecastStateKey(model string) string {
 	if model == "" {
 		return "compaction_forecast"
@@ -45,64 +37,27 @@ func compactionForecastStateKey(model string) string {
 	return "compaction_forecast:" + model
 }
 
-// compactionForecastState is the JSON-serializable mirror of
-// sdkmemory.CompactionForecast used for app_state persistence. It carries the
-// same three ratios; zero values mean "use the config seed" on load.
+// compactionForecastState is the JSON mirror of sdkmemory.CompactionForecast
+// for app_state persistence; zero values mean "use the config seed" on load.
 type compactionForecastState struct {
 	SummarizationRatio       float64 `json:"summarization_ratio"`
 	HierarchicalDistantRatio float64 `json:"hierarchical_distant_ratio"`
 	HierarchicalMiddleRatio  float64 `json:"hierarchical_middle_ratio"`
 }
 
-// compactMarkerRole is the persisted ChatMessage role marking a manual context
-// compaction. The row renders as the existing context-compaction card on
-// reload (chatUtils maps the role) and carries the compacted history snapshot
-// in its metadata so history restore (convertChatMessagesToLLM) can rebuild
-// the LLM-visible conversation exactly as it was after compaction.
+// compactMarkerRole is the persisted role marking a manual compaction; the
+// row renders as the compaction card on reload and its metadata snapshot
+// reseeds the LLM-visible history. See specs/domains/memory/compaction.md.
 const compactMarkerRole = "context_compaction"
 
-// CompactSessionContext starts a MANUAL context compaction for the session:
-// the session's cross-task conversation history (what the orchestrator injects
-// as prior conversation into every request) is compacted with the named
-// strategy. The UI chat history is untouched — only the LLM-visible context
-// shrinks.
-//
-// Flow (asynchronous — returns immediately after validation):
-//  1. compaction_started is emitted and the session is flagged compacting
-//     (sends/resumes now fail with ErrSessionCompacting).
-//  2. If a task is running, the flow pauses it exactly like PauseSession
-//     (cooperative pause at the next step boundary) and waits for the request
-//     goroutine to exit — the same wait semantics as a user-initiated pause.
-//  3. The orchestrator's history is compacted (orchestrator.
-//     CompactConversationHistory). LLM-backed strategies run their summarize
-//     calls through the session's tracking caller, so tokens are counted.
-//     A no-op compaction (ErrNothingCompacted — the dialogue already fits
-//     within the strategy's limits) is NOT a failure: the flow finishes
-//     successfully with nothing_compacted=true and no marker row.
-//     3.5. When nothing was compacted but a paused unfinished task is about to
-//     be auto-resumed, the compaction is deferred to the resume instead:
-//     the orchestrator's one-shot resume-compaction request is armed
-//     (RequestResumeCompaction) BEFORE the auto-resume below, so the resumed
-//     Conductor run force-compacts the merged trajectory up front — the real
-//     numbers then arrive as the executor's context_compaction card.
-//  4. On success a marker row (role context_compaction) is persisted with the
-//     compacted history snapshot, so a restart restores the compacted history.
-//     Skipped for the no-op outcome (phase 3): there is no compacted history
-//     to snapshot.
-//  5. If THIS flow paused the session, a paused checkpoint remains, AND the
-//     pause is still owned by this flow (a user pause is never stolen: one
-//     that races or follows the flow's own pause overwrites the owner, and
-//     one already in flight when the flow armed keeps the user as owner —
-//     either way the user's pause survives), the task is auto-resumed.
-//     compaction_finished is emitted with the outcome (success / cancelled /
-//     error + whether the session was resumed, nothing was compacted, or the
-//     compaction was deferred to the resume).
-//
-// Cancellation (CancelSessionCompaction) during the pause-wait still waits for
-// the checkpoint to land (unflipping the pause signal mid-flight would race
-// the executor's step-boundary check) and then skips the compaction and
-// auto-resumes; during the compaction itself it aborts the summarize calls,
-// leaving the history untouched.
+// CompactSessionContext starts a MANUAL context compaction of the session's
+// cross-task conversation history with the named strategy; the UI chat
+// history is untouched. Asynchronous: emit compaction_started + flag
+// compacting → pause a running task and wait for its checkpoint → compact →
+// persist the marker row → auto-resume only a pause this flow still owns →
+// emit compaction_finished. A no-op (ErrNothingCompacted) is success with
+// nothing_compacted=true and no marker. Full flow, pause ownership and
+// cancellation semantics: specs/domains/memory/compaction.md.
 func (m *Manager) CompactSessionContext(ctx context.Context, sessionID, strategy string) error {
 	if !slices.Contains(validCompactionStrategies, strategy) {
 		return fmt.Errorf("unknown compaction strategy %q (valid: %s)", strategy, strings.Join(validCompactionStrategies, ", "))
@@ -134,15 +89,9 @@ func (m *Manager) CompactSessionContext(ctx context.Context, sessionID, strategy
 	session.compactCancel = cancel
 	compactDone := make(chan struct{})
 	session.compactDone = compactDone
-	// If a task is running, take it to a cooperative pause checkpoint first —
-	// the same mechanism PauseSession uses (pausing window + signal flip).
-	// Recording the pause owner lets phase 5 distinguish this flow's pause
-	// from a user-initiated one: a user pause is NEVER stolen — neither one
-	// that lands after this arming (PauseSession overwrites the owner) nor
-	// one that is already in flight when the arming happens (a user-owned
-	// pause is left owned by the user). Either way the flow leaves the task
-	// paused in phase 5 instead of silently resuming an operator pause.
-	// doneCh closes when the request goroutine finishes its epilogue.
+	// Pause a running task first (PauseSession's mechanism); the recorded
+	// owner lets phase 5 tell this flow's pause from a user's — a user pause
+	// is never stolen. doneCh closes when the request goroutine finishes.
 	var doneCh chan struct{}
 	pausedForCompaction := false
 	if session.active {
@@ -169,11 +118,9 @@ func (m *Manager) CompactSessionContext(ctx context.Context, sessionID, strategy
 	return nil
 }
 
-// runSessionCompaction executes the manual-compaction flow on a background
-// goroutine (see CompactSessionContext for the phase description). The
-// session's compacting flag and compactCancel are owned by this flow: they are
-// cleared here before the auto-resume so the resumed task is not rejected by
-// the compacting guards.
+// runSessionCompaction runs the manual-compaction flow on a background
+// goroutine; it clears the compacting flag/compactCancel before the
+// auto-resume so ResumeTask passes the compacting guards.
 func (m *Manager) runSessionCompaction(compCtx context.Context, cancel context.CancelFunc, compactDone chan struct{}, sessionID string, session *Session, orch *core.Orchestrator, strategy string, doneCh chan struct{}, pausedForCompaction bool) {
 	defer cancel()
 	// Shutdown joins this goroutine via compactDone: everything after this
@@ -181,18 +128,15 @@ func (m *Manager) runSessionCompaction(compCtx context.Context, cancel context.C
 	defer close(compactDone)
 
 	// Phase 2: wait for the running request to reach its pause checkpoint and
-	// exit. A cancellation during the wait still waits for the checkpoint
-	// (skipping the compaction afterwards) — unflipping the pause signal
-	// mid-flight would race the executor's step-boundary check and could leave
-	// the session paused with nobody to resume it.
+	// exit; a cancellation still waits (unflipping mid-flight would race the
+	// executor's step-boundary check and strand the pause).
 	cancelled := false
 	if doneCh != nil {
 		select {
 		case <-doneCh:
-			// The checkpoint and the cancellation raced: both channels were
-			// ready, and select picked one at random. Honour the cancellation —
-			// it was requested no later than the checkpoint landing, so the
-			// compaction is skipped like any other pause-wait cancellation.
+			// Checkpoint and cancellation raced (select picked randomly);
+			// honour the cancellation — it was requested no later than the
+			// checkpoint landed.
 			if compCtx.Err() != nil {
 				cancelled = true
 			}
@@ -202,11 +146,7 @@ func (m *Manager) runSessionCompaction(compCtx context.Context, cancel context.C
 		}
 	}
 
-	// Phase 3: compact the orchestrator's conversation history. A no-op
-	// compaction (ErrNothingCompacted — the dialogue already fits within the
-	// strategy's limits) is not a failure: the sentinel returns zero
-	// percentages and leaves the history untouched, so the flow finishes
-	// successfully with nothing_compacted=true.
+	// Phase 3: compact the history; ErrNothingCompacted is a successful no-op.
 	var before, after float64
 	var err error
 	nothingCompacted := false
@@ -222,84 +162,57 @@ func (m *Manager) runSessionCompaction(compCtx context.Context, cancel context.C
 			err = nil
 		}
 	}
-	// Shutdown cancels the flow's context (Manager.Shutdown): the tail phases
-	// below must not run against a torn-down backend — arming a
-	// resume-compaction for a dead process, persisting a marker into a DB
-	// that is closing, or auto-resuming a task after Shutdown declared all
-	// tasks stopped. The paused checkpoint (if any) is preserved and
-	// persisted by Shutdown's own persistPauseIfUnfinished.
+	// Shutdown cancels the flow's context: the tail phases must not run
+	// against a torn-down backend; the paused checkpoint (if any) is persisted
+	// by Shutdown's own persistPauseIfUnfinished.
 	shuttingDown := m.shuttingDown.Load()
 	if shuttingDown {
 		cancelled = true
 	}
 
-	// Phase 3.5: when nothing was compacted but a paused unfinished task
-	// waits (for this flow's auto-resume, or a later user resume), defer the
-	// compaction to the resume: arm the orchestrator's one-shot
-	// resume-compaction request BEFORE the auto-resume in phase 5, so the
-	// flag is consumed by the resumed run's Resume call. If the task is
-	// instead cancelled or abandoned before resuming (user discard, goal
-	// takeover, archival), the session layer's clearResumeRequests drops
-	// the flag so it never fires for an unrelated task. The resumed
-	// Conductor run then force-compacts the merged trajectory (seeded
-	// checkpoint + the resumed run) up front, and the real numbers arrive as
-	// the executor's context_compaction card. Deferred only for the no-op
-	// outcome: a successful compaction already shrank the history and
-	// persisted the marker, so re-compacting the merged trajectory at
-	// resume would duplicate the work.
+	// Phase 3.5: a no-op outcome with a paused unfinished task waiting defers
+	// the compaction to the resume — arm RequestResumeCompaction BEFORE the
+	// auto-resume so the resumed run force-compacts the merged trajectory
+	// up front; clearResumeRequests drops the flag if the task is cancelled
+	// or abandoned instead. Deferred only for the no-op: a successful
+	// compaction already shrank the history and wrote the marker.
 	deferredToResume := false
 	if nothingCompacted && !shuttingDown && m.hasPausedUnfinishedTask(sessionID) {
 		orch.RequestResumeCompaction(strategy)
 		deferredToResume = true
 	}
 
-	// Liveness gate: DeleteSession sets session.deleting BEFORE it cancels and
-	// joins this flow, so once that flag is visible the session is being torn
-	// down (orchestrator cleanup, file closes, map removal, dir removal) and
-	// the flow must not touch the store on the session's behalf (phase 4) or
-	// resurrect it (phase 5's auto-resume → getOrRestoreSession would rebuild
-	// the just-deleted session while the caller is mid-deletion). The join in
-	// DeleteSession normally happens BEFORE these lines run, but the flag
-	// covers the window where the flow reached here before the cancel landed.
+	// Liveness gate: once session.deleting is visible the session is being
+	// torn down — the flow must not touch the store (phase 4) or resurrect
+	// it via auto-resume. The flag covers the window where the flow got here
+	// before DeleteSession's cancel landed.
 	session.mu.Lock()
 	deleting := session.deleting
 	session.mu.Unlock()
 
-	// Phase 4: persist the marker so a restart restores the compacted history.
-	// Skipped for the no-op outcome — there is no compacted history to
-	// snapshot, and the executor's context_compaction card (phase 3.5) is the
-	// user-facing record of the deferred compaction instead.
+	// Phase 4: persist the marker so a restart restores the compacted history;
+	// skipped for the no-op outcome (nothing to snapshot).
 	if err == nil && !cancelled && !nothingCompacted && !shuttingDown && !deleting {
 		if perr := m.persistCompactionMarker(sessionID, orch, strategy, before, after); perr != nil {
 			m.log().Error("manual compaction: failed to persist marker", "session", sessionID, "error", perr)
 			// Non-fatal: the in-memory history is already compacted; only the
 			// restart-restore falls back to the full history.
 		}
-		// Persist the EWMA-calibrated forecast so the compression-ratio
-		// calibration survives restarts. Best-effort, like the marker.
+		// Persist the EWMA-calibrated forecast; best-effort, like the marker.
 		m.persistCompactionForecast(orch)
 	}
 
-	// Release the compacting window BEFORE the auto-resume so ResumeTask is
-	// not rejected by the compacting guard. pausing was already cleared by the
-	// request epilogue (deactivateSessionTask) when the goroutine exited.
+	// Release the compacting window BEFORE the auto-resume so ResumeTask
+	// passes the compacting guard.
 	session.mu.Lock()
 	session.compacting = false
 	session.compactCancel = nil
 	session.compactDone = nil
 	session.mu.Unlock()
 
-	// Phase 5: auto-resume the task this flow paused, when a paused checkpoint
-	// remains (the task may have completed normally in the pause window — then
-	// there is nothing to resume) AND the pause is still owned by this flow.
-	// The owner check is what keeps a user-initiated pause alive in BOTH
-	// orderings: a pause the user requested after this flow armed (PauseSession
-	// writes pauseOwnerUser on every call, racing the flow or landing inside
-	// the compaction window) overwrites the owner, and a pause the user
-	// requested BEFORE the arming keeps it — the arming never steals a
-	// user-owned pause. Either way the task stays paused and clients are told
-	// to re-apply the paused state. The owner is consumed (reset) by this
-	// decision.
+	// Phase 5: auto-resume only a pause this flow still owns (the owner check
+	// keeps a user-initiated pause alive in both orderings); the owner is
+	// consumed by this decision.
 	resumed := false
 	pausedWithoutResume := false
 	session.mu.Lock()
@@ -307,28 +220,23 @@ func (m *Manager) runSessionCompaction(compCtx context.Context, cancel context.C
 	deleting = session.deleting // re-read: DeleteSession may have flipped it while phases 3.5/4 ran
 	session.pauseOwner = pauseOwnerNone
 	session.mu.Unlock()
-	// Re-read the flag here: Shutdown may have begun after the mid-flow
-	// snapshot above — the choke points (getOrRestoreSession / ResumeTask)
-	// would reject the resume anyway; skipping it outright keeps the
-	// terminal event honest (no spurious "auto-resume failed" warning
-	// during teardown) and the checkpoint persists as resumable via
-	// Shutdown's persistPauseIfUnfinished. The deleting check is the
-	// DeleteSession counterpart: an auto-resume here would ghost-resurrect
-	// the session the user just deleted.
+	// Re-read both flags: Shutdown may have begun after the mid-flow snapshot
+	// (skip keeps the terminal event honest; the checkpoint persists via
+	// persistPauseIfUnfinished), and a flipped deleting flag means an
+	// auto-resume here would ghost-resurrect the just-deleted session.
 	if pausedForCompaction && !shuttingDown && !deleting && !m.shuttingDown.Load() && m.hasPausedUnfinishedTask(sessionID) {
 		if ownsPause {
 			if rerr := m.ResumeTask(context.Background(), sessionID, "", "", ""); rerr != nil {
-				// The checkpoint is still there with nobody else to resume it, and
-				// the UI never saw session_paused (it is suppressed while
-				// compacting) — flag it so clients re-apply the paused state.
+				// Nobody else will resume the checkpoint and the UI never saw
+				// session_paused (suppressed while compacting) — clients must
+				// re-apply the paused state.
 				pausedWithoutResume = true
 				m.log().Warn("manual compaction: auto-resume failed", "session", sessionID, "error", rerr)
 			} else {
 				resumed = true
 			}
 		} else {
-			// The user asked for the paused state while this flow held the
-			// session: honour it — same client contract as a failed
+			// Honour the user's pause — same client contract as a failed
 			// auto-resume (the UI never saw session_paused while compacting).
 			pausedWithoutResume = true
 			m.log().Info("manual compaction: keeping user-requested pause", "session", sessionID)
@@ -364,11 +272,11 @@ func (m *Manager) runSessionCompaction(compCtx context.Context, cancel context.C
 	})
 }
 
-// CancelSessionCompaction aborts an in-flight manual compaction. When the flow
-// is still waiting for the running task's pause checkpoint it stops there
-// (skipping the compaction and auto-resuming once the checkpoint lands); when
-// the compaction itself is running it aborts the summarize calls, leaving the
-// history untouched. A no-op when no compaction is in flight.
+// CancelSessionCompaction aborts an in-flight manual compaction: during the
+// pause-wait it stops there (skip + auto-resume once the checkpoint lands),
+// during the compaction it aborts the summarize calls with the history
+// untouched. No-op when nothing is in flight. See
+// specs/domains/memory/compaction.md.
 func (m *Manager) CancelSessionCompaction(sessionID string) error {
 	m.mu.RLock()
 	sess := m.sessions[sessionID]
@@ -385,14 +293,10 @@ func (m *Manager) CancelSessionCompaction(sessionID string) error {
 	return nil
 }
 
-// clearResumeRequests discards any armed one-shot resume request
-// (resume-compaction and/or resume-re-route) on the session's in-memory
-// orchestrator. Called when the session's unfinished task is cancelled or
-// abandoned: an armed flag belonged to THAT task's future resume and must not
-// leak into an unrelated later one. The flags live only on the in-memory
-// orchestrator, so a session that is not currently in memory cannot have one —
-// a plain map lookup suffices (no store restore). Best-effort and race-free
-// with a concurrent Resume consume (mutex-guarded on the orchestrator).
+// clearResumeRequests discards the session's armed one-shot resume requests
+// (compaction and/or re-route) when its unfinished task is cancelled or
+// abandoned: the flags belonged to THAT task's future resume. In-memory only
+// (no store restore); race-free with a concurrent Resume consume.
 func (m *Manager) clearResumeRequests(sessionID string) {
 	m.mu.RLock()
 	sess := m.sessions[sessionID]
@@ -406,10 +310,8 @@ func (m *Manager) clearResumeRequests(sessionID string) {
 	}
 }
 
-// persistCompactionMarker writes the context_compaction marker row carrying
-// the compacted history snapshot. The row's role renders as the existing
-// compaction card on reload; its metadata.messages snapshot lets
-// convertChatMessagesToLLM rebuild the LLM-visible history exactly.
+// persistCompactionMarker writes the context_compaction marker row with the
+// compacted history snapshot. See specs/domains/memory/compaction.md.
 func (m *Manager) persistCompactionMarker(sessionID string, orch *core.Orchestrator, strategy string, before, after float64) error {
 	m.mu.RLock()
 	store := m.sessionStore
@@ -428,11 +330,9 @@ func (m *Manager) persistCompactionMarker(sessionID string, orch *core.Orchestra
 	if err != nil {
 		return fmt.Errorf("marshal compaction marker: %w", err)
 	}
-	// Bounded like the sibling forecast save (restoreDBReadTimeout): this
-	// write runs on the compaction flow goroutine and shares the app's single
-	// SQLite pool; an unbounded wait for a pooled connection under a write
-	// storm would stall the flow's finish path (and, before the phase-4
-	// gate, its auto-resume) indefinitely.
+	// Bounded (restoreDBReadTimeout): this runs on the compaction flow
+	// goroutine sharing the app's single SQLite pool; an unbounded wait would
+	// stall the flow's finish path indefinitely.
 	ctx, cancel := context.WithTimeout(context.Background(), restoreDBReadTimeout)
 	defer cancel()
 	return store.SaveMessage(ctx, ChatMessage{
@@ -444,11 +344,9 @@ func (m *Manager) persistCompactionMarker(sessionID string, orch *core.Orchestra
 	})
 }
 
-// persistCompactionForecast writes the orchestrator's EWMA-calibrated
-// compression-ratio forecast to app_state so the calibration survives an app
-// restart. Best-effort: a failed write only loses the incremental calibration
-// (the next compaction re-seeds from config and re-learns), never the compacted
-// history itself.
+// persistCompactionForecast writes the EWMA-calibrated compression-ratio
+// forecast to app_state; best-effort — a failed write only loses the
+// incremental calibration. See specs/domains/memory/compaction.md.
 func (m *Manager) persistCompactionForecast(orch *core.Orchestrator) {
 	m.mu.RLock()
 	store := m.projectStore
@@ -467,10 +365,8 @@ func (m *Manager) persistCompactionForecast(orch *core.Orchestrator) {
 		m.log().Warn("manual compaction: failed to marshal forecast", "error", err)
 		return
 	}
-	// Bound the store call like the restore head-reads (restoreDBReadTimeout):
-	// the shared SQLite connection serves every active session's writes, so
-	// an unbounded save here could stall the compaction-finish path under a
-	// concurrent write storm.
+	// Bounded like the restore head-reads (restoreDBReadTimeout): the shared
+	// SQLite connection serves every active session's writes.
 	ctx, cancel := context.WithTimeout(context.Background(), restoreDBReadTimeout)
 	defer cancel()
 	key := compactionForecastStateKey(orch.CurrentModel())
@@ -478,13 +374,9 @@ func (m *Manager) persistCompactionForecast(orch *core.Orchestrator) {
 		m.log().Warn("manual compaction: failed to persist forecast", "error", err)
 		return
 	}
-	// Also refresh the model-independent entry (unless the model-scoped key is
-	// already it). A session restored after a restart may run under a different
-	// model than the one that calibrated the forecast — a transient per-request
-	// override is not persisted as the session's model — so this keeps the last
-	// calibration reachable instead of silently reverting to the config seed,
-	// which is what makes the documented "survives restarts" guarantee hold.
-	// loadCompactionForecast prefers the model-scoped entry and falls back here.
+	// Also refresh the model-independent entry: a restart may restore the
+	// session under a different model, and loadCompactionForecast falls back
+	// to this key — that is what makes "survives restarts" hold.
 	if fallback := compactionForecastStateKey(""); key != fallback {
 		if err := store.SaveAppState(ctx, fallback, string(raw)); err != nil {
 			m.log().Warn("manual compaction: failed to persist unscoped forecast", "error", err)
@@ -492,12 +384,9 @@ func (m *Manager) persistCompactionForecast(orch *core.Orchestrator) {
 	}
 }
 
-// loadCompactionForecast reads a previously persisted compression-ratio
-// forecast from app_state and applies it to the orchestrator, overriding the
-// config seed. A missing key, an unparsable value, or an absent store leaves
-// the orchestrator's config-seeded forecast untouched (the seed is a valid
-// conservative default). Zero fields are ignored, so a partially persisted
-// state keeps the config seed for the missing ratios.
+// loadCompactionForecast applies a persisted forecast over the config seed;
+// missing/unparsable state or zero fields leave the seed untouched. See
+// specs/domains/memory/compaction.md.
 func (m *Manager) loadCompactionForecast(orch *core.Orchestrator) {
 	m.mu.RLock()
 	store := m.projectStore
@@ -505,11 +394,9 @@ func (m *Manager) loadCompactionForecast(orch *core.Orchestrator) {
 	if store == nil {
 		return
 	}
-	// Bound the store call like the restore head-reads (restoreDBReadTimeout):
-	// this load runs inside the lazy-restore path (getOrRestoreSession), so
-	// an unbounded read queuing behind a write storm would park the restore —
-	// and, via restoreInFlight, every concurrent waiter — past the point the
-	// head-read bound was meant to guarantee.
+	// Bounded (restoreDBReadTimeout): this runs inside the lazy-restore path,
+	// where an unbounded read would park the restore and every concurrent
+	// waiter behind it.
 	ctx, cancel := context.WithTimeout(context.Background(), restoreDBReadTimeout)
 	defer cancel()
 	raw, err := store.LoadAppState(ctx, compactionForecastStateKey(orch.CurrentModel()))
@@ -518,11 +405,7 @@ func (m *Manager) loadCompactionForecast(orch *core.Orchestrator) {
 		return
 	}
 	if raw == "" {
-		// Fall back to the model-independent entry when the model-scoped key is
-		// absent: the session may be restored under a different model than the
-		// one that calibrated the forecast (a transient override is not
-		// persisted), and dropping the calibration there would contradict the
-		// documented "survives restarts" guarantee.
+		// Fall back to the model-independent entry (see persistCompactionForecast).
 		raw, err = store.LoadAppState(ctx, compactionForecastStateKey(""))
 		if err != nil {
 			m.log().Warn("manual compaction: failed to load fallback forecast", "error", err)
@@ -537,8 +420,7 @@ func (m *Manager) loadCompactionForecast(orch *core.Orchestrator) {
 		m.log().Warn("manual compaction: unparsable forecast state", "error", err)
 		return
 	}
-	// Merge onto the current (config-seeded) forecast: only non-zero persisted
-	// ratios override, so a partial state preserves the seed for the rest.
+	// Only non-zero persisted ratios override; a partial state keeps the seed.
 	f := orch.CompactionForecast()
 	if state.SummarizationRatio > 0 {
 		f.SummarizationRatio = state.SummarizationRatio
@@ -552,10 +434,9 @@ func (m *Manager) loadCompactionForecast(orch *core.Orchestrator) {
 	orch.SetCompactionForecast(f)
 }
 
-// compactedHistoryFromMarker parses the compacted history snapshot embedded in
-// a persisted context_compaction marker row. Returns nil when the metadata
-// carries no (or an unparsable) snapshot — old markers without the messages
-// field are treated as no-ops by the restore path.
+// compactedHistoryFromMarker parses the history snapshot from a
+// context_compaction marker row; nil when absent/unparsable (old markers are
+// restore no-ops).
 func compactedHistoryFromMarker(raw json.RawMessage) []llm.Message {
 	if len(raw) == 0 {
 		return nil

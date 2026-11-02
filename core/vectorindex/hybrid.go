@@ -46,26 +46,21 @@ const defaultHybridFanout = 100
 // defaultFanoutMultiplier scales topK into a per-side candidate pool.
 const defaultFanoutMultiplier = 4
 
-// defaultVectorScoreRatio is the relative cosine cutoff below which
-// vector hits are discarded before fusion. A hit survives when its
-// similarity is at least this fraction of the top similarity in the
-// (post-filter) vector result set. 0 disables the relative cutoff.
+// defaultVectorScoreRatio is the relative cosine cutoff below which vector
+// hits are discarded before fusion (a hit survives at ≥ this fraction of the
+// top post-filter similarity; 0 disables it). See specs/domains/workspace.md.
 const defaultVectorScoreRatio = 0.25
 
-// defaultLexicalScoreRatio is the relative BM25 cutoff below which
-// lexical hits are discarded before fusion. BM25 magnitudes vary widely
-// across queries, so a relative threshold is more robust than an
-// absolute one. 0 disables the cutoff.
+// defaultLexicalScoreRatio is the relative BM25 cutoff below which lexical
+// hits are discarded before fusion (0 disables it); a relative threshold is
+// more robust than an absolute one because BM25 magnitudes vary by query.
 const defaultLexicalScoreRatio = 0.1
 
-// HybridConfig holds tunable parameters for Reciprocal Rank Fusion.
-//
-// Zero-valued integer fields (RRFK, FanoutMultiplier, FanoutMin) fall
-// back to built-in defaults via ResolveHybridConfig. Zero-valued
-// threshold fields mean "disabled" — every hit passes the score gate —
-// so callers that construct a zero HybridConfig (e.g. tests) get no
-// score filtering. Production config sets non-zero thresholds via
-// config.VectorIndexConfig.
+// HybridConfig holds the Reciprocal Rank Fusion tunables. Zero integer
+// fields (RRFK, FanoutMultiplier, FanoutMin) fall back to built-in defaults
+// via ResolveHybridConfig; zero thresholds mean "disabled" — every hit
+// passes the gate — so a zero HybridConfig (tests) does no score filtering.
+// Production sets thresholds via config.VectorIndexConfig.
 type HybridConfig struct {
 	// RRFK is the RRF constant k (default 60).
 	RRFK int
@@ -91,9 +86,8 @@ type HybridConfig struct {
 	LexicalScoreRatio float64
 }
 
-// DefaultHybridConfig returns the built-in default HybridConfig. The
-// threshold defaults (VectorScoreRatio, LexicalScoreRatio) are enabled
-// to suppress noise-tail promotion in RRF; set them to 0 to disable.
+// DefaultHybridConfig returns the built-in HybridConfig; the thresholds are
+// enabled to suppress noise-tail promotion in RRF (0 disables a threshold).
 func DefaultHybridConfig() HybridConfig {
 	return HybridConfig{
 		RRFK:              rrfK,
@@ -165,26 +159,20 @@ func ParseQuery(raw string) (base string, mustMatch []string) {
 	return strings.Join(baseParts, " "), mustMatch
 }
 
-// HybridSearch runs a hybrid vector + lexical search according to
-// opts.Mode and fuses the two ranked lists with Reciprocal Rank Fusion.
-//
-// Auto-fallback rules:
-//   - ModeHybrid with no/empty lexical index → degrades to ModeVector.
-//   - ModeLexical with no/empty lexical index → returns an empty slice
-//     (or an error if no lexical index has been opened at all).
-//
-// Blocks via WaitReady if the index is not yet ready.
+// HybridSearch runs a hybrid vector + lexical search per opts.Mode and fuses
+// the ranked lists with Reciprocal Rank Fusion; it blocks via WaitReady.
+// Auto-fallback (see specs/domains/workspace.md): ModeHybrid degrades to
+// ModeVector when the lexical index is empty/unavailable; ModeLexical
+// returns an empty slice (or an error when no lexical index was ever
+// opened).
 func (s *Service) HybridSearch(ctx context.Context, opts SearchOptions) ([]SearchResult, error) {
 	return s.hybridSearch(ctx, opts, true)
 }
 
-// HybridSearchNoWait is the non-blocking form of HybridSearch: it never
-// waits for readiness and returns ErrNotReady immediately when the index is
-// not ready. Callers that gate readiness themselves (the search_wait_timeout
-// wiring: the semantic_search tool closure after its bounded waitFunc, the
-// RAG-hint path after its bounded wait, the fail-fast RPC branch) use this
-// form so an incremental pass starting between their gate and the search
-// cannot block them until the pass finishes.
+// HybridSearchNoWait never waits for readiness: it returns ErrNotReady
+// immediately when the index is not ready. It is the form for callers that
+// gate readiness themselves, so an incremental pass starting between their
+// gate and the search cannot block them until the pass finishes.
 func (s *Service) HybridSearchNoWait(ctx context.Context, opts SearchOptions) ([]SearchResult, error) {
 	return s.hybridSearch(ctx, opts, false)
 }
@@ -215,14 +203,11 @@ func (s *Service) hybridSearch(ctx context.Context, opts SearchOptions, wait boo
 	mustMatch = append(mustMatch, opts.MustMatch...)
 	mustMatch = append(mustMatch, sugarMust...)
 
-	// Capture the collection and lexical index and hold the read lock across
-	// the whole search, including every lexical query below. bleveIndex has
-	// no internal synchronization and its Close — taken under the write lock
-	// by a branch/project switch, a park eviction or Service.Close — nils the
-	// underlying index, so using a captured pointer after releasing the lock
-	// races the close and can dereference nil. This mirrors browseWithFilter,
-	// which holds the read lock across its query; the chromem collection is
-	// covered by the same hold.
+	// Hold the read lock across the whole search, including every lexical
+	// query: bleveIndex has no internal synchronization, and its Close (taken
+	// under the write lock by a switch, park eviction or Service.Close) nils
+	// the underlying index, so a pointer used after release races the close.
+	// Mirrors browseWithFilter; the chromem collection rides the same hold.
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -380,9 +365,9 @@ type fusedEntry struct {
 	score        float64
 }
 
-// hybridSearchRRF runs vector and lexical queries in parallel, fuses
-// their ranked lists with Reciprocal Rank Fusion (k=60), and returns
-// the top-K results after applying post-filters.
+// hybridSearchRRF runs vector and lexical queries in parallel, fuses their
+// ranked lists with Reciprocal Rank Fusion (k=60), and returns the top-K
+// results after pre-fusion filters and score gates. See specs/domains/workspace.md.
 func (s *Service) hybridSearchRRF(
 	ctx context.Context,
 	col *chromem.Collection,
@@ -430,9 +415,8 @@ func (s *Service) hybridSearchRRF(
 		return nil, fmt.Errorf("lexical search: %w", lexErr)
 	}
 
-	// Apply per-side filters BEFORE fusing so the rank spaces are
-	// comparable. The plan requires per-side MustMatch and glob filters
-	// applied pre-fusion (see "Design invariants").
+	// Per-side filters apply BEFORE fusing so the rank spaces are comparable
+	// (see specs/domains/workspace.md).
 	agg := make(map[string]*fusedEntry, len(vecResults)+len(lexHits))
 
 	aggregateVectorHits(agg, vecResults, filePattern, mustMatch, s.hybridConfig, s.logger, resolver)
@@ -460,18 +444,11 @@ func (s *Service) hybridSearchRRF(
 	return out, nil
 }
 
-// aggregateVectorHits adds vector results into the RRF aggregation map.
-//
-// Two passes keep rank spaces comparable while suppressing noise:
-//  1. Apply path/mustmatch filters and collect survivors with the top
-//     similarity among them.
-//  2. Apply the score floor (the stricter of VectorScoreFloor and
-//     VectorScoreRatio × top similarity), assign 1-based ranks over the
-//     scored survivors, and add the RRF contribution 1/(RRFK+rank).
-//
-// Hits that fail the score gate are never inserted into agg, so they
-// receive no RRF contribution from the vector side. This prevents weak
-// tail hits that also appear lexically from earning a double RRF boost.
+// aggregateVectorHits adds vector results into the RRF aggregation map in
+// two passes: filter (collecting the top similarity among survivors), then
+// the score gate, 1-based ranks, and the RRF contribution 1/(RRFK+rank).
+// Gate failures never enter agg, so weak tail hits cannot earn a double RRF
+// boost by also appearing lexically. See specs/domains/workspace.md.
 func aggregateVectorHits(
 	agg map[string]*fusedEntry,
 	vecResults []chromem.Result,
@@ -512,20 +489,12 @@ func aggregateVectorHits(
 	}
 }
 
-// aggregateLexicalHits adds lexical results into the RRF aggregation map.
-//
-// Two passes, mirroring aggregateVectorHits:
-//  1. Resolve each hit via chromem.GetByID (creating a fusedEntry when
-//     the document is not already present), apply path/must-match
-//     filters, and collect survivors with their BM25 scores; track the
-//     maximum BM25 among survivors.
-//  2. Apply the relative BM25 ratio gate and assign a 1-based lexical
-//     rank to each surviving hit, adding its RRF contribution.
-//
-// Hits missing from chromem or failing filters are skipped. Hits below
-// the score gate are skipped so noise-tail documents that merely contain
-// a query term cannot receive an RRF contribution. When the threshold is
-// zero the gate is a no-op.
+// aggregateLexicalHits adds lexical results into the RRF aggregation map,
+// mirroring aggregateVectorHits: resolve via chromem.GetByID (entries created
+// here are removed again when the gate drops them), filter, collect
+// survivors, apply the relative BM25 gate, rank, contribute. Hits missing
+// from chromem or failing filters are skipped; a zero threshold disables the
+// gate. See specs/domains/workspace.md.
 func aggregateLexicalHits(
 	ctx context.Context,
 	col *chromem.Collection,
@@ -582,9 +551,8 @@ func aggregateLexicalHits(
 	}
 }
 
-// hybridFanout returns the per-side fanout for RRF. Using a larger
-// candidate pool than topK significantly improves recall. The pool size
-// is max(topK*FanoutMultiplier, FanoutMin) from the resolved HybridConfig.
+// hybridFanout returns the per-side RRF fanout max(topK×FanoutMultiplier,
+// FanoutMin); a larger candidate pool than topK materially improves recall.
 func hybridFanout(topK int, hc HybridConfig) int {
 	fanout := topK * hc.FanoutMultiplier
 	if fanout < hc.FanoutMin {
@@ -593,17 +561,15 @@ func hybridFanout(topK int, hc HybridConfig) int {
 	return fanout
 }
 
-// matchFilePathPattern tests whether a file path matches a glob pattern.
-// It tries multiple strategies to handle the common case where file_path is
-// stored as an absolute path but the user enters a relative pattern like
-// "*.md" or "src/**":
-//   - Direct match (handles "**/*.go", absolute patterns)
-//   - "**/" prefix (handles "*.go" → "**/*.go", "src/**" → "**/src/**")
-//   - Basename match (handles "*.go" against the file's basename)
+// matchFilePathPattern tests whether a file path matches a glob pattern with
+// three strategies — direct doublestar match, "**/" prefix for relative
+// patterns, basename match — because file_path is stored absolute while
+// users type relative patterns like "*.md" or "src/**".
 //
-// This mirrors the frontend pathFilter logic (picomatch with contains:true
-// plus basename testing) so the sidebar file-pattern filter behaves
-// consistently with the file-tree filter.
+// It mirrors the frontend pathFilter logic (picomatch with contains:true plus
+// basename testing) so the sidebar filter behaves like the file-tree filter;
+// this FE↔Go parity contract is specified in specs/domains/workspace.md
+// (file-pattern matching parity).
 func matchFilePathPattern(pattern, filePath string) bool {
 	// Normalize to forward slashes for doublestar (which always uses /).
 	fp := filepath.ToSlash(filePath)
@@ -629,20 +595,14 @@ func matchFilePathPattern(pattern, filePath string) bool {
 	return false
 }
 
-// passesFilters returns true if the chromem result satisfies both the
-// file-path glob filter (if any) and all must-match tokens.
-//
-// Must-match checks the result's stored content first; documents committed
-// with a pre-populated embedding store none (see strippedForCommit), so for
-// them the chunk text is reconstructed from the source file via resolver —
-// lazily, only when a must-match token actually needs it. The resolver's
-// per-call path cache keeps multi-token checks over the same chunk at one
-// file read. A file that cannot be reconstructed (missing / unreadable) is
-// treated as a filter MISS — not matched against the diagnostic placeholder
-// text — so must_match excludes deleted files from filtered results (the
-// placeholder embeds the absolute path and the words content/source/file/
-// missing/unreadable; substring-testing it would admit such a file whenever a
-// token happened to be a substring of the path or the diagnostics).
+// passesFilters returns true if the chromem result satisfies the file-path
+// glob filter (if any) and all must-match tokens. Must-match checks stored
+// content first; content-less documents (see strippedForCommit) are
+// reconstructed via resolver — lazily, with the per-call path cache keeping
+// multi-token checks at one file read. A file that cannot be reconstructed is
+// a filter MISS — never matched against the diagnostic placeholder, whose
+// embedded path and words would otherwise admit a substring token — so
+// must_match excludes deleted files from filtered results (ADR-049).
 func passesFilters(r chromem.Result, filePattern string, mustMatch []string, resolver *contentResolver, logger *slog.Logger) bool {
 	if filePattern != "" {
 		fp := r.Metadata["file_path"]
@@ -663,9 +623,6 @@ func passesFilters(r chromem.Result, filePattern string, mustMatch []string, res
 			endLine, _ := strconv.Atoi(r.Metadata["end_line"])
 			reconstructed, ok := resolver.chunkContentOK(r.Metadata["file_path"], startLine, endLine)
 			if !ok {
-				// The source file is gone or unreadable: there is no text to
-				// match against, so the hit fails the filter rather than
-				// matching the placeholder's own words/path.
 				return false
 			}
 			content = reconstructed
@@ -677,16 +634,11 @@ func passesFilters(r chromem.Result, filePattern string, mustMatch []string, res
 	return true
 }
 
-// passesVectorScoreGate reports whether a vector hit with similarity
-// sim survives the pre-fusion score gate given the top similarity
-// maxSim among the post-filter vector hits.
-//
-// A hit is rejected when its similarity is below the absolute floor
-// (VectorScoreFloor) OR below the relative cutoff
-// (VectorScoreRatio × maxSim). When both thresholds are zero the gate
-// is disabled and every hit passes. A zero maxSim disables the relative
-// cutoff (avoids rejecting everything when the vector list is
-// degenerate).
+// passesVectorScoreGate reports whether a hit survives the pre-fusion vector
+// gate: below the absolute floor (VectorScoreFloor) OR below the relative
+// cutoff (VectorScoreRatio × maxSim) rejects. Zero thresholds disable the
+// gate; a zero maxSim disables the relative cutoff (a degenerate vector list
+// rejects nothing).
 func passesVectorScoreGate(sim, maxSim float32, hc HybridConfig) bool {
 	if hc.VectorScoreFloor == 0 && hc.VectorScoreRatio == 0 {
 		return true
@@ -700,14 +652,10 @@ func passesVectorScoreGate(sim, maxSim float32, hc HybridConfig) bool {
 	return true
 }
 
-// passesLexicalScoreGate reports whether a lexical hit with BM25 score
-// score survives the pre-fusion score gate given the top BM25 maxScore
-// among the post-filter lexical hits.
-//
-// A hit is rejected when its score is below the relative cutoff
-// (LexicalScoreRatio × maxScore). When the threshold is zero the gate
-// is disabled and every hit passes. A zero maxScore disables the gate
-// (avoids rejecting everything when the lexical list is degenerate).
+// passesLexicalScoreGate reports whether a hit survives the pre-fusion
+// lexical gate: below LexicalScoreRatio × maxScore rejects. A zero ratio or
+// a zero maxScore disables the gate (a degenerate lexical list rejects
+// nothing).
 func passesLexicalScoreGate(score, maxScore float32, hc HybridConfig) bool {
 	if hc.LexicalScoreRatio == 0 {
 		return true
