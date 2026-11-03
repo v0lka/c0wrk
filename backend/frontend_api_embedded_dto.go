@@ -412,9 +412,10 @@ type EmbeddedLLMPlan struct {
 	CacheRAMMiB int `json:"cache_ram_mib"`
 	// Devices is the `-dev` list this plan pins the offload to. Always an
 	// array, never null; empty = the plan leaves the device choice to the
-	// runtime. When non-empty, the two budgets below price ONLY the named
-	// devices' pool — the filter that makes the pin truthful lives in the
-	// planner (see specs/domains/embedded-llm.md).
+	// runtime. When non-empty, DeviceBudgetMiB below prices ONLY the named
+	// devices' pool, while HostBudgetMiB stays machine-wide — the filter that
+	// makes the pin truthful lives in the planner
+	// (see specs/domains/embedded-llm.md).
 	Devices []string `json:"devices"`
 	// SplitMode is the `-sm`/`--split-mode` spelling the plan pins, empty when
 	// the flag is omitted (the runtime decides the split). Echoed verbatim
@@ -499,7 +500,7 @@ type EmbeddedLLMOffloadTuningDTO struct {
 
 // EmbeddedLLMTuningDTO is the payload of GetEmbeddedLLMTuning: the operator's
 // persisted memory-plan overrides (embedded_llm.tuning), field for field for
-// the twelve UI-exposed knobs. The two YAML-only checkpoint-policy knobs
+// the fourteen UI-exposed knobs. The two YAML-only checkpoint-policy knobs
 // (`ctx_checkpoints`, `cache_idle_slots`) are deliberately absent here, from
 // EmbeddedLLMTuningRequest and from the reset vocabulary — they are editable
 // only through config.yaml and observable only through the launch command

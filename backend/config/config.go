@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"sort"
 	"strings"
@@ -1742,6 +1743,39 @@ func (c *LLMConfig) copyModelOverridesMap() {
 	c.Models = clone
 }
 
+// EmbeddedEngineIsMTPLX reports whether the effective embedded-LLM engine on
+// platform is mtplx: either the spelling itself — the spelling owns the
+// cross-check on every platform, even where the engine cannot run, because a
+// contradiction in the file is refused wherever the file loads — or an auto
+// spelling the platform resolves to mtplx (darwin/arm64, via
+// embeddedllm.ResolveEngine).
+func EmbeddedEngineIsMTPLX(engine, platform string) bool {
+	if embeddedllm.NormalizeEngine(embeddedllm.Engine(engine)) == embeddedllm.EngineMTPLX {
+		return true
+	}
+	resolved, err := embeddedllm.ResolveEngine(embeddedllm.Engine(engine), platform)
+	return err == nil && resolved == embeddedllm.EngineMTPLX
+}
+
+// EmbeddedLLMMTPLXTuningRefusal renders the cross-engine refusal for a tuning
+// key with no meaning under mtplx (embeddedllm.ForbiddenLlamaTuning's list).
+// It is the one funnel behind the load validator and the tuning-write RPC, so
+// the two surfaces refuse with a word-identical message; an engine that had to
+// be RESOLVED (auto on darwin/arm64) is named as such, so an operator who
+// wrote auto learns why the refusal says mtplx.
+func EmbeddedLLMMTPLXTuningRefusal(forbiddenKey, engine string) error {
+	if embeddedllm.NormalizeEngine(embeddedllm.Engine(engine)) == embeddedllm.EngineMTPLX {
+		return fmt.Errorf(
+			"embedded_llm.tuning.%s does not apply to embedded_llm.engine: mtplx (no offload, no fit pass, no KV or packing choice); remove the key or set engine: llama",
+			forbiddenKey,
+		)
+	}
+	return fmt.Errorf(
+		"embedded_llm.tuning.%s does not apply to embedded_llm.engine: mtplx, which embedded_llm.engine: auto resolves to on this platform (no offload, no fit pass, no KV or packing choice); remove the key or set engine: llama",
+		forbiddenKey,
+	)
+}
+
 // validateEmbeddedLLM checks the embedded_llm section. Most of it is
 // app-written state, so an invalid value there is either a hand edit or a bug —
 // both must fail fast with an actionable message rather than produce an
@@ -1750,10 +1784,18 @@ func (c *LLMConfig) copyModelOverridesMap() {
 // reason: a plan the planner cannot honour must be refused at load, not at
 // launch.
 func validateEmbeddedLLM(c *EmbeddedLLMConfig) error {
-	// The engine setting is a closed vocabulary, and an explicit mtplx cannot
-	// carry llama-only tuning: the two halves of one contradiction are named
-	// together. Auto is NOT cross-checked here — its resolution is a platform
-	// fact the install owns, and PlanMLX refuses the same list there.
+	return validateEmbeddedLLMOn(c, runtime.GOOS+"-"+runtime.GOARCH)
+}
+
+// validateEmbeddedLLMOn is validateEmbeddedLLM against an explicit platform
+// ("goos-goarch"), the seam the engine tests use to exercise the
+// auto→mtplx outcomes on any machine; the production entry passes only the
+// running platform, so behavior is identical.
+func validateEmbeddedLLMOn(c *EmbeddedLLMConfig, platform string) error {
+	// The engine setting is a closed vocabulary. Whether an mtplx engine —
+	// explicit, or an auto the platform resolves to mtplx — may carry
+	// llama-only tuning is the cross-check below, which resolves the setting
+	// against `platform` instead of trusting the spelling.
 	switch embeddedllm.NormalizeEngine(embeddedllm.Engine(c.Engine)) {
 	case embeddedllm.EngineAuto, embeddedllm.EngineLlama, embeddedllm.EngineMTPLX:
 	default:
@@ -1762,16 +1804,13 @@ func validateEmbeddedLLM(c *EmbeddedLLMConfig) error {
 			c.Engine,
 		)
 	}
-	if embeddedllm.NormalizeEngine(embeddedllm.Engine(c.Engine)) == embeddedllm.EngineMTPLX {
+	if EmbeddedEngineIsMTPLX(c.Engine, platform) {
 		tuning, tuningErr := c.Tuning.ToTuning()
 		if tuningErr != nil {
 			return tuningErr
 		}
 		if forbidden := embeddedllm.ForbiddenLlamaTuning(tuning); len(forbidden) > 0 {
-			return fmt.Errorf(
-				"embedded_llm.tuning.%s does not apply to embedded_llm.engine: mtplx (no offload, no fit pass, no KV or packing choice); remove the key or set engine: llama",
-				forbidden[0],
-			)
+			return EmbeddedLLMMTPLXTuningRefusal(forbidden[0], c.Engine)
 		}
 	}
 

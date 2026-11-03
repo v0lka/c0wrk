@@ -48,10 +48,12 @@ import {
   isEmbeddedLLMPlan,
   isEmbeddedLLMStatusExtras,
   isEmbeddedLLMTuning,
+  setEmbeddedLLMTuning,
   validateEmbeddedLLMTuningPatch,
   type EmbeddedLLMPlan,
   type EmbeddedLLMStatusExtras,
   type EmbeddedLLMTuning,
+  type EmbeddedLLMTuningPatch,
 } from './embeddedTuning'
 
 beforeEach(() => {
@@ -133,6 +135,10 @@ describe('isEmbeddedLLMPlan — every field the install record renders', () => {
     expect(isEmbeddedLLMPlan(EMPTY_PLAN)).toBe(true)
   })
 
+  it('accepts a populated devices pin and split_mode spelling', () => {
+    expect(isEmbeddedLLMPlan({ ...PLAN, devices: ['CUDA0'], split_mode: 'layer' })).toBe(true)
+  })
+
   it('rejects a non-object', () => {
     expect(isEmbeddedLLMPlan(null)).toBe(false)
     expect(isEmbeddedLLMPlan('PQ2_0')).toBe(false)
@@ -154,6 +160,9 @@ describe('isEmbeddedLLMPlan — every field the install record renders', () => {
     ['mmproj_offload', 1],
     ['parallel', null],
     ['cache_ram_mib', '-1'],
+    ['devices', 'CUDA0'],
+    ['devices', ['CUDA0', 3]],
+    ['split_mode', 5],
     ['gpu_family', 7],
     ['device_budget_mib', '24576'],
     ['host_budget_mib', {}],
@@ -216,6 +225,8 @@ describe('isEmbeddedLLMTuning — the override surface', () => {
         offload: { mode: 'layers', layers: 30 },
         fit: false,
         host_reserve_gib: 6.5,
+        devices: ['CUDA0'],
+        split_mode: 'layer',
       }),
     ).toBe(true)
   })
@@ -225,6 +236,9 @@ describe('isEmbeddedLLMTuning — the override surface', () => {
     ['parallel', '2'],
     ['host_reserve_gib', '6'],
     ['kv_cache_type', 8],
+    ['devices', 'CUDA0'],
+    ['devices', ['CUDA0', 3]],
+    ['split_mode', 5],
   ])('rejects a drifted %s', (key, value) => {
     expect(isEmbeddedLLMTuning({ ...TUNING, [key]: value })).toBe(false)
   })
@@ -293,6 +307,49 @@ describe('validateEmbeddedLLMTuningPatch — the device pin and the split mode',
     ).not.toThrow()
     expect(() => validateEmbeddedLLMTuningPatch({ devices: [] })).not.toThrow()
     expect(() => validateEmbeddedLLMTuningPatch({ split_mode: 'row' })).not.toThrow()
+  })
+
+  it('refuses a runtime null devices cleanly instead of a TypeError', () => {
+    // Out of contract for `devices?: readonly string[]` — a hand-called
+    // binding must hit the guard, never `.length` of null. The value only
+    // exists at runtime, so the case reaches the guard through a cast.
+    const outOfContract = { devices: null } as unknown as EmbeddedLLMTuningPatch
+    expect(() => validateEmbeddedLLMTuningPatch(outOfContract)).toThrow(/devices/)
+    expect(() => validateEmbeddedLLMTuningPatch(outOfContract)).toThrow(
+      /a list of device names/,
+    )
+  })
+
+  it.each(['auto', 'AUTO', 'Layer', ' layer ', ''] as const)(
+    'accepts the tuningChoice-lenient split spelling %j',
+    (split_mode) => {
+      // The backend's tuningChoice trims, matches case-insensitively, and
+      // reads "" / "auto" as the explicit-auto statement — a real wire
+      // value, distinct from unset (null). The guard mirrors exactly that.
+      expect(() => validateEmbeddedLLMTuningPatch({ split_mode })).not.toThrow()
+    },
+  )
+
+  it('forwards the lenient split spellings verbatim — the backend canonicalizes', async () => {
+    const rpc = vi.fn().mockResolvedValue(undefined)
+    mockApp.SetEmbeddedLLMTuning = rpc
+    await setEmbeddedLLMTuning({ split_mode: 'auto' })
+    await setEmbeddedLLMTuning({ split_mode: 'Layer' })
+    await setEmbeddedLLMTuning({ split_mode: ' layer ' })
+    await setEmbeddedLLMTuning({ split_mode: '' })
+    expect(rpc).toHaveBeenCalledTimes(4)
+    expect(rpc).toHaveBeenNthCalledWith(1, { split_mode: 'auto' })
+    expect(rpc).toHaveBeenNthCalledWith(2, { split_mode: 'Layer' })
+    expect(rpc).toHaveBeenNthCalledWith(3, { split_mode: ' layer ' })
+    expect(rpc).toHaveBeenNthCalledWith(4, { split_mode: '' })
+  })
+
+  it('refuses a non-string split_mode cleanly — no TypeError', () => {
+    expect(() =>
+      validateEmbeddedLLMTuningPatch({
+        split_mode: 5,
+      } as unknown as Parameters<typeof validateEmbeddedLLMTuningPatch>[0]),
+    ).toThrow(/embedded_llm\.tuning\.split_mode/)
   })
 
   it.each([

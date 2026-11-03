@@ -1675,23 +1675,42 @@ type resolvedLaunch struct {
 // profile and a re-plan that now refuses the machine all leave the recorded plan
 // untouched and log at Debug — which replaces the older, absolute "no hardware
 // probe runs at load time" rule with the property that rule existed to
-// guarantee: A LOAD MUST NOT FAIL BECAUSE A DRIVER QUERY WEDGED. The single
-// exception is an operator device pin (Tuning.Devices): a pin the machine cannot
-// verify or honour refuses the load with ErrUnknownDevice rather than launching
-// a shape that silently ignores it. What the probe buys is freshness: a GPU that
+// guarantee: A LOAD MUST NOT FAIL BECAUSE A DRIVER QUERY WEDGED. The exceptions
+// refuse rather than fall back: an operator pin (Tuning.Devices,
+// Tuning.SplitMode) the machine cannot verify or honour, and — on the mtplx
+// engine — a llama-only tuning key, which no mtplx launch can honour at all.
+// What the probe buys is freshness: a GPU that
 // appeared, disappeared or got a new driver since the install is priced at
 // launch instead of being served a shape computed for a machine that no longer
 // exists.
+//
+// The operator's tuning is read ONCE, here, and the snapshot is threaded
+// through both engine legs: the mtplx key pre-check and its planner, the pin
+// verification and the llama re-plan. An operator edit saved while the
+// launch's bounded probe is in flight therefore applies to the NEXT launch
+// and never to this one — a pin present at entry can be neither silently
+// dropped from, nor silently injected into, the shape this launch prices.
 func (s *Server) launchSpec(ctx context.Context, manifest Manifest, port int) (resolvedLaunch, error) {
+	tuning := s.tuning()
 	if manifest.Engine == EngineMTPLX {
-		return s.launchSpecMLX(manifest, port)
+		// Config validation refuses llama-only keys beside engine mtplx — but
+		// `engine: auto` resolves to mtplx on this platform without passing
+		// that check, so the load is the last checkpoint: launching the
+		// recorded plan would silently ignore the override, the infeasible-plan
+		// rationale one engine earlier.
+		if forbidden := ForbiddenLlamaTuning(tuning); len(forbidden) > 0 {
+			return resolvedLaunch{}, fmt.Errorf(
+				"embeddedllm: %w: embedded_llm.tuning.%s does not apply to engine %q (no offload, no fit pass, no KV, packing, device or split choice; use context.mode for the window)",
+				ErrTuningInvalid, strings.Join(forbidden, ", "), EngineMTPLX)
+		}
+		return s.launchSpecMLX(manifest, port, tuning)
 	}
 	identity, err := s.launchIdentity(manifest, port)
 	if err != nil {
 		return resolvedLaunch{}, err
 	}
 
-	plan, topology, planErr := s.effectivePlan(ctx, manifest, identity.ServerBinary)
+	plan, topology, planErr := s.effectivePlan(ctx, manifest, identity.ServerBinary, tuning)
 	if planErr != nil {
 		// The one load-time refusal effectivePlan can produce: an operator
 		// device pin the fresh inventory does not verify. Launching would
@@ -1831,18 +1850,24 @@ func (s *Server) launchIdentity(manifest Manifest, port int) (LaunchSpec, error)
 // the model ran at install, when the bytes were chosen and the user accepted
 // them.
 //
-// THE ONE EXCEPTION is an operator device pin (Tuning.Devices). A pin the
-// machine cannot verify or honour is refused, not papered over, because the
-// fail-soft fallback would launch a shape that silently ignores what the
-// operator asked for: no inventory to verify the names against, and a replan
-// that answers ErrUnknownDevice, both surface as a failed load carrying the
-// typed error. Everything else about a wedged probe keeps the old contract —
-// the recorded plan launches.
-func (s *Server) effectivePlan(ctx context.Context, manifest Manifest, binary string) (*MemoryPlan, *MemoryTopology, error) {
+// THE ONE EXCEPTION is an operator pin (Tuning.Devices, Tuning.SplitMode). A
+// pin the machine cannot verify or honour is refused, not papered over,
+// because the fail-soft fallback would launch a shape that silently ignores
+// what the operator asked for: no inventory to verify the names against, and
+// a replan that answers ErrUnknownDevice, both surface as a failed load
+// naming the unmet pin. Everything else about a wedged probe keeps the old
+// contract — the recorded plan launches.
+//
+// tuning is the launch-entry snapshot launchSpec read once (see the single
+// read there): the pin check and both re-plans below price from exactly that
+// value, so an operator edit saved while the probe subprocess is in flight
+// cannot split this launch's decision between two tunings — it applies to the
+// next launch instead.
+func (s *Server) effectivePlan(ctx context.Context, manifest Manifest, binary string, tuning Tuning) (*MemoryPlan, *MemoryTopology, error) {
 	stored := manifest.Plan
 	snapshot := manifest.Topology
 
-	if pin := s.tuning(); len(pin.Devices) > 0 {
+	if pin := tuning; len(pin.Devices) > 0 || pin.SplitMode != SplitModeAuto {
 		// A pin needs to survive to the launch argv one way or another: either
 		// a fresh inventory verifies it and the re-plan carries it, or — and
 		// only then — the recorded plan ITSELF carries the same pin (a shape a
@@ -1854,7 +1879,7 @@ func (s *Server) effectivePlan(ctx context.Context, manifest Manifest, binary st
 			stored.SplitMode == pin.SplitMode
 		if s.ProbeDevices == nil {
 			if !carries {
-				return nil, nil, &UnknownDeviceError{Device: pin.Devices[0]}
+				return nil, nil, unmetPinError(pin, stored, "no device probe is wired in to re-plan it")
 			}
 			// Not wired: the pre-existing contract, and the manifest — which
 			// here includes the pin — is the whole story.
@@ -1869,7 +1894,7 @@ func (s *Server) effectivePlan(ctx context.Context, manifest Manifest, binary st
 			// recorded plan carries the same pin. Otherwise the fallback would
 			// launch the shape the operator overruled.
 			if !carries {
-				return nil, nil, &UnknownDeviceError{Device: pin.Devices[0]}
+				return nil, nil, unmetPinError(pin, stored, "the load-time device probe did not answer, so it cannot be re-planned")
 			}
 			s.logger().Debug("the embedded LLM load-time device probe did not answer; launching the recorded plan, which carries the operator's device pin")
 			return stored, snapshot, nil
@@ -1879,7 +1904,7 @@ func (s *Server) effectivePlan(ctx context.Context, manifest Manifest, binary st
 		// artifacts on disk and does not read the recorded plan; a pre-plan
 		// manifest gains a first plan carrying the pin, which is the honest
 		// shape for a machine the probe just measured).
-		replanned, err := s.replan(manifest, fresh)
+		replanned, err := s.replan(manifest, fresh, tuning)
 		if err != nil {
 			if errors.Is(err, ErrUnknownDevice) {
 				// The pin names a device the fresh inventory does not report —
@@ -1890,10 +1915,11 @@ func (s *Server) effectivePlan(ctx context.Context, manifest Manifest, binary st
 				return nil, nil, err
 			}
 			if !carries {
-				// The re-plan failed for a reason the pin cannot help with (a
-				// wedged profile read, an unclassifiable inventory); the
-				// recorded plan may still carry the pin — checked above.
-				return nil, nil, &UnknownDeviceError{Device: pin.Devices[0]}
+				// The probe ANSWERED, so the inventory is not the problem: the
+				// planner's own error is the truthful refusal — a synthesized
+				// device word would send the operator re-probing a healthy
+				// machine.
+				return nil, nil, err
 			}
 			s.logger().Debug("the embedded LLM launch shape was not re-planned from the fresh topology; launching the recorded plan, which carries the operator's device pin",
 				"error", err, "gpu_family", ClassifyGPUs(fresh.Devices))
@@ -1927,12 +1953,13 @@ func (s *Server) effectivePlan(ctx context.Context, manifest Manifest, binary st
 		// THE FAIL-SOFT CASE the load-time probe exists to survive: a wedged or
 		// absent driver query falls back to the snapshot the install recorded,
 		// and the load proceeds on the shape this machine was provisioned for.
-		// A device pin never reaches this branch — the block above refused it.
+		// A pinned tuning never reaches this branch — the block above refused
+		// or carried it.
 		s.logger().Debug("the embedded LLM load-time device probe did not answer; launching the recorded plan")
 		return stored, snapshot, nil
 	}
 
-	replanned, err := s.replan(manifest, fresh)
+	replanned, err := s.replan(manifest, fresh, tuning)
 	if err != nil {
 		if errors.Is(err, ErrUnknownDevice) {
 			// The pin names a device the fresh inventory does not report — a
@@ -1956,8 +1983,59 @@ func (s *Server) effectivePlan(ctx context.Context, manifest Manifest, binary st
 	return &replanned, &measured, nil
 }
 
+// unmetPinError is the fail-closed refusal for an operator pin the recorded
+// plan does not carry and which no probe can re-plan into the launch. A
+// devices-only mismatch keeps the typed UnknownDeviceError, carrying the
+// caller's why so the refusal also says why no inventory could verify the pin,
+// and — with a recorded plan — names the first pinned device the plan itself
+// does not carry, so the named device is one the recorded shape genuinely
+// lacks rather than merely holds in a different order; anything where the
+// split differs is worded by the fields actually unmet, so a split-mode-only
+// pin is never refused with a device word — and a pin that names no devices
+// never earns one either, not even when no plan is recorded.
+func unmetPinError(pin Tuning, stored *MemoryPlan, why string) error {
+	splitUnmet := stored == nil || stored.SplitMode != pin.SplitMode
+	if !splitUnmet && len(pin.Devices) > 0 {
+		return &UnknownDeviceError{Device: missingPinnedDevice(pin.Devices, stored), Why: why}
+	}
+	var unmet []string
+	if len(pin.Devices) > 0 && (stored == nil || !slices.Equal(stored.Devices, pin.Devices)) {
+		unmet = append(unmet, "devices")
+	}
+	if splitUnmet {
+		unmet = append(unmet, "split_mode")
+	}
+	return fmt.Errorf("the recorded plan does not carry the operator's pin (%s unmet): %s — launching it would silently ignore the pin",
+		strings.Join(unmet, " and "), why)
+}
+
+// missingPinnedDevice names the first pinned device the recorded plan does not
+// itself carry, so a typed mismatch refusal names a device the recorded shape
+// genuinely lacks — a reorder or superset pin names its first genuinely absent
+// device instead of blindly repeating the pin's own head. A plan that carries
+// every pinned name (an ordering-only divergence, still a mismatch the launch
+// must not paper over) falls back to the pin's first device.
+func missingPinnedDevice(pin []string, stored *MemoryPlan) string {
+	if stored != nil {
+		for _, dev := range pin {
+			if !slices.Contains(stored.Devices, dev) {
+				return dev
+			}
+		}
+	}
+	return pin[0]
+}
+
 // replan re-derives the launch shape from a fresh measurement while holding the
 // plan to the artifacts that are actually on disk.
+//
+// tuning is the caller's launch-entry snapshot — launchSpec reads the
+// operator's tuning once per launch and threads it here — NOT a fresh read.
+// Re-reading after the bounded probe subprocess would let a tuning saved
+// mid-probe split the launch's decision between two tunings, most dangerously
+// in the direction that drops an entry pin from the priced plan silently: no
+// refusal, no note. The parameter is a copy, so the packing pin below never
+// reaches the caller's snapshot.
 //
 // The packing is PINNED to the manifest's. That is the one input a load-time
 // re-plan must not be allowed to re-decide: `Plan` derives a packing from the
@@ -1966,12 +2044,11 @@ func (s *Server) effectivePlan(ctx context.Context, manifest Manifest, binary st
 // context and offload it returned would be computed for bytes that are not
 // there. A packing change is an install decision, because it changes which
 // multi-gigabyte file gets downloaded.
-func (s *Server) replan(manifest Manifest, topology MemoryTopology) (MemoryPlan, error) {
+func (s *Server) replan(manifest Manifest, topology MemoryTopology, tuning Tuning) (MemoryPlan, error) {
 	profile, err := PinnedMemoryProfile()
 	if err != nil {
 		return MemoryPlan{}, fmt.Errorf("memory profile: %w", err)
 	}
-	tuning := s.tuning()
 	if manifest.Packing != "" {
 		tuning.Packing = manifest.Packing
 	}

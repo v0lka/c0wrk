@@ -374,27 +374,55 @@ var ErrUnknownDevice = errors.New("the embedded-LLM tuning names an accelerator 
 
 // UnknownDeviceError carries everything an operator needs to fix the pin: the
 // offending name, the inventory the LAST probe answered with, and when that
-// probe ran. An empty Inventory means no probe ever answered (or none was
-// wired), which is its own actionable message — the pin cannot be verified at
-// all, not merely mismatched.
+// probe ran. An empty Inventory means the pin could not be checked against any
+// measurement, and the wording splits on which kind of "nothing" it is: no
+// probe ever answered (or none was wired) — with Why, when set, naming that
+// reason — versus a probe that DID answer but reported zero accelerators
+// (ProbedAt set, Inventory empty), i.e. the machine itself reports none. Either
+// way the pin cannot be verified at all, which is its own actionable message —
+// not merely a mismatch.
 type UnknownDeviceError struct {
 	Device    string
 	Inventory []string
 	ProbedAt  string
+	// Why, when set, is the caller's reason no measurement could verify the
+	// pin (no probe is wired in, or the load-time probe did not answer). It
+	// renders only beside an empty Inventory — a measured inventory already
+	// carries the actionable listing — and never contradicts the probe stamp:
+	// a Why reason and a probed-but-empty inventory are two facts about two
+	// different probes, so both render.
+	Why string
 }
 
 func (e *UnknownDeviceError) Error() string {
+	lead := fmt.Sprintf("%q is not among the accelerators this machine reports", e.Device)
 	listed := "no device inventory was measured"
-	if len(e.Inventory) > 0 {
+	switch {
+	case len(e.Inventory) > 0:
 		listed = "the measured inventory is " + strings.Join(e.Inventory, ", ")
+	case e.ProbedAt != "":
+		// A probe DID answer and reported zero accelerators: "no device
+		// inventory was measured" would contradict the probe stamp below.
+		listed = "the measured inventory is empty — this machine reports no accelerators at all"
+	default:
+		// Nothing was ever measured — the probe was unwired, or it was wired
+		// and did not answer (see Why). Asserting what the machine "reports"
+		// would state a fact nobody measured and contradict the Why clause
+		// beside it, so the leading clause stays at what IS known: the pin
+		// could not be verified against any measurement at all.
+		lead = fmt.Sprintf("%q could not be verified against any measured device inventory", e.Device)
+	}
+	reason := ""
+	if e.Why != "" && len(e.Inventory) == 0 {
+		reason = " (" + e.Why + ")"
 	}
 	when := ""
 	if e.ProbedAt != "" {
 		when = fmt.Sprintf(" (probed %s)", e.ProbedAt)
 	}
-	detail := fmt.Sprintf("%q is not among the accelerators this machine reports; %s%s — "+
+	detail := fmt.Sprintf("%s; %s%s%s — "+
 		"update the device list to the measured names, or re-probe and retry",
-		e.Device, listed, when)
+		lead, listed, reason, when)
 	return fmt.Errorf("%w: %s", ErrUnknownDevice, detail).Error()
 }
 

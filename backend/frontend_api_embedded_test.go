@@ -130,6 +130,13 @@ func newEmbeddedTestAPI(t *testing.T) (*FrontendAPI, *embeddedEventRecorder, *mo
 	cfg.LLM.DefaultModel = "claude-3-opus"
 	cfg.LLM.Anthropic.APIKey = "sk-test-embedded"
 	cfg.LLM.Anthropic.Models = []string{"claude-3-opus"}
+	// The engine setting is pinned to the llama family — the record this
+	// helper builds is llama-shaped — so a fixture's llama-only tuning stays
+	// legal on every CI platform: the auto spelling would resolve to mtplx on
+	// darwin/arm64, and the write-side cross-check would refuse the very
+	// writes these tests exercise. Tests of the engine gate set the spelling
+	// they need explicitly.
+	cfg.EmbeddedLLM.Engine = string(embeddedllm.EngineLlama)
 	if err := config.Save(cfg, cfgPath); err != nil {
 		t.Fatalf("saving the test config: %v", err)
 	}

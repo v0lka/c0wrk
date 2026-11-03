@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -264,6 +265,10 @@ func TestSetEmbeddedLLMTuningKeepsEveryKnobTheRequestDoesNotName(t *testing.T) {
 		Parallel:       tuningIntPtr(1),
 		CacheRAMMiB:    tuningIntPtr(0),
 		HostReserveGiB: tuningF64Ptr(6),
+		// The two device-pin knobs are part of the keep contract like any
+		// other: a one-knob patch must leave them byte-identical.
+		Devices:   []string{"CUDA0", "CUDA1"},
+		SplitMode: strPtr("row"),
 	}
 	f.config.EmbeddedLLM.Tuning = stored
 
@@ -285,6 +290,12 @@ func TestSetEmbeddedLLMTuningKeepsEveryKnobTheRequestDoesNotName(t *testing.T) {
 	}
 	if got.CacheRAMMiB == nil || *got.CacheRAMMiB != 0 {
 		t.Errorf("cache_ram_mib = %v, want it kept at the explicit 0", got.CacheRAMMiB)
+	}
+	if !slices.Equal(got.Devices, []string{"CUDA0", "CUDA1"}) {
+		t.Errorf("devices = %v, want the pin kept verbatim", got.Devices)
+	}
+	if got.SplitMode == nil || *got.SplitMode != "row" {
+		t.Errorf("split_mode = %v, want it kept at %q", got.SplitMode, "row")
 	}
 
 	// And it reached the file, not just memory.
@@ -312,10 +323,12 @@ func TestSetEmbeddedLLMTuningResetClearsAKnobBackToUnset(t *testing.T) {
 		Fit:            tuningBoolPtr(false),
 		Parallel:       tuningIntPtr(4),
 		HostReserveGiB: tuningF64Ptr(6),
+		Devices:        []string{"CUDA0", "CUDA1"},
+		SplitMode:      strPtr("row"),
 	}
 
 	if err := f.SetEmbeddedLLMTuning(EmbeddedLLMTuningRequest{
-		Reset: []string{"context", "kv_cache_type", "parallel"},
+		Reset: []string{"context", "kv_cache_type", "parallel", "devices", "split_mode"},
 	}); err != nil {
 		t.Fatalf("SetEmbeddedLLMTuning: %v", err)
 	}
@@ -330,6 +343,12 @@ func TestSetEmbeddedLLMTuningResetClearsAKnobBackToUnset(t *testing.T) {
 	if got.Parallel != nil {
 		t.Errorf("parallel = %v after a reset, want nil", *got.Parallel)
 	}
+	if got.Devices != nil {
+		t.Errorf("devices = %v after a reset, want nil", got.Devices)
+	}
+	if got.SplitMode != nil {
+		t.Errorf("split_mode = %v after a reset, want nil", *got.SplitMode)
+	}
 	// The knobs the request never named survive a reset of the others.
 	if got.Offload.Mode == nil || *got.Offload.Mode != config.EmbeddedLLMOffloadCPU {
 		t.Errorf("offload.mode = %v, want it kept at %q", got.Offload.Mode, config.EmbeddedLLMOffloadCPU)
@@ -339,6 +358,39 @@ func TestSetEmbeddedLLMTuningResetClearsAKnobBackToUnset(t *testing.T) {
 	}
 	if got.HostReserveGiB == nil || *got.HostReserveGiB != 6 {
 		t.Errorf("host_reserve_gib = %v, want it kept at 6", got.HostReserveGiB)
+	}
+}
+
+// TestSetEmbeddedLLMTuningRoundTripsTheDevicePin proves GET returns what SET
+// persisted for the two device-pin knobs — the echo the frontend guards read
+// (isEmbeddedLLMPlan hard-requires an array for devices and a string for
+// split_mode) — and that the tuning DTO does not alias the live config.
+func TestSetEmbeddedLLMTuningRoundTripsTheDevicePin(t *testing.T) {
+	f, _, _ := newEmbeddedTestAPI(t)
+
+	if err := f.SetEmbeddedLLMTuning(EmbeddedLLMTuningRequest{
+		Devices:   []string{" CUDA0 ", "CUDA1"},
+		SplitMode: strPtr("row"),
+	}); err != nil {
+		t.Fatalf("SetEmbeddedLLMTuning: %v", err)
+	}
+
+	dto, err := f.GetEmbeddedLLMTuning()
+	if err != nil {
+		t.Fatalf("GetEmbeddedLLMTuning: %v", err)
+	}
+	// The fold trims each entry, so the echo is the normalized pin.
+	if !slices.Equal(dto.Devices, []string{"CUDA0", "CUDA1"}) {
+		t.Errorf("the echoed devices = %v, want the normalized [CUDA0 CUDA1]", dto.Devices)
+	}
+	if dto.SplitMode == nil || *dto.SplitMode != "row" {
+		t.Errorf("the echoed split_mode = %v, want %q", dto.SplitMode, "row")
+	}
+
+	// The mapper cloned: mutating the echo must not reach the live config.
+	dto.Devices[0] = "MUTATED"
+	if got := storedTuning(t, f).Devices; !slices.Equal(got, []string{"CUDA0", "CUDA1"}) {
+		t.Errorf("the stored devices = %v after the DTO was mutated, want the untouched pin", got)
 	}
 }
 
@@ -520,6 +572,66 @@ func TestSetEmbeddedLLMTuningRefusesInvalidValuesWithoutWriting(t *testing.T) {
 				t.Errorf("the config no longer loads after a refused write: %v", err)
 			}
 			time.Sleep(20 * time.Millisecond)
+			if n := rec.count(EventConfigUpdated); n != 0 {
+				t.Errorf("config:updated was emitted %d time(s) for a refused write", n)
+			}
+		})
+	}
+}
+
+// TestSetEmbeddedLLMTuningRefusesDevicePinBesideMTPLX extends the refusal
+// table's before-a-byte-changes criterion to the ENGINE gate: beside an mtplx
+// engine the two device-pin keys are llama-only, and the RPC refuses them with
+// the load validator's message, leaving the baseline file untouched and
+// loadable. The stored baseline is the zero section, so the saved file itself
+// stays legal beside engine: mtplx (the shared table's llama-only baseline
+// would not).
+func TestSetEmbeddedLLMTuningRefusesDevicePinBesideMTPLX(t *testing.T) {
+	cases := []struct {
+		name   string
+		req    EmbeddedLLMTuningRequest
+		engine string
+		key    string
+	}{
+		{"devices pin", EmbeddedLLMTuningRequest{Devices: []string{"CUDA0"}}, "mtplx", "devices"},
+		{"split_mode", EmbeddedLLMTuningRequest{SplitMode: strPtr("row")}, "mtplx", "split_mode"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f, rec, _ := newEmbeddedTestAPI(t)
+			f.configMu.Lock()
+			f.config.EmbeddedLLM.Engine = tc.engine
+			f.configMu.Unlock()
+			if err := config.Save(f.config, f.configPath); err != nil {
+				t.Fatalf("saving the baseline config: %v", err)
+			}
+			before, err := readConfigBytes(t, f.configPath)
+			if err != nil {
+				t.Fatalf("reading the baseline config: %v", err)
+			}
+
+			err = f.SetEmbeddedLLMTuning(tc.req)
+			if err == nil {
+				t.Fatalf("the request %+v was accepted beside engine: %s", tc.req, tc.engine)
+			}
+			for _, want := range []string{tc.key, "engine: mtplx"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("the refusal %q does not name %q", err, want)
+				}
+			}
+			if got := storedTuning(t, f); !reflect.DeepEqual(got, config.TuningConfig{}) {
+				t.Errorf("the in-memory tuning changed to %+v after a refusal", got)
+			}
+			after, err := readConfigBytes(t, f.configPath)
+			if err != nil {
+				t.Fatalf("reading the config after the refusal: %v", err)
+			}
+			if before != after {
+				t.Error("config.yaml changed even though the request was refused")
+			}
+			if _, err := config.Load(f.configPath); err != nil {
+				t.Errorf("the config no longer loads after a refused write: %v", err)
+			}
 			if n := rec.count(EventConfigUpdated); n != 0 {
 				t.Errorf("config:updated was emitted %d time(s) for a refused write", n)
 			}
@@ -723,6 +835,166 @@ func TestSetEmbeddedLLMTuningMirrorsTheLoadTimeEngineCrossCheck(t *testing.T) {
 		got := storedTuning(t, f).Context
 		if got.Mode == nil || *got.Mode != config.EmbeddedLLMContextExact || got.Tokens == nil || *got.Tokens != 16384 {
 			t.Errorf("context = %+v, want the written exact/16384", got)
+		}
+	})
+
+	t.Run("the device pin keys beside engine mtplx are refused like at load", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			req  EmbeddedLLMTuningRequest
+			key  string
+		}{
+			{"devices", EmbeddedLLMTuningRequest{Devices: []string{"CUDA0"}}, "devices"},
+			{"split_mode", EmbeddedLLMTuningRequest{SplitMode: strPtr("row")}, "split_mode"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				f, _, _ := newEmbeddedTestAPI(t)
+				f.configMu.Lock()
+				f.config.EmbeddedLLM.Engine = "mtplx"
+				f.configMu.Unlock()
+
+				err := f.SetEmbeddedLLMTuning(tc.req)
+				if err == nil {
+					t.Fatalf("the RPC accepted %s beside engine: mtplx", tc.key)
+				}
+				for _, want := range []string{tc.key, "engine: mtplx"} {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("the refusal %q does not name %q", err, want)
+					}
+				}
+
+				// Verbatim-the-load-validator, the same check the
+				// kv_cache_type case makes: the contradicting section must be
+				// refused by the next load with the RPC's exact sentence.
+				onDisk, lerr := config.Load(f.configPath)
+				if lerr != nil {
+					t.Fatalf("the refused write must not corrupt the config, but it no longer loads: %v", lerr)
+				}
+				onDisk.EmbeddedLLM.Engine = "mtplx"
+				if tc.key == "devices" {
+					onDisk.EmbeddedLLM.Tuning.Devices = []string{"CUDA0"}
+				} else {
+					onDisk.EmbeddedLLM.Tuning.SplitMode = strPtr("row")
+				}
+				path := filepath.Join(t.TempDir(), "config.yaml")
+				if err := config.Save(onDisk, path); err != nil {
+					t.Fatalf("Save(): %v", err)
+				}
+				_, loadErr := config.LoadWithResult(path)
+				if loadErr == nil {
+					t.Fatal("the contradicting section loaded — the fixture is wrong")
+				}
+				if !strings.HasSuffix(loadErr.Error(), err.Error()) {
+					t.Errorf("RPC refusal %q differs from the load-time error %q", err, loadErr)
+				}
+				// …and the refused patch never reached the file.
+				got := storedTuning(t, f)
+				if got.Devices != nil || got.SplitMode != nil {
+					t.Errorf("the refused pin persisted: devices=%v split_mode=%v", got.Devices, got.SplitMode)
+				}
+			})
+		}
+	})
+
+	t.Run("an auto engine that resolves to mtplx refuses the llama-only keys like an explicit mtplx", func(t *testing.T) {
+		for _, engine := range []struct{ spelling, label string }{
+			{"auto", "auto"}, {"", "empty"},
+		} {
+			for _, tc := range []struct {
+				name string
+				req  EmbeddedLLMTuningRequest
+				key  string
+			}{
+				{"devices", EmbeddedLLMTuningRequest{Devices: []string{"CUDA0"}}, "devices"},
+				{"split_mode", EmbeddedLLMTuningRequest{SplitMode: strPtr("row")}, "split_mode"},
+			} {
+				t.Run(engine.label+" spelling "+tc.name, func(t *testing.T) {
+					f, _, _ := newEmbeddedTestAPI(t)
+					f.configMu.Lock()
+					f.config.EmbeddedLLM.Engine = engine.spelling
+					f.configMu.Unlock()
+
+					// The production RPC resolves the RUNNING platform, so
+					// the darwin/arm64 resolution is driven through the
+					// platform seam: production passes only
+					// runtime.GOOS-GOARCH, and behaves identically there.
+					err := f.setEmbeddedLLMTuningOn(embeddedllm.PlatformDarwinARM64, tc.req)
+					if err == nil {
+						t.Fatalf("engine %q on darwin/arm64 accepted %s", engine.label, tc.key)
+					}
+					for _, want := range []string{tc.key, "engine: mtplx", "auto resolves to"} {
+						if !strings.Contains(err.Error(), want) {
+							t.Errorf("the refusal %q does not name %q", err, want)
+						}
+					}
+					if got := storedTuning(t, f); !reflect.DeepEqual(got, config.TuningConfig{}) {
+						t.Errorf("the refused patch persisted %+v", got)
+					}
+				})
+			}
+		}
+	})
+
+	t.Run("the explicit llama engine keeps the device pin beside a darwin/arm64 resolution", func(t *testing.T) {
+		f, _, _ := newEmbeddedTestAPI(t)
+		// The fixture's spelling is llama; the point is that the SAME platform
+		// that refuses the pin beside auto honors it beside llama — the gate is
+		// resolution-driven, not spelling-driven.
+		if err := f.setEmbeddedLLMTuningOn(embeddedllm.PlatformDarwinARM64, EmbeddedLLMTuningRequest{
+			Devices:   []string{"CUDA0"},
+			SplitMode: strPtr("row"),
+		}); err != nil {
+			t.Fatalf("SetEmbeddedLLMTuning beside engine llama on darwin/arm64: %v", err)
+		}
+		got := storedTuning(t, f)
+		if !slices.Equal(got.Devices, []string{"CUDA0"}) || got.SplitMode == nil || *got.SplitMode != "row" {
+			t.Errorf("devices=%v split_mode=%v, want the persisted pin", got.Devices, got.SplitMode)
+		}
+	})
+
+	t.Run("a context write beside an auto-resolved mtplx persists", func(t *testing.T) {
+		f, _, _ := newEmbeddedTestAPI(t)
+		f.configMu.Lock()
+		f.config.EmbeddedLLM.Engine = "auto"
+		f.configMu.Unlock()
+
+		// The gate is KEY-scoped, not a blanket refusal: context is legal
+		// beside mtplx, so an auto resolution to mtplx must not block it.
+		if err := f.setEmbeddedLLMTuningOn(embeddedllm.PlatformDarwinARM64, EmbeddedLLMTuningRequest{
+			Context: &EmbeddedLLMContextTuningRequest{
+				Mode: strPtr(config.EmbeddedLLMContextExact), Tokens: tuningIntPtr(16384),
+			},
+		}); err != nil {
+			t.Fatalf("SetEmbeddedLLMTuning(context) beside an auto-resolved mtplx: %v", err)
+		}
+		got := storedTuning(t, f).Context
+		if got.Mode == nil || *got.Mode != config.EmbeddedLLMContextExact || got.Tokens == nil || *got.Tokens != 16384 {
+			t.Errorf("context = %+v, want the written exact/16384", got)
+		}
+	})
+
+	t.Run("a reset of the llama-only keys beside engine mtplx clears them", func(t *testing.T) {
+		f, _, _ := newEmbeddedTestAPI(t)
+		f.configMu.Lock()
+		f.config.EmbeddedLLM.Engine = "mtplx"
+		f.config.EmbeddedLLM.Tuning = config.TuningConfig{
+			Devices:   []string{"CUDA0", "CUDA1"},
+			SplitMode: strPtr("row"),
+		}
+		f.configMu.Unlock()
+
+		// The stored pin contradicts the engine (only a hand-edited file can
+		// hold it), yet the reset must SUCCEED: the gate checks the POST-fold
+		// section, and the fold has already removed the keys the reset names —
+		// a reset is the one write path that repairs the contradiction.
+		if err := f.SetEmbeddedLLMTuning(EmbeddedLLMTuningRequest{
+			Reset: []string{"devices", "split_mode"},
+		}); err != nil {
+			t.Fatalf("SetEmbeddedLLMTuning(reset): %v", err)
+		}
+		got := storedTuning(t, f)
+		if got.Devices != nil || got.SplitMode != nil {
+			t.Errorf("devices=%v split_mode=%v after the reset, want both cleared", got.Devices, got.SplitMode)
 		}
 	})
 }

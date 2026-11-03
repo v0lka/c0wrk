@@ -1987,12 +1987,52 @@ func TestPlanRefusesAnUnknownPinnedDevice(t *testing.T) {
 	}
 
 	// A pin with no inventory behind it cannot be verified, so it refuses.
+	// The topology WAS probed (a stamp exists) but reports zero accelerators,
+	// so the wording must distinguish the measured-empty case from the
+	// never-probed one — it may not claim no inventory was ever measured
+	// beside the stamp, and the stamp must still render.
 	empty := topologyLiteral(0, 64000, nil, 64)
 	_, err = Plan(empty, profile, Tuning{Devices: []string{"CUDA0"}}, BackendCUDA128, GPUFamilyNVIDIAAda)
 	if !errors.Is(err, ErrUnknownDevice) {
 		t.Fatalf("Plan(no inventory, pinned CUDA0) error = %v, want ErrUnknownDevice", err)
 	}
-	if msg := err.Error(); !strings.Contains(msg, "no device inventory was measured") {
-		t.Errorf("error message %q does not say the inventory is missing", msg)
+	msg := err.Error()
+	if !strings.Contains(msg, "the measured inventory is empty") || !strings.Contains(msg, "reports no accelerators") {
+		t.Errorf("error message %q does not say the measured inventory is empty", msg)
+	}
+	if !strings.Contains(msg, "probed "+empty.ProbedAt) {
+		t.Errorf("error message %q does not carry the probe stamp", msg)
+	}
+}
+
+// TestUnknownDeviceErrorNeverProbedWording pins the third wording quadrant:
+// with NO inventory and NO probe stamp — the probe was unwired, or wired and
+// it did not answer — the leading clause may not assert a machine truth
+// nobody measured ("is not among the accelerators this machine reports"
+// would state exactly that, and contradict the Why clause beside it). The
+// measured quadrants (a listed inventory, a probed-but-empty one) are covered
+// by TestPlanRefusesAnUnknownPinnedDevice.
+func TestUnknownDeviceErrorNeverProbedWording(t *testing.T) {
+	t.Parallel()
+
+	err := &UnknownDeviceError{Device: "CUDA0", Why: "no device probe is wired in to re-plan it"}
+	msg := err.Error()
+	if !strings.Contains(msg, `"CUDA0" could not be verified against any measured device inventory`) {
+		t.Errorf("error message %q does not say the pin could not be verified against any measurement", msg)
+	}
+	if strings.Contains(msg, "is not among the accelerators this machine reports") {
+		t.Errorf("the never-probed refusal %q asserts an unmeasured machine truth", msg)
+	}
+	if !strings.Contains(msg, "no device inventory was measured") {
+		t.Errorf("error message %q does not say no inventory was measured", msg)
+	}
+	if !strings.Contains(msg, "(no device probe is wired in to re-plan it)") {
+		t.Errorf("error message %q does not carry the why clause", msg)
+	}
+	if strings.Contains(msg, "probed ") {
+		t.Errorf("the never-probed refusal %q carries a probe stamp", msg)
+	}
+	if !errors.Is(err, ErrUnknownDevice) {
+		t.Errorf("error %v does not wrap ErrUnknownDevice", err)
 	}
 }

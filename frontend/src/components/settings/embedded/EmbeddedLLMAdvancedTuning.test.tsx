@@ -340,6 +340,129 @@ describe('EmbeddedLLMAdvancedTuning — the tri-state booleans and packing', () 
   })
 })
 
+// The two llama-only knobs and the mtplx recovery path. The engine is a status
+// field, so every default fixture ('') renders the controls; the mtplx cases
+// seed it explicitly. The section persists across engine switches, which is
+// exactly why a persisted llama-only pin under mtplx needs a reachable reset.
+describe('EmbeddedLLMAdvancedTuning — the llama-only knobs (devices, split mode)', () => {
+  it('commits a split-mode pick verbatim and clears it through the reset spelling', async () => {
+    await openSection()
+
+    await pickOption('Split mode', 'layer')
+    expect(mocks.setEmbeddedLLMTuning).toHaveBeenCalledWith({ split_mode: 'layer' })
+    expect(trigger('Split mode').textContent).toContain('layer')
+
+    mocks.setEmbeddedLLMTuning.mockClear()
+    await pickOption('Split mode', 'Auto (runtime default)')
+    expect(mocks.setEmbeddedLLMTuning).toHaveBeenCalledWith({ reset: ['split_mode'] })
+    expect(trigger('Split mode').textContent).toContain('Auto')
+  })
+
+  it('hides both llama-only controls under mtplx and shows them again under llama', async () => {
+    seedStatus({ engine: 'mtplx' })
+    await openSection()
+    expect(container.querySelector('[data-testid="embedded-llm-tuning-devices"]')).toBeNull()
+    expect(container.querySelector('[data-testid="embedded-llm-tuning-split-mode"]')).toBeNull()
+
+    seedStatus({ engine: 'llama' })
+    expect(container.querySelector('[data-testid="embedded-llm-tuning-devices"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="embedded-llm-tuning-split-mode"]')).not.toBeNull()
+  })
+
+  it('paints an unknown split-mode spelling as Auto, never the raw string', async () => {
+    // A hand-edited config.yaml can carry a spelling the closed set retired;
+    // the knob must not paint a value the menu could not commit back.
+    current = makeTuning({ split_mode: 'diagonal' })
+    await openSection()
+
+    const text = trigger('Split mode').textContent ?? ''
+    expect(text).toContain('Auto')
+    expect(text).not.toContain('diagonal')
+  })
+
+  it('renders no mtplx pin notice while neither llama-only knob is persisted', async () => {
+    seedStatus({ engine: 'mtplx' })
+    await openSection()
+
+    expect(container.querySelector('[data-testid="embedded-llm-tuning-mtplx-pins"]')).toBeNull()
+  })
+
+  it('offers one reset for the llama-only pins the mtplx engine refuses, then hides the notice', async () => {
+    current = makeTuning({ devices: ['CUDA0'], split_mode: 'layer' })
+    seedStatus({ engine: 'mtplx' })
+    await openSection()
+
+    const notice = container.querySelector('[data-testid="embedded-llm-tuning-mtplx-pins"]')
+    expect(notice).not.toBeNull()
+    const btn = notice?.querySelector('button')
+    if (!btn) throw new Error('mtplx pin reset button not found')
+    await act(async () => {
+      btn.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await flush()
+
+    expect(mocks.setEmbeddedLLMTuning).toHaveBeenCalledWith({ reset: ['devices', 'split_mode'] })
+    // The fold cleared both knobs, so the re-read leaves nothing to report.
+    expect(container.querySelector('[data-testid="embedded-llm-tuning-mtplx-pins"]')).toBeNull()
+  })
+
+  it('surfaces the notice for a split-mode-only pin and clears both keys through the reset', async () => {
+    // The gate is an OR: a stored split mode alone must render the notice even
+    // with devices unset — under mtplx this notice is the only surface that can
+    // commit the reset, and the backend refuses any tuning write that carries
+    // the llama-only keys.
+    current = makeTuning({ split_mode: 'layer' })
+    seedStatus({ engine: 'mtplx' })
+    await openSection()
+
+    const notice = container.querySelector('[data-testid="embedded-llm-tuning-mtplx-pins"]')
+    expect(notice).not.toBeNull()
+    const btn = notice?.querySelector('button')
+    if (!btn) throw new Error('mtplx pin reset button not found')
+    await act(async () => {
+      btn.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await flush()
+
+    expect(mocks.setEmbeddedLLMTuning).toHaveBeenCalledWith({ reset: ['devices', 'split_mode'] })
+    // The fold cleared both knobs, so the re-read leaves nothing to report.
+    expect(container.querySelector('[data-testid="embedded-llm-tuning-mtplx-pins"]')).toBeNull()
+  })
+
+  it('surfaces the notice for a stored spelling outside the split-mode set', async () => {
+    // A hand-edited 'Layer' is legal for the backend's tuning surface but
+    // retired from the closed UI set: oneOf paints Auto while splitMode stays
+    // non-null, so the notice must not collapse to the unset case — otherwise a
+    // case-variant pin would strand with no reset path under mtplx.
+    current = makeTuning({ split_mode: 'Layer' })
+    await openSection()
+    // The llama-side combobox paints Auto — never the raw uncommittable string.
+    const text = trigger('Split mode').textContent ?? ''
+    expect(text).toContain('Auto')
+    expect(text).not.toContain('Layer')
+
+    seedStatus({ engine: 'mtplx' })
+    expect(container.querySelector('[data-testid="embedded-llm-tuning-mtplx-pins"]')).not.toBeNull()
+  })
+
+  it('renders no mtplx pin notice for the explicit-auto statement in any spelling', async () => {
+    // A hand-edited `split_mode: "AUTO"` folds to non-explicit in the
+    // backend's tuningChoice — every tuning write still succeeds under
+    // mtplx, so the stored spelling must NOT read as a pin: the notice's
+    // "every tuning write fails" claim would misstate a config that loads
+    // and works fine. splitModePin folds the statement away at the hook.
+    current = makeTuning({ split_mode: 'AUTO' })
+    await openSection()
+    // The llama-side combobox paints Auto for the folded statement too.
+    const text = trigger('Split mode').textContent ?? ''
+    expect(text).toContain('Auto')
+    expect(text).not.toContain('AUTO')
+
+    seedStatus({ engine: 'mtplx' })
+    expect(container.querySelector('[data-testid="embedded-llm-tuning-mtplx-pins"]')).toBeNull()
+  })
+})
+
 // An Auto knob renders its documented DEFAULT, not a stored value: the snapshot
 // says the knob is unset ("the planner decides"). So a bare focus+blur must
 // persist nothing — otherwise one keyboard sweep through Advanced tuning writes

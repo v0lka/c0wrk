@@ -545,6 +545,11 @@ func TestEmbeddedLLMTuningValidateAccepted(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			cfg := minimalValidConfig()
+			// The llama spelling keeps these llama-only tunings legal beside
+			// every CI platform's resolution: auto on darwin/arm64 is mtplx,
+			// and the mtplx cross-check would refuse them before validate()
+			// reaches the knob a row is about.
+			cfg.EmbeddedLLM.Engine = "llama"
 			mutate(&cfg.EmbeddedLLM.Tuning)
 			if err := validate(cfg); err != nil {
 				t.Fatalf("validate() rejected a legal embedded_llm.tuning section: %v", err)
@@ -590,6 +595,10 @@ func TestEmbeddedLLMTuningValidatedWhileInert(t *testing.T) {
 	for name, mutate := range inert {
 		t.Run(name, func(t *testing.T) {
 			cfg := minimalValidConfig()
+			// Engine llama so the refusal a row proves is the inert-knob
+			// validation, not the mtplx engine cross-check that would also
+			// refuse llama-only keys on a darwin/arm64 auto resolution.
+			cfg.EmbeddedLLM.Engine = "llama"
 			mutate(&cfg.EmbeddedLLM)
 			if err := validate(cfg); err == nil {
 				t.Fatalf("validate() accepted an inert-but-invalid tuning knob: %+v",
@@ -813,6 +822,9 @@ func TestEmbeddedLLMTuningLoadFromYAML(t *testing.T) {
 	// hand-appended block that could collide with the section ApplyDefaults
 	// already seeds.
 	good := minimalValidConfig()
+	// The llama spelling keeps the llama-only section loadable beside every
+	// CI platform's resolution (auto on darwin/arm64 is mtplx).
+	good.EmbeddedLLM.Engine = "llama"
 	good.EmbeddedLLM.Tuning = TuningConfig{
 		Context: EmbeddedLLMContextConfig{
 			Mode:   embeddedStrPtr(EmbeddedLLMContextExact),
@@ -953,6 +965,11 @@ func TestEmbeddedLLMTuningCeilingsAcceptTheirBoundary(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := minimalValidConfig()
+			// Engine llama so a ceiling on a llama-only knob (fit_target_mib,
+			// cache_ram_mib, parallel, offload.layers, host_reserve_gib) is
+			// tested against the knob's own bound rather than refused by the
+			// mtplx engine cross-check on a darwin/arm64 auto resolution.
+			cfg.EmbeddedLLM.Engine = "llama"
 			tc.mutate(&cfg.EmbeddedLLM.Tuning)
 
 			if err := validate(cfg); err != nil {
@@ -980,6 +997,10 @@ func TestEmbeddedLLMTuningHostReserveRejectsEveryNonFiniteShape(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			cfg := minimalValidConfig()
+			// Engine llama so the refusal asserts the finite-value rule itself
+			// rather than the mtplx cross-check that would also refuse
+			// host_reserve_gib on a darwin/arm64 auto resolution.
+			cfg.EmbeddedLLM.Engine = "llama"
 			cfg.EmbeddedLLM.Tuning.HostReserveGiB = embeddedFloatPtr(value)
 
 			err := validate(cfg)

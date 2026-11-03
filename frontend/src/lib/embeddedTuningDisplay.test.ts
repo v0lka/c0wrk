@@ -34,6 +34,7 @@ import {
   plannedFitArg,
   plannedLayers,
   seedCount,
+  splitModePin,
   storedOffloadMode,
 } from './embeddedTuningDisplay'
 
@@ -241,5 +242,28 @@ describe('TUNING_RANGES — one source for the input bounds and the fallbacks', 
     for (const range of Object.values(TUNING_RANGES)) {
       expect(range.min).toBeLessThanOrEqual(range.max)
     }
+  })
+})
+
+describe('splitModePin — the stored -sm spelling as a pin signal', () => {
+  it('reads unset and the auto statement (any casing/whitespace) as no pin', () => {
+    expect(splitModePin(null)).toBeNull()
+    expect(splitModePin(undefined)).toBeNull()
+    expect(splitModePin('')).toBeNull()
+    expect(splitModePin('   ')).toBeNull()
+    expect(splitModePin('auto')).toBeNull()
+    expect(splitModePin('AUTO')).toBeNull()
+    expect(splitModePin(' Auto ')).toBeNull()
+  })
+
+  it('keeps a closed-set member as itself, and any other spelling a pin', () => {
+    expect(splitModePin('row')).toBe('row')
+    expect(splitModePin('layer')).toBe('layer')
+    expect(splitModePin('tensor')).toBe('tensor')
+    // A case-variant member is canonicalized by tuningChoice on every write —
+    // still a pin (the mtplx notice fires), though the menu paints Auto for it.
+    expect(splitModePin('ROW')).toBe(TUNING_AUTO)
+    // A retired spelling ('Layer') is refused outright — a pin too.
+    expect(splitModePin('Layer')).toBe(TUNING_AUTO)
   })
 })

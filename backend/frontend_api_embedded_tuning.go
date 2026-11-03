@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 
@@ -383,6 +384,17 @@ func (f *FrontendAPI) GetEmbeddedLLMTuning() (EmbeddedLLMTuningDTO, error) {
 // applies to the next install, and this method does not require the model to be
 // installed.
 func (f *FrontendAPI) SetEmbeddedLLMTuning(req EmbeddedLLMTuningRequest) error {
+	// The engine gate below resolves against THIS machine; the platform
+	// parameter of setEmbeddedLLMTuningOn is the seam that pins the
+	// resolution outcomes on any test machine.
+	return f.setEmbeddedLLMTuningOn(runtime.GOOS+"-"+runtime.GOARCH, req)
+}
+
+// setEmbeddedLLMTuningOn is SetEmbeddedLLMTuning against an explicit platform
+// ("goos-goarch"), the seam the engine-gate tests use to exercise the
+// auto→mtplx outcomes on any machine; production passes only the running
+// platform, so behavior is identical.
+func (f *FrontendAPI) setEmbeddedLLMTuningOn(platform string, req EmbeddedLLMTuningRequest) error {
 	server, _, err := f.embeddedBuild()
 	if err != nil {
 		// The subsystem being unavailable is not a reason to lose the
@@ -421,20 +433,19 @@ func (f *FrontendAPI) SetEmbeddedLLMTuning(req EmbeddedLLMTuningRequest) error {
 		f.configMu.Unlock()
 		return fmt.Errorf("invalid embedded LLM tuning: %w", terr)
 	}
-	// The OTHER half of the load-time check: an explicit mtplx engine cannot
+	// The OTHER half of the load-time check: an mtplx engine — an explicit
+	// mtplx spelling, or an auto that `platform` resolves to mtplx — cannot
 	// carry llama-only tuning (validateEmbeddedLLM refuses the pair at load).
-	// The same cross-check runs here against the PERSISTED engine, so the RPC
-	// cannot write a config the next load rejects — otherwise a tuning write
-	// beside engine: mtplx would answer success and leave a config.yaml that
-	// reports a validation error on every startup. The message is verbatim the
-	// load validator's, so the two surfaces speak with one voice.
-	if embeddedllm.NormalizeEngine(embeddedllm.Engine(f.config.EmbeddedLLM.Engine)) == embeddedllm.EngineMTPLX {
+	// The same cross-check runs here against the PERSISTED engine resolved
+	// against `platform`, so the RPC cannot write a config the next load
+	// rejects — otherwise a tuning write beside an auto-resolved mtplx would
+	// answer success and leave a config.yaml that reports a validation error
+	// on every startup. config.EmbeddedLLMMTPLXTuningRefusal is the load
+	// validator's own funnel, so the two surfaces speak with one voice.
+	if config.EmbeddedEngineIsMTPLX(f.config.EmbeddedLLM.Engine, platform) {
 		if forbidden := embeddedllm.ForbiddenLlamaTuning(tuning); len(forbidden) > 0 {
 			f.configMu.Unlock()
-			return fmt.Errorf(
-				"embedded_llm.tuning.%s does not apply to embedded_llm.engine: mtplx (no offload, no fit pass, no KV or packing choice); remove the key or set engine: llama",
-				forbidden[0],
-			)
+			return config.EmbeddedLLMMTPLXTuningRefusal(forbidden[0], f.config.EmbeddedLLM.Engine)
 		}
 	}
 	if reflect.DeepEqual(next, stored) {

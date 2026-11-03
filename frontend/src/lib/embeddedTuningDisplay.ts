@@ -21,6 +21,7 @@ import {
   OFFLOAD_MODE_ALL,
   OFFLOAD_MODE_CPU,
   OFFLOAD_MODE_LAYERS,
+  SPLIT_MODES,
   type EmbeddedLLMPlan,
 } from '@/api/embeddedTuning'
 import {
@@ -67,6 +68,22 @@ export function num(
 /** A string knob inside its closed set, else Auto. */
 export function oneOf(value: string | null | undefined, set: readonly string[]): string {
   return value !== null && value !== undefined && set.includes(value) ? value : TUNING_AUTO
+}
+
+/** The stored `-sm` spelling as a PIN signal, not a menu value: null when
+ *  nothing explicit is stored — unset, empty, or the auto statement in any
+ *  spelling ('' / 'auto' trim+case-fold to non-explicit in the backend's
+ *  tuningChoice, so tuning writes still succeed under mtplx and the pin
+ *  notice must stay silent). Any other stored spelling stays a pin:
+ *  oneOf-gated for the menu (an unknown or case-variant spelling paints
+ *  Auto) but non-null, because tuningChoice either canonicalizes a member
+ *  or refuses the spelling on every tuning write — exactly what the mtplx
+ *  pin notice warns about. */
+export function splitModePin(value: string | null | undefined): string | null {
+  if (value == null) return null
+  const folded = value.trim().toLowerCase()
+  if (folded === '' || folded === TUNING_AUTO) return null
+  return oneOf(value, SPLIT_MODES)
 }
 
 /** The count beside a count-bearing mode: the stored override when it is

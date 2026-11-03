@@ -50,8 +50,11 @@ export const KV_CACHE_TYPES = ['f16', 'q8_0', 'q4_0'] as const
 /** The closed packing-override set (core SupportedPackings). */
 export const TUNING_PACKINGS = ['PQ2_0', 'PTQ1_0'] as const
 
-/** The closed `-sm`/`--split-mode` set (core SplitModes; "auto" — omit the
- *  flag — is the choice not to make one, spelled in the knob itself). */
+/** The closed `-sm`/`--split-mode` set (core SplitModes). An explicit "auto"
+ *  is ALSO a real wire value — backend tuningChoice stores it verbatim and
+ *  distinguishes it from unset — but it is not a set member: the patch guard
+ *  below accepts it (and any case/whitespace spelling of these four) the way
+ *  tuningChoice does, by trimming and case-folding before the match. */
 export const SPLIT_MODES = ['none', 'layer', 'row', 'tensor'] as const
 
 /** The mode spellings of the two composite knobs (config's YAML vocabulary). */
@@ -108,7 +111,8 @@ export interface EmbeddedLLMPlan {
   readonly parallel: number
   readonly cache_ram_mib: number
   /** The `-dev` list this plan pins; empty = the runtime chooses the devices.
-   *  Non-empty means BOTH budgets below price ONLY these devices' pool. */
+   *  Non-empty means the device budget prices ONLY the named pool; the host
+   *  budget stays machine-wide. */
   readonly devices: readonly string[]
   /** The `-sm` spelling the plan pins; "" = the flag is omitted. */
   readonly split_mode: string
@@ -344,6 +348,11 @@ export function validateEmbeddedLLMTuningPatch(patch: EmbeddedLLMTuningPatch): v
   // backend's plan-time inventory check (an unknown name is refused by the
   // LOAD, not here — the UI cannot know the machine's inventory spelling).
   if (patch.devices !== undefined) {
+    // A runtime null is out of contract for `devices?` (reset goes through
+    // the reset knob list; an empty array clears the list) — refuse it like
+    // split_mode refuses a non-string, never a TypeError on `.length`.
+    if (patch.devices === null)
+      throw bad('devices', 'null', 'a list of device names (an empty array clears the list)')
     if (patch.devices.length > MAX_TUNING_DEVICES)
       throw bad(
         'devices',
@@ -361,8 +370,27 @@ export function validateEmbeddedLLMTuningPatch(patch: EmbeddedLLMTuningPatch): v
       seen.add(name)
     }
   }
-  if (patch.split_mode !== undefined && !SPLIT_MODES.includes(patch.split_mode as never))
-    throw bad('split_mode', JSON.stringify(patch.split_mode), `one of ${SPLIT_MODES.join(', ')}`)
+  // split_mode mirrors the backend's tuningChoice — trim, case-fold, and
+  // forward the request verbatim (the backend canonicalizes, it never
+  // round-trips a rewritten spelling): "" / "auto" are the explicit-auto
+  // statement (a real value, distinct from unset), the members match in any
+  // spelling, and any other value is refused here exactly as tuningChoice
+  // refuses it there. A non-string reaches the refusal too, never a TypeError.
+  const sm =
+    typeof patch.split_mode === 'string'
+      ? patch.split_mode.trim().toLowerCase()
+      : patch.split_mode
+  if (
+    patch.split_mode !== undefined &&
+    sm !== '' &&
+    sm !== 'auto' &&
+    !SPLIT_MODES.includes(sm as never)
+  )
+    throw bad(
+      'split_mode',
+      JSON.stringify(patch.split_mode),
+      `one of ${SPLIT_MODES.join(', ')}, or "auto"`,
+    )
 }
 
 /** Persist a partial tuning patch. Out-of-range values are refused locally

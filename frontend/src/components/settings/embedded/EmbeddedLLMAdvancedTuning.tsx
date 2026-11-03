@@ -8,6 +8,7 @@
 // The recorded plan's own outcome is quoted beside every unset knob, so Auto is
 // never a guess.
 
+import { Button } from '@/components/ui/button'
 import { Combobox, type ComboboxOption } from '@/components/ui/combobox'
 import { VariantSection } from '@/components/settings/ModelProfilesSections'
 import { SPLIT_MODES, TUNING_PACKINGS } from '@/api/embeddedTuning'
@@ -154,7 +155,7 @@ export function EmbeddedLLMAdvancedTuning(props: EmbeddedLLMAdvancedTuningProps)
         disabled={disabled}
         onSet={onSet}
       />
-      {llamaFamily && (
+      {llamaFamily ? (
         <>
           <TuningDevices
             devices={props.measuredDevices}
@@ -184,6 +185,31 @@ export function EmbeddedLLMAdvancedTuning(props: EmbeddedLLMAdvancedTuningProps)
             </p>
           </div>
         </>
+      ) : (
+        (props.devices != null || props.splitMode != null) && (
+          // The tuning section survives an engine switch, but the mtplx backend
+          // refuses `devices`/`split_mode` BY NAME — so with both controls
+          // hidden, every tuning write would fail until the keys are cleared.
+          // The notice is the only surface left that can commit the reset.
+          <div
+            className="flex flex-col gap-1 rounded-md border border-warning/30 bg-warning/10 p-2"
+            data-testid="embedded-llm-tuning-mtplx-pins"
+          >
+            <p className="text-xs text-warning">
+              The persisted devices / split-mode pins are llama-only and the mtplx engine refuses
+              them, so every tuning write fails until they are cleared.
+            </p>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 w-fit text-xs"
+              disabled={disabled}
+              onClick={() => onSet({ reset: ['devices', 'split_mode'] })}
+            >
+              Clear the llama-only pins
+            </Button>
+          </div>
+        )
       )}
     </VariantSection>
   )
