@@ -99,6 +99,38 @@ describe('SegmentedControl — tabs semantic', () => {
     expect(item('raw').textContent).toBe('raw')
   })
 
+  it('renders a trailing accessory after the label, outside the hiding label span', () => {
+    act(() => {
+      root.render(
+        <SegmentedControl
+          items={[
+            {
+              value: 'x',
+              label: 'X',
+              trailing: <span data-badge>12</span>,
+            },
+          ]}
+          value="x"
+          onValueChange={() => {}}
+          ariaLabel="Views"
+          labelClassName="hideable-label"
+        />,
+      )
+    })
+    // The accessory renders…
+    const badge = item('x').querySelector('[data-badge]')
+    expect(badge).not.toBeNull()
+    expect(badge!.textContent).toBe('12')
+    // …AFTER the label and OUTSIDE it, so `labelClassName` hiding (the
+    // narrow-sidebar icon-only collapse) can never hide the badge with it.
+    const labelSpan = item('x').querySelector('span.hideable-label')
+    expect(labelSpan).not.toBeNull()
+    expect(labelSpan!.textContent).toBe('X')
+    expect(labelSpan!.contains(badge!)).toBe(false)
+    const children = Array.from(item('x').children)
+    expect(children.indexOf(labelSpan!)).toBeLessThan(children.indexOf(badge!))
+  })
+
   it('exposes data-testid hooks and the title attribute', () => {
     act(() => {
       root.render(
