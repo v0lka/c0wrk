@@ -18,7 +18,7 @@ Offline operation is a hard product requirement for the steady state, not a trad
 - `core/toolmanager/versions.go` — `ToolVersions` map and `.versions` JSON read/write
 - `core/toolmanager/platform.go` — `Platform()` / `PlatformTriple()` canonical naming
 - `core/toolmanager/manager_diskcheck_unix.go` / `manager_diskcheck_windows.go` — best-effort pre-download disk-space guard
-- `desktop/startup_phases.go` `initTools()` / `reconcileToolsWithSplash()` — wiring (Phase 2, [ADR-100](../decisions/100-blocking-first-run-tool-install.md)): `NeedsInstall()` early detection → splash (`tool_manager:start`) → offline `EnsureCriticalTools(AllowNetwork: false)` → when tools remain missing, a **blocking** network `EnsureCriticalTools(AllowNetwork: true)` under the splash → `PrependToPATH()`; residual not-Ready tools or a structural network failure are fatal (`toolFatalActions`: native modal + quit); a structural offline failure over a complete install degrades to a `runtime_error` toast. Test seams: `toolEnsurer` (fake in tests), `toolFatalActions` (recorders)
+- `desktop/startup_phases.go` `initTools()` / `reconcileToolsWithSplash()` — wiring (Phase 2, [ADR-100](../decisions/100-blocking-first-run-tool-install.md)): `NeedsInstall()` early detection → splash (`tool_manager:start`) → offline `EnsureCriticalTools(AllowNetwork: false)` → when tools remain missing, a **blocking** network `EnsureCriticalTools(AllowNetwork: true)` under the splash → `PrependToPATH()`; residual not-Ready tools or a structural network failure are fatal (`toolFatalActions`: native modal + quit); a structural offline failure over a complete install degrades to a `runtime_error` toast; `emitToolManagerProgress` forwards the Manager's progress and stamps every event with the splash denominator (`tools_total`). Test seams: `toolEnsurer` (fake in tests), `toolFatalActions` (recorders)
 
 ## Core Types
 
@@ -58,7 +58,7 @@ type EnsureOptions struct {
 
 type ToolStatus struct {          // per-tool outcome of one EnsureCriticalTools run
 	Tool      ToolSpec
-	Ready     bool  // installed and verified (before or during this run)
+	Ready     bool  // installed and verified (static: version probe; Python: bootstrap complete) — before or during this run
 	Installed bool  // newly installed or updated during this run
 	Err       error // why the tool is not Ready; nil iff Ready
 }
@@ -161,6 +161,7 @@ startup Phase 2: initTools()
 - Per-tool failures are isolated within a pass: one unavailable tool never prevents the remaining tools from being reconciled. Tools still not Ready after the blocking network pass are fatal (native modal naming them + quit); the `runtime_error` toast (`tool_install_failed`) is reserved for the structural offline failure over an already-complete install.
 - A version bump whose archive was fetched while online completes fully offline on the next startup (verified cached archive → in-place upgrade with no network).
 - All `exec.CommandContext("rg", ...)` call sites resolve to the managed binary transparently, because `tools/bin/` is prepended to `PATH` at startup before Phase 3 — on every non-fatal path, after the passes complete (PATH resolution happens per-exec).
+- Progress reporting is terminal-explicit (payload contract: [event-catalog](../contracts/event-catalog.md), `tool_manager:progress`): every install that performs work ends its visible lifecycle with a `done` or `failed` (carrying the cause) event — `done` means installed AND verified via the post-install version probe for static binaries, and bootstrap-complete (interpreter, venv, locked packages and wrapper in place; no version probe runs — the byte-exact embedded requirements lock plus the fail-closed `uv pip install` is the verification) for Python tools — and a deferral to the network pass (`errNeedsNetwork`, or an offline-pass static-binary cache miss surfaced as `ErrCacheUnavailable`) is silent — the network pass owns the tool's terminal outcome. Every progress event carries the splash denominator (`tools_total`), because the webview-subscription race can lose `tool_manager:start` and the frontend's totals must not depend on it.
 - The managed venv layout (`<toolsDir>/python/venv`) is owned by this package; `VenvPythonPath` is the canonical accessor other layers use to obtain the interpreter that can `import markitdown` (vision-assisted document conversion runs through the markitdown Python API, not the CLI). It is a pure filesystem probe — it never triggers an installation and returns `""` when the venv is absent, leaving plain CLI conversion intact.
 
 ## Configuration

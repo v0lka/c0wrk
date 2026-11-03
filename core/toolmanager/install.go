@@ -31,7 +31,9 @@ type InstallResult struct {
 // environments; an interface so tests can substitute a mock.
 type Installer interface {
 	InstallStaticBinary(archivePath string, tool ToolSpec, binDir string) (*InstallResult, error)
-	InstallPythonPackage(ctx context.Context, tool ToolSpec, toolsDir string, binDir string) (*InstallResult, error)
+	// InstallPythonPackage bootstraps the managed Python; step reports each
+	// sub-step (the Detail* vocabulary) just before its uv invocation runs.
+	InstallPythonPackage(ctx context.Context, tool ToolSpec, toolsDir string, binDir string, step func(detail string)) (*InstallResult, error)
 }
 
 // FSInstaller is the production Installer that operates on the local filesystem.
@@ -90,8 +92,15 @@ func (i *FSInstaller) InstallStaticBinary(archivePath string, tool ToolSpec, bin
 }
 
 // InstallPythonPackage bootstraps the managed Python via uv (install → venv
-// → pip) and writes the wrapper; uv must already exist in binDir.
-func (i *FSInstaller) InstallPythonPackage(ctx context.Context, tool ToolSpec, toolsDir, binDir string) (*InstallResult, error) {
+// → pip) and writes the wrapper; uv must already exist in binDir. Each uv
+// invocation is announced through step just before it runs (nil tolerated).
+func (i *FSInstaller) InstallPythonPackage(ctx context.Context, tool ToolSpec, toolsDir, binDir string, step func(detail string)) (*InstallResult, error) {
+	report := func(detail string) {
+		if step != nil {
+			step(detail)
+		}
+	}
+
 	uvBin := filepath.Join(binDir, "uv")
 	if runtime.GOOS == "windows" {
 		uvBin += ".exe"
@@ -114,6 +123,7 @@ func (i *FSInstaller) InstallPythonPackage(ctx context.Context, tool ToolSpec, t
 	venvDir := filepath.Join(pythonDir, "venv")
 
 	// Step 1: Install portable Python via uv.
+	report(DetailInterpreter)
 	installCmd := exec.CommandContext(ctx, uvBin, "python", "install", tool.PythonVersion,
 		"--install-dir", installDir)
 	sysproc.HideConsole(installCmd) // avoid flashing console windows on Windows (GUI app)
@@ -126,6 +136,7 @@ func (i *FSInstaller) InstallPythonPackage(ctx context.Context, tool ToolSpec, t
 	if pythonBin == "" {
 		return nil, fmt.Errorf("tool %q: python binary not found in %s after uv install", tool.Name, installDir)
 	}
+	report(DetailVenv)
 	venvCmd := exec.CommandContext(ctx, uvBin, "venv", venvDir, "--python", pythonBin)
 	sysproc.HideConsole(venvCmd) // avoid flashing console windows on Windows (GUI app)
 	if out, err := venvCmd.CombinedOutput(); err != nil {
@@ -141,6 +152,7 @@ func (i *FSInstaller) InstallPythonPackage(ctx context.Context, tool ToolSpec, t
 	if err != nil {
 		return nil, err
 	}
+	report(DetailPackages)
 	pipCmd := exec.CommandContext(ctx, uvBin, pipInstallArgs(venvPython, lockPath, tool.PipSpec)...)
 	sysproc.HideConsole(pipCmd) // avoid flashing console windows on Windows (GUI app)
 	if out, err := pipCmd.CombinedOutput(); err != nil {

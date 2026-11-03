@@ -18,9 +18,40 @@ import (
 	"github.com/v0lka/sp4rk/safeio"
 )
 
-// ProgressCallback reports install progress to the UI: toolName, stage
-// ("download", "extract", "python_bootstrap"), download bytes (0/0 if N/A).
-type ProgressCallback func(toolName, stage string, bytesDone, bytesTotal int64)
+// Install progress stages. Bytes are reported only for StageDownload; every
+// other stage carries 0/0 — a percentage there would be a lie. The vocabulary
+// is the wire contract of tool_manager:progress
+// (specs/contracts/event-catalog.md).
+const (
+	StageDownload        = "download"         // archive transfer, bytes reported
+	StageExtract         = "extract"          // archive extraction, no bytes
+	StageVerify          = "verify"           // post-install version probe, no bytes
+	StagePythonBootstrap = "python_bootstrap" // uv bootstrap, Detail names the sub-step
+	StageDone            = "done"             // terminal: installed; probe-verified (static) or bootstrap-complete (Python — no probe)
+	StageFailed          = "failed"           // terminal for the pass: install error in Error
+)
+
+// Python-bootstrap sub-steps, reported on StagePythonBootstrap via Detail.
+const (
+	DetailInterpreter = "interpreter" // uv python install
+	DetailVenv        = "venv"        // uv venv
+	DetailPackages    = "packages"    // uv pip install
+)
+
+// ToolProgress is one install-progress report for one tool; Error is
+// non-empty only on StageFailed and carries a truncated cause.
+type ToolProgress struct {
+	Tool       string
+	Stage      string
+	Detail     string // python_bootstrap sub-step; "" otherwise
+	BytesDone  int64
+	BytesTotal int64
+	Error      string
+}
+
+// ProgressCallback reports install progress to the UI.
+// See specs/domains/tool-manager.md.
+type ProgressCallback func(ToolProgress)
 
 // Manager orchestrates download, installation, and version-tracking of the
 // managed tools; the desktop startup layer is the only consumer, sequencing
@@ -69,15 +100,16 @@ func NewManager(toolsDir, binDir, pythonDir string, logger *slog.Logger, cfg Man
 // EnsureOptions controls how EnsureCriticalTools acquires missing tools.
 type EnsureOptions struct {
 	// AllowNetwork=false restricts reconciliation to local disk — cached,
-	// SHA256-verified archives only; network-needing tools are deferred
-	// (errNeedsNetwork). See specs/domains/tool-manager.md.
+	// SHA256-verified archives only; network-needing tools are deferred to
+	// the startup network pass (errNeedsNetwork, or ErrCacheUnavailable for
+	// a static binary with no cached archive). See specs/domains/tool-manager.md.
 	AllowNetwork bool
 }
 
 // ToolStatus is the per-tool outcome of one EnsureCriticalTools run.
 type ToolStatus struct {
 	Tool      ToolSpec
-	Ready     bool  // installed and verified (before or during this run)
+	Ready     bool  // installed and verified (static: version probe; Python: bootstrap complete) — before or during this run
 	Installed bool  // newly installed or updated during this run
 	Err       error // why the tool is not Ready; nil iff Ready
 }
@@ -85,6 +117,22 @@ type ToolStatus struct {
 // errNeedsNetwork marks a tool skipped by an offline (AllowNetwork=false)
 // run and deferred to the startup layer's network pass.
 var errNeedsNetwork = errors.New("requires network access; deferred to the network reconciliation pass")
+
+// deferredToNetworkPass reports whether installErr is a deferral to the
+// startup network pass rather than a failure: errNeedsNetwork (Python tools —
+// nothing local can satisfy them), or an offline-pass static-binary cache
+// miss (ErrCacheUnavailable — a fresh machine or a post-bump archive cleanup
+// left nothing verifiable cached; the network pass will supply the bytes).
+// DownloadOnline never yields ErrCacheUnavailable, so the AllowNetwork guard
+// is belt-and-braces against future Downloader drift. Only the progress
+// verdict is silenced by this predicate — the ToolStatus still carries the
+// cause.
+func deferredToNetworkPass(installErr error, opts EnsureOptions) bool {
+	if errors.Is(installErr, errNeedsNetwork) {
+		return true
+	}
+	return !opts.AllowNetwork && errors.Is(installErr, ErrCacheUnavailable)
+}
 
 // EnsureCriticalTools reconciles the managed registry against the local
 // install: per-tool failures are isolated in the returned statuses, structural
@@ -172,11 +220,18 @@ func (m *Manager) reconcileTool(ctx context.Context, tool ToolSpec, installed, c
 	if installErr := m.installOne(ctx, tool, cacheDir, opts); installErr != nil {
 		status.Ready = false
 		status.Err = installErr
+		// A deferral to the network pass is expected, not a failure — that
+		// pass owns the tool's terminal outcome. Suppressing only the wire
+		// verdict here: the status keeps the cause (see deferredToNetworkPass).
+		if !deferredToNetworkPass(installErr, opts) {
+			m.reportProgress(ToolProgress{Tool: tool.Name, Stage: StageFailed, Error: truncForLog(installErr.Error())})
+		}
 		m.Logger.Error("tool install failed; continuing with remaining tools",
 			"tool", tool.Name, "error", installErr)
 		return status
 	}
 	status.Installed = true
+	m.reportProgress(ToolProgress{Tool: tool.Name, Stage: StageDone})
 	return status
 }
 
@@ -234,9 +289,9 @@ func (m *Manager) PrependToPATH() string {
 	return m.BinDir
 }
 
-func (m *Manager) reportProgress(toolName, stage string, bytesDone, bytesTotal int64) {
+func (m *Manager) reportProgress(p ToolProgress) {
 	if m.ProgressCallback != nil {
-		m.ProgressCallback(toolName, stage, bytesDone, bytesTotal)
+		m.ProgressCallback(p)
 	}
 }
 
@@ -253,6 +308,7 @@ func (m *Manager) installOne(ctx context.Context, tool ToolSpec, cacheDir string
 		// Fail-closed post-install probe: a binary that can't report the pinned
 		// version is removed, .versions untouched — the next run retries.
 		binPath := m.binaryPath(tool.Name, tool.Type)
+		m.reportProgress(ToolProgress{Tool: tool.Name, Stage: StageVerify})
 		out, probeErr := m.probeBinaryVersion(ctx, binPath)
 		if probeErr == nil && !versionInOutput(out, tool.Version) {
 			probeErr = fmt.Errorf("installed binary does not report expected version %q", tool.Version)
@@ -362,7 +418,7 @@ func (m *Manager) binaryVersionMatches(ctx context.Context, tool ToolSpec, binPa
 // destroy. See specs/domains/tool-manager.md.
 func (m *Manager) installStatic(ctx context.Context, tool ToolSpec, cacheDir string, mode DownloadMode) error {
 	downloadProgress := func(done, total int64) {
-		m.reportProgress(tool.Name, "download", done, total)
+		m.reportProgress(ToolProgress{Tool: tool.Name, Stage: StageDownload, BytesDone: done, BytesTotal: total})
 	}
 	result, err := m.Downloader.Download(ctx, tool, cacheDir, mode, downloadProgress)
 	if err != nil && mode == DownloadOnline {
@@ -380,7 +436,7 @@ func (m *Manager) installStatic(ctx context.Context, tool ToolSpec, cacheDir str
 	// short-circuit cannot leave a stale binary under the recorded new version.
 	m.removeStaleStaticBinary(tool)
 
-	m.reportProgress(tool.Name, "extract", 0, 0)
+	m.reportProgress(ToolProgress{Tool: tool.Name, Stage: StageExtract})
 	if _, err := m.Installer.InstallStaticBinary(result.ArchivePath, tool, m.BinDir); err != nil {
 		return fmt.Errorf("install: %w", err)
 	}
@@ -417,9 +473,12 @@ func (m *Manager) cleanupOldArchives(tool ToolSpec, cacheDir string) {
 // bootstrap (never earlier — a network failure must not strip a working old
 // environment); the offline pass never reaches it. See specs/domains/tool-manager.md.
 func (m *Manager) installPython(ctx context.Context, tool ToolSpec) error {
-	m.reportProgress(tool.Name, "python_bootstrap", 0, 0)
+	m.reportProgress(ToolProgress{Tool: tool.Name, Stage: StagePythonBootstrap})
 	m.removeStalePythonEnv(tool)
-	if _, err := m.Installer.InstallPythonPackage(ctx, tool, m.ToolsDir, m.BinDir); err != nil {
+	step := func(detail string) {
+		m.reportProgress(ToolProgress{Tool: tool.Name, Stage: StagePythonBootstrap, Detail: detail})
+	}
+	if _, err := m.Installer.InstallPythonPackage(ctx, tool, m.ToolsDir, m.BinDir, step); err != nil {
 		return fmt.Errorf("python install: %w", err)
 	}
 	m.Logger.Debug("python package installed", "tool", tool.Name)

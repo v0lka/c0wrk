@@ -1571,7 +1571,7 @@ func TestForceUnloadReportsAStopThatDidNotTake(t *testing.T) {
 	// the owning Load explicitly, then join its own failure and gate release.
 	cancelLoad()
 	select {
-	case <-loadErr:
+	case <-loadErr: //nolint:errcheck // join: the payload is not the assertion
 	case <-time.After(10 * time.Second):
 		t.Fatal("the interrupted Load never returned")
 	}

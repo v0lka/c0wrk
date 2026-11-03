@@ -60,6 +60,7 @@ function App() {
   const [phase, setPhase] = useState<AppPhase>('splash')
   const [splashTools, setSplashTools] = useState<readonly ToolManagerToolInfo[] | null>(null)
   const [progressMap, setProgressMap] = useState<Map<string, ToolManagerProgressData>>(new Map())
+  const [splashToolsTotal, setSplashToolsTotal] = useState(0)
   const activeSessionId = useSessionStore(s => s.activeSessionId)
   const activeProjectId = useProjectStore(s => s.activeProjectId)
 
@@ -171,6 +172,10 @@ function App() {
         next.set(data.tool, data)
         return next
       })
+      // The backend stamps every event with the splash denominator, so the
+      // authoritative total survives a lost tool_manager:start (Wails drops
+      // events emitted before the webview subscribes).
+      setSplashToolsTotal(prev => Math.max(prev, data.tools_total ?? 0))
       // If we got progress but tool_manager:start was lost, auto-populate
       // the tool list from the progress map so the splash renders.
       setSplashTools(prev => {
@@ -287,7 +292,7 @@ function App() {
   if (phase === 'splash' && splashTools !== null) {
     return (
       <>
-        <ToolInstallSplash tools={splashTools} progressMap={progressMap} />
+        <ToolInstallSplash tools={splashTools} progressMap={progressMap} toolsTotal={splashToolsTotal} />
         {/* Mounted in every phase: a webview reload (wake recovery) can land
             back in splash while sessions keep running in the backend, and the
             close guard's confirmation modal must still be renderable then. */}
