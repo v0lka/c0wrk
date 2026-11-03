@@ -26,6 +26,7 @@ import {
   DEFAULT_FIT_TARGET_MIB,
   DEFAULT_PARALLEL,
   MAX_CONTEXT_TOKENS,
+  MAX_TUNING_DEVICES,
   MAX_TUNING_HOST_RESERVE_GIB,
   MAX_TUNING_LAYERS,
   MAX_TUNING_MIB,
@@ -114,6 +115,11 @@ describe('the mirrored ceilings match core/embeddedllm/limits.go', () => {
     expect(MAX_TUNING_HOST_RESERVE_GIB).toBe(2 ** 20)
   })
 
+  it('mirrors MaxTuningDevices (8)', () => {
+    expect(MAX_TUNING_DEVICES).toBe(readConstant(LIMITS_GO, 'MaxTuningDevices'))
+    expect(MAX_TUNING_DEVICES).toBe(8)
+  })
+
   it('mirrors maxTrainingContext (1 << 18) as the context ceiling', () => {
     expect(MAX_CONTEXT_TOKENS).toBe(readConstant(MEMORY_GO, 'maxTrainingContext'))
     expect(MAX_CONTEXT_TOKENS).toBe(2 ** 18)
@@ -174,6 +180,7 @@ describe('every bound is usable as an inclusive range', () => {
     expect(0).toBeLessThanOrEqual(MAX_TUNING_MIB)
     expect(0).toBeLessThanOrEqual(MAX_TUNING_LAYERS)
     expect(0).toBeLessThanOrEqual(MAX_TUNING_HOST_RESERVE_GIB)
+    expect(0).toBeLessThanOrEqual(MAX_TUNING_DEVICES)
   })
 
   it('keeps every figure a safe integer the Go side can parse back', () => {
@@ -185,6 +192,7 @@ describe('every bound is usable as an inclusive range', () => {
       MAX_TUNING_LAYERS,
       MAX_TUNING_PARALLEL,
       MAX_TUNING_HOST_RESERVE_GIB,
+      MAX_TUNING_DEVICES,
       DEFAULT_FIT_MIN_CONTEXT,
       DEFAULT_CONTEXT_TOKENS,
       DEFAULT_FIT_TARGET_MIB,

@@ -23,6 +23,8 @@ export function makeTuning(overrides: Partial<EmbeddedLLMTuning> = {}): Embedded
     parallel: null,
     cache_ram_mib: null,
     host_reserve_gib: null,
+    devices: null,
+    split_mode: null,
     ...overrides,
   }
 }

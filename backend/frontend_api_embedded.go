@@ -413,9 +413,16 @@ func (f *FrontendAPI) embeddedBuild() (*embeddedllm.Server, *embeddedllm.Install
 	// so a GPU that appeared, disappeared or got a new driver since the install
 	// is priced at launch instead of being served a shape computed for a
 	// machine that no longer exists. The hook is fail-soft in core (a wedged or
-	// absent probe launches the recorded plan), so wiring it can never make a
-	// load fail — see Server.effectivePlan.
-	server.ProbeDevices = embeddedllm.ProbeDevices
+	// absent probe launches the recorded plan) with the one deliberate
+	// exception — an operator device pin the fresh inventory cannot verify
+	// refuses the load (ErrUnknownDevice) instead of launching a shape that
+	// ignores the pin; see Server.effectivePlan. Read through the deviceProber
+	// seam at CALL time, so the explicit re-probe RPC and this hook can never
+	// disagree about the machine — including in tests, where one stub answers
+	// both.
+	server.ProbeDevices = func(ctx context.Context, binaryPath string, logger *slog.Logger) (embeddedllm.MemoryTopology, bool) {
+		return f.embedded.deviceProber()(ctx, binaryPath, logger)
+	}
 	// The launch shape must be planned with the tuning in force WHEN IT RUNS,
 	// and the supervisor is built once and cached, so this is a function rather
 	// than a value: it reads the live config on every load.

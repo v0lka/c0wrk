@@ -32,6 +32,7 @@
 import { getApp } from './runtime'
 import {
   MAX_CONTEXT_TOKENS,
+  MAX_TUNING_DEVICES,
   MAX_TUNING_HOST_RESERVE_GIB,
   MAX_TUNING_LAYERS,
   MAX_TUNING_MIB,
@@ -48,6 +49,10 @@ export const KV_CACHE_TYPES = ['f16', 'q8_0', 'q4_0'] as const
 
 /** The closed packing-override set (core SupportedPackings). */
 export const TUNING_PACKINGS = ['PQ2_0', 'PTQ1_0'] as const
+
+/** The closed `-sm`/`--split-mode` set (core SplitModes; "auto" — omit the
+ *  flag — is the choice not to make one, spelled in the knob itself). */
+export const SPLIT_MODES = ['none', 'layer', 'row', 'tensor'] as const
 
 /** The mode spellings of the two composite knobs (config's YAML vocabulary). */
 export const CONTEXT_MODE_EXACT = 'exact'
@@ -70,6 +75,8 @@ export type EmbeddedLLMTuningKnob =
   | 'parallel'
   | 'cache_ram_mib'
   | 'host_reserve_gib'
+  | 'devices'
+  | 'split_mode'
 
 // --- Types (mirrors of the backend DTOs; null = unset) ---
 
@@ -83,7 +90,8 @@ export interface EmbeddedLLMDevice {
 
 /** The launch shape the planner last recorded (the EFFECTIVE plan, not the
  *  override). Sentinel conventions: `layers` -1 = flag omitted, `cache_ram_mib`
- *  -1 = flag omitted (0 = cache disabled), `notes` is ALWAYS an array. */
+ *  -1 = flag omitted (0 = cache disabled), `notes` and `devices` are ALWAYS
+ *  arrays (`split_mode` "" = the flag is omitted). */
 export interface EmbeddedLLMPlan {
   readonly recorded: boolean
   readonly packing: string
@@ -99,6 +107,11 @@ export interface EmbeddedLLMPlan {
   readonly mmproj_offload: boolean
   readonly parallel: number
   readonly cache_ram_mib: number
+  /** The `-dev` list this plan pins; empty = the runtime chooses the devices.
+   *  Non-empty means BOTH budgets below price ONLY these devices' pool. */
+  readonly devices: readonly string[]
+  /** The `-sm` spelling the plan pins; "" = the flag is omitted. */
+  readonly split_mode: string
   readonly gpu_family: string
   readonly device_budget_mib: number
   readonly host_budget_mib: number
@@ -128,7 +141,10 @@ export interface EmbeddedLLMStatusExtras {
   readonly reload_required: boolean
 }
 
-/** The persisted override surface (GetEmbeddedLLMTuning), field for field. */
+/** The persisted override surface (GetEmbeddedLLMTuning), field for field.
+ *  `devices` is null-or-array (nil and empty both read as unset — a cleared
+ *  list and an authored-empty one are the same statement), `split_mode` is
+ *  null-or-spelling. */
 export interface EmbeddedLLMTuning {
   readonly context: { readonly mode: string | null; readonly tokens: number | null }
   readonly kv_cache_type: string | null
@@ -142,10 +158,13 @@ export interface EmbeddedLLMTuning {
   readonly parallel: number | null
   readonly cache_ram_mib: number | null
   readonly host_reserve_gib: number | null
+  readonly devices: readonly string[] | null
+  readonly split_mode: string | null
 }
 
 /** A partial tuning patch (SetEmbeddedLLMTuning). Absent = keep the stored
- *  value; present = replace verbatim; a knob in `reset` = clear to unset. */
+ *  value; present = replace verbatim (an EMPTY `devices` array clears the
+ *  list); a knob in `reset` = clear to unset. */
 export interface EmbeddedLLMTuningPatch {
   readonly reset?: readonly EmbeddedLLMTuningKnob[]
   readonly context?: { mode: string | null; tokens: number | null }
@@ -160,6 +179,8 @@ export interface EmbeddedLLMTuningPatch {
   readonly parallel?: number
   readonly cache_ram_mib?: number
   readonly host_reserve_gib?: number
+  readonly devices?: readonly string[]
+  readonly split_mode?: string
 }
 
 // --- Guards (presence + type only; null and "" stay legal values) ---
@@ -214,6 +235,9 @@ export function isEmbeddedLLMPlan(d: unknown): d is EmbeddedLLMPlan {
     typeof o.mmproj_offload === 'boolean' &&
     isNum(o.parallel) &&
     isNum(o.cache_ram_mib) &&
+    Array.isArray(o.devices) &&
+    o.devices.every(isStr) &&
+    isStr(o.split_mode) &&
     isStr(o.gpu_family) &&
     isNum(o.device_budget_mib) &&
     isNum(o.host_budget_mib) &&
@@ -258,7 +282,9 @@ export function isEmbeddedLLMTuning(d: unknown): d is EmbeddedLLMTuning {
     isNullable(o.packing, isStr) &&
     isNullable(o.parallel, isNum) &&
     isNullable(o.cache_ram_mib, isNum) &&
-    isNullable(o.host_reserve_gib, isNum)
+    isNullable(o.host_reserve_gib, isNum) &&
+    (o.devices === null || (Array.isArray(o.devices) && o.devices.every(isStr))) &&
+    isNullable(o.split_mode, isStr)
   )
 }
 
@@ -312,6 +338,31 @@ export function validateEmbeddedLLMTuningPatch(patch: EmbeddedLLMTuningPatch): v
     !withinRange(patch.host_reserve_gib, 0, MAX_TUNING_HOST_RESERVE_GIB)
   )
     throw bad('host_reserve_gib', patch.host_reserve_gib, `within 0-${MAX_TUNING_HOST_RESERVE_GIB}`)
+  // devices: the same fast-path shape rules the backend's ToTuning applies —
+  // bounded count, one separator-free non-empty token per entry, no
+  // duplicates. Whether a name names a device THIS machine has stays the
+  // backend's plan-time inventory check (an unknown name is refused by the
+  // LOAD, not here — the UI cannot know the machine's inventory spelling).
+  if (patch.devices !== undefined) {
+    if (patch.devices.length > MAX_TUNING_DEVICES)
+      throw bad(
+        'devices',
+        `${patch.devices.length} entries`,
+        `at most ${MAX_TUNING_DEVICES} entries`,
+      )
+    const seen = new Set<string>()
+    for (const raw of patch.devices) {
+      const name = raw.trim()
+      if (name === '')
+        throw bad('devices', JSON.stringify(raw), 'a non-empty device name (CUDA0, Vulkan0, ...)')
+      if (/[\s,]/.test(name) || name.startsWith('-'))
+        throw bad('devices', JSON.stringify(raw), 'a single separator-free device token')
+      if (seen.has(name)) throw bad('devices', name, 'listed exactly once')
+      seen.add(name)
+    }
+  }
+  if (patch.split_mode !== undefined && !SPLIT_MODES.includes(patch.split_mode as never))
+    throw bad('split_mode', JSON.stringify(patch.split_mode), `one of ${SPLIT_MODES.join(', ')}`)
 }
 
 /** Persist a partial tuning patch. Out-of-range values are refused locally

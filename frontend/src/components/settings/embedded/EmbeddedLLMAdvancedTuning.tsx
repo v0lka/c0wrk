@@ -10,8 +10,9 @@
 
 import { Combobox, type ComboboxOption } from '@/components/ui/combobox'
 import { VariantSection } from '@/components/settings/ModelProfilesSections'
-import { TUNING_PACKINGS } from '@/api/embeddedTuning'
+import { SPLIT_MODES, TUNING_PACKINGS } from '@/api/embeddedTuning'
 import { TRI_OFF, TRI_ON, TUNING_AUTO, TUNING_RANGES } from '@/lib/embeddedTuningDisplay'
+import { TuningDevices } from './TuningDevices'
 import { TuningNumber } from './TuningNumber'
 import { TuningTriState } from './TuningTriState'
 import type { EmbeddedLLMAdvancedTuningProps } from '@/hooks/useEmbeddedLLMAdvancedTuning'
@@ -19,6 +20,11 @@ import type { EmbeddedLLMAdvancedTuningProps } from '@/hooks/useEmbeddedLLMAdvan
 const PACKING_OPTIONS: readonly ComboboxOption[] = [
   { value: TUNING_AUTO, label: 'Auto (resolver)' },
   ...TUNING_PACKINGS.map((p) => ({ value: p, label: p })),
+]
+
+const SPLIT_MODE_OPTIONS: readonly ComboboxOption[] = [
+  { value: TUNING_AUTO, label: 'Auto (runtime default)' },
+  ...SPLIT_MODES.map((m) => ({ value: m, label: m })),
 ]
 
 const FIT_OPTIONS: readonly ComboboxOption[] = [
@@ -41,6 +47,10 @@ function planNote(prefix: string, quoted: string | null): string | null {
 
 export function EmbeddedLLMAdvancedTuning(props: EmbeddedLLMAdvancedTuningProps) {
   const { onSet, disabled } = props
+  // The device pin and the split mode are llama-only knobs: under the mtplx
+  // engine MLX has no multi-device split, the config layer refuses the keys,
+  // and the controls would offer choices nothing can honour.
+  const llamaFamily = props.engine !== 'mtplx'
   return (
     <VariantSection title="Advanced tuning" open={props.open} onOpenChange={props.onOpenChange}>
       <p className="text-xs text-muted-foreground">
@@ -144,6 +154,37 @@ export function EmbeddedLLMAdvancedTuning(props: EmbeddedLLMAdvancedTuningProps)
         disabled={disabled}
         onSet={onSet}
       />
+      {llamaFamily && (
+        <>
+          <TuningDevices
+            devices={props.measuredDevices}
+            selected={props.devices}
+            planned={props.plannedDevices}
+            probedAt={props.probedAt}
+            disabled={disabled}
+            onSet={onSet}
+          />
+          <div className="flex flex-col gap-1" data-testid="embedded-llm-tuning-split-mode">
+            <label className="text-xs text-muted-foreground">Split mode</label>
+            <Combobox
+              ariaLabel="Split mode"
+              value={props.splitMode ?? TUNING_AUTO}
+              options={SPLIT_MODE_OPTIONS}
+              className="h-8 w-44 text-xs"
+              disabled={disabled}
+              onChange={(mode) =>
+                onSet(mode === TUNING_AUTO ? { reset: ['split_mode'] } : { split_mode: mode })
+              }
+            />
+            <p className="text-xs text-muted-foreground">
+              How a multi-device split divides the model (--split-mode): none pins one device,
+              layer distributes layers and KV, row and tensor split the weights. Auto omits the
+              flag and leaves the split to the runtime. Pinned like the devices above, it never
+              narrows the plan's device pool.
+            </p>
+          </div>
+        </>
+      )}
     </VariantSection>
   )
 }

@@ -16,7 +16,11 @@
 // which the planner can resolve to OFF while the override stays unset.
 
 import { useMemo, useState } from 'react'
-import { TUNING_PACKINGS, type EmbeddedLLMTuningPatch } from '@/api/embeddedTuning'
+import {
+  TUNING_PACKINGS,
+  type EmbeddedLLMDevice,
+  type EmbeddedLLMTuningPatch,
+} from '@/api/embeddedTuning'
 import {
   DEFAULT_FIT_MIN_CONTEXT,
   DEFAULT_FIT_TARGET_MIB,
@@ -73,6 +77,21 @@ export interface EmbeddedLLMAdvancedTuningProps {
   parallel: number
   cacheRamMiB: number
   hostReserveGiB: number
+  /** The persisted `-dev` override, normalized for display: null = Auto (an
+   *  empty stored list is the same statement). */
+  devices: readonly string[] | null
+  /** The persisted `-sm` spelling, or null = Auto (the runtime decides). */
+  splitMode: string | null
+  /** The measured accelerator inventory — the checklist's rows. */
+  measuredDevices: readonly EmbeddedLLMDevice[]
+  /** RFC 3339 stamp of the last probe that answered; "" = none ever did. */
+  probedAt: string
+  /** The recorded plan's own `-dev` pin, or null while nothing was recorded —
+   *  the outcome quoted beside an unset selection. */
+  plannedDevices: readonly string[] | null
+  /** The runtime family on disk ('' | 'llama' | 'mtplx'): the device pin and
+   *  the split mode are llama-only knobs and hide under mtplx. */
+  engine: string
   auto: Readonly<Record<TuningAutoKnobs, boolean>>
   onSet: (patch: EmbeddedLLMTuningPatch) => void
 }
@@ -105,6 +124,12 @@ export function useEmbeddedLLMAdvancedTuning(
       parallel: num(tuning?.parallel, TUNING_RANGES.parallel.min, TUNING_RANGES.parallel.max, DEFAULT_PARALLEL),
       cacheRamMiB: num(tuning?.cache_ram_mib, TUNING_RANGES.cache_ram_mib.min, TUNING_RANGES.cache_ram_mib.max, 0),
       hostReserveGiB: num(tuning?.host_reserve_gib, TUNING_RANGES.host_reserve_gib.min, TUNING_RANGES.host_reserve_gib.max, 0),
+      devices: tuning?.devices != null && tuning.devices.length > 0 ? tuning.devices : null,
+      splitMode: tuning?.split_mode ?? null,
+      measuredDevices: status?.devices ?? [],
+      probedAt: status?.topology_probed_at ?? '',
+      plannedDevices: plan != null && plan.recorded ? plan.devices : null,
+      engine: status?.engine ?? '',
       auto: {
         fitTargetMiB: tuning?.fit_target_mib == null,
         fitMinContext: tuning?.fit_min_context == null,
@@ -113,6 +138,6 @@ export function useEmbeddedLLMAdvancedTuning(
         hostReserveGiB: tuning?.host_reserve_gib == null,
       },
     }),
-    [open, disabled, onSet, tuning, plan],
+    [open, disabled, onSet, tuning, plan, status],
   )
 }

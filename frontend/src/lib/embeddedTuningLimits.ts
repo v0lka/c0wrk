@@ -57,6 +57,13 @@ export const MAX_TUNING_PARALLEL = 64
  *  "indefinite value" on amd64, which would fail the memory gate OPEN). */
 export const MAX_TUNING_HOST_RESERVE_GIB = 1048576
 
+/** Mirrors `embeddedllm.MaxTuningDevices` (8): the `-dev` offload target list
+ *  ceiling. Eight accelerators is already far past any machine the subsystem
+ *  provisions for; the backend also verifies every name against the runtime's
+ *  own `--list-devices` inventory before a plan is built, so this bound is the
+ *  fast-path half of an absurdity guard, never the authority on what fits. */
+export const MAX_TUNING_DEVICES = 8
+
 // --- Documented defaults (the fallback an unset knob displays) ---
 
 /** The fit-floor default when unset (core DefaultFitMinContext — deliberately

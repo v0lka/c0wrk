@@ -361,6 +361,45 @@ func mibGiB(mib int64) string { return gibString(float64(mib) / mibPerGiB) }
 // gibString renders a GiB figure with one decimal.
 func gibString(gib float64) string { return fmt.Sprintf("%.1f GiB", gib) }
 
+// ErrUnknownDevice is the fail-closed sentinel for an operator device pin the
+// machine cannot honour. The config layer already refuses a tuning that does
+// not even spell like a device; THIS refusal is the machine-truth half — the
+// named accelerator is not in the inventory the runtime itself reported, so a
+// launch built on it would budget one pool and allocate in another. Naming a
+// device that is not there is an unlaunchable server, not a slower one, and a
+// load refuses rather than silently falling back to a shape that ignores the
+// pin (see Server.effectivePlan, the one fail-soft path this error cuts
+// through).
+var ErrUnknownDevice = errors.New("the embedded-LLM tuning names an accelerator the device probe does not report")
+
+// UnknownDeviceError carries everything an operator needs to fix the pin: the
+// offending name, the inventory the LAST probe answered with, and when that
+// probe ran. An empty Inventory means no probe ever answered (or none was
+// wired), which is its own actionable message — the pin cannot be verified at
+// all, not merely mismatched.
+type UnknownDeviceError struct {
+	Device    string
+	Inventory []string
+	ProbedAt  string
+}
+
+func (e *UnknownDeviceError) Error() string {
+	listed := "no device inventory was measured"
+	if len(e.Inventory) > 0 {
+		listed = "the measured inventory is " + strings.Join(e.Inventory, ", ")
+	}
+	when := ""
+	if e.ProbedAt != "" {
+		when = fmt.Sprintf(" (probed %s)", e.ProbedAt)
+	}
+	detail := fmt.Sprintf("%q is not among the accelerators this machine reports; %s%s — "+
+		"update the device list to the measured names, or re-probe and retry",
+		e.Device, listed, when)
+	return fmt.Errorf("%w: %s", ErrUnknownDevice, detail).Error()
+}
+
+func (e *UnknownDeviceError) Unwrap() []error { return []error{ErrUnknownDevice} }
+
 // deviceAxisState is the tri-state of the gate's accelerator side. It is
 // tri-state for the same reason `BudgetFit` and `CPUFeature` are: "there is no
 // accelerator" and "there is an accelerator whose memory nobody measured" are
@@ -460,6 +499,14 @@ func gateBudgetsFor(in ResolveInput, backend Backend, family GPUFamily) (gateBud
 		// probe carries, so passing the profile's copy as the fallback is not a
 		// second opinion.
 		topology := normalizeTopology(*in.Topology, in.RAMGiB)
+		// A pinned device list narrows the pool before any budget reads it —
+		// and refuses a name the probe does not report, because a gate verdict
+		// computed over devices the launch cannot use is a verdict about a
+		// machine that does not exist.
+		topology, filterErr := filterTopology(topology, in.Tuning)
+		if filterErr != nil {
+			return gateBudgets{}, filterErr
+		}
 		ramBytes := int64(topology.HostRAMGiB * gibibyte)
 
 		hostBytes := topology.HostBudgetBytes
@@ -488,6 +535,13 @@ func gateBudgetsFor(in ResolveInput, backend Backend, family GPUFamily) (gateBud
 
 	// No probe answered. The host side is still derivable — the RAM probe is a
 	// hard input and `resolveWith` has already refused an unreadable one.
+	// A pinned device list, however, is only honest against a measured
+	// inventory: with nothing probed there is nothing to verify the names
+	// against and nothing to narrow the pool by, so the pin refuses rather than
+	// pricing a shape the launch could not honour.
+	if len(in.Tuning.Devices) > 0 {
+		return gateBudgets{}, &UnknownDeviceError{Device: in.Tuning.Devices[0]}
+	}
 	ramGiB := in.RAMGiB
 	ramBytes := int64(ramGiB * gibibyte)
 	reserve := hostReserveBytes(ramBytes)
@@ -1149,6 +1203,13 @@ func Plan(
 	family GPUFamily,
 ) (MemoryPlan, error) {
 	topology = normalizeTopology(topology, 0)
+	// The operator's device pin narrows the pool BEFORE anything prices it, so
+	// the gate and the shape see the same truthful inventory. A name the probe
+	// does not report refuses here, at the source.
+	topology, filterErr := filterTopology(topology, tuning)
+	if filterErr != nil {
+		return MemoryPlan{}, filterErr
+	}
 	// planShape returns a ZERO MemoryPlan when it refuses, so the packing a
 	// refusal has to price is re-derived here rather than read off the plan.
 	packing := tuning.Packing
@@ -1802,6 +1863,88 @@ func normalizeTopology(topology MemoryTopology, ramGiBFallback float64) MemoryTo
 	return topology
 }
 
+// filterTopology narrows a topology to the accelerators the operator's device
+// pin names, and re-derives the device budget over ONLY that pool.
+//
+// Without it a pinned `-dev` would budget a lie: `devicePoolMiB` sums every
+// discrete card the runtime reports, while the runtime itself would allocate
+// inside just the named ones — a plan sized against 22528 MiB of two GPUs that
+// the launch can only draw 16384 MiB of. The re-derivation applies the same
+// margin and the same unified min() `normalizeTopology` applies, so both sides
+// of a pinned plan price one pool: the gate's (via gateBudgetsFor) and the
+// shape's (via planBudgets).
+//
+// The pin must VERIFY against the inventory, not merely shrink it: a name the
+// last probe did not report is a stale or mistyped pin, and launching would
+// either fail obscurely inside the runtime or silently run on devices the
+// operator did not choose. Both are refused with the typed UnknownDeviceError —
+// fail-closed, the same posture the config layer states for a tuning it cannot
+// even spell. A pin with NO inventory behind it (nothing probed, nothing wired)
+// refuses for the same reason: the budget could not be made truthful, so the
+// shape cannot be honestly built.
+//
+// SplitMode does NOT narrow a pool (every device still participates in a split)
+// and is therefore invisible here. Duplicate names are refused rather than
+// deduplicated: the planner's Tuning is constructible directly, and a repeated
+// name would double-count that card's bytes in the budget — a caller bug to
+// surface, not to paper over.
+func filterTopology(topology MemoryTopology, tuning Tuning) (MemoryTopology, error) {
+	if len(tuning.Devices) == 0 {
+		return topology, nil
+	}
+	seen := make(map[string]struct{}, len(tuning.Devices))
+	for _, name := range tuning.Devices {
+		if _, dup := seen[name]; dup {
+			return MemoryTopology{}, fmt.Errorf("%w: the device list names %q more than once", ErrTuningInvalid, name)
+		}
+		seen[name] = struct{}{}
+	}
+	if len(topology.Devices) == 0 {
+		return MemoryTopology{}, &UnknownDeviceError{Device: tuning.Devices[0], ProbedAt: topology.ProbedAt}
+	}
+	byName := make(map[string]DeviceMemory, len(topology.Devices))
+	for _, device := range topology.Devices {
+		byName[device.Name] = device
+	}
+	filtered := make([]DeviceMemory, 0, len(tuning.Devices))
+	for _, name := range tuning.Devices {
+		device, ok := byName[name]
+		if !ok {
+			return MemoryTopology{}, &UnknownDeviceError{
+				Device:    name,
+				Inventory: deviceNames(topology.Devices),
+				ProbedAt:  topology.ProbedAt,
+			}
+		}
+		filtered = append(filtered, device)
+	}
+	pool := devicePoolMiB(filtered, topology.Unified)
+	if pool > deviceMarginMiB {
+		budget := (pool - deviceMarginMiB) * bytesPerMiB
+		if topology.Unified {
+			budget = min(budget, topology.HostBudgetBytes)
+		}
+		topology.DeviceBudgetBytes = max(budget, 0)
+	} else {
+		// The named pool cannot cover the runtime's own bookkeeping — the same
+		// measurement-not-omission rule normalizeTopology applies, and the same
+		// zero budget the memory gate then refuses on.
+		topology.DeviceBudgetBytes = 0
+	}
+	topology.Devices = filtered
+	return topology, nil
+}
+
+// deviceNames renders an inventory as the list of names an UnknownDeviceError
+// quotes — the exact vocabulary `-dev` consumes.
+func deviceNames(devices []DeviceMemory) []string {
+	names := make([]string, 0, len(devices))
+	for _, device := range devices {
+		names = append(names, device.Name)
+	}
+	return names
+}
+
 // planLayers resolves `-ngl`, or nil when the runtime's fit pass must choose
 // it. Under fit the flag is OMITTED, not set to a value fit would have picked:
 // setting it is what turns fit off (and, with `--fit on`, what makes the fork
@@ -2113,6 +2256,16 @@ func shapeNotes(tuning Tuning, plan MemoryPlan, profile ModelMemoryProfile, b bu
 		notes = append(notes, fmt.Sprintf(
 			"the offload was pinned to %s (--device), which the runtime treats as a chosen offload and therefore sizes nothing itself",
 			strings.Join(plan.Devices, ",")))
+		// The topology arrived filtered (see filterTopology), so this inventory
+		// IS the named pool — state its measured size so the budget below is
+		// readable as "what these cards hold", not "what the machine holds".
+		named := int64(0)
+		for _, device := range topology.Devices {
+			named += device.TotalMiB
+		}
+		notes = append(notes, fmt.Sprintf(
+			"the device pool was narrowed to %s (--device): the named accelerators measure %d MiB, and the context below is priced against that pool alone",
+			strings.Join(plan.Devices, ","), named))
 	}
 	if plan.SplitMode != SplitModeAuto {
 		notes = append(notes, fmt.Sprintf(

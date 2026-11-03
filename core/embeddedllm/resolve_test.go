@@ -1486,3 +1486,49 @@ func TestResolveNeverEmitsAPlanThatOverflowsItsOwnBudget(t *testing.T) {
 		})
 	}
 }
+
+// TestGateBudgetsForNarrowsPinnedDevices checks the gate side of the device
+// pin: the budgets a gate verdict spends are the PINNED pool's, not every
+// card's, and a pin with no topology behind it refuses rather than pricing an
+// unverifiable machine.
+func TestGateBudgetsForNarrowsPinnedDevices(t *testing.T) {
+	t.Parallel()
+
+	two := probedTopology(t, PlatformLinuxAMD64, 64,
+		DeviceMemory{Name: "CUDA0", Description: "NVIDIA GeForce RTX 4090", TotalMiB: 24576, FreeMiB: 24576},
+		DeviceMemory{Name: "CUDA1", Description: "NVIDIA GeForce RTX 4060", TotalMiB: 8 * 1024, FreeMiB: 8 * 1024})
+
+	narrowed := two
+	narrowed.Devices = []DeviceMemory{
+		{Name: "CUDA0", Description: "NVIDIA GeForce RTX 4090", TotalMiB: 24576, FreeMiB: 24576},
+	}
+	narrowed.DeviceBudgetBytes = (24576 - deviceMarginMiB) * bytesPerMiB
+
+	g, err := gateBudgetsFor(ResolveInput{
+		MachineProfile: MachineProfile{
+			Platform: PlatformLinuxAMD64, Backend: BackendCUDA128, RAMGiB: 64,
+		},
+		Topology: &two,
+		Tuning:   Tuning{Devices: []string{"CUDA0"}},
+	}, BackendCUDA128, GPUFamilyNVIDIAAda)
+	if err != nil {
+		t.Fatalf("gateBudgetsFor(pinned CUDA0) error = %v", err)
+	}
+	want := max(narrowed.DeviceBudgetMiB()-splitAllowanceMiB(GPUFamilyNVIDIAAda), 0)
+	if g.device != deviceKnown || g.deviceMiB != want {
+		t.Errorf("pinned gate device axis/budget = (%v, %d MiB), want (known, %d MiB)", g.device, g.deviceMiB, want)
+	}
+	if g.deviceMiB >= max(two.DeviceBudgetMiB()-splitAllowanceMiB(GPUFamilyNVIDIAAda), 0) {
+		t.Errorf("pinned gate budget %d MiB is not narrower than the full pool's", g.deviceMiB)
+	}
+
+	_, err = gateBudgetsFor(ResolveInput{
+		MachineProfile: MachineProfile{
+			Platform: PlatformLinuxAMD64, Backend: BackendCUDA128, RAMGiB: 64,
+		},
+		Tuning: Tuning{Devices: []string{"CUDA0"}},
+	}, BackendCUDA128, GPUFamilyNVIDIAAda)
+	if !errors.Is(err, ErrUnknownDevice) {
+		t.Fatalf("gateBudgetsFor(pin without topology) error = %v, want ErrUnknownDevice", err)
+	}
+}

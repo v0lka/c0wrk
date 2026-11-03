@@ -1125,11 +1125,14 @@ func EmbeddedLLMMaxContextTokens() (int, error) { return embeddedLLMMaxContext()
 // Remove both carry it through verbatim, so provisioning or uninstalling the
 // model never resets a tuned memory plan.
 //
-// Two `embeddedllm.Tuning` fields are deliberately NOT exposed here: `Devices`
-// (`-dev`) and `SplitMode` (`-sm`). Both pin the offload, which forces fit off,
-// and neither has a safe default on a machine c0wrk has not measured — naming
-// the wrong device is an unlaunchable server, not a slower one. They stay
-// reachable only through the planner's own vocabulary.
+// The tuning surface is typed-only and cannot inject argv: every field here is
+// a pointer or a closed-set spelling, translated by ToTuning into the planner's
+// own vocabulary, so nothing an operator writes can become a free-form flag.
+// `Devices` and `SplitMode` — the two fields that pin the offload and force fit
+// off — are exposed the same way: a device name is checked as a single
+// separator-free token HERE and verified against the machine's measured
+// inventory by the planner, so a stale or mistyped name refuses the load
+// instead of launching a shape nobody asked for.
 type TuningConfig struct {
 	// Context overrides `-c`. Absent (or `mode: auto`) lets the planner size
 	// it: from the fit floor under fit, otherwise from the RAM ladder.
@@ -1212,6 +1215,32 @@ type TuningConfig struct {
 	// represent is implementation-defined (it saturates on arm64 and goes
 	// negative on amd64, which would fail the memory gate open).
 	HostReserveGiB *float64 `yaml:"host_reserve_gib,omitempty"`
+	// Devices pins `-dev`, the offload target list, to the accelerators the
+	// operator names — the exact names `llama-server --list-devices` prints
+	// ("CUDA0", "Vulkan0", "MTL0", ...). Naming a device pins the offload,
+	// which forces `-fit off`: the planner then sizes the context and the
+	// layer count itself, and it prices the plan against ONLY the named
+	// devices' measured pool, so pinning the larger of two cards gives a
+	// truthful, single-card budget rather than a sum the launch cannot draw.
+	// Each entry must be one separator-free, dash-free token (the same rule
+	// LaunchSpec.Validate applies to argv) and the list at most
+	// embeddedllm.MaxTuningDevices long, without duplicates. The planner
+	// verifies every name against the runtime's own inventory before it plans:
+	// an unknown or stale name refuses the load with the typed
+	// UnknownDeviceError naming the device, the measured inventory and the
+	// probe stamp — fail-closed, because a launch built on a device this
+	// machine does not report budgets one pool and allocates in another.
+	Devices []string `yaml:"devices,omitempty"`
+	// SplitMode pins `-sm`, how a multi-device split divides the model:
+	// "none" (one device only), "layer" (the runtime default), "row" or
+	// "tensor". Absent or "auto" omits the flag and leaves the split to the
+	// runtime. Like Devices it pins the offload — any explicit spelling forces
+	// `-fit off` — but it does NOT narrow the device pool: every card still
+	// participates in the split, so the budgets stay the full measured pool.
+	// The spelling is validated even while the key is inert (the same rule
+	// every knob here follows); it is refused outright under the mtplx engine,
+	// which has no multi-device split.
+	SplitMode *string `yaml:"split_mode,omitempty"`
 }
 
 // EmbeddedLLMContextConfig is the `tuning.context` knob: a mode plus, for
@@ -1415,6 +1444,55 @@ func (t TuningConfig) ToTuning() (embeddedllm.Tuning, error) {
 	}
 	if packingExplicit {
 		out.Packing = embeddedllm.Packing(packing)
+	}
+
+	// devices: the `-dev` offload target list. The token rule is core's own
+	// (ValidateDeviceName — the same check argv gets), the ceiling is the
+	// shared absurdity guard, duplicates are a caller bug the planner would
+	// double-count, and every entry is trimmed once so " CUDA0 " and "CUDA0"
+	// are one spelling. Whether a name names a device THIS machine has is a
+	// plan-time question the planner answers against the runtime's own
+	// inventory — unknown names refuse there, fail-closed.
+	if len(t.Devices) > 0 {
+		if len(t.Devices) > embeddedllm.MaxTuningDevices {
+			return embeddedllm.Tuning{}, fmt.Errorf(
+				"embedded_llm.tuning.devices lists %d entries; must be at most %d — one per accelerator this machine could plausibly carry",
+				len(t.Devices), embeddedllm.MaxTuningDevices)
+		}
+		names := make([]string, 0, len(t.Devices))
+		seen := make(map[string]struct{}, len(t.Devices))
+		for _, raw := range t.Devices {
+			name := strings.TrimSpace(raw)
+			if name == "" {
+				return embeddedllm.Tuning{}, errors.New(
+					"embedded_llm.tuning.devices carries an empty entry; each entry must be one device name exactly as `llama-server --list-devices` prints it (CUDA0, Vulkan0, MTL0, ...), or remove the key to let the runtime use every device")
+			}
+			if err := embeddedllm.ValidateDeviceName(name); err != nil {
+				return embeddedllm.Tuning{}, fmt.Errorf(
+					"embedded_llm.tuning.devices: %w — each entry must be a single device token, exactly as --list-devices prints it", err)
+			}
+			if _, dup := seen[name]; dup {
+				return embeddedllm.Tuning{}, fmt.Errorf(
+					"embedded_llm.tuning.devices names %q more than once; each device must be listed exactly once, or remove the key to let the runtime use every device",
+					name)
+			}
+			seen[name] = struct{}{}
+			names = append(names, name)
+		}
+		out.Devices = names
+	}
+
+	// split_mode: core owns the closed set (SplitModes), so a mode the runtime
+	// retires on a pin bump disappears from what config.yaml may say with no
+	// edit here. An explicit spelling pins the split — which forces fit off at
+	// plan time — but does not narrow the device pool.
+	sm, smExplicit, err := tuningChoice(
+		"embedded_llm.tuning.split_mode", t.SplitMode, embeddedllm.SplitModes())
+	if err != nil {
+		return embeddedllm.Tuning{}, err
+	}
+	if smExplicit {
+		out.SplitMode = embeddedllm.SplitMode(sm)
 	}
 
 	// The remaining numeric knobs. Every bound is checked whether or not the

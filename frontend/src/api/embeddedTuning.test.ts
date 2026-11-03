@@ -75,6 +75,8 @@ const PLAN: EmbeddedLLMPlan = {
   mmproj_offload: true,
   parallel: 1,
   cache_ram_mib: -1,
+  devices: ['CUDA0'],
+  split_mode: '',
   gpu_family: 'metal',
   device_budget_mib: 24576,
   host_budget_mib: 8192,
@@ -121,6 +123,8 @@ const TUNING: EmbeddedLLMTuning = {
   parallel: null,
   cache_ram_mib: null,
   host_reserve_gib: null,
+  devices: null,
+  split_mode: null,
 }
 
 describe('isEmbeddedLLMPlan — every field the install record renders', () => {
@@ -279,6 +283,27 @@ describe('validateEmbeddedLLMTuningPatch — ceilings', () => {
     expect(() =>
       validateEmbeddedLLMTuningPatch({ context: { mode: 'exact', tokens: MIN_CONTEXT_TOKENS - 1 } }),
     ).toThrow(/context\.tokens/)
+  })
+})
+
+describe('validateEmbeddedLLMTuningPatch — the device pin and the split mode', () => {
+  it('accepts a well-formed device list, a clear, and a legal split spelling', () => {
+    expect(() =>
+      validateEmbeddedLLMTuningPatch({ devices: ['CUDA0', 'CUDA1'], split_mode: 'layer' }),
+    ).not.toThrow()
+    expect(() => validateEmbeddedLLMTuningPatch({ devices: [] })).not.toThrow()
+    expect(() => validateEmbeddedLLMTuningPatch({ split_mode: 'row' })).not.toThrow()
+  })
+
+  it.each([
+    ['too many entries', { devices: Array.from({ length: 9 }, (_, i) => `CUDA${i}`) }],
+    ['a separator inside a token', { devices: ['CUDA 0'] }],
+    ['a flag-like token', { devices: ['-smrow'] }],
+    ['an empty entry', { devices: ['CUDA0', '   '] }],
+    ['a duplicated entry', { devices: ['CUDA0', 'CUDA0'] }],
+    ['an unknown split spelling', { split_mode: 'diagonal' }],
+  ] as const)('refuses %s', (_name, patch) => {
+    expect(() => validateEmbeddedLLMTuningPatch(patch)).toThrow(/embedded_llm\.tuning\.devices|split_mode/)
   })
 })
 

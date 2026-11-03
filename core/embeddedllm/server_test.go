@@ -4766,6 +4766,152 @@ func TestLoadReplansFromAFreshTopology(t *testing.T) {
 	}
 }
 
+// TestLoadRefusesAPinnedDeviceTheFreshProbeDoesNotReport is the fail-closed
+// launch contract: a device pin the fresh inventory cannot verify refuses the
+// load with the typed error — it never falls back to the recorded plan, which
+// predates the pin and would launch the shape the operator overruled.
+func TestLoadRefusesAPinnedDeviceTheFreshProbeDoesNotReport(t *testing.T) {
+	t.Parallel()
+
+	fresh := MemoryTopology{
+		Devices: []DeviceMemory{
+			{Name: "CUDA0", Description: "NVIDIA GeForce RTX 4090", TotalMiB: 24576, FreeMiB: 24576},
+		},
+		HostRAMGiB:        128,
+		Unified:           false,
+		DeviceBudgetBytes: 24576 * bytesPerMiB,
+		HostBudgetBytes:   112 * 1024 * bytesPerMiB,
+		ProbedAt:          testInstallInstant.Add(time.Hour).Format(time.RFC3339),
+	}
+	fx := memoryAwareFixture(t, fixtureOptions{
+		backend: BackendCUDA124,
+		probeDevices: func(context.Context, string, *slog.Logger) (MemoryTopology, bool) {
+			return fresh, true
+		},
+		tuning: func() Tuning { return Tuning{Devices: []string{"CUDA1"}} },
+	})
+
+	_, err := fx.srv.launchSpec(t.Context(), fx.manifest, fx.manifest.Port)
+	if !errors.Is(err, ErrUnknownDevice) {
+		t.Fatalf("launchSpec error = %v, want it to wrap ErrUnknownDevice", err)
+	}
+	var typed *UnknownDeviceError
+	if !errors.As(err, &typed) {
+		t.Fatalf("error %v is not an *UnknownDeviceError", err)
+	}
+	if typed.Device != "CUDA1" {
+		t.Errorf("typed device = %q, want CUDA1", typed.Device)
+	}
+	if !slices.Equal(typed.Inventory, []string{"CUDA0"}) {
+		t.Errorf("typed inventory = %v, want [CUDA0]", typed.Inventory)
+	}
+}
+
+// TestLoadRefusesAPinnedDeviceWithoutAProbe covers the two unverifiable shapes:
+// the probe seam not wired at all, and a probe that answers nothing. Neither
+// can verify the pin, so both refuse instead of launching a shape that ignores
+// it — while a plan with NO pin keeps the fail-soft recorded-plan fallback.
+func TestLoadRefusesAPinnedDeviceWithoutAProbe(t *testing.T) {
+	t.Parallel()
+
+	for name, opts := range map[string]fixtureOptions{
+		"unwired probe": {backend: BackendCUDA124},
+		"wedged probe": {
+			backend: BackendCUDA124,
+			probeDevices: func(context.Context, string, *slog.Logger) (MemoryTopology, bool) {
+				return MemoryTopology{}, false
+			},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			opts.tuning = func() Tuning { return Tuning{Devices: []string{"CUDA0"}} }
+			fx := memoryAwareFixture(t, opts)
+			_, err := fx.srv.launchSpec(t.Context(), fx.manifest, fx.manifest.Port)
+			if !errors.Is(err, ErrUnknownDevice) {
+				t.Fatalf("launchSpec error = %v, want ErrUnknownDevice", err)
+			}
+			if msg := err.Error(); !strings.Contains(msg, "no device inventory was measured") {
+				t.Errorf("error message %q does not say no inventory was measured", msg)
+			}
+		})
+	}
+}
+
+// TestLoadHonoursAPinnedDeviceWhenTheProbeConfirmsIt is the happy path: a pin
+// the fresh inventory confirms rides the re-plan, the launch carries the pin,
+// and the manifest records the refinement.
+func TestLoadHonoursAPinnedDeviceWhenTheProbeConfirmsIt(t *testing.T) {
+	t.Parallel()
+
+	fresh := MemoryTopology{
+		Devices: []DeviceMemory{
+			{Name: "CUDA0", Description: "NVIDIA GeForce RTX 4090", TotalMiB: 24576, FreeMiB: 24576},
+		},
+		HostRAMGiB:        128,
+		Unified:           false,
+		DeviceBudgetBytes: 24576 * bytesPerMiB,
+		HostBudgetBytes:   112 * 1024 * bytesPerMiB,
+		ProbedAt:          testInstallInstant.Add(time.Hour).Format(time.RFC3339),
+	}
+	fx := memoryAwareFixture(t, fixtureOptions{
+		backend: BackendCUDA124,
+		probeDevices: func(context.Context, string, *slog.Logger) (MemoryTopology, bool) {
+			return fresh, true
+		},
+		tuning: func() Tuning { return Tuning{Devices: []string{"CUDA0"}} },
+	})
+
+	launch, err := fx.srv.launchSpec(t.Context(), fx.manifest, fx.manifest.Port)
+	if err != nil {
+		t.Fatalf("launchSpec: %v", err)
+	}
+	if !slices.Equal(launch.Spec.Devices, []string{"CUDA0"}) {
+		t.Errorf("launch devices = %v, want [CUDA0]", launch.Spec.Devices)
+	}
+	if launch.Plan == nil || !slices.Equal(launch.Plan.Devices, []string{"CUDA0"}) {
+		t.Errorf("applied plan devices = %v, want [CUDA0]", launch.Plan)
+	}
+	if notes := strings.Join(launch.Plan.Notes, "\n"); !strings.Contains(notes, "--device") {
+		t.Errorf("plan notes = %v, want one naming the device pin", launch.Plan.Notes)
+	}
+}
+
+// TestLoadFallsBackToARecordedPlanThatCarriesThePin is the coherence half of
+// the wedged-probe contract: a driver query that answers nothing may still
+// launch the recorded plan WHEN that plan itself carries the same device pin —
+// it is the shape a previous load already launched on this machine — while a
+// plan without the pin is refused (see TestLoadRefusesAPinnedDeviceWithoutAProbe).
+func TestLoadFallsBackToARecordedPlanThatCarriesThePin(t *testing.T) {
+	t.Parallel()
+
+	pinned := stagedPlan()
+	pinned.Devices = []string{"CUDA0"}
+	topology := stagedTopology()
+	fx := newFixture(t, fixtureOptions{
+		backend:     BackendCUDA124,
+		plan:        &pinned,
+		topology:    &topology,
+		contextSize: pinned.ContextSize,
+		probeDevices: func(context.Context, string, *slog.Logger) (MemoryTopology, bool) {
+			return MemoryTopology{}, false
+		},
+		tuning: func() Tuning { return Tuning{Devices: []string{"CUDA0"}} },
+	})
+
+	launch, err := fx.srv.launchSpec(t.Context(), fx.manifest, fx.manifest.Port)
+	if err != nil {
+		t.Fatalf("launchSpec: %v", err)
+	}
+	if !slices.Equal(launch.Spec.Devices, []string{"CUDA0"}) {
+		t.Errorf("launch devices = %v, want the recorded plan's [CUDA0]", launch.Spec.Devices)
+	}
+	if launch.Refreshed {
+		t.Error("a wedged probe produced a refresh, want the recorded plan reused verbatim")
+	}
+}
+
 // TestLoadReplanPinsTheInstalledPacking is the one input a load-time re-plan
 // must not be allowed to re-decide. `Plan` derives a packing from the backend
 // and GPU family whenever the tuning leaves it unset, and the operator's tuning

@@ -620,9 +620,21 @@ func splitModeIsKnown(mode SplitMode) bool {
 
 // splitModeNames renders the closed set for diagnostics.
 func splitModeNames() []string {
+	return SplitModes()
+}
+
+// SplitModes lists the closed `-sm`/`--split-mode` vocabulary the planner and
+// the launch spec accept, in a stable order, WITHOUT the empty "auto" sentinel
+// (an absent or "auto" spelling means "omit the flag", which is not a member of
+// the runtime's set — it is the choice not to make one). backend/config reads
+// this list for the `embedded_llm.tuning.split_mode` closed set instead of
+// transcribing it, so the YAML surface and the launch vocabulary cannot drift.
+func SplitModes() []string {
 	return []string{
-		string(SplitModeNone), string(SplitModeLayer),
-		string(SplitModeRow), string(SplitModeTensor),
+		string(SplitModeNone),
+		string(SplitModeLayer),
+		string(SplitModeRow),
+		string(SplitModeTensor),
 	}
 }
 
@@ -648,6 +660,18 @@ func validateDeviceName(name string) error {
 		return fmt.Errorf("%w: -dev device name %q reads as a flag", ErrLaunchSpecInvalid, name)
 	}
 	return nil
+}
+
+// ValidateDeviceName is the exported shape of the same typed-value rule
+// `LaunchSpec.Validate` applies to every `-dev` entry, for surfaces OUTSIDE the
+// launch path that name devices — today `backend/config`'s
+// `embedded_llm.tuning.devices` translation, so a spelling config rejects and a
+// spelling argv rejects are the same statement by construction. The machine
+// truth of a name (whether this machine actually reports it) is deliberately
+// NOT checked here: that is the planner's filterTopology, against the runtime's
+// own inventory, at plan time.
+func ValidateDeviceName(name string) error {
+	return validateDeviceName(name)
 }
 
 // fitArg renders the literal `-fit` value. It mirrors MemoryPlan.FitArg so the
@@ -909,7 +933,12 @@ type Server struct {
 	// pre-existing contract of this path was "no hardware probe runs at load
 	// time", and a caller that does not wire it must get that behaviour rather
 	// than an exec it did not ask for. When wired, it is FAIL-SOFT in every
-	// direction — see effectivePlan — so wiring it can never make a load fail.
+	// direction — see effectivePlan — so wiring it can never make a load fail,
+	// with the one deliberate exception: an operator device pin the probe's
+	// inventory cannot verify refuses the load (ErrUnknownDevice) instead of
+	// launching a shape that silently ignores the pin. An UNWIRED probe meets
+	// the same refusal when a pin is in force — a pin no inventory can verify
+	// must not launch either.
 	ProbeDevices func(ctx context.Context, binaryPath string, logger *slog.Logger) (MemoryTopology, bool)
 	// Tuning resolves the operator's memory-plan overrides
 	// (`embedded_llm.tuning`) at launch time. It is a FUNCTION, not a value,
@@ -1646,10 +1675,13 @@ type resolvedLaunch struct {
 // profile and a re-plan that now refuses the machine all leave the recorded plan
 // untouched and log at Debug — which replaces the older, absolute "no hardware
 // probe runs at load time" rule with the property that rule existed to
-// guarantee: A LOAD MUST NOT FAIL BECAUSE A DRIVER QUERY WEDGED. What the probe
-// buys is freshness: a GPU that appeared, disappeared or got a new driver since
-// the install is priced at launch instead of being served a shape computed for a
-// machine that no longer exists.
+// guarantee: A LOAD MUST NOT FAIL BECAUSE A DRIVER QUERY WEDGED. The single
+// exception is an operator device pin (Tuning.Devices): a pin the machine cannot
+// verify or honour refuses the load with ErrUnknownDevice rather than launching
+// a shape that silently ignores it. What the probe buys is freshness: a GPU that
+// appeared, disappeared or got a new driver since the install is priced at
+// launch instead of being served a shape computed for a machine that no longer
+// exists.
 func (s *Server) launchSpec(ctx context.Context, manifest Manifest, port int) (resolvedLaunch, error) {
 	if manifest.Engine == EngineMTPLX {
 		return s.launchSpecMLX(manifest, port)
@@ -1659,7 +1691,14 @@ func (s *Server) launchSpec(ctx context.Context, manifest Manifest, port int) (r
 		return resolvedLaunch{}, err
 	}
 
-	plan, topology := s.effectivePlan(ctx, manifest, identity.ServerBinary)
+	plan, topology, planErr := s.effectivePlan(ctx, manifest, identity.ServerBinary)
+	if planErr != nil {
+		// The one load-time refusal effectivePlan can produce: an operator
+		// device pin the fresh inventory does not verify. Launching would
+		// ignore the pin; the error names the device, the measured inventory
+		// and the probe stamp, and Load surfaces it as the actionable failure.
+		return resolvedLaunch{}, planErr
+	}
 	refreshed := planChanged(manifest.Plan, plan) || topologyChanged(manifest.Topology, topology)
 
 	var spec LaunchSpec
@@ -1782,30 +1821,103 @@ func (s *Server) launchIdentity(manifest Manifest, port int) (LaunchSpec, error)
 // refined by a fresh measurement when one can be had cheaply, and unchanged
 // otherwise.
 //
-// It NEVER fails and never blocks longer than LoadProbeTimeout. Every way the
-// refinement can go wrong — no probe wired, no recorded plan to refine, a driver
-// query that wedges or answers nothing, an unreadable memory profile, a planner
-// that now refuses the machine — leaves the stored decision in place and logs at
-// Debug. The reasoning is the one the install's own probes already follow: a
-// measurement REFINES a decision, it is never a precondition of one. A load-time
-// refusal would also be a new failure mode with no user action behind it — the
-// memory gate that decides whether this machine may hold the model ran at
-// install, when the bytes were chosen and the user accepted them.
-func (s *Server) effectivePlan(ctx context.Context, manifest Manifest, binary string) (*MemoryPlan, *MemoryTopology) {
+// Every way the refinement can go wrong — no probe wired, no recorded plan to
+// refine, a driver query that wedges or answers nothing, an unreadable memory
+// profile, a planner that now refuses the machine — leaves the stored decision
+// in place and logs at Debug. The reasoning is the one the install's own probes
+// already follow: a measurement REFINES a decision, it is never a precondition
+// of one. A load-time refusal would also be a new failure mode with no user
+// action behind it — the memory gate that decides whether this machine may hold
+// the model ran at install, when the bytes were chosen and the user accepted
+// them.
+//
+// THE ONE EXCEPTION is an operator device pin (Tuning.Devices). A pin the
+// machine cannot verify or honour is refused, not papered over, because the
+// fail-soft fallback would launch a shape that silently ignores what the
+// operator asked for: no inventory to verify the names against, and a replan
+// that answers ErrUnknownDevice, both surface as a failed load carrying the
+// typed error. Everything else about a wedged probe keeps the old contract —
+// the recorded plan launches.
+func (s *Server) effectivePlan(ctx context.Context, manifest Manifest, binary string) (*MemoryPlan, *MemoryTopology, error) {
 	stored := manifest.Plan
 	snapshot := manifest.Topology
+
+	if pin := s.tuning(); len(pin.Devices) > 0 {
+		// A pin needs to survive to the launch argv one way or another: either
+		// a fresh inventory verifies it and the re-plan carries it, or — and
+		// only then — the recorded plan ITSELF carries the same pin (a shape a
+		// previous load already launched on this machine). Anything else would
+		// silently launch a shape that ignores what the operator asked for, so
+		// it refuses instead.
+		carries := stored != nil &&
+			slices.Equal(stored.Devices, pin.Devices) &&
+			stored.SplitMode == pin.SplitMode
+		if s.ProbeDevices == nil {
+			if !carries {
+				return nil, nil, &UnknownDeviceError{Device: pin.Devices[0]}
+			}
+			// Not wired: the pre-existing contract, and the manifest — which
+			// here includes the pin — is the whole story.
+			return stored, snapshot, nil
+		}
+		probeCtx, cancel := context.WithTimeout(ctx, s.loadProbeTimeout())
+		defer cancel()
+		fresh, ok := s.ProbeDevices(probeCtx, binary, s.logger())
+		if !ok {
+			// THE driver query wedged. The no-pin contract falls back to the
+			// recorded plan; a pin may join that fallback only when the
+			// recorded plan carries the same pin. Otherwise the fallback would
+			// launch the shape the operator overruled.
+			if !carries {
+				return nil, nil, &UnknownDeviceError{Device: pin.Devices[0]}
+			}
+			s.logger().Debug("the embedded LLM load-time device probe did not answer; launching the recorded plan, which carries the operator's device pin")
+			return stored, snapshot, nil
+		}
+		// The probe answered: the pin re-plans against the fresh inventory —
+		// whether or not a plan was recorded (replan holds the shape to the
+		// artifacts on disk and does not read the recorded plan; a pre-plan
+		// manifest gains a first plan carrying the pin, which is the honest
+		// shape for a machine the probe just measured).
+		replanned, err := s.replan(manifest, fresh)
+		if err != nil {
+			if errors.Is(err, ErrUnknownDevice) {
+				// The pin names a device the fresh inventory does not report —
+				// a stale name after a driver update, a reordering, a hardware
+				// swap. The recorded plan predates the pin, so falling back to
+				// it would launch exactly the shape the operator overruled.
+				// Refuse.
+				return nil, nil, err
+			}
+			if !carries {
+				// The re-plan failed for a reason the pin cannot help with (a
+				// wedged profile read, an unclassifiable inventory); the
+				// recorded plan may still carry the pin — checked above.
+				return nil, nil, &UnknownDeviceError{Device: pin.Devices[0]}
+			}
+			s.logger().Debug("the embedded LLM launch shape was not re-planned from the fresh topology; launching the recorded plan, which carries the operator's device pin",
+				"error", err, "gpu_family", ClassifyGPUs(fresh.Devices))
+			return stored, snapshot, nil
+		}
+		if stored == nil || planChanged(stored, &replanned) {
+			s.logger().Info("the embedded LLM launch shape changed after the load-time device probe",
+				"gpu_family", replanned.GPUFamily, "fit", replanned.FitArg(),
+				"device_budget_mib", fresh.DeviceBudgetMiB())
+		}
+		return &replanned, &fresh, nil
+	}
 
 	if s.ProbeDevices == nil {
 		// Not wired: the pre-existing contract, and the manifest is the whole
 		// story.
-		return stored, snapshot
+		return stored, snapshot, nil
 	}
 	if stored == nil {
 		// Nothing to refine. A fresh measurement with no recorded plan would
 		// have to invent a shape from the pure policy, which is a different and
 		// coarser decision than the one this install made — so the launch stays
 		// legacy and no topology is recorded beside a plan that ignores it.
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	probeCtx, cancel := context.WithTimeout(ctx, s.loadProbeTimeout())
@@ -1815,15 +1927,23 @@ func (s *Server) effectivePlan(ctx context.Context, manifest Manifest, binary st
 		// THE FAIL-SOFT CASE the load-time probe exists to survive: a wedged or
 		// absent driver query falls back to the snapshot the install recorded,
 		// and the load proceeds on the shape this machine was provisioned for.
+		// A device pin never reaches this branch — the block above refused it.
 		s.logger().Debug("the embedded LLM load-time device probe did not answer; launching the recorded plan")
-		return stored, snapshot
+		return stored, snapshot, nil
 	}
 
 	replanned, err := s.replan(manifest, fresh)
 	if err != nil {
+		if errors.Is(err, ErrUnknownDevice) {
+			// The pin names a device the fresh inventory does not report — a
+			// stale name after a driver update, a reordering, a hardware swap.
+			// The recorded plan predates the pin, so falling back to it would
+			// launch exactly the shape the operator overruled. Refuse.
+			return nil, nil, err
+		}
 		s.logger().Debug("the embedded LLM launch shape was not re-planned from the fresh topology",
 			"error", err, "gpu_family", ClassifyGPUs(fresh.Devices))
-		return stored, snapshot
+		return stored, snapshot, nil
 	}
 
 	measured := fresh
@@ -1833,7 +1953,7 @@ func (s *Server) effectivePlan(ctx context.Context, manifest Manifest, binary st
 			"from_context", stored.ContextSize, "to_context", replanned.ContextSize,
 			"device_budget_mib", measured.DeviceBudgetMiB())
 	}
-	return &replanned, &measured
+	return &replanned, &measured, nil
 }
 
 // replan re-derives the launch shape from a fresh measurement while holding the

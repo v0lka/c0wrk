@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1873,4 +1874,125 @@ func TestPlanKVTypeGatesAUnifiedPoolAdditively(t *testing.T) {
 // splitPool is a same-sized non-unified budget pair, for the precondition above.
 func splitPool(pool int64) budgets {
 	return budgets{deviceMiB: pool, hostMiB: pool}
+}
+
+// TestPlanFiltersTopologyToPinnedDevices is the truthfulness contract of an
+// operator device pin: a plan built for `CUDA0` on a two-card machine must be
+// byte-for-byte the plan the CUDA0-only machine would get. Anything else — a
+// budget summed over cards the launch cannot use, a context sized for bytes
+// that are not there — is an at-load OOM wearing a successful plan.
+func TestPlanFiltersTopologyToPinnedDevices(t *testing.T) {
+	t.Parallel()
+	profile := profileOrFail(t)
+
+	two := probedTopology(t, PlatformLinuxAMD64, 64,
+		DeviceMemory{Name: "CUDA0", Description: "NVIDIA GeForce RTX 4090", TotalMiB: 24576, FreeMiB: 24576},
+		DeviceMemory{Name: "CUDA1", Description: "NVIDIA GeForce RTX 4060", TotalMiB: 8 * 1024, FreeMiB: 8 * 1024})
+	one := probedTopology(t, PlatformLinuxAMD64, 64,
+		DeviceMemory{Name: "CUDA0", Description: "NVIDIA GeForce RTX 4090", TotalMiB: 24576, FreeMiB: 24576})
+
+	pinned, err := Plan(two, profile, Tuning{Devices: []string{"CUDA0"}}, BackendCUDA128, GPUFamilyNVIDIAAda)
+	if err != nil {
+		t.Fatalf("Plan(two GPUs, pinned CUDA0) error = %v", err)
+	}
+	solo, err := Plan(one, profile, Tuning{}, BackendCUDA128, GPUFamilyNVIDIAAda)
+	if err != nil {
+		t.Fatalf("Plan(CUDA0-only machine) error = %v", err)
+	}
+	full, err := Plan(two, profile, Tuning{}, BackendCUDA128, GPUFamilyNVIDIAAda)
+	if err != nil {
+		t.Fatalf("Plan(two GPUs, no pin) error = %v", err)
+	}
+
+	if pinned.DeviceBudgetMiB != solo.DeviceBudgetMiB {
+		t.Errorf("pinned budget = %d MiB, want the CUDA0-only machine's %d MiB", pinned.DeviceBudgetMiB, solo.DeviceBudgetMiB)
+	}
+	if pinned.ContextSize != solo.ContextSize {
+		t.Errorf("pinned context = %d, want the CUDA0-only machine's %d", pinned.ContextSize, solo.ContextSize)
+	}
+	if pinned.DeviceBudgetMiB >= full.DeviceBudgetMiB {
+		t.Errorf("pinned budget %d MiB is not narrower than the full two-card pool %d MiB",
+			pinned.DeviceBudgetMiB, full.DeviceBudgetMiB)
+	}
+	if !slices.Equal(pinned.Devices, []string{"CUDA0"}) {
+		t.Errorf("plan devices = %v, want [CUDA0]", pinned.Devices)
+	}
+	if notes := strings.Join(pinned.Notes, "\n"); !strings.Contains(notes, "narrowed to CUDA0") {
+		t.Errorf("Notes = %v, want one naming the narrowed pool", pinned.Notes)
+	}
+
+	// A split-mode pin does NOT narrow the pool: every card still participates.
+	split, err := Plan(two, profile, Tuning{SplitMode: SplitModeRow}, BackendCUDA128, GPUFamilyNVIDIAAda)
+	if err != nil {
+		t.Fatalf("Plan(two GPUs, split row) error = %v", err)
+	}
+	if split.DeviceBudgetMiB != full.DeviceBudgetMiB {
+		t.Errorf("split-only budget = %d MiB, want the full pool's %d MiB", split.DeviceBudgetMiB, full.DeviceBudgetMiB)
+	}
+
+	// A unified pool survives a pin that names its one device: largest-device
+	// reading, host cap and all.
+	unified := probedTopology(t, PlatformDarwinARM64, 128,
+		DeviceMemory{Name: "MTL0", Description: "Apple M4 Max", TotalMiB: 110100, FreeMiB: 110100})
+	plainUnified, err := Plan(unified, profile, Tuning{}, BackendMetal, GPUFamilyAppleSilicon)
+	if err != nil {
+		t.Fatalf("Plan(unified, no pin) error = %v", err)
+	}
+	pinnedUnified, err := Plan(unified, profile, Tuning{Devices: []string{"MTL0"}}, BackendMetal, GPUFamilyAppleSilicon)
+	if err != nil {
+		t.Fatalf("Plan(unified, pinned MTL0) error = %v", err)
+	}
+	if pinnedUnified.DeviceBudgetMiB != plainUnified.DeviceBudgetMiB {
+		t.Errorf("unified pinned budget = %d MiB, want the whole pool's %d MiB",
+			pinnedUnified.DeviceBudgetMiB, plainUnified.DeviceBudgetMiB)
+	}
+}
+
+// TestPlanRefusesAnUnknownPinnedDevice is the fail-closed half: a name the
+// inventory does not report refuses the plan with the typed error, which names
+// the offending device, the measured inventory and the probe stamp.
+func TestPlanRefusesAnUnknownPinnedDevice(t *testing.T) {
+	t.Parallel()
+	profile := profileOrFail(t)
+
+	two := probedTopology(t, PlatformLinuxAMD64, 64,
+		DeviceMemory{Name: "CUDA0", Description: "NVIDIA GeForce RTX 4090", TotalMiB: 24576, FreeMiB: 24576},
+		DeviceMemory{Name: "CUDA1", Description: "NVIDIA GeForce RTX 4060", TotalMiB: 8 * 1024, FreeMiB: 8 * 1024})
+
+	_, err := Plan(two, profile, Tuning{Devices: []string{"CUDA7"}}, BackendCUDA128, GPUFamilyNVIDIAAda)
+	if !errors.Is(err, ErrUnknownDevice) {
+		t.Fatalf("Plan(pinned CUDA7) error = %v, want it to wrap ErrUnknownDevice", err)
+	}
+	var typed *UnknownDeviceError
+	if !errors.As(err, &typed) {
+		t.Fatalf("error %v is not an *UnknownDeviceError", err)
+	}
+	if typed.Device != "CUDA7" {
+		t.Errorf("typed device = %q, want CUDA7", typed.Device)
+	}
+	if !slices.Equal(typed.Inventory, []string{"CUDA0", "CUDA1"}) {
+		t.Errorf("typed inventory = %v, want [CUDA0 CUDA1]", typed.Inventory)
+	}
+	if typed.ProbedAt == "" {
+		t.Error("typed ProbedAt is empty, want the topology's probe stamp")
+	}
+	if msg := err.Error(); !strings.Contains(msg, "CUDA7") || !strings.Contains(msg, "CUDA0") {
+		t.Errorf("error message %q does not name the pin and the inventory", msg)
+	}
+
+	// Duplicate names are a caller bug the budget would double-count.
+	_, err = Plan(two, profile, Tuning{Devices: []string{"CUDA0", "CUDA0"}}, BackendCUDA128, GPUFamilyNVIDIAAda)
+	if !errors.Is(err, ErrTuningInvalid) {
+		t.Fatalf("Plan(duplicated CUDA0) error = %v, want it to wrap ErrTuningInvalid", err)
+	}
+
+	// A pin with no inventory behind it cannot be verified, so it refuses.
+	empty := topologyLiteral(0, 64000, nil, 64)
+	_, err = Plan(empty, profile, Tuning{Devices: []string{"CUDA0"}}, BackendCUDA128, GPUFamilyNVIDIAAda)
+	if !errors.Is(err, ErrUnknownDevice) {
+		t.Fatalf("Plan(no inventory, pinned CUDA0) error = %v, want ErrUnknownDevice", err)
+	}
+	if msg := err.Error(); !strings.Contains(msg, "no device inventory was measured") {
+		t.Errorf("error message %q does not say the inventory is missing", msg)
+	}
 }

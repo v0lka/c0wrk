@@ -40,7 +40,7 @@ import (
 // UI-exposed knob, so a request names an override the way config.example.yaml
 // and every validation error already name it. `context` and `offload` are
 // included even though they are composite — one uniform clear mechanism for
-// all twelve knobs beats two. The two YAML-only checkpoint-policy knobs
+// all fourteen knobs beats two. The two YAML-only checkpoint-policy knobs
 // (`ctx_checkpoints`, `cache_idle_slots`) are deliberately NOT part of this
 // vocabulary: they have no tuning DTO field, no request spelling and no reset
 // key, and are editable only through config.yaml (see
@@ -58,6 +58,8 @@ const (
 	embeddedTuningKnobParallel       = "parallel"
 	embeddedTuningKnobCacheRAMMiB    = "cache_ram_mib"
 	embeddedTuningKnobHostReserveGiB = "host_reserve_gib"
+	embeddedTuningKnobDevices        = "devices"
+	embeddedTuningKnobSplitMode      = "split_mode"
 )
 
 // embeddedTuningKnobs is every legal `reset` key, in the order
@@ -77,6 +79,8 @@ var embeddedTuningKnobs = []string{
 	embeddedTuningKnobParallel,
 	embeddedTuningKnobCacheRAMMiB,
 	embeddedTuningKnobHostReserveGiB,
+	embeddedTuningKnobDevices,
+	embeddedTuningKnobSplitMode,
 }
 
 // applyEmbeddedTuningRequest folds a partial patch onto the stored section and
@@ -117,6 +121,8 @@ func applyEmbeddedTuningRequest(stored config.TuningConfig, req EmbeddedLLMTunin
 		embeddedTuningKnobParallel:       req.Parallel != nil,
 		embeddedTuningKnobCacheRAMMiB:    req.CacheRAMMiB != nil,
 		embeddedTuningKnobHostReserveGiB: req.HostReserveGiB != nil,
+		embeddedTuningKnobDevices:        req.Devices != nil,
+		embeddedTuningKnobSplitMode:      req.SplitMode != nil,
 	}
 	contradictions := make([]string, 0, len(reset))
 	for key := range reset {
@@ -158,6 +164,10 @@ func applyEmbeddedTuningRequest(stored config.TuningConfig, req EmbeddedLLMTunin
 			next.CacheRAMMiB = nil
 		case embeddedTuningKnobHostReserveGiB:
 			next.HostReserveGiB = nil
+		case embeddedTuningKnobDevices:
+			next.Devices = nil
+		case embeddedTuningKnobSplitMode:
+			next.SplitMode = nil
 		}
 	}
 
@@ -202,6 +212,22 @@ func applyEmbeddedTuningRequest(stored config.TuningConfig, req EmbeddedLLMTunin
 	}
 	if req.HostReserveGiB != nil {
 		next.HostReserveGiB = copyFloat64Ptr(req.HostReserveGiB)
+	}
+	if req.Devices != nil {
+		// A present devices field REPLACES the list wholesale; an empty array
+		// is a clear (list knobs have no pointer tri-state), normalized to nil
+		// so a cleared list and an unset one are one stored value.
+		if len(req.Devices) == 0 {
+			next.Devices = nil
+		} else {
+			next.Devices = make([]string, len(req.Devices))
+			for i, name := range req.Devices {
+				next.Devices[i] = strings.TrimSpace(name)
+			}
+		}
+	}
+	if req.SplitMode != nil {
+		next.SplitMode = copyStringPtr(req.SplitMode)
 	}
 	return next, nil
 }

@@ -761,6 +761,10 @@ func TestApplyEmbeddedTuningRequestFoldsEveryKnob(t *testing.T) {
 			config.TuningConfig{Parallel: tuningIntPtr(1), Fit: tuningBoolPtr(false)}},
 		{"an explicit zero cache ceiling is not a nil", EmbeddedLLMTuningRequest{CacheRAMMiB: tuningIntPtr(0)},
 			config.TuningConfig{Parallel: tuningIntPtr(1), CacheRAMMiB: tuningIntPtr(0)}},
+		{"devices replaces the whole list", EmbeddedLLMTuningRequest{Devices: []string{" CUDA0 ", "CUDA1"}},
+			config.TuningConfig{Parallel: tuningIntPtr(1), Devices: []string{"CUDA0", "CUDA1"}}},
+		{"split_mode is stored verbatim", EmbeddedLLMTuningRequest{SplitMode: strPtr("layer")},
+			config.TuningConfig{Parallel: tuningIntPtr(1), SplitMode: strPtr("layer")}},
 		{"the empty request keeps everything", EmbeddedLLMTuningRequest{}, stored},
 	}
 
@@ -781,19 +785,38 @@ func TestApplyEmbeddedTuningRequestFoldsEveryKnob(t *testing.T) {
 // the WRITE side: a request the caller keeps holding must not be able to mutate
 // the config it was folded into.
 func TestApplyEmbeddedTuningRequestDoesNotAliasTheRequest(t *testing.T) {
-	req := EmbeddedLLMTuningRequest{Parallel: tuningIntPtr(2), Fit: tuningBoolPtr(true)}
+	req := EmbeddedLLMTuningRequest{
+		Parallel: tuningIntPtr(2),
+		Fit:      tuningBoolPtr(true),
+		Devices:  []string{"CUDA0", "CUDA1"},
+	}
 	got, err := applyEmbeddedTuningRequest(config.TuningConfig{}, req)
 	if err != nil {
 		t.Fatalf("applyEmbeddedTuningRequest: %v", err)
 	}
 	*req.Parallel = 99
 	*req.Fit = false
+	req.Devices[0] = "MUTATED"
 
 	if *got.Parallel != 2 {
 		t.Errorf("parallel = %d, want the value at fold time (2)", *got.Parallel)
 	}
 	if !*got.Fit {
 		t.Error("fit = false, want the value at fold time (true)")
+	}
+	if got.Devices[0] != "CUDA0" {
+		t.Errorf("devices = %v, want the value at fold time", got.Devices)
+	}
+
+	// An empty array clears the list to the unset value, not to an authored
+	// empty list the config layer would carry as a pin to nothing.
+	cleared, err := applyEmbeddedTuningRequest(
+		config.TuningConfig{Devices: []string{"CUDA0"}}, EmbeddedLLMTuningRequest{Devices: []string{}})
+	if err != nil {
+		t.Fatalf("applyEmbeddedTuningRequest(clear): %v", err)
+	}
+	if cleared.Devices != nil {
+		t.Errorf("devices = %v after a clear, want nil (the unset value)", cleared.Devices)
 	}
 }
 
@@ -1052,6 +1075,85 @@ func TestEmbeddedTuningReloadRequiredIsNotRaisedByAnEquivalentRespelling(t *test
 	}
 	if status := f.GetEmbeddedLLMStatus(); !status.ReloadRequired {
 		t.Error("reload_required = false after a change to the KV precision")
+	}
+}
+
+// TestEmbeddedTuningReloadRequiredTracksTheDevicePin pins the fingerprint over
+// the device vocabulary: a whitespace respelling of the list a resident model
+// was launched with resolves to the same translated tuning (no spurious reload
+// demand), while changing the list — which changes the pool the plan prices —
+// raises it.
+func TestEmbeddedTuningReloadRequiredTracksTheDevicePin(t *testing.T) {
+	f, _, _ := newEmbeddedTestAPI(t)
+
+	// A two-GPU discrete machine the load-time re-plan can verify the pin
+	// against: fail-closed means an unverifiable pin refuses the load.
+	const mib = int64(1) << 20
+	f.embedded.deviceProbeFn = func(context.Context, string, *slog.Logger) (embeddedllm.MemoryTopology, bool) {
+		return embeddedllm.MemoryTopology{
+			Devices: []embeddedllm.DeviceMemory{
+				{Name: "CUDA0", Description: "NVIDIA GeForce RTX 4090", TotalMiB: 24576, FreeMiB: 24576},
+				{Name: "CUDA1", Description: "NVIDIA GeForce RTX 4060", TotalMiB: 8192, FreeMiB: 8192},
+			},
+			HostRAMGiB:        128,
+			Unified:           false,
+			DeviceBudgetBytes: (24576 + 8192 - 1536) * mib,
+			HostBudgetBytes:   112 * 1024 * mib,
+			ProbedAt:          "2026-09-25T12:00:00Z",
+		}, true
+	}
+
+	// The resident model must be launched WITH the pin, so the launched
+	// fingerprint records it. The pin is therefore written BEFORE the
+	// supervision fixture builds the supervisor — and the fixture's spawn/probe
+	// seams must already be installed, because embeddedBuild constructs on
+	// first use and a build triggered by the tuning write would cache the
+	// production spawn. residentEmbeddedModel would install its seams too late,
+	// so its body is staged here with the write inserted before Init.
+	_, port := modelsEndpoint(t)
+	writeEmbeddedInstallTree(t, f.agentDir, embeddedTestManifest(port, 32768))
+	stubFreePortProbe(t, f)
+	var spawns atomic.Int32
+	f.embedded.spawnFn = func(context.Context, embeddedllm.LaunchCommand) (embeddedllm.Process, error) {
+		return newFakeEmbeddedProcess(4242 + int(spawns.Add(1))), nil
+	}
+	tightenEmbeddedBudgets(t, f)
+
+	if err := f.SetEmbeddedLLMTuning(EmbeddedLLMTuningRequest{
+		Devices: []string{"CUDA0", "CUDA1"},
+	}); err != nil {
+		t.Fatalf("SetEmbeddedLLMTuning: %v", err)
+	}
+
+	f.Lifecycle().InitEmbeddedLLM()
+	if err := f.LoadEmbeddedLLM(); err != nil {
+		t.Fatalf("LoadEmbeddedLLM: %v", err)
+	}
+	if status := f.GetEmbeddedLLMStatus(); !status.Loaded {
+		t.Fatalf("the fixture model is not resident: %+v", status)
+	}
+
+	// A whitespace respelling folds to the identical stored list (the fold
+	// trims each entry), so nothing changed: no write, and the resident model
+	// still runs exactly what is stored.
+	if err := f.SetEmbeddedLLMTuning(EmbeddedLLMTuningRequest{
+		Devices: []string{"  CUDA0", "CUDA1"},
+	}); err != nil {
+		t.Fatalf("SetEmbeddedLLMTuning(respelling): %v", err)
+	}
+	if status := f.GetEmbeddedLLMStatus(); status.ReloadRequired {
+		t.Error("reload_required = true for a whitespace respelling of the same device list")
+	}
+
+	// Changing the list changes the pool the plan prices, so the resident
+	// process really is stale.
+	if err := f.SetEmbeddedLLMTuning(EmbeddedLLMTuningRequest{
+		Devices: []string{"CUDA0"},
+	}); err != nil {
+		t.Fatalf("SetEmbeddedLLMTuning(narrow): %v", err)
+	}
+	if status := f.GetEmbeddedLLMStatus(); !status.ReloadRequired {
+		t.Error("reload_required = false after the device list changed")
 	}
 }
 

@@ -64,4 +64,14 @@ const (
 	// reserve` enormous and fail the memory gate OPEN. Rejecting above 1 PiB
 	// keeps the conversion total on every architecture.
 	MaxTuningHostReserveGiB = 1 << 20
+
+	// MaxTuningDevices bounds `embedded_llm.tuning.devices`, the `-dev` offload
+	// target list. Eight accelerators is already far past any consumer machine
+	// the subsystem provisions for, and each entry is verified against the
+	// runtime's own `--list-devices` inventory before a plan is built, so the
+	// bound is purely an absurdity guard: it keeps the list a fixed-size
+	// verification loop and a bounded notes trail, and it cannot refuse a
+	// legitimate configuration because no legitimate machine carries more.
+	// The memory gate and filterTopology own what a launch can actually honour.
+	MaxTuningDevices = 8
 )
