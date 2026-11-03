@@ -7,6 +7,7 @@ import { Section } from './ChangesList/Section'
 import { SortGroupControls } from './ChangesList/SortGroupControls'
 import { TreeExpandControls } from './ChangesList/TreeExpandControls'
 import { ChangesToolbar } from './ChangesToolbar'
+import { ChangesSummaryBar } from './ChangesSummaryBar'
 import { classifyEntries } from '@/lib/gitStatus'
 import type { StageToggleHandler } from '@/lib/gitStatus'
 import type { SectionData } from './ChangesList/types'
@@ -121,6 +122,9 @@ export function ChangesList({ onToggleFile, onOpenDiff }: ChangesListProps) {
   return (
     <div className="flex flex-col flex-1 min-h-0">
       <ChangesToolbar />
+      {/* Breakdown behind the tab badge: modified/deleted/new counters plus a
+          proportional mix bar. Self-hiding while there are no entries. */}
+      <ChangesSummaryBar />
       {viewMode === 'flat' ? (
         <SortGroupControls />
       ) : (

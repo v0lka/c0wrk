@@ -127,6 +127,68 @@ describe('GitPanel — internal tab routing', () => {
   })
 })
 
+describe('GitPanel — changes tab count badge', () => {
+  function makeEntry(overrides: Partial<{
+    path: string
+    status: string
+    staged: boolean
+    indexStatus: string
+    worktreeStatus: string
+  }>) {
+    return {
+      path: '/repo/f.txt',
+      status: 'M',
+      staged: false,
+      diffStat: null,
+      indexStatus: ' ',
+      worktreeStatus: ' ',
+      ...overrides,
+    }
+  }
+
+  function badgeEl(): HTMLElement | null {
+    return container?.querySelector('[data-testid="changes-tab-count"]') ?? null
+  }
+
+  it('shows the total of modified + deleted + new paths, one count per path', () => {
+    useGitPanelStore.getState().loadEntries([
+      // Modified on BOTH axes — a single path, counted once.
+      makeEntry({ path: '/repo/mm.txt', status: 'M', staged: true, indexStatus: 'M', worktreeStatus: 'M' }),
+      makeEntry({ path: '/repo/mod.txt', status: 'M', indexStatus: ' ', worktreeStatus: 'M' }),
+      makeEntry({ path: '/repo/del.txt', status: 'D', indexStatus: ' ', worktreeStatus: 'D' }),
+      makeEntry({ path: '/repo/staged-del.txt', status: 'D', staged: true, indexStatus: 'D', worktreeStatus: ' ' }),
+      makeEntry({ path: '/repo/new.txt', status: 'A', indexStatus: '?', worktreeStatus: '?' }),
+      makeEntry({ path: '/repo/added.txt', status: 'A', staged: true, indexStatus: 'A', worktreeStatus: ' ' }),
+    ])
+
+    renderPanel()
+
+    expect(badgeEl()?.textContent).toBe('6')
+    // The badge lives on the Changes segment itself.
+    const changesBtn = Array.from(container!.querySelectorAll('button')).find((b) =>
+      b.contains(badgeEl()),
+    )
+    expect(changesBtn?.dataset.segmentValue).toBe('changes')
+  })
+
+  it('hides the badge while there are no entries', () => {
+    renderPanel()
+    expect(badgeEl()).toBeNull()
+  })
+
+  it('updates the badge when the status refreshes', () => {
+    renderPanel()
+    expect(badgeEl()).toBeNull()
+
+    act(() => {
+      useGitPanelStore.getState().loadEntries([
+        makeEntry({ path: '/repo/one.txt', indexStatus: ' ', worktreeStatus: 'M' }),
+      ])
+    })
+    expect(badgeEl()?.textContent).toBe('1')
+  })
+})
+
 describe('GitPanel — git-repo pairing', () => {
   it('renders the panel when isGitRepo was checked for the active project', () => {
     renderPanel()
