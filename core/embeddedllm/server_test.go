@@ -5116,8 +5116,9 @@ func TestLoadRefusesASplitPinTheRecordedPlanLacks(t *testing.T) {
 // a reorder or superset case is a device the plan carries under a different
 // order (naming it would read as the plan lacking a device it holds). An
 // ordering-only divergence falls back to the pin's head. (With NO recorded
-// plan the split is unmet too, so the plain split-worded branch renders and
-// the typed error is unreachable there — see the tests above.)
+// plan a devices-only pin is typed as well — nothing recorded carries
+// anything, so the pin's own head is quoted; a pin reaches the plain
+// split-worded branch only when the operator actually pinned a split.)
 func TestUnmetPinErrorNamesADeviceTheRecordedPlanLacks(t *testing.T) {
 	t.Parallel()
 
@@ -5145,6 +5146,32 @@ func TestUnmetPinErrorNamesADeviceTheRecordedPlanLacks(t *testing.T) {
 	}
 	if typed.Device != "CUDA2" {
 		t.Errorf("named device = %q, want CUDA2 — the pin's own head when the plan carries every pinned name", typed.Device)
+	}
+
+	// With NO recorded plan a devices-only pin is typed too: nothing recorded
+	// carries anything, so the pin's own head is quoted — and the refusal
+	// never claims a split the operator never pinned.
+	err = unmetPinError(Tuning{Devices: []string{"CUDA0"}}, nil, why)
+	typed = nil
+	if !errors.As(err, &typed) {
+		t.Fatalf("error %v is not an *UnknownDeviceError", err)
+	}
+	if typed.Device != "CUDA0" {
+		t.Errorf("named device = %q, want CUDA0 — the pin's own head with no recorded plan", typed.Device)
+	}
+	if typed.Why != why {
+		t.Errorf("typed why = %q, want %q", typed.Why, why)
+	}
+
+	// A split-mode-only pin with no recorded plan renders the plain branch,
+	// worded by the one field actually unmet — never a device word.
+	err = unmetPinError(Tuning{SplitMode: SplitModeRow}, nil, why)
+	var typedAgain *UnknownDeviceError
+	if errors.As(err, &typedAgain) {
+		t.Fatalf("a split-only pin with no recorded plan produced a typed device error %v, want a split-worded one", err)
+	}
+	if msg := err.Error(); !strings.Contains(msg, "(split_mode unmet)") {
+		t.Errorf("error message %q does not name exactly the unmet split_mode pin", msg)
 	}
 }
 

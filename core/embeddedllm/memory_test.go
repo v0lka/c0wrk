@@ -540,8 +540,9 @@ func TestProjectHostMiBAtFullOffloadIgnoresContext(t *testing.T) {
 //
 // The command line is c0wrk's canonical LaunchSpec.Args() shape (`-fit on
 // -ngl 99 -fa on -np 1 --ctx-checkpoints 32 --no-cache-idle-slots --mmproj
-// ...`, 65/65 layers offloaded); the full logs live at
-// testdata/cuda-measured/, transcribed with their methodology and SHA256s in
+// ...`, 65/65 layers offloaded); the full logs are LOCAL measurement
+// artifacts under testdata/cuda-measured/ (gitignored, NOT part of the
+// repository), whose methodology, transcription and SHA256s live in
 // docs/development/embedded-llm-cuda-measurements.md.
 type cudaMeasuredRow struct {
 	name        string

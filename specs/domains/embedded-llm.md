@@ -1599,12 +1599,16 @@ constant, its measured value, and the log line it came from.
 is measured end to end: a CUDA backend on NVIDIA Blackwell (GeForce RTX 5060
 Ti, 15938 MiB, arch 1200), same fork pin `prism-b10735-842b188`, **cuda-13.3**
 build, PQ2_0 + mmproj, 65/65 layers offloaded, at c0wrk's canonical `-fit on`
-launch shape. The evidence is the four full llama-server logs committed at
-`core/embeddedllm/testdata/cuda-measured/`, transcribed with their methodology,
-parsing greps and SHA256s in
-`docs/development/embedded-llm-cuda-measurements.md`. These logs carry **no
-dry-run fit rows** (the fork prints the breakdown once, at SIGTERM shutdown),
-so the overlay reproduces the **loaded-pass breakdown `self`** — which
+launch shape. The evidence was the four full llama-server logs captured under
+`core/embeddedllm/testdata/cuda-measured/` — **local measurement artifacts,
+not part of the repository** (`*.log` is gitignored); the durable in-repo
+record of the numbers is their transcription with their methodology, parsing
+greps and SHA256s in
+`docs/development/embedded-llm-cuda-measurements.md`, plus
+`TestCUDAMeasuredProfileReplay`, which asserts every row. These logs carry
+**no dry-run fit rows** (the fork prints the breakdown once, at SIGTERM
+shutdown), so the overlay reproduces the **loaded-pass breakdown `self`** —
+which
 excludes the ~2449–2471 MiB unaccounted CUDA term (context + cuBLAS/graph
 workspaces + mmproj, constant with `-c`), a headroom the plan budgets' margin
 and family allowance must absorb rather than one the projection models.
@@ -1889,9 +1893,14 @@ memoryGate(ResolveInput, effectiveBackend, gpuFamily, ModelMemoryProfile)   [PUR
 │                 otherwise (metal / vulkan / unsure)  → deviceKnown, unified:
 │                                                        the pool IS the host budget
 │
-├─ 2. context   the operator's exact -c, else the -fitc override, else
-│               DefaultFitMinContext — the smallest context c0wrk will serve, so
-│               the question is "can this machine serve the model AT ALL"
+├─ 2. context   the operator's exact -c, else — on the fit path — the -fitc
+│               override, else DefaultFitMinContext. The explicit path (a
+│               device/split pin or an explicit fit-off) holds the same
+│               DEFAULT floor: -fitc is not emitted there, so its override has
+│               no launch meaning to price — the floor the gate admits at is
+│               the floor the plan will serve on BOTH paths (ADR-105, tested by
+│               TestGateFloorMatchesPlanFloorOnBothPaths). The question is "can
+│               this machine serve the model AT ALL"
 │
 ├─ 3. space     packings = the machine's own decision (+ PTQ1_0 when that is not
 │               already it), mirroring planMemory's single bounded downgrade so

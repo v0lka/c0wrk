@@ -123,6 +123,14 @@ export async function refreshEmbeddedLLMTuning(): Promise<boolean> {
  *  caller. Null = idle. */
 let deviceProbeInFlight: Promise<boolean> | null = null
 
+/** The REAL refusal of the probe currently in flight, recorded when it fails
+ *  and read by a manual caller that joined it (see the join branch below):
+ *  the attempt's failure HANDLING already ran under the initiator's mode, so
+ *  the joiner repaints the attempt's own cause instead of inventing a
+ *  concurrency ("another probe is still settling") that has already settled.
+ *  Null outside a failed probe. */
+let deviceProbeFailure: string | null = null
+
 /** Re-measure THIS machine's accelerator memory now (`ProbeEmbeddedLLMDevices`)
  *  and store the live snapshot. NEVER throws. Returns whether a snapshot was
  *  applied.
@@ -140,21 +148,23 @@ let deviceProbeInFlight: Promise<boolean> | null = null
  *     attempt's outcome.
  *
  *  Concurrent callers share the in-flight probe (see `deviceProbeInFlight`);
- *  the failure HANDLING still runs per caller, so a manual and an automatic
- *  refresh racing on one probe each behave in their own mode. */
+ *  the failure HANDLING runs once per attempt, under the INITIATOR's mode,
+ *  and a manual caller joining a failed attempt repaints that attempt's real
+ *  refusal (see the join branch below). */
 export async function refreshEmbeddedLLMDevices(mode: 'auto' | 'manual'): Promise<boolean> {
   const { setDeviceSnapshotLoading } = useEmbeddedLLMStore.getState()
   if (deviceProbeInFlight !== null) {
     // A probe is already running: its result is exactly as fresh as this
     // caller's would have been. Await it so the spinner covers the shared
-    // window, then apply only the caller's own failure policy.
+    // window. The attempt's failure HANDLING already ran under the
+    // initiator's mode inside the probe, so a joining caller only paints for
+    // itself: a manual joiner paints the attempt's REAL refusal — never a
+    // placeholder claiming another probe is still settling, which by the time
+    // the joiner resumes would name a concurrency that no longer exists — and
+    // an automatic joiner adds nothing.
     const applied = await deviceProbeInFlight.catch(() => false)
     if (!applied && mode === 'manual') {
-      useEmbeddedLLMStore
-        .getState()
-        .setDeviceSnapshotError(
-          'the device probe did not answer — another probe is still settling; try again',
-        )
+      useEmbeddedLLMStore.getState().setDeviceSnapshotError(deviceProbeFailure)
     }
     return applied
   }
@@ -166,6 +176,9 @@ export async function refreshEmbeddedLLMDevices(mode: 'auto' | 'manual'): Promis
       return true
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
+      // Record the REAL cause before the policy runs: a manual caller joining
+      // this probe reads it after its await (see the join branch above).
+      deviceProbeFailure = message
       if (mode === 'manual') {
         useEmbeddedLLMStore.getState().setDeviceSnapshotError(message)
       } else {

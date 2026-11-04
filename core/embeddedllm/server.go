@@ -2086,16 +2086,25 @@ func (s *Server) preflightFreeMemory(plan *MemoryPlan, topology *MemoryTopology)
 
 // unmetPinError is the fail-closed refusal for an operator pin the recorded
 // plan does not carry and which no probe can re-plan into the launch. A
-// devices-only mismatch keeps the typed UnknownDeviceError, carrying the
-// caller's why so the refusal also says why no inventory could verify the pin,
-// and — with a recorded plan — names the first pinned device the plan itself
+// devices-only mismatch — the split unpinned on both sides, whether or not a
+// plan was recorded — keeps the typed UnknownDeviceError, carrying the
+// caller's why so the refusal also says why no inventory could verify the
+// pin; with a recorded plan it names the first pinned device the plan itself
 // does not carry, so the named device is one the recorded shape genuinely
-// lacks rather than merely holds in a different order; anything where the
-// split differs is worded by the fields actually unmet, so a split-mode-only
-// pin is never refused with a device word — and a pin that names no devices
-// never earns one either, not even when no plan is recorded.
+// lacks rather than merely holds in a different order (with no recorded plan
+// nothing recorded carries anything, and the pin's own head is quoted).
+// Everything else is worded by the fields actually unmet: a split-mode-only
+// pin is never refused with a device word, and a devices-only pin is never
+// refused with a split word — an operator who pinned no split must not read
+// that the shape failed a split they never asked for.
 func unmetPinError(pin Tuning, stored *MemoryPlan, why string) error {
-	splitUnmet := stored == nil || stored.SplitMode != pin.SplitMode
+	// A pin is split-unmet only when the operator PINNED a split the recorded
+	// shape does not carry. With no recorded plan nothing carries anything —
+	// but an unpinned split (the zero/auto value) is not unmet: folding the
+	// missing plan into this condition would refuse a devices-only pin with a
+	// split word the operator never wrote.
+	splitUnmet := (stored == nil && pin.SplitMode != SplitModeAuto) ||
+		(stored != nil && stored.SplitMode != pin.SplitMode)
 	if !splitUnmet && len(pin.Devices) > 0 {
 		return &UnknownDeviceError{Device: missingPinnedDevice(pin.Devices, stored), Why: why}
 	}

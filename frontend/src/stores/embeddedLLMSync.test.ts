@@ -316,6 +316,34 @@ describe('embeddedLLMSync — refreshEmbeddedLLMDevices (the live probe)', () =>
     expect(state().deviceSnapshotLoading).toBe(false)
   })
 
+  it('paints the REAL refusal when a manual caller joins an auto probe that failed', async () => {
+    let reject!: (err: Error) => void
+    const gate = new Promise<EmbeddedLLMDeviceSnapshot>((_, rej) => {
+      reject = rej
+    })
+    mocks.probeEmbeddedLLMDevices.mockReturnValue(gate)
+
+    const auto = refreshEmbeddedLLMDevices('auto')
+    await tick()
+    const manual = refreshEmbeddedLLMDevices('manual')
+    await tick()
+
+    // One spawn, two callers; the auto initiator's quiet policy must not leak
+    // into the manual joiner's honesty.
+    expect(mocks.probeEmbeddedLLMDevices).toHaveBeenCalledTimes(1)
+
+    reject(new Error('busy: a removal is deleting the probed tree'))
+    await expect(auto).resolves.toBe(false)
+    await expect(manual).resolves.toBe(false)
+
+    // The painted refusal is the probe's own cause: by the time the manual
+    // joiner resumes, the probe has settled, so the old placeholder ("another
+    // probe is still settling") would name a concurrency that no longer
+    // exists.
+    expect(state().deviceSnapshotError).toBe('busy: a removal is deleting the probed tree')
+    expect(state().deviceSnapshotLoading).toBe(false)
+  })
+
   it('re-probes on a state event (auto) and applies a notice event verbatim', () => {
     let onStateCb: (() => void) | undefined
     let onNoticeCb: ((data: unknown) => void) | undefined

@@ -2081,8 +2081,16 @@ func TestPlanFiltersTopologyToPinnedDevices(t *testing.T) {
 	if !slices.Equal(pinned.Devices, []string{"CUDA0"}) {
 		t.Errorf("plan devices = %v, want [CUDA0]", pinned.Devices)
 	}
-	if notes := strings.Join(pinned.Notes, "\n"); !strings.Contains(notes, "narrowed to CUDA0") {
-		t.Errorf("Notes = %v, want one naming the narrowed pool", pinned.Notes)
+	// ONE note carries the whole pin story — the chosen-offload semantics AND
+	// the narrowed pool's measured size — not two entries reading as two
+	// decisions.
+	joined := strings.Join(pinned.Notes, "\n")
+	if !strings.Contains(joined, "the offload was pinned to CUDA0 (--device)") ||
+		!strings.Contains(joined, "the named accelerators measure 24576 MiB") {
+		t.Errorf("Notes = %v, want one note naming the pin and the pool it narrowed the plan to", pinned.Notes)
+	}
+	if n := strings.Count(joined, "--device"); n != 1 {
+		t.Errorf("Notes mention --device %d times, want one merged note, not a duplicated pin story", n)
 	}
 
 	// A split-mode pin does NOT narrow the pool: every card still participates.
@@ -2270,6 +2278,64 @@ func TestPlanExplicitPinHoldsTheContextFloor(t *testing.T) {
 			t.Errorf("refused plan carried a shape (%+v), want the zero plan", plan)
 		}
 	})
+}
+
+// TestGateFloorMatchesPlanFloorOnBothPaths pins the one-floor promise behind
+// gateContext: on each path the gate prices the SAME floor planTargetContext
+// serves when the RAM tier sits beneath it. The fit path prices the `-fitc`
+// override (or the default); the explicit path prices DefaultFitMinContext —
+// an override the explicit launch never applies must not refuse a machine the
+// launch could serve.
+func TestGateFloorMatchesPlanFloorOnBothPaths(t *testing.T) {
+	t.Parallel()
+
+	fit := true
+	fitOff := false
+	override := DefaultFitMinContext * 2 // an operator -fitc above the default
+	// A RAM tier beneath the floor: with the ladder this small, the target
+	// planTargetContext returns IS its floor, whatever the path.
+	card := func(totalMiB int64) DeviceMemory {
+		return DeviceMemory{
+			Name:        "CUDA0",
+			Description: "NVIDIA GeForce RTX 5060 Ti",
+			TotalMiB:    totalMiB,
+			FreeMiB:     totalMiB,
+		}
+	}
+	lowRAM := probedTopology(t, PlatformLinuxAMD64, 8, card(8192))
+	profile := profileOrFail(t)
+
+	for name, tuning := range map[string]Tuning{
+		"all-auto":                       {},
+		"fit on":                         {FitEnabled: &fit},
+		"fit off explicitly":             {FitEnabled: &fitOff},
+		"a device pin":                   {Devices: []string{"CUDA0"}},
+		"a split pin":                    {SplitMode: SplitModeRow},
+		"an exact pin":                   {Context: ContextTuning{Mode: ContextExact, Tokens: 32768}},
+		"fit on with the override":       {FitEnabled: &fit, FitMinContext: &override},
+		"a device pin with the override": {Devices: []string{"CUDA0"}, FitMinContext: &override},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			gate := gateContext(tuning)
+			// The planner resolves its floor from the override BEFORE the path
+			// split (resolveWith); planTargetContext applies it only on the
+			// path where the flag has launch meaning. Mirror that exactly.
+			fitMin := DefaultFitMinContext
+			if tuning.FitMinContext != nil && *tuning.FitMinContext > 0 {
+				fitMin = *tuning.FitMinContext
+			}
+			target, err := planTargetContext(tuning, fitPathFor(tuning), fitMin, lowRAM, profile)
+			if err != nil {
+				t.Fatalf("planTargetContext: %v", err)
+			}
+			if gate != target {
+				t.Errorf("the gate priced %d tokens but the plan serves %d — the gate's admission is not a floor the launch keeps",
+					gate, target)
+			}
+		})
+	}
 }
 
 // TestPlanRefusesAnUnknownPinnedDevice is the fail-closed half: a name the

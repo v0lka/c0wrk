@@ -691,20 +691,37 @@ type gateAttempt struct {
 	overflow  int64
 }
 
+// fitPathFor reduces Plan's fit-exclusivity block — explicitOffloadShape plus
+// the FitEnabled switch, the planner's "one decider" — to the boolean that
+// block lands on: fit runs only when no override pins the offload and the
+// operator has not turned fit off explicitly. The gate needs the same answer
+// the planner will reach, because its context floor is path-dependent (see
+// gateContext): pricing the fit path's `-fitc` override against a machine
+// that will take the explicit path would hold it to a floor the launch never
+// applies. Keep this in lockstep with the planner's block — the gate/plan
+// floor-parity test in plan_test.go fails if they drift.
+func fitPathFor(tuning Tuning) bool {
+	return !tuning.explicitOffloadShape() && (tuning.FitEnabled == nil || *tuning.FitEnabled)
+}
+
 // gateContext is the context the gate prices: the operator's exact override
-// when there is one, otherwise the `-fitc` floor. It is never the RAM ladder's
-// larger tiers, because the gate answers "can this machine serve the model at
-// all", and the smallest context c0wrk is willing to serve IS the floor —
-// `DefaultFitMinContext`'s doc comment records why going below it reproduces
-// the pinned model's most-reported failure. Both sides of that promise now
-// hold: `planTargetContext` holds the plan to the same floor on BOTH paths
-// (fit and explicit), so a machine the gate admitted at 65536 is never planned
-// beneath it — the gate's verdict is an admission the launch can keep.
+// when there is one, otherwise the floor the plan will actually serve — the
+// `-fitc` override on the fit path, plain `DefaultFitMinContext` on the
+// explicit path, where `-fitc` is not emitted and its override has no launch
+// meaning (planTargetContext ignores it there too). It is never the RAM
+// ladder's larger tiers, because the gate answers "can this machine serve the
+// model at all", and the smallest context c0wrk is willing to serve IS the
+// floor — `DefaultFitMinContext`'s doc comment records why going below it
+// reproduces the pinned model's most-reported failure. Both sides of that
+// promise now hold: `planTargetContext` holds the plan to the same floor on
+// BOTH paths (fit and explicit), so a machine the gate admitted at its floor
+// is never planned beneath it — the gate's verdict is an admission the launch
+// can keep.
 func gateContext(tuning Tuning) int {
 	if tuning.Context.Mode == ContextExact && tuning.Context.Tokens > 0 {
 		return tuning.Context.Tokens
 	}
-	if tuning.FitMinContext != nil && *tuning.FitMinContext > 0 {
+	if fitPathFor(tuning) && tuning.FitMinContext != nil && *tuning.FitMinContext > 0 {
 		return *tuning.FitMinContext
 	}
 	return DefaultFitMinContext
@@ -2394,18 +2411,17 @@ func shapeNotes(tuning Tuning, plan MemoryPlan, profile ModelMemoryProfile, b bu
 			plan.FitMinContext, plan.ExpectedDeviceMiB, plan.ExpectedHostMiB))
 	}
 	if len(plan.Devices) > 0 {
-		notes = append(notes, fmt.Sprintf(
-			"the offload was pinned to %s (--device), which the runtime treats as a chosen offload and therefore sizes nothing itself",
-			strings.Join(plan.Devices, ",")))
 		// The topology arrived filtered (see filterTopology), so this inventory
 		// IS the named pool — state its measured size so the budget below is
 		// readable as "what these cards hold", not "what the machine holds".
+		// One note, not two: both sentences describe the SAME pin, and two
+		// entries would read to the operator as two separate decisions.
 		named := int64(0)
 		for _, device := range topology.Devices {
 			named += device.TotalMiB
 		}
 		notes = append(notes, fmt.Sprintf(
-			"the device pool was narrowed to %s (--device): the named accelerators measure %d MiB, and the context below is priced against that pool alone",
+			"the offload was pinned to %s (--device), which the runtime treats as a chosen offload and therefore sizes nothing itself; the named accelerators measure %d MiB, and the context below is priced against that pool alone",
 			strings.Join(plan.Devices, ","), named))
 	}
 	if plan.SplitMode != SplitModeAuto {

@@ -68,7 +68,7 @@ grep -A2 "memory breakdown \[MiB\]" llama-measure-cuda-*.log
 
 Все значения в MiB. Колонка «context» в shutdown-строке = KV-кэш + recurrent (например, 32768/f16: 2048.00 + 149.62 ≈ 2197).
 
-| Лог (`testdata/cuda-measured/`) | `-c` | KV | weights (CUDA0) | spill (Host) | recurrent (RS) | compute device | compute host | shutdown CUDA0: self = model+ctx+compute (free) | shutdown Host: self |
+| Лог | `-c` | KV | weights (CUDA0) | spill (Host) | recurrent (RS) | compute device | compute host | shutdown CUDA0: self = model+ctx+compute (free) | shutdown Host: self |
 |---|---|---|---|---|---|---|---|---|---|
 | `llama-measure-cuda-32768.log` | 32768 | f16 | 6539.67 | 322.07 | 149.62 | 166.02 | 52.02 | 8907 = 6543 + 2197 + 166 (free 4581) | 374 = 322 + 0 + 52 |
 | `llama-measure-cuda-65536.log` | 65536 | f16 | 6539.67 | 322.07 | 149.62 | 198.02 | 84.02 | 10987 = 6543 + 4245 + 198 (free 2479) | 406 = 322 + 0 + 84 |
@@ -88,7 +88,13 @@ KV-кэш из load-паса (16 attention-слоёв): 2048.00 (32768/f16), 409
 
 ## Файлы и целостность
 
-Логи лежат в `core/embeddedllm/testdata/cuda-measured/` (полные stdout/stderr llama-server, verbosity max):
+Логи — **локальные артефакты замера** в `core/embeddedllm/testdata/cuda-measured/`
+(полные stdout/stderr llama-server, verbosity max). В репозиторий они **не
+входят**: `*.log` исключён `.gitignore` намеренно. Durable-запись чисел в репо —
+транскрипция выше и replay-тест `TestCUDAMeasuredProfileReplay`
+(`core/embeddedllm/memory_test.go`), проверяющий каждую строку. Таблица ниже —
+манифест целостности локальных файлов: держатель оригиналов может сверить с
+ними транскрипцию.
 
 | Файл | Порт | SHA256 |
 |---|---|---|

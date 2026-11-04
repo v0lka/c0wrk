@@ -575,10 +575,13 @@ func mibCeil(bytes int64) int64 {
 // launch shape (`-fit on -ngl 99 -fa on -np 1 --ctx-checkpoints 32
 // --no-cache-idle-slots --mmproj ...`, all 65/65 layers offloaded).
 //
-// The evidence is the four full llama-server logs committed at
-// `testdata/cuda-measured/`; the numbers below are transcribed from them in
+// The evidence was the four full llama-server logs captured under
+// `testdata/cuda-measured/` — LOCAL measurement artifacts that are NOT part
+// of the repository (`*.log` is gitignored). The durable in-repo record of
+// the numbers below is their transcription in
 // `docs/development/embedded-llm-cuda-measurements.md` (methodology, the
-// parsing grep commands, and the SHA256 of every log included). The four
+// parsing grep commands, the SHA256 of every log, and
+// `TestCUDAMeasuredProfileReplay`, which asserts every row). The four
 // measured (context, KV precision) points are:
 //
 //	32768 / f16    `| - CUDA0 (RTX 5060 Ti) | 15938 = 4581 + (8907 = 6543 + 2197 + 166) + 2449 |`, `| - Host | 374 = 322 + 0 + 52 |`
