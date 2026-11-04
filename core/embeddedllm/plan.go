@@ -88,7 +88,10 @@ import (
 //
 // 65536 is also the tier `contextSizeFor` already grants a ≤71 GiB machine, so
 // the fit floor and the explicit ladder agree at the middle of the range
-// instead of the planner having two different ideas of "usable".
+// instead of the planner having two different ideas of "usable". And since the
+// explicit path holds its own tier to THIS floor (planTargetContext), the
+// agreement now holds everywhere: one floor, both deciders, one idea of the
+// smallest context a plan may serve.
 const DefaultFitMinContext = 65536
 
 // upstreamFitMinContext is the fork's own `-fitc` default, kept only so the
@@ -149,17 +152,20 @@ const DefaultCtxCheckpoints = 32
 const runtimeCacheRAMDefaultMiB = 8192
 
 // Policy margins for the device/host SPLIT, which memory.go documents as
-// measured on **Metal only**. The weight, cache, recurrent-state and compute
-// terms are model+runtime properties and travel across backends; the division
-// of those terms between device and host is a property of each backend's repack
-// support, and on a backend nobody measured it the projection is an estimate.
-// These allowances are the planner's way of saying so: they are POLICY, not
-// measurement, deliberately conservative, and they are the only numbers in this
+// measured on exactly two tuples — Metal on Apple Silicon and CUDA on NVIDIA
+// Blackwell (see measuredSplitTuples below). The weight, cache,
+// recurrent-state and compute terms are model+runtime properties and travel
+// across backends; the division of those terms between device and host is a
+// property of each backend's repack support, and on a tuple nobody measured
+// the projection is an estimate. These allowances are the planner's way of
+// saying so: they are POLICY, not measurement, deliberately conservative,
+// and — since the CUDA overlay landed — they are the only numbers in this
 // file that are not derived from a cited figure.
 const (
 	// unmeasuredSplitAllowanceMiB is subtracted from the device budget on a
-	// recognized GPU family whose split has not been measured (every CUDA,
-	// ROCm, Vulkan and Intel part).
+	// recognized GPU family whose split has not been measured: ROCm, Vulkan
+	// and Intel parts, and CUDA parts off the measured tuple (every family
+	// other than Blackwell, and Blackwell behind a non-CUDA build).
 	unmeasuredSplitAllowanceMiB int64 = 1024
 	// unknownGPUAllowanceMiB is the larger deduction for a device the
 	// classifier does not recognize at all: an unknown part is unknown in both
@@ -543,7 +549,7 @@ func gateBudgetsFor(in ResolveInput, backend Backend, family GPUFamily) (gateBud
 		}
 		reserveBytes := max(ramBytes-hostBytes, 0)
 
-		device := max(topology.DeviceBudgetMiB()-splitAllowanceMiB(family), 0)
+		device := max(topology.DeviceBudgetMiB()-splitAllowanceMiB(backend, family), 0)
 
 		axis := deviceKnown
 		if len(topology.Devices) == 0 {
@@ -690,7 +696,10 @@ type gateAttempt struct {
 // larger tiers, because the gate answers "can this machine serve the model at
 // all", and the smallest context c0wrk is willing to serve IS the floor —
 // `DefaultFitMinContext`'s doc comment records why going below it reproduces
-// the pinned model's most-reported failure.
+// the pinned model's most-reported failure. Both sides of that promise now
+// hold: `planTargetContext` holds the plan to the same floor on BOTH paths
+// (fit and explicit), so a machine the gate admitted at 65536 is never planned
+// beneath it — the gate's verdict is an admission the launch can keep.
 func gateContext(tuning Tuning) int {
 	if tuning.Context.Mode == ContextExact && tuning.Context.Tokens > 0 {
 		return tuning.Context.Tokens
@@ -767,7 +776,7 @@ func memoryGate(in ResolveInput, backend Backend, family GPUFamily, profile Mode
 		notes = append(notes, g.degradedNote)
 	}
 
-	best, ok := closestAttempt(profile, packings, kvSet, ctx, offloadShapes, g.overflow,
+	best, ok := closestAttempt(profile, backend, family, packings, kvSet, ctx, offloadShapes, g.overflow,
 		in.Tuning.KVOffload == nil || *in.Tuning.KVOffload,
 		in.Tuning.MMProjOffload == nil || *in.Tuning.MMProjOffload)
 	if !ok {
@@ -795,6 +804,8 @@ func memoryGate(in ResolveInput, backend Backend, family GPUFamily, profile Mode
 // unmeasured packing outright, which is a different question.
 func closestAttempt(
 	profile ModelMemoryProfile,
+	backend Backend,
+	family GPUFamily,
 	packings []Packing,
 	kvSet []KVType,
 	ctx int,
@@ -808,7 +819,7 @@ func closestAttempt(
 	for _, packing := range packings {
 		for _, offloaded := range shapes {
 			for _, kv := range kvSet {
-				deviceMiB, hostMiB, _, err := footprint(profile, packing, ctx, kv, offloaded, false,
+				deviceMiB, hostMiB, _, err := footprint(profile, backend, family, packing, ctx, kv, offloaded, false,
 					kvOffload, mmprojOffload)
 				if err != nil {
 					continue
@@ -921,8 +932,9 @@ func (o Offload) explicit() bool { return o.Mode != OffloadAuto }
 type ContextMode int
 
 const (
-	// ContextAuto lets the planner compute the context: from the fit floor when
-	// fit sizes it, otherwise from the RAM ladder.
+	// ContextAuto lets the planner compute the context: the RAM ladder held to
+	// a 65536-token floor — the `-fitc` value under fit, the default floor on
+	// the explicit path (planTargetContext).
 	ContextAuto ContextMode = iota
 	// ContextExact pins `-c` to Tokens.
 	ContextExact
@@ -1065,26 +1077,73 @@ func (t Tuning) explicitOffloadShape() bool {
 // The GPUFamily vocabulary and its description classifier live in compat.go,
 // which owns them for the packing decision and the compatibility guards. This
 // file is a second CONSUMER of the same answer, and it consumes it for a
-// different reason: memory.go's profile was measured on ONE family (Apple
-// Silicon / Metal), so the family is what prices the uncertainty of a
-// device/host split nobody measured — see splitAllowanceMiB. Resolve classifies
+// different reason: the device/host split is measured per (backend, family)
+// tuple (memory.go's overlays), so the TUPLE is what prices the uncertainty of
+// a split nobody measured — see splitAllowanceMiB. Resolve classifies
 // a probed inventory with ClassifyGPUs before planning, so a plan and the
 // packing decision can never disagree about which silicon they are for.
 
-// splitAllowanceMiB is the device-budget deduction a family's unmeasured split
-// costs. Apple Silicon is the measured family and pays nothing; a recognized
-// family nobody measured pays unmeasuredSplitAllowanceMiB; an unrecognized part
-// pays unknownGPUAllowanceMiB, because unknown means unknown in both
-// directions (the split AND the compute-reserve behaviour).
-func splitAllowanceMiB(family GPUFamily) int64 {
-	switch family {
-	case GPUFamilyAppleSilicon:
-		return 0
-	case GPUFamilyUnknown:
-		return unknownGPUAllowanceMiB
-	default:
-		return unmeasuredSplitAllowanceMiB
+// measuredSplitTuple is one row of measuredSplitTuples: a (backend, family)
+// pair whose device/host split this project has measured, plus the citation
+// that makes the row a fact and not an opinion.
+type measuredSplitTuple struct {
+	// family is the silicon the split was measured on.
+	family GPUFamily
+	// onBackend reports whether the runtime build matches the measurement;
+	// the same predicates select memory.go's projection overlays.
+	onBackend func(Backend) bool
+	// cite names the measurement; the figures themselves live in memory.go.
+	cite string
+}
+
+// measuredSplitTuples is the POLICY table of measured (backend, family)
+// tuples — the split-allowance twin of memory.go's shapeFor. A tuple on this
+// table pays no split allowance: its projection is a measurement, and holding
+// budget back from a measured machine is exactly the guesswork the
+// measurement retired. A tuple OFF it keeps paying, so an estimate can never
+// spend a measured machine's headroom.
+//
+// The table is append-only: a new measurement adds a row; a re-measure
+// updates its row's cite. memory.go's overlay selection and this table must
+// cover the same tuples — TestPlanSplitAllowancePricesAnUnmeasuredSplit pins
+// both sides of that agreement.
+var measuredSplitTuples = []measuredSplitTuple{
+	{
+		family:    GPUFamilyAppleSilicon,
+		onBackend: func(b Backend) bool { return b == BackendMetal },
+		cite:      "the 2026-09-25 Metal measurement (Apple M4 Max)",
+	},
+	{
+		family:    GPUFamilyNVIDIABlackwell,
+		onBackend: Backend.IsCUDA,
+		cite:      "the 2026-11-03 CUDA measurement (fork pin prism-b10735-842b188, cuda-13.3 build, RTX 5060 Ti, PQ2_0)",
+	},
+}
+
+// splitIsMeasured reports whether this project has measured the device/host
+// split of the (backend, family) tuple — one lookup into measuredSplitTuples.
+func splitIsMeasured(backend Backend, family GPUFamily) bool {
+	for _, row := range measuredSplitTuples {
+		if row.family == family && row.onBackend(backend) {
+			return true
+		}
 	}
+	return false
+}
+
+// splitAllowanceMiB is the device-budget deduction a tuple's unmeasured split
+// costs. A measured tuple (see measuredSplitTuples) pays nothing; a
+// recognized tuple nobody measured pays unmeasuredSplitAllowanceMiB; an
+// unrecognized part pays unknownGPUAllowanceMiB, because unknown means
+// unknown in both directions (the split AND the compute-reserve behaviour).
+func splitAllowanceMiB(backend Backend, family GPUFamily) int64 {
+	if splitIsMeasured(backend, family) {
+		return 0
+	}
+	if family == GPUFamilyUnknown {
+		return unknownGPUAllowanceMiB
+	}
+	return unmeasuredSplitAllowanceMiB
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1158,8 +1217,8 @@ type MemoryPlan struct {
 	// bundle carries the reason behind the allowance in the budgets below.
 	GPUFamily GPUFamily `json:"gpu_family,omitempty"`
 	// DeviceBudgetMiB and HostBudgetMiB are the budgets the plan was gated
-	// against: the topology's own, after the family's split allowance (device)
-	// and after any HostReserveGiB override (host).
+	// against: the topology's own, after the (backend, family) tuple's split
+	// allowance (device) and after any HostReserveGiB override (host).
 	DeviceBudgetMiB int64 `json:"device_budget_mib"`
 	HostBudgetMiB   int64 `json:"host_budget_mib"`
 	// ExpectedDeviceMiB and ExpectedHostMiB are the projected footprints of the
@@ -1255,7 +1314,7 @@ func Plan(
 	// still the typed both-pools one, because "which pool is short" is a fact
 	// about the machine and not about who chose the shape.
 	if tuning.explicitOffloadShape() {
-		return plan, insufficientForPlan(topology, profile, tuning, family, packing)
+		return plan, insufficientForPlan(topology, profile, tuning, backend, family, packing)
 	}
 
 	for _, relax := range relaxations(tuning, topology, profile) {
@@ -1271,7 +1330,7 @@ func Plan(
 			return relaxed, relaxErr
 		}
 	}
-	return plan, insufficientForPlan(topology, profile, tuning, family, packing)
+	return plan, insufficientForPlan(topology, profile, tuning, backend, family, packing)
 }
 
 // relaxation is one shape degradation Plan tries when the base shape does not
@@ -1394,6 +1453,11 @@ func shrinkTarget(tuning Tuning, topology MemoryTopology, profile ModelMemoryPro
 	if profile.MaxContext > 0 && ladder > profile.MaxContext {
 		ladder = profile.MaxContext
 	}
+	// The explicit path's target is the floored tier (planTargetContext), so
+	// this reads the same figure on both paths.
+	if DefaultFitMinContext > ladder {
+		ladder = DefaultFitMinContext
+	}
 	return ladder
 }
 
@@ -1410,10 +1474,11 @@ func insufficientForPlan(
 	topology MemoryTopology,
 	profile ModelMemoryProfile,
 	tuning Tuning,
+	backend Backend,
 	family GPUFamily,
 	packing Packing,
 ) error {
-	b, err := planBudgets(topology, tuning, family)
+	b, err := planBudgets(topology, tuning, backend, family)
 	if err != nil {
 		// Unreachable in practice: Plan returns a budget error from planShape
 		// before it ever asks for a refusal message. Propagating it keeps this
@@ -1459,7 +1524,7 @@ func insufficientForPlan(
 		// price both extremes, which is the bound `footprint` already reports.
 	}
 
-	best, ok := closestAttempt(profile, packings, gateKVTypes(tuning), ctx, shapes, g.overflow,
+	best, ok := closestAttempt(profile, backend, family, packings, gateKVTypes(tuning), ctx, shapes, g.overflow,
 		tuning.KVOffload == nil || *tuning.KVOffload,
 		tuning.MMProjOffload == nil || *tuning.MMProjOffload)
 	if !ok {
@@ -1486,7 +1551,7 @@ func planShape(
 		return MemoryPlan{}, err
 	}
 
-	budgets, err := planBudgets(topology, tuning, family)
+	budgets, err := planBudgets(topology, tuning, backend, family)
 	if err != nil {
 		return MemoryPlan{}, err
 	}
@@ -1521,6 +1586,19 @@ func planShape(
 	if err != nil {
 		return MemoryPlan{}, err
 	}
+	// The explicit path's floor is a decision the operator should see: when the
+	// RAM tier sits below 65536, the plan served more than the machine's tier
+	// ladder grants, and the Note says why (the gate admitted the machine at
+	// the floor; a smaller window reproduces the truncated-answer failure).
+	// The fit path's own note below already names its floor, and an exact pin
+	// needs no explanation.
+	if !fit && tuning.Context.Mode == ContextAuto {
+		if tier := ladderContextFor(topology, profile); target > tier {
+			notes = append(notes, fmt.Sprintf(
+				"the %d-token RAM tier sits below the %d-token floor, so the context was held to the floor and rendered as an explicit -c: a smaller window is what produces this model's empty and truncated answers",
+				tier, DefaultFitMinContext))
+		}
+	}
 
 	// One flag, computed once, shared by the KV gate and the expected-figure
 	// projection: a partial layer count is the one shape the measured profile
@@ -1528,13 +1606,13 @@ func planShape(
 	// at a measurement or at a bound.
 	partial := partialOffload(profile, layers, fit)
 
-	kv, kvNotes, err := planKVType(tuning, profile, packing, target, budgets, layers, fit, partial)
+	kv, kvNotes, err := planKVType(tuning, profile, backend, family, packing, target, budgets, layers, fit, partial)
 	if err != nil {
 		return MemoryPlan{}, err
 	}
 	notes = append(notes, kvNotes...)
 
-	deviceMiB, hostMiB, bound, err := planFootprint(profile, packing, target, kv, layers, fit, partial, budgets, tuning)
+	deviceMiB, hostMiB, bound, err := planFootprint(profile, backend, family, packing, target, kv, layers, fit, partial, budgets, tuning)
 	if err != nil {
 		return MemoryPlan{}, err
 	}
@@ -1584,7 +1662,9 @@ func planShape(
 	// `--fit` adjusts only UNSET arguments, so a rendered `-c` is left alone
 	// and fit sizes the offload (`-ngl`) — while a zero would hand the context
 	// to the runtime, which sizes it up to the model's full training context
-	// regardless of available memory. An exact operator pin is honoured as-is.
+	// regardless of available memory. The explicit path holds its tier to the
+	// same default floor and Notes when the floor lifted it. An exact operator
+	// pin is honoured as-is.
 	plan.ContextSize = target
 	if fit {
 		if tuning.Context.Mode == ContextExact {
@@ -1624,7 +1704,7 @@ func planShape(
 		}
 	}
 
-	notes = append(notes, shapeNotes(tuning, plan, profile, budgets, topology)...)
+	notes = append(notes, shapeNotes(tuning, plan, profile, budgets, topology, backend)...)
 	plan.Notes = notes
 	return plan, nil
 }
@@ -1755,9 +1835,9 @@ func (b budgets) fits(deviceMiB, hostMiB int64) bool {
 // planBudgets derives the two numbers the gate spends, from the topology's own
 // budgets plus this plan's overrides.
 //
-// The device budget loses the GPU family's split allowance: the topology's
-// 1536 MiB margin covers allocator bookkeeping on the backend the profile was
-// measured on, and nothing covers a repack split nobody measured.
+// The device budget loses the (backend, family) tuple's split allowance: the
+// topology's 1536 MiB margin covers allocator bookkeeping on the backends the
+// overlays measured, and nothing covers a repack split nobody measured.
 //
 // The host budget is the topology's own unless HostReserveGiB overrides it, in
 // which case it is re-derived from the topology's RAM total — the override
@@ -1771,8 +1851,8 @@ func (b budgets) fits(deviceMiB, hostMiB int64) bool {
 //
 // The topology's Unified flag is carried through so the budgets can be spent the
 // way the memory gate spends them — see budgets.fits.
-func planBudgets(topology MemoryTopology, tuning Tuning, family GPUFamily) (budgets, error) {
-	device := topology.DeviceBudgetMiB() - splitAllowanceMiB(family)
+func planBudgets(topology MemoryTopology, tuning Tuning, backend Backend, family GPUFamily) (budgets, error) {
+	device := topology.DeviceBudgetMiB() - splitAllowanceMiB(backend, family)
 	if device < 0 {
 		device = 0
 	}
@@ -2016,10 +2096,17 @@ func planLayers(tuning Tuning, fit bool, deviceBudgetMiB int64) (layers *int, no
 	}
 }
 
-// planTargetContext resolves the context the plan must be able to SERVE. Under
-// fit that is the floor fit is held to (`-fitc`), because a fit run that cannot
-// reach its own minimum aborts rather than degrading; otherwise it is the
-// override, or the RAM ladder the explicit path has always used.
+// planTargetContext resolves the context the plan must be able to SERVE. Both
+// non-exact paths hold the RAM ladder to a 65536-token floor; they differ only
+// in which floor. Under fit it is the `-fitc` value (the override, else the
+// default), because a fit run that cannot reach its own minimum aborts rather
+// than degrading. On the explicit path (pinned devices, a split mode, or an
+// explicit fit-off) it is DefaultFitMinContext: the `-fitc` flag is not
+// emitted there, so its override has no launch meaning — and the floor is the
+// exact figure gateContext admits the machine at, so a plan that served less
+// would break that promise and reproduce the truncated-answer failure
+// DefaultFitMinContext exists to prevent. An exact operator pin always wins
+// unchanged.
 func planTargetContext(
 	tuning Tuning,
 	fit bool,
@@ -2050,17 +2137,30 @@ func planTargetContext(
 		}
 		return ladder, nil
 	}
-	return ladderContextFor(topology, profile), nil
+	// The explicit path holds the ladder to the same default floor. The gate
+	// (gateContext) priced this machine at exactly that figure, so serving a
+	// smaller tier would quietly under-deliver on the admission — and on the
+	// small machines that matters most (a 32 GiB host tiers at 32768), that
+	// under-delivery is the truncated-answer failure itself. planShape records
+	// a Note whenever the floor lifted the tier.
+	ladder := ladderContextFor(topology, profile)
+	if DefaultFitMinContext > ladder {
+		ladder = DefaultFitMinContext
+	}
+	return ladder, nil
 }
 
-// ladderContextFor is the RAM-tier context the explicit path has always used:
-// the ladder value clamped to the model's own training context. It is ALSO the
-// fit path's `-c` (see planShape): `--fit` adjusts only UNSET arguments, so a
-// rendered `-c` is left alone and fit sizes the offload (`-ngl`) — while an
-// omitted (zero) context hands the sizing to the runtime, which picks the
-// model's full training context regardless of available memory. That is the
-// failure the vendor warns about explicitly and the shape that made every agent
-// prompt a minutes-long prefill on memory-rich machines.
+// ladderContextFor is the RAW RAM tier — the ladder value clamped to the
+// model's own training context — that BOTH paths start from before their floor
+// is applied (planTargetContext). It is the value planShape's fit note and the
+// explicit path's floor note quote, because "the tier the machine's RAM
+// grants" and "the floor c0wrk serves" are the two halves of one decision.
+// It is ALSO the fit path's `-c` story (see planShape): `--fit` adjusts only
+// UNSET arguments, so a rendered `-c` is left alone and fit sizes the offload
+// (`-ngl`) — while an omitted (zero) context hands the sizing to the runtime,
+// which picks the model's full training context regardless of available
+// memory. That is the failure the vendor warns about explicitly and the shape
+// that made every agent prompt a minutes-long prefill on memory-rich machines.
 func ladderContextFor(topology MemoryTopology, profile ModelMemoryProfile) int {
 	ladder := contextSizeFor(topology.HostRAMGiB)
 	if profile.MaxContext > 0 && ladder > profile.MaxContext {
@@ -2090,6 +2190,8 @@ func ladderContextFor(topology MemoryTopology, profile ModelMemoryProfile) int {
 func planKVType(
 	tuning Tuning,
 	profile ModelMemoryProfile,
+	backend Backend,
+	family GPUFamily,
 	packing Packing,
 	target int,
 	budgets budgets,
@@ -2130,7 +2232,7 @@ func planKVType(
 		// the real `partial` matters even though the flag is ignored — a
 		// partial shape must be gated on the same conservative bounds the plan
 		// will later report, not on an exact figure it cannot produce.
-		deviceMiB, hostMiB, _, err := footprint(profile, packing, target, candidate, offloaded,
+		deviceMiB, hostMiB, _, err := footprint(profile, backend, family, packing, target, candidate, offloaded,
 			partial, tuning.KVOffload == nil || *tuning.KVOffload,
 			tuning.MMProjOffload == nil || *tuning.MMProjOffload)
 		if err != nil {
@@ -2189,8 +2291,14 @@ func partialOffload(profile ModelMemoryProfile, layers *int, fit bool) bool {
 // and the host figure the CPU-only projection (an upper bound — some weights
 // moving to the device cannot cost more host memory). Both bounds err towards
 // refusal, which is the safe direction for a gate.
+//
+// backend and family select the measured shape the projections price with —
+// the CUDA overlay on the measured CUDA tuple, the Metal default elsewhere
+// (memory.go's shapeFor).
 func footprint(
 	profile ModelMemoryProfile,
+	backend Backend,
+	family GPUFamily,
 	packing Packing,
 	ctx int,
 	kv KVType,
@@ -2199,22 +2307,22 @@ func footprint(
 	kvOffload bool,
 	mmprojOffload bool,
 ) (deviceMiB, hostMiB int64, exact bool, err error) {
-	deviceMiB, err = profile.ProjectDeviceMiB(packing, ctx, kv, offloaded)
+	deviceMiB, err = profile.ProjectDeviceMiB(backend, family, packing, ctx, kv, offloaded)
 	if err != nil {
 		return 0, 0, false, err
 	}
-	hostMiB, err = profile.ProjectHostMiB(packing, ctx, kv, offloaded)
+	hostMiB, err = profile.ProjectHostMiB(backend, family, packing, ctx, kv, offloaded)
 	if err != nil {
 		return 0, 0, false, err
 	}
 	if partial {
 		// Re-derive both sides as bounds: device from the full-offload
 		// projection, host from the CPU-only one.
-		deviceMiB, err = profile.ProjectDeviceMiB(packing, ctx, kv, true)
+		deviceMiB, err = profile.ProjectDeviceMiB(backend, family, packing, ctx, kv, true)
 		if err != nil {
 			return 0, 0, false, err
 		}
-		hostMiB, err = profile.ProjectHostMiB(packing, ctx, kv, false)
+		hostMiB, err = profile.ProjectHostMiB(backend, family, packing, ctx, kv, false)
 		if err != nil {
 			return 0, 0, false, err
 		}
@@ -2250,6 +2358,8 @@ func footprint(
 // figures for the precision that actually won.
 func planFootprint(
 	profile ModelMemoryProfile,
+	backend Backend,
+	family GPUFamily,
 	packing Packing,
 	target int,
 	kv KVType,
@@ -2260,7 +2370,7 @@ func planFootprint(
 	tuning Tuning,
 ) (deviceMiB, hostMiB int64, bound bool, err error) {
 	offloaded := willOffload(layers, fit, budgets.deviceMiB)
-	deviceMiB, hostMiB, exact, err := footprint(profile, packing, target, kv, offloaded, partial,
+	deviceMiB, hostMiB, exact, err := footprint(profile, backend, family, packing, target, kv, offloaded, partial,
 		tuning.KVOffload == nil || *tuning.KVOffload,
 		tuning.MMProjOffload == nil || *tuning.MMProjOffload)
 	if err != nil {
@@ -2271,8 +2381,11 @@ func planFootprint(
 
 // shapeNotes records the non-default decisions the shape itself carries. Every
 // entry is a deviation from the all-Auto plan, which is the contract the UI
-// relies on: a plan with nothing overridden has nothing to explain.
-func shapeNotes(tuning Tuning, plan MemoryPlan, profile ModelMemoryProfile, b budgets, topology MemoryTopology) []string {
+// relies on: a plan with nothing overridden has nothing to explain. The
+// backend qualifies the split-allowance note: a measured (backend, family)
+// tuple pays nothing and gets no note at all — "not measured" is a claim about
+// a tuple, and writing it about a measured one would be false.
+func shapeNotes(tuning Tuning, plan MemoryPlan, profile ModelMemoryProfile, b budgets, topology MemoryTopology, backend Backend) []string {
 	var notes []string
 
 	if plan.Fit {
@@ -2308,7 +2421,7 @@ func shapeNotes(tuning Tuning, plan MemoryPlan, profile ModelMemoryProfile, b bu
 	if !plan.MMProjOffload {
 		notes = append(notes, "--no-mmproj-offload keeps the vision projector's worst-case reserve in system RAM")
 	}
-	if allowance := splitAllowanceMiB(plan.GPUFamily); allowance > 0 {
+	if allowance := splitAllowanceMiB(backend, plan.GPUFamily); allowance > 0 {
 		notes = append(notes, fmt.Sprintf(
 			"the accelerator was classified as %s, whose device/host split this project has not measured, so %d MiB was held back from its %d MiB budget",
 			plan.GPUFamily, allowance, b.deviceMiB+allowance))

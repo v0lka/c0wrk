@@ -52,6 +52,8 @@ import {
 } from '@/stores/embeddedLLMStore'
 import { EmbeddedLLMProgress } from './embedded/EmbeddedLLMProgress'
 import { EmbeddedLLMInstallRecord } from './embedded/EmbeddedLLMInstallRecord'
+import { EmbeddedLLMDeviceMemory } from './embedded/EmbeddedLLMDeviceMemory'
+import { EmbeddedLLMNotice } from './embedded/EmbeddedLLMNotice'
 import { EmbeddedLLMActions, EmbeddedLLMInstallAction, EmbeddedLLMCleanupAction } from './embedded/EmbeddedLLMActions'
 import { EmbeddedLLMAutoUnload } from './embedded/EmbeddedLLMAutoUnload'
 import { EmbeddedLLMTuning } from './embedded/EmbeddedLLMTuning'
@@ -185,7 +187,11 @@ export function EmbeddedLLMSettings() {
             <EmbeddedLLMProgress progress={progress} busy={busy} onCancel={lifecycle.cancelInstall} />
           ) : installed && status ? (
             <>
+              <EmbeddedLLMNotice />
+
               <EmbeddedLLMInstallRecord status={status} />
+
+              <EmbeddedLLMDeviceMemory installed={installed} />
 
               <EmbeddedLLMActions
                 loaded={loaded}

@@ -35,6 +35,7 @@ const mocks = vi.hoisted(() => ({
   // Captured subscribers so a test can emit an event at the block.
   stateHandlers: new Set<(data: unknown) => void>(),
   progressHandlers: new Set<(data: unknown) => void>(),
+  noticeHandlers: new Set<(data: unknown) => void>(),
 }))
 
 vi.mock('@/lib/logger', () => ({
@@ -62,6 +63,12 @@ vi.mock('@/api/embedded', () => ({
     mocks.progressHandlers.add(cb)
     return () => {
       mocks.progressHandlers.delete(cb)
+    }
+  },
+  onEmbeddedLLMNotice: (cb: (data: unknown) => void) => {
+    mocks.noticeHandlers.add(cb)
+    return () => {
+      mocks.noticeHandlers.delete(cb)
     }
   },
 }))

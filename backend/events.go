@@ -222,6 +222,17 @@ const EventEmbeddedLLMInstallProgress = "embedded_llm:install_progress"
 // specs/contracts/event-catalog.md.
 const EventEmbeddedLLMState = "embedded_llm:state"
 
+// EventEmbeddedLLMNotice reports a non-terminal operator-facing finding from
+// the embedded-LLM supervisor — a warning about the launch it is making, not a
+// state transition (the state machine's own verdict still travels through
+// embedded_llm:state). The payload is an EmbeddedLLMNoticeData. It is a global
+// event with a bare name (not session-scoped): the finding belongs to the
+// machine, not to a conversation. Current producer: the load-time pre-flight
+// that compares freshly measured free accelerator memory with the launch's
+// projected device footprint (core/embeddedllm Server.preflightFreeMemory).
+// See specs/contracts/event-catalog.md.
+const EventEmbeddedLLMNotice = "embedded_llm:notice"
+
 // EventChatGPTAuthState reports a transition of the ChatGPT subscription
 // sign-in flow (pending | success | error | cancelled). The payload is a
 // ChatGPTAuthEventData. It is a global event with a bare name (not

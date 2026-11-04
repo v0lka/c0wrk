@@ -938,6 +938,28 @@ export interface EmbeddedLLMStateData {
   readonly install_error: string
 }
 
+/** Payload of the global `embedded_llm:notice` event: one non-terminal
+ *  supervisor finding — a warning about the launch the embedded LLM is
+ *  making, NOT a state transition (the state machine's own verdict still
+ *  travels through `embedded_llm:state`). Current producer: the load-time
+ *  pre-flight that compares freshly measured free accelerator memory with the
+ *  launch's projected device footprint — a shortfall is reported, the plan is
+ *  unchanged (budgets price total capacity). Mirrors backend
+ *  EmbeddedLLMNoticeData. */
+export interface EmbeddedLLMNoticeData {
+  /** The closed finding vocabulary from core ("low_free_device_memory"), so
+   *  rendering keys on it instead of parsing Message. */
+  readonly kind: string
+  /** The complete, renderable human sentence — the same text the supervisor
+   *  logged at Warn. */
+  readonly message: string
+  /** The free accelerator memory measured over exactly the pool the plan
+   *  prices (MiB). */
+  readonly free_device_mib: number
+  /** The plan's projected device footprint (MiB). */
+  readonly expected_device_mib: number
+}
+
 /** Payload of the global `chatgpt_auth:state` event: one transition of the
  *  ChatGPT subscription sign-in flow (backend/frontend_api_auth.go). Exactly
  *  one flow transition per event; the fields are state-dependent — `auth_url`
@@ -1034,6 +1056,9 @@ export interface GlobalEventMap {
    *  transition, once at startup after the manifest restore, and after an
    *  install, a removal or an auto-unload policy change. */
   readonly 'embedded_llm:state': EmbeddedLLMStateData
+  /** Embedded local-model non-terminal supervisor finding (a launch warning,
+   *  not a transition). Emitted by the load-time free-memory pre-flight. */
+  readonly 'embedded_llm:notice': EmbeddedLLMNoticeData
   /** ChatGPT subscription sign-in flow transition (pending → success |
    *  error | cancelled). Emitted by the background flow started with
    *  StartChatGPTSignIn; sign-out emits nothing. */
@@ -1894,6 +1919,18 @@ export function isEmbeddedLLMStateData(d: unknown): d is EmbeddedLLMStateData {
   if (typeof d.auto_unload_minutes !== 'number') return false
   if (typeof d.error !== 'string') return false
   return typeof d.install_error === 'string'
+}
+
+/** Guard for an `embedded_llm:notice` payload. `kind` is deliberately NOT
+ *  enumerated: it is core's closed finding vocabulary, but a new finding kind
+ *  must not make the event fail validation before the vocabulary reaches this
+ *  file — the message renders fine on its own. */
+export function isEmbeddedLLMNoticeData(d: unknown): d is EmbeddedLLMNoticeData {
+  if (!isObj(d)) return false
+  if (typeof d.kind !== 'string') return false
+  if (typeof d.message !== 'string') return false
+  if (typeof d.free_device_mib !== 'number') return false
+  return typeof d.expected_device_mib === 'number'
 }
 
 /** The four `chatgpt_auth:state` payload states (backend chatgptAuthEvent*

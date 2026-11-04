@@ -433,9 +433,11 @@ llm:
 #   # this machine does not have budgets one pool and allocates in another.
 #   tuning:
 #     # The context window (`-c`). Default: unset.
-#     #   mode: auto   the planner sizes it — from fit_min_context under fit,
-#     #                otherwise from the system-RAM ladder, never above the
-#     #                model's own training context.
+#     #   mode: auto   the planner sizes it — the system-RAM ladder held to the
+#     #                65536-token floor on both paths (from fit_min_context
+#     #                under fit, from the default floor when fit is off, e.g.
+#     #                under a devices/split_mode pin), never above the model's
+#     #                own training context.
 #     #   mode: exact  pins `-c` to tokens, which then becomes REQUIRED.
 #     # tokens is valid 1-262144 (the pinned model's own training context, read
 #     # from the memory profile rather than written down here) and is validated

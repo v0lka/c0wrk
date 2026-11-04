@@ -52,10 +52,12 @@ vi.mock('@/api/embedded', () => ({
   setEmbeddedLLMAutoUnload: vi.fn(),
   onEmbeddedLLMState: mocks.onState,
   onEmbeddedLLMInstallProgress: mocks.onProgress,
+  onEmbeddedLLMNotice: vi.fn(() => () => {}),
 }))
 
 vi.mock('@/api/embeddedTuning', () => ({
   getEmbeddedLLMTuning: mocks.getEmbeddedLLMTuning,
+  probeEmbeddedLLMDevices: vi.fn(() => Promise.reject(new Error('probe forbidden'))),
 }))
 
 import {

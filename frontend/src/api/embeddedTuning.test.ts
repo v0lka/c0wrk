@@ -45,9 +45,11 @@ import {
   MIN_PARALLEL,
 } from '@/lib/embeddedTuningLimits'
 import {
+  isEmbeddedLLMDeviceSnapshot,
   isEmbeddedLLMPlan,
   isEmbeddedLLMStatusExtras,
   isEmbeddedLLMTuning,
+  probeEmbeddedLLMDevices,
   setEmbeddedLLMTuning,
   validateEmbeddedLLMTuningPatch,
   type EmbeddedLLMPlan,
@@ -440,5 +442,42 @@ describe('validateEmbeddedLLMTuningPatch — integrality of the `int` knobs', ()
       validateEmbeddedLLMTuningPatch({ context: { mode: 'exact', tokens: 32768 } }),
     ).not.toThrow()
     expect(() => validateEmbeddedLLMTuningPatch({ fit_min_context: MIN_CONTEXT_TOKENS })).not.toThrow()
+  })
+})
+
+
+describe('probeEmbeddedLLMDevices — the live snapshot guard', () => {
+  const SNAPSHOT = {
+    devices: [{ name: 'CUDA0', description: 'NVIDIA GeForce RTX 4090', total_mib: 24576, free_mib: 8000 }],
+    unified: false,
+    host_ram_gib: 128,
+    device_budget_mib: 23552,
+    host_budget_mib: 114688,
+    probed_at: '2026-11-03T12:00:00Z',
+  }
+
+  it('passes a healthy measurement through', async () => {
+    mockApp.ProbeEmbeddedLLMDevices = async () => SNAPSHOT
+    await expect(probeEmbeddedLLMDevices()).resolves.toEqual(SNAPSHOT)
+  })
+
+  it('refuses a drifted payload loudly (schema drift, not a machine with no memory)', async () => {
+    mockApp.ProbeEmbeddedLLMDevices = async () => ({ ...SNAPSHOT, unified: 'yes' })
+    await expect(probeEmbeddedLLMDevices()).rejects.toThrow('invalid device snapshot')
+  })
+
+  it('propagates the backend refusal verbatim (an unanswered probe is an error, never an empty inventory)', async () => {
+    mockApp.ProbeEmbeddedLLMDevices = async () => {
+      throw new Error('the device probe did not answer')
+    }
+    await expect(probeEmbeddedLLMDevices()).rejects.toThrow('the device probe did not answer')
+  })
+
+  it('guard: an empty devices array is a real answer; a non-array or non-number field is drift', () => {
+    expect(isEmbeddedLLMDeviceSnapshot({ ...SNAPSHOT, devices: [] })).toBe(true)
+    expect(isEmbeddedLLMDeviceSnapshot({ ...SNAPSHOT, devices: 'none' })).toBe(false)
+    expect(isEmbeddedLLMDeviceSnapshot({ ...SNAPSHOT, probed_at: 42 })).toBe(false)
+    expect(isEmbeddedLLMDeviceSnapshot({ ...SNAPSHOT, devices: [{ ...SNAPSHOT.devices[0], free_mib: '8192' }] })).toBe(false)
+    expect(isEmbeddedLLMDeviceSnapshot(null)).toBe(false)
   })
 })

@@ -404,6 +404,11 @@ func (f *FrontendAPI) embeddedBuild() (*embeddedllm.Server, *embeddedllm.Install
 	server := embeddedllm.NewServer(layout, logger)
 	server.AutoUnload = f.embeddedAutoUnloadPolicy()
 	server.OnState = f.onEmbeddedLLMState
+	// Non-terminal launch findings (the load-time free-memory pre-flight)
+	// travel beside the state machine, as the global embedded_llm:notice event.
+	// Same contract as OnState: called from the transition's goroutine, never
+	// reentrant.
+	server.OnNotice = f.onEmbeddedLLMNotice
 	// The persisted port is a preference, not a reservation: it is re-checked
 	// before every spawn and walks upward to the next free one, and a move is
 	// written back to config so the generated provider base_url keeps matching
@@ -897,6 +902,32 @@ func (f *FrontendAPI) emitEmbeddedLLMState(state embeddedllm.State, port int, me
 		return
 	}
 	f.emitEvent(EventEmbeddedLLMState, f.embeddedStatePayload(state, port, message))
+}
+
+// onEmbeddedLLMNotice is the core supervisor's ServerNotice transport: it
+// forwards every non-terminal launch finding as the global embedded_llm:notice
+// event. Same goroutine discipline as onEmbeddedLLMState — it runs on the
+// goroutine that made the finding and must never call back into the supervisor
+// (core documents OnNotice as non-reentrant) — so it only maps the notice to
+// its DTO and emits.
+func (f *FrontendAPI) onEmbeddedLLMNotice(notice embeddedllm.ServerNotice) {
+	f.emitEmbeddedLLMNotice(notice)
+}
+
+// emitEmbeddedLLMNotice builds and emits the global embedded_llm:notice
+// payload. Nil-guarded like every other emitter: most tests do not wire
+// emitEvent.
+func (f *FrontendAPI) emitEmbeddedLLMNotice(notice embeddedllm.ServerNotice) {
+	f.seedAcquire()
+	if f.emitEvent == nil {
+		return
+	}
+	f.emitEvent(EventEmbeddedLLMNotice, EmbeddedLLMNoticeData{
+		Kind:              string(notice.Kind),
+		Message:           notice.Message,
+		FreeDeviceMiB:     notice.FreeDeviceMiB,
+		ExpectedDeviceMiB: notice.ExpectedDeviceMiB,
+	})
 }
 
 // embeddedStatePayload merges a supervision state with the install record and

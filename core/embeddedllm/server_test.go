@@ -5363,7 +5363,11 @@ func TestLoadKeepsTheRecordedContextWhenTheReadbackFails(t *testing.T) {
 
 // TestLoadDoesNotRewriteTheRecordWhenNothingChanged keeps a steady machine
 // cheap: a readback that agrees with the record and a probe nobody wired produce
-// no manifest write and no config write on every cold start.
+// no manifest write and no mtime churn on every cold start. The config seam
+// still hears the readback: core cannot see the config override, so it cannot
+// know that the value already agrees — the reconciliation call is how a
+// drifted llm.models override heals, and in production it is an idempotent
+// no-op when the values agree (SyncEmbeddedLLMProvider reports no change).
 func TestLoadDoesNotRewriteTheRecordWhenNothingChanged(t *testing.T) {
 	t.Parallel()
 
@@ -5379,8 +5383,8 @@ func TestLoadDoesNotRewriteTheRecordWhenNothingChanged(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 
-	if got := fx.persistedContexts(); len(got) != 0 {
-		t.Errorf("an unchanged context was persisted: %v", got)
+	if got := fx.persistedContexts(); len(got) != 1 || got[0] != before.ContextSize {
+		t.Errorf("PersistContext calls = %v, want exactly [%d]", got, before.ContextSize)
 	}
 	after := fx.diskManifest(t)
 	if !reflect.DeepEqual(after, before) {

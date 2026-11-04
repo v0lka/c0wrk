@@ -539,6 +539,47 @@ func devicePoolMiB(devices []DeviceMemory, unified bool) int64 {
 	return total
 }
 
+// freePoolMiB is the LIVE half of the same reading: how much accelerator
+// memory is free RIGHT NOW over the pool a plan prices. `pinned` names the
+// devices a plan restricts itself to (the `-dev` pin, the plan's own Devices
+// list); an empty list means the whole inventory. Unknown pinned names simply
+// match nothing — a caller that cared has already refused them (replan's
+// ErrUnknownDevice), so by the time this runs every name is measured.
+//
+// The unified/discrete split mirrors devicePoolMiB exactly, with Free in place
+// of Total: on a unified machine every entry aliases ONE physical pool, so the
+// free figure is the largest single entry's free (adding them would count the
+// same free bytes twice); on discrete cards the free pools are additive, the
+// same way the runtime tensor-splits the model across them. Like Total, Free
+// is informational — this is the explicit live check the field's contract
+// names, never a budget input.
+func freePoolMiB(devices []DeviceMemory, unified bool, pinned []string) int64 {
+	pool := devices
+	if len(pinned) > 0 {
+		pool = pool[:0:0]
+		for _, device := range devices {
+			if slices.Contains(pinned, device.Name) {
+				pool = append(pool, device)
+			}
+		}
+	}
+	if len(pool) == 0 {
+		return 0
+	}
+	if unified {
+		largest := int64(0)
+		for _, device := range pool {
+			largest = max(largest, device.FreeMiB)
+		}
+		return largest
+	}
+	total := int64(0)
+	for _, device := range pool {
+		total += device.FreeMiB
+	}
+	return total
+}
+
 // Metal device names ("MTL0", "MTL1") and the CUDA/HIP inventory names
 // ("CUDA0", "HIP0"). Matched as patterns rather than prefix comparisons so the
 // file carries no ad-hoc string containment of its own.

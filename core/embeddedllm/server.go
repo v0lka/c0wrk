@@ -172,6 +172,41 @@ type StateEvent struct {
 	Message string `json:"message,omitempty"`
 }
 
+// NoticeKind names a class of non-terminal supervisor finding. The vocabulary
+// is closed and the backend forwards it verbatim, so the UI can key its
+// rendering (icon, severity, dismissal) on it without parsing prose.
+type NoticeKind string
+
+// NoticeLowFreeDeviceMemory reports that a fresh load-time measurement found
+// less free accelerator memory than the launch about to run projects to use.
+// It is a WARNING, never a refusal: the plan's budgets price TOTAL capacity
+// (the Total-budgeting invariant — a plan must not move with whatever else
+// happens to be running), so the shape is unchanged; the notice exists because
+// the projected footprint may not fit into what is free RIGHT NOW, and the
+// fork's fit pass (or a hard OOM) is where that would otherwise surface first.
+const NoticeLowFreeDeviceMemory NoticeKind = "low_free_device_memory"
+
+// ServerNotice is one non-terminal operator-facing finding, in the shape the
+// backend forwards as the global `embedded_llm:notice` event. Unlike a
+// StateEvent it carries no transition: the state machine's verdict for this
+// launch stays whatever it was going to be, and the notice only adds the
+// finding beside it. The numeric fields are the evidence behind Message, so a
+// surface can render its own sentence (or a free-vs-expected bar) without
+// re-deriving either figure.
+type ServerNotice struct {
+	Kind NoticeKind `json:"kind"`
+	// Message is the complete, renderable human sentence — the same text the
+	// supervisor itself logged at Warn.
+	Message string `json:"message"`
+	// FreeDeviceMiB is the free accelerator memory the finding measured, over
+	// exactly the pool the plan prices (the pinned `-dev` set when one is in
+	// force, the whole inventory otherwise; the largest device's free on a
+	// unified machine, the sum otherwise). ExpectedDeviceMiB is the plan's
+	// own projection.
+	FreeDeviceMiB     int64 `json:"free_device_mib"`
+	ExpectedDeviceMiB int64 `json:"expected_device_mib"`
+}
+
 // Status is a snapshot of the supervision state, safe to hand to the UI.
 type Status struct {
 	State State
@@ -920,6 +955,12 @@ type Server struct {
 	// call back into the Server: it runs outside the state lock, but a reentrant
 	// Load/Unload from it would deadlock on the single-instance gate.
 	OnState func(StateEvent)
+	// OnNotice receives one ServerNotice per non-terminal operator-facing
+	// finding the supervisor raises BESIDE its state machine — a warning about
+	// the launch it is about to make, not a transition. May be nil (no
+	// notices delivered). Like OnState it is called from the goroutine that
+	// made the finding and must not call back into the Server.
+	OnNotice func(ServerNotice)
 	// HTTPClient performs the readiness probes. nil → http.DefaultClient with a
 	// per-probe timeout (ProbeTimeout).
 	HTTPClient *http.Client
@@ -957,10 +998,14 @@ type Server struct {
 	// (backend.persistEmbeddedContext); nil → the manifest is still updated, but
 	// config.yaml keeps the install's estimate.
 	//
-	// It is called inside Load, after readiness and while the single-instance
-	// gate is held, so an implementation must not call back into the Server.
-	// Failures are logged and otherwise ignored: a load that served the model
-	// successfully must not be reported as failed over an administrative write.
+	// It is called on EVERY successful readback — not only when the value
+	// moved — so an implementation MUST be idempotent: a value that already
+	// agrees produces no write and no change signal, and the same call heals
+	// an override that has drifted from the manifest. It runs inside Load,
+	// after readiness and while the single-instance gate is held, so an
+	// implementation must not call back into the Server. Failures are logged
+	// and otherwise ignored: a load that served the model successfully must
+	// not be reported as failed over an administrative write.
 	PersistContext func(ctx context.Context, contextSize int) error
 	// LoadProbeTimeout bounds the ProbeDevices call. <= 0 →
 	// DefaultLoadProbeTimeout.
@@ -1930,6 +1975,7 @@ func (s *Server) effectivePlan(ctx context.Context, manifest Manifest, binary st
 				"gpu_family", replanned.GPUFamily, "fit", replanned.FitArg(),
 				"device_budget_mib", fresh.DeviceBudgetMiB())
 		}
+		s.preflightFreeMemory(&replanned, &fresh)
 		return &replanned, &fresh, nil
 	}
 
@@ -1980,7 +2026,62 @@ func (s *Server) effectivePlan(ctx context.Context, manifest Manifest, binary st
 			"from_context", stored.ContextSize, "to_context", replanned.ContextSize,
 			"device_budget_mib", measured.DeviceBudgetMiB())
 	}
+	s.preflightFreeMemory(&replanned, &measured)
 	return &replanned, &measured, nil
+}
+
+// preflightFreeMemory is the load-time pre-flight: against a FRESH measurement
+// (the same ProbeDevices call whose answer refined the plan — never the
+// recorded snapshot, whose free figures describe install day) it compares the
+// free accelerator memory of the pool the plan prices with the footprint the
+// plan projects onto it, and reports a shortfall as a Warn plus a
+// NoticeLowFreeDeviceMemory through OnNotice. It is a WARNING, never a gate:
+//
+//   - The budgeting invariant is untouched. Plan budgets derive from TOTAL
+//     capacity (buildTopology prices Total, with the family's margin), so a
+//     plan must not move with whatever else happens to be running — occupied
+//     VRAM changes nothing about the shape this launch applies, and this
+//     function has no plan input it could change even by accident.
+//   - The finding is advisory because free memory is transient: the other
+//     process holding the VRAM may exit before the weights land, and a launch
+//     that genuinely cannot fit fails later with a diagnosis that names the
+//     real cause (the fork's fit pass or the driver's OOM).
+//
+// Every way the check can lose its evidence skips it silently: no fresh
+// topology (the probe did not answer — the fail-soft contract kept the load
+// alive on the recorded snapshot), no devices in it, no plan, a non-positive
+// projection (a host-only shape places nothing on the accelerator). A check
+// that cannot measure must not invent a warning. OnNotice nil is NOT such a
+// skip: the Warn is the finding's primary record and is logged regardless;
+// only the UI delivery needs the seam.
+func (s *Server) preflightFreeMemory(plan *MemoryPlan, topology *MemoryTopology) {
+	if plan == nil || topology == nil {
+		return
+	}
+	if len(topology.Devices) == 0 || plan.ExpectedDeviceMiB <= 0 {
+		return
+	}
+	free := freePoolMiB(topology.Devices, topology.Unified, plan.Devices)
+	if free >= plan.ExpectedDeviceMiB {
+		return
+	}
+	notice := ServerNotice{
+		Kind: NoticeLowFreeDeviceMemory,
+		Message: fmt.Sprintf(
+			"the accelerator has %d MiB free, below the %d MiB this launch plans to place on it — the plan is unchanged (budgets price total capacity), but the launch may not fit while other processes hold the memory",
+			free, plan.ExpectedDeviceMiB),
+		FreeDeviceMiB:     free,
+		ExpectedDeviceMiB: plan.ExpectedDeviceMiB,
+	}
+	s.logger().Warn(notice.Message,
+		"kind", string(notice.Kind),
+		"free_device_mib", free,
+		"expected_device_mib", plan.ExpectedDeviceMiB,
+		"unified", topology.Unified,
+		"pinned_devices", plan.Devices)
+	if s.OnNotice != nil {
+		s.OnNotice(notice)
+	}
 }
 
 // unmetPinError is the fail-closed refusal for an operator pin the recorded
@@ -2199,7 +2300,11 @@ func mulContext(perSlot, slots int) (int, bool) {
 
 // recordEffectiveContext reads the served context back from a ready server and
 // makes it durable: the manifest's `ContextSize` and — through PersistContext —
-// the tier-1 `llm.models."Bonsai 2 27B".context_window` override.
+// the tier-1 `llm.models."Bonsai 2 27B".context_window` override. The config
+// mirror hears EVERY successful readback — even one that agrees with the
+// record — because the manifest comparison cannot see an override that has
+// drifted from it, and the call is idempotent by contract: that mirror is the
+// only place such a drift heals.
 //
 // This is the correction the recorded value needs. `llm-providers.md` gives a
 // tier-1 config override precedence over the tier-1.5 lazy probe, so an override
@@ -2234,7 +2339,9 @@ func (s *Server) recordEffectiveContext(ctx context.Context, launch resolvedLaun
 		}
 		return readPropsContext(ctx, s.httpClient(), propsURL(launch.Spec.Port), s.probeTimeout())
 	}
+	readbackOK := false
 	if n, ok := readCtx(); ok {
+		readbackOK = true
 		effective = n
 		// The served window can never legitimately exceed what this launch
 		// itself ordered (`-c`, the RAM tier in the auto path, the operator's
@@ -2282,37 +2389,44 @@ func (s *Server) recordEffectiveContext(ctx context.Context, launch resolvedLaun
 		return effective
 	}
 	recorded = current.ContextSize
-	if effective == recorded && !launch.Refreshed {
-		// Nothing this load learned differs from the record: no write, no new
-		// mtime and no spurious change signal.
-		return effective
+	if effective != recorded || launch.Refreshed {
+		updated := current
+		updated.ContextSize = effective
+		updated.Plan = launch.Plan
+		updated.Topology = launch.Topology
+		// The port is deliberately NOT the one this load bound: manifest.json keeps
+		// the port the install allocated, which is the preference the next load
+		// re-scans from — see backend.persistEmbeddedPort.
+
+		if err := writeManifest(path, updated, s.logger()); err != nil {
+			s.logger().Warn("failed to persist the embedded LLM context readback",
+				"error", err, "context_size", effective)
+			return effective
+		}
+		s.logger().Debug("the embedded LLM manifest was updated from the live server",
+			"context_size", effective, "recorded", recorded, "plan_refreshed", launch.Refreshed)
 	}
 
-	updated := current
-	updated.ContextSize = effective
-	updated.Plan = launch.Plan
-	updated.Topology = launch.Topology
-	// The port is deliberately NOT the one this load bound: manifest.json keeps
-	// the port the install allocated, which is the preference the next load
-	// re-scans from — see backend.persistEmbeddedPort.
-
-	if err := writeManifest(path, updated, s.logger()); err != nil {
-		s.logger().Warn("failed to persist the embedded LLM context readback",
-			"error", err, "context_size", effective)
-		return effective
-	}
-	s.logger().Debug("the embedded LLM manifest was updated from the live server",
-		"context_size", effective, "recorded", recorded, "plan_refreshed", launch.Refreshed)
-
-	if effective == recorded || s.PersistContext == nil {
-		return effective
-	}
-	if err := s.PersistContext(ctx, effective); err != nil {
-		// The manifest is already correct; only the config mirror lagged. The
-		// next successful load retries, and the override keeps its previous —
-		// still valid — value in the meantime.
-		s.logger().Warn("failed to persist the embedded LLM context window override",
-			"context_size", effective, "error", err)
+	// The config mirror reconciles on EVERY successful readback, not only when
+	// the context moved. The manifest comparison above cannot see a config
+	// override that has drifted from the record — a binary serving a different
+	// window writes both stores consistently, but a corrected build after it
+	// finds nothing new in the manifest and would otherwise skip this write
+	// forever, leaving the tier-1 override — the figure the router budgets
+	// against — silently stale while every manifest-driven surface shows the
+	// correct value. The call is idempotent by contract: an implementation
+	// reports no change when the value already agrees, so a steady machine
+	// pays a lock pair and no I/O. A FAILED readback still persists nothing:
+	// without the server's own figure, effective is the recorded value rather
+	// than anything this load learned.
+	if readbackOK && s.PersistContext != nil {
+		if err := s.PersistContext(ctx, effective); err != nil {
+			// The manifest is already correct; only the config mirror lagged. The
+			// next successful load retries, and the override keeps its previous —
+			// still valid — value in the meantime.
+			s.logger().Warn("failed to persist the embedded LLM context window override",
+				"context_size", effective, "error", err)
+		}
 	}
 	return effective
 }

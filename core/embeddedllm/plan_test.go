@@ -58,12 +58,13 @@ func probedTopology(t *testing.T, platform string, ramGiB float64, devices ...De
 // deviceFootprint is the accelerator memory one (context, precision) shape
 // needs INCLUDING the vision projector, computed from memory.go's own API
 // rather than from plan.go's, so a budget derived with it is not circular with
-// the code under test.
-func deviceFootprint(t *testing.T, profile ModelMemoryProfile, packing Packing, ctx int, kv KVType) int64 {
+// the code under test. backend/family select the measured shape (the CUDA
+// overlay or the Metal default).
+func deviceFootprint(t *testing.T, profile ModelMemoryProfile, backend Backend, family GPUFamily, packing Packing, ctx int, kv KVType) int64 {
 	t.Helper()
-	device, err := profile.ProjectDeviceMiB(packing, ctx, kv, true)
+	device, err := profile.ProjectDeviceMiB(backend, family, packing, ctx, kv, true)
 	if err != nil {
-		t.Fatalf("ProjectDeviceMiB(%v, %d, %v) error = %v", packing, ctx, kv, err)
+		t.Fatalf("ProjectDeviceMiB(%v, %v, %v, %d, %v) error = %v", backend, family, packing, ctx, kv, err)
 	}
 	return device + profile.MMProjReserveDeviceMiB
 }
@@ -878,9 +879,9 @@ func TestPlanAdaptiveKVEscalation(t *testing.T) {
 	profile := profileOrFail(t)
 	const ctx = DefaultFitMinContext
 
-	f16 := deviceFootprint(t, profile, PackingPQ2_0, ctx, KVTypeF16)
-	q8 := deviceFootprint(t, profile, PackingPQ2_0, ctx, KVTypeQ8_0)
-	q4 := deviceFootprint(t, profile, PackingPQ2_0, ctx, KVTypeQ4_0)
+	f16 := deviceFootprint(t, profile, BackendMetal, GPUFamilyAppleSilicon, PackingPQ2_0, ctx, KVTypeF16)
+	q8 := deviceFootprint(t, profile, BackendMetal, GPUFamilyAppleSilicon, PackingPQ2_0, ctx, KVTypeQ8_0)
+	q4 := deviceFootprint(t, profile, BackendMetal, GPUFamilyAppleSilicon, PackingPQ2_0, ctx, KVTypeQ4_0)
 
 	// Sanity: the ladder must actually descend, or every level below is
 	// testing the same budget.
@@ -1339,33 +1340,70 @@ func TestPlanNotesEveryNonDefaultDecision(t *testing.T) {
 	}
 }
 
-// TestPlanSplitAllowancePricesAnUnmeasuredSplit pins the policy margin: the
-// measured family pays nothing, a recognized-but-unmeasured family pays the
+// TestPlanSplitAllowancePricesAnUnmeasuredSplit pins the policy margin: a
+// MEASURED tuple pays nothing, a recognized-but-unmeasured tuple pays the
 // smaller allowance, and an unrecognized part pays the larger one. These are
-// POLICY, not measurement — memory.go documents that the device/host split was
-// measured on Metal alone.
+// POLICY, not measurement — memory.go documents the two overlays the table
+// mirrors (Metal/Apple Silicon 2026-09-25, CUDA/Blackwell 2026-11-03), and the
+// backend dimension is load-bearing: the same Blackwell silicon is measured
+// behind a CUDA build and unmeasured behind ROCm or Vulkan.
 func TestPlanSplitAllowancePricesAnUnmeasuredSplit(t *testing.T) {
 	t.Parallel()
 
+	profile := profileOrFail(t)
 	tests := []struct {
-		family GPUFamily
-		want   int64
+		name    string
+		backend Backend
+		family  GPUFamily
+		want    int64
 	}{
-		{GPUFamilyAppleSilicon, 0},
-		{GPUFamilyNVIDIAAda, unmeasuredSplitAllowanceMiB},
-		{GPUFamilyNVIDIABlackwell, unmeasuredSplitAllowanceMiB},
-		{GPUFamilyAMDRDNA2, unmeasuredSplitAllowanceMiB},
-		{GPUFamilyAMDGFX1151, unmeasuredSplitAllowanceMiB},
-		{GPUFamilyIntelArc, unmeasuredSplitAllowanceMiB},
-		{GPUFamilyUnknown, unknownGPUAllowanceMiB},
+		{"measured Metal tuple", BackendMetal, GPUFamilyAppleSilicon, 0},
+		{"measured CUDA tuple (the 2026-11-03 overlay)", BackendCUDA133, GPUFamilyNVIDIABlackwell, 0},
+		{"another pinned CUDA tag, same measured silicon", BackendCUDA124, GPUFamilyNVIDIABlackwell, 0},
+		{"measured silicon behind an unmeasured build", BackendROCm, GPUFamilyNVIDIABlackwell, unmeasuredSplitAllowanceMiB},
+		{"measured silicon behind an unmeasured graphics build", BackendVulkan, GPUFamilyNVIDIABlackwell, unmeasuredSplitAllowanceMiB},
+		{"a recognized unmeasured family", BackendCUDA124, GPUFamilyNVIDIAAda, unmeasuredSplitAllowanceMiB},
+		{"AMD, unmeasured", BackendROCm, GPUFamilyAMDRDNA2, unmeasuredSplitAllowanceMiB},
+		{"AMD, unmeasured, alias family", BackendROCm, GPUFamilyAMDGFX1151, unmeasuredSplitAllowanceMiB},
+		{"Intel, unmeasured", BackendVulkan, GPUFamilyIntelArc, unmeasuredSplitAllowanceMiB},
+		{"an unrecognized part", BackendCPU, GPUFamilyUnknown, unknownGPUAllowanceMiB},
 	}
 	for _, tc := range tests {
-		t.Run(string(tc.family), func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := splitAllowanceMiB(tc.family); got != tc.want {
-				t.Errorf("splitAllowanceMiB(%q) = %d, want %d", tc.family, got, tc.want)
+			if got := splitAllowanceMiB(tc.backend, tc.family); got != tc.want {
+				t.Errorf("splitAllowanceMiB(%q, %q) = %d, want %d", tc.backend, tc.family, got, tc.want)
 			}
 		})
+	}
+
+	// The table and memory.go's overlay selection must agree: an allowance of
+	// zero is only ever granted where the projection itself is measured, so
+	// every zero row must price PQ2_0 from a measured residency (no
+	// ErrMemoryNotMeasured) and the CUDA row must select the overlay. A table
+	// row that drifts from memory.go would hand measured-budget trust to an
+	// estimated projection.
+	for _, row := range measuredSplitTuples {
+		backend := BackendCPU
+		if row.family == GPUFamilyAppleSilicon {
+			backend = BackendMetal
+		}
+		if row.family == GPUFamilyNVIDIABlackwell {
+			backend = BackendCUDA133
+		}
+		if !splitIsMeasured(backend, row.family) {
+			t.Errorf("measuredSplitTuples row (%q, %q) does not match its own backend predicate", backend, row.family)
+		}
+		if _, err := profile.ProjectDeviceMiB(backend, row.family, PackingPQ2_0, 65536, KVTypeF16, true); err != nil {
+			t.Errorf("table row (%q, %q) pays no allowance but the projection is not measured: %v",
+				backend, row.family, err)
+		}
+		if row.cite == "" {
+			t.Errorf("measuredSplitTuples row (%q, %q) carries no citation", backend, row.family)
+		}
+	}
+	if _, ok := cudaShape(BackendCUDA133, GPUFamilyNVIDIABlackwell); !ok {
+		t.Error("the CUDA table row has no overlay behind it: cudaShape reported no measured shape")
 	}
 
 	if unknownGPUAllowanceMiB <= unmeasuredSplitAllowanceMiB {
@@ -1375,7 +1413,6 @@ func TestPlanSplitAllowancePricesAnUnmeasuredSplit(t *testing.T) {
 
 	// The allowance is spent, not merely documented: the same topology yields a
 	// smaller device budget for an unknown part.
-	profile := profileOrFail(t)
 	topology := topologyLiteral(24576, 64*1024, []DeviceMemory{
 		{Name: "GPU0", Description: "NVIDIA L4", TotalMiB: 24576, FreeMiB: 24576},
 	}, 64)
@@ -1390,6 +1427,133 @@ func TestPlanSplitAllowancePricesAnUnmeasuredSplit(t *testing.T) {
 	}
 	if want := known.DeviceBudgetMiB - (unknownGPUAllowanceMiB - unmeasuredSplitAllowanceMiB); unknown.DeviceBudgetMiB != want {
 		t.Errorf("unknown-family device budget = %d MiB, want %d MiB", unknown.DeviceBudgetMiB, want)
+	}
+}
+
+// TestMeasuredCUDATupleBudgetAndProjections pins the measured tuple's budget
+// arithmetic end to end, on the machine class the 2026-11-03 measurement
+// covered (cuda-13.3 build, NVIDIA Blackwell, RTX 5060 Ti's 15938 MiB).
+//
+// A measured tuple pays the topology's 1536 MiB margin and NOTHING else, so
+// the device budget is 15938 − 1536 = 14402 MiB — 1024 MiB more than the
+// unmeasured-split policy granted the same silicon before the measurement.
+// The measured-tuple projections are priced by the CUDA overlay (device self =
+// 6543 weights + KV + 150 recurrent state + compute, plus the vision
+// projector's 849 MiB device reserve):
+//
+//	65536/f16   = 6543 + 4096 + 150 + 198 + 849 = 11836 — fits
+//	131072/q8_0 = 6543 + 4352 + 150 + 730 + 849 = 12624 — fits
+//	131072/f16  = 6543 + 8192 + 150 + 198 + 849 = 15932 — REFUSED
+//
+// The last shape rides the clamp above the measured f16 curve's last knot
+// (198 at 65536 — an UNDER-count by cudaComputeAt's own admission), and it
+// still refuses: the honest answer to a shape that does not fit the measured
+// budget is a refusal, not a launch. The freed headroom also buys no context:
+// the auto target stays the RAM tier's 65536 (the ladder prices context from
+// system RAM, not from device headroom), and the plan's notes carry no
+// "not measured" claim — that sentence is about tuples, and this one is
+// measured.
+func TestMeasuredCUDATupleBudgetAndProjections(t *testing.T) {
+	t.Parallel()
+
+	profile := profileOrFail(t)
+	topology := probedTopology(t, PlatformLinuxAMD64, 32,
+		DeviceMemory{Name: "CUDA0", Description: "NVIDIA GeForce RTX 5060 Ti", TotalMiB: 15938, FreeMiB: 15938})
+
+	if got, want := topology.DeviceBudgetMiB(), int64(15938-1536); got != want {
+		t.Fatalf("5060 Ti device budget = %d MiB, want %d (15938 total - the 1536 MiB margin)", got, want)
+	}
+	budgets, err := planBudgets(topology, Tuning{}, BackendCUDA133, GPUFamilyNVIDIABlackwell)
+	if err != nil {
+		t.Fatalf("planBudgets(cuda-13.3, nvidia-blackwell): %v", err)
+	}
+	if want := int64(15938 - 1536); budgets.deviceMiB != want {
+		t.Errorf("measured-tuple device budget = %d MiB, want %d — a measured split pays no allowance",
+			budgets.deviceMiB, want)
+	}
+
+	for _, tc := range []struct {
+		name string
+		ctx  int
+		kv   KVType
+		want int64
+		fits bool
+	}{
+		{"65536/f16 fits", 65536, KVTypeF16, 11836, true},
+		{"131072/q8_0 fits", 131072, KVTypeQ8_0, 12624, true},
+		{"131072/f16 is honestly refused", 131072, KVTypeF16, 15932, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			device, host, _, err := footprint(profile, BackendCUDA133, GPUFamilyNVIDIABlackwell,
+				PackingPQ2_0, tc.ctx, tc.kv, true, false, true, true)
+			if err != nil {
+				t.Fatalf("footprint(%d, %q): %v", tc.ctx, tc.kv, err)
+			}
+			if device != tc.want {
+				t.Errorf("measured-tuple device projection at (%d, %q) = %d MiB, want %d",
+					tc.ctx, tc.kv, device, tc.want)
+			}
+			if got := budgets.fits(device, host); got != tc.fits {
+				t.Errorf("budgets.fits(%d, %d) = %v, want %v against the %d MiB measured budget",
+					device, host, got, tc.fits, budgets.deviceMiB)
+			}
+		})
+	}
+
+	// The honest refusal, planner-side: asked to size the launch itself
+	// (--fit off, so this planner owns the precision ladder) at 131072, it
+	// starts the ladder ABOVE f16 — the long-context threshold exists exactly
+	// so the shape that does not fit the device is never chosen — and plans
+	// the measured q8_0 shape instead.
+	selfSized, err := Plan(topology, profile, Tuning{
+		FitEnabled: boolPtr(false),
+		Context:    ContextTuning{Mode: ContextExact, Tokens: 131072},
+	}, BackendCUDA133, GPUFamilyNVIDIABlackwell)
+	if err != nil {
+		t.Fatalf("Plan(--fit off, 131072) error = %v, want the planner's own sizing", err)
+	}
+	if selfSized.KVType != KVTypeQ8_0 {
+		t.Errorf("planner-chosen KV at 131072 = %q, want q8_0 — f16 does not fit the measured device budget and must not be chosen", selfSized.KVType)
+	}
+	if selfSized.ExpectedDeviceMiB != 12624 {
+		t.Errorf("planner-sized 131072 plan expects %d MiB on the device, want the measured 12624",
+			selfSized.ExpectedDeviceMiB)
+	}
+	// And an operator who pins f16 anyway gets the pin honoured with the
+	// arithmetic on record: the plan carries the over-budget expectation
+	// against its own budget, visible rather than hidden.
+	pinnedF16, err := Plan(topology, profile, Tuning{
+		FitEnabled: boolPtr(false),
+		Context:    ContextTuning{Mode: ContextExact, Tokens: 131072},
+		KVType:     KVTypeF16,
+	}, BackendCUDA133, GPUFamilyNVIDIABlackwell)
+	if err != nil {
+		t.Fatalf("Plan(pinned f16, 131072) error = %v, want the pin honoured", err)
+	}
+	if pinnedF16.ExpectedDeviceMiB != 15932 || pinnedF16.ExpectedDeviceMiB <= pinnedF16.DeviceBudgetMiB {
+		t.Errorf("pinned f16 plan expects %d MiB against a %d MiB budget, want the honest over-budget 15932 on record",
+			pinnedF16.ExpectedDeviceMiB, pinnedF16.DeviceBudgetMiB)
+	}
+
+	// The all-Auto plan on the same machine: the RAM tier keeps the context at
+	// 65536, the echoed budget is the measured tuple's own, and no note
+	// claims a split this project has measured.
+	plan, err := Plan(topology, profile, Tuning{}, BackendCUDA133, GPUFamilyNVIDIABlackwell)
+	if err != nil {
+		t.Fatalf("Plan (auto): %v", err)
+	}
+	if plan.ContextSize != 65536 {
+		t.Errorf("auto context = %d, want the 65536-token RAM tier — freed device headroom does not raise the auto target",
+			plan.ContextSize)
+	}
+	if plan.DeviceBudgetMiB != budgets.deviceMiB {
+		t.Errorf("plan echoes device budget %d MiB, want the gate's %d", plan.DeviceBudgetMiB, budgets.deviceMiB)
+	}
+	for _, note := range plan.Notes {
+		if strings.Contains(note, "not measured") {
+			t.Errorf("plan note for a measured tuple claims an unmeasured split: %q", note)
+		}
 	}
 }
 
@@ -1446,7 +1610,7 @@ func TestPlanHostReserveOverrideReplacesTheDerivedReserve(t *testing.T) {
 		{"derived", Tuning{}, 4 * 1024},
 		{"override", Tuning{HostReserveGiB: floatPtr(2)}, 6 * 1024},
 	} {
-		budget, err := planBudgets(topology, tc.tuning, GPUFamilyAppleSilicon)
+		budget, err := planBudgets(topology, tc.tuning, BackendMetal, GPUFamilyAppleSilicon)
 		if err != nil {
 			t.Fatalf("%s budget: %v", tc.name, err)
 		}
@@ -1485,18 +1649,18 @@ func TestFootprintAgreesWithTheMeasuredProjections(t *testing.T) {
 
 	// Full offload, KV on the device, projector on the device: the measured
 	// shape (`| - Host | 598 = 322 + 0 + 276 |` beside the MTL0 row).
-	device, host, exact, err := footprint(profile, PackingPQ2_0, ctx, KVTypeF16, true, false, true, true)
+	device, host, exact, err := footprint(profile, BackendMetal, GPUFamilyAppleSilicon, PackingPQ2_0, ctx, KVTypeF16, true, false, true, true)
 	if err != nil {
 		t.Fatalf("footprint (offloaded) error = %v", err)
 	}
 	if !exact {
 		t.Error("exact = false, want true for a full offload")
 	}
-	wantDevice := deviceFootprint(t, profile, PackingPQ2_0, ctx, KVTypeF16)
+	wantDevice := deviceFootprint(t, profile, BackendMetal, GPUFamilyAppleSilicon, PackingPQ2_0, ctx, KVTypeF16)
 	if device != wantDevice {
 		t.Errorf("device = %d MiB, want %d MiB (the projection plus the projector reserve)", device, wantDevice)
 	}
-	wantHost, err := profile.ProjectHostMiB(PackingPQ2_0, ctx, KVTypeF16, true)
+	wantHost, err := profile.ProjectHostMiB(BackendMetal, GPUFamilyAppleSilicon, PackingPQ2_0, ctx, KVTypeF16, true)
 	if err != nil {
 		t.Fatalf("ProjectHostMiB error = %v", err)
 	}
@@ -1506,7 +1670,7 @@ func TestFootprintAgreesWithTheMeasuredProjections(t *testing.T) {
 
 	// Nothing offloaded: the measured `-ngl 0` shape, where the device side is
 	// zero by construction.
-	device, host, exact, err = footprint(profile, PackingPQ2_0, ctx, KVTypeF16, false, false, true, true)
+	device, host, exact, err = footprint(profile, BackendMetal, GPUFamilyAppleSilicon, PackingPQ2_0, ctx, KVTypeF16, false, false, true, true)
 	if err != nil {
 		t.Fatalf("footprint (CPU only) error = %v", err)
 	}
@@ -1516,7 +1680,7 @@ func TestFootprintAgreesWithTheMeasuredProjections(t *testing.T) {
 	if device != 0 {
 		t.Errorf("device = %d MiB, want 0 with nothing offloaded", device)
 	}
-	wantHost, err = profile.ProjectHostMiB(PackingPQ2_0, ctx, KVTypeF16, false)
+	wantHost, err = profile.ProjectHostMiB(BackendMetal, GPUFamilyAppleSilicon, PackingPQ2_0, ctx, KVTypeF16, false)
 	if err != nil {
 		t.Fatalf("ProjectHostMiB error = %v", err)
 	}
@@ -1535,11 +1699,11 @@ func TestFootprintMovesTheCacheUnderNKVO(t *testing.T) {
 	profile := profileOrFail(t)
 	const ctx = 65536
 
-	withKV, withKVHost, _, err := footprint(profile, PackingPQ2_0, ctx, KVTypeF16, true, false, true, true)
+	withKV, withKVHost, _, err := footprint(profile, BackendMetal, GPUFamilyAppleSilicon, PackingPQ2_0, ctx, KVTypeF16, true, false, true, true)
 	if err != nil {
 		t.Fatalf("footprint error = %v", err)
 	}
-	withoutKV, withoutKVHost, _, err := footprint(profile, PackingPQ2_0, ctx, KVTypeF16, true, false, false, true)
+	withoutKV, withoutKVHost, _, err := footprint(profile, BackendMetal, GPUFamilyAppleSilicon, PackingPQ2_0, ctx, KVTypeF16, true, false, false, true)
 	if err != nil {
 		t.Fatalf("footprint (-nkvo) error = %v", err)
 	}
@@ -1842,7 +2006,7 @@ func TestPlanKVTypeGatesAUnifiedPoolAdditively(t *testing.T) {
 	// sum by exactly one MiB.
 	profile := profileOrFail(t)
 	target := DefaultFitMinContext
-	deviceMiB, hostMiB, _, err := footprint(profile, PackingPQ2_0, target, KVTypeF16, true, false, true, true)
+	deviceMiB, hostMiB, _, err := footprint(profile, BackendMetal, GPUFamilyAppleSilicon, PackingPQ2_0, target, KVTypeF16, true, false, true, true)
 	if err != nil {
 		t.Fatalf("footprint: %v", err)
 	}
@@ -1856,7 +2020,7 @@ func TestPlanKVTypeGatesAUnifiedPoolAdditively(t *testing.T) {
 			deviceMiB, hostMiB, pool)
 	}
 
-	kv, _, err := planKVType(Tuning{}, profile, PackingPQ2_0, target,
+	kv, _, err := planKVType(Tuning{}, profile, BackendMetal, GPUFamilyAppleSilicon, PackingPQ2_0, target,
 		budgets{deviceMiB: pool, hostMiB: pool, unified: true}, nil, true, false)
 	switch {
 	case errors.Is(err, ErrMemoryPlanInfeasible):
@@ -1946,6 +2110,166 @@ func TestPlanFiltersTopologyToPinnedDevices(t *testing.T) {
 		t.Errorf("unified pinned budget = %d MiB, want the whole pool's %d MiB",
 			pinnedUnified.DeviceBudgetMiB, plainUnified.DeviceBudgetMiB)
 	}
+}
+
+// TestPlanExplicitPinHoldsTheContextFloor pins the explicit path's context
+// floor (ADR-105 D1): a device pin forces fit off, and a plan that sizes the
+// context itself must serve the SAME 65536-token floor the fit path is held to
+// — gateContext admits the machine at exactly that figure, so serving a
+// smaller RAM tier would under-deliver on the admission and reproduce the
+// truncated-answer failure on precisely the small machines a pin targets. The
+// scenarios price the MEASURED CUDA/Blackwell tuple (the 2026-11-03 overlay,
+// split allowance 0), so every budget below is the topology's own.
+func TestPlanExplicitPinHoldsTheContextFloor(t *testing.T) {
+	t.Parallel()
+	profile := profileOrFail(t)
+	const backend, family = BackendCUDA133, GPUFamilyNVIDIABlackwell
+
+	measuredCard := func(totalMiB int64) DeviceMemory {
+		return DeviceMemory{
+			Name:        "CUDA0",
+			Description: "NVIDIA GeForce RTX 5060 Ti",
+			TotalMiB:    totalMiB,
+			FreeMiB:     totalMiB,
+		}
+	}
+
+	t.Run("the pinned 16 GiB card serves the floor at f16", func(t *testing.T) {
+		t.Parallel()
+
+		// The measured machine: 32 GiB RAM tiers at 32768, so the floor is
+		// what lifts the target — before ADR-105 this pin planned 32768.
+		topology := probedTopology(t, PlatformLinuxAMD64, 32, measuredCard(15938))
+		plan, err := Plan(topology, profile, Tuning{Devices: []string{"CUDA0"}}, backend, family)
+		if err != nil {
+			t.Fatalf("Plan(pinned CUDA0) error = %v", err)
+		}
+		if plan.ContextSize != DefaultFitMinContext {
+			t.Errorf("ContextSize = %d, want the %d-token floor (the 32 GiB RAM tier is 32768)",
+				plan.ContextSize, DefaultFitMinContext)
+		}
+		if plan.KVType != KVTypeF16 {
+			t.Errorf("KVType = %q, want f16: the f16 footprint fits the measured budget, so the ladder must not escalate", plan.KVType)
+		}
+		if !plan.KVOffload {
+			t.Error("KVOffload = false, want the default on")
+		}
+		if plan.ExpectedDeviceMiB > plan.DeviceBudgetMiB {
+			t.Errorf("expected device footprint %d MiB exceeds the budget %d MiB",
+				plan.ExpectedDeviceMiB, plan.DeviceBudgetMiB)
+		}
+		// The footprint is the measured profile's own projection (self + the
+		// vision projector), not a bounds figure.
+		if want := deviceFootprint(t, profile, backend, family, PackingPQ2_0, DefaultFitMinContext, KVTypeF16); plan.ExpectedDeviceMiB != want {
+			t.Errorf("ExpectedDeviceMiB = %d, want the measured profile's %d", plan.ExpectedDeviceMiB, want)
+		}
+		// The floor note explains the lift from 32768 to 65536.
+		if notes := strings.Join(plan.Notes, "\n"); !strings.Contains(notes,
+			"the 32768-token RAM tier sits below the 65536-token floor") {
+			t.Errorf("Notes = %v, want one naming the applied floor", plan.Notes)
+		}
+	})
+
+	t.Run("a tier already at the floor emits no floor note", func(t *testing.T) {
+		t.Parallel()
+
+		// 64 GiB RAM tiers at 65536: the floor is a no-op, and the Notes must
+		// not claim it lifted anything.
+		topology := probedTopology(t, PlatformLinuxAMD64, 64, measuredCard(15938))
+		plan, err := Plan(topology, profile, Tuning{Devices: []string{"CUDA0"}}, backend, family)
+		if err != nil {
+			t.Fatalf("Plan(pinned CUDA0) error = %v", err)
+		}
+		if plan.ContextSize != DefaultFitMinContext {
+			t.Errorf("ContextSize = %d, want the tier's own %d", plan.ContextSize, DefaultFitMinContext)
+		}
+		if notes := strings.Join(plan.Notes, "\n"); strings.Contains(notes, "sits below the") {
+			t.Errorf("Notes = %v, want no floor note when the tier already meets the floor", plan.Notes)
+		}
+	})
+
+	t.Run("12 GiB-class cards stay green at the floor", func(t *testing.T) {
+		t.Parallel()
+
+		tests := []struct {
+			name     string
+			totalMiB int64
+			wantKV   KVType
+		}{
+			// A real 12 GiB SKU (12288 MiB): the pinned budget is 10752 MiB,
+			// f16 misses it (11836) and the ladder escalates one step to
+			// q8_0 (10128 ≤ 10752).
+			{name: "12 GiB card", totalMiB: 12288, wantKV: KVTypeQ8_0},
+			// A 11520 MiB reading of a 12 GB card: the budget is 9984, q8_0
+			// misses by 144 MiB and the ladder lands on q4_0 (9104 ≤ 9984).
+			{name: "12 GB card", totalMiB: 11520, wantKV: KVTypeQ4_0},
+		}
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+
+				// 16 GiB RAM tiers at 16384, so the floor is load-bearing here
+				// too: the pin serves 65536, not the tier.
+				topology := probedTopology(t, PlatformLinuxAMD64, 16, measuredCard(tc.totalMiB))
+				plan, err := Plan(topology, profile, Tuning{Devices: []string{"CUDA0"}}, backend, family)
+				if err != nil {
+					t.Fatalf("Plan(pinned %d MiB card) error = %v", tc.totalMiB, err)
+				}
+				if plan.ContextSize != DefaultFitMinContext {
+					t.Errorf("ContextSize = %d, want the %d-token floor", plan.ContextSize, DefaultFitMinContext)
+				}
+				if plan.KVType != tc.wantKV {
+					t.Errorf("KVType = %q, want %q: the least-lossy precision that fits the %d MiB budget",
+						plan.KVType, tc.wantKV, plan.DeviceBudgetMiB)
+				}
+				// "q4_0 fits" holds in BOTH rows — the ladder's last rung fits
+				// the pinned budget at the floor, so the floor never turns a
+				// 12 GiB-class card into a refusal.
+				q4 := deviceFootprint(t, profile, backend, family, PackingPQ2_0, DefaultFitMinContext, KVTypeQ4_0)
+				if q4 > plan.DeviceBudgetMiB {
+					t.Errorf("q4_0 footprint %d MiB exceeds the %d MiB budget", q4, plan.DeviceBudgetMiB)
+				}
+				if notes := strings.Join(plan.Notes, "\n"); !strings.Contains(notes,
+					"the 16384-token RAM tier sits below the 65536-token floor") {
+					t.Errorf("Notes = %v, want one naming the applied floor", plan.Notes)
+				}
+			})
+		}
+	})
+
+	t.Run("an 8 GiB card refuses honestly at the floor", func(t *testing.T) {
+		t.Parallel()
+
+		// 8 GiB of RAM keeps every shape short of BOTH budgets, so the refusal
+		// names the accelerator side the pin is about rather than a
+		// host-resident shape that would fit but for the pin.
+		topology := probedTopology(t, PlatformLinuxAMD64, 8, measuredCard(8192))
+		plan, err := Plan(topology, profile, Tuning{Devices: []string{"CUDA0"}}, backend, family)
+		if !errors.Is(err, ErrInsufficientMemory) {
+			t.Fatalf("Plan(8 GiB pin) error = %v, want it to wrap ErrInsufficientMemory", err)
+		}
+		var memErr *InsufficientMemoryError
+		if !errors.As(err, &memErr) {
+			t.Fatalf("error = %T, want *InsufficientMemoryError with the both-pools arithmetic", err)
+		}
+		// The refusal prices the FLOOR — the gate's own figure — not the 16384
+		// tier the RAM ladder would have granted.
+		if memErr.Context != DefaultFitMinContext {
+			t.Errorf("refusal context = %d, want the %d-token floor", memErr.Context, DefaultFitMinContext)
+		}
+		if !memErr.Offloaded {
+			t.Error("refusal shape is host-resident; the device pin means the shortfall is the accelerator's")
+		}
+		if memErr.DeviceHaveMiB == 0 || memErr.DeviceNeedMiB <= memErr.DeviceHaveMiB {
+			t.Errorf("device clause = %d needed vs %d had, want a real device-side shortfall",
+				memErr.DeviceNeedMiB, memErr.DeviceHaveMiB)
+		}
+		// A pinned shape gets no ladder: the plan stays refused, not degraded
+		// (planShape returns the zero plan on the refusal path).
+		if plan.ContextSize != 0 || plan.Layers != nil || plan.KVType != "" {
+			t.Errorf("refused plan carried a shape (%+v), want the zero plan", plan)
+		}
+	})
 }
 
 // TestPlanRefusesAnUnknownPinnedDevice is the fail-closed half: a name the

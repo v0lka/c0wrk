@@ -8,11 +8,10 @@
 // Sibling of @/api/embedded — split out so each module stays at one concern
 // (lifecycle vs tuning); components import from either, never from wailsjs.
 //
-// The on-demand `ProbeEmbeddedLLMDevices` RPC is deliberately NOT wrapped here:
-// nothing in the UI consumes it. The topology the install record renders comes
-// from the status snapshot's own fields (mirrored below), and no "Re-probe"
-// affordance exists — the RPC stays reachable from diagnostics on the Go side.
-// Add a wrapper only together with the surface that calls it.
+// The on-demand `ProbeEmbeddedLLMDevices` RPC is wrapped below (see
+// probeEmbeddedLLMDevices) beside the live-snapshot type: the Settings block's
+// device-memory panel measures THIS instant with it, and the header comment's
+// old "deliberately not wrapped" rule expired the moment that surface existed.
 //
 // Every knob is NULLABLE and null is load-bearing: it means "unset — the
 // planner decides", which is NOT the same value as an explicit "auto" spelling
@@ -400,4 +399,66 @@ export function validateEmbeddedLLMTuningPatch(patch: EmbeddedLLMTuningPatch): v
 export async function setEmbeddedLLMTuning(patch: EmbeddedLLMTuningPatch): Promise<void> {
   validateEmbeddedLLMTuningPatch(patch)
   await getApp().SetEmbeddedLLMTuning(patch)
+}
+
+// --- Live device-memory snapshot ---
+
+/** A measurement of THIS instant: the on-demand ProbeEmbeddedLLMDevices
+ *  answer. Field for field the topology half of EmbeddedLLMStatusExtras, but a
+ *  value in its own right — the recorded snapshot ages (another process takes
+ *  VRAM, a driver updates), and this is what "how much is free right now"
+ *  means. */
+export interface EmbeddedLLMDeviceSnapshot {
+  /** The accelerator inventory in the runtime's own print order. An EMPTY
+   *  array is a real answer from a machine with no usable accelerator, not a
+   *  failed probe — a failed probe rejects the promise instead. */
+  readonly devices: readonly EmbeddedLLMDevice[]
+  /** True when the device pool aliases host RAM (the budgets share one pool
+   *  and must never be summed). */
+  readonly unified: boolean
+  readonly host_ram_gib: number
+  readonly device_budget_mib: number
+  readonly host_budget_mib: number
+  /** RFC 3339 stamp of THIS probe (never ""). */
+  readonly probed_at: string
+}
+
+/** Guard for a ProbeEmbeddedLLMDevices answer. Mirrors the backend DTO's
+ *  always-present contract: a payload missing a field is schema drift, not a
+ *  machine with no memory. */
+export function isEmbeddedLLMDeviceSnapshot(d: unknown): d is EmbeddedLLMDeviceSnapshot {
+  if (typeof d !== 'object' || d === null) return false
+  const o = d as Record<string, unknown>
+  const isDevice = (v: unknown): v is EmbeddedLLMDevice =>
+    typeof v === 'object' &&
+    v !== null &&
+    typeof (v as Record<string, unknown>).name === 'string' &&
+    typeof (v as Record<string, unknown>).description === 'string' &&
+    typeof (v as Record<string, unknown>).total_mib === 'number' &&
+    typeof (v as Record<string, unknown>).free_mib === 'number'
+  return (
+    Array.isArray(o.devices) &&
+    o.devices.every(isDevice) &&
+    typeof o.unified === 'boolean' &&
+    typeof o.host_ram_gib === 'number' &&
+    typeof o.device_budget_mib === 'number' &&
+    typeof o.host_budget_mib === 'number' &&
+    typeof o.probed_at === 'string'
+  )
+}
+
+/** Measure THIS machine's accelerator memory now: the on-demand
+ *  ProbeEmbeddedLLMDevices RPC. Unlike every other embedded-LLM read this one
+ *  is allowed to be slow (it spawns the provisioned runtime with
+ *  --list-devices) and to fail — an unanswered probe rejects with the
+ *  operator-facing cause instead of degrading to an empty inventory. Refused
+ *  while an install/removal owns the embedded-operation gate, and before any
+ *  install exists. */
+export async function probeEmbeddedLLMDevices(): Promise<EmbeddedLLMDeviceSnapshot> {
+  const result = await getApp().ProbeEmbeddedLLMDevices()
+  if (!isEmbeddedLLMDeviceSnapshot(result)) {
+    logger.error('probeEmbeddedLLMDevices: unexpected response shape', result)
+    throw new Error('ProbeEmbeddedLLMDevices returned an invalid device snapshot')
+  }
+  return result
 }

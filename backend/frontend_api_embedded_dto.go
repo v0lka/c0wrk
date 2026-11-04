@@ -310,6 +310,28 @@ type EmbeddedLLMStateData struct {
 	InstallError string `json:"install_error"`
 }
 
+// EmbeddedLLMNoticeData is the payload of the global embedded_llm:notice
+// event: one non-terminal supervisor finding. It is NOT a state transition —
+// the state machine's verdict for the launch that produced the finding still
+// travels through embedded_llm:state — so a renderer treats it as a warning
+// banner beside the supervision state, never as its replacement. Mirrors
+// EmbeddedLLMNoticeData in frontend/src/types/events.ts.
+type EmbeddedLLMNoticeData struct {
+	// Kind names the finding class verbatim from core's closed vocabulary
+	// ("low_free_device_memory"), so the UI can key rendering on it without
+	// parsing Message.
+	Kind string `json:"kind"`
+	// Message is the complete, renderable human sentence — the same text the
+	// supervisor logged at Warn.
+	Message string `json:"message"`
+	// FreeDeviceMiB / ExpectedDeviceMiB are the evidence behind the finding:
+	// the free accelerator memory measured over exactly the pool the plan
+	// prices, and the plan's projected device footprint. Advisory only — the
+	// plan itself is unchanged (budgets price total capacity).
+	FreeDeviceMiB     int64 `json:"free_device_mib"`
+	ExpectedDeviceMiB int64 `json:"expected_device_mib"`
+}
+
 // EmbeddedLLMProgressData is the payload of the global
 // embedded_llm:install_progress event: one component's one stage. It is the
 // frontend-facing shape of core/embeddedllm.Progress (snake_case JSON keys,
