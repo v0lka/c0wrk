@@ -262,6 +262,33 @@ type VectorIndexConfig struct {
 	// See specs/decisions/049-vector-index-memory-reduction.md.
 	ParkBudgetMb *int64 `yaml:"park_budget_mb"`
 
+	// CorpusResidencyCapacity is how many zero-reference shared corpus
+	// handles the process-level corpus owner retains in its LRU
+	// (ADR-104 §5) — A→B→A re-attaches without a re-decode. Pointer-int:
+	// unset → 0. 0 is NOT a sentinel here: together with a 0 budget it is
+	// the documented default "retention off"; a positive budget with
+	// capacity 0 retains by bytes alone. Negative values are rejected by
+	// validate() — the old park knobs' zero/negative sentinel semantics
+	// are deliberately not carried over.
+	CorpusResidencyCapacity *int `yaml:"corpus_residency_capacity"`
+
+	// CorpusResidencyBudgetMb is the cumulative MiB budget for the RETAINED
+	// corpus handles (their estimated resident bytes; shared corpora are
+	// counted once). Pointer-int64: unset → 0 ("no byte bound"); negative
+	// values and values above the MiB ceiling are rejected by validate().
+	// Both knobs at 0 (the default) disable retention entirely.
+	CorpusResidencyBudgetMb *int64 `yaml:"corpus_residency_budget_mb"`
+
+	// StoreDiskBudgetMb is the MiB budget for the §3 content-addressed
+	// store TREE on disk (ADR-104 §5 disk ledger: unique chunk bytes
+	// counted once, per-snapshot tables and lexical state, per-root
+	// overlays, whole superseded generations). 0 (the default) disables
+	// eviction; under pressure the switch-riding hygiene pass evicts
+	// LRU snapshot directories no owner pins (re-derived by the next
+	// attach's corpus pass). Pointer-int64: unset → 0; negatives and
+	// values above the MiB ceiling are rejected by validate().
+	StoreDiskBudgetMb *int64 `yaml:"store_disk_budget_mb"`
+
 	// ExecutionProvider selects the ONNX Runtime execution provider for the
 	// embedding model — see the VectorIndexProvider* constants; the empty
 	// string normalizes to "auto", invalid values are rejected by validate().
@@ -2921,6 +2948,53 @@ func validate(cfg *Config) error {
 		case *budget > maxMemoryLimitMiB:
 			return fmt.Errorf(
 				"vector_index.park_budget_mb %d exceeds the maximum of %d MiB (2 PiB); the MiB→bytes shift would overflow",
+				*budget, maxMemoryLimitMiB,
+			)
+		}
+	}
+
+	// vector_index.corpus_residency_capacity: 0 is a DOCUMENTED value (the
+	// default "retention off" / "no count bound" when a byte budget is
+	// set), so unlike park_capacity there is no disable sentinel — anything
+	// negative is a typo and fails load. See ADR-104 §5 (residency).
+	if capacity := cfg.VectorIndex.CorpusResidencyCapacity; capacity != nil && *capacity < 0 {
+		return fmt.Errorf(
+			"vector_index.corpus_residency_capacity %d is not valid; must be >= 0 (0 disables retention together with a 0 budget)",
+			*capacity,
+		)
+	}
+
+	// vector_index.corpus_residency_budget_mb: same clean semantics — 0 is
+	// the documented "no byte bound" (not an ambiguous disable), negatives
+	// are typos, and the ceiling guards the consumer's MiB→bytes shift.
+	if budget := cfg.VectorIndex.CorpusResidencyBudgetMb; budget != nil {
+		if *budget < 0 {
+			return fmt.Errorf(
+				"vector_index.corpus_residency_budget_mb %d is not valid; must be >= 0 (0 means no byte bound)",
+				*budget,
+			)
+		}
+		if *budget > maxMemoryLimitMiB {
+			return fmt.Errorf(
+				"vector_index.corpus_residency_budget_mb %d exceeds the maximum of %d MiB (2 PiB); the MiB→bytes shift would overflow",
+				*budget, maxMemoryLimitMiB,
+			)
+		}
+	}
+
+	// vector_index.store_disk_budget_mb: the §5 disk ledger's byte cap —
+	// same clean semantics as the residency budget (0 = the documented
+	// "no cap", negatives are typos, the ceiling guards the shift).
+	if budget := cfg.VectorIndex.StoreDiskBudgetMb; budget != nil {
+		if *budget < 0 {
+			return fmt.Errorf(
+				"vector_index.store_disk_budget_mb %d is not valid; must be >= 0 (0 means no disk cap)",
+				*budget,
+			)
+		}
+		if *budget > maxMemoryLimitMiB {
+			return fmt.Errorf(
+				"vector_index.store_disk_budget_mb %d exceeds the maximum of %d MiB (2 PiB); the MiB→bytes shift would overflow",
 				*budget, maxMemoryLimitMiB,
 			)
 		}

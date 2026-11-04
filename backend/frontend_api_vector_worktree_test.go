@@ -204,9 +204,11 @@ func waitForVectorBranch(t *testing.T, mgr *vectorindex.Manager, want string) {
 
 // TestResolveVectorIndexTarget_ManagedSessionTargetsOwnTree pins focus-target
 // resolution: the project's saved managed session moves the Git-panel focus
-// (and with it the user-facing index target) to its own tree root with a
-// worktree-scoped storage dir; no session and local sessions keep the
-// checkout + project storage — the unchanged default flow.
+// (and with it the user-facing index target) to its own tree root — storage
+// is the PROJECT's shared store (ADR-104 stage 2: the tree reads the
+// snapshot corpus and writes its per-root overlay there); no session and
+// local sessions keep the checkout + project storage — the unchanged
+// default flow.
 func TestResolveVectorIndexTarget_ManagedSessionTargetsOwnTree(t *testing.T) {
 	h := newVectorWorktreeHarness(t)
 	p := h.proj
@@ -221,15 +223,12 @@ func TestResolveVectorIndexTarget_ManagedSessionTargetsOwnTree(t *testing.T) {
 	h.saveManagedSession(t, "sess-managed", "s-1", "topic", tree)
 
 	got = h.api.resolveVectorIndexTarget(context.Background(), p)
-	wantStorage, err := config.WorktreeVectorIndexPath(h.agentDir, p.ID, "s-1")
-	if err != nil {
-		t.Fatalf("worktree vector path: %v", err)
-	}
+	wantStorage := config.ProjectVectorIndexPath(h.agentDir, p.ID)
 	if got.workspacePath != tree {
 		t.Errorf("workspace = %q, want the managed tree %q", got.workspacePath, tree)
 	}
 	if got.storagePath != wantStorage {
-		t.Errorf("storage = %q, want %q", got.storagePath, wantStorage)
+		t.Errorf("storage = %q, want the shared project store %q", got.storagePath, wantStorage)
 	}
 
 	// A local saved session keeps the defaults.
@@ -253,6 +252,20 @@ func TestResolveVectorIndexTarget_ManagedSessionTargetsOwnTree(t *testing.T) {
 // must never open the same chromem persistent storage.
 func TestManagerForContext_RoutesSessionTreePerSession(t *testing.T) {
 	h := newVectorWorktreeHarness(t)
+	// Production parity: the factory wires the shared-corpus registry, so
+	// each tree's manager keeps the shared snapshot corpus read-only plus
+	// its own per-root overlay INSIDE the project's store.
+	readyCh := make(chan struct{})
+	close(readyCh)
+	h.roots.SetFactory(func() (*vectorindex.Manager, error) {
+		return vectorindex.NewManager(vectorindex.ManagerConfig{
+			EmbeddingFunc: func(context.Context, string) ([]float32, error) {
+				return make([]float32, 4), nil
+			},
+			ShutdownGrace: 2 * time.Minute,
+			Corpus:        h.roots.CorpusRegistry(),
+		})
+	}, readyCh, nil)
 
 	treeA := h.addManagedWorktree(t, "s-alpha", "feature-alpha")
 	treeB := h.addManagedWorktree(t, "s-beta", "feature-beta")
@@ -267,17 +280,46 @@ func TestManagerForContext_RoutesSessionTreePerSession(t *testing.T) {
 	}
 	waitForVectorBranch(t, mgrA, "feature-alpha")
 
-	storageA, err := config.WorktreeVectorIndexPath(h.agentDir, h.proj.ID, "s-alpha")
-	if err != nil {
-		t.Fatal(err)
+	// The shared store carries A's per-root overlay (branches/branch_root_*).
+	// WaitReady flips when the corpus BUILD settles — the overlay open and
+	// the adoption pass continue briefly after — so the disk effect is
+	// awaited with a bounded poll (watchdog), never a naked sleep.
+	shared := config.ProjectVectorIndexPath(h.agentDir, h.proj.ID)
+	overlays := func() []string {
+		t.Helper()
+		entries, err := os.ReadDir(filepath.Join(shared, "branches"))
+		if err != nil {
+			return nil //nolint:nilerr // not there YET — the poll retries
+		}
+		var out []string
+		for _, e := range entries {
+			if e.IsDir() && filepathPrefix(e.Name(), "branch_root_") {
+				out = append(out, e.Name())
+			}
+		}
+		return out
 	}
-	if fi, statErr := os.Stat(filepath.Join(storageA, "branches")); statErr != nil || !fi.IsDir() {
-		t.Errorf("tree A storage layout missing under %s (err=%v)", storageA, statErr)
+	awaitOverlays := func(want int) []string {
+		t.Helper()
+		deadline := time.Now().Add(30 * time.Second)
+		for {
+			got := overlays()
+			if len(got) >= want {
+				return got
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("watchdog: %d overlays never materialized under %s (got %v)", want, shared, got)
+			}
+			// Bounded watchdog retry over a real disk effect (not a scheduler
+			// sleep): the receive parks this goroutine until the next tick.
+			<-time.After(20 * time.Millisecond)
+		}
 	}
+	overlaysA := awaitOverlays(1)
 
 	// Session B on the other tree: its OWN manager, branch resolved from that
-	// root, storage disjoint from A's. A's manager stays live — B's routing
-	// must not disturb it.
+	// root, its own overlay alongside A's. A's manager stays live — B's
+	// routing must not disturb it.
 	ctxB := sdktools.WithWorkspacePathNoProbe(context.Background(), treeB)
 	mgrB, err := h.roots.ManagerForContext(ctxB)
 	if err != nil {
@@ -285,18 +327,21 @@ func TestManagerForContext_RoutesSessionTreePerSession(t *testing.T) {
 	}
 	waitForVectorBranch(t, mgrB, "feature-beta")
 
-	storageB, err := config.WorktreeVectorIndexPath(h.agentDir, h.proj.ID, "s-beta")
-	if err != nil {
-		t.Fatal(err)
+	overlaysB := awaitOverlays(len(overlaysA) + 1)
+	if len(overlaysB) <= len(overlaysA) {
+		t.Errorf("tree B routing created no overlay of its own (before=%d after=%d)", len(overlaysA), len(overlaysB))
 	}
-	if _, statErr := os.Stat(storageB); statErr != nil {
-		t.Errorf("tree B storage missing: %v", statErr)
-	}
-	if storageA == storageB {
-		t.Fatalf("storage roots collide: %q", storageA)
-	}
-	if _, statErr := os.Stat(storageA); statErr != nil {
-		t.Errorf("tree A storage removed by tree B routing: %v", statErr)
+	for _, a := range overlaysA {
+		found := false
+		for _, b := range overlaysB {
+			if a == b {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("tree A's overlay %s removed by tree B routing", a)
+		}
 	}
 	if mgrA == mgrB {
 		t.Fatal("tree A and tree B resolved to the same manager instance")

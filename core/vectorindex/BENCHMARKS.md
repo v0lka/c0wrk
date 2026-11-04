@@ -39,6 +39,11 @@ Optional controls:
 BENCHTIME=1x COUNT=3 SP4RK_ROOT=../sp4rk scripts/benchmark-vector-index.sh
 ```
 
+The ADR-104 store-protocol section runs in every invocation (deterministic
+embedder, no ONNX assets needed); tune it with `STORE_PROTOCOL_SCENARIOS`,
+`STORE_PROTOCOL_BRANCHES`, `STORE_PROTOCOL_ROOTS`, and `PROTOCOL_CORPUS`
+(`small` default | `large`), each case in its own `go test` process.
+
 The multi-session grid section honors `GRID_WORKERS`, `GRID_THREADS`,
 `GRID_BATCHES`, `GRID_SEQUENCES` (space-separated lists) and
 `GRID_MEMORY_CAP_MIB` (admission cap; memory-rejected cases print `SKIP`).
@@ -328,3 +333,246 @@ chunks instead of ~30k). Notable data point for future work: even the
 current 1500-char default truncates ~33% of chunks on token-dense synthetic
 code — shrinking chunk size removes truncation entirely (1200 → 0.0000) but
 failed the retrieval and chunk-count conditions on this corpus.
+
+## Multi-branch / multi-root store protocol (ADR-104)
+
+This section is the **reproducible measurement contract** for the
+content-addressed store ([ADR-104](../../specs/decisions/104-content-addressed-vector-store.md)).
+It is the acceptance instrument for every roadmap step that touches store
+identity, ownership, residency, or migration. The protocol is fixed here
+BEFORE implementation; the harness (a new scenario family in this suite plus
+its script entry) lands with the implementing steps and must satisfy this
+contract, not redefine it. Owner approval of the latency budgets below is a
+gate before implementation begins.
+
+### Environment recording
+
+Every run records the same environment block as the baseline above: machine
+model, OS/arch, Go version, ONNX Runtime version, embedding model, and — new
+— the store topology knobs and the store `format` version. Cross-machine
+comparisons are out of scope; before/after on one machine is the claim shape.
+
+### Corpus
+
+Deterministic synthetic repository generator (an extension of the existing
+template generator, seeded, no repository source files read):
+
+- `SMALL`: 500 files (~2 MB text); `LARGE`: 5000 files (~25 MB text). Mixed
+  Go/Markdown, short and long sections, generated and minified noise included
+  (the content filter must see real work).
+- **Duplicate-content fraction:** 10% of files exist VERBATIM at a second path
+  (copy with a different name). The store must keep both occurrences
+  searchable (asserted by ground truth) while storing one set of chunk
+  records (asserted by the ledger).
+- **Ground-truth query set:** ≥ 20 queries with known-correct answers derived
+  from the generator's manifest (which file, which section). Queries are
+  boundary-sensitive like the retrieval-quality set and include two queries
+  whose correct answers are duplicated-content paths (BOTH must be findable).
+
+### Topology grid
+
+Branches per root: `1, 4, 12`. Roots: `1, 2, 4` (the checkout plus managed
+worktrees of the same repository). Branch fan-out shape: all branches forked
+from ONE indexed commit (the sharing-best case) for the fork-reuse scenario,
+and from DISTINCT commits (real diversity) for the storage-cost scenario.
+Every case runs in its own process (peak-RSS discipline, as above).
+
+### Scenarios
+
+- **cold full index**: fresh store, full pass at commit A (includes corpus
+  walk + inference; ONNX init is timed separately, see below).
+- **cold ONNX init (measured separately)**: embedder session creation + first
+  inference, timed as its own stage and REPORTED SEPARATELY from every store
+  scenario. No scenario's wall time may include an un-attributed ONNX start;
+  warm-attach numbers are meaningless otherwise.
+- **warm attach**: process restart against an existing fully-indexed store,
+  opening the branch's view — store-open time only (no indexing work). The
+  ADR-064 successor metric: must be O(one table), not O(branch documents).
+- **branch fork reuse**: create a new branch from indexed commit A; time to
+  first correct search on it. Must complete with ZERO corpus bytes read
+  (assert `chunks-written == 0`, `files-walked == 0`) — a pointer write.
+- **branch switch**: A → B → A round trip on a multi-branch store.
+- **incremental**: edit ≤ 10 files (dirty overlay path); full pass time.
+- **concurrent roots**: R roots issuing ground-truth searches while one root
+  runs a cold full index — search p95 under load and indexing throughput
+  regression vs the unloaded cold index.
+- **migration (once)**: v1 layout (per-branch chromem roots) → v2 store for
+  the same corpus; wall time and transient disk overhead (rollback window).
+
+### Primary metric: time-to-first-correct-search (TTFS)
+
+From the operation's start (process start / project switch / branch switch /
+fork) to the moment a ground-truth query batch returns EVERY expected file at
+rank ≤ 3. Readiness events or "ready" states do NOT stop the clock —
+correctness does (the honest-status principle of ADR-064, generalized from
+"honest about preparing" to "honest about correct"). TTFS is reported per
+scenario as median and p95 over the repetitions.
+
+### Latency budgets (seconds) — the gate numbers
+
+Budgets are targets on the reference environment class (the baseline machine
+above, `LARGE` corpus unless noted); a roadmap step that regresses a budget
+beyond noise (>5%, per the optimization-claim threshold) does not land
+without an explicit owner decision:
+
+| Scenario | Budget | Notes |
+|---|---:|---|
+| warm attach, 12 branches | ≤ 1.5 s | to first correct search ≤ 2.0 s |
+| branch fork from indexed commit | ≤ 1.5 s | zero corpus bytes read (hard assert) |
+| cold full index, LARGE (excl. ONNX init) | ≤ 60 s | ONNX cold init reported separately, ≤ 3 s |
+| cold full index, SMALL (excl. ONNX init) | ≤ 8 s | |
+| incremental pass (≤ 10 files) | ≤ 5 s | |
+| branch switch (warm) | ≤ 1.5 s | |
+| search p95, warm, top-10 hybrid | ≤ 0.15 s | per query, unloaded |
+| search p95 under concurrent indexing (4 roots) | ≤ 0.5 s | indexing throughput regression ≤ 30% |
+| migration v1→v2, LARGE | ≤ 300 s | background; UI never blocks |
+
+Budget amendment (2026-11-03, owner decision): on the first LARGE-corpus
+full-grid landing the sub-second TTFS class measured at the edge of
+inter-invocation variance on the reference machine — across two independent
+full-grid invocations the medians spanned warm attach (12 branches) 0.60–1.02 s,
+fork 1.03–1.27 s, switch 1.07–1.34 s — while every structural assertion held
+on every repetition (one-table decode regardless of branch count, zero-write
+fork, zero re-embeds). The owner amended the three 1.0 s budgets to
+≤ 1.5 s (LARGE) rather than gate the protocol on machine noise; optimization
+of the table-decode path remains a benchstat-gated follow-up. The SMALL
+reference stays far inside every budget.
+
+### Repetitions and reporting
+
+Minimum `COUNT=5` per case, median + p95 reported; comparisons use
+`benchstat` with the repository's 5% noise threshold. Single-iteration runs
+may be checked in as reference coverage (as the 2026-09-09 baseline is) but
+are never evidence for or against a budget. Assertions (zero-corpus-read on
+fork, both duplicate-path occurrences findable, ledger dedup: unique chunk
+bytes counted once across views) are evaluated on EVERY repetition and any
+failure fails the case — they are correctness gates, not statistics.
+
+### Baseline (2026-11-03, SMALL corpus): first full publication
+
+Environment: Apple M4 Max, Darwin/arm64, Go 1.27.3, deterministic host
+embedder (16-dim bag-of-runes) + the REAL chunker — no ONNX assets
+required; `format:2` store, one isolated `go test` process per scenario,
+`-benchtime=1x` (single-iteration reference coverage; `COUNT=5`+ remains
+the rule for optimization claims). Corpus: SMALL = 500 generated files
+(2 MB text, mixed Go/Markdown + minified noise) + 50 verbatim duplicate
+paths = 550 manifest files, 2 730 chunk records, 24 ground-truth queries
+(2 duplicate-path). Topology: warm_attach at 4 branches (the script's grid
+covers 1/4/12); concurrent_roots at 2 roots.
+
+The v1 arm ("before") is the same tree with the corpus registry unwired —
+the legacy per-branch store model. The v2 arm is the ADR-104 store.
+
+| Scenario (SMALL) | TTFS / metric | embed texts | chunks written | storage |
+|---|---:|---:|---:|---:|
+| cold full, v1 (before) | 1564 ms | 2598 | 2730 | 1.90 MiB/branch |
+| cold full, v2 (after) | 1863 ms | 2598 | 2730 | 2.26 MiB shared |
+| warm attach (4 branches' history) | 260 ms | 0 | 0 | — |
+| branch fork from indexed commit | 320 ms | 0 | 0 | +0 bytes |
+| branch switch A→B / B→A, v1 | 266 / 284 ms | 0 | 0 | per-branch copy |
+| branch switch A→B / B→A, v2 | 300 / 298 ms | 0 | 0 | shared |
+| incremental (10-file edit) | 93 ms | 62 | 65 | overlay delta |
+| migration v1→v2 (rename promotion) | 411 ms | 0 | 0 | +0.36 MiB transient |
+| eviction re-derive (re-attach) | 279 ms | 0 | 0 | — |
+| concurrent: cold build under 1 searcher | 2122 ms | 2611 | — | search p50 1.76 ms, p95 4.41 ms, 0 errors, −12% throughput |
+
+Structural counters (asserted on every repetition, not sampled):
+`corpus-decodes`=1 for a fresh-process warm attach (one table, regardless
+of branch history); fork asserts `chunks-written == 0` AND `embed-texts == 0`
+(a pointer write); migration and eviction assert zero re-embeddings; the
+duplicate-path ground-truth queries assert BOTH occurrences findable on
+every pass; the dedup ledger holds one corpus on disk for all branches of
+one commit while v1 pays the full per-branch copy.
+
+Reading: **cold parity with a bounded publish overhead** — v2's cold pass
+pays +19% wall (corpus publication + manifest + attach) and +0.36 MiB
+transient disk once; in exchange every warm operation is structurally
+cheaper: a fork is a pointer write (v1 re-walks, re-chunks and re-commits
+the whole corpus per branch — 2598 embeds' worth of work plus a full disk
+copy per branch), warm attach decodes exactly one table with zero
+stat-walk work, and multi-branch storage stops multiplying (2.26 MiB
+shared vs 1.90 MiB × branches). Budget check on this reference
+environment: warm attach 0.26 s; fork 0.32 s with the hard zero-write
+assert green; cold SMALL 1.86 s; incremental 93 ms; branch switch ~0.3 s;
+search p95 under load 4.41 ms with −12% indexing throughput. The
+LARGE-corpus full grid (branches 1/4/12 × roots 1/2/4, `COUNT=5`) is
+recorded in the next section.
+
+### Full grid (2026-11-03, LARGE corpus): complete topology publication
+
+Environment: Apple M4 Max, Darwin/arm64, Go 1.27.3, deterministic host
+embedder (16-dim bag-of-runes) + the REAL chunker — no ONNX assets
+required; `format:2` store, one isolated `go test` process per scenario,
+`-benchtime=1x`, `COUNT=5` (median [p95] below). Corpus: LARGE = 5000
+generated files (~25 MB text) + 500 verbatim duplicate paths = 5500
+manifest files, 27 252 chunk records, 24 ground-truth queries (2
+duplicate-path). Topology: the full grid — warm attach at 1/4/12 branches;
+concurrent roots at 2/4 (`concurrent_roots` is defined as "searchers on
+R−1 warm roots while one root cold-builds" and requires R ≥ 2; the script
+skips a roots=1 cell with a printed note — that cell degenerates to the
+unloaded cold_full case measured separately).
+
+| Scenario (LARGE) | TTFS / metric — median [p95] | embed texts | chunks written | storage |
+|---|---:|---:|---:|---:|
+| cold full, v1 (before) | 13.3 [13.7] s | 25 873 | 27 252 | 16.6 MiB/branch |
+| cold full, v2 (after) | 24.2 [25.7] s | 25 873 | 27 252 | 21.6 MiB shared |
+| warm attach, 1 branch | attach 832 [859] ms; TTFS 928 [951] ms | 0 | 0 | 21.7 MiB |
+| warm attach, 4 branches | attach 433 [837] ms; TTFS 471 [929] ms | 0 | 0 | 79.9 MiB |
+| warm attach, 12 branches | attach 599 [833] ms; TTFS 692 [923] ms | 0 | 0 | 234.8 MiB |
+| branch fork from indexed commit | 1.03 [1.17] s | 0 | 0 | +0 bytes |
+| branch switch A→B / B→A | 1.07 [1.34] / 1.23 [1.95] s | 0 | 0 | shared |
+| incremental (10-file edit) | 165 [210] ms | 56 | 58 | overlay delta |
+| migration v1→v2 (rename promotion) | 1.59 [1.63] s | 0 | 0 | +1.38 MiB transient |
+| eviction re-derive (re-attach) | 497 [574] ms | 0 | 0 | 40.9 MiB |
+| concurrent: 2 roots (1 searcher) | cold-under-load 14.2 [14.6] s | 25 885 | — | search p50 3.4 / p95 5.9 [6.3] ms, 3 965 samples, 0 errors |
+| concurrent: 4 roots (3 searchers) | cold-under-load 16.7 [17.6] s | 25 887 | — | search p50 5.2 / p95 11.3 [12.5] ms, 8 497 samples, 0 errors |
+
+Structural counters (asserted on every repetition, not sampled): warm
+attach `corpus-decodes`=1 at 1, 4 AND 12 branches (one table, regardless
+of branch history); fork asserts `chunks-written == 0` AND
+`embed-texts == 0` on every repetition (a pointer write); migration and
+eviction assert zero re-embeddings; the duplicate-path ground-truth
+queries assert BOTH occurrences findable on every pass; concurrent
+search-errors=0 across ~8 500 sampled searches at 4 roots.
+
+Budget check (owner-amended 1.5 s class above): warm attach 12 branches
+attach 0.599 s ≤ 1.5 s and TTFS 0.923 s ≤ 2.0 s; fork 1.03 s ≤ 1.5 s with
+the hard zero-write assert green; branch switch 1.07/1.23 s ≤ 1.5 s; cold
+LARGE 24.2 s ≤ 60 s; incremental 165 ms ≤ 5 s; migration 1.59 s ≤ 300 s;
+search p95 under 4-root indexing 11.3 ms ≤ 0.5 s with NO indexing
+throughput regression (299 files/s under load vs 206 files/s unloaded —
+the under-load arm rides the content-addressed embedding cache). Every
+budget green.
+
+Inter-run variance (recorded for honesty): a same-day first full-grid
+invocation — aborted at a since-fixed script defect that fed the harness
+an invalid `roots=1` concurrent cell — measured the ten shared sections
+green with medians spanning warm attach (12 branches) 1.021 s vs 0.599 s
+here, fork 1.269 s vs 1.030 s, switch 1.082/1.343 s vs 1.072/1.231 s,
+cold v2 44.4 s vs 24.2 s. That spread across independent invocations —
+not within-run noise — is what the owner's 1.5 s amendment of the
+sub-second class accounts for; within-run repetition spread stayed small
+(e.g. switch p95 1.34 s at medians 1.07 s).
+
+Reading: **at 10× the SMALL corpus every warm operation stays at the
+one-table-decode floor** — attach cost is flat across 1/4/12 branches
+(433–832 ms medians, dominated by the single table decode plus the
+24-query correctness batch), a fork remains a pointer write (0 chunks, 0
+embeds, +0 bytes), and the store's dedup ledger holds unique chunk bytes
+counted once across views on every repetition (asserted, not sampled).
+The warm-attach topology pins each branch at a DISTINCT commit — the
+storage-cost shape — and the measured store grows 21.7 → 79.9 → 234.8 MiB
+across 1/4/12 such branches; the sharing-best shape is measured by the
+fork row instead (+0 bytes per additional branch at one indexed commit).
+The cold pass pays the corpus publication openly: +82% wall vs the v1 arm
+at LARGE (24.2 s vs 13.3 s — 27 252 chunk records + the 5500-row
+occurrence table + the lexical leg) with identical inference counts
+(25 873 embeds both arms), a one-time cost every warm operation then
+amortizes.
+
+Run:
+
+```sh
+STORE_PROTOCOL_SCENARIOS='warm_attach' STORE_PROTOCOL_BRANCHES='1 4 12' \
+  scripts/benchmark-vector-index.sh
+```

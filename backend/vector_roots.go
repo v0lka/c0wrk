@@ -63,6 +63,12 @@ type vectorRootEntry struct {
 type VectorRoots struct {
 	f *FrontendAPI
 
+	// corpus is the process-level shared-corpus registry (ADR-104 stage 2):
+	// snapshot-keyed corpora shared read-only by every root of a project —
+	// the owner side of the owner/view contract. Nil only in tests that
+	// build VectorRoots structs literally.
+	corpus *vectorindex.CorpusRegistry
+
 	mu    sync.Mutex
 	roots map[string]*vectorRootEntry // key: canonical (filepath.Clean) root
 	// closing tracks in-flight LRU evictions: root → channel closed when the
@@ -99,7 +105,34 @@ func newVectorRoots(f *FrontendAPI) *VectorRoots {
 		f:       f,
 		roots:   make(map[string]*vectorRootEntry),
 		closing: make(map[string]chan struct{}),
+		// The process-level shared-corpus owner (ADR-104 §4: one store
+		// owner per project store per process): every manager the factory
+		// builds participates — the checkout and each managed worktree of a
+		// project share one snapshot-keyed corpus per commit, read-only,
+		// with per-root overlays as their working stores.
+		corpus: vectorindex.NewCorpusRegistry(f.log()),
 	}
+}
+
+// CorpusRegistry exposes the process-level shared-corpus registry (wired
+// into every manager build by the desktop factory). The desktop layer's
+// manager factory passes it as ManagerConfig.Corpus.
+func (vr *VectorRoots) CorpusRegistry() *vectorindex.CorpusRegistry {
+	if vr == nil {
+		return nil
+	}
+	return vr.corpus
+}
+
+// vectorCorpusRegistry is the in-package accessor for the process-level
+// shared-corpus registry (ManagerConfig.Corpus). Nil before the registry is
+// constructed. The desktop layer reaches the registry through the
+// FrontendAPILifecycle variant — this method stays off the Wails RPC surface.
+func (f *FrontendAPI) vectorCorpusRegistry() *vectorindex.CorpusRegistry {
+	if f.vectorRoots == nil {
+		return nil
+	}
+	return f.vectorRoots.CorpusRegistry()
 }
 
 // SetFactory wires the manager factory from the desktop background ONNX init,
@@ -291,19 +324,17 @@ func (f *FrontendAPI) resolveRootPlan(ctx context.Context, root string) (project
 		if p.IsNoProject {
 			continue
 		}
-		name, nameErr := config.ManagedWorktreeNameFromPath(p.WorkspacePath, root)
-		if nameErr != nil {
+		// ADR-104 stage 2 (owner/view): a managed worktree shares the
+		// PROJECT's store — snapshot-keyed corpora carry the bulk content
+		// (read-only), the tree's own overlay (root-fingerprint keyed)
+		// carries its divergence, and the embedding cache is the project's
+		// single content-addressed cache (no per-tree copy, no re-embed).
+		// Membership is still decided by the .worktrees container: a tree
+		// can only belong to the project whose container holds it.
+		if _, nameErr := config.ManagedWorktreeNameFromPath(p.WorkspacePath, root); nameErr != nil {
 			continue
 		}
-		storage, storageErr := config.WorktreeVectorIndexPath(f.agentDir, p.ID, name)
-		if storageErr != nil {
-			return "", "", "", fmt.Errorf("deriving worktree vector storage for %s: %w", root, storageErr)
-		}
-		cache, cacheErr := config.WorktreeEmbeddingCachePath(f.agentDir, p.ID, name)
-		if cacheErr != nil {
-			return "", "", "", fmt.Errorf("deriving worktree embedding cache for %s: %w", root, cacheErr)
-		}
-		return p.ID, storage, cache, nil
+		return p.ID, config.ProjectVectorIndexPath(f.agentDir, p.ID), config.ProjectEmbeddingCachePath(f.agentDir, p.ID), nil
 	}
 	return "", "", "", fmt.Errorf("%w: %s is not a registered project checkout or managed worktree", errVectorNoTarget, root)
 }
@@ -617,11 +648,31 @@ func (vr *VectorRoots) Release(root string) *vectorindex.Manager {
 	if ok && vr.focus == root {
 		vr.focus = ""
 	}
+	var closed chan struct{}
+	if ok {
+		// Park the root in the closing set around the Shutdown drain,
+		// exactly like ReleaseProject and the LRU eviction (see
+		// VectorRoots.closing): a ManagerForRoot racing this drain must
+		// wait instead of rebuilding a second manager over the same chromem
+		// storage. The drain stays synchronous — callers rely on the
+		// returned manager being fully shut down (Windows handle-close).
+		closed = make(chan struct{})
+		if vr.closing == nil {
+			vr.closing = make(map[string]chan struct{})
+		}
+		vr.closing[root] = closed
+	}
 	vr.mu.Unlock()
 	if !ok {
 		return nil
 	}
 	e.mgr.Shutdown()
+	vr.mu.Lock()
+	if ch, isClosing := vr.closing[root]; isClosing && ch == closed {
+		delete(vr.closing, root)
+	}
+	close(closed)
+	vr.mu.Unlock()
 	return e.mgr
 }
 
@@ -693,6 +744,14 @@ func (vr *VectorRoots) ShutdownAll() {
 
 	for _, mgr := range managers {
 		mgr.Shutdown()
+	}
+	// The corpus registry's residency slots die with the process: managers
+	// have drained (their corpus refs released into retention), so Close
+	// settles every retained handle and retires any straggler (it closes at
+	// its last release). A Disable() deliberately does NOT do this — the
+	// restartable enable/disable cycle reuses the retained corpora.
+	if vr.corpus != nil {
+		vr.corpus.Close()
 	}
 	if closeEmbedder != nil {
 		if err := closeEmbedder(); err != nil {

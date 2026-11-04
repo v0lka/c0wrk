@@ -315,6 +315,14 @@ describe('isVectorIndexPayload (#159 provider_fallback_reason)', () => {
   it('rejects a present non-string provider_fallback_reason (VectorIndexDiagnostics calls .trim())', () => {
     expect(isVectorIndexPayload({ ...base, provider_fallback_reason: { why: 'x' } })).toBe(false)
   })
+
+  it('accepts the ADR-104 stage 2 states "preparing" and "migration-rebuild" (literals pinned to core/vectorindex/indexer.go IndexStatePreparing/IndexStateMigrating)', () => {
+    // Dropping either from VALID_VECTOR_STATES would silently discard the
+    // payload at every ingestion point and strand a stale pre-attach state;
+    // the search auto-gate would never see the transition out of it.
+    expect(isVectorIndexPayload({ ...base, state: 'preparing' })).toBe(true)
+    expect(isVectorIndexPayload({ ...base, state: 'migration-rebuild' })).toBe(true)
+  })
 })
 
 describe('isVectorIndexPayload (ov_device)', () => {

@@ -1686,6 +1686,51 @@ orchestration:
 #                              # disables); park_capacity: 0 still disables
 #                              # parking entirely regardless of the budget.
 #
+#   corpus_residency_capacity: 0
+#                              # how many zero-reference SHARED corpus handles
+#                              # (ADR-104) the process-level corpus owner keeps
+#                              # resident, so A→B→A re-attaches the same handle
+#                              # — no chromem re-decode, no lexical reopen
+#                              # (default 0 = retention of inactive views OFF;
+#                              # a released corpus closes at once). The budget
+#                              # spans all projects' shared corpora in the
+#                              # process; each corpus is counted ONCE however
+#                              # many roots view it (per-root overlays stay
+#                              # outside this ledger — the park knobs bound
+#                              # them). Attached corpora are pinned by their
+#                              # readers and never evicted: the bounds govern
+#                              # RETENTION, not admission — they are not a
+#                              # hard RSS cap and never claimed as one. 0 is a
+#                              # documented value here (with a 0 budget:
+#                              # retention off; with a positive budget: retain
+#                              # by bytes alone); negatives are rejected at
+#                              # load — no sentinels.
+#
+#   corpus_residency_budget_mb: 0
+#                              # cumulative RAM budget (MiB) for the RETAINED
+#                              # corpus handles (their estimated footprints —
+#                              # the same docs × (dims × 4 B + 1 KiB) shape).
+#                              # The oldest eligible handles are evicted while
+#                              # the sum exceeds the budget, including a single
+#                              # handle too big to fit on its own. Default 0 =
+#                              # no byte bound (corpus_residency_capacity
+#                              # alone). Negatives and values above the 2 PiB
+#                              # ceiling are rejected at load (the MiB→bytes
+#                              # shift would overflow).
+#
+#   store_disk_budget_mb: 0    # disk cap (MiB) for the content-addressed
+#                              # vector store tree (ADR-104 §5 disk ledger:
+#                              # unique chunk bytes counted once + per-snapshot
+#                              # tables/lexical + per-root overlays + whole
+#                              # superseded generations). Default 0 = no cap.
+#                              # Under pressure the silent switch-riding
+#                              # hygiene pass evicts LRU snapshot directories
+#                              # no owner pins (live roots, surviving branch
+#                              # refs, attached corpora); an evicted snapshot
+#                              # is re-derived by the next attach's corpus
+#                              # pass. Negatives and values above the 2 PiB
+#                              # ceiling are rejected at load.
+#
 #   max_chunks_per_file: 4000  # upper bound on chunks one file may contribute
 #                              # to an index pass (default 4000). Files that
 #                              # exceed it are skipped wholesale (WARN) — a
@@ -1777,6 +1822,9 @@ orchestration:
 #   search_wait_timeout_ms: 3000
 #   park_capacity: 3
 #   park_budget_mb: 1024
+#   corpus_residency_capacity: 0
+#   corpus_residency_budget_mb: 0
+#   store_disk_budget_mb: 0
 #   max_file_size: 4194304
 #   max_chunk_size: 1500
 #   max_chunks_per_file: 4000

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,6 +16,8 @@ import (
 
 	"github.com/v0lka/c0wrk/core"
 	"github.com/v0lka/sp4rk/embedding"
+	"github.com/v0lka/sp4rk/pathutil"
+	"github.com/v0lka/sp4rk/safeio"
 )
 
 // ErrEmbeddingDisabled is returned by NewManager when no EmbeddingFunc is
@@ -55,6 +59,20 @@ const (
 	// config disable sentinel) leaves park_capacity as the only bound. See
 	// specs/decisions/049-vector-index-memory-reduction.md.
 	DefaultParkBudgetBytes int64 = 1024 << 20
+
+	// DefaultCorpusResidencyCapacity (vector_index.corpus_residency_capacity):
+	// how many zero-reference shared corpus handles the process-level owner
+	// retains (ADR-104 §5). The default 0 (with the byte budget's 0) keeps
+	// retention of inactive views OFF — a released corpus closes at once,
+	// the pre-residency behavior; raising either bound opts in.
+	DefaultCorpusResidencyCapacity = 0
+
+	// DefaultCorpusResidencyBudgetBytes
+	// (vector_index.corpus_residency_budget_mb → bytes): the summed
+	// estimateCorpusHandleBytes of the RETAINED corpus handles. Unlike the
+	// park knobs there are no zero/negative sentinels: 0 simply means "no
+	// bound of this kind" and negatives are rejected at config load.
+	DefaultCorpusResidencyBudgetBytes int64 = 0
 )
 
 // DefaultEmbeddingBatchSize mirrors sp4rk's embedding.DefaultBatchSize — the
@@ -168,6 +186,13 @@ type ManagerConfig struct {
 	// specs/decisions/049-vector-index-memory-reduction.md.
 	ParkBudgetBytes int64
 
+	// Corpus, when non-nil, wires the shared-corpus owner/view model
+	// (ADR-104 stage 2) into the manager: it attaches snapshot-keyed shared
+	// corpora read-only and keeps the root's private overlay as its working
+	// store. Nil keeps the historical single store per root (tests,
+	// standalone services).
+	Corpus *CorpusRegistry
+
 	// ShutdownGrace overrides the shutdown drain grace (0 = the production
 	// shutdownIndexGracePeriod). Tests that create managers with PERSISTED
 	// storage and then remove it (TempDir) should set a generous grace:
@@ -243,6 +268,13 @@ type Manager struct {
 	// access to it).
 	workspacePath string
 
+	// storageRoot is the active project's vector-index storage root (the
+	// §3 store's physical root), stored at the same publication points as
+	// workspacePath. Read by StorageRoot for status surfaces that must
+	// never block behind indexing (the service's own StorageRoot takes
+	// the service read lock, which an in-flight pass holds).
+	storageRoot string
+
 	// Chunk and hash functions for indexing.
 	chunkFn          ChunkFunc
 	hashFn           HashFunc
@@ -287,6 +319,12 @@ type Manager struct {
 	// SwitchProject / Shutdown cancels it so a stale init can't touch a
 	// freshly-switched (or closed) service. Set under m.mu.
 	initCancel context.CancelFunc
+	// migrationCancel cancels the in-flight store-migration sweep
+	// (kickStoreMigration); SwitchProject / Shutdown cancel it so a stale
+	// sweep never outlives its manager. The sweep itself is replay-safe —
+	// the next attach of any root of the store resumes it from its persisted
+	// per-unit state. Set under m.mu.
+	migrationCancel context.CancelFunc
 	// initWG tracks the initProject goroutine. Only Shutdown waits on it
 	// (bounded), so the init goroutine never operates on a closed service.
 	// SwitchProject cancels initCtx but never waits: initProject aborts at
@@ -384,9 +422,13 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 		EmbeddingDimension:        cfg.EmbeddingDimension,
 		EmbeddingCacheMaxBytes:    cfg.EmbeddingCacheMaxBytes,
 		ChunkerFingerprint:        ChunkerFingerprint(maxChunkSize, chunkOverlap, resolveContentFilterConfig(cfg.ContentFilter).Fingerprint()),
-		ContentFilter:             cfg.ContentFilter,
-		ParkCapacity:              cfg.ParkCapacity,
-		ParkBudgetBytes:           cfg.ParkBudgetBytes,
+		IgnoreFingerprint: IgnoreFingerprint(
+			cfg.IgnoreFiles, cfg.ExcludePatterns, cfg.IncludeSubmodules,
+			maxFileSize, maxChunksPerFile),
+		Corpus:          cfg.Corpus,
+		ContentFilter:   cfg.ContentFilter,
+		ParkCapacity:    cfg.ParkCapacity,
+		ParkBudgetBytes: cfg.ParkBudgetBytes,
 	})
 	if err != nil {
 		return nil, err
@@ -482,12 +524,14 @@ func (m *Manager) SwitchProject(projectID, workspacePath, vectorIndexFullPath st
 			m.indexCancel = nil
 			m.indexCtx = nil
 		}
+		m.cancelStoreMigrationLocked()
 		if m.gitMonitor != nil {
 			_ = m.gitMonitor.Stop()
 			m.gitMonitor = nil
 		}
 		m.indexer = nil
 		m.workspacePath = ""
+		m.storageRoot = ""
 		m.mu.Unlock()
 		m.stopDebounce()
 		// Drop readiness before the (possibly deferred) reset below so a search
@@ -520,6 +564,7 @@ func (m *Manager) SwitchProject(projectID, workspacePath, vectorIndexFullPath st
 		m.indexCancel = nil
 		m.indexCtx = nil
 	}
+	m.cancelStoreMigrationLocked()
 	if m.gitMonitor != nil {
 		_ = m.gitMonitor.Stop()
 		m.gitMonitor = nil
@@ -621,6 +666,13 @@ func (m *Manager) initProject(ctx context.Context, projectID, workspacePath, vec
 		return
 	}
 
+	// Bind the workspace root (ADR-104 L4) BEFORE any branch open: the
+	// branch-scoped open's generation gate, the sidecar's root scope and
+	// every per-request hydration resolve against it. An orphaned init is
+	// cancelled before a newer switch rebinds, so a stale binding never
+	// outlives its project.
+	m.service.SetWorkspaceRoot(workspacePath)
+
 	// Detect branch. CurrentBranch returns DefaultBranch for non-git
 	// directories; git-on-PATH is verified synchronously by the backend
 	// before SwitchProject, so a failure here indicates a broken repo.
@@ -668,8 +720,28 @@ func (m *Manager) initProject(ctx context.Context, projectID, workspacePath, vec
 		Telemetry:         m.telemetry,
 	})
 
-	// Switch to branch collection (opens the per-branch bleve index).
-	if switchErr := m.service.SwitchBranch(ctx, branch); switchErr != nil {
+	// Open the store. View model (ADR-104 stage 2): AttachSnapshot resolves
+	// the snapshot identity, drives the shared corpus to a published state
+	// (single-flight; honest preparation/migration-rebuild/indexing
+	// statuses), and binds the root's overlay — fail-closed on any error
+	// (nothing of another snapshot is ever served). Legacy model: the branch
+	// collection open as before.
+	if m.service.CorpusEnabled() {
+		if attachErr := indexer.AttachSnapshot(ctx, workspacePath, branch); attachErr != nil {
+			// A cancellation landing during the attach belongs to an
+			// orphaned init and must not flip the newer project's readiness.
+			if cerr := ctx.Err(); cerr != nil {
+				m.logger.Info("vector index init cancelled during view attach; ignoring failure",
+					"project", projectID, "error", attachErr)
+				return
+			}
+			m.logger.Warn("vector index init failed; search disabled",
+				"project", projectID, "step", "attach snapshot view", "error", attachErr)
+			m.notifyInitFailure(cbs, attachErr)
+			m.service.SetReady(true)
+			return
+		}
+	} else if switchErr := m.service.SwitchBranch(ctx, branch); switchErr != nil {
 		// A cancellation landing while the bleve index opened belongs to an
 		// orphaned init and must not flip the newer project's readiness.
 		if cerr := ctx.Err(); cerr != nil {
@@ -692,9 +764,21 @@ func (m *Manager) initProject(ctx context.Context, projectID, workspacePath, vec
 	// collection is live. publishInitState re-checks ctx under m.mu, closing
 	// the check-to-publish TOCTOU window; indexCancel stays owned by the
 	// Manager (the next SwitchProject / Shutdown cancels through it).
-	indexCtx, _, published := m.publishInitState(ctx, projectID, workspacePath, indexer)
+	indexCtx, _, published := m.publishInitState(ctx, projectID, workspacePath, vectorIndexFullPath, indexer)
 	if !published {
 		return
+	}
+
+	// View model: kick the unified legacy-layout migration sweep (ADR-104
+	// §3, stage 3) in the background. The sweep holds no service/registry
+	// lock across its run and never delays this root's readiness — the
+	// attach above already waited only for THIS snapshot's own preparation;
+	// every promotion the sweep makes takes the target key's single-flight
+	// build lease, serializing with corpus builds on exactly the shared
+	// data. Replay-safe: a cancelled or crashed sweep resumes on the next
+	// attach from its persisted per-unit state.
+	if m.service.CorpusEnabled() {
+		m.kickStoreMigration(workspacePath)
 	}
 
 	// Start background indexing; tracked by indexingWG so Shutdown can join
@@ -703,8 +787,13 @@ func (m *Manager) initProject(ctx context.Context, projectID, workspacePath, vec
 	go func() {
 		defer m.indexingWG.Done()
 		col := m.service.GetCollection()
+		viewMode := m.service.CorpusEnabled()
 		var idxErr error
-		if col == nil || col.Count() == 0 {
+		// View model: the corpus carries the bulk content; the overlay is
+		// reconciled incrementally ALWAYS (a first attach adopts the corpus
+		// into the sidecar — walk + hash, no embed/chunk/commit), so the
+		// full-index branch never runs.
+		if !viewMode && (col == nil || col.Count() == 0) {
 			m.logger.Info("empty collection, running full index", "project", projectID)
 			idxErr = indexer.IndexFull(indexCtx, workspacePath)
 			// Return the transient whole-corpus allocations here instead of
@@ -718,18 +807,24 @@ func (m *Manager) initProject(ctx context.Context, projectID, workspacePath, vec
 			// Reconciliation: collection has data but the lexical index is
 			// empty (pre-BM25 project, or a failed dual-write) — backfill
 			// the lexical side first so hybrid search works immediately.
-			lexCount, lexCountErr := m.service.LexicalCount()
-			if lexCountErr != nil {
-				m.logger.Warn("failed to read lexical count; skipping reconciliation",
-					"project", projectID, "error", lexCountErr)
-			} else if lexCount == 0 && m.service.GetLexical() != nil {
-				m.logger.Info("lexical index empty, running BM25 backfill",
-					"project", projectID, "chunks", col.Count())
-				if rbErr := indexer.RebuildLexical(indexCtx); rbErr != nil {
-					if context.Cause(indexCtx) != nil {
-						m.logger.Info("lexical backfill cancelled", "project", projectID)
-					} else {
-						m.logger.Warn("lexical backfill failed", "error", rbErr)
+			// View-model services skip this: the corpus's own lexical index
+			// serves the shared content and the overlay's lexical fills
+			// incrementally — backfilling here would re-tokenize the whole
+			// corpus into the overlay on every first attach.
+			if !viewMode {
+				lexCount, lexCountErr := m.service.LexicalCount()
+				if lexCountErr != nil {
+					m.logger.Warn("failed to read lexical count; skipping reconciliation",
+						"project", projectID, "error", lexCountErr)
+				} else if lexCount == 0 && m.service.GetLexical() != nil {
+					m.logger.Info("lexical index empty, running BM25 backfill",
+						"project", projectID, "chunks", col.Count())
+					if rbErr := indexer.RebuildLexical(indexCtx); rbErr != nil {
+						if context.Cause(indexCtx) != nil {
+							m.logger.Info("lexical backfill cancelled", "project", projectID)
+						} else {
+							m.logger.Warn("lexical backfill failed", "error", rbErr)
+						}
 					}
 				}
 			}
@@ -783,7 +878,7 @@ func (m *Manager) initProject(ctx context.Context, projectID, workspacePath, vec
 // between initProject's unlocked check and this publication aborts without
 // installing stale state. Returns the context, its cancel, and whether
 // anything was installed.
-func (m *Manager) publishInitState(ctx context.Context, projectID, workspacePath string, indexer *Indexer) (context.Context, context.CancelFunc, bool) {
+func (m *Manager) publishInitState(ctx context.Context, projectID, workspacePath, vectorIndexFullPath string, indexer *Indexer) (context.Context, context.CancelFunc, bool) {
 	indexCtx, indexCancel := context.WithCancel(context.Background())
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -794,9 +889,21 @@ func (m *Manager) publishInitState(ctx context.Context, projectID, workspacePath
 	}
 	m.indexer = indexer
 	m.workspacePath = workspacePath
+	m.storageRoot = vectorIndexFullPath
 	m.indexCancel = indexCancel
 	m.indexCtx = indexCtx
 	return indexCtx, indexCancel, true
+}
+
+// StorageRoot returns the active project's vector-index storage root (""
+// when unset) WITHOUT taking the service lock: status surfaces read it
+// while an indexing pass may hold the service write lock (ADR-104 §4 —
+// status reads never block behind indexing). The manager-level mutex is
+// held only briefly by lifecycle transitions, never across a pass.
+func (m *Manager) StorageRoot() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.storageRoot
 }
 
 // installGitMonitor publishes gitMon unless the init context was cancelled
@@ -1165,7 +1272,10 @@ func (m *Manager) Reindex(ctx context.Context) error {
 			return
 		}
 		var idxErr error
-		if col.Count() == 0 {
+		// View-model services always reconcile incrementally (the corpus
+		// carries the bulk; an empty overlay is the normal first-attach
+		// state, filled by adoption, not by a full pass).
+		if col.Count() == 0 && !m.service.CorpusEnabled() {
 			m.logger.Info("empty collection, running full index")
 			idxErr = idx.IndexFull(indexCtx, workspacePath)
 			// Same rationale and success gate as the initProject pass.
@@ -1206,6 +1316,7 @@ func (m *Manager) Shutdown() {
 		m.indexCancel()
 		m.indexCancel = nil
 	}
+	m.cancelStoreMigrationLocked()
 	if m.gitMonitor != nil {
 		if err := m.gitMonitor.Stop(); err != nil {
 			m.logger.Error("failed to stop git monitor", "error", err)
@@ -1275,6 +1386,96 @@ func (m *Manager) addIndexingWork() bool {
 	}
 	m.indexingWG.Add(1)
 	return true
+}
+
+// kickStoreMigration launches (at most once per manager) the unified
+// legacy-layout migration sweep of the active store (ADR-104 §3, stage 3;
+// the implementation and its lock/replay discipline live in layout.go).
+// The sweep is background hygiene: it delays no readiness, holds no global
+// lock, and joins Shutdown through indexingWG; SwitchProject / Shutdown
+// cancel it and the next attach of any root of the store replays it from
+// the persisted per-unit state.
+func (m *Manager) kickStoreMigration(workspacePath string) {
+	m.mu.Lock()
+	if m.migrationCancel != nil { // already kicked by this manager
+		m.mu.Unlock()
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	m.migrationCancel = cancel
+	m.mu.Unlock()
+
+	if !m.addIndexingWork() {
+		// addIndexingWork is called past m.mu.Unlock; take the lock back so
+		// the cancel honors cancelStoreMigrationLocked's must-hold-m.mu
+		// contract like the SwitchProject/Shutdown callers do.
+		m.mu.Lock()
+		m.cancelStoreMigrationLocked()
+		m.mu.Unlock()
+		cancel()
+		return
+	}
+	go func() {
+		defer m.indexingWG.Done()
+		defer cancel()
+		m.service.RunStoreMigration(ctx, m.service.StorageRoot(), StoreMigrationFacts{
+			ListBranches: func(ctx context.Context) ([]string, error) {
+				return ListLocalBranches(ctx, workspacePath)
+			},
+			BranchCommit: func(ctx context.Context, branch string) (string, error) {
+				return CommitOfBranch(ctx, workspacePath, branch)
+			},
+			// The v1→v2 chunk-record completion's facts: the focused
+			// root's source access (RAW bytes by occurrence path, contained
+			// under the workspace) and the live chunker identity.
+			ReadSource: func(ctx context.Context, relPath string) ([]byte, error) {
+				return readWorkspaceSource(ctx, workspacePath, relPath)
+			},
+			ChunkFn:      m.chunkFn,
+			HashFn:       m.hashFn,
+			ChunkerFP:    m.service.chunkerFingerprint,
+			MaxChunkSize: m.maxChunkSize,
+			Overlap:      m.chunkOverlap,
+		})
+	}()
+}
+
+// readWorkspaceSource reads one occurrence path's RAW bytes from the
+// workspace tree (the v1→v2 chunk-record migration's source access). The
+// path is root-relative by contract (it came from a corpus manifest this
+// project's stores produced); joining is guarded by containment anyway —
+// a malformed manifest row reads as a missing source, never as an escape
+// outside the tree.
+func readWorkspaceSource(ctx context.Context, workspacePath, relPath string) ([]byte, error) {
+	if workspacePath == "" || relPath == "" {
+		return nil, os.ErrNotExist
+	}
+	if strings.Contains(relPath, "..") || strings.ContainsRune(relPath, 0) {
+		return nil, os.ErrNotExist
+	}
+	abs := filepath.Join(workspacePath, filepath.FromSlash(relPath))
+	if within, err := pathutil.IsWithinPath(workspacePath, abs); err != nil || !within {
+		return nil, os.ErrNotExist
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+	info, err := os.Stat(abs)
+	if err != nil || !info.Mode().IsRegular() {
+		return nil, os.ErrNotExist
+	}
+	return safeio.ReadFile(abs)
+}
+
+// cancelStoreMigrationLocked cancels the in-flight store-migration sweep, if
+// any (SwitchProject / Shutdown paths). The caller must hold m.mu.
+func (m *Manager) cancelStoreMigrationLocked() {
+	if m.migrationCancel != nil {
+		m.migrationCancel()
+		m.migrationCancel = nil
+	}
 }
 
 // sealIndexingWork marks the manager closed for new indexing work; Shutdown

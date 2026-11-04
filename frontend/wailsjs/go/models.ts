@@ -2647,6 +2647,7 @@ export namespace backend {
 	    cuda_verified?: boolean;
 	    ov_device?: string;
 	    provider_fallback_reason?: string;
+	    store?: vectorindex.StoreLedger;
 	    device_id?: number;
 	
 	    static createFrom(source: any = {}) {
@@ -2668,8 +2669,27 @@ export namespace backend {
 	        this.cuda_verified = source["cuda_verified"];
 	        this.ov_device = source["ov_device"];
 	        this.provider_fallback_reason = source["provider_fallback_reason"];
+	        this.store = this.convertValues(source["store"], vectorindex.StoreLedger);
 	        this.device_id = source["device_id"];
 	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class VectorStoreEntry {
 	    file_path: string;
@@ -3939,6 +3959,45 @@ export namespace tools {
 		    }
 		    return a;
 		}
+	}
+
+}
+
+export namespace vectorindex {
+	
+	export class StoreLedger {
+	    generation: number;
+	    chunk_records: number;
+	    chunk_bytes: number;
+	    chunk_orphans: number;
+	    snapshot_bytes: Record<string, number>;
+	    overlay_bytes: Record<string, number>;
+	    snapshots: number;
+	    overlays: number;
+	    superseded_bytes: number;
+	    total_bytes: number;
+	    evicted_last_pass: number;
+	    updated_at: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new StoreLedger(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.generation = source["generation"];
+	        this.chunk_records = source["chunk_records"];
+	        this.chunk_bytes = source["chunk_bytes"];
+	        this.chunk_orphans = source["chunk_orphans"];
+	        this.snapshot_bytes = source["snapshot_bytes"];
+	        this.overlay_bytes = source["overlay_bytes"];
+	        this.snapshots = source["snapshots"];
+	        this.overlays = source["overlays"];
+	        this.superseded_bytes = source["superseded_bytes"];
+	        this.total_bytes = source["total_bytes"];
+	        this.evicted_last_pass = source["evicted_last_pass"];
+	        this.updated_at = source["updated_at"];
+	    }
 	}
 
 }

@@ -7,14 +7,16 @@ import { useVectorIndexStore } from '@/stores/vectorIndexStore'
 /**
  * The force-full-reindex action for the semantics (vector store) search
  * panel. The vector index state drives it: the action is disabled and shown
- * spinning while the index is already busy — a pass in flight, or the
- * branch-scoped DB still opening (`loading`, ADR-064) — or while a request is
- * pending (see the optimistic latch below). A terminal `unavailable` index
- * state (a failed open or init failure) disables the action WITHOUT the
- * spinner — nothing is running, and a reindex cannot repair a missing
- * collection; switching branch or reopening the project retries the open.
- * In No Project (CHAT mode), where the vector index is disabled, the action
- * is hidden entirely instead of being rendered disabled.
+ * spinning while the index is already busy — a pass in flight, the
+ * branch-scoped DB still opening (`loading`, ADR-064), the ADR-104 stage-2
+ * pre-work (`preparing` view-model attach window / `migration-rebuild`
+ * legacy store promotion) — or while a request is pending (see the
+ * optimistic latch below). A terminal `unavailable` index state (a failed
+ * open or init failure) disables the action WITHOUT the spinner — nothing
+ * is running, and a reindex cannot repair a missing collection; switching
+ * branch or reopening the project retries the open. In No Project (CHAT
+ * mode), where the vector index is disabled, the action is hidden entirely
+ * instead of being rendered disabled.
  *
  * Extracted from FileTreePanel when the button moved to the search panel's
  * mode-selector row (hybrid/vector/lexical); ADR-064 later folded the
@@ -34,6 +36,13 @@ export function useVectorReindex() {
   // while the open still reported `indexing` before ADR-064.
   const isPassRunning = indexState === 'indexing' || indexState === 'reindexing'
   const isOpening = indexState === 'loading'
+  // `preparing` / `migration-rebuild` (ADR-104 stage 2) are the view-model
+  // attach window and the one-time legacy store promotion — pre-work, not a
+  // pass — but the index is busy exactly like the `loading` open: a reindex
+  // fired now would race the attach/migration, and until it settles the
+  // manager could only fail. They count as busy so the action stays disabled
+  // and spinning (events.ts VALID_VECTOR_STATES admits them onto the store).
+  const isAttaching = indexState === 'preparing' || indexState === 'migration-rebuild'
   // `unavailable` is terminal, not busy: a failed DB open or init failure left
   // no collection, and a reindex cannot repair that (there is nothing to
   // validate or add to). The action is disabled WITHOUT the busy spinner —
@@ -44,7 +53,7 @@ export function useVectorReindex() {
   // the registry is parked (every reindex RPC fails fast), and only Settings
   // can change it. Disabled without the spinner, with its own tooltip.
   const isIndexDisabled = indexState === 'disabled'
-  const isBusy = isPassRunning || isOpening
+  const isBusy = isPassRunning || isOpening || isAttaching
   const reindexUnavailable = isNoProject || !activeProjectId
 
   // Optimistic latch: between the click and the arrival of the first
@@ -59,14 +68,21 @@ export function useVectorReindex() {
   // latch) OR a terminal state (unavailable / disabled).
   const reindexDisabled = reindexBusy || isIndexUnavailable || isIndexDisabled
 
-  // The action's tooltip names the REAL reason it is disabled, so the open is
+  // The action's tooltip names the REAL reason it is disabled, so pre-work is
   // never labelled a reindex pass — the same honesty rule the status-bar pill
-  // and the search panel follow (ADR-064). The optimistic latch (a request in
-  // flight, no busy status observed yet) reads as a reindex: that is what the
-  // user just asked for. The terminal unavailable state gets its own
-  // actionable title (a reindex cannot repair it; switching branch or
+  // and the search panel follow (ADR-064). The labels match IndexingStatus
+  // exactly ('Preparing index…' / 'Migrating store…'). The optimistic latch (a
+  // request in flight, no busy status observed yet) reads as a reindex: that
+  // is what the user just asked for. The terminal unavailable state gets its
+  // own actionable title (a reindex cannot repair it; switching branch or
   // reopening the project retries the open).
-  const reindexBusyTitle = isOpening && !reindexRequested ? 'Opening the index…' : 'Reindexing...'
+  const preWorkTitle = isOpening
+    ? 'Opening the index…'
+    : indexState === 'preparing'
+      ? 'Preparing index…'
+      : 'Migrating store…'
+  const reindexBusyTitle =
+    (isOpening || isAttaching) && !reindexRequested ? preWorkTitle : 'Reindexing...'
   const reindexDisabledTitle =
     isIndexDisabled && !reindexBusy
       ? 'Indexing is off — enable it in Settings → Search'
@@ -75,9 +91,10 @@ export function useVectorReindex() {
         : reindexBusyTitle
 
   useEffect(() => {
-    // The backend emits a busy status (loading/indexing/reindexing) as the first
-    // event of a project open or of a pass; once the store reflects it the latch
-    // is redundant. A switch to an unavailable project (No Project / no active
+    // The backend emits a busy status (loading/indexing/reindexing, and since
+    // ADR-104 stage 2 preparing/migration-rebuild) as the first event of a
+    // project open or of a pass; once the store reflects it the latch is
+    // redundant. A switch to an unavailable project (No Project / no active
     // project) — or to a terminal unavailable/disabled index state — also
     // invalidates a pending request.
     if (isBusy || isIndexUnavailable || isIndexDisabled || reindexUnavailable) setReindexRequested(false)

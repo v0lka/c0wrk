@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted (049-C's park LRU composes with the ADR-104 corpus-residency LRU since the residency stage: parking a state releases its shared-corpus reference into the owner's retention (default off — closed at once), and `estimateStateBytes` keeps sizing a parked state from its OVERLAY collection only, so shared corpus bytes are never double-counted between the park budget and the corpus budget; the park knobs keep their documented semantics unchanged. The content-less migration machinery retires against ADR-104 format v2 — content-less by design — and the stage-3 sweep turns this ADR's marker into a REUSE GATE: a legacy branch store without `contentless_<collection>.done` is never promoted into a shared corpus (a read-only shared decode would pin its fat documents in every attached process) and falls back to a cache-spared rebuild instead; the marker moves with a promoted store and remains the live working stores' trust anchor)
 
 ## Context
 

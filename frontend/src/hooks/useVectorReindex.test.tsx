@@ -1,9 +1,11 @@
 // Behavior of the force-full-reindex action's state machine (useVectorReindex):
-// the ADR-064 `loading` open reads as busy with its own tooltip; the terminal
-// `unavailable` state (a failed open / init failure) disables the action
-// WITHOUT the busy spinner and with an actionable tooltip — a reindex cannot
-// repair a missing collection — and clicking it must not fire the RPC. Uses
-// the real stores; only the RPC boundary (@/api/vector) is mocked.
+// the ADR-064 `loading` open and the ADR-104 stage-2 pre-work states
+// (`preparing` view-model attach window / `migration-rebuild` store promotion)
+// read as busy with their own tooltips; the terminal `unavailable` state (a
+// failed open / init failure) disables the action WITHOUT the busy spinner
+// and with an actionable tooltip — a reindex cannot repair a missing
+// collection — and clicking it must not fire the RPC. Uses the real stores;
+// only the RPC boundary (@/api/vector) is mocked.
 
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -114,6 +116,55 @@ describe('useVectorReindex — the terminal unavailable state', () => {
     })
     expect(hook().reindexBusy).toBe(false)
     expect(hook().reindexDisabled).toBe(true)
+  })
+})
+
+describe('useVectorReindex — the ADR-104 stage-2 pre-work states', () => {
+  it.each([
+    ['preparing', 'Preparing index…'],
+    ['migration-rebuild', 'Migrating store…'],
+  ] as const)(
+    'counts %s as busy with its own honest tooltip and never fires the RPC',
+    (state, title) => {
+      act(() => {
+        useVectorIndexStore.setState({ status: statusWith(state) })
+      })
+      act(() => {
+        root.render(<Harness />)
+      })
+      // Pre-work, not a pass — but busy: a reindex fired now would race the
+      // attach/migration. Disabled WITH the spinner, never the plain
+      // 'Reindexing...' label.
+      expect(hook().reindexBusy).toBe(true)
+      expect(hook().reindexDisabled).toBe(true)
+      expect(hook().reindexDisabledTitle).toBe(title)
+      act(() => {
+        hook().handleReindex()
+      })
+      expect(reindexSpy).not.toHaveBeenCalled()
+    },
+  )
+
+  it('releases a pending optimistic latch when the index enters pre-work', () => {
+    act(() => {
+      useVectorIndexStore.setState({ status: statusWith('ready') })
+    })
+    act(() => {
+      root.render(<Harness />)
+    })
+    act(() => {
+      hook().handleReindex()
+    })
+    expect(hook().reindexBusy).toBe(true)
+    // The store flips to the attach window instead of a pass: the state owns
+    // the disabled state from here (isBusy), so the latch must release —
+    // otherwise it would re-arm on every subsequent status event and mask
+    // the transition out of pre-work.
+    act(() => {
+      useVectorIndexStore.setState({ status: statusWith('preparing') })
+    })
+    expect(hook().reindexBusy).toBe(true)
+    expect(hook().reindexDisabledTitle).toBe('Preparing index…')
   })
 })
 

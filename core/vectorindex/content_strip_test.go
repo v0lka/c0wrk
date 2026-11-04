@@ -84,17 +84,22 @@ func indexStripFixture(t *testing.T, svc *Service, ws string) *Indexer {
 }
 
 // fixtureDocID returns the single (fakeChunkFunc) chunk ID for a fixture file.
+// The sidecar key and the document ID share the occurrence coordinate
+// (root-relative once a pass bound the workspace root, ADR-104 L2).
 func fixtureDocID(t *testing.T, svc *Service, ws, rel string) string {
 	t.Helper()
 	files, err := svc.GetCollectionFiles()
 	if err != nil {
 		t.Fatalf("GetCollectionFiles: %v", err)
 	}
-	abs := filepath.Join(ws, rel)
-	if _, ok := files[abs]; !ok {
-		t.Fatalf("fixture file %s missing from sidecar %v", abs, files)
+	if _, ok := files[rel]; !ok {
+		abs := filepath.Join(ws, rel)
+		if _, okAbs := files[abs]; !okAbs {
+			t.Fatalf("fixture file %s missing from sidecar %v", abs, files)
+		}
+		return DocumentID(abs, 0)
 	}
-	return DocumentID(abs, 0)
+	return DocumentID(rel, 0)
 }
 
 // TestIndexedDocuments_StoreNoContentOrPerFileMetadata pins acceptance (1):
@@ -105,7 +110,7 @@ func TestIndexedDocuments_StoreNoContentOrPerFileMetadata(t *testing.T) {
 	svc := newStripTestService(t, t.TempDir(), &fakeBatchEmbedder{})
 	indexStripFixture(t, svc, ws)
 
-	wantKeys := map[string]bool{"file_path": true, "start_line": true, "end_line": true, "language": true}
+	wantKeys := map[string]bool{"file_path": true, relPathMetaKey: true, "start_line": true, "end_line": true, "language": true}
 	for rel := range stripFixtureFiles {
 		id := fixtureDocID(t, svc, ws, rel)
 		doc, err := svc.current.collection.GetByID(context.Background(), id)
@@ -128,6 +133,9 @@ func TestIndexedDocuments_StoreNoContentOrPerFileMetadata(t *testing.T) {
 		}
 		if got := doc.Metadata["file_path"]; got != filepath.Join(ws, rel) {
 			t.Errorf("doc %s file_path = %q; want %q", id, got, filepath.Join(ws, rel))
+		}
+		if got := doc.Metadata[relPathMetaKey]; got != rel {
+			t.Errorf("doc %s rel_path = %q; want %q", id, got, rel)
 		}
 	}
 

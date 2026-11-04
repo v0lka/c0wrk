@@ -55,7 +55,7 @@ func TestManagerPublishInitState_CancelledContextDoesNotPublish(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	indexCtx, indexCancel, published := mgr.publishInitState(ctx, "p-cancelled", "/ws", idx)
+	indexCtx, indexCancel, published := mgr.publishInitState(ctx, "p-cancelled", "/ws", "/vi", idx)
 	if published {
 		t.Fatal("publishInitState published for a cancelled context")
 	}
@@ -77,7 +77,7 @@ func TestManagerPublishInitState_CancelledContextDoesNotPublish(t *testing.T) {
 	// A live context still publishes (and hands back the cancel pair).
 	liveCtx, liveCancel := context.WithCancel(context.Background())
 	defer liveCancel()
-	gotCtx, gotCancel, ok := mgr.publishInitState(liveCtx, "p-live", "/ws", idx)
+	gotCtx, gotCancel, ok := mgr.publishInitState(liveCtx, "p-live", "/ws", "/vi", idx)
 	if !ok {
 		t.Fatal("publishInitState refused to publish for a live context")
 	}
