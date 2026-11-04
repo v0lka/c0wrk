@@ -12,6 +12,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -99,6 +100,30 @@ func (h *vectorWorktreeHarness) waitAttached(t *testing.T, root string, wantOver
 	return mgr
 }
 
+// removeWorktreeDir deletes a managed worktree directory. On Windows the
+// removal can transiently fail with a sharing violation while the tree's
+// manager is deliberately still live (the resurrection scenario models an
+// EXTERNAL deletion, not the Release-first discipline the sweep test below
+// follows): AV scanners hold freshly-written checkout files, and any
+// in-flight helper process whose cwd sits inside the tree keeps it busy —
+// both invisible on POSIX, where unlinking open handles succeeds. The
+// bounded retry synchronizes with those holders; non-Windows legs fail
+// loudly on the first error.
+func removeWorktreeDir(t *testing.T, dir string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		err := os.RemoveAll(dir)
+		if err == nil {
+			return
+		}
+		if runtime.GOOS != "windows" || !time.Now().Before(deadline) {
+			t.Fatalf("removing %s: %v", dir, err)
+		}
+		<-time.After(200 * time.Millisecond)
+	}
+}
+
 // TestCleanupReleasedTreeVectorData_ResurrectionGuard pins the release-path
 // guard: a released tree that a racing adoption RE-CREATED (the tree path
 // exists again, its manager is live) keeps every vector artifact — the
@@ -137,10 +162,9 @@ func TestCleanupReleasedTreeVectorData_ResurrectionGuard(t *testing.T) {
 	}
 
 	// The tree is really gone: its OWN delta goes, the corpus stays (the
-	// branch's reference reaches it — no root does anymore).
-	if err := os.RemoveAll(wt); err != nil {
-		t.Fatalf("removing the tree: %v", err)
-	}
+	// branch's reference reaches it — no root does anymore). The manager is
+	// deliberately NOT released first — see removeWorktreeDir.
+	removeWorktreeDir(t, wt)
 	h.api.cleanupReleasedTreeVectorData(h.proj.WorkspacePath, h.proj.ID, "s-res", wt)
 	if got := len(h.storeEntryNames(t, "branches", "branch_root_")); got != 0 {
 		t.Errorf("released tree's overlay still present: %v", h.storeEntryNames(t, "branches", "branch_root_"))
@@ -177,9 +201,7 @@ func TestSharedStoreSweep_KeepsLiveRootsData(t *testing.T) {
 	if m := h.roots.Release(wtB); m == nil {
 		t.Fatal("tree B had no live manager to release")
 	}
-	if err := os.RemoveAll(wtB); err != nil {
-		t.Fatalf("removing tree B: %v", err)
-	}
+	removeWorktreeDir(t, wtB)
 	h.api.cleanupReleasedTreeVectorData(h.proj.WorkspacePath, h.proj.ID, "tree-gb", wtB)
 
 	mgr, disposable := h.roots.ManagerForCleanup()
