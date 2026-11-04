@@ -4,7 +4,13 @@
 // it. These tests pin that wiring so a silent edit (wrong skill, empty
 // prompt) cannot slip through.
 import { describe, expect, it } from 'vitest'
-import { INITIALIZE_ACTION, NO_SPECS_REASON, QUICK_ACTIONS } from './specsActions'
+import {
+  INITIALIZE_ACTION,
+  NO_SPECS_REASON,
+  QUICK_ACTIONS,
+  buildFixFindingsAction,
+} from './specsActions'
+import type { SpecFinding } from '@/types/models'
 
 describe('specsActions — QUICK_ACTIONS', () => {
   it('renders exactly the four lifecycle gestures in the fixed order', () => {
@@ -50,5 +56,51 @@ describe('specsActions — QUICK_ACTIONS', () => {
     expect(QUICK_ACTIONS[0]).toBe(INITIALIZE_ACTION)
     expect(INITIALIZE_ACTION.skill).toBe('spec-init')
     expect(NO_SPECS_REASON.length).toBeGreaterThan(0)
+  })
+
+  it('the sidebar-strip labels are the SHORT forms; the tooltips spell the gestures', () => {
+    // ADR-108: the narrow sidebar carries short button names; the full
+    // gesture name moves to the tooltip (fullLabel).
+    const byKey = Object.fromEntries(QUICK_ACTIONS.map((a) => [a.key, a]))
+    expect(byKey['initialize']!.label).toBe('Init')
+    expect(byKey['check-drift']!.label).toBe('Check')
+    expect(byKey['initialize']!.fullLabel).toBe('Initialize specs')
+    expect(byKey['check-drift']!.fullLabel).toBe('Check drift')
+    for (const action of QUICK_ACTIONS) {
+      if (action.fullLabel === undefined) continue
+      expect(action.fullLabel.length).toBeGreaterThan(action.label.length)
+    }
+  })
+})
+
+describe('specsActions — buildFixFindingsAction', () => {
+  const findings: SpecFinding[] = [
+    { kind: 'PATH_MISSING', file: 'domains/app.md', detail: 'key file does not exist: specs/gone.md' },
+    { kind: 'SUPERSEDED_CYCLE', file: 'decisions/001-a.md', detail: 'supersession cycle: a -> b -> a' },
+  ]
+
+  it('dispatches spec-update with a prompt enumerating every finding verbatim', () => {
+    const action = buildFixFindingsAction(findings)
+    expect(action.key).toBe('fix-findings')
+    expect(action.skill).toBe('spec-update')
+    expect(action.label).toBe('Fix findings')
+    expect(action.prompt).toContain('Findings:')
+    // Every finding appears as its deterministic "[kind] file: detail" line,
+    // so the dispatched task sees exactly what the panel renders.
+    for (const f of findings) {
+      expect(action.prompt).toContain(`- [${f.kind}] ${f.file}: ${f.detail}`)
+    }
+  })
+
+  it('the tooltip names the count the task will resolve', () => {
+    expect(buildFixFindingsAction(findings).fullLabel).toBe('Fix all 2 integrity findings')
+    const single = buildFixFindingsAction([findings[0]!])
+    expect(single.fullLabel).toBe('Fix all 1 integrity finding')
+  })
+
+  it('an empty findings list still produces a well-formed action', () => {
+    const action = buildFixFindingsAction([])
+    expect(action.prompt).toContain('Findings:')
+    expect(action.prompt.endsWith('Findings:\n')).toBe(true)
   })
 })

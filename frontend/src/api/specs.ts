@@ -116,7 +116,7 @@ function isSpecADRMeta(v: unknown): v is SpecADRMeta {
 }
 
 /** A finding needs all three fields as strings; the kind is NOT restricted
- *  to the four known tier-1 values — a future tier's kind passes through
+ *  to the known tier-1 values — a future tier's kind passes through
  *  (typed as the union, rendered with a generic label) instead of costing
  *  the finding its place in the panel. */
 function isSpecFinding(v: unknown): v is SpecFinding {

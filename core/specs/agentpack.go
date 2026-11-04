@@ -42,8 +42,9 @@ const agentEmbedRoot = "agents"
 
 // AgentSeedVersion is the pack version stamped into each seeded profile's
 // marker; bump it when embedded content changes. Deliberately separate from
-// CurrentSeedVersion so the two packs bump independently.
-const AgentSeedVersion = "1"
+// CurrentSeedVersion so the two packs bump independently. v2: commit-scoped
+// ADR immutability in the Discipline section (see skillpack.go).
+const AgentSeedVersion = "2"
 
 // SeedAgentsResult reports the per-profile outcome of a SeedAgents call. Each
 // slice holds profile names (e.g. "specs") and is sorted for deterministic

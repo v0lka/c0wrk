@@ -152,7 +152,7 @@ Remaining action items:
 ### ADR
 
 ADRs are historical records and generally don't drift. Check only:
-1. `Status` field — if `Accepted`, verify no contradicting newer ADR exists
+1. `Status` field — if `Accepted` and the file's current content is committed (git reports no pending change for it), verify no contradicting newer ADR exists; an uncommitted accepted ADR is still a draft that may be revised in place instead
 2. Referenced code/specs in Context/Decision — verify they still exist
 3. Duplicate numbers — scan the entire `specs/decisions/` tree for files sharing the same leading `NNN` (parse `NNN` from each `NNN-slug.md` filename and ignore the slug; include superseded ADRs — a retired record keeps its number). Report each contested number with its claimant files.
 

@@ -36,6 +36,22 @@ const (
 	// FindingIndexStale: a spec file under the four sections that the
 	// INDEX.md directory listing does not name.
 	FindingIndexStale FindingKind = "INDEX_STALE"
+	// FindingRootFileMissing: a documented root file (INDEX.md, META.md)
+	// is absent from a tree that carries at least one parsed file.
+	FindingRootFileMissing FindingKind = "ROOT_FILE_MISSING"
+	// FindingADRNameMalformed: a decisions/ file whose base name does not
+	// match the documented NNN-slug.md shape, so the record is invisible
+	// to the ADR model.
+	FindingADRNameMalformed FindingKind = "ADR_NAME_MALFORMED"
+	// FindingADRNumberMismatch: a decisions/NNN-slug.md file whose
+	// "# ADR-NNN:" heading carries a different number than the file name.
+	FindingADRNumberMismatch FindingKind = "ADR_NUMBER_MISMATCH"
+	// FindingSupersededTargetMissing: a superseded ADR names a successor
+	// NNN that no decisions/ file carries.
+	FindingSupersededTargetMissing FindingKind = "SUPERSEDED_TARGET_MISSING"
+	// FindingSupersededCycle: the supersession chain of an ADR loops back
+	// to one of its own records.
+	FindingSupersededCycle FindingKind = "SUPERSEDED_CYCLE"
 )
 
 // ADR Status classifications (ADRMeta.Status): the vocabulary a "## Status"
@@ -155,8 +171,9 @@ type ADRMeta struct {
 }
 
 // Finding is one deterministic tier-1 integrity finding (ADR-105 D5). The
-// four categories deliberately under-approximate spec-check: semantic drift
-// stays conversational.
+// categories deliberately under-approximate spec-check: semantic drift
+// stays conversational, and every category here is decidable from the tree
+// itself (paths, links, numbering, supersession graph, INDEX coverage).
 type Finding struct {
 	// Kind is the finding category.
 	Kind FindingKind `json:"kind"`

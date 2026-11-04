@@ -1421,6 +1421,11 @@ export type SpecFindingKind =
   | 'CROSS_REF_BROKEN'
   | 'DUPLICATE_ADR_NUMBER'
   | 'INDEX_STALE'
+  | 'ROOT_FILE_MISSING'
+  | 'ADR_NAME_MALFORMED'
+  | 'ADR_NUMBER_MISMATCH'
+  | 'SUPERSEDED_TARGET_MISSING'
+  | 'SUPERSEDED_CYCLE'
 
 /** One parsed .md file of the specs/ tree (mirrors core/specs SpecFile).
  *  `path` is specs-root-relative with forward slashes; an absent `section`
@@ -1459,6 +1464,11 @@ export interface SpecADRMeta {
   /** Successor's NNN, set only when status is superseded and the status
    *  line names a successor. */
   superseded_by?: string
+  /** Git add-date (YYYY-MM-DD) of the decision file, enriched by the
+   *  backend from the repo's history; absent when the file is uncommitted
+   *  or the workspace has no git history (mirrors ADRMetaDTO's omitempty
+   *  date). */
+  date?: string
 }
 
 /** One deterministic tier-1 integrity finding (mirrors core/specs Finding). */

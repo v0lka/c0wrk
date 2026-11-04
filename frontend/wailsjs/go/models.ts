@@ -1,5 +1,29 @@
 export namespace backend {
 	
+	export class ADRMetaDTO {
+	    number: string;
+	    slug: string;
+	    file: string;
+	    title?: string;
+	    status: string;
+	    superseded_by?: string;
+	    date?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ADRMetaDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.number = source["number"];
+	        this.slug = source["slug"];
+	        this.file = source["file"];
+	        this.title = source["title"];
+	        this.status = source["status"];
+	        this.superseded_by = source["superseded_by"];
+	        this.date = source["date"];
+	    }
+	}
 	export class AgentDescriptorDTO {
 	    name: string;
 	    description: string;
@@ -2515,7 +2539,7 @@ export namespace backend {
 	    root: string;
 	    files: specs.SpecFile[];
 	    index_tasks: specs.IndexTask[];
-	    adrs: specs.ADRMeta[];
+	    adrs: ADRMetaDTO[];
 	    findings: specs.Finding[];
 	    counts: SpecsCountsDTO;
 	
@@ -2529,7 +2553,7 @@ export namespace backend {
 	        this.root = source["root"];
 	        this.files = this.convertValues(source["files"], specs.SpecFile);
 	        this.index_tasks = this.convertValues(source["index_tasks"], specs.IndexTask);
-	        this.adrs = this.convertValues(source["adrs"], specs.ADRMeta);
+	        this.adrs = this.convertValues(source["adrs"], ADRMetaDTO);
 	        this.findings = this.convertValues(source["findings"], specs.Finding);
 	        this.counts = this.convertValues(source["counts"], SpecsCountsDTO);
 	    }
@@ -3948,28 +3972,6 @@ export namespace session {
 
 export namespace specs {
 	
-	export class ADRMeta {
-	    number: string;
-	    slug: string;
-	    file: string;
-	    title?: string;
-	    status: string;
-	    superseded_by?: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new ADRMeta(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.number = source["number"];
-	        this.slug = source["slug"];
-	        this.file = source["file"];
-	        this.title = source["title"];
-	        this.status = source["status"];
-	        this.superseded_by = source["superseded_by"];
-	    }
-	}
 	export class Finding {
 	    kind: string;
 	    file: string;

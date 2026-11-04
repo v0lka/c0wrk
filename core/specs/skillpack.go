@@ -42,8 +42,9 @@ const embedRoot = "skills"
 // CurrentSeedVersion is the pack version stamped into each seeded skill's
 // marker; bump it when embedded content changes and copies should refresh.
 // Deliberately independent of every other pack's marker (research, papers) so
-// the packs bump independently.
-const CurrentSeedVersion = "1"
+// the packs bump independently. v2: ADR immutability keys on commit state
+// (committed = locked, uncommitted = editable draft).
+const CurrentSeedVersion = "2"
 
 // SeedSkillsResult reports the per-skill outcome of a SeedSkills call; each
 // slice holds skill names, sorted for deterministic output. It is the shared

@@ -12,11 +12,12 @@ import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { SpecsHeader } from './SpecsHeader'
 import { SpecsQuickActions } from './SpecsQuickActions'
 import { SpecsEmptyState } from './SpecsEmptyState'
-import { SpecsIndexTable } from './SpecsIndexTable'
 import { SpecsSectionTree } from './SpecsSectionTree'
-import { SpecsADRTimeline } from './SpecsADRTimeline'
 import { SpecsFindings } from './SpecsFindings'
-import { isSpecsRelevantChange, joinSpecPath } from './specsPaths'
+import { adrDatesByFile, isSpecsRelevantChange, joinSpecPath } from './specsPaths'
+import { buildFixFindingsAction } from './specsActions'
+import { useSpecsDispatch } from './useSpecsDispatch'
+import type { SpecsStatus } from '@/types/models'
 
 /**
  * Refresh model (ADR-105 D3): one light read-only parse on mount — the
@@ -45,6 +46,7 @@ export function SpecsPanel() {
   const isLoading = useSpecsStore((s) => s.isLoading)
   const error = useSpecsStore((s) => s.error)
   const fetchStatus = useSpecsStore((s) => s.fetchStatus)
+  const dispatch = useSpecsDispatch()
 
   // Mount / project switch: the initial parse. Never in No-Project (the
   // tab strip is absent there; the guard below is the defensive neutral).
@@ -82,6 +84,19 @@ export function SpecsPanel() {
     [projectId],
   )
 
+  // Fix-findings gesture (ADR-108): the header's findings badge dispatches
+  // one spec-update task whose prompt enumerates the CURRENT parse's
+  // findings verbatim. Built at click time from the store so the task sees
+  // exactly what the panel renders (a mid-flight refetch updates the list).
+  const onFixFindings = useCallback(
+    (newSession: boolean) => {
+      const store = useSpecsStore.getState()
+      if (store.projectId !== projectId || store.status === null) return
+      dispatch(buildFixFindingsAction(store.status.findings), newSession)
+    },
+    [projectId, dispatch],
+  )
+
   // Defensive No-Project neutral render (the tab never mounts there).
   if (projectId === null) return null
 
@@ -100,20 +115,63 @@ export function SpecsPanel() {
         <div className="p-3 text-xs text-muted-foreground">
           {isLoading ? 'Loading specs…' : 'No specs data.'}
         </div>
-      ) : !status.present ? (
-        <SpecsEmptyState root={status.root} />
       ) : (
         <>
-          <SpecsHeader status={status} />
-          <SpecsQuickActions present={status.present} />
-          <div className="custom-scrollbar flex min-h-0 flex-1 flex-col gap-2 overflow-auto px-1.5 py-1.5">
-            <SpecsIndexTable indexTasks={status.index_tasks} onOpen={openSpec} />
-            <SpecsSectionTree files={status.files} onOpen={openSpec} />
-            <SpecsADRTimeline adrs={status.adrs} onOpen={openSpec} />
-            <SpecsFindings findings={status.findings} onOpen={openSpec} />
-          </div>
+          {/* The header renders in BOTH branches: the badge stays visible
+              (inert without a present tree) even when the body swaps, so
+              the affordance never teleports in and out on present flips. */}
+          <SpecsHeader status={status} onFixFindings={onFixFindings} />
+          {status.present ? (
+            <>
+              <SpecsQuickActions present />
+              <div className="custom-scrollbar flex min-h-0 flex-1 flex-col gap-2 overflow-auto px-1.5 py-1.5">
+                {/* The sidebar carries the section tree (with the DECISIONS
+                    date column, ADR-108) and the findings. */}
+                <PanelTree
+                  projectId={projectId}
+                  files={status.files}
+                  adrDates={adrDatesByFile(status.adrs)}
+                  onOpen={openSpec}
+                />
+                <SpecsFindings findings={status.findings} onOpen={openSpec} />
+              </div>
+            </>
+          ) : (
+            <SpecsEmptyState root={status.root} />
+          )}
         </>
       )}
     </div>
+  )
+}
+
+/** The sidebar tree with the store-owned, per-project expansion: the panel
+ *  unmounts on every tab switch, so the expanded set lives in specsStore
+ *  (keyed by the active project and persisted) rather than in component
+ *  state. Everything starts collapsed. The DECISIONS date column reads the
+ *  parse's ADR dates (ADR-108). */
+function PanelTree({
+  projectId,
+  files,
+  adrDates,
+  onOpen,
+}: {
+  projectId: string
+  files: SpecsStatus['files']
+  adrDates: Record<string, string>
+  onOpen: (relPath: string) => void
+}) {
+  // Both selectors return store-held references (the per-project map object
+  // and the action), so they stay referentially stable across renders.
+  const expandedNodes = useSpecsStore((s) => s.treeExpandedNodes[projectId])
+  const toggleTreeNode = useSpecsStore((s) => s.toggleTreeNode)
+  return (
+    <SpecsSectionTree
+      files={files}
+      onOpen={onOpen}
+      adrDates={adrDates}
+      expandedNodes={expandedNodes}
+      onToggleNode={toggleTreeNode}
+    />
   )
 }

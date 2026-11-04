@@ -39,7 +39,7 @@ type SpecsStatusDTO struct {
 
 	// ADRs holds decisions/NNN-slug.md metadata, sorted by number. Always
 	// non-nil.
-	ADRs []specs.ADRMeta `json:"adrs"`
+	ADRs []ADRMetaDTO `json:"adrs"`
 
 	// Findings holds the deterministic tier-1 integrity findings, sorted by
 	// kind, file, detail. Always non-nil.
@@ -47,6 +47,22 @@ type SpecsStatusDTO struct {
 
 	// Counts aggregates the collections for panel badges and filters.
 	Counts SpecsCountsDTO `json:"counts"`
+}
+
+// ADRMetaDTO is the wire shape of one decisions/NNN-slug.md record: the
+// parsed specs.ADRMeta fields flattened verbatim (number, slug, file, title,
+// status, superseded_by) plus the environment-derived add date. Date is the
+// file's first-commit date in YYYY-MM-DD form from the workspace's git
+// history, "" (omitted on the wire) when unknown — a non-git workspace,
+// an unborn HEAD, or any git failure leave it empty without surfacing an
+// error. The date is environment metadata, never spec content. See
+// specs/domains/specs.md and specs/contracts/desktop-frontend.md § Specs.
+type ADRMetaDTO struct {
+	specs.ADRMeta
+
+	// Date is the add (first-commit) date of the ADR file, YYYY-MM-DD;
+	// omitted when unknown.
+	Date string `json:"date,omitempty"`
 }
 
 // SpecsCountsDTO is the aggregate badge model of SpecsStatusDTO: the sizes
@@ -109,7 +125,13 @@ func (f *FrontendAPI) GetSpecsStatus(projectID string) (*SpecsStatusDTO, error) 
 			"root", specsRoot, "error", err)
 		return specsStatusDTOFromRoot(nil, specsRoot), nil
 	}
-	return specsStatusDTOFromRoot(root, specsRoot), nil
+	dto := specsStatusDTOFromRoot(root, specsRoot)
+	// Environment enrichment, strictly after the pure parse: stamp the ADR
+	// add dates from git. Fail-soft by contract — a non-git workspace, an
+	// unborn HEAD, or any git failure leaves the ADRs undated with the RPC
+	// still successful (one git invocation per call, only when ADRs exist).
+	f.enrichSpecsADRDates(f.ctx(), dto, proj.WorkspacePath)
+	return dto, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -125,7 +147,7 @@ func specsStatusDTOFromRoot(root *specs.SpecsRoot, rootPath string) *SpecsStatus
 		Root:       rootPath,
 		Files:      []specs.SpecFile{},
 		IndexTasks: []specs.IndexTask{},
-		ADRs:       []specs.ADRMeta{},
+		ADRs:       []ADRMetaDTO{},
 		Findings:   []specs.Finding{},
 		Counts:     SpecsCountsDTO{FindingsByKind: map[string]int{}},
 	}
@@ -141,7 +163,10 @@ func specsStatusDTOFromRoot(root *specs.SpecsRoot, rootPath string) *SpecsStatus
 		dto.IndexTasks = root.Index.Tasks
 	}
 	if root.ADRs != nil {
-		dto.ADRs = root.ADRs
+		dto.ADRs = make([]ADRMetaDTO, len(root.ADRs))
+		for i, adr := range root.ADRs {
+			dto.ADRs[i] = ADRMetaDTO{ADRMeta: adr}
+		}
 	}
 	if root.Findings != nil {
 		dto.Findings = root.Findings

@@ -1,14 +1,14 @@
 // specsPaths — the pure helpers: absolute-path resolution for the file
 // viewer, the workspace:tree_changed relevance filter (ADR-105 D3), and the
-// tree/timeline ordering.
+// nested tree + DECISIONS date lookup.
 import { describe, expect, it } from 'vitest'
 import type { SpecADRMeta, SpecFile } from '@/types/models'
 import {
+  adrDatesByFile,
+  buildSpecsTree,
   findingKindLabel,
-  groupFilesBySection,
   isSpecsRelevantChange,
   joinSpecPath,
-  sortADRsNewestFirst,
 } from './specsPaths'
 
 describe('joinSpecPath', () => {
@@ -105,62 +105,131 @@ describe('isSpecsRelevantChange (workspace:tree_changed filter)', () => {
   })
 })
 
-describe('groupFilesBySection', () => {
+describe('buildSpecsTree (nested tree builder)', () => {
   const files: SpecFile[] = [
-    { path: 'INDEX.md' },
-    { path: 'architecture/layers.md', section: 'architecture' },
+    { path: 'INDEX.md', title: 'Specs Index' },
+    { path: 'META.md', title: 'META' },
+    { path: 'architecture/layers.md', section: 'architecture', title: 'Layers' },
     { path: 'architecture/overview.md', section: 'architecture' },
-    { path: 'domains/testing.md', section: 'domains' },
+    { path: 'domains/frontend/ui-scale.md', section: 'domains', title: 'UI Scale' },
+    { path: 'domains/testing.md', section: 'domains', title: 'Testing' },
+    { path: 'contracts/events.md', section: 'contracts' },
   ]
 
-  it('groups by section in first-appearance order, preserving file order', () => {
-    const groups = groupFilesBySection(files)
-    expect(groups.map((g) => g.section)).toEqual(['', 'architecture', 'domains'])
-    expect(groups[1]!.files.map((f) => f.path)).toEqual([
-      'architecture/layers.md',
-      'architecture/overview.md',
+  it('builds the root files group (INDEX/META) first, then sections in appearance order', () => {
+    const tree = buildSpecsTree(files)
+    expect(tree.map((n) => n.id)).toEqual(['', 'architecture', 'domains', 'contracts'])
+    const rootGroup = tree[0]!
+    expect(rootGroup.label).toBe('root')
+    expect(rootGroup.files.map((f) => f.path)).toEqual(['INDEX.md', 'META.md'])
+    expect(rootGroup.children).toEqual([])
+  })
+
+  it('nests subdirectory nodes from the path segments', () => {
+    const tree = buildSpecsTree(files)
+    const domains = tree.find((n) => n.id === 'domains')!
+    expect(domains.children.map((c) => c.id)).toEqual(['domains/frontend'])
+    const frontend = domains.children[0]!
+    expect(frontend.label).toBe('frontend')
+    expect(frontend.files.map((f) => f.path)).toEqual(['domains/frontend/ui-scale.md'])
+    // The direct file stays on the section node itself.
+    expect(domains.files.map((f) => f.path)).toEqual(['domains/testing.md'])
+  })
+
+  it('counts files over the whole subtree', () => {
+    const tree = buildSpecsTree(files)
+    const byId = new Map(tree.map((n) => [n.id, n]))
+    expect(byId.get('')!.count).toBe(2)
+    expect(byId.get('architecture')!.count).toBe(2)
+    expect(byId.get('contracts')!.count).toBe(1)
+    expect(byId.get('domains')!.count).toBe(2)
+    expect(byId.get('domains')!.children[0]!.count).toBe(1)
+  })
+
+  it('excludes "_"-prefixed files (the template prefix the parse skips)', () => {
+    const tree = buildSpecsTree([
+      ...files,
+      { path: 'domains/_template.md', section: 'domains' },
+      { path: 'decisions/_draft.md', section: 'decisions' },
     ])
+    const paths: string[] = []
+    const walk = (node: { files: SpecFile[]; children: unknown[] }): void => {
+      for (const f of node.files) paths.push(f.path)
+      for (const c of node.children ?? []) walk(c as typeof node)
+    }
+    for (const top of tree) walk(top)
+    expect(paths).not.toContain('domains/_template.md')
+    expect(paths).not.toContain('decisions/_draft.md')
+    // The template-only section does not become an empty node either.
+    expect(tree.map((n) => n.id)).not.toContain('decisions')
   })
 
-  it('handles an empty list', () => {
-    expect(groupFilesBySection([])).toEqual([])
-  })
-})
-
-describe('sortADRsNewestFirst', () => {
-  const adr = (number: string, slug = number): SpecADRMeta => ({
-    number,
-    slug,
-    file: `decisions/${number}-${slug}.md`,
-    status: 'accepted',
+  it('sorts child directories by label', () => {
+    const tree = buildSpecsTree([
+      { path: 'domains/zeta/a.md' },
+      { path: 'domains/alpha/b.md' },
+      { path: 'domains/mid/c.md' },
+    ])
+    expect(tree[0]!.children.map((c) => c.label)).toEqual(['alpha', 'mid', 'zeta'])
   })
 
-  it('sorts numerically descending', () => {
-    const sorted = sortADRsNewestFirst([adr('9'), adr('105'), adr('38')])
-    expect(sorted.map((a) => a.number)).toEqual(['105', '38', '9'])
+  it('handles an empty list and a root-only list', () => {
+    expect(buildSpecsTree([])).toEqual([])
+    const rootOnly = buildSpecsTree([{ path: 'INDEX.md' }])
+    expect(rootOnly).toHaveLength(1)
+    expect(rootOnly[0]!.id).toBe('')
+    expect(rootOnly[0]!.files).toHaveLength(1)
   })
 
-  it('sorts non-numeric numbers last, keeping the rest stable', () => {
-    const sorted = sortADRsNewestFirst([adr('draft'), adr('7'), adr('x')])
-    expect(sorted.map((a) => a.number)).toEqual(['7', 'draft', 'x'])
-  })
-
-  it('does not mutate the input', () => {
-    const input = [adr('2'), adr('1')]
-    sortADRsNewestFirst(input)
-    expect(input.map((a) => a.number)).toEqual(['2', '1'])
+  it('does not mutate the input file list', () => {
+    const input = [...files]
+    buildSpecsTree(input)
+    expect(input).toEqual(files)
   })
 })
 
 describe('findingKindLabel', () => {
-  it('labels the four tier-1 categories (ADR-105 D5)', () => {
+  it('labels the tier-1 categories (ADR-105 D5 as completed by ADR-108)', () => {
     expect(findingKindLabel('PATH_MISSING')).toBe('Missing path')
     expect(findingKindLabel('CROSS_REF_BROKEN')).toBe('Broken cross-ref')
     expect(findingKindLabel('DUPLICATE_ADR_NUMBER')).toBe('Duplicate ADR number')
     expect(findingKindLabel('INDEX_STALE')).toBe('INDEX stale')
+    expect(findingKindLabel('ROOT_FILE_MISSING')).toBe('Missing root file')
+    expect(findingKindLabel('ADR_NAME_MALFORMED')).toBe('Malformed ADR name')
+    expect(findingKindLabel('ADR_NUMBER_MISMATCH')).toBe('ADR number mismatch')
+    expect(findingKindLabel('SUPERSEDED_TARGET_MISSING')).toBe('Missing successor')
+    expect(findingKindLabel('SUPERSEDED_CYCLE')).toBe('Supersession cycle')
   })
 
   it('passes a future tier kind through with a generic label', () => {
     expect(findingKindLabel('BEHAVIOR_DRIFT')).toBe('behavior drift')
   })
 })
+
+describe('adrDatesByFile (DECISIONS date-column lookup)', () => {
+  const adr = (number: string, date?: string): SpecADRMeta => ({
+    number,
+    slug: number,
+    file: `decisions/${number}-x.md`,
+    status: 'accepted',
+    ...(date !== undefined ? { date } : {}),
+  })
+
+  it('keys each dated record by its specs-root-relative file path', () => {
+    expect(adrDatesByFile([adr('104', '2025-11-01'), adr('107', '2026-01-15')])).toEqual({
+      'decisions/104-x.md': '2025-11-01',
+      'decisions/107-x.md': '2026-01-15',
+    })
+  })
+
+  it('omits undated records (non-git workspace, uncommitted file)', () => {
+    expect(adrDatesByFile([adr('104'), adr('105', ''), adr('106', '2026-02-02')])).toEqual({
+      'decisions/106-x.md': '2026-02-02',
+    })
+  })
+
+  it('returns an empty map for an empty list', () => {
+    expect(adrDatesByFile([])).toEqual({})
+  })
+})
+

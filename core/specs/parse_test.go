@@ -5,6 +5,7 @@ import (
 	"path"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -70,9 +71,15 @@ func TestParseSpecsRootPartialTree(t *testing.T) {
 	if len(root.ADRs) != 1 || root.ADRs[0].Number != "042" || root.ADRs[0].Title != "Late" {
 		t.Errorf("partial tree ADRs = %+v, want one 042 Late", root.ADRs)
 	}
-	// Without INDEX.md there is no listing to be stale against.
-	if len(root.Findings) != 0 {
-		t.Errorf("partial tree findings = %+v, want none", root.Findings)
+	// The tree carries a file, so the missing documented root files are
+	// integrity findings now (ROOT_FILE_MISSING); without INDEX.md there is
+	// still no listing to be INDEX_STALE against.
+	want := []Finding{
+		{Kind: FindingRootFileMissing, File: "INDEX.md", Detail: "required root file is missing: INDEX.md"},
+		{Kind: FindingRootFileMissing, File: "META.md", Detail: "required root file is missing: META.md"},
+	}
+	if !reflect.DeepEqual(root.Findings, want) {
+		t.Errorf("partial tree findings = %+v\nwant %+v", root.Findings, want)
 	}
 }
 
@@ -89,6 +96,16 @@ func TestParseSpecsRootDuplicateADRUnpadded(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(decisions, name), []byte("# ADR: "+name+"\n\n## Status\n\nAccepted\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// Both root files present, and the INDEX listing names both decisions
+	// files, so the case stays focused on the duplicate kind (an INDEX
+	// without a listing would INDEX_STALE them; no INDEX at all would
+	// ROOT_FILE_MISSING).
+	if err := os.WriteFile(filepath.Join(dir, "INDEX.md"), []byte("# Index\n\n## Directory Listing\n\n- [one](decisions/002-one.md)\n- [two](decisions/2-two.md)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "META.md"), []byte("# Meta\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 
 	root, err := ParseSpecsRoot(dir)
@@ -107,6 +124,162 @@ func TestParseSpecsRootDuplicateADRUnpadded(t *testing.T) {
 	}
 }
 
+// seedTree writes both root files plus the extra files (specs-root-relative
+// path → content) under a fresh temp specs root, builds INDEX.md's
+// Directory Listing from every extra file so the baseline stays clean of
+// INDEX_STALE, and parses the tree. The per-kind tests seed exactly one
+// anomaly each and assert the exact findings list against this clean
+// baseline. Returns the parse and the root path (for on-disk mutations).
+func seedTree(t *testing.T, extra map[string]string) (root *SpecsRoot, dir string) {
+	t.Helper()
+	dir = t.TempDir()
+	listing := make([]string, 0, len(extra))
+	for rel := range extra {
+		listing = append(listing, "- ["+path.Base(rel)+"]("+rel+")\n")
+	}
+	sort.Strings(listing)
+	all := make(map[string]string, len(extra)+2)
+	for rel, content := range extra {
+		all[rel] = content
+	}
+	all["INDEX.md"] = "# Index\n\n## Directory Listing\n\n" + strings.Join(listing, "")
+	all["META.md"] = "# Meta\n\nFormats.\n"
+	for rel, content := range all {
+		abs := filepath.Join(dir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(abs, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	root, err := ParseSpecsRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return root, dir
+}
+
+func TestParseSpecsRootRootFileMissing(t *testing.T) {
+	// A tree that carries files but lost META.md flags exactly that root
+	// file; the present INDEX.md stays clean.
+	_, dir := seedTree(t, map[string]string{
+		"domains/app.md": "# App\n\nBody.\n",
+	})
+	if err := os.Remove(filepath.Join(dir, "META.md")); err != nil {
+		t.Fatal(err)
+	}
+	root, err := ParseSpecsRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Finding{
+		{Kind: FindingRootFileMissing, File: "META.md", Detail: "required root file is missing: META.md"},
+	}
+	if !reflect.DeepEqual(root.Findings, want) {
+		t.Errorf("Findings = %+v\nwant %+v", root.Findings, want)
+	}
+
+	// A fully EMPTY tree stays clean — that is the not-initialized-yet
+	// state the panel's empty state covers.
+	empty, err := ParseSpecsRoot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(empty.Findings) != 0 {
+		t.Errorf("empty tree findings = %+v, want none", empty.Findings)
+	}
+}
+
+func TestParseSpecsRootADRNameMalformed(t *testing.T) {
+	root, _ := seedTree(t, map[string]string{
+		"decisions/003-ok.md":    "# ADR-003: Ok\n\n## Status\n\nAccepted\n",
+		"decisions/notes.md":     "# Notes\n\nNot an ADR file name.\n",
+		"decisions/sub/extra.md": "# Extra\n\nBuried, still malformed.\n",
+	})
+	want := []Finding{
+		{Kind: FindingADRNameMalformed, File: "decisions/notes.md", Detail: "ADR file name is not NNN-slug.md: notes.md"},
+		{Kind: FindingADRNameMalformed, File: "decisions/sub/extra.md", Detail: "ADR file name is not NNN-slug.md: extra.md"},
+	}
+	if !reflect.DeepEqual(root.Findings, want) {
+		t.Errorf("Findings = %+v\nwant %+v", root.Findings, want)
+	}
+	// The well-formed sibling stays a parsed ADR and raises no finding.
+	if len(root.ADRs) != 1 || root.ADRs[0].Number != "003" {
+		t.Errorf("ADRs = %+v, want exactly 003", root.ADRs)
+	}
+}
+
+func TestParseSpecsRootADRNumberMismatch(t *testing.T) {
+	root, _ := seedTree(t, map[string]string{
+		"decisions/042-late.md": "# ADR-041: Late\n\n## Status\n\nAccepted\n",
+		"decisions/043-ok.md":   "# ADR-43: Unpadded but numerically equal\n\n## Status\n\nAccepted\n",
+		"decisions/044-free.md": "# Free-form heading\n\n## Status\n\nAccepted\n",
+	})
+	want := []Finding{
+		{Kind: FindingADRNumberMismatch, File: "decisions/042-late.md", Detail: "heading number 041 does not match file name number 042"},
+	}
+	if !reflect.DeepEqual(root.Findings, want) {
+		t.Errorf("Findings = %+v\nwant %+v", root.Findings, want)
+	}
+}
+
+func TestParseSpecsRootSupersededTargetMissing(t *testing.T) {
+	root, _ := seedTree(t, map[string]string{
+		// Plain-form reference (no markdown link): the missing successor
+		// must surface as SUPERSEDED_TARGET_MISSING alone, without the
+		// dangling link also firing CROSS_REF_BROKEN.
+		"decisions/010-old.md": "# ADR-010: Old\n\n## Status\n\nSuperseded by ADR-011\n",
+		// An unpadded reference resolving to a padded file name is fine.
+		"decisions/012-fine.md":  "# ADR-012: Fine\n\n## Status\n\nSuperseded by [84](084-later.md)\n",
+		"decisions/084-later.md": "# ADR-084: Later\n\n## Status\n\nAccepted\n",
+	})
+	want := []Finding{
+		{Kind: FindingSupersededTargetMissing, File: "decisions/010-old.md", Detail: "superseded by missing ADR 011: no decisions/ file carries that number"},
+	}
+	if !reflect.DeepEqual(root.Findings, want) {
+		t.Errorf("Findings = %+v\nwant %+v", root.Findings, want)
+	}
+}
+
+func TestParseSpecsRootSupersededCycle(t *testing.T) {
+	// A two-record loop reports ONCE, on the lowest-path member, with the
+	// walk order showing the closure; the record leading INTO the cycle
+	// (000-entry) is not part of it and raises nothing.
+	root, _ := seedTree(t, map[string]string{
+		"decisions/000-entry.md": "# ADR-000: Entry\n\n## Status\n\nSuperseded by ADR-001\n",
+		"decisions/001-a.md":     "# ADR-001: A\n\n## Status\n\nSuperseded by ADR-002\n",
+		"decisions/002-b.md":     "# ADR-002: B\n\n## Status\n\nSuperseded by ADR-001\n",
+	})
+	want := []Finding{
+		{
+			Kind:   FindingSupersededCycle,
+			File:   "decisions/001-a.md",
+			Detail: "supersession cycle: decisions/001-a.md -> decisions/002-b.md -> decisions/001-a.md",
+		},
+	}
+	if !reflect.DeepEqual(root.Findings, want) {
+		t.Errorf("Findings = %+v\nwant %+v", root.Findings, want)
+	}
+}
+
+func TestParseSpecsRootSupersededSelfLoop(t *testing.T) {
+	// An ADR superseded by its own number is a one-record cycle.
+	root, _ := seedTree(t, map[string]string{
+		"decisions/005-x.md": "# ADR-005: X\n\n## Status\n\nSuperseded by ADR-005\n",
+	})
+	want := []Finding{
+		{
+			Kind:   FindingSupersededCycle,
+			File:   "decisions/005-x.md",
+			Detail: "supersession cycle: decisions/005-x.md -> decisions/005-x.md",
+		},
+	}
+	if !reflect.DeepEqual(root.Findings, want) {
+		t.Errorf("Findings = %+v\nwant %+v", root.Findings, want)
+	}
+}
+
 func TestParseSpecsRootFixture(t *testing.T) {
 	root, err := ParseSpecsRoot(filepath.Join(fixtureRepo, "specs"))
 	if err != nil {
@@ -118,6 +291,7 @@ func TestParseSpecsRootFixture(t *testing.T) {
 
 	wantPaths := []string{
 		"INDEX.md",
+		"META.md",
 		"architecture/layers.md",
 		"decisions/001-duplicate.md",
 		"decisions/001-one.md",
@@ -276,7 +450,10 @@ func TestParseADRStatusVariants(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			content := "# ADR-038: Fixture\n\n## Status\n\n" + tt.statusLine + "\n\n## Decision\n\nBody.\n"
-			_, status, supersededBy := ParseADR(content)
+			_, heading, status, supersededBy := ParseADR(content)
+			if heading != "038" {
+				t.Errorf("heading number = %q, want %q", heading, "038")
+			}
 			if status != tt.wantStatus {
 				t.Errorf("status = %q, want %q", status, tt.wantStatus)
 			}
@@ -288,19 +465,28 @@ func TestParseADRStatusVariants(t *testing.T) {
 }
 
 func TestParseADRTitle(t *testing.T) {
-	title, _, _ := ParseADR("# ADR-105: Specs sidebar panel\n\n## Status\n\nAccepted\n")
+	title, heading, _, _ := ParseADR("# ADR-105: Specs sidebar panel\n\n## Status\n\nAccepted\n")
 	if title != "Specs sidebar panel" {
 		t.Errorf("title = %q, want %q", title, "Specs sidebar panel")
 	}
+	if heading != "105" {
+		t.Errorf("heading number = %q, want %q", heading, "105")
+	}
 	// A heading that does not match the template shape stays verbatim.
-	title, _, _ = ParseADR("# Not a template heading\n\n## Status\n\nAccepted\n")
+	title, heading, _, _ = ParseADR("# Not a template heading\n\n## Status\n\nAccepted\n")
 	if title != "Not a template heading" {
 		t.Errorf("title = %q, want verbatim heading", title)
 	}
+	if heading != "" {
+		t.Errorf("heading number = %q, want empty for a non-template heading", heading)
+	}
 	// A template-shaped heading inside a code fence is not the title.
-	title, _, _ = ParseADR("```\n# ADR-NNN: Fenced\n```\n\n# Real Title\n")
+	title, heading, _, _ = ParseADR("```\n# ADR-NNN: Fenced\n```\n\n# Real Title\n")
 	if title != "Real Title" {
 		t.Errorf("title = %q, want %q", title, "Real Title")
+	}
+	if heading != "" {
+		t.Errorf("heading number = %q, want empty for a fenced heading", heading)
 	}
 }
 
