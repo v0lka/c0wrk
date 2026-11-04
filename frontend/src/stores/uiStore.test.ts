@@ -120,3 +120,50 @@ describe('sessionListGrouped persistence', () => {
     expect(state.researchSegmentByProject).toEqual({ p1: 'papers' })
   })
 })
+
+describe('workspaceTabByProject — specs tab value (merge validation)', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    useUIStore.setState({ workspaceTabByProject: {} })
+  })
+
+  it('keeps a same-version persisted specs tab through merge', async () => {
+    // The Specs workspace tab (ADR-105) is a new VALID value: the same-version
+    // merge must accept it entry-by-entry so a project remembered on the
+    // Specs panel restores there after a reload.
+    localStorage.setItem(
+      UI_STORAGE_KEY,
+      JSON.stringify({
+        state: { workspaceTabByProject: { p1: 'specs', p2: 'research' } },
+        version: CURRENT_VERSION,
+      }),
+    )
+
+    await useUIStore.persist.rehydrate()
+
+    expect(useUIStore.getState().workspaceTabByProject).toEqual({
+      p1: 'specs',
+      p2: 'research',
+    })
+  })
+
+  it('still drops unknown tab values beside a valid specs entry (fail-closed)', async () => {
+    localStorage.setItem(
+      UI_STORAGE_KEY,
+      JSON.stringify({
+        state: { workspaceTabByProject: { p1: 'specs', p2: 'bogus' } },
+        version: CURRENT_VERSION,
+      }),
+    )
+
+    await useUIStore.persist.rehydrate()
+
+    expect(useUIStore.getState().workspaceTabByProject).toEqual({ p1: 'specs' })
+  })
+
+  it('setWorkspaceTab persists the specs tab value', () => {
+    useUIStore.getState().setWorkspaceTab('p1', 'specs')
+
+    expect(useUIStore.getState().workspaceTabByProject).toEqual({ p1: 'specs' })
+  })
+})

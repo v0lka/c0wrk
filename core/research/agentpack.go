@@ -23,6 +23,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/v0lka/c0wrk/core/seedpack"
 	"github.com/v0lka/sp4rk/safeio"
 )
 
@@ -43,14 +44,8 @@ const AgentSeedVersion = "1"
 
 // SeedAgentsResult reports the per-profile outcome of a SeedAgents call. Each
 // slice holds profile names (e.g. "research") and is sorted for deterministic
-// output. It mirrors SeedSkillsResult.
-type SeedAgentsResult struct {
-	Seeded    []string // newly written (directory did not exist)
-	Updated   []string // overwritten to the current pack version (upgrade or truncated-tree repair)
-	Current   []string // content matches the pack; left untouched
-	Preserved []string // user-owned (no marker, content differs); left untouched
-	Modified  []string // pack-marked but content diverges (user edit or spoofed marker); left untouched
-}
+// output. It mirrors SeedSkillsResult (the shared core/seedpack Result).
+type SeedAgentsResult = seedpack.Result
 
 // ResearchAgentNames returns the sorted pack profile names, read from the
 // embed.FS at call time to stay in sync with the embedded tree.
@@ -86,8 +81,8 @@ func SeedAgents(destAgentsDir string, logger *slog.Logger) (*SeedAgentsResult, e
 		return nil, fmt.Errorf("research.SeedAgents: create agents dir %q: %w", destAgentsDir, err)
 	}
 
-	// Sweep leftovers from an interrupted previous run (see stageAndSwap).
-	sweepSeedLeftovers(destAgentsDir)
+	// Sweep leftovers from an interrupted previous run (see seedpack.StageAndSwap).
+	seedpack.SweepLeftovers(destAgentsDir)
 
 	result := &SeedAgentsResult{}
 	names := ResearchAgentNames()
@@ -97,10 +92,10 @@ func SeedAgents(destAgentsDir string, logger *slog.Logger) (*SeedAgentsResult, e
 		if err != nil {
 			return nil, fmt.Errorf("research.SeedAgents: seed %q: %w", name, err)
 		}
-		appendAgentResult(result, action, name)
+		result.Append(action, name)
 	}
 
-	sortAgentResult(result)
+	result.Sort()
 	if logger != nil {
 		logger.Info("research agent-pack seeded",
 			"dest", destAgentsDir,
@@ -116,34 +111,34 @@ func SeedAgents(destAgentsDir string, logger *slog.Logger) (*SeedAgentsResult, e
 }
 
 // seedOneAgent classifies one destination by content hash and writes via the
-// crash-safe staging swap, reusing the seedAction enum and helpers shared
-// with skillpack.go.
-func seedOneAgent(name, target string, logger *slog.Logger) (seedAction, error) {
-	st, packHash, err := inspectSeedTarget(agentPackFS, agentEmbedRoot, name, target)
+// crash-safe staging swap, reusing the seedpack Action enum and helpers
+// shared with skillpack.go.
+func seedOneAgent(name, target string, logger *slog.Logger) (seedpack.Action, error) {
+	st, packHash, err := seedpack.InspectTarget(agentPackFS, agentEmbedRoot, name, target)
 	if err != nil {
-		return actionSeed, err
+		return seedpack.ActionSeed, err
 	}
-	action, restamp := classifySeed(st, packHash, AgentSeedVersion)
+	action, restamp := seedpack.Classify(st, packHash, AgentSeedVersion)
 	switch action {
-	case actionPreserve:
+	case seedpack.ActionPreserve:
 		if logger != nil {
 			logger.Debug("research agent preserved (user-owned)", "agent", name, "dir", target)
 		}
-		return actionPreserve, nil
-	case actionModified:
+		return seedpack.ActionPreserve, nil
+	case seedpack.ActionModified:
 		if logger != nil {
 			logger.Info("research agent profile locally modified; preserved", "agent", name, "dir", target)
 		}
-		return actionModified, nil
-	case actionCurrent:
+		return seedpack.ActionModified, nil
+	case seedpack.ActionCurrent:
 		if restamp {
-			if err := writeMarkerAtomic(target, AgentSeedVersion); err != nil {
-				return actionCurrent, err
+			if err := seedpack.WriteMarkerAtomic(target, AgentSeedVersion); err != nil {
+				return seedpack.ActionCurrent, err
 			}
 		}
-		return actionCurrent, nil
+		return seedpack.ActionCurrent, nil
 	}
-	if err := stageAndSwap(name, target, AgentSeedVersion, func(stagingDir string) error {
+	if err := seedpack.StageAndSwap(name, target, AgentSeedVersion, func(stagingDir string) error {
 		return writeAgentEmbedTree(name, stagingDir)
 	}); err != nil {
 		return action, err
@@ -174,31 +169,6 @@ func writeAgentEmbedTree(name, dest string) error {
 		if rerr != nil {
 			return rerr
 		}
-		return seedWriteFile(target, data, 0o644)
+		return seedpack.WriteFile(target, data, 0o644)
 	})
-}
-
-// appendAgentResult records a profile name under the bucket for its action.
-func appendAgentResult(r *SeedAgentsResult, action seedAction, name string) {
-	switch action {
-	case actionSeed:
-		r.Seeded = append(r.Seeded, name)
-	case actionUpdate:
-		r.Updated = append(r.Updated, name)
-	case actionCurrent:
-		r.Current = append(r.Current, name)
-	case actionPreserve:
-		r.Preserved = append(r.Preserved, name)
-	case actionModified:
-		r.Modified = append(r.Modified, name)
-	}
-}
-
-// sortAgentResult sorts every bucket of a result for deterministic output.
-func sortAgentResult(r *SeedAgentsResult) {
-	sort.Strings(r.Seeded)
-	sort.Strings(r.Updated)
-	sort.Strings(r.Current)
-	sort.Strings(r.Preserved)
-	sort.Strings(r.Modified)
 }

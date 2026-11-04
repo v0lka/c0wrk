@@ -13,6 +13,7 @@ import (
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/core/papers"
 	"github.com/v0lka/c0wrk/core/research"
+	"github.com/v0lka/c0wrk/core/specs"
 )
 
 // ---------------------------------------------------------------------------
@@ -900,13 +901,16 @@ func (f *FrontendAPI) parseResearchRootBestEffort(researchRoot string) *research
 
 // seedGlobalPacks seeds every c0wrk-owned pack into the GLOBAL agent
 // directories (~/.c0wrk/.agents/{skills,agents}) once per launch — the seven
-// research-* skills, the study-paper skill, and the research Subagent
-// Profile — from NewFrontendAPI, BEFORE the skill/agent watchers start, so
-// the fresh directories are watched on the same launch. Idempotent,
+// research-* skills, the study-paper skill, the six spec-* skills, the
+// research Subagent Profile, and the specs Subagent Profile — from
+// NewFrontendAPI, BEFORE the skill/agent watchers start, so the fresh
+// directories are watched on the same launch. Idempotent,
 // non-destructive, per-pack failures logged and never fatal; classification
-// contract in core/research/skillpack.go and core/papers/skillpack.go.
-// Serialized on researchSeedMu; skill/agent caches invalidated afterwards.
-// See specs/domains/research.md.
+// contract in core/research/skillpack.go, core/papers/skillpack.go, and
+// core/specs/{skillpack,agentpack}.go.
+// Serialized on researchSeedMu; skill/agent caches invalidated afterwards
+// (common invalidation after ALL packs).
+// See specs/domains/research.md and specs/decisions/104-vendor-spec-skillset.md.
 func (f *FrontendAPI) seedGlobalPacks() {
 	f.seedAcquire()
 	if f.agentDir == "" {
@@ -937,12 +941,32 @@ func (f *FrontendAPI) seedGlobalPacks() {
 			"current", len(res.Current), "preserved", len(res.Preserved))
 	}
 
+	if res, err := specs.SeedSkills(skillsDir, f.log()); err != nil {
+		f.log().Warn("global spec skill-pack seeding failed",
+			"skills_dir", skillsDir, "error", err)
+	} else {
+		f.log().Info("global spec skill-pack seeded",
+			"skills_dir", skillsDir,
+			"seeded", len(res.Seeded), "updated", len(res.Updated),
+			"current", len(res.Current), "preserved", len(res.Preserved))
+	}
+
 	agentsDir := config.AgentsDir(f.agentDir)
 	if res, err := research.SeedAgents(agentsDir, f.log()); err != nil {
 		f.log().Warn("global research agent-pack seeding failed",
 			"agents_dir", agentsDir, "error", err)
 	} else {
 		f.log().Info("global research agent-pack seeded",
+			"agents_dir", agentsDir,
+			"seeded", len(res.Seeded), "updated", len(res.Updated),
+			"current", len(res.Current), "preserved", len(res.Preserved))
+	}
+
+	if res, err := specs.SeedAgents(agentsDir, f.log()); err != nil {
+		f.log().Warn("global spec agent-pack seeding failed",
+			"agents_dir", agentsDir, "error", err)
+	} else {
+		f.log().Info("global spec agent-pack seeded",
 			"agents_dir", agentsDir,
 			"seeded", len(res.Seeded), "updated", len(res.Updated),
 			"current", len(res.Current), "preserved", len(res.Preserved))

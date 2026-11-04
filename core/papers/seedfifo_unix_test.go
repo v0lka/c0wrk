@@ -8,6 +8,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/v0lka/c0wrk/core/seedpack"
 )
 
 // runBounded runs fn under a hang watchdog: the planted-FIFO defects these
@@ -45,11 +47,11 @@ func TestDiskFileSet_SkipsPlantedFIFO(t *testing.T) {
 
 	var files map[string][]byte
 	var err error
-	runBounded(t, "diskFileSet", func() {
-		files, err = diskFileSet(dir)
+	runBounded(t, "seedpack.DiskFileSet", func() {
+		files, err = seedpack.DiskFileSet(dir)
 	})
 	if err != nil {
-		t.Fatalf("diskFileSet: %v", err)
+		t.Fatalf("seedpack.DiskFileSet: %v", err)
 	}
 	if len(files) != 1 {
 		t.Fatalf("file count = %d, want 1 (only the regular file)", len(files))
@@ -70,16 +72,16 @@ func TestDiskFileSet_SkipsPlantedFIFO(t *testing.T) {
 // still publish the marker.
 func TestWriteMarkerAtomic_RefusesPlantedFIFOTmp(t *testing.T) {
 	dir := t.TempDir()
-	if err := syscall.Mkfifo(filepath.Join(dir, "."+seedVersionFile+".tmp"), 0o600); err != nil {
+	if err := syscall.Mkfifo(filepath.Join(dir, "."+seedpack.VersionFile+".tmp"), 0o600); err != nil {
 		t.Skipf("mkfifo unavailable: %v", err)
 	}
 
-	runBounded(t, "writeMarkerAtomic", func() {
-		if err := writeMarkerAtomic(dir, "v1"); err != nil {
-			t.Errorf("writeMarkerAtomic: %v", err)
+	runBounded(t, "seedpack.WriteMarkerAtomic", func() {
+		if err := seedpack.WriteMarkerAtomic(dir, "v1"); err != nil {
+			t.Errorf("seedpack.WriteMarkerAtomic: %v", err)
 		}
 	})
-	data, err := os.ReadFile(filepath.Join(dir, seedVersionFile))
+	data, err := os.ReadFile(filepath.Join(dir, seedpack.VersionFile))
 	if err != nil {
 		t.Fatalf("reading published marker: %v", err)
 	}

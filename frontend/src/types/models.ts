@@ -1410,6 +1410,91 @@ export interface NewHypothesisCard {
   parents?: string[]
 }
 
+// --- Specs panel (ADR-105): the parsed specs/ tree of a project ---
+
+/** Tier-1 integrity finding categories (mirrors core/specs FindingKind,
+ *  ADR-105 D5). The union covers the current tier; the RPC boundary accepts
+ *  any non-empty string kind so a future tier's findings render with a
+ *  generic label instead of being dropped. */
+export type SpecFindingKind =
+  | 'PATH_MISSING'
+  | 'CROSS_REF_BROKEN'
+  | 'DUPLICATE_ADR_NUMBER'
+  | 'INDEX_STALE'
+
+/** One parsed .md file of the specs/ tree (mirrors core/specs SpecFile).
+ *  `path` is specs-root-relative with forward slashes; an absent `section`
+ *  marks the root files INDEX.md and META.md. Optional fields are omitted
+ *  on the wire when empty (Go omitempty); the RPC boundary validates them
+ *  as well-typed-or-absent. */
+export interface SpecFile {
+  path: string
+  section?: string
+  title?: string
+  /** Backticked entries of the file's "## Key Files" section, in document
+   *  order, verbatim. */
+  key_files?: string[]
+  /** Relative markdown link targets in document order, verbatim (a file
+   *  path with an optional #anchor, or a pure #anchor). */
+  cross_refs?: string[]
+}
+
+/** One row of INDEX.md's "## Navigation by Task" table (mirrors core/specs
+ *  IndexTask). */
+export interface SpecIndexTask {
+  task: string
+  specs?: string[]
+}
+
+/** One decisions/NNN-slug.md record (mirrors core/specs ADRMeta): number
+ *  and slug from the file name, title/status/supersession from the body.
+ *  `status` is the classification of the "## Status" first line
+ *  ("accepted" / "superseded" / lower-cased first word). */
+export interface SpecADRMeta {
+  number: string
+  slug: string
+  file: string
+  title?: string
+  status: string
+  /** Successor's NNN, set only when status is superseded and the status
+   *  line names a successor. */
+  superseded_by?: string
+}
+
+/** One deterministic tier-1 integrity finding (mirrors core/specs Finding). */
+export interface SpecFinding {
+  kind: SpecFindingKind
+  /** Specs-root-relative path the finding is about. */
+  file: string
+  detail: string
+}
+
+/** Aggregate badge model of SpecsStatus: the collection sizes plus the
+ *  per-kind findings histogram (keyed by the stringified kind). */
+export interface SpecsCounts {
+  files: number
+  adrs: number
+  findings: number
+  findings_by_kind: Record<string, number>
+}
+
+/** View model for GetSpecsStatus (ADR-105 D2): the parsed specs/ tree of
+ *  one project. The RPC boundary normalizes every collection to `[]`/`{}`
+ *  and recomputes `counts` from the normalized collections, so the store
+ *  and panel never null-guard and the badges never disagree with the
+ *  rendered lists. `present=false` is the neutral state (a missing tree or
+ *  No Project), never an error. */
+export interface SpecsStatus {
+  present: boolean
+  /** Absolute specs root path ("" for No Project). */
+  root: string
+  files: SpecFile[]
+  index_tasks: SpecIndexTask[]
+  adrs: SpecADRMeta[]
+  findings: SpecFinding[]
+  counts: SpecsCounts
+}
+
 /** One worktree of the active project's repository, enriched with the
  *  ownership metadata the Git panel's focus switcher renders: managed trees
  *  carry their owning session, and every entry knows whether it is the

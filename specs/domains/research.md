@@ -10,8 +10,9 @@ RESEARCH mode is a project-scoped methodology workspace for maintaining research
 - `core/research/parser.go` - pure Markdown/Mermaid parsers and best-effort research-root filesystem parsing
 - `core/research/rootwriter.go` - root-level mutations: `index.md` row moves for activation, minimal row/index creation, and project deletion with containment
 - `core/research/recommend.go` - pure next-step recommendation, project-wide and hypothesis-scoped
-- `core/research/skillpack.go` - embedded seven-skill research pack and non-destructive versioned seeding
+- `core/research/skillpack.go` - embedded seven-skill research pack and non-destructive versioned seeding (a thin consumer of the shared core below)
 - `core/research/skills/` - embedded `research-*` skill sources
+- `core/seedpack` - the shared crash-safe seeding core (content-hash classification, staged write + atomic rename, `.seed-version` marker handling, leftovers sweep) behind the seeding invariants below; `core/research`, `core/papers`, and future packs are thin consumers keeping only their embed trees, version constants, and pack-specific logging (ADR-104 decision 5)
 - `core/papers/skillpack.go` - the embedded `study-paper` pack; seeded globally by the same startup seed into the c0wrk global skills directory (which outranks a same-named `~/.agents` skill in discovery)
 - `backend/frontend_api_research.go` - always-on status/graph RPC behavior, workspace containment, and `seedGlobalPacks` — the single global pack seed run once per launch
 - `backend/frontend_api_project.go` - recursive research-tree watcher integration and incremental file-change emission
@@ -211,6 +212,7 @@ The literature library and the hypothesis graph are wired in ONE direction end-t
 
 - [papers.md](papers.md) - the paper ("literature") library: studied-paper cards, flashcards, the literature graph, and multi-paper comparisons, plus the globally-seeded `study-paper` skill-pack (the RESEARCH panel's Papers segment)
 - [../decisions/056-research-always-on-global-seeding.md](../decisions/056-research-always-on-global-seeding.md) - why RESEARCH is always on for real projects and every c0wrk pack seeds globally at startup with reordered discovery (supersedes [ADR-051](../decisions/051-research-pack-reconciliation.md))
+- [../decisions/104-vendor-spec-skillset.md](../decisions/104-vendor-spec-skillset.md) - decision 5: the seed-staging core behind these seeding invariants consolidated into the shared `core/seedpack`
 - [../contracts/desktop-frontend.md](../contracts/desktop-frontend.md) - RESEARCH RPC surface and DTO boundary
 - [../contracts/event-catalog.md](../contracts/event-catalog.md) - `research:changed` and `research:file_changed` events
 - [architecture/security-model.md](../architecture/security-model.md) - workspace containment and untrusted persisted artifacts

@@ -8,29 +8,31 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/v0lka/c0wrk/core/seedpack"
 )
 
-// failSeedWritesContaining swaps the seedWriteFile seam so that any write
+// failSeedWritesContaining swaps the seedpack.WriteFile seam so that any write
 // whose destination path contains needle fails, simulating a process kill
 // mid-tree-write at a deterministic point. The seam is restored on cleanup.
 // Tests using it MUST NOT run in parallel (the seam is package-global).
 func failSeedWritesContaining(t *testing.T, needle string) {
 	t.Helper()
-	orig := seedWriteFile
-	seedWriteFile = func(name string, data []byte, perm fs.FileMode) error {
+	orig := seedpack.WriteFile
+	seedpack.WriteFile = func(name string, data []byte, perm fs.FileMode) error {
 		if strings.Contains(name, needle) {
 			return errors.New("injected write failure: " + name)
 		}
 		return orig(name, data, perm)
 	}
-	t.Cleanup(func() { seedWriteFile = orig })
+	t.Cleanup(func() { seedpack.WriteFile = orig })
 }
 
 // restoreSeedWriteFile restores the seam early (for tests that need a second,
 // successful run after the interrupted one within the same test).
 func restoreSeedWriteFile(t *testing.T) {
 	t.Helper()
-	seedWriteFile = os.WriteFile
+	seedpack.WriteFile = os.WriteFile
 }
 
 // assertDirMatchesPack verifies that the on-disk directory for one pack entry
@@ -38,13 +40,13 @@ func restoreSeedWriteFile(t *testing.T) {
 // part of either file set).
 func assertDirMatchesPack(t *testing.T, fsys fs.FS, root, name, destDir, context string) {
 	t.Helper()
-	pack, err := packFileSet(fsys, root, name)
+	pack, err := seedpack.PackFileSet(fsys, root, name)
 	if err != nil {
-		t.Fatalf("%s: packFileSet: %v", context, err)
+		t.Fatalf("%s: seedpack.PackFileSet: %v", context, err)
 	}
-	disk, err := diskFileSet(filepath.Join(destDir, name))
+	disk, err := seedpack.DiskFileSet(filepath.Join(destDir, name))
 	if err != nil {
-		t.Fatalf("%s: diskFileSet: %v", context, err)
+		t.Fatalf("%s: seedpack.DiskFileSet: %v", context, err)
 	}
 	if len(disk) != len(pack) {
 		t.Fatalf("%s: file count = %d, want %d (disk=%v)", context, len(disk), len(pack), keysOf(disk))
@@ -137,7 +139,7 @@ func TestSeedSkills_InterruptedWriteMidTreeLeavesNoPartialState(t *testing.T) {
 		t.Fatalf("second pass Current = %v, want the 3 skills completed before the interruption", res.Current)
 	}
 	assertDirMatchesPack(t, skillPackFS, embedRoot, "research-init", dest, "repaired skill")
-	if ok, v := readSeedVersion(interrupted); !ok || v != CurrentSeedVersion {
+	if ok, v := seedpack.ReadVersion(interrupted); !ok || v != CurrentSeedVersion {
 		t.Errorf("repaired skill marker = (%q, %v), want %q", v, ok, CurrentSeedVersion)
 	}
 }
@@ -159,7 +161,7 @@ func TestSeedSkills_InterruptedUpdateKeepsOldDirIntact(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(oldDir, "SKILL.md"), oldSKILL, 0o644); err != nil {
 		t.Fatalf("write old SKILL.md: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(oldDir, seedVersionFile), []byte("1"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(oldDir, seedpack.VersionFile), []byte("1"), 0o644); err != nil {
 		t.Fatalf("backdate marker: %v", err)
 	}
 
@@ -177,7 +179,7 @@ func TestSeedSkills_InterruptedUpdateKeepsOldDirIntact(t *testing.T) {
 	if !bytes.Equal(got, oldSKILL) {
 		t.Fatalf("interrupted update must not touch the old dir content")
 	}
-	if ok, v := readSeedVersion(oldDir); !ok || v != "1" {
+	if ok, v := seedpack.ReadVersion(oldDir); !ok || v != "1" {
 		t.Fatalf("old marker = (%q, %v), want (\"1\", true)", v, ok)
 	}
 	if leftovers := hiddenLeftovers(t, dest); len(leftovers) != 0 {
@@ -220,7 +222,7 @@ func TestSeedSkills_MarkerPlusTruncatedTreeIsStaleNotCurrent(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), packSKILL, 0o644); err != nil {
 		t.Fatalf("write SKILL.md: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, seedVersionFile), []byte(CurrentSeedVersion), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, seedpack.VersionFile), []byte(CurrentSeedVersion), 0o644); err != nil {
 		t.Fatalf("write marker: %v", err)
 	}
 
@@ -235,7 +237,7 @@ func TestSeedSkills_MarkerPlusTruncatedTreeIsStaleNotCurrent(t *testing.T) {
 		t.Fatalf("Updated = %v, want [research-init] (stale → repaired)", res.Updated)
 	}
 	assertDirMatchesPack(t, skillPackFS, embedRoot, "research-init", dest, "repaired truncated tree")
-	if ok, v := readSeedVersion(dir); !ok || v != CurrentSeedVersion {
+	if ok, v := seedpack.ReadVersion(dir); !ok || v != CurrentSeedVersion {
 		t.Errorf("marker after repair = (%q, %v), want %q", v, ok, CurrentSeedVersion)
 	}
 }
@@ -256,7 +258,7 @@ func TestSeedSkills_SpoofedMarkerWithAlienContentNotCurrent(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), alien, 0o644); err != nil {
 		t.Fatalf("write alien SKILL.md: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, seedVersionFile), []byte(CurrentSeedVersion), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, seedpack.VersionFile), []byte(CurrentSeedVersion), 0o644); err != nil {
 		t.Fatalf("write spoofed marker: %v", err)
 	}
 
@@ -295,7 +297,7 @@ func TestSeedSkills_MarkerlessExactPackContentReclaimed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read SKILL.md: %v", err)
 	}
-	if err := os.Remove(filepath.Join(dir, seedVersionFile)); err != nil {
+	if err := os.Remove(filepath.Join(dir, seedpack.VersionFile)); err != nil {
 		t.Fatalf("remove marker: %v", err)
 	}
 
@@ -309,7 +311,7 @@ func TestSeedSkills_MarkerlessExactPackContentReclaimed(t *testing.T) {
 	if len(res.Preserved) != 0 || len(res.Modified) != 0 || len(res.Updated) != 0 {
 		t.Fatalf("unexpected buckets: Preserved=%v Modified=%v Updated=%v", res.Preserved, res.Modified, res.Updated)
 	}
-	if ok, v := readSeedVersion(dir); !ok || v != CurrentSeedVersion {
+	if ok, v := seedpack.ReadVersion(dir); !ok || v != CurrentSeedVersion {
 		t.Errorf("marker after reclaim = (%q, %v), want %q", v, ok, CurrentSeedVersion)
 	}
 	after, err := os.ReadFile(skillMD)
@@ -384,7 +386,7 @@ func TestSeedAgents_MarkerPlusTruncatedTreeIsRepaired(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, seedVersionFile), []byte(AgentSeedVersion), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, seedpack.VersionFile), []byte(AgentSeedVersion), 0o644); err != nil {
 		t.Fatalf("write marker: %v", err)
 	}
 
@@ -399,7 +401,7 @@ func TestSeedAgents_MarkerPlusTruncatedTreeIsRepaired(t *testing.T) {
 		t.Fatalf("Updated = %v, want [research]", res.Updated)
 	}
 	assertDirMatchesPack(t, agentPackFS, agentEmbedRoot, "research", dest, "repaired profile")
-	if ok, v := readSeedVersion(dir); !ok || v != AgentSeedVersion {
+	if ok, v := seedpack.ReadVersion(dir); !ok || v != AgentSeedVersion {
 		t.Errorf("marker after repair = (%q, %v), want %q", v, ok, AgentSeedVersion)
 	}
 }
@@ -432,7 +434,7 @@ func TestSeedAgents_InterruptedWriteLeavesNoPartialState(t *testing.T) {
 }
 
 // TestSeedSkills_CleanSeedHashMatchesPack pins the symmetry the hash
-// classification depends on: after a clean seed, diskFileSet and packFileSet
+// classification depends on: after a clean seed, seedpack.DiskFileSet and seedpack.PackFileSet
 // produce identical (path → bytes) sets, so the next run classifies every
 // skill Current.
 func TestSeedSkills_CleanSeedHashMatchesPack(t *testing.T) {
@@ -456,15 +458,15 @@ func TestSeedSkills_CleanSeedHashMatchesPack(t *testing.T) {
 // TestHashFileSet_Framing verifies the length-framed hash: path/content
 // boundaries are unambiguous and the hash is deterministic.
 func TestHashFileSet_Framing(t *testing.T) {
-	if hashFileSet(map[string][]byte{"a": []byte("bc")}) == hashFileSet(map[string][]byte{"ab": []byte("c")}) {
+	if seedpack.HashFileSet(map[string][]byte{"a": []byte("bc")}) == seedpack.HashFileSet(map[string][]byte{"ab": []byte("c")}) {
 		t.Fatal("path/content boundary must be framed: {a:bc} vs {ab:c} must differ")
 	}
 	first := map[string][]byte{"x": []byte("y")}
 	second := map[string][]byte{"x": []byte("y")}
-	if hashFileSet(first) != hashFileSet(second) {
+	if seedpack.HashFileSet(first) != seedpack.HashFileSet(second) {
 		t.Fatal("hash must be deterministic for identical sets")
 	}
-	if hashFileSet(map[string][]byte{"x": []byte("y")}) == hashFileSet(map[string][]byte{"x": []byte("z")}) {
+	if seedpack.HashFileSet(map[string][]byte{"x": []byte("y")}) == seedpack.HashFileSet(map[string][]byte{"x": []byte("z")}) {
 		t.Fatal("content change must change the hash")
 	}
 }
