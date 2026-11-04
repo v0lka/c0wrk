@@ -955,7 +955,10 @@ describe('EmbeddedLLMSettings — tuning section', () => {
 
     expect(q('embedded-llm-unified')?.textContent).toBe('Yes')
     expect(q('embedded-llm-devices')?.textContent).toContain('Apple M4 Max')
-    expect(q('embedded-llm-devices')?.textContent).toContain('24 GiB')
+    // The install record quotes the recorded topology's TOTAL only — the free
+    // figure is the live panel's vocabulary (the fixture's free is 24 GiB).
+    expect(q('embedded-llm-devices')?.textContent).toContain('48 GiB')
+    expect(q('embedded-llm-devices')?.textContent).not.toContain('free of')
     const plan = q('embedded-llm-plan')?.textContent ?? ''
     expect(plan).toContain('PQ2_0')
     expect(plan).toContain('KV q8_0')

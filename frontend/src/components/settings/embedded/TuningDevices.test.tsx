@@ -81,7 +81,10 @@ describe('TuningDevices', () => {
     )
     expect(cuda0).not.toBeNull()
     expect(cuda0?.textContent).toContain('NVIDIA GeForce RTX 5060 Ti')
-    expect(cuda0?.textContent).toContain('14.6 GiB free of 16 GiB')
+    // The row's only figure is the TOTAL — the live "free" reading belongs to
+    // the Device memory (live) panel, never beside the pin choice.
+    expect(cuda0?.textContent).toContain('16 GiB')
+    expect(cuda0?.textContent).not.toContain('free of')
     expect(cuda0?.getAttribute('aria-pressed')).toBe('false')
     expect(
       q('embedded-llm-tuning-devices')?.querySelector('[aria-label="Offload to CUDA1"]'),

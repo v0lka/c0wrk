@@ -3,6 +3,12 @@
 // status snapshot's own inventory — the exact names `llama-server
 // --list-devices` prints and `-dev` consumes), empty selection = Auto.
 //
+// The row's only figure is the TOTAL MiB — the input the plan's budgets price
+// (an occupancy change must not move a reproducible plan). The live free
+// reading belongs exclusively to the Device memory (live) panel; quoting a
+// recorded "free" beside the pin choice dresses the install-time snapshot in
+// live vocabulary (specs/domains/embedded-llm.md).
+//
 // A name the inventory stops reporting (the machine changed, or a probe dropped
 // an alias row) would otherwise become an invisible pin no row can clear, so a
 // pinned-but-unmeasured name renders as its own STALE row — still clickable,
@@ -116,7 +122,7 @@ export function TuningDevices({
                   {device.name} — {device.description}
                 </span>
                 <span className="ml-auto shrink-0 text-xs text-muted-foreground">
-                  {formatMiB(device.free_mib)} free of {formatMiB(device.total_mib)}
+                  {formatMiB(device.total_mib)}
                 </span>
               </Button>
             )
