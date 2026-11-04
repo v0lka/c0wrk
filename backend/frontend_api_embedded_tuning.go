@@ -373,13 +373,21 @@ func (f *FrontendAPI) setEmbeddedLLMTuningOn(platform string, req EmbeddedLLMTun
 	return nil
 }
 
+// ErrEmbeddedLLMDeviceProbeWrongEngine — the on-demand device probe asks the
+// provisioned llama-family binary, and the mtplx engine provisions none: its
+// refusal is BY ENGINE, never a missing-file accident. errors.Is-able so the
+// auto re-probe path and tests can match the shape.
+var ErrEmbeddedLLMDeviceProbeWrongEngine = errors.New("the embedded LLM device probe is llama-only")
+
 // ProbeEmbeddedLLMDevices measures THIS machine's accelerator memory on
 // demand: EmbeddedLLMStatus's topology is a recorded, staleable snapshot and
 // core's re-measure is fail-soft and invisible, so an operator diagnosing a
 // plan asks here — the one embedded-LLM read allowed to be slow and to fail,
 // turning core's silent probe into an actionable error. Nothing persisted or
 // re-planned; requires an installed runtime; refused while an embedded
-// operation is in flight. See specs/domains/embedded-llm.md.
+// operation is in flight, and under the mtplx engine by engine itself
+// (ErrEmbeddedLLMDeviceProbeWrongEngine — the live panel hides for it).
+// See specs/domains/embedded-llm.md.
 func (f *FrontendAPI) ProbeEmbeddedLLMDevices() (EmbeddedLLMDevicesDTO, error) {
 	server, _, err := f.embeddedBuild()
 	if err != nil {
@@ -393,6 +401,14 @@ func (f *FrontendAPI) ProbeEmbeddedLLMDevices() (EmbeddedLLMDevicesDTO, error) {
 	if !ok {
 		return EmbeddedLLMDevicesDTO{}, errors.New(
 			"the embedded LLM is not installed — the device probe asks the provisioned runtime, so install it first")
+	}
+	// An mtplx install records metal as its backend but lives in the staged
+	// mtplx tree: RuntimeDir would resolve the llama-family path that does not
+	// exist for it, and the refusal would read as a missing-file accident.
+	// Refuse by ENGINE instead — typed, naming the engine.
+	if manifest.Engine == embeddedllm.EngineMTPLX {
+		return EmbeddedLLMDevicesDTO{}, fmt.Errorf("%w: the mtplx engine has no probeable runtime binary — the live panel is hidden for this engine",
+			ErrEmbeddedLLMDeviceProbeWrongEngine)
 	}
 
 	runtimeDir, err := server.Layout.RuntimeDir(manifest.Backend)

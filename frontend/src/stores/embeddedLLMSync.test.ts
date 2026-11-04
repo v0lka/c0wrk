@@ -59,6 +59,7 @@ import { refreshEmbeddedLLMDevices, refreshEmbeddedLLMTuning, runEmbeddedLLMActi
 import { useEmbeddedLLMStore } from './embeddedLLMStore'
 import type { EmbeddedLLMDeviceSnapshot, EmbeddedLLMTuning } from '@/api/embeddedTuning'
 import { makeTuning } from '@/test/embeddedTuningFixture'
+import { makeEmbeddedStatus } from '@/test/embeddedStatusFixture'
 
 const state = () => useEmbeddedLLMStore.getState()
 
@@ -291,6 +292,28 @@ describe('embeddedLLMSync — refreshEmbeddedLLMDevices (the live probe)', () =>
 
     expect(state().deviceSnapshotError).toBeNull()
     expect(state().deviceSnapshot).toBeNull()
+  })
+
+  it('skips an AUTO probe under the mtplx engine (the RPC would refuse by engine)', async () => {
+    state().setStatus(makeEmbeddedStatus({ installed: true, engine: 'mtplx' }))
+    mocks.probeEmbeddedLLMDevices.mockResolvedValue(snapshot)
+
+    await expect(refreshEmbeddedLLMDevices('auto')).resolves.toBe(false)
+
+    expect(mocks.probeEmbeddedLLMDevices).not.toHaveBeenCalled()
+    expect(state().deviceSnapshotError).toBeNull()
+  })
+
+  it('still sends a MANUAL probe under the mtplx engine (the backend owns the refusal)', async () => {
+    state().setStatus(makeEmbeddedStatus({ installed: true, engine: 'mtplx' }))
+    mocks.probeEmbeddedLLMDevices.mockRejectedValue(
+      new Error('the embedded LLM device probe is llama-only: the mtplx engine has no probeable runtime binary'),
+    )
+
+    await expect(refreshEmbeddedLLMDevices('manual')).resolves.toBe(false)
+
+    expect(mocks.probeEmbeddedLLMDevices).toHaveBeenCalledTimes(1)
+    expect(state().deviceSnapshotError).toContain('llama-only')
   })
 
   it('lets concurrent refreshes share one in-flight probe', async () => {

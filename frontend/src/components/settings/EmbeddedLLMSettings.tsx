@@ -191,7 +191,7 @@ export function EmbeddedLLMSettings() {
 
               <EmbeddedLLMInstallRecord status={status} />
 
-              <EmbeddedLLMDeviceMemory installed={installed} />
+              <EmbeddedLLMDeviceMemory installed={installed} engine={status.engine} />
 
               <EmbeddedLLMActions
                 loaded={loaded}

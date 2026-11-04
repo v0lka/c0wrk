@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"math"
 	"os"
@@ -1535,6 +1536,29 @@ func TestProbeEmbeddedLLMDevicesRefusesWhenNotInstalled(t *testing.T) {
 		t.Fatal("ProbeEmbeddedLLMDevices succeeded with nothing installed")
 	} else if !strings.Contains(err.Error(), "not installed") {
 		t.Errorf("the error %q does not say the model is not installed", err)
+	}
+}
+
+// TestProbeEmbeddedLLMDevicesRefusesUnderTheMTPLXEngine: an mtplx install
+// records metal as its backend but lives in the staged mtplx tree, so the
+// llama-family runtime binary the probe asks for does not exist. The refusal
+// is by ENGINE — typed and naming the engine, not a missing-file accident —
+// and the prober never spawns.
+func TestProbeEmbeddedLLMDevicesRefusesUnderTheMTPLXEngine(t *testing.T) {
+	f, _, _ := newEmbeddedTestAPI(t)
+	manifest := embeddedTestManifest(4321, 32768)
+	manifest.Engine = embeddedllm.EngineMTPLX
+	writeEmbeddedInstallTree(t, f.agentDir, manifest)
+	f.Lifecycle().InitEmbeddedLLM()
+	f.embedded.deviceProbeFn = func(context.Context, string, *slog.Logger) (embeddedllm.MemoryTopology, bool) {
+		t.Error("the device probe ran under the mtplx engine")
+		return embeddedllm.MemoryTopology{}, false
+	}
+
+	if _, err := f.ProbeEmbeddedLLMDevices(); err == nil {
+		t.Fatal("ProbeEmbeddedLLMDevices succeeded under the mtplx engine")
+	} else if !errors.Is(err, ErrEmbeddedLLMDeviceProbeWrongEngine) || !strings.Contains(err.Error(), "mtplx") {
+		t.Errorf("the error %v is not a typed, engine-naming refusal", err)
 	}
 }
 

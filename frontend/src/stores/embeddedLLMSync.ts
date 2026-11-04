@@ -146,6 +146,11 @@ let deviceProbeFailure: string | null = null
  *     the next transition re-probes. An auto failure also clears a stale
  *     error, since the painted complaint no longer describes the latest
  *     attempt's outcome.
+ *   - Under the mtplx engine an AUTO probe does not fire at all: the RPC
+ *     refuses by engine (no llama-family binary exists to spawn), the live
+ *     panel hides for that engine, and the recorded topology stays its only
+ *     answer. A manual probe still goes through — the backend owns the
+ *     refusal.
  *
  *  Concurrent callers share the in-flight probe (see `deviceProbeInFlight`);
  *  the failure HANDLING runs once per attempt, under the INITIATOR's mode,
@@ -153,6 +158,14 @@ let deviceProbeFailure: string | null = null
  *  refusal (see the join branch below). */
 export async function refreshEmbeddedLLMDevices(mode: 'auto' | 'manual'): Promise<boolean> {
   const { setDeviceSnapshotLoading } = useEmbeddedLLMStore.getState()
+  // The live probe asks the provisioned llama-family binary; under the mtplx
+  // engine the RPC refuses BY ENGINE, so every `embedded_llm:state`
+  // transition would fire a doomed RPC that only ever logs here. The live
+  // panel hides for mtplx — skip until the engine changes (a manual probe
+  // still goes through: the backend owns the refusal).
+  if (mode === 'auto' && useEmbeddedLLMStore.getState().status?.engine === 'mtplx') {
+    return false
+  }
   if (deviceProbeInFlight !== null) {
     // A probe is already running: its result is exactly as fresh as this
     // caller's would have been. Await it so the spinner covers the shared

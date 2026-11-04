@@ -10,6 +10,12 @@
 // must not move a reproducible plan); this panel shows the machine as it is
 // right now. The two never merge: different questions, different snapshots.
 //
+// The panel is llama-family only: the live probe asks the provisioned
+// llama-family binary and the mtplx engine provisions none (its RPC refuses
+// by engine), so under `engine: 'mtplx'` the panel renders nothing and both
+// automatic probes skip — the install record's recorded topology remains
+// that engine's only honest answer.
+//
 // Data flow follows the store contract: the snapshot lives in
 // embeddedLLMStore (`deviceSnapshot`, replaced whole by
 // refreshEmbeddedLLMDevices — the writer in embeddedLLMSync), arrives here
@@ -72,28 +78,32 @@ function DeviceRow({ device }: { device: EmbeddedLLMDevice }) {
   )
 }
 
-export function EmbeddedLLMDeviceMemory({ installed }: { installed: boolean }) {
+export function EmbeddedLLMDeviceMemory({ installed, engine }: { installed: boolean; engine?: string }) {
   const snapshot = useEmbeddedLLMDeviceSnapshot()
   const loading = useEmbeddedLLMDeviceSnapshotLoading()
   const error = useEmbeddedLLMDeviceSnapshotError()
 
+  // Undefined engine = the llama family (pre-engine installs).
+  const llamaFamily = engine !== 'mtplx'
+
   // First measurement: the `embedded_llm:state` invalidation only fires on a
   // transition, so a panel opened before the next one would render nothing
-  // forever. Probe once on mount (installed only — the RPC refuses before any
-  // install exists) in the quiet `auto` mode; the boolean condition, not the
-  // snapshot reference, is the dependency, so a failed probe does not loop.
+  // forever. Probe once on mount (installed llama-family only — the RPC
+  // refuses before any install exists and by engine under mtplx) in the quiet
+  // `auto` mode; the boolean condition, not the snapshot reference, is the
+  // dependency, so a failed probe does not loop.
   const probedOnce = useRef(false)
   useEffect(() => {
-    if (!installed || probedOnce.current) return
+    if (!installed || !llamaFamily || probedOnce.current) return
     probedOnce.current = true
     void refreshEmbeddedLLMDevices('auto')
-  }, [installed])
+  }, [installed, llamaFamily])
 
   const refresh = () => {
     void refreshEmbeddedLLMDevices('manual')
   }
 
-  if (!installed) return null
+  if (!installed || !llamaFamily) return null
 
   return (
     <div className="flex flex-col gap-2" data-testid="embedded-llm-device-memory-panel">

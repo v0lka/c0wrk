@@ -88,6 +88,12 @@ describe('EmbeddedLLMDeviceMemory', () => {
     expect(mocks.probeEmbeddedLLMDevices).not.toHaveBeenCalled()
   })
 
+  it('renders nothing under the mtplx engine and skips the mount probe', async () => {
+    await render(<EmbeddedLLMDeviceMemory installed={true} engine="mtplx" />)
+    expect(container.children).toHaveLength(0)
+    expect(mocks.probeEmbeddedLLMDevices).not.toHaveBeenCalled()
+  })
+
   it('probes once on mount and renders the live free/total per device', async () => {
     mocks.probeEmbeddedLLMDevices.mockResolvedValue(snapshot(8000))
 
