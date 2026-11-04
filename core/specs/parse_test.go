@@ -465,12 +465,12 @@ func TestParseADRStatusVariants(t *testing.T) {
 }
 
 func TestParseADRTitle(t *testing.T) {
-	title, heading, _, _ := ParseADR("# ADR-105: Specs sidebar panel\n\n## Status\n\nAccepted\n")
+	title, heading, _, _ := ParseADR("# ADR-106: Specs sidebar panel\n\n## Status\n\nAccepted\n")
 	if title != "Specs sidebar panel" {
 		t.Errorf("title = %q, want %q", title, "Specs sidebar panel")
 	}
-	if heading != "105" {
-		t.Errorf("heading number = %q, want %q", heading, "105")
+	if heading != "106" {
+		t.Errorf("heading number = %q, want %q", heading, "106")
 	}
 	// A heading that does not match the template shape stays verbatim.
 	title, heading, _, _ = ParseADR("# Not a template heading\n\n## Status\n\nAccepted\n")
@@ -585,8 +585,8 @@ func TestSelfParseC0wrkSpecs(t *testing.T) {
 		}
 		adrByNumber[a.Number] = a
 	}
-	if a := adrByNumber["105"]; a.Title != "Specs sidebar panel" || a.Slug != "specs-sidebar-panel" || a.Status != StatusAccepted {
-		t.Errorf("ADR-105 = %+v", a)
+	if a := adrByNumber["106"]; a.Title != "Specs sidebar panel" || a.Slug != "specs-sidebar-panel" || a.Status != StatusAccepted {
+		t.Errorf("ADR-106 = %+v", a)
 	}
 	if a := adrByNumber["038"]; a.Status != StatusSuperseded || a.SupersededBy != "055" {
 		t.Errorf("ADR-038 = %+v, want superseded by 055", a)

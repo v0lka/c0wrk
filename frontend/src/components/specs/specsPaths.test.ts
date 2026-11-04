@@ -1,5 +1,5 @@
 // specsPaths — the pure helpers: absolute-path resolution for the file
-// viewer, the workspace:tree_changed relevance filter (ADR-105 D3), and the
+// viewer, the workspace:tree_changed relevance filter (ADR-106 D3), and the
 // nested tree + DECISIONS date lookup.
 import { describe, expect, it } from 'vitest'
 import type { SpecADRMeta, SpecFile } from '@/types/models'
@@ -189,7 +189,7 @@ describe('buildSpecsTree (nested tree builder)', () => {
 })
 
 describe('findingKindLabel', () => {
-  it('labels the tier-1 categories (ADR-105 D5 as completed by ADR-108)', () => {
+  it('labels the tier-1 categories (ADR-106 D5 as completed by ADR-109)', () => {
     expect(findingKindLabel('PATH_MISSING')).toBe('Missing path')
     expect(findingKindLabel('CROSS_REF_BROKEN')).toBe('Broken cross-ref')
     expect(findingKindLabel('DUPLICATE_ADR_NUMBER')).toBe('Duplicate ADR number')

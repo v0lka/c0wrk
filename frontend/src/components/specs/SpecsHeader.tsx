@@ -1,4 +1,4 @@
-// Specs panel header (ADR-105): the integrity badge — the tier-1
+// Specs panel header (ADR-106): the integrity badge — the tier-1
 // deterministic-findings signal computed per parse — plus the aggregate
 // counts. Pure presentational over SpecsStatus.
 
@@ -8,7 +8,7 @@ import type { SpecsStatus } from '@/types/models'
 
 /** The integrity badge: 0 findings → a success "Integrity OK" chip; any
  *  finding → a warning BUTTON naming the count — clicking it dispatches
- *  the fix-findings task into the chat (Shift = a new session, ADR-108),
+ *  the fix-findings task into the chat (Shift = a new session, ADR-109),
  *  so "N findings" is the one affordance that acts on what it reports. */
 function IntegrityBadge({
   findings,
@@ -51,7 +51,7 @@ function IntegrityBadge({
 }
 
 /** The header row: the integrity badge (the findings count doubles as the
- *  fix-findings dispatch, ADR-108) and the aggregate counts. The absolute
+ *  fix-findings dispatch, ADR-109) and the aggregate counts. The absolute
  *  specs root rides along as the row's tooltip. */
 export function SpecsHeader({
   status,

@@ -280,7 +280,7 @@ func TestGetSpecsStatus_RealSpecsTree(t *testing.T) {
 // TestGetSpecsStatus_MissingSpecsDirIsNeutral pins the missing-tree
 // contract: a real project without a specs/ directory returns present=false
 // with the resolved root path and the stable empty collections — never an
-// error (ADR-105 D2).
+// error (ADR-106 D2).
 func TestGetSpecsStatus_MissingSpecsDirIsNeutral(t *testing.T) {
 	api, workspaces := specsTestFrontend(t, project.ProjectInfo{ID: "proj-1", Name: "P"})
 
@@ -319,7 +319,7 @@ func TestGetSpecsStatus_MissingSpecsDirIsNeutral(t *testing.T) {
 // TestGetSpecsStatus_NoProjectIsNeutral pins the No-Project contract: the
 // pseudo-project yields the neutral present=false state without an error
 // (the defensive shape — the Specs panel is not rendered in CHAT mode at
-// all, ADR-105 D1).
+// all, ADR-106 D1).
 func TestGetSpecsStatus_NoProjectIsNeutral(t *testing.T) {
 	api, _ := specsTestFrontend(t, project.ProjectInfo{
 		ID:   project.NoProjectID,

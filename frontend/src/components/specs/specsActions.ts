@@ -1,4 +1,4 @@
-// Dispatch constants for the SPECS panel (ADR-105 D4, labels ADR-108).
+// Dispatch constants for the SPECS panel (ADR-106 D4, labels ADR-109).
 //
 // The panel turns every mutating lifecycle gesture into a dispatched
 // `spec-*` skill (via sendMessage's activeSkills slot) instead of writing
@@ -9,9 +9,9 @@
 import type { SpecFinding } from '@/types/models'
 
 /** A single quick action: a human label, the `spec-*` skill it activates
- *  (ADR-104), the constant prompt dispatched alongside the skill, and
+ *  (ADR-105), the constant prompt dispatched alongside the skill, and
  *  whether the gesture requires an existing specs/ tree. The labels are
- *  deliberately SHORT (the row is a narrow sidebar strip — ADR-108); the
+ *  deliberately SHORT (the row is a narrow sidebar strip — ADR-109); the
  *  optional fullLabel spells the gesture out in the button's tooltip. */
 export interface SpecQuickAction {
   key: string
@@ -37,8 +37,8 @@ export const INITIALIZE_ACTION: SpecQuickAction = {
   prompt: 'Initialize the specs/ specification system for this project.',
 }
 
-/** The fixed quick-action row (ADR-105 D4): Init, Check (the tier-2
- *  semantic-drift surface, ADR-105 D5), Consult, Explore. */
+/** The fixed quick-action row (ADR-106 D4): Init, Check (the tier-2
+ *  semantic-drift surface, ADR-106 D5), Consult, Explore. */
 export const QUICK_ACTIONS: SpecQuickAction[] = [
   INITIALIZE_ACTION,
   {
@@ -67,7 +67,7 @@ export const QUICK_ACTIONS: SpecQuickAction[] = [
   },
 ]
 
-/** Build the Fix-findings gesture for the CURRENT parse (ADR-108): the
+/** Build the Fix-findings gesture for the CURRENT parse (ADR-109): the
  *  header's findings badge dispatches one `spec-update` task whose prompt
  *  enumerates every tier-1 finding, so the chat resolves all of them in
  *  one pass and re-verifies. The prompt is derived verbatim from the parse

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// SpecsFindings — the tier-1 findings list's CASCADE CARD layout (ADR-105
+// SpecsFindings — the tier-1 findings list's CASCADE CARD layout (ADR-106
 // D5): row 1 carries the kind chip + the file link, row 2 the detail text
 // on its own line at the full card width (a long detail must never squeeze
 // the row-1 controls). Renders NOTHING when clean — the header badge is

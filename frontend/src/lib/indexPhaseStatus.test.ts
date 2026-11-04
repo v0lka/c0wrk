@@ -58,6 +58,22 @@ describe('deriveDotStatus', () => {
     })
   })
 
+  it('stays idle during the preparing attach window (ADR-104 stage 2: pre-work, no building claim)', () => {
+    expect(deriveDotStatus('preparing', 'preparation')).toEqual({
+      vectorDot: 'idle',
+      lexicalDot: 'idle',
+      bothReady: false,
+    })
+  })
+
+  it('stays idle during the migration-rebuild store promotion (ADR-104 stage 2: store-shape repair)', () => {
+    expect(deriveDotStatus('migration-rebuild', 'migration-rebuild')).toEqual({
+      vectorDot: 'idle',
+      lexicalDot: 'idle',
+      bothReady: false,
+    })
+  })
+
   it('stays idle while indexing is disabled by the master switch (ADR-103)', () => {
     expect(deriveDotStatus('disabled', undefined)).toEqual({
       vectorDot: 'idle',

@@ -10,7 +10,7 @@
 // seedpack.Classify). See specs/domains/papers.md (global skill-pack seeding
 // invariant) and specs/decisions/056-research-always-on-global-seeding.md.
 // The classification/staging core is the shared core/seedpack package
-// (ADR-104 decision 5), common with core/research.
+// (ADR-105 decision 5), common with core/research.
 package papers
 
 import (

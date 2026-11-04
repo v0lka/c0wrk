@@ -1,5 +1,5 @@
 // Package specs — skill-pack: the six vendored spec-* skills (spec-init,
-// spec-explore, spec-consult, spec-create, spec-update, spec-check; ADR-104),
+// spec-explore, spec-consult, spec-create, spec-update, spec-check; ADR-105),
 // seeded globally once per launch into the c0wrk global skills directory
 // before the skill watchers start. The seeded copies land where the
 // per-session SkillManager discovers them (a project-local .agents/skills
@@ -9,7 +9,7 @@
 // Seeding is idempotent, crash-safe, and non-destructive: destinations are
 // classified by CONTENT HASH against the embedded pack (never mtime/size,
 // never the marker alone). The classification/staging mechanics live in the
-// shared core/seedpack package (ADR-104 decision 5); full rules:
+// shared core/seedpack package (ADR-105 decision 5); full rules:
 // specs/domains/specs.md (seeding invariants).
 package specs
 

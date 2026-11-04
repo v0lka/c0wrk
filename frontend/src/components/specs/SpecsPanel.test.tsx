@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// SpecsPanel — the panel orchestrator over specsStore (ADR-105): the
+// SpecsPanel — the panel orchestrator over specsStore (ADR-106): the
 // mount fetch, the in-panel workspace:tree_changed subscription with the
 // specs/ path filter, the read path through the file viewer, and the four
 // render states (loading, error-alongside-previous-status, empty, full
@@ -100,7 +100,7 @@ function makeStatus(present: boolean): SpecsStatus {
     files: [
       { path: 'INDEX.md', title: 'Specs Index' },
       { path: 'domains/testing.md', section: 'domains', title: 'Testing', key_files: ['core/x.go'] },
-      { path: 'decisions/105-specs-sidebar-panel.md', section: 'decisions', title: 'Specs sidebar panel' },
+      { path: 'decisions/106-specs-sidebar-panel.md', section: 'decisions', title: 'Specs sidebar panel' },
       { path: 'decisions/038-old-decision.md', section: 'decisions', title: 'Old decision' },
     ],
     index_tasks: [{ task: 'Writing tests', specs: ['./domains/testing.md'] }],
@@ -108,7 +108,7 @@ function makeStatus(present: boolean): SpecsStatus {
       {
         number: '105',
         slug: 'specs-sidebar-panel',
-        file: 'decisions/105-specs-sidebar-panel.md',
+        file: 'decisions/106-specs-sidebar-panel.md',
         status: 'accepted',
         title: 'Specs sidebar panel',
         date: '2026-01-15',
@@ -174,14 +174,14 @@ describe('SpecsPanel — render states', () => {
         .click()
     })
     expect(query('specs-file')!.textContent).toContain('Testing')
-    // The DECISIONS date column (ADR-108): the dated 105 leaf carries its
+    // The DECISIONS date column (ADR-109): the dated 105 leaf carries its
     // blue-tinted date; the undated 038 leaf renders none.
     act(() => {
       container!
         .querySelector<HTMLElement>('[data-testid="specs-tree-group"][data-node="decisions"]')!
         .click()
     })
-    const datedLeaf = container!.querySelector('[data-path="decisions/105-specs-sidebar-panel.md"]')!
+    const datedLeaf = container!.querySelector('[data-path="decisions/106-specs-sidebar-panel.md"]')!
     expect(datedLeaf.querySelector('[data-testid="specs-file-date"]')!.textContent).toBe('2026-01-15')
     const undatedLeaf = container!.querySelector('[data-path="decisions/038-old-decision.md"]')!
     expect(undatedLeaf.querySelector('[data-testid="specs-file-date"]')).toBeNull()
@@ -205,7 +205,7 @@ describe('SpecsPanel — render states', () => {
     expect(text()).toContain('/ws/p1/specs')
     // The full body does not render alongside the empty state.
     expect(query('specs-tree')).toBeNull()
-    // The header STAYS with the clean badge (the opener is gone — ADR-108
+    // The header STAYS with the clean badge (the opener is gone — ADR-109
     // removed the overview page).
     expect(query('specs-header')).not.toBeNull()
     expect(query('specs-open-overview')).toBeNull()

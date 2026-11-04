@@ -1,6 +1,6 @@
-// specsActions — the auditable dispatch constants (ADR-105 D4). A quick
+// specsActions — the auditable dispatch constants (ADR-106 D4). A quick
 // action is fully determined by its constant: the label the button renders,
-// the spec-* skill it activates (ADR-104), and the prompt dispatched with
+// the spec-* skill it activates (ADR-105), and the prompt dispatched with
 // it. These tests pin that wiring so a silent edit (wrong skill, empty
 // prompt) cannot slip through.
 import { describe, expect, it } from 'vitest'
@@ -22,7 +22,7 @@ describe('specsActions — QUICK_ACTIONS', () => {
     ])
   })
 
-  it('maps every gesture to its ADR-104 skill', () => {
+  it('maps every gesture to its ADR-105 skill', () => {
     const byKey = Object.fromEntries(QUICK_ACTIONS.map((a) => [a.key, a]))
     expect(byKey['initialize']!.skill).toBe('spec-init')
     expect(byKey['check-drift']!.skill).toBe('spec-check')
@@ -59,7 +59,7 @@ describe('specsActions — QUICK_ACTIONS', () => {
   })
 
   it('the sidebar-strip labels are the SHORT forms; the tooltips spell the gestures', () => {
-    // ADR-108: the narrow sidebar carries short button names; the full
+    // ADR-109: the narrow sidebar carries short button names; the full
     // gesture name moves to the tooltip (fullLabel).
     const byKey = Object.fromEntries(QUICK_ACTIONS.map((a) => [a.key, a]))
     expect(byKey['initialize']!.label).toBe('Init')

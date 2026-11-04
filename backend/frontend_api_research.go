@@ -910,7 +910,7 @@ func (f *FrontendAPI) parseResearchRootBestEffort(researchRoot string) *research
 // core/specs/{skillpack,agentpack}.go.
 // Serialized on researchSeedMu; skill/agent caches invalidated afterwards
 // (common invalidation after ALL packs).
-// See specs/domains/research.md and specs/decisions/104-vendor-spec-skillset.md.
+// See specs/domains/research.md and specs/decisions/105-vendor-spec-skillset.md.
 func (f *FrontendAPI) seedGlobalPacks() {
 	f.seedAcquire()
 	if f.agentDir == "" {

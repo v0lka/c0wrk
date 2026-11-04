@@ -82,10 +82,13 @@ export function IndexingStatus() {
     )
   }
 
-  if (status.state === 'loading') {
+  if (status.state === 'loading' || status.state === 'preparing') {
     // ADR-064: the branch-scoped persistent DB is being opened. Show an honest
     // "Preparing index…" — no progress bar and no n/m, never the "Indexing" /
     // "building" shape that implied a pass was already running.
+    // `preparing` (ADR-104 stage 2) renders the same way: the view-model
+    // attach window (snapshot identity resolution, corpus lease acquisition)
+    // is pre-work, not a pass — idle dots and the honest label, no fake bar.
     return (
       <div
         className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground"
@@ -96,6 +99,25 @@ export function IndexingStatus() {
           <Dot state={derived.lexicalDot} label={lexicalLabel} />
         </div>
         <span>Preparing index…</span>
+      </div>
+    )
+  }
+
+  if (status.state === 'migration-rebuild') {
+    // ADR-104 stage 2: the one-time promotion of a legacy branch-keyed store
+    // into the shared snapshot corpus (a rename, or the rebuild pass that
+    // replaces it). Store-shape repair, not fresh content — its own honest
+    // label with idle dots, never the "Indexing…" progress-bar shape.
+    return (
+      <div
+        className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground"
+        title={tooltip}
+      >
+        <div className="flex items-center gap-1">
+          <Dot state={derived.vectorDot} label={vectorLabel} />
+          <Dot state={derived.lexicalDot} label={lexicalLabel} />
+        </div>
+        <span>Migrating store…</span>
       </div>
     )
   }
@@ -119,15 +141,42 @@ export function IndexingStatus() {
     )
   }
 
-  const isReindexing = status.state === 'reindexing'
-  const pct = Math.round(status.progress * 100)
-  const phaseLabel =
-    phase === 'lexical' ? 'Lexical'
-      : phase === 'embedding' ? 'Embedding'
-        : null
-  const actionLabel = isReindexing ? 'Updating' : 'Indexing'
-  const text = phaseLabel ? `${actionLabel} ${phaseLabel}...` : `${actionLabel}...`
+  if (status.state === 'indexing' || status.state === 'reindexing') {
+    const isReindexing = status.state === 'reindexing'
+    const pct = Math.round(status.progress * 100)
+    const phaseLabel =
+      phase === 'lexical' ? 'Lexical'
+        : phase === 'embedding' ? 'Embedding'
+          : null
+    const actionLabel = isReindexing ? 'Updating' : 'Indexing'
+    const text = phaseLabel ? `${actionLabel} ${phaseLabel}...` : `${actionLabel}...`
 
+    return (
+      <div
+        className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground"
+        title={tooltip}
+      >
+        <div className="flex items-center gap-1">
+          <Dot state={derived.vectorDot} label={vectorLabel} />
+          <Dot state={derived.lexicalDot} label={lexicalLabel} />
+        </div>
+        <span>{text}</span>
+        <div className="h-1.5 w-16 overflow-hidden rounded-full bg-muted">
+          <div
+            className={cn('h-full rounded-full transition-all', isReindexing ? 'bg-muted-foreground' : 'bg-info')}
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+        {status.total_files > 0 && (
+          <span>{status.files_indexed}/{status.total_files}</span>
+        )}
+      </div>
+    )
+  }
+
+  // Unknown states (a backend literal this frontend does not know yet): fall
+  // to the honest preparing shape — idle dots and a neutral label, never a
+  // fake progress bar or a "building" claim for a state we cannot describe.
   return (
     <div
       className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground"
@@ -137,16 +186,7 @@ export function IndexingStatus() {
         <Dot state={derived.vectorDot} label={vectorLabel} />
         <Dot state={derived.lexicalDot} label={lexicalLabel} />
       </div>
-      <span>{text}</span>
-      <div className="h-1.5 w-16 overflow-hidden rounded-full bg-muted">
-        <div
-          className={cn('h-full rounded-full transition-all', isReindexing ? 'bg-muted-foreground' : 'bg-info')}
-          style={{ width: `${pct}%` }}
-        />
-      </div>
-      {status.total_files > 0 && (
-        <span>{status.files_indexed}/{status.total_files}</span>
-      )}
+      <span>Preparing index…</span>
     </div>
   )
 }

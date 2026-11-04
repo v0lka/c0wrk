@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted (the open-LRU stretch idea is superseded by ADR-104 §5's owner-level residency: the retained unit is the shared corpus handle, so a return to a snapshot skips the decode entirely rather than caching decoded branches; per-branch DB roots remain superseded by commit-keyed corpora per ADR-104 §7. The layout migration this ADR introduced is itself superseded by the ADR-104 stage-3 unified sweep: the synchronous `SetProject` re-homing of root-level legacy collection directories remains as the cheap first seam, but the resulting per-branch stores — and the ADR-081 per-worktree stores — are drained into commit-keyed corpora by the background, replay-safe `store_migration.json` sweep, and the `branches/_orphan` root is no longer invisible residue: it is inventoried as a terminal skip record in the state file, still kept in place and never loaded)
 
 ## Context
 

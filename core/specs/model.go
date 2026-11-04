@@ -5,7 +5,7 @@
 // filesystem orchestrator. The parser keys off the documented layout, not
 // c0wrk-specific paths, and tolerates a missing, empty, or partial tree:
 // zero-values are meaningful neutral states, never errors
-// (specs/decisions/105-specs-sidebar-panel.md).
+// (specs/decisions/106-specs-sidebar-panel.md).
 package specs
 
 // Section names: the four documented section directories of a specs/ tree
@@ -18,7 +18,7 @@ const (
 	SectionDecisions    = "decisions"
 )
 
-// FindingKind is one tier-1 static finding category (ADR-105 D5): computed
+// FindingKind is one tier-1 static finding category (ADR-106 D5): computed
 // by the parser on every parse, never persisted, always fresh.
 type FindingKind string
 
@@ -72,7 +72,7 @@ type SpecsRoot struct {
 
 	// Present reports whether the root existed and was a directory. A root
 	// that is missing or not a directory parses to Present=false with
-	// everything else empty — a neutral state, not an error (ADR-105 D2).
+	// everything else empty — a neutral state, not an error (ADR-106 D2).
 	Present bool `json:"present"`
 
 	// Files holds every parsed spec file — the section trees plus the root
@@ -88,7 +88,7 @@ type SpecsRoot struct {
 	// file name as the tie-break so duplicates stay adjacent).
 	ADRs []ADRMeta `json:"adrs,omitempty"`
 
-	// Findings holds the deterministic tier-1 integrity findings (ADR-105
+	// Findings holds the deterministic tier-1 integrity findings (ADR-106
 	// D5), sorted by kind, then file, then detail.
 	Findings []Finding `json:"findings,omitempty"`
 }
@@ -154,7 +154,7 @@ type ADRMeta struct {
 	Slug string `json:"slug"`
 
 	// File is the specs-root-relative path
-	// ("decisions/105-specs-sidebar-panel.md").
+	// ("decisions/106-specs-sidebar-panel.md").
 	File string `json:"file"`
 
 	// Title is the text after "# ADR-NNN: " (the whole heading when it does
@@ -170,7 +170,7 @@ type ADRMeta struct {
 	SupersededBy string `json:"superseded_by,omitempty"`
 }
 
-// Finding is one deterministic tier-1 integrity finding (ADR-105 D5). The
+// Finding is one deterministic tier-1 integrity finding (ADR-106 D5). The
 // categories deliberately under-approximate spec-check: semantic drift
 // stays conversational, and every category here is decidable from the tree
 // itself (paths, links, numbering, supersession graph, INDEX coverage).

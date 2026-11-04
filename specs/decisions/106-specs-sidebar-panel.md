@@ -1,4 +1,4 @@
-# ADR-105: Specs sidebar panel
+# ADR-106: Specs sidebar panel
 
 ## Status
 
@@ -11,7 +11,7 @@ Every other decision stands.)
 
 ## Context
 
-Issue [#69](https://github.com/v0lka/c0wrk/issues/69): the vendored `spec-*` skills (ADR-104) let an _agent_ drive the spec lifecycle, but there is no _human_ surface for the specification system. Today `specs/` is browsable only through the generic file tree / file viewer — no task→spec navigation, no ADR timeline, no drift signal.
+Issue [#69](https://github.com/v0lka/c0wrk/issues/69): the vendored `spec-*` skills (ADR-105) let an _agent_ drive the spec lifecycle, but there is no _human_ surface for the specification system. Today `specs/` is browsable only through the generic file tree / file viewer — no task→spec navigation, no ADR timeline, no drift signal.
 
 The sidebar host pattern is established: `frontend/src/components/layout/WorkspacePanel.tsx` renders a `SegmentedControl` tab strip (`explorer` | `git` | `semantics` | `research`) typed by `WorkspaceTab` in `frontend/src/stores/uiStore.ts`, with per-project tab memory and a fail-closed persisted-value whitelist. The Research panel is the closest precedent (segmented inner views, `researchStore`, RPC wrappers in `frontend/src/api/research.ts`, an App-root event bridge, quick actions that dispatch `research-*` skills into the chat).
 
@@ -48,6 +48,6 @@ Six research questions had to be answered: information architecture, drift statu
 
 ## Related
 
-- [ADR-104](./104-vendor-spec-skillset.md) — the vendored `spec-*` skills the panel dispatches.
+- [ADR-105](./105-vendor-spec-skillset.md) — the vendored `spec-*` skills the panel dispatches.
 - `specs/domains/specs.md` — the panel, the RPC surface, and the refresh model (created with the implementation sync; not yet present when this ADR was accepted).
 - [../contracts/desktop-frontend.md](../contracts/desktop-frontend.md) — the RPC contract; its `### Specs` section is added with the implementation sync.

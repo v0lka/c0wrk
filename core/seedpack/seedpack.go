@@ -4,7 +4,7 @@
 // single rename, and classification compares CONTENT HASHES against the
 // embedded pack (never mtime/size, never the marker alone). Consumers keep
 // only their embed directives, version constants, and pack-specific logging
-// (ADR-104 decision 5). Full rules: specs/domains/research.md (seeding
+// (ADR-105 decision 5). Full rules: specs/domains/research.md (seeding
 // invariants) and specs/domains/papers.md (global skill-pack seeding
 // invariant).
 package seedpack

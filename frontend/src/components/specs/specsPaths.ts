@@ -1,4 +1,4 @@
-// Pure path/tree helpers for the SPECS panel (ADR-105). No React, no DOM —
+// Pure path/tree helpers for the SPECS panel (ADR-106). No React, no DOM —
 // fully unit-testable. Every path that reaches the file viewer is built
 // here, and the workspace:tree_changed relevance filter lives here too, so
 // the components stay thin orchestrators.
@@ -68,7 +68,7 @@ function isInsideSpecs(changedPath: string, specsRoot: string): boolean {
 }
 
 /**
- * The workspace:tree_changed relevance filter (ADR-105 D3): refresh only
+ * The workspace:tree_changed relevance filter (ADR-106 D3): refresh only
  * when the change touches specs/ paths. Both PRODUCTION payload shapes
  * carry no path list at all — the fs watcher emits `{research_scoped?}` and
  * the agent-write emitter emits nothing — so a payload without paths means
@@ -83,7 +83,7 @@ export function isSpecsRelevantChange(payload: unknown, specsRoot: string): bool
   return paths.some((p) => isInsideSpecs(p, specsRoot))
 }
 
-/** One node of the nested specs tree (ADR-105): a directory of the specs
+/** One node of the nested specs tree (ADR-106): a directory of the specs
  *  root — the root files group (''), a top-level section directory
  *  ('domains'), or a nested subdirectory ('domains/frontend'). */
 export interface SpecsTreeNode {
@@ -103,7 +103,7 @@ export interface SpecsTreeNode {
   count: number
 }
 
-/** Build the nested specs tree from the parsed file list (ADR-105). The
+/** Build the nested specs tree from the parsed file list (ADR-106). The
  *  nesting derives from the PATH segments: a top-level directory becomes a
  *  section node, deeper segments become nested subdirectory nodes, and the
  *  file itself is a leaf of its innermost directory. Files at the root of
@@ -180,7 +180,7 @@ export function buildSpecsTree(files: SpecFile[]): SpecsTreeNode[] {
 }
 
 /** The decision rows' git add-dates keyed by their specs-root-relative
- *  file path (ADR-108): the sidebar tree renders each DECISIONS leaf's
+ *  file path (ADR-109): the sidebar tree renders each DECISIONS leaf's
  *  date in its own right-aligned column, and this is the lookup it reads.
  *  Undated records (a non-git workspace, an uncommitted file) are absent
  *  from the map — the row renders without the date column instead of
@@ -194,8 +194,8 @@ export function adrDatesByFile(adrs: SpecADRMeta[]): Record<string, string> {
   return out
 }
 
-/** Human label for a finding kind: the tier-1 categories of ADR-105 D5
- *  (as completed by ADR-108), plus a generic passthrough for a future
+/** Human label for a finding kind: the tier-1 categories of ADR-106 D5
+ *  (as completed by ADR-109), plus a generic passthrough for a future
  *  tier's unknown kind (the RPC boundary passes unknown kinds through
  *  instead of dropping them — the label degrades instead of the finding
  *  losing its place). */

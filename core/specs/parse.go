@@ -38,7 +38,7 @@ const maxSpecBytes = 8 << 20
 var markdownLinkRe = regexp.MustCompile(`\[[^\]]*\]\(([^()\s]+)\)`)
 
 // adrFileNameRe splits a decisions/ file name into number and slug
-// ("105-specs-sidebar-panel.md" → "105", "specs-sidebar-panel").
+// ("106-specs-sidebar-panel.md" → "105", "specs-sidebar-panel").
 var adrFileNameRe = regexp.MustCompile(`^(\d+)-(.+)\.md$`)
 
 // adrTitleRe matches the template's ADR heading ("# ADR-NNN: Title"),
@@ -479,7 +479,7 @@ func splitRef(ref string) (p, anchor string) {
 
 // ParseSpecsRoot parses a specs/ directory: INDEX.md, META.md and every .md
 // file under the four section directories, plus the deterministic tier-1
-// findings (ADR-105 D2/D5). It mirrors core/research.ParseResearchRoot's
+// findings (ADR-106 D2/D5). It mirrors core/research.ParseResearchRoot's
 // read-only tolerant shape but is neutral about a missing tree: a root that
 // does not exist or is not a directory parses to Present=false, never an
 // error; an unreadable or oversized individual file is skipped. Key Files
@@ -489,7 +489,7 @@ func ParseSpecsRoot(rootPath string) (*SpecsRoot, error) {
 	root := &SpecsRoot{Path: rootPath}
 	info, err := os.Stat(rootPath)
 	if err != nil || !info.IsDir() {
-		return root, nil //nolint:nilerr // a missing or non-directory root is a neutral present=false state, never an error (ADR-105 D2)
+		return root, nil //nolint:nilerr // a missing or non-directory root is a neutral present=false state, never an error (ADR-106 D2)
 	}
 	root.Present = true
 
@@ -629,7 +629,7 @@ func compareADRNumbers(a, b string) int {
 	}
 }
 
-// -- tier-1 findings (ADR-105 D5) --
+// -- tier-1 findings (ADR-106 D5) --
 
 // computeFindings runs the nine deterministic checks: the four content
 // categories (Key Files paths, cross-references, ADR numbering, INDEX

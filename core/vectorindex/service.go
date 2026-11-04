@@ -116,6 +116,23 @@ type ServiceConfig struct {
 	// Empty → the package-default fingerprint.
 	ChunkerFingerprint string
 
+	// IgnoreFingerprint identifies the ignore/eligibility policy (honoured
+	// ignore files, exclude patterns, submodule flag, size/chunk caps — see
+	// IgnoreFingerprint) recorded in the branch generation manifest
+	// (ADR-104 §2 fingerprint I): membership is re-derived by every walk
+	// against the CURRENT policy, and the recorded fingerprint makes a
+	// policy-era change visible to (and gateable by) later shared-store
+	// readers. Empty → the package-default fingerprint.
+	IgnoreFingerprint string
+
+	// Corpus, when non-nil, wires the shared-corpus owner/view model
+	// (ADR-104 stage 2): snapshot-keyed corpora shared read-only across the
+	// project's workspace roots, per-root overlays, per-root visibility
+	// filtering before top-K/RRF. Nil disables the model entirely — the
+	// service then keeps the historical single-store behavior (tests,
+	// standalone services).
+	Corpus *CorpusRegistry
+
 	// ContentFilter controls the same deterministic pre-chunk content policy
 	// used by the Indexer. Nil selects DefaultContentFilterConfig.
 	ContentFilter *ContentFilterConfig
@@ -156,6 +173,46 @@ type projectState struct {
 
 	projectID   string
 	projectPath string // full path to project vector storage (set by SetProject)
+
+	// workspaceRoot is the active workspace root bound by the Manager
+	// (ADR-104 L4 root-local state): the base every root-relative
+	// occurrence coordinate (rel_path) resolves against for per-request
+	// content hydration and result paths, and the scope the v6 file-hash
+	// sidecar's size/mtime stat fast-path is keyed to — never shared
+	// between trees. Empty for in-memory and standalone states, which keep
+	// the historical absolute-path coordinates.
+	workspaceRoot string
+
+	// corpus is the attached read-only shared corpus handle (ADR-104 stage
+	// 2 owner/view); nil in legacy mode or while detached. Refcounted in the
+	// process-wide corpus registry — one decode per corpus per process.
+	corpus *CorpusHandle
+
+	// rootKey is the overlay store key (overlayRootKey) of the bound root —
+	// the identity of the working store while the view model is live.
+	rootKey string
+
+	// storeGen is the §3 chunk-record generation directory backing this
+	// store (ADR-104 §3): "" when the store runs in the legacy shape (a
+	// registry-less v1 service, or a generation that could not be
+	// created/refused — foreign format). Set at SwitchBranch; every commit
+	// hook and table flush keys off it.
+	storeGen string
+
+	// chunkRows is the working store's pending §3 occurrence rows
+	// (ADR-104 §3 L2), accumulated by every commit since the store opened
+	// and maintained by the removal hooks — the in-memory truth a table
+	// flush serializes. Rows are complete exactly when they cover every
+	// document of the working collection (the count rule; see
+	// chunkRowsComplete).
+	chunkRows map[string]occurrenceRow
+
+	// sidecarFlush, when installed, rides the sidecar settle boundary
+	// (saveFileHashes — every lifecycle flush, including parked states):
+	// the owning Service's §3 extras (overlay table flush, legacy sidecar
+	// retirement). Set at SetProject; placeholders and in-memory states
+	// leave it nil.
+	sidecarFlush func(ps *projectState)
 
 	currentBranch string
 
@@ -333,10 +390,26 @@ type Service struct {
 	// package-default configuration).
 	chunkerFingerprint string
 
+	// ignoreFingerprint is the resolved ignore/eligibility fingerprint
+	// recorded in branch generation manifests (ADR-104 §2 fingerprint I);
+	// never empty (NewService defaults it to the package-default policy).
+	ignoreFingerprint string
+
 	// contentFilter is the resolved pre-chunk content policy, so
 	// ValidateCollection keeps skipped files out of new/stale sets the same
 	// way processFile keeps them out of the collection.
 	contentFilter ContentFilterConfig
+
+	// corpusRegistry is the process-level shared-corpus owner (nil = the
+	// legacy single-store model; see ServiceConfig.Corpus).
+	corpusRegistry *CorpusRegistry
+
+	// corpusAdoptions collects corpus-current classifications recorded under
+	// the read lock by ValidateCollection; drained per pass by
+	// TakeCorpusAdoptions. corpusAdoptionsMu is a LEAF mutex — nothing else
+	// is held while taking it (ADR-104 §4 lock ordering).
+	corpusAdoptionsMu sync.Mutex
+	corpusAdoptions   map[string]string
 }
 
 // NewService creates a new vector index Service.
@@ -406,8 +479,39 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 		)
 	}
 	s.contentFilter = resolveContentFilterConfig(cfg.ContentFilter)
+	s.corpusRegistry = cfg.Corpus
+	s.ignoreFingerprint = cfg.IgnoreFingerprint
+	if s.ignoreFingerprint == "" {
+		s.ignoreFingerprint = IgnoreFingerprint(
+			nil, nil, false, DefaultMaxIndexableFileSize, DefaultMaxChunksPerFile)
+	}
 
 	return s, nil
+}
+
+// SetWorkspaceRoot binds the active project's workspace root (ADR-104 L4):
+// the root every root-relative occurrence coordinate resolves against for
+// per-request content hydration and search-result paths, and the scope of
+// the v6 sidecar's root-local stat fast-path. The Manager calls this right
+// after SetProject, before any branch open or pass; the binding lives on the
+// project state, so park/restore keeps it and every switch resets it to
+// empty until rebound. An empty path unbinds (the historical absolute-path
+// coordinates).
+func (s *Service) SetWorkspaceRoot(workspacePath string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.current != nil {
+		s.current.workspaceRoot = workspacePath
+	}
+}
+
+// WorkspaceRoot returns the active project's bound workspace root ("" when
+// unbound — in-memory states, standalone services). Read paths resolve
+// root-relative occurrence coordinates against it per request.
+func (s *Service) WorkspaceRoot() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.current.workspaceRoot
 }
 
 // SetProject switches to a project directory: it prepares the per-project
@@ -470,6 +574,7 @@ func (s *Service) SetProject(projectID, fullPath string, embeddingCachePaths ...
 	// Slow path: open a fresh state. s.current stays non-nil on every return
 	// path (an empty state on error) so the lock-free accessors never see nil.
 	ps := &projectState{projectID: projectID, projectPath: fullPath}
+	ps.sidecarFlush = s.sidecarSettledExtras
 	if fullPath != "" {
 		if err := ensureRealDir(fullPath, 0o750); err != nil {
 			s.current = &projectState{}
@@ -644,6 +749,12 @@ func (s *Service) parkCurrentLocked() {
 		return
 	}
 
+	// The shared corpus handle is refcounted process-wide, not parkable per
+	// state (ADR-104 §4: residency belongs to the owner): drop the reference
+	// when the state retires; a later attach re-takes it (decode shared with
+	// every other attached root of the same corpus).
+	s.releaseCorpusLocked(ps)
+
 	// Persist the outgoing hashes before parking/closing, and cancel any
 	// in-flight sidecar migration. Skip the save while a migration is pending
 	// or the last one failed: loadFileHashes then seeds ps.fileHashes as an
@@ -737,6 +848,7 @@ func (s *Service) closeStateLocked(ps *projectState) {
 	if ps == nil {
 		return
 	}
+	s.releaseCorpusLocked(ps)
 	if ps.lexical != nil {
 		if err := ps.lexical.Close(); err != nil {
 			s.logger.Warn("failed to close lexical index", "error", err)
@@ -854,32 +966,65 @@ func (s *Service) browseWithFilter(ctx context.Context, topK int, fileFilter str
 		return nil, errors.New("no collection available; call SetProject and SwitchBranch first")
 	}
 
-	count := s.current.collection.Count()
-	if count == 0 {
-		s.mu.RUnlock()
-		return []SearchResult{}, nil
-	}
-	if topK > count {
-		topK = count
-	}
+	// The requesting root (ADR-104 L4): result paths hydrate per request
+	// against the tree that is asking, not the tree that indexed the chunk.
+	root := s.current.workspaceRoot
 
 	// Embedding-free enumeration (see unitQueryVector): dim == 0 keeps the
 	// embedding-bearing path; the fileFilter below still narrows the set.
+	// The overlay leg serves up to topK of the root's OWN documents; the
+	// corpus leg below adds the shared snapshot's visible slice (§3 table
+	// first, v1 collection otherwise) — a clean attached root has an empty
+	// overlay and must still browse the corpus, so the empty early-exit
+	// runs only after BOTH legs.
 	var results []chromem.Result
 	var err error
-	if unitVec := s.unitQueryVector(); unitVec != nil {
-		results, err = s.current.collection.QueryEmbedding(ctx, unitVec, topK, nil, nil)
-	} else {
-		results, err = s.current.collection.Query(ctx, " ", topK, nil, nil)
+	if count := s.current.collection.Count(); count > 0 {
+		overlayTopK := min(topK, count)
+		if unitVec := s.unitQueryVector(); unitVec != nil {
+			results, err = s.current.collection.QueryEmbedding(ctx, unitVec, overlayTopK, nil, nil)
+		} else {
+			results, err = s.current.collection.Query(ctx, " ", overlayTopK, nil, nil)
+		}
+		if err != nil {
+			s.mu.RUnlock()
+			return nil, fmt.Errorf("browsing collection: %w", err)
+		}
+	}
+	// View model (ADR-104 stage 2): browse the visible slice of the shared
+	// corpus alongside the overlay — visibility-filtered per root BEFORE the
+	// merge, so the browsed set is exactly this root's view.
+	if cv := s.current.corpus; cv != nil {
+		corpusResults, bErr := s.browseCorpusCandidates(ctx, cv, topK)
+		if bErr != nil {
+			s.mu.RUnlock()
+			return nil, bErr
+		}
+		// Corpus leg FIRST: the merge dedup below keeps the first sighting,
+		// and the corpus entry carries the root's CURRENT bytes (its
+		// visibility gate matched the sidecar hash) — the same corpus-wins
+		// precedence as the search paths, so a stale overlay duplicate
+		// never shadows it in the browse either.
+		results = append(corpusResults, results...)
+	}
+	if len(results) == 0 {
+		s.mu.RUnlock()
+		return []SearchResult{}, nil
 	}
 	s.mu.RUnlock()
-	if err != nil {
-		return nil, fmt.Errorf("browsing collection: %w", err)
-	}
 
-	out := make([]SearchResult, 0, len(results))
+	// Merge-then-trim (the browse twin of vectorOnlySearch's discipline):
+	// the overlay and corpus legs share the DocumentID space, so a file
+	// held by both is served once, and the filtered set is trimmed to topK —
+	// never the store-split 2×topK append the legs alone would produce.
+	out := make([]SearchResult, 0, min(topK, len(results)))
+	seen := make(map[string]struct{}, len(results))
 	for _, r := range results {
-		sr := resultToSearchResult(r)
+		if _, dup := seen[r.ID]; dup {
+			continue
+		}
+		seen[r.ID] = struct{}{}
+		sr := resultToSearchResult(r, root)
 
 		if fileFilter != "" {
 			if !matchFilePathPattern(fileFilter, sr.FilePath) {
@@ -888,6 +1033,9 @@ func (s *Service) browseWithFilter(ctx context.Context, topK int, fileFilter str
 		}
 
 		out = append(out, sr)
+		if len(out) >= topK {
+			break
+		}
 	}
 
 	// Committed documents store no chunk text; hydrate Content from the
@@ -1144,6 +1292,12 @@ func (s *Service) DeleteProjectData(fullPath string) error {
 	}
 	s.mu.Unlock()
 
+	// The storage root's shared corpora leave the registry's residency too
+	// (ADR-104 §5): retained slots close here, still-attached handles are
+	// retired — a later release closes instead of retaining, so nothing of
+	// the deleted store can come back through the residency back door.
+	s.corpusRegistry.DeleteStore(target)
+
 	if err := os.RemoveAll(fullPath); err != nil {
 		return fmt.Errorf("removing vector data for project: %w", err)
 	}
@@ -1195,12 +1349,16 @@ func (s *Service) Close() error {
 // passes through as-is: committed documents store no chunk text, so the caller
 // hydrates the final top-K from source files via hydrateSearchContent;
 // FileName is derived from FilePath (documents store no file_name field).
+// FilePath is resolved PER REQUEST (ADR-104 L4): a root-relative occurrence
+// coordinate is joined onto root — the requesting tree's view — so a chunk
+// indexed under one tree never reports another tree's absolute path; legacy
+// documents without a coordinate fall back to the stored absolute file_path.
 // See specs/decisions/049-vector-index-memory-reduction.md.
-func resultToSearchResult(r chromem.Result) SearchResult {
+func resultToSearchResult(r chromem.Result, root string) SearchResult {
 	startLine, _ := strconv.Atoi(r.Metadata["start_line"])
 	endLine, _ := strconv.Atoi(r.Metadata["end_line"])
 
-	fp := r.Metadata["file_path"]
+	fp := sourcePath(r.Metadata, root)
 	fileName := ""
 	if fp != "" {
 		fileName = filepath.Base(fp)

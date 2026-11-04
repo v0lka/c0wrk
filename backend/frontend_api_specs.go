@@ -12,16 +12,16 @@ import (
 // DTOs
 // ---------------------------------------------------------------------------
 
-// SpecsStatusDTO is the full Specs-panel view model (ADR-105): the parsed
+// SpecsStatusDTO is the full Specs-panel view model (ADR-106): the parsed
 // specs/ tree of one project — every spec file, the INDEX.md task→spec
 // navigation table, ADR metadata, and the deterministic tier-1 integrity
 // findings. The wire shape is stable: the collection fields and the counts
 // histogram are ALWAYS non-nil (empty collections serialize as [] and {},
 // never null), so the frontend renders without null guards. No Project gets
-// the neutral present=false state. See specs/decisions/105-specs-sidebar-panel.md.
+// the neutral present=false state. See specs/decisions/106-specs-sidebar-panel.md.
 type SpecsStatusDTO struct {
 	// Present reports whether <workspace>/specs exists and is a directory.
-	// A missing tree is a neutral state, never an error (ADR-105 D2).
+	// A missing tree is a neutral state, never an error (ADR-106 D2).
 	Present bool `json:"present"`
 
 	// Root is the absolute specs root path (config.ProjectSpecsPath); ""
@@ -81,7 +81,7 @@ type SpecsCountsDTO struct {
 // ---------------------------------------------------------------------------
 
 // GetSpecsStatus returns the parsed specs/ tree of a project for the Specs
-// sidebar panel (ADR-105): files, the INDEX.md task navigation table, ADR
+// sidebar panel (ADR-106): files, the INDEX.md task navigation table, ADR
 // metadata, and the always-fresh tier-1 integrity findings — one light
 // read-only parse per call. The specs root is always <workspace>/specs
 // (config.ProjectSpecsPath); a missing or non-directory root parses to the
@@ -90,7 +90,7 @@ type SpecsCountsDTO struct {
 // in either case. No Project returns the same neutral state (the workspace
 // tab strip — and with it the Specs panel — is not rendered there at all;
 // this is the defensive contract, mirroring GetResearchStatus). See
-// specs/decisions/105-specs-sidebar-panel.md.
+// specs/decisions/106-specs-sidebar-panel.md.
 func (f *FrontendAPI) GetSpecsStatus(projectID string) (*SpecsStatusDTO, error) {
 	f.seedAcquire()
 	if projectID == "" {
@@ -102,7 +102,7 @@ func (f *FrontendAPI) GetSpecsStatus(projectID string) (*SpecsStatusDTO, error) 
 
 	// Project resolution mirrors loadProjectForResearch / GetResearchStatus,
 	// except No Project is the neutral present=false state here, not an
-	// error — the panel is simply absent in CHAT mode (ADR-105 D1).
+	// error — the panel is simply absent in CHAT mode (ADR-106 D1).
 	proj, err := f.projectManager.GetProject(projectID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load project %q: %w", projectID, err)

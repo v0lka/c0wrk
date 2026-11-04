@@ -49,6 +49,59 @@ else
   )
 fi
 
+printf '\n## ADR-104 store protocol (deterministic embedder, isolated process per case)\n'
+# BENCHMARKS.md "Multi-branch / multi-root store protocol": every case runs in
+# its own process (peak-RSS discipline). PROTOCOL_CORPUS=large switches the
+# corpus; the branch/root grids below cover the budget-table anchors.
+STORE_PROTOCOL_SCENARIOS="${STORE_PROTOCOL_SCENARIOS:-cold_full cold_full_legacy warm_attach branch_fork_reuse branch_switch incremental migration eviction concurrent_roots}"
+for scenario in $STORE_PROTOCOL_SCENARIOS; do
+  case "$scenario" in
+    warm_attach)
+      # The warm-attach budget is anchored at 12 branches; 1 and 4 document
+      # the attach-cost slope across historical branch counts.
+      for branches in ${STORE_PROTOCOL_BRANCHES:-1 4 12}; do
+        printf '\n### scenario=%s branches=%s\n' "$scenario" "$branches"
+        (
+          cd "$ROOT"
+          GOWORK="$WORK_FILE" PROTOCOL_BRANCHES="$branches" \
+            go test -run '^$' -bench "^BenchmarkStoreProtocol$/^sub=${scenario}$" \
+              -benchtime="$BENCHTIME" -count="$COUNT" -benchmem ./core/vectorindex
+        )
+      done
+      ;;
+    concurrent_roots)
+      # The scenario is "searchers on R-1 warm roots while one root
+      # cold-builds"; the harness rejects R<2 (one cold indexer + one
+      # searcher). A roots=1 cell degenerates to the unloaded cold_full
+      # case the grid already measures, so it is skipped loudly here
+      # instead of failing the grid.
+      for roots in ${STORE_PROTOCOL_ROOTS:-1 2 4}; do
+        if [[ "$roots" -lt 2 ]]; then
+          printf '\n### scenario=%s roots=%s SKIP\n' "$scenario" "$roots"
+          printf 'concurrent_roots needs at least 2 roots (one cold indexer + one searcher); roots=1 degenerates to the unloaded cold_full case this grid already measures.\n'
+          continue
+        fi
+        printf '\n### scenario=%s roots=%s\n' "$scenario" "$roots"
+        (
+          cd "$ROOT"
+          GOWORK="$WORK_FILE" PROTOCOL_ROOTS="$roots" \
+            go test -run '^$' -bench "^BenchmarkStoreProtocol$/^sub=${scenario}$" \
+              -benchtime="$BENCHTIME" -count="$COUNT" -benchmem ./core/vectorindex
+        )
+      done
+      ;;
+    *)
+      printf '\n### scenario=%s\n' "$scenario"
+      (
+        cd "$ROOT"
+        GOWORK="$WORK_FILE" \
+          go test -run '^$' -bench "^BenchmarkStoreProtocol$/^sub=${scenario}$" \
+            -benchtime="$BENCHTIME" -count="$COUNT" -benchmem ./core/vectorindex
+      )
+      ;;
+  esac
+done
+
 printf '\n## ONNX embedding matrix (isolated process per case)\n'
 if [[ ! -f "$MODEL" || ! -f "$TOKENIZER" || ! -f "$LIBRARY" ]]; then
   printf 'SKIP: ONNX assets unavailable. Set EMBEDDING_TEST_MODEL_PATH, EMBEDDING_TEST_TOKENIZER_PATH, and EMBEDDING_TEST_LIBRARY_PATH.\n'

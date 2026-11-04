@@ -7,7 +7,7 @@
 // still outranks the global one). The profile declares the four continuous
 // skills (spec-consult, spec-create, spec-update, spec-check) — resolved
 // fail-closed against the skill catalog at launch — and the least-privilege
-// tool budget local-read, local-write (ADR-104 decision 3).
+// tool budget local-read, local-write (ADR-105 decision 3).
 //
 // Seeding is idempotent, crash-safe, and non-destructive: destinations are
 // classified by CONTENT HASH against the embedded pack (never mtime/size,

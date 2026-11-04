@@ -1,12 +1,12 @@
-# ADR-107: Specs panel usability redesign
+# ADR-108: Specs panel usability redesign
 
 ## Status
 
-Accepted → Partially superseded by [ADR-108](./108-specs-panel-simplification.md) (decisions 1 and 2 — the `c0wrk:specs` overview page and its INDEX navigation — and decision 4's Open-overview opener are removed; decision 3's git-derived ADR dates stand, consumed by the sidebar DECISIONS tree instead of the overview timeline, and decision 4's nested-tree + findings body and decision 5's persisted per-project expansion stand unchanged)
+Accepted → Partially superseded by [ADR-109](./109-specs-panel-simplification.md) (decisions 1 and 2 — the `c0wrk:specs` overview page and its INDEX navigation — and decision 4's Open-overview opener are removed; decision 3's git-derived ADR dates stand, consumed by the sidebar DECISIONS tree instead of the overview timeline, and decision 4's nested-tree + findings body and decision 5's persisted per-project expansion stand unchanged)
 
 ## Context
 
-[ADR-105](./105-specs-sidebar-panel.md) shipped the Specs sidebar panel: one narrow `WorkspacePanel` tab rendering the parsed tree as a flat section table (`SpecsIndexTable`) and an ADR timeline (`SpecsADRTimeline`) stacked above quick actions. Real use surfaced three usability gaps:
+[ADR-106](./106-specs-sidebar-panel.md) shipped the Specs sidebar panel: one narrow `WorkspacePanel` tab rendering the parsed tree as a flat section table (`SpecsIndexTable`) and an ADR timeline (`SpecsADRTimeline`) stacked above quick actions. Real use surfaced three usability gaps:
 
 1. **The sidebar is narrow.** The INDEX task→spec table and the ADR timeline truncate hard at 180–500px; both need viewer width to be readable.
 2. **ADR history has no dates.** The timeline orders by ADR number only; recency (which decision is newest, how stale the set is) is invisible, and the information exists for free in git history.
@@ -46,7 +46,7 @@ The codebase already has an established pattern for "full-width interactive work
 
 ## Related
 
-- [ADR-105](./105-specs-sidebar-panel.md) — the panel this redesign recomposes; its six decisions stand (placement, data source, refresh, interaction split, two-tier drift, scope boundary).
-- [ADR-104](./104-vendor-spec-skillset.md) — the vendored `spec-*` skills the panel dispatches.
+- [ADR-106](./106-specs-sidebar-panel.md) — the panel this redesign recomposes; its six decisions stand (placement, data source, refresh, interaction split, two-tier drift, scope boundary).
+- [ADR-105](./105-vendor-spec-skillset.md) — the vendored `spec-*` skills the panel dispatches.
 - `specs/domains/specs.md` — the subsystem spec (panel + overview page composition, date enrichment, invariants).
 - [../contracts/desktop-frontend.md](../contracts/desktop-frontend.md) § Specs — the `ADRMetaDTO.date` wire shape and the fail-soft contract.

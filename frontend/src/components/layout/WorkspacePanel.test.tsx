@@ -34,7 +34,7 @@ vi.mock('@/api/specs', () => ({
       {
         number: '105',
         slug: 'specs-sidebar-panel',
-        file: 'decisions/105-specs-sidebar-panel.md',
+        file: 'decisions/106-specs-sidebar-panel.md',
         status: 'accepted',
       },
     ],

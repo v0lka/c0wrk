@@ -1,4 +1,4 @@
-// The SPECS panel (ADR-105): a view over specsStore plus the refresh
+// The SPECS panel (ADR-106): a view over specsStore plus the refresh
 // subscription. Reads open in the file viewer; every mutating gesture is a
 // dispatched spec-* skill (the quick actions); drift is the two-tier signal
 // (header badge + findings list here, "Check drift" for the semantic tier).
@@ -20,7 +20,7 @@ import { useSpecsDispatch } from './useSpecsDispatch'
 import type { SpecsStatus } from '@/types/models'
 
 /**
- * Refresh model (ADR-105 D3): one light read-only parse on mount — the
+ * Refresh model (ADR-106 D3): one light read-only parse on mount — the
  * tabpanel mounts only while the Specs tab is active, so every tab
  * activation refreshes — plus a refetch on `workspace:tree_changed` events
  * that touch specs/ paths.
@@ -67,7 +67,7 @@ export function SpecsPanel() {
     return subscribe('workspace:tree_changed', onChange)
   }, [projectId])
 
-  // Read path (ADR-105 D4): a specs-root-relative reference resolves
+  // Read path (ADR-106 D4): a specs-root-relative reference resolves
   // against the absolute root and opens through the existing file viewer —
   // no new file-read RPC. The root is read from the store AT CLICK TIME
   // and only from the CURRENT project's status: a stale cross-project root
@@ -84,7 +84,7 @@ export function SpecsPanel() {
     [projectId],
   )
 
-  // Fix-findings gesture (ADR-108): the header's findings badge dispatches
+  // Fix-findings gesture (ADR-109): the header's findings badge dispatches
   // one spec-update task whose prompt enumerates the CURRENT parse's
   // findings verbatim. Built at click time from the store so the task sees
   // exactly what the panel renders (a mid-flight refetch updates the list).
@@ -126,7 +126,7 @@ export function SpecsPanel() {
               <SpecsQuickActions present />
               <div className="custom-scrollbar flex min-h-0 flex-1 flex-col gap-2 overflow-auto px-1.5 py-1.5">
                 {/* The sidebar carries the section tree (with the DECISIONS
-                    date column, ADR-108) and the findings. */}
+                    date column, ADR-109) and the findings. */}
                 <PanelTree
                   projectId={projectId}
                   files={status.files}
@@ -149,7 +149,7 @@ export function SpecsPanel() {
  *  unmounts on every tab switch, so the expanded set lives in specsStore
  *  (keyed by the active project and persisted) rather than in component
  *  state. Everything starts collapsed. The DECISIONS date column reads the
- *  parse's ADR dates (ADR-108). */
+ *  parse's ADR dates (ADR-109). */
 function PanelTree({
   projectId,
   files,

@@ -1,4 +1,4 @@
-// The specs tree (ADR-105): a real nested tree over the parsed file list —
+// The specs tree (ADR-106): a real nested tree over the parsed file list —
 // top-level section nodes (ROOT for the INDEX.md/META.md group, then the
 // section directories) with subdirectory nodes built from the path segments
 // and the files as leaves. Every file row opens in the file viewer through
@@ -16,7 +16,7 @@ import type { SpecFile } from '@/types/models'
 import { buildSpecsTree, type SpecsTreeNode } from './specsPaths'
 
 /** The decisions/ prefix of a DECISIONS-section leaf — the only leaves the
- *  date column renders on (ADR-108). */
+ *  date column renders on (ADR-109). */
 const DECISIONS_PREFIX = 'decisions/'
 
 /** Ordering mode for the top-level section groups: parse order (first
@@ -41,7 +41,7 @@ function fileLabel(file: SpecFile): string {
 /** One file leaf: the title (or path when the file carries no heading) with
  *  the relative path on the tooltip, plus a Key Files count chip when the
  *  spec lists any. A DECISIONS leaf with a known git add-date carries it in
- *  its own right-aligned compact column (ADR-108): fixed width so dated
+ *  its own right-aligned compact column (ADR-109): fixed width so dated
  *  rows align, blue-tinted tabular digits, absent entirely for undated
  *  records (a non-git workspace or an uncommitted file) so no dead space
  *  narrows the title. */
@@ -194,7 +194,7 @@ export function SpecsSectionTree({
 }: {
   files: SpecFile[]
   onOpen: (relPath: string) => void
-  /** Git add-dates keyed by the specs-root-relative file path (ADR-108):
+  /** Git add-dates keyed by the specs-root-relative file path (ADR-109):
    *  DECISIONS leaves look their date up here. Undated records stay
    *  column-free. */
   adrDates?: Record<string, string>

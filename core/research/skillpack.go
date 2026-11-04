@@ -9,7 +9,7 @@
 // Seeding is idempotent, crash-safe, and non-destructive: destinations are
 // classified by CONTENT HASH against the embedded pack (never mtime/size,
 // never the marker alone). The classification/staging mechanics live in the
-// shared core/seedpack package (ADR-104 decision 5); full rules:
+// shared core/seedpack package (ADR-105 decision 5); full rules:
 // specs/domains/research.md (seeding invariants).
 package research
 

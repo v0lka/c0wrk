@@ -73,6 +73,18 @@ func (f *FrontendAPI) RefreshAgents() []AgentDescriptorDTO {
 	return f.ListAgents()
 }
 
+// emitAgentsChanged emits the global agents:changed event (no payload —
+// consumers re-read via the agents RPCs) after a watched Subagent Profile
+// directory changes. Nil-guarded like every other emitter: the fsnotify
+// callback that emits it can fire in tests or early startup before the Wails
+// event wiring lands.
+func (f *FrontendAPI) emitAgentsChanged() {
+	f.seedAcquire()
+	if f.emitEvent != nil {
+		f.emitEvent(EventAgentsChanged, nil)
+	}
+}
+
 // startAgentsWatchers creates a debounced watcher per existing Subagent
 // Profile directory; a change invalidates the cache and emits agents:changed.
 func (f *FrontendAPI) startAgentsWatchers(dirs []string) {
@@ -87,7 +99,7 @@ func (f *FrontendAPI) startAgentsWatchers(dirs []string) {
 		}
 		watcher, err := workspace.NewWatcher(dir, func(_ []string) {
 			f.invalidateAgentCache()
-			f.emitEvent(EventAgentsChanged, nil)
+			f.emitAgentsChanged()
 		}, f.log())
 		if err != nil {
 			f.log().Warn("failed to watch agent directory", "dir", dir, "error", err)

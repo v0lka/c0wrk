@@ -1,4 +1,4 @@
-// Tier-1 deterministic findings (ADR-105 D5, ADR-108): the nine parse-time
+// Tier-1 deterministic findings (ADR-106 D5, ADR-109): the nine parse-time
 // integrity categories. Renders NOTHING when clean — the header's badge is
 // the clean signal; this list appears only when there is something to see.
 

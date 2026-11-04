@@ -12,7 +12,7 @@ import (
 	"github.com/v0lka/sp4rk/skills"
 )
 
-// The spec-* skillset and the specs Subagent Profile (ADR-104) ride the same
+// The spec-* skillset and the specs Subagent Profile (ADR-105) ride the same
 // launch-time global seed as the research/paper packs (ADR-056):
 // seedGlobalPacks materializes them into the GLOBAL agent directories
 // (~/.c0wrk/.agents/{skills,agents}) so the standard discovery set — whose
@@ -185,7 +185,7 @@ func TestSeedGlobalPacks_SpecPacksIdempotent(t *testing.T) {
 	}
 }
 
-// TestSeedGlobalPacks_SpecPacksInCatalog pins the discovery half of ADR-104
+// TestSeedGlobalPacks_SpecPacksInCatalog pins the discovery half of ADR-105
 // decision 4: the seeded spec packs enter ListSkills/ListAgents WITHOUT any
 // catalog change. The sp4rk SkillManager/AgentManager — the exact discovery
 // the real builder runs over the global dir (config.SkillsDir/AgentsDir, the

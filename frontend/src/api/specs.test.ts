@@ -18,7 +18,7 @@ const validFile = { path: 'INDEX.md', title: 'Specs Index' }
 const validADR = {
   number: '105',
   slug: 'specs-sidebar-panel',
-  file: 'decisions/105-specs-sidebar-panel.md',
+  file: 'decisions/106-specs-sidebar-panel.md',
   status: 'accepted',
 }
 const validFinding = {
