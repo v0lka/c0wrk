@@ -100,6 +100,12 @@ const paneEl = (): HTMLElement | null => hostEl()?.querySelector('[role="tooltip
 const rows = (): HTMLElement[] =>
   Array.from(document.querySelectorAll('.cm-tooltip-autocomplete li[id]')) as HTMLElement[]
 
+// The built-in `/goal` command rides the rank-0 Commands section, so absolute
+// row indices shift with the catalogs — hover tests address rows by their
+// unique row text (agent name) instead of a fixed DOM position.
+const rowByText = (substr: string): number =>
+  rows().findIndex((li) => (li.textContent ?? '').includes(substr))
+
 describe('mention markdown pane', () => {
   const views: { view: EditorView; host: HTMLElement }[] = []
   afterEach(() => {
@@ -130,7 +136,7 @@ describe('mention markdown pane', () => {
     vi.mocked(listAgents).mockResolvedValue([{ name: 'reviewer', description }])
     await openSlash()
 
-    await hoverRow(0)
+    await hoverRow(rowByText('reviewer'))
     // Hover-only activation: the row the popup pre-selected does NOT open the
     // pane on its own — only the pointer, after TOOLTIP_DELAY_MS (the same
     // single source the chat's TooltipProvider gates its tooltips with).
@@ -178,7 +184,7 @@ describe('mention markdown pane', () => {
     await vi.advanceTimersByTimeAsync(TOOLTIP_DELAY_MS + 200)
     expect(hostEl().style.visibility).not.toBe('visible')
 
-    await hoverRow(1)
+    await hoverRow(rowByText('beta'))
     await vi.advanceTimersByTimeAsync(TOOLTIP_DELAY_MS + 50)
     await until(
       () => (hostEl()?.textContent ?? '').includes('Beta agent second'),
@@ -204,8 +210,11 @@ describe('mention markdown pane', () => {
     // first rendered row the id of a later option: the pane must show THAT
     // completion's description, not the one at DOM position 0 (which is what
     // counting `li` siblings would wrongly resolve).
-    rows()[0]!.id = 'virtualized-1'
-    expect(rows()[0]!.id).toMatch(/-1$/)
+    // The built-in /goal command occupies option index 0, so beta's absolute
+    // option index is read from its rendered row id rather than hardcoded.
+    const betaOption = rows().find((li) => (li.textContent ?? '').includes('beta'))!.id.split('-').pop()
+    rows()[0]!.id = `virtualized-${betaOption}`
+    expect(rows()[0]!.id).not.toMatch(/-0$/)
 
     await hoverRow(0)
     await vi.advanceTimersByTimeAsync(TOOLTIP_DELAY_MS + 50)
