@@ -177,6 +177,33 @@ describe('useMessageSender optimistic metadata', () => {
     )
   })
 
+  it('stamps the goal badge for a /goal:N prefix send without the toggle', async () => {
+    useSessionStore.setState({ activeSessionId: 's1' })
+    await act(async () => {
+      await capturedSend!('/goal:5 ship it')
+    })
+    // The optimistic card carries the goal stamp though the TOGGLE flag went
+    // out false — the backend arms goal mode from the prefix (badge parity;
+    // lib/goalCommand mirrors the backend grammar).
+    expect(sentUser('s1').metadata).toEqual({ goal: true })
+    expect(spies.sendMessage).toHaveBeenCalledWith(
+      's1', '/goal:5 ship it', [], [], [], '', '', false, '', false, false,
+      userMessages('s1')[0]!.id,
+      null,
+    )
+    // Nothing to reset: the toggle was never armed.
+    expect(useInputModeStore.getState().goalEnabled).toBe(false)
+  })
+
+  it('does not stamp goal metadata for an inert /goal:0 form', async () => {
+    useSessionStore.setState({ activeSessionId: 's1' })
+    await act(async () => {
+      await capturedSend!('/goal:0 ship it')
+    })
+    // An invalid budget form activates nothing — the card stays plain.
+    expect(sentUser('s1').metadata).toBeUndefined()
+  })
+
   it('mirrors the e2s flag into the send and resets the toggle (disarming goal)', async () => {
     useSessionStore.setState({ activeSessionId: 's1' })
     act(() => {

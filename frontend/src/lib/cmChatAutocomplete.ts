@@ -335,6 +335,33 @@ function relativePath(absPath: string, rootPath: string | null): string {
   return absPath
 }
 
+/** The built-in /goal backend command surfaced in the Commands section. It is
+ *  grammar, not a catalog entry: when any VISIBLE entry (agent, skill, MCP
+ *  server, user command) is named "goal", the plain spelling resolves to that
+ *  entry and the built-in is hidden (shadowing parity, ADR-076/ADR-096).
+ *  specs/domains/goal-mode.md, specs/domains/commands.md. */
+const BUILT_IN_COMMAND: CommandDescriptor = {
+  name: 'goal',
+  description: 'Built-in — run the task in goal mode (/goal:N sets a turn budget)',
+  agent: '',
+  model: '',
+  template: '',
+}
+
+function visibleBuiltInCommands(
+  agentNames: Set<string>,
+  skillNames: Set<string>,
+  mcpNames: Set<string>,
+  commands: CommandDescriptor[],
+): CommandDescriptor[] {
+  const shadowed =
+    agentNames.has(BUILT_IN_COMMAND.name) ||
+    skillNames.has(BUILT_IN_COMMAND.name) ||
+    mcpNames.has(BUILT_IN_COMMAND.name) ||
+    commands.some((c) => c.name === BUILT_IN_COMMAND.name)
+  return shadowed ? [] : [BUILT_IN_COMMAND]
+}
+
 /**
  * Text inserted into the chat input when a file is selected: a path made
  * relative to the workspace root (when the file lives inside it), formatted
@@ -367,7 +394,9 @@ function chatApplyPath(absPath: string, rootPath: string | null, suffix: string,
 // inserts its /name (or the collision-qualified /command: name when the name
 // collides with a mention catalog) and the send path expands the template —
 // they are not session-kind filtered (no capability modes exist for them;
-// project-local commands simply do not exist in a No-Project session).
+// project-local commands simply do not exist in a No-Project session). The
+// built-in /goal backend command rides the Commands section (visibleBuiltInCommands
+// hides it when the plain spelling is shadowed by a catalog entry).
 // A name present in more than one catalog is a collision — every colliding
 // entry is offered in its collision-qualified spelling (`/agent: name`,
 // `/mcp: name`, `/skill: name`, `/command: name`, the canonical spaced form)
@@ -426,7 +455,7 @@ async function slashSource(ctx: CompletionContext): Promise<CompletionResult | n
   // collision-qualified spelling so the send path resolves it as a command
   // (the plain spelling would be the ambiguous no-op). No session-kind
   // filter: commands have no capability modes.
-  for (const c of fuzzyFilter(query, commands, (c) => c.name)) {
+  for (const c of fuzzyFilter(query, [...commands, ...visibleBuiltInCommands(agentNames, skillNames, mcpNames, commands)], (c) => c.name)) {
     const collides = agentNames.has(c.name) || skillNames.has(c.name) || mcpNames.has(c.name)
     const detail = c.description !== '' ? c.description : 'Custom command'
     options.push({

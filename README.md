@@ -27,7 +27,7 @@ Compared in **August 2026**; desktop features move fast, so verify against each 
 | --- | --- | --- | --- | --- |
 | **Scope** | Research + coding + writing | Code-focused | Code-focused | Code-focused |
 | **Plan review** | Reviewable graph (DAG) of parallel subagents | No reviewable plan graph | Summary pane / proposed plan | Linear, read-only Plan mode |
-| **Goal mode** | Up-front approved "done" + evidence self-verification | — | `/goal` persistent objective | `/goal` per-turn condition |
+| **Goal mode** | Up-front approved "done" + evidence self-verification; typed `/goal` / `/goal:N` (inline turn budget) arms it per message | — | `/goal` persistent objective | `/goal` per-turn condition |
 | **Full build loop in one place** | Native: plan → implement → review → revise → commit/push | Partial | Partial | Strong diff review |
 | **Model freedom** | Any OpenAI/Anthropic-compatible + local | Any model | OpenAI only | Anthropic only |
 | **Local embeddings** | Bundled ONNX (offline) | Local-first | Cloud | Cloud |

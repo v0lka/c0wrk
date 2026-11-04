@@ -592,10 +592,11 @@ const (
 // the authoritative gate; ValidateLiveSend pre-checks the same conditions
 // before the frontend persists. See specs/domains/session-lifecycle.md.
 func liveSendRejectionLocked(session *Session, goal, e2s bool, text string, activeSkills, activeAgents, activeMCPServers []string) error {
-	// A leading "/goal" selects goal mode even without the explicit flag; the
-	// fresh path detects it via DetectAndStripGoalMode, so the live gate must
-	// reject it identically instead of queueing it as a plain interjection.
-	_, isGoalPrefix := core.DetectAndStripGoalMode(text)
+	// A leading "/goal" (or "/goal:N") selects goal mode even without the
+	// explicit flag; the fresh path detects it via DetectAndStripGoalMode, so
+	// the live gate must reject it identically instead of queueing it as a
+	// plain interjection.
+	_, isGoalPrefix, _ := core.DetectAndStripGoalMode(text)
 	goal = goal || isGoalPrefix
 	switch {
 	case session.compacting:
@@ -848,10 +849,10 @@ func (m *Manager) sendMessage(ctx context.Context, id, text, echoText, clientSen
 		// restart reconstruction (ChatMessage.Metadata).
 		imageBlocks := imageAttachmentsToContentBlocks(pendingImages)
 
-		// Detect goal mode (leading "/goal" OR the explicit flag) BEFORE the
-		// resume check: a goal request starts a fresh pursuit, skipping the
-		// resume path and abandoning any unfinished task.
-		goalMsg, isGoal := core.DetectAndStripGoalMode(msg)
+		// Detect goal mode (leading "/goal"/"/goal:N" OR the explicit flag)
+		// BEFORE the resume check: a goal request starts a fresh pursuit,
+		// skipping the resume path and abandoning any unfinished task.
+		goalMsg, isGoal, goalTurns := core.DetectAndStripGoalMode(msg)
 		goalEnabled := isGoal || goal
 
 		switch {
@@ -892,7 +893,7 @@ func (m *Manager) sendMessage(ctx context.Context, id, text, echoText, clientSen
 
 		var budgetOverride *goalpkg.GoalBudget
 		if goalEnabled {
-			budgetOverride = parseGoalBudget(goalBudget, m.log())
+			budgetOverride = resolveGoalBudgetOverride(goalBudget, goalTurns, m.log())
 		}
 
 		// The orchestrator receives the /goal-stripped message when goal mode
@@ -1040,6 +1041,18 @@ func parseGoalBudget(raw string, log *slog.Logger) *goalpkg.GoalBudget {
 		return nil
 	}
 	return &b
+}
+
+// resolveGoalBudgetOverride merges the two per-message budget sources: the
+// toggle's goalBudget JSON and the message's textual "/goal:N" cap. The
+// textual form wins (the more specific, message-scoped signal); a bare
+// "/goal" leaves the toggle budget in force; neither → nil (unlimited).
+func resolveGoalBudgetOverride(toggleJSON string, textualTurns int, log *slog.Logger) *goalpkg.GoalBudget {
+	override := parseGoalBudget(toggleJSON, log)
+	if textualTurns > 0 {
+		override = &goalpkg.GoalBudget{MaxTurns: textualTurns}
+	}
+	return override
 }
 
 // tryContinueInterruptedTask continues an unfinished (interrupted) task by

@@ -368,7 +368,7 @@ User sends message
       ├─ Live-send gate: validate pause window / goal / E2S / skill-agent-MCP refs
       │   BEFORE persisting (a rejected send never reaches the store)
       ├─ E2S checks (before any side effect): e2s+goal rejected as mutually
-      │   exclusive (incl. a leading /goal command); e2s rejected fail-closed
+      │   exclusive (incl. a leading /goal or /goal:N command); e2s rejected fail-closed
       │   while experimental.enabled is false
       ├─ Preprocess text for orchestrator:
       │   ├─ Strip resolved /skill, /agent and /server references (plain or qualified), catalog-gated and fail-closed
@@ -406,7 +406,7 @@ User sends message
 > **Per-continuation parameters.** `goal`, `modelOverride`, `reasoningEffort`,
 > and `pendingAttachments` are **per-message** inputs: they are taken from the
 > *current* send, not persisted from the prior task. A continuation message can
-> therefore flip goal mode on (`/goal` prefix or the goal toggle), switch the
+> therefore flip goal mode on (`/goal`/`/goal:N` prefix or the goal toggle), switch the
 > model or reasoning effort, and stage a fresh set of attachments — all are
 > applied to the continuation pass and override whatever the prior task used.
 > `TaskID`, `UserSkills`, `SessionPlansDir`, `goalBudget`, and `reviewMode`
@@ -422,8 +422,8 @@ User sends message
 > If the session has an **unfinished (interrupted) task** *and the message is
 > not a goal request*, the execution goroutine takes the
 > `tryContinueInterruptedTask` branch *before* `HandleMessage` and resumes the
-> prior ReAct cycle instead of routing a new task. A goal request (`/goal`
-> prefix or the goal toggle) supersedes this branch — the interrupted task is
+> prior ReAct cycle instead of routing a new task. A goal request (`/goal` or
+> `/goal:N` prefix, or the goal toggle) supersedes this branch — the interrupted task is
 > abandoned and the goal loop runs instead (see [Continuing an interrupted task with a new message](#continuing-an-interrupted-task-with-a-new-message)).
 
 ### File Reference (`fileref://`) Path Semantics
@@ -806,8 +806,9 @@ immediately. Idle sessions (no unfinished task) behave exactly as before
 > continue-check so both the resume path and the fresh-task path consume the
 > staged attachments exactly once.
 
-> **Goal mode supersedes the resume path.** The goal flag is detected
-> (`/goal` prefix OR the goal toggle) **before** the resume check. When goal
+> **Goal mode supersedes the resume path.** The goal signal is detected
+> (`/goal`/`/goal:N` prefix OR the goal toggle, one `DetectAndStripGoalMode` pass —
+> [ADR-106](../decisions/106-goal-mode-chat-activation.md)) **before** the resume check. When goal
 > mode is requested, the resume path is **skipped** and `abandonUnfinishedTaskForGoal`
 > cancels the interrupted task (persisting the cancellation, resolving the
 > `task_failed_resumable` banner, and emitting a service event) so it does not
@@ -1026,7 +1027,7 @@ Invariants and edge cases:
 - **Pause/resumable outcome**: leftovers stay queued; the resumed request drains them at its first step boundary.
 - **Race-freedom**: queueing happens under `session.mu` while `active=true`; the epilogue's take happens under the same mutex as the `active=false` flip — a send racing the completion either joins the follow-up (queued before the flip) or starts a normal task (observed `active=false`), never both.
 - **Scope**: live delivery applies to the session's main Conductor run only (normal path, resume, every goal-loop turn). Subagent executors never receive live messages.
-- **Text-only**: attachments, `/goal` requests, and `/skill`/`/agent`/`/server` references are rejected on the live path (they are task-start concerns); the user is asked to wait for pause/completion.
+- **Text-only**: attachments, `/goal`/`/goal:N` requests, and `/skill`/`/agent`/`/server` references are rejected on the live path (they are task-start concerns); the user is asked to wait for pause/completion.
 
 **Input-lock matrix (frontend)**: `computeChatInputDisabled` (pure helper, `lib/chatInputLock.ts`): input is disabled iff `compacting || pausing || isNoProject`. A running (`taskActive`) or paused session keeps the input open — running sends interject live; paused sends nudge-resume. While compacting the whole input area (editor, toolbar buttons, selector cluster, send/pause/resume) locks — with one exception: **Stop stays available** (CancelTask carries no compacting guard, and terminating the in-flight request is the one user action that helps the flow's pause-wait land; the Pause/Resume flank is hidden for the window because the flow owns the pause signal). The placeholder advertises the affordance ("your message joins the next request to the model").
 

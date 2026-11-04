@@ -75,16 +75,21 @@ frontend cache.
 - The expanded text REPLACES the message and flows through the ordinary send
   path: mention refs inside the template are re-extracted and partitioned
   normally, `@file` references resolve via the existing fileref pipeline, and
-  a template starting with `/goal` triggers goal mode (an E2S send then
-  rejects it server-side, as always).
+  a template starting with `/goal` — or `/goal:N`, which carries the N-turn
+  budget through the expansion ([ADR-106](../decisions/106-goal-mode-chat-activation.md)) —
+  triggers goal mode (an E2S send then rejects it server-side, as always).
 - Frontmatter bindings: `agent` merges into the partitioned agents
   (deduplicated); `model` rides as `SendOptions.commandModel` — used only
   when the toolbar has no explicit selection.
 - Empty expansion (whitespace template) → no-op + hint naming the empty
   template. A failed send restores the ORIGINAL invocation text.
 - A command named `goal` shadows the built-in `/goal` for the plain spelling
-  (the accepted ADR-076 shadowing class); `/command: goal` still invokes the
-  file.
+  (the accepted ADR-076 shadowing class — an agent, a skill, or a
+  kind-visible MCP server named `goal` hides the built-in from the completion
+  list the same way); `/command: goal` still invokes the file, and the
+  budgeted `/goal:N` form is never a catalog mention (the `:` breaks the
+  plain-token boundary), so it always reaches the built-in detector
+  ([ADR-106](../decisions/106-goal-mode-chat-activation.md)).
 
 ### Completion
 

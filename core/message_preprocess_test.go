@@ -332,6 +332,19 @@ func TestPreprocessMessageText(t *testing.T) {
 			activeAgents: []string{"reviewer"},
 			want:         "/goal: reviewer ship it",
 		},
+		{
+			name:         "budgeted goal prefix preserved with non-empty catalogs",
+			text:         "/goal:5 refactor the auth module",
+			activeAgents: []string{"code-reviewer"},
+			activeSkills: []string{"explore"},
+			want:         "/goal:5 refactor the auth module",
+		},
+		{
+			name:         "stripped skill ref exposes budgeted goal prefix",
+			text:         "/explore /goal:5 ship it",
+			activeSkills: []string{"explore"},
+			want:         "/goal:5 ship it",
+		},
 
 		// Multiple spaces collapse into one after all transforms.
 		{

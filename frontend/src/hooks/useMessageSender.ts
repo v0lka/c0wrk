@@ -8,6 +8,7 @@ import { useInputModeStore } from '@/stores/inputModeStore'
 import { useE2SStore } from '@/stores/e2sStore'
 import { useAttachmentsStore, EMPTY_ATTACHMENTS } from '@/stores/attachmentsStore'
 import { buildUserMessageMeta } from '@/lib/userMessageMeta'
+import { detectGoalCommand } from '@/lib/goalCommand'
 import { isE2SSendEnabled } from '@/lib/e2sGate'
 import { sendMessage, cancelTask } from '@/api/chat'
 import { listSessions } from '@/api/sessions'
@@ -176,6 +177,12 @@ export function useMessageSender(): UseMessageSenderResult {
     // message is already rendered with its goal/attachment badges, so the
     // indicators no longer wait for a session/project switch to appear.
     const goalEnabled = useInputModeStore.getState().goalEnabled
+    // Badge parity (optimistic side): a leading /goal / /goal:N prefix arms
+    // goal mode on the backend without the toggle, so the optimistic card
+    // carries the goal stamp too (detectGoalCommand mirrors the backend
+    // grammar; a prefix exposed by stripping a /-mention is stamped by the
+    // backend's persisted metadata and shows on reload).
+    const metaGoal = goalEnabled || detectGoalCommand(messageText).activates
     // E2S is mutually exclusive with goal (the store's setters enforce it), so
     // at most one of the two flags is armed here. `isE2SSendEnabled` is the
     // single fail-closed gate: it composes the experimental availability gate
@@ -184,7 +191,7 @@ export function useMessageSender(): UseMessageSenderResult {
     const e2sEnabled = isE2SSendEnabled()
     const pendingAttachments =
       useAttachmentsStore.getState().attachmentsBySession[sessionId] ?? EMPTY_ATTACHMENTS
-    const metadata = buildUserMessageMeta(goalEnabled, pendingAttachments, wasPaused || isRunning)
+    const metadata = buildUserMessageMeta(metaGoal, pendingAttachments, wasPaused || isRunning)
 
     const optimisticId = generateMessageId()
     useChatStore.getState().addMessage(sessionId, {

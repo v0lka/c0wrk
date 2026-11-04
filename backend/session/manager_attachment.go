@@ -187,8 +187,9 @@ func imageAttachmentsToMetadata(images []ImageAttachment) json.RawMessage {
 }
 
 // PendingMessageMetadata returns the persistable metadata blob for a user
-// message about to be sent (goal flag OR the staged attachments); nil when
-// none are present. Read before SendMessage snapshots and clears the lists.
+// message about to be sent (the caller-armed goal signal — toggle or a
+// "/goal"/"/goal:N" prefix — OR the staged attachments); nil when none are
+// present. Read before SendMessage snapshots and clears the lists.
 // Image-only messages delegate to imageAttachmentsToMetadata so the blob is
 // exactly {"images":[...]}.
 func (m *Manager) PendingMessageMetadata(sessionID string, goal bool) (json.RawMessage, error) {

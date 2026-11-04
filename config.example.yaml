@@ -1328,7 +1328,8 @@ orchestration:
 # mode is obviously the better fit for the request and, when it is, offers to
 # activate it before the task starts. Declining suppresses further suggestions
 # for the rest of the session. Goal mode itself remains always available via
-# the explicit toggle or a leading /goal.
+# the explicit toggle or a leading /goal (or /goal:N, an inline N-turn
+# budget; an invalid :N form is inert and ships as plain text).
 #
 #   enabled        (default true)  — master gate for the suggestion feature.
 #   min_complexity (default 3)     — routing-complexity floor below which the

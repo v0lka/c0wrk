@@ -2,6 +2,11 @@
 
 All notable changes to **c0wrk**. Dates follow the tag date.
 
+## Unreleased
+
+### Added
+- **Built-in `/goal` and `/goal:N` chat commands** — goal mode is armed from the message itself: a leading `/goal` activates the loop and `/goal:N` carries an inline N-turn budget that outranks the toolbar's `goalBudget` when both are set (a bare `/goal` keeps the toolbar budget; neither source runs unlimited). Invalid `:N` forms (`/goal:0`, a non-digit or missing digit, an out-of-range N) are inert and ship as plain text. Any armed send — toggle or prefix — stamps the persisted user message with `goal: true`, so the chat's Goal badge renders identically for both entry forms, and `/goal` appears in the `/` completion list's Commands section (hidden when a subagent, skill, MCP server, or custom command is named `goal`; `/goal:N` is never a mention, so it always reaches the detector). Goal gates treat a prefix send exactly like a toggled one: live-send rejection, E2S mutual exclusion, the Model Profiles essential-tools block, and detection-before-resume-check. See [ADR-106](./specs/decisions/106-goal-mode-chat-activation.md) and [goal-mode.md](./specs/domains/goal-mode.md).
+
 ## v0.13.0 — 2026-10-25
 
 ### Added

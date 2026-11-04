@@ -327,8 +327,11 @@ func (f *FrontendAPI) PinSession(id string) error {
 // events). Parameter deltas:
 //   - activeSkills/activeAgents/activeMCPServers: /-mention threading (durable
 //     task-scoped MCP authorization: specs/domains/session-lifecycle.md).
-//   - goal/goalBudget: goal mode for the first message of a task (OR-ed with a
-//     /goal command prefix); goalBudget = JSON {"max_turns":N}, empty = defaults.
+//   - goal/goalBudget: goal mode for the first message of a task (OR-ed with
+//     a "/goal" or "/goal:N" command prefix; a textual ":N" turn budget
+//     outranks goalBudget); goalBudget = JSON {"max_turns":N}, empty =
+//     unlimited. The armed signal also stamps the persisted user row's
+//     metadata `goal: true` (the chat's Goal badge).
 //   - e2s: the E2S execution mode — experimental (fails closed when the gate is
 //     off) and mutually exclusive with goal.
 //   - reviewMode: code-review feedback the agent must address.
@@ -349,7 +352,7 @@ func (f *FrontendAPI) SendMessage(id, text string, activeSkills, activeAgents, a
 	// hidden behind them, and the manager arms goal mode from the processed
 	// text — a raw-text check alone misses that form.
 	processed := core.PreprocessMessageText(text, activeSkills, activeAgents, activeMCPServers, "")
-	_, isGoalPrefix := core.DetectAndStripGoalMode(processed)
+	_, isGoalPrefix, _ := core.DetectAndStripGoalMode(processed)
 	goalEnabled := goal || isGoalPrefix
 	// An armed /goal prefix must not slip past the exclusivity check: the
 	// manager would otherwise build a HandleOptions with BOTH Goal and E2S
@@ -413,10 +416,12 @@ func (f *FrontendAPI) SendMessage(id, text string, activeSkills, activeAgents, a
 	// Snapshot the pending-attachment metadata BEFORE the manager call (its
 	// fresh/resume path snapshots and clears the pending lists); the message
 	// itself is persisted AFTER the authoritative dispatch so is_nudge matches
-	// the actual decision and a rejected send never reaches the store.
+	// the actual decision and a rejected send never reaches the store. The
+	// goal metadata flag carries the ARMED signal (toggle OR prefix), so a
+	// prefix-activated send renders the chat's Goal badge like a toggled one.
 	var messageMetadata json.RawMessage
 	if mgr := f.app.Manager(); mgr != nil {
-		if md, mdErr := mgr.PendingMessageMetadata(id, goal); mdErr == nil {
+		if md, mdErr := mgr.PendingMessageMetadata(id, goalEnabled); mdErr == nil {
 			messageMetadata = md
 		} else {
 			f.log().Warn("failed to read pending message metadata", "session_id", id, "error", mdErr)

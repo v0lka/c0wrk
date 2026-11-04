@@ -861,32 +861,49 @@ func TestResolveGoalBudget(t *testing.T) {
 }
 
 // TestDetectAndStripGoalMode verifies the /goal prefix detection used by the
-// backend to plumb the Goal flag.
+// backend to plumb the Goal flag and the /goal:N turn budget.
 func TestDetectAndStripGoalMode(t *testing.T) {
 	cases := []struct {
-		name     string
-		input    string
-		wantMsg  string
-		wantGoal bool
+		name      string
+		input     string
+		wantMsg   string
+		wantGoal  bool
+		wantTurns int
 	}{
-		{"plain goal command", "/goal make tests pass", "make tests pass", true},
-		{"goal at end", "/goal", "", true},
-		{"no goal prefix", "make tests pass", "make tests pass", false},
-		{"does not match goals-report", "/goals-report run", "/goals-report run", false},
+		{"plain goal command", "/goal make tests pass", "make tests pass", true, 0},
+		{"goal at end", "/goal", "", true, 0},
+		{"budgeted command", "/goal:5 ship the release", "ship the release", true, 5},
+		{"budget without message", "/goal:3", "", true, 3},
+		{"budget leading zeros", "/goal:007 x", "x", true, 7},
+		{"budget tab boundary", "/goal:5\tx", "x", true, 5},
+		// Invalid budget forms are inert: no activation, text verbatim.
+		{"zero budget", "/goal:0 ship it", "/goal:0 ship it", false, 0},
+		{"colon without number", "/goal: ship it", "/goal: ship it", false, 0},
+		{"non-numeric budget", "/goal:abc ship it", "/goal:abc ship it", false, 0},
+		{"space after colon", "/goal: 5 ship it", "/goal: 5 ship it", false, 0},
+		{"overflow budget", "/goal:99999999999999999999 x", "/goal:99999999999999999999 x", false, 0},
+		{"budget glued to word", "/goal:12more", "/goal:12more", false, 0},
+		{"no goal prefix", "make tests pass", "make tests pass", false, 0},
+		{"does not match goals-report", "/goals-report run", "/goals-report run", false, 0},
+		{"digits glued to bare goal", "/goal5 and count", "/goal5 and count", false, 0},
 		// Note: the backend preprocesses (trims) the message before detection,
 		// so /goal must be at the start; leading whitespace is not matched.
-		{"leading whitespace not matched", "  /goal do x", "  /goal do x", false},
+		{"leading whitespace not matched", "  /goal do x", "  /goal do x", false, 0},
+		{"mid-text budget not matched", "do /goal:5 now", "do /goal:5 now", false, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			// DetectAndStripGoalMode matches against the raw text; trim for
 			// the leading-spaces case consistency.
-			gotMsg, gotGoal := DetectAndStripGoalMode(tc.input)
+			gotMsg, gotGoal, gotTurns := DetectAndStripGoalMode(tc.input)
 			if gotGoal != tc.wantGoal {
 				t.Errorf("isGoal = %v, want %v", gotGoal, tc.wantGoal)
 			}
 			if gotMsg != tc.wantMsg {
 				t.Errorf("cleaned = %q, want %q", gotMsg, tc.wantMsg)
+			}
+			if gotTurns != tc.wantTurns {
+				t.Errorf("budgetTurns = %d, want %d", gotTurns, tc.wantTurns)
 			}
 		})
 	}
