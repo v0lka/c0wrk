@@ -2,7 +2,12 @@
 
 ## Status
 
-Accepted
+Accepted (amended: decision 2's "tolerates a missing or partial `specs/`
+(neutral `present: false`)" wording overstated the neutral state — as
+implemented and test-pinned since acceptance, the neutral `present: false`
+is a MISSING or non-directory root only; an existing EMPTY or PARTIAL tree
+parses `present: true` with whatever content is readable, never an error.
+Every other decision stands.)
 
 ## Context
 

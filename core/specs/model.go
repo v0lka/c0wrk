@@ -3,7 +3,7 @@
 // the in-memory model behind the Specs sidebar panel: model.go — domain
 // types (no I/O); parse.go — content parsing and the thin read-only
 // filesystem orchestrator. The parser keys off the documented layout, not
-// c0wrk-specific paths, and tolerates a missing or partial tree:
+// c0wrk-specific paths, and tolerates a missing, empty, or partial tree:
 // zero-values are meaningful neutral states, never errors
 // (specs/decisions/105-specs-sidebar-panel.md).
 package specs

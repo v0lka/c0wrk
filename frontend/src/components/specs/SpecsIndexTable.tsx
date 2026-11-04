@@ -27,9 +27,9 @@ function TaskRow({
     <div className="flex items-start gap-1.5 py-0.5 text-xs leading-relaxed">
       <span className="min-w-0 flex-1 break-words text-foreground">{task}</span>
       <span className="flex max-w-[55%] shrink-0 flex-wrap justify-end gap-x-1.5 gap-y-0.5">
-        {specs.map((spec) => (
+        {specs.map((spec, j) => (
           <button
-            key={spec}
+            key={`${spec}-${j}`}
             type="button"
             data-testid="specs-index-link"
             data-spec={spec}
@@ -47,7 +47,10 @@ function TaskRow({
 
 /** The INDEX section: header + one row per parsed task. `specs` entries are
  *  specs-root-relative references; the panel resolves them against the
- *  absolute root before opening. */
+ *  absolute root before opening. Keys are index-augmented (the Findings
+ *  list's pattern): the task text and spec targets are USER-AUTHORED
+ *  workspace content — copy-pasted rows or a repeated link must not
+ *  duplicate React keys. */
 export function SpecsIndexTable({
   indexTasks,
   onOpen,
@@ -62,9 +65,9 @@ export function SpecsIndexTable({
         <ListChecks className="size-3" />
         INDEX — tasks
       </div>
-      {indexTasks.map((row) => (
+      {indexTasks.map((row, i) => (
         <TaskRow
-          key={row.task}
+          key={`${row.task}-${i}`}
           task={row.task}
           specs={row.specs ?? []}
           onOpen={onOpen}

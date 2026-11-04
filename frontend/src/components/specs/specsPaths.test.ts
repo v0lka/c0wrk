@@ -36,6 +36,28 @@ describe('joinSpecPath', () => {
       '/ws/p1/specs/domains/testing.md',
     )
   })
+
+  it('preserves a UNC root anchor (//server/share — ADR-095 dialect)', () => {
+    expect(joinSpecPath('//server/share/ws/specs', 'INDEX.md')).toBe(
+      '//server/share/ws/specs/INDEX.md',
+    )
+    expect(joinSpecPath('\\\\server\\share\\ws\\specs', 'domains\\testing.md')).toBe(
+      '//server/share/ws/specs/domains/testing.md',
+    )
+  })
+
+  it('preserves a Windows drive root in canonical form (C:/…)', () => {
+    expect(joinSpecPath('C:\\ws\\specs', 'domains/testing.md')).toBe(
+      'C:/ws/specs/domains/testing.md',
+    )
+  })
+
+  it('clamps ../ escapes at the root anchor, never above it', () => {
+    expect(joinSpecPath('//server/share/ws/specs', '../../../../../etc/passwd')).toBe(
+      '//server/share/etc/passwd',
+    )
+    expect(joinSpecPath('/ws/specs', '../..')).toBe('/')
+  })
 })
 
 describe('isSpecsRelevantChange (workspace:tree_changed filter)', () => {

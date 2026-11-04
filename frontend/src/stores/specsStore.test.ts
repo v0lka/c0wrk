@@ -145,6 +145,50 @@ describe('specsStore — fetchStatus', () => {
   })
 })
 
+describe('specsStore — cross-project guards', () => {
+  it("clears the previous project's status the moment a different project's fetch starts", async () => {
+    getSpecsStatusMock.mockResolvedValue(statusOf(true, 'p1'))
+    await useSpecsStore.getState().fetchStatus('p1')
+    expect(useSpecsStore.getState().status?.root).toBe('/ws/p1/specs')
+
+    // p2's fetch never resolves: the clear must be synchronous with START,
+    // not an effect of the response landing.
+    getSpecsStatusMock.mockReturnValue(new Promise(() => {}))
+    void useSpecsStore.getState().fetchStatus('p2')
+
+    const s = useSpecsStore.getState()
+    expect(s.status).toBeNull()
+    expect(s.projectId).toBe('p2')
+    expect(s.isLoading).toBe(true)
+  })
+
+  it('a failed different-project fetch leaves no cross-project data to keep', async () => {
+    getSpecsStatusMock.mockResolvedValue(statusOf(true, 'p1'))
+    await useSpecsStore.getState().fetchStatus('p1')
+
+    getSpecsStatusMock.mockRejectedValue(new Error('p2 fetch failed'))
+    await useSpecsStore.getState().fetchStatus('p2')
+
+    const s = useSpecsStore.getState()
+    expect(s.error).toBe('p2 fetch failed')
+    expect(s.status).toBeNull()
+    expect(s.projectId).toBe('p2')
+  })
+
+  it('keeps the previous status during a SAME-project refetch (no flicker)', async () => {
+    getSpecsStatusMock.mockResolvedValue(statusOf(true, 'p1'))
+    await useSpecsStore.getState().fetchStatus('p1')
+
+    getSpecsStatusMock.mockReturnValue(new Promise(() => {}))
+    void useSpecsStore.getState().fetchStatus('p1')
+
+    const s = useSpecsStore.getState()
+    expect(s.status?.root).toBe('/ws/p1/specs')
+    expect(s.projectId).toBe('p1')
+    expect(s.isLoading).toBe(true)
+  })
+})
+
 describe('specsStore — reset', () => {
   it('clears status, projectId, error and isLoading', async () => {
     getSpecsStatusMock.mockResolvedValue(statusOf(true, 'p1'))

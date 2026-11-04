@@ -1,6 +1,7 @@
 package specs
 
 import (
+	"cmp"
 	"errors"
 	"io/fs"
 	"os"
@@ -606,17 +607,20 @@ func collectADRs(contents map[string]string) []ADRMeta {
 	return adrs
 }
 
-// compareADRNumbers orders ADR numbers numerically ("002" before "010")
-// with a lexicographic tie-break for unpadded spellings of the same number.
+// compareADRNumbers orders ADR numbers numerically ("002" before "010"),
+// reporting unpadded spellings of the same number ("002" and "2") as EQUAL
+// (0) — the caller breaks equal numbers deterministically (collectADRs by
+// file path, duplicateADRFindings as one duplicate group). Non-numeric
+// numbers sort after all numeric ones, lexicographically.
 func compareADRNumbers(a, b string) int {
 	na, aerr := strconv.Atoi(a)
 	nb, berr := strconv.Atoi(b)
 	switch {
-	case aerr == nil && berr == nil && na != nb:
-		return na - nb
-	case aerr == nil && berr != nil:
+	case aerr == nil && berr == nil:
+		return cmp.Compare(na, nb)
+	case aerr == nil:
 		return -1
-	case aerr != nil && berr == nil:
+	case berr == nil:
 		return 1
 	default:
 		return strings.Compare(a, b)
@@ -780,7 +784,11 @@ func duplicateADRFindings(adrs []ADRMeta) []Finding {
 	var findings []Finding
 	for i := 0; i < len(adrs); {
 		j := i + 1
-		for j < len(adrs) && adrs[j].Number == adrs[i].Number {
+		// Group NUMERICALLY: the sort's comparator defines the equality
+		// classes, and its zero includes unpadded spellings of the same
+		// number ("002" == "2") — the very collision the check exists to
+		// catch — so its zero is the group boundary, not string equality.
+		for j < len(adrs) && compareADRNumbers(adrs[j].Number, adrs[i].Number) == 0 {
 			j++
 		}
 		if group := adrs[i:j]; len(group) > 1 {
@@ -791,12 +799,23 @@ func duplicateADRFindings(adrs []ADRMeta) []Finding {
 			findings = append(findings, Finding{
 				Kind:   FindingDuplicateADRNumber,
 				File:   group[0].File,
-				Detail: "duplicate ADR number " + group[0].Number + ": " + strings.Join(files, ", "),
+				Detail: "duplicate ADR number " + unpaddedADRNumber(group[0].Number) + ": " + strings.Join(files, ", "),
 			})
 		}
 		i = j
 	}
 	return findings
+}
+
+// unpaddedADRNumber renders an ADR number without zero padding ("002" →
+// "2") so a duplicate group spanning padded and unpadded spellings reports
+// one canonical number. The file-name pattern admits digits only; the
+// verbatim fallback covers a future pattern widening.
+func unpaddedADRNumber(number string) string {
+	if n, err := strconv.Atoi(number); err == nil {
+		return strconv.Itoa(n)
+	}
+	return number
 }
 
 // indexStaleFindings flags section files INDEX.md does not know about. The

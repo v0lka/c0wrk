@@ -33,7 +33,15 @@ import { isSpecsRelevantChange, joinSpecPath } from './specsPaths'
  */
 export function SpecsPanel() {
   const projectId = useProjectStore((s) => s.activeProjectId)
-  const status = useSpecsStore((s) => s.status)
+  // Cross-project stale-status guard (the gitRepoProjectId pairing
+  // convention of this panel strip): the store's status renders only while
+  // it belongs to the ACTIVE project, so a previous project's parse never
+  // reaches the layout — not even for the frames between a project switch
+  // and the switch's own fetch clearing the store. Both branches return
+  // store-held references, so the selector stays referentially stable.
+  const status = useSpecsStore((s) =>
+    projectId !== null && s.projectId === projectId ? s.status : null,
+  )
   const isLoading = useSpecsStore((s) => s.isLoading)
   const error = useSpecsStore((s) => s.error)
   const fetchStatus = useSpecsStore((s) => s.fetchStatus)
@@ -59,15 +67,19 @@ export function SpecsPanel() {
 
   // Read path (ADR-105 D4): a specs-root-relative reference resolves
   // against the absolute root and opens through the existing file viewer —
-  // no new file-read RPC.
-  const root = status?.root ?? ''
+  // no new file-read RPC. The root is read from the store AT CLICK TIME
+  // and only from the CURRENT project's status: a stale cross-project root
+  // must never reach the viewer (defense in depth under the render guard —
+  // the clickable rows themselves are already project-scoped).
   const openSpec = useCallback(
     (relPath: string) => {
+      const store = useSpecsStore.getState()
+      if (store.projectId !== projectId || store.status === null) return
       const viewer = useFileViewerStore.getState()
       viewer.setCollapsed(false)
-      viewer.openFile(joinSpecPath(root, relPath))
+      viewer.openFile(joinSpecPath(store.status.root, relPath))
     },
-    [root],
+    [projectId],
   )
 
   // Defensive No-Project neutral render (the tab never mounts there).

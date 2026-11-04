@@ -201,6 +201,24 @@ describe('SpecsPanel — render states', () => {
     expect(getSpecsStatusMock).not.toHaveBeenCalled()
     expect(query('specs-panel')).toBeNull()
   })
+
+  it("renders the loading state — never the previous project's tree — across a project switch", async () => {
+    await renderPanel()
+    expect(text()).toContain('Writing tests')
+
+    // Switch to p2 whose fetch hangs: p1's tree must vanish for the whole
+    // flight (the store clears it at fetch start; the render guard pairs
+    // the store's projectId with the active project either way).
+    getSpecsStatusMock.mockReturnValue(new Promise(() => {}))
+    await act(async () => {
+      useProjectStore.setState({ activeProjectId: 'p2' })
+    })
+    await flush()
+
+    expect(getSpecsStatusMock).toHaveBeenCalledWith('p2')
+    expect(text()).toContain('Loading specs…')
+    expect(text()).not.toContain('Writing tests')
+  })
 })
 
 describe('SpecsPanel — refresh trigger (in-panel subscription)', () => {
@@ -254,6 +272,11 @@ describe('SpecsPanel — refresh trigger (in-panel subscription)', () => {
 })
 
 describe('SpecsPanel — read path (file viewer)', () => {
+  // Coverage boundary note: openSpec's cross-project no-op (store stamp ≠
+  // active project) is defense in depth under the render guard — rows for
+  // another project cannot render, so the guard has no reachable UI click;
+  // the cross-project behavior itself is pinned in specsStore.test.ts and
+  // the project-switch render test above.
   it('opens a spec file, an INDEX target, and an ADR through openFile', async () => {
     await renderPanel()
 

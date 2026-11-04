@@ -14,9 +14,10 @@ interface SpecsState {
   /** Last error from a status fetch; null when clean. The previous status
    *  (if any) stays rendered alongside an error banner. */
   error: string | null
-  /** The projectId the current `status` belongs to. Guards against stale
-   *  data when the user switches projects before an in-flight fetch
-   *  resolves. */
+  /** The projectId the current `status` belongs to, stamped at fetch START:
+   *  together with the panel's active-project guard it keeps a stale
+   *  cross-project status from ever rendering when the user switches
+   *  projects while a fetch is in flight. */
   projectId: string | null
   /** Monotonic sequence stamped on every fetchStatus START. A response
    *  applies only while the store's counter still equals the ticket
@@ -28,9 +29,13 @@ interface SpecsState {
 
 interface SpecsActions {
   /** Fetch the specs/ status of a project (one light read-only parse) and
-   *  store it, stamped with the projectId. Superseded responses (a newer
-   *  fetch started while this one was in flight) are discarded; a failure
-   *  stores its message in `error` and keeps the previous status. */
+   *  store it, stamped with the projectId. A fetch for a DIFFERENT project
+   *  clears the previous project's status up front — it must neither
+   *  render during the flight nor survive this flight's error path; a
+   *  same-project refetch keeps the old status rendered (no flicker on
+   *  tree_changed). Superseded responses (a newer fetch started while this
+   *  one was in flight) are discarded; a failure stores its message in
+   *  `error` and keeps the previous status. */
   fetchStatus: (projectId: string) => Promise<void>
   /** Set/clear the panel's error banner directly. The quick-actions
    *  dispatch path uses it to surface a failed spec-* skill send (the
@@ -59,7 +64,17 @@ export const useSpecsStore = create<SpecsStore>((set, get) => ({
   ...initialState,
 
   fetchStatus: async (projectId) => {
-    set((s) => ({ fetchSeq: s.fetchSeq + 1, isLoading: true, error: null }))
+    set((s) => ({
+      fetchSeq: s.fetchSeq + 1,
+      isLoading: true,
+      error: null,
+      // A fetch for a DIFFERENT project starts from a clean slate: the
+      // previous project's status must neither render during the flight
+      // nor survive this flight's error path. A same-project refetch
+      // keeps the previous status rendered (no flicker on tree_changed).
+      status: s.projectId === projectId ? s.status : null,
+      projectId,
+    }))
     const seq = get().fetchSeq
     try {
       const status = await getSpecsStatus(projectId)

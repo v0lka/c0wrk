@@ -68,11 +68,13 @@ type SpecsCountsDTO struct {
 // sidebar panel (ADR-105): files, the INDEX.md task navigation table, ADR
 // metadata, and the always-fresh tier-1 integrity findings — one light
 // read-only parse per call. The specs root is always <workspace>/specs
-// (config.ProjectSpecsPath); a missing or partial tree parses to the neutral
-// present=false state, never an error. No Project returns the same neutral
-// state (the workspace tab strip — and with it the Specs panel — is not
-// rendered there at all; this is the defensive contract, mirroring
-// GetResearchStatus). See specs/decisions/105-specs-sidebar-panel.md.
+// (config.ProjectSpecsPath); a missing or non-directory root parses to the
+// neutral present=false state, and an existing empty or partial tree
+// parses present=true with whatever content is readable — never an error
+// in either case. No Project returns the same neutral state (the workspace
+// tab strip — and with it the Specs panel — is not rendered there at all;
+// this is the defensive contract, mirroring GetResearchStatus). See
+// specs/decisions/105-specs-sidebar-panel.md.
 func (f *FrontendAPI) GetSpecsStatus(projectID string) (*SpecsStatusDTO, error) {
 	f.seedAcquire()
 	if projectID == "" {
@@ -99,10 +101,10 @@ func (f *FrontendAPI) GetSpecsStatus(projectID string) (*SpecsStatusDTO, error) 
 	specsRoot := config.ProjectSpecsPath(proj.WorkspacePath)
 	root, err := specs.ParseSpecsRoot(specsRoot)
 	if err != nil {
-		// The parser is tolerant by contract (a missing or partial tree is
-		// present=false, never an error); fail open to the neutral state if
-		// a future revision grows an error path — the parseResearchRootBestEffort
-		// pattern.
+		// The parser is tolerant by contract (a missing or non-directory
+		// root is present=false, never an error); fail open to the neutral
+		// state if a future revision grows an error path — the
+		// parseResearchRootBestEffort pattern.
 		f.log().Debug("GetSpecsStatus: specs root not parseable",
 			"root", specsRoot, "error", err)
 		return specsStatusDTOFromRoot(nil, specsRoot), nil

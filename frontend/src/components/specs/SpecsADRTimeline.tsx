@@ -38,10 +38,15 @@ function StatusChip({ status }: { status: string }) {
 function ADRRow({
   adr,
   successor,
+  successorAmbiguous,
   onOpen,
 }: {
   adr: SpecADRMeta
   successor: SpecADRMeta | null
+  /** True when the successor's number is carried by more than one file
+   *  (DUPLICATE_ADR_NUMBER data): the chip then opens the group's lowest
+   *  file path, deterministically, and the tooltip says so. */
+  successorAmbiguous: boolean
   onOpen: (relPath: string) => void
 }) {
   return (
@@ -73,7 +78,10 @@ function ADRRow({
           data-number={adr.superseded_by}
           title={
             successor !== null
-              ? `Superseded by ADR-${successor.number}: ${successor.title ?? successor.slug}`
+              ? `Superseded by ADR-${successor.number}: ${successor.title ?? successor.slug}` +
+                (successorAmbiguous
+                  ? ' (duplicate ADR number in the tree — opening the lowest file)'
+                  : '')
               : `Superseded by ADR-${adr.superseded_by} (not in the tree)`
           }
           disabled={successor === null}
@@ -99,7 +107,22 @@ export function SpecsADRTimeline({
 }) {
   if (adrs.length === 0) return null
   const sorted = sortADRsNewestFirst(adrs)
-  const byNumber = new Map(adrs.map((adr) => [adr.number, adr]))
+  // Duplicate numbers are ANTICIPATED data (DUPLICATE_ADR_NUMBER is a
+  // tier-1 finding, ADR-105 D5 — e.g. a decision archived into a
+  // decisions/ subdirectory re-parses with the same number): rows key by
+  // the file path (unique by construction — it is the parse's map key),
+  // and a successor number carried by several files resolves
+  // DETERMINISTICALLY to the group's lowest file path, never to whichever
+  // copy the wire happened to list last.
+  const byNumber = new Map<string, SpecADRMeta>()
+  const numberCounts = new Map<string, number>()
+  for (const adr of adrs) {
+    numberCounts.set(adr.number, (numberCounts.get(adr.number) ?? 0) + 1)
+    const existing = byNumber.get(adr.number)
+    if (existing === undefined || adr.file < existing.file) {
+      byNumber.set(adr.number, adr)
+    }
+  }
   return (
     <section data-testid="specs-adrs" className="flex flex-col gap-0.5">
       <div className="flex items-center gap-1 px-0.5 text-xs uppercase tracking-wide text-muted-foreground">
@@ -108,9 +131,14 @@ export function SpecsADRTimeline({
       </div>
       {sorted.map((adr) => (
         <ADRRow
-          key={`${adr.number}-${adr.slug}`}
+          key={adr.file}
           adr={adr}
           successor={adr.superseded_by ? byNumber.get(adr.superseded_by) ?? null : null}
+          successorAmbiguous={
+            adr.superseded_by !== undefined &&
+            adr.superseded_by !== '' &&
+            (numberCounts.get(adr.superseded_by) ?? 0) > 1
+          }
           onOpen={onOpen}
         />
       ))}

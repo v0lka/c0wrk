@@ -49,7 +49,7 @@ type Finding struct{ Kind FindingKind; File, Detail string }
 
 type SpecsRoot struct {
     Path     string        // exactly as passed to ParseSpecsRoot
-    Present  bool          // root existed and was a directory; missing/partial == neutral, never an error
+    Present  bool          // root existed and was a directory; a missing or non-directory root is the neutral state, never an error
     Files    []SpecFile    // sorted by path; "_"-prefixed files (templates) excluded
     Index    *SpecsIndex   // parsed INDEX.md; nil only when missing/unreadable
     ADRs     []ADRMeta     // sorted by number
@@ -97,7 +97,7 @@ Human gestures
 - Seeding writes are crash-safe: each entry is staged in a hidden sibling temp directory and swapped in with a single rename; staging/backup leftovers from a hard kill are swept on the next run. The specs pack versions (`specs.CurrentSeedVersion`, `specs.AgentSeedVersion`) bump independently of the research/papers packs.
 - Skill/agent discovery precedence is project-local `<workspace>/.agents/{skills,agents}` → c0wrk global `~/.c0wrk/.agents/{skills,agents}` → user `~/.agents/{skills,agents}`: the seeded spec pack outranks a stale same-named user copy, and `ListSkills`/`ListAgents` expose it with no catalog change.
 - The specs root is unconditionally `<workspace>/specs` (`config.ProjectSpecsPath`), read-only for the application: the panel and the parser never create, write, or delete anything under it — every mutation is dispatched to a `spec-*` skill.
-- The parser is tolerant: a missing, empty, or partial `specs/` tree parses to the neutral `Present=false` state, never an error; files whose base name starts with `_` (templates) are excluded from the model; the parser keys off the documented `specs/` layout, not c0wrk-specific paths (any workspace with a `specs/` directory renders the panel).
+- The parser is tolerant: a MISSING or non-directory `specs/` root parses to the neutral `Present=false` state; an existing EMPTY or PARTIAL tree parses `Present=true` with whatever content is readable — never an error in either case; files whose base name starts with `_` (templates) are excluded from the model; the parser keys off the documented `specs/` layout, not c0wrk-specific paths (any workspace with a `specs/` directory renders the panel).
 - `GetSpecsStatus` requires a real project: the No-Project pseudo-project returns the neutral `present=false` DTO (the defensive contract — the workspace tab strip, and with it the panel, is not rendered in CHAT mode at all), and every other error path is a transport-level Go error.
 - Every DTO collection and the counts histogram are non-nil on the wire (empty `[]`/`{}`, never `null`); the frontend boundary re-validates the outer shape, drops malformed entries per-entry, and recomputes the counts from the normalized collections so the badges always agree with the rendered lists.
 - Tier-1 integrity findings are computed by the parser on every call (`PATH_MISSING` — a Key Files path that does not exist; `CROSS_REF_BROKEN` — a relative link or anchor that does not resolve; `DUPLICATE_ADR_NUMBER` — two `decisions/NNN-*.md` sharing NNN; `INDEX_STALE` — a section file the INDEX.md directory listing does not name) and are never persisted — the parse is cheap and always fresh.

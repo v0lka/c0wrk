@@ -76,6 +76,37 @@ func TestParseSpecsRootPartialTree(t *testing.T) {
 	}
 }
 
+func TestParseSpecsRootDuplicateADRUnpadded(t *testing.T) {
+	// "002" and "2" are the same ADR number in unpadded spelling — the
+	// most likely hand-created collision — and must group into one
+	// DUPLICATE_ADR_NUMBER finding with a canonical (unpadded) number.
+	dir := t.TempDir()
+	decisions := filepath.Join(dir, "decisions")
+	if err := os.MkdirAll(decisions, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"002-one.md", "2-two.md"} {
+		if err := os.WriteFile(filepath.Join(decisions, name), []byte("# ADR: "+name+"\n\n## Status\n\nAccepted\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	root, err := ParseSpecsRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Finding{
+		{
+			Kind:   FindingDuplicateADRNumber,
+			File:   "decisions/002-one.md",
+			Detail: "duplicate ADR number 2: decisions/002-one.md, decisions/2-two.md",
+		},
+	}
+	if !reflect.DeepEqual(root.Findings, want) {
+		t.Errorf("Findings = %+v\nwant %+v", root.Findings, want)
+	}
+}
+
 func TestParseSpecsRootFixture(t *testing.T) {
 	root, err := ParseSpecsRoot(filepath.Join(fixtureRepo, "specs"))
 	if err != nil {
@@ -202,7 +233,7 @@ func TestParseSpecsRootFixture(t *testing.T) {
 		{Kind: FindingCrossRefBroken, File: "INDEX.md", Detail: "link does not resolve: domains/missing.md"},
 		{Kind: FindingCrossRefBroken, File: "domains/app.md", Detail: "anchor does not resolve: ../architecture/layers.md#no-such-heading"},
 		{Kind: FindingCrossRefBroken, File: "domains/app.md", Detail: "link does not resolve: ../nope.md"},
-		{Kind: FindingDuplicateADRNumber, File: "decisions/001-duplicate.md", Detail: "duplicate ADR number 001: decisions/001-duplicate.md, decisions/001-one.md"},
+		{Kind: FindingDuplicateADRNumber, File: "decisions/001-duplicate.md", Detail: "duplicate ADR number 1: decisions/001-duplicate.md, decisions/001-one.md"},
 		{Kind: FindingIndexStale, File: "domains/unlisted.md", Detail: "not listed in INDEX.md"},
 		{Kind: FindingPathMissing, File: "domains/app.md", Detail: "key file does not exist: specs/gone.md"},
 	}

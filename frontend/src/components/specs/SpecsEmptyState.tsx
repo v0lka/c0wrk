@@ -1,6 +1,7 @@
-// The neutral !present state (ADR-105 D2): a missing or partial specs/
-// tree is data, not an error. The CTA dispatches the Initialize gesture —
-// the same constant the quick-actions row renders — into the chat.
+// The neutral !present state (ADR-105 D2): a missing or non-directory
+// specs/ root is data, not an error. The CTA dispatches the Initialize
+// gesture — the same constant the quick-actions row renders — into the
+// chat.
 
 import { BookPlus } from 'lucide-react'
 import { INITIALIZE_ACTION } from './specsActions'

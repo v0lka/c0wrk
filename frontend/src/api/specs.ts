@@ -15,9 +15,11 @@ import type {
  * Get the parsed specs/ status of a project: every spec file, the INDEX.md
  * task navigation table, ADR metadata, and the tier-1 integrity findings
  * (GetSpecsStatus — one light read-only parse per call, always fresh). A
- * missing or partial tree is the neutral present=false state, never an
- * error; No Project gets the same neutral state (the panel is not rendered
- * there — the defensive contract of GetResearchStatus).
+ * missing or non-directory root is the neutral present=false state, and an
+ * existing empty or partial tree parses present=true with whatever content
+ * is readable — never an error in either case; No Project gets the same
+ * neutral state (the panel is not rendered there — the defensive contract
+ * of GetResearchStatus).
  */
 export async function getSpecsStatus(projectId: string): Promise<SpecsStatus> {
   try {

@@ -3,6 +3,7 @@
 // viewer is built here, and the workspace:tree_changed relevance filter
 // lives here so the panel component stays a thin orchestrator.
 
+import { normalizePath } from '@/lib/localFileLink'
 import type { SpecADRMeta, SpecFile } from '@/types/models'
 
 /** Normalize a path for comparison/joining: watcher and backend paths may
@@ -16,22 +17,21 @@ function toSlashPath(p: string): string {
  * Resolve a specs-root-relative reference (verbatim from a Markdown link or
  * table cell — possibly carrying a `./` prefix, a `#anchor` suffix, or a
  * `../` escape that leaves the specs tree) against the ABSOLUTE specs root,
- * lexically: `.` and `..` segments collapse without touching the disk.
+ * lexically, through the app's CANONICAL resolver (`normalizePath` in
+ * lib/localFileLink.ts, mirrored by core/pathabs.go — ADR-095): the root's
+ * dialect is PRESERVED (POSIX `/…`, Windows drive `C:/…`, UNC
+ * `//server/share/…` — a hand-rolled segment walk would collapse the UNC
+ * anchor's empty leading segments), and `..` clamps at the dialect's anchor
+ * instead of popping above the root. Leading-slash relPaths are anchored
+ * under the root; a DRIVE-rooted relPath (`C:/x.md` in a table cell) is an
+ * absolute input normalizePath passes through verbatim — the same carve-out
+ * `resolveFileRefPath` gives chat `@file` refs, on the same user-triggered,
+ * uncontained-by-design viewer read path.
  * `fileViewerStore.openFile` takes the resulting absolute path.
  */
 export function joinSpecPath(root: string, relPath: string): string {
   const rel = toSlashPath(relPath).split('#')[0]!.replace(/^\/+/, '')
-  const combined = `${toSlashPath(root).replace(/\/+$/, '')}/${rel}`
-  const parts: string[] = []
-  for (const seg of combined.split('/')) {
-    if (seg === '' || seg === '.') continue
-    if (seg === '..') {
-      parts.pop()
-      continue
-    }
-    parts.push(seg)
-  }
-  return `/${parts.join('/')}`
+  return normalizePath(root, rel)
 }
 
 /** Extract the changed-path list from a `workspace:tree_changed` payload,
