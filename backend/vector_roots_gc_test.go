@@ -168,6 +168,15 @@ func TestSharedStoreSweep_KeepsLiveRootsData(t *testing.T) {
 
 	// Release tree B the way the session flow does (tree removed, then the
 	// cleanup): B's overlay and marker go; the corpus is shared with A.
+	// The vector manager is released FIRST: the registry's synchronous
+	// Shutdown drain closes every handle the manager held over the tree —
+	// the codebase's own Windows discipline (see deleteWorktreeVectorIndex,
+	// whose Release precedes every data removal "so the removal works on
+	// Windows too") — so the directory removal cannot hit a sharing
+	// violation on the Windows CI leg.
+	if m := h.roots.Release(wtB); m == nil {
+		t.Fatal("tree B had no live manager to release")
+	}
 	if err := os.RemoveAll(wtB); err != nil {
 		t.Fatalf("removing tree B: %v", err)
 	}
