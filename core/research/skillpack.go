@@ -8,7 +8,8 @@
 //
 // Seeding is idempotent, crash-safe, and non-destructive: destinations are
 // classified by CONTENT HASH against the embedded pack (never mtime/size,
-// never the marker alone). Full classification and crash-safety rules:
+// never the marker alone). The classification/staging mechanics live in the
+// shared core/seedpack package (ADR-105 decision 5); full rules:
 // specs/domains/research.md (seeding invariants).
 package research
 
@@ -24,6 +25,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/v0lka/c0wrk/core/seedpack"
 	"github.com/v0lka/sp4rk/safeio"
 )
 
@@ -42,19 +44,10 @@ const embedRoot = "skills"
 // marker; bump it when embedded content changes and copies should refresh.
 const CurrentSeedVersion = "2"
 
-// seedVersionFile is the marker filename whose presence identifies a
-// directory as pack-seeded (safe to overwrite on a version bump).
-const seedVersionFile = ".seed-version"
-
 // SeedSkillsResult reports the per-skill outcome of a SeedSkills call; each
-// slice holds skill names, sorted for deterministic output.
-type SeedSkillsResult struct {
-	Seeded    []string // newly written (directory did not exist)
-	Updated   []string // overwritten to the current pack version (upgrade or truncated-tree repair)
-	Current   []string // content matches the pack; left untouched
-	Preserved []string // user-owned (no marker, content differs); left untouched
-	Modified  []string // pack-marked but content diverges (user edit or spoofed marker); left untouched
-}
+// slice holds skill names, sorted for deterministic output. It is the shared
+// core/seedpack Result.
+type SeedSkillsResult = seedpack.Result
 
 // ResearchSkillNames returns the sorted pack skill names, read from the
 // embed.FS at call time to stay in sync with the embedded tree.
@@ -90,8 +83,8 @@ func SeedSkills(destSkillsDir string, logger *slog.Logger) (*SeedSkillsResult, e
 		return nil, fmt.Errorf("research.SeedSkills: create skills dir %q: %w", destSkillsDir, err)
 	}
 
-	// Sweep leftovers from an interrupted previous run (see stageAndSwap).
-	sweepSeedLeftovers(destSkillsDir)
+	// Sweep leftovers from an interrupted previous run (see seedpack.StageAndSwap).
+	seedpack.SweepLeftovers(destSkillsDir)
 
 	result := &SeedSkillsResult{}
 	names := ResearchSkillNames()
@@ -101,10 +94,10 @@ func SeedSkills(destSkillsDir string, logger *slog.Logger) (*SeedSkillsResult, e
 		if err != nil {
 			return nil, fmt.Errorf("research.SeedSkills: seed %q: %w", name, err)
 		}
-		appendToResult(result, action, name)
+		result.Append(action, name)
 	}
 
-	sortAll(result)
+	result.Sort()
 	if logger != nil {
 		logger.Info("research skill-pack seeded",
 			"dest", destSkillsDir,
@@ -120,36 +113,36 @@ func SeedSkills(destSkillsDir string, logger *slog.Logger) (*SeedSkillsResult, e
 }
 
 // seedOne classifies one destination by content hash and performs the write
-// via the crash-safe staging swap (seedstaging.go).
-func seedOne(name, target string, logger *slog.Logger) (seedAction, error) {
-	st, packHash, err := inspectSeedTarget(skillPackFS, embedRoot, name, target)
+// via the crash-safe staging swap (core/seedpack).
+func seedOne(name, target string, logger *slog.Logger) (seedpack.Action, error) {
+	st, packHash, err := seedpack.InspectTarget(skillPackFS, embedRoot, name, target)
 	if err != nil {
-		return actionSeed, err
+		return seedpack.ActionSeed, err
 	}
-	action, restamp := classifySeed(st, packHash, CurrentSeedVersion)
+	action, restamp := seedpack.Classify(st, packHash, CurrentSeedVersion)
 	switch action {
-	case actionPreserve:
+	case seedpack.ActionPreserve:
 		if logger != nil {
 			logger.Debug("research skill preserved (user-owned)", "skill", name, "dir", target)
 		}
-		return actionPreserve, nil
-	case actionModified:
+		return seedpack.ActionPreserve, nil
+	case seedpack.ActionModified:
 		if logger != nil {
 			logger.Info("research skill locally modified; preserved", "skill", name, "dir", target)
 		}
-		return actionModified, nil
-	case actionCurrent:
+		return seedpack.ActionModified, nil
+	case seedpack.ActionCurrent:
 		if restamp {
 			// Content equals the pack; marker missing/stale: re-claim it.
-			if err := writeMarkerAtomic(target, CurrentSeedVersion); err != nil {
-				return actionCurrent, err
+			if err := seedpack.WriteMarkerAtomic(target, CurrentSeedVersion); err != nil {
+				return seedpack.ActionCurrent, err
 			}
 		}
-		return actionCurrent, nil
+		return seedpack.ActionCurrent, nil
 	}
-	// actionSeed/actionUpdate: stage the full tree in a hidden sibling dir
+	// ActionSeed/ActionUpdate: stage the full tree in a hidden sibling dir
 	// and swap — an interruption leaves the target fully old or fully new.
-	if err := stageAndSwap(name, target, CurrentSeedVersion, func(stagingDir string) error {
+	if err := seedpack.StageAndSwap(name, target, CurrentSeedVersion, func(stagingDir string) error {
 		return writeEmbedTree(name, stagingDir)
 	}); err != nil {
 		return action, err
@@ -180,47 +173,6 @@ func writeEmbedTree(name, dest string) error {
 		if rerr != nil {
 			return rerr
 		}
-		return seedWriteFile(target, data, 0o644)
+		return seedpack.WriteFile(target, data, 0o644)
 	})
-}
-
-// readSeedVersion returns the pack marker's presence and version; missing
-// either reads (false, "").
-func readSeedVersion(target string) (hasMarker bool, version string) {
-	data, err := safeio.ReadFile(filepath.Join(target, seedVersionFile))
-	if err != nil {
-		return false, ""
-	}
-	return true, strings.TrimSpace(string(data))
-}
-
-// dirExists reports whether target exists and is a directory.
-func dirExists(target string) bool {
-	info, err := os.Stat(target)
-	return err == nil && info.IsDir()
-}
-
-// appendToResult records a skill name under the bucket for its action.
-func appendToResult(r *SeedSkillsResult, action seedAction, name string) {
-	switch action {
-	case actionSeed:
-		r.Seeded = append(r.Seeded, name)
-	case actionUpdate:
-		r.Updated = append(r.Updated, name)
-	case actionCurrent:
-		r.Current = append(r.Current, name)
-	case actionPreserve:
-		r.Preserved = append(r.Preserved, name)
-	case actionModified:
-		r.Modified = append(r.Modified, name)
-	}
-}
-
-// sortAll sorts every bucket of a result for deterministic output.
-func sortAll(r *SeedSkillsResult) {
-	sort.Strings(r.Seeded)
-	sort.Strings(r.Updated)
-	sort.Strings(r.Current)
-	sort.Strings(r.Preserved)
-	sort.Strings(r.Modified)
 }

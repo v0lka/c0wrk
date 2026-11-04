@@ -450,6 +450,10 @@ export function GetShellExecSettings() {
   return window['go']['desktop']['App']['GetShellExecSettings']();
 }
 
+export function GetSpecsStatus(arg1) {
+  return window['go']['desktop']['App']['GetSpecsStatus'](arg1);
+}
+
 export function GetStepOutput(arg1, arg2) {
   return window['go']['desktop']['App']['GetStepOutput'](arg1, arg2);
 }

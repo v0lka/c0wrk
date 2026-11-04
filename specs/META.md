@@ -261,7 +261,7 @@ What was evaluated and why it was rejected.
 2. Preserve the document format (sections, ordering) defined in this META.md
 3. Update cross-references if file paths changed
 4. After adding or removing a spec file, update `INDEX.md`
-5. ADRs with `Status: Accepted` are immutable; create a new ADR to supersede
+5. ADRs with `Status: Accepted` are immutable once committed to the repository; an uncommitted accepted ADR is an editable draft, and a committed one is superseded by a new ADR
 
 ### Validation checklist
 

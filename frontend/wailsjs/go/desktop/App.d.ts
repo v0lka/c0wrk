@@ -233,6 +233,8 @@ export function GetSessionWorkspace(arg1:string):Promise<string>;
 
 export function GetShellExecSettings():Promise<backend.ShellExecSettingsResponse>;
 
+export function GetSpecsStatus(arg1:string):Promise<backend.SpecsStatusDTO>;
+
 export function GetStepOutput(arg1:string,arg2:string):Promise<string>;
 
 export function GetSystemFonts():Promise<backend.SystemFontsResponse>;

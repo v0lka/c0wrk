@@ -18,6 +18,31 @@ vi.mock('./VectorStorePanel', () => ({ VectorStorePanel: () => null }))
 vi.mock('@/components/research', () => ({ ResearchPanel: () => null }))
 vi.mock('@/hooks/useProjectGitRepo', () => ({ useProjectGitRepo: vi.fn() }))
 
+// The Specs tab body fetches through @/api/specs — mocked here so the
+// specsStore fetch effect resolves without a Wails runtime (the boundary
+// validation itself is covered by api/specs.test.ts).
+vi.mock('@/api/specs', () => ({
+  getSpecsStatus: vi.fn(async () => ({
+    present: true,
+    root: '/ws/p1/specs',
+    files: [
+      { path: 'INDEX.md', title: 'Specs Index' },
+      { path: 'domains/testing.md', section: 'domains', title: 'Testing' },
+    ],
+    index_tasks: [],
+    adrs: [
+      {
+        number: '105',
+        slug: 'specs-sidebar-panel',
+        file: 'decisions/106-specs-sidebar-panel.md',
+        status: 'accepted',
+      },
+    ],
+    findings: [],
+    counts: { files: 2, adrs: 1, findings: 0, findings_by_kind: {} },
+  })),
+}))
+
 // Indexing master switch double — the gate is driven directly per test; the
 // real hook (and its GetConfig hydration/retry lifecycle) is covered by
 // useIndexingSettings.test.ts.
@@ -30,6 +55,7 @@ import { WorkspacePanel } from './WorkspacePanel'
 import { useProjectStore } from '@/stores/projectStore'
 import { useGitPanelStore, selectGitPanelTab } from '@/stores/gitPanelStore'
 import { useUIStore, selectWorkspaceTab } from '@/stores/uiStore'
+import { useSpecsStore } from '@/stores/specsStore'
 import type { ProjectInfo } from '@/types/models'
 
 function makeProject(overrides: Partial<ProjectInfo> & { id: string }): ProjectInfo {
@@ -81,6 +107,7 @@ beforeEach(() => {
   useProjectStore.setState({ projects: [P1, NO_PROJECT], activeProjectId: 'p1' })
   useGitPanelStore.getState().reset()
   useUIStore.setState({ workspaceTabByProject: {} })
+  useSpecsStore.getState().reset()
 })
 
 afterEach(() => {
@@ -101,7 +128,7 @@ describe('WorkspacePanel — layout by git-repo state', () => {
     renderPanel()
     await flush()
 
-    expect(tabCount()).toBe(3) // Explorer | Search | Research — no Git
+    expect(tabCount()).toBe(4) // Explorer | Search | Research | Specs — no Git
     expect(has('file-tree')).toBe(true)
     expect(has('git-panel')).toBe(false)
   })
@@ -114,7 +141,7 @@ describe('WorkspacePanel — layout by git-repo state', () => {
     renderPanel()
     await flush()
 
-    expect(tabCount()).toBe(3) // Git | Search | Research — no Explorer
+    expect(tabCount()).toBe(4) // Git | Search | Research | Specs — no Explorer
     expect(has('git-panel')).toBe(true)
     expect(has('file-tree')).toBe(false)
   })
@@ -138,6 +165,7 @@ describe('WorkspacePanel — layout by git-repo state', () => {
     await flush()
 
     expect(tabCount()).toBe(0)
+    expect(container?.querySelector('[data-segment-value="specs"]')).toBeNull()
     expect(has('file-tree')).toBe(true)
   })
 })
@@ -310,7 +338,7 @@ describe('WorkspacePanel — indexing gate (Search tab)', () => {
     await flush()
 
     expect(hasTab('semantics')).toBe(true)
-    expect(tabCount()).toBe(3) // Explorer | Search | Research
+    expect(tabCount()).toBe(4) // Explorer | Search | Research | Specs
 
     act(() => {
       useGitPanelStore.getState().setGitRepo(true, 'p1')
@@ -318,7 +346,7 @@ describe('WorkspacePanel — indexing gate (Search tab)', () => {
     await flush()
 
     expect(hasTab('semantics')).toBe(true)
-    expect(tabCount()).toBe(3) // Git | Search | Research
+    expect(tabCount()).toBe(4) // Git | Search | Research | Specs
   })
 
   it('hides the Search tab from the git layout while indexing is disabled', async () => {
@@ -331,7 +359,8 @@ describe('WorkspacePanel — indexing gate (Search tab)', () => {
     await flush()
 
     expect(hasTab('semantics')).toBe(false)
-    expect(tabCount()).toBe(2) // Git | Research — no Search
+    expect(hasTab('specs')).toBe(true) // Specs is not gated by indexing
+    expect(tabCount()).toBe(3) // Git | Research | Specs — no Search
   })
 
   it('hides the Search tab from the non-git layout while indexing is disabled', async () => {
@@ -341,7 +370,8 @@ describe('WorkspacePanel — indexing gate (Search tab)', () => {
     await flush()
 
     expect(hasTab('semantics')).toBe(false)
-    expect(tabCount()).toBe(2) // Explorer | Research — no Search
+    expect(hasTab('specs')).toBe(true)
+    expect(tabCount()).toBe(3) // Explorer | Research | Specs — no Search
   })
 
   it('remaps a remembered semantics tab to git (and persists it) when indexing is off', async () => {
@@ -411,5 +441,63 @@ describe('WorkspacePanel — indexing gate (Search tab)', () => {
 
     expect(selectWorkspaceTab(useUIStore.getState(), 'p1')).toBe('semantics')
     expect(container!.querySelector('[role="tabpanel"]')!.id).toBe('workspace-panel-semantics')
+  })
+})
+
+describe('WorkspacePanel — Specs tab', () => {
+  /** The rendered tab trigger values, in strip order. */
+  function tabValues(): string[] {
+    return Array.from(container!.querySelectorAll('[data-segment-value]')).map(
+      (el) => el.getAttribute('data-segment-value')!,
+    )
+  }
+
+  it('renders the Specs trigger after Research in both layouts', async () => {
+    renderPanel()
+    await flush()
+
+    expect(tabValues()).toEqual(['explorer', 'semantics', 'research', 'specs'])
+
+    act(() => {
+      useGitPanelStore.getState().setGitRepo(true, 'p1')
+    })
+    await flush()
+
+    expect(tabValues()).toEqual(['git', 'semantics', 'research', 'specs'])
+  })
+
+  it('a remembered specs tab stays put (no layout normalization touches it)', async () => {
+    useUIStore.setState({ workspaceTabByProject: { p1: 'specs' } })
+
+    renderPanel()
+    await flush()
+
+    expect(selectWorkspaceTab(useUIStore.getState(), 'p1')).toBe('specs')
+    const panel = container!.querySelector('[role="tabpanel"]')!
+    expect(panel.id).toBe('workspace-panel-specs')
+    expect(panel.getAttribute('aria-labelledby')).toBe('workspace-tab-specs')
+  })
+
+  it('mounts the specs body: fetch -> store -> rendered counts', async () => {
+    useUIStore.setState({ workspaceTabByProject: { p1: 'specs' } })
+
+    renderPanel()
+    await flush()
+
+    // The mocked @/api/specs payload flowed through specsStore into the DOM.
+    const s = useSpecsStore.getState()
+    expect(s.projectId).toBe('p1')
+    expect(s.status?.present).toBe(true)
+    expect(s.error).toBeNull()
+    expect(container!.textContent).toContain('2 spec files')
+    expect(container!.textContent).toContain('1 ADRs')
+  })
+
+  it('does not fetch while another tab is active', async () => {
+    renderPanel()
+    await flush()
+
+    expect(useSpecsStore.getState().status).toBeNull()
+    expect(useSpecsStore.getState().isLoading).toBe(false)
   })
 })
