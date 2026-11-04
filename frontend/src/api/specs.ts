@@ -99,7 +99,8 @@ function isSpecIndexTask(v: unknown): v is SpecIndexTask {
 
 /** An ADR record is well-typed when every field parsed from the file name
  *  (number, slug, file) and the classified status is a string, and the
- *  optional title/superseded_by are well-typed-or-absent. */
+ *  optional title/superseded_by/date (the git-derived add date, ADR-107)
+ *  are well-typed-or-absent. */
 function isSpecADRMeta(v: unknown): v is SpecADRMeta {
   if (!isRecord(v)) return false
   if (
@@ -112,7 +113,7 @@ function isSpecADRMeta(v: unknown): v is SpecADRMeta {
   }
   const optionalString = (key: string): boolean =>
     v[key] === undefined || v[key] === null || typeof v[key] === 'string'
-  return optionalString('title') && optionalString('superseded_by')
+  return optionalString('title') && optionalString('superseded_by') && optionalString('date')
 }
 
 /** A finding needs all three fields as strings; the kind is NOT restricted

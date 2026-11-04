@@ -145,7 +145,7 @@ func wireKeys(wire map[string]json.RawMessage) []string {
 // TestGetSpecsStatus_RealSpecsTree pins the populated RPC contract: the full
 // parsed model of a real specs/ tree (files incl. INDEX.md/META.md, the
 // INDEX task table, ADR metadata with status classification) plus exactly
-// the four seeded findings, consistent counts, and the stable wire shape.
+// the five seeded findings, consistent counts, and the stable wire shape.
 func TestGetSpecsStatus_RealSpecsTree(t *testing.T) {
 	api, workspaces := specsTestFrontend(t, project.ProjectInfo{ID: "proj-1", Name: "P"})
 	writeSpecsTree(t, workspaces["proj-1"])

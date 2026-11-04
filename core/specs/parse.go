@@ -636,8 +636,10 @@ func compareADRNumbers(a, b string) int {
 // coverage) plus the layout/supersession families (root files present,
 // decisions/ names well-formed, heading numbers matching file names,
 // supersession targets existing, the supersession graph acyclic). Every
-// check under-approximates: entries that do not look like workspace paths,
-// anchors in unreadable files, and a missing INDEX.md produce no findings.
+// check under-approximates: entries that do not look like workspace paths
+// and anchors in unreadable files produce no findings, and a missing
+// INDEX.md produces no INDEX_STALE findings (the ROOT_FILE_MISSING check
+// owns that state).
 func computeFindings(root *SpecsRoot, contents map[string]string, workspaceRoot string) []Finding {
 	findings := make([]Finding, 0, len(root.Files))
 	for _, f := range root.Files {

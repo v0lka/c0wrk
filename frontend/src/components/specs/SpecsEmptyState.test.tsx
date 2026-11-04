@@ -75,4 +75,14 @@ describe('SpecsEmptyState', () => {
       { newSession: false },
     )
   })
+
+  it('CTA keeps the short label but spells the gesture out in the tooltip (fullLabel, ADR-108)', async () => {
+    const container = await renderEmpty('/ws/p1/specs')
+    const cta = container.querySelector<HTMLButtonElement>(
+      '[data-testid="specs-initialize-cta"]',
+    )!
+
+    expect(cta.textContent).toContain(INITIALIZE_ACTION.label)
+    expect(cta.title).toBe('Initialize specs (spec-init) — Shift = new session')
+  })
 })

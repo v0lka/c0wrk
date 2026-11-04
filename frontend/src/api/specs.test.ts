@@ -107,6 +107,7 @@ describe('getSpecsStatus boundary validation', () => {
           validADR,
           { number: '106' }, // missing slug/file/status → dropped
           { number: '106', slug: 's', file: 'decisions/106-s.md', status: 'draft', title: 42 }, // non-string title → dropped
+          { number: '106', slug: 's', file: 'decisions/106-s.md', status: 'draft', date: 42 }, // non-string date → dropped
         ],
         findings: [
           validFinding,

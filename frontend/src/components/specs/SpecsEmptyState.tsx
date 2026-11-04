@@ -34,7 +34,7 @@ export function SpecsEmptyState({ root }: { root: string }) {
         data-testid="specs-initialize-cta"
         data-skill={INITIALIZE_ACTION.skill}
         onClick={(e) => dispatch(INITIALIZE_ACTION, e.shiftKey)}
-        title={`${INITIALIZE_ACTION.label} (${INITIALIZE_ACTION.skill}) — Shift = new session`}
+        title={`${INITIALIZE_ACTION.fullLabel ?? INITIALIZE_ACTION.label} (${INITIALIZE_ACTION.skill}) — Shift = new session`}
         className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-3 py-1.5 text-xs text-foreground transition-colors hover:bg-muted"
       >
         <BookPlus className="size-3.5 text-muted-foreground" />
