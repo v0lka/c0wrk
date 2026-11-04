@@ -2,6 +2,7 @@ package vectorindex
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -124,16 +125,16 @@ func (s *Service) ensureBranchGeneration(branch, branchRoot string) error {
 	hasData := dirHasEntries(branchRoot) || pathExists(sidecar) || pathExists(marker) || dirHasEntries(lexDir)
 	if hasData {
 		// Superseded generation: discard every artifact keyed by the old
-		// coordinates. Failures fall back to the historical open path — a
-		// half-wiped root with no manifest re-enters this gate and finishes
-		// the reset on the next open.
+		// coordinates. Fail closed — a wipe failure returns the error and
+		// the manifest is NOT written: the half-wiped root has no manifest,
+		// so the next open re-enters this gate and finishes the reset
+		// before anything is served under the new coordinates.
 		for _, victim := range []string{branchRoot, lexDir, sidecar, marker} {
 			if victim == "" {
 				continue
 			}
 			if err := os.RemoveAll(victim); err != nil {
-				s.logger.Warn("vector index: failed to discard superseded branch generation artifact",
-					"branch", branch, "path", victim, "error", err)
+				return fmt.Errorf("discarding superseded branch generation artifact %s: %w", victim, err)
 			}
 		}
 		s.logger.Info("vector index: reset branch generation (incompatible identity or embedding era)",

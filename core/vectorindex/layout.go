@@ -458,6 +458,12 @@ func (r *CorpusRegistry) RunStoreMigration(ctx context.Context, storageRoot, emb
 	}
 	logger := r.logger
 	cs := r.storeFor(storageRoot)
+	if cs == nil {
+		// Registry closed (app shutdown racing a late migration kick) —
+		// the same nil-store guard every sibling entry point (RunHygiene,
+		// StoreLedgerSnapshot) carries.
+		return nil
+	}
 
 	if existing := readStoreMigrationState(storageRoot); existing != nil && existing.Version > storeMigrationVersion {
 		// A newer binary's state file: refuse to run or rewrite it.
@@ -579,7 +585,7 @@ func (r *CorpusRegistry) RunStoreMigration(ctx context.Context, storageRoot, emb
 			settle()
 			continue
 		}
-		if cs.Published(key) {
+		if cs.publishedCompatible(key, embeddingFP, dims) {
 			// The snapshot's corpus already exists (built by an attach, or
 			// promoted by an earlier unit/run): the validated new state
 			// supersedes this duplicate copy.
@@ -601,10 +607,10 @@ func (r *CorpusRegistry) RunStoreMigration(ctx context.Context, storageRoot, emb
 		if !started {
 			// A live corpus build owns the key: wait a short bound, then
 			// re-check; on expiry defer the unit to the next sweep.
-			if !cs.waitBuildFor(waitCh, key, sweepLeaseWait) {
+			if !cs.waitBuildFor(waitCh, key, embeddingFP, dims, sweepLeaseWait) {
 				return abandon("corpus build lease for " + key + " did not settle in time")
 			}
-			if cs.Published(key) {
+			if cs.publishedCompatible(key, embeddingFP, dims) {
 				removeLegacyStoreArtifacts(logger, unit.srcRoot, branch)
 				if err := writeBranchRef(storageRoot, branch, key); err != nil {
 					logger.Debug("vector index: could not record the migrated branch's reference",

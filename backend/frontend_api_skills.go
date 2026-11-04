@@ -97,6 +97,18 @@ func (f *FrontendAPI) invalidateSkillCache() {
 	atomic.AddUint64(&f.skillCacheGen, 1)
 }
 
+// emitSkillsChanged emits the global skills:changed event (no payload —
+// consumers re-read via the skills RPCs) after a watched skill directory
+// changes. Nil-guarded like every other emitter: the fsnotify callback that
+// emits it can fire in tests or early startup before the Wails event wiring
+// lands.
+func (f *FrontendAPI) emitSkillsChanged() {
+	f.seedAcquire()
+	if f.emitEvent != nil {
+		f.emitEvent(EventSkillsChanged, nil)
+	}
+}
+
 // startSkillsWatchers watches each existing skill directory (debounced):
 // cache invalidation plus a skills:changed event. Missing directories are
 // skipped until an app restart — the accepted trade-off.
@@ -112,7 +124,7 @@ func (f *FrontendAPI) startSkillsWatchers(dirs []string) {
 		}
 		watcher, err := workspace.NewWatcher(dir, func(_ []string) {
 			f.invalidateSkillCache()
-			f.emitEvent(EventSkillsChanged, nil)
+			f.emitSkillsChanged()
 		}, f.log())
 		if err != nil {
 			f.log().Warn("failed to watch skill directory", "dir", dir, "error", err)

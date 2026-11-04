@@ -78,10 +78,26 @@ func rootRefPath(storageRoot, rootKey string) string {
 }
 
 // branchRefKey derives the refs/ file key of a branch reference from the
-// branch's short name, through the same sanitizer every other branch-keyed
-// identity uses (a collision keeps the shared reference — the historical
-// lossy-sanitizer posture).
+// branch's name as a SHA-256 of the name — NOT through the historical
+// lossy sanitizer. The sanitizer (and case-insensitive filesystems) fold
+// distinct branch names onto ONE marker file: `bref_Feature.ref` and
+// `bref_feature.ref` are the same file on macOS/Windows defaults, and the
+// sanitizer's own `/`→`_` and character-stripping folds collapse
+// `feature/x` with `feature_x` on EVERY filesystem — the second live
+// branch's write would silently replace the first's ownership record and
+// the sweep would reclaim a live branch's corpus. The hash key is
+// injective over branch names. Markers written by earlier builds under
+// the sanitized key are still honored: readers keep every key derivable
+// from a SURVIVING branch by EITHER derivation, so an upgrade never drops
+// an existing keep.
 func branchRefKey(branch string) string {
+	return branchRefKeyPrefix + computeHash([]byte(branch))
+}
+
+// legacyBranchRefKey is the pre-hash sanitized marker key of a branch
+// (kept for reading and removing markers written by earlier builds; see
+// branchRefKey).
+func legacyBranchRefKey(branch string) string {
 	sanitized := strings.ReplaceAll(branch, "/", "_")
 	return branchRefKeyPrefix + sanitizeRe.ReplaceAllString(sanitized, "")
 }
@@ -111,7 +127,16 @@ func writeRootRef(storageRoot, rootKey, workspaceRoot, snapKey string) error {
 // commit is captured by snapKey's corpus, so the branch owns a keep on it.
 // The ref is written by the attaching root (its HEAD is the branch tip) and
 // removed by the branch's deletion — the branch is an OWNER through this
-// pointer, never through a directory name (ADR-104 §1 L3).
+// pointer, never through a directory name (ADR-104 §1 L3). A legacy
+// sanitized-name marker of the same branch is deliberately NOT removed
+// here: legacy keys can COLLIDE across distinct branch spellings (the
+// sanitizer's /→_ and character stripping, and case-insensitive
+// filesystems), so removing one could drop a different SURVIVING branch's
+// only ownership record — the exact keep this hash keying exists to
+// protect. The legacy spelling is honored on read (liveRootReferences
+// keeps both derivations for every surviving branch) and removed only by
+// the branch-deletion path (removeBranchRef removes both spellings of the
+// deleted branch); a stale legacy marker therefore only ever over-keeps.
 func writeBranchRef(storageRoot, branch, snapKey string) error {
 	if branch == "" || snapKey == "" {
 		return os.ErrInvalid
@@ -119,16 +144,13 @@ func writeBranchRef(storageRoot, branch, snapKey string) error {
 	return writeRefRecord(storageRoot, branchRefKey(branch), rootRef{Snapshot: snapKey})
 }
 
-// writeRefRecord is the shared atomic write of one refs/ record.
+// writeRefRecord is the shared atomic write of one refs/ record. Markers
+// live ONLY at <storageRoot>/refs/ — the storage-root level, outside any
+// §3 generation — so they survive every generation advance without any
+// carry (the generation tree's own refs/ placeholder directory is empty
+// by design; see storeRefsDirName).
 func writeRefRecord(storageRoot, key string, r rootRef) error {
-	return writeRefRecordIn(filepath.Join(storageRoot, refsDirName), key, r)
-}
-
-// writeRefRecordIn writes one refs/ record into an EXPLICIT refs directory —
-// the §3 relocation seam (chunkstore.go): once a store generation exists,
-// ownership markers live under the generation's refs/ tree, and the writers
-// resolve that directory before calling this.
-func writeRefRecordIn(refsDir, key string, r rootRef) error {
+	refsDir := filepath.Join(storageRoot, refsDirName)
 	if err := ensureRealDir(refsDir, 0o750); err != nil {
 		return err
 	}
@@ -151,9 +173,13 @@ func removeRootRef(storageRoot, rootKey string) error {
 }
 
 // removeBranchRef deletes a branch's reference (the branch's own detach —
-// DeleteBranchData). Missing-is-no-op like removeRootRef.
+// DeleteBranchData). Both marker forms of the branch are removed. Missing
+// -is-no-op like removeRootRef.
 func removeBranchRef(storageRoot, branch string) error {
-	return removeRootRef(storageRoot, branchRefKey(branch))
+	if err := removeRootRef(storageRoot, branchRefKey(branch)); err != nil {
+		return err
+	}
+	return removeRootRef(storageRoot, legacyBranchRefKey(branch))
 }
 
 // rootRefLive reports whether the marker's workspace tree still exists. The
@@ -167,14 +193,18 @@ func rootRefLive(r rootRef) bool {
 	return err == nil && info.IsDir()
 }
 
-// readRootRefs loads every ownership marker under storageRoot. ok is false
-// when the refs/ directory does not exist — a store that never recorded an
-// owner (pre-stage-5 corpora, or a store only ever touched by the legacy
-// branch model); the sweep then keeps every corpus/overlay artifact
-// (conservative upgrade posture: the first marker-writing attach opts the
-// store into reachability GC). Malformed entries are returned as zero-value
-// refs keyed by their (shape-validated) file name — never trusted, never
-// deleted by the sweep.
+// readRootRefs loads every ownership marker under storageRoot. ok is
+// false when the refs/ directory does not exist (a store that never
+// recorded an owner — the sweep then keeps every corpus/overlay artifact,
+// the conservative upgrade posture: the first marker-writing attach opts
+// the store into reachability GC) OR when any single marker entry exists
+// but cannot be READ or PARSED (a transient EACCES/EMFILE/EIO, an
+// AV/backup lock, or a foreign marker format written by a newer binary).
+// Folding such an entry into a zero-value ref would silently drop a
+// possibly-LIVE owner's identity from the keep set and the sweep would
+// delete its overlay and corpora — the per-entry conservative posture
+// mirrors the directory-level one: resolve nothing, keep everything, and
+// let the next sweep retry against the intact markers.
 func readRootRefs(storageRoot string) (refs map[string]rootRef, ok bool) {
 	entries, err := os.ReadDir(filepath.Join(storageRoot, refsDirName))
 	if err != nil {
@@ -187,17 +217,20 @@ func readRootRefs(storageRoot string) (refs map[string]rootRef, ok bool) {
 		}
 		key, ok := strings.CutSuffix(entry.Name(), rootRefSuffix)
 		if !ok || !isSafeStoreKeySegment(key) {
-			continue // not an owner record — never removed, never trusted
+			continue // not an owner record — never trusted, never removed
 		}
 		data, err := safeio.ReadFile(rootRefPath(storageRoot, key))
 		if err != nil {
-			refs[key] = rootRef{} // present but unreadable: not live, not deleted
-			continue
+			// Present but unreadable: the owner may well be live — only
+			// the read failed. Resolve nothing this pass.
+			return nil, false
 		}
 		var r rootRef
 		if json.Unmarshal(data, &r) != nil || r.Format != rootRefFormat {
-			refs[key] = rootRef{}
-			continue
+			// A foreign/newer marker format: this binary cannot interpret
+			// the ownership it records — keep everything rather than
+			// detach owners on an upgrade/downgrade cycle.
+			return nil, false
 		}
 		refs[key] = r
 	}
@@ -238,27 +271,33 @@ func identityFromCollectionName(name string) (string, bool) {
 //     goes with it;
 //   - a BRANCH reference whose branch is absent from keepBranches (the
 //     branch was deleted while the app was not running) is removed the same
-//     way — the branch's own reference, not its data, is the detach.
+//     way — the branch's own reference, not its data, is the detach. A
+//     marker keyed by EITHER branchRefKey derivation (the current hash key
+//     or the legacy sanitized key written by earlier builds) survives
+//     while its branch survives.
 //
 // The data itself is reclaimed by the caller's sweep only if nothing else
-// reaches it. Fail-soft: an unreadable refs dir reports no owners
-// (ok=false), leaving every shared artifact kept.
+// reaches it. Fail-soft: an unreadable refs dir — or a single unreadable
+// or foreign-format marker in it — reports no owners (ok=false), leaving
+// every shared artifact kept.
 func liveRootReferences(logger *slog.Logger, storageRoot string, keepBranches []string, extraProtectedSnapKeys map[string]struct{}) (keepIdentities map[string]struct{}) {
 	refs, ok := readRootRefs(storageRoot)
 	if !ok {
 		return nil
 	}
-	survivingBranches := make(map[string]struct{}, len(keepBranches))
+	survivingBranches := make(map[string]struct{}, 2*len(keepBranches))
 	for _, branch := range keepBranches {
-		if branch != "" {
-			survivingBranches[branchRefKey(branch)] = struct{}{}
+		if branch == "" {
+			continue
 		}
+		survivingBranches[branchRefKey(branch)] = struct{}{}
+		survivingBranches[legacyBranchRefKey(branch)] = struct{}{}
 	}
 	keep := make(map[string]struct{}, len(refs)+len(extraProtectedSnapKeys))
 	for key, r := range refs {
 		wellFormed := r.Snapshot != "" && isSafeStoreKeySegment(r.Snapshot)
 		if !wellFormed {
-			continue // unreadable or foreign record: trusted by no one, deleted by no one
+			continue // a well-formed envelope recording no usable snapshot: trusted by no one, deleted by no one
 		}
 		if isBranchRefKey := strings.HasPrefix(key, branchRefKeyPrefix); isBranchRefKey {
 			if _, survives := survivingBranches[key]; !survives {

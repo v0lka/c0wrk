@@ -1406,7 +1406,12 @@ func (m *Manager) kickStoreMigration(workspacePath string) {
 	m.mu.Unlock()
 
 	if !m.addIndexingWork() {
+		// addIndexingWork is called past m.mu.Unlock; take the lock back so
+		// the cancel honors cancelStoreMigrationLocked's must-hold-m.mu
+		// contract like the SwitchProject/Shutdown callers do.
+		m.mu.Lock()
 		m.cancelStoreMigrationLocked()
+		m.mu.Unlock()
 		cancel()
 		return
 	}

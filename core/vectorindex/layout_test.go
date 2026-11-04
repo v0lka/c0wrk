@@ -921,7 +921,7 @@ func TestStoreMigration_FallbackReasons_HonestSkips(t *testing.T) {
 		t.Fatalf("sweep state = %+v, want done despite skips", st)
 	}
 	for unit, want := range map[string]string{
-		"branch:" + collectionName("foreign-era"): "generation manifest absent or foreign embedding era",
+		"branch:" + collectionName("foreign-era"): "generation manifest names a foreign embedding era",
 		"branch:" + collectionName("fat-store"):   "content-less marker absent",
 		"branch:" + collectionName("ghost"):       "branch absent from the local clone (store left in place)",
 	} {

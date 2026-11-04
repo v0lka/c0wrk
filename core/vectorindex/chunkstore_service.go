@@ -14,16 +14,23 @@ package vectorindex
 // collection — sum(len(row.Chunks)) == collection.Count(). Poison-dropped
 // chunks never commit, so they are absent from both sides; adopted corpus
 // files create sidecar entries but no documents, so they never inflate the
-// count. A pre-adoption store's older documents (committed before the
-// generation existed) break the equality and the flush defers — the v1→v2
-// chunk-record migration is what completes such stores, and the chunk GC
-// treats a store without its table conservatively (keeps every chunk).
+// count. A store whose rows cannot reach the equality keeps its legacy
+// legs serving and its §3 table deferred indefinitely: this happens for
+// any overlay that still holds documents committed BEFORE its §3 adoption
+// (the v1→v2 chunk-record migration completes SNAPSHOTS only, never
+// overlays — its source reader is bound to the driving root's tree, while
+// an overlay's rows must derive from its OWN tree). The chunk GC does NOT
+// keep such a store's records forever: a deferred overlay's committed
+// chunk records become sweepable orphans once the grace window elapses —
+// they are re-derivable through the content-addressed embedding cache if
+// a later re-index of the legacy paths ever completes the rows.
 
 import (
 	"context"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 
 	chromem "github.com/philippgille/chromem-go"
@@ -98,9 +105,22 @@ type pendingOccRow struct {
 // Merge semantics: a batch carrying the path's chunk 0 RESTARTS the row (a
 // re-index re-commits the whole file); a batch without chunk 0 (the tail
 // of a window-spanning file) MERGES into the existing row at its indices.
-// A failed embed or chunk write drops the path's pending occurrences — the
-// count rule then keeps the table unwritten rather than referencing a
-// missing chunk. Caller must hold s.mu (write).
+// Every occurrence carries its TRUE chunk index explicitly (the
+// occurrence grammar's index field): a mid-file poison drop (the batch
+// embedder's per-text retry failure) leaves a permanent gap in the file's
+// 0..n-1 sequence, and the row preserves that gap — occurrences are never
+// re-positioned by slice compaction, so openV2Corpus's
+// DocumentID(path, i) mapping stays exact. A failed embed or chunk write
+// poisons the path FOR THE WHOLE BATCH (sticky) AND drops the path's
+// accumulated row: the pending occurrences are dropped, every later
+// document of that path in the same batch is skipped, and the previous
+// version's row (adopted from the last flushed table) is discarded too —
+// otherwise a later CONTINUATION batch would merge its tail into the
+// PREVIOUS version's row under the new blob hash, baking a two-version
+// chimera row that the count rule cannot detect; without a base the
+// continuation starts a fresh tail-only row that fails the count rule and
+// defers the flush. The count rule then keeps the table unwritten
+// rather than referencing a missing chunk. Caller must hold s.mu (write).
 func (s *Service) recordChunkRecordsLocked(ctx context.Context, docs []chromem.Document) {
 	ps := s.current
 	if ps.storeGen == "" || len(docs) == 0 {
@@ -110,6 +130,7 @@ func (s *Service) recordChunkRecordsLocked(ctx context.Context, docs []chromem.D
 		ps.chunkRows = make(map[string]occurrenceRow)
 	}
 	pending := make(map[string]*pendingOccRow, len(docs))
+	poisoned := make(map[string]bool)
 	for i := range docs {
 		d := &docs[i]
 		rel := d.Metadata[relPathMetaKey]
@@ -117,6 +138,9 @@ func (s *Service) recordChunkRecordsLocked(ctx context.Context, docs []chromem.D
 		idx, ok := chunkIndexFromID(d.ID)
 		if rel == "" || blob == "" || !ok {
 			continue
+		}
+		if poisoned[rel] {
+			continue // sticky batch poison: the path's row defers wholesale
 		}
 		vec := d.Embedding
 		if len(vec) == 0 {
@@ -137,7 +161,15 @@ func (s *Service) recordChunkRecordsLocked(ctx context.Context, docs []chromem.D
 			} else {
 				s.logger.Warn("vector index: shadow embedding failed; table flush deferred",
 					"path", rel, "error", err)
+				poisoned[rel] = true
 				delete(pending, rel)
+				// The accumulated row goes too (it may hold the PREVIOUS
+				// version's occurrences adopted from the last flushed
+				// table): a later continuation batch must not merge its
+				// tail into it and flush a two-version chimera the count
+				// rule accepts — it starts a fresh tail-only row that
+				// fails the count rule instead.
+				delete(ps.chunkRows, rel)
 				continue
 			}
 		}
@@ -145,7 +177,12 @@ func (s *Service) recordChunkRecordsLocked(ctx context.Context, docs []chromem.D
 		if err := writeChunkRecord(ps.storeGen, c, vec); err != nil {
 			s.logger.Warn("vector index: chunk record write failed; table flush deferred",
 				"path", rel, "error", err)
+			poisoned[rel] = true
 			delete(pending, rel)
+			// Same cross-batch scope as the shadow-embed poison above: the
+			// previous version's accumulated row is dropped so a later
+			// continuation batch cannot merge into it.
+			delete(ps.chunkRows, rel)
 			continue
 		}
 		row := pending[rel]
@@ -155,7 +192,7 @@ func (s *Service) recordChunkRecordsLocked(ctx context.Context, docs []chromem.D
 		}
 		start, _ := strconv.Atoi(d.Metadata["start_line"])
 		end, _ := strconv.Atoi(d.Metadata["end_line"])
-		row.occs[idx] = chunkOccurrence{C: c, Start: start, End: end, Language: d.Metadata["language"]}
+		row.occs[idx] = chunkOccurrence{C: c, Index: idx, Start: start, End: end, Language: d.Metadata["language"]}
 		if idx == 0 {
 			row.hasZero = true
 		}
@@ -174,34 +211,32 @@ func (s *Service) recordChunkRecordsLocked(ctx context.Context, docs []chromem.D
 		}
 		row := ps.chunkRows[rel]
 		row.BlobHash = prow.blob
-		maxIdx := -1
-		for idx := range prow.occs {
-			if idx > maxIdx {
-				maxIdx = idx
-			}
+		for _, occ := range prow.occs {
+			row.Chunks = upsertOccurrence(row.Chunks, occ)
 		}
-		for len(row.Chunks) <= maxIdx {
-			row.Chunks = append(row.Chunks, chunkOccurrence{})
-		}
-		for idx, occ := range prow.occs {
-			row.Chunks[idx] = occ
-		}
-		// Drop placeholder slots (an unembedded or failed chunk leaves a
-		// gap): the count rule keeps the table unwritten if any went
-		// missing, so a gap never reaches the disk form.
-		compact := row.Chunks[:0]
-		for _, occ := range row.Chunks {
-			if occ.C != "" {
-				compact = append(compact, occ)
-			}
-		}
-		row.Chunks = compact
 		if len(row.Chunks) == 0 {
 			delete(ps.chunkRows, rel)
 			continue
 		}
 		ps.chunkRows[rel] = row
 	}
+}
+
+// upsertOccurrence inserts or replaces one occurrence in an Index-sorted
+// slice (kept sorted so the durable encode is deterministic and a
+// re-committed chunk index overwrites its earlier entry instead of
+// duplicating it — the count rule sums slice lengths and must never count
+// one index twice).
+func upsertOccurrence(chunks []chunkOccurrence, occ chunkOccurrence) []chunkOccurrence {
+	i := sort.Search(len(chunks), func(j int) bool { return chunks[j].Index >= occ.Index })
+	if i < len(chunks) && chunks[i].Index == occ.Index {
+		chunks[i] = occ
+		return chunks
+	}
+	chunks = append(chunks, chunkOccurrence{})
+	copy(chunks[i+1:], chunks[i:])
+	chunks[i] = occ
+	return chunks
 }
 
 // dropChunkRowsLocked removes the §3 rows of the given occurrence paths —
@@ -230,9 +265,18 @@ func (s *Service) sidecarSettledExtras(ps *projectState) {
 	s.retireLegacyOverlaySidecar(ps)
 	if !isOverlayIdentity(ps.currentBranch) || !ps.chunkRowsComplete() {
 		if ps.storeGen != "" && isOverlayIdentity(ps.currentBranch) {
+			// The count is computed defensively: this boundary is reached
+			// with collection == nil after a failed incoming open left the
+			// residents released while the overlay identity and storeGen
+			// survived (SwitchBranch's error path) — the log must report,
+			// never panic (this runs on the RPC/shutdown path).
+			docs := -1
+			if ps.collection != nil {
+				docs = ps.collection.Count()
+			}
 			s.logger.Debug("vector index: overlay table flush deferred (rows incomplete)",
 				"store", ps.currentBranch,
-				"rows", len(ps.chunkRows), "documents", ps.collection.Count())
+				"rows", len(ps.chunkRows), "documents", docs)
 		}
 		return
 	}

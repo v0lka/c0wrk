@@ -13,13 +13,14 @@ package vectorindex
 //	    manifest.json             {format:2, embedding_fp E, dims, created}
 //	    chunks/<aa>/<C>.chunk     L1: C → vector (dims×f32 LE), no text
 //	    snapshots/<oid16>/
-//	      occurrences.tab          L2 rows: path → blobHash, [(C, s, e, lang)]
+//	      occurrences.tab          L2 rows: path → blobHash, [(C, i, s, e, lang)]
 //	      table.json               {chunker_fp K, ignore_fp I, counts, bytes}
 //	      lexical/                 per-snapshot bleve index
-//	    refs/<sanitized>.ref      ownership pointers (stage-5 records relocated)
 //	    roots/<sanitized-root>/   L4: overlay.tab, overlay-lexical/, sidecar.json,
 //	                              view.json
 //	  CURRENT                     atomic-rename pointer to the live generation
+//	refs/<key>.ref                ownership markers (stage-5 records) live at
+//	                              the STORAGE-ROOT level, outside generations/
 //
 // Write ordering (ADR-104 §3, load-bearing for crash recovery): chunk
 // records land BEFORE any table referencing them; tables land by
@@ -32,9 +33,11 @@ package vectorindex
 // An unknown manifest format makes the whole tree read as ABSENT (forward
 // compatibility refused): nothing is served, nothing is deleted. The
 // generation is E-scoped: an embedding-era change advances to a NEW
-// generation directory (occurrence tables and refs are carried over —
-// they are era-independent — while chunk vectors re-fill from the
-// embedding cache's misses).
+// generation directory. Chunk vectors and the tables that reference them
+// are era-bound, so NOTHING under snapshots/ is carried across the
+// boundary — the next attach re-publishes each snapshot's tables through
+// the ordinary build pass (embedding-cache-spared). Ownership markers
+// (refs/) live outside the generations tree and survive every advance.
 
 import (
 	"encoding/binary"
@@ -88,10 +91,12 @@ const (
 	// snapshotTableName is the snapshot's header/completion record.
 	snapshotTableName = "table.json"
 
-	// storeRefsDirName holds the generation's ownership pointers — the
-	// stage-5 refs/ records (root markers, branch references), relocated
-	// under the generation once it exists. Readers union both locations so
-	// a pre-§3 store's markers keep working through the adoption.
+	// storeRefsDirName is the §3 tree's placeholder refs/ directory under
+	// each generation. Ownership markers do NOT live here: they live at
+	// the STORAGE-ROOT refs/ (rootrefs.go — the same records the legacy
+	// layout reads), outside the generations tree, so they survive every
+	// era advance without any carry. The per-generation directory is kept
+	// only for layout stability of trees created by earlier builds.
 	storeRefsDirName = "refs"
 
 	// storeRootsDirName holds the per-root L4 state directories (the root
@@ -138,12 +143,16 @@ func (m *storeGenerationManifest) compatible(embeddingFP string, dims int) bool 
 }
 
 // chunkOccurrence is one L2 occurrence inside a table row: the chunk's
-// content identity C (L1), its line range, and its language. The chunk
+// content identity C (L1), its TRUE chunk index (the DocumentID suffix i —
+// a poison-dropped chunk leaves a gap in a file's 0..n-1 sequence, so the
+// row's slice positions are NOT the chunk indices and the index must be
+// carried explicitly), its line range, and its language. The chunk
 // TEXT is deliberately absent — ADR-049's content-less contract is
 // preserved at the store level (reconstruction stays best-effort from
 // sources).
 type chunkOccurrence struct {
 	C        string
+	Index    int
 	Start    int
 	End      int
 	Language string
@@ -248,12 +257,16 @@ func readGenerationManifest(dir string) *storeGenerationManifest {
 //   - no tree at all → create generation 0 with the era's manifest, publish
 //     CURRENT (the store is born §3-native);
 //   - CURRENT generation compatible → return it (the common case);
-//   - CURRENT generation foreign-era → create the NEXT generation,
-//     carry over the era-independent records (every snapshot's
-//     occurrences.tab + table.json and the refs/ tree — vectors re-fill
-//     from embedding-cache misses), and atomically advance CURRENT. The
-//     superseded generation's chunk files stop being referenced; the §6
-//     orphan sweep collects them once no table points into them.
+//   - CURRENT generation foreign-era → create the NEXT generation EMPTY
+//     and atomically advance CURRENT. NOTHING under snapshots/ is carried
+//     across the boundary: chunk vectors AND the tables referencing them
+//     are era-bound, and a carried table would be destroyed at its first
+//     open and re-published anyway (advanceStoreGeneration); each
+//     snapshot's tables return through the next attach's ordinary build
+//     pass, embedding-cache-spared. refs/ lives outside the generations
+//     tree and survives untouched. The superseded generation stops being
+//     referenced; the §6 sweep collects its chunks and tables once
+//     unreachable.
 //
 // Errors surface to the caller's fail-soft handling: a store that cannot
 // create its generation keeps operating in the legacy shape (§3 writes are
@@ -265,22 +278,22 @@ func ensureStoreGeneration(storageRoot, embeddingFP string, dims int) (string, e
 		}
 		return advanceStoreGeneration(storageRoot, dir, embeddingFP, dims)
 	}
-	// A malformed/unknown-format tree is read as absent but never deleted:
-	// park the §3 tree aside only if a foreign CURRENT blocks creation —
-	// instead, refuse to adopt (the conservative posture; unknown formats
-	// belong to a newer binary).
-	if pathExists(storePath(storageRoot)) {
-		if data, err := safeio.ReadFile(currentPointerPath(storageRoot)); err == nil {
-			name := strings.TrimSpace(string(data))
-			if n, convErr := strconv.Atoi(name); convErr == nil && n >= 0 {
-				dir := generationPath(storageRoot, n)
-				if readGenerationManifest(dir) != nil {
-					// A readable manifest we refused above must be a
-					// foreign format: adopt nothing, serve legacy.
-					return "", errForeignStoreGeneration
-				}
-			}
-		}
+	// CURRENT did not resolve to a readable, format-known generation. The
+	// creation leg rewrites generation 0's manifest and points CURRENT at
+	// it — safe ONLY for a tree that never completed its first create (or
+	// holds no store/ tree at all). Every other shape — an unreadable
+	// CURRENT pointer (permissions, fd exhaustion, an AV/indexer lock), a
+	// named generation whose manifest is absent or unreadable, or a
+	// readable manifest of a foreign format — may hide chunk records and
+	// tables of another embedding era under an identity this binary cannot
+	// verify (era identity lives ONLY in the manifest; tables and chunk
+	// records carry none). Overwriting generation 0 in place would serve
+	// that data under the new era's manifest — the cross-era mixing the
+	// generation model exists to prevent — so the tree is refused, not
+	// rewritten blind: §3 reads see absent, §3 writes skip, the legacy
+	// shape keeps serving, nothing is deleted.
+	if dir, err := firstGenerationAdoption(storageRoot, embeddingFP, dims); dir != "" || err != nil {
+		return dir, err
 	}
 	dir := generationPath(storageRoot, 0)
 	if err := writeGenerationDirectory(dir, &storeGenerationManifest{
@@ -290,16 +303,123 @@ func ensureStoreGeneration(storageRoot, embeddingFP string, dims int) (string, e
 	}); err != nil {
 		return "", err
 	}
-	if err := publishCurrentGeneration(storageRoot, 0); err != nil {
+	if adopted, err := publishCurrentGeneration(storageRoot, 0); err != nil {
 		return "", err
+	} else if adopted != "" {
+		// A concurrent ensure won a race and published a generation while
+		// this caller was creating generation 0: adopt the winner.
+		return adopted, nil
 	}
 	return dir, nil
+}
+
+// firstGenerationAdoption decides ensureStoreGeneration's creation leg for
+// a tree whose CURRENT pointer did not resolve. It returns:
+//
+//   - ("", nil): safe to (re)create generation 0 — no store/ tree at all,
+//     or the clean crashed-first-create window (a store/ tree with no
+//     CURRENT and an empty, manifest-less generation 0);
+//   - (gen0, nil): a compatible generation 0 exists without its pointer —
+//     the pointer write is replayed and generation 0 returned (idempotent
+//     recovery, nothing rewritten);
+//   - ("", errForeignStoreGeneration): the tree must not be adopted or
+//     recreated (see ensureStoreGeneration), or a transient I/O error made
+//     the decision unknowable (the conservative answer is the same).
+func firstGenerationAdoption(storageRoot, embeddingFP string, dims int) (string, error) {
+	store := storePath(storageRoot)
+	if !pathExists(store) {
+		return "", nil // no tree at all: create generation 0
+	}
+	if _, err := safeio.ReadFile(currentPointerPath(storageRoot)); err == nil {
+		// A CURRENT that readCurrentGeneration refused: it names a
+		// non-plain generation, or the named generation's manifest is
+		// absent, unreadable, or foreign-format. The manifest-before-
+		// pointer write ordering makes every legitimately-created
+		// generation resolvable, so each of these shapes hides a possibly
+		// populated directory behind an era this binary cannot verify.
+		return "", errForeignStoreGeneration
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		// The pointer itself is unreadable: the tree was adopted once —
+		// never rewrite it blind.
+		return "", errForeignStoreGeneration
+	}
+	// No CURRENT pointer: the crashed-first-create window (the store/ tree
+	// was created but the pointer rename never landed). Recover ONLY when
+	// generation 0 is provably this era's (a compatible manifest — replay
+	// the pointer) or provably empty (no manifest, no chunks, no
+	// snapshots — recreate). Anything else — a foreign-era generation 0
+	// without its pointer, an unreadable manifest, or debris beyond
+	// generation 0 — is corruption, not a crash window.
+	gens, err := os.ReadDir(filepath.Join(store, storeGenerationsDirName))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return "", errForeignStoreGeneration
+	}
+	for _, e := range gens {
+		if n, convErr := strconv.Atoi(e.Name()); convErr != nil || n > 0 {
+			return "", errForeignStoreGeneration
+		}
+	}
+	gen0 := generationPath(storageRoot, 0)
+	m, absent := readGenerationManifestClassified(gen0)
+	switch {
+	case absent:
+		if dirHasEntries(filepath.Join(gen0, storeChunksDirName)) ||
+			dirHasEntries(filepath.Join(gen0, storeSnapshotsDirName)) {
+			// Data without a manifest: its era is unknowable — refuse
+			// rather than adopt it under a fresh manifest.
+			return "", errForeignStoreGeneration
+		}
+		return "", nil // the clean crash window: recreate generation 0
+	case m.compatible(embeddingFP, dims):
+		adopted, err := publishCurrentGeneration(storageRoot, 0)
+		if err != nil {
+			return "", err
+		}
+		if adopted != "" {
+			// A concurrent ensure published a higher generation while this
+			// caller was deciding: adopt the winner's directory.
+			return adopted, nil
+		}
+		return gen0, nil
+	default:
+		// Present but foreign-era or unparsable: never overwritten.
+		return "", errForeignStoreGeneration
+	}
+}
+
+// readGenerationManifestClassified loads a generation manifest and
+// distinguishes ABSENT (fs.ErrNotExist — the directory never completed a
+// create) from UNREADABLE/unparsable (present but not loadable): callers
+// deciding whether a directory may be rewritten in place must never fold
+// an unreadable manifest into a missing one.
+func readGenerationManifestClassified(dir string) (m *storeGenerationManifest, absent bool) {
+	data, err := safeio.ReadFile(filepath.Join(dir, storeGenerationManifestName))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, true
+	}
+	if err != nil {
+		return nil, false
+	}
+	var mm storeGenerationManifest
+	if json.Unmarshal(data, &mm) != nil {
+		return nil, false
+	}
+	return &mm, false
 }
 
 // errForeignStoreGeneration marks a tree whose CURRENT names a generation
 // this binary refuses (unknown manifest format). §3 writes skip; §3 reads
 // see absent; nothing is deleted.
 var errForeignStoreGeneration = errors.New("vector store generation has an unknown format")
+
+// errChunkRecordTorn marks a chunk-record read that proves durable store
+// damage — a record whose bytes are not a valid vector of the expected
+// width (empty, torn, over-long, or not a regular file). Distinct from a
+// transient read fault (permissions, fd exhaustion, a lock): only a torn
+// record justifies unpublishing the table that references it (the
+// power-loss self-heal); a transient fault must leave the publication
+// intact for the next attempt.
+var errChunkRecordTorn = errors.New("vector chunk record is torn")
 
 // writeGenerationDirectory creates one generation directory with its
 // manifest (idempotent on an existing compatible manifest).
@@ -323,31 +443,71 @@ func writeGenerationDirectory(dir string, m *storeGenerationManifest) error {
 }
 
 // publishCurrentGeneration atomically advances the CURRENT pointer.
-func publishCurrentGeneration(storageRoot string, n int) error {
+// MONOTONIC: two services can race an era advance into computing different
+// successors (no store-level lock serializes ensureStoreGeneration across a
+// project's simultaneous managers); the loser's late publish must never
+// move CURRENT backwards onto a lower generation. When the existing
+// pointer already names n' >= n the write is SKIPPED and the winner's
+// directory is returned so the losing caller re-adopts it instead of its
+// own superseded target (which the sweep collects as debris). A pointer
+// read that fails OTHER than by absence fails the publish: an unconditional
+// write on a transient read error (EACCES/EMFILE/EIO) never had its
+// monotonic check, and could regress CURRENT onto a lower generation than
+// a racing advance already published.
+func publishCurrentGeneration(storageRoot string, n int) (adopted string, err error) {
 	if err := ensureRealDir(storePath(storageRoot), 0o750); err != nil {
-		return fmt.Errorf("creating store directory: %w", err)
+		return "", fmt.Errorf("creating store directory: %w", err)
 	}
-	return safeio.WriteFileAtomic(currentPointerPath(storageRoot), []byte(strconv.Itoa(n)), 0o644)
+	data, readErr := safeio.ReadFile(currentPointerPath(storageRoot))
+	if readErr != nil && !errors.Is(readErr, fs.ErrNotExist) {
+		return "", fmt.Errorf("reading the CURRENT pointer: %w", readErr)
+	}
+	if readErr == nil {
+		if prev, convErr := strconv.Atoi(strings.TrimSpace(string(data))); convErr == nil && prev >= n {
+			return generationPath(storageRoot, prev), nil
+		}
+	}
+	return "", safeio.WriteFileAtomic(currentPointerPath(storageRoot), []byte(strconv.Itoa(n)), 0o644)
 }
 
-// advanceStoreGeneration creates the successor generation of curDir,
-// carries the era-independent records over, and advances CURRENT. The old
-// generation directory stays on disk (the sweep collects its chunks once
-// unreachable); a crash before the CURRENT swap simply leaves the old
-// generation current — the next ensure replays.
+// advanceStoreGeneration creates the successor generation of curDir and
+// advances CURRENT. The old generation directory stays on disk (the sweep
+// collects its chunks once unreachable); a crash before the CURRENT swap
+// simply leaves the old generation current — the next ensure replays.
+// Nothing is carried across the boundary: an advance happens exactly on an
+// embedding-era change (ensureStoreGeneration advances only an incompatible
+// generation), chunk vectors are era-bound, and openV2Corpus fails the open
+// on any missing chunk record — a carried table would be destroyed at its
+// first open and re-published by the next attach's build pass anyway, so
+// carrying it only invites the destroy-then-rebuild dance. Ownership
+// markers need no carry: they live at the storage-root refs/ (rootrefs.go),
+// outside the generations tree.
 func advanceStoreGeneration(storageRoot, curDir, embeddingFP string, dims int) (string, error) {
 	// The successor's number: one past the highest existing generation —
 	// crash debris of an earlier advance attempt must never be reused as
-	// "new" while a lower-numbered complete generation exists.
+	// "new" while a lower-numbered complete generation exists. A failed
+	// listing is never folded into "zero existing generations": next=0
+	// would overwrite a possibly-populated generation 0 in place and flip
+	// CURRENT onto old-era chunk data — fail the advance instead (the
+	// caller's fail-soft handling keeps the legacy shape; the next ensure
+	// replays).
+	entries, err := os.ReadDir(filepath.Join(storePath(storageRoot), storeGenerationsDirName))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return "", fmt.Errorf("listing store generations: %w", err)
+	}
 	next := 0
-	if entries, err := os.ReadDir(filepath.Join(storePath(storageRoot), storeGenerationsDirName)); err == nil {
-		for _, e := range entries {
-			if n, convErr := strconv.Atoi(e.Name()); convErr == nil && n >= next {
-				next = n + 1
-			}
+	for _, e := range entries {
+		if n, convErr := strconv.Atoi(e.Name()); convErr == nil && n >= next {
+			next = n + 1
 		}
 	}
 	nextDir := generationPath(storageRoot, next)
+	if nextDir == curDir {
+		// Structurally unreachable with a correct listing (next is greater
+		// than every existing number, CURRENT's included) — refuse rather
+		// than rewrite the current generation's manifest in place.
+		return "", fmt.Errorf("store generation advance refused: successor %d equals the current generation", next)
+	}
 	if err := writeGenerationDirectory(nextDir, &storeGenerationManifest{
 		Format:      storeFormatV2Generation,
 		EmbeddingFP: embeddingFP,
@@ -355,97 +515,15 @@ func advanceStoreGeneration(storageRoot, curDir, embeddingFP string, dims int) (
 	}); err != nil {
 		return "", err
 	}
-	// Carry over snapshot tables (occurrences.tab + table.json — era-
-	// independent rows; chunk vectors re-fill on demand) and the refs tree
-	// (ownership must survive an app-update re-embed or the sweep would
-	// reclaim live corpora). Lexical directories are era-independent BM25
-	// state: they move with the table. Best-effort: a failed copy leaves
-	// the old generation current and the next ensure replays.
-	if err := carryGenerationRecords(curDir, nextDir); err != nil {
-		return "", err
-	}
-	if err := publishCurrentGeneration(storageRoot, next); err != nil {
-		return "", err
+	if adopted, pubErr := publishCurrentGeneration(storageRoot, next); pubErr != nil {
+		return "", pubErr
+	} else if adopted != "" {
+		// A concurrent advance won the race and CURRENT already names a
+		// generation >= next: adopt the winner's directory (our own target
+		// is debris the sweep collects) instead of moving CURRENT back.
+		return adopted, nil
 	}
 	return nextDir, nil
-}
-
-// carryGenerationRecords copies every snapshot's table files (and lexical
-// directory) plus the refs tree from one generation into its successor.
-// Copy (not rename): the old generation must stay whole until CURRENT
-// advances — a reader that resolved it a moment ago keeps a consistent
-// view, and a crash mid-carry leaves nothing half-moved in the successor
-// (a partial snapshot dir simply has no table.json and reads as absent).
-func carryGenerationRecords(fromDir, toDir string) error {
-	copyTree := func(rel string) error {
-		src := filepath.Join(fromDir, rel)
-		if !pathExists(src) {
-			return nil
-		}
-		return copyDirTree(src, filepath.Join(toDir, rel))
-	}
-	if entries, err := os.ReadDir(filepath.Join(fromDir, storeSnapshotsDirName)); err == nil {
-		for _, e := range entries {
-			if !e.IsDir() {
-				continue
-			}
-			snapName := e.Name()
-			// The successor's snapshot directory must exist before its
-			// table files land (WriteFileAtomic creates files, not
-			// parents); an empty carried directory is harmless — it has
-			// no table.json and reads as absent.
-			if err := ensureRealDir(filepath.Join(toDir, storeSnapshotsDirName, snapName), 0o750); err != nil {
-				return err
-			}
-			for _, leg := range []string{occurrencesTabName, snapshotTableName} {
-				data, err := safeio.ReadFile(filepath.Join(fromDir, storeSnapshotsDirName, snapName, leg))
-				if err != nil {
-					continue // a snapshot without complete tables carries nothing
-				}
-				dst := filepath.Join(toDir, storeSnapshotsDirName, snapName, leg)
-				if err := safeio.WriteFileAtomic(dst, data, 0o644); err != nil {
-					return fmt.Errorf("carrying snapshot table %s/%s: %w", snapName, leg, err)
-				}
-			}
-			if err := copyTree(filepath.Join(storeSnapshotsDirName, snapName, "lexical")); err != nil {
-				return err
-			}
-		}
-	}
-	return copyTree(storeRefsDirName)
-}
-
-// copyDirTree recursively copies a directory tree (regular files and
-// directories only; symlinks are skipped — the store never creates them).
-func copyDirTree(src, dst string) error {
-	entries, err := os.ReadDir(src)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil
-		}
-		return fmt.Errorf("reading %s for carry-over: %w", src, err)
-	}
-	if err := ensureRealDir(dst, 0o750); err != nil {
-		return err
-	}
-	for _, e := range entries {
-		s, d := filepath.Join(src, e.Name()), filepath.Join(dst, e.Name())
-		switch {
-		case e.IsDir():
-			if err := copyDirTree(s, d); err != nil {
-				return err
-			}
-		case e.Type().IsRegular():
-			data, err := safeio.ReadFile(s)
-			if err != nil {
-				return err
-			}
-			if err := safeio.WriteFileAtomic(d, data, 0o644); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -460,6 +538,25 @@ func copyDirTree(src, dst string) error {
 // (deduplication boundary, ADR-104 §1 L1).
 func chunkRecordKey(chunkText string) string {
 	return computeHash([]byte(normalizeEmbeddingChunk(chunkText)))
+}
+
+// isChunkID reports whether s has the full shape of a chunk identity C
+// (chunkRecordKey's output: 64 lowercase hex characters). Every identity
+// that reaches chunkRecordPath (whose c[:2] shard slice panics on shorter
+// input) is validated against this shape first — the sweep walks a
+// directory foreign debris can land in, and a stray "x.chunk" file must
+// read as debris, never crash the walk.
+func isChunkID(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		b := s[i]
+		if (b < '0' || b > '9') && (b < 'a' || b > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // chunkRecordPath returns the chunk record's sharded path under a
@@ -510,7 +607,8 @@ func decodeChunkRecord(data []byte, dims int) ([]float32, error) {
 // pay thousands). The rename is process-crash-atomic, which is the crash
 // model ADR-104 §6 enumerates; a POWER-loss window (table durable, a chunk
 // record's data not) is closed by the reader instead — openV2Corpus
-// unpublishes a snapshot whose referenced chunk is unreadable and the next
+// unpublishes a snapshot whose referenced chunk is provably absent or torn
+// (a transient read error leaves the publication intact) and the next
 // attach rebuilds it cache-spared. Never a torn read: a table row without
 // its chunk fails closed.
 func writeChunkRecord(genDir, c string, vec []float32) error {
@@ -547,17 +645,26 @@ func writeChunkRecord(genDir, c string, vec []float32) error {
 	return nil
 }
 
-// readChunkRecord loads one vector record; a missing, short or
+// readChunkRecord loads one vector record; a missing, short, over-long or
 // wrong-width record is an error (the caller fails closed rather than
-// serving a wrong vector).
+// serving a wrong vector). Errors that prove durable damage wrap
+// errChunkRecordTorn (or are fs.ErrNotExist / io.ErrUnexpectedEOF); every
+// other open/stat/read error is a TRANSIENT fault the caller must not
+// treat as store damage.
 //
 // The record is OUR OWN file (written by writeChunkRecord under the
 // store's generation tree), and the §3 open reads thousands of them at
 // once: the generic safeio.ReadFile open (O_NONBLOCK) registers every fd
 // with the runtime poller — hundreds of microseconds per 64-byte record,
 // seconds per corpus — so this reader uses the plain blocking open and
-// reads EXACTLY the expected width. The regular-file check is kept (a
-// planted non-regular file reads as an error, never as a wrong vector).
+// reads EXACTLY the expected width. The file is STAT-ed first and its size
+// must match the expected width EXACTLY in both directions: a SHORT file
+// is a torn record, and an OVER-LONG file (a foreign-era record written
+// at a larger dims, or an external append) must never be silently
+// truncated to its first dims floats and served as a full current-era
+// vector — the width check's own doc contract ("a foreign-era or torn
+// record reads as an error, never as a wrong vector") holds in both
+// directions only with the total-size check.
 func readChunkRecord(genDir, c string, dims int) ([]float32, error) {
 	f, err := os.Open(chunkRecordPath(genDir, c))
 	if err != nil {
@@ -566,20 +673,22 @@ func readChunkRecord(genDir, c string, dims int) ([]float32, error) {
 	defer func() { _ = f.Close() }()
 	const maxVecDims = 1 << 16
 	width := 4 * dims
+	info, statErr := f.Stat()
+	if statErr != nil {
+		return nil, statErr
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("chunk record %s is not a regular file: %w", c, errChunkRecordTorn)
+	}
 	if width == 0 {
 		// A service that never learned its arity: size the read from the
 		// file itself (bounded; the decode validates alignment).
-		info, statErr := f.Stat()
-		if statErr != nil {
-			return nil, statErr
-		}
-		if !info.Mode().IsRegular() {
-			return nil, fmt.Errorf("chunk record %s is not a regular file", c)
-		}
 		if info.Size() <= 0 || info.Size() > 4*maxVecDims || info.Size()%4 != 0 {
-			return nil, fmt.Errorf("chunk record is %d bytes; not a float32 vector", info.Size())
+			return nil, fmt.Errorf("chunk record is %d bytes; not a float32 vector: %w", info.Size(), errChunkRecordTorn)
 		}
 		width = int(info.Size())
+	} else if info.Size() != int64(width) {
+		return nil, fmt.Errorf("chunk record is %d bytes, want %d for dims %d: %w", info.Size(), width, dims, errChunkRecordTorn)
 	}
 	buf := make([]byte, width)
 	if _, err := io.ReadFull(f, buf); err != nil {
@@ -599,13 +708,18 @@ func chunkRecordExists(genDir, c string) bool {
 
 // escapeTabField percent-escapes the characters that would break the TSV /
 // occurrence grammar. '%' escapes first so the encoding is unambiguous.
+// The scan is BYTE-wise on purpose: range-over-string iterates runes and
+// rewrites every invalid UTF-8 byte as the 3-byte U+FFFD, which would
+// permanently corrupt a row's path (Linux filenames are arbitrary bytes);
+// byte-wise escaping keeps any filename byte verbatim and makes the
+// round-trip total.
 func escapeTabField(s string) string {
 	if !strings.ContainsAny(s, "%\t\n;,") {
 		return s
 	}
 	var sb strings.Builder
-	for _, r := range s {
-		switch r {
+	for i := 0; i < len(s); i++ {
+		switch b := s[i]; b {
 		case '%':
 			sb.WriteString("%p")
 		case '\t':
@@ -617,7 +731,7 @@ func escapeTabField(s string) string {
 		case ',':
 			sb.WriteString("%c")
 		default:
-			sb.WriteRune(r)
+			sb.WriteByte(b)
 		}
 	}
 	return sb.String()
@@ -655,12 +769,22 @@ func unescapeTabField(s string) string {
 
 // encodeOccurrenceTab renders rows as the deterministic occurrences.tab
 // body: one row per line, sorted by path, `path \t blobHash \t occ;occ…`
-// with each occurrence `C,start,end,lang`. Determinism makes the table
-// byte-comparable across replays — the migration's replay-safety proof.
+// with each occurrence `C,index,start,end,lang`. The chunk index is
+// carried explicitly: a poison-dropped chunk leaves a gap in a file's
+// 0..n-1 sequence, so the row's slice positions are not the indices and
+// positional consumers (openV2Corpus's DocumentID mapping) must not
+// derive them. Determinism makes the table byte-comparable across
+// replays — the migration's replay-safety proof.
 func encodeOccurrenceTab(rows []occurrenceRow) []byte {
 	sorted := make([]occurrenceRow, len(rows))
 	copy(sorted, rows)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Path < sorted[j].Path })
+	for i := range sorted {
+		chunks := make([]chunkOccurrence, len(sorted[i].Chunks))
+		copy(chunks, sorted[i].Chunks)
+		sort.SliceStable(chunks, func(a, b int) bool { return chunks[a].Index < chunks[b].Index })
+		sorted[i].Chunks = chunks
+	}
 	var sb strings.Builder
 	for _, row := range sorted {
 		sb.WriteString(escapeTabField(row.Path))
@@ -672,6 +796,8 @@ func encodeOccurrenceTab(rows []occurrenceRow) []byte {
 				sb.WriteByte(';')
 			}
 			sb.WriteString(occ.C)
+			sb.WriteByte(',')
+			sb.WriteString(strconv.Itoa(occ.Index))
 			sb.WriteByte(',')
 			sb.WriteString(strconv.Itoa(occ.Start))
 			sb.WriteByte(',')
@@ -686,7 +812,10 @@ func encodeOccurrenceTab(rows []occurrenceRow) []byte {
 
 // decodeOccurrenceTab parses an occurrences.tab body; every malformed line
 // fails the whole table (a torn table reads as absent and rebuilds — never
-// a silently partial view).
+// a silently partial view). The occurrence grammar is 5-field
+// `C,index,start,end,lang`; C must be a full 64-hex chunk identity
+// (chunkRecordKey's output shape — a foreign value is never dereferenced
+// into the chunk tree) and the index must be non-negative.
 func decodeOccurrenceTab(data []byte) ([]occurrenceRow, error) {
 	var rows []occurrenceRow
 	for lineNo, line := range strings.Split(strings.TrimRight(string(data), "\n"), "\n") {
@@ -703,22 +832,27 @@ func decodeOccurrenceTab(data []byte) ([]occurrenceRow, error) {
 		}
 		for _, occ := range strings.Split(parts[2], ";") {
 			fields := strings.Split(occ, ",")
-			if len(fields) != 4 || len(fields[0]) != 64 {
+			if len(fields) != 5 || !isChunkID(fields[0]) {
 				return nil, fmt.Errorf("occurrence tab line %d: malformed chunk occurrence %q", lineNo+1, occ)
 			}
-			start, err := strconv.Atoi(fields[1])
+			index, err := strconv.Atoi(fields[1])
+			if err != nil || index < 0 {
+				return nil, fmt.Errorf("occurrence tab line %d: bad chunk index in %q", lineNo+1, occ)
+			}
+			start, err := strconv.Atoi(fields[2])
 			if err != nil {
 				return nil, fmt.Errorf("occurrence tab line %d: bad start line: %w", lineNo+1, err)
 			}
-			end, err := strconv.Atoi(fields[2])
+			end, err := strconv.Atoi(fields[3])
 			if err != nil {
 				return nil, fmt.Errorf("occurrence tab line %d: bad end line: %w", lineNo+1, err)
 			}
 			row.Chunks = append(row.Chunks, chunkOccurrence{
 				C:        fields[0],
+				Index:    index,
 				Start:    start,
 				End:      end,
-				Language: unescapeTabField(fields[3]),
+				Language: unescapeTabField(fields[4]),
 			})
 		}
 		if len(row.Chunks) == 0 {
@@ -748,9 +882,28 @@ func snapshotTablePaths(dir string) (occPath, headerPath string) {
 // chunk writes: occurrences.tab lands by atomic rename FIRST, table.json
 // LAST — its presence is the snapshot's completion marker (ADR-104 §3
 // write ordering; a crash between the two leaves a tableless snapshot that
-// reads as absent and replays).
+// reads as absent and replays). Before anything lands, every referenced
+// chunk record is verified on disk: the orphan sweep runs under sweepMu,
+// NOT under the corpus build lease, so a build that outlives the sweep's
+// grace window can have its early records collected mid-build — publishing
+// a table over a missing record would fail every later open (the reader
+// fails closed) and force the unpublish-rebuild cycle to repeat. A missing
+// record defers the publish instead (the caller treats it like any other
+// incomplete pass and replays).
 func writeSnapshotTable(genDir, snapKey string, rows []occurrenceRow, header *snapshotTable) error {
 	dir := snapshotDir(genDir, snapKey)
+	seen := make(map[string]struct{}, len(rows))
+	for _, row := range rows {
+		for _, occ := range row.Chunks {
+			if _, dup := seen[occ.C]; dup {
+				continue // content addressing collapses identical chunks
+			}
+			seen[occ.C] = struct{}{}
+			if !chunkRecordExists(genDir, occ.C) {
+				return fmt.Errorf("publishing %s: chunk record %s is missing (deferred)", snapKey, occ.C)
+			}
+		}
+	}
 	if err := ensureRealDir(dir, 0o750); err != nil {
 		return err
 	}
@@ -806,8 +959,13 @@ func snapshotTablePublished(genDir, snapKey string) bool {
 // its completion marker — the power-loss self-heal of the chunk-record
 // durability model (see writeChunkRecord): a table whose chunk data did
 // not survive is never half-served, and the removal makes the next
-// EnsureCorpus rebuild the snapshot (embedding-cache-spared). occurrences
-// tab debris is left for the rebuild to overwrite. Best-effort.
+// EnsureCorpus rebuild the snapshot (embedding-cache-spared). On failure
+// the occurrences tab debris is left for the rebuild to overwrite; on
+// success both legs are removed. Best-effort. Callers
+// must first classify the triggering error (openV2Corpus): only PROVEN
+// damage (a record absent or torn) justifies this — a transient read
+// fault (permissions, fd exhaustion, a lock) must leave the publication
+// intact so the next attempt retries against the same table.
 func unpublishSnapshotTable(genDir, snapKey string) {
 	_, headerPath := snapshotTablePaths(snapshotDir(genDir, snapKey))
 	if err := os.Remove(headerPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -884,13 +1042,15 @@ func writeRootViewState(genDir, rootKey, snapKey string) error {
 }
 
 // ---------------------------------------------------------------------------
-// Refs relocation (stage-5 records under the generation)
+// Generation-relative path helpers
 // ---------------------------------------------------------------------------
 
 // storageRootOfGeneration reverses generationPath: the generation sits
 // three levels below the storage root (store/generations/<n> → root).
 // Used by read paths that must resolve a sibling artifact OUTSIDE the
-// generation (the migrated snapshot's legacy lexical fallback).
+// generation (the migrated snapshot's legacy lexical fallback). Ownership
+// markers (refs/) live at the storage root itself, never under a
+// generation — rootrefs.go owns their layout.
 func storageRootOfGeneration(genDir string) string {
 	return filepath.Dir(filepath.Dir(filepath.Dir(genDir)))
 }
@@ -919,7 +1079,10 @@ func chunkShardDirs(genDir string) ([]string, error) {
 }
 
 // chunkIDsFromShard lists the C identities of the chunk records in one
-// shard directory.
+// shard directory. Stems that are not a full 64-hex chunk identity are
+// foreign debris in a directory we never exclusively own — skipped, never
+// returned (the sweep feeds every returned ID into chunkRecordPath, whose
+// two-hex shard slice must never see a short stem).
 func chunkIDsFromShard(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -931,6 +1094,9 @@ func chunkIDsFromShard(dir string) ([]string, error) {
 	var ids []string
 	for _, e := range entries {
 		if c, ok := strings.CutSuffix(e.Name(), chunkFileExt); ok && e.Type().IsRegular() {
+			if !isChunkID(c) {
+				continue // foreign debris — never ours, never enumerated
+			}
 			ids = append(ids, c)
 		}
 	}

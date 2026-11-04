@@ -1824,6 +1824,7 @@ orchestration:
 #   park_budget_mb: 1024
 #   corpus_residency_capacity: 0
 #   corpus_residency_budget_mb: 0
+#   store_disk_budget_mb: 0
 #   max_file_size: 4194304
 #   max_chunk_size: 1500
 #   max_chunks_per_file: 4000

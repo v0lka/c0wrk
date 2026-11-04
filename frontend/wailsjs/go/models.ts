@@ -3965,18 +3965,6 @@ export namespace tools {
 
 export namespace vectorindex {
 	
-	export class CorpusRegistry {
-	
-	
-	    static createFrom(source: any = {}) {
-	        return new CorpusRegistry(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	
-	    }
-	}
 	export class StoreLedger {
 	    generation: number;
 	    chunk_records: number;

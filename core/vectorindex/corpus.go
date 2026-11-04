@@ -25,6 +25,7 @@ package vectorindex
 
 import (
 	"context"
+	"encoding/gob"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,6 +33,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -276,18 +278,24 @@ func (cs *corpusStore) residencyEnabled() bool {
 	return cs.resCapacity > 0 || cs.resBudget > 0
 }
 
-// Published reports whether key's corpus has a publication record — the
-// v1 corpus.json manifest OR the §3 snapshot table (either is a complete
-// publication; the §3 table is the canonical form, corpus.json the legacy
-// gate kept until the chunk-record migration removes the v1 store).
-func (cs *corpusStore) Published(key string) bool {
+// publishedCompatible reports whether key's corpus has a publication
+// record readable UNDER THE GIVEN EMBEDDING ERA — the v1 corpus.json
+// manifest OR the §3 snapshot table (either is a complete publication;
+// the §3 table is the canonical form, corpus.json the legacy gate kept
+// until the chunk-record migration removes the v1 store). BOTH legs are
+// era-gated: a stale-era record of either form is NOT a publication (the
+// corpus must rebuild under the current era — an era-blind v1 leg would
+// block the rebuild forever while every open fails with
+// ErrCorpusEraMismatch, wedging the snapshot).
+func (cs *corpusStore) publishedCompatible(key, embeddingFP string, dims int) bool {
 	if cs == nil || key == "" {
 		return false
 	}
-	if gen, _, ok := readCurrentGeneration(cs.root); ok && snapshotTablePublished(gen, key) {
+	if gen, m, ok := readCurrentGeneration(cs.root); ok && m.compatible(embeddingFP, dims) && snapshotTablePublished(gen, key) {
 		return true
 	}
-	return readCorpusManifest(branchRootPath(cs.root, key)) != nil
+	m := readCorpusManifest(branchRootPath(cs.root, key))
+	return m != nil && m.compatible(embeddingFP, dims)
 }
 
 // beginBuild acquires key's single-flight build lease: the first caller
@@ -323,9 +331,10 @@ func (cs *corpusStore) endBuild(key string, err error) {
 }
 
 // waitBuild blocks until the given in-flight build settles; ok is false
-// when the build expired (corpusBuildWait) or failed.
-func (cs *corpusStore) waitBuild(waitCh <-chan struct{}, key string) bool {
-	return cs.waitBuildFor(waitCh, key, corpusBuildWait)
+// when the build expired (corpusBuildWait) or failed to publish under the
+// given era.
+func (cs *corpusStore) waitBuild(waitCh <-chan struct{}, key, embeddingFP string, dims int) bool {
+	return cs.waitBuildFor(waitCh, key, embeddingFP, dims, corpusBuildWait)
 }
 
 // waitBuildFor is waitBuild with a caller-supplied bound. The unified store
@@ -333,10 +342,10 @@ func (cs *corpusStore) waitBuild(waitCh <-chan struct{}, key string) bool {
 // build defers the unit to its next run instead of parking for the attach
 // path's full drain window — the sweep is background hygiene, never a
 // blocker of the opened view.
-func (cs *corpusStore) waitBuildFor(waitCh <-chan struct{}, key string, bound time.Duration) bool {
+func (cs *corpusStore) waitBuildFor(waitCh <-chan struct{}, key, embeddingFP string, dims int, bound time.Duration) bool {
 	select {
 	case <-waitCh:
-		return cs.Published(key)
+		return cs.publishedCompatible(key, embeddingFP, dims)
 	case <-time.After(bound):
 		return false
 	}
@@ -352,9 +361,27 @@ func (cs *corpusStore) open(ctx context.Context, key string, ef chromem.Embeddin
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 	if h, ok := cs.handles[key]; ok {
-		cs.refs[key]++
-		cs.detachLRULocked(key) // attached again — never an eviction candidate
-		return h, nil
+		if h.manifest != nil && !h.manifest.compatible(embeddingFP, dims) {
+			// A retained (zero-ref, residency LRU) or still-referenced
+			// handle of a PREVIOUS embedding era must never be re-served:
+			// the cache is keyed by snapshot key only, and a cache hit
+			// would bypass BOTH era gates the fresh path enforces — silent
+			// wrong-era vectors and a stale visibility map. Evictable
+			// handles are dropped here and the open continues through the
+			// fresh gated path; an attached handle (refs > 0) cannot be
+			// closed under its reader, so the open fails closed with the
+			// era error until the old reference drains.
+			if cs.refs[key] > 0 {
+				return nil, fmt.Errorf("%w: %s (fp %q dims %d)", ErrCorpusEraMismatch, key, embeddingFP, dims)
+			}
+			delete(cs.handles, key)
+			cs.detachLRULocked(key)
+			cs.closeHandleLocked(h)
+		} else {
+			cs.refs[key]++
+			cs.detachLRULocked(key) // attached again — never an eviction candidate
+			return h, nil
+		}
 	}
 	// §3 read path first (ADR-104 §3): a published occurrence table opens
 	// the corpus without any chromem decode. Failure with an existing v1
@@ -493,8 +520,17 @@ func (cs *corpusStore) closeHandleLocked(h *CorpusHandle) {
 //
 //   - key already published → nothing to do ("already published");
 //   - no source store for branch under srcRoot → ("source store absent");
-//   - legacy branch generation manifest absent or foreign embedding era →
-//     ("generation manifest absent or foreign embedding era") — nothing
+//   - legacy branch generation manifest ABSENT → the era is derived on this
+//     first touch, gated by a sampled document's embedding width (a width
+//     mismatch or an undecodable store refuses with its own reason) and
+//     stamped with the current era (stores written by older binaries
+//     predate the manifest writer, which first runs inside a focused-root
+//     SwitchBranch — without the stamp the promotion would be unreachable
+//     for exactly the pre-ADR-104 stores it exists for; from then on the
+//     durable record gates every later era change through the ordinary
+//     generation reset);
+//   - legacy branch generation manifest names a foreign embedding era →
+//     ("generation manifest names a foreign embedding era") — nothing
 //     trustworthy to promote, embeddings of another era must never be
 //     served (ADR-104 §2);
 //   - no usable sidecar hash map → ("no usable sidecar hash map") — a
@@ -511,11 +547,70 @@ func (cs *corpusStore) closeHandleLocked(h *CorpusHandle) {
 // Only the store's current process may run this (the app's single-instance
 // lock, ADR-075, is the cross-process guard), and only under the store's
 // build lease for key.
+// chromemDocumentProbe mirrors the exported fields of chromem-go's persisted
+// Document gob (gob matches fields by name — the same trick
+// chromemCollectionMetadata uses in layout.go) so the promotion can inspect a
+// legacy store's embedding width WITHOUT opening the store as a chromem DB.
+type chromemDocumentProbe struct {
+	ID        string
+	Metadata  map[string]string
+	Embedding []float32
+	Content   string
+}
+
+// sampleLegacyEmbeddingWidth decodes ONE document from the legacy branch
+// store's collection directories and returns its embedding width. ok=false
+// when no document file decodes (the store is empty, unreadable or torn) —
+// the caller treats that as an unverifiable era and refuses the stamp. The
+// collection metadata file is skipped by name, exactly as chromem's own open
+// differentiates it from document files.
+func sampleLegacyEmbeddingWidth(branchRoot string) (int, bool) {
+	cols, err := os.ReadDir(branchRoot)
+	if err != nil {
+		return 0, false
+	}
+	for _, col := range cols {
+		if !col.IsDir() {
+			continue
+		}
+		entries, readErr := os.ReadDir(filepath.Join(branchRoot, col.Name()))
+		if readErr != nil {
+			continue
+		}
+		for _, e := range entries {
+			if e.IsDir() || e.Name() == chromemMetadataFileName || !strings.HasSuffix(e.Name(), ".gob") {
+				continue
+			}
+			width, ok := decodeEmbeddingWidth(filepath.Join(branchRoot, col.Name(), e.Name()))
+			if ok {
+				return width, true
+			}
+		}
+	}
+	return 0, false
+}
+
+// decodeEmbeddingWidth gob-decodes one document file and returns its
+// embedding width; ok=false on any decode failure (the caller tries the
+// next file — a torn write must not veto an otherwise verifiable store).
+func decodeEmbeddingWidth(path string) (int, bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, false
+	}
+	defer f.Close() //nolint:errcheck // read-only probe close
+	var d chromemDocumentProbe
+	if err := gob.NewDecoder(f).Decode(&d); err != nil || len(d.Embedding) == 0 {
+		return 0, false
+	}
+	return len(d.Embedding), true
+}
+
 func (cs *corpusStore) promoteLegacyStore(srcRoot, branch, key, embeddingFP string, dims int) (migrated bool, reason string, err error) {
 	if key == "" || branch == "" || branch == key {
 		return false, "no source store for this snapshot key", nil
 	}
-	if cs.Published(key) {
+	if cs.publishedCompatible(key, embeddingFP, dims) {
 		return false, "already published", nil
 	}
 	legacyRoot := branchRootPath(srcRoot, branch)
@@ -523,9 +618,58 @@ func (cs *corpusStore) promoteLegacyStore(srcRoot, branch, key, embeddingFP stri
 		return false, "source store absent", nil
 	}
 	legacyManifest := readBranchManifest(legacyRoot)
+	if legacyManifest == nil {
+		// Stores written by older binaries carry no manifest (the writer
+		// first runs inside a focused-root SwitchBranch), so the era gate
+		// below would reject every pre-ADR-104 store as "absent" and the
+		// promotion would never fire for exactly its targets. First touch
+		// derives the era: the sidecar hash map and content-less marker
+		// gates below certify a completed content-less store, and the
+		// store predates the era record, so this stamps the CURRENT era —
+		// the durable record exists from then on, and any LATER era change
+		// resets the store through the ordinary generation gate instead of
+		// relying on this adoption. The chunker fingerprint is derived from
+		// the sidecar below; the ignore fingerprint stays unrecorded (the
+		// v1→v2 migration gates only recorded values).
+		//
+		// One dimension of the era IS verifiable in place — the embedding
+		// width of the store's own documents — and the stamp is refused
+		// when it does not match the current era: a model swap that
+		// changed dimensions must never promote mismatched-width vectors
+		// as current-era. A same-width model swap stays indistinguishable
+		// (the store predates era records entirely); the adoption accepts
+		// it deliberately, same posture as firstGenerationAdoption.
+		//
+		// The chunker fingerprint is DERIVED from the sidecar's own
+		// entries when every recorded entry agrees (the corpus's chunks
+		// really were produced by that chunker, so the corpus-current
+		// adoption gate and the v1→v2 migration gate compare real values
+		// instead of an always-mismatching "" that would silently
+		// no-op the promotion); disagreeing or absent records stay "" —
+		// each downstream gate then applies its own documented semantics.
+		// The ignore fingerprint stays unrecorded (the sidecar carries
+		// none).
+		width, ok := sampleLegacyEmbeddingWidth(legacyRoot)
+		if !ok {
+			return false, "generation manifest absent and no document decodes to verify the embedding width", nil
+		}
+		if width != dims {
+			return false, "generation manifest absent and the sampled embedding width does not match the current era", nil
+		}
+		legacyManifest = &branchGenerationManifest{
+			Format:      storeFormatV2,
+			Coords:      coordsRelativeV1,
+			EmbeddingFP: embeddingFP,
+			Dims:        dims,
+			ChunkerFP:   legacySidecarChunkerFP(srcRoot, branch),
+		}
+		if err := writeBranchManifest(legacyRoot, legacyManifest); err != nil {
+			return false, "", fmt.Errorf("stamping generation manifest onto legacy branch store %s: %w", branch, err)
+		}
+	}
 	if !legacyManifest.compatible(embeddingFP, dims) {
-		// Absent or foreign-era legacy store: nothing trustworthy to promote.
-		return false, "generation manifest absent or foreign embedding era", nil
+		// A manifest naming a foreign era: nothing trustworthy to promote.
+		return false, "generation manifest names a foreign embedding era", nil
 	}
 	files, ok := legacySidecarHashMap(srcRoot, branch)
 	if !ok || len(files) == 0 {
@@ -591,6 +735,46 @@ func (cs *corpusStore) promoteLegacyStore(srcRoot, branch, key, embeddingFP stri
 	return true, "", nil
 }
 
+// legacySidecarChunkerFP derives the legacy store's chunker fingerprint
+// from its sidecar entries: the single distinct non-empty value every
+// recorded entry agrees on, or "" when the entries disagree or carry no
+// fingerprint (legacy/intermediate formats). "" keeps both downstream
+// consumers honest in their own way — the v1→v2 migration treats it as
+// ungated, the corpus-current adoption gate treats it as a mismatch —
+// rather than guessing a configuration the store never recorded.
+func legacySidecarChunkerFP(storageRoot, branch string) string {
+	data, err := safeio.ReadFile(fileHashesPathFor(storageRoot, branch))
+	if err != nil {
+		return ""
+	}
+	var envelope struct {
+		Version int               `json:"version"`
+		Root    string            `json:"root"`
+		Entries map[string]string `json:"entries"`
+	}
+	entries := envelope.Entries
+	if json.Unmarshal(data, &envelope) != nil || entries == nil {
+		var bare map[string]string
+		if json.Unmarshal(data, &bare) != nil {
+			return ""
+		}
+		entries = bare
+	}
+	single := ""
+	for _, entry := range entries {
+		fp := fileHashEntryChunkerFP(entry)
+		if fp == "" {
+			continue
+		}
+		if single == "" {
+			single = fp
+		} else if single != fp {
+			return "" // disagreeing records: nothing honest to stamp
+		}
+	}
+	return single
+}
+
 // legacySidecarHashMap extracts the rel-path → content-hash map from a
 // legacy sidecar file (v6 envelope or bare map). ok=false when the file is
 // absent or holds no usable entries.
@@ -630,11 +814,16 @@ func hashColumn(entries map[string]string) (map[string]string, bool) {
 // from a project storage root: the per-root branch store, its lexical
 // directory, its file-hash sidecar and its ownership marker (refs/<rootKey>.
 // ref — the root's OWN reference to the shared store, ADR-104 stage 5; the
-// detach removes exactly this reference and this delta). The shared corpus
-// is never touched — other roots (other worktrees, the checkout) may still
-// view it; the next sweep reclaims it only when no live marker reaches it.
-// Best-effort by design (the caller usually runs it after the tree itself
-// is gone); returns the first removal error encountered.
+// detach removes exactly this reference and this delta), plus the root's
+// §3 state directory (overlay.tab, overlay-lexical/, sidecar.json,
+// view.json) in the CURRENT generation — without it every released
+// worktree leaks its state dir forever (the hygiene sweep reclaims
+// snapshots and superseded generations, never roots/) and a worktree
+// recreated at the same path re-adopts the stale overlay rows. The shared
+// corpus is never touched — other roots (other worktrees, the checkout)
+// may still view it; the next sweep reclaims it only when no live marker
+// reaches it. Best-effort by design (the caller usually runs it after the
+// tree itself is gone); returns the first removal error encountered.
 func DeleteRootOverlay(storageRoot, workspaceRoot string) error {
 	key := overlayRootKey(workspaceRoot)
 	var firstErr error
@@ -645,6 +834,14 @@ func DeleteRootOverlay(storageRoot, workspaceRoot string) error {
 		contentlessMarkerPathFor(storageRoot, key),
 	} {
 		if err := os.RemoveAll(victim); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	// Superseded generations' roots/ subdirectories are reclaimed with
+	// their whole generation (removeSupersededGenerations); only the
+	// CURRENT generation's per-root state dir is this call's to remove.
+	if genDir, _, ok := readCurrentGeneration(storageRoot); ok {
+		if err := os.RemoveAll(rootStateDir(genDir, key)); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
@@ -730,13 +927,30 @@ func (r *CorpusRegistry) storeFor(storageRoot string) *corpusStore {
 	return cs
 }
 
-// Published reports whether the snapshot corpus of key is published under
-// storageRoot.
-func (r *CorpusRegistry) Published(storageRoot, key string) bool {
-	if r == nil {
-		return false
+// resetUnpublishedCorpusStore deletes the unpublished corpus branch store's
+// v1 artifacts (chromem root, lexical index, sidecar, content-less marker)
+// under key so a (re)tried build starts from an empty store instead of
+// resuming over an interrupted attempt's committed prefix: IndexFull only
+// ADDs documents, so a file whose chunk count shrank between attempts would
+// keep its stale higher-index chunks alive in the immutable corpus forever
+// (and permanently block the snapshot's v1→v2 chunk-record migration). The
+// §3 generation tree is deliberately untouched — its chunk records are
+// content-addressed and shared, so the retry re-embeds nothing reusable.
+// Best-effort per artifact (the rebuild overwrites survivors anyway); only
+// called on the fresh-build path, where no era-compatible publication
+// exists by definition.
+func (cs *corpusStore) resetUnpublishedCorpusStore(storageRoot, key string) {
+	for _, victim := range []string{
+		branchRootPath(storageRoot, key),
+		lexicalIndexPath(storageRoot, key),
+		fileHashesPathFor(storageRoot, key),
+		contentlessMarkerPathFor(storageRoot, key),
+	} {
+		if err := os.RemoveAll(victim); err != nil {
+			cs.logger.Warn("vector corpus: failed to reset unpublished corpus store artifact",
+				"snapshot", key, "path", victim, "error", err)
+		}
 	}
-	return r.storeFor(storageRoot).Published(key)
 }
 
 // EnsureCorpus drives one snapshot's corpus to a published state under
@@ -754,14 +968,14 @@ func (r *CorpusRegistry) EnsureCorpus(ctx context.Context, storageRoot, key, leg
 	if cs == nil {
 		return errors.New("corpus registry is closed")
 	}
-	if cs.Published(key) {
+	if cs.publishedCompatible(key, embeddingFP, dims) {
 		return nil
 	}
 	started, waitCh := cs.beginBuild(key)
 	if !started {
 		// Someone else is building this corpus: wait bounded, then read the
 		// published result — never open a parallel store (single-writer).
-		if !cs.waitBuild(waitCh, key) {
+		if !cs.waitBuild(waitCh, key, embeddingFP, dims) {
 			return fmt.Errorf("%w: concurrent corpus build for %s did not complete", ErrCorpusNotPublished, key)
 		}
 		return nil
@@ -779,10 +993,19 @@ func (r *CorpusRegistry) EnsureCorpus(ctx context.Context, storageRoot, key, leg
 		}
 		cs.logger.Debug("vector corpus: legacy store not promotable; building a fresh corpus",
 			"branch", legacyBranch, "snapshot", key, "reason", reason)
+		// A retried build must never resume over the interrupted attempt's
+		// committed prefix: IndexFull only ADDs, so a file whose chunk count
+		// shrank between attempts would keep its stale higher-index chunks
+		// alive in the immutable corpus forever (and permanently block the
+		// snapshot's v1→v2 chunk-record migration). Reset the unpublished
+		// v1 store before the build; the §3 generation tree stays untouched
+		// (its chunk records are content-addressed and shared, so the retry
+		// re-embeds nothing it could have reused).
+		cs.resetUnpublishedCorpusStore(storageRoot, key)
 		if bErr := build(); bErr != nil {
 			return bErr
 		}
-		if !cs.Published(key) {
+		if !cs.publishedCompatible(key, embeddingFP, dims) {
 			// The builder is responsible for publishing (PublishCorpus);
 			// a finished build without publication is a contract breach —
 			// fail closed rather than serve an unproven store.

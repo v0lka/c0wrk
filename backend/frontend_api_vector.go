@@ -117,6 +117,26 @@ func (f *FrontendAPI) deleteWorktreeVectorIndex(repoRoot, projectID, name string
 		root = canonicalWorktreeRoot(releasedPath[0])
 	}
 	overlayPaths := []string{root}
+	// RESURRECTION GUARD (ADR-104 stage 5), inner half: a tree path that
+	// exists again is a NEW tree (a racing adoption's Recreate), and its
+	// overlay, ownership marker and legacy storage are the live tree's
+	// data. The os.Stat probe must run BEFORE vr.Release — Release removes
+	// the root's manager, so a LiveManager probe after it is nil by
+	// construction and could never fire. The manager releases themselves
+	// still happen for every spelling (callers rely on the synchronous
+	// drain for Windows handle-close, and a manager is an in-process cache
+	// over durable data — a resurrected root transparently rebuilds its
+	// manager on next use); only the DATA cleanup is skipped for a
+	// resurrected spelling, deferring it to that tree's own next release.
+	resurrected := func(treePath string) bool {
+		if info, err := os.Stat(treePath); err == nil && info.IsDir() {
+			f.log().Debug("vector index: released worktree resurrected before cleanup; keeping its vector data",
+				"project", projectID, "worktree", name, "root", treePath)
+			return true
+		}
+		return false
+	}
+	rootResurrected := resurrected(root)
 	mgr := vr.Release(root)
 	// Legacy rows keep a symlinked ancestor in their stored root: AGENT
 	// routing keys a tree's live manager under the raw stored spelling, while
@@ -129,29 +149,30 @@ func (f *FrontendAPI) deleteWorktreeVectorIndex(repoRoot, projectID, name string
 			alt = filepath.Join(config.ManagedWorktreesDir(stored), name)
 		}
 		if alt != root {
+			altResurrected := resurrected(alt)
 			if m := vr.Release(alt); m != nil && mgr == nil {
 				mgr = m
 			}
-			overlayPaths = append(overlayPaths, alt)
+			if !altResurrected {
+				overlayPaths = append(overlayPaths, alt)
+			}
 		}
+	}
+	if rootResurrected {
+		// The resurrected tree's overlay, marker AND legacy per-tree storage
+		// are its live data — skip the whole vector cleanup, exactly like
+		// the outer guard, deferring it to that tree's own next release.
+		return
 	}
 
 	// ADR-104 stage 2 (owner/view): the tree's per-root overlay inside the
 	// PROJECT's shared store goes away with the tree; the snapshot corpora
 	// stay (the checkout and other trees may still view them). Overlay keys
 	// are fingerprinted off the raw tree path, so every spelling the tree
-	// was ever keyed under is cleaned. RESURRECTION GUARD: if a new manager
-	// already re-attached this root path (a Create/adopt racing the release
-	// — the narrow resurrection window), its overlay and ownership marker
-	// belong to the LIVE root now and are left alone; the next release of
-	// that tree cleans them.
+	// was ever keyed under is cleaned — except the resurrected spellings the
+	// guard above already removed from overlayPaths.
 	sharedRoot := config.ProjectVectorIndexPath(f.agentDir, projectID)
 	for _, treePath := range overlayPaths {
-		if vr.LiveManager(treePath) != nil {
-			f.log().Debug("vector index: skipping overlay cleanup for a re-attached worktree root",
-				"project", projectID, "worktree", name, "root", treePath)
-			continue
-		}
 		if err := vectorindex.DeleteRootOverlay(sharedRoot, treePath); err != nil {
 			f.log().Warn("vector index: failed to remove released worktree overlay from the shared store",
 				"project", projectID, "worktree", name, "error", err)
@@ -386,7 +407,7 @@ func (f *FrontendAPI) vectorIndexStatusFromManager(vm *vectorindex.Manager) Vect
 	// until then. The root comes from the MANAGER (lock-free for status:
 	// the service's own StorageRoot takes the service read lock an
 	// in-flight indexing pass holds — ADR-104 §4's never-block contract).
-	if reg := f.VectorCorpusRegistry(); reg != nil {
+	if reg := f.vectorCorpusRegistry(); reg != nil {
 		if root := vm.StorageRoot(); root != "" {
 			result.Store = reg.StoreLedgerSnapshot(root)
 		}

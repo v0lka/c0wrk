@@ -22,14 +22,16 @@ package vectorindex
 
 import (
 	"context"
+	"encoding/gob"
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	chromem "github.com/philippgille/chromem-go"
 
 	"github.com/v0lka/c0wrk/internal/gittest"
 )
@@ -226,8 +228,14 @@ func TestSharedCorpus_TwoRootsOneCommit_ReuseWithoutFullPass(t *testing.T) {
 	}
 
 	// B's overlay stays empty: nothing was committed for the clean tree.
-	if col := svcB.GetCollection(); col == nil || col.Count() != 0 {
-		t.Errorf("root B overlay holds %d docs; want 0 (corpus serves the clean tree)", col.Count())
+	// n = -1 keeps a nil collection (no overlay at all) reportable in the
+	// failure message without dereferencing it.
+	n := -1
+	if col := svcB.GetCollection(); col != nil {
+		n = col.Count()
+	}
+	if n != 0 {
+		t.Errorf("root B overlay holds %d docs; want 0 (corpus serves the clean tree)", n)
 	}
 
 	// Criterion 2 (disk): ONE snapshot corpus; the per-root overlay stores
@@ -274,6 +282,212 @@ func TestSharedCorpus_TwoRootsOneCommit_ReuseWithoutFullPass(t *testing.T) {
 			t.Errorf("B result path %q is not hydrated against root B %q", res[0].FilePath, h.rootB)
 		}
 	}
+}
+
+// TestHybridRRF_VectorLegDedup_CorpusWins pins the fourth merge site of the
+// same-ID dedup: a stale overlay duplicate (injected directly here — the
+// realistic producer is a retirement that outlived a transient failure) must
+// NOT earn a second vector-side RRF contribution in hybrid mode. The corpus
+// entry carries the root's current bytes and wins, mirroring
+// vectorOnlySearch, lexicalOnlySearch and aggregateCorpusLexicalHits.
+func TestHybridRRF_VectorLegDedup_CorpusWins(t *testing.T) {
+	files := map[string]string{
+		"a.go": "package main\n\n// alpha marker one\n",
+		"b.go": "package main\n\n// beta marker two\n",
+	}
+	h := newViewHarness(t, files)
+
+	svc := h.newViewService(nil)
+	idx := h.newIndexer(svc, nil, nil)
+	if err := h.attach(svc, idx, h.rootA, "main"); err != nil {
+		t.Fatalf("attach A: %v", err)
+	}
+
+	// Resolve the corpus-served candidate for a.go (the must-match pin
+	// already applies inside corpusVectorCandidates) and poison the overlay
+	// with a document under the SAME DocumentID — the state a failed
+	// retirement leaves behind: both stores visibly serve one ID.
+	svc.mu.RLock()
+	resolver := newContentResolver(svc.maxFileSize, svc.maxChunkSize)
+	corpusHit, err := svc.corpusVectorCandidates(context.Background(), "alpha marker one", hybridFanout(10, svc.hybridConfig), "", []string{"alpha marker"}, resolver)
+	svc.mu.RUnlock()
+	if err != nil {
+		t.Fatalf("corpus candidates: %v", err)
+	}
+	if len(corpusHit) == 0 {
+		t.Fatal("fixture sanity: the corpus must serve a.go")
+	}
+	src := corpusHit[0]
+	emb, embErr := fakeEmbeddingFunc()(context.Background(), src.Content)
+	if embErr != nil {
+		t.Fatalf("fake embed: %v", embErr)
+	}
+	stale := chromem.Document{ID: src.ID, Content: src.Content, Metadata: src.Metadata, Embedding: emb}
+
+	svc.AcquireWriteLock()
+	if err := svc.current.collection.AddDocuments(context.Background(), []chromem.Document{stale}, 1); err != nil {
+		svc.ReleaseWriteLock()
+		t.Fatalf("poisoning the overlay with the stale duplicate: %v", err)
+	}
+	svc.ReleaseWriteLock()
+
+	res, err := svc.HybridSearch(context.Background(), SearchOptions{
+		Query: "alpha marker one", TopK: 5, Mode: ModeHybrid, MustMatch: []string{"alpha marker"},
+	})
+	if err != nil {
+		t.Fatalf("hybrid search: %v", err)
+	}
+	if len(res) != 1 {
+		t.Fatalf("results = %d (%v); want exactly the one must-matched file", len(res), res)
+	}
+	got := res[0]
+	// Without the merge dedup the same ID occupies TWO vector-rank slots and
+	// the second occurrence overwrites vectorRank with the later rank.
+	if got.VectorRank != 1 {
+		t.Errorf("duplicated ID's vector rank = %d; want 1 (one vector-side contribution, corpus copy wins)", got.VectorRank)
+	}
+	// Exactly one vector contribution (rank 1) plus one corpus-lexical
+	// contribution (rank 1); a second 1/(k+2) vector contribution is the
+	// double-count the dedup eliminates.
+	k := svc.hybridConfig.RRFK
+	want := 1.0/float64(k+1) + 1.0/float64(k+1)
+	if diff := got.Score - float32(want); diff < -1e-6 || diff > 1e-6 {
+		t.Errorf("fused score = %v; want %v (one vector + one lexical contribution, no duplicate boost)", got.Score, want)
+	}
+}
+
+// writeLegacyDocGob writes one chromem-shaped document gob (the
+// chromemDocumentProbe field set is gob-compatible with chromem.Document)
+// into a legacy collection directory.
+func writeLegacyDocGob(t *testing.T, path string, width int) {
+	t.Helper()
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create %s: %v", path, err)
+	}
+	defer f.Close() //nolint:errcheck // test fixture
+	doc := chromemDocumentProbe{
+		ID:        "a.go:0",
+		Metadata:  map[string]string{"file_path": "a.go"},
+		Embedding: make([]float32, width),
+	}
+	if err := gob.NewEncoder(f).Encode(&doc); err != nil {
+		t.Fatalf("encode %s: %v", path, err)
+	}
+}
+
+// TestPromoteLegacyStore_ManifestlessWidthGate pins the era-derivation
+// posture of the manifest-less adoption: the current-era stamp fires only
+// when a sampled document's embedding width MATCHES the current era (the
+// one dimension of the era verifiable in place); a width mismatch — a
+// dims-changing model swap between binaries — refuses with an honest
+// reason, writes nothing, and leaves the legacy store in place for the
+// cache-spared rebuild; an empty/undecodable store is equally unverifiable.
+func TestPromoteLegacyStore_ManifestlessWidthGate(t *testing.T) {
+	buildFixture := func(t *testing.T) string {
+		t.Helper()
+		srcRoot := t.TempDir()
+		legacyRoot := branchRootPath(srcRoot, "main")
+		colDir := filepath.Join(legacyRoot, "deadbeefcol")
+		if err := os.MkdirAll(colDir, 0o750); err != nil {
+			t.Fatalf("mkdir collection: %v", err)
+		}
+		writeLegacyDocGob(t, filepath.Join(colDir, "00000001.gob"), 8)
+		pruneWrite(t, fileHashesPathFor(srcRoot, "main"), `{"a.go":"h1"}`)
+		pruneWrite(t, contentlessMarkerPathFor(srcRoot, "main"), "")
+		return srcRoot
+	}
+	newStore := func(t *testing.T) *corpusStore {
+		t.Helper()
+		reg := NewCorpusRegistry(nil)
+		t.Cleanup(reg.Close)
+		return reg.storeFor(t.TempDir())
+	}
+	const key = "snap_aaaa0000bbbb1111"
+
+	t.Run("width mismatch refuses without stamping or moving", func(t *testing.T) {
+		srcRoot := buildFixture(t)
+		migrated, reason, err := newStore(t).promoteLegacyStore(srcRoot, "main", key, "fp-cur", 4)
+		if err != nil {
+			t.Fatalf("promoteLegacyStore: %v", err)
+		}
+		if migrated {
+			t.Fatal("a width-mismatching store must not be promoted")
+		}
+		if reason != "generation manifest absent and the sampled embedding width does not match the current era" {
+			t.Errorf("reason = %q; want the honest width-mismatch reason", reason)
+		}
+		// Nothing was written and nothing moved: no manifest, store intact.
+		if m := readBranchManifest(branchRootPath(srcRoot, "main")); m != nil {
+			t.Errorf("refused promotion stamped a manifest anyway: %+v", m)
+		}
+		if !pathExists(branchRootPath(srcRoot, "main")) {
+			t.Error("refused promotion moved the legacy store away")
+		}
+	})
+
+	t.Run("width match stamps and promotes by rename", func(t *testing.T) {
+		srcRoot := buildFixture(t)
+		cs := newStore(t)
+		migrated, reason, err := cs.promoteLegacyStore(srcRoot, "main", key, "fp-cur", 8)
+		if err != nil {
+			t.Fatalf("promoteLegacyStore: %v", err)
+		}
+		if !migrated || reason != "" {
+			t.Fatalf("migrated=%v reason=%q; want a clean promotion", migrated, reason)
+		}
+		snapRoot := branchRootPath(cs.root, key)
+		if !pathExists(filepath.Join(snapRoot, corpusManifestName)) {
+			t.Error("promotion did not publish corpus.json")
+		}
+		if m := readBranchManifest(snapRoot); m == nil || m.EmbeddingFP != "fp-cur" || m.Dims != 8 {
+			t.Errorf("stamped manifest = %+v; want the current era (fp-cur/8) carried into the snapshot", m)
+		}
+		if pathExists(branchRootPath(srcRoot, "main")) {
+			t.Error("legacy store was not renamed into the corpus")
+		}
+	})
+
+	t.Run("agreeing sidecar chunker fingerprints are stamped", func(t *testing.T) {
+		srcRoot := buildFixture(t)
+		// 4-field entries whose 4th field is the chunker fingerprint.
+		pruneWrite(t, fileHashesPathFor(srcRoot, "main"), `{"a.go":"hashA|120|1700000000|fp-chunk","b.go":"hashB|80|1700000000|fp-chunk"}`)
+		cs := newStore(t)
+		if migrated, _, err := cs.promoteLegacyStore(srcRoot, "main", key, "fp-cur", 8); err != nil || !migrated {
+			t.Fatalf("promoteLegacyStore: migrated=%v err=%v", migrated, err)
+		}
+		m := readBranchManifest(branchRootPath(cs.root, key))
+		if m == nil || m.ChunkerFP != "fp-chunk" {
+			t.Errorf("stamped manifest ChunkerFP = %+v; want fp-chunk (the corpus-current adoption gate compares real values)", m)
+		}
+	})
+
+	t.Run("disagreeing sidecar chunker fingerprints stay unrecorded", func(t *testing.T) {
+		srcRoot := buildFixture(t)
+		pruneWrite(t, fileHashesPathFor(srcRoot, "main"), `{"a.go":"hashA|120|1700000000|fp-one","b.go":"hashB|80|1700000000|fp-two"}`)
+		cs := newStore(t)
+		if migrated, _, err := cs.promoteLegacyStore(srcRoot, "main", key, "fp-cur", 8); err != nil || !migrated {
+			t.Fatalf("promoteLegacyStore: migrated=%v err=%v", migrated, err)
+		}
+		m := readBranchManifest(branchRootPath(cs.root, key))
+		if m == nil || m.ChunkerFP != "" {
+			t.Errorf("stamped manifest ChunkerFP = %+v; want \"\" (disagreeing records must not be guessed)", m)
+		}
+	})
+
+	t.Run("undecodable store is unverifiable and refused", func(t *testing.T) {
+		srcRoot := buildFixture(t)
+		if err := os.Remove(filepath.Join(branchRootPath(srcRoot, "main"), "deadbeefcol", "00000001.gob")); err != nil {
+			t.Fatal(err)
+		}
+		migrated, reason, err := newStore(t).promoteLegacyStore(srcRoot, "main", key, "fp-cur", 8)
+		if err != nil {
+			t.Fatalf("promoteLegacyStore: %v", err)
+		}
+		if migrated || reason != "generation manifest absent and no document decodes to verify the embedding width" {
+			t.Errorf("migrated=%v reason=%q; want the unverifiable-store refusal", migrated, reason)
+		}
+	})
 }
 
 // TestViewIsolation_RootAMutationsNeverChangeB pins criterion 3: edits,
@@ -418,7 +632,7 @@ func corruptSnapshotEraEverywhere(t *testing.T, storage, snapKey string) {
 	}
 }
 
-func TestCorpusFailClosed_ForeignEraNeverServed(t *testing.T) {
+func TestCorpusForeignEraRebuildsInsteadOfServingStale(t *testing.T) {
 	files := map[string]string{
 		"a.go": "package main\n\n// alpha marker\n",
 	}
@@ -430,8 +644,12 @@ func TestCorpusFailClosed_ForeignEraNeverServed(t *testing.T) {
 		t.Fatalf("attach A: %v", err)
 	}
 
-	// Corrupt the publication: a foreign embedding era. The next attach must
-	// refuse — fail-closed — and must not serve the stored corpus.
+	// Corrupt the publication: a foreign embedding era. The stale corpus
+	// must read UNPUBLISHED for the current era (era-aware Published) and
+	// the next attach REBUILDS it under the current era — never serving
+	// the foreign-era vectors (the fail-open hazard) and never wedging the
+	// snapshot behind a permanent ErrCorpusEraMismatch (the pre-fix
+	// fail-closed-forever hazard: no restart or reindex recovered it).
 	snaps := h.snapshotDirs()
 	if len(snaps) != 1 {
 		t.Fatalf("fixture sanity: one corpus expected, got %v", snaps)
@@ -441,30 +659,31 @@ func TestCorpusFailClosed_ForeignEraNeverServed(t *testing.T) {
 		t.Fatalf("fixture sanity: %q is not a corpus directory name", snaps[0])
 	}
 	corruptSnapshotEraEverywhere(t, h.storage, snapKey)
-	// Drop the live attachment (and with it the registry's cached handle —
-	// a cached handle is legitimate for the era it was opened under): the
-	// next open must read the corrupted manifest from disk and refuse.
+	// Drop the live attachment (and with it the registry's cached handle):
+	// the next attach reads the corrupted manifest from disk.
 	if err := svcA.Close(); err != nil {
 		t.Fatalf("closing A: %v", err)
 	}
 
 	svcC := h.newViewService(nil)
 	idxC := h.newIndexer(svcC, nil, nil)
-	err := h.attach(svcC, idxC, h.rootB, "topic")
-	if err == nil {
-		t.Fatal("attach with a foreign-era corpus succeeded; want fail-closed error")
+	if err := h.attach(svcC, idxC, h.rootB, "topic"); err != nil {
+		t.Fatalf("attach after an era change must rebuild, not wedge: %v", err)
 	}
-	if !errors.Is(err, ErrCorpusEraMismatch) {
-		t.Errorf("attach error = %v; want ErrCorpusEraMismatch in the chain", err)
+	// The republished manifest carries the CURRENT era.
+	manifestPath := filepath.Join(branchRootPath(h.storage, snapKey), corpusManifestName)
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("rereading the corpus manifest: %v", err)
 	}
-	// The failed root must not serve ANY collection — not the corpus, not
-	// another root's overlay. A failed attach leaves the service not-ready
-	// (the manager surface maps this to an honest unavailable status): the
-	// non-blocking search refuses with ErrNotReady instead of serving.
-	if res, searchErr := svcC.HybridSearchNoWait(context.Background(), SearchOptions{Query: "alpha marker", TopK: 5}); searchErr == nil {
-		t.Errorf("failed attach served %d results — foreign collection leaked into the root", len(res))
-	} else if !errors.Is(searchErr, ErrNotReady) {
-		t.Errorf("failed attach search error = %v; want ErrNotReady (nothing served)", searchErr)
+	var m CorpusManifest
+	if jErr := json.Unmarshal(data, &m); jErr != nil || m.EmbeddingFP != "fp-view" {
+		t.Fatalf("republished manifest = %+v (err %v); want the current era fp-view", m, jErr)
+	}
+	// The rebuilt corpus serves current-era results.
+	res, err := svcC.HybridSearch(context.Background(), SearchOptions{Query: "alpha marker", TopK: 5})
+	if err != nil || len(res) == 0 {
+		t.Fatalf("search on the rebuilt corpus = %v (err %v); want results", res, err)
 	}
 }
 

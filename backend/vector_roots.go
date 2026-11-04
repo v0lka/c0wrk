@@ -124,10 +124,11 @@ func (vr *VectorRoots) CorpusRegistry() *vectorindex.CorpusRegistry {
 	return vr.corpus
 }
 
-// VectorCorpusRegistry exposes the process-level shared-corpus registry for
-// the desktop manager factory (ManagerConfig.Corpus). Nil before the
-// registry is constructed.
-func (f *FrontendAPI) VectorCorpusRegistry() *vectorindex.CorpusRegistry {
+// vectorCorpusRegistry is the in-package accessor for the process-level
+// shared-corpus registry (ManagerConfig.Corpus). Nil before the registry is
+// constructed. The desktop layer reaches the registry through the
+// FrontendAPILifecycle variant — this method stays off the Wails RPC surface.
+func (f *FrontendAPI) vectorCorpusRegistry() *vectorindex.CorpusRegistry {
 	if f.vectorRoots == nil {
 		return nil
 	}
@@ -647,11 +648,31 @@ func (vr *VectorRoots) Release(root string) *vectorindex.Manager {
 	if ok && vr.focus == root {
 		vr.focus = ""
 	}
+	var closed chan struct{}
+	if ok {
+		// Park the root in the closing set around the Shutdown drain,
+		// exactly like ReleaseProject and the LRU eviction (see
+		// VectorRoots.closing): a ManagerForRoot racing this drain must
+		// wait instead of rebuilding a second manager over the same chromem
+		// storage. The drain stays synchronous — callers rely on the
+		// returned manager being fully shut down (Windows handle-close).
+		closed = make(chan struct{})
+		if vr.closing == nil {
+			vr.closing = make(map[string]chan struct{})
+		}
+		vr.closing[root] = closed
+	}
 	vr.mu.Unlock()
 	if !ok {
 		return nil
 	}
 	e.mgr.Shutdown()
+	vr.mu.Lock()
+	if ch, isClosing := vr.closing[root]; isClosing && ch == closed {
+		delete(vr.closing, root)
+	}
+	close(closed)
+	vr.mu.Unlock()
 	return e.mgr
 }
 

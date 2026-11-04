@@ -16,9 +16,13 @@ package vectorindex
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"math"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -91,8 +95,11 @@ func (v *v2Corpus) corpusManifest(gen *storeGenerationManifest) *CorpusManifest 
 func (v *v2Corpus) count() int { return len(v.byID) }
 
 // documentAt re-derives one pseudo chromem document: the occurrence's
-// identity (ID), the metadata the search paths and the content resolver
-// consume, and its vector from the chunk pool.
+// identity (ID — derived from the occurrence's STORED chunk index, never
+// its slice position: a poison-dropped chunk leaves gaps in a file's
+// 0..n-1 sequence, and the lexical leg's IDs are the true positional
+// DocumentID(path, i)), the metadata the search paths and the content
+// resolver consume, and its vector from the chunk pool.
 func (v *v2Corpus) documentAt(ref v2DocRef) (chromem.Document, bool) {
 	if ref.row < 0 || ref.row >= len(v.rows) {
 		return chromem.Document{}, false
@@ -107,7 +114,7 @@ func (v *v2Corpus) documentAt(ref v2DocRef) (chromem.Document, bool) {
 		return chromem.Document{}, false
 	}
 	return chromem.Document{
-		ID:        DocumentID(row.Path, ref.chunk),
+		ID:        DocumentID(row.Path, occ.Index),
 		Embedding: vec,
 		Metadata: map[string]string{
 			relPathMetaKey: row.Path,
@@ -159,12 +166,15 @@ func openV2Corpus(genDir, snapKey string, gen *storeGenerationManifest) (*v2Corp
 	// reads are safe by construction. The first error fails the open
 	// (chunks-before-tables makes a missing record store damage, never a
 	// skip); every worker drains its queue regardless — a fail-closed open
-	// costs one walk, not a leaked goroutine.
+	// costs one walk, not a leaked goroutine. byID keys each occurrence
+	// by its STORED chunk index (the true DocumentID suffix), never its
+	// slice position — a poison-dropped chunk leaves a positional gap the
+	// row legitimately omits.
 	var distinct []string
 	for ri, row := range rows {
 		v.byPath[row.Path] = ri
 		for ci, occ := range row.Chunks {
-			v.byID[DocumentID(row.Path, ci)] = v2DocRef{row: ri, chunk: ci}
+			v.byID[DocumentID(row.Path, occ.Index)] = v2DocRef{row: ri, chunk: ci}
 			if _, loaded := v.vectors[occ.C]; !loaded {
 				v.vectors[occ.C] = nil
 				distinct = append(distinct, occ.C)
@@ -203,11 +213,18 @@ func openV2Corpus(genDir, snapKey string, gen *storeGenerationManifest) (*v2Corp
 	}
 	wg.Wait()
 	if readErr != nil {
-		// A table row whose chunk is unreadable: power-loss tore the
-		// publication (chunks-before-tables rules out the ordering cause;
-		// only durability can be missing). Unpublish the §3 form — the v1
-		// corpus (if any) serves meanwhile and the next attach rebuilds
-		// cache-spared.
+		// Classify before destroying: only PROVEN damage — a record absent
+		// (fs.ErrNotExist) or torn (short/over-long/non-regular, wrapped
+		// errChunkRecordTorn; a truncated read is io.ErrUnexpectedEOF) — is
+		// the power-loss window the unpublish exists to heal. A TRANSIENT
+		// fault (EACCES, EMFILE/ENFILE, EIO, an AV/indexer sharing
+		// violation on Windows) fails the open WITHOUT touching the
+		// publication: the table is intact, the next attempt retries
+		// against it, and a full rebuild pass (re-walk, re-hash,
+		// re-commit) is not triggered by a retryable OS error.
+		if !chunkRecordDamaged(readErr) {
+			return nil, fmt.Errorf("chunk record of snapshot %s (transient, publication kept): %w", snapKey, readErr)
+		}
 		unpublishSnapshotTable(genDir, snapKey)
 		return nil, fmt.Errorf("chunk record of snapshot %s: %w", snapKey, readErr)
 	}
@@ -227,6 +244,18 @@ func openV2Corpus(genDir, snapKey string, gen *storeGenerationManifest) (*v2Corp
 	}
 	v.lexical = lex
 	return v, nil
+}
+
+// chunkRecordDamaged reports whether a chunk-record read error indicates
+// PROVEN durable damage — the power-loss window the publication model
+// self-heals by unpublishing (a record absent or torn) — rather than a
+// transient fault (permissions, fd exhaustion, a disk blip, an AV/indexer
+// lock) that must leave the publication intact for the next attempt.
+func chunkRecordDamaged(err error) bool {
+	return errors.Is(err, fs.ErrNotExist) ||
+		errors.Is(err, io.EOF) ||
+		errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, errChunkRecordTorn)
 }
 
 // cosineSimilarity is the plain cosine the vector leg ranks by — the same
@@ -288,6 +317,11 @@ func (s *Service) v2VectorCandidates(ctx context.Context, v *v2Corpus, query str
 			if len(top) < fanout {
 				top = append(top, v2Scored{ref: v2DocRef{row: ri, chunk: ci}, sim: sim})
 				if len(top) == fanout {
+					// The slice first reached the working-set size over an
+					// arbitrary table-order permutation — a REAL sort is
+					// required here (and only here): the admission
+					// threshold below reads top[len(top)-1] as the set's
+					// minimum, which it is only once the slice is ordered.
 					sortV2ScoredDesc(top)
 				}
 				continue
@@ -299,6 +333,7 @@ func (s *Service) v2VectorCandidates(ctx context.Context, v *v2Corpus, query str
 			sortV2ScoredDesc(top)
 		}
 	}
+	sortV2ScoredDesc(top) // also orders a slice that never reached fanout
 	out := make([]chromem.Result, 0, len(top))
 	for _, sc := range top {
 		doc, ok := v.documentAt(sc.ref)
@@ -339,16 +374,15 @@ func passesV2Filters(path string, occ chunkOccurrence, filePattern string, mustM
 	return true
 }
 
-// sortV2ScoredDesc keeps the working top-K ordered by descending
-// similarity (bounded-slice insertion; fanout is small).
+// sortV2ScoredDesc orders the working top-K by descending similarity — a
+// full sort of a fanout-sized slice (cheap and exact). The fill-time call
+// (when the slice first reaches fanout over an arbitrary table-order
+// permutation) and the pre-output call (a slice that never filled) both
+// NEED the full sort; the replacement-time call re-establishes the order
+// after the threshold swap. The admission rule (sim <= top[len-1].sim ⇒
+// skip; replace top[len-1]) is correct only while this invariant holds.
 func sortV2ScoredDesc(top []v2Scored) {
-	for i := len(top) - 1; i > 0; i-- {
-		if top[i].sim > top[i-1].sim {
-			top[i], top[i-1] = top[i-1], top[i]
-			continue
-		}
-		break
-	}
+	sort.Slice(top, func(i, j int) bool { return top[i].sim > top[j].sim })
 }
 
 // corpusRowVisible is the §3 form of the per-root visibility arbiter: the

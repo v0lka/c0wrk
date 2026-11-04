@@ -567,4 +567,11 @@ func TestWatcherEmitters_TolerateNilEmitter(t *testing.T) {
 	if got := f.emitResearchFileChanged(researchRoot, "proj-1", []string{filepath.Join(root, "outside.txt")}); got {
 		t.Errorf("emitResearchFileChanged(non-scoped path) = %t, want false", got)
 	}
+
+	// The skills/agents/commands watcher callbacks share the same nil-emitter
+	// contract: their fsnotify callbacks emit through the guarded helpers, so
+	// a FrontendAPI without Wails event wiring must not crash here either.
+	f.emitSkillsChanged()
+	f.emitAgentsChanged()
+	f.emitCommandsChanged()
 }

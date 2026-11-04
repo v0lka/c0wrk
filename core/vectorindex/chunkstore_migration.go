@@ -19,20 +19,25 @@ package vectorindex
 // (the table's chunker fingerprint must equal the live one — a mismatch
 // defers to the rebuild path, whose re-derivation the fingerprints own);
 // each chunk's C is the content identity, and the legacy document at
-// DocumentID(path, i) supplies the vector and its occurrence metadata.
-// A chunk index with no legacy document is a poison-dropped chunk —
-// absent from both sides, the row legitimately omits it.
+// DocumentID(path, i) supplies the vector and its occurrence metadata,
+// recorded at its TRUE index i. A chunk index with no legacy document is
+// a gap the row legitimately omits EXACTLY when the corpus's own sidecar
+// never recorded the index (a poison-dropped chunk at commit time); a
+// recorded-but-missing index defers the snapshot — the positional
+// DocumentID mapping must never be served over a compaction.
 //
 // Replay-safety (the ADR's marker-gated pattern): the snapshot's
 // table.json — written LAST by writeSnapshotTable, after every chunk
-// record landed — IS the per-branch completion marker. A crash or
+// record landed — IS the per-snapshot completion marker. A crash or
 // cancellation before it leaves the snapshot unconverted; the next sweep
 // replays it whole (chunk writes are idempotent by content addressing).
-// The project-level marker (store_chunk_records.done, store_gc.go) is
-// written only after EVERY published corpus of the store has its §3
-// tables; its presence opens the v1 chromem leg removal — the rollback
-// window's close (the lexical leg stays: §3 opens fall back to it until
-// a rebuild lands the lexical index inside the snapshot directory).
+// The v1 chromem leg of a snapshot whose §3 table is published is reaped
+// by the hygiene pass PER SNAPSHOT (removeMigratedV1Legs — the rollback
+// window of each snapshot closes at its own table.json; a store-wide
+// completion marker, store_chunk_records.done, is written afterwards as
+// telemetry only and gates nothing. The lexical leg stays either way: §3
+// opens fall back to it until a rebuild lands the lexical index inside
+// the snapshot directory).
 //
 // Lock discipline: the pass rides the store's sweepMu (single-flighted
 // with the layout sweep and the hygiene pass), holds no service or
@@ -42,7 +47,10 @@ package vectorindex
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -57,6 +65,50 @@ type chunkRecordMigrationReport struct {
 	Deferred  int // snapshots left on the v1 path with a recorded reason
 	Done      int // already-converted snapshots observed (marker hygiene)
 	Marked    bool
+}
+
+// corpusSidecarChunkSets loads the corpus build's committed chunk-index
+// sets from the snapshot's own file-hash sidecar (each entry's 5th field).
+// Paths with no sidecar entry, or entries without a chunk set (older
+// sidecar formats), map to nil. A nil set CANNOT distinguish a legitimate
+// poison-drop gap from an unexplained miss, so the caller treats a miss at
+// such a path as a poison-drop (skip) — safe because the coverage-count
+// gate below still defers the whole snapshot whenever the collection
+// counted documents this loop never served; the sidecar's own recorded
+// set is what proves a deferral-worthy miss (a chunk it records that the
+// collection cannot serve) versus a legitimate gap (an index it never
+// recorded).
+func corpusSidecarChunkSets(storageRoot, snapKey string) map[string]map[int]bool {
+	data, err := safeio.ReadFile(fileHashesPathFor(storageRoot, snapKey))
+	if err != nil {
+		return nil
+	}
+	var envelope struct {
+		Version int               `json:"version"`
+		Root    string            `json:"root"`
+		Entries map[string]string `json:"entries"`
+	}
+	entries := envelope.Entries
+	if json.Unmarshal(data, &envelope) != nil || entries == nil {
+		var bare map[string]string
+		if json.Unmarshal(data, &bare) != nil {
+			return nil
+		}
+		entries = bare
+	}
+	sets := make(map[string]map[int]bool, len(entries))
+	for path, entry := range entries {
+		idx, ok := fileHashEntryChunkSet(entry)
+		if !ok {
+			continue // no recorded set: misses at this path stay unexplained
+		}
+		m := make(map[int]bool, len(idx))
+		for _, i := range idx {
+			m[i] = true
+		}
+		sets[path] = m
+	}
+	return sets
 }
 
 // migrateCorpusChunkRecords converts one published v1 corpus into its §3
@@ -98,6 +150,19 @@ func migrateCorpusChunkRecords(
 	if total == 0 {
 		return false, "v1 corpus is empty (nothing to move)", nil
 	}
+	// Each file's committed chunk-index set (the corpus's own sidecar, 5th
+	// field) decides whether a GetByID miss at index i is a legitimate
+	// poison-drop gap (the sidecar never recorded i — the row legitimately
+	// omits it, and every SURVIVING occurrence keeps its TRUE index in the
+	// occurrence grammar's index field, so the table's DocumentID(path, i)
+	// mapping stays exact) or an unexplained gap (the sidecar recorded i
+	// but the collection cannot serve it — the whole snapshot defers
+	// rather than converts into a misaligned table). A path without a
+	// recorded set (older sidecar formats) cannot prove either way: its
+	// misses read as poison-drops, and the coverage-count gate below still
+	// defers the snapshot if the collection counted documents this loop
+	// never served.
+	committedSets := corpusSidecarChunkSets(storageRoot, snapKey)
 
 	paths := make([]string, 0, len(manifest.Files))
 	for path := range manifest.Files {
@@ -125,11 +190,17 @@ func migrateCorpusChunkRecords(
 		if chunkErr != nil {
 			return false, "", fmt.Errorf("re-chunking %s for %s: %w", path, snapKey, chunkErr)
 		}
+		committed := committedSets[path]
 		row := occurrenceRow{Path: path, BlobHash: blobHash}
 		for i, chunk := range chunks {
 			doc, docErr := col.GetByID(ctx, DocumentID(path, i))
 			if docErr != nil {
-				// Poison-dropped at commit time: absent from both sides.
+				if committed != nil && committed[i] {
+					return false, fmt.Sprintf("document %s is missing though the sidecar records its chunk (deferred)", DocumentID(path, i)), nil
+				}
+				// Poison-dropped at commit time (never recorded as
+				// committed): absent from both sides, the row legitimately
+				// omits the index — never compacted over it.
 				continue
 			}
 			if len(doc.Embedding) == 0 {
@@ -143,6 +214,7 @@ func migrateCorpusChunkRecords(
 			}
 			row.Chunks = append(row.Chunks, chunkOccurrence{
 				C:        c,
+				Index:    i,
 				Start:    chunk.StartLine,
 				End:      chunk.EndLine,
 				Language: chunk.Language,
@@ -178,9 +250,12 @@ func migrateCorpusChunkRecords(
 // runChunkRecordMigration drives one physical store's v1→v2 chunk-record
 // completion: every published, era-compatible v1 corpus without a §3
 // table converts; when none remains, the project marker lands (atomic,
-// last) and the v1 chromem legs of converted snapshots are reaped by the
-// hygiene pass (store_gc.go — the rollback window closes with the
-// marker). The caller holds the store's sweepMu.
+// last) as COMPLETION TELEMETRY — the v1 chromem legs of converted
+// snapshots are reaped per snapshot by the hygiene pass as soon as their
+// own tables are published (store_gc.go; the marker gates nothing, so a
+// multi-branch store whose absent-checkout corpora legitimately defer
+// still reclaims every converted snapshot). The caller holds the store's
+// sweepMu.
 func (r *CorpusRegistry) runChunkRecordMigration(ctx context.Context, cs *corpusStore, storageRoot, embeddingFP string, dims int, facts StoreMigrationFacts) chunkRecordMigrationReport {
 	logger := r.logger
 	var report chunkRecordMigrationReport
@@ -195,7 +270,17 @@ func (r *CorpusRegistry) runChunkRecordMigration(ctx context.Context, cs *corpus
 	if facts.ReadSource == nil || facts.ChunkFn == nil {
 		return report // not wired (in-memory tests): defer silently
 	}
-	keys := publishedV1CorpusKeys(storageRoot, embeddingFP, dims)
+	keys, listErr := publishedV1CorpusKeys(storageRoot, embeddingFP, dims)
+	if listErr != nil {
+		// The enumeration itself failed (a transient EACCES/EMFILE/EIO on
+		// branches/): remaining == 0 here would be indistinguishable from
+		// a fully-converted store, and the marker would permanently
+		// certify corpora this run never examined. Skip the pass — the
+		// next sweep retries against the intact tree.
+		logger.Warn("vector store: chunk-record migration enumeration failed; run deferred",
+			"storage", storageRoot, "error", listErr)
+		return report
+	}
 	remaining := 0
 	for _, key := range keys {
 		if ctx.Err() != nil {
@@ -211,7 +296,7 @@ func (r *CorpusRegistry) runChunkRecordMigration(ctx context.Context, cs *corpus
 			// sweep (the layout sweep's short-wait posture would only
 			// duplicate the wait here — the build publishes its own §3
 			// tables on completion).
-			cs.waitBuildFor(waitCh, key, sweepLeaseWait)
+			cs.waitBuildFor(waitCh, key, embeddingFP, dims, sweepLeaseWait)
 			remaining++
 			continue
 		}
@@ -233,8 +318,12 @@ func (r *CorpusRegistry) runChunkRecordMigration(ctx context.Context, cs *corpus
 	}
 	if remaining == 0 && ctx.Err() == nil && !storeChunkRecordsDone(storageRoot) {
 		// Every published corpus of the store is either converted or has
-		// nothing to move: the project marker lands (the rollback window's
-		// close). Only the store's own process may run this (ADR-075).
+		// nothing to move: the marker lands as completion telemetry (the
+		// reaping itself is per snapshot — a converted snapshot's v1 leg
+		// is reclaimable at its own table.json regardless of this marker,
+		// so a multi-branch store with legitimately deferred absent-tree
+		// corpora still reclaims what converted). Only the store's own
+		// process may run this (ADR-075).
 		if err := safeio.WriteFileAtomic(storeChunkRecordsDonePath(storageRoot), nil, 0o644); err != nil {
 			logger.Debug("vector store: chunk-record migration marker deferred",
 				"error", err)
@@ -249,11 +338,19 @@ func (r *CorpusRegistry) runChunkRecordMigration(ctx context.Context, cs *corpus
 
 // publishedV1CorpusKeys lists the store's published, era-compatible
 // snapshot corpora (v1 or §3 — the completion and the marker account for
-// both) in store-key space, sorted for determinism.
-func publishedV1CorpusKeys(storageRoot, embeddingFP string, dims int) []string {
+// both) in store-key space, sorted for determinism. An enumeration error
+// is RETURNED, never folded into an empty list: the driver's marker
+// decision treats "no corpora found" as proof of completion, and a
+// transient ReadDir fault must not manufacture that proof
+// (branches/ absent — fs.ErrNotExist — genuinely means zero published
+// corpora).
+func publishedV1CorpusKeys(storageRoot, embeddingFP string, dims int) ([]string, error) {
 	entries, err := os.ReadDir(filepath.Join(storageRoot, branchRootsDirName))
 	if err != nil {
-		return nil
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("listing store branches: %w", err)
 	}
 	var keys []string
 	for _, e := range entries {
@@ -271,5 +368,5 @@ func publishedV1CorpusKeys(storageRoot, embeddingFP string, dims int) []string {
 		keys = append(keys, identity)
 	}
 	slices.Sort(keys)
-	return keys
+	return keys, nil
 }

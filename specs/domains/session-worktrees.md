@@ -189,26 +189,26 @@ KEPT — no operation in this path ever deletes a branch. The eager
 `CreateSession` RPC (no arguments) creates the plain local row; provisioning
 lives exclusively in the first send's `bindSessionWorkspace`.
 
-#### Embedding-cache seeding
+#### Vector store and embedding cache (no seeding step)
 
-After its success point (create: after the binding is persisted; fork: after
-the store fork), both provisioning flows call `seedWorktreeEmbeddingCache`
-(backend `frontend_api_vector.go`): the project checkout's content-addressed
-embedding cache is copied into the fresh tree's cache root
-(`config.WorktreeEmbeddingCachePath`) — synchronously, before the RPC returns,
-so the frontend's immediate focus move builds the tree's vector manager over
-an already-warm cache. A session tree is 99-100% identical to its branch
-point, and the cache — keyed by chunk-text hash plus model fingerprint with
-paths deliberately excluded — is the one layer where that identity is legally
-reusable (branch collections are absolute-path-keyed and cannot be shared);
-with a warm seed the tree's first index pass reuses the checkout's embeddings
-instead of re-running ONNX inference over near-identical content. The seed is
-best-effort and idempotent: a missing checkout cache, a derivation failure, or
-a partial copy only means the first pass runs cold (copied entries are
-checksum-guarded, so a torn file is a miss, never a wrong vector); an existing
-target directory is never touched; per-file failures against the checkout's
-live cache are skipped. The recreate path needs no call — its cache root
-survives the lost tree.
+Since ADR-104 stage 2 neither provisioning flow seeds anything: a managed
+worktree owns no per-tree vector storage and no per-tree embedding cache.
+Its vector state lives in the PROJECT's shared store (one store owner per
+project per process), where the tree's index delta is a per-root overlay
+beside the read-only snapshot corpora the checkout and sibling trees also
+reach. Embeddings come from the project's content-addressed shared cache
+(`config.ProjectEmbeddingCachePath`) — keyed by chunk-text hash plus model
+fingerprint with paths deliberately excluded — so the checkout and every
+worktree of the project legally share one cache: a session tree is 99-100%
+identical to its branch point, and the fresh tree's first index pass reuses
+those already-computed embeddings directly, re-running ONNX inference only
+for genuinely new content. Nothing copies synchronously before the RPC
+returns; the frontend's immediate focus move builds the tree's manager over
+the same shared store the checkout's manager already uses, warm by
+construction. The legacy per-tree cache roots
+(`config.WorktreeEmbeddingCachePath` and its pre-containment-fix variant)
+survive only as cleanup targets — release drops them alongside the tree's
+overlay (see [Release](#release-deletion)).
 
 ### Restore
 
@@ -422,8 +422,11 @@ frontend (useGitFocusSync, mounted at the App root)  backend
   entering the new tree stays the user's decision. On success
   `git:status_changed` refreshes the branch list and status while the
   frontend's Git-focus refresh (`refreshGitFocus`) re-reads the worktree
-  list, landing the new tree in the Worktrees section; the tree's embedding
-  cache is seeded best-effort, same contract as session provisioning.
+  list, landing the new tree in the Worktrees section. No vector seed step
+  runs after the success point: since ADR-104 stage 2 the new tree routes
+  onto the project's shared store, so its first index pass reads the base
+  ref's snapshot corpus and the project's shared embedding cache — the same
+  no-seed contract as session provisioning (above).
 - The Worktrees section is shown in pick mode too: the pick records a
   BRANCH, but an existing worktree (e.g. a stale managed tree) can still be
   deleted — through the mandatory `WorktreeDeleteConfirmDialog` — without
@@ -622,10 +625,12 @@ root follows the active session" protocol, [ADR-099](../decisions/099-research-r
 - Deletion never resurrects: `Manager.DeleteSession` refuses sessions not
   live in memory (the RPC gates on `HasSession`), so a deletion flow can
   never re-provision a tree it just released through the restore ensurer.
-- Vector-index routing is per workspace root (ADR-081): every routed root
-  owns a `vectorindex.Manager` with worktree-scoped storage under
-  `<project vector_index>/worktrees/<name>` (branch resolved from that root;
-  disjoint, simultaneously live state per tree). Agent-side search resolves
+- Vector-index routing is per workspace root (ADR-081 + ADR-104 stage 2):
+  every routed root owns a `vectorindex.Manager`, and all of a project's
+  roots share ONE physical store — the per-tree state is exactly each
+  root's overlay (`branches/branch_root_<fingerprint>/`) beside the
+  read-only snapshot corpora other roots also reach (branch resolved from
+  that root). Agent-side search resolves
   the root from the executor context — a session always searches its own
   tree, regardless of which session is active or focused — while the
   user-facing RPCs follow the Git-panel focus. Membership is decided by
@@ -633,15 +638,13 @@ root follows the active session" protocol, [ADR-099](../decisions/099-research-r
   config, and an unknown root is rejected rather than
   silently indexed. No send ever re-points shared index state.
 - Releasing a managed tree releases its registry manager first (open chromem
-  handles dropped so removal is Windows-safe), then removes its vector-index
-  storage root and per-tree embedding cache; project deletion removes every
+  handles dropped so removal is Windows-safe), then removes the tree's
+  shared-store overlay and its `refs/root_<fingerprint>` ownership marker —
+  never the snapshot corpora another owner still reaches — plus its LEGACY
+  per-tree storage roots and caches (`WorktreeVectorIndexPath` /
+  `WorktreeEmbeddingCachePath`, cleanup-only); a newly provisioned tree
+  never gets a per-tree cache. Project deletion removes every
   worktree root together with the project root.
-- Worktree embedding-cache seeding is a provisioning-time, best-effort,
-  once-per-tree step: it runs only after the flow's success point and before
-  the RPC returns, never touches an existing cache root, copies only the
-  content-addressed entries (never branch collections — those are
-  absolute-path-keyed and tree-specific), and its failure never fails the
-  provisioning flow.
 - A tool-call path argument resolving inside a managed worktree container
   (`<root>/.worktrees`) reachable from the session's own roots escalates as
   the canonical hard reason `managed_worktree_traversal`

@@ -25,7 +25,13 @@ func seedSnapshotTable(t *testing.T, genDir, snapKey string, cs ...string) {
 		Chunks:   make([]chunkOccurrence, 0, len(cs)),
 	}}
 	for i, c := range cs {
-		rows[0].Chunks = append(rows[0].Chunks, chunkOccurrence{C: c, Start: i + 1, End: i + 9, Language: "go"})
+		// writeSnapshotTable verifies every referenced chunk record before
+		// publishing (the header is the completion marker), so the seed
+		// writes the records first.
+		if err := writeChunkRecord(genDir, c, chunkVec(c)); err != nil {
+			t.Fatalf("writeChunkRecord %s: %v", c, err)
+		}
+		rows[0].Chunks = append(rows[0].Chunks, chunkOccurrence{C: c, Index: i, Start: i + 1, End: i + 9, Language: "go"})
 	}
 	if err := writeSnapshotTable(genDir, snapKey, rows, &snapshotTable{ChunkerFP: "k", IgnoreFP: "i", Files: 1, Chunks: len(cs), UniqueChunks: len(cs)}); err != nil {
 		t.Fatalf("writeSnapshotTable %s: %v", snapKey, err)
@@ -136,20 +142,42 @@ func TestOrphanChunkSweep_ReferenceSetAndGraceWindow(t *testing.T) {
 	}
 }
 
+// backdate moves a path's mtime into the past (beyond the sweeps' grace
+// windows) so a test observes the post-grace behavior without sleeping.
+func backdate(t *testing.T, path string, age time.Duration) {
+	t.Helper()
+	past := time.Now().Add(-age)
+	if err := os.Chtimes(path, past, past); err != nil {
+		t.Fatalf("backdating %s: %v", path, err)
+	}
+}
+
 func TestRemoveSupersededGenerations_KeepSetHonored(t *testing.T) {
 	h := newChunkStoreHarness(t)
 	gen0 := h.gen
 	h.ensureGen("fp-era-b", 8) // advance: gen0 superseded
 	logger := gcTestLogger()
-	removed := removeSupersededGenerations(logger, h.storage, nil)
-	if removed != 1 || pathExists(gen0) {
-		t.Fatalf("superseded generation not removed (removed=%d, exists=%v)", removed, pathExists(gen0))
+
+	// The grace window applies to EVERY non-CURRENT generation: a freshly
+	// superseded leg (a losing racer may still be writing §3 records there
+	// until its next re-adopt) survives the sweep...
+	if removed := removeSupersededGenerations(logger, h.storage, nil); removed != 0 {
+		t.Fatalf("freshly superseded generation removed inside the grace window: %d", removed)
+	}
+	if !pathExists(gen0) {
+		t.Fatal("freshly superseded generation was removed inside the grace window")
+	}
+	// ...and once the window has elapsed it goes.
+	backdate(t, gen0, advanceDebrisGrace+time.Hour)
+	if removed := removeSupersededGenerations(logger, h.storage, nil); removed != 1 || pathExists(gen0) {
+		t.Fatalf("grace-elapsed superseded generation not removed (removed=%d, exists=%v)", removed, pathExists(gen0))
 	}
 	if !pathExists(h.gen) {
 		t.Fatal("the CURRENT generation must never be removed")
 	}
 	// A generation an open handle was decoded from stays.
 	h.ensureGen("fp-era-c", 8) // gen1 now superseded too
+	backdate(t, generationPath(h.storage, 1), advanceDebrisGrace+time.Hour)
 	if removed := removeSupersededGenerations(logger, h.storage, map[string]struct{}{generationPath(h.storage, 1): {}}); removed != 0 {
 		t.Fatalf("held generation removed: %d", removed)
 	}
@@ -282,7 +310,7 @@ func TestEvictSnapshotsUnderBudget_LRUPinnedKept(t *testing.T) {
 	}
 }
 
-func TestRemoveMigratedV1Legs_MarkerGated(t *testing.T) {
+func TestRemoveMigratedV1Legs_PerSnapshot(t *testing.T) {
 	h := newChunkStoreHarness(t)
 	logger := gcTestLogger()
 	c := chunkRecordKey("migrated")
@@ -301,18 +329,13 @@ func TestRemoveMigratedV1Legs_MarkerGated(t *testing.T) {
 		}
 	}
 
-	// Without the done marker nothing is reaped (the rollback window).
-	if removed := removeMigratedV1Legs(logger, h.storage, h.gen, nil); removed != 0 {
-		t.Fatalf("v1 legs reaped before the done marker: %d", removed)
-	}
-	if !pathExists(branchRootPath(h.storage, withTable)) {
-		t.Fatal("v1 leg removed before the marker")
-	}
-
-	if err := os.WriteFile(storeChunkRecordsDonePath(h.storage), nil, 0o644); err != nil {
-		t.Fatalf("marker: %v", err)
-	}
-	if removed := removeMigratedV1Legs(logger, h.storage, h.gen, map[string]struct{}{tableless: {}}); removed != 1 {
+	// PER-SNAPSHOT reaping, marker-ungated: a converted snapshot's v1
+	// chromem leg is derived state the moment its own table.json published
+	// (the rollback window closes per snapshot), while the store-wide
+	// store_chunk_records.done marker is completion telemetry only — a
+	// multi-branch store whose deferred corpora never block reaping the
+	// snapshots that DID convert.
+	if removed := removeMigratedV1Legs(logger, h.storage, h.gen, nil); removed != 1 {
 		t.Fatalf("reaped %d, want 1 (the converted, unheld snapshot)", removed)
 	}
 	if pathExists(branchRootPath(h.storage, withTable)) {
@@ -323,6 +346,22 @@ func TestRemoveMigratedV1Legs_MarkerGated(t *testing.T) {
 	}
 	if !pathExists(branchRootPath(h.storage, tableless)) {
 		t.Error("a tableless snapshot's v1 leg was reaped (it is the only form)")
+	}
+
+	// A held key is protected (Windows close-ordering): the sweep leaves
+	// its leg for the next pass.
+	seedSnapshotTable(t, h.gen, withTable, c) // re-publish the table
+	if err := os.MkdirAll(branchRootPath(h.storage, withTable), 0o750); err != nil {
+		t.Fatalf("mkdir v1 corpus (re-seed): %v", err)
+	}
+	if removed := removeMigratedV1Legs(logger, h.storage, h.gen, map[string]struct{}{withTable: {}}); removed != 0 {
+		t.Fatalf("reaped %d with the snapshot held, want 0", removed)
+	}
+	if !pathExists(branchRootPath(h.storage, withTable)) {
+		t.Error("a held snapshot's v1 leg was reaped")
+	}
+	if removed := removeMigratedV1Legs(logger, h.storage, h.gen, nil); removed != 1 {
+		t.Fatalf("reaped %d after release, want 1", removed)
 	}
 }
 

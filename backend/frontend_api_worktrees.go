@@ -409,8 +409,6 @@ func (f *FrontendAPI) bindAdoptedTree(ctx context.Context, owner *worktrees.Owne
 		}
 		return fmt.Errorf("managed worktree %q was gone at the post-bind re-validation (removed by a concurrent last-owner deletion); the previous workspace was restored — retry the send to provision a fresh tree: %w", holder.Name, err)
 	}
-	// Idempotent: the tree's first session seeded the cache already; a fresh
-	// seed warms adopted (previously orphaned) trees too.
 	return nil
 }
 
@@ -529,9 +527,6 @@ func (f *FrontendAPI) forkManagedSession(ctx context.Context, src *session.Sessi
 		f.compensateProvisionedTree(provisionCtx, repoRoot, treeName, "fork persistence failed")
 		return nil, err
 	}
-	// Seed after the success point, before the RPC returns and the frontend
-	// focuses the fork's tree: the fork starts at the source's committed
-	// HEAD, so the checkout cache is a near-perfect match for its first pass.
 	f.emitSessionsChanged()
 	return info, nil
 }

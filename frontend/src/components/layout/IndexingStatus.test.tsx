@@ -86,6 +86,27 @@ describe('IndexingStatus — progress bar', () => {
     expect(() => fillElement(container)).toThrow()
   })
 
+  it('renders "Preparing index…" for the preparing attach window (ADR-104 stage 2, no fake bar)', () => {
+    // The view-model attach window (snapshot identity resolution, corpus
+    // lease acquisition): pre-work, not a pass — the same honest shape as
+    // `loading`, never the "Indexing…" 0% bar.
+    state.status = { state: 'preparing', phase: 'preparation', progress: 0, files_indexed: 0, total_files: 0 }
+    render()
+    expect(container.textContent).toContain('Preparing index…')
+    expect(container.textContent).not.toContain('Indexing')
+    expect(() => fillElement(container)).toThrow()
+  })
+
+  it('renders "Migrating store…" for the migration-rebuild promotion (ADR-104 stage 2, no fake bar)', () => {
+    // The one-time legacy store promotion: store-shape repair, not fresh
+    // content — its own honest label, never the "Indexing…" progress bar.
+    state.status = { state: 'migration-rebuild', phase: 'migration-rebuild', progress: 0, files_indexed: 0, total_files: 0 }
+    render()
+    expect(container.textContent).toContain('Migrating store…')
+    expect(container.textContent).not.toContain('Indexing')
+    expect(() => fillElement(container)).toThrow()
+  })
+
   it('renders an honest "Index unavailable" for the terminal unavailable state (no fake bar)', () => {
     // A failed DB open / init failure: nothing is running and nothing can be
     // repaired by a reindex (there is no collection). The state used to fall

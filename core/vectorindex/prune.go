@@ -386,7 +386,7 @@ func (s *Service) DeleteBranchData(projectPath, branch string, remainingBranches
 		return 0
 	}
 
-	removed := removeBranchArtifactsFS(s.logger, target, col, lex, sharedCollection, sharedLexical)
+	removed := removeBranchArtifactsFS(s.logger, target, branch, col, lex, sharedCollection, sharedLexical)
 	// Ride the delete with the §3 hygiene pass: the branch's bref was
 	// detached above (removeBranchArtifactsFS path); an unreferenced §3
 	// snapshot directory and its exclusive chunks are reclaimed now
@@ -421,7 +421,7 @@ func DeleteBranchDataFS(logger *slog.Logger, projectPath, branch string, remaini
 	}
 
 	sharedCollection, sharedLexical := branchCollisionIdentities(branch, remainingBranches)
-	removed := removeBranchArtifactsFS(logger, target, col, lex, sharedCollection, sharedLexical)
+	removed := removeBranchArtifactsFS(logger, target, branch, col, lex, sharedCollection, sharedLexical)
 	// The §3 hygiene pass rides the delete in its manager-free form.
 	hygieneStoreFS(logger, target, remainingBranches, 0)
 	return removed
@@ -451,14 +451,16 @@ func branchCollisionIdentities(branch string, remainingBranches []string) (share
 // removeBranchArtifactsFS removes the per-branch artifacts of one deleted
 // branch — both indexes plus the sidecar pair — skipping the artifacts an
 // identity collision shares with a surviving branch. The branch's OWN
-// reference to its snapshot corpus (refs/bref_<sanitized>.ref) is removed
-// with it: the detach drops the branch's keep on the corpus, which the next
-// sweep reclaims only when no live root or surviving branch still reaches
-// it (ADR-104 stage 5). The bref key sanitizes exactly like the lexical
-// identity, so the lexical collision guard covers it too. The on-disk half
-// shared by Service.DeleteBranchData and DeleteBranchDataFS. Fail-soft
-// throughout.
-func removeBranchArtifactsFS(logger *slog.Logger, target, col, lex string, sharedCollection, sharedLexical bool) int {
+// reference to its snapshot corpus (refs/bref_<hash>.ref, the hash of the
+// raw branch name — see branchRefKey) is removed with it via
+// removeBranchRef (both key forms): the detach drops the branch's keep on
+// the corpus, which the next sweep reclaims only when no live root or
+// surviving branch still reaches it (ADR-104 stage 5). Hash-keyed bref
+// markers never collide across branches, so the lexical collision guard
+// that gates this detach is strictly conservative (an unnecessary keep at
+// worst). The on-disk half shared by Service.DeleteBranchData and
+// DeleteBranchDataFS. Fail-soft throughout.
+func removeBranchArtifactsFS(logger *slog.Logger, target, branch, col, lex string, sharedCollection, sharedLexical bool) int {
 	removed := 0
 	if !sharedCollection {
 		removed += removeBranchArtifactFS(logger, filepath.Join(target, branchRootsDirName, col))
@@ -467,12 +469,13 @@ func removeBranchArtifactsFS(logger *slog.Logger, target, col, lex string, share
 	}
 	if !sharedLexical {
 		removed += removeBranchArtifactFS(logger, filepath.Join(target, lexicalDirName, lex))
-		// The deleted branch's corpus reference. branchRefKey sanitizes
-		// exactly like lexicalBranchDirName, so the lexical identity IS the
-		// bref key's suffix — and shares its collision domain.
-		if err := removeRootRef(target, branchRefKey(lex)); err != nil {
+		// The deleted branch's corpus reference. The detach keys on the
+		// RAW branch name (branchRefKey hashes it); the pre-hash sanitized
+		// markers of earlier builds go with it (removeBranchRef removes
+		// both forms).
+		if err := removeBranchRef(target, branch); err != nil {
 			logger.Debug("vector index: could not remove the deleted branch's reference",
-				"branch", lex, "error", err)
+				"branch", branch, "error", err)
 		}
 	}
 	return removed

@@ -78,6 +78,18 @@ func (f *FrontendAPI) invalidateCommandCache() {
 	atomic.AddUint64(&f.commandCacheGen, 1)
 }
 
+// emitCommandsChanged emits the global commands:changed event (no payload —
+// consumers re-read via the commands RPCs) after a watched command directory
+// changes. Nil-guarded like every other emitter: the fsnotify callback that
+// emits it can fire in tests or early startup before the Wails event wiring
+// lands.
+func (f *FrontendAPI) emitCommandsChanged() {
+	f.seedAcquire()
+	if f.emitEvent != nil {
+		f.emitEvent(EventCommandsChanged, nil)
+	}
+}
+
 // startCommandsWatchers watches each existing global command directory
 // (debounced): cache invalidation plus a commands:changed event. Missing
 // directories are skipped until an app restart — the accepted trade-off.
@@ -94,7 +106,7 @@ func (f *FrontendAPI) startCommandsWatchers(dirs []string) {
 		}
 		watcher, err := workspace.NewWatcher(dir, func(_ []string) {
 			f.invalidateCommandCache()
-			f.emitEvent(EventCommandsChanged, nil)
+			f.emitCommandsChanged()
 		}, f.log())
 		if err != nil {
 			f.log().Warn("failed to watch command directory", "dir", dir, "error", err)

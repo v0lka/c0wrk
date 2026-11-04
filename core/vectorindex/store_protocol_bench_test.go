@@ -807,31 +807,38 @@ func BenchmarkStoreProtocol(b *testing.B) {
 				query: protocolRevToken(ti),
 			})
 		}
-		revQueries := make([]protocolGroundTruth, 0, len(revisions))
-		for _, r := range revisions {
-			revQueries = append(revQueries, protocolGroundTruth{Query: r.query, Primary: r.rel})
-		}
+		// The per-iteration ground truth (iterQueries) is derived inside the
+		// loop: every pass writes a fresh, iteration-suffixed revision token.
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			b.StopTimer()
 			counters.telemetry.Reset()
 			counters.embedDocs.Store(0)
+			// Fold the iteration into every revision token: a byte-identical
+			// rewrite makes iterations >= 2 validation-only no-ops (the
+			// incremental pass finds nothing changed) and the reported
+			// metrics describe an idle pass. The per-iteration token is
+			// unique to its one edited file, so the ground truth re-derived
+			// below tracks it exactly.
+			iterQueries := make([]protocolGroundTruth, 0, len(revisions))
 			for _, r := range revisions {
+				token := fmt.Sprintf("%s_i%03d", r.query, i)
 				var sb strings.Builder
 				sb.WriteString(protocolContent(r.target))
 				for k := 0; k < 8; k++ {
-					fmt.Fprintf(&sb, "// %s revision checkpoint %d\n", r.query, k)
+					fmt.Fprintf(&sb, "// %s revision checkpoint %d\n", token, k)
 				}
 				if err := os.WriteFile(filepath.Join(p.root, filepath.FromSlash(r.rel)), []byte(sb.String()), 0o644); err != nil {
 					b.Fatalf("edit %s: %v", r.rel, err)
 				}
+				iterQueries = append(iterQueries, protocolGroundTruth{Query: token, Primary: r.rel})
 			}
 			b.StartTimer()
 			started := time.Now()
 			if err := idx.IndexIncremental(context.Background(), p.root); err != nil {
 				b.Fatalf("incremental pass: %v", err)
 			}
-			verifyGroundTruth(b, svc, revQueries)
+			verifyGroundTruth(b, svc, iterQueries)
 			ttfs := time.Since(started)
 			b.StopTimer()
 			reportProtocolCommon(b, ttfs, len(revisions), counters, storageBytes(p.storage))
@@ -1069,6 +1076,15 @@ func BenchmarkStoreProtocol(b *testing.B) {
 			close(stop)
 			wg.Wait()
 
+			// Gating (finding #48 shape): a persistent searcher failure never
+			// fails the loop above — it only skips appending a latency — so
+			// an all-failing run would report pct()=0 for every percentile
+			// and silently PASS with search-p50-ms=0. Fail when every
+			// sample errored; a partial error fraction is gated below.
+			if fails := searchFailures.Load(); fails > 0 && len(latencies) == 0 {
+				b.Fatalf("concurrent-roots: all %d searches failed under load; no latency samples to report", fails)
+			}
+
 			mu.Lock()
 			sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
 			pct := func(q float64) float64 {
@@ -1079,6 +1095,11 @@ func BenchmarkStoreProtocol(b *testing.B) {
 				return float64(latencies[idx]) / float64(time.Millisecond)
 			}
 			p50, p95, samples := pct(0.50), pct(0.95), len(latencies)
+			if fails := searchFailures.Load(); fails > 0 {
+				if attempts := fails + int64(samples); attempts > 0 && fails*100 > attempts {
+					b.Errorf("concurrent-roots: %d of %d searches failed under load (>1%%)", fails, attempts)
+				}
+			}
 			mu.Unlock()
 			b.ReportMetric(float64(coldElapsed)/float64(time.Millisecond), "ms/cold-under-load")
 			b.ReportMetric(float64(p.fileCount)/coldElapsed.Seconds(), "files/sec-under-load")

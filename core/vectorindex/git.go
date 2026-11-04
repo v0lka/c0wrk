@@ -90,6 +90,13 @@ func CurrentCommit(ctx context.Context, repoPath string) (string, error) {
 	}
 	out, err := runGit(ctx, repoPath, "rev-parse", "HEAD")
 	if err != nil {
+		// An unborn branch (git init, zero commits) resolves no HEAD object
+		// yet while its symref is live: a normal working state the index
+		// serves through the root-owned synthetic snapshot (oid == ""), so
+		// it is "", nil — not a terminal error.
+		if isUnbornHead(ctx, repoPath) {
+			return "", nil
+		}
 		return "", fmt.Errorf("detecting commit via git: %w", err)
 	}
 	oid := strings.TrimSpace(out)
@@ -97,6 +104,70 @@ func CurrentCommit(ctx context.Context, repoPath string) (string, error) {
 		oid = oid[:16]
 	}
 	return oid, nil
+}
+
+// branchRefExists reports whether the named refs/heads/<branch> ref exists
+// in ref storage (loose or packed), WITHOUT resolving its object: git's own
+// ref-listing plumbing (show-ref --verify, for-each-ref) parses the object
+// and fails on a damaged store — exactly the state the caller must
+// distinguish from an absent ref. Branch refs live in the repository's
+// COMMON git directory; a linked worktree's private dir names it in its
+// `common-dir` file (relative paths resolve against the private dir).
+// Reftable-backend repositories carry neither a loose file nor packed-refs;
+// for the unborn question that reads as "ref absent" — conservative only in
+// the already-failing state that reached this check.
+func branchRefExists(repoPath, ref string) bool {
+	gitDir, err := resolveGitDir(repoPath)
+	if err != nil || gitDir == "" {
+		return false
+	}
+	commonDir := gitDir
+	if data, rerr := os.ReadFile(filepath.Join(gitDir, "common-dir")); rerr == nil {
+		if cd := strings.TrimSpace(string(data)); cd != "" {
+			if filepath.IsAbs(cd) {
+				commonDir = cd
+			} else {
+				commonDir = filepath.Join(gitDir, cd)
+			}
+		}
+	}
+	name := strings.TrimPrefix(ref, "refs/heads/")
+	if _, serr := os.Stat(filepath.Join(commonDir, "refs", "heads", filepath.FromSlash(name))); serr == nil {
+		return true
+	}
+	data, perr := os.ReadFile(filepath.Join(commonDir, "packed-refs"))
+	if perr != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "#") {
+			continue // peeled/header comment lines
+		}
+		if strings.HasSuffix(line, " "+ref) {
+			return true
+		}
+	}
+	return false
+}
+
+// isUnbornHead reports whether repoPath's HEAD is an unborn branch: a
+// symref whose target branch ref does not exist yet (git init with zero
+// commits, a fresh orphan checkout). `rev-parse HEAD` fails on such a tree
+// while `symbolic-ref HEAD` still succeeds AND the target ref is absent
+// from ref storage — the ref-existence clause distinguishes "no commits
+// yet" from a damaged clone (a ref that exists while its object is
+// missing), which must stay on CurrentCommit's error path instead of
+// silently degrading to the root-owned synthetic snapshot.
+func isUnbornHead(ctx context.Context, repoPath string) bool {
+	ref, err := runGit(ctx, repoPath, "symbolic-ref", "HEAD")
+	if err != nil {
+		return false
+	}
+	ref = strings.TrimSpace(ref)
+	if !strings.HasPrefix(ref, "refs/heads/") {
+		return false
+	}
+	return !branchRefExists(repoPath, ref)
 }
 
 // ListLocalBranches lists the repository's local branch names (refs/heads —

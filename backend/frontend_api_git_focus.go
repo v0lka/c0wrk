@@ -327,7 +327,11 @@ func (f *FrontendAPI) DeleteWorktree(worktreePath string, force, unlock bool) er
 	}
 	switch entry.Kind {
 	case workspace.WorktreeManaged:
-		f.deleteWorktreeVectorIndex(repoRoot, projectID, entry.Name, entry.Path)
+		// Routed through the resurrection guard like the session-release
+		// flow (cleanupReleasedTreeVectorData): a racing adoption may have
+		// recreated the tree between the removal above and the cleanup —
+		// that tree's manager, overlay and marker are live data and stay.
+		f.cleanupReleasedTreeVectorData(repoRoot, projectID, entry.Name, entry.Path)
 	case workspace.WorktreeExternal:
 		// An external tree may hold the panel's focus and a live manager;
 		// release it (no c0wrk-provisioned storage exists to clean).

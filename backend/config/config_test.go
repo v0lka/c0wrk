@@ -1851,12 +1851,12 @@ vector_index:
 	}
 }
 
-// TestVectorIndexConfig_CorpusResidency_DefaultsAndExplicit pins the corpus
-// residency knobs (ADR-104 §5) through the full Load path: absent keys
-// migrate to the documented defaults (0/0 — retention of inactive views
-// OFF), explicit values survive verbatim, and an explicit 0 is a documented
-// value (not a sentinel), so it survives too. Unlike the park knobs there
-// are no zero/negative sentinels to disambiguate.
+// TestVectorIndexConfig_StoreDiskBudget_DefaultsExplicitAndValidation pins
+// the store disk-budget knob (ADR-104 §5) through the full Load path:
+// absent keys migrate to the documented default (0 — no disk cap), an
+// explicit value survives verbatim, and a negative or over-ceiling value
+// (one that would overflow the MiB→bytes shift) fails load/validation
+// naming the knob.
 func TestVectorIndexConfig_StoreDiskBudget_DefaultsExplicitAndValidation(t *testing.T) {
 	const explicit = `
 llm:
@@ -1911,6 +1911,12 @@ vector_index:
 	}
 }
 
+// TestVectorIndexConfig_CorpusResidency_DefaultsAndExplicit pins the corpus
+// residency knobs (ADR-104 §5) through the full Load path: absent keys
+// migrate to the documented defaults (0/0 — retention of inactive views
+// OFF), explicit values survive verbatim, and an explicit 0 is a documented
+// value (not a sentinel), so it survives too. Unlike the park knobs there
+// are no zero/negative sentinels to disambiguate.
 func TestVectorIndexConfig_CorpusResidency_DefaultsAndExplicit(t *testing.T) {
 	const explicit = `
 llm:

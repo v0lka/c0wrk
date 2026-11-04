@@ -970,57 +970,60 @@ func (s *Service) browseWithFilter(ctx context.Context, topK int, fileFilter str
 	// against the tree that is asking, not the tree that indexed the chunk.
 	root := s.current.workspaceRoot
 
-	count := s.current.collection.Count()
-	if count == 0 {
-		s.mu.RUnlock()
-		return []SearchResult{}, nil
-	}
-	if topK > count {
-		topK = count
-	}
-
 	// Embedding-free enumeration (see unitQueryVector): dim == 0 keeps the
 	// embedding-bearing path; the fileFilter below still narrows the set.
+	// The overlay leg serves up to topK of the root's OWN documents; the
+	// corpus leg below adds the shared snapshot's visible slice (§3 table
+	// first, v1 collection otherwise) — a clean attached root has an empty
+	// overlay and must still browse the corpus, so the empty early-exit
+	// runs only after BOTH legs.
 	var results []chromem.Result
 	var err error
-	if unitVec := s.unitQueryVector(); unitVec != nil {
-		results, err = s.current.collection.QueryEmbedding(ctx, unitVec, topK, nil, nil)
-	} else {
-		results, err = s.current.collection.Query(ctx, " ", topK, nil, nil)
-	}
-	if err != nil {
-		s.mu.RUnlock()
-		return nil, fmt.Errorf("browsing collection: %w", err)
+	if count := s.current.collection.Count(); count > 0 {
+		overlayTopK := min(topK, count)
+		if unitVec := s.unitQueryVector(); unitVec != nil {
+			results, err = s.current.collection.QueryEmbedding(ctx, unitVec, overlayTopK, nil, nil)
+		} else {
+			results, err = s.current.collection.Query(ctx, " ", overlayTopK, nil, nil)
+		}
+		if err != nil {
+			s.mu.RUnlock()
+			return nil, fmt.Errorf("browsing collection: %w", err)
+		}
 	}
 	// View model (ADR-104 stage 2): browse the visible slice of the shared
 	// corpus alongside the overlay — visibility-filtered per root BEFORE the
 	// merge, so the browsed set is exactly this root's view.
-	if cv := s.current.corpus; cv != nil && cv.collection != nil && cv.collection.Count() > 0 {
-		corpusTopK := topK
-		if n := cv.collection.Count(); corpusTopK > n {
-			corpusTopK = n
-		}
-		var corpusResults []chromem.Result
-		if unitVec := s.unitQueryVector(); unitVec != nil {
-			corpusResults, err = cv.collection.QueryEmbedding(ctx, unitVec, corpusTopK, nil, nil)
-		} else {
-			corpusResults, err = cv.collection.Query(ctx, " ", corpusTopK, nil, nil)
-		}
-		if err != nil {
+	if cv := s.current.corpus; cv != nil {
+		corpusResults, bErr := s.browseCorpusCandidates(ctx, cv, topK)
+		if bErr != nil {
 			s.mu.RUnlock()
-			return nil, fmt.Errorf("browsing corpus: %w", err)
+			return nil, bErr
 		}
-		for _, r := range corpusResults {
-			if !s.corpusVisible(r.Metadata) {
-				continue
-			}
-			results = append(results, r)
-		}
+		// Corpus leg FIRST: the merge dedup below keeps the first sighting,
+		// and the corpus entry carries the root's CURRENT bytes (its
+		// visibility gate matched the sidecar hash) — the same corpus-wins
+		// precedence as the search paths, so a stale overlay duplicate
+		// never shadows it in the browse either.
+		results = append(corpusResults, results...)
+	}
+	if len(results) == 0 {
+		s.mu.RUnlock()
+		return []SearchResult{}, nil
 	}
 	s.mu.RUnlock()
 
-	out := make([]SearchResult, 0, len(results))
+	// Merge-then-trim (the browse twin of vectorOnlySearch's discipline):
+	// the overlay and corpus legs share the DocumentID space, so a file
+	// held by both is served once, and the filtered set is trimmed to topK —
+	// never the store-split 2×topK append the legs alone would produce.
+	out := make([]SearchResult, 0, min(topK, len(results)))
+	seen := make(map[string]struct{}, len(results))
 	for _, r := range results {
+		if _, dup := seen[r.ID]; dup {
+			continue
+		}
+		seen[r.ID] = struct{}{}
 		sr := resultToSearchResult(r, root)
 
 		if fileFilter != "" {
@@ -1030,6 +1033,9 @@ func (s *Service) browseWithFilter(ctx context.Context, topK int, fileFilter str
 		}
 
 		out = append(out, sr)
+		if len(out) >= topK {
+			break
+		}
 	}
 
 	// Committed documents store no chunk text; hydrate Content from the

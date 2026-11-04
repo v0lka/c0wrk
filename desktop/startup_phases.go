@@ -1334,7 +1334,7 @@ func (l *vectorIndexLauncher) runVectorIndexInit(epoch uint64, ready chan struct
 		// re-applied on every build so a saved settings change lands with
 		// the next manager build (UpdateIndexingSettings rebuilds the focus
 		// root through this closure) instead of needing a restart.
-		if reg := a.frontendAPI().VectorCorpusRegistry(); reg != nil {
+		if reg := a.frontendAPI().Lifecycle().VectorCorpusRegistry(); reg != nil {
 			reg.SetResidency(
 				derefInt(viNow.CorpusResidencyCapacity),
 				derefCorpusResidencyBudgetBytes(viNow.CorpusResidencyBudgetMb),
@@ -1392,7 +1392,7 @@ func (l *vectorIndexLauncher) runVectorIndexInit(epoch uint64, ready chan struct
 			// shared-corpus registry — every root manager of a project
 			// shares one snapshot-keyed corpus per commit (read-only) plus
 			// its own per-root overlay as the working store.
-			Corpus: a.frontendAPI().VectorCorpusRegistry(),
+			Corpus: a.frontendAPI().Lifecycle().VectorCorpusRegistry(),
 			// ParkCapacity: how many recently-closed projects keep their
 			// vector-index state resident (vector_index.park_capacity;
 			// resolved default 3, explicit 0 disables parking).

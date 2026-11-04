@@ -240,9 +240,18 @@ func (s *Service) hybridSearch(ctx context.Context, opts SearchOptions, wait boo
 			}
 		}
 		corpusLexReady := false
+		var corpusCountErr error
 		if cv := s.current.corpus; cv != nil && cv.lexical != nil {
-			if n, countErr := cv.lexical.Count(); countErr == nil && n > 0 {
+			var n uint64
+			n, corpusCountErr = cv.lexical.Count()
+			if corpusCountErr == nil && n > 0 {
 				corpusLexReady = true
+			} else if corpusCountErr != nil {
+				// The asymmetric twin of the overlay leg's Warn above: a
+				// transient DocCount failure is never silently folded into
+				// "not ready" — it is logged, and ModeLexical fails closed
+				// with it below when the corpus leg was the lexical side.
+				s.logger.Warn("corpus lexical count failed; treating the corpus lexical leg as absent", "error", corpusCountErr)
 			}
 		}
 		switch {
@@ -251,14 +260,28 @@ func (s *Service) hybridSearch(ctx context.Context, opts SearchOptions, wait boo
 				return nil, errors.New("lexical index not available")
 			}
 			effectiveMode = ModeVector
-		case overlayCountErr != nil:
+		case overlayCountErr != nil && !corpusLexReady:
+			// Both lexical legs are unusable: lexical-only fails closed and
+			// hybrid degrades to vector (both count failures are
+			// Warn-logged above).
 			if mode == ModeLexical {
 				return nil, fmt.Errorf("lexical count: %w", overlayCountErr)
 			}
-			// Keep hybrid alive on the corpus lexical leg; the overlay leg
-			// is treated as empty rather than fatal.
+			effectiveMode = ModeVector
+		case overlayCountErr != nil:
+			// Keep hybrid and lexical-only alive on the corpus lexical leg;
+			// the overlay leg is GENUINELY skipped — lex = nil reaches the
+			// search functions, so the broken overlay index is never
+			// queried (the comment and the code now agree).
+			lex = nil
 		case overlayCount == 0 && !corpusLexReady:
 			if mode == ModeLexical {
+				if corpusCountErr != nil {
+					// A clean overlay makes the corpus leg the whole
+					// lexical side: its transient count failure must not
+					// masquerade as an authoritative empty success.
+					return nil, fmt.Errorf("corpus lexical count: %w", corpusCountErr)
+				}
 				return []SearchResult{}, nil
 			}
 			effectiveMode = ModeVector
@@ -288,9 +311,11 @@ func (s *Service) hybridSearch(ctx context.Context, opts SearchOptions, wait boo
 // overlay plus the visible slice of the shared corpus (ADR-104 stage 2) —
 // and returns results with their raw cosine similarity scores. Corpus
 // candidates are visibility-filtered per root BEFORE the merged ranking and
-// the top-K trim, so the rank space sees one per-root world; the overlay and
-// corpus candidate sets are path-disjoint by construction (a diverged path
-// is invisible in the corpus and served by the overlay).
+// the top-K trim, so the rank space sees one per-root world. A diverged
+// path is invisible in the corpus and served by the overlay — but a stale
+// overlay duplicate (e.g. a retirement that outlived a transient failure)
+// can share an ID with a visible corpus entry, so the merge dedups by ID
+// with the corpus version (the root's current bytes) winning.
 func (s *Service) vectorOnlySearch(
 	ctx context.Context,
 	col *chromem.Collection,
@@ -306,7 +331,20 @@ func (s *Service) vectorOnlySearch(
 		return []SearchResult{}, nil
 	}
 
+	corpusResults, err := s.corpusVectorCandidates(ctx, query, fanout, filePattern, mustMatch, resolver)
+	if err != nil {
+		return nil, err
+	}
+	// Same-ID dedup across the two legs (they share the DocumentID space):
+	// the corpus entry carries the root's CURRENT bytes (its visibility
+	// gate matched the sidecar hash), so a stale overlay duplicate — e.g.
+	// one left behind by a failed retirement — is dropped, not double-ranked.
 	merged := make([]chromem.Result, 0, fanout)
+	seen := make(map[string]struct{}, len(corpusResults)+count)
+	for _, r := range corpusResults {
+		seen[r.ID] = struct{}{}
+		merged = append(merged, r)
+	}
 	if count > 0 {
 		vecFanout := fanout
 		if vecFanout > count {
@@ -320,14 +358,13 @@ func (s *Service) vectorOnlySearch(
 			if !passesFilters(r, filePattern, mustMatch, s.current.workspaceRoot, resolver, s.logger) {
 				continue
 			}
+			if _, dup := seen[r.ID]; dup {
+				continue
+			}
+			seen[r.ID] = struct{}{}
 			merged = append(merged, r)
 		}
 	}
-	corpusResults, err := s.corpusVectorCandidates(ctx, query, fanout, filePattern, mustMatch, resolver)
-	if err != nil {
-		return nil, err
-	}
-	merged = append(merged, corpusResults...)
 
 	// Rank the merged candidate list by similarity BEFORE the trim — the
 	// final top-K must see every pre-fusion survivor of the view.
@@ -374,7 +411,23 @@ func (s *Service) lexicalOnlySearch(
 		result chromem.Result
 		score  float32
 	}
+
+	corpusHits, err := s.corpusLexicalCandidates(ctx, query, fanout, filePattern, mustMatch, resolver)
+	if err != nil {
+		return nil, err
+	}
+	// Same-ID dedup across the two legs (they share the DocumentID space):
+	// the corpus hit carries the root's CURRENT bytes (visibility-gated),
+	// so a stale overlay duplicate is dropped, not double-ranked.
 	merged := make([]mergedHit, 0, fanout)
+	seen := make(map[string]struct{}, len(corpusHits)+fanout)
+	for _, c := range corpusHits {
+		seen[c.doc.ID] = struct{}{}
+		merged = append(merged, mergedHit{
+			result: chromem.Result{ID: c.doc.ID, Metadata: c.doc.Metadata, Content: c.doc.Content},
+			score:  c.score,
+		})
+	}
 
 	if lex != nil {
 		hits, err := lex.Query(ctx, query, fanout)
@@ -393,18 +446,12 @@ func (s *Service) lexicalOnlySearch(
 			if !passesFilters(r, filePattern, mustMatch, s.current.workspaceRoot, resolver, s.logger) {
 				continue
 			}
+			if _, dup := seen[doc.ID]; dup {
+				continue
+			}
+			seen[doc.ID] = struct{}{}
 			merged = append(merged, mergedHit{result: r, score: h.Score})
 		}
-	}
-	corpusHits, err := s.corpusLexicalCandidates(ctx, query, fanout, filePattern, mustMatch, resolver)
-	if err != nil {
-		return nil, err
-	}
-	for _, c := range corpusHits {
-		merged = append(merged, mergedHit{
-			result: chromem.Result{ID: c.doc.ID, Metadata: c.doc.Metadata, Content: c.doc.Content},
-			score:  c.score,
-		})
 	}
 
 	sort.SliceStable(merged, func(i, j int) bool {
@@ -516,9 +563,25 @@ func (s *Service) hybridSearchRRF(
 	// (see specs/domains/workspace.md). The vector candidates of both stores
 	// merge into ONE similarity-ordered list (cosine scores share one
 	// embedding space), so RRF ranks reflect the view, not the store split.
+	// Same-ID dedup across the two legs (they share the DocumentID space),
+	// mirroring vectorOnlySearch: the corpus entry carries the root's CURRENT
+	// bytes (its visibility gate matched the sidecar hash), so a stale
+	// overlay duplicate — e.g. a retirement that outlived a transient
+	// failure — is dropped, not double-ranked (a second occurrence would
+	// earn a second vector-side RRF contribution and corrupt the fusion).
 	vecAll := make([]chromem.Result, 0, len(vecResults)+len(corpusVec))
-	vecAll = append(vecAll, vecResults...)
-	vecAll = append(vecAll, corpusVec...)
+	seenVec := make(map[string]struct{}, len(corpusVec)+len(vecResults))
+	for _, r := range corpusVec {
+		seenVec[r.ID] = struct{}{}
+		vecAll = append(vecAll, r)
+	}
+	for _, r := range vecResults {
+		if _, dup := seenVec[r.ID]; dup {
+			continue
+		}
+		seenVec[r.ID] = struct{}{}
+		vecAll = append(vecAll, r)
+	}
 	sort.SliceStable(vecAll, func(i, j int) bool {
 		return vecAll[i].Similarity > vecAll[j].Similarity
 	})
@@ -667,6 +730,10 @@ func aggregateLexicalHits(
 // the chromem lookup. The relative BM25 gate spans the corpus list's own
 // maximum: BM25 statistics are corpus-shape-dependent (ADR-104 §3) and the
 // overlay's maximum is not a meaningful threshold for the corpus's scores.
+// An ID the OVERLAY lexical leg already fused (lexicalRank != 0) is
+// skipped: the two stores share the DocumentID space, and a stale overlay
+// duplicate of a corpus document must not earn a second lexical-side RRF
+// contribution (the overlay's rank stays authoritative for that ID).
 func aggregateCorpusLexicalHits(
 	agg map[string]*fusedEntry,
 	hits []corpusLexicalHit,
@@ -684,6 +751,9 @@ func aggregateCorpusLexicalHits(
 			continue
 		}
 		entry := agg[h.doc.ID]
+		if entry != nil && entry.lexicalRank != 0 {
+			continue // the overlay lexical leg already fused this ID
+		}
 		if entry == nil {
 			r := chromem.Result{ID: h.doc.ID, Metadata: h.doc.Metadata, Content: h.doc.Content}
 			entry = &fusedEntry{result: r}

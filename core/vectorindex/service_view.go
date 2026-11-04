@@ -94,6 +94,14 @@ func (s *Service) AttachView(ctx context.Context, snapKey, rootKey string) error
 		h.Release()
 		return errors.New("vector project switched during corpus attach")
 	}
+	// Release-before-bind: the registry open above runs with s.mu released,
+	// so a second AttachView (the git monitor dispatches one goroutine per
+	// event) may have bound its own handle in the window — overwriting that
+	// binding without releasing it would pin the handle's refcount (and its
+	// residency/GC protection) forever. The release/bind pair is atomic
+	// under this lock hold; the top-of-function release stays as the early
+	// switch-path cleanup.
+	s.releaseCorpusLocked(s.current)
 	s.current.corpus = h
 	s.current.rootKey = rootKey
 	s.mu.Unlock()
@@ -119,13 +127,26 @@ func (s *Service) PinCorpusView(workspaceRoot, snapKey string) error {
 	if storage == "" {
 		return errors.New("no project initialized; call SetProject first")
 	}
-	return writeRootRef(storage, overlayRootKey(workspaceRoot), workspaceRoot, snapKey)
+	if err := writeRootRef(storage, overlayRootKey(workspaceRoot), workspaceRoot, snapKey); err != nil {
+		return err
+	}
+	// view.json (ADR-104 §3): the root's view record beside the marker —
+	// best-effort observability; a store that has not adopted §3 (no
+	// CURRENT generation) simply has no place to write it.
+	if genDir, _, ok := readCurrentGeneration(storage); ok {
+		if err := writeRootViewState(genDir, overlayRootKey(workspaceRoot), snapKey); err != nil {
+			s.logger.Warn("vector index: failed to record root view state", "error", err)
+		}
+	}
+	return nil
 }
 
 // PinBranchView durably records a BRANCH reference to a snapshot corpus:
-// refs/bref_<sanitized>.ref under the storage root. The attaching root
-// writes it when its HEAD is the branch's tip (the corpus then captures the
-// branch's commit), and the branch's deletion removes it
+// refs/bref_<sha256-of-name>.ref under the storage root (hash-keyed —
+// rootrefs.go; markers written by earlier builds under the sanitized key
+// are still honored on read and removed on the next write). The attaching
+// root writes it when its HEAD is the branch's tip (the corpus then
+// captures the branch's commit), and the branch's deletion removes it
 // (DeleteBranchData) — the branch is an owner through this pointer, never
 // through a storage key (ADR-104 §1 L3, stage 5).
 func (s *Service) PinBranchView(branch, snapKey string) error {
@@ -369,26 +390,110 @@ func (s *Service) corpusVectorCandidates(ctx context.Context, query string, fano
 	if cv.collection == nil {
 		return nil, nil
 	}
-	if n := cv.collection.Count(); n == 0 {
+	n := cv.collection.Count()
+	if n == 0 {
 		return nil, nil
-	} else if fanout > n {
-		fanout = n
 	}
-	results, err := cv.collection.Query(ctx, query, fanout, nil, nil)
-	if err != nil {
-		return nil, fmt.Errorf("corpus vector search: %w", err)
-	}
-	out := make([]chromem.Result, 0, len(results))
-	for _, r := range results {
-		if !s.corpusVisible(r.Metadata) {
-			continue
+	limit := min(fanout, n)
+	// The corpus query is CORPUS-GLOBAL: the top-`limit` hits of the whole
+	// snapshot precede the per-root visibility filter, so invisible
+	// documents (diverged, deleted-in-tree, policy-excluded) would consume
+	// the fanout slots this root's visible documents need. Over-fetch and
+	// iterate deeper (chromem has no offset API; a growing limit re-ranks
+	// the same in-memory scan) while the filtered survivors underflow the
+	// fanout and the corpus is not exhausted — the exact filter-then-trim
+	// discipline the §3 vector leg applies natively.
+	seen := make(map[string]struct{})
+	var out []chromem.Result
+	for {
+		results, err := cv.collection.Query(ctx, query, limit, nil, nil)
+		if err != nil {
+			return nil, fmt.Errorf("corpus vector search: %w", err)
 		}
-		if !passesFilters(r, filePattern, mustMatch, s.current.workspaceRoot, resolver, s.logger) {
-			continue
+		for _, r := range results {
+			if _, dup := seen[r.ID]; dup {
+				continue // deeper queries re-rank earlier hits too
+			}
+			seen[r.ID] = struct{}{}
+			if !s.corpusVisible(r.Metadata) {
+				continue
+			}
+			if !passesFilters(r, filePattern, mustMatch, s.current.workspaceRoot, resolver, s.logger) {
+				continue
+			}
+			out = append(out, r)
 		}
-		out = append(out, r)
+		if len(out) >= fanout || limit >= n || len(results) < limit {
+			return out, nil
+		}
+		limit = min(limit*2, n)
 	}
-	return out, nil
+}
+
+// browseCorpusCandidates enumerates the attached corpus's visibility-
+// eligible documents for the browse mode (no semantic ordering). The §3
+// form walks the occurrence table and filters BEFORE the limit (exact);
+// the v1 form queries the corpus-global top-`limit` and then drops this
+// root's invisible slice, so it over-fetches and iterates deeper while the
+// filter underflows topK and the corpus is not exhausted (the browse twin
+// of corpusVectorCandidates). Caller must hold s.mu (read).
+func (s *Service) browseCorpusCandidates(ctx context.Context, cv *CorpusHandle, topK int) ([]chromem.Result, error) {
+	if cv == nil || topK <= 0 {
+		return nil, nil
+	}
+	if cv.v2 != nil {
+		out := make([]chromem.Result, 0, min(topK, cv.v2.count()))
+		for ri, row := range cv.v2.rows {
+			if !s.corpusRowVisible(row) {
+				continue
+			}
+			for ci := range row.Chunks {
+				if len(out) >= topK {
+					return out, nil
+				}
+				doc, ok := cv.v2.documentAt(v2DocRef{row: ri, chunk: ci})
+				if !ok {
+					continue
+				}
+				out = append(out, chromem.Result{ID: doc.ID, Metadata: doc.Metadata})
+			}
+		}
+		return out, nil
+	}
+	if cv.collection == nil || cv.collection.Count() == 0 {
+		return nil, nil
+	}
+	n := cv.collection.Count()
+	limit := min(topK, n)
+	unitVec := s.unitQueryVector()
+	seen := make(map[string]struct{})
+	var out []chromem.Result
+	for {
+		var results []chromem.Result
+		var err error
+		if unitVec != nil {
+			results, err = cv.collection.QueryEmbedding(ctx, unitVec, limit, nil, nil)
+		} else {
+			results, err = cv.collection.Query(ctx, " ", limit, nil, nil)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("browsing corpus: %w", err)
+		}
+		for _, r := range results {
+			if _, dup := seen[r.ID]; dup {
+				continue // deeper queries re-rank earlier hits too
+			}
+			seen[r.ID] = struct{}{}
+			if !s.corpusVisible(r.Metadata) {
+				continue
+			}
+			out = append(out, r)
+		}
+		if len(out) >= topK || limit >= n || len(results) < limit {
+			return out, nil
+		}
+		limit = min(limit*2, n)
+	}
 }
 
 // corpusLexicalHit pairs a corpus lexical hit with its corpus document.
@@ -405,19 +510,52 @@ func (s *Service) corpusLexicalCandidates(ctx context.Context, query string, fan
 	if cv == nil || cv.lexical == nil || fanout <= 0 {
 		return nil, nil
 	}
-	if cv.v2 != nil {
-		hits, err := cv.lexical.Query(ctx, query, fanout)
+	v2 := cv.v2
+	if v2 == nil && cv.collection == nil {
+		return nil, nil
+	}
+	// bleve (both forms) ranks corpus-globally and cannot apply the
+	// per-root predicate server-side, so the top-`limit` cut precedes the
+	// visibility filter — invisible documents would consume the fanout
+	// slots of this root's visible ones. Over-fetch and iterate deeper
+	// while the filtered survivors underflow the fanout and the index is
+	// not exhausted (a query returning fewer hits than the limit is the
+	// exhaustion signal; the §3 vector leg needs no such pass — it scans
+	// and filters before trimming).
+	limit := fanout
+	seen := make(map[string]struct{})
+	var out []corpusLexicalHit
+	for {
+		hits, err := cv.lexical.Query(ctx, query, limit)
 		if err != nil {
 			return nil, fmt.Errorf("corpus lexical search: %w", err)
 		}
-		out := make([]corpusLexicalHit, 0, len(hits))
 		for _, h := range hits {
-			doc, ok := cv.v2.docByID(h.ID)
-			if !ok {
-				continue // drift between the corpus lexical and table sides
+			if _, dup := seen[h.ID]; dup {
+				continue // deeper queries re-rank earlier hits too
 			}
-			r := chromem.Result{ID: doc.ID, Metadata: doc.Metadata}
-			if !s.corpusVisible(doc.Metadata) {
+			seen[h.ID] = struct{}{}
+			if v2 != nil {
+				doc, ok := v2.docByID(h.ID)
+				if !ok {
+					continue // drift between the corpus lexical and table sides
+				}
+				r := chromem.Result{ID: doc.ID, Metadata: doc.Metadata}
+				if !s.corpusVisible(doc.Metadata) {
+					continue
+				}
+				if !passesFilters(r, filePattern, mustMatch, s.current.workspaceRoot, resolver, s.logger) {
+					continue
+				}
+				out = append(out, corpusLexicalHit{doc: doc, score: h.Score})
+				continue
+			}
+			doc, getErr := cv.collection.GetByID(ctx, h.ID)
+			if getErr != nil {
+				continue // drift between the corpus lexical and vector sides
+			}
+			r := chromem.Result{ID: doc.ID, Metadata: doc.Metadata, Content: doc.Content}
+			if !s.corpusVisible(r.Metadata) {
 				continue
 			}
 			if !passesFilters(r, filePattern, mustMatch, s.current.workspaceRoot, resolver, s.logger) {
@@ -425,29 +563,9 @@ func (s *Service) corpusLexicalCandidates(ctx context.Context, query string, fan
 			}
 			out = append(out, corpusLexicalHit{doc: doc, score: h.Score})
 		}
-		return out, nil
-	}
-	if cv.collection == nil {
-		return nil, nil
-	}
-	hits, err := cv.lexical.Query(ctx, query, fanout)
-	if err != nil {
-		return nil, fmt.Errorf("corpus lexical search: %w", err)
-	}
-	out := make([]corpusLexicalHit, 0, len(hits))
-	for _, h := range hits {
-		doc, getErr := cv.collection.GetByID(ctx, h.ID)
-		if getErr != nil {
-			continue // drift between the corpus lexical and vector sides
+		if len(out) >= fanout || len(hits) < limit {
+			return out, nil
 		}
-		r := chromem.Result{ID: doc.ID, Metadata: doc.Metadata, Content: doc.Content}
-		if !s.corpusVisible(r.Metadata) {
-			continue
-		}
-		if !passesFilters(r, filePattern, mustMatch, s.current.workspaceRoot, resolver, s.logger) {
-			continue
-		}
-		out = append(out, corpusLexicalHit{doc: doc, score: h.Score})
+		limit *= 2
 	}
-	return out, nil
 }

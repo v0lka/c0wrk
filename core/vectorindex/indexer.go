@@ -372,17 +372,35 @@ func (idx *Indexer) IndexIncremental(ctx context.Context, workspacePath string) 
 			adoptPaths = append(adoptPaths, filepath.Join(workspacePath, filepath.FromSlash(rel)))
 		}
 		idx.service.AcquireWriteLock()
+		// Retire the superseded overlay documents FIRST and persist the
+		// adoption only on success: the sidecar row is what makes the
+		// corpus entry visible, and a landed row whose stale overlay
+		// duplicate survived a transient delete failure would never be
+		// re-driven (the stat fast-path skips corpus reconciliation), so
+		// the file would serve twice forever. Deferring instead is safe —
+		// the classification is content-based, so the next
+		// ValidateCollection re-records and retries the adoption.
+		retired := true
 		if ids, idErr := idx.collectDocumentIDs(ctx, adoptPaths); idErr != nil {
-			idx.logger.Warn("collecting superseded overlay document IDs failed", "error", idErr)
+			idx.logger.Warn("collecting superseded overlay document IDs failed; adoption deferred to the next pass", "error", idErr)
+			retired = false
 		} else if len(ids) > 0 {
 			if delErr := idx.service.DeleteDocumentsByIDs(ctx, ids); delErr != nil {
-				idx.logger.Warn("retiring superseded overlay documents failed", "error", delErr)
+				idx.logger.Warn("retiring superseded overlay documents failed; adoption deferred to the next pass", "error", delErr)
+				retired = false
 			}
 		}
-		if err := idx.service.adoptCorpusFilesLocked(adopted); err != nil {
-			idx.logger.Warn("persisting corpus adoptions into the sidecar failed", "error", err)
-		} else {
-			idx.logger.Info("incremental index: adopted corpus-current files", "count", len(adopted))
+		if retired {
+			// The retired paths' §3 occurrence rows follow their documents
+			// out (the same coupling removeFileHashes applies for deleted
+			// files): surviving rows would forever out-count the collection
+			// and wedge the overlay table's completeness-gated flush.
+			idx.service.dropChunkRowsLocked(adoptPaths)
+			if err := idx.service.adoptCorpusFilesLocked(adopted); err != nil {
+				idx.logger.Warn("persisting corpus adoptions into the sidecar failed", "error", err)
+			} else {
+				idx.logger.Info("incremental index: adopted corpus-current files", "count", len(adopted))
+			}
 		}
 		idx.service.ReleaseWriteLock()
 	}

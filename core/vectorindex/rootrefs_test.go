@@ -62,6 +62,40 @@ func (f gcFixture) markerExists(k string) bool       { _, err := os.Stat(f.marke
 func (f gcFixture) dirExists(path string) bool       { _, err := os.Stat(path); return err == nil }
 func (f gcFixture) fileExists(path string) bool      { _, err := os.Stat(path); return err == nil }
 
+// TestBranchRefKey_DistinctAcrossFolds pins the WRITE side of the bref key
+// space: the pre-hash case-preserving sanitizer collapsed distinct
+// branch names onto one refs/bref_<sanitized>.ref file — case-insensitive
+// filesystems fold "Feature/X" into "feature/x", and the sanitizer's own
+// folds ('/'→'_', every stripped character) collide on every filesystem —
+// so the second live branch's attach overwrote the first's ownership
+// record and the sweep reclaimed a live branch's corpus. The hash key
+// keeps every spelling distinct on disk.
+func TestBranchRefKey_DistinctAcrossFolds(t *testing.T) {
+	f := newGCFixture(t)
+	snap := snapshotKey("4242424242424242")
+	branches := []string{"Feature/X", "feature/x", "feature_x", "featureX"}
+	for _, b := range branches {
+		if err := writeBranchRef(f.storage, b, snap); err != nil {
+			t.Fatalf("writeBranchRef(%q): %v", b, err)
+		}
+	}
+	if branchRefKey("feature/x") == branchRefKey("feature_x") {
+		t.Fatal("the sanitizer fold '/'→'_' still collapses bref keys")
+	}
+	if branchRefKey("Feature/X") == branchRefKey("feature/x") {
+		t.Fatal("the case fold still collapses bref keys")
+	}
+	refs, ok := readRootRefs(f.storage)
+	if !ok {
+		t.Fatal("readRootRefs failed")
+	}
+	for _, b := range branches {
+		if _, seen := refs[branchRefKey(b)]; !seen {
+			t.Errorf("branch %q lost its marker to a key fold", b)
+		}
+	}
+}
+
 // TestPruneSharedArtifacts_ReachabilityGC pins the stage-5 contract on the
 // manager-free sweep: corpora and overlays of LIVE roots survive, the dead
 // root's reference is removed, and everything only the dead root reached is

@@ -278,7 +278,15 @@ export interface MergeRebaseState {
 
 export type SearchMode = 'hybrid' | 'vector' | 'lexical'
 
-export type IndexPhase = 'both' | 'embedding' | 'lexical' | 'open'
+/**
+ * Which side(s) of the dual index a status event describes. "preparation"
+ * and "migration-rebuild" pair with the `preparing` / `migration-rebuild`
+ * STATES (ADR-104 stage 2: the view-model attach window and the legacy
+ * store promotion) — they describe no embedding/lexical pass, so they never
+ * reach the dot derivation's build branches. Literals must stay in sync
+ * with core/vectorindex IndexPhase.
+ */
+export type IndexPhase = 'both' | 'embedding' | 'lexical' | 'open' | 'preparation' | 'migration-rebuild'
 
 /**
  * ONNX Runtime execution provider for the vector-index embedder
@@ -290,13 +298,40 @@ export type IndexPhase = 'both' | 'embedding' | 'lexical' | 'open'
  */
 export type ExecutionProvider = 'auto' | 'cpu' | 'cuda' | 'openvino'
 
+/**
+ * §5 disk-ledger snapshot of one physical store (ADR-104; backend
+ * core/vectorindex StoreLedger, emitted as VectorIndexStatus.store). Real
+ * bytes walked from the store tree by the hygiene sweep, charged once per
+ * identity level; absent until the first pass has snapshotted a store.
+ */
+export interface StoreLedger {
+  generation: number
+  chunk_records: number
+  chunk_bytes: number
+  chunk_orphans: number
+  snapshot_bytes: Record<string, number>
+  overlay_bytes: Record<string, number>
+  snapshots: number
+  overlays: number
+  /** Every whole generation older than CURRENT — removable wholesale. */
+  superseded_bytes: number
+  total_bytes: number
+  evicted_last_pass: number
+  updated_at: string
+}
+
 export interface VectorIndexStatus {
   /**
    * "disabled" (ADR-103): indexing is off via the master switch — the
    * registry is parked, no collection exists, and the gated search surfaces
    * stay hidden until a re-enable finishes the background embedder init.
+   * "preparing" / "migration-rebuild" (ADR-104 stage 2): the view-model
+   * attach window (snapshot identity resolution, corpus lease acquisition)
+   * and the one-time legacy store promotion — honest pre-work states, never
+   * rendered with a fake progress bar. Literals must stay in sync with
+   * core/vectorindex IndexState.
    */
-  state: 'idle' | 'indexing' | 'ready' | 'reindexing' | 'unavailable' | 'loading' | 'disabled'
+  state: 'idle' | 'indexing' | 'ready' | 'reindexing' | 'unavailable' | 'loading' | 'disabled' | 'preparing' | 'migration-rebuild'
   progress: number
   files_indexed: number
   total_files: number
@@ -304,6 +339,12 @@ export interface VectorIndexStatus {
   branch?: string
   phase?: IndexPhase
   indices?: string[]
+  /**
+   * §5 disk ledger (ADR-104): the store-tree byte accounting snapshot for
+   * the manager's physical store — populated by the hygiene pass, omitted
+   * until then.
+   */
+  store?: StoreLedger
   /**
    * ONNX Runtime execution provider the embedder effectively runs on:
    * "cpu", "cuda" or "openvino" — never "auto" ("auto" is resolved once,

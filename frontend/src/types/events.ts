@@ -1823,7 +1823,11 @@ export function isNotificationClickedData(d: unknown): d is NotificationClickedD
 // VectorIndexStatus['state'] union (models.ts): "disabled" (ADR-103) is the
 // master-switch off state — dropping it here would silently discard the
 // payload at every ingestion point and strand a stale pre-disable state.
-const VALID_VECTOR_STATES: ReadonlySet<string> = new Set(['idle', 'indexing', 'ready', 'reindexing', 'unavailable', 'loading', 'disabled'])
+// "preparing" and "migration-rebuild" (ADR-104 stage 2) are the view-model
+// attach window and the legacy store promotion — dropping them would strand
+// a stale pre-attach state and the search auto-gate would never see the
+// transition out of it (literals pinned in events.boundary.test.ts).
+const VALID_VECTOR_STATES: ReadonlySet<string> = new Set(['idle', 'indexing', 'ready', 'reindexing', 'unavailable', 'loading', 'disabled', 'preparing', 'migration-rebuild'])
 
 export function isVectorIndexPayload(d: unknown): d is VectorIndexStatus {
   if (!isObjLocal(d)) return false
