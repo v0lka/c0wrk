@@ -880,8 +880,7 @@ func (o *Orchestrator) logDebug(msg string, args ...any) {
 func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, routing *router.RoutingDecision, plansDir string, resumeSteps []agent.Step, goalState *goal.GoalState, nudge string) (result *HandleResult, err error) {
 	o.logDebug("orchestrator: resume started", "resumeSteps", len(resumeSteps), "nudge", nudge != "")
 
-	// Consume the one-shot re-route arm before any early return so a stale arm
-	// cannot leak into a later resume (see consumeResumeReroute).
+	// Consume the re-route arm before any early return (see consumeResumeReroute).
 	forceReroute := o.consumeResumeReroute()
 
 	// Model Profiles goal guard (ErrGoalBlockedByModelProfiles,
@@ -1091,15 +1090,11 @@ func (o *Orchestrator) Resume(ctx context.Context, bb orchestration.Blackboard, 
 		Status:          execResult.Status,
 	}
 
-	// Persist the task outcome according to the typed execution status.
-	// Partial executions stay resumable; see persistTaskOutcome.
 	if pbb, ok := bb.(PersistableBlackboard); ok {
 		persistTaskOutcome(pbb, execResult)
 	}
 
 	o.logDebug("orchestrator: resume completed")
-	// Propagate ErrExecutionIncomplete alongside the best-effort result, as
-	// documented: callers must errors.Is-check and still use the result.
 	return result, incompleteErr
 }
 
@@ -1990,10 +1985,10 @@ func (o *Orchestrator) Emitter() Emitter {
 	return o.emitter
 }
 
-// ToolRegistry returns the orchestrator's per-session tool registry — the
-// session-scoped clone Build created, whose tool judge rides the session's own
-// router (builder.bindSessionJudge) — so manual "Judge" evaluations follow the
-// same provider/model as automatic escalations. nil when not wired; nil-check.
+// ToolRegistry returns the per-session registry clone whose tool judge rides
+// the session's own router (builder.bindSessionJudge), so manual "Judge"
+// evaluations follow the same provider/model as automatic escalations.
+// nil when not wired; nil-check.
 func (o *Orchestrator) ToolRegistry() *tools.ToolRegistry {
 	return o.coreToolRegistry
 }
@@ -2380,16 +2375,13 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	// before the defer so recordConversationOutcome captures it by reference.
 	var contentBlocks []llm.ContentBlock
 
-	// Registered after the single-flight guard so a rejected request is not
-	// recorded (the recording contract lives on recordConversationOutcome).
+	// Registered after the single-flight guard: a rejected request is not recorded.
 	defer func() {
 		o.recordConversationOutcome(ctx, taskMessage, contentBlocks, result, err)
 	}()
 
-	// 0. Apply per-request overrides to all LLM-calling components.
 	o.ApplyRequestOverrides(ctx, opts.ModelOverride, opts.ReasoningEffort)
 
-	// 1. Prepare context (plan-mode key, injection-defense, vector hints, initial context_fill).
 	o.logDebug("orchestrator: handle_message started", "messageLength", len(message), "taskID", opts.TaskID)
 	ctx = o.prepareRequestContext(ctx, taskMessage)
 
@@ -2399,7 +2391,6 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 		ctx = WithReviewMode(ctx)
 	}
 
-	// 2. Setup blackboard (fresh or restored).
 	bb, err := o.setupBlackboard(taskMessage, sessionID, opts.TaskID, opts.PendingAttachments)
 	if err != nil {
 		return nil, err
@@ -2416,8 +2407,7 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	opts.UserSkills = mentionedSkillsForTask(ctx, opts.UserSkills)
 	opts.UserAgents = mentionedAgentsForTask(ctx, opts.UserAgents)
 
-	// Only the Conductor sees attachments (augmentWithAttachments); images
-	// travel as ContentBlocks below.
+	// Only the Conductor sees attachments; images travel as ContentBlocks below.
 	conductorMessage := o.augmentWithAttachments(taskMessage, bb)
 
 	// Structured content blocks: attachment-augmented text task first, then the staged
@@ -2513,16 +2503,13 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 	// back to in_progress (no-op for fresh tasks, already in_progress).
 	o.reactivateContinuationTask(bb, opts.TaskID)
 
-	// 4. Enrich context with domain/complexity/user-skills for execution.
 	ctx = WithDomain(ctx, routing.Domain)
 	ctx = WithComplexity(ctx, routing.Complexity)
 	if len(opts.UserSkills) > 0 {
 		ctx = WithUserSkills(ctx, opts.UserSkills)
 	}
 
-	// 5. Execute via the Conductor (single ReAct loop owning the task); persist
-	// the routing decision on the blackboard so the Conductor and finalization
-	// can retrieve it.
+	// Persist the routing decision so the Conductor and finalization retrieve it.
 	if pbb, ok := bb.(PersistableBlackboard); ok {
 		pbb.SetRouting(routing)
 	}
@@ -2559,8 +2546,7 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 		execResult = &orchestration.ExecutionResult{}
 	}
 
-	// 6. Finalize: persist routing and build result. The conversation
-	// history is updated by the recordConversationOutcome defer above.
+	// Conversation history is updated by the recordConversationOutcome defer.
 	result = o.finalizeResult(bb, routing, execResult)
 
 	if incompleteErr != nil {

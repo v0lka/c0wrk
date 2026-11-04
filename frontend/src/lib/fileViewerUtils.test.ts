@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { fileNameFromPath, isBinaryContent, isImageFilePath } from './fileViewerUtils'
+import { fileNameFromPath, isBinaryContent, isImageFilePath, restoreScrollTop } from './fileViewerUtils'
 
 describe('fileNameFromPath', () => {
   it('extracts the basename from a regular path', () => {
@@ -74,5 +74,27 @@ describe('isImageFilePath', () => {
   it('judges by the final extension only (dotted directory names)', () => {
     expect(isImageFilePath('/ws/a.b/c')).toBe(false)
     expect(isImageFilePath('/ws/a.b/photo.png')).toBe(true)
+  })
+})
+
+describe('restoreScrollTop', () => {
+  it('returns the saved offset verbatim for unchanged geometry', () => {
+    expect(restoreScrollTop({ scrollTop: 4200, scrollHeight: 10000 }, 10000)).toBe(4200)
+  })
+
+  it('scales the offset proportionally when the content height changed', () => {
+    // Half-way through a document that has since doubled → still half-way.
+    expect(restoreScrollTop({ scrollTop: 500, scrollHeight: 1000 }, 2000)).toBe(1000)
+    // A file that shrank scales down; rounding stays deterministic.
+    expect(restoreScrollTop({ scrollTop: 333, scrollHeight: 1000 }, 600)).toBe(200)
+  })
+
+  it('restores to the top for degenerate geometries', () => {
+    expect(restoreScrollTop({ scrollTop: 500, scrollHeight: 1000 }, 0)).toBe(0)
+    expect(restoreScrollTop({ scrollTop: 500, scrollHeight: 0 }, 1000)).toBe(0)
+  })
+
+  it('keeps a top position at the top when the height changed', () => {
+    expect(restoreScrollTop({ scrollTop: 0, scrollHeight: 1000 }, 3000)).toBe(0)
   })
 })

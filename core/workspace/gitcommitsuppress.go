@@ -9,43 +9,21 @@ import (
 	"sort"
 )
 
-// This file implements an exec-free detector for commit-suppression and
-// commit-alteration vectors a repository (or the user's global git config)
-// can install around `git commit`: installed hooks from the commit family
-// and commit-signing configuration. It answers the intake question "what
-// will try to run — or sign — when a commit is made here?" without ever
-// spawning a process, reusing the same .git discovery (including linked
-// worktrees through their commondir) and the same config parser as the
-// GitSpawn config scan.
-//
-// Both vectors are already neutralized by the c0wrk git baseline on every
-// invocation (-c core.hooksPath=<safe dir> redirects hooks away, and
-// -c commit.gpgsign=false disarms signing), so this is a detection-grade
-// picture for the intake UI, not a mitigation. Two deliberate blind spots
-// mirror the baseline. First, a configured core.hooksPath is reported as a
-// single marker — the target directory is an arbitrary user-configured
-// path outside the repository, and it is never listed. Second, include
-// directives are parsed and recorded but never followed (the standing
-// ADR-033 scanner posture; ResolveIncludes exists for trust fingerprinting
-// only): a commit-surface setting defined only inside an included file —
-// armed signing above all — stays invisible here, so the commit gate does
-// not fire for include-driven setups. Accepted because the baseline
-// neutralizes the commit either way and the intake warning already marks
-// every include directive; trust remains the path for such repositories.
+// Exec-free detector for the commit-suppression and commit-alteration vectors a
+// repository (or the user's global git config) can install around `git commit`:
+// commit-family hooks and armed commit signing. Detection grade, not mitigation
+// — the baseline already neutralizes both on every invocation. See
+// specs/domains/workspace.md (Commit gate) and
+// specs/decisions/059-commit-hooks-signing-gate.md (include blind spot,
+// withhold-and-decide consumer).
 
 // CommitSuppressionHooksPathMarker is the single hooks entry reported when
-// the repository config sets core.hooksPath: git would run commit hooks
-// from that configured directory instead of <commonDir>/hooks, but the
-// directory is outside the repository, so its contents are deliberately
-// not listed — the marker alone carries the fact.
+// core.hooksPath is set: the redirected dir is outside the repository, so its
+// contents are deliberately not listed — the marker carries the fact.
 const CommitSuppressionHooksPathMarker = "custom hooks dir (core.hooksPath)"
 
-// commitHookNames is the hook family that participates in commit creation:
-// the four hooks git runs around a commit (before the editor, on the
-// message, before the commit is recorded, and after). Other hooks
-// (pre-push, post-merge, ...) do not fire on a plain commit and are out of
-// this detector's scope; *.sample template files are excluded by exact-name
-// matching.
+// commitHookNames is the commit family: the four hooks git runs around a commit.
+// Other hooks never fire on a plain commit; *.sample excluded by exact name.
 var commitHookNames = []string{
 	"pre-commit",
 	"prepare-commit-msg",
@@ -53,41 +31,19 @@ var commitHookNames = []string{
 	"post-commit",
 }
 
-// DetectCommitSuppression reports the commit-surface programs a repository
-// and the user's global git config arm, without executing anything:
+// DetectCommitSuppression reports the commit-surface programs a repository and
+// the user's global git config arm, without executing anything:
+//   - hooks: installed commit-family hooks in <commonDir>/hooks (executable on
+//     POSIX, present-at-all on Windows; *.sample never counts), or the single
+//     CommitSuppressionHooksPathMarker when core.hooksPath redirects;
+//   - signingRepo / signingGlobal: an ARMED commit.gpgsign (truthy/bare) in
+//     repository or global config — sibling signing keys are inert without it
+//     (still visible as GitConfigFindingSigning from ScanGitConfig).
 //
-//   - hooks: names of installed hooks from the commit family found in the
-//     repository's hooks directory (<commonDir>/hooks — for a linked
-//     worktree that is the main repository's hooks directory git shares),
-//     executable on POSIX and present-at-all on Windows (which has no
-//     exec bit); *.sample templates never count. When core.hooksPath
-//     redirects hooks, the single CommitSuppressionHooksPathMarker is
-//     returned instead and the configured directory is not listed. Sorted
-//     for stable reporting; nil when nothing is armed.
-//   - signingRepo: the repository (common config, plus the config.worktree
-//     overlay when enabled — the config files git reads directly) has an
-//     ARMED commit.gpgsign (true/yes/on/1/bare): commits would be signed,
-//     i.e. git would execute the signing program (gpg.program or gpg
-//     itself) during commit. A disabled gpgsign — the value c0wrk's own
-//     baseline and fixtures pin — keeps the flag down, and the sibling
-//     signing keys (gpg.format, gpg.program, user.signingkey) alone do not
-//     arm signing: without commit.gpgsign they never execute. Each of them
-//     is still visible as a GitConfigFindingSigning finding from
-//     ScanGitConfig. Included config files are not consulted (see the
-//     include-directive blind spot in the file header above), so signing
-//     enforced only through an include does not raise this flag.
-//   - signingGlobal: the same armed commit.gpgsign in the configuration
-//     files git reads outside the repository (~/.gitconfig, the XDG global
-//     config — honoring $XDG_CONFIG_HOME — and $GIT_CONFIG_GLOBAL /
-//     $GIT_CONFIG_SYSTEM when set; the platform system config /etc/gitconfig
-//     stays out of scope).
-//
-// A path with no discoverable .git yields an empty result with a nil error
-// (the same convention as ScanGitConfig); the global config is not even
-// consulted then — without a repository there is no commit surface. A
-// hostile or broken repository (unreadable config, failed commondir
-// resolution, unparseable object format) propagates the scanner's
-// fail-closed error instead of guessing.
+// Includes are recorded but never followed (ADR-033), so include-only arming
+// stays invisible — the accepted blind spot of specs/decisions/059-commit-hooks-signing-gate.md. No discoverable .git
+// yields an empty result and nil error (global config not consulted); a
+// hostile or broken repository propagates the scanner's fail-closed error.
 func DetectCommitSuppression(repoPath string) (hooks []string, signingRepo, signingGlobal bool, err error) {
 	info, err := ScanGitConfig(repoPath)
 	if err != nil {
@@ -113,10 +69,8 @@ func DetectCommitSuppression(repoPath string) (hooks []string, signingRepo, sign
 	return hooks, signingRepo, detectGlobalCommitSigning(), nil
 }
 
-// armedCommitGpgsign reports whether the parsed config carries an armed
-// commit.gpgsign — the truthy-gated signing finding from the config
-// scanner. It is the one signing key that makes git execute a signing
-// program during commit; the sibling signing keys are inert without it.
+// armedCommitGpgsign reports a truthy-gated commit.gpgsign finding — the
+// one signing key that makes git execute a signing program during commit.
 func armedCommitGpgsign(info *GitConfigInfo) bool {
 	for i := range info.Findings {
 		f := &info.Findings[i]
@@ -127,26 +81,14 @@ func armedCommitGpgsign(info *GitConfigInfo) bool {
 	return false
 }
 
-// detectGlobalCommitSigning reports an armed commit.gpgsign in the git
-// configuration files git reads OUTSIDE the repository, mirroring git's own
-// resolution order:
-//
-//   - $GIT_CONFIG_GLOBAL replaces both global locations when set (an empty
-//     value disables global config entirely — exactly git's semantics);
-//   - otherwise BOTH ~/.gitconfig and the XDG global config are read, the
-//     XDG file being $XDG_CONFIG_HOME/git/config when XDG_CONFIG_HOME is set
-//     (git then does NOT fall back to ~/.config/git/config) and
-//     ~/.config/git/config otherwise;
-//   - $GIT_CONFIG_SYSTEM replaces the system config when set (empty
-//     disables it). When unset the platform system config (/etc/gitconfig)
-//     stays out of scope: this flag describes the USER's config, and
-//     machine-level policy arming signing is a separate deployment concern.
-//
-// A missing file is simply clean; a present but malformed (or unreadable or
-// oversized) user-level config is treated as clean rather than fatal — it is
-// the user's own environment (git itself would refuse to run with it, so
-// nothing can silently sign), not hostile repository input the repo scan
-// must fail closed on.
+// detectGlobalCommitSigning reports an armed commit.gpgsign in the config files
+// git reads OUTSIDE the repository, mirroring git's resolution order:
+// $GIT_CONFIG_GLOBAL (empty = global disabled), else ~/.gitconfig plus the XDG
+// config ($XDG_CONFIG_HOME/git/config, else ~/.config/git/config), and
+// $GIT_CONFIG_SYSTEM (empty = system disabled; /etc/gitconfig otherwise out of
+// scope — this flag describes the USER's config). A missing file is clean; a
+// malformed/unreadable user-level config is clean too — it is the user's own
+// environment (git would refuse to run), not hostile input.
 func detectGlobalCommitSigning() bool {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -166,9 +108,8 @@ func detectGlobalCommitSigning() bool {
 			filepath.Join(xdgGitConfigDir(home), "config"),
 		)
 	}
-	// GIT_CONFIG_SYSTEM names a config git reads on EVERY invocation, so an
-	// armed commit.gpgsign there executes on commit just the same; an empty
-	// value disables the system config wholesale (git's semantics).
+	// GIT_CONFIG_SYSTEM names a config git reads on EVERY invocation; an
+	// empty value disables the system config wholesale (git's semantics).
 	if p, ok := os.LookupEnv("GIT_CONFIG_SYSTEM"); ok && p != "" {
 		paths = append(paths, p)
 	}
@@ -181,10 +122,8 @@ func detectGlobalCommitSigning() bool {
 	return false
 }
 
-// xdgGitConfigDir returns the XDG config directory git reads its global
-// config from: $XDG_CONFIG_HOME/git when XDG_CONFIG_HOME is set non-empty
-// (git reads no ~/.config/git/config in that case), <home>/.config/git as
-// the XDG default otherwise.
+// xdgGitConfigDir returns git's XDG global config dir: $XDG_CONFIG_HOME/git
+// when set (no ~/.config fallback then), <home>/.config/git otherwise.
 func xdgGitConfigDir(home string) string {
 	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
 		return filepath.Join(xdg, "git")
@@ -192,9 +131,8 @@ func xdgGitConfigDir(home string) string {
 	return filepath.Join(home, ".config", "git")
 }
 
-// armedCommitGpgsignInFile reports an armed commit.gpgsign in the git config
-// file at path. A missing or unreadable file is clean — see the
-// user's-own-environment reasoning on detectGlobalCommitSigning.
+// armedCommitGpgsignInFile reports an armed commit.gpgsign in the config file
+// at path; a missing or unreadable file is clean (see detectGlobalCommitSigning).
 func armedCommitGpgsignInFile(path string) bool {
 	info, err := ScanGitConfigFile(path)
 	if err != nil {
@@ -203,12 +141,9 @@ func armedCommitGpgsignInFile(path string) bool {
 	return armedCommitGpgsign(info)
 }
 
-// listExecutableCommitHooks lists the commit-family hooks installed in
-// hooksDir: regular files (symlinks resolve to their target — git executes
-// the target) that carry any execute bit on POSIX, or any non-directory
-// entry on Windows, where the filesystem has no exec bit and presence is
-// what git runs. A missing directory is an empty result (git runs no hooks
-// then); anything else that fails to read or stat fails closed.
+// listExecutableCommitHooks lists the commit-family hooks installed in hooksDir —
+// any execute bit on POSIX, any non-directory entry on Windows (no exec bit);
+// symlinks resolve to their target, which is what git executes. Missing dir = empty.
 func listExecutableCommitHooks(hooksDir string) ([]string, error) {
 	entries, err := os.ReadDir(hooksDir)
 	if err != nil {
@@ -251,10 +186,8 @@ func isCommitHookName(name string) bool {
 	return false
 }
 
-// hookIsExecutable reports whether the hook at path would run. Symlinks
-// are followed (os.Stat): git executes the link's target, so a symlinked
-// hook is armed exactly when its target is; a dangling one targets nothing
-// and counts as not installed. Directories never count.
+// hookIsExecutable reports whether the hook at path would run: symlinks are
+// followed (git executes the target; dangling = not installed); dirs never count.
 func hookIsExecutable(path string) (bool, error) {
 	st, err := os.Stat(path)
 	if errors.Is(err, os.ErrNotExist) {

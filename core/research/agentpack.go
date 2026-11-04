@@ -1,37 +1,14 @@
-// Package research provides the RESEARCH-mode agent-pack: a versioned,
-// embed-bundled Subagent Profile (AGENT.md). FrontendAPI.seedGlobalPacks seeds
-// it into the global c0wrk agents directory (`~/.c0wrk/.agents/agents`) once
-// per launch, before the agent watchers start; RESEARCH is always on for real
-// projects, so there is no per-project enable step. It mirrors the
-// skill-pack (skillpack.go) so a research step can be delegated via the
-// `#research` mention or delegate(agent:"research").
+// Package research — agent-pack: the versioned, embed-bundled research
+// Subagent Profile (AGENT.md), seeded globally once per launch by
+// FrontendAPI.seedGlobalPacks into the c0wrk global agents directory before
+// the agent watchers start. It mirrors the skill-pack (skillpack.go) so a
+// research step can be delegated via delegate(agent:"research"); the seeded
+// profile lands where ListAgents and the per-session AgentManager discover
+// it (a project-local .agents/agents copy still outranks the global one).
 //
-// Seeding is idempotent, crash-safe, and non-destructive to user-authored
-// profiles. Classification compares the CONTENT HASH of the on-disk tree
-// against the embedded pack (never mtime/size, never the marker alone):
-//   - Writes are staged into a hidden sibling temp directory and swapped in
-//     with a single rename, so an interrupted run can never leave a
-//     truncated tree at the destination; leftovers from a hard kill are
-//     swept on the next run.
-//   - A directory whose content equals the pack is Current and left
-//     untouched; a missing or stale `.seed-version` marker on such a
-//     directory is re-stamped.
-//   - A pack-marked truncated subset of the pack (an interrupted write — the
-//     "marker + truncated tree" state that a marker-first ordering would
-//     produce) is repaired, never classified Current.
-//   - A pack-marked directory at the current version whose content diverges
-//     from the pack was edited locally (or its marker was spoofed): it is
-//     preserved untouched and reported as Modified.
-//   - A pack-marked directory from an older pack version is overwritten in
-//     full (a pack upgrade) and re-marked.
-//   - An existing directory with NO marker whose content differs from the
-//     pack is user-owned and never clobbered.
-//
-// Because the seeded profiles land in the global c0wrk agents directory — which
-// both ListAgents and the per-session AgentManager discover (a project-local
-// `.agents/agents` copy still outranks it) — they enter the subagent roster
-// automatically; no catalog change is required. FrontendAPI.seedGlobalPacks
-// resolves the destination global agents directory and passes it to SeedAgents.
+// Seeding is idempotent, crash-safe, and non-destructive: destinations are
+// classified by CONTENT HASH against the embedded pack (never mtime/size,
+// never the marker alone). Full rules: specs/domains/research.md.
 package research
 
 import (
@@ -49,10 +26,8 @@ import (
 	"github.com/v0lka/sp4rk/safeio"
 )
 
-// agentPackFS embeds the built-in research Subagent Profile directories (each
-// containing an AGENT.md). The directive uses a plain directory embed so
-// dotfiles/underscore-prefixed files (e.g. stray .DS_Store) are excluded by the
-// embed rules, keeping the bundle deterministic — mirroring skillPackFS.
+// agentPackFS embeds the research Subagent Profile directories, mirroring
+// skillPackFS's plain directory embed (dotfiles excluded, deterministic).
 //
 //go:embed agents
 var agentPackFS embed.FS
@@ -62,10 +37,8 @@ var agentPackFS embed.FS
 const agentEmbedRoot = "agents"
 
 // AgentSeedVersion is the pack version stamped into each seeded profile's
-// sidecar marker. Bump this when the embedded AGENT.md content changes and
-// existing seeded copies should be refreshed on the next seed run. It is
-// deliberately separate from CurrentSeedVersion (the skill-pack version) so the
-// two packs can bump independently.
+// marker; bump it when embedded content changes. Deliberately separate from
+// CurrentSeedVersion so the two packs bump independently.
 const AgentSeedVersion = "1"
 
 // SeedAgentsResult reports the per-profile outcome of a SeedAgents call. Each
@@ -79,14 +52,12 @@ type SeedAgentsResult struct {
 	Modified  []string // pack-marked but content diverges (user edit or spoofed marker); left untouched
 }
 
-// ResearchAgentNames returns the sorted names of the research Subagent
-// Profiles bundled in the pack, read from the embed.FS at call time so it stays
-// in sync with the embedded tree.
+// ResearchAgentNames returns the sorted pack profile names, read from the
+// embed.FS at call time to stay in sync with the embedded tree.
 func ResearchAgentNames() []string {
 	entries, err := fs.ReadDir(agentPackFS, agentEmbedRoot)
 	if err != nil {
-		// The embed tree is compile-time fixed; ReadDir can only fail on a
-		// programming error (bad path). Return empty rather than panic.
+		// Compile-time-fixed tree: ReadDir failing is a programming error; empty, not panic.
 		return nil
 	}
 	names := make([]string, 0, len(entries))
@@ -99,15 +70,14 @@ func ResearchAgentNames() []string {
 	return names
 }
 
-// SeedAgents materializes the embedded research agent-pack into destAgentsDir.
-// destAgentsDir is the project-local agents directory (typically
-// config.ProjectAgentsPath(workspacePath)); it is created if missing. The
-// destination must be a real, writable filesystem path.
+// SeedAgents materializes the embedded research agent-pack into
+// destAgentsDir, created if missing. The caller resolves the destination —
+// seedGlobalPacks passes the global c0wrk agents directory (ADR-056), not a
+// project-local pack path.
 //
-// The function is safe to call repeatedly (idempotent): see the package docs
-// for the classification rules. It never overwrites a directory that lacks a
-// pack marker unless its content is byte-identical to the pack (in which case
-// only the marker is re-stamped).
+// Idempotent per the package docs: a marker-less directory is never
+// overwritten unless byte-identical to the pack (then only the marker is
+// re-stamped).
 func SeedAgents(destAgentsDir string, logger *slog.Logger) (*SeedAgentsResult, error) {
 	if destAgentsDir == "" {
 		return nil, errors.New("research.SeedAgents: destAgentsDir is empty")
@@ -116,8 +86,7 @@ func SeedAgents(destAgentsDir string, logger *slog.Logger) (*SeedAgentsResult, e
 		return nil, fmt.Errorf("research.SeedAgents: create agents dir %q: %w", destAgentsDir, err)
 	}
 
-	// Sweep away staging/backup leftovers from a previous interrupted run
-	// (a hard kill can leave hidden sibling dirs behind; see stageAndSwap).
+	// Sweep leftovers from an interrupted previous run (see stageAndSwap).
 	sweepSeedLeftovers(destAgentsDir)
 
 	result := &SeedAgentsResult{}
@@ -146,11 +115,9 @@ func SeedAgents(destAgentsDir string, logger *slog.Logger) (*SeedAgentsResult, e
 	return result, nil
 }
 
-// seedOneAgent handles a single embedded profile: classifies the destination
-// by content hash against the embedded pack and performs the required write
-// via the crash-safe staging swap (see seedstaging.go). It reuses the
-// seedAction enum and the staging helpers from skillpack.go/seedstaging.go
-// (same package).
+// seedOneAgent classifies one destination by content hash and writes via the
+// crash-safe staging swap, reusing the seedAction enum and helpers shared
+// with skillpack.go.
 func seedOneAgent(name, target string, logger *slog.Logger) (seedAction, error) {
 	st, packHash, err := inspectSeedTarget(agentPackFS, agentEmbedRoot, name, target)
 	if err != nil {
@@ -192,8 +159,8 @@ func writeAgentEmbedTree(name, dest string) error {
 		if err != nil {
 			return err
 		}
-		// Path relative to the profile's embed root (forward-slash math), then
-		// converted to the host separator. The walk root itself maps to ".".
+		// Embed-root-relative path (forward slashes) converted to the host
+		// separator; the walk root maps to ".".
 		rel := strings.TrimPrefix(p, srcRoot)
 		rel = strings.TrimPrefix(rel, "/")
 		target := dest

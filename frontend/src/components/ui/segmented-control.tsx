@@ -39,6 +39,11 @@ export interface SegmentedControlItem<V extends string | number> {
   label?: ReactNode
   /** Leading icon node (already sized, e.g. `<GitBranch className="size-3.5" />`). */
   icon?: ReactNode
+  /** Trailing accessory node rendered AFTER the label span (e.g. a count
+   *  badge). Deliberately OUTSIDE the label span so it stays visible when
+   *  `labelClassName` responsively hides the label — a trailing count must
+   *  survive the narrow-sidebar icon-only collapse of its segment. */
+  trailing?: ReactNode
   /** Native tooltip / accessible name for icon-only items. When omitted, a
    *  string `label` is used as the title automatically (an echo is the
    *  correct tooltip for label-hiding segments); a non-string label and an
@@ -204,6 +209,7 @@ function SegmentedControlInner<V extends string | number>(
             {item.label !== undefined && (
               <span className={cn(labelClassName)}>{item.label}</span>
             )}
+            {item.trailing}
           </button>
         )
       })}

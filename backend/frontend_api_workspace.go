@@ -21,38 +21,21 @@ import (
 	"github.com/v0lka/sp4rk/safeio"
 )
 
-// lineAnchorRe matches a trailing line-anchor fragment appended to a file
-// path by the file viewer (e.g. ".../x.go#L20-L36" or ".../x.go#42"). The
-// viewer links the chat to specific lines; the backend must strip the
-// fragment before resolving the path so os.ReadFile sees the real file.
-// Forms supported: "#L<n>", "#L<n>-L<m>", "#L<n>-<m>", "#<n>", "#<n>-<n>".
-// Plain fragment identifiers like "#v2" or "#123" are NOT matched — only
-// fragments that look like a line range.
+// lineAnchorRe matches the trailing line-anchor fragment the viewer appends
+// to file paths (specs/decisions/095-chat-file-reference-path-semantics.md);
+// only numeric #L<n>[-L<m>] forms match, so "#v2"-style anchors stay verbatim.
 var lineAnchorRe = regexp.MustCompile(`#L?\d+(?:-L?\d+)?$`)
 
-// stripLineAnchor removes a trailing "#L<n>" / "#L<n>-L<m>" line anchor
-// fragment from filePath. It is applied at the top of every read-path
-// resolver as a defence-in-depth safety net so the viewer can pass
-// line-anchored paths verbatim.
+// stripLineAnchor removes a trailing line-anchor fragment; every read-path
+// resolver applies it first so the viewer can pass anchored paths verbatim.
 func stripLineAnchor(p string) string {
 	return lineAnchorRe.ReplaceAllString(p, "")
 }
 
 // resolveWorkspacePath validates that filePath is within the active project
-// workspace and returns the resolved absolute path and workspace root.
-// For No Project (CHAT mode), WorkspacePath is the project directory itself
-// (~/.c0wrk/projects/__no_project__/); per-session workspaces live under
-// <sid>/workspace/.
-//
-// Additionally allows paths within session infrastructure directories
-// (plans/, temp/) which live under the project directory but outside the
-// workspace — these are needed for plan review and future features.
-//
-// IMPORTANT: for session-infra paths the returned absRoot is
-// config.ProjectDir(agentDir, projectID), NOT the project workspace.
-// Callers that compute relative paths from absRoot (e.g. GetFileDiff)
-// must account for this — the project data dir is not a git repo and
-// git-based diff operations will fall back to the no-repo variant.
+// workspace and returns the resolved path and root
+// (specs/contracts/desktop-frontend.md); session-infra dirs (plans/, temp/)
+// are admitted — for those absRoot is the project DATA dir, not a git repo.
 func (f *FrontendAPI) resolveWorkspacePath(filePath string) (absPath, absRoot string, err error) {
 	f.seedAcquire()
 	f.activeProjectMu.RLock()
@@ -69,14 +52,8 @@ func (f *FrontendAPI) resolveWorkspacePath(filePath string) (absPath, absRoot st
 		return "", "", fmt.Errorf("invalid path: %w", err)
 	}
 
-	// For No Project, WorkspacePath points to the project directory itself
-	// (~/.c0wrk/projects/__no_project__/) — no need for filepath.Dir.
-	//
-	// NOTE: resolveWorkspacePath does NOT enforce the structural
-	// <sid>/workspace constraint — that lives in ListDirectory,
-	// the user-facing entry point. ReadFile, GetFileIcon, and GetFileDiff
-	// receive paths returned by ListDirectory, so the trust boundary is
-	// maintained.
+	// No Project: WorkspacePath is the project dir itself; the <sid>/workspace
+	// structural rule is enforced only by ListDirectory, not here.
 	absRoot, err = filepath.Abs(projectPath)
 	if err != nil {
 		return "", "", fmt.Errorf("invalid workspace path: %w", err)
@@ -88,9 +65,7 @@ func (f *FrontendAPI) resolveWorkspacePath(filePath string) (absPath, absRoot st
 				return absPath, tree, nil
 			}
 		}
-		// Path is outside the project workspace — check if it falls within
-		// session infrastructure directories (plans/, temp/) under the
-		// project's data directory (~/.c0wrk/projects/<projectID>/).
+		// Session-infra dirs (plans/, temp/) live under the project data dir.
 		projectDir := config.ProjectDir(f.agentDir, projectID)
 		if !config.IsSessionInfraPath(projectDir, absPath) {
 			return "", "", errors.New("path outside project workspace")
@@ -101,32 +76,10 @@ func (f *FrontendAPI) resolveWorkspacePath(filePath string) (absPath, absRoot st
 	return absPath, absRoot, nil
 }
 
-// resolveReadablePath resolves a file path for the read-path RPCs (ReadFile,
-// GetFileIcon, ReadImageAsDataURL, GetFileDiff). Unlike resolveWorkspacePath
-// it does NOT enforce workspace containment and does NOT require an active
-// project — the file viewer must be able to display any file path surfaced by
-// the agent (e.g. files in the sp4rk SDK, system files referenced in chat,
-// paths from external tools). Containment for the destructive /
-// trust-boundary RPCs (WriteFile, ListDirectory) remains enforced by
-// resolveWorkspacePath.
-//
-// Absolute paths are recognized lexically via core.IsAbsolutePath, which
-// classifies identically on every GOOS: POSIX ("/a/b"), Windows drive-rooted
-// ("C:\x\f.md") and Windows UNC ("\\srv\share\f.md"). A recognized absolute
-// path is returned verbatim after the line-anchor strip — feeding a
-// Windows-dialect path through filepath.Abs on POSIX would mount it as
-// rooted junk ("/C:\x\f.md") that no filesystem can open. The legacy rooted
-// spelling the frontend once emitted ("/C:/x/f.md" — a POSIX slash bolted
-// onto a Windows path) is un-rooted: the leading slash is stripped whenever
-// the remainder is itself a Windows-dialect absolute path. A remainder that
-// starts with "/" is a canonical forward-slash UNC ("//srv/share") and stays
-// intact, as do genuine POSIX-absolute paths. Relative paths keep the
-// historical filepath.Abs resolution against the process CWD. Canonical
-// spellings resolve byte-for-byte exactly as before; changed behavior is
-// limited to non-canonical ones: the Windows dialects (previously mounted
-// as rooted junk) and dot-segment-carrying POSIX absolutes, which are now
-// returned verbatim instead of filepath.Abs-cleaned — dot-segment
-// canonicalization is the emitter's job (ADR-095 decisions 2 and 8).
+// resolveReadablePath resolves a path for the read-path RPCs (ReadFile,
+// GetFileIcon, ReadImageAsDataURL, GetFileDiff): NOT workspace-contained, no
+// active project required; dialect classification and un-rooting semantics
+// live in specs/decisions/095-chat-file-reference-path-semantics.md.
 func (f *FrontendAPI) resolveReadablePath(filePath string) (string, error) {
 	cleaned := stripLineAnchor(filePath)
 	if len(cleaned) > 1 && cleaned[0] == '/' && cleaned[1] != '/' &&
@@ -144,25 +97,18 @@ func (f *FrontendAPI) resolveReadablePath(filePath string) (string, error) {
 	return absPath, nil
 }
 
-// resolveFileIcon returns the Nerd Font icon and hex color for a file or directory.
-// The color is snapped to the nearest theme palette color.
+// resolveFileIcon returns the Nerd Font icon for a file, its hex color snapped
+// to the nearest theme palette color.
 func resolveFileIcon(info os.FileInfo) (icon, color string) {
 	style := devicons.IconForInfo(info)
 	return style.Icon, snapToTheme(style.Color)
 }
 
-// GetSessionWorkspace returns the workspace directory path for a given session.
-// When the session is known to the session manager, its specific WorkspacePath
-// is returned if it belongs to the active project — this guards against
-// returning a stale workspace from a session that belongs to a different
-// project the user switched away from.
-// For No Project (CHAT mode), each session has its own isolated workspace
-// (~/.c0wrk/projects/__no_project__/<sid>/workspace/) which differs
-// from the project-level workspace path. In this case the session workspace
-// is always preferred.
-// Falls back to the active project workspace path if the session is not yet
-// registered, the manager is unavailable, or the session belongs to a
-// different project.
+// GetSessionWorkspace returns the workspace root the UI follows for a
+// session: the session's own workspace when it belongs to the active project
+// (in No Project always, by per-session isolation), else the project
+// workspace (specs/contracts/desktop-frontend.md,
+// specs/decisions/099-research-root-follows-active-session.md).
 func (f *FrontendAPI) GetSessionWorkspace(sessionID string) (string, error) {
 	f.seedAcquire()
 	f.activeProjectMu.RLock()
@@ -172,17 +118,11 @@ func (f *FrontendAPI) GetSessionWorkspace(sessionID string) (string, error) {
 
 	if sessionID != "" && f.app != nil {
 		if mgr := f.app.Manager(); mgr != nil {
-			// Non-restoring lookups ONLY: GetSession here rebuilt a store-only
-			// session (full orchestrator build, fresh log/dump handles,
-			// managed-worktree re-provision) inside a pure path-lookup RPC on
-			// the session/project-switch hot path. WorkspacePathFor resolves
-			// the workspace for in-memory AND store-only sessions without any
-			// restore side effect; its contract requires the caller to bound
-			// the session-row read. The project ID for the membership check
-			// below comes from the store row, with a RESIDENT session's
-			// in-memory ProjectID as the fallback when the row is missing (a
-			// session never moves between projects, so both are
-			// authoritative).
+			// WorkspacePathFor, never GetSession: a pure path lookup must not
+			// rebuild a store-only session on this hot path; its contract
+			// requires the caller to bound the session-row read. Membership
+			// below keys on the store row's project ID, falling back to a
+			// RESIDENT session's in-memory ProjectID (sessions never move).
 			ctx, cancel := context.WithTimeout(f.ctx(), terminalPathLookupTimeout)
 			ws, hasWS := mgr.WorkspacePathFor(ctx, sessionID)
 			var sessProjectID string
@@ -200,20 +140,10 @@ func (f *FrontendAPI) GetSessionWorkspace(sessionID string) (string, error) {
 			}
 			cancel()
 			if hasWS && ws != "" {
-				// Return the session workspace only if the session belongs to
-				// the ACTIVE project — membership is decided by project ID,
-				// never by comparing the workspace path to the project path:
-				// a managed-worktree session of the active project has a
-				// WorkspacePath inside <checkout>/.worktrees and must still
-				// resolve to its own tree (the explorer, @-file completions,
-				// and the viewer root follow the active session). For No
-				// Project, session and project workspaces differ by design
-				// (per-session isolation), and a session registered under a
-				// real project must never leak its workspace into CHAT mode
-				// (the old unconditional short-circuit let a stale
-				// cross-project activeSessionId set the file-tree root
-				// outside the No Project tree — ListDirectory rejected it
-				// and @-file completions died until restart).
+				// Membership keys on project ID, never path comparison: a
+				// managed-worktree session of the active project must still
+				// resolve to its own tree, and a real project's session must
+				// never leak into CHAT mode (per-session isolation).
 				var belongsToActive bool
 				if activeProjectID == project.NoProjectID {
 					belongsToActive = sessProjectID == project.NoProjectID
@@ -231,12 +161,8 @@ func (f *FrontendAPI) GetSessionWorkspace(sessionID string) (string, error) {
 		return "", errors.New("no active project")
 	}
 
-	// For No Project, per-session workspaces are deterministic:
-	// __no_project__/<sessionID>/workspace. When the session is not yet
-	// in memory (e.g. after a project switch where the session was not
-	// created by applySavedProjectSwitchState), derive the path from the
-	// session ID instead of falling back to the project-level directory
-	// which would expose all sessions' scaffolding.
+	// No Project: derive the session's deterministic workspace from its ID —
+	// the project-level fallback would expose all sessions' scaffolding.
 	if activeProjectID == project.NoProjectID && sessionID != "" {
 		wsPath := config.NoProjectSessionWorkspace(f.agentDir, sessionID)
 		if absPath, absErr := filepath.Abs(wsPath); absErr == nil {
@@ -248,9 +174,7 @@ func (f *FrontendAPI) GetSessionWorkspace(sessionID string) (string, error) {
 	return activeProject, nil
 }
 
-// GetFileIcon returns the Nerd Font icon and hex color for a file path. The
-// path is not constrained to the active project workspace — the viewer may
-// request an icon for any file path surfaced by the agent.
+// GetFileIcon resolves via resolveReadablePath — the uncontained read path.
 func (f *FrontendAPI) GetFileIcon(filePath string) (FileIconResponse, error) {
 	absPath, err := f.resolveReadablePath(filePath)
 	if err != nil {
@@ -260,15 +184,9 @@ func (f *FrontendAPI) GetFileIcon(filePath string) (FileIconResponse, error) {
 	return FileIconResponse{Icon: style.Icon, IconColor: snapToTheme(style.Color)}, nil
 }
 
-// GetGitStatus returns a map of absolute file paths to their git status for
-// the Git-panel focus target — the explicitly focused worktree of the active
-// project, or the project checkout by default. The panel's frontend always
-// passes the project workspace path; the backend resolves the focus root so
-// status reflects the focused tree (the worktree every git RPC operates
-// on). Containment accepts the project workspace (worktree files under the
-// checkout's .worktrees container included) and, for an external linked
-// tree focus, the focus root itself. Returns an empty map for No Project
-// (no git operations).
+// GetGitStatus returns the git status for the Git-panel focus target — the
+// focused worktree, or the checkout by default (focus model:
+// specs/domains/session-worktrees.md). No Project returns an empty map.
 func (f *FrontendAPI) GetGitStatus(dirPath string) (map[string]GitStatusEntry, error) {
 	f.activeProjectMu.RLock()
 	projectPath := f.activeProjectPath
@@ -314,19 +232,10 @@ func (f *FrontendAPI) GetGitStatus(dirPath string) (map[string]GitStatusEntry, e
 	return f.cachedGitStatus(focusRoot)
 }
 
-// ReadFile returns the content of a file. The path is not constrained to the
-// active project workspace — the viewer may surface any file path surfaced by
-// the agent (e.g. SDK files, system files referenced in chat). Only the
-// line-anchor fragment is stripped and the path is made absolute.
-//
-// The read goes through safeio, which refuses a non-regular file (a FIFO,
-// socket, device, or directory) instead of blocking the open forever: a
-// leftover named pipe at a path the viewer opens would otherwise hang this
-// synchronous RPC — and the UI waiting on it — indefinitely. The size is
-// capped at maxViewerFileSize (the same 8 MiB the sibling data-URL path
-// enforces): the content crosses the IPC channel as one JSON string, and a
-// multi-GB file must fail with a user-visible error instead of exhausting
-// the Go process.
+// ReadFile returns any agent-surfaced file (uncontained, via
+// resolveReadablePath). safeio refuses non-regular files — a leftover FIFO
+// would hang this synchronous RPC forever — and the maxViewerFileSize cap
+// bounds the one-JSON-string IPC payload.
 func (f *FrontendAPI) ReadFile(filePath string) (string, error) {
 	absPath, err := f.resolveReadablePath(filePath)
 	if err != nil {
@@ -341,11 +250,8 @@ func (f *FrontendAPI) ReadFile(filePath string) (string, error) {
 	return string(content), nil
 }
 
-// readCappedFile reads absPath, rejecting files larger than maxSize with a
-// user-visible error BEFORE reading (the sibling readFileAsDataURL pattern):
-// the content crosses the IPC channel as one JSON string, and a multi-GB
-// file must fail fast instead of being buffered whole in the Go process.
-// The read itself still goes through safeio (FIFO/non-regular refusal).
+// readCappedFile rejects oversized files BEFORE reading (no whole-file
+// buffer) and still reads through safeio (non-regular refusal).
 func readCappedFile(absPath string, maxSize int64) ([]byte, error) {
 	info, err := os.Stat(absPath)
 	if err != nil {
@@ -358,32 +264,24 @@ func readCappedFile(absPath string, maxSize int64) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to read file: %w", err)
 	}
-	// The file may have grown between the stat above and the read (a build
-	// log or agent-written dump being appended to): enforce the cap against
-	// what was actually buffered, mirroring importThemeFromPath.
+	// The file may have grown between the stat and the read (an appended
+	// log): enforce the cap against what was actually buffered.
 	if int64(len(data)) > maxSize {
 		return nil, fmt.Errorf("file too large (%d bytes, max %d bytes) — open it in an external editor instead", len(data), maxSize)
 	}
 	return data, nil
 }
 
-// maxDataURLSize caps a data-URL payload at 8 MiB so a huge binary is never
-// streamed through the IPC channel in a single base64 string.
+// maxDataURLSize caps data-URL payloads at 8 MiB — one base64 string over
+// the IPC channel must never be unbounded.
 const maxDataURLSize = 8 << 20
 
-// maxViewerFileSize caps the file-viewer ReadFile RPC at the same 8 MiB the
-// sibling data-URL path enforces: the content travels over the Wails IPC
-// channel as one JSON string, so an unbounded read means an unbounded
-// allocation in the Go process plus a giant IPC payload for the webview.
+// maxViewerFileSize caps the ReadFile RPC at the same 8 MiB — same
+// one-JSON-string IPC constraint as the data-URL path.
 const maxViewerFileSize = maxDataURLSize
 
-// imageMimeByExt pins the media type for the image formats the file viewer and
-// the markdown renderer must always render, independent of the host MIME
-// registry. mime.TypeByExtension consults the OS mime.types on Unix, which is
-// not guaranteed to know bmp/ico/avif (or may be absent entirely); the
-// application/octet-stream fallback would make the webview refuse to paint the
-// image. Keeping the mapping explicit makes image rendering deterministic
-// across platforms.
+// imageMimeByExt pins image MIMEs the OS registry may not know — the
+// octet-stream fallback would make the webview refuse to paint them.
 var imageMimeByExt = map[string]string{
 	".png":  "image/png",
 	".jpg":  "image/jpeg",
@@ -396,11 +294,8 @@ var imageMimeByExt = map[string]string{
 	".avif": "image/avif",
 }
 
-// mimeByExtension returns the media type for a path based on its extension,
-// falling back to application/octet-stream when unknown. Image extensions are
-// resolved from imageMimeByExt first (deterministic across platforms); every
-// other extension uses the standard library's registry, which knows the common
-// image formats (png, jpg/jpeg, gif, webp, svg) as well.
+// mimeByExtension resolves image extensions from imageMimeByExt first, then
+// the stdlib registry, else application/octet-stream.
 func mimeByExtension(path string) string {
 	ext := strings.ToLower(filepath.Ext(path))
 	if mt, ok := imageMimeByExt[ext]; ok {
@@ -412,9 +307,8 @@ func mimeByExtension(path string) string {
 	return "application/octet-stream"
 }
 
-// readFileAsDataURL reads absPath and returns it as a data URL (RFC 2397):
-// "data:<mime>;base64,<payload>". A file larger than maxSize is rejected so a
-// huge binary never travels through the IPC channel in one base64 string.
+// readFileAsDataURL returns absPath as a data URL (RFC 2397), rejecting
+// files larger than maxSize before reading.
 func readFileAsDataURL(absPath string, maxSize int64) (string, error) {
 	info, err := os.Stat(absPath)
 	if err != nil {
@@ -432,21 +326,10 @@ func readFileAsDataURL(absPath string, maxSize int64) (string, error) {
 	return "data:" + mimeByExtension(absPath) + ";base64," + base64.StdEncoding.EncodeToString(data), nil
 }
 
-// ReadFileAsDataURL returns the bytes of a file encoded as a data URL
-// (RFC 2397): "data:<mime>;base64,<payload>". This lets the file-viewer
-// markdown renderer embed images that live on the local filesystem (the
-// webview cannot load file:// or project-root-relative URLs directly).
-//
-// Containment is enforced via resolveWorkspacePath: only files within the
-// active project workspace (or session-infra dirs) may be embedded. Unlike
-// ReadFile — which intentionally reads arbitrary paths surfaced by the agent
-// (e.g. SDK/system files) — image embedding only ever needs project-local
-// files, and images are auto-fetched during markdown rendering without an
-// explicit user action. Containment therefore prevents a malicious markdown
-// document from silently reading arbitrary files (e.g. "../../.ssh/id_rsa" or
-// "/Users/.../.aws/credentials") into the webview DOM via the render pipeline.
-// A size guard caps the payload at 8 MiB to avoid streaming huge binaries
-// through the IPC channel; oversized files return an error.
+// ReadFileAsDataURL embeds a local file as a data URL for the markdown
+// renderer. Unlike ReadFile it is workspace-CONTAINED (resolveWorkspacePath):
+// it fires during automatic rendering, so a document must not pull arbitrary
+// local files into the webview DOM (specs/contracts/desktop-frontend.md).
 func (f *FrontendAPI) ReadFileAsDataURL(filePath string) (string, error) {
 	absPath, _, err := f.resolveWorkspacePath(filePath)
 	if err != nil {
@@ -456,18 +339,10 @@ func (f *FrontendAPI) ReadFileAsDataURL(filePath string) (string, error) {
 	return readFileAsDataURL(absPath, maxDataURLSize)
 }
 
-// ReadImageAsDataURL returns the bytes of a file encoded as a data URL
-// (RFC 2397) for the file viewer's image tab. It is the display counterpart to
-// ReadFileAsDataURL with the OPPOSITE containment contract: it resolves via
-// resolveReadablePath and is therefore NOT workspace-contained — the viewer
-// must be able to show an image the agent surfaced anywhere (e.g. a plot under
-// /tmp, or an SDK asset), exactly like ReadFile does for text.
-//
-// The relaxed contract is safe because this RPC never runs during automatic
-// rendering: it fires only when the user explicitly opens an image file in the
-// viewer, so it does not widen the markdown auto-render attack surface that
-// ReadFileAsDataURL's containment protects. The same size guard
-// (maxDataURLSize) bounds the payload.
+// ReadImageAsDataURL is the image tab's display counterpart with the OPPOSITE
+// containment: resolveReadablePath — uncontained, like ReadFile. Safe because
+// it fires only on an explicit user open, never during auto-render. Same
+// maxDataURLSize cap.
 func (f *FrontendAPI) ReadImageAsDataURL(filePath string) (string, error) {
 	absPath, err := f.resolveReadablePath(filePath)
 	if err != nil {
@@ -476,19 +351,13 @@ func (f *FrontendAPI) ReadImageAsDataURL(filePath string) (string, error) {
 	return readFileAsDataURL(absPath, maxDataURLSize)
 }
 
-// GetFileDiff returns the unified diff of uncommitted changes for a single
-// file. Uses the cached isGitRepo check to avoid redundant git rev-parse
-// calls, then delegates to GetFileDiffInRepo for git repositories.
-//
-// The read path is not constrained to the workspace — the viewer may surface
-// any file path surfaced by the agent. A diff requires a git baseline, so for
-// files outside the active project root OR outside a git repository the RPC
-// returns ("", nil) (no error, no baseline): the hunk-staging panel and
-// synthetic diff view are not rendered. Returns ("", nil) early for No Project
-// (no git operations) as well.
+// GetFileDiff returns the unified diff of uncommitted changes for one file
+// in the repository that owns it (specs/domains/session-worktrees.md).
+// Uncontained like every read path; anything without a git baseline —
+// outside the project, non-git, No Project — returns ("", nil) so no diff
+// panel is rendered.
 func (f *FrontendAPI) GetFileDiff(filePath string) (string, error) {
-	// No Project: git diff is not available. Check before any path resolution
-	// to avoid misleading path-resolution errors.
+	// No Project: checked before path resolution to avoid misleading errors.
 	f.activeProjectMu.RLock()
 	isNoProject := f.activeProjectID == project.NoProjectID
 	projectPath := f.activeProjectPath
@@ -496,11 +365,9 @@ func (f *FrontendAPI) GetFileDiff(filePath string) (string, error) {
 	if isNoProject {
 		return "", nil
 	}
-	// No active project loaded at all (transient startup / closed-project
-	// state, distinct from No Project): there is no baseline to diff against.
-	// Guard explicitly because resolveReadablePath is path-agnostic and
-	// filepath.Abs("") would otherwise resolve to the app CWD, risking a
-	// diff against an unrelated git repo at the CWD.
+	// Transient startup / closed-project state (distinct from No Project):
+	// guard explicitly — filepath.Abs("") would resolve to the app CWD and
+	// diff against an unrelated repo there.
 	if projectPath == "" {
 		return "", nil
 	}
@@ -515,8 +382,7 @@ func (f *FrontendAPI) GetFileDiff(filePath string) (string, error) {
 		return "", fmt.Errorf("invalid workspace path: %w", err)
 	}
 
-	// Files outside the active project root have no git baseline to diff
-	// against. Return ("", nil) so the frontend does not render a diff panel.
+	// Outside the project (and not a managed worktree): no git baseline.
 	ok, err := config.IsWithinPath(absRoot, absPath)
 	if err != nil {
 		return "", fmt.Errorf("failed to check path containment: %w", err)
@@ -529,25 +395,16 @@ func (f *FrontendAPI) GetFileDiff(filePath string) (string, error) {
 		}
 	}
 
-	// Diff in the repository that OWNS the file, not the project checkout:
-	// containment is validated against the active project root (which
-	// contains the managed .worktrees container), but a file inside a
-	// session's managed worktree belongs to that worktree's own repository —
-	// running the diff from the checkout would see the .worktrees subtree as
-	// excluded (info/exclude) and report no changes. ResolveWorkTreeRoot
-	// walks up from the file to the nearest .git (a linked worktree's .git
-	// pointer file included), so checkout files keep their checkout baseline
-	// and worktree files get their own tree's baseline — the viewer's diff
-	// follows the file's session workspace, while the Git panel keeps its
-	// explicit focus target.
+	// Diff in the repository that OWNS the file, not the checkout: a
+	// managed-worktree file belongs to its own repository and the checkout's
+	// info/exclude hides .worktrees. ResolveWorkTreeRoot finds the nearest
+	// .git, so the viewer's diff follows the session workspace.
 	fileRoot := workspace.ResolveWorkTreeRoot(absPath)
 	if fileRoot == "" {
 		fileRoot = absRoot
 	}
 	if !f.isGitRepo(fileRoot) {
-		// Non-git paths (non-git workspaces, session-infra directories) have no
-		// git baseline to diff against. Return an empty string so the frontend
-		// does not render a synthetic diff or the hunk-staging panel.
+		// Non-git paths have no baseline; no synthetic diff panel.
 		return "", nil
 	}
 
@@ -555,28 +412,18 @@ func (f *FrontendAPI) GetFileDiff(filePath string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to compute relative path: %w", err)
 	}
-	// Bounded like every other local git spawn (gitCmdTimeout): f.ctx() is
-	// the application context — cancelled only at shutdown, no deadline — so
-	// a git wedged on a hung filesystem would park this RPC forever.
+	// Bounded like every local git spawn: f.ctx() has no deadline, so an
+	// unbounded git on a hung filesystem would park this RPC forever.
 	ctx, cancel := context.WithTimeout(f.ctx(), gitCmdTimeout)
 	defer cancel()
 	return workspace.GetFileDiffInRepo(ctx, fileRoot, relPath)
 }
 
-// ListDirectory returns the children of a directory. When recursive is false,
-// only the immediate children are listed, sorted directories first then
-// alphabetically. When recursive is true, a flat list of all files and
-// directories found recursively under dirPath is returned. The .git directory
-// and its contents are excluded. Files and directories ignored by .gitignore
-// are included but flagged with GitIgnored=true so the frontend can render
-// them with a subdued color.
-//
-// Delegates to core/workspace.ListDirFlat / ListDirRecursive and attaches icons.
-//
-// Failure semantics: a git error while computing the ignored-paths set does
-// not fail the listing — the RPC degrades to flag-less entries (warn logged).
-// Only containment violations and an unreadable directory itself are fatal,
-// so a broken repository state can never blank the file tree.
+// ListDirectory lists dirPath (immediate children, or a recursive flat list;
+// .git excluded), flags .gitignore/.aiignore hits for subdued rendering, and
+// attaches icons (specs/domains/workspace.md). A git failure computing the
+// ignore set degrades to flag-less entries — only containment violations and
+// an unreadable directory are fatal, so a broken repo never blanks the tree.
 func (f *FrontendAPI) ListDirectory(dirPath string, recursive bool) ([]FileNode, error) {
 	f.activeProjectMu.RLock()
 	projectPath := f.activeProjectPath
@@ -592,8 +439,6 @@ func (f *FrontendAPI) ListDirectory(dirPath string, recursive bool) ([]FileNode,
 		return nil, fmt.Errorf("invalid path: %w", err)
 	}
 
-	// For No Project, WorkspacePath is the project dir itself
-	// (~/.c0wrk/projects/__no_project__/) — use it directly.
 	absRoot, err := filepath.Abs(projectPath)
 	if err != nil {
 		return nil, fmt.Errorf("invalid workspace path: %w", err)
@@ -622,15 +467,9 @@ func (f *FrontendAPI) ListDirectory(dirPath string, recursive bool) ([]FileNode,
 	if isRepo {
 		ignored, gitErr := f.cachedGitIgnoredPaths(absRoot)
 		if gitErr != nil {
-			// Degrade instead of failing the whole listing: the ignore set
-			// only drives cosmetic GitIgnored flags in the tree, so a broken
-			// git index or a transiently failing repo must not blank the
-			// user's file explorer (the frontend caches a rejected root
-			// listing as empty with no retry). Proceed flag-less and warn —
-			// mirroring the non-fatal treatment of ignore.Resolver
-			// construction failures below. The git spawn itself already went
-			// through the hardened GitCmdInRepo path; no security property
-			// is relaxed by dropping the flags.
+			// Degrade, don't fail: the flags are cosmetic, and the frontend
+			// caches a rejected root listing as empty with no retry. No
+			// security property is relaxed by dropping them.
 			f.log().Warn("failed to list git-ignored paths; listing without ignore flags",
 				"dir", absDir, "error", gitErr)
 			ignoredPaths = nil
@@ -654,24 +493,12 @@ func (f *FrontendAPI) ListDirectory(dirPath string, recursive bool) ([]FileNode,
 		return nil, err
 	}
 
-	// Layer ignore-file flagging on top of the git-derived set. A single-root
-	// ignore.Resolver over the workspace compiles both .gitignore and .aiignore
-	// patterns. Two cases:
-	//
-	//   - Git repository: git already honoured .gitignore (with negation and
-	//     the global gitignore that the resolver does not), so only .aiignore-
-	//     sourced rules are layered on top via IgnoredByAIIgnore. OR-merging
-	//     the full resolver verdict here would let the resolver's negation-less
-	//     .gitignore matching override a git "un-ignore" (!pattern).
-	//   - Non-git workspace: there is no git to honour .gitignore, so the
-	//     resolver is the sole authority for both files (matching how the
-	//     indexer and search tools treat non-git workspaces). The full Ignored
-	//     verdict is applied.
-	//
-	// The resolver is therefore built unconditionally — No Project / non-git
-	// workspaces now honour .aiignore (and .gitignore) too, consistent with the
-	// indexer and glob/ripgrep tools. A construction failure is non-fatal: the
-	// listing still returns with whatever flags were already computed.
+	// ignore.Resolver layering: in a git repo only .aiignore rules are added
+	// (git already honoured .gitignore with negation; OR-merging the full
+	// verdict would let the resolver's negation-less matching override a git
+	// "un-ignore" !pattern). Non-git: the resolver is the sole authority for
+	// both files, like the indexer and search tools. Resolver construction
+	// failure is non-fatal.
 	if r, rErr := ignore.NewResolver(absRoot); rErr == nil {
 		for i := range nodes {
 			if nodes[i].GitIgnored {
@@ -691,30 +518,16 @@ func (f *FrontendAPI) ListDirectory(dirPath string, recursive bool) ([]FileNode,
 	return nodes, nil
 }
 
-// WatchDirectory re-scopes the file watcher to the given workspace root.
-//
-// For No Project (CHAT mode), it re-scopes the watcher to the given session
-// workspace: each chat session is isolated, so the watcher root must follow the
-// active session to detect its file changes. The frontend calls this with the
-// active session's workspace on every session switch, so re-scoping here keeps
-// the watcher in sync without requiring a separate RPC or frontend/binding
-// changes. CODE mode performs the SAME session-following re-scope: the
-// renderer-supplied path must belong to this project (inside the active
-// workspace, or one of its managed worktrees), and a workspace root — the
-// checkout itself or a managed tree — re-roots the watcher there, moving the
-// tracked research/papers emit roots along with it. A re-scope is applied
-// only when the requested root still matches the active-session authority at
-// execution time (scopeRootMatchesActiveSessionLocked): binding calls race,
-// so a late request for an older tree is skipped instead of parking the
-// watcher — and the tracked roots with it — on the wrong tree.
+// WatchDirectory re-scopes the watcher to the requested workspace root (the
+// active session's workspace, checkout as fallback; tracked roots follow —
+// specs/domains/session-worktrees.md). A re-scope applies only while the
+// root still matches the active-session authority; late requests are skipped.
 func (f *FrontendAPI) WatchDirectory(dirPath string) error {
 	f.seedAcquire()
 	if f.isNoProject() {
-		// dirPath is renderer-supplied: the No-Project re-scope would
-		// otherwise MkdirAll and re-root the watcher at ANY path (the path is
-		// trivially "under" itself once used as the root). Gate it exactly
-		// like ListDirectory: containment within the No-Project project dir
-		// plus the <sessionID>/workspace/... structural rule.
+		// dirPath is renderer-supplied: gate it exactly like ListDirectory
+		// (containment + the <sessionID>/workspace structural rule), or the
+		// re-scope would re-root the watcher at any path.
 		f.activeProjectMu.RLock()
 		projectPath := f.activeProjectPath
 		f.activeProjectMu.RUnlock()
@@ -734,9 +547,8 @@ func (f *FrontendAPI) WatchDirectory(dirPath string) error {
 		}
 		return f.reScopeNoProjectWatcher(absDir)
 	}
-	// CODE mode: dirPath is renderer-supplied, so it must belong to this
-	// project — inside the active workspace, or one of its managed worktrees
-	// — before it can influence watcher state.
+	// CODE mode: renderer-supplied path must belong to this project (active
+	// workspace or a managed worktree) before influencing watcher state.
 	f.activeProjectMu.RLock()
 	projectPath := f.activeProjectPath
 	f.activeProjectMu.RUnlock()
@@ -757,13 +569,10 @@ func (f *FrontendAPI) WatchDirectory(dirPath string) error {
 		return errors.New("path outside project workspace")
 	}
 
-	// Only a workspace root (the checkout itself, or the managed tree root
-	// the path belongs to) may re-root the watcher; a deeper contained path
-	// keeps the additive single-directory watch — re-rooting at it would
-	// shrink the watched workspace. An unchanged root keeps the live watcher:
-	// FileTreePanel re-issues this call on every mount, and tearing the
-	// watcher down for those would drop events for nothing (a nil watcher is
-	// still created lazily, mirroring the CHAT branch).
+	// Only a workspace root (checkout or managed tree) may re-root the
+	// watcher; a deeper path keeps the additive single-directory watch. An
+	// unchanged root keeps the live watcher (FileTreePanel re-issues on
+	// every mount).
 	scopeRoot := ""
 	switch {
 	case absDir == absRoot:
@@ -777,22 +586,11 @@ func (f *FrontendAPI) WatchDirectory(dirPath string) error {
 	switch {
 	case scopeRoot != "":
 		if f.watcher == nil || f.watcher.Root() != scopeRoot {
-			// Freshness re-check before any re-scope: every Wails binding call
-			// runs on its own goroutine, so two rapid WatchDirectory calls can
-			// execute server-side in either order, and a LATE request for an
-			// older tree must not re-root the watcher — nor the tracked
-			// research/papers emit roots that follow it — at a tree the
-			// active-session authority no longer resolves to (the same
-			// authority the research RPCs read through). The authority is
-			// re-resolved here, under watcherMu, so the check and the re-scope
-			// are atomic against other re-scopes; the bounded
-			// activeSessionWorkspace lookup never acquires watcherMu itself,
-			// and a degraded (slow/failed) lookup skips the re-scope — a
-			// skipped re-scope self-heals on the next panel mount or session
-			// switch (the frontend re-issues this call), while a stale one
-			// would park the watcher on the wrong tree until then. A skipped
-			// request moves NOTHING: neither the watcher nor the tracked
-			// roots (the write below is gated on rescoped).
+			// Freshness re-check: re-scope calls race, and a LATE request for
+			// an older tree must not re-root the watcher (or the tracked
+			// roots). Atomic under watcherMu; the authority lookup never takes
+			// watcherMu. A degraded lookup skips (the frontend re-issues) and
+			// a skipped request moves nothing.
 			if f.scopeRootMatchesActiveSessionLocked(scopeRoot, absRoot) {
 				watchErr = f.reScopeCodeWatcherLocked(scopeRoot, config.ProjectResearchPath(absRoot))
 				rescoped = watchErr == nil
@@ -800,9 +598,8 @@ func (f *FrontendAPI) WatchDirectory(dirPath string) error {
 				f.log().Debug("skipping stale watcher re-scope", "requested", scopeRoot)
 			}
 		} else {
-			// Same-root re-issue (FileTreePanel re-sends on every mount):
-			// keep the tracked roots in step — idempotent, and it heals a
-			// roots/watcher drift from an earlier skipped request.
+			// Same-root re-issue: idempotent; heals a roots/watcher drift
+			// from an earlier skipped request.
 			rescoped = true
 		}
 	case f.watcher == nil:
@@ -820,12 +617,9 @@ func (f *FrontendAPI) WatchDirectory(dirPath string) error {
 		return watchErr
 	}
 
-	// The tracked emit roots follow the watched workspace (the callbacks
-	// snapshot them per batch under activeProjectMu). Only an APPLIED re-scope
-	// moves them: a freshness-skipped request must leave the roots on the
-	// tree the watcher is actually rooted at, and the project guard keeps a
-	// stale RPC from poisoning the tracked roots of a project that switched
-	// while this re-scope ran.
+	// Only an APPLIED re-scope moves the tracked emit roots: a skipped one
+	// must leave them on the tree the watcher is rooted at, and the project
+	// guard keeps a stale RPC from poisoning a project that switched.
 	if scopeRoot != "" && rescoped {
 		f.activeProjectMu.Lock()
 		if f.activeProjectPath == absRoot {
@@ -839,16 +633,10 @@ func (f *FrontendAPI) WatchDirectory(dirPath string) error {
 	return nil
 }
 
-// scopeRootMatchesActiveSessionLocked reports whether scopeRoot is still the
-// root the active-session authority resolves to right now: the active
-// session's workspace (activeSessionWorkspace — the persisted user selection
-// first, activity-latest fallback), or the project checkout when the
-// authority has no session — the fallback every consumer of
-// activeSessionWorkspace applies. The caller must hold f.watcherMu; the
-// session-manager/store reads are bounded by terminalPathLookupTimeout and
-// never acquire watcherMu themselves, so the nested activeProjectMu read
-// cannot deadlock (no path holds activeProjectMu and then waits on watcherMu
-// — the same one-directional order the watcher callback's snapshot uses).
+// scopeRootMatchesActiveSessionLocked reports whether scopeRoot is still what
+// the active-session authority resolves to: the session workspace, else the
+// checkout. Caller holds watcherMu; the authority reads never take watcherMu,
+// so the nested activeProjectMu read cannot deadlock.
 func (f *FrontendAPI) scopeRootMatchesActiveSessionLocked(scopeRoot, checkout string) bool {
 	f.activeProjectMu.RLock()
 	projectID := f.activeProjectID
@@ -859,40 +647,19 @@ func (f *FrontendAPI) scopeRootMatchesActiveSessionLocked(scopeRoot, checkout st
 	return scopeRoot == checkout
 }
 
-// UnwatchDirectory is a no-op in both CHAT and CODE modes.
-//
-// The workspace watcher is fully managed by the backend: it is created and
-// scoped to the active session's workspace in BOTH modes (the project
-// checkout when no CODE session workspace resolves) by
-// switchProjectSetupWatcher / WatchDirectory, and torn down on project
-// switch. The frontend calls this from FileTreePanel's effect cleanup,
-// which runs whenever FileTreePanel unmounts — and in CODE mode FileTreePanel
-// unmounts when the user switches the sidebar tab (Explorer → Git/Search),
-// collapses the sidebar, or during React StrictMode's mount/unmount/remount
-// cycle in development.
-//
-// Removing the watched workspace root here would tear down the backend-managed
-// watcher and break file-change detection until the panel remounts. In CODE
-// mode this is exactly what happened: switching to the Git tab unmounted
-// FileTreePanel, UnwatchDirectory removed the project root, and the file tree
-// stopped updating. A StrictMode race between the async unwatch/watch RPCs
-// could even leave the root permanently un-watched. CHAT mode was already a
-// no-op; this extends the same treatment to CODE mode so the tree auto-refreshes
-// in both modes.
+// UnwatchDirectory is a no-op: the watcher is fully backend-managed (scoped
+// by switchProjectSetupWatcher / WatchDirectory). FileTreePanel calls this
+// from unmount cleanup — every tab switch, StrictMode remount — and an
+// RPC-triggered unwatch there killed watching until remount.
 func (f *FrontendAPI) UnwatchDirectory(_ string) error {
 	return nil
 }
 
-// WriteFile writes content to a file within the session's workspace.
-//
-// Trust boundary: resolveWorkspacePath is the containment decision — the
-// re-validation below checks the SAME root it admitted (the project
-// workspace, or the project data dir for session-infra paths), never
-// SessionWorkspaceRoot. The two roots disagree by construction: plans/ and
-// temp/ are siblings of <projects>/<pid>/Workspace (never descendants), and
-// an external project's workspace is its external checkout — re-checking
-// against SessionWorkspaceRoot rejected EVERY admitted session-infra and
-// external-project write, silently swallowing the plan editor's auto-save.
+// WriteFile: resolveWorkspacePath is the containment decision; the
+// re-validation below re-checks the SAME admitted root — never
+// SessionWorkspaceRoot, which disagrees by construction (plans/ and temp/
+// are siblings of the workspace; external projects' workspaces are their
+// own checkouts) and used to swallow every admitted write.
 func (f *FrontendAPI) WriteFile(sessionID, path, content string) error {
 	f.seedAcquire()
 	absPath, absRoot, err := f.resolveWorkspacePath(path)
@@ -910,18 +677,16 @@ func (f *FrontendAPI) WriteFile(sessionID, path, content string) error {
 	f.activeProjectMu.RLock()
 	projectID := f.activeProjectID
 	f.activeProjectMu.RUnlock()
-	// No Project keeps the per-session isolation on top of the project-dir
-	// boundary: a CHAT session writes only inside its own <sid>/workspace or
-	// its own plans//temp/ session-infra dirs — never another session's tree.
+	// No Project adds per-session isolation: a CHAT session writes only
+	// inside its own <sid>/workspace or its own plans//temp/ infra dirs.
 	if projectID == project.NoProjectID {
 		wsErr := config.ValidateWithinSessionWorkspace(f.agentDir, projectID, sessionID, absPath)
 		infraOK := false
 		if sessionID != "" {
 			ownSession := config.SessionDir(f.agentDir, projectID, sessionID)
 			if ownOK, ownErr := config.IsWithinPath(ownSession, absPath); ownErr == nil && ownOK {
-				// IsSessionInfraPath takes the PROJECT dir (it validates the
-				// <sid>/plans|temp structure against it); the own-session
-				// containment above pins <sid> to the calling session.
+				// IsSessionInfraPath takes the PROJECT dir; the own-session
+				// check above pins <sid> to the calling session.
 				infraOK = config.IsSessionInfraPath(config.ProjectDir(f.agentDir, projectID), absPath)
 			}
 		}
@@ -931,20 +696,11 @@ func (f *FrontendAPI) WriteFile(sessionID, path, content string) error {
 	}
 
 	dir := filepath.Dir(absPath)
-	// Symlink safety (review fix): MkdirAllReal creates only real directories
-	// — a dangling link at any component, or a link swapped into a component
-	// it creates, is refused — but it RESOLVES pre-existing links by design,
-	// so ordinary operator/system ancestors (macOS /var → /private/var, a
-	// symlinked home) keep working. A resolvable link SHIPPED inside the
-	// workspace is therefore refused HERE: every component of dir below the
-	// admitted root must be a real directory, so a planted link cannot steer
-	// the WRITE outside the workspace — the strict check runs before
-	// WriteFile (MkdirAllReal necessarily resolves first to have components
-	// to check, so a fresh sub-tree may exist inside the link's target before
-	// the refusal; the write itself never happens), and the no-follow open
-	// still protects the final component (unix; on Windows the safeio parity
-	// note applies, tempered by Windows requiring elevated/dev-mode rights to
-	// create symlinks).
+	// Symlink safety: MkdirAllReal refuses a dangling or swapped-in link but
+	// resolves pre-existing operator/system ancestors (/var → /private/var),
+	// so a link shipped INSIDE the workspace is caught here: every component
+	// below the admitted root must be real (CheckRealDirsBelow), enforced
+	// before the write. The no-follow open protects the final component.
 	if err := safeio.MkdirAllReal(dir, 0o755); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}

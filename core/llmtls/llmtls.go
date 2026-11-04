@@ -1,32 +1,7 @@
 // Package llmtls provides per-provider TLS verification overrides for
-// self-signed LLM endpoints. The host application (c0wrk) builds a pinned
-// *http.Client from a provider's tls_fingerprint config; the TLS policy
-// stays entirely in this layer — the SDK transports whatever client it is
-// handed (llm.ProviderEntry.HTTPClient).
-//
-// Semantics (per ADR-054, "the pin is the switch"):
-//
-//	no pin (empty)  → system verification; base is used unchanged
-//	pin set         → accept ONLY the certificate whose
-//	                  SubjectPublicKeyInfo hashes to the pin
-//
-// The pin format is base64(StdEncoding, SHA-256(SPKI DER)) — the same
-// construction as Chromium's CertificatePinList / RFC 7469 — so a pin
-// survives certificate renewal as long as the key pair is reused. Pin
-// comparison is whitespace-tolerant.
-//
-// There is deliberately no "accept any certificate" mode: an override
-// exists only when a pin exists, so a misconfigured provider fails closed
-// (ErrPinMismatch) instead of silently disabling verification entirely.
-//
-// A configured HTTP proxy normally wins over the pin (ADR-054): the proxy is
-// a global network policy that predates the per-provider trust decision, and
-// a MITM proxy re-encrypts traffic with its own certificate, so a pin layered
-// on top would reject a legitimately configured setup. The exception is a
-// target host on proxy.bypass_list (see DialPolicy): a bypassed host dials
-// directly, so its pin applies. The resolvers below encode that rule for the
-// two kinds of dial path this application has; see their doc comments for
-// why one resolver cannot serve both.
+// self-signed LLM endpoints: the pin is the switch (empty pin = system
+// verification; no accept-any state); a proxy wins except on bypassed
+// hosts. See specs/decisions/054-per-provider-tls-pinning.md.
 package llmtls
 
 import (
@@ -49,26 +24,14 @@ import (
 // FetchFingerprint.
 const FetchFingerprintTimeout = 10 * time.Second
 
-// ErrPinMismatch is returned (wrapped) when the peer certificate's SPKI hash
-// does not match the configured pin. The error deliberately carries no
-// certificate material — only the fact of the mismatch (see ADR-054).
+// ErrPinMismatch is returned (wrapped) on a pin mismatch; it carries no
+// certificate material (specs/decisions/054-per-provider-tls-pinning.md).
 var ErrPinMismatch = errors.New("fingerprint mismatch")
 
-// DialPolicy answers the one question every provider dial path must settle
-// before a TLS pin can be considered (ADR-054): does this dial go through
-// the operator's proxy, or straight to the endpoint?
-//
-// ProxyActive is the effective-proxy rule — proxy.enabled AND a non-empty
-// proxy.url, the exact rule proxy.BuildTransport applies (a nil client from
-// proxy.BuildClient means not active).
-//
-// TargetBypassed reports that the target host is on proxy.bypass_list. When
-// a proxy is active but the target is bypassed, the dial goes direct, so the
-// pin applies after all ("bypass re-arms the pin"): the derived client is
-// built with any proxy routing stripped from its transport. When no proxy is
-// active the field is irrelevant and stays false.
-//
-// ZeroDialPolicy means "no effective proxy": every pinned dial is direct.
+// DialPolicy answers whether a dial goes through the operator's proxy or
+// straight to the endpoint — the gate for whether a pin applies (specs/
+// decisions/054-per-provider-tls-pinning.md). ProxyActive is the
+// effective-proxy rule; a bypassed target dials direct, so its pin re-arms.
 type DialPolicy struct {
 	ProxyActive    bool
 	TargetBypassed bool
@@ -77,22 +40,11 @@ type DialPolicy struct {
 // ZeroDialPolicy is the no-proxy dial policy.
 var ZeroDialPolicy = DialPolicy{}
 
-// Client returns an HTTP client for one provider endpoint.
-//
-//   - fingerprint "": base is returned unchanged (same pointer); system
-//     certificate verification applies.
-//   - fingerprint non-empty: a clone of base whose transport accepts only
-//     the certificate whose SPKI SHA-256 (base64) equals the fingerprint.
-//
-// The pin IS the switch — there is no separate skip-verification knob and
-// no "accept any certificate" state: an empty pin means "no override".
-//
-// base is never mutated; when base is nil a fresh client with the package
-// default timeout is used as the starting point. The clone keeps base's
-// Timeout and derives its transport from base's transport, so a caller that
-// passes the shared LLM client gets the pin AND that client's request
-// timeout. logger (may be nil) receives a Warn when base carries a custom
-// RoundTripper that cannot hold a tls.Config and is therefore replaced.
+// Client returns an HTTP client for one provider endpoint: empty pin → base
+// unchanged (same pointer), non-empty pin → a clone whose transport accepts
+// only the certificate whose SPKI SHA-256 (base64) equals the pin. base is
+// never mutated (nil → fresh default-timeout client); the clone keeps
+// base's Timeout. See specs/decisions/054-per-provider-tls-pinning.md.
 func Client(base *http.Client, fingerprint string, logger *slog.Logger) *http.Client {
 	pin := normalizePin(fingerprint)
 	if pin == "" {
@@ -110,32 +62,11 @@ func Client(base *http.Client, fingerprint string, logger *slog.Logger) *http.Cl
 	return &clone
 }
 
-// RouterEntryClient resolves the per-provider client override for an
-// llm.ProviderEntry — the chat/inference dial path.
-//
-//	proxy dials (active + !bypassed)  → nil
-//	proxy bypassed for the target     → pinned clone of base (proxy stripped)
-//	no proxy, pin == ""               → nil
-//	no proxy, pin != ""               → Client(base, pin, logger)
-//
-// nil means "this entry carries no override", which makes the SDK fall back
-// to the router-level client (llm.RouterConfig.HTTPClient). That fallback is
-// the whole reason this resolver returns nil rather than the proxy client
-// while the proxy dials: the router-level client already carries the proxy
-// transport AND the long LLM request timeout, whereas the raw proxy client
-// is built with the much shorter web-fetch proxy timeout. Handing the proxy
-// client back here would shadow the router-level client and silently cap
-// every inference request at that shorter timeout — long enough to break
-// reasoning models. Use DirectDialClient on paths that have no such
-// fallback.
-//
-// On the bypassed branch the pinned client is still cloned from base (so a
-// pinned inference client keeps the long LLM timeout), but its transport
-// inherits base's proxy routing only to strip it: a bypassed host must dial
-// directly, and a MITM proxy on the way would present its own certificate
-// and guarantee a pin mismatch (stripProxy).
-//
-// base is the shared LLM client whose timeout a pinned client must inherit.
+// RouterEntryClient resolves the per-provider override for an
+// llm.ProviderEntry — the chat/inference dial path: nil while the proxy
+// dials or no pin is set (the router-level fallback carries the long LLM
+// timeout; the proxy client would cap every inference request), else a
+// pinned clone with the proxy routing stripped (specs/decisions/054-per-provider-tls-pinning.md).
 func RouterEntryClient(policy DialPolicy, base *http.Client, fingerprint string, logger *slog.Logger) *http.Client {
 	if policy.ProxyActive && !policy.TargetBypassed {
 		return nil
@@ -153,25 +84,11 @@ func RouterEntryClient(policy DialPolicy, base *http.Client, fingerprint string,
 	return client
 }
 
-// DirectDialClient resolves the client for a dial path that has no
-// router-level fallback: the Fetch Models listing and the lazy
-// context-window probe, both of which bound their own requests with a
-// context deadline.
-//
-//	proxy dials (active + !bypassed)  → proxyClient, unchanged (pin ignored)
-//	proxy bypassed for the target     → direct client (proxy routing
-//	                                    stripped); pinned when a pin is set
-//	no proxy, pin == ""               → nil (SDK/default transport)
-//	no proxy, pin != ""               → Client(nil, pin, logger)
-//
-// While the proxy dials, the proxy client is returned verbatim — no clone,
-// no derived transport — so exactly the pre-pin behavior is restored. Unlike
-// RouterEntryClient, returning the proxy client here is correct: there is no
-// shared client behind these calls, so nil would mean "dial directly" and
-// quietly bypass the operator's routing policy. A bypassed host instead gets
-// a DIRECT client derived from the proxy client (pin applied when set):
-// handing the proxy client back verbatim would route a bypassed host through
-// the proxy against the operator's own bypass_list.
+// DirectDialClient resolves dial paths with no router-level fallback
+// (Fetch Models, the context-window probe): the proxy client verbatim while
+// the proxy dials — nil would mean "dial directly", bypassing the
+// operator's routing — a direct derived client for a bypassed host, else
+// the pinned or nil SDK client.
 func DirectDialClient(proxyClient *http.Client, policy DialPolicy, fingerprint string, logger *slog.Logger) *http.Client {
 	if policy.HostThroughProxy() {
 		return proxyClient
@@ -183,10 +100,8 @@ func DirectDialClient(proxyClient *http.Client, policy DialPolicy, fingerprint s
 		}
 		return nil
 	}
-	// Bypassed while the proxy is active: strip the proxy routing so the
-	// dial matches what the proxy transport itself would do for this host —
-	// direct, still carrying the operator's CA overrides — and layer the
-	// pin on top when one is configured.
+	// Bypassed while the proxy is active: dial direct (operator CA
+	// overrides kept), pin layered on top when set.
 	pin := normalizePin(fingerprint)
 	if pin == "" {
 		clone := *proxyClient
@@ -199,18 +114,14 @@ func DirectDialClient(proxyClient *http.Client, policy DialPolicy, fingerprint s
 }
 
 // HostThroughProxy reports whether the dial behind policy still goes through
-// the proxy transport. True only when the proxy is active and the target is
-// NOT bypassed — the branch in which both resolvers return the proxy
-// client's own configuration unchanged.
+// the proxy transport (active and NOT bypassed).
 func (p DialPolicy) HostThroughProxy() bool {
 	return p.ProxyActive && !p.TargetBypassed
 }
 
-// stripProxy returns a transport with the proxy routing removed, for dials a
-// bypassed host must make directly (ADR-054). An *http.Transport is cloned —
-// never mutated, it may be shared — and its Proxy func cleared, keeping the
-// operator's dialer and CA overrides; a custom RoundTripper cannot be
-// rewritten and is returned as-is.
+// stripProxy returns a transport with the proxy routing removed for direct
+// bypassed dials; the *http.Transport is cloned (never mutated — it may be
+// shared), keeping the operator's dialer and CA overrides.
 func stripProxy(base http.RoundTripper) http.RoundTripper {
 	if ht, ok := base.(*http.Transport); ok {
 		ht = ht.Clone()
@@ -221,9 +132,8 @@ func stripProxy(base http.RoundTripper) http.RoundTripper {
 }
 
 // TargetHost returns the hostname (no port, no scheme) of rawURL, or "" when
-// the URL is empty or unparseable. It is the bypass-matching key every dial
-// path derives from a provider base URL — core resolves DialPolicy with it,
-// and the backend Get-fingerprint RPC applies the same rule to its probe.
+// the URL is empty or unparseable — the bypass-matching key every dial path
+// derives from a provider base URL.
 func TargetHost(rawURL string) string {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
@@ -232,13 +142,9 @@ func TargetHost(rawURL string) string {
 	return parsed.Hostname()
 }
 
-// warnInvalidPin logs a Warn when pin is non-empty but cannot be the base64
-// (standard encoding) form of a 32-byte SHA-256 digest — the only well-formed
-// pin format this package accepts (ADR-054). A malformed pin still flows
-// through to the handshake, where it fails with ErrPinMismatch regardless;
-// the Warn exists so a typo'd paste (hex characters, missing "=" padding, a
-// truncated value) is distinguishable in the log from a genuine server key
-// rotation. Diagnostic only — never blocks the request path.
+// warnInvalidPin logs a Warn for a pin that cannot be base64(SHA-256) —
+// diagnostic only (ADR-054): the handshake still fails with ErrPinMismatch,
+// but a typo'd paste is distinguishable from a genuine key rotation.
 func warnInvalidPin(pin string, logger *slog.Logger) {
 	if pin == "" || logger == nil {
 		return
@@ -250,19 +156,14 @@ func warnInvalidPin(pin string, logger *slog.Logger) {
 	}
 }
 
-// pinnedTransport derives an *http.Transport carrying the TLS pinning
-// configuration from base (may be nil → default transport). pin is already
-// normalized and MUST be non-empty (Client returns base unchanged for an
-// empty pin, so the any-certificate state is unreachable); verification is
-// pin-only: system verification is replaced by the SPKI comparison. The
-// result is a concrete *http.Transport — not a RoundTripper wrapper — so it
-// satisfies the stdlib's closeIdler interface and http.Client.CloseIdleConnections
-// actually reaches the connection pool of the derived client.
+// pinnedTransport derives the pin-only *http.Transport from base (nil →
+// default). The result is a concrete *http.Transport — not a wrapper — so
+// http.Client.CloseIdleConnections reaches the derived client's pool
+// (specs/decisions/054-per-provider-tls-pinning.md).
 func pinnedTransport(base http.RoundTripper, pin string, logger *slog.Logger) *http.Transport {
 	tlsCfg := &tls.Config{
-		// System verification is replaced by our own check below; the
-		// #nosec comment documents that this is the deliberate,
-		// user-opted-in bypass (gosec G402).
+		// Deliberate, user-opted-in bypass (gosec G402): system verification
+		// is replaced by the SPKI check below.
 		InsecureSkipVerify:    true, // #nosec G402 -- user-opted per-provider override
 		MinVersion:            tls.VersionTLS12,
 		VerifyPeerCertificate: pinVerifier(pin),
@@ -272,21 +173,13 @@ func pinnedTransport(base http.RoundTripper, pin string, logger *slog.Logger) *h
 }
 
 // transportWithTLS clones base into a private *http.Transport whose
-// TLSClientConfig is tlsCfg. The clone happens ONCE per derived client, not
-// per request: http.Transport.Clone() does not carry over the idle-connection
-// pool, so cloning inside RoundTrip would drop every keep-alive connection
-// and force a fresh TCP+TLS handshake per request. Custom (non-*http.Transport)
-// RoundTrippers cannot hold a tls.Config; they are replaced by a
-// default-transport clone with a Warn on logger (when non-nil) — retry or
-// observability wrappers must not disappear silently.
+// TLSClientConfig is tlsCfg — once per derived client, never per request
+// (Clone drops the idle pool; a custom RoundTripper is replaced by a
+// default-transport clone with a Warn).
 //
-// Note on Clone's side effect: the stdlib's Transport.Clone runs the base
-// transport's lazy HTTP/2 setup, which populates base.TLSClientConfig with
-// the default h2 protocol list if it was nil. That is the same
-// initialization the base would perform on its own first request, and it
-// carries no policy — Clone deep-copies the config, so the pinned
-// tlsCfg assigned below lands only on the clone. The base transport never
-// inherits InsecureSkipVerify or the pin verifier.
+// Clone's side effect: it runs the base's lazy HTTP/2 setup, populating
+// base.TLSClientConfig with the default h2 list when nil; the config is
+// deep-copied, so the pinned tlsCfg lands only on the clone.
 func transportWithTLS(base http.RoundTripper, tlsCfg *tls.Config, logger *slog.Logger) *http.Transport {
 	if ht, ok := base.(*http.Transport); ok {
 		ht = ht.Clone()
@@ -330,9 +223,8 @@ func SPKIFingerprint(cert *x509.Certificate) string {
 	return base64.StdEncoding.EncodeToString(sum[:])
 }
 
-// normalizePin strips whitespace from a configured pin so values pasted with
-// line wraps or spaces still match. Comparison itself is case-sensitive
-// (base64 standard alphabet is well-defined).
+// normalizePin strips whitespace so values pasted with line wraps still
+// match (ADR-054); comparison stays case-sensitive.
 func normalizePin(pin string) string {
 	return strings.Map(func(r rune) rune {
 		switch r {
@@ -344,25 +236,11 @@ func normalizePin(pin string) string {
 	}, pin)
 }
 
-// FetchFingerprint connects to the host:port of rawURL without verifying the
-// server certificate, performs the TLS handshake, and returns the leaf
-// certificate's SPKI fingerprint (base64 SHA-256). It exists for the
-// settings UI "Get" button: the user pins the certificate the server
-// presents RIGHT NOW rather than copying hashes from the server.
-//
-// The call is UNCONDITIONAL with respect to the configured pin (ADR-054): it
-// takes no fingerprint argument and never reads one, so pressing "Get"
-// behaves identically whether the provider already has a pin or not — it
-// always reports what the endpoint currently serves. Deciding what to do
-// with the result is the caller's (the user's) business.
-//
-// Only the handshake happens — no HTTP request is sent — so no API key is
-// involved. rawURL must carry a scheme and host; a path is ignored.
-//
-// Only https endpoints can serve a certificate to pin, so a URL with any
-// other scheme is rejected up front with an explicit error instead of a
-// confusing TLS dial to port 443 (review on ADR-054: local servers are
-// often configured as plain http://).
+// FetchFingerprint performs an unverified TLS handshake against rawURL and
+// returns the leaf certificate's SPKI fingerprint — the settings UI "Get"
+// button. Unconditional w.r.t. any configured pin (takes and reads none),
+// no HTTP request, no API key; non-https schemes rejected up front (specs/
+// decisions/054-per-provider-tls-pinning.md).
 func FetchFingerprint(ctx context.Context, rawURL string, logger *slog.Logger) (string, error) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {

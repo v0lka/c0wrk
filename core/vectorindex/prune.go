@@ -9,28 +9,28 @@ import (
 	"strings"
 )
 
-// Per-branch artifact pruning. The ADR-064 storage layout gives every git
-// branch its own on-disk artifacts under a project's (or a managed worktree's)
-// vector-index storage root:
+// Per-branch artifact pruning. ADR-064's storage layout gives every git
+// branch its own on-disk artifacts under a project's (or managed worktree's)
+// vector-index storage root — the chromem DB root, the bleve lexical
+// directory, the file-hash sidecar and the content-less marker (see
+// layout.go and specs/decisions/064-branch-scoped-lazy-vector-index-open.md).
+// Branches disappear from the local clone over time (merged and deleted
+// remotely, dropped by hand, worktrees pruned), but their artifacts are never
+// re-opened and silently accumulate; the sweep and targeted purge below
+// remove them. See specs/domains/workspace.md (Stale-branch index cleanup).
 //
-//	<root>/branches/<collectionName(branch)>/   chromem DB root — the VECTOR index
-//	<root>/lexical/<lexicalBranchDirName>/      bleve index — the LEXICAL index
-//	<root>/file_hashes_<collectionName>.json    per-branch file-hash sidecar
-//	<root>/contentless_<collectionName>.done    per-branch migration marker
-//
-// Branches disappear from the local clone over time (merged and deleted on the
-// remote, dropped by hand, worktrees pruned), but their index artifacts are
-// never re-opened and silently accumulate. PruneMissingBranchData removes BOTH
-// indexes — the chromem vector DB root and the bleve lexical directory — plus
-// the branch's sidecar and marker for every branch that is absent from the
-// caller-supplied list of the repository's existing local branches. The backend
-// calls it in the background on every project switch; the caller enumerates the
-// storage roots (the project checkout's own root plus every managed worktree's
-// root) and lists the branches once per repository with
-// `git for-each-ref refs/heads`. DeleteBranchData is the targeted counterpart:
-// the backend fires it right after a Git-panel branch deletion, so the deleted
-// branch's artifacts are removed immediately instead of waiting for the next
-// switch sweep.
+// The SHARED artifacts of ADR-104 stage 2/5 — snapshot corpora
+// (branches/branch_snap_<oid16>/) and per-root overlays
+// (branches/branch_root_<fingerprint>/) — are NOT branch data and never
+// follow the branch-name rules: corpora are shared by every root at the
+// commit (regardless of which branches exist) and overlays belong to a
+// workspace tree. Their lifetime is decided by OWNER reachability
+// (rootrefs.go: the on-disk root references plus the registry's held
+// snapshots and build leases), folded into the same sweep by
+// addSharedKeepIdentities. Detaching a root (worktree release) removes its
+// own marker and overlay (DeleteRootOverlay); a branch deletion removes
+// only the branch's own artifacts (DeleteBranchData) — the corpora stay
+// reachable through every live root that still views them.
 
 const (
 	// lexicalDirName is the storage subdirectory holding the per-branch
@@ -53,43 +53,29 @@ var (
 	defaultSyntheticLexicalDirName = lexicalBranchDirName(DefaultBranch)
 )
 
-// PruneMissingBranchData removes the per-branch artifacts of every branch that
-// is absent from keepBranches under the storage root projectPath, returning
-// how many on-disk artifacts were removed. It deletes, per absent branch, BOTH
-// indexes (the chromem vector DB root under branches/ and the bleve lexical
-// directory under lexical/) plus the branch's file-hash sidecar and
-// content-less marker. The content-addressed embedding cache is
-// branch-independent by design and is never touched.
+// PruneMissingBranchData removes the per-branch artifacts of every branch
+// absent from keepBranches under the storage root projectPath — BOTH indexes
+// plus the sidecar and content-less marker — returning how many artifacts
+// were removed. The full contract lives in specs/domains/workspace.md
+// (Stale-branch index cleanup): keeping is decided on sanitized identities
+// (a sanitizer collision keeps the shared directory); the synthetic default,
+// the legacy _orphan root and the live state's active branch are never
+// pruned; parked states of pruned branches are evicted with handles released
+// (no sidecar flush); the branch-independent embedding cache is untouched;
+// the operation is fail-soft (Debug-logged skips, retried by the next sweep)
+// and safe to run concurrently with a live service on the same storage. The
+// count is advisory telemetry.
 //
-// Keeping is decided on the sanitized identities, not on recovered branch
-// names: the branch ⇒ directory mapping is lossy, so a directory is removed
-// only when NO branch in keepBranches (and no protected identity) maps to it —
-// a sanitized-name collision between a deleted and an existing branch keeps
-// the shared directory. Three identities are always kept: the synthetic
-// DefaultBranch ("branch_default" collection / "default" lexical dir, which a
-// real branch named "default" also maps to), the legacy-migration orphan root
-// (branches/_orphan), and — defensively — the ACTIVE branch of a live state
-// rooted at projectPath, whose artifacts the running service may currently
-// hold open even when the caller's branch list missed it (a checked-out
-// branch cannot normally be absent, but the prune must stay harmless if the
-// refs were changed underneath it).
-//
-// Parked states whose branch is absent are dropped from the park LRU with
-// their handles released (mirroring DeleteProjectData: the migration is
-// cancelled, the sidecar is deliberately NOT flushed — the directory is about
-// to disappear — and migrationWG bookkeeping stays with Close). Parked states
-// of other branches, other projects and other storage paths are untouched.
-//
-// The operation is fail-soft and best-effort: a missing storage root is a
-// silent no-op that creates nothing; unreadable directories and per-entry
-// removal failures (a concurrent open handle on Windows, a racing removal)
-// are logged at Debug and skipped, so the next switch retries them. Callers
-// treat the returned count as advisory telemetry only. Safe to call
-// concurrently with a live service on the same storage: only artifacts of
-// absent branches are removed, and a live service holds open handles solely
-// for branches that were checked out at some point — all of which stay in the
-// keep set unless deleted from the refs after the fact (the same graceful
-// degradation a manual `git branch -D` exhibits today).
+// Shared-store artifacts (ADR-104 stage 5 reachability GC) are NOT keyed by
+// branch names: snapshot corpora (snap_*) and per-root overlays (root_*)
+// live or die by OWNER reachability — the on-disk root references
+// (refs/<rootKey>.ref; a live marker's root key and referenced snapshot are
+// kept, a dead marker is removed) plus the process registry's protection
+// (every held corpus handle and in-flight build lease). A store without a
+// refs/ directory never recorded an owner and keeps every corpus/overlay
+// artifact (conservative upgrade posture; the first marker-writing attach
+// opts it into reachability GC). Unknown files and directories are never
+// removed by this sweep.
 func (s *Service) PruneMissingBranchData(projectPath string, keepBranches []string) int {
 	if projectPath == "" {
 		return 0
@@ -97,6 +83,7 @@ func (s *Service) PruneMissingBranchData(projectPath string, keepBranches []stri
 	target := filepath.Clean(projectPath)
 
 	keepCollections, keepLexical := keepIdentities(keepBranches)
+	addSharedKeepIdentities(s.logger, target, keepBranches, s.corpusRegistry.ProtectedKeys(target), keepCollections, keepLexical)
 
 	// Protect the active branch of a live state rooted at target, and drop
 	// parked states whose branch is being pruned (their chromem DB and bleve
@@ -127,7 +114,63 @@ func (s *Service) PruneMissingBranchData(projectPath string, keepBranches []stri
 	s.parked = kept
 	s.mu.Unlock()
 
+	// Windows handle-close ordering + the attach race, right before the FS
+	// pass: (1) re-check the registry's protection — a corpus ATTACHED since
+	// the markers were read (its pin marker may not have existed yet) is
+	// pulled back into the keep set instead of being reclaimed under its new
+	// reader; (2) close the RESIDENCY slots of the corpora this sweep is
+	// about to remove, so a retained lexical reader cannot keep the
+	// directory alive. Attached handles and builds never reach the victim
+	// set; if a removal still collides with a late open, it fails soft and
+	// the next sweep retries.
+	if s.corpusRegistry != nil {
+		for key := range s.corpusRegistry.ProtectedKeys(target) {
+			keepCollections[collectionName(key)] = struct{}{}
+			keepLexical[lexicalBranchDirName(key)] = struct{}{}
+		}
+		s.corpusRegistry.ReclaimKeys(target, doomedCorpusKeys(target, keepCollections))
+	}
+
+	// The §3 store hygiene pass (ADR-104 §5/§6) rides the same switch:
+	// superseded generations, orphan chunk records, unreachable §3
+	// snapshots, the disk budget, and — once the chunk-record migration is
+	// done — the v1 chromem legs. Silent and single-flighted (a busy
+	// sweepMu means the store migration already runs it); the keep set is
+	// recomputed from the markers under the pass itself.
+	s.corpusRegistry.RunHygiene(target, keepBranches)
+
 	return pruneBranchDataFS(s.logger, target, keepCollections, keepLexical)
+}
+
+// doomedCorpusKeys enumerates the snapshot-corpus identities that exist on
+// disk under target's branches/ but are not in the keep map (dir-name
+// space) — the sweep's victim set in store-key space, consumed by
+// CorpusRegistry.ReclaimKeys. Overlays are absent on purpose: a root's
+// working store is only ever closed by its own manager's lifecycle, never
+// by the sweep's registry side.
+func doomedCorpusKeys(target string, keepCollections map[string]struct{}) map[string]struct{} {
+	entries, err := os.ReadDir(filepath.Join(target, branchRootsDirName))
+	if err != nil {
+		return nil
+	}
+	var doomed map[string]struct{}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		identity, ok := identityFromCollectionName(e.Name())
+		if !ok || !isCorpusIdentity(identity) {
+			continue
+		}
+		if _, kept := keepCollections[e.Name()]; kept {
+			continue
+		}
+		if doomed == nil {
+			doomed = make(map[string]struct{})
+		}
+		doomed[identity] = struct{}{}
+	}
+	return doomed
 }
 
 // PruneMissingBranchDataFS is the manager-free form of
@@ -137,7 +180,8 @@ func (s *Service) PruneMissingBranchData(projectPath string, keepBranches []stri
 // parked state can hold handles and the live-state/park protection of the
 // Service form is vacuous. The on-disk effect is identical: same layout, same
 // keep rules (sanitized identities, synthetic default, orphan root, collision
-// keeps), same fail-soft contract, same return semantics.
+// keeps, shared-store reachability from the on-disk root references), same
+// fail-soft contract, same return semantics.
 func PruneMissingBranchDataFS(logger *slog.Logger, projectPath string, keepBranches []string) int {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
@@ -147,7 +191,92 @@ func PruneMissingBranchDataFS(logger *slog.Logger, projectPath string, keepBranc
 	}
 	target := filepath.Clean(projectPath)
 	keepCollections, keepLexical := keepIdentities(keepBranches)
+	// No registry in the manager-free form: the disabled registry shut every
+	// manager down, so no handle or build lease can exist to protect.
+	addSharedKeepIdentities(logger, target, keepBranches, nil, keepCollections, keepLexical)
+	// The §3 hygiene pass rides the same switch in its manager-free form
+	// (no open handles exist by construction; budget eviction is off —
+	// the knob lives on the registry, which is disabled on this path).
+	hygieneStoreFS(logger, target, keepBranches, 0)
 	return pruneBranchDataFS(logger, target, keepCollections, keepLexical)
+}
+
+// addSharedKeepIdentities folds the shared-store reachability keep set
+// (ADR-104 stage 5) into the sweep's keep maps: every identity reachable
+// from a LIVE owner survives in both identity spaces (the branches/ child
+// name and the lexical/ child name), exactly like a surviving branch's
+// identities. Reachability sources:
+//
+//   - the on-disk ownership records (refs/*.ref): a live ROOT marker keeps
+//     its root's overlay identity and its referenced snapshot identity (a
+//     dead marker — tree gone — is removed: the root detached, its
+//     reference goes with it); a SURVIVING branch reference keeps its
+//     snapshot (a gone branch's reference is removed — the branch's own
+//     detach); nothing here consults refs/heads for STORAGE decisions — the
+//     branch reaches its corpus through its own pointer, never through a
+//     branch-named directory;
+//   - protectedSnapKeys: the process registry's held snapshots (live shared
+//     handles) and in-flight build leases — never reclaimable from under a
+//     live reader or builder;
+//   - a storage root WITHOUT a refs/ directory never recorded an owner
+//     (pre-stage-5 corpora; a store only ever touched by the legacy branch
+//     model): every snap_/root_ artifact found on disk is kept — the
+//     conservative upgrade posture. The first marker-writing attach opts the
+//     store into reachability GC.
+func addSharedKeepIdentities(logger *slog.Logger, target string, keepBranches []string, protectedSnapKeys, keepCollections, keepLexical map[string]struct{}) {
+	shared := liveRootReferences(logger, target, keepBranches, protectedSnapKeys)
+	if shared == nil {
+		shared = onDiskSharedIdentities(logger, target)
+	}
+	for identity := range shared {
+		keepCollections[collectionName(identity)] = struct{}{}
+		keepLexical[lexicalBranchDirName(identity)] = struct{}{}
+	}
+}
+
+// onDiskSharedIdentities enumerates the snap_/root_-shaped identities that
+// exist under the storage root (branches/ children, lexical/ children and
+// root-level sidecars) — the conservative keep-all set for stores without
+// ownership markers. Only OUR identity shapes are recognized; anything else
+// is invisible here and follows the branch-name rules.
+func onDiskSharedIdentities(logger *slog.Logger, target string) map[string]struct{} {
+	shared := make(map[string]struct{})
+	collect := func(name string, ok bool) {
+		if !ok {
+			return
+		}
+		if isCorpusIdentity(name) || isOverlayIdentity(name) {
+			shared[name] = struct{}{}
+		}
+	}
+	if entries, err := os.ReadDir(filepath.Join(target, branchRootsDirName)); err == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				collect(identityFromCollectionName(e.Name()))
+			}
+		}
+	}
+	if entries, err := os.ReadDir(filepath.Join(target, lexicalDirName)); err == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				collect(e.Name(), isSafeStoreKeySegment(e.Name()))
+			}
+		}
+	}
+	if entries, err := os.ReadDir(target); err == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			if identity, ok := sidecarCollectionIdentity(e.Name()); ok {
+				collect(identityFromCollectionName(identity))
+			}
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		logger.Debug("vector index: shared-artifact scan cannot read storage root",
+			"dir", target, "error", err)
+	}
+	return shared
 }
 
 // keepIdentities maps the caller's surviving-branch names to the two keep
@@ -175,11 +304,16 @@ func keepIdentities(keepBranches []string) (keepCollections, keepLexical map[str
 func pruneBranchDataFS(logger *slog.Logger, target string, keepCollections, keepLexical map[string]struct{}) int {
 	removed := 0
 	// The vector index: per-branch chromem DB roots. The orphan root is the
-	// migration's own keep-forever pseudo-branch.
+	// migration's own keep-forever pseudo-branch. Snapshot corpora and root
+	// overlays are kept through the REACHABILITY keep set
+	// (addSharedKeepIdentities, ADR-104 stage 5) — a shared store nobody
+	// reaches is legitimately collectable, one a live root or build lease
+	// touches never is; the branch keep map alone never names them.
 	removed += pruneMissingEntriesFS(logger, filepath.Join(target, branchRootsDirName),
 		keepCollections, orphanBranchRootName)
 	// The lexical index: per-branch bleve directories. The synthetic default
-	// directory is already in keepLexical; no extra protected name.
+	// directory is already in keepLexical; corpus/overlay lexical
+	// directories follow the same reachability keep set.
 	removed += pruneMissingEntriesFS(logger, filepath.Join(target, lexicalDirName),
 		keepLexical, "")
 	// The per-branch files at the storage root: file-hash sidecars and
@@ -188,40 +322,19 @@ func pruneBranchDataFS(logger *slog.Logger, target string, keepCollections, keep
 	return removed
 }
 
-// DeleteBranchData removes the per-branch artifacts of exactly one branch
-// under the storage root projectPath — BOTH indexes (the chromem vector DB
-// root under branches/ and the bleve lexical directory under lexical/) plus
-// the branch's file-hash sidecar and content-less marker — returning how many
-// on-disk artifacts were removed. It is the targeted counterpart of
-// PruneMissingBranchData: the backend fires it right after a git branch
-// deletion made through the Git panel, so the branch's data is cleaned up
-// immediately instead of waiting for the next project-switch sweep.
+// DeleteBranchData removes the per-branch artifacts of exactly one branch —
+// BOTH indexes plus the file-hash sidecar and content-less marker — returning
+// how many artifacts were removed. It is the targeted counterpart of
+// PruneMissingBranchData, fired right after a Git-panel branch deletion
+// instead of waiting for the next project-switch sweep (surgical, idempotent,
+// silent by the same quiet-failure contract). See specs/domains/workspace.md
+// (Deleted-branch index cleanup).
 //
-// branch is the branch's short name (refs/heads spelling). The caller passes
-// the repository's surviving local branches (listed AFTER the deletion) so
-// the lossy branch ⇒ directory mapping can be respected: when a surviving
-// branch sanitizes to the same collection or lexical identity, that shared
-// artifact is kept — the collision rule of PruneMissingBranchData, applied
-// per identity (the collection identity also guards the sidecar pair, which
-// is keyed on it). A stale list that still names the deleted branch is
-// filtered out defensively.
-//
-// Three identities are never touched: the synthetic DefaultBranch (a real
-// branch literally named "default" sanitizes to it and is indistinguishable
-// on disk), the legacy-migration orphan root, and — defensively — the branch
-// of a live state rooted at projectPath (git refuses deleting a checked-out
-// branch, but the refs may have changed underneath the service). Parked
-// states of the deleted branch rooted at projectPath leave the park LRU with
-// their handles released (no sidecar flush, mirroring both the sweep and
-// DeleteProjectData), so a later return never revives a state whose
-// directories are gone.
-//
-// The operation is fail-soft, best-effort and idempotent: a missing storage
-// root or already-absent artifact removes nothing (and is not counted),
-// per-entry removal failures are logged at Debug and skipped, and the
-// embedding cache is never touched (branch-independent by design). Safe to
-// call concurrently with the sweep or a live service on the same storage —
-// the same graceful degradation documented on PruneMissingBranchData.
+// branch is the short (refs/heads) name; remainingBranches (listed AFTER the
+// deletion) drives the lossy-sanitizer collision guard per identity — an
+// artifact shared with a surviving branch stays (the collection identity also
+// guards the sidecar pair, which is keyed on it) — and a stale list still
+// naming the deleted branch is filtered out defensively.
 func (s *Service) DeleteBranchData(projectPath, branch string, remainingBranches []string) int {
 	if projectPath == "" || branch == "" {
 		return 0
@@ -273,7 +386,15 @@ func (s *Service) DeleteBranchData(projectPath, branch string, remainingBranches
 		return 0
 	}
 
-	return removeBranchArtifactsFS(s.logger, target, col, lex, sharedCollection, sharedLexical)
+	removed := removeBranchArtifactsFS(s.logger, target, branch, col, lex, sharedCollection, sharedLexical)
+	// Ride the delete with the §3 hygiene pass: the branch's bref was
+	// detached above (removeBranchArtifactsFS path); an unreferenced §3
+	// snapshot directory and its exclusive chunks are reclaimed now
+	// instead of waiting for the next switch sweep.
+	if s.corpusRegistry != nil {
+		s.corpusRegistry.RunHygiene(target, remainingBranches)
+	}
+	return removed
 }
 
 // DeleteBranchDataFS is the manager-free form of [Service.DeleteBranchData]
@@ -300,7 +421,10 @@ func DeleteBranchDataFS(logger *slog.Logger, projectPath, branch string, remaini
 	}
 
 	sharedCollection, sharedLexical := branchCollisionIdentities(branch, remainingBranches)
-	return removeBranchArtifactsFS(logger, target, col, lex, sharedCollection, sharedLexical)
+	removed := removeBranchArtifactsFS(logger, target, branch, col, lex, sharedCollection, sharedLexical)
+	// The §3 hygiene pass rides the delete in its manager-free form.
+	hygieneStoreFS(logger, target, remainingBranches, 0)
+	return removed
 }
 
 // branchCollisionIdentities applies the per-identity collision guard shared
@@ -326,9 +450,17 @@ func branchCollisionIdentities(branch string, remainingBranches []string) (share
 
 // removeBranchArtifactsFS removes the per-branch artifacts of one deleted
 // branch — both indexes plus the sidecar pair — skipping the artifacts an
-// identity collision shares with a surviving branch. The on-disk half shared
-// by Service.DeleteBranchData and DeleteBranchDataFS. Fail-soft throughout.
-func removeBranchArtifactsFS(logger *slog.Logger, target, col, lex string, sharedCollection, sharedLexical bool) int {
+// identity collision shares with a surviving branch. The branch's OWN
+// reference to its snapshot corpus (refs/bref_<hash>.ref, the hash of the
+// raw branch name — see branchRefKey) is removed with it via
+// removeBranchRef (both key forms): the detach drops the branch's keep on
+// the corpus, which the next sweep reclaims only when no live root or
+// surviving branch still reaches it (ADR-104 stage 5). Hash-keyed bref
+// markers never collide across branches, so the lexical collision guard
+// that gates this detach is strictly conservative (an unnecessary keep at
+// worst). The on-disk half shared by Service.DeleteBranchData and
+// DeleteBranchDataFS. Fail-soft throughout.
+func removeBranchArtifactsFS(logger *slog.Logger, target, branch, col, lex string, sharedCollection, sharedLexical bool) int {
 	removed := 0
 	if !sharedCollection {
 		removed += removeBranchArtifactFS(logger, filepath.Join(target, branchRootsDirName, col))
@@ -337,6 +469,14 @@ func removeBranchArtifactsFS(logger *slog.Logger, target, col, lex string, share
 	}
 	if !sharedLexical {
 		removed += removeBranchArtifactFS(logger, filepath.Join(target, lexicalDirName, lex))
+		// The deleted branch's corpus reference. The detach keys on the
+		// RAW branch name (branchRefKey hashes it); the pre-hash sanitized
+		// markers of earlier builds go with it (removeBranchRef removes
+		// both forms).
+		if err := removeBranchRef(target, branch); err != nil {
+			logger.Debug("vector index: could not remove the deleted branch's reference",
+				"branch", branch, "error", err)
+		}
 	}
 	return removed
 }
@@ -345,9 +485,12 @@ func removeBranchArtifactsFS(logger *slog.Logger, target, col, lex string, share
 // in keep (and not the protected pseudo-name, when non-empty). Only real
 // directories are considered: both laid-out subtrees hold nothing but
 // per-branch directories, and a conservative scope never removes a name the
-// layout does not document. A missing dir is a silent no-op that creates
-// nothing; other read failures and per-entry removal failures are Debug-logged
-// and skipped. Returns how many entries were removed.
+// layout does not document. View-model stores (snapshot corpora / root
+// overlays) survive through the reachability keep set computed by the caller
+// (addSharedKeepIdentities), never through a name-shape exception here. A
+// missing dir is a silent no-op that creates nothing; other read failures and
+// per-entry removal failures are Debug-logged and skipped. Returns how many
+// entries were removed.
 func pruneMissingEntriesFS(logger *slog.Logger, dir string, keep map[string]struct{}, protected string) int {
 	entries, err := os.ReadDir(dir)
 	if err != nil {

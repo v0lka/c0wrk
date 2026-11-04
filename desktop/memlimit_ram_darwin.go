@@ -4,9 +4,8 @@ package desktop
 
 import "golang.org/x/sys/unix"
 
-// physicalMemoryBytes returns the machine's total physical RAM via the
-// darwin sysctl hw.memsize (bytes). Used by the AUTO memory-soft-limit mode
-// (see memlimit.go).
+// physicalMemoryBytes returns total physical RAM via the sysctl hw.memsize, for the
+// AUTO memory-soft-limit mode (specs/decisions/049-vector-index-memory-reduction.md).
 func physicalMemoryBytes() (int64, bool) {
 	v, err := unix.SysctlUint64("hw.memsize")
 	if err != nil || v == 0 {

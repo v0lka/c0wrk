@@ -1,75 +1,44 @@
 package core
 
-// SkillsRelativePath is the conventional relative path from a project workspace
-// root to the project-local agent skills directory. Shared between core/ and
-// backend/config/ to avoid duplicating the ".agents/skills" literal.
+// SkillsRelativePath is the project-relative path to the project-local agent
+// skills directory, shared across layers. See specs/decisions/021-subagents.md.
 const SkillsRelativePath = ".agents/skills"
 
-// AgentsRelativePath is the conventional relative path from a project workspace
-// root to the project-local Subagent Profiles directory (AGENT.md files).
-// Shared between core/ and backend/config/ to avoid duplicating the
-// ".agents/agents" literal. Mirrors SkillsRelativePath for the agents package.
+// AgentsRelativePath is the project-relative Subagent Profiles directory
+// (AGENT.md files), mirroring SkillsRelativePath. See specs/decisions/021-subagents.md.
 const AgentsRelativePath = ".agents/agents"
 
-// EmbeddedRuntimesRelativePath is the relative path, within the c0wrk default
-// agent directory, of the embedded-LLM inference-runtime root
-// (~/.c0wrk/runtimes). Each pinned runtime is extracted into its own
-// "llama-<tag>-<backend>" subdirectory, which core/embeddedllm derives.
-//
-// The directory is deliberately NOT under tools/: Manager.PrependToPATH()
-// exposes <toolsDir>/bin to the agent's bash_exec, and the inference runtime
-// must never be agent-invokable (ADR-066 D3, ASI05).
-//
-// The constant lives here — paralleling SkillsRelativePath — so the layer that
-// owns c0wrk's directory layout (backend/config/paths.go RuntimesDir) and the
-// subsystem that owns the embedded layout agree on one literal.
-// core/embeddedllm itself cannot import this package (root core imports
-// core/embeddedllm, so an import back would cycle); it receives the resolved
-// root from its caller instead of re-deriving it.
+// EmbeddedRuntimesRelativePath is the embedded-LLM inference-runtime root in
+// the c0wrk default agent directory (~/.c0wrk/runtimes). Deliberately NOT
+// under tools/: <toolsDir>/bin is exposed to the agent's bash_exec, and the
+// inference runtime must never be agent-invokable (ADR-066 D3, ASI05);
+// core/embeddedllm receives the resolved root from its caller (import cycle).
+// See specs/domains/embedded-llm.md.
 const EmbeddedRuntimesRelativePath = "runtimes"
 
-// EmbeddedModelRelativePath is the relative path, within the c0wrk default
-// agent directory, of the embedded-LLM weights directory
-// (~/.c0wrk/models/bonsai-2-27b). It is a dedicated subdirectory of the
-// models/ root — that root already holds the flat embedding-model files
-// resolved by desktop/startup.go resolveModelPath, so nesting keeps Remove
-// from ever touching the embedding model (ADR-066, Alternatives Considered).
+// EmbeddedModelRelativePath is the embedded-LLM weights directory — a dedicated
+// subdir of the models/ root (which holds the flat embedding-model files), so
+// Remove can never touch the embedding model. See specs/domains/embedded-llm.md.
 const EmbeddedModelRelativePath = "models/bonsai-2-27b"
 
-// EmbeddedMLXModelRelativePath is the relative path, within the c0wrk default
-// agent directory, of the embedded-LLM MLX weight pack (the mtplx engine's
-// tree). It sits beside — never inside — the llama GGUF root, so a scoped
-// removal of one engine's weights can never take the other's.
+// EmbeddedMLXModelRelativePath is the mtplx engine's MLX weight-pack dir
+// within the c0wrk default agent directory, beside — never inside — the llama
+// GGUF root, so a scoped removal of one engine's weights can't take the other's.
 const EmbeddedMLXModelRelativePath = "models/bonsai-2-27b-mlx"
 
-// WorktreesRelativePath is the conventional relative path from a project
-// repository root to the app-managed session-worktree container
-// (<repo>/.worktrees/<name> per ADR-080). Shared between core/ (worktree
-// primitive classification in core/workspace) and backend/config (the
-// ManagedWorktreesDir/ManagedWorktreePath constructors) so the two layers
-// agree on one literal — mirroring SkillsRelativePath.
+// WorktreesRelativePath is the repo-relative legacy session-worktree container
+// (<repo>/.worktrees/<name>, ADR-080), shared across layers. See specs/domains/session-worktrees.md.
 const WorktreesRelativePath = ".worktrees"
 
-// ProjectWorktreesSegment is the directory name of a project-scoped managed
-// worktree container: <base>/<projectID>/ProjectWorktreesSegment/<name>, where
-// <base> is the app-data projects directory (or its configured override).
-// backend/config.NewManagedWorktreesDir constructs it. It is deliberately
-// distinct from the legacy checkout-local WorktreesRelativePath (".worktrees"):
-// the project-id path segment anchors ownership of a DURABLE recorded path
-// independently of the mutable ".c0wrk-worktree-repository" marker file, so a
-// binding stays recognizable after the marker or the app-data container is
-// removed. Shared between core's ownership recognition and backend/config's
-// container constructor so the two layers agree on one literal — mirroring
-// SkillsRelativePath.
+// ProjectWorktreesSegment is the directory name of the project-scoped managed
+// worktree container (<base>/<projectID>/worktrees/<name>) — deliberately
+// distinct from the legacy checkout-local ".worktrees": the project-id segment
+// anchors ownership of a DURABLE recorded path independently of the mutable
+// repository marker file. See specs/domains/session-worktrees.md.
 const ProjectWorktreesSegment = "worktrees"
 
-// GitSafeHooksRelativePath is the relative path, within the c0wrk default
-// agent directory, of the empty directory every git invocation points at via
-// "-c core.hooksPath=<dir>" (see internal/sysproc.GitCmd). Hooks from the
-// repository under inspection are thereby never executed. The constant lives
-// here — paralleling SkillsRelativePath — so cross-layer code and tests can
-// reference the canonical value. internal/sysproc keeps a test-pinned
-// duplicate of this literal because it cannot import this package (core
-// imports core/markitdown, which imports internal/sysproc — an import here
-// would cycle).
+// GitSafeHooksRelativePath is the agent-dir-relative empty directory every git
+// invocation points at via "-c core.hooksPath=<dir>" (internal/sysproc.GitCmd),
+// so repository hooks never execute; internal/sysproc keeps a test-pinned
+// duplicate (import cycle). See specs/decisions/033-git-subprocess-hardening.md.
 const GitSafeHooksRelativePath = "git/safe-hooks"

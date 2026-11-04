@@ -2121,7 +2121,7 @@ func TestPlanFiltersTopologyToPinnedDevices(t *testing.T) {
 }
 
 // TestPlanExplicitPinHoldsTheContextFloor pins the explicit path's context
-// floor (ADR-105 D1): a device pin forces fit off, and a plan that sizes the
+// floor (ADR-108 D1): a device pin forces fit off, and a plan that sizes the
 // context itself must serve the SAME 65536-token floor the fit path is held to
 // — gateContext admits the machine at exactly that figure, so serving a
 // smaller RAM tier would under-deliver on the admission and reproduce the
@@ -2146,7 +2146,7 @@ func TestPlanExplicitPinHoldsTheContextFloor(t *testing.T) {
 		t.Parallel()
 
 		// The measured machine: 32 GiB RAM tiers at 32768, so the floor is
-		// what lifts the target — before ADR-105 this pin planned 32768.
+		// what lifts the target — before ADR-108 this pin planned 32768.
 		topology := probedTopology(t, PlatformLinuxAMD64, 32, measuredCard(15938))
 		plan, err := Plan(topology, profile, Tuning{Devices: []string{"CUDA0"}}, backend, family)
 		if err != nil {

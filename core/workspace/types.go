@@ -13,13 +13,9 @@ type FileNode struct {
 	GitIgnored bool   `json:"gitignored"`
 }
 
-// GitStatusEntry describes the git status of a single file.
-// It captures both the index (staged) and work-tree (unstaged) status
-// as reported by git status --porcelain.  When both the index and the
-// work tree have modifications (e.g. "MM") the legacy Status/Staged
-// fields reflect the index side for backward compatibility with
-// existing consumers; callers that need both should read IndexStatus
-// and WorkTreeStatus directly.
+// GitStatusEntry describes the git status of a single file as reported by git
+// status --porcelain. When both index and work tree are modified the legacy
+// Status/Staged fields reflect the index side; read IndexStatus/WorkTreeStatus for both.
 type GitStatusEntry struct {
 	Status         string `json:"status"`          // legacy primary status char: "M", "A", "R", "C", or "U"
 	Staged         bool   `json:"staged"`          // legacy: true=index, false=worktree
@@ -33,11 +29,9 @@ type DiffStat struct {
 	Deleted int `json:"deleted"`
 }
 
-// Branch represents a git branch, local or remote. Kind is "local" for
-// refs under refs/heads/ and "remote" for refs under refs/remotes/.
-// IsCurrent is true only for the currently checked-out local branch.
-// Upstream holds the short name of the branch's upstream (e.g. "origin/main")
-// and is empty when none is configured (including remote branches).
+// Branch represents a git branch: Kind "local" (refs/heads/) or "remote"
+// (refs/remotes/); IsCurrent only for the checked-out local branch; Upstream
+// the short upstream name, empty when none configured.
 type Branch struct {
 	Name      string `json:"name"`
 	IsCurrent bool   `json:"is_current"`
@@ -45,11 +39,9 @@ type Branch struct {
 	Upstream  string `json:"upstream"`
 }
 
-// BranchInfo describes the currently checked-out branch together with its
-// upstream tracking state (ahead/behind counts).  Ahead is the number of
-// local commits not present on the upstream; Behind is the number of
-// upstream commits not yet integrated locally.  Upstream is empty when no
-// upstream is configured (including detached HEAD).
+// BranchInfo describes the checked-out branch and its upstream tracking state:
+// Ahead = local commits missing upstream, Behind = upstream not yet integrated;
+// Upstream empty when unconfigured (incl. detached HEAD).
 type BranchInfo struct {
 	Name     string `json:"name"`
 	Upstream string `json:"upstream"`
@@ -57,10 +49,8 @@ type BranchInfo struct {
 	Behind   int    `json:"behind"`
 }
 
-// BranchBase represents a ref that can serve as a start-point for
-// `git checkout -b`. Type distinguishes the ref category so the UI can
-// group and label items. Detail holds the commit subject for commits
-// (empty for branches and tags).
+// BranchBase is a ref usable as a `git checkout -b` start-point; Type
+// groups it for the UI, Detail carries the commit subject (commits only).
 type BranchBase struct {
 	Ref    string `json:"ref"`    // git ref: "main", "origin/main", "v1.0", "a3f5c1d"
 	Label  string `json:"label"`  // display: same as Ref for branches/tags; short SHA for commits
@@ -68,10 +58,8 @@ type BranchBase struct {
 	Detail string `json:"detail"` // commit subject for commits; "" for branches/tags
 }
 
-// CommitFile describes a single file changed by a commit.  Status is the
-// git name-status letter ("A" added, "M" modified, "D" deleted, "R"
-// renamed, "C" copied).  Path is the post-commit path (the destination
-// for renames/copies).
+// CommitFile is a single file changed by a commit: Status the git
+// name-status letter, Path the post-commit path (rename/copy destination).
 type CommitFile struct {
 	Status string `json:"status"`
 	Path   string `json:"path"`
@@ -83,10 +71,8 @@ type StashEntry struct {
 	Message string `json:"message"`
 }
 
-// GitHistoryCommit describes a single commit for the unified history+graph
-// view. It carries both the human-readable log fields (author/email/date)
-// and the graph topology fields (parents/refs) so the frontend can render
-// lane topology and expandable commit details from a single source.
+// GitHistoryCommit is one commit of the unified history+graph view: log
+// fields and graph topology (parents/refs) from a single source.
 type GitHistoryCommit struct {
 	SHA     string   `json:"sha"`
 	Parents []string `json:"parents"`
@@ -97,30 +83,19 @@ type GitHistoryCommit struct {
 	Refs    []string `json:"refs"`
 }
 
-// GitHistoryPage is a single page of the unified commit history. The
-// frontend loads history incrementally (git log -n <limit> --skip <skip>),
-// consuming Commits and re-issuing the call with Skip = NextSkip while
-// HasMore is true. HasMore is derived from the page being saturated
-// (len(Commits) == requested limit), which is the only signal git log
-// exposes for "there might be more below".
+// GitHistoryPage is one page of the unified commit history, loaded incrementally
+// (Skip = NextSkip while HasMore); HasMore is page saturation (len == limit).
 type GitHistoryPage struct {
 	Commits  []GitHistoryCommit `json:"commits"`
 	NextSkip int                `json:"next_skip"`
 	HasMore  bool               `json:"has_more"`
 }
 
-// HunkDiffInfo describes a single diff hunk with its staging status and
-// raw unified-diff text. The frontend uses it to render per-hunk controls
-// (stage / unstage / discard) and hover tooltips with syntax-highlighted
-// diff content. OldStart/OldCount and NewStart/NewCount mirror the
-// unified-diff hunk header fields — these include context lines and
-// therefore point to the first context line, not the first changed line.
-// OldChangeStart/NewChangeStart are computed by walking the hunk body and
-// identify the first actually-changed line (first '+' or '-' line) in
-// old-file and new-file coordinates respectively. Staged is true for hunks
-// that appear in git diff --cached (HEAD vs index) and false for hunks in
-// git diff (index vs worktree). Diff is the hunk's unified-diff block
-// (header + body) suitable for re-parsing or syntax highlighting.
+// HunkDiffInfo is one diff hunk with its staging status and raw text, for the
+// frontend's per-hunk stage/unstage/discard controls. The Start/Count fields
+// mirror the @@ header (they include context — the first context line, not the
+// first changed line); OldChangeStart/NewChangeStart walk the body to the first
+// '+'/'-' line in each file's coordinates. Staged = from git diff --cached; Diff is header + body.
 type HunkDiffInfo struct {
 	OldStart       int    `json:"old_start"`
 	OldCount       int    `json:"old_count"`
@@ -132,20 +107,15 @@ type HunkDiffInfo struct {
 	Diff           string `json:"diff"`
 }
 
-// MergeRebaseState reports whether a merge or rebase is currently in
-// progress in the repository. The frontend uses it to reveal abort
-// controls in the git panel toolbar. Both flags are false when the
-// repository is in a clean (non in-progress) state.
+// MergeRebaseState reports an in-progress merge or rebase (frontend abort
+// controls); both flags false in a clean state.
 type MergeRebaseState struct {
 	IsMerging  bool `json:"is_merging"`
 	IsRebasing bool `json:"is_rebasing"`
 }
 
-// ReviewHunk describes a single unified-diff hunk for the code-review
-// page. It mirrors the "@@" header line numbers and carries the raw hunk
-// block (header + body) for rendering. Unlike HunkDiffInfo (which is tied
-// to the git panel's per-hunk staging controls), ReviewHunk is a minimal,
-// display-oriented snapshot of an uncommitted change region.
+// ReviewHunk is one unified-diff hunk for the code-review page: @@ header
+// numbers plus the raw block; a display-oriented snapshot, untied to staging.
 type ReviewHunk struct {
 	Raw      string `json:"raw"`       // full hunk block: "@@ ..." header + body lines
 	OldStart int    `json:"old_start"` // first old-file line (1-based, includes context)
@@ -154,10 +124,8 @@ type ReviewHunk struct {
 	NewCount int    `json:"new_count"` // number of new-file lines in the hunk
 }
 
-// ReviewFileDiff groups the uncommitted hunks of a single file for the
-// code-review page. Path is the current (post-rename) path; OldPath is
-// populated only for renames/copies where the a/ and b/ sides of the diff
-// header differ. Hunks is empty for a pure rename with no content change.
+// ReviewFileDiff groups the uncommitted hunks of one file for the code-review
+// page: Path post-rename, OldPath only when a/ and b/ differ, Hunks empty on pure rename.
 type ReviewFileDiff struct {
 	Path    string       `json:"path"`
 	OldPath string       `json:"old_path,omitempty"`

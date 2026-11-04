@@ -273,3 +273,55 @@ func TestGitMonitor_CheckoutUnaffectedByWorktreeEvents(t *testing.T) {
 		t.Errorf("checkout branch = %q after worktree switch, want main", got)
 	}
 }
+
+// TestIsUnbornHead pins the unborn classification CurrentCommit relies on:
+// a zero-commit HEAD (an orphan checkout, the fresh-init shape) is unborn
+// and serves the root-owned synthetic snapshot ("", nil), while a DAMAGED
+// clone — the branch ref exists but its commit object is missing — is NOT
+// unborn: the git failure must surface instead of silently degrading to
+// the synthetic snapshot.
+func TestIsUnbornHead(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("healthy repo with commits", func(t *testing.T) {
+		root := filepath.Join(t.TempDir(), "repo")
+		repo := gittest.InitRepo(t, root, "hello\n")
+		if isUnbornHead(ctx, repo.Root) {
+			t.Error("a repo with commits classified as unborn")
+		}
+		if _, err := CurrentCommit(ctx, repo.Root); err != nil {
+			t.Errorf("CurrentCommit on a healthy repo: %v", err)
+		}
+	})
+
+	t.Run("orphan checkout with zero commits", func(t *testing.T) {
+		root := filepath.Join(t.TempDir(), "repo")
+		repo := gittest.InitRepo(t, root, "hello\n")
+		repo.Git(t, "checkout", "--orphan", "fresh-start")
+		if !isUnbornHead(ctx, repo.Root) {
+			t.Error("an orphan checkout (zero commits) must classify as unborn")
+		}
+		oid, err := CurrentCommit(ctx, repo.Root)
+		if err != nil || oid != "" {
+			t.Errorf("CurrentCommit on an unborn HEAD = (%q, %v); want (\"\", nil)", oid, err)
+		}
+	})
+
+	t.Run("damaged ref: symref resolves, rev-parse fails", func(t *testing.T) {
+		root := filepath.Join(t.TempDir(), "repo")
+		repo := gittest.InitRepo(t, root, "hello\n")
+		// A ref file that EXISTS but holds garbage: symbolic-ref still
+		// resolves while rev-parse HEAD fails — the shape that must NOT
+		// classify as unborn (the ref's presence proves the branch was
+		// born; the store is damaged and the error must surface).
+		if err := os.WriteFile(filepath.Join(repo.GitDir(), "refs", "heads", "main"), []byte("corrupt\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if isUnbornHead(ctx, repo.Root) {
+			t.Error("a damaged ref (present but unparseable) must NOT classify as unborn")
+		}
+		if _, err := CurrentCommit(ctx, repo.Root); err == nil {
+			t.Error("CurrentCommit must surface the git failure on a damaged ref")
+		}
+	})
+}

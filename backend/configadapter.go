@@ -24,15 +24,11 @@ func derefBool(b *bool) bool {
 }
 
 // globLimitsExplicit reports whether the resolved glob config is explicitly
-// customized: at least one of the three knobs differs from sp4rk's default.
-// ApplyDefaults materializes absent *int knobs to their defaults, so
-// post-defaults a non-default value can only come from an explicitly set knob
-// — including the explicit "0 disables". A knob explicitly set to its default
-// value is indistinguishable from an absent one here, but both resolve to the
-// identical tool, so the collapse is observationally irrelevant; the flag only
-// gates the all-zero case, where the no-fallback constructor
-// (NewGlobToolWithLimitsOverride) is required so the documented "0 disables"
-// on all three knobs is not silently replaced by the defaults.
+// customized — post-ApplyDefaults a non-default value can only be an explicit
+// knob (including the explicit "0 disables"). A knob set to its default is
+// indistinguishable from an absent one, but both resolve identically; the
+// flag only gates the all-zero case, which requires the no-fallback
+// constructor (NewGlobToolWithLimitsOverride).
 func globLimitsExplicit(maxEntries, maxResults, timeoutSec int) bool {
 	def := builtins.DefaultGlobLimits()
 	return maxEntries != def.MaxEntries ||
@@ -40,11 +36,10 @@ func globLimitsExplicit(maxEntries, maxResults, timeoutSec int) bool {
 		timeoutSec != int(def.Timeout/time.Second)
 }
 
-// derefInt dereferences a *int, returning def when the pointer is nil. The
-// *int config knobs distinguish an absent key (nil → default) from an explicit
-// zero ("0 disables"); config normally flows through ApplyDefaults (which
-// materializes the default), but a programmatically built config may bypass it,
-// so the deref is defensive.
+// derefInt dereferences a *int with a default: the *int knobs distinguish an
+// absent key (nil → default) from an explicit zero ("0 disables"). A
+// programmatically built config may bypass ApplyDefaults, so the deref is
+// defensive.
 func derefInt(p *int, def int) int {
 	if p == nil {
 		return def
@@ -52,10 +47,9 @@ func derefInt(p *int, def int) int {
 	return *p
 }
 
-// loadModelProfilesCatalog loads the full model-profile profile catalog (predefined ∪
-// custom), logging store-level warnings. Callers that must surface warnings
-// in the UI instead (config load time) use config.LoadModelProfilesCatalog directly —
-// see config.ResolveAndLoad.
+// loadModelProfilesCatalog loads the full profile catalog (predefined ∪
+// custom), logging store-level warnings; callers that must surface warnings
+// in the UI instead use config.LoadModelProfilesCatalog directly.
 func loadModelProfilesCatalog(agentDir string, log *slog.Logger) []config.ModelProfile {
 	catalog, warnings := config.LoadModelProfilesCatalog(agentDir)
 	if log != nil {
@@ -66,28 +60,21 @@ func loadModelProfilesCatalog(agentDir string, log *slog.Logger) []config.ModelP
 	return catalog
 }
 
-// effectiveModelProfilesConfig resolves the persisted `model_profiles:` section against the given
-// profile catalog (predefined ∪ custom — see config.LoadModelProfilesCatalog) and
-// returns the effective runtime profile. Model Profiles is NOT gated by the
-// experimental-features switch: the master toggle (model_profiles.enabled) is
-// the only switch and is carried through verbatim, so the effective profile is
-// exactly what the operator persisted. Resolution warnings are returned for
-// the caller to surface (load time) or log (runtime re-resolves).
+// effectiveModelProfilesConfig resolves the persisted `model_profiles:` section
+// against the catalog and returns the effective runtime profile. NOT gated by
+// the experimental switch — the master toggle is the only switch, carried
+// through verbatim (see specs/decisions/044-model-profiles-out-of-experimental.md);
+// resolution warnings are returned for the caller to surface.
 func effectiveModelProfilesConfig(cfg *config.Config, modelProfilesCatalog []config.ModelProfile) (profile config.ModelProfilesConfig, warnings []string) {
 	return config.ResolveModelProfilesConfig(cfg.ModelProfiles, modelProfilesCatalog)
 }
 
-// activeModelProfile returns the catalog entry the persisted `model_profiles:` section
-// resolves to, applying the same soft fallback and retired-predefined-id
-// aliasing config.ResolveModelProfilesConfig uses for the effective values:
-// an empty or dangling active_profile id falls back to the model-agnostic
-// "generic" profile, and a retired predefined id resolves to its replacement
-// — so the reported identity always matches the effective values. The entry
-// identifies the active profile (id + kind) for agent_metrics annotation —
-// reported even when the master toggle is off. The zero entry is returned
-// only when even "generic" is missing from the catalog (never the case with
-// the shipped predefined catalog); the metrics meta then carries no profile
-// fields.
+// activeModelProfile returns the catalog entry the persisted section resolves
+// to, with the same soft fallback and retired-id aliasing
+// config.ResolveModelProfilesConfig applies, so the reported identity always
+// matches the effective values — reported even when the master toggle is off.
+// The zero entry is returned only when even "generic" is missing from the
+// catalog.
 func activeModelProfile(persist config.ModelProfilesPersistConfig, catalog []config.ModelProfile) config.ModelProfile {
 	id := persist.ActiveProfile
 	if id == "" {
@@ -100,16 +87,15 @@ func activeModelProfile(persist config.ModelProfilesPersistConfig, catalog []con
 	return generic
 }
 
-// ToBuilderConfig converts a *config.Config into a *core.BuilderConfig.
-// This is the single conversion point so that core never imports backend/config.
-// modelProfilesCatalog is the profile catalog (predefined ∪ custom) used to resolve the
-// effective model-profile profile; callers that have an agent dir should build it
-// via config.LoadModelProfilesCatalog so custom profiles apply without a restart.
+// ToBuilderConfig converts a *config.Config into a *core.BuilderConfig — the
+// single conversion point, so core never imports backend/config (see
+// specs/architecture/layers.md). modelProfilesCatalog resolves the effective
+// model profile; callers with an agent dir should build it via
+// config.LoadModelProfilesCatalog so custom profiles apply without a restart.
 func ToBuilderConfig(cfg *config.Config, modelProfilesCatalog []config.ModelProfile, logger ...*slog.Logger) *core.BuilderConfig {
-	// Optional logger: when provided, residual inconsistencies a programmatic
-	// (load-bypassing) config can carry — e.g. a shell_exec override dropped by
-	// convertShellExecTool — are logged instead of silently ignored. The load
-	// pipeline (config.normalizeShellExec) already warns for the normal path.
+	// Optional logger: residual inconsistencies a programmatic (load-bypassing)
+	// config can carry are logged instead of silently ignored; the load
+	// pipeline already warns for the normal path.
 	var log *slog.Logger
 	if len(logger) > 0 {
 		log = logger[0]
@@ -128,14 +114,12 @@ func ToBuilderConfig(cfg *config.Config, modelProfilesCatalog []config.ModelProf
 			OutputTokenReserve: p.OutputTokenReserve,
 			TimeoutClass:       p.TimeoutClass,
 		}
-		// ChatGPT subscription auth (llm.chatgpt.auth.mode: "oauth"): the
-		// entry is marked SubscriptionAuth — core attaches the token source
-		// and pins streaming via the builder seam — and its BaseURL is
-		// pinned to the ChatGPT Codex backend, because subscription
-		// credentials are accepted only there, never on the public
-		// api.openai.com API. The static api_key still travels on the entry
-		// but is overridden on the wire by the token source; a signed-out
-		// user gets an actionable error, never a silent key fallback.
+		// ChatGPT subscription auth (llm.chatgpt.auth.mode: "oauth"): mark the
+		// entry SubscriptionAuth and pin its BaseURL to the Codex backend —
+		// subscription credentials are accepted only there. The static
+		// api_key still travels but is overridden on the wire; a signed-out
+		// user gets an actionable error, never a silent key fallback. See
+		// specs/domains/llm-providers.md (ChatGPT Subscription Auth).
 		if p.Name == "chatgpt" && cfg.LLM.ChatGPT.Auth.Mode == config.ChatGPTAuthModeOAuth {
 			bpc.SubscriptionAuth = true
 			bpc.BaseURL = providerauth.ChatGPT().APIBaseURL
@@ -157,9 +141,9 @@ func ToBuilderConfig(cfg *config.Config, modelProfilesCatalog []config.ModelProf
 		}
 	}
 
-	// Convert tool groups (the security schema). The system group is not
-	// configurable and config validation already rejects it; entries are
-	// copied verbatim — the builder skips anything invalid defensively.
+	// Convert tool groups (the security schema); entries are copied verbatim
+	// — the system group is not configurable and config validation rejects
+	// it — while the builder skips anything invalid defensively.
 	groups := make(map[string]core.BuilderGroupPolicy, len(cfg.Security.Groups))
 	for name, g := range cfg.Security.Groups {
 		groups[name] = core.BuilderGroupPolicy{
@@ -167,14 +151,11 @@ func ToBuilderConfig(cfg *config.Config, modelProfilesCatalog []config.ModelProf
 			Blocklist: g.Blocklist,
 		}
 	}
-	// Effective view for the core layer: the execute blocklist is empty by
-	// default (the app ships no predefined patterns), so an unset (nil)
-	// config list is materialized as an explicit empty list, and the entry
-	// is CREATED when absent. core's UpdateShellBlocklist fails closed on a
-	// missing execute group or a nil blocklist (it cannot distinguish
-	// "unset" from an incomplete programmatic config), so the conversion
-	// always hands it a non-nil list; an empty list compiles to "no
-	// patterns" — the intended default posture.
+	// The execute blocklist is empty by default (the app ships no predefined
+	// patterns), so an unset config list is materialized as an explicit empty
+	// list, and the entry is CREATED when absent: core's UpdateShellBlocklist
+	// fails closed on a missing execute group or nil blocklist, and an empty
+	// list compiles to "no patterns" — the intended default posture.
 	if g, ok := groups[config.ToolGroupExecute]; !ok {
 		groups[config.ToolGroupExecute] = core.BuilderGroupPolicy{
 			Blocklist: []string{},
@@ -184,15 +165,12 @@ func ToBuilderConfig(cfg *config.Config, modelProfilesCatalog []config.ModelProf
 		groups[config.ToolGroupExecute] = g
 	}
 
-	// Convert MCP servers.
-	// Capability modes are carried verbatim from capabilities.mcp: the load
-	// pipeline (migrateLegacyMCPServerModes + normalizeCapabilities) folds
-	// the legacy per-server mode key into the section and canonicalizes every
-	// value, and the frontend rebuild paths start from that validated config
-	// — so the adapter needs no normalization of its own (mirroring the
-	// timeout contract, where the adapter does not log or fix anything the
-	// load path owns). A name absent from the section maps to the zero
-	// CapabilityModes — auto in both contexts.
+	// Convert MCP servers. Capability modes are carried verbatim from
+	// capabilities.mcp: the load pipeline folds the legacy per-server mode
+	// key in and canonicalizes every value, and the frontend rebuild paths
+	// start from that validated config — the adapter needs no normalization
+	// of its own (mirroring the timeout contract). A name absent from the
+	// section maps to auto in both contexts.
 	mcpServers := make(map[string]core.BuilderMCPServer, len(cfg.MCP.Servers))
 	for name, srv := range cfg.MCP.Servers {
 		caps := cfg.Capabilities.MCP[name]
@@ -210,15 +188,10 @@ func ToBuilderConfig(cfg *config.Config, modelProfilesCatalog []config.ModelProf
 		}
 	}
 
-	// Effective view for the core layer: the E2S mode has no separate master
-	// toggle — its availability is exactly the experimental gate, so
-	// BuilderE2SConfig.Enabled is mapped from cfg.Experimental.Enabled below
-	// (fail-closed). The section's numeric knobs are always seeded so tuning
-	// never requires a rebuild.
-	//
-	// The model-profile profile is resolved from the active profile in the
-	// catalog (resolution warnings are surfaced at load time, not here). It is
-	// not gated by the experimental-features switch.
+	// The E2S mode has no separate master toggle — its availability is
+	// exactly the experimental gate, mapped fail-closed below. The model
+	// profile is resolved from the active catalog profile (warnings surface
+	// at load time, not here).
 	modelProfiles, _ := effectiveModelProfilesConfig(cfg, modelProfilesCatalog)
 	return &core.BuilderConfig{
 		LLM: core.BuilderLLMConfig{
@@ -329,10 +302,8 @@ func ToBuilderConfig(cfg *config.Config, modelProfilesCatalog []config.ModelProf
 		},
 		// Capability modes for the skill/agent catalogs are carried verbatim
 		// from capabilities.skills / capabilities.agents — the same contract
-		// as the MCP section above: the load pipeline already canonicalized
-		// every value (normalizeCapabilities covers all three sections), the
-		// builder drops both-empty entries into its immutable snapshot, and a
-		// name absent from a section is auto in both contexts.
+		// as the MCP section above: already canonicalized by the load
+		// pipeline; a name absent from a section is auto in both contexts.
 		Capabilities: core.BuilderCapabilitiesConfig{
 			Skills: capabilityModesToCore(cfg.Capabilities.Skills),
 			Agents: capabilityModesToCore(cfg.Capabilities.Agents),
@@ -424,21 +395,18 @@ func ToBuilderConfig(cfg *config.Config, modelProfilesCatalog []config.ModelProf
 			GlobTimeout:     derefInt(cfg.Timeouts.GlobTimeout, int(builtins.DefaultGlobLimits().Timeout/time.Second)),
 			ToolCallTimeout: derefInt(cfg.Timeouts.ToolCallTimeout, int(agent.DefaultToolCallTimeout/time.Second)),
 			// The ceiling's exempt tool-name set: nil (knob absent — the
-			// normal load path, since ApplyDefaults deliberately leaves it
-			// nil) threads through and keeps sp4rk's built-in default set,
-			// resolved at execution time so it can track sp4rk updates and is
-			// never persisted into config.yaml by a save; an explicit list —
-			// including empty ("no exemptions") — replaces it wholesale in
-			// the executor setter.
+			// normal load path) keeps sp4rk's built-in default set, resolved
+			// at execution time and never persisted; an explicit list —
+			// including empty ("no exemptions") — replaces it wholesale.
 			ToolCallTimeoutExemptTools: []string(cfg.Timeouts.ToolCallTimeoutExemptTools),
 			WebFetchTimeout:            cfg.Timeouts.WebFetchTimeout,
 			WebFetchProxyTimeout:       cfg.Timeouts.WebFetchProxyTimeout,
 			WebFetchRetries:            cfg.Timeouts.WebFetchRetries,
 			WebSearchTimeout:           cfg.Timeouts.WebSearchTimeout,
 			LLMRequestTimeout:          cfg.Timeouts.LLMRequestTimeout,
-			// Adaptive request budget kill-switch (ADR-071 D11). derefBool
-			// defaults a nil (unset — a programmatic config that bypassed
-			// ApplyDefaults) to the feature's enabled-by-default posture.
+			// Adaptive request budget kill-switch (ADR-071 D11); derefBool
+			// defaults an unset nil to the feature's enabled-by-default
+			// posture.
 			AdaptiveBudgetEnabled: derefBool(cfg.Timeouts.AdaptiveBudget.Enabled),
 		},
 		ShellExec: convertShellExecConfig(cfg.ShellExec, log),
@@ -454,8 +422,7 @@ func ToBuilderConfig(cfg *config.Config, modelProfilesCatalog []config.ModelProf
 }
 
 // capabilityModesToCore converts a config-layer per-capability mode map into
-// the core-layer mirror, value-for-value (core never imports backend/config,
-// so the struct types are distinct copies of the same shape).
+// the core-layer mirror, value-for-value (core never imports backend/config).
 func capabilityModesToCore(entries map[string]config.CapabilityModes) map[string]core.CapabilityModes {
 	if len(entries) == 0 {
 		return nil
@@ -468,18 +435,12 @@ func capabilityModesToCore(entries map[string]config.CapabilityModes) map[string
 }
 
 // parseMCPDuration resolves an MCP server duration string (timeout /
-// call_timeout) into a time.Duration for the sp4rk ServerEntry. Empty resolves
-// to 0 (the sp4rk default). An unparseable or non-positive value fails soft to
-// 0, so a bad duration can never prevent a server from starting.
-//
-// It deliberately logs nothing: config.LoadWithResult is the single surfacing
-// point for an invalid value — normalizeMCPTimeouts turns each one into a load
-// warning that config.ResolveAndLoad both logs at WARN and hands to the UI's
-// configLoadErrors channel — so logging here too would duplicate that WARN on
-// every start (and on every builder rebuild). The UI save path rejects an
-// invalid value up front (validateMCPServerConfig), so this fail-soft branch
-// only ever covers a hand-edited file (already warned about at load) or a
-// programmatic config that bypasses that validation.
+// call_timeout) into a time.Duration for the sp4rk ServerEntry. Empty
+// resolves to 0 (the sp4rk default); unparseable or non-positive fails soft
+// to 0, so a bad duration can never prevent a server from starting. It
+// deliberately logs nothing — config.LoadWithResult is the single surfacing
+// point for an invalid value, and the UI save path rejects one up front, so
+// this branch only covers a hand-edited file or a programmatic config.
 func parseMCPDuration(raw string) time.Duration {
 	d, err := config.ParseMCPDuration(raw)
 	if err != nil {
@@ -504,16 +465,10 @@ func convertTruncationMap(src map[string]config.ToolTruncationConfig) map[string
 }
 
 // agentsMDSearchPaths resolves the extra AGENTS.md search paths (outside the
-// workspace) in priority order. The paths are searched ahead of the
-// workspace-root AGENTS.md, so the first entry is the global file shared by
-// all agents and the second is the c0wrk-specific file:
-//
-//  1. ~/.agents/AGENTS.md            — global, shared across all agents
-//  2. ~/.c0wrk/.agents/AGENTS.md     — c0wrk-specific
-//
-// Each entry points directly at an AGENTS.md file. Missing files are silently
-// skipped at read time (the orchestrator tolerates non-existent paths), so we
-// always return both candidates unconditionally.
+// workspace, searched ahead of the workspace-root file) in priority order:
+// ~/.agents/AGENTS.md (global), then ~/.c0wrk/.agents/AGENTS.md
+// (c0wrk-specific). Missing files are silently skipped at read time, so both
+// candidates are returned unconditionally.
 func agentsMDSearchPaths() []string {
 	homeDir, err := os.UserHomeDir()
 	if err != nil || homeDir == "" {
@@ -527,10 +482,8 @@ func agentsMDSearchPaths() []string {
 
 // convertShellExecConfig maps the validated config `shell_exec` section onto
 // the builder's per-tool launch-shape invocations. The load pipeline
-// (config.normalizeShellExec) guarantees an active override carries a valid
-// template and a declared kind; any residual inconsistency (a
-// programmatically-built config that bypassed load) fails soft to the
-// built-in default rather than erroring the whole conversion.
+// guarantees an active override carries a valid template and declared kind;
+// residual inconsistency fails soft to the built-in default.
 func convertShellExecConfig(sec config.ShellExecConfig, log *slog.Logger) core.BuilderShellExecConfig {
 	return core.BuilderShellExecConfig{
 		BashExec: convertShellExecTool("bash_exec", sec.BashExec, log),

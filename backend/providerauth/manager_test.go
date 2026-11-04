@@ -1031,7 +1031,7 @@ func TestTokenManager_ReSignInDuringRefreshKeepsNewerAccount(t *testing.T) {
 
 	close(block)
 	select {
-	case <-tokenDone:
+	case <-tokenDone: //nolint:errcheck // join: the payload is not the assertion
 	case <-time.After(5 * time.Second):
 		t.Fatal("Token never concluded after the refresh unblocked")
 	}
@@ -1387,7 +1387,7 @@ func TestTokenManager_RefreshBoundedSupersessionManagerStaysAnswerable(t *testin
 	go func() { refreshDone <- m.Refresh(ctx) }()
 	for round := 1; round <= maxTokenRefreshRounds+2; round++ {
 		select {
-		case <-refreshDone:
+		case <-refreshDone: //nolint:errcheck // join: the payload is not the assertion
 			// The lock must be free: the manager still answers. A leaked
 			// lock would block this Status call forever.
 			statusDone := make(chan AccountStatus, 1)

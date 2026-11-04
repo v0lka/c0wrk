@@ -1,4 +1,4 @@
-# ADR-105: Explicit-Path Context Floor
+# ADR-108: Explicit-Path Context Floor
 
 ## Status
 
@@ -10,7 +10,7 @@ The planner sizes the context on two paths. Under fit, `planTargetContext` held
 the RAM tier to the `-fitc` floor (`DefaultFitMinContext`, 65536 — ADR-067):
 fit sizes the offload, never the context, and a fit run that cannot reach its own
 minimum aborts rather than degrading. On the explicit path — a pinned offload, a
-device list or split mode (ADR-104), or an explicit fit-off — the plan serves the
+device list or split mode (ADR-107), or an explicit fit-off — the plan serves the
 raw RAM tier: a 32 GiB host tiers at 32768 and got `-c 32768`.
 
 The combined memory gate prices every machine at a different figure.
@@ -24,7 +24,7 @@ verdict was not a promise the launch kept.
 The under-delivery is not a cosmetic shortfall — it is the pinned model's
 most-reported failure in its purest form (empty and truncated answers, the
 documented workaround for which is `-c 65536`), concentrated on exactly the
-machines an operator pin targets: small hosts beside one fast card. ADR-106's
+machines an operator pin targets: small hosts beside one fast card. ADR-109's
 measured CUDA tuple is what makes the fix affordable there — the floor prices
 against an honest budget (the 5060 Ti's 14402 MiB holds the 65536/f16 shape at
 11836 MiB), so holding the pin to the floor serves a real launch instead of
@@ -48,7 +48,7 @@ and why a smaller window is refused. The `gateContext` comment states the
 promise two-sided: a machine the gate admitted at 65536 is never planned beneath
 it.
 
-**Alignment with ADR-104.** The floor changes what a pinned plan TARGETS and
+**Alignment with ADR-107.** The floor changes what a pinned plan TARGETS and
 what its refusal PRICES — not who may relax a pinned shape. The KV-precision
 escalation stays allowed on the explicit path (it serves the pinned residency:
 a pinned 12 GiB card escalates to q8_0 or q4_0 and loads); the degradation
@@ -98,11 +98,11 @@ GiB card refuses honestly at 65536.
   has no budget to verify the floored shape against. Revisit only if the
   estimate becomes launch-authoritative.
 - **Raise the auto target on measured device headroom instead.** Already
-  rejected in ADR-106 D4: headroom buys KV precision, not context reach.
+  rejected in ADR-109 D4: headroom buys KV precision, not context reach.
 
 ## Related
 
 - [Embedded LLM](../domains/embedded-llm.md) — the domain spec ([Memory plan](../domains/embedded-llm.md#memory-plan))
-- [ADR-104](./104-operator-selected-offload-devices.md) — the operator device pin whose plans this floor completes
-- [ADR-106](./106-measured-backend-memory-profiles.md) — the measured CUDA/Blackwell budgets that make the floor affordable on the measured tuple
+- [ADR-107](./107-operator-selected-offload-devices.md) — the operator device pin whose plans this floor completes
+- [ADR-109](./109-measured-backend-memory-profiles.md) — the measured CUDA/Blackwell budgets that make the floor affordable on the measured tuple
 - [ADR-067](./067-memory-aware-embedded-llm-provisioning.md) — the fit-path floor, the exclusivity rule and the gate this decision extends

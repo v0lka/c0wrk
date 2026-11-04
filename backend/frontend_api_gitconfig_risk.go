@@ -1,30 +1,12 @@
 package backend
 
-// Git-config intake warnings: when a project switch or an auxiliary
-// work-directory add opens a repository whose .git/config carries dangerous
-// keys, the backend scans it with the exec-free parser in core/workspace
-// (ScanGitConfig) and emits the global project:git_config_risk event so the
-// frontend can warn the user about the workspace before agent work starts.
-//
-// The scan is pure text parsing — it never spawns git and never follows
-// include directives. This path is detection only: actual neutralization
-// happens in the git spawn layer (the unconditional sysproc.GitCmd baseline
-// plus the per-repo NeutralizingArgv set), not in the UI. A clean, fully
-// visible config emits nothing; anything that makes the config suspicious
-// (dangerous keys, include directives, malformed or unreadable config) fails
-// closed into a warning — the same fail-closed signal as GitConfigInfo.Clean.
-// While the blanket attribute-interpretation kill (attr.tree) is part of the
-// derived neutralization — the include case, where driver names may be
-// hidden from the scan — the warning also discloses that activation and its
-// collateral: benign eol/CRLF normalization is off, so text files may be
-// reported as falsely modified (review [56]).
-//
-// Repositories the user explicitly trusted (security.trusted_git_repos,
-// maintained by the TrustGitRepo / RemoveTrustedGitRepo / GetTrustedGitRepos
-// RPCs below) skip the warning; the trust decision also registers the root in
-// the process-wide core/gittrust registry, so the spawn layer runs raw git
-// for it (its own hooks, filters and signing apply — see sysproc.GitCmdRaw).
-// Untrusted and hardened repositories keep the full neutralization.
+// Git-config intake warnings: opening a repository whose .git/config carries
+// dangerous keys emits project:git_config_risk before agent work starts.
+// Detection only — exec-free text parsing; neutralization happens in the git
+// spawn layer, never the UI (specs/architecture/security-model.md,
+// specs/decisions/033-git-subprocess-hardening.md). Anything not provably
+// clean fails closed into a warning; trusted repositories run raw git
+// (specs/decisions/034-git-trust-opt-out.md, 070-git-semantic-trust.md).
 
 import (
 	"crypto/sha256"
@@ -49,29 +31,20 @@ const (
 	GitConfigRiskSourceWorkdir = "workdir"
 )
 
-// gitConfigRiskNotice is the standing safety note carried with every warning.
-// It states explicitly that repository-defined hooks never run inside c0wrk
-// and that the config-driven programs listed in the findings are blocked or
-// neutralized on every git invocation c0wrk makes — including the Git
-// panel's remote operations (pull/push/fetch), whose transport keys
-// (core.sshCommand, core.askPass, credential helpers) carry their own
-// neutralizations. The warning informs without implying the config executed.
+// gitConfigRiskNotice is the standing safety note carried with every warning:
+// hooks never run and the listed config-driven programs are neutralized on
+// every git invocation, remote operations included. It informs without
+// implying the config executed.
 const gitConfigRiskNotice = "Repository-defined git hooks do not run inside c0wrk: the config-driven programs listed below are blocked or neutralized on every git invocation c0wrk makes, remote operations (pull, push, fetch) included. Continue only if you trust this repository."
 
-// gitConfigDriftReason is the Reason carried when a previously-trusted
-// repository's command-bearing git configuration changed semantically since
-// the trust decision (any change outside the inert branch/alias allowlist —
-// see workspace.SemanticFingerprint; inert branch/alias bookkeeping never
-// fires this event). The trust was evicted and the repository returned to
-// the hardened default.
+// gitConfigDriftReason is the Reason for semantic drift of a trusted
+// repository's command-bearing config: trust evicted, repository hardened
+// again (inert branch/alias churn never fires this — ADR-070).
 const gitConfigDriftReason = "This repository was previously trusted, but its command-bearing git configuration changed since you trusted it — the diff below shows the security-relevant changes only (routine branch-tracking and alias bookkeeping never triggers this warning). The trust has been revoked and the repository is hardened again; re-trust it only if the change is expected."
 
-// gitConfigTrustUnverifiableReason is the Reason carried when a previously
-// trusted repository's trust record could not be verified against the trust
-// model — its v1 record could not be migrated to the semantic fingerprint
-// (missing fingerprint, or a snapshot that is missing, corrupted, or not a
-// snapshot this scanner wrote). The trust cannot be carried over, so it is
-// revoked fail-closed; re-trusting re-captures a fresh snapshot.
+// gitConfigTrustUnverifiableReason is the Reason when a v1 trust record
+// cannot be migrated to the semantic fingerprint (missing/corrupted
+// snapshot): revoked fail-closed; re-trusting re-captures a fresh snapshot.
 const gitConfigTrustUnverifiableReason = "This repository was previously trusted, but the git-config snapshot recorded at trust time could no longer be read or interpreted, so the trust cannot be carried over. The trust has been revoked and the repository is hardened again; review the repository's current git configuration and re-trust it only if it is the configuration you originally trusted."
 
 // GitConfigRiskFinding is one detected danger, as delivered to the frontend.
@@ -100,44 +73,29 @@ type GitConfigRiskData struct {
 	// Findings lists every detected key / danger. Never empty when the
 	// event fires.
 	Findings []GitConfigRiskFinding `json:"findings"`
-	// Reason is set when the warning fired for a repository that was
-	// previously trusted but whose configuration changed since the trust
-	// decision — the trust was evicted and the repository returned to the
-	// hardened default. Empty for ordinary first-time intake warnings.
+	// Reason is set only for evicted-trust warnings; empty for ordinary
+	// first-time intake warnings.
 	Reason string `json:"reason,omitempty"`
 	// Diff is a human-readable diff between the trusted snapshot and the
 	// current configuration ("" for ordinary first-time warnings).
 	Diff string `json:"diff,omitempty"`
 }
 
-// gitRepoTrusted reports whether path has been marked trusted by the user
-// (security.trusted_git_repos, maintained by the TrustGitRepo RPC). The
-// stored entries and the probe are compared across path's trust-key forms —
-// an exact match on any of them, deliberately without prefix/subtree
-// semantics: trust is per repository root, so a decision for one root must
-// never silently cover a different repository nested inside it (or the
-// parent it lives in). Since review [52] both sides are repository roots:
-// callers pass a path inside the repository, and the comparison keys on the
-// work-tree root (workspace.ResolveWorkTreeRoot) and the repository trust
-// root (workspace.ResolveGitTrustRoot — the MAIN work-tree root a linked
-// worktree shares its hooks and common config with; also the legacy form
-// pre-worktree-unification entries were stored under). With no config
-// loaded nothing is trusted (fail-closed: the warning stays on).
+// gitRepoTrusted reports whether path's repository was marked trusted by the
+// user (security.trusted_git_repos). Matching runs across every trust-key
+// form of both sides, deliberately WITHOUT prefix/subtree semantics: trust
+// is per repository root and must never silently cover a nested repository
+// or its parent. No config loaded → nothing is trusted (fail-closed).
 func (f *FrontendAPI) gitRepoTrusted(path string) bool {
 	_, ok := f.trustedGitRepoEntryFor(path)
 	return ok
 }
 
 // trustedGitRepoEntryFor returns a COPY of the trusted entry matching any
-// trust-key form of path (workspace.TrustProbePaths: the exact path, the
-// repository trust root, the legacy work-tree root, and the canonical
-// spelling of each — a linked worktree's pointer chain carries canonical
-// paths while stored entries keep the lexical form the user knows), or
-// ok=false when none matches. Unlike a bare predicate it exposes the entry —
-// and therefore its Fingerprint — so notifyGitConfigRisk can recheck the
-// stored snapshot against the current scan instead of trusting blindly. A
-// value copy is returned so the caller never holds a pointer into the
-// mutex-guarded slice.
+// trust-key form of path (workspace.TrustProbePaths), or ok=false. It
+// exposes the entry — its Fingerprint included — so notifyGitConfigRisk can
+// recheck the stored snapshot instead of trusting blindly; a value copy so
+// the caller never holds a pointer into the mutex-guarded slice.
 func (f *FrontendAPI) trustedGitRepoEntryFor(path string) (config.TrustedGitRepo, bool) {
 	candidates := workspace.TrustProbePaths(path)
 
@@ -156,19 +114,11 @@ func (f *FrontendAPI) trustedGitRepoEntryFor(path string) (config.TrustedGitRepo
 }
 
 // trustEntryMatchesPath reports whether a stored entry's path denotes the
-// same repository as one of the probe candidates: the match is SYMMETRIC
-// across every trust-key form of BOTH sides — the entry path is expanded
-// through workspace.TrustProbePaths (its exact cleaned path, canonical
-// spelling, repository trust root, legacy work-tree root, and the canonical
-// spelling of each) and intersected with the caller's candidates (the same
-// expansion of the queried path). An entry stored under any legacy or
-// alternate spelling — a pre-unification linked-worktree key, a
-// subdirectory path, a symlinked mount — therefore matches a query for the
-// repository root and vice versa, which is what keeps the trust⊥harden
-// mutual exclusion, the idempotency loops, and the removals as sound as
-// the multi-form checks. EvalSymlinks is a filesystem walk, so this stays
-// out of hot loops' inner iterations: callers probe a handful of entries on
-// cold trust-lifecycle and intake paths.
+// same repository as one of the probe candidates: SYMMETRIC across every
+// trust-key form of BOTH sides (workspace.TrustProbePaths), so any legacy
+// spelling matches a root query and vice versa — what keeps the trust⊥harden
+// exclusion, idempotency loops, and removals sound. It may walk symlinks;
+// keep it off hot loops' inner iterations.
 func trustEntryMatchesPath(entryPath string, candidates []string) bool {
 	for _, form := range workspace.TrustProbePaths(entryPath) {
 		for _, c := range candidates {
@@ -180,32 +130,26 @@ func trustEntryMatchesPath(entryPath string, candidates []string) bool {
 	return false
 }
 
-// writeGitConfigSnapshot stores the snapshot bytes under
-// ~/.c0wrk/git-config-snapshots/<fingerprint> (content-addressed, so identical
-// snapshots share one file). The directory is created lazily. Returns an error
-// when the agent dir is unset — production always sets it; tests that trust a
-// repo must too.
+// writeGitConfigSnapshot stores snapshot bytes content-addressed under
+// ~/.c0wrk/git-config-snapshots/<fingerprint> (directory created lazily;
+// errors when the agent dir is unset — tests that trust a repo must set it).
 func (f *FrontendAPI) writeGitConfigSnapshot(fingerprint string, snapshot []byte) error {
 	f.seedAcquire()
 	if f.agentDir == "" {
 		return errors.New("agent dir not set")
 	}
 	dir := config.GitConfigSnapshotsDir(f.agentDir)
-	// The snapshot root must be created as REAL directories (review [108]):
-	// os.MkdirAll accepts a symlink-to-directory, so a link swapped into a
-	// created component would redirect every trust-snapshot write (and the
-	// paired read) outside ~/.c0wrk; MkdirAllReal refuses a dangling or
-	// swapped-in link, while a pre-existing operator-symlinked tree resolves
-	// as intent.
+	// REAL directories only (review [108]): os.MkdirAll accepts a
+	// symlink-to-directory, so a swapped-in link would redirect snapshot
+	// writes and reads outside ~/.c0wrk; a pre-existing operator symlink
+	// resolves as intent.
 	if err := safeio.MkdirAllReal(dir, 0o755); err != nil {
 		return fmt.Errorf("creating git-config snapshot directory: %w", err)
 	}
-	// safeio.WriteFile refuses a non-regular target (review [35]): a FIFO
-	// planted at the content-addressed snapshot path would block the
-	// write-open forever. Its open is no-follow on unix; on Windows the
-	// safeio parity note applies (the final symlink is still resolved), and
-	// this write is destructive (O_TRUNC) — so the final symlink is refused
-	// explicitly on every platform instead of relying on the open.
+	// safeio.WriteFile refuses non-regular targets (a planted FIFO would
+	// block forever); since the write is destructive (O_TRUNC) and Windows
+	// resolves a final symlink, that symlink is refused explicitly on every
+	// platform instead of relying on the no-follow open.
 	snapshotPath := filepath.Join(dir, fingerprint)
 	if info, lerr := os.Lstat(snapshotPath); lerr == nil && info.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("refusing to write git-config snapshot: %s is a symlink", snapshotPath)
@@ -224,27 +168,12 @@ func (f *FrontendAPI) readGitConfigSnapshot(fingerprint string) ([]byte, error) 
 }
 
 // syncGitTrustRegistry mirrors security.trusted_git_repos into the
-// process-wide core/gittrust registry, which core/workspace consults to
-// decide whether a repository may spawn raw git (the trust decision now opts
-// a repository back into its own hooks, filters, and signing — see
-// sysproc.GitCmdRaw). HardenGitRepos entries are never trusted (config
-// validation enforces mutual exclusion), so they are naturally absent from
-// the registry and stay hardened. The caller must hold configMu when calling
-// from a concurrent context (TrustGitRepo / RemoveTrustedGitRepo hold it;
-// NewFrontendAPI calls at construction time, before the API is published).
-//
-// Each entry is mirrored under its REPOSITORY TRUST ROOT
-// (workspace.ResolveGitTrustRoot), the same normalization TrustGitRepo
-// applies when writing new entries — the registry matches stored strings
-// exactly against the spawn layer's probed forms, so a legacy entry a
-// pre-unification build keyed on a linked-worktree path must register the
-// main root or the spawn layer would keep hardening the rest of the
-// repository (main-root commits included) while the config-side trust check
-// — which matches every key form of both sides — reads it as trusted. An
-// entry whose pointer chain cannot be resolved (repository moved or deleted)
-// mirrors verbatim, exactly the form the spawn layer's own degraded probes
-// still reach; agreement holds there too, because both sides degrade the
-// same way.
+// process-wide core/gittrust registry the spawn layer consults before raw
+// git (ADR-034). Entries register under their REPOSITORY TRUST ROOT because
+// the registry matches strings exactly — a legacy worktree-keyed entry must
+// register the main root; an unresolvable pointer chain mirrors verbatim
+// (the form degraded probes still reach). Harden entries never mirror.
+// Caller holds configMu in concurrent contexts.
 func (f *FrontendAPI) syncGitTrustRegistry() {
 	if f.config == nil {
 		gittrust.Replace(nil)
@@ -261,10 +190,8 @@ func (f *FrontendAPI) syncGitTrustRegistry() {
 	gittrust.Replace(paths)
 }
 
-// GetTrustedGitRepos returns the repository roots the user has marked
-// trusted (their untrusted-git-config intake warning is suppressed). The
-// slice is a defensive copy — callers cannot mutate the live config through
-// the RPC boundary — and is never nil so JSON serializes as [].
+// GetTrustedGitRepos returns the trusted repository roots as a defensive
+// copy, never nil (JSON []).
 func (f *FrontendAPI) GetTrustedGitRepos() []string {
 	f.configMu.RLock()
 	defer f.configMu.RUnlock()
@@ -279,37 +206,15 @@ func (f *FrontendAPI) GetTrustedGitRepos() []string {
 	return out
 }
 
-// TrustGitRepo marks a repository root as trusted: the
-// "untrusted git configuration detected" intake warning is no longer emitted
-// for it, and the spawn layer runs raw git for it (its own hooks, filters and
-// signing apply — see syncGitTrustRegistry). The path must be an existing
-// absolute directory. What is stored is the REPOSITORY TRUST ROOT resolved
-// from that path (workspace.ResolveGitTrustRoot, review [52]): the intake
-// warning is attributed to the repository root the scan discovered (the scan
-// walks up from subdirectory workspaces, and a linked worktree's commit
-// surface — hooks, common config, signing — is shared with the main
-// checkout), so trust must key on the same root — trusting any path inside a
-// repository trusts that whole repository, and a future open of the root, of
-// any subdirectory of it, or of any of its linked worktrees stays silent,
-// exactly as ADR-033 documents. When no repository is discoverable from the
-// path, the cleaned path itself is stored (the fail-closed pairing with the
-// warning's fallback attribution).
-//
-// The trust decision is bound to two identities of one snapshot: the scanned
-// config (common config, config.worktree overlay, and attribute routing
-// sources, plus any resolved include target) is hashed into its byte-level
-// fingerprint AND into its semantic fingerprint — the hash of the DANGEROUS
-// subset only (see workspace.SemanticSnapshot), which is what the trust
-// lifecycle keys on. Both snapshot forms are stored content-addressed under
-// ~/.c0wrk/git-config-snapshots/ so notifyGitConfigRisk can recheck a later
-// scan against them: inert branch/alias churn silently refreshes the stored
-// bytes, any semantic change evicts the trust and re-warns with a semantic
-// diff. A config that cannot be scanned is refused fail-closed (a trust
-// decision cannot be bound to bytes that cannot be read).
-// Idempotent: trusting a repository that already has a trusted entry — under
-// this spelling, the repository trust root, the legacy work-tree root, a
-// subdirectory path, or any canonical variant (trustEntryMatchesPath) — is a
-// no-op; no duplicate record is appended.
+// TrustGitRepo marks a repository root as trusted: its intake warning is
+// suppressed and the spawn layer runs raw git for it (ADR-034,
+// specs/decisions/070-git-semantic-trust.md). The REPOSITORY TRUST ROOT is
+// stored — trusting any path inside a repository trusts it whole, worktrees
+// included. The decision binds the byte-level fingerprint AND the semantic
+// fingerprint (the DANGEROUS subset, workspace.SemanticSnapshot), both
+// stored content-addressed for later rechecks: inert churn refreshes the
+// bytes, semantic change evicts. Unscannable → refused fail-closed.
+// Idempotent across every trust-key form.
 func (f *FrontendAPI) TrustGitRepo(path string) error {
 	path = strings.TrimSpace(path)
 	if path == "" {
@@ -326,13 +231,10 @@ func (f *FrontendAPI) TrustGitRepo(path string) error {
 	if !info.IsDir() {
 		return fmt.Errorf("repository path is not a directory: %s", cleaned)
 	}
-	// Normalize to the repository trust root — the same form
-	// notifyGitConfigRisk attributes warnings to, so what the toast
-	// displayed (risk.path) round-trips through the trust check. For a
-	// linked worktree this is the MAIN work-tree root: the commit surface
-	// trust covers (hooks, common config, signing) is shared by every
-	// worktree, so a decision made from any path inside the repository
-	// covers the whole repository, worktrees included.
+	// Normalize to the repository trust root — the form warnings are
+	// attributed to, so risk.path round-trips through the trust check (a
+	// linked worktree normalizes to the MAIN root its commit surface is
+	// shared with).
 	if root := workspace.ResolveGitTrustRoot(cleaned); root != "" {
 		cleaned = root
 	}
@@ -346,12 +248,9 @@ func (f *FrontendAPI) TrustGitRepo(path string) error {
 		return errors.New("config not initialized")
 	}
 
-	// Capture the snapshot BEFORE mutating config: the trust decision is
-	// bound to the exact bytes the user reviewed. Both identities are bound
-	// at once — the byte-level fingerprint (its snapshot feeds the drift
-	// diff and the v1→v2 migration of this very record) and the semantic
-	// fingerprint (what the trust lifecycle actually keys on, so inert
-	// branch/alias churn never evicts the trust).
+	// Capture the snapshot BEFORE mutating config: the decision is bound to
+	// the exact bytes the user reviewed — byte-level fingerprint (drift
+	// diff, v1→v2 migration) and semantic fingerprint (the lifecycle key).
 	scanned, err := workspace.ScanGitConfig(cleaned, f.log())
 	if err != nil {
 		return fmt.Errorf("cannot fingerprint repository config (fail closed): %w", err)
@@ -372,12 +271,8 @@ func (f *FrontendAPI) TrustGitRepo(path string) error {
 	if f.config == nil {
 		return errors.New("config not initialized")
 	}
-	// Idempotent across every trust-key form of both sides: trusting a root
-	// that already has an entry — stored under this spelling, the legacy
-	// work-tree root, a subdirectory path, or a canonical variant — is a
-	// no-op instead of appending a duplicate record for the same repository
-	// (a duplicate would leave commits keyed on the old form suppressed and
-	// re-fire the intake warning until a second Trust click).
+	// Idempotent across every trust-key form: a duplicate record would
+	// re-fire the intake warning on the next open.
 	candidates := workspace.TrustProbePaths(cleaned)
 	for _, trusted := range f.config.Security.TrustedGitRepos {
 		if trustEntryMatchesPath(trusted.Path, candidates) {
@@ -395,13 +290,9 @@ func (f *FrontendAPI) TrustGitRepo(path string) error {
 	return nil
 }
 
-// RemoveTrustedGitRepo removes a repository root from the trusted list; its
-// intake warning returns on the next open. Idempotent: removing an absent
-// entry is a no-op. Like the trust check it prunes every trust-key form of
-// the given path — the exact cleaned path, the repository trust root, and
-// the legacy work-tree root — so entries stored under any of the forms (or a
-// subdirectory path passed by hand) still prune cleanly instead of becoming
-// unremovable zombies.
+// RemoveTrustedGitRepo removes a repository root from the trusted list (its
+// warning returns on the next open). Idempotent; prunes every trust-key form
+// of the path so no spelling becomes an unremovable zombie.
 func (f *FrontendAPI) RemoveTrustedGitRepo(path string) error {
 	path = strings.TrimSpace(path)
 	if path == "" {
@@ -436,13 +327,10 @@ func (f *FrontendAPI) RemoveTrustedGitRepo(path string) error {
 }
 
 // removeTrustedPathLocked removes every trusted entry denoting the same
-// repository as cleaned — matched across all trust-key forms of both sides
-// (trustEntryMatchesPath over TrustProbePaths(cleaned)), so a legacy
-// worktree-keyed or subdirectory-spelled entry cannot survive a hardening
-// of the repository root as a raw-git-eligible zombie. Reports whether any
-// entry was removed. The caller must hold configMu.Lock. It does NOT sync
-// the registry or persist — callers do that once, after all mutations, so a
-// combined trust/harden transition syncs exactly once.
+// repository as cleaned (all trust-key forms), so a legacy-spelled entry
+// cannot survive a hardening as a raw-git-eligible zombie. Caller holds
+// configMu.Lock; no registry sync or persist — callers do that once after
+// all mutations.
 func (f *FrontendAPI) removeTrustedPathLocked(cleaned string) bool {
 	candidates := workspace.TrustProbePaths(cleaned)
 	kept := make([]config.TrustedGitRepo, 0, len(f.config.Security.TrustedGitRepos))
@@ -458,13 +346,9 @@ func (f *FrontendAPI) removeTrustedPathLocked(cleaned string) bool {
 	return removed
 }
 
-// removeHardenPathLocked removes every hardened entry denoting the same
-// repository as cleaned, matched across all trust-key forms of both sides —
-// the mirror of removeTrustedPathLocked, so a legacy worktree-keyed
-// hardening cannot survive a trust decision for the repository root (where
-// the spawn layer's multi-form probes would otherwise read the repository
-// as trusted). Reports whether an entry was removed. The caller holds
-// configMu.Lock.
+// removeHardenPathLocked is removeTrustedPathLocked's mirror for hardened
+// entries, so a legacy worktree-keyed hardening cannot survive a trust
+// decision for the repository root. Caller holds configMu.Lock.
 func (f *FrontendAPI) removeHardenPathLocked(cleaned string) bool {
 	candidates := workspace.TrustProbePaths(cleaned)
 	kept := make([]string, 0, len(f.config.Security.HardenGitRepos))
@@ -480,9 +364,8 @@ func (f *FrontendAPI) removeHardenPathLocked(cleaned string) bool {
 	return removed
 }
 
-// GetHardenGitRepos returns the repository roots the user has marked hardened
-// (always neutralized; never raw-git eligible). The slice is a defensive copy
-// and is never nil so JSON serializes as [].
+// GetHardenGitRepos returns the hardened repository roots (always
+// neutralized, never raw-git eligible) as a defensive copy, never nil.
 func (f *FrontendAPI) GetHardenGitRepos() []string {
 	f.configMu.RLock()
 	defer f.configMu.RUnlock()
@@ -495,16 +378,10 @@ func (f *FrontendAPI) GetHardenGitRepos() []string {
 	return out
 }
 
-// HardenGitRepo marks a repository root as hardened: it can never become
-// raw-git eligible and its untrusted-git-config intake warning is never
-// suppressed. Hardening is the inverse of trust, so a root that was trusted is
-// untrusted (and unregistered from the spawn-layer trust registry) as part of
-// the call — a root cannot be both trusted and hardened (validation enforces
-// the exclusion). The path must be an existing absolute directory, normalized
-// to its repository trust root exactly like TrustGitRepo. Idempotent: a
-// repository that already has a hardened entry — under any trust-key form of
-// either side — is a no-op, and hardening drops every trusted entry denoting
-// the same repository (removeTrustedPathLocked), not just exact spellings.
+// HardenGitRepo marks a repository root as hardened: never raw-git eligible,
+// its warning never suppressed. The inverse of trust — drops and unregisters
+// any trusted entry for the same repository (mutual exclusion), normalized
+// like TrustGitRepo. Idempotent across every trust-key form.
 func (f *FrontendAPI) HardenGitRepo(path string) error {
 	path = strings.TrimSpace(path)
 	if path == "" {
@@ -531,9 +408,7 @@ func (f *FrontendAPI) HardenGitRepo(path string) error {
 	if f.config == nil {
 		return errors.New("config not initialized")
 	}
-	// Idempotent across every trust-key form of both sides (same matching as
-	// TrustGitRepo): hardening a root that already has an entry — under any
-	// spelling — is a no-op.
+	// Idempotent across every trust-key form (matching as in TrustGitRepo).
 	candidates := workspace.TrustProbePaths(cleaned)
 	for _, h := range f.config.Security.HardenGitRepos {
 		if trustEntryMatchesPath(h, candidates) {
@@ -552,10 +427,7 @@ func (f *FrontendAPI) HardenGitRepo(path string) error {
 }
 
 // RemoveHardenGitRepo removes a repository root from the hardened list.
-// Idempotent: removing an absent entry is a no-op. Like RemoveTrustedGitRepo,
-// it prunes every key form of the given path (the exact cleaned path, the
-// repository trust root, and the legacy work-tree root) so stale,
-// subdirectory, or worktree spellings still remove cleanly.
+// Idempotent; prunes every trust-key form like RemoveTrustedGitRepo.
 func (f *FrontendAPI) RemoveHardenGitRepo(path string) error {
 	path = strings.TrimSpace(path)
 	if path == "" {
@@ -588,32 +460,15 @@ func (f *FrontendAPI) RemoveHardenGitRepo(path string) error {
 	return nil
 }
 
-// notifyGitConfigRisk scans path's git config and emits the global
-// project:git_config_risk event when the config is not provably clean
-// (dangerous keys, include directives, malformed or unreadable config — the
-// fail-closed complement of GitConfigInfo.Clean). A clean repo emits nothing,
-// and a directory without .git is clean by definition. A repository the user
-// explicitly trusted (security.trusted_git_repos) emits nothing ONLY while its
-// configuration still matches the trusted snapshot: on drift the trust is
-// evicted and the repo re-warns with a diff (see recheckTrustedGitRepo).
-// Best-effort and synchronous: the scan is a bounded text parse, and emitting
-// after the project:switched / workdirs:changed events keeps the UI narrative
-// ("opened, then warned") stable. No-op when no emitter is wired (tests).
-//
-// The warning and the trust check are attributed to the repository's trust
-// root (workspace.ResolveGitTrustRoot — the main work-tree root), not the
-// given path (review [52]): the scan itself walks up to the parent
-// repository, so a workspace opened at a subdirectory — or inside a linked
-// worktree, whose hooks and common config are shared with the main
-// checkout — must be warned under, and trusted as, the repository root the
-// programs actually come from, exactly as ADR-033 and the security model
-// describe. TrustGitRepo normalizes through the same resolver, so both
-// sides always agree. The trusted-entry lookup still runs on the given path
-// (across all its trust-key forms) so an entry stored under the legacy
-// work-tree-root form — or the raw path itself — is found too. The scan
-// still runs on the given path: relative core.attributesFile values anchor
-// where git actually runs (the workspace directory), not the repository
-// root.
+// notifyGitConfigRisk scans path's git config and emits project:git_config_risk
+// when the config is not provably clean (fail-closed complement of
+// GitConfigInfo.Clean; no .git → clean). A trusted repository stays silent
+// only while it matches its snapshot — on drift the trust is evicted and the
+// repo re-warns with a diff (recheckTrustedGitRepo). Synchronous, emitted
+// after project:switched / workdirs:changed ("opened, then warned"); no-op
+// without an emitter (tests). Attribution and trust key on the repository
+// trust root (ADR-033); the entry lookup and the scan still run on the given
+// path — relative core.attributesFile anchors where git runs.
 func (f *FrontendAPI) notifyGitConfigRisk(source, path string) {
 	f.seedAcquire()
 	if f.emitEvent == nil {
@@ -657,43 +512,17 @@ func (f *FrontendAPI) notifyGitConfigRisk(source, path string) {
 	})
 }
 
-// recheckTrustedGitRepo decides whether a repository the user trusted is still
-// safe to leave silent. The trust lifecycle is bound to the SEMANTIC
-// fingerprint of the config snapshot captured at trust time (the hash of its
-// DANGEROUS subset — see workspace.SemanticSnapshot), so a fresh scan is
-// classified three ways:
-//
-//   - semantic fingerprint unchanged, byte-level fingerprint unchanged: the
-//     configuration is exactly what the user trusted; nothing is emitted.
-//   - semantic fingerprint unchanged, byte-level fingerprint differs: the
-//     delta is INERT by construction (branch/alias bookkeeping — the only
-//     records outside the semantic identity). The trust stands and the stored
-//     raw snapshot is silently refreshed to the new bytes, so the byte-level
-//     binding follows the config without an event.
-//   - semantic fingerprint differs (or the config can no longer be scanned —
-//     fail closed): the trust is evicted and the repository returns to the
-//     hardened default with a warning carrying the drift reason and a diff of
-//     the SEMANTIC change (DiffGitConfigSnapshots over the stored and current
-//     semantic snapshots), so inert churn never buries the real difference.
-//
-// Records written before the semantic layer (a fingerprint but no semantic
-// fingerprint, or the legacy bare-path form with neither) are migrated on
-// this path: the semantic identity is recovered from the raw snapshot the
-// record stored — describing the bytes the user actually trusted — and
-// persisted. A record whose identity cannot be recovered fails closed: the
-// trust is evicted and the repository warns (see
-// migrateTrustedGitRepoRecord).
-//
-// The scan runs on displayPath (the work-tree root), NOT the caller's path:
-// trust is stored — and fingerprinted — under the root TrustGitRepo resolved,
-// so the recheck must scan the same path form to stay consistent (a relative
-// core.attributesFile anchors where git runs; scanning a subdirectory would
-// resolve it differently and false-trigger drift).
+// recheckTrustedGitRepo decides whether a trusted repository stays silent.
+// The lifecycle keys on the SEMANTIC fingerprint (ADR-070): both fingerprints
+// unchanged → silence; bytes differ, semantics not → inert by construction,
+// refresh the raw snapshot silently; semantics differ (or unscannable —
+// fail closed) → evict and re-warn with the SEMANTIC diff. Pre-semantic
+// records are migrated from their raw snapshot first
+// (migrateTrustedGitRepoRecord); unrecoverable identity fails closed. The
+// scan runs on displayPath — trust is fingerprinted under the resolved root.
 func (f *FrontendAPI) recheckTrustedGitRepo(source, displayPath string, trusted config.TrustedGitRepo) {
 	f.seedAcquire()
-	// v1→v2 migration: a record predating the semantic layer carries no
-	// semantic fingerprint. Recover it from the stored raw snapshot before
-	// anything else — an unrecoverable record fails closed below.
+	// v1→v2 migration first: an unrecoverable record fails closed below.
 	if trusted.SemanticFingerprint == "" {
 		migrated := f.migrateTrustedGitRepoRecord(trusted)
 		if migrated == nil {
@@ -725,18 +554,15 @@ func (f *FrontendAPI) recheckTrustedGitRepo(source, displayPath string, trusted 
 			f.log().Debug("git-config risk warning suppressed: trusted repository unchanged", "path", displayPath)
 			return
 		}
-		// The bytes moved but the meaning did not: the delta is inert by
-		// construction (branch/alias churn). Keep the trust and follow the
-		// bytes silently — no event.
+		// Bytes moved, meaning did not: inert by construction. Follow
+		// silently, no event.
 		f.refreshTrustedGitRepoRawSnapshot(displayPath, trusted, scanned)
 		return
 	}
 
-	// Semantic drift (or an unreadable config — fail closed): the trust is
-	// stale. Evict it so the spawn layer stops running raw git and the repo
-	// hardens again. The eviction keys on the ENTRY's stored path form (the
-	// lookup may have matched a legacy work-tree-root entry attributed here
-	// to the trust root), so the record actually leaves the list.
+	// Semantic drift (or unreadable config — fail closed): evict so the
+	// spawn layer stops running raw git. Keys on the ENTRY's stored path
+	// form, so the record actually leaves the list.
 	f.evictTrustedGitRepo(trusted)
 
 	data := GitConfigRiskData{
@@ -775,23 +601,16 @@ func (f *FrontendAPI) recheckTrustedGitRepo(source, displayPath string, trusted 
 	f.emitEvent(EventGitConfigRisk, data)
 }
 
-// migrateTrustedGitRepoRecord recovers the semantic fingerprint of a v1 trust
-// record — one written before the semantic layer, carrying only the raw
-// byte-level fingerprint (or, in the legacy bare-path form, neither
-// fingerprint). The identity is recovered from the raw snapshot the record
-// stored, deliberately WITHOUT re-scanning the repository: the recovered
-// identity must describe the bytes the user actually reviewed at trust time,
-// whatever the repository carries now. On success the record in the config is
-// updated and persisted, and the semantic snapshot is stored content-
-// addressed next to the raw one. A nil return means the record cannot be
-// migrated — no fingerprint, a missing or corrupted snapshot (one that no
-// longer hashes to its content-addressed name), or a snapshot this scanner
-// cannot interpret — and the caller must fail closed: evict the trust rather
-// than carry an unverifiable one over.
+// migrateTrustedGitRepoRecord recovers a v1 record's semantic fingerprint
+// from its stored RAW snapshot — deliberately without re-scanning, so the
+// identity describes the bytes the user actually reviewed, whatever the
+// repository carries now. On success the record is updated and persisted and
+// the semantic snapshot stored; nil means unmigratable (no fingerprint,
+// missing/corrupted snapshot, uninterpretable content) and the caller must
+// fail closed: evict rather than carry an unverifiable trust.
 func (f *FrontendAPI) migrateTrustedGitRepoRecord(trusted config.TrustedGitRepo) *config.TrustedGitRepo {
 	if trusted.Fingerprint == "" {
-		// Legacy bare-path record: no snapshot was ever captured, so there
-		// is nothing to recover the trusted identity from.
+		// Legacy bare-path record: nothing to recover the identity from.
 		f.log().Debug("trusted git repository record has no snapshot (legacy); cannot migrate", "path", trusted.Path)
 		return nil
 	}
@@ -800,9 +619,8 @@ func (f *FrontendAPI) migrateTrustedGitRepoRecord(trusted config.TrustedGitRepo)
 		f.log().Debug("trusted git repository record migration failed: raw snapshot unreadable", "path", trusted.Path, "error", err)
 		return nil
 	}
-	// The snapshot store is content-addressed: a file that no longer hashes
-	// to its name is corrupted, and carrying trust over from it would bind
-	// the trust to bytes the user never reviewed.
+	// Content-addressed store: a file that no longer hashes to its name is
+	// corrupted — carrying trust over would bind it to unreviewed bytes.
 	if sum := sha256.Sum256(raw); hex.EncodeToString(sum[:]) != trusted.Fingerprint {
 		f.log().Debug("trusted git repository record migration failed: raw snapshot does not match its fingerprint (corrupted)", "path", trusted.Path)
 		return nil
@@ -829,20 +647,16 @@ func (f *FrontendAPI) migrateTrustedGitRepoRecord(trusted config.TrustedGitRepo)
 		}
 	}
 	if updated {
-		// Persisted UNDER configMu (review [103]): persistConfig → config.Save
-		// yaml.Marshals the live config maps, and marshalling outside the
-		// lock races a concurrent Settings save's in-place map writes into a
-		// fatal "concurrent map read and map write". Every other persistConfig
-		// caller in the trust path holds the lock; these two sites were the
-		// outliers.
+		// Persisted UNDER configMu (review [103]): config.Save's yaml.Marshal
+		// ranges the live config maps — marshalling outside the lock races a
+		// concurrent Settings save into a fatal concurrent map access.
 		if err := f.persistConfig(); err != nil {
 			f.log().Warn("failed to persist migrated trusted git repositories", "error", err)
 		}
 	}
 	f.configMu.Unlock()
 	if !updated {
-		// The record changed or vanished concurrently; do not report a
-		// migration for a trust that is no longer the one being rechecked.
+		// The record changed or vanished concurrently — no migration to report.
 		return nil
 	}
 	f.log().Debug("trusted git repository record migrated to the semantic fingerprint", "path", trusted.Path)
@@ -851,14 +665,10 @@ func (f *FrontendAPI) migrateTrustedGitRepoRecord(trusted config.TrustedGitRepo)
 	return &out
 }
 
-// refreshTrustedGitRepoRawSnapshot rebinds a trusted entry to the freshly
-// scanned bytes after inert drift: the semantic identity is unchanged, so the
-// delta cannot affect how c0wrk's git operations behave, and only the
-// byte-level fingerprint and its snapshot follow the config. The semantic
-// snapshot is rewritten too — content-addressed, so the write is a no-op
-// unless a previous write was lost, in which case it heals the store.
-// Nothing is emitted: the user trusted a meaning, and the meaning did not
-// change.
+// refreshTrustedGitRepoRawSnapshot rebinds a trusted entry to freshly scanned
+// bytes after inert drift: only the byte-level fingerprint and its snapshot
+// follow the config; the semantic snapshot rewrite is a no-op unless a
+// previous write was lost (it heals the store). Nothing is emitted.
 func (f *FrontendAPI) refreshTrustedGitRepoRawSnapshot(displayPath string, trusted config.TrustedGitRepo, scanned *workspace.GitConfigInfo) {
 	fingerprint := scanned.Fingerprint()
 	if err := f.writeGitConfigSnapshot(fingerprint, scanned.Snapshot()); err != nil {
@@ -871,18 +681,15 @@ func (f *FrontendAPI) refreshTrustedGitRepoRawSnapshot(displayPath string, trust
 	updated := false
 	for i := range f.config.Security.TrustedGitRepos {
 		entry := &f.config.Security.TrustedGitRepos[i]
-		// Match the ENTRY's own stored path (the lookup may have matched a
-		// legacy work-tree-root entry attributed to the trust root), never
-		// the display form — a refresh must never touch a different record.
+		// Match the ENTRY's own stored path, never the display form — a
+		// refresh must never touch a different record.
 		if filepath.Clean(entry.Path) == filepath.Clean(trusted.Path) && entry.Fingerprint == trusted.Fingerprint {
 			entry.Fingerprint = fingerprint
 			updated = true
 		}
 	}
 	if updated {
-		// Persisted UNDER configMu, mirroring the other persistConfig
-		// callers — config.Save's yaml.Marshal ranges the live config maps
-		// (review [103]).
+		// Persisted UNDER configMu — review [103], see migrateTrustedGitRepoRecord.
 		if err := f.persistConfig(); err != nil {
 			f.log().Warn("failed to persist refreshed trusted git repositories", "error", err)
 		}
@@ -894,12 +701,10 @@ func (f *FrontendAPI) refreshTrustedGitRepoRawSnapshot(displayPath string, trust
 	f.log().Debug("git-config drift for trusted repository is inert; raw snapshot refreshed", "path", displayPath)
 }
 
-// evictTrustedGitRepo removes the given trusted entry, mirroring the removal
-// into the process-wide git trust registry so the repository hardens again.
-// It removes by the entry's own stored path (RemoveTrustedGitRepo then prunes
-// every key form of it), so a legacy work-tree-root entry attributed to the
-// trust root still leaves the list. Best-effort: failures are logged, not
-// returned — the caller always emits the warning event either way.
+// evictTrustedGitRepo removes the trusted entry (by its stored path form, so
+// legacy-spelled records still leave the list) and mirrors the removal into
+// the gittrust registry so the repository hardens again. Best-effort — the
+// caller emits the warning either way.
 func (f *FrontendAPI) evictTrustedGitRepo(trusted config.TrustedGitRepo) {
 	if err := f.RemoveTrustedGitRepo(trusted.Path); err != nil {
 		f.log().Warn("failed to evict drifted trusted git repository", "path", trusted.Path, "error", err)
@@ -941,12 +746,9 @@ func buildGitConfigFindings(info *workspace.GitConfigInfo) []GitConfigRiskFindin
 		})
 	}
 
-	// Review [56]c: surface the blanket attribute-interpretation kill while
-	// it is active. In narrow mode (visible drivers pinned by name) benign
-	// attributes keep working and nothing is added; only the include case —
-	// where driver names may be hidden from the scan — still engages
-	// attr.tree, and its collateral is disclosed here so a user staring at
-	// falsely-modified CRLF files knows why.
+	// Review [56]c: disclose the blanket attribute-interpretation kill while
+	// it is active (only the include case still engages attr.tree), so a
+	// user staring at falsely-modified CRLF files knows why.
 	if info.AttributesInterpretationDisabled() {
 		findings = append(findings, GitConfigRiskFinding{
 			Key: "(attributes disabled)",

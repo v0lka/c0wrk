@@ -5,6 +5,7 @@ import "context"
 // noProjectKey is the context key signalling No Project (CHAT) mode.
 // When set, privacy-sensitive info (e.g. home directory) must be redacted
 // from system prompts, and code‑oriented tools are disabled.
+// See specs/domains/orchestration/README.md (Invariants).
 type noProjectKey struct{}
 
 // WithNoProject returns a new context marked as No Project mode.
@@ -19,14 +20,13 @@ func IsNoProject(ctx context.Context) bool {
 }
 
 // researchKey is the context key signalling RESEARCH mode for a real project
-// (not No Project) with a non-empty research root. Unlike No Project mode,
-// RESEARCH keeps the full CODE toolset — the flag exists for prompt/router/UI
-// awareness, not tool restriction.
+// with a non-empty research root. Unlike No Project mode, RESEARCH keeps the
+// full CODE toolset — the flag drives prompt/router/UI awareness only.
+// See specs/domains/research.md (Invariants).
 type researchKey struct{}
 
-// WithResearch returns a new context marked as RESEARCH mode. The caller is
-// responsible for only applying this to real projects that have a non-empty
-// research root (never No Project sessions).
+// WithResearch marks the context RESEARCH mode; the caller applies it only to
+// real projects with a non-empty research root (never No Project sessions).
 func WithResearch(ctx context.Context) context.Context {
 	return context.WithValue(ctx, researchKey{}, true)
 }
@@ -37,17 +37,13 @@ func IsResearch(ctx context.Context) bool {
 	return v
 }
 
-// researchRootKey carries the on-disk research-root path for a RESEARCH-mode
-// project (config.ProjectResearchPath, `<workspace>/.research`, for every real
-// project). It is set alongside
-// WithResearch by the session manager so the orchestrator can parse the
-// research catalog and build a research-aware prompt/router context without
-// re-deriving the path (core may not import backend/config). Empty by
-// default; callers must only set it for real projects with a non-empty root.
+// researchRootKey carries the on-disk research root (config.ProjectResearchPath,
+// `<workspace>/.research`); set alongside WithResearch by the session manager —
+// core may not import backend/config. Only for real projects with a root.
 type researchRootKey struct{}
 
-// WithResearchRoot returns a new context carrying the research-root path. It
-// is a no-op when path is empty (no root → no research context block).
+// WithResearchRoot returns a new context carrying the research-root path;
+// an empty path means no research context block.
 func WithResearchRoot(ctx context.Context, path string) context.Context {
 	if path == "" {
 		return ctx

@@ -5,10 +5,8 @@ package backend
 import "errors"
 
 // errSystemFontUnavailable is the non-Linux answer from readSystemFonts:
-// there is no gsettings-equivalent probe for the desktop fonts that c0wrk
-// implements today (macOS and Windows resolve their "system fonts" through
-// platform-native stacks the webview already follows). The RPC surfaces this
-// as the zero response and the frontend hides the settings entirely.
+// desktop-system-font detection is GNOME/gsettings-only in c0wrk; the RPC
+// surfaces the zero response and the frontend hides the settings there.
 var errSystemFontUnavailable = errors.New("system font detection is only supported on Linux (GNOME/gsettings)")
 
 // readSystemFonts is the non-Linux stub backing GetSystemFonts; see

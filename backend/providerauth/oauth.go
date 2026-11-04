@@ -17,8 +17,8 @@ import (
 	"time"
 )
 
-// DefaultCallbackWait bounds how long the flow waits for the browser redirect
-// before giving up. It can be shortened through the context passed to SignIn.
+// DefaultCallbackWait bounds the browser-redirect wait; the context passed
+// to SignIn can shorten it.
 const DefaultCallbackWait = 5 * time.Minute
 
 // ErrBrowserCallback reports that the browser redirect never arrived.
@@ -31,9 +31,8 @@ var ErrStateMismatch = errors.New("providerauth: OAuth state mismatch on redirec
 // ErrAccessDenied reports the user declining consent in the browser.
 var ErrAccessDenied = errors.New("providerauth: authorization was denied in the browser")
 
-// BrowserOpener presents the authorization URL to the user. Production code
-// uses DefaultBrowserOpener; tests inject a fake that drives the loopback
-// listener programmatically.
+// BrowserOpener presents the authorization URL to the user; production uses
+// DefaultBrowserOpener, tests inject a fake driving the loopback listener.
 type BrowserOpener func(authURL string) error
 
 // DefaultBrowserOpener opens authURL in the OS default browser. It returns an
@@ -53,20 +52,16 @@ func DefaultBrowserOpener(authURL string) error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("providerauth: opening the system browser (%s): %w", command, err)
 	}
-	// Reap the launcher child (xdg-open / open / rundll32): Start must be
-	// followed by Wait (or Release) or the exited child stays a zombie in the
-	// process table for the app's lifetime — one leaked entry per sign-in.
-	// The Wait goroutine detaches on purpose: the browser launcher must not
-	// be killed when the sign-in flow returns (the context has no deadline
-	// and no cancellation), and its error carries no actionable signal.
+	// Reap the launcher child: Start without Wait leaks a zombie per sign-in.
+	// The Wait goroutine detaches on purpose — the launcher must not be killed
+	// when the sign-in returns, and its error carries no actionable signal.
 	go func() { _ = cmd.Wait() }()
 	return nil
 }
 
-// Flow runs one browser OAuth sign-in for a Profile: it binds the loopback
-// listener, opens the browser, awaits the redirect, and exchanges the
-// authorization code for tokens. Flow values are single-use per SignIn call
-// and safe to share across calls.
+// Flow runs one browser OAuth sign-in for a Profile: loopback listener,
+// browser, redirect, code exchange (specs/domains/llm-providers.md). A Flow
+// value serves a single SignIn call and is safe to share across calls.
 type Flow struct {
 	profile Profile
 	client  *http.Client
@@ -74,9 +69,7 @@ type Flow struct {
 	now     func() time.Time
 }
 
-// NewFlow returns a Flow for profile. client defaults to a conservative
-// HTTP client with a bounded timeout; opener defaults to
-// DefaultBrowserOpener.
+// NewFlow returns a Flow for profile.
 func NewFlow(profile Profile, client *http.Client, opener BrowserOpener) *Flow {
 	if client == nil {
 		client = defaultHTTPClient()
@@ -96,9 +89,8 @@ type SignInResult struct {
 	Identity *Identity
 }
 
-// SignIn performs the full authorization-code flow with PKCE and returns the
-// issued tokens. ctx bounds both the wait for the browser redirect and the
-// token exchange. Secrets never appear in returned errors or logs.
+// SignIn performs the full authorization-code flow with PKCE (see
+// specs/domains/llm-providers.md); ctx bounds redirect wait and exchange.
 func (f *Flow) SignIn(ctx context.Context) (*SignInResult, error) {
 	verifier, err := newCodeVerifier()
 	if err != nil {
@@ -126,9 +118,8 @@ func (f *Flow) SignIn(ctx context.Context) (*SignInResult, error) {
 		return nil, err
 	}
 
-	// Start serving the redirect BEFORE handing the URL to the browser, so an
-	// opener that synchronously drives the redirect cannot deadlock against a
-	// listener that is not accepting yet.
+	// Serve the redirect BEFORE opening the browser so an opener that
+	// synchronously drives the redirect cannot hit a dead listener.
 	callback := startCallbackServer(listener, f.profile.RedirectPath, state)
 	if err := f.opener(authURL); err != nil {
 		callback.stop()
@@ -171,9 +162,7 @@ func (f *Flow) authorizeURL(redirectURI, state, verifier string) (string, error)
 		"code_challenge":        {challenge},
 		"code_challenge_method": {"S256"},
 	}
-	// Provider-specific extras (simplified-flow switches, originator, …);
-	// core OAuth parameters above always win, so the extras cannot corrupt
-	// them.
+	// Provider-specific extras; core OAuth parameters above always win.
 	for k, v := range f.profile.AuthorizeParams {
 		if _, core := q[k]; !core && v != "" {
 			q.Set(k, v)
@@ -187,12 +176,10 @@ type callbackWaiter struct {
 	srv      *http.Server
 	done     chan callbackResult
 	serveErr chan error
-	// publish serializes result publication: exactly ONE callback result
-	// ever enters the (buffered) channel, so a stray second redirect (the
-	// browser retrying, a second tab, a local process hammering the port)
-	// cannot fill the buffer and leave later handlers blocked forever on
-	// the send. Late callbacks are answered (the browser gets its page) and
-	// dropped.
+	// publish serializes verdict publication: exactly ONE callback result
+	// ever enters the buffered channel, so a stray second redirect (browser
+	// retry, second tab, a process hammering the port) cannot wedge later
+	// handlers on the send. Late callbacks are answered and dropped.
 	publishOnce sync.Once
 }
 
@@ -221,9 +208,6 @@ func startCallbackServer(listener net.Listener, callbackPath, state string) *cal
 			rw.WriteHeader(http.StatusOK)
 			_, _ = rw.Write([]byte("<html><body><h1>Sign-in complete</h1><p>You can close this tab and return to c0wrk.</p></body></html>"))
 		}
-		// Publish the verdict at most once; late callbacks (a second
-		// redirect while the waiter is concluding) are answered above and
-		// never block this handler goroutine.
 		w.publishOnce.Do(func() { w.done <- cb })
 	})
 	w.srv.Handler = mux
@@ -318,18 +302,10 @@ func newState() (string, error) {
 }
 
 // listenLoopback binds the redirect port on every loopback family the host
-// provides (IPv4 127.0.0.1 and, when available, IPv6 ::1), because the
-// redirect URI names "localhost" and browsers may connect through either
-// family. The port itself is not negotiable: the issuer allow-lists the
-// exact redirect URI, so a busy port must fail the sign-in with an
-// actionable error rather than silently moving to an unregistered port.
-//
-// A family the host cannot provide (no IPv6 stack) is skipped silently, but
-// EADDRINUSE on a family the host DOES provide is fatal even when the other
-// family bound fine: the redirect URI names "localhost", and the browser may
-// resolve it to the busy family — another process would then accept the
-// redirect and the sign-in would wait for its full timeout instead of
-// failing fast with the busy-port error.
+// provides; no port fallback — the issuer allow-lists the exact redirect URI
+// (specs/domains/llm-providers.md). A family the host cannot provide is
+// skipped, but a busy provided family fails the sign-in: the browser may
+// resolve "localhost" to it, letting a stranger accept the redirect.
 func listenLoopback(port int) (net.Listener, error) {
 	var listeners []net.Listener
 	for _, host := range []string{"127.0.0.1", "::1"} {
@@ -358,8 +334,7 @@ func listenLoopback(port int) (net.Listener, error) {
 }
 
 // multiListener merges several bound listeners behind one net.Listener so a
-// single http.Server serves every loopback family. Addr reports the first
-// bound listener (all families share the port in production flows).
+// single http.Server serves every loopback family.
 type multiListener struct {
 	listeners []net.Listener
 	accepts   chan net.Conn
@@ -427,7 +402,6 @@ func (m *multiListener) Addr() net.Addr {
 	return m.listeners[0].Addr()
 }
 
-// listenTCP binds one loopback address through a context-aware ListenConfig.
 func listenTCP(addr string) (net.Listener, error) {
 	return (&net.ListenConfig{}).Listen(context.Background(), "tcp", addr)
 }

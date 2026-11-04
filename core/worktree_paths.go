@@ -10,14 +10,14 @@ import (
 	"github.com/v0lka/sp4rk/safeio"
 )
 
-// WorktreeRepositoryMarker binds an external managed container to its repository.
-// It survives tree removal and config changes; it is not session or git state.
+// WorktreeRepositoryMarker binds a managed container to its repository; it
+// survives tree removal and config changes — specs/domains/session-worktrees.md.
 const WorktreeRepositoryMarker = ".c0wrk-worktree-repository"
 
 // IsManagedWorktreePath recognizes a direct child of the legacy container or a
-// marked container belonging to repoRoot, independently of current config.
-// Callers additionally validate portable names and live git membership before
-// performing lifecycle operations.
+// marked container belonging to repoRoot, independently of current config
+// (specs/domains/session-worktrees.md). Callers still validate portable names
+// and live git membership before lifecycle operations.
 func IsManagedWorktreePath(repoRoot, target string) bool {
 	if !filepath.IsAbs(target) || filepath.Clean(target) != target {
 		return false
@@ -42,16 +42,11 @@ func IsManagedWorktreePath(repoRoot, target string) bool {
 }
 
 // IsProjectScopedWorktreePath recognizes a direct child of a project-scoped
-// managed container (<...>/<projectID>/<ProjectWorktreesSegment>/<name>)
-// independently of the on-disk repository marker and of current config. A
-// durable binding records its own container, so the project-id path segment
-// anchors ownership even after the marker file or the whole app-data container
-// is removed — the marker corroborates, it must not gate recognition of a path
-// the app itself recorded. Symlink-safety and direct-child containment are
-// still enforced; existence is not asserted (a missing tree stays
-// recognizable, and a missing container is recreated at this path on restore).
-// Classification of FOREIGN (git-listed) trees keeps the stricter
-// IsManagedWorktreePath proof and never calls this.
+// managed container (<...>/<projectID>/<ProjectWorktreesSegment>/<name>) by
+// its project-id layout alone — marker-independent, so a recorded binding
+// stays decodable after the marker or app-data container is removed
+// (specs/domains/session-worktrees.md); containment and symlink-safety still
+// hold. Foreign (git-listed) trees keep the stricter IsManagedWorktreePath.
 func IsProjectScopedWorktreePath(projectID, target string) bool {
 	if projectID == "" || !filepath.IsAbs(target) || filepath.Clean(target) != target {
 		return false

@@ -5,18 +5,15 @@ import (
 	"strings"
 )
 
-// Profile describes one subscription provider's OAuth and API endpoints.
-// Profiles are pure data; ChatGPT() returns the production ChatGPT profile
-// and tests build throwaway profiles against httptest servers.
+// Profile describes one subscription provider's OAuth and API endpoints as
+// pure data; ChatGPT() is the production profile, tests build throwaway ones.
 type Profile struct {
-	// ProviderID is the stable provider identifier ("chatgpt"); it keys the
-	// persisted secret and appears in diagnostics.
+	// ProviderID keys the persisted secret and appears in diagnostics.
 	ProviderID string
 	// Issuer is the OAuth issuer base URL, without a trailing slash
 	// (e.g. "https://auth.openai.com").
 	Issuer string
-	// ClientID is the public OAuth client identifier; subscription clients
-	// use PKCE instead of a client secret.
+	// ClientID is the public OAuth client identifier (PKCE, no client secret).
 	ClientID string
 	// Scopes is the OAuth scope list requested at authorization.
 	Scopes []string
@@ -26,25 +23,20 @@ type Profile struct {
 	// APIBaseURL is the provider's model-API base URL (the path /responses is
 	// appended by the transport layer, not here).
 	APIBaseURL string
-	// RedirectPort is the loopback listener port for the browser redirect.
-	// The issuer validates redirect_uri against the OAuth client's
-	// allow-list exactly, so the port is not negotiable: when it is busy the
-	// sign-in fails with an actionable error instead of silently moving to
-	// an unregistered port.
+	// RedirectPort is the loopback redirect port — not negotiable: the issuer
+	// allow-lists the exact redirect URI, so a busy port fails the sign-in
+	// with an actionable error, never a port fallback
+	// (specs/domains/llm-providers.md).
 	RedirectPort int
-	// RedirectHost is the host named in the redirect URI ("localhost"). It
-	// is the host the client registered, not necessarily a numeric loopback
-	// address: browsers may resolve the name to either loopback family, so
-	// the listener binds every family it can.
+	// RedirectHost is the host named in the registered redirect URI
+	// ("localhost") — a name browsers may resolve to either loopback family.
 	RedirectHost string
-	// RedirectPath is the exact redirect path registered for the OAuth
-	// client ("/auth/callback" for the Codex CLI client) and the path the
-	// loopback listener serves.
+	// RedirectPath is the exact redirect path registered for the OAuth client
+	// ("/auth/callback" for the Codex CLI client), served by the listener.
 	RedirectPath string
-	// AuthorizeParams carries provider-specific extra query parameters for
-	// the authorize request (e.g. the Codex simplified-flow switches and the
-	// originator). Core OAuth parameters (response_type, client_id, …) are
-	// always set by the flow itself.
+	// AuthorizeParams carries provider-specific extra authorize-query
+	// parameters (Codex simplified-flow switches, originator, …); the flow
+	// always sets the core OAuth parameters itself.
 	AuthorizeParams map[string]string
 }
 
@@ -60,8 +52,6 @@ func (p Profile) TokenURL() string {
 }
 
 // RedirectURI returns the loopback redirect URI for the given local port.
-// The host and path come from the profile because the issuer matches
-// redirect_uri against the client's allow-list byte-for-byte.
 func (p Profile) RedirectURI(port int) string {
 	return fmt.Sprintf("http://%s:%d%s", p.RedirectHost, port, p.RedirectPath)
 }

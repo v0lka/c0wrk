@@ -10,6 +10,7 @@ import { formatFileRefPath } from '@/lib/parseReferences'
 import { parseUnifiedDiff, buildDisplayLines } from '@/lib/diffParser'
 import { Markdown } from '@/lib/markdownConfig'
 import { Button } from '@/components/ui/button'
+import { useReadingPosition } from '@/components/fileViewer/useReadingPosition'
 import { FileViewerContextMenu } from '@/components/fileViewer/FileViewerContextMenu'
 import {
   diffDecorationField,
@@ -63,10 +64,9 @@ export function CodeMirrorFileViewer(props: CodeMirrorViewerProps) {
             highlightLine={highlightLine}
           />
         ) : (
-          <Markdown
+          <MarkdownPreviewPane
+            path={activeFile}
             content={content}
-            className="flex-1 overflow-auto custom-scrollbar p-4"
-            baseFilePath={activeFile}
             workspaceRoot={workspacePath}
           />
         )}
@@ -105,6 +105,15 @@ function CodeMirrorEditor({ content, language, diff, highlightLine }: CodeMirror
   // below so CodeMirror re-measures line heights for the new metrics.
   const monoFontFamily = useFontStore((s) => s.monoFontFamily)
 
+  // -- Reading-position memory (session scope) ---------------------------
+  // The file-viewer twin of ChatScrollManager + chatStore.scrollPositions:
+  // the shared useReadingPosition hook owns the scroll ref and the
+  // save/restore effects (unmount / tab re-target); this component only
+  // feeds it the view's scrollDOM once created — the bind is the mount
+  // restore point, since the view (and its scroll geometry) does not exist
+  // when the hook's own path effect runs.
+  const { bindScrollElement, restore } = useReadingPosition(activeFile)
+
   // Create EditorView on mount, destroy on unmount
   useEffect(() => {
     if (!containerRef.current) return
@@ -133,8 +142,19 @@ function CodeMirrorEditor({ content, language, diff, highlightLine }: CodeMirror
     })
 
     viewRef.current = view
+    // Bind the listener and restore the saved reading position — the live
+    // scroll DOM died with the previous unmount (viewer collapse / tab
+    // close). restoreScrollTop scales a stale offset when the file changed
+    // between save and restore, and the browser clamps the rest. The
+    // highlightLine effect below runs AFTER this one (effect definition
+    // order), so an explicit open-at-line still wins.
+    bindScrollElement(view.scrollDOM)
 
     return () => {
+      // Detach the listener before destroy() — afterwards the scrollDOM is
+      // gone. The unmount save itself lives in the hook and reads the
+      // listener-fed ref, so its order against this cleanup is irrelevant.
+      bindScrollElement(null)
       view.destroy()
       viewRef.current = null
     }
@@ -161,9 +181,20 @@ function CodeMirrorEditor({ content, language, diff, highlightLine }: CodeMirror
   }, [theme, themeId, monoFontFamily])
 
   // Update document content when it changes
+  const contentPathRef = useRef<string | null>(activeFile)
   useEffect(() => {
     const view = viewRef.current
     if (!view) return
+
+    // Consume the path BEFORE the byte-identical early return below: a
+    // re-target onto identical bytes must still mark the path consumed, or
+    // the next same-tab refresh would be misclassified as a re-target and
+    // restore() would overwrite the live reading position with the stale
+    // saved offset. A byte-identical re-target itself needs no re-anchor —
+    // the shared hook's path effect already restored against an identical
+    // document.
+    const retargeted = contentPathRef.current !== activeFile
+    contentPathRef.current = activeFile
 
     const currentDoc = view.state.doc.toString()
     if (currentDoc === content) return
@@ -171,7 +202,12 @@ function CodeMirrorEditor({ content, language, diff, highlightLine }: CodeMirror
     view.dispatch({
       changes: { from: 0, to: view.state.doc.length, insert: content },
     })
-  }, [content])
+    // A tab re-target restored against the OUTGOING document's geometry (the
+    // shared hook's restore runs before this swap): re-anchor the incoming
+    // path's position against the new document. A same-tab refresh must not
+    // re-anchor — the live reading position wins over the stale saved one.
+    if (retargeted) restore()
+  }, [content, activeFile, restore])
 
   // Load language asynchronously and reconfigure compartment
   useEffect(() => {
@@ -290,5 +326,45 @@ function CodeMirrorEditor({ content, language, diff, highlightLine }: CodeMirror
         onClose={closeContextMenu}
       />
     </>
+  )
+}
+
+/**
+ * The markdown PREVIEW branch of the viewer with reading-position memory —
+ * the same save-on-unmount / restore-on-bind contract as CodeMirrorEditor,
+ * shared through useReadingPosition, so the preview scroll also survives
+ * viewer collapse and tab re-targets. Source and preview share ONE store
+ * slot per file — the toggle carries the single position across the panes
+ * (restoreScrollTop re-anchors it to the other pane's height), it does not
+ * keep two independent positions.
+ *
+ * The wrapper div is the scroll container itself (overflow-auto + padding
+ * live here) and binds the hook directly via a commit-phase ref callback —
+ * before effects, so the hook's path effect finds the element and restores
+ * directly. Markdown renders INSIDE it as plain flowing content: nothing
+ * here depends on Markdown's internal DOM shape.
+ */
+function MarkdownPreviewPane({ path, content, workspaceRoot }: {
+  path: string | null
+  content: string
+  workspaceRoot: string | null
+}) {
+  const { bindScrollElement } = useReadingPosition(path)
+
+  const attachScrollContainer = useCallback((el: HTMLDivElement | null) => {
+    bindScrollElement(el)
+  }, [bindScrollElement])
+
+  return (
+    <div
+      ref={attachScrollContainer}
+      className="flex-1 min-h-0 overflow-auto custom-scrollbar p-4"
+    >
+      <Markdown
+        content={content}
+        baseFilePath={path}
+        workspaceRoot={workspaceRoot}
+      />
+    </div>
   )
 }

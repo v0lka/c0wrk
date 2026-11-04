@@ -184,8 +184,11 @@ Phase 2: config + tools (parallel, up to 3-10 min on first run)
       │     toast; no network pass, no blocking
       └─ tools not Ready / positively missing → PASS 2: BLOCKING network
             EnsureCriticalTools(AllowNetwork:true) under the splash
-            ├─ download → emit tool_manager:progress(bytes_done, bytes_total)
-            ├─ extract / python_bootstrap
+            ├─ per-tool progress: emit tool_manager:progress(stage,
+            │   bytes_done, bytes_total, detail?, error?, tools_total) —
+            │   download bytes, extract, verify (post-install probe),
+            │   python_bootstrap sub-steps; every install ends in a terminal
+            │   done or failed event
             ├─ emit tool_manager:done(counts) — exactly once per launch, on
             │   the deciding pass, before any fatal modal
             ├─ structural network failure → native fatal modal (error text)
@@ -202,6 +205,8 @@ emitBackendReady():
   │   visible and initTools already re-showed it, so this is always a no-op)
   └─ emit backend:ready
 ```
+
+**Background-vs-critical rule** (normative): new startup subsystems MUST go in a BACKGROUND phase unless they absolutely require completion before `EventBackendReady`; any change that adds >50ms to a critical phase MUST be justified in a code review comment. Per-phase timing is visible with `LOG_LEVEL=INFO`.
 
 **Frontend state machine** during startup:
 - `splash` (initial): renders `<ToolInstallSplash />` if `tool_manager:start` received, otherwise a minimal spinner

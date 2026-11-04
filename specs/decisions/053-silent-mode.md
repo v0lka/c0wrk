@@ -305,6 +305,17 @@ sub-policy), `verdict`, `tool`/`source`/`reason`, `justification`, and (for
 > such rows render as raw content. No migration is provided: no released
 > build ever wrote those rows.
 
+### D7. The silent-mode step-limit judge decides on host-owned evidence: the execution window
+
+The silent-mode step-limit judge (`step_limit.mode: auto`) decides on
+host-owned evidence: the session emitter feeds a bounded execution window — a
+ring of the last 24 executor events (tool calls, tool results, step
+completions, diagnostics; detail strings capped at 160 bytes) plus cumulative
+per-run quality counters mirroring the `agent_metrics` buckets — so
+`ResolveSilentStepLimit` sees the same trajectory the finish report presents,
+independent of executor-internal state. The window resets where
+`metricsState` snapshots — one window per task run.
+
 ## Consequences
 
 **Positive**

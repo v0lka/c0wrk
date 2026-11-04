@@ -9,20 +9,17 @@ import (
 	"github.com/zalando/go-keyring"
 )
 
-// keyringService is the OS-keychain service name every c0wrk secret is stored
-// under. Individual secrets are addressed by user ("account") keys such as
-// "providerauth:chatgpt".
+// keyringService is the OS-keychain service name for every c0wrk secret;
+// secrets are addressed by account keys such as "providerauth:chatgpt".
 const keyringService = "c0wrk"
 
 // ErrSecretNotFound reports that no secret is stored under the requested key
 // (e.g. the provider is signed out).
 var ErrSecretNotFound = errors.New("providerauth: secret not found")
 
-// SecretStore persists opaque secret strings keyed by name. The production
-// implementation is the OS keychain; tests use MemorySecretStore. Values are
-// treated as confidential: implementations must never log them.
-//
-// All methods must be safe for concurrent use.
+// SecretStore persists opaque secret strings keyed by name. Implementations
+// must keep values confidential (never log them) and be safe for concurrent
+// use.
 type SecretStore interface {
 	// Get returns the secret stored under key, or ErrSecretNotFound when none is.
 	Get(key string) (string, error)
@@ -45,18 +42,15 @@ func NewKeyringSecretStore() *KeyringSecretStore {
 }
 
 // keyringGet/keyringSet/keyringDelete are the go-keyring entry points, kept
-// as variables so tests can exercise the wrapper (error mapping, hints)
-// without touching the real OS keychain.
+// as variables so tests exercise the wrapper without the real OS keychain.
 var (
 	keyringGet    = keyring.Get
 	keyringSet    = keyring.Set
 	keyringDelete = keyring.Delete
 )
 
-// Get reads a secret from the OS keychain. A missing entry maps to
-// ErrSecretNotFound; backend failures (most commonly a Linux desktop without
-// a running Secret Service) return an error carrying an actionable hint.
-// The secret value is never part of the returned error.
+// Get reads a secret from the OS keychain: a missing entry maps to
+// ErrSecretNotFound, backend failures carry an actionable hint (keyringHint).
 func (s *KeyringSecretStore) Get(key string) (string, error) {
 	secret, err := keyringGet(s.service, key)
 	if err != nil {
@@ -76,7 +70,7 @@ func (s *KeyringSecretStore) Set(key, secret string) error {
 	return nil
 }
 
-// Delete removes a secret from the OS keychain.
+// Delete removes a secret; a missing entry maps to ErrSecretNotFound.
 func (s *KeyringSecretStore) Delete(key string) error {
 	err := keyringDelete(s.service, key)
 	if err != nil {
@@ -88,9 +82,8 @@ func (s *KeyringSecretStore) Delete(key string) error {
 	return nil
 }
 
-// keyringHint appends a platform-appropriate remediation note to keychain
-// errors. On Linux the dominant cause is a missing or locked Secret Service
-// (gnome-keyring); the other platforms surface their native managers.
+// keyringHint returns the platform-appropriate remediation note appended to
+// keychain errors.
 func keyringHint() string {
 	switch runtime.GOOS {
 	case "linux":
@@ -102,8 +95,7 @@ func keyringHint() string {
 	}
 }
 
-// MemorySecretStore is an in-process SecretStore for tests and tools. It is
-// safe for concurrent use and never touches the OS keychain.
+// MemorySecretStore is an in-process SecretStore for tests and tools.
 type MemorySecretStore struct {
 	mu sync.Mutex
 	m  map[string]string
@@ -114,7 +106,6 @@ func NewMemorySecretStore() *MemorySecretStore {
 	return &MemorySecretStore{m: make(map[string]string)}
 }
 
-// Get returns the stored secret or ErrSecretNotFound.
 func (s *MemorySecretStore) Get(key string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -125,7 +116,6 @@ func (s *MemorySecretStore) Get(key string) (string, error) {
 	return secret, nil
 }
 
-// Set stores the secret, replacing any previous value.
 func (s *MemorySecretStore) Set(key, secret string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -133,7 +123,6 @@ func (s *MemorySecretStore) Set(key, secret string) error {
 	return nil
 }
 
-// Delete removes the secret, returning ErrSecretNotFound when absent.
 func (s *MemorySecretStore) Delete(key string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

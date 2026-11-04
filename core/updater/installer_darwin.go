@@ -13,11 +13,9 @@ import (
 )
 
 // findInstallRoot resolves the .app bundle enclosing the running executable on
-// macOS. The executable lives at <bundle>.app/Contents/MacOS/<name>; we climb
-// ancestors until we find a directory whose suffix is ".app". A bare dev binary
-// (no enclosing .app bundle) has no safe install root — the directory it was
-// placed in may contain unrelated user files, and swapping that directory in
-// place would displace them — so it is refused with ErrNonStandardLocation.
+// macOS (<bundle>.app/Contents/MacOS/<name>). A bare dev binary (no enclosing
+// .app) has no safe install root — swapping its directory could displace
+// unrelated user files — so it is refused with ErrNonStandardLocation.
 func findInstallRoot() (string, error) {
 	exe, err := os.Executable()
 	if err != nil {
@@ -79,28 +77,18 @@ func normalizedTempRoot() (string, error) {
 	return filepath.EvalSymlinks(os.TempDir())
 }
 
-// copyExecutable copies src to dst and marks it executable (Unix perms).
-//
-// The copy is then RE-SIGNED with an ad-hoc signature. The running binary's
-// embedded signature is sealed against its bundle context (the CodeDirectory's
-// special slots cover the bundle's Info.plist), so a bare copy outside the
-// .app bundle fails macOS's exec-time validation: on recent macOS releases
-// amfid rejects it with "The signature on the file is invalid" and SIGKILLs
-// the process the moment exec(2) runs. Because the kill is asynchronous, the
-// launching cmd.Start() still reports success and the self-update silently
-// never happens (observed on macOS 27: the whole flow "succeeds" — quit,
-// no swap, no relaunch). A fresh `codesign --force --sign -` on the copy
-// produces a self-contained ad-hoc signature that validates as a bare
-// executable, so the staged updater actually runs. This does not weaken the
-// update integrity gate (ADR-023): the copied bytes are the SHA256-verified
-// release's own bytes; only the signature wrapper is regenerated locally.
+// copyExecutable copies src to dst with Unix exec perms, then re-signs the
+// copy ad-hoc: the running binary's embedded signature is sealed to its bundle
+// context, so a bare copy is SIGKILLed at exec while cmd.Start still reports
+// success (observed on macOS 27 — the flow "succeeds" but no update lands).
+// The bytes stay the SHA256-verified release's own; only the signature wrapper
+// is regenerated locally (specs/decisions/023-auto-update.md).
 func copyExecutable(src, dst string) (string, error) {
 	if err := copyFile(src, dst, 0o755); err != nil {
 		return "", fmt.Errorf("copy staging updater: %w", err)
 	}
-	// A bounded context (not the app's): the caller has none to pass, and a
-	// wedged codesign must not hang the apply path — a valid ad-hoc re-sign of
-	// a ~80 MB Mach-O completes in well under a second.
+	// Bounded context (the caller has none): a wedged codesign must not hang
+	// the apply path — a valid ad-hoc re-sign of a ~80 MB Mach-O is sub-second.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "codesign", "--force", "--sign", "-", dst)

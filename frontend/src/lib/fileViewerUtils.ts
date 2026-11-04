@@ -58,3 +58,20 @@ export function fileNameFromPath(path: string): string {
   }
   return path.split('/').pop() ?? path
 }
+
+/**
+ * The scrollTop to restore for a saved reading position against the live
+ * scroll geometry: the saved offset verbatim when the content height is
+ * unchanged, proportionally scaled when the file changed between save and
+ * restore (silent auto-refresh after `workspace:tree_changed`, an external
+ * edit while the viewer was collapsed). Degenerate geometries — no live
+ * content yet, or a save that recorded no height — restore to the top.
+ */
+export function restoreScrollTop(
+  saved: { scrollTop: number; scrollHeight: number },
+  scrollHeight: number,
+): number {
+  if (scrollHeight <= 0 || saved.scrollHeight <= 0) return 0
+  if (saved.scrollHeight === scrollHeight) return saved.scrollTop
+  return Math.round((saved.scrollTop * scrollHeight) / saved.scrollHeight)
+}

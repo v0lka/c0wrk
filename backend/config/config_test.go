@@ -1851,6 +1851,162 @@ vector_index:
 	}
 }
 
+// TestVectorIndexConfig_StoreDiskBudget_DefaultsExplicitAndValidation pins
+// the store disk-budget knob (ADR-104 §5) through the full Load path:
+// absent keys migrate to the documented default (0 — no disk cap), an
+// explicit value survives verbatim, and a negative or over-ceiling value
+// (one that would overflow the MiB→bytes shift) fails load/validation
+// naming the knob.
+func TestVectorIndexConfig_StoreDiskBudget_DefaultsExplicitAndValidation(t *testing.T) {
+	const explicit = `
+llm:
+  default_model: claude-3-haiku
+  anthropic:
+    api_key: "test-key"
+    models:
+      - claude-3-haiku
+vector_index:
+  store_disk_budget_mb: 5120
+`
+	configPath := writeTestConfig(t, explicit)
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() with an explicit store disk budget failed: %v", err)
+	}
+	if cfg.VectorIndex.StoreDiskBudgetMb == nil || *cfg.VectorIndex.StoreDiskBudgetMb != 5120 {
+		t.Errorf("explicit store_disk_budget_mb must parse verbatim, got %v", cfg.VectorIndex.StoreDiskBudgetMb)
+	}
+
+	// An absent block (a pre-§5 config) resolves to 0 — the documented
+	// "no disk cap"; the knob carries no sentinel semantics.
+	cfg = &Config{}
+	ApplyDefaults(cfg)
+	if cfg.VectorIndex.StoreDiskBudgetMb == nil || *cfg.VectorIndex.StoreDiskBudgetMb != 0 {
+		t.Errorf("default store_disk_budget_mb = %v, want explicit 0 (no cap)", cfg.VectorIndex.StoreDiskBudgetMb)
+	}
+
+	// A negative value is a typo and fails load; an over-ceiling value
+	// would overflow the consumer's MiB→bytes shift.
+	const negative = `
+llm:
+  default_model: claude-3-haiku
+  anthropic:
+    api_key: "test-key"
+    models:
+      - claude-3-haiku
+vector_index:
+  store_disk_budget_mb: -1
+`
+	negPath := writeTestConfig(t, negative)
+	if _, err := Load(negPath); err == nil || !strings.Contains(err.Error(), "store_disk_budget_mb") {
+		t.Errorf("negative store_disk_budget_mb must fail load naming the knob, got %v", err)
+	}
+
+	over := int64(1) << 62
+	cfg.VectorIndex.StoreDiskBudgetMb = &over
+	cfg.LLM.DefaultModel = "claude-3-haiku"
+	cfg.LLM.Anthropic = AnthropicConfig{APIKey: "test-key", Models: []string{"claude-3-haiku"}}
+	if err := validate(cfg); err == nil || !strings.Contains(err.Error(), "store_disk_budget_mb") {
+		t.Errorf("over-ceiling store_disk_budget_mb must fail validation naming the knob, got %v", err)
+	}
+}
+
+// TestVectorIndexConfig_CorpusResidency_DefaultsAndExplicit pins the corpus
+// residency knobs (ADR-104 §5) through the full Load path: absent keys
+// migrate to the documented defaults (0/0 — retention of inactive views
+// OFF), explicit values survive verbatim, and an explicit 0 is a documented
+// value (not a sentinel), so it survives too. Unlike the park knobs there
+// are no zero/negative sentinels to disambiguate.
+func TestVectorIndexConfig_CorpusResidency_DefaultsAndExplicit(t *testing.T) {
+	const explicit = `
+llm:
+  default_model: claude-3-haiku
+  anthropic:
+    api_key: "test-key"
+    models:
+      - claude-3-haiku
+vector_index:
+  corpus_residency_capacity: 6
+  corpus_residency_budget_mb: 2048
+`
+	configPath := writeTestConfig(t, explicit)
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() with explicit corpus residency knobs failed: %v", err)
+	}
+	if cfg.VectorIndex.CorpusResidencyCapacity == nil || *cfg.VectorIndex.CorpusResidencyCapacity != 6 {
+		t.Errorf("explicit corpus_residency_capacity must parse verbatim, got %v", cfg.VectorIndex.CorpusResidencyCapacity)
+	}
+	if cfg.VectorIndex.CorpusResidencyBudgetMb == nil || *cfg.VectorIndex.CorpusResidencyBudgetMb != 2048 {
+		t.Errorf("explicit corpus_residency_budget_mb must parse verbatim, got %v", cfg.VectorIndex.CorpusResidencyBudgetMb)
+	}
+
+	// An absent block (a pre-residency config) resolves to 0/0 — retention
+	// off; that is the whole migration story for these knobs.
+	cfg = &Config{}
+	ApplyDefaults(cfg)
+	if cfg.VectorIndex.CorpusResidencyCapacity == nil || *cfg.VectorIndex.CorpusResidencyCapacity != 0 {
+		t.Errorf("default corpus_residency_capacity = %v, want explicit 0 (retention off)", cfg.VectorIndex.CorpusResidencyCapacity)
+	}
+	if cfg.VectorIndex.CorpusResidencyBudgetMb == nil || *cfg.VectorIndex.CorpusResidencyBudgetMb != 0 {
+		t.Errorf("default corpus_residency_budget_mb = %v, want explicit 0 (no byte bound)", cfg.VectorIndex.CorpusResidencyBudgetMb)
+	}
+
+	// ApplyDefaults never overwrites an explicit value (including the
+	// documented 0 = byte-only / count-off combinations).
+	zeroCap := 0
+	cfg.VectorIndex.CorpusResidencyCapacity = &zeroCap
+	ApplyDefaults(cfg)
+	if *cfg.VectorIndex.CorpusResidencyCapacity != 0 {
+		t.Errorf("ApplyDefaults overwrote an explicit corpus_residency_capacity: 0, got %d", *cfg.VectorIndex.CorpusResidencyCapacity)
+	}
+}
+
+// TestVectorIndexConfig_CorpusResidency_RejectsNegativesAndCeiling pins the
+// clean validation semantics: negatives are typos and fail load for BOTH
+// knobs (the park knobs' -1 disable sentinel is deliberately NOT carried
+// over — these knobs have no sentinel values), and the byte budget is
+// bounded by the same 2 PiB ceiling that guards the MiB→bytes shift.
+func TestVectorIndexConfig_CorpusResidency_RejectsNegativesAndCeiling(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+	}{
+		{
+			name: "negative capacity",
+			yaml: "vector_index:\n  corpus_residency_capacity: -1\n",
+		},
+		{
+			name: "negative budget (not a disable sentinel)",
+			yaml: "vector_index:\n  corpus_residency_budget_mb: -1\n",
+		},
+		{
+			name: "far-negative budget",
+			yaml: "vector_index:\n  corpus_residency_budget_mb: -100\n",
+		},
+		{
+			name: "budget above the 2 PiB ceiling",
+			yaml: "vector_index:\n  corpus_residency_budget_mb: 4294967296\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			content := `
+llm:
+  default_model: claude-3-haiku
+  anthropic:
+    api_key: "test-key"
+    models:
+      - claude-3-haiku
+` + tc.yaml
+			configPath := writeTestConfig(t, content)
+			if _, err := Load(configPath); err == nil {
+				t.Errorf("Load() with %s must fail validation, got nil error", tc.name)
+			}
+		})
+	}
+}
+
 // TestVectorIndexConfig_LegacyYAMLCompat pins that a config written before the
 // embedding-optimization cycle (no embedding_cache_max_bytes / content_filter
 // keys) still loads through the full Load path (defaults + validation) and

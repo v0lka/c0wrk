@@ -15,48 +15,37 @@ import (
 )
 
 // sessionStoreOpTimeout bounds one session/project/review store round-trip
-// issued from the RPC layer. Every store shares the app's single SQLite
-// connection pool; database/sql waits for a free pooled connection with no
-// deadline when the caller context carries none (busy_timeout bounds only
-// SQLite lock retry, not pool acquisition). The default mirrors the session
-// package's restoreDBReadTimeout so a contended pool yields a prompt,
-// retryable error instead of an indefinitely parked RPC.
+// from the RPC layer: every store shares the app's single SQLite pool, and
+// database/sql waits for a free connection with no deadline when the caller
+// context carries none — the default mirrors the session package's
+// restoreDBReadTimeout so a contended pool yields a prompt, retryable error.
 const sessionStoreOpTimeout = 15 * time.Second
 
 // sessionForkTimeout bounds the transactional fork (session + tasks +
-// blackboard + review deep copy). The fork is one transaction over an
-// unbounded row set, so it carries its own budget — wider than
-// sessionStoreOpTimeout, still finite, still derived from f.ctx() so app
-// shutdown cancels it.
+// blackboard + review deep copy): one transaction over an unbounded row set,
+// derived from f.ctx() so app shutdown cancels it.
 const sessionForkTimeout = 60 * time.Second
 
 // storeOpCtx returns the request context (f.ctx(), cancelled at app shutdown)
-// bounded by sessionStoreOpTimeout, for one store round-trip. Every direct
-// f.store/f.projStore/f.reviewStore call on an RPC path must go through it —
-// a bare context.Background() discards both the shutdown cancellation and
-// any bound on the pool wait.
+// bounded by sessionStoreOpTimeout. Every direct store call on an RPC path
+// must go through it — a bare context.Background() discards the shutdown
+// cancellation and any bound on the pool wait.
 func (f *FrontendAPI) storeOpCtx() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(f.ctx(), sessionStoreOpTimeout)
 }
 
 // switchStoreOpCtx derives one store round-trip deadline from the
-// switch-section deadline (switchSectionTimeout): the effective bound is the
-// EARLIER of the per-op budget and whatever the switch has left, so a
-// saturated store cannot stack N full budgets into one switchMu hold. Note
-// the parent is the switch ctx, not f.ctx(): the switch already implies
-// liveness, and the section deadline must hold even if f.ctx() has no
-// deadline of its own.
+// switch-section deadline (switchSectionTimeout) — the EARLIER of the two, so
+// a saturated store cannot stack N full budgets into one switchMu hold. The
+// parent is the switch ctx, not f.ctx(): the section deadline must hold even
+// when f.ctx() carries no deadline. See specs/domains/workspace.md.
 func (f *FrontendAPI) switchStoreOpCtx(switchCtx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(switchCtx, sessionStoreOpTimeout)
 }
 
-// emitSessionsChanged emits the global sessions:changed event so the
-// frontend refreshes its session list after a list-affecting mutation
-// (create, fork, delete, archive, pin, promotion, project deletion). No
-// payload — consumers re-read via ListSessions/ListAllSessions. No-op when
-// the Wails emitter has not been wired yet (e.g. very early in startup) —
-// mirrors how other global events are dispatched through the injected
-// emitEvent callback.
+// emitSessionsChanged emits the global sessions:changed event (no payload —
+// consumers re-read via ListSessions/ListAllSessions) after a list-affecting
+// mutation.
 func (f *FrontendAPI) emitSessionsChanged() {
 	f.seedAcquire()
 	if f.emitEvent != nil {
@@ -92,22 +81,18 @@ func (f *FrontendAPI) CreateSession() (*session.SessionInfo, error) {
 		}
 		cancel()
 	}
-	// Announce AFTER the persist attempt (CS #33, matching
-	// ForkSession/Delete/Archive/Pin/promote): the event's debounced re-read
-	// must see the persisted row — an emission before SaveSession let a slow
-	// (contended pool) save strand the new session out of the sidebar/radar
-	// until the safety poll. A failed save stays log-only best-effort; the
-	// announcement order is what the other emission sites already guarantee.
+	// Announce AFTER the persist attempt: the event's debounced re-read must
+	// see the persisted row — an emission before SaveSession let a slow save
+	// strand the new session out of the sidebar/radar until the safety poll.
 	f.emitSessionsChanged()
 	return info, nil
 }
 
 // ForkSession creates an independent deep copy of a session (messages, tasks,
-// blackboard facts/plan/trajectory, terminal history, work directories, and
-// code review) with freshly generated identifiers so the fork shares no rows
-// with the original. Forking is only allowed when the session has no unfinished
-// (in-progress or failed) task. On success the new session is returned; the
-// caller switches the active session to it.
+// blackboard, terminal history, work directories, review) with freshly
+// generated identifiers — no shared rows. Only allowed with no unfinished
+// task; on success the caller switches the active session to it.
+// See specs/domains/session-lifecycle.md.
 func (f *FrontendAPI) ForkSession(sessionID string) (*session.SessionInfo, error) {
 	if f.appCell() == nil || f.app.Manager() == nil {
 		return nil, errors.New("session manager not initialized")
@@ -116,14 +101,9 @@ func (f *FrontendAPI) ForkSession(sessionID string) (*session.SessionInfo, error
 		return nil, errors.New("session store not initialized")
 	}
 
-	// Guard reads go through the file's storeOpCtx bound (pool wait + shutdown
-	// cancellation); the transactional fork below gets its own explicit,
-	// wider budget (sessionForkTimeout) because it copies an unbounded row
-	// set inside one transaction.
+	// Guard: a session with an unfinished task cannot be forked — forking
+	// would duplicate a half-completed execution state.
 	guardCtx, cancelGuard := f.storeOpCtx()
-
-	// Guard: a session with an unfinished task cannot be forked — forking would
-	// duplicate a half-completed execution state.
 	unfinished, err := f.store.GetUnfinishedTask(guardCtx, sessionID)
 	cancelGuard()
 	if err != nil {
@@ -134,16 +114,16 @@ func (f *FrontendAPI) ForkSession(sessionID string) (*session.SessionInfo, error
 	}
 
 	// Clone the review inside the same transaction as the fork so the whole
-	// operation (session + tasks + review) commits atomically; a review-copy
-	// failure rolls back the entire fork instead of leaving a review-less fork.
+	// operation commits atomically; a review-copy failure rolls back the
+	// entire fork instead of leaving a review-less fork.
 	var reviewCloner session.ForkReviewCloner
 	if f.reviewStore != nil {
 		reviewCloner = f.reviewStore.CloneReviewTx
 	}
 
-	// Managed sources fork into their OWN tree on a derived branch created at
-	// the source's committed HEAD (see forkManagedSession); local and CHAT
-	// sources keep the plain deep-copy path with the binding they have.
+	// Managed sources fork into their OWN tree on a derived branch created
+	// at the source's committed HEAD (see forkManagedSession); local and
+	// CHAT sources keep the plain deep-copy path with the binding they have.
 	srcCtx, cancelSrc := f.storeOpCtx()
 	src, err := f.store.LoadSession(srcCtx, sessionID)
 	cancelSrc()
@@ -169,42 +149,26 @@ func (f *FrontendAPI) ForkSession(sessionID string) (*session.SessionInfo, error
 	return info, nil
 }
 
-// DeleteSession removes a session. All internal files that belong to the
-// session (logs, dumps, temp, plans, and the No-Project workspace) are removed
-// from ~/.c0wrk. Archiving a session (ArchiveSession) does NOT remove files so
-// an archived session can be restored.
-//
-// A session that owns a managed worktree additionally has its tree released
-// (never its branch); when the tree is dirty or locked this first call fails
-// with *SessionDeleteBlockedError and nothing is deleted — re-issue via
-// DeleteSessionWithOptions with the user's explicit confirmation.
+// DeleteSession removes a session including every internal file that belongs
+// to it under ~/.c0wrk; archiving does NOT remove files. A session owning a
+// managed worktree additionally has its tree released (never its branch); a
+// dirty or locked tree blocks with *SessionDeleteBlockedError — re-issue via
+// DeleteSessionWithOptions. See specs/domains/session-lifecycle.md,
+// specs/domains/session-worktrees.md.
 func (f *FrontendAPI) DeleteSession(id string) error {
 	return f.DeleteSessionWithOptions(id, SessionDeleteOptions{})
 }
 
 // DeleteSessionWithOptions removes a session carrying the user's explicit
-// deletion decisions for its managed worktree. Managed pre-flight (in order):
-// join the running task, stop the session terminal, then run the
-// [count co-owners → own-row removal → release] protocol — the removal
-// primitives recheck dirtiness/lock state at removal time, so a blocked
-// deletion leaves the session, tree, and branch fully intact and retryable
-// (the own-row removal only happens on the shared-tree path, where no
-// blocking decision exists). Only after the tree is released (or was never
-// managed, or stays with its co-owners) does the rest of the session get
-// deleted: in-memory resources via the manager, the store row when the
-// pre-flight left it, internal files under ~/.c0wrk.
+// deletion decisions for its managed worktree: the managed pre-flight (join
+// the running task → stop the terminal → [count co-owners → own-row removal →
+// release]) runs BEFORE any session state is removed, so a blocked deletion
+// leaves session, tree, and branch fully intact and retryable. See
+// specs/domains/session-worktrees.md (Release).
 func (f *FrontendAPI) DeleteSessionWithOptions(id string, opts SessionDeleteOptions) error {
 	if f.appCell() == nil || f.app.Manager() == nil {
 		return errors.New("session manager not initialized")
 	}
-	// Managed sessions: stop task/terminal and run the tree protocol BEFORE
-	// any session state is removed, so a blocked or failed release keeps the
-	// session retryable. Store-only sessions (restored never this run) are
-	// handled too — the binding is read from the store. A shared-tree
-	// co-owner deletion has its row removed by the pre-flight itself (a
-	// concurrent co-owner's count must observe it gone); cleanupProjectID
-	// then carries the project whose internal files still need the fallback
-	// cleanup below.
 	cleanupProjectID, err := f.prepareManagedTreeDeletion(context.Background(), id, opts)
 	if err != nil {
 		return err
@@ -212,14 +176,11 @@ func (f *FrontendAPI) DeleteSessionWithOptions(id string, opts SessionDeleteOpti
 	manager := f.app.Manager()
 
 	// The manager lazily restores and deletes in-memory/restorable sessions,
-	// closing file handles and removing the entire per-session directory. When
-	// the session cannot be restored (e.g. its project can no longer be
-	// resolved), capture the project ID from the store so its on-disk files can
-	// still be cleaned up below. HasSession (NOT GetSession) decides the
-	// branch: restoring a managed session here would re-provision the tree the
-	// pre-flight just released.
+	// closing file handles and removing the entire per-session directory.
+	// HasSession (NOT GetSession): restoring a managed session here would
+	// re-provision the tree the pre-flight just released. An unrestorable
+	// session's project ID is captured for the file cleanup below.
 	var unrestorableProjectID string
-	// Only delete from manager if session is live in memory.
 	switch {
 	case manager.HasSession(id):
 		if err := manager.DeleteSession(id); err != nil {
@@ -236,8 +197,7 @@ func (f *FrontendAPI) DeleteSessionWithOptions(id string, opts SessionDeleteOpti
 		}
 		cancel()
 	}
-	// Always delete from store (handles store-only sessions from previous runs)
-	// Best-effort persistence: log and continue to avoid disrupting the user session.
+	// Always delete from store (handles store-only sessions from previous runs).
 	if f.store != nil {
 		ctx, cancel := f.storeOpCtx()
 		if err := f.store.DeleteSession(ctx, id); err != nil {
@@ -245,12 +205,9 @@ func (f *FrontendAPI) DeleteSessionWithOptions(id string, opts SessionDeleteOpti
 		}
 		cancel()
 	}
-	// Stop any active terminal for this session (idempotent — the managed
-	// pre-flight already stopped it for managed sessions; local and CHAT
-	// sessions are handled here).
 	f.stopSessionTerminal(id)
 	// Fallback: remove internal files for sessions the manager could not
-	// restore. Restored/in-memory sessions are already cleaned up above.
+	// restore; restored/in-memory sessions were cleaned up above.
 	if unrestorableProjectID != "" {
 		sessionDir := config.SessionDir(f.agentDir, unrestorableProjectID, id)
 		if err := os.RemoveAll(sessionDir); err != nil {
@@ -278,11 +235,10 @@ func (f *FrontendAPI) ListSessions() ([]session.SessionInfo, error) {
 	return f.app.Manager().ListSessionsByProject(projectID)
 }
 
-// ListAllSessions returns sessions across ALL projects (not just the active
-// one) in a single list, ordered pinned first and then by effective activity
-// — the data source for the cross-project activity indicator. An
-// uninitialized session manager yields an empty slice rather than an error,
-// so the UI can call this unconditionally during startup.
+// ListAllSessions returns sessions across ALL projects, ordered pinned first
+// then by effective activity — the data source for the cross-project activity
+// indicator. An uninitialized manager yields an empty slice, not an error, so
+// the UI can call this unconditionally during startup.
 func (f *FrontendAPI) ListAllSessions() ([]session.SessionInfo, error) {
 	if f.appCell() == nil || f.app.Manager() == nil {
 		return []session.SessionInfo{}, nil
@@ -297,18 +253,14 @@ func (f *FrontendAPI) RenameSession(id, name string) error {
 		return errors.New("session manager not initialized")
 	}
 	manager := f.app.Manager()
-	// Only rename in manager if session exists in memory. HasSession (NOT
-	// GetSession) is the memory-only test the comment describes: GetSession
-	// lazily RESTORES a store-only session (full orchestrator build, fresh
-	// log/dump handles, managed-worktree re-provision) inside a plain
-	// metadata RPC — a rename of a never-opened session would resurrect it.
+	// HasSession (NOT GetSession): GetSession lazily RESTORES a store-only
+	// session (full orchestrator build, managed-worktree re-provision) — a
+	// rename of a never-opened session would resurrect it inside a metadata RPC.
 	if manager.HasSession(id) {
 		if err := manager.RenameSession(id, name); err != nil {
 			return fmt.Errorf("failed to rename session: %w", err)
 		}
 	}
-	// Always rename in store (handles store-only sessions from previous runs)
-	// Best-effort persistence: log and continue to avoid disrupting the user session.
 	if f.store != nil {
 		ctx, cancel := f.storeOpCtx()
 		if err := f.store.RenameSession(ctx, id, name); err != nil {
@@ -325,15 +277,12 @@ func (f *FrontendAPI) ArchiveSession(id string) error {
 		return errors.New("session manager not initialized")
 	}
 	manager := f.app.Manager()
-	// Only archive in manager if session exists in memory (HasSession, not
-	// the restoring GetSession — see RenameSession above).
+	// HasSession, not the restoring GetSession — see RenameSession above.
 	if manager.HasSession(id) {
 		if err := manager.ArchiveSession(id); err != nil {
 			return fmt.Errorf("failed to archive session: %w", err)
 		}
 	}
-	// Toggle archive in store
-	// Best-effort persistence: log and continue to avoid disrupting the user session.
 	if f.store != nil {
 		ctx, cancel := f.storeOpCtx()
 		info, err := f.store.LoadSession(ctx, id)
@@ -354,15 +303,12 @@ func (f *FrontendAPI) PinSession(id string) error {
 		return errors.New("session manager not initialized")
 	}
 	manager := f.app.Manager()
-	// Only pin in manager if session exists in memory (HasSession, not the
-	// restoring GetSession — see RenameSession above).
+	// HasSession, not the restoring GetSession — see RenameSession above.
 	if manager.HasSession(id) {
 		if err := manager.PinSession(id); err != nil {
 			return fmt.Errorf("failed to pin session: %w", err)
 		}
 	}
-	// Toggle pin in store
-	// Best-effort persistence: log and continue to avoid disrupting the user session.
 	if f.store != nil {
 		ctx, cancel := f.storeOpCtx()
 		info, err := f.store.LoadSession(ctx, id)
@@ -377,105 +323,66 @@ func (f *FrontendAPI) PinSession(id string) error {
 	return nil
 }
 
-// SendMessage sends a user message to a session (async - results come via events).
-// activeSkills contains skill names explicitly referenced by the user via /skill-name syntax.
-// activeAgents contains subagent profile names explicitly referenced via /-mentions.
-// activeMCPServers contains MCP server names explicitly referenced via /-mentions
-// (plain or /mcp:-qualified): a mention enables that server's tools for the
-// whole task when the server is configured in "manual" mode, and threads the
-// soft "Requested MCP Servers" prompt directive.
-// goal, when true, enables goal mode for the first message of a task (OR-ed with
-// any /goal command prefix the message text may carry). goalBudget is an optional
-// JSON budget override ({"max_turns":N}) tightening the goal's turn cap;
-// empty = use defaults (unlimited).
-// e2s, when true, enables the E2S (explicit-state) execution mode for the task.
-// It is an experimental feature: the send fails closed (before any side effect)
-// when the experimental gate is off, and it is mutually exclusive with goal.
-// reviewMode, when true, marks the message as carrying code review feedback the
-// agent must address (review status == "submitted"); the system prompt gains a
-// Code Review section directing the agent to edit code.
-// clientSendID, when non-empty, is the sending surface's optimistic-card id;
-// the message_received echo carries it back so the sender dedups the echo by
-// identity instead of content+time-window (two surfaces sending the same text
-// inside the dedup window stay two cards). Internal sends without an
-// optimistic card pass "".
-// workspace, when non-nil, carries the send-time workspace choice of the
-// draft-free creation flow: the FIRST message of a fresh session (no
-// transcript, no task) may ask for a managed worktree on the chosen branch.
-// The backend provisions or adopts the tree, persists the binding, and lets
-// this send's own session access restore an orchestrator built for the new
-// workspace; a provisioning failure rejects the send before any state is
-// touched. A nil choice (every ordinary send, every continuation) is a no-op.
+// SendMessage sends a user message to a session (async — results come via
+// events). Parameter deltas:
+//   - activeSkills/activeAgents/activeMCPServers: /-mention threading (durable
+//     task-scoped MCP authorization: specs/domains/session-lifecycle.md).
+//   - goal/goalBudget: goal mode for the first message of a task (OR-ed with a
+//     /goal command prefix); goalBudget = JSON {"max_turns":N}, empty = defaults.
+//   - e2s: the E2S execution mode — experimental (fails closed when the gate is
+//     off) and mutually exclusive with goal.
+//   - reviewMode: code-review feedback the agent must address.
+//   - clientSendID: the sender's optimistic-card id, echoed on message_received
+//     so the sender dedups by identity; internal sends pass "".
+//   - workspace: the send-time workspace choice (ADR-091, first message of a
+//     fresh session only); a provisioning failure rejects the send before any
+//     state is touched. Nil = no-op.
 func (f *FrontendAPI) SendMessage(id, text string, activeSkills, activeAgents, activeMCPServers []string, modelOverride, reasoningEffort string, goal /* goal */ bool, goalBudget string, e2s /* e2s */, reviewMode /* reviewMode */ bool, clientSendID string, workspace *SessionWorkspaceChoice) error {
 	// E2S and goal are alternative task modes with incompatible loop
-	// semantics; the frontend store enforces exclusivity, this is the
-	// server-side defense so a hand-crafted call cannot arm both. Checked
-	// first: a both-flags request is malformed regardless of the gate.
+	// semantics; the frontend enforces exclusivity — this is the server-side
+	// defense, checked first (a both-flags request is malformed regardless).
 	if e2s && goal {
 		return errors.New("E2S mode and goal mode are mutually exclusive — disable one of the toggles before sending")
 	}
-	// Detect the leading "/goal" command prefix once, on the POST-preprocessing
-	// text: PreprocessMessageText strips leading /-mention refs (skills,
-	// agents, and MCP servers), which can expose a /goal prefix hidden behind
-	// them ("/myskill /goal …"), and
-	// the manager arms goal mode from the processed text — the raw-text check
-	// alone misses that form. Preprocessing is pure, so both guards below still
-	// reject before any side effect; the workspace path is irrelevant to prefix
-	// stripping.
+	// Detect the leading "/goal" prefix on the POST-preprocessing text:
+	// preprocessing strips leading /-mention refs, which can expose a "/goal"
+	// hidden behind them, and the manager arms goal mode from the processed
+	// text — a raw-text check alone misses that form.
 	processed := core.PreprocessMessageText(text, activeSkills, activeAgents, activeMCPServers, "")
 	_, isGoalPrefix := core.DetectAndStripGoalMode(processed)
 	goalEnabled := goal || isGoalPrefix
-	// A leading "/goal" command arms goal mode in the manager even when the
-	// explicit flag is absent (goalEnabled := isGoal || goal), so it must not
-	// slip past the exclusivity check below: otherwise the manager would build
-	// a HandleOptions with BOTH Goal and E2S set, which core rejects as a
-	// wiring mistake (ErrE2SGoalConflict) AFTER the run's E2S takeover cleanup
-	// was skipped. Reject it here, before any side effect, exactly like the
-	// explicit-flag case.
+	// An armed /goal prefix must not slip past the exclusivity check: the
+	// manager would otherwise build a HandleOptions with BOTH Goal and E2S
+	// set, which core rejects (ErrE2SGoalConflict) AFTER the run's E2S
+	// takeover cleanup was skipped. Rejected here, before any side effect.
 	if e2s && isGoalPrefix {
 		return errors.New("E2S mode and goal mode are mutually exclusive — an E2S message cannot carry a /goal command")
 	}
-	// E2S is experimental: fail closed BEFORE any side effect (no activity
-	// timestamp, no persisted message, no task launch) when the flag arrives
-	// while the experimental gate is off. experimentalFeaturesEnabled also
+	// E2S is experimental: fail closed BEFORE any side effect. The gate also
 	// returns false for a not-yet-loaded config, so an early send can never
-	// slip past the gate. Checked even before the manager-initialized guard:
-	// a gated request is rejected on principle, regardless of runtime state.
+	// slip past it — checked even before the manager-initialized guard.
 	if e2s && !f.experimentalFeaturesEnabled() {
 		return errors.New("E2S mode is experimental and currently disabled — enable experimental features in settings to use it")
 	}
-	// Goal mode is refused while the Model Profiles essential-tools narrowing is
-	// active: the two are mutually exclusive. The narrowing is applied only on
-	// the non-goal Conductor path and the E2S branch (both run after goal
-	// mode's early return), so it never narrows a goal run today — the
-	// exclusion is explicit so the toggle cannot be a silent no-op in goal
-	// mode. If the narrowing were applied to a goal run it would hide the
-	// goal-loop tooling (propose_goal, declare_goal_status,
-	// declare_verification) and make the loop unrunnable. Both arming signals
-	// are covered — the explicit flag and a /goal prefix — and the rejection
-	// lands BEFORE any side effect (no activity timestamp, no persisted
-	// message, no task), so a blocked goal never leaves a phantom row.
-	// modelProfilesGoalBlocked resolves the effective profile (active profile ∪
-	// experimental gate) and is false when the profile or its essential-tools
-	// variant is off, so the default path is unchanged.
+	// Goal mode is refused while the Model Profiles essential-tools narrowing
+	// is active (the narrowing never applies to a goal run, so the exclusion
+	// keeps the toggle from being a silent no-op there): both arming signals
+	// are covered, and the rejection lands BEFORE any side effect.
+	// See specs/domains/model-profiles.md.
 	if goalEnabled && f.modelProfilesGoalBlocked() {
 		return errors.New("goal mode is unavailable while the Model Profiles essential-tools profile is active — disable the Model Profiles profile or its essential-tools narrowing to use goal mode")
 	}
 	if f.appCell() == nil || f.app.Manager() == nil {
 		return errors.New("session manager not initialized - check startup logs for LLM router or configuration errors")
 	}
-	// Send-time workspace binding (the fresh window): a non-nil choice rides
-	// only on the first message of a brand-new session. Provisioning and
+	// Send-time workspace binding (the fresh window): provisioning and
 	// adoption failures reject the send BEFORE any state is touched — no
-	// activity bump, no persisted message, no task — so the user can fix the
-	// choice (or pick another branch) and resend.
+	// activity bump, no persisted message, no task.
 	if workspace != nil {
 		if err := f.bindSessionWorkspace(f.ctx(), id, workspace); err != nil {
 			return err
 		}
 	}
-	// Update session activity timestamp
-	// Best-effort persistence: log and continue to avoid disrupting the user session.
 	if f.store != nil {
 		ctx, cancel := f.storeOpCtx()
 		if err := f.store.UpdateSessionActivity(ctx, id); err != nil {
@@ -483,22 +390,18 @@ func (f *FrontendAPI) SendMessage(id, text string, activeSkills, activeAgents, a
 		}
 		cancel()
 	}
-	// Authoritative live-send gate: validate the pause window, goal/E2S mode,
-	// and skill/agent references BEFORE persisting anything, so a rejected
-	// live send never leaves a phantom persisted message. The manager
-	// re-checks the same conditions under the session lock in sendMessage;
-	// this early call only moves the common rejection ahead of the store
-	// write (the race between this check and the authoritative queue is
-	// harmless — a message that passes but finds the task finished
-	// afterwards simply starts a normal task).
+	// Authoritative live-send gate, moved ahead of the store write so a
+	// rejected live send never leaves a phantom persisted message. The
+	// manager re-checks the same conditions under the session lock; the race
+	// is harmless (a message that passes but finds the task finished simply
+	// starts a normal task).
 	if err := f.app.Manager().ValidateLiveSend(id, goal, e2s, text, activeSkills, activeAgents, activeMCPServers); err != nil {
 		return err
 	}
 
 	// Attachments cannot join a live interjection: they are flushed into the
-	// blackboard/context only at task start. This UX gate uses the runtime
-	// status snapshot; the manager's authoritative live branch ignores
-	// attachments (it queues text only), so this is purely a guard.
+	// blackboard/context only at task start. The manager's live branch
+	// ignores attachments (queues text only), so this is purely a UX guard.
 	if !goal && !e2s {
 		if status, statusErr := f.app.Manager().GetSessionRuntimeStatus(id); statusErr == nil {
 			if status.Active && !status.Paused && f.app.Manager().HasPendingAttachments(id) {
@@ -507,12 +410,10 @@ func (f *FrontendAPI) SendMessage(id, text string, activeSkills, activeAgents, a
 		}
 	}
 
-	// Snapshot the pending-attachment metadata BEFORE the manager call: the
-	// manager's fresh/resume path snapshots and clears the pending lists, and
-	// the metadata blob must capture them for restart reconstruction. The
-	// message itself is persisted AFTER the authoritative dispatch so the
-	// is_nudge flag matches the actual decision (live/nudge vs fresh) and a
-	// rejected send never reaches the store.
+	// Snapshot the pending-attachment metadata BEFORE the manager call (its
+	// fresh/resume path snapshots and clears the pending lists); the message
+	// itself is persisted AFTER the authoritative dispatch so is_nudge matches
+	// the actual decision and a rejected send never reaches the store.
 	var messageMetadata json.RawMessage
 	if mgr := f.app.Manager(); mgr != nil {
 		if md, mdErr := mgr.PendingMessageMetadata(id, goal); mdErr == nil {
@@ -522,43 +423,33 @@ func (f *FrontendAPI) SendMessage(id, text string, activeSkills, activeAgents, a
 		}
 	}
 
-	// Preprocess text for the orchestrator: strip /skill refs and convert @file refs to fileref:// URIs.
-	// Relative @file paths are resolved against the session's own workspace path (authoritative for
-	// both project and No Project sessions) so the LLM receives unambiguous absolute paths. This
-	// mirrors the preprocessing applied during history restore and avoids the project-level
-	// activeProjectPath, which is empty for No Project sessions and may not match the session's project.
+	// Preprocess for the orchestrator (mention refs stripped, @file refs
+	// resolved); relative paths resolve against the SESSION's workspace —
+	// the authoritative root for both project and No Project sessions.
+	// See specs/decisions/095-chat-file-reference-path-semantics.md.
 	workspacePath := ""
 	if wp, ok := f.app.Manager().GetSessionWorkspacePath(id); ok {
 		workspacePath = wp
 	}
 	processedText := core.PreprocessMessageText(text, activeSkills, activeAgents, activeMCPServers, workspacePath)
 
-	// ADR-080: no send-time vector re-scoping — the per-root registry routes
-	// each session's semantic_search and RAG hints through its own task
-	// context (WorkspacePathFrom), so a send never mutates shared index state.
-
-	// Auto-discover local directories mentioned in the prompt and add them as
-	// session-scoped auxiliary working directories (best-effort: never blocks).
+	// No send-time vector re-scoping: the per-root registry (ADR-080/081)
+	// routes each session's searches through its own task context.
 	f.autoAddPromptWorkDirs(id, text)
 
-	// The manager's task dispatch consumes the PREPROCESSED text (mention
-	// refs stripped, @file refs resolved — what the orchestrator and the LLM
-	// must see), but the message_received echo it emits must carry the RAW
-	// input: the user row persisted below stores Content: text and the
-	// sending surface's optimistic card renders the raw form, so the
-	// useChatEvents dedup compares the echo against the raw text. Without
-	// this, any message whose preprocessing actually changed the text (a
-	// leading "/skill" mention, an @file ref) renders twice on the sending
-	// surface: the optimistic card plus a ref-less duplicate from the echo.
+	// The dispatch consumes the PREPROCESSED text, but the message_received
+	// echo must carry the RAW input: the persisted row and the sender's
+	// optimistic card both hold the raw form, so the useChatEvents dedup
+	// compares against it — a processed echo would duplicate the card. See
+	// specs/contracts/event-catalog.md (message_received).
 	classification, err := f.app.Manager().SendMessageClassified(f.ctx(), id, processedText, activeSkills, activeAgents, activeMCPServers, modelOverride, reasoningEffort, goal, goalBudget, e2s, reviewMode, session.WithEchoText(text), session.WithClientMessageID(clientSendID))
 	if err != nil {
 		return fmt.Errorf("failed to send message: %w", err)
 	}
 
-	// Persist the user message with the authoritative classification. Both a
-	// live interjection and a nudge-resume carry is_nudge: true (they are not
-	// fresh requests); a fresh task — including a continuation of a completed
-	// task — does not.
+	// Persist the user message with the authoritative classification: a live
+	// interjection and a nudge-resume both carry is_nudge: true; a fresh task
+	// — including a continuation of a completed task — does not.
 	if f.store != nil {
 		if classification != session.SendFresh {
 			messageMetadata = mergeIsNudgeMetadata(messageMetadata)
@@ -571,11 +462,8 @@ func (f *FrontendAPI) SendMessage(id, text string, activeSkills, activeAgents, a
 			Metadata:  messageMetadata,
 			// MUST be UTC (Z-suffixed) like every other timestamp writer:
 			// LoadMessages orders by lexicographic TEXT comparison of
-			// created_at, so a local-time offset suffix (+03:00) would sort
-			// the row after every Z-suffixed row of the same chat —
-			// rendering all user messages at the end of the history after a
-			// reload. See the normalization migration in
-			// session/persistence.go createTables.
+			// created_at — a local-time offset suffix would sort this row
+			// after every Z-suffixed row of the same chat after a reload.
 			CreatedAt: time.Now().UTC().Format(time.RFC3339),
 		}); err != nil {
 			f.log().Error("failed to save user message to store", "error", err)
@@ -594,11 +482,10 @@ func (f *FrontendAPI) CancelTask(id string) error {
 	return f.app.Manager().CancelTask(id)
 }
 
-// ResumeTask resumes an interrupted task in the given session, if any.
-// Returns nil if no unfinished task exists. This is safe to call on session load.
-// The optional modelOverride/reasoningEffort apply the user's current selection
-// to the resumed task (same semantics as SendMessage) instead of inheriting the
-// interrupted task's settings.
+// ResumeTask resumes an interrupted task in the given session, if any; nil
+// when no unfinished task exists (safe to call on session load). The optional
+// modelOverride/reasoningEffort apply the user's CURRENT selection instead of
+// inheriting the interrupted task's settings.
 func (f *FrontendAPI) ResumeTask(id, modelOverride, reasoningEffort string) error {
 	if f.appCell() == nil || f.app.Manager() == nil {
 		return errors.New("session manager not initialized")
@@ -609,16 +496,13 @@ func (f *FrontendAPI) ResumeTask(id, modelOverride, reasoningEffort string) erro
 	return f.app.Manager().ResumeTask(f.ctx(), id, modelOverride, reasoningEffort, "")
 }
 
-// goalResumeBlockedByModelProfiles reports whether resuming session id would re-enter a
-// goal loop while the Model Profiles essential-tools narrowing is active. It is
-// true only when the narrowing is on AND the session's unfinished task carries
+// goalResumeBlockedByModelProfiles reports whether resuming session id would
+// re-enter a goal loop while the Model Profiles essential-tools narrowing is
+// active — true only when the narrowing is on AND the unfinished task carries
 // a NON-terminal goal state (the exact condition Orchestrator.Resume uses to
-// pick the goal loop) — a paused plain or E2S task is unaffected, so non-goal
-// resumes and the default (profile-off) path are unchanged. A task-store read
-// failure is treated as "not blocked" (fail-open): the resume is independently
-// re-checked by the session manager (Manager.ResumeTask, under the session lock
-// and before any task activation) and resumeGoalLoop is the ultimate
-// authority, so a transient read error must not strand a legitimate resume.
+// pick the goal loop). A task-store read failure is fail-open: the manager
+// independently re-checks under the session lock and resumeGoalLoop is the
+// ultimate authority. See specs/domains/model-profiles.md.
 func (f *FrontendAPI) goalResumeBlockedByModelProfiles(id string) bool {
 	f.seedAcquire()
 	if f.store == nil || !f.modelProfilesGoalBlocked() {
@@ -636,11 +520,10 @@ func (f *FrontendAPI) goalResumeBlockedByModelProfiles(id string) bool {
 	return !gs.Status.IsTerminal()
 }
 
-// PauseSession signals the currently-running task (any mode) for the session to
-// pause at the next step boundary. The pause is cooperative: the conductor's
-// executor checks the pause signal at every step boundary, stops with a paused
-// checkpoint, and the task is persisted as paused so a later ResumeSession can
-// re-enter. It is a no-op when no request is in flight.
+// PauseSession signals the currently-running task (any mode) to pause at the
+// next step boundary: the executor checks the signal cooperatively, stops
+// with a paused checkpoint, and the task is persisted as paused so a later
+// ResumeSession can re-enter.
 func (f *FrontendAPI) PauseSession(sessionID string) error {
 	if f.appCell() == nil || f.app.Manager() == nil {
 		return errors.New("session manager not initialized")
@@ -649,12 +532,9 @@ func (f *FrontendAPI) PauseSession(sessionID string) error {
 }
 
 // ResumeSession re-enters the execution loop for a paused (or still-active)
-// task. It delegates to the resume path, which loads the persisted task state
-// (trajectory, goal state) and dispatches to the orchestrator's resume path.
-// The optional nudge is injected as a trailing user message into the first
-// resumed turn (one-shot) — used by the UI's nudge input on a paused session.
-// The optional modelOverride/reasoningEffort apply the user's current selection
-// to the resumed task. Returns nil if there is nothing to resume.
+// task, loading the persisted task state. The optional nudge is injected as a
+// trailing user message into the first resumed turn (one-shot); the optional
+// modelOverride/reasoningEffort apply the user's current selection.
 func (f *FrontendAPI) ResumeSession(sessionID, modelOverride, reasoningEffort, nudge string) error {
 	if f.appCell() == nil || f.app.Manager() == nil {
 		return errors.New("session manager not initialized")
@@ -665,14 +545,12 @@ func (f *FrontendAPI) ResumeSession(sessionID, modelOverride, reasoningEffort, n
 	return f.app.Manager().ResumeSession(f.ctx(), sessionID, modelOverride, reasoningEffort, nudge)
 }
 
-// CompactSessionContext starts a manual context compaction for the session's
-// conversation history with the named strategy ("sliding_window" |
-// "summarization" | "hierarchical"). Asynchronous: the call validates and
-// accepts the request (pausing a running task first, exactly like
-// PauseSession, and waiting for its checkpoint), then reports progress via the
-// compaction_started / compaction_finished session events. On completion a
-// task paused by the flow is auto-resumed. Returns an error immediately for an
-// unknown strategy or when a compaction is already in flight.
+// CompactSessionContext starts a manual context compaction with the named
+// strategy ("sliding_window" | "summarization" | "hierarchical").
+// Asynchronous: validates and accepts (pausing a running task first, exactly
+// like PauseSession, waiting for its checkpoint), reports via
+// compaction_started/compaction_finished, and auto-resumes the paused task.
+// See specs/domains/memory/compaction.md.
 func (f *FrontendAPI) CompactSessionContext(sessionID, strategy string) error {
 	if f.appCell() == nil || f.app.Manager() == nil {
 		return errors.New("session manager not initialized")
@@ -690,11 +568,10 @@ func (f *FrontendAPI) CancelSessionCompaction(sessionID string) error {
 	return f.app.Manager().CancelSessionCompaction(sessionID)
 }
 
-// GetSessionTokens returns token counts for a session. The persisted session
-// row is the base; when the session is live in memory, the manager's snapshot
-// overlays fresher values — notably the context-window used/max tokens and the
-// up-to-the-call fill percent — so a switch back to a running session restores
-// the status bar's "N of M" display instead of a stale/partial fill.
+// GetSessionTokens returns token counts for a session: the persisted row as
+// the base, overlaid when live by the manager's snapshot so a switch back to
+// a running session restores the status bar's "N of M" display.
+// See specs/domains/session-lifecycle.md.
 func (f *FrontendAPI) GetSessionTokens(sessionID string) SessionTokensResponse {
 	f.seedAcquire()
 	var result SessionTokensResponse
@@ -743,10 +620,9 @@ func (f *FrontendAPI) CancelUnfinishedTask(id string) error {
 	return f.app.Manager().CancelUnfinishedTask(id)
 }
 
-// GetSessionRuntimeStatus returns whether a task is currently running in the
-// session and whether the session has an unfinished (resumable) task persisted
-// in the task store. The frontend calls this after loading history so the UI
-// reflects real execution state instead of defaulting to "idle/completed".
+// GetSessionRuntimeStatus returns live/persisted execution state; the
+// frontend calls it after loading history so the UI reflects real execution
+// state. See specs/contracts/desktop-frontend.md.
 func (f *FrontendAPI) GetSessionRuntimeStatus(id string) (session.SessionRuntimeStatus, error) {
 	if f.appCell() == nil || f.app.Manager() == nil {
 		return session.SessionRuntimeStatus{}, errors.New("session manager not initialized")
@@ -754,22 +630,15 @@ func (f *FrontendAPI) GetSessionRuntimeStatus(id string) (session.SessionRuntime
 	return f.app.Manager().GetSessionRuntimeStatus(id)
 }
 
-// GetSessionHistory returns the session's full content history, oldest-first,
-// in a single call. Non-content activity rows (thinking, step_done) are
-// omitted.
-//
-// DELIBERATE TRADE-OFF: this is intentionally unpaginated — the former 200-row
-// page size and the 2000-row backend cap were removed because the full set is
-// needed for plan-timeline restore, so NO numeric ceiling remains on the
-// initial-load cost. See SQLiteSessionStore.LoadSessionHistory.
+// GetSessionHistory returns the session's full content history, oldest-first.
+// Deliberately unpaginated — plan-timeline restore needs the full set, so no
+// numeric ceiling remains on the initial-load cost.
+// See specs/domains/session-lifecycle.md.
 func (f *FrontendAPI) GetSessionHistory(id string) ([]session.ChatMessage, error) {
 	f.seedAcquire()
 	if f.store == nil {
 		return []session.ChatMessage{}, nil
 	}
-	// The heaviest read on the shared pool (the row caps were removed — see
-	// above); bound the pool wait so a contended DB yields a retryable error
-	// instead of an indefinitely open chat view.
 	ctx, cancel := f.storeOpCtx()
 	defer cancel()
 	return f.store.LoadSessionHistory(ctx, id)
@@ -890,10 +759,9 @@ func (f *FrontendAPI) taskState(sessionID string) (*core.TaskState, error) {
 	return bbState.TaskState, nil
 }
 
-// GetStepOutput returns the full output (body) of a single plan step for the
-// blackboard viewer. It is fetched lazily on tooltip hover so each step's
-// (potentially large) output never rides along in the GetBlackboardState
-// payload. Returns an empty string when the step or its output is absent.
+// GetStepOutput returns the full output (body) of a single plan step, fetched
+// lazily on hover so large outputs never ride along in GetBlackboardState.
+// See specs/contracts/desktop-frontend.md.
 func (f *FrontendAPI) GetStepOutput(sessionID, stepID string) (string, error) {
 	state, err := f.taskState(sessionID)
 	if err != nil {
@@ -906,10 +774,9 @@ func (f *FrontendAPI) GetStepOutput(sessionID, stepID string) (string, error) {
 }
 
 // SearchBlackboardStepOutputs returns the IDs of steps whose full output
-// contains the query (case-insensitive). The viewer unions this with its local
-// summary/id filtering so the search box matches step output content without
-// ever shipping full outputs over the list endpoint. An empty query yields no
-// matches.
+// contains the query (case-insensitive), unioned by the viewer with its local
+// filtering — content is searchable without shipping full outputs over the
+// list endpoint. See specs/contracts/desktop-frontend.md.
 func (f *FrontendAPI) SearchBlackboardStepOutputs(sessionID, query string) ([]string, error) {
 	state, err := f.taskState(sessionID)
 	if err != nil {
@@ -929,10 +796,10 @@ func (f *FrontendAPI) SearchBlackboardStepOutputs(sessionID, query string) ([]st
 }
 
 // ResolvePendingMessage patches the metadata of the most recent persisted
-// message with the given role and matching field value, merging the extra
-// fields. Used by desktop HITL response handlers to mark tool_confirm /
-// ask_user / step_limit / plan_review messages as resolved in the DB so they
-// don't reappear as pending on session reload.
+// message with the given role and matching field value — HITL response
+// handlers mark tool_confirm / ask_user / step_limit / plan_review messages
+// as resolved so they don't reappear as pending on reload.
+// See specs/domains/session-lifecycle.md.
 func (f *FrontendAPI) ResolvePendingMessage(sessionID, role, matchField, matchValue string, extra map[string]any) error {
 	f.seedAcquire()
 	if f.store == nil {
@@ -943,12 +810,10 @@ func (f *FrontendAPI) ResolvePendingMessage(sessionID, role, matchField, matchVa
 	return f.store.ResolvePendingMessage(ctx, sessionID, role, matchField, matchValue, extra)
 }
 
-// mergeIsNudgeMetadata merges is_nudge: true into a user-message metadata blob.
-// A nil/empty input yields a fresh {"is_nudge":true} blob. Existing keys are
-// preserved; is_nudge is added/overwritten. The result marks the persisted
-// user message as a nudge — either a nudge-resume into a paused session or a
-// live interjection into a running task — so the UI can distinguish it from a
-// fresh request on reload.
+// mergeIsNudgeMetadata merges is_nudge: true into a user-message metadata
+// blob (nil/empty input yields a fresh blob; existing keys preserved), marking
+// the persisted message as a live interjection or nudge-resume.
+// See specs/contracts/event-catalog.md (message_received).
 func mergeIsNudgeMetadata(raw json.RawMessage) json.RawMessage {
 	merged := make(map[string]any)
 	if len(raw) > 0 {

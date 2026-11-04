@@ -5,58 +5,42 @@ import (
 	"time"
 )
 
-// ServiceKind identifies a one-shot auxiliary LLM service call. Every member of
-// this class rides the shared oneshot service client (see service_call.go) and
-// carries its own per-kind telemetry (Issue #64).
+// ServiceKind identifies a one-shot auxiliary LLM service call: every member
+// rides the shared oneshot service client with per-kind telemetry —
+// specs/domains/llm-providers.md (per-kind telemetry).
 type ServiceKind string
 
+// ServiceKind labels the one-shot service call sites for per-kind telemetry.
+// The two suggest kinds are the post-routing goal-mode suitability classifier
+// (ADR-086) and the chat-input follow-up prompt suggestions (ADR-088).
 const (
-	// ServiceKindTitle is session-title generation (backend/session/title.go).
-	ServiceKindTitle ServiceKind = "title"
-	// ServiceKindCommitMessage is commit-message generation
-	// (backend/frontend_api_git.go).
-	ServiceKindCommitMessage ServiceKind = "commit_message"
-	// ServiceKindOptimizeExtract is the prompt optimizer's translate/extract step.
-	ServiceKindOptimizeExtract ServiceKind = "optimize_extract"
-	// ServiceKindOptimizeRewrite is the prompt optimizer's rewrite step.
-	ServiceKindOptimizeRewrite ServiceKind = "optimize_rewrite"
-	// ServiceKindCompactionSummary is context-compaction summarization.
-	ServiceKindCompactionSummary ServiceKind = "compaction_summarize"
-	// ServiceKindGoalSuggest is the post-routing goal-mode suitability
-	// classifier (core/goal_suggest.go): a fresh non-goal task's message is
-	// judged for obvious goal-mode fit before the Conductor run starts.
-	ServiceKindGoalSuggest ServiceKind = "goal_suggest"
-	// ServiceKindPromptSuggest is the chat-input prompt-suggestions generator
-	// (core/prompt_suggest.go): after a task finishes full/partial, follow-up
-	// prompts are generated from the recent-history windows (ADR-088).
-	ServiceKindPromptSuggest ServiceKind = "prompt_suggest"
+	ServiceKindTitle             ServiceKind = "title"                // session-title generation
+	ServiceKindCommitMessage     ServiceKind = "commit_message"       // commit-message generation
+	ServiceKindOptimizeExtract   ServiceKind = "optimize_extract"     // prompt optimizer: translate/extract step
+	ServiceKindOptimizeRewrite   ServiceKind = "optimize_rewrite"     // prompt optimizer: rewrite step
+	ServiceKindCompactionSummary ServiceKind = "compaction_summarize" // context-compaction summarization
+	ServiceKindGoalSuggest       ServiceKind = "goal_suggest"         // goal-mode suitability classifier
+	ServiceKindPromptSuggest     ServiceKind = "prompt_suggest"       // follow-up prompt suggestions
 )
 
 // ServiceOutcome classifies the terminal result of a service call.
 type ServiceOutcome string
 
+// ServiceOutcome classifies the terminal result of a service call. Fallback
+// and Error are non-transport outcomes; the Router owns transport failures
+// and they surface as TransportError.
 const (
-	// ServiceOutcomeOK is a first-or-retried parse success.
-	ServiceOutcomeOK ServiceOutcome = "ok"
-	// ServiceOutcomeFallback is a degraded value returned by the oneshot
-	// client after the nudge loop (OnFailureFallback / OnFailureFailSafe).
-	ServiceOutcomeFallback ServiceOutcome = "fallback"
-	// ServiceOutcomeError is a terminal refusal (or a pre-call context
-	// cancellation) that did not come from the transport.
-	ServiceOutcomeError ServiceOutcome = "error"
-	// ServiceOutcomeTransportError is a failure of the underlying LLM call
-	// itself (never retried by the oneshot client — the Router owns retry).
-	ServiceOutcomeTransportError ServiceOutcome = "transport_error"
+	ServiceOutcomeOK             ServiceOutcome = "ok"              // first-or-retried parse success
+	ServiceOutcomeFallback       ServiceOutcome = "fallback"        // nudge loop exhausted, degraded value
+	ServiceOutcomeError          ServiceOutcome = "error"           // terminal refusal or pre-call cancel
+	ServiceOutcomeTransportError ServiceOutcome = "transport_error" // the underlying LLM call failed
 )
 
-// ServiceKindMetrics is the aggregate telemetry for one ServiceKind. All
-// counters are monotonic; the durations are wall-clock and cover the whole
-// client exchange (including any nudge re-sends).
+// ServiceKindMetrics is the aggregate telemetry for one ServiceKind.
 //
-// Retries = Attempts - Calls holds only for calls that reached the wire
-// (nudge re-sends); a call cancelled before its first attempt records
-// Calls=1 with Attempts=0, so consumers must not derive Retries from the
-// difference unconditionally.
+// Retries = Attempts - Calls holds only for calls that reached the wire: a
+// call cancelled before its first attempt records Calls=1 with Attempts=0, so
+// consumers must not derive Retries unconditionally.
 type ServiceKindMetrics struct {
 	Calls           int64         // serviceCall invocations
 	Attempts        int64         // underlying LLM calls (first try + nudges)
@@ -69,14 +53,10 @@ type ServiceKindMetrics struct {
 	MaxDuration     time.Duration // slowest single call
 }
 
-// ServiceMetrics is the thread-safe, in-process collector for the one-shot
-// service calls' per-kind counters and latency (Issue #64). It is
-// low-cardinality and content-free — it holds no prompts and no model output —
-// so it is safe to log or expose.
-//
-// A nil *ServiceMetrics is valid and every method is a no-op on it, so call
-// sites (and the many tests that build a bare OrchestratorBuilder / Orchestrator
-// literal) never have to guard against an unstaged collector.
+// ServiceMetrics is the in-process collector for the one-shot service calls'
+// per-kind counters and latency; content-free (no prompts, no model output),
+// so it is safe to log or expose — specs/domains/llm-providers.md. A nil
+// *ServiceMetrics is valid: every method is a no-op on it.
 type ServiceMetrics struct {
 	mu    sync.Mutex
 	kinds map[ServiceKind]*ServiceKindMetrics
@@ -87,9 +67,8 @@ func newServiceMetrics() *ServiceMetrics {
 	return &ServiceMetrics{kinds: make(map[ServiceKind]*ServiceKindMetrics)}
 }
 
-// record folds one completed service call into the per-kind aggregate.
-// attempts is the number of underlying LLM calls the client issued (>= 1 for a
-// call that reached the wire).
+// record folds one completed service call into the per-kind aggregate;
+// attempts counts underlying LLM calls (>= 1 for a call that reached the wire).
 func (m *ServiceMetrics) record(kind ServiceKind, outcome ServiceOutcome, attempts int, dur time.Duration) {
 	if m == nil {
 		return
@@ -128,8 +107,8 @@ func (m *ServiceMetrics) record(kind ServiceKind, outcome ServiceOutcome, attemp
 	}
 }
 
-// Snapshot returns a stable copy of the per-kind aggregates. Kinds with no
-// calls are absent. Safe to call concurrently with record.
+// Snapshot returns a copy of the per-kind aggregates; kinds with no calls are
+// absent.
 func (m *ServiceMetrics) Snapshot() map[ServiceKind]ServiceKindMetrics {
 	out := make(map[ServiceKind]ServiceKindMetrics)
 	if m == nil {

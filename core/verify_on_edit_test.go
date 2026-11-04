@@ -75,8 +75,13 @@ func TestBuildEditVerifyRunner_NilWhenUnconfigured(t *testing.T) {
 
 func TestEditVerifyRunner_ExitZero(t *testing.T) {
 	ws := t.TempDir()
+	// The 120s timeout is a runner-stall cushion, not a timing expectation:
+	// a CI Windows runner once wedged powershell.exe for the whole 30s
+	// budget (killed with zero output, passed the re-run unchanged), and the
+	// command normally finishes in milliseconds. Assertions never measure
+	// elapsed time.
 	runner := buildEditVerifyRunner(newVerifyTestRegistry(t), ws,
-		"echo verify-ok", "30s", 0, nil)
+		"echo verify-ok", "120s", 0, nil)
 	if runner == nil {
 		t.Fatal("runner is nil for configured command")
 	}
@@ -113,7 +118,7 @@ func nonZeroExitShellCommand() string {
 func TestEditVerifyRunner_NonZeroExit(t *testing.T) {
 	ws := t.TempDir()
 	runner := buildEditVerifyRunner(newVerifyTestRegistry(t), ws,
-		nonZeroExitShellCommand(), "30s", 0, nil)
+		nonZeroExitShellCommand(), "120s", 0, nil)
 	res := runner(context.Background())
 	if res.Err != nil {
 		t.Fatalf("unexpected Err: %v", res.Err)

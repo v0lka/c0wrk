@@ -380,7 +380,7 @@ func blockTheSupervisorGate(t *testing.T, f *FrontendAPI) func() {
 
 	return func() {
 		close(release)
-		<-loadDone
+		<-loadDone //nolint:errcheck // join: the payload is not the assertion
 	}
 }
 

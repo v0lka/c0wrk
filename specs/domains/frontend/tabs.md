@@ -84,7 +84,7 @@ Every tab creation goes through `TabEngine.createAndActivate(seed?)`: the [creat
 | `researchSegmentByProject` | `uiStore` | `'dashboard'` \| `'papers'` per project id |
 | `inputMode` | `inputModeStore` | `{mode, height, collapsedHeight, isExpanded}` — exactly the panel's persisted fields; the transient `pending*` fields are excluded |
 | `sidebar` | `uiStore` | `{collapsed, width}` — the left sidebar's geometry (v2, [ADR-085](../../decisions/085-workspace-tabs-single-engine.md)) |
-| `viewer` | `fileViewerStore` | `{pinned, collapsed, width}` — the right panel's geometry (v2); its OPEN FILE TABS are deliberately excluded |
+| `viewer` | `fileViewerStore` | `{pinned, collapsed, width}` — the right panel's geometry (v2); its OPEN FILE TABS are deliberately excluded, and so are the per-file reading positions (`scrollPositions`) — those are session-scoped in-memory state that never enters a tab snapshot or localStorage |
 | `gitPanelTabByProject` | `gitPanelStore` | `'files'` \| `'changes'` \| `'history'` per project id (v2) |
 | `chatSessionListRatio` | `uiStore` | the CHAT session-list/workspace split ratio (v2) |
 | `showSessionStats` | `uiStore` | the session-stats row visibility toggle (v2) |

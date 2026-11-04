@@ -34,14 +34,12 @@ type tokenState struct {
 	lastFillStatus      string
 	lastModel           string // last model used
 	lastFamily          string // last model family used
-	// displayContextWindow is the model's advertised context-window size, injected
-	// by the orchestrator via SetDisplayContextWindow. When > 0, ContextFill
-	// recomputes fill relative to this real window instead of the executor's
-	// internal "effective max" (window − output limit − safety margin).
+	// displayContextWindow, when > 0, makes ContextFill present fill relative
+	// to the real advertised window instead of the executor's internal
+	// "effective max". See specs/domains/memory/compaction.md.
 	displayContextWindow int
-	// lastEffectiveMax caches the executor's effective max from the most recent
-	// ContextFill so ContextCompaction can scale its before/after percentages
-	// from the internal effective-max basis to the display (real window) basis.
+	// lastEffectiveMax caches the executor's internal "effective max" so
+	// ContextCompaction rescales its percentages to the display basis.
 	lastEffectiveMax int
 	tokenPersist     func(inputTokens, outputTokens int, model, family string, fillPercent float64) // callback to persist tokens
 }
@@ -53,10 +51,8 @@ type toolCallIDGen struct {
 	epoch   int64 // millisecond timestamp at creation, ensures uniqueness across session reloads
 
 	// toolCallSink, when set, is invoked after each ToolCall with the tool name
-	// and the generated tool_call_id. The session Manager registers it so the
-	// desktop confirmation callback can attach the matching tool_call_id to the
-	// tool_confirm payload — enabling precise tool_call ↔ tool_confirm
-	// correlation instead of fragile tool-name matching. Guarded by mu.
+	// and generated tool_call_id (the Manager registers it so tool_confirm
+	// payloads carry the matching id). Guarded by mu.
 	mu           sync.RWMutex
 	toolCallSink func(tool, toolCallID string)
 }
@@ -73,18 +69,16 @@ func (g *toolCallIDGen) setSink(fn func(tool, toolCallID string)) {
 	g.toolCallSink = fn
 }
 
-// sink returns the registered callback, or nil if none is set.
 func (g *toolCallIDGen) sink() func(tool, toolCallID string) {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	return g.toolCallSink
 }
 
-// EventEmitter implements core.Emitter and routes events to a callback function.
+// EventEmitter implements core.Emitter and routes events to a callback.
 //
-// Lock ordering: tokens.mu must be acquired BEFORE e.mu to avoid deadlocks.
-// Methods that need both (e.g. AssistantDone, EmitSessionTokens, ContextFill)
-// always lock tokens.mu first, then e.mu.
+// Lock ordering: tokens.mu must be acquired BEFORE e.mu; methods needing
+// both always take tokens.mu first.
 type EventEmitter struct {
 	sessionID    string
 	emit         func(Event)
@@ -104,18 +98,16 @@ type EventEmitter struct {
 	// Shared token accumulation (shared across WithPlanStepID copies)
 	tokens *tokenState
 
-	// Shared activity tracking (shared across WithPlanStepID copies): the
-	// last user-facing activity label and the open-stream flag, read by the
-	// session runtime-status snapshot to reconcile the frontend's frozen
-	// activity/streaming state after a session/project switch.
+	// Shared activity tracking: the last user-facing activity label and the
+	// open-stream flag, replayed by the runtime-status snapshot after a
+	// session/project switch.
 	activity *activityState
 
 	// Shared agent quality metrics (shared across WithPlanStepID copies)
 	metrics *metricsState
 
-	// Shared host-side recent-execution window (shared across WithPlanStepID
-	// copies): the bounded trajectory + counters the step-limit judge reasons
-	// over in silent mode. See execution_window.go.
+	// Shared recent-execution window (trajectory + counters the silent-mode
+	// step-limit judge reasons over). See execution_window.go.
 	window *executionWindow
 
 	// Tool call ID generation (shared across WithPlanStepID copies)
@@ -126,17 +118,14 @@ type EventEmitter struct {
 	// since each executor starts stepNum from 1.
 	localToolIDs map[string]string
 
-	// isSessionRoot marks the conductor's own emitter. Scoped copies created by
-	// WithPlanStepID/WithRetryAttempt (subagents) are NOT root. Only the root
-	// emitter updates the session-level fill cache so a subagent's own context
-	// fill never overwrites the conductor's fill shown in the status bar.
+	// isSessionRoot marks the conductor's own emitter (scoped copies are NOT
+	// root); only the root updates the session-level fill cache, so a
+	// subagent's fill never clobbers the status bar's.
 	isSessionRoot bool
 
-	// attachmentNameResolver resolves a read_attachment attachment_id to its
-	// original file name so the tool-call event (and thus the persisted
-	// message metadata) carries a human-readable name. Wired per-task by the
-	// orchestrator from the blackboard; nil when no task is active or the
-	// emitter predates resolver support. Guarded by mu.
+	// attachmentNameResolver maps a read_attachment attachment_id to its
+	// original file name for the tool-call event/metadata. Wired per-task by
+	// the orchestrator; nil when unsupported. Guarded by mu.
 	attachmentNameResolver func(string) string
 
 	logger *slog.Logger
@@ -173,37 +162,23 @@ func (e *EventEmitter) SetTokenPersist(fn func(inputTokens, outputTokens int, mo
 	e.tokens.tokenPersist = fn
 }
 
-// SetDisplayContextWindow injects the model's advertised context-window size
-// so ContextFill presents fill relative to the real window rather than the
-// executor's internal "effective max" (window − output limit − safety margin).
-// The orchestrator calls this after resolving the model meta, before the first
-// context_fill. A value <= 0 clears the override and falls back to the
-// executor-reported max.
+// SetDisplayContextWindow injects the model's advertised context window so
+// ContextFill presents fill on the display basis; <= 0 clears the override.
+// See specs/domains/memory/compaction.md.
 func (e *EventEmitter) SetDisplayContextWindow(window int) {
 	e.tokens.mu.Lock()
 	defer e.tokens.mu.Unlock()
 	e.tokens.displayContextWindow = window
 }
 
-// SetDisplayContextWindowForModel applies a LATE-ARRIVING display-window
-// correction discovered by the lazy self-hosted server probe (LM Studio /
-// vLLM / Ollama). The initial context_fill of a task is emitted before the
-// async probe completes, so it carries the pre-probe window (catalog spec or
-// fallback); this method lets the probe's observed runtime window correct the
-// status bar mid-task instead of waiting for the next message.
-//
-// The update is MODEL-SCOPED: when the most recently reported model is known
-// and differs from `model`, the update is dropped — the user switched models
-// after the probe was fired, and a stale window would corrupt the new model's
-// display (the new model's own probe or the next initial context_fill
-// supplies the correct value). An empty lastModel (nothing reported yet)
-// accepts the update: the probe was fired for the session's active model.
-//
-// When a fill has already been reported (used > 0) on the session root, a
-// refreshed context_fill event is re-broadcast on the new basis so an idle
-// status bar corrects immediately; during active execution the next executor
-// fill would correct it anyway, but no further events arrive after a task
-// ends.
+// SetDisplayContextWindowForModel applies the lazy self-hosted server probe's
+// LATE-ARRIVING display-window correction (the initial context_fill precedes
+// the probe). The update is MODEL-SCOPED — dropped when the last reported
+// model differs, since a stale window would corrupt a switched model's
+// display — and when a fill was already reported on the session root, a
+// refreshed context_fill is re-broadcast so an idle status bar corrects
+// immediately (no further events arrive after a task ends).
+// See specs/domains/llm-providers.md (Context Window Resolution).
 func (e *EventEmitter) SetDisplayContextWindowForModel(model string, window int) {
 	if window <= 0 {
 		return
@@ -249,23 +224,17 @@ func (e *EventEmitter) SetDisplayContextWindowForModel(model string, window int)
 	})
 }
 
-// SetToolCallIDSink registers a callback invoked after each ToolCall with the
-// tool name and the generated tool_call_id. The session Manager sets it so the
-// desktop-layer confirmation callback can attach the matching tool_call_id to
-// the tool_confirm payload, enabling precise tool_call ↔ tool_confirm
-// correlation on the frontend (instead of matching by tool name, which is
-// ambiguous when two calls share a name). The sink lives on the shared gen, so
-// scoped copies (WithPlanStepID/WithRetryAttempt) report to the same store.
+// SetToolCallIDSink registers the post-ToolCall callback so tool_confirm
+// payloads carry the matching tool_call_id (name matching is ambiguous when
+// two calls share a name). The sink lives on the shared gen, so scoped copies
+// report to the same store.
 func (e *EventEmitter) SetToolCallIDSink(fn func(tool, toolCallID string)) {
 	e.toolCallIDs.setSink(fn)
 }
 
-// SetAttachmentNameResolver wires a resolver that maps a read_attachment
-// attachment_id to its original file name, used to enrich read_attachment
-// tool-call events (and their persisted metadata) so cards render the file
-// name even after restart. Wired per-task by the orchestrator from the
-// blackboard. Scoped copies (WithPlanStepID/WithRetryAttempt) inherit the same
-// resolver so subagents/retries resolve names against the shared blackboard.
+// SetAttachmentNameResolver enriches read_attachment tool-call events (and
+// their persisted metadata) with the original file name so cards render it
+// even after restart. Scoped copies inherit the same resolver.
 func (e *EventEmitter) SetAttachmentNameResolver(resolve func(attachmentID string) string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -310,27 +279,20 @@ func (e *EventEmitter) WithRetryAttempt(attempt int) core.Emitter {
 	}
 }
 
-// SetCurrentStepID dynamically updates the plan_step_id injected into
-// subsequent events emitted by this receiver. Unlike WithPlanStepID (which
-// returns a scoped copy with a fixed planStepID), SetCurrentStepID mutates
-// the receiver in place — use it to track the "current step" during inline
-// Conductor execution, where a single emitter instance serves the whole
-// ReAct loop and the active step changes via update_checklist /
-// declare_step_complete tool calls. Pass an empty string to clear the scope.
-//
-// Scoped copies created by WithPlanStepID have their own planStepID field
-// and are unaffected by calls to this method on the original emitter.
+// SetCurrentStepID mutates the receiver's plan_step_id in place (unlike the
+// WithPlanStepID copies, which carry a fixed scope) — the inline Conductor's
+// single emitter tracks the "current step" through
+// update_checklist/declare_step_complete. "" clears the scope; scoped copies
+// are unaffected.
 func (e *EventEmitter) SetCurrentStepID(id string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.planStepID = id
 }
 
-// CurrentStepID returns the dynamic plan-step scope set via SetCurrentStepID
-// (the inline step the root executor is currently executing), or "" when the
-// emitter is not step-scoped. It lets out-of-band emitters that bypass the
-// scoped copies (e.g. Manager.EmitAutonomyDecision) attribute a notice to the
-// same inline step the executor's own events carry via emitEvent injection.
+// CurrentStepID returns the dynamic scope set via SetCurrentStepID ("" when
+// unscoped) so out-of-band emitters (e.g. Manager.EmitAutonomyDecision)
+// attribute to the same inline step the executor's events carry.
 func (e *EventEmitter) CurrentStepID() string {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -355,10 +317,9 @@ func (e *EventEmitter) emitEvent(evt Event) {
 			data["retry_attempt"] = e.retryAttempt
 		}
 	}
-	// Track the session's last activity label / open-stream flag BEFORE the
-	// event leaves the emitter: a listener may not exist (the user switched
-	// projects/sessions), and the runtime-status snapshot replays this state
-	// when they switch back. See activityState for the locking contract.
+	// Track the last activity label / open-stream flag BEFORE the event
+	// leaves: a listener may not exist, and the runtime-status snapshot
+	// replays this state on switch-back. See activityState.
 	e.activity.updateActivity(evt)
 	e.emit(evt)
 }
@@ -401,11 +362,9 @@ func (e *EventEmitter) PlanGenerated(stepCount int, steps []orchestration.PlanSt
 	})
 }
 
-// PlanStepStart emits a plan step start event with progress info.
-// Duplicate calls for the same step ID are suppressed — the event is emitted
-// only the first time a step starts. This lets both the Conductor's inline
-// todo callback and the subagent launcher call PlanStepStart without worrying
-// about double-emission.
+// PlanStepStart emits a plan step start event; duplicate calls for the same
+// step ID are suppressed, so the inline todo callback and the subagent
+// launcher can both call it.
 func (e *EventEmitter) PlanStepStart(stepID, description, summary string) {
 	e.log().Debug("emitter: plan step start", "sessionID", e.sessionID, "stepID", stepID, "description", description, "summary", summary)
 	e.mu.Lock()
@@ -447,13 +406,10 @@ func (e *EventEmitter) PlanStepComplete(stepID string, success bool, duration ti
 		}
 		e.planCompletedSet[stepID] = true
 	} else {
-		// A failed step is eligible for re-run (same-run execute_plan retry or
-		// a continuable resume re-running failed steps). Drop it from the
-		// started-set so the re-run's PlanStepStart is emitted and the UI
-		// flips the step back to "running" instead of lingering "failed".
-		// Successfully completed steps keep their dedupe: a re-declared or
-		// skipped step synthesizes its own start/complete pair, and double
-		// starts for a still-completed step would only churn the UI.
+		// A failed step is re-runnable: drop it from the started-set so the
+		// re-run's PlanStepStart re-emits and the UI flips back to "running".
+		// Completed steps keep their dedupe (re-declared/skipped steps
+		// synthesize their own pair).
 		delete(e.planStartedSet, stepID)
 	}
 	if e.planCurrentStepID == stepID {
@@ -487,11 +443,9 @@ func (e *EventEmitter) PlanStepPaused(stepID string, duration time.Duration, err
 	e.log().Debug("emitter: plan step paused", "sessionID", e.sessionID, "stepID", stepID, "duration", duration, "errMsg", errMsg)
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	// The emitter outlives individual runs (one instance per session), so the
-	// started-set from the paused run would suppress the resumed run's
-	// PlanStepStart for the re-entered step as a duplicate. Drop it: the
-	// resume path re-emits start so the UI flips the step from "paused" back
-	// to "running" instead of lingering until the final completion.
+	// The emitter outlives runs: drop the paused step from the started-set or
+	// the resumed run's PlanStepStart is suppressed as a duplicate and the UI
+	// never flips back to "running".
 	delete(e.planStartedSet, stepID)
 	completedCount := len(e.planCompletedSet)
 	data := map[string]any{
@@ -566,11 +520,9 @@ func (e *EventEmitter) Finishing(stepNum int, summary string) {
 	})
 }
 
-// JudgeStarted emits the start of a strict-judge (Smart Approve) evaluation.
-// The judge runs BEFORE a confirmation card exists, so the activity label this
-// event maps to ("Safety judge evaluating...") is what honestly describes the
-// session while the judge LLM call is in flight. Transient: the persister
-// skips this event type.
+// JudgeStarted emits the start of a strict-judge (Smart Approve) evaluation —
+// the honest activity label while the judge LLM call is in flight, before any
+// confirmation card exists. Transient (the persister skips it).
 func (e *EventEmitter) JudgeStarted(toolName string) {
 	e.log().Debug("emitter: judge started", "sessionID", e.sessionID, "tool", toolName)
 	e.mu.Lock()
@@ -582,12 +534,10 @@ func (e *EventEmitter) JudgeStarted(toolName string) {
 	})
 }
 
-// JudgeFinished emits the end of a strict-judge (Smart Approve) evaluation.
-// Immediately after the verdict, either the tool executes (strict ALLOW) or a
-// confirmation card is issued — both land their own events right after — so
-// the mapped activity label mirrors the live tool-call convention
-// ("Running tool: <tool>...") rather than guessing the verdict outcome.
-// Transient: the persister skips this event type.
+// JudgeFinished emits the end of a strict-judge evaluation; the tool-execute
+// or card events land right after, so the label mirrors the live tool-call
+// convention rather than guessing the verdict. Transient (the persister skips
+// it).
 func (e *EventEmitter) JudgeFinished(toolName string) {
 	e.log().Debug("emitter: judge finished", "sessionID", e.sessionID, "tool", toolName)
 	e.mu.Lock()
@@ -599,13 +549,10 @@ func (e *EventEmitter) JudgeFinished(toolName string) {
 	})
 }
 
-// AutonomyDecision emits an automatic (no-human) security decision taken under
-// an automatic autonomy posture (assisted or silent), so the gate a human
-// would otherwise have answered is recorded as a non-blocking, auditable
-// notice (OWASP ASI10). Unlike the strict-judge phase telemetry
-// (JudgeStarted/JudgeFinished, which only say a judge RAN), this carries WHAT
-// was decided: kind, mode, policy, verdict, tool/reason and justification.
-// Persisted — the trajectory must stay reconstructable.
+// AutonomyDecision emits an automatic (no-human) security decision — the
+// persisted, auditable record of WHAT was decided (unlike the judge phase
+// telemetry, which only says a judge ran). See
+// specs/contracts/event-catalog.md.
 func (e *EventEmitter) AutonomyDecision(payload AutonomyDecisionData) {
 	e.log().Debug("emitter: autonomy decision",
 		"sessionID", e.sessionID, "kind", payload.Kind,
@@ -619,14 +566,11 @@ func (e *EventEmitter) AutonomyDecision(payload AutonomyDecisionData) {
 	})
 }
 
-// ToolConfirm emits a tool-confirmation request. The desktop confirm callback
-// routes the event through the live session emitter (via Manager.EmitToolConfirm)
-// so the activity tracker — and therefore the runtime-status snapshot read on
-// session switches — reports "Awaiting confirmation..." for however long the
-// agent goroutine blocks on the user's decision, instead of a stale
-// "Running tool: ..." label. Transient: the persister skips this event type
-// (pending confirmations are process-local; a persisted row would render as an
-// unresolvable card after a restart).
+// ToolConfirm emits a tool-confirmation request via the live session emitter
+// (Manager.EmitToolConfirm) so the runtime-status snapshot reports "Awaiting
+// confirmation..." for however long the agent blocks on the user. Transient:
+// pending confirmations are process-local. See
+// specs/contracts/event-catalog.md.
 func (e *EventEmitter) ToolConfirm(payload ToolConfirmPayload) {
 	e.log().Debug("emitter: tool confirm", "sessionID", e.sessionID, "tool", payload.Tool, "confirmID", payload.ConfirmID)
 	e.mu.Lock()
@@ -648,9 +592,8 @@ func (e *EventEmitter) ToolCall(stepNum, callIdx int, toolName, argsPreview, sou
 
 	// Generate unique tool_call_id
 	toolCallID := e.toolCallIDs.next()
-	// Record the last tool_call_id for this session so the desktop
-	// confirmation callback can correlate the (immediately-following)
-	// tool_confirm with this exact tool_call event.
+	// Record the tool_call_id so the confirmation callback correlates the
+	// immediately-following tool_confirm with this exact tool_call.
 	if sink := e.toolCallIDs.sink(); sink != nil {
 		sink(toolName, toolCallID)
 	}
@@ -675,9 +618,8 @@ func (e *EventEmitter) ToolCall(stepNum, callIdx int, toolName, argsPreview, sou
 			data["parsed_args"] = parsed
 		}
 	}
-	// Enrich read_attachment calls with the attachment's original file name so
-	// the persisted tool-call metadata (and thus the card) shows the name even
-	// after an app restart, when the frontend's in-memory name cache is empty.
+	// Enrich read_attachment calls with the original file name: the card shows
+	// it even after restart, when the frontend's name cache is empty.
 	if toolName == "read_attachment" && e.attachmentNameResolver != nil {
 		if id := readAttachmentID(data); id != "" {
 			if name := e.attachmentNameResolver(id); name != "" {
@@ -693,9 +635,8 @@ func (e *EventEmitter) ToolCall(stepNum, callIdx int, toolName, argsPreview, sou
 	})
 }
 
-// readAttachmentID extracts the attachment_id argument from a read_attachment
-// tool-call event's data map — preferring the pre-parsed args and falling back
-// to the raw args JSON. Returns "" when absent.
+// readAttachmentID extracts the attachment_id argument, preferring the
+// pre-parsed args; "" when absent.
 func readAttachmentID(data map[string]any) string {
 	if parsed, ok := data["parsed_args"].(map[string]any); ok {
 		if id, _ := parsed["attachment_id"].(string); id != "" {
@@ -937,12 +878,10 @@ func (e *EventEmitter) AssistantDone(fullContent string, inputTokens, outputToke
 	})
 }
 
-// SetLastModel updates the cached model/family so that subsequent context_fill
-// events report the newly-selected model immediately, before the first LLM call
-// reports actual usage via the UsageTracker observer. It is invoked by the
-// orchestrator's ApplyRequestOverrides when a per-request model override is
-// applied, so the status bar does not show the previous task's stale model
-// during a continuation or resume. A no-op when model is empty.
+// SetLastModel refreshes the cached model/family on a per-request override
+// (orchestrator's ApplyRequestOverrides) so context_fill events report the
+// new model immediately instead of the previous task's stale one during a
+// continuation/resume. No-op when empty.
 func (e *EventEmitter) SetLastModel(model, family string) {
 	if model == "" {
 		return
@@ -953,23 +892,17 @@ func (e *EventEmitter) SetLastModel(model, family string) {
 	e.tokens.mu.Unlock()
 }
 
-// EmitSessionTokens emits a "session_tokens" event with the given totals.
-// This is called by the UsageTracker observer — accumulation is handled externally.
-// The context-window fill percent and used/max token counts are read from the shared
-// cache (updated only by the session-root emitter in ContextFill) and forwarded for
-// persistence and display.
+// EmitSessionTokens emits "session_tokens" with the given totals (UsageTracker
+// observer); fill/used/max come from the shared cache, updated only by the
+// session-root emitter in ContextFill.
 func (e *EventEmitter) EmitSessionTokens(totalIn, totalOut int, model, family string) {
 	e.emitSessionTokens(totalIn, totalOut, model, family, 0, 0)
 }
 
-// EmitSessionTokensWithThroughput emits a "session_tokens" event that
-// additionally carries the median per-call output-token throughput
-// (medianOutputTokPerSec, tokens/second) and the sample count behind it
-// (throughputSamples). It is the preferred seam of the UsageTracker's timed
-// observer in core/builder.go; the plain EmitSessionTokens remains for
-// emitters/callers that only have cumulative totals. Values of 0 mean the
-// per-session throughput window has not reached its minimum sample count —
-// the fields are omitted from the wire payload (omitempty).
+// EmitSessionTokensWithThroughput additionally carries the median output-token
+// throughput and its sample count — the preferred seam of the UsageTracker's
+// timed observer in core/builder.go. Zeros mean the throughput window has not
+// reached its minimum samples; the fields are omitted (omitempty).
 func (e *EventEmitter) EmitSessionTokensWithThroughput(totalIn, totalOut int, model, family string, medianOutputTokPerSec float64, throughputSamples int) {
 	e.emitSessionTokens(totalIn, totalOut, model, family, medianOutputTokPerSec, throughputSamples)
 }
@@ -997,11 +930,9 @@ func (e *EventEmitter) emitSessionTokens(totalIn, totalOut int, model, family st
 		persist(totalIn, totalOut, model, family, fillPercent)
 	}
 
-	// emitEvent reads planStepID/retryAttempt, which SetCurrentStepID/
-	// SetRetryAttempt write under e.mu on the conductor goroutine while this
-	// emission can run on a subagent/E2S token-observer goroutine — hold e.mu
-	// across the dispatch like every other emitEvent call site (ContextFill,
-	// Service) so the read cannot race the writer.
+	// emitEvent reads planStepID/retryAttempt, written under e.mu on the
+	// conductor goroutine while this can run on a token-observer goroutine —
+	// hold e.mu across the dispatch so the read cannot race the writer.
 	e.mu.Lock()
 	e.emitEvent(Event{
 		SessionID: e.sessionID,
@@ -1021,34 +952,20 @@ func (e *EventEmitter) emitSessionTokens(totalIn, totalOut int, model, family st
 	e.mu.Unlock()
 }
 
-// ContextFill emits a context fill status event, enriched with session-level token totals.
-//
-// The executor reports fill relative to its internal "effective max"
-// (context window − output limit − safety margin), which is the ceiling the
-// agent's compaction logic manages against. The user-facing display, however,
-// must reflect the model's advertised context window so the status bar never
-// exposes internal compaction thresholds. When a display context window has
-// been injected via SetDisplayContextWindow, the percent and max are
-// recomputed relative to that real window before emission and caching.
+// ContextFill emits a context fill event enriched with session token totals,
+// rescaled to the display (advertised-window) basis so the status bar never
+// exposes internal compaction thresholds. See
+// specs/domains/memory/compaction.md.
 func (e *EventEmitter) ContextFill(fillPercent float64, usedTokens, maxTokens int, status, stepID string) {
-	// The executor passes its own plan-step id (SetPlanContext — delegated
-	// subagent executors only). Inline Conductor steps never set one: their
-	// scoping is dynamic on the ROOT emitter (SetCurrentStepID), and
-	// emitEvent's plan_step_id injection covers only map[string]any payloads,
-	// NOT this typed struct — so the inline steps' context_fill arrived
-	// session-root and the frontend never populated the step header's
-	// context-fill badge (the status bar swallowed every emission). Fall back
-	// to the emitter's own scope (fixed via WithPlanStepID, dynamic via
-	// SetCurrentStepID) when the caller has none; "" on both sides keeps the
-	// event session-root (planning/idle emissions between steps).
-	//
-	// The dynamic scope is valid only between a task's start and its
-	// completion: the inline lifecycle sets it per step and clears it in
-	// completeStep/completeAll, and the orchestrator clears it unconditionally
-	// at task entry (resetDynamicStepScope) — a pause→abandon or crash can
-	// otherwise leave it dangling into the next task. Session-root emissions
-	// that must never inherit a scope (the initial fill, the manual-compaction
-	// refresh) reset it explicitly right before emitting.
+	// The executor passes its own plan-step id (delegated subagents only).
+	// Inline Conductor steps rely on the emitter's own scope: emitEvent's
+	// plan_step_id injection covers only map payloads, NOT this typed struct,
+	// so without this fallback their fills arrived session-root and the step
+	// header's fill badge never populated. "" on both sides keeps the event
+	// session-root. The dynamic scope is valid only within a task — the
+	// orchestrator clears it at task entry (resetDynamicStepScope), and
+	// session-root emissions that must never inherit a scope reset it
+	// explicitly before emitting.
 	if stepID == "" {
 		e.mu.Lock()
 		stepID = e.planStepID
@@ -1056,9 +973,8 @@ func (e *EventEmitter) ContextFill(fillPercent float64, usedTokens, maxTokens in
 	}
 	// Cache fill state and read session totals atomically.
 	e.tokens.mu.Lock()
-	// The executor's maxTokens is the internal effective max; remember it so
-	// ContextCompaction can scale its before/after percentages to the display
-	// basis.
+	// maxTokens is the internal effective max; cached so ContextCompaction
+	// can rescale to the display basis.
 	e.tokens.lastEffectiveMax = maxTokens
 	// Recompute display values relative to the real advertised context window
 	// (falling back to the executor-reported max when no window is known).
@@ -1070,10 +986,8 @@ func (e *EventEmitter) ContextFill(fillPercent float64, usedTokens, maxTokens in
 	if displayMax > 0 {
 		displayPercent = float64(usedTokens) / float64(displayMax) * 100
 	}
-	// Only the session-root (conductor) emitter updates the session-level fill
-	// cache. Scoped copies (subagents) report their own fill via the emitted
-	// event and stepContextFill, but must not clobber the conductor's fill used
-	// by the status bar / persisted session tokens.
+	// Only the session-root emitter updates the session-level fill cache;
+	// subagent copies must not clobber the conductor's status-bar fill.
 	if e.isSessionRoot {
 		e.tokens.lastFillPercent = displayPercent
 		e.tokens.lastUsedTokens = usedTokens
@@ -1097,11 +1011,8 @@ func (e *EventEmitter) ContextFill(fillPercent float64, usedTokens, maxTokens in
 			MaxTokens:   displayMax,
 			Status:      status,
 			PlanStepID:  stepID,
-			// Root emitter + dynamic inline-step scope: the frontend may
-			// mirror this fill to the session-level status bar (the
-			// session_tokens re-broadcast lags one executor iteration).
-			// Subagent copies never set it — WithPlanStepID does not carry
-			// isSessionRoot.
+			// See ContextFillEventData.SessionRootMirror; subagent copies
+			// never set it (no isSessionRoot).
 			SessionRootMirror:   e.isSessionRoot && stepID != "",
 			SessionInputTokens:  totalIn,
 			SessionOutputTokens: totalOut,
@@ -1142,10 +1053,8 @@ func (e *EventEmitter) ServiceWithMeta(content string, meta map[string]any) {
 	})
 }
 
-// GoalStatus emits a dedicated goal_status session event carrying the full goal
-// state snapshot. Unlike the phase-discriminated `service` channel, it is its
-// own event type so the frontend's live subscription reliably reaches the goal
-// store (the goal status indicator + turn transitions).
+// GoalStatus emits the dedicated goal_status event (its own type so the live
+// subscription reliably reaches the goal store, unlike the service channel).
 func (e *EventEmitter) GoalStatus(data map[string]any) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -1156,9 +1065,8 @@ func (e *EventEmitter) GoalStatus(data map[string]any) {
 	})
 }
 
-// GoalProgress emits a dedicated goal_progress session event with turn/budget
-// telemetry, emitted mid-loop (after a non-terminal turn) so the frontend can
-// show live progress toward the budget.
+// GoalProgress emits goal_progress turn/budget telemetry mid-loop so the
+// frontend can show live progress toward the budget.
 func (e *EventEmitter) GoalProgress(data map[string]any) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -1169,10 +1077,9 @@ func (e *EventEmitter) GoalProgress(data map[string]any) {
 	})
 }
 
-// E2SState emits a dedicated e2s_state session event carrying the full
-// execution-state snapshot (Σ map, turn, max turns, status) of an E2S-mode
-// run. Emitted after every applied state patch so the frontend's Execution
-// State panel renders the live Σ.
+// E2SState emits the full E2S execution-state snapshot after every applied
+// state patch so the Execution State panel renders the live Σ. See
+// specs/domains/e2s.md.
 func (e *EventEmitter) E2SState(data map[string]any) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -1183,8 +1090,7 @@ func (e *EventEmitter) E2SState(data map[string]any) {
 	})
 }
 
-// ExecutorDiagnostic logs an internal executor diagnostic at DEBUG level.
-// These are internal diagnostics, not user-facing events.
+// ExecutorDiagnostic logs an internal (not user-facing) diagnostic at DEBUG.
 func (e *EventEmitter) ExecutorDiagnostic(stepNum int, event string, details map[string]any) {
 	e.metrics.observeDiagnostic(event)
 	e.window.recordDiagnostic(stepNum, event)
@@ -1197,10 +1103,8 @@ func (e *EventEmitter) ExecutorDiagnostic(stepNum int, event string, details map
 
 // ContextCompaction emits a context compaction event with before/after fill percentages.
 func (e *EventEmitter) ContextCompaction(beforePercent, afterPercent float64, stepID string) {
-	// The executor reports compaction before/after relative to its internal
-	// effective max. Scale to the display basis (real context window) so the
-	// "Context compacted from X% to Y%" message stays consistent with the
-	// status bar, which also presents fill relative to the real window.
+	// Rescale to the display basis (real window) so the message stays
+	// consistent with the status bar.
 	e.tokens.mu.Lock()
 	scale := 1.0
 	if e.tokens.lastMaxTokens > 0 && e.tokens.lastEffectiveMax > 0 {
@@ -1239,24 +1143,19 @@ func (e *EventEmitter) SkillsActivated(skillNames []string) {
 	})
 }
 
-// SetModelProfile snapshots the Model Profiles profile state the session runs
-// under — including the active profile's id and kind — it annotates the
-// "agent_metrics" payload so measurements can be grouped by active
-// optimization variants. Metrics are collected regardless — an unset
-// profile just reports enabled=false with no variants and no profile fields.
+// SetModelProfile snapshots the Model Profiles state annotating the
+// "agent_metrics" payload; collected regardless (unset reports enabled=false).
 func (e *EventEmitter) SetModelProfile(info ModelProfilesMetaInfo) {
 	e.metrics.setModelProfiles(info)
 }
 
-// EmitAgentMetrics emits the "agent_metrics" event carrying the accumulated
-// agent quality counters and resets them, covering exactly one task run.
+// EmitAgentMetrics emits "agent_metrics" (see specs/contracts/event-catalog.md)
+// covering exactly one task run, and resets the counters + execution window.
 // finish describes the terminal state ("full", "partial", "failed",
 // "aborted" or "cancelled"). Returns the emitted payload.
 func (e *EventEmitter) EmitAgentMetrics(finish string) AgentMetricsData {
 	_, outputTokens := e.SessionTokenTotals()
 	data := e.metrics.snapshot(finish, outputTokens)
-	// The execution window covers the same span as agent_metrics: one task
-	// run. Reset it here so the next run starts from an empty trajectory.
 	e.window.reset()
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -1268,10 +1167,9 @@ func (e *EventEmitter) EmitAgentMetrics(finish string) AgentMetricsData {
 	return data
 }
 
-// ExecutionWindowSnapshot returns a copy of the session's recent-execution
-// window (trajectory + counters) together with the emitter's plan-progress
-// view. It is the host-side evidence source for the silent-mode step-limit
-// judge; the snapshot is immutable and safe to hand to a decision goroutine.
+// ExecutionWindowSnapshot returns a copy of the recent-execution window plus
+// the plan-progress view — the silent-mode step-limit judge's evidence source
+// (immutable, safe for a decision goroutine).
 func (e *EventEmitter) ExecutionWindowSnapshot() ExecutionWindowSnapshot {
 	e.mu.Lock()
 	planTotal := e.planTotalSteps

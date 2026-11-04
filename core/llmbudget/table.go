@@ -1,24 +1,10 @@
-// Package llmbudget implements ADR-071: adaptive per-model LLM request
-// budgets learned from live traffic.
-//
-// The sp4rk UsageTracker feed (TimedUsageObserver) delivers one timed sample
-// per successful LLM call — input/output tokens and the wall-clock duration.
-// BudgetTable retains the most recent SampleWindow samples per model; the
-// estimator prices a request's deadline as
-//
-//	budget = clamp(est_in·r_in + out_reserve·r_out, floor(class), ceiling(class))
-//
-// with the two rates fitted per model (duration ≈ in·r_in + out·r_out, priced
-// at the p85 tail) and degrading through a size-normalized duration percentile
-// down to the class constants when the fit is degenerate (ADR-071 D6/D7).
-// ResolveDeadline layers the operator-owned opinions on top (per-model
-// request_timeout, global llmRequestTimeout, warmup, kill-switch; ADR-071
-// D4/D5/D11), and Transport applies the resolved budget as a context deadline
-// on the provider's HTTP wire, escalating ×2 on its own expiry (ADR-071 D9).
-//
-// Everything here is session-scoped and in-memory (ADR-071 D10); nothing is
-// persisted. The package never probes: its only input is traffic the user was
-// generating anyway (ADR-071 D1).
+// Package llmbudget implements ADR-071: adaptive per-model LLM request budgets
+// learned from live traffic — one timed sample per successful call from the
+// sp4rk timed-usage feed, never probed, never persisted (session-scoped,
+// in-memory). The estimator prices clamp(est_in·r_in + out_reserve·r_out,
+// floor, ceiling) with a degradation ladder for degenerate fits, and
+// Transport arms the result as a context deadline, escalating ×2 on its own
+// expiry. specs/decisions/071-adaptive-llm-request-budgets.md
 package llmbudget
 
 import (
@@ -71,19 +57,15 @@ type BudgetTable struct {
 	models map[string]*modelRecord
 }
 
-// NewBudgetTable returns an empty table. Keys are free-form strings: the
-// transport keys budgets by the wire-extracted model name and falls back to a
-// provider-level key when extraction fails, so both live in the same map.
+// NewBudgetTable returns an empty table. Keys are free-form: wire-extracted
+// model names and provider-level fallback keys share one map.
 func NewBudgetTable() *BudgetTable {
 	return &BudgetTable{models: make(map[string]*modelRecord)}
 }
 
-// Ingest records one timed sample (ADR-071 D1). Samples with a non-positive
-// duration or an empty model are ignored — there is nothing to learn from a
-// call whose duration was not measured. Zero-output samples are KEPT: they are
-// prefill evidence and feed the input-rate fit. A successful ingest clears the
-// model's escalation latch: the request completed, so the next budget is
-// computed from evidence again rather than from the previous expiry.
+// Ingest records one timed sample (ADR-071 D1), ignoring non-positive
+// durations and empty models; zero-output samples are KEPT (prefill evidence).
+// A successful ingest clears the escalation latch: the request completed.
 func (t *BudgetTable) Ingest(model string, in, out int, duration time.Duration) {
 	if model == "" || duration <= 0 {
 		return
@@ -102,10 +84,8 @@ func (t *BudgetTable) Ingest(model string, in, out int, duration time.Duration) 
 }
 
 // Escalate latches a ×2 escalation for the model's next trained budget
-// (ADR-071 D9), called when the transport detects that a request died of the
-// budget it armed itself. Repeated expiries compound (×2, ×4, …) so the ladder
-// walks up to the class ceiling; MaxEscalationFactor keeps the multiplication
-// total. The latch clears on the model's next successful ingest.
+// (ADR-071 D9); expiries compound to MaxEscalationFactor, and the latch
+// clears on the model's next successful ingest.
 func (t *BudgetTable) Escalate(model string) {
 	if model == "" {
 		return
@@ -126,9 +106,8 @@ func (t *BudgetTable) SampleCount(key string) int {
 	return count
 }
 
-// Samples returns a copy of the retained samples for the key, oldest first. It
-// is the read-only diagnostics accessor over the same snapshot the estimator
-// consumes (a later Ingest cannot mutate the returned slice).
+// Samples returns a copy of the retained samples for the key, oldest first —
+// the read-only diagnostics view of the estimator's snapshot.
 func (t *BudgetTable) Samples(key string) []Sample {
 	return t.snapshot(key)
 }

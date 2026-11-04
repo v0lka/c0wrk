@@ -2,12 +2,10 @@ package prompts
 
 import "strings"
 
-// Goal-mode prompt template placeholders. Each is a stable marker in
-// goal_mode.md that renderGoalModeSection (core/systemprompt.go) substitutes
-// from the active GoalState at prompt-assembly time. Keeping them as
-// recoverable placeholders — rather than baking values into the embedded var
-// at package load — mirrors SubstituteShellTool and avoids an init-time
-// global mutation.
+// Goal-mode prompt template placeholders: stable markers in goal_mode.md that
+// renderGoalModeSection (core/systemprompt.go) substitutes from the active
+// GoalState at prompt-assembly time. They stay recoverable placeholders (no
+// init-time baking), mirroring SubstituteShellTool.
 const (
 	GoalConditionPlaceholder    = "{goal_condition}"
 	GoalVerifyClausePlaceholder = "{goal_verify_clause}"

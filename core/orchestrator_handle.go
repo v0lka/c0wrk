@@ -14,8 +14,9 @@ import (
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
-// prepareRequestContext sets plan-mode key, injection-defense key, vector hints,
-// and emits the initial 0% context_fill so the frontend has a baseline.
+// prepareRequestContext assembles the task context (plan-mode key, injection
+// defense, model-profiles prompt profile, RAG hints, vision resolver) and
+// emits the initial 0% context_fill baseline.
 func (o *Orchestrator) prepareRequestContext(ctx context.Context, message string) context.Context {
 	// Always set plan mode context key (planning always happens first).
 	ctx = context.WithValue(ctx, PlanModeKey, true)
@@ -23,42 +24,27 @@ func (o *Orchestrator) prepareRequestContext(ctx context.Context, message string
 		ctx = context.WithValue(ctx, InjectionDefenseKey, true)
 	}
 
-	// Model Profiles prompt profile: carry the SystemPrompt sub-toggle flags so
-	// buildSystemPromptWith can gate the lite directive, reasoning scaffold,
-	// and few-shot examples independently (see applyModelProfilesPromptProfile).
 	ctx = o.applyModelProfilesPromptProfile(ctx)
 
-	// Generate RAG hints from vector index (non-blocking, 2s timeout).
 	ctx = o.injectVectorSearchHints(ctx, message)
 
-	// Vision-assisted document conversion: attach the per-document vision
-	// resolver so every markitdown conversion inside this task (including
-	// subagent delegations, which inherit the context) captions embedded
-	// images with the model active at conversion time. Nil-safe no-op.
+	// Per-document vision resolution: every markitdown conversion in this
+	// task (incl. inherited subagent delegations) captions images with the
+	// model active at conversion time. Nil-safe no-op.
 	ctx = markitdown.WithVisionResolver(ctx, o.visionResolver)
 
-	// Emit initial 0% context_fill so the frontend has a baseline before any LLM call.
 	o.emitInitialContextFill()
 
 	return ctx
 }
 
-// applyModelProfilesPromptProfile carries the model-profile SystemPrompt sub-toggle flags
-// into ctx so buildSystemPromptWith can gate the lite directive, reasoning
-// scaffold, and few-shot examples independently. Gated on BOTH the effective
-// master ModelProfiles.Enabled toggle and the SystemPrompt variant being active (Lite
-// on) (defense-in-depth) — when either is off the ctx value is absent and
-// buildSystemPromptWith uses the default verbose directive with no
-// scaffold/few-shot additions. Reads the effective settings (the runtime
-// override when a config change refreshed them), so a runtime toggle is
-// honored without a restart.
-//
-// This is the single place the key is set: prepareRequestContext calls it on
-// the fresh-request path and Orchestrator.Resume calls it on the resume path.
-// Without the resume call, a resumed goal's independent verifier — a
-// specialized run assembled by buildSpecializedSystemPromptWithLite — would
-// miss the Lite swap the fresh path applied, so the same goal would get
-// different verifier prompts depending on whether it had been paused.
+// applyModelProfilesPromptProfile carries the model-profile SystemPrompt
+// sub-toggle flags into ctx (gated on the effective master toggle AND Lite —
+// defense-in-depth; effective settings, so a runtime toggle needs no
+// restart). Variant semantics: specs/domains/model-profiles.md. This is the
+// single place the key is set (fresh path here, resume path in Resume): a
+// resumed goal's verifier — a specialized Lite-eligible run — would otherwise
+// miss the swap the fresh path applied.
 func (o *Orchestrator) applyModelProfilesPromptProfile(ctx context.Context) context.Context {
 	sc := o.modelProfilesSettings()
 	if sc.Enabled && sc.SystemPrompt.Lite {
@@ -71,13 +57,11 @@ func (o *Orchestrator) applyModelProfilesPromptProfile(ctx context.Context) cont
 	return ctx
 }
 
-// setupBlackboard creates a fresh Blackboard (first message) or restores an
-// existing one from persistence (continuation). Pending attachments are flushed
-// into the blackboard in both paths so they are available to the task and
-// persisted alongside the rest of the blackboard state.
+// setupBlackboard creates a fresh Blackboard (first message) or restores one
+// from persistence (continuation); pending attachments are flushed in both
+// paths so they are available to the task and persisted.
 func (o *Orchestrator) setupBlackboard(message, sessionID, taskID string, pendingAttachments []orchestration.Attachment) (orchestration.Blackboard, error) {
 	if taskID == "" {
-		// First message: create clean BB
 		id := uuid.New().String()
 		var bb orchestration.Blackboard
 		if o.bbFactory != nil {
@@ -87,12 +71,10 @@ func (o *Orchestrator) setupBlackboard(message, sessionID, taskID string, pendin
 		}
 		bb.SetOriginalRequest(message)
 
-		// Wire emitter if PersistentBlackboard
 		if pbb, ok := bb.(PersistableBlackboard); ok {
 			pbb.SetEmitter(o.emitter)
 		}
 
-		// Flush pending attachments before execution.
 		for _, a := range pendingAttachments {
 			bb.AddAttachment(a)
 		}
@@ -114,41 +96,35 @@ func (o *Orchestrator) setupBlackboard(message, sessionID, taskID string, pendin
 		return nil, fmt.Errorf("task not found: %s", taskID)
 	}
 
-	// Wire emitter
 	pbb.SetEmitter(o.emitter)
 
-	// Emit MemoryRead if facts were restored from persistence.
 	if facts := pbb.GetFacts(); len(facts) > 0 {
 		o.emitter.MemoryRead(0, fmt.Sprintf("Loaded %d facts from previous execution", len(facts)))
 	}
 
-	// Flush pending attachments into the restored blackboard.
 	for _, a := range pendingAttachments {
 		pbb.AddAttachment(a)
 	}
 
-	// NOTE: the task is deliberately NOT reactivated here. Reactivation
-	// flips the anchor task's terminal status (completed/cancelled) back to
-	// in_progress — a side effect that must only happen once the
-	// continuation has actually committed to executing (routing succeeded /
-	// goal loop entered). HandleMessage calls reactivateContinuationTask at
-	// that commit point. Reactivating here instead meant a pre-commit
-	// failure (e.g. a routing error) left the anchor orphaned in_progress:
-	// the manager's fresh-workflow fallback then created a NEW task row and
-	// nothing ever closed the reactivated one, so the session reported
-	// has_unfinished_task=true forever and every app restart re-injected the
-	// "Task failed / Resume" banner over an otherwise completed session.
+	// NOTE: deliberately NOT reactivated here — reactivation flips the anchor
+	// task's terminal status back to in_progress and must only happen at the
+	// continuation's commit point (reactivateContinuationTask, called by
+	// HandleMessage). A pre-commit failure (e.g. a routing error) left the
+	// anchor orphaned in_progress: the manager's fallback created a NEW task
+	// row, nothing closed the reactivated one, the session reported
+	// has_unfinished_task=true forever, and every restart re-injected the
+	// "Task failed / Resume" banner over a completed session.
 
 	o.wireAttachmentNameResolver(pbb)
 	return pbb, nil
 }
 
 // reactivateContinuationTask flips a restored continuation task back to
-// in_progress at the continuation's commit point — after routing has
-// succeeded (normal path) or the goal loop is entered (goal path) — so a task
-// whose continuation fails BEFORE execution starts keeps its prior terminal
-// status instead of being orphaned in_progress. No-op for fresh tasks
-// (taskID == ""): their PersistNewTask row already starts in_progress.
+// in_progress at the continuation's commit point — after routing succeeded
+// (normal path) or the goal loop was entered (goal path) — so a task whose
+// continuation fails BEFORE execution starts keeps its prior terminal status
+// instead of being orphaned in_progress. No-op for fresh tasks: their
+// PersistNewTask row already starts in_progress.
 func (o *Orchestrator) reactivateContinuationTask(bb orchestration.Blackboard, taskID string) {
 	if taskID == "" {
 		return
@@ -158,12 +134,10 @@ func (o *Orchestrator) reactivateContinuationTask(bb orchestration.Blackboard, t
 	}
 }
 
-// wireAttachmentNameResolver connects the emitter (when it supports attachment
-// name resolution) to the task's blackboard so read_attachment tool-call
-// events carry the original file name in their persisted metadata. The
-// resolver is a closure over bb and is read at event-emission time, so it sees
-// attachments regardless of whether they were flushed from pending or
-// rehydrated from persistence. Nil-safe: a nil emitter type-asserts to false.
+// wireAttachmentNameResolver connects the emitter (when it supports
+// attachment name resolution) to the task's blackboard. The resolver closure
+// reads bb at event-emission time, so it sees attachments whether they were
+// flushed from pending or rehydrated from persistence. Nil-safe.
 func (o *Orchestrator) wireAttachmentNameResolver(bb orchestration.Blackboard) {
 	if r, ok := o.emitter.(AttachmentNameResolver); ok {
 		r.SetAttachmentNameResolver(func(id string) string {
@@ -175,15 +149,11 @@ func (o *Orchestrator) wireAttachmentNameResolver(bb orchestration.Blackboard) {
 	}
 }
 
-// routeOrContinue wraps routeAndActivateSkills with a continuation fast-path.
-//
-// When the user sends a follow-up message to a restored task (opts.TaskID !=
-// "") and the restored blackboard has an existing routing decision, the
-// router is skipped entirely. The router only sees the flat conversation
-// history (user/assistant pairs) and is blind to the restored state — so a
-// message like "continue step 10" would be misclassified. The fast-path
-// reuses the restored routing decision and reactivates skills from it,
-// then falls through to the Conductor.
+// routeOrContinue wraps routeAndActivateSkills with a continuation fast-path:
+// on a restored task with a persisted routing decision the router is skipped
+// entirely — it only sees the flat conversation history and is blind to the
+// restored state, so "continue step 10" would be misclassified. The restored
+// decision is reused and skills reactivated from it.
 func (o *Orchestrator) routeOrContinue(
 	ctx context.Context,
 	message string,
@@ -191,15 +161,10 @@ func (o *Orchestrator) routeOrContinue(
 	bb orchestration.Blackboard,
 	availableTools []sdktools.ToolDescriptor,
 ) (context.Context, *router.RoutingDecision, []skills.SkillDescriptor, *HandleResult, error) {
-	// Enrich the context with the subagent roster (discovered catalog + any
-	// explicit /-mentions) and the user's MCP-server mentions before routing.
-	// All are routing-independent, so enriching here covers the continuation
-	// fast-path and fresh routing in a single spot. The context flows into
-	// the Conductor's system prompt, which renders "Available Subagents"
-	// (implicit delegation view) and, when present, "Requested Subagents"
-	// (explicit delegation directive) and "Requested MCP Servers" (soft
-	// preference for mentioned manual-mode servers). Nil agentManager / empty
-	// lists leave the context untouched (no regression).
+	// Subagent roster + MCP mentions ride the context before routing —
+	// routing-independent, so this covers the fast-path and fresh routing in
+	// one spot (the Conductor prompt renders them as prompt sections;
+	// specs/domains/capabilities.md).
 	ctx = o.enrichAgentContext(ctx, opts.UserAgents, opts.UserMCPServers)
 
 	if opts.TaskID != "" {
@@ -225,18 +190,12 @@ func (o *Orchestrator) routeOrContinue(
 	return o.routeAndActivateSkills(ctx, message, opts, bb, availableTools)
 }
 
-// enrichAgentContext attaches the discovered subagent catalog, any explicit
-// /-mention subagent names, and the user's MCP-server mentions to the context
-// so the Conductor's system prompt can render the "Available Subagents",
-// "Requested Subagents", and "Requested MCP Servers" sections. The catalog is
-// filtered through the task's agent capability snapshot BEFORE the hidden-agent
-// formatting: auto entries only — a manual agent is hidden from implicit
-// discovery (it still resolves for an explicit /agent: mention, which threads
-// through the separately-attached user list, itself stripped of disabled
-// agents at task entry), and a disabled agent is gone entirely. All
-// attachments are nil/empty-safe: a nil agentManager or empty name lists
-// leave the context unchanged, so a project with no subagents and no MCP
-// mentions sees no regression.
+// enrichAgentContext attaches the discovered subagent catalog, explicit
+// /-mention names, and MCP-server mentions to the context for the Conductor
+// prompt's roster/directive sections. The catalog is filtered through the
+// task's capability snapshot BEFORE formatting (auto entries only —
+// specs/domains/capabilities.md); nil/empty inputs leave the context
+// unchanged.
 func (o *Orchestrator) enrichAgentContext(ctx context.Context, userAgents, userMCPServers []string) context.Context {
 	if o.agentManager != nil {
 		if descriptors := filterRosterAgents(ctx, o.agentManager.List()); len(descriptors) > 0 {
@@ -252,15 +211,13 @@ func (o *Orchestrator) enrichAgentContext(ctx context.Context, userAgents, userM
 	return ctx
 }
 
-// reactivateSkills re-applies skill activation (context value + emitter event)
-// from a restored routing decision. Used by the continuation fast-path to
-// avoid calling the router while still wiring skills.
+// reactivateSkills re-applies skill activation from a restored routing
+// decision — the continuation fast-path's router-free skill wiring. The
+// restored decision is filtered through the task's capability snapshot
+// (implicitSkillNames): a skill that has since turned manual/disabled must
+// not silently reactivate; user mentions were filtered at task entry
+// (specs/domains/capabilities.md).
 func (o *Orchestrator) reactivateSkills(ctx context.Context, routing *router.RoutingDecision, userSkills []string) context.Context {
-	// Capability gating on the restored routing decision: a skill matched
-	// before a pause but since turned manual/disabled must not silently
-	// reactivate through the fast-path — the same implicit-discovery rule the
-	// fresh path's router-catalog filter applies. User mentions were already
-	// filtered at task entry (disabled dropped, manual kept).
 	implicitMatched := implicitSkillNames(routing.MatchedSkills, SkillCapabilityModesFromContext(ctx))
 	mergedSkillNames := mergeSkillNames(implicitMatched, userSkills)
 	if len(mergedSkillNames) == 0 || o.skillManager == nil {
@@ -284,15 +241,11 @@ func (o *Orchestrator) reactivateSkills(ctx context.Context, routing *router.Rou
 	return ctx
 }
 
-// collectActiveSkillDescriptors builds the SkillDescriptor slice for a restored
-// routing decision (mirrors what routeAndActivateSkills would produce). The
-// task context carries the skill capability snapshot (attachCapabilitySnapshots),
-// which the routing-matched names are filtered through.
+// collectActiveSkillDescriptors builds the SkillDescriptor slice for a
+// restored routing decision (what routeAndActivateSkills would have produced),
+// filtered through the task's capability snapshot the same way reactivateSkills
+// does (specs/domains/capabilities.md).
 func (o *Orchestrator) collectActiveSkillDescriptors(ctx context.Context, routing *router.RoutingDecision, userSkills []string) []skills.SkillDescriptor {
-	// Same rules as reactivateSkills: routing-matched names follow the
-	// implicit-discovery rule (a restored decision predating a capability
-	// change must not resurrect a manual/disabled skill); user mentions were
-	// already filtered at task entry.
 	implicitMatched := implicitSkillNames(routing.MatchedSkills, SkillCapabilityModesFromContext(ctx))
 	mergedSkillNames := mergeSkillNames(implicitMatched, userSkills)
 	if len(mergedSkillNames) == 0 || o.skillManager == nil {
@@ -307,9 +260,9 @@ func (o *Orchestrator) collectActiveSkillDescriptors(ctx context.Context, routin
 	return descriptors
 }
 
-// routeAndActivateSkills performs routing and activates matched skills.
-// Clarification is not handled here — the Conductor decides when to ask via
-// the ask_user tool (ADR-012).
+// routeAndActivateSkills performs routing and activates matched skills;
+// clarification is not handled here — the Conductor decides via ask_user
+// (ADR-012).
 func (o *Orchestrator) routeAndActivateSkills(
 	ctx context.Context,
 	message string,
@@ -318,29 +271,20 @@ func (o *Orchestrator) routeAndActivateSkills(
 	availableTools []sdktools.ToolDescriptor,
 ) (context.Context, *router.RoutingDecision, []skills.SkillDescriptor, *HandleResult, error) {
 	o.logDebug("orchestrator: starting routing")
-	// Activity-only notice: updates the live activity label ("Routing
-	// request...") but must NOT surface as a chat row. The "orchestration"
-	// phase is the chat-visible/persisted discriminator (see
-	// backend/session/event_persister.go and the frontend's service handler);
-	// this per-task boilerplate carries a different phase so it is neither
-	// persisted nor rendered. Only the routing decision itself
-	// (o.emitter.Routing below) shows up in the chat.
+	// Activity-only notice: phase "routing" keeps it out of the chat rows —
+	// the phase meta is the chat-visibility discriminator
+	// (specs/contracts/event-catalog.md, "service").
 	o.emitter.ServiceWithMeta("Routing request...", map[string]any{"phase": "routing"})
 
 	var skillDescriptors []skills.SkillDescriptor
 	if o.skillManager != nil {
-		// Capability gating (auto-only catalog): manual skills are invisible
-		// to router matching (they activate only via an explicit /skill:
-		// mention) and disabled skills are gone entirely. The snapshot rides
-		// the task context (attachCapabilitySnapshots at task entry); an
-		// absent snapshot passes the catalog through unchanged.
+		// Auto-only catalog (specs/domains/capabilities.md): manual skills are
+		// invisible to router matching; the task-context snapshot decides.
 		skillDescriptors = implicitSkillDescriptors(o.skillManager.List(), SkillCapabilityModesFromContext(ctx))
 	}
 
-	// When the user explicitly invoked skill(s) via /skill-name, the message
-	// has the skill reference stripped. Build a routing-specific message that
-	// restores the skill context (same logic as resolveTaskMessage, applied
-	// here to the raw message the router receives).
+	// /skill-name invocations were stripped from the message; restore the
+	// skill context for the router only (same logic as resolveTaskMessage).
 	routingMessage := o.resolveTaskMessage(message, opts.UserSkills)
 
 	// Convert github.com/v0lka/sp4rk/skills.SkillDescriptor to github.com/v0lka/sp4rk/agent/router.SkillDescriptor
@@ -351,11 +295,10 @@ func (o *Orchestrator) routeAndActivateSkills(
 
 	routing, err := o.router.Route(ctx, routingMessage, availableTools, o.historySnapshot(), routerSkills)
 	if err != nil {
-		// Model Profiles degradation path: when the essential-tools narrowing is
-		// active and the routing JSON is unparseable even after the router's
-		// built-in repair retry, fail safe instead of failing the task —
-		// continue with a default routing decision. The tool filter then
-		// applies its static selection (applyModelProfilesToolFilter).
+		// Model Profiles degradation: with essential-tools narrowing active
+		// and the routing JSON unparseable even after the router's repair
+		// retry, fail safe — continue with a default routing decision (the
+		// static tool filter then applies).
 		if errors.Is(err, router.ErrRoutingParse) && o.modelProfilesEssentialToolsEnabled() {
 			if o.logger != nil {
 				o.logger.Warn("orchestrator: routing decision unparseable after repair retry; continuing with default routing",
@@ -378,16 +321,13 @@ func (o *Orchestrator) routeAndActivateSkills(
 		} else {
 			o.logDebug("orchestrator: routing failed", "error", err)
 			// Commit-point semantics (mirrors reactivateContinuationTask):
-			// FailTask may only flip a LIVE task row to failed — a fresh
-			// task (opts.TaskID == "", its PersistNewTask row already is
-			// in_progress) or a reactivated continuation anchor (the goal
-			// path reactivates BEFORE routing). A normal-path continuation
-			// has NOT been reactivated yet (that happens only after routing
-			// succeeds), so its restored status must stay untouched:
-			// flipping a terminal (completed) anchor to failed made the
-			// session report an unfinished task forever (failed counts as
-			// resumable) and dead-ended the manager's fresh-retry fallback
-			// on the "Task failed / Resume" banner.
+			// FailTask may only flip a LIVE task row — a fresh task (already
+			// in_progress) or an already-reactivated anchor (the goal path
+			// reactivates before routing). A normal-path continuation has not
+			// been reactivated yet, so its restored status must stay
+			// untouched: flipping a terminal anchor to failed made the
+			// session report an unfinished task forever and dead-ended the
+			// manager's fresh-retry fallback on the resume banner.
 			if pbb, ok := bb.(PersistableBlackboard); ok && (opts.TaskID == "" || opts.Goal) {
 				pbb.FailTask()
 			}
@@ -400,12 +340,11 @@ func (o *Orchestrator) routeAndActivateSkills(
 	o.emitter.Routing("conductor", routing.Domain, strconv.Itoa(routing.Complexity))
 	o.logInfo("routing_decision", "domain", routing.Domain, "complexity", routing.Complexity)
 
-	// Activate matched skills (merge router-matched + user-specified, deduplicated)
+	// Activate matched skills (merge router-matched + user-specified).
 	var activeSkillDescriptors []skills.SkillDescriptor
-	// The router only saw the auto-only catalog, so routing-matched names are
-	// already implicitly discoverable — the filter is defense-in-depth (and
-	// the exact rule collectActiveSkillDescriptors applies to a RESTORED
-	// routing decision, which may predate a capability change).
+	// Routing-matched names are re-filtered through the auto-only rule as
+	// defense-in-depth (specs/domains/capabilities.md); a RESTORED decision
+	// may predate a capability change.
 	implicitMatched := implicitSkillNames(routing.MatchedSkills, SkillCapabilityModesFromContext(ctx))
 	mergedSkillNames := mergeSkillNames(implicitMatched, opts.UserSkills)
 	if len(mergedSkillNames) > 0 && o.skillManager != nil {
@@ -427,20 +366,17 @@ func (o *Orchestrator) routeAndActivateSkills(
 		}
 	}
 
-	// Handle clarification — removed in ADR-012.
-	// The Conductor handles clarification itself via the ask_user tool.
-	// Router.NeedsClarification is ignored: the Conductor decides when to ask.
+	// Clarification was removed in ADR-012: the Conductor asks via ask_user;
+	// Router.NeedsClarification is ignored.
 
 	return ctx, routing, activeSkillDescriptors, nil, nil
 }
 
 // finalizeResult persists the routing decision and builds the HandleResult.
-// The conversation history is updated centrally by recordConversationOutcome
-// (deferred in HandleMessage), NOT here — this keeps history updates uniform
-// across all terminal outcomes.
-// execResult must never be nil; callers must guard with a zero-value fallback.
+// History updates happen centrally in recordConversationOutcome (deferred in
+// HandleMessage), keeping them uniform across terminal outcomes; execResult
+// must never be nil (callers guard with a zero-value fallback).
 func (o *Orchestrator) finalizeResult(bb orchestration.Blackboard, routing *router.RoutingDecision, execResult *orchestration.ExecutionResult) *HandleResult {
-	// Persist routing decision on PersistentBlackboard (post-execution)
 	o.logDebug("orchestrator: persisting routing decision")
 	if pbb, ok := bb.(PersistableBlackboard); ok {
 		pbb.SetRouting(routing)
@@ -456,7 +392,6 @@ func (o *Orchestrator) finalizeResult(bb orchestration.Blackboard, routing *rout
 		Status:          execResult.Status,
 	}
 
-	// Get plan from blackboard if available
 	if plan := bb.GetPlan(); plan != nil {
 		result.Plan = plan
 	}
@@ -467,27 +402,22 @@ func (o *Orchestrator) finalizeResult(bb orchestration.Blackboard, routing *rout
 }
 
 // persistTaskOutcome maps the typed execution status onto the persisted task
-// status. Partial executions are deliberately left "in_progress" so the
-// resumable-task safety net (GetUnfinishedTask) can offer a Resume action;
-// failed/aborted executions are marked "failed" (also resumable). Only a
-// genuinely successful execution closes the task as "completed".
+// status: paused/partial stay resumable, failed/aborted are marked failed
+// (also resumable), and only genuine success closes the task as completed.
 func persistTaskOutcome(pbb PersistableBlackboard, execResult *orchestration.ExecutionResult) {
 	switch execResult.Status {
 	case orchestration.ExecutionStatusPaused:
-		// Paused: a cooperative pause is a recoverable checkpoint. Mark the
-		// task paused so SessionRuntimeStatus.Paused can reflect it and a
-		// later Resume re-enters. The trajectory was already flushed by the
-		// conductor's RunConductor (trajStore.Flush) so the checkpoint is live.
+		// Cooperative pause = recoverable checkpoint; the trajectory was
+		// already flushed by RunConductor, so the checkpoint is live.
 		pbb.PauseTask()
 	case orchestration.ExecutionStatusPartial, orchestration.ExecutionStatusCancelled:
-		// Partial: keep in_progress — resumable.
-		// Cancelled: the session manager persists the cancellation itself.
+		// Keep in_progress — resumable; the manager persists cancellation itself.
 	case orchestration.ExecutionStatusFailed, orchestration.ExecutionStatusAborted:
 		pbb.FailTask()
 	default:
-		// Success or legacy empty status. Record the Conductor's output as the
-		// final result before completion; CompleteTask then persists it to the
-		// tasks.final_output column (see specs/domains/memory/blackboard.md).
+		// Success or legacy empty status: record the output as the final
+		// result, then CompleteTask persists it to tasks.final_output
+		// (specs/domains/memory/blackboard.md).
 		pbb.SetFinalResult(execResult.Output)
 		pbb.CompleteTask(execResult.AttemptCount)
 	}

@@ -183,7 +183,7 @@ Three-column panel layout (no router): Sidebar (persisted width, clamped 180-500
 | `activeSessionsStore` | Global cross-project session snapshot (listAllSessions) + pending-HITL overrides for the live-sessions indicator; live execution state stays in chatStore |
 | `projectStore`       | Project list (sorted by last_active_at), active project ID                                     |
 | `fileTreeStore`      | Lazy-loaded directory tree, expanded dirs, search entries, git status                          |
-| `fileViewerStore`    | Open files/content/diff/language, tabs, panel width, collapsed/pinned state                     |
+| `fileViewerStore`    | Open files/content/diff/language, tabs, panel width, collapsed/pinned state, per-file reading positions (in-memory) |
 | `inputModeStore`     | Chat/terminal input mode, panel height, expanded state (persisted)                             |
 | `gitPanelStore`     | Git panel: branch info (ahead/behind), merge/rebase state (persisted)                          |
 | `blackboardStore`    | Blackboard facts and metadata for current session                                              |

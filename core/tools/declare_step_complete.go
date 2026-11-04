@@ -15,9 +15,8 @@ Outputs: the step's status update in the plan panel.
 Example: step_id "step_2", success true once its acceptance criteria verify green.
 Anti-example: not for delegated steps; never call twice for one step; do not report success while acceptance criteria are unmet.`
 
-// StepCompleteFunc is called by declare_step_complete to signal that an
-// inline plan step has finished. success=false indicates failure; errMsg
-// provides an optional failure reason.
+// StepCompleteFunc signals an inline plan step's completion; un-signaled steps
+// are auto-completed by the Conductor's finish fallback. See specs/domains/orchestration/conductor.md.
 type StepCompleteFunc func(stepID string, success bool, errMsg string)
 
 // DeclareStepCompleteTool signals completion of an inline plan step.

@@ -1,79 +1,58 @@
 package embeddedllm
 
-// MLX memory planning (ADR-092): the mtplx engine's decision layer.
-//
-// The llama family plans a SPLIT (device weights vs host spill, `-ngl`, KV
-// precision, `--fit` delegation); MLX on Apple Silicon has no split to plan —
-// everything is resident in ONE unified pool, MTPLX sizes its own wired limit
-// and KV quantization at load, and the only decision left to c0wrk is the
-// context window the server is launched with. This file makes that decision
-// from the pinned pack's OWN measured memory evidence, with the same
-// discipline as plan.go: pure inputs, cited constants, a gate that is the
-// first check, and a refusal that carries the arithmetic.
-//
-// Every constant below is a measurement carried inside the pinned pack
-// (`mtplx_runtime.json` → `memory_evidence`, captured for MLXPackRevision on
-// an M5 Max, deterministic text prompts, draft head and vision tower
-// resident), cross-checked against the registry's own byte counts at pin
-// time. Re-measuring is part of a pack bump.
+// MLX memory planning (ADR-092): the mtplx engine's decision layer. One
+// unified pool — the only decision is the context window, made from the
+// pinned pack's own measured evidence with plan.go's discipline: pure inputs,
+// gate first, arithmetic in the refusal. Constants are pack-contract
+// measurements (`mtplx_runtime.json` → `memory_evidence`); re-measure on a
+// pack bump. See specs/domains/embedded-llm.md (Memory plan).
 
 import "fmt"
 
-// MLXMemoryTerms is the measured memory model of the pinned MLX pack. Every
+// MLXMemoryTerms is the measured memory model of the pinned MLX pack; every
 // figure is the pack contract's own, in bytes.
 type MLXMemoryTerms struct {
-	// WeightsBytes is the trunk + MTP head + vision tower residency: the pack
-	// contract's `weights_bytes` (8,834,412,216), which is exactly the sum of
-	// the registry's model.safetensors + mtp.safetensors pins — the vision
-	// tower is inside model.safetensors.
+	// WeightsBytes is the trunk + MTP head + vision tower residency — exactly
+	// the sum of the registry's model.safetensors + mtp.safetensors pins.
 	WeightsBytes int64
-	// RuntimeTransientsBytes is what the measurements show the engine needs
-	// ABOVE weights and KV in every run ("the peak sits about 3.1 GiB above
-	// the weights and the KV cache"): allocator scratch, compiled-verify
-	// programs, prefill transients, MTP draft state.
+	// RuntimeTransientsBytes is the measured peak ABOVE weights and KV:
+	// allocator scratch, compiled-verify programs, prefill transients, MTP
+	// draft state.
 	RuntimeTransientsBytes int64
-	// BankSteadyBytes is the steady-state session-bank residency the planner
-	// keeps beside live KV. On a 16 GiB-class machine the bank's RAM floor is
-	// dropped entirely (restores come from SSD); this is the remaining steady
-	// term, not the dropped floor.
+	// BankSteadyBytes is the steady-state session-bank residency beside live
+	// KV (the 16 GiB class drops the bank's RAM floor entirely — SSD restores).
 	BankSteadyBytes int64
-	// KVBytesPerToken is the DENSE cache width (65,536). MTPLX's dynamic paged
-	// KV may quantize at load; the planner counts dense in its own verdicts,
-	// and so does this one — quantization then only widens the margin.
+	// KVBytesPerToken is the DENSE width; MTPLX may quantize the paged KV at
+	// load, which only widens the margin.
 	KVBytesPerToken int64
-	// MaxContext is the pack contract's `model_max_context` (262,144), also
-	// the trunk's training context.
+	// MaxContext is the pack contract's `model_max_context`, also the trunk's
+	// training context.
 	MaxContext int
-	// MinContext is the smallest window this planner emits (8,192): the
-	// measured verdict on the tightest machine the pack is offered on, and
-	// the floor MTPLX itself falls back to.
+	// MinContext is the smallest window this planner emits — the measured
+	// verdict on the tightest machine the pack is offered on, and the floor
+	// MTPLX itself falls back to.
 	MinContext int
 }
 
 // The measured engine-budget fraction: on every measured RAM class the
-// engine's usable budget is exactly three quarters of physical RAM
-// (16 GiB → 12.0 GiB, 18 → 13.5, 24 → 18.0 — the pack's `memory_limit_bytes`).
+// engine's usable budget is exactly ¾ of physical RAM (`memory_limit_bytes`).
 const (
 	mlxBudgetNum   = 3
 	mlxBudgetDenom = 4
 )
 
-// The arithmetic-window policy margin. The measured classes resolve BELOW the
-// raw arithmetic ceiling (an M5 Max resolved 20,480 of 32,768 possible at
-// 18 GiB, 94,208 of 106,496 at 24 GiB — per-chip wired-limit and bank policy
-// c0wrk cannot see), so a window computed for a NON-measured RAM size keeps a
-// 1/8 margin over the ceiling and snaps to 4,096-token granules. The measured
-// classes do not apply it: their windows are the pack's own verdicts.
+// The arithmetic-window policy margin: the measured classes resolve BELOW the
+// raw ceiling (per-chip wired-limit and bank policy c0wrk cannot see), so a
+// NON-measured RAM size keeps a 1/8 margin and 4,096-token granules.
 const (
 	mlxPolicyMarginNum   = 7
 	mlxPolicyMarginDenom = 8
 	mlxWindowGranule     = 4096
 )
 
-// mlxMeasuredWindows are the pack memory evidence's resolved context windows
-// for the RAM classes it actually measured, taken verbatim. Keyed by whole
-// GiB of physical RAM (Apple's nominal sizes ARE the binary GiB the probe
-// reports: a "24 GB" Mac's hw.memsize is exactly 24×2³⁰).
+// mlxMeasuredWindows are the pack evidence's resolved windows for the RAM
+// classes it measured, verbatim (Apple's nominal GB are the binary GiB the
+// probe reports).
 var mlxMeasuredWindows = map[int]int{
 	16: 8192,
 	18: 20480,
@@ -121,11 +100,10 @@ func (t MLXMemoryTerms) mlxFixedBytes() int64 {
 	return t.WeightsBytes + t.RuntimeTransientsBytes + t.BankSteadyBytes
 }
 
-// mlxArithmeticWindow computes the context window for a RAM size the pack
-// evidence did not measure: the raw ceiling ((budget − fixed) / dense KV),
-// shaved by the 1/8 policy margin, snapped down to a 4,096 granule and
-// clamped to [MinContext, MaxContext]. The clamp UP at the floor matches the
-// measured 16 GiB class, whose ceiling is exactly MinContext.
+// mlxArithmeticWindow computes the window for a NON-measured RAM size: raw
+// ceiling ((budget − fixed) / dense KV), shaved by the 1/8 margin, snapped to
+// a granule, clamped to [MinContext, MaxContext] — clamp UP at the floor
+// matches the 16 GiB class, whose ceiling is MinContext.
 func (t MLXMemoryTerms) mlxArithmeticWindow(budgetBytes int64) int {
 	kvBudget := budgetBytes - t.mlxFixedBytes()
 	if kvBudget < 0 {
@@ -144,16 +122,11 @@ func (t MLXMemoryTerms) mlxArithmeticWindow(budgetBytes int64) int {
 }
 
 // PlanMLX is the mtplx engine's pure planner: (physical RAM, tuning, measured
-// terms) → the context window the server is launched with, gated against the
-// measured budget. No I/O, no probing, no clock — the same purity contract as
-// Plan, and held by the same kind of structural test.
-//
-// The llama-family override vocabulary does not apply here: there is no
-// offload to pin, no fit pass to delegate to, no KV precision c0wrk chooses,
-// and no packing to swap (the engine ships one quantization). A tuning that
-// sets any of those is a configuration error and is refused with
-// ErrTuningInvalid naming the engine — never silently ignored — while the
-// context override works exactly as on the llama family.
+// terms) → the context window, gated against the measured budget. No I/O, no
+// probing, no clock — Plan's purity contract, held by the same kind of
+// structural test. The llama override vocabulary does not exist here
+// (ADR-092 D5): ErrTuningInvalid names the offender, never a silent ignore;
+// context.mode exact works as on the llama family.
 func PlanMLX(ramGiB float64, tuning Tuning, terms MLXMemoryTerms) (MemoryPlan, error) {
 	for _, no := range mlxForbiddenOverrides(tuning) {
 		return MemoryPlan{}, fmt.Errorf("%w: embedded_llm.tuning.%s does not apply to engine %q (no offload, no fit pass, no KV or packing choice; use context.mode for the window)",
@@ -197,13 +170,13 @@ func PlanMLX(ramGiB float64, tuning Tuning, terms MLXMemoryTerms) (MemoryPlan, e
 	}
 
 	plan := MemoryPlan{
-		// No fit pass and no -ngl exist on this engine: Layers stays nil (the
-		// launcher omits the flag) and Fit is false.
+		// No fit pass and no -ngl exist on this engine: Layers stays nil, Fit
+		// is false.
 		Fit:         false,
 		ContextSize: window,
-		// KVType, Packing and the whole llama flag vocabulary stay at their
-		// zero values: the launcher reads none of them for this engine, and a
-		// rendered "f16 KV" would describe a decision nobody made.
+		// The llama flag vocabulary stays at its zero values: the launcher
+		// reads none of it, and a rendered "f16 KV" would describe a decision
+		// nobody made.
 		KVType:            "",
 		Packing:           "",
 		GPUFamily:         GPUFamilyAppleSilicon,
@@ -225,10 +198,9 @@ func PlanMLX(ramGiB float64, tuning Tuning, terms MLXMemoryTerms) (MemoryPlan, e
 	return plan, nil
 }
 
-// MLXInsufficientMemoryError is the mtplx engine's gate refusal. It carries
-// the whole arithmetic — window, need, budget, RAM — because a refusal must
-// show why, and it unwraps to BOTH ErrMemoryPlanInfeasible and
-// ErrInsufficientMemory so a caller matching either sentinel matches this one.
+// MLXInsufficientMemoryError is the mtplx gate refusal: it carries the whole
+// arithmetic — window, need, budget, RAM — and unwraps to BOTH
+// ErrMemoryPlanInfeasible and ErrInsufficientMemory.
 type MLXInsufficientMemoryError struct {
 	Window      int
 	NeedBytes   int64
@@ -250,18 +222,16 @@ func (e *MLXInsufficientMemoryError) Unwrap() []error {
 	return []error{ErrMemoryPlanInfeasible, ErrInsufficientMemory}
 }
 
-// ForbiddenLlamaTuning names every llama-family tuning key that is set and has
-// no meaning under the mtplx engine. It is the config layer's cross-engine
-// check (a `tuning:` that names llama-only knobs beside `engine: mtplx` is a
-// contradiction refused at load) and it is the SAME list the planner refuses
-// with, so the two layers cannot disagree about what "llama-only" means.
+// ForbiddenLlamaTuning names every llama-family tuning key that is set and
+// has no meaning under the mtplx engine — the config layer's cross-engine
+// check AND the planner's own refusal list, one list, two layers, no drift
+// (ADR-092 D5).
 func ForbiddenLlamaTuning(tuning Tuning) []string {
 	return mlxForbiddenOverrides(tuning)
 }
 
-// mlxForbiddenOverrides names every llama-family tuning field that is set and
-// has no meaning under the mtplx engine. One name per finding, in struct
-// order, so a misconfigured config names ALL its mistakes at once.
+// mlxForbiddenOverrides reports one name per finding, in struct order, so a
+// misconfigured config names ALL its mistakes at once.
 func mlxForbiddenOverrides(tuning Tuning) []string {
 	var found []string
 	if tuning.KVType != "" {

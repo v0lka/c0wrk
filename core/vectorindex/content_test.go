@@ -1,9 +1,11 @@
 package vectorindex
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -88,6 +90,59 @@ func TestContentResolver_UnreadableFileYieldsPlaceholder(t *testing.T) {
 	got := newContentResolver(0, 0).chunkContent(dir, 1, 2)
 	if !strings.Contains(got, contentUnavailablePrefix) {
 		t.Errorf("directory read should yield placeholder, got %q", got)
+	}
+}
+
+// TestContentResolver_ConcurrentFanout pins the hybrid fan-out's sharing
+// contract: one resolver serves hybridSearchRRF's two concurrent corpus legs
+// (must-match filters reconstruct through passesFilters), so fileLines must
+// be safe for concurrent callers — an unsynchronized cache write is a
+// process-fatal concurrent map write, not a recoverable race. The race
+// detector flags any residual unsynchronized access; the joined goroutines
+// also assert reconstruction correctness from every lane.
+func TestContentResolver_ConcurrentFanout(t *testing.T) {
+	dir := t.TempDir()
+	const files = 16
+	paths := make([]string, files)
+	for i := range paths {
+		paths[i] = filepath.Join(dir, fmt.Sprintf("f%02d.go", i))
+		body := strings.Repeat(fmt.Sprintf("line %d tok%d\n", i, i), 8)
+		if err := os.WriteFile(paths[i], []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	deadPath := filepath.Join(dir, "missing.go")
+
+	cr := newContentResolver(0, 0)
+	const lanes = 8
+	var wg sync.WaitGroup
+	for lane := 0; lane < lanes; lane++ {
+		wg.Add(1)
+		go func(lane int) {
+			defer wg.Done()
+			for round := 0; round < 4; round++ {
+				for i, p := range paths {
+					if got, ok := cr.chunkContentOK(p, 2, 3); !ok || got != fmt.Sprintf("line %d tok%d\nline %d tok%d", i, i, i, i) {
+						t.Errorf("lane %d: chunkContentOK(%s) = %q, ok=%v", lane, p, got, ok)
+						return
+					}
+				}
+				if got, ok := cr.chunkContentOK(deadPath, 1, 1); ok || got != "" {
+					t.Errorf("lane %d: dead path resolved to %q, ok=%v", lane, got, ok)
+					return
+				}
+			}
+		}(lane)
+	}
+	wg.Wait()
+
+	cr.mu.Lock()
+	defer cr.mu.Unlock()
+	if len(cr.lines) != files {
+		t.Errorf("cache holds %d live paths; want %d", len(cr.lines), files)
+	}
+	if len(cr.failed) != 1 {
+		t.Errorf("cache holds %d dead paths; want 1", len(cr.failed))
 	}
 }
 

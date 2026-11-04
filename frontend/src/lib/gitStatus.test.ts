@@ -10,6 +10,8 @@ import {
   classifyEntries,
   rowStatusChar,
   stripRootPrefix,
+  entryChangeKind,
+  countChangeKinds,
 } from '@/lib/gitStatus'
 import type { StageSide } from '@/lib/gitStatus'
 import type { GitPanelEntry } from '@/stores/gitPanelStore'
@@ -184,6 +186,50 @@ describe('classifyEntries', () => {
 
   it('handles an empty input', () => {
     expect(classifyEntries([])).toEqual({ staged: [], unstaged: [], untracked: [] })
+  })
+})
+
+// --- entryChangeKind / countChangeKinds ---
+
+describe('entryChangeKind', () => {
+  it('classifies untracked and added paths as new', () => {
+    // 'UA' (added by them) and 'AU' (added by us) are new-to-HEAD paths too.
+    for (const combo of ['??', 'A ', 'AM', 'AD', 'AA', 'AU', 'UA']) {
+      expect(entryChangeKind(entryXY(combo))).toBe('new')
+    }
+  })
+
+  it('classifies deleted paths as deleted, unless the path is new to the repo', () => {
+    for (const combo of ['D ', ' D', 'MD', 'DD', 'DU', 'UD']) {
+      expect(entryChangeKind(entryXY(combo))).toBe('deleted')
+    }
+    // 'AD' is a staged-new file deleted from the worktree: no HEAD
+    // counterpart exists, so it stays new (A outranks D).
+    expect(entryChangeKind(entryXY('AD'))).toBe('new')
+  })
+
+  it('classifies edits, renames and remaining conflicts as modified', () => {
+    for (const combo of ['M ', ' M', 'MM', 'RM', 'CM', 'UU']) {
+      expect(entryChangeKind(entryXY(combo))).toBe('modified')
+    }
+  })
+})
+
+describe('countChangeKinds', () => {
+  it('counts each unique PATH once — an MM entry contributes 1, not 2', () => {
+    const counts = countChangeKinds([
+      entryXY('MM', 'mm.txt'),
+      entryXY(' M', 'mod.txt'),
+      entryXY('??', 'new.txt'),
+      entryXY('A ', 'added.txt'),
+      entryXY('D ', 'del.txt'),
+      entryXY(' D', 'del2.txt'),
+    ])
+    expect(counts).toEqual({ modified: 2, deleted: 2, new: 2, total: 6 })
+  })
+
+  it('returns all-zero counts for an empty input', () => {
+    expect(countChangeKinds([])).toEqual({ modified: 0, deleted: 0, new: 0, total: 0 })
   })
 })
 

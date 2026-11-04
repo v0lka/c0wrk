@@ -1,12 +1,7 @@
-// Host-side execution window.
-//
-// The step-limit HITL boundary is decided by an LLM judge (silent mode,
-// security.silent_mode.step_limit.mode = "auto"). To decide well the judge
-// needs more than the terse boundary reason it is handed: it needs the recent
-// trajectory and the run's quality counters. This file keeps that evidence,
-// fed by the session emitter as executor events flow through it (tool calls,
-// tool results, step completions and executor diagnostics), so the decision
-// context is host-owned and independent of any executor-internal state.
+// Host-side execution window: the evidence (recent trajectory + run quality
+// counters) the silent-mode step-limit judge decides on, emitter-fed so the
+// decision context is host-owned and independent of executor-internal state.
+// See specs/decisions/053-silent-mode.md.
 package session
 
 import (
@@ -24,9 +19,8 @@ const executionWindowMaxEntries = 24
 // window.
 const executionWindowMaxDetail = 160
 
-// Execution-window entry kinds. Exported so decision-layer consumers (the
-// silent-mode step-limit judge) can classify entries without duplicating the
-// string literals.
+// Execution-window entry kinds, exported so decision-layer consumers can
+// classify entries without duplicating the string literals.
 const (
 	ExecWindowToolCallKind     = "tool_call"
 	ExecWindowToolResultKind   = "tool_result"
@@ -44,10 +38,9 @@ type ExecutionWindowEntry struct {
 	IsError bool   `json:"is_error,omitempty"`
 }
 
-// ExecutionWindowCounters are the cumulative quality counters for the current
-// task run. They mirror the buckets metricsState reports in agent_metrics so
-// the judge sees the same evidence at the boundary that the finish report
-// presents at the end of the run.
+// ExecutionWindowCounters are the run's cumulative quality counters,
+// mirroring the agent_metrics buckets so the judge sees the same evidence at
+// the boundary that the finish report presents at the end of the run.
 type ExecutionWindowCounters struct {
 	Steps            int `json:"steps"`
 	ToolCalls        int `json:"tool_calls"`
@@ -58,9 +51,9 @@ type ExecutionWindowCounters struct {
 	InvalidToolCalls int `json:"invalid_tool_calls"`
 }
 
-// ExecutionWindowSnapshot is an immutable copy of the window at a point in
-// time, together with the emitter's plan-progress view. Entries are ordered
-// oldest-first. PlanStep is the currently running plan step ID (may be empty).
+// ExecutionWindowSnapshot is an immutable copy of the window plus the
+// emitter's plan-progress view; entries are oldest-first and PlanStep is the
+// currently running plan step ID (may be empty).
 type ExecutionWindowSnapshot struct {
 	Entries   []ExecutionWindowEntry
 	Counters  ExecutionWindowCounters
@@ -73,12 +66,10 @@ type ExecutionWindowSnapshot struct {
 // boundary reached with no recorded activity carries no trajectory to judge on.
 func (s ExecutionWindowSnapshot) AnyWork() bool { return len(s.Entries) > 0 }
 
-// executionWindow is an emitter-shared, bounded ring of the most recent
-// executor events for a session plus cumulative run counters. A single
-// instance is shared by an EventEmitter and all of its scoped copies
-// (WithPlanStepID / WithRetryAttempt) — mirroring metricsState and tokenState —
-// so delegated subagent activity is visible at the boundary too. Safe for
-// concurrent use.
+// executionWindow is a bounded ring of the most recent executor events plus
+// cumulative run counters, shared by an EventEmitter and all its scoped copies
+// (WithPlanStepID / WithRetryAttempt) so delegated subagent activity is
+// visible at the boundary too.
 type executionWindow struct {
 	mu       sync.Mutex
 	entries  []ExecutionWindowEntry
@@ -167,18 +158,16 @@ func (w *executionWindow) copyEntries() []ExecutionWindowEntry {
 	return out
 }
 
-// copyCounters returns a copy of the cumulative counters.
 func (w *executionWindow) copyCounters() ExecutionWindowCounters {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.counters
 }
 
-// diagnosticBuckets classifies an executor diagnostic into the quality buckets
-// the window counts. It mirrors the event mapping in metricsState.observeDiagnostic
-// (agent_metrics.go) — keep the two in sync when a loop-detector event is added.
-// Informational diagnostics (executor_finish_nudge, pre_compaction_nudge,
-// checklist_* and friends) map to no bucket.
+// diagnosticBuckets classifies an executor diagnostic into the quality
+// buckets the window counts, mirroring metricsState.observeDiagnostic
+// (agent_metrics.go) — keep the two in sync when a loop-detector event is
+// added; informational diagnostics map to no bucket.
 func diagnosticBuckets(event string) (nudge, abort, parse bool) {
 	switch event {
 	case "repeated_tool_call_nudge", "same_tool_repeat_nudge", "fruitless_nudge":

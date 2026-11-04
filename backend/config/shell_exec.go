@@ -3,31 +3,9 @@
 // shell_exec.go — the `shell_exec` config section: the operator override of
 // HOW the shell-execution tool (bash_exec on Unix, posh_exec on Windows)
 // launches the agent's command, plus the mandatory declaration of which shell
-// the command text is written in.
-//
-// Design contract (ADR-058):
-//   - The override is optional; the zero value keeps the built-in launch
-//     shape (`bash -c <command>` / `powershell.exe -NoProfile -NonInteractive
-//     -Command <command>`).
-//   - Command is an argv template: exactly one element must equal the
-//     "{command}" placeholder; at execution time it is replaced by the
-//     agent's command as a SINGLE argv element (no string splicing, no extra
-//     quoting layer).
-//   - Shell is a CLOSED enum: bash, sh, zsh, ksh, dash (bash family) and
-//     powershell, pwsh (PowerShell family). The deterministic flowsh command
-//     analysis understands exactly these two syntax families, so shells
-//     outside the set have no analyzer and are rejected at load rather than
-//     silently dropping the safety floor or failing closed on every call.
-//   - Load-time problems are FAIL-SOFT: an invalid enum value or template
-//     shape produces a visible load warning and resets the section to the
-//     default launch shape (the model-profiles precedent). A broken override
-//     must never keep the app from starting — and must never silently
-//     mis-declare the shell either.
-//   - When Command is set but Shell is empty, the platform's legacy kind is
-//     seeded (bash / powershell): the overwhelmingly common override (a
-//     Homebrew bash, a login zsh) keeps the tool's native syntax family. The
-//     seeding is silent — it matches the documented default — but an INVALID
-//     kind is always warned about.
+// the command text is written in. Design contract (optional override, argv
+// template, closed shell enum, fail-soft load, platform-default seeding):
+// specs/decisions/058-shell-execution-override.md.
 
 package config
 
@@ -42,15 +20,16 @@ import (
 // spells it locally because backend/config never imports the engine.
 const ShellCommandPlaceholder = "{command}"
 
-// Supported shell kinds (closed enum; see the package contract above).
+// Supported shell kinds — the closed enum the deterministic flowsh command
+// analysis understands (specs/decisions/058-shell-execution-override.md).
 const (
-	ShellKindBash       = "bash"
-	ShellKindSh         = "sh"
-	ShellKindZsh        = "zsh"
-	ShellKindKsh        = "ksh"
-	ShellKindDash       = "dash"
-	ShellKindPowerShell = "powershell"
-	ShellKindPwsh       = "pwsh"
+	ShellKindBash       = "bash"       // bash syntax family
+	ShellKindSh         = "sh"         // bash syntax family
+	ShellKindZsh        = "zsh"        // bash syntax family
+	ShellKindKsh        = "ksh"        // bash syntax family
+	ShellKindDash       = "dash"       // bash syntax family
+	ShellKindPowerShell = "powershell" // PowerShell syntax family
+	ShellKindPwsh       = "pwsh"       // PowerShell syntax family
 )
 
 // Platform-default shell kinds — the syntax family each tool's command text
@@ -138,12 +117,11 @@ func ValidateShellKind(kind string) error {
 	}
 }
 
-// normalizeShellExec validates the shell_exec section in place and returns
-// load warnings. Invalid entries are FAIL-SOFT: warned about and reset to the
-// zero value (built-in default launch shape), never fatal — a broken override
-// must not keep the app from starting, and must not run half-applied either.
-// Must run AFTER ApplyDefaults (which seeds the platform-default kind for an
-// active override) and BEFORE validate.
+// normalizeShellExec validates the shell_exec section in place, fail-soft:
+// an invalid entry is warned about and reset to the zero value (built-in
+// launch shape) — never fatal, never half-applied. Must run AFTER
+// ApplyDefaults (which seeds the platform-default kind for an active
+// override) and BEFORE validate.
 func normalizeShellExec(cfg *Config) []string {
 	var warnings []string
 	reset := func(name string, tool *ShellExecToolConfig, err error) {

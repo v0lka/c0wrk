@@ -6,16 +6,10 @@ import (
 	"sync"
 )
 
-// activityState tracks the session's last user-facing activity label and the
-// open-stream flag so GetSessionRuntimeStatus can report them for a session
-// the frontend stopped listening to (project/mode switch). It is shared across
-// emitter copies (WithPlanStepID/WithRetryAttempt) like tokenState: conductor
-// and subagent emitters all update the same session-level view.
-//
-// Locking: activity.mu is a leaf lock — it is acquired from emitEvent while
-// e.mu is held, and readers (LastActivity/StreamingActive) acquire it alone.
-// Nothing acquires e.mu while holding activity.mu, so the e.mu → activity.mu
-// order cannot deadlock.
+// activityState tracks the session's last activity label and open-stream flag
+// for the runtime-status snapshot (specs/domains/session-lifecycle.md); shared
+// across emitter copies like tokenState. Locking: activity.mu is a leaf lock
+// acquired under e.mu — never the reverse — so the order cannot deadlock.
 type activityState struct {
 	mu        sync.Mutex
 	last      string // last activity label; empty until the first tracked event
@@ -24,17 +18,15 @@ type activityState struct {
 
 // trackedStreaming states for updateActivity. zero means "leave unchanged".
 const (
-	streamingUnchanged = 0
-	streamingOn        = 1
-	streamingOff       = 2
+	streamingUnchanged = 0 // leave the flag untouched
+	streamingOn        = 1 // assistant_chunk opened a stream
+	streamingOff       = 2 // assistant_done closed it
 )
 
-// activityForEvent maps an event to (label, streamingState, tracked). The
-// labels mirror the frontend's live handlers (useLifecycleEvents /
-// useChatEvents / useSubagentEvents / usePlanEvents) so a session snapshot
-// renders the same text a live listener would have produced. Events that
-// don't map to an activity label (tool_call, context_fill, blackboard, ...)
-// return tracked=false and leave the state untouched.
+// activityForEvent maps an event to (label, streamingState, tracked); the
+// labels mirror the frontend's live handlers so a session snapshot renders
+// the same text a live listener would have produced. tracked=false events
+// leave the state untouched.
 func activityForEvent(evt Event) (label string, streaming int8, tracked bool) {
 	switch evt.Type {
 	case "routing":
@@ -76,32 +68,26 @@ func activityForEvent(evt Event) (label string, streaming int8, tracked bool) {
 		}
 		return "Executing step " + stepID + "...", streamingUnchanged, true
 	case "tool_judge_started":
-		// Strict judge (Smart Approve) evaluation is in flight — at this point
-		// NO confirmation card exists yet, so the label must describe the
-		// judge, not a (nonexistent) pending user response.
+		// No confirmation card exists yet — the label must name the judge, not a
+		// pending user response (specs/contracts/event-catalog.md).
 		return "Safety judge evaluating...", streamingUnchanged, true
 	case "tool_judge_finished":
 		tool, _ := mapString(evt.Data, "tool")
 		if tool == "" {
 			return "", streamingUnchanged, false
 		}
-		// Mirrors the frontend's live tool_call label: on a strict-ALLOW verdict
-		// the tool is executing, so the label holds; on a CONFIRM fallback the
-		// tracked tool_confirm event below overwrites it within milliseconds.
+		// Holds on a strict-ALLOW (tool executing); a CONFIRM fallback overwrites
+		// it via tool_confirm (specs/contracts/event-catalog.md).
 		return fmt.Sprintf("Running tool: %s...", tool), streamingUnchanged, true
 	case "tool_confirm":
-		// Emitted by the desktop confirm callback through the session emitter:
-		// the agent goroutine is blocked on the user's decision, so this is the
-		// honest label for however long the wait lasts. Mirrors the frontend's
-		// live handleToolConfirmEvent.
+		// The agent goroutine blocks on the user's decision — the honest label for
+		// the whole wait (specs/contracts/event-catalog.md, tool_confirm).
 		return "Awaiting confirmation...", streamingUnchanged, true
 	default:
 		return "", streamingUnchanged, false
 	}
 }
 
-// updateActivity applies an event's activity mapping to the shared state.
-// Called from emitEvent (under e.mu); safe for concurrent use.
 func (a *activityState) updateActivity(evt Event) {
 	label, streaming, tracked := activityForEvent(evt)
 	if !tracked {
@@ -159,32 +145,27 @@ func mapInt(data any, key string) (int, bool) {
 	return 0, false
 }
 
-// LastActivity returns the session's last activity label ("Thinking...",
-// "Routing request...", "Generating response...", ...). The value is
-// meaningful while the session's task is active; terminal transitions
-// (task_complete / error / cancellation) are emitted by the Manager outside
-// the EventEmitter, so consumers should treat it as authoritative only when
-// the session reports Active=true.
+// LastActivity returns the session's last activity label; terminal
+// transitions are emitted by the Manager outside the EventEmitter, so the
+// value is authoritative only while the session reports Active=true.
 func (e *EventEmitter) LastActivity() string {
 	e.activity.mu.Lock()
 	defer e.activity.mu.Unlock()
 	return e.activity.last
 }
 
-// StreamingActive reports whether an assistant stream is currently open in
-// this session (assistant_chunk emitted without the closing assistant_done).
-// Used by the runtime-status snapshot to let the frontend clear stale frozen
-// streaming text after a switch back to a session it stopped listening to.
+// StreamingActive reports an open assistant stream (assistant_chunk without
+// the closing assistant_done); feeds the runtime-status stale-stream heal
+// (specs/domains/session-lifecycle.md).
 func (e *EventEmitter) StreamingActive() bool {
 	e.activity.mu.Lock()
 	defer e.activity.mu.Unlock()
 	return e.activity.streaming
 }
 
-// TokenSnapshot is the live, in-memory view of a session's token/fill state —
-// the same values the emitter broadcasts via session_tokens / context_fill.
-// Unlike the persisted session row it carries used/max tokens, which the
-// status bar renders as "N of M" after a switch back to a session.
+// TokenSnapshot is the live, in-memory view of a session's token/fill state;
+// GetSessionTokens overlays it over the persisted session row
+// (specs/domains/session-lifecycle.md).
 type TokenSnapshot struct {
 	InputTokens  int
 	OutputTokens int
@@ -195,9 +176,9 @@ type TokenSnapshot struct {
 	FillPercent  float64
 }
 
-// TokenSnapshot returns the cached session-level token and context-fill
-// state. Fresh values exist only after the first LLM call of a task in this
-// process; zero values otherwise (the caller falls back to the store).
+// TokenSnapshot returns the cached session-level token/fill state; fresh
+// values exist only after the first LLM call in this process (zero values
+// otherwise — the caller falls back to the store).
 func (e *EventEmitter) TokenSnapshot() TokenSnapshot {
 	e.tokens.mu.Lock()
 	defer e.tokens.mu.Unlock()

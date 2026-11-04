@@ -1,4 +1,4 @@
-# ADR-106: Measured Backend Memory Profiles
+# ADR-109: Measured Backend Memory Profiles
 
 ## Status
 
@@ -44,5 +44,5 @@ Codify the measurement as a second **measured backend memory profile**, keyed on
 - [Embedded LLM](../domains/embedded-llm.md) — the domain spec (memory model overlay, memory plan, combined memory gate, invariants)
 - [ADR-066](./066-embedded-llm-runtime.md) — the runtime and its supervision
 - [ADR-067](./067-memory-aware-embedded-llm-provisioning.md) — the memory-aware launch shape whose budgets this decision makes tuple-scoped
-- [ADR-104](./104-operator-selected-offload-devices.md) — the operator device pin that narrows the pool the measured tuple's budget prices
+- [ADR-107](./107-operator-selected-offload-devices.md) — the operator device pin that narrows the pool the measured tuple's budget prices
 - `docs/development/embedded-llm-cuda-measurements.md` — the measurement's methodology, command lines and SHA256-verified logs

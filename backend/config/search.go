@@ -8,21 +8,15 @@ import (
 	"github.com/v0lka/sp4rk/tools/builtins/websearch"
 )
 
-// ValidateSearchBaseURL checks search.base_url for the given provider against
-// the RAW config value (${ENV_VAR} placeholders unresolved):
-//
-//   - only the searxng provider uses it; for every other provider any value
-//     is accepted (and ignored);
-//   - an empty value fails: ApplyDefaults seeds the local-instance default
-//     (websearch.DefaultSearxngBaseURL), so an empty base_url reaching this
-//     gate means a programmatic config bypassed the defaults;
-//   - a ${ENV_VAR} placeholder passes load validation — it resolves at
-//     runtime, and the consumption-time gate (core/tools
-//     CreateSearchProviderWithClient) re-checks the EXPANDED value fail-closed;
-//   - otherwise it must be an absolute http(s) URL with a host.
-//
-// The Settings save path (UpdateSearchSettings) runs the same check so an
-// invalid value is rejected up front instead of surfacing on the next launch.
+// ValidateSearchBaseURL checks search.base_url against the RAW config value
+// (${ENV_VAR} placeholders unresolved). Cross-subsystem contract
+// (specs/domains/tool-system/builtins.md, Web Search Base-URL Validation):
+// only the searxng provider uses it; empty fails (ApplyDefaults
+// seeds websearch.DefaultSearxngBaseURL); a ${...} placeholder passes here
+// and is re-checked EXPANDED, fail-closed, by the consumption-time gate
+// (core/tools CreateSearchProviderWithClient); otherwise it must be an
+// absolute http(s) URL with a host. The Settings save path
+// (UpdateSearchSettings) runs the same check up front.
 func ValidateSearchBaseURL(provider, raw string) error {
 	if !strings.EqualFold(provider, "searxng") {
 		return nil
