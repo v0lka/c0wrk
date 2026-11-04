@@ -195,6 +195,30 @@ describe('useMessageSender optimistic metadata', () => {
     expect(useInputModeStore.getState().goalEnabled).toBe(false)
   })
 
+  it('suppresses the optimistic goal stamp when the leading plain /goal was partitioned as a mention', async () => {
+    useSessionStore.setState({ activeSessionId: 's1' })
+    await act(async () => {
+      // Shadowing configuration (ADR-106 D5): a real catalog entry named
+      // goal owns the plain spelling — the controller threads it and the
+      // backend mention strip consumes the token, so no goal arms and no
+      // stamp persists. The optimistic mirror must agree (no badge a reload
+      // would silently remove).
+      await capturedSend!('/goal ship it', ['goal'], [], [])
+    })
+    expect(sentUser('s1').metadata).toBeUndefined()
+  })
+
+  it('still stamps the badge for a budgeted prefix even when goal threads as a mention elsewhere', async () => {
+    useSessionStore.setState({ activeSessionId: 's1' })
+    await act(async () => {
+      // A "/goal:5" token is never a mention token (the colon breaks the
+      // plain-token boundary), so a qualified goal mention later in the text
+      // cannot strip it — the activation stays honest and the badge fires.
+      await capturedSend!('/goal:5 ship it /skill: goal', ['goal'], [], [])
+    })
+    expect(sentUser('s1').metadata).toEqual({ goal: true })
+  })
+
   it('does not stamp goal metadata for an inert /goal:0 form', async () => {
     useSessionStore.setState({ activeSessionId: 's1' })
     await act(async () => {

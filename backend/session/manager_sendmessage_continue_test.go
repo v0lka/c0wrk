@@ -972,6 +972,138 @@ func TestSendMessage_GoalOnResume_AbandonsInterruptedTaskAndRunsGoal(t *testing.
 }
 
 // ----------------------------------------------------------------------------
+// Paused-session goal gate: the nudge-resume router keys on the goal union
+// ----------------------------------------------------------------------------
+
+// TestSendMessage_GoalIntoPausedSession_AbandonsAndRunsFreshGoal pins the
+// nudge-resume router's goal union (ADR-106 gate parity): a leading
+// "/goal"/"/goal:N" prefix is a goal request exactly like the toggle flag,
+// detected BEFORE the paused-task router, so it abandons the paused task and
+// starts a fresh budgeted goal instead of nudge-resuming the old task with
+// the command text as prose — the pause row of goal-mode.md's resume table.
+func TestSendMessage_GoalIntoPausedSession_AbandonsAndRunsFreshGoal(t *testing.T) {
+	const (
+		goalCondition = "review all code"
+		goalVerify    = "no issues found"
+		pausedTaskID  = "task-paused-goal-fresh-1"
+	)
+
+	for name, send := range map[string]struct {
+		text     string
+		goalFlag bool
+		wantMax  int
+	}{
+		"budgeted /goal:N prefix": {text: "/goal:5 " + goalCondition, goalFlag: false, wantMax: 5},
+		"bare /goal prefix":       {text: "/goal " + goalCondition, goalFlag: false, wantMax: 0},
+		"goal toggle flag":        {text: goalCondition, goalFlag: true, wantMax: 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			trajJSON, _ := json.Marshal([]agent.Step{
+				{Thought: "paused mid-step", Action: llm.ToolCall{ID: "pc1", Name: "read_file", Input: json.RawMessage(`{}`)}, Observation: "PRIOR"},
+			})
+			store := &cancelTrackingResumeStore{
+				resumeTaskStore: &resumeTaskStore{
+					task: &TaskRecord{
+						ID: pausedTaskID, SessionID: "ignored", OriginalRequest: "long running task",
+						Status: "paused",
+					},
+					trajectory: trajJSON,
+				},
+			}
+
+			caller := &scriptedLLM{scripted: []*llm.ChatResponse{
+				routingJSONResponse("general", 1),
+				proposeGoalResponse(goalCondition, goalVerify),
+				finishResponse("derivation complete"),
+				declareGoalMetResponse(),
+				declareVerificationConfirmedResponse(),
+			}}
+
+			var (
+				allEventsMu sync.Mutex
+				allEvents   []Event
+			)
+			eventChan := make(chan Event, 100)
+			go func() {
+				for e := range eventChan {
+					allEventsMu.Lock()
+					allEvents = append(allEvents, e)
+					allEventsMu.Unlock()
+				}
+			}()
+
+			mgr := NewManager(goalBudgetTestFactory(caller), func(e Event) { eventChan <- e }, runtimeTempDir(t))
+			t.Cleanup(mgr.Shutdown)
+			mgr.SetTaskStore(store)
+
+			info, err := mgr.CreateSession(testProjectID, runtimeTempDir(t))
+			if err != nil {
+				t.Fatalf("CreateSession failed: %v", err)
+			}
+			store.mu.Lock()
+			store.task.SessionID = info.ID
+			store.mu.Unlock()
+
+			sess, _ := mgr.GetSession(info.ID)
+			if sess == nil {
+				t.Fatal("session not found after creation")
+			}
+			sess.orchestrator.SetGoalProposer(autoApproveProposer{})
+
+			classification, err := mgr.SendMessageClassified(context.Background(), info.ID, send.text, nil, nil, nil, "", "", send.goalFlag, "", false, false)
+			if err != nil {
+				t.Fatalf("SendMessageClassified failed: %v", err)
+			}
+			if classification != SendFresh {
+				t.Fatalf("classification = %v, want SendFresh — a goal request supersedes the paused task, it never nudge-resumes it", classification)
+			}
+
+			if !waitForBufferedEvent(&allEventsMu, &allEvents, "task_complete", 5*time.Second) {
+				t.Fatal("timeout waiting for task_complete event")
+			}
+
+			store.mu.Lock()
+			cancels := store.cancelCalls
+			cancelled := store.cancelledTaskID
+			loads := store.loadTrajCalls
+			store.mu.Unlock()
+			if cancels == 0 || cancelled != pausedTaskID {
+				t.Errorf("expected CancelTask on the paused task %q (abandonUnfinishedTaskForGoal), got %d calls for %q", pausedTaskID, cancels, cancelled)
+			}
+			if loads != 0 {
+				t.Errorf("expected LoadTrajectory NOT called (no nudge-resume), got %d calls", loads)
+			}
+
+			// The goal loop ran with the resolved budget: the textual :N wins
+			// for the budgeted send; bare prefix and flag resolve unlimited.
+			allEventsMu.Lock()
+			defer allEventsMu.Unlock()
+			maxTurns := -1
+			for _, e := range allEvents {
+				if e.Type != "goal_status" {
+					continue
+				}
+				data, ok := e.Data.(map[string]any)
+				if !ok {
+					t.Fatalf("goal_status payload shape: %T", e.Data)
+				}
+				mt, ok := data["max_turns"].(int)
+				if !ok {
+					t.Fatalf("goal_status max_turns shape: %T", data["max_turns"])
+				}
+				if maxTurns != -1 && maxTurns != mt {
+					t.Fatalf("goal_status events disagree on max_turns: %d vs %d", maxTurns, mt)
+				}
+				maxTurns = mt
+			}
+			if maxTurns != send.wantMax {
+				t.Errorf("max_turns = %d, want %d", maxTurns, send.wantMax)
+			}
+		})
+	}
+}
+
+// ----------------------------------------------------------------------------
 // Per-message goal budget sources: the textual "/goal:N" cap vs the toggle's
 // goalBudget JSON (specs/domains/goal-mode.md — budget resolution)
 // ----------------------------------------------------------------------------

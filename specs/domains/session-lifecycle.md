@@ -983,8 +983,12 @@ User clicks "Resume" (optionally with model/reasoning-effort overrides)
 ```
 User types a message while paused → Send
   → Frontend: marks the optimistic user message is_nudge=true; clears paused
-  → Backend: SendMessage detects hasPausedUnfinishedTask(sessionID) == true
-      (and not a goal message) → routes to ResumeSession(text, ...)
+  → Backend: sendMessage's nudge-resume router detects
+      hasPausedUnfinishedTask(sessionID) == true (and the message is not a
+      goal request — the goal toggle OR a leading "/goal"/"/goal:N" prefix,
+      detected on the processed text before the router exactly like before
+      the interrupted-task resume check, [ADR-106](../decisions/106-goal-mode-chat-activation.md))
+      → routes to ResumeSession(text, ...)
         → the user's text becomes the nudge, injected as a trailing user message
           into the first resumed turn
 ```

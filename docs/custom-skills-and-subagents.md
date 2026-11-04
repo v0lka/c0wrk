@@ -659,8 +659,11 @@ Rules that keep the reference kinds unambiguous:
 
 - A reference is only recognized at the **start of the text or after
   whitespace** — mid-word slashes are not references (so `http://...` is
-  safe), and `/goal` keeps its command meaning (it is never a catalog name;
-  the `/goal:N` budget form is never strippable as a mention either — the
+  safe), and `/goal` keeps its command meaning (it is never a catalog name,
+  and the send path never threads it as a passthrough mention — only a REAL
+  catalog entry named `goal` shadows the plain spelling,
+  [ADR-106](../specs/decisions/106-goal-mode-chat-activation.md); the
+  `/goal:N` budget form is never strippable as a mention either — the
   `:` breaks the plain-token boundary — so it always reaches the built-in
   goal detector).
 - `#` is not a trigger: `#foo` is always plain text (issue numbers, hashtags,

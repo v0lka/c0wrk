@@ -1,5 +1,7 @@
 // Reference parsing/formatting for user message text.
 
+import { GOAL_COMMAND_NAME } from './goalCommand'
+
 /**
  * The three `/`-ref kinds sharing one trigger (issue #110 + the MCP mention
  * flow): `agent` = Subagent Profile (threaded as `activeAgents` →
@@ -106,7 +108,14 @@ export interface PartitionedRefs {
  *  - A plain name in NO catalog degrades to a skill ref — the historical
  *    permissive behavior (extractSkillRefs passed everything raw and the
  *    server resolves/skips unknown skills), preserved so an unavailable
- *    catalog (fetch failure) never silently drops the user's text.
+ *    catalog (fetch failure) never silently drops the user's text. The one
+ *    exception is the built-in goal command: a plain "goal" token naming no
+ *    catalog entry is the `/goal` command (ADR-106), never a mention —
+ *    threading it would have the backend's mention strip eat the command
+ *    prefix before goal detection runs, so it is left unthreaded and the
+ *    text reaches the detector verbatim. When "goal" names a real catalog
+ *    entry, the catalog branch above still wins (the documented shadowing
+ *    configuration; the mention then legitimately resolves to the entry).
  *
  * All output lists preserve first-occurrence order and are deduplicated
  * (a name reached via both a qualified and a plain spelling threads once).
@@ -140,8 +149,11 @@ export function partitionRefs(refs: TypedRef[], agentNames: string[], skillNames
       agents.add(ref.name)
     } else if (isMCP) {
       mcpServers.add(ref.name)
-    } else {
-      // Skill, or unknown in every catalog (permissive skill passthrough).
+    } else if (isSkill || ref.name !== GOAL_COMMAND_NAME) {
+      // Skill, or unknown in every catalog (permissive skill passthrough) —
+      // except the bare goal command token: a plain "goal" naming no catalog
+      // entry stays unthreaded so the /goal command survives the backend's
+      // mention strip (ADR-106).
       skills.add(ref.name)
     }
   }

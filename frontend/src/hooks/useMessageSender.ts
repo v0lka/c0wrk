@@ -8,7 +8,7 @@ import { useInputModeStore } from '@/stores/inputModeStore'
 import { useE2SStore } from '@/stores/e2sStore'
 import { useAttachmentsStore, EMPTY_ATTACHMENTS } from '@/stores/attachmentsStore'
 import { buildUserMessageMeta } from '@/lib/userMessageMeta'
-import { detectGoalCommand } from '@/lib/goalCommand'
+import { detectGoalCommand, goalCommandShadowedByMention } from '@/lib/goalCommand'
 import { isE2SSendEnabled } from '@/lib/e2sGate'
 import { sendMessage, cancelTask } from '@/api/chat'
 import { listSessions } from '@/api/sessions'
@@ -181,8 +181,16 @@ export function useMessageSender(): UseMessageSenderResult {
     // goal mode on the backend without the toggle, so the optimistic card
     // carries the goal stamp too (detectGoalCommand mirrors the backend
     // grammar; a prefix exposed by stripping a /-mention is stamped by the
-    // backend's persisted metadata and shows on reload).
-    const metaGoal = goalEnabled || detectGoalCommand(messageText).activates
+    // backend's persisted metadata and shows on reload). The ADR-106
+    // shadowing configuration suppresses the mirror: when the leading plain
+    // /goal token was partitioned as a mention ("goal" rides one of the
+    // threaded arrays), the backend's mention strip consumes it and no goal
+    // arms — stamping the card then would be a false positive the reload
+    // silently removes.
+    const metaGoal =
+      goalEnabled ||
+      (detectGoalCommand(messageText).activates &&
+        !goalCommandShadowedByMention(messageText, activeSkills, activeAgents, activeMCPServers))
     // E2S is mutually exclusive with goal (the store's setters enforce it), so
     // at most one of the two flags is armed here. `isE2SSendEnabled` is the
     // single fail-closed gate: it composes the experimental availability gate

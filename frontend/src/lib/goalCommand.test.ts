@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { detectGoalCommand } from './goalCommand'
+import { detectGoalCommand, goalCommandShadowedByMention } from './goalCommand'
 
 // Parity table with core/message_preprocess.go TestDetectAndStripGoalMode:
 // every form the backend accepts/rejects must produce the same activation
@@ -38,4 +38,41 @@ describe('detectGoalCommand', () => {
       })
     })
   }
+})
+
+// The optimistic mirror's shadowing suppression (ADR-106): when the leading
+// plain /goal token was partitioned as a mention ("goal" rides a threaded
+// array), the backend strip consumes it, no goal arms, and the optimistic
+// stamp must stay off. The budgeted /goal:N form is never a mention token,
+// so its activation is always honest.
+describe('goalCommandShadowedByMention', () => {
+  it('true when the leading plain token threads goal as any mention kind', () => {
+    expect(goalCommandShadowedByMention('/goal ship it', ['goal'], [], [])).toBe(true)
+    expect(goalCommandShadowedByMention('/goal ship it', [], ['goal'], [])).toBe(true)
+    expect(goalCommandShadowedByMention('/goal ship it', [], [], ['goal'])).toBe(true)
+  })
+
+  it('false when nothing threads goal (the command rides the text)', () => {
+    expect(goalCommandShadowedByMention('/goal ship it', [], [], [])).toBe(false)
+    expect(goalCommandShadowedByMention('/goal ship it', ['other'], [], [])).toBe(false)
+  })
+
+  it('false when the leading token is the budgeted form — never a mention token', () => {
+    // Even a qualified /skill: goal elsewhere in the text cannot strip the
+    // /goal:5 token, so the optimistic activation stays honest.
+    expect(goalCommandShadowedByMention('/goal:5 ship it /skill: goal', ['goal'], [], [])).toBe(false)
+  })
+
+  it('false without a leading plain goal token', () => {
+    expect(goalCommandShadowedByMention('ship it /goal later', ['goal'], [], [])).toBe(false)
+    expect(goalCommandShadowedByMention('/goals-report run', ['goal'], [], [])).toBe(false)
+  })
+
+  it('false for inert :N spellings (the token is not the plain form)', () => {
+    expect(goalCommandShadowedByMention('/goal:0 ship it', ['goal'], [], [])).toBe(false)
+  })
+
+  it('undefined arrays read as empty', () => {
+    expect(goalCommandShadowedByMention('/goal ship it')).toBe(false)
+  })
 })

@@ -17,6 +17,7 @@ import (
 	"github.com/v0lka/sp4rk/llm"
 	"github.com/v0lka/sp4rk/memory"
 	"github.com/v0lka/sp4rk/orchestration"
+	"github.com/v0lka/sp4rk/skills"
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
@@ -207,6 +208,69 @@ func TestSendMessage_GoalPrefixPersistsGoalMetadata(t *testing.T) {
 
 		if userRowGoalStamp(t, h.store, sessID, "just a task") {
 			t.Error("plain send must not persist a goal stamp")
+		}
+	})
+}
+
+// TestSendMessage_GhostGoalThreading pins the backend defense-in-depth for
+// the bare "/goal" command (ADR-106): stripMentionRefs strips by the
+// CALLER-PROVIDED mention lists, so threading ["goal"] would eat the leading
+// command prefix before DetectAndStripGoalMode runs — silently downgrading
+// the send to a plain task. The frontend partition never threads "goal"
+// when it names no catalog entry; a direct API caller (or a stale frontend)
+// that threads it anyway must not disarm the command. When "goal" names a
+// REAL catalog entry the threading stands — the documented shadowing
+// configuration (ADR-106 Decision 5).
+func TestSendMessage_GhostGoalThreading(t *testing.T) {
+	t.Run("threaded [goal] naming no catalog entry still arms the goal loop", func(t *testing.T) {
+		h := newNudgeStampHarnessWithFactory(t, false, func(_ session.OrchestratorFactory, caller agent.LLMCaller) session.OrchestratorFactory {
+			return goalBadgeTestFactory(caller)
+		})
+		sessID := h.newSession(t, "ghost-goal-defense")
+		armGoalLoopScript(h)
+
+		if err := h.api.SendMessage(sessID, "/goal ship it", []string{"goal"}, nil, nil, "", "", false, "", false, false, "", nil); err != nil {
+			t.Fatalf("SendMessage: %v", err)
+		}
+		// The goal LOOP ran (not just the stamp): a goal_status event only
+		// fires from the loop's state transitions — drained first, before the
+		// completing event consumes the rest.
+		waitForEventType(t, h.events, "goal_status", 10*time.Second)
+		waitForEventType(t, h.events, "task_complete", 10*time.Second)
+
+		if !userRowGoalStamp(t, h.store, sessID, "/goal ship it") {
+			t.Error("a threaded [goal] list naming no catalog entry must not disarm the /goal command (goal stamp missing)")
+		}
+	})
+
+	t.Run("a real skill named goal keeps the threading (shadowing preserved)", func(t *testing.T) {
+		h := newNudgeStampHarness(t, false)
+		h.api.builderOverride = &mockBuilder{getSkillDescriptorsRes: []skills.SkillDescriptor{{Name: "goal", Description: "shadowing skill"}}}
+		sessID := h.newSession(t, "goal-shadowing")
+
+		if err := h.api.SendMessage(sessID, "/goal ship it", []string{"goal"}, nil, nil, "", "", false, "", false, false, "", nil); err != nil {
+			t.Fatalf("SendMessage: %v", err)
+		}
+		waitForEventType(t, h.events, "task_complete", 10*time.Second)
+
+		if userRowGoalStamp(t, h.store, sessID, "/goal ship it") {
+			t.Error("a real skill named goal owns the plain spelling (ADR-106 Decision 5): the send must run as a plain mention task with no goal stamp")
+		}
+	})
+
+	t.Run("threaded [goal] with no command in the text threads unchanged", func(t *testing.T) {
+		// The defense never touches a threading that is not eating a command:
+		// a mid-text "goal" mention with no leading prefix stays threaded.
+		h := newNudgeStampHarness(t, false)
+		sessID := h.newSession(t, "goal-mention-only")
+
+		if err := h.api.SendMessage(sessID, "consult /goal docs", []string{"goal"}, nil, nil, "", "", false, "", false, false, "", nil); err != nil {
+			t.Fatalf("SendMessage: %v", err)
+		}
+		waitForEventType(t, h.events, "task_complete", 10*time.Second)
+
+		if userRowGoalStamp(t, h.store, sessID, "consult /goal docs") {
+			t.Error("a goal threading with no command prefix must not arm goal mode")
 		}
 	})
 }

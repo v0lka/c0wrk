@@ -66,7 +66,10 @@ frontend cache.
   servers — session-kind-filtered as usual — plus commands): in ≥2 → the
   ADR-076 ambiguous no-op (hint names `/command:` fourth); exactly commands →
   expand; exactly one mention catalog → the mention pipeline; none → the
-  permissive skill passthrough.
+  permissive skill passthrough. The one carve-out: a plain `goal` token
+  naming no catalog entry is the built-in `/goal` command
+  ([ADR-106](../decisions/106-goal-mode-chat-activation.md)), never a
+  passthrough mention — it rides the text so the backend detector sees it.
 - Qualified `/command: name args…` (both colon spellings; ANY run of spaces
   or tabs after the colon — a deliberate divergence from the ADR-076 mention
   grammar, which keeps its single optional space for `/agent:`/`/skill:`/
@@ -108,7 +111,8 @@ commands simply do not exist without a project).
   guard) and on an RPC rejection (the completion cache); the send path then
   resolves the leading token with an EMPTY command catalog — an invocation
   typed during an outage degrades to the permissive passthrough, never to a
-  lost message.
+  lost message (a `/goal` invocation instead degrades to the built-in goal
+  command: it never depended on the command catalog).
 - Ambiguity and empty-expansion no-ops surface a dismissible send-error hint
   and restore the typed text.
 
