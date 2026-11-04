@@ -74,12 +74,15 @@ func assertStripped(t *testing.T, doc chromem.Document, wantID string) {
 	if len(doc.Embedding) != 4 || doc.Embedding[0] != 1 {
 		t.Errorf("doc %s: embedding not preserved: %v", doc.ID, doc.Embedding)
 	}
-	if len(doc.Metadata) != len(commitMetadataKeys) {
-		t.Fatalf("doc %s: metadata has %d keys (%v), want exactly %d", doc.ID, len(doc.Metadata), doc.Metadata, len(commitMetadataKeys))
-	}
+	// Every surviving key must be a commit key; the exact count depends on
+	// the seed era (legacy seeds carry no rel_path coordinate, ADR-104).
+	commitKeys := make(map[string]bool, len(commitMetadataKeys))
 	for _, k := range commitMetadataKeys {
-		if _, ok := doc.Metadata[k]; !ok {
-			t.Errorf("doc %s: metadata missing commit key %q", doc.ID, k)
+		commitKeys[k] = true
+	}
+	for k := range doc.Metadata {
+		if !commitKeys[k] {
+			t.Errorf("doc %s: metadata retains non-commit key %q", doc.ID, k)
 		}
 	}
 	if doc.Metadata["file_path"] == "" || doc.Metadata["language"] == "" {
@@ -161,6 +164,10 @@ func TestContentlessMigration_StripsLegacyDocsAndWritesMarker(t *testing.T) {
 	if err := svc.SetProject("proj", dir); err != nil {
 		t.Fatalf("SetProject: %v", err)
 	}
+	// The seeded branch store predates ADR-104's generation manifests;
+	// declare its era compatible so this test exercises the content-less
+	// migration, not the sequential-generation reset.
+	seedBranchGenerationManifest(t, svc, branchRootPath(dir, "main"))
 	if err := svc.SwitchBranch(context.Background(), "main"); err != nil {
 		t.Fatalf("SwitchBranch: %v", err)
 	}
@@ -267,6 +274,9 @@ func TestContentlessMigration_CancelledByProjectSwitch_ReplaysOnReopen(t *testin
 	if err := svc.SetProject("proj", dir); err != nil {
 		t.Fatalf("SetProject: %v", err)
 	}
+	// The seeded store predates ADR-104 manifests; declare its era
+	// compatible so the test exercises the migration, not the reset.
+	seedBranchGenerationManifest(t, svc, branchRootPath(dir, "main"))
 	if err := svc.SwitchBranch(context.Background(), "main"); err != nil {
 		t.Fatalf("SwitchBranch: %v", err)
 	}

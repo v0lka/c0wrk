@@ -348,7 +348,7 @@ func (f *FrontendAPI) SendMessage(id, text string, activeSkills, activeAgents, a
 	if e2s && goal {
 		return errors.New("E2S mode and goal mode are mutually exclusive — disable one of the toggles before sending")
 	}
-	// Defense-in-depth for the bare "/goal" command (ADR-106): a mention
+	// Defense-in-depth for the bare "/goal" command (ADR-110): a mention
 	// list threading "goal" would have PreprocessMessageText strip the
 	// leading command token as a mention before DetectAndStripGoalMode can
 	// see it, silently downgrading the send to a plain task. The frontend
@@ -356,7 +356,7 @@ func (f *FrontendAPI) SendMessage(id, text string, activeSkills, activeAgents, a
 	// direct API caller (or a stale frontend) that threads it anyway must
 	// not disarm the command. A "goal" naming a real catalog entry is the
 	// documented shadowing configuration and threads unchanged
-	// (ADR-106 Decision 5).
+	// (ADR-110 Decision 5).
 	activeSkills, activeAgents, activeMCPServers = f.dropGhostGoalThreading(text, activeSkills, activeAgents, activeMCPServers)
 	// Detect the leading "/goal" prefix on the POST-preprocessing text:
 	// preprocessing strips leading /-mention refs, which can expose a "/goal"
@@ -491,7 +491,7 @@ func (f *FrontendAPI) SendMessage(id, text string, activeSkills, activeAgents, a
 }
 
 // goalCommandToken is the built-in goal command's plain token — the one
-// slash-name that is a command, never a catalog name (ADR-106).
+// slash-name that is a command, never a catalog name (ADR-110).
 const goalCommandToken = "goal"
 
 // dropGhostGoalThreading removes "goal" from the mention lists when the
@@ -502,7 +502,7 @@ const goalCommandToken = "goal"
 // stripMentionRefs strips by the caller-provided lists, so a threaded
 // "goal" eats the leading "/goal" prefix before DetectAndStripGoalMode
 // runs. A "goal" that names a real agent, skill, or MCP server is the
-// documented shadowing configuration (ADR-106 Decision 5) and threads
+// documented shadowing configuration (ADR-110 Decision 5) and threads
 // unchanged. Fail-open: the rule only ever drops a threading that names
 // nothing real, so an unreadable catalog cannot break a legitimate mention.
 func (f *FrontendAPI) dropGhostGoalThreading(text string, activeSkills, activeAgents, activeMCPServers []string) (skills, agents, mcpServers []string) {
@@ -530,7 +530,7 @@ func (f *FrontendAPI) dropGhostGoalThreading(text string, activeSkills, activeAg
 // goalNamesCatalogEntry reports whether a real agent, skill, or configured
 // MCP server is named "goal" — the shadowing configuration in which a plain
 // "/goal" token legitimately resolves to the catalog entry instead of the
-// built-in command (ADR-106 Decision 5). All three catalogs are read
+// built-in command (ADR-110 Decision 5). All three catalogs are read
 // through their cache-served listings; an unavailable backend reads as
 // empty (fail-open for the command, never for the mention).
 func (f *FrontendAPI) goalNamesCatalogEntry() bool {

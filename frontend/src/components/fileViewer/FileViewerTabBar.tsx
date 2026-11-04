@@ -129,9 +129,12 @@ export function FileViewerTabBar({ onToggleCollapse, collapsed }: FileViewerTabB
                 onContextMenu={(e) => handleTabContextMenu(e, path)}
               >
                 <span className="shrink-0">
-                  {/* Research pseudo-path: render the icon directly. TabFileIcon
-                      must not run for it — useFileIcon would fire a getFileIcon
-                      RPC for a non-file path and persist a junk fileIcons entry. */}
+                  {/* Synthetic pseudo-paths: render the icon directly.
+                      TabFileIcon must not run for them — useFileIcon would
+                      fire a getFileIcon RPC for a non-file path and persist
+                      a junk fileIcons entry (the hook's c0wrk:-prefix guard
+                      also bails, this call-site rule keeps the tinted
+                      glyphs). */}
                   {path === RESEARCH_TAB_PATH ? (
                     <FlaskConical className="size-3.5 text-success" />
                   ) : (

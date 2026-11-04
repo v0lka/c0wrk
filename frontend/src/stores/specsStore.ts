@@ -1,5 +1,7 @@
 import { create } from 'zustand'
+import { persist } from 'zustand/middleware'
 import { getSpecsStatus } from '@/api/specs'
+import { useProjectStore } from '@/stores/projectStore'
 import type { SpecsStatus } from '@/types/models'
 
 // --- State types ---
@@ -25,6 +27,16 @@ interface SpecsState {
    *  older fetch that resolves after a newer one never overwrites it (the
    *  researchStore graphSyncSeq contract). */
   fetchSeq: number
+  /** The SIDEBAR tree's expanded nodes, keyed by projectId and then by the
+   *  tree node id (the directory path relative to the specs root, '' for
+   *  the root files group) — true = expanded. An absent key is collapsed:
+   *  the whole tree starts collapsed. Keyed per project because the parse
+   *  (and the node ids) belong to one project's specs tree; a foreign
+   *  project must never inherit another project's expansion. The whole map
+   *  is the store's ONLY persisted slice (zustand persist): the panel
+   *  unmounts on every tab switch, and localStorage is the only state that
+   *  survives an app restart. */
+  treeExpandedNodes: Record<string, Record<string, boolean>>
 }
 
 interface SpecsActions {
@@ -42,6 +54,10 @@ interface SpecsActions {
    *  research store's setError contract — send() rethrows only when the
    *  auto-created session fails, the splash race). */
   setError: (error: string | null) => void
+  /** Expand/collapse one SIDEBAR tree node for the ACTIVE project (keyed
+   *  by node id). A no-op without an active project — there is nothing to
+   *  key the expansion on. */
+  toggleTreeNode: (nodeId: string) => void
   /** Clear everything (e.g. tests, or a future project-switch hook). */
   reset: () => void
 }
@@ -56,11 +72,20 @@ const initialState: SpecsState = {
   error: null,
   projectId: null,
   fetchSeq: 0,
+  treeExpandedNodes: {},
 }
 
 // --- Store ---
+//
+// The persist middleware carries exactly ONE slice — `treeExpandedNodes`
+// (the sidebar tree's per-project expansion; the panel unmounts on every
+// tab switch and localStorage is what survives a restart). Everything else
+// (the parse and the fetch bookkeeping) is session state: a persisted
+// parse would go stale.
 
-export const useSpecsStore = create<SpecsStore>((set, get) => ({
+export const useSpecsStore = create<SpecsStore>()(
+  persist(
+    (set, get) => ({
   ...initialState,
 
   fetchStatus: async (projectId) => {
@@ -91,5 +116,33 @@ export const useSpecsStore = create<SpecsStore>((set, get) => ({
 
   setError: (error) => set({ error, isLoading: false }),
 
+  toggleTreeNode: (nodeId) => {
+    // Keyed on the ACTIVE project at toggle time — the expansion belongs to
+    // the project whose tree is rendered, so a foreign project never picks
+    // up another project's expanded set.
+    const projectId = useProjectStore.getState().activeProjectId
+    if (projectId === null) return
+    set((s) => ({
+      treeExpandedNodes: {
+        ...s.treeExpandedNodes,
+        [projectId]: {
+          ...s.treeExpandedNodes[projectId],
+          // Absent key = collapsed, so first toggle expands.
+          [nodeId]: !(s.treeExpandedNodes[projectId]?.[nodeId] ?? false),
+        },
+      },
+    }))
+  },
+
   reset: () => set(initialState),
-}))
+    }),
+    {
+      name: 'c0wrk-specs-view',
+      version: 1,
+      // Bump version and implement migration when adding/removing/renaming
+      // persisted fields.
+      migrate: (persistedState, _version) => persistedState,
+      partialize: (state) => ({ treeExpandedNodes: state.treeExpandedNodes }),
+    },
+  ),
+)

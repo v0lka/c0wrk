@@ -848,9 +848,10 @@ func (f *FrontendAPI) CreateBranchInWorktree(name, base string) error {
 		return err
 	}
 
-	// Best-effort, after the success point — the focus does not move, but
-	// the tree's first index pass reuses the checkout's computed embeddings.
-	f.seedWorktreeEmbeddingCache(projectID, treeName)
+	// The new tree needs no vector preparation after the success point: it
+	// routes onto the project's shared store (ADR-104 stage 2), so its first
+	// index pass reads the base ref's snapshot corpus and the project's
+	// shared embedding cache without any seed step.
 
 	f.emitGitStatusChanged(checkout)
 	return nil

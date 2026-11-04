@@ -1016,6 +1016,14 @@ func (l *FrontendAPILifecycle) VectorRoots() *VectorRoots {
 	return l.f.vectorRootsRegistry()
 }
 
+// VectorCorpusRegistry exposes the process-level shared-corpus registry for
+// the desktop manager factory (ManagerConfig.Corpus). Nil before the
+// registry is constructed.
+// Moved to FrontendAPILifecycle to avoid exposure on the Wails RPC surface.
+func (l *FrontendAPILifecycle) VectorCorpusRegistry() *vectorindex.CorpusRegistry {
+	return l.f.vectorCorpusRegistry()
+}
+
 // NotifyVectorFileChange triggers debounced incremental re-indexing on the
 // manager of the given workspace root ("" = the focus root) — the
 // file-mutating post-execute hook's entry point; a root with no live manager

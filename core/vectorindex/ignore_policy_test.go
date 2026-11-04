@@ -70,10 +70,17 @@ func indexedRelFiles(t *testing.T, svc *Service, root string) map[string]bool {
 		t.Fatalf("GetCollectionFiles: %v", err)
 	}
 	out := make(map[string]bool, len(files))
-	for abs := range files {
-		rel, relErr := filepath.Rel(root, abs)
+	for key := range files {
+		// Sidecar keys are root-relative occurrence coordinates
+		// (ADR-104 L2) when the indexing pass bound a workspace root;
+		// absolute only for legacy/unbound services.
+		if !filepath.IsAbs(key) {
+			out[filepath.ToSlash(key)] = true
+			continue
+		}
+		rel, relErr := filepath.Rel(root, key)
 		if relErr != nil {
-			t.Fatalf("Rel(%q, %q): %v", root, abs, relErr)
+			t.Fatalf("Rel(%q, %q): %v", root, key, relErr)
 		}
 		out[filepath.ToSlash(rel)] = true
 	}

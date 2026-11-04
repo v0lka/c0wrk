@@ -128,7 +128,7 @@ describe('workspaceTabByProject — specs tab value (merge validation)', () => {
   })
 
   it('keeps a same-version persisted specs tab through merge', async () => {
-    // The Specs workspace tab (ADR-105) is a new VALID value: the same-version
+    // The Specs workspace tab (ADR-106) is a new VALID value: the same-version
     // merge must accept it entry-by-entry so a project remembered on the
     // Specs panel restores there after a reload.
     localStorage.setItem(

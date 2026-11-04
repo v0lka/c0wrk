@@ -36,7 +36,11 @@ them. Activate the `spec-*` skills for each phase of the work.
 
 - Spec work reads and writes Markdown only — never execute commands, and never
   modify code outside the delegated step's explicit scope.
-- Never edit an accepted ADR except its `Status` line (supersede via a new ADR).
+- An accepted ADR committed to the repository is immutable — supersede it via a new
+  ADR; the only permitted edit is its `Status` line. An accepted ADR whose current
+  content is uncommitted is still a draft: edit it in place, no superseding ADR
+  needed. You cannot run git — establish the commit state from the task context or
+  ask the Conductor before touching an accepted ADR.
 - Note spec/code drift you observe along the way (`spec-check` territory); do
   not silently fix it inside an unrelated task — report it.
 - Return a summary of every spec change (files created/updated, INDEX.md

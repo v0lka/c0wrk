@@ -3,7 +3,9 @@ package vectorindex
 import (
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/v0lka/sp4rk/safeio"
 )
@@ -56,11 +58,19 @@ type contentResolver struct {
 	// 2× cap keeps a hit proportional to a chunk. 0 disables the cap (tests
 	// with hand-built docs).
 	maxChunkSize int
+	// mu guards the cache state below: one resolver serves the whole hybrid
+	// fan-out, whose two corpus legs (hybridSearchRRF) filter concurrently
+	// through passesFilters — an unsynchronized cache write there is a
+	// process-fatal concurrent map write. The lock spans the bounded read in
+	// fileLines too, so concurrent hits on one path collapse into a single
+	// disk read instead of racing duplicate reads.
+	mu sync.Mutex
 	// lines caches path → the file's content split on "\n" (line N is
 	// lines[N-1]; a trailing newline yields a final "" element that line
 	// ranges never select). A present-but-nil entry never occurs: paths
 	// that fail to read land in failed instead.
 	lines map[string][]string
+
 	// failed caches paths whose bounded read returned an error (missing,
 	// permission, directory, …). They resolve to the placeholder for the
 	// resolver's whole lifetime.
@@ -151,8 +161,11 @@ func truncateRunes(s string, limit int) string {
 
 // fileLines returns the file's lines, reading (bounded) at most once per path
 // per resolver lifetime while the budget lasts; failures are cached, so
-// repeated hits on a dead path cost nothing.
+// repeated hits on a dead path cost nothing. Safe for concurrent callers —
+// the hybrid fan-out's corpus legs share one resolver.
 func (cr *contentResolver) fileLines(filePath string) ([]string, bool) {
+	cr.mu.Lock()
+	defer cr.mu.Unlock()
 	if lines, cached := cr.lines[filePath]; cached {
 		return lines, true
 	}
@@ -188,6 +201,19 @@ func readBounded(filePath string, limit int64) ([]byte, error) {
 		return io.ReadAll(f)
 	}
 	return io.ReadAll(io.LimitReader(f, limit))
+}
+
+// sourcePath resolves a stored occurrence to an absolute source path for ONE
+// request (ADR-104 L4 per-request hydration): the root-relative coordinate
+// (rel_path) joined onto the requesting workspace root when both exist, the
+// stored absolute file_path otherwise (legacy documents, or a service without
+// a bound root). The stored absolute path belongs to whichever tree indexed
+// the chunk and is never authoritative for another root.
+func sourcePath(md map[string]string, root string) string {
+	if rel := md[relPathMetaKey]; rel != "" && root != "" && !filepath.IsAbs(rel) {
+		return filepath.Join(root, filepath.FromSlash(rel))
+	}
+	return md["file_path"]
 }
 
 // hydrateSearchContent fills Content for results whose stored content is

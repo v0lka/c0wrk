@@ -1342,6 +1342,22 @@ func (l *vectorIndexLauncher) runVectorIndexInit(epoch uint64, ready chan struct
 		viNow := a.frontendAPI().Lifecycle().VectorIndexConfigSnapshot()
 		pol := backend.ResolveVectorIndexingPolicy(viNow)
 		contentFilterNow := viNow.ContentFilter.ResolveContentFilter()
+		// Corpus residency (ADR-104 §5): apply the live count/byte policy
+		// to the process-level corpus owner BEFORE building — idempotent,
+		// immediately enforced against what is already retained, and
+		// re-applied on every build so a saved settings change lands with
+		// the next manager build (UpdateIndexingSettings rebuilds the focus
+		// root through this closure) instead of needing a restart.
+		if reg := a.frontendAPI().Lifecycle().VectorCorpusRegistry(); reg != nil {
+			reg.SetResidency(
+				derefInt(viNow.CorpusResidencyCapacity),
+				derefCorpusResidencyBudgetBytes(viNow.CorpusResidencyBudgetMb),
+			)
+			// §5 disk ledger budget (store_gc.go): the store-tree byte cap,
+			// applied beside the residency bounds on every manager build so
+			// a saved settings change lands with the next build.
+			reg.SetDiskBudget(derefStoreDiskBudgetBytes(viNow.StoreDiskBudgetMb))
+		}
 		return vectorindex.NewManager(vectorindex.ManagerConfig{
 			EmbeddingFunc: emb.EmbeddingFunc(),
 			// BatchEmbedder enables the batched document-embedding path in
@@ -1386,6 +1402,11 @@ func (l *vectorIndexLauncher) runVectorIndexInit(epoch uint64, ready chan struct
 			// config, never defaulted); stored on the Manager for the
 			// search-path wiring.
 			SearchWaitTimeout: time.Duration(derefInt(viNow.SearchWaitTimeoutMs)) * time.Millisecond,
+			// Corpus (ADR-104 stage 2 owner/view): the process-level
+			// shared-corpus registry — every root manager of a project
+			// shares one snapshot-keyed corpus per commit (read-only) plus
+			// its own per-root overlay as the working store.
+			Corpus: a.frontendAPI().Lifecycle().VectorCorpusRegistry(),
 			// ParkCapacity: how many recently-closed projects keep their
 			// vector-index state resident (vector_index.park_capacity;
 			// resolved default 3, explicit 0 disables parking).
@@ -1492,6 +1513,28 @@ func derefInt(p *int) int {
 func derefParkBudgetBytes(p *int64) int64 {
 	if p == nil {
 		return vectorindex.DefaultParkBudgetBytes
+	}
+	return *p << 20
+}
+
+// derefCorpusResidencyBudgetBytes converts
+// vector_index.corpus_residency_budget_mb into bytes. The knob has no
+// sentinel semantics (0 is the documented "no byte bound"; negatives never
+// reach here — validate() rejects them at load), so the nil path is the
+// resolved default alone.
+func derefCorpusResidencyBudgetBytes(p *int64) int64 {
+	if p == nil {
+		return vectorindex.DefaultCorpusResidencyBudgetBytes
+	}
+	return *p << 20
+}
+
+// derefStoreDiskBudgetBytes converts vector_index.store_disk_budget_mb into
+// bytes. Same no-sentinel semantics as the residency budget (0 = no cap;
+// negatives never reach here — validate() rejects them at load).
+func derefStoreDiskBudgetBytes(p *int64) int64 {
+	if p == nil {
+		return 0
 	}
 	return *p << 20
 }

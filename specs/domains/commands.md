@@ -68,7 +68,7 @@ frontend cache.
   expand; exactly one mention catalog → the mention pipeline; none → the
   permissive skill passthrough. The one carve-out: a plain `goal` token
   naming no catalog entry is the built-in `/goal` command
-  ([ADR-106](../decisions/106-goal-mode-chat-activation.md)), never a
+  ([ADR-110](../decisions/110-goal-mode-chat-activation.md)), never a
   passthrough mention — it rides the text so the backend detector sees it.
 - Qualified `/command: name args…` (both colon spellings; ANY run of spaces
   or tabs after the colon — a deliberate divergence from the ADR-076 mention
@@ -79,7 +79,7 @@ frontend cache.
   path: mention refs inside the template are re-extracted and partitioned
   normally, `@file` references resolve via the existing fileref pipeline, and
   a template starting with `/goal` — or `/goal:N`, which carries the N-turn
-  budget through the expansion ([ADR-106](../decisions/106-goal-mode-chat-activation.md)) —
+  budget through the expansion ([ADR-110](../decisions/110-goal-mode-chat-activation.md)) —
   triggers goal mode (an E2S send then rejects it server-side, as always).
 - Frontmatter bindings: `agent` merges into the partitioned agents
   (deduplicated); `model` rides as `SendOptions.commandModel` — used only
@@ -92,7 +92,7 @@ frontend cache.
   list the same way); `/command: goal` still invokes the file, and the
   budgeted `/goal:N` form is never a catalog mention (the `:` breaks the
   plain-token boundary), so it always reaches the built-in detector
-  ([ADR-106](../decisions/106-goal-mode-chat-activation.md)).
+  ([ADR-110](../decisions/110-goal-mode-chat-activation.md)).
 
 ### Completion
 

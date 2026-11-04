@@ -38,12 +38,12 @@ const maxSpecBytes = 8 << 20
 var markdownLinkRe = regexp.MustCompile(`\[[^\]]*\]\(([^()\s]+)\)`)
 
 // adrFileNameRe splits a decisions/ file name into number and slug
-// ("105-specs-sidebar-panel.md" → "105", "specs-sidebar-panel").
+// ("106-specs-sidebar-panel.md" → "105", "specs-sidebar-panel").
 var adrFileNameRe = regexp.MustCompile(`^(\d+)-(.+)\.md$`)
 
 // adrTitleRe matches the template's ADR heading ("# ADR-NNN: Title"),
-// capturing the title.
-var adrTitleRe = regexp.MustCompile(`(?m)^#\s+ADR-\d+:\s*(.+)$`)
+// capturing the number and the title.
+var adrTitleRe = regexp.MustCompile(`(?m)^#\s+ADR-(\d+):\s*(.+)$`)
 
 // bracketedADRRe matches a bracketed successor reference ("[084]",
 // "[ADR-055]") in a raw status line. Only 1-3 digits, so a bracketed year
@@ -305,16 +305,18 @@ func isRelativeRef(target string) bool {
 	return true
 }
 
-// ParseADR extracts one ADR body's document metadata: the title, the Status
-// classification and the successor number. Number and slug come from the
-// file name and are filled in by the caller.
-func ParseADR(content string) (title, status, supersededBy string) {
+// ParseADR extracts one ADR body's document metadata: the title, the
+// heading's ADR number ("" when the heading does not match the template
+// shape), the Status classification and the successor number. Number and
+// slug come from the file name and are filled in by the caller.
+func ParseADR(content string) (title, headingNumber, status, supersededBy string) {
 	title = ParseTitle(content)
 	if m := adrTitleRe.FindStringSubmatch(plainText(content)); m != nil {
-		title = strings.TrimSpace(m[1])
+		title = strings.TrimSpace(m[2])
+		headingNumber = m[1]
 	}
 	status, supersededBy = parseADRStatusLine(firstNonEmptyLine(sectionBody(content, "Status")))
-	return title, status, supersededBy
+	return title, headingNumber, status, supersededBy
 }
 
 // firstNonEmptyLine returns the first line that is not blank after
@@ -477,7 +479,7 @@ func splitRef(ref string) (p, anchor string) {
 
 // ParseSpecsRoot parses a specs/ directory: INDEX.md, META.md and every .md
 // file under the four section directories, plus the deterministic tier-1
-// findings (ADR-105 D2/D5). It mirrors core/research.ParseResearchRoot's
+// findings (ADR-106 D2/D5). It mirrors core/research.ParseResearchRoot's
 // read-only tolerant shape but is neutral about a missing tree: a root that
 // does not exist or is not a directory parses to Present=false, never an
 // error; an unreadable or oversized individual file is skipped. Key Files
@@ -487,7 +489,7 @@ func ParseSpecsRoot(rootPath string) (*SpecsRoot, error) {
 	root := &SpecsRoot{Path: rootPath}
 	info, err := os.Stat(rootPath)
 	if err != nil || !info.IsDir() {
-		return root, nil //nolint:nilerr // a missing or non-directory root is a neutral present=false state, never an error (ADR-105 D2)
+		return root, nil //nolint:nilerr // a missing or non-directory root is a neutral present=false state, never an error (ADR-106 D2)
 	}
 	root.Present = true
 
@@ -588,7 +590,7 @@ func collectADRs(contents map[string]string) []ADRMeta {
 		if m == nil {
 			continue
 		}
-		title, status, supersededBy := ParseADR(content)
+		title, _, status, supersededBy := ParseADR(content)
 		adrs = append(adrs, ADRMeta{
 			Number:       m[1],
 			Slug:         m[2],
@@ -627,11 +629,17 @@ func compareADRNumbers(a, b string) int {
 	}
 }
 
-// -- tier-1 findings (ADR-105 D5) --
+// -- tier-1 findings (ADR-106 D5) --
 
-// computeFindings runs the four deterministic checks. Every check
-// under-approximates: entries that do not look like workspace paths,
-// anchors in unreadable files, and a missing INDEX.md produce no findings.
+// computeFindings runs the nine deterministic checks: the four content
+// categories (Key Files paths, cross-references, ADR numbering, INDEX
+// coverage) plus the layout/supersession families (root files present,
+// decisions/ names well-formed, heading numbers matching file names,
+// supersession targets existing, the supersession graph acyclic). Every
+// check under-approximates: entries that do not look like workspace paths
+// and anchors in unreadable files produce no findings, and a missing
+// INDEX.md produces no INDEX_STALE findings (the ROOT_FILE_MISSING check
+// owns that state).
 func computeFindings(root *SpecsRoot, contents map[string]string, workspaceRoot string) []Finding {
 	findings := make([]Finding, 0, len(root.Files))
 	for _, f := range root.Files {
@@ -640,6 +648,11 @@ func computeFindings(root *SpecsRoot, contents map[string]string, workspaceRoot 
 	findings = append(findings, crossRefFindings(root, contents)...)
 	findings = append(findings, duplicateADRFindings(root.ADRs)...)
 	findings = append(findings, indexStaleFindings(root)...)
+	findings = append(findings, rootFileFindings(contents)...)
+	findings = append(findings, adrNameFindings(contents)...)
+	findings = append(findings, adrNumberMismatchFindings(root.ADRs, contents)...)
+	findings = append(findings, supersededTargetFindings(root.ADRs)...)
+	findings = append(findings, supersededCycleFindings(root.ADRs)...)
 
 	sort.Slice(findings, func(i, j int) bool {
 		if findings[i].Kind != findings[j].Kind {
@@ -847,6 +860,197 @@ func indexStaleFindings(root *SpecsRoot) []Finding {
 			Kind:   FindingIndexStale,
 			File:   f.Path,
 			Detail: "not listed in INDEX.md",
+		})
+	}
+	return findings
+}
+
+// rootFileFindings flags a missing INDEX.md or META.md in a tree that
+// carries at least one parsed file: both are part of the documented layout
+// (META.md defines the format, INDEX.md is the navigation baseline), and a
+// tree built far enough to hold any file but missing one of them is a real
+// integrity gap. A fully EMPTY tree stays clean — that is the
+// not-initialized-yet state the empty state's Initialize CTA covers.
+func rootFileFindings(contents map[string]string) []Finding {
+	if len(contents) == 0 {
+		return nil
+	}
+	var findings []Finding
+	for _, name := range []string{"INDEX.md", "META.md"} {
+		if _, ok := contents[name]; ok {
+			continue
+		}
+		findings = append(findings, Finding{
+			Kind:   FindingRootFileMissing,
+			File:   name,
+			Detail: "required root file is missing: " + name,
+		})
+	}
+	return findings
+}
+
+// adrNameFindings flags decisions/ files whose base name does not match the
+// documented NNN-slug.md shape: the record is invisible to the ADR model
+// (collectADRs skips it), so nothing — numbering, supersession, the
+// timeline — can ever reference it correctly. "_"-prefixed files never
+// reach contents (the loader excludes them), so templates stay exempt.
+func adrNameFindings(contents map[string]string) []Finding {
+	var findings []Finding
+	for rel := range contents {
+		if !strings.HasPrefix(rel, SectionDecisions+"/") {
+			continue
+		}
+		base := path.Base(rel)
+		if adrFileNameRe.MatchString(base) {
+			continue
+		}
+		findings = append(findings, Finding{
+			Kind:   FindingADRNameMalformed,
+			File:   rel,
+			Detail: "ADR file name is not NNN-slug.md: " + base,
+		})
+	}
+	return findings
+}
+
+// adrNumberMismatchFindings flags decisions/NNN-slug.md files whose
+// "# ADR-NNN:" heading carries a different number than the file name —
+// the template's two number authorities disagree, and every reference to
+// either one of them is ambiguous. Numbers compare NUMERICALLY
+// (compareADRNumbers), so an unpadded heading ("# ADR-42" in 042-x.md)
+// matches; a heading that does not match the template shape at all produces
+// no finding (the title parser already degrades to the first heading).
+func adrNumberMismatchFindings(adrs []ADRMeta, contents map[string]string) []Finding {
+	var findings []Finding
+	for _, adr := range adrs {
+		content, ok := contents[adr.File]
+		if !ok {
+			continue
+		}
+		if _, heading, _, _ := ParseADR(content); heading != "" && compareADRNumbers(heading, adr.Number) != 0 {
+			findings = append(findings, Finding{
+				Kind:   FindingADRNumberMismatch,
+				File:   adr.File,
+				Detail: "heading number " + heading + " does not match file name number " + adr.Number,
+			})
+		}
+	}
+	return findings
+}
+
+// supersededTargetFindings flags a superseded ADR whose successor number no
+// decisions/ file carries: the record points at a replacement that does not
+// exist (deleted, renumbered, or a typo). Numbers compare NUMERICALLY, so
+// an unpadded reference ("[84]" for 084-x.md) resolves.
+func supersededTargetFindings(adrs []ADRMeta) []Finding {
+	numbers := make(map[int]bool, len(adrs))
+	for _, adr := range adrs {
+		if n, err := strconv.Atoi(adr.Number); err == nil {
+			numbers[n] = true
+		}
+	}
+	var findings []Finding
+	for _, adr := range adrs {
+		if adr.SupersededBy == "" {
+			continue
+		}
+		n, err := strconv.Atoi(adr.SupersededBy)
+		if err != nil || numbers[n] {
+			continue
+		}
+		findings = append(findings, Finding{
+			Kind:   FindingSupersededTargetMissing,
+			File:   adr.File,
+			Detail: "superseded by missing ADR " + adr.SupersededBy + ": no decisions/ file carries that number",
+		})
+	}
+	return findings
+}
+
+// supersededCycleFindings flags loops in the supersession graph (A superseded
+// by B, B superseded by A — including an ADR superseded by its own number):
+// the chain is unreadable by definition, since every record in it claims
+// another is its replacement. Successor numbers resolve to the carrier with
+// the lowest file path (deterministic, the duplicate-number tie-break);
+// each cycle reports ONCE, on its lowest-path member, with the walk order
+// showing the loop. Missing successor links end the walk (that is
+// supersededTargetFindings' domain).
+func supersededCycleFindings(adrs []ADRMeta) []Finding {
+	// Unpadded successor number → the carrier with the lowest file path.
+	byNumber := make(map[int]string, len(adrs))
+	for _, adr := range adrs {
+		n, err := strconv.Atoi(adr.Number)
+		if err != nil {
+			continue
+		}
+		if existing, ok := byNumber[n]; !ok || adr.File < existing {
+			byNumber[n] = adr.File
+		}
+	}
+	// File → unpadded successor number.
+	succ := make(map[string]int, len(adrs))
+	for _, adr := range adrs {
+		if adr.SupersededBy == "" {
+			continue
+		}
+		if n, err := strconv.Atoi(adr.SupersededBy); err == nil {
+			succ[adr.File] = n
+		}
+	}
+
+	var findings []Finding
+	reported := make(map[string]bool) // files already named by a reported cycle
+	for _, start := range adrs {
+		if reported[start.File] {
+			continue
+		}
+		onPath := make(map[string]bool, len(adrs))
+		order := make([]string, 0, len(adrs))
+		cur := start.File
+		cycled := false
+		for steps := 0; steps <= len(adrs); steps++ {
+			if onPath[cur] {
+				cycled = true
+				break
+			}
+			onPath[cur] = true
+			order = append(order, cur)
+			num, ok := succ[cur]
+			if !ok {
+				break // no successor reference — chain ends here
+			}
+			next, ok := byNumber[num]
+			if !ok {
+				break // successor missing — the target check reports it
+			}
+			cur = next
+		}
+		if !cycled {
+			continue
+		}
+		// The cycle is the on-path suffix that starts at the repeated node;
+		// any walk prefix (records leading INTO the cycle) is not part of it.
+		first := 0
+		for order[first] != cur {
+			first++
+		}
+		members := order[first:]
+		smallest := members[0]
+		for _, m := range members {
+			if m < smallest {
+				smallest = m
+			}
+		}
+		if reported[smallest] {
+			continue // an earlier start already reported this cycle
+		}
+		for _, m := range members {
+			reported[m] = true
+		}
+		findings = append(findings, Finding{
+			Kind:   FindingSupersededCycle,
+			File:   smallest,
+			Detail: "supersession cycle: " + strings.Join(members, " -> ") + " -> " + smallest,
 		})
 	}
 	return findings

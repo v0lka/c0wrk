@@ -1,7 +1,7 @@
-// Pure path/filter/grouping helpers for the SPECS panel (ADR-105). No
-// React, no DOM — fully unit-testable. Every path that reaches the file
-// viewer is built here, and the workspace:tree_changed relevance filter
-// lives here so the panel component stays a thin orchestrator.
+// Pure path/tree helpers for the SPECS panel (ADR-106). No React, no DOM —
+// fully unit-testable. Every path that reaches the file viewer is built
+// here, and the workspace:tree_changed relevance filter lives here too, so
+// the components stay thin orchestrators.
 
 import { normalizePath } from '@/lib/localFileLink'
 import type { SpecADRMeta, SpecFile } from '@/types/models'
@@ -68,7 +68,7 @@ function isInsideSpecs(changedPath: string, specsRoot: string): boolean {
 }
 
 /**
- * The workspace:tree_changed relevance filter (ADR-105 D3): refresh only
+ * The workspace:tree_changed relevance filter (ADR-106 D3): refresh only
  * when the change touches specs/ paths. Both PRODUCTION payload shapes
  * carry no path list at all — the fs watcher emits `{research_scoped?}` and
  * the agent-write emitter emits nothing — so a payload without paths means
@@ -83,56 +83,132 @@ export function isSpecsRelevantChange(payload: unknown, specsRoot: string): bool
   return paths.some((p) => isInsideSpecs(p, specsRoot))
 }
 
-/** One section of the specs tree: its directory name (`''` for the root
- *  files INDEX.md / META.md) and its files in parse order. */
-export interface SpecSectionGroup {
-  section: string
+/** One node of the nested specs tree (ADR-106): a directory of the specs
+ *  root — the root files group (''), a top-level section directory
+ *  ('domains'), or a nested subdirectory ('domains/frontend'). */
+export interface SpecsTreeNode {
+  /** Stable expansion identity: the directory path relative to the specs
+   *  root — '' for the root files group (INDEX.md / META.md), the first
+   *  segment for a section, the joined segments for a nested directory. */
+  id: string
+  /** Display label: 'root' for the root files group, otherwise the bare
+   *  directory segment. */
+  label: string
+  /** Child directories, sorted by label. */
+  children: SpecsTreeNode[]
+  /** Files directly inside this directory, in input order (the backend
+   *  parse emits paths sorted, so this is path order). */
   files: SpecFile[]
+  /** Total number of files in the whole subtree (the header count chip). */
+  count: number
 }
 
-/** Group spec files by their top-level section, preserving first-appearance
- *  order of the sections (the backend parse walks paths in sorted order, so
- *  sections arrive deterministically) and the files' order inside each. */
-export function groupFilesBySection(files: SpecFile[]): SpecSectionGroup[] {
-  const groups: SpecSectionGroup[] = []
-  const bySection = new Map<string, SpecSectionGroup>()
+/** Build the nested specs tree from the parsed file list (ADR-106). The
+ *  nesting derives from the PATH segments: a top-level directory becomes a
+ *  section node, deeper segments become nested subdirectory nodes, and the
+ *  file itself is a leaf of its innermost directory. Files at the root of
+ *  the specs tree (INDEX.md, META.md — no directory segment) form the root
+ *  group. Files whose base name starts with '_' are EXCLUDED — the
+ *  template prefix the backend parse skips; the exclusion is repeated here
+ *  so a stale or future parse cannot leak templates into the tree. Section
+ *  order is first appearance (the parse is path-sorted, so this is
+ *  alphabetical by path); child directories sort by label. */
+export function buildSpecsTree(files: SpecFile[]): SpecsTreeNode[] {
+  const rootFiles: SpecFile[] = []
+  const sections = new Map<string, SpecsTreeNode>()
+  const sectionOrder: string[] = []
   for (const file of files) {
-    const section = file.section ?? ''
-    let group = bySection.get(section)
-    if (!group) {
-      group = { section, files: [] }
-      bySection.set(section, group)
-      groups.push(group)
+    const segments = toSlashPath(file.path).split('/')
+    const base = segments[segments.length - 1] ?? ''
+    if (base.startsWith('_')) continue
+    if (segments.length === 1) {
+      rootFiles.push(file)
+      continue
     }
-    group.files.push(file)
+    const dirs = segments.slice(0, -1)
+    const section = dirs[0]!
+    let node: SpecsTreeNode | undefined = sections.get(section)
+    if (!node) {
+      const created: SpecsTreeNode = {
+        id: section,
+        label: section,
+        children: [],
+        files: [],
+        count: 0,
+      }
+      sections.set(section, created)
+      sectionOrder.push(section)
+      node = created
+    }
+    for (let i = 1; i < dirs.length; i++) {
+      const dirId = dirs.slice(0, i + 1).join('/')
+      let child: SpecsTreeNode | undefined = node.children.find((c) => c.id === dirId)
+      if (!child) {
+        child = { id: dirId, label: dirs[i]!, children: [], files: [], count: 0 }
+        node.children.push(child)
+      }
+      node = child
+    }
+    node.files.push(file)
   }
-  return groups
+
+  // Depth-first subtree counts + child-directory ordering. The root group's
+  // count is its own file count (it has no subdirectories).
+  const finalize = (node: SpecsTreeNode): number => {
+    node.children.sort((a, b) => a.label.localeCompare(b.label))
+    let total = node.files.length
+    for (const child of node.children) total += finalize(child)
+    node.count = total
+    return total
+  }
+  const topNodes: SpecsTreeNode[] = []
+  if (rootFiles.length > 0) {
+    topNodes.push({
+      id: '',
+      label: 'root',
+      children: [],
+      files: rootFiles,
+      count: rootFiles.length,
+    })
+  }
+  for (const section of sectionOrder) {
+    const node = sections.get(section)!
+    finalize(node)
+    topNodes.push(node)
+  }
+  return topNodes
 }
 
-/** ADR timeline order: newest (highest number) first. A non-numeric number
- *  sorts last; equal numbers keep their input order (stable). */
-export function sortADRsNewestFirst(adrs: SpecADRMeta[]): SpecADRMeta[] {
-  return [...adrs].sort((a, b) => {
-    const an = Number.parseInt(a.number, 10)
-    const bn = Number.parseInt(b.number, 10)
-    const aNaN = Number.isNaN(an)
-    const bNaN = Number.isNaN(bn)
-    if (aNaN && bNaN) return 0
-    if (aNaN) return 1
-    if (bNaN) return -1
-    return bn - an
-  })
+/** The decision rows' git add-dates keyed by their specs-root-relative
+ *  file path (ADR-109): the sidebar tree renders each DECISIONS leaf's
+ *  date in its own right-aligned column, and this is the lookup it reads.
+ *  Undated records (a non-git workspace, an uncommitted file) are absent
+ *  from the map — the row renders without the date column instead of
+ *  reserving an empty one. */
+export function adrDatesByFile(adrs: SpecADRMeta[]): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const adr of adrs) {
+    if (adr.date === undefined || adr.date === '') continue
+    out[adr.file] = adr.date
+  }
+  return out
 }
 
-/** Human label for a finding kind: the four tier-1 categories of ADR-105
- *  D5, plus a generic passthrough for a future tier's unknown kind (the RPC
- *  boundary passes unknown kinds through instead of dropping them — the
- *  label degrades instead of the finding losing its place). */
+/** Human label for a finding kind: the tier-1 categories of ADR-106 D5
+ *  (as completed by ADR-109), plus a generic passthrough for a future
+ *  tier's unknown kind (the RPC boundary passes unknown kinds through
+ *  instead of dropping them — the label degrades instead of the finding
+ *  losing its place). */
 const FINDING_KIND_LABELS: Record<string, string> = {
   PATH_MISSING: 'Missing path',
   CROSS_REF_BROKEN: 'Broken cross-ref',
   DUPLICATE_ADR_NUMBER: 'Duplicate ADR number',
   INDEX_STALE: 'INDEX stale',
+  ROOT_FILE_MISSING: 'Missing root file',
+  ADR_NAME_MALFORMED: 'Malformed ADR name',
+  ADR_NUMBER_MISMATCH: 'ADR number mismatch',
+  SUPERSEDED_TARGET_MISSING: 'Missing successor',
+  SUPERSEDED_CYCLE: 'Supersession cycle',
 }
 
 export function findingKindLabel(kind: string): string {

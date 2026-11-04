@@ -14,13 +14,25 @@ const { readFileMock, readImageAsDataURLMock, getFileDiffMock, getFileDiffHunksM
   getFileDiffHunksMock: vi.fn().mockResolvedValue([]),
 }))
 
+/** Handlers captured from subscribe('workspace:tree_changed', …) so tests
+ *  can fire the refresh path directly. */
+const treeChangedHandlers: Array<(...data: unknown[]) => void> = []
+
 vi.mock('@/api/workspace', () => ({
   readFile: readFileMock,
   readImageAsDataURL: readImageAsDataURLMock,
   getFileDiff: getFileDiffMock,
 }))
 vi.mock('@/api/git', () => ({ getFileDiffHunks: getFileDiffHunksMock }))
-vi.mock('@/api/runtime', () => ({ subscribe: vi.fn(() => () => {}) }))
+vi.mock('@/api/runtime', () => ({
+  subscribe: vi.fn((name: string, cb: (...data: unknown[]) => void) => {
+    if (name === 'workspace:tree_changed') treeChangedHandlers.push(cb)
+    return () => {
+      const idx = treeChangedHandlers.indexOf(cb)
+      if (idx >= 0) treeChangedHandlers.splice(idx, 1)
+    }
+  }),
+}))
 
 import { useFileViewerData } from './useFileViewerData'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
@@ -97,5 +109,37 @@ describe('useFileViewerData — image files', () => {
     const file = useFileViewerStore.getState().files[path]
     expect(file?.content).toBe('const x = 1\n')
     expect(file?.imageDataUrl).toBeUndefined()
+  })
+})
+
+describe('useFileViewerData — virtual pseudo-path tabs', () => {
+  it('never reads a virtual pseudo-path — on activation nor on tree_changed refresh', async () => {
+    // Any c0wrk:-prefixed virtual tab (the research workspace opens one —
+    // see researchStore): virtual → skipped by the loader.
+    const path = 'c0wrk:research'
+    useFileViewerStore.setState({
+      openTabs: [path],
+      activeFile: path,
+      files: { [path]: { content: '', loading: false, virtual: true } },
+    })
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    root = createRoot(container)
+    await act(async () => {
+      root!.render(<Probe activeFile={path} openTabs={[path]} />)
+    })
+
+    expect(readFileMock).not.toHaveBeenCalled()
+    expect(readImageAsDataURLMock).not.toHaveBeenCalled()
+    expect(getFileDiffMock).not.toHaveBeenCalled()
+
+    // A workspace:tree_changed with the tab open must not read it either —
+    // the refresh loop skips virtual tabs.
+    await act(async () => {
+      for (const handler of treeChangedHandlers) handler()
+      await Promise.resolve()
+    })
+
+    expect(readFileMock).not.toHaveBeenCalled()
   })
 })

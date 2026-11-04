@@ -1,4 +1,4 @@
-// Quick-actions row (ADR-105 D4): one button per lifecycle gesture, each
+// Quick-actions row (ADR-106 D4): one button per lifecycle gesture, each
 // dispatching its matching `spec-*` skill (with a constant prompt from
 // specsActions.ts) through the shared dispatch hook. This is the "start
 // doing" surface — the panel never writes to specs/ itself.
@@ -53,7 +53,7 @@ export function SpecsQuickActions({ present }: { present: boolean }) {
             }}
             title={
               enabled
-                ? `${action.label} (${action.skill}) — Shift = new session`
+                ? `${action.fullLabel ?? action.label} (${action.skill}) — Shift = new session`
                 : NO_SPECS_REASON
             }
             className={cn(ACTION_BUTTON_CLASS, 'disabled:opacity-50')}

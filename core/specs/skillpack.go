@@ -1,5 +1,5 @@
 // Package specs — skill-pack: the six vendored spec-* skills (spec-init,
-// spec-explore, spec-consult, spec-create, spec-update, spec-check; ADR-104),
+// spec-explore, spec-consult, spec-create, spec-update, spec-check; ADR-105),
 // seeded globally once per launch into the c0wrk global skills directory
 // before the skill watchers start. The seeded copies land where the
 // per-session SkillManager discovers them (a project-local .agents/skills
@@ -9,7 +9,7 @@
 // Seeding is idempotent, crash-safe, and non-destructive: destinations are
 // classified by CONTENT HASH against the embedded pack (never mtime/size,
 // never the marker alone). The classification/staging mechanics live in the
-// shared core/seedpack package (ADR-104 decision 5); full rules:
+// shared core/seedpack package (ADR-105 decision 5); full rules:
 // specs/domains/specs.md (seeding invariants).
 package specs
 
@@ -42,8 +42,9 @@ const embedRoot = "skills"
 // CurrentSeedVersion is the pack version stamped into each seeded skill's
 // marker; bump it when embedded content changes and copies should refresh.
 // Deliberately independent of every other pack's marker (research, papers) so
-// the packs bump independently.
-const CurrentSeedVersion = "1"
+// the packs bump independently. v2: ADR immutability keys on commit state
+// (committed = locked, uncommitted = editable draft).
+const CurrentSeedVersion = "2"
 
 // SeedSkillsResult reports the per-skill outcome of a SeedSkills call; each
 // slice holds skill names, sorted for deterministic output. It is the shared

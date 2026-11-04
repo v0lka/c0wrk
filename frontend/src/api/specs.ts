@@ -1,4 +1,4 @@
-// Specs panel API wrappers (ADR-105): the parsed specs/ tree of a project.
+// Specs panel API wrappers (ADR-106): the parsed specs/ tree of a project.
 
 import { getApp } from './runtime'
 import { logger } from '@/lib/logger'
@@ -99,7 +99,8 @@ function isSpecIndexTask(v: unknown): v is SpecIndexTask {
 
 /** An ADR record is well-typed when every field parsed from the file name
  *  (number, slug, file) and the classified status is a string, and the
- *  optional title/superseded_by are well-typed-or-absent. */
+ *  optional title/superseded_by/date (the git-derived add date, ADR-108)
+ *  are well-typed-or-absent. */
 function isSpecADRMeta(v: unknown): v is SpecADRMeta {
   if (!isRecord(v)) return false
   if (
@@ -112,11 +113,11 @@ function isSpecADRMeta(v: unknown): v is SpecADRMeta {
   }
   const optionalString = (key: string): boolean =>
     v[key] === undefined || v[key] === null || typeof v[key] === 'string'
-  return optionalString('title') && optionalString('superseded_by')
+  return optionalString('title') && optionalString('superseded_by') && optionalString('date')
 }
 
 /** A finding needs all three fields as strings; the kind is NOT restricted
- *  to the four known tier-1 values — a future tier's kind passes through
+ *  to the known tier-1 values — a future tier's kind passes through
  *  (typed as the union, rendered with a generic label) instead of costing
  *  the finding its place in the panel. */
 function isSpecFinding(v: unknown): v is SpecFinding {

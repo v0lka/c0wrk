@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// SpecsPanel — the panel orchestrator over specsStore (ADR-105): the
+// SpecsPanel — the panel orchestrator over specsStore (ADR-106): the
 // mount fetch, the in-panel workspace:tree_changed subscription with the
 // specs/ path filter, the read path through the file viewer, and the four
 // render states (loading, error-alongside-previous-status, empty, full
@@ -36,10 +36,12 @@ vi.mock('@/api/runtime', () => ({
 }))
 
 // The panel renders the quick actions / empty state (which use the sender);
-// their dispatch behavior is covered by their own suites.
+// their dispatch behavior is covered by their own suites. The captured send
+// mock also serves the fix-findings badge tests below.
+const sendMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => {}))
 vi.mock('@/hooks/useMessageSender', () => ({
   useMessageSender: () => ({
-    send: vi.fn(async () => {}),
+    send: sendMock,
     cancel: vi.fn(async () => {}),
     isProcessing: false,
   }),
@@ -98,15 +100,18 @@ function makeStatus(present: boolean): SpecsStatus {
     files: [
       { path: 'INDEX.md', title: 'Specs Index' },
       { path: 'domains/testing.md', section: 'domains', title: 'Testing', key_files: ['core/x.go'] },
+      { path: 'decisions/106-specs-sidebar-panel.md', section: 'decisions', title: 'Specs sidebar panel' },
+      { path: 'decisions/038-old-decision.md', section: 'decisions', title: 'Old decision' },
     ],
     index_tasks: [{ task: 'Writing tests', specs: ['./domains/testing.md'] }],
     adrs: [
       {
         number: '105',
         slug: 'specs-sidebar-panel',
-        file: 'decisions/105-specs-sidebar-panel.md',
+        file: 'decisions/106-specs-sidebar-panel.md',
         status: 'accepted',
         title: 'Specs sidebar panel',
+        date: '2026-01-15',
       },
       {
         number: '038',
@@ -120,13 +125,15 @@ function makeStatus(present: boolean): SpecsStatus {
     findings: [
       { kind: 'PATH_MISSING', file: 'domains/testing.md', detail: 'core/x.go does not exist' },
     ],
-    counts: { files: 2, adrs: 2, findings: 1, findings_by_kind: { PATH_MISSING: 1 } },
+    counts: { files: 4, adrs: 2, findings: 1, findings_by_kind: { PATH_MISSING: 1 } },
   }
 }
 
 beforeEach(() => {
   getSpecsStatusMock.mockReset()
   getSpecsStatusMock.mockResolvedValue(makeStatus(true))
+  sendMock.mockReset()
+  sendMock.mockResolvedValue(undefined)
   eventHandlers.clear()
   useSpecsStore.getState().reset()
   useProjectStore.setState({ activeProjectId: 'p1' })
@@ -144,23 +151,42 @@ afterEach(() => {
 })
 
 describe('SpecsPanel — render states', () => {
-  it('fetches on mount and renders the full parsed body', async () => {
+  it('fetches on mount and renders the collapsed tree plus findings', async () => {
     await renderPanel()
 
     expect(getSpecsStatusMock).toHaveBeenCalledWith('p1')
     // Header: integrity badge (1 finding) + counts.
     expect(query('specs-integrity-badge')!.textContent).toContain('1 finding')
-    expect(text()).toContain('2 spec files')
+    expect(text()).toContain('4 spec files')
     expect(text()).toContain('2 ADRs')
-    // INDEX task table, section tree, ADR timeline, findings list.
-    expect(text()).toContain('Writing tests')
-    expect(text()).toContain('Testing')
-    expect(query('specs-adr')!.textContent).toContain('Specs sidebar panel')
+    // The INDEX navigation and the ADR timeline live on the overview page
+    // now — the panel renders NEITHER, even though the parse carries both.
+    expect(query('specs-index')).toBeNull()
+    expect(query('specs-adrs')).toBeNull()
+    expect(text()).not.toContain('Writing tests')
+    // The tree renders collapsed: group headers visible, no file rows yet.
+    expect(query('specs-tree')).not.toBeNull()
+    expect(query('specs-file')).toBeNull()
+    // Expanding the domains group reveals its leaf (title + key-files chip).
+    act(() => {
+      container!
+        .querySelector<HTMLElement>('[data-testid="specs-tree-group"][data-node="domains"]')!
+        .click()
+    })
+    expect(query('specs-file')!.textContent).toContain('Testing')
+    // The DECISIONS date column (ADR-109): the dated 105 leaf carries its
+    // blue-tinted date; the undated 038 leaf renders none.
+    act(() => {
+      container!
+        .querySelector<HTMLElement>('[data-testid="specs-tree-group"][data-node="decisions"]')!
+        .click()
+    })
+    const datedLeaf = container!.querySelector('[data-path="decisions/106-specs-sidebar-panel.md"]')!
+    expect(datedLeaf.querySelector('[data-testid="specs-file-date"]')!.textContent).toBe('2026-01-15')
+    const undatedLeaf = container!.querySelector('[data-path="decisions/038-old-decision.md"]')!
+    expect(undatedLeaf.querySelector('[data-testid="specs-file-date"]')).toBeNull()
+    // The findings list renders the detail (the cascade card's own row).
     expect(text()).toContain('core/x.go does not exist')
-    // Superseded record: status chip + supersession to the successor.
-    const superseded = container!.querySelector<HTMLElement>('[data-number="038"]')!
-    expect(superseded.getAttribute('data-status')).toBe('superseded')
-    expect(query('specs-adr-supersession')!.textContent).toContain('105')
   })
 
   it('renders the loading state before the first status lands', async () => {
@@ -178,7 +204,12 @@ describe('SpecsPanel — render states', () => {
     expect(query('specs-initialize-cta')).not.toBeNull()
     expect(text()).toContain('/ws/p1/specs')
     // The full body does not render alongside the empty state.
-    expect(query('specs-header')).toBeNull()
+    expect(query('specs-tree')).toBeNull()
+    // The header STAYS with the clean badge (the opener is gone — ADR-109
+    // removed the overview page).
+    expect(query('specs-header')).not.toBeNull()
+    expect(query('specs-open-overview')).toBeNull()
+    expect(query('specs-integrity-badge')!.textContent).toContain('Integrity OK')
   })
 
   it('keeps the previous status rendered alongside an error banner', async () => {
@@ -191,7 +222,7 @@ describe('SpecsPanel — render states', () => {
 
     expect(query('specs-error')!.textContent).toContain('boom')
     // The previous tree stays rendered (error ≠ data loss).
-    expect(text()).toContain('Writing tests')
+    expect(query('specs-tree')).not.toBeNull()
   })
 
   it('renders nothing when there is no active project (defensive neutral)', async () => {
@@ -204,7 +235,7 @@ describe('SpecsPanel — render states', () => {
 
   it("renders the loading state — never the previous project's tree — across a project switch", async () => {
     await renderPanel()
-    expect(text()).toContain('Writing tests')
+    expect(query('specs-tree')).not.toBeNull()
 
     // Switch to p2 whose fetch hangs: p1's tree must vanish for the whole
     // flight (the store clears it at fetch start; the render guard pairs
@@ -217,7 +248,7 @@ describe('SpecsPanel — render states', () => {
 
     expect(getSpecsStatusMock).toHaveBeenCalledWith('p2')
     expect(text()).toContain('Loading specs…')
-    expect(text()).not.toContain('Writing tests')
+    expect(query('specs-tree')).toBeNull()
   })
 })
 
@@ -277,27 +308,18 @@ describe('SpecsPanel — read path (file viewer)', () => {
   // another project cannot render, so the guard has no reachable UI click;
   // the cross-project behavior itself is pinned in specsStore.test.ts and
   // the project-switch render test above.
-  it('opens a spec file, an INDEX target, and an ADR through openFile', async () => {
+  it('opens a tree leaf and a finding file through openFile', async () => {
     await renderPanel()
 
-    // Section tree row → absolute path under the specs root.
+    // The tree starts collapsed: expand the domains group, then click the
+    // leaf → the absolute path under the specs root.
+    act(() => {
+      container!
+        .querySelector<HTMLElement>('[data-testid="specs-tree-group"][data-node="domains"]')!
+        .click()
+    })
     act(() => {
       query('specs-file')!.click()
-    })
-    // INDEX link: the verbatim './domains/testing.md' target resolves.
-    act(() => {
-      container!.querySelector<HTMLButtonElement>('[data-spec="./domains/testing.md"]')!.click()
-    })
-    // ADR rows → their decisions/ files (the timeline is newest-first, so
-    // the first row is ADR-105 and the superseded 038 is second).
-    act(() => {
-      query('specs-adr')!.click()
-      container!.querySelector<HTMLButtonElement>('[data-testid="specs-adr"][data-number="038"]')!.click()
-    })
-    // The supersession chip opens the SUCCESSOR's file (deduped here — the
-    // 105 row above already opened it; openFile re-activates the tab).
-    act(() => {
-      query('specs-adr-supersession')!.click()
     })
     // A finding's file link opens too.
     act(() => {
@@ -306,9 +328,104 @@ describe('SpecsPanel — read path (file viewer)', () => {
 
     const openTabs = useFileViewerStore.getState().openTabs
     expect(openTabs).toContain('/ws/p1/specs/domains/testing.md')
-    expect(openTabs).toContain('/ws/p1/specs/decisions/105-specs-sidebar-panel.md')
-    expect(openTabs).toContain('/ws/p1/specs/decisions/038-old-decision.md')
     // Opening uncollapses the viewer.
     expect(useFileViewerStore.getState().collapsed).toBe(false)
+  })
+
+  it('expansion survives a tab switch (remount) via the per-project store state', async () => {
+    await renderPanel()
+
+    act(() => {
+      container!
+        .querySelector<HTMLElement>('[data-testid="specs-tree-group"][data-node="domains"]')!
+        .click()
+    })
+    expect(query('specs-file')).not.toBeNull()
+    expect(useSpecsStore.getState().treeExpandedNodes.p1).toEqual({ domains: true })
+
+    // The Specs tab switching away unmounts the panel; switching back
+    // remounts it — the expanded set must come from the store, not from
+    // component state.
+    act(() => {
+      activeRoot!.unmount()
+    })
+    await renderPanel()
+
+    const domains = container!.querySelector<HTMLElement>(
+      '[data-testid="specs-tree-group"][data-node="domains"]',
+    )!
+    expect(domains.getAttribute('aria-expanded')).toBe('true')
+    expect(query('specs-file')).not.toBeNull()
+  })
+
+  it("a foreign project never inherits another project's expanded set", async () => {
+    await renderPanel()
+
+    act(() => {
+      container!
+        .querySelector<HTMLElement>('[data-testid="specs-tree-group"][data-node="domains"]')!
+        .click()
+    })
+
+    // Switch to p2: its own (empty) expansion set applies — the domains
+    // group starts collapsed even though p1 had it expanded.
+    getSpecsStatusMock.mockResolvedValue(makeStatus(true))
+    await act(async () => {
+      useProjectStore.setState({ activeProjectId: 'p2' })
+    })
+    await flush()
+
+    const domains = container!.querySelector<HTMLElement>(
+      '[data-testid="specs-tree-group"][data-node="domains"]',
+    )!
+    expect(domains.getAttribute('aria-expanded')).toBe('false')
+    expect(useSpecsStore.getState().treeExpandedNodes.p2).toBeUndefined()
+    // p1's set is untouched for the switch back.
+    expect(useSpecsStore.getState().treeExpandedNodes.p1).toEqual({ domains: true })
+  })
+
+  it('clicking the findings badge dispatches the fix-findings task into the chat', async () => {
+    await renderPanel()
+
+    const badge = query('specs-integrity-badge')!
+    expect(badge.textContent).toContain('1 finding')
+    act(() => {
+      badge.click()
+    })
+
+    expect(sendMock).toHaveBeenCalledTimes(1)
+    const [prompt, skills, , , , options] = sendMock.mock.calls[0]!
+    expect(String(prompt)).toContain('Fix every tier-1 integrity finding')
+    // The prompt enumerates the CURRENT parse's findings verbatim.
+    expect(String(prompt)).toContain('[PATH_MISSING] domains/testing.md: core/x.go does not exist')
+    expect(skills).toEqual(['spec-update'])
+    expect(options).toMatchObject({ newSession: false })
+  })
+
+  it('shift-clicking the findings badge targets a NEW session', async () => {
+    await renderPanel()
+
+    const badge = query('specs-integrity-badge')!
+    await act(async () => {
+      badge.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }))
+    })
+
+    expect(sendMock).toHaveBeenCalledTimes(1)
+    expect(sendMock.mock.calls[0]![5]).toMatchObject({ newSession: true })
+  })
+
+  it('the badge is inert without findings (the OK chip dispatches nothing)', async () => {
+    const clean = makeStatus(true)
+    clean.findings = []
+    clean.counts = { ...clean.counts, findings: 0, findings_by_kind: {} }
+    getSpecsStatusMock.mockResolvedValue(clean)
+    await renderPanel()
+
+    const badge = query('specs-integrity-badge')!
+    expect(badge.textContent).toContain('Integrity OK')
+    act(() => {
+      badge.click()
+    })
+    expect(sendMock).not.toHaveBeenCalled()
   })
 })

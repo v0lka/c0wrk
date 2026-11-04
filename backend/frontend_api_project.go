@@ -707,9 +707,14 @@ func (f *FrontendAPI) reScopeCodeWatcherLocked(watchRoot, checkoutResearchRoot s
 		// papers:changed for the paper library / comparisons roots — tracked
 		// independently of the active R-NNN (ADR-099).
 		f.emitPapersChanged(snapPapersRoot, snapComparisonsRoot, snapProjectID, changedPaths)
-		f.emitEvent(EventWorkspaceTreeChanged, map[string]bool{
-			"research_scoped": researchScoped,
-		})
+		// Nil-guarded like every other emitter: this callback runs on the
+		// fsnotify goroutine, which can fire in tests or early startup
+		// before the Wails event wiring lands.
+		if f.emitEvent != nil {
+			f.emitEvent(EventWorkspaceTreeChanged, map[string]bool{
+				"research_scoped": researchScoped,
+			})
+		}
 
 		// An ignore-rule file change anywhere under a watched root makes the
 		// cached ignore resolver stale; evict the affected roots so the next
@@ -800,10 +805,14 @@ func (f *FrontendAPI) emitResearchFileChanged(researchRoot, projectID string, ch
 		"research_root", researchRoot,
 		"paths", researchPaths,
 	)
-	f.emitEvent(EventResearchFileChanged, map[string]string{
-		"project_id": projectID,
-		"paths":      strings.Join(researchPaths, ","),
-	})
+	// Nil-guarded: callers include the fsnotify watcher callbacks, which can
+	// run before the Wails event wiring lands.
+	if f.emitEvent != nil {
+		f.emitEvent(EventResearchFileChanged, map[string]string{
+			"project_id": projectID,
+			"paths":      strings.Join(researchPaths, ","),
+		})
+	}
 	return true
 }
 
@@ -845,9 +854,13 @@ func (f *FrontendAPI) reScopeNoProjectWatcherLocked(root string) error {
 		// No Project has no paper library or comparisons dir (both roots
 		// empty) — a no-op, kept for parity with the CODE-mode callback.
 		f.emitPapersChanged(snapPapersRoot, snapComparisonsRoot, snapProjectID, changedPaths)
-		f.emitEvent(EventWorkspaceTreeChanged, map[string]bool{
-			"research_scoped": researchScoped,
-		})
+		// Nil-guarded: the fsnotify goroutine can outlive the emitter wiring
+		// (see the CODE-mode callback).
+		if f.emitEvent != nil {
+			f.emitEvent(EventWorkspaceTreeChanged, map[string]bool{
+				"research_scoped": researchScoped,
+			})
+		}
 
 		// Invalidate the skill/agent/command caches — project-local entries
 		// live under the session workspace's .agents/.

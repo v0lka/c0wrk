@@ -213,14 +213,14 @@ func TestSendMessage_GoalPrefixPersistsGoalMetadata(t *testing.T) {
 }
 
 // TestSendMessage_GhostGoalThreading pins the backend defense-in-depth for
-// the bare "/goal" command (ADR-106): stripMentionRefs strips by the
+// the bare "/goal" command (ADR-110): stripMentionRefs strips by the
 // CALLER-PROVIDED mention lists, so threading ["goal"] would eat the leading
 // command prefix before DetectAndStripGoalMode runs — silently downgrading
 // the send to a plain task. The frontend partition never threads "goal"
 // when it names no catalog entry; a direct API caller (or a stale frontend)
 // that threads it anyway must not disarm the command. When "goal" names a
 // REAL catalog entry the threading stands — the documented shadowing
-// configuration (ADR-106 Decision 5).
+// configuration (ADR-110 Decision 5).
 func TestSendMessage_GhostGoalThreading(t *testing.T) {
 	t.Run("threaded [goal] naming no catalog entry still arms the goal loop", func(t *testing.T) {
 		h := newNudgeStampHarnessWithFactory(t, false, func(_ session.OrchestratorFactory, caller agent.LLMCaller) session.OrchestratorFactory {
@@ -254,7 +254,7 @@ func TestSendMessage_GhostGoalThreading(t *testing.T) {
 		waitForEventType(t, h.events, "task_complete", 10*time.Second)
 
 		if userRowGoalStamp(t, h.store, sessID, "/goal ship it") {
-			t.Error("a real skill named goal owns the plain spelling (ADR-106 Decision 5): the send must run as a plain mention task with no goal stamp")
+			t.Error("a real skill named goal owns the plain spelling (ADR-110 Decision 5): the send must run as a plain mention task with no goal stamp")
 		}
 	})
 

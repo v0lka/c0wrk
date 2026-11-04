@@ -12,16 +12,29 @@ export interface DerivedStatus {
   bothReady: boolean
 }
 
+export type VectorIndexState =
+  'idle' | 'indexing' | 'ready' | 'reindexing' | 'unavailable' | 'loading' | 'disabled' | 'preparing' | 'migration-rebuild'
+
 export function deriveDotStatus(
-  state: 'idle' | 'indexing' | 'ready' | 'reindexing' | 'unavailable' | 'loading' | 'disabled',
+  state: VectorIndexState,
   phase: IndexPhase | undefined,
 ): DerivedStatus {
   // `loading` (ADR-064): the branch-scoped DB is being opened; neither index is
   // built or being built yet, so both dots stay idle — never a "building"
   // claim for what is only an open.
+  // `preparing` / `migration-rebuild` (ADR-104 stage 2): the view-model attach
+  // window and the legacy store promotion — pre-work or store-shape repair,
+  // not an embedding/lexical pass, so the dots stay idle for them too.
   // `disabled` (ADR-103): indexing is off via the master switch — nothing is
   // built or building either; idle dots, like every other non-running state.
-  if (state === 'idle' || state === 'unavailable' || state === 'loading' || state === 'disabled') {
+  if (
+    state === 'idle' ||
+    state === 'unavailable' ||
+    state === 'loading' ||
+    state === 'disabled' ||
+    state === 'preparing' ||
+    state === 'migration-rebuild'
+  ) {
     return { vectorDot: 'idle', lexicalDot: 'idle', bothReady: false }
   }
   if (state === 'ready') {

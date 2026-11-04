@@ -808,7 +808,7 @@ immediately. Idle sessions (no unfinished task) behave exactly as before
 
 > **Goal mode supersedes the resume path.** The goal signal is detected
 > (`/goal`/`/goal:N` prefix OR the goal toggle, one `DetectAndStripGoalMode` pass —
-> [ADR-106](../decisions/106-goal-mode-chat-activation.md)) **before** the resume check. When goal
+> [ADR-110](../decisions/110-goal-mode-chat-activation.md)) **before** the resume check. When goal
 > mode is requested, the resume path is **skipped** and `abandonUnfinishedTaskForGoal`
 > cancels the interrupted task (persisting the cancellation, resolving the
 > `task_failed_resumable` banner, and emitting a service event) so it does not
@@ -987,7 +987,7 @@ User types a message while paused → Send
       hasPausedUnfinishedTask(sessionID) == true (and the message is not a
       goal request — the goal toggle OR a leading "/goal"/"/goal:N" prefix,
       detected on the processed text before the router exactly like before
-      the interrupted-task resume check, [ADR-106](../decisions/106-goal-mode-chat-activation.md))
+      the interrupted-task resume check, [ADR-110](../decisions/110-goal-mode-chat-activation.md))
       → routes to ResumeSession(text, ...)
         → the user's text becomes the nudge, injected as a trailing user message
           into the first resumed turn

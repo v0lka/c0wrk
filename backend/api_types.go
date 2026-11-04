@@ -1,6 +1,7 @@
 package backend
 
 import (
+	"github.com/v0lka/c0wrk/core/vectorindex"
 	"github.com/v0lka/c0wrk/core/workspace"
 	"github.com/v0lka/sp4rk/llm"
 )
@@ -636,6 +637,13 @@ type VectorIndexStatus struct {
 	OVDevice string `json:"ov_device,omitempty"`
 
 	ProviderFallbackReason string `json:"provider_fallback_reason,omitempty"`
+
+	// Store is the project's §3 content-addressed store disk ledger
+	// (ADR-104 §5), cached by the switch-riding hygiene pass — unique
+	// chunk bytes counted once, per-snapshot and per-root breakdowns,
+	// superseded generations. Omitted while no pass has snapshot a store
+	// yet (fresh installs, pre-§3 stores).
+	Store *vectorindex.StoreLedger `json:"store,omitempty"`
 
 	DeviceID int `json:"device_id,omitempty"`
 }

@@ -10,7 +10,7 @@ rebinding to this project's spec-tree layout, and dropping the upstream
 `WORKFLOW.md` artifact) are Copyright (c) 2026 Vladimir Kochetkov as well, and
 licensed under the MIT License below. The vendored copy is evolved
 independently of upstream; upstream is the origin, not a dependency (see
-`specs/decisions/104-vendor-spec-skillset.md`).
+`specs/decisions/105-vendor-spec-skillset.md`).
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

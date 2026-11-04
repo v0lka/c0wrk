@@ -976,7 +976,7 @@ func TestSendMessage_GoalOnResume_AbandonsInterruptedTaskAndRunsGoal(t *testing.
 // ----------------------------------------------------------------------------
 
 // TestSendMessage_GoalIntoPausedSession_AbandonsAndRunsFreshGoal pins the
-// nudge-resume router's goal union (ADR-106 gate parity): a leading
+// nudge-resume router's goal union (ADR-110 gate parity): a leading
 // "/goal"/"/goal:N" prefix is a goal request exactly like the toggle flag,
 // detected BEFORE the paused-task router, so it abandons the paused task and
 // starts a fresh budgeted goal instead of nudge-resuming the old task with

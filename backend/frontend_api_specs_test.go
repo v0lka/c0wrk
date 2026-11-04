@@ -48,12 +48,13 @@ func specsTestFrontend(t *testing.T, infos ...project.ProjectInfo) (api *Fronten
 }
 
 // writeSpecsTree seeds a structurally complete specs/ tree under ws plus the
-// workspace Key File it references. The tree deliberately carries four
+// workspace Key File it references. The tree deliberately carries five
 // findings: decisions/001-first.md and decisions/001-dup.md share the
 // leading number (DUPLICATE_ADR_NUMBER), domains/orchestration/conductor.md
 // and the unlisted duplicate are missing from INDEX.md's directory listing
-// (2× INDEX_STALE), and the supersession link of 001-dup.md points at a
-// file that does not exist (CROSS_REF_BROKEN). Everything else is clean:
+// (2× INDEX_STALE), the supersession link of 001-dup.md points at a file
+// that does not exist (CROSS_REF_BROKEN), and its successor number has no
+// carrier either (SUPERSEDED_TARGET_MISSING). Everything else is clean:
 // the contracts→architecture cross-reference resolves, the Key File exists.
 func writeSpecsTree(t *testing.T, ws string) {
 	t.Helper()
@@ -144,7 +145,7 @@ func wireKeys(wire map[string]json.RawMessage) []string {
 // TestGetSpecsStatus_RealSpecsTree pins the populated RPC contract: the full
 // parsed model of a real specs/ tree (files incl. INDEX.md/META.md, the
 // INDEX task table, ADR metadata with status classification) plus exactly
-// the four seeded findings, consistent counts, and the stable wire shape.
+// the five seeded findings, consistent counts, and the stable wire shape.
 func TestGetSpecsStatus_RealSpecsTree(t *testing.T) {
 	api, workspaces := specsTestFrontend(t, project.ProjectInfo{ID: "proj-1", Name: "P"})
 	writeSpecsTree(t, workspaces["proj-1"])
@@ -216,10 +217,11 @@ func TestGetSpecsStatus_RealSpecsTree(t *testing.T) {
 		t.Errorf("ADRs[1] = %+v, want slug first, accepted", second)
 	}
 
-	// Exactly the four seeded findings (the unlisted duplicate is INDEX_STALE
-	// too — the listing names only 001-first.md).
-	if len(status.Findings) != 4 {
-		t.Fatalf("Findings = %+v, want exactly the four seeded findings", status.Findings)
+	// Exactly the five seeded findings (the unlisted duplicate is
+	// INDEX_STALE too — the listing names only 001-first.md; the dangling
+	// supersession is both a broken link and a missing successor number).
+	if len(status.Findings) != 5 {
+		t.Fatalf("Findings = %+v, want exactly the five seeded findings", status.Findings)
 	}
 	gotKinds := map[string]int{}
 	staleFiles := map[string]bool{}
@@ -242,21 +244,23 @@ func TestGetSpecsStatus_RealSpecsTree(t *testing.T) {
 		t.Errorf("INDEX_STALE files = %v, want %v", staleFiles, wantStale)
 	}
 	wantKinds := map[string]int{
-		string(specs.FindingCrossRefBroken):     1,
-		string(specs.FindingDuplicateADRNumber): 1,
-		string(specs.FindingIndexStale):         2,
+		string(specs.FindingCrossRefBroken):          1,
+		string(specs.FindingDuplicateADRNumber):      1,
+		string(specs.FindingIndexStale):              2,
+		string(specs.FindingSupersededTargetMissing): 1,
 	}
 	if !reflect.DeepEqual(gotKinds, wantKinds) {
 		t.Errorf("Findings kinds = %v, want %v", gotKinds, wantKinds)
 	}
 
-	if status.Counts.Files != 7 || status.Counts.ADRs != 2 || status.Counts.Findings != 4 {
-		t.Errorf("Counts = %+v, want Files=7 ADRs=2 Findings=4", status.Counts)
+	if status.Counts.Files != 7 || status.Counts.ADRs != 2 || status.Counts.Findings != 5 {
+		t.Errorf("Counts = %+v, want Files=7 ADRs=2 Findings=5", status.Counts)
 	}
 	wantByKind := map[string]int{
-		string(specs.FindingCrossRefBroken):     1,
-		string(specs.FindingDuplicateADRNumber): 1,
-		string(specs.FindingIndexStale):         2,
+		string(specs.FindingCrossRefBroken):          1,
+		string(specs.FindingDuplicateADRNumber):      1,
+		string(specs.FindingIndexStale):              2,
+		string(specs.FindingSupersededTargetMissing): 1,
 	}
 	if status.Counts.FindingsByKind == nil {
 		t.Fatal("Counts.FindingsByKind is nil — the histogram must be allocated even for a populated tree")
@@ -276,7 +280,7 @@ func TestGetSpecsStatus_RealSpecsTree(t *testing.T) {
 // TestGetSpecsStatus_MissingSpecsDirIsNeutral pins the missing-tree
 // contract: a real project without a specs/ directory returns present=false
 // with the resolved root path and the stable empty collections — never an
-// error (ADR-105 D2).
+// error (ADR-106 D2).
 func TestGetSpecsStatus_MissingSpecsDirIsNeutral(t *testing.T) {
 	api, workspaces := specsTestFrontend(t, project.ProjectInfo{ID: "proj-1", Name: "P"})
 
@@ -315,7 +319,7 @@ func TestGetSpecsStatus_MissingSpecsDirIsNeutral(t *testing.T) {
 // TestGetSpecsStatus_NoProjectIsNeutral pins the No-Project contract: the
 // pseudo-project yields the neutral present=false state without an error
 // (the defensive shape — the Specs panel is not rendered in CHAT mode at
-// all, ADR-105 D1).
+// all, ADR-106 D1).
 func TestGetSpecsStatus_NoProjectIsNeutral(t *testing.T) {
 	api, _ := specsTestFrontend(t, project.ProjectInfo{
 		ID:   project.NoProjectID,

@@ -106,7 +106,7 @@ func TestSeedSkills_DirNameMatchesFrontmatter(t *testing.T) {
 }
 
 // TestSeedSkills_InitAssetsAdapted verifies spec-init ships exactly the two
-// vendored templates and NOT the upstream workflow-template.md (ADR-104
+// vendored templates and NOT the upstream workflow-template.md (ADR-105
 // decision 2: no specs/WORKFLOW.md artifact is introduced).
 func TestSeedSkills_InitAssetsAdapted(t *testing.T) {
 	dest := t.TempDir()
@@ -119,13 +119,13 @@ func TestSeedSkills_InitAssetsAdapted(t *testing.T) {
 		}
 	}
 	if _, err := os.Stat(filepath.Join(dest, "spec-init", "assets", "workflow-template.md")); !os.IsNotExist(err) {
-		t.Errorf("spec-init/assets/workflow-template.md must not ship (ADR-104 D2), stat err=%v", err)
+		t.Errorf("spec-init/assets/workflow-template.md must not ship (ADR-105 D2), stat err=%v", err)
 	}
 }
 
 // TestSeedSkills_NoUpstreamArtifacts scans every embedded pack file and
 // verifies the vendoring left no upstream traces: no "vibespec" name and no
-// WORKFLOW.md artifact references (ADR-104 decisions 1 and 2).
+// WORKFLOW.md artifact references (ADR-105 decisions 1 and 2).
 func TestSeedSkills_NoUpstreamArtifacts(t *testing.T) {
 	err := fs.WalkDir(skillPackFS, embedRoot, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -142,7 +142,7 @@ func TestSeedSkills_NoUpstreamArtifacts(t *testing.T) {
 			t.Errorf("%s: upstream name %q survived the adaptation", p, "vibespec")
 		}
 		if strings.Contains(string(data), "WORKFLOW") {
-			t.Errorf("%s: WORKFLOW.md reference survived the adaptation (ADR-104 D2)", p)
+			t.Errorf("%s: WORKFLOW.md reference survived the adaptation (ADR-105 D2)", p)
 		}
 		return nil
 	})

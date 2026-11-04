@@ -45,7 +45,7 @@ func TestProcessFile_SkipsGeneratedFile(t *testing.T) {
 	if err := os.WriteFile(genPath, generatedGoSource(8), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	vecDocs, lexDocs, err := indexer.processFile(genPath)
+	vecDocs, lexDocs, err := indexer.processFile(genPath, "")
 	if err != nil {
 		t.Fatalf("processFile: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestProcessFile_SkipsGeneratedFile(t *testing.T) {
 		HashFn:        fakeHashFunc,
 		ContentFilter: disabledFilterPtr(),
 	})
-	vecDocs, lexDocs, err = indexerOptOut.processFile(genPath)
+	vecDocs, lexDocs, err = indexerOptOut.processFile(genPath, "")
 	if err != nil {
 		t.Fatalf("processFile (opt-out): %v", err)
 	}
@@ -158,10 +158,12 @@ func TestValidateCollection_ContentFilterExcludedAndDeleted(t *testing.T) {
 		t.Fatalf("IndexFull: %v", err)
 	}
 
-	// Sanity: with the filter off, both files were indexed.
+	// Sanity: with the filter off, both files were indexed (sidecar keys
+	// are the root-relative occurrence coordinates once the pass bound the
+	// workspace root, ADR-104 L2).
 	svc.mu.RLock()
-	_, genIndexed := svc.current.fileHashes[genFile]
-	_, legitIndexed := svc.current.fileHashes[legitFile]
+	_, genIndexed := svc.current.fileHashes[svc.fileHashKeyLocked(genFile)]
+	_, legitIndexed := svc.current.fileHashes[svc.fileHashKeyLocked(legitFile)]
 	svc.mu.RUnlock()
 	if !genIndexed || !legitIndexed {
 		t.Fatalf("filter-off pass must index both files: gen=%v legit=%v", genIndexed, legitIndexed)

@@ -1,5 +1,29 @@
 export namespace backend {
 	
+	export class ADRMetaDTO {
+	    number: string;
+	    slug: string;
+	    file: string;
+	    title?: string;
+	    status: string;
+	    superseded_by?: string;
+	    date?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ADRMetaDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.number = source["number"];
+	        this.slug = source["slug"];
+	        this.file = source["file"];
+	        this.title = source["title"];
+	        this.status = source["status"];
+	        this.superseded_by = source["superseded_by"];
+	        this.date = source["date"];
+	    }
+	}
 	export class AgentDescriptorDTO {
 	    name: string;
 	    description: string;
@@ -2515,7 +2539,7 @@ export namespace backend {
 	    root: string;
 	    files: specs.SpecFile[];
 	    index_tasks: specs.IndexTask[];
-	    adrs: specs.ADRMeta[];
+	    adrs: ADRMetaDTO[];
 	    findings: specs.Finding[];
 	    counts: SpecsCountsDTO;
 	
@@ -2529,7 +2553,7 @@ export namespace backend {
 	        this.root = source["root"];
 	        this.files = this.convertValues(source["files"], specs.SpecFile);
 	        this.index_tasks = this.convertValues(source["index_tasks"], specs.IndexTask);
-	        this.adrs = this.convertValues(source["adrs"], specs.ADRMeta);
+	        this.adrs = this.convertValues(source["adrs"], ADRMetaDTO);
 	        this.findings = this.convertValues(source["findings"], specs.Finding);
 	        this.counts = this.convertValues(source["counts"], SpecsCountsDTO);
 	    }
@@ -2707,6 +2731,7 @@ export namespace backend {
 	    cuda_verified?: boolean;
 	    ov_device?: string;
 	    provider_fallback_reason?: string;
+	    store?: vectorindex.StoreLedger;
 	    device_id?: number;
 	
 	    static createFrom(source: any = {}) {
@@ -2728,8 +2753,27 @@ export namespace backend {
 	        this.cuda_verified = source["cuda_verified"];
 	        this.ov_device = source["ov_device"];
 	        this.provider_fallback_reason = source["provider_fallback_reason"];
+	        this.store = this.convertValues(source["store"], vectorindex.StoreLedger);
 	        this.device_id = source["device_id"];
 	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class VectorStoreEntry {
 	    file_path: string;
@@ -3948,28 +3992,6 @@ export namespace session {
 
 export namespace specs {
 	
-	export class ADRMeta {
-	    number: string;
-	    slug: string;
-	    file: string;
-	    title?: string;
-	    status: string;
-	    superseded_by?: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new ADRMeta(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.number = source["number"];
-	        this.slug = source["slug"];
-	        this.file = source["file"];
-	        this.title = source["title"];
-	        this.status = source["status"];
-	        this.superseded_by = source["superseded_by"];
-	    }
-	}
 	export class Finding {
 	    kind: string;
 	    file: string;
@@ -4076,6 +4098,45 @@ export namespace tools {
 		    }
 		    return a;
 		}
+	}
+
+}
+
+export namespace vectorindex {
+	
+	export class StoreLedger {
+	    generation: number;
+	    chunk_records: number;
+	    chunk_bytes: number;
+	    chunk_orphans: number;
+	    snapshot_bytes: Record<string, number>;
+	    overlay_bytes: Record<string, number>;
+	    snapshots: number;
+	    overlays: number;
+	    superseded_bytes: number;
+	    total_bytes: number;
+	    evicted_last_pass: number;
+	    updated_at: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new StoreLedger(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.generation = source["generation"];
+	        this.chunk_records = source["chunk_records"];
+	        this.chunk_bytes = source["chunk_bytes"];
+	        this.chunk_orphans = source["chunk_orphans"];
+	        this.snapshot_bytes = source["snapshot_bytes"];
+	        this.overlay_bytes = source["overlay_bytes"];
+	        this.snapshots = source["snapshots"];
+	        this.overlays = source["overlays"];
+	        this.superseded_bytes = source["superseded_bytes"];
+	        this.total_bytes = source["total_bytes"];
+	        this.evicted_last_pass = source["evicted_last_pass"];
+	        this.updated_at = source["updated_at"];
+	    }
 	}
 
 }

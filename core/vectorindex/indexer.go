@@ -49,6 +49,18 @@ const (
 	// fraction, rendered as a plain "Preparing index…", never the
 	// indexing/building shape. See specs/domains/workspace.md.
 	IndexStateLoading IndexState = "loading"
+	// IndexStatePreparing indicates the view-model attach window (ADR-104
+	// stage 2): snapshot identity resolution, corpus lease acquisition or
+	// the bounded wait for an in-flight corpus build — before anything is
+	// opened or indexed. Distinct from loading (a store decode) and from
+	// indexing (a pass): the UI renders an honest "preparing" state.
+	IndexStatePreparing IndexState = "preparing"
+	// IndexStateMigrating indicates the one-time store promotion of a
+	// legacy branch-keyed store into the shared snapshot corpus
+	// (migration by rename, no re-embed) — or, when nothing compatible
+	// exists, the rebuild pass that replaces it. Distinct from indexing:
+	// the work is store-shape repair, not fresh content.
+	IndexStateMigrating IndexState = "migration-rebuild"
 )
 
 // IndexPhase describes which side(s) of the dual index are being produced
@@ -67,6 +79,12 @@ const (
 	// PhaseOpen accompanies IndexStateLoading: the branch-scoped persistent DB
 	// is being opened, before any indexing pass exists.
 	PhaseOpen IndexPhase = "open"
+	// PhasePreparation accompanies IndexStatePreparing: the view-model
+	// attach window (snapshot resolution, corpus lease) before any open.
+	PhasePreparation IndexPhase = "preparation"
+	// PhaseMigration accompanies IndexStateMigrating: a legacy branch store
+	// is being promoted into the shared corpus, or rebuilt for it.
+	PhaseMigration IndexPhase = "migration-rebuild"
 )
 
 // addDocumentBatchSize is the number of documents added per batch call.
@@ -237,6 +255,13 @@ func NewIndexer(cfg IndexerConfig) *Indexer {
 // and adds the resulting documents to both the vector collection and the
 // lexical index.
 func (idx *Indexer) IndexFull(ctx context.Context, workspacePath string) (err error) {
+	// Bind the walked tree as the service's workspace root (ADR-104 L4):
+	// every occurrence coordinate this pass writes — document IDs, sidecar
+	// keys, lexical IDs — is relative to it, and ValidateCollection /
+	// deletion re-derive against the same binding. Production wires the
+	// identical root through Manager.initProject, so this is an anchor of
+	// record for standalone-service callers, not a switch.
+	idx.service.SetWorkspaceRoot(workspacePath)
 	// MarkNotReady atomically captures a readiness generation; RestoreReady
 	// uses it to restore readiness on EVERY exit, including the cancellation
 	// and batch-add error paths that once returned without SetReady(true),
@@ -276,6 +301,7 @@ func (idx *Indexer) IndexFull(ctx context.Context, workspacePath string) (err er
 		total:        totalFiles,
 		cancelMsg:    "indexing cancelled",
 		skipLogLabel: "skipping file",
+		root:         workspacePath,
 	})
 	if idxErr != nil {
 		return idxErr
@@ -290,6 +316,9 @@ func (idx *Indexer) IndexFull(ctx context.Context, workspacePath string) (err er
 // collection against disk, then updates only changed/new/deleted files
 // across both the vector collection and the lexical index.
 func (idx *Indexer) IndexIncremental(ctx context.Context, workspacePath string) (err error) {
+	// Same root binding as IndexFull: the pass's coordinate anchor (see
+	// IndexFull).
+	idx.service.SetWorkspaceRoot(workspacePath)
 	readyGen := idx.service.MarkNotReady()
 	defer idx.service.RestoreReady(readyGen)
 	// Same terminal progress contract as IndexFull: "ready" vs "unavailable"
@@ -326,6 +355,54 @@ func (idx *Indexer) IndexIncremental(ctx context.Context, workspacePath string) 
 	idx.telemetry.observe(StageWalkValidation, len(stale)+len(newFiles)+len(deleted), time.Since(validationStarted))
 	if err != nil {
 		return fmt.Errorf("validating collection: %w", err)
+	}
+
+	// Corpus adoptions (ADR-104 stage 2): files whose current bytes match the
+	// shared corpus were classified corpus-current by ValidateCollection.
+	// Persist their sidecar rows — this is what makes the corpus entries
+	// VISIBLE to this root — and retire any overlay documents for adopted
+	// paths (a reverted file's overlay version is superseded by the corpus
+	// one). Nothing here chunks, embeds, or commits: the bounded
+	// reconciliation of a clean attach is exactly this plus the walk. This
+	// runs BEFORE the no-changes early return — a clean attach has zero
+	// overlay changes and its whole value IS the adoption.
+	if adopted := idx.service.TakeCorpusAdoptions(); len(adopted) > 0 {
+		adoptPaths := make([]string, 0, len(adopted))
+		for rel := range adopted {
+			adoptPaths = append(adoptPaths, filepath.Join(workspacePath, filepath.FromSlash(rel)))
+		}
+		idx.service.AcquireWriteLock()
+		// Retire the superseded overlay documents FIRST and persist the
+		// adoption only on success: the sidecar row is what makes the
+		// corpus entry visible, and a landed row whose stale overlay
+		// duplicate survived a transient delete failure would never be
+		// re-driven (the stat fast-path skips corpus reconciliation), so
+		// the file would serve twice forever. Deferring instead is safe —
+		// the classification is content-based, so the next
+		// ValidateCollection re-records and retries the adoption.
+		retired := true
+		if ids, idErr := idx.collectDocumentIDs(ctx, adoptPaths); idErr != nil {
+			idx.logger.Warn("collecting superseded overlay document IDs failed; adoption deferred to the next pass", "error", idErr)
+			retired = false
+		} else if len(ids) > 0 {
+			if delErr := idx.service.DeleteDocumentsByIDs(ctx, ids); delErr != nil {
+				idx.logger.Warn("retiring superseded overlay documents failed; adoption deferred to the next pass", "error", delErr)
+				retired = false
+			}
+		}
+		if retired {
+			// The retired paths' §3 occurrence rows follow their documents
+			// out (the same coupling removeFileHashes applies for deleted
+			// files): surviving rows would forever out-count the collection
+			// and wedge the overlay table's completeness-gated flush.
+			idx.service.dropChunkRowsLocked(adoptPaths)
+			if err := idx.service.adoptCorpusFilesLocked(adopted); err != nil {
+				idx.logger.Warn("persisting corpus adoptions into the sidecar failed", "error", err)
+			} else {
+				idx.logger.Info("incremental index: adopted corpus-current files", "count", len(adopted))
+			}
+		}
+		idx.service.ReleaseWriteLock()
 	}
 
 	totalChanges := len(stale) + len(newFiles) + len(deleted)
@@ -395,6 +472,7 @@ func (idx *Indexer) IndexIncremental(ctx context.Context, workspacePath string) 
 		cancelMsg:     "incremental indexing cancelled",
 		skipLogLabel:  "skipping file during incremental index",
 		batchLogLabel: " (incremental)",
+		root:          workspacePath,
 	}); perr != nil {
 		return perr
 	}
@@ -418,6 +496,19 @@ func (idx *Indexer) HandleBranchSwitch(ctx context.Context, workspacePath, newBr
 	// delegation, so this defer is the only restore on that path.
 	readyGen := idx.service.MarkNotReady()
 	defer idx.service.RestoreReady(readyGen)
+
+	// View model (ADR-104 stage 2): a branch change re-resolves the SNAPSHOT
+	// (the new HEAD's commit key — possibly the same corpus another root
+	// already built), re-attaches the read-only corpus, and reconciles the
+	// root's overlay. The working store stays the root's overlay throughout;
+	// the legacy branch store is never opened as a working store again.
+	if idx.service.CorpusEnabled() {
+		if err := idx.AttachSnapshot(ctx, workspacePath, newBranch); err != nil {
+			idx.onProgress(PhaseBoth, IndexStateUnavailable, 0, 0, "")
+			return false, err
+		}
+		return false, idx.IndexIncremental(ctx, workspacePath)
+	}
 
 	// ADR-064 made a branch switch a real open: SwitchBranch releases the
 	// outgoing branch's residents and gob-decodes the target branch's own
@@ -453,6 +544,94 @@ func (idx *Indexer) HandleBranchSwitch(ctx context.Context, workspacePath, newBr
 	return false, idx.IndexIncremental(ctx, workspacePath)
 }
 
+// AttachSnapshot drives the view-model attach of one workspace tree (ADR-104
+// stage 2): resolve the tree's snapshot identity (the HEAD commit OID — the
+// root-owned synthetic id for non-git trees), drive the snapshot's corpus to
+// a published state under the registry's single-flight lease (building it
+// with this indexer's full pass when nobody has, promoting a compatible
+// legacy branch store by rename when one exists), then bind the service to
+// the shared read-only corpus plus the root's private overlay.
+//
+// Status honesty (preparation/migration-rebuild/indexing) rides the ordinary
+// progress callback; every failure is terminal for the attach — the caller
+// surfaces unavailable and NOTHING of another snapshot is ever served
+// (fail-closed).
+func (idx *Indexer) AttachSnapshot(ctx context.Context, workspacePath, legacyBranch string) error {
+	if !idx.service.CorpusEnabled() {
+		return errors.New("corpus registry not wired")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	oid, oidErr := CurrentCommit(ctx, workspacePath)
+	if oidErr != nil {
+		return fmt.Errorf("resolving snapshot identity: %w", oidErr)
+	}
+	if oid == "" {
+		// Non-git tree: the synthetic snapshot is root-owned (ADR-104 §1).
+		oid = "ngit-" + rootFingerprint(workspacePath)
+	}
+	key := snapshotKey(oid)
+	storage := idx.service.StorageRoot()
+
+	// Durable ownership pin (ADR-104 stage 5): record the root's reference
+	// to this snapshot BEFORE driving the corpus, so the reachability sweep
+	// can never reclaim a corpus this root is in the middle of building or
+	// adopting (an in-flight build also carries registry protection, but
+	// the marker is the record that survives eviction, restart and
+	// shutdown). Fail-soft: an unrecordable reference degrades to GC churn
+	// (the corpus is rebuilt on the next attach), never to a wrong attach.
+	if err := idx.service.PinCorpusView(workspacePath, key); err != nil {
+		idx.logger.Warn("vector corpus: could not record the root reference; the corpus stays sweep-reclaimable",
+			"root", workspacePath, "snapshot", key, "error", err)
+	}
+	// The branch reference: this root's HEAD is legacyBranch's tip, so the
+	// corpus captures the branch's commit — the branch owns a keep on it
+	// until its deletion (ADR-104 §1 L3; a branch reaches its corpus
+	// through this pointer, never through a branch-named store). Same
+	// fail-soft posture as the root pin.
+	if legacyBranch != "" {
+		if err := idx.service.PinBranchView(legacyBranch, key); err != nil {
+			idx.logger.Warn("vector corpus: could not record the branch reference; the corpus stays sweep-reclaimable",
+				"branch", legacyBranch, "snapshot", key, "error", err)
+		}
+	}
+
+	idx.onProgress(PhasePreparation, IndexStatePreparing, 0, 0, "")
+	ensureErr := idx.service.EnsureCorpus(ctx, storage, key, legacyBranch, func() error {
+		// The build lease is held: bind the working store to the corpus,
+		// run the full pass through the ordinary pipeline, publish, and
+		// ONLY THEN release the corpus's read-write residents — the lease
+		// settles with no write handle left behind, so a concurrent
+		// attacher's read-only open never contends the lexical lock.
+		if err := idx.service.BuildCorpusStore(ctx, key); err != nil {
+			return err
+		}
+		if err := idx.IndexFull(ctx, workspacePath); err != nil {
+			idx.service.CloseWorkingStore()
+			return err
+		}
+		if err := idx.service.PublishCorpus(key); err != nil {
+			idx.service.CloseWorkingStore()
+			return err
+		}
+		idx.service.CloseWorkingStore()
+		return nil
+	}, func() {
+		idx.onProgress(PhaseMigration, IndexStateMigrating, 0, 0, "")
+	})
+	if ensureErr != nil {
+		return fmt.Errorf("ensuring corpus %s: %w", key, ensureErr)
+	}
+
+	idx.onProgress(PhaseOpen, IndexStateLoading, 0, 0, "")
+	if err := idx.service.AttachView(ctx, key, overlayRootKey(workspacePath)); err != nil {
+		return err
+	}
+	idx.logger.Info("view attached", "snapshot", key, "root", workspacePath)
+	return nil
+}
+
 // sanitizeChunkContent replaces undecodable UTF-8 byte sequences with U+FFFD
 // so the tokenizer can process the bytes, reporting whether anything was
 // replaced. Protocol owner: callers MUST hash the RAW bytes first
@@ -469,8 +648,19 @@ func sanitizeChunkContent(content []byte) ([]byte, bool) {
 
 // processFile reads a file, computes its hash, chunks it, and returns
 // parallel chromem and lexical document slices keyed by the same shared
-// document ID.
-func (idx *Indexer) processFile(filePath string) ([]chromem.Document, []lexical.Doc, error) {
+// document ID. root is the workspace root the pass walks; the file's
+// root-RELATIVE occurrence path (see relPathFromAbs) becomes the shared
+// identity — document ID, sidecar key, lexical ID — while the absolute path
+// stays per-request data (L4, ADR-104). An empty root (standalone services)
+// keeps the historical absolute-path identity.
+func (idx *Indexer) processFile(filePath, root string) ([]chromem.Document, []lexical.Doc, error) {
+	// The occurrence coordinate: root-relative when the file sits under the
+	// bound root, the absolute path otherwise (identity must be stable even
+	// for paths a caller feeds from outside the tree).
+	relPath := relPathFromAbs(root, filePath)
+	if relPath == "" {
+		relPath = filepath.ToSlash(filePath)
+	}
 	// Size guard (stat once; reused below for lastModified): the universal
 	// backstop that no oversized file is ever fully read, from any caller —
 	// the NUL-header binary check cannot recognize protobuf-format binaries
@@ -567,12 +757,13 @@ func (idx *Indexer) processFile(filePath string) ([]chromem.Document, []lexical.
 	vecDocs := make([]chromem.Document, 0, len(chunks))
 	lexDocs := make([]lexical.Doc, 0, len(chunks))
 	for i, chunk := range chunks {
-		docID := DocumentID(filePath, i)
+		docID := DocumentID(relPath, i)
 		vecDocs = append(vecDocs, chromem.Document{
 			ID:      docID,
 			Content: chunk.Content,
 			Metadata: map[string]string{
 				"file_path":            filePath,
+				relPathMetaKey:         relPath,
 				"file_name":            fileName,
 				"last_modified":        lastModified,
 				"content_hash":         hash,
@@ -583,9 +774,12 @@ func (idx *Indexer) processFile(filePath string) ([]chromem.Document, []lexical.
 				"language":             chunk.Language,
 			},
 		})
+		// The lexical entry carries the SHARED coordinate (the relative
+		// occurrence path) — root-local resolution happens per request, and
+		// the sidecar facts (size/mtime) never ride the lexical document.
 		lexDocs = append(lexDocs, lexical.Doc{
 			ID:       docID,
-			FilePath: filePath,
+			FilePath: relPath,
 			Language: chunk.Language,
 			Content:  chunk.Content,
 		})
@@ -611,12 +805,14 @@ type prepUnit struct {
 // never touches the service or other shared state — so files are prepared
 // concurrently while the single consumer embeds earlier batches; the
 // unbuffered input channel bounds in-flight preparation to prepWorkers files.
+// root is the workspace root the pass walks (the occurrence-coordinate base
+// every document ID is derived relative to).
 //
 // The stream closes after every path has been prepared, skipped, or dropped:
 // every send and the feeder select on ctx.Done(), so a consumer that returns
 // early never deadlocks the pool — the feeder stops feeding, workers abandon
 // in-flight sends, all goroutines exit.
-func (idx *Indexer) streamPreparedFiles(ctx context.Context, paths []string, skipLogLabel string) <-chan prepUnit {
+func (idx *Indexer) streamPreparedFiles(ctx context.Context, paths []string, root, skipLogLabel string) <-chan prepUnit {
 	in := make(chan string)
 	out := make(chan prepUnit)
 
@@ -632,7 +828,7 @@ func (idx *Indexer) streamPreparedFiles(ctx context.Context, paths []string, ski
 					continue
 				}
 				prepStarted := time.Now()
-				vecDocs, lexDocs, err := idx.processFile(path)
+				vecDocs, lexDocs, err := idx.processFile(path, root)
 				idx.telemetry.observe(StageReadHashChunk, len(vecDocs), time.Since(prepStarted))
 				unit := prepUnit{path: path, vecDocs: vecDocs, lexDocs: lexDocs}
 				if err != nil {
@@ -691,6 +887,11 @@ type indexPipelineOpts struct {
 	// former serial loops ("" / " (incremental)").
 	batchLogLabel string
 	skipLogLabel  string
+
+	// root is the workspace root the pass walks — the base the
+	// root-relative occurrence coordinates (document IDs, sidecar keys,
+	// lexical IDs) are derived against (ADR-104 L2).
+	root string
 }
 
 type pendingDocument struct {
@@ -866,7 +1067,7 @@ func (idx *Indexer) indexPrepared(ctx context.Context, paths []string, o indexPi
 	poolCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	units := idx.streamPreparedFiles(poolCtx, paths, o.skipLogLabel)
+	units := idx.streamPreparedFiles(poolCtx, paths, o.root, o.skipLogLabel)
 
 	progress := o.progressStart
 	var vecBatch []chromem.Document
@@ -1000,6 +1201,11 @@ func (idx *Indexer) RebuildLexical(ctx context.Context) error {
 	}
 	slices.Sort(paths)
 
+	// The workspace root the sidecar's relative keys resolve against for
+	// source reads (per-request hydration; the keys themselves are the
+	// shared coordinates and stay relative in the emitted IDs).
+	rebuildRoot := idx.service.WorkspaceRoot()
+
 	idx.onProgress(PhaseLexical, IndexStateIndexing, 0, len(paths), "")
 	idx.logger.Info("starting sidecar-driven lexical backfill", "files", len(paths), "chunks", count)
 
@@ -1035,7 +1241,7 @@ func (idx *Indexer) RebuildLexical(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("lexical rebuild cancelled: %w", err)
 		}
-		docs, reason := idx.lexicalDocsForSidecarFile(fp, hashes[fp])
+		docs, reason := idx.lexicalDocsForSidecarFile(fp, hashes[fp], rebuildRoot)
 		if reason != "" {
 			skipped++
 			if lexicalSkipUnrepairable(reason) {
@@ -1088,7 +1294,10 @@ func (idx *Indexer) RebuildLexical(ctx context.Context) error {
 //
 // The returned reason is "" on success; non-empty is a human-readable skip
 // cause, and the incremental pass re-indexes — and rewrites — skipped files.
-func (idx *Indexer) lexicalDocsForSidecarFile(filePath, entry string) (docs []lexical.Doc, reason string) {
+// key is the sidecar key (the occurrence coordinate — root-relative when a
+// workspace root is bound); root resolves it to the absolute source path for
+// this rebuild's reads, while the emitted IDs stay keyed by the coordinate.
+func (idx *Indexer) lexicalDocsForSidecarFile(key, entry, root string) (docs []lexical.Doc, reason string) {
 	entryFP := fileHashEntryChunkerFP(entry)
 	if entryFP == "" {
 		return nil, lexicalSkipNoFingerprint
@@ -1101,7 +1310,11 @@ func (idx *Indexer) lexicalDocsForSidecarFile(filePath, entry string) (docs []le
 		return nil, lexicalSkipUnknownSet
 	}
 
-	content, err := readBounded(filePath, idx.maxFileSize)
+	absPath := key
+	if root != "" && !filepath.IsAbs(key) {
+		absPath = filepath.Join(root, filepath.FromSlash(key))
+	}
+	content, err := readBounded(absPath, idx.maxFileSize)
 	if err != nil {
 		return nil, "file unreadable: " + err.Error()
 	}
@@ -1114,7 +1327,7 @@ func (idx *Indexer) lexicalDocsForSidecarFile(filePath, entry string) (docs []le
 	// deterministic-ID invariant.
 	content, _ = sanitizeChunkContent(content)
 
-	chunks, err := idx.chunkFn(filePath, content, idx.maxChunkSize, idx.overlap)
+	chunks, err := idx.chunkFn(absPath, content, idx.maxChunkSize, idx.overlap)
 	if err != nil {
 		return nil, "chunking failed: " + err.Error()
 	}
@@ -1137,8 +1350,8 @@ func (idx *Indexer) lexicalDocsForSidecarFile(filePath, entry string) (docs []le
 	docs = make([]lexical.Doc, 0, len(set))
 	for _, i := range set {
 		docs = append(docs, lexical.Doc{
-			ID:       DocumentID(filePath, i),
-			FilePath: filePath,
+			ID:       DocumentID(key, i),
+			FilePath: key,
 			Language: chunks[i].Language,
 			Content:  chunks[i].Content,
 		})
@@ -1214,6 +1427,10 @@ func (idx *Indexer) rebuildLexicalFromCollection(ctx context.Context, lex lexica
 	// the placeholder — that text would surface as bogus lexical hits (the
 	// deletion reconciliation removes such documents next pass anyway).
 	resolver := newContentResolver(idx.maxFileSize, idx.maxChunkSize)
+	// The workspace root the occurrence coordinates resolve against for
+	// per-request source reads (ADR-104 L4); legacy documents without a
+	// rel_path coordinate fall back to their stored absolute path.
+	rebuildRoot := idx.service.WorkspaceRoot()
 	skippedUnreadable := 0
 
 	batch := make([]lexical.Doc, 0, addDocumentBatchSize)
@@ -1226,7 +1443,7 @@ func (idx *Indexer) rebuildLexicalFromCollection(ctx context.Context, lex lexica
 		if content == "" {
 			startLine, _ := strconv.Atoi(r.Metadata["start_line"])
 			endLine, _ := strconv.Atoi(r.Metadata["end_line"])
-			reconstructed, ok := resolver.chunkContentOK(r.Metadata["file_path"], startLine, endLine)
+			reconstructed, ok := resolver.chunkContentOK(sourcePath(r.Metadata, rebuildRoot), startLine, endLine)
 			if !ok {
 				skippedUnreadable++
 				continue
@@ -1235,7 +1452,7 @@ func (idx *Indexer) rebuildLexicalFromCollection(ctx context.Context, lex lexica
 		}
 		batch = append(batch, lexical.Doc{
 			ID:       r.ID,
-			FilePath: r.Metadata["file_path"],
+			FilePath: occurrencePath(r.Metadata),
 			Language: r.Metadata["language"],
 			Content:  content,
 		})
@@ -1313,14 +1530,21 @@ func (idx *Indexer) collectDocumentIDsViaQuery(ctx context.Context, filePaths []
 		return nil, fmt.Errorf("querying collection for document IDs: %w", err)
 	}
 
+	// Compare on the occurrence coordinate: sidecar-keyed paths arrive as
+	// absolute workspace paths and stored documents carry either the
+	// root-relative rel_path (post-ADR-104) or the legacy absolute
+	// file_path — both must match their translated key (see
+	// Service.fileHashKeyLocked, which the write-lock-holding caller's
+	// collection state is keyed under).
 	pathSet := make(map[string]bool, len(filePaths))
 	for _, p := range filePaths {
+		pathSet[idx.service.fileHashKeyLocked(p)] = true
 		pathSet[p] = true
 	}
 
 	var ids []string
 	for _, r := range results {
-		if pathSet[r.Metadata["file_path"]] {
+		if pathSet[occurrencePath(r.Metadata)] {
 			ids = append(ids, r.ID)
 		}
 	}

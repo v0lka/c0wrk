@@ -1,4 +1,4 @@
-# ADR-104: Vendor and seed the vibespec spec-\* skillset
+# ADR-105: Vendor and seed the vibespec spec-\* skillset
 
 ## Status
 
@@ -48,5 +48,5 @@ Three decisions had to be made at design time:
 ## Related
 
 - [ADR-056](./056-research-always-on-global-seeding.md) — the global pack-seeding and discovery-precedence precedent this pack inherits.
-- [ADR-105](./105-specs-sidebar-panel.md) — the human-facing Specs panel that consumes the same subsystem.
+- [ADR-106](./106-specs-sidebar-panel.md) — the human-facing Specs panel that consumes the same subsystem.
 - `specs/domains/specs.md` — the domain spec for the pack, the seeding invariants, and the panel (created with the implementation sync; not yet present when this ADR was accepted).

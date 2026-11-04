@@ -18,7 +18,7 @@ const validFile = { path: 'INDEX.md', title: 'Specs Index' }
 const validADR = {
   number: '105',
   slug: 'specs-sidebar-panel',
-  file: 'decisions/105-specs-sidebar-panel.md',
+  file: 'decisions/106-specs-sidebar-panel.md',
   status: 'accepted',
 }
 const validFinding = {
@@ -107,6 +107,7 @@ describe('getSpecsStatus boundary validation', () => {
           validADR,
           { number: '106' }, // missing slug/file/status → dropped
           { number: '106', slug: 's', file: 'decisions/106-s.md', status: 'draft', title: 42 }, // non-string title → dropped
+          { number: '106', slug: 's', file: 'decisions/106-s.md', status: 'draft', date: 42 }, // non-string date → dropped
         ],
         findings: [
           validFinding,

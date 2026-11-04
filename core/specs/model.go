@@ -5,7 +5,7 @@
 // filesystem orchestrator. The parser keys off the documented layout, not
 // c0wrk-specific paths, and tolerates a missing, empty, or partial tree:
 // zero-values are meaningful neutral states, never errors
-// (specs/decisions/105-specs-sidebar-panel.md).
+// (specs/decisions/106-specs-sidebar-panel.md).
 package specs
 
 // Section names: the four documented section directories of a specs/ tree
@@ -18,7 +18,7 @@ const (
 	SectionDecisions    = "decisions"
 )
 
-// FindingKind is one tier-1 static finding category (ADR-105 D5): computed
+// FindingKind is one tier-1 static finding category (ADR-106 D5): computed
 // by the parser on every parse, never persisted, always fresh.
 type FindingKind string
 
@@ -36,6 +36,22 @@ const (
 	// FindingIndexStale: a spec file under the four sections that the
 	// INDEX.md directory listing does not name.
 	FindingIndexStale FindingKind = "INDEX_STALE"
+	// FindingRootFileMissing: a documented root file (INDEX.md, META.md)
+	// is absent from a tree that carries at least one parsed file.
+	FindingRootFileMissing FindingKind = "ROOT_FILE_MISSING"
+	// FindingADRNameMalformed: a decisions/ file whose base name does not
+	// match the documented NNN-slug.md shape, so the record is invisible
+	// to the ADR model.
+	FindingADRNameMalformed FindingKind = "ADR_NAME_MALFORMED"
+	// FindingADRNumberMismatch: a decisions/NNN-slug.md file whose
+	// "# ADR-NNN:" heading carries a different number than the file name.
+	FindingADRNumberMismatch FindingKind = "ADR_NUMBER_MISMATCH"
+	// FindingSupersededTargetMissing: a superseded ADR names a successor
+	// NNN that no decisions/ file carries.
+	FindingSupersededTargetMissing FindingKind = "SUPERSEDED_TARGET_MISSING"
+	// FindingSupersededCycle: the supersession chain of an ADR loops back
+	// to one of its own records.
+	FindingSupersededCycle FindingKind = "SUPERSEDED_CYCLE"
 )
 
 // ADR Status classifications (ADRMeta.Status): the vocabulary a "## Status"
@@ -56,7 +72,7 @@ type SpecsRoot struct {
 
 	// Present reports whether the root existed and was a directory. A root
 	// that is missing or not a directory parses to Present=false with
-	// everything else empty — a neutral state, not an error (ADR-105 D2).
+	// everything else empty — a neutral state, not an error (ADR-106 D2).
 	Present bool `json:"present"`
 
 	// Files holds every parsed spec file — the section trees plus the root
@@ -72,7 +88,7 @@ type SpecsRoot struct {
 	// file name as the tie-break so duplicates stay adjacent).
 	ADRs []ADRMeta `json:"adrs,omitempty"`
 
-	// Findings holds the deterministic tier-1 integrity findings (ADR-105
+	// Findings holds the deterministic tier-1 integrity findings (ADR-106
 	// D5), sorted by kind, then file, then detail.
 	Findings []Finding `json:"findings,omitempty"`
 }
@@ -138,7 +154,7 @@ type ADRMeta struct {
 	Slug string `json:"slug"`
 
 	// File is the specs-root-relative path
-	// ("decisions/105-specs-sidebar-panel.md").
+	// ("decisions/106-specs-sidebar-panel.md").
 	File string `json:"file"`
 
 	// Title is the text after "# ADR-NNN: " (the whole heading when it does
@@ -154,9 +170,10 @@ type ADRMeta struct {
 	SupersededBy string `json:"superseded_by,omitempty"`
 }
 
-// Finding is one deterministic tier-1 integrity finding (ADR-105 D5). The
-// four categories deliberately under-approximate spec-check: semantic drift
-// stays conversational.
+// Finding is one deterministic tier-1 integrity finding (ADR-106 D5). The
+// categories deliberately under-approximate spec-check: semantic drift
+// stays conversational, and every category here is decidable from the tree
+// itself (paths, links, numbering, supersession graph, INDEX coverage).
 type Finding struct {
 	// Kind is the finding category.
 	Kind FindingKind `json:"kind"`

@@ -1,4 +1,4 @@
-# ADR-106: Built-in `/goal`/`/goal:N` Chat Activation
+# ADR-110: Built-in `/goal`/`/goal:N` Chat Activation
 
 ## Status
 

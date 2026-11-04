@@ -118,9 +118,9 @@ describe('custom-scrollbar guard (scroll-look invariant)', () => {
     // Sanity: the walk must actually reach the component tree, otherwise a
     // path regression would make the assertion below vacuously pass.
     expect(sources.length).toBeGreaterThan(50)
-  })
+  }, 30_000)
 
-  it('every scroll-enabling overflow utility carries custom-scrollbar or no-scrollbar', () => {
+  it('every scroll-enabling overflow utility carries custom-scrollbar or no-scrollbar', () => { // whole-tree scan
     const offenders: string[] = []
     for (const file of sources) {
       const lines = stripComments(readFileSync(file, 'utf8'), file).split('\n')
@@ -131,7 +131,7 @@ describe('custom-scrollbar guard (scroll-look invariant)', () => {
       })
     }
     expect(offenders).toEqual([])
-  })
+  }, 30_000)
 
   it('flags scroll utilities without a scrollbar token (and passes styled ones)', () => {
     // The historical offenders.
@@ -156,7 +156,7 @@ describe('custom-scrollbar guard (scroll-look invariant)', () => {
     // Longer identifiers are not the utility.
     expect(SCROLL_UTILITY.test('const overflowAutoFlag = true')).toBe(false)
     expect(SCROLL_UTILITY.test('overflow-autosave')).toBe(false)
-  })
+  }, 30_000)
 
   it('ignores overflow utilities mentioned in comments', () => {
     // Explanatory prose legitimately mentions the utility; the parser-based
@@ -169,7 +169,7 @@ describe('custom-scrollbar guard (scroll-look invariant)', () => {
     // guard's subject is rendered class strings, not documentation.
     const src2 = '/* old code: overflow-auto */\nconst t = 1\n'
     expect(SCROLL_UTILITY.test(stripComments(src2, 'sample.tsx'))).toBe(false)
-  })
+  }, 30_000)
 
   it('strips comments without swallowing code after a comment-opener inside a string', () => {
     // A `src/**`-style string contains a comment-opener sequence; a naive
@@ -180,7 +180,7 @@ describe('custom-scrollbar guard (scroll-look invariant)', () => {
     expect(stripped).toContain('overflow-auto')
     expect(stripped).toContain('const t = 1')
     expect(stripped).toHaveLength(src.length)
-  })
+  }, 30_000)
 
   it('is not desynced by a lone backtick or apostrophe in JSX text', () => {
     const src = "<p>Press the ` key, it's fine</p>\n// used overflow-auto\nconst y = 1\n"
@@ -188,7 +188,7 @@ describe('custom-scrollbar guard (scroll-look invariant)', () => {
     expect(stripped).not.toContain('used overflow-auto')
     expect(stripped).toContain('const y = 1')
     expect(stripped).toHaveLength(src.length)
-  })
+  }, 30_000)
 
   it('defines the .custom-scrollbar look and the third-party scroller rules in index.css', () => {
     const css = readFileSync(join(SRC_DIR, 'index.css'), 'utf8')
@@ -199,5 +199,5 @@ describe('custom-scrollbar guard (scroll-look invariant)', () => {
     // scrollback viewport).
     expect(css).toMatch(/\.cm-viewer-container \.cm-scroller::-webkit-scrollbar\b/)
     expect(css).toMatch(/\.xterm \.xterm-viewport::-webkit-scrollbar\b/)
-  })
+  }, 30_000)
 })

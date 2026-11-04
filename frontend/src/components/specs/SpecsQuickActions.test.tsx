@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// SpecsQuickActions — the spec-* skill dispatch row (ADR-105 D4). Covers:
+// SpecsQuickActions — the spec-* skill dispatch row (ADR-106 D4). Covers:
 // every button dispatches ITS constant prompt with ITS skill through
 // sendMessage's activeSkills slot; derived enablement (Initialize without a
 // tree, the rest only with one — no workflow-dead buttons, every disabled

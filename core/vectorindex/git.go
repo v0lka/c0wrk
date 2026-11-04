@@ -77,6 +77,137 @@ func CurrentBranch(ctx context.Context, repoPath string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
+// CurrentCommit returns the commit OID prefix (16 hex chars) of repoPath's
+// HEAD, or "" for a non-git directory. The OID — not the branch name — is
+// the snapshot identity of the shared corpus (ADR-104 §1 L3): every branch
+// and worktree checked out at the same commit maps onto one corpus, a
+// detached HEAD is first-class, and branch-name sanitizer collisions cannot
+// fork storage identity.
+func CurrentCommit(ctx context.Context, repoPath string) (string, error) {
+	gitDir := filepath.Join(repoPath, ".git")
+	if _, err := os.Stat(gitDir); os.IsNotExist(err) {
+		return "", nil
+	}
+	out, err := runGit(ctx, repoPath, "rev-parse", "HEAD")
+	if err != nil {
+		// An unborn branch (git init, zero commits) resolves no HEAD object
+		// yet while its symref is live: a normal working state the index
+		// serves through the root-owned synthetic snapshot (oid == ""), so
+		// it is "", nil — not a terminal error.
+		if isUnbornHead(ctx, repoPath) {
+			return "", nil
+		}
+		return "", fmt.Errorf("detecting commit via git: %w", err)
+	}
+	oid := strings.TrimSpace(out)
+	if len(oid) > 16 {
+		oid = oid[:16]
+	}
+	return oid, nil
+}
+
+// branchRefExists reports whether the named refs/heads/<branch> ref exists
+// in ref storage (loose or packed), WITHOUT resolving its object: git's own
+// ref-listing plumbing (show-ref --verify, for-each-ref) parses the object
+// and fails on a damaged store — exactly the state the caller must
+// distinguish from an absent ref. Branch refs live in the repository's
+// COMMON git directory; a linked worktree's private dir names it in its
+// `common-dir` file (relative paths resolve against the private dir).
+// Reftable-backend repositories carry neither a loose file nor packed-refs;
+// for the unborn question that reads as "ref absent" — conservative only in
+// the already-failing state that reached this check.
+func branchRefExists(repoPath, ref string) bool {
+	gitDir, err := resolveGitDir(repoPath)
+	if err != nil || gitDir == "" {
+		return false
+	}
+	commonDir := gitDir
+	if data, rerr := os.ReadFile(filepath.Join(gitDir, "common-dir")); rerr == nil {
+		if cd := strings.TrimSpace(string(data)); cd != "" {
+			if filepath.IsAbs(cd) {
+				commonDir = cd
+			} else {
+				commonDir = filepath.Join(gitDir, cd)
+			}
+		}
+	}
+	name := strings.TrimPrefix(ref, "refs/heads/")
+	if _, serr := os.Stat(filepath.Join(commonDir, "refs", "heads", filepath.FromSlash(name))); serr == nil {
+		return true
+	}
+	data, perr := os.ReadFile(filepath.Join(commonDir, "packed-refs"))
+	if perr != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "#") {
+			continue // peeled/header comment lines
+		}
+		if strings.HasSuffix(line, " "+ref) {
+			return true
+		}
+	}
+	return false
+}
+
+// isUnbornHead reports whether repoPath's HEAD is an unborn branch: a
+// symref whose target branch ref does not exist yet (git init with zero
+// commits, a fresh orphan checkout). `rev-parse HEAD` fails on such a tree
+// while `symbolic-ref HEAD` still succeeds AND the target ref is absent
+// from ref storage — the ref-existence clause distinguishes "no commits
+// yet" from a damaged clone (a ref that exists while its object is
+// missing), which must stay on CurrentCommit's error path instead of
+// silently degrading to the root-owned synthetic snapshot.
+func isUnbornHead(ctx context.Context, repoPath string) bool {
+	ref, err := runGit(ctx, repoPath, "symbolic-ref", "HEAD")
+	if err != nil {
+		return false
+	}
+	ref = strings.TrimSpace(ref)
+	if !strings.HasPrefix(ref, "refs/heads/") {
+		return false
+	}
+	return !branchRefExists(repoPath, ref)
+}
+
+// ListLocalBranches lists the repository's local branch names (refs/heads —
+// the set every worktree of the clone shares, checked-out branches included).
+// An empty result is valid: a repository without refs keeps nothing. It is
+// the identity source of the unified store migration's branch resolution
+// (layout.go): every legacy branch store must map back to a live ref before
+// its commit OID — and therefore its snapshot corpus key — can be derived.
+func ListLocalBranches(ctx context.Context, repoPath string) ([]string, error) {
+	out, err := runGit(ctx, repoPath, "for-each-ref", "--format=%(refname:short)", "refs/heads/")
+	if err != nil {
+		return nil, fmt.Errorf("listing local branches: %w", err)
+	}
+	var names []string
+	for _, line := range strings.Split(out, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			names = append(names, line)
+		}
+	}
+	return names, nil
+}
+
+// CommitOfBranch resolves a local branch's current commit OID (16 hex
+// chars), the key the unified store migration promotes a legacy branch
+// store under (ADR-104 §1 L3: identity is the commit, never the branch
+// name). A missing branch is an error, not "": callers distinguish
+// structurally-absent branches from transient git failures by resolving the
+// branch list first.
+func CommitOfBranch(ctx context.Context, repoPath, branch string) (string, error) {
+	out, err := runGit(ctx, repoPath, "rev-parse", "--verify", branch+"^{commit}")
+	if err != nil {
+		return "", fmt.Errorf("resolving commit of branch %q: %w", branch, err)
+	}
+	oid := strings.TrimSpace(out)
+	if len(oid) > 16 {
+		oid = oid[:16]
+	}
+	return oid, nil
+}
+
 // runGit runs `git -C repoPath <args...>` and returns trimmed stdout. Every
 // invocation is routed through workspace.GitCmdInRepo — the hardened choke
 // point (fresh per-repo config scan + neutralizing -c overrides, fail-closed

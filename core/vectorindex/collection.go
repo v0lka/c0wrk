@@ -82,6 +82,11 @@ func (s *Service) SwitchBranch(ctx context.Context, branchName string) error {
 	// switch peaks at one branch's working set (specs/decisions/064-branch-scoped-lazy-vector-index-open.md).
 	s.releaseBranchResidentsLocked()
 
+	// Bind the incoming store's §3 state (ADR-104 §3) before its residents
+	// open: the lexical directory and sidecar path resolutions below key
+	// off the adopted generation.
+	s.adoptStoreGenerationLocked(branchName)
+
 	// Branch-scoped open: NewPersistentDB decodes only this branch's collection
 	// (ADR-064).
 	db, err := s.openBranchDBLocked(branchName)
@@ -102,9 +107,10 @@ func (s *Service) SwitchBranch(ctx context.Context, branchName string) error {
 
 	// Open this branch's lexical index (the previous branch's was closed by
 	// releaseBranchResidentsLocked above); a state without a storage root or
-	// project id (in-memory No Project) gets no lexical persistence.
+	// project id (in-memory No Project) gets no lexical persistence. View-
+	// model stores resolve into the §3 tree (chunkstore_service.go).
 	if s.current.projectPath != "" && s.current.projectID != "" {
-		lexDir := filepath.Join(s.current.projectPath, "lexical", lexicalBranchDirName(branchName))
+		lexDir := s.workingLexicalDirLocked(branchName)
 		// Real parent dir only (a planted symlink must not redirect the index);
 		// bleve's New() creates the leaf directory itself.
 		if mkErr := ensureRealDir(filepath.Dir(lexDir), 0o750); mkErr != nil {
@@ -362,8 +368,11 @@ type fileHashInfo struct {
 // fileHashInfoFromMetadata extracts per-file facts from document metadata — the
 // pre-upgrade carrier still used by standalone AddDocuments and tests. ok is false
 // without a content hash: no sidecar entry, ValidateCollection reconciles from disk.
+// The key is the occurrence path (the root-relative rel_path coordinate when the
+// document carries one, the legacy absolute file_path otherwise), so sidecar rows
+// land under the same identity the documents and lexical entries use.
 func fileHashInfoFromMetadata(md map[string]string) (fileHashInfo, bool) {
-	fp, hash := md["file_path"], md["content_hash"]
+	fp, hash := occurrencePath(md), md["content_hash"]
 	if fp == "" || hash == "" {
 		return fileHashInfo{}, false
 	}
@@ -424,6 +433,40 @@ func (s *Service) ValidateCollection(ctx context.Context, workspacePath string, 
 		return nil, nil, nil, fmt.Errorf("resolving workspace path: %w", absErr)
 	}
 
+	// sidecarKey maps a walked absolute path to its sidecar key: the
+	// root-relative occurrence coordinate (ADR-104 L2) — the same identity
+	// the documents and lexical entries are keyed by — when a workspace
+	// root is BOUND on the service, with the absolute path as the fallback
+	// (in-memory/standalone services keep the historical absolute keys).
+	boundRoot := s.current.workspaceRoot
+	sidecarKey := func(absPath string) string {
+		if boundRoot != "" {
+			if rel := relPathFromAbs(boundRoot, absPath); rel != "" {
+				return rel
+			}
+		}
+		return absPath
+	}
+	// storedKeyAbs inverts sidecarKey for reporting: deleted files are
+	// reported as ABSOLUTE paths (the historical contract — callers read
+	// the sources), reconstructed against the bound root (the tree the
+	// keys are relative to), falling back to the walked root. A
+	// slash-rooted key ("C:\x" is filepath.IsAbs, "/x" is not on Windows)
+	// is a legacy ABSOLUTE spelling, not a root-relative coordinate —
+	// joining it with the root would both mangle the report and break the
+	// key round-trip removeFileHashes/collectDocumentIDs rely on (their
+	// fileHashKeyLocked fallback returns an unresolvable key verbatim).
+	storedKeyAbs := func(key string) string {
+		if filepath.IsAbs(key) || strings.HasPrefix(key, "/") {
+			return key
+		}
+		root := boundRoot
+		if root == "" {
+			root = absRoot
+		}
+		return filepath.Join(root, filepath.FromSlash(key))
+	}
+
 	walkErr := filepath.WalkDir(absRoot, func(path string, d fs.DirEntry, walkDirErr error) error {
 		if walkDirErr != nil {
 			return walkDirErr
@@ -468,11 +511,11 @@ func (s *Service) ValidateCollection(ctx context.Context, workspacePath string, 
 		// through on legacy/fingerprint-less entries, any mismatch, a failed d.Info, or
 		// a forced full-hash pass; the full-read comparison upgrades the entry next index.
 		if !forceFullHash && info != nil {
-			if stored, exists := storedHashes[absPath]; exists {
+			if stored, exists := storedHashes[sidecarKey(absPath)]; exists {
 				if _, size, mtime, ok := parseFileHashEntry(stored); ok &&
 					size == info.Size() && mtime == info.ModTime().UnixNano() &&
 					fileHashEntryChunkerFP(stored) == s.chunkerFingerprint {
-					seen[absPath] = true
+					seen[sidecarKey(absPath)] = true
 					return nil //nolint:nilerr // unchanged: skip content read + hash
 				}
 			}
@@ -507,8 +550,28 @@ func (s *Service) ValidateCollection(ctx context.Context, workspacePath string, 
 
 		currentHash := computeHash(content)
 
-		if stored, exists := storedHashes[absPath]; exists {
-			seen[absPath] = true
+		// Corpus-current classification (ADR-104 stage 2 owner/view): a
+		// file whose bytes still match the published corpus is NOT
+		// new/stale for this root's OVERLAY — the corpus serves it, the
+		// pass neither chunks nor embeds nor commits it, and the file is
+		// adopted as a sidecar-only fact (recorded under the leaf adoptions
+		// mutex, persisted by the indexing pass), which is also what makes
+		// the corpus entry VISIBLE to this root. A chunker-era mismatch
+		// opts out (the corpus text was chunked differently — re-chunk into
+		// the overlay instead).
+		if cv := s.current.corpus; cv != nil && cv.manifest.ChunkerFP == s.chunkerFingerprint {
+			key := sidecarKey(absPath)
+			if want, inCorpus := cv.manifest.Files[key]; inCorpus && want == currentHash {
+				seen[key] = true
+				if info != nil {
+					s.recordCorpusAdoption(key, currentHash, info.Size(), info.ModTime().UnixNano())
+				}
+				return nil //nolint:nilerr // corpus-current: no overlay work
+			}
+		}
+
+		if stored, exists := storedHashes[sidecarKey(absPath)]; exists {
+			seen[sidecarKey(absPath)] = true
 			if fileHashEntryHash(stored) != currentHash {
 				staleFiles = append(staleFiles, absPath)
 			} else if entryFP := fileHashEntryChunkerFP(stored); entryFP != "" && entryFP != s.chunkerFingerprint {
@@ -526,9 +589,15 @@ func (s *Service) ValidateCollection(ctx context.Context, workspacePath string, 
 		return nil, nil, nil, fmt.Errorf("walking workspace %s: %w", workspacePath, walkErr)
 	}
 
-	for storedPath := range storedHashes {
-		if !seen[storedPath] {
-			deletedFiles = append(deletedFiles, storedPath)
+	// Stored keys the walk did not see are deleted from THIS root's
+	// perspective: the file is gone, OR the root's CURRENT ignore/eligibility
+	// policy excludes it (per-root policy, ADR-104 L4 — a shared corpus never
+	// bypasses the walk's verdict), OR the entry belongs to another tree's
+	// layout. All three must surface as deletions so the incremental pass
+	// removes them from this store view.
+	for storedKey := range storedHashes {
+		if !seen[storedKey] {
+			deletedFiles = append(deletedFiles, storedKeyAbs(storedKey))
 		}
 	}
 
@@ -541,7 +610,24 @@ func (s *Service) GetCollectionFiles() (map[string]string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	return s.getCollectionFileHashes()
+	out, err := s.getCollectionFileHashes()
+	if err != nil {
+		return nil, err
+	}
+	// View model (ADR-104 stage 2): the file list is the root's VIEW — its
+	// overlay entries plus the corpus entries still visible to this root
+	// (the root's sidecar records the corpus's hash for the path).
+	if cv := s.current.corpus; cv != nil {
+		for rel, want := range cv.manifest.Files {
+			if _, taken := out[rel]; taken {
+				continue
+			}
+			if entry, ok := s.current.fileHashes[rel]; ok && fileHashEntryHash(entry) == want {
+				out[rel] = entry
+			}
+		}
+	}
+	return out, nil
 }
 
 // getCollectionFileHashes returns the file→entry map from the in-memory sidecar,
@@ -594,7 +680,7 @@ func queryCollectionFileHashesFrom(ctx context.Context, col *chromem.Collection,
 
 	fileHashes := make(map[string]string, len(results))
 	for _, r := range results {
-		fp := r.Metadata["file_path"]
+		fp := occurrencePath(r.Metadata)
 		if fp == "" {
 			continue
 		}
@@ -612,13 +698,36 @@ func queryCollectionFileHashesFrom(ctx context.Context, col *chromem.Collection,
 	return fileHashes, nil
 }
 
+// fileHashesPathFor returns the on-disk path of the per-branch file-hash
+// sidecar under a project's vector storage root.
+func fileHashesPathFor(projectPath, branch string) string {
+	return filepath.Join(projectPath, "file_hashes_"+collectionName(branch)+".json")
+}
+
 // fileHashesPath returns the on-disk path of the sidecar for this state's
-// branch, or "" if project/branch is unset. Caller must hold s.mu.
+// branch, or "" if project/branch is unset. Under an adopted §3 generation
+// an overlay store's sidecar lives at roots/<fp>/sidecar.json (ADR-104 §3
+// L4): the §3 path is authoritative once it exists, or when the legacy file
+// never did (a fresh overlay); a pre-adoption overlay keeps its legacy
+// file until the chunk-record migration adopts it — the two never compete.
+// Caller must hold s.mu.
 func (ps *projectState) fileHashesPath() string {
 	if ps.projectPath == "" || ps.currentBranch == "" {
 		return ""
 	}
-	return filepath.Join(ps.projectPath, "file_hashes_"+collectionName(ps.currentBranch)+".json")
+	if ps.storeGen != "" && isOverlayIdentity(ps.currentBranch) {
+		p := overlaySidecarPath(ps.storeGen, ps.currentBranch)
+		if pathExists(p) || !pathExists(fileHashesPathFor(ps.projectPath, ps.currentBranch)) {
+			return p
+		}
+	}
+	return fileHashesPathFor(ps.projectPath, ps.currentBranch)
+}
+
+// contentlessMarkerPathFor returns the zero-byte content-less migration
+// marker's path for a branch under a project storage root.
+func contentlessMarkerPathFor(projectPath, branch string) string {
+	return filepath.Join(projectPath, "contentless_"+collectionName(branch)+".done")
 }
 
 // contentlessMarkerPath returns the zero-byte content-less migration marker's path —
@@ -629,7 +738,7 @@ func (ps *projectState) contentlessMarkerPath() string {
 	if ps.projectPath == "" || ps.currentBranch == "" {
 		return ""
 	}
-	return filepath.Join(ps.projectPath, "contentless_"+collectionName(ps.currentBranch)+".done")
+	return contentlessMarkerPathFor(ps.projectPath, ps.currentBranch)
 }
 
 // contentlessMarkerExists reports the marker's presence; it gates whether an empty
@@ -641,6 +750,43 @@ func contentlessMarkerExists(ps *projectState) bool {
 	}
 	_, err := os.Stat(marker)
 	return err == nil
+}
+
+// sidecarFileV6 is the v6 envelope grammar of the file-hash sidecar: the
+// entries map is scoped to one workspace root by fingerprint, so the sidecar's
+// root-local facts (size/mtime — the stat fast-path) are never shared between
+// trees (ADR-104 L4). A sidecar whose recorded root fingerprint does not match
+// the loading root is DISCARDED: the same relative paths in another tree carry
+// independent mtimes, and a foreign stat classification could hide real
+// rewrites. Files in the pre-v6 bare-map grammar load as legacy entries.
+type sidecarFileV6 struct {
+	Version int               `json:"version"`
+	Root    string            `json:"root"`
+	Entries map[string]string `json:"entries"`
+}
+
+// sidecarVersionV6 is the envelope version of sidecarFileV6.
+const sidecarVersionV6 = 6
+
+// decodeSidecarEntries parses sidecar bytes under the loading root's
+// fingerprint. ok is false when the file is a v6 envelope scoped to a
+// DIFFERENT root (entries must be discarded — root-local facts are not
+// shared) or when no grammar parses; a v5-or-older bare map is returned as
+// legacy entries (absolute-path keys of a superseded coordinate era, only
+// reachable for in-flight stores the generation gate has not yet reset).
+func decodeSidecarEntries(data []byte, rootFP string) (entries map[string]string, ok bool) {
+	var env sidecarFileV6
+	if err := json.Unmarshal(data, &env); err == nil && env.Version == sidecarVersionV6 {
+		if env.Root != rootFP {
+			return nil, false
+		}
+		return env.Entries, true
+	}
+	var legacy map[string]string
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		return nil, false
+	}
+	return legacy, true
 }
 
 // loadFileHashes populates the current state's sidecar from disk; when absent, the
@@ -676,14 +822,19 @@ func (s *Service) loadFileHashes() {
 	// See specs/domains/workspace.md (file-hash sidecar trust protocol).
 	if path := ps.fileHashesPath(); path != "" {
 		if data, err := safeio.ReadFile(path); err == nil {
-			var m map[string]string
-			if jsonErr := json.Unmarshal(data, &m); jsonErr == nil {
+			if m, ok := decodeSidecarEntries(data, rootFingerprint(ps.workspaceRoot)); ok {
 				if len(m) > 0 || contentlessMarkerExists(ps) {
 					ps.fileHashes = m
 					ps.fileHashMigrationPending.Store(false)
 					ps.migrationCh = closedChan()
 					return
 				}
+			} else {
+				// A v6 sidecar scoped to another workspace root: root-local
+				// size/mtime facts are never shared between trees — discard
+				// and reconcile from disk (ADR-104 L4).
+				s.logger.Info("discarding file-hash sidecar scoped to another workspace root",
+					"branch", ps.currentBranch)
 			}
 		}
 	}
@@ -1101,14 +1252,19 @@ func (s *Service) WaitContentlessMigration(ctx context.Context) error {
 	}
 }
 
-// saveFileHashes atomically writes the sidecar; missing project/branch or a nil map is
-// a no-op. Caller must hold the owning Service's mu (write).
+// saveFileHashes atomically writes the sidecar in the v6 root-scoped envelope
+// (see sidecarFileV6); missing project/branch or a nil map is a no-op. Caller
+// must hold the owning Service's mu (write).
 func (ps *projectState) saveFileHashes() error {
 	path := ps.fileHashesPath()
 	if path == "" || ps.fileHashes == nil {
 		return nil
 	}
-	data, err := json.Marshal(ps.fileHashes)
+	data, err := json.Marshal(sidecarFileV6{
+		Version: sidecarVersionV6,
+		Root:    rootFingerprint(ps.workspaceRoot),
+		Entries: ps.fileHashes,
+	})
 	if err != nil {
 		return fmt.Errorf("marshaling file hashes: %w", err)
 	}
@@ -1117,6 +1273,12 @@ func (ps *projectState) saveFileHashes() error {
 	// stages under a randomized name.
 	if err := safeio.WriteFileAtomic(path, data, 0o644); err != nil {
 		return fmt.Errorf("writing file-hash sidecar: %w", err)
+	}
+	// The §3 extras ride the same settle boundary (overlay table flush,
+	// legacy sidecar retirement — chunkstore_service.go); best-effort by
+	// design, exactly like the sidecar write's own fail-soft callers.
+	if ps.sidecarFlush != nil {
+		ps.sidecarFlush(ps)
 	}
 	return nil
 }
@@ -1210,14 +1372,32 @@ func (s *Service) composeFileHashEntryInfo(info fileHashInfo, committedIDs []str
 }
 
 // removeFileHashes drops paths from the in-memory sidecar (persisted at lifecycle
-// boundaries, like upsertFileHashesFiltered). Caller must hold s.mu (write).
+// boundaries, like upsertFileHashesFiltered). Paths arrive as the ABSOLUTE paths
+// ValidateCollection reports; entries are keyed by the occurrence coordinate
+// (root-relative when a workspace root is bound), so each path is translated
+// through the same mapping the validation pass used. Caller must hold s.mu
+// (write).
 func (s *Service) removeFileHashes(paths []string) {
 	if s.current.fileHashes == nil || len(paths) == 0 {
 		return
 	}
 	for _, p := range paths {
-		delete(s.current.fileHashes, p)
+		delete(s.current.fileHashes, s.fileHashKeyLocked(p))
 	}
+	// The §3 occurrence rows follow the documents out (ADR-104 §3 L2).
+	s.dropChunkRowsLocked(paths)
+}
+
+// fileHashKeyLocked maps an absolute workspace path to its sidecar key: the
+// root-relative occurrence coordinate when a workspace root is bound (the L2
+// identity of ADR-104), the path itself otherwise (in-memory services and
+// standalone tests keep the historical absolute keys). Caller must hold s.mu
+// (read or write).
+func (s *Service) fileHashKeyLocked(path string) string {
+	if rel := relPathFromAbs(s.current.workspaceRoot, path); rel != "" {
+		return rel
+	}
+	return path
 }
 
 // RebuildCollection deletes the current branch collection and creates a fresh one.
@@ -1278,9 +1458,11 @@ type BatchEmbedder interface {
 }
 
 // commitMetadataKeys are the only metadata keys a committed document retains — the
-// chunk-position fields; all per-file bookkeeping lives in the sidecar (commit-time
-// strip, specs/decisions/049-vector-index-memory-reduction.md).
-var commitMetadataKeys = [4]string{"file_path", "start_line", "end_line", "language"}
+// occurrence coordinates (absolute file_path for per-tree diagnostics plus the
+// root-relative rel_path identity) and the chunk-position fields; all per-file
+// bookkeeping lives in the sidecar (commit-time strip,
+// specs/decisions/049-vector-index-memory-reduction.md).
+var commitMetadataKeys = [5]string{"file_path", relPathMetaKey, "start_line", "end_line", "language"}
 
 // strippedForCommit returns the commit view of docs: content dropped wherever an
 // embedding is already present (persisting consumed text doubles disk for zero
@@ -1329,6 +1511,10 @@ func (s *Service) commitEmbeddedDocuments(ctx context.Context, vecDocs []chromem
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("committing embedded documents: %w", err)
 	}
+
+	// §3 chunk records land BEFORE the chromem commit (ADR-104 §3 write
+	// ordering); the accumulator's documents arrive pre-embedded.
+	s.recordChunkRecordsLocked(ctx, vecDocs)
 
 	commitStarted := time.Now()
 	commitErr := s.current.collection.AddDocuments(ctx, strippedForCommit(vecDocs), 1)
@@ -1393,6 +1579,13 @@ func (s *Service) AddDocuments(ctx context.Context, vecDocs []chromem.Document, 
 				}
 			}
 		}
+		// §3 chunk records land BEFORE the chromem commit (ADR-104 §3 write
+		// ordering): the table that will reference them flushes later, at
+		// the settle boundary. On the legacy per-document path (nil batch
+		// embedder) the hook shadow-embeds through the cache — the chromem
+		// commit itself is untouched, so the legacy store's shape (chromem-
+		// embedded, content-bearing documents) is preserved byte-for-byte.
+		s.recordChunkRecordsLocked(ctx, sub)
 		if len(sub) == 0 {
 			continue
 		}
@@ -1641,9 +1834,21 @@ func (s *Service) DeleteDocumentsByIDs(ctx context.Context, ids []string) error 
 	return nil
 }
 
-// DocumentID returns a deterministic document ID for a file path and chunk index.
-func DocumentID(filePath string, chunkIndex int) string {
-	h := sha256.Sum256([]byte(filePath))
+// DocumentID returns a deterministic document ID for a file's occurrence
+// path and chunk index. The occurrence path is the file's path RELATIVE to
+// the workspace root (slash-separated; see relPathFromAbs) — the L2 identity
+// of ADR-104 — so the same repository layout checked out under any workspace
+// root (another branch's tree, a managed worktree, a clone at a different
+// absolute path) yields the SAME IDs while the absolute root stays root-local
+// (L4). Two paths always keep two IDs: identical bytes at two paths are two
+// OCCURRENCES sharing one embedding (the content-addressed embedding cache
+// deduplicates inference), never one collapsed entry — occurrences are
+// preserved, not deduplicated away. Services without a bound workspace root
+// (in-memory, standalone tests) may pass any stable path; the ID grammar
+// ("<sha16>:<idx>") is unchanged, and the coordinate era is pinned by the
+// branch generation manifest (see generation.go).
+func DocumentID(path string, chunkIndex int) string {
+	h := sha256.Sum256([]byte(path))
 	pathHash := hex.EncodeToString(h[:8]) // first 8 bytes = 16 hex chars
 	return fmt.Sprintf("%s:%d", pathHash, chunkIndex)
 }
@@ -1652,7 +1857,9 @@ func DocumentID(filePath string, chunkIndex int) string {
 // no collection Query (which would materialize every document, vectors included);
 // ok is false unless EVERY path has a known set (enumeration without materialization,
 // specs/decisions/049-vector-index-memory-reduction.md). The set mirrors the collection:
-// written only after commit, removed with the documents. Caller must hold at least
+// written only after commit, removed with the documents. Paths arrive as the absolute
+// paths the validation pass reports and are translated to their sidecar keys (the
+// occurrence coordinate, see fileHashKeyLocked). Caller must hold at least
 // s.mu.RLock().
 func (s *Service) sidecarDocumentIDs(filePaths []string) ([]string, bool) {
 	if s.current.fileHashes == nil || len(filePaths) == 0 {
@@ -1660,7 +1867,11 @@ func (s *Service) sidecarDocumentIDs(filePaths []string) ([]string, bool) {
 	}
 	var ids []string
 	for _, p := range filePaths {
-		entry, exists := s.current.fileHashes[p]
+		// Both the entry lookup AND the ID derivation use the occurrence
+		// coordinate — the sidecar key and the document ID are the same
+		// identity (ADR-104 L2), never the input's absolute form.
+		key := s.fileHashKeyLocked(p)
+		entry, exists := s.current.fileHashes[key]
 		if !exists {
 			return nil, false
 		}
@@ -1669,7 +1880,7 @@ func (s *Service) sidecarDocumentIDs(filePaths []string) ([]string, bool) {
 			return nil, false
 		}
 		for _, i := range indices {
-			ids = append(ids, DocumentID(p, i))
+			ids = append(ids, DocumentID(key, i))
 		}
 	}
 	return ids, true

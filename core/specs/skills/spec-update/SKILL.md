@@ -64,11 +64,15 @@ Read the entire spec before making any modifications. This is critical because:
 
 ### Step 4 — Handle ADR immutability
 
-If your change contradicts an existing Architecture Decision Record:
-- Do NOT edit the accepted ADR
-- Create a new ADR that supersedes it (use `spec-create` skill)
-- Update only the `## Status` line of the old ADR to: `Superseded by [NNN](./NNN-slug.md)`
-- This is the ONLY permitted edit to an accepted ADR
+`Status: Accepted` locks an ADR only once its current content is committed to the repository. Establish which case applies before touching an accepted ADR — git: `git status --porcelain -- specs/decisions/NNN-slug.md`; empty output = committed (outside a git repository, treat the ADR as committed):
+
+- **Uncommitted** (untracked, or content differs from the last commit) — the ADR is still a draft: edit it freely in place — reword, correct, or even reverse the decision; no superseding ADR is needed. The commit is what locks it
+- **Committed** — do NOT edit it. If your change contradicts the decision:
+  - Create a new ADR that supersedes it (use `spec-create` skill)
+  - Update only the `## Status` line of the old ADR to: `Superseded by [NNN](./NNN-slug.md)`
+  - This is the ONLY permitted edit to a committed accepted ADR
+
+If you have no way to run git, establish the commit state from the task context or ask the user — never guess about a committed accepted ADR.
 
 ### Step 5 — Update INDEX.md (if applicable)
 
@@ -94,7 +98,7 @@ Before declaring the update complete, verify:
 - [ ] Paths in "Key Files" are accurate (verify the files exist)
 - [ ] Invariants are stated affirmatively
 - [ ] INDEX.md reflects the current file set (if files were added/removed)
-- [ ] ADR immutability was respected (no edits to accepted ADRs except superseding)
+- [ ] ADR immutability was respected (committed accepted ADRs touched only via superseding; uncommitted drafts edited in place)
 - [ ] No filler prose was introduced
 - [ ] ASCII diagrams are consistent with updated behavior
 - [ ] Tables/catalogs include any new entries
@@ -108,7 +112,7 @@ Before declaring the update complete, verify:
 | Silently skipping spec update | Specs drift, next agent gets wrong context | Always check if specs are affected |
 | Rewriting the entire spec | Loses carefully worded invariants | Make minimal, targeted edits |
 | Adding changelog entries | Clutters the spec, wastes context window | Update in-place, git history tracks changes |
-| Editing an accepted ADR | Loses decision history | Create new ADR with Superseded by |
+| Editing a committed accepted ADR | Loses decision history | Create new ADR with Superseded by (uncommitted accepted ADRs are drafts — edit in place) |
 | Updating spec before code is done | Risk of spec-code mismatch if implementation changes | Update spec AFTER implementation is complete |
 | Skipping cross-reference check | Broken links make specs unreachable | Search for references to modified content |
 | Stating invariants negatively | Harder to verify compliance | Always use affirmative phrasing |

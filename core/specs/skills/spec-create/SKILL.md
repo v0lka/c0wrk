@@ -216,8 +216,9 @@ OR meets this one alone:
 - Numbers are NEVER reused (even for superseded ADRs)
 - Under parallel branches, a freshly allocated number is provisional until that branch merges — a sibling branch may have allocated the same number in the meantime
 - If a duplicate number reaches the tree at merge time, the second-landed ADR takes the next free number. When renumbering, update ALL of: the filename, the `# ADR-NNN: [Title]` heading, `Superseded by [NNN](./NNN-slug.md)` links in other ADRs, INDEX.md entries, and any cross-references to this ADR in other specs
-- Once `Status: Accepted`, the ADR is immutable
-- To change a decision: create a NEW ADR, then update the old one's Status to `Superseded by [NNN](./NNN-slug.md)` (this is the only allowed edit to an accepted ADR)
+- `Status: Accepted` locks an ADR only once its current content is committed to the repository — verify with `git status --porcelain -- specs/decisions/NNN-slug.md`: empty output = committed = locked (outside a git repository, treat every accepted ADR as committed)
+- An accepted ADR that is untracked, or whose current content carries uncommitted changes, is still an editable draft: refine, reword, or rewrite it in place — no superseding ADR is needed; the commit is what locks it
+- To change a committed decision: create a NEW ADR, then update the old one's Status to `Superseded by [NNN](./NNN-slug.md)` (this is the only allowed edit to a committed accepted ADR)
 
 ---
 

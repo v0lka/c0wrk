@@ -90,7 +90,7 @@ A template may use the ordinary message machinery:
   completion list) — rename it if you still need the plain spelling. The
   budgeted `/goal:N` form is never a catalog mention, so it still arms goal
   mode with an N-turn budget
-  ([ADR-106](../specs/decisions/106-goal-mode-chat-activation.md)).
+  ([ADR-110](../specs/decisions/110-goal-mode-chat-activation.md)).
 
 ## v1 limitations
 

@@ -1,5 +1,5 @@
 // The one dispatch path shared by the quick-actions row and the empty
-// state's Initialize CTA (ADR-105 D4: the panel never writes to specs/
+// state's Initialize CTA (ADR-106 D4: the panel never writes to specs/
 // itself — every mutating gesture activates a `spec-*` skill).
 
 import { useCallback } from 'react'

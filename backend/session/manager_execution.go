@@ -714,7 +714,7 @@ func (m *Manager) sendMessage(ctx context.Context, id, text, echoText, clientSen
 	// ResumeSession (re-activate + inject the text as a trailing user turn)
 	// instead of starting a new one. Goal/E2S requests are excluded — they
 	// supersede any paused task. A "/goal"/"/goal:N" prefix is a goal request
-	// exactly like the toggle flag (ADR-106 gate parity): detected HERE, on
+	// exactly like the toggle flag (ADR-110 gate parity): detected HERE, on
 	// the same processed text the task goroutine re-detects on, so a
 	// prefix-only send into a paused session abandons the paused task and
 	// starts the fresh (budgeted) goal instead of nudge-resuming the old one

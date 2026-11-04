@@ -14,7 +14,7 @@ import (
 // expectedAgentNames is the canonical set bundled in the agent pack, sorted.
 var expectedAgentNames = []string{"specs"}
 
-// expectedProfileTools is the least-privilege tool budget ADR-104 decision 3
+// expectedProfileTools is the least-privilege tool budget ADR-105 decision 3
 // pins for the spec-steward profile: Markdown read/write only, never execute.
 const expectedProfileTools = "local-read, local-write"
 

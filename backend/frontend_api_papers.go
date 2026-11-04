@@ -545,10 +545,14 @@ func (f *FrontendAPI) emitPapersChanged(papersRoot, comparisonsRoot, projectID s
 		"comparisons_root", comparisonsRoot,
 		"paths", paperPaths,
 	)
-	f.emitEvent(EventPapersChanged, map[string]string{
-		"project_id": projectID,
-		"paths":      strings.Join(paperPaths, ","),
-	})
+	// Nil-guarded: callers include the fsnotify watcher callbacks, which can
+	// run before the Wails event wiring lands.
+	if f.emitEvent != nil {
+		f.emitEvent(EventPapersChanged, map[string]string{
+			"project_id": projectID,
+			"paths":      strings.Join(paperPaths, ","),
+		})
+	}
 	return true
 }
 

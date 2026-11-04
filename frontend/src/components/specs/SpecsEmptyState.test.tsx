@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// SpecsEmptyState — the neutral !present render (ADR-105 D2): a missing
+// SpecsEmptyState — the neutral !present render (ADR-106 D2): a missing
 // specs/ tree is data, not an error. The CTA dispatches the SAME Initialize
 // constant the quick-actions row renders (one dispatch path).
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -74,5 +74,15 @@ describe('SpecsEmptyState', () => {
       undefined,
       { newSession: false },
     )
+  })
+
+  it('CTA keeps the short label but spells the gesture out in the tooltip (fullLabel, ADR-109)', async () => {
+    const container = await renderEmpty('/ws/p1/specs')
+    const cta = container.querySelector<HTMLButtonElement>(
+      '[data-testid="specs-initialize-cta"]',
+    )!
+
+    expect(cta.textContent).toContain(INITIALIZE_ACTION.label)
+    expect(cta.title).toBe('Initialize specs (spec-init) — Shift = new session')
   })
 })
