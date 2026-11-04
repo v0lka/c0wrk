@@ -71,7 +71,7 @@ func newViewHarness(t *testing.T, files map[string]string) *viewHarness {
 	}
 	wt := filepath.Join(t.TempDir(), "wt")
 	repo.Git(t, "worktree", "add", "-b", "topic", wt, "main")
-	return &viewHarness{
+	h := &viewHarness{
 		repo:     repo,
 		rootA:    root,
 		rootB:    wt,
@@ -79,6 +79,13 @@ func newViewHarness(t *testing.T, files map[string]string) *viewHarness {
 		registry: NewCorpusRegistry(nil),
 		t:        t,
 	}
+	// Registered AFTER the TempDir calls above, so LIFO runs it BEFORE
+	// their RemoveAll: retained residency handles hold read-only bleve
+	// (.zap) readers open by design, and Windows refuses to unlink a file
+	// with an open handle. Idempotent — tests that Close the registry
+	// themselves are unaffected.
+	t.Cleanup(func() { h.registry.Close() })
+	return h
 }
 
 // embedCounter wraps a service's per-text embedder with a counter.

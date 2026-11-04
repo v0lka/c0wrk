@@ -58,9 +58,15 @@ func (h *vectorWorktreeHarness) storeEntryNames(t *testing.T, sub, prefix string
 	return out
 }
 
-// waitAttached drives a root's manager to a ready, fully attached state and
-// waits (bounded) until its overlay store landed in the shared store.
-func (h *vectorWorktreeHarness) waitAttached(t *testing.T, root string) *vectorindex.Manager {
+// waitAttached drives a root's manager to a ready, fully attached state:
+// service readiness (the collection opened), the background incremental
+// pass settled (IndexStateReady is its terminal progress event — WaitReady
+// alone flips while the corpus-adoption walk still has workspace files
+// open, and on Windows removing the tree in that window is a sharing
+// violation), and wantOverlays distinct overlays landed in the shared
+// store (a bare ≥1 wait is satisfied by ANOTHER root's overlay and returns
+// before this root's attach lands anything).
+func (h *vectorWorktreeHarness) waitAttached(t *testing.T, root string, wantOverlays int) *vectorindex.Manager {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -74,12 +80,20 @@ func (h *vectorWorktreeHarness) waitAttached(t *testing.T, root string) *vectori
 		t.Fatalf("root %s never became ready: %v", root, err)
 	}
 	deadline := time.Now().Add(30 * time.Second)
-	for len(h.storeEntryNames(t, "branches", "branch_root_")) == 0 {
+	for mgr.GetIndexStatus().State != vectorindex.IndexStateReady {
+		if time.Now().After(deadline) {
+			t.Fatalf("root %s background pass never settled (state=%v status: %+v)",
+				root, mgr.GetIndexStatus().State, mgr.GetIndexStatus())
+		}
+		// Bounded watchdog retry over a real lifecycle signal (not a
+		// scheduler sleep): the receive parks until the next tick.
+		<-time.After(50 * time.Millisecond)
+	}
+	deadline = time.Now().Add(30 * time.Second)
+	for len(h.storeEntryNames(t, "branches", "branch_root_")) < wantOverlays {
 		if time.Now().After(deadline) {
 			t.Fatalf("root %s never landed its overlay in the shared store", root)
 		}
-		// Bounded watchdog retry over a real disk effect (not a scheduler
-		// sleep): the receive parks this goroutine until the next tick.
 		<-time.After(50 * time.Millisecond)
 	}
 	return mgr
@@ -97,7 +111,7 @@ func TestCleanupReleasedTreeVectorData_ResurrectionGuard(t *testing.T) {
 	wireCorpusFactory(h)
 	wt := h.addManagedWorktree(t, "s-res", "wt-res")
 
-	h.waitAttached(t, wt)
+	h.waitAttached(t, wt, 1)
 	if got := len(h.storeEntryNames(t, "branches", "branch_snap_")); got != 1 {
 		t.Fatalf("expected one snapshot corpus after the attach, got %d", got)
 	}
@@ -149,8 +163,8 @@ func TestSharedStoreSweep_KeepsLiveRootsData(t *testing.T) {
 	wtA := h.addManagedWorktree(t, "tree-ga", "feat-ga")
 	wtB := h.addManagedWorktree(t, "tree-gb", "feat-gb") // same commit as feat-a
 
-	h.waitAttached(t, wtA)
-	h.waitAttached(t, wtB)
+	h.waitAttached(t, wtA, 1)
+	h.waitAttached(t, wtB, 2)
 
 	// Release tree B the way the session flow does (tree removed, then the
 	// cleanup): B's overlay and marker go; the corpus is shared with A.

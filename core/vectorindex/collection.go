@@ -450,16 +450,21 @@ func (s *Service) ValidateCollection(ctx context.Context, workspacePath string, 
 	// storedKeyAbs inverts sidecarKey for reporting: deleted files are
 	// reported as ABSOLUTE paths (the historical contract — callers read
 	// the sources), reconstructed against the bound root (the tree the
-	// keys are relative to), falling back to the walked root.
+	// keys are relative to), falling back to the walked root. A
+	// slash-rooted key ("C:\x" is filepath.IsAbs, "/x" is not on Windows)
+	// is a legacy ABSOLUTE spelling, not a root-relative coordinate —
+	// joining it with the root would both mangle the report and break the
+	// key round-trip removeFileHashes/collectDocumentIDs rely on (their
+	// fileHashKeyLocked fallback returns an unresolvable key verbatim).
 	storedKeyAbs := func(key string) string {
-		if !filepath.IsAbs(key) {
-			root := boundRoot
-			if root == "" {
-				root = absRoot
-			}
-			return filepath.Join(root, filepath.FromSlash(key))
+		if filepath.IsAbs(key) || strings.HasPrefix(key, "/") {
+			return key
 		}
-		return key
+		root := boundRoot
+		if root == "" {
+			root = absRoot
+		}
+		return filepath.Join(root, filepath.FromSlash(key))
 	}
 
 	walkErr := filepath.WalkDir(absRoot, func(path string, d fs.DirEntry, walkDirErr error) error {

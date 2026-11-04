@@ -238,12 +238,17 @@ func TestRebuildLexical_V2SkipsChangedFile(t *testing.T) {
 	if len(docs) == 0 {
 		t.Fatal("v2 produced no documents at all")
 	}
+	// The lexical documents carry the occurrence coordinate (processFile's
+	// relPath — ToSlash(absolute) for a rootless service), not the native
+	// absolute spelling, so the comparisons run in the coordinate's form.
+	fileAKey := filepath.ToSlash(fileA)
+	fileBKey := filepath.ToSlash(fileB)
 	stableSeen := false
 	for _, d := range docs {
-		if d.FilePath == fileB {
+		if d.FilePath == fileBKey {
 			t.Errorf("changed file %s must be skipped, but its document %s was indexed", fileB, d.ID)
 		}
-		if d.FilePath == fileA {
+		if d.FilePath == fileAKey {
 			stableSeen = true
 		}
 	}

@@ -313,8 +313,12 @@ func TestCorpusResidency_CountBound(t *testing.T) {
 	if n := h.decoded(K1); n != 2 {
 		t.Errorf("K1 decoded %d times after eviction+return, want 2 (one fresh reopen)", n)
 	}
-	if _, err := lexical.OpenReadOnly(lexicalDir); err != nil {
+	if lex, err := lexical.OpenReadOnly(lexicalDir); err != nil {
 		t.Errorf("eviction did not release K1's lexical reader (reopen failed): %v", err)
+	} else {
+		// The probe is a real bleve reader: on Windows an open handle pins
+		// the .zap files and blocks the TempDir cleanup.
+		_ = lex.Close()
 	}
 	res, err := h.svc.HybridSearchNoWait(context.Background(), SearchOptions{Query: "seed alpha marker", TopK: 3})
 	if err != nil || len(res) == 0 {
@@ -561,8 +565,12 @@ func TestCorpusResidency_CloseIsFinal(t *testing.T) {
 	if leftHandles == 0 || !allRetired {
 		t.Fatalf("after Close the attached handle must remain (retired, closing at its release): handles=%d allRetired=%v", leftHandles, allRetired)
 	}
-	if _, err := lexical.OpenReadOnly(lexDir); err != nil {
+	if lex, err := lexical.OpenReadOnly(lexDir); err != nil {
 		t.Errorf("Close did not release the retained corpus's lexical reader: %v", err)
+	} else {
+		// The probe is a real bleve reader: on Windows an open handle pins
+		// the .zap files and blocks the TempDir cleanup.
+		_ = lex.Close()
 	}
 	// The still-attached service's handle must be retired: its release
 	// closes rather than retains.
