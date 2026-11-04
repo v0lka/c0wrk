@@ -6,13 +6,14 @@ import { VectorStorePanel } from "./VectorStorePanel";
 import { GitPanel } from "@/components/GitPanel";
 import { BranchPicker } from "@/components/GitPanel/BranchPicker";
 import { ResearchPanel } from "@/components/research";
+import { SpecsPanel } from "@/components/specs";
 import { useProjectStore, selectIsNoProject } from "@/stores/projectStore";
 import { useGitPanelStore } from "@/stores/gitPanelStore";
 import { useUIStore, selectWorkspaceTab, type WorkspaceTab } from "@/stores/uiStore";
 import { useProjectGitRepo } from "@/hooks/useProjectGitRepo";
 import { useIndexingSettings } from "@/hooks/useIndexingSettings";
 import { focusFileExplorer } from "@/lib/workspaceLayout";
-import { FolderTree, GitBranch, Search, FlaskConical } from "lucide-react";
+import { FolderTree, GitBranch, Search, FlaskConical, BookOpen } from "lucide-react";
 
 /** Stable ids wiring each tab to its panel (the ARIA tabs pattern, same
  *  shape as the Research panel's segment wiring). */
@@ -157,6 +158,12 @@ export function WorkspacePanel() {
       label: "Research",
       itemProps: tabItemProps("research"),
     },
+    {
+      value: "specs",
+      icon: <BookOpen className="size-4" />,
+      label: "Specs",
+      itemProps: tabItemProps("specs"),
+    },
   ];
 
   return (
@@ -222,6 +229,17 @@ export function WorkspacePanel() {
             className="flex-1 min-h-0 overflow-hidden"
           >
             <ResearchPanel />
+          </div>
+        )}
+
+        {effectiveTab === 'specs' && (
+          <div
+            role="tabpanel"
+            id={workspacePanelId('specs')}
+            aria-labelledby={workspaceTabId('specs')}
+            className="flex-1 min-h-0 overflow-hidden"
+          >
+            <SpecsPanel />
           </div>
         )}
 

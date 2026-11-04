@@ -44,6 +44,6 @@ Accepted
 
 ## Lifecycle
 
-- ADRs with `Status: Accepted` are immutable (no edits after acceptance)
-- To change a decision: create a new ADR that supersedes the old one
+- ADRs with `Status: Accepted` are immutable once committed to the repository (no edits after acceptance); an uncommitted accepted ADR is an editable draft
+- To change a committed decision: create a new ADR that supersedes the old one
 - Update the old ADR's status to `Superseded by [NNN]`

@@ -1,0 +1,1 @@
+export { SpecsPanel } from './SpecsPanel'

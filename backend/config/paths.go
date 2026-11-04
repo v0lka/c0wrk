@@ -619,6 +619,14 @@ func ProjectCommandsPath(workspacePath string) string {
 	return filepath.Join(workspacePath, ".agents", "commands")
 }
 
+// ProjectSpecsPath returns the project-local specs root
+// (<workspacePath>/specs) parsed by core/specs for the Specs sidebar panel.
+// The path is only ever READ — a missing tree is the neutral present=false
+// state and is never created here. See specs/decisions/106-specs-sidebar-panel.md.
+func ProjectSpecsPath(workspacePath string) string {
+	return filepath.Join(workspacePath, "specs")
+}
+
 // ProjectResearchPath returns the project-local research root
 // (<workspacePath>/.research) — always on for real projects, created lazily
 // by the writing layer. See specs/domains/research.md.

@@ -24,7 +24,7 @@ export function getDefaultSidebarWidth(): number {
 
 // --- State types ---
 
-export type WorkspaceTab = 'explorer' | 'git' | 'semantics' | 'research'
+export type WorkspaceTab = 'explorer' | 'git' | 'semantics' | 'research' | 'specs'
 
 /** Active workspace tab per project id. Persisted so each project remembers its own tab. */
 export type WorkspaceTabByProject = Record<string, WorkspaceTab>
@@ -50,7 +50,7 @@ export type ResearchSegmentByProject = Record<string, ResearchSegment>
  * the default tab. Also the single source of truth for the tab-snapshot
  * validation in lib/tabSnapshot.
  */
-export const WORKSPACE_TAB_VALUES = new Set<WorkspaceTab>(['explorer', 'git', 'semantics', 'research'])
+export const WORKSPACE_TAB_VALUES = new Set<WorkspaceTab>(['explorer', 'git', 'semantics', 'research', 'specs'])
 
 /**
  * Valid ResearchSegment values — validated entry-by-entry on every rehydrate
