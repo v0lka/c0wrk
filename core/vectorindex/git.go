@@ -77,6 +77,66 @@ func CurrentBranch(ctx context.Context, repoPath string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
+// CurrentCommit returns the commit OID prefix (16 hex chars) of repoPath's
+// HEAD, or "" for a non-git directory. The OID — not the branch name — is
+// the snapshot identity of the shared corpus (ADR-104 §1 L3): every branch
+// and worktree checked out at the same commit maps onto one corpus, a
+// detached HEAD is first-class, and branch-name sanitizer collisions cannot
+// fork storage identity.
+func CurrentCommit(ctx context.Context, repoPath string) (string, error) {
+	gitDir := filepath.Join(repoPath, ".git")
+	if _, err := os.Stat(gitDir); os.IsNotExist(err) {
+		return "", nil
+	}
+	out, err := runGit(ctx, repoPath, "rev-parse", "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("detecting commit via git: %w", err)
+	}
+	oid := strings.TrimSpace(out)
+	if len(oid) > 16 {
+		oid = oid[:16]
+	}
+	return oid, nil
+}
+
+// ListLocalBranches lists the repository's local branch names (refs/heads —
+// the set every worktree of the clone shares, checked-out branches included).
+// An empty result is valid: a repository without refs keeps nothing. It is
+// the identity source of the unified store migration's branch resolution
+// (layout.go): every legacy branch store must map back to a live ref before
+// its commit OID — and therefore its snapshot corpus key — can be derived.
+func ListLocalBranches(ctx context.Context, repoPath string) ([]string, error) {
+	out, err := runGit(ctx, repoPath, "for-each-ref", "--format=%(refname:short)", "refs/heads/")
+	if err != nil {
+		return nil, fmt.Errorf("listing local branches: %w", err)
+	}
+	var names []string
+	for _, line := range strings.Split(out, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			names = append(names, line)
+		}
+	}
+	return names, nil
+}
+
+// CommitOfBranch resolves a local branch's current commit OID (16 hex
+// chars), the key the unified store migration promotes a legacy branch
+// store under (ADR-104 §1 L3: identity is the commit, never the branch
+// name). A missing branch is an error, not "": callers distinguish
+// structurally-absent branches from transient git failures by resolving the
+// branch list first.
+func CommitOfBranch(ctx context.Context, repoPath, branch string) (string, error) {
+	out, err := runGit(ctx, repoPath, "rev-parse", "--verify", branch+"^{commit}")
+	if err != nil {
+		return "", fmt.Errorf("resolving commit of branch %q: %w", branch, err)
+	}
+	oid := strings.TrimSpace(out)
+	if len(oid) > 16 {
+		oid = oid[:16]
+	}
+	return oid, nil
+}
+
 // runGit runs `git -C repoPath <args...>` and returns trimmed stdout. Every
 // invocation is routed through workspace.GitCmdInRepo — the hardened choke
 // point (fresh per-repo config scan + neutralizing -c overrides, fail-closed

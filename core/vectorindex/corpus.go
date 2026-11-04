@@ -1,0 +1,873 @@
+package vectorindex
+
+// The shared-corpus layer of ADR-104 stage 2 (owner/view contract,
+// specs/decisions/104-content-addressed-vector-store.md §3/§4): one
+// IMMUTABLE, snapshot-keyed corpus per physical store, shared read-only by
+// every workspace root of the project, with per-root overlays carrying each
+// root's divergence. A corpus is a branch-store-shaped directory
+// (branches/<collectionName(snapKey)>/) built once by a single-flight lease
+// holder through the ordinary IndexFull pipeline, PUBLISHED by an atomically
+// written corpus.json (the publication gate — a store without it is not
+// reusable and never served to another root), and thereafter opened read-only:
+// the chromem collection is decoded ONCE per process and shared by every
+// attached manager, and the lexical index is opened bleve-read-only (no
+// persister/merger), so N roots of one corpus never multiply its resident
+// bytes (criterion: no full copy on disk or in RAM).
+//
+// Snapshot identity is the commit OID ("two branches at the same commit
+// share tables exactly", ADR-104 §1 L3): SnapshotKey(oid) maps every branch
+// and every worktree checked out at that commit onto ONE corpus directory,
+// which is what lets a second clean root reuse the corpus with a bounded
+// reconciliation walk and no embed/chunk/commit pass. The per-root overlay
+// (overlayRootKey) is a private branch store under the same project root;
+// it is written solely by its root's manager (single-writer-per-store) and
+// never shared.
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"runtime/debug"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	chromem "github.com/philippgille/chromem-go"
+
+	"github.com/v0lka/c0wrk/core/vectorindex/lexical"
+	"github.com/v0lka/sp4rk/safeio"
+)
+
+const (
+	// corpusManifestName is the publication record of a snapshot corpus,
+	// written inside the corpus's branch root. It lands LAST and atomically:
+	// its presence is the only proof the corpus is complete (ADR-104 §3
+	// write ordering — a crash mid-build leaves an unpublished store that is
+	// rebuilt, never half-served).
+	corpusManifestName = "corpus.json"
+
+	// snapshotKeyPrefix namespaces commit-keyed corpora under branches/ so a
+	// snapshot identity can never collide with a legacy branch-named store
+	// (branch names are user data; snapshot keys are ours).
+	snapshotKeyPrefix = "snap_"
+
+	// overlayKeyPrefix namespaces per-root overlay stores under branches/.
+	// The suffix is the root fingerprint (identity.go), so a root's overlay
+	// is stable across sessions and unique per physical tree.
+	overlayKeyPrefix = "root_"
+
+	// corpusBuildWait bounds how long a non-building attacher waits for an
+	// in-flight corpus build (the single-flight lease's drain window). On
+	// expiry the attach fails closed — it never opens a parallel store.
+	corpusBuildWait = 10 * time.Minute
+)
+
+// Sentinel errors of the corpus layer. Fail-closed attach semantics
+// (ADR-104): an attach that cannot open the exact snapshot's corpus NEVER
+// falls back to serving another snapshot's or root's collection.
+var (
+	// ErrCorpusNotPublished is returned when a corpus store exists on disk
+	// without a publication manifest — the caller must build (or wait for
+	// the builder), never read it.
+	ErrCorpusNotPublished = errors.New("vector corpus not published")
+	// ErrCorpusEraMismatch is returned when a published corpus was produced
+	// under a different embedding era — the caller must rebuild it.
+	ErrCorpusEraMismatch = errors.New("vector corpus embedding era mismatch")
+)
+
+// CorpusManifest is the publication record of one snapshot corpus: the era
+// it was produced under (same fields as the branch generation manifest, so
+// era gating composes), the chromem collection name inside the store root
+// (a migrated corpus keeps its legacy collection name), and the per-file
+// content-hash map — the corpus's occurrence table lite (L2), and the
+// visibility arbiter for every attached root (a corpus entry is visible to a
+// root exactly while the root's own sidecar records the same hash for the
+// path).
+type CorpusManifest struct {
+	Format      int               `json:"format"`
+	Coords      string            `json:"coords"`
+	EmbeddingFP string            `json:"embedding_fp"`
+	Dims        int               `json:"dims"`
+	ChunkerFP   string            `json:"chunker_fp"`
+	IgnoreFP    string            `json:"ignore_fp"`
+	Collection  string            `json:"collection"`
+	Files       map[string]string `json:"files"`
+	CreatedAt   string            `json:"created_at"`
+}
+
+// compatible reports whether the manifest may be read under the given
+// embedding era. Chunker/ignore fingerprints do not gate reads (ADR-104 §2:
+// they own re-derivation, not generation boundaries).
+func (m *CorpusManifest) compatible(embeddingFP string, dims int) bool {
+	return m != nil &&
+		m.Format == storeFormatV2 &&
+		m.Coords == coordsRelativeV1 &&
+		m.EmbeddingFP == embeddingFP &&
+		m.Dims == dims
+}
+
+// readCorpusManifest loads a corpus publication record; nil (no error) when
+// absent or unparsable — absence means "not published", never "trust the
+// directory".
+func readCorpusManifest(branchRoot string) *CorpusManifest {
+	data, err := safeio.ReadFile(filepath.Join(branchRoot, corpusManifestName))
+	if err != nil {
+		return nil
+	}
+	var m CorpusManifest
+	if json.Unmarshal(data, &m) != nil {
+		return nil
+	}
+	return &m
+}
+
+// writeCorpusManifest atomically publishes the corpus record. Callers must
+// have completed every store write (documents, lexical, sidecar) first.
+func writeCorpusManifest(branchRoot string, m *CorpusManifest) error {
+	m.CreatedAt = time.Now().UTC().Format(time.RFC3339)
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return err
+	}
+	return safeio.WriteFileAtomic(filepath.Join(branchRoot, corpusManifestName), data, 0o644)
+}
+
+// snapshotKey derives the corpus store key from a commit OID (or a
+// synthetic, root-owned id for non-git trees — ADR-104 §1: "the synthetic
+// default/non-git snapshot is root-owned"). Every branch and worktree at
+// the same commit maps onto one key.
+func snapshotKey(oid string) string {
+	if oid == "" {
+		return ""
+	}
+	return snapshotKeyPrefix + sanitizeRe.ReplaceAllString(oid, "")
+}
+
+// overlayRootKey derives the per-root overlay store key from a workspace
+// root: the root fingerprint (identity.go) namespaces the root's private
+// store under the project's shared storage tree.
+func overlayRootKey(workspaceRoot string) string {
+	return overlayKeyPrefix + rootFingerprint(workspaceRoot)
+}
+
+// CorpusHandle is one shared, read-only view of a published corpus. The
+// chromem collection is decoded exactly once per process per corpus and the
+// handle is refcounted across every manager that attached it; the lexical
+// index is opened bleve-read-only. Nothing reachable from a handle may be
+// written — corpus immutability after publication is what makes per-root
+// isolation structural (a diverging root never mutates what other roots
+// read).
+type CorpusHandle struct {
+	key        string
+	manifest   *CorpusManifest
+	collection *chromem.Collection
+	lexical    lexical.Index
+	store      *corpusStore
+
+	// v2 is the §3-backed view (ADR-104 §3 read path): non-nil when the
+	// snapshot's occurrence table served the open — then collection is nil
+	// (no chromem decode: the tables and chunk records ARE the corpus) and
+	// every read leg branches through chunkstore_corpus.go. Exactly one of
+	// collection/v2 carries the corpus; manifest and lexical serve both.
+	v2 *v2Corpus
+
+	// retired marks a handle whose store left the registry
+	// (CorpusRegistry.DeleteStore / Close): the LAST release closes it
+	// instead of retaining it in the residency LRU, so a deleted store's
+	// corpora can never come back through the residency back door. Set and
+	// read only under the store's mutex.
+	retired bool
+}
+
+// Key returns the handle's snapshot store key.
+func (h *CorpusHandle) Key() string { return h.key }
+
+// Manifest returns the corpus's publication record (do not mutate).
+func (h *CorpusHandle) Manifest() *CorpusManifest { return h.manifest }
+
+// CorpusCount returns the corpus collection's document count (0 when the
+// handle is nil). A §3-backed handle counts its chunk occurrences.
+func (h *CorpusHandle) CorpusCount() int {
+	if h == nil {
+		return 0
+	}
+	if h.v2 != nil {
+		return h.v2.count()
+	}
+	if h.collection == nil {
+		return 0
+	}
+	return h.collection.Count()
+}
+
+// Release drops one reference; the last release either closes the handle
+// (retention disabled / store retired) or retains it in the owner's
+// residency LRU under the registry's count/byte budget — see
+// corpus_residency.go.
+func (h *CorpusHandle) Release() {
+	if h == nil || h.store == nil {
+		return
+	}
+	h.store.release(h)
+}
+
+// corpusBuild is the single-flight record of one in-flight corpus build.
+type corpusBuild struct {
+	done chan struct{}
+	err  error
+}
+
+// corpusStore is the per-physical-store corpus coordinator: the handle
+// cache (one decode per corpus per process), the build leases, and the
+// RESIDENCY LRU of ADR-104 §5 (retention of zero-reference handles, bounded
+// by count and bytes). The handle map is the ONLY cache — the lru list just
+// orders its zero-ref entries, so there is no parallel branch-keyed cache to
+// drift against.
+type corpusStore struct {
+	root   string
+	logger *slog.Logger
+	// reg is the owning registry (residency knobs' source of truth and the
+	// memory-free seam holder); nil only for hand-built stores in tests.
+	reg     *CorpusRegistry
+	mu      sync.Mutex
+	handles map[string]*CorpusHandle
+	refs    map[string]int
+	// lru orders the RETAINED (zero-ref) handles, oldest first (lru[0] is
+	// the next eviction candidate). An attached handle is never listed: the
+	// refcount is the read lease (ADR-104 §5 reader pinning) — attachment
+	// removes the key, the last release re-appends it, so a live view is
+	// structurally un-evictable and no second lock is needed.
+	lru []string
+	// decodes counts real corpus decodes per key (test introspection: the
+	// residency contract is "a re-attach of a resident corpus never
+	// decodes").
+	decodes map[string]int
+	builds  map[string]*corpusBuild
+
+	// sweepMu single-flights the unified legacy-layout migration sweep
+	// (layout.go RunStoreMigration): at most one sweep walks a physical
+	// store at a time; it is NEVER held while any other lock is taken, and
+	// the sweep itself holds no service/registry lock across its run.
+	sweepMu sync.Mutex
+
+	// resCapacity / resBudget bound the retained set (0/0 = retention
+	// disabled — a zero-ref handle closes immediately, the pre-residency
+	// behavior). Copied from the registry by SetResidency/storeFor under
+	// the store lock; never read through reg on the hot path.
+	resCapacity int
+	resBudget   int64
+
+	// diskBudgetBytes is the store-tree disk budget (0 = eviction off,
+	// store_gc.go). Copied from the registry by SetDiskBudget/storeFor.
+	diskBudgetBytes atomic.Int64
+
+	// ledger caches the last hygiene pass's §5 disk ledger snapshot for
+	// status reads (a status read never walks the tree).
+	ledger atomic.Pointer[StoreLedger]
+}
+
+// residencyEnabled reports whether zero-ref handles are retained at all:
+// both bounds zero (the default) disables retention entirely.
+func (cs *corpusStore) residencyEnabled() bool {
+	return cs.resCapacity > 0 || cs.resBudget > 0
+}
+
+// Published reports whether key's corpus has a publication record — the
+// v1 corpus.json manifest OR the §3 snapshot table (either is a complete
+// publication; the §3 table is the canonical form, corpus.json the legacy
+// gate kept until the chunk-record migration removes the v1 store).
+func (cs *corpusStore) Published(key string) bool {
+	if cs == nil || key == "" {
+		return false
+	}
+	if gen, _, ok := readCurrentGeneration(cs.root); ok && snapshotTablePublished(gen, key) {
+		return true
+	}
+	return readCorpusManifest(branchRootPath(cs.root, key)) != nil
+}
+
+// beginBuild acquires key's single-flight build lease: the first caller
+// becomes the builder (started=true); concurrent callers receive the lease's
+// done channel and must wait for it (bounded by the caller), then re-check
+// Published — a failed build leaves nothing published and the attach fails
+// closed. There is never a second writer to one store.
+func (cs *corpusStore) beginBuild(key string) (started bool, wait <-chan struct{}) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	if b, ok := cs.builds[key]; ok {
+		return false, b.done
+	}
+	b := &corpusBuild{done: make(chan struct{})}
+	if cs.builds == nil {
+		cs.builds = make(map[string]*corpusBuild)
+	}
+	cs.builds[key] = b
+	return true, b.done
+}
+
+// endBuild settles a build lease: the error is handed to waiters through the
+// closed channel and the lease is dropped (a later attacher may retry).
+func (cs *corpusStore) endBuild(key string, err error) {
+	cs.mu.Lock()
+	b := cs.builds[key]
+	delete(cs.builds, key)
+	cs.mu.Unlock()
+	if b != nil {
+		b.err = err
+		close(b.done)
+	}
+}
+
+// waitBuild blocks until the given in-flight build settles; ok is false
+// when the build expired (corpusBuildWait) or failed.
+func (cs *corpusStore) waitBuild(waitCh <-chan struct{}, key string) bool {
+	return cs.waitBuildFor(waitCh, key, corpusBuildWait)
+}
+
+// waitBuildFor is waitBuild with a caller-supplied bound. The unified store
+// migration uses a short one: a sweep that loses the lease to a live corpus
+// build defers the unit to its next run instead of parking for the attach
+// path's full drain window — the sweep is background hygiene, never a
+// blocker of the opened view.
+func (cs *corpusStore) waitBuildFor(waitCh <-chan struct{}, key string, bound time.Duration) bool {
+	select {
+	case <-waitCh:
+		return cs.Published(key)
+	case <-time.After(bound):
+		return false
+	}
+}
+
+// open returns the shared handle for key's published corpus, fail-closed:
+// unpublished, foreign-era, or unreadable corpora return an error naming the
+// snapshot — never another snapshot's data. The chromem decode is cached and
+// refcounted; the lexical index is opened read-only. A cache hit — attached
+// OR retained by the residency LRU — re-serves the SAME handle object: no
+// decode, no lexical reopen (the A→B→A contract of ADR-104 §5).
+func (cs *corpusStore) open(ctx context.Context, key string, ef chromem.EmbeddingFunc, embeddingFP string, dims int) (*CorpusHandle, error) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	if h, ok := cs.handles[key]; ok {
+		cs.refs[key]++
+		cs.detachLRULocked(key) // attached again — never an eviction candidate
+		return h, nil
+	}
+	// §3 read path first (ADR-104 §3): a published occurrence table opens
+	// the corpus without any chromem decode. Failure with an existing v1
+	// corpus falls back to the v1 open (the migration will repair); failure
+	// without one propagates (fail-closed attach).
+	if gen, genManifest, ok := readCurrentGeneration(cs.root); ok && genManifest.compatible(embeddingFP, dims) {
+		v2, v2Err := openV2Corpus(gen, key, genManifest)
+		switch {
+		case v2 != nil:
+			if cs.decodes == nil {
+				cs.decodes = make(map[string]int)
+			}
+			cs.decodes[key]++
+			h := &CorpusHandle{
+				key:      key,
+				manifest: v2.corpusManifest(genManifest),
+				lexical:  v2.lexical,
+				v2:       v2,
+				store:    cs,
+			}
+			if cs.handles == nil {
+				cs.handles = make(map[string]*CorpusHandle)
+				cs.refs = make(map[string]int)
+			}
+			cs.handles[key] = h
+			cs.refs[key] = 1
+			return h, nil
+		case v2Err != nil:
+			cs.logger.Debug("vector corpus: §3 open failed; falling back to the v1 store",
+				"snapshot", key, "error", v2Err)
+		}
+	}
+	branchRoot := branchRootPath(cs.root, key)
+	m := readCorpusManifest(branchRoot)
+	if m == nil {
+		return nil, fmt.Errorf("%w: %s", ErrCorpusNotPublished, key)
+	}
+	if !m.compatible(embeddingFP, dims) {
+		return nil, fmt.Errorf("%w: %s (fp %q dims %d)", ErrCorpusEraMismatch, key, m.EmbeddingFP, m.Dims)
+	}
+	db, err := newPersistentDB(branchRoot, false)
+	if err != nil {
+		return nil, fmt.Errorf("opening corpus DB for %s: %w", key, err)
+	}
+	name := m.Collection
+	if name == "" {
+		name = collectionName(key)
+	}
+	col := db.GetCollection(name, ef)
+	if col == nil {
+		return nil, fmt.Errorf("corpus collection %q missing for %s", name, key)
+	}
+	lexDir := lexicalIndexPath(cs.root, key)
+	lex, lexErr := lexical.OpenReadOnly(lexDir)
+	if lexErr != nil {
+		return nil, fmt.Errorf("opening corpus lexical index for %s: %w", key, lexErr)
+	}
+	if cs.decodes == nil {
+		cs.decodes = make(map[string]int)
+	}
+	cs.decodes[key]++
+	h := &CorpusHandle{key: key, manifest: m, collection: col, lexical: lex, store: cs}
+	if cs.handles == nil {
+		cs.handles = make(map[string]*CorpusHandle)
+		cs.refs = make(map[string]int)
+	}
+	cs.handles[key] = h
+	cs.refs[key] = 1
+	return h, nil
+}
+
+// detachLRULocked removes key from the retention list (a handle became
+// attached again). The caller must hold cs.mu.
+func (cs *corpusStore) detachLRULocked(key string) {
+	for i, k := range cs.lru {
+		if k == key {
+			cs.lru = append(cs.lru[:i], cs.lru[i+1:]...)
+			return
+		}
+	}
+}
+
+// release drops a handle reference. While references remain, the handle
+// stays live and un-evictable (the refcount is the read lease). The LAST
+// release either closes the handle (retention disabled, or the store was
+// retired) or retains it in the residency LRU, evicting the oldest eligible
+// handles beyond the configured count/byte bounds (corpus.go's park-mechanic
+// posture: enforcement right at the state change, memory freed through the
+// seam outside the lock).
+func (cs *corpusStore) release(h *CorpusHandle) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	if n := cs.refs[h.key]; n > 1 {
+		cs.refs[h.key] = n - 1
+		return
+	}
+	delete(cs.refs, h.key)
+	if h.retired || !cs.residencyEnabled() {
+		// Closed for good: drop the cache entry so the next open re-decodes.
+		delete(cs.handles, h.key)
+		cs.closeHandleLocked(h)
+		return
+	}
+	// Retained: the handle STAYS in the handles cache (a later open finds
+	// it and re-serves the same object — no decode, no lexical reopen);
+	// only its lru listing marks it eligible for eviction.
+	cs.lru = append(cs.lru, h.key)
+	cs.enforceResidencyLocked()
+}
+
+// closeHandleLocked releases a handle's OS-level residents (the read-only
+// lexical index; the chromem decode becomes garbage with the handle). The
+// caller must hold cs.mu and must already have dropped the handle from the
+// maps.
+func (cs *corpusStore) closeHandleLocked(h *CorpusHandle) {
+	if h.lexical != nil {
+		if err := h.lexical.Close(); err != nil {
+			cs.logger.Warn("vector corpus: closing read-only lexical index failed", "key", h.key, "error", err)
+		}
+	}
+}
+
+// promoteLegacyStore promotes a legacy branch-keyed store (ADR-064 layout)
+// living under srcRoot — the project's shared storage root or a released
+// worktree's legacy storage root — into the snapshot-keyed corpus for key,
+// WITHOUT copying bytes and WITHOUT a single embedding: directory renames
+// plus a corpus.json derived from the legacy sidecar's hash column (both
+// sidecar grammars — v6 envelope and bare map — feed the same hash column).
+// The publication manifest lands LAST (see corpusManifestName), so an
+// interrupted promotion is simply not published and the caller rebuilds or
+// replays.
+//
+// The reusable-mapping gates, in order, each with an honest reason string
+// for the caller's fallback diagnostics (the unified migration records them
+// verbatim, layout.go):
+//
+//   - key already published → nothing to do ("already published");
+//   - no source store for branch under srcRoot → ("source store absent");
+//   - legacy branch generation manifest absent or foreign embedding era →
+//     ("generation manifest absent or foreign embedding era") — nothing
+//     trustworthy to promote, embeddings of another era must never be
+//     served (ADR-104 §2);
+//   - no usable sidecar hash map → ("no usable sidecar hash map") — a
+//     corpus without a per-file hash map cannot arbitrate visibility;
+//   - content-less marker absent → ("content-less marker absent") — the
+//     store predates ADR-049's commit-time strip and holds fat documents
+//     whose content a read-only shared decode would pin in every attached
+//     process's RAM; the rebuild fallback re-derives content-less documents
+//     through the embedding cache (inference-spared).
+//
+// Reports migrated=false with a non-empty reason when there is nothing
+// promotable (the caller builds a fresh corpus), and err for I/O failures
+// (transient: the unified migration replays such units on its next run).
+// Only the store's current process may run this (the app's single-instance
+// lock, ADR-075, is the cross-process guard), and only under the store's
+// build lease for key.
+func (cs *corpusStore) promoteLegacyStore(srcRoot, branch, key, embeddingFP string, dims int) (migrated bool, reason string, err error) {
+	if key == "" || branch == "" || branch == key {
+		return false, "no source store for this snapshot key", nil
+	}
+	if cs.Published(key) {
+		return false, "already published", nil
+	}
+	legacyRoot := branchRootPath(srcRoot, branch)
+	if !dirHasEntries(legacyRoot) && !pathExists(fileHashesPathFor(srcRoot, branch)) {
+		return false, "source store absent", nil
+	}
+	legacyManifest := readBranchManifest(legacyRoot)
+	if !legacyManifest.compatible(embeddingFP, dims) {
+		// Absent or foreign-era legacy store: nothing trustworthy to promote.
+		return false, "generation manifest absent or foreign embedding era", nil
+	}
+	files, ok := legacySidecarHashMap(srcRoot, branch)
+	if !ok || len(files) == 0 {
+		// A corpus without a per-file hash map cannot arbitrate visibility.
+		return false, "no usable sidecar hash map", nil
+	}
+	if !pathExists(contentlessMarkerPathFor(srcRoot, branch)) {
+		// Pre-ADR-049 documents carry their content; a read-only shared
+		// decode would pin it in RAM in every attached process.
+		return false, "content-less marker absent", nil
+	}
+
+	snapRoot := branchRootPath(cs.root, key)
+	if err := ensureRealDir(filepath.Dir(snapRoot), 0o750); err != nil {
+		return false, "", fmt.Errorf("creating corpus parent for %s: %w", key, err)
+	}
+	// The lexical leg renames into the destination store's lexical/ tree,
+	// which a store that never indexed in legacy mode may not have yet.
+	if err := ensureRealDir(filepath.Dir(lexicalIndexPath(cs.root, key)), 0o750); err != nil {
+		return false, "", fmt.Errorf("creating lexical corpus parent for %s: %w", key, err)
+	}
+	// Never overwrite an existing target leg: an existing corpus for the
+	// snapshot (or the debris of an interrupted promotion) is left exactly
+	// as it is and the source stays in place — the sweep reports the
+	// collision, the attach path's build decides the store's fate.
+	for _, leg := range []string{snapRoot, fileHashesPathFor(cs.root, key), lexicalIndexPath(cs.root, key), contentlessMarkerPathFor(cs.root, key)} {
+		if _, statErr := os.Stat(leg); statErr == nil {
+			return false, "promotion target already exists", nil
+		}
+	}
+	// Renames are individually atomic; publication lands last.
+	moves := []struct{ from, to string }{
+		{legacyRoot, snapRoot},
+		{fileHashesPathFor(srcRoot, branch), fileHashesPathFor(cs.root, key)},
+		{lexicalIndexPath(srcRoot, branch), lexicalIndexPath(cs.root, key)},
+		{contentlessMarkerPathFor(srcRoot, branch), contentlessMarkerPathFor(cs.root, key)},
+	}
+	for _, mv := range moves {
+		if mv.from == "" || mv.to == "" || mv.from == mv.to {
+			continue
+		}
+		if _, statErr := os.Stat(mv.from); statErr != nil {
+			continue // absent legs are skipped, not fatal
+		}
+		if err := os.Rename(mv.from, mv.to); err != nil {
+			return false, "", fmt.Errorf("renaming %s into the corpus for %s: %w", mv.from, key, err)
+		}
+	}
+	if err := writeCorpusManifest(snapRoot, &CorpusManifest{
+		Format:      storeFormatV2,
+		Coords:      coordsRelativeV1,
+		EmbeddingFP: embeddingFP,
+		Dims:        dims,
+		ChunkerFP:   legacyManifest.ChunkerFP,
+		IgnoreFP:    legacyManifest.IgnoreFP,
+		Collection:  collectionName(branch),
+		Files:       files,
+	}); err != nil {
+		return false, "", fmt.Errorf("publishing migrated corpus for %s: %w", key, err)
+	}
+	cs.logger.Info("vector corpus: promoted legacy branch store into the shared corpus",
+		"branch", branch, "snapshot", key, "files", len(files), "source_root", srcRoot)
+	return true, "", nil
+}
+
+// legacySidecarHashMap extracts the rel-path → content-hash map from a
+// legacy sidecar file (v6 envelope or bare map). ok=false when the file is
+// absent or holds no usable entries.
+func legacySidecarHashMap(storageRoot, branch string) (map[string]string, bool) {
+	data, err := safeio.ReadFile(fileHashesPathFor(storageRoot, branch))
+	if err != nil {
+		return nil, false
+	}
+	var envelope struct {
+		Version int               `json:"version"`
+		Root    string            `json:"root"`
+		Entries map[string]string `json:"entries"`
+	}
+	if json.Unmarshal(data, &envelope) == nil && envelope.Entries != nil {
+		return hashColumn(envelope.Entries)
+	}
+	var bare map[string]string
+	if json.Unmarshal(data, &bare) != nil {
+		return nil, false
+	}
+	return hashColumn(bare)
+}
+
+// hashColumn maps sidecar entries to their hash field, keeping only
+// well-formed values.
+func hashColumn(entries map[string]string) (map[string]string, bool) {
+	out := make(map[string]string, len(entries))
+	for k, v := range entries {
+		if h := fileHashEntryHash(v); h != "" {
+			out[k] = h
+		}
+	}
+	return out, len(out) > 0
+}
+
+// DeleteRootOverlay removes one workspace root's overlay store artifacts
+// from a project storage root: the per-root branch store, its lexical
+// directory, its file-hash sidecar and its ownership marker (refs/<rootKey>.
+// ref — the root's OWN reference to the shared store, ADR-104 stage 5; the
+// detach removes exactly this reference and this delta). The shared corpus
+// is never touched — other roots (other worktrees, the checkout) may still
+// view it; the next sweep reclaims it only when no live marker reaches it.
+// Best-effort by design (the caller usually runs it after the tree itself
+// is gone); returns the first removal error encountered.
+func DeleteRootOverlay(storageRoot, workspaceRoot string) error {
+	key := overlayRootKey(workspaceRoot)
+	var firstErr error
+	for _, victim := range []string{
+		branchRootPath(storageRoot, key),
+		lexicalIndexPath(storageRoot, key),
+		fileHashesPathFor(storageRoot, key),
+		contentlessMarkerPathFor(storageRoot, key),
+	} {
+		if err := os.RemoveAll(victim); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if err := removeRootRef(storageRoot, key); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	return firstErr
+}
+
+// CorpusRegistry is the process-level owner of the per-store corpus
+// coordinators (ADR-104 §4: "one store owner per project store per
+// process"). The backend wires exactly one registry into every Manager of
+// every project through the manager factory; managers attach and release
+// read-only corpus handles through it. A nil registry (tests, standalone
+// services) disables the shared-corpus model entirely — those services keep
+// the historical per-branch behavior.
+//
+// Residency (ADR-104 §5) is REGISTRY-level policy: the count/byte bounds
+// below govern every store it owns, so the budget spans all projects'
+// shared corpora in the process. The default (0/0) keeps retention off —
+// a zero-ref handle closes immediately, exactly the pre-residency
+// behavior; additional retention of inactive views is an opt-in.
+type CorpusRegistry struct {
+	mu     sync.Mutex
+	stores map[string]*corpusStore
+	logger *slog.Logger
+
+	// resCapacity / resBudget are the residency bounds propagated to every
+	// store (see corpusStore.resCapacity). 0/0 = retention disabled.
+	resCapacity int
+	resBudget   int64
+
+	// diskBudget is the store-tree disk budget propagated to every store
+	// (store_gc.go §5); 0 disables snapshot eviction under pressure.
+	diskBudget atomic.Int64
+
+	// freeOSMemory is the instance-local memory-free seam resolved at
+	// construction (mirrors Service.freeOSMemory); residency evictions
+	// schedule it asynchronously so the freed RAM is returned to the OS
+	// without holding any lock. In-package tests swap it to observe calls.
+	freeOSMemory func()
+
+	// closed is set by Close (app shutdown): every later storeFor/Open
+	// fails instead of resurrecting stores over torn-down handles.
+	closed bool
+}
+
+// NewCorpusRegistry creates the process-level corpus registry.
+func NewCorpusRegistry(logger *slog.Logger) *CorpusRegistry {
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
+	}
+	return &CorpusRegistry{
+		stores:       make(map[string]*corpusStore),
+		logger:       logger,
+		freeOSMemory: debug.FreeOSMemory,
+	}
+}
+
+// storeFor returns (creating if absent) the corpus coordinator of one
+// physical storage root. Nil once the registry is closed.
+func (r *CorpusRegistry) storeFor(storageRoot string) *corpusStore {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return nil
+	}
+	if r.stores == nil {
+		r.stores = make(map[string]*corpusStore)
+	}
+	cs, ok := r.stores[storageRoot]
+	if !ok {
+		cs = &corpusStore{
+			root:        storageRoot,
+			logger:      r.logger,
+			reg:         r,
+			resCapacity: r.resCapacity,
+			resBudget:   r.resBudget,
+		}
+		cs.diskBudgetBytes.Store(r.diskBudget.Load())
+		r.stores[storageRoot] = cs
+	}
+	return cs
+}
+
+// Published reports whether the snapshot corpus of key is published under
+// storageRoot.
+func (r *CorpusRegistry) Published(storageRoot, key string) bool {
+	if r == nil {
+		return false
+	}
+	return r.storeFor(storageRoot).Published(key)
+}
+
+// EnsureCorpus drives one snapshot's corpus to a published state under
+// single-flight (ADR-104 §4: root managers SUBMIT work; at most one writer
+// ever touches the store): the first attacher runs build (the caller's
+// full-pass callback) under the lease; concurrent attachers wait bounded for
+// its outcome, then open the published corpus or fail closed. The migration
+// step promotes a compatible legacy branch store by rename before falling
+// back to a build. Returns the error of the ensuring caller only.
+func (r *CorpusRegistry) EnsureCorpus(ctx context.Context, storageRoot, key, legacyBranch, embeddingFP string, dims int, build func() error, onMigrate func()) error {
+	if r == nil || key == "" {
+		return errors.New("corpus registry not wired")
+	}
+	cs := r.storeFor(storageRoot)
+	if cs == nil {
+		return errors.New("corpus registry is closed")
+	}
+	if cs.Published(key) {
+		return nil
+	}
+	started, waitCh := cs.beginBuild(key)
+	if !started {
+		// Someone else is building this corpus: wait bounded, then read the
+		// published result — never open a parallel store (single-writer).
+		if !cs.waitBuild(waitCh, key) {
+			return fmt.Errorf("%w: concurrent corpus build for %s did not complete", ErrCorpusNotPublished, key)
+		}
+		return nil
+	}
+	buildErr := func() error {
+		migrated, reason, mErr := cs.promoteLegacyStore(storageRoot, legacyBranch, key, embeddingFP, dims)
+		if mErr != nil {
+			return mErr
+		}
+		if migrated {
+			if onMigrate != nil {
+				onMigrate()
+			}
+			return nil
+		}
+		cs.logger.Debug("vector corpus: legacy store not promotable; building a fresh corpus",
+			"branch", legacyBranch, "snapshot", key, "reason", reason)
+		if bErr := build(); bErr != nil {
+			return bErr
+		}
+		if !cs.Published(key) {
+			// The builder is responsible for publishing (PublishCorpus);
+			// a finished build without publication is a contract breach —
+			// fail closed rather than serve an unproven store.
+			return fmt.Errorf("%w: build for %s finished without publishing", ErrCorpusNotPublished, key)
+		}
+		return nil
+	}()
+	cs.endBuild(key, buildErr)
+	return buildErr
+}
+
+// Open returns the shared read-only handle of key's published corpus under
+// storageRoot (fail-closed; see corpusStore.open).
+func (r *CorpusRegistry) Open(ctx context.Context, storageRoot, key string, ef chromem.EmbeddingFunc, embeddingFP string, dims int) (*CorpusHandle, error) {
+	if r == nil {
+		return nil, errors.New("corpus registry not wired")
+	}
+	cs := r.storeFor(storageRoot)
+	if cs == nil {
+		return nil, errors.New("corpus registry is closed")
+	}
+	return cs.open(ctx, key, ef, embeddingFP, dims)
+}
+
+// ProtectedKeys returns the snapshot keys of storageRoot that the process
+// currently PROTECTS from reachability GC (ADR-104 stage 5): every key with
+// a live shared handle (a root's attached view — a held snapshot) and every
+// key under an in-flight build lease (a corpus being built or migrated has
+// no ownership marker yet; the lease is its interim owner). The sweep
+// consults this before removing corpus artifacts, so it can never delete a
+// live reader's decode or a builder's target; a nil registry protects
+// nothing (no registry means no corpus mode — nothing to protect).
+// RETAINED zero-reference handles (the residency LRU) are deliberately NOT
+// protected: retention is a memory cache, not an owner — ReclaimKeys closes
+// them on the sweep's behalf.
+func (r *CorpusRegistry) ProtectedKeys(storageRoot string) map[string]struct{} {
+	if r == nil {
+		return nil
+	}
+	cs := r.storeFor(storageRoot)
+	if cs == nil {
+		return nil // registry closed — nothing is protected or reclaimable
+	}
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	protected := make(map[string]struct{}, len(cs.refs)+len(cs.builds))
+	for key, n := range cs.refs {
+		if n > 0 {
+			protected[key] = struct{}{}
+		}
+	}
+	for key := range cs.builds {
+		protected[key] = struct{}{}
+	}
+	return protected
+}
+
+// ReclaimKeys closes the RETAINED (zero-reference) handles of the given
+// snapshot keys under storageRoot — the reachability sweep calls it for
+// corpora it is about to remove, so a residency slot's open lexical reader
+// cannot keep the directory alive (Windows handle-close ordering) and the
+// LRU never caches a deleted store. Attached handles (refs > 0) and
+// in-flight builds are left untouched — their keys never reach the sweep's
+// victim set (ProtectedKeys); if one slipped through anyway it stays open
+// and the removal fails soft, retried by the next sweep.
+func (r *CorpusRegistry) ReclaimKeys(storageRoot string, keys map[string]struct{}) {
+	if r == nil || len(keys) == 0 || storageRoot == "" {
+		return
+	}
+	cs := r.storeFor(storageRoot)
+	if cs == nil {
+		return // registry closed — teardown already retired every handle
+	}
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	for key := range keys {
+		if cs.refs[key] > 0 {
+			continue // attached: not ours to close
+		}
+		h, ok := cs.handles[key]
+		if !ok {
+			continue
+		}
+		delete(cs.handles, key)
+		cs.detachLRULocked(key)
+		cs.closeHandleLocked(h)
+	}
+}

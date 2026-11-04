@@ -546,6 +546,24 @@ func ApplyDefaults(cfg *Config) {
 		v := vectorindex.DefaultParkBudgetBytes >> 20
 		cfg.VectorIndex.ParkBudgetMb = &v
 	}
+	// Corpus residency (ADR-104 §5): both pointer knobs materialize their
+	// explicit defaults (0 = retention off / no bound of that kind), so the
+	// resolved config always carries the effective policy and the desktop
+	// factory forwards resolved values — never a fail-open literal. An
+	// absent block in an older config migrates to these defaults (there is
+	// nothing to carry over: the knobs are new).
+	if cfg.VectorIndex.CorpusResidencyCapacity == nil {
+		v := vectorindex.DefaultCorpusResidencyCapacity
+		cfg.VectorIndex.CorpusResidencyCapacity = &v
+	}
+	if cfg.VectorIndex.CorpusResidencyBudgetMb == nil {
+		v := vectorindex.DefaultCorpusResidencyBudgetBytes >> 20
+		cfg.VectorIndex.CorpusResidencyBudgetMb = &v
+	}
+	if cfg.VectorIndex.StoreDiskBudgetMb == nil {
+		v := int64(0)
+		cfg.VectorIndex.StoreDiskBudgetMb = &v
+	}
 
 	// Execution provider: empty normalizes to "auto"; DeviceID's 0 is already
 	// the valid "first GPU" (only negatives are rejected).

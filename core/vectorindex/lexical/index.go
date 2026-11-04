@@ -77,6 +77,26 @@ func Open(dir string) (Index, error) {
 	return &bleveIndex{idx: idx, dir: dir}, nil
 }
 
+// OpenReadOnly returns an Index over an EXISTING directory opened
+// bleve-read-only (scorch config read_only: no persister, no merger, no
+// writes). This is the shared-corpus reader mode (ADR-104): N attached
+// workspace roots of one published snapshot corpus read the same on-disk
+// lexical index concurrently while exactly zero of them may write it. A
+// missing directory is an error — published corpora always carry one.
+func OpenReadOnly(dir string) (Index, error) {
+	if dir == "" {
+		return nil, errors.New("lexical index dir must not be empty")
+	}
+	if _, err := os.Stat(dir); err != nil {
+		return nil, fmt.Errorf("opening read-only lexical index at %s: %w", dir, err)
+	}
+	idx, err := bleve.OpenUsing(dir, map[string]interface{}{"read_only": true})
+	if err != nil {
+		return nil, fmt.Errorf("opening read-only lexical index at %s: %w", dir, err)
+	}
+	return &bleveIndex{idx: idx, dir: dir}, nil
+}
+
 // buildMapping constructs the c0wrk_code analyzer mapping: content analyzed,
 // file_path and language keyword fields.
 func buildMapping() (mapping.IndexMapping, error) {

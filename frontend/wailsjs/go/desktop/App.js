@@ -1014,6 +1014,10 @@ export function UpdateWorkDirectoryDescription(arg1, arg2, arg3, arg4) {
   return window['go']['desktop']['App']['UpdateWorkDirectoryDescription'](arg1, arg2, arg3, arg4);
 }
 
+export function VectorCorpusRegistry() {
+  return window['go']['desktop']['App']['VectorCorpusRegistry']();
+}
+
 export function WatchDirectory(arg1) {
   return window['go']['desktop']['App']['WatchDirectory'](arg1);
 }

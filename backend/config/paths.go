@@ -212,10 +212,16 @@ func ManagedWorktreeRootForPath(repoRoot, path string) (string, bool) {
 	return "", false
 }
 
-// WorktreeVectorIndexPath returns a managed worktree's vector-index storage
-// root: <project vector index>/worktrees/<name> — per-tree state stays
-// isolated from concurrent sessions on other trees while remaining inside
-// the project's vector dir (project deletion removes it). See
+// WorktreeVectorIndexPath returns a managed worktree's LEGACY vector-index
+// storage root: <project vector index>/worktrees/<name>. New attaches never
+// derive a live store from it — since ADR-104 stage 2 (owner/view), a
+// worktree shares the PROJECT's store: snapshot-keyed corpora (read-only)
+// plus its per-root overlay keyed by the tree's root fingerprint inside the
+// shared tree (see core/vectorindex overlayRootKey). The path survives for
+// CLEANUP ONLY: deleteWorktreeVectorIndex removes a released tree's legacy
+// root (pre-shared-store builds) on tree deletion; project deletion removes
+// the whole project vector dir, legacy roots included. See
+// specs/decisions/104-content-addressed-vector-store.md and
 // specs/domains/session-worktrees.md.
 func WorktreeVectorIndexPath(agentDir, projectID, name string) (string, error) {
 	if projectID == "" {
@@ -227,17 +233,16 @@ func WorktreeVectorIndexPath(agentDir, projectID, name string) (string, error) {
 	return filepath.Join(ProjectVectorIndexPath(agentDir, projectID), "worktrees", name), nil
 }
 
-// WorktreeEmbeddingCachePath returns a managed worktree's content-addressed
-// embedding-cache dir, INSIDE the tree's storage root
-// (<project vector index>/worktrees/<name>/embedding_cache):
-// core/vectorindex enables a persistent cache only for a root inside the
-// storage the service was opened for — anywhere else silently turns the
-// tree's first index pass into a full cold ONNX re-run (issue #137 step 1).
-// Cache roots stay disjoint subtrees (scanCacheTree walks its own root); the
-// checkout's cache is seeded into fresh trees by seedWorktreeEmbeddingCache;
-// project deletion removes the dir; the pre-fix sibling location is cleaned
-// up via LegacyWorktreeEmbeddingCachePath. See
-// specs/domains/session-worktrees.md and specs/domains/workspace.md.
+// WorktreeEmbeddingCachePath returns a managed worktree's LEGACY per-tree
+// content-addressed embedding-cache dir, INSIDE the tree's legacy storage
+// root (<project vector index>/worktrees/<name>/embedding_cache). Since
+// ADR-104 stage 2, a worktree's manager uses the PROJECT's shared cache
+// (ProjectEmbeddingCachePath) — the content-addressed cache is keyed by
+// embedding-era + text hash and needs no per-tree copies. This path
+// survives for CLEANUP ONLY (deleteWorktreeVectorIndex on tree release).
+// The pre-fix sibling location is cleaned up via
+// LegacyWorktreeEmbeddingCachePath. See specs/decisions/104-content-addressed-vector-store.md
+// and specs/domains/session-worktrees.md.
 func WorktreeEmbeddingCachePath(agentDir, projectID, name string) (string, error) {
 	if projectID == "" {
 		return "", errors.New("project id is required for a worktree embedding cache path")

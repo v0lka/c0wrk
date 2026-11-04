@@ -3,12 +3,9 @@ package backend
 import (
 	"context"
 	"errors"
-	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/project"
@@ -68,24 +65,21 @@ func (f *FrontendAPI) resolveVectorIndexTarget(switchCtx context.Context, p *pro
 	return target
 }
 
-// managedWorktreeVectorTarget derives the worktree-scoped vector target when
-// ws is a managed worktree of project p's checkout (the workspace is the tree
-// root itself; storage <project vector index>/worktrees/<name>). The cache is
-// per-tree too: a checkout manager and a tree manager run concurrently, and
-// the cache accounting walks its root recursively, so a shared root is unsafe.
+// managedWorktreeVectorTarget derives the worktree's vector target: the
+// workspace is the tree root itself; storage is the PROJECT's shared store
+// (ADR-104 stage 2 owner/view — the tree reads the snapshot-keyed corpus
+// read-only and writes only its per-root overlay; the embedding cache is the
+// project's single content-addressed cache). Membership is decided by
+// containment inside THIS project's .worktrees container.
 func (f *FrontendAPI) managedWorktreeVectorTarget(p *project.ProjectInfo, ws string) (vectorIndexTarget, bool) {
 	f.seedAcquire()
-	name, err := config.ManagedWorktreeNameFromPath(p.WorkspacePath, ws)
-	if err != nil {
+	if _, err := config.ManagedWorktreeNameFromPath(p.WorkspacePath, ws); err != nil {
 		return vectorIndexTarget{}, false
 	}
-	storage, err := config.WorktreeVectorIndexPath(f.agentDir, p.ID, name)
-	if err != nil {
-		f.log().Warn("vector index: deriving worktree storage path failed; indexing the project checkout instead",
-			"project", p.ID, "workspace", ws, "error", err)
-		return vectorIndexTarget{}, false
-	}
-	return vectorIndexTarget{workspacePath: ws, storagePath: storage}, true
+	return vectorIndexTarget{
+		workspacePath: ws,
+		storagePath:   config.ProjectVectorIndexPath(f.agentDir, p.ID),
+	}, true
 }
 
 // storedProjectRoot returns the project row's stored (unresolved) workspace
@@ -122,6 +116,7 @@ func (f *FrontendAPI) deleteWorktreeVectorIndex(repoRoot, projectID, name string
 	if len(releasedPath) > 0 && releasedPath[0] != "" {
 		root = canonicalWorktreeRoot(releasedPath[0])
 	}
+	overlayPaths := []string{root}
 	mgr := vr.Release(root)
 	// Legacy rows keep a symlinked ancestor in their stored root: AGENT
 	// routing keys a tree's live manager under the raw stored spelling, while
@@ -137,9 +132,34 @@ func (f *FrontendAPI) deleteWorktreeVectorIndex(repoRoot, projectID, name string
 			if m := vr.Release(alt); m != nil && mgr == nil {
 				mgr = m
 			}
+			overlayPaths = append(overlayPaths, alt)
 		}
 	}
 
+	// ADR-104 stage 2 (owner/view): the tree's per-root overlay inside the
+	// PROJECT's shared store goes away with the tree; the snapshot corpora
+	// stay (the checkout and other trees may still view them). Overlay keys
+	// are fingerprinted off the raw tree path, so every spelling the tree
+	// was ever keyed under is cleaned. RESURRECTION GUARD: if a new manager
+	// already re-attached this root path (a Create/adopt racing the release
+	// — the narrow resurrection window), its overlay and ownership marker
+	// belong to the LIVE root now and are left alone; the next release of
+	// that tree cleans them.
+	sharedRoot := config.ProjectVectorIndexPath(f.agentDir, projectID)
+	for _, treePath := range overlayPaths {
+		if vr.LiveManager(treePath) != nil {
+			f.log().Debug("vector index: skipping overlay cleanup for a re-attached worktree root",
+				"project", projectID, "worktree", name, "root", treePath)
+			continue
+		}
+		if err := vectorindex.DeleteRootOverlay(sharedRoot, treePath); err != nil {
+			f.log().Warn("vector index: failed to remove released worktree overlay from the shared store",
+				"project", projectID, "worktree", name, "error", err)
+		}
+	}
+
+	// Legacy per-tree storage roots (pre-shared-store builds) still get
+	// their best-effort cleanup.
 	storage, err := config.WorktreeVectorIndexPath(f.agentDir, projectID, name)
 	if err != nil {
 		f.log().Debug("vector index: cannot derive worktree storage path for cleanup",
@@ -198,123 +218,6 @@ func (f *FrontendAPI) deleteWorktreeVectorIndex(repoRoot, projectID, name string
 				"project", projectID, "worktree", name, "error", err)
 		}
 	}
-}
-
-// seedWorktreeEmbeddingCache populates a freshly provisioned worktree's
-// content-addressed embedding cache from the project checkout's cache, so the
-// tree's first index pass reuses the checkout's embeddings. Best-effort and
-// idempotent — a skipped or partial seed only means a cold first pass; runs
-// once, synchronously, in the provisioning RPC, before the frontend's focus
-// move can build the tree's manager. See specs/domains/session-worktrees.md.
-func (f *FrontendAPI) seedWorktreeEmbeddingCache(projectID, worktreeName string) {
-	f.seedAcquire()
-	src := config.ProjectEmbeddingCachePath(f.agentDir, projectID)
-	dst, err := config.WorktreeEmbeddingCachePath(f.agentDir, projectID, worktreeName)
-	if err != nil {
-		f.log().Debug("vector index: cannot derive worktree cache path for seeding",
-			"project", projectID, "worktree", worktreeName, "error", err)
-		return
-	}
-	srcInfo, err := os.Stat(src)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			f.log().Debug("vector index: checkout embedding cache unreadable; seed skipped",
-				"project", projectID, "worktree", worktreeName, "error", err)
-		}
-		return
-	}
-	if !srcInfo.IsDir() {
-		return
-	}
-	if _, err := os.Stat(dst); err == nil {
-		// Already seeded (or the tree's manager created the root): never
-		// touch an existing cache directory.
-		return
-	} else if !os.IsNotExist(err) {
-		f.log().Warn("vector index: worktree embedding cache state unreadable; seed skipped",
-			"project", projectID, "worktree", worktreeName, "error", err)
-		return
-	}
-	if err := os.MkdirAll(dst, 0o750); err != nil {
-		f.log().Debug("vector index: cannot create worktree embedding cache; seed skipped",
-			"project", projectID, "worktree", worktreeName, "error", err)
-		return
-	}
-
-	started := time.Now()
-	files, bytes, err := copyEmbeddingCacheTree(src, dst)
-	if err != nil {
-		f.log().Warn("vector index: worktree embedding cache seed incomplete; the tree's first index pass stays cold",
-			"project", projectID, "worktree", worktreeName,
-			"files", files, "bytes", bytes, "error", err)
-		return
-	}
-	f.log().Info("vector index: seeded worktree embedding cache from the project checkout",
-		"project", projectID, "worktree", worktreeName,
-		"files", files, "bytes", bytes, "duration", time.Since(started))
-}
-
-// copyEmbeddingCacheTree mirrors src's fanout tree (two-level hex dirs of
-// .vec entries; only regular files are meaningful) into dst, which must not
-// exist. Tolerant by design — the source is a live cache the checkout's
-// manager may write or prune concurrently, so per-file failures are skipped
-// (a missing entry is a cold miss downstream; a torn copy fails the entry's
-// checksum at read time). Modes match the cache's own writer (0o750 dirs,
-// 0o600 files); the error is the first fatal walk error, not a per-file skip.
-func copyEmbeddingCacheTree(src, dst string) (filesCopied int, bytesCopied int64, err error) {
-	err = filepath.WalkDir(src, func(path string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			if path == src {
-				return walkErr // unreadable source root: nothing sensible to copy
-			}
-			return nil //nolint:nilerr // a vanished subtree is a skip, not a failure
-		}
-		rel, relErr := filepath.Rel(src, path)
-		if relErr != nil {
-			return nil //nolint:nilerr // cannot express the entry relative to src: skip it
-		}
-		if d.IsDir() {
-			if path == src {
-				return nil // dst root already exists
-			}
-			return os.MkdirAll(filepath.Join(dst, rel), 0o750)
-		}
-		if !d.Type().IsRegular() {
-			return nil // caches hold only regular entries; skip anything else
-		}
-		info, infoErr := d.Info()
-		if infoErr != nil {
-			return nil //nolint:nilerr // the entry vanished between ReadDir and Info: cold miss
-		}
-		if copyErr := copyFileExact(filepath.Join(dst, rel), path, info.Mode().Perm()); copyErr != nil {
-			return nil //nolint:nilerr // unreadable or just-pruned source entry: cold miss
-		}
-		filesCopied++
-		bytesCopied += info.Size()
-		return nil
-	})
-	return filesCopied, bytesCopied, err
-}
-
-// copyFileExact copies one regular file, creating dstPath exclusively with the
-// source's permission bits; a failed copy removes the partial, so a later copy
-// never sees a half-written entry as done.
-func copyFileExact(dstPath, srcPath string, perm os.FileMode) error {
-	in, err := os.Open(srcPath)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = in.Close() }()
-	out, err := os.OpenFile(dstPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(out, in); err != nil {
-		_ = out.Close()
-		_ = os.Remove(dstPath)
-		return err
-	}
-	return out.Close()
 }
 
 // SearchVectorStore searches the vector store, routed to the Git-panel FOCUS
@@ -477,6 +380,17 @@ func (f *FrontendAPI) vectorIndexStatusFromManager(vm *vectorindex.Manager) Vect
 		}
 	}
 	result.Indices = indices
+
+	// The §5 disk ledger (ADR-104): the registry's cached snapshot for the
+	// manager's physical store — populated by the hygiene pass; omitted
+	// until then. The root comes from the MANAGER (lock-free for status:
+	// the service's own StorageRoot takes the service read lock an
+	// in-flight indexing pass holds — ADR-104 §4's never-block contract).
+	if reg := f.VectorCorpusRegistry(); reg != nil {
+		if root := vm.StorageRoot(); root != "" {
+			result.Store = reg.StoreLedgerSnapshot(root)
+		}
+	}
 	return result
 }
 

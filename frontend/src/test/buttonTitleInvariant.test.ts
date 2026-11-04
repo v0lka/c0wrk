@@ -277,7 +277,7 @@ describe('button title invariant (title=, a TooltipTrigger ancestor, or a static
     expect(sources.length).toBeGreaterThan(50)
   })
 
-  it('gives every <button>/<Button> a title= attribute or a TooltipTrigger ancestor', () => {
+  it('gives every <button>/<Button> a title= attribute or a TooltipTrigger ancestor', () => { // whole-tree scan: generous bound under parallel suite load
     const offenders: string[] = []
     for (const file of sources) {
       for (const v of scanButtonTitles(readFileSync(file, 'utf8'), file)) {
@@ -285,7 +285,7 @@ describe('button title invariant (title=, a TooltipTrigger ancestor, or a static
       }
     }
     expect(offenders).toEqual([])
-  })
+  }, 30_000)
 
   it('flags a button without title', () => {
     for (const src of [

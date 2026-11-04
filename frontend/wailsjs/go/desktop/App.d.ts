@@ -8,6 +8,7 @@ import {config} from '../models';
 import {desktop} from '../models';
 import {review} from '../models';
 import {fs} from '../models';
+import {vectorindex} from '../models';
 
 export function AbortMerge():Promise<void>;
 
@@ -514,6 +515,8 @@ export function UpdateShellExecSettings(arg1:backend.ShellExecSettingsResponse):
 export function UpdateVectorIndexSettings(arg1:backend.VectorIndexSettingsResponse):Promise<void>;
 
 export function UpdateWorkDirectoryDescription(arg1:string,arg2:string,arg3:string,arg4:string):Promise<void>;
+
+export function VectorCorpusRegistry():Promise<vectorindex.CorpusRegistry>;
 
 export function WatchDirectory(arg1:string):Promise<void>;
 

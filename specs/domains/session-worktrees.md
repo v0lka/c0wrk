@@ -31,7 +31,7 @@ git RPC, the worktree listing and deletion RPCs, and the pinned-branch refusal) 
 - `backend/config/paths.go` — `NewManagedWorktreesDir`, `WorktreePathInContainer`, `ManagedWorktreeNameFromPath`/`ManagedWorktreeNameFromPathProject`, `ManagedWorktreeLegacyPath`, `ManagedWorktreeRootForPath`, legacy `ManagedWorktreesDir`/`ManagedWorktreePath`, and project-deletion preflight
 - `backend/frontend_api_git_focus.go` — the Git-panel focus model: `SetGitPanelFocus`/`GetGitPanelFocus`/`ListProjectWorktrees` RPCs, `resolveGitFocusRoot` (the focus resolution behind `resolveGitRepoRoot`), owning-session metadata, the pinned-branch guard (`ErrPinnedWorktreeBranch`, `refusePinnedBranchSwitch`), the fail-soft vector-registry re-point every accepted focus move carries (`focusVectorRoots` → `ApplyFocus`), and `DeleteWorktree` (removes any linked tree of the active project with the session-release cleanup contract)
 - `backend/frontend_api_git.go` — `CreateBranchInWorktree`, the Git-panel RPC that births a branch and its managed tree atomically from a base ref (through `worktrees.Owner.ProvisionNewBranch`), never switching or consulting the focus
-- `backend/frontend_api_vector.go` — vector-index RPC surface (`SearchVectorStore`/`GetVectorIndexStatus`/`ReindexVectorIndex`, all routed to the Git-panel FOCUS root), focus-target resolution (`resolveVectorIndexTarget` — the project switch resolves the saved session's tree), worktree-scoped storage (`config.WorktreeVectorIndexPath`), release cleanup (`deleteWorktreeVectorIndex`: registry release → storage → per-tree cache) and provisioning seeding (`seedWorktreeEmbeddingCache`: copies the checkout's embedding cache into a fresh tree's cache root)
+- `backend/frontend_api_vector.go` — vector-index RPC surface (`SearchVectorStore`/`GetVectorIndexStatus`/`ReindexVectorIndex`, all routed to the Git-panel FOCUS root), focus-target resolution (`resolveVectorIndexTarget` — the project switch resolves the saved session's tree; managed trees route onto the PROJECT's shared store, ADR-104), release cleanup (`deleteWorktreeVectorIndex`: registry release → the tree's shared-store overlay + ownership marker + legacy per-tree storage + cache) and the resurrection guard (`cleanupReleasedTreeVectorData`, ADR-104 stage 5)
 - `backend/vector_roots.go` — the per-root registry (ADR-081): one `vectorindex.Manager` per workspace root (single-flight creation, LRU-bounded live set with the focus pinned), agent-side routing by the executor context's workspace root, `ApplyFocus`/`LeaveFocus`, `Release`/`ReleaseProject`/`ShutdownAll`, and `Application.buildVectorRouter` (the shared search closures)
 - `core/vectorindex/git.go` — `resolveGitDir` follows a linked worktree's `.git` pointer file to the private git directory that owns HEAD, so the vector index's branch monitoring works inside managed trees; `backend/config/paths.go` `ManagedWorktreeNameFromPath`/`WorktreeVectorIndexPath` derive the per-tree index storage
 - `frontend/src/lib/gitFocus.ts` + `frontend/src/hooks/useGitFocusSync.ts` — the frontend side: serialized/supersede-guarded focus applies and the follow-the-session effect (project/session switches and the active session's send-time-bind transition move the focus to the active session's execution workspace); the hook is mounted once at the App root (beside `useVectorIndexStatus`) — the Git panel lives only while the git tab is active, and the follow must also run on chat-area session switches with any other tab open
@@ -396,7 +396,17 @@ frontend (useGitFocusSync, mounted at the App root)  backend
   vector-registry root is released first (open chromem handles dropped so
   removal is Windows-safe) and a managed tree's derived index storage +
   embedding cache are dropped (`deleteWorktreeVectorIndex`); an external
-  tree only releases its registry root. `git:status_changed` is emitted for
+  tree only releases its registry root. Since ADR-104 stage 2/5 the
+  tree-scoped part is exactly its OWN delta in the project's shared store —
+  the per-root overlay (store, lexical directory, sidecar, content-less
+  marker) plus its `refs/root_<fp>.ref` ownership marker; the snapshot
+  corpora other roots or surviving branches still reach are never touched
+  (see [workspace.md](workspace.md), shared-store reachability GC). The
+  session-release flow guards the resurrection window first
+  (`cleanupReleasedTreeVectorData`): a released tree whose path exists
+  again (a racing adoption's Recreate) keeps everything — the recreated
+  tree's manager, overlay and marker are live data, and the cleanup defers
+  to that tree's own next release. `git:status_changed` is emitted for
   the checkout — the refresh re-resolves the focus server-side, so a focus
   pointing at the deleted tree rolls back to the checkout through the
   stale-focus fallback.

@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -537,5 +538,33 @@ func TestWatchDirectory_CodeStaleRescopeSkipped(t *testing.T) {
 	}
 	if root := codeWatcherRoot(t, f); root != checkout {
 		t.Fatalf("watcher root after authority move = %q, want the checkout %q", root, checkout)
+	}
+}
+
+// TestWatcherEmitters_TolerateNilEmitter pins the nil-emitter contract of the
+// helpers the fsnotify callbacks emit through: a FrontendAPI without Wails
+// event wiring (test harnesses, early startup) must not crash the watcher
+// goroutine when a debounced batch lands. Regression: the CODE-mode callback
+// called the emitEvent field without a nil guard and a stray .git event
+// SIGSEGV'd the whole test binary.
+func TestWatcherEmitters_TolerateNilEmitter(t *testing.T) {
+	f := &FrontendAPI{agentDir: t.TempDir(), logger: slog.New(slog.DiscardHandler)}
+	f.seedPublished.Store(true)
+	root := t.TempDir()
+	researchRoot := config.ProjectResearchPath(root)
+	papersRoot := filepath.Join(root, "papers")
+	f.activeProjectMu.Lock()
+	f.activeResearchRoot = researchRoot
+	f.activePapersRoot = papersRoot
+	f.activeProjectMu.Unlock()
+
+	if got := f.emitResearchFileChanged(researchRoot, "proj-1", []string{filepath.Join(researchRoot, "R-001", "brief.md")}); !got {
+		t.Errorf("emitResearchFileChanged(research-scoped path) = %t, want true (nil emitter must not change scoping)", got)
+	}
+	if got := f.emitPapersChanged(papersRoot, "", "proj-1", []string{filepath.Join(papersRoot, "a.pdf")}); !got {
+		t.Errorf("emitPapersChanged(paper-library path) = %t, want true (nil emitter must not change scoping)", got)
+	}
+	if got := f.emitResearchFileChanged(researchRoot, "proj-1", []string{filepath.Join(root, "outside.txt")}); got {
+		t.Errorf("emitResearchFileChanged(non-scoped path) = %t, want false", got)
 	}
 }

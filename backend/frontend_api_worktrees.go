@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -362,9 +363,6 @@ func (f *FrontendAPI) bindSessionWorkspace(ctx context.Context, id string, choic
 		f.app.Manager().EmitStagedAttachmentsLost(id, pendingSnap)
 		return fmt.Errorf("session workspace bound, but its staged attachments could not be carried across the workspace switch; the files were NOT sent — re-attach them: %w", err)
 	}
-	// Seed the tree's embedding cache after the success point (the task's
-	// vector manager builds against the new workspace root).
-	f.seedWorktreeEmbeddingCache(projectID, binding.WorktreeName)
 	return nil
 }
 
@@ -413,7 +411,6 @@ func (f *FrontendAPI) bindAdoptedTree(ctx context.Context, owner *worktrees.Owne
 	}
 	// Idempotent: the tree's first session seeded the cache already; a fresh
 	// seed warms adopted (previously orphaned) trees too.
-	f.seedWorktreeEmbeddingCache(projectID, holder.Name)
 	return nil
 }
 
@@ -535,7 +532,6 @@ func (f *FrontendAPI) forkManagedSession(ctx context.Context, src *session.Sessi
 	// Seed after the success point, before the RPC returns and the frontend
 	// focuses the fork's tree: the fork starts at the source's committed
 	// HEAD, so the checkout cache is a near-perfect match for its first pass.
-	f.seedWorktreeEmbeddingCache(src.ProjectID, treeName)
 	f.emitSessionsChanged()
 	return info, nil
 }
@@ -643,15 +639,34 @@ func (f *FrontendAPI) prepareManagedTreeDeletion(ctx context.Context, id string,
 		return "", releaseErr
 	}
 	if released {
-		// The tree is gone: drop its worktree-scoped vector-index storage too
-		// (best-effort — only derived data, re-indexed on demand; in the
-		// narrow resurrection window an in-flight adoption's Recreate may
-		// re-create a just-released tree before this cleanup runs). The
-		// registry release first shuts the root's live manager (closing its
-		// open chromem handles so removal works on Windows too).
-		f.deleteWorktreeVectorIndex(repoRoot, info.ProjectID, binding.WorktreeName, binding.WorkspacePath)
+		// The tree is gone: drop its vector data too — unless it came back
+		// (the narrow resurrection window: an in-flight adoption's
+		// Recreate may re-create a just-released tree before this cleanup
+		// runs, and the recreated tree's manager, overlay and ownership
+		// marker belong to the LIVE tree now).
+		f.cleanupReleasedTreeVectorData(repoRoot, info.ProjectID, binding.WorktreeName, binding.WorkspacePath)
 	}
 	return rowGoneProjectID, nil
+}
+
+// cleanupReleasedTreeVectorData runs a released managed tree's vector-index
+// cleanup (manager release, shared-store overlay + ownership marker, legacy
+// per-tree storage) unless the tree was RESURRECTED first: both callers of
+// deleteWorktreeVectorIndex arrive only after the tree's own removal, so a
+// tree path that exists again is a NEW tree (a racing adoption's Recreate),
+// and everything vector-scoped at that path — the registry manager, the
+// overlay, the refs/ marker — is the live tree's data. Skipping defers the
+// cleanup to that tree's own next release (ADR-104 stage 5: a deletion
+// never removes a live root's data).
+func (f *FrontendAPI) cleanupReleasedTreeVectorData(repoRoot, projectID, name, treePath string) {
+	if treePath != "" {
+		if info, err := os.Stat(treePath); err == nil && info.IsDir() {
+			f.log().Debug("vector index: released worktree resurrected before cleanup; keeping its vector data",
+				"project", projectID, "worktree", name, "root", treePath)
+			return
+		}
+	}
+	f.deleteWorktreeVectorIndex(repoRoot, projectID, name, treePath)
 }
 
 // removeOwnerAndReleaseTreeLocked removes the deleting session's row from the

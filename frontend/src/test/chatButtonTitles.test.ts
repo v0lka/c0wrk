@@ -215,7 +215,7 @@ describe('button-title guard (chat components)', () => {
     expect(sources.length).toBeGreaterThan(30)
   })
 
-  it('gives every button-like element a title or a static visible label', () => {
+  it('gives every button-like element a title or a static visible label', () => { // whole-tree scan: generous bound under parallel suite load
     const offenders: string[] = []
     for (const file of sources) {
       for (const { line, tag } of findUntitledButtons(readFileSync(file, 'utf8'), file)) {
@@ -223,7 +223,7 @@ describe('button-title guard (chat components)', () => {
       }
     }
     expect(offenders).toEqual([])
-  })
+  }, 30_000)
 
   it('flags a native button without a title or label', () => {
     expect(flagsSnippet('<button onClick={f}><X /></button>')).toBe(true)

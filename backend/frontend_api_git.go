@@ -850,7 +850,6 @@ func (f *FrontendAPI) CreateBranchInWorktree(name, base string) error {
 
 	// Best-effort, after the success point — the focus does not move, but
 	// the tree's first index pass reuses the checkout's computed embeddings.
-	f.seedWorktreeEmbeddingCache(projectID, treeName)
 
 	f.emitGitStatusChanged(checkout)
 	return nil

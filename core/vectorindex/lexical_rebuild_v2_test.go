@@ -69,7 +69,7 @@ func seedLegacyIndexedFile(t *testing.T, idx *Indexer, svc *Service, absPath, bo
 	if err := os.WriteFile(absPath, []byte(body), 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
-	vecDocs, _, err := idx.processFile(absPath)
+	vecDocs, _, err := idx.processFile(absPath, "")
 	if err != nil {
 		t.Fatalf("processFile(%s): %v", absPath, err)
 	}
