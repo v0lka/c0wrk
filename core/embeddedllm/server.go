@@ -1695,8 +1695,11 @@ func (s *Server) preflightFreeMemory(plan *MemoryPlan, topology *MemoryTopology)
 // caller's why so the refusal also says why no inventory could verify the
 // pin; with a recorded plan it names the first pinned device the plan itself
 // does not carry, so the named device is one the recorded shape genuinely
-// lacks rather than merely holds in a different order (with no recorded plan
-// nothing recorded carries anything, and the pin's own head is quoted).
+// lacks (with no recorded plan nothing recorded carries anything, and the
+// pin's own head is quoted). An ordering-only divergence — the recorded plan
+// carries every pinned name, differently ordered — is a real mismatch (-dev
+// order is the main-GPU preference) but NOT an unknown device, so it gets its
+// own plain wording instead of the typed error's could-not-be-verified lead.
 // Everything else is worded by the fields actually unmet: a split-mode-only
 // pin is never refused with a device word, and a devices-only pin is never
 // refused with a split word — an operator who pinned no split must not read
@@ -1710,6 +1713,16 @@ func unmetPinError(pin Tuning, stored *MemoryPlan, why string) error {
 	splitUnmet := (stored == nil && pin.SplitMode != SplitModeAuto) ||
 		(stored != nil && stored.SplitMode != pin.SplitMode)
 	if !splitUnmet && len(pin.Devices) > 0 {
+		if stored != nil && reordersDevices(pin.Devices, stored.Devices) {
+			// The devices are all known — only their order differs. The typed
+			// error's could-not-be-verified lead would hide that from the
+			// operator, so the refusal names the divergence instead.
+			return fmt.Errorf(
+				"the recorded plan carries the operator's devices in a different order (recorded %s, pinned %s): %s — "+
+					"-dev order is the main-GPU preference, so the launch refuses rather than silently reordering the offload; "+
+					"re-probe and retry, or restore the recorded order in tuning.devices",
+				strings.Join(stored.Devices, ", "), strings.Join(pin.Devices, ", "), why)
+		}
 		return &UnknownDeviceError{Device: missingPinnedDevice(pin.Devices, stored), Why: why}
 	}
 	var unmet []string
@@ -1725,10 +1738,10 @@ func unmetPinError(pin Tuning, stored *MemoryPlan, why string) error {
 
 // missingPinnedDevice names the first pinned device the recorded plan does not
 // itself carry, so a typed mismatch refusal names a device the recorded shape
-// genuinely lacks — a reorder or superset pin names its first genuinely absent
-// device instead of blindly repeating the pin's own head. A plan that carries
-// every pinned name (an ordering-only divergence, still a mismatch the launch
-// must not paper over) falls back to the pin's first device.
+// genuinely lacks — a superset pin names its first genuinely absent device
+// instead of blindly repeating the pin's own head. The pin[0] fallback fires
+// only when nothing is recorded; an ordering-only divergence never reaches
+// here (the caller words it as one before the typed branch).
 func missingPinnedDevice(pin []string, stored *MemoryPlan) string {
 	if stored != nil {
 		for _, dev := range pin {
@@ -1738,6 +1751,25 @@ func missingPinnedDevice(pin []string, stored *MemoryPlan) string {
 		}
 	}
 	return pin[0]
+}
+
+// reordersDevices reports whether the two lists carry exactly the same device
+// names and differ only in order.
+func reordersDevices(a, b []string) bool {
+	if len(a) != len(b) || slices.Equal(a, b) {
+		return false
+	}
+	counts := make(map[string]int, len(a))
+	for _, dev := range b {
+		counts[dev]++
+	}
+	for _, dev := range a {
+		counts[dev]--
+		if counts[dev] < 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // replan re-derives the launch shape from a fresh measurement, holding the

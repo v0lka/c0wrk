@@ -5113,9 +5113,10 @@ func TestLoadRefusesASplitPinTheRecordedPlanLacks(t *testing.T) {
 // TestUnmetPinErrorNamesADeviceTheRecordedPlanLacks pins the typed branch's
 // subject choice: with a recorded plan, the refusal names the first pinned
 // device the plan genuinely lacks — not blindly the pin's own head, which in
-// a reorder or superset case is a device the plan carries under a different
-// order (naming it would read as the plan lacking a device it holds). An
-// ordering-only divergence falls back to the pin's head. (With NO recorded
+// a superset case is a device the plan carries under a different order
+// (naming it would read as the plan lacking a device it holds). An
+// ordering-only divergence is not typed at all — its own wording is pinned by
+// TestUnmetPinErrorWordsAnOrderingOnlyDivergenceAsOne. (With NO recorded
 // plan a devices-only pin is typed as well — nothing recorded carries
 // anything, so the pin's own head is quoted; a pin reaches the plain
 // split-worded branch only when the operator actually pinned a split.)
@@ -5135,17 +5136,6 @@ func TestUnmetPinErrorNamesADeviceTheRecordedPlanLacks(t *testing.T) {
 	}
 	if typed.Why != why {
 		t.Errorf("typed why = %q, want %q", typed.Why, why)
-	}
-
-	// Ordering-only divergence: the plan carries every pinned name, so there
-	// is no genuinely absent device and the pin's own head is quoted.
-	err = unmetPinError(Tuning{Devices: []string{"CUDA2", "CUDA1"}}, stored, why)
-	typed = nil
-	if !errors.As(err, &typed) {
-		t.Fatalf("error %v is not an *UnknownDeviceError", err)
-	}
-	if typed.Device != "CUDA2" {
-		t.Errorf("named device = %q, want CUDA2 — the pin's own head when the plan carries every pinned name", typed.Device)
 	}
 
 	// With NO recorded plan a devices-only pin is typed too: nothing recorded
@@ -5172,6 +5162,81 @@ func TestUnmetPinErrorNamesADeviceTheRecordedPlanLacks(t *testing.T) {
 	}
 	if msg := err.Error(); !strings.Contains(msg, "(split_mode unmet)") {
 		t.Errorf("error message %q does not name exactly the unmet split_mode pin", msg)
+	}
+}
+
+// TestUnmetPinErrorWordsAnOrderingOnlyDivergenceAsOne pins the ordering-only
+// refusal: a pin carrying exactly the recorded devices in a different order is
+// a real mismatch — -dev order is the main-GPU preference — but NOT an unknown
+// device, so the refusal says so in plain words instead of the typed error's
+// could-not-be-verified lead.
+func TestUnmetPinErrorWordsAnOrderingOnlyDivergenceAsOne(t *testing.T) {
+	t.Parallel()
+
+	const why = "the load-time device probe did not answer, so it cannot be re-planned"
+	stored := &MemoryPlan{Devices: []string{"CUDA0", "CUDA1"}}
+
+	err := unmetPinError(Tuning{Devices: []string{"CUDA1", "CUDA0"}}, stored, why)
+	var typed *UnknownDeviceError
+	if errors.As(err, &typed) {
+		t.Fatalf("an ordering-only divergence produced the typed unknown-device error %v, want plain wording", err)
+	}
+	if errors.Is(err, ErrUnknownDevice) {
+		t.Errorf("error %v wraps ErrUnknownDevice — the devices are all known, only reordered", err)
+	}
+	msg := err.Error()
+	for _, want := range []string{
+		"different order",
+		"recorded CUDA0, CUDA1, pinned CUDA1, CUDA0",
+		"-dev order is the main-GPU preference",
+		why,
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error message %q does not contain %q", msg, want)
+		}
+	}
+
+	// The same names in the SAME order carry the pin — no divergence, no
+	// refusal here; and a list that differs in membership is a genuine
+	// unknown-device mismatch, still typed.
+	err = unmetPinError(Tuning{Devices: []string{"CUDA1", "CUDA0", "CUDA0"}}, stored, why)
+	typed = nil
+	if !errors.As(err, &typed) {
+		t.Errorf("a duplicate-name pin %v is not an ordering-only divergence; error %v should stay typed", Tuning{Devices: []string{"CUDA1", "CUDA0", "CUDA0"}}, err)
+	}
+}
+
+// TestLoadRefusesAnOrderingOnlyDevicePin pins the end-to-end ordering
+// refusal: a wedged probe plus a pin that reorders the recorded plan's
+// devices refuses the load with the ordering wording — never the typed
+// unknown-device error, and never a silent launch on the recorded order.
+func TestLoadRefusesAnOrderingOnlyDevicePin(t *testing.T) {
+	t.Parallel()
+
+	plan := stagedPlan()
+	plan.Devices = []string{"CUDA0", "CUDA1"}
+	topology := stagedTopology()
+	fx := newFixture(t, fixtureOptions{
+		backend:     BackendCUDA124,
+		contextSize: plan.ContextSize,
+		plan:        &plan,
+		topology:    &topology,
+		probeDevices: func(context.Context, string, *slog.Logger) (MemoryTopology, bool) {
+			return MemoryTopology{}, false
+		},
+		tuning: func() Tuning { return Tuning{Devices: []string{"CUDA1", "CUDA0"}} },
+	})
+
+	_, err := fx.srv.launchSpec(t.Context(), fx.manifest, fx.manifest.Port)
+	if err == nil {
+		t.Fatal("launchSpec launched the recorded order while the operator pinned the reverse, want a refusal")
+	}
+	var typed *UnknownDeviceError
+	if errors.As(err, &typed) {
+		t.Fatalf("refusal %v is the typed unknown-device error, want the ordering wording", err)
+	}
+	if msg := err.Error(); !strings.Contains(msg, "different order") {
+		t.Errorf("error message %q does not name the ordering divergence", msg)
 	}
 }
 
