@@ -2,7 +2,7 @@ package backend
 
 // Session-root coherence for the research/papers subsystems (the "research
 // root follows the active session" protocol): the agent writes research
-// artifacts under <session-workspace>/.research, so the panel RPCs, the
+// artifacts under <session-workspace>/research, so the panel RPCs, the
 // papers library paths, and the watcher emit roots must resolve the SAME
 // root — the active session's tree, falling back to the checkout when no
 // session of the project resolves. Reuses the wtHarness (real git repository
@@ -127,9 +127,9 @@ func TestPapersRoots_FollowActiveSession(t *testing.T) {
 // TestWatchDirectory_FollowsSessionResearchRoot pins the watcher half of the
 // protocol: after the frontend re-roots the file tree at a managed session's
 // workspace (the WatchDirectory call on every session switch), a change under
-// <worktree>/.research emits research:file_changed and a paper-card edit
+// <worktree>/research emits research:file_changed and a paper-card edit
 // emits papers:changed. Before the fix the watcher only watched the
-// checkout's .research, so session-tree research was invisible to the panel's
+// checkout's research tree, so session-tree research was invisible to the panel's
 // incremental update path.
 //
 // The watcher state is asserted after the synchronous WatchDirectory call;
@@ -141,7 +141,7 @@ func TestWatchDirectory_FollowsSessionResearchRoot(t *testing.T) {
 
 	managed := h.api.mustManagedSession(t, "", true, "")
 	tree := managed.WorkspaceBinding.WorkspacePath
-	sessionRoot := filepath.Join(tree, ".research")
+	sessionRoot := filepath.Join(tree, "research")
 
 	// Seed the artifact tree BEFORE watching so the edits below are modifies.
 	hypDir := filepath.Join(sessionRoot, "R-001-test", "hypotheses")
@@ -244,7 +244,7 @@ func TestFollowSessionResearchRoots_IgnoresForeignPath(t *testing.T) {
 	h := newWTHarness(t, wtFactory())
 	managed := h.api.mustManagedSession(t, "", true, "")
 	tree := managed.WorkspaceBinding.WorkspacePath
-	sessionRoot := filepath.Join(tree, ".research")
+	sessionRoot := filepath.Join(tree, "research")
 
 	f := h.api
 	f.emitEvent = func(string, ...any) {}

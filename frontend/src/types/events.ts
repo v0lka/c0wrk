@@ -1020,10 +1020,16 @@ export interface GlobalEventMap {
    *  research:file_changed path); consumers use it to defer to that path. */
   readonly 'workspace:tree_changed': { readonly research_scoped?: boolean }
   /** RESEARCH mutation for a project: the active R-NNN switched
-   *  (`SetActiveResearch`) or a research project was deleted (`DeleteResearch`).
+   *  (`SetActiveResearch`), a research project was deleted (`DeleteResearch`),
+   *  or a pre-rename `<workspace>/.research` root was migrated to the
+   *  canonical `<workspace>/research` (`MigrateResearchRoots` — a rename,
+   *  not a content change, so watchers re-register and the UI refetches).
    *  RESEARCH is always on for real projects, so there is no enable/disable
    *  action. Mirrors specs/contracts/event-catalog.md. */
-  readonly 'research:changed': { readonly project_id: string; readonly action: 'active_changed' | 'project_deleted' }
+  readonly 'research:changed': {
+    readonly project_id: string
+    readonly action: 'active_changed' | 'project_deleted' | 'root_migrated'
+  }
   /** A file inside the research directory changed (hypothesis cards, brief,
    *  prior-art, graph, log). `paths` is a comma-separated list. */
   readonly 'research:file_changed': { readonly project_id: string; readonly paths: string }

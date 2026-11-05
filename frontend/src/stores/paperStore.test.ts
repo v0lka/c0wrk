@@ -68,7 +68,7 @@ function recordOf(id: string, overrides: Partial<PaperRecord> = {}): PaperRecord
     claims: [],
     red_flags: [],
     uncertainties: [],
-    dir: `/ws/.research/papers/${slug}`,
+    dir: `/ws/research/papers/${slug}`,
     card_path: `papers/${slug}/paper.md`,
     pinned: false,
     linked_research: [],
@@ -83,8 +83,8 @@ function libraryOf(
 ): PaperLibrary {
   return {
     project_id: projectId,
-    research_root: '/ws/.research',
-    root: '/ws/.research/papers',
+    research_root: '/ws/research',
+    root: '/ws/research/papers',
     papers,
     pinned,
   }
@@ -156,7 +156,7 @@ describe('paperStore reducer', () => {
 
     const s = usePaperStore.getState()
     expect(s.projectId).toBe('p1')
-    expect(s.root).toBe('/ws/.research/papers')
+    expect(s.root).toBe('/ws/research/papers')
     expect(s.papers.map((p) => p.id)).toEqual(['P-001'])
     expect(s.records['P-001']).toBe(s.papers[0])
     expect(s.pinned).toEqual(['papers/p-001/paper.md'])

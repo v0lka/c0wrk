@@ -86,7 +86,7 @@ function makePaper(overrides: Partial<PaperRecord> = {}): PaperRecord {
     claims: [],
     red_flags: [],
     uncertainties: [],
-    dir: '/root/.research/papers/vaswani-2017-attention',
+    dir: '/root/research/papers/vaswani-2017-attention',
     card_path: 'papers/vaswani-2017-attention/paper.md',
     pinned: false,
     linked_research: [],
@@ -97,8 +97,8 @@ function makePaper(overrides: Partial<PaperRecord> = {}): PaperRecord {
 function makeLibrary(papers: PaperRecord[], projectId = 'p1'): PaperLibrary {
   return {
     project_id: projectId,
-    research_root: '/root/.research',
-    root: '/root/.research/papers',
+    research_root: '/root/research',
+    root: '/root/research/papers',
     papers,
     pinned: [],
   }
@@ -693,7 +693,7 @@ describe('PapersView — multi-select comparison', () => {
 
     expect(sendMock).toHaveBeenCalledTimes(1)
     expect(sendMock).toHaveBeenCalledWith(
-      buildCompareSelectedPrompt([p1, p2], '/root/.research'),
+      buildCompareSelectedPrompt([p1, p2], '/root/research'),
       [STUDY_PAPER_SKILL],
       undefined,
       undefined,
@@ -718,7 +718,7 @@ describe('PapersView — multi-select comparison', () => {
       await new Promise((r) => setTimeout(r, 0))
     })
     expect(sendMock).toHaveBeenCalledWith(
-      buildCompareSelectedPrompt([p1, p2], '/root/.research'),
+      buildCompareSelectedPrompt([p1, p2], '/root/research'),
       [STUDY_PAPER_SKILL],
       undefined,
       undefined,

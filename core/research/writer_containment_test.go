@@ -13,7 +13,7 @@ import (
 // through the symlink, so without a containment gate the mutation would stage
 // (os.CreateTemp) and rename card/graph writes into the outside directory.
 // The card and graph are seeded in the outside target first (moved out of the
-// project), exactly like a repo whose .research tree carries the symlink with
+// project), exactly like a repo whose research tree carries the symlink with
 // the real content living elsewhere.
 func symlinkEscapeFixture(t *testing.T) (root, projectDir, outside string) {
 	t.Helper()

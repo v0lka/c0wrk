@@ -45,7 +45,7 @@ const embedRoot = "skills"
 // sidecar marker; bump it to refresh existing seeded copies on the next
 // startup. Deliberately independent of the research pack's version so the two
 // packs bump separately (specs/domains/papers.md, configuration table).
-const CurrentSeedVersion = "5"
+const CurrentSeedVersion = "6"
 
 // SeedResult reports the per-skill outcome of a SeedSkills call. Each slice
 // holds skill names (e.g. "study-paper") and is sorted for deterministic

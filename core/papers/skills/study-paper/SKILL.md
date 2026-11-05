@@ -236,7 +236,7 @@ Markdown file per comparison set:
 ```
 
 - `<research-root>` is the project's research root, always
-  `<workspace>/.research` (config.ProjectResearchPath) for every real project.
+  `<workspace>/research` (config.ProjectResearchPath) for every real project.
   The library is always read from
   `<research-root>/papers/<slug>/` (and comparisons from
   `<research-root>/comparisons/<slug>.md`); the app resolves no other location,

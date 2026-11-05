@@ -578,6 +578,10 @@ export function Merge(arg1) {
   return window['go']['desktop']['App']['Merge'](arg1);
 }
 
+export function MigrateResearchRoots(arg1) {
+  return window['go']['desktop']['App']['MigrateResearchRoots'](arg1);
+}
+
 export function OptimizePrompt(arg1) {
   return window['go']['desktop']['App']['OptimizePrompt'](arg1);
 }

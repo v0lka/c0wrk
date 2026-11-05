@@ -33,6 +33,7 @@ vi.mock('@/api/research', () => ({
   getResearchStatus: (projectId: string) => statusMock(projectId),
   getResearchGraph: (projectId: string) => graphMock(projectId),
   getResearchNextStep: (projectId: string) => nextStepMock(projectId),
+  migrateResearchRoots: vi.fn(),
 }))
 
 vi.mock('@/lib/logger', () => ({
@@ -43,9 +44,9 @@ function makeStatus(logCount: number): ResearchStatus {
   return {
     enabled: true,
     project_id: 'p1',
-    research_root: '/ws/.research',
+    research_root: '/ws/research',
     root: {
-      path: '/ws/.research',
+      path: '/ws/research',
       index: [{ id: 'R-002', title: 'T' }],
       projects: [
         {
@@ -148,7 +149,7 @@ describe('ResearchPanel — auto-update on research:file_changed', () => {
     // The agent appends one more entry; the backend emits research:file_changed.
     graphMock.mockResolvedValue(makeGraphResponse(3))
     await act(async () => {
-      handlers.get('research:file_changed')!({ project_id: 'p1', paths: '/ws/.research/log.md' })
+      handlers.get('research:file_changed')!({ project_id: 'p1', paths: '/ws/research/log.md' })
       await vi.advanceTimersByTimeAsync(400)
     })
 
@@ -182,7 +183,7 @@ describe('ResearchPanel — auto-update on research:file_changed', () => {
     statusMock.mockResolvedValue(freshStatus)
 
     await act(async () => {
-      handlers.get('research:file_changed')!({ project_id: 'p1', paths: '/ws/.research/R-003/log.md' })
+      handlers.get('research:file_changed')!({ project_id: 'p1', paths: '/ws/research/R-003/log.md' })
       await vi.advanceTimersByTimeAsync(400)
     })
 

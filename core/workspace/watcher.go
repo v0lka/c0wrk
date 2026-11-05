@@ -30,7 +30,7 @@ type Watcher struct {
 	watched  map[string]bool
 	// extraRoots are additional admitted roots for the under-root gate:
 	// WatchDir/WatchTree accept the primary root OR any extra root — for subtrees
-	// legitimately outside it (a managed worktree's .research tree at checkout root).
+	// legitimately outside it (a managed worktree's research tree at checkout root).
 	extraRoots map[string]bool
 	// recursiveRoots are roots whose entire subtree must be watched: the event
 	// loop auto-adds directories created inside them (fsnotify is NOT recursive,
@@ -243,7 +243,7 @@ func keysOf(m map[string]struct{}) []string {
 
 // WatchTree recursively watches dir, marking it a "recursive root" whose
 // later-created subdirectories are auto-added (fsnotify is not recursive, even
-// on macOS) — for subtrees watched as a whole (e.g. .research) vs WatchDir's
+// on macOS) — for subtrees watched as a whole (e.g. the research tree) vs WatchDir's
 // single non-recursive directory. Best-effort, idempotent, under-root only.
 func (w *Watcher) WatchTree(path string) error {
 	absPath, err := filepath.Abs(path)
@@ -451,7 +451,7 @@ func (w *Watcher) Close() error {
 
 // AllowRoot admits an additional root for the under-root gate — for watched
 // subtrees legitimately outside the primary root (a managed session worktree's
-// .research tree while the watcher roots at the checkout). Idempotent.
+// research tree while the watcher roots at the checkout). Idempotent.
 func (w *Watcher) AllowRoot(path string) error {
 	absPath, err := filepath.Abs(path)
 	if err != nil {

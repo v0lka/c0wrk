@@ -2,7 +2,7 @@
 
 ## Purpose
 
-RESEARCH mode is a project-scoped methodology workspace for maintaining research briefs, prior art, hypothesis cards, a hypothesis DAG, progress metrics, and synthesis reports. It is always on for every real project — there is no per-project toggle: it parses Markdown/Mermaid artifacts under the workspace-contained research root `<workspace>/.research`, seeds versioned `research-*` skills (globally, once at app startup), and exposes the same active-project graph to the orchestrator and frontend.
+RESEARCH mode is a project-scoped methodology workspace for maintaining research briefs, prior art, hypothesis cards, a hypothesis DAG, progress metrics, and synthesis reports. It is always on for every real project — there is no per-project toggle: it parses Markdown/Mermaid artifacts under the workspace-contained research root `<workspace>/research`, seeds versioned `research-*` skills (globally, once at app startup), and exposes the same active-project graph to the orchestrator and frontend.
 
 ## Key Files
 
@@ -14,9 +14,10 @@ RESEARCH mode is a project-scoped methodology workspace for maintaining research
 - `core/research/skills/` - embedded `research-*` skill sources
 - `core/seedpack` - the shared crash-safe seeding core (content-hash classification, staged write + atomic rename, `.seed-version` marker handling, leftovers sweep) behind the seeding invariants below; `core/research`, `core/papers`, and future packs are thin consumers keeping only their embed trees, version constants, and pack-specific logging (ADR-105 decision 5)
 - `core/papers/skillpack.go` - the embedded `study-paper` pack; seeded globally by the same startup seed into the c0wrk global skills directory (which outranks a same-named `~/.agents` skill in discovery)
-- `backend/frontend_api_research.go` - always-on status/graph RPC behavior, workspace containment, and `seedGlobalPacks` — the single global pack seed run once per launch
+- `backend/frontend_api_research.go` - always-on status/graph RPC behavior, workspace containment, legacy `.research`-root detection + the manual `MigrateResearchRoots` rename, and `seedGlobalPacks` — the single global pack seed run once per launch
 - `backend/frontend_api_project.go` - recursive research-tree watcher integration and incremental file-change emission
 - `frontend/src/components/research/index.tsx` - Research panel (the `[Dashboard | Papers]` segmented control + graph/status presentation)
+- `frontend/src/components/research/ResearchLegacyMigration.tsx` - the legacy-root migration notice: replaces the panel's segments while `legacy_research_roots` is non-empty, dispatches `MigrateResearchRoots` on click (busy state, inline error with retry), and loads the fresh status on success — the empty legacy list unmounts the notice immediately, without waiting for `research:changed`
 - `frontend/src/components/papers/PapersView.tsx` - Papers segment: the `study-paper` invocation surface over the studied-paper list, plus multi-select ("Compare selected", enabled at ≥2 papers) that dispatches a library comparison
 - `frontend/src/components/papers/CompareMatrix.tsx` - paper Compare section renderer: a multi-paper comparison artifact (`<research-root>/comparisons/<slug>.md`) rendered as the papers table + dimension × paper matrix + the fairness / agreement / gaps / synthesis-verdict sections (pure parsing in `frontend/src/lib/paperComparison.ts`)
 - `frontend/src/components/papers/useComparisons.ts` - loads every comparison artifact under `<research-root>/comparisons/` for the Compare section
@@ -85,12 +86,24 @@ App startup
      are themselves watched on the same launch)
 
 Open / switch to a real project (incl. the app-startup restore replay)
-  -> the research root is unconditionally <workspace>/.research
+  -> the research root is unconditionally <workspace>/research
      (config.ProjectResearchPath) — RESEARCH is always on, no persisted
      per-project root, no reconcile/seed on switch
   -> the project's recursive watcher covers the research root's current and
      future directories; the frontend loads the panel via GetResearchStatus
   -> nothing is seeded on the switch
+
+Legacy root detected (data written by a pre-rename build)
+  -> GetResearchStatus lists the detected <workspace>/.research roots in
+     legacy_research_roots (the checkout's and the active-session
+     workspace's, deduplicated)
+  -> the panel replaces its segments with the migration notice; the Migrate
+     click dispatches MigrateResearchRoots — a per-root rename (empty
+     target removed first, non-empty target and symlinks refused; see
+     Invariants) — which re-registers the research watches and emits
+     research:changed (action=root_migrated) + papers:changed
+  -> the returned fresh status (empty legacy list) unmounts the notice and
+     restores the panel content without waiting for research:changed
 
 Research artifact changes
   -> recursive workspace watcher batches changed paths
@@ -155,8 +168,9 @@ Metrics are derived from the reconciled graph:
 - RESEARCH mode is always on for real projects: there is no per-project toggle and no persisted root. The No-Project pseudo-project has no workspace, so RESEARCH is unavailable there (`loadProjectForResearch` rejects it) and the panel renders a neutral empty state.
 - RESEARCH mode is not gated by the `experimental.enabled` switch (which gates the E2S execution mode, the embedded local model's frontend surfaces, and the Settings → General Session Statistics block) — it stays available for every real project.
 - The RESEARCH context flag (`core/tools.WithResearch` / `IsResearch` in `core/tools/mode.go`) marks a real project with a non-empty research root; it is set alongside the research root (`researchRootKey`) by the session manager — the root lives in the context because core may not import `backend/config`. Unlike No Project mode, RESEARCH keeps the full CODE toolset — the flag exists for prompt/router/UI awareness only, never tool restriction.
-- The research root is unconditionally `<workspace>/.research` (`config.ProjectResearchPath`) — an absolute, workspace-contained path, never persisted per project and with no user override. `<workspace>` is the ACTIVE SESSION's execution workspace ([ADR-099](../decisions/099-research-root-follows-active-session.md)): the managed tree for a `managed_worktree` session, the project checkout for `local`/unbound sessions — panel-side resolvers follow the session through the READ-ONLY `WorkspacePathFor` lookup with `GetSessionWorkspace`'s project-ID membership, falling back to the checkout when no session of the project resolves.
-- Always-on RESEARCH also makes the research **router hints unconditional for every real project**. `researchProjectInfo` returns `(<session workspace>/.research, true)` for every real-project session — the root is derived from the SESSION's execution workspace (ADR-080: the project checkout for a `local` session, the session's own tree for a `managed_worktree` session, so concurrently running sessions of one project never share research state), never from the project's registered checkout alone — so `core/router_adapter.go` appends `formatResearchRouterHints` (the advisory intent→`research-*`-skill mapping) to the router context whenever `coretools.IsResearch(ctx)` holds, and the full `## Research Context` block (`core/systemprompt.go`) is added whenever a research snapshot is present — independent of whether the project has any research artifacts. This is an intentional consequence of always-on RESEARCH (ADR-056): every real project pays the extra router-prompt tokens and carries a mild classification bias toward the research skills, even with an empty research root. No-Project sessions are unaffected (`IsResearch` is false there).
+- The research root is unconditionally `<workspace>/research` (`config.ProjectResearchPath`) — an absolute, workspace-contained path, never persisted per project and with no user override. `<workspace>` is the ACTIVE SESSION's execution workspace ([ADR-099](../decisions/099-research-root-follows-active-session.md)): the managed tree for a `managed_worktree` session, the project checkout for `local`/unbound sessions — panel-side resolvers follow the session through the READ-ONLY `WorkspacePathFor` lookup with `GetSessionWorkspace`'s project-ID membership, falling back to the checkout when no session of the project resolves. The visible `research` directory name (renamed from the hidden `.research`) is [ADR-113](../decisions/113-research-root-rename.md).
+- Pre-rename `<workspace>/.research` roots (written by older builds) are detection/migration-only data ([ADR-113](../decisions/113-research-root-rename.md)): `ResearchStatusDTO.legacy_research_roots` lists the detected ones — the checkout's and the active-session workspace's, deduplicated, checkout first, any entry type counts (a symlink is surfaced so the user sees it) — and a live research root is never derived from the legacy path (`config.LegacyProjectResearchPath` exists solely for detection and migration). Migration is manual and user-triggered (`MigrateResearchRoots` from the panel's migration notice — no auto-migration ever runs): each detected legacy directory is renamed into its workspace's canonical `research` under the per-root mutation mutex keyed by the TARGET; an EMPTY existing target directory is removed first, a non-empty or non-directory target is refused with an actionable error, and a symlinked legacy root is refused outright (never followed or silently moved). On success the research trees are re-registered with the live CODE watcher, `research:changed` (action=`root_migrated`) and `papers:changed` fire, and the fresh status is returned; a no-op (no legacy roots anywhere) is a plain success that creates nothing on disk and emits no event.
+- Always-on RESEARCH also makes the research **router hints unconditional for every real project**. `researchProjectInfo` returns `(<session workspace>/research, true)` for every real-project session — the root is derived from the SESSION's execution workspace (ADR-080: the project checkout for a `local` session, the session's own tree for a `managed_worktree` session, so concurrently running sessions of one project never share research state), never from the project's registered checkout alone — so `core/router_adapter.go` appends `formatResearchRouterHints` (the advisory intent→`research-*`-skill mapping) to the router context whenever `coretools.IsResearch(ctx)` holds, and the full `## Research Context` block (`core/systemprompt.go`) is added whenever a research snapshot is present — independent of whether the project has any research artifacts. This is an intentional consequence of always-on RESEARCH (ADR-056): every real project pays the extra router-prompt tokens and carries a mild classification bias toward the research skills, even with an empty research root. No-Project sessions are unaffected (`IsResearch` is false there).
 - `seedGlobalPacks` runs once per launch from `NewFrontendAPI`, BEFORE the skill and agent directory watchers are created, so the c0wrk global directories (`~/.c0wrk/.agents/{skills,agents}`) are freshly seeded and watched on the same launch; it serializes on `researchSeedMu` and invalidates the skill/agent caches afterwards. It is idempotent: a second run re-seeds nothing new and never duplicates domain state.
 - Skill/agent discovery precedence is project-local `<workspace>/.agents/{skills,agents}` → c0wrk global `~/.c0wrk/.agents/{skills,agents}` → user `~/.agents/{skills,agents}`: the c0wrk global directory outranks the user's portable `~/.agents` library, so a seeded c0wrk pack wins over a stale same-named user copy.
 - A project switch seeds nothing — `reconcileResearchPacks` is gone; the global startup seed is the only c0wrk pack writer.
@@ -186,10 +200,10 @@ Metrics are derived from the reconciled graph:
 
 | Parameter | Default | Description |
 | --------- | ------- | ----------- |
-| Research root | `<workspace>/.research` | Unconditional per-project root (`config.ProjectResearchPath`); no persisted override |
+| Research root | `<workspace>/research` | Unconditional per-project root (`config.ProjectResearchPath`; the visible name of [ADR-113](../decisions/113-research-root-rename.md)); no persisted override |
 | Global seed dir | `~/.c0wrk/.agents/` (`config.SkillsDir`/`config.AgentsDir` on the agent dir) | Destination of the startup `seedGlobalPacks` run; outranks `~/.agents` in discovery |
-| Skill-pack seed version | `2` (`research.CurrentSeedVersion`) | Pack version stamped into `.seed-version` markers; agent-pack version (`research.AgentSeedVersion`, `1`) bumps independently |
-| Papers skill-pack seed version | `3` (`papers.CurrentSeedVersion`) | The `study-paper` pack seeded by the same global startup seed; bumps independently of both research pack versions (ADR-056) |
+| Skill-pack seed version | `3` (`research.CurrentSeedVersion`) | Pack version stamped into `.seed-version` markers; agent-pack version (`research.AgentSeedVersion`, `2`) bumps independently |
+| Papers skill-pack seed version | `6` (`papers.CurrentSeedVersion`) | The `study-paper` pack seeded by the same global startup seed; bumps independently of both research pack versions (ADR-056) |
 
 ## Extension Points
 
@@ -212,6 +226,7 @@ The literature library and the hypothesis graph are wired in ONE direction end-t
 
 - [papers.md](papers.md) - the paper ("literature") library: studied-paper cards, flashcards, the literature graph, and multi-paper comparisons, plus the globally-seeded `study-paper` skill-pack (the RESEARCH panel's Papers segment)
 - [../decisions/056-research-always-on-global-seeding.md](../decisions/056-research-always-on-global-seeding.md) - why RESEARCH is always on for real projects and every c0wrk pack seeds globally at startup with reordered discovery (supersedes [ADR-051](../decisions/051-research-pack-reconciliation.md))
+- [../decisions/113-research-root-rename.md](../decisions/113-research-root-rename.md) - why the research root moved from the hidden `<workspace>/.research` to the visible `<workspace>/research`, with manual detection/migration for pre-rename data
 - [../decisions/105-vendor-spec-skillset.md](../decisions/105-vendor-spec-skillset.md) - decision 5: the seed-staging core behind these seeding invariants consolidated into the shared `core/seedpack`
 - [../contracts/desktop-frontend.md](../contracts/desktop-frontend.md) - RESEARCH RPC surface and DTO boundary
 - [../contracts/event-catalog.md](../contracts/event-catalog.md) - `research:changed` and `research:file_changed` events

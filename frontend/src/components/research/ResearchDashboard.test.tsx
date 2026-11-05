@@ -49,6 +49,7 @@ vi.mock('@/api/research', () => ({
   deleteResearch: vi.fn(),
   setResearchPinned: vi.fn(),
   setHypothesisPinned: vi.fn(),
+  migrateResearchRoots: vi.fn(),
 }))
 
 // Radix dropdown positioning observes the trigger with ResizeObserver, which
@@ -94,9 +95,9 @@ function makeStatus(log: ResearchLogEntry[] = []): ResearchStatus {
   return {
     enabled: true,
     project_id: 'p1',
-    research_root: '/root/.research',
+    research_root: '/root/research',
     root: {
-      path: '/root/.research',
+      path: '/root/research',
       index: [{ id: 'R-001', path: 'R-001/brief.md' }],
       active_project_id: 'R-001',
       projects: [
@@ -574,7 +575,7 @@ describe('ResearchPanel — header + View Artifacts', () => {
     await act(async () => {
       items[0]!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
-    expect(useFileViewerStore.getState().openTabs).toContain('/root/.research/R-001/brief.md')
+    expect(useFileViewerStore.getState().openTabs).toContain('/root/research/R-001/brief.md')
   })
 
   it('lists all four artifacts when everything exists; Graph opens the workspace tab', async () => {
@@ -609,7 +610,7 @@ describe('ResearchPanel — prior-art Deep read', () => {
   // Computed through the same pure path helpers the panel uses, so the
   // expectation tracks the artifact layout rather than a hard-coded string.
   const expectedPriorArt = projectFilePaths(
-    '/root/.research',
+    '/root/research',
     projectDir(makeStatus().root, 'R-001'),
   ).priorArt
 

@@ -2256,6 +2256,7 @@ export namespace backend {
 	    root?: research.ResearchRoot;
 	    pinned_research: string[];
 	    pinned_hypotheses: Record<string, Array<string>>;
+	    legacy_research_roots: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new ResearchStatusDTO(source);
@@ -2269,6 +2270,7 @@ export namespace backend {
 	        this.root = this.convertValues(source["root"], research.ResearchRoot);
 	        this.pinned_research = source["pinned_research"];
 	        this.pinned_hypotheses = source["pinned_hypotheses"];
+	        this.legacy_research_roots = source["legacy_research_roots"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
