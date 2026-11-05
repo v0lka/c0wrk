@@ -61,8 +61,10 @@ With tree on, each section renders `buildBranchTree` over the section's
 **visible** (post-filter) names:
 
 - `/`-separated branch segments become directory rows (chevron + folder icon,
-  `role="treeitem"`, `aria-expanded`, `data-testid="branch-dir-<fullPath>"`);
-  children indent by `depth * 12px`.
+  `role="button"` + `tabIndex="0"` with an Enter/Space twin of the click
+  toggle — there is no owning `role="tree"`, so `treeitem` would be orphaned
+  ARIA; `aria-expanded`, `data-testid="branch-dir-<fullPath>"`); children
+  indent by `depth * 12px`.
 - A remote-tracking ref's remote prefix (`origin`) emerges as the top-level
   directory of the Remote section.
 - A name that is both a leaf and a directory prefix (`feature` +

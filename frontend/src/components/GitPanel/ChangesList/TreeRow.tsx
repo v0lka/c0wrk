@@ -35,12 +35,22 @@ export function TreeRow({
 
     return (
       <>
+        {/* Keyboard twin of the click toggle: a plain div carries
+            role="button" + tabIndex so the row stays reachable (no owning
+            role="tree" — treeitem would be orphaned ARIA). */}
         <div
           className="flex h-7 cursor-pointer select-none items-center gap-1.5 px-2 hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
           style={{ paddingLeft: `${indentPx + 8}px` }}
           onClick={() => onToggleExpandedDir(node.fullPath)}
-          role="treeitem"
+          role="button"
+          tabIndex={0}
           aria-expanded={isExpanded}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault()
+              onToggleExpandedDir(node.fullPath)
+            }
+          }}
         >
           {isExpanded ? (
             <ChevronDown className="size-3.5 shrink-0" />

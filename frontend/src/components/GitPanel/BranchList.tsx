@@ -83,7 +83,8 @@ export interface BranchListProps {
  * as functions of the full branch name and is threaded through verbatim.
  *
  * With `tree`, each section renders via {@link buildBranchTree}: directory
- * rows (chevron + folder, click toggles) indent children by `depth * 12px`,
+ * rows (chevron + folder; click or Enter/Space toggles) indent children by
+ * `depth * 12px`,
  * and a remote ref's remote prefix (`origin`) emerges as the top-level
  * directory. A branch that is both a leaf and a directory prefix renders
  * once — as the directory's own leaf payload inside its expanded dir row.
@@ -239,8 +240,11 @@ export function BranchList({
     )
   }
 
-  /** Directory row — chevron + folder, click toggles the `dir:<path>` key
-   *  (mirrors the ChangesList tree rows; the menu stays open: plain div). */
+  /** Directory row — chevron + folder; click or Enter/Space toggles the
+   *  `dir:<path>` key (mirrors the ChangesList tree rows; the menu stays
+   *  open: plain div). The keyboard twin of the click keeps the row
+   *  reachable: role="button" + tabIndex — there is no owning role="tree",
+   *  so treeitem would be orphaned ARIA. */
   const renderDirRow = (node: BranchTreeDirNode, depth: number) => {
     const dirKey = `dir:${node.fullPath}`
     const expanded = isSectionExpanded(dirKey, searchActive)
@@ -249,8 +253,15 @@ export function BranchList({
         className="flex h-7 cursor-pointer select-none items-center gap-1.5 px-2 hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
         style={{ paddingLeft: `${depth * 12 + 8}px` }}
         onClick={() => toggleSection(dirKey)}
-        role="treeitem"
+        role="button"
+        tabIndex={0}
         aria-expanded={expanded}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault()
+            toggleSection(dirKey)
+          }
+        }}
         data-testid={`branch-dir-${node.fullPath}`}
       >
         {expanded ? (

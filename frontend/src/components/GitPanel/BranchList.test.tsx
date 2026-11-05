@@ -117,19 +117,23 @@ function click(el: Element): Promise<void> {
   return flush()
 }
 
+/** Leaf rows: div[role=button] minus the dir rows, which are role=button too
+ *  (keyboard-reachable toggles) and carry `branch-dir-*` testids. */
+function leafRows(): Element[] {
+  return Array.from(
+    body().querySelectorAll('div[role="button"]:not([data-testid^="branch-dir-"])'),
+  )
+}
+
 /** A branch row is a div[role=button] whose text is exactly `name`. */
 function rowByName(name: string): HTMLElement {
-  const row = Array.from(body().querySelectorAll('div[role="button"]')).find(
-    (el) => (el.textContent ?? '').trim() === name,
-  )
+  const row = leafRows().find((el) => (el.textContent ?? '').trim() === name)
   expect(row, `branch row "${name}"`).toBeTruthy()
   return row as HTMLElement
 }
 
 function hasRow(name: string): boolean {
-  return Array.from(body().querySelectorAll('div[role="button"]')).some(
-    (el) => (el.textContent ?? '').trim() === name,
-  )
+  return leafRows().some((el) => (el.textContent ?? '').trim() === name)
 }
 
 /** Menu-variant section header — a registered menu item with the exact label. */
@@ -474,7 +478,8 @@ describe('BranchList — tree mode', () => {
     // One dir node — no duplicate sibling leaf at the root.
     expect(body().querySelectorAll('[data-testid="branch-dir-feature"]').length).toBe(1)
     // Expanded by default: the dir's own branch row comes first, then the nested leaf.
-    const rows = Array.from(body().querySelectorAll('div[role="button"]'))
+    // (leafRows excludes the dir row itself, which also carries text "feature".)
+    const rows = leafRows()
       .map((el) => (el.textContent ?? '').trim())
       .filter((t) => t === 'feature' || t === 'feature/login')
     expect(rows).toEqual(['feature', 'feature/login'])
@@ -496,5 +501,34 @@ describe('BranchList — tree mode', () => {
 
     expect(dirRow('feature').closest('li')).toBeTruthy()
     expect(rowByName('feature/login').closest('li')).toBeTruthy()
+  })
+
+  it('dir rows are keyboard-reachable: tabIndex=0, Enter/Space twin the click toggle', async () => {
+    await renderMenu(
+      listProps({
+        branches: [makeBranch({ name: 'feature/login' })],
+        tree: true,
+      }),
+    )
+
+    const dir = dirRow('feature')
+    expect(dir.getAttribute('role')).toBe('button')
+    expect(dir.getAttribute('tabindex')).toBe('0')
+
+    // Enter collapses the dir — its subtree unmounts, the row stays.
+    act(() => {
+      dir.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })
+    await flush()
+    expect(dir.getAttribute('aria-expanded')).toBe('false')
+    expect(hasRow('feature/login')).toBe(false)
+
+    // Space re-expands (same row element — the toggle never remounts it).
+    act(() => {
+      dir.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }))
+    })
+    await flush()
+    expect(dir.getAttribute('aria-expanded')).toBe('true')
+    expect(rowByName('feature/login')).toBeTruthy()
   })
 })
