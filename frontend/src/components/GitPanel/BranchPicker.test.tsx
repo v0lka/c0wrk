@@ -133,9 +133,11 @@ function branchRows(): HTMLElement[] {
   return Array.from(body().querySelectorAll('div[role="button"]'))
 }
 
-/** The branch row whose text contains `name`. */
+/** The branch row whose accessible name is exactly `name` — always the FULL
+ *  branch name/ref: in tree mode the visible label is the basename
+ *  (`branchLeafLabel`), while `aria-label` keeps the full name. */
 function branchRow(name: string): HTMLElement | undefined {
-  return branchRows().find((el) => el.textContent?.includes(name))
+  return branchRows().find((el) => el.getAttribute('aria-label') === name)
 }
 
 function renderPicker() {
@@ -1481,7 +1483,8 @@ describe('BranchPicker — flat/tree view toggle', () => {
     expect(dirRow('feat')).toBeDefined()
     expect(dirRow('bugfix')).toBeDefined()
     expect(dirRow('origin')).toBeDefined()
-    // Leaves stay reachable under their full names.
+    // Leaves stay reachable — the accessible names are the full names; the
+    // visible labels are basenames indented under their dirs.
     expect(branchRow('feat/a')).toBeDefined()
     expect(branchRow('origin/feat/remote')).toBeDefined()
 

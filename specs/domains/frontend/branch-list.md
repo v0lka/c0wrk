@@ -14,7 +14,7 @@ directory-tree display mode.
 - `frontend/src/components/GitPanel/BranchDropdown.tsx` — the menu surface: toolbar dropdown with a display-mode toggle + search input on one row; renders its own always-flat Worktrees section beside the list
 - `frontend/src/components/GitPanel/BranchPicker.tsx` — the dialog surface: filter row with the display-mode toggle; one component serves switch mode and draft pick mode
 - `frontend/src/components/GitPanel/LocalBranchRow.tsx` / `RemoteBranchRow.tsx` — the leaf rows (checkout/rename/merge/rebase/push/delete context-menu actions, draft selection, managed-session pins and focus gates)
-- `frontend/src/lib/branchTree.ts` — `buildBranchTree`: implicit `/`-segment directory nodes, the leaf/dir collision payload, dirs-first alphabetical sorting
+- `frontend/src/lib/branchTree.ts` — `buildBranchTree`: implicit `/`-segment directory nodes, the leaf/dir collision payload, dirs-first alphabetical sorting; `branchLeafLabel`: the tree leaf's visible label (the last name segment)
 - `frontend/src/stores/gitPanelStore.ts` — the persisted display preference `branchListTree` + `setBranchListTree`; scalar-validated on rehydrate by `mergeGitPanel`
 
 ## Behavior
@@ -67,6 +67,14 @@ With tree on, each section renders `buildBranchTree` over the section's
   indent by `depth * 12px`.
 - A remote-tracking ref's remote prefix (`origin`) emerges as the top-level
   directory of the Remote section.
+- A leaf's visible label is the last `/`-segment of its name
+  (`branchLeafLabel`): `origin/ui/branch-grouping` renders as
+  `branch-grouping` beneath the `origin` → `ui` dir rows — the Changes
+  list's name-only convention; flat mode renders full names. The accessible
+  name (`aria-label`) stays the FULL name, so same-named leaves in sibling
+  dirs stay distinguishable to assistive tech. The dir row's label uses the
+  leaf font size (`text-xs`) — only the muted color marks the row as a
+  container.
 - A name that is both a leaf and a directory prefix (`feature` +
   `feature/login`) renders ONCE — as the directory's own `leaf` payload,
   shown inside the expanded dir row; no duplicate sibling leaf is created.
@@ -90,8 +98,10 @@ With tree on, each section renders `buildBranchTree` over the section's
 
 Row callbacks always receive the FULL branch name — local rows the branch
 name, remote rows the full remote-tracking ref (`origin/feat/x`) — in BOTH
-display modes; tree display is cosmetic, exactly like the Changes list's
-display paths. In draft pick mode the row click flows through
+display modes; tree display is cosmetic (the leaf's visible label is the
+basename, while hover-action labels, tooltips and the accessible name keep
+the full name), exactly like the Changes list's display paths. In draft pick
+mode the row click flows through
 `draftSelect.onSelect(fullName)` unchanged, so the picker's decision payload
 (`{kind, branch, createBranch, startPoint}`) is mode-independent.
 
@@ -111,6 +121,9 @@ closed-when-error toolbar behavior).
   without the key and any non-boolean value both rehydrate to flat.
 - Row payloads are always full branch names / full remote-tracking refs —
   never the tree's display basename or a directory path.
+- A tree leaf's visible label is the basename (`branchLeafLabel`); its
+  accessible name (`aria-label`), hover-action labels and tooltips stay the
+  full branch name / remote ref.
 - Tree mode is built from filtered (visible) names only; a directory never
   renders without at least one matching leaf beneath it (including the
   collision `leaf` payload).

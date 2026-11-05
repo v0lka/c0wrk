@@ -120,11 +120,16 @@ function isMenuOpen(): boolean {
   return body().querySelector('[data-slot="dropdown-menu-content"]') !== null
 }
 
-/** A branch row is a div[role=button] containing the given name. */
+/** A branch row is a div[role=button] whose accessible name is exactly
+ *  `name` — always the FULL branch name/ref: in tree mode the visible
+ *  label is the basename (`branchLeafLabel`), while `aria-label` keeps
+ *  the full name. */
 function rowByName(name: string): HTMLElement {
-  return Array.from(body().querySelectorAll('div[role="button"]')).find((el) =>
-    (el.textContent ?? '').includes(name),
-  ) as HTMLElement
+  const row = Array.from(body().querySelectorAll('div[role="button"]')).find(
+    (el) => el.getAttribute('aria-label') === name,
+  )
+  expect(row, `branch row "${name}"`).toBeTruthy()
+  return row as HTMLElement
 }
 
 /** The action buttons inside a row (hover mini-icons). */
@@ -520,9 +525,11 @@ describe('BranchDropdown — tree/flat display-mode toggle', () => {
       'branch-dir-origin',
       'branch-dir-origin/feature',
     ])
-    // Every leaf stays reachable (full names, indented under their dirs).
+    // Every leaf stays reachable — the accessible names are the full
+    // names; the visible labels are basenames indented under their dirs.
     expect(rowByName('feature/auth')).toBeTruthy()
     expect(rowByName('origin/feature/api')).toBeTruthy()
+    expect((rowByName('feature/auth').textContent ?? '').trim()).toBe('auth')
   })
 
   it('a search that matches nothing shows the empty state — with every tree dir pruned', async () => {

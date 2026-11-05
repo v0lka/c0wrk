@@ -2,6 +2,7 @@ import { Fragment, useMemo, type ReactNode } from 'react'
 import { ChevronDown, ChevronRight, Folder } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import {
+  branchLeafLabel,
   buildBranchTree,
   type BranchTreeDirNode,
   type BranchTreeNode,
@@ -86,7 +87,11 @@ export interface BranchListProps {
  * rows (chevron + folder; click or Enter/Space toggles) indent children by
  * `depth * 12px`,
  * and a remote ref's remote prefix (`origin`) emerges as the top-level
- * directory. A branch that is both a leaf and a directory prefix renders
+ * directory. A tree leaf's visible label is its last `/`-segment
+ * ({@link branchLeafLabel}) — the dir rows above carry the remaining
+ * segments; the accessible name (`aria-label`) and every row payload stay
+ * the full branch name. A branch that is both a leaf and a directory prefix
+ * renders
  * once — as the directory's own leaf payload inside its expanded dir row.
  * Filtering feeds only visible names into the tree, so dirs whose rows all
  * match nothing are pruned. Sections and dirs collapse through
@@ -166,10 +171,11 @@ export function BranchList({
 
   // ── Row renderers (shared by flat and tree layouts) ────────────────────────
 
-  const rowElement = (b: Branch) =>
+  const rowElement = (b: Branch, displayName?: string) =>
     b.kind === 'local' ? (
       <LocalBranchRow
         branch={b}
+        displayName={displayName}
         inFlight={inFlightOf(b.name)}
         disabled={disabledOf(b.name)}
         pinned={pinnedFor ? pinnedFor(b.name) : undefined}
@@ -199,6 +205,7 @@ export function BranchList({
     ) : (
       <RemoteBranchRow
         branch={b}
+        displayName={displayName}
         inFlight={inFlightOf(b.name)}
         disabled={disabledOf(b.name)}
         checkoutBlockedReason={
@@ -226,12 +233,14 @@ export function BranchList({
    *  li-wrapped in the dialog variant (the menu renders rows bare). `key`
    *  overrides the default branch-name key — tree mode namespaces keys with
    *  a `leaf:` prefix so a carried collision leaf never shares its dir
-   *  node's `fullPath` key. */
+   *  node's `fullPath` key. In tree mode the visible label is the last
+   *  `/`-segment (the dir rows above carry the rest, like the Changes
+   *  list's name-only files); flat mode shows the full name. */
   const renderLeafRow = (b: Branch, depth: number, key: string = b.name) => {
     const row = depth > 0 ? (
-      <div style={{ paddingLeft: `${depth * 12}px` }}>{rowElement(b)}</div>
+      <div style={{ paddingLeft: `${depth * 12}px` }}>{rowElement(b, tree ? branchLeafLabel(b.name) : undefined)}</div>
     ) : (
-      rowElement(b)
+      rowElement(b, tree ? branchLeafLabel(b.name) : undefined)
     )
     return variant === 'dialog' ? (
       <li key={key}>{row}</li>
@@ -270,7 +279,9 @@ export function BranchList({
           <ChevronRight className="size-3.5 shrink-0" />
         )}
         <Folder className="size-3.5 shrink-0" />
-        <span className="min-w-0 truncate text-sm leading-none">{node.name}</span>
+        {/* Leaf-parity font: the label is text-xs like the branch rows
+            (only the muted color marks the row as a container). */}
+        <span className="min-w-0 truncate text-xs">{node.name}</span>
       </div>
     )
     return variant === 'dialog' ? <li>{row}</li> : row

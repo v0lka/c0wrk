@@ -121,3 +121,17 @@ export function buildBranchTree(branches: string[]): BranchTreeNode[] {
 
   return root
 }
+
+// ──────────────────────────────── Leaf Labels ────────────────────────────────
+
+/**
+ * The visible label of a branch leaf inside the tree: the last `/`-segment
+ * of the full name (`origin/ui/branch-grouping` → `branch-grouping`). The
+ * ancestor dir rows above the leaf already carry the remaining segments —
+ * the same name-only convention as the Changes list's file labels. Flat
+ * mode ignores this helper and renders the full name.
+ */
+export function branchLeafLabel(name: string): string {
+  const slash = name.lastIndexOf('/')
+  return slash === -1 ? name : name.slice(slash + 1)
+}

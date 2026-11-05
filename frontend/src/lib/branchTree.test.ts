@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildBranchTree } from './branchTree'
+import { branchLeafLabel, buildBranchTree, type BranchTreeNode } from './branchTree'
 
 describe('buildBranchTree', () => {
   it('returns an empty array for empty input', () => {
@@ -179,5 +179,26 @@ describe('buildBranchTree', () => {
       },
       { name: 'main', branch: 'main', isDir: false },
     ])
+  })
+})
+
+describe('branchLeafLabel', () => {
+  it('returns the last slash segment — the tree leaf label', () => {
+    expect(branchLeafLabel('origin/ui/branch-grouping')).toBe('branch-grouping')
+    expect(branchLeafLabel('feature/login')).toBe('login')
+  })
+
+  it('returns the full name when there is no slash (top-level leaf)', () => {
+    expect(branchLeafLabel('main')).toBe('main')
+  })
+
+  it('always agrees with the tree leaf node name field', () => {
+    const name = 'origin/feat/remote'
+    const tree = buildBranchTree([name])
+    // A single input name builds a linear chain of dirs ending in one leaf.
+    let node: BranchTreeNode = tree[0]!
+    while (node.isDir) node = node.children[0]!
+    expect(node.branch).toBe(name)
+    expect(branchLeafLabel(name)).toBe(node.name)
   })
 })

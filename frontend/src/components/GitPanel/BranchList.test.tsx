@@ -125,15 +125,18 @@ function leafRows(): Element[] {
   )
 }
 
-/** A branch row is a div[role=button] whose text is exactly `name`. */
+/** A branch row is a div[role=button] whose accessible name is exactly
+ *  `name` — always the FULL branch name/ref: in tree mode the visible label
+ *  is the basename (`branchLeafLabel`), while `aria-label` keeps the full
+ *  name so rows stay unambiguous (two dirs can hold same-named leaves). */
 function rowByName(name: string): HTMLElement {
-  const row = leafRows().find((el) => (el.textContent ?? '').trim() === name)
+  const row = leafRows().find((el) => el.getAttribute('aria-label') === name)
   expect(row, `branch row "${name}"`).toBeTruthy()
   return row as HTMLElement
 }
 
 function hasRow(name: string): boolean {
-  return leafRows().some((el) => (el.textContent ?? '').trim() === name)
+  return leafRows().some((el) => el.getAttribute('aria-label') === name)
 }
 
 /** Menu-variant section header — a registered menu item with the exact label. */
@@ -409,6 +412,39 @@ describe('BranchList — tree mode', () => {
     expect(rowByName('origin/feature/x')).toBeTruthy()
   })
 
+  it('tree leaves show the basename; the accessible name and flat mode stay full', async () => {
+    await renderMenu(
+      listProps({
+        branches: [
+          makeBranch({ name: 'origin/ui/branch-grouping', kind: 'remote' }),
+        ],
+        tree: true,
+      }),
+    )
+
+    // The dirs above the leaf carry every ancestor segment; the leaf renders
+    // only the last one.
+    expect(dirRow('origin')).toBeTruthy()
+    expect(dirRow('origin/ui')).toBeTruthy()
+    const leaf = rowByName('origin/ui/branch-grouping')
+    expect((leaf.textContent ?? '').trim()).toBe('branch-grouping')
+    // The accessible name stays the full ref — the visible basename is
+    // ambiguous across sibling dirs (`origin/ui/x` vs `origin/cli/x`).
+    expect(leaf.getAttribute('aria-label')).toBe('origin/ui/branch-grouping')
+
+    // Flat mode ignores the basename convention and shows the full ref.
+    await renderMenu(
+      listProps({
+        branches: [
+          makeBranch({ name: 'origin/ui/branch-grouping', kind: 'remote' }),
+        ],
+      }),
+    )
+    const flatLeaf = rowByName('origin/ui/branch-grouping')
+    expect((flatLeaf.textContent ?? '').trim()).toBe('origin/ui/branch-grouping')
+    expect(body().querySelector('[data-testid="branch-dir-origin"]')).toBeNull()
+  })
+
   it('an active search force-expands a dir the user collapsed — and restores on clear', async () => {
     let setSearchActive: (v: boolean) => void = () => {}
     function Harness({ props }: { props: Omit<BranchListProps, 'variant'> }) {
@@ -478,9 +514,11 @@ describe('BranchList — tree mode', () => {
     // One dir node — no duplicate sibling leaf at the root.
     expect(body().querySelectorAll('[data-testid="branch-dir-feature"]').length).toBe(1)
     // Expanded by default: the dir's own branch row comes first, then the nested leaf.
-    // (leafRows excludes the dir row itself, which also carries text "feature".)
+    // (leafRows excludes the dir row itself, which also carries text "feature";
+    // both leaves render the basename "feature", so order is asserted by the
+    // full accessible name.)
     const rows = leafRows()
-      .map((el) => (el.textContent ?? '').trim())
+      .map((el) => el.getAttribute('aria-label'))
       .filter((t) => t === 'feature' || t === 'feature/login')
     expect(rows).toEqual(['feature', 'feature/login'])
 

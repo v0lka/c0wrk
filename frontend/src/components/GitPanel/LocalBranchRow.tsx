@@ -6,6 +6,14 @@ import type { BranchActionKind } from '@/hooks/useBranchActions'
 
 interface LocalBranchRowProps {
   branch: Branch
+  /**
+   * Visible label override: in tree display mode the leaf renders the last
+   * `/`-segment of the name (the ancestor dir rows carry the rest — the
+   * Changes list's name-only convention); undefined (flat mode) renders the
+   * full name. Payloads, hover-action labels, tooltips and the accessible
+   * name (aria-label) always stay the FULL branch name.
+   */
+  displayName?: string
   /** The action currently in-flight on this row (null = idle). */
   inFlight: BranchActionKind | null
   /** True when a different row's operation is in-flight — dims & blocks this row. */
@@ -82,6 +90,7 @@ interface LocalBranchRowProps {
  */
 export function LocalBranchRow({
   branch,
+  displayName,
   inFlight,
   disabled,
   onCheckout,
@@ -138,6 +147,10 @@ export function LocalBranchRow({
       tabIndex={(draftSelect ? blocked || draftBlocked : (isCurrent && !isPinned) || blocked) ? -1 : 0}
       aria-disabled={isPinned || checkoutBlocked || draftBlocked ? 'true' : undefined}
       aria-current={isCurrent || selected || isPinned ? 'true' : undefined}
+      // The accessible name is always the FULL branch name — the visible
+      // label is the tree-mode basename, and two dirs can hold same-named
+      // leaves (`origin/ui/x` and `origin/cli/x`).
+      aria-label={branch.name}
       title={
         draftBlocked
           ? (draftBlockedReason ?? undefined)
@@ -158,7 +171,7 @@ export function LocalBranchRow({
       )}
     >
       <GitBranch className="size-4 shrink-0 text-muted-foreground" />
-      <span className="flex-1 truncate">{branch.name}</span>
+      <span className="flex-1 truncate">{displayName ?? branch.name}</span>
       {(isCurrent || selected) && !isPinned && <Check className="size-4 shrink-0" />}
       {isPinned && <Lock className="size-4 shrink-0" aria-label="Pinned to this session" />}
       {inFlight === 'checkout' && (
