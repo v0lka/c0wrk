@@ -352,6 +352,27 @@ func TestSendMessage_E2SRejectsGoalCommandPrefix(t *testing.T) {
 		t.Errorf("expected a mutual-exclusivity rejection, got: %v", err)
 	}
 
+	// The budgeted "/goal:N" form arms goal mode identically.
+	err = api.SendMessage("fork-src", "/goal:5 do the thing", nil, nil, nil, "", "", false, "", true, false, "", nil)
+	if err == nil {
+		t.Fatal("expected an error for an E2S message carrying a /goal:N command")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("expected a mutual-exclusivity rejection, got: %v", err)
+	}
+
+	// A threaded ["goal"] mention list must not disarm the prefix guard
+	// either: the ghost-threading defense (dropGhostGoalThreading) drops a
+	// "goal" naming no real catalog entry, so the exposed prefix still trips
+	// the exclusivity rejection instead of quietly running an E2S task.
+	err = api.SendMessage("fork-src", "/goal do the thing", []string{"goal"}, nil, nil, "", "", false, "", true, false, "", nil)
+	if err == nil {
+		t.Fatal("expected an error for an E2S message carrying a /goal command behind a threaded [goal] mention list")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("expected a mutual-exclusivity rejection, got: %v", err)
+	}
+
 	// Rejected before any side effect: no message persisted, no task row.
 	if msgs, mErr := sessionStore.LoadMessages(ctx, "fork-src"); mErr != nil {
 		t.Fatalf("LoadMessages: %v", mErr)
@@ -426,6 +447,7 @@ func TestSendMessage_GoalBlockedByModelProfiles(t *testing.T) {
 	}{
 		{"explicit flag", "do the thing", true},
 		{"/goal prefix", "/goal do the thing", false},
+		{"budgeted /goal:N prefix", "/goal:5 do the thing", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

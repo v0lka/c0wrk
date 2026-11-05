@@ -270,6 +270,58 @@ describe('partitionRefs — mcp catalog', () => {
   })
 })
 
+describe('partitionRefs — built-in goal command carve-out', () => {
+  // ADR-106: a plain "goal" token absent from every catalog is the built-in
+  // /goal command, never a permissive skill passthrough — threading it would
+  // have the backend's mention strip eat the command prefix before goal
+  // detection runs. The controller-level cross-boundary test in
+  // useChatInputController.test.tsx pins the partition→SendMessage wiring.
+  it('leaves a plain goal token absent from every catalog unthreaded', () => {
+    const result = partitionRefs(extractRefs('/goal ship it'), [], [], [])
+    expect(result.skills).toEqual([])
+    expect(result.agents).toEqual([])
+    expect(result.mcpServers).toEqual([])
+    expect(result.ambiguous).toEqual([])
+  })
+
+  it('bare /goal as the whole message is unthreaded too (derivation grounds from empty)', () => {
+    const result = partitionRefs(extractRefs('/goal'), [], [], [])
+    expect(result.skills).toEqual([])
+    expect(result.agents).toEqual([])
+    expect(result.mcpServers).toEqual([])
+  })
+
+  it('keeps a mid-text goal token unthreaded so a stripped mention can expose the prefix', () => {
+    // /explore is a real skill → threaded and backend-stripped; goal is not →
+    // the exposed /goal then arms goal mode post-preprocessing (ADR-106 D1).
+    const result = partitionRefs(extractRefs('/explore /goal ship it'), [], ['explore'], [])
+    expect(result.skills).toEqual(['explore'])
+  })
+
+  it('a real catalog entry named goal still threads (the ADR-106 shadowing configuration)', () => {
+    expect(partitionRefs(extractRefs('/goal ship it'), [], ['goal'], []).skills).toEqual(['goal'])
+    expect(partitionRefs(extractRefs('/goal ship it'), ['goal'], [], []).agents).toEqual(['goal'])
+    expect(partitionRefs(extractRefs('/goal ship it'), [], [], ['goal']).mcpServers).toEqual(['goal'])
+  })
+
+  it('a goal name colliding across catalogs stays the ambiguous no-op', () => {
+    const result = partitionRefs(extractRefs('/goal ship it'), ['goal'], ['goal'], [])
+    expect(result.ambiguous).toEqual(['goal'])
+    expect(result.skills).toEqual([])
+    expect(result.agents).toEqual([])
+  })
+
+  it('the carve-out is name-exact: other unknown tokens keep the permissive passthrough', () => {
+    const result = partitionRefs(extractRefs('/goal and /mystery'), [], [], [])
+    expect(result.skills).toEqual(['mystery'])
+  })
+
+  it('a qualified /skill: goal threads verbatim (explicit kind, no catalog check)', () => {
+    const result = partitionRefs(extractRefs('/skill: goal now'), [], [], [])
+    expect(result.skills).toEqual(['goal'])
+  })
+})
+
 describe('formatFileRefPath', () => {
   it('leaves a path without spaces unescaped and unquoted', () => {
     expect(formatFileRefPath('src/x.go')).toBe('src/x.go')

@@ -52,7 +52,13 @@ func (f *FrontendAPI) builder() appBuilder {
 	if f.app == nil {
 		return nil
 	}
-	return f.app.Builder()
+	// Box only a NON-nil concrete builder: a nil *OrchestratorBuilder assigned
+	// to the interface would be a typed nil (≠ nil interface) and slip past
+	// every caller's nil-check, panicking on the first receiver dereference.
+	if b := f.app.Builder(); b != nil {
+		return b
+	}
+	return nil
 }
 
 // Compile-time assertion that *core.OrchestratorBuilder satisfies appBuilder.

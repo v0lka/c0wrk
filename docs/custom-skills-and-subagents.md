@@ -609,7 +609,7 @@ asking for a code review and letting the Conductor pick it from the
 | `/skill: name` (or `/skill:name`) | An Agent Skill, collision-qualified | Frontend; the marker forces the skill kind |
 | `/mcp: name` (or `/mcp:name`) | An MCP server, collision-qualified | Frontend; the marker forces the MCP kind (always valid input) |
 | `@path` | A file reference (with optional `#L20` / `#L5-L10` line anchors) | Frontend; converted to a `fileref://` URI for the agent |
-| `/goal …` | Switches the first message of a task into goal mode | Backend goal-mode detection |
+| `/goal` or `/goal:N` | Switches the first message of a task into goal mode; `:N` sets an N-turn budget (the built-in command, [ADR-110](../specs/decisions/110-goal-mode-chat-activation.md)) | Backend goal-mode detection |
 
 `/` is the single trigger for all three mention kinds: it opens one completion
 list with a labelled **Subagents** section first, then **MCP Servers**, then
@@ -659,7 +659,13 @@ Rules that keep the reference kinds unambiguous:
 
 - A reference is only recognized at the **start of the text or after
   whitespace** — mid-word slashes are not references (so `http://...` is
-  safe), and `/goal` keeps its command meaning (it is never a catalog name).
+  safe), and `/goal` keeps its command meaning (it is never a catalog name,
+  and the send path never threads it as a passthrough mention — only a REAL
+  catalog entry named `goal` shadows the plain spelling,
+  [ADR-110](../specs/decisions/110-goal-mode-chat-activation.md); the
+  `/goal:N` budget form is never strippable as a mention either — the
+  `:` breaks the plain-token boundary — so it always reaches the built-in
+  goal detector).
 - `#` is not a trigger: `#foo` is always plain text (issue numbers, hashtags,
   …). The `#` glued to a file token (the line anchor in `@x.go#L20`) belongs
   to the file ref.

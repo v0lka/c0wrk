@@ -184,6 +184,13 @@ type nudgeStampHarness struct {
 }
 
 func newNudgeStampHarness(t *testing.T, gateFirstCall bool) *nudgeStampHarness {
+	return newNudgeStampHarnessWithFactory(t, gateFirstCall, nil)
+}
+
+// newNudgeStampHarnessWithFactory is newNudgeStampHarness with an optional
+// factory replacement (e.g. a goal-capable orchestrator for goal-loop tests);
+// the wrapper receives the default factory and the scripted caller.
+func newNudgeStampHarnessWithFactory(t *testing.T, gateFirstCall bool, wrapFactory func(inner session.OrchestratorFactory, caller agent.LLMCaller) session.OrchestratorFactory) *nudgeStampHarness {
 	t.Helper()
 
 	// A FILE-backed db pinned to one connection: the task runner goroutine
@@ -231,7 +238,11 @@ func newNudgeStampHarness(t *testing.T, gateFirstCall bool) *nudgeStampHarness {
 	}
 	events := make(chan session.Event, 200)
 	diag := &nudgeSweepDiagCapture{}
-	manager := session.NewManager(routingTestFactory(caller), func(e session.Event) { events <- e }, agentDir)
+	factory := routingTestFactory(caller)
+	if wrapFactory != nil {
+		factory = wrapFactory(factory, caller)
+	}
+	manager := session.NewManager(factory, func(e session.Event) { events <- e }, agentDir)
 	manager.SetLogger(slog.New(diag))
 	manager.SetSessionStore(store)
 	manager.SetTaskStore(store)
