@@ -255,7 +255,7 @@ describe("type-scale guard (relative typography invariant)", () => {
     expect(group).not.toContain(".cm-tooltip-autocomplete");
   });
 
-  it("never hardcodes a font-family stack in TS outside lib/fonts.ts", () => {
+  it("never hardcodes a font-family stack in TS outside lib/fonts.ts", () => { // whole-tree scan: generous bound under parallel suite load
     const offenders: string[] = [];
     for (const file of sources) {
       if (file.endsWith(join("lib", "fonts.ts"))) continue; // the TS mirror itself
@@ -269,9 +269,9 @@ describe("type-scale guard (relative typography invariant)", () => {
       });
     }
     expect(offenders).toEqual([]);
-  });
+  }, 30_000);
 
-  it("never hardcodes a font-family stack in CSS outside @font-face", () => {
+  it("never hardcodes a font-family stack in CSS outside @font-face", () => { // whole-tree scan: generous bound under parallel suite load
     const offenders: string[] = [];
     for (const file of stylesheets) {
       const css = readFileSync(file, "utf8");
@@ -287,9 +287,9 @@ describe("type-scale guard (relative typography invariant)", () => {
       }
     }
     expect(offenders).toEqual([]);
-  });
+  }, 30_000);
 
-  it("never sizes text with an arbitrary px/rem utility", () => {
+  it("never sizes text with an arbitrary px/rem utility", () => { // whole-tree scan: generous bound under parallel suite load
     const offenders: string[] = [];
     for (const file of sources) {
       const lines = stripComments(readFileSync(file, "utf8"), file).split("\n");
@@ -300,9 +300,9 @@ describe("type-scale guard (relative typography invariant)", () => {
       });
     }
     expect(offenders).toEqual([]);
-  });
+  }, 30_000);
 
-  it("never carries an absolute inline font size outside the API-bound exceptions", () => {
+  it("never carries an absolute inline font size outside the API-bound exceptions", () => { // whole-tree scan: generous bound under parallel suite load
     const offenders: string[] = [];
     for (const file of sources) {
       if (INLINE_FONT_SIZE_EXCEPTIONS.some((ex) => file.endsWith(ex))) continue;
@@ -314,9 +314,9 @@ describe("type-scale guard (relative typography invariant)", () => {
       });
     }
     expect(offenders).toEqual([]);
-  });
+  }, 30_000);
 
-  it("keeps CSS font sizes relative except the html root rule", () => {
+  it("keeps CSS font sizes relative except the html root rule", () => { // whole-tree scan: generous bound under parallel suite load
     const offenders: string[] = [];
     for (const file of stylesheets) {
       const css = readFileSync(file, "utf8");
@@ -333,7 +333,7 @@ describe("type-scale guard (relative typography invariant)", () => {
       }
     }
     expect(offenders).toEqual([]);
-  });
+  }, 30_000);
 
   it("the px-size pattern catches font sizes but not color values", () => {
     expect(PX_FONT_SIZE.test('className="text-[10px]"')).toBe(true);

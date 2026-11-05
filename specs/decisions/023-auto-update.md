@@ -134,7 +134,14 @@ download from network MITM.
 - **Archive safety** — extraction rejects zip-slip / tar-slip path traversal
   (`safeJoin`) and skips symlinks during update extraction.
 - **Stale-updater reaping** — `CleanupStaleUpdaters` (called at normal
-  startup) reaps orphaned updater copies from interrupted runs.
+  startup) reaps orphaned updater copies from interrupted runs, but only
+  artifacts older than `cleanupStaleMaxAge` (24h), dated on the entry and its
+  direct children: an artifact modified within the window may be a LIVE update
+  (download in progress or staged apply pending relaunch) and is left alone; a
+  manual cleanup racing an in-flight update can only be younger. Unreadable
+  entries count as live (never delete what you cannot date), except regular
+  files, which are dated on their own mtime only — else the fail-open rule
+  would exempt file-shaped leftovers (the Windows `c0wrk-updater.exe`) forever.
 
 ### Threat model
 

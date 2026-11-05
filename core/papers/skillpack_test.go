@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/v0lka/c0wrk/core/seedpack"
 	"github.com/v0lka/sp4rk/skills"
 )
 
@@ -46,8 +47,8 @@ func TestSeedSkills_EmbedsAll(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dir, "SKILL.md")); err != nil {
 			t.Errorf("%s/SKILL.md missing: %v", name, err)
 		}
-		if ok, v := readSeedVersion(dir); !ok {
-			t.Errorf("%s: missing %s marker", name, seedVersionFile)
+		if ok, v := seedpack.ReadVersion(dir); !ok {
+			t.Errorf("%s: missing %s marker", name, seedpack.VersionFile)
 		} else if v != CurrentSeedVersion {
 			t.Errorf("%s: marker version %q, want %q", name, v, CurrentSeedVersion)
 		}
@@ -223,8 +224,8 @@ func TestSeedSkills_PreservesUserOwnedSkill(t *testing.T) {
 	if !bytes.Equal(got, userSKILL) {
 		t.Errorf("user-owned skill was clobbered:\ngot:\n%s\nwant:\n%s", got, userSKILL)
 	}
-	if _, err := os.Stat(filepath.Join(userDir, seedVersionFile)); !os.IsNotExist(err) {
-		t.Errorf("user-owned dir should not gain a %s marker", seedVersionFile)
+	if _, err := os.Stat(filepath.Join(userDir, seedpack.VersionFile)); !os.IsNotExist(err) {
+		t.Errorf("user-owned dir should not gain a %s marker", seedpack.VersionFile)
 	}
 }
 
@@ -238,7 +239,7 @@ func TestSeedSkills_OverwritesOnVersionBump(t *testing.T) {
 	}
 
 	dir := filepath.Join(dest, "study-paper")
-	if err := os.WriteFile(filepath.Join(dir, seedVersionFile), []byte("0"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, seedpack.VersionFile), []byte("0"), 0o644); err != nil {
 		t.Fatalf("backdate marker: %v", err)
 	}
 	stale := filepath.Join(dir, "stale-user-file.md")
@@ -254,7 +255,7 @@ func TestSeedSkills_OverwritesOnVersionBump(t *testing.T) {
 		t.Fatalf("Updated: got %v, want [study-paper]", res.Updated)
 	}
 
-	ok, v := readSeedVersion(dir)
+	ok, v := seedpack.ReadVersion(dir)
 	if !ok || v != CurrentSeedVersion {
 		t.Errorf("after update: marker %q (ok=%v), want %q", v, ok, CurrentSeedVersion)
 	}
@@ -306,8 +307,8 @@ func TestEmbeddedScriptsStdlibOnly(t *testing.T) {
 // `license:` field is gone and a `metadata:` block is present. It also pins the
 // seed-version bump that a pack-content change requires.
 func TestSeedSkills_SkillMDNoLicenseFrontMatter(t *testing.T) {
-	if CurrentSeedVersion != "5" {
-		t.Errorf("CurrentSeedVersion = %q, want %q (pack content changed)", CurrentSeedVersion, "5")
+	if CurrentSeedVersion != "6" {
+		t.Errorf("CurrentSeedVersion = %q, want %q (pack content changed)", CurrentSeedVersion, "6")
 	}
 	licenseRe := regexp.MustCompile(`(?m)^license:`)
 	metadataRe := regexp.MustCompile(`(?m)^metadata:`)

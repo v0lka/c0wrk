@@ -153,6 +153,8 @@ and direct-constructor fallback are defined in [Factory Pattern](#factory-patter
 
 The session manager never touches core internals — it treats the Orchestrator as a black box with `HandleMessage()` and `Resume()` as its entry points.
 
+**`TaskStoreAdapter` store-call deadline.** `core.TaskPersistence` methods take no ctx, so every backend adapter store call MUST be deadline-bounded (`storeCallTimeout` in `backend/session/task_adapter.go`, the same bound the restore head-reads use): all calls share the app's single SQLite pool, and an unbounded pool-wait parks the synchronous terminal finalizers (`CompleteTask`/`FailTask`/`CancelTask`) — the task UI stays 'running' forever.
+
 ## Event Emission
 
 Backend implements `core.Emitter`:

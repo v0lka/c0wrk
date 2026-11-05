@@ -91,10 +91,10 @@ function makeStatus(pinnedHypotheses: Record<string, string[]> = {}): ResearchSt
   return {
     enabled: true,
     project_id: 'p1',
-    research_root: '/root/.research',
+    research_root: '/root/research',
     pinned_hypotheses: pinnedHypotheses,
     root: {
-      path: '/root/.research',
+      path: '/root/research',
       index: [{ id: 'R-001', path: 'R-001-test/brief.md' }],
       active_project_id: 'R-001',
       projects: [

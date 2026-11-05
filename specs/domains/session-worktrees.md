@@ -31,7 +31,7 @@ git RPC, the worktree listing and deletion RPCs, and the pinned-branch refusal) 
 - `backend/config/paths.go` — `NewManagedWorktreesDir`, `WorktreePathInContainer`, `ManagedWorktreeNameFromPath`/`ManagedWorktreeNameFromPathProject`, `ManagedWorktreeLegacyPath`, `ManagedWorktreeRootForPath`, legacy `ManagedWorktreesDir`/`ManagedWorktreePath`, and project-deletion preflight
 - `backend/frontend_api_git_focus.go` — the Git-panel focus model: `SetGitPanelFocus`/`GetGitPanelFocus`/`ListProjectWorktrees` RPCs, `resolveGitFocusRoot` (the focus resolution behind `resolveGitRepoRoot`), owning-session metadata, the pinned-branch guard (`ErrPinnedWorktreeBranch`, `refusePinnedBranchSwitch`), the fail-soft vector-registry re-point every accepted focus move carries (`focusVectorRoots` → `ApplyFocus`), and `DeleteWorktree` (removes any linked tree of the active project with the session-release cleanup contract)
 - `backend/frontend_api_git.go` — `CreateBranchInWorktree`, the Git-panel RPC that births a branch and its managed tree atomically from a base ref (through `worktrees.Owner.ProvisionNewBranch`), never switching or consulting the focus
-- `backend/frontend_api_vector.go` — vector-index RPC surface (`SearchVectorStore`/`GetVectorIndexStatus`/`ReindexVectorIndex`, all routed to the Git-panel FOCUS root), focus-target resolution (`resolveVectorIndexTarget` — the project switch resolves the saved session's tree), worktree-scoped storage (`config.WorktreeVectorIndexPath`), release cleanup (`deleteWorktreeVectorIndex`: registry release → storage → per-tree cache) and provisioning seeding (`seedWorktreeEmbeddingCache`: copies the checkout's embedding cache into a fresh tree's cache root)
+- `backend/frontend_api_vector.go` — vector-index RPC surface (`SearchVectorStore`/`GetVectorIndexStatus`/`ReindexVectorIndex`, all routed to the Git-panel FOCUS root), focus-target resolution (`resolveVectorIndexTarget` — the project switch resolves the saved session's tree; managed trees route onto the PROJECT's shared store, ADR-104), release cleanup (`deleteWorktreeVectorIndex`: registry release → the tree's shared-store overlay + ownership marker + legacy per-tree storage + cache) and the resurrection guard (`cleanupReleasedTreeVectorData`, ADR-104 stage 5)
 - `backend/vector_roots.go` — the per-root registry (ADR-081): one `vectorindex.Manager` per workspace root (single-flight creation, LRU-bounded live set with the focus pinned), agent-side routing by the executor context's workspace root, `ApplyFocus`/`LeaveFocus`, `Release`/`ReleaseProject`/`ShutdownAll`, and `Application.buildVectorRouter` (the shared search closures)
 - `core/vectorindex/git.go` — `resolveGitDir` follows a linked worktree's `.git` pointer file to the private git directory that owns HEAD, so the vector index's branch monitoring works inside managed trees; `backend/config/paths.go` `ManagedWorktreeNameFromPath`/`WorktreeVectorIndexPath` derive the per-tree index storage
 - `frontend/src/lib/gitFocus.ts` + `frontend/src/hooks/useGitFocusSync.ts` — the frontend side: serialized/supersede-guarded focus applies and the follow-the-session effect (project/session switches and the active session's send-time-bind transition move the focus to the active session's execution workspace); the hook is mounted once at the App root (beside `useVectorIndexStatus`) — the Git panel lives only while the git tab is active, and the follow must also run on chat-area session switches with any other tab open
@@ -189,26 +189,26 @@ KEPT — no operation in this path ever deletes a branch. The eager
 `CreateSession` RPC (no arguments) creates the plain local row; provisioning
 lives exclusively in the first send's `bindSessionWorkspace`.
 
-#### Embedding-cache seeding
+#### Vector store and embedding cache (no seeding step)
 
-After its success point (create: after the binding is persisted; fork: after
-the store fork), both provisioning flows call `seedWorktreeEmbeddingCache`
-(backend `frontend_api_vector.go`): the project checkout's content-addressed
-embedding cache is copied into the fresh tree's cache root
-(`config.WorktreeEmbeddingCachePath`) — synchronously, before the RPC returns,
-so the frontend's immediate focus move builds the tree's vector manager over
-an already-warm cache. A session tree is 99-100% identical to its branch
-point, and the cache — keyed by chunk-text hash plus model fingerprint with
-paths deliberately excluded — is the one layer where that identity is legally
-reusable (branch collections are absolute-path-keyed and cannot be shared);
-with a warm seed the tree's first index pass reuses the checkout's embeddings
-instead of re-running ONNX inference over near-identical content. The seed is
-best-effort and idempotent: a missing checkout cache, a derivation failure, or
-a partial copy only means the first pass runs cold (copied entries are
-checksum-guarded, so a torn file is a miss, never a wrong vector); an existing
-target directory is never touched; per-file failures against the checkout's
-live cache are skipped. The recreate path needs no call — its cache root
-survives the lost tree.
+Since ADR-104 stage 2 neither provisioning flow seeds anything: a managed
+worktree owns no per-tree vector storage and no per-tree embedding cache.
+Its vector state lives in the PROJECT's shared store (one store owner per
+project per process), where the tree's index delta is a per-root overlay
+beside the read-only snapshot corpora the checkout and sibling trees also
+reach. Embeddings come from the project's content-addressed shared cache
+(`config.ProjectEmbeddingCachePath`) — keyed by chunk-text hash plus model
+fingerprint with paths deliberately excluded — so the checkout and every
+worktree of the project legally share one cache: a session tree is 99-100%
+identical to its branch point, and the fresh tree's first index pass reuses
+those already-computed embeddings directly, re-running ONNX inference only
+for genuinely new content. Nothing copies synchronously before the RPC
+returns; the frontend's immediate focus move builds the tree's manager over
+the same shared store the checkout's manager already uses, warm by
+construction. The legacy per-tree cache roots
+(`config.WorktreeEmbeddingCachePath` and its pre-containment-fix variant)
+survive only as cleanup targets — release drops them alongside the tree's
+overlay (see [Release](#release-deletion)).
 
 ### Restore
 
@@ -396,7 +396,17 @@ frontend (useGitFocusSync, mounted at the App root)  backend
   vector-registry root is released first (open chromem handles dropped so
   removal is Windows-safe) and a managed tree's derived index storage +
   embedding cache are dropped (`deleteWorktreeVectorIndex`); an external
-  tree only releases its registry root. `git:status_changed` is emitted for
+  tree only releases its registry root. Since ADR-104 stage 2/5 the
+  tree-scoped part is exactly its OWN delta in the project's shared store —
+  the per-root overlay (store, lexical directory, sidecar, content-less
+  marker) plus its `refs/root_<fp>.ref` ownership marker; the snapshot
+  corpora other roots or surviving branches still reach are never touched
+  (see [workspace.md](workspace.md), shared-store reachability GC). The
+  session-release flow guards the resurrection window first
+  (`cleanupReleasedTreeVectorData`): a released tree whose path exists
+  again (a racing adoption's Recreate) keeps everything — the recreated
+  tree's manager, overlay and marker are live data, and the cleanup defers
+  to that tree's own next release. `git:status_changed` is emitted for
   the checkout — the refresh re-resolves the focus server-side, so a focus
   pointing at the deleted tree rolls back to the checkout through the
   stale-focus fallback.
@@ -412,8 +422,11 @@ frontend (useGitFocusSync, mounted at the App root)  backend
   entering the new tree stays the user's decision. On success
   `git:status_changed` refreshes the branch list and status while the
   frontend's Git-focus refresh (`refreshGitFocus`) re-reads the worktree
-  list, landing the new tree in the Worktrees section; the tree's embedding
-  cache is seeded best-effort, same contract as session provisioning.
+  list, landing the new tree in the Worktrees section. No vector seed step
+  runs after the success point: since ADR-104 stage 2 the new tree routes
+  onto the project's shared store, so its first index pass reads the base
+  ref's snapshot corpus and the project's shared embedding cache — the same
+  no-seed contract as session provisioning (above).
 - The Worktrees section is shown in pick mode too: the pick records a
   BRANCH, but an existing worktree (e.g. a stale managed tree) can still be
   deleted — through the mandatory `WorktreeDeleteConfirmDialog` — without
@@ -508,14 +521,14 @@ root follows the active session" protocol, [ADR-099](../decisions/099-research-r
   resolves — ONE definition (`activeSessionID`) shared by every backend
   consumer, so the panel, papers surfaces, watcher and tracked emit roots can
   never disagree with the session the UI shows.
-- The agent writes research artifacts under `<session-workspace>/.research`
+- The agent writes research artifacts under `<session-workspace>/research`
   (`session/Manager.researchProjectInfo` derives the root from the session's
   own execution workspace), so every panel-side read/mutation path
   (`FrontendAPI.effectiveResearchRoot`), the papers library and comparisons
   roots, and the workspace watcher's tracked emit roots resolve
-  `<workspace-of-the-active-session>/.research` through the READ-ONLY
+  `<workspace-of-the-active-session>/research` through the READ-ONLY
   `Manager.WorkspacePathFor` with `GetSessionWorkspace`'s project-ID
-  membership, falling back to `<proj.WorkspacePath>/.research` when no
+  membership, falling back to `<proj.WorkspacePath>/research` when no
   session of the project resolves.
 - Containment for the root (and the papers/comparisons subdirectories) is
   validated against the workspace the root was derived from
@@ -524,8 +537,8 @@ root follows the active session" protocol, [ADR-099](../decisions/099-research-r
   resolution won.
 - The CODE-mode watcher ROOT follows the active session too (see
   [workspace.md](workspace.md#filesystem-watcher)): its root is the session's
-  workspace — the managed tree — so the session's `.research` is an in-root
-  recursive watch, while the checkout's `.research` stays watched through an
+  workspace — the managed tree — so the session's `research` is an in-root
+  recursive watch, while the checkout's `research` stays watched through an
   admitted `AllowRoot` tree when the two differ. The frontend's session-switch
   `WatchDirectory(session workspace)` call re-scopes the watcher to the new
   tree and re-points the tracked emit roots, so `research:file_changed` /
@@ -612,10 +625,12 @@ root follows the active session" protocol, [ADR-099](../decisions/099-research-r
 - Deletion never resurrects: `Manager.DeleteSession` refuses sessions not
   live in memory (the RPC gates on `HasSession`), so a deletion flow can
   never re-provision a tree it just released through the restore ensurer.
-- Vector-index routing is per workspace root (ADR-081): every routed root
-  owns a `vectorindex.Manager` with worktree-scoped storage under
-  `<project vector_index>/worktrees/<name>` (branch resolved from that root;
-  disjoint, simultaneously live state per tree). Agent-side search resolves
+- Vector-index routing is per workspace root (ADR-081 + ADR-104 stage 2):
+  every routed root owns a `vectorindex.Manager`, and all of a project's
+  roots share ONE physical store — the per-tree state is exactly each
+  root's overlay (`branches/branch_root_<fingerprint>/`) beside the
+  read-only snapshot corpora other roots also reach (branch resolved from
+  that root). Agent-side search resolves
   the root from the executor context — a session always searches its own
   tree, regardless of which session is active or focused — while the
   user-facing RPCs follow the Git-panel focus. Membership is decided by
@@ -623,15 +638,26 @@ root follows the active session" protocol, [ADR-099](../decisions/099-research-r
   config, and an unknown root is rejected rather than
   silently indexed. No send ever re-points shared index state.
 - Releasing a managed tree releases its registry manager first (open chromem
-  handles dropped so removal is Windows-safe), then removes its vector-index
-  storage root and per-tree embedding cache; project deletion removes every
+  handles dropped so removal is Windows-safe), then removes the tree's
+  shared-store overlay and its `refs/root_<fingerprint>` ownership marker —
+  never the snapshot corpora another owner still reaches — plus its LEGACY
+  per-tree storage roots and caches (`WorktreeVectorIndexPath` /
+  `WorktreeEmbeddingCachePath`, cleanup-only); a newly provisioned tree
+  never gets a per-tree cache. Project deletion removes every
   worktree root together with the project root.
-- Worktree embedding-cache seeding is a provisioning-time, best-effort,
-  once-per-tree step: it runs only after the flow's success point and before
-  the RPC returns, never touches an existing cache root, copies only the
-  content-addressed entries (never branch collections — those are
-  absolute-path-keyed and tree-specific), and its failure never fails the
-  provisioning flow.
+- A tool-call path argument resolving inside a managed worktree container
+  (`<root>/.worktrees`) reachable from the session's own roots escalates as
+  the canonical hard reason `managed_worktree_traversal`
+  (`worktreeTraversalHardReason` / `ReasonCodeManagedWorktreeTraversal`,
+  `core/tools/registry_worktrees.go`): the container lives inside the
+  checkout, so root containment cannot separate the checkout from sibling
+  session trees, and a local session would otherwise read/write another
+  session's isolated tree silently. Exemptions: the session's own managed
+  tree (the workspace is a child of the container), and targets already
+  out-of-root (soft containment covers those). Shell tools are untouched
+  (ordinary flowsh/judge gates); group deny is enforced upstream. The reason
+  is canonical: `allow` never executes it silently and `ExecuteUnattended`
+  blocks it.
 
 ## Configuration
 

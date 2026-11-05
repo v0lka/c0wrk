@@ -1,0 +1,178 @@
+// Package specs — agent-pack: the versioned, embed-bundled spec-steward
+// Subagent Profile (AGENT.md, name "specs"), seeded globally once per launch
+// into the c0wrk global agents directory before the agent watchers start. It
+// mirrors the skill-pack (skillpack.go) so a spec step can be delegated via
+// delegate(agent:"specs"); the seeded profile lands where ListAgents and the
+// per-session AgentManager discover it (a project-local .agents/agents copy
+// still outranks the global one). The profile declares the four continuous
+// skills (spec-consult, spec-create, spec-update, spec-check) — resolved
+// fail-closed against the skill catalog at launch — and the least-privilege
+// tool budget local-read, local-write (ADR-105 decision 3).
+//
+// Seeding is idempotent, crash-safe, and non-destructive: destinations are
+// classified by CONTENT HASH against the embedded pack (never mtime/size,
+// never the marker alone). Full rules: specs/domains/specs.md.
+package specs
+
+import (
+	"embed"
+	"errors"
+	"fmt"
+	"io/fs"
+	"log/slog"
+	"os"
+	"path"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"github.com/v0lka/c0wrk/core/seedpack"
+	"github.com/v0lka/sp4rk/safeio"
+)
+
+// agentPackFS embeds the spec-steward Subagent Profile directories, mirroring
+// skillPackFS's plain directory embed (dotfiles excluded, deterministic).
+//
+//go:embed agents
+var agentPackFS embed.FS
+
+// agentEmbedRoot is the path within agentPackFS under which the profile
+// directories live. embed.FS always uses forward slashes regardless of host OS.
+const agentEmbedRoot = "agents"
+
+// AgentSeedVersion is the pack version stamped into each seeded profile's
+// marker; bump it when embedded content changes. Deliberately separate from
+// CurrentSeedVersion so the two packs bump independently. v2: commit-scoped
+// ADR immutability in the Discipline section (see skillpack.go).
+const AgentSeedVersion = "2"
+
+// SeedAgentsResult reports the per-profile outcome of a SeedAgents call. Each
+// slice holds profile names (e.g. "specs") and is sorted for deterministic
+// output. It mirrors SeedSkillsResult (the shared core/seedpack Result).
+type SeedAgentsResult = seedpack.Result
+
+// SpecAgentNames returns the sorted pack profile names, read from the
+// embed.FS at call time to stay in sync with the embedded tree.
+func SpecAgentNames() []string {
+	entries, err := fs.ReadDir(agentPackFS, agentEmbedRoot)
+	if err != nil {
+		// Compile-time-fixed tree: ReadDir failing is a programming error; empty, not panic.
+		return nil
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// SeedAgents materializes the embedded spec agent-pack into destAgentsDir,
+// created if missing. The caller resolves the destination — the global seed
+// passes the global c0wrk agents directory (ADR-056 precedence), not a
+// project-local pack path.
+//
+// Idempotent per the package docs: a marker-less directory is never
+// overwritten unless byte-identical to the pack (then only the marker is
+// re-stamped).
+func SeedAgents(destAgentsDir string, logger *slog.Logger) (*SeedAgentsResult, error) {
+	if destAgentsDir == "" {
+		return nil, errors.New("specs.SeedAgents: destAgentsDir is empty")
+	}
+	if err := safeio.MkdirAllRealWithin(filepath.Dir(filepath.Dir(destAgentsDir)), destAgentsDir, 0o755); err != nil {
+		return nil, fmt.Errorf("specs.SeedAgents: create agents dir %q: %w", destAgentsDir, err)
+	}
+
+	// Sweep leftovers from an interrupted previous run (see seedpack.StageAndSwap).
+	seedpack.SweepLeftovers(destAgentsDir)
+
+	result := &SeedAgentsResult{}
+	names := SpecAgentNames()
+	for _, name := range names {
+		target := filepath.Join(destAgentsDir, name)
+		action, err := seedOneAgent(name, target, logger)
+		if err != nil {
+			return nil, fmt.Errorf("specs.SeedAgents: seed %q: %w", name, err)
+		}
+		result.Append(action, name)
+	}
+
+	result.Sort()
+	if logger != nil {
+		logger.Info("spec agent-pack seeded",
+			"dest", destAgentsDir,
+			"version", AgentSeedVersion,
+			"seeded", len(result.Seeded),
+			"updated", len(result.Updated),
+			"current", len(result.Current),
+			"preserved", len(result.Preserved),
+			"modified", len(result.Modified),
+		)
+	}
+	return result, nil
+}
+
+// seedOneAgent classifies one destination by content hash and writes via the
+// crash-safe staging swap, reusing the seedpack Action enum and helpers
+// shared with skillpack.go.
+func seedOneAgent(name, target string, logger *slog.Logger) (seedpack.Action, error) {
+	st, packHash, err := seedpack.InspectTarget(agentPackFS, agentEmbedRoot, name, target)
+	if err != nil {
+		return seedpack.ActionSeed, err
+	}
+	action, restamp := seedpack.Classify(st, packHash, AgentSeedVersion)
+	switch action {
+	case seedpack.ActionPreserve:
+		if logger != nil {
+			logger.Debug("spec agent preserved (user-owned)", "agent", name, "dir", target)
+		}
+		return seedpack.ActionPreserve, nil
+	case seedpack.ActionModified:
+		if logger != nil {
+			logger.Info("spec agent profile locally modified; preserved", "agent", name, "dir", target)
+		}
+		return seedpack.ActionModified, nil
+	case seedpack.ActionCurrent:
+		if restamp {
+			if err := seedpack.WriteMarkerAtomic(target, AgentSeedVersion); err != nil {
+				return seedpack.ActionCurrent, err
+			}
+		}
+		return seedpack.ActionCurrent, nil
+	}
+	if err := seedpack.StageAndSwap(name, target, AgentSeedVersion, func(stagingDir string) error {
+		return writeAgentEmbedTree(name, stagingDir)
+	}); err != nil {
+		return action, err
+	}
+	return action, nil
+}
+
+// writeAgentEmbedTree writes the embedded subtree for one profile to dest,
+// creating intermediate directories as needed. embed paths use forward slashes.
+func writeAgentEmbedTree(name, dest string) error {
+	srcRoot := path.Join(agentEmbedRoot, name)
+	return fs.WalkDir(agentPackFS, srcRoot, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		// Embed-root-relative path (forward slashes) converted to the host
+		// separator; the walk root maps to ".".
+		rel := strings.TrimPrefix(p, srcRoot)
+		rel = strings.TrimPrefix(rel, "/")
+		target := dest
+		if rel != "" {
+			target = filepath.Join(dest, filepath.FromSlash(rel))
+		}
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		data, rerr := agentPackFS.ReadFile(p)
+		if rerr != nil {
+			return rerr
+		}
+		return seedpack.WriteFile(target, data, 0o644)
+	})
+}

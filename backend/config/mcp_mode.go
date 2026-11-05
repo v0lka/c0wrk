@@ -5,34 +5,27 @@ import (
 	"sort"
 )
 
-// Per-server MCP activation modes (`mcp.servers.<name>.mode`).
+// Capability activation modes: the canonical enum behind both
+// `capabilities.*.{chat_mode,code_mode}` slots and the legacy per-server
+// `mcp.servers.<name>.mode` key (specs/domains/capabilities.md).
 const (
-	// MCPServerModeAuto connects the server whenever the MCP gateway starts
-	// or reconfigures — the behavior of every server before the mode existed
-	// and the effective value for an omitted or empty key.
+	// MCPServerModeAuto — the default (also the resolved value for an
+	// omitted/empty key): dialed at gateway start/reconfigure, advertised
+	// everywhere.
 	MCPServerModeAuto = "auto"
-	// MCPServerModeManual keeps the server's configuration live and surfaces
-	// it as mentionable (GetMCPMentionableServers) for the chat-input
-	// completion / send flow instead of treating it as always-on.
+	// MCPServerModeManual — stays dialed; advertised only after a
+	// `/`-mention enables it task-wide.
 	MCPServerModeManual = "manual"
-	// MCPServerModeDisabled never dials the server: it is skipped entirely
-	// when the gateway config is built, so no process is spawned and no
-	// connection is opened — neither at startup nor on reconfigure.
+	// MCPServerModeDisabled — excluded from that context's availability; the
+	// dial decision is shared across contexts, so the server is skipped only
+	// when disabled in both.
 	MCPServerModeDisabled = "disabled"
 )
 
-// ValidMCPServerMode reports whether raw is a recognized per-server mode.
-// Empty is deliberately NOT valid here — it is the "unset, use the default"
-// signal that callers resolve to auto themselves (silently on load, as the
-// accepted default on the UI save path).
-//
-// Together with NormalizeMCPServerMode it is the single source of truth for
-// the mode enum, shared by the load-time normalization (normalizeCapabilities,
-// migrateLegacyMCPServerModes), the UI save-path validations
-// (validateMCPServerConfig, ValidateCapabilities) and the status / mentionable
-// RPCs, so all of them agree on exactly which values are valid. The
-// capabilities section (skills / agents / mcp) reuses this exact enum for
-// both of its per-context keys.
+// ValidMCPServerMode reports whether raw is a recognized mode. Empty is
+// deliberately NOT valid — it is the "unset, resolve to auto" signal
+// (silently on load, accepted default on the UI save path). The closed-enum
+// contract shared by every consumer: specs/domains/capabilities.md.
 func ValidMCPServerMode(raw string) bool {
 	switch raw {
 	case MCPServerModeAuto, MCPServerModeManual, MCPServerModeDisabled:
@@ -42,10 +35,9 @@ func ValidMCPServerMode(raw string) bool {
 }
 
 // NormalizeMCPServerMode resolves a raw mode value to the canonical enum:
-// a recognized value passes through, empty and unrecognized values resolve
-// to the default "auto". It never warns — distinguishing a silent default
-// (empty) from a reported fallback (invalid) is the load path's job
-// (migrateLegacyMCPServerModes / normalizeCapabilities).
+// recognized values pass through, empty and unrecognized resolve to the
+// default "auto". It never warns — distinguishing a silent default (empty)
+// from a reported fallback (invalid) is the load path's job.
 func NormalizeMCPServerMode(raw string) string {
 	if !ValidMCPServerMode(raw) {
 		return MCPServerModeAuto
@@ -54,22 +46,13 @@ func NormalizeMCPServerMode(raw string) string {
 }
 
 // migrateLegacyMCPServerModes folds the legacy per-server activation key
-// (mcp.servers.<name>.mode) into the capabilities section and erases it. For
-// every server with a non-empty mode: a recognized value is folded into
-// capabilities.mcp.<name> verbatim (both contexts — the legacy key had no
-// context split), an unrecognized one is reported as a load warning and
-// folds as the default "auto"; an entry that already carries at least one
-// explicit capability value outranks the legacy key and is left untouched.
-// The Mode field is ALWAYS reset to "" afterwards — once folded (or absent)
-// it is dead state, and leaving it set would resurrect the legacy key in
-// YAML on the next save right next to the capabilities entry it migrated
-// into. It is FAIL-SOFT: a bad legacy value can never prevent a server from
-// starting.
-//
-// Must run after ApplyDefaults and before validate — the pipeline position
-// the mode canonicalization held before the capabilities section existed.
-// Warnings surface through the load pipeline into the UI's configLoadErrors
-// channel, mirroring normalizeMCPTimeouts.
+// (mcp.servers.<name>.mode) into capabilities.mcp.<name> — both contexts, an
+// unrecognized value reported as a load warning and folded as "auto", an
+// explicit entry outranking the legacy key (specs/domains/capabilities.md).
+// The Mode field is ALWAYS reset to "" afterwards: left set it would
+// resurrect the legacy key in YAML on the next save. Fail-soft; must run
+// after ApplyDefaults and before validate; warnings surface through
+// configLoadErrors, mirroring normalizeMCPTimeouts.
 func migrateLegacyMCPServerModes(cfg *Config) []string {
 	if len(cfg.MCP.Servers) == 0 {
 		return nil
@@ -104,11 +87,10 @@ func migrateLegacyMCPServerModes(cfg *Config) []string {
 }
 
 // foldLegacyMCPMode copies a legacy per-server mode into
-// capabilities.mcp.<name> unless the entry already carries at least one
-// explicit value — an operator-authored capability entry always outranks the
-// legacy key it coexists with. The fold is all-or-nothing per entry: a
-// partially authored entry (one context set) keeps its other context at the
-// "auto" default rather than inheriting the legacy mode.
+// capabilities.mcp.<name> unless the entry already carries an explicit value
+// — an operator-authored entry always outranks the legacy key. The fold is
+// all-or-nothing per entry: a partially authored entry keeps its other
+// context at the "auto" default rather than inheriting the legacy mode.
 func foldLegacyMCPMode(cfg *Config, name, mode string) {
 	if cfg.Capabilities.MCP == nil {
 		cfg.Capabilities.MCP = make(map[string]CapabilityModes)
@@ -120,25 +102,14 @@ func foldLegacyMCPMode(cfg *Config, name, mode string) {
 	cfg.Capabilities.MCP[name] = CapabilityModes{ChatMode: mode, CodeMode: mode}
 }
 
-// normalizeCapabilities canonicalizes every capabilities entry in place and
-// returns a load warning for each invalid value. It is FAIL-SOFT: an
-// unrecognized chat_mode / code_mode is reported, never fatal, and reset to
-// the default "auto" — a hand-edited typo can never break a capability. The
-// values are REWRITTEN in place (the enum is closed): every consumer
-// downstream of the load pipeline sees a canonical value without
-// re-normalizing, and the next save stores exactly what the load resolved.
-// Empty is the default, not an error — it resolves to "auto" silently; only
-// a non-empty unrecognized value warns.
-//
-// Two structural cleanups run alongside the canonicalization, both silent:
-// a capabilities.mcp entry whose name is not in mcp.servers is stale (the
-// server was deleted or renamed) and is removed, and an entry whose values
-// are BOTH empty carries no information and is removed — in every section,
-// so a saved entry always resolves to at least one non-default mode.
-//
-// Must run after migrateLegacyMCPServerModes (the values it folds are
-// already canonical) and after ApplyDefaults, before validate — the same
-// pipeline position and surfacing contract as the other MCP normalizations.
+// normalizeCapabilities canonicalizes every capabilities entry in place,
+// fail-soft: empty resolves to "auto" silently, an unrecognized value is
+// reported and rewritten in place so every downstream consumer sees a
+// canonical enum (specs/domains/capabilities.md). Two silent structural
+// cleanups run alongside: a capabilities.mcp name absent from mcp.servers is
+// stale and removed, and a both-empty entry carries no information and is
+// removed — in every section. Must run after migrateLegacyMCPServerModes and
+// ApplyDefaults, before validate.
 func normalizeCapabilities(cfg *Config) []string {
 	var warnings []string
 	for _, section := range capabilitySections(cfg) {
@@ -225,14 +196,13 @@ func sortedCapabilityNames(m map[string]CapabilityModes) []string {
 
 // ValidateCapabilities strictly validates a capabilities section for a SAVE
 // path: every non-empty chat_mode / code_mode must be a recognized mode
-// (ValidMCPServerMode — the same closed enum the load path normalizes
-// fail-soft). Empty is allowed everywhere; it IS the "auto" default. The
-// structural rules are deliberately NOT save errors — stale capabilities.mcp
-// names and both-empty entries are harmless state that the load path's
-// normalization (normalizeCapabilities) cleans up, so saving one costs a
-// load warning at worst. Invalid enum values are rejected here because Save
-// does not run validate(): a value stored past this gate would surface only
-// at the next launch, where the failed load discards the whole config.
+// (the same closed enum the load path normalizes fail-soft —
+// specs/domains/capabilities.md); empty is the "auto" default everywhere.
+// Structural state (stale capabilities.mcp names, both-empty entries) is
+// deliberately NOT a save error — the load normalization cleans it up.
+// Invalid values are rejected here because Save does not run validate(): a
+// value stored past this gate would surface only at the next launch, where
+// the failed load discards the whole config.
 func ValidateCapabilities(c *CapabilitiesConfig) error {
 	for _, section := range capabilitySections(&Config{Capabilities: *c}) {
 		for _, name := range sortedCapabilityNames(section.entries) {

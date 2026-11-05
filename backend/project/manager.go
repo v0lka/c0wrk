@@ -23,21 +23,16 @@ type Manager struct {
 	logger   *slog.Logger
 	mu       sync.RWMutex
 	// initErr is non-nil when the projects base directory could not be
-	// created as a REAL directory (a symlink or non-directory planted at any
-	// component of ~/.c0wrk/projects). Every operation fails closed while it
-	// is set: os.MkdirAll would silently follow the link and materialize
-	// project workspaces, session logs/dumps/temp and vector indexes inside
-	// the link target — outside ~/.c0wrk. Mirrors the loud agent-dir refusal
-	// in backend/config resolve.
+	// created as a REAL directory (a planted link anywhere under
+	// ~/.c0wrk/projects); every operation fails closed while it is set,
+	// mirroring the agent-dir refusal in backend/config resolve.
 	initErr error
 }
 
-// storeOpTimeout bounds one ProjectStore round-trip. The store rides the
-// app's single shared SQLite connection pool; database/sql waits for a free
-// pooled connection with no deadline when the caller context carries none
-// (busy_timeout bounds only SQLite lock retry). Mirrors the session
-// package's restoreDBReadTimeout so a contended pool yields a prompt,
-// retryable error instead of an indefinitely parked RPC.
+// storeOpTimeout bounds one ProjectStore round-trip on the shared SQLite
+// pool (database/sql parks indefinitely on a free connection without a
+// caller deadline); mirrors the session package's restoreDBReadTimeout.
+// Switch-section stacking: specs/domains/workspace.md.
 const storeOpTimeout = 15 * time.Second
 
 // opCtx returns a bounded context for one store round-trip.
@@ -53,14 +48,10 @@ func (m *Manager) checkReady() error {
 	return nil
 }
 
-// EnsureNoProject creates the No Project pseudo-project if it does not already exist.
-// It is safe to call multiple times (idempotent). Returns created=true when
-// the project was newly created (false when it already existed).
-//
-// For No Project, WorkspacePath points to the project directory itself
-// (~/.c0wrk/projects/__no_project__/) rather than a shared Workspace/
-// subdirectory. Per-session workspaces live under <session-uuid>/workspace/
-// and are created lazily by the session manager.
+// EnsureNoProject creates the No Project pseudo-project unless it exists
+// (created reports which happened). Its WorkspacePath is the project
+// directory itself; per-session workspaces are the session manager's
+// business. No Project semantics: specs/domains/workspace.md.
 func (m *Manager) EnsureNoProject() (created bool, err error) {
 	if err := m.checkReady(); err != nil {
 		return false, err
@@ -79,21 +70,14 @@ func (m *Manager) EnsureNoProject() (created bool, err error) {
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	// No Project workspace is the project directory itself; per-session
-	// workspaces live under <uuid>/workspace/ and are created by the
-	// session manager on demand.
 	wsPath := config.ProjectDir(m.agentDir, NoProjectID)
-	// Ensure the stored path is always absolute so it remains valid
-	// regardless of runtime working directory changes.
+	// Store an absolute path: it must stay valid across cwd changes.
 	if absPath, err := filepath.Abs(wsPath); err == nil {
 		wsPath = absPath
 	}
-	// Canonicalize the deepest existing ancestor (the projects dir —
-	// created by NewManager) so the stored path matches the same invariant
-	// CreateProject's internal branch establishes: stored roots are
-	// compared against resolved forms. The workspace directory itself is
-	// deliberately not created here (lazy per-session creation below), so
-	// only the existing prefix is resolved; the fail-soft fallback keeps
+	// Canonicalize the deepest EXISTING ancestor (the workspace itself is
+	// deliberately not created here) so the stored path matches the
+	// resolved-form invariant CreateProject establishes; fail-soft back to
 	// the lexical form.
 	if resolvedParent, perr := filepath.EvalSymlinks(filepath.Dir(wsPath)); perr == nil {
 		wsPath = filepath.Join(resolvedParent, filepath.Base(wsPath))
@@ -107,8 +91,7 @@ func (m *Manager) EnsureNoProject() (created bool, err error) {
 		CreatedAt:     now,
 		LastActiveAt:  now,
 	}
-	// Do not eagerly create the directory — per-session workspace
-	// creation will create parent directories lazily via MkdirAll.
+	// Not created here — per-session workspace creation MkdirAlls lazily.
 	if err := m.store.SaveProject(ctx, info); err != nil {
 		return false, err
 	}
@@ -116,22 +99,16 @@ func (m *Manager) EnsureNoProject() (created bool, err error) {
 }
 
 // NewManager creates a new project Manager and ensures the projects base
-// directory (~/.c0wrk/projects/) exists.
-//
-// logger is used to emit warnings on non-critical directory-creation failures.
-// If nil, warnings are suppressed.
+// directory (~/.c0wrk/projects/) exists. A nil logger suppresses the
+// non-critical failure warnings.
 func NewManager(store ProjectStore, agentDir string, logger *slog.Logger) *Manager {
-	// Ensure the projects base directory exists so downstream project
-	// creation (internal workspaces, session directories) can proceed
-	// without the caller needing to manage directory layout.
 	projectsDir := config.ProjectsDir(agentDir)
-	// MkdirAllReal creates only real directories: a dangling link, a
-	// non-directory component, or a link swapped into a created component is
-	// refused loudly and fail-closed — initErr makes every subsequent
-	// operation fail rather than write through it — while a pre-existing
-	// operator-symlinked tree resolves as intent rather than as a planted
-	// redirect of the project/session subtree writes (workspaces, session
-	// logs/dumps/temp/plans, the vector index).
+	// MkdirAllReal: only REAL directories are created — a planted or
+	// swapped-in link fails closed into initErr instead of redirecting the
+	// project/session subtree writes; a pre-existing operator-symlinked
+	// tree is intent, not a redirect.
+	// See specs/architecture/security-model.md (Fixed-Path ~/.c0wrk State
+	// Hardening).
 	initErr := safeio.MkdirAllReal(projectsDir, 0o755)
 	if initErr != nil && logger != nil {
 		logger.Error("projects directory is not a real directory — refusing to create or operate projects through it",
@@ -170,30 +147,28 @@ func (m *Manager) CreateProject(name, externalPath string) (*ProjectInfo, error)
 		// Internal project: create workspace directory under ~/.c0wrk/projects/<id>/Workspace
 		info.WorkspacePath = config.ProjectWorkspacePath(m.agentDir, id)
 		info.IsExternal = false
-		// Real-directory creation: a dangling or swapped-in symlink at the
-		// workspace root fails instead of redirecting it (same
-		// directory-vector class as the projects root guarded in
-		// NewManager).
+		// Real-directory creation: a planted or swapped-in link at the
+		// workspace root fails instead of redirecting it (same class as the
+		// projects root in NewManager).
+		// See specs/architecture/security-model.md (Fixed-Path ~/.c0wrk State
+		// Hardening).
 		if err := safeio.MkdirAllReal(info.WorkspacePath, 0o755); err != nil {
 			return nil, fmt.Errorf("failed to create internal workspace directory: %w", err)
 		}
-		// Canonicalize before persisting, mirroring the external branch:
-		// the stored path is compared against symlink-resolved forms by
-		// security containment (resolved tool inputs) and the git worktree
-		// primitives (git's canonical `git worktree list` output), so a
-		// constructed path through a symlinked ancestor (e.g. a symlinked
-		// agent dir) would silently diverge from every one of them.
+		// Canonicalize before persisting (external branch does the same):
+		// security containment and the git worktree primitives compare
+		// stored paths against RESOLVED forms, so a path through a symlinked
+		// ancestor would silently diverge from both.
 		resolved, err := filepath.EvalSymlinks(info.WorkspacePath)
 		if err != nil {
 			return nil, fmt.Errorf("cannot resolve internal workspace symlinks: %w", err)
 		}
 		info.WorkspacePath = resolved
 	} else {
-		// External project: canonicalize the path (absolute, cleaned,
-		// symlink-resolved) before persisting. Stored paths participate in
-		// security containment (allowed roots), which compares them against
-		// resolved tool inputs, so a non-canonical root would silently fail
-		// the containment match — mirrors AddWorkDirectory.
+		// External project: canonicalize (absolute, cleaned, resolved)
+		// before persisting — containment compares stored roots against
+		// resolved tool inputs, so a non-canonical root silently fails the
+		// match (mirrors AddWorkDirectory).
 		abs, err := filepath.Abs(externalPath)
 		if err != nil {
 			return nil, fmt.Errorf("cannot resolve external workspace path: %w", err)
@@ -251,14 +226,13 @@ func (m *Manager) DeleteProject(id string) error {
 	}
 
 	if !proj.IsExternal {
-		// Internal project: remove the project directory tree
 		projectDir := config.ProjectDir(m.agentDir, id)
 		if err := os.RemoveAll(projectDir); err != nil {
 			return fmt.Errorf("failed to remove internal project directory: %w", err)
 		}
 	} else {
-		// External project: only clean up the project directory under the agentDir if it
-		// somehow exists (it shouldn't, but be safe). NEVER touch the external workspace.
+		// External project: remove a stale project dir if one somehow exists.
+		// NEVER touch the external workspace.
 		projectDir := config.ProjectDir(m.agentDir, id)
 		if _, err := os.Stat(projectDir); err == nil {
 			if err := os.RemoveAll(projectDir); err != nil {
@@ -292,13 +266,11 @@ func (m *Manager) ListProjects() ([]ProjectInfo, error) {
 	return m.ListProjectsCtx(ctx)
 }
 
-// ListProjectsCtx is the caller-deadline variant of ListProjects. It exists so
-// the project-switch critical section can derive every store round-trip —
-// its own, and the vector leg's root resolution (resolveRootPlan) — from
-// ONE switch-scoped deadline: individually bounded operations (each with its
-// own opCtx) still sum to minutes of switchMu hold time when the shared
-// SQLite pool is saturated and every one of them burns its full budget. See
-// SwitchProject's switchSectionTimeout.
+// ListProjectsCtx is the caller-deadline variant of ListProjects: the
+// project-switch critical section derives every store round-trip from ONE
+// switch-scoped deadline, because individually bounded ops still stack to
+// minutes of switchMu hold time on a saturated pool. See SwitchProject's
+// switchSectionTimeout; specs/domains/workspace.md.
 func (m *Manager) ListProjectsCtx(ctx context.Context) ([]ProjectInfo, error) {
 	if err := m.checkReady(); err != nil {
 		return nil, err

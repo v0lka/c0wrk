@@ -9,16 +9,9 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// tryLockExclusive takes a non-blocking exclusive byte-range lock on the
-// first byte of the file via LockFileEx (the extended LockFileEx lives in
-// x/sys/windows; the stdlib syscall package exposes only the blocking-free
-// LockFile without FAIL_IMMEDIATELY semantics). The lock is associated with
-// the file handle, so a second OpenFile of the same path — in this or any
-// other process — fails with ERROR_LOCK_VIOLATION while the first holder's
-// handle is open; the kernel releases it on CloseHandle and on every process
-// exit. Only ERROR_LOCK_VIOLATION means "held by another instance"; every
-// other error is a setup failure the caller treats as fail-open (see
-// AcquireSingleInstanceLock).
+// tryLockExclusive takes a non-blocking exclusive LockFileEx byte-range lock (x/sys
+// windows — stdlib syscall lacks FAIL_IMMEDIATELY); other-than-held errors fail open
+// (specs/decisions/075-single-instance-lock.md, D3).
 func tryLockExclusive(file *os.File) (bool, error) {
 	var overlapped windows.Overlapped
 	err := windows.LockFileEx(windows.Handle(file.Fd()),

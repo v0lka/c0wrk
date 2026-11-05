@@ -42,11 +42,9 @@ func resolveNewTreePlatform(extractDir string) (string, error) {
 }
 
 // relaunchApp launches the freshly installed .exe directly with
-// DETACHED_PROCESS so it survives the updater process. It deliberately does
-// NOT route through `cmd /c start`: `start` treats the first quoted argument
-// as the window title, so a path containing spaces (e.g. under "Program
-// Files") is mis-split and the relaunch silently fails. A direct exec avoids
-// any shell quoting pitfalls.
+// DETACHED_PROCESS so it survives the updater process. It deliberately avoids
+// `cmd /c start`, which treats the first quoted argument as the window title
+// and mis-splits paths containing spaces ("Program Files"), silently failing.
 func relaunchApp(targetDir string, log *slog.Logger) error {
 	exePath := findExecutableIn(targetDir)
 	if exePath == "" {
@@ -63,10 +61,8 @@ func relaunchApp(targetDir string, log *slog.Logger) error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start %s: %w", exePath, err)
 	}
-	// Release the child so its process handle is not leaked: the updater
-	// exits right after the relaunch and never Waits, and per os/exec a
-	// successful Start must be followed by Wait or Release to release the
-	// child's associated resources (mirrors the Linux branch).
+	// Release the child: the updater exits right after the relaunch and never
+	// Waits, so the handle must be freed explicitly.
 	if err := cmd.Process.Release(); err != nil {
 		log.Debug("could not release relaunched process (best-effort)", "error", err)
 	}
@@ -127,10 +123,9 @@ func processAlive(pid int) bool {
 	)
 	handle, err := syscall.OpenProcess(procQueryLimitedInfo, false, uint32(pid))
 	if err != nil {
-		// An access-denied result still implies the process exists (it is
-		// running under different credentials), so keep waiting. Other open
-		// failures — notably ERROR_INVALID_PARAMETER for a PID that has exited
-		// — mean the process is gone.
+		// Access denied still implies the process exists (other credentials);
+		// other failures — notably ERROR_INVALID_PARAMETER for an exited PID —
+		// mean it is gone.
 		return errors.Is(err, syscall.ERROR_ACCESS_DENIED)
 	}
 	defer func() { _ = syscall.CloseHandle(handle) }()
@@ -141,9 +136,9 @@ func processAlive(pid int) bool {
 	return code == stillActive
 }
 
-// cleanupStaleUpdatersPlatform removes leftover c0wrk-updater-*.exe copies in
-// %TEMP%. Because a running Windows updater .exe cannot self-delete, this runs
-// at the *next* normal startup to reap orphans from prior updates.
+// cleanupStaleUpdatersPlatform reaps %TEMP% artifacts from prior updates at
+// the next normal startup — a running Windows updater .exe cannot self-delete
+// (specs/decisions/023-auto-update.md).
 func cleanupStaleUpdatersPlatform(log *slog.Logger) {
 	cleanupTempGlobs(os.TempDir(), log,
 		"c0wrk-updater.exe", // staging updater copy that cannot self-delete on Windows

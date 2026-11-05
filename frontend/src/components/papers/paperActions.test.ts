@@ -44,7 +44,7 @@ function makePaper(overrides: Partial<PaperRecord> = {}): PaperRecord {
     claims: [],
     red_flags: [],
     uncertainties: [],
-    dir: '/root/.research/papers/vaswani-2017-attention',
+    dir: '/root/research/papers/vaswani-2017-attention',
     card_path: 'papers/vaswani-2017-attention/paper.md',
     pinned: false,
     linked_research: [],
@@ -253,8 +253,8 @@ describe('paperActions — compare selected (multi-paper)', () => {
 
   it('resolves the comparisons directory against a research root', () => {
     expect(COMPARISONS_SUBDIR).toBe('comparisons')
-    expect(comparisonsRef('/ws/.research')).toBe('/ws/.research/comparisons')
-    expect(comparisonsRef('/ws/.research/')).toBe('/ws/.research/comparisons')
+    expect(comparisonsRef('/ws/research')).toBe('/ws/research/comparisons')
+    expect(comparisonsRef('/ws/research/')).toBe('/ws/research/comparisons')
     expect(comparisonsRef('')).toBe('comparisons')
   })
 
@@ -265,7 +265,7 @@ describe('paperActions — compare selected (multi-paper)', () => {
   })
 
   it('dispatches the Compare intent with every selected identifier and the artifact path', () => {
-    const prompt = buildCompareSelectedPrompt([p1, p2], '/ws/.research')
+    const prompt = buildCompareSelectedPrompt([p1, p2], '/ws/research')
     expect(prompt).toContain('Compare these 2 papers using the study-paper Compare intent')
     // The three template sections the reader renders come from the skill.
     expect(prompt).toContain('Fairness & comparability')
@@ -273,7 +273,7 @@ describe('paperActions — compare selected (multi-paper)', () => {
     expect(prompt).toContain('Gaps')
     // The artifact path under the research root's comparisons/ directory.
     expect(prompt).toContain(
-      '/ws/.research/comparisons/vaswani-2017-attention-vs-sutskever-2014-sequence.md',
+      '/ws/research/comparisons/vaswani-2017-attention-vs-sutskever-2014-sequence.md',
     )
     // Each selected paper's id + identifier is listed.
     expect(prompt).toContain('- P-001 — arxiv:1706.03762')

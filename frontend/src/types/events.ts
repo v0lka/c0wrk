@@ -637,11 +637,23 @@ export interface ToolManagerToolInfo { readonly name: string; readonly version: 
 
 export interface ToolManagerStartData { readonly tools: readonly ToolManagerToolInfo[] }
 
+/** Tool install stage; `done`/`failed` are terminal for the tool. */
+export type ToolManagerStage =
+  | 'download' // archive transfer — bytes reported
+  | 'extract' // archive extraction — no bytes
+  | 'verify' // post-install version probe — no bytes
+  | 'python_bootstrap' // uv bootstrap — `detail` names the sub-step
+  | 'done' // terminal: installed; probe-verified (static) or bootstrap-complete (Python — no probe)
+  | 'failed' // terminal for the pass — `error` carries the cause
+
 export interface ToolManagerProgressData {
   readonly tool: string
-  readonly stage: 'download' | 'extract' | 'python_bootstrap'
+  readonly stage: ToolManagerStage
   readonly bytes_done: number
   readonly bytes_total: number
+  readonly detail?: string // python_bootstrap sub-step
+  readonly error?: string // failed: truncated install cause
+  readonly tools_total?: number // splash denominator, stamped on every event
 }
 
 export interface ToolManagerDoneData {
@@ -938,6 +950,28 @@ export interface EmbeddedLLMStateData {
   readonly install_error: string
 }
 
+/** Payload of the global `embedded_llm:notice` event: one non-terminal
+ *  supervisor finding — a warning about the launch the embedded LLM is
+ *  making, NOT a state transition (the state machine's own verdict still
+ *  travels through `embedded_llm:state`). Current producer: the load-time
+ *  pre-flight that compares freshly measured free accelerator memory with the
+ *  launch's projected device footprint — a shortfall is reported, the plan is
+ *  unchanged (budgets price total capacity). Mirrors backend
+ *  EmbeddedLLMNoticeData. */
+export interface EmbeddedLLMNoticeData {
+  /** The closed finding vocabulary from core ("low_free_device_memory"), so
+   *  rendering keys on it instead of parsing Message. */
+  readonly kind: string
+  /** The complete, renderable human sentence — the same text the supervisor
+   *  logged at Warn. */
+  readonly message: string
+  /** The free accelerator memory measured over exactly the pool the plan
+   *  prices (MiB). */
+  readonly free_device_mib: number
+  /** The plan's projected device footprint (MiB). */
+  readonly expected_device_mib: number
+}
+
 /** Payload of the global `chatgpt_auth:state` event: one transition of the
  *  ChatGPT subscription sign-in flow (backend/frontend_api_auth.go). Exactly
  *  one flow transition per event; the fields are state-dependent — `auth_url`
@@ -986,10 +1020,16 @@ export interface GlobalEventMap {
    *  research:file_changed path); consumers use it to defer to that path. */
   readonly 'workspace:tree_changed': { readonly research_scoped?: boolean }
   /** RESEARCH mutation for a project: the active R-NNN switched
-   *  (`SetActiveResearch`) or a research project was deleted (`DeleteResearch`).
+   *  (`SetActiveResearch`), a research project was deleted (`DeleteResearch`),
+   *  or a pre-rename `<workspace>/.research` root was migrated to the
+   *  canonical `<workspace>/research` (`MigrateResearchRoots` — a rename,
+   *  not a content change, so watchers re-register and the UI refetches).
    *  RESEARCH is always on for real projects, so there is no enable/disable
    *  action. Mirrors specs/contracts/event-catalog.md. */
-  readonly 'research:changed': { readonly project_id: string; readonly action: 'active_changed' | 'project_deleted' }
+  readonly 'research:changed': {
+    readonly project_id: string
+    readonly action: 'active_changed' | 'project_deleted' | 'root_migrated'
+  }
   /** A file inside the research directory changed (hypothesis cards, brief,
    *  prior-art, graph, log). `paths` is a comma-separated list. */
   readonly 'research:file_changed': { readonly project_id: string; readonly paths: string }
@@ -1034,6 +1074,9 @@ export interface GlobalEventMap {
    *  transition, once at startup after the manifest restore, and after an
    *  install, a removal or an auto-unload policy change. */
   readonly 'embedded_llm:state': EmbeddedLLMStateData
+  /** Embedded local-model non-terminal supervisor finding (a launch warning,
+   *  not a transition). Emitted by the load-time free-memory pre-flight. */
+  readonly 'embedded_llm:notice': EmbeddedLLMNoticeData
   /** ChatGPT subscription sign-in flow transition (pending → success |
    *  error | cancelled). Emitted by the background flow started with
    *  StartChatGPTSignIn; sign-out emits nothing. */
@@ -1823,7 +1866,11 @@ export function isNotificationClickedData(d: unknown): d is NotificationClickedD
 // VectorIndexStatus['state'] union (models.ts): "disabled" (ADR-103) is the
 // master-switch off state — dropping it here would silently discard the
 // payload at every ingestion point and strand a stale pre-disable state.
-const VALID_VECTOR_STATES: ReadonlySet<string> = new Set(['idle', 'indexing', 'ready', 'reindexing', 'unavailable', 'loading', 'disabled'])
+// "preparing" and "migration-rebuild" (ADR-104 stage 2) are the view-model
+// attach window and the legacy store promotion — dropping them would strand
+// a stale pre-attach state and the search auto-gate would never see the
+// transition out of it (literals pinned in events.boundary.test.ts).
+const VALID_VECTOR_STATES: ReadonlySet<string> = new Set(['idle', 'indexing', 'ready', 'reindexing', 'unavailable', 'loading', 'disabled', 'preparing', 'migration-rebuild'])
 
 export function isVectorIndexPayload(d: unknown): d is VectorIndexStatus {
   if (!isObjLocal(d)) return false
@@ -1850,12 +1897,15 @@ export function isToolManagerStartData(d: unknown): d is ToolManagerStartData {
   return isObj(d) && Array.isArray(d.tools) && d.tools.every(isToolManagerToolInfo)
 }
 
-const VALID_TOOL_STAGES = new Set(['download', 'extract', 'python_bootstrap'])
+const VALID_TOOL_STAGES = new Set(['download', 'extract', 'verify', 'python_bootstrap', 'done', 'failed'])
 
 export function isToolManagerProgressData(d: unknown): d is ToolManagerProgressData {
   return isObj(d) && typeof d.tool === 'string' && typeof d.stage === 'string' &&
     VALID_TOOL_STAGES.has(d.stage) &&
-    typeof d.bytes_done === 'number' && typeof d.bytes_total === 'number'
+    typeof d.bytes_done === 'number' && typeof d.bytes_total === 'number' &&
+    (d.detail === undefined || typeof d.detail === 'string') &&
+    (d.error === undefined || typeof d.error === 'string') &&
+    (d.tools_total === undefined || typeof d.tools_total === 'number')
 }
 
 
@@ -1894,6 +1944,18 @@ export function isEmbeddedLLMStateData(d: unknown): d is EmbeddedLLMStateData {
   if (typeof d.auto_unload_minutes !== 'number') return false
   if (typeof d.error !== 'string') return false
   return typeof d.install_error === 'string'
+}
+
+/** Guard for an `embedded_llm:notice` payload. `kind` is deliberately NOT
+ *  enumerated: it is core's closed finding vocabulary, but a new finding kind
+ *  must not make the event fail validation before the vocabulary reaches this
+ *  file — the message renders fine on its own. */
+export function isEmbeddedLLMNoticeData(d: unknown): d is EmbeddedLLMNoticeData {
+  if (!isObj(d)) return false
+  if (typeof d.kind !== 'string') return false
+  if (typeof d.message !== 'string') return false
+  if (typeof d.free_device_mib !== 'number') return false
+  return typeof d.expected_device_mib === 'number'
 }
 
 /** The four `chatgpt_auth:state` payload states (backend chatgptAuthEvent*

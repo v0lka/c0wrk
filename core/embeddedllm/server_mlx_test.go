@@ -411,15 +411,23 @@ func TestLaunchSpecMLXLiveReplan(t *testing.T) {
 		t.Fatalf("launchSpec(infeasible exact) error = %v, want ErrMemoryPlanInfeasible", err)
 	}
 
-	// A llama-only tuning key is config validation's refusal, not a launch
-	// failure: the recorded plan launches.
-	server.Tuning = func() Tuning { return Tuning{KVType: "q8_0"} }
-	resolved, err = server.launchSpec(ctx, manifest, 18432)
-	if err != nil {
-		t.Fatalf("launchSpec(forbidden tuning): %v", err)
-	}
-	if resolved.Spec.ContextSize != 94208 {
-		t.Fatalf("forbidden-tuning fallback context = %d, want the recorded 94208", resolved.Spec.ContextSize)
+	// A llama-only tuning key refuses the load fail-closed: config validation
+	// is skipped when `engine: auto` resolves to mtplx, so the launch is the
+	// last checkpoint — launching the recorded plan would silently ignore the
+	// key.
+	for key, tuning := range map[string]Tuning{
+		"kv_cache_type": {KVType: "q8_0"},
+		"devices":       {Devices: []string{"MTL0"}},
+		"split_mode":    {SplitMode: SplitModeRow},
+	} {
+		server.Tuning = func() Tuning { return tuning }
+		_, err = server.launchSpec(ctx, manifest, 18432)
+		if !errors.Is(err, ErrTuningInvalid) {
+			t.Fatalf("launchSpec(forbidden %s) error = %v, want it to wrap ErrTuningInvalid", key, err)
+		}
+		if msg := err.Error(); !strings.Contains(msg, key) {
+			t.Errorf("forbidden-%s error message %q does not name the key", key, msg)
+		}
 	}
 
 	// No topology snapshot (a pre-snapshot manifest) leaves the recorded plan

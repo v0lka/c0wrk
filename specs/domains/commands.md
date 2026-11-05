@@ -66,7 +66,10 @@ frontend cache.
   servers — session-kind-filtered as usual — plus commands): in ≥2 → the
   ADR-076 ambiguous no-op (hint names `/command:` fourth); exactly commands →
   expand; exactly one mention catalog → the mention pipeline; none → the
-  permissive skill passthrough.
+  permissive skill passthrough. The one carve-out: a plain `goal` token
+  naming no catalog entry is the built-in `/goal` command
+  ([ADR-110](../decisions/110-goal-mode-chat-activation.md)), never a
+  passthrough mention — it rides the text so the backend detector sees it.
 - Qualified `/command: name args…` (both colon spellings; ANY run of spaces
   or tabs after the colon — a deliberate divergence from the ADR-076 mention
   grammar, which keeps its single optional space for `/agent:`/`/skill:`/
@@ -75,16 +78,21 @@ frontend cache.
 - The expanded text REPLACES the message and flows through the ordinary send
   path: mention refs inside the template are re-extracted and partitioned
   normally, `@file` references resolve via the existing fileref pipeline, and
-  a template starting with `/goal` triggers goal mode (an E2S send then
-  rejects it server-side, as always).
+  a template starting with `/goal` — or `/goal:N`, which carries the N-turn
+  budget through the expansion ([ADR-110](../decisions/110-goal-mode-chat-activation.md)) —
+  triggers goal mode (an E2S send then rejects it server-side, as always).
 - Frontmatter bindings: `agent` merges into the partitioned agents
   (deduplicated); `model` rides as `SendOptions.commandModel` — used only
   when the toolbar has no explicit selection.
 - Empty expansion (whitespace template) → no-op + hint naming the empty
   template. A failed send restores the ORIGINAL invocation text.
 - A command named `goal` shadows the built-in `/goal` for the plain spelling
-  (the accepted ADR-076 shadowing class); `/command: goal` still invokes the
-  file.
+  (the accepted ADR-076 shadowing class — an agent, a skill, or a
+  kind-visible MCP server named `goal` hides the built-in from the completion
+  list the same way); `/command: goal` still invokes the file, and the
+  budgeted `/goal:N` form is never a catalog mention (the `:` breaks the
+  plain-token boundary), so it always reaches the built-in detector
+  ([ADR-110](../decisions/110-goal-mode-chat-activation.md)).
 
 ### Completion
 
@@ -103,7 +111,8 @@ commands simply do not exist without a project).
   guard) and on an RPC rejection (the completion cache); the send path then
   resolves the leading token with an EMPTY command catalog — an invocation
   typed during an outage degrades to the permissive passthrough, never to a
-  lost message.
+  lost message (a `/goal` invocation instead degrades to the built-in goal
+  command: it never depended on the command catalog).
 - Ambiguity and empty-expansion no-ops surface a dismissible send-error hint
   and restore the typed text.
 

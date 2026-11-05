@@ -1,5 +1,6 @@
 // Command teststress runs the bounded probabilistic test category and rejects
-// missing, skipped or failed coverage. It is shared by Make and every CI OS.
+// missing, skipped or failed coverage; shared by Make and every CI OS.
+// See specs/domains/testing.md (the test-stress category).
 package main
 
 import (
@@ -24,9 +25,9 @@ var required = []string{
 }
 
 // testEvent is the consumed subset of the `go test -json` event stream. The
-// stream is buffered instead of streamed: a clean run prints only the per-test
-// coverage summary, while a failing run prints the buffered output of every
-// failed or skipped test, so CI logs stay compact but fully diagnosable.
+// stream is buffered instead of streamed — a clean run prints only the
+// coverage summary, a failing run the full output of every failed/skipped
+// test (specs/domains/testing.md, the test-stress category).
 type testEvent struct {
 	Action string
 	Test   string
@@ -93,9 +94,8 @@ func (r *results) verify() error {
 	return nil
 }
 
-// report renders the buffered output of every failed or skipped test. The
-// empty test name covers package-level events (for example a race-detector
-// report attributed to the package rather than a test).
+// report renders the buffered output of every failed or skipped test; the
+// empty name covers package-level events (e.g. a race-detector report).
 func (r *results) report() string {
 	if len(r.failed) == 0 {
 		return ""

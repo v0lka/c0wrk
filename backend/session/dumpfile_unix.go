@@ -7,12 +7,8 @@ import (
 	"syscall"
 )
 
-// dupFile returns an independent handle to the given *os.File.
-//
-// On Unix this duplicates the underlying file descriptor via syscall.Dup so
-// that background goroutines (title generation, ToolJudge) keep a working
-// handle that survives session deletion. The caller owns the returned handle
-// and must close it.
+// dupFile returns an independent handle to f via syscall.Dup so background
+// appends (title generation, ToolJudge) survive session deletion; caller closes.
 func dupFile(f *os.File) (*os.File, error) {
 	fd, err := syscall.Dup(int(f.Fd()))
 	if err != nil {

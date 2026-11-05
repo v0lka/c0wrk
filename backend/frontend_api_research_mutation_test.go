@@ -22,8 +22,8 @@ func researchTwoProjectTestFrontend(t *testing.T) (api *FrontendAPI, projA, proj
 	base := t.TempDir()
 	wsA := filepath.Join(base, "wsA")
 	wsB := filepath.Join(base, "wsB")
-	rootA = filepath.Join(wsA, ".research")
-	rootB = filepath.Join(wsB, ".research")
+	rootA = filepath.Join(wsA, "research")
+	rootB = filepath.Join(wsB, "research")
 
 	seedResearchProjectDir(t, rootA, "R-001-test")
 	seedResearchProjectDir(t, rootB, "R-009-other")

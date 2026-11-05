@@ -1,24 +1,8 @@
-// Package papers parses a project's literature ("papers") library — a
-// per-paper paper.md front-matter card plus an optional note.md evidence note
-// and appraisal.md critical-appraisal sheet — into an in-memory model.
-//
-// The package mirrors core/research and is split three ways:
-//
-//   - model.go  — domain types plus pure derived logic (ID/slug
-//     normalization, library lookup/indexing). No I/O.
-//   - parser.go — content parsing (YAML front matter, Markdown tables) and the
-//     thin filesystem orchestrators (ParsePaperDir / ParseLibraryDir). Parsing
-//     is best-effort: every artifact is optional, so a partially written or
-//     hand-edited paper still yields a usable record.
-//   - writer.go — atomic (temp file + rename) persistence of a paper's three
-//     artifacts, containment-checked against the library root.
-//
-// All structural logic is exposed as pure functions over strings or already
-// parsed structs, so it can be unit-tested in isolation without touching disk.
-//
-// Zero values are meaningful: an empty PaperRecord is a valid partial state (a
-// paper directory whose paper.md has not been written yet), and an empty
-// PaperLibrary is a valid empty library.
+// Package papers parses the literature ("papers") library — paper.md cards
+// plus optional note.md/appraisal.md sheets — into an in-memory model:
+// model.go types + pure logic, parser.go best-effort parsing, writer.go
+// atomic containment-checked writes (specs/domains/papers.md). Zero values
+// are valid partial states.
 package papers
 
 import (
@@ -30,9 +14,8 @@ import (
 	"unicode"
 )
 
-// Artifact file names. These are the single source of truth shared by the
-// parser (reads them) and the writer (renders them); the library layout is
-// <libraryRoot>/<slug>/{paper.md, note.md, appraisal.md}.
+// Artifact file names — single source of truth shared by parser and
+// writer; layout <libraryRoot>/<slug>/{paper.md, note.md, appraisal.md}.
 const (
 	// PaperFileName is the per-paper front-matter card.
 	PaperFileName = "paper.md"
@@ -44,23 +27,18 @@ const (
 	// AppraisalFileName is the per-paper critical-appraisal sheet.
 	AppraisalFileName = "appraisal.md"
 
-	// LiteratureFileName is the per-paper literature-neighbourhood graph
-	// (predecessors / citing / contradiction candidates) written by the
-	// study-paper `literature.py` helper. Unlike the three card artifacts
-	// above it is NOT produced by the backend writer and NOT part of
-	// PaperArtifacts — it is helper OUTPUT, present only after a lookup runs.
+	// LiteratureFileName is the literature-neighbourhood graph written by the
+	// study-paper `literature.py` helper — helper OUTPUT, not a backend-writer
+	// artifact and not part of PaperArtifacts.
 	LiteratureFileName = "literature.json"
 )
 
-// PaperArtifacts lists every artifact file name a paper directory may carry,
-// in write order. It is the canonical iteration order for writers and for
-// tests that assert on a fully-populated directory.
+// PaperArtifacts lists the writer-owned artifacts in write order — the
+// canonical iteration order for writers and tests.
 var PaperArtifacts = []string{PaperFileName, NoteFileName, AppraisalFileName}
 
-// Mode is how deeply the paper was engaged with. It is a string enum so it
-// round-trips cleanly through JSON and the paper.md front matter. Mode is
-// descriptive rather than policy-bearing: an unrecognized value is preserved
-// verbatim by NormalizeMode so a hand-authored vocabulary is never lost.
+// Mode is how deeply the paper was engaged with; unrecognized values are
+// preserved verbatim (specs/domains/papers.md).
 type Mode string
 
 const (
@@ -70,20 +48,16 @@ const (
 	// ModeDeep: the paper was read in full and its claims were verified.
 	ModeDeep Mode = "deep"
 
-	// ModeSurvey: the paper was read as part of a broader survey rather than
-	// as an individual target.
+	// ModeSurvey: read as part of a broader survey, not as an individual target.
 	ModeSurvey Mode = "survey"
 
-	// ModeReview: the study-paper "review" depth — the paper was read in full
-	// and appraised (the skill's full-appraisal pass).
+	// ModeReview: study-paper "review" depth — read in full and appraised.
 	ModeReview Mode = "review"
 
-	// ModeImplement: the study-paper "implement" depth — the paper was read to
-	// re-implement / reproduce its method.
+	// ModeImplement: study-paper "implement" depth — read to re-implement it.
 	ModeImplement Mode = "implement"
 
-	// ModeTeach: the study-paper "teach" depth — the paper was studied to
-	// learn and explain its ideas.
+	// ModeTeach: study-paper "teach" depth — studied to explain its ideas.
 	ModeTeach Mode = "teach"
 )
 
@@ -92,15 +66,13 @@ const (
 type Verdict string
 
 const (
-	// VerdictAccepted: the paper's claims were judged sound enough to build
-	// on.
+	// VerdictAccepted: claims judged sound enough to build on.
 	VerdictAccepted Verdict = "accepted"
 
-	// VerdictRejected: the paper's claims were judged unsound or
-	// non-reproducible.
+	// VerdictRejected: claims judged unsound or non-reproducible.
 	VerdictRejected Verdict = "rejected"
 
-	// VerdictUncertain: the evidence was insufficient or contradictory.
+	// VerdictUncertain: evidence insufficient or contradictory.
 	VerdictUncertain Verdict = "uncertain"
 )
 
@@ -108,23 +80,18 @@ const (
 type Confidence string
 
 const (
-	// ConfidenceLow: the verdict rests on thin or indirect evidence.
+	// ConfidenceLow: thin or indirect evidence.
 	ConfidenceLow Confidence = "low"
 
-	// ConfidenceMedium: the verdict is supported but not exhaustively.
+	// ConfidenceMedium: supported but not exhaustively.
 	ConfidenceMedium Confidence = "medium"
 
-	// ConfidenceHigh: the verdict is well-supported by direct evidence.
+	// ConfidenceHigh: well-supported by direct evidence.
 	ConfidenceHigh Confidence = "high"
 )
 
-// Reading is the reading DECISION recorded on a paper's card — how much of the
-// paper to read. It is a distinct axis from Verdict: the reading decision
-// ("read in full / read selectively / skip") answers "should I read this?",
-// while the Verdict answers "are its claims sound?". The card's front matter
-// carries the reading decision (`reading:`) and the soundness verdict
-// (`verdict:`, kept in sync with the appraisal sheet). String enum, so it
-// round-trips cleanly through JSON and the paper.md front matter.
+// Reading is the reading DECISION — a distinct axis from Verdict (the
+// soundness judgement); the two MUST NOT be conflated (specs/domains/papers.md).
 type Reading string
 
 const (
@@ -138,32 +105,22 @@ const (
 	ReadingSkip Reading = "skip"
 )
 
-// normalizeValueToken lower-cases a raw scalar/table value and strips
-// surrounding Markdown emphasis and punctuation (asterisk, underscore, backtick,
-// space and dot), so an emphasised cell such as a bolded "review" folds the same
-// as a bare "review". It is the single value-normalizer shared by every value
-// fold in the package (mode/reading/verdict/confidence here, and stage/grade in
-// flashcards.go), so header and value folding cannot drift.
+// normalizeValueToken lower-cases and strips Markdown emphasis/punctuation
+// — the single value-normalizer for every fold in the package (incl.
+// stage/grade in flashcards.go), so header and value folding cannot drift.
 func normalizeValueToken(raw string) string {
 	return strings.ToLower(strings.Trim(cleanLine(raw), "*_` ."))
 }
 
-// NormalizeMode normalizes a mode token: lower-cased, trimmed, and stripped of
-// surrounding Markdown emphasis/punctuation. It performs NO validation or
-// canonicalization — the skill's mode vocabulary (skim/deep/survey/review/
-// implement/teach) and any hand-authored value are all passed through verbatim,
-// so a custom mode is preserved rather than dropped (and no dead enum-list
-// switch implies a filtering this function does not perform).
+// NormalizeMode performs NO validation — every value passes through
+// verbatim, preserving a hand-authored vocabulary (specs/domains/papers.md).
 func NormalizeMode(raw string) Mode {
 	return Mode(normalizeValueToken(raw))
 }
 
-// NormalizeReading canonicalizes a reading-decision token (lower-cased,
-// trimmed, emphasis/punctuation stripped), folding the phrase forms the skill
-// writes in prose ("read in full", "read selectively") onto the canonical
-// constants, and folding the "no reading decision" spellings ("n/a", "none",
-// "-", "") to the empty value. An unrecognized value is returned lower-cased so
-// callers can still render it.
+// NormalizeReading folds the skill's prose forms ("read in full", "read
+// selectively") onto the canonical constants and the "no decision" spellings
+// ("n/a", "none", "-", "") to ""; unrecognized values come back lower-cased.
 func NormalizeReading(raw string) Reading {
 	s := normalizeValueToken(raw)
 	switch s {
@@ -180,10 +137,8 @@ func NormalizeReading(raw string) Reading {
 	}
 }
 
-// NormalizeVerdict canonicalizes a verdict token drawn from any source (front
-// matter, appraisal.md table, or a free-form line). It lower-cases and trims
-// the input and folds common synonyms onto the canonical constants; an
-// unrecognized value is returned lower-cased so callers can still render it.
+// NormalizeVerdict folds appraisal-template synonyms onto the canonical
+// constants; unrecognized values come back lower-cased.
 func NormalizeVerdict(raw string) Verdict {
 	s := normalizeValueToken(raw)
 	switch s {
@@ -200,9 +155,8 @@ func NormalizeVerdict(raw string) Verdict {
 	}
 }
 
-// NormalizeConfidence canonicalizes a confidence token, folding common
-// synonyms ("med", "moderate") onto the canonical constants. An unrecognized
-// value is returned lower-cased.
+// NormalizeConfidence folds synonyms ("med", "moderate") onto the canonical
+// constants; unrecognized values come back lower-cased.
 func NormalizeConfidence(raw string) Confidence {
 	s := normalizeValueToken(raw)
 	switch s {
@@ -217,22 +171,17 @@ func NormalizeConfidence(raw string) Confidence {
 	}
 }
 
-// paperIDRe matches a whole library-local paper identifier, e.g. "P-001". It is
-// anchored at both ends so a slug or directory base that merely contains a
-// `p-<n>` run (e.g. "group-2") does not mint a spurious canonical id.
+// paperIDRe matches a whole paper identifier ("P-001"), anchored at both
+// ends so "group-2" cannot mint a spurious canonical id.
 var paperIDRe = regexp.MustCompile(`(?i)^P-?(\d+)$`)
 
-// researchIDRe matches a whole research-hypothesis reference (H-NNN) as recorded
-// in a paper's research_ids list. It is intentionally a local copy of the
-// research package's spelling rule so core/papers does not depend on
-// core/research, and is anchored at both ends for the same reason as paperIDRe.
+// researchIDRe matches a whole H-NNN reference — a deliberate local copy of
+// the research package's spelling rule (no core/research dependency).
 var researchIDRe = regexp.MustCompile(`(?i)^H-?(\d+)$`)
 
-// NormalizePaperID canonicalizes a paper identifier to its zero-padded,
-// hyphenated, upper-case form ("P-001"). It accepts "P001", "P-001", "P1" and
-// "P-1" spellings, case-insensitive, and returns "" for input that contains no
-// identifier. Padding to three digits (growing beyond for numbers ≥ 1000)
-// keeps two spellings of the same number from coexisting as distinct records.
+// NormalizePaperID canonicalizes a paper id to "P-NNN" (P001 / P-1 / p1
+// accepted); zero padding keeps one number from coexisting as two records
+// (specs/domains/papers.md).
 func NormalizePaperID(raw string) string {
 	m := paperIDRe.FindStringSubmatch(raw)
 	if m == nil {
@@ -245,10 +194,8 @@ func NormalizePaperID(raw string) string {
 	return fmt.Sprintf("P-%03d", n)
 }
 
-// NormalizeResearchID canonicalizes a research-hypothesis reference to its
-// zero-padded, hyphenated, upper-case form ("H-001"), accepting the same
-// spelling variants as NormalizePaperID. It returns "" for input carrying no
-// H-NNN reference.
+// NormalizeResearchID canonicalizes an H-NNN reference the way
+// NormalizePaperID does for papers; "" when no reference is present.
 func NormalizeResearchID(raw string) string {
 	m := researchIDRe.FindStringSubmatch(raw)
 	if m == nil {
@@ -275,9 +222,8 @@ func paperIDNumber(id string) (int, bool) {
 	return n, true
 }
 
-// comparePaperIDs orders paper IDs numerically (P-2 before P-10) rather than
-// lexicographically, with a lexicographic tie-break so the order stays
-// deterministic for equal numbers and for IDs without a numeric part.
+// comparePaperIDs orders IDs numerically (P-2 before P-10), with a
+// lexicographic tie-break for determinism.
 func comparePaperIDs(a, b string) int {
 	na, aok := paperIDNumber(a)
 	nb, bok := paperIDNumber(b)
@@ -293,12 +239,9 @@ func comparePaperIDs(a, b string) int {
 	}
 }
 
-// Slugify converts an arbitrary title (or ID) into a filesystem-safe slug:
-// lower-case, runs of non-alphanumeric characters collapsed to a single
-// hyphen, and leading/trailing hyphens trimmed. Unicode letters and digits are
-// preserved (so a non-Latin title still yields a non-empty slug) rather than
-// being dropped. The result is NOT guaranteed to satisfy ValidSlug for
-// pathological inputs — callers that need a validated component must check.
+// Slugify folds a title/id into a filesystem-safe slug (Unicode letters
+// preserved, so a non-Latin title stays non-empty); the result is NOT
+// guaranteed to satisfy ValidSlug (specs/domains/papers.md).
 func Slugify(s string) string {
 	var b strings.Builder
 	pendingDash := false
@@ -316,12 +259,9 @@ func Slugify(s string) string {
 	return b.String()
 }
 
-// ValidSlug reports whether s is a safe single path component usable as a
-// paper's directory name. It rejects empty strings, the traversal names "."
-// and "..", anything containing a path separator, hidden (dot-prefixed) names,
-// and control characters, and requires at least one letter or digit. It is a
-// security check (a slug is joined onto the library root), so it fails closed;
-// the writer additionally re-checks containment through pathutil.
+// ValidSlug is the fail-closed security check for a slug used as a paper's
+// directory name (a slug is joined onto the library root); the writer
+// re-checks containment through pathutil (specs/domains/papers.md).
 func ValidSlug(s string) bool {
 	if s == "" || s == "." || s == ".." || len(s) > 200 {
 		return false
@@ -344,18 +284,15 @@ func ValidSlug(s string) bool {
 	return hasAlnum
 }
 
-// Identifier is a single external identifier for a paper (DOI, arXiv id,
-// ISBN, URL, ...). Scheme is a lower-cased tag (e.g. "doi"); Value is the raw
-// identifier text, preserved verbatim.
+// Identifier is one external identifier for a paper (DOI, arXiv id, ISBN,
+// URL, …); Scheme is a lower-cased tag, Value the verbatim identifier text.
 type Identifier struct {
 	Scheme string `json:"scheme" yaml:"scheme"`
 	Value  string `json:"value" yaml:"value"`
 }
 
-// Anchor is a notable location inside the paper (a section, figure, or
-// quotation) that later evidence can point back to. Label is a short human tag
-// (e.g. "sec3", "fig2"), Ref is the location or quoted text, and Note is
-// optional context.
+// Anchor is a notable paper location later evidence points back to: Label
+// a short human tag, Ref the location or quote, Note optional context.
 type Anchor struct {
 	Label string `json:"label,omitempty" yaml:"label,omitempty"`
 	Ref   string `json:"ref,omitempty" yaml:"ref,omitempty"`
@@ -402,10 +339,8 @@ type Uncertainty struct {
 	Detail string `json:"detail,omitempty"`
 }
 
-// PaperRecord is a single paper parsed from a paper directory. It is the atomic
-// unit of the library. The front-matter fields are optional: a partially
-// written or hand-edited card yields a record with whatever was present and
-// zero values for the rest.
+// PaperRecord is one paper — the library's atomic unit; the optional front-
+// matter fields carry zero values for whatever the card lacked.
 type PaperRecord struct {
 	// ID is the library-local canonical identifier, e.g. "P-001". Empty when
 	// the card carries none.
@@ -459,10 +394,9 @@ type PaperRecord struct {
 	Dir string `json:"-"`
 }
 
-// ResolvedSlug returns the slug to use for the record's directory: the
-// explicit Slug when it is valid, else a slug derived from the title, else one
-// derived from the ID. It returns "" when none of the three yields a valid
-// component — the writer rejects such a record rather than guessing.
+// ResolvedSlug resolves the directory name: the valid Slug, else a
+// title-derived slug, else an ID-derived one; "" when none is valid — the
+// writer rejects such a record rather than guessing.
 func (r PaperRecord) ResolvedSlug() string {
 	if s := strings.TrimSpace(r.Slug); ValidSlug(s) {
 		return s
@@ -476,9 +410,8 @@ func (r PaperRecord) ResolvedSlug() string {
 	return ""
 }
 
-// PaperLibrary is a parsed paper library: the library root directory and every
-// paper record under it, sorted deterministically. An empty library (no papers
-// yet) is a valid partial state.
+// PaperLibrary is a parsed library: root plus deterministically ordered
+// records; an empty library is a valid partial state.
 type PaperLibrary struct {
 	// Root is the library root directory the papers were parsed from.
 	Root string `json:"root,omitempty"`
@@ -487,10 +420,9 @@ type PaperLibrary struct {
 	Papers []*PaperRecord `json:"papers"`
 }
 
-// Get returns the paper matching key — by exact ID, by exact slug, by a
-// normalized P-NNN id, or by a slugified key. It returns nil when nothing
-// matches. The lookup order makes an exact ID win over a slug that happens to
-// equal another paper's slug.
+// Get resolves a key by exact ID → exact slug → normalized P-NNN → slugified
+// key, so an exact ID wins over a colliding slug (specs/domains/papers.md);
+// nil when nothing matches.
 func (l *PaperLibrary) Get(key string) *PaperRecord {
 	if l == nil || key == "" {
 		return nil
@@ -522,13 +454,9 @@ func (l *PaperLibrary) Get(key string) *PaperRecord {
 	return nil
 }
 
-// ByResearchID returns every paper linked to the given research-hypothesis
-// reference (H-NNN), in library order. The reference is normalized, so "h1"
-// and "H-001" select the same papers. The result is nil when nothing matches.
-//
-// This is public, spec-owned API: it is the documented H-NNN → papers selector
-// (specs/domains/papers.md) and is exercised by the package tests. Keep it even
-// though today's backend links papers to hypotheses through its own helper.
+// ByResearchID returns the papers linked to an H-NNN reference (normalized,
+// so "h1" and "H-001" agree), in library order. Spec-owned API (specs/
+// domains/papers.md) — keep despite no current backend caller.
 func (l *PaperLibrary) ByResearchID(researchID string) []*PaperRecord {
 	want := NormalizeResearchID(researchID)
 	if l == nil || want == "" {

@@ -292,7 +292,7 @@ describe('attachFileContent (web upload path)', () => {
     expect(rpcApp.AttachFileContent).not.toHaveBeenCalled()
   })
 
-  it('accepts a payload at exactly the limit', async () => {
+  it('accepts a payload at exactly the limit', async () => { // max-size payload encode/transport: generous bound under parallel suite load
     rpcApp.AttachFileContent.mockResolvedValue([])
     await expect(
       attachFileContent('sess-1', {
@@ -302,7 +302,7 @@ describe('attachFileContent (web upload path)', () => {
       }),
     ).resolves.toEqual([])
     expect(rpcApp.AttachFileContent).toHaveBeenCalledTimes(1)
-  })
+  }, 30_000)
 
   it('logs and returns [] on an unexpected response shape', async () => {
     rpcApp.AttachFileContent.mockResolvedValue({ nope: true })

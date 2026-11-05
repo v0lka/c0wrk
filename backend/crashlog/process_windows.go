@@ -9,10 +9,9 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// processAlive reports whether a process with the given pid exists.
-// PROCESS_QUERY_LIMITED_INFORMATION is the least-privilege handle that
-// answers existence; ERROR_ACCESS_DENIED still proves the process exists
-// (it runs under another user).
+// processAlive reports whether a pid exists (OpenProcess; see
+// specs/domains/crash-logging.md). ERROR_ACCESS_DENIED still proves
+// existence — the process runs under another user.
 func processAlive(pid int) bool {
 	if pid <= 0 || pid > math.MaxUint32 {
 		return false

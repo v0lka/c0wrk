@@ -450,6 +450,10 @@ export function GetShellExecSettings() {
   return window['go']['desktop']['App']['GetShellExecSettings']();
 }
 
+export function GetSpecsStatus(arg1) {
+  return window['go']['desktop']['App']['GetSpecsStatus'](arg1);
+}
+
 export function GetStepOutput(arg1, arg2) {
   return window['go']['desktop']['App']['GetStepOutput'](arg1, arg2);
 }
@@ -572,6 +576,10 @@ export function LoadEmbeddedLLM() {
 
 export function Merge(arg1) {
   return window['go']['desktop']['App']['Merge'](arg1);
+}
+
+export function MigrateResearchRoots(arg1) {
+  return window['go']['desktop']['App']['MigrateResearchRoots'](arg1);
 }
 
 export function OptimizePrompt(arg1) {
@@ -826,12 +834,20 @@ export function SetPromptSuggestionsEnabled(arg1) {
   return window['go']['desktop']['App']['SetPromptSuggestionsEnabled'](arg1);
 }
 
+export function SetResearchEnabled(arg1) {
+  return window['go']['desktop']['App']['SetResearchEnabled'](arg1);
+}
+
 export function SetResearchPinned(arg1, arg2, arg3) {
   return window['go']['desktop']['App']['SetResearchPinned'](arg1, arg2, arg3);
 }
 
 export function SetReviewStatus(arg1, arg2) {
   return window['go']['desktop']['App']['SetReviewStatus'](arg1, arg2);
+}
+
+export function SetSpecsEnabled(arg1) {
+  return window['go']['desktop']['App']['SetSpecsEnabled'](arg1);
 }
 
 export function SetUpdateSettings(arg1) {

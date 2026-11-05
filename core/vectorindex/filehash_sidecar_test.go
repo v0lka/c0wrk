@@ -805,6 +805,11 @@ func TestValidateCollection_LegacySidecarFullReadAndUpgrade(t *testing.T) {
 	if err := os.WriteFile(sidecar, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// ADR-104: the branch store's era is declared by its generation
+	// manifest; without one the open resets the branch (and its satellite
+	// sidecar) as another coordinate era. Seed a compatible manifest so the
+	// legacy-entry semantics stay under test.
+	seedBranchGenerationManifest(t, svc, branchRootPath(proj, "main"))
 
 	if err := svc.SwitchBranch(context.Background(), "main"); err != nil {
 		t.Fatalf("SwitchBranch: %v", err)
@@ -1087,15 +1092,17 @@ func TestSwitchBranch_RoundTripsNewSidecarFormat(t *testing.T) {
 		t.Fatalf("round-tripped entry chunk set = %v (ok=%v), want [0]", gotSet, setOK)
 	}
 
-	// On-disk round-trip: the persisted sidecar JSON stores the new format.
+	// On-disk round-trip: the persisted sidecar is the v6 root-scoped
+	// envelope (ADR-104 L4) wrapping the new-format entries.
 	sidecarData, err := os.ReadFile(filepath.Join(proj, "file_hashes_"+collectionName("main")+".json"))
 	if err != nil {
 		t.Fatalf("reading sidecar: %v", err)
 	}
-	var onDisk map[string]string
-	if err := json.Unmarshal(sidecarData, &onDisk); err != nil {
-		t.Fatalf("unmarshaling sidecar: %v", err)
+	var env sidecarFileV6
+	if err := json.Unmarshal(sidecarData, &env); err != nil || env.Version != sidecarVersionV6 {
+		t.Fatalf("unmarshaling sidecar v6 envelope: %v", err)
 	}
+	onDisk := env.Entries
 	if onDisk[file] != wantEntry {
 		t.Errorf("on-disk sidecar entry = %q, want %q", onDisk[file], wantEntry)
 	}

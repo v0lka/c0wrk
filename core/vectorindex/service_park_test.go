@@ -210,10 +210,11 @@ func TestService_ParkEvictionFlushesSidecar(t *testing.T) {
 	if err != nil {
 		t.Fatalf("evicted A's sidecar was not flushed to disk: %v", err)
 	}
-	var m map[string]string
-	if err := json.Unmarshal(data, &m); err != nil {
-		t.Fatalf("evicted sidecar is not valid JSON: %v", err)
+	var env sidecarFileV6
+	if err := json.Unmarshal(data, &env); err != nil || env.Version != sidecarVersionV6 {
+		t.Fatalf("evicted sidecar is not a valid v6 envelope: %v", err)
 	}
+	m := env.Entries
 	if m[filepath.Join(dirA, "a.go")] == "" {
 		t.Errorf("evicted sidecar is missing A's entry; got %v", m)
 	}
@@ -592,10 +593,11 @@ func TestService_ParkBudgetEvictionFlushesSidecarAndFreesMemory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("budget-evicted A's sidecar was not flushed to disk: %v", err)
 	}
-	var m map[string]string
-	if err := json.Unmarshal(data, &m); err != nil {
-		t.Fatalf("evicted sidecar is not valid JSON: %v", err)
+	var env sidecarFileV6
+	if err := json.Unmarshal(data, &env); err != nil || env.Version != sidecarVersionV6 {
+		t.Fatalf("evicted sidecar is not a valid v6 envelope: %v", err)
 	}
+	m := env.Entries
 	if m[filepath.Join(dirA, "a.go")] == "" {
 		t.Errorf("budget-evicted sidecar is missing A's entry; got %v", m)
 	}

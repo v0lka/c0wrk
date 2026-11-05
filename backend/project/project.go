@@ -9,20 +9,15 @@ import (
 	"github.com/v0lka/c0wrk/core"
 )
 
-// NoProjectID is the well-known identifier for the "No Project" pseudo-project.
-// Sessions under this project receive per-session workspaces and index-dependent
-// tools (semantic_search) are disabled.
-// Defined in core/types.go; re-exported here for convenience.
+// NoProjectID is the well-known identifier of the "No Project" pseudo-project:
+// per-session workspaces, index-dependent tools disabled.
+// See specs/domains/workspace.md.
 const NoProjectID = core.NoProjectID
 
 // ResearchPins is the per-project set of pinned research artifacts shown in
-// the RESEARCH UI. Research lists pinned research document paths (relative to
-// the project's research root); Hypotheses maps a hypothesis id (H-NNN) to the
-// pinned card paths belonging to that hypothesis. Papers lists pinned paper
-// card paths (each a paper-library document path relative to the research
-// root, e.g. "papers/<slug>/paper.md") — the literature library is a global
-// subdirectory of the research root, so its pins share this same root-relative
-// path style and live alongside the research pins.
+// the RESEARCH UI: root-relative document paths (Research), pinned card
+// paths per H-NNN (Hypotheses), pinned paper cards (Papers). Path style and
+// pin RPCs: specs/domains/papers.md.
 type ResearchPins struct {
 	Research   []string            `json:"research"`
 	Hypotheses map[string][]string `json:"hypotheses"`
@@ -36,10 +31,8 @@ type ProjectInfo struct {
 	WorkspacePath string `json:"workspace_path"`
 	IsExternal    bool   `json:"is_external"`
 	IsNoProject   bool   `json:"is_no_project"`
-	// ResearchPins holds the per-project pinned research artifacts for the
-	// RESEARCH UI: pinned document paths (Research) and pinned card paths per
-	// hypothesis id (Hypotheses). The zero value (or an all-empty value)
-	// persists as NULL so absent pins round-trip as absent.
+	// ResearchPins persists as NULL when all-empty, so absent pins
+	// round-trip as absent.
 	ResearchPins ResearchPins `json:"research_pins"`
 	CreatedAt    string       `json:"created_at"`
 	LastActiveAt string       `json:"last_active_at"`
@@ -55,11 +48,9 @@ type ProjectUIState struct {
 }
 
 // WorkDirectoryRecord is the persistence record for an auxiliary working
-// directory exposed to the agent as an additional containment root.
-//
-// Scope (project vs session) and owner are implied by which store method is
-// called, so they are not fields here. The minimal agent-facing shape lives in
-// core.WorkDirectory.
+// directory (an extra agent containment root). Scope and owner are implied
+// by which store method is called, so they are not fields. RPC surface:
+// specs/contracts/desktop-frontend.md (Work Directories).
 type WorkDirectoryRecord struct {
 	ID          string `json:"id"`
 	Path        string `json:"path"`
@@ -67,14 +58,12 @@ type WorkDirectoryRecord struct {
 	CreatedAt   string `json:"created_at"`
 }
 
-// ErrWorkDirAlreadyExists is returned when a work directory with the same path
-// already exists for a given owner. Both project- and session-scoped stores
-// translate a unique-constraint violation into this sentinel.
+// ErrWorkDirAlreadyExists is returned when a work directory with the same
+// path exists for an owner (both stores translate the UNIQUE violation).
 var ErrWorkDirAlreadyExists = errors.New("work directory already exists for this project or session")
 
-// AppStateKeyLastActiveProjectID is the app_state key under which the most
-// recently activated project ID is persisted (including NoProjectID) so the
-// last active project can be restored after an app restart.
+// AppStateKeyLastActiveProjectID persists the most recently activated
+// project ID (NoProjectID included) for restart restore.
 const AppStateKeyLastActiveProjectID = "last_active_project_id"
 
 // ProjectStore provides persistent storage for projects.

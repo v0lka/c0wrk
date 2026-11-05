@@ -158,6 +158,58 @@ export function classifyEntries(entries: GitPanelEntry[]): ClassifiedEntries {
   }
 }
 
+// --- Coarse change-kind summary counts ---
+//
+// The Changes tab badge and the Changes summary strip collapse each status
+// path into ONE of three coarse kinds — modified / deleted / new. Unlike
+// `classifyEntries` (which splits a path along both porcelain axes), the
+// summary counts each unique PATH once: the backend keys the status map by
+// path, so a plain per-entry fold is exactly a per-path count (an `MM` path
+// contributes 1, never 2).
+
+/** The coarse change kind a status entry falls into for summary counts. */
+export type ChangeKind = 'modified' | 'deleted' | 'new'
+
+/**
+ * Classify one entry into its coarse change kind:
+ * - `new` — untracked paths (`??`) and anything added on either axis (`A`,
+ *   including an `AA` conflict): the path has no committed counterpart yet.
+ *   `A` outranks a later worktree deletion (`AD`) — the path is still new to
+ *   the repository even though the worktree copy is gone.
+ * - `deleted` — deleted on either axis (`D`, including a `DD` conflict).
+ * - `modified` — everything else: `M`/`R`/`C`/`T` edits and the remaining
+ *   conflict combos (changes to an already-tracked path).
+ */
+export function entryChangeKind(entry: GitPanelEntry): ChangeKind {
+  if (isUntracked(entry)) return 'new'
+  if (entry.indexStatus === 'A' || entry.worktreeStatus === 'A') return 'new'
+  if (entry.indexStatus === 'D' || entry.worktreeStatus === 'D') return 'deleted'
+  return 'modified'
+}
+
+/** Per-kind counts over a set of status entries plus the grand total. */
+export interface ChangeKindCounts {
+  modified: number
+  deleted: number
+  new: number
+  /** Unique changed paths — one contribution per entry (`MM` counts once). */
+  total: number
+}
+
+/**
+ * Count entries per coarse change kind (see `entryChangeKind`). Returns a
+ * fresh plain object; callers that re-derive per render should memoize it on
+ * the entries reference.
+ */
+export function countChangeKinds(entries: readonly GitPanelEntry[]): ChangeKindCounts {
+  const counts: ChangeKindCounts = { modified: 0, deleted: 0, new: 0, total: 0 }
+  for (const entry of entries) {
+    counts[entryChangeKind(entry)] += 1
+  }
+  counts.total = counts.modified + counts.deleted + counts.new
+  return counts
+}
+
 /**
  * The status character to render for a row on the given axis: the axis's own
  * porcelain code (including the untracked `?`) when it carries one, else the

@@ -11,14 +11,10 @@ import (
 )
 
 // newCoreRouter creates a github.com/v0lka/sp4rk/agent/router.Router wired with the c0wrk
-// routing system prompt. historyWindow controls how many recent messages
-// are included in the routing context (default 10 when <= 0).
-//
-// The router system prompt uses conditional placeholders (TOOL-MATCHING and
-// JSON-OUTPUT-SCHEMA) that the SDK resolves based on the router's tool-matching
-// flag. Semantic tool matching is NOT used: the Model Profiles essential-tools
-// narrowing is a static selection (modelProfiles.SelectTools), so the flag stays
-// off and both placeholders resolve to empty/default content.
+// routing system prompt; historyWindow recent messages join the routing
+// context (default 10 when <= 0). Semantic tool matching stays off — the
+// placeholders resolve empty and the essential-tools narrowing is static:
+// specs/domains/orchestration/router.md.
 func newCoreRouter(caller agent.LLMCaller, historyWindow int) *router.Router {
 	return router.New(caller, router.Config{
 		SystemPrompt:          prompts.RouterSystem,
@@ -27,13 +23,9 @@ func newCoreRouter(caller agent.LLMCaller, historyWindow int) *router.Router {
 	})
 }
 
-// formatRouterContextSections returns additional prompt sections for the router
-// derived from the request context. It injects AGENTS.md content (so the
-// router can consider project conventions, tech stack, and tooling) and, in
-// RESEARCH mode, the research-awareness block plus lightweight keyword hints
-// that help natural-language messages match the research-* skills without an
-// explicit "/" invocation. No core state machine is introduced — the hints are
-// advisory; all enforcement stays in the skill bodies.
+// formatRouterContextSections returns the router's extra prompt sections:
+// AGENTS.md content plus, in RESEARCH mode, the research-awareness block and
+// the advisory skill-matching hints (specs/contracts/core-sp4rk.md).
 func formatRouterContextSections(ctx context.Context) string {
 	var sections []string
 	if s := formatAgentsMD(ctx); s != "" {
@@ -48,13 +40,9 @@ func formatRouterContextSections(ctx context.Context) string {
 	return strings.Join(sections, "")
 }
 
-// formatResearchRouterHints emits a concise, advisory mapping from common
-// natural-language research intents to research-* skills, so the router can
-// surface the right skill for messages like "start an experiment" or "add a
-// hypothesis" without requiring a "/research-*" prefix. It is appended to the
-// router context only in RESEARCH mode. This is intentionally lightweight — it
-// nudges matching; it is NOT a state machine and does not override explicit
-// "/skill" invocations (those still take precedence).
+// formatResearchRouterHints emits the advisory intent→research-*-skill mapping,
+// appended to the router context only in RESEARCH mode; it nudges matching and
+// explicit /-invocations always take precedence — specs/domains/research.md.
 func formatResearchRouterHints(ctx context.Context) string {
 	if !coretools.IsResearch(ctx) {
 		return ""

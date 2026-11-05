@@ -633,9 +633,13 @@ func TestBuildUIEmitFunc_SessionRenamedEmitsGlobal(t *testing.T) {
 			NewName: "Meaningful Title",
 		},
 	})
-	// Events flow through the batching transport; force the flush so the
-	// assertions see the delivered envelope.
-	a.flushEvents()
+	// Events flow through the batching transport; stop (drain + join the
+	// flusher goroutine) so the assertions see every delivered envelope
+	// deterministically — a plain flush drains under the batcher's mutex but
+	// emits outside it, so the background flusher can take the queue and
+	// still be mid-emit when the recorder snapshots (the CI flake this
+	// family of tests used to carry).
+	a.stopEventBatcher()
 
 	events := flattenEmittedBatches(t, rec.snapshot())
 	if len(events) != 2 {
@@ -669,7 +673,7 @@ func TestBuildUIEmitFunc_NonRenameEmitsOnlyScoped(t *testing.T) {
 
 	// A regular event must emit only the session-scoped event, no global echo.
 	emit(session.Event{SessionID: "s1", Type: "finishing"})
-	a.flushEvents()
+	a.stopEventBatcher()
 
 	events := flattenEmittedBatches(t, rec.snapshot())
 	if len(events) != 1 {
@@ -703,7 +707,7 @@ func TestBuildUIEmitFunc_TaskLifecycleEmitsSessionsChanged(t *testing.T) {
 			emit := a.buildUIEmitFunc()
 
 			emit(session.Event{SessionID: "s1", Type: eventType})
-			a.flushEvents()
+			a.stopEventBatcher()
 
 			events := flattenEmittedBatches(t, rec.snapshot())
 			if len(events) != 2 {
@@ -736,7 +740,7 @@ func TestBuildUIEmitFunc_NonLifecycleEmitsNoSessionsChanged(t *testing.T) {
 	emit := a.buildUIEmitFunc()
 
 	emit(session.Event{SessionID: "s1", Type: "finishing"})
-	a.flushEvents()
+	a.stopEventBatcher()
 
 	events := flattenEmittedBatches(t, rec.snapshot())
 	if len(events) != 1 {
@@ -948,6 +952,11 @@ func TestReconcileToolsWithSplash_NotReadyAfterOffline_BlockingNetworkPass(t *te
 	if got := fake.calls; !reflect.DeepEqual(got, []string{"offline", "network"}) {
 		t.Errorf("ensure calls = %v, want [offline network]", got)
 	}
+	// The splash denominator recorded at start time feeds every progress
+	// event — a lost tool_manager:start must not leave the splash total-less.
+	if got := a.toolSplashTotal.Load(); got != 2 {
+		t.Errorf("toolSplashTotal = %d, want 2 (the NeedsInstall list length)", got)
+	}
 	events := rec.snapshot()
 	starts := phaseEventsByName(events, backend.EventToolManagerStart)
 	if len(starts) != 1 {
@@ -974,6 +983,51 @@ func TestReconcileToolsWithSplash_NotReadyAfterOffline_BlockingNetworkPass(t *te
 	}
 	if got := journal.snapshot(); !reflect.DeepEqual(got, want) {
 		t.Errorf("journal = %v, want %v (done must follow the network pass)", got, want)
+	}
+}
+
+// Every tool_manager:progress event carries the full payload contract: the
+// stage, byte counts, the terminal error text, and the stamped splash
+// denominator — the webview-subscription race can lose tool_manager:start,
+// so no single progress event may be less than self-describing.
+func TestEmitToolManagerProgress_CarriesFullPayload(t *testing.T) {
+	a, rec, _, _ := setupToolFlow(t)
+	a.toolSplashTotal.Store(3)
+
+	a.emitToolManagerProgress(toolmanager.ToolProgress{
+		Tool:       "rg",
+		Stage:      toolmanager.StageDownload,
+		BytesDone:  50,
+		BytesTotal: 100,
+	})
+	a.emitToolManagerProgress(toolmanager.ToolProgress{
+		Tool:   "uv",
+		Stage:  toolmanager.StagePythonBootstrap,
+		Detail: toolmanager.DetailPackages,
+	})
+	a.emitToolManagerProgress(toolmanager.ToolProgress{
+		Tool:  "markitdown",
+		Stage: toolmanager.StageFailed,
+		Error: "checksum mismatch",
+	})
+
+	events := phaseEventsByName(rec.snapshot(), backend.EventToolManagerProgress)
+	if len(events) != 3 {
+		t.Fatalf("tool_manager:progress emitted %d time(s), want 3", len(events))
+	}
+	download := mapPayload(t, events[0])
+	if download["tool"] != "rg" || download["stage"] != "download" ||
+		download["bytes_done"] != int64(50) || download["bytes_total"] != int64(100) ||
+		download["tools_total"] != int64(3) {
+		t.Errorf("download payload = %+v, want rg 50/100 with tools_total=3", download)
+	}
+	bootstrap := mapPayload(t, events[1])
+	if bootstrap["stage"] != "python_bootstrap" || bootstrap["detail"] != "packages" {
+		t.Errorf("bootstrap payload = %+v, want the packages sub-step", bootstrap)
+	}
+	failed := mapPayload(t, events[2])
+	if failed["stage"] != "failed" || failed["error"] != "checksum mismatch" {
+		t.Errorf("failed payload = %+v, want the failure cause", failed)
 	}
 }
 

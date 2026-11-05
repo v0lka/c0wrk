@@ -2,11 +2,11 @@
 
 ## Status
 
-Accepted
+Accepted (the open-LRU stretch idea is superseded by ADR-104 §5's owner-level residency: the retained unit is the shared corpus handle, so a return to a snapshot skips the decode entirely rather than caching decoded branches; per-branch DB roots remain superseded by commit-keyed corpora per ADR-104 §7. The layout migration this ADR introduced is itself superseded by the ADR-104 stage-3 unified sweep: the synchronous `SetProject` re-homing of root-level legacy collection directories remains as the cheap first seam, but the resulting per-branch stores — and the ADR-081 per-worktree stores — are drained into commit-keyed corpora by the background, replay-safe `store_migration.json` sweep, and the `branches/_orphan` root is no longer invisible residue: it is inventoried as a terminal skip record in the state file, still kept in place and never loaded)
 
 ## Context
 
-chromem-go persists a project's vector index as a directory tree in which **each collection is a subdirectory** and **each document is an individual `.gob` file** (`core/vectorindex` uses one collection per git branch — see [ADR-013](../decisions/013-hybrid-search.md) and [domains/workspace.md](../domains/workspace.md)). `chromem.NewPersistentDB(dir)` is all-or-nothing: it enumerates **every** collection subdirectory under the DB root and gob-decodes **every** document file in each, synchronously, on open.
+chromem-go persists a project's vector index as a directory tree in which **each collection is a subdirectory** and **each document is an individual `.gob` file** (`core/vectorindex` uses one collection per git branch — see [domains/workspace.md](../domains/workspace.md)). `chromem.NewPersistentDB(dir)` is all-or-nothing: it enumerates **every** collection subdirectory under the DB root and gob-decodes **every** document file in each, synchronously, on open.
 
 c0wrk opened the whole project root (`<project>/vector_index`) on every project open (`Service.SetProject` → `newPersistentDB`), so the open cost was `O(branches × documents)`. Because most branches are irrelevant to the active session — the Service only ever uses the collection of the current git branch — this work was almost entirely wasted.
 

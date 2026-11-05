@@ -1,4 +1,4 @@
-import { useCallback } from 'react'
+import { useCallback, useMemo } from 'react'
 import { GitBranch, AlertCircle, FolderTree, FileDiff, History } from 'lucide-react'
 import { logger } from '@/lib/logger'
 import { useGitPanelStore, selectGitPanelTab } from '@/stores/gitPanelStore'
@@ -8,6 +8,7 @@ import { useGitStatusEvents } from '@/hooks/useGitStatusEvents'
 import { getFileDiff } from '@/api/workspace'
 import { stageFile, unstageFile } from '@/api/git'
 import { runGitOperation } from '@/lib/gitOperation'
+import { countChangeKinds } from '@/lib/gitStatus'
 import type { StageAction } from '@/lib/gitStatus'
 import { GitPanelToolbar } from './GitPanelToolbar'
 import { ChangesList } from './ChangesList'
@@ -41,6 +42,11 @@ export function GitPanel() {
   // 'files' for a first visit) with no transient wrong-section frame.
   const activeTab = useGitPanelStore((s) => selectGitPanelTab(s, activeProjectId))
   const setActiveTab = useGitPanelStore((s) => s.setActiveTab)
+  // One total number for the Changes tab badge: every unique changed path —
+  // modified, deleted and new alike — counts exactly once (an `MM` path is
+  // one file, not one per porcelain axis; see `countChangeKinds`).
+  const entries = useGitPanelStore((s) => s.entries)
+  const changesTotal = useMemo(() => countChangeKinds(entries).total, [entries])
 
   // ── Callbacks ──────────────────────────────────────────────────────────
 
@@ -115,7 +121,24 @@ export function GitPanel() {
           <SegmentedControl
             items={[
               { value: 'files', label: 'Files', icon: <FolderTree className="size-4" /> },
-              { value: 'changes', label: 'Changes', icon: <FileDiff className="size-4" /> },
+              {
+                value: 'changes',
+                label: 'Changes',
+                icon: <FileDiff className="size-4" />,
+                // Total-changes badge (modified + deleted + new, one count
+                // per unique path). Trailing — not part of the label — so it
+                // stays visible when the label responsively hides on a
+                // narrow sidebar and the segment collapses to icon + count.
+                trailing: changesTotal > 0 && (
+                  <span
+                    data-testid="changes-tab-count"
+                    title={`${changesTotal} changed file${changesTotal === 1 ? '' : 's'}`}
+                    className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-muted px-1 text-xs font-medium leading-none tabular-nums text-foreground"
+                  >
+                    {changesTotal}
+                  </span>
+                ),
+              },
               { value: 'history', label: 'History', icon: <History className="size-4" /> },
             ]}
             value={activeTab}

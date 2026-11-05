@@ -16,10 +16,10 @@ function statusOf(enabled: boolean, projectId = 'proj-1'): ResearchStatus {
   return {
     enabled,
     project_id: projectId,
-    research_root: enabled ? '/ws/.research' : '',
+    research_root: enabled ? '/ws/research' : '',
     root: enabled
       ? {
-          path: '/ws/.research',
+          path: '/ws/research',
           index: [],
           projects: [
             {
@@ -451,9 +451,9 @@ function statusWithRoot(
   return {
     enabled: true,
     project_id: projectId,
-    research_root: '/ws/.research',
+    research_root: '/ws/research',
     root: {
-      path: '/ws/.research',
+      path: '/ws/research',
       index: [],
       active_project_id: activeProjectId,
       projects,
@@ -835,9 +835,9 @@ describe('researchStore selectors', () => {
     const status: ResearchStatus = {
       enabled: true,
       project_id: 'proj-1',
-      research_root: '/ws/.research',
+      research_root: '/ws/research',
       root: {
-        path: '/ws/.research',
+        path: '/ws/research',
         index: [],
         active_project_id: 'r2',
         projects: [

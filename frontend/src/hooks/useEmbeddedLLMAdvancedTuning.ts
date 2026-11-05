@@ -16,7 +16,11 @@
 // which the planner can resolve to OFF while the override stays unset.
 
 import { useMemo, useState } from 'react'
-import { TUNING_PACKINGS, type EmbeddedLLMTuningPatch } from '@/api/embeddedTuning'
+import {
+  TUNING_PACKINGS,
+  type EmbeddedLLMDevice,
+  type EmbeddedLLMTuningPatch,
+} from '@/api/embeddedTuning'
 import {
   DEFAULT_FIT_MIN_CONTEXT,
   DEFAULT_FIT_TARGET_MIB,
@@ -29,6 +33,7 @@ import {
   oneOf,
   plannedBoolArg,
   plannedFitArg,
+  splitModePin,
 } from '@/lib/embeddedTuningDisplay'
 import { useEmbeddedLLMStatus, useEmbeddedLLMTuningSnapshot } from '@/stores/embeddedLLMStore'
 
@@ -73,6 +78,27 @@ export interface EmbeddedLLMAdvancedTuningProps {
   parallel: number
   cacheRamMiB: number
   hostReserveGiB: number
+  /** The persisted `-dev` override, normalized for display: null = Auto (an
+   *  empty stored list is the same statement). */
+  devices: readonly string[] | null
+  /** The persisted `-sm` spelling as a pin signal (the mtplx notice keys on
+   *  non-null): null when nothing explicit is stored — unset, or the auto
+   *  statement in any spelling ('' / 'auto' trim+case-fold to non-explicit
+   *  in the backend's tuningChoice, so tuning writes still succeed under
+   *  mtplx). Non-null is a stored spelling — a closed-set member for the
+   *  menu, or an unknown spelling that still paints Auto but stays a pin
+   *  the backend refuses on every tuning write (see splitModePin). */
+  splitMode: string | null
+  /** The measured accelerator inventory — the checklist's rows. */
+  measuredDevices: readonly EmbeddedLLMDevice[]
+  /** RFC 3339 stamp of the last probe that answered; "" = none ever did. */
+  probedAt: string
+  /** The recorded plan's own `-dev` pin, or null while nothing was recorded —
+   *  the outcome quoted beside an unset selection. */
+  plannedDevices: readonly string[] | null
+  /** The runtime family on disk ('' | 'llama' | 'mtplx'): the device pin and
+   *  the split mode are llama-only knobs and hide under mtplx. */
+  engine: string
   auto: Readonly<Record<TuningAutoKnobs, boolean>>
   onSet: (patch: EmbeddedLLMTuningPatch) => void
 }
@@ -105,6 +131,12 @@ export function useEmbeddedLLMAdvancedTuning(
       parallel: num(tuning?.parallel, TUNING_RANGES.parallel.min, TUNING_RANGES.parallel.max, DEFAULT_PARALLEL),
       cacheRamMiB: num(tuning?.cache_ram_mib, TUNING_RANGES.cache_ram_mib.min, TUNING_RANGES.cache_ram_mib.max, 0),
       hostReserveGiB: num(tuning?.host_reserve_gib, TUNING_RANGES.host_reserve_gib.min, TUNING_RANGES.host_reserve_gib.max, 0),
+      devices: tuning?.devices != null && tuning.devices.length > 0 ? tuning.devices : null,
+      splitMode: splitModePin(tuning?.split_mode),
+      measuredDevices: status?.devices ?? [],
+      probedAt: status?.topology_probed_at ?? '',
+      plannedDevices: plan != null && plan.recorded ? plan.devices : null,
+      engine: status?.engine ?? '',
       auto: {
         fitTargetMiB: tuning?.fit_target_mib == null,
         fitMinContext: tuning?.fit_min_context == null,
@@ -113,6 +145,6 @@ export function useEmbeddedLLMAdvancedTuning(
         hostReserveGiB: tuning?.host_reserve_gib == null,
       },
     }),
-    [open, disabled, onSet, tuning, plan],
+    [open, disabled, onSet, tuning, plan, status],
   )
 }

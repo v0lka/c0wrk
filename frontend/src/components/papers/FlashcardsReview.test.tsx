@@ -44,7 +44,7 @@ function paperRecordOf(id: string): PaperRecord {
     claims: [],
     red_flags: [],
     uncertainties: [],
-    dir: `/ws/.research/papers/${id.toLowerCase()}`,
+    dir: `/ws/research/papers/${id.toLowerCase()}`,
     card_path: `papers/${id.toLowerCase()}/paper.md`,
     pinned: false,
     linked_research: [],
@@ -202,8 +202,8 @@ describe('FlashcardsReview', () => {
   it('writes a review back through the store when the owner paper is provided', async () => {
     usePaperStore.getState().loadLibrary({
       project_id: 'p1',
-      research_root: '/ws/.research',
-      root: '/ws/.research/papers',
+      research_root: '/ws/research',
+      root: '/ws/research/papers',
       papers: [paperRecordOf('P-001')],
       pinned: [],
     })
@@ -227,8 +227,8 @@ describe('FlashcardsReview', () => {
   it('does not reset an in-progress review when the same paper’s deck content changes (write-back refetch)', () => {
     usePaperStore.getState().loadLibrary({
       project_id: 'p1',
-      research_root: '/ws/.research',
-      root: '/ws/.research/papers',
+      research_root: '/ws/research',
+      root: '/ws/research/papers',
       papers: [paperRecordOf('P-001')],
       pinned: [],
     })

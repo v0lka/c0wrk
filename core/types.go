@@ -45,11 +45,10 @@ type Emitter interface {
 	PlanGenerated(stepCount int, steps []orchestration.PlanStepEvent)
 	PlanStepStart(stepID string, description, summary string)
 	PlanStepComplete(stepID string, success bool, duration time.Duration, errMsg string)
-	// PlanStepPaused emits a plan-step pause event: the step stopped via a
-	// cooperative pause checkpoint (executor.ErrPaused) — a recoverable
-	// checkpoint, not a failure or a completion. The step is NOT marked
-	// completed: never-started steps stay pending, and a later Resume
-	// re-enters the paused step.
+	// PlanStepPaused emits a plan_step_paused event: the step stopped at a
+	// cooperative pause checkpoint — recoverable, not a failure or completion;
+	// a later Resume re-enters it from its checkpoint.
+	// Payload contract: specs/contracts/event-catalog.md ("plan_step_paused").
 	PlanStepPaused(stepID string, duration time.Duration, errMsg string)
 	Reflection(reflection *orchestration.Reflection, attempt, maxAttempts int)
 	Retry(attempt, maxAttempts int)
@@ -59,23 +58,18 @@ type Emitter interface {
 	// ServiceWithMeta emits a service message with metadata for frontend filtering.
 	// The meta map can contain arbitrary key-value pairs, e.g., {"phase": "orchestration"}.
 	ServiceWithMeta(content string, meta map[string]any)
-	// GoalStatus emits a dedicated goal_status session event carrying the full
-	// goal state snapshot (status, turn, verdict, reason, evidence, verification
-	// outcome). It is its OWN session event type — not carried on the generic
-	// phase-discriminated `service` channel — so the frontend's live
-	// subscription reliably reaches the goal store (fixing lost turn telemetry)
-	// and renders a visible turn-transition notification.
+	// GoalStatus emits a dedicated goal_status session event (NOT the generic
+	// service channel, so the goal store's live subscription receives it)
+	// carrying the full goal-state snapshot. Payload contract:
+	// specs/contracts/event-catalog.md ("goal_status").
 	GoalStatus(data map[string]any)
-	// GoalProgress emits a dedicated goal_progress session event with
-	// turn/budget telemetry, emitted mid-loop (after a non-terminal turn) so the
-	// frontend can show live progress toward the budget.
+	// GoalProgress emits the dedicated goal_progress session event with
+	// turn/budget telemetry mid-loop. specs/contracts/event-catalog.md
+	// ("goal_progress").
 	GoalProgress(data map[string]any)
-	// E2SState emits a dedicated e2s_state session event carrying the full
-	// execution-state snapshot (Σ map, turn, max turns, status) of an E2S-mode
-	// run. Like goal_status it is its OWN session event type — not the
-	// phase-discriminated `service` channel — so the frontend's Execution
-	// State panel subscription reliably reaches the e2s store. Emitted after
-	// every applied state patch.
+	// E2SState emits the dedicated e2s_state session event carrying the full
+	// execution-state snapshot Σ, after every applied state patch. Payload
+	// contract: specs/contracts/event-catalog.md ("e2s_state").
 	E2SState(data map[string]any)
 	// ReplanFailed reports a failed replan attempt.
 	ReplanFailed(err error)
@@ -100,94 +94,62 @@ type RetryAttemptScopable interface {
 	WithRetryAttempt(attempt int) Emitter
 }
 
-// CurrentStepScopable is an optional interface that Emitter implementations
-// can implement to support dynamic plan-step scoping for inline Conductor
-// execution. When the Conductor executes a plan step inline (without
-// delegating to a subagent), the inlineStepLifecycle calls SetCurrentStepID
-// to tag subsequent executor events (tool_call, thought, assistant, etc.)
-// with plan_step_id so they nest under the step block in the frontend.
-//
-// Unlike PlanStepScopable (which returns a scoped copy with a fixed
-// planStepID), SetCurrentStepID mutates the receiver in place, allowing a
-// single emitter instance to be re-scoped as the Conductor moves between
-// steps within one continuous ReAct loop.
+// CurrentStepScopable is an optional interface for dynamic plan-step scoping
+// of inline Conductor execution: the inlineStepLifecycle calls SetCurrentStepID
+// so subsequent executor events (tool_call, thought, …) nest under the step in
+// the frontend. Unlike PlanStepScopable (a scoped COPY), SetCurrentStepID
+// mutates in place, so one emitter instance is re-scoped as the Conductor
+// moves between steps within one continuous ReAct loop.
 type CurrentStepScopable interface {
 	SetCurrentStepID(id string)
 }
 
-// AttachmentNameResolver is an optional interface that Emitter implementations
-// can implement so that read_attachment tool-call events are enriched with the
-// attachment's original file name. The orchestrator wires a resolver backed by
-// the task's blackboard (which holds both freshly-attached and
-// continuation/resume-rehydrated attachments) when the blackboard is set up,
-// before any tool executes. This bakes the human-readable name into the
-// persisted tool-call metadata, so read_attachment cards render the file name
-// even after an app restart — when the frontend's in-memory name cache is
-// empty and the blackboard is no longer resident. Returning an empty string
-// (unknown id) leaves the event unenriched; the frontend falls back to the id.
+// AttachmentNameResolver is an optional interface for emitters whose
+// read_attachment tool-call events carry the attachment's original file name.
+// The orchestrator wires a blackboard-backed resolver at task setup, so the
+// name is baked into the persisted metadata and survives restarts (when the
+// frontend's in-memory cache is empty); an unknown id leaves the event
+// unenriched and the frontend falls back to the id.
 type AttachmentNameResolver interface {
 	SetAttachmentNameResolver(resolve func(attachmentID string) string)
 }
 
 // GoalProposerSetter is implemented by the Orchestrator so the backend can
-// inject the goal-proposer hook (the desktop approval flow that
-// propose_goal blocks on) AFTER construction. It mirrors the
-// AttachmentNameResolver pattern: the proposer depends on backend state (the
-// pending-confirmation channel + event emitter) that is not available at
-// Orchestrator construction time, so it is wired later by the session layer.
-// Without a proposer, goal derivation fails fast rather than silently running
-// a non-goal Conductor pass.
+// inject the goal-proposer hook (the desktop approval flow propose_goal blocks
+// on) after construction — it depends on backend state unavailable at
+// construction time. Without a proposer, goal derivation fails fast rather
+// than silently running a non-goal Conductor pass.
 type GoalProposerSetter interface {
 	SetGoalProposer(proposer tools.GoalProposer)
 }
 
-// DisplayContextWindowSetter is an optional interface that Emitter
-// implementations can implement to present context-fill information relative
-// to the model's advertised context window.
-//
-// The agent's internal compaction logic operates on an "effective max"
-// (context window − output limit − safety margin), and the executor reports
-// fill relative to that internal ceiling. The user-facing display, however,
-// must reflect the real context window so the status bar doesn't expose
-// internal compaction thresholds. The orchestrator resolves the model meta
-// and injects the advertised window via SetDisplayContextWindow before the
-// first context_fill emission.
+// DisplayContextWindowSetter is an optional interface for emitters that
+// present context fill against the model's ADVERTISED window (the executor
+// reports fill against the internal effective max; basis rationale:
+// specs/domains/memory/compaction.md, "Manual Context Compaction"). The
+// orchestrator resolves the meta and injects the window before the first
+// context_fill emission.
 type DisplayContextWindowSetter interface {
 	SetDisplayContextWindow(window int)
 }
 
-// DisplayContextWindowForModelSetter is an optional interface that Emitter
-// implementations can implement to accept a LATE-ARRIVING, model-scoped
-// display-window correction.
-//
-// The initial context_fill of every task injects the display window resolved
-// at HandleMessage start — before the async self-hosted server probe (LM
-// Studio / vLLM) has completed, so it carries the catalog spec or fallback
-// window. When the probe lands mid-task, the orchestrator-side probe callback
-// pushes the observed runtime window through this interface so the status
-// bar's context max corrects without waiting for the next message.
-//
-// The `model` argument lets the emitter guard against a stale probe: when the
-// most recently reported model differs, the update is dropped (the user has
-// switched models since the probe was fired; the new model's own probe — or
-// the next emitInitialContextFill — will supply the correct window).
+// DisplayContextWindowForModelSetter is an optional interface for a
+// LATE-ARRIVING, model-scoped display-window correction: the first fill of a
+// task carries the catalog/fallback window (the self-hosted probe has not
+// landed yet), and the probe callback pushes the runtime window through here.
+// The model argument guards against a stale probe — when the model has since
+// been switched, the update is dropped (the new model's own probe or the next
+// emitInitialContextFill supplies the correct window).
 type DisplayContextWindowForModelSetter interface {
 	SetDisplayContextWindowForModel(model string, window int)
 }
 
-// LastModelSetter is an optional interface that Emitter implementations can
-// implement so the model surfaced in context_fill / session_tokens events is
-// synchronized the instant a per-request model override is applied — before
-// the first LLM call reports actual usage.
-//
-// The emitter caches the "last model" from the UsageTracker observer, which
-// only fires after a successful LLM response. The initial context_fill that
-// opens every task (including continuations and resumes) reads that cached
-// value, so without an explicit push the status bar would display the
-// *previous* task's model until the first token-usage report arrives. The
-// orchestrator resolves the selected model's family and injects both via
-// SetLastModel inside ApplyRequestOverrides, mirroring the
-// DisplayContextWindowSetter pattern.
+// LastModelSetter is an optional interface for emitters whose context_fill /
+// session_tokens model is synchronized the instant a per-request override is
+// applied: the emitter's cached "last model" otherwise lags until the first
+// usage report, so the opening fill would show the PREVIOUS task's model. The
+// orchestrator injects model+family inside ApplyRequestOverrides (mirroring
+// DisplayContextWindowSetter).
 type LastModelSetter interface {
 	SetLastModel(model, family string)
 }
@@ -202,14 +164,10 @@ type SessionTokenEmitter interface {
 }
 
 // SessionTokenThroughputEmitter is the timing-augmented extension of
-// SessionTokenEmitter: alongside the cumulative totals it carries the median
-// per-call output-token throughput (tokens/second) over the session's recent
-// LLM calls, plus the sample count behind that median. The builder feeds a
-// per-session sliding window from the UsageTracker's timed observer (sp4rk
-// llm.TimedUsageObserver) and prefers this seam, falling back to
-// SessionTokenEmitter when the emitter predates it. A median of 0 with a
-// non-zero sample count means the window is still below its minimum sample
-// threshold (warming up), not that the session stalled.
+// SessionTokenEmitter: cumulative totals plus the median per-call
+// output-token throughput and its sample count. The builder prefers this
+// seam, falling back to SessionTokenEmitter. Warming semantics and payload:
+// specs/contracts/event-catalog.md ("session_tokens").
 type SessionTokenThroughputEmitter interface {
 	EmitSessionTokensWithThroughput(totalIn, totalOut int, model, family string, medianOutputTokPerSec float64, throughputSamples int)
 }
@@ -266,16 +224,12 @@ type HandleResult struct {
 	Reflections     []orchestration.Reflection    `json:"reflections,omitempty"`
 	Status          orchestration.ExecutionStatus `json:"status,omitempty"`
 	// Err is the typed terminal cause of a DEGRADED outcome — non-nil only
-	// when the run produced a best-effort result with a nil returned error
-	// (today: the goal loop's errored-turn halt, which collapses its typed
-	// turn error into gs.LastError). It preserves the error VALUE (not just
-	// its text) so the session manager's auto-retry classifier can apply
-	// errors.As on the *llm.Error chain (ADR-065) — stringifying the cause
-	// would lose the classification. It is deliberately NOT set when the
-	// orchestrator returns the error itself: that path already carries the
-	// cause through the returned error, and duplicating it here would make
-	// both transports race for the same classification. JSON-omitted so the
-	// frontend contract is unchanged.
+	// when the run returned a best-effort result with a nil error (today: the
+	// goal loop's errored-turn halt). It preserves the error VALUE so the
+	// session manager's auto-retry classifier can errors.As on the *llm.Error
+	// chain (ADR-065); it is deliberately NOT set when the error is returned
+	// directly (the transports would race for the same classification).
+	// JSON-omitted: the frontend contract is unchanged.
 	Err error `json:"-"`
 }
 
@@ -291,25 +245,17 @@ type HandleOptions struct {
 	PendingAttachments []orchestration.Attachment // attachments staged by AttachFiles, flushed into the blackboard before execution
 	PendingImages      []llm.ContentBlock         // image attachments staged by AttachFiles, passed to the context window as image content blocks
 
-	// ReviewMode marks a message as carrying code review feedback the agent
-	// must act on. Set by the backend when a review is submitted (review
-	// status == "submitted"): the user's message contains the review comments
-	// (general + per-hunk). When true, HandleMessage sets ReviewModeKey so the
-	// system prompt gains a "Code Review" section instructing the agent to
-	// address the comments by editing code rather than merely acknowledging
-	// them. See specs/domains/review.md.
+	// ReviewMode marks a message as carrying code review feedback: the user's
+	// message holds the review comments, and the system prompt gains a
+	// "Code Review" section instructing the agent to address them by editing
+	// code. See specs/domains/review.md.
 	ReviewMode bool
 
-	// Goal selects goal mode. When true, HandleMessage dispatches to
-	// runGoalLoop: the orchestrator first derives a crisp {condition, verify}
-	// goal via propose_goal (with user sign-off), then iterates the Conductor
-	// turn-by-turn until the agent declares the goal met (via
-	// declare_goal_status), the budget is exhausted, the agent goes idle
-	// (anti-spin), or the goal is paused. Goal mode is entered on BOTH a fresh
-	// task (TaskID == "") and a continuation (TaskID != ""): on a continuation
-	// the prior task's blackboard is restored and the goal loop runs on the
-	// inherited facts/history, deriving a fresh goal from the new message
-	// (reusing the restored routing via routeOrContinue).
+	// Goal selects goal mode: HandleMessage dispatches to runGoalLoop, which
+	// derives a {condition, verify} goal via propose_goal (with user
+	// sign-off) and iterates the Conductor turn-by-turn until met, budget
+	// exhaustion, anti-spin idle, or pause. Entered on BOTH a fresh task and a
+	// continuation. Loop contract: specs/domains/goal-mode.md.
 	Goal bool
 
 	// GoalBudgetOverride, when non-nil, tightens the goal's resource caps below
@@ -318,12 +264,10 @@ type HandleOptions struct {
 	// fields fall back to the config default. Only meaningful when Goal is true.
 	GoalBudgetOverride *goal.GoalBudget
 
-	// E2S selects the explicit-execution-state mode (E2S). When true,
-	// HandleMessage dispatches to runE2SLoop instead of the route→Conductor
-	// flow: the run maintains an externalized state Σ that the model reads and
-	// patches each turn via the e2s_step meta-tool (bounded O(1) context), and
-	// actions dispatch through the tool registry with every security gate
-	// intact. Mutually exclusive with Goal — HandleMessage rejects both set
-	// with an explicit error rather than silently preferring one loop.
+	// E2S selects the explicit-execution-state mode: HandleMessage dispatches
+	// to runE2SLoop (externalized state Σ patched per turn, O(1) context,
+	// dispatch through the registry with every security gate intact).
+	// Mutually exclusive with Goal — an explicit error, never silent
+	// preference. See specs/domains/e2s.md.
 	E2S bool
 }

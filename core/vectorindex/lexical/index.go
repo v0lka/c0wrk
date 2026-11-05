@@ -24,10 +24,9 @@ const (
 	docType = "doc"
 )
 
-// Doc is an input document for the lexical index.
-//
-// Content is analyzed with the c0wrk_code analyzer. FilePath and Language
-// are stored as keyword fields for exact-match post-filtering.
+// Doc is an input document for the lexical index: Content is analyzed with the
+// c0wrk_code analyzer; FilePath and Language are keyword fields for exact-match
+// post-filtering. See specs/domains/workspace.md (Vector Index).
 type Doc struct {
 	ID       string
 	FilePath string
@@ -78,9 +77,28 @@ func Open(dir string) (Index, error) {
 	return &bleveIndex{idx: idx, dir: dir}, nil
 }
 
-// buildMapping constructs an IndexMapping with the c0wrk_code analyzer and
-// field mappings for content (analyzed), file_path (keyword), and language
-// (keyword).
+// OpenReadOnly returns an Index over an EXISTING directory opened
+// bleve-read-only (scorch config read_only: no persister, no merger, no
+// writes). This is the shared-corpus reader mode (ADR-104): N attached
+// workspace roots of one published snapshot corpus read the same on-disk
+// lexical index concurrently while exactly zero of them may write it. A
+// missing directory is an error — published corpora always carry one.
+func OpenReadOnly(dir string) (Index, error) {
+	if dir == "" {
+		return nil, errors.New("lexical index dir must not be empty")
+	}
+	if _, err := os.Stat(dir); err != nil {
+		return nil, fmt.Errorf("opening read-only lexical index at %s: %w", dir, err)
+	}
+	idx, err := bleve.OpenUsing(dir, map[string]interface{}{"read_only": true})
+	if err != nil {
+		return nil, fmt.Errorf("opening read-only lexical index at %s: %w", dir, err)
+	}
+	return &bleveIndex{idx: idx, dir: dir}, nil
+}
+
+// buildMapping constructs the c0wrk_code analyzer mapping: content analyzed,
+// file_path and language keyword fields.
 func buildMapping() (mapping.IndexMapping, error) {
 	im := bleve.NewIndexMapping()
 
@@ -187,7 +205,6 @@ func (b *bleveIndex) Query(ctx context.Context, q string, topK int) ([]Hit, erro
 	mq := bleve.NewMatchQuery(q)
 	mq.SetField(FieldContent)
 	mq.Analyzer = AnalyzerName
-	// Default operator is OR already; keep it explicit for clarity.
 
 	req := bleve.NewSearchRequest(mq)
 	req.Size = topK
@@ -219,9 +236,8 @@ func (b *bleveIndex) Count() (uint64, error) {
 	return n, nil
 }
 
-// Close releases the underlying bleve index. The caller must serialize access
-// to this method — it is not safe for concurrent use. After Close returns
-// successfully, the index is nil and further operations must not be called.
+// Close releases the underlying bleve index. Not safe for concurrent use;
+// after it returns, b.idx is nil and further operations must not be called.
 func (b *bleveIndex) Close() error {
 	if b.idx == nil {
 		return nil

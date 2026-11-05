@@ -19,9 +19,8 @@ var (
 	// ErrCoreKeyType: the patch set a core key to a value of the wrong JSON
 	// type (re-typing is forbidden).
 	ErrCoreKeyType = errors.New("e2s: core key type mismatch")
-	// ErrCoreKeyElement: a core array key held an element of the wrong
-	// shape (checklist items must be {text, checked} objects; the other list
-	// keys must hold strings).
+	// ErrCoreKeyElement: a core array key held a wrong-shaped element
+	// (checklist: {text, checked} objects; other list keys: strings).
 	ErrCoreKeyElement = errors.New("e2s: core key element mismatch")
 	// ErrInvalidStatus: the core status key was set to a value outside the
 	// closed status set.
@@ -42,25 +41,18 @@ const DefaultStateByteLimit = 16 * 1024
 
 // MergeOptions parameterizes ApplyPatch.
 type MergeOptions struct {
-	// StateByteLimit caps the JSON-encoded size of Σ in bytes. Zero disables
-	// the check (offline tooling only — the runtime always sets it from the
-	// e2s.state_byte_limit config).
+	// StateByteLimit caps the JSON-encoded size of Σ in bytes; zero disables
+	// the check (offline tooling only — the runtime always sets it from
+	// e2s.state_byte_limit).
 	StateByteLimit int
-	// Now timestamps the merge (E2SState.UpdatedAt). Zero means
-	// time.Now().UTC().
+	// Now timestamps the merge (E2SState.UpdatedAt); zero = time.Now().UTC().
 	Now time.Time
 }
 
-// ApplyPatch computes Σₜ₊₁ = Σₜ ⊕ ΔΣₜ under full validation and returns the
-// new state. The receiver is never mutated: on any validation error the
-// original state stays the authoritative continuation point (the caller keeps
-// it; the returned state is the zero value).
-//
-// On success the merged state carries TurnCount+1, UpdatedAt from opts, and a
-// Status field re-synced from the core "status" key. A state whose Schema
-// fingerprint is non-empty and differs from the compiled-in schema is
-// rejected (ErrSchemaMismatch) — it predates a schema change and must not be
-// silently patched under the new rules.
+// ApplyPatch computes Σₜ₊₁ = Σₜ ⊕ ΔΣₜ under full validation; the receiver
+// is never mutated (rollback by construction). Success bumps TurnCount, sets
+// UpdatedAt from opts, re-syncs Status; a stale schema fingerprint is
+// rejected (ErrSchemaMismatch). See specs/domains/e2s.md.
 func ApplyPatch(state E2SState, patch StatePatch, opts MergeOptions) (E2SState, error) {
 	if state.Schema != "" && state.Schema != SchemaFingerprint() {
 		return E2SState{}, fmt.Errorf("%w: state was created under a different core schema", ErrSchemaMismatch)
@@ -93,15 +85,11 @@ func ApplyPatch(state E2SState, patch StatePatch, opts MergeOptions) (E2SState, 
 			merged[key] = value
 			continue
 		}
-		// Extension keys are mutable: a value write replaces the previous
-		// value in place (update semantics, same as core keys without the
-		// fixed typing). The original add-only policy made every mutable
-		// fact (cursors, next action, phase markers) require rename-churn
-		// (tombstone + re-add under a new name), which starved models of
-		// usable memory and burned correction retries — see the E2S
-		// stabilization revision of ADR-039. Destructive-overwrite protection
-		// stays where it is typed: core key typing, the byte cap, and the
-		// null tombstone for explicit deletion.
+		// Extension keys are mutable: a write replaces the previous value in
+		// place (ADR-040 — the add-only policy forced tombstone+re-add churn
+		// for every mutable fact, starving the model's usable memory).
+		// Overwrite protection stays where it is typed: core-key typing, the
+		// byte cap, and the null tombstone.
 		merged[key] = value
 	}
 
@@ -123,9 +111,8 @@ func ApplyPatch(state E2SState, patch StatePatch, opts MergeOptions) (E2SState, 
 	if next.UpdatedAt.IsZero() {
 		next.UpdatedAt = time.Now().UTC()
 	}
-	// Re-sync the typed status copy from the (validated) core key. The key is
-	// guaranteed to be a string here whenever it exists, because every write
-	// path through validateCoreValue enforced it.
+	// Re-sync the typed status copy from the (validated) core key —
+	// validateCoreValue guarantees a string whenever it exists.
 	if s, ok := merged[CoreKeyStatus].(string); ok {
 		next.Status = StateStatus(s)
 	}
@@ -134,10 +121,9 @@ func ApplyPatch(state E2SState, patch StatePatch, opts MergeOptions) (E2SState, 
 
 // ApplyRawPatch is the JSON-level entry point for patches produced by the
 // E2S loop (StepCall.StatePatch): each key's raw JSON is decoded into its
-// post-encoding/json shape and merged via ApplyPatch. A raw `null` value
-// decodes to a nil any and therefore acts as the deletion tombstone, exactly
-// like a nil value in a decoded StatePatch. Invalid JSON in any value fails
-// the whole patch atomically.
+// post-encoding/json shape and merged via ApplyPatch — a raw `null` decodes
+// to nil any, the deletion tombstone. Invalid JSON in any value fails the
+// whole patch atomically.
 func ApplyRawPatch(state E2SState, patch map[string]json.RawMessage, opts MergeOptions) (E2SState, error) {
 	if len(patch) == 0 {
 		return ApplyPatch(state, nil, opts)
@@ -154,9 +140,8 @@ func ApplyRawPatch(state E2SState, patch map[string]json.RawMessage, opts MergeO
 }
 
 // validateCoreValue checks a patch value against the fixed JSON type of its
-// core key. Accepted Go shapes are the post-encoding/json shapes: string for
-// strings/statuses, []any for arrays. A core key may be updated freely but
-// never re-typed.
+// core key (post-encoding/json shapes: string, []any). Update-only — never
+// re-typed.
 func validateCoreValue(key string, value any) error {
 	switch coreTypes[key] {
 	case coreTypeString:
@@ -176,13 +161,10 @@ func validateCoreValue(key string, value any) error {
 		if !ok {
 			return fmt.Errorf("%w: %q requires an array, got %s", ErrCoreKeyType, key, jsonTypeName(value))
 		}
-		// Element shapes are part of the documented core schema (see
-		// core/prompts/e2s.md): checklist holds {text, checked} objects and
-		// every other list key holds strings. Enforcing them here keeps the
-		// validating merge operator the single source of truth, so a
-		// wrong-shaped element is rejected (bounded retry → error
-		// observation) instead of being persisted and then silently dropped
-		// by the UI's Σ guard.
+		// Element shapes are part of the documented core schema — checklist
+		// holds {text, checked} objects, other list keys strings — enforced
+		// here so a wrong-shaped element is rejected at merge, not persisted
+		// and dropped by the UI's Σ guard (specs/domains/e2s.md).
 		for i, el := range arr {
 			if err := validateCoreArrayElement(key, i, el); err != nil {
 				return err

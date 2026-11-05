@@ -26,9 +26,9 @@ import (
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
-// trajectoryHolder is a thread-safe TrajectoryStore for the Conductor.
-// The executor syncs its step history here at each loop iteration; the
-// reflect tool reads the current trajectory for scope="trajectory".
+// trajectoryHolder is a thread-safe TrajectoryStore: the executor syncs its
+// step history here each loop iteration; reflect reads it for
+// scope="trajectory". See specs/domains/session-lifecycle.md.
 type trajectoryHolder struct {
 	mu    sync.Mutex
 	steps []agent.Step
@@ -37,8 +37,8 @@ type trajectoryHolder struct {
 func (h *trajectoryHolder) Sync(steps []agent.Step) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	// Length-monotonic guard: a shorter sync is ignored — a mis-wired executor
-	// can never erase the parent's task checkpoint (session-lifecycle.md).
+	// Length-monotonic: a shorter sync is ignored — a mis-wired executor can
+	// never erase the parent's task checkpoint. See specs/domains/session-lifecycle.md.
 	if len(steps) < len(h.steps) {
 		return
 	}
@@ -142,8 +142,8 @@ func newChecklistGuard(planState *planRunState) agent.ChecklistGuardFunc {
 }
 
 // compositeTrajectoryStore implements agent.TrajectoryStore: in-memory copy
-// for reflect + best-effort non-blocking full-snapshot DB upsert per Sync
-// (session-lifecycle.md, "Task trajectory persistence").
+// for reflect + best-effort non-blocking full-snapshot DB upsert per Sync.
+// See specs/domains/session-lifecycle.md ("Task trajectory persistence").
 type compositeTrajectoryStore struct {
 	memory *trajectoryHolder
 	taskID string
@@ -227,7 +227,6 @@ func unitKindForDelegation(kind tools.DelegationKind) units.UnitKind {
 func (c *compositeTrajectoryStore) Sync(steps []agent.Step) {
 	c.memory.Sync(steps)
 
-	// Nothing to persist when there is no DB store or no task to key on.
 	if c.store == nil || c.taskID == "" {
 		return
 	}
@@ -264,7 +263,6 @@ func (c *compositeTrajectoryStore) Sync(steps []agent.Step) {
 // Flush drains in-flight writes and persists the trajectory synchronously —
 // once, after the ReAct loop stops (the final checkpoint).
 func (c *compositeTrajectoryStore) Flush() {
-	// Nothing to persist when there is no DB store or no task to key on.
 	if c.store == nil || c.taskID == "" {
 		return
 	}
@@ -273,7 +271,6 @@ func (c *compositeTrajectoryStore) Flush() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Wait for the outstanding async write to finish before doing our own.
 	c.wg.Wait()
 
 	steps := c.memory.Steps()
@@ -478,11 +475,11 @@ func (l *conductorLauncher) settleUnit(id string, execErr error) {
 	l.recordUnitLedger(id, execErr, nil)
 }
 
-// recordUnitLedger durably records a settled unit — its resume checkpoint (the
-// ReAct steps) and its terminal status — through the launcher's ledger and, for
-// an ISOLATED run, through the ledger-bound unit sink (the goal verifier). Both
-// writes are best-effort. Ids the isolated sink never registered are ignored,
-// so a mainline plan-step outcome can never synthesize a phantom verifier unit.
+// recordUnitLedger durably records a settled unit — resume checkpoint (the
+// ReAct steps) + terminal status — through the launcher's ledger and, for an
+// ISOLATED run, the ledger-bound unit sink; both writes best-effort, and ids
+// the isolated sink never registered are ignored. See
+// specs/domains/orchestration/delegation.md.
 func (l *conductorLauncher) recordUnitLedger(id string, execErr error, steps []agent.Step) {
 	if ledger := l.unitLedger(); ledger != nil {
 		if len(steps) > 0 {
@@ -513,10 +510,9 @@ func (l *conductorLauncher) PlanContinuation() bool {
 }
 
 // Execute runs the declared plan's steps in DAG order with parallelism
-// (tools.PlanStepExecutor). Resumable: successful steps skipped unless forced
-// via stepIDs; continuable resumes run without a re-declare, restored plans
-// refused. Isolated-subagent execution presented as plan-step events
-// (conductor.md, "Inline Step Lifecycle").
+// (tools.PlanStepExecutor): resumable (successful steps skipped unless
+// forced via stepIDs), continuable resumes run without a re-declare, restored
+// plans refused. See specs/domains/orchestration/conductor.md.
 func (l *conductorLauncher) Execute(ctx context.Context, stepIDs []string) ([]tools.PlanStepResult, error) {
 	plan := l.bb.GetPlan()
 	if plan == nil || len(plan.Steps) == 0 {
@@ -822,7 +818,7 @@ func (l *conductorLauncher) releaseSubagentSlot() {
 // dispatch: every worker draws from the launcher-wide limiter (async launches
 // use the same one), so max_parallel_subagents caps all concurrent paths;
 // input order preserved. No slot-holder can itself delegate → no nested
-// deadlock (delegation.md).
+// deadlock. See specs/domains/orchestration/delegation.md.
 func (l *conductorLauncher) runSubAgentsParallel(ctx context.Context, tasks []agent.SubAgentTask) []agent.SubAgentResult {
 	if len(tasks) == 0 {
 		return nil
@@ -1049,9 +1045,9 @@ func (l *conductorLauncher) runBlocking(ctx context.Context, tasks []tools.Deleg
 	var regularTasks []tools.DelegationTask
 	var redelegTasks []tools.DelegationTask
 	for _, t := range tasks {
-		// A profile's allow-redelegate only ever upgrades (ADR-021 §5); resolved
-		// here because it selects the dispatch path (the other profile fields
-		// are applied in buildSubAgentTask).
+		// A profile's allow-redelegate only ever upgrades; resolved here
+		// because it selects the dispatch path (the other profile fields are
+		// applied in buildSubAgentTask).
 		if t.Agent != "" {
 			t.AllowRedelegate = l.resolveAgentAllowRedelegate(ctx, t.Agent, t.AllowRedelegate)
 		}
@@ -1078,8 +1074,8 @@ func (l *conductorLauncher) runBlocking(ctx context.Context, tasks []tools.Deleg
 }
 
 // resolveAgentAllowRedelegate applies a profile's allow-redelegate override —
-// upgrade-only (ADR-021 §5). A not-found profile (benign mid-run removal;
-// validation already rejected unknown names) keeps the task flag.
+// upgrade-only. A not-found profile (benign mid-run removal) keeps the task
+// flag. See specs/decisions/021-subagents.md.
 func (l *conductorLauncher) resolveAgentAllowRedelegate(ctx context.Context, agentName string, taskFlag bool) bool {
 	resolver := tools.AgentResolverFrom(ctx)
 	if resolver == nil {
@@ -1096,8 +1092,8 @@ func (l *conductorLauncher) resolveAgentAllowRedelegate(ctx context.Context, age
 }
 
 // subagentCtx strips Conductor-only context values — required for any
-// non-redelegating subagent; rationale (three cleared classes + trajectory
-// detach) in delegation.md ("Subagent Context Narrowing").
+// non-redelegating subagent (three cleared classes + trajectory detach).
+// See specs/domains/orchestration/delegation.md ("Subagent Context Narrowing").
 func subagentCtx(ctx context.Context) context.Context {
 	ctx = tools.WithDelegationRegistry(ctx, nil)
 	ctx = tools.WithDelegationLauncher(ctx, nil)
@@ -1114,7 +1110,7 @@ func subagentCtx(ctx context.Context) context.Context {
 	ctx = WithAvailableAgents(ctx, nil)
 	ctx = WithUserAgents(ctx, nil)
 	// Detach the trajectory store: a foreign executor must never sync into the
-	// parent task checkpoint (see delegation.md "Subagent Context Narrowing").
+	// parent task checkpoint.
 	ctx = agent.WithTrajectoryStore(ctx, &trajectoryHolder{})
 	return ctx
 }
@@ -1403,9 +1399,10 @@ func (l *conductorLauncher) buildSubAgentTask(ctx context.Context, t tools.Deleg
 	}
 	taskDesc := l.buildTaskDescription(t, registry, maxSteps)
 
-	// Seed a cooperative-pause checkpoint (blackboard Steps) into executor and
-	// ContextManager so the subagent continues where it stopped; failed steps
-	// re-run fresh (delegation.md, "Cooperative Subagent Pause and Resume").
+	// Seed a cooperative-pause checkpoint into executor and ContextManager so
+	// the subagent continues where it stopped; failed steps re-run fresh. See
+	// specs/domains/orchestration/delegation.md ("Cooperative Subagent Pause
+	// and Resume").
 	var resumeSteps []agent.Step
 	if cp, ok := l.pausedCheckpoint(t.ID); ok {
 		resumeSteps = append([]agent.Step(nil), cp.Steps...)
@@ -1486,8 +1483,8 @@ func (l *conductorLauncher) buildSubAgentTask(ctx context.Context, t tools.Deleg
 	}
 	toolExec := l.deps.toolExec
 	// The merged skills must also reach the TOOL execution context
-	// (read_skill_resource resolves from the context); the per-subagent
-	// decorator below carries them (delegation.md, "Tool addressability").
+	// (read_skill_resource resolves from it) via the per-subagent decorator
+	// below.
 	if len(profileSkills) > 0 && toolExec != nil {
 		toolExec = &activeSkillsToolExec{inner: toolExec, skills: &ActiveSkills{Skills: profileSkills}}
 	}
@@ -1507,7 +1504,8 @@ func (l *conductorLauncher) buildSubAgentTask(ctx context.Context, t tools.Deleg
 }
 
 // conductorOnlyToolNames must never reach a regular subagent: delegation
-// machinery and the Conductor's plan/reflect workflow (delegation.md).
+// machinery and the Conductor's plan/reflect workflow. See
+// specs/domains/orchestration/delegation.md.
 var conductorOnlyToolNames = map[string]struct{}{
 	"delegate":          {},
 	"cancel_delegation": {},
@@ -1540,8 +1538,8 @@ func stripConductorOnlyTools(descs []sdktools.ToolDescriptor) []sdktools.ToolDes
 }
 
 // stripSubagentTools removes what a task subagent must never hold: the
-// Conductor-only tools plus the GroupSystem goal-loop actor tools, which
-// would otherwise ride the system group (conductor-tools.md).
+// Conductor-only tools plus the GroupSystem goal-loop actor tools. See
+// specs/contracts/conductor-tools.md.
 func stripSubagentTools(descs []sdktools.ToolDescriptor) []sdktools.ToolDescriptor {
 	return tools.StripGoalModeTools(stripConductorOnlyTools(descs))
 }
@@ -1549,8 +1547,8 @@ func stripSubagentTools(descs []sdktools.ToolDescriptor) []sdktools.ToolDescript
 // resolveTaskTools computes a task's toolset from DelegationTask.Tools:
 // nil/""/"all" = full grant minus conductor-only/mode-disabled; "read-only" =
 // system ∪ local/remote_read (no MCP); a group-token array = system ∪ granted
-// (an empty array errors). Fail-closed otherwise; MCP-mode gated via
-// stripGatedMCPTools. Contract: delegation.md + mcp-gateway.md.
+// (empty array errors). Fail-closed; MCP-mode gated via stripGatedMCPTools.
+// See specs/domains/orchestration/delegation.md + mcp-gateway.md.
 func (l *conductorLauncher) resolveTaskTools(ctx context.Context, t tools.DelegationTask) ([]sdktools.ToolDescriptor, error) {
 	all := stripGatedMCPTools(ctx, l.stripDisabled(l.allToolDescriptors()))
 
@@ -1792,7 +1790,8 @@ func (l *conductorLauncher) scopeEvents(stepID string) agent.Events {
 // plan-step events, so plan steps reuse the subagent machinery while appearing
 // as plan steps in the UI. Plan-step events go to the ROOT emitter (the
 // WithPlanStepID copy does not share the plan progress sets); child events
-// carry plan_step_id via the embedded scoped copy.
+// carry plan_step_id via the embedded scoped copy. See
+// specs/domains/orchestration/conductor.md.
 type planStepEventTranslator struct {
 	Emitter         // scoped copy (child events with plan_step_id)
 	root    Emitter // session-root emitter (plan-step lifecycle + progress)
@@ -2234,9 +2233,9 @@ func RunConductor(
 		systemPromptFactory = deps.systemPromptOverride
 	}
 
-	// maxSteps = complexity × stepsPerComplexity — uniform for normal runs and
-	// specialized passes, so the verifier is bounded exactly like the executor
-	// it checks (conductor.md, "Step Limit").
+	// maxSteps = complexity × stepsPerComplexity — uniform for normal and
+	// specialized runs, so the verifier is bounded exactly like the executor
+	// it checks. See specs/domains/orchestration/conductor.md ("Step Limit").
 	maxSteps := complexity * stepsPerComplexity
 
 	cfg := orchestration.ConductorConfig{
@@ -2283,8 +2282,8 @@ func RunConductor(
 	conductor := orchestration.NewConductor(cfg)
 	result, err := conductor.Run(ctx, message, bb, availableTools, events, compactionStrategy)
 	// Finish fallback: complete inline steps the Conductor never closed via
-	// declare_step_complete. A cooperative pause is NOT terminal — the
-	// fallback is skipped so the plan stays resumable (checkpointed).
+	// declare_step_complete; skipped on a cooperative pause (NOT terminal —
+	// the plan stays resumable). See specs/domains/orchestration/conductor.md.
 	if !pausedRun(err, result) {
 		success := err == nil && result != nil && result.Status == orchestration.ExecutionStatusSuccess
 		errMsg := ""
@@ -2400,7 +2399,7 @@ func (o *Orchestrator) buildConductorDeps(conversationHistory []llm.Message, res
 
 // inlineStepLifecycle manages inline plan steps: Start inferred from the
 // first checklist update, Complete from declare_step_complete or the finish
-// fallback (conductor.md, "Inline Step Lifecycle").
+// fallback. See specs/domains/orchestration/conductor.md ("Inline Step Lifecycle").
 type inlineStepLifecycle struct {
 	emitter Emitter
 	scoper  CurrentStepScopable // nil if emitter doesn't support dynamic scoping

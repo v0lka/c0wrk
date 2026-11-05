@@ -1,29 +1,18 @@
 package embeddedllm
 
 // MLX engine pins (ADR-092): the second embedded-LLM runtime family for
-// darwin/arm64. Where the llama family provisions the PrismML-Eng llama.cpp
-// fork with the GGUF weights, the mtplx family provisions the pinned MTPLX
-// release — a Python/MLX stack that runs Ternary-Bonsai-2-27B natively on MLX
-// with MTP speculative decoding — plus the MLX-format weight pack.
-//
-// Supply chain (ADR-066 D11 posture, unchanged): every artifact below is a
-// compile-time pin — the MTPLX release, the managed CPython build, every wheel
-// of the engine tree, and every file of the model pack. No upstream version
-// queries, no auto-updates; a bump is a hand-run, CVE-reviewed operation that
-// re-records the whole table. Wheel SHA256 values come from the PyPI JSON API
-// (files.pythonhosted.org digests); pack SHA256 values are the Hugging Face
-// LFS OIDs for LFS files and content hashes captured from the pinned revision
-// for plain files. The wheel set was resolved with
-// `uv pip compile --generate-hashes` (cp312, aarch64-apple-darwin, deployment
-// target 14.0) and then reduced to the single wheel uv would install on that
-// platform; the installer replays it offline as a pip requirements file (one
-// `name==version --hash=sha256:…` line per wheel) so
-// `pip install --require-hashes` accepts exactly these files and nothing else.
-//
-// License note: MTPLX is Apache-2.0 with a NOTICE attribution clause — a
-// product built on it must surface "Powered by MTPLX" inside the product UI.
-// The Settings embedded-LLM block carries that line when this engine is
-// installed, and the pack's NOTICE.txt is installed with the weights.
+// darwin/arm64 — the pinned MTPLX release (a Python/MLX stack running
+// Ternary-Bonsai-2-27B natively with MTP speculative decoding) plus the
+// MLX-format weight pack. Supply chain (ADR-066 D11 posture): every artifact
+// below is a compile-time pin — release, managed CPython, every wheel, every
+// pack file; no upstream queries, no auto-updates; a bump is a hand-run,
+// CVE-reviewed re-record of the whole table. Wheel SHA256s: PyPI JSON API;
+// pack SHA256s: HF LFS OIDs / revision content hashes. The wheel set was
+// resolved with `uv pip compile --generate-hashes` (cp312, aarch64-apple-
+// darwin, deployment target 14.0) and is replayed offline via
+// `pip install --require-hashes`. License: Apache-2.0 with a NOTICE clause —
+// the Settings block surfaces "Powered by MTPLX" when this engine runs.
+// See specs/decisions/092-embedded-llm-mlx-mtplx.md.
 
 import (
 	"errors"
@@ -57,9 +46,8 @@ var (
 	ErrEngineUnsupportedPlatform = errors.New("embedded-LLM engine not supported on this platform")
 )
 
-// NormalizeEngine maps the empty config spelling to EngineAuto. Any other
-// value passes through unchanged; validation of the vocabulary is
-// ResolveEngine's job.
+// NormalizeEngine maps the empty config spelling to EngineAuto; vocabulary
+// validation is ResolveEngine's job.
 func NormalizeEngine(e Engine) Engine {
 	if e == "" {
 		return EngineAuto
@@ -67,10 +55,9 @@ func NormalizeEngine(e Engine) Engine {
 	return e
 }
 
-// ResolveEngine resolves the config request against the platform. Auto picks
-// mtplx on darwin/arm64 (the MLX machine shape) and llama everywhere else; an
-// explicit mtplx off darwin/arm64 is a typed refusal, never a silent llama
-// substitution; an explicit llama is honored on every supported platform.
+// ResolveEngine resolves the config request against the platform: auto picks
+// mtplx on darwin/arm64 and llama elsewhere; an explicit mtplx off
+// darwin/arm64 is a typed refusal, never a silent llama substitution.
 func ResolveEngine(requested Engine, platform string) (Engine, error) {
 	switch NormalizeEngine(requested) {
 	case EngineAuto:
@@ -100,9 +87,8 @@ func ResolveEngine(requested Engine, platform string) (Engine, error) {
 const (
 	MTPLXVersion = "2.12.2"
 
-	// MTPLXPackRepo is the MLX weight pack the mtplx engine serves: the
-	// Optimized-Speed pack with the vision tower and the Qwen3.8-27B MTP head
-	// inside (no separate vision projector artifact on this engine).
+	// MTPLXPackRepo is the MLX weight pack: the Optimized-Speed pack with the
+	// vision tower and MTP head inside (no separate projector artifact).
 	mtlxPackRepoOwner = "Youssofal"
 	mtlxPackRepoName  = "Ternary-Bonsai-2-27B-MTPLX-Optimized-Speed"
 	// MLXPackRevision is the pinned Hugging Face revision of the pack.
@@ -111,13 +97,10 @@ const (
 
 const mlxPackResolveBase = "https://huggingface.co/" + mtlxPackRepoOwner + "/" + mtlxPackRepoName + "/resolve/" + MLXPackRevision + "/"
 
-// Managed CPython, from the python-build-standalone release uv itself
-// installs from. Pinning the archive (not "uv python install 3.12") keeps
-// every byte of the engine stack under this package's fail-closed SHA256
-// verification: the installer downloads it through the same Downloader as
-// everything else, and the extracted interpreter — a relocatable plain-file
-// tree, no venv and no uv anywhere in the delivery — installs the pinned
-// wheel set itself, offline (mlxPipInstall).
+// Managed CPython, from the python-build-standalone release. Pinning the
+// archive keeps every byte under this package's fail-closed SHA256
+// verification; the extracted interpreter — relocatable plain files, no venv,
+// no uv — installs the pinned wheel set itself, offline (ADR-092 D2).
 const (
 	pythonInstallTag     = "20261013"
 	pythonInstallVersion = "3.12.15"
@@ -136,15 +119,14 @@ var pythonArchiveAsset = Asset{
 }
 
 // PythonArchiveAsset returns the pinned managed-CPython archive for the mtplx
-// engine. ok is false on any platform where the engine is not offered.
+// engine. Callers gate the platform before asking; ok is always true.
 func PythonArchiveAsset() (Asset, bool) { return pythonArchiveAsset, true }
 
 // mtplxWheelPins is the complete, closed wheel set of the engine tree:
-// mtplx itself, its pinned MLX (exactly 0.32.2 — an exactness-gated pin by
-// upstream), and every transitive dependency, resolved and hashed from PyPI
-// for cp312 / aarch64-apple-darwin. The installer turns this table into a
-// requirements file and runs `pip install --require-hashes` against it, so
-// an unsigned registry response can never enter the engine tree.
+// mtplx itself, its pinned MLX (exactly 0.32.2 — upstream's exactness-gated
+// pin), and every transitive dependency for cp312/aarch64-apple-darwin —
+// replayed as a requirements file for `pip install --require-hashes`, so an
+// unsigned registry response cannot enter the tree (ADR-092 D1).
 
 var mtplxWheelPins = []WheelAsset{
 	{Name: "annotated-doc", Version: "0.0.5",
@@ -380,13 +362,10 @@ var mtplxWheelPins = []WheelAsset{
 }
 
 // mlxPackPins is the complete file set of the pinned MLX weight pack, in
-// download order (weights first, then the MTP sidecar, the tokenizer stack,
-// the ternary rotation table, and the serving contract). SHA256 values for
-// the three LFS files are the Hugging Face LFS OIDs of MLXPackRevision; every
-// other value is the content hash captured from that revision. The pack is a
-// plain directory of these files — the engine is pointed at it with
-// `--model <dir>`, and nothing is ever fetched through `mtplx pull` (ADR-092
-// keeps the supply chain in this registry).
+// download order (weights, MTP sidecar, tokenizer stack, rotation table,
+// serving contract). LFS-file SHA256s are the HF LFS OIDs of MLXPackRevision,
+// the rest revision content hashes. The pack is a plain directory launched
+// with `--model <dir>`; nothing is fetched through `mtplx pull`.
 var mlxPackPins = []Asset{
 	{Component: ComponentMLXPack, URL: mlxPackResolveBase + "model.safetensors",
 		SHA256: "130de5925082c168b7866b2e91b52e44abbafc99017e3ca352b77b5b55a269ed", SizeBytes: 8595477990,
@@ -438,17 +417,16 @@ var mlxPackPins = []Asset{
 		ArchiveName: "NOTICE.txt"},
 }
 
-// WheelAsset is one pinned wheel of the engine virtual environment, carrying
-// its distribution identity for diagnostics and its fail-closed download pin.
+// WheelAsset is one pinned wheel, carrying its distribution identity for
+// diagnostics and its fail-closed download pin.
 type WheelAsset struct {
 	Name    string // PyPI project name (lowercase, hyphenated)
 	Version string
 	Asset   Asset // Component is ComponentEngineWheels
 }
 
-// EngineWheel returns the pinned wheel for a distribution name. ok is false
-// for a name the pin does not carry — the wheel set is closed, and an
-// unlisted dependency is a resolution failure, never an unpinned download.
+// EngineWheel returns the pinned wheel for a distribution name; false for an
+// unlisted dependency — a resolution failure, never an unpinned download.
 func EngineWheel(name string) (WheelAsset, bool) {
 	for _, w := range mtplxWheelPins {
 		if w.Name == name {
@@ -458,10 +436,8 @@ func EngineWheel(name string) (WheelAsset, bool) {
 	return WheelAsset{}, false
 }
 
-// EngineWheels returns every pinned wheel in resolution order. The order is
-// the registry's stable one; install correctness does not depend on it — pip
-// matches each requirements-file line to its file by name and pinned hash
-// (mlxPipInstall), so order only decides the progress bar's sequence.
+// EngineWheels returns every pinned wheel in the registry's stable order;
+// correctness does not depend on it (pip matches by name+hash).
 func EngineWheels() []WheelAsset { return slices.Clone(mtplxWheelPins) }
 
 // TotalWheelBytes sums the pinned sizes of the whole engine wheel set; the
@@ -492,11 +468,9 @@ func MLXPackFile(name string) (Asset, bool) {
 // MLXPackBytes sums the exact pinned sizes of the whole pack.
 func MLXPackBytes() int64 { return TotalBytes(mlxPackPins) }
 
-// EngineArtifactSet resolves the complete, ordered download set for an mtplx
-// install on darwin/arm64: the managed CPython archive, then the wheel set,
-// then the weight pack. The vision tower and MTP head are inside the pack, so
-// there is no projector artifact and no cudart on this engine. Fail-closed on
-// the platform check: mtplx is pinned for darwin/arm64 only.
+// EngineArtifactSet resolves the ordered download set for an mtplx install on
+// darwin/arm64: managed CPython, wheel set, weight pack (vision tower and MTP
+// head inside the pack — no projector, no cudart). Fail-closed off darwin/arm64.
 func EngineArtifactSet(platform string) ([]Asset, error) {
 	if platform != PlatformDarwinARM64 {
 		return nil, fmt.Errorf("%w: engine %q needs %q, got %q",
@@ -511,18 +485,14 @@ func EngineArtifactSet(platform string) ([]Asset, error) {
 }
 
 // ValidateMLXPins self-checks the engine pin tables with the same contract as
-// ValidateRegistry: every artifact carries a URL under its pinned base, a
-// well-formed lowercase hex SHA256, a positive exact size and a plain file
-// name; wheel identities are unique; the wheel set actually contains the
-// pinned engine itself and its pinned MLX.
+// ValidateRegistry, plus wheel-identity uniqueness and the required
+// distributions (the pinned engine and its pinned MLX included).
 func ValidateMLXPins() error {
 	return validateMLXPinTables(pythonArchiveAsset, mtplxWheelPins, mlxPackPins)
 }
 
-// validateMLXPinTables is ValidateMLXPins over explicit tables rather than
-// the package-level ones, so a test can prove the validator has teeth without
-// mutating shared registry state (which would leak into every later test in
-// the package).
+// validateMLXPinTables is ValidateMLXPins over explicit tables, so a test
+// proves the validator has teeth without mutating shared state.
 func validateMLXPinTables(python Asset, wheels []WheelAsset, pack []Asset) error {
 	var errs []error
 	check := func(where string, a Asset) {

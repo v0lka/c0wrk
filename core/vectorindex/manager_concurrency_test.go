@@ -120,8 +120,13 @@ func TestManagerNotifyFileChangeSerializesOverlappingPasses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetCollectionFiles: %v", err)
 	}
+	// Sidecar keys are root-relative occurrence coordinates under a bound
+	// workspace root (ADR-104); the lookup accepts either era.
 	for _, name := range []string{"main.go", "added.go", "trailing.go"} {
-		if _, ok := files[filepath.Join(ws, name)]; !ok {
+		if _, okRel := files[name]; okRel {
+			continue
+		}
+		if _, okAbs := files[filepath.Join(ws, name)]; !okAbs {
 			t.Errorf("completed passes did not index %s", name)
 		}
 	}

@@ -2,6 +2,7 @@ package backend
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -200,6 +201,88 @@ func TestEmbeddedPlanDTORendersTheOffloadDecision(t *testing.T) {
 				t.Errorf("Recorded = %v, want %v", got.Recorded, tc.plan != nil)
 			}
 		})
+	}
+}
+
+// TestEmbeddedPlanDTOEchoesTheDevicePin pins the device pin's mapping: a
+// populated pin is echoed verbatim (cloned, never aliased), an absent pin
+// leaves the always-an-array [] in place, and split_mode is echoed verbatim —
+// the properties the frontend guards (isEmbeddedLLMPlan's Array.isArray for
+// devices and isStr for split_mode) are built on.
+func TestEmbeddedPlanDTOEchoesTheDevicePin(t *testing.T) {
+	plan := &embeddedllm.MemoryPlan{
+		Devices:   []string{"CUDA0", "CUDA1"},
+		SplitMode: embeddedllm.SplitModeRow,
+	}
+	got := embeddedPlanDTO(plan)
+	if !slices.Equal(got.Devices, []string{"CUDA0", "CUDA1"}) {
+		t.Errorf("Devices = %v, want the pin echoed verbatim", got.Devices)
+	}
+	if got.SplitMode != string(embeddedllm.SplitModeRow) {
+		t.Errorf("SplitMode = %q, want %q", got.SplitMode, embeddedllm.SplitModeRow)
+	}
+
+	// The clone branch: mutating the plan after mapping must not reach the DTO.
+	plan.Devices[0] = "MUTATED"
+	if got.Devices[0] != "CUDA0" {
+		t.Errorf("Devices aliased the plan it rendered: %v", got.Devices)
+	}
+
+	// An absent pin keeps the preset empty array — never null on the wire.
+	empty := embeddedPlanDTO(&embeddedllm.MemoryPlan{})
+	if empty.Devices == nil || len(empty.Devices) != 0 {
+		t.Errorf("Devices = %v for a pinless plan, want the empty array", empty.Devices)
+	}
+	if nilPlan := embeddedPlanDTO(nil); nilPlan.Devices == nil {
+		t.Error("Devices is nil for a nil plan, want the empty array")
+	}
+	encoded, err := json.Marshal(empty)
+	if err != nil {
+		t.Fatalf("marshalling: %v", err)
+	}
+	if strings.Contains(string(encoded), `"devices":null`) || !strings.Contains(string(encoded), `"devices":[]`) {
+		t.Errorf("a pinless plan serialized %s, want devices as []", encoded)
+	}
+}
+
+// TestEmbeddedTuningDTOEchoesTheDevicePin pins the tuning side of the same
+// contract: a persisted pin echoes verbatim (and cloned), an unset pin is nil —
+// the wire's "unset", not an empty array — so the editor's tri-state stays
+// truthful.
+func TestEmbeddedTuningDTOEchoesTheDevicePin(t *testing.T) {
+	src := config.TuningConfig{
+		Devices:   []string{"CUDA0", "CUDA1"},
+		SplitMode: strPtr("row"),
+	}
+	populated := embeddedTuningDTO(src)
+	if !slices.Equal(populated.Devices, []string{"CUDA0", "CUDA1"}) {
+		t.Errorf("Devices = %v, want the pin echoed verbatim", populated.Devices)
+	}
+	if populated.SplitMode == nil || *populated.SplitMode != "row" {
+		t.Errorf("SplitMode = %v, want %q", populated.SplitMode, "row")
+	}
+
+	// The mapper cloned: mutating the echo must not reach the section.
+	populated.Devices[0] = "MUTATED"
+	if !slices.Equal(src.Devices, []string{"CUDA0", "CUDA1"}) {
+		t.Errorf("the tuning DTO aliased the section it rendered: %v", src.Devices)
+	}
+
+	// The list knob's empty shape IS unset (the config layer refuses an
+	// authored-but-empty list), so nil — not [] — is the unset spelling here.
+	empty := embeddedTuningDTO(config.TuningConfig{})
+	if empty.Devices != nil {
+		t.Errorf("Devices = %v for an unset pin, want nil (the wire's unset)", empty.Devices)
+	}
+	if empty.SplitMode != nil {
+		t.Errorf("SplitMode = %v for an unset pin, want nil", empty.SplitMode)
+	}
+	encoded, err := json.Marshal(empty)
+	if err != nil {
+		t.Fatalf("marshalling: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"devices":null`) {
+		t.Errorf("an unset pin serialized %s, want devices as null (unset)", encoded)
 	}
 }
 

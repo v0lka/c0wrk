@@ -14,10 +14,10 @@ import (
 	"github.com/v0lka/c0wrk/internal/shellresolver"
 )
 
-// LoadShellEnvironment loads environment variables from the user's shell profile.
-// This is necessary on macOS where apps launched from Finder/Dock don't inherit
-// shell environment variables (like those set in .zshrc/.bash_profile).
-// The function is best-effort: failures are logged but don't block startup.
+// LoadShellEnvironment loads environment variables from the user's login
+// shell — necessary on macOS, where Finder/Dock-launched apps don't inherit
+// shell env; it runs before any other init (specs/domains/llm-providers.md).
+// Best-effort: failures are logged but don't block startup.
 func LoadShellEnvironment(logger *slog.Logger) {
 	if logger == nil {
 		logger = slog.Default()
@@ -28,8 +28,6 @@ func LoadShellEnvironment(logger *slog.Logger) {
 		return
 	}
 
-	// Resolve the user's shell via the shared resolver.
-	// Uses SHELL env → LookPath → stat fallback chain.
 	shell := shellresolver.Resolve()
 
 	// Run shell with -l (login) flag to source profile files
@@ -56,19 +54,16 @@ func LoadShellEnvironment(logger *slog.Logger) {
 		return
 	}
 
-	// Parse KEY=VALUE lines and set environment variables
 	scanner := bufio.NewScanner(strings.NewReader(string(output)))
 	loaded := 0
 	var setErrors int
 	for scanner.Scan() {
 		line := scanner.Text()
 
-		// Skip empty lines
 		if line == "" {
 			continue
 		}
 
-		// Find first '=' to split key and value
 		eqIdx := strings.Index(line, "=")
 		if eqIdx <= 0 {
 			// Line without '=' or starting with '=' is invalid; skip

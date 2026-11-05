@@ -20,7 +20,7 @@ const (
 const contentFilterVersion = "v1"
 
 // ContentFilterConfig controls early rejection of generated, minified, and
-// pathological text before chunking. A nil *ContentFilterConfig selects
+// pathological text before chunking (policy: ADR-036). A nil config selects
 // DefaultContentFilterConfig; a non-nil config is used exactly as supplied.
 type ContentFilterConfig struct {
 	Enabled bool
@@ -63,8 +63,8 @@ func resolveContentFilterConfig(cfg *ContentFilterConfig) ContentFilterConfig {
 }
 
 // Fingerprint returns a stable serialization of every decision-affecting
-// policy input. It is included in the chunker fingerprint so policy changes
-// invalidate sidecars just like max chunk size or overlap changes.
+// input, included in the chunker fingerprint so policy changes invalidate
+// sidecars just like a max-chunk-size change does.
 func (c ContentFilterConfig) Fingerprint() string {
 	return fmt.Sprintf("%s|enabled=%t|generated=%t|minified=%t|pathological=%t|header=%d|minbytes=%d|maxline=%d|maxws=%.6f|pathbytes=%d|maxtoken=%d",
 		contentFilterVersion, c.Enabled, c.DetectGenerated, c.DetectMinified,

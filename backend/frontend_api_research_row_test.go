@@ -45,7 +45,7 @@ func researchLostUpdateTestFrontend(t *testing.T) (f *FrontendAPI, projectID, ro
 	t.Helper()
 	base := t.TempDir()
 	ws := filepath.Join(base, "ws")
-	root = filepath.Join(ws, ".research")
+	root = filepath.Join(ws, "research")
 
 	seedResearchProjectDir(t, root, "R-001-test")
 	index := "# Research Index\n\n" +

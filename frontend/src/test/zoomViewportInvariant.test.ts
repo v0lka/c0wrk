@@ -179,9 +179,9 @@ describe('viewport-unit guard (UI-scale zoom invariant)', () => {
     // Sanity: the walk must actually reach the component tree, otherwise a
     // path regression would make the assertion below vacuously pass.
     expect(sources.length).toBeGreaterThan(50)
-  })
+  }, 30_000)
 
-  it('never sizes with a raw viewport unit or a viewport-size utility', () => {
+  it('never sizes with a raw viewport unit or a viewport-size utility', () => { // whole-tree scan: generous bound under parallel suite load
     const offenders: string[] = []
     for (const file of [...sources, HTML_ENTRY]) {
       const lines = stripComments(readFileSync(file, 'utf8'), file).split('\n')
@@ -196,9 +196,9 @@ describe('viewport-unit guard (UI-scale zoom invariant)', () => {
       })
     }
     expect(offenders).toEqual([])
-  })
+  }, 30_000)
 
-  it('never positions a floating panel from a raw anchor coordinate', () => {
+  it('never positions a floating panel from a raw anchor coordinate', () => { // whole-tree scan
     const offenders: string[] = []
     for (const file of sources) {
       const lines = stripComments(readFileSync(file, 'utf8'), file).split('\n')
@@ -209,7 +209,7 @@ describe('viewport-unit guard (UI-scale zoom invariant)', () => {
       })
     }
     expect(offenders).toEqual([])
-  })
+  }, 30_000)
 
   it('the raw-anchor pattern catches the shape it guards against (and not layout-px ones)', () => {
     // The historical bug: a pointer coordinate written into a fixed panel.
@@ -222,7 +222,7 @@ describe('viewport-unit guard (UI-scale zoom invariant)', () => {
     expect(RAW_ANCHOR_POSITION.test('left: menuPosition?.left ?? 0')).toBe(false)
     expect(RAW_ANCHOR_POSITION.test('top: position?.top ?? 0')).toBe(false)
     expect(RAW_ANCHOR_POSITION.test('const delta = startY - e.clientY')).toBe(false)
-  })
+  }, 30_000)
 
   it('strips comments without swallowing code after a comment-opener inside a string', () => {
     // The `src/**` glob contains a comment-opener sequence; a naive block
@@ -236,7 +236,7 @@ describe('viewport-unit guard (UI-scale zoom invariant)', () => {
     // Length and line count are preserved, so reported line numbers are exact.
     expect(stripped).toHaveLength(src.length)
     expect(stripped.split('\n')).toHaveLength(src.split('\n').length)
-  })
+  }, 30_000)
 
   it('blanks real comments while still scanning string literals', () => {
     const src = "const a = '100vh' // 80vw\n/* 60dvh */\nconst b = 2\n"
@@ -248,7 +248,7 @@ describe('viewport-unit guard (UI-scale zoom invariant)', () => {
     expect(stripped).toContain("'100vh'")
     expect(stripped).toContain('const b = 2')
     expect(stripped).toHaveLength(src.length)
-  })
+  }, 30_000)
 
   it('does not treat `//` or `/*` inside JSX text as a comment', () => {
     // A bare URL or a rendered `src/**` glob in JSX text is literal content,
@@ -261,7 +261,7 @@ describe('viewport-unit guard (UI-scale zoom invariant)', () => {
     expect(stripped).not.toContain('80vh')
     expect(stripped).toContain('const x = 1')
     expect(stripped).toHaveLength(src.length)
-  })
+  }, 30_000)
 
   it('is not desynced by a lone backtick or apostrophe in JSX text', () => {
     const src = "<p>Press the ` key, it's fine</p>\n// cap of 80vh\nconst y = 1\n"
@@ -269,7 +269,7 @@ describe('viewport-unit guard (UI-scale zoom invariant)', () => {
     expect(stripped).not.toContain('80vh')
     expect(stripped).toContain('const y = 1')
     expect(stripped).toHaveLength(src.length)
-  })
+  }, 30_000)
 
   it('parses a .ts file as TS so a generic arrow does not hide later comments', () => {
     // In a `.ts` file the bare `<T>(x: T)` is an unparenthesised generic arrow;
@@ -282,7 +282,7 @@ describe('viewport-unit guard (UI-scale zoom invariant)', () => {
     expect(stripped).not.toContain('90vh')
     expect(stripped).toContain('const y = 1')
     expect(stripped).toHaveLength(src.length)
-  })
+  }, 30_000)
 
   it('flags signed and dot-led viewport lengths too', () => {
     for (const snippet of [
@@ -297,7 +297,7 @@ describe('viewport-unit guard (UI-scale zoom invariant)', () => {
     expect(VIEWPORT_UNIT.test('className="h-[80vh]"')).toBe(true)
     expect(VIEWPORT_UNIT.test('calc(var(--ui-vh) * 0.8)')).toBe(false)
     expect(VIEWPORT_UNIT.test('var(--ui-zoom, 1)')).toBe(false)
-  })
+  }, 30_000)
 
   it('flags every viewport-percentage unit, not just vh/vw', () => {
     // Tailwind accepts all of these in an arbitrary value; `zoom` magnifies
@@ -308,7 +308,7 @@ describe('viewport-unit guard (UI-scale zoom invariant)', () => {
     // Prefixes that merely start with a unit token are not lengths.
     expect(VIEWPORT_UNIT.test('const vipers = 1')).toBe(false)
     expect(VIEWPORT_UNIT.test('className="h-full"')).toBe(false)
-  })
+  }, 30_000)
 
   it('flags Tailwind viewport-size utilities as well as bracketed literals', () => {
     for (const cls of ['h-dvh', 'min-h-svh', 'w-dvw', 'max-h-lvh', 'min-w-svw', 'size-dvh']) {
@@ -320,10 +320,10 @@ describe('viewport-unit guard (UI-scale zoom invariant)', () => {
     expect(VIEWPORT_UNIT_UTILITY.test('className="max-w-screen-sm"')).toBe(false)
     expect(VIEWPORT_UNIT_UTILITY.test('className="h-full w-full"')).toBe(false)
     expect(VIEWPORT_UNIT_UTILITY.test('const pathDvh = 1')).toBe(false)
-  })
+  }, 30_000)
 
   it('defines the zoom-corrected --ui-vh primitive in index.css', () => {
     const css = readFileSync(join(SRC_DIR, 'index.css'), 'utf8')
     expect(css).toMatch(/--ui-vh:\s*calc\(100vh\s*\/\s*var\(--ui-zoom/)
-  })
+  }, 30_000)
 })

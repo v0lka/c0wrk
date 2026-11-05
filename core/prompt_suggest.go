@@ -16,18 +16,14 @@ import (
 	"github.com/v0lka/sp4rk/oneshot"
 )
 
-// Prompt-suggestion generation (ADR-088): after a task finishes full/partial,
-// the backend assembles a recent-history window and asks a one-shot service
-// call (ServiceKindPromptSuggest) for a small set of follow-up prompts the
-// user could send next. This file owns the core side of that pipeline — the
-// generation input assembly (window caps, the is_nudge filter, prompt→answer
-// pairing, latest-priority trimming), the LLM round-trip under the shared
-// service-call pipeline, and the fail-safe response parsing. Triggering,
-// persistence, and the RPC/event surface live in the backend (D7/D8/D9).
+// Prompt-suggestion generation (ADR-088): after a full/partial task finish,
+// a one-shot service call produces follow-up prompts from a recent-history
+// window. Pipeline contract, windows, filters, and fail-open semantics:
+// specs/domains/prompt-suggestions.md.
 
 // SuggestionKind selects which suggestion family one generation pass
-// produces (ADR-088 D1). The two kinds share this pipeline; they differ in
-// the embedded prompt and the session window.
+// produces (ADR-088 D1); the kinds share this pipeline and differ in the
+// embedded prompt and session window.
 type SuggestionKind string
 
 const (
@@ -40,14 +36,10 @@ const (
 	SuggestionKindGoalAdvance SuggestionKind = "goal_advance"
 )
 
-// PromptSuggestion is one persisted follow-up prompt row (ADR-088 D7): the
-// chat input offers it after a task finishes with outcome full or partial.
-// Rows hang off their session: deleting the session deletes its suggestions
-// (ON DELETE CASCADE) and a fork does not copy them. This is the canonical
-// in-memory shape the whole pipeline shares; the backend session store
-// persists it in SQLite with CreatedAt as an RFC 3339 string, and the wire
-// (GetPromptSuggestions, the prompt_suggestions event) marshals it with the
-// same snake_case keys — a time.Time always renders as RFC 3339 there.
+// PromptSuggestion is one persisted follow-up prompt row (ADR-088 D7) — the
+// canonical in-memory shape the pipeline and the wire share (rows hang off
+// their session: ON DELETE CASCADE, forks don't copy). Lifecycle and wire
+// contract: specs/domains/prompt-suggestions.md.
 type PromptSuggestion struct {
 	ID        string         `json:"id"`
 	SessionID string         `json:"session_id"`
@@ -113,12 +105,9 @@ type PromptSuggestSession struct {
 
 // PromptSuggestInput is the assembled generation input for one pass.
 type PromptSuggestInput struct {
-	// Sessions is the recency window in CHRONOLOGICAL order (oldest first,
-	// the most recent session LAST — the caller passes the triggering
-	// session last). The window cap is enforced here: at most
-	// nextTaskWindowSessions (next_task) sessions are read; goal_advance
-	// reads exactly one — the triggering session (the ADR-088 D4
-	// multi-session goal window is a deferred extension point).
+	// Sessions is the recency window in CHRONOLOGICAL order (the triggering
+	// session last); the window cap is enforced here (D3/D4 — see
+	// specs/domains/prompt-suggestions.md).
 	Sessions []PromptSuggestSession
 }
 
@@ -131,13 +120,10 @@ type promptSuggestPair struct {
 }
 
 // promptSuggestPairs recovers prompt→final-answer pairs from a chronological
-// transcript. is_nudge user messages are dropped entirely (D5): they open no
-// pair and close none — assistant text following a dropped nudge still
-// updates the open pair's final answer. A non-nudge user message closes the
-// open pair and opens a new one; every assistant message updates the open
-// pair's answer, so the LAST assistant message before the next user message
-// wins. Pairs missing either side are discarded. Both sides are capped to
-// promptSuggestMaxMessageChars runes.
+// transcript: nudges open/close no pair (assistant text keeps updating the
+// open pair), each non-nudge user message closes the open pair and opens a
+// new one, so the LAST assistant message before the next user message wins.
+// Incomplete pairs are discarded; both sides are capped.
 func promptSuggestPairs(msgs []PromptSuggestMessage) []promptSuggestPair {
 	var (
 		pairs []promptSuggestPair
@@ -153,9 +139,7 @@ func promptSuggestPairs(msgs []PromptSuggestMessage) []promptSuggestPair {
 		content := promptSuggestTruncate(strings.TrimSpace(m.Content), promptSuggestMaxMessageChars)
 		switch m.Role {
 		case "user":
-			// D5: nudges describe no work — they neither open nor close a
-			// pair, so the answer continuation after a nudge stays attached
-			// to the pair the nudge interrupted.
+			// Nudges describe no work — they neither open nor close a pair.
 			if m.IsNudge || content == "" {
 				continue
 			}
@@ -172,9 +156,8 @@ func promptSuggestPairs(msgs []PromptSuggestMessage) []promptSuggestPair {
 	return pairs
 }
 
-// promptSuggestTruncate caps s to maxRunes runes, so a multi-byte character
-// is never split. A non-positive cap returns the empty string; s already
-// within the cap is returned unchanged.
+// promptSuggestTruncate caps s to maxRunes runes (never splits a multi-byte
+// character); a non-positive cap returns "".
 func promptSuggestTruncate(s string, maxRunes int) string {
 	if maxRunes <= 0 {
 		return ""
@@ -197,10 +180,8 @@ func promptSuggestPairCost(p promptSuggestPair) int {
 }
 
 // promptSuggestTrimPairsLatestFirst keeps the most recent pairs that fit the
-// byte budget, latest priority: walk from the newest pair and stop at the
-// first one that no longer fits — an older pair is never resurrected past a
-// newer non-fitting one. The single most recent pair is always kept, so a
-// session with any complete pair never trims to nothing.
+// byte budget, latest priority: an older pair is never resurrected past a
+// newer non-fitting one, and the single most recent pair is always kept.
 func promptSuggestTrimPairsLatestFirst(pairs []promptSuggestPair, budget int) []promptSuggestPair {
 	if len(pairs) == 0 || budget <= 0 {
 		return nil
@@ -224,10 +205,7 @@ type promptSuggestSessionBlock struct {
 	body string
 }
 
-// promptSuggestWindow is the kind's session-window cap (D3/D4): next_task
-// reads the project window (10 sessions); goal_advance reads exactly the
-// triggering session in v1 — the D4 multi-session goal window is a recorded
-// extension point.
+// promptSuggestWindow is the kind's session-window cap (D3/D4).
 func promptSuggestWindow(kind SuggestionKind) int {
 	if kind == SuggestionKindNextTask {
 		return nextTaskWindowSessions
@@ -247,11 +225,9 @@ func promptSuggestSystemPrompt(kind SuggestionKind) (string, error) {
 	}
 }
 
-// promptSuggestUserContent renders the user turn for one generation pass:
-// the window's session transcripts — window cap enforced (keeping the most
-// recent sessions), is_nudge filtered (D5), per-session and global budgets
-// applied latest-first (D3). An error means the window yielded no complete
-// pair (D9: no suggestions, fail open).
+// promptSuggestUserContent renders the user turn: window cap, is_nudge
+// filter, per-session and global budgets applied latest-first. An error means
+// the window yielded no complete pair (fail-open, D9).
 func promptSuggestUserContent(kind SuggestionKind, in PromptSuggestInput) (string, error) {
 	sessions := in.Sessions
 	if window := promptSuggestWindow(kind); len(sessions) > window {
@@ -299,20 +275,15 @@ func promptSuggestUserContent(kind SuggestionKind, in PromptSuggestInput) (strin
 	return b.String(), nil
 }
 
-// suggestionMarkerRe strips one leading list marker or ordinal ("1." / "1)")
-// that models habitually prefix suggestion lines with. It tolerates leading
-// indentation and requires whitespace after the marker, so a marker stripped
-// bare by TrimSpace ("1. " → "1.") still cannot survive as a suggestion —
-// such leftovers carry no letter or digit and are dropped below.
+// suggestionMarkerRe strips one leading list marker or ordinal. It tolerates
+// leading indentation and requires whitespace after the marker, so a
+// marker stripped bare by TrimSpace cannot survive as a suggestion.
 var suggestionMarkerRe = regexp.MustCompile(`^[ \t]*(?:[-*+•·]|\d{1,3}[.)])[ \t]+`)
 
 // parsePromptSuggestions recovers up to maxSuggestionsPerPass one-line
-// suggestions from the response. Fail-safe by construction: fence and
-// preamble stripping (oneshot.Text), per-line decoration stripping (list
-// markers, ordinals, quotes, markdown emphasis), and exact-duplicate
-// dropping mean every returned string is clean — or the parse error engages
-// the client's nudge loop and, when every attempt fails, the fail-safe
-// fallback (no suggestions, nil error).
+// suggestions, fail-safe by construction: fence/preamble stripping, per-line
+// decoration stripping, and exact-duplicate dropping — or the parse error
+// engages the client's nudge loop and then the fail-safe fallback.
 func parsePromptSuggestions(resp *llm.ChatResponse) ([]string, error) {
 	text := oneshot.Text(resp)
 	if text == "" {
@@ -340,14 +311,10 @@ func parsePromptSuggestions(resp *llm.ChatResponse) ([]string, error) {
 	return out, nil
 }
 
-// parseSuggestionLine normalizes one response line into a suggestion:
-// a leading list marker or ordinal, surrounding whitespace, and one layer of
-// decorative quotes or markdown emphasis are stripped; the cleaned line is
-// returned verbatim — no length cap truncates an already-formed suggestion
-// (the prompt bounds the answer's shape instead). Decoration-only lines
-// (markers, dashes, fences, ellipses — anything without a letter or digit)
-// and colon-terminated header/preamble lines ("Here are three suggestions:")
-// normalize to "".
+// parseSuggestionLine normalizes one response line into a suggestion: marker,
+// whitespace, one layer of quotes/emphasis stripped; the cleaned line is
+// returned verbatim (no length cap — the prompt bounds the answer's shape).
+// Decoration-only lines and colon-terminated header/preamble lines become "".
 func parseSuggestionLine(line string) string {
 	s := suggestionMarkerRe.ReplaceAllString(line, "")
 	s = strings.TrimSpace(s)
@@ -355,14 +322,10 @@ func parseSuggestionLine(line string) string {
 		return ""
 	}
 	s = strings.TrimSpace(oneshot.Unquote(s))
-	// A suggestion always names work: a line with no letter or digit is
-	// decoration left over after stripping ("1.", "-", "…", "```").
+	// A suggestion always names work: no letter or digit = leftover decoration.
 	if !strings.ContainsFunc(s, func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }) {
 		return ""
 	}
-	// The cleaned line IS the suggestion — verbatim, no post-hoc length
-	// cap. The prompt bounds the answer's shape; truncating here would
-	// cut off an already-formed suggestion mid-sentence.
 	return s
 }
 
@@ -371,13 +334,10 @@ func parseSuggestionLine(line string) string {
 const promptSuggestRetryHint = "Reply with AT MOST 3 plain lines — one suggested prompt per line. " +
 	"No numbering, no bullets, no quotes, no markdown, no prose, no empty lines."
 
-// suggestPromptsWithCaller is the production generation pass for one
-// suggestion kind: input assembly (window cap D3/D4, is_nudge filter D5,
-// latest-priority trimming) followed by one one-shot service call
-// (ServiceKindPromptSuggest) under the shared service pipeline. Errors
-// (unknown kind, empty window, transport failure, exhausted nudges) are
-// returned to the caller, which fails open — the suggestion feature can
-// never delay, block, or break a task finish (D9).
+// suggestPromptsWithCaller is the production generation pass: input assembly
+// followed by one one-shot service call (ServiceKindPromptSuggest). Errors
+// are returned to the caller, which fails open (D9 — the feature can never
+// delay, block, or break a task finish).
 func suggestPromptsWithCaller(
 	ctx context.Context,
 	caller oneshot.Caller,
@@ -414,15 +374,12 @@ func suggestPromptsWithCaller(
 		})
 }
 
-// GeneratePromptSuggestions generates chat-input follow-up prompt suggestions
-// (ADR-088) for one suggestion kind from the assembled generation input: up
-// to maxSuggestionsPerPass cleaned one-line prompts, written in the dominant
-// language of the supplied history (D6). The call rides the cached LLM router
-// under the oneshot service policy and the shared service-call pipeline
-// (per-kind telemetry, ServiceKindPromptSuggest). The caller owns the
-// deadline via ctx — the backend fires this on the service timeout
-// (timeouts.serviceLLMRequestTimeout) — and must treat every error as
-// fail-open "no suggestions" (D9).
+// GeneratePromptSuggestions generates follow-up prompt suggestions (ADR-088)
+// for one kind from the assembled input: up to maxSuggestionsPerPass cleaned
+// one-line prompts in the history's dominant language (D6). Rides the cached
+// LLM router under the oneshot service policy; the caller owns the deadline
+// via ctx (the backend fires on timeouts.serviceLLMRequestTimeout) and treats
+// every error as fail-open "no suggestions" (D9).
 func (b *OrchestratorBuilder) GeneratePromptSuggestions(ctx context.Context, kind SuggestionKind, in PromptSuggestInput) ([]string, error) {
 	if err := b.waitReady(ctx); err != nil {
 		return nil, err

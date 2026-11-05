@@ -106,6 +106,15 @@ func TestSendMessage_LiveRejectedForGoal(t *testing.T) {
 	if got := orch.DrainLiveUserMessages(); got != "" {
 		t.Errorf("queue holds %q after a rejected goal send, want empty", got)
 	}
+
+	// A budgeted "/goal:N" prefix arms goal mode identically without the flag.
+	err = manager.SendMessage(context.Background(), sess.ID, "/goal:5 chase it", nil, nil, nil, "", "", false, "", false, false)
+	if err == nil {
+		t.Fatal("expected an error for a /goal:N prefix into a running task")
+	}
+	if got := orch.DrainLiveUserMessages(); got != "" {
+		t.Errorf("queue holds %q after a rejected /goal:N send, want empty", got)
+	}
 }
 
 // TestSendMessage_LiveRejectedForE2S verifies E2S requests are rejected on

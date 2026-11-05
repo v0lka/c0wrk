@@ -1,12 +1,9 @@
 package providerauth
 
-// ChatGPT subscription sign-in profile.
-//
-// The client id is the public Codex CLI OAuth client published in the
-// openai/codex repository (codex-rs/login/src/auth/manager.rs,
-// CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"); it is a public PKCE client
-// with no secret, usable by third-party clients. The port 1455 redirect and
-// the issuer endpoints mirror that client's allow-listed configuration.
+// ChatGPT subscription sign-in profile: the public Codex CLI OAuth client
+// published in openai/codex (codex-rs/login/src/auth/manager.rs), a PKCE
+// client with no secret; the redirect port and issuer endpoints mirror that
+// client's allow-listed configuration (specs/domains/llm-providers.md).
 const (
 	// chatgptProviderID keys the persisted secret ("providerauth:chatgpt").
 	chatgptProviderID = "chatgpt"
@@ -21,12 +18,10 @@ const (
 	chatgptAPIBaseURL = "https://chatgpt.com/backend-api/codex"
 	// chatgptRedirectPort is the loopback redirect port.
 	chatgptRedirectPort = 1455
-	// chatgptRedirectHost and chatgptRedirectPath form the exact redirect
-	// URI registered for the Codex CLI client:
-	// http://localhost:1455/auth/callback. The issuer matches redirect_uri
-	// against that allow-list byte-for-byte — the numeric host 127.0.0.1, a
-	// different path, or a different port is rejected with
-	// "invalid_authorize_request" before any login page renders.
+	// chatgptRedirectHost and chatgptRedirectPath form the exact redirect URI
+	// registered for the Codex CLI client; the issuer matches redirect_uri
+	// byte-for-byte and rejects any deviation ("invalid_authorize_request")
+	// before any login page renders.
 	chatgptRedirectHost = "localhost"
 	chatgptRedirectPath = "/auth/callback"
 )

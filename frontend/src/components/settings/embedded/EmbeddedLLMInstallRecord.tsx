@@ -206,7 +206,7 @@ export function EmbeddedLLMInstallRecord({ status }: { status: EmbeddedLLMStatus
       {status.devices.length > 0 ? (
         <p className="text-xs text-muted-foreground" data-testid="embedded-llm-devices">
           {status.devices
-            .map((d) => `${d.name} — ${formatMiB(d.free_mib)} free of ${formatMiB(d.total_mib)}`)
+            .map((d) => `${d.name} — ${formatMiB(d.total_mib)}`)
             .join(' · ')}
         </p>
       ) : (

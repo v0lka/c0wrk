@@ -9,9 +9,8 @@ import (
 	"strings"
 )
 
-// clipboardHelper returns the first available Wayland/X11 clipboard front-end:
-// "wl-paste" (Wayland) or "xclip" (X11). Returns "" when neither is installed,
-// in which case clipboard probes report "not present".
+// clipboardHelper returns the first available clipboard front-end ("wl-paste"
+// for Wayland, "xclip" for X11); "" means every probe reports "not present".
 func clipboardHelper() string {
 	if _, err := exec.LookPath("wl-paste"); err == nil {
 		return "wl-paste"
@@ -22,12 +21,9 @@ func clipboardHelper() string {
 	return ""
 }
 
-// runHelper runs a clipboard front-end with the given arguments and returns its
-// stdout. A non-zero exit (e.g. the requested MIME type is not on the
-// clipboard) is reported as errNoClipboardType so the caller treats it as
-// "not present" rather than a hard failure.
-var errNoClipboardType = errors.New("clipboard type not available")
-
+// runHelper runs a clipboard front-end and returns its stdout; a non-zero exit
+// (e.g. the requested MIME type is not on the clipboard) becomes
+// errNoClipboardType — "not present", not a hard failure.
 func runHelper(ctx context.Context, tool string, args ...string) ([]byte, error) {
 	out, err := exec.CommandContext(ctx, tool, args...).Output()
 	if err != nil {
@@ -36,9 +32,10 @@ func runHelper(ctx context.Context, tool string, args ...string) ([]byte, error)
 	return out, nil
 }
 
-// clipboardImage reads a PNG image from the clipboard. On Wayland it requests
-// "image/png"; on X11 it requests the same target via xclip. ok is true only
-// when image bytes are present.
+var errNoClipboardType = errors.New("clipboard type not available")
+
+// clipboardImage reads a PNG image from the clipboard ("image/png" via either
+// front-end); ok is true only when image bytes are present.
 func clipboardImage(ctx context.Context) (data []byte, mediaType string, ok bool, err error) {
 	tool := clipboardHelper()
 	if tool == "" {
@@ -60,9 +57,8 @@ func clipboardImage(ctx context.Context) (data []byte, mediaType string, ok bool
 	return out, "image/png", true, nil
 }
 
-// clipboardFiles reads file URIs from the clipboard (text/uri-list, or the
-// x-special/gnome-copied-files format used by GNOME/X11 file managers). ok is
-// true only when at least one file:// URI is present.
+// clipboardFiles reads file URIs from the clipboard (text/uri-list, or GNOME's
+// x-special/gnome-copied-files format); ok is true only with a file:// URI.
 func clipboardFiles(ctx context.Context) (paths []string, ok bool, err error) {
 	tool := clipboardHelper()
 	if tool == "" {

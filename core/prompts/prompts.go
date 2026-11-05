@@ -8,37 +8,28 @@ import _ "embed"
 //go:embed orchestrator_system.md
 var OrchestratorSystem string
 
-// OrchestratorSystemLite is the compact core directive used when the model-profile
-// SystemPrompt.Lite profile is active. It keeps only the ~6-8 most critical
-// directives (ReAct loop shape, tool priority, finish-is-mandatory,
-// brief-reasoning-before-action) and DROPS the verbose operational docs
-// (truncation internals, fact-memory mechanics, checklist/table mechanics,
-// progress-tracking internals) that an ModelProfiles cannot hold. It intentionally does
-// NOT carry injection-defense content — that is still injected separately via
-// InjectionDefense (strict constraint), so the lite directive is purely the
-// behavioral core. The {shell_tool} placeholder is resolved via
-// SubstituteShellTool at the call site.
+// OrchestratorSystemLite is the compact core directive swapped in when the
+// Model Profiles system_prompt Lite variant is active: the behavioral core
+// only, with no injection-defense content (injected separately, unchanged).
+// See specs/domains/model-profiles.md (Lite variant).
 //
 //go:embed orchestrator_lite.md
 var OrchestratorSystemLite string
 
-// OrchestratorLiteScaffold is the reasoning-scaffold block appended after
-// OrchestratorSystemLite when the model-profile SystemPrompt.ReasoningScaffold
-// sub-toggle is active. It directs a small model to structure its pre-action
-// reasoning into three short steps (goal, tool choice + rationale, exact
-// args) instead of emitting free-form, drifting thoughts. Extracted from the
-// lite directive so it can be turned on/off independently of the few-shot
-// examples.
+// OrchestratorLiteScaffold is the three-step reasoning scaffold (goal, tool
+// choice + rationale, exact args) appended after OrchestratorSystemLite under
+// the ReasoningScaffold sub-toggle, so a small model reasons in a fixed shape
+// instead of free-form drift.
+// See specs/domains/model-profiles.md (ReasoningScaffold).
 //
 //go:embed orchestrator_lite_scaffold.md
 var OrchestratorLiteScaffold string
 
-// OrchestratorLiteFewShot is the curated few-shot ReAct cycle block appended
-// after OrchestratorSystemLite when the model-profile SystemPrompt.FewShot
-// sub-toggle is active. It demonstrates the behaviors an ModelProfiles most often
-// violates: correct tool-call format (real tool_use, not printing syntax as
-// text), choosing between similar tools, recovering from a tool error by
-// retrying with corrected args, and calling finish when done.
+// OrchestratorLiteFewShot is the curated worked-example ReAct block appended
+// after OrchestratorSystemLite under the FewShot sub-toggle, demonstrating the
+// behaviors a small model most often violates (tool-call format, tool choice,
+// error recovery, finish).
+// See specs/domains/model-profiles.md (FewShot).
 //
 //go:embed orchestrator_lite_fewshot.md
 var OrchestratorLiteFewShot string
@@ -61,57 +52,42 @@ var GoalMode string
 //go:embed goal_derivation.md
 var GoalDerivation string
 
-// GoalDerivationLite is the compact counterpart of GoalDerivation used when the
-// model-profile SystemPrompt.Lite profile is active. It keeps only the derivation
-// essentials (investigate, derive a {condition, verify} pair, choose the
-// verification_mode, propose_goal) and drops the verbose worked guidance an ModelProfiles
-// cannot hold. Selected by buildSpecializedSystemPromptWithLite
-// (core/systemprompt.go).
+// GoalDerivationLite is the compact Lite counterpart of GoalDerivation,
+// selected by buildSpecializedSystemPromptWithLite for goal derivation runs.
+// See specs/domains/model-profiles.md (goal-agent Lite parity).
 //
 //go:embed goal_derivation_lite.md
 var GoalDerivationLite string
 
-// Goal verification — the directive for the isolated read-only/test agent that
-// independently confirms or rejects a "met" claim for a declared goal. Used by
-// the verification step that runs after an agent emits a "met" verdict via
-// declare_goal_status. The {goal_condition}, {goal_verify_clause}, and
-// {reported_evidence} placeholders are substituted by GoalVerificationSubstitute
-// from the active GoalState and the agent's reported evidence; the
-// {shell_tool} placeholder is resolved via SubstituteShellTool (delegated by
-// GoalVerificationSubstitute) so the directive names the platform-correct
-// shell-execution tool.
+// Goal verification — the directive for the isolated read-only verifier that
+// independently re-runs a goal's verify clause (executable mode) after the
+// agent declares "met". Placeholders are resolved by
+// GoalVerificationSubstitute.
+// See specs/domains/goal-mode.md (independent verification).
 
 //go:embed goal_verification.md
 var GoalVerification string
 
-// GoalVerificationLite is the compact counterpart of GoalVerification used when
-// the model-profile SystemPrompt.Lite profile is active. It carries the SAME
-// placeholder set as the verbose directive ({goal_condition},
-// {goal_verify_clause}, {reported_evidence}, {shell_tool}) resolved by
-// GoalVerificationSubstitute, so callers render it exactly like the verbose
-// directive. Selected by GoalVerificationLiteDirectiveByMode.
+// GoalVerificationLite is the compact Lite counterpart of GoalVerification;
+// the same placeholder set, selected by GoalVerificationLiteDirectiveByMode.
+// See specs/domains/model-profiles.md (goal-agent Lite parity).
 //
 //go:embed goal_verification_lite.md
 var GoalVerificationLite string
 
-// Goal re-derivation verification — the directive for the isolated agent that
-// verifies a "met" claim in re_derivation mode. Instead of running a single
-// verify clause, this verifier DELEGATES a fresh, read-only execution of the
-// goal's process and confirms only if that fresh run comes back clean. The
-// {goal_condition}, {goal_verify_clause}, and {reported_evidence} placeholders
-// are substituted by GoalVerificationSubstitute (the same placeholder set as
-// the executable directive — re-derivation reuses it), and {shell_tool} is
-// resolved via SubstituteShellTool. Used by defaultGoalVerifier when the goal's
-// VerificationMode is re_derivation; selection of this directive vs the
-// executable one by mode is centralized in GoalVerificationDirectiveByMode.
+// Goal re-derivation verification — the directive for the verifier that
+// settles a "met" claim by DELEGATING a fresh, read-only execution of the
+// goal's process and confirming only on a clean outcome (re_derivation mode).
+// Placeholders are resolved by GoalVerificationSubstitute; mode selection is
+// centralized in GoalVerificationDirectiveByMode.
+// See specs/domains/goal-mode.md (re_derivation mode).
 //
 //go:embed goal_rederivation.md
 var GoalReDerivation string
 
-// GoalReDerivationLite is the compact counterpart of GoalReDerivation used when
-// the model-profile SystemPrompt.Lite profile is active. It reuses the same
-// placeholder set as the verbose re-derivation directive and is selected by
-// GoalVerificationLiteDirectiveByMode.
+// GoalReDerivationLite is the compact Lite counterpart of GoalReDerivation,
+// selected by GoalVerificationLiteDirectiveByMode.
+// See specs/domains/model-profiles.md (goal-agent Lite parity).
 //
 //go:embed goal_rederivation_lite.md
 var GoalReDerivationLite string
@@ -168,14 +144,11 @@ var RouterSystem string
 var GoalSuggest string
 
 // Prompt-suggestion prompts (chat-input follow-up prompts; see
-// core/prompt_suggest.go and ADR-088). Both instruct the model to match the
-// dominant language of the supplied history and to answer with at most three
-// plain lines — one suggested prompt per line.
-//
-// PromptSuggestContinuation feeds goal_advance suggestions: keep driving an
-// active goal from the recent same-goal history. PromptSuggestNewSession
-// feeds next_task suggestions: the natural next task after a finished task,
-// from the recent project history.
+// core/prompt_suggest.go and specs/domains/prompt-suggestions.md). Both answer
+// in the supplied history's dominant language, at most three plain lines — one
+// suggestion per line. PromptSuggestContinuation feeds goal_advance (keep
+// driving the active goal); PromptSuggestNewSession feeds next_task (the
+// natural next task after a finished one).
 
 //go:embed prompt_suggest_continuation.md
 var PromptSuggestContinuation string
@@ -193,30 +166,25 @@ var VerificationMandate string
 //go:embed injection_defense.md
 var InjectionDefense string
 
-// E2S system directive — the compact core prompt for the E2S execution loop
-// (core/e2s). Defines the agent role, the e2s_step protocol (state_patch +
-// action), state discipline, acting/finishing rules. The loop's prompt
-// builder (core/e2s/prompt.go) appends the workspace, available-tools, and
-// active-skills sections around this directive.
+// E2S system directive — the compact core prompt for the E2S execution loop:
+// the e2s_step protocol, state discipline, acting/finishing rules; core/e2s's
+// prompt builder appends the surrounding sections around it.
+// See specs/domains/e2s.md.
 
 //go:embed e2s.md
 var E2SSystem string
 
-// E2S system directive, Lite variant — the Model Profiles prompt-swap
-// counterpart of E2SSystem (mirrors the OrchestratorSystemLite trade the
-// verbose orchestrator directive for a compact one). The orchestrator's E2S
-// integration selects it when the Model Profiles profile's SystemPrompt variant
-// is active; the surrounding sections (verification/injection directives,
-// workspace, tools, skills) are appended unchanged by the same
-// prompt builder.
+// E2SSystemLite is the Model Profiles Lite-swap counterpart of E2SSystem,
+// selected for the E2S core directive under the same profile gates; the
+// surrounding sections are appended unchanged.
+// See specs/domains/e2s.md (Model Profiles).
 
 //go:embed e2s-lite.md
 var E2SSystemLite string
 
-// Code review mode — injected into the system prompt when the user submitted
-// review feedback (ReviewModeKey). Directs the agent to treat the user's
-// message as actionable review comments and edit code to address them, so the
-// review loop (specs/domains/review.md) makes progress toward approval.
+// Code review mode — injected when the user submitted review feedback
+// (ReviewModeKey): treat the message as actionable review comments and edit
+// code to address them (specs/domains/review.md).
 
 //go:embed code_review_mode.md
 var CodeReviewMode string

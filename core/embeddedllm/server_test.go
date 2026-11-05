@@ -1571,7 +1571,7 @@ func TestForceUnloadReportsAStopThatDidNotTake(t *testing.T) {
 	// the owning Load explicitly, then join its own failure and gate release.
 	cancelLoad()
 	select {
-	case <-loadErr:
+	case <-loadErr: //nolint:errcheck // join: the payload is not the assertion
 	case <-time.After(10 * time.Second):
 		t.Fatal("the interrupted Load never returned")
 	}
@@ -4766,6 +4766,525 @@ func TestLoadReplansFromAFreshTopology(t *testing.T) {
 	}
 }
 
+// TestLoadRefusesAPinnedDeviceTheFreshProbeDoesNotReport is the fail-closed
+// launch contract: a device pin the fresh inventory cannot verify refuses the
+// load with the typed error — it never falls back to the recorded plan, which
+// predates the pin and would launch the shape the operator overruled.
+func TestLoadRefusesAPinnedDeviceTheFreshProbeDoesNotReport(t *testing.T) {
+	t.Parallel()
+
+	fresh := MemoryTopology{
+		Devices: []DeviceMemory{
+			{Name: "CUDA0", Description: "NVIDIA GeForce RTX 4090", TotalMiB: 24576, FreeMiB: 24576},
+		},
+		HostRAMGiB:        128,
+		Unified:           false,
+		DeviceBudgetBytes: 24576 * bytesPerMiB,
+		HostBudgetBytes:   112 * 1024 * bytesPerMiB,
+		ProbedAt:          testInstallInstant.Add(time.Hour).Format(time.RFC3339),
+	}
+	fx := memoryAwareFixture(t, fixtureOptions{
+		backend: BackendCUDA124,
+		probeDevices: func(context.Context, string, *slog.Logger) (MemoryTopology, bool) {
+			return fresh, true
+		},
+		tuning: func() Tuning { return Tuning{Devices: []string{"CUDA1"}} },
+	})
+
+	_, err := fx.srv.launchSpec(t.Context(), fx.manifest, fx.manifest.Port)
+	if !errors.Is(err, ErrUnknownDevice) {
+		t.Fatalf("launchSpec error = %v, want it to wrap ErrUnknownDevice", err)
+	}
+	var typed *UnknownDeviceError
+	if !errors.As(err, &typed) {
+		t.Fatalf("error %v is not an *UnknownDeviceError", err)
+	}
+	if typed.Device != "CUDA1" {
+		t.Errorf("typed device = %q, want CUDA1", typed.Device)
+	}
+	if !slices.Equal(typed.Inventory, []string{"CUDA0"}) {
+		t.Errorf("typed inventory = %v, want [CUDA0]", typed.Inventory)
+	}
+}
+
+// TestLoadRefusesAPinnedDeviceWithoutAProbe covers the two unverifiable shapes:
+// the probe seam not wired at all, and a probe that answers nothing. Neither
+// can verify the pin, so both refuse instead of launching a shape that ignores
+// it — while a plan with NO pin keeps the fail-soft recorded-plan fallback.
+func TestLoadRefusesAPinnedDeviceWithoutAProbe(t *testing.T) {
+	t.Parallel()
+
+	for name, opts := range map[string]fixtureOptions{
+		"unwired probe": {backend: BackendCUDA124},
+		"wedged probe": {
+			backend: BackendCUDA124,
+			probeDevices: func(context.Context, string, *slog.Logger) (MemoryTopology, bool) {
+				return MemoryTopology{}, false
+			},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			opts.tuning = func() Tuning { return Tuning{Devices: []string{"CUDA0"}} }
+			fx := memoryAwareFixture(t, opts)
+			_, err := fx.srv.launchSpec(t.Context(), fx.manifest, fx.manifest.Port)
+			if !errors.Is(err, ErrUnknownDevice) {
+				t.Fatalf("launchSpec error = %v, want ErrUnknownDevice", err)
+			}
+			// The refusal must say WHY nothing could verify the pin, matching
+			// the branch: the bare "no inventory" fact alone would read as a
+			// broken machine rather than an unwired (or wedged) probe.
+			wantReason := map[string]string{
+				"unwired probe": "no device probe is wired in to re-plan it",
+				"wedged probe":  "the load-time device probe did not answer, so it cannot be re-planned",
+			}[name]
+			msg := err.Error()
+			if !strings.Contains(msg, wantReason) {
+				t.Errorf("error message %q does not name the refusal reason %q", msg, wantReason)
+			}
+			// unmetPinError's typed error carries no recorded inventory — the
+			// manifest's stagedTopology is not what failed to verify the pin,
+			// since no probe ran against it — so the never-probed wording
+			// stands beside the reason, with no MTL0 inventory and no stamp.
+			if !strings.Contains(msg, "no device inventory was measured") {
+				t.Errorf("error message %q does not say no inventory was measured", msg)
+			}
+		})
+	}
+}
+
+// TestLoadHonoursAPinnedDeviceWhenTheProbeConfirmsIt is the happy path: a pin
+// the fresh inventory confirms rides the re-plan, the launch carries the pin,
+// and the manifest records the refinement.
+func TestLoadHonoursAPinnedDeviceWhenTheProbeConfirmsIt(t *testing.T) {
+	t.Parallel()
+
+	fresh := MemoryTopology{
+		Devices: []DeviceMemory{
+			{Name: "CUDA0", Description: "NVIDIA GeForce RTX 4090", TotalMiB: 24576, FreeMiB: 24576},
+		},
+		HostRAMGiB:        128,
+		Unified:           false,
+		DeviceBudgetBytes: 24576 * bytesPerMiB,
+		HostBudgetBytes:   112 * 1024 * bytesPerMiB,
+		ProbedAt:          testInstallInstant.Add(time.Hour).Format(time.RFC3339),
+	}
+	fx := memoryAwareFixture(t, fixtureOptions{
+		backend: BackendCUDA124,
+		probeDevices: func(context.Context, string, *slog.Logger) (MemoryTopology, bool) {
+			return fresh, true
+		},
+		tuning: func() Tuning { return Tuning{Devices: []string{"CUDA0"}, SplitMode: SplitModeRow} },
+	})
+
+	launch, err := fx.srv.launchSpec(t.Context(), fx.manifest, fx.manifest.Port)
+	if err != nil {
+		t.Fatalf("launchSpec: %v", err)
+	}
+	if !slices.Equal(launch.Spec.Devices, []string{"CUDA0"}) {
+		t.Errorf("launch devices = %v, want [CUDA0]", launch.Spec.Devices)
+	}
+	// The split half of the pin rides the same re-plan into the argv — the
+	// pin→argv translation has no other end-to-end driver.
+	if launch.Plan.SplitMode != SplitModeRow {
+		t.Errorf("applied plan split mode = %q, want row", launch.Plan.SplitMode)
+	}
+	requireArgs(t, launch.Spec.Args(), "-sm", "row")
+	if launch.Plan == nil || !slices.Equal(launch.Plan.Devices, []string{"CUDA0"}) {
+		t.Errorf("applied plan devices = %v, want [CUDA0]", launch.Plan)
+	}
+	if notes := strings.Join(launch.Plan.Notes, "\n"); !strings.Contains(notes, "--device") {
+		t.Errorf("plan notes = %v, want one naming the device pin", launch.Plan.Notes)
+	}
+}
+
+// TestLoadHonoursTheEntryPinWhenTheTuningIsClearedMidProbe pins the one-read
+// launch contract: the operator's tuning is read once, at launchSpec's entry,
+// and that snapshot threads through the probe into the re-plan. A tuning
+// saved while the (bounded) probe subprocess is in flight — here, an edit
+// that clears the pin — therefore applies to the NEXT launch, and the pin
+// present at entry is honored for this one: the dangerous direction (an entry
+// pin silently dropped from the priced plan — no refusal, no note) cannot
+// happen.
+func TestLoadHonoursTheEntryPinWhenTheTuningIsClearedMidProbe(t *testing.T) {
+	t.Parallel()
+
+	fresh := MemoryTopology{
+		Devices: []DeviceMemory{
+			{Name: "CUDA0", Description: "NVIDIA GeForce RTX 4090", TotalMiB: 24576, FreeMiB: 24576},
+		},
+		HostRAMGiB:        128,
+		Unified:           false,
+		DeviceBudgetBytes: 24576 * bytesPerMiB,
+		HostBudgetBytes:   112 * 1024 * bytesPerMiB,
+		ProbedAt:          testInstallInstant.Add(time.Hour).Format(time.RFC3339),
+	}
+	edited := false
+	fx := memoryAwareFixture(t, fixtureOptions{
+		backend: BackendCUDA124,
+		probeDevices: func(context.Context, string, *slog.Logger) (MemoryTopology, bool) {
+			// The operator saves a pinless tuning while the probe subprocess
+			// is in flight — after launchSpec's entry read, before the
+			// re-plan. (The closures run sequentially inside one launchSpec
+			// call, so a plain flag cannot race.)
+			edited = true
+			return fresh, true
+		},
+		tuning: func() Tuning {
+			if edited {
+				return Tuning{}
+			}
+			return Tuning{Devices: []string{"CUDA0"}, SplitMode: SplitModeRow}
+		},
+	})
+
+	launch, err := fx.srv.launchSpec(t.Context(), fx.manifest, fx.manifest.Port)
+	if err != nil {
+		t.Fatalf("launchSpec: %v", err)
+	}
+	// The ENTRY pin rides the re-plan into the argv, mid-probe edit or not.
+	if !slices.Equal(launch.Spec.Devices, []string{"CUDA0"}) {
+		t.Errorf("launch devices = %v, want the entry pin [CUDA0], not the mid-probe pinless tuning", launch.Spec.Devices)
+	}
+	if launch.Plan.SplitMode != SplitModeRow {
+		t.Errorf("applied plan split mode = %q, want row (the entry pin's split half)", launch.Plan.SplitMode)
+	}
+	requireArgs(t, launch.Spec.Args(), "-sm", "row")
+}
+
+// TestLoadPricesTheEntryTuningWhenAPinAppearsMidProbe is the mirror direction
+// of the one-read contract: a pin that APPEARS while the probe is in flight
+// was not present at entry, so this launch is priced from the pinless entry
+// snapshot and the mid-probe pin applies to the next launch — an edit can
+// neither drop nor inject itself into a launch already in flight.
+func TestLoadPricesTheEntryTuningWhenAPinAppearsMidProbe(t *testing.T) {
+	t.Parallel()
+
+	fresh := MemoryTopology{
+		Devices: []DeviceMemory{
+			{Name: "CUDA0", Description: "NVIDIA GeForce RTX 4090", TotalMiB: 24576, FreeMiB: 24576},
+			{Name: "CUDA1", Description: "NVIDIA GeForce RTX 4090", TotalMiB: 24576, FreeMiB: 24576},
+		},
+		HostRAMGiB:        128,
+		Unified:           false,
+		DeviceBudgetBytes: 2 * 24576 * bytesPerMiB,
+		HostBudgetBytes:   112 * 1024 * bytesPerMiB,
+		ProbedAt:          testInstallInstant.Add(time.Hour).Format(time.RFC3339),
+	}
+	edited := false
+	fx := memoryAwareFixture(t, fixtureOptions{
+		backend: BackendCUDA124,
+		probeDevices: func(context.Context, string, *slog.Logger) (MemoryTopology, bool) {
+			// The operator pins CUDA0 while the probe subprocess is in
+			// flight — after launchSpec's entry read, before the re-plan.
+			edited = true
+			return fresh, true
+		},
+		tuning: func() Tuning {
+			if edited {
+				return Tuning{Devices: []string{"CUDA0"}}
+			}
+			return Tuning{}
+		},
+	})
+
+	launch, err := fx.srv.launchSpec(t.Context(), fx.manifest, fx.manifest.Port)
+	if err != nil {
+		t.Fatalf("launchSpec: %v", err)
+	}
+	// The plan is priced from the ENTRY snapshot (pinless): a pinless plan
+	// records no device narrowing at all — it would record [CUDA0] had the
+	// mid-probe pin been applied to this launch.
+	if len(launch.Plan.Devices) != 0 {
+		t.Errorf("applied plan devices = %v, want none — priced from the pinless entry snapshot, not the mid-probe pin [CUDA0]", launch.Plan.Devices)
+	}
+	if len(launch.Spec.Devices) != 0 {
+		t.Errorf("launch devices = %v, want none — the mid-probe pin [CUDA0] must not narrow this launch", launch.Spec.Devices)
+	}
+	if launch.Plan.SplitMode != SplitModeAuto {
+		t.Errorf("applied plan split mode = %q, want auto — the entry snapshot has no split pin", launch.Plan.SplitMode)
+	}
+}
+
+// TestLoadFallsBackToARecordedPlanThatCarriesThePin is the coherence half of
+// the wedged-probe contract: a driver query that answers nothing may still
+// launch the recorded plan WHEN that plan itself carries the same device pin —
+// it is the shape a previous load already launched on this machine — while a
+// plan without the pin is refused (see TestLoadRefusesAPinnedDeviceWithoutAProbe).
+func TestLoadFallsBackToARecordedPlanThatCarriesThePin(t *testing.T) {
+	t.Parallel()
+
+	pinned := stagedPlan()
+	pinned.Devices = []string{"CUDA0"}
+	topology := stagedTopology()
+	fx := newFixture(t, fixtureOptions{
+		backend:     BackendCUDA124,
+		plan:        &pinned,
+		topology:    &topology,
+		contextSize: pinned.ContextSize,
+		probeDevices: func(context.Context, string, *slog.Logger) (MemoryTopology, bool) {
+			return MemoryTopology{}, false
+		},
+		tuning: func() Tuning { return Tuning{Devices: []string{"CUDA0"}} },
+	})
+
+	launch, err := fx.srv.launchSpec(t.Context(), fx.manifest, fx.manifest.Port)
+	if err != nil {
+		t.Fatalf("launchSpec: %v", err)
+	}
+	if !slices.Equal(launch.Spec.Devices, []string{"CUDA0"}) {
+		t.Errorf("launch devices = %v, want the recorded plan's [CUDA0]", launch.Spec.Devices)
+	}
+	if launch.Refreshed {
+		t.Error("a wedged probe produced a refresh, want the recorded plan reused verbatim")
+	}
+}
+
+// TestLoadRefusesASplitModeOnlyPinWithoutAProbe covers the split-mode-only
+// quadrant of the pin contract: split_mode alone is a pin, so the unwired and
+// wedged probe paths refuse it exactly like an unverifiable device pin —
+// naming split_mode, never a device word.
+func TestLoadRefusesASplitModeOnlyPinWithoutAProbe(t *testing.T) {
+	t.Parallel()
+
+	splitPin := func() Tuning { return Tuning{SplitMode: SplitModeRow} }
+	for name, opts := range map[string]fixtureOptions{
+		"unwired probe": {backend: BackendCUDA124, tuning: splitPin},
+		"wedged probe": {
+			backend: BackendCUDA124,
+			tuning:  splitPin,
+			probeDevices: func(context.Context, string, *slog.Logger) (MemoryTopology, bool) {
+				return MemoryTopology{}, false
+			},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			fx := memoryAwareFixture(t, opts)
+			_, err := fx.srv.launchSpec(t.Context(), fx.manifest, fx.manifest.Port)
+			if err == nil {
+				t.Fatal("launchSpec launched the recorded plan without the pinned split, want a refusal")
+			}
+			if errors.Is(err, ErrUnknownDevice) {
+				t.Errorf("refusal error = %v, want a split-worded error, not a device one", err)
+			}
+			if msg := err.Error(); !strings.Contains(msg, "split_mode") {
+				t.Errorf("error message %q does not name the unmet split_mode pin", msg)
+			}
+		})
+	}
+}
+
+// TestLoadRefusesASplitPinTheRecordedPlanLacks is the SplitMode half of the
+// carries gate: the recorded plan carries the pinned devices but an older
+// split, so the coherence check fails on the split clause alone — a wedged
+// probe must refuse rather than fall back to the shape with the wrong split.
+func TestLoadRefusesASplitPinTheRecordedPlanLacks(t *testing.T) {
+	t.Parallel()
+
+	pinned := stagedPlan()
+	pinned.Devices = []string{"CUDA0"}
+	topology := stagedTopology()
+	fx := newFixture(t, fixtureOptions{
+		backend:     BackendCUDA124,
+		plan:        &pinned,
+		topology:    &topology,
+		contextSize: pinned.ContextSize,
+		probeDevices: func(context.Context, string, *slog.Logger) (MemoryTopology, bool) {
+			return MemoryTopology{}, false
+		},
+		tuning: func() Tuning { return Tuning{Devices: []string{"CUDA0"}, SplitMode: SplitModeRow} },
+	})
+
+	_, err := fx.srv.launchSpec(t.Context(), fx.manifest, fx.manifest.Port)
+	if err == nil {
+		t.Fatal("launchSpec launched a recorded plan whose split mode differs from the operator's pin, want a refusal")
+	}
+	if errors.Is(err, ErrUnknownDevice) {
+		t.Errorf("refusal error = %v, want it to name split_mode, not a device word", err)
+	}
+	if msg := err.Error(); !strings.Contains(msg, "split_mode") {
+		t.Errorf("error message %q does not name the unmet split_mode pin", msg)
+	}
+}
+
+// TestUnmetPinErrorNamesADeviceTheRecordedPlanLacks pins the typed branch's
+// subject choice: with a recorded plan, the refusal names the first pinned
+// device the plan genuinely lacks — not blindly the pin's own head, which in
+// a superset case is a device the plan carries under a different order
+// (naming it would read as the plan lacking a device it holds). An
+// ordering-only divergence is not typed at all — its own wording is pinned by
+// TestUnmetPinErrorWordsAnOrderingOnlyDivergenceAsOne. (With NO recorded
+// plan a devices-only pin is typed as well — nothing recorded carries
+// anything, so the pin's own head is quoted; a pin reaches the plain
+// split-worded branch only when the operator actually pinned a split.)
+func TestUnmetPinErrorNamesADeviceTheRecordedPlanLacks(t *testing.T) {
+	t.Parallel()
+
+	const why = "no device probe is wired in to re-plan it"
+	stored := &MemoryPlan{Devices: []string{"CUDA1", "CUDA2"}}
+
+	err := unmetPinError(Tuning{Devices: []string{"CUDA0", "CUDA1"}}, stored, why)
+	var typed *UnknownDeviceError
+	if !errors.As(err, &typed) {
+		t.Fatalf("error %v is not an *UnknownDeviceError", err)
+	}
+	if typed.Device != "CUDA0" {
+		t.Errorf("named device = %q, want CUDA0 — the first pin device the recorded plan genuinely lacks", typed.Device)
+	}
+	if typed.Why != why {
+		t.Errorf("typed why = %q, want %q", typed.Why, why)
+	}
+
+	// With NO recorded plan a devices-only pin is typed too: nothing recorded
+	// carries anything, so the pin's own head is quoted — and the refusal
+	// never claims a split the operator never pinned.
+	err = unmetPinError(Tuning{Devices: []string{"CUDA0"}}, nil, why)
+	typed = nil
+	if !errors.As(err, &typed) {
+		t.Fatalf("error %v is not an *UnknownDeviceError", err)
+	}
+	if typed.Device != "CUDA0" {
+		t.Errorf("named device = %q, want CUDA0 — the pin's own head with no recorded plan", typed.Device)
+	}
+	if typed.Why != why {
+		t.Errorf("typed why = %q, want %q", typed.Why, why)
+	}
+
+	// A split-mode-only pin with no recorded plan renders the plain branch,
+	// worded by the one field actually unmet — never a device word.
+	err = unmetPinError(Tuning{SplitMode: SplitModeRow}, nil, why)
+	var typedAgain *UnknownDeviceError
+	if errors.As(err, &typedAgain) {
+		t.Fatalf("a split-only pin with no recorded plan produced a typed device error %v, want a split-worded one", err)
+	}
+	if msg := err.Error(); !strings.Contains(msg, "(split_mode unmet)") {
+		t.Errorf("error message %q does not name exactly the unmet split_mode pin", msg)
+	}
+}
+
+// TestUnmetPinErrorWordsAnOrderingOnlyDivergenceAsOne pins the ordering-only
+// refusal: a pin carrying exactly the recorded devices in a different order is
+// a real mismatch — -dev order is the main-GPU preference — but NOT an unknown
+// device, so the refusal says so in plain words instead of the typed error's
+// could-not-be-verified lead.
+func TestUnmetPinErrorWordsAnOrderingOnlyDivergenceAsOne(t *testing.T) {
+	t.Parallel()
+
+	const why = "the load-time device probe did not answer, so it cannot be re-planned"
+	stored := &MemoryPlan{Devices: []string{"CUDA0", "CUDA1"}}
+
+	err := unmetPinError(Tuning{Devices: []string{"CUDA1", "CUDA0"}}, stored, why)
+	var typed *UnknownDeviceError
+	if errors.As(err, &typed) {
+		t.Fatalf("an ordering-only divergence produced the typed unknown-device error %v, want plain wording", err)
+	}
+	if errors.Is(err, ErrUnknownDevice) {
+		t.Errorf("error %v wraps ErrUnknownDevice — the devices are all known, only reordered", err)
+	}
+	msg := err.Error()
+	for _, want := range []string{
+		"different order",
+		"recorded CUDA0, CUDA1, pinned CUDA1, CUDA0",
+		"-dev order is the main-GPU preference",
+		why,
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error message %q does not contain %q", msg, want)
+		}
+	}
+
+	// The same names in the SAME order carry the pin — no divergence, no
+	// refusal here; and a list that differs in membership is a genuine
+	// unknown-device mismatch, still typed.
+	err = unmetPinError(Tuning{Devices: []string{"CUDA1", "CUDA0", "CUDA0"}}, stored, why)
+	typed = nil
+	if !errors.As(err, &typed) {
+		t.Errorf("a duplicate-name pin %v is not an ordering-only divergence; error %v should stay typed", Tuning{Devices: []string{"CUDA1", "CUDA0", "CUDA0"}}, err)
+	}
+}
+
+// TestLoadRefusesAnOrderingOnlyDevicePin pins the end-to-end ordering
+// refusal: a wedged probe plus a pin that reorders the recorded plan's
+// devices refuses the load with the ordering wording — never the typed
+// unknown-device error, and never a silent launch on the recorded order.
+func TestLoadRefusesAnOrderingOnlyDevicePin(t *testing.T) {
+	t.Parallel()
+
+	plan := stagedPlan()
+	plan.Devices = []string{"CUDA0", "CUDA1"}
+	topology := stagedTopology()
+	fx := newFixture(t, fixtureOptions{
+		backend:     BackendCUDA124,
+		contextSize: plan.ContextSize,
+		plan:        &plan,
+		topology:    &topology,
+		probeDevices: func(context.Context, string, *slog.Logger) (MemoryTopology, bool) {
+			return MemoryTopology{}, false
+		},
+		tuning: func() Tuning { return Tuning{Devices: []string{"CUDA1", "CUDA0"}} },
+	})
+
+	_, err := fx.srv.launchSpec(t.Context(), fx.manifest, fx.manifest.Port)
+	if err == nil {
+		t.Fatal("launchSpec launched the recorded order while the operator pinned the reverse, want a refusal")
+	}
+	var typed *UnknownDeviceError
+	if errors.As(err, &typed) {
+		t.Fatalf("refusal %v is the typed unknown-device error, want the ordering wording", err)
+	}
+	if msg := err.Error(); !strings.Contains(msg, "different order") {
+		t.Errorf("error message %q does not name the ordering divergence", msg)
+	}
+}
+
+// TestLoadReplanFailureSurfacesTheRealError: with the probe answered and the
+// recorded plan not carrying the pin, a re-plan that fails for a non-device
+// reason surfaces the planner's own error — a synthesized UnknownDeviceError
+// would send the operator re-probing a healthy machine.
+func TestLoadReplanFailureSurfacesTheRealError(t *testing.T) {
+	t.Parallel()
+
+	fresh := MemoryTopology{
+		Devices: []DeviceMemory{
+			{Name: "CUDA0", Description: "NVIDIA GeForce RTX 4090", TotalMiB: 24576, FreeMiB: 24576},
+		},
+		HostRAMGiB:        128,
+		Unified:           false,
+		DeviceBudgetBytes: 24576 * bytesPerMiB,
+		HostBudgetBytes:   112 * 1024 * bytesPerMiB,
+		ProbedAt:          testInstallInstant.Add(time.Hour).Format(time.RFC3339),
+	}
+	// An exact context below 1 is a non-device planner refusal (ErrTuningInvalid),
+	// isolating the real-error branch from the device-mismatch one.
+	badContext := ContextTuning{Mode: ContextExact, Tokens: -1}
+	for name, tuning := range map[string]Tuning{
+		"a device pin":          {Devices: []string{"CUDA0"}, Context: badContext},
+		"a split-mode-only pin": {SplitMode: SplitModeRow, Context: badContext},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			fx := memoryAwareFixture(t, fixtureOptions{
+				backend: BackendCUDA124,
+				probeDevices: func(context.Context, string, *slog.Logger) (MemoryTopology, bool) {
+					return fresh, true
+				},
+				tuning: func() Tuning { return tuning },
+			})
+			_, err := fx.srv.launchSpec(t.Context(), fx.manifest, fx.manifest.Port)
+			if !errors.Is(err, ErrTuningInvalid) {
+				t.Fatalf("launchSpec error = %v, want the planner's ErrTuningInvalid", err)
+			}
+			if errors.Is(err, ErrUnknownDevice) {
+				t.Errorf("refusal error = %v, want the real planner error, not a synthesized device one", err)
+			}
+		})
+	}
+}
+
 // TestLoadReplanPinsTheInstalledPacking is the one input a load-time re-plan
 // must not be allowed to re-decide. `Plan` derives a packing from the backend
 // and GPU family whenever the tuning leaves it unset, and the operator's tuning
@@ -4936,7 +5455,11 @@ func TestLoadKeepsTheRecordedContextWhenTheReadbackFails(t *testing.T) {
 
 // TestLoadDoesNotRewriteTheRecordWhenNothingChanged keeps a steady machine
 // cheap: a readback that agrees with the record and a probe nobody wired produce
-// no manifest write and no config write on every cold start.
+// no manifest write and no mtime churn on every cold start. The config seam
+// still hears the readback: core cannot see the config override, so it cannot
+// know that the value already agrees — the reconciliation call is how a
+// drifted llm.models override heals, and in production it is an idempotent
+// no-op when the values agree (SyncEmbeddedLLMProvider reports no change).
 func TestLoadDoesNotRewriteTheRecordWhenNothingChanged(t *testing.T) {
 	t.Parallel()
 
@@ -4952,8 +5475,8 @@ func TestLoadDoesNotRewriteTheRecordWhenNothingChanged(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 
-	if got := fx.persistedContexts(); len(got) != 0 {
-		t.Errorf("an unchanged context was persisted: %v", got)
+	if got := fx.persistedContexts(); len(got) != 1 || got[0] != before.ContextSize {
+		t.Errorf("PersistContext calls = %v, want exactly [%d]", got, before.ContextSize)
 	}
 	after := fx.diskManifest(t)
 	if !reflect.DeepEqual(after, before) {

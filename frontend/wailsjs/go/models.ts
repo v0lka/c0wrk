@@ -1,5 +1,29 @@
 export namespace backend {
 	
+	export class ADRMetaDTO {
+	    number: string;
+	    slug: string;
+	    file: string;
+	    title?: string;
+	    status: string;
+	    superseded_by?: string;
+	    date?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ADRMetaDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.number = source["number"];
+	        this.slug = source["slug"];
+	        this.file = source["file"];
+	        this.title = source["title"];
+	        this.status = source["status"];
+	        this.superseded_by = source["superseded_by"];
+	        this.date = source["date"];
+	    }
+	}
 	export class AgentDescriptorDTO {
 	    name: string;
 	    description: string;
@@ -541,6 +565,18 @@ export namespace backend {
 	        this.respect_aiignore = source["respect_aiignore"];
 	    }
 	}
+	export class SidebarPackSettingsResponse {
+	    enabled: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new SidebarPackSettingsResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	    }
+	}
 	export class PromptSuggestionsSettingsResponse {
 	    enabled: boolean;
 	
@@ -629,6 +665,8 @@ export namespace backend {
 	    experimental: ExperimentalSettingsResponse;
 	    model_profiles: ModelProfilesSettingsResponse;
 	    prompt_suggestions: PromptSuggestionsSettingsResponse;
+	    research: SidebarPackSettingsResponse;
+	    specs: SidebarPackSettingsResponse;
 	    vector_index: VectorIndexSettingsResponse;
 	
 	    static createFrom(source: any = {}) {
@@ -646,6 +684,8 @@ export namespace backend {
 	        this.experimental = this.convertValues(source["experimental"], ExperimentalSettingsResponse);
 	        this.model_profiles = this.convertValues(source["model_profiles"], ModelProfilesSettingsResponse);
 	        this.prompt_suggestions = this.convertValues(source["prompt_suggestions"], PromptSuggestionsSettingsResponse);
+	        this.research = this.convertValues(source["research"], SidebarPackSettingsResponse);
+	        this.specs = this.convertValues(source["specs"], SidebarPackSettingsResponse);
 	        this.vector_index = this.convertValues(source["vector_index"], VectorIndexSettingsResponse);
 	    }
 	
@@ -825,6 +865,8 @@ export namespace backend {
 	    mmproj_offload: boolean;
 	    parallel: number;
 	    cache_ram_mib: number;
+	    devices: string[];
+	    split_mode: string;
 	    gpu_family: string;
 	    device_budget_mib: number;
 	    host_budget_mib: number;
@@ -852,6 +894,8 @@ export namespace backend {
 	        this.mmproj_offload = source["mmproj_offload"];
 	        this.parallel = source["parallel"];
 	        this.cache_ram_mib = source["cache_ram_mib"];
+	        this.devices = source["devices"];
+	        this.split_mode = source["split_mode"];
 	        this.gpu_family = source["gpu_family"];
 	        this.device_budget_mib = source["device_budget_mib"];
 	        this.host_budget_mib = source["host_budget_mib"];
@@ -981,6 +1025,8 @@ export namespace backend {
 	    parallel?: number;
 	    cache_ram_mib?: number;
 	    host_reserve_gib?: number;
+	    devices: string[];
+	    split_mode?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new EmbeddedLLMTuningDTO(source);
@@ -1000,6 +1046,8 @@ export namespace backend {
 	        this.parallel = source["parallel"];
 	        this.cache_ram_mib = source["cache_ram_mib"];
 	        this.host_reserve_gib = source["host_reserve_gib"];
+	        this.devices = source["devices"];
+	        this.split_mode = source["split_mode"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -1034,6 +1082,8 @@ export namespace backend {
 	    parallel?: number;
 	    cache_ram_mib?: number;
 	    host_reserve_gib?: number;
+	    devices: string[];
+	    split_mode?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new EmbeddedLLMTuningRequest(source);
@@ -1054,6 +1104,8 @@ export namespace backend {
 	        this.parallel = source["parallel"];
 	        this.cache_ram_mib = source["cache_ram_mib"];
 	        this.host_reserve_gib = source["host_reserve_gib"];
+	        this.devices = source["devices"];
+	        this.split_mode = source["split_mode"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -2220,6 +2272,7 @@ export namespace backend {
 	    root?: research.ResearchRoot;
 	    pinned_research: string[];
 	    pinned_hypotheses: Record<string, Array<string>>;
+	    legacy_research_roots: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new ResearchStatusDTO(source);
@@ -2233,6 +2286,7 @@ export namespace backend {
 	        this.root = this.convertValues(source["root"], research.ResearchRoot);
 	        this.pinned_research = source["pinned_research"];
 	        this.pinned_hypotheses = source["pinned_hypotheses"];
+	        this.legacy_research_roots = source["legacy_research_roots"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -2478,6 +2532,7 @@ export namespace backend {
 	
 	
 	
+	
 	export class SkillDescriptorDTO {
 	    name: string;
 	    description: string;
@@ -2491,6 +2546,66 @@ export namespace backend {
 	        this.name = source["name"];
 	        this.description = source["description"];
 	    }
+	}
+	export class SpecsCountsDTO {
+	    files: number;
+	    adrs: number;
+	    findings: number;
+	    findings_by_kind: Record<string, number>;
+	
+	    static createFrom(source: any = {}) {
+	        return new SpecsCountsDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.files = source["files"];
+	        this.adrs = source["adrs"];
+	        this.findings = source["findings"];
+	        this.findings_by_kind = source["findings_by_kind"];
+	    }
+	}
+	export class SpecsStatusDTO {
+	    present: boolean;
+	    root: string;
+	    files: specs.SpecFile[];
+	    index_tasks: specs.IndexTask[];
+	    adrs: ADRMetaDTO[];
+	    findings: specs.Finding[];
+	    counts: SpecsCountsDTO;
+	
+	    static createFrom(source: any = {}) {
+	        return new SpecsStatusDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.present = source["present"];
+	        this.root = source["root"];
+	        this.files = this.convertValues(source["files"], specs.SpecFile);
+	        this.index_tasks = this.convertValues(source["index_tasks"], specs.IndexTask);
+	        this.adrs = this.convertValues(source["adrs"], ADRMetaDTO);
+	        this.findings = this.convertValues(source["findings"], specs.Finding);
+	        this.counts = this.convertValues(source["counts"], SpecsCountsDTO);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class SystemFontsResponse {
 	    ui_family: string;
@@ -2647,6 +2762,7 @@ export namespace backend {
 	    cuda_verified?: boolean;
 	    ov_device?: string;
 	    provider_fallback_reason?: string;
+	    store?: vectorindex.StoreLedger;
 	    device_id?: number;
 	
 	    static createFrom(source: any = {}) {
@@ -2668,8 +2784,27 @@ export namespace backend {
 	        this.cuda_verified = source["cuda_verified"];
 	        this.ov_device = source["ov_device"];
 	        this.provider_fallback_reason = source["provider_fallback_reason"];
+	        this.store = this.convertValues(source["store"], vectorindex.StoreLedger);
 	        this.device_id = source["device_id"];
 	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class VectorStoreEntry {
 	    file_path: string;
@@ -3886,6 +4021,61 @@ export namespace session {
 
 }
 
+export namespace specs {
+	
+	export class Finding {
+	    kind: string;
+	    file: string;
+	    detail: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Finding(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.kind = source["kind"];
+	        this.file = source["file"];
+	        this.detail = source["detail"];
+	    }
+	}
+	export class IndexTask {
+	    task: string;
+	    specs?: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new IndexTask(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.task = source["task"];
+	        this.specs = source["specs"];
+	    }
+	}
+	export class SpecFile {
+	    path: string;
+	    section?: string;
+	    title?: string;
+	    key_files?: string[];
+	    cross_refs?: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new SpecFile(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.section = source["section"];
+	        this.title = source["title"];
+	        this.key_files = source["key_files"];
+	        this.cross_refs = source["cross_refs"];
+	    }
+	}
+
+}
+
 export namespace tools {
 	
 	export class AskUserOption {
@@ -3939,6 +4129,45 @@ export namespace tools {
 		    }
 		    return a;
 		}
+	}
+
+}
+
+export namespace vectorindex {
+	
+	export class StoreLedger {
+	    generation: number;
+	    chunk_records: number;
+	    chunk_bytes: number;
+	    chunk_orphans: number;
+	    snapshot_bytes: Record<string, number>;
+	    overlay_bytes: Record<string, number>;
+	    snapshots: number;
+	    overlays: number;
+	    superseded_bytes: number;
+	    total_bytes: number;
+	    evicted_last_pass: number;
+	    updated_at: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new StoreLedger(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.generation = source["generation"];
+	        this.chunk_records = source["chunk_records"];
+	        this.chunk_bytes = source["chunk_bytes"];
+	        this.chunk_orphans = source["chunk_orphans"];
+	        this.snapshot_bytes = source["snapshot_bytes"];
+	        this.overlay_bytes = source["overlay_bytes"];
+	        this.snapshots = source["snapshots"];
+	        this.overlays = source["overlays"];
+	        this.superseded_bytes = source["superseded_bytes"];
+	        this.total_bytes = source["total_bytes"];
+	        this.evicted_last_pass = source["evicted_last_pass"];
+	        this.updated_at = source["updated_at"];
+	    }
 	}
 
 }

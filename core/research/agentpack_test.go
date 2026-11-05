@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/v0lka/c0wrk/core/seedpack"
 	"github.com/v0lka/sp4rk/agents"
 )
 
@@ -41,8 +42,8 @@ func TestSeedAgents_EmbedsResearchProfile(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "AGENT.md")); err != nil {
 		t.Errorf("research/AGENT.md missing: %v", err)
 	}
-	if ok, v := readSeedVersion(dir); !ok {
-		t.Errorf("research: missing %s marker", seedVersionFile)
+	if ok, v := seedpack.ReadVersion(dir); !ok {
+		t.Errorf("research: missing %s marker", seedpack.VersionFile)
 	} else if v != AgentSeedVersion {
 		t.Errorf("research: marker version %q, want %q", v, AgentSeedVersion)
 	}
@@ -159,8 +160,8 @@ func TestSeedAgents_PreservesUserOwnedProfile(t *testing.T) {
 	if !bytes.Equal(got, userAGENT) {
 		t.Errorf("user-owned profile was clobbered:\ngot:\n%s\nwant:\n%s", got, userAGENT)
 	}
-	if _, err := os.Stat(filepath.Join(userDir, seedVersionFile)); !os.IsNotExist(err) {
-		t.Errorf("user-owned dir should not gain a %s marker", seedVersionFile)
+	if _, err := os.Stat(filepath.Join(userDir, seedpack.VersionFile)); !os.IsNotExist(err) {
+		t.Errorf("user-owned dir should not gain a %s marker", seedpack.VersionFile)
 	}
 }
 
@@ -176,7 +177,7 @@ func TestSeedAgents_OverwritesOnVersionBump(t *testing.T) {
 
 	// Backdate the marker to an older version and inject a stale file.
 	dir := filepath.Join(dest, "research")
-	if err := os.WriteFile(filepath.Join(dir, seedVersionFile), []byte("0"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, seedpack.VersionFile), []byte("0"), 0o644); err != nil {
 		t.Fatalf("backdate marker: %v", err)
 	}
 	stale := filepath.Join(dir, "stale-user-file.md")
@@ -196,7 +197,7 @@ func TestSeedAgents_OverwritesOnVersionBump(t *testing.T) {
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
 		t.Errorf("stale file should be removed on update, still present")
 	}
-	if ok, v := readSeedVersion(dir); !ok || v != AgentSeedVersion {
+	if ok, v := seedpack.ReadVersion(dir); !ok || v != AgentSeedVersion {
 		t.Errorf("marker after update = ok=%v version=%q, want ok=true version=%q", ok, v, AgentSeedVersion)
 	}
 }

@@ -25,10 +25,10 @@ func TestBuildResearchContextSnapshot_Testdata(t *testing.T) {
 		t.Fatalf("ParseResearchRoot: %v", err)
 	}
 
-	rc := buildResearchContextSnapshot("/ws/.research", root)
+	rc := buildResearchContextSnapshot("/ws/research", root)
 
-	if rc.RootPath != "/ws/.research" {
-		t.Errorf("RootPath: got %q, want /ws/.research", rc.RootPath)
+	if rc.RootPath != "/ws/research" {
+		t.Errorf("RootPath: got %q, want /ws/research", rc.RootPath)
 	}
 	if rc.ProjectCount != 2 {
 		t.Errorf("ProjectCount: got %d, want 2", rc.ProjectCount)
@@ -45,8 +45,8 @@ func TestBuildResearchContextSnapshot_Testdata(t *testing.T) {
 // TestBuildResearchContextSnapshot_NoProjects verifies a root with no projects
 // reports "none yet" semantics and a setup phase.
 func TestBuildResearchContextSnapshot_NoProjects(t *testing.T) {
-	root := &research.ResearchRoot{Path: "/ws/.research"}
-	rc := buildResearchContextSnapshot("/ws/.research", root)
+	root := &research.ResearchRoot{Path: "/ws/research"}
+	rc := buildResearchContextSnapshot("/ws/research", root)
 
 	if rc.ActiveID != "" {
 		t.Errorf("ActiveID: got %q, want empty", rc.ActiveID)

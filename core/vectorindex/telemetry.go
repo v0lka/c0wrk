@@ -30,8 +30,9 @@ type StageMetrics struct {
 	Duration time.Duration
 }
 
-// TelemetrySnapshot is an aggregate, content-free view of indexing work.
-// It contains no source text, paths, project IDs, branch names, or free-form labels.
+// TelemetrySnapshot is an aggregate, content-free view of indexing work:
+// numeric aggregates only — never source text, paths, project IDs, branch
+// names, or caller-defined labels. See specs/domains/workspace.md (Vector Index).
 type TelemetrySnapshot struct {
 	Stages          map[TelemetryStage]StageMetrics
 	Batches         int64
@@ -51,8 +52,7 @@ func (s TelemetrySnapshot) EmbeddingCacheHitRatio() float64 {
 }
 
 // BatchFill returns the fraction of configured ONNX rows occupied by the
-// indexer's streaming inference batches. It is at most 1: every non-final
-// batch is full and only the final pass tail may be underfilled.
+// indexer's streaming batches; at most 1 (only a final-pass tail underfills).
 func (s TelemetrySnapshot) BatchFill() float64 {
 	if s.BatchCapacity == 0 {
 		return 0
@@ -60,8 +60,8 @@ func (s TelemetrySnapshot) BatchFill() float64 {
 	return float64(s.BatchItems) / float64(s.BatchCapacity)
 }
 
-// Telemetry aggregates low-cardinality, content-free indexing metrics. It is
-// safe for concurrent prep workers. A nil *Telemetry is intentionally a no-op.
+// Telemetry aggregates low-cardinality indexing metrics (content-free — see
+// specs/domains/workspace.md); safe for concurrent prep workers; nil no-op.
 type Telemetry struct {
 	mu              sync.Mutex
 	stages          map[TelemetryStage]StageMetrics

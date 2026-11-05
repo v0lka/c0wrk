@@ -8,23 +8,21 @@ import (
 	"github.com/v0lka/c0wrk/backend/crashlog"
 )
 
-// Component ceilings the default deadline must cover CUMULATIVELY. Shutdown
-// runs its steps sequentially, so the worst case is the SUM of the bounded
-// steps, not the largest one:
+// Component ceilings the default deadline must cover CUMULATIVELY — shutdown
+// runs sequentially, so the worst case is the SUM of the bounded steps, not
+// the largest one:
 //
 //   - embeddedLLMStopCeiling: stopEmbeddedLLM is bounded at ~46 s when a quit
-//     races an in-flight cold load holding the supervisor gate — a 30 s
-//     bounded wait for the single-instance gate (backend embeddedStopTimeout)
-//     plus the stop's own derived force budget (15 s once the gate is held,
-//     16 s on the no-gate force path; core/embeddedllm) — after which the
-//     child is terminated.
+//     races an in-flight cold load holding the supervisor gate — a 30 s wait
+//     for the single-instance gate plus the stop's own 15/16 s force budget
+//     (core/embeddedllm) — after which the child is terminated.
 //   - sessionManagerStopBudget: a.app.Shutdown joins the manager's background
-//     goroutines and drains both blackboards under ONE shared stopTimeout
-//     budget (10 s; backend/session/manager.go).
+//     goroutines and drains both blackboards under ONE shared budget
+//     (backend/session/manager.go).
 //   - teardownSlack: every remaining step is individually bounded and fast
 //     (batcher stop, pending-action drains, judgeWG.Wait, FrontendAPI
-//     lifecycle cleanup, db/sessionLogger close); the slack covers their sum
-//     on slow storage.
+//     cleanup, db/sessionLogger close); the slack covers their sum on slow
+//     storage.
 const (
 	embeddedLLMStopCeiling   = 30*time.Second + 16*time.Second
 	sessionManagerStopBudget = 10 * time.Second
@@ -32,24 +30,21 @@ const (
 )
 
 // defaultShutdownHardDeadline bounds the whole Shutdown teardown when
-// shutdown.hardDeadline is unset (0). It is derived from the cumulative
-// worst case of the sequential teardown steps (see the component ceilings
-// above), with the historical 60 s kept as a floor: normal teardown
-// completes in well under a second, so the deadline only ever fires on a
-// genuinely wedged cancellation path — never on a merely slow one. Sizing it
-// below the cumulative worst case would force-exit a LEGITIMATE quit (a cold
-// embedded-model load racing a slow manager teardown) mid-stop, leaving the
-// detached llama-server running — exactly the outcome the deadline exists to
-// prevent.
+// shutdown.hardDeadline is unset (0): the cumulative worst case of the
+// sequential teardown steps (above), with the historical 60 s as a floor —
+// normal teardown completes in well under a second, so the deadline only
+// fires on a genuinely wedged cancellation path. Sizing it below the
+// cumulative worst case would force-exit a legitimate quit mid-stop, leaving
+// the detached inference server running — exactly what the deadline prevents.
 const cumulativeTeardownCeiling = embeddedLLMStopCeiling + sessionManagerStopBudget + teardownSlack
 
 var defaultShutdownHardDeadline = max(cumulativeTeardownCeiling, 60*time.Second)
 
 // EffectiveShutdownDeadline maps the configured shutdown.hardDeadline
-// (seconds; 0 = unset) onto the effective teardown deadline — the value the
-// shutdown watchdog enforces and the GPU-relaunch handover budget derives
-// from. Single source for both, so the handover budget can never be sized
-// against a deadline the predecessor is not actually bounded by.
+// (seconds; 0 = unset) onto the effective teardown deadline — the single
+// source shared by the shutdown watchdog and the GPU-relaunch handover
+// budget, so the handover can never be sized against a deadline the
+// predecessor is not actually bounded by. See specs/domains/webview-gpu-policy.md.
 func EffectiveShutdownDeadline(configuredSeconds int) time.Duration {
 	if configuredSeconds > 0 {
 		return time.Duration(configuredSeconds) * time.Second
@@ -58,20 +53,13 @@ func EffectiveShutdownDeadline(configuredSeconds int) time.Duration {
 }
 
 // shutdownWatchdog enforces one hard deadline over the entire application
-// teardown. Every step of Shutdown is already bounded individually (task
-// goroutine joins, manager background-goroutine joins, blackboard persistence
-// workers), but a broken cancellation path can still park the Wails main
-// thread indefinitely — the observed failure where the session log ends at
-// "shutdown: blackboard persistence workers stopped" and
-// "application shutdown: complete" never appears, forcing the user to kill the
-// process. The watchdog is the last-resort guarantee: when the deadline
-// expires it logs at Error and invokes onExpiry (crashlog.ForceExit(0) in
-// production — marker removal + exit banner + os.Exit), so the
-// process always terminates within a bounded time.
-//
-// The watchdog is armed at the top of Shutdown and disarmed (stop) on every
-// return path via defer; on expiry it exits the process, so the defer is
-// irrelevant in that case.
+// teardown. Every step of Shutdown is bounded individually, but a broken
+// cancellation path can park the Wails main thread indefinitely (the observed
+// failure: the session log ends mid-teardown and "application shutdown:
+// complete" never appears); on expiry the watchdog logs at Error and invokes
+// onExpiry (crashlog.ForceExit(0) in production), so the process always
+// terminates within a bounded time. Armed at the top of Shutdown, disarmed
+// via defer on every return path. See specs/domains/crash-logging.md.
 type shutdownWatchdog struct {
 	deadline time.Duration
 	log      *slog.Logger
@@ -82,12 +70,11 @@ type shutdownWatchdog struct {
 }
 
 // startShutdownWatchdog arms the watchdog and returns it. A non-positive
-// deadline falls back to defaultShutdownHardDeadline; a nil logger falls back
-// to slog.Default(); a nil onExpiry falls back to crashlog.ForceExit(0) — the
-// forced exit runs the crash-log clean-exit hooks (marker removal + exit
-// banner) before exiting, so a forced-but-legitimate quit is not misreported as
-// a crash on the next launch. The returned watchdog must be stopped (defer)
-// once teardown completes.
+// deadline falls back to defaultShutdownHardDeadline; nil logger to
+// slog.Default(); nil onExpiry to crashlog.ForceExit(0), whose clean-exit
+// hooks (marker removal + exit banner) keep a forced-but-legitimate quit from
+// being misreported as a crash on the next launch. Stop the returned watchdog
+// via defer once teardown completes.
 func startShutdownWatchdog(deadline time.Duration, log *slog.Logger, onExpiry func()) *shutdownWatchdog {
 	if deadline <= 0 {
 		deadline = defaultShutdownHardDeadline
@@ -128,9 +115,9 @@ func (w *shutdownWatchdog) run() {
 	case <-w.done:
 		return
 	case <-timer.C:
-		// Also re-check done non-blockingly: stop() can close it in the instant
-		// between the deadline firing and this arm running. If teardown
-		// completed, the deadline is moot — return without exiting.
+		// Re-check done non-blockingly: stop() can close it in the instant
+		// between the deadline firing and this arm running — a completed
+		// teardown must never force an exit.
 		select {
 		case <-w.done:
 			return
@@ -142,7 +129,7 @@ func (w *shutdownWatchdog) run() {
 	}
 }
 
-// stop disarms the watchdog. It is idempotent and safe to call from a defer.
+// stop disarms the watchdog.
 func (w *shutdownWatchdog) stop() {
 	w.stopOnce.Do(func() { close(w.done) })
 }

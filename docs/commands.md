@@ -84,8 +84,13 @@ A template may use the ordinary message machinery:
   `test`) — a deliberate widening so extra spacing in hand-typed input cannot
   degrade an invocation; mentions (`/agent:`, `/skill:`, `/mcp:`) still
   accept at most one space after the colon.
-- A command named `goal` shadows the built-in `/goal` (same rule as a skill
-  named `goal`) — rename the file if you still need goal mode.
+- A command named `goal` shadows the built-in `/goal` (the same happens with
+  an agent, a skill, or an MCP server named `goal` — the plain spelling
+  resolves to the catalog entry and the built-in disappears from the
+  completion list) — rename it if you still need the plain spelling. The
+  budgeted `/goal:N` form is never a catalog mention, so it still arms goal
+  mode with an N-turn budget
+  ([ADR-110](../specs/decisions/110-goal-mode-chat-activation.md)).
 
 ## v1 limitations
 

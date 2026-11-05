@@ -12,8 +12,14 @@ import (
 	"github.com/v0lka/sp4rk/strutil"
 )
 
-// loggingEmitter wraps an Emitter to log all events via a session-specific logger.
-// It implements Emitter and PlanStepScopable.
+// loggingEmitter wraps an Emitter to log all events via a session-specific
+// logger. Log-redaction policy for EVERY handler in this file: model- or
+// judge-authored payload text is never logged verbatim — scalar prose gets a
+// bounded 200-rune preview plus its byte length, and payload maps get
+// payloadShape (sizes/types only) — because such prose can embed quoted file
+// contents, absolute paths, or secrets, and payload maps are re-logged after
+// every applied patch. Each handler below carries only its delta.
+// See specs/domains/orchestration/README.md (Invariants).
 type loggingEmitter struct {
 	inner  Emitter
 	logger *slog.Logger
@@ -66,9 +72,7 @@ func (l *loggingEmitter) WithRetryAttempt(attempt int) Emitter {
 }
 
 // SetCurrentStepID delegates to the inner emitter if it supports dynamic
-// plan-step scoping. This allows the inlineStepLifecycle to dynamically
-// tag the Conductor's inline executor events with plan_step_id through
-// the logging wrapper.
+// plan-step scoping (the inlineStepLifecycle's tag channel).
 func (l *loggingEmitter) SetCurrentStepID(id string) {
 	if sc, ok := l.inner.(CurrentStepScopable); ok {
 		sc.SetCurrentStepID(id)
@@ -76,8 +80,8 @@ func (l *loggingEmitter) SetCurrentStepID(id string) {
 }
 
 // SetDisplayContextWindow delegates to the inner emitter if it supports
-// display-context-window injection, so the orchestrator can route the
-// model's advertised window through the logging wrapper.
+// display-context-window injection (the orchestrator's advertised model
+// window routed through the logging wrapper).
 func (l *loggingEmitter) SetDisplayContextWindow(window int) {
 	if s, ok := l.inner.(DisplayContextWindowSetter); ok {
 		s.SetDisplayContextWindow(window)
@@ -85,9 +89,8 @@ func (l *loggingEmitter) SetDisplayContextWindow(window int) {
 }
 
 // SetDisplayContextWindowForModel delegates to the inner emitter if it
-// supports model-scoped display-window injection, so the lazy probe's
-// late-arriving runtime window can refresh the status bar through the
-// logging wrapper.
+// supports model-scoped window injection (the lazy probe's late-arriving
+// runtime window refreshes the status bar through the logging wrapper).
 func (l *loggingEmitter) SetDisplayContextWindowForModel(model string, window int) {
 	if s, ok := l.inner.(DisplayContextWindowForModelSetter); ok {
 		s.SetDisplayContextWindowForModel(model, window)
@@ -95,8 +98,7 @@ func (l *loggingEmitter) SetDisplayContextWindowForModel(model string, window in
 }
 
 // SetLastModel delegates to the inner emitter if it supports last-model
-// injection, so the orchestrator can route the selected model/family through
-// the logging wrapper for immediate context_fill synchronization.
+// injection (immediate context_fill sync on the selected model/family).
 func (l *loggingEmitter) SetLastModel(model, family string) {
 	if s, ok := l.inner.(LastModelSetter); ok {
 		s.SetLastModel(model, family)
@@ -133,19 +135,14 @@ func (l *loggingEmitter) StepComplete(stepNum int, duration time.Duration) {
 }
 
 func (l *loggingEmitter) SubAgentLaunch(stepID, description string) {
-	// description is model-authored prose (the plan-step description forwarded
-	// by planStepEventTranslator): bounded preview plus its length only, never
-	// the payload unbounded ("no secrets in logs", cf. SubAgentComplete).
+	// Model-authored prose — bounded preview + length (file policy).
 	l.logger.Debug("subagent: launch", "stepID", stepID, "descriptionLen", len(description),
 		"descriptionPreview", strutil.TruncateUTF8(description, 200))
 	l.inner.SubAgentLaunch(stepID, description)
 }
 
 func (l *loggingEmitter) SubAgentComplete(stepID string, success bool, duration time.Duration, errMsg string) {
-	// errMsg is model-authored: the SDK computes it from a hard error, the
-	// abort reason, or raw result.Output — prose that can embed quoted file
-	// contents and paths. Log a bounded preview plus its length only, never
-	// the payload unbounded ("no secrets in logs", cf. E2SState above).
+	// Model-authored errMsg — bounded preview + length (file policy).
 	l.logger.Debug("subagent: complete", "stepID", stepID, "success", success,
 		"durationMs", duration.Milliseconds(), "errMsgLen", len(errMsg),
 		"errMsgPreview", strutil.TruncateUTF8(errMsg, 200))
@@ -178,18 +175,14 @@ func (l *loggingEmitter) ContextCompaction(beforePercent, afterPercent float64, 
 }
 
 func (l *loggingEmitter) Finishing(stepNum int, summary string) {
-	// summary is model-authored prose (the run's delivered answer; in the E2S
-	// path it is literally the model's final Answer): bounded preview plus its
-	// length only ("no secrets in logs", cf. SubAgentComplete above).
+	// Model-authored summary — bounded preview + length (file policy).
 	l.logger.Debug("executor: finishing", "stepNum", stepNum, "summaryLen", len(summary),
 		"summaryPreview", strutil.TruncateUTF8(summary, 200))
 	l.inner.Finishing(stepNum, summary)
 }
 
 func (l *loggingEmitter) ExecutorDiagnostic(stepNum int, event string, details map[string]any) {
-	// details is an arbitrary payload map that can embed quoted file contents
-	// or secrets: log the shape only (sorted key + string byte-length / Go
-	// type), never the raw values ("no secrets in logs", cf. E2SState below).
+	// Arbitrary payload map — shape only (file policy).
 	l.logger.Debug("executor: diagnostic", "stepNum", stepNum, "event", event,
 		"detailsShape", payloadShape(details))
 	l.inner.ExecutorDiagnostic(stepNum, event, details)
@@ -210,9 +203,7 @@ func (l *loggingEmitter) PlanGenerated(stepCount int, steps []orchestration.Plan
 }
 
 func (l *loggingEmitter) PlanStepStart(stepID, description, summary string) {
-	// description/summary are model-authored prose (declare_plan fields): log
-	// bounded previews plus their lengths only, never the payloads unbounded
-	// ("no secrets in logs", cf. SubAgentComplete below).
+	// Model-authored fields — bounded previews + lengths (file policy).
 	l.logger.Info("plan step start", "stepID", stepID,
 		"descriptionLen", len(description), "descriptionPreview", strutil.TruncateUTF8(description, 200),
 		"summaryLen", len(summary), "summaryPreview", strutil.TruncateUTF8(summary, 200))
@@ -220,9 +211,7 @@ func (l *loggingEmitter) PlanStepStart(stepID, description, summary string) {
 }
 
 func (l *loggingEmitter) PlanStepComplete(stepID string, success bool, duration time.Duration, errMsg string) {
-	// errMsg is model-authored (mirrors SubAgentComplete below): bounded
-	// preview plus its length only, never the payload unbounded
-	// ("no secrets in logs").
+	// Model-authored errMsg — bounded preview + length (file policy).
 	l.logger.Info("plan step complete", "stepID", stepID, "success", success,
 		"durationMs", duration.Milliseconds(), "errMsgLen", len(errMsg),
 		"errMsgPreview", strutil.TruncateUTF8(errMsg, 200))
@@ -230,8 +219,7 @@ func (l *loggingEmitter) PlanStepComplete(stepID string, success bool, duration 
 }
 
 func (l *loggingEmitter) PlanStepPaused(stepID string, duration time.Duration, errMsg string) {
-	// errMsg is model-authored (mirrors SubAgentComplete below): bounded
-	// preview plus its length only ("no secrets in logs").
+	// Model-authored errMsg — bounded preview + length (file policy).
 	l.logger.Info("plan step paused", "stepID", stepID, "durationMs", duration.Milliseconds(),
 		"errMsgLen", len(errMsg), "errMsgPreview", strutil.TruncateUTF8(errMsg, 200))
 	l.inner.PlanStepPaused(stepID, duration, errMsg)
@@ -242,10 +230,7 @@ func (l *loggingEmitter) Reflection(reflection *orchestration.Reflection, attemp
 	if reflection != nil {
 		summary, action, cause = reflection.Summary, reflection.SuggestedAction, reflection.RootCause
 	}
-	// The reflector's Summary/SuggestedAction/RootCause are LLM-authored prose
-	// derived from the failing trajectory and its tool output — they restate
-	// observed failure output and can embed quoted file contents: bounded
-	// previews plus lengths only ("no secrets in logs", cf. SubAgentComplete).
+	// LLM-authored reflection fields — bounded previews + lengths (file policy).
 	l.logger.Info("reflection", "attempt", attempt, "maxAttempts", maxAttempts,
 		"summaryLen", len(summary), "summaryPreview", strutil.TruncateUTF8(summary, 200),
 		"suggestedActionLen", len(action), "suggestedActionPreview", strutil.TruncateUTF8(action, 200),
@@ -264,27 +249,22 @@ func (l *loggingEmitter) StepRetry(stepID string, attempt, maxAttempts int) {
 }
 
 func (l *loggingEmitter) Service(content string) {
-	// content can embed model/service-authored prose: bounded preview plus its
-	// length only ("no secrets in logs", cf. SubAgentComplete above).
+	// Model/service-authored content — bounded preview + length (file policy).
 	l.logger.Debug("service", "contentLen", len(content),
 		"contentPreview", strutil.TruncateUTF8(content, 200))
 	l.inner.Service(content)
 }
 
 func (l *loggingEmitter) ServiceWithMeta(content string, meta map[string]any) {
-	// content bounded as in Service; meta is an arbitrary map that can embed
-	// file contents or secrets: log the shape only ("no secrets in logs").
+	// Meta is an arbitrary map — shape only (file policy).
 	l.logger.Debug("service", "contentLen", len(content),
 		"contentPreview", strutil.TruncateUTF8(content, 200), "metaShape", payloadShape(meta))
 	l.inner.ServiceWithMeta(content, meta)
 }
 
 func (l *loggingEmitter) GoalStatus(data map[string]any) {
-	// The goal payload carries model/judge-authored prose (condition, reason,
-	// evidence, verification_* — and verdict.Status, which is free-form model
-	// text, core/goal/types.go): log the short non-prose metadata plus bounded
-	// previews and the payload shape only, never the prose unbounded ("no
-	// secrets in logs", cf. E2SState below).
+	// Model/judge-authored payload — non-prose metadata + bounded previews +
+	// shape only (file policy).
 	l.logger.Debug("goal_status", "turn", data["turn"], "max_turns", data["max_turns"],
 		"status", data["status"], "verdict", boundedPreview(data["verdict"]),
 		"verification", data["verification"], "verification_mode", data["verification_mode"],
@@ -293,20 +273,14 @@ func (l *loggingEmitter) GoalStatus(data map[string]any) {
 }
 
 func (l *loggingEmitter) GoalProgress(data map[string]any) {
-	// Same policy as GoalStatus: metadata + shape only, prose never unbounded.
 	l.logger.Debug("goal_progress", "turn", data["turn"], "max_turns", data["max_turns"],
 		"payloadShape", payloadShape(data))
 	l.inner.GoalProgress(data)
 }
 
-// payloadShape summarizes an event payload map as a deterministic,
-// human-readable string of "key(byteLength)" entries for string values and
-// "key(goType)" entries otherwise (sorted by key), so the log keeps the
-// payload's structure and sizes without any model/judge-authored prose. It is
-// the shared form of the bound-and-truncate policy this file applies to
-// model-authored text (SubAgentComplete's length+preview, E2SState's
-// metadata-only logging): the maps it renders can embed quoted file contents
-// or secrets and are never logged raw ("no secrets in logs").
+// payloadShape renders an event payload map as "key(byteLength)" entries for
+// strings and "key(goType)" otherwise, sorted by key — the map form of this
+// file's bounded-logging policy (the maps can embed file contents or secrets).
 func payloadShape(data map[string]any) string {
 	if len(data) == 0 {
 		return ""
@@ -328,10 +302,8 @@ func payloadShape(data map[string]any) string {
 }
 
 // boundedPreview renders a possibly model-authored payload value as a bounded
-// log attribute: strings are truncated like every prose preview in this file,
-// and any other non-nil value is rendered through %v and truncated the same
-// way — a struct (e.g. a goal Verdict) can embed unbounded model prose, so it
-// must never reach the log verbatim ("no secrets in logs").
+// log attribute: strings (and %v-rendered non-nil values) truncated like every
+// prose preview in this file — a struct can embed unbounded model prose.
 func boundedPreview(v any) string {
 	if v == nil {
 		return ""
@@ -344,11 +316,8 @@ func boundedPreview(v any) string {
 }
 
 func (l *loggingEmitter) E2SState(data map[string]any) {
-	// Log METADATA only, never the Σ payload: Σ is model-authored working
-	// memory that regularly carries distilled file contents, absolute paths,
-	// and findings (possible secrets/PII), and it is re-logged after every
-	// applied patch — the neighboring handlers deliberately log sizes and
-	// previews for the same reason ("no secrets in logs").
+	// Metadata only: Σ is model-authored working memory, re-logged after
+	// every applied patch (file policy).
 	turn, _ := data["turn"].(int)
 	totalTurns, _ := data["total_turns"].(int)
 	maxTurns, _ := data["max_turns"].(int)
@@ -382,9 +351,8 @@ func (l *loggingEmitter) MemoryRead(stepNum int, content string) {
 	l.inner.MemoryRead(stepNum, content)
 }
 
-// EmitSessionTokens forwards session token totals to the inner emitter if it supports it.
-// This enables the UsageTracker observer (registered via builder.go type assertion) to
-// propagate accumulated tokens through the logging wrapper.
+// EmitSessionTokens forwards session token totals to the inner emitter if it
+// supports it (the UsageTracker observer's propagation channel).
 func (l *loggingEmitter) EmitSessionTokens(totalIn, totalOut int, model, family string) {
 	l.logger.Debug("session tokens update", "totalIn", totalIn, "totalOut", totalOut, "model", model, "family", family)
 	if te, ok := l.inner.(SessionTokenEmitter); ok {
@@ -392,11 +360,10 @@ func (l *loggingEmitter) EmitSessionTokens(totalIn, totalOut int, model, family 
 	}
 }
 
-// EmitSessionTokensWithThroughput forwards session token totals plus the median
-// output-token throughput to the inner emitter. The inner emitter's capability
-// decides the path: the throughput seam when it supports it, degraded to the
-// plain totals seam otherwise — mirroring the builder's observer-selection
-// fallback so the logging wrapper never masks an inner capability.
+// EmitSessionTokensWithThroughput forwards totals plus median throughput,
+// degrading to the plain totals seam when the inner emitter predates it —
+// mirroring the builder's observer selection (specs/contracts/event-catalog.md,
+// "session_tokens").
 func (l *loggingEmitter) EmitSessionTokensWithThroughput(totalIn, totalOut int, model, family string, medianOutputTokPerSec float64, throughputSamples int) {
 	l.logger.Debug("session tokens update",
 		"totalIn", totalIn, "totalOut", totalOut, "model", model, "family", family,

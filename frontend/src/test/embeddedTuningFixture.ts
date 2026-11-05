@@ -23,24 +23,22 @@ export function makeTuning(overrides: Partial<EmbeddedLLMTuning> = {}): Embedded
     parallel: null,
     cache_ram_mib: null,
     host_reserve_gib: null,
+    devices: null,
+    split_mode: null,
     ...overrides,
   }
 }
 
-/** The fold the backend performs: nil keeps, present replaces, reset clears.
- *  Works on a mutable record copy — the DTO mirror is deeply readonly. */
+/** The fold the backend performs (`applyEmbeddedTuningRequest`): nil keeps,
+ *  present replaces — `devices` wholesale, entries trimmed, an empty array
+ *  clearing to null so cleared and unset are one stored value — `split_mode`
+ *  verbatim, `reset` clears. The fold is exhaustive: a patch key with no
+ *  branch throws, so a future DTO field cannot be silently dropped. Works on
+ *  a mutable record copy — the DTO mirror is deeply readonly. */
 export function applyPatch(
   t: EmbeddedLLMTuning,
   patch: EmbeddedLLMTuningPatch,
 ): EmbeddedLLMTuning {
-  const next = {
-    ...t,
-    context: { ...t.context },
-    offload: { ...t.offload },
-  } as unknown as Record<string, unknown>
-  if (patch.context) next.context = { ...patch.context }
-  if (patch.kv_cache_type !== undefined) next.kv_cache_type = patch.kv_cache_type
-  if (patch.offload) next.offload = { ...patch.offload }
   const scalars = [
     'fit',
     'fit_target_mib',
@@ -52,9 +50,33 @@ export function applyPatch(
     'cache_ram_mib',
     'host_reserve_gib',
   ] as const
+  const folded = new Set<string>([
+    ...scalars,
+    'context',
+    'kv_cache_type',
+    'offload',
+    'devices',
+    'split_mode',
+    'reset',
+  ])
+  for (const key of Object.keys(patch)) {
+    if (!folded.has(key)) throw new Error(`applyPatch: no fold branch for patch key "${key}"`)
+  }
+  const next = {
+    ...t,
+    context: { ...t.context },
+    offload: { ...t.offload },
+  } as unknown as Record<string, unknown>
+  if (patch.context) next.context = { ...patch.context }
+  if (patch.kv_cache_type !== undefined) next.kv_cache_type = patch.kv_cache_type
+  if (patch.offload) next.offload = { ...patch.offload }
   for (const key of scalars) {
     if (patch[key] !== undefined) next[key] = patch[key]
   }
+  if (patch.devices !== undefined) {
+    next.devices = patch.devices.length === 0 ? null : patch.devices.map((name) => name.trim())
+  }
+  if (patch.split_mode !== undefined) next.split_mode = patch.split_mode
   if (patch.reset) {
     for (const knob of patch.reset) {
       if (knob === 'context') next.context = { mode: null, tokens: null }

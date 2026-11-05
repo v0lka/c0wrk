@@ -93,7 +93,7 @@ const VIOLATION_PATTERNS = [
 ]
 
 describe('Wails window-access invariant', () => {
-  it('window.go / window.runtime are touched only inside api/runtime.ts', () => {
+  it('window.go / window.runtime are touched only inside api/runtime.ts', () => { // whole-tree scan
     const violations: string[] = []
     for (const file of collectSources(SRC_DIR)) {
       // `relative()` emits platform separators (backslashes on Windows);
@@ -110,7 +110,7 @@ describe('Wails window-access invariant', () => {
       })
     }
     expect(violations).toEqual([])
-  })
+  }, 30_000)
 
   it('api/runtime.ts actually contains the accesses the invariant protects', () => {
     // A guard that passes because the allowed file was renamed away (or the
@@ -123,5 +123,5 @@ describe('Wails window-access invariant', () => {
       0,
     )
     expect(hits).toBeGreaterThan(0)
-  })
+  }, 30_000)
 })

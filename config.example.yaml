@@ -426,15 +426,18 @@ llm:
 #   # still keeping the arithmetic downstream total. What actually fits remains
 #   # the memory gate's and the planner's call.
 #   #
-#   # Two planner knobs are deliberately NOT exposed: `-dev` (the offload
-#   # device list) and `-sm`/`--split-mode`. Both pin the offload, which turns
-#   # fit off, and naming a device this machine does not have yields an
-#   # unlaunchable server rather than a slower one.
+#   # The offload target itself is selectable too: `devices` (the `-dev` list)
+#   # and `split_mode` (`-sm`) are documented at the end of this block. Both pin
+#   # the offload, which turns fit off, and a device name the machine does not
+#   # report refuses the load — fail-closed, because a launch built on a device
+#   # this machine does not have budgets one pool and allocates in another.
 #   tuning:
 #     # The context window (`-c`). Default: unset.
-#     #   mode: auto   the planner sizes it — from fit_min_context under fit,
-#     #                otherwise from the system-RAM ladder, never above the
-#     #                model's own training context.
+#     #   mode: auto   the planner sizes it — the system-RAM ladder held to the
+#     #                65536-token floor on both paths (from fit_min_context
+#     #                under fit, from the default floor when fit is off, e.g.
+#     #                under a devices/split_mode pin), never above the model's
+#     #                own training context.
 #     #   mode: exact  pins `-c` to tokens, which then becomes REQUIRED.
 #     # tokens is valid 1-262144 (the pinned model's own training context, read
 #     # from the memory profile rather than written down here) and is validated
@@ -572,6 +575,41 @@ llm:
 #     # which would make `host = ram − reserve` enormous and fail the memory gate
 #     # OPEN on the one knob meant to shrink the budget.
 #     host_reserve_gib: 4
+#     # The offload target list (`-dev`): pin the model to the accelerators you
+#     # name, using the exact names `llama-server --list-devices` prints
+#     # ("CUDA0", "Vulkan0", "MTL0", ...). Default: unset = the runtime uses
+#     # every device it finds.
+#     # Naming devices pins the offload, which turns fit off: the planner then
+#     # sizes the context and the layer count itself, and it prices the plan
+#     # against ONLY the named devices' measured pool. That is the point — on a
+#     # fast-plus-slow pair (say a 16 GiB new-generation card beside a 6 GiB old
+#     # one) the default layer split uses BOTH cards, which buys KV capacity but
+#     # never token speed: layers run sequentially, so the slow card gates every
+#     # token. Pinning the fast card alone gives the truthful single-card budget
+#     # and the best per-token speed; leaving the key unset keeps the full
+#     # multi-card pool for the largest possible context.
+#     # Each entry must be one separator-free token (the same rule the launch
+#     # argv enforces), at most 8 entries, no duplicates. Every name is verified
+#     # against the runtime's own inventory at plan time: an unknown or stale
+#     # name — after a driver update, a reordering, a hardware swap — REFUSES
+#     # the load with the device, the measured inventory and the probe stamp in
+#     # the error, instead of launching a shape nobody asked for.
+#     devices: [CUDA0]
+#     # How a multi-device split divides the model (`-sm/--split-mode`).
+#     # Default: unset = the runtime's own (layer).
+#     #   auto    omit the flag — the runtime decides.
+#     #   none    one device only (the first in the device list above, or the
+#     #           runtime's main GPU).
+#     #   layer   layers and KV are distributed across the devices (the
+#     #           runtime's default).
+#     #   row     weights are split by rows across the devices.
+#     #   tensor  weights are split by tensors across the devices.
+#     # Like devices, an explicit spelling pins the offload and turns fit off —
+#     # but it does NOT narrow the device pool: every card still participates,
+#     # so the plan's budgets stay the full measured pool. Validated even while
+#     # inert, and refused outright under engine: mtplx (MLX has no multi-device
+#     # split).
+#     split_mode: auto
 
 # ---------------------------------------------------------------------------
 # MCP (Model Context Protocol) Servers
@@ -1328,7 +1366,8 @@ orchestration:
 # mode is obviously the better fit for the request and, when it is, offers to
 # activate it before the task starts. Declining suppresses further suggestions
 # for the rest of the session. Goal mode itself remains always available via
-# the explicit toggle or a leading /goal.
+# the explicit toggle or a leading /goal (or /goal:N, an inline N-turn
+# budget; an invalid :N form is inert and ships as plain text).
 #
 #   enabled        (default true)  — master gate for the suggestion feature.
 #   min_complexity (default 3)     — routing-complexity floor below which the
@@ -1359,6 +1398,33 @@ orchestration:
 #                            entirely (no pass, no LLM call, no event).
 #
 # prompt_suggestions:
+#   enabled: true
+
+# ---------------------------------------------------------------------------
+# Sidebar Packs (Research / Specs)
+# ---------------------------------------------------------------------------
+# Gates for the sidebar's Research and Specs surfaces (Settings → General).
+# Each surface ships a globally-seeded pack — Research: the seven research-*
+# skills, the study-paper skill and the research Subagent Profile; Specs: the
+# six spec-* skills and the specs Subagent Profile — materialized into
+# ~/.c0wrk/.agents/{skills,agents} at launch. Disabling a surface hides its
+# sidebar button and removes its seeded pack copies from disk; re-enabling
+# reseeds them. The launch seed reconciles both ways: enabled surfaces seed,
+# disabled surfaces unseed (converging any copy a failed removal left
+# behind). Removal is non-destructive by content: only copies that are
+# byte-identical to the shipped pack (or a pack-marked, interrupted partial
+# copy) are deleted — a marker-less user-authored copy and a locally edited
+# copy (marker present, content diverged) are always preserved (edited copies
+# are named in a warning log).
+#
+#   enabled (default true) — surface master gate; false hides the sidebar
+#                            button and unseeds the surface's pack copies
+#                            (at the toggle and again at every launch).
+#
+# research:
+#   enabled: true
+#
+# specs:
 #   enabled: true
 
 # ---------------------------------------------------------------------------
@@ -1686,6 +1752,51 @@ orchestration:
 #                              # disables); park_capacity: 0 still disables
 #                              # parking entirely regardless of the budget.
 #
+#   corpus_residency_capacity: 0
+#                              # how many zero-reference SHARED corpus handles
+#                              # (ADR-104) the process-level corpus owner keeps
+#                              # resident, so A→B→A re-attaches the same handle
+#                              # — no chromem re-decode, no lexical reopen
+#                              # (default 0 = retention of inactive views OFF;
+#                              # a released corpus closes at once). The budget
+#                              # spans all projects' shared corpora in the
+#                              # process; each corpus is counted ONCE however
+#                              # many roots view it (per-root overlays stay
+#                              # outside this ledger — the park knobs bound
+#                              # them). Attached corpora are pinned by their
+#                              # readers and never evicted: the bounds govern
+#                              # RETENTION, not admission — they are not a
+#                              # hard RSS cap and never claimed as one. 0 is a
+#                              # documented value here (with a 0 budget:
+#                              # retention off; with a positive budget: retain
+#                              # by bytes alone); negatives are rejected at
+#                              # load — no sentinels.
+#
+#   corpus_residency_budget_mb: 0
+#                              # cumulative RAM budget (MiB) for the RETAINED
+#                              # corpus handles (their estimated footprints —
+#                              # the same docs × (dims × 4 B + 1 KiB) shape).
+#                              # The oldest eligible handles are evicted while
+#                              # the sum exceeds the budget, including a single
+#                              # handle too big to fit on its own. Default 0 =
+#                              # no byte bound (corpus_residency_capacity
+#                              # alone). Negatives and values above the 2 PiB
+#                              # ceiling are rejected at load (the MiB→bytes
+#                              # shift would overflow).
+#
+#   store_disk_budget_mb: 0    # disk cap (MiB) for the content-addressed
+#                              # vector store tree (ADR-104 §5 disk ledger:
+#                              # unique chunk bytes counted once + per-snapshot
+#                              # tables/lexical + per-root overlays + whole
+#                              # superseded generations). Default 0 = no cap.
+#                              # Under pressure the silent switch-riding
+#                              # hygiene pass evicts LRU snapshot directories
+#                              # no owner pins (live roots, surviving branch
+#                              # refs, attached corpora); an evicted snapshot
+#                              # is re-derived by the next attach's corpus
+#                              # pass. Negatives and values above the 2 PiB
+#                              # ceiling are rejected at load.
+#
 #   max_chunks_per_file: 4000  # upper bound on chunks one file may contribute
 #                              # to an index pass (default 4000). Files that
 #                              # exceed it are skipped wholesale (WARN) — a
@@ -1777,6 +1888,9 @@ orchestration:
 #   search_wait_timeout_ms: 3000
 #   park_capacity: 3
 #   park_budget_mb: 1024
+#   corpus_residency_capacity: 0
+#   corpus_residency_budget_mb: 0
+#   store_disk_budget_mb: 0
 #   max_file_size: 4194304
 #   max_chunk_size: 1500
 #   max_chunks_per_file: 4000

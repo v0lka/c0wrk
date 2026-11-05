@@ -129,5 +129,78 @@ func TestEmbeddedLLMEngineTuningCrossRefusal(t *testing.T) {
 	if err := validateEmbeddedLLM(&off); err != nil {
 		t.Fatalf("zero tuning beside engine mtplx rejected: %v", err)
 	}
+
+	// The mtplx engine need not be spelled: auto (or the empty spelling)
+	// resolves to mtplx on darwin/arm64, and the load-time cross-check must
+	// refuse the same llama-only keys there — which is what the platform seam
+	// of validateEmbeddedLLMOn exists to pin on any machine. The explicit
+	// llama rows prove the refusal is resolution-driven, not spelling-driven,
+	// and the off-platform mtplx row pins that the spelling alone still owns
+	// the check where the engine cannot run.
+	resolutionCases := []struct {
+		name     string
+		engine   string
+		platform string
+		tuning   func(*EmbeddedLLMConfig)
+		wantErr  bool
+		wantNote bool // the refusal names that auto resolved to mtplx
+	}{
+		{
+			name:   "auto on darwin/arm64 resolves to mtplx and refuses devices",
+			engine: "auto", platform: embeddedllm.PlatformDarwinARM64,
+			tuning:  func(c *EmbeddedLLMConfig) { c.Tuning.Devices = []string{"CUDA0"} },
+			wantErr: true, wantNote: true,
+		},
+		{
+			name:   "empty spelling on darwin/arm64 resolves to mtplx and refuses split_mode",
+			engine: "", platform: embeddedllm.PlatformDarwinARM64,
+			tuning: func(c *EmbeddedLLMConfig) {
+				v := string(embeddedllm.SplitModeRow)
+				c.Tuning.SplitMode = &v
+			},
+			wantErr: true, wantNote: true,
+		},
+		{
+			name:   "explicit llama beside darwin/arm64 keeps the pin",
+			engine: "llama", platform: embeddedllm.PlatformDarwinARM64,
+			tuning:  func(c *EmbeddedLLMConfig) { c.Tuning.Devices = []string{"CUDA0"} },
+			wantErr: false,
+		},
+		{
+			name:   "auto beside linux resolves to llama and keeps the pin",
+			engine: "auto", platform: embeddedllm.PlatformLinuxAMD64,
+			tuning:  func(c *EmbeddedLLMConfig) { c.Tuning.Devices = []string{"CUDA0"} },
+			wantErr: false,
+		},
+		{
+			name:   "explicit mtplx owns the cross-check off-platform too",
+			engine: "mtplx", platform: embeddedllm.PlatformLinuxAMD64,
+			tuning:  func(c *EmbeddedLLMConfig) { v := "PQ2_0"; c.Tuning.Packing = &v },
+			wantErr: true,
+		},
+	}
+	for _, tc := range resolutionCases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := installedEmbeddedState()
+			cfg.Engine = tc.engine
+			tc.tuning(&cfg)
+			err := validateEmbeddedLLMOn(&cfg, tc.platform)
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatalf("engine %q on %s rejected a legal tuning: %v", tc.engine, tc.platform, err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("engine %q on %s accepted the llama-only tuning", tc.engine, tc.platform)
+			}
+			if !strings.Contains(err.Error(), "mtplx") {
+				t.Errorf("the refusal %q does not name the resolved engine", err)
+			}
+			if tc.wantNote != strings.Contains(err.Error(), "auto resolves to") {
+				t.Errorf("the refusal %q misstates the resolution (note = %v)", err, tc.wantNote)
+			}
+		})
+	}
 	_ = install
 }

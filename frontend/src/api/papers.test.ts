@@ -41,7 +41,7 @@ function wirePaper(overrides: Record<string, unknown> = {}): Record<string, unkn
     claims: [{ claim: 'c', evidence: 'e', location: 'p.4', stance: 'support' }],
     red_flags: [{ flag: 'small n', detail: 'n=3', severity: 'low' }],
     uncertainties: [{ item: 'generalization' }],
-    dir: '/ws/.research/papers/attention',
+    dir: '/ws/research/papers/attention',
     card_path: 'papers/attention/paper.md',
     pinned: true,
     linked_research: [{ hypothesis_id: 'H-001', research_id: 'R-001' }],
@@ -52,8 +52,8 @@ function wirePaper(overrides: Record<string, unknown> = {}): Record<string, unkn
 function wireLibrary(papers: unknown[], pinned: string[] = []): Record<string, unknown> {
   return {
     project_id: 'p1',
-    research_root: '/ws/.research',
-    root: '/ws/.research/papers',
+    research_root: '/ws/research',
+    root: '/ws/research/papers',
     papers,
     pinned,
   }
@@ -72,8 +72,8 @@ describe('getPapers boundary validation', () => {
     const lib = await getPapers('p1')
 
     expect(lib.project_id).toBe('p1')
-    expect(lib.research_root).toBe('/ws/.research')
-    expect(lib.root).toBe('/ws/.research/papers')
+    expect(lib.research_root).toBe('/ws/research')
+    expect(lib.root).toBe('/ws/research/papers')
     expect(lib.pinned).toEqual(['papers/attention/paper.md'])
     expect(lib.papers).toHaveLength(1)
     expect(lib.papers[0]).toMatchObject({
@@ -83,7 +83,7 @@ describe('getPapers boundary validation', () => {
       reading: 'selective',
       verdict: 'accepted',
       confidence: 'high',
-      dir: '/ws/.research/papers/attention',
+      dir: '/ws/research/papers/attention',
       card_path: 'papers/attention/paper.md',
       pinned: true,
       research_ids: ['H-001'],
@@ -107,8 +107,8 @@ describe('getPapers boundary validation', () => {
     mockApp.GetPapers = vi.fn(() =>
       Promise.resolve({
         project_id: 'p1',
-        research_root: '/ws/.research',
-        root: '/ws/.research/papers',
+        research_root: '/ws/research',
+        root: '/ws/research/papers',
         papers: [
           {
             id: 'P-002',
@@ -122,7 +122,7 @@ describe('getPapers boundary validation', () => {
             uncertainties: null,
             research_ids: null,
             linked_research: null,
-            dir: '/ws/.research/papers/x',
+            dir: '/ws/research/papers/x',
             card_path: 'papers/x/paper.md',
           },
         ],

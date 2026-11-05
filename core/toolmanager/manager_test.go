@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -956,7 +957,7 @@ func (s *stubInstaller) InstallStaticBinary(archivePath string, tool ToolSpec, b
 	return &InstallResult{ToolName: tool.Name, BinPath: dst, Installed: true}, nil
 }
 
-func (s *stubInstaller) InstallPythonPackage(ctx context.Context, tool ToolSpec, toolsDir, binDir string) (*InstallResult, error) { //nolint:gocritic // must match Installer interface
+func (s *stubInstaller) InstallPythonPackage(ctx context.Context, tool ToolSpec, toolsDir, binDir string, step func(detail string)) (*InstallResult, error) { //nolint:gocritic // must match Installer interface
 	return &InstallResult{ToolName: tool.Name, BinPath: filepath.Join(binDir, tool.BinName), Installed: true}, nil
 }
 
@@ -989,7 +990,7 @@ func (s *shortCircuitStaticInstaller) InstallStaticBinary(archivePath string, to
 	return &InstallResult{ToolName: tool.Name, BinPath: dst, Installed: true}, nil
 }
 
-func (s *shortCircuitStaticInstaller) InstallPythonPackage(ctx context.Context, tool ToolSpec, toolsDir, binDir string) (*InstallResult, error) { //nolint:gocritic // must match Installer interface
+func (s *shortCircuitStaticInstaller) InstallPythonPackage(ctx context.Context, tool ToolSpec, toolsDir, binDir string, step func(detail string)) (*InstallResult, error) { //nolint:gocritic // must match Installer interface
 	return &InstallResult{ToolName: tool.Name, BinPath: filepath.Join(binDir, tool.BinName), Installed: true}, nil
 }
 
@@ -1025,5 +1026,328 @@ func TestVenvPythonPath(t *testing.T) {
 	}
 	if filepath.Clean(got) != filepath.Clean(interp) {
 		t.Errorf("VenvPythonPath = %q, want %q", got, interp)
+	}
+}
+
+// ── Install progress protocol ──────────────────────────────────────────────
+
+// progressRecorder collects ToolProgress reports in emission order.
+type progressRecorder struct {
+	events []ToolProgress
+}
+
+func (r *progressRecorder) callback(p ToolProgress) { r.events = append(r.events, p) }
+
+// stages returns the stage sequence reported for one tool.
+func (r *progressRecorder) stages(tool string) []string {
+	var out []string
+	for _, p := range r.events {
+		if p.Tool == tool {
+			out = append(out, p.Stage)
+		}
+	}
+	return out
+}
+
+// last returns the final report for one tool.
+func (r *progressRecorder) last(tool string) ToolProgress {
+	var found ToolProgress
+	for _, p := range r.events {
+		if p.Tool == tool {
+			found = p
+		}
+	}
+	return found
+}
+
+// stepReportingInstaller models a Python bootstrap that announces its
+// sub-steps like the production FSInstaller does.
+type stepReportingInstaller struct {
+	stubInstaller
+}
+
+func (s *stepReportingInstaller) InstallPythonPackage(ctx context.Context, tool ToolSpec, toolsDir, binDir string, step func(detail string)) (*InstallResult, error) { //nolint:gocritic // must match Installer interface
+	step(DetailInterpreter)
+	step(DetailVenv)
+	step(DetailPackages)
+	return &InstallResult{ToolName: tool.Name, BinPath: filepath.Join(binDir, tool.BinName), Installed: true}, nil
+}
+
+// TestManager_InstallProgress_OfflineCacheInstall pins the progress protocol
+// of a cached offline install: no download events (a cache hit transfers no
+// bytes), extract → verify → done for each static binary, and NO events for a
+// Python tool deferred to the network pass — a deferral is not a failure and
+// the network pass owns that tool's outcome.
+func TestManager_InstallProgress_OfflineCacheInstall(t *testing.T) {
+	toolsDir, binDir, pythonDir := makeTestDirs(t)
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := &progressRecorder{}
+	mgr := &Manager{
+		ToolsDir:         toolsDir,
+		BinDir:           binDir,
+		PythonDir:        pythonDir,
+		Downloader:       DownloadFunc(cacheAwareDownload),
+		Installer:        &stubInstaller{},
+		Logger:           slog.New(slog.DiscardHandler),
+		ProgressCallback: rec.callback,
+	}
+
+	uv := toolSpec(t, "uv")
+	rg := toolSpec(t, "rg")
+	writeCachedArchives(t, filepath.Join(toolsDir, ".cache"), uv, rg)
+	if err := WriteVersions(toolsDir, ToolVersions{uv.Name: "previous", rg.Name: "previous"}); err != nil {
+		t.Fatal(err)
+	}
+	setFakeToolVersion(t, uv.Name, uv.Version)
+	setFakeToolVersion(t, rg.Name, rg.Version)
+
+	statuses, err := mgr.EnsureCriticalTools(context.Background(), EnsureOptions{AllowNetwork: false})
+	if err != nil {
+		t.Fatalf("EnsureCriticalTools failed: %v", err)
+	}
+	for _, spec := range []ToolSpec{uv, rg} {
+		if status := findStatus(t, statuses, spec.Name); !status.Ready {
+			t.Fatalf("%s: not Ready after offline cache install: %v", spec.Name, status.Err)
+		}
+		want := []string{StageExtract, StageVerify, StageDone}
+		if got := rec.stages(spec.Name); !slices.Equal(got, want) {
+			t.Errorf("%s progress stages = %q, want %q", spec.Name, got, want)
+		}
+		if p := rec.last(spec.Name); p.Stage != StageDone || p.Error != "" {
+			t.Errorf("%s final report = %+v, want a clean done", spec.Name, p)
+		}
+	}
+
+	// markitdown is deferred to the network pass — it must stay silent here.
+	if got := rec.stages("markitdown"); len(got) != 0 {
+		t.Errorf("markitdown offline progress = %q, want no events (deferred, not failed)", got)
+	}
+}
+
+// TestManager_InstallProgress_OfflineCacheMiss pins the first-run offline
+// cache-miss protocol — the canonical splash scenario (fresh machine or a
+// post-bump archive cleanup: NeedsInstall returns everything, nothing is
+// cached). A static binary failing with ErrCacheUnavailable on the offline
+// pass is a DEFERRAL to the network pass, not a failure: no progress events
+// at all for the deferred tools (in particular no false failed verdict the
+// splash would render), while the statuses still report not-Ready with the
+// ErrCacheUnavailable cause.
+func TestManager_InstallProgress_OfflineCacheMiss(t *testing.T) {
+	toolsDir, binDir, pythonDir := makeTestDirs(t)
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := &progressRecorder{}
+	mgr := &Manager{
+		ToolsDir:         toolsDir,
+		BinDir:           binDir,
+		PythonDir:        pythonDir,
+		Downloader:       DownloadFunc(offlineCacheMissDownload),
+		Installer:        &stubInstaller{},
+		Logger:           slog.New(slog.DiscardHandler),
+		ProgressCallback: rec.callback,
+	}
+
+	// First run: nothing installed, nothing cached, network off.
+	statuses, err := mgr.EnsureCriticalTools(context.Background(), EnsureOptions{AllowNetwork: false})
+	if err != nil {
+		t.Fatalf("EnsureCriticalTools failed: %v", err)
+	}
+
+	// Statuses carry the deferral cause — the suppression is wire-only.
+	for _, name := range []string{"uv", "rg"} {
+		status := findStatus(t, statuses, name)
+		if status.Ready {
+			t.Fatalf("%s: must not be Ready on an offline cache miss", name)
+		}
+		if status.Err == nil || !errors.Is(status.Err, ErrCacheUnavailable) {
+			t.Errorf("%s status error = %v; want an error wrapping ErrCacheUnavailable", name, status.Err)
+		}
+		if status.Installed {
+			t.Errorf("%s: must not be recorded as Installed on a cache miss", name)
+		}
+	}
+	md := findStatus(t, statuses, "markitdown")
+	if md.Ready || md.Err == nil || !errors.Is(md.Err, errNeedsNetwork) {
+		t.Errorf("markitdown status = %+v; want not-Ready deferred with errNeedsNetwork", md)
+	}
+
+	// The offline pass is silent for every deferred tool: no failed verdicts,
+	// no partial stages — the network pass owns the terminal outcome.
+	if len(rec.events) != 0 {
+		t.Errorf("offline cache-miss progress = %+v, want no events (deferral, not failure)", rec.events)
+	}
+}
+
+// TestDeferredToNetworkPass pins the deferral predicate's truth table,
+// especially the AllowNetwork guard on the ErrCacheUnavailable arm: only an
+// offline pass (AllowNetwork=false) may treat a static-binary cache miss as a
+// deferral — the deciding network pass has nothing later to defer to, so the
+// same error there stays a failure. DownloadOnline never yields
+// ErrCacheUnavailable today; the guard is belt-and-braces against future
+// Downloader drift, and this table is what keeps it from being "simplified"
+// away. errNeedsNetwork is a deferral regardless of the pass (the manager
+// only produces it offline, but the predicate does not re-derive that).
+func TestDeferredToNetworkPass(t *testing.T) {
+	cacheMiss := fmt.Errorf("tool %q: %w", "uv", ErrCacheUnavailable)
+	pyDefer := fmt.Errorf("tool %q: %w", "markitdown", errNeedsNetwork)
+	tests := []struct {
+		name       string
+		installErr error
+		allowNet   bool
+		want       bool
+	}{
+		{"python deferral on the offline pass", pyDefer, false, true},
+		{"python deferral regardless of the pass", pyDefer, true, true},
+		{"static cache miss on the offline pass is a deferral", cacheMiss, false, true},
+		{"static cache miss on the deciding network pass is a failure", cacheMiss, true, false},
+		{"unrelated failure on the offline pass is a failure", errors.New("network unavailable"), false, false},
+		{"unrelated failure on the network pass is a failure", errors.New("network unavailable"), true, false},
+		{"nil error is not a deferral", nil, false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := deferredToNetworkPass(tt.installErr, EnsureOptions{AllowNetwork: tt.allowNet}); got != tt.want {
+				t.Errorf("deferredToNetworkPass(%v, AllowNetwork=%t) = %t, want %t", tt.installErr, tt.allowNet, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestManager_InstallProgress_NetworkPassCacheMissIsFailure pins the wire
+// consequence of the AllowNetwork guard: on the deciding network pass a
+// static binary failing with ErrCacheUnavailable is a FAILURE whose failed
+// verdict reaches the splash — the offline cache-miss deferral semantics must
+// not leak into the pass that owns the terminal outcome. offlineCacheMissDownload
+// models the Downloader-drift scenario deterministically, with no network I/O.
+func TestManager_InstallProgress_NetworkPassCacheMissIsFailure(t *testing.T) {
+	toolsDir, binDir, pythonDir := makeTestDirs(t)
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := &progressRecorder{}
+	mgr := &Manager{
+		ToolsDir:         toolsDir,
+		BinDir:           binDir,
+		PythonDir:        pythonDir,
+		Downloader:       DownloadFunc(offlineCacheMissDownload),
+		Installer:        &stubInstaller{},
+		Logger:           slog.New(slog.DiscardHandler),
+		ProgressCallback: rec.callback,
+	}
+
+	statuses, err := mgr.EnsureCriticalTools(context.Background(), EnsureOptions{AllowNetwork: true})
+	if err != nil {
+		t.Fatalf("EnsureCriticalTools failed: %v", err)
+	}
+
+	for _, name := range []string{"uv", "rg"} {
+		status := findStatus(t, statuses, name)
+		if status.Ready {
+			t.Fatalf("%s: must not be Ready after a failed network-pass install", name)
+		}
+		if status.Err == nil || !errors.Is(status.Err, ErrCacheUnavailable) {
+			t.Errorf("%s status error = %v; want an error wrapping ErrCacheUnavailable", name, status.Err)
+		}
+		p := rec.last(name)
+		if p.Stage != StageFailed {
+			t.Errorf("%s final stage = %q, want %q (no deferral past the deciding pass)", name, p.Stage, StageFailed)
+		}
+		if !strings.Contains(p.Error, ErrCacheUnavailable.Error()) {
+			t.Errorf("%s failed report carries error %q, want the ErrCacheUnavailable cause", name, p.Error)
+		}
+	}
+
+	// The Python tool is owned by this same pass and still completes.
+	if got := rec.stages("markitdown"); !slices.Equal(got, []string{StagePythonBootstrap, StageDone}) {
+		t.Errorf("markitdown progress stages = %q, want [%q %q]", got, StagePythonBootstrap, StageDone)
+	}
+}
+
+// TestManager_InstallProgress_NetworkPass pins the progress protocol of the
+// blocking network pass: byte-carrying download events, a failing install
+// ending in failed with a truncated cause, and the Python bootstrap
+// announcing its sub-steps before a terminal done.
+func TestManager_InstallProgress_NetworkPass(t *testing.T) {
+	toolsDir, binDir, pythonDir := makeTestDirs(t)
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := &progressRecorder{}
+	downloader := DownloadFunc(func(ctx context.Context, tool ToolSpec, cacheDir string, mode DownloadMode, progress func(int64, int64)) (*DownloadResult, error) {
+		if tool.Name == "uv" {
+			return nil, errors.New("network unavailable")
+		}
+		progress(50, 100) // a real transfer reports bytes before finishing
+		return &DownloadResult{ToolName: tool.Name, ArchivePath: filepath.Join(cacheDir, tool.ArchiveName), Downloaded: true}, nil
+	})
+	mgr := &Manager{
+		ToolsDir:         toolsDir,
+		BinDir:           binDir,
+		PythonDir:        pythonDir,
+		Downloader:       downloader,
+		Installer:        &stepReportingInstaller{stubInstaller{}},
+		Logger:           slog.New(slog.DiscardHandler),
+		ProgressCallback: rec.callback,
+	}
+
+	uv := toolSpec(t, "uv")
+	rg := toolSpec(t, "rg")
+	setFakeToolVersion(t, uv.Name, uv.Version)
+	setFakeToolVersion(t, rg.Name, rg.Version)
+
+	if _, err := mgr.EnsureCriticalTools(context.Background(), EnsureOptions{AllowNetwork: true}); err != nil {
+		t.Fatalf("EnsureCriticalTools failed: %v", err)
+	}
+
+	// rg: download bytes flow through, then the terminal sequence.
+	wantRG := []string{StageDownload, StageExtract, StageVerify, StageDone}
+	if got := rec.stages(rg.Name); !slices.Equal(got, wantRG) {
+		t.Errorf("rg progress stages = %q, want %q", got, wantRG)
+	}
+	var dl ToolProgress
+	for _, p := range rec.events {
+		if p.Tool == rg.Name && p.Stage == StageDownload {
+			dl = p
+		}
+	}
+	if dl.BytesDone != 50 || dl.BytesTotal != 100 {
+		t.Errorf("rg download report = %d/%d, want 50/100", dl.BytesDone, dl.BytesTotal)
+	}
+
+	// uv: the failed install ends in failed and carries the cause.
+	p := rec.last(uv.Name)
+	if p.Stage != StageFailed {
+		t.Errorf("uv final stage = %q, want %q", p.Stage, StageFailed)
+	}
+	if !strings.Contains(p.Error, "network unavailable") {
+		t.Errorf("uv failed report carries error %q, want the download cause", p.Error)
+	}
+
+	// markitdown: bootstrap sub-steps in order, then done.
+	var gotDetail []string
+	var stages []string
+	for _, e := range rec.events {
+		if e.Tool != "markitdown" {
+			continue
+		}
+		stages = append(stages, e.Stage)
+		if e.Detail != "" {
+			gotDetail = append(gotDetail, e.Detail)
+		}
+	}
+	wantStages := []string{StagePythonBootstrap, StagePythonBootstrap, StagePythonBootstrap, StagePythonBootstrap, StageDone}
+	if !slices.Equal(stages, wantStages) {
+		t.Errorf("markitdown progress stages = %q, want %q", stages, wantStages)
+	}
+	wantDetail := []string{DetailInterpreter, DetailVenv, DetailPackages}
+	if !slices.Equal(gotDetail, wantDetail) {
+		t.Errorf("markitdown bootstrap details = %q, want %q", gotDetail, wantDetail)
 	}
 }

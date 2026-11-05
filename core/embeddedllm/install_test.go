@@ -1254,7 +1254,7 @@ func TestInstallStopsTheServerFirst(t *testing.T) {
 			t.Error("the in-flight load's child survived the bounded step-0 stop")
 		}
 		select {
-		case <-loadDone:
+		case <-loadDone: //nolint:errcheck // join: the payload is not the assertion
 		case <-time.After(5 * time.Second):
 			t.Error("the interrupted load never returned")
 		}

@@ -25,11 +25,10 @@ type memoryStatusEx struct {
 	availExtendedVirtual uint64
 }
 
-// platformTotalRAMBytes reads total physical RAM through GlobalMemoryStatusEx,
-// the same source the fork's PowerShell demo scripts use. It reports the total
-// installed physical memory, not what is currently free — resolution sizes the
-// context tier from the machine's capacity, exactly like the demo's
-// bonsai_ctx_default does on the other platforms.
+// platformTotalRAMBytes reads total physical RAM through GlobalMemoryStatusEx:
+// total installed memory, not currently free — resolution sizes the context
+// tier from the machine's capacity. See specs/domains/embedded-llm.md
+// (Hardware probe → resolution).
 func platformTotalRAMBytes(_ context.Context) (uint64, error) {
 	kernel32 := syscall.NewLazyDLL("kernel32.dll")
 	globalMemoryStatusEx := kernel32.NewProc("GlobalMemoryStatusEx")

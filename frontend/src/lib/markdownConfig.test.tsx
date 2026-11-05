@@ -254,3 +254,95 @@ describe('Markdown parse cache', () => {
   })
 })
 
+describe('Markdown remote image gating', () => {
+  let container: HTMLElement
+  let root: Root
+
+  beforeEach(() => {
+    container = document.createElement('div')
+    document.body.replaceChildren(container)
+    root = createRoot(container)
+  })
+
+  afterEach(() => {
+    act(() => {
+      root.unmount()
+    })
+    document.body.replaceChildren()
+  })
+
+  function render(content: string) {
+    return act(async () => {
+      root.render(<Markdown content={content} />)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+  }
+
+  it('renders a remote http(s) image as a blocked placeholder, never an auto-fetched <img>', async () => {
+    await render('![tracking](https://evil.example/pixel.png?t=1)')
+    // The webview must not issue a GET for the model-authored URL: no <img>
+    // exists until the user explicitly loads it.
+    expect(container.querySelector('img')).toBeNull()
+    const gate = container.querySelector('[data-testid="markdown-image-blocked"]')
+    expect(gate).toBeTruthy()
+    expect(gate!.textContent).toContain('https://evil.example/pixel.png?t=1')
+    expect(gate!.querySelector('[data-testid="markdown-image-load"]')).toBeTruthy()
+  })
+
+  it('loads the remote image only after the explicit user click', async () => {
+    await render('![photo](https://images.example/photo.png)')
+    const load = container.querySelector('[data-testid="markdown-image-load"]') as HTMLElement
+    await act(async () => {
+      load.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+    const img = container.querySelector('img')
+    expect(img).toBeTruthy()
+    expect(img!.getAttribute('src')).toBe('https://images.example/photo.png')
+    // The gate is gone once consented.
+    expect(container.querySelector('[data-testid="markdown-image-blocked"]')).toBeNull()
+  })
+
+  it('resets the gate when the src changes', async () => {
+    await render('![a](https://images.example/a.png)')
+    await act(async () => {
+      ;(container.querySelector('[data-testid="markdown-image-load"]') as HTMLElement).dispatchEvent(
+        new MouseEvent('click', { bubbles: true }),
+      )
+      await Promise.resolve()
+    })
+    expect(container.querySelector('img')).toBeTruthy()
+    // A follow-up message with a different src cannot ride the earlier
+    // approval — the gate is closed again.
+    await render('![b](https://images.example/b.png)')
+    expect(container.querySelector('img')).toBeNull()
+    expect(container.querySelector('[data-testid="markdown-image-blocked"]')).toBeTruthy()
+  })
+
+  it('does not gate local (relative) image paths', async () => {
+    await render('![pic](docs/img.png)')
+    // Local paths resolve through the workspace RPC — no remote fetch, no gate.
+    expect(container.querySelector('img')).toBeTruthy()
+    expect(container.querySelector('[data-testid="markdown-image-blocked"]')).toBeNull()
+  })
+
+  it('blocks protocol-relative srcs — the webview resolves them against the page scheme', async () => {
+    await render('![x](//evil.example/pixel.png?t=1)')
+    // `//host` has no scheme for the sanitizer and misses a literal https://
+    // prefix check, yet the browser fetches it cross-origin — it must be gated.
+    expect(container.querySelector('img')).toBeNull()
+    const gate = container.querySelector('[data-testid="markdown-image-blocked"]')
+    expect(gate).toBeTruthy()
+    expect(gate!.textContent).toContain('//evil.example/pixel.png?t=1')
+  })
+
+  it('blocks single-slash scheme spellings the URL parser normalizes to https://', async () => {
+    await render('![x](https:/evil.example/pixel.png?t=1)')
+    // `https:/host` (one slash) passes the sanitizer's protocol allow-list and
+    // the webview normalizes it to https://host — it must be gated too.
+    expect(container.querySelector('img')).toBeNull()
+    expect(container.querySelector('[data-testid="markdown-image-blocked"]')).toBeTruthy()
+  })
+})
+

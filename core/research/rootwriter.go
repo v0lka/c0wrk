@@ -1,14 +1,9 @@
-// Package research — root-level writer layer.
-//
-// This file implements the research-root mutations that operate ABOVE a
-// single project's hypothesis graph: activating a project (rewriting the
-// root index.md so the project's row becomes the last entry — the
-// chronological "last entry = active" rule PickActiveProject applies) and
-// deleting a project (removing its index rows and its R-NNN-* directory
-// tree). Like the hypothesis mutations in writer.go, both entry points read
-// first, compute the new index content purely in memory, and write through
-// writeFilesAtomic (temp file + rename, containment-checked against
-// researchRoot), so a failure leaves index.md byte-for-byte unchanged.
+// Package research — root-level writer layer: the research-root mutations
+// ABOVE a single project's hypothesis graph — activating a project (index.md
+// row moved to last, the "last entry = active" rule) and deleting a project
+// (index rows + R-NNN-* tree removed). Like writer.go, both read first,
+// compute in memory, and write through writeFilesAtomic, so a failure leaves
+// index.md byte-for-byte unchanged.
 package research
 
 import (
@@ -22,20 +17,12 @@ import (
 	"github.com/v0lka/sp4rk/pathutil"
 )
 
-// SetActiveResearch makes rid the active research project of a research root.
-// Activation rewrites the root's index.md so rid's row becomes the LAST table
-// entry — the chronological rule PickActiveProject uses to select the active
-// R-NNN (the latest index entry wins over the highest-numbered directory).
-// When index.md is missing, or carries no row for rid, a minimal row linking
-// the project's brief is appended instead (index.md is created with the
-// canonical skeleton when absent). The write is atomic-ish
-// (writeFilesAtomic) and a no-op when rid's row already is the last table
-// entry.
-//
-// rid must resolve to a project under researchRoot — the same ownership
-// check ProjectDir applies to hypothesis mutations — so activating a research
-// that lives under another root, or an id that matches nothing, is rejected
-// before any file is touched.
+// SetActiveResearch makes rid the active research project by moving its
+// index.md row to the last table entry — the chronological rule
+// PickActiveProject applies. A missing file/row gets the minimal
+// brief-linking row (canonical skeleton when the file is absent); rid must
+// resolve under researchRoot (ProjectDir ownership check) before any file is
+// touched. Full contract: specs/domains/research.md.
 func SetActiveResearch(researchRoot, rid string) error {
 	rid = NormalizeResearchID(rid)
 	if rid == "" {
@@ -49,9 +36,8 @@ func SetActiveResearch(researchRoot, rid string) error {
 	}
 
 	indexPath := filepath.Join(researchRoot, "index.md")
-	// Fail closed on an unreadable index: proceeding with "" would rewrite
-	// index.md as a minimal single-row skeleton and drop every other
-	// project's row.
+	// Fail closed on an unreadable index: "" would rewrite index.md as a
+	// one-row skeleton, dropping every other project's row.
 	current, err := readFileStrict(indexPath)
 	if err != nil {
 		return fmt.Errorf("failed to read research index: %w", err)
@@ -75,20 +61,14 @@ func SetActiveResearch(researchRoot, rid string) error {
 	return nil
 }
 
-// DeleteResearchProject removes a research project from a research root: every
-// index.md entry line referencing it, then its R-NNN-* directory tree in full
-// (os.RemoveAll). rid must resolve under researchRoot (the ProjectDir
-// ownership check), and the resolved project directory must sit strictly
-// INSIDE the resolved research root — a symlinked or otherwise escaping
-// project directory, or one equal to the root itself, is rejected before
-// anything is touched (the same containment posture as writeFilesAtomic).
-//
-// The index rewrite is atomic and happens before the directory removal, so an
-// index failure leaves the project directory untouched; a directory-removal
-// failure leaves a stale index row, which the best-effort parser tolerates
-// (an entry without a matching directory never becomes the active project).
-// os.RemoveAll does not follow symlinks — a symlinked child inside the tree
-// is unlinked, not chased.
+// DeleteResearchProject removes every index.md entry line referencing rid,
+// then rid's R-NNN-* directory tree in full. The resolved project directory
+// must sit strictly inside the resolved research root — equality with the
+// root, or any escape, is rejected before anything is touched (full contract:
+// specs/domains/research.md). The atomic index rewrite precedes the removal,
+// so an index failure leaves the tree untouched, and a removal failure leaves
+// a stale row the best-effort parser tolerates; os.RemoveAll unlinks
+// symlinked children rather than chasing them.
 func DeleteResearchProject(researchRoot, rid string) error {
 	rid = NormalizeResearchID(rid)
 	if rid == "" {
@@ -103,11 +83,10 @@ func DeleteResearchProject(researchRoot, rid string) error {
 		return err
 	}
 
-	// 1. Drop every index entry line for rid (atomic; skipped when index.md
-	// carries none). readFileStrict (not the tolerant readFile) so a
-	// present-but-unreadable index aborts the deletion instead of silently
-	// skipping the rewrite and then removing the directory — which would leave
-	// a dangling index row pointing at a removed project.
+	// 1. Drop every index entry line for rid (atomic; skipped when none).
+	// readFileStrict, not the tolerant readFile: a present-but-unreadable
+	// index must abort the deletion rather than leave a dangling index row
+	// pointing at a removed project.
 	indexPath := filepath.Join(researchRoot, "index.md")
 	current, readErr := readFileStrict(indexPath)
 	if readErr != nil {
@@ -119,18 +98,14 @@ func DeleteResearchProject(researchRoot, rid string) error {
 		}
 	}
 
-	// 2. Remove the project directory tree — the resolved location that was
-	// containment-checked, exactly like writeFilesAtomic writes the resolved
-	// target.
+	// 2. Remove the project tree at the resolved, containment-checked location.
 	if err := os.RemoveAll(resolvedDir); err != nil {
 		return fmt.Errorf("failed to remove research project directory %q: %w", projectDir, err)
 	}
 	return nil
 }
 
-// ---------------------------------------------------------------------------
-// index.md content helpers (pure)
-// ---------------------------------------------------------------------------
+// -- index.md content helpers (pure) --
 
 // indexTableHeader and indexTableSeparator are the canonical index.md table
 // skeleton (the research-init template; see testdata/index.md).
@@ -140,11 +115,9 @@ const (
 )
 
 // indexLineEntryID returns the research ID a single index.md line contributes
-// to ParseIndex's result — "" when the line is not an entry line (headings,
-// table headers, separators, prose). It reuses ParseIndex on the single line
-// so "what counts as an entry" stays defined in exactly one place: a line
-// carrying a brief.md Markdown link (ID from the link target, else the link
-// text) or, when the line has no link at all, a bare R-NNN token.
+// to ParseIndex ("": not an entry line). It reuses ParseIndex so "what counts
+// as an entry" stays defined in exactly one place — a brief.md link (ID from
+// target, else text) or a bare R-NNN token.
 func indexLineEntryID(line string) string {
 	entries := ParseIndex(line)
 	if len(entries) == 0 {
@@ -153,15 +126,12 @@ func indexLineEntryID(line string) string {
 	return entries[0].ID
 }
 
-// moveIndexRowToTableEnd rewrites index.md content so rid's row becomes the
-// last row of its Markdown table — the entry order PickActiveProject reads
-// (the last parsed entry is the active project). The row moved is the FIRST
-// line referencing rid, the occurrence that fixes its position in ParseIndex's
-// de-duplicated order; later duplicate references (e.g. a bullet list
-// mirroring the table) stay in place and are ignored by the parser's
-// de-duplication. A table row moves to the end of the last table; a
-// non-table entry line (a bullet) moves to the end of the file. It returns
-// the new content and whether a row was found at all.
+// moveIndexRowToTableEnd rewrites index.md so rid's row becomes the last row
+// of its table — the entry order PickActiveProject reads. The FIRST line
+// referencing rid moves (it fixes the parser's de-duplicated position);
+// later duplicates stay. A table row moves to the end of the last table, a
+// bullet entry to the end of the file. Returns the new content and whether
+// a row was found.
 func moveIndexRowToTableEnd(content, rid string) (string, bool) {
 	lines := strings.Split(content, "\n")
 	rowIdx := -1
@@ -179,9 +149,8 @@ func moveIndexRowToTableEnd(content, rid string) (string, bool) {
 	without = append(without, lines[:rowIdx]...)
 	without = append(without, lines[rowIdx+1:]...)
 
-	// A table row moves to the end of the last table; anything else (a
-	// bullet-list entry) moves to the end of the file, which also makes it
-	// the last parsed entry.
+	// A table row moves to the end of the last table; a bullet entry moves to
+	// the end of the file (also making it the last parsed entry).
 	if strings.HasPrefix(strings.TrimSpace(row), "|") {
 		if end := lastTableEnd(without); end >= 0 {
 			out := make([]string, 0, len(without)+1)
@@ -194,9 +163,8 @@ func moveIndexRowToTableEnd(content, rid string) (string, bool) {
 	return appendEntryLine(without, row), true
 }
 
-// removeIndexEntryLines removes every index entry line referencing rid — both
-// its table row and any bullet-list duplicates — so a deleted project leaves
-// no trace in ParseIndex's result. Non-entry lines are preserved verbatim;
+// removeIndexEntryLines removes every index entry line referencing rid (table
+// row and bullet duplicates); non-entry lines are preserved verbatim, and
 // content carrying no entry for rid is returned unchanged.
 func removeIndexEntryLines(content, rid string) string {
 	lines := strings.Split(content, "\n")
@@ -215,12 +183,9 @@ func removeIndexEntryLines(content, rid string) string {
 	return strings.Join(kept, "\n")
 }
 
-// appendMinimalIndexRow appends a minimal index row for rid to index.md
-// content that carries no row for it: a table row matching the existing
-// table's column count when a table is present, else a bullet-list line; a
-// blank/missing index is created with the canonical skeleton. The row links
-// the project's brief so ParseIndex picks it up regardless of the surrounding
-// format.
+// appendMinimalIndexRow appends a minimal brief-linking row for rid: a table
+// row matching the existing table's column count when one exists, else a
+// bullet line; a blank index is created with the canonical skeleton.
 func appendMinimalIndexRow(content, rid, title, briefPath string) string {
 	if strings.TrimSpace(content) == "" {
 		return minimalIndexContent(rid, title, briefPath)
@@ -237,10 +202,8 @@ func appendMinimalIndexRow(content, rid, title, briefPath string) string {
 	return appendEntryLine(lines, fmt.Sprintf("- [%s: %s](%s)", rid, title, briefPath))
 }
 
-// minimalIndexContent renders a fresh index.md for a research root that has
-// none: the canonical "# Research Index" heading, the table skeleton from the
-// research-init template, and rid's row as the single — last, therefore
-// active — entry.
+// minimalIndexContent renders a fresh index.md: canonical heading, the
+// research-init table skeleton, rid's row as the single (active) entry.
 func minimalIndexContent(rid, title, briefPath string) string {
 	row := minimalTableRow(rid, title, fmt.Sprintf("[brief](%s)", briefPath), 7)
 	return "# Research Index\n\n" +
@@ -251,9 +214,8 @@ func minimalIndexContent(rid, title, briefPath string) string {
 		row + "\n"
 }
 
-// minimalTableRow renders a minimal table row for rid: the ID, the title, the
-// brief link, and "—" placeholders in between so the row matches the table's
-// column count (cols is clamped to at least 2).
+// minimalTableRow renders a minimal row for rid (ID, title, brief link, "—"
+// placeholders; cols clamped to at least 2).
 func minimalTableRow(rid, title, link string, cols int) string {
 	if cols < 2 {
 		cols = 2
@@ -272,9 +234,8 @@ func minimalTableRow(rid, title, link string, cols int) string {
 	return joinCells(cells)
 }
 
-// appendEntryLine appends an entry line after the last non-blank line of an
-// already line-split content, preserving the trailing newline (and adding one
-// when the content had none).
+// appendEntryLine appends an entry line after the last non-blank line,
+// preserving (or adding) the trailing newline.
 func appendEntryLine(lines []string, row string) string {
 	out := make([]string, len(lines), len(lines)+2)
 	copy(out, lines)
@@ -294,10 +255,8 @@ func appendEntryLine(lines []string, row string) string {
 	return strings.Join(out, "\n")
 }
 
-// lastTableEnd returns the index just past the last line of the last Markdown
-// table in lines — a contiguous run of |-prefixed lines that contains a
-// separator row — or -1 when no table exists. A |-prefixed run without a
-// separator row is not a table and is skipped.
+// lastTableEnd returns the index just past the last Markdown table (a run of
+// |-prefixed lines containing a separator row), or -1 when none exists.
 func lastTableEnd(lines []string) int {
 	end := -1
 	inTable := false
@@ -322,8 +281,8 @@ func lastTableEnd(lines []string) int {
 	return end
 }
 
-// tableColumnCount counts the columns of the table whose last line is at
-// endIdx-1 (the block's first line is the header row). It returns at least 2.
+// tableColumnCount counts the columns of the table ending at endIdx-1;
+// at least 2.
 func tableColumnCount(lines []string, endIdx int) int {
 	start := endIdx - 1
 	for start > 0 && strings.HasPrefix(strings.TrimSpace(lines[start-1]), "|") {
@@ -335,19 +294,16 @@ func tableColumnCount(lines []string, endIdx int) int {
 	return 2
 }
 
-// projectBriefTitle reads a project directory's brief.md and returns its
-// parsed title ("" when the brief is missing or carries no title) — used to
-// render a human-readable minimal index row.
+// projectBriefTitle returns the parsed brief.md title ("" when absent) for a
+// human-readable minimal index row.
 func projectBriefTitle(projectDir string) string {
 	content, _ := readFile(filepath.Join(projectDir, "brief.md"))
 	return ParseBrief(content).Title
 }
 
-// briefRelLink renders the index.md link target for a project's brief: the
-// project directory's path relative to the research root plus brief.md, with
-// forward slashes (Markdown link targets are URL paths, not host paths). It
-// falls back to the directory's base name when the relative path cannot be
-// computed.
+// briefRelLink renders the index.md link target for a project's brief:
+// root-relative, forward slashes (Markdown targets are URL paths); falls
+// back to the base name when the relative path cannot be computed.
 func briefRelLink(researchRoot, projectDir string) string {
 	rel, err := filepath.Rel(researchRoot, projectDir)
 	if err != nil {
@@ -356,19 +312,13 @@ func briefRelLink(researchRoot, projectDir string) string {
 	return path.Join(filepath.ToSlash(rel), "brief.md")
 }
 
-// ---------------------------------------------------------------------------
-// Delete containment
-// ---------------------------------------------------------------------------
+// -- Delete containment --
 
-// resolveProjectDirWithinRoot symlink-resolves the research root and a project
-// directory and verifies the project directory sits strictly INSIDE the root.
-// pathutil.IsWithinPath treats the root itself as "within", so the equality
-// case — which would make os.RemoveAll wipe the whole research tree — is
-// rejected explicitly. It returns the resolved project directory: the
-// on-disk location that was validated and may therefore be removed. It fails
-// closed: an unresolvable path or any containment mismatch is an error, so a
-// symlinked project directory can never redirect a deletion outside the
-// workspace.
+// resolveProjectDirWithinRoot symlink-resolves root and project directory and
+// verifies the directory sits strictly INSIDE the root: IsWithinPath treats
+// the root itself as "within", so the equality case — which would make
+// os.RemoveAll wipe the whole research tree — is rejected explicitly. Returns
+// the validated on-disk location; fails closed on any mismatch.
 func resolveProjectDirWithinRoot(researchRoot, projectDir string) (string, error) {
 	if researchRoot == "" {
 		return "", errors.New("research delete rejected: empty research root")

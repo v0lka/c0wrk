@@ -1,21 +1,13 @@
 package gittest
 
-// Fake-git harness, shared by the hardening tests that pin the exact argv
-// and environment a c0wrk git layer executes. The stand-in "git" is the test
-// binary itself (the stdlib helper-process pattern): a copy of it placed on
-// PATH re-enters the package's TestMain in fake mode when
-// C0WRK_GITTEST_FAKE_GIT=1 is present in the environment (t.Setenv in the
-// parent test is inherited by the child), appends its argv and environment
-// to the log file named by C0WRK_GITTEST_FAKE_GIT_LOG, and exits 0. This
-// works on every platform, including Windows where shell scripts are not
-// executable.
-//
-// Usage per package (TestMain cannot be shared):
-//
-//	func TestMain(m *testing.M) {
-//		gittest.MaybeRecordFakeGit()
-//		os.Exit(m.Run())
-//	}
+// Fake-git harness for the hardening tests pinning the exact argv and
+// environment a c0wrk git layer executes. The stand-in "git" is the test
+// binary itself (stdlib helper-process pattern): a copy on PATH re-enters the
+// package's TestMain in fake mode when FakeGitGateEnv=1 (t.Setenv values are
+// inherited by the child), appends its argv and environment to the
+// FakeGitLogEnv file, and exits 0 — on every platform, Windows included.
+// Each package's TestMain must call MaybeRecordFakeGit first (TestMain
+// cannot be shared).
 
 import (
 	"os"
@@ -39,8 +31,7 @@ const (
 )
 
 // MaybeRecordFakeGit turns the test binary into the fake git recorder and
-// exits when C0WRK_GITTEST_FAKE_GIT=1; otherwise it returns so the normal
-// test run proceeds. Call it first in the package's TestMain.
+// exits when the gate env is set; otherwise it returns for the normal run.
 func MaybeRecordFakeGit() {
 	if os.Getenv(FakeGitGateEnv) != "1" {
 		return
@@ -60,8 +51,7 @@ func recordFakeGit() {
 	defer func() { _ = f.Close() }() // best-effort diagnostic logging
 	buf := &strings.Builder{}
 	buf.WriteString("ARGV\n")
-	// os.Args[0] is the resolved executable path; record its base name so
-	// assertions can pin that the executed binary is "git".
+	// Base name only, so assertions can pin that the executed binary is "git".
 	buf.WriteString(filepath.Base(os.Args[0]) + "\n")
 	for _, a := range os.Args[1:] {
 		buf.WriteString(a + "\n")
@@ -127,11 +117,10 @@ func SectionLines(lines []string, header string) []string {
 	return out
 }
 
-// AssertHardenedInvocation pins a recorded invocation of a hardened git
-// layer: the argv must be [git, safety overrides…, layerArgs…] with a valid
-// safe hooks dir, and the environment must preserve the parent environment
-// (the SentinelEnvName sentinel, which the test must set via t.Setenv) and
-// carry GIT_EDITOR=true.
+// AssertHardenedInvocation pins a recorded hardened invocation: the argv is
+// [git, safety overrides…, layerArgs…] with an existing safe hooks dir, and
+// the environment preserves the parent (SentinelEnvName, set via t.Setenv)
+// and carries GIT_EDITOR=true.
 func AssertHardenedInvocation(t *testing.T, lines []string, layerArgs ...string) {
 	t.Helper()
 	home, err := os.UserHomeDir()

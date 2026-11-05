@@ -109,6 +109,8 @@ task finishes ──▶ outcome gate (D2): finish ∈ {full, partial}? ──no�
 
 Exactly one generation pass per triggering task: the outcome gate consumes the finish event once; retries of the bookkeeping path must not double-fire (generation is idempotent per (task, kind) — a second pass replaces the first).
 
+The gate reads the TYPED execution status (`result.Status`), not the completion string: `Cancelled` and `Paused` map to the same "partial" completion as degraded outcomes but finished nothing, so they never trigger (`promptSuggestOutcomeTriggers`, `backend/session/prompt_suggest.go`); only `full` and genuinely-partial finishes do, as one fail-open pass on a tracked background goroutine.
+
 ### Generation inputs
 
 | Kind | Window | Filter |

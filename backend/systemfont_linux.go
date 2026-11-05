@@ -9,15 +9,11 @@ import (
 	"time"
 )
 
-// gnomeFontTimeout bounds one gsettings child process behind
-// readGSettingsKey: a wedged desktop settings daemon must never hang an RPC.
-// Each of the two keys gets its own fresh bound (worst case 6 s for both
-// reads), and the read happens once per app launch (the frontend asks after
-// backend:ready), so the cost of the generous bound is negligible.
+// gnomeFontTimeout bounds one gsettings child per key (a wedged settings daemon must
+// never hang an RPC); the read happens once per app launch. See specs/domains/frontend/fonts.md.
 const gnomeFontTimeout = 3 * time.Second
 
-// Compile-time command constants: gsettings is exec'd with a fixed argv —
-// nothing user- or model-controlled ever reaches the process invocation.
+// Compile-time command constants: nothing user- or model-controlled reaches the argv.
 const (
 	gsettingsBinary  = "gsettings"
 	gsettingsGetCmd  = "get"
@@ -26,20 +22,10 @@ const (
 	gnomeMonoFontKey = "monospace-font-name"
 )
 
-// readSystemFonts returns the raw GNOME interface and monospace font
-// descriptions (org.gnome.desktop.interface font-name and
-// monospace-font-name) for parseGnomeFontName. An error means "no detectable
-// system fonts" — gsettings missing from PATH or the schema absent (KDE, a
-// bare WM): both are normal outcomes the RPC reports as unavailable (the
-// zero response), never as failures. When the reads succeed, each
-// description is parsed independently and an unparsable value empties only
-// its own family.
-//
-// gsettings is exec'd rather than linked via GSettings cgo: it is the
-// established pattern for desktop-integration probes in this codebase (see
-// config/shell_env.go, session/clipboard_linux.go), keeps the build
-// cgo-neutral, and the value is read once per launch so the spawn cost is
-// irrelevant.
+// readSystemFonts returns the raw GNOME interface and monospace font descriptions for
+// parseGnomeFontName; an error means "no detectable system fonts" (no gsettings, schema
+// absent on KDE/bare WM) — normal, reported as unavailable, never a failure. See
+// specs/domains/frontend/fonts.md.
 func readSystemFonts() (systemFontPair, error) {
 	if _, err := exec.LookPath(gsettingsBinary); err != nil {
 		return systemFontPair{}, fmt.Errorf("%s not found in PATH: %w", gsettingsBinary, err)
@@ -55,10 +41,8 @@ func readSystemFonts() (systemFontPair, error) {
 	return systemFontPair{UI: ui, Mono: mono}, nil
 }
 
-// readGSettingsKey reads a single font key from gnomeFontSchema under its own
-// gnomeFontTimeout bound. An error here means the whole detection is
-// unavailable: both keys live in the same schema, so a missing schema or a
-// missing binary takes both fonts down together.
+// readGSettingsKey reads a single font key under its own gnomeFontTimeout bound;
+// an error takes the whole detection down (both keys share the schema).
 func readGSettingsKey(key string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), gnomeFontTimeout)
 	defer cancel()

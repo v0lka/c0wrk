@@ -45,13 +45,17 @@ import {
   MIN_PARALLEL,
 } from '@/lib/embeddedTuningLimits'
 import {
+  isEmbeddedLLMDeviceSnapshot,
   isEmbeddedLLMPlan,
   isEmbeddedLLMStatusExtras,
   isEmbeddedLLMTuning,
+  probeEmbeddedLLMDevices,
+  setEmbeddedLLMTuning,
   validateEmbeddedLLMTuningPatch,
   type EmbeddedLLMPlan,
   type EmbeddedLLMStatusExtras,
   type EmbeddedLLMTuning,
+  type EmbeddedLLMTuningPatch,
 } from './embeddedTuning'
 
 beforeEach(() => {
@@ -75,6 +79,8 @@ const PLAN: EmbeddedLLMPlan = {
   mmproj_offload: true,
   parallel: 1,
   cache_ram_mib: -1,
+  devices: ['CUDA0'],
+  split_mode: '',
   gpu_family: 'metal',
   device_budget_mib: 24576,
   host_budget_mib: 8192,
@@ -121,12 +127,18 @@ const TUNING: EmbeddedLLMTuning = {
   parallel: null,
   cache_ram_mib: null,
   host_reserve_gib: null,
+  devices: null,
+  split_mode: null,
 }
 
 describe('isEmbeddedLLMPlan — every field the install record renders', () => {
   it('accepts a recorded plan and the unrecorded sentinel shape', () => {
     expect(isEmbeddedLLMPlan(PLAN)).toBe(true)
     expect(isEmbeddedLLMPlan(EMPTY_PLAN)).toBe(true)
+  })
+
+  it('accepts a populated devices pin and split_mode spelling', () => {
+    expect(isEmbeddedLLMPlan({ ...PLAN, devices: ['CUDA0'], split_mode: 'layer' })).toBe(true)
   })
 
   it('rejects a non-object', () => {
@@ -150,6 +162,9 @@ describe('isEmbeddedLLMPlan — every field the install record renders', () => {
     ['mmproj_offload', 1],
     ['parallel', null],
     ['cache_ram_mib', '-1'],
+    ['devices', 'CUDA0'],
+    ['devices', ['CUDA0', 3]],
+    ['split_mode', 5],
     ['gpu_family', 7],
     ['device_budget_mib', '24576'],
     ['host_budget_mib', {}],
@@ -212,6 +227,8 @@ describe('isEmbeddedLLMTuning — the override surface', () => {
         offload: { mode: 'layers', layers: 30 },
         fit: false,
         host_reserve_gib: 6.5,
+        devices: ['CUDA0'],
+        split_mode: 'layer',
       }),
     ).toBe(true)
   })
@@ -221,6 +238,9 @@ describe('isEmbeddedLLMTuning — the override surface', () => {
     ['parallel', '2'],
     ['host_reserve_gib', '6'],
     ['kv_cache_type', 8],
+    ['devices', 'CUDA0'],
+    ['devices', ['CUDA0', 3]],
+    ['split_mode', 5],
   ])('rejects a drifted %s', (key, value) => {
     expect(isEmbeddedLLMTuning({ ...TUNING, [key]: value })).toBe(false)
   })
@@ -279,6 +299,70 @@ describe('validateEmbeddedLLMTuningPatch — ceilings', () => {
     expect(() =>
       validateEmbeddedLLMTuningPatch({ context: { mode: 'exact', tokens: MIN_CONTEXT_TOKENS - 1 } }),
     ).toThrow(/context\.tokens/)
+  })
+})
+
+describe('validateEmbeddedLLMTuningPatch — the device pin and the split mode', () => {
+  it('accepts a well-formed device list, a clear, and a legal split spelling', () => {
+    expect(() =>
+      validateEmbeddedLLMTuningPatch({ devices: ['CUDA0', 'CUDA1'], split_mode: 'layer' }),
+    ).not.toThrow()
+    expect(() => validateEmbeddedLLMTuningPatch({ devices: [] })).not.toThrow()
+    expect(() => validateEmbeddedLLMTuningPatch({ split_mode: 'row' })).not.toThrow()
+  })
+
+  it('refuses a runtime null devices cleanly instead of a TypeError', () => {
+    // Out of contract for `devices?: readonly string[]` — a hand-called
+    // binding must hit the guard, never `.length` of null. The value only
+    // exists at runtime, so the case reaches the guard through a cast.
+    const outOfContract = { devices: null } as unknown as EmbeddedLLMTuningPatch
+    expect(() => validateEmbeddedLLMTuningPatch(outOfContract)).toThrow(/devices/)
+    expect(() => validateEmbeddedLLMTuningPatch(outOfContract)).toThrow(
+      /a list of device names/,
+    )
+  })
+
+  it.each(['auto', 'AUTO', 'Layer', ' layer ', ''] as const)(
+    'accepts the tuningChoice-lenient split spelling %j',
+    (split_mode) => {
+      // The backend's tuningChoice trims, matches case-insensitively, and
+      // reads "" / "auto" as the explicit-auto statement — a real wire
+      // value, distinct from unset (null). The guard mirrors exactly that.
+      expect(() => validateEmbeddedLLMTuningPatch({ split_mode })).not.toThrow()
+    },
+  )
+
+  it('forwards the lenient split spellings verbatim — the backend canonicalizes', async () => {
+    const rpc = vi.fn().mockResolvedValue(undefined)
+    mockApp.SetEmbeddedLLMTuning = rpc
+    await setEmbeddedLLMTuning({ split_mode: 'auto' })
+    await setEmbeddedLLMTuning({ split_mode: 'Layer' })
+    await setEmbeddedLLMTuning({ split_mode: ' layer ' })
+    await setEmbeddedLLMTuning({ split_mode: '' })
+    expect(rpc).toHaveBeenCalledTimes(4)
+    expect(rpc).toHaveBeenNthCalledWith(1, { split_mode: 'auto' })
+    expect(rpc).toHaveBeenNthCalledWith(2, { split_mode: 'Layer' })
+    expect(rpc).toHaveBeenNthCalledWith(3, { split_mode: ' layer ' })
+    expect(rpc).toHaveBeenNthCalledWith(4, { split_mode: '' })
+  })
+
+  it('refuses a non-string split_mode cleanly — no TypeError', () => {
+    expect(() =>
+      validateEmbeddedLLMTuningPatch({
+        split_mode: 5,
+      } as unknown as Parameters<typeof validateEmbeddedLLMTuningPatch>[0]),
+    ).toThrow(/embedded_llm\.tuning\.split_mode/)
+  })
+
+  it.each([
+    ['too many entries', { devices: Array.from({ length: 9 }, (_, i) => `CUDA${i}`) }],
+    ['a separator inside a token', { devices: ['CUDA 0'] }],
+    ['a flag-like token', { devices: ['-smrow'] }],
+    ['an empty entry', { devices: ['CUDA0', '   '] }],
+    ['a duplicated entry', { devices: ['CUDA0', 'CUDA0'] }],
+    ['an unknown split spelling', { split_mode: 'diagonal' }],
+  ] as const)('refuses %s', (_name, patch) => {
+    expect(() => validateEmbeddedLLMTuningPatch(patch)).toThrow(/embedded_llm\.tuning\.devices|split_mode/)
   })
 })
 
@@ -358,5 +442,42 @@ describe('validateEmbeddedLLMTuningPatch — integrality of the `int` knobs', ()
       validateEmbeddedLLMTuningPatch({ context: { mode: 'exact', tokens: 32768 } }),
     ).not.toThrow()
     expect(() => validateEmbeddedLLMTuningPatch({ fit_min_context: MIN_CONTEXT_TOKENS })).not.toThrow()
+  })
+})
+
+
+describe('probeEmbeddedLLMDevices — the live snapshot guard', () => {
+  const SNAPSHOT = {
+    devices: [{ name: 'CUDA0', description: 'NVIDIA GeForce RTX 4090', total_mib: 24576, free_mib: 8000 }],
+    unified: false,
+    host_ram_gib: 128,
+    device_budget_mib: 23552,
+    host_budget_mib: 114688,
+    probed_at: '2026-11-03T12:00:00Z',
+  }
+
+  it('passes a healthy measurement through', async () => {
+    mockApp.ProbeEmbeddedLLMDevices = async () => SNAPSHOT
+    await expect(probeEmbeddedLLMDevices()).resolves.toEqual(SNAPSHOT)
+  })
+
+  it('refuses a drifted payload loudly (schema drift, not a machine with no memory)', async () => {
+    mockApp.ProbeEmbeddedLLMDevices = async () => ({ ...SNAPSHOT, unified: 'yes' })
+    await expect(probeEmbeddedLLMDevices()).rejects.toThrow('invalid device snapshot')
+  })
+
+  it('propagates the backend refusal verbatim (an unanswered probe is an error, never an empty inventory)', async () => {
+    mockApp.ProbeEmbeddedLLMDevices = async () => {
+      throw new Error('the device probe did not answer')
+    }
+    await expect(probeEmbeddedLLMDevices()).rejects.toThrow('the device probe did not answer')
+  })
+
+  it('guard: an empty devices array is a real answer; a non-array or non-number field is drift', () => {
+    expect(isEmbeddedLLMDeviceSnapshot({ ...SNAPSHOT, devices: [] })).toBe(true)
+    expect(isEmbeddedLLMDeviceSnapshot({ ...SNAPSHOT, devices: 'none' })).toBe(false)
+    expect(isEmbeddedLLMDeviceSnapshot({ ...SNAPSHOT, probed_at: 42 })).toBe(false)
+    expect(isEmbeddedLLMDeviceSnapshot({ ...SNAPSHOT, devices: [{ ...SNAPSHOT.devices[0], free_mib: '8192' }] })).toBe(false)
+    expect(isEmbeddedLLMDeviceSnapshot(null)).toBe(false)
   })
 })

@@ -1,12 +1,9 @@
 // Package updater checks for newer c0wrk-desktop releases published on
 // GitHub and selects the downloadable asset matching the running platform
-// and packaging flavor.
-//
-// The package is intentionally decoupled from transport and version sources:
-// the HTTP client is injected (so corporate proxies configured via the
-// proxy package are honoured) and the current version is supplied by the
-// caller. This keeps the checker pure, deterministic and unit-testable with
-// an httptest mock server.
+// and packaging flavor. The package is decoupled from transport and version
+// sources: the HTTP client is injected (so corporate proxies configured via
+// the proxy package are honoured) and the current version is caller-supplied,
+// keeping the checker pure, deterministic and unit-testable.
 package updater
 
 import (
@@ -29,19 +26,11 @@ type platformSpec struct {
 	token    string // suffix token used to match an asset regardless of version, e.g. "macos-arm64"
 }
 
-// supportedPlatforms mirrors the build matrix in .github/workflows/release.yml.
-// The asset names are produced by the "Package …" steps of each platform job.
-// linux/amd64 is listed three times: the default CPU flavor and the two opt-in
-// GPU flavors — the CUDA 13 flavor (ADR-045/ADR-046), whose archive name
-// appends "-cuda13" after the arch token, and the OpenVINO flavor, whose
-// archive name appends "-openvino".
-//
-//	darwin/arm64         → c0wrk-desktop-macos-arm64.zip   (ditto of the .app bundle)
-//	linux/amd64 cpu      → c0wrk-desktop-linux-amd64.tar.gz
-//	linux/amd64 cuda13   → c0wrk-desktop-linux-amd64-cuda13.tar.gz
-//	linux/amd64 openvino → c0wrk-desktop-linux-amd64-openvino.tar.gz
-//	linux/arm64          → c0wrk-desktop-linux-arm64.tar.gz
-//	windows/amd64        → c0wrk-desktop-windows-amd64.zip
+// supportedPlatforms mirrors the build matrix in .github/workflows/release.yml
+// (ADR-046/ADR-089): linux/amd64 is listed three times — the default CPU
+// flavor plus the opt-in cuda13 and openvino flavors, whose archive names
+// append the flavor infix after the arch token. The code-checked matrix test
+// (core/updater/matrix_sync_test.go) is the drift guard.
 var supportedPlatforms = []platformSpec{
 	{goos: "darwin", goarch: "arm64", flavor: FlavorCPU, basename: "c0wrk-desktop-macos-arm64.zip", token: "macos-arm64"},
 	{goos: "linux", goarch: "amd64", flavor: FlavorCPU, basename: "c0wrk-desktop-linux-amd64.tar.gz", token: "linux-amd64"},
@@ -52,10 +41,9 @@ var supportedPlatforms = []platformSpec{
 }
 
 // AssetNameFor returns the canonical release asset filename for the given
-// GOOS/GOARCH pair and packaging flavor. It returns ErrNoAssetForPlatform
-// when the combination is not part of the release matrix (e.g.
-// linux/riscv64, darwin/amd64, or a GPU flavor on a platform that ships no
-// flavor variants).
+// GOOS/GOARCH pair and packaging flavor, or ErrNoAssetForPlatform when the
+// combination is not part of the release matrix (e.g. linux/riscv64,
+// darwin/amd64, or a GPU flavor on a platform with no flavor variants).
 func AssetNameFor(goos, goarch string, flavor Flavor) (string, error) {
 	for _, p := range supportedPlatforms {
 		if p.goos == goos && p.goarch == goarch && p.flavor == flavor {
@@ -65,9 +53,8 @@ func AssetNameFor(goos, goarch string, flavor Flavor) (string, error) {
 	return "", ErrNoAssetForPlatform
 }
 
-// platformToken returns the suffix identifying the asset for a platform and
-// flavor, or "" when unsupported. It is used to match against the filenames
-// returned by the GitHub API, which embed the version in some flows.
+// platformToken returns the asset-matching suffix token for a platform and
+// flavor, or "" when unsupported.
 func platformToken(goos, goarch string, flavor Flavor) string {
 	for _, p := range supportedPlatforms {
 		if p.goos == goos && p.goarch == goarch && p.flavor == flavor {
@@ -78,22 +65,18 @@ func platformToken(goos, goarch string, flavor Flavor) string {
 }
 
 // SelectAsset picks the release asset whose name matches the given platform
-// and packaging flavor.
-//
-// Matching is exact-first: it prefers the canonical archive filename for the
-// platform+flavor (compared case-insensitively against either the asset's Name
-// or the filename portion of its BrowserDownloadURL). Only when that exact
-// name is absent does it fall back to a token match, and that fallback is
-// anchored: the filename must end with "<token><archive-extension>" so that
-// companion files (detached signatures, checksums) and differently-flavored
-// archives never win over the archive itself. The anchoring is load-bearing
-// for the CPU flavor on linux/amd64: its token "linux-amd64" is a substring
-// of both flavored asset names "…-linux-amd64-cuda13.tar.gz" and
-// "…-linux-amd64-openvino.tar.gz", and a plain Contains match would silently
-// hand a CPU installation a GPU archive (or vice versa).
-//
-// It returns ErrNoAssetForPlatform when the platform+flavor is unsupported or
-// when no asset in the release matches it.
+// and packaging flavor. Matching is exact-first: it prefers the canonical
+// archive filename for the platform+flavor (compared case-insensitively
+// against either the asset's Name or the filename portion of its
+// BrowserDownloadURL). Only when that exact name is absent does it fall back
+// to a token match, and that fallback is anchored: the filename must end
+// with "<token><archive-extension>", so companion files (detached
+// signatures, checksums) and differently-flavored archives never win over
+// the archive itself. The anchoring is load-bearing for the CPU flavor on
+// linux/amd64, whose token "linux-amd64" is a substring of both flavored
+// asset names — a plain Contains match would silently hand a CPU
+// installation a GPU archive (or vice versa). Returns ErrNoAssetForPlatform
+// when the platform+flavor is unsupported or no asset matches.
 func SelectAsset(assets []ReleaseAsset, goos, goarch string, flavor Flavor) (ReleaseAsset, error) {
 	basename, err := AssetNameFor(goos, goarch, flavor)
 	if err != nil {
@@ -160,10 +143,10 @@ var archiveExtensions = []string{".zip", ".tar.gz"}
 
 // matchesTokenExt reports whether name ends with the token immediately
 // followed by a recognised archive extension. Requiring the token to sit
-// flush against the extension anchors the match at the end of the filename:
-// "linux-amd64" matches "c0wrk-desktop-linux-amd64.tar.gz" but NOT
-// "c0wrk-desktop-linux-amd64-cuda13.tar.gz", whose arch token is followed by
-// the "-cuda13" flavor infix. A substring Contains has no such guarantee.
+// flush against the extension anchors the match at the filename's end:
+// "linux-amd64" matches "c0wrk-desktop-linux-amd64.tar.gz" but NOT the
+// "-cuda13"/"-openvino" flavored archives, whose arch token is followed by
+// the flavor infix. A substring Contains has no such guarantee.
 func matchesTokenExt(name, token string) bool {
 	for _, ext := range archiveExtensions {
 		if strings.HasSuffix(name, token+ext) {
@@ -174,8 +157,6 @@ func matchesTokenExt(name, token string) bool {
 }
 
 // CurrentPlatform returns the GOOS/GOARCH the running binary was built for.
-// It is a convenience wrapper over the runtime package, exposed so callers can
-// override it (mainly for tests) without touching globals.
 func CurrentPlatform() (goos, goarch string) {
 	return runtime.GOOS, runtime.GOARCH
 }

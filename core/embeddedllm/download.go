@@ -23,79 +23,34 @@ import (
 	"github.com/v0lka/sp4rk/safeio"
 )
 
-// Range support — experimentally confirmed against both pinned hosts.
-//
-// Resume is the normal path, not an optimistic guess. Probed live (2026-09-23)
-// with `curl -L -H "Range: bytes=<offset>-"`:
-//
-//	Hugging Face weights
-//	  GET https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf/resolve/<rev>/
-//	      Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf          Range: bytes=629246000-
-//	  → 302  accept-ranges: bytes
-//	         x-linked-size: 629246976
-//	         x-linked-etag: "6807ede61d570bb86ba34b756a0fa109edc33668604de867c6ea6d8f1d631903"
-//	         location: https://us.aws.cdn.hf.co/xet-bridge-us/… (signed, expiring)
-//	  → 206  accept-ranges: bytes
-//	         content-length: 976
-//	         content-range: bytes 629246000-629246975/629246976
-//	  → 416  for a Range starting beyond EOF
-//
-//	GitHub release assets (runtime + cudart)
-//	  GET …/releases/download/prism-b10735-842b188/llama-…-bin-win-cpu-x64.zip
-//	                                                   Range: bytes=19029000-
-//	  → 302 → 206  accept-ranges: bytes
-//	               content-length: 1039
-//	               content-range: bytes 19029000-19030038/19030039
-//	  → 416  content-range: bytes */19030039 for a Range beyond EOF
-//
-// Both hosts serve the bytes through a redirect to a signed CDN URL. net/http
-// copies the Range header across a redirect — only Authorization, Cookie,
-// Cookie2 and WWW-Authenticate are domain-gated — so one ranged request
-// resumes correctly without any redirect handling here.
-//
-// Fallbacks, both explicit and never silent:
-//
-//   - A host that answers 200 to a ranged request ignored Range. The transfer
-//     restarts from byte 0 using that same response body: the partial is
-//     truncated, the hasher is reset, a warning is logged, and Result carries
-//     Restarted + RestartReason. Appending a full body to a partial would
-//     silently corrupt the artifact, so this is the only safe reading of 200.
-//   - A host that answers 416 cannot be reconciled with the partial on disk
-//     (the object shrank, or the partial is longer than the pin). The partial
-//     is discarded and the download restarts once from byte 0.
-//
-// SILENT AUTO-RESUME (see Download): a transfer that drops mid-body, a server
-// that could not be reached at all, and a retryable HTTP refusal (408/429/5xx)
-// are all retried inside Download with a growing backoff — the resume machinery
-// this file already owns makes each retry continue the partial instead of
-// restarting it, and the retry is invisible to every caller: no error surfaces
-// while progress is still being made. The loop stops and reports
-// ErrAttemptsExhausted only after MaxFailedAttempts consecutive attempts that
-// grew the partial by nothing at all — the "no network" shape. A cancelled
-// context is never retried: the operator's cancel click and an app shutdown
-// are the only producers, and both mean STOP.
-//
-// A transfer is never left "silently partial": every byte that reaches the
-// destination path has been SHA256-verified against the compile-time pin.
+// Resumable download of ONE pinned artifact. Range resume against both pinned
+// hosts was probed live (2026-09-23): both answer 302 → 206 to
+// `Range: bytes=<offset>-` and 416 beyond EOF; net/http copies the Range
+// header across the redirect to the signed CDN URL, so one ranged request
+// resumes without redirect handling here. The two Range fallbacks — a 200 that
+// ignored Range restarts from byte 0 with THAT body (appending a full object
+// to a partial would silently corrupt the artifact), and a 416 discarding the
+// irreconcilable partial for one from-scratch restart — are explicit and never
+// silent. Resumable failures are retried silently inside Download; the retry
+// policy and the fail-closed verification live in
+// specs/domains/embedded-llm.md (Download failures).
 const (
-	// PartialSuffix marks an in-flight transfer. A file at the destination
+	// PartialSuffix marks an in-flight transfer; a file at the destination
 	// path WITHOUT this suffix has passed SHA256 verification.
 	PartialSuffix = ".part"
 
-	// DefaultProgressInterval is the progress-callback throttle: fast enough to
-	// feel live, slow enough not to flood the Wails event channel on a 10 Gb/s
-	// link where a 6.7 GiB transfer produces hundreds of thousands of writes.
+	// DefaultProgressInterval throttles progress callbacks so a fast link
+	// cannot flood the Wails event channel with hundreds of thousands of
+	// writes per transfer.
 	DefaultProgressInterval = 100 * time.Millisecond
 
-	// responseHeaderTimeout bounds the wait for response headers only. There is
-	// deliberately no bound on the body transfer.
+	// responseHeaderTimeout bounds the wait for response headers only; the
+	// body transfer is deliberately unbounded.
 	responseHeaderTimeout = 60 * time.Second
 )
 
-// DefaultDiskHeadroom is free space required ON TOP of the bytes being
-// written. It absorbs the runtime archive's extracted contents and the
-// transient doubling while a partial is promoted, so a nearly-full volume
-// cannot end in ENOSPC halfway through a 6.7 GiB write.
+// DefaultDiskHeadroom is free space required ON TOP of the bytes being written
+// (the archive's extracted contents plus the transient promotion doubling).
 const DefaultDiskHeadroom int64 = 2 << 30 // 2 GiB
 
 // maxTransferAttempts bounds the 416-restart loop: one resume attempt plus one
@@ -103,52 +58,43 @@ const DefaultDiskHeadroom int64 = 2 << 30 // 2 GiB
 // a retry loop.
 const maxTransferAttempts = 2
 
-// Silent auto-resume policy.
+// Silent auto-resume policy: the zero-progress bound and the backoff shape are
+// spec'd in specs/domains/embedded-llm.md (Download failures).
 const (
-	// DefaultMaxFailedAttempts bounds how many CONSECUTIVE resumable failures
-	// (an unreachable server, a dropped transfer, a retryable HTTP refusal)
-	// may pass while the partial on disk has not grown by a single byte. Three
-	// zero-progress attempts in a row is the "no network" shape: the download
-	// stops and reports instead of retrying forever. Any attempt that grows
-	// the partial resets the count, so a flaky link that keeps moving bytes is
-	// retried without bound.
+	// DefaultMaxFailedAttempts bounds CONSECUTIVE zero-progress resumable
+	// failures — the "no network" shape; any attempt that grows the partial
+	// resets the count, so a flaky link that keeps moving bytes is retried
+	// without bound.
 	DefaultMaxFailedAttempts = 3
 
-	// DefaultRetryBackoff is the pause before the FIRST retry of a resumable
-	// failure. It doubles with every consecutive zero-progress failure and is
-	// capped at maxRetryBackoff; an attempt that makes progress resets it.
+	// DefaultRetryBackoff is the pause before the FIRST retry; it doubles per
+	// consecutive zero-progress failure and resets on progress.
 	DefaultRetryBackoff = time.Second
 
-	// maxRetryBackoff caps the backoff doubling so a long outage polls the
-	// server at a bounded rate instead of stacking ever-longer sleeps.
+	// maxRetryBackoff caps the doubling so a long outage polls the server at
+	// a bounded rate instead of stacking ever-longer sleeps.
 	maxRetryBackoff = 30 * time.Second
 )
 
-// ProgressFunc reports transfer progress as (bytesDone, bytesTotal). It is
-// called immediately at the start (with the resume offset, so the UI shows a
-// resumed transfer starting partway), at throttled intervals during the
-// transfer, and always once more at completion with done == total.
+// ProgressFunc reports (bytesDone, bytesTotal): immediately at the resume
+// offset, at throttled intervals during the transfer, and always once more at
+// completion with done == total.
 type ProgressFunc func(done, total int64)
 
 // Downloader fetches one pinned artifact to disk with resume, progress and
-// fail-closed verification.
-//
-// It is deliberately NOT core/toolmanager.Download. That downloader bounds a
-// startup-critical archive: maxDownloadBytes (1 GiB), a 5-minute whole-transfer
-// client timeout and a fixed 200 MiB disk guard — every one of which is wrong
-// for a 6.7 GiB user-initiated download that may span hours and must resume
-// across restarts (ADR-066, "Not a tool-manager extension"). What is reused is
-// the tool-manager's *pattern*: compile-time pins, fail-closed SHA256, and
-// securing the new bytes before destroying anything old.
-//
-// The zero value is usable; NewDownloader applies the documented defaults.
+// fail-closed verification. Deliberately NOT core/toolmanager.Download — that
+// one bounds a startup-critical archive (1 GiB cap, 5-minute transfer timeout,
+// fixed 200 MiB disk guard), every one wrong for a multi-gigabyte
+// user-initiated download that may span hours and resume across restarts
+// (ADR-066); only the pattern is reused (compile-time pins, fail-closed
+// SHA256, secure the new bytes before destroying the old). The zero value is
+// usable; NewDownloader applies the documented defaults.
 type Downloader struct {
 	// Client performs the transfer. nil → defaultTransferClient(), which has
 	// no overall timeout.
 	Client *http.Client
 	// Logger receives resume/restart/fallback diagnostics. nil → a discard
-	// logger (never the global slog.Default), matching the package's own
-	// no-global-logging rule.
+	// logger, never the global slog.Default.
 	Logger *slog.Logger
 	// ProgressInterval throttles progress callbacks. <= 0 → DefaultProgressInterval.
 	ProgressInterval time.Duration
@@ -156,89 +102,73 @@ type Downloader struct {
 	// <= 0 → DefaultDiskHeadroom.
 	DiskHeadroom int64
 	// FreeSpace reports bytes available on the volume containing a path.
-	// nil → platformFreeSpace. Injectable so the guard is testable without
-	// filling a disk.
+	// nil → platformFreeSpace; injectable so tests need not fill a disk.
 	FreeSpace func(path string) (int64, error)
-	// MaxFailedAttempts bounds how many consecutive resumable failures may
-	// pass while the partial has not grown. <= 0 → DefaultMaxFailedAttempts.
-	// See Download for the full retry contract.
+	// MaxFailedAttempts bounds consecutive zero-progress resumable failures.
+	// <= 0 → DefaultMaxFailedAttempts.
 	MaxFailedAttempts int
-	// RetryBackoff is the pause before the first retry of a resumable failure;
-	// it doubles per consecutive zero-progress failure up to maxRetryBackoff
-	// and resets after any progress. <= 0 → DefaultRetryBackoff.
+	// RetryBackoff is the pause before the first retry. <= 0 → DefaultRetryBackoff.
 	RetryBackoff time.Duration
 	// RetrySleep waits between retries, aborting early when ctx is done.
-	// nil → a real timer. Injectable so tests run retry loops without
-	// wall-clock pauses.
+	// nil → a real timer; injectable so tests avoid wall-clock pauses.
 	RetrySleep func(ctx context.Context, d time.Duration) error
-	// Now reports the clock used to throttle progress callbacks. nil →
-	// time.Now. Injectable so tests are deterministic regardless of the
-	// platform's clock granularity: the monotonic clock on Windows advances
-	// in ~0.5 ms steps, so a fast loopback transfer clears the throttle gate
-	// only a handful of times no matter how many chunks were written.
+	// Now is the clock throttling progress callbacks. nil → time.Now;
+	// injectable because the monotonic clock on Windows advances in ~0.5 ms
+	// steps, so a fast loopback transfer would clear the throttle gate only a
+	// handful of times no matter how many chunks were written.
 	Now func() time.Time
 }
 
-// Result reports the outcome of a verified download.
+// Result reports the outcome of a verified download. Verified is always true
+// when Download returns a nil error: fail-closed, there is no code path that
+// hands back unverified bytes.
 type Result struct {
 	// Path is the verified destination file (never the .part).
 	Path string
 	// SizeBytes is the artifact size, equal to the pinned size on success.
 	SizeBytes int64
-	// BytesWritten is the number of bytes the SUCCESSFUL attempt transferred;
-	// 0 on a cache hit and less than SizeBytes when the transfer resumed. It
-	// does not accumulate the bytes of attempts a silent retry discarded — it
-	// answers "how much network did the finishing transfer cost", not "how
-	// flaky was the link".
+	// BytesWritten is what the SUCCESSFUL attempt transferred — 0 on a cache
+	// hit, < SizeBytes when resumed; it never accumulates bytes a silent
+	// retry discarded ("how much network did the finishing transfer cost",
+	// not "how flaky was the link").
 	BytesWritten int64
 	// SHA256 is the verified digest.
 	SHA256 string
-	// Resumed is true when the transfer continued from a pre-existing partial.
+	// Resumed: the transfer continued from a pre-existing partial.
 	Resumed bool
-	// Cached is true when no bytes were transferred because the destination
-	// already existed and verified.
+	// Cached: no bytes transferred, the destination already existed and verified.
 	Cached bool
-	// Restarted is true when a Range fallback discarded the resume offset and
-	// re-fetched from byte 0; RestartReason carries the user-facing message.
+	// Restarted is set when a Range fallback re-fetched from byte 0;
+	// RestartReason carries the user-facing message.
 	Restarted     bool
 	RestartReason string
-	// Verified is always true when Download returns a nil error: fail-closed
-	// means there is no code path that hands back unverified bytes.
-	Verified bool
+	Verified      bool
 }
 
-// Downloader refusals. Each is a sentinel so callers can branch with errors.Is
-// and surface an actionable message instead of a generic failure.
+// Downloader refusals — sentinels for errors.Is; the resumable-vs-fatal split
+// is spec'd in specs/domains/embedded-llm.md (Download failures).
 var (
 	// ErrMissingChecksum is the fail-closed refusal for an artifact with no
-	// usable pinned digest. An empty checksum means REFUSE — it is never read
-	// as "skip verification" (ASI04).
+	// usable pinned digest — never read as "skip verification" (ASI04).
 	ErrMissingChecksum = errors.New("no pinned sha256 for this artifact")
-	// ErrChecksumMismatch reports downloaded bytes whose digest differs from
-	// the pin. The partial file is deleted; the bytes are never accepted.
+	// ErrChecksumMismatch: the partial is deleted, the bytes never accepted.
 	ErrChecksumMismatch = errors.New("sha256 mismatch")
 	// ErrInsufficientDisk reports that the volume cannot hold the artifact.
 	ErrInsufficientDisk = errors.New("insufficient free disk space")
-	// ErrArtifactTooLarge reports a server that offered more bytes than the
-	// pin allows — a wrong object, a lying mirror or a captive portal.
+	// ErrArtifactTooLarge: a wrong object, a lying mirror or a captive portal.
 	ErrArtifactTooLarge = errors.New("transfer exceeded the pinned artifact size")
-	// ErrIncompleteTransfer reports a transfer that stopped early. The partial
-	// is KEPT so the next attempt resumes instead of restarting.
+	// ErrIncompleteTransfer: the partial is KEPT so the next attempt resumes
+	// instead of restarting.
 	ErrIncompleteTransfer = errors.New("transfer stopped before the pinned artifact size")
-	// ErrUnreachable reports that the server could not be asked for bytes at
-	// all: the connection attempt failed (DNS, dial, TLS, the response-header
-	// timeout) or the server answered a refusal a retry can plausibly fix
-	// (408, 429, 5xx). Like ErrIncompleteTransfer it is RESUMABLE — Download
-	// retries it silently — but nothing was transferred, so the retry is a
-	// fresh connection rather than a resume.
+	// ErrUnreachable: the connection failed (DNS, dial, TLS, response-header
+	// timeout) or the server answered a retryable refusal (408/429/5xx).
+	// RESUMABLE — Download retries it silently, as a fresh connection.
 	ErrUnreachable = errors.New("the artifact server could not be reached")
-	// ErrAttemptsExhausted reports that the transfer was abandoned after
-	// MaxFailedAttempts consecutive attempts made no progress — the operator
-	// is offline or the server is down. The partial is KEPT: the next call
-	// resumes rather than restarts.
+	// ErrAttemptsExhausted: abandoned after MaxFailedAttempts consecutive
+	// zero-progress attempts — the operator is offline or the server is down.
+	// The partial is KEPT for the next call.
 	ErrAttemptsExhausted = errors.New("the transfer could not make progress")
-	// errStalePartial signals that the partial cannot be resumed (server
-	// answered 416) and the download must restart from byte 0.
+	// errStalePartial: the partial cannot be resumed (416); restart from byte 0.
 	errStalePartial = errors.New("resume offset rejected by the server")
 )
 
@@ -255,12 +185,10 @@ func NewDownloader(client *http.Client, logger *slog.Logger) *Downloader {
 	}
 }
 
-// defaultTransferClient builds the transfer client once.
-//
-// It has NO Client.Timeout on purpose. toolmanager's 5-minute cap exists to
-// keep a hung startup tool download from blocking the app; here the same cap
-// would abort every multi-gigabyte transfer on a slow link. Liveness is
-// bounded instead by the dial and response-header timeouts plus ctx.
+// defaultTransferClient builds the transfer client once. NO Client.Timeout on
+// purpose — toolmanager's 5-minute cap would abort every multi-gigabyte
+// transfer on a slow link; liveness is bounded by the dial and response-header
+// timeouts plus ctx.
 var defaultTransferClient = sync.OnceValue(func() *http.Client {
 	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
 	return &http.Client{
@@ -285,37 +213,22 @@ func RequiredFreeBytes(totalBytes int64) int64 {
 }
 
 // Download fetches asset to dstPath, resuming from an existing partial, and
-// returns only after the bytes on disk verify against the pin.
+// returns only after the bytes on disk verify against the pin. Contract: no
+// usable digest refused before any I/O; a checksum mismatch deletes the
+// partial; a transfer ending short of the pin keeps the partial
+// (ErrIncompleteTransfer), so the next call resumes; a partial that is not a
+// regular file this package wrote (a symlink above all) is discarded rather
+// than written through; cancellation keeps the partial; and dstPath is only
+// ever occupied by verified bytes (renamed from the partial).
 //
-// Contract:
-//   - an artifact with no usable pinned digest is refused before any I/O;
-//   - a checksum mismatch deletes the partial and returns ErrChecksumMismatch;
-//   - a transfer that ends short of the pin — dropped, cancelled, or a body that
-//     closed cleanly early — keeps the partial and returns ErrIncompleteTransfer,
-//     so the next call resumes rather than restarts;
-//   - a partial that is not a regular file this package wrote (a symlink, above
-//     all) is discarded rather than written through;
-//   - cancellation through ctx aborts at any stage and keeps the partial;
-//   - dstPath is only ever created after verification (it is renamed from the
-//     partial), so an unverified file never occupies the destination path.
-//
-// SILENT AUTO-RESUME. A resumable failure — ErrIncompleteTransfer (the
-// transfer dropped or ended short) or ErrUnreachable (the server could not be
-// reached, or answered 408/429/5xx) — is RETRIED inside this call, after a
-// backoff that starts at RetryBackoff and doubles per consecutive failure. The
-// retry is invisible to the caller: the resume machinery above continues the
-// partial, the progress callback keeps reporting the growing offset, and no
-// error surfaces while the transfer is still making progress. The loop gives
-// up — returning ErrAttemptsExhausted (wrapping the last cause) — only after
-// MaxFailedAttempts consecutive attempts that grew the partial by NOTHING, the
-// "no network" shape; the partial is still kept for the next call. Progress is
-// measured as the partial's size delta, not bytes transferred, so a server
-// that keeps restarting the transfer from byte 0 (a 200 fallback against a
-// short body) does not count as progress. A cancelled context is never
-// retried, and a 416-rejected resume restarts from byte 0 at most once, as
-// before.
-//
-// progress may be nil.
+// SILENT AUTO-RESUME: ErrIncompleteTransfer / ErrUnreachable are retried
+// inside this call after a doubling backoff, invisibly while progress
+// continues; the loop reports ErrAttemptsExhausted only after
+// MaxFailedAttempts consecutive attempts that grew the partial by NOTHING.
+// Progress is the partial's size DELTA, not bytes transferred, so a 200
+// fallback rewriting byte 0 does not count. A cancelled context is never
+// retried; a 416-rejected resume restarts from byte 0 at most once.
+// See specs/domains/embedded-llm.md (Download failures). progress may be nil.
 func (d *Downloader) Download(ctx context.Context, asset Asset, dstPath string, progress ProgressFunc) (*Result, error) {
 	if err := validateAsset(asset); err != nil {
 		return nil, err
@@ -363,11 +276,9 @@ func (d *Downloader) Download(ctx context.Context, asset Asset, dstPath string, 
 	partial := dstPath + PartialSuffix
 	var restarts int
 	var restartReason string
-	// Silent auto-resume bookkeeping. failStreak counts CONSECUTIVE resumable
-	// failures that grew the partial by nothing; sizeBefore is the partial's
-	// size at the end of the previous attempt (its growth, not the bytes an
-	// attempt transferred, is what counts as progress — a 200 fallback that
-	// rewrites the same prefix from byte 0 transfers bytes without advancing).
+	// Silent auto-resume bookkeeping: progress is the partial's GROWTH, not
+	// the bytes an attempt transferred (a 200 fallback rewriting byte 0
+	// advances nothing).
 	failStreak := 0
 	sizeBefore := d.partialSize(partial)
 	backoff := d.retryBackoff()
@@ -382,9 +293,8 @@ func (d *Downloader) Download(ctx context.Context, asset Asset, dstPath string, 
 			}
 			return res, nil
 		}
-		// A cancelled context is never retried: the operator's cancel click
-		// and an app shutdown are the only producers, and both mean STOP. The
-		// partial stays on disk for the resume either way.
+		// A cancelled context is never retried — the operator's cancel click
+		// and app shutdown are the only producers. The partial stays on disk.
 		if ctx.Err() != nil {
 			return nil, err
 		}
@@ -481,10 +391,9 @@ func (d *Downloader) transfer(ctx context.Context, asset Asset, dstPath, partial
 		offset = 0
 	}
 
-	// Hash the bytes already on disk BEFORE requesting anything, so the final
-	// digest covers the whole artifact without a second 6.7 GiB read after the
-	// transfer. This is a read-only open: no file is created until the server
-	// has actually answered, so a failed request leaves no partial behind.
+	// Hash the resumed prefix BEFORE requesting anything, so the final digest
+	// covers the whole artifact without a second multi-GiB read. Read-only
+	// open: a failed request leaves no partial behind.
 	hasher := sha256.New()
 	if offset > 0 {
 		if herr := hashPrefix(hasher, partial, offset); herr != nil {
@@ -501,9 +410,8 @@ func (d *Downloader) transfer(ctx context.Context, asset Asset, dstPath, partial
 	}
 	resp, err := d.client().Do(req)
 	if err != nil {
-		// Transport/context failure: the partial stays on disk for resume.
 		// Wrapped with ErrUnreachable so the retry loop classifies it as
-		// resumable (and the cancellation still unwraps to context.Canceled).
+		// resumable; cancellation still unwraps to context.Canceled.
 		return nil, fmt.Errorf("embeddedllm: %s: %w: the request failed: %w",
 			asset.Component, ErrUnreachable, err)
 	}
@@ -522,9 +430,8 @@ func (d *Downloader) transfer(ctx context.Context, asset Asset, dstPath, partial
 				asset.Component, complete, total)
 		}
 	case http.StatusOK:
-		// Range ignored. Restart from byte 0 with THIS body rather than
-		// appending a full object onto a partial (which would silently
-		// corrupt the artifact).
+		// Range ignored: restart from byte 0 with THIS body — appending a
+		// full object onto a partial would silently corrupt the artifact.
 		if offset > 0 {
 			res.Restarted = true
 			res.Resumed = false
@@ -569,9 +476,8 @@ func (d *Downloader) transfer(ctx context.Context, asset Asset, dstPath, partial
 		progress(offset, total)
 	}
 	// The hasher must see BOTH the resumed prefix (fed above) and every byte
-	// of this response, so the final digest covers the whole artifact. Writing
-	// only to the file would verify nothing. io.MultiWriter returns an
-	// io.Writer, so the progress wrapper can replace it below.
+	// of this response, or the final digest verifies nothing. io.MultiWriter
+	// returns an io.Writer, so the progress wrapper can replace it below.
 	writer := io.MultiWriter(f, hasher)
 	if progress != nil {
 		writer = &progressWriter{
@@ -595,20 +501,18 @@ func (d *Downloader) transfer(ctx context.Context, asset Asset, dstPath, partial
 		return nil, fmt.Errorf("embeddedllm: %s: %w (pin expects %d bytes)", asset.Component, ErrArtifactTooLarge, total)
 	}
 	if copyErr != nil {
-		// Keep the partial: this is exactly what resume is for. A cancelled
-		// or dropped transfer costs at most the bytes since the last flush.
-		// Both sentinels are wrapped so callers can branch on cancellation
+		// Keep the partial — this is exactly what resume is for. Both
+		// sentinels are wrapped so callers can branch on cancellation
 		// (errors.Is(err, context.Canceled)) as well as on incompleteness.
 		return nil, fmt.Errorf("embeddedllm: %s: %w after %d of %d bytes (partial kept at %s for resume): %w",
 			asset.Component, ErrIncompleteTransfer, written, remaining, partial, copyErr)
 	}
 	if written < remaining {
 		// The body ended CLEANLY short of the pin — a proxy that stripped
-		// Content-Length, or a host that closed a chunked stream early. The bytes
-		// are unverified, so they must not be promoted; but they are a valid
-		// resume prefix, and letting them fall through to the digest gate would
-		// report a checksum mismatch and DELETE a multi-gigabyte partial that
-		// could simply have been continued.
+		// Content-Length, or a host that closed a chunked stream early.
+		// Unverified, so not promoted — but a valid resume prefix; letting
+		// it reach the digest gate would DELETE a partial that could simply
+		// have been continued.
 		return nil, fmt.Errorf("embeddedllm: %s: %w after %d of %d bytes (partial kept at %s for resume): the response ended cleanly short of the pinned size",
 			asset.Component, ErrIncompleteTransfer, written, remaining, partial)
 	}
@@ -647,23 +551,16 @@ func (d *Downloader) transfer(ctx context.Context, asset Asset, dstPath, partial
 }
 
 // discardForeignPartial removes a partial path that is NOT a regular file this
-// package wrote — a symlink above all — so the resumable open below cannot be
-// redirected through it.
-//
-// `safeio.OpenFile(partial, O_RDWR|O_CREATE, …)` follows a pre-planted symlink: the
-// truncate and every appended byte would land on the link's TARGET, with pinned
-// (non-attacker-controlled) artifact bytes written at an attacker-chosen offset.
-// The digest gate still fires and deletes the symlink rather than promoting
-// anything, so this is hardening and not a hole — but writing through a link into
-// an arbitrary same-user path is a side effect no verification can undo.
-//
-// os.Lstat is the portable check: O_NOFOLLOW is not available on every platform
-// this runs on, and nothing legitimate can put a non-regular file at this path —
-// the partial is created by this package, as a regular file, in a directory it
-// also created. A residual TOCTOU window remains between this check and the open
-// (an actor with same-user write access to the downloads directory could swap the
-// path in between); closing it portably would need an O_EXCL create-and-rename
-// per chunk, which is not what a resumable multi-gigabyte transfer can do.
+// package wrote — a symlink above all — so the resumable O_RDWR|O_CREATE open
+// below cannot be redirected through it: the open would FOLLOW a pre-planted
+// link and land the truncate plus every appended byte on the link's target, a
+// side effect no digest gate can undo (it deletes the link instead of
+// promoting — hardening, not a hole). os.Lstat is the portable check
+// (O_NOFOLLOW is not available everywhere) and nothing legitimate can put a
+// non-regular file at this path. A residual TOCTOU window remains between the
+// check and the open; closing it portably would need an O_EXCL
+// create-and-rename per chunk, which a resumable multi-gigabyte transfer
+// cannot do. See specs/domains/embedded-llm.md (Invariants).
 func (d *Downloader) discardForeignPartial(partial string, asset Asset) error {
 	info, err := os.Lstat(partial)
 	if err != nil {
@@ -732,8 +629,7 @@ func (d *Downloader) partialSize(partial string) int64 {
 	return fi.Size()
 }
 
-// sleep pauses for dur, aborting when ctx is done. The RetrySleep seam exists
-// so tests run retry loops without wall-clock pauses.
+// sleep pauses for dur, aborting when ctx is done.
 func (d *Downloader) sleep(ctx context.Context, dur time.Duration) error {
 	if d.RetrySleep != nil {
 		return d.RetrySleep(ctx, dur)
@@ -833,15 +729,10 @@ func promote(partial, dstPath string) error {
 }
 
 // checkDiskSpace refuses a download when the volume holding dir cannot fit the
-// artifact plus headroom. The guard is sized to the actual artifact, which is
-// the whole reason this downloader is not the tool-manager's (whose guard is a
-// fixed 200 MiB).
-//
-// Measurement failure is best-effort and non-fatal, matching
-// toolmanager.checkDiskSpace: an unmeasurable volume should not make the
-// feature unusable, and a genuinely full disk still fails safely — the write
-// returns ENOSPC, the transfer keeps its partial, and the digest gate means
-// unverified bytes are never accepted.
+// artifact plus headroom — sized to the actual artifact, which is the whole
+// reason this downloader is not the tool-manager's (fixed 200 MiB guard).
+// Measurement failure is best-effort and non-fatal: a genuinely full disk
+// still fails safely (ENOSPC, partial kept, digest gate).
 func (d *Downloader) checkDiskSpace(dir string, required int64) error {
 	freeSpace := d.FreeSpace
 	if freeSpace == nil {

@@ -2,14 +2,14 @@
 
 ## Status
 
-Accepted
+Accepted (storage isolation superseded by ADR-104's shared-store-plus-overlays; since ADR-104's residency stage, an LRU-evicted root manager leaves its shared corpora under the process-wide corpus-residency budget — `vector_index.corpus_residency_*`, default off — so a rebuilt root re-attaches without a re-decode while the memory story stays bounded by the owner, not by the manager count)
 
 ## Context
 
 The vector index was a process-wide singleton: one `vectorindex.Manager`
 whose single active target was re-pointed on every send
 (`maybeReScopeVectorIndexToSession`) and on project switch. Under
-[worktree sessions](076-session-worktrees.md) that model breaks twice:
+[worktree sessions](080-session-worktrees.md) that model breaks twice:
 
 - **Agent-side wrongness.** A background session's `semantic_search` tool
   and RAG-hint injection resolved against whatever tree the singleton last
@@ -100,3 +100,13 @@ deferring the first project's setup drains once the factory lands.
 - **Read-only session managers over the focus manager's index** — rejected:
   a background session's tree would only be indexed while focused,
   violating the always-correct routing requirement.
+
+
+## Amendment (ADR-104 stage 2)
+
+The per-root MANAGER registry is unchanged (one manager per root, focus
+routing, LRU, single-flight per root). The per-root STORAGE isolation is
+superseded: all roots of a project now share one physical store — immutable
+snapshot corpora keyed by commit OID plus per-root overlays (see ADR-104).
+Worktrees no longer derive isolated `worktrees/<name>/vector_index` roots or
+seeded cache copies; those paths remain only for legacy cleanup.

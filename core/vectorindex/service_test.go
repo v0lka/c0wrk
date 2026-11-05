@@ -382,7 +382,7 @@ func TestResultToSearchResult(t *testing.T) {
 		Similarity: 0.95,
 	}
 
-	sr := resultToSearchResult(r)
+	sr := resultToSearchResult(r, "")
 	if sr.FilePath != "/project/main.go" {
 		t.Errorf("FilePath = %q, want %q", sr.FilePath, "/project/main.go")
 	}

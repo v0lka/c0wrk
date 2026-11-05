@@ -36,8 +36,8 @@ func (r *researchEventRecorder) papersChanged() []map[string]string {
 
 // papersTestFrontend wires a FrontendAPI with one real project whose workspace
 // lives at <base>/ws. RESEARCH is always on for real projects, so the research
-// root is the canonical <ws>/.research and the library lives at
-// <ws>/.research/papers. It returns the API, the fixed project id, the
+// root is the canonical <ws>/research and the library lives at
+// <ws>/research/papers. It returns the API, the fixed project id, the
 // workspace, and the effective research root.
 func papersTestFrontend(t *testing.T, _ string, pins project.ResearchPins) (api *FrontendAPI, projectID, ws, effectiveRoot string) {
 	t.Helper()
@@ -61,7 +61,7 @@ func papersTestFrontend(t *testing.T, _ string, pins project.ResearchPins) (api 
 		t.Fatalf("save project: %v", err)
 	}
 	// RESEARCH is always on for real projects: the research root is the
-	// canonical <ws>/.research (there is no per-project persisted root, so it
+	// canonical <ws>/research (there is no per-project persisted root, so it
 	// can never escape the workspace).
 	effectiveRoot = config.ProjectResearchPath(ws)
 	recorder := &researchEventRecorder{}
@@ -367,10 +367,10 @@ func TestEmitPapersChanged_ScopesToLibrary(t *testing.T) {
 	f.seedPublished.Store(true)
 	// Arbitrary (non-existent) POSIX paths: emitPapersChanged only does
 	// containment prefix-matching, it never touches the filesystem.
-	root := "/ws/.research/papers"
+	root := "/ws/research/papers"
 	card := root + "/vaswani-2017-attention/paper.md"
-	research := "/ws/.research/R-001-test/brief.md"
-	comparisonsRoot := "/ws/.research/comparisons"
+	research := "/ws/research/R-001-test/brief.md"
+	comparisonsRoot := "/ws/research/comparisons"
 	comparison := comparisonsRoot + "/a-vs-b.md"
 
 	if f.emitPapersChanged("", "", "p", []string{card}) {
@@ -733,7 +733,7 @@ func TestSwitchProjectSetupWatcher_WatchesHybridLibrary(t *testing.T) {
 
 	// Issue 52: nothing is materialized at switch time.
 	if _, err := os.Stat(config.ProjectResearchPath(ws)); !os.IsNotExist(err) {
-		t.Fatalf("switchProjectSetupWatcher materialized .research: err=%v", err)
+		t.Fatalf("switchProjectSetupWatcher materialized the research tree: err=%v", err)
 	}
 
 	// A paper-card write under the effective research root — with RESEARCH off

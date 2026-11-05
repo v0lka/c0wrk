@@ -9,9 +9,9 @@ import (
 )
 
 // AddBookmark persists a chat-event bookmark for a session and returns the
-// created record. Bookmarks are isolated per session: the event_key is opaque
-// to the backend and is produced/consumed by the frontend's groupMessages
-// (DisplayItem key), so navigation and preview stay a frontend concern.
+// created record. The event_key is opaque to the backend — produced and
+// consumed by the frontend's groupMessages (DisplayItem key).
+// See specs/contracts/desktop-frontend.md (Bookmarks).
 func (f *FrontendAPI) AddBookmark(sessionID, eventKey, title string) (session.SessionBookmark, error) {
 	f.seedAcquire()
 	if f.store == nil {

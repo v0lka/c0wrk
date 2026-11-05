@@ -1,13 +1,9 @@
-// Silent-mode step-limit autonomy.
-//
-// When security.silent_mode is enabled and its step_limit sub-policy is "auto",
-// the blocking step-limit card must be replaced by an autonomous decision. This
-// file resolves that decision: it gathers the host-side trajectory (the
-// session emitter's recent-execution window: last steps + run counters + plan
-// progress), enriches it with the boundary category and the task context, and
-// asks the session-pinned loop judge (sp4rk tools.ToolJudge.JudgeStepLimit).
-// The typed verdict is mapped onto agent.StepLimitResponse, failing CLOSED
-// (deny) whenever silent+auto is on but the judge is missing or fails.
+// Silent-mode step-limit autonomy: when security.silent_mode's step_limit
+// sub-policy is "auto", the blocking step-limit card is replaced by an
+// autonomous decision from the session-pinned loop judge, built from the
+// host-side execution window — failing CLOSED (deny) whenever the judge is
+// missing or fails.
+// See specs/decisions/053-silent-mode.md.
 package backend
 
 import (
@@ -37,17 +33,13 @@ var _ interface {
 // silent mode is enabled AND the step_limit sub-policy is "auto". It returns
 // (response, reasoning, handled): handled is false when the boundary must
 // follow the existing interactive path — silent mode off, sub-policy "stop",
-// or no session registry — so the caller falls back to the blocking prompt
-// (non-silent behavior is unchanged). When handled is true the decision is
-// FINAL and every failure inside is fail-closed to StepLimitDeny.
-//
-// The trajectory provider is the session emitter's recent-execution window; the
-// loop judge is the session-pinned ToolJudge carried by the session registry.
+// or no session registry. When handled is true the decision is FINAL and
+// every failure is fail-closed to StepLimitDeny.
+// See specs/decisions/053-silent-mode.md.
 func (app *Application) ResolveSilentStepLimit(ctx context.Context, sessionID string, currentStep, maxSteps int, abortReason string) (agent.StepLimitResponse, string, bool) {
 	registry := app.sessionRegistry(sessionID)
 	if registry == nil {
-		// No registry ⇒ the posture cannot be read. Do not invent autonomy:
-		// fall back to the existing (human) path.
+		// No registry ⇒ the posture cannot be read; do not invent autonomy.
 		return agent.StepLimitDeny, "", false
 	}
 
@@ -121,28 +113,24 @@ func (app *Application) sessionRegistry(sessionID string) *coretools.ToolRegistr
 	return orch.ToolRegistry()
 }
 
-// resolveSilentStepLimitDecision is the seam-free core of the resolver: given
-// the session's autonomy mode and silent-mode sub-policies, its judge, and the
-// assembled request, it decides the boundary. Split out from
-// ResolveSilentStepLimit so the gate and the fail-closed policy are
-// unit-testable without a live Manager/Application.
+// resolveSilentStepLimitDecision is the seam-free core of the resolver, split
+// out so the gate and the fail-closed policy are unit-testable without a live
+// Manager/Application.
 func resolveSilentStepLimitDecision(ctx context.Context, autonomyMode string, sm coretools.SilentModeState, judge *sdktools.ToolJudge, req sdktools.StepLimitJudgeRequest) (agent.StepLimitResponse, string, bool) {
 	if autonomyMode != coretools.AutonomyModeSilent {
 		return agent.StepLimitDeny, "", false
 	}
-	// A fixed sub-policy resolves the boundary deterministically (no judge).
-	// "stop" is NOT a fixed resolution — it opts this gate out of silent mode
-	// by keeping the interactive card — so it falls through below.
+	// A fixed sub-policy resolves deterministically (no judge). "stop" is
+	// NOT fixed — it opts this gate out of silent mode and falls through.
 	if fixed, reasoning, ok := fixedStepLimitResponse(sm.StepLimit); ok {
 		return fixed, reasoning, true
 	}
 	if sm.StepLimit != config.SilentStepLimitAuto {
-		// "stop", or an empty/unknown value: keep the blocking card (fall back
-		// to the unchanged interactive path).
+		// "stop", or empty/unknown: keep the blocking card.
 		return agent.StepLimitDeny, "", false
 	}
-	// Silent + auto: the boundary must be decided without a human. From here
-	// every failure is fail-closed DENY (handled = true), never a prompt.
+	// Silent + auto: from here every failure is fail-closed DENY, never a
+	// prompt.
 	if judge == nil {
 		return agent.StepLimitDeny, "step-limit judge unavailable in silent mode; stopping for safety", true
 	}

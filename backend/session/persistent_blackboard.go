@@ -32,14 +32,12 @@ const persistEnqueueRetryInterval = 5 * time.Millisecond
 var _ orchestration.Blackboard = (*PersistentBlackboard)(nil)
 var _ core.PersistableBlackboard = (*PersistentBlackboard)(nil)
 
-// PersistentBlackboard wraps a MapBlackboard and persists write operations to a TaskPersistence store.
-// Read methods delegate to the embedded MapBlackboard. Write methods delegate AND persist.
-// All persistence calls are best-effort: errors are logged but do not propagate to callers.
-// Persistence operations are executed by a single background worker goroutine with a timeout
-// and panic recovery to prevent hangs.
+// PersistentBlackboard wraps a MapBlackboard: reads delegate to the embedded
+// blackboard, writes delegate AND persist best-effort through one background
+// worker (timeout, panic recovery). See specs/domains/memory/blackboard.md.
 type PersistentBlackboard struct {
-	// *orchestration.MapBlackboard is embedded for in-memory read operations.
-	// Write operations are intercepted to persist changes to the database.
+	// *orchestration.MapBlackboard is embedded for reads; writes are
+	// intercepted to persist.
 	*orchestration.MapBlackboard
 	taskID             string
 	sessionID          string
@@ -52,26 +50,21 @@ type PersistentBlackboard struct {
 	persistCh          chan persistOp          // buffered channel for serializing DB writes
 	persistMu          sync.Mutex              // guards persistCh lifecycle (send vs. shutdown close)
 
-	// persistDone is closed when the background persistence worker returns.
-	// shutdownPersister only closes the channel (the worker drains it and
-	// exits afterwards); Shutdown waits on persistDone so it can guarantee the
-	// worker is gone, not merely asked to stop.
+	// persistDone is closed when the worker returns; Shutdown waits on it to
+	// guarantee the worker is gone, not merely asked to stop.
 	persistDone chan struct{}
 
-	// routing is cached when SetRouting is called, so that Routing() can return
-	// the value without a DB round-trip in active execution paths.
+	// routing is cached at SetRouting so Routing() avoids a DB round-trip.
 	routingMu sync.RWMutex
 	routing   *router.RoutingDecision
 
-	// delegationSpecsMu guards delegationSpecs — the task's persisted
-	// delegation specs, hydrated once at restore and read by the Resume
-	// auto-resume wave via the DelegationSpecReader capability.
+	// delegationSpecsMu guards delegationSpecs — hydrated at restore, read by
+	// the Resume auto-resume wave via DelegationSpecReader.
 	delegationSpecsMu sync.RWMutex
 	delegationSpecs   []tools.DelegationSpec
 
-	// unitLedger is the ledger-backed durable unit ledger for this task (the
-	// MAINLINE unit ledger). It is built once via unitLedgerOnce and cached so
-	// its in-memory overlay survives across callers.
+	// unitLedger is the task's MAINLINE unit ledger, built once so its
+	// in-memory overlay survives across callers.
 	unitLedgerOnce sync.Once
 	unitLedger     units.Ledger
 }
@@ -89,8 +82,8 @@ func NewPersistentBlackboard(taskID, sessionID string, store core.TaskPersistenc
 	return NewPersistentBlackboardWithTimeout(taskID, sessionID, store, logger, 0, opts...)
 }
 
-// NewPersistentBlackboardWithTimeout creates a PersistentBlackboard that wraps a fresh MapBlackboard with a configurable timeout.
-// The logger is optional (nil-safe). If timeout is 0, defaultPersistenceTimeout is used.
+// NewPersistentBlackboardWithTimeout wraps a fresh MapBlackboard with a
+// configurable timeout (0 selects defaultPersistenceTimeout). Logger is nil-safe.
 func NewPersistentBlackboardWithTimeout(taskID, sessionID string, store core.TaskPersistence, logger *slog.Logger, timeout time.Duration, opts ...orchestration.MapBlackboardOption) *PersistentBlackboard {
 	ch := make(chan persistOp, 8)
 	pb := &PersistentBlackboard{
@@ -114,14 +107,12 @@ func (pb *PersistentBlackboard) SetEmitter(emitter core.Emitter) {
 	pb.emitterMu.Unlock()
 }
 
-// SetOnChanged sets an optional callback invoked after every successful
-// blackboard write. The changeType argument describes what changed (e.g. "plan",
-// "step_result", "fact", "reflection"). The callback is nil-safe.
+// SetOnChanged sets an optional post-write callback ("plan", "step_result",
+// "fact", ...); nil-safe.
 func (pb *PersistentBlackboard) SetOnChanged(fn func(changeType string)) {
 	pb.onChanged = fn
 }
 
-// notifyChanged invokes the onChanged callback if set.
 func (pb *PersistentBlackboard) notifyChanged(changeType string) {
 	if pb.onChanged != nil {
 		pb.onChanged(changeType)
@@ -132,23 +123,11 @@ func (pb *PersistentBlackboard) notifyChanged(changeType string) {
 // Persistence safety wrapper
 // ---------------------------------------------------------------------------
 
-// persistSafe enqueues a non-critical persistence operation (step results,
-// facts, reflections, attachments) to the background worker. The caller blocks
-// until the operation completes or the timeout expires; errors are logged and
-// optionally emitted to the user, and also returned so write methods can gate
-// change notifications on the write having actually landed (a
-// blackboard_updated event must never advertise state the database does not
-// hold — the frontend fetch reads SQLite, not the in-memory blackboard).
-//
-// Enqueueing retries until buffer space frees up, bounded by the same timeout
-// budget as the write itself: the caller already blocks on the result, so
-// waiting for queue space adds no latency in the healthy path, while a plain
-// drop would silently lose the write — facts and step results are flushed
-// only by their own write methods, so a dropped op stays missing from the
-// database (and the Blackboard panel) until the next full-list rewrite. When
-// the budget is exhausted the operation is abandoned and the error returned.
-// Channel access is guarded by persistMu so each attempt is race-free against
-// shutdownPersister's close (the mutex is never held across the retry sleep).
+// persistSafe enqueues a non-critical write to the background worker and
+// blocks until it lands or the timeout expires; the error is returned so
+// write methods can gate change notifications on the write landing.
+// Enqueueing waits for queue space within the same budget instead of
+// dropping the write. See specs/domains/memory/blackboard.md.
 func (pb *PersistentBlackboard) persistSafe(operation string, fn func() error) error {
 	done := make(chan error, 1)
 	op := persistOp{operation: operation, fn: fn, done: done}
@@ -186,16 +165,10 @@ func (pb *PersistentBlackboard) persistSafe(operation string, fn func() error) e
 	}
 }
 
-// persistSynchronously executes a critical finalizing write (CompleteTask,
-// FailTask, CancelTask) directly on the caller goroutine, bypassing the
-// background worker. Finalizers must complete before the method returns: a
-// completion that is merely queued (and may not drain within the result-wait
-// timeout) leaves the task marked unfinished and trips a spurious "persistence
-// issue was detected" warning. Running synchronously removes that race — the
-// write either succeeds (task marked done) or fails (logged/emitted; the
-// follow-up warning is then legitimate, not spurious). Panics are recovered so
-// the conductor is never crashed by a persistence failure. The error is
-// returned so callers can gate change notifications on the write landing.
+// persistSynchronously runs a critical finalizing write (CompleteTask/FailTask/
+// CancelTask) on the caller goroutine — the status change must be durable
+// before the method returns — with panic recovery; the error is returned.
+// See specs/domains/memory/blackboard.md.
 func (pb *PersistentBlackboard) persistSynchronously(operation string, fn func() error) error {
 	var err error
 	func() {
@@ -222,10 +195,9 @@ func (pb *PersistentBlackboard) persistSynchronously(operation string, fn func()
 	return err
 }
 
-// waitPersistenceResult waits for a persistence operation to complete or timeout.
-// Returns the operation's error (or the timeout error); logging and the
-// optional user-facing warning happen here so every persistSafe caller
-// surfaces failures uniformly.
+// waitPersistenceResult waits for the operation or the timeout; logging and
+// the user-facing warning live here so every persistSafe caller surfaces
+// failures uniformly.
 func (pb *PersistentBlackboard) waitPersistenceResult(operation string, done <-chan error) error {
 	timeout := pb.persistenceTimeout
 	if timeout == 0 {
@@ -269,12 +241,9 @@ func (pb *PersistentBlackboard) persistenceWorker(ch <-chan persistOp) {
 	}
 }
 
-// shutdownPersister closes the persistence channel, causing the worker
-// goroutine to exit after draining any queued operations. Guards the close
-// with persistMu so it is race-free against concurrent persistSafe sends and
-// idempotent against duplicate finalizer calls (CompleteTask + FailTask on the
-// same blackboard). The worker drains remaining buffered ops via
-// `for op := range ch` before exiting.
+// shutdownPersister closes the persistence channel under persistMu — race-free
+// against persistSafe sends and idempotent across duplicate finalizers; the
+// worker drains buffered ops before exiting.
 func (pb *PersistentBlackboard) shutdownPersister() {
 	pb.persistMu.Lock()
 	defer pb.persistMu.Unlock()
@@ -284,16 +253,10 @@ func (pb *PersistentBlackboard) shutdownPersister() {
 	}
 }
 
-// Shutdown stops the background persistence worker and waits up to timeout for
-// it to drain and exit. It is idempotent and safe to call on a blackboard
-// whose terminal finalizer (CompleteTask/FailTask/CancelTask) already stopped
-// the worker: shutdownPersister is a no-op then and persistDone is already
-// closed.
-//
-// It exists so the session Manager can guarantee that no persistence worker
-// outlives Shutdown — a task that never reached a terminal finalizer (paused
-// or abandoned) would otherwise leave the worker blocked on its channel
-// forever.
+// Shutdown stops the worker and waits up to timeout for it to drain; idempotent
+// when a terminal finalizer already stopped it. Exists so the session Manager
+// can guarantee no worker outlives Shutdown (a paused/abandoned task would
+// otherwise block its worker on the channel forever).
 func (pb *PersistentBlackboard) Shutdown(timeout time.Duration) {
 	pb.shutdownPersister()
 	if pb.persistDone == nil {
@@ -309,12 +272,9 @@ func (pb *PersistentBlackboard) Shutdown(timeout time.Duration) {
 	}
 }
 
-// persistenceWorkerStopped reports whether the background persistence worker
-// has already exited — through a terminal finalizer
-// (CompleteTask/FailTask/CancelTask) or a Shutdown call. The session manager
-// uses it to prune finished blackboards from its shutdown tracking list: a
-// stopped worker no longer needs joining, while a live one (running or paused
-// task) is exactly what Shutdown must stop.
+// persistenceWorkerStopped reports whether the worker already exited (terminal
+// finalizer or Shutdown) so the session manager can prune finished blackboards
+// from its shutdown tracking list.
 func (pb *PersistentBlackboard) persistenceWorkerStopped() bool {
 	select {
 	case <-pb.persistDone:
@@ -336,8 +296,8 @@ func (pb *PersistentBlackboard) SetOriginalRequest(req string) {
 	})
 }
 
-// SetPlan stores a plan and persists it. The change notification is gated on
-// the write landing (see StoreFact for the rationale).
+// SetPlan stores a plan and persists it; the notification is gated on the
+// write landing (see StoreFact).
 func (pb *PersistentBlackboard) SetPlan(plan *orchestration.Plan) {
 	pb.MapBlackboard.SetPlan(plan)
 	if err := pb.persistSafe("plan", func() error {
@@ -347,9 +307,8 @@ func (pb *PersistentBlackboard) SetPlan(plan *orchestration.Plan) {
 	}
 }
 
-// SetStepResult records a step result and persists it.
-// The summary is generated using the same logic as MapBlackboard.
-// The change notification is gated on the write landing (see StoreFact).
+// SetStepResult records a step result and persists it; the notification is
+// gated on the write landing (see StoreFact).
 func (pb *PersistentBlackboard) SetStepResult(stepID, output string, err error, steps []agent.Step) {
 	pb.MapBlackboard.SetStepResult(stepID, output, err, steps)
 
@@ -371,8 +330,8 @@ func (pb *PersistentBlackboard) SetStepResult(stepID, output string, err error, 
 	}
 }
 
-// AddReflection appends a reflection and persists it.
-// The change notification is gated on the write landing (see StoreFact).
+// AddReflection appends a reflection and persists it (notification gated on
+// the write landing, see StoreFact).
 func (pb *PersistentBlackboard) AddReflection(r orchestration.Reflection) {
 	pb.MapBlackboard.AddReflection(r)
 	if err := pb.persistSafe("reflection", func() error {
@@ -382,11 +341,10 @@ func (pb *PersistentBlackboard) AddReflection(r orchestration.Reflection) {
 	}
 }
 
-// StoreFact appends a fact and persists the full facts list. The change
-// notification fires only when the write landed: the frontend refreshes its
-// Blackboard panel from SQLite, so announcing a fact the database does not
-// hold yet (dropped/timed-out write) makes the panel fetch state WITHOUT the
-// fact right after the tool reported success — the fact then looks missing.
+// StoreFact appends a fact and persists the full list; the change notification
+// fires only when the write landed — the panel refetches SQLite, so announcing
+// un-persisted state makes the fact look missing. See
+// specs/domains/memory/blackboard.md.
 func (pb *PersistentBlackboard) StoreFact(fact orchestration.Fact) {
 	pb.MapBlackboard.StoreFact(fact)
 	facts := pb.GetFacts()
@@ -397,8 +355,8 @@ func (pb *PersistentBlackboard) StoreFact(fact orchestration.Fact) {
 	}
 }
 
-// AddAttachment appends an attachment and persists the full attachments list.
-// The change notification is gated on the write landing (see StoreFact).
+// AddAttachment appends an attachment and persists the full list (gated
+// notification, see StoreFact).
 func (pb *PersistentBlackboard) AddAttachment(a orchestration.Attachment) {
 	pb.MapBlackboard.AddAttachment(a)
 	attachments := pb.GetAttachments()
@@ -409,10 +367,8 @@ func (pb *PersistentBlackboard) AddAttachment(a orchestration.Attachment) {
 	}
 }
 
-// RemoveAttachment removes an attachment and persists the full attachments list
-// when an attachment was actually removed. Read methods (GetAttachments /
-// GetAttachment) are promoted from the embedded MapBlackboard. The change
-// notification is gated on the write landing (see StoreFact).
+// RemoveAttachment removes an attachment and persists the full list when one
+// was actually removed (gated notification, see StoreFact).
 func (pb *PersistentBlackboard) RemoveAttachment(id string) bool {
 	removed := pb.MapBlackboard.RemoveAttachment(id)
 	if !removed {
@@ -427,8 +383,7 @@ func (pb *PersistentBlackboard) RemoveAttachment(id string) bool {
 	return true
 }
 
-// SetFinalResult sets the final result string.
-// Does NOT call PersistCompletion — the orchestrator calls CompleteTask() separately.
+// SetFinalResult does NOT persist — CompleteTask persists the final output.
 func (pb *PersistentBlackboard) SetFinalResult(result string) {
 	pb.MapBlackboard.SetFinalResult(result)
 }
@@ -454,12 +409,8 @@ func (pb *PersistentBlackboard) Routing() *router.RoutingDecision {
 // Additional methods (not part of Blackboard interface)
 // ---------------------------------------------------------------------------
 
-// CompleteTask marks the task as completed.
-// Called by the orchestrator after Handle() succeeds.
-// Writes the completion synchronously (bypassing the worker) so it is
-// guaranteed to be persisted before this method returns — a queued write that
-// drains after the result-wait timeout would leave the task marked unfinished
-// and trip a spurious persistence warning.
+// CompleteTask marks the task completed, writing synchronously so the status
+// change is durable before returning. See specs/domains/memory/blackboard.md.
 func (pb *PersistentBlackboard) CompleteTask(attemptCount int) {
 	finalOutput := pb.GetFinalResult()
 	err := pb.persistSynchronously("task completion", func() error {
@@ -471,9 +422,7 @@ func (pb *PersistentBlackboard) CompleteTask(attemptCount int) {
 	pb.shutdownPersister()
 }
 
-// FailTask marks the task as failed.
-// Writes the failure synchronously (bypassing the worker) to guarantee the
-// status change is persisted before returning.
+// FailTask marks the task failed, writing synchronously (see CompleteTask).
 func (pb *PersistentBlackboard) FailTask() {
 	_ = pb.persistSynchronously("task failure", func() error {
 		return pb.store.PersistFailure(pb.taskID)
@@ -481,9 +430,7 @@ func (pb *PersistentBlackboard) FailTask() {
 	pb.shutdownPersister()
 }
 
-// CancelTask marks the task as cancelled (user-initiated cancellation).
-// Writes the cancellation synchronously (bypassing the worker) to guarantee
-// the status change is persisted before returning.
+// CancelTask marks the task cancelled, writing synchronously (see CompleteTask).
 func (pb *PersistentBlackboard) CancelTask() {
 	_ = pb.persistSynchronously("task cancellation", func() error {
 		return pb.store.PersistCancellation(pb.taskID)
@@ -491,12 +438,10 @@ func (pb *PersistentBlackboard) CancelTask() {
 	pb.shutdownPersister()
 }
 
-// PauseTask marks the task as paused so it survives app restart as a resumable
-// checkpoint. Writes synchronously (bypassing the worker) to guarantee the
-// status change is persisted before returning. Does NOT shut down the
-// persister channel: unlike the terminal finalizers (Complete/Fail/Cancel), a
-// paused task is still live and may receive additional persistence writes
-// (e.g. a final trajectory flush) before the orchestrator fully unwinds.
+// PauseTask marks the task paused (resumable checkpoint), writing
+// synchronously. Unlike the terminal finalizers it does NOT shut down the
+// persister: a paused task is still live and may still write (e.g. a final
+// trajectory flush).
 func (pb *PersistentBlackboard) PauseTask() {
 	_ = pb.persistSynchronously("task pause", func() error {
 		return pb.store.PersistPause(pb.taskID)
@@ -515,10 +460,8 @@ func (pb *PersistentBlackboard) TaskID() string {
 	return pb.taskID
 }
 
-// SessionID returns the session ID the blackboard was created for.
-// The session Manager groups tracked blackboards by it: DeleteSession stops
-// the deleted session's persistence workers, whose task can no longer reach a
-// terminal finalizer.
+// SessionID returns the session ID the blackboard was created for; the Manager
+// groups tracked blackboards by it so DeleteSession can stop their workers.
 func (pb *PersistentBlackboard) SessionID() string {
 	return pb.sessionID
 }
@@ -527,8 +470,8 @@ func (pb *PersistentBlackboard) SessionID() string {
 // Restoration
 // ---------------------------------------------------------------------------
 
-// RestoreBlackboard loads a task's state from persistence and hydrates a PersistentBlackboard.
-// Returns nil, nil if the task is not found.
+// RestoreBlackboard hydrates a PersistentBlackboard from persisted task state
+// (nil, nil when not found). See specs/domains/memory/blackboard.md.
 func RestoreBlackboard(taskID, sessionID string, store core.TaskPersistence, logger *slog.Logger, opts ...orchestration.MapBlackboardOption) (*PersistentBlackboard, error) {
 	state, err := store.LoadTaskState(taskID)
 	if err != nil {
@@ -546,8 +489,7 @@ func RestoreBlackboard(taskID, sessionID string, store core.TaskPersistence, log
 		mb.SetPlan(state.Plan)
 	}
 	for stepID, sr := range state.StepResults {
-		// Re-use the raw data; SetStepResult would regenerate the summary,
-		// so we populate the map directly via SetStepResultRaw.
+		// Raw: SetStepResult would regenerate the summary.
 		mb.SetStepResultRaw(stepID, sr)
 	}
 	for _, r := range state.Reflections {
@@ -579,21 +521,17 @@ func RestoreBlackboard(taskID, sessionID string, store core.TaskPersistence, log
 	return pb, nil
 }
 
-// DelegationSpecs returns the task's persisted delegation specs (hydrated at
-// restore), implementing core.DelegationSpecReader. The Resume auto-resume
-// wave uses them to rebuild paused delegates. Fresh (non-restored)
-// blackboards return nil — a task that never paused has no delegation specs
-// to expose beyond what its live registry holds.
+// DelegationSpecs implements core.DelegationSpecReader: the specs hydrated at
+// restore, which the Resume auto-resume wave uses to rebuild paused delegates.
+// Fresh blackboards return nil.
 func (pb *PersistentBlackboard) DelegationSpecs() []tools.DelegationSpec {
 	pb.delegationSpecsMu.RLock()
 	defer pb.delegationSpecsMu.RUnlock()
 	return pb.delegationSpecs
 }
 
-// UnitStore returns the durable unit store backing this blackboard's task, or
-// nil when the underlying store has no unit persistence. It implements
-// core.UnitStoreProvider so the mainline unit ledger can be built from the
-// blackboard (core.NewBlackboardLedger).
+// UnitStore implements core.UnitStoreProvider: the task's durable unit store,
+// or nil when the store has no unit persistence.
 func (pb *PersistentBlackboard) UnitStore() units.Store {
 	if p, ok := pb.store.(interface{ UnitStore() units.Store }); ok {
 		return p.UnitStore()
@@ -601,10 +539,8 @@ func (pb *PersistentBlackboard) UnitStore() units.Store {
 	return nil
 }
 
-// UnitLedger returns the ledger-backed durable unit ledger for this task's
-// blackboard — the MAINLINE unit ledger. It is built once and cached so the
-// ledger's in-memory overlay survives across callers, and degrades to a
-// best-effort in-memory ledger when the store has no unit persistence.
+// UnitLedger returns the MAINLINE unit ledger, built once and cached;
+// degrades to an in-memory ledger without unit persistence.
 func (pb *PersistentBlackboard) UnitLedger() units.Ledger {
 	pb.unitLedgerOnce.Do(func() {
 		pb.unitLedger = units.NewLedger(pb.UnitStore(), pb.taskID, "")

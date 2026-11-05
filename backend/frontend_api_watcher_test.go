@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -339,10 +340,10 @@ func TestSwitchProjectSetupWatcher_CodeWatcherRootFollowsActiveSession(t *testin
 	// Issue 52: watching the tree must not materialize research subtrees in
 	// it or in the checkout.
 	if _, err := os.Stat(config.ProjectResearchPath(tree)); !os.IsNotExist(err) {
-		t.Fatalf("switchProjectSetupWatcher materialized the session tree's .research: err=%v", err)
+		t.Fatalf("switchProjectSetupWatcher materialized the session tree's research tree: err=%v", err)
 	}
 	if _, err := os.Stat(config.ProjectResearchPath(checkout)); !os.IsNotExist(err) {
-		t.Fatalf("switchProjectSetupWatcher materialized the checkout's .research: err=%v", err)
+		t.Fatalf("switchProjectSetupWatcher materialized the checkout's research tree: err=%v", err)
 	}
 
 	// A newer LOCAL session (checkout workspace) flips the root back. The
@@ -538,4 +539,39 @@ func TestWatchDirectory_CodeStaleRescopeSkipped(t *testing.T) {
 	if root := codeWatcherRoot(t, f); root != checkout {
 		t.Fatalf("watcher root after authority move = %q, want the checkout %q", root, checkout)
 	}
+}
+
+// TestWatcherEmitters_TolerateNilEmitter pins the nil-emitter contract of the
+// helpers the fsnotify callbacks emit through: a FrontendAPI without Wails
+// event wiring (test harnesses, early startup) must not crash the watcher
+// goroutine when a debounced batch lands. Regression: the CODE-mode callback
+// called the emitEvent field without a nil guard and a stray .git event
+// SIGSEGV'd the whole test binary.
+func TestWatcherEmitters_TolerateNilEmitter(t *testing.T) {
+	f := &FrontendAPI{agentDir: t.TempDir(), logger: slog.New(slog.DiscardHandler)}
+	f.seedPublished.Store(true)
+	root := t.TempDir()
+	researchRoot := config.ProjectResearchPath(root)
+	papersRoot := filepath.Join(root, "papers")
+	f.activeProjectMu.Lock()
+	f.activeResearchRoot = researchRoot
+	f.activePapersRoot = papersRoot
+	f.activeProjectMu.Unlock()
+
+	if got := f.emitResearchFileChanged(researchRoot, "proj-1", []string{filepath.Join(researchRoot, "R-001", "brief.md")}); !got {
+		t.Errorf("emitResearchFileChanged(research-scoped path) = %t, want true (nil emitter must not change scoping)", got)
+	}
+	if got := f.emitPapersChanged(papersRoot, "", "proj-1", []string{filepath.Join(papersRoot, "a.pdf")}); !got {
+		t.Errorf("emitPapersChanged(paper-library path) = %t, want true (nil emitter must not change scoping)", got)
+	}
+	if got := f.emitResearchFileChanged(researchRoot, "proj-1", []string{filepath.Join(root, "outside.txt")}); got {
+		t.Errorf("emitResearchFileChanged(non-scoped path) = %t, want false", got)
+	}
+
+	// The skills/agents/commands watcher callbacks share the same nil-emitter
+	// contract: their fsnotify callbacks emit through the guarded helpers, so
+	// a FrontendAPI without Wails event wiring must not crash here either.
+	f.emitSkillsChanged()
+	f.emitAgentsChanged()
+	f.emitCommandsChanged()
 }

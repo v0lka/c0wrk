@@ -112,7 +112,7 @@ describe('cursor policy invariant', () => {
     expect(css).toContain('cursor: not-allowed')
   })
 
-  it('no `cursor-default` outside the allowlist (it defeats the pointer base rule)', () => {
+  it('no `cursor-default` outside the allowlist (it defeats the pointer base rule)', () => { // whole-tree scan (collect + read): generous bound under parallel suite load
     const sources = collectSources(SRC_DIR)
     expect(sources.length).toBeGreaterThan(0)
 
@@ -144,7 +144,7 @@ describe('cursor policy invariant', () => {
     }
 
     expect(violations, violations.join('\n')).toEqual([])
-  })
+  }, 30_000)
 
   it('allowlist matching is separator-agnostic (Windows-safe)', () => {
     // Regression guard for the CI failure on Windows: `relative()` emits

@@ -233,6 +233,8 @@ export function GetSessionWorkspace(arg1:string):Promise<string>;
 
 export function GetShellExecSettings():Promise<backend.ShellExecSettingsResponse>;
 
+export function GetSpecsStatus(arg1:string):Promise<backend.SpecsStatusDTO>;
+
 export function GetStepOutput(arg1:string,arg2:string):Promise<string>;
 
 export function GetSystemFonts():Promise<backend.SystemFontsResponse>;
@@ -294,6 +296,8 @@ export function ListVectorIndexGPUs():Promise<Array<backend.GPUDeviceResponse>>;
 export function LoadEmbeddedLLM():Promise<void>;
 
 export function Merge(arg1:string):Promise<void>;
+
+export function MigrateResearchRoots(arg1:string):Promise<backend.ResearchStatusDTO>;
 
 export function OptimizePrompt(arg1:string):Promise<backend.OptimizePromptResponse>;
 
@@ -421,9 +425,13 @@ export function SetPaperPinned(arg1:string,arg2:string,arg3:boolean):Promise<voi
 
 export function SetPromptSuggestionsEnabled(arg1:boolean):Promise<void>;
 
+export function SetResearchEnabled(arg1:boolean):Promise<void>;
+
 export function SetResearchPinned(arg1:string,arg2:string,arg3:boolean):Promise<void>;
 
 export function SetReviewStatus(arg1:string,arg2:string):Promise<void>;
+
+export function SetSpecsEnabled(arg1:boolean):Promise<void>;
 
 export function SetUpdateSettings(arg1:boolean):Promise<backend.UpdateSettings>;
 

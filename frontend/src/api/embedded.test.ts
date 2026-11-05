@@ -13,9 +13,18 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 // --- Mock getApp before importing the module under test ---
 const mockApp: Record<string, (...args: unknown[]) => Promise<unknown>> = {}
 
+const mockRuntime = vi.hoisted(() => ({
+  globalEventHandlers: new Map<string, (data: unknown) => void>(),
+}))
+
 vi.mock('@/api/runtime', () => ({
   getApp: () => mockApp,
-  onGlobalEvent: vi.fn(() => () => {}),
+  onGlobalEvent: vi.fn((name: string, cb: (data: unknown) => void) => {
+    mockRuntime.globalEventHandlers.set(name, cb)
+    return () => {
+      mockRuntime.globalEventHandlers.delete(name)
+    }
+  }),
   reportDroppedEvent: vi.fn(),
   subscribe: vi.fn(() => () => {}),
 }))
@@ -30,6 +39,7 @@ import {
   MIN_AUTO_UNLOAD_MINUTES,
   getEmbeddedLLMStatus,
   isEmbeddedLLMStatus,
+  onEmbeddedLLMNotice,
   removeEmbeddedLLM,
   setEmbeddedLLMAutoUnload,
 } from './embedded'
@@ -37,6 +47,7 @@ import {
 beforeEach(() => {
   vi.clearAllMocks()
   for (const key of Object.keys(mockApp)) delete mockApp[key]
+  mockRuntime.globalEventHandlers.clear()
 })
 
 /** A complete, healthy status snapshot (every DTO field is always present). */
@@ -91,6 +102,8 @@ const STATUS = {
     mmproj_offload: false,
     parallel: 0,
     cache_ram_mib: -1,
+    devices: [],
+    split_mode: '',
     gpu_family: '',
     device_budget_mib: 0,
     host_budget_mib: 0,
@@ -250,5 +263,36 @@ describe('removeEmbeddedLLM — the scope pass-through', () => {
     await removeEmbeddedLLM('weights')
     await removeEmbeddedLLM('projection')
     expect(calls.map((c) => c[0])).toEqual(['runtime', 'weights', 'projection'])
+  })
+})
+
+
+describe('onEmbeddedLLMNotice — the finding transport', () => {
+  const NOTICE = {
+    kind: 'low_free_device_memory',
+    message: 'the accelerator has 8000 MiB free, below the 20000 MiB this launch plans to place on it',
+    free_device_mib: 8000,
+    expected_device_mib: 20000,
+  }
+
+  it('subscribes to the global embedded_llm:notice channel and delivers a valid payload', () => {
+    const seen: unknown[] = []
+    const unsubscribe = onEmbeddedLLMNotice((data) => seen.push(data))
+
+    const handler = mockRuntime.globalEventHandlers.get('embedded_llm:notice')
+    expect(handler).toBeDefined()
+    handler?.(NOTICE)
+    expect(seen).toEqual([NOTICE])
+
+    unsubscribe()
+    expect(mockRuntime.globalEventHandlers.has('embedded_llm:notice')).toBe(false)
+  })
+
+  it('drops a drifted payload and reports it instead of delivering it', () => {
+    const seen: unknown[] = []
+    onEmbeddedLLMNotice((data) => seen.push(data))
+
+    mockRuntime.globalEventHandlers.get('embedded_llm:notice')?.({ kind: 42 })
+    expect(seen).toEqual([])
   })
 })

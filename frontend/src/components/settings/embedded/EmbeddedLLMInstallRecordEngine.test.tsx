@@ -104,6 +104,8 @@ describe('the engine-aware plan line', () => {
     mmproj_offload: false,
     parallel: 0,
     cache_ram_mib: -1,
+    devices: [],
+    split_mode: '',
     gpu_family: '',
     device_budget_mib: 0,
     host_budget_mib: 0,

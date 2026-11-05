@@ -278,7 +278,15 @@ export interface MergeRebaseState {
 
 export type SearchMode = 'hybrid' | 'vector' | 'lexical'
 
-export type IndexPhase = 'both' | 'embedding' | 'lexical' | 'open'
+/**
+ * Which side(s) of the dual index a status event describes. "preparation"
+ * and "migration-rebuild" pair with the `preparing` / `migration-rebuild`
+ * STATES (ADR-104 stage 2: the view-model attach window and the legacy
+ * store promotion) — they describe no embedding/lexical pass, so they never
+ * reach the dot derivation's build branches. Literals must stay in sync
+ * with core/vectorindex IndexPhase.
+ */
+export type IndexPhase = 'both' | 'embedding' | 'lexical' | 'open' | 'preparation' | 'migration-rebuild'
 
 /**
  * ONNX Runtime execution provider for the vector-index embedder
@@ -290,13 +298,40 @@ export type IndexPhase = 'both' | 'embedding' | 'lexical' | 'open'
  */
 export type ExecutionProvider = 'auto' | 'cpu' | 'cuda' | 'openvino'
 
+/**
+ * §5 disk-ledger snapshot of one physical store (ADR-104; backend
+ * core/vectorindex StoreLedger, emitted as VectorIndexStatus.store). Real
+ * bytes walked from the store tree by the hygiene sweep, charged once per
+ * identity level; absent until the first pass has snapshotted a store.
+ */
+export interface StoreLedger {
+  generation: number
+  chunk_records: number
+  chunk_bytes: number
+  chunk_orphans: number
+  snapshot_bytes: Record<string, number>
+  overlay_bytes: Record<string, number>
+  snapshots: number
+  overlays: number
+  /** Every whole generation older than CURRENT — removable wholesale. */
+  superseded_bytes: number
+  total_bytes: number
+  evicted_last_pass: number
+  updated_at: string
+}
+
 export interface VectorIndexStatus {
   /**
    * "disabled" (ADR-103): indexing is off via the master switch — the
    * registry is parked, no collection exists, and the gated search surfaces
    * stay hidden until a re-enable finishes the background embedder init.
+   * "preparing" / "migration-rebuild" (ADR-104 stage 2): the view-model
+   * attach window (snapshot identity resolution, corpus lease acquisition)
+   * and the one-time legacy store promotion — honest pre-work states, never
+   * rendered with a fake progress bar. Literals must stay in sync with
+   * core/vectorindex IndexState.
    */
-  state: 'idle' | 'indexing' | 'ready' | 'reindexing' | 'unavailable' | 'loading' | 'disabled'
+  state: 'idle' | 'indexing' | 'ready' | 'reindexing' | 'unavailable' | 'loading' | 'disabled' | 'preparing' | 'migration-rebuild'
   progress: number
   files_indexed: number
   total_files: number
@@ -304,6 +339,12 @@ export interface VectorIndexStatus {
   branch?: string
   phase?: IndexPhase
   indices?: string[]
+  /**
+   * §5 disk ledger (ADR-104): the store-tree byte accounting snapshot for
+   * the manager's physical store — populated by the hygiene pass, omitted
+   * until then.
+   */
+  store?: StoreLedger
   /**
    * ONNX Runtime execution provider the embedder effectively runs on:
    * "cpu", "cuda" or "openvino" — never "auto" ("auto" is resolved once,
@@ -601,11 +642,26 @@ export interface ConfigResponse {
    * `enabled: false` (or an unloaded config).
    */
   prompt_suggestions?: ConfigPromptSuggestionsResponse
+  /**
+   * Effective sidebar surface gates (config `research.enabled` / `specs.enabled`).
+   * Optional so existing typed mocks/test fixtures — which predate the fields —
+   * stay compatible; a payload without a block is treated as "on" (the backend's
+   * nil default = on). The backend reports false only for an explicit
+   * `enabled: false` (or an unloaded config).
+   */
+  research?: ConfigSidebarPackResponse
+  specs?: ConfigSidebarPackResponse
 }
 
 /** Effective prompt-suggestions gate exposed by GetConfig — mirrors the
  *  backend's PromptSuggestionsSettingsResponse (ADR-088). */
 export interface ConfigPromptSuggestionsResponse {
+  enabled: boolean
+}
+
+/** Effective sidebar surface gate (research / specs) exposed by GetConfig —
+ *  mirrors the backend's SidebarPackSettingsResponse. */
+export interface ConfigSidebarPackResponse {
   enabled: boolean
 }
 
@@ -1321,6 +1377,14 @@ export interface ResearchStatus {
    *  cards from several research projects. Optional on the wire; the RPC
    *  boundary normalizes it to `{}`. */
   pinned_hypotheses?: Record<string, string[]>
+  /** Pre-rename research roots detected on disk (`<workspace>/.research`,
+   *  written by older builds) — the checkout's and the active-session
+   *  workspace's, deduplicated, checkout first. Non-empty while a rename
+   *  to the canonical `<workspace>/research` is pending; the Research
+   *  panel then shows a migration notice instead of its content. Optional
+   *  on the wire (older payloads omit it); the RPC boundary normalizes it
+   *  to `[]`. */
+  legacy_research_roots?: string[]
 }
 
 /** Lightweight response for GetResearchGraph: only the hypothesis graph,
@@ -1408,6 +1472,101 @@ export interface NewHypothesisCard {
   verification_criterion?: string
   timebox?: string
   parents?: string[]
+}
+
+// --- Specs panel (ADR-106): the parsed specs/ tree of a project ---
+
+/** Tier-1 integrity finding categories (mirrors core/specs FindingKind,
+ *  ADR-106 D5). The union covers the current tier; the RPC boundary accepts
+ *  any non-empty string kind so a future tier's findings render with a
+ *  generic label instead of being dropped. */
+export type SpecFindingKind =
+  | 'PATH_MISSING'
+  | 'CROSS_REF_BROKEN'
+  | 'DUPLICATE_ADR_NUMBER'
+  | 'INDEX_STALE'
+  | 'ROOT_FILE_MISSING'
+  | 'ADR_NAME_MALFORMED'
+  | 'ADR_NUMBER_MISMATCH'
+  | 'SUPERSEDED_TARGET_MISSING'
+  | 'SUPERSEDED_CYCLE'
+
+/** One parsed .md file of the specs/ tree (mirrors core/specs SpecFile).
+ *  `path` is specs-root-relative with forward slashes; an absent `section`
+ *  marks the root files INDEX.md and META.md. Optional fields are omitted
+ *  on the wire when empty (Go omitempty); the RPC boundary validates them
+ *  as well-typed-or-absent. */
+export interface SpecFile {
+  path: string
+  section?: string
+  title?: string
+  /** Backticked entries of the file's "## Key Files" section, in document
+   *  order, verbatim. */
+  key_files?: string[]
+  /** Relative markdown link targets in document order, verbatim (a file
+   *  path with an optional #anchor, or a pure #anchor). */
+  cross_refs?: string[]
+}
+
+/** One row of INDEX.md's "## Navigation by Task" table (mirrors core/specs
+ *  IndexTask). */
+export interface SpecIndexTask {
+  task: string
+  specs?: string[]
+}
+
+/** One decisions/NNN-slug.md record (mirrors core/specs ADRMeta): number
+ *  and slug from the file name, title/status/supersession from the body.
+ *  `status` is the classification of the "## Status" first line
+ *  ("accepted" / "superseded" / lower-cased first word). */
+export interface SpecADRMeta {
+  number: string
+  slug: string
+  file: string
+  title?: string
+  status: string
+  /** Successor's NNN, set only when status is superseded and the status
+   *  line names a successor. */
+  superseded_by?: string
+  /** Git add-date (YYYY-MM-DD) of the decision file, enriched by the
+   *  backend from the repo's history; absent when the file is uncommitted
+   *  or the workspace has no git history (mirrors ADRMetaDTO's omitempty
+   *  date). */
+  date?: string
+}
+
+/** One deterministic tier-1 integrity finding (mirrors core/specs Finding). */
+export interface SpecFinding {
+  kind: SpecFindingKind
+  /** Specs-root-relative path the finding is about. */
+  file: string
+  detail: string
+}
+
+/** Aggregate badge model of SpecsStatus: the collection sizes plus the
+ *  per-kind findings histogram (keyed by the stringified kind). */
+export interface SpecsCounts {
+  files: number
+  adrs: number
+  findings: number
+  findings_by_kind: Record<string, number>
+}
+
+/** View model for GetSpecsStatus (ADR-106 D2): the parsed specs/ tree of
+ *  one project. The RPC boundary normalizes every collection to `[]`/`{}`
+ *  and recomputes `counts` from the normalized collections, so the store
+ *  and panel never null-guard and the badges never disagree with the
+ *  rendered lists. `present=false` is the neutral state (a missing tree or
+ *  No Project), never an error. */
+export interface SpecsStatus {
+  present: boolean
+  /** Absolute specs root path ("" for No Project). */
+  root: string
+  files: SpecFile[]
+  index_tasks: SpecIndexTask[]
+  adrs: SpecADRMeta[]
+  findings: SpecFinding[]
+  counts: SpecsCounts
 }
 
 /** One worktree of the active project's repository, enriched with the

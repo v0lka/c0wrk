@@ -563,8 +563,12 @@ describe('cmChatAutocomplete unified /-source', () => {
     const agent = completions.find((c) => c.label === 'code-reviewer')!
     const mcp = completions.find((c) => c.label === 'context7')!
     const skill = completions.find((c) => c.label === 'commit')!
-    // With no commands in the catalog the Commands section is absent; the
-    // mention sections keep their relative order one rank down.
+    // The built-in /goal command keeps the Commands section present (rank 0);
+    // the mention sections keep their static ranks below it.
+    const goal = completions.find((c) => c.label === 'goal')!
+    expect(goal.type).toBe('command')
+    expect(goal.section).toEqual({ name: 'Commands', rank: 0 })
+    expect(goal.detail).toContain('/goal:N')
     expect(agent.section).toEqual({ name: 'Subagents', rank: 1 })
     expect(agent.type).toBe('agent')
     // MCP Servers sits BETWEEN Subagents and Skills.
@@ -572,14 +576,15 @@ describe('cmChatAutocomplete unified /-source', () => {
     expect(mcp.type).toBe('mcp')
     expect(skill.section).toEqual({ name: 'Skills', rank: 3 })
     expect(skill.type).toBe('skill')
-    // Subagents are offered ahead of MCP servers, which lead skills.
+    // Commands lead, then Subagents, MCP servers, skills.
+    expect(completions.indexOf(goal)).toBeLessThan(completions.indexOf(agent))
     expect(completions.indexOf(agent)).toBeLessThan(completions.indexOf(mcp))
     expect(completions.indexOf(mcp)).toBeLessThan(completions.indexOf(skill))
 
     // Headers are real, non-selectable section elements; spacing stays in CSS.
-    await until(() => document.querySelectorAll('completion-section').length === 3, 'section headers to render')
+    await until(() => document.querySelectorAll('completion-section').length === 4, 'section headers to render')
     const headers = Array.from(document.querySelectorAll<HTMLElement>('completion-section'))
-    expect(headers.map((el) => el.textContent)).toEqual(['Subagents', 'MCP Servers', 'Skills'])
+    expect(headers.map((el) => el.textContent)).toEqual(['Commands', 'Subagents', 'MCP Servers', 'Skills'])
     const css = readFileSync('src/index.css', 'utf8')
     const spacingRule = css.match(/\.cm-tooltip-autocomplete completion-section:not\(:first-child\)\s*\{[^}]+\}/)?.[0]
     expect(spacingRule).toBeDefined()
@@ -590,14 +595,96 @@ describe('cmChatAutocomplete unified /-source', () => {
       expect(getComputedStyle(headers[0]!).marginTop).not.toBe('0.5rem')
       expect(getComputedStyle(headers[1]!).marginTop).toBe('0.5rem')
       expect(getComputedStyle(headers[2]!).marginTop).toBe('0.5rem')
+      expect(getComputedStyle(headers[3]!).marginTop).toBe('0.5rem')
     } finally {
       style.remove()
     }
 
-    // A non-colliding pick inserts the plain name after the typed '/'.
+    // The first (selected) completion is the built-in command: picking it
+    // inserts the plain spelling after the typed '/'.
     await vi.advanceTimersByTimeAsync(100)
     acceptCompletion(view)
-    expect(view.state.doc.toString()).toBe('/code-reviewer ')
+    expect(view.state.doc.toString()).toBe('/goal ')
+  })
+
+  it('hides the built-in goal command when a catalog entry named goal shadows the plain spelling', async () => {
+    // User-command shadowing: a custom `goal` command owns the plain
+    // spelling, so the built-in disappears and only the (collision-free)
+    // command is offered (ADR-076/ADR-096).
+    useProjectStore.setState({ projects: [], activeProjectId: 'slash-goal-shadow-cmd' })
+    vi.mocked(listAgents).mockResolvedValue([])
+    vi.mocked(listSkills).mockResolvedValue([])
+    getMCPMentionableServersMock.mockResolvedValue([])
+    listCommandsMock.mockResolvedValue([
+      { name: 'goal', description: 'Custom goal command', agent: '', model: '', template: 'T' },
+    ])
+
+    const view = newSlashView()
+    typeAndComplete(view, '/')
+    await until(
+      () => currentCompletions(view.state).some((c) => c.label === 'goal'),
+      'shadowing command to appear',
+    )
+
+    const labels = currentCompletions(view.state).map((c) => c.label)
+    expect(labels).toContain('goal')
+    // The surviving entry is the user command, not the built-in: one entry
+    // only, and its detail is the command's own description.
+    expect(currentCompletions(view.state).find((c) => c.label === 'goal')!.detail).toBe('Custom goal command')
+
+    // Agent shadowing: a project switch invalidates the caches, and an agent
+    // named "goal" likewise owns the plain spelling — the built-in is gone
+    // and the surviving plain 'goal' entry is the AGENT mention.
+    useProjectStore.setState({
+      projects: [],
+      activeProjectId: 'slash-goal-shadow-agent',
+    })
+    vi.mocked(listAgents).mockResolvedValue([{ name: 'goal', description: 'Goal agent' }])
+    listCommandsMock.mockResolvedValue([])
+
+    const view2 = newSlashView()
+    typeAndComplete(view2, '/')
+    await until(
+      () => currentCompletions(view2.state).some((c) => c.label === 'goal' && c.type === 'agent'),
+      'goal agent to appear',
+    )
+    expect(currentCompletions(view2.state).some((c) => c.label === 'goal' && c.type === 'command')).toBe(false)
+
+    // Skill shadowing: a skill named "goal" owns the plain spelling too —
+    // the built-in is hidden and the surviving plain 'goal' entry is the
+    // SKILL mention.
+    useProjectStore.setState({
+      projects: [],
+      activeProjectId: 'slash-goal-shadow-skill',
+    })
+    vi.mocked(listAgents).mockResolvedValue([])
+    vi.mocked(listSkills).mockResolvedValue([{ name: 'goal', description: 'Goal skill' }])
+
+    const view3 = newSlashView()
+    typeAndComplete(view3, '/')
+    await until(
+      () => currentCompletions(view3.state).some((c) => c.label === 'goal' && c.type === 'skill'),
+      'goal skill to appear',
+    )
+    expect(currentCompletions(view3.state).some((c) => c.label === 'goal' && c.type === 'command')).toBe(false)
+
+    // MCP-server shadowing: a mentionable server named "goal" (auto in the
+    // active session's kind) is the last visible catalog kind — the built-in
+    // is hidden and the surviving plain 'goal' entry is the MCP mention.
+    useProjectStore.setState({
+      projects: [],
+      activeProjectId: 'slash-goal-shadow-mcp',
+    })
+    vi.mocked(listSkills).mockResolvedValue([])
+    getMCPMentionableServersMock.mockResolvedValue([{ name: 'goal', chat_mode: 'auto', code_mode: 'auto' }])
+
+    const view4 = newSlashView()
+    typeAndComplete(view4, '/')
+    await until(
+      () => currentCompletions(view4.state).some((c) => c.label === 'goal' && c.type === 'mcp'),
+      'goal MCP server to appear',
+    )
+    expect(currentCompletions(view4.state).some((c) => c.label === 'goal' && c.type === 'command')).toBe(false)
   })
 
   it('offers the Commands section first (rank 0) and qualifies a colliding name', async () => {
