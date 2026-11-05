@@ -6,7 +6,7 @@ Accepted (the open-LRU stretch idea is superseded by ADR-104 §5's owner-level r
 
 ## Context
 
-chromem-go persists a project's vector index as a directory tree in which **each collection is a subdirectory** and **each document is an individual `.gob` file** (`core/vectorindex` uses one collection per git branch — see [ADR-013](../decisions/013-hybrid-search.md) and [domains/workspace.md](../domains/workspace.md)). `chromem.NewPersistentDB(dir)` is all-or-nothing: it enumerates **every** collection subdirectory under the DB root and gob-decodes **every** document file in each, synchronously, on open.
+chromem-go persists a project's vector index as a directory tree in which **each collection is a subdirectory** and **each document is an individual `.gob` file** (`core/vectorindex` uses one collection per git branch — see [domains/workspace.md](../domains/workspace.md)). `chromem.NewPersistentDB(dir)` is all-or-nothing: it enumerates **every** collection subdirectory under the DB root and gob-decodes **every** document file in each, synchronously, on open.
 
 c0wrk opened the whole project root (`<project>/vector_index`) on every project open (`Service.SetProject` → `newPersistentDB`), so the open cost was `O(branches × documents)`. Because most branches are irrelevant to the active session — the Service only ever uses the collection of the current git branch — this work was almost entirely wasted.
 

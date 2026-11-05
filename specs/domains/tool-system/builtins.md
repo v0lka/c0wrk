@@ -32,7 +32,7 @@ c0wrk's registered tools, their capability group (ADR-024 — drives policy and 
 | `ripgrep`             | Search    | `local_read` | yes       | Fast regex content search (shells out to `rg`)     |
 | `semantic_search`     | Search    | `system` | yes       | Vector similarity search (optional)                |
 | `web_fetch`           | Web       | `remote_read` | yes       | Fetch URL content                                  |
-| `web_search`          | Web       | `remote_read` | yes       | Search the web (optional; provider: `brave`/`tavily`/`exa` API key, self-hosted `searxng` base_url, or best-effort `duckduckgo` — see [docs/search-providers.md](../../docs/search-providers.md)) |
+| `web_search`          | Web       | `remote_read` | yes       | Search the web (optional; provider: `brave`/`tavily`/`exa` API key, self-hosted `searxng` base_url, or best-effort `duckduckgo` — see [docs/search-providers.md](../../../docs/search-providers.md)) |
 | `finish`              | Agent     | `system` | no        | Signal task/step completion                        |
 | `ask_user`            | Agent     | `system` | no        | Prompt user for information (c0wrk-specific, `core/tools/askuser.go`) |
 | `propose_goal`        | Agent     | `system` | no        | Goal-mode derivation: submit a {condition, verify} goal proposal for user sign-off. Blocks until the user approves (optionally with edits) or cancels. A no-op outside a derivation Conductor run (no `GoalProposer` in context). See [../goal-mode.md](../goal-mode.md). |

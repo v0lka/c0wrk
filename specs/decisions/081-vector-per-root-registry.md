@@ -9,7 +9,7 @@ Accepted (storage isolation superseded by ADR-104's shared-store-plus-overlays; 
 The vector index was a process-wide singleton: one `vectorindex.Manager`
 whose single active target was re-pointed on every send
 (`maybeReScopeVectorIndexToSession`) and on project switch. Under
-[worktree sessions](076-session-worktrees.md) that model breaks twice:
+[worktree sessions](080-session-worktrees.md) that model breaks twice:
 
 - **Agent-side wrongness.** A background session's `semantic_search` tool
   and RAG-hint injection resolved against whatever tree the singleton last
