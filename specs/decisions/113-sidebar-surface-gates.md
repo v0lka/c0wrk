@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Superseded by [ADR-114](./114-sidebar-pack-gates-reconcile-and-serialization.md) (the launch-side behavior is deepened — launch now reconciles a disabled surface's leftover copies, and the toggle applies serialize against the launch seed on `researchSeedMu` — with every decision below restated and carried forward there). Historical record below.
 
 ## Context
 

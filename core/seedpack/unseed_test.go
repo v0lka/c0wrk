@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"testing/fstest"
 )
@@ -184,11 +185,45 @@ func TestUnseedEntries_EmptyDestErrors(t *testing.T) {
 	}
 }
 
+// TestUnseedEntries_PerEntryFailSoft pins the fail-soft loop: an entry whose
+// own removal errors (a plain file squatting the pack name) lands in the
+// Failed bucket and is named in the joined error, while the remaining
+// entries still unseed — one hostile entry never blocks the rest of the
+// pack, and the failed entry stays on disk for the next reconcile.
+func TestUnseedEntries_PerEntryFailSoft(t *testing.T) {
+	dest := t.TempDir()
+	writeUnseedTree(t, filepath.Join(dest, "one"), true, map[string]string{"SKILL.md": "A", "ref.md": "B"})
+	if err := os.WriteFile(filepath.Join(dest, "two"), []byte("C"), 0o644); err != nil {
+		t.Fatalf("write squatter file: %v", err)
+	}
+
+	res, err := UnseedEntries(unseedPackFS(), "root", dest, []string{"one", "two"}, "test entry", nil)
+	if err == nil {
+		t.Fatal("a per-entry failure must surface in the returned error")
+	}
+	if !strings.Contains(err.Error(), `"two"`) {
+		t.Errorf("the joined error must name the failed entry, got: %v", err)
+	}
+	if len(res.Removed) != 1 || res.Removed[0] != "one" {
+		t.Errorf("Removed = %v, want [one] — the squatter must not abort the pack", res.Removed)
+	}
+	if len(res.Failed) != 1 || res.Failed[0] != "two" {
+		t.Errorf("Failed = %v, want [two]", res.Failed)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "one")); !os.IsNotExist(err) {
+		t.Errorf("healthy entry was not removed (stat err=%v)", err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "two")); err != nil {
+		t.Errorf("the failed entry must stay on disk for the next reconcile: %v", err)
+	}
+}
+
 // TestUnseedEntries_ForeignNameWithTargetErrors pins the programming-error
-// guard: a name absent from the embed tree fails the run when a target
-// directory exists (InspectTarget must load the pack set to classify it). A
-// foreign name with NO target on disk is benign — the classification never
-// consults the pack, so it reports Missing.
+// guard: a name absent from the embed tree fails ITS OWN entry when a
+// target directory exists (InspectTarget must load the pack set to classify
+// it) and surfaces in the joined error; a foreign name with NO target on
+// disk is benign — the classification never consults the pack, so it
+// reports Missing.
 func TestUnseedEntries_ForeignNameWithTargetErrors(t *testing.T) {
 	dest := t.TempDir()
 	absent := filepath.Join(dest, "nope")

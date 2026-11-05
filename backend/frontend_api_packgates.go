@@ -1,9 +1,13 @@
 // Sidebar surface gates: SetResearchEnabled / SetSpecsEnabled persist the
 // config research.enabled / specs.enabled toggles (Settings → General) and
 // apply their pack side-effect in the same beat — enabling seeds the
-// surface's packs, disabling unseeds them (seedGlobalPacks consults the same
-// gates at launch, so a disabled surface stays unseeded across restarts).
-// See the sidebar-packs ADR and specs/domains/{research,specs}.md.
+// surface's packs, disabling unseeds them. The apply runs under
+// researchSeedMu (configMu → researchSeedMu) and writes the gate mirror
+// under the same lock before its disk pass, so the launch seed — which
+// re-reads that mirror inside its own critical section — can never act on a
+// stale gate; a disabled surface is unseeded at launch too, reconciling any
+// drift a failed toggle-time removal left behind. See the sidebar-packs ADR
+// and specs/domains/{research,specs}.md.
 package backend
 
 import (
@@ -92,73 +96,99 @@ func (f *FrontendAPI) sidebarPackGates() (researchOn, specsOn bool) {
 
 // applyResearchPacksLocked seeds or unseeds the research surface's packs —
 // the research and paper skill packs plus the research Subagent Profile —
-// to match `enabled`. Callers must hold configMu; researchSeedMu orders this
-// against the launch seed (configMu → researchSeedMu everywhere:
-// seedGlobalPacks reads the gates BEFORE taking researchSeedMu, so the
-// nesting never inverts). Per-pack failures are logged and never fatal — the
-// persisted gate stays authoritative, exactly like the launch seed.
+// to match `enabled`. Callers must hold configMu; the whole pass runs under
+// researchSeedMu (configMu → researchSeedMu everywhere: seedGlobalPacks
+// reads the gates under configMu BEFORE taking researchSeedMu, so the
+// nesting never inverts), serializing the toggle against the launch seed
+// and every other pack pass. The gate mirror is written under the same lock
+// BEFORE the disk pass, so a launch seed that acquires the lock afterwards
+// re-reads the toggled value instead of acting on a pre-toggle snapshot.
+// Per-pack failures are logged and never fatal — the persisted gate stays
+// authoritative, and the next launch seed reconciles the drift.
 func (f *FrontendAPI) applyResearchPacksLocked(enabled bool) {
+	f.researchSeedMu.Lock()
+	defer f.researchSeedMu.Unlock()
+	f.packGateResearch = &enabled
+	f.runResearchPacks(enabled)
+}
+
+// runResearchPacks performs the research surface's disk pass: seeding the
+// research and paper skill packs plus the research Subagent Profile when
+// `on` is set, unseeding them otherwise — only byte-identical copies (and
+// pack-marked truncated subsets) are removed; user-owned and locally
+// modified copies are preserved, the modified ones named in a warning. The
+// shared body of the toggle apply and the launch seed: callers must hold
+// researchSeedMu; no locks are taken here. Per-pack failures are logged and
+// never fatal, and the skill/agent caches are invalidated so the next read
+// rescans the changed directories.
+func (f *FrontendAPI) runResearchPacks(on bool) {
 	skillsDir := config.SkillsDir(f.agentDir)
 	agentsDir := config.AgentsDir(f.agentDir)
 
-	if enabled {
+	if on {
 		if res, err := research.SeedSkills(skillsDir, f.log()); err != nil {
-			f.log().Warn("research surface enable: research skill-pack seeding failed",
+			f.log().Warn("research skill-pack seeding failed",
 				"skills_dir", skillsDir, "error", err)
 		} else {
-			f.log().Info("research surface enabled; research skill-pack seeded",
+			f.log().Info("research skill-pack seeded",
 				"skills_dir", skillsDir,
 				"seeded", len(res.Seeded), "updated", len(res.Updated),
 				"current", len(res.Current), "preserved", len(res.Preserved))
 		}
 		if res, err := papers.SeedSkills(skillsDir, f.log()); err != nil {
-			f.log().Warn("research surface enable: paper skill-pack seeding failed",
+			f.log().Warn("paper skill-pack seeding failed",
 				"skills_dir", skillsDir, "error", err)
 		} else {
-			f.log().Info("research surface enabled; paper skill-pack seeded",
+			f.log().Info("paper skill-pack seeded",
 				"skills_dir", skillsDir,
 				"seeded", len(res.Seeded), "updated", len(res.Updated),
 				"current", len(res.Current), "preserved", len(res.Preserved))
 		}
 		if res, err := research.SeedAgents(agentsDir, f.log()); err != nil {
-			f.log().Warn("research surface enable: research agent-pack seeding failed",
+			f.log().Warn("research agent-pack seeding failed",
 				"agents_dir", agentsDir, "error", err)
 		} else {
-			f.log().Info("research surface enabled; research agent-pack seeded",
+			f.log().Info("research agent-pack seeded",
 				"agents_dir", agentsDir,
 				"seeded", len(res.Seeded), "updated", len(res.Updated),
 				"current", len(res.Current), "preserved", len(res.Preserved))
 		}
 	} else {
 		if res, err := research.UnseedSkills(skillsDir, f.log()); err != nil {
-			f.log().Warn("research surface disable: research skill-pack unseed failed",
+			f.log().Warn("research skill-pack unseed failed",
 				"skills_dir", skillsDir, "error", err)
 		} else {
-			f.log().Info("research surface disabled; research skill-pack unseeded",
+			f.log().Info("research skill-pack unseeded",
 				"skills_dir", skillsDir,
 				"removed", len(res.Removed),
+				"missing", len(res.Missing),
 				"preserved_user", len(res.PreservedUser),
-				"preserved_modified", len(res.PreservedModified))
+				"preserved_modified", len(res.PreservedModified),
+				"failed", len(res.Failed))
 		}
 		if res, err := papers.UnseedSkills(skillsDir, f.log()); err != nil {
-			f.log().Warn("research surface disable: paper skill-pack unseed failed",
+			f.log().Warn("paper skill-pack unseed failed",
 				"skills_dir", skillsDir, "error", err)
 		} else {
-			f.log().Info("research surface disabled; paper skill-pack unseeded",
+			f.log().Info("paper skill-pack unseeded",
 				"skills_dir", skillsDir,
 				"removed", len(res.Removed),
+				"missing", len(res.Missing),
 				"preserved_user", len(res.PreservedUser),
-				"preserved_modified", len(res.PreservedModified))
+				"preserved_modified", len(res.PreservedModified),
+				"failed", len(res.Failed))
 		}
 		if res, err := research.UnseedAgents(agentsDir, f.log()); err != nil {
-			f.log().Warn("research surface disable: research agent-pack unseed failed",
+			f.log().Warn("research agent-pack unseed failed",
 				"agents_dir", agentsDir, "error", err)
 		} else {
-			f.log().Info("research surface disabled; research agent-pack unseeded",
+			f.log().Info("research agent-pack unseeded",
 				"agents_dir", agentsDir,
 				"removed", len(res.Removed),
+				"missing", len(res.Missing),
 				"preserved_user", len(res.PreservedUser),
-				"preserved_modified", len(res.PreservedModified))
+				"preserved_modified", len(res.PreservedModified),
+				"failed", len(res.Failed))
 		}
 	}
 
@@ -170,50 +200,68 @@ func (f *FrontendAPI) applyResearchPacksLocked(enabled bool) {
 
 // applySpecsPacksLocked seeds or unseeds the specs surface's packs — the
 // spec skill pack plus the specs Subagent Profile — to match `enabled`,
-// under the same contract as applyResearchPacksLocked.
+// under the same contract as applyResearchPacksLocked (configMu held by the
+// caller; the pass serialized on researchSeedMu, the gate mirror written
+// before the disk pass).
 func (f *FrontendAPI) applySpecsPacksLocked(enabled bool) {
+	f.researchSeedMu.Lock()
+	defer f.researchSeedMu.Unlock()
+	f.packGateSpecs = &enabled
+	f.runSpecsPacks(enabled)
+}
+
+// runSpecsPacks performs the specs surface's disk pass — the spec skill
+// pack plus the specs Subagent Profile — under the same contract as
+// runResearchPacks: callers must hold researchSeedMu; no locks are taken
+// here; per-pack failures are logged and never fatal; the skill/agent
+// caches are invalidated afterwards.
+func (f *FrontendAPI) runSpecsPacks(on bool) {
 	skillsDir := config.SkillsDir(f.agentDir)
 	agentsDir := config.AgentsDir(f.agentDir)
 
-	if enabled {
+	if on {
 		if res, err := specs.SeedSkills(skillsDir, f.log()); err != nil {
-			f.log().Warn("specs surface enable: spec skill-pack seeding failed",
+			f.log().Warn("spec skill-pack seeding failed",
 				"skills_dir", skillsDir, "error", err)
 		} else {
-			f.log().Info("specs surface enabled; spec skill-pack seeded",
+			f.log().Info("spec skill-pack seeded",
 				"skills_dir", skillsDir,
 				"seeded", len(res.Seeded), "updated", len(res.Updated),
 				"current", len(res.Current), "preserved", len(res.Preserved))
 		}
 		if res, err := specs.SeedAgents(agentsDir, f.log()); err != nil {
-			f.log().Warn("specs surface enable: spec agent-pack seeding failed",
+			f.log().Warn("spec agent-pack seeding failed",
 				"agents_dir", agentsDir, "error", err)
 		} else {
-			f.log().Info("specs surface enabled; spec agent-pack seeded",
+			f.log().Info("spec agent-pack seeded",
 				"agents_dir", agentsDir,
 				"seeded", len(res.Seeded), "updated", len(res.Updated),
 				"current", len(res.Current), "preserved", len(res.Preserved))
 		}
 	} else {
 		if res, err := specs.UnseedSkills(skillsDir, f.log()); err != nil {
-			f.log().Warn("specs surface disable: spec skill-pack unseed failed",
+			f.log().Warn("spec skill-pack unseed failed",
 				"skills_dir", skillsDir, "error", err)
 		} else {
-			f.log().Info("specs surface disabled; spec skill-pack unseeded",
+			f.log().Info("spec skill-pack unseeded",
 				"skills_dir", skillsDir,
 				"removed", len(res.Removed),
+				"missing", len(res.Missing),
 				"preserved_user", len(res.PreservedUser),
-				"preserved_modified", len(res.PreservedModified))
+				"preserved_modified", len(res.PreservedModified),
+				"failed", len(res.Failed))
 		}
 		if res, err := specs.UnseedAgents(agentsDir, f.log()); err != nil {
-			f.log().Warn("specs surface disable: spec agent-pack unseed failed",
+			f.log().Warn("spec agent-pack unseed failed",
 				"agents_dir", agentsDir, "error", err)
 		} else {
-			f.log().Info("specs surface disabled; spec agent-pack unseeded",
+			f.log().Info("spec agent-pack unseeded",
 				"agents_dir", agentsDir,
 				"removed", len(res.Removed),
+				"missing", len(res.Missing),
 				"preserved_user", len(res.PreservedUser),
-				"preserved_modified", len(res.PreservedModified))
+				"preserved_modified", len(res.PreservedModified),
+				"failed", len(res.Failed))
 		}
 	}
 

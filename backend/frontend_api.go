@@ -194,11 +194,32 @@ type FrontendAPI struct {
 	// deadline for acquiring switchMu. Test-only seam (0 in production).
 	switchLockTimeoutOverride time.Duration
 
-	// researchSeedMu serializes c0wrk-owned pack seeding (seedGlobalPacks —
-	// see specs/decisions/056-research-always-on-global-seeding.md): a
-	// concurrent writer would race the pack staging swap, so the whole run is
-	// serialized process-wide; seeding is millisecond-scale local IO.
+	// researchSeedMu serializes every c0wrk-owned pack mutation — seeding
+	// AND unseeding: the launch seed (seedGlobalPacks) and the sidebar
+	// surface gate RPCs' applies (applyResearchPacksLocked /
+	// applySpecsPacksLocked in frontend_api_packgates.go) each run their
+	// whole pack pass under it, so a toggle's writes never interleave with
+	// the launch seed's (a concurrent writer would race the pack staging
+	// swap); pack passes are millisecond-scale local IO. Lock order:
+	// configMu → researchSeedMu — the applies run while their RPC holds
+	// configMu, and seedGlobalPacks reads the gates under configMu BEFORE
+	// taking researchSeedMu, so the nesting never inverts. See
+	// specs/decisions/056-research-always-on-global-seeding.md and
+	// specs/decisions/114-sidebar-pack-gates-reconcile-and-serialization.md.
 	researchSeedMu sync.Mutex
+
+	// packGateResearch/packGateSpecs mirror the EFFECTIVE sidebar surface
+	// gates (research.enabled / specs.enabled) under researchSeedMu: written
+	// by the toggle RPCs' applies before their disk pass and re-read by
+	// seedGlobalPacks INSIDE its critical section — configMu cannot be taken
+	// there (the applies hold configMu while waiting for researchSeedMu), so
+	// the mirror is what lets the launch seed honor a toggle landing between
+	// its pre-lock gate read and the lock, instead of acting on a stale
+	// snapshot and resurrecting just-unseeded packs. nil (no toggle has run
+	// this session) leaves the config snapshot the launch seed reads under
+	// configMu authoritative; the gates themselves always live in f.config.
+	packGateResearch *bool
+	packGateSpecs    *bool
 
 	// switchInProgressHook is a test-only seam invoked inside SwitchProject
 	// while switchMu is held (i.e. mid-switch). Nil in production.
@@ -643,9 +664,11 @@ func (l *FrontendAPILifecycle) Init(cfg FrontendAPIConfig) *FrontendAPI {
 	// (core/gittrust) — fail-closed when config is nil or the list is empty.
 	f.syncGitTrustRegistry()
 
-	// Seed the c0wrk-owned packs into the GLOBAL agent directories BEFORE the
-	// directory watchers are created, so the fresh directories are watched on
-	// this launch. Idempotent, user-owned dirs preserved — see
+	// Reconcile the c0wrk-owned packs in the GLOBAL agent directories with
+	// their sidebar surface gates BEFORE the directory watchers are created,
+	// so the reconciled directories are watched on this launch: enabled
+	// surfaces seed (idempotent, user-owned dirs preserved), disabled
+	// surfaces unseed — converging the disk to the config. See
 	// specs/decisions/056-research-always-on-global-seeding.md.
 	f.seedGlobalPacks()
 

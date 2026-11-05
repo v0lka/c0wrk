@@ -368,8 +368,10 @@ const (
 // holds entry names, sorted for deterministic output. It mirrors Result.
 type UnseedResult struct {
 	Removed           []string
+	Missing           []string // target absent — nothing to do
 	PreservedUser     []string
 	PreservedModified []string
+	Failed            []string // per-entry error; kept on disk, the next reconcile retries
 }
 
 // Append records an entry name under the bucket for its unseed action.
@@ -377,6 +379,8 @@ func (r *UnseedResult) Append(action UnseedAction, name string) {
 	switch action {
 	case UnseedRemoved:
 		r.Removed = append(r.Removed, name)
+	case UnseedMissing:
+		r.Missing = append(r.Missing, name)
 	case UnseedPreservedUser:
 		r.PreservedUser = append(r.PreservedUser, name)
 	case UnseedPreservedModified:
@@ -387,8 +391,10 @@ func (r *UnseedResult) Append(action UnseedAction, name string) {
 // Sort sorts every bucket of an unseed result for deterministic output.
 func (r *UnseedResult) Sort() {
 	sort.Strings(r.Removed)
+	sort.Strings(r.Missing)
 	sort.Strings(r.PreservedUser)
 	sort.Strings(r.PreservedModified)
+	sort.Strings(r.Failed)
 }
 
 // UnseedTarget classifies one pack destination for removal and deletes the
@@ -422,21 +428,29 @@ func UnseedTarget(fsys fs.FS, root, name, target string) (UnseedAction, error) {
 // UnseedEntries removes every listed pack entry from destDir — the delete
 // half of the pack lifecycle behind the sidebar surface gates: per entry the
 // decision is UnseedTarget's, so only byte-identical (or pack-marked
-// truncated) copies disappear. Never creates destDir; a missing entry
-// reports UnseedMissing. The result is sorted for deterministic output, and
-// when a logger is given one Info line names the counts plus — for every
-// locally modified copy kept on disk — one visible Warn (kind reads as
-// "research skill" / "spec agent" in the messages).
+// truncated) copies disappear. Per-entry failures are FAIL-SOFT: the entry
+// lands in the result's Failed bucket, the loop continues past it, and the
+// joined error is returned alongside the partial result — one hostile entry
+// (a plain file squatting a pack name, a locked directory) never blocks the
+// removal of the rest, and the caller's next reconcile (a toggle cycle or
+// the launch seed) retries the failed entries. Never creates destDir; a missing
+// entry reports UnseedMissing. The result is sorted for deterministic
+// output, and when a logger is given one Info line names the counts plus —
+// for every locally modified copy kept on disk — one visible Warn (kind
+// reads as "research skill" / "spec agent" in the messages).
 func UnseedEntries(fsys fs.FS, root, destDir string, names []string, kind string, logger *slog.Logger) (*UnseedResult, error) {
 	if destDir == "" {
 		return nil, errors.New("seedpack.UnseedEntries: destDir is empty")
 	}
 	result := &UnseedResult{}
+	var failed []error
 	for _, name := range names {
 		target := filepath.Join(destDir, name)
 		action, err := UnseedTarget(fsys, root, name, target)
 		if err != nil {
-			return nil, fmt.Errorf("unseed %s %q: %w", kind, name, err)
+			result.Failed = append(result.Failed, name)
+			failed = append(failed, fmt.Errorf("unseed %s %q: %w", kind, name, err))
+			continue
 		}
 		result.Append(action, name)
 	}
@@ -445,12 +459,14 @@ func UnseedEntries(fsys fs.FS, root, destDir string, names []string, kind string
 		logger.Info(kind+" pack unseeded",
 			"dest", destDir,
 			"removed", len(result.Removed),
+			"missing", len(result.Missing),
 			"preserved_user", len(result.PreservedUser),
-			"preserved_modified", len(result.PreservedModified))
+			"preserved_modified", len(result.PreservedModified),
+			"failed", len(result.Failed))
 		if len(result.PreservedModified) > 0 {
 			logger.Warn(kind+" entries locally modified; kept on disk (delete manually if unwanted)",
 				"dest", destDir, "entries", strings.Join(result.PreservedModified, ", "))
 		}
 	}
-	return result, nil
+	return result, errors.Join(failed...)
 }

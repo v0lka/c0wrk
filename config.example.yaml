@@ -1409,14 +1409,17 @@ orchestration:
 # six spec-* skills and the specs Subagent Profile — materialized into
 # ~/.c0wrk/.agents/{skills,agents} at launch. Disabling a surface hides its
 # sidebar button and removes its seeded pack copies from disk; re-enabling
-# reseeds them. Removal is non-destructive by content: only copies that are
+# reseeds them. The launch seed reconciles both ways: enabled surfaces seed,
+# disabled surfaces unseed (converging any copy a failed removal left
+# behind). Removal is non-destructive by content: only copies that are
 # byte-identical to the shipped pack (or a pack-marked, interrupted partial
 # copy) are deleted — a marker-less user-authored copy and a locally edited
 # copy (marker present, content diverged) are always preserved (edited copies
 # are named in a warning log).
 #
 #   enabled (default true) — surface master gate; false hides the sidebar
-#                            button and unseeds the surface's pack copies.
+#                            button and unseeds the surface's pack copies
+#                            (at the toggle and again at every launch).
 #
 # research:
 #   enabled: true

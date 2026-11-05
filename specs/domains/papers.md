@@ -12,7 +12,7 @@ The paper ("literature") library is a per-project, workspace-contained store of 
 - `core/papers/flashcards.go` - the `flashcards.md` model, parser, renderer, and the fixed-interval scheduler. Pure, no I/O.
 - `core/papers/original.go` - the `paper.html` fetcher (`FetchOriginalHTML`): the arXiv-native-then-ar5iv endpoint chain under a hard host allowlist, streaming byte caps, script stripping, image localization into `assets/`, and the atomic staged write. Produces the app-owned original-HTML artifacts (see Invariants).
 - `core/papers/skillpack.go` - the embedded `study-paper` pack and the non-destructive, versioned GLOBAL seeding run at app startup by `seedGlobalPacks` (see ADR-056). A thin consumer of the shared seeding core.
-- `core/papers/unseed.go` - the delete half of the pack lifecycle behind the `research.enabled` surface gate ([ADR-113](../decisions/113-sidebar-surface-gates.md)): `UnseedSkills` removes only byte-identical (or pack-marked truncated) copies; locally edited copies are preserved with a visible warning
+- `core/papers/unseed.go` - the delete half of the pack lifecycle behind the `research.enabled` surface gate ([ADR-114](../decisions/114-sidebar-pack-gates-reconcile-and-serialization.md)): `UnseedSkills` removes only byte-identical (or pack-marked truncated) copies; locally edited copies are preserved with a visible warning, and per-entry failures are fail-soft (recorded and joined into the error, never aborting the rest of the pack)
 - `core/seedpack` - the shared crash-safe seeding core (content-hash classification, staged write + atomic rename, `.seed-version` marker handling, leftovers sweep) behind every pack's seeding; `core/research` and `core/papers` are thin consumers keeping only their embed trees, version constants, and pack-specific logging (ADR-105 decision 5 — supersedes the old deliberate-mirror precedent of `core/papers/seedstaging.go`).
 - `core/papers/skills/study-paper/` - the embedded skill: `SKILL.md` plus `references/`, `assets/` (`flashcards.md`, `comparison-matrix.md`, `note-template.md`, `appraisal-template.md`, `explainer-outline.md`), and `scripts/` (`literature.py`, `fetch_paper.py`).
 - `backend/frontend_api_papers.go` - `GetPapers`/`GetPaper`/`SetPaperPinned`/`RecordFlashcardReview`, DTO mapping/normalization, the paper-library watcher callback, and pin/unpin.
@@ -110,9 +110,10 @@ App startup
      the research agent profile into ~/.c0wrk/.agents/agents —
      content-hash classified, staged + atomically swapped, non-destructive;
      the papers pack rides the research.enabled surface gate
-     ([ADR-113](../decisions/113-sidebar-surface-gates.md)): with the gate
-     off, neither the research nor the paper pack seeds at launch (the
-     toggle-time unseed has removed both);
+     ([ADR-114](../decisions/114-sidebar-pack-gates-reconcile-and-serialization.md)): with the gate
+     off, neither the research nor the paper pack seeds at launch — the
+     launch unseeds both (reconciling any drift a failed toggle-time
+     removal left behind);
      it runs BEFORE the skill watchers start, so the seeded skill enters the
      ListSkills catalog with no extra wiring
   -> the c0wrk global skills dir outranks the user's ~/.agents/skills in
@@ -223,7 +224,7 @@ Original-HTML fetch ("Load HTML original" in the workspace Source section)
 ## Related Specs
 
 - [research.md](research.md) - RESEARCH mode: the research root, the project-local research pack, and the panel whose Papers segment renders this library
-- [../decisions/113-sidebar-surface-gates.md](../decisions/113-sidebar-surface-gates.md) - the `research.enabled` surface gate: the papers pack seeds and unseeds together with the research packs (off unseeds `study-paper` too; `RunPaperLiterature` degrades to its `no_seed` status)
+- [../decisions/114-sidebar-pack-gates-reconcile-and-serialization.md](../decisions/114-sidebar-pack-gates-reconcile-and-serialization.md) - the `research.enabled` surface gate: the papers pack seeds and unseeds together with the research packs (off unseeds `study-paper` too; `RunPaperLiterature` degrades to its `no_seed` status)
 - [../contracts/desktop-frontend.md](../contracts/desktop-frontend.md) - the Papers RPC surface and DTO boundary (incl. `RunPaperLiterature`/`PaperLiteratureDTO`)
 - [../contracts/event-catalog.md](../contracts/event-catalog.md) - the `papers:changed` event
 - [frontend/stores.md](frontend/stores.md) - `paperStore` and the `uiStore` Research-panel segment map
