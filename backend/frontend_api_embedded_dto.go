@@ -218,6 +218,28 @@ type EmbeddedLLMStateData struct {
 	InstallError string `json:"install_error"`
 }
 
+// EmbeddedLLMNoticeData is the payload of the global embedded_llm:notice
+// event: one non-terminal supervisor finding. NOT a state transition — the
+// verdict for the launch that produced the finding still travels through
+// embedded_llm:state — so a renderer treats it as a warning banner beside the
+// supervision state. Mirrors EmbeddedLLMNoticeData in
+// frontend/src/types/events.ts.
+type EmbeddedLLMNoticeData struct {
+	// Kind names the finding class verbatim from core's closed vocabulary
+	// ("low_free_device_memory"), so the UI can key rendering on it without
+	// parsing Message.
+	Kind string `json:"kind"`
+	// Message is the complete, renderable human sentence — the same text the
+	// supervisor logged at Warn.
+	Message string `json:"message"`
+	// FreeDeviceMiB / ExpectedDeviceMiB are the evidence behind the finding:
+	// the free accelerator memory measured over exactly the pool the plan
+	// prices, and the plan's projected device footprint. Advisory only — the
+	// plan itself is unchanged (budgets price total capacity).
+	FreeDeviceMiB     int64 `json:"free_device_mib"`
+	ExpectedDeviceMiB int64 `json:"expected_device_mib"`
+}
+
 // EmbeddedLLMProgressData is the embedded_llm:install_progress payload: one
 // component's one stage (specs/contracts/event-catalog.md).
 type EmbeddedLLMProgressData struct {
@@ -288,6 +310,17 @@ type EmbeddedLLMPlan struct {
 	// CacheRAMMiB is `-cram`; -1 = flag omitted, 0 = a real value that
 	// disables the cache.
 	CacheRAMMiB int `json:"cache_ram_mib"`
+	// Devices is the `-dev` list this plan pins the offload to. Always an
+	// array, never null; empty = the plan leaves the device choice to the
+	// runtime. When non-empty, DeviceBudgetMiB below prices ONLY the named
+	// devices' pool, while HostBudgetMiB stays machine-wide — the filter that
+	// makes the pin truthful lives in the planner
+	// (see specs/domains/embedded-llm.md).
+	Devices []string `json:"devices"`
+	// SplitMode is the `-sm`/`--split-mode` spelling the plan pins, empty when
+	// the flag is omitted (the runtime decides the split). Echoed verbatim
+	// from the resolved plan, never re-derived here.
+	SplitMode string `json:"split_mode"`
 	// GPUFamily is the accelerator generation the plan was classified as, empty
 	// when no device probe answered. It is what priced the split allowance in
 	// the two budgets below.
@@ -348,12 +381,13 @@ type EmbeddedLLMOffloadTuningDTO struct {
 }
 
 // EmbeddedLLMTuningDTO is the GetEmbeddedLLMTuning payload: the persisted
-// embedded_llm.tuning overrides for the twelve UI-exposed knobs
+// embedded_llm.tuning overrides for the fourteen UI-exposed knobs
 // (specs/domains/embedded-llm.md); the two YAML-only checkpoint knobs are
-// config.yaml-only. EVERY field is nullable — nil = "unset — the planner
-// decides", distinct from an explicit "auto"; this is the OVERRIDE, the
-// outcome is EmbeddedLLMStatus.Plan. Legal spellings live only in
-// config.tuningChoice; a rejected SetEmbeddedLLMTuning lists them.
+// config.yaml-only — no DTO field, no request spelling, no reset key. EVERY
+// field is nullable — nil = "unset — the planner decides", distinct from an
+// explicit "auto"; this is the OVERRIDE, the outcome is
+// EmbeddedLLMStatus.Plan. Legal spellings live only in config.tuningChoice; a
+// rejected SetEmbeddedLLMTuning lists them.
 type EmbeddedLLMTuningDTO struct {
 	// Context is the `-c` knob: nil mode = unset, "auto" = the planner sizes it,
 	// "exact" = Tokens pins it.
@@ -393,6 +427,16 @@ type EmbeddedLLMTuningDTO struct {
 	// the topology's own derivation. It is a PLANNER-side budget knob, not a
 	// runtime flag -- the pinned fork has no `--host-reserve`.
 	HostReserveGiB *float64 `json:"host_reserve_gib"`
+	// Devices is the `-dev` offload target list, mirrored verbatim from the
+	// stored section. nil/empty = unset — the runtime uses every device it
+	// finds. Entries are the `--list-devices` names; the machine truth of a
+	// name is the planner's call at plan time (an unknown or stale name refuses
+	// the load), so this DTO only echoes what the operator pinned.
+	Devices []string `json:"devices"`
+	// SplitMode is the `-sm`/`--split-mode` spelling. nil = unset (omit the
+	// flag); an explicit "auto" is a real value the section distinguishes from
+	// unset, exactly like every other closed-set knob here.
+	SplitMode *string `json:"split_mode"`
 }
 
 // EmbeddedLLMContextTuningRequest is the `context` knob of a tuning patch:
@@ -415,7 +459,11 @@ type EmbeddedLLMOffloadTuningRequest struct {
 // verbatim (an explicit "auto" is a real value, not unset); a knob named in
 // Reset clears back to unset. Reset exists because nil already means "absent
 // from this request" and cannot also mean "clear" — bool/int knobs have no
-// "auto" spelling. Resetting and setting the same knob is refused.
+// "auto" spelling; the config-file vocabulary is the one encoding covering
+// all fourteen knobs uniformly. (The devices LIST is the one knob whose
+// "clear" is also expressible as a present-but-empty array, normalized to
+// unset by the fold; the reset key exists so one uniform mechanism covers it
+// like every other knob.) Resetting and setting the same knob is refused.
 type EmbeddedLLMTuningRequest struct {
 	// Reset names knobs to clear (embedded_llm.tuning YAML keys; an unknown
 	// key is refused without a write).
@@ -433,6 +481,14 @@ type EmbeddedLLMTuningRequest struct {
 	Parallel       *int                             `json:"parallel"`
 	CacheRAMMiB    *int                             `json:"cache_ram_mib"`
 	HostReserveGiB *float64                         `json:"host_reserve_gib"`
+	// Devices REPLACES the whole `-dev` list when present (an empty array
+	// clears it — list knobs have no pointer tri-state), or keeps the stored
+	// value when nil. Entries are validated by the same ToTuning translation a
+	// config load runs.
+	Devices []string `json:"devices"`
+	// SplitMode REPLACES the `-sm` spelling when present; nil keeps the stored
+	// value.
+	SplitMode *string `json:"split_mode"`
 }
 
 // embeddedDevicesDTO maps a measured topology onto the wire shape.
@@ -465,6 +521,7 @@ func embeddedPlanDTO(plan *embeddedllm.MemoryPlan) EmbeddedLLMPlan {
 		CacheRAMMiB: -1,
 		OffloadMode: config.EmbeddedLLMTuningAuto,
 		Notes:       []string{},
+		Devices:     []string{},
 	}
 	if plan == nil {
 		return dto
@@ -481,11 +538,15 @@ func embeddedPlanDTO(plan *embeddedllm.MemoryPlan) EmbeddedLLMPlan {
 	dto.KVOffload = plan.KVOffload
 	dto.MMProjOffload = plan.MMProjOffload
 	dto.Parallel = plan.Parallel
+	dto.SplitMode = string(plan.SplitMode)
 	dto.GPUFamily = string(plan.GPUFamily)
 	dto.DeviceBudgetMiB = plan.DeviceBudgetMiB
 	dto.HostBudgetMiB = plan.HostBudgetMiB
 	dto.ExpectedDeviceMiB = plan.ExpectedDeviceMiB
 	dto.ExpectedHostMiB = plan.ExpectedHostMiB
+	if len(plan.Devices) > 0 {
+		dto.Devices = slices.Clone(plan.Devices)
+	}
 	if plan.CacheRAMMiB != nil {
 		dto.CacheRAMMiB = *plan.CacheRAMMiB
 	}
@@ -512,9 +573,10 @@ func embeddedPlanDTO(plan *embeddedllm.MemoryPlan) EmbeddedLLMPlan {
 	return dto
 }
 
-// embeddedTuningDTO mirrors the persisted override surface across the twelve
-// UI-exposed knobs, copying the pointers so the DTO never aliases the live
-// config across a reload.
+// embeddedTuningDTO mirrors the persisted override surface across the
+// fourteen UI-exposed knobs (the two YAML-only checkpoint-policy knobs have
+// no DTO representation by design — see EmbeddedLLMTuningDTO), copying the
+// pointers so the DTO never aliases the live config across a reload.
 func embeddedTuningDTO(tuning config.TuningConfig) EmbeddedLLMTuningDTO {
 	dto := EmbeddedLLMTuningDTO{
 		Context: EmbeddedLLMContextTuningDTO{
@@ -536,6 +598,13 @@ func embeddedTuningDTO(tuning config.TuningConfig) EmbeddedLLMTuningDTO {
 		CacheRAMMiB:    copyIntPtr(tuning.CacheRAMMiB),
 		HostReserveGiB: copyFloat64Ptr(tuning.HostReserveGiB),
 	}
+	// devices is list-valued, so "unset" and "pinned to nothing" are the same
+	// statement (the config layer refuses an authored-but-empty list before it
+	// could ever be stored); nil reads as unset on the wire.
+	if len(tuning.Devices) > 0 {
+		dto.Devices = slices.Clone(tuning.Devices)
+	}
+	dto.SplitMode = copyStringPtr(tuning.SplitMode)
 	return dto
 }
 

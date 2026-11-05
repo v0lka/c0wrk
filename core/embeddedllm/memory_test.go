@@ -370,21 +370,21 @@ func TestProjectionMatchesMeasuredMatrix(t *testing.T) {
 					profile.MaxContext, run.kv, cache, run.wantKV, run.source)
 			}
 
-			device, err := profile.ProjectDeviceMiB(run.packing, profile.MaxContext, run.kv, run.offloaded)
+			device, err := profile.ProjectDeviceMiB(BackendMetal, GPUFamilyAppleSilicon, run.packing, profile.MaxContext, run.kv, run.offloaded)
 			if err != nil {
 				t.Fatalf("ProjectDeviceMiB: %v", err)
 			}
 			if device != run.wantDevice {
-				t.Errorf("ProjectDeviceMiB(%q, %d, %q, %v) = %d MiB, want the measured %d MiB\n  source: %s",
+				t.Errorf("ProjectDeviceMiB(metal, %q, %d, %q, %v) = %d MiB, want the measured %d MiB\n  source: %s",
 					run.packing, profile.MaxContext, run.kv, run.offloaded, device, run.wantDevice, run.source)
 			}
 
-			host, err := profile.ProjectHostMiB(run.packing, profile.MaxContext, run.kv, run.offloaded)
+			host, err := profile.ProjectHostMiB(BackendMetal, GPUFamilyAppleSilicon, run.packing, profile.MaxContext, run.kv, run.offloaded)
 			if err != nil {
 				t.Fatalf("ProjectHostMiB: %v", err)
 			}
 			if host != run.wantHost {
-				t.Errorf("ProjectHostMiB(%q, %d, %q, %v) = %d MiB, want the measured %d MiB\n  source: %s",
+				t.Errorf("ProjectHostMiB(metal, %q, %d, %q, %v) = %d MiB, want the measured %d MiB\n  source: %s",
 					run.packing, profile.MaxContext, run.kv, run.offloaded, host, run.wantHost, run.source)
 			}
 		})
@@ -402,7 +402,7 @@ func TestProjectionScalesWithContextAndPrecision(t *testing.T) {
 
 	project := func(ctx int, kv KVType) int64 {
 		t.Helper()
-		got, err := profile.ProjectDeviceMiB(PackingPQ2_0, ctx, kv, true)
+		got, err := profile.ProjectDeviceMiB(BackendMetal, GPUFamilyAppleSilicon, PackingPQ2_0, ctx, kv, true)
 		if err != nil {
 			t.Fatalf("ProjectDeviceMiB(%d, %q): %v", ctx, kv, err)
 		}
@@ -441,7 +441,7 @@ func TestProjectDeviceMiBIsZeroWithoutOffload(t *testing.T) {
 
 	for _, kv := range KVTypes() {
 		for _, ctx := range []int{1024, 65536, profile.MaxContext} {
-			got, err := profile.ProjectDeviceMiB(PackingPQ2_0, ctx, kv, false)
+			got, err := profile.ProjectDeviceMiB(BackendMetal, GPUFamilyAppleSilicon, PackingPQ2_0, ctx, kv, false)
 			if err != nil {
 				t.Fatalf("ProjectDeviceMiB(%d, %q, offloaded=false): %v", ctx, kv, err)
 			}
@@ -472,10 +472,10 @@ func TestProjectionCoversEveryPinnedPackingAndRefusesOthers(t *testing.T) {
 		if _, ok := profile.HostWeightSpillMiB[packing]; !ok {
 			t.Errorf("HostWeightSpillMiB has no measured entry for the pinned packing %q", packing)
 		}
-		if _, err := profile.ProjectDeviceMiB(packing, profile.MaxContext, KVTypeF16, true); err != nil {
+		if _, err := profile.ProjectDeviceMiB(BackendMetal, GPUFamilyAppleSilicon, packing, profile.MaxContext, KVTypeF16, true); err != nil {
 			t.Errorf("ProjectDeviceMiB(%q) = %v, want success", packing, err)
 		}
-		if _, err := profile.ProjectHostMiB(packing, profile.MaxContext, KVTypeF16, false); err != nil {
+		if _, err := profile.ProjectHostMiB(BackendMetal, GPUFamilyAppleSilicon, packing, profile.MaxContext, KVTypeF16, false); err != nil {
 			t.Errorf("ProjectHostMiB(%q) = %v, want success", packing, err)
 		}
 	}
@@ -483,24 +483,24 @@ func TestProjectionCoversEveryPinnedPackingAndRefusesOthers(t *testing.T) {
 	// An unpinned packing is refused on both projections, and the refusal does
 	// not depend on the offload flag reaching the residency lookup.
 	unpinned := Packing("Q4_K_M")
-	if _, err := profile.ProjectDeviceMiB(unpinned, profile.MaxContext, KVTypeF16, true); !errors.Is(err, ErrMemoryNotMeasured) {
+	if _, err := profile.ProjectDeviceMiB(BackendMetal, GPUFamilyAppleSilicon, unpinned, profile.MaxContext, KVTypeF16, true); !errors.Is(err, ErrMemoryNotMeasured) {
 		t.Errorf("ProjectDeviceMiB(%q) error = %v, want ErrMemoryNotMeasured", unpinned, err)
 	}
-	if _, err := profile.ProjectHostMiB(unpinned, profile.MaxContext, KVTypeF16, false); !errors.Is(err, ErrMemoryNotMeasured) {
+	if _, err := profile.ProjectHostMiB(BackendMetal, GPUFamilyAppleSilicon, unpinned, profile.MaxContext, KVTypeF16, false); !errors.Is(err, ErrMemoryNotMeasured) {
 		t.Errorf("ProjectHostMiB(%q, offloaded=false) error = %v, want ErrMemoryNotMeasured", unpinned, err)
 	}
-	if _, err := profile.ProjectHostMiB(unpinned, profile.MaxContext, KVTypeF16, true); !errors.Is(err, ErrMemoryNotMeasured) {
+	if _, err := profile.ProjectHostMiB(BackendMetal, GPUFamilyAppleSilicon, unpinned, profile.MaxContext, KVTypeF16, true); !errors.Is(err, ErrMemoryNotMeasured) {
 		t.Errorf("ProjectHostMiB(%q, offloaded=true) error = %v, want ErrMemoryNotMeasured", unpinned, err)
 	}
 
 	// A bad shape is reported before the packing lookup matters.
-	if _, err := profile.ProjectDeviceMiB(PackingPQ2_0, 0, KVTypeF16, true); !errors.Is(err, ErrContextOutOfRange) {
+	if _, err := profile.ProjectDeviceMiB(BackendMetal, GPUFamilyAppleSilicon, PackingPQ2_0, 0, KVTypeF16, true); !errors.Is(err, ErrContextOutOfRange) {
 		t.Errorf("ProjectDeviceMiB(ctx=0) error = %v, want ErrContextOutOfRange", err)
 	}
-	if _, err := profile.ProjectDeviceMiB(PackingPQ2_0, profile.MaxContext, KVType("q5_0"), false); !errors.Is(err, ErrKVTypeUnsupported) {
+	if _, err := profile.ProjectDeviceMiB(BackendMetal, GPUFamilyAppleSilicon, PackingPQ2_0, profile.MaxContext, KVType("q5_0"), false); !errors.Is(err, ErrKVTypeUnsupported) {
 		t.Errorf("ProjectDeviceMiB(q5_0) error = %v, want ErrKVTypeUnsupported", err)
 	}
-	if _, err := profile.ProjectHostMiB(PackingPQ2_0, profile.MaxContext, KVType("q5_0"), true); !errors.Is(err, ErrKVTypeUnsupported) {
+	if _, err := profile.ProjectHostMiB(BackendMetal, GPUFamilyAppleSilicon, PackingPQ2_0, profile.MaxContext, KVType("q5_0"), true); !errors.Is(err, ErrKVTypeUnsupported) {
 		t.Errorf("ProjectHostMiB(q5_0) error = %v, want ErrKVTypeUnsupported", err)
 	}
 }
@@ -516,7 +516,7 @@ func TestProjectHostMiBAtFullOffloadIgnoresContext(t *testing.T) {
 
 	for _, kv := range KVTypes() {
 		for _, ctx := range []int{1024, 65536, profile.MaxContext} {
-			got, err := profile.ProjectHostMiB(PackingPQ2_0, ctx, kv, true)
+			got, err := profile.ProjectHostMiB(BackendMetal, GPUFamilyAppleSilicon, PackingPQ2_0, ctx, kv, true)
 			if err != nil {
 				t.Fatalf("ProjectHostMiB(%d, %q, offloaded=true): %v", ctx, kv, err)
 			}
@@ -525,6 +525,299 @@ func TestProjectHostMiBAtFullOffloadIgnoresContext(t *testing.T) {
 				t.Errorf("ProjectHostMiB(%d, %q, offloaded=true) = %d MiB, want %d", ctx, kv, got, want)
 			}
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The CUDA (NVIDIA Blackwell) overlay against its own measurement
+// ---------------------------------------------------------------------------
+
+// cudaMeasuredRow is one row of the 2026-11-03 CUDA run matrix: the same
+// evidence shape as measuredMatrix above, but from the cuda-13.3 loaded-pass
+// breakdowns on an RTX 5060 Ti (Blackwell), which carry NO dry-run fit rows —
+// so wantDevice/wantHost are the shutdown row's `self` columns, not a fit
+// projection.
+//
+// The command line is c0wrk's canonical LaunchSpec.Args() shape (`-fit on
+// -ngl 99 -fa on -np 1 --ctx-checkpoints 32 --no-cache-idle-slots --mmproj
+// ...`, 65/65 layers offloaded); the full logs are LOCAL measurement
+// artifacts under testdata/cuda-measured/ (gitignored, NOT part of the
+// repository), whose methodology, transcription and SHA256s live in
+// docs/development/embedded-llm-cuda-measurements.md.
+type cudaMeasuredRow struct {
+	name        string
+	ctx         int
+	kv          KVType
+	wantKV      int64 // llama_kv_cache: size = <wantKV>.00 MiB
+	wantCompDev int64 // sched_reserve: CUDA0 compute buffer size, floored
+	wantCompHst int64 // sched_reserve: CUDA_Host compute buffer size, floored
+	wantDevice  int64 // the shutdown CUDA0 row's self column
+	wantHost    int64 // the shutdown Host row's self column
+	source      string
+}
+
+// cudaMeasuredRows is the complete CUDA run matrix, verbatim readings of the
+// four shutdown breakdowns; `source` quotes the rows behind every figure.
+var cudaMeasuredRows = []cudaMeasuredRow{
+	{
+		name: "PQ2_0, full offload, 32768, f16", ctx: 32768, kv: KVTypeF16,
+		wantKV: 2048, wantCompDev: 166, wantCompHst: 52, wantDevice: 8907, wantHost: 374,
+		source: "| - CUDA0 (RTX 5060 Ti) | 15938 = 4581 + (8907 = 6543 + 2197 + 166) + 2449 | | " +
+			"| - Host | 374 = 322 + 0 + 52 | | sched_reserve: CUDA0 compute buffer size = 166.02 MiB | " +
+			"sched_reserve: CUDA_Host compute buffer size = 52.02 MiB (llama-measure-cuda-32768.log)",
+	},
+	{
+		name: "PQ2_0, full offload, 65536, f16", ctx: 65536, kv: KVTypeF16,
+		wantKV: 4096, wantCompDev: 198, wantCompHst: 84, wantDevice: 10987, wantHost: 406,
+		source: "| - CUDA0 (RTX 5060 Ti) | 15938 = 2479 + (10987 = 6543 + 4245 + 198) + 2471 | | " +
+			"| - Host | 406 = 322 + 0 + 84 | | sched_reserve: CUDA0 compute buffer size = 198.02 MiB | " +
+			"sched_reserve: CUDA_Host compute buffer size = 84.02 MiB (llama-measure-cuda-65536.log)",
+	},
+	{
+		name: "PQ2_0, full offload, 65536, q8_0", ctx: 65536, kv: KVTypeQ8_0,
+		wantKV: 2176, wantCompDev: 410, wantCompHst: 84, wantDevice: 9279, wantHost: 406,
+		source: "| - CUDA0 (RTX 5060 Ti) | 15938 = 4209 + (9279 = 6543 + 2325 + 410) + 2449 | | " +
+			"| - Host | 406 = 322 + 0 + 84 | | sched_reserve: CUDA0 compute buffer size = 410.28 MiB | " +
+			"sched_reserve: CUDA_Host compute buffer size = 84.28 MiB (llama-measure-cuda-65536-q8.log)",
+	},
+	{
+		name: "PQ2_0, full offload, 131072, q8_0", ctx: 131072, kv: KVTypeQ8_0,
+		wantKV: 4352, wantCompDev: 730, wantCompHst: 148, wantDevice: 11775, wantHost: 470,
+		source: "| - CUDA0 (RTX 5060 Ti) | 15938 = 1702 + (11775 = 6543 + 4501 + 730) + 2460 | | " +
+			"| - Host | 470 = 322 + 0 + 148 | | sched_reserve: CUDA0 compute buffer size = 730.28 MiB | " +
+			"sched_reserve: CUDA_Host compute buffer size = 148.28 MiB (llama-measure-cuda-131072-q8.log)",
+	},
+}
+
+// TestCUDAMeasuredProfileReplay replays every measured breakdown row through
+// the projections at the measured tuple — (a CUDA backend, NVIDIA Blackwell)
+// — and demands the measured `self` columns back. Each row asserts the two
+// compute terms on their own first, so a drifting total points at the term
+// that drifted. The device self is 6543 (weights) + KV + 150 (recurrent) +
+// compute, the host self 322 (spill) + host compute; the printed context
+// column (e.g. 4501) is floor(KV + 149.62), the same floor-vs-rounded-self
+// shape the Metal profile models.
+func TestCUDAMeasuredProfileReplay(t *testing.T) {
+	t.Parallel()
+
+	profile := mustProfile(t)
+
+	shape, ok := cudaShape(BackendCUDA133, GPUFamilyNVIDIABlackwell)
+	if !ok {
+		t.Fatal("cudaShape reported no overlay for (cuda-13.3, nvidia-blackwell), the measured tuple")
+	}
+
+	for _, row := range cudaMeasuredRows {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+
+			// The KV term on its own, so a total that drifts points at the
+			// term that drifted.
+			cache, err := profile.KVCacheMiB(row.ctx, row.kv)
+			if err != nil {
+				t.Fatalf("KVCacheMiB: %v", err)
+			}
+			if cache != row.wantKV {
+				t.Errorf("KVCacheMiB(%d, %q) = %d MiB, want the measured %d MiB\n  source: %s",
+					row.ctx, row.kv, cache, row.wantKV, row.source)
+			}
+
+			// The two compute terms on their own, from the selected shape.
+			compDev, err := shape.computeDevice(row.ctx, row.kv)
+			if err != nil {
+				t.Fatalf("computeDevice: %v", err)
+			}
+			if compDev != row.wantCompDev {
+				t.Errorf("CUDA compute device at (%d, %q) = %d MiB, want the measured %d MiB\n  source: %s",
+					row.ctx, row.kv, compDev, row.wantCompDev, row.source)
+			}
+			compHst, err := shape.computeHost(row.ctx, row.kv)
+			if err != nil {
+				t.Fatalf("computeHost: %v", err)
+			}
+			if compHst != row.wantCompHst {
+				t.Errorf("CUDA compute host at (%d, %q) = %d MiB, want the measured %d MiB\n  source: %s",
+					row.ctx, row.kv, compHst, row.wantCompHst, row.source)
+			}
+
+			// The full replay through the projections.
+			device, err := profile.ProjectDeviceMiB(BackendCUDA133, GPUFamilyNVIDIABlackwell, PackingPQ2_0, row.ctx, row.kv, true)
+			if err != nil {
+				t.Fatalf("ProjectDeviceMiB: %v", err)
+			}
+			if device != row.wantDevice {
+				t.Errorf("ProjectDeviceMiB(cuda, blackwell, %q, %d, %v, true) = %d MiB, want the measured %d MiB\n  source: %s",
+					PackingPQ2_0, row.ctx, row.kv, device, row.wantDevice, row.source)
+			}
+			host, err := profile.ProjectHostMiB(BackendCUDA133, GPUFamilyNVIDIABlackwell, PackingPQ2_0, row.ctx, row.kv, true)
+			if err != nil {
+				t.Fatalf("ProjectHostMiB: %v", err)
+			}
+			if host != row.wantHost {
+				t.Errorf("ProjectHostMiB(cuda, blackwell, %q, %d, %v, true) = %d MiB, want the measured %d MiB\n  source: %s",
+					PackingPQ2_0, row.ctx, row.kv, host, row.wantHost, row.source)
+			}
+		})
+	}
+
+	// The other two pinned CUDA asset tags select the same overlay: the
+	// buffers are a property of the fork pin and the silicon, and cuda-13.3
+	// is merely the build actually measured. Pinned here so the selection
+	// cannot quietly narrow to one tag.
+	for _, backend := range []Backend{BackendCUDA124, BackendCUDA128} {
+		device, err := profile.ProjectDeviceMiB(backend, GPUFamilyNVIDIABlackwell, PackingPQ2_0, 131072, KVTypeQ8_0, true)
+		if err != nil {
+			t.Fatalf("ProjectDeviceMiB(%q): %v", backend, err)
+		}
+		if device != 11775 {
+			t.Errorf("ProjectDeviceMiB(%q, blackwell, 131072, q8_0) = %d MiB, want the measured 11775",
+				backend, device)
+		}
+	}
+}
+
+// TestCUDAProfileFallsBackToMetalForUnmeasuredTuples is the estimate honesty
+// guard: every (backend, family) tuple the 2026-11-03 measurement does not
+// cover must price EXACTLY the Metal default — not a blend, not a refusal,
+// the same numbers a Metal gate uses — while the measured tuple prices
+// differently, proving the overlay actually engaged.
+func TestCUDAProfileFallsBackToMetalForUnmeasuredTuples(t *testing.T) {
+	t.Parallel()
+
+	profile := mustProfile(t)
+	const ctx = 65536
+
+	metalDevice, err := profile.ProjectDeviceMiB(BackendMetal, GPUFamilyAppleSilicon, PackingPQ2_0, ctx, KVTypeF16, true)
+	if err != nil {
+		t.Fatalf("ProjectDeviceMiB(metal): %v", err)
+	}
+	metalHost, err := profile.ProjectHostMiB(BackendMetal, GPUFamilyAppleSilicon, PackingPQ2_0, ctx, KVTypeF16, true)
+	if err != nil {
+		t.Fatalf("ProjectHostMiB(metal): %v", err)
+	}
+
+	unmeasured := []struct {
+		backend Backend
+		family  GPUFamily
+	}{
+		{BackendVulkan, GPUFamilyNVIDIABlackwell},
+		{BackendROCm, GPUFamilyNVIDIABlackwell},
+		{BackendCPU, GPUFamilyNVIDIABlackwell},
+		{BackendCUDA133, GPUFamilyNVIDIAAda},
+		{BackendCUDA133, GPUFamilyNVIDIAHopper},
+		{BackendCUDA133, GPUFamilyNVIDIAAmpere},
+		{BackendCUDA133, GPUFamilyAMDRDNA2},
+		{BackendCUDA133, GPUFamilyIntelArc},
+		{BackendCUDA133, GPUFamilyAppleSilicon},
+		{BackendCUDA133, GPUFamilyUnknown},
+	}
+	for _, tuple := range unmeasured {
+		device, err := profile.ProjectDeviceMiB(tuple.backend, tuple.family, PackingPQ2_0, ctx, KVTypeF16, true)
+		if err != nil {
+			t.Fatalf("ProjectDeviceMiB(%q, %q): %v", tuple.backend, tuple.family, err)
+		}
+		if device != metalDevice {
+			t.Errorf("ProjectDeviceMiB(%q, %q) = %d MiB, want the Metal default %d (the tuple is unmeasured)",
+				tuple.backend, tuple.family, device, metalDevice)
+		}
+		host, err := profile.ProjectHostMiB(tuple.backend, tuple.family, PackingPQ2_0, ctx, KVTypeF16, true)
+		if err != nil {
+			t.Fatalf("ProjectHostMiB(%q, %q): %v", tuple.backend, tuple.family, err)
+		}
+		if host != metalHost {
+			t.Errorf("ProjectHostMiB(%q, %q) = %d MiB, want the Metal default %d (the tuple is unmeasured)",
+				tuple.backend, tuple.family, host, metalHost)
+		}
+	}
+
+	// The measured tuple prices differently at this shape (198 against 1377
+	// of compute), so the assertions above are not vacuously green.
+	cudaDevice, err := profile.ProjectDeviceMiB(BackendCUDA133, GPUFamilyNVIDIABlackwell, PackingPQ2_0, ctx, KVTypeF16, true)
+	if err != nil {
+		t.Fatalf("ProjectDeviceMiB(cuda): %v", err)
+	}
+	if cudaDevice == metalDevice {
+		t.Errorf("the CUDA tuple prices %d MiB, the same as the Metal default — the overlay did not engage", cudaDevice)
+	}
+}
+
+// TestCUDAProfileRefusesUnmeasuredPacking is the CUDA twin of
+// TestProjectionCoversEveryPinnedPackingAndRefusesOthers: only PQ2_0 was
+// measured on CUDA, so PTQ1_0 is refused there rather than projected from its
+// Metal residency.
+func TestCUDAProfileRefusesUnmeasuredPacking(t *testing.T) {
+	t.Parallel()
+
+	profile := mustProfile(t)
+
+	if _, err := profile.ProjectDeviceMiB(BackendCUDA133, GPUFamilyNVIDIABlackwell, PackingPTQ1_0, 65536, KVTypeF16, true); !errors.Is(err, ErrMemoryNotMeasured) {
+		t.Errorf("ProjectDeviceMiB(cuda, blackwell, PTQ1_0) error = %v, want ErrMemoryNotMeasured", err)
+	}
+	if _, err := profile.ProjectHostMiB(BackendCUDA133, GPUFamilyNVIDIABlackwell, PackingPTQ1_0, 65536, KVTypeF16, true); !errors.Is(err, ErrMemoryNotMeasured) {
+		t.Errorf("ProjectHostMiB(cuda, blackwell, PTQ1_0) error = %v, want ErrMemoryNotMeasured", err)
+	}
+}
+
+// TestCUDAComputeCurvesInterpolateAndClamp pins the curve arithmetic away
+// from the measured contexts: the knots are exact, the segments interpolate
+// linearly with floored endpoints, the clamps hold on both sides, and q4_0 —
+// the one precision with no CUDA measurement — rides the q8_0 curve as the
+// documented over-estimate.
+func TestCUDAComputeCurvesInterpolateAndClamp(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name           string
+		kv             KVType
+		ctx            int
+		wantDev, wantH int64
+	}{
+		{name: "f16 first knot", kv: KVTypeF16, ctx: 32768, wantDev: 166, wantH: 52},
+		{name: "f16 second knot", kv: KVTypeF16, ctx: 65536, wantDev: 198, wantH: 84},
+		{name: "f16 clamped below", kv: KVTypeF16, ctx: 1024, wantDev: 166, wantH: 52},
+		{name: "f16 clamped above", kv: KVTypeF16, ctx: 262144, wantDev: 198, wantH: 84},
+		{name: "f16 midpoint", kv: KVTypeF16, ctx: 49152, wantDev: 182, wantH: 68},
+		{name: "q8_0 first knot", kv: KVTypeQ8_0, ctx: 65536, wantDev: 410, wantH: 84},
+		{name: "q8_0 second knot", kv: KVTypeQ8_0, ctx: 131072, wantDev: 730, wantH: 148},
+		{name: "q8_0 clamped below", kv: KVTypeQ8_0, ctx: 1024, wantDev: 410, wantH: 84},
+		{name: "q8_0 clamped above", kv: KVTypeQ8_0, ctx: 262144, wantDev: 730, wantH: 148},
+		{name: "q8_0 midpoint", kv: KVTypeQ8_0, ctx: 98304, wantDev: 570, wantH: 116},
+		{name: "q4_0 rides the q8_0 curve", kv: KVTypeQ4_0, ctx: 131072, wantDev: 730, wantH: 148},
+		{name: "q4_0 rides the q8_0 clamp", kv: KVTypeQ4_0, ctx: 1024, wantDev: 410, wantH: 84},
+	}
+	for _, tc := range cases {
+		dev, host, err := cudaComputeAt(tc.kv, tc.ctx)
+		if err != nil {
+			t.Fatalf("%s: cudaComputeAt: %v", tc.name, err)
+		}
+		if dev != tc.wantDev || host != tc.wantH {
+			t.Errorf("%s: cudaComputeAt(%q, %d) = (%d, %d) MiB, want (%d, %d)",
+				tc.name, tc.kv, tc.ctx, dev, host, tc.wantDev, tc.wantH)
+		}
+	}
+}
+
+// TestCUDAOverlayResidentWeightsFitTheFile extends
+// TestDevicePlusSpillNeverExceedsTheFile to the CUDA overlay: its device
+// weights and spill are an independent measurement, so they are checked
+// against the same file-size bound (6873 MiB on disk for PQ2_0).
+func TestCUDAOverlayResidentWeightsFitTheFile(t *testing.T) {
+	t.Parallel()
+
+	profile := mustProfile(t)
+
+	file, ok := profile.WeightsMiB[PackingPQ2_0]
+	if !ok {
+		t.Fatalf("WeightsMiB has no entry for %q", PackingPQ2_0)
+	}
+	resident := cudaDeviceWeightsMiB[PackingPQ2_0] + cudaHostWeightSpillMiB[PackingPQ2_0]
+	if resident > file {
+		t.Errorf("CUDA overlay: device %d MiB + spill %d MiB = %d MiB exceeds the %d MiB file",
+			cudaDeviceWeightsMiB[PackingPQ2_0], cudaHostWeightSpillMiB[PackingPQ2_0], resident, file)
+	}
+	if gap := file - resident; gap < 0 || gap > 64 {
+		t.Errorf("CUDA overlay: file %d MiB - resident %d MiB = %d MiB of unaccounted overhead, want 0..64",
+			file, resident, gap)
 	}
 }
 

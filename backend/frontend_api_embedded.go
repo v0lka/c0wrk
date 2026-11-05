@@ -273,13 +273,26 @@ func (f *FrontendAPI) embeddedBuild() (*embeddedllm.Server, *embeddedllm.Install
 	server := embeddedllm.NewServer(layout, logger)
 	server.AutoUnload = f.embeddedAutoUnloadPolicy()
 	server.OnState = f.onEmbeddedLLMState
+	// Non-terminal launch findings (the load-time free-memory pre-flight)
+	// travel beside the state machine, as the global embedded_llm:notice
+	// event. Same contract as OnState: called from the transition's
+	// goroutine, never reentrant.
+	server.OnNotice = f.onEmbeddedLLMNotice
 	// The persisted port is a preference re-checked before every spawn; a move
 	// is written back so the provider base_url keeps matching (see
 	// specs/domains/embedded-llm.md, Port allocation).
 	server.EnsurePort = f.embeddedEnsurePort
-	// A load re-measures the accelerator before committing to a launch shape;
-	// the hook is fail-soft in core, so wiring it can never fail a load.
-	server.ProbeDevices = embeddedllm.ProbeDevices
+	// A load re-measures the accelerator before committing to a launch shape,
+	// so a GPU that changed since the install is priced at launch. Fail-soft
+	// in core (a wedged probe launches the recorded plan) with ONE deliberate
+	// exception — an operator device pin the fresh inventory cannot verify
+	// refuses the load (ErrUnknownDevice; see Server.effectivePlan). Read
+	// through the deviceProber seam at CALL time, so the re-probe RPC and
+	// this hook can never disagree about the machine — in tests one stub
+	// answers both.
+	server.ProbeDevices = func(ctx context.Context, binaryPath string, logger *slog.Logger) (embeddedllm.MemoryTopology, bool) {
+		return f.embedded.deviceProber()(ctx, binaryPath, logger)
+	}
 	// The supervisor is built once and cached, so the launch tuning is a
 	// function: it reads the live config when the shape is planned.
 	server.Tuning = f.embeddedTuning
@@ -646,6 +659,32 @@ func (f *FrontendAPI) emitEmbeddedLLMState(state embeddedllm.State, port int, me
 		return
 	}
 	f.emitEvent(EventEmbeddedLLMState, f.embeddedStatePayload(state, port, message))
+}
+
+// onEmbeddedLLMNotice is the core supervisor's ServerNotice transport: it
+// forwards every non-terminal launch finding as the global embedded_llm:notice
+// event. Same goroutine discipline as onEmbeddedLLMState — it runs on the
+// goroutine that made the finding and must never call back into the supervisor
+// (core documents OnNotice as non-reentrant) — so it only maps the notice to
+// its DTO and emits.
+func (f *FrontendAPI) onEmbeddedLLMNotice(notice embeddedllm.ServerNotice) {
+	f.emitEmbeddedLLMNotice(notice)
+}
+
+// emitEmbeddedLLMNotice builds and emits the global embedded_llm:notice
+// payload. Nil-guarded like every other emitter: most tests do not wire
+// emitEvent.
+func (f *FrontendAPI) emitEmbeddedLLMNotice(notice embeddedllm.ServerNotice) {
+	f.seedAcquire()
+	if f.emitEvent == nil {
+		return
+	}
+	f.emitEvent(EventEmbeddedLLMNotice, EmbeddedLLMNoticeData{
+		Kind:              string(notice.Kind),
+		Message:           notice.Message,
+		FreeDeviceMiB:     notice.FreeDeviceMiB,
+		ExpectedDeviceMiB: notice.ExpectedDeviceMiB,
+	})
 }
 
 // embeddedStatePayload merges a supervision state with the install record and

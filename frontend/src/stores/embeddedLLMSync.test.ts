@@ -26,8 +26,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const mocks = vi.hoisted(() => ({
   getEmbeddedLLMStatus: vi.fn(),
   getEmbeddedLLMTuning: vi.fn(),
+  probeEmbeddedLLMDevices: vi.fn(),
   onState: vi.fn(),
   onProgress: vi.fn(),
+  onNotice: vi.fn(),
   invalidateConfigCache: vi.fn(),
 }))
 
@@ -45,16 +47,19 @@ vi.mock('@/api/embedded', () => ({
   getEmbeddedLLMStatus: mocks.getEmbeddedLLMStatus,
   onEmbeddedLLMState: mocks.onState,
   onEmbeddedLLMInstallProgress: mocks.onProgress,
+  onEmbeddedLLMNotice: mocks.onNotice,
 }))
 
 vi.mock('@/api/embeddedTuning', () => ({
   getEmbeddedLLMTuning: mocks.getEmbeddedLLMTuning,
+  probeEmbeddedLLMDevices: mocks.probeEmbeddedLLMDevices,
 }))
 
-import { refreshEmbeddedLLMTuning, runEmbeddedLLMAction } from './embeddedLLMSync'
+import { refreshEmbeddedLLMDevices, refreshEmbeddedLLMTuning, runEmbeddedLLMAction, subscribeEmbeddedLLMEvents } from './embeddedLLMSync'
 import { useEmbeddedLLMStore } from './embeddedLLMStore'
-import type { EmbeddedLLMTuning } from '@/api/embeddedTuning'
+import type { EmbeddedLLMDeviceSnapshot, EmbeddedLLMTuning } from '@/api/embeddedTuning'
 import { makeTuning } from '@/test/embeddedTuningFixture'
+import { makeEmbeddedStatus } from '@/test/embeddedStatusFixture'
 
 const state = () => useEmbeddedLLMStore.getState()
 
@@ -247,3 +252,210 @@ describe('embeddedLLMSync — refreshEmbeddedLLMTuning with two reads in flight'
     expect(state().tuningLoading).toBe(false)
   })
 })
+
+describe('embeddedLLMSync — refreshEmbeddedLLMDevices (the live probe)', () => {
+  const snapshot: EmbeddedLLMDeviceSnapshot = {
+    devices: [{ name: 'CUDA0', description: 'NVIDIA GeForce RTX 4090', total_mib: 24576, free_mib: 8000 }],
+    unified: false,
+    host_ram_gib: 128,
+    device_budget_mib: 23552,
+    host_budget_mib: 114688,
+    probed_at: '2026-11-03T12:00:00Z',
+  }
+
+  it('stores the snapshot and retires a previous error on success (manual)', async () => {
+    state().setDeviceSnapshotError('stale refusal')
+    mocks.probeEmbeddedLLMDevices.mockResolvedValue(snapshot)
+
+    await expect(refreshEmbeddedLLMDevices('manual')).resolves.toBe(true)
+
+    expect(state().deviceSnapshot).toEqual(snapshot)
+    expect(state().deviceSnapshotError).toBeNull()
+    expect(state().deviceSnapshotLoading).toBe(false)
+  })
+
+  it('paints the refusal for a MANUAL probe that did not answer', async () => {
+    mocks.probeEmbeddedLLMDevices.mockRejectedValue(new Error('the device probe did not answer'))
+
+    await expect(refreshEmbeddedLLMDevices('manual')).resolves.toBe(false)
+
+    expect(state().deviceSnapshotError).toBe('the device probe did not answer')
+    expect(state().deviceSnapshot).toBeNull()
+    expect(state().deviceSnapshotLoading).toBe(false)
+  })
+
+  it('keeps an AUTO failure quiet (no painted error) and retires a stale one', async () => {
+    state().setDeviceSnapshotError('older refusal')
+    mocks.probeEmbeddedLLMDevices.mockRejectedValue(new Error('busy: an install owns the gate'))
+
+    await expect(refreshEmbeddedLLMDevices('auto')).resolves.toBe(false)
+
+    expect(state().deviceSnapshotError).toBeNull()
+    expect(state().deviceSnapshot).toBeNull()
+  })
+
+  it('skips an AUTO probe under the mtplx engine (the RPC would refuse by engine)', async () => {
+    state().setStatus(makeEmbeddedStatus({ installed: true, engine: 'mtplx' }))
+    mocks.probeEmbeddedLLMDevices.mockResolvedValue(snapshot)
+
+    await expect(refreshEmbeddedLLMDevices('auto')).resolves.toBe(false)
+
+    expect(mocks.probeEmbeddedLLMDevices).not.toHaveBeenCalled()
+    expect(state().deviceSnapshotError).toBeNull()
+  })
+
+  it('still sends a MANUAL probe under the mtplx engine (the backend owns the refusal)', async () => {
+    state().setStatus(makeEmbeddedStatus({ installed: true, engine: 'mtplx' }))
+    mocks.probeEmbeddedLLMDevices.mockRejectedValue(
+      new Error('the embedded LLM device probe is llama-only: the mtplx engine has no probeable runtime binary'),
+    )
+
+    await expect(refreshEmbeddedLLMDevices('manual')).resolves.toBe(false)
+
+    expect(mocks.probeEmbeddedLLMDevices).toHaveBeenCalledTimes(1)
+    expect(state().deviceSnapshotError).toContain('llama-only')
+  })
+
+  it('lets concurrent refreshes share one in-flight probe', async () => {
+    let release!: (value: EmbeddedLLMDeviceSnapshot) => void
+    const gate = new Promise<EmbeddedLLMDeviceSnapshot>((res) => {
+      release = res
+    })
+    mocks.probeEmbeddedLLMDevices.mockReturnValue(gate)
+
+    const first = refreshEmbeddedLLMDevices('auto')
+    await tick()
+    const second = refreshEmbeddedLLMDevices('manual')
+    await tick()
+
+    // One spawn, two callers: the burst of state transitions must not stack
+    // several runtime invocations.
+    expect(mocks.probeEmbeddedLLMDevices).toHaveBeenCalledTimes(1)
+    expect(state().deviceSnapshotLoading).toBe(true)
+
+    release(snapshot)
+    await Promise.all([first, second])
+    expect(state().deviceSnapshot).toEqual(snapshot)
+    expect(state().deviceSnapshotLoading).toBe(false)
+  })
+
+  it('paints the REAL refusal when a manual caller joins an auto probe that failed', async () => {
+    let reject!: (err: Error) => void
+    const gate = new Promise<EmbeddedLLMDeviceSnapshot>((_, rej) => {
+      reject = rej
+    })
+    mocks.probeEmbeddedLLMDevices.mockReturnValue(gate)
+
+    const auto = refreshEmbeddedLLMDevices('auto')
+    await tick()
+    const manual = refreshEmbeddedLLMDevices('manual')
+    await tick()
+
+    // One spawn, two callers; the auto initiator's quiet policy must not leak
+    // into the manual joiner's honesty.
+    expect(mocks.probeEmbeddedLLMDevices).toHaveBeenCalledTimes(1)
+
+    reject(new Error('busy: a removal is deleting the probed tree'))
+    await expect(auto).resolves.toBe(false)
+    await expect(manual).resolves.toBe(false)
+
+    // The painted refusal is the probe's own cause: by the time the manual
+    // joiner resumes, the probe has settled, so the old placeholder ("another
+    // probe is still settling") would name a concurrency that no longer
+    // exists.
+    expect(state().deviceSnapshotError).toBe('busy: a removal is deleting the probed tree')
+    expect(state().deviceSnapshotLoading).toBe(false)
+  })
+
+  it('re-probes on a state event (auto) and applies a notice event verbatim', () => {
+    let onStateCb: (() => void) | undefined
+    let onNoticeCb: ((data: unknown) => void) | undefined
+    mocks.onState.mockImplementation((cb: () => void) => {
+      onStateCb = cb
+      return () => {}
+    })
+    mocks.onNotice.mockImplementation((cb: (data: unknown) => void) => {
+      onNoticeCb = cb
+      return () => {}
+    })
+    mocks.getEmbeddedLLMStatus.mockResolvedValue(makeStatus())
+    mocks.onProgress.mockImplementation(() => () => {})
+
+    const unsubscribe = subscribeEmbeddedLLMEvents()
+    try {
+      // A transition invalidates the LIVE snapshot the same way it invalidates
+      // the status: the weights landing (or an unload returning them) move the
+      // free memory.
+      onStateCb?.()
+      expect(mocks.probeEmbeddedLLMDevices).toHaveBeenCalledTimes(1)
+
+      // A notice is not a transition: it lands in the store verbatim, beside
+      // the state machine, and lives until dismissal.
+      const notice = {
+        kind: 'low_free_device_memory',
+        message: 'the accelerator has 8000 MiB free, below the 20000 MiB this launch plans to place on it',
+        free_device_mib: 8000,
+        expected_device_mib: 20000,
+      }
+      onNoticeCb?.(notice)
+      expect(state().notice).toEqual(notice)
+    } finally {
+      unsubscribe()
+    }
+  })
+})
+
+/** A minimal valid status payload for the state-event re-read. */
+function makeStatus(): Record<string, unknown> {
+  return {
+    installed: true,
+    installing: false,
+    available: true,
+    loaded: false,
+    loading: false,
+    engine: 'llama',
+    packing: 'PQ2_0',
+    backend: 'cuda-12.4',
+    port: 8080,
+    context_size: 32768,
+    auto_unload_enabled: true,
+    idle_remaining_seconds: 0,
+    error: '',
+    install_error: '',
+    leftover_runtime: false,
+    leftover_weights: false,
+    leftover_projection: false,
+    devices: [],
+    unified: false,
+    host_ram_gib: 128,
+    device_budget_mib: 23552,
+    host_budget_mib: 114688,
+    topology_probed_at: '2026-11-03T12:00:00Z',
+    plan: {
+      recorded: true,
+      packing: 'PQ2_0',
+      kv_type: 'q8_0',
+      context_size: 32768,
+      fit: false,
+      fit_arg: 'off',
+      fit_target_mib: 0,
+      fit_min_context: 65536,
+      offload_mode: 'layers',
+      layers: 12,
+      kv_offload: false,
+      mmproj_offload: false,
+      parallel: 1,
+      cache_ram_mib: 0,
+      devices: [],
+      split_mode: '',
+      gpu_family: 'nvidia-ada',
+      device_budget_mib: 23552,
+      host_budget_mib: 114688,
+      expected_device_mib: 20000,
+      expected_host_mib: 4000,
+      notes: [],
+    },
+    reload_required: false,
+    auto_unload_minutes: 60,
+  }
+}

@@ -128,6 +128,41 @@ type StateEvent struct {
 	Message string `json:"message,omitempty"`
 }
 
+// NoticeKind names a class of non-terminal supervisor finding. The vocabulary
+// is closed and the backend forwards it verbatim, so the UI can key its
+// rendering (icon, severity, dismissal) on it without parsing prose.
+type NoticeKind string
+
+// NoticeLowFreeDeviceMemory reports that a fresh load-time measurement found
+// less free accelerator memory than the launch about to run projects to use.
+// It is a WARNING, never a refusal: the plan's budgets price TOTAL capacity
+// (the Total-budgeting invariant — a plan must not move with whatever else
+// happens to be running), so the shape is unchanged; the notice exists because
+// the projected footprint may not fit into what is free RIGHT NOW, and the
+// fork's fit pass (or a hard OOM) is where that would otherwise surface first.
+const NoticeLowFreeDeviceMemory NoticeKind = "low_free_device_memory"
+
+// ServerNotice is one non-terminal operator-facing finding, in the shape the
+// backend forwards as the global `embedded_llm:notice` event. Unlike a
+// StateEvent it carries no transition: the state machine's verdict for this
+// launch stays whatever it was going to be, and the notice only adds the
+// finding beside it. The numeric fields are the evidence behind Message, so a
+// surface can render its own sentence (or a free-vs-expected bar) without
+// re-deriving either figure.
+type ServerNotice struct {
+	Kind NoticeKind `json:"kind"`
+	// Message is the complete, renderable human sentence — the same text the
+	// supervisor itself logged at Warn.
+	Message string `json:"message"`
+	// FreeDeviceMiB is the free accelerator memory the finding measured, over
+	// exactly the pool the plan prices (the pinned `-dev` set when one is in
+	// force, the whole inventory otherwise; the largest device's free on a
+	// unified machine, the sum otherwise). ExpectedDeviceMiB is the plan's
+	// own projection.
+	FreeDeviceMiB     int64 `json:"free_device_mib"`
+	ExpectedDeviceMiB int64 `json:"expected_device_mib"`
+}
+
 // Status is a snapshot of the supervision state, safe to hand to the UI.
 type Status struct {
 	State State
@@ -487,9 +522,21 @@ func splitModeIsKnown(mode SplitMode) bool {
 
 // splitModeNames renders the closed set for diagnostics.
 func splitModeNames() []string {
+	return SplitModes()
+}
+
+// SplitModes lists the closed `-sm`/`--split-mode` vocabulary the planner and
+// the launch spec accept, in a stable order, WITHOUT the empty "auto" sentinel
+// (an absent or "auto" spelling means "omit the flag", which is not a member of
+// the runtime's set — it is the choice not to make one). backend/config reads
+// this list for the `embedded_llm.tuning.split_mode` closed set instead of
+// transcribing it, so the YAML surface and the launch vocabulary cannot drift.
+func SplitModes() []string {
 	return []string{
-		string(SplitModeNone), string(SplitModeLayer),
-		string(SplitModeRow), string(SplitModeTensor),
+		string(SplitModeNone),
+		string(SplitModeLayer),
+		string(SplitModeRow),
+		string(SplitModeTensor),
 	}
 }
 
@@ -508,6 +555,17 @@ func validateDeviceName(name string) error {
 		return fmt.Errorf("%w: -dev device name %q reads as a flag", ErrLaunchSpecInvalid, name)
 	}
 	return nil
+}
+
+// ValidateDeviceName is the exported shape of the same typed-value rule
+// `LaunchSpec.Validate` applies to every `-dev` entry, for surfaces outside
+// the launch path that name devices (backend/config's
+// `embedded_llm.tuning.devices` translation), so a spelling config rejects
+// and a spelling argv rejects are the same statement by construction. Machine
+// truth (whether this machine reports the name) is deliberately NOT checked
+// here — that is the planner's filterTopology, at plan time.
+func ValidateDeviceName(name string) error {
+	return validateDeviceName(name)
 }
 
 // fitArg renders the literal `-fit` value, mirroring MemoryPlan.FitArg so the
@@ -718,6 +776,12 @@ type Server struct {
 	// call back into the Server: it runs outside the state lock, but a reentrant
 	// Load/Unload from it would deadlock on the single-instance gate.
 	OnState func(StateEvent)
+	// OnNotice receives one ServerNotice per non-terminal operator-facing
+	// finding the supervisor raises BESIDE its state machine — a warning about
+	// the launch it is about to make, not a transition. May be nil (no
+	// notices delivered). Like OnState it is called from the goroutine that
+	// made the finding and must not call back into the Server.
+	OnNotice func(ServerNotice)
 	// HTTPClient performs the readiness probes. nil → http.DefaultClient with a
 	// per-probe timeout (ProbeTimeout).
 	HTTPClient *http.Client
@@ -726,7 +790,11 @@ type Server struct {
 	// install). PRODUCTION ALWAYS WIRES IT (backend.embeddedDeviceProbe);
 	// nil → no load-time probe — opt-in so an unwired caller keeps the
 	// original no-probe behaviour. When wired, FAIL-SOFT in every direction
-	// (see effectivePlan): wiring it can never make a load fail.
+	// (see effectivePlan): wiring it can never make a load fail, with ONE
+	// deliberate exception — an operator device pin no inventory can verify
+	// refuses the load (ErrUnknownDevice) rather than launching a shape that
+	// silently ignores the pin; an unwired probe meets the same refusal when
+	// a pin is in force.
 	ProbeDevices func(ctx context.Context, binaryPath string, logger *slog.Logger) (MemoryTopology, bool)
 	// Tuning resolves the operator's memory-plan overrides
 	// (`embedded_llm.tuning`) at launch time — a FUNCTION, not a value: the
@@ -736,9 +804,11 @@ type Server struct {
 	// PersistContext writes the effective context a READY server reported into
 	// durable config — the tier-1 `llm.models` context_window override.
 	// PRODUCTION ALWAYS WIRES IT (backend.persistEmbeddedContext); nil → only
-	// the manifest updates. Called inside Load under the single-instance gate
-	// (no call-backs into the Server); failures are logged and ignored — a
-	// serving load is not failed over an administrative write.
+	// the manifest updates. Called on EVERY successful readback — the call is
+	// idempotent by contract, and that mirror is the only place a drifted
+	// override heals. Runs inside Load under the single-instance gate (no
+	// call-backs into the Server); failures are logged and ignored — a serving
+	// load is not failed over an administrative write.
 	PersistContext func(ctx context.Context, contextSize int) error
 	// LoadProbeTimeout bounds the ProbeDevices call. <= 0 →
 	// DefaultLoadProbeTimeout.
@@ -1289,17 +1359,41 @@ type resolvedLaunch struct {
 // disk. SHAPE half: Manifest.Plan, or the resolve.go policy for a pre-plan
 // manifest, then OPTIONALLY refined by a bounded load-time device probe —
 // FAIL-SOFT in every direction (a load must not fail because a driver query
-// wedged). Full contract: specs/domains/embedded-llm.md (Load / serve / unload).
+// wedged). The exceptions refuse rather than fall back: an operator pin
+// (Tuning.Devices, Tuning.SplitMode) the machine cannot verify or honour, and
+// on the mtplx engine a llama-only tuning key, which no mtplx launch can
+// honour at all. The operator's tuning is read ONCE, here, and the snapshot
+// threads both engine legs — an edit saved mid-probe applies to the NEXT
+// launch, never this one. Full contract: specs/domains/embedded-llm.md
+// (Load / serve / unload).
 func (s *Server) launchSpec(ctx context.Context, manifest Manifest, port int) (resolvedLaunch, error) {
+	tuning := s.tuning()
 	if manifest.Engine == EngineMTPLX {
-		return s.launchSpecMLX(manifest, port)
+		// Config validation refuses llama-only keys beside engine mtplx — but
+		// `engine: auto` resolves to mtplx on this platform without passing
+		// that check, so the load is the last checkpoint: launching the
+		// recorded plan would silently ignore the override, the infeasible-plan
+		// rationale one engine earlier.
+		if forbidden := ForbiddenLlamaTuning(tuning); len(forbidden) > 0 {
+			return resolvedLaunch{}, fmt.Errorf(
+				"embeddedllm: %w: embedded_llm.tuning.%s does not apply to engine %q (no offload, no fit pass, no KV, packing, device or split choice; use context.mode for the window)",
+				ErrTuningInvalid, strings.Join(forbidden, ", "), EngineMTPLX)
+		}
+		return s.launchSpecMLX(manifest, port, tuning)
 	}
 	identity, err := s.launchIdentity(manifest, port)
 	if err != nil {
 		return resolvedLaunch{}, err
 	}
 
-	plan, topology := s.effectivePlan(ctx, manifest, identity.ServerBinary)
+	plan, topology, planErr := s.effectivePlan(ctx, manifest, identity.ServerBinary, tuning)
+	if planErr != nil {
+		// The one load-time refusal effectivePlan can produce: an operator
+		// device pin the fresh inventory does not verify. Launching would
+		// ignore the pin; the error names the device, the measured inventory
+		// and the probe stamp, and Load surfaces it as the actionable failure.
+		return resolvedLaunch{}, planErr
+	}
 	refreshed := planChanged(manifest.Plan, plan) || topologyChanged(manifest.Topology, topology)
 
 	var spec LaunchSpec
@@ -1412,21 +1506,95 @@ func (s *Server) launchIdentity(manifest Manifest, port int) (LaunchSpec, error)
 // by a fresh measurement when cheaply available, else unchanged. NEVER fails,
 // never blocks beyond LoadProbeTimeout — every refinement failure keeps the
 // stored decision (a measurement refines; the accept/reject gate ran at
-// install, behind a user action). specs/domains/embedded-llm.md (Load / serve / unload).
-func (s *Server) effectivePlan(ctx context.Context, manifest Manifest, binary string) (*MemoryPlan, *MemoryTopology) {
+// install, behind a user action). THE ONE EXCEPTION is an operator pin
+// (Tuning.Devices, Tuning.SplitMode) the machine cannot verify or honour: the
+// fail-soft fallback would launch a shape that silently ignores what the
+// operator asked for, so both an unverifiable pin and a replan answering
+// ErrUnknownDevice surface as a failed load naming the unmet pin. tuning is
+// the launch-entry snapshot launchSpec read once — the pin check and both
+// re-plans price exactly that value, so an edit saved mid-probe applies to
+// the next launch. specs/domains/embedded-llm.md (Load / serve / unload).
+func (s *Server) effectivePlan(ctx context.Context, manifest Manifest, binary string, tuning Tuning) (*MemoryPlan, *MemoryTopology, error) {
 	stored := manifest.Plan
 	snapshot := manifest.Topology
+
+	if pin := tuning; len(pin.Devices) > 0 || pin.SplitMode != SplitModeAuto {
+		// A pin needs to survive to the launch argv one way or another: either
+		// a fresh inventory verifies it and the re-plan carries it, or — and
+		// only then — the recorded plan ITSELF carries the same pin (a shape a
+		// previous load already launched on this machine). Anything else would
+		// silently launch a shape that ignores what the operator asked for, so
+		// it refuses instead.
+		carries := stored != nil &&
+			slices.Equal(stored.Devices, pin.Devices) &&
+			stored.SplitMode == pin.SplitMode
+		if s.ProbeDevices == nil {
+			if !carries {
+				return nil, nil, unmetPinError(pin, stored, "no device probe is wired in to re-plan it")
+			}
+			// Not wired: the pre-existing contract, and the manifest — which
+			// here includes the pin — is the whole story.
+			return stored, snapshot, nil
+		}
+		probeCtx, cancel := context.WithTimeout(ctx, s.loadProbeTimeout())
+		defer cancel()
+		fresh, ok := s.ProbeDevices(probeCtx, binary, s.logger())
+		if !ok {
+			// THE driver query wedged. The no-pin contract falls back to the
+			// recorded plan; a pin may join that fallback only when the
+			// recorded plan carries the same pin. Otherwise the fallback would
+			// launch the shape the operator overruled.
+			if !carries {
+				return nil, nil, unmetPinError(pin, stored, "the load-time device probe did not answer, so it cannot be re-planned")
+			}
+			s.logger().Debug("the embedded LLM load-time device probe did not answer; launching the recorded plan, which carries the operator's device pin")
+			return stored, snapshot, nil
+		}
+		// The probe answered: the pin re-plans against the fresh inventory —
+		// whether or not a plan was recorded (replan holds the shape to the
+		// artifacts on disk and does not read the recorded plan; a pre-plan
+		// manifest gains a first plan carrying the pin, which is the honest
+		// shape for a machine the probe just measured).
+		replanned, err := s.replan(manifest, fresh, tuning)
+		if err != nil {
+			if errors.Is(err, ErrUnknownDevice) {
+				// The pin names a device the fresh inventory does not report —
+				// a stale name after a driver update, a reordering, a hardware
+				// swap. The recorded plan predates the pin, so falling back to
+				// it would launch exactly the shape the operator overruled.
+				// Refuse.
+				return nil, nil, err
+			}
+			if !carries {
+				// The probe ANSWERED, so the inventory is not the problem: the
+				// planner's own error is the truthful refusal — a synthesized
+				// device word would send the operator re-probing a healthy
+				// machine.
+				return nil, nil, err
+			}
+			s.logger().Debug("the embedded LLM launch shape was not re-planned from the fresh topology; launching the recorded plan, which carries the operator's device pin",
+				"error", err, "gpu_family", ClassifyGPUs(fresh.Devices))
+			return stored, snapshot, nil
+		}
+		if stored == nil || planChanged(stored, &replanned) {
+			s.logger().Info("the embedded LLM launch shape changed after the load-time device probe",
+				"gpu_family", replanned.GPUFamily, "fit", replanned.FitArg(),
+				"device_budget_mib", fresh.DeviceBudgetMiB())
+		}
+		s.preflightFreeMemory(&replanned, &fresh)
+		return &replanned, &fresh, nil
+	}
 
 	if s.ProbeDevices == nil {
 		// Not wired: the pre-existing contract, and the manifest is the whole
 		// story.
-		return stored, snapshot
+		return stored, snapshot, nil
 	}
 	if stored == nil {
 		// Nothing to refine: a fresh measurement with no recorded plan would
 		// have to invent a coarser shape from the pure policy, so the launch
 		// stays legacy and no topology is recorded beside a plan ignoring it.
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	probeCtx, cancel := context.WithTimeout(ctx, s.loadProbeTimeout())
@@ -1434,16 +1602,25 @@ func (s *Server) effectivePlan(ctx context.Context, manifest Manifest, binary st
 	fresh, ok := s.ProbeDevices(probeCtx, binary, s.logger())
 	if !ok {
 		// THE fail-soft case the load-time probe exists to survive: a wedged
-		// or absent driver query falls back to the recorded snapshot.
+		// or absent driver query falls back to the recorded snapshot. A pinned
+		// tuning never reaches this branch — the block above refused or
+		// carried it.
 		s.logger().Debug("the embedded LLM load-time device probe did not answer; launching the recorded plan")
-		return stored, snapshot
+		return stored, snapshot, nil
 	}
 
-	replanned, err := s.replan(manifest, fresh)
+	replanned, err := s.replan(manifest, fresh, tuning)
 	if err != nil {
+		if errors.Is(err, ErrUnknownDevice) {
+			// The pin names a device the fresh inventory does not report — a
+			// stale name after a driver update, a reordering, a hardware swap.
+			// The recorded plan predates the pin, so falling back to it would
+			// launch exactly the shape the operator overruled. Refuse.
+			return nil, nil, err
+		}
 		s.logger().Debug("the embedded LLM launch shape was not re-planned from the fresh topology",
 			"error", err, "gpu_family", ClassifyGPUs(fresh.Devices))
-		return stored, snapshot
+		return stored, snapshot, nil
 	}
 
 	measured := fresh
@@ -1453,20 +1630,162 @@ func (s *Server) effectivePlan(ctx context.Context, manifest Manifest, binary st
 			"from_context", stored.ContextSize, "to_context", replanned.ContextSize,
 			"device_budget_mib", measured.DeviceBudgetMiB())
 	}
-	return &replanned, &measured
+	s.preflightFreeMemory(&replanned, &measured)
+	return &replanned, &measured, nil
+}
+
+// preflightFreeMemory is the load-time pre-flight: against a FRESH measurement
+// (the same ProbeDevices call whose answer refined the plan — never the
+// recorded snapshot, whose free figures describe install day) it compares the
+// free accelerator memory of the pool the plan prices with the footprint the
+// plan projects onto it, and reports a shortfall as a Warn plus a
+// NoticeLowFreeDeviceMemory through OnNotice. It is a WARNING, never a gate:
+//
+//   - The budgeting invariant is untouched. Plan budgets derive from TOTAL
+//     capacity (buildTopology prices Total, with the family's margin), so a
+//     plan must not move with whatever else happens to be running — occupied
+//     VRAM changes nothing about the shape this launch applies, and this
+//     function has no plan input it could change even by accident.
+//   - The finding is advisory because free memory is transient: the other
+//     process holding the VRAM may exit before the weights land, and a launch
+//     that genuinely cannot fit fails later with a diagnosis that names the
+//     real cause (the fork's fit pass or the driver's OOM).
+//
+// Every way the check can lose its evidence skips it silently: no fresh
+// topology (the probe did not answer — the fail-soft contract kept the load
+// alive on the recorded snapshot), no devices in it, no plan, a non-positive
+// projection (a host-only shape places nothing on the accelerator). A check
+// that cannot measure must not invent a warning. OnNotice nil is NOT such a
+// skip: the Warn is the finding's primary record and is logged regardless;
+// only the UI delivery needs the seam.
+func (s *Server) preflightFreeMemory(plan *MemoryPlan, topology *MemoryTopology) {
+	if plan == nil || topology == nil {
+		return
+	}
+	if len(topology.Devices) == 0 || plan.ExpectedDeviceMiB <= 0 {
+		return
+	}
+	free := freePoolMiB(topology.Devices, topology.Unified, plan.Devices)
+	if free >= plan.ExpectedDeviceMiB {
+		return
+	}
+	notice := ServerNotice{
+		Kind: NoticeLowFreeDeviceMemory,
+		Message: fmt.Sprintf(
+			"the accelerator has %d MiB free, below the %d MiB this launch plans to place on it — the plan is unchanged (budgets price total capacity), but the launch may not fit while other processes hold the memory",
+			free, plan.ExpectedDeviceMiB),
+		FreeDeviceMiB:     free,
+		ExpectedDeviceMiB: plan.ExpectedDeviceMiB,
+	}
+	s.logger().Warn(notice.Message,
+		"kind", string(notice.Kind),
+		"free_device_mib", free,
+		"expected_device_mib", plan.ExpectedDeviceMiB,
+		"unified", topology.Unified,
+		"pinned_devices", plan.Devices)
+	if s.OnNotice != nil {
+		s.OnNotice(notice)
+	}
+}
+
+// unmetPinError is the fail-closed refusal for an operator pin the recorded
+// plan does not carry and which no probe can re-plan into the launch. A
+// devices-only mismatch — the split unpinned on both sides, whether or not a
+// plan was recorded — keeps the typed UnknownDeviceError, carrying the
+// caller's why so the refusal also says why no inventory could verify the
+// pin; with a recorded plan it names the first pinned device the plan itself
+// does not carry, so the named device is one the recorded shape genuinely
+// lacks (with no recorded plan nothing recorded carries anything, and the
+// pin's own head is quoted). An ordering-only divergence — the recorded plan
+// carries every pinned name, differently ordered — is a real mismatch (-dev
+// order is the main-GPU preference) but NOT an unknown device, so it gets its
+// own plain wording instead of the typed error's could-not-be-verified lead.
+// Everything else is worded by the fields actually unmet: a split-mode-only
+// pin is never refused with a device word, and a devices-only pin is never
+// refused with a split word — an operator who pinned no split must not read
+// that the shape failed a split they never asked for.
+func unmetPinError(pin Tuning, stored *MemoryPlan, why string) error {
+	// A pin is split-unmet only when the operator PINNED a split the recorded
+	// shape does not carry. With no recorded plan nothing carries anything —
+	// but an unpinned split (the zero/auto value) is not unmet: folding the
+	// missing plan into this condition would refuse a devices-only pin with a
+	// split word the operator never wrote.
+	splitUnmet := (stored == nil && pin.SplitMode != SplitModeAuto) ||
+		(stored != nil && stored.SplitMode != pin.SplitMode)
+	if !splitUnmet && len(pin.Devices) > 0 {
+		if stored != nil && reordersDevices(pin.Devices, stored.Devices) {
+			// The devices are all known — only their order differs. The typed
+			// error's could-not-be-verified lead would hide that from the
+			// operator, so the refusal names the divergence instead.
+			return fmt.Errorf(
+				"the recorded plan carries the operator's devices in a different order (recorded %s, pinned %s): %s — "+
+					"-dev order is the main-GPU preference, so the launch refuses rather than silently reordering the offload; "+
+					"re-probe and retry, or restore the recorded order in tuning.devices",
+				strings.Join(stored.Devices, ", "), strings.Join(pin.Devices, ", "), why)
+		}
+		return &UnknownDeviceError{Device: missingPinnedDevice(pin.Devices, stored), Why: why}
+	}
+	var unmet []string
+	if len(pin.Devices) > 0 && (stored == nil || !slices.Equal(stored.Devices, pin.Devices)) {
+		unmet = append(unmet, "devices")
+	}
+	if splitUnmet {
+		unmet = append(unmet, "split_mode")
+	}
+	return fmt.Errorf("the recorded plan does not carry the operator's pin (%s unmet): %s — launching it would silently ignore the pin",
+		strings.Join(unmet, " and "), why)
+}
+
+// missingPinnedDevice names the first pinned device the recorded plan does not
+// itself carry, so a typed mismatch refusal names a device the recorded shape
+// genuinely lacks — a superset pin names its first genuinely absent device
+// instead of blindly repeating the pin's own head. The pin[0] fallback fires
+// only when nothing is recorded; an ordering-only divergence never reaches
+// here (the caller words it as one before the typed branch).
+func missingPinnedDevice(pin []string, stored *MemoryPlan) string {
+	if stored != nil {
+		for _, dev := range pin {
+			if !slices.Contains(stored.Devices, dev) {
+				return dev
+			}
+		}
+	}
+	return pin[0]
+}
+
+// reordersDevices reports whether the two lists carry exactly the same device
+// names and differ only in order.
+func reordersDevices(a, b []string) bool {
+	if len(a) != len(b) || slices.Equal(a, b) {
+		return false
+	}
+	counts := make(map[string]int, len(a))
+	for _, dev := range b {
+		counts[dev]++
+	}
+	for _, dev := range a {
+		counts[dev]--
+		if counts[dev] < 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // replan re-derives the launch shape from a fresh measurement, holding the
-// plan to the artifacts on disk. The packing is PINNED to the manifest's —
-// the one input a re-plan must not re-decide: a different packing prices
-// bytes that are not there (a packing change is an install decision).
-// specs/domains/embedded-llm.md (Load / serve / unload).
-func (s *Server) replan(manifest Manifest, topology MemoryTopology) (MemoryPlan, error) {
+// plan to the artifacts on disk. tuning is the caller's launch-entry snapshot
+// (launchSpec reads it once per launch), NOT a fresh read — re-reading after
+// the bounded probe could split the decision between two tunings, silently
+// dropping an entry pin; the parameter is a copy, so the packing pin below
+// never reaches the caller's snapshot. The packing is PINNED to the
+// manifest's — the one input a re-plan must not re-decide: a different
+// packing prices bytes that are not there (a packing change is an install
+// decision). specs/domains/embedded-llm.md (Load / serve / unload).
+func (s *Server) replan(manifest Manifest, topology MemoryTopology, tuning Tuning) (MemoryPlan, error) {
 	profile, err := PinnedMemoryProfile()
 	if err != nil {
 		return MemoryPlan{}, fmt.Errorf("memory profile: %w", err)
 	}
-	tuning := s.tuning()
 	if manifest.Packing != "" {
 		tuning.Packing = manifest.Packing
 	}
@@ -1588,11 +1907,13 @@ func mulContext(perSlot, slots int) (int, bool) {
 }
 
 // recordEffectiveContext reads the served context back and makes it durable:
-// the manifest's ContextSize and the tier-1 llm.models override (which
-// shadows the lazy probe — this is its only correction), on the load path so
-// GetConfig stays network-free. MERGES onto the current on-disk record, only
-// the fields this load learned, abandoned on a different install
-// (sameInstall); fail-soft. specs/domains/embedded-llm.md (Context readback).
+// the manifest's ContextSize and — through PersistContext, which hears EVERY
+// successful readback and is idempotent by contract — the tier-1 llm.models
+// override (which shadows the lazy probe; this readback is the only place a
+// drifted override heals), on the load path so GetConfig stays network-free.
+// The write MERGES onto the current on-disk record, only the fields this load
+// learned, abandoned on a different install (sameInstall); fail-soft.
+// specs/domains/embedded-llm.md (Context readback).
 func (s *Server) recordEffectiveContext(ctx context.Context, launch resolvedLaunch, manifest Manifest) int {
 	recorded := manifest.ContextSize
 	effective := recorded
@@ -1602,7 +1923,9 @@ func (s *Server) recordEffectiveContext(ctx context.Context, launch resolvedLaun
 		}
 		return readPropsContext(ctx, s.httpClient(), propsURL(launch.Spec.Port), s.probeTimeout())
 	}
+	readbackOK := false
 	if n, ok := readCtx(); ok {
+		readbackOK = true
 		effective = n
 		// The served window can never legitimately exceed what this launch
 		// ordered; anything larger is a poisoned readback (squatted port,
@@ -1640,37 +1963,44 @@ func (s *Server) recordEffectiveContext(ctx context.Context, launch resolvedLaun
 		return effective
 	}
 	recorded = current.ContextSize
-	if effective == recorded && !launch.Refreshed {
-		// Nothing this load learned differs from the record: no write, no new
-		// mtime and no spurious change signal.
-		return effective
+	if effective != recorded || launch.Refreshed {
+		updated := current
+		updated.ContextSize = effective
+		updated.Plan = launch.Plan
+		updated.Topology = launch.Topology
+		// The port is deliberately NOT the one this load bound: manifest.json keeps
+		// the port the install allocated, which is the preference the next load
+		// re-scans from — see backend.persistEmbeddedPort.
+
+		if err := writeManifest(path, updated, s.logger()); err != nil {
+			s.logger().Warn("failed to persist the embedded LLM context readback",
+				"error", err, "context_size", effective)
+			return effective
+		}
+		s.logger().Debug("the embedded LLM manifest was updated from the live server",
+			"context_size", effective, "recorded", recorded, "plan_refreshed", launch.Refreshed)
 	}
 
-	updated := current
-	updated.ContextSize = effective
-	updated.Plan = launch.Plan
-	updated.Topology = launch.Topology
-	// The port is deliberately NOT the one this load bound: manifest.json keeps
-	// the port the install allocated, which is the preference the next load
-	// re-scans from — see backend.persistEmbeddedPort.
-
-	if err := writeManifest(path, updated, s.logger()); err != nil {
-		s.logger().Warn("failed to persist the embedded LLM context readback",
-			"error", err, "context_size", effective)
-		return effective
-	}
-	s.logger().Debug("the embedded LLM manifest was updated from the live server",
-		"context_size", effective, "recorded", recorded, "plan_refreshed", launch.Refreshed)
-
-	if effective == recorded || s.PersistContext == nil {
-		return effective
-	}
-	if err := s.PersistContext(ctx, effective); err != nil {
-		// The manifest is already correct; only the config mirror lagged. The
-		// next successful load retries, and the override keeps its previous —
-		// still valid — value in the meantime.
-		s.logger().Warn("failed to persist the embedded LLM context window override",
-			"context_size", effective, "error", err)
+	// The config mirror reconciles on EVERY successful readback, not only when
+	// the context moved. The manifest comparison above cannot see a config
+	// override that has drifted from the record — a binary serving a different
+	// window writes both stores consistently, but a corrected build after it
+	// finds nothing new in the manifest and would otherwise skip this write
+	// forever, leaving the tier-1 override — the figure the router budgets
+	// against — silently stale while every manifest-driven surface shows the
+	// correct value. The call is idempotent by contract: an implementation
+	// reports no change when the value already agrees, so a steady machine
+	// pays a lock pair and no I/O. A FAILED readback still persists nothing:
+	// without the server's own figure, effective is the recorded value rather
+	// than anything this load learned.
+	if readbackOK && s.PersistContext != nil {
+		if err := s.PersistContext(ctx, effective); err != nil {
+			// The manifest is already correct; only the config mirror lagged. The
+			// next successful load retries, and the override keeps its previous —
+			// still valid — value in the meantime.
+			s.logger().Warn("failed to persist the embedded LLM context window override",
+				"context_size", effective, "error", err)
+		}
 	}
 	return effective
 }

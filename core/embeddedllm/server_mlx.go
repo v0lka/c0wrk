@@ -80,11 +80,17 @@ func (spec LaunchSpec) mlxValidate() error {
 
 // launchSpecMLX turns an mtplx install record into a launch specification.
 // Identity (interpreter, pack dir) is containment-checked against the layout.
-// Shape is re-derived from the SAME pinned terms with the LIVE tuning (PlanMLX
-// is pure), so `context.mode: exact` keeps working (ADR-092 D5): a feasible
-// live plan wins, an infeasible one refuses, an unpriceable one (ErrRAMUnknown,
-// planner-refused tuning) falls back to the recorded plan.
-func (s *Server) launchSpecMLX(manifest Manifest, port int) (resolvedLaunch, error) {
+// Shape is re-derived from the SAME pinned terms with the tuning snapshot
+// launchSpec read once at entry — the same value its ForbiddenLlamaTuning
+// pre-check refused on, so pre-check and planner cannot disagree — and
+// PlanMLX is pure (no probe, no I/O; an edit saved mid-launch applies to the
+// NEXT launch), so `context.mode: exact` keeps working (ADR-092 D5). A
+// feasible live plan wins, an infeasible one refuses with the gate's own
+// error; ONLY ErrRAMUnknown (a manifest with no topology snapshot to price
+// from) falls back to the recorded plan — a tuning the planner refuses fails
+// closed, never papered over (launchSpec refuses the llama-key contradiction
+// before this runs).
+func (s *Server) launchSpecMLX(manifest Manifest, port int, tuning Tuning) (resolvedLaunch, error) {
 	if manifest.Engine != EngineMTPLX {
 		return resolvedLaunch{}, fmt.Errorf("%w: launchSpecMLX called for engine %q", ErrLaunchSpecInvalid, manifest.Engine)
 	}
@@ -136,7 +142,7 @@ func (s *Server) launchSpecMLX(manifest Manifest, port int) (resolvedLaunch, err
 	if manifest.Topology != nil {
 		ramGiB = manifest.Topology.HostRAMGiB
 	}
-	live, err := PlanMLX(ramGiB, s.tuning(), terms)
+	live, err := PlanMLX(ramGiB, tuning, terms)
 	switch {
 	case err == nil:
 		plan = &live
@@ -146,12 +152,19 @@ func (s *Server) launchSpecMLX(manifest Manifest, port int) (resolvedLaunch, err
 		// gate's own advice directed, so the refusal — carrying the gate's
 		// arithmetic — is the answer.
 		return resolvedLaunch{}, fmt.Errorf("embeddedllm: %w", err)
-	default:
-		// ErrRAMUnknown (a manifest written before the topology snapshot
-		// existed) or a tuning the planner refuses (config validation owns
-		// that): launch the recorded decision.
+	case errors.Is(err, ErrRAMUnknown):
+		// A manifest with no topology snapshot (written before the snapshot
+		// existed) cannot be priced at all — information the launch lacks
+		// rather than an override it would ignore: the recorded decision
+		// launches.
 		s.logger().Debug("the mtplx launch shape was not re-planned from the live tuning; launching the recorded plan",
 			"error", err)
+	default:
+		// A tuning the planner refuses is fail-closed: launchSpec's
+		// ForbiddenLlamaTuning pre-check already refuses the engine-mismatch
+		// keys, so reaching here means an invalid override slipped past every
+		// write-side check — the recorded plan must not silently replace it.
+		return resolvedLaunch{}, fmt.Errorf("embeddedllm: %w", err)
 	}
 	switch {
 	case plan != nil && plan.ContextSize > 0:

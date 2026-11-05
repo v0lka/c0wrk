@@ -35,6 +35,7 @@ const mocks = vi.hoisted(() => ({
   // Captured subscribers so a test can emit an event at the block.
   stateHandlers: new Set<(data: unknown) => void>(),
   progressHandlers: new Set<(data: unknown) => void>(),
+  noticeHandlers: new Set<(data: unknown) => void>(),
 }))
 
 vi.mock('@/lib/logger', () => ({
@@ -62,6 +63,12 @@ vi.mock('@/api/embedded', () => ({
     mocks.progressHandlers.add(cb)
     return () => {
       mocks.progressHandlers.delete(cb)
+    }
+  },
+  onEmbeddedLLMNotice: (cb: (data: unknown) => void) => {
+    mocks.noticeHandlers.add(cb)
+    return () => {
+      mocks.noticeHandlers.delete(cb)
     }
   },
 }))
@@ -102,6 +109,8 @@ const EMPTY_PLAN: EmbeddedLLMPlan = {
   mmproj_offload: false,
   parallel: 0,
   cache_ram_mib: -1,
+  devices: [],
+  split_mode: '',
   gpu_family: '',
   device_budget_mib: 0,
   host_budget_mib: 0,
@@ -946,7 +955,10 @@ describe('EmbeddedLLMSettings — tuning section', () => {
 
     expect(q('embedded-llm-unified')?.textContent).toBe('Yes')
     expect(q('embedded-llm-devices')?.textContent).toContain('Apple M4 Max')
-    expect(q('embedded-llm-devices')?.textContent).toContain('24 GiB')
+    // The install record quotes the recorded topology's TOTAL only — the free
+    // figure is the live panel's vocabulary (the fixture's free is 24 GiB).
+    expect(q('embedded-llm-devices')?.textContent).toContain('48 GiB')
+    expect(q('embedded-llm-devices')?.textContent).not.toContain('free of')
     const plan = q('embedded-llm-plan')?.textContent ?? ''
     expect(plan).toContain('PQ2_0')
     expect(plan).toContain('KV q8_0')

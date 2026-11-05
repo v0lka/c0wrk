@@ -8,11 +8,10 @@
 // Sibling of @/api/embedded — split out so each module stays at one concern
 // (lifecycle vs tuning); components import from either, never from wailsjs.
 //
-// The on-demand `ProbeEmbeddedLLMDevices` RPC is deliberately NOT wrapped here:
-// nothing in the UI consumes it. The topology the install record renders comes
-// from the status snapshot's own fields (mirrored below), and no "Re-probe"
-// affordance exists — the RPC stays reachable from diagnostics on the Go side.
-// Add a wrapper only together with the surface that calls it.
+// The on-demand `ProbeEmbeddedLLMDevices` RPC is wrapped below (see
+// probeEmbeddedLLMDevices) beside the live-snapshot type: the Settings block's
+// device-memory panel measures THIS instant with it, and the header comment's
+// old "deliberately not wrapped" rule expired the moment that surface existed.
 //
 // Every knob is NULLABLE and null is load-bearing: it means "unset — the
 // planner decides", which is NOT the same value as an explicit "auto" spelling
@@ -32,6 +31,7 @@
 import { getApp } from './runtime'
 import {
   MAX_CONTEXT_TOKENS,
+  MAX_TUNING_DEVICES,
   MAX_TUNING_HOST_RESERVE_GIB,
   MAX_TUNING_LAYERS,
   MAX_TUNING_MIB,
@@ -48,6 +48,13 @@ export const KV_CACHE_TYPES = ['f16', 'q8_0', 'q4_0'] as const
 
 /** The closed packing-override set (core SupportedPackings). */
 export const TUNING_PACKINGS = ['PQ2_0', 'PTQ1_0'] as const
+
+/** The closed `-sm`/`--split-mode` set (core SplitModes). An explicit "auto"
+ *  is ALSO a real wire value — backend tuningChoice stores it verbatim and
+ *  distinguishes it from unset — but it is not a set member: the patch guard
+ *  below accepts it (and any case/whitespace spelling of these four) the way
+ *  tuningChoice does, by trimming and case-folding before the match. */
+export const SPLIT_MODES = ['none', 'layer', 'row', 'tensor'] as const
 
 /** The mode spellings of the two composite knobs (config's YAML vocabulary). */
 export const CONTEXT_MODE_EXACT = 'exact'
@@ -70,6 +77,8 @@ export type EmbeddedLLMTuningKnob =
   | 'parallel'
   | 'cache_ram_mib'
   | 'host_reserve_gib'
+  | 'devices'
+  | 'split_mode'
 
 // --- Types (mirrors of the backend DTOs; null = unset) ---
 
@@ -83,7 +92,8 @@ export interface EmbeddedLLMDevice {
 
 /** The launch shape the planner last recorded (the EFFECTIVE plan, not the
  *  override). Sentinel conventions: `layers` -1 = flag omitted, `cache_ram_mib`
- *  -1 = flag omitted (0 = cache disabled), `notes` is ALWAYS an array. */
+ *  -1 = flag omitted (0 = cache disabled), `notes` and `devices` are ALWAYS
+ *  arrays (`split_mode` "" = the flag is omitted). */
 export interface EmbeddedLLMPlan {
   readonly recorded: boolean
   readonly packing: string
@@ -99,6 +109,12 @@ export interface EmbeddedLLMPlan {
   readonly mmproj_offload: boolean
   readonly parallel: number
   readonly cache_ram_mib: number
+  /** The `-dev` list this plan pins; empty = the runtime chooses the devices.
+   *  Non-empty means the device budget prices ONLY the named pool; the host
+   *  budget stays machine-wide. */
+  readonly devices: readonly string[]
+  /** The `-sm` spelling the plan pins; "" = the flag is omitted. */
+  readonly split_mode: string
   readonly gpu_family: string
   readonly device_budget_mib: number
   readonly host_budget_mib: number
@@ -128,7 +144,10 @@ export interface EmbeddedLLMStatusExtras {
   readonly reload_required: boolean
 }
 
-/** The persisted override surface (GetEmbeddedLLMTuning), field for field. */
+/** The persisted override surface (GetEmbeddedLLMTuning), field for field.
+ *  `devices` is null-or-array (nil and empty both read as unset — a cleared
+ *  list and an authored-empty one are the same statement), `split_mode` is
+ *  null-or-spelling. */
 export interface EmbeddedLLMTuning {
   readonly context: { readonly mode: string | null; readonly tokens: number | null }
   readonly kv_cache_type: string | null
@@ -142,10 +161,13 @@ export interface EmbeddedLLMTuning {
   readonly parallel: number | null
   readonly cache_ram_mib: number | null
   readonly host_reserve_gib: number | null
+  readonly devices: readonly string[] | null
+  readonly split_mode: string | null
 }
 
 /** A partial tuning patch (SetEmbeddedLLMTuning). Absent = keep the stored
- *  value; present = replace verbatim; a knob in `reset` = clear to unset. */
+ *  value; present = replace verbatim (an EMPTY `devices` array clears the
+ *  list); a knob in `reset` = clear to unset. */
 export interface EmbeddedLLMTuningPatch {
   readonly reset?: readonly EmbeddedLLMTuningKnob[]
   readonly context?: { mode: string | null; tokens: number | null }
@@ -160,6 +182,8 @@ export interface EmbeddedLLMTuningPatch {
   readonly parallel?: number
   readonly cache_ram_mib?: number
   readonly host_reserve_gib?: number
+  readonly devices?: readonly string[]
+  readonly split_mode?: string
 }
 
 // --- Guards (presence + type only; null and "" stay legal values) ---
@@ -214,6 +238,9 @@ export function isEmbeddedLLMPlan(d: unknown): d is EmbeddedLLMPlan {
     typeof o.mmproj_offload === 'boolean' &&
     isNum(o.parallel) &&
     isNum(o.cache_ram_mib) &&
+    Array.isArray(o.devices) &&
+    o.devices.every(isStr) &&
+    isStr(o.split_mode) &&
     isStr(o.gpu_family) &&
     isNum(o.device_budget_mib) &&
     isNum(o.host_budget_mib) &&
@@ -258,7 +285,9 @@ export function isEmbeddedLLMTuning(d: unknown): d is EmbeddedLLMTuning {
     isNullable(o.packing, isStr) &&
     isNullable(o.parallel, isNum) &&
     isNullable(o.cache_ram_mib, isNum) &&
-    isNullable(o.host_reserve_gib, isNum)
+    isNullable(o.host_reserve_gib, isNum) &&
+    (o.devices === null || (Array.isArray(o.devices) && o.devices.every(isStr))) &&
+    isNullable(o.split_mode, isStr)
   )
 }
 
@@ -312,6 +341,55 @@ export function validateEmbeddedLLMTuningPatch(patch: EmbeddedLLMTuningPatch): v
     !withinRange(patch.host_reserve_gib, 0, MAX_TUNING_HOST_RESERVE_GIB)
   )
     throw bad('host_reserve_gib', patch.host_reserve_gib, `within 0-${MAX_TUNING_HOST_RESERVE_GIB}`)
+  // devices: the same fast-path shape rules the backend's ToTuning applies —
+  // bounded count, one separator-free non-empty token per entry, no
+  // duplicates. Whether a name names a device THIS machine has stays the
+  // backend's plan-time inventory check (an unknown name is refused by the
+  // LOAD, not here — the UI cannot know the machine's inventory spelling).
+  if (patch.devices !== undefined) {
+    // A runtime null is out of contract for `devices?` (reset goes through
+    // the reset knob list; an empty array clears the list) — refuse it like
+    // split_mode refuses a non-string, never a TypeError on `.length`.
+    if (patch.devices === null)
+      throw bad('devices', 'null', 'a list of device names (an empty array clears the list)')
+    if (patch.devices.length > MAX_TUNING_DEVICES)
+      throw bad(
+        'devices',
+        `${patch.devices.length} entries`,
+        `at most ${MAX_TUNING_DEVICES} entries`,
+      )
+    const seen = new Set<string>()
+    for (const raw of patch.devices) {
+      const name = raw.trim()
+      if (name === '')
+        throw bad('devices', JSON.stringify(raw), 'a non-empty device name (CUDA0, Vulkan0, ...)')
+      if (/[\s,]/.test(name) || name.startsWith('-'))
+        throw bad('devices', JSON.stringify(raw), 'a single separator-free device token')
+      if (seen.has(name)) throw bad('devices', name, 'listed exactly once')
+      seen.add(name)
+    }
+  }
+  // split_mode mirrors the backend's tuningChoice — trim, case-fold, and
+  // forward the request verbatim (the backend canonicalizes, it never
+  // round-trips a rewritten spelling): "" / "auto" are the explicit-auto
+  // statement (a real value, distinct from unset), the members match in any
+  // spelling, and any other value is refused here exactly as tuningChoice
+  // refuses it there. A non-string reaches the refusal too, never a TypeError.
+  const sm =
+    typeof patch.split_mode === 'string'
+      ? patch.split_mode.trim().toLowerCase()
+      : patch.split_mode
+  if (
+    patch.split_mode !== undefined &&
+    sm !== '' &&
+    sm !== 'auto' &&
+    !SPLIT_MODES.includes(sm as never)
+  )
+    throw bad(
+      'split_mode',
+      JSON.stringify(patch.split_mode),
+      `one of ${SPLIT_MODES.join(', ')}, or "auto"`,
+    )
 }
 
 /** Persist a partial tuning patch. Out-of-range values are refused locally
@@ -321,4 +399,66 @@ export function validateEmbeddedLLMTuningPatch(patch: EmbeddedLLMTuningPatch): v
 export async function setEmbeddedLLMTuning(patch: EmbeddedLLMTuningPatch): Promise<void> {
   validateEmbeddedLLMTuningPatch(patch)
   await getApp().SetEmbeddedLLMTuning(patch)
+}
+
+// --- Live device-memory snapshot ---
+
+/** A measurement of THIS instant: the on-demand ProbeEmbeddedLLMDevices
+ *  answer. Field for field the topology half of EmbeddedLLMStatusExtras, but a
+ *  value in its own right — the recorded snapshot ages (another process takes
+ *  VRAM, a driver updates), and this is what "how much is free right now"
+ *  means. */
+export interface EmbeddedLLMDeviceSnapshot {
+  /** The accelerator inventory in the runtime's own print order. An EMPTY
+   *  array is a real answer from a machine with no usable accelerator, not a
+   *  failed probe — a failed probe rejects the promise instead. */
+  readonly devices: readonly EmbeddedLLMDevice[]
+  /** True when the device pool aliases host RAM (the budgets share one pool
+   *  and must never be summed). */
+  readonly unified: boolean
+  readonly host_ram_gib: number
+  readonly device_budget_mib: number
+  readonly host_budget_mib: number
+  /** RFC 3339 stamp of THIS probe (never ""). */
+  readonly probed_at: string
+}
+
+/** Guard for a ProbeEmbeddedLLMDevices answer. Mirrors the backend DTO's
+ *  always-present contract: a payload missing a field is schema drift, not a
+ *  machine with no memory. */
+export function isEmbeddedLLMDeviceSnapshot(d: unknown): d is EmbeddedLLMDeviceSnapshot {
+  if (typeof d !== 'object' || d === null) return false
+  const o = d as Record<string, unknown>
+  const isDevice = (v: unknown): v is EmbeddedLLMDevice =>
+    typeof v === 'object' &&
+    v !== null &&
+    typeof (v as Record<string, unknown>).name === 'string' &&
+    typeof (v as Record<string, unknown>).description === 'string' &&
+    typeof (v as Record<string, unknown>).total_mib === 'number' &&
+    typeof (v as Record<string, unknown>).free_mib === 'number'
+  return (
+    Array.isArray(o.devices) &&
+    o.devices.every(isDevice) &&
+    typeof o.unified === 'boolean' &&
+    typeof o.host_ram_gib === 'number' &&
+    typeof o.device_budget_mib === 'number' &&
+    typeof o.host_budget_mib === 'number' &&
+    typeof o.probed_at === 'string'
+  )
+}
+
+/** Measure THIS machine's accelerator memory now: the on-demand
+ *  ProbeEmbeddedLLMDevices RPC. Unlike every other embedded-LLM read this one
+ *  is allowed to be slow (it spawns the provisioned runtime with
+ *  --list-devices) and to fail — an unanswered probe rejects with the
+ *  operator-facing cause instead of degrading to an empty inventory. Refused
+ *  while an install/removal owns the embedded-operation gate, and before any
+ *  install exists. */
+export async function probeEmbeddedLLMDevices(): Promise<EmbeddedLLMDeviceSnapshot> {
+  const result = await getApp().ProbeEmbeddedLLMDevices()
+  if (!isEmbeddedLLMDeviceSnapshot(result)) {
+    logger.error('probeEmbeddedLLMDevices: unexpected response shape', result)
+    throw new Error('ProbeEmbeddedLLMDevices returned an invalid device snapshot')
+  }
+  return result
 }

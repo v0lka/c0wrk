@@ -181,6 +181,16 @@ const EventEmbeddedLLMInstallProgress = "embedded_llm:install_progress"
 // EventRuntimeError (no RPC is left to carry it).
 const EventEmbeddedLLMState = "embedded_llm:state"
 
+// EventEmbeddedLLMNotice reports a non-terminal operator-facing finding from
+// the embedded-LLM supervisor — a warning about the launch it is making, not
+// a state transition (the state machine's own verdict still travels through
+// embedded_llm:state). Payload: EmbeddedLLMNoticeData. A global event with a
+// bare name — the finding belongs to the machine, not to a conversation.
+// Current producer: the load-time pre-flight comparing freshly measured free
+// accelerator memory with the projected device footprint (core/embeddedllm
+// Server.preflightFreeMemory). See specs/contracts/event-catalog.md.
+const EventEmbeddedLLMNotice = "embedded_llm:notice"
+
 // EventChatGPTAuthState reports a transition of the ChatGPT sign-in flow. A
 // global event with a bare name: the account belongs to the app, not to a
 // conversation. The synchronous sign-out does not emit — its RPC return is

@@ -849,6 +849,8 @@ export namespace backend {
 	    mmproj_offload: boolean;
 	    parallel: number;
 	    cache_ram_mib: number;
+	    devices: string[];
+	    split_mode: string;
 	    gpu_family: string;
 	    device_budget_mib: number;
 	    host_budget_mib: number;
@@ -876,6 +878,8 @@ export namespace backend {
 	        this.mmproj_offload = source["mmproj_offload"];
 	        this.parallel = source["parallel"];
 	        this.cache_ram_mib = source["cache_ram_mib"];
+	        this.devices = source["devices"];
+	        this.split_mode = source["split_mode"];
 	        this.gpu_family = source["gpu_family"];
 	        this.device_budget_mib = source["device_budget_mib"];
 	        this.host_budget_mib = source["host_budget_mib"];
@@ -1005,6 +1009,8 @@ export namespace backend {
 	    parallel?: number;
 	    cache_ram_mib?: number;
 	    host_reserve_gib?: number;
+	    devices: string[];
+	    split_mode?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new EmbeddedLLMTuningDTO(source);
@@ -1024,6 +1030,8 @@ export namespace backend {
 	        this.parallel = source["parallel"];
 	        this.cache_ram_mib = source["cache_ram_mib"];
 	        this.host_reserve_gib = source["host_reserve_gib"];
+	        this.devices = source["devices"];
+	        this.split_mode = source["split_mode"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -1058,6 +1066,8 @@ export namespace backend {
 	    parallel?: number;
 	    cache_ram_mib?: number;
 	    host_reserve_gib?: number;
+	    devices: string[];
+	    split_mode?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new EmbeddedLLMTuningRequest(source);
@@ -1078,6 +1088,8 @@ export namespace backend {
 	        this.parallel = source["parallel"];
 	        this.cache_ram_mib = source["cache_ram_mib"];
 	        this.host_reserve_gib = source["host_reserve_gib"];
+	        this.devices = source["devices"];
+	        this.split_mode = source["split_mode"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

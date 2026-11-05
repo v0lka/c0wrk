@@ -20,9 +20,10 @@
 import {
   getEmbeddedLLMStatus,
   onEmbeddedLLMInstallProgress,
+  onEmbeddedLLMNotice,
   onEmbeddedLLMState,
 } from '@/api/embedded'
-import { getEmbeddedLLMTuning } from '@/api/embeddedTuning'
+import { getEmbeddedLLMTuning, probeEmbeddedLLMDevices } from '@/api/embeddedTuning'
 import { invalidateConfigCache } from '@/hooks/useConfigData'
 import { logger } from '@/lib/logger'
 import { useEmbeddedLLMStore, type EmbeddedLLMBusyAction } from './embeddedLLMStore'
@@ -115,6 +116,101 @@ export async function refreshEmbeddedLLMTuning(): Promise<boolean> {
   }
 }
 
+/** The live device-memory probe in flight, shared by every concurrent caller.
+ *  The probe spawns the provisioned runtime, so a burst of `embedded_llm:state`
+ *  transitions (loading → loaded) must not stack several of them: concurrent
+ *  refreshes share the one in-flight promise, and its outcome settles every
+ *  caller. Null = idle. */
+let deviceProbeInFlight: Promise<boolean> | null = null
+
+/** The REAL refusal of the probe currently in flight, recorded when it fails
+ *  and read by a manual caller that joined it (see the join branch below):
+ *  the attempt's failure HANDLING already ran under the initiator's mode, so
+ *  the joiner repaints the attempt's own cause instead of inventing a
+ *  concurrency ("another probe is still settling") that has already settled.
+ *  Null outside a failed probe. */
+let deviceProbeFailure: string | null = null
+
+/** Re-measure THIS machine's accelerator memory now (`ProbeEmbeddedLLMDevices`)
+ *  and store the live snapshot. NEVER throws. Returns whether a snapshot was
+ *  applied.
+ *
+ *  `mode` decides how a FAILURE behaves, because the two callers deserve
+ *  different honesty:
+ *   - `manual` (the Settings refresh button): the operator asked, so the
+ *     refusal is painted — `deviceSnapshotError` carries it until a later
+ *     probe succeeds.
+ *   - `auto` (an `embedded_llm:state` invalidation): nothing was asked, so a
+ *     busy-gate refusal (an install owns the gate, a removal is deleting the
+ *     tree that would be probed) only logs and leaves the previous snapshot —
+ *     the next transition re-probes. An auto failure also clears a stale
+ *     error, since the painted complaint no longer describes the latest
+ *     attempt's outcome.
+ *   - Under the mtplx engine an AUTO probe does not fire at all: the RPC
+ *     refuses by engine (no llama-family binary exists to spawn), the live
+ *     panel hides for that engine, and the recorded topology stays its only
+ *     answer. A manual probe still goes through — the backend owns the
+ *     refusal.
+ *
+ *  Concurrent callers share the in-flight probe (see `deviceProbeInFlight`);
+ *  the failure HANDLING runs once per attempt, under the INITIATOR's mode,
+ *  and a manual caller joining a failed attempt repaints that attempt's real
+ *  refusal (see the join branch below). */
+export async function refreshEmbeddedLLMDevices(mode: 'auto' | 'manual'): Promise<boolean> {
+  const { setDeviceSnapshotLoading } = useEmbeddedLLMStore.getState()
+  // The live probe asks the provisioned llama-family binary; under the mtplx
+  // engine the RPC refuses BY ENGINE, so every `embedded_llm:state`
+  // transition would fire a doomed RPC that only ever logs here. The live
+  // panel hides for mtplx — skip until the engine changes (a manual probe
+  // still goes through: the backend owns the refusal).
+  if (mode === 'auto' && useEmbeddedLLMStore.getState().status?.engine === 'mtplx') {
+    return false
+  }
+  if (deviceProbeInFlight !== null) {
+    // A probe is already running: its result is exactly as fresh as this
+    // caller's would have been. Await it so the spinner covers the shared
+    // window. The attempt's failure HANDLING already ran under the
+    // initiator's mode inside the probe, so a joining caller only paints for
+    // itself: a manual joiner paints the attempt's REAL refusal — never a
+    // placeholder claiming another probe is still settling, which by the time
+    // the joiner resumes would name a concurrency that no longer exists — and
+    // an automatic joiner adds nothing.
+    const applied = await deviceProbeInFlight.catch(() => false)
+    if (!applied && mode === 'manual') {
+      useEmbeddedLLMStore.getState().setDeviceSnapshotError(deviceProbeFailure)
+    }
+    return applied
+  }
+  const probe = (async (): Promise<boolean> => {
+    setDeviceSnapshotLoading(true)
+    try {
+      const snapshot = await probeEmbeddedLLMDevices()
+      useEmbeddedLLMStore.getState().setDeviceSnapshot(snapshot)
+      return true
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      // Record the REAL cause before the policy runs: a manual caller joining
+      // this probe reads it after its await (see the join branch above).
+      deviceProbeFailure = message
+      if (mode === 'manual') {
+        useEmbeddedLLMStore.getState().setDeviceSnapshotError(message)
+      } else {
+        // A probe that was not asked for never paints an error; it does retire
+        // a stale one, because the error line must describe the latest
+        // attempt's outcome, not an older failure's.
+        useEmbeddedLLMStore.getState().setDeviceSnapshotError(null)
+        logger.warn('[embedded-llm] device probe failed', err)
+      }
+      return false
+    } finally {
+      deviceProbeInFlight = null
+      setDeviceSnapshotLoading(false)
+    }
+  })()
+  deviceProbeInFlight = probe
+  return probe
+}
+
 /** Mutating actions currently in flight. The runner's OWN bookkeeping — it is
  *  deliberately not part of the store's snapshot, because no surface renders a
  *  count: they render `busy`, which the tally exists to protect. It is
@@ -202,7 +298,7 @@ export async function runEmbeddedLLMAction(
 let eventSubscribers = 0
 let eventUnsubscribe: (() => void) | null = null
 
-/** Subscribe to the two global `embedded_llm:*` events and feed the store.
+/** Subscribe to the three global `embedded_llm:*` events and feed the store.
  *
  *  Refcounted: the returned unsubscribe tears the shared Wails subscription down
  *  only when the LAST consumer goes away, and is idempotent (a double call from
@@ -215,13 +311,27 @@ export function subscribeEmbeddedLLMEvents(): () => void {
       // A transition is an invalidation, not a patch: re-read the authoritative
       // snapshot (which also carries the fields the event payload omits).
       void refreshEmbeddedLLMStatus()
+      // The transition may also have moved the machine's free memory (the
+      // weights landing, an unload returning them), so the LIVE device
+      // snapshot is invalidated the same way. Auto mode: a refusal (an
+      // install owning the gate, no install yet) logs quietly and the next
+      // transition re-probes — it must never paint an error nobody asked
+      // about.
+      void refreshEmbeddedLLMDevices('auto')
     })
     const offProgress = onEmbeddedLLMInstallProgress((data) => {
       useEmbeddedLLMStore.getState().applyProgress(data)
     })
+    const offNotice = onEmbeddedLLMNotice((data) => {
+      // A notice is not a transition: it rides beside the state machine, so it
+      // is applied verbatim and lives until the UI dismisses it (or a newer
+      // notice replaces it).
+      useEmbeddedLLMStore.getState().applyNotice(data)
+    })
     eventUnsubscribe = () => {
       offState()
       offProgress()
+      offNotice()
     }
   }
 

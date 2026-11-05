@@ -43,11 +43,13 @@
 
 import { create } from 'zustand'
 import type { EmbeddedLLMStatus } from '@/api/embedded'
-import type { EmbeddedLLMTuning } from '@/api/embeddedTuning'
-import type { EmbeddedLLMComponent, EmbeddedLLMInstallProgressData } from '@/types/events'
+import type { EmbeddedLLMDeviceSnapshot, EmbeddedLLMTuning } from '@/api/embeddedTuning'
+import type { EmbeddedLLMComponent, EmbeddedLLMInstallProgressData, EmbeddedLLMNoticeData } from '@/types/events'
 
 export type { EmbeddedLLMStatus } from '@/api/embedded'
 export type { EmbeddedLLMTuning } from '@/api/embeddedTuning'
+export type { EmbeddedLLMDeviceSnapshot } from '@/api/embeddedTuning'
+export type { EmbeddedLLMNoticeData } from '@/types/events'
 
 /** The mutating RPC currently in flight (null = idle). Drives button disabling
  *  and the spinner. `load` is the long one: LoadEmbeddedLLM blocks for the whole
@@ -110,6 +112,26 @@ interface EmbeddedLLMState {
    *  keeps it set until the LAST snapshot has landed — one early clear would
    *  re-enable the controls against a snapshot the sibling write predates. */
   tuningLoading: boolean
+  /** The LIVE device-memory snapshot (a `ProbeEmbeddedLLMDevices` answer — the
+   *  measurement of THIS instant, distinct from the recorded topology inside
+   *  `status`). Replaced WHOLE by `setDeviceSnapshot` under the same authority
+   *  model as `status`: one writer (the sync module's refresh), no partial
+   *  merges. Null until the first probe answers. */
+  deviceSnapshot: EmbeddedLLMDeviceSnapshot | null
+  /** True while a live probe is in flight (the refresh button's spinner and
+   *  the auto re-probe's silent window — the UI must not distinguish them). */
+  deviceSnapshotLoading: boolean
+  /** The message of the last FAILED live probe. A manual refresh surfaces it
+   *  (the operator asked and deserves the refusal); an automatic refresh
+   *  (embedded_llm:state) clears it only on success and logs quietly, so a
+   *  busy-gate refusal during an install never paints an error nobody asked
+   *  about. Null = the last probe that matters succeeded. */
+  deviceSnapshotError: string | null
+  /** The latest supervisor notice (the load-time free-memory pre-flight's
+   *  finding). Replaced WHOLE by `applyNotice` on every embedded_llm:notice
+   *  event and cleared by `dismissNotice`; the UI renders it as a warning
+   *  beside the status, never as a state replacement. */
+  notice: EmbeddedLLMNoticeData | null
 }
 
 interface EmbeddedLLMActions {
@@ -133,6 +155,19 @@ interface EmbeddedLLMActions {
   setTuning: (tuning: EmbeddedLLMTuning) => void
   /** Toggle the tuning-read flag (see the `tuningLoading` field). */
   setTuningLoading: (loading: boolean) => void
+  /** Replace the live device-memory snapshot wholesale (a
+   *  `ProbeEmbeddedLLMDevices` read). Clears the previous probe error: a
+   *  successful measurement is the answer that retires it. */
+  setDeviceSnapshot: (snapshot: EmbeddedLLMDeviceSnapshot) => void
+  /** Toggle the live-probe spinner (see `deviceSnapshotLoading`). */
+  setDeviceSnapshotLoading: (loading: boolean) => void
+  /** Record/clear the message of a failed live probe (see
+   *  `deviceSnapshotError`). */
+  setDeviceSnapshotError: (message: string | null) => void
+  /** Record the latest supervisor notice, replacing any previous one. */
+  applyNotice: (notice: EmbeddedLLMNoticeData) => void
+  /** Drop the current notice (the UI's dismissal). */
+  dismissNotice: () => void
   /** Drop every local field (used by tests and by an app-level teardown). */
   reset: () => void
 }
@@ -150,6 +185,10 @@ const initialState: EmbeddedLLMState = {
   error: null,
   tuning: null,
   tuningLoading: false,
+  deviceSnapshot: null,
+  deviceSnapshotLoading: false,
+  deviceSnapshotError: null,
+  notice: null,
 }
 
 // --- Store ---
@@ -186,6 +225,16 @@ export const useEmbeddedLLMStore = create<EmbeddedLLMStore>()((set) => ({
   setTuning: (tuning) => set({ tuning, tuningLoading: false }),
 
   setTuningLoading: (loading) => set({ tuningLoading: loading }),
+
+  setDeviceSnapshot: (snapshot) => set({ deviceSnapshot: snapshot, deviceSnapshotError: null }),
+
+  setDeviceSnapshotLoading: (loading) => set({ deviceSnapshotLoading: loading }),
+
+  setDeviceSnapshotError: (message) => set({ deviceSnapshotError: message }),
+
+  applyNotice: (notice) => set({ notice }),
+
+  dismissNotice: () => set({ notice: null }),
 
   reset: () => set({ ...initialState }),
 }))
@@ -236,6 +285,27 @@ export function useEmbeddedLLMTuningLoading(): boolean {
   return useEmbeddedLLMStore((s) => s.tuningLoading)
 }
 
+/** The LIVE device-memory snapshot, or null before the first probe. Direct
+ *  store reference — safe. */
+export function useEmbeddedLLMDeviceSnapshot(): EmbeddedLLMDeviceSnapshot | null {
+  return useEmbeddedLLMStore((s) => s.deviceSnapshot)
+}
+
+/** Whether a live probe is in flight. Primitive — safe. */
+export function useEmbeddedLLMDeviceSnapshotLoading(): boolean {
+  return useEmbeddedLLMStore((s) => s.deviceSnapshotLoading)
+}
+
+/** The message of the last failed live probe. Primitive — safe. */
+export function useEmbeddedLLMDeviceSnapshotError(): string | null {
+  return useEmbeddedLLMStore((s) => s.deviceSnapshotError)
+}
+
+/** The latest supervisor notice, or null. Direct store reference — safe. */
+export function useEmbeddedLLMNotice(): EmbeddedLLMNoticeData | null {
+  return useEmbeddedLLMStore((s) => s.notice)
+}
+
 // --- Backend sync ---
 //
 // The four module-level sync functions (the two authoritative re-reads, the one
@@ -246,6 +316,7 @@ export function useEmbeddedLLMTuningLoading(): boolean {
 export {
   refreshEmbeddedLLMStatus,
   refreshEmbeddedLLMTuning,
+  refreshEmbeddedLLMDevices,
   runEmbeddedLLMAction,
   subscribeEmbeddedLLMEvents,
 } from './embeddedLLMSync'

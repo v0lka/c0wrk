@@ -52,10 +52,12 @@ vi.mock('@/api/embedded', () => ({
   setEmbeddedLLMAutoUnload: vi.fn(),
   onEmbeddedLLMState: mocks.onState,
   onEmbeddedLLMInstallProgress: mocks.onProgress,
+  onEmbeddedLLMNotice: vi.fn(() => () => {}),
 }))
 
 vi.mock('@/api/embeddedTuning', () => ({
   getEmbeddedLLMTuning: mocks.getEmbeddedLLMTuning,
+  probeEmbeddedLLMDevices: vi.fn(() => Promise.reject(new Error('probe forbidden'))),
 }))
 
 import {
@@ -86,6 +88,8 @@ const EMPTY_PLAN: EmbeddedLLMPlan = {
   mmproj_offload: false,
   parallel: 0,
   cache_ram_mib: -1,
+  devices: [],
+  split_mode: '',
   gpu_family: '',
   device_budget_mib: 0,
   host_budget_mib: 0,

@@ -31,10 +31,12 @@ import { isEmbeddedLLMStatusExtras, type EmbeddedLLMStatusExtras } from './embed
 import { logger } from '@/lib/logger'
 import {
   isEmbeddedLLMInstallProgressData,
+  isEmbeddedLLMNoticeData,
   isEmbeddedLLMStateData,
 } from '@/types/events'
 import type {
   EmbeddedLLMInstallProgressData,
+  EmbeddedLLMNoticeData,
   EmbeddedLLMStateData,
 } from '@/types/events'
 
@@ -380,6 +382,19 @@ export function onEmbeddedLLMInstallProgress(
   return onGlobalEvent('embedded_llm:install_progress', (data) => {
     if (!data || !isEmbeddedLLMInstallProgressData(data)) {
       reportDroppedEvent('embedded_llm:install_progress', data)
+      return
+    }
+    cb(data)
+  })
+}
+
+/** Subscribe to `embedded_llm:notice` — one non-terminal supervisor finding (a
+ *  launch warning, not a state transition; the current producer is the
+ *  load-time free-memory pre-flight). Returns an unsubscribe function. */
+export function onEmbeddedLLMNotice(cb: (data: EmbeddedLLMNoticeData) => void): () => void {
+  return onGlobalEvent('embedded_llm:notice', (data) => {
+    if (!data || !isEmbeddedLLMNoticeData(data)) {
+      reportDroppedEvent('embedded_llm:notice', data)
       return
     }
     cb(data)

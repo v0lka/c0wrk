@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 
@@ -20,9 +21,11 @@ import (
 // specs/decisions/067-memory-aware-embedded-llm-provisioning.md.
 
 // The `reset` vocabulary: the embedded_llm.tuning YAML key of every
-// UI-exposed knob. The two YAML-only checkpoint-policy knobs
-// (`ctx_checkpoints`, `cache_idle_slots`) are deliberately absent — no DTO
-// field, editable only through config.yaml.
+// UI-exposed knob; `context` and `offload` are included even though they are
+// composite — one uniform clear mechanism for all fourteen knobs beats two.
+// The two YAML-only checkpoint-policy knobs (`ctx_checkpoints`,
+// `cache_idle_slots`) are deliberately absent — no DTO field, no request
+// spelling, editable only through config.yaml.
 const (
 	embeddedTuningKnobContext        = "context"
 	embeddedTuningKnobKVCacheType    = "kv_cache_type"
@@ -36,6 +39,8 @@ const (
 	embeddedTuningKnobParallel       = "parallel"
 	embeddedTuningKnobCacheRAMMiB    = "cache_ram_mib"
 	embeddedTuningKnobHostReserveGiB = "host_reserve_gib"
+	embeddedTuningKnobDevices        = "devices"
+	embeddedTuningKnobSplitMode      = "split_mode"
 )
 
 // embeddedTuningKnobs is every legal `reset` key in config.TuningConfig's
@@ -53,6 +58,8 @@ var embeddedTuningKnobs = []string{
 	embeddedTuningKnobParallel,
 	embeddedTuningKnobCacheRAMMiB,
 	embeddedTuningKnobHostReserveGiB,
+	embeddedTuningKnobDevices,
+	embeddedTuningKnobSplitMode,
 }
 
 // applyEmbeddedTuningRequest folds a partial patch onto the stored section and
@@ -89,6 +96,8 @@ func applyEmbeddedTuningRequest(stored config.TuningConfig, req EmbeddedLLMTunin
 		embeddedTuningKnobParallel:       req.Parallel != nil,
 		embeddedTuningKnobCacheRAMMiB:    req.CacheRAMMiB != nil,
 		embeddedTuningKnobHostReserveGiB: req.HostReserveGiB != nil,
+		embeddedTuningKnobDevices:        req.Devices != nil,
+		embeddedTuningKnobSplitMode:      req.SplitMode != nil,
 	}
 	contradictions := make([]string, 0, len(reset))
 	for key := range reset {
@@ -130,6 +139,10 @@ func applyEmbeddedTuningRequest(stored config.TuningConfig, req EmbeddedLLMTunin
 			next.CacheRAMMiB = nil
 		case embeddedTuningKnobHostReserveGiB:
 			next.HostReserveGiB = nil
+		case embeddedTuningKnobDevices:
+			next.Devices = nil
+		case embeddedTuningKnobSplitMode:
+			next.SplitMode = nil
 		}
 	}
 
@@ -174,6 +187,22 @@ func applyEmbeddedTuningRequest(stored config.TuningConfig, req EmbeddedLLMTunin
 	}
 	if req.HostReserveGiB != nil {
 		next.HostReserveGiB = copyFloat64Ptr(req.HostReserveGiB)
+	}
+	if req.Devices != nil {
+		// A present devices field REPLACES the list wholesale; an empty array
+		// is a clear (list knobs have no pointer tri-state), normalized to nil
+		// so a cleared list and an unset one are one stored value.
+		if len(req.Devices) == 0 {
+			next.Devices = nil
+		} else {
+			next.Devices = make([]string, len(req.Devices))
+			for i, name := range req.Devices {
+				next.Devices[i] = strings.TrimSpace(name)
+			}
+		}
+	}
+	if req.SplitMode != nil {
+		next.SplitMode = copyStringPtr(req.SplitMode)
 	}
 	return next, nil
 }
@@ -261,6 +290,17 @@ func (f *FrontendAPI) GetEmbeddedLLMTuning() (EmbeddedLLMTuningDTO, error) {
 // it, Unload/Load applies it now. Tuning is an operator SETTING, not install
 // state. See specs/domains/embedded-llm.md.
 func (f *FrontendAPI) SetEmbeddedLLMTuning(req EmbeddedLLMTuningRequest) error {
+	// The engine gate below resolves against THIS machine; the platform
+	// parameter of setEmbeddedLLMTuningOn is the seam that pins the
+	// resolution outcomes on any test machine.
+	return f.setEmbeddedLLMTuningOn(runtime.GOOS+"-"+runtime.GOARCH, req)
+}
+
+// setEmbeddedLLMTuningOn is SetEmbeddedLLMTuning against an explicit platform
+// ("goos-goarch"), the seam the engine-gate tests use to exercise the
+// auto→mtplx outcomes on any machine; production passes only the running
+// platform, so behavior is identical.
+func (f *FrontendAPI) setEmbeddedLLMTuningOn(platform string, req EmbeddedLLMTuningRequest) error {
 	server, _, err := f.embeddedBuild()
 	if err != nil {
 		// The subsystem being unavailable is not a reason to lose the tuning:
@@ -296,17 +336,16 @@ func (f *FrontendAPI) SetEmbeddedLLMTuning(req EmbeddedLLMTuningRequest) error {
 		f.configMu.Unlock()
 		return fmt.Errorf("invalid embedded LLM tuning: %w", terr)
 	}
-	// The OTHER half of the load-time check, against the PERSISTED engine: an
-	// explicit mtplx engine cannot carry llama-only tuning (the load validator
-	// refuses the pair), and the message is its verbatim so both surfaces speak
-	// with one voice.
-	if embeddedllm.NormalizeEngine(embeddedllm.Engine(f.config.EmbeddedLLM.Engine)) == embeddedllm.EngineMTPLX {
+	// The OTHER half of the load-time check: an mtplx engine — an explicit
+	// mtplx spelling, or an auto that `platform` resolves to mtplx — cannot
+	// carry llama-only tuning. The cross-check runs against the PERSISTED
+	// engine, so the RPC cannot write a config the next load rejects;
+	// config.EmbeddedLLMMTPLXTuningRefusal is the load validator's own
+	// funnel, so the two surfaces speak with one voice.
+	if config.EmbeddedEngineIsMTPLX(f.config.EmbeddedLLM.Engine, platform) {
 		if forbidden := embeddedllm.ForbiddenLlamaTuning(tuning); len(forbidden) > 0 {
 			f.configMu.Unlock()
-			return fmt.Errorf(
-				"embedded_llm.tuning.%s does not apply to embedded_llm.engine: mtplx (no offload, no fit pass, no KV or packing choice); remove the key or set engine: llama",
-				forbidden[0],
-			)
+			return config.EmbeddedLLMMTPLXTuningRefusal(forbidden[0], f.config.EmbeddedLLM.Engine)
 		}
 	}
 	if reflect.DeepEqual(next, stored) {
@@ -334,13 +373,21 @@ func (f *FrontendAPI) SetEmbeddedLLMTuning(req EmbeddedLLMTuningRequest) error {
 	return nil
 }
 
+// ErrEmbeddedLLMDeviceProbeWrongEngine — the on-demand device probe asks the
+// provisioned llama-family binary, and the mtplx engine provisions none: its
+// refusal is BY ENGINE, never a missing-file accident. errors.Is-able so the
+// auto re-probe path and tests can match the shape.
+var ErrEmbeddedLLMDeviceProbeWrongEngine = errors.New("the embedded LLM device probe is llama-only")
+
 // ProbeEmbeddedLLMDevices measures THIS machine's accelerator memory on
 // demand: EmbeddedLLMStatus's topology is a recorded, staleable snapshot and
 // core's re-measure is fail-soft and invisible, so an operator diagnosing a
 // plan asks here — the one embedded-LLM read allowed to be slow and to fail,
 // turning core's silent probe into an actionable error. Nothing persisted or
 // re-planned; requires an installed runtime; refused while an embedded
-// operation is in flight. See specs/domains/embedded-llm.md.
+// operation is in flight, and under the mtplx engine by engine itself
+// (ErrEmbeddedLLMDeviceProbeWrongEngine — the live panel hides for it).
+// See specs/domains/embedded-llm.md.
 func (f *FrontendAPI) ProbeEmbeddedLLMDevices() (EmbeddedLLMDevicesDTO, error) {
 	server, _, err := f.embeddedBuild()
 	if err != nil {
@@ -354,6 +401,14 @@ func (f *FrontendAPI) ProbeEmbeddedLLMDevices() (EmbeddedLLMDevicesDTO, error) {
 	if !ok {
 		return EmbeddedLLMDevicesDTO{}, errors.New(
 			"the embedded LLM is not installed — the device probe asks the provisioned runtime, so install it first")
+	}
+	// An mtplx install records metal as its backend but lives in the staged
+	// mtplx tree: RuntimeDir would resolve the llama-family path that does not
+	// exist for it, and the refusal would read as a missing-file accident.
+	// Refuse by ENGINE instead — typed, naming the engine.
+	if manifest.Engine == embeddedllm.EngineMTPLX {
+		return EmbeddedLLMDevicesDTO{}, fmt.Errorf("%w: the mtplx engine has no probeable runtime binary — the live panel is hidden for this engine",
+			ErrEmbeddedLLMDeviceProbeWrongEngine)
 	}
 
 	runtimeDir, err := server.Layout.RuntimeDir(manifest.Backend)

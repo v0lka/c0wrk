@@ -439,6 +439,12 @@ func TestEmbeddedConfigSinkPreservesOperatorTuning(t *testing.T) {
 	cfg := minimalValidConfig()
 	want := operatorTuning()
 	cfg.EmbeddedLLM.Tuning = want
+	// The plan carries kv_cache_type — llama-only — and the engine cross-check
+	// refuses it under an engine the platform resolves to mtplx (auto on
+	// darwin/arm64), so the fixture pins the operator's explicit llama choice
+	// (the preservation contract itself is engine-independent; the auto
+	// resolution outcome is pinned in embedded_llm_engine_test.go).
+	cfg.EmbeddedLLM.Engine = "llama"
 
 	state := testInstallState()
 	if err := (embeddedConfigSink{cfg: cfg}).ApplyInstalled(context.Background(), state); err != nil {

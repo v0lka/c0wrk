@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -60,6 +61,8 @@ func fullySpecifiedTuning() TuningConfig {
 		CtxCheckpoints: embeddedIntPtr(0),
 		CacheIdleSlots: embeddedBoolPtr(false),
 		HostReserveGiB: embeddedFloatPtr(6.5),
+		Devices:        []string{"CUDA0"},
+		SplitMode:      embeddedStrPtr(string(embeddedllm.SplitModeRow)),
 	}
 }
 
@@ -90,6 +93,7 @@ func TestEmbeddedLLMTuningYAMLRoundTrip(t *testing.T) {
 		"layers:", "fit:", "fit_target_mib:", "fit_min_context:", "kv_offload:",
 		"mmproj_offload:", "packing:", "parallel:", "cache_ram_mib:",
 		"ctx_checkpoints:", "cache_idle_slots:", "host_reserve_gib:",
+		"devices:", "split_mode:",
 	} {
 		if !strings.Contains(string(data), key) {
 			t.Errorf("marshalled tuning section is missing key %q:\n%s", key, data)
@@ -209,8 +213,15 @@ func TestEmbeddedLLMTuningZeroValueIsAllUnset(t *testing.T) {
 	for i := range v.NumField() {
 		field := v.Field(i)
 		name := v.Type().Field(i).Name
-		switch field.Kind() { //nolint:exhaustive // only the three shapes TuningConfig uses
+		switch field.Kind() { //nolint:exhaustive // only the four shapes TuningConfig uses
 		case reflect.Pointer:
+			if !field.IsNil() {
+				t.Errorf("the zero TuningConfig.%s is not nil", name)
+			}
+		case reflect.Slice:
+			// devices: the one list-valued knob. nil (not merely empty) is the
+			// unset value, the same "never authored" statement a nil pointer
+			// makes.
 			if !field.IsNil() {
 				t.Errorf("the zero TuningConfig.%s is not nil", name)
 			}
@@ -351,6 +362,41 @@ func TestEmbeddedLLMTuningValidateRejected(t *testing.T) {
 		"negative parallel": {
 			mutate:  func(c *TuningConfig) { c.Parallel = embeddedIntPtr(-2) },
 			wantMsg: "embedded_llm.tuning.parallel -2 is not valid",
+		},
+
+		// The device pin and the split mode. The token rule is core's own
+		// (the same check argv gets); the machine truth of a name is NOT
+		// checked here — that is the planner's inventory verification at plan
+		// time, which refuses a stale name with the typed UnknownDeviceError.
+		"split_mode outside the closed set": {
+			mutate:  func(c *TuningConfig) { c.SplitMode = embeddedStrPtr("diagonal") },
+			wantMsg: `embedded_llm.tuning.split_mode "diagonal" is not valid`,
+		},
+		"device name with a separator": {
+			mutate:  func(c *TuningConfig) { c.Devices = []string{"CUDA 0"} },
+			wantMsg: "contains a separator",
+		},
+		"device name that reads as a flag": {
+			mutate:  func(c *TuningConfig) { c.Devices = []string{"-smrow"} },
+			wantMsg: "reads as a flag",
+		},
+		"empty device entry": {
+			mutate:  func(c *TuningConfig) { c.Devices = []string{"CUDA0", " "} },
+			wantMsg: "carries an empty entry",
+		},
+		"duplicated device entry": {
+			mutate:  func(c *TuningConfig) { c.Devices = []string{"CUDA0", "CUDA0"} },
+			wantMsg: `more than once`,
+		},
+		"devices above the ceiling": {
+			mutate: func(c *TuningConfig) {
+				c.Devices = make([]string, embeddedllm.MaxTuningDevices+1)
+				for i := range c.Devices {
+					c.Devices[i] = fmt.Sprintf("CUDA%d", i)
+				}
+			},
+			wantMsg: fmt.Sprintf("lists %d entries; must be at most %d",
+				embeddedllm.MaxTuningDevices+1, embeddedllm.MaxTuningDevices),
 		},
 
 		// The CEILINGS. Core owns the figures (embeddedllm.MaxTuning*) and they
@@ -499,6 +545,11 @@ func TestEmbeddedLLMTuningValidateAccepted(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			cfg := minimalValidConfig()
+			// The llama spelling keeps these llama-only tunings legal beside
+			// every CI platform's resolution: auto on darwin/arm64 is mtplx,
+			// and the mtplx cross-check would refuse them before validate()
+			// reaches the knob a row is about.
+			cfg.EmbeddedLLM.Engine = "llama"
 			mutate(&cfg.EmbeddedLLM.Tuning)
 			if err := validate(cfg); err != nil {
 				t.Fatalf("validate() rejected a legal embedded_llm.tuning section: %v", err)
@@ -544,6 +595,10 @@ func TestEmbeddedLLMTuningValidatedWhileInert(t *testing.T) {
 	for name, mutate := range inert {
 		t.Run(name, func(t *testing.T) {
 			cfg := minimalValidConfig()
+			// Engine llama so the refusal a row proves is the inert-knob
+			// validation, not the mtplx engine cross-check that would also
+			// refuse llama-only keys on a darwin/arm64 auto resolution.
+			cfg.EmbeddedLLM.Engine = "llama"
 			mutate(&cfg.EmbeddedLLM)
 			if err := validate(cfg); err == nil {
 				t.Fatalf("validate() accepted an inert-but-invalid tuning knob: %+v",
@@ -605,6 +660,12 @@ func TestEmbeddedLLMTuningToTuning(t *testing.T) {
 	if got.HostReserveGiB == nil || *got.HostReserveGiB != 6.5 {
 		t.Errorf("host_reserve_gib = %v, want 6.5", got.HostReserveGiB)
 	}
+	if !slices.Equal(got.Devices, []string{"CUDA0"}) {
+		t.Errorf("devices = %v, want [CUDA0]", got.Devices)
+	}
+	if got.SplitMode != embeddedllm.SplitModeRow {
+		t.Errorf("split_mode = %q, want %q", got.SplitMode, embeddedllm.SplitModeRow)
+	}
 
 	// The unset section translates to the planner's zero value, which plan.go
 	// documents as the all-Auto plan.
@@ -615,11 +676,9 @@ func TestEmbeddedLLMTuningToTuning(t *testing.T) {
 	if !reflect.DeepEqual(fromZero, embeddedllm.Tuning{}) {
 		t.Errorf("the unset section translated to %+v, want the planner's zero value", fromZero)
 	}
-
-	// The two knobs this surface deliberately does not expose stay at their own
-	// zero sentinels, so an operator cannot reach them through config.yaml.
+	// devices/split_mode included: an unauthored section pins nothing.
 	if len(fromZero.Devices) != 0 || fromZero.SplitMode != embeddedllm.SplitModeAuto {
-		t.Errorf("devices/split_mode = %v/%q, want them unreachable from config",
+		t.Errorf("zero devices/split_mode = %v/%q, want the planner's zero sentinels",
 			fromZero.Devices, fromZero.SplitMode)
 	}
 }
@@ -763,6 +822,9 @@ func TestEmbeddedLLMTuningLoadFromYAML(t *testing.T) {
 	// hand-appended block that could collide with the section ApplyDefaults
 	// already seeds.
 	good := minimalValidConfig()
+	// The llama spelling keeps the llama-only section loadable beside every
+	// CI platform's resolution (auto on darwin/arm64 is mtplx).
+	good.EmbeddedLLM.Engine = "llama"
 	good.EmbeddedLLM.Tuning = TuningConfig{
 		Context: EmbeddedLLMContextConfig{
 			Mode:   embeddedStrPtr(EmbeddedLLMContextExact),
@@ -903,6 +965,11 @@ func TestEmbeddedLLMTuningCeilingsAcceptTheirBoundary(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := minimalValidConfig()
+			// Engine llama so a ceiling on a llama-only knob (fit_target_mib,
+			// cache_ram_mib, parallel, offload.layers, host_reserve_gib) is
+			// tested against the knob's own bound rather than refused by the
+			// mtplx engine cross-check on a darwin/arm64 auto resolution.
+			cfg.EmbeddedLLM.Engine = "llama"
 			tc.mutate(&cfg.EmbeddedLLM.Tuning)
 
 			if err := validate(cfg); err != nil {
@@ -930,6 +997,10 @@ func TestEmbeddedLLMTuningHostReserveRejectsEveryNonFiniteShape(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			cfg := minimalValidConfig()
+			// Engine llama so the refusal asserts the finite-value rule itself
+			// rather than the mtplx cross-check that would also refuse
+			// host_reserve_gib on a darwin/arm64 auto resolution.
+			cfg.EmbeddedLLM.Engine = "llama"
 			cfg.EmbeddedLLM.Tuning.HostReserveGiB = embeddedFloatPtr(value)
 
 			err := validate(cfg)
@@ -941,4 +1012,71 @@ func TestEmbeddedLLMTuningHostReserveRejectsEveryNonFiniteShape(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestEmbeddedLLMTuningDevicesAndSplitMode pins the operator device pin end to
+// end at the config layer: the legal shapes translate onto the planner's own
+// vocabulary, the translation cannot alias the configured list, and the mtplx
+// engine — which has no multi-device split — refuses both keys by name.
+func TestEmbeddedLLMTuningDevicesAndSplitMode(t *testing.T) {
+	t.Run("the legal shapes translate verbatim", func(t *testing.T) {
+		got, err := TuningConfig{
+			Devices:   []string{" CUDA0 ", "CUDA1"},
+			SplitMode: embeddedStrPtr("Layer"),
+		}.ToTuning()
+		if err != nil {
+			t.Fatalf("ToTuning(): %v", err)
+		}
+		if !slices.Equal(got.Devices, []string{"CUDA0", "CUDA1"}) {
+			t.Errorf("devices = %v, want the trimmed [CUDA0 CUDA1]", got.Devices)
+		}
+		if got.SplitMode != embeddedllm.SplitModeLayer {
+			t.Errorf("split_mode = %q, want the canonical %q", got.SplitMode, embeddedllm.SplitModeLayer)
+		}
+
+		// An explicit auto collapses onto the planner's sentinel — the same
+		// unset-vs-auto distinction every other closed-set knob keeps.
+		auto, err := TuningConfig{SplitMode: embeddedStrPtr(EmbeddedLLMTuningAuto)}.ToTuning()
+		if err != nil {
+			t.Fatalf("ToTuning(auto): %v", err)
+		}
+		if auto.SplitMode != embeddedllm.SplitModeAuto || len(auto.Devices) != 0 {
+			t.Errorf("an explicit auto split_mode must collapse onto the planner's own sentinel, got %q", auto.SplitMode)
+		}
+	})
+
+	t.Run("the translated list never aliases the config", func(t *testing.T) {
+		src := TuningConfig{Devices: []string{"CUDA0", "CUDA1"}}
+		got, err := src.ToTuning()
+		if err != nil {
+			t.Fatalf("ToTuning(): %v", err)
+		}
+		got.Devices[0] = "MUTATED"
+		if src.Devices[0] != "CUDA0" {
+			t.Errorf("mutating the translated devices reached back into the config: %v", src.Devices)
+		}
+	})
+
+	t.Run("engine mtplx refuses the device pin and the split by name", func(t *testing.T) {
+		for name, mutate := range map[string]func(*TuningConfig){
+			"devices":    func(c *TuningConfig) { c.Devices = []string{"CUDA0"} },
+			"split_mode": func(c *TuningConfig) { c.SplitMode = embeddedStrPtr("layer") },
+		} {
+			t.Run(name, func(t *testing.T) {
+				cfg := minimalValidConfig()
+				cfg.EmbeddedLLM.Engine = "mtplx"
+				mutate(&cfg.EmbeddedLLM.Tuning)
+				err := validate(cfg)
+				if err == nil {
+					t.Fatal("validate() accepted llama-only device tuning beside engine: mtplx")
+				}
+				if !strings.Contains(err.Error(), "embedded_llm.tuning."+name) {
+					t.Errorf("error %q does not name the offending key", err)
+				}
+				if !strings.Contains(err.Error(), "mtplx") {
+					t.Errorf("error %q does not name the contradicting engine", err)
+				}
+			})
+		}
+	})
 }

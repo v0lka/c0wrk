@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"sort"
 	"strings"
@@ -807,8 +808,11 @@ func EmbeddedLLMMaxContextTokens() (int, error) { return embeddedLLMMaxContext()
 // only translation). Pointers make an explicit value — "auto" or 0 included
 // — distinguishable from "never written", which is load-bearing; the zero
 // value IS the documented all-Auto default (nothing seeded), and
-// Install/Remove carry the section verbatim. Devices/SplitMode are
-// deliberately unexposed. See specs/domains/embedded-llm.md, ADR-067.
+// Install/Remove carry the section verbatim. Devices/SplitMode pin the
+// offload: a name is checked as a separator-free token HERE and verified
+// against the machine's measured inventory by the planner at plan time. The
+// surface is typed-only and cannot inject argv (pointers or closed-set
+// spellings only). See specs/domains/embedded-llm.md, ADR-067.
 type TuningConfig struct {
 	// Context overrides `-c`; absent (or mode auto) lets the planner size it
 	// (fit floor under fit, otherwise the RAM ladder).
@@ -865,6 +869,32 @@ type TuningConfig struct {
 	// topology derivation. FINITE within 0..MaxTuningHostReserveGiB — the
 	// planner's float→int conversion must stay representable (see ToTuning).
 	HostReserveGiB *float64 `yaml:"host_reserve_gib,omitempty"`
+	// Devices pins `-dev`, the offload target list, to the accelerators the
+	// operator names — the exact names `llama-server --list-devices` prints
+	// ("CUDA0", "Vulkan0", "MTL0", ...). Naming a device pins the offload,
+	// which forces `-fit off`: the planner then sizes the context and the
+	// layer count itself, and it prices the plan against ONLY the named
+	// devices' measured pool, so pinning the larger of two cards gives a
+	// truthful, single-card budget rather than a sum the launch cannot draw.
+	// Each entry must be one separator-free, dash-free token (the same rule
+	// LaunchSpec.Validate applies to argv) and the list at most
+	// embeddedllm.MaxTuningDevices long, without duplicates. The planner
+	// verifies every name against the runtime's own inventory before it plans:
+	// an unknown or stale name refuses the load with the typed
+	// UnknownDeviceError naming the device, the measured inventory and the
+	// probe stamp — fail-closed, because a launch built on a device this
+	// machine does not report budgets one pool and allocates in another.
+	Devices []string `yaml:"devices,omitempty"`
+	// SplitMode pins `-sm`, how a multi-device split divides the model:
+	// "none" (one device only), "layer" (the runtime default), "row" or
+	// "tensor". Absent or "auto" omits the flag and leaves the split to the
+	// runtime. Like Devices it pins the offload — any explicit spelling forces
+	// `-fit off` — but it does NOT narrow the device pool: every card still
+	// participates in the split, so the budgets stay the full measured pool.
+	// The spelling is validated even while the key is inert (the same rule
+	// every knob here follows); it is refused outright under the mtplx engine,
+	// which has no multi-device split.
+	SplitMode *string `yaml:"split_mode,omitempty"`
 }
 
 // EmbeddedLLMContextConfig is the `tuning.context` knob: a mode plus, for
@@ -1048,6 +1078,55 @@ func (t TuningConfig) ToTuning() (embeddedllm.Tuning, error) {
 	}
 	if packingExplicit {
 		out.Packing = embeddedllm.Packing(packing)
+	}
+
+	// devices: the `-dev` offload target list. The token rule is core's own
+	// (ValidateDeviceName — the same check argv gets), the ceiling is the
+	// shared absurdity guard, duplicates are a caller bug the planner would
+	// double-count, and every entry is trimmed once so " CUDA0 " and "CUDA0"
+	// are one spelling. Whether a name names a device THIS machine has is a
+	// plan-time question the planner answers against the runtime's own
+	// inventory — unknown names refuse there, fail-closed.
+	if len(t.Devices) > 0 {
+		if len(t.Devices) > embeddedllm.MaxTuningDevices {
+			return embeddedllm.Tuning{}, fmt.Errorf(
+				"embedded_llm.tuning.devices lists %d entries; must be at most %d — one per accelerator this machine could plausibly carry",
+				len(t.Devices), embeddedllm.MaxTuningDevices)
+		}
+		names := make([]string, 0, len(t.Devices))
+		seen := make(map[string]struct{}, len(t.Devices))
+		for _, raw := range t.Devices {
+			name := strings.TrimSpace(raw)
+			if name == "" {
+				return embeddedllm.Tuning{}, errors.New(
+					"embedded_llm.tuning.devices carries an empty entry; each entry must be one device name exactly as `llama-server --list-devices` prints it (CUDA0, Vulkan0, MTL0, ...), or remove the key to let the runtime use every device")
+			}
+			if err := embeddedllm.ValidateDeviceName(name); err != nil {
+				return embeddedllm.Tuning{}, fmt.Errorf(
+					"embedded_llm.tuning.devices: %w — each entry must be a single device token, exactly as --list-devices prints it", err)
+			}
+			if _, dup := seen[name]; dup {
+				return embeddedllm.Tuning{}, fmt.Errorf(
+					"embedded_llm.tuning.devices names %q more than once; each device must be listed exactly once, or remove the key to let the runtime use every device",
+					name)
+			}
+			seen[name] = struct{}{}
+			names = append(names, name)
+		}
+		out.Devices = names
+	}
+
+	// split_mode: core owns the closed set (SplitModes), so a mode the runtime
+	// retires on a pin bump disappears from what config.yaml may say with no
+	// edit here. An explicit spelling pins the split — which forces fit off at
+	// plan time — but does not narrow the device pool.
+	sm, smExplicit, err := tuningChoice(
+		"embedded_llm.tuning.split_mode", t.SplitMode, embeddedllm.SplitModes())
+	if err != nil {
+		return embeddedllm.Tuning{}, err
+	}
+	if smExplicit {
+		out.SplitMode = embeddedllm.SplitMode(sm)
 	}
 
 	// Every remaining bound is checked even while inert — an out-of-range
@@ -1276,12 +1355,53 @@ func (c *LLMConfig) copyModelOverridesMap() {
 	c.Models = clone
 }
 
+// EmbeddedEngineIsMTPLX reports whether the effective embedded-LLM engine on
+// platform is mtplx: either the spelling itself — the spelling owns the
+// cross-check on every platform, even where the engine cannot run, because a
+// contradiction in the file is refused wherever the file loads — or an auto
+// spelling the platform resolves to mtplx (darwin/arm64, via
+// embeddedllm.ResolveEngine).
+func EmbeddedEngineIsMTPLX(engine, platform string) bool {
+	if embeddedllm.NormalizeEngine(embeddedllm.Engine(engine)) == embeddedllm.EngineMTPLX {
+		return true
+	}
+	resolved, err := embeddedllm.ResolveEngine(embeddedllm.Engine(engine), platform)
+	return err == nil && resolved == embeddedllm.EngineMTPLX
+}
+
+// EmbeddedLLMMTPLXTuningRefusal renders the cross-engine refusal for a tuning
+// key with no meaning under mtplx (embeddedllm.ForbiddenLlamaTuning's list).
+// One funnel behind the load validator and the tuning-write RPC, so both
+// surfaces refuse word-identically; an engine that had to be RESOLVED (auto
+// on darwin/arm64) is named as such.
+func EmbeddedLLMMTPLXTuningRefusal(forbiddenKey, engine string) error {
+	if embeddedllm.NormalizeEngine(embeddedllm.Engine(engine)) == embeddedllm.EngineMTPLX {
+		return fmt.Errorf(
+			"embedded_llm.tuning.%s does not apply to embedded_llm.engine: mtplx (no offload, no fit pass, no KV or packing choice); remove the key or set engine: llama",
+			forbiddenKey,
+		)
+	}
+	return fmt.Errorf(
+		"embedded_llm.tuning.%s does not apply to embedded_llm.engine: mtplx, which embedded_llm.engine: auto resolves to on this platform (no offload, no fit pass, no KV or packing choice); remove the key or set engine: llama",
+		forbiddenKey,
+	)
+}
+
 // validateEmbeddedLLM checks the embedded_llm section: mostly app-written
 // state, so an invalid value is a hand edit or a bug and must fail fast —
-// the operator-authored tuning sub-section held to the same standard.
+// the operator-authored tuning sub-section held to the same standard (a plan
+// the planner cannot honour must be refused at load, not at launch).
 func validateEmbeddedLLM(c *EmbeddedLLMConfig) error {
-	// Closed vocabulary; an explicit mtplx cannot carry llama-only tuning —
-	// both halves named together. Auto is not cross-checked (install-owned).
+	return validateEmbeddedLLMOn(c, runtime.GOOS+"-"+runtime.GOARCH)
+}
+
+// validateEmbeddedLLMOn is validateEmbeddedLLM against an explicit platform
+// ("goos-goarch") — the seam the engine tests use to exercise the auto→mtplx
+// outcomes anywhere; production passes only the running platform. Whether an
+// mtplx engine — explicit, or an auto the platform resolves to mtplx — may
+// carry llama-only tuning is the cross-check below, which resolves the
+// setting against `platform` instead of trusting the spelling.
+func validateEmbeddedLLMOn(c *EmbeddedLLMConfig, platform string) error {
 	switch embeddedllm.NormalizeEngine(embeddedllm.Engine(c.Engine)) {
 	case embeddedllm.EngineAuto, embeddedllm.EngineLlama, embeddedllm.EngineMTPLX:
 	default:
@@ -1290,16 +1410,13 @@ func validateEmbeddedLLM(c *EmbeddedLLMConfig) error {
 			c.Engine,
 		)
 	}
-	if embeddedllm.NormalizeEngine(embeddedllm.Engine(c.Engine)) == embeddedllm.EngineMTPLX {
+	if EmbeddedEngineIsMTPLX(c.Engine, platform) {
 		tuning, tuningErr := c.Tuning.ToTuning()
 		if tuningErr != nil {
 			return tuningErr
 		}
 		if forbidden := embeddedllm.ForbiddenLlamaTuning(tuning); len(forbidden) > 0 {
-			return fmt.Errorf(
-				"embedded_llm.tuning.%s does not apply to embedded_llm.engine: mtplx (no offload, no fit pass, no KV or packing choice); remove the key or set engine: llama",
-				forbidden[0],
-			)
+			return EmbeddedLLMMTPLXTuningRefusal(forbidden[0], c.Engine)
 		}
 	}
 
