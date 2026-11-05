@@ -10,7 +10,9 @@ directory-tree display mode.
 
 ## Key Files
 
-- `frontend/src/components/GitPanel/BranchList.tsx` — the shared list: local/remote kind split, name filter, empty state, flat and tree renderers; `variant: 'menu' | 'dialog'`
+- `frontend/src/components/GitPanel/BranchList.tsx` — the shared list: local/remote kind split, name filter, empty state; hands each section to `BranchSection` with the memoized by-name maps and built trees; `variant: 'menu' | 'dialog'`
+- `frontend/src/components/GitPanel/BranchListRows.tsx` — `BranchSection`: one section's header chrome + flat/tree row renderers (leaf rows through `LocalBranchRow`/`RemoteBranchRow`, dir rows through `CollapsibleDirRow`); the `BranchDraftSelect` row-handler contract
+- `frontend/src/components/GitPanel/CollapsibleDirRow.tsx` — the collapsible directory row shared with the Changes list's `TreeRow`: chevron + folder, click or Enter/Space toggle, `role="button"` + `tabIndex` reachability, `depth * 12px` indent; the label font is the consumer's (`text-xs` in the branch list for leaf parity, `text-sm` in the Changes list)
 - `frontend/src/components/GitPanel/BranchDropdown.tsx` — the menu surface: toolbar dropdown with a display-mode toggle + search input on one row; renders its own always-flat Worktrees section beside the list
 - `frontend/src/components/GitPanel/BranchPicker.tsx` — the dialog surface: filter row with the display-mode toggle; one component serves switch mode and draft pick mode
 - `frontend/src/components/GitPanel/LocalBranchRow.tsx` / `RemoteBranchRow.tsx` — the leaf rows (checkout/rename/merge/rebase/push/delete context-menu actions, draft selection, managed-session pins and focus gates)
@@ -46,10 +48,14 @@ to the flat default.
 
 Each surface hosts one toggle on its search/filter row, showing the mode it
 switches TO (`FolderTree` when flat, `List` when tree), titled
-`"Show branch tree"` / `"Show flat list"`:
+`"Show branch tree"` / `"Show flat list"` — and BOTH announce the current
+mode to assistive tech, so a screen-reader user never has to guess it:
 
-- the menu toggle is a registered `DropdownMenuItem` whose `onSelect` calls
-  `event.preventDefault()` — flipping the mode never dismisses the dropdown;
+- the menu toggle is a registered `DropdownMenuCheckboxItem` (`checked` =
+  the tree mode, so `aria-checked` carries the state; the wrapper's check
+  indicator is suppressed — the glyph already shows the mode) whose
+  `onSelect` calls `event.preventDefault()` — flipping the mode never
+  dismisses the dropdown;
 - the dialog toggle is a plain button with `aria-pressed` and
   `data-testid="branch-view-toggle"`.
 
@@ -60,11 +66,12 @@ choice survives open/close cycles and app restarts (localStorage).
 With tree on, each section renders `buildBranchTree` over the section's
 **visible** (post-filter) names:
 
-- `/`-separated branch segments become directory rows (chevron + folder icon,
-  `role="button"` + `tabIndex="0"` with an Enter/Space twin of the click
-  toggle — there is no owning `role="tree"`, so `treeitem` would be orphaned
-  ARIA; `aria-expanded`, `data-testid="branch-dir-<fullPath>"`); children
-  indent by `depth * 12px`.
+- `/`-separated branch segments become directory rows (the shared
+  `CollapsibleDirRow`: chevron + folder icon, `role="button"` +
+  `tabIndex="0"` with an Enter/Space twin of the click toggle — there is no
+  owning `role="tree"`, so `treeitem` would be orphaned ARIA;
+  `aria-expanded`, `data-testid="branch-dir-<fullPath>"`); children indent
+  by `depth * 12px`.
 - A remote-tracking ref's remote prefix (`origin`) emerges as the top-level
   directory of the Remote section.
 - A leaf's visible label is the last `/`-segment of its name

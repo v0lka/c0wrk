@@ -446,10 +446,11 @@ describe('BranchDropdown — tree/flat display-mode toggle', () => {
     makeBranch({ name: 'origin/feature/api', kind: 'remote' }),
   ]
 
-  /** The mode toggle — the only registered menu item, found by its title. */
+  /** The mode toggle — the only registered menu checkbox, found by its
+   *  title. */
   function modeToggle(): HTMLElement {
     const el = body().querySelector<HTMLElement>(
-      '[role="menuitem"][title="Show branch tree"], [role="menuitem"][title="Show flat list"]',
+      '[role="menuitemcheckbox"][title="Show branch tree"], [role="menuitemcheckbox"][title="Show flat list"]',
     )
     expect(el, 'display-mode toggle').toBeTruthy()
     return el!
@@ -478,8 +479,13 @@ describe('BranchDropdown — tree/flat display-mode toggle', () => {
     renderDropdown()
     await openDropdown()
 
-    // Default mode is flat, so the icon advertises the switch TO the tree.
-    expect(body().querySelector('[role="menuitem"][title="Show branch tree"]')).not.toBeNull()
+    // Default mode is flat, so the icon advertises the switch TO the tree;
+    // aria-checked announces the CURRENT mode (flat = unchecked).
+    const toggle = body().querySelector(
+      '[role="menuitemcheckbox"][title="Show branch tree"]',
+    )
+    expect(toggle).not.toBeNull()
+    expect(toggle!.getAttribute('aria-checked')).toBe('false')
     // The toggle renders even though the search input stays hidden (<5).
     expect(body().querySelector('input[placeholder="Search branches..."]')).toBeNull()
     // The flat list itself is untouched.
@@ -495,18 +501,27 @@ describe('BranchDropdown — tree/flat display-mode toggle', () => {
 
     // The onSelect preventDefault keeps the menu open…
     expect(isMenuOpen()).toBe(true)
-    // …the toggle now advertises the way back…
-    expect(body().querySelector('[role="menuitem"][title="Show flat list"]')).not.toBeNull()
-    expect(body().querySelector('[role="menuitem"][title="Show branch tree"]')).toBeNull()
+    // …the toggle now advertises the way back, with the state announced…
+    const treeToggle = body().querySelector(
+      '[role="menuitemcheckbox"][title="Show flat list"]',
+    )
+    expect(treeToggle).not.toBeNull()
+    expect(treeToggle!.getAttribute('aria-checked')).toBe('true')
+    expect(body().querySelector('[role="menuitemcheckbox"][title="Show branch tree"]')).toBeNull()
     // …and Local renders its `feature` directory instead of the flat list.
     expect(body().querySelector('[data-testid="branch-dir-feature"]')).not.toBeNull()
     expect(rowByName('feature/auth')).toBeTruthy()
 
     await clickToggle()
 
-    // Flipping back restores the flat view; the menu is STILL open.
+    // Flipping back restores the flat view; the menu is STILL open and the
+    // checkbox is unchecked again.
     expect(isMenuOpen()).toBe(true)
-    expect(body().querySelector('[role="menuitem"][title="Show branch tree"]')).not.toBeNull()
+    const flatToggle = body().querySelector(
+      '[role="menuitemcheckbox"][title="Show branch tree"]',
+    )
+    expect(flatToggle).not.toBeNull()
+    expect(flatToggle!.getAttribute('aria-checked')).toBe('false')
     expect(body().querySelector('[data-testid="branch-dir-feature"]')).toBeNull()
     expect(rowByName('feature/auth')).toBeTruthy()
   })
@@ -909,7 +924,7 @@ describe('BranchDropdown — collapsible sections', () => {
     const menu = body().querySelector('[data-slot="dropdown-menu-content"]') as HTMLElement
     await pressKey(menu, 'ArrowDown')
     expect(document.activeElement).toBe(
-      body().querySelector('[role="menuitem"][title="Show branch tree"]'),
+      body().querySelector('[role="menuitemcheckbox"][title="Show branch tree"]'),
     )
 
     await pressKey(document.activeElement!, 'ArrowDown')

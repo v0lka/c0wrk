@@ -5,7 +5,7 @@ import {
   DropdownMenu,
   DropdownMenuTrigger,
   DropdownMenuContent,
-  DropdownMenuItem,
+  DropdownMenuCheckboxItem,
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 import { MenuSearchInput } from "@/components/ui/MenuSearchInput";
@@ -30,8 +30,9 @@ import { WorktreesSection } from "./WorktreesSection";
  * Modeled on {@link SessionSelector}: a `DropdownMenu` anchored to the current
  * branch indicator. Clicking the field opens the list; the search-input line
  * carries a tree/flat display-mode toggle (modeled on
- * {@link SessionSelectorToolbar} — a registered `DropdownMenuItem` whose
- * `onSelect` preventDefaults, so flipping the mode never closes the menu; the
+ * {@link SessionSelectorToolbar} — a registered `DropdownMenuCheckboxItem`
+ * whose `onSelect` preventDefaults, so flipping the mode never closes the
+ * menu while `aria-checked` announces the current mode; the
  * icon shows the mode you switch TO and renders even below the 5-branch
  * threshold, where the search box itself is hidden). Branches are grouped into
  * **Local** (rows
@@ -176,9 +177,13 @@ export function BranchDropdown() {
               cannot steal focus from it now that the toggle makes the menu
               hold a registered item. */}
           <div className="flex items-center gap-1 px-2 py-1">
-            <DropdownMenuItem
+            <DropdownMenuCheckboxItem
+              checked={tree}
+              aria-label={tree ? "Show flat list" : "Show branch tree"}
               title={tree ? "Show flat list" : "Show branch tree"}
-              className="h-7 w-7 shrink-0 justify-center rounded p-0 text-muted-foreground hover:bg-muted/50 active:bg-muted/30"
+              // The wrapper's check indicator is suppressed: the icon-only
+              // button's glyph already shows the mode you switch TO.
+              className="h-7 w-7 shrink-0 justify-center rounded p-0 text-muted-foreground hover:bg-muted/50 active:bg-muted/30 [&>span]:hidden"
               onSelect={(event) => {
                 // Keep the menu open — only the display mode flips.
                 event.preventDefault();
@@ -186,7 +191,7 @@ export function BranchDropdown() {
               }}
             >
               {tree ? <List className="size-4" /> : <FolderTree className="size-4" />}
-            </DropdownMenuItem>
+            </DropdownMenuCheckboxItem>
             {showSearch && (
               <MenuSearchInput
                 value={search}
