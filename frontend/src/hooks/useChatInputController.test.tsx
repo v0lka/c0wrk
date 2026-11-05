@@ -698,6 +698,57 @@ describe('handleSend /-ref partitioning', () => {
     expect(sendMock).toHaveBeenCalledWith('use /mystery-ref now', ['mystery-ref'], [], [], 'sess-a')
   })
 
+  // Cross-boundary regression (ADR-106): the plain goal token absent from
+  // every catalog is the built-in /goal command, never a permissive skill
+  // passthrough. Threading ["goal"] here would have the backend's
+  // stripMentionRefs eat the leading command prefix before
+  // DetectAndStripGoalMode runs — the bare form must leave the client with
+  // empty mention arrays so the backend detector arms goal mode.
+  it('sends a bare /goal command with no mention threading (the built-in survives to the backend detector)', async () => {
+    render()
+    await type('/goal ship it')
+    await act(async () => {
+      await controllerRef.current!.handleSend()
+    })
+    expect(sendMock).toHaveBeenCalledOnce()
+    expect(sendMock).toHaveBeenCalledWith('/goal ship it', [], [], [], 'sess-a')
+  })
+
+  it('sends a bare /goal as the whole message with no threading', async () => {
+    render()
+    await type('/goal')
+    await act(async () => {
+      await controllerRef.current!.handleSend()
+    })
+    expect(sendMock).toHaveBeenCalledWith('/goal', [], [], [], 'sess-a')
+  })
+
+  it('threads only the real mention when it exposes a goal prefix behind it', async () => {
+    render()
+    apiMocks.skills.listSkills.mockResolvedValue([{ name: 'explore', description: 'Explore' }])
+    await type('/explore /goal ship it')
+    await act(async () => {
+      await controllerRef.current!.handleSend()
+    })
+    // /explore threads and is backend-stripped; the exposed /goal prefix
+    // then arms goal mode post-preprocessing (ADR-106 D1). goal must NOT
+    // ride the threading or the strip would eat the exposed prefix too.
+    expect(sendMock).toHaveBeenCalledWith('/explore /goal ship it', ['explore'], [], [], 'sess-a')
+  })
+
+  it('threads goal as a mention when a real skill named goal exists (shadowing preserved)', async () => {
+    render()
+    apiMocks.skills.listSkills.mockResolvedValue([{ name: 'goal', description: 'Goal skill' }])
+    await type('/goal ship it')
+    await act(async () => {
+      await controllerRef.current!.handleSend()
+    })
+    // ADR-106 D5: the catalog entry wins the plain spelling — the mention
+    // threads and the backend strip resolves it to the entry, disarming the
+    // command (recovery: rename, the toggle, or /goal:N).
+    expect(sendMock).toHaveBeenCalledWith('/goal ship it', ['goal'], [], [], 'sess-a')
+  })
+
   it('threads qualified refs verbatim without fetching the catalogs', async () => {
     render()
     await type('/agent: reviewer and /skill: study-paper plus /skill:glued')

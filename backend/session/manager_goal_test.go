@@ -3,8 +3,42 @@ package session
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"testing"
 )
+
+// TestResolveGoalBudgetOverride verifies the per-message budget merge: the
+// textual "/goal:N" cap outranks the toggle's goalBudget JSON; a bare
+// "/goal" keeps the toggle budget; neither source → nil (unlimited).
+func TestResolveGoalBudgetOverride(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cases := []struct {
+		name         string
+		toggleJSON   string
+		textualTurns int
+		wantTurns    int // -1 = nil override (unlimited)
+	}{
+		{"no source", "", 0, -1},
+		{"toggle only", `{"max_turns":3}`, 0, 3},
+		{"textual only", "", 5, 5},
+		{"textual outranks toggle", `{"max_turns":3}`, 5, 5},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolveGoalBudgetOverride(tc.toggleJSON, tc.textualTurns, log)
+			if tc.wantTurns == -1 {
+				if got != nil {
+					t.Fatalf("override = %+v, want nil (unlimited)", got)
+				}
+				return
+			}
+			if got == nil || got.MaxTurns != tc.wantTurns {
+				t.Fatalf("override = %+v, want MaxTurns %d", got, tc.wantTurns)
+			}
+		})
+	}
+}
 
 // TestCancelTask_ErrNoActiveTaskIsSentinel verifies the refactor that turned
 // the literal error into the exported ErrNoActiveTask sentinel, so callers

@@ -177,6 +177,57 @@ describe('useMessageSender optimistic metadata', () => {
     )
   })
 
+  it('stamps the goal badge for a /goal:N prefix send without the toggle', async () => {
+    useSessionStore.setState({ activeSessionId: 's1' })
+    await act(async () => {
+      await capturedSend!('/goal:5 ship it')
+    })
+    // The optimistic card carries the goal stamp though the TOGGLE flag went
+    // out false — the backend arms goal mode from the prefix (badge parity;
+    // lib/goalCommand mirrors the backend grammar).
+    expect(sentUser('s1').metadata).toEqual({ goal: true })
+    expect(spies.sendMessage).toHaveBeenCalledWith(
+      's1', '/goal:5 ship it', [], [], [], '', '', false, '', false, false,
+      userMessages('s1')[0]!.id,
+      null,
+    )
+    // Nothing to reset: the toggle was never armed.
+    expect(useInputModeStore.getState().goalEnabled).toBe(false)
+  })
+
+  it('suppresses the optimistic goal stamp when the leading plain /goal was partitioned as a mention', async () => {
+    useSessionStore.setState({ activeSessionId: 's1' })
+    await act(async () => {
+      // Shadowing configuration (ADR-106 D5): a real catalog entry named
+      // goal owns the plain spelling — the controller threads it and the
+      // backend mention strip consumes the token, so no goal arms and no
+      // stamp persists. The optimistic mirror must agree (no badge a reload
+      // would silently remove).
+      await capturedSend!('/goal ship it', ['goal'], [], [])
+    })
+    expect(sentUser('s1').metadata).toBeUndefined()
+  })
+
+  it('still stamps the badge for a budgeted prefix even when goal threads as a mention elsewhere', async () => {
+    useSessionStore.setState({ activeSessionId: 's1' })
+    await act(async () => {
+      // A "/goal:5" token is never a mention token (the colon breaks the
+      // plain-token boundary), so a qualified goal mention later in the text
+      // cannot strip it — the activation stays honest and the badge fires.
+      await capturedSend!('/goal:5 ship it /skill: goal', ['goal'], [], [])
+    })
+    expect(sentUser('s1').metadata).toEqual({ goal: true })
+  })
+
+  it('does not stamp goal metadata for an inert /goal:0 form', async () => {
+    useSessionStore.setState({ activeSessionId: 's1' })
+    await act(async () => {
+      await capturedSend!('/goal:0 ship it')
+    })
+    // An invalid budget form activates nothing — the card stays plain.
+    expect(sentUser('s1').metadata).toBeUndefined()
+  })
+
   it('mirrors the e2s flag into the send and resets the toggle (disarming goal)', async () => {
     useSessionStore.setState({ activeSessionId: 's1' })
     act(() => {

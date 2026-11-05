@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -327,8 +328,11 @@ func (f *FrontendAPI) PinSession(id string) error {
 // events). Parameter deltas:
 //   - activeSkills/activeAgents/activeMCPServers: /-mention threading (durable
 //     task-scoped MCP authorization: specs/domains/session-lifecycle.md).
-//   - goal/goalBudget: goal mode for the first message of a task (OR-ed with a
-//     /goal command prefix); goalBudget = JSON {"max_turns":N}, empty = defaults.
+//   - goal/goalBudget: goal mode for the first message of a task (OR-ed with
+//     a "/goal" or "/goal:N" command prefix; a textual ":N" turn budget
+//     outranks goalBudget); goalBudget = JSON {"max_turns":N}, empty =
+//     unlimited. The armed signal also stamps the persisted user row's
+//     metadata `goal: true` (the chat's Goal badge).
 //   - e2s: the E2S execution mode — experimental (fails closed when the gate is
 //     off) and mutually exclusive with goal.
 //   - reviewMode: code-review feedback the agent must address.
@@ -344,12 +348,22 @@ func (f *FrontendAPI) SendMessage(id, text string, activeSkills, activeAgents, a
 	if e2s && goal {
 		return errors.New("E2S mode and goal mode are mutually exclusive — disable one of the toggles before sending")
 	}
+	// Defense-in-depth for the bare "/goal" command (ADR-110): a mention
+	// list threading "goal" would have PreprocessMessageText strip the
+	// leading command token as a mention before DetectAndStripGoalMode can
+	// see it, silently downgrading the send to a plain task. The frontend
+	// partition never threads "goal" when it names no catalog entry; a
+	// direct API caller (or a stale frontend) that threads it anyway must
+	// not disarm the command. A "goal" naming a real catalog entry is the
+	// documented shadowing configuration and threads unchanged
+	// (ADR-110 Decision 5).
+	activeSkills, activeAgents, activeMCPServers = f.dropGhostGoalThreading(text, activeSkills, activeAgents, activeMCPServers)
 	// Detect the leading "/goal" prefix on the POST-preprocessing text:
 	// preprocessing strips leading /-mention refs, which can expose a "/goal"
 	// hidden behind them, and the manager arms goal mode from the processed
 	// text — a raw-text check alone misses that form.
 	processed := core.PreprocessMessageText(text, activeSkills, activeAgents, activeMCPServers, "")
-	_, isGoalPrefix := core.DetectAndStripGoalMode(processed)
+	_, isGoalPrefix, _ := core.DetectAndStripGoalMode(processed)
 	goalEnabled := goal || isGoalPrefix
 	// An armed /goal prefix must not slip past the exclusivity check: the
 	// manager would otherwise build a HandleOptions with BOTH Goal and E2S
@@ -413,10 +427,12 @@ func (f *FrontendAPI) SendMessage(id, text string, activeSkills, activeAgents, a
 	// Snapshot the pending-attachment metadata BEFORE the manager call (its
 	// fresh/resume path snapshots and clears the pending lists); the message
 	// itself is persisted AFTER the authoritative dispatch so is_nudge matches
-	// the actual decision and a rejected send never reaches the store.
+	// the actual decision and a rejected send never reaches the store. The
+	// goal metadata flag carries the ARMED signal (toggle OR prefix), so a
+	// prefix-activated send renders the chat's Goal badge like a toggled one.
 	var messageMetadata json.RawMessage
 	if mgr := f.app.Manager(); mgr != nil {
-		if md, mdErr := mgr.PendingMessageMetadata(id, goal); mdErr == nil {
+		if md, mdErr := mgr.PendingMessageMetadata(id, goalEnabled); mdErr == nil {
 			messageMetadata = md
 		} else {
 			f.log().Warn("failed to read pending message metadata", "session_id", id, "error", mdErr)
@@ -472,6 +488,80 @@ func (f *FrontendAPI) SendMessage(id, text string, activeSkills, activeAgents, a
 	}
 
 	return nil
+}
+
+// goalCommandToken is the built-in goal command's plain token — the one
+// slash-name that is a command, never a catalog name (ADR-110).
+const goalCommandToken = "goal"
+
+// dropGhostGoalThreading removes "goal" from the mention lists when the
+// message carries the bare goal command AND "goal" names no real catalog
+// entry — the backend mirror of the frontend partition rule (a plain goal
+// token absent from every catalog is the built-in command, never a
+// permissive skill passthrough). The drop is what keeps the command armed:
+// stripMentionRefs strips by the caller-provided lists, so a threaded
+// "goal" eats the leading "/goal" prefix before DetectAndStripGoalMode
+// runs. A "goal" that names a real agent, skill, or MCP server is the
+// documented shadowing configuration (ADR-110 Decision 5) and threads
+// unchanged. Fail-open: the rule only ever drops a threading that names
+// nothing real, so an unreadable catalog cannot break a legitimate mention.
+func (f *FrontendAPI) dropGhostGoalThreading(text string, activeSkills, activeAgents, activeMCPServers []string) (skills, agents, mcpServers []string) {
+	if !slices.Contains(activeSkills, goalCommandToken) &&
+		!slices.Contains(activeAgents, goalCommandToken) &&
+		!slices.Contains(activeMCPServers, goalCommandToken) {
+		return activeSkills, activeAgents, activeMCPServers
+	}
+	if f.goalNamesCatalogEntry() {
+		return activeSkills, activeAgents, activeMCPServers
+	}
+	// Drop only when the threading actually eats the command: preprocess
+	// without the "goal" entries and check whether the command prefix
+	// surfaces. A "/goal:N" prefix survives any list (the colon breaks the
+	// mention-token boundary), so budgeted sends never need this re-arm.
+	skills = dropString(activeSkills, goalCommandToken)
+	agents = dropString(activeAgents, goalCommandToken)
+	mcpServers = dropString(activeMCPServers, goalCommandToken)
+	if _, isGoal, _ := core.DetectAndStripGoalMode(core.PreprocessMessageText(text, skills, agents, mcpServers, "")); !isGoal {
+		return activeSkills, activeAgents, activeMCPServers
+	}
+	return skills, agents, mcpServers
+}
+
+// goalNamesCatalogEntry reports whether a real agent, skill, or configured
+// MCP server is named "goal" — the shadowing configuration in which a plain
+// "/goal" token legitimately resolves to the catalog entry instead of the
+// built-in command (ADR-110 Decision 5). All three catalogs are read
+// through their cache-served listings; an unavailable backend reads as
+// empty (fail-open for the command, never for the mention).
+func (f *FrontendAPI) goalNamesCatalogEntry() bool {
+	for _, s := range f.ListSkills() {
+		if s.Name == goalCommandToken {
+			return true
+		}
+	}
+	for _, a := range f.ListAgents() {
+		if a.Name == goalCommandToken {
+			return true
+		}
+	}
+	for _, s := range f.GetMCPMentionableServers() {
+		if s.Name == goalCommandToken {
+			return true
+		}
+	}
+	return false
+}
+
+// dropString returns list without every occurrence of drop (nil-safe; the
+// result is always a fresh slice).
+func dropString(list []string, drop string) []string {
+	out := make([]string, 0, len(list))
+	for _, v := range list {
+		if v != drop {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // CancelTask cancels the running task in a session.

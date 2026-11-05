@@ -3,6 +3,7 @@ package core
 import (
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -236,22 +237,35 @@ func resolveFileRefPath(refPath, workspacePath string) string {
 	return path.Join(workspacePath, refPath) + anchor
 }
 
-// goalModePrefixRe matches a leading "/goal" command (optionally followed by
-// whitespace) that selects goal mode for the first message of a task. It must
-// be anchored at the start of the (trimmed) message and be followed by either
-// whitespace or end-of-string so it does not false-match "/goals-report".
-var goalModePrefixRe = regexp.MustCompile(`^/goal(?:\s+|$)`)
+// goalModePrefixRe matches a leading "/goal" command (specs/domains/goal-mode.md)
+// in either form: bare (unlimited budget) or "/goal:N" (an N-turn budget).
+// The match must be anchored at the start of the (trimmed) message and end at
+// a whitespace boundary or end-of-string, so "/goals-report" and "/goal5"
+// never match. The digit capture is validated by DetectAndStripGoalMode: a
+// malformed ":N" (0, non-digit, no digit, out of range) matches nothing —
+// the text stays verbatim and goal mode stays off.
+var goalModePrefixRe = regexp.MustCompile(`^/goal(?:\s+|$|:(\d+)(?:\s+|$))`)
 
 // DetectAndStripGoalMode inspects a (preprocessed) message for a leading
-// "/goal" command — one of goal mode's two explicit entry points (specs/domains/goal-mode.md) —
-// returning it stripped (trimmed) with isGoal=true. It runs on the
-// already-preprocessed text so "/goal /skill-name …" still works (ADR-076); an
-// empty remainder (bare "/goal") returns empty with isGoal=true — deriveGoal
-// grounds the goal from the (empty) message.
-func DetectAndStripGoalMode(text string) (cleaned string, isGoal bool) {
-	if !goalModePrefixRe.MatchString(text) {
-		return text, false
+// "/goal" or "/goal:N" command — one of goal mode's two explicit entry points
+// (specs/domains/goal-mode.md) — returning it stripped (trimmed) with
+// isGoal=true plus budgetTurns (the /goal:N turn cap; 0 = none given, the
+// per-message override transport decides). It runs on the
+// already-preprocessed text so "/goal /skill-name …" still works (ADR-076);
+// an empty remainder (bare "/goal") returns empty with isGoal=true —
+// deriveGoal grounds the goal from the (empty) message. An invalid
+// "/goal:…" form is inert: no activation, text returned unchanged.
+func DetectAndStripGoalMode(text string) (cleaned string, isGoal bool, budgetTurns int) {
+	m := goalModePrefixRe.FindStringSubmatch(text)
+	if m == nil {
+		return text, false, 0
 	}
-	cleaned = goalModePrefixRe.ReplaceAllString(text, "")
-	return strings.TrimSpace(cleaned), true
+	if m[1] != "" {
+		n, err := strconv.Atoi(m[1])
+		if err != nil || n < 1 {
+			return text, false, 0
+		}
+		budgetTurns = n
+	}
+	return strings.TrimSpace(text[len(m[0]):]), true, budgetTurns
 }

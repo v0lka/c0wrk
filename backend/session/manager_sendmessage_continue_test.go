@@ -972,6 +972,316 @@ func TestSendMessage_GoalOnResume_AbandonsInterruptedTaskAndRunsGoal(t *testing.
 }
 
 // ----------------------------------------------------------------------------
+// Paused-session goal gate: the nudge-resume router keys on the goal union
+// ----------------------------------------------------------------------------
+
+// TestSendMessage_GoalIntoPausedSession_AbandonsAndRunsFreshGoal pins the
+// nudge-resume router's goal union (ADR-110 gate parity): a leading
+// "/goal"/"/goal:N" prefix is a goal request exactly like the toggle flag,
+// detected BEFORE the paused-task router, so it abandons the paused task and
+// starts a fresh budgeted goal instead of nudge-resuming the old task with
+// the command text as prose — the pause row of goal-mode.md's resume table.
+func TestSendMessage_GoalIntoPausedSession_AbandonsAndRunsFreshGoal(t *testing.T) {
+	const (
+		goalCondition = "review all code"
+		goalVerify    = "no issues found"
+		pausedTaskID  = "task-paused-goal-fresh-1"
+	)
+
+	for name, send := range map[string]struct {
+		text     string
+		goalFlag bool
+		wantMax  int
+	}{
+		"budgeted /goal:N prefix": {text: "/goal:5 " + goalCondition, goalFlag: false, wantMax: 5},
+		"bare /goal prefix":       {text: "/goal " + goalCondition, goalFlag: false, wantMax: 0},
+		"goal toggle flag":        {text: goalCondition, goalFlag: true, wantMax: 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			trajJSON, _ := json.Marshal([]agent.Step{
+				{Thought: "paused mid-step", Action: llm.ToolCall{ID: "pc1", Name: "read_file", Input: json.RawMessage(`{}`)}, Observation: "PRIOR"},
+			})
+			store := &cancelTrackingResumeStore{
+				resumeTaskStore: &resumeTaskStore{
+					task: &TaskRecord{
+						ID: pausedTaskID, SessionID: "ignored", OriginalRequest: "long running task",
+						Status: "paused",
+					},
+					trajectory: trajJSON,
+				},
+			}
+
+			caller := &scriptedLLM{scripted: []*llm.ChatResponse{
+				routingJSONResponse("general", 1),
+				proposeGoalResponse(goalCondition, goalVerify),
+				finishResponse("derivation complete"),
+				declareGoalMetResponse(),
+				declareVerificationConfirmedResponse(),
+			}}
+
+			var (
+				allEventsMu sync.Mutex
+				allEvents   []Event
+			)
+			eventChan := make(chan Event, 100)
+			go func() {
+				for e := range eventChan {
+					allEventsMu.Lock()
+					allEvents = append(allEvents, e)
+					allEventsMu.Unlock()
+				}
+			}()
+
+			mgr := NewManager(goalBudgetTestFactory(caller), func(e Event) { eventChan <- e }, runtimeTempDir(t))
+			t.Cleanup(mgr.Shutdown)
+			mgr.SetTaskStore(store)
+
+			info, err := mgr.CreateSession(testProjectID, runtimeTempDir(t))
+			if err != nil {
+				t.Fatalf("CreateSession failed: %v", err)
+			}
+			store.mu.Lock()
+			store.task.SessionID = info.ID
+			store.mu.Unlock()
+
+			sess, _ := mgr.GetSession(info.ID)
+			if sess == nil {
+				t.Fatal("session not found after creation")
+			}
+			sess.orchestrator.SetGoalProposer(autoApproveProposer{})
+
+			classification, err := mgr.SendMessageClassified(context.Background(), info.ID, send.text, nil, nil, nil, "", "", send.goalFlag, "", false, false)
+			if err != nil {
+				t.Fatalf("SendMessageClassified failed: %v", err)
+			}
+			if classification != SendFresh {
+				t.Fatalf("classification = %v, want SendFresh — a goal request supersedes the paused task, it never nudge-resumes it", classification)
+			}
+
+			if !waitForBufferedEvent(&allEventsMu, &allEvents, "task_complete", 5*time.Second) {
+				t.Fatal("timeout waiting for task_complete event")
+			}
+
+			store.mu.Lock()
+			cancels := store.cancelCalls
+			cancelled := store.cancelledTaskID
+			loads := store.loadTrajCalls
+			store.mu.Unlock()
+			if cancels == 0 || cancelled != pausedTaskID {
+				t.Errorf("expected CancelTask on the paused task %q (abandonUnfinishedTaskForGoal), got %d calls for %q", pausedTaskID, cancels, cancelled)
+			}
+			if loads != 0 {
+				t.Errorf("expected LoadTrajectory NOT called (no nudge-resume), got %d calls", loads)
+			}
+
+			// The goal loop ran with the resolved budget: the textual :N wins
+			// for the budgeted send; bare prefix and flag resolve unlimited.
+			allEventsMu.Lock()
+			defer allEventsMu.Unlock()
+			maxTurns := -1
+			for _, e := range allEvents {
+				if e.Type != "goal_status" {
+					continue
+				}
+				data, ok := e.Data.(map[string]any)
+				if !ok {
+					t.Fatalf("goal_status payload shape: %T", e.Data)
+				}
+				mt, ok := data["max_turns"].(int)
+				if !ok {
+					t.Fatalf("goal_status max_turns shape: %T", data["max_turns"])
+				}
+				if maxTurns != -1 && maxTurns != mt {
+					t.Fatalf("goal_status events disagree on max_turns: %d vs %d", maxTurns, mt)
+				}
+				maxTurns = mt
+			}
+			if maxTurns != send.wantMax {
+				t.Errorf("max_turns = %d, want %d", maxTurns, send.wantMax)
+			}
+		})
+	}
+}
+
+// ----------------------------------------------------------------------------
+// Per-message goal budget sources: the textual "/goal:N" cap vs the toggle's
+// goalBudget JSON (specs/domains/goal-mode.md — budget resolution)
+// ----------------------------------------------------------------------------
+
+// goalBudgetTestFactory is routingFunctionalFactory with the goal-loop tools
+// registered: a scripted derivation must actually EXECUTE propose_goal (and a
+// turn declare_goal_status) — the empty default registry fails those calls
+// and the loop exits before activation, emitting no goal_status at all.
+func goalBudgetTestFactory(caller agent.LLMCaller) OrchestratorFactory {
+	return func(emitter core.Emitter, _ *slog.Logger, _ string, bbFactory core.BlackboardFactory, _ io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+		registry := sdktools.NewToolRegistry()
+		registry.Register(coretools.NewProposeGoalTool())
+		registry.Register(coretools.NewDeclareGoalStatusTool())
+		registry.Register(coretools.NewDeclareVerificationTool())
+		cf := func(systemPrompt string, _ llm.ModelMetadata, _ string, _ ...orchestration.PruningOverride) core.ContextManager {
+			cw := memory.NewContextWindow(memory.ContextWindowConfig{
+				SystemPrompt: systemPrompt,
+				ModelMeta:    llm.ModelMetadata{ContextWindow: 128000, OutputLimit: 4096},
+			})
+			return core.NewCoreContextManager(cw)
+		}
+		rtr := router.New(caller, router.Config{
+			SystemPrompt:  prompts.RouterSystem,
+			HistoryWindow: 5,
+		})
+		return core.NewOrchestrator(core.OrchestratorConfig{}, core.OrchestratorDeps{
+			LLM:            caller,
+			Router:         rtr,
+			BBFactory:      bbFactory,
+			ToolExec:       registry,
+			ToolRegistry:   registry,
+			TokenCounter:   llm.NewSimpleTokenCounter(),
+			ContextFactory: cf,
+			Emitter:        emitter,
+			CircuitBreaker: agent.CircuitBreakerConfig{RepeatNudgeThreshold: 3, RepeatAbortThreshold: 4},
+		}), nil
+	}
+}
+
+// declareGoalMetResponse builds a goal-turn response declaring the goal met.
+func declareGoalMetResponse() *llm.ChatResponse {
+	return &llm.ChatResponse{
+		Message: llm.Message{
+			Role: "assistant",
+			ToolCalls: []llm.ToolCall{{
+				ID:    "dgs1",
+				Name:  "declare_goal_status",
+				Input: json.RawMessage(`{"status":"met","reason":"done","evidence":[{"type":"qualitative","ref":"probe","summary":"verified"}]}`),
+			}},
+		},
+		StopReason: "tool_use",
+	}
+}
+
+// declareVerificationConfirmedResponse builds the verifier pass's response
+// confirming the "met" verdict.
+func declareVerificationConfirmedResponse() *llm.ChatResponse {
+	return &llm.ChatResponse{
+		Message: llm.Message{
+			Role: "assistant",
+			ToolCalls: []llm.ToolCall{{
+				ID:    "dv1",
+				Name:  "declare_verification",
+				Input: json.RawMessage(`{"confirmed":true,"reason":"re-checked","evidence":[{"type":"qualitative","ref":"probe","summary":"verified"}]}`),
+			}},
+		},
+		StopReason: "tool_use",
+	}
+}
+
+// goalStatusBudget runs one goal send through the full goal loop and returns
+// the max_turns value its goal_status events carried (the resolved budget;
+// every event must agree). Script: routing → propose_goal (derivation) →
+// finish (derivation ends; the auto-approving proposer activates the goal) →
+// declare_goal_status met (turn 1) → declare_verification confirmed.
+func goalStatusBudget(t *testing.T, text, toggleBudget string, goalFlag bool) int {
+	t.Helper()
+	caller := &scriptedLLM{scripted: []*llm.ChatResponse{
+		routingJSONResponse("general", 1),
+		proposeGoalResponse("review all code", "no issues found"),
+		finishResponse("derivation complete"),
+		declareGoalMetResponse(),
+		declareVerificationConfirmedResponse(),
+	}}
+
+	var (
+		allEventsMu sync.Mutex
+		allEvents   []Event
+	)
+	eventChan := make(chan Event, 100)
+	go func() {
+		for e := range eventChan {
+			allEventsMu.Lock()
+			allEvents = append(allEvents, e)
+			allEventsMu.Unlock()
+		}
+	}()
+
+	mgr := NewManager(goalBudgetTestFactory(caller), func(e Event) { eventChan <- e }, runtimeTempDir(t))
+	ws := runtimeTempDir(t)
+	t.Cleanup(mgr.Shutdown)
+
+	info, err := mgr.CreateSession(testProjectID, ws)
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+
+	sess, _ := mgr.GetSession(info.ID)
+	if sess == nil {
+		t.Fatal("session not found after creation")
+	}
+	sess.orchestrator.SetGoalProposer(autoApproveProposer{})
+
+	if err := mgr.SendMessage(context.Background(), info.ID, text, nil, nil, nil, "", "", goalFlag, toggleBudget, false, false); err != nil {
+		t.Fatalf("SendMessage failed: %v", err)
+	}
+	if !waitForBufferedEvent(&allEventsMu, &allEvents, "task_complete", 5*time.Second) {
+		t.Fatal("timeout waiting for task_complete event")
+	}
+
+	allEventsMu.Lock()
+	defer allEventsMu.Unlock()
+	maxTurns := -1
+	for _, e := range allEvents {
+		if e.Type != "goal_status" {
+			continue
+		}
+		data, ok := e.Data.(map[string]any)
+		if !ok {
+			t.Fatalf("goal_status payload shape: %T", e.Data)
+		}
+		mt, ok := data["max_turns"].(int)
+		if !ok {
+			t.Fatalf("goal_status max_turns shape: %T", data["max_turns"])
+		}
+		if maxTurns != -1 && maxTurns != mt {
+			t.Fatalf("goal_status events disagree on max_turns: %d vs %d", maxTurns, mt)
+		}
+		maxTurns = mt
+	}
+	if maxTurns == -1 {
+		types := make([]string, 0, len(allEvents))
+		for _, e := range allEvents {
+			types = append(types, e.Type)
+		}
+		t.Fatalf("no goal_status event emitted — the goal loop did not run; event types: %v", types)
+	}
+	return maxTurns
+}
+
+// TestSendMessage_GoalBudgetSources pins the budget-source merge on a live
+// goal loop: a textual "/goal:N" prefix outranks the toggle's goalBudget
+// JSON, a bare "/goal" keeps the toggle budget, and the flag-only send
+// resolves from the toggle alone.
+func TestSendMessage_GoalBudgetSources(t *testing.T) {
+	t.Run("textual /goal:N outranks the toggle budget", func(t *testing.T) {
+		if got := goalStatusBudget(t, "/goal:5 ship it", `{"max_turns":3}`, false); got != 5 {
+			t.Errorf("max_turns = %d, want 5 (textual /goal:N wins)", got)
+		}
+	})
+	t.Run("bare /goal keeps the toggle budget", func(t *testing.T) {
+		if got := goalStatusBudget(t, "/goal ship it", `{"max_turns":3}`, false); got != 3 {
+			t.Errorf("max_turns = %d, want 3 (toggle budget preserved)", got)
+		}
+	})
+	t.Run("flag send resolves from the toggle", func(t *testing.T) {
+		if got := goalStatusBudget(t, "ship it", `{"max_turns":3}`, true); got != 3 {
+			t.Errorf("max_turns = %d, want 3 (toggle budget)", got)
+		}
+	})
+	t.Run("no source stays unlimited", func(t *testing.T) {
+		if got := goalStatusBudget(t, "/goal ship it", "", false); got != 0 {
+			t.Errorf("max_turns = %d, want 0 (unlimited)", got)
+		}
+	})
+}
+
+// ----------------------------------------------------------------------------
 // Issue #95 regression tests: the nudge-resume path preserves goal mode
 // ----------------------------------------------------------------------------
 
