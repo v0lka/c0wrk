@@ -27,7 +27,7 @@ function paper(overrides: Partial<PaperRecord> & { id: string }): PaperRecord {
     claims: [],
     red_flags: [],
     uncertainties: [],
-    dir: `/ws/.research/papers/${overrides.id}`,
+    dir: `/ws/research/papers/${overrides.id}`,
     card_path: `papers/${overrides.id}/paper.md`,
     pinned: false,
     linked_research: [],
@@ -128,7 +128,7 @@ describe('collectHypothesisNodes', () => {
 
   it('unions the nodes of every project (the join universe)', () => {
     const root: ResearchRoot = {
-      path: '/ws/.research',
+      path: '/ws/research',
       index: [],
       projects: [
         {

@@ -33,7 +33,7 @@ const RAW = JSON.stringify({
   contradictions: [{ title: 'Citer', year: 2019, doi: '10.1/c', reasons: ['critique'] }],
 })
 
-const DIR = '/ws/.research/papers/demo'
+const DIR = '/ws/research/papers/demo'
 const PAPER: PaperRecord = {
   id: 'P-001',
   slug: 'demo',
@@ -108,8 +108,8 @@ describe('PaperLiterature', () => {
     vi.stubGlobal('cancelAnimationFrame', () => {})
     usePaperStore.getState().loadLibrary({
       project_id: 'p1',
-      research_root: '/ws/.research',
-      root: '/ws/.research/papers',
+      research_root: '/ws/research',
+      root: '/ws/research/papers',
       papers: [PAPER],
       pinned: [],
     })
@@ -293,7 +293,7 @@ describe('PaperLiterature', () => {
       ...PAPER,
       id: 'P-002',
       slug: 'other',
-      dir: '/ws/.research/papers/other',
+      dir: '/ws/research/papers/other',
     }
 
     const ownContainer = document.createElement('div')

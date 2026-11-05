@@ -36,7 +36,7 @@ type PapersDTO struct {
 	ProjectID string `json:"project_id"`
 
 	// ResearchRoot is the project's effective research root (the canonical
-	// <workspace>/.research). The library is a subdirectory of it.
+	// <workspace>/research). The library is a subdirectory of it.
 	ResearchRoot string `json:"research_root"`
 
 	// Root is the absolute path of the paper library
@@ -368,7 +368,7 @@ func (f *FrontendAPI) comparisonsRootForProject(p *project.ProjectInfo) string {
 }
 
 // effectiveResearchRoot returns the project's effective research root,
-// following the ACTIVE SESSION (ADR-099): <workspace-of-the-active-session>/.research,
+// following the ACTIVE SESSION (ADR-099): <workspace-of-the-active-session>/research,
 // where the active session is the user-selected session when a usable
 // selection is persisted (project_ui_state.saved_session_id), falling back to
 // the most recently active non-archived session — resolved through the

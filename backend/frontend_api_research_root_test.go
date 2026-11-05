@@ -69,7 +69,7 @@ func researchRootTestFrontend(t *testing.T, seedDirs []string, pins project.Rese
 	t.Helper()
 	base := t.TempDir()
 	ws := filepath.Join(base, "ws")
-	researchRoot = filepath.Join(ws, ".research")
+	researchRoot = filepath.Join(ws, "research")
 
 	rows := make([]string, 0, len(seedDirs))
 	for _, dir := range seedDirs {
@@ -127,8 +127,8 @@ func researchTwoRootTestFrontend(t *testing.T) (api *FrontendAPI, projA, projB, 
 	base := t.TempDir()
 	wsA := filepath.Join(base, "wsA")
 	wsB := filepath.Join(base, "wsB")
-	rootA = filepath.Join(wsA, ".research")
-	rootB = filepath.Join(wsB, ".research")
+	rootA = filepath.Join(wsA, "research")
+	rootB = filepath.Join(wsB, "research")
 
 	seedResearchProjectDir(t, rootA, "R-001-test")
 	seedResearchProjectDir(t, rootB, "R-009-other")

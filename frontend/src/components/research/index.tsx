@@ -18,6 +18,7 @@ import { ResearchHypothesisPicker } from './ResearchHypothesisPicker'
 import { ResearchQuickActions } from './ResearchQuickActions'
 import { ResearchLog } from './ResearchLog'
 import { ResearchProjectPicker } from './ResearchProjectPicker'
+import { ResearchLegacyMigration } from './ResearchLegacyMigration'
 import { PriorArtRow } from './PriorArtRow'
 import { DanglingPaperLinks } from './InformingPapers'
 import { projectDir, projectFilePaths } from './researchDagRender'
@@ -121,6 +122,10 @@ function SegmentPanel({
  * A segmented control switches between this Dashboard and the Papers view (the
  * literature library), persisted per project in uiStore.
  *
+ * While the status reports pre-rename `.research` roots on disk
+ * (`legacy_research_roots`), the panel body is instead the blocking
+ * ResearchLegacyMigration notice — see that component for why.
+ *
  * The hypothesis tree/DAG presentation lives in the Research workspace tab
  * (t5); the bottom bar is a single View Artifacts dropdown that opens the
  * brief / prior-art / graph / report artifacts that actually exist.
@@ -134,6 +139,12 @@ export function ResearchPanel() {
   const root = useResearchStore((s) => s.status?.root)
   const error = useResearchStore((s) => s.error)
   const isLoading = useResearchStore((s) => s.isLoading)
+  // Pre-rename `.research` roots detected on disk — while any exist, the
+  // panel body becomes the migration notice (see ResearchLegacyMigration).
+  // Direct payload references (stable per status object), normalized to an
+  // array by the RPC boundary.
+  const legacyRoots = useResearchStore((s) => s.status?.legacy_research_roots)
+  const legacyProjectId = useResearchStore((s) => s.status?.project_id)
 
   // The segment is remembered per project; '' / null id falls back to the
   // Dashboard.
@@ -208,73 +219,85 @@ export function ResearchPanel() {
         <ResearchProjectPicker />
       </div>
 
-      {segmentControl}
-
       {error && <ErrorBanner message={error} />}
 
-      {segment === 'papers' ? (
-        <SegmentPanel segment="papers" className="flex min-h-0 flex-1 flex-col">
-          <PapersView />
-        </SegmentPanel>
+      {legacyRoots !== undefined && legacyRoots.length > 0 ? (
+        // Pre-rename `.research` roots on disk → the Dashboard/Papers
+        // content lives in the unmigrated directory, so the panel renders
+        // the migration notice instead until the rename lands.
+        <ResearchLegacyMigration
+          legacyRoots={legacyRoots}
+          projectId={legacyProjectId ?? ''}
+        />
       ) : (
-        <SegmentPanel segment="dashboard" className="flex min-h-0 flex-1 flex-col">
-          {/* Control dashboard body */}
-          <div className="flex-1 min-h-0 overflow-auto custom-scrollbar px-1.5 py-1.5 flex flex-col gap-2">
-            {isLoading && !project ? (
-              <div className="flex items-center justify-center py-8 text-xs text-muted-foreground">
-                Loading…
-              </div>
-            ) : (
-              <>
-                {metrics && <ResearchMetricsRow metrics={metrics} />}
-                <ResearchNextStep />
-                <ResearchHypothesisPicker />
-                <ResearchQuickActions />
-                {project && (project.prior_art_count ?? 0) > 0 && (
-                  <PriorArtRow path={paths.priorArt} count={project.prior_art_count} />
-                )}
-                {/* Reverse-link integrity: paper cards naming an H-NNN that
-                    resolves to no hypothesis — the dangling bucket of the
-                    paperStore × graph projection (renders nothing when clean). */}
-                <DanglingPaperLinks />
-                <ResearchLog />
-              </>
-            )}
-          </div>
+        <>
+          {segmentControl}
 
-          {/* View Artifacts: one dropdown listing the artifacts that exist */}
-          <div className="flex shrink-0 items-center gap-1 border-t border-border bg-secondary/20 px-2 py-1.5">
-            <DropdownMenu>
-              <DropdownMenuTrigger
-                data-testid="research-view-artifacts"
-                disabled={artifactItems.length === 0}
-                title={
-                  artifactItems.length === 0
-                    ? 'No research artifacts yet'
-                    : 'Open a research artifact'
-                }
-                className={cn(
-                  'inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs transition-colors',
-                  'text-muted-foreground',
-                  artifactItems.length > 0
-                    ? 'cursor-pointer hover:bg-muted'
-                    : 'opacity-60',
+          {segment === 'papers' ? (
+            <SegmentPanel segment="papers" className="flex min-h-0 flex-1 flex-col">
+              <PapersView />
+            </SegmentPanel>
+          ) : (
+            <SegmentPanel segment="dashboard" className="flex min-h-0 flex-1 flex-col">
+              {/* Control dashboard body */}
+              <div className="flex-1 min-h-0 overflow-auto custom-scrollbar px-1.5 py-1.5 flex flex-col gap-2">
+                {isLoading && !project ? (
+                  <div className="flex items-center justify-center py-8 text-xs text-muted-foreground">
+                    Loading…
+                  </div>
+                ) : (
+                  <>
+                    {metrics && <ResearchMetricsRow metrics={metrics} />}
+                    <ResearchNextStep />
+                    <ResearchHypothesisPicker />
+                    <ResearchQuickActions />
+                    {project && (project.prior_art_count ?? 0) > 0 && (
+                      <PriorArtRow path={paths.priorArt} count={project.prior_art_count} />
+                    )}
+                    {/* Reverse-link integrity: paper cards naming an H-NNN that
+                        resolves to no hypothesis — the dangling bucket of the
+                        paperStore × graph projection (renders nothing when clean). */}
+                    <DanglingPaperLinks />
+                    <ResearchLog />
+                  </>
                 )}
-              >
-                <FolderOpen className="size-3" />
-                <span className="uppercase tracking-wide">View artifacts</span>
-                <ChevronDown className="size-3" />
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start">
-                {artifactItems.map((item) => (
-                  <DropdownMenuItem key={item.label} onSelect={item.onClick}>
-                    {item.label}
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-        </SegmentPanel>
+              </div>
+
+              {/* View Artifacts: one dropdown listing the artifacts that exist */}
+              <div className="flex shrink-0 items-center gap-1 border-t border-border bg-secondary/20 px-2 py-1.5">
+                <DropdownMenu>
+                  <DropdownMenuTrigger
+                    data-testid="research-view-artifacts"
+                    disabled={artifactItems.length === 0}
+                    title={
+                      artifactItems.length === 0
+                        ? 'No research artifacts yet'
+                        : 'Open a research artifact'
+                    }
+                    className={cn(
+                      'inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs transition-colors',
+                      'text-muted-foreground',
+                      artifactItems.length > 0
+                        ? 'cursor-pointer hover:bg-muted'
+                        : 'opacity-60',
+                    )}
+                  >
+                    <FolderOpen className="size-3" />
+                    <span className="uppercase tracking-wide">View artifacts</span>
+                    <ChevronDown className="size-3" />
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start">
+                    {artifactItems.map((item) => (
+                      <DropdownMenuItem key={item.label} onSelect={item.onClick}>
+                        {item.label}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+            </SegmentPanel>
+          )}
+        </>
       )}
     </div>
   )

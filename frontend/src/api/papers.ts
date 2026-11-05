@@ -3,7 +3,7 @@
 // The literature ("papers") library is a global subdirectory of a project's
 // EFFECTIVE research root — `<research-root>/papers/<slug>/{paper.md, note.md,
 // appraisal.md}` — where `<research-root>` is always the canonical
-// `<workspace>/.research` for a real project. The library lives and is watched
+// `<workspace>/research` for a real project. The library lives and is watched
 // independently of any active R-NNN. See
 // specs/contracts/desktop-frontend.md → Papers.
 //

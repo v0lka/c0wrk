@@ -56,7 +56,7 @@ func TestFormatAgentsMD_EscapesTagBreakout(t *testing.T) {
 func TestFormatResearchContext_EscapesTagBreakout(t *testing.T) {
 	ctx := coretools.WithResearch(context.Background())
 	ctx = WithResearchContext(ctx, &ResearchContext{
-		RootPath:    "/ws/.research",
+		RootPath:    "/ws/research",
 		ActiveID:    "R-001",
 		ActiveTitle: breakoutPayload,
 		PhaseHint:   breakoutPayload,

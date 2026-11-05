@@ -28,9 +28,9 @@ function makeStatus(nodeCount: number): ResearchStatus {
   return {
     enabled: true,
     project_id: 'p1',
-    research_root: '/ws/.research',
+    research_root: '/ws/research',
     root: {
-      path: '/ws/.research',
+      path: '/ws/research',
       index: [{ id: 'R-001', title: 'T' }],
       active_project_id: 'R-001',
       projects: [

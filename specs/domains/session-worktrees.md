@@ -521,14 +521,14 @@ root follows the active session" protocol, [ADR-099](../decisions/099-research-r
   resolves — ONE definition (`activeSessionID`) shared by every backend
   consumer, so the panel, papers surfaces, watcher and tracked emit roots can
   never disagree with the session the UI shows.
-- The agent writes research artifacts under `<session-workspace>/.research`
+- The agent writes research artifacts under `<session-workspace>/research`
   (`session/Manager.researchProjectInfo` derives the root from the session's
   own execution workspace), so every panel-side read/mutation path
   (`FrontendAPI.effectiveResearchRoot`), the papers library and comparisons
   roots, and the workspace watcher's tracked emit roots resolve
-  `<workspace-of-the-active-session>/.research` through the READ-ONLY
+  `<workspace-of-the-active-session>/research` through the READ-ONLY
   `Manager.WorkspacePathFor` with `GetSessionWorkspace`'s project-ID
-  membership, falling back to `<proj.WorkspacePath>/.research` when no
+  membership, falling back to `<proj.WorkspacePath>/research` when no
   session of the project resolves.
 - Containment for the root (and the papers/comparisons subdirectories) is
   validated against the workspace the root was derived from
@@ -537,8 +537,8 @@ root follows the active session" protocol, [ADR-099](../decisions/099-research-r
   resolution won.
 - The CODE-mode watcher ROOT follows the active session too (see
   [workspace.md](workspace.md#filesystem-watcher)): its root is the session's
-  workspace — the managed tree — so the session's `.research` is an in-root
-  recursive watch, while the checkout's `.research` stays watched through an
+  workspace — the managed tree — so the session's `research` is an in-root
+  recursive watch, while the checkout's `research` stays watched through an
   admitted `AllowRoot` tree when the two differ. The frontend's session-switch
   `WatchDirectory(session workspace)` call re-scopes the watcher to the new
   tree and re-points the tracked emit roots, so `research:file_changed` /

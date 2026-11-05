@@ -40,7 +40,7 @@ const agentEmbedRoot = "agents"
 // AgentSeedVersion is the pack version stamped into each seeded profile's
 // marker; bump it when embedded content changes. Deliberately separate from
 // CurrentSeedVersion so the two packs bump independently.
-const AgentSeedVersion = "1"
+const AgentSeedVersion = "2"
 
 // SeedAgentsResult reports the per-profile outcome of a SeedAgents call. Each
 // slice holds profile names (e.g. "research") and is sorted for deterministic

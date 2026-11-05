@@ -627,11 +627,28 @@ func ProjectSpecsPath(workspacePath string) string {
 	return filepath.Join(workspacePath, "specs")
 }
 
-// ProjectResearchPath returns the project-local research root
-// (<workspacePath>/.research) — always on for real projects, created lazily
+// ResearchRootSegment is the workspace-relative research-root directory
+// name (<workspace>/research) — always on for real projects, created lazily
 // by the writing layer. See specs/domains/research.md.
+const ResearchRootSegment = "research"
+
+// LegacyResearchRootSegment is the pre-rename hidden research-root directory
+// name (<workspace>/.research) written by older builds — DETECTION/MIGRATION
+// ONLY: never derive a live research root from it.
+const LegacyResearchRootSegment = ".research"
+
+// ProjectResearchPath returns the project-local research root
+// (<workspacePath>/research). See specs/domains/research.md.
 func ProjectResearchPath(workspacePath string) string {
-	return filepath.Join(workspacePath, ".research")
+	return filepath.Join(workspacePath, ResearchRootSegment)
+}
+
+// LegacyProjectResearchPath returns the pre-rename hidden research root
+// (<workspacePath>/.research) written by older builds — DETECTION/MIGRATION
+// ONLY: recognizing or relocating pre-rename data; never derive a live
+// research root from it.
+func LegacyProjectResearchPath(workspacePath string) string {
+	return filepath.Join(workspacePath, LegacyResearchRootSegment)
 }
 
 // IsResearchPath reports whether absPath is within the research root; used
@@ -653,7 +670,7 @@ func PaperLibraryPathIn(researchRoot string) string {
 }
 
 // PaperLibraryPath returns the project-local papers library
-// (<workspacePath>/.research/papers) — PaperLibraryPathIn applied to the
+// (<workspacePath>/research/papers) — PaperLibraryPathIn applied to the
 // default research root. See specs/domains/papers.md.
 func PaperLibraryPath(workspacePath string) string {
 	return PaperLibraryPathIn(ProjectResearchPath(workspacePath))
@@ -672,7 +689,7 @@ func ComparisonsPathIn(researchRoot string) string {
 }
 
 // ComparisonsPath returns the project-local comparisons dir
-// (<workspacePath>/.research/comparisons) — ComparisonsPathIn applied to the
+// (<workspacePath>/research/comparisons) — ComparisonsPathIn applied to the
 // default research root. See specs/domains/papers.md.
 func ComparisonsPath(workspacePath string) string {
 	return ComparisonsPathIn(ProjectResearchPath(workspacePath))

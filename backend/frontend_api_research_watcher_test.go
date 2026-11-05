@@ -18,7 +18,7 @@ import (
 )
 
 // TestResearchFileChanged_NestedSubdir verifies that the research panel update
-// mechanism works: a hypothesis card at <ws>/.research/R-001/hypotheses/H-001.md
+// mechanism works: a hypothesis card at <ws>/research/R-001/hypotheses/H-001.md
 // (a deeply nested path) is detected by the watcher and the CODE-mode callback
 // emits research:file_changed. This exercises the WatchTree fix — without it,
 // fsnotify only watches the workspace root and nested research edits go
@@ -27,11 +27,11 @@ func TestResearchFileChanged_NestedSubdir(t *testing.T) {
 	base := t.TempDir()
 	ws := filepath.Join(base, "project", "workspace")
 	// Create the nested research directory BEFORE the watcher starts.
-	hypDir := filepath.Join(ws, ".research", "R-001-test", "hypotheses")
+	hypDir := filepath.Join(ws, "research", "R-001-test", "hypotheses")
 	if err := os.MkdirAll(hypDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll hyp dir: %v", err)
 	}
-	researchRoot := filepath.Join(ws, ".research")
+	researchRoot := filepath.Join(ws, "research")
 
 	// Seed a hypothesis file so the edit below is a modify, not a create.
 	hypFile := filepath.Join(hypDir, "H-001.md")
@@ -106,7 +106,7 @@ func TestResearchFileChanged_NestedSubdir(t *testing.T) {
 
 	// Verify auto-add: create a brand-new research project subdir + hypothesis.
 	researchChanged.Store(0)
-	newHypDir := filepath.Join(ws, ".research", "R-002-new", "hypotheses")
+	newHypDir := filepath.Join(ws, "research", "R-002-new", "hypotheses")
 	if err := os.MkdirAll(newHypDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll new hyp dir: %v", err)
 	}
@@ -246,7 +246,7 @@ func researchMutationTestFrontend(t *testing.T) (api *FrontendAPI, projectID, ro
 	t.Helper()
 	base := t.TempDir()
 	ws := filepath.Join(base, "ws")
-	researchRoot := filepath.Join(ws, ".research")
+	researchRoot := filepath.Join(ws, "research")
 
 	seedResearchProjectDir(t, researchRoot, "R-001-test")
 

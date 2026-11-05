@@ -340,10 +340,10 @@ func TestSwitchProjectSetupWatcher_CodeWatcherRootFollowsActiveSession(t *testin
 	// Issue 52: watching the tree must not materialize research subtrees in
 	// it or in the checkout.
 	if _, err := os.Stat(config.ProjectResearchPath(tree)); !os.IsNotExist(err) {
-		t.Fatalf("switchProjectSetupWatcher materialized the session tree's .research: err=%v", err)
+		t.Fatalf("switchProjectSetupWatcher materialized the session tree's research tree: err=%v", err)
 	}
 	if _, err := os.Stat(config.ProjectResearchPath(checkout)); !os.IsNotExist(err) {
-		t.Fatalf("switchProjectSetupWatcher materialized the checkout's .research: err=%v", err)
+		t.Fatalf("switchProjectSetupWatcher materialized the checkout's research tree: err=%v", err)
 	}
 
 	// A newer LOCAL session (checkout workspace) flips the root back. The
