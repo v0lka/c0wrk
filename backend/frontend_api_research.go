@@ -904,10 +904,13 @@ func (f *FrontendAPI) parseResearchRootBestEffort(researchRoot string) *research
 // research-* skills, the study-paper skill, the six spec-* skills, the
 // research Subagent Profile, and the specs Subagent Profile — from
 // NewFrontendAPI, BEFORE the skill/agent watchers start, so the fresh
-// directories are watched on the same launch. Idempotent,
-// non-destructive, per-pack failures logged and never fatal; classification
-// contract in core/research/skillpack.go, core/papers/skillpack.go, and
-// core/specs/{skillpack,agentpack}.go.
+// directories are watched on the same launch. Each pack seeds only while its
+// sidebar surface gate (config research.enabled / specs.enabled) is on: a
+// disabled surface's packs were unseeded when its toggle flipped, and
+// re-seeding them here would resurrect content the user turned off.
+// Idempotent, non-destructive, per-pack failures logged and never fatal;
+// classification contract in core/research/skillpack.go,
+// core/papers/skillpack.go, and core/specs/{skillpack,agentpack}.go.
 // Serialized on researchSeedMu; skill/agent caches invalidated afterwards
 // (common invalidation after ALL packs).
 // See specs/domains/research.md and specs/decisions/105-vendor-spec-skillset.md.
@@ -917,59 +920,86 @@ func (f *FrontendAPI) seedGlobalPacks() {
 		return
 	}
 
+	// The sidebar surface gates (research.enabled / specs.enabled) decide
+	// whether the launch seeds the packs at all. Read BEFORE the seed lock:
+	// configMu nests under nothing here, and the RPC apply path takes
+	// researchSeedMu while holding configMu, so the reverse order would risk
+	// a deadlock. A nil config fail-opens (unset gates mean on).
+	researchOn, specsOn := f.sidebarPackGates()
+
 	f.researchSeedMu.Lock()
 	defer f.researchSeedMu.Unlock()
 
 	skillsDir := config.SkillsDir(f.agentDir)
-	if res, err := research.SeedSkills(skillsDir, f.log()); err != nil {
-		f.log().Warn("global research skill-pack seeding failed",
-			"skills_dir", skillsDir, "error", err)
+	if researchOn {
+		if res, err := research.SeedSkills(skillsDir, f.log()); err != nil {
+			f.log().Warn("global research skill-pack seeding failed",
+				"skills_dir", skillsDir, "error", err)
+		} else {
+			f.log().Info("global research skill-pack seeded",
+				"skills_dir", skillsDir,
+				"seeded", len(res.Seeded), "updated", len(res.Updated),
+				"current", len(res.Current), "preserved", len(res.Preserved))
+		}
+
+		if res, err := papers.SeedSkills(skillsDir, f.log()); err != nil {
+			f.log().Warn("global paper skill-pack seeding failed",
+				"skills_dir", skillsDir, "error", err)
+		} else {
+			f.log().Info("global paper skill-pack seeded",
+				"skills_dir", skillsDir,
+				"seeded", len(res.Seeded), "updated", len(res.Updated),
+				"current", len(res.Current), "preserved", len(res.Preserved))
+		}
 	} else {
-		f.log().Info("global research skill-pack seeded",
-			"skills_dir", skillsDir,
-			"seeded", len(res.Seeded), "updated", len(res.Updated),
-			"current", len(res.Current), "preserved", len(res.Preserved))
+		f.log().Debug("research surface disabled; research/paper skill packs not seeded",
+			"skills_dir", skillsDir)
 	}
 
-	if res, err := papers.SeedSkills(skillsDir, f.log()); err != nil {
-		f.log().Warn("global paper skill-pack seeding failed",
-			"skills_dir", skillsDir, "error", err)
+	if specsOn {
+		if res, err := specs.SeedSkills(skillsDir, f.log()); err != nil {
+			f.log().Warn("global spec skill-pack seeding failed",
+				"skills_dir", skillsDir, "error", err)
+		} else {
+			f.log().Info("global spec skill-pack seeded",
+				"skills_dir", skillsDir,
+				"seeded", len(res.Seeded), "updated", len(res.Updated),
+				"current", len(res.Current), "preserved", len(res.Preserved))
+		}
 	} else {
-		f.log().Info("global paper skill-pack seeded",
-			"skills_dir", skillsDir,
-			"seeded", len(res.Seeded), "updated", len(res.Updated),
-			"current", len(res.Current), "preserved", len(res.Preserved))
-	}
-
-	if res, err := specs.SeedSkills(skillsDir, f.log()); err != nil {
-		f.log().Warn("global spec skill-pack seeding failed",
-			"skills_dir", skillsDir, "error", err)
-	} else {
-		f.log().Info("global spec skill-pack seeded",
-			"skills_dir", skillsDir,
-			"seeded", len(res.Seeded), "updated", len(res.Updated),
-			"current", len(res.Current), "preserved", len(res.Preserved))
+		f.log().Debug("specs surface disabled; spec skill pack not seeded",
+			"skills_dir", skillsDir)
 	}
 
 	agentsDir := config.AgentsDir(f.agentDir)
-	if res, err := research.SeedAgents(agentsDir, f.log()); err != nil {
-		f.log().Warn("global research agent-pack seeding failed",
-			"agents_dir", agentsDir, "error", err)
+	if researchOn {
+		if res, err := research.SeedAgents(agentsDir, f.log()); err != nil {
+			f.log().Warn("global research agent-pack seeding failed",
+				"agents_dir", agentsDir, "error", err)
+		} else {
+			f.log().Info("global research agent-pack seeded",
+				"agents_dir", agentsDir,
+				"seeded", len(res.Seeded), "updated", len(res.Updated),
+				"current", len(res.Current), "preserved", len(res.Preserved))
+		}
 	} else {
-		f.log().Info("global research agent-pack seeded",
-			"agents_dir", agentsDir,
-			"seeded", len(res.Seeded), "updated", len(res.Updated),
-			"current", len(res.Current), "preserved", len(res.Preserved))
+		f.log().Debug("research surface disabled; research agent pack not seeded",
+			"agents_dir", agentsDir)
 	}
 
-	if res, err := specs.SeedAgents(agentsDir, f.log()); err != nil {
-		f.log().Warn("global spec agent-pack seeding failed",
-			"agents_dir", agentsDir, "error", err)
+	if specsOn {
+		if res, err := specs.SeedAgents(agentsDir, f.log()); err != nil {
+			f.log().Warn("global spec agent-pack seeding failed",
+				"agents_dir", agentsDir, "error", err)
+		} else {
+			f.log().Info("global spec agent-pack seeded",
+				"agents_dir", agentsDir,
+				"seeded", len(res.Seeded), "updated", len(res.Updated),
+				"current", len(res.Current), "preserved", len(res.Preserved))
+		}
 	} else {
-		f.log().Info("global spec agent-pack seeded",
-			"agents_dir", agentsDir,
-			"seeded", len(res.Seeded), "updated", len(res.Updated),
-			"current", len(res.Current), "preserved", len(res.Preserved))
+		f.log().Debug("specs surface disabled; spec agent pack not seeded",
+			"agents_dir", agentsDir)
 	}
 
 	// The seeded directories are new c0wrk-owned content; drop any cached

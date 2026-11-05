@@ -12,6 +12,7 @@ import { useGitPanelStore } from "@/stores/gitPanelStore";
 import { useUIStore, selectWorkspaceTab, type WorkspaceTab } from "@/stores/uiStore";
 import { useProjectGitRepo } from "@/hooks/useProjectGitRepo";
 import { useIndexingSettings } from "@/hooks/useIndexingSettings";
+import { useSidebarPacks } from "@/hooks/useSidebarPacks";
 import { focusFileExplorer } from "@/lib/workspaceLayout";
 import { FolderTree, GitBranch, Search, FlaskConical, BookOpen } from "lucide-react";
 
@@ -42,6 +43,10 @@ export function WorkspacePanel() {
   // layouts while indexing is off — there is no index to search. The hook
   // must run before the CHAT early-return below (hooks are unconditional).
   const indexingEnabled = useIndexingSettings();
+  // Sidebar surface gates (config `research.enabled` / `specs.enabled`): the
+  // Research and Specs tabs hide from the tab strip while their gate is off
+  // (the backend unseeded the surface's skill/agent pack in the same toggle).
+  const { research: researchEnabled, specs: specsEnabled } = useSidebarPacks();
   // Each project remembers its own workspace tab. Deriving (rather than
   // storing a scalar) means a project switch instantly yields the incoming
   // project's tab without any transient wrong-layout frame.
@@ -73,8 +78,10 @@ export function WorkspacePanel() {
   // Explorer tab exists only for non-git projects (a git project hosts the
   // explorer inside the Git panel's "files" section), the Git tab only
   // for git projects, and the Search (semantics) tab only while indexing
-  // is enabled. Runs on layout flips, project switches and indexing
-  // toggles — but ONLY once the active project's repo check has landed.
+  // is enabled. A remembered research/specs tab falls back the same way
+  // while its sidebar surface gate is off. Runs on layout flips, project
+  // switches and gating toggles — but ONLY once the active project's repo
+  // check has landed.
   // Acting on the fail-closed `isGitRepo === false` while the check is
   // still pending would clobber a freshly switched project's remembered
   // tab (e.g. a git project whose memory is 'git' would be reset to
@@ -90,8 +97,16 @@ export function WorkspacePanel() {
       // Indexing off: the Search tab no longer exists — fall back to the
       // layout's primary tab (Git for a repo, Explorer otherwise).
       setWorkspaceTab(activeProjectId, isGitRepo ? "git" : "explorer");
+    } else if (!researchEnabled && workspaceTab === "research") {
+      // Research surface off: the tab no longer exists — the same primary-
+      // tab fallback (the backend unseeded the surface's pack in the same
+      // toggle).
+      setWorkspaceTab(activeProjectId, isGitRepo ? "git" : "explorer");
+    } else if (!specsEnabled && workspaceTab === "specs") {
+      // Specs surface off: the same fallback.
+      setWorkspaceTab(activeProjectId, isGitRepo ? "git" : "explorer");
     }
-  }, [repoKnown, isGitRepo, workspaceTab, activeProjectId, setWorkspaceTab, indexingEnabled]);
+  }, [repoKnown, isGitRepo, workspaceTab, activeProjectId, setWorkspaceTab, indexingEnabled, researchEnabled, specsEnabled]);
 
   // In CHAT (No Project) mode, hide the tab strip entirely — only show the file
   // explorer with file-name search. Git and Semantics are unavailable anyway.
@@ -120,6 +135,14 @@ export function WorkspacePanel() {
       ? "explorer"
       : workspaceTab;
   if (!indexingEnabled && effectiveTab === "semantics") {
+    effectiveTab = isGitRepo ? "git" : "explorer";
+  }
+  // The same inline fallback covers a remembered research/specs tab while
+  // its surface gate is off (the effect persists the corrected value).
+  if (!researchEnabled && effectiveTab === "research") {
+    effectiveTab = isGitRepo ? "git" : "explorer";
+  }
+  if (!specsEnabled && effectiveTab === "specs") {
     effectiveTab = isGitRepo ? "git" : "explorer";
   }
 
@@ -152,18 +175,26 @@ export function WorkspacePanel() {
           },
         ]
       : []),
-    {
-      value: "research",
-      icon: <FlaskConical className="size-4" />,
-      label: "Research",
-      itemProps: tabItemProps("research"),
-    },
-    {
-      value: "specs",
-      icon: <BookOpen className="size-4" />,
-      label: "Specs",
-      itemProps: tabItemProps("specs"),
-    },
+    ...(researchEnabled
+      ? [
+          {
+            value: "research" as const,
+            icon: <FlaskConical className="size-4" />,
+            label: "Research",
+            itemProps: tabItemProps("research"),
+          },
+        ]
+      : []),
+    ...(specsEnabled
+      ? [
+          {
+            value: "specs" as const,
+            icon: <BookOpen className="size-4" />,
+            label: "Specs",
+            itemProps: tabItemProps("specs"),
+          },
+        ]
+      : []),
   ];
 
   return (

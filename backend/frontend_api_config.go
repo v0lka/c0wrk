@@ -73,6 +73,14 @@ func (f *FrontendAPI) GetConfig() ConfigResponse {
 		PromptSuggestions: PromptSuggestionsSettingsResponse{
 			Enabled: f.config.PromptSuggestions.SuggestionsEnabled(),
 		},
+		// The EFFECTIVE sidebar surface gates (research.enabled /
+		// specs.enabled): nil config = on — see specs/contracts/desktop-frontend.md.
+		Research: SidebarPackSettingsResponse{
+			Enabled: f.config.Research.PackEnabled(),
+		},
+		Specs: SidebarPackSettingsResponse{
+			Enabled: f.config.Specs.PackEnabled(),
+		},
 	}
 
 	// The identity half (active/suggested) is filled FRESH — pure in-memory

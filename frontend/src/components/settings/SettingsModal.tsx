@@ -18,6 +18,7 @@ import { ProxySettings } from './ProxySettings'
 import { SoundSettings } from './SoundSettings'
 import { SystemNotificationSettings } from './SystemNotificationSettings'
 import { PromptSuggestionsSettings } from './PromptSuggestionsSettings'
+import { ResearchSpecsSettings } from './ResearchSpecsSettings'
 import { SessionStatsSettings } from './SessionStatsSettings'
 import { WebAccessSettings } from './WebAccessSettings'
 import { WebviewGpuPolicySettings } from './WebviewGpuPolicySettings'
@@ -266,6 +267,9 @@ export function SettingsModal() {
               </div>
               <div className="border-t border-border pt-4">
                 <PromptSuggestionsSettings />
+              </div>
+              <div className="border-t border-border pt-4">
+                <ResearchSpecsSettings />
               </div>
               {/* Session Statistics is an experimental surface: rendered only
                   while the master experimental switch is on. The toggle itself

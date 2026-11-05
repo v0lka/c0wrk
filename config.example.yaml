@@ -1401,6 +1401,30 @@ orchestration:
 #   enabled: true
 
 # ---------------------------------------------------------------------------
+# Sidebar Packs (Research / Specs)
+# ---------------------------------------------------------------------------
+# Gates for the sidebar's Research and Specs surfaces (Settings → General).
+# Each surface ships a globally-seeded pack — Research: the seven research-*
+# skills, the study-paper skill and the research Subagent Profile; Specs: the
+# six spec-* skills and the specs Subagent Profile — materialized into
+# ~/.c0wrk/.agents/{skills,agents} at launch. Disabling a surface hides its
+# sidebar button and removes its seeded pack copies from disk; re-enabling
+# reseeds them. Removal is non-destructive by content: only copies that are
+# byte-identical to the shipped pack (or a pack-marked, interrupted partial
+# copy) are deleted — a marker-less user-authored copy and a locally edited
+# copy (marker present, content diverged) are always preserved (edited copies
+# are named in a warning log).
+#
+#   enabled (default true) — surface master gate; false hides the sidebar
+#                            button and unseeds the surface's pack copies.
+#
+# research:
+#   enabled: true
+#
+# specs:
+#   enabled: true
+
+# ---------------------------------------------------------------------------
 # Workspace Ignore Files (.gitignore / .aiignore)
 # ---------------------------------------------------------------------------
 # c0wrk respects repository ignore files to decide which files and directories

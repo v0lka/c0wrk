@@ -76,6 +76,15 @@ type Config struct {
 	Runtime           RuntimeConfig           `yaml:"runtime"`
 	Notifications     NotificationsConfig     `yaml:"notifications"`
 
+	// Research and Specs gate the sidebar's Research and Specs surfaces
+	// together with their globally-seeded skill/agent packs: a disabled
+	// surface hides its sidebar button and unseeds the pack copies; enabling
+	// it reseeds them. Pointer-bools: unset = enabled — the packs seed
+	// exactly as they did before the gates existed. See the sidebar-packs
+	// ADR and specs/domains/{research,specs}.md.
+	Research SidebarPackConfig `yaml:"research"`
+	Specs    SidebarPackConfig `yaml:"specs"`
+
 	// ModelProfiles persists only the two durable operator choices — the
 	// manual-only master toggle and the active profile id; the 25 variant
 	// knobs resolve at runtime from the profile catalog. A legacy inline
@@ -2139,6 +2148,23 @@ type PromptSuggestionsConfig struct {
 // SuggestionsEnabled resolves the effective gate: unset means on (ADR-088
 // D9 — the section is the documented opt-out extension point).
 func (c PromptSuggestionsConfig) SuggestionsEnabled() bool {
+	return c.Enabled == nil || *c.Enabled
+}
+
+// SidebarPackConfig gates one sidebar feature surface (Research or Specs)
+// together with its globally-seeded skill/agent pack: a disabled surface
+// hides its sidebar button and unseeds its pack copies; enabling it reseeds
+// them (seedGlobalPacks). See the sidebar-packs ADR and
+// specs/domains/{research,specs}.md.
+type SidebarPackConfig struct {
+	// Enabled is the surface's master gate; nil defaults to true — explicit
+	// false is the only way the pack goes unseeded.
+	Enabled *bool `yaml:"enabled"`
+}
+
+// PackEnabled resolves the effective surface gate: unset means on (the
+// seeded-pack default predates the gate).
+func (c SidebarPackConfig) PackEnabled() bool {
 	return c.Enabled == nil || *c.Enabled
 }
 

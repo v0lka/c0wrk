@@ -423,6 +423,32 @@ describe('SettingsModal General tab: prompt suggestions gate', () => {
     expect(section).not.toBeNull()
     expect(section!.className).toContain('pt-4')
   })
+
+  it('places the Sidebar Research & Specs section directly after Prompt Suggestions', async () => {
+    useSettingsStore.setState({ open: true, activeTab: 'general' })
+    act(() => {
+      root.render(<SettingsModal />)
+    })
+    await flush()
+
+    const headers = Array.from(document.body.querySelectorAll('span'))
+    const suggestionsHeader = headers.find((s) => s.textContent === 'Prompt Suggestions')
+    const sidebarHeader = headers.find((s) => s.textContent === 'Sidebar Research & Specs')
+    expect(suggestionsHeader).toBeDefined()
+    expect(sidebarHeader).toBeDefined()
+    // DOM order pins the placement contract: the sidebar-gate section reads
+    // immediately after the prompt-suggestions gate, before Session
+    // Statistics.
+    expect(
+      suggestionsHeader!.compareDocumentPosition(sidebarHeader!) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+    // General-tab sections are divided by a border-t wrapper — the section
+    // must follow that convention, not float undivided between neighbors.
+    const section = sidebarHeader!.closest('div.border-t')
+    expect(section).not.toBeNull()
+    expect(section!.className).toContain('pt-4')
+  })
 })
 
 describe('SettingsModal Appearance tab', () => {
