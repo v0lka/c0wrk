@@ -290,8 +290,8 @@ describe('#34/#121/#125 research status normalizes brief/metrics per project', (
     mockApp.GetResearchStatus = vi.fn(() => Promise.resolve({
       enabled: true,
       project_id: 'R-001',
-      research_root: '/ws/.research',
-      root: { path: '/ws/.research', index: [], projects: [project], active_project_id: 'R-001' },
+      research_root: '/ws/research',
+      root: { path: '/ws/research', index: [], projects: [project], active_project_id: 'R-001' },
       pinned_research: [],
       pinned_hypotheses: {},
     }))
@@ -318,9 +318,9 @@ describe('#34/#121/#125 research status normalizes brief/metrics per project', (
     mockApp.GetResearchStatus = vi.fn(() => Promise.resolve({
       enabled: true,
       project_id: 'R-001',
-      research_root: '/ws/.research',
+      research_root: '/ws/research',
       root: {
-        path: '/ws/.research',
+        path: '/ws/research',
         index: [],
         projects: [
           { id: 42, graph: { nodes: [], edges: [] }, log: [] },

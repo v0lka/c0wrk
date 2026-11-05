@@ -90,9 +90,9 @@ func TestWithResearchRoot(t *testing.T) {
 		t.Errorf("bare context: expected empty research root, got %q", got)
 	}
 
-	ctx = WithResearchRoot(ctx, "/ws/.research")
-	if got := ResearchRootPathFrom(ctx); got != "/ws/.research" {
-		t.Errorf("after WithResearchRoot: got %q, want %q", got, "/ws/.research")
+	ctx = WithResearchRoot(ctx, "/ws/research")
+	if got := ResearchRootPathFrom(ctx); got != "/ws/research" {
+		t.Errorf("after WithResearchRoot: got %q, want %q", got, "/ws/research")
 	}
 }
 
@@ -117,9 +117,9 @@ func TestWithResearchRoot_UnrelatedContext(t *testing.T) {
 // earlier one (not concatenated).
 func TestWithResearchRoot_Overwrites(t *testing.T) {
 	ctx := context.Background()
-	ctx = WithResearchRoot(ctx, "/a/.research")
-	ctx = WithResearchRoot(ctx, "/b/.research")
-	if got := ResearchRootPathFrom(ctx); got != "/b/.research" {
-		t.Errorf("expected overwrite to /b/.research, got %q", got)
+	ctx = WithResearchRoot(ctx, "/a/research")
+	ctx = WithResearchRoot(ctx, "/b/research")
+	if got := ResearchRootPathFrom(ctx); got != "/b/research" {
+		t.Errorf("expected overwrite to /b/research, got %q", got)
 	}
 }

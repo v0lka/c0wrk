@@ -205,7 +205,7 @@ type FrontendAPI struct {
 	// configMu, and seedGlobalPacks reads the gates under configMu BEFORE
 	// taking researchSeedMu, so the nesting never inverts. See
 	// specs/decisions/056-research-always-on-global-seeding.md and
-	// specs/decisions/114-sidebar-pack-gates-reconcile-and-serialization.md.
+	// specs/decisions/115-sidebar-pack-gates-reconcile-and-serialization.md.
 	researchSeedMu sync.Mutex
 
 	// packGateResearch/packGateSpecs mirror the EFFECTIVE sidebar surface

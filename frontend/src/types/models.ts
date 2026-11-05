@@ -1377,6 +1377,14 @@ export interface ResearchStatus {
    *  cards from several research projects. Optional on the wire; the RPC
    *  boundary normalizes it to `{}`. */
   pinned_hypotheses?: Record<string, string[]>
+  /** Pre-rename research roots detected on disk (`<workspace>/.research`,
+   *  written by older builds) — the checkout's and the active-session
+   *  workspace's, deduplicated, checkout first. Non-empty while a rename
+   *  to the canonical `<workspace>/research` is pending; the Research
+   *  panel then shows a migration notice instead of its content. Optional
+   *  on the wire (older payloads omit it); the RPC boundary normalizes it
+   *  to `[]`. */
+  legacy_research_roots?: string[]
 }
 
 /** Lightweight response for GetResearchGraph: only the hypothesis graph,

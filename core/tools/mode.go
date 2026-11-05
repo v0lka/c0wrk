@@ -38,7 +38,7 @@ func IsResearch(ctx context.Context) bool {
 }
 
 // researchRootKey carries the on-disk research root (config.ProjectResearchPath,
-// `<workspace>/.research`); set alongside WithResearch by the session manager —
+// `<workspace>/research`); set alongside WithResearch by the session manager —
 // core may not import backend/config. Only for real projects with a root.
 type researchRootKey struct{}
 

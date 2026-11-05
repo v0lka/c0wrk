@@ -37,7 +37,7 @@ async function render(el: React.ReactNode): Promise<HTMLElement> {
   return container
 }
 
-const PATH = '/ws/.research/R-001-flaw/prior-art.md'
+const PATH = '/ws/research/R-001-flaw/prior-art.md'
 
 beforeEach(() => {
   sendMock.mockReset()

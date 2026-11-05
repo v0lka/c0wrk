@@ -85,9 +85,9 @@ function makeStatus(): ResearchStatus {
   return {
     enabled: true,
     project_id: 'p1',
-    research_root: '/root/.research',
+    research_root: '/root/research',
     root: {
-      path: '/root/.research',
+      path: '/root/research',
       index: [{ id: 'R-001', path: 'R-001/brief.md' }],
       active_project_id: 'R-001',
       projects: [
@@ -701,8 +701,8 @@ describe('ResearchWorkspace — hypothesis card links', () => {
     })
 
     const viewer = useFileViewerStore.getState()
-    expect(viewer.openTabs).toContain('/root/.research/R-001/hypotheses/H-002.md')
-    expect(viewer.activeFile).toBe('/root/.research/R-001/hypotheses/H-002.md')
+    expect(viewer.openTabs).toContain('/root/research/R-001/hypotheses/H-002.md')
+    expect(viewer.activeFile).toBe('/root/research/R-001/hypotheses/H-002.md')
   })
 
   it('opens a parent hypothesis card from the parents list', async () => {
@@ -717,7 +717,7 @@ describe('ResearchWorkspace — hypothesis card links', () => {
     })
 
     expect(useFileViewerStore.getState().openTabs).toContain(
-      '/root/.research/R-001/hypotheses/H-001.md',
+      '/root/research/R-001/hypotheses/H-001.md',
     )
   })
 

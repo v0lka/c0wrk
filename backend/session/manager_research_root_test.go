@@ -15,8 +15,8 @@ import (
 // contract for the execution-time RESEARCH root (ADR-080 workspace-coherence
 // step): the root is derived from the SESSION's execution workspace, never
 // from the project's registered checkout — a local session gets
-// <checkout>/.research, a managed-worktree session its own
-// <tree>/.research, so concurrently running sessions of one project never
+// <checkout>/research, a managed-worktree session its own
+// <tree>/research, so concurrently running sessions of one project never
 // share (or overwrite) each other's research state. CHAT sessions and
 // workspace-less sessions stay research-off.
 func TestResearchProjectInfo_UsesSessionWorkspace(t *testing.T) {

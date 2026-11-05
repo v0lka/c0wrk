@@ -12,7 +12,7 @@ The paper ("literature") library is a per-project, workspace-contained store of 
 - `core/papers/flashcards.go` - the `flashcards.md` model, parser, renderer, and the fixed-interval scheduler. Pure, no I/O.
 - `core/papers/original.go` - the `paper.html` fetcher (`FetchOriginalHTML`): the arXiv-native-then-ar5iv endpoint chain under a hard host allowlist, streaming byte caps, script stripping, image localization into `assets/`, and the atomic staged write. Produces the app-owned original-HTML artifacts (see Invariants).
 - `core/papers/skillpack.go` - the embedded `study-paper` pack and the non-destructive, versioned GLOBAL seeding run at app startup by `seedGlobalPacks` (see ADR-056). A thin consumer of the shared seeding core.
-- `core/papers/unseed.go` - the delete half of the pack lifecycle behind the `research.enabled` surface gate ([ADR-114](../decisions/114-sidebar-pack-gates-reconcile-and-serialization.md)): `UnseedSkills` removes only byte-identical (or pack-marked truncated) copies; locally edited copies are preserved with a visible warning, and per-entry failures are fail-soft (recorded and joined into the error, never aborting the rest of the pack)
+- `core/papers/unseed.go` - the delete half of the pack lifecycle behind the `research.enabled` surface gate ([ADR-115](../decisions/115-sidebar-pack-gates-reconcile-and-serialization.md)): `UnseedSkills` removes only byte-identical (or pack-marked truncated) copies; locally edited copies are preserved with a visible warning, and per-entry failures are fail-soft (recorded and joined into the error, never aborting the rest of the pack)
 - `core/seedpack` - the shared crash-safe seeding core (content-hash classification, staged write + atomic rename, `.seed-version` marker handling, leftovers sweep) behind every pack's seeding; `core/research` and `core/papers` are thin consumers keeping only their embed trees, version constants, and pack-specific logging (ADR-105 decision 5 — supersedes the old deliberate-mirror precedent of `core/papers/seedstaging.go`).
 - `core/papers/skills/study-paper/` - the embedded skill: `SKILL.md` plus `references/`, `assets/` (`flashcards.md`, `comparison-matrix.md`, `note-template.md`, `appraisal-template.md`, `explainer-outline.md`), and `scripts/` (`literature.py`, `fetch_paper.py`).
 - `backend/frontend_api_papers.go` - `GetPapers`/`GetPaper`/`SetPaperPinned`/`RecordFlashcardReview`, DTO mapping/normalization, the paper-library watcher callback, and pin/unpin.
@@ -51,7 +51,7 @@ The paper ("literature") library is a per-project, workspace-contained store of 
     <slug>.md           multi-paper comparison (study-paper Compare intent)
 ```
 
-`<research-root>` is `<workspace>/.research` (RESEARCH is always on for real projects; the root is derived from the workspace path and never persisted per project). `<workspace>` is the ACTIVE SESSION's execution workspace ([ADR-099](../decisions/099-research-root-follows-active-session.md)) — the managed tree for a `managed_worktree` session, the project checkout otherwise; the papers and comparisons roots follow the session ([session-worktrees.md](session-worktrees.md#researchpapers-roots)). `papers/` and `comparisons/` are direct children of the root — global siblings of the `R-NNN-<slug>/` research projects, owned by no single project. `paper.md`, `note.md`, and `appraisal.md` are the `PaperArtifacts` set (the front matter card and the two Markdown sheets the writer owns); `flashcards.md`, `literature.json`, and the OPTIONAL per-paper artifacts `source.md` (the extracted source text), `literature.md` (the literature-context note) and `comparison.md` (a single-paper comparison) are additionally produced by the skill/helper and are NOT part of the backend `PaperArtifacts`. `paper.html` and `assets/` (`papers.OriginalHTMLFileName` / `papers.OriginalAssetsDirName`) are a third category — APP-OWNED fetch output: written only by the `FetchPaperOriginal` RPC (`core/papers.FetchOriginalHTML`), never by the study-paper skill or the backend writer, and read-only for the skill (see Invariants).
+`<research-root>` is `<workspace>/research` (RESEARCH is always on for real projects; the root is derived from the workspace path and never persisted per project). `<workspace>` is the ACTIVE SESSION's execution workspace ([ADR-099](../decisions/099-research-root-follows-active-session.md)) — the managed tree for a `managed_worktree` session, the project checkout otherwise; the papers and comparisons roots follow the session ([session-worktrees.md](session-worktrees.md#researchpapers-roots)). `papers/` and `comparisons/` are direct children of the root — global siblings of the `R-NNN-<slug>/` research projects, owned by no single project. `paper.md`, `note.md`, and `appraisal.md` are the `PaperArtifacts` set (the front matter card and the two Markdown sheets the writer owns); `flashcards.md`, `literature.json`, and the OPTIONAL per-paper artifacts `source.md` (the extracted source text), `literature.md` (the literature-context note) and `comparison.md` (a single-paper comparison) are additionally produced by the skill/helper and are NOT part of the backend `PaperArtifacts`. `paper.html` and `assets/` (`papers.OriginalHTMLFileName` / `papers.OriginalAssetsDirName`) are a third category — APP-OWNED fetch output: written only by the `FetchPaperOriginal` RPC (`core/papers.FetchOriginalHTML`), never by the study-paper skill or the backend writer, and read-only for the skill (see Invariants).
 
 ## Core Types
 
@@ -110,7 +110,7 @@ App startup
      the research agent profile into ~/.c0wrk/.agents/agents —
      content-hash classified, staged + atomically swapped, non-destructive;
      the papers pack rides the research.enabled surface gate
-     ([ADR-114](../decisions/114-sidebar-pack-gates-reconcile-and-serialization.md)): with the gate
+     ([ADR-115](../decisions/115-sidebar-pack-gates-reconcile-and-serialization.md)): with the gate
      off, neither the research nor the paper pack seeds at launch — the
      launch unseeds both (reconciling any drift a failed toggle-time
      removal left behind);
@@ -180,7 +180,7 @@ Original-HTML fetch ("Load HTML original" in the workspace Source section)
 ## Invariants
 
 - Papers are available only for real projects: `loadProjectForResearch` rejects the No Project pseudo-project, and every RPC enforces workspace containment on the research root and on the paper library (`config.IsWithinPath`, defense in depth).
-- The library location is `<research-root>/papers` with `<research-root>` = `<workspace>/.research` (RESEARCH is always on for real projects; `<workspace>` is the active session's execution workspace — the managed tree for a bound session, the checkout otherwise — ADR-099). The library is a global sibling of the `R-NNN-<slug>/` projects and belongs to no single one.
+- The library location is `<research-root>/papers` with `<research-root>` = `<workspace>/research` (RESEARCH is always on for real projects; `<workspace>` is the active session's execution workspace — the managed tree for a bound session, the checkout otherwise — ADR-099). The library is a global sibling of the `R-NNN-<slug>/` projects and belongs to no single one.
 - The library is maintained and watched independently of any particular `R-NNN` research project: a paper edit emits `papers:changed` regardless of which project (if any) is active.
 - Parsing is best-effort and total: every artifact is optional, so a partially written or hand-edited paper yields a usable record; an empty library and a zero-value `PaperRecord` are valid partial states. Missing optional artifacts never invalidate other parseable papers.
 - Records and libraries are deterministically ordered: papers by numeric id then slug (`P-2` sorts before `P-10`), so a parse is stable regardless of directory-read order.
@@ -202,10 +202,10 @@ Original-HTML fetch ("Load HTML original" in the workspace Source section)
 
 | Parameter | Default | Description |
 | --------- | ------- | ----------- |
-| Library location | `<research-root>/papers` | Global sibling of the `R-NNN-*` projects; `<research-root>` = `<workspace>/.research` (`config.ProjectResearchPath`; `<workspace>` = the ACTIVE SESSION's execution workspace, ADR-099) |
+| Library location | `<research-root>/papers` | Global sibling of the `R-NNN-*` projects; `<research-root>` = `<workspace>/research` (`config.ProjectResearchPath`; `<workspace>` = the ACTIVE SESSION's execution workspace, ADR-099) |
 | Comparisons location | `<research-root>/comparisons` | One `<slug>.md` per comparison set (`config.ComparisonDirName`) |
 | Global skill seed dir | `~/.c0wrk/.agents/skills` (`config.SkillsDir`) | Destination of the startup `seedGlobalPacks` paper-pack seed; outranks `~/.agents` in discovery (ADR-056) |
-| `papers.CurrentSeedVersion` | `5` | Pack version stamped into each seeded skill's `.seed-version` marker; bump to refresh marked copies |
+| `papers.CurrentSeedVersion` | `6` | Pack version stamped into each seeded skill's `.seed-version` marker; bump to refresh marked copies |
 | Original-HTML fetch timeouts | `60s` document, `20s` per image | Per-request bounds for `FetchPaperOriginal` (`papers.originalDocTimeout`/`originalImageTimeout`) |
 | Original-HTML fetch caps | `8 MiB` document, `2 MiB` per image, `200` images, `5` redirect hops | Streaming byte/count caps for `FetchPaperOriginal`; images beyond a cap are skipped and de-referenced, never fatal |
 | Literature run timeout | `90s` wall clock; `20s` per HTTP request | Bounds `RunPaperLiterature`; the helper owns its per-request timeout |
@@ -224,7 +224,7 @@ Original-HTML fetch ("Load HTML original" in the workspace Source section)
 ## Related Specs
 
 - [research.md](research.md) - RESEARCH mode: the research root, the project-local research pack, and the panel whose Papers segment renders this library
-- [../decisions/114-sidebar-pack-gates-reconcile-and-serialization.md](../decisions/114-sidebar-pack-gates-reconcile-and-serialization.md) - the `research.enabled` surface gate: the papers pack seeds and unseeds together with the research packs (off unseeds `study-paper` too; `RunPaperLiterature` degrades to its `no_seed` status)
+- [../decisions/115-sidebar-pack-gates-reconcile-and-serialization.md](../decisions/115-sidebar-pack-gates-reconcile-and-serialization.md) - the `research.enabled` surface gate: the papers pack seeds and unseeds together with the research packs (off unseeds `study-paper` too; `RunPaperLiterature` degrades to its `no_seed` status)
 - [../contracts/desktop-frontend.md](../contracts/desktop-frontend.md) - the Papers RPC surface and DTO boundary (incl. `RunPaperLiterature`/`PaperLiteratureDTO`)
 - [../contracts/event-catalog.md](../contracts/event-catalog.md) - the `papers:changed` event
 - [frontend/stores.md](frontend/stores.md) - `paperStore` and the `uiStore` Research-panel segment map

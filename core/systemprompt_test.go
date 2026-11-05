@@ -131,7 +131,7 @@ func TestFormatAgentsMD_Untrusted(t *testing.T) {
 // RESEARCH mode even when a snapshot is present.
 func TestFormatResearchContext_NotResearch(t *testing.T) {
 	ctx := WithResearchContext(context.Background(), &ResearchContext{
-		RootPath:  "/ws/.research",
+		RootPath:  "/ws/research",
 		ActiveID:  "R-001",
 		PhaseHint: "experimenting",
 	})
@@ -154,7 +154,7 @@ func TestFormatResearchContext_ResearchButNoSnapshot(t *testing.T) {
 func TestFormatResearchContext_RendersSnapshot(t *testing.T) {
 	ctx := coretools.WithResearch(context.Background())
 	ctx = WithResearchContext(ctx, &ResearchContext{
-		RootPath:        "/ws/.research",
+		RootPath:        "/ws/research",
 		ProjectCount:    2,
 		ActiveID:        "R-002",
 		ActiveTitle:     "Empty Scaffold",
@@ -165,7 +165,7 @@ func TestFormatResearchContext_RendersSnapshot(t *testing.T) {
 	got := formatResearchContext(ctx)
 	for _, want := range []string{
 		"RESEARCH mode",
-		"/ws/.research",
+		"/ws/research",
 		"R-002",
 		"Empty Scaffold",
 		"setup: brief defined",
@@ -182,7 +182,7 @@ func TestFormatResearchContext_RendersSnapshot(t *testing.T) {
 func TestFormatResearchContext_RendersNoneYet(t *testing.T) {
 	ctx := coretools.WithResearch(context.Background())
 	ctx = WithResearchContext(ctx, &ResearchContext{
-		RootPath:  "/ws/.research",
+		RootPath:  "/ws/research",
 		ActiveID:  "",
 		PhaseHint: "ready to initialize",
 	})
@@ -225,7 +225,7 @@ func TestFormatResearchRouterHints(t *testing.T) {
 func TestFormatRouterContextSections_IncludesResearch(t *testing.T) {
 	ctx := coretools.WithResearch(context.Background())
 	ctx = WithResearchContext(ctx, &ResearchContext{
-		RootPath:  "/ws/.research",
+		RootPath:  "/ws/research",
 		ActiveID:  "R-001",
 		PhaseHint: "experimenting",
 	})
@@ -245,7 +245,7 @@ func TestBuildSystemPrompt_ResearchContextInjected(t *testing.T) {
 	ctx := tools.WithWorkspacePath(context.Background(), "/ws")
 	ctx = coretools.WithResearch(ctx)
 	ctx = WithResearchContext(ctx, &ResearchContext{
-		RootPath:  "/ws/.research",
+		RootPath:  "/ws/research",
 		ActiveID:  "R-001",
 		PhaseHint: "experimenting: 2 active hypotheses on the front (open/in-progress)",
 	})
@@ -254,7 +254,7 @@ func TestBuildSystemPrompt_ResearchContextInjected(t *testing.T) {
 	if !strings.Contains(got, "Research Context") {
 		t.Error("system prompt should contain the Research Context section")
 	}
-	if !strings.Contains(got, "/ws/.research") {
+	if !strings.Contains(got, "/ws/research") {
 		t.Error("system prompt should contain the research root path")
 	}
 	if !strings.Contains(got, "R-001") {

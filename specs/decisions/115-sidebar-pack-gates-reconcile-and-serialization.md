@@ -1,4 +1,4 @@
-# ADR-114: Sidebar Pack Gates — Launch Reconcile and Toggle Serialization
+# ADR-115: Sidebar Pack Gates — Launch Reconcile and Toggle Serialization
 
 ## Status
 
@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-ADR-113 introduced the `research.enabled` / `specs.enabled` sidebar surface gates with launch-as-skip semantics: `seedGlobalPacks` "consults the gates at launch: a disabled surface's packs are not seeded", and a disabled surface "costs nothing at launch (no seed writes)".
+ADR-114 introduced the `research.enabled` / `specs.enabled` sidebar surface gates with launch-as-skip semantics: `seedGlobalPacks` "consults the gates at launch: a disabled surface's packs are not seeded", and a disabled surface "costs nothing at launch (no seed writes)".
 
 Two gaps emerged against that wording:
 
@@ -17,9 +17,9 @@ The fix also needed a lock discipline that never inverts the established `config
 
 ## Decision
 
-This ADR supersedes [ADR-113](./113-sidebar-surface-gates.md) and restates its decisions unchanged, then deepens the launch-side behavior and adds the serialization contract.
+This ADR supersedes [ADR-114](./114-sidebar-surface-gates.md) and restates its decisions unchanged, then deepens the launch-side behavior and adds the serialization contract.
 
-Restated from ADR-113:
+Restated from ADR-114:
 
 - The config gates `research.enabled` / `specs.enabled` (pointer bools, nil = on) gate each surface's sidebar tab AND its globally-seeded packs (`research-*` + `study-paper` + the research Subagent Profile; `spec-*` + the specs Subagent Profile), as Settings → General toggles under Prompt Suggestions.
 - `SetResearchEnabled` / `SetSpecsEnabled` persist AND apply in one beat: a same-value request is a no-op, a failed config write rolls the in-memory value back, success runs the pack side-effect and announces `config:updated`.
@@ -35,13 +35,13 @@ New in this ADR:
 ## Consequences
 
 - The disk converges to the persisted gates at every launch and after every completed toggle; the only divergence windows are a failed entry (logged, named) and an in-flight pass, both bounded by the next pass.
-- A disabled surface's launch cost is a stat-plus-hash scan of its pack targets — no writes in steady state — refining ADR-113's "no seed writes" consequence to "no seed writes, a read-only reconcile".
+- A disabled surface's launch cost is a stat-plus-hash scan of its pack targets — no writes in steady state — refining ADR-114's "no seed writes" consequence to "no seed writes, a read-only reconcile".
 - A failed unseed entry (a squatter file, a locked directory) delays but never blocks convergence; user-owned and locally edited copies survive every reconcile, the edited ones named in a warning.
-- The residual exposures ADR-113 recorded carry forward: an in-flight task using a seeded skill when the toggle flips loses the skill's files mid-task (the same exposure as hand-deleting), and the research/specs roots plus read RPCs are never touched by a toggle.
-- ADR-113's amendment of [ADR-056](./056-research-always-on-global-seeding.md) / [ADR-105](./105-vendor-spec-skillset.md)'s always-seeded invariant ("seeded while the surface gate is on") carries forward unchanged.
+- The residual exposures ADR-114 recorded carry forward: an in-flight task using a seeded skill when the toggle flips loses the skill's files mid-task (the same exposure as hand-deleting), and the research/specs roots plus read RPCs are never touched by a toggle.
+- ADR-114's amendment of [ADR-056](./056-research-always-on-global-seeding.md) / [ADR-105](./105-vendor-spec-skillset.md)'s always-seeded invariant ("seeded while the surface gate is on") carries forward unchanged.
 
 ## Alternatives Considered
 
-- Launch as a pure skip (ADR-113's wording) — rejected: with fail-soft removals and interruptible passes, drift becomes permanent; a config that says off must mean off on disk.
+- Launch as a pure skip (ADR-114's wording) — rejected: with fail-soft removals and interruptible passes, drift becomes permanent; a config that says off must mean off on disk.
 - Failing the toggle RPC on any unseed error (retry at the RPC) — rejected: a hostile or squatted entry must not wedge the toggle; the persisted gate is authoritative and the launch reconcile retries.
 - A wider Init-wide pack mutex, or taking `researchSeedMu` before `configMu` — rejected: the RPC shape fixes the nesting (persist under `configMu`, then apply); inverting it risks deadlock, and the gate mirror already makes the launch seed's pre-lock snapshot harmless without any extra lock.

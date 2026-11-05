@@ -34,7 +34,7 @@ vi.mock('@/api/workspace', () => ({
 import { usePaperArtifacts } from './usePaperArtifacts'
 
 function entry(name: string) {
-  return { name, path: `/ws/.research/papers/demo/${name}`, is_dir: false }
+  return { name, path: `/ws/research/papers/demo/${name}`, is_dir: false }
 }
 
 function Harness({ dir, refreshKey }: { dir: string; refreshKey: number }) {
@@ -53,7 +53,7 @@ function Harness({ dir, refreshKey }: { dir: string; refreshKey: number }) {
   )
 }
 
-const DIR = '/ws/.research/papers/demo'
+const DIR = '/ws/research/papers/demo'
 
 let root: Root | null = null
 let container: HTMLDivElement | null = null

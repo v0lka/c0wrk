@@ -40,9 +40,9 @@ function makeStatus(): ResearchStatus {
   return {
     enabled: true,
     project_id: 'p1',
-    research_root: '/ws/.research',
+    research_root: '/ws/research',
     root: {
-      path: '/ws/.research',
+      path: '/ws/research',
       index: [],
       projects: [
         {

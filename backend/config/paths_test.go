@@ -269,16 +269,31 @@ func TestSessionWorkspaceRoot(t *testing.T) {
 func TestProjectResearchPath(t *testing.T) {
 	ws := filepath.Join(testAgentDir, "projects", "proj-123", WorkspaceSegment)
 	got := ProjectResearchPath(ws)
-	want := filepath.Join(ws, ".research")
+	want := filepath.Join(ws, ResearchRootSegment)
 	if got != want {
 		t.Errorf("ProjectResearchPath: got %q, want %q", got, want)
+	}
+}
+
+// TestLegacyProjectResearchPath pins the pre-rename hidden root: the legacy
+// helpers exist for detection/migration of data written by older builds and
+// must stay distinct from the live root.
+func TestLegacyProjectResearchPath(t *testing.T) {
+	ws := filepath.Join(testAgentDir, "projects", "proj-123", WorkspaceSegment)
+	got := LegacyProjectResearchPath(ws)
+	want := filepath.Join(ws, LegacyResearchRootSegment)
+	if got != want {
+		t.Errorf("LegacyProjectResearchPath: got %q, want %q", got, want)
+	}
+	if got == ProjectResearchPath(ws) {
+		t.Fatal("legacy and current research roots must differ")
 	}
 }
 
 func TestPaperLibraryPath(t *testing.T) {
 	ws := filepath.Join(testAgentDir, "projects", "proj-123", WorkspaceSegment)
 	got := PaperLibraryPath(ws)
-	want := filepath.Join(ws, ".research", "papers")
+	want := filepath.Join(ws, "research", "papers")
 	if got != want {
 		t.Errorf("PaperLibraryPath: got %q, want %q", got, want)
 	}
@@ -287,14 +302,14 @@ func TestPaperLibraryPath(t *testing.T) {
 func TestComparisonsPath(t *testing.T) {
 	ws := filepath.Join(testAgentDir, "projects", "proj-123", WorkspaceSegment)
 	got := ComparisonsPath(ws)
-	want := filepath.Join(ws, ".research", "comparisons")
+	want := filepath.Join(ws, "research", "comparisons")
 	if got != want {
 		t.Errorf("ComparisonsPath: got %q, want %q", got, want)
 	}
 }
 
 func TestComparisonsPathIn(t *testing.T) {
-	researchRoot := filepath.Join(testAgentDir, "projects", "proj-123", WorkspaceSegment, ".research")
+	researchRoot := filepath.Join(testAgentDir, "projects", "proj-123", WorkspaceSegment, "research")
 	got := ComparisonsPathIn(researchRoot)
 	want := filepath.Join(researchRoot, "comparisons")
 	if got != want {

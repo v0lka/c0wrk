@@ -543,8 +543,8 @@ func (f *FrontendAPI) switchProjectTeardown(ctx context.Context, newID string) {
 
 // trackedSessionRoots derives the research/papers/comparisons roots a project
 // switch tracks (ADR-099), from the ALREADY-RESOLVED active-session workspace
-// (the same snapshot that rooted the watcher): <session-workspace>/.research
-// when one resolved, <checkout>/.research otherwise. The papers/comparisons
+// (the same snapshot that rooted the watcher): <session-workspace>/research
+// when one resolved, <checkout>/research otherwise. The papers/comparisons
 // derivation stays GUARDED: an empty effective research root must leave both
 // roots EMPTY — the watcher emit gates treat "" as "not tracked", while
 // filepath.Join("", "papers") would silently produce a relative path and
@@ -677,7 +677,7 @@ func (f *FrontendAPI) switchProjectSetupWatcher(switchCtx context.Context, p *pr
 // routes the per-root consumers (git status/ignore caches, vector
 // NotifyFileChange) at watchRoot — the tree the events actually come from —
 // never at the checkout. checkoutResearchRoot is the checkout's canonical
-// <workspace>/.research, watched recursively wherever the root moved (see
+// <workspace>/research, watched recursively wherever the root moved (see
 // watchResearchTreesLocked). Caller holds f.watcherMu and must have resolved
 // watchRoot WITHOUT holding it (the resolver queries the session manager/store).
 func (f *FrontendAPI) reScopeCodeWatcherLocked(watchRoot, checkoutResearchRoot string) error {
@@ -755,11 +755,11 @@ func (f *FrontendAPI) reScopeCodeWatcherLocked(watchRoot, checkoutResearchRoot s
 }
 
 // watchResearchTreesLocked registers the recursive research-tree watches on a
-// freshly built CODE watcher: the checkout's canonical <workspace>/.research
-// and the watched root's own .research when they differ. Either tree may sit
+// freshly built CODE watcher: the checkout's canonical <workspace>/research
+// and the watched root's own research tree when they differ. Either tree may sit
 // outside the watcher root, so each is admitted via AllowRoot (inert for
 // in-root trees). Registration creates NOTHING on disk (Issue 52: a switch
-// must not materialize .research in the user's repository) — a missing tree
+// must not materialize the research tree in the user's repository) — a missing tree
 // is only marked recursive; its first write auto-adds it.
 func (f *FrontendAPI) watchResearchTreesLocked(w *workspace.Watcher, watchRoot, checkoutResearchRoot string) {
 	roots := make([]string, 0, 2)

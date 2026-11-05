@@ -32,7 +32,7 @@ function makePaper(overrides: Partial<PaperRecord> & { id: string }): PaperRecor
     claims: [],
     red_flags: [],
     uncertainties: [],
-    dir: `/ws/.research/papers/${overrides.id}`,
+    dir: `/ws/research/papers/${overrides.id}`,
     card_path: `papers/${overrides.id}/paper.md`,
     pinned: false,
     linked_research: [],
@@ -44,9 +44,9 @@ function makeStatus(): ResearchStatus {
   return {
     enabled: true,
     project_id: 'p1',
-    research_root: '/ws/.research',
+    research_root: '/ws/research',
     root: {
-      path: '/ws/.research',
+      path: '/ws/research',
       index: [{ id: 'R-001', path: 'R-001/brief.md' }],
       active_project_id: 'R-001',
       projects: [
@@ -79,8 +79,8 @@ function makeStatus(): ResearchStatus {
 function seedPapers(papers: PaperRecord[]): void {
   usePaperStore.getState().loadLibrary({
     project_id: 'p1',
-    research_root: '/ws/.research',
-    root: '/ws/.research/papers',
+    research_root: '/ws/research',
+    root: '/ws/research/papers',
     papers,
     pinned: [],
   })

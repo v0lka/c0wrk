@@ -28,6 +28,7 @@ vi.mock('@/api/research', () => ({
   deleteResearch: vi.fn(),
   setResearchPinned: vi.fn(),
   setHypothesisPinned: vi.fn(),
+  migrateResearchRoots: vi.fn(),
 }))
 
 vi.stubGlobal(
@@ -56,9 +57,9 @@ function makeStatus(): ResearchStatus {
   return {
     enabled: true,
     project_id: 'p1',
-    research_root: '/root/.research',
+    research_root: '/root/research',
     root: {
-      path: '/root/.research',
+      path: '/root/research',
       index: [{ id: 'R-001', path: 'R-001/brief.md' }],
       active_project_id: 'R-001',
       projects: [

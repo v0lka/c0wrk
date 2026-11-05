@@ -31,7 +31,7 @@ import { PAPER_HTML_MAX_BYTES, resetPaperHtmlCache } from '@/lib/paperHtmlSaniti
 // jsdom implements no scrollIntoView — polyfill with an observable mock.
 const scrollIntoViewMock = vi.fn()
 
-const PAPER_DIR = '/ws/.research/papers/demo'
+const PAPER_DIR = '/ws/research/papers/demo'
 const PAPER_HTML_PATH = `${PAPER_DIR}/paper.html`
 
 const DOC_WITH_IMG = `<!DOCTYPE html><html><body>

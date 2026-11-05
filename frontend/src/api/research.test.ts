@@ -19,6 +19,7 @@ import {
   deleteResearch,
   setResearchPinned,
   setHypothesisPinned,
+  migrateResearchRoots,
 } from '@/api/research'
 
 const validNode = { id: 'H-001', title: 'Root cause', status: 'open', parents: [] }
@@ -125,9 +126,9 @@ describe('getResearchStatus boundary validation', () => {
       Promise.resolve({
         enabled: true,
         project_id: 'R-001',
-        research_root: '/ws/.research',
+        research_root: '/ws/research',
         root: {
-          path: '/ws/.research',
+          path: '/ws/research',
           projects: [
             {
               id: 'R-001',
@@ -167,7 +168,7 @@ describe('getResearchStatus boundary validation', () => {
       Promise.resolve({
         enabled: true,
         project_id: 'p1',
-        research_root: '/ws/.research',
+        research_root: '/ws/research',
         pinned_research: ['R-001-web/brief.md'],
         pinned_hypotheses: {
           'H-001': [
@@ -200,8 +201,59 @@ describe('getResearchStatus boundary validation', () => {
         Promise.resolve({
           enabled: true,
           project_id: 'p1',
-          research_root: '/ws/.research',
+          research_root: '/ws/research',
           ...pins,
+        }),
+      )
+      await expect(getResearchStatus('p1')).rejects.toThrow(/Invalid research status/)
+    }
+  })
+
+  it('normalizes missing/null legacy_research_roots to []', async () => {
+    // The field is absent on older payloads and null when Go serializes a
+    // nil slice — both normalize to the empty array the panel gates on.
+    for (const legacy of [undefined, null]) {
+      mockApp.GetResearchStatus = vi.fn(() =>
+        Promise.resolve({
+          enabled: true,
+          project_id: 'p1',
+          research_root: '/ws/research',
+          legacy_research_roots: legacy,
+        }),
+      )
+      const res = await getResearchStatus('p1')
+      expect(res.legacy_research_roots).toEqual([])
+    }
+  })
+
+  it('keeps well-formed legacy_research_roots', async () => {
+    mockApp.GetResearchStatus = vi.fn(() =>
+      Promise.resolve({
+        enabled: true,
+        project_id: 'p1',
+        research_root: '/ws/research',
+        legacy_research_roots: ['/ws/.research', '/wt/other/.research'],
+      }),
+    )
+
+    const res = await getResearchStatus('p1')
+
+    expect(res.legacy_research_roots).toEqual(['/ws/.research', '/wt/other/.research'])
+  })
+
+  it('rejects malformed legacy_research_roots instead of accepting them (fail-closed)', async () => {
+    const cases: unknown[] = [
+      '/ws/.research', // not an array
+      ['/ws/.research', 42], // non-string entry
+      {}, // not an array
+    ]
+    for (const legacy of cases) {
+      mockApp.GetResearchStatus = vi.fn(() =>
+        Promise.resolve({
+          enabled: true,
+          project_id: 'p1',
+          research_root: '/ws/research',
+          legacy_research_roots: legacy,
         }),
       )
       await expect(getResearchStatus('p1')).rejects.toThrow(/Invalid research status/)
@@ -220,7 +272,7 @@ describe('setActiveResearch / deleteResearch boundary validation', () => {
       Promise.resolve({
         enabled: true,
         project_id: 'p1',
-        research_root: '/ws/.research',
+        research_root: '/ws/research',
         pinned_research: null,
         pinned_hypotheses: null,
       }),
@@ -245,7 +297,7 @@ describe('setActiveResearch / deleteResearch boundary validation', () => {
       Promise.resolve({
         enabled: true,
         project_id: 'p1',
-        research_root: '/ws/.research',
+        research_root: '/ws/research',
       }),
     )
 
@@ -283,5 +335,46 @@ describe('setResearchPinned / setHypothesisPinned passthrough', () => {
 
     await expect(setResearchPinned('p1', 'R-001', true)).rejects.toThrow('rpc down')
     await expect(setHypothesisPinned('p1', 'R-001', 'H-001', true)).rejects.toThrow('rpc down')
+  })
+})
+
+describe('migrateResearchRoots', () => {
+  beforeEach(() => {
+    delete mockApp.MigrateResearchRoots
+  })
+
+  it('passes the project through and validates/normalizes the refreshed status', async () => {
+    mockApp.MigrateResearchRoots = vi.fn(() =>
+      Promise.resolve({
+        enabled: true,
+        project_id: 'p1',
+        research_root: '/ws/research',
+        legacy_research_roots: null,
+        pinned_research: null,
+        pinned_hypotheses: null,
+      }),
+    )
+
+    const res = await migrateResearchRoots('p1')
+
+    expect(mockApp.MigrateResearchRoots).toHaveBeenCalledWith('p1')
+    expect(res.research_root).toBe('/ws/research')
+    expect(res.legacy_research_roots).toEqual([])
+    expect(res.pinned_research).toEqual([])
+    expect(res.pinned_hypotheses).toEqual({})
+  })
+
+  it('rejects a malformed status payload from MigrateResearchRoots', async () => {
+    mockApp.MigrateResearchRoots = vi.fn(() => Promise.resolve({ nope: true }))
+
+    await expect(migrateResearchRoots('p1')).rejects.toThrow(/Invalid research status/)
+  })
+
+  it('propagates migration failures (non-empty target, symlink refusal)', async () => {
+    mockApp.MigrateResearchRoots = vi.fn(() =>
+      Promise.reject(new Error('research exists and is not empty')),
+    )
+
+    await expect(migrateResearchRoots('p1')).rejects.toThrow('research exists and is not empty')
   })
 })

@@ -3,6 +3,7 @@ package backend
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -20,7 +21,7 @@ import (
 
 // ResearchStatusDTO is the full Research-panel view model: the mode state
 // plus the parsed research root. Always-on for real projects (Enabled=true,
-// ResearchRoot=<workspace>/.research); No Project gets the neutral empty
+// ResearchRoot=<workspace>/research); No Project gets the neutral empty
 // state. See specs/domains/research.md.
 type ResearchStatusDTO struct {
 	// Enabled reports whether RESEARCH is available (true for a real project).
@@ -44,6 +45,15 @@ type ResearchStatusDTO struct {
 	// PinnedHypotheses maps a hypothesis id (H-NNN) to its pinned card paths
 	// (a list — the same H-NNN exists across R-NNN projects). Always non-nil.
 	PinnedHypotheses map[string][]string `json:"pinned_hypotheses"`
+
+	// LegacyResearchRoots lists the detected pre-rename research roots
+	// (<workspace>/.research, written by older builds) for the project — the
+	// checkout's and the active-session workspace's — deduplicated, checkout
+	// first; a candidate is listed when it exists on disk (any entry type —
+	// a symlink is surfaced so the user sees it, while the migration RPC
+	// itself refuses it). Always non-nil (stable wire shape); empty when
+	// nothing needs migrating.
+	LegacyResearchRoots []string `json:"legacy_research_roots"`
 }
 
 // ResearchGraphDTO is the lightweight response for GetResearchGraph: only the
@@ -148,8 +158,9 @@ func (f *FrontendAPI) GetResearchStatus(projectID string) (*ResearchStatusDTO, e
 
 	if proj.IsNoProject {
 		status := &ResearchStatusDTO{
-			Enabled:   false,
-			ProjectID: projectID,
+			Enabled:             false,
+			ProjectID:           projectID,
+			LegacyResearchRoots: f.legacyResearchRootPaths(proj),
 		}
 		applyResearchPins(status, proj.ResearchPins)
 		return status, nil
@@ -158,13 +169,197 @@ func (f *FrontendAPI) GetResearchStatus(projectID string) (*ResearchStatusDTO, e
 	researchRoot := f.effectiveResearchRoot(proj)
 	root := f.parseResearchRootBestEffort(researchRoot)
 	status := &ResearchStatusDTO{
-		Enabled:      true,
-		ProjectID:    projectID,
-		ResearchRoot: researchRoot,
-		Root:         root,
+		Enabled:             true,
+		ProjectID:           projectID,
+		ResearchRoot:        researchRoot,
+		Root:                root,
+		LegacyResearchRoots: f.legacyResearchRootPaths(proj),
 	}
 	applyResearchPins(status, proj.ResearchPins)
 	return status, nil
+}
+
+// ---------------------------------------------------------------------------
+// Legacy research-root detection & migration
+// ---------------------------------------------------------------------------
+
+// legacyResearchRoot pairs one detected pre-rename research root with its
+// canonical target: legacy is a <workspace>/.research written by an older
+// build, target is the same workspace's canonical <workspace>/research
+// (config.ProjectResearchPath).
+type legacyResearchRoot struct {
+	legacy string
+	target string
+}
+
+// legacyResearchRootCandidates lists the deduplicated legacy-root candidates
+// for a project: the checkout's and the active-session workspace's
+// <workspace>/.research — the boundary researchRootWithBoundary resolves
+// (when no session resolves, the boundary IS the checkout and the two
+// collapse into one). The checkout always comes first (stable wire order).
+func legacyResearchRootCandidates(proj *project.ProjectInfo, boundary string) []legacyResearchRoot {
+	if proj == nil || proj.IsNoProject || proj.WorkspacePath == "" {
+		return nil
+	}
+	candidates := []legacyResearchRoot{{
+		legacy: config.LegacyProjectResearchPath(proj.WorkspacePath),
+		target: config.ProjectResearchPath(proj.WorkspacePath),
+	}}
+	if boundary != "" && boundary != proj.WorkspacePath {
+		candidates = append(candidates, legacyResearchRoot{
+			legacy: config.LegacyProjectResearchPath(boundary),
+			target: config.ProjectResearchPath(boundary),
+		})
+	}
+	return candidates
+}
+
+// detectLegacyResearchRoots returns the candidates that exist on disk — any
+// entry type counts (a symlink or stray file is surfaced so the user sees
+// it; MigrateResearchRoots refuses to act on it with a clear error).
+func (f *FrontendAPI) detectLegacyResearchRoots(proj *project.ProjectInfo) []legacyResearchRoot {
+	_, boundary := f.researchRootWithBoundary(proj)
+	candidates := legacyResearchRootCandidates(proj, boundary)
+	detected := make([]legacyResearchRoot, 0, len(candidates))
+	for _, c := range candidates {
+		if _, err := os.Lstat(c.legacy); err == nil {
+			detected = append(detected, c)
+		}
+	}
+	return detected
+}
+
+// legacyResearchRootPaths returns the detected legacy research-root paths
+// for the status DTO — always non-nil (stable wire shape).
+func (f *FrontendAPI) legacyResearchRootPaths(proj *project.ProjectInfo) []string {
+	detected := f.detectLegacyResearchRoots(proj)
+	paths := make([]string, len(detected))
+	for i, c := range detected {
+		paths[i] = c.legacy
+	}
+	return paths
+}
+
+// MigrateResearchRoots renames every detected legacy <workspace>/.research
+// directory into the canonical <workspace>/research: an EMPTY existing
+// target directory is removed first, a non-empty (or non-directory) target
+// is refused with an actionable error, and a symlink in place of the legacy
+// directory is refused outright (never silently followed or renamed). Each
+// rename runs under the per-root mutation mutex keyed by its TARGET — the
+// same family the hypothesis/pin mutations use — so writes cannot
+// interleave with the rename. On success the research trees are
+// re-registered with the workspace watcher (the tree only now exists for
+// WatchTree to add), research:changed (action=root_migrated) and
+// papers:changed are emitted, and the fresh status is returned. A no-op
+// (no legacy roots) is a success with no events.
+func (f *FrontendAPI) MigrateResearchRoots(projectID string) (*ResearchStatusDTO, error) {
+	f.seedAcquire()
+	if projectID == "" {
+		return nil, errors.New("project_id is required")
+	}
+	if f.projectManager == nil {
+		return nil, errors.New("project subsystem not initialized")
+	}
+	proj, err := f.loadProjectForResearch(projectID)
+	if err != nil {
+		return nil, err
+	}
+
+	detected := f.detectLegacyResearchRoots(proj)
+	migrated := make([]string, 0, len(detected))
+	for _, root := range detected {
+		mu := f.researchMutationMu(root.target)
+		mu.Lock()
+		renamed, migrateErr := migrateLegacyResearchRootOnDisk(root.legacy, root.target)
+		mu.Unlock()
+		if migrateErr != nil {
+			return nil, fmt.Errorf("failed to migrate legacy research root %q: %w", root.legacy, migrateErr)
+		}
+		if renamed {
+			migrated = append(migrated, root.target)
+		}
+	}
+
+	if len(migrated) > 0 {
+		f.rewatchResearchTreesAfterMigration(proj)
+		// Nil-guarded like every other emitter (see emitPapersChanged).
+		if f.emitEvent != nil {
+			f.emitEvent(EventResearchChanged, map[string]string{
+				"project_id": projectID,
+				"action":     "root_migrated",
+			})
+			f.emitEvent(EventPapersChanged, map[string]string{
+				"project_id": projectID,
+				"paths":      strings.Join(migrated, ","),
+			})
+		}
+	}
+	return f.GetResearchStatus(projectID)
+}
+
+// migrateLegacyResearchRootOnDisk performs one legacy→canonical rename on
+// disk: refuse a legacy path that is not a real directory (Lstat — a symlink
+// is never followed or silently moved), drop an EMPTY existing target
+// directory before the rename, refuse a non-empty or non-directory target,
+// then os.Rename. renamed=false with a nil error means the legacy root
+// vanished since detection (nothing to do — not a failure).
+func migrateLegacyResearchRootOnDisk(legacy, target string) (renamed bool, err error) {
+	info, err := os.Lstat(legacy)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("failed to inspect the legacy research root: %w", err)
+	}
+	if !info.IsDir() {
+		return false, fmt.Errorf("%s is not a directory (a symlink or file left by another tool) — resolve or remove it manually, then retry", legacy)
+	}
+
+	if tinfo, statErr := os.Lstat(target); statErr == nil {
+		if !tinfo.IsDir() {
+			return false, fmt.Errorf("target %s exists and is not a directory — resolve or remove it manually, then retry", target)
+		}
+		entries, readErr := os.ReadDir(target)
+		if readErr != nil {
+			return false, fmt.Errorf("failed to inspect the target research root: %w", readErr)
+		}
+		if len(entries) > 0 {
+			return false, fmt.Errorf("target %s is not empty — move its contents into %s (or remove them), then retry", target, legacy)
+		}
+		if removeErr := os.Remove(target); removeErr != nil {
+			return false, fmt.Errorf("failed to remove the empty target research root: %w", removeErr)
+		}
+	} else if !errors.Is(statErr, fs.ErrNotExist) {
+		return false, fmt.Errorf("failed to inspect the target research root: %w", statErr)
+	}
+
+	if renameErr := os.Rename(legacy, target); renameErr != nil {
+		return false, fmt.Errorf("failed to rename %s to %s: %w", legacy, target, renameErr)
+	}
+	return true, nil
+}
+
+// rewatchResearchTreesAfterMigration re-registers the research-tree watches
+// on the live CODE watcher after a migration: the canonical trees may only
+// have come into existence with the rename (a missing tree is merely marked
+// recursive at setup — see watchResearchTreesLocked), so they are re-admitted
+// now that they exist. The watch root is resolved WITHOUT holding watcherMu
+// (the resolver queries the session manager/store), mirroring
+// reScopeCodeWatcherLocked; a missing watcher is a no-op.
+func (f *FrontendAPI) rewatchResearchTreesAfterMigration(proj *project.ProjectInfo) {
+	if proj == nil || proj.WorkspacePath == "" {
+		return
+	}
+	watchRoot := proj.WorkspacePath
+	if ws, ok := f.activeSessionWorkspace(proj.ID); ok && ws != "" {
+		watchRoot = ws
+	}
+	f.watcherMu.Lock()
+	defer f.watcherMu.Unlock()
+	if f.watcher == nil {
+		return
+	}
+	f.watchResearchTreesLocked(f.watcher, watchRoot, config.ProjectResearchPath(proj.WorkspacePath))
 }
 
 // ---------------------------------------------------------------------------
@@ -460,10 +655,11 @@ func (f *FrontendAPI) SetActiveResearch(projectID, researchID string) (*Research
 
 	root := f.parseResearchRootBestEffort(researchRoot)
 	status := &ResearchStatusDTO{
-		Enabled:      true,
-		ProjectID:    projectID,
-		ResearchRoot: researchRoot,
-		Root:         root,
+		Enabled:             true,
+		ProjectID:           projectID,
+		ResearchRoot:        researchRoot,
+		Root:                root,
+		LegacyResearchRoots: f.legacyResearchRootPaths(proj),
 	}
 	applyResearchPins(status, proj.ResearchPins)
 
@@ -547,10 +743,11 @@ func (f *FrontendAPI) DeleteResearch(projectID, researchID string) (*ResearchSta
 
 	root := f.parseResearchRootBestEffort(researchRoot)
 	status := &ResearchStatusDTO{
-		Enabled:      true,
-		ProjectID:    projectID,
-		ResearchRoot: researchRoot,
-		Root:         root,
+		Enabled:             true,
+		ProjectID:           projectID,
+		ResearchRoot:        researchRoot,
+		Root:                root,
+		LegacyResearchRoots: f.legacyResearchRootPaths(proj),
 	}
 	applyResearchPins(status, proj.ResearchPins)
 

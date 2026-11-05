@@ -42,7 +42,7 @@ const embedRoot = "skills"
 
 // CurrentSeedVersion is the pack version stamped into each seeded skill's
 // marker; bump it when embedded content changes and copies should refresh.
-const CurrentSeedVersion = "2"
+const CurrentSeedVersion = "3"
 
 // SeedSkillsResult reports the per-skill outcome of a SeedSkills call; each
 // slice holds skill names, sorted for deterministic output. It is the shared

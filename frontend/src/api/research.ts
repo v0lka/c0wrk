@@ -16,7 +16,7 @@ import type {
 /**
  * Get the live RESEARCH status for a project: the parsed research root
  * (graph + metrics + project list). RESEARCH is always available for real
- * projects, so `enabled` is true and the root is `<workspace>/.research`; the
+ * projects, so `enabled` is true and the root is `<workspace>/research`; the
  * No-Project pseudo-project gets a neutral empty DTO.
  */
 export async function getResearchStatus(projectId: string): Promise<ResearchStatus> {
@@ -119,6 +119,31 @@ export async function deleteResearch(
     return normalizeResearchStatus(result)
   } catch (err) {
     logger.error('Failed to delete research:', err)
+    throw err
+  }
+}
+
+/**
+ * Migrate every detected pre-rename research root (`<workspace>/.research`,
+ * written by older builds) to the canonical `<workspace>/research` via an
+ * atomic per-root rename. The backend refuses a non-empty canonical
+ * destination and symlinked/file legacy roots (those need a manual
+ * resolution — the error text explains what to move). Returns the
+ * refreshed status; a no-op migration (nothing detected) resolves without
+ * side effects. The backend also emits `research:changed` (action
+ * `root_migrated`) after a real rename, but the resolved status is the
+ * refresh signal here — callers load it into the store directly.
+ */
+export async function migrateResearchRoots(projectId: string): Promise<ResearchStatus> {
+  try {
+    const app = getApp()
+    const result = await app.MigrateResearchRoots(projectId)
+    if (!isResearchStatus(result)) {
+      throw new Error('Invalid research status response from backend')
+    }
+    return normalizeResearchStatus(result)
+  } catch (err) {
+    logger.error('Failed to migrate research roots:', err)
     throw err
   }
 }
@@ -264,6 +289,10 @@ function isResearchStatus(v: unknown): v is ResearchStatus {
       if (!isStringArrayOrMissing(cards)) return false
     }
   }
+  // Legacy research roots follow the same string-array-or-missing contract:
+  // a malformed field fails closed at the boundary (the migration notice
+  // keys off its length) instead of crashing the panel render.
+  if (!isStringArrayOrMissing(v['legacy_research_roots'])) return false
   return true
 }
 
@@ -402,6 +431,9 @@ function normalizeResearchStatus(status: ResearchStatus): ResearchStatus {
   // as always-present collections, never null/undefined.
   status.pinned_research ??= []
   status.pinned_hypotheses ??= {}
+  // Same for the legacy-root list — the panel gates its migration notice on
+  // `.length > 0`, so the field must be an array on every normalized status.
+  status.legacy_research_roots ??= []
   return status
 }
 

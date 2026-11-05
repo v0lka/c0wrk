@@ -149,7 +149,7 @@ function paperRecord(overrides: Partial<PaperRecord> = {}): PaperRecord {
     claims: [],
     red_flags: [],
     uncertainties: [],
-    dir: '/ws/.research/papers/demo',
+    dir: '/ws/research/papers/demo',
     card_path: 'papers/demo/paper.md',
     pinned: false,
     linked_research: [],
@@ -164,8 +164,8 @@ function seed(paper: PaperRecord | null): void {
   }
   usePaperStore.getState().loadLibrary({
     project_id: 'p1',
-    research_root: '/ws/.research',
-    root: '/ws/.research/papers',
+    research_root: '/ws/research',
+    root: '/ws/research/papers',
     papers: [paper],
     pinned: [],
   })
@@ -858,7 +858,7 @@ describe('PaperWorkspace — Compare section (multi-paper comparisons)', () => {
 
   it('renders the comparison matrix for a library comparison that names the paper', () => {
     comparisonsHolder.current = {
-      dir: '/ws/.research/comparisons',
+      dir: '/ws/research/comparisons',
       loading: false,
       items: [{ slug: 'demo-vs-sparse', fileName: 'demo-vs-sparse.md', content: COMPARISON, error: null }],
     }
@@ -876,7 +876,7 @@ describe('PaperWorkspace — Compare section (multi-paper comparisons)', () => {
 
   it('ignores a comparison that does not name the paper (falls back to the empty state)', () => {
     comparisonsHolder.current = {
-      dir: '/ws/.research/comparisons',
+      dir: '/ws/research/comparisons',
       loading: false,
       items: [{ slug: 'other', fileName: 'other.md', content: OTHER, error: null }],
     }
@@ -887,7 +887,7 @@ describe('PaperWorkspace — Compare section (multi-paper comparisons)', () => {
   })
 
   it('falls back to the per-paper comparison artifact when no library comparison applies', () => {
-    comparisonsHolder.current = { dir: '/ws/.research/comparisons', loading: false, items: [] }
+    comparisonsHolder.current = { dir: '/ws/research/comparisons', loading: false, items: [] }
     artifactsHolder.current = artifactsOf({
       compare: {
         fileName: 'comparison.md',
@@ -905,7 +905,7 @@ describe('PaperWorkspace — Compare section (multi-paper comparisons)', () => {
   })
 
   it('shows the loading state while the comparisons directory is read', () => {
-    comparisonsHolder.current = { dir: '/ws/.research/comparisons', loading: true, items: [] }
+    comparisonsHolder.current = { dir: '/ws/research/comparisons', loading: true, items: [] }
     render()
     click('[data-testid="paper-section-compare"]')
     expect(document.querySelector('[data-testid="paper-compare-loading"]')).not.toBeNull()
@@ -915,7 +915,7 @@ describe('PaperWorkspace — Compare section (multi-paper comparisons)', () => {
     // An unreadable comparison has empty content, so it never matches the paper;
     // without the notice the section would silently look like "no comparisons".
     comparisonsHolder.current = {
-      dir: '/ws/.research/comparisons',
+      dir: '/ws/research/comparisons',
       loading: false,
       items: [{ slug: 'broken', content: '', error: 'EACCES: permission denied' }],
     }
