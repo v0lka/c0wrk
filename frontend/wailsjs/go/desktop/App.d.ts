@@ -425,9 +425,13 @@ export function SetPaperPinned(arg1:string,arg2:string,arg3:boolean):Promise<voi
 
 export function SetPromptSuggestionsEnabled(arg1:boolean):Promise<void>;
 
+export function SetResearchEnabled(arg1:boolean):Promise<void>;
+
 export function SetResearchPinned(arg1:string,arg2:string,arg3:boolean):Promise<void>;
 
 export function SetReviewStatus(arg1:string,arg2:string):Promise<void>;
+
+export function SetSpecsEnabled(arg1:boolean):Promise<void>;
 
 export function SetUpdateSettings(arg1:boolean):Promise<backend.UpdateSettings>;
 

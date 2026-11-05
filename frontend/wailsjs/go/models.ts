@@ -565,6 +565,18 @@ export namespace backend {
 	        this.respect_aiignore = source["respect_aiignore"];
 	    }
 	}
+	export class SidebarPackSettingsResponse {
+	    enabled: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new SidebarPackSettingsResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	    }
+	}
 	export class PromptSuggestionsSettingsResponse {
 	    enabled: boolean;
 	
@@ -653,6 +665,8 @@ export namespace backend {
 	    experimental: ExperimentalSettingsResponse;
 	    model_profiles: ModelProfilesSettingsResponse;
 	    prompt_suggestions: PromptSuggestionsSettingsResponse;
+	    research: SidebarPackSettingsResponse;
+	    specs: SidebarPackSettingsResponse;
 	    vector_index: VectorIndexSettingsResponse;
 	
 	    static createFrom(source: any = {}) {
@@ -670,6 +684,8 @@ export namespace backend {
 	        this.experimental = this.convertValues(source["experimental"], ExperimentalSettingsResponse);
 	        this.model_profiles = this.convertValues(source["model_profiles"], ModelProfilesSettingsResponse);
 	        this.prompt_suggestions = this.convertValues(source["prompt_suggestions"], PromptSuggestionsSettingsResponse);
+	        this.research = this.convertValues(source["research"], SidebarPackSettingsResponse);
+	        this.specs = this.convertValues(source["specs"], SidebarPackSettingsResponse);
 	        this.vector_index = this.convertValues(source["vector_index"], VectorIndexSettingsResponse);
 	    }
 	
@@ -2513,6 +2529,7 @@ export namespace backend {
 		    return a;
 		}
 	}
+	
 	
 	
 	

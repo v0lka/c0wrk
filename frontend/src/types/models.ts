@@ -642,11 +642,26 @@ export interface ConfigResponse {
    * `enabled: false` (or an unloaded config).
    */
   prompt_suggestions?: ConfigPromptSuggestionsResponse
+  /**
+   * Effective sidebar surface gates (config `research.enabled` / `specs.enabled`).
+   * Optional so existing typed mocks/test fixtures — which predate the fields —
+   * stay compatible; a payload without a block is treated as "on" (the backend's
+   * nil default = on). The backend reports false only for an explicit
+   * `enabled: false` (or an unloaded config).
+   */
+  research?: ConfigSidebarPackResponse
+  specs?: ConfigSidebarPackResponse
 }
 
 /** Effective prompt-suggestions gate exposed by GetConfig — mirrors the
  *  backend's PromptSuggestionsSettingsResponse (ADR-088). */
 export interface ConfigPromptSuggestionsResponse {
+  enabled: boolean
+}
+
+/** Effective sidebar surface gate (research / specs) exposed by GetConfig —
+ *  mirrors the backend's SidebarPackSettingsResponse. */
+export interface ConfigSidebarPackResponse {
   enabled: boolean
 }
 

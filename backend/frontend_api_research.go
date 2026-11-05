@@ -12,9 +12,7 @@ import (
 
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/project"
-	"github.com/v0lka/c0wrk/core/papers"
 	"github.com/v0lka/c0wrk/core/research"
-	"github.com/v0lka/c0wrk/core/specs"
 )
 
 // ---------------------------------------------------------------------------
@@ -1096,17 +1094,22 @@ func (f *FrontendAPI) parseResearchRootBestEffort(researchRoot string) *research
 	return root
 }
 
-// seedGlobalPacks seeds every c0wrk-owned pack into the GLOBAL agent
-// directories (~/.c0wrk/.agents/{skills,agents}) once per launch — the seven
-// research-* skills, the study-paper skill, the six spec-* skills, the
-// research Subagent Profile, and the specs Subagent Profile — from
-// NewFrontendAPI, BEFORE the skill/agent watchers start, so the fresh
-// directories are watched on the same launch. Idempotent,
-// non-destructive, per-pack failures logged and never fatal; classification
+// seedGlobalPacks reconciles every c0wrk-owned pack in the GLOBAL agent
+// directories (~/.c0wrk/.agents/{skills,agents}) with its sidebar surface
+// gate once per launch — the seven research-* skills, the study-paper
+// skill, the six spec-* skills, and the research/specs Subagent Profiles —
+// from Init, BEFORE the skill/agent watchers start, so the reconciled
+// directories are watched on the same launch. An ENABLED surface
+// (research.enabled / specs.enabled, default on) seeds or repairs its
+// packs; a DISABLED surface UNSEEDS them, converging the disk to the
+// config even when the toggle-time removal failed (a transient FS error, a
+// squatted pack name) or an earlier run was interrupted — unseeding is
+// idempotent and non-destructive (user-owned and locally modified copies
+// preserved). Per-pack failures logged and never fatal; classification
 // contract in core/research/skillpack.go, core/papers/skillpack.go, and
-// core/specs/{skillpack,agentpack}.go.
-// Serialized on researchSeedMu; skill/agent caches invalidated afterwards
-// (common invalidation after ALL packs).
+// core/specs/{skillpack,agentpack}.go. Serialized on researchSeedMu
+// against the toggle RPCs' applies; skill/agent caches invalidated by each
+// surface's pass.
 // See specs/domains/research.md and specs/decisions/105-vendor-spec-skillset.md.
 func (f *FrontendAPI) seedGlobalPacks() {
 	f.seedAcquire()
@@ -1114,65 +1117,30 @@ func (f *FrontendAPI) seedGlobalPacks() {
 		return
 	}
 
+	// The sidebar surface gates (research.enabled / specs.enabled) decide
+	// whether each surface's packs seed or unseed. Read BEFORE the seed
+	// lock: configMu nests under nothing here, and the RPC apply path takes
+	// researchSeedMu while holding configMu, so the reverse order would risk
+	// a deadlock. A nil config fail-opens (unset gates mean on). Then re-read
+	// INSIDE the lock from the researchSeedMu-guarded gate mirror, written
+	// by the toggle RPCs' applies before their disk pass: a toggle that
+	// landed between the two reads is honored here, so the launch seed can
+	// never act on a stale gate and resurrect just-unseeded packs. A nil
+	// mirror (no toggle has run this session) leaves the config snapshot
+	// authoritative.
+	researchOn, specsOn := f.sidebarPackGates()
+
 	f.researchSeedMu.Lock()
 	defer f.researchSeedMu.Unlock()
-
-	skillsDir := config.SkillsDir(f.agentDir)
-	if res, err := research.SeedSkills(skillsDir, f.log()); err != nil {
-		f.log().Warn("global research skill-pack seeding failed",
-			"skills_dir", skillsDir, "error", err)
-	} else {
-		f.log().Info("global research skill-pack seeded",
-			"skills_dir", skillsDir,
-			"seeded", len(res.Seeded), "updated", len(res.Updated),
-			"current", len(res.Current), "preserved", len(res.Preserved))
+	if f.packGateResearch != nil {
+		researchOn = *f.packGateResearch
+	}
+	if f.packGateSpecs != nil {
+		specsOn = *f.packGateSpecs
 	}
 
-	if res, err := papers.SeedSkills(skillsDir, f.log()); err != nil {
-		f.log().Warn("global paper skill-pack seeding failed",
-			"skills_dir", skillsDir, "error", err)
-	} else {
-		f.log().Info("global paper skill-pack seeded",
-			"skills_dir", skillsDir,
-			"seeded", len(res.Seeded), "updated", len(res.Updated),
-			"current", len(res.Current), "preserved", len(res.Preserved))
-	}
-
-	if res, err := specs.SeedSkills(skillsDir, f.log()); err != nil {
-		f.log().Warn("global spec skill-pack seeding failed",
-			"skills_dir", skillsDir, "error", err)
-	} else {
-		f.log().Info("global spec skill-pack seeded",
-			"skills_dir", skillsDir,
-			"seeded", len(res.Seeded), "updated", len(res.Updated),
-			"current", len(res.Current), "preserved", len(res.Preserved))
-	}
-
-	agentsDir := config.AgentsDir(f.agentDir)
-	if res, err := research.SeedAgents(agentsDir, f.log()); err != nil {
-		f.log().Warn("global research agent-pack seeding failed",
-			"agents_dir", agentsDir, "error", err)
-	} else {
-		f.log().Info("global research agent-pack seeded",
-			"agents_dir", agentsDir,
-			"seeded", len(res.Seeded), "updated", len(res.Updated),
-			"current", len(res.Current), "preserved", len(res.Preserved))
-	}
-
-	if res, err := specs.SeedAgents(agentsDir, f.log()); err != nil {
-		f.log().Warn("global spec agent-pack seeding failed",
-			"agents_dir", agentsDir, "error", err)
-	} else {
-		f.log().Info("global spec agent-pack seeded",
-			"agents_dir", agentsDir,
-			"seeded", len(res.Seeded), "updated", len(res.Updated),
-			"current", len(res.Current), "preserved", len(res.Preserved))
-	}
-
-	// The seeded directories are new c0wrk-owned content; drop any cached
-	// skill/agent listing so the next read rescans them.
-	f.invalidateSkillCache()
-	f.invalidateAgentCache()
+	f.runResearchPacks(researchOn)
+	f.runSpecsPacks(specsOn)
 }
 
 // applyResearchPins fills a ResearchStatusDTO's pin fields from the

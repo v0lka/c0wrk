@@ -19,13 +19,25 @@ type ConfigResponse struct {
 	// PromptSuggestions mirrors prompt_suggestions.enabled — see
 	// PromptSuggestionsSettingsResponse.
 	PromptSuggestions PromptSuggestionsSettingsResponse `json:"prompt_suggestions"`
-	VectorIndex       VectorIndexSettingsResponse       `json:"vector_index"`
+	// Research and Specs mirror the sidebar surface gates research.enabled /
+	// specs.enabled — see SidebarPackSettingsResponse.
+	Research    SidebarPackSettingsResponse `json:"research"`
+	Specs       SidebarPackSettingsResponse `json:"specs"`
+	VectorIndex VectorIndexSettingsResponse `json:"vector_index"`
 }
 
 // PromptSuggestionsSettingsResponse exposes the prompt_suggestions.enabled
 // gate via SuggestionsEnabled() — nil config = on, unloaded config = false
 // (ADR-088, specs/domains/prompt-suggestions.md).
 type PromptSuggestionsSettingsResponse struct {
+	Enabled bool `json:"enabled"`
+}
+
+// SidebarPackSettingsResponse exposes one sidebar surface gate
+// (research.enabled / specs.enabled) via PackEnabled() — nil config = on,
+// unloaded config = false (the sidebar-packs ADR,
+// specs/domains/{research,specs}.md).
+type SidebarPackSettingsResponse struct {
 	Enabled bool `json:"enabled"`
 }
 
