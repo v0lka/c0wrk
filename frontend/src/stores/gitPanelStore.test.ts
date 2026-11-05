@@ -40,6 +40,7 @@ describe('gitPanelStore', () => {
     expect(s.viewMode).toBe('flat')
     expect(s.sortBy).toBe('path')
     expect(s.groupBy).toBe('none')
+    expect(s.branchListTree).toBe(false)
     expect(s.entries).toEqual([])
     expect(s.commitByProject).toEqual({})
     expect(s.commitMessageByBranch).toEqual({})
@@ -630,6 +631,71 @@ describe('gitPanelStore — D8 (sortBy / groupBy)', () => {
     const merged = mergeGitPanel({ sortBy: 'bogus', groupBy: 'nope' }, current)
     expect(merged.sortBy).toBe('path')
     expect(merged.groupBy).toBe('none')
+  })
+})
+
+// --- Branch-list display mode (branchListTree) ---
+
+describe('gitPanelStore — branch list display mode (branchListTree)', () => {
+  beforeEach(() => {
+    resetStore()
+  })
+
+  it('setBranchListTree flips the display mode both ways', () => {
+    const { setBranchListTree } = useGitPanelStore.getState()
+    setBranchListTree(true)
+    expect(useGitPanelStore.getState().branchListTree).toBe(true)
+    setBranchListTree(false)
+    expect(useGitPanelStore.getState().branchListTree).toBe(false)
+  })
+
+  it('reset restores branchListTree to flat', () => {
+    const { setBranchListTree, reset } = useGitPanelStore.getState()
+    setBranchListTree(true)
+    reset()
+    expect(useGitPanelStore.getState().branchListTree).toBe(false)
+  })
+
+  it('partialize persists branchListTree alongside the other display prefs', () => {
+    const { setBranchListTree, setSortBy } = useGitPanelStore.getState()
+    setBranchListTree(true)
+    setSortBy('status')
+
+    const partial = partializeGitPanel(useGitPanelStore.getState())
+    expect(partial.branchListTree).toBe(true)
+    expect(partial.sortBy).toBe('status')
+  })
+
+  it('merge defaults branchListTree to flat for legacy state without the key', () => {
+    const current = useGitPanelStore.getState()
+    // Simulate an older localStorage entry written before the flag existed.
+    const merged = mergeGitPanel({ viewMode: 'tree', expandedDirs: ['src'] }, current)
+    expect(merged.branchListTree).toBe(false)
+    expect(merged.viewMode).toBe('tree')
+    expect(merged.expandedDirs).toEqual(new Set(['src']))
+  })
+
+  it('merge restores a persisted branchListTree through a JSON round-trip', () => {
+    const { setBranchListTree } = useGitPanelStore.getState()
+    setBranchListTree(true)
+    const partial = partializeGitPanel(useGitPanelStore.getState())
+
+    // Merge into a FRESH store: a true result can only come from the
+    // persisted payload, not from the merge base.
+    useGitPanelStore.getState().reset()
+    const rehydrated = JSON.parse(JSON.stringify(partial)) as unknown
+    const merged = mergeGitPanel(rehydrated, useGitPanelStore.getState())
+    expect(merged.branchListTree).toBe(true)
+  })
+
+  it('merge rejects non-boolean persisted values but keeps explicit false', () => {
+    const current = useGitPanelStore.getState()
+    expect(mergeGitPanel({ branchListTree: 'true' }, current).branchListTree).toBe(false)
+    expect(mergeGitPanel({ branchListTree: 1 }, current).branchListTree).toBe(false)
+    expect(mergeGitPanel({ branchListTree: null }, current).branchListTree).toBe(false)
+    expect(mergeGitPanel({ branchListTree: undefined }, current).branchListTree).toBe(false)
+    expect(mergeGitPanel({ branchListTree: false }, current).branchListTree).toBe(false)
+    expect(mergeGitPanel({ branchListTree: true }, current).branchListTree).toBe(true)
   })
 })
 
