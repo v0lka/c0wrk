@@ -1505,6 +1505,16 @@ func (s *Service) commitEmbeddedDocuments(ctx context.Context, vecDocs []chromem
 	if len(vecDocs) == 0 {
 		return nil
 	}
+	// The nil guard is a crash barrier, not ceremony: this is the one commit
+	// path reachable while the working store was torn down underneath a pass
+	// (a displaced corpus build's cleanup once closed the displacing
+	// builder's store mid-pass) — chromem's AddDocuments dereferences its
+	// receiver only inside spawned goroutines, so a nil collection here is an
+	// unrecoverable process-killing SIGSEGV, never an error. Service
+	// .AddDocuments carries the same guard at its own entry.
+	if s.current.collection == nil {
+		return errors.New("no collection available")
+	}
 	if len(vecDocs) > embeddingCommitWindowSize {
 		return fmt.Errorf("embedded commit window contains %d documents; limit is %d", len(vecDocs), embeddingCommitWindowSize)
 	}

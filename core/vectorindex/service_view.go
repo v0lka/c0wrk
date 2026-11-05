@@ -214,6 +214,34 @@ func (s *Service) PublishCorpus(snapKey string) error {
 func (s *Service) CloseWorkingStore() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.closeWorkingStoreLocked()
+}
+
+// CloseWorkingStoreIfCurrent is CloseWorkingStore gated on ownership: the
+// close runs only while the working store is still snapKey's. The corpus
+// build pipeline is single-flight per snapshot KEY, not globally (see
+// CorpusRegistry.EnsureCorpus), so a concurrent attach of a DIFFERENT
+// snapshot may displace this builder's working store between its full pass
+// and the publish — at that point the slot is the displacer's, and closing
+// it would tear down the displacer's freshly opened store mid-pass,
+// stranding its accumulator commits on a nil collection (the silent
+// app-exit crash of 2026-11-05: a chromem AddDocuments goroutine
+// dereferencing a nil receiver cannot be recovered and kills the process).
+// The displacer owns the slot and closes it through its own callback.
+// Reports whether the close ran.
+func (s *Service) CloseWorkingStoreIfCurrent(snapKey string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.current.currentBranch != snapKey {
+		return false
+	}
+	s.closeWorkingStoreLocked()
+	return true
+}
+
+// closeWorkingStoreLocked releases the working store's residents and forgets
+// the store key. The caller must hold s.mu (write).
+func (s *Service) closeWorkingStoreLocked() {
 	s.releaseBranchResidentsLocked()
 	s.current.currentBranch = ""
 	s.current.fileHashes = nil

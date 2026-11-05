@@ -604,18 +604,27 @@ func (idx *Indexer) AttachSnapshot(ctx context.Context, workspacePath, legacyBra
 		// ONLY THEN release the corpus's read-write residents — the lease
 		// settles with no write handle left behind, so a concurrent
 		// attacher's read-only open never contends the lexical lock.
+		//
+		// Every release is OWNERSHIP-GATED (CloseWorkingStoreIfCurrent):
+		// the lease is single-flight per snapshot KEY, so an attach of a
+		// different snapshot racing this build can displace the working
+		// store between the full pass and the publish — that slot is the
+		// displacer's now, and closing it would strand the displacer's
+		// pass on a nil collection mid-commit (a process-killing panic in
+		// chromem's commit goroutines). A displaced build simply fails its
+		// own publish and replays on the next attach.
 		if err := idx.service.BuildCorpusStore(ctx, key); err != nil {
 			return err
 		}
 		if err := idx.IndexFull(ctx, workspacePath); err != nil {
-			idx.service.CloseWorkingStore()
+			idx.service.CloseWorkingStoreIfCurrent(key)
 			return err
 		}
 		if err := idx.service.PublishCorpus(key); err != nil {
-			idx.service.CloseWorkingStore()
+			idx.service.CloseWorkingStoreIfCurrent(key)
 			return err
 		}
-		idx.service.CloseWorkingStore()
+		idx.service.CloseWorkingStoreIfCurrent(key)
 		return nil
 	}, func() {
 		idx.onProgress(PhaseMigration, IndexStateMigrating, 0, 0, "")
