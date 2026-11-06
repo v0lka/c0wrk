@@ -55,6 +55,9 @@ type Tokens struct {
 	TokenType string `json:"token_type,omitempty"`
 	// Expiry is when AccessToken stops being valid (zero when unknown).
 	Expiry time.Time `json:"expiry"`
+	// ExpiresIn is the issuer's reported access-token lifetime in seconds.
+	// Memory-only — used to size the device-flow refresh threshold.
+	ExpiresIn int `json:"-"`
 }
 
 // tokenResponse is the wire shape of a successful token-endpoint reply.
@@ -68,15 +71,28 @@ type tokenResponse struct {
 }
 
 // tokens converts a wire response into Tokens, stamping the absolute expiry.
+// When the access token is a JWT, its exp claim is preferred if earlier than
+// expires_in (Kimi access tokens are short-lived ES256 JWTs; see
+// specs/domains/llm-providers.md).
 func (r *tokenResponse) tokens(now time.Time) *Tokens {
 	t := &Tokens{
 		AccessToken:  r.AccessToken,
 		RefreshToken: r.RefreshToken,
 		IDToken:      r.IDToken,
 		TokenType:    r.TokenType,
+		ExpiresIn:    r.ExpiresIn,
 	}
 	if r.ExpiresIn > 0 {
 		t.Expiry = now.Add(time.Duration(r.ExpiresIn) * time.Second)
+	}
+	if exp, ok := jwtExpiryUnix(r.AccessToken); ok {
+		jwtExpiry := time.Unix(exp, 0)
+		if t.Expiry.IsZero() || jwtExpiry.Before(t.Expiry) {
+			t.Expiry = jwtExpiry
+			if remaining := int(jwtExpiry.Sub(now).Seconds()); remaining > 0 {
+				t.ExpiresIn = remaining
+			}
+		}
 	}
 	return t
 }
@@ -93,15 +109,53 @@ func (f *Flow) exchange(ctx context.Context, code, verifier, redirectURI string)
 	return postTokenForm(ctx, f.client, f.profile, form)
 }
 
+// maxRefreshAttempts bounds transient refresh retries (429 / 5xx), matching
+// the official Kimi Code CLI. Non-retryable OAuth errors fail immediately.
+const maxRefreshAttempts = 3
+
 // refreshTokens redeems a refresh token for a fresh token set. When the
 // endpoint omits a new refresh token the caller must keep the previous one.
+// Transient HTTP failures (429, 500, 502, 503, 504) are retried with
+// exponential backoff; invalid_grant / invalid_client are not.
 func refreshTokens(ctx context.Context, client *http.Client, profile Profile, refreshToken string) (*tokenResponse, error) {
 	form := url.Values{
 		"grant_type":    {"refresh_token"},
 		"client_id":     {profile.ClientID},
 		"refresh_token": {refreshToken},
 	}
-	return postTokenForm(ctx, client, profile, form)
+	var lastErr error
+	for attempt := 0; attempt < maxRefreshAttempts; attempt++ {
+		if attempt > 0 {
+			delay := time.Duration(1<<uint(attempt-1)) * time.Second
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, ctx.Err()
+			case <-timer.C:
+			}
+		}
+		resp, err := postTokenForm(ctx, client, profile, form)
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+		var tErr *TokenEndpointError
+		if errors.As(err, &tErr) && !retryableTokenHTTPStatus(tErr.HTTPStatus) {
+			return nil, err
+		}
+	}
+	return nil, lastErr
+}
+
+func retryableTokenHTTPStatus(status int) bool {
+	switch status {
+	case http.StatusTooManyRequests, http.StatusInternalServerError,
+		http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
 }
 
 // postForm submits one OAuth form without logging its secret values.

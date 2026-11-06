@@ -9,7 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/v0lka/c0wrk/core/version"
 )
@@ -53,6 +55,94 @@ func TestKimiTokenRequestUsesDeviceEndpointAndOmitsLegacyHeaders(t *testing.T) {
 	p.Issuer = srv.URL
 	if _, err := refreshTokens(context.Background(), srv.Client(), p, "secret"); err != nil {
 		t.Fatalf("refreshTokens: %v", err)
+	}
+}
+
+// TestKimiDeviceFlowRefreshThresholdMatchesKimiCLI pins the Moonshot
+// half-life / 5-minute floor: a 900 s access token refreshes once remaining
+// life drops below 450 s (not the ChatGPT 30 s skew).
+func TestKimiDeviceFlowRefreshThresholdMatchesKimiCLI(t *testing.T) {
+	clock := newManualClock()
+	m := &TokenManager{
+		profile: Kimi(),
+		skew:    DefaultExpirySkew,
+		now:     clock.Now,
+		tokens: &Tokens{
+			AccessToken:  "at",
+			RefreshToken: "rt",
+			ExpiresIn:    900,
+			Expiry:       clock.Now().Add(900 * time.Second),
+		},
+	}
+	if got := m.refreshThresholdLocked(); got != 450*time.Second {
+		t.Fatalf("threshold = %v, want 450s (max(5m, 900s/2))", got)
+	}
+
+	clock.Advance(400 * time.Second) // 500 s remaining — still outside the 450 s window
+	if !m.validLocked() {
+		t.Fatal("token at 400 s of a 900 s life should still be valid")
+	}
+	clock.Advance(60 * time.Second) // 440 s remaining — inside the window
+	if m.validLocked() {
+		t.Fatal("token at 460 s of a 900 s life must refresh (kimi-cli half-life)")
+	}
+}
+
+func TestRefreshTokensRetriesTransientHTTPStatuses(t *testing.T) {
+	var calls atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := calls.Add(1)
+		if n < 3 {
+			http.Error(w, `{"error":"server_error"}`, http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"at-ok","refresh_token":"rt-ok","token_type":"Bearer","expires_in":900}`))
+	}))
+	t.Cleanup(srv.Close)
+	p := Kimi()
+	p.Issuer = srv.URL
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	resp, err := refreshTokens(ctx, srv.Client(), p, "secret")
+	if err != nil {
+		t.Fatalf("refreshTokens: %v", err)
+	}
+	if resp.AccessToken != "at-ok" || calls.Load() != 3 {
+		t.Fatalf("access = %q, calls = %d, want at-ok after 3 attempts", resp.AccessToken, calls.Load())
+	}
+}
+
+func TestRefreshTokensDoesNotRetryInvalidGrant(t *testing.T) {
+	var calls atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		http.Error(w, `{"error":"invalid_grant","error_description":"refresh token expired"}`, http.StatusBadRequest)
+	}))
+	t.Cleanup(srv.Close)
+	p := Kimi()
+	p.Issuer = srv.URL
+	_, err := refreshTokens(context.Background(), srv.Client(), p, "secret")
+	var tErr *TokenEndpointError
+	if !errors.As(err, &tErr) || tErr.Code != "invalid_grant" {
+		t.Fatalf("err = %v, want invalid_grant", err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("calls = %d, want 1 (no retry on invalid_grant)", calls.Load())
+	}
+}
+
+func TestTokenResponsePrefersEarlierJWTExpiry(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	access := makeJWT(map[string]any{"exp": now.Add(900 * time.Second).Unix()})
+	got := (&tokenResponse{
+		AccessToken: access, RefreshToken: "rt", TokenType: "Bearer", ExpiresIn: 3600,
+	}).tokens(now)
+	if !got.Expiry.Equal(now.Add(900 * time.Second)) {
+		t.Fatalf("Expiry = %v, want JWT exp (900s), not expires_in 3600", got.Expiry)
+	}
+	if got.ExpiresIn != 900 {
+		t.Fatalf("ExpiresIn = %d, want 900 (synced to JWT)", got.ExpiresIn)
 	}
 }
 

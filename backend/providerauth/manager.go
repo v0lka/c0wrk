@@ -13,9 +13,15 @@ import (
 	"github.com/v0lka/sp4rk/llm"
 )
 
-// DefaultExpirySkew is how long before the reported expiry a token is
-// considered stale and refreshed proactively.
+// DefaultExpirySkew is how long before the reported expiry a ChatGPT-style
+// access token is considered stale and refreshed proactively.
 const DefaultExpirySkew = 30 * time.Second
+
+// deviceFlowMinRefreshThreshold is the Moonshot kimi-cli floor
+// (MIN_REFRESH_THRESHOLD_SECONDS=300): device-flow access tokens are ~15 min,
+// so a 30 s skew leaves almost no margin before API 401s. See
+// specs/domains/llm-providers.md (Kimi subscription auth).
+const deviceFlowMinRefreshThreshold = 5 * time.Minute
 
 // persistedAuthVersion is the on-disk schema version of the stored secret.
 const persistedAuthVersion = 2
@@ -577,7 +583,31 @@ func (m *TokenManager) validLocked() bool {
 	if m.tokens.Expiry.IsZero() {
 		return true
 	}
-	return m.now().Add(m.skew).Before(m.tokens.Expiry)
+	return m.now().Add(m.refreshThresholdLocked()).Before(m.tokens.Expiry)
+}
+
+// refreshThresholdLocked sizes the proactive refresh window. ChatGPT keeps
+// DefaultExpirySkew. Device-flow (Kimi) matches kimi-cli:
+// max(5m, expires_in/2), capped below the token lifetime so a fresh token
+// is never immediately stale.
+func (m *TokenManager) refreshThresholdLocked() time.Duration {
+	threshold := m.skew
+	if !m.profile.DeviceFlow || m.tokens == nil || m.tokens.ExpiresIn <= 0 {
+		return threshold
+	}
+	lifetime := time.Duration(m.tokens.ExpiresIn) * time.Second
+	half := lifetime / 2
+	threshold = half
+	if threshold < deviceFlowMinRefreshThreshold {
+		threshold = deviceFlowMinRefreshThreshold
+	}
+	if threshold >= lifetime {
+		threshold = half
+	}
+	if threshold < m.skew {
+		threshold = m.skew
+	}
+	return threshold
 }
 
 // refreshEpoch performs one refresh round-trip for credential epoch gen
