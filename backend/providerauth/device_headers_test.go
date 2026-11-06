@@ -43,7 +43,7 @@ func TestKimiDeviceHeadersStableAcrossManagers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat device_id: %v", err)
 	}
-	if got := info.Mode().Perm(); got != 0o600 {
+	if got := info.Mode().Perm(); runtime.GOOS != "windows" && got != 0o600 {
 		t.Errorf("device_id mode = %o, want 600", got)
 	}
 
@@ -115,7 +115,7 @@ func TestKimiDeviceIDRepairsPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := info.Mode().Perm(); got != 0o600 {
+	if got := info.Mode().Perm(); runtime.GOOS != "windows" && got != 0o600 {
 		t.Errorf("device_id mode after read = %o, want 600", got)
 	}
 }

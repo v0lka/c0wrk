@@ -42,18 +42,24 @@ func stableDeviceID(agentDir string) (string, error) {
 	}
 
 	id := uuid.NewString()
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if os.IsExist(err) {
-		return readDeviceID(path)
-	}
+	file, err := os.CreateTemp(agentDir, ".device_id-*")
 	if err != nil {
 		return "", err
 	}
+	tmpPath := file.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
 	if _, err := file.WriteString(id + "\n"); err != nil {
 		_ = file.Close()
 		return "", err
 	}
 	if err := file.Close(); err != nil {
+		return "", err
+	}
+	// A hard link publishes the complete file without replacing a competitor's ID.
+	if err := os.Link(tmpPath, path); err != nil {
+		if os.IsExist(err) {
+			return readDeviceID(path)
+		}
 		return "", err
 	}
 	return id, nil
