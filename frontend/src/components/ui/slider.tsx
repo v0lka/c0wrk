@@ -22,7 +22,10 @@ const asRange = (v: number | number[] | undefined): number[] | undefined =>
   v === undefined ? undefined : Array.isArray(v) ? v : [v]
 
 type SliderProps = Omit<React.ComponentProps<typeof SliderPrimitive.Root>, 'value' | 'defaultValue'> & {
-  /** ARIA/props for the thumb — the announced element (role=slider). */
+  /**
+   * Props spread onto the thumb — the announced element (role=slider).
+   * `className` merges after the built-in visuals instead of replacing them.
+   */
   thumb?: React.ComponentProps<typeof SliderPrimitive.Thumb>
   /** Scalar accepted; normalized to Radix's array shape. */
   value?: number | number[]
@@ -61,7 +64,10 @@ function Slider({ className, thumb: thumbProps, value, defaultValue, ...props }:
           key={index}
           {...thumbProps}
           data-slot="slider-thumb"
-          className="block size-4 shrink-0 rounded-full border border-primary bg-background shadow-sm outline-none transition-[color,box-shadow] focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-50"
+          className={cn(
+            "block size-4 shrink-0 rounded-full border border-primary bg-background shadow-sm outline-none transition-[color,box-shadow] focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-50",
+            thumbProps?.className
+          )}
         />
       ))}
     </SliderPrimitive.Root>

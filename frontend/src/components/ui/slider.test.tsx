@@ -138,6 +138,22 @@ describe('Slider', () => {
     expect(thumb().className).toContain('rounded-full')
   })
 
+  it('merges a caller thumb className instead of replacing the built-in visuals', () => {
+    act(() => {
+      root.render(
+        <Slider min={50} max={200} step={5} value={[100]} thumb={{ className: 'size-6' }} />,
+      )
+    })
+    // cn + tailwind-merge semantics: the caller's utility wins over a
+    // conflicting built-in one (size-6 replaces size-4) while the rest of
+    // the built-in visuals survive — a spread that silently dropped or
+    // wholly replaced them would fail here.
+    const className = thumb().className
+    expect(className).toContain('size-6')
+    expect(className).not.toContain('size-4')
+    expect(className).toContain('rounded-full')
+  })
+
   it('steps by the step prop on ArrowRight and clamps at max', () => {
     const onValueChange = vi.fn()
     act(() => {

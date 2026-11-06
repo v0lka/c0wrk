@@ -42,14 +42,14 @@ function unmountHook(): void {
 }
 
 /** Build a wheel event; `preventDefault` is spied so callers can assert it. */
-function wheelEvent(deltaY: number, ctrlKey: boolean, metaKey = false) {
-  const event = new WheelEvent('wheel', { cancelable: true, deltaY, ctrlKey, metaKey })
+function wheelEvent(deltaY: number, ctrlKey: boolean, metaKey = false, altKey = false) {
+  const event = new WheelEvent('wheel', { cancelable: true, deltaY, ctrlKey, metaKey, altKey })
   return { event, prevented: vi.spyOn(event, 'preventDefault') }
 }
 
 /** Dispatch a wheel event on window (inside act — it can trigger renders). */
-function dispatchWheel(deltaY: number, ctrlKey: boolean, metaKey = false) {
-  const { event, prevented } = wheelEvent(deltaY, ctrlKey, metaKey)
+function dispatchWheel(deltaY: number, ctrlKey: boolean, metaKey = false, altKey = false) {
+  const { event, prevented } = wheelEvent(deltaY, ctrlKey, metaKey, altKey)
   act(() => {
     window.dispatchEvent(event)
   })
@@ -147,6 +147,20 @@ describe('useCtrlWheelScale — Ctrl+wheel stepping', () => {
     expect(plain.prevented).not.toHaveBeenCalled()
     expect(useUiScaleStore.getState().scale).toBe(100)
     expect(hud?.visible).toBe(false)
+  })
+
+  it('ignores an AltGr wheel (Ctrl+Alt): untouched, no step, no HUD, no timer', () => {
+    renderHook()
+
+    // AltGr is the system's Ctrl+Alt; a wheel arriving with it held is not
+    // a zoom chord — mirroring the keyboard path's AltGr exclusion. The
+    // event stays untouched: no preventDefault (native page zoom keeps its
+    // meaning), no step, no HUD, no hide timer.
+    const altgr = dispatchWheel(-100, true, false, true)
+    expect(altgr.prevented).not.toHaveBeenCalled()
+    expect(useUiScaleStore.getState().scale).toBe(100)
+    expect(hud?.visible).toBe(false)
+    expect(vi.getTimerCount()).toBe(0)
   })
 })
 
@@ -340,6 +354,18 @@ describe('useCtrlWheelScale — macOS: Cmd is the zoom modifier', () => {
     expect(hud?.visible).toBe(true)
     advance(1)
     expect(hud?.visible).toBe(false)
+  })
+
+  it('ignores a Cmd+Alt wheel (AltGr-styled chord), like the keyboard path', () => {
+    renderHook()
+
+    // Alt is excluded from the chord on mac for the same symmetry as the
+    // keyboard gate: a modifier+Alt wheel is never a zoom chord.
+    const altgr = dispatchWheel(-100, false, true, true)
+    expect(altgr.prevented).not.toHaveBeenCalled()
+    expect(useUiScaleStore.getState().scale).toBe(100)
+    expect(hud?.visible).toBe(false)
+    expect(vi.getTimerCount()).toBe(0)
   })
 
   it('Meta keydown auto-repeat keeps the HUD up; releasing Cmd hides it', () => {

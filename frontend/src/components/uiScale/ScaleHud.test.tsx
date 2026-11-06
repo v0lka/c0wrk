@@ -8,7 +8,8 @@
 // live slider bound to the store, and a label mirroring the current scale —
 // every interaction landing in setScale, which applies the <html> zoom
 // synchronously. The App-mount tests assert the root composition: the HUD
-// is mounted beside ExitConfirmDialog in the app's render branches.
+// is hosted once above the app's phase switch (a phase transition never
+// remounts it), while ExitConfirmDialog stays a per-phase overlay.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { StrictMode, act } from 'react'
@@ -56,10 +57,10 @@ vi.hoisted(() => {
 
 // --- App-mount tests: the harness from App.test.tsx, heavy deps stubbed ---
 vi.mock('@/components/layout/AppLayout', () => ({ AppLayout: () => null }))
-// Pass-through provider: in the main phase every root child (ScaleHud
-// included) sits inside TooltipProvider, so stubbing it to null would drop
-// them all — the other mocked children stay null, the provider itself must
-// render its subtree for this composition test to see anything.
+// Pass-through provider: the main-phase body renders inside it (its mocked
+// children stay null) — the provider must render its subtree for the
+// composition test to see that body. ScaleHud sits beside it, hosted once
+// above the phase switch.
 vi.mock('@/components/ui/tooltip', () => ({
   TooltipProvider: ({ children }: { children?: ReactNode }) => children,
 }))
@@ -86,8 +87,33 @@ vi.mock('@/hooks/useAutonomyLoader', () => ({ useAutonomyLoader: () => {} }))
 vi.mock('@/stores/activeSessionsStore', () => ({ useActiveSessionsRefresh: () => {} }))
 vi.mock('@/lib/sound', () => ({ initSoundUnlock: () => {} }))
 vi.mock('@/lib/systemNotifications', () => ({ initSystemNotifications: () => {} }))
+// Captured subscribe handlers: the phase-transition test fires the app
+// lifecycle events (tool_manager:start/done, backend:ready) through the same
+// mock to drive App's phase machine exactly as the backend would.
+const runtimeEvents = vi.hoisted(() => {
+  const handlers = new Map<string, Set<(data: unknown) => void>>()
+  return {
+    subscribe(event: string, handler: (data: unknown) => void): () => void {
+      let bucket = handlers.get(event)
+      if (bucket === undefined) {
+        bucket = new Set()
+        handlers.set(event, bucket)
+      }
+      bucket.add(handler)
+      return () => {
+        bucket.delete(handler)
+      }
+    },
+    emit(event: string, data?: unknown): void {
+      handlers.get(event)?.forEach((handler) => handler(data))
+    },
+    reset(): void {
+      handlers.clear()
+    },
+  }
+})
 vi.mock('@/api/runtime', () => ({
-  subscribe: vi.fn(() => () => {}),
+  subscribe: vi.fn(runtimeEvents.subscribe),
   onGlobalEvent: vi.fn(() => () => {}),
   isWailsReady: vi.fn(() => false),
   isWebTransport: vi.fn(() => false),
@@ -135,6 +161,7 @@ beforeEach(() => {
   useUiScaleStore.setState({ scale: 100 })
   localStorage.clear()
   document.documentElement.style.zoom = ''
+  runtimeEvents.reset()
   control.visible = false
   control.hold.mockClear()
   control.release.mockClear()
@@ -348,9 +375,35 @@ describe('App mounts ScaleHud', () => {
   it('renders the HUD while the wheel gesture is active', async () => {
     control.visible = true
     const unmount = await mountApp()
-    // The splash-phase branch carries the HUD just like the main one —
-    // presence of the slider proves the root composition mounts ScaleHud.
+    // The harness lands in the main phase (the listProjects safety net) —
+    // the slider's presence proves the root composition mounts ScaleHud
+    // there exactly as on the splash screens.
     expect(document.querySelector('[role="slider"]')).not.toBeNull()
+    await unmount()
+  })
+
+  it('keeps the same HUD mount across phase transitions (no remount)', async () => {
+    control.visible = true
+    const unmount = await mountApp()
+    const sliderBefore = document.querySelector('[role="slider"]')
+    expect(sliderBefore).not.toBeNull()
+
+    // Drive the real startup sequence — tool install splash → waiting for
+    // the backend → main. The HUD is hosted once above the phase switch, so
+    // every transition must keep the very same DOM node (a per-branch host
+    // would remount it: a new node, re-attached window listeners, a visible
+    // HUD dropped mid-gesture).
+    await act(async () => {
+      runtimeEvents.emit('tool_manager:start', { tools: [{ name: 'rg', version: '14.1.0' }] })
+    })
+    await act(async () => {
+      runtimeEvents.emit('tool_manager:done')
+    })
+    await act(async () => {
+      runtimeEvents.emit('backend:ready')
+    })
+
+    expect(document.querySelector('[role="slider"]')).toBe(sliderBefore)
     await unmount()
   })
 

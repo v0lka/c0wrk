@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
+import type { ReactNode } from 'react'
 import { AppLayout } from '@/components/layout/AppLayout'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { subscribe } from '@/api/runtime'
@@ -289,101 +290,109 @@ function App() {
 
   // ── Render ─────────────────────────────────────────────────────────────
 
-  // Phase: splash (tool install in progress).
+  // Per-phase content. ScaleHud is deliberately not part of any branch: it
+  // is hosted once after this switch (the final return below), so a phase
+  // transition keeps the same mount — a per-branch host would remount the
+  // HUD on every transition, re-attaching its window listeners and dropping
+  // a visible HUD mid-gesture.
+  let phaseBody: ReactNode
   if (phase === 'splash' && splashTools !== null) {
-    return (
+    // Tool install in progress.
+    phaseBody = (
       <>
         <ToolInstallSplash tools={splashTools} progressMap={progressMap} toolsTotal={splashToolsTotal} />
         {/* Mounted in every phase: a webview reload (wake recovery) can land
             back in splash while sessions keep running in the backend, and the
             close guard's confirmation modal must still be renderable then. */}
         <ExitConfirmDialog />
-        <ScaleHud />
       </>
     )
-  }
-
-  // Phase: splash but no tool_manager:start received yet — show minimal spinner.
-  if (phase === 'splash') {
-    return (
+  } else if (phase === 'splash') {
+    // No tool_manager:start received yet — minimal spinner.
+    phaseBody = (
       <>
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background">
           <div className="size-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
         </div>
         <ExitConfirmDialog />
-        <ScaleHud />
       </>
     )
-  }
-
-  // Phase: waiting_ready — tools done, waiting for backend.
-  if (phase === 'waiting_ready') {
-    return (
+  } else if (phase === 'waiting_ready') {
+    // Tools done, waiting for backend.
+    phaseBody = (
       <>
         <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-4 bg-background">
           <div className="size-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
           <p className="text-sm text-muted-foreground">Starting c0wrk…</p>
         </div>
         <ExitConfirmDialog />
-        <ScaleHud />
       </>
+    )
+  } else {
+    // Main — normal app rendering.
+    phaseBody = (
+      <TooltipProvider>
+        <div className="fixed top-0 left-0 right-0 z-50 flex flex-col pointer-events-none">
+          {startupError && (
+            <div className="bg-destructive/95 text-destructive-foreground p-4 shadow-lg pointer-events-auto">
+              <div className="max-w-4xl mx-auto flex items-start gap-3">
+                <AlertCircle className="h-5 w-5 mt-0.5 flex-shrink-0" />
+                <div className="flex-1">
+                  <p className="font-semibold">Startup Error</p>
+                  <p className="text-sm opacity-90">{startupError.message}</p>
+                  <p className="text-xs opacity-75 mt-1 font-mono">{startupError.error}</p>
+                </div>
+                <button
+                  title="Dismiss"
+                  onClick={dismissStartupError}
+                  className="p-1 hover:bg-destructive-foreground/10 active:bg-destructive-foreground/20 rounded transition-colors"
+                  aria-label="Dismiss"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+          )}
+          {runtimeError && (
+            <div className="bg-destructive/90 text-destructive-foreground px-4 py-3 shadow-lg pointer-events-auto animate-in fade-in duration-300">
+              <div className="max-w-4xl mx-auto flex items-center gap-3">
+                <AlertCircle className="h-5 w-5 flex-shrink-0" />
+                <p className="flex-1 text-sm font-medium">{runtimeError.message}</p>
+                <button
+                  title="Dismiss"
+                  onClick={dismissRuntimeError}
+                  className="p-1 hover:bg-destructive-foreground/10 active:bg-destructive-foreground/20 rounded transition-colors"
+                  aria-label="Dismiss"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+        <AppLayout />
+        <SettingsModal />
+        <WorkDirsModal />
+        <CreateProjectDialogAlwaysMounted />
+        <UpdateToast />
+        <GitConfigRiskToast />
+        {/* Research store sync (status + incremental graph updates), mounted
+            once here — so ResearchPanel and ResearchWorkspace stay pure views
+            and never double-mount the watchdog/full-refresh paths. */}
+        <ResearchEventBridge />
+        <ExitConfirmDialog />
+      </TooltipProvider>
     )
   }
 
-  // Phase: main — normal app rendering.
   return (
-    <TooltipProvider>
-      <div className="fixed top-0 left-0 right-0 z-50 flex flex-col pointer-events-none">
-        {startupError && (
-          <div className="bg-destructive/95 text-destructive-foreground p-4 shadow-lg pointer-events-auto">
-            <div className="max-w-4xl mx-auto flex items-start gap-3">
-              <AlertCircle className="h-5 w-5 mt-0.5 flex-shrink-0" />
-              <div className="flex-1">
-                <p className="font-semibold">Startup Error</p>
-                <p className="text-sm opacity-90">{startupError.message}</p>
-                <p className="text-xs opacity-75 mt-1 font-mono">{startupError.error}</p>
-              </div>
-              <button
-                title="Dismiss"
-                onClick={dismissStartupError}
-                className="p-1 hover:bg-destructive-foreground/10 active:bg-destructive-foreground/20 rounded transition-colors"
-                aria-label="Dismiss"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-          </div>
-        )}
-        {runtimeError && (
-          <div className="bg-destructive/90 text-destructive-foreground px-4 py-3 shadow-lg pointer-events-auto animate-in fade-in duration-300">
-            <div className="max-w-4xl mx-auto flex items-center gap-3">
-              <AlertCircle className="h-5 w-5 flex-shrink-0" />
-              <p className="flex-1 text-sm font-medium">{runtimeError.message}</p>
-              <button
-                title="Dismiss"
-                onClick={dismissRuntimeError}
-                className="p-1 hover:bg-destructive-foreground/10 active:bg-destructive-foreground/20 rounded transition-colors"
-                aria-label="Dismiss"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
-      <AppLayout />
-      <SettingsModal />
-      <WorkDirsModal />
-      <CreateProjectDialogAlwaysMounted />
-      <UpdateToast />
-      <GitConfigRiskToast />
-      {/* Research store sync (status + incremental graph updates), mounted
-          once here — so ResearchPanel and ResearchWorkspace stay pure views
-          and never double-mount the watchdog/full-refresh paths. */}
-      <ResearchEventBridge />
-      <ExitConfirmDialog />
+    <>
+      {phaseBody}
+      {/* Hosted once, shared by every phase branch (see phaseBody above):
+          one mount means phase transitions never re-attach the HUD's window
+          listeners nor drop a visible HUD mid-gesture. */}
       <ScaleHud />
-    </TooltipProvider>
+    </>
   )
 }
 

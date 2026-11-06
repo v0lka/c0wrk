@@ -60,11 +60,12 @@ const HUD_HIDE_DELAY_MS = 1000
  * on `event.key` first ('+', '=' for the unshifted plus key, '-' and the
  * U+2212 minus) with an `event.code` fallback (`NumpadAdd`,
  * `NumpadSubtract`, `Equal`, `Minus`) so the chord works on any keyboard
- * layout and on the numpad. AltGr is never a zoom modifier: a
- * `ctrlKey+altKey` keydown is left untouched — AltGr is the system's
- * Ctrl+Alt, and character production on AltGr layouts must keep working
- * (the cmChatKeymap AltGr precedent). No `stopPropagation` on keydown:
- * wheel handlers don't exist for keyboard input, and other keydown
+ * layout and on the numpad. AltGr is never a zoom modifier on either path:
+ * a `ctrlKey+altKey` keydown and a modifier+Alt wheel are both left
+ * untouched — AltGr is the system's Ctrl+Alt, and character production on
+ * AltGr layouts must keep working (the cmChatKeymap AltGr precedent); the
+ * ignored wheel then keeps its native meaning. No `stopPropagation` on
+ * keydown: wheel handlers don't exist for keyboard input, and other keydown
  * listeners (menus, inputs) must keep seeing the event.
  *
  * The listener set attaches once per mount and is gated on
@@ -157,10 +158,16 @@ export function useCtrlWheelScale(): {
     heldRef.current = false
 
     // Platform zoom modifier: Cmd on macOS, Ctrl elsewhere. Captured once
-    // per mount — the host platform cannot change mid-run.
+    // per mount — the host platform cannot change mid-run. AltGr is never
+    // part of the chord on either path: a modifier+Alt wheel is left
+    // untouched exactly like the keyboard chord's AltGr keydowns (AltGr is
+    // the system's Ctrl+Alt — see the docblock), so a wheel that arrives
+    // with the system's AltGr held keeps its native meaning.
     const mac = isMacHost()
     const hasZoomModifier = (event: WheelEvent): boolean =>
-      mac ? event.metaKey || event.ctrlKey : event.ctrlKey
+      mac
+        ? (event.metaKey || event.ctrlKey) && !event.altKey
+        : event.ctrlKey && !event.altKey
 
     /**
      * Zoom direction from a modifier+key keydown: +1 (zoom in) for the plus
