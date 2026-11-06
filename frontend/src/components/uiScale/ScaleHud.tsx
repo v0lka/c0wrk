@@ -15,6 +15,7 @@
 
 import { RotateCcw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Slider } from '@/components/ui/slider'
 import { useCtrlWheelScale } from '@/hooks/useCtrlWheelScale'
 import { SLIDER_STEP_PERCENT } from '@/lib/uiScaleSteps'
 import { useUiScaleStore, UI_SCALE_MIN, UI_SCALE_MAX } from '@/stores/uiScaleStore'
@@ -53,19 +54,24 @@ export function ScaleHud() {
           <RotateCcw className="size-4" />
         </Button>
         {/*
-          Live slider: every onChange lands in setScale (which normalizes,
+          Live slider: the self-styled Radix primitive (components/ui/slider)
+          so the control looks identical on every platform's webview — the
+          native range input rendered GTK/WebKit/Chromium sliders that
+          differed per OS. Every change lands in setScale (which normalizes,
           applies the <html> zoom and persists) — there is no apply/save
           step, matching the Settings → Appearance selector's behavior.
+          Radix's value/onValueChange are array-shaped; the store value is a
+          plain number, hence the [scale] / v[0] mapping. Keyboard steps and
+          pointer drag both honor the 5% step grid.
         */}
-        <input
-          type="range"
+        <Slider
+          className="w-40 cursor-pointer"
           min={UI_SCALE_MIN}
           max={UI_SCALE_MAX}
           step={SLIDER_STEP_PERCENT}
-          value={scale}
-          onChange={(e) => setScale(Number(e.target.value))}
+          value={[scale]}
+          onValueChange={(v) => setScale(v[0] ?? scale)}
           aria-label="UI scale"
-          className="w-40 accent-primary cursor-pointer"
         />
         <span className="w-10 text-right text-xs tabular-nums text-muted-foreground" aria-hidden="true">
           {scale}%

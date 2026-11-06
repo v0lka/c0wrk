@@ -38,6 +38,14 @@ vi.hoisted(() => {
     key: (i: number) => Array.from(map.keys())[i] ?? null,
     get length() { return map.size },
   }
+  // jsdom also lacks ResizeObserver, which Radix slider's use-size hook
+  // requires on mount (the HUD now renders the Radix-based slider
+  // primitive). A record-only stub is enough: nothing resizes here.
+  ;(win as Record<string, unknown>).ResizeObserver = class {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  }
 })
 
 // --- App-mount tests: the harness from App.test.tsx, heavy deps stubbed ---
@@ -141,20 +149,24 @@ function resetButton(): HTMLButtonElement {
   return el!
 }
 
-function scaleInput(): HTMLInputElement {
-  const el = container.querySelector<HTMLInputElement>('input[aria-label="UI scale"]')
+/** The HUD slider is the self-styled Radix primitive: the focusable
+ *  role=slider element is its thumb, the value lives in aria-valuenow. */
+function scaleSlider(): HTMLElement {
+  const el = container.querySelector<HTMLElement>('[role="slider"][aria-label="UI scale"], [role="slider"]')
   expect(el).not.toBeNull()
   return el!
 }
 
-/** Set a controlled input's value the way a real browser does: native
- *  prototype setter + `input` event, so React's synthetic onChange fires. */
-function setRangeValue(el: HTMLInputElement, value: string): void {
-  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
-  if (!setter) throw new Error('native input setter not found')
+/** Step the slider one grid notch with the keyboard the way a browser
+ *  delivers it: focus the thumb, dispatch a keydown on it. Radix handles
+ *  the step arithmetic (SLIDER_STEP_PERCENT grid) internally. */
+function stepSlider(key: string): void {
+  const thumb = scaleSlider()
   act(() => {
-    setter.call(el, value)
-    el.dispatchEvent(new Event('input', { bubbles: true }))
+    thumb.focus()
+  })
+  act(() => {
+    thumb.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }))
   })
 }
 
@@ -179,12 +191,13 @@ describe('ScaleHud visible', () => {
       root.render(<ScaleHud />)
     })
     resetButton()
-    const input = scaleInput()
-    expect(input.type).toBe('range')
-    expect(input.min).toBe('50')
-    expect(input.max).toBe('200')
-    expect(input.step).toBe('5')
-    expect(input.value).toBe('100')
+    const slider = scaleSlider()
+    expect(slider.getAttribute('aria-valuemin')).toBe('50')
+    expect(slider.getAttribute('aria-valuemax')).toBe('200')
+    expect(slider.getAttribute('aria-valuenow')).toBe('100')
+    // No native range input remains — the point of the change: the visual
+    // is ours (design tokens), not the platform's.
+    expect(container.querySelector('input[type="range"]')).toBeNull()
     expect(container.textContent).toContain('100%')
   })
 
@@ -198,7 +211,7 @@ describe('ScaleHud visible', () => {
     })
     expect(useUiScaleStore.getState().scale).toBe(100)
     expect(document.documentElement.style.zoom).toBe('1')
-    expect(scaleInput().value).toBe('100')
+    expect(scaleSlider().getAttribute('aria-valuenow')).toBe('100')
     expect(container.textContent).toContain('100%')
   })
 
@@ -206,11 +219,13 @@ describe('ScaleHud visible', () => {
     act(() => {
       root.render(<ScaleHud />)
     })
-    setRangeValue(scaleInput(), '125')
-    expect(useUiScaleStore.getState().scale).toBe(125)
-    expect(document.documentElement.style.zoom).toBe('1.25')
-    expect(scaleInput().value).toBe('125')
-    expect(container.textContent).toContain('125%')
+    // One ArrowRight notch: 100 → 105 on the 5% grid; Radix calls
+    // onValueChange → setScale, which applies the <html> zoom synchronously.
+    stepSlider('ArrowRight')
+    expect(useUiScaleStore.getState().scale).toBe(105)
+    expect(document.documentElement.style.zoom).toBe('1.05')
+    expect(scaleSlider().getAttribute('aria-valuenow')).toBe('105')
+    expect(container.textContent).toContain('105%')
   })
 
   it('the value label mirrors the store scale', () => {
@@ -218,7 +233,7 @@ describe('ScaleHud visible', () => {
     act(() => {
       root.render(<ScaleHud />)
     })
-    expect(scaleInput().value).toBe('175')
+    expect(scaleSlider().getAttribute('aria-valuenow')).toBe('175')
     expect(container.textContent).toContain('175%')
   })
 
@@ -263,13 +278,13 @@ describe('App mounts ScaleHud', () => {
     const unmount = await mountApp()
     // The splash-phase branch carries the HUD just like the main one —
     // presence of the slider proves the root composition mounts ScaleHud.
-    expect(document.querySelector('input[aria-label="UI scale"]')).not.toBeNull()
+    expect(document.querySelector('[role="slider"]')).not.toBeNull()
     await unmount()
   })
 
   it('leaves the HUD out of the DOM while hidden (steady state)', async () => {
     const unmount = await mountApp()
-    expect(document.querySelector('input[aria-label="UI scale"]')).toBeNull()
+    expect(document.querySelector('[role="slider"]')).toBeNull()
     await unmount()
   })
 })
