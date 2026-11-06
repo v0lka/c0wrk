@@ -39,14 +39,21 @@ export function SpecsPanel() {
   // session's workspace), so the panel follows the session exactly like it
   // follows the project. Primitive selector — referentially stable.
   const sessionId = useSessionStore((s) => s.activeSessionId)
-  // Cross-project stale-status guard (the gitRepoProjectId pairing
-  // convention of this panel strip): the store's status renders only while
-  // it belongs to the ACTIVE project, so a previous project's parse never
-  // reaches the layout — not even for the frames between a project switch
-  // and the switch's own fetch clearing the store. Both branches return
-  // store-held references, so the selector stays referentially stable.
+  // Cross-project AND cross-session stale-status guard (the gitRepoProjectId
+  // pairing convention of this panel strip): the store's status renders only
+  // while it belongs to the ACTIVE (project, session) pair — a previous
+  // project's parse never reaches the layout, and neither does the previous
+  // session's: not even for the frames between a switch and the switch's own
+  // fetch clearing the store (the store clears at fetch START, which runs in
+  // an effect — AFTER the paint that would otherwise show the old tree).
+  // Both branches return store-held references, so the selector stays
+  // referentially stable.
   const status = useSpecsStore((s) =>
-    projectId !== null && s.projectId === projectId ? s.status : null,
+    projectId !== null &&
+    s.projectId === projectId &&
+    s.sessionId === sessionId
+      ? s.status
+      : null,
   )
   const isLoading = useSpecsStore((s) => s.isLoading)
   const error = useSpecsStore((s) => s.error)

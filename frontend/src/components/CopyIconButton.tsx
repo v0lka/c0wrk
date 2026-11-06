@@ -1,7 +1,7 @@
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { useCallback } from 'react'
 import { Copy, Check, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { clipboardSetText } from '@/api/runtime'
+import { useCopyFlash } from '@/hooks/useCopyFlash'
 
 interface CopyIconButtonProps {
   /** Text copied to the clipboard on click. */
@@ -11,53 +11,23 @@ interface CopyIconButtonProps {
   className?: string
 }
 
-/** Which feedback state the button is flashing, if any. */
-type Feedback = 'copied' | 'failed' | null
-
 /**
  * CopyIconButton — icon-only copy-to-clipboard control.
  *
  * Renders just a `Copy` icon (`h-3.5 w-3.5`); the label lives only in
  * `title` / `aria-label` and flips to "Copied" / "Failed" for a short window
  * after a click (success flashes the `Check` icon in `text-success`, failure
- * the `X` icon in `text-destructive`). The write goes through the native
- * Wails runtime via `clipboardSetText` — NOT `navigator.clipboard`, which is
- * unreliable inside the Wails webview (see `clipboardSetText` in
- * @/api/runtime); a `false` verdict (or a rejection, folded in defensively)
- * is a failed copy and must never render the success state. Unlike
- * chat/CopyButton there is no visible text label and no Save morph — hover
- * reveal in chat messages is handled by the parent via `group` +
+ * the `X` icon in `text-destructive`). The clipboard write and the flash
+ * contract (native Wails runtime via `clipboardSetText`, false/rejection is a
+ * failed copy, bounded revert timer) are the shared `useCopyFlash` hook.
+ * Unlike chat/CopyButton there is no visible text label and no Save morph —
+ * hover reveal in chat messages is handled by the parent via `group` +
  * `group-hover:*` wrappers.
  */
 export function CopyIconButton({ text, label = 'Copy', className }: CopyIconButtonProps) {
-  const [feedback, setFeedback] = useState<Feedback>(null)
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const { feedback, copy } = useCopyFlash()
 
-  useEffect(() => {
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current)
-    }
-  }, [])
-
-  const flashFeedback = useCallback((kind: Exclude<Feedback, null>) => {
-    setFeedback(kind)
-    if (timerRef.current) clearTimeout(timerRef.current)
-    timerRef.current = setTimeout(() => setFeedback(null), 2000)
-  }, [])
-
-  const handleCopy = useCallback(() => {
-    clipboardSetText(text)
-      .then((ok) => {
-        // `false` is a failed copy (see `clipboardSetText`) — it must never
-        // render the success state.
-        flashFeedback(ok ? 'copied' : 'failed')
-      })
-      .catch(() => {
-        // `clipboardSetText` resolves instead of throwing; this is a safety
-        // net — fail with the same visible signal rather than silently.
-        flashFeedback('failed')
-      })
-  }, [text, flashFeedback])
+  const handleCopy = useCallback(() => copy(text), [copy, text])
 
   const currentLabel = feedback === 'copied' ? 'Copied' : feedback === 'failed' ? 'Failed' : label
   const Icon = feedback === 'failed' ? X : feedback !== null ? Check : Copy
