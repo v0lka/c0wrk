@@ -15,9 +15,9 @@ import { SpecsEmptyState } from './SpecsEmptyState'
 import { SpecsSectionTree } from './SpecsSectionTree'
 import { SpecsFindings } from './SpecsFindings'
 import { adrDatesByFile, isSpecsRelevantChange, joinSpecPath } from './specsPaths'
-import { buildFixFindingsAction } from './specsActions'
+import { buildFixFindingAction, buildFixFindingsAction } from './specsActions'
 import { useSpecsDispatch } from './useSpecsDispatch'
-import type { SpecsStatus } from '@/types/models'
+import type { SpecFinding, SpecsStatus } from '@/types/models'
 
 /**
  * Refresh model (ADR-106 D3): one light read-only parse on mount — the
@@ -97,6 +97,28 @@ export function SpecsPanel() {
     [projectId, dispatch],
   )
 
+  // Per-finding fix gesture (ADR-109): a finding card's badge dispatches
+  // one spec-update task scoped to THAT single finding. The same guard as
+  // the aggregate badge — only the CURRENT project's parse may dispatch.
+  const onFixFinding = useCallback(
+    (finding: SpecFinding, newSession: boolean) => {
+      const store = useSpecsStore.getState()
+      if (store.projectId !== projectId || store.status === null) return
+      dispatch(buildFixFindingAction(finding), newSession)
+    },
+    [projectId, dispatch],
+  )
+
+  // Manual refresh: the same refetch as the mount/tree_changed paths — a
+  // SAME-PROJECT fetch keeps the previous status rendered (no flicker) and
+  // the store's LWW ticket (fetchSeq) serializes overlapping flights, so a
+  // slow response never clobbers a newer parse. The guard mirrors the
+  // other two entry points; the render path below already returns null
+  // without a project, making the null check the defensive neutral.
+  const onRefresh = useCallback(() => {
+    if (projectId !== null) void fetchStatus(projectId)
+  }, [projectId, fetchStatus])
+
   // Defensive No-Project neutral render (the tab never mounts there).
   if (projectId === null) return null
 
@@ -120,7 +142,7 @@ export function SpecsPanel() {
           {/* The header renders in BOTH branches: the badge stays visible
               (inert without a present tree) even when the body swaps, so
               the affordance never teleports in and out on present flips. */}
-          <SpecsHeader status={status} onFixFindings={onFixFindings} />
+          <SpecsHeader status={status} onFixFindings={onFixFindings} onRefresh={onRefresh} isLoading={isLoading} />
           {status.present ? (
             <>
               <SpecsQuickActions present />
@@ -133,7 +155,11 @@ export function SpecsPanel() {
                   adrDates={adrDatesByFile(status.adrs)}
                   onOpen={openSpec}
                 />
-                <SpecsFindings findings={status.findings} onOpen={openSpec} />
+                <SpecsFindings
+                  findings={status.findings}
+                  onOpen={openSpec}
+                  onFixFinding={onFixFinding}
+                />
               </div>
             </>
           ) : (
