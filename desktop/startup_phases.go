@@ -1613,6 +1613,20 @@ func (a *App) initChatGPTAuth(log *slog.Logger) {
 	})
 }
 
+// initKimiAuth mirrors the ChatGPT restore: a locked OS keychain must not
+// block backend readiness, and a late result is discarded during shutdown.
+func (a *App) initKimiAuth(log *slog.Logger) {
+	if a.frontendAPI() == nil {
+		return
+	}
+	safeGo(log, "kimi_auth", func() {
+		startTime := time.Now()
+		a.frontendAPI().Lifecycle().InitKimiAuth()
+		log.Info("startup phase complete", "phase", "kimi_auth",
+			"elapsed_ms", time.Since(startTime).Milliseconds())
+	})
+}
+
 // stopEmbeddedLLM stops the supervised llama-server during Shutdown,
 // releasing the weights' RAM/VRAM early in the teardown. Idempotent; a
 // failure is logged, never fatal.

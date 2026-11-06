@@ -8,9 +8,11 @@ import type { ProviderConfig } from './useLLMConfig'
 
 interface UseLLMConfigSaveResult {
   /** Immediately persist the full config to the backend. */
-  saveFullConfig: (defModel: string, configs: Record<string, ProviderConfig>) => void
+  saveFullConfig: (defModel: string, configs: Record<string, ProviderConfig>) => Promise<void>
   /** Debounced wrapper around saveFullConfig (300 ms). */
   debouncedSave: (defModel: string, configs: Record<string, ProviderConfig>) => void
+  /** Complete the pending save before an auth flow starts. */
+  flushPendingSave: () => Promise<void>
   /** Cancel a queued debounced save before it can persist stale state. */
   cancelDebouncedSave: () => void
   /** Strip masked API key placeholder before merging into existing config. */
@@ -36,11 +38,12 @@ interface ProviderEntryPayload {
    *  backend pointer sentinel; an explicit number, including 0, is applied
    *  verbatim. */
   auto_retry_seconds?: number
-  /** ChatGPT-only authentication mode ('api_key' | 'oauth'). Undefined
+  /** ChatGPT/Kimi authentication mode ('api_key' | 'oauth'). Undefined
    *  (dropped by JSON serialization) keeps the persisted mode via the
-   *  backend pointer sentinel; the draft always carries a concrete value for
-   *  a loaded chatgpt entry, so switching the selector persists verbatim. */
+   *  backend pointer sentinel; a loaded subscription-capable entry carries
+   *  a concrete value, so switching the selector persists verbatim. */
   auth_mode?: 'api_key' | 'oauth'
+  auth_region?: 'global' | 'mainland_cn'
 }
 
 export function useLLMConfigSave(onSettingsSaved?: () => void): UseLLMConfigSaveResult {
@@ -49,6 +52,10 @@ export function useLLMConfigSave(onSettingsSaved?: () => void): UseLLMConfigSave
   // unmount cleanup can FLUSH it (cancelDebouncedSave discards it instead —
   // the "cancel stale state" semantics its callers rely on).
   const pendingSaveRef = useRef<{ defModel: string; configs: Record<string, ProviderConfig> } | null>(null)
+  // Bumped when a newer save is queued or an older one is explicitly cancelled,
+  // so a failed flush cannot put its snapshot back over that newer decision.
+  const saveEpochRef = useRef(0)
+  const inFlightSaveRef = useRef<Promise<void> | null>(null)
   const onSavedRef = useRef(onSettingsSaved)
   onSavedRef.current = onSettingsSaved
 
@@ -72,10 +79,10 @@ export function useLLMConfigSave(onSettingsSaved?: () => void): UseLLMConfigSave
           api_key: cfg.api_key,
           models: cfg.models,
         }
-        if (PROVIDERS_WITH_BASE_URL.has(p)) {
+        if (PROVIDERS_WITH_BASE_URL.has(p, cfg.type)) {
           entry.base_url = cfg.base_url
         }
-        if (isCompatibleProvider(p)) {
+        if (isCompatibleProvider(p, cfg.type)) {
           // The per-provider TLS pin (ADR-054) is stored only for compatible
           // providers — fixed ones talk to vendor endpoints with public
           // certificates. It always travels along so the backend applies it
@@ -99,13 +106,15 @@ export function useLLMConfigSave(onSettingsSaved?: () => void): UseLLMConfigSave
             openaiCompatible[p] = entry
           }
         } else {
-          // The ChatGPT auth mode rides along the fixed entry it belongs to:
-          // the draft always carries a concrete mode for a LOADED chatgpt
-          // entry, so the selector's flip persists atomically with the rest
-          // of the form. Anthropic has no such field — undefined drops the
-          // key and the backend keeps the persisted (nonexistent) mode.
-          if (p === 'chatgpt' && cfg.auth_mode !== undefined) {
+          // The auth mode rides along its fixed ChatGPT or Kimi entry: the
+          // draft carries a concrete mode, so the selector's flip persists
+          // atomically with the rest of the form. Other fixed providers have
+          // no such field — undefined drops the key from the payload.
+          if ((p === 'chatgpt' || p === 'kimi') && cfg.auth_mode !== undefined) {
             entry.auth_mode = cfg.auth_mode
+          }
+          if (p === 'kimi' && cfg.auth_region !== undefined) {
+            entry.auth_region = cfg.auth_region
           }
           req[p] = entry
         }
@@ -118,12 +127,25 @@ export function useLLMConfigSave(onSettingsSaved?: () => void): UseLLMConfigSave
       req.openai_compatible = openaiCompatible
       req.anthropic_compatible = anthropicCompatible
 
-      updateLLMConfig(req as LLMFullConfigRequest)
-        .then(() => {
+      const snapshot = { defModel, configs }
+      pendingSaveRef.current = snapshot
+      const promise = (async () => {
+        try {
+          await updateLLMConfig(req as LLMFullConfigRequest)
+          if (pendingSaveRef.current === snapshot) pendingSaveRef.current = null
           invalidateConfigCache()
           onSavedRef.current?.()
-        })
-        .catch((error) => logger.error('Failed to save LLM config:', error))
+        } catch (error) {
+          logger.error('Failed to save LLM config:', error)
+          throw error
+        }
+      })()
+      inFlightSaveRef.current = promise
+      const clearInFlight = () => {
+        if (inFlightSaveRef.current === promise) inFlightSaveRef.current = null
+      }
+      void promise.then(clearInFlight, clearInFlight)
+      return promise
     },
     [], // stable — uses refs for external deps
   )
@@ -131,24 +153,61 @@ export function useLLMConfigSave(onSettingsSaved?: () => void): UseLLMConfigSave
   // --- debouncedSave -----------------------------------------------------------
   const debouncedSave = useCallback(
     (defModel: string, configs: Record<string, ProviderConfig>) => {
+      saveEpochRef.current += 1
       pendingSaveRef.current = { defModel, configs }
       if (debounceRef.current) clearTimeout(debounceRef.current)
       debounceRef.current = setTimeout(() => {
         debounceRef.current = null
+        const pending = pendingSaveRef.current
+        const epoch = saveEpochRef.current
         pendingSaveRef.current = null
-        saveFullConfig(defModel, configs)
+        if (!pending) return
+        void saveFullConfig(pending.defModel, pending.configs).catch(() => {
+          if (saveEpochRef.current === epoch && pendingSaveRef.current === null) {
+            pendingSaveRef.current = pending
+          }
+        })
       }, 300)
     },
     [saveFullConfig],
   )
 
   const cancelDebouncedSave = useCallback(() => {
+    saveEpochRef.current += 1
     if (debounceRef.current) {
       clearTimeout(debounceRef.current)
       debounceRef.current = null
     }
     pendingSaveRef.current = null
   }, [])
+
+  const flushPendingSave = useCallback(async () => {
+    for (;;) {
+      if (debounceRef.current) {
+        clearTimeout(debounceRef.current)
+        debounceRef.current = null
+      }
+      const saving = inFlightSaveRef.current
+      if (saving) {
+        await saving
+        continue
+      }
+      const pending = pendingSaveRef.current
+      const epoch = saveEpochRef.current
+      pendingSaveRef.current = null
+      if (!pending) return
+      try {
+        await saveFullConfig(pending.defModel, pending.configs)
+      } catch (error) {
+        // A failed pre-sign-in flush must stay retryable. A region change that
+        // never reaches the backend would start OAuth against the previous region.
+        if (saveEpochRef.current === epoch && pendingSaveRef.current === null) {
+          pendingSaveRef.current = pending
+        }
+        throw error
+      }
+    }
+  }, [saveFullConfig])
 
   // Flush a pending debounced save on unmount so field/model/default edits
   // made within the 300 ms window survive closing the settings dialog or
@@ -157,14 +216,8 @@ export function useLLMConfigSave(onSettingsSaved?: () => void): UseLLMConfigSave
   // only on blur/Enter (ProviderConfigForm.commitApiKeyDraft), so a pending
   // snapshot can never carry a keystroke-level fragment over the stored key.
   useEffect(() => () => {
-    if (debounceRef.current) {
-      clearTimeout(debounceRef.current)
-      debounceRef.current = null
-    }
-    const pending = pendingSaveRef.current
-    pendingSaveRef.current = null
-    if (pending) saveFullConfig(pending.defModel, pending.configs)
-  }, [saveFullConfig])
+    void flushPendingSave().catch(() => undefined)
+  }, [flushPendingSave])
 
   // --- buildSafeUpdates --------------------------------------------------------
   const buildSafeUpdates = useCallback(
@@ -178,5 +231,5 @@ export function useLLMConfigSave(onSettingsSaved?: () => void): UseLLMConfigSave
     [],
   )
 
-  return { saveFullConfig, debouncedSave, cancelDebouncedSave, buildSafeUpdates }
+  return { saveFullConfig, debouncedSave, cancelDebouncedSave, flushPendingSave, buildSafeUpdates }
 }

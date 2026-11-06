@@ -58,6 +58,10 @@ export function CancelGoal(arg1, arg2) {
   return window['go']['desktop']['App']['CancelGoal'](arg1, arg2);
 }
 
+export function CancelKimiSignIn() {
+  return window['go']['desktop']['App']['CancelKimiSignIn']();
+}
+
 export function CancelSessionCompaction(arg1) {
   return window['go']['desktop']['App']['CancelSessionCompaction'](arg1);
 }
@@ -218,6 +222,10 @@ export function FetchChatGPTModels() {
   return window['go']['desktop']['App']['FetchChatGPTModels']();
 }
 
+export function FetchKimiModels() {
+  return window['go']['desktop']['App']['FetchKimiModels']();
+}
+
 export function FetchPaperOriginal(arg1, arg2) {
   return window['go']['desktop']['App']['FetchPaperOriginal'](arg1, arg2);
 }
@@ -332,6 +340,14 @@ export function GetHardenGitRepos() {
 
 export function GetIsGitRepo() {
   return window['go']['desktop']['App']['GetIsGitRepo']();
+}
+
+export function GetKimiAuthStatus() {
+  return window['go']['desktop']['App']['GetKimiAuthStatus']();
+}
+
+export function GetKimiModelPreset() {
+  return window['go']['desktop']['App']['GetKimiModelPreset']();
 }
 
 export function GetLastActiveProjectID() {
@@ -902,6 +918,10 @@ export function SignOutChatGPT() {
   return window['go']['desktop']['App']['SignOutChatGPT']();
 }
 
+export function SignOutKimi() {
+  return window['go']['desktop']['App']['SignOutKimi']();
+}
+
 export function SkipVersion(arg1) {
   return window['go']['desktop']['App']['SkipVersion'](arg1);
 }
@@ -916,6 +936,10 @@ export function StageFile(arg1) {
 
 export function StartChatGPTSignIn() {
   return window['go']['desktop']['App']['StartChatGPTSignIn']();
+}
+
+export function StartKimiSignIn() {
+  return window['go']['desktop']['App']['StartKimiSignIn']();
 }
 
 export function StartTerminal(arg1) {

@@ -364,11 +364,9 @@ type FrontendAPI struct {
 	// mutexes, lazily constructed — see frontend_api_embedded.go.
 	embedded embeddedLLMState
 
-	// ChatGPT subscription-auth subsystem state: the providerauth token
-	// manager, the in-flight browser sign-in run, its last error. Value
-	// field with its own mutex, constructed by InitChatGPTAuth on the
-	// startup path — see frontend_api_auth.go.
+	// Independent subscription-auth states restored by the shared lifecycle.
 	chatgptAuth chatgptAuthState
+	kimiAuth    providerAuthState
 
 	// Terminal
 	terminalManager TerminalManager
@@ -910,17 +908,11 @@ func (l *FrontendAPILifecycle) Cleanup() {
 			"step", name,
 			"step_ms", time.Since(cleanupStart).Milliseconds())
 	}
-	// Cancel an in-flight ChatGPT browser sign-in FIRST: its loopback
-	// listener and goroutine must not outlive the teardown. The stop is
-	// marked REQUESTED — a quit closes with the quiet cancelled event, and
-	// the run's own failure branch does the bookkeeping (fire-and-forget,
-	// non-blocking by construction).
-	f.chatgptAuth.mu.Lock()
-	if f.chatgptAuth.inFlight && f.chatgptAuth.cancel != nil {
-		f.chatgptAuth.cancelRequested = true
-		f.chatgptAuth.cancel()
-	}
-	f.chatgptAuth.mu.Unlock()
+	// Cancel both providers' in-flight browser sign-ins FIRST: ChatGPT's
+	// loopback listener and both providers' goroutines must not outlive teardown.
+	// Requested stops close with quiet cancelled events and never block cleanup.
+	_ = f.cancelProviderSignIn(&f.chatgptAuth)
+	_ = f.cancelProviderSignIn(&f.kimiAuth)
 	// Stop the periodic auto-fetch ticker first so no new background fetch
 	// starts while the rest of the backend tears down (non-blocking; an
 	// in-flight fetch is bounded by remoteGitCmdTimeout — see

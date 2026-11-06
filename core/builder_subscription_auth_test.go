@@ -115,9 +115,8 @@ func TestProviderEntryFromConfig_APIKeyModeIsHistorical(t *testing.T) {
 }
 
 // TestProviderEntryFromConfig_SubscriptionEntryCarriesTheSeamSource verifies
-// the marker-on/serving-seam shape: the live token source and the streaming
-// requirement land on the entry, and the static APIKey still travels (the
-// middleware overrides it on the wire; it is not a fallback).
+// the marker-on shape: the dynamic source delegates to the explicit source,
+// streaming remains required, and the static APIKey is not a fallback.
 func TestProviderEntryFromConfig_SubscriptionEntryCarriesTheSeamSource(t *testing.T) {
 	shared := &http.Client{Timeout: 10 * time.Minute}
 	src := &stubTokenSource{}
@@ -130,8 +129,8 @@ func TestProviderEntryFromConfig_SubscriptionEntryCarriesTheSeamSource(t *testin
 	if entry.TokenSource == nil {
 		t.Fatal("TokenSource = nil, want the seam's live source")
 	}
-	if entry.TokenSource != llm.TokenSource(src) {
-		t.Errorf("TokenSource = %T, want the exact seam source", entry.TokenSource)
+	if token, err := entry.TokenSource.Token(t.Context()); err != nil || token.AccessToken == "" {
+		t.Errorf("dynamic source did not delegate to the explicit source: token %+v, err %v", token, err)
 	}
 	if !entry.RequireStreaming {
 		t.Error("RequireStreaming = false, want true on a subscription entry")

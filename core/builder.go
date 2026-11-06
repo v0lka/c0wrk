@@ -1330,28 +1330,82 @@ func (b *OrchestratorBuilder) embeddedSeam(cfg *BuilderConfig) BuilderEmbeddedLL
 	return b.embeddedLLM
 }
 
-// SetSubscriptionTokenSource installs (or, with a zero value, withdraws) the
-// builder-level subscription-auth seam — the identical mechanism to
-// SetEmbeddedLLM, without which a cached router would run signed-out while
-// the user is signed in (specs/domains/llm-providers.md). The backend calls
-// it after a successful sign-in and on sign-out. It rebuilds nothing: follow
-// with RebuildRouter; per-session routers pick it up at their next build.
+// SetSubscriptionTokenSource installs or withdraws one provider's builder-level
+// subscription source. The historical zero value withdraws ChatGPT, the only
+// provider that existed when that form was introduced. TokenSources replaces
+// the complete map when supplied. RebuildRouter refreshes app-level routers;
+// builder-default session routers observe auth changes on their next token call.
 func (b *OrchestratorBuilder) SetSubscriptionTokenSource(cfg BuilderSubscriptionAuthConfig) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.subscriptionAuth = cfg
+	if cfg.TokenSources != nil {
+		b.subscriptionAuth = BuilderSubscriptionAuthConfig{TokenSources: make(map[string]llm.TokenSource, len(cfg.TokenSources))}
+		for name, source := range cfg.TokenSources {
+			if name != "" && source != nil {
+				b.subscriptionAuth.TokenSources[name] = source
+			}
+		}
+		b.normalizeSubscriptionAuthLocked()
+		return
+	}
+	if b.subscriptionAuth.TokenSources == nil {
+		b.subscriptionAuth.TokenSources = make(map[string]llm.TokenSource)
+	}
+	// Preserve any legacy single-provider value before updating the map.
+	if b.subscriptionAuth.ProviderName != "" && b.subscriptionAuth.TokenSource != nil {
+		b.subscriptionAuth.TokenSources[b.subscriptionAuth.ProviderName] = b.subscriptionAuth.TokenSource
+	}
+	name := cfg.ProviderName
+	if name == "" {
+		name = "chatgpt"
+	}
+	if cfg.TokenSource == nil {
+		delete(b.subscriptionAuth.TokenSources, name)
+	} else {
+		b.subscriptionAuth.TokenSources[name] = cfg.TokenSource
+	}
+	b.normalizeSubscriptionAuthLocked()
 }
 
-// subscriptionAuthSeam resolves the effective subscription-auth seam: an explicit
-// per-build TokenSource wins, else the builder-level default
-// (specs/domains/llm-providers.md).
+// normalizeSubscriptionAuthLocked keeps the legacy fields populated while
+// exactly one source exists, preserving the original seam's read shape.
+func (b *OrchestratorBuilder) normalizeSubscriptionAuthLocked() {
+	b.subscriptionAuth.ProviderName = ""
+	b.subscriptionAuth.TokenSource = nil
+	if len(b.subscriptionAuth.TokenSources) == 0 {
+		b.subscriptionAuth.TokenSources = nil
+		return
+	}
+	if len(b.subscriptionAuth.TokenSources) == 1 {
+		for name, source := range b.subscriptionAuth.TokenSources {
+			b.subscriptionAuth.ProviderName = name
+			b.subscriptionAuth.TokenSource = source
+		}
+	}
+}
+
+// subscriptionAuthSeam resolves the effective subscription-auth seam and
+// marks whether request-time lookup should follow builder defaults.
 func (b *OrchestratorBuilder) subscriptionAuthSeam(cfg *BuilderConfig) BuilderSubscriptionAuthConfig {
-	if cfg.SubscriptionAuth.TokenSource != nil && cfg.SubscriptionAuth.ProviderName != "" {
-		return cfg.SubscriptionAuth
+	if (cfg.SubscriptionAuth.TokenSource != nil && cfg.SubscriptionAuth.ProviderName != "") || cfg.SubscriptionAuth.TokenSources != nil {
+		return snapshotSubscriptionAuth(cfg.SubscriptionAuth)
 	}
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	return b.subscriptionAuth
+	seam := snapshotSubscriptionAuth(b.subscriptionAuth)
+	seam.followBuilderDefault = true
+	return seam
+}
+
+func snapshotSubscriptionAuth(cfg BuilderSubscriptionAuthConfig) BuilderSubscriptionAuthConfig {
+	out := cfg
+	if cfg.TokenSources != nil {
+		out.TokenSources = make(map[string]llm.TokenSource, len(cfg.TokenSources))
+		for name, source := range cfg.TokenSources {
+			out.TokenSources[name] = source
+		}
+	}
+	return out
 }
 
 // RegisterVectorSearch adds the semantic_search tool to the shared registry (once the
@@ -1688,7 +1742,7 @@ func (b *OrchestratorBuilder) buildRouter(ctx context.Context, cfg *BuilderConfi
 	// Non-nil exactly when the proxy is effective (proxy.BuildClient rule); the bypass
 	// matcher re-arms the pin for bypassed hosts (ADR-054). One per build, read-only after.
 	bypass := proxy.NewBypassMatcher(cfg.Proxy.BypassList)
-	providerOrder := []string{"anthropic", "chatgpt"}
+	providerOrder := []string{"anthropic", "chatgpt", "kimi"}
 	for _, name := range providerOrder {
 		pc, ok := cfg.LLM.ProviderConfigs[name]
 		if !ok || len(pc.Models) == 0 {
@@ -2126,54 +2180,62 @@ func providerEntryFromConfig(
 	}
 }
 
-// subscriptionAuthEntry resolves one entry's auth shape from the marker and the seam
-// (specs/domains/llm-providers.md): marker off → (nil, false) — api_key configs are
-// byte-for-byte historical; marker on + serving seam → the live token source; marker on
-// + no seam → the dynamicSubscriptionSource stand-in, so a later sign-in serves the SAME
-// cached router without a rebuild.
+// subscriptionAuthEntry resolves one entry's auth shape from the marker and the
+// seam. RequireStreaming is a ChatGPT Codex protocol constraint, not a generic
+// OAuth constraint: Kimi retains the ordinary OpenAI streaming choice.
 func subscriptionAuthEntry(name string, pc BuilderProviderConfig, seam BuilderSubscriptionAuthConfig, b *OrchestratorBuilder) (llm.TokenSource, bool) {
 	if !pc.SubscriptionAuth {
 		return nil, false
 	}
-	if seam.serves(name) {
-		return seam.TokenSource, true
-	}
-	return &dynamicSubscriptionSource{builder: b, providerName: name}, true
+	return &dynamicSubscriptionSource{
+		builder: b, providerName: name, seam: seam, builderDefault: seam.followBuilderDefault,
+	}, name == "chatgpt"
 }
 
-// errSignInRequired is the signed-out subscription-auth failure — the actionable error
-// naming the one fix (sign in with ChatGPT); no token material, safe to surface anywhere
-// (specs/domains/llm-providers.md).
+// errSignInRequired is retained as ChatGPT's signed-out sentinel for callers
+// that match it with errors.Is.
 var errSignInRequired = errors.New(
 	"the chatgpt provider is set to ChatGPT subscription auth (llm.chatgpt.auth.mode: \"oauth\") " +
 		"but no account is signed in — sign in with ChatGPT to send requests through it",
 )
 
-// dynamicSubscriptionSource is the request-time TokenSource for entries built while the
-// seam served nothing: each Token call re-reads the builder's CURRENT seam — a later
-// sign-in serves the same cached router (specs/domains/llm-providers.md).
+func subscriptionSignInRequired(providerName string) error {
+	if providerName == "chatgpt" {
+		return errSignInRequired
+	}
+	displayName := providerName
+	if providerName == "kimi" {
+		displayName = "Kimi"
+	}
+	return fmt.Errorf("the %s provider is set to subscription auth (llm.%s.auth.mode: \"oauth\") but no account is signed in — sign in with %s to send requests through it", providerName, providerName, displayName)
+}
+
+// dynamicSubscriptionSource follows builder defaults only for a default seam;
+// an explicit per-build seam remains an isolated snapshot.
 type dynamicSubscriptionSource struct {
-	builder      *OrchestratorBuilder
-	providerName string
+	builder        *OrchestratorBuilder
+	providerName   string
+	seam           BuilderSubscriptionAuthConfig
+	builderDefault bool
 }
 
 func (d *dynamicSubscriptionSource) Token(ctx context.Context) (llm.BearerToken, error) {
-	if d.builder != nil {
-		seam := d.builder.builderSubscriptionSeam()
-		if seam.serves(d.providerName) {
-			return seam.TokenSource.Token(ctx)
-		}
+	seam := d.seam
+	if d.builderDefault && d.builder != nil {
+		seam = d.builder.builderSubscriptionSeam()
 	}
-	return llm.BearerToken{}, errSignInRequired
+	if source := seam.source(d.providerName); source != nil {
+		return source.Token(ctx)
+	}
+	return llm.BearerToken{}, subscriptionSignInRequired(d.providerName)
 }
 
 // builderSubscriptionSeam snapshots the builder-level default seam for
-// dynamicSubscriptionSource's per-Token resolution (direct accessor, no
-// per-request allocation).
+// dynamicSubscriptionSource's per-Token resolution.
 func (b *OrchestratorBuilder) builderSubscriptionSeam() BuilderSubscriptionAuthConfig {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	return b.subscriptionAuth
+	return snapshotSubscriptionAuth(b.subscriptionAuth)
 }
 
 // dialPolicy derives the llmtls.DialPolicy for targetURL: proxy active when a

@@ -104,14 +104,16 @@ func refreshTokens(ctx context.Context, client *http.Client, profile Profile, re
 	return postTokenForm(ctx, client, profile, form)
 }
 
-// postTokenForm submits a token-endpoint form and decodes the reply.
-// Failures return a *TokenEndpointError or a transport error and never echo
-// the submitted form values (they include secrets).
-func postTokenForm(ctx context.Context, client *http.Client, profile Profile, form url.Values) (*tokenResponse, error) {
+// postForm submits one OAuth form without logging its secret values.
+func postForm(ctx context.Context, client *http.Client, profile Profile, form url.Values) (*http.Response, error) {
+	return postFormURL(ctx, client, profile, form, profile.TokenURL())
+}
+
+func postFormURL(ctx context.Context, client *http.Client, profile Profile, form url.Values, endpoint string) (*http.Response, error) {
 	if client == nil {
 		client = defaultHTTPClient()
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, profile.TokenURL(), strings.NewReader(form.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf("providerauth: building token request: %w", err)
 	}
@@ -120,10 +122,25 @@ func postTokenForm(ctx context.Context, client *http.Client, profile Profile, fo
 	if profile.Originator != "" {
 		req.Header.Set("originator", profile.Originator)
 	}
-
+	for name, value := range profile.TokenHeaders {
+		if value != "" {
+			req.Header.Set(name, value)
+		}
+	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("providerauth: token request to %s failed: %w", profile.TokenURL(), err)
+		return nil, fmt.Errorf("providerauth: token request to %s failed: %w", endpoint, err)
+	}
+	return resp, nil
+}
+
+// postTokenForm submits a token-endpoint form and decodes the reply.
+// Failures return a *TokenEndpointError or a transport error and never echo
+// the submitted form values (they include secrets).
+func postTokenForm(ctx context.Context, client *http.Client, profile Profile, form url.Values) (*tokenResponse, error) {
+	resp, err := postForm(ctx, client, profile, form)
+	if err != nil {
+		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 

@@ -93,6 +93,7 @@ type ConfigLLMResponse struct {
 	OpenAICompatible    map[string]ConfigProviderFull `json:"openai_compatible"`
 	AnthropicCompatible map[string]ConfigProviderFull `json:"anthropic_compatible"`
 	ChatGPT             ConfigProviderFull            `json:"chatgpt"`
+	Kimi                ConfigProviderFull            `json:"kimi"`
 	AllModels           []ModelInfo                   `json:"all_models"`   // flat list of all enabled models with family + reasoning metadata
 	ModelsReady         bool                          `json:"models_ready"` // false during async LLM init; true once registry is wired
 	// AutoRetryMaxSeconds is the inclusive per-provider auto_retry_seconds
@@ -110,14 +111,16 @@ type ConfigProviderFull struct {
 	// the pinned key is accepted; empty = system CA verification.
 	TLSFingerprint string `json:"tls_fingerprint,omitempty"`
 	// AutoRetrySeconds is the per-provider auto-retry interval, 0 = disabled
-	// (fixed anthropic/chatgpt providers always report 0).
+	// (fixed providers always report 0).
 	AutoRetrySeconds int `json:"auto_retry_seconds,omitempty"`
 	// TimeoutClass is the adaptive budget's class override (ADR-071 D3):
 	// "local" | "remote"; empty = infer.
 	TimeoutClass string `json:"timeout_class,omitempty"`
-	// AuthMode is the chatgpt provider's auth mode: "api_key" (default) |
-	// "oauth" (ADR-074); every other provider leaves it empty.
+	// AuthMode is a chatgpt or kimi auth mode: "api_key" (default) | "oauth"
+	// (ADR-074/ADR-116); other providers leave it empty.
 	AuthMode string `json:"auth_mode,omitempty"`
+	// AuthRegion selects global (default) or mainland_cn for Kimi OAuth.
+	AuthRegion string `json:"auth_region,omitempty"`
 }
 
 // ConfigSearchResp holds search config values.
@@ -178,6 +181,7 @@ type LLMFullConfigRequest struct {
 	OpenAICompatible    map[string]ProviderConfigRequest `json:"openai_compatible,omitempty"`
 	AnthropicCompatible map[string]ProviderConfigRequest `json:"anthropic_compatible,omitempty"`
 	ChatGPT             *ProviderConfigRequest           `json:"chatgpt,omitempty"`
+	Kimi                *ProviderConfigRequest           `json:"kimi,omitempty"`
 }
 
 // ProviderConfigRequest holds a single provider's configuration.
@@ -196,10 +200,12 @@ type ProviderConfigRequest struct {
 	// TimeoutClass (ADR-071 D3): nil = keep; non-nil applies verbatim after
 	// enum validation, so an explicit "" CLEARS the override.
 	TimeoutClass *string `json:"timeout_class,omitempty"`
-	// AuthMode selects chatgpt auth: "api_key" (static key) or "oauth"
-	// (ADR-074). nil = keep the persisted mode; non-nil applies after enum
-	// validation. Other providers ignore it.
+	// AuthMode selects chatgpt or kimi auth: "api_key" (static key) or
+	// "oauth" (ADR-074/ADR-116). nil = keep the persisted mode; non-nil
+	// applies after enum validation. Other providers ignore it.
 	AuthMode *string `json:"auth_mode,omitempty"`
+	// AuthRegion selects global or mainland_cn for Kimi OAuth; nil keeps it.
+	AuthRegion *string `json:"auth_region,omitempty"`
 }
 
 // ChatGPTSignInResponse is StartChatGPTSignIn's answer: the authorization URL
@@ -263,6 +269,43 @@ type ChatGPTAuthEventData struct {
 	// Email / AccountID / ExpiresAt (success only); ExpiresAt is RFC3339.
 	Email     string `json:"email,omitempty"`
 	AccountID string `json:"account_id,omitempty"`
+	ExpiresAt string `json:"expires_at,omitempty"`
+}
+
+// KimiSignInResponse carries the browser authorization URL; subsequent
+// transitions arrive through kimi_auth:state.
+type KimiSignInResponse struct {
+	AuthURL string `json:"auth_url"`
+}
+
+// KimiAuthStatusResponse is the secret-free Kimi auth snapshot.
+type KimiAuthStatusResponse struct {
+	SignedIn  bool   `json:"signed_in"`
+	Email     string `json:"email,omitempty"`
+	ExpiresAt string `json:"expires_at,omitempty"`
+	Mode      string `json:"mode"`
+	InFlight  bool   `json:"in_flight"`
+	LastError string `json:"last_error,omitempty"`
+}
+
+// KimiModelPresetResponse lists either the offline preset or the live subscription catalog.
+type KimiModelPresetResponse struct {
+	Models []KimiModelPresetEntry `json:"models"`
+}
+
+type KimiModelPresetEntry struct {
+	Name          string `json:"name"`
+	ContextWindow int    `json:"context_window,omitempty"`
+	OutputLimit   int    `json:"output_limit,omitempty"`
+	Reasoning     bool   `json:"reasoning,omitempty"`
+}
+
+// KimiAuthEventData is one secret-free kimi_auth:state transition.
+type KimiAuthEventData struct {
+	State     string `json:"state"`
+	AuthURL   string `json:"auth_url,omitempty"`
+	Error     string `json:"error,omitempty"`
+	Email     string `json:"email,omitempty"`
 	ExpiresAt string `json:"expires_at,omitempty"`
 }
 

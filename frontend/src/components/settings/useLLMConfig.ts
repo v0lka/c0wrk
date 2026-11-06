@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { getConfig } from '@/api/config'
-import { normalizeChatGPTAuthMode } from '@/api/auth'
+import { normalizeChatGPTAuthMode, normalizeKimiAuthRegion } from '@/api/auth'
 import { logger } from '@/lib/logger'
 import { useProxyDraftStore, isProxyEffective } from '@/stores/proxyDraftStore'
 import { FIXED_PROVIDERS, isBackendOwnedProvider, type CompatibleType } from '@/lib/llm-providers'
@@ -14,7 +14,7 @@ export interface ProviderConfig {
     models: string[]
     /**
      * Transport type for compatible (named, custom-endpoint) providers.
-     * Fixed providers (anthropic, chatgpt) leave this undefined; it is only
+     * Fixed providers (anthropic, chatgpt, kimi) leave this undefined; it is only
      * meaningful for compatible providers and drives which backend map
      * (openai_compatible vs anthropic_compatible) they are saved under.
      */
@@ -31,14 +31,12 @@ export interface ProviderConfig {
      */
     auto_retry_seconds?: number
     /**
-     * How the CHATGPT provider authenticates ('api_key' | 'oauth'). Only the
-     * chatgpt draft entry carries it — the backend normalizes the stored
-     * value before serializing, so a loaded chatgpt entry always has a real
-     * mode, and the save sends it verbatim (a two-state switch, not a
-     * nullable override). Undefined = keep the persisted mode (the save
-     * payload omits the key; the backend pointer sentinel preserves it).
+     * How a ChatGPT or Kimi provider authenticates ('api_key' | 'oauth').
+     * Loaded subscription-capable entries carry a concrete mode; undefined
+     * keeps the persisted mode through the backend pointer sentinel.
      */
     auth_mode?: ChatGPTAuthMode
+    auth_region?: 'global' | 'mainland_cn'
 }
 
 const defaultProviderConfigs: Record<string, ProviderConfig> = Object.fromEntries(
@@ -64,6 +62,7 @@ interface UseLLMConfigResult {
     /** Names of providers loaded from the anthropic_compatible map. */
     anthropicCompatibleProviderNames: Set<string>
     isLoading: boolean
+    flushPendingSave: () => Promise<void>
     setDefaultModel: (model: string) => void
     updateProviderConfig: (provider: string, updates: Partial<ProviderConfig>) => void
     toggleModel: (provider: string, model: string) => void
@@ -71,7 +70,7 @@ interface UseLLMConfigResult {
     deleteProvider: (name: string) => void
 }
 
-function toProviderConfig(p: ConfigProviderFull, type?: CompatibleType): ProviderConfig {
+function toProviderConfig(p: ConfigProviderFull, type: CompatibleType | undefined, providerName: string): ProviderConfig {
     return {
         api_key: p.api_key,
         base_url: p.base_url ?? '',
@@ -84,12 +83,10 @@ function toProviderConfig(p: ConfigProviderFull, type?: CompatibleType): Provide
         // undefined draft omits the key from the save payload, which the
         // backend pointer sentinel treats as "keep the persisted value".
         auto_retry_seconds: p.auto_retry_seconds,
-        // ChatGPT-only authentication mode. The backend normalizes the empty
-        // stored value to api_key before serializing and only the chatgpt
-        // entry carries the field, so undefined (every other provider) means
-        // "not applicable" and the save payload omits the key — the backend
-        // keeps the persisted mode.
+        // ChatGPT and Kimi carry auth modes; undefined for other providers
+        // means "not applicable" and the save payload omits the key.
         auth_mode: p.auth_mode !== undefined ? normalizeChatGPTAuthMode(p.auth_mode) : undefined,
+        auth_region: providerName === 'kimi' ? normalizeKimiAuthRegion(p.auth_region) : undefined,
     }
 }
 
@@ -175,7 +172,7 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
     const onDefaultModelChangeRef = useRef(onDefaultModelChange)
     onDefaultModelChangeRef.current = onDefaultModelChange
 
-    const { saveFullConfig, debouncedSave, cancelDebouncedSave, buildSafeUpdates } = useLLMConfigSave(onSettingsSaved)
+    const { saveFullConfig, debouncedSave, cancelDebouncedSave, flushPendingSave, buildSafeUpdates } = useLLMConfigSave(onSettingsSaved)
 
     const persistWhenDefaultIsValid = useCallback((model: string, configs: Record<string, ProviderConfig>) => {
         if (!defaultModelIsValid(model, configs)) {
@@ -211,7 +208,7 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
         if (!defaultModelIsValid(model, configs)) {
             return
         }
-        saveFullConfig(model, configs)
+        void saveFullConfig(model, configs).catch(() => undefined)
     }, [cancelDebouncedSave, saveFullConfig])
 
     const loadConfig = useCallback(async () => {
@@ -242,11 +239,19 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
                 const openaiNames = new Set<string>()
                 const anthropicNames = new Set<string>()
 
-                // Load fixed providers (anthropic, chatgpt).
+                const ocProviders = llm.openai_compatible
+                const acProviders = llm.anthropic_compatible
+                const hasLegacyKimi = Boolean(
+                    (ocProviders && 'kimi' in ocProviders) || (acProviders && 'kimi' in acProviders),
+                )
+
+                // A legacy compatible Kimi keeps its original insertion position
+                // and bare-default precedence; the fixed entry stays hidden.
                 for (const p of FIXED_PROVIDERS) {
+                    if (p === 'kimi' && hasLegacyKimi) continue
                     const cfg = llm[p]
                     if (cfg) {
-                        configs[p] = toProviderConfig(cfg)
+                        configs[p] = toProviderConfig(cfg, undefined, p)
                     }
                 }
 
@@ -260,10 +265,9 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
                 // list are regenerated from the authoritative `embedded_llm`
                 // state on every load and save, so anything typed into an
                 // accordion for it would be silently discarded.
-                const ocProviders = llm.openai_compatible
                 if (ocProviders && typeof ocProviders === 'object') {
                     for (const [name, cfg] of Object.entries(ocProviders)) {
-                        configs[name] = toProviderConfig(cfg, 'openai')
+                        configs[name] = toProviderConfig(cfg, 'openai', name)
                         if (!isBackendOwnedProvider(name)) {
                             openaiNames.add(name)
                         }
@@ -271,10 +275,9 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
                 }
 
                 // Load anthropic_compatible providers from the map.
-                const acProviders = llm.anthropic_compatible
                 if (acProviders && typeof acProviders === 'object') {
                     for (const [name, cfg] of Object.entries(acProviders)) {
-                        configs[name] = toProviderConfig(cfg, 'anthropic')
+                        configs[name] = toProviderConfig(cfg, 'anthropic', name)
                         anthropicNames.add(name)
                     }
                 }
@@ -427,6 +430,7 @@ export function useLLMConfig(onSettingsSaved?: () => void, onDefaultModelChange?
         openaiCompatibleProviderNames,
         anthropicCompatibleProviderNames,
         isLoading,
+        flushPendingSave,
         setDefaultModel,
         updateProviderConfig,
         toggleModel,

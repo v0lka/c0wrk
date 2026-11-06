@@ -34,8 +34,8 @@ type BuilderConfig struct {
 	// router build (zero value = no embedded supervisor; see the type below).
 	EmbeddedLLM BuilderEmbeddedLLMConfig
 
-	// SubscriptionAuth wires the ChatGPT subscription token source into the
-	// marked router entry (zero value = the api_key posture; see the type below).
+	// SubscriptionAuth wires provider-keyed subscription token sources into
+	// marked router entries (zero value = builder defaults; see the type below).
 	SubscriptionAuth BuilderSubscriptionAuthConfig
 
 	// ShellExec carries the operator's shell-exec launch-shape override
@@ -246,9 +246,9 @@ type BuilderProviderConfig struct {
 	// adaptive request budget: "local" | "remote" (empty = infer; the
 	// reserved "embedded" entry's class is fixed). See specs/domains/llm-providers.md.
 	TimeoutClass string
-	// SubscriptionAuth marks the entry as ChatGPT-subscription (browser OAuth)
-	// auth; set only by ToBuilderConfig in oauth mode. With the marker off the
-	// entry is built byte-for-byte as before the mode existed.
+	// SubscriptionAuth marks a ChatGPT or Kimi entry for browser-OAuth
+	// credentials; set only by ToBuilderConfig in oauth mode. With the marker
+	// off the entry retains static-key behavior.
 	// See specs/domains/llm-providers.md.
 	SubscriptionAuth bool
 }
@@ -748,30 +748,30 @@ func (c BuilderEmbeddedLLMConfig) guards(name string) bool {
 	return c.Loader != nil && c.ProviderName != "" && c.ProviderName == name
 }
 
-// BuilderSubscriptionAuthConfig carries the subscription-auth token source into
-// the router build: the entry whose BuilderProviderConfig carries
-// SubscriptionAuth gets TokenSource + RequireStreaming, so the static APIKey
-// never reaches the wire. This is the PER-BUILD form; OrchestratorBuilder also
-// holds one as its default (SetSubscriptionTokenSource) covering the
-// per-session routers. See specs/domains/llm-providers.md.
+// BuilderSubscriptionAuthConfig carries subscription-auth token sources into
+// the router build. An entry whose BuilderProviderConfig carries
+// SubscriptionAuth gets its provider's TokenSource, so the static APIKey never
+// reaches the wire. ProviderName/TokenSource are the original single-provider
+// form; TokenSources covers several simultaneously signed-in providers.
 type BuilderSubscriptionAuthConfig struct {
-	// ProviderName is the router entry the token source serves (backend-
-	// injected; deliberately not hardcoded — an unset name serves nothing).
 	ProviderName string
+	TokenSource  llm.TokenSource
 
-	// TokenSource supplies per-request OAuth bearer credentials (the backend's
-	// providerauth.TokenManager in production); nil means signed out — the
-	// entry stays listed but every request fails with the actionable
-	// "sign in with ChatGPT" error.
-	TokenSource llm.TokenSource
+	// TokenSources maps router entry names to their live OAuth sources. A nil
+	// source is never installed: signed-out entries use the dynamic stand-in.
+	TokenSources map[string]llm.TokenSource
+
+	// followBuilderDefault distinguishes the builder default from an explicit
+	// per-build snapshot without changing the public config shape.
+	followBuilderDefault bool
 }
 
-// serves reports whether this seam supplies credentials to the provider entry
-// named name. Both halves are required, mirroring
-// BuilderEmbeddedLLMConfig.guards: a source with no name would serve nothing,
-// and a name with no source is the signed-out posture, not a guess.
-func (c BuilderSubscriptionAuthConfig) serves(name string) bool {
-	return c.TokenSource != nil && c.ProviderName != "" && c.ProviderName == name
+// source returns the live source for one provider entry, if signed in.
+func (c BuilderSubscriptionAuthConfig) source(name string) llm.TokenSource {
+	if c.TokenSource != nil && c.ProviderName == name {
+		return c.TokenSource
+	}
+	return c.TokenSources[name]
 }
 
 // BuilderShellExecConfig carries the operator's shell-exec launch-shape
