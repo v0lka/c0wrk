@@ -11,6 +11,7 @@ import { ToolInstallSplash } from '@/components/ToolInstallSplash'
 import { UpdateToast } from '@/components/UpdateToast'
 import { GitConfigRiskToast } from '@/components/GitConfigRiskToast'
 import { ExitConfirmDialog } from '@/components/ExitConfirmDialog'
+import { ScaleHud } from '@/components/uiScale/ScaleHud'
 import { useUpdateChecker } from '@/hooks/useUpdateChecker'
 import { useExitGuard } from '@/hooks/useExitGuard'
 import { useSystemFonts } from '@/hooks/useSystemFonts'
@@ -297,6 +298,7 @@ function App() {
             back in splash while sessions keep running in the backend, and the
             close guard's confirmation modal must still be renderable then. */}
         <ExitConfirmDialog />
+        <ScaleHud />
       </>
     )
   }
@@ -309,6 +311,7 @@ function App() {
           <div className="size-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
         </div>
         <ExitConfirmDialog />
+        <ScaleHud />
       </>
     )
   }
@@ -322,6 +325,7 @@ function App() {
           <p className="text-sm text-muted-foreground">Starting c0wrk…</p>
         </div>
         <ExitConfirmDialog />
+        <ScaleHud />
       </>
     )
   }
@@ -378,6 +382,7 @@ function App() {
           and never double-mount the watchdog/full-refresh paths. */}
       <ResearchEventBridge />
       <ExitConfirmDialog />
+      <ScaleHud />
     </TooltipProvider>
   )
 }
