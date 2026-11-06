@@ -12,7 +12,7 @@ import {
   buildFixFindingsAction,
   findingLine,
 } from './specsActions'
-import type { SpecFinding } from '@/types/models'
+import type { SpecFinding, SpecFindingKind } from '@/types/models'
 
 describe('specsActions — QUICK_ACTIONS', () => {
   it('renders exactly the four lifecycle gestures in the fixed order', () => {
@@ -93,6 +93,9 @@ describe('specsActions — buildFixFindingsAction', () => {
     for (const f of findings) {
       expect(action.prompt).toContain(findingLine(f))
     }
+    // The aggregate keeps the FULL clause list — the per-finding gesture is
+    // the one that narrows by kind.
+    expect(action.prompt).toContain('renumber duplicate ADR records')
   })
 
   it('the tooltip names the count the task will resolve', () => {
@@ -128,13 +131,50 @@ describe('specsActions — buildFixFindingAction', () => {
     expect(action.fullLabel).toBe('Fix this integrity finding')
   })
 
-  it('the prompt carries the shared repair instructions and the finding verbatim', () => {
+  it('the prompt carries the kind-scoped repair clause and the finding verbatim', () => {
     const action = buildFixFindingAction(finding)
     expect(action.prompt).toContain('Findings:')
+    // Only the clicked finding's clause — no foreign repair categories, so
+    // the dispatched task repairs exactly what the card shows.
+    expect(action.prompt).toContain('fix or remove the broken cross-reference')
+    expect(action.prompt).not.toContain('renumber duplicate ADR records')
+    expect(action.prompt).not.toContain('restore the missing root files')
+    expect(action.prompt).toContain('When done, re-verify that the tree parses clean.')
     // The verbatim line is the same findingLine the card's copy button
     // hands out — one format, no drift between panel and dispatched task.
     expect(action.prompt).toContain(findingLine(finding))
     expect(action.prompt.endsWith('\n' + findingLine(finding))).toBe(true)
+  })
+
+  it('every known kind resolves to its own targeted clause', () => {
+    const cases: Array<[SpecFindingKind, string]> = [
+      ['PATH_MISSING', 'Key Files path'],
+      ['CROSS_REF_BROKEN', 'cross-reference'],
+      ['DUPLICATE_ADR_NUMBER', 'renumber protocol'],
+      ['INDEX_STALE', 'INDEX.md directory listing'],
+      ['ROOT_FILE_MISSING', 'restore the missing root files'],
+      ['ADR_NAME_MALFORMED', 'NNN-slug.md shape'],
+      ['ADR_NUMBER_MISMATCH', 'heading number'],
+      ['SUPERSEDED_TARGET_MISSING', 'supersession reference'],
+      ['SUPERSEDED_CYCLE', 'supersession cycle'],
+    ]
+    for (const [kind, clause] of cases) {
+      const action = buildFixFindingAction({ kind, file: 'decisions/x.md', detail: 'd' })
+      expect(action.prompt, kind).toContain(clause)
+    }
+  })
+
+  it('an unknown runtime kind falls back to the aggregate clause list', () => {
+    // The RPC boundary accepts any non-empty kind string (a future tier
+    // renders a generic label) — an unlisted kind must not dispatch an
+    // empty instruction set.
+    const action = buildFixFindingAction({
+      kind: 'FUTURE_KIND' as SpecFindingKind,
+      file: 'domains/app.md',
+      detail: 'something new',
+    })
+    expect(action.prompt).toContain('renumber duplicate ADR records')
+    expect(action.prompt).toContain('When done, re-verify that the tree parses clean.')
   })
 
   it('the prompt enumerates ONLY the one finding — no foreign lines', () => {

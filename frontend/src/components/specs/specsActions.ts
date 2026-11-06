@@ -6,7 +6,7 @@
 // prompt lives here as a constant so the wiring stays auditable and the
 // components render only.
 
-import type { SpecFinding } from '@/types/models'
+import type { SpecFinding, SpecFindingKind } from '@/types/models'
 
 /** A single quick action: a human label, the `spec-*` skill it activates
  *  (ADR-105), the constant prompt dispatched alongside the skill, and
@@ -76,12 +76,35 @@ export function findingLine(finding: SpecFinding): string {
   return `- [${finding.kind}] ${finding.file}: ${finding.detail}`
 }
 
-/** The repair instructions shared verbatim by the aggregate Fix-findings
- *  prompt and the per-finding Fix-finding prompt — one constant so the two
- *  `spec-update` gestures cannot drift apart in what they ask the task to
- *  do with the listed findings. */
+/** The head and tail shared by both repair prompts — only the instruction
+ *  middle differs: the aggregate lists every clause, the per-finding
+ *  gesture carries just the clicked finding's clause. */
+const FIX_PROMPT_HEAD = 'Update the spec files so '
+const FIX_PROMPT_TAIL = '. When done, re-verify that the tree parses clean.'
+
+/** Every repair clause the tier-1 findings can ask for, verbatim in the
+ *  aggregate Fix-findings prompt. */
+const FIX_ALL_CLAUSES =
+  'fix or remove broken paths and cross-references, renumber duplicate ADR records per the renumber protocol, register unlisted files in the INDEX.md directory listing, restore missing root files, and repair ADR numbering/supersession inconsistencies'
+
 const FIX_INSTRUCTIONS =
-  'Update the spec files so every finding resolves: fix or remove broken paths and cross-references, renumber duplicate ADR records per the renumber protocol, register unlisted files in the INDEX.md directory listing, restore missing root files, and repair ADR numbering/supersession inconsistencies. When done, re-verify that the tree parses clean.'
+  FIX_PROMPT_HEAD + 'every finding resolves: ' + FIX_ALL_CLAUSES + FIX_PROMPT_TAIL
+
+/** One targeted repair clause per ADR-106 D5 kind (meanings per the
+ *  core/specs FindingKind docs). Exhaustive over SpecFindingKind; the RPC
+ *  boundary accepts any non-empty kind string, so the lookup below falls
+ *  back to FIX_ALL_CLAUSES for a kind this union doesn't know yet. */
+const FIX_CLAUSE_BY_KIND: Record<SpecFindingKind, string> = {
+  PATH_MISSING: 'fix or remove the broken Key Files path',
+  CROSS_REF_BROKEN: 'fix or remove the broken cross-reference',
+  DUPLICATE_ADR_NUMBER: 'renumber the duplicate ADR records per the renumber protocol',
+  INDEX_STALE: 'register the unlisted file in the INDEX.md directory listing',
+  ROOT_FILE_MISSING: 'restore the missing root files',
+  ADR_NAME_MALFORMED: 'rename the file to the documented NNN-slug.md shape',
+  ADR_NUMBER_MISMATCH: 'align the "# ADR-NNN:" heading number with the file name',
+  SUPERSEDED_TARGET_MISSING: 'repair the supersession reference to name an existing ADR',
+  SUPERSEDED_CYCLE: 'break the supersession cycle',
+}
 
 /** Build the Fix-findings gesture for the CURRENT parse (ADR-109): the
  *  header's findings badge dispatches one `spec-update` task whose prompt
@@ -108,10 +131,12 @@ export function buildFixFindingsAction(findings: SpecFinding[]): SpecQuickAction
 /** Build the per-finding Fix gesture (ADR-109): a finding card dispatches
  *  one `spec-update` task scoped to that single finding, so a targeted
  *  repair doesn't drag the whole parse's backlog into the chat. The prompt
- *  shares the aggregate's repair instructions (FIX_INSTRUCTIONS) and quotes
- *  the finding verbatim via findingLine — the line the card's copy button
- *  hands out is byte-identical to the one the dispatched task sees. */
+ *  narrows the repair instructions to the finding's kind (unknown kinds
+ *  fall back to the aggregate's full clause list) and quotes the finding
+ *  verbatim via findingLine — the line the card's copy button hands out is
+ *  byte-identical to the one the dispatched task sees. */
 export function buildFixFindingAction(finding: SpecFinding): SpecQuickAction {
+  const clause = FIX_CLAUSE_BY_KIND[finding.kind] ?? FIX_ALL_CLAUSES
   return {
     key: 'fix-finding',
     label: 'Fix finding',
@@ -119,7 +144,10 @@ export function buildFixFindingAction(finding: SpecFinding): SpecQuickAction {
     skill: 'spec-update',
     prompt:
       'Fix the following tier-1 integrity finding in the specs/ tree listed below. ' +
-      FIX_INSTRUCTIONS +
+      FIX_PROMPT_HEAD +
+      'the finding resolves: ' +
+      clause +
+      FIX_PROMPT_TAIL +
       '\n\nFindings:\n' +
       findingLine(finding),
   }
