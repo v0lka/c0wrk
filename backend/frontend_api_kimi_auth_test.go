@@ -261,6 +261,7 @@ func TestKimiAuthModeConfigRoundTrip(t *testing.T) {
 
 func TestKimiRegionConfigRoundTrip(t *testing.T) {
 	f, _, _ := newKimiAuthTestAPI(t)
+	installKimiManager(t, f, &fakeChatGPTManager{})
 	region := config.KimiRegionMainlandCN
 	if err := f.UpdateLLMConfig(LLMFullConfigRequest{Kimi: &ProviderConfigRequest{AuthRegion: &region}}); err != nil {
 		t.Fatalf("UpdateLLMConfig region: %v", err)
