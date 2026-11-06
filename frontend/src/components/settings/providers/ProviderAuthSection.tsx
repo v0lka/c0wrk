@@ -1,7 +1,6 @@
 import { Button } from '@/components/ui/button'
 import { Combobox, type ComboboxOption } from '@/components/ui/combobox'
 import { Loader2, LogOut } from 'lucide-react'
-import { formatAuthExpiry } from '@/lib/chatgptFormat'
 import type { KimiAuthRegion, SubscriptionAuthMode } from '@/types/models'
 import type { ProviderAuthFlowState } from '@/hooks/useProviderAuthFlow'
 
@@ -66,9 +65,6 @@ export function ProviderAuthSection({ displayName, authMode, onAuthModeChange, a
               <span className="font-medium text-success">Signed in with {displayName}</span>
               {status?.email && <span className="text-muted-foreground">{status.email}</span>}
               {status?.account_id && <span className="text-muted-foreground">Account {status.account_id}</span>}
-              {status?.expires_at && (
-                <span className="text-muted-foreground">Session valid until {formatAuthExpiry(status.expires_at)}</span>
-              )}
             </div>
           ) : (
             <span className="text-xs text-muted-foreground">

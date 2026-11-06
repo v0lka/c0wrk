@@ -123,11 +123,22 @@ describe('KimiAuthSection', () => {
   })
 
   it('shows restored identity and signs out', async () => {
-    spies.getKimiAuthStatus.mockResolvedValue({ signed_in: true, mode: 'oauth', in_flight: false, email: 'restored@example.com' })
+    spies.getKimiAuthStatus.mockResolvedValue({
+      signed_in: true,
+      mode: 'oauth',
+      in_flight: false,
+      email: 'restored@example.com',
+      account_id: 'kimi-account',
+      expires_at: '2026-10-01T10:00:00Z',
+    })
     renderSection()
     await settleStatus()
     expect(container.textContent).toContain('Signed in with Kimi')
     expect(container.textContent).toContain('restored@example.com')
+    expect(container.textContent).toContain('Account kimi-account')
+    expect(container.textContent).not.toContain('Session valid until')
+    expect(container.textContent).not.toContain(new Date('2026-10-01T10:00:00Z').toLocaleString())
+    expect(container.textContent).not.toContain('2026-10-01T10:00:00Z')
     spies.signOutKimi.mockResolvedValue(undefined)
     await act(async () => {
       buttonByText('Sign out').dispatchEvent(new MouseEvent('click', { bubbles: true }))
