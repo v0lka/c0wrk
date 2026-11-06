@@ -8,23 +8,27 @@ import { useUiScaleStore } from '@/stores/uiScaleStore'
 const HUD_HIDE_DELAY_MS = 1000
 
 /**
- * useCtrlWheelScale — desktop-only modifier+wheel app-zoom stepping with a
- * transient HUD visibility flag. The modifier follows the platform's zoom
- * convention: Cmd on macOS (`isMacHost`), Ctrl on Windows/Linux. On macOS
- * plain Ctrl is accepted too, because WebKit reports trackpad pinch wheels
- * with the synthetic `ctrlKey` flag — the same gesture family.
+ * useCtrlWheelScale — desktop-only modifier+wheel AND modifier+keyboard
+ * app-zoom stepping with a transient HUD visibility flag. The modifier
+ * follows the platform's zoom convention: Cmd on macOS (`isMacHost`), Ctrl
+ * on Windows/Linux. On macOS plain Ctrl is accepted too, because WebKit
+ * reports trackpad pinch wheels with the synthetic `ctrlKey` flag — the
+ * same gesture family.
  *
- * While the HUD is hidden this hook owns no UI; it only listens for the
- * modifier+wheel chord on the window (capture phase, non-passive) and:
+ * While the HUD is hidden this hook owns no UI; it listens on the window
+ * (capture phase, non-passive where needed) for the modifier+wheel chord
+ * and the modifier +/-/− keyboard chord, and:
  *   - steps the persisted UI scale through `nextScaleOnWheel` (snapped to the
- *     wheel grid, direction from the deltaY sign only, clamped by the store),
+ *     wheel grid, direction from the deltaY sign or the +/- key, clamped by
+ *     the store),
  *   - shows the HUD and re-arms the hide timer on every zoom signal, so it
  *     stays visible for `HUD_HIDE_DELAY_MS` after the last chord, the
  *     modifier keyup or a window blur. Holding the modifier keeps the HUD up
  *     via its auto-repeating keydowns (each cancels a pending hide), which
  *     also covers gestures with no keyup at all — a trackpad pinch fires
  *     ctrlKey wheels without any key ever being held, and the HUD hides one
- *     delay after the last wheel notch,
+ *     delay after the last wheel notch or zoom keydown (a held Ctrl+'+'
+ *     repeats keydowns that each re-arm the hide and step the scale),
  *   - pauses the hide entirely while the user is grabbing the HUD card
  *     (`hold` from a card `pointerdown`, `release` on `pointerup`/`pointercancel`):
  *     dragging the slider outlasts any single timer budget, so while held a
@@ -41,6 +45,19 @@ const HUD_HIDE_DELAY_MS = 1000
  * zoom the diagram on the same gesture) — under the chord the wheel means
  * app zoom everywhere. Plain wheel events are ignored untouched so scrolling
  * stays native.
+ *
+ * The keyboard chord (Ctrl+'+' / Ctrl+'−', or Cmd+/- on macOS — plain Ctrl
+ * accepted on mac like the wheel) is the platform webview's own page-zoom
+ * shortcut too, so it is prevented the same way. The zoom keys are matched
+ * on `event.key` first ('+', '=' for the unshifted plus key, '-' and the
+ * U+2212 minus) with an `event.code` fallback (`NumpadAdd`,
+ * `NumpadSubtract`, `Equal`, `Minus`) so the chord works on any keyboard
+ * layout and on the numpad. AltGr is never a zoom modifier: a
+ * `ctrlKey+altKey` keydown is left untouched — AltGr is the system's
+ * Ctrl+Alt, and character production on AltGr layouts must keep working
+ * (the cmChatKeymap AltGr precedent). No `stopPropagation` on keydown:
+ * wheel handlers don't exist for keyboard input, and other keydown
+ * listeners (menus, inputs) must keep seeing the event.
  *
  * The listener set attaches once per mount and is gated on
  * `transportSnapshot() === 'wails'`: in the plain dev-server browser, on the
@@ -123,6 +140,36 @@ export function useCtrlWheelScale(): {
     const hasZoomModifier = (event: WheelEvent): boolean =>
       mac ? event.metaKey || event.ctrlKey : event.ctrlKey
 
+    /**
+     * Zoom direction from a modifier+key keydown: +1 (zoom in) for the plus
+     * keys, −1 (zoom out) for the minus keys, 0 for anything else. Matched
+     * on `event.key` first ('+', '=' — the unshifted printed-plus key, '-'
+     * and the U+2212 true-minus) with an `event.code` fallback
+     * (`NumpadAdd`, `NumpadSubtract`, `Equal`, `Minus`) so the chord works
+     * on any keyboard layout and on the numpad. Pure and module-local so
+     * the keydown handler stays readable.
+     */
+    const zoomKeyDirection = (event: KeyboardEvent): number => {
+      const key = event.key
+      const code = event.code
+      if (key === '+' || key === '=' || key === '\u2212' || code === 'NumpadAdd' || code === 'Equal') {
+        return 1
+      }
+      if (key === '-' || code === 'NumpadSubtract' || code === 'Minus') {
+        return -1
+      }
+      return 0
+    }
+
+    /** True while a zoom modifier chord is held (mirrors hasZoomModifier for keys). */
+    const hasZoomModifierKey = (event: KeyboardEvent): boolean =>
+      mac ? (event.metaKey || event.ctrlKey) && !event.altKey : event.ctrlKey && !event.altKey
+
+    const stepScale = (deltaY: number): void => {
+      const scale = useUiScaleStore.getState().scale
+      useUiScaleStore.getState().setScale(nextScaleOnWheel(scale, deltaY))
+    }
+
     const onWheel = (event: WheelEvent): void => {
       if (!hasZoomModifier(event)) return
       // No vertical input — no zoom direction: leave the event untouched.
@@ -136,8 +183,7 @@ export function useCtrlWheelScale(): {
       event.stopPropagation()
       showHud()
       scheduleHide()
-      const scale = useUiScaleStore.getState().scale
-      useUiScaleStore.getState().setScale(nextScaleOnWheel(scale, event.deltaY))
+      stepScale(event.deltaY)
     }
 
     const onKeyDown = (event: KeyboardEvent): void => {
@@ -146,7 +192,22 @@ export function useCtrlWheelScale(): {
       // not fire mid-gesture.
       if ((event.key === 'Control' || event.key === 'Meta') && hudVisibleRef.current) {
         cancelHide()
+        return
       }
+      // The keyboard zoom chord (Ctrl+'+' / Ctrl+'−', Cmd on macOS): the
+      // platform webview's own page-zoom shortcut — prevent the native zoom
+      // and step the app scale instead. An AltGr keydown (Ctrl+Alt, the
+      // system's AltGr) is never a zoom chord — character production on
+      // AltGr layouts must keep working. Auto-repeat (a held Ctrl+'+')
+      // steps on every repeat and re-arms the hide, mirroring a wheel burst.
+      const direction = hasZoomModifierKey(event) ? zoomKeyDirection(event) : 0
+      if (direction === 0) return
+      event.preventDefault()
+      showHud()
+      scheduleHide()
+      // nextScaleOnWheel's deltaY is wheel-signed (down = zoom out): a zoom-in
+      // keypress (+1) maps to deltaY = -1.
+      stepScale(-direction)
     }
 
     const onKeyUp = (event: KeyboardEvent): void => {

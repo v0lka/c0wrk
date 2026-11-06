@@ -63,6 +63,30 @@ function dispatchKey(type: 'keydown' | 'keyup', key: string): void {
   })
 }
 
+/** Dispatch a modifier+key zoom chord on window (Ctrl modifier by default). */
+function dispatchKeyChord(key: string): void {
+  dispatchKeyChordWithModifiers(key, { ctrlKey: true })
+}
+
+/** Dispatch a zoom chord recognized via event.code (numpad keys). */
+function dispatchKeyChordWithCode(code: string): void {
+  act(() => {
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', { key: '', code, cancelable: true, ctrlKey: true }),
+    )
+  })
+}
+
+/** Dispatch a zoom chord with explicit modifier flags. */
+function dispatchKeyChordWithModifiers(
+  key: string,
+  modifiers: { ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean },
+): void {
+  act(() => {
+    window.dispatchEvent(new KeyboardEvent('keydown', { key, cancelable: true, ...modifiers }))
+  })
+}
+
 /** Dispatch a window blur (the keyup-swallowing path). */
 function dispatchBlur(): void {
   act(() => {
@@ -372,6 +396,182 @@ describe('useCtrlWheelScale — chord swallowing over canvas handlers', () => {
     expect(canvasHits).toBe(0)
     expect(useUiScaleStore.getState().scale).toBe(110)
     expect(hud?.visible).toBe(true)
+  })
+})
+
+describe('useCtrlWheelScale — keyboard zoom chords (Ctrl+Plus / Ctrl+Minus)', () => {
+  it('steps the scale up on Ctrl+= and shows the HUD', () => {
+    renderHook()
+    expect(hud?.visible).toBe(false)
+
+    // The unshifted plus key prints '=': Ctrl+'=' is the canonical chord.
+    const evt = new KeyboardEvent('keydown', { key: '=', cancelable: true, ctrlKey: true })
+    const prevented = vi.spyOn(evt, 'preventDefault')
+    act(() => {
+      window.dispatchEvent(evt)
+    })
+
+    expect(prevented).toHaveBeenCalled()
+    expect(useUiScaleStore.getState().scale).toBe(110)
+    expect(hud?.visible).toBe(true)
+  })
+
+  it('steps the scale up on Shift+Ctrl++ (printed plus) and down on Ctrl+-', () => {
+    renderHook()
+
+    dispatchKeyChord('+')
+    expect(useUiScaleStore.getState().scale).toBe(110)
+
+    dispatchKeyChord('-')
+    expect(useUiScaleStore.getState().scale).toBe(100)
+  })
+
+  it('matches the numpad keys via event.code fallback', () => {
+    renderHook()
+
+    dispatchKeyChordWithCode('NumpadAdd')
+    expect(useUiScaleStore.getState().scale).toBe(110)
+
+    dispatchKeyChordWithCode('NumpadSubtract')
+    expect(useUiScaleStore.getState().scale).toBe(100)
+  })
+
+  it('snaps to the grid before stepping (same arithmetic as the wheel)', () => {
+    useUiScaleStore.setState({ scale: 55 })
+    renderHook()
+
+    dispatchKeyChord('-')
+    expect(useUiScaleStore.getState().scale).toBe(50)
+  })
+
+  it('clamps at the store bounds', () => {
+    useUiScaleStore.setState({ scale: 195 })
+    renderHook()
+
+    dispatchKeyChord('+')
+    expect(useUiScaleStore.getState().scale).toBe(200)
+
+    dispatchKeyChord('+')
+    expect(useUiScaleStore.getState().scale).toBe(200)
+  })
+
+  it('auto-repeat steps repeatedly and re-arms the hide on each repeat', () => {
+    renderHook()
+
+    dispatchKeyChord('+')
+    dispatchKeyChord('+')
+    dispatchKeyChord('+')
+    expect(useUiScaleStore.getState().scale).toBe(130)
+    expect(hud?.visible).toBe(true)
+
+    // The hide timer was armed by the LAST keydown, not the first.
+    advance(999)
+    expect(hud?.visible).toBe(true)
+    advance(1)
+    expect(hud?.visible).toBe(false)
+  })
+
+  it('releasing the modifier hides the HUD 1s after keyup Control', () => {
+    renderHook()
+    dispatchKeyChord('+')
+    dispatchKey('keyup', 'Control')
+    advance(999)
+    expect(hud?.visible).toBe(true)
+    advance(1)
+    expect(hud?.visible).toBe(false)
+  })
+
+  it('leaves AltGr (Ctrl+Alt) untouched: no step, no preventDefault, no HUD', () => {
+    renderHook()
+
+    const evt = new KeyboardEvent('keydown', {
+      key: '+',
+      cancelable: true,
+      ctrlKey: true,
+      altKey: true,
+    })
+    const prevented = vi.spyOn(evt, 'preventDefault')
+    act(() => {
+      window.dispatchEvent(evt)
+    })
+
+    expect(prevented).not.toHaveBeenCalled()
+    expect(useUiScaleStore.getState().scale).toBe(100)
+    expect(hud?.visible).toBe(false)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('ignores the chord without the modifier', () => {
+    renderHook()
+
+    const evt = new KeyboardEvent('keydown', { key: '+', cancelable: true })
+    const prevented = vi.spyOn(evt, 'preventDefault')
+    act(() => {
+      window.dispatchEvent(evt)
+    })
+
+    expect(prevented).not.toHaveBeenCalled()
+    expect(useUiScaleStore.getState().scale).toBe(100)
+    expect(hud?.visible).toBe(false)
+  })
+
+  it('ignores unrelated Ctrl chords (e.g. Ctrl+S)', () => {
+    renderHook()
+
+    const evt = new KeyboardEvent('keydown', { key: 's', cancelable: true, ctrlKey: true })
+    const prevented = vi.spyOn(evt, 'preventDefault')
+    act(() => {
+      window.dispatchEvent(evt)
+    })
+
+    expect(prevented).not.toHaveBeenCalled()
+    expect(useUiScaleStore.getState().scale).toBe(100)
+    expect(hud?.visible).toBe(false)
+  })
+
+  it('mac: Cmd+= and Ctrl+= both step; AltGr-styled Ctrl+Alt stays inert', () => {
+    vi.spyOn(navigator, 'platform', 'get').mockReturnValue('MacIntel')
+    renderHook()
+
+    dispatchKeyChordWithModifiers('=', { metaKey: true })
+    expect(useUiScaleStore.getState().scale).toBe(110)
+
+    dispatchKeyChordWithModifiers('=', { ctrlKey: true })
+    expect(useUiScaleStore.getState().scale).toBe(120)
+
+    dispatchKeyChordWithModifiers('=', { ctrlKey: true, altKey: true })
+    expect(useUiScaleStore.getState().scale).toBe(120)
+  })
+
+  it('non-mac: Cmd+= keeps its native meaning', () => {
+    vi.spyOn(navigator, 'platform', 'get').mockReturnValue('Linux x86_64')
+    renderHook()
+
+    const evt = new KeyboardEvent('keydown', {
+      key: '=',
+      cancelable: true,
+      metaKey: true,
+    })
+    const prevented = vi.spyOn(evt, 'preventDefault')
+    act(() => {
+      window.dispatchEvent(evt)
+    })
+
+    expect(prevented).not.toHaveBeenCalled()
+    expect(useUiScaleStore.getState().scale).toBe(100)
+    expect(hud?.visible).toBe(false)
+  })
+
+  it('keyboard chord coexists with the wheel: one HUD lifecycle, interleaved steps', () => {
+    renderHook()
+
+    dispatchWheel(-1, true)
+    dispatchKeyChord('+')
+    expect(useUiScaleStore.getState().scale).toBe(120)
+
+    dispatchWheel(1, true)
+    dispatchKeyChord('-')
+    expect(useUiScaleStore.getState().scale).toBe(100)
   })
 })
 
