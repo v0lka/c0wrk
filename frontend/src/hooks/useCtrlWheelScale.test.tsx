@@ -18,7 +18,7 @@ let root: Root
 let container: HTMLDivElement
 // Latest render's hook result — the HUD visibility flag and the card-grab
 // controls live in component state, so this is the only way to reach them.
-let hud: { visible: boolean; hold: () => void; release: () => void } | null
+let hud: { visible: boolean; hold: () => void; release: () => void; rearm: () => void } | null
 
 function Harness() {
   hud = useCtrlWheelScale()
@@ -225,6 +225,24 @@ describe('useCtrlWheelScale — HUD hide timer', () => {
     expect(hud?.visible).toBe(false)
   })
 
+  it('rearm moves the hide deadline (the HUD slider contract)', () => {
+    renderHook()
+    dispatchWheel(-1, true)
+    dispatchKey('keyup', 'Control')
+    advance(600)
+
+    // A slider value change 600ms into the armed hide re-arms it: the
+    // deadline becomes one delay after the rearm, not after the keyup.
+    act(() => {
+      hud?.rearm()
+    })
+    expect(hud?.visible).toBe(true)
+    advance(999)
+    expect(hud?.visible).toBe(true)
+    advance(1)
+    expect(hud?.visible).toBe(false)
+  })
+
   it('blur without a visible HUD arms no timer', () => {
     renderHook()
     dispatchBlur()
@@ -424,6 +442,23 @@ describe('useCtrlWheelScale — keyboard zoom chords (Ctrl+Plus / Ctrl+Minus)', 
 
     dispatchKeyChord('-')
     expect(useUiScaleStore.getState().scale).toBe(100)
+  })
+
+  it('steps the scale DOWN on the U+2212 true-minus key (regression: it zoomed up)', () => {
+    renderHook()
+
+    // Some layouts/firmwares emit U+2212 for the physical minus key. It is a
+    // minus key and must zoom out — a past revision matched it in the plus
+    // branch, inverting the gesture exactly where it was needed.
+    const evt = new KeyboardEvent('keydown', { key: '\u2212', cancelable: true, ctrlKey: true })
+    const prevented = vi.spyOn(evt, 'preventDefault')
+    act(() => {
+      window.dispatchEvent(evt)
+    })
+
+    expect(prevented).toHaveBeenCalled()
+    expect(useUiScaleStore.getState().scale).toBe(90)
+    expect(hud?.visible).toBe(true)
   })
 
   it('matches the numpad keys via event.code fallback', () => {

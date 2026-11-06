@@ -19,9 +19,14 @@ import type { ReactNode } from 'react'
 // wails transport (attached-listener behavior covered by its own suite), so
 // the component tests drive visibility directly and spy the card-grab
 // controls the component wires onto its pointer handlers.
-const control = vi.hoisted(() => ({ visible: false, hold: vi.fn(), release: vi.fn() }))
+const control = vi.hoisted(() => ({ visible: false, hold: vi.fn(), release: vi.fn(), rearm: vi.fn() }))
 vi.mock('@/hooks/useCtrlWheelScale', () => ({
-  useCtrlWheelScale: () => ({ visible: control.visible, hold: control.hold, release: control.release }),
+  useCtrlWheelScale: () => ({
+    visible: control.visible,
+    hold: control.hold,
+    release: control.release,
+    rearm: control.rearm,
+  }),
 }))
 
 // jsdom in this environment does not expose `window.localStorage`, which
@@ -133,6 +138,7 @@ beforeEach(() => {
   control.visible = false
   control.hold.mockClear()
   control.release.mockClear()
+  control.rearm.mockClear()
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
@@ -261,7 +267,7 @@ describe('ScaleHud visible', () => {
     expect(card.className).toContain('pointer-events-auto')
   })
 
-  it('grabbing the card holds the hide; pointerup/pointercancel release it', () => {
+  it('grabbing the card holds the hide; a release anywhere ends the grab', () => {
     act(() => {
       root.render(<ScaleHud />)
     })
@@ -274,15 +280,48 @@ describe('ScaleHud visible', () => {
     expect(control.hold).toHaveBeenCalledTimes(1)
     expect(control.release).not.toHaveBeenCalled()
 
+    // The pointer comes up OUTSIDE the card (the mouse has no implicit
+    // pointer capture): the window-level listener must end the grab, or a
+    // press released off-card would pin the HUD on screen forever.
     act(() => {
-      card!.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }))
+      document.body.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }))
     })
     expect(control.release).toHaveBeenCalledTimes(1)
 
+    // pointercancel releases the same way (re-grab first).
     act(() => {
-      card!.dispatchEvent(new MouseEvent('pointercancel', { bubbles: true }))
+      card!.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+    })
+    act(() => {
+      document.body.dispatchEvent(new MouseEvent('pointercancel', { bubbles: true }))
     })
     expect(control.release).toHaveBeenCalledTimes(2)
+
+    // The window listeners live exactly for the grab: with it over, a
+    // further pointerup attaches to nothing — no spurious releases.
+    act(() => {
+      document.body.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }))
+    })
+    expect(control.release).toHaveBeenCalledTimes(2)
+  })
+
+  it('a slider value change re-arms the hide (keyboard steps keep the HUD up)', () => {
+    act(() => {
+      root.render(<ScaleHud />)
+    })
+    expect(control.rearm).not.toHaveBeenCalled()
+
+    // Each value change — a keyboard step on the focused thumb here, the
+    // pointer-less path — calls rearm once, alongside the setScale the
+    // change already performs. Without it the HUD (thumb included) would
+    // hide one delay after the last zoom chord mid-stepping.
+    stepSlider('ArrowRight')
+    expect(useUiScaleStore.getState().scale).toBe(105)
+    expect(control.rearm).toHaveBeenCalledTimes(1)
+
+    stepSlider('ArrowRight')
+    expect(useUiScaleStore.getState().scale).toBe(110)
+    expect(control.rearm).toHaveBeenCalledTimes(2)
   })
 })
 

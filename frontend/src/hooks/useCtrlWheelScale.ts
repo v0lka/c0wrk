@@ -30,9 +30,17 @@ const HUD_HIDE_DELAY_MS = 1000
  *     delay after the last wheel notch or zoom keydown (a held Ctrl+'+'
  *     repeats keydowns that each re-arm the hide and step the scale),
  *   - pauses the hide entirely while the user is grabbing the HUD card
- *     (`hold` from a card `pointerdown`, `release` on `pointerup`/`pointercancel`):
- *     dragging the slider outlasts any single timer budget, so while held a
- *     pending hide is cancelled and cannot re-arm.
+ *     (`hold` from a card `pointerdown`): dragging the slider outlasts any
+ *     single timer budget, so while held a pending hide is cancelled and
+ *     cannot re-arm. `release` re-arms the hide; the card fires it from
+ *     window-level pointerup/pointercancel listeners registered while
+ *     held — the mouse has no implicit pointer capture, so a press that
+ *     starts on the card but releases outside it must still end the hold,
+ *     or the HUD would stay up forever,
+ *   - re-arms on a HUD slider value change (`rearm` on the slider's
+ *     `onValueChange`): keyboard steps on a focused thumb carry no pointer
+ *     events, so without this the HUD (thumb included) would unmount one
+ *     delay after the last chord regardless of the user stepping it.
  *
  * A chord wheel with `deltaY === 0` (a deltaX-only trackpad gesture or an
  * inertial tail — the same zero-delta wheels `usePanZoom` guards) carries no
@@ -74,6 +82,7 @@ export function useCtrlWheelScale(): {
   visible: boolean
   hold: () => void
   release: () => void
+  rearm: () => void
 } {
   const [visible, setVisible] = useState(false)
   // Synchronous mirrors for the event handlers — they run outside React and
@@ -118,10 +127,23 @@ export function useCtrlWheelScale(): {
     cancelHide()
   }, [cancelHide])
 
-  /** Card pointerup/pointercancel: re-arm the hide. */
+  /** Any pointerup/pointercancel while held (the card wires window-level
+   *  listeners for the held duration): re-arm the hide. */
   const release = useCallback((): void => {
     if (!heldRef.current) return
     heldRef.current = false
+    scheduleHide()
+  }, [scheduleHide])
+
+  /**
+   * A value change from the HUD's own slider (keyboard steps on a focused
+   * thumb, or a drag that reaches the slider without a card-level hold):
+   * any change is an active gesture, so the hide re-arms — without this a
+   * keyboard user gets 1s after the modifier keyup before the HUD (thumb
+   * included) unmounts under them. No-op while held (the hold pauses the
+   * hide) and while hidden.
+   */
+  const rearm = useCallback((): void => {
     scheduleHide()
   }, [scheduleHide])
 
@@ -152,10 +174,13 @@ export function useCtrlWheelScale(): {
     const zoomKeyDirection = (event: KeyboardEvent): number => {
       const key = event.key
       const code = event.code
-      if (key === '+' || key === '=' || key === '\u2212' || code === 'NumpadAdd' || code === 'Equal') {
+      // '+' and '=' are the plus keys; '-', the U+2212 true-minus (what
+      // some layouts/firmwares emit for the minus key) and the numpad/row
+      // codes below are the minus keys.
+      if (key === '+' || key === '=' || code === 'NumpadAdd' || code === 'Equal') {
         return 1
       }
-      if (key === '-' || code === 'NumpadSubtract' || code === 'Minus') {
+      if (key === '-' || key === '\u2212' || code === 'NumpadSubtract' || code === 'Minus') {
         return -1
       }
       return 0
@@ -237,5 +262,5 @@ export function useCtrlWheelScale(): {
     }
   }, [cancelHide, showHud, scheduleHide])
 
-  return { visible, hold, release }
+  return { visible, hold, release, rearm }
 }
