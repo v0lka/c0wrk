@@ -88,18 +88,24 @@ export function SpecsPanel() {
   // Read path (ADR-106 D4): a specs-root-relative reference resolves
   // against the absolute root and opens through the existing file viewer —
   // no new file-read RPC. The root is read from the store AT CLICK TIME
-  // and only from the CURRENT project's status: a stale cross-project root
-  // must never reach the viewer (defense in depth under the render guard —
-  // the clickable rows themselves are already project-scoped).
+  // and only from the CURRENT (project, session) parse: a stale cross-project
+  // or cross-session root must never reach the viewer (defense in depth
+  // under the render guard — the clickable rows themselves are already
+  // (project, session)-scoped).
   const openSpec = useCallback(
     (relPath: string) => {
       const store = useSpecsStore.getState()
-      if (store.projectId !== projectId || store.status === null) return
+      if (
+        store.projectId !== projectId ||
+        store.sessionId !== sessionId ||
+        store.status === null
+      )
+        return
       const viewer = useFileViewerStore.getState()
       viewer.setCollapsed(false)
       viewer.openFile(joinSpecPath(store.status.root, relPath))
     },
-    [projectId],
+    [projectId, sessionId],
   )
 
   // Fix-findings gesture (ADR-109): the header's findings badge dispatches
@@ -109,22 +115,33 @@ export function SpecsPanel() {
   const onFixFindings = useCallback(
     (newSession: boolean) => {
       const store = useSpecsStore.getState()
-      if (store.projectId !== projectId || store.status === null) return
+      if (
+        store.projectId !== projectId ||
+        store.sessionId !== sessionId ||
+        store.status === null
+      )
+        return
       dispatch(buildFixFindingsAction(store.status.findings), newSession)
     },
-    [projectId, dispatch],
+    [projectId, sessionId, dispatch],
   )
 
   // Per-finding fix gesture (ADR-109): a finding card's badge dispatches
   // one spec-update task scoped to THAT single finding. The same guard as
-  // the aggregate badge — only the CURRENT project's parse may dispatch.
+  // the aggregate badge — only the CURRENT (project, session) parse may
+  // dispatch.
   const onFixFinding = useCallback(
     (finding: SpecFinding, newSession: boolean) => {
       const store = useSpecsStore.getState()
-      if (store.projectId !== projectId || store.status === null) return
+      if (
+        store.projectId !== projectId ||
+        store.sessionId !== sessionId ||
+        store.status === null
+      )
+        return
       dispatch(buildFixFindingAction(finding), newSession)
     },
-    [projectId, dispatch],
+    [projectId, sessionId, dispatch],
   )
 
   // Manual refresh: the same refetch as the mount/tree_changed paths — a
