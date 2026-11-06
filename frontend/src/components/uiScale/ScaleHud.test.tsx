@@ -17,10 +17,11 @@ import type { ReactNode } from 'react'
 
 // Controllable stand-in for the wheel hook: the real hook is gated on the
 // wails transport (attached-listener behavior covered by its own suite), so
-// the component tests drive visibility directly.
-const control = vi.hoisted(() => ({ visible: false }))
+// the component tests drive visibility directly and spy the card-grab
+// controls the component wires onto its pointer handlers.
+const control = vi.hoisted(() => ({ visible: false, hold: vi.fn(), release: vi.fn() }))
 vi.mock('@/hooks/useCtrlWheelScale', () => ({
-  useCtrlWheelScale: () => ({ visible: control.visible }),
+  useCtrlWheelScale: () => ({ visible: control.visible, hold: control.hold, release: control.release }),
 }))
 
 // jsdom in this environment does not expose `window.localStorage`, which
@@ -130,6 +131,8 @@ beforeEach(() => {
   localStorage.clear()
   document.documentElement.style.zoom = ''
   control.visible = false
+  control.hold.mockClear()
+  control.release.mockClear()
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
@@ -150,9 +153,10 @@ function resetButton(): HTMLButtonElement {
 }
 
 /** The HUD slider is the self-styled Radix primitive: the focusable
- *  role=slider element is its thumb, the value lives in aria-valuenow. */
+ *  role=slider element is its thumb, the value lives in aria-valuenow and
+ *  its accessible name + % unit in aria-label/aria-valuetext. */
 function scaleSlider(): HTMLElement {
-  const el = container.querySelector<HTMLElement>('[role="slider"][aria-label="UI scale"], [role="slider"]')
+  const el = container.querySelector<HTMLElement>('[role="slider"]')
   expect(el).not.toBeNull()
   return el!
 }
@@ -195,6 +199,10 @@ describe('ScaleHud visible', () => {
     expect(slider.getAttribute('aria-valuemin')).toBe('50')
     expect(slider.getAttribute('aria-valuemax')).toBe('200')
     expect(slider.getAttribute('aria-valuenow')).toBe('100')
+    // The announced element is the thumb: name + % unit live on it (the
+    // visible label span is aria-hidden, so the units exist only here).
+    expect(slider.getAttribute('aria-label')).toBe('UI scale')
+    expect(slider.getAttribute('aria-valuetext')).toBe('100%')
     // No native range input remains — the point of the change: the visual
     // is ours (design tokens), not the platform's.
     expect(container.querySelector('input[type="range"]')).toBeNull()
@@ -225,6 +233,7 @@ describe('ScaleHud visible', () => {
     expect(useUiScaleStore.getState().scale).toBe(105)
     expect(document.documentElement.style.zoom).toBe('1.05')
     expect(scaleSlider().getAttribute('aria-valuenow')).toBe('105')
+    expect(scaleSlider().getAttribute('aria-valuetext')).toBe('105%')
     expect(container.textContent).toContain('105%')
   })
 
@@ -250,6 +259,30 @@ describe('ScaleHud visible', () => {
     expect(wrapper.className).toContain('pointer-events-none')
     const card = wrapper.firstElementChild as HTMLElement
     expect(card.className).toContain('pointer-events-auto')
+  })
+
+  it('grabbing the card holds the hide; pointerup/pointercancel release it', () => {
+    act(() => {
+      root.render(<ScaleHud />)
+    })
+    const card = container.querySelector<HTMLElement>('.pointer-events-auto')
+    expect(card).not.toBeNull()
+
+    act(() => {
+      card!.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+    })
+    expect(control.hold).toHaveBeenCalledTimes(1)
+    expect(control.release).not.toHaveBeenCalled()
+
+    act(() => {
+      card!.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }))
+    })
+    expect(control.release).toHaveBeenCalledTimes(1)
+
+    act(() => {
+      card!.dispatchEvent(new MouseEvent('pointercancel', { bubbles: true }))
+    })
+    expect(control.release).toHaveBeenCalledTimes(2)
   })
 })
 

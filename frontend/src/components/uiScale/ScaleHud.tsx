@@ -6,7 +6,8 @@
 // current value). The full-screen wrapper swallows no input — it is
 // pointer-events-none and only the card itself re-enables pointer events —
 // so the rest of the UI stays interactive while the HUD is up; hiding is
-// driven entirely by the hook's timers, never by clicking away.
+// driven by the hook's timers (paused while the card is grabbed, so a slider
+// drag can outlast the timer budget), never by clicking away.
 //
 // Mounted once at the App root in every app phase: a zoom-chord wheel
 // gesture is meaningful on the splash screens too (the zoom is a
@@ -29,7 +30,7 @@ const DEFAULT_SCALE = 100
  * steady state — this component owns no persistent UI).
  */
 export function ScaleHud() {
-  const { visible } = useCtrlWheelScale()
+  const { visible, hold, release } = useCtrlWheelScale()
   // Primitive field selectors: `scale` changes on every wheel notch, while
   // `setScale` is a stable store action — neither selector allocates, so the
   // re-render per step stays cheap (stable-selector principle).
@@ -43,7 +44,14 @@ export function ScaleHud() {
     // above the app (z-[100]) but lets every click/wheel through — blocking
     // the UI while the user is still reading it would fight the gesture.
     <div className="fixed inset-0 z-[100] flex items-center justify-center pointer-events-none">
-      <div className="pointer-events-auto flex items-center gap-3 rounded-md border border-border bg-popover text-popover-foreground px-3 py-2 shadow-[0_4px_12px_var(--color-shadow)]">
+      {/* Grabbing the card pauses the hide timer (hook hold/release): a
+          slider drag outlasts the 1 s budget, and releasing re-arms it. */}
+      <div
+        className="pointer-events-auto flex items-center gap-3 rounded-md border border-border bg-popover text-popover-foreground px-3 py-2 shadow-[0_4px_12px_var(--color-shadow)]"
+        onPointerDown={hold}
+        onPointerUp={release}
+        onPointerCancel={release}
+      >
         <Button
           variant="ghost"
           size="icon-sm"
@@ -71,7 +79,13 @@ export function ScaleHud() {
           step={SLIDER_STEP_PERCENT}
           value={[scale]}
           onValueChange={(v) => setScale(v[0] ?? scale)}
-          aria-label="UI scale"
+          thumb={{
+            // The thumb is the announced role=slider element — the accessible
+            // name and the % unit live there; the root span is not focusable,
+            // so a label on it is never announced.
+            'aria-label': 'UI scale',
+            'aria-valuetext': `${scale}%`,
+          }}
         />
         <span className="w-10 text-right text-xs tabular-nums text-muted-foreground" aria-hidden="true">
           {scale}%

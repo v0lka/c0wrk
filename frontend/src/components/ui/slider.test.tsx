@@ -36,14 +36,6 @@ import { Slider } from './slider'
 let container: HTMLDivElement
 let root: Root
 
-/**
- * Radix slider's internal context always carries `values: number[]` — a
- * scalar `value` prop is NOT normalized upstream, and `Range` crashes on
- * `values.map`. The tests (and the Scale HUD, whose store value is a plain
- * number) must therefore pass `[number]` arrays.
- */
-const toValues = (v: number | number[]): number[] => (Array.isArray(v) ? v : [v])
-
 beforeEach(() => {
   container = document.createElement('div')
   document.body.appendChild(container)
@@ -85,17 +77,56 @@ function thumb(): HTMLElement {
 }
 
 describe('Slider', () => {
-  it('exposes the Radix slider ARIA contract', () => {
+  it('exposes the Radix slider ARIA contract, threading the thumb props through', () => {
     act(() => {
-      root.render(<Slider min={50} max={200} step={5} value={[100]} aria-label="UI scale" />)
+      root.render(
+        <Slider
+          min={50}
+          max={200}
+          step={5}
+          value={[100]}
+          thumb={{ 'aria-label': 'UI scale', 'aria-valuetext': '100%' }}
+        />,
+      )
     })
     const el = sliderEl()
     expect(el.getAttribute('aria-valuemin')).toBe('50')
     expect(el.getAttribute('aria-valuemax')).toBe('200')
     expect(el.getAttribute('aria-valuenow')).toBe('100')
-    // The role=slider element is the THUMB (carrying the value attributes);
-    // the root span keeps the free-form aria-label.
-    expect(container.querySelector<HTMLElement>('[data-slot="slider"]')!.getAttribute('aria-label')).toBe('UI scale')
+    // The role=slider element is the THUMB (carrying the value attributes) —
+    // the accessible name and the % unit live there too: the root span is
+    // not focusable, so a label on it is never announced.
+    expect(el.getAttribute('aria-label')).toBe('UI scale')
+    expect(el.getAttribute('aria-valuetext')).toBe('100%')
+  })
+
+  it('normalizes scalar value/defaultValue to the array shape Radix requires', () => {
+    const onValueChange = vi.fn()
+    act(() => {
+      root.render(<Slider min={50} max={200} step={5} value={100} onValueChange={onValueChange} />)
+    })
+    expect(sliderEl().getAttribute('aria-valuenow')).toBe('100')
+    expect(container.querySelectorAll('[data-slot="slider-thumb"]')).toHaveLength(1)
+    act(() => {
+      sliderEl().dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+    })
+    expect(onValueChange).toHaveBeenCalledWith([105])
+
+    // Scalar defaultValue (the uncontrolled shape) is normalized the same
+    // way. Fresh mount: flipping the same tree from controlled to
+    // uncontrolled is a React anti-pattern (and warns), so this shape gets
+    // its own root.
+    act(() => {
+      root.unmount()
+    })
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    root = createRoot(container)
+    act(() => {
+      root.render(<Slider min={50} max={200} step={5} defaultValue={150} />)
+    })
+    expect(sliderEl().getAttribute('aria-valuenow')).toBe('150')
+    expect(container.querySelectorAll('[data-slot="slider-thumb"]')).toHaveLength(1)
   })
 
   it('carries the design-token classes on its parts', () => {
@@ -128,7 +159,7 @@ describe('Slider', () => {
     function Harness(): React.ReactElement {
       const [value, setValue] = React.useState(100)
       return (
-        <Slider min={50} max={200} step={5} value={toValues(value)} onValueChange={(v) => setValue(v[0] ?? value)} />
+        <Slider min={50} max={200} step={5} value={value} onValueChange={(v) => setValue(v[0] ?? value)} />
       )
     }
     act(() => {

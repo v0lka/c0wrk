@@ -28,10 +28,12 @@ export function roundScaleToStep(value: number, step: number): number {
  * The current scale is first snapped to the nearest {@link WHEEL_STEP_PERCENT}
  * multiple (see {@link roundScaleToStep}), then one step is applied in the
  * wheel's direction and the result is clamped to the store's supported range
- * [UI_SCALE_MIN, UI_SCALE_MAX].
+ * [UI_SCALE_MIN, UI_SCALE_MAX]. A zero `deltaY` carries no direction and
+ * returns `current` unchanged (the caller's guard for inert wheel events).
  */
 export function nextScaleOnWheel(current: number, deltaY: number): number {
   const base = roundScaleToStep(current, WHEEL_STEP_PERCENT)
+  if (deltaY === 0) return Math.min(UI_SCALE_MAX, Math.max(UI_SCALE_MIN, base))
   const direction = deltaY > 0 ? -1 : 1
   const next = base + direction * WHEEL_STEP_PERCENT
   return Math.min(UI_SCALE_MAX, Math.max(UI_SCALE_MIN, next))

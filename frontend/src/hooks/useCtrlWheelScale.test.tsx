@@ -16,9 +16,9 @@ import { useUiScaleStore } from '@/stores/uiScaleStore'
 
 let root: Root
 let container: HTMLDivElement
-// Latest render's hook result — the HUD visibility flag lives in component
-// state, so this is the only way to observe it.
-let hud: { visible: boolean } | null
+// Latest render's hook result — the HUD visibility flag and the card-grab
+// controls live in component state, so this is the only way to reach them.
+let hud: { visible: boolean; hold: () => void; release: () => void } | null
 
 function Harness() {
   hud = useCtrlWheelScale()
@@ -325,5 +325,109 @@ describe('useCtrlWheelScale — non-mac: Cmd keeps its native meaning', () => {
     expect(useUiScaleStore.getState().scale).toBe(100)
     expect(hud?.visible).toBe(false)
     expect(vi.getTimerCount()).toBe(0)
+  })
+})
+
+describe('useCtrlWheelScale — inert zero-delta wheels', () => {
+  it('ignores a deltaY === 0 chord (deltaX-only gesture): untouched, no step, no HUD', () => {
+    renderHook()
+
+    // The momentum-tail shape: deltaX carries the input, deltaY is 0 — no
+    // zoom direction, so the event must not preventDefault, show the HUD,
+    // step the scale or arm a hide timer.
+    const inert = dispatchWheel(0, true)
+    expect(inert.prevented).not.toHaveBeenCalled()
+    expect(useUiScaleStore.getState().scale).toBe(100)
+    expect(hud?.visible).toBe(false)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+})
+
+describe('useCtrlWheelScale — chord swallowing over canvas handlers', () => {
+  it('stopPropagation keeps a canvas-level wheel handler from seeing the chord', () => {
+    renderHook()
+
+    // A canvas-style native listener deeper in the tree (the usePanZoom
+    // shape): without the swallow it would zoom the canvas on the same
+    // gesture that steps the app scale.
+    const canvas = document.createElement('div')
+    container.appendChild(canvas)
+    let canvasHits = 0
+    const onCanvasWheel = (): void => {
+      canvasHits++
+    }
+    canvas.addEventListener('wheel', onCanvasWheel)
+
+    const event = new WheelEvent('wheel', {
+      cancelable: true,
+      deltaY: -1,
+      ctrlKey: true,
+      bubbles: true,
+    })
+    act(() => {
+      canvas.dispatchEvent(event)
+    })
+    canvas.removeEventListener('wheel', onCanvasWheel)
+
+    expect(canvasHits).toBe(0)
+    expect(useUiScaleStore.getState().scale).toBe(110)
+    expect(hud?.visible).toBe(true)
+  })
+})
+
+describe('useCtrlWheelScale — HUD hold (card grab pauses the hide)', () => {
+  it('hold pauses the hide past its deadline; release re-arms it', () => {
+    renderHook()
+    dispatchWheel(-1, true)
+    dispatchKey('keyup', 'Control')
+
+    act(() => {
+      hud?.hold()
+    })
+    advance(3000)
+    expect(hud?.visible).toBe(true)
+
+    act(() => {
+      hud?.release()
+    })
+    advance(999)
+    expect(hud?.visible).toBe(true)
+    advance(1)
+    expect(hud?.visible).toBe(false)
+  })
+
+  it('hide re-arm signals (keyup, wheel, blur) are inert while held', () => {
+    renderHook()
+    dispatchWheel(-1, true)
+
+    act(() => {
+      hud?.hold()
+    })
+    dispatchKey('keyup', 'Control')
+    dispatchWheel(-1, true)
+    dispatchBlur()
+    advance(3000)
+    expect(hud?.visible).toBe(true)
+
+    // Releasing after all of that arms a fresh hide from now.
+    act(() => {
+      hud?.release()
+    })
+    advance(1000)
+    expect(hud?.visible).toBe(false)
+  })
+
+  it('hold without a visible HUD and release without hold are inert', () => {
+    renderHook()
+
+    act(() => {
+      hud?.hold()
+    })
+    act(() => {
+      hud?.release()
+    })
+    dispatchBlur()
+    expect(vi.getTimerCount()).toBe(0)
+    expect(hud?.visible).toBe(false)
   })
 })
