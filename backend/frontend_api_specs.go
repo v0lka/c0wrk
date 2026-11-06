@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/v0lka/c0wrk/backend/config"
+	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/core/specs"
 )
 
@@ -83,14 +84,18 @@ type SpecsCountsDTO struct {
 // GetSpecsStatus returns the parsed specs/ tree of a project for the Specs
 // sidebar panel (ADR-106): files, the INDEX.md task navigation table, ADR
 // metadata, and the always-fresh tier-1 integrity findings — one light
-// read-only parse per call. The specs root is always <workspace>/specs
-// (config.ProjectSpecsPath); a missing or non-directory root parses to the
-// neutral present=false state, and an existing empty or partial tree
-// parses present=true with whatever content is readable — never an error
-// in either case. No Project returns the same neutral state (the workspace
-// tab strip — and with it the Specs panel — is not rendered there at all;
-// this is the defensive contract, mirroring GetResearchStatus). See
-// specs/decisions/106-specs-sidebar-panel.md.
+// read-only parse per call. The specs root follows the ACTIVE SESSION
+// (ADR-099, mirroring GetResearchStatus): <workspace-of-the-active-session>/specs,
+// falling back to the project checkout when no session resolves — the agent
+// writes specs inside its session tree, so a checkout-only root would miss
+// them. A missing or non-directory root parses to the neutral present=false
+// state, and an existing empty or partial tree parses present=true with
+// whatever content is readable — never an error in either case. No Project
+// returns the same neutral state (the workspace tab strip — and with it the
+// Specs panel — is not rendered there at all; this is the defensive
+// contract, mirroring GetResearchStatus). See
+// specs/decisions/106-specs-sidebar-panel.md and
+// specs/decisions/099-research-root-follows-active-session.md.
 func (f *FrontendAPI) GetSpecsStatus(projectID string) (*SpecsStatusDTO, error) {
 	f.seedAcquire()
 	if projectID == "" {
@@ -114,7 +119,7 @@ func (f *FrontendAPI) GetSpecsStatus(projectID string) (*SpecsStatusDTO, error) 
 		return specsStatusDTOFromRoot(nil, ""), nil
 	}
 
-	specsRoot := config.ProjectSpecsPath(proj.WorkspacePath)
+	specsRoot, boundary := f.specsRootWithBoundary(proj)
 	root, err := specs.ParseSpecsRoot(specsRoot)
 	if err != nil {
 		// The parser is tolerant by contract (a missing or non-directory
@@ -130,13 +135,39 @@ func (f *FrontendAPI) GetSpecsStatus(projectID string) (*SpecsStatusDTO, error) 
 	// add dates from git. Fail-soft by contract — a non-git workspace, an
 	// unborn HEAD, or any git failure leaves the ADRs undated with the RPC
 	// still successful (one git invocation per call, only when ADRs exist).
-	f.enrichSpecsADRDates(f.ctx(), dto, proj.WorkspacePath)
+	// The git context is the BOUNDARY workspace — the tree the root was
+	// derived from — so a session worktree's dates come from the worktree's
+	// own HEAD, never the checkout's.
+	f.enrichSpecsADRDates(f.ctx(), dto, boundary)
 	return dto, nil
 }
 
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
+
+// specsRootWithBoundary returns the project's effective specs root, following
+// the ACTIVE SESSION (ADR-099, mirroring researchRootWithBoundary):
+// <workspace-of-the-active-session>/specs, where the active session is the
+// user-selected session when a usable selection is persisted, falling back to
+// the most recently active non-archived one, else the project checkout —
+// with the workspace its containment must be validated against (the session
+// workspace when the root followed a session — a managed tree lives OUTSIDE
+// the checkout — the checkout on the fallback). The boundary is also the git
+// context the ADR add-date enrichment must read, so the dates always come
+// from the same tree that was parsed. "" for nil, No Project, or a
+// workspace-less project. See
+// specs/decisions/099-research-root-follows-active-session.md and
+// specs/decisions/106-specs-sidebar-panel.md.
+func (f *FrontendAPI) specsRootWithBoundary(p *project.ProjectInfo) (root, boundary string) {
+	if p == nil || p.IsNoProject || p.WorkspacePath == "" {
+		return "", ""
+	}
+	if ws, ok := f.activeSessionWorkspace(p.ID); ok {
+		return config.ProjectSpecsPath(ws), ws
+	}
+	return config.ProjectSpecsPath(p.WorkspacePath), p.WorkspacePath
+}
 
 // specsStatusDTOFromRoot maps a parsed specs root to the wire DTO with the
 // stable non-null shape: every collection non-nil even when empty, and the

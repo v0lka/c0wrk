@@ -7,6 +7,7 @@ import { useCallback, useEffect } from 'react'
 import { AlertCircle } from 'lucide-react'
 import { subscribe } from '@/api/runtime'
 import { useProjectStore } from '@/stores/projectStore'
+import { useSessionStore } from '@/stores/sessionStore'
 import { useSpecsStore } from '@/stores/specsStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import { SpecsHeader } from './SpecsHeader'
@@ -34,6 +35,10 @@ import type { SpecFinding, SpecsStatus } from '@/types/models'
  */
 export function SpecsPanel() {
   const projectId = useProjectStore((s) => s.activeProjectId)
+  // The specs parse is session-scoped on the backend (it scans the ACTIVE
+  // session's workspace), so the panel follows the session exactly like it
+  // follows the project. Primitive selector — referentially stable.
+  const sessionId = useSessionStore((s) => s.activeSessionId)
   // Cross-project stale-status guard (the gitRepoProjectId pairing
   // convention of this panel strip): the store's status renders only while
   // it belongs to the ACTIVE project, so a previous project's parse never
@@ -48,15 +53,21 @@ export function SpecsPanel() {
   const fetchStatus = useSpecsStore((s) => s.fetchStatus)
   const dispatch = useSpecsDispatch()
 
-  // Mount / project switch: the initial parse. Never in No-Project (the
-  // tab strip is absent there; the guard below is the defensive neutral).
+  // Mount / project switch / session switch: the initial parse. The backend
+  // resolves the fetch against the ACTIVE session's workspace, so a session
+  // switch is a refetch just like a project switch (the store's session
+  // stamp keeps the previous session's parse from surviving it). Never in
+  // No-Project (the tab strip is absent there; the guard below is the
+  // defensive neutral).
   useEffect(() => {
     if (projectId !== null) void fetchStatus(projectId)
-  }, [projectId, fetchStatus])
+  }, [projectId, fetchStatus, sessionId])
 
   // tree_changed → refetch, scoped to specs/-touching changes when the
   // payload names paths (fail-open otherwise — see isSpecsRelevantChange).
   // The root is read from the store at event time, not captured at render.
+  // Re-keyed on the session too: the subscription belongs to the same
+  // (project, session) parse the mount fetch starts.
   useEffect(() => {
     if (projectId === null) return
     const onChange = (data: unknown) => {
@@ -65,7 +76,7 @@ export function SpecsPanel() {
       void store.fetchStatus(projectId)
     }
     return subscribe('workspace:tree_changed', onChange)
-  }, [projectId])
+  }, [projectId, sessionId])
 
   // Read path (ADR-106 D4): a specs-root-relative reference resolves
   // against the absolute root and opens through the existing file viewer —

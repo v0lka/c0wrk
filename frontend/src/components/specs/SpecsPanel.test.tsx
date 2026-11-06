@@ -13,6 +13,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { SpecsPanel } from './SpecsPanel'
 import { useSpecsStore } from '@/stores/specsStore'
 import { useProjectStore } from '@/stores/projectStore'
+import { useSessionStore } from '@/stores/sessionStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import type { SpecsStatus } from '@/types/models'
 
@@ -138,6 +139,7 @@ beforeEach(() => {
   eventHandlers.clear()
   useSpecsStore.getState().reset()
   useProjectStore.setState({ activeProjectId: 'p1' })
+  useSessionStore.setState({ sessions: null, activeSessionId: null })
   useFileViewerStore.setState({ openTabs: [], activeFile: null, collapsed: true })
 })
 
@@ -300,6 +302,50 @@ describe('SpecsPanel — refresh trigger (in-panel subscription)', () => {
     })
     activeRoot = null
     expect(eventHandlers.get('workspace:tree_changed')).toHaveLength(0)
+  })
+})
+
+describe('SpecsPanel — session switch (the parse follows the active session)', () => {
+  // The backend scans the ACTIVE session's workspace (like research/papers),
+  // so a session switch is a refetch trigger exactly like a project switch —
+  // same fetch call (the server resolves the session), new parse.
+  it('refetches the active project when the active session changes', async () => {
+    await renderPanel()
+    expect(getSpecsStatusMock).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      useSessionStore.setState({ sessions: null, activeSessionId: 's2' })
+    })
+    await flush()
+
+    // EXACTLY one more fetch: the mount/project effect refires; the
+    // tree_changed effect re-keying on the session only resubscribes.
+    expect(getSpecsStatusMock).toHaveBeenCalledTimes(2)
+    expect(getSpecsStatusMock).toHaveBeenLastCalledWith('p1')
+
+    // The resubscribed tree_changed subscription still refetches (a broken
+    // resubscription would leave a dead or duplicated listener).
+    act(() => {
+      fireTreeChanged({ paths: ['/ws/p1/specs/INDEX.md'] })
+    })
+    await flush()
+    expect(getSpecsStatusMock).toHaveBeenCalledTimes(3)
+  })
+
+  it('renders the loading state — never the previous session\'s tree — across a session switch', async () => {
+    await renderPanel()
+    expect(query('specs-tree')).not.toBeNull()
+
+    // s2's fetch hangs: s1's tree must vanish for the whole flight (the
+    // store's session-stamped clean slate clears it at fetch start).
+    getSpecsStatusMock.mockReturnValue(new Promise(() => {}))
+    await act(async () => {
+      useSessionStore.setState({ sessions: null, activeSessionId: 's2' })
+    })
+    await flush()
+
+    expect(text()).toContain('Loading specs…')
+    expect(query('specs-tree')).toBeNull()
   })
 })
 
