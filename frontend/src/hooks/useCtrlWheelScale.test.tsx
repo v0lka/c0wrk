@@ -42,14 +42,14 @@ function unmountHook(): void {
 }
 
 /** Build a wheel event; `preventDefault` is spied so callers can assert it. */
-function wheelEvent(deltaY: number, ctrlKey: boolean) {
-  const event = new WheelEvent('wheel', { cancelable: true, deltaY, ctrlKey })
+function wheelEvent(deltaY: number, ctrlKey: boolean, metaKey = false) {
+  const event = new WheelEvent('wheel', { cancelable: true, deltaY, ctrlKey, metaKey })
   return { event, prevented: vi.spyOn(event, 'preventDefault') }
 }
 
 /** Dispatch a wheel event on window (inside act — it can trigger renders). */
-function dispatchWheel(deltaY: number, ctrlKey: boolean) {
-  const { event, prevented } = wheelEvent(deltaY, ctrlKey)
+function dispatchWheel(deltaY: number, ctrlKey: boolean, metaKey = false) {
+  const { event, prevented } = wheelEvent(deltaY, ctrlKey, metaKey)
   act(() => {
     window.dispatchEvent(event)
   })
@@ -141,18 +141,37 @@ describe('useCtrlWheelScale — HUD hide timer', () => {
     expect(hud?.visible).toBe(false)
   })
 
-  it('a repeated ctrl+wheel cancels the pending hide', () => {
+  it('a repeated ctrl+wheel re-arms the hide 1s after the last chord', () => {
     renderHook()
     dispatchWheel(-1, true)
     dispatchKey('keyup', 'Control')
     advance(600)
 
-    // Fresh wheel while the hide timer is armed: the HUD must stay up well
-    // past the original 1000ms deadline.
+    // Fresh wheel while the hide timer is armed: the deadline moves to one
+    // delay after THIS chord, not after the original keyup.
     dispatchWheel(-1, true)
     expect(hud?.visible).toBe(true)
-    advance(2000)
+    advance(999)
     expect(hud?.visible).toBe(true)
+    advance(1)
+    expect(hud?.visible).toBe(false)
+  })
+
+  it('held-modifier keydown auto-repeat keeps the HUD up past the wheel deadline', () => {
+    renderHook()
+    dispatchWheel(-1, true)
+    advance(500)
+
+    // Holding Ctrl fires repeating keydowns; each cancels the timer armed by
+    // the wheel, so the HUD never disappears mid-gesture.
+    dispatchKey('keydown', 'Control')
+    advance(700)
+    expect(hud?.visible).toBe(true)
+
+    // The release re-arms the hide and it completes.
+    dispatchKey('keyup', 'Control')
+    advance(1000)
+    expect(hud?.visible).toBe(false)
   })
 
   it('keydown Control while visible cancels the pending hide', () => {
@@ -239,5 +258,72 @@ describe('useCtrlWheelScale — cleanup', () => {
     dispatchWheel(-1, true)
     expect(hud?.visible).toBe(true)
     expect(useUiScaleStore.getState().scale).toBe(120)
+  })
+})
+
+describe('useCtrlWheelScale — macOS: Cmd is the zoom modifier', () => {
+  beforeEach(() => {
+    // jsdom seeds navigator.platform from the host running the tests; pin
+    // macOS explicitly (the outer afterEach restores all mocks).
+    vi.spyOn(navigator, 'platform', 'get').mockReturnValue('MacIntel')
+  })
+
+  it('steps on Cmd+wheel, preventDefaults it and hides 1s after keyup Meta', () => {
+    renderHook()
+
+    const up = dispatchWheel(-1, false, true)
+    expect(up.prevented).toHaveBeenCalled()
+    expect(useUiScaleStore.getState().scale).toBe(110)
+    expect(hud?.visible).toBe(true)
+
+    dispatchKey('keyup', 'Meta')
+    advance(999)
+    expect(hud?.visible).toBe(true)
+    advance(1)
+    expect(hud?.visible).toBe(false)
+  })
+
+  it('accepts a plain Ctrl+wheel too (WebKit pinch reports synthetic ctrlKey) and hides after the last notch', () => {
+    renderHook()
+
+    const pinch = dispatchWheel(-1, true)
+    expect(pinch.prevented).toHaveBeenCalled()
+    expect(useUiScaleStore.getState().scale).toBe(110)
+    expect(hud?.visible).toBe(true)
+
+    // A pinch fires no keyup and no blur: each notch re-arms the hide, so it
+    // lands exactly one delay after the LAST wheel event.
+    dispatchWheel(-1, true)
+    advance(999)
+    expect(hud?.visible).toBe(true)
+    advance(1)
+    expect(hud?.visible).toBe(false)
+  })
+
+  it('Meta keydown auto-repeat keeps the HUD up; releasing Cmd hides it', () => {
+    renderHook()
+    dispatchWheel(-1, false, true)
+    advance(500)
+
+    dispatchKey('keydown', 'Meta')
+    advance(700)
+    expect(hud?.visible).toBe(true)
+
+    dispatchKey('keyup', 'Meta')
+    advance(1000)
+    expect(hud?.visible).toBe(false)
+  })
+})
+
+describe('useCtrlWheelScale — non-mac: Cmd keeps its native meaning', () => {
+  it('ignores a Cmd-only wheel on Linux/Windows', () => {
+    vi.spyOn(navigator, 'platform', 'get').mockReturnValue('Linux x86_64')
+    renderHook()
+
+    const cmd = dispatchWheel(-100, false, true)
+    expect(cmd.prevented).not.toHaveBeenCalled()
+    expect(useUiScaleStore.getState().scale).toBe(100)
+    expect(hud?.visible).toBe(false)
+    expect(vi.getTimerCount()).toBe(0)
   })
 })

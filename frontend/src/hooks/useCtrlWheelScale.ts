@@ -1,31 +1,39 @@
 import { useEffect, useState } from 'react'
 import { transportSnapshot } from '@/api/runtime'
+import { isMacHost } from '@/lib/platform'
 import { nextScaleOnWheel } from '@/lib/uiScaleSteps'
 import { useUiScaleStore } from '@/stores/uiScaleStore'
 
-/** How long the HUD stays visible after Ctrl is released (or the window blurs). */
+/** How long the HUD stays visible after the zoom modifier is released (or the window blurs). */
 const HUD_HIDE_DELAY_MS = 1000
 
 /**
- * useCtrlWheelScale — desktop-only Ctrl+wheel app-zoom stepping with a
- * transient HUD visibility flag.
+ * useCtrlWheelScale — desktop-only modifier+wheel app-zoom stepping with a
+ * transient HUD visibility flag. The modifier follows the platform's zoom
+ * convention: Cmd on macOS (`isMacHost`), Ctrl on Windows/Linux. On macOS
+ * plain Ctrl is accepted too, because WebKit reports trackpad pinch wheels
+ * with the synthetic `ctrlKey` flag — the same gesture family.
  *
  * While the HUD is hidden this hook owns no UI; it only listens for the
- * Ctrl+wheel chord on the window (capture phase, non-passive) and:
+ * modifier+wheel chord on the window (capture phase, non-passive) and:
  *   - steps the persisted UI scale through `nextScaleOnWheel` (snapped to the
  *     wheel grid, direction from the deltaY sign only, clamped by the store),
- *   - shows the HUD and keeps it visible for `HUD_HIDE_DELAY_MS` after the
- *     last signal (keyup Control or window blur). A fresh Ctrl+wheel cancels
- *     a pending hide, and a keydown Control cancels it too — holding Ctrl
- *     through a wheel burst never lets the HUD flicker away mid-gesture.
+ *   - shows the HUD and re-arms the hide timer on every zoom signal, so it
+ *     stays visible for `HUD_HIDE_DELAY_MS` after the last chord, the
+ *     modifier keyup or a window blur. Holding the modifier keeps the HUD up
+ *     via its auto-repeating keydowns (each cancels a pending hide), which
+ *     also covers gestures with no keyup at all — a trackpad pinch fires
+ *     ctrlKey wheels without any key ever being held, and the HUD hides one
+ *     delay after the last wheel notch.
  *
- * `preventDefault` runs only for Ctrl+wheel (the browser's own page-zoom
- * chord); plain wheel events are ignored untouched so scrolling stays native.
+ * `preventDefault` runs only for the zoom chord (the browser's own
+ * page-zoom chord: Ctrl+wheel, or Cmd+wheel on macOS); plain wheel events
+ * are ignored untouched so scrolling stays native.
  *
  * The listener set attaches once per mount and is gated on
  * `transportSnapshot() === 'wails'`: in the plain dev-server browser, on the
- * web-access sidecar and in tests ctrl+wheel keeps its native meaning, so no
- * listener is registered at all. The scale is read via
+ * web-access sidecar and in tests modifier+wheel keeps its native meaning,
+ * so no listener is registered at all. The scale is read via
  * `useUiScaleStore.getState()` inside the handlers (not React state) so the
  * effect never re-attaches when the scale changes.
  *
@@ -37,6 +45,12 @@ export function useCtrlWheelScale(): { visible: boolean } {
 
   useEffect(() => {
     if (transportSnapshot() !== 'wails') return
+
+    // Platform zoom modifier: Cmd on macOS, Ctrl elsewhere. Captured once
+    // per mount — the host platform cannot change mid-run.
+    const mac = isMacHost()
+    const hasZoomModifier = (event: WheelEvent): boolean =>
+      mac ? event.metaKey || event.ctrlKey : event.ctrlKey
 
     // Synchronous mirror of `visible` for the event handlers — they run
     // outside React and must not depend on a closure that a re-render could
@@ -70,27 +84,34 @@ export function useCtrlWheelScale(): { visible: boolean } {
     }
 
     const onWheel = (event: WheelEvent): void => {
-      if (!event.ctrlKey) return
-      // Ctrl+wheel is the browser's page-zoom chord: swallow it so the
-      // viewport never zooms while we step the app scale instead.
+      if (!hasZoomModifier(event)) return
+      // The zoom chord is the browser's page-zoom gesture (Ctrl+wheel, or
+      // Cmd+wheel on macOS): swallow it so the viewport never zooms while we
+      // step the app scale instead. Re-arm the hide on every notch — a held
+      // physical modifier keeps canceling via its auto-repeating keydowns,
+      // and a pinch (synthetic ctrlKey, no keyup) hides after the last one.
       event.preventDefault()
       showHud()
+      scheduleHide()
       const scale = useUiScaleStore.getState().scale
       useUiScaleStore.getState().setScale(nextScaleOnWheel(scale, event.deltaY))
     }
 
     const onKeyDown = (event: KeyboardEvent): void => {
-      // Ctrl still held while the HUD is up — the user keeps zooming, so a
-      // pending hide must not fire mid-gesture.
-      if (event.key === 'Control' && hudVisible) cancelHide()
+      // The zoom modifier is still held while the HUD is up (auto-repeat
+      // fires continuously) — the user keeps zooming, so a pending hide must
+      // not fire mid-gesture.
+      if ((event.key === 'Control' || event.key === 'Meta') && hudVisible) {
+        cancelHide()
+      }
     }
 
     const onKeyUp = (event: KeyboardEvent): void => {
-      if (event.key === 'Control') scheduleHide()
+      if (event.key === 'Control' || event.key === 'Meta') scheduleHide()
     }
 
     const onBlur = (): void => {
-      // Releasing Ctrl after the window lost focus produces no keyup
+      // Releasing the modifier after the window lost focus produces no keyup
       // (useShiftHeld precedent) — route blur through the same timed hide.
       scheduleHide()
     }

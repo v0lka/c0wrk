@@ -1,5 +1,6 @@
 // Scale HUD — the transient zoom indicator shown while the user is
-// Ctrl+wheel-stepping the app UI scale (see useCtrlWheelScale).
+// modifier+wheel-stepping the app UI scale (Ctrl, or Cmd on macOS — see
+// useCtrlWheelScale).
 //
 // A small centered card over the app (Reset to 100% + a live slider + the
 // current value). The full-screen wrapper swallows no input — it is
@@ -7,10 +8,10 @@
 // so the rest of the UI stays interactive while the HUD is up; hiding is
 // driven entirely by the hook's timers, never by clicking away.
 //
-// Mounted once at the App root in every app phase: a Ctrl+wheel gesture is
-// meaningful on the splash screens too (the zoom is a <html>-level style and
-// survives phase transitions), and the hook keeps the HUD hidden outside a
-// desktop (wails) session.
+// Mounted once at the App root in every app phase: a zoom-chord wheel
+// gesture is meaningful on the splash screens too (the zoom is a
+// <html>-level style and survives phase transitions), and the hook keeps the
+// HUD hidden outside a desktop (wails) session.
 
 import { RotateCcw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
