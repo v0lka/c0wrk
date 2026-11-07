@@ -27,6 +27,11 @@ const service = () => ({ kind: 'service', id: `svc-${++seq}`, variant: 'status',
 const errorItem = () => ({ kind: 'error', message: mkMsg('error', 'boom') }) as DisplayItem
 const toolConfirm = () => ({ kind: 'tool_confirm', message: mkMsg('tool_confirm', 'Allow bash?') }) as DisplayItem
 const askUser = () => ({ kind: 'ask_user', message: mkMsg('ask_user', 'Which one?') }) as DisplayItem
+const goalSuggestion = (resolved = false) => ({
+  kind: 'goal_suggestion',
+  message: { ...mkMsg('goal_suggestion', 'goal-shaped'), metadata: resolved ? { resolved: true, decision: 'decline' } : { resolved: false } },
+  reason: 'multi-step build with a verifiable done criterion',
+}) as DisplayItem
 const planStep = () => ({ kind: 'plan_step', id: `ps-${++seq}`, stepId: `step_${seq}`, stepNum: 1, title: 'Step', status: 'completed', children: [] }) as Extract<DisplayItem, { kind: 'plan_step' }>
 const activeChecklist = () => ({ kind: 'checklist', id: `cl-${++seq}`, stepId: null, items: [{ text: 'todo', checked: false }], active: true }) as DisplayItem
 const launcher = (id: string, name: 'execute_plan' | 'delegate' = 'execute_plan') =>
@@ -131,6 +136,47 @@ describe('splitTurnWork', () => {
     expect(idsOf(segments[0]!.work)).toEqual(idsOf([tl]))
     expect(idsOf(tail)).toEqual(idsOf([tc]))
     expect(tail[0]).toBe(tc)
+  })
+
+  it('lifts an unresolved goal_suggestion out of the work region (the gate blocks before any answer)', () => {
+    // The post-routing goal-suggestion gate blocks the task BEFORE any
+    // execution starts: the turn is [user, routing notice, suggestion] with
+    // no assistant item, and the offer card is a blocking HITL affordance
+    // like every other panel — it must not stay inside the collapsible.
+    const u = user('build the feature end to end')
+    const svc = service()
+    const gs = goalSuggestion()
+    const { segments, tail } = splitTurnWork([u, svc, gs])
+
+    expect(segments).toHaveLength(1)
+    expect(idsOf(segments[0]!.work)).toEqual(idsOf([svc]))
+    expect(idsOf(tail)).toEqual(idsOf([gs]))
+    expect(tail[0]).toBe(gs)
+  })
+
+  it('lifts an unresolved goal_suggestion below a committed answer too (both split shapes)', () => {
+    // The answered shape: the offer card sits BEFORE the answer in the
+    // stream (inside the work region the anchor-only split would file it
+    // under) — the lift must move it below the committed answer, not just
+    // leave it there when it already trails the answer.
+    const u = user()
+    const gs = goalSuggestion()
+    const fin = assistant('Here is the plan.')
+    const { segments, tail } = splitTurnWork([u, gs, fin])
+
+    expect(segments).toEqual([])
+    expect(idsOf(tail)).toEqual(idsOf([fin, gs]))
+  })
+
+  it('keeps a RESOLVED goal_suggestion at its stream position inside the work (settled history)', () => {
+    const u = user()
+    const svc = service()
+    const resolved = goalSuggestion(true)
+    const { segments, tail } = splitTurnWork([u, svc, resolved])
+
+    expect(segments).toHaveLength(1)
+    expect(idsOf(segments[0]!.work)).toEqual(idsOf([svc, resolved]))
+    expect(tail).toEqual([])
   })
 
   it('a resolved panel keeps its stream position inside the work (settled decision history)', () => {

@@ -438,8 +438,34 @@ export function reconcileRuntimeStatus(
  *
  * Returns the messages that were resolved as stale (so the caller can persist
  * the resolution to the backend).
+ *
+ * `readAt` is the time the caller read the pending set (before the RPC
+ * resolved). The task-active re-assertion below consults it through the
+ * task-flag freshness stamp (`taskFlagsEventAt`): a live flag transition —
+ * above all a pause or terminal event — that landed after the read outranks
+ * the sweep, so a pending snapshot racing such a transition cannot resurrect
+ * `taskActive` over it. Callers that omit `readAt` get no guard (their read
+ * is known current); reconcileRuntimeStatus/reconcileWorkUnits follow the
+ * same convention for their snapshot guards.
+ *
+ * `liveFlagsEventAt` is the `taskFlagsEventAt` value captured after the
+ * pending read resolved but BEFORE the caller applied any OTHER snapshot of
+ * the same load. The runtime-status reconcile writes flags through the
+ * stamping store actions (`setUnfinishedTaskStatus` / `setTaskActive`), so
+ * by the time this function runs the map already carries the SNAPSHOT's own
+ * stamp — posted after `readAt` — and the guard would read it as a live
+ * pause/terminal transition, suppressing the heal exactly when a stale
+ * `active=false` snapshot needs correcting. A caller that composes both
+ * reconciles (sessionHistoryReload) passes the pre-application value so the
+ * guard compares against LIVE transitions only; omitted, the live map is
+ * read (correct for callers that applied no other snapshot since the read).
  */
-export function reconcilePendingActions(sessionId: string, pending: PendingActionsResponse): ChatMessageUI[] {
+export function reconcilePendingActions(
+  sessionId: string,
+  pending: PendingActionsResponse,
+  readAt?: number,
+  liveFlagsEventAt?: number,
+): ChatMessageUI[] {
   const store = useChatStore.getState()
   const msgs = selectSessionMessages(store, sessionId)
 
@@ -651,6 +677,29 @@ export function reconcilePendingActions(sessionId: string, pending: PendingActio
     + pending.plan_approvals.length + pending.ask_user.length + pending.goal_proposals.length
     + pending.goal_suggestions.length
   if (pendingCount > 0) {
+    // A live waiter is also authoritative for the TASK FLAGS: the waiter
+    // exists exactly while the task goroutine runs (a cancel/exit deletes the
+    // pending entry), so a runtime-status snapshot that raced a just-sent
+    // task's backend activation (its read predates `session.active = true`)
+    // cannot be allowed to leave `taskActive` false — that settles the live
+    // turn's work block to `interrupted` and buries the prompt exactly while
+    // the user must act on it. One-directional TRUE re-assertion, mirroring
+    // the step_start / HITL-arrival heal; a truthful snapshot reports
+    // active=true anyway. Freshness-guarded by `readAt` like every other
+    // snapshot application here: a pause/terminal transition that landed
+    // AFTER the pending read (the two RPCs race a user pause — the backend
+    // deletes the waiter on it, but a read already in flight may still
+    // report the entry) owns the flag, and a task that genuinely finished
+    // between the read and this application is corrected by its terminal
+    // event or the next reconcile (whose read postdates this stamp). The
+    // compared stamp is the LIVE-transition time — `liveFlagsEventAt` when
+    // the caller already applied a status snapshot (that application stamps
+    // the map itself and must not masquerade as a live transition).
+    const flagsEventAt = liveFlagsEventAt ?? store.taskFlagsEventAt[sessionId] ?? 0
+    const hasFresherTaskFlags = readAt !== undefined && flagsEventAt > readAt
+    if (!hasFresherTaskFlags && store.taskActive[sessionId] !== true) {
+      store.setTaskActive(sessionId, true)
+    }
     store.setActivityStatus(sessionId, 'Waiting for your response...')
   }
 
