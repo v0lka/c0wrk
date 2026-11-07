@@ -19,7 +19,7 @@
         bench-startup          startup benchmark (BenchmarkStartupCriticalPath)
         lint                   fmt-check + `golangci-lint run` + frontend `npm run lint`
         fmt-check              fail if `gofmt -l` reports any unformatted Go file
-        vulncheck              govulncheck gate (same command as the CI `make vulncheck`)
+        vulncheck              dependency vulnerability gate (same command as the CI `make vulncheck`)
         dev-desktop            `wails dev` hot-reload loop
         dev-frontend           Vite dev server only (`npm run dev`)
         fetch-onnx             download/install ONNX Runtime (CPU) next to the binary
@@ -311,9 +311,9 @@ function Target-Lint {
 }
 
 function Target-Vulncheck {
-    Write-Step "govulncheck $GOVULNCHECK_VERSION ./..."
+    Write-Step "internal/vulncheck (pinned govulncheck $GOVULNCHECK_VERSION + reviewed allowlist)"
     Invoke-Checked -Command "go" -Arguments @(
-        "run", "golang.org/x/vuln/cmd/govulncheck@$GOVULNCHECK_VERSION", "./..."
+        "run", "./internal/vulncheck", "-govulncheck-version", $GOVULNCHECK_VERSION
     )
 }
 

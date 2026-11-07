@@ -60,7 +60,7 @@ Verified from project configuration and build files:
 - **Node.js 24 + npm** (used by Wails frontend commands and `frontend/package.json` scripts). CI pins `node-version: "24"`.
 - **Wails v2 CLI, matching the version pinned in `go.mod`** (`github.com/wailsapp/wails/v2`, currently **v2.16.0**) — CI and the release workflow install the same pinned version (`go install github.com/wailsapp/wails/v2/cmd/wails@v2.16.0`); `wails build`/`wails dev` are used by the Makefile and, on Windows, by [`build.ps1`](build.ps1).
 - **golangci-lint v2.14.0** (for `make lint` / `./build.ps1 lint`) — pinned to match CI (`go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0`).
-- **govulncheck v1.7.0** (for `make vulncheck` / `./build.ps1 vulncheck`) — the Makefile pins the version and runs it via `go run`, so no separate install is needed.
+- **govulncheck v1.7.0** (for `make vulncheck` / `./build.ps1 vulncheck`) — the Makefile pins the version and `internal/vulncheck` runs it via `go run` against a reviewed exception list, so no separate install is needed.
 - **`git`** — required for CODE mode only; checked on first project switch. CHAT mode (No Project) works without git.
 - **`rg` (ripgrep)** — auto-downloaded by the tool-manager on first run; no manual install needed.
 - Platform support in the Makefile ONNX fetch logic:
@@ -160,7 +160,7 @@ From the repository root:
 ./build.ps1 build        # frontend-deps + wails build + fetch-onnx + fetch-embedding-model
 ./build.ps1 test         # go test ./... + frontend npm test
 ./build.ps1 lint         # fmt-check + golangci-lint + frontend eslint
-./build.ps1 vulncheck    # govulncheck ./...
+./build.ps1 vulncheck    # pinned govulncheck + reviewed allowlist
 ./build.ps1 help         # list every target
 ```
 
@@ -258,7 +258,7 @@ make lint            # make fmt-check + golangci-lint + frontend ESLint
 make dev-desktop     # full desktop hot-reload loop (wails dev + platform tags)
 make dev-frontend    # frontend Vite dev server only (no Go bridge)
 make build           # versioned wails build + ONNX runtime + embedding model
-make vulncheck       # Go dependency vulnerability gate (govulncheck, pinned)
+make vulncheck       # Go dependency vulnerability gate (pinned govulncheck + reviewed allowlist)
 make bump            # update the pinned sp4rk revision with GOWORK=off (release point only)
 make clean           # remove build/bin, .cache, frontend/dist
 ```
