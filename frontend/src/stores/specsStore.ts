@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { getSpecsStatus } from '@/api/specs'
 import { useProjectStore } from '@/stores/projectStore'
+import { useSessionStore } from '@/stores/sessionStore'
 import type { SpecsStatus } from '@/types/models'
 
 // --- State types ---
@@ -21,6 +22,14 @@ interface SpecsState {
    *  cross-project status from ever rendering when the user switches
    *  projects while a fetch is in flight. */
   projectId: string | null
+  /** The ACTIVE session id at fetch START (read from sessionStore, the same
+   *  call-time read as toggleTreeNode's projectStore read), stamped
+   *  alongside projectId: the backend scans the ACTIVE session's workspace,
+   *  so a parse belongs to a (project, session) pair, not a project alone.
+   *  A fetch for a NEW session of the same project clears the previous
+   *  session's status like a different project does. Non-persisted —
+   *  session bookkeeping, like the rest of the fetch state. */
+  sessionId: string | null
   /** Monotonic sequence stamped on every fetchStatus START. A response
    *  applies only while the store's counter still equals the ticket
    *  captured at its start — last-write-wins by initiation order, so an
@@ -41,13 +50,14 @@ interface SpecsState {
 
 interface SpecsActions {
   /** Fetch the specs/ status of a project (one light read-only parse) and
-   *  store it, stamped with the projectId. A fetch for a DIFFERENT project
-   *  clears the previous project's status up front — it must neither
-   *  render during the flight nor survive this flight's error path; a
-   *  same-project refetch keeps the old status rendered (no flicker on
-   *  tree_changed). Superseded responses (a newer fetch started while this
-   *  one was in flight) are discarded; a failure stores its message in
-   *  `error` and keeps the previous status. */
+   *  store it, stamped with the projectId and the active session id. A fetch
+   *  for a DIFFERENT project — or for a NEW session of the same project (the
+   *  backend scans the active session's workspace) — clears the previous
+   *  status up front: it must neither render during the flight nor survive
+   *  this flight's error path; a same-project same-session refetch keeps the
+   *  old status rendered (no flicker on tree_changed). Superseded responses
+   *  (a newer fetch started while this one was in flight) are discarded; a
+   *  failure stores its message in `error` and keeps the previous status. */
   fetchStatus: (projectId: string) => Promise<void>
   /** Set/clear the panel's error banner directly. The quick-actions
    *  dispatch path uses it to surface a failed spec-* skill send (the
@@ -71,6 +81,7 @@ const initialState: SpecsState = {
   isLoading: false,
   error: null,
   projectId: null,
+  sessionId: null,
   fetchSeq: 0,
   treeExpandedNodes: {},
 }
@@ -89,22 +100,29 @@ export const useSpecsStore = create<SpecsStore>()(
   ...initialState,
 
   fetchStatus: async (projectId) => {
+    // The session stamp is read AT START, from the session store directly —
+    // the API wrapper stays session-blind (the server resolves the active
+    // session), so the store mirrors the client-side identity itself.
+    const sessionId = useSessionStore.getState().activeSessionId
     set((s) => ({
       fetchSeq: s.fetchSeq + 1,
       isLoading: true,
       error: null,
-      // A fetch for a DIFFERENT project starts from a clean slate: the
-      // previous project's status must neither render during the flight
-      // nor survive this flight's error path. A same-project refetch
-      // keeps the previous status rendered (no flicker on tree_changed).
-      status: s.projectId === projectId ? s.status : null,
+      // A fetch for a DIFFERENT project — or a NEW session of the same
+      // project (the backend scans the active session's workspace) — starts
+      // from a clean slate: the previous parse must neither render during
+      // the flight nor survive this flight's error path. A same-project
+      // same-session refetch keeps the previous status rendered (no flicker
+      // on tree_changed).
+      status: s.projectId === projectId && s.sessionId === sessionId ? s.status : null,
       projectId,
+      sessionId,
     }))
     const seq = get().fetchSeq
     try {
       const status = await getSpecsStatus(projectId)
       if (get().fetchSeq !== seq) return
-      set({ status, projectId, isLoading: false, error: null })
+      set({ status, projectId, sessionId, isLoading: false, error: null })
     } catch (err) {
       if (get().fetchSeq !== seq) return
       set({
