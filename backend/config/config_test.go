@@ -699,8 +699,8 @@ func TestGetAllProviderConfigs(t *testing.T) {
 	}
 
 	providers := cfg.GetAllProviderConfigs()
-	if len(providers) != 5 {
-		t.Fatalf("Expected 5 providers (anthropic + 2 openai_compatible + 1 anthropic_compatible + chatgpt), got %d", len(providers))
+	if len(providers) != 6 {
+		t.Fatalf("Expected 6 providers (anthropic + chatgpt + kimi + 2 openai_compatible + 1 anthropic_compatible), got %d", len(providers))
 	}
 
 	// Check first provider
@@ -725,40 +725,45 @@ func TestGetAllProviderConfigs(t *testing.T) {
 		t.Errorf("Second provider type = %q, want 'openai'", providers[1].ProviderType)
 	}
 
-	// Check third provider (deepseek — sorted after chatgpt)
-	if providers[2].Name != "deepseek" {
-		t.Errorf("Third provider name = %q, want 'deepseek'", providers[2].Name)
-	}
-	if providers[2].ProviderType != "openai" {
-		t.Errorf("Third provider type = %q, want 'openai'", providers[2].ProviderType)
-	}
-	if providers[2].BaseURL != "https://api.deepseek.com" {
-		t.Errorf("Third provider BaseURL = %q, want 'https://api.deepseek.com'", providers[2].BaseURL)
-	}
-	if providers[2].OutputTokenReserve != 16384 {
-		t.Errorf("deepseek OutputTokenReserve = %d, want 16384", providers[2].OutputTokenReserve)
+	// Check the fixed Kimi provider.
+	if providers[2].Name != "kimi" || providers[2].ProviderType != "openai" || providers[2].BaseURL != KimiAPIKeyBaseURL {
+		t.Errorf("Kimi provider = %+v", providers[2])
 	}
 
-	// Check fourth provider (openrouter — sorted after deepseek)
-	if providers[3].Name != "openrouter" {
-		t.Errorf("Fourth provider name = %q, want 'openrouter'", providers[3].Name)
+	// Check fourth provider (deepseek — sorted after the fixed providers)
+	if providers[3].Name != "deepseek" {
+		t.Errorf("Fourth provider name = %q, want 'deepseek'", providers[3].Name)
 	}
 	if providers[3].ProviderType != "openai" {
 		t.Errorf("Fourth provider type = %q, want 'openai'", providers[3].ProviderType)
 	}
+	if providers[3].BaseURL != "https://api.deepseek.com" {
+		t.Errorf("Fourth provider BaseURL = %q, want 'https://api.deepseek.com'", providers[3].BaseURL)
+	}
+	if providers[3].OutputTokenReserve != 16384 {
+		t.Errorf("deepseek OutputTokenReserve = %d, want 16384", providers[3].OutputTokenReserve)
+	}
 
-	// Check fifth provider (my-proxy — anthropic_compatible, sorted after openai_compatible)
-	if providers[4].Name != "my-proxy" {
-		t.Errorf("Fifth provider name = %q, want 'my-proxy'", providers[4].Name)
+	// Check fifth provider (openrouter — sorted after deepseek)
+	if providers[4].Name != "openrouter" {
+		t.Errorf("Fifth provider name = %q, want 'openrouter'", providers[4].Name)
 	}
-	if providers[4].ProviderType != "anthropic" {
-		t.Errorf("Fifth provider type = %q, want 'anthropic'", providers[4].ProviderType)
+	if providers[4].ProviderType != "openai" {
+		t.Errorf("Fifth provider type = %q, want 'openai'", providers[4].ProviderType)
 	}
-	if providers[4].BaseURL != "https://my-anthropic-proxy.example.com" {
-		t.Errorf("Fifth provider BaseURL = %q, want 'https://my-anthropic-proxy.example.com'", providers[4].BaseURL)
+
+	// Check sixth provider (my-proxy — anthropic_compatible, sorted after openai_compatible)
+	if providers[5].Name != "my-proxy" {
+		t.Errorf("Sixth provider name = %q, want 'my-proxy'", providers[5].Name)
 	}
-	if len(providers[4].Models) != 1 || providers[4].Models[0] != "claude-sonnet-4-20250514" {
-		t.Errorf("Fifth provider Models = %v, want [claude-sonnet-4-20250514]", providers[4].Models)
+	if providers[5].ProviderType != "anthropic" {
+		t.Errorf("Sixth provider type = %q, want 'anthropic'", providers[5].ProviderType)
+	}
+	if providers[5].BaseURL != "https://my-anthropic-proxy.example.com" {
+		t.Errorf("Sixth provider BaseURL = %q, want 'https://my-anthropic-proxy.example.com'", providers[5].BaseURL)
+	}
+	if len(providers[5].Models) != 1 || providers[5].Models[0] != "claude-sonnet-4-20250514" {
+		t.Errorf("Sixth provider Models = %v, want [claude-sonnet-4-20250514]", providers[5].Models)
 	}
 }
 

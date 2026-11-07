@@ -1,14 +1,15 @@
-// Unit tests for api/auth.ts — the ChatGPT subscription-auth RPC wrappers'
-// boundary validation and the chatgpt_auth:state event fan-out.
+// Unit tests for api/auth.ts — ChatGPT/Kimi subscription-auth RPC boundary
+// validation and global auth-event fan-out.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 // Mocks created via vi.hoisted so they exist before vi.mock factories run
 // (the factories dereference the object itself, not just lazy closures).
-const { mockApp, runtimeMocks } = vi.hoisted(() => {
+const { mockApp, runtimeMocks, loggerError } = vi.hoisted(() => {
   const mockApp: Record<string, (...args: unknown[]) => Promise<unknown>> = {}
   return {
     mockApp,
+    loggerError: vi.fn(),
     runtimeMocks: {
       getApp: () => mockApp,
       onGlobalEvent: vi.fn(
@@ -23,7 +24,7 @@ const { mockApp, runtimeMocks } = vi.hoisted(() => {
 vi.mock('@/api/runtime', () => runtimeMocks)
 
 vi.mock('@/lib/logger', () => ({
-  logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+  logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: loggerError },
 }))
 
 import {
@@ -35,6 +36,13 @@ import {
   onChatGPTAuthState,
   signOutChatGPT,
   startChatGPTSignIn,
+  fetchKimiModels,
+  getKimiAuthStatus,
+  getKimiModelPreset,
+  startKimiSignIn,
+  cancelKimiSignIn,
+  signOutKimi,
+  onKimiAuthState,
 } from './auth'
 
 beforeEach(() => {
@@ -241,5 +249,58 @@ describe('onChatGPTAuthState', () => {
     handler({ state: 'success', email: 42 })
     expect(cb).not.toHaveBeenCalled()
     expect(runtimeMocks.reportDroppedEvent).toHaveBeenCalled()
+  })
+})
+
+describe('Kimi auth wrappers', () => {
+  it('starts the browser flow, reads status and preset, and calls lifecycle RPCs', async () => {
+    mockApp.StartKimiSignIn = vi.fn().mockResolvedValue({ auth_url: 'https://auth.kimi.com/device?user_code=test' })
+    const resp = await startKimiSignIn()
+    expect(resp.auth_url).toContain('auth.kimi.com')
+    expect(runtimeMocks.openExternalURL).toHaveBeenCalledWith(resp.auth_url)
+
+    mockApp.GetKimiAuthStatus = vi.fn().mockResolvedValue({ signed_in: true, email: 'kimi@example.com', mode: 'oauth', in_flight: false })
+    expect((await getKimiAuthStatus()).email).toBe('kimi@example.com')
+    mockApp.GetKimiModelPreset = vi.fn().mockResolvedValue({ models: [{ name: 'k3', context_window: 1000000, reasoning: true }] })
+    expect((await getKimiModelPreset()).models[0]?.name).toBe('k3')
+    mockApp.FetchKimiModels = vi.fn().mockResolvedValue({
+      models: [{ name: 'k3.1-pro', context_window: 1048576, reasoning: true }],
+    })
+    expect((await fetchKimiModels()).models[0]?.name).toBe('k3.1-pro')
+
+    mockApp.CancelKimiSignIn = vi.fn().mockResolvedValue(undefined)
+    mockApp.SignOutKimi = vi.fn().mockResolvedValue(undefined)
+    await cancelKimiSignIn()
+    await signOutKimi()
+    expect(mockApp.CancelKimiSignIn).toHaveBeenCalledTimes(1)
+    expect(mockApp.SignOutKimi).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects malformed start/status/preset payloads without opening a browser', async () => {
+    mockApp.StartKimiSignIn = vi.fn().mockResolvedValue({ auth_url: '' })
+    await expect(startKimiSignIn()).rejects.toThrow('invalid data')
+    expect(runtimeMocks.openExternalURL).not.toHaveBeenCalled()
+    expect(loggerError).toHaveBeenCalledWith('Failed to start Kimi sign-in:', expect.any(Error))
+
+    mockApp.GetKimiAuthStatus = vi.fn().mockResolvedValue({ signed_in: false, mode: 'oauth' })
+    await expect(getKimiAuthStatus()).rejects.toThrow('invalid data')
+    expect(loggerError).toHaveBeenCalledWith('Failed to get Kimi auth status:', expect.any(Error))
+
+    mockApp.GetKimiModelPreset = vi.fn().mockResolvedValue({ models: [{ name: '' }] })
+    await expect(getKimiModelPreset()).rejects.toThrow('invalid data')
+    expect(loggerError).toHaveBeenCalledWith('Failed to get the Kimi model preset:', expect.any(Error))
+    expect(loggerError).toHaveBeenCalledTimes(3)
+  })
+
+  it('validates kimi_auth:state and reports malformed transitions', () => {
+    const cb = vi.fn()
+    onKimiAuthState(cb)
+    expect(runtimeMocks.onGlobalEvent).toHaveBeenCalledWith('kimi_auth:state', expect.any(Function))
+    const handler = runtimeMocks.onGlobalEvent.mock.calls[runtimeMocks.onGlobalEvent.mock.calls.length - 1]![1] as (...data: unknown[]) => void
+    handler({ state: 'success', email: 'kimi@example.com' })
+    expect(cb).toHaveBeenCalledWith({ state: 'success', email: 'kimi@example.com' })
+    handler({ state: 'unknown' })
+    expect(cb).toHaveBeenCalledTimes(1)
+    expect(runtimeMocks.reportDroppedEvent).toHaveBeenCalledWith('kimi_auth:state', { state: 'unknown' })
   })
 })

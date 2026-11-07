@@ -36,14 +36,14 @@ function makeConfig(over: Partial<ProviderConfig> = {}): ProviderConfig {
   }
 }
 
-function Harness({ config }: { config: ProviderConfig }) {
-  result = useModelFetch('selfhosted', { selfhosted: config })
+function Harness({ config, provider = 'selfhosted' }: { config: ProviderConfig; provider?: string }) {
+  result = useModelFetch(provider, { [provider]: config })
   return null
 }
 
-async function render(config: ProviderConfig) {
+async function render(config: ProviderConfig, provider = 'selfhosted') {
   await act(async () => {
-    root.render(<Harness config={config} />)
+    root.render(<Harness config={config} provider={provider} />)
   })
 }
 
@@ -143,4 +143,14 @@ describe('useModelFetch TLS pin handling', () => {
     expect(result.models).toEqual(['qwen3'])
     expect(result.modelsError).toBeNull()
   })
+})
+
+describe('legacy Kimi credentials', () => {
+  for (const type of ['openai', 'anthropic'] as const) {
+    it(`requires a compatible base URL for ${type}`, async () => {
+      await render(makeConfig({ base_url: '', type }), 'kimi')
+      expect(result.hasRequiredCredentials).toBe(false)
+      expect(spies.listProviderModels).not.toHaveBeenCalled()
+    })
+  }
 })

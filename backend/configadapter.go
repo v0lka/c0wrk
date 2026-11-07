@@ -124,6 +124,12 @@ func ToBuilderConfig(cfg *config.Config, modelProfilesCatalog []config.ModelProf
 			bpc.SubscriptionAuth = true
 			bpc.BaseURL = providerauth.ChatGPT().APIBaseURL
 		}
+		_, openAIKimi := cfg.LLM.OpenAICompatible["kimi"]
+		_, anthropicKimi := cfg.LLM.AnthropicCompatible["kimi"]
+		if p.Name == "kimi" && cfg.LLM.Kimi.Auth.Mode == config.KimiAuthModeOAuth && !openAIKimi && !anthropicKimi {
+			bpc.SubscriptionAuth = true
+			bpc.BaseURL = providerauth.KimiForRegion(cfg.LLM.Kimi.Auth.Region).APIBaseURL
+		}
 		providerConfigs[p.Name] = bpc
 	}
 

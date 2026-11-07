@@ -32,7 +32,7 @@ var ErrStateMismatch = errors.New("providerauth: OAuth state mismatch on redirec
 var ErrAccessDenied = errors.New("providerauth: authorization was denied in the browser")
 
 // BrowserOpener presents the authorization URL to the user; production uses
-// DefaultBrowserOpener, tests inject a fake driving the loopback listener.
+// DefaultBrowserOpener, while PKCE tests inject a loopback-driving fake.
 type BrowserOpener func(authURL string) error
 
 // DefaultBrowserOpener opens authURL in the OS default browser. It returns an
@@ -59,14 +59,15 @@ func DefaultBrowserOpener(authURL string) error {
 	return nil
 }
 
-// Flow runs one browser OAuth sign-in for a Profile: loopback listener,
-// browser, redirect, code exchange (specs/domains/llm-providers.md). A Flow
-// value serves a single SignIn call and is safe to share across calls.
+// Flow runs one browser OAuth sign-in for a Profile: loopback PKCE or Device
+// Authorization Grant (specs/domains/llm-providers.md). A Flow value serves a
+// single SignIn call and is safe to share across calls.
 type Flow struct {
 	profile Profile
 	client  *http.Client
 	opener  BrowserOpener
 	now     func() time.Time
+	sleep   func(context.Context, time.Duration) error
 }
 
 // NewFlow returns a Flow for profile.
@@ -77,7 +78,7 @@ func NewFlow(profile Profile, client *http.Client, opener BrowserOpener) *Flow {
 	if opener == nil {
 		opener = DefaultBrowserOpener
 	}
-	return &Flow{profile: profile, client: client, opener: opener, now: time.Now}
+	return &Flow{profile: profile, client: client, opener: opener, now: time.Now, sleep: sleepContext}
 }
 
 // SignInResult is the outcome of a successful sign-in.
@@ -89,9 +90,11 @@ type SignInResult struct {
 	Identity *Identity
 }
 
-// SignIn performs the full authorization-code flow with PKCE (see
-// specs/domains/llm-providers.md); ctx bounds redirect wait and exchange.
+// SignIn performs the profile's browser flow and honors cancellation.
 func (f *Flow) SignIn(ctx context.Context) (*SignInResult, error) {
+	if f.profile.DeviceFlow {
+		return f.signInDevice(ctx)
+	}
 	verifier, err := newCodeVerifier()
 	if err != nil {
 		return nil, err

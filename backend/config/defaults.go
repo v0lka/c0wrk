@@ -115,6 +115,12 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.LLM.ChatGPT.Auth.Mode == "" {
 		cfg.LLM.ChatGPT.Auth.Mode = ChatGPTAuthModeAPIKey
 	}
+	if cfg.LLM.Kimi.Auth.Mode == "" {
+		cfg.LLM.Kimi.Auth.Mode = KimiAuthModeAPIKey
+	}
+	if cfg.LLM.Kimi.Auth.Region == "" {
+		cfg.LLM.Kimi.Auth.Region = KimiRegionGlobal
+	}
 
 	// Embedded LLM idle-unload defaults; pointers so explicit YAML is
 	// respected. The rest of the section is app-written install state (its

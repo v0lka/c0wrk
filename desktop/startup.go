@@ -394,8 +394,9 @@ func (a *App) Startup(ctx context.Context) {
 	// ── Embedded local model: restore only (see initEmbeddedLLM) ────
 	a.initEmbeddedLLM(log)
 
-	// ── ChatGPT subscription auth: keychain restore only (see initChatGPTAuth) ──
+	// ── Subscription auth: keychain restore only, no network I/O ──
 	a.initChatGPTAuth(log)
+	a.initKimiAuth(log)
 
 	a.wireWailsEventListeners(log, uiEmitFunc)
 

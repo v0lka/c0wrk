@@ -167,7 +167,9 @@ describe('ChatGPTAuthSection sign-in flow', () => {
     expect(container.textContent).toContain('Signed in with ChatGPT')
     expect(container.textContent).toContain('dev@example.com')
     expect(container.textContent).toContain('acct-7')
-    expect(container.textContent).toContain(new Date('2026-10-01T10:00:00Z').toLocaleString())
+    expect(container.textContent).not.toContain('Session valid until')
+    expect(container.textContent).not.toContain(new Date('2026-10-01T10:00:00Z').toLocaleString())
+    expect(container.textContent).not.toContain('2026-10-01T10:00:00Z')
 
     spies.signOutChatGPT.mockResolvedValue(undefined)
     await act(async () => {

@@ -137,6 +137,26 @@ llm:
     # auth:
     #   mode: api_key
 
+  kimi:
+    # Moonshot AI platform API key. Existing openai_compatible /
+    # anthropic_compatible Moonshot entries remain supported and do not migrate.
+    api_key: "${MOONSHOT_API_KEY}"
+    models: []
+    # Authentication mode:
+    #   api_key (default) — Moonshot platform at https://api.moonshot.ai/v1.
+    #                        Typical preset IDs: kimi-k3, kimi-k2.7-code.
+    #   oauth              — Kimi for Coding subscription via browser sign-in.
+    #                        Credentials live in the OS keychain, never here.
+    #                        Requests use the region's pinned coding endpoint;
+    #                        typical preset IDs are k3, k3-256k and
+    #                        kimi-for-coding. A signed-out request fails with
+    #                        "sign in with Kimi"; api_key is never a fallback.
+    # auth:
+    #   mode: api_key
+    #   # OAuth region: global (default, kimi.ai) or mainland_cn (kimi.com).
+    #   # Changing region clears the old credential and requires signing in again.
+    #   region: global
+
   # Override built-in model metadata per model name. Every field is optional and
   # uses a sentinel value meaning "inherit the built-in default": 0 for integers,
   # "" for strings, nil (omitted map) for capabilities. Only fields that differ
