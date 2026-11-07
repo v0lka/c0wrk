@@ -1,12 +1,12 @@
-# ADR-117: Kimi subscription model catalog
+# ADR-118: Kimi subscription model catalog
 
 ## Status
 
-Accepted. Supersedes the live-catalog refusal in [ADR-116](116-kimi-subscription-auth.md) D6.
+Accepted. Supersedes the live-catalog refusal in [ADR-117](117-kimi-subscription-auth.md) D6.
 
 ## Context
 
-ADR-116 pinned Kimi for Coding OAuth to a compile-time checklist of four model ids. The coding endpoint's model set is part of the subscription: a Max account is served models, including `k3.1-pro`, that the pinned list does not name. The Kimi Code CLI already reads that set with `GET {coding base}/models` after sign-in. A static list cannot follow the account.
+ADR-117 pinned Kimi for Coding OAuth to a compile-time checklist of four model ids. The coding endpoint's model set is part of the subscription: a Max account is served models, including `k3.1-pro`, that the pinned list does not name. The Kimi Code CLI already reads that set with `GET {coding base}/models` after sign-in. A static list cannot follow the account.
 
 ## Decision
 

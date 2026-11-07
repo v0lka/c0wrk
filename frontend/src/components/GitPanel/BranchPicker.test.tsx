@@ -133,9 +133,11 @@ function branchRows(): HTMLElement[] {
   return Array.from(body().querySelectorAll('div[role="button"]'))
 }
 
-/** The branch row whose text contains `name`. */
+/** The branch row whose accessible name is exactly `name` — always the FULL
+ *  branch name/ref: in tree mode the visible label is the basename
+ *  (`branchLeafLabel`), while `aria-label` keeps the full name. */
 function branchRow(name: string): HTMLElement | undefined {
-  return branchRows().find((el) => el.textContent?.includes(name))
+  return branchRows().find((el) => el.getAttribute('aria-label') === name)
 }
 
 function renderPicker() {
@@ -1417,5 +1419,192 @@ describe('BranchPicker — managed-focus gate (manage mode only, ADR-080)', () =
       startPoint: '',
     })
     expect(gitMocks.createBranch).not.toHaveBeenCalled()
+  })
+})
+
+describe('BranchPicker — flat/tree view toggle', () => {
+  /** Branch fixture with `/`-slash prefixes on BOTH sides of the list. */
+  const treeFixture = [
+    { name: 'main', is_current: true, kind: 'local', upstream: '' },
+    { name: 'feat/a', is_current: false, kind: 'local', upstream: '' },
+    { name: 'feat/b', is_current: false, kind: 'local', upstream: '' },
+    { name: 'bugfix/1', is_current: false, kind: 'local', upstream: '' },
+    { name: 'origin/feat/remote', is_current: false, kind: 'remote', upstream: '' },
+  ]
+
+  /** The header button before the filter input (data-testid passthrough). */
+  function viewToggle(): HTMLButtonElement {
+    return body().querySelector(
+      'button[data-testid="branch-view-toggle"]',
+    ) as HTMLButtonElement
+  }
+
+  /** All tree directory rows currently rendered. */
+  function dirRows(): HTMLElement[] {
+    return Array.from(body().querySelectorAll('[data-testid^="branch-dir-"]'))
+  }
+
+  function dirRow(path: string): HTMLElement | undefined {
+    return body().querySelector(
+      `[data-testid="branch-dir-${path}"]`,
+    ) as HTMLElement | undefined
+  }
+
+  /** Open the picker in DRAFT mode over {@link treeFixture}. */
+  async function openDraftPicker() {
+    // The pick targets the ACTIVE fresh session, seeded with the local
+    // default — same setup as the draft-mode describe above.
+    useSessionStore.setState({ activeSessionId: 'sess-draft' })
+    useSessionWorkspaceStore.getState().setChoice('sess-draft', { kind: 'local' })
+    gitMocks.getBranches.mockResolvedValue(treeFixture)
+    act(() => {
+      useGitPanelStore.getState().openBranchPicker('draft')
+    })
+    renderPicker()
+    await flush()
+  }
+
+  it('switch mode: the toggle flips flat ⇄ tree', async () => {
+    gitMocks.getBranches.mockResolvedValue(treeFixture)
+    renderPicker()
+    await flush()
+
+    // Flat first: no directory rows; the toggle shows it is off.
+    expect(dirRows()).toHaveLength(0)
+    expect(viewToggle().getAttribute('aria-pressed')).toBe('false')
+
+    await act(async () => {
+      viewToggle().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await flush()
+
+    // Tree: one dir per `/`-slash prefix, local AND remote (`origin`).
+    expect(viewToggle().getAttribute('aria-pressed')).toBe('true')
+    expect(dirRow('feat')).toBeDefined()
+    expect(dirRow('bugfix')).toBeDefined()
+    expect(dirRow('origin')).toBeDefined()
+    // Leaves stay reachable — the accessible names are the full names; the
+    // visible labels are basenames indented under their dirs.
+    expect(branchRow('feat/a')).toBeDefined()
+    expect(branchRow('origin/feat/remote')).toBeDefined()
+
+    // Flipping back restores the flat list.
+    await act(async () => {
+      viewToggle().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await flush()
+    expect(dirRows()).toHaveLength(0)
+    expect(branchRow('feat/a')).toBeDefined()
+  })
+
+  it('draft mode: the same toggle renders and flips the list to a tree', async () => {
+    await openDraftPicker()
+
+    expect(viewToggle()).toBeDefined()
+    expect(dirRows()).toHaveLength(0)
+
+    await act(async () => {
+      viewToggle().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await flush()
+
+    expect(viewToggle().getAttribute('aria-pressed')).toBe('true')
+    expect(dirRow('feat')).toBeDefined()
+    expect(dirRow('origin')).toBeDefined()
+    expect(branchRow('feat/b')).toBeDefined()
+  })
+
+  it('draft-pick from the tree records the same choice with the full branch name', async () => {
+    await openDraftPicker()
+
+    await act(async () => {
+      viewToggle().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await flush()
+
+    const leaf = branchRow('feat/a')!
+    expect(leaf).toBeDefined()
+    await act(async () => {
+      leaf.click()
+    })
+    await flush()
+
+    // Identical choice shape as the flat-mode pick — the tree layout only
+    // re-renders the rows, never the pick semantics.
+    expect(useSessionWorkspaceStore.getState().choices['sess-draft']).toEqual({
+      kind: 'branch',
+      branch: 'feat/a',
+      createBranch: false,
+      startPoint: '',
+    })
+    expect(gitMocks.checkoutBranch).not.toHaveBeenCalled()
+    expect(gitMocks.createBranch).not.toHaveBeenCalled()
+    // Selection closes the picker, same as the flat pick.
+    expect(useGitPanelStore.getState().isBranchPickerOpen).toBe(false)
+  })
+
+  it('remote-pick from the tree is unchanged: create-branch from the full remote ref', async () => {
+    await openDraftPicker()
+
+    await act(async () => {
+      viewToggle().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await flush()
+
+    // The remote leaf sits inside the `origin` → `feat` dir chain but keeps
+    // its full ref as the pick payload.
+    const leaf = branchRow('origin/feat/remote')!
+    expect(leaf).toBeDefined()
+    await act(async () => {
+      leaf.click()
+    })
+    await flush()
+
+    expect(useSessionWorkspaceStore.getState().choices['sess-draft']).toEqual({
+      kind: 'branch',
+      branch: 'feat/remote',
+      createBranch: true,
+      startPoint: 'origin/feat/remote',
+    })
+    expect(gitMocks.checkoutRemoteBranch).not.toHaveBeenCalled()
+  })
+
+  it('an active filter force-expands a collapsed dir and restores the collapse when cleared', async () => {
+    gitMocks.getBranches.mockResolvedValue(treeFixture)
+    renderPicker()
+    await flush()
+
+    await act(async () => {
+      viewToggle().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await flush()
+
+    // Collapse the `feat` dir — its leaves disappear.
+    const dir = dirRow('feat')!
+    expect(dir.getAttribute('aria-expanded')).toBe('true')
+    await act(async () => {
+      dir.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await flush()
+    expect(dir.getAttribute('aria-expanded')).toBe('false')
+    expect(branchRow('feat/a')).toBeUndefined()
+
+    // Searching force-expands the dir — matches stay visible.
+    const filterInput = Array.from(body().querySelectorAll('input')).find(
+      (i) => i.getAttribute('placeholder') === 'Filter branches...',
+    )!
+    await act(async () => {
+      setInputValue(filterInput, 'feat')
+    })
+    await flush()
+    expect(branchRow('feat/a')).toBeDefined()
+
+    // Clearing the filter restores the user's collapse.
+    await act(async () => {
+      setInputValue(filterInput, '')
+    })
+    await flush()
+    expect(dirRow('feat')!.getAttribute('aria-expanded')).toBe('false')
+    expect(branchRow('feat/a')).toBeUndefined()
   })
 })

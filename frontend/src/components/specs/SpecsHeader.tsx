@@ -2,7 +2,7 @@
 // deterministic-findings signal computed per parse — plus the aggregate
 // counts. Pure presentational over SpecsStatus.
 
-import { AlertTriangle, CheckCircle2 } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, RefreshCw } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { SpecsStatus } from '@/types/models'
 
@@ -51,14 +51,21 @@ function IntegrityBadge({
 }
 
 /** The header row: the integrity badge (the findings count doubles as the
- *  fix-findings dispatch, ADR-109) and the aggregate counts. The absolute
- *  specs root rides along as the row's tooltip. */
+ *  fix-findings dispatch, ADR-109), the aggregate counts, and the icon-only
+ *  manual-refresh button at the right edge. The absolute specs root rides
+ *  along as the row's tooltip. The button renders in BOTH header branches
+ *  (present / !present — a tree-less project can still be re-parsed) and
+ *  is inert while a fetch is in flight. */
 export function SpecsHeader({
   status,
   onFixFindings,
+  onRefresh,
+  isLoading = false,
 }: {
   status: SpecsStatus
   onFixFindings?: (newSession: boolean) => void
+  onRefresh?: () => void
+  isLoading?: boolean
 }) {
   const { counts, root } = status
   return (
@@ -71,6 +78,21 @@ export function SpecsHeader({
       <span className={cn('text-xs text-muted-foreground truncate')}>
         {counts.files} spec files · {counts.adrs} ADRs
       </span>
+      <button
+        type="button"
+        data-testid="specs-refresh"
+        onClick={onRefresh}
+        disabled={!onRefresh || isLoading}
+        aria-label="Re-parse the specs/ tree and re-check integrity"
+        title="Re-parse the specs/ tree and re-check integrity"
+        className={cn(
+          'ml-auto inline-flex shrink-0 items-center rounded p-1 text-muted-foreground',
+          'transition-colors hover:bg-secondary hover:text-foreground',
+          'disabled:pointer-events-none disabled:opacity-50',
+        )}
+      >
+        <RefreshCw className={cn('size-3.5', isLoading && 'animate-spin')} aria-hidden />
+      </button>
     </div>
   )
 }

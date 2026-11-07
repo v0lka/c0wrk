@@ -449,7 +449,7 @@ Kimi reuses `providerauth.TokenManager`, `KeyringSecretStore`, and the refresh l
 
 `GetKimiModelPreset` is that offline fallback and performs no network request. It returns `k3.1-pro`, `k3.1-pro-highspeed`, `k3`, `k3-256k`, `kimi-for-coding`, and `kimi-for-coding-highspeed`, independent of the persisted auth mode, so an api_key→oauth draft flip cannot render platform IDs from the pre-save mode. API-key mode lists Moonshot platform models through `ListProviderModels`. Entries receive fail-soft metadata from `ModelRegistry.ResolveLocal` (`context_window`, `output_limit`, `reasoning`), with names still available before the async registry is ready.
 
-See [ADR-116](../decisions/116-kimi-subscription-auth.md) for the endpoint-pinning and reusable multi-provider design decision, and [ADR-117](../decisions/117-kimi-subscription-model-catalog.md) for the live catalog.
+See [ADR-117](../decisions/117-kimi-subscription-auth.md) for the endpoint-pinning and reusable multi-provider design decision, and [ADR-118](../decisions/118-kimi-subscription-model-catalog.md) for the live catalog.
 
 ## Service Call Observability
 
@@ -476,11 +476,11 @@ One provider block is app-written rather than operator-authored: `llm.openai_com
 
 The `chatgpt` provider additionally carries `llm.chatgpt.auth.mode` (`api_key` default | `oauth` — the ChatGPT subscription sign-in; a refresh-token-only secret in the OS keychain, endpoint pinned to the Codex backend, no `api_key` fallback). See [ChatGPT Subscription Auth](#chatgpt-subscription-auth) and [ADR-074](../decisions/074-chatgpt-subscription-auth.md).
 
-The fixed `kimi` provider carries `llm.kimi.api_key`, `llm.kimi.models`, `llm.kimi.output_token_reserve`, `llm.kimi.auth.mode` (`api_key` default | `oauth`), and `llm.kimi.auth.region` (`global` default | `mainland_cn`). Api-key mode targets `https://api.moonshot.ai/v1`; oauth mode uses the regional coding endpoint (`api.kimi.ai` or `api.kimi.com`) and keychain-held subscription credential with no static-key fallback. See [Kimi for Coding Subscription Auth](#kimi-for-coding-subscription-auth) and [ADR-116](../decisions/116-kimi-subscription-auth.md).
+The fixed `kimi` provider carries `llm.kimi.api_key`, `llm.kimi.models`, `llm.kimi.output_token_reserve`, `llm.kimi.auth.mode` (`api_key` default | `oauth`), and `llm.kimi.auth.region` (`global` default | `mainland_cn`). Api-key mode targets `https://api.moonshot.ai/v1`; oauth mode uses the regional coding endpoint (`api.kimi.ai` or `api.kimi.com`) and keychain-held subscription credential with no static-key fallback. See [Kimi for Coding Subscription Auth](#kimi-for-coding-subscription-auth) and [ADR-117](../decisions/117-kimi-subscription-auth.md).
 
 ## Related Specs
 
-- [ADR-116: Kimi for Coding subscription authentication](../decisions/116-kimi-subscription-auth.md) — pinned public OAuth profile, shared credential lifecycle, independent provider-keyed token sources, and provider-specific streaming
+- [ADR-117: Kimi for Coding subscription authentication](../decisions/117-kimi-subscription-auth.md) — pinned public OAuth profile, shared credential lifecycle, independent provider-keyed token sources, and provider-specific streaming
 - [sp4rk llm-providers](https://github.com/v0lka/sp4rk/blob/main/specs/domains/llm-providers.md) — canonical `Router`, `ModelRegistry` (5-tier Resolve), token counting, `TrackingCaller`, retry/backoff
 - [sp4rk llm-providers contract](https://github.com/v0lka/sp4rk/blob/main/specs/contracts/llm-providers.md) — `Provider`/`Router`/`Message`/`ChatRequest`/`ChatResponse` interface definitions
 - [orchestration/router.md](orchestration/router.md) — routing uses the router for classification

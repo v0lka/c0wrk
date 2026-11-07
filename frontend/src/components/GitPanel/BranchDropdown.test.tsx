@@ -120,11 +120,16 @@ function isMenuOpen(): boolean {
   return body().querySelector('[data-slot="dropdown-menu-content"]') !== null
 }
 
-/** A branch row is a div[role=button] containing the given name. */
+/** A branch row is a div[role=button] whose accessible name is exactly
+ *  `name` — always the FULL branch name/ref: in tree mode the visible
+ *  label is the basename (`branchLeafLabel`), while `aria-label` keeps
+ *  the full name. */
 function rowByName(name: string): HTMLElement {
-  return Array.from(body().querySelectorAll('div[role="button"]')).find((el) =>
-    (el.textContent ?? '').includes(name),
-  ) as HTMLElement
+  const row = Array.from(body().querySelectorAll('div[role="button"]')).find(
+    (el) => el.getAttribute('aria-label') === name,
+  )
+  expect(row, `branch row "${name}"`).toBeTruthy()
+  return row as HTMLElement
 }
 
 /** The action buttons inside a row (hover mini-icons). */
@@ -428,6 +433,141 @@ describe('BranchDropdown', () => {
     // Branch creation lives in the BranchPicker modal — the dropdown never
     // opens it itself.
     expect(useGitPanelStore.getState().isBranchPickerOpen).toBe(false)
+  })
+})
+
+describe('BranchDropdown — tree/flat display-mode toggle', () => {
+  // 5 branches: enough for the search input to render alongside the toggle.
+  const treeFixture = [
+    makeBranch({ name: 'main', is_current: true }),
+    makeBranch({ name: 'feature/auth' }),
+    makeBranch({ name: 'feature/api' }),
+    makeBranch({ name: 'origin/feature/auth', kind: 'remote' }),
+    makeBranch({ name: 'origin/feature/api', kind: 'remote' }),
+  ]
+
+  /** The mode toggle — the only registered menu checkbox, found by its
+   *  title. */
+  function modeToggle(): HTMLElement {
+    const el = body().querySelector<HTMLElement>(
+      '[role="menuitemcheckbox"][title="Show branch tree"], [role="menuitemcheckbox"][title="Show flat list"]',
+    )
+    expect(el, 'display-mode toggle').toBeTruthy()
+    return el!
+  }
+
+  /** Click the toggle (Radix item click → onSelect). */
+  async function clickToggle(): Promise<void> {
+    act(() => {
+      modeToggle().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await flush()
+  }
+
+  /** Dir rows inside one section's content region, in document order. */
+  function dirIds(regionId: string): string[] {
+    return Array.from(
+      body().querySelectorAll(`#${regionId} [data-testid^="branch-dir-"]`),
+    ).map((el) => el.getAttribute('data-testid')!)
+  }
+
+  it('renders the toggle below the 5-branch threshold — with the search input still hidden', async () => {
+    useGitPanelStore.getState().setBranches([
+      makeBranch({ name: 'main', is_current: true }),
+      makeBranch({ name: 'feature/x' }),
+    ])
+    renderDropdown()
+    await openDropdown()
+
+    // Default mode is flat, so the icon advertises the switch TO the tree;
+    // aria-checked announces the CURRENT mode (flat = unchecked).
+    const toggle = body().querySelector(
+      '[role="menuitemcheckbox"][title="Show branch tree"]',
+    )
+    expect(toggle).not.toBeNull()
+    expect(toggle!.getAttribute('aria-checked')).toBe('false')
+    // The toggle renders even though the search input stays hidden (<5).
+    expect(body().querySelector('input[placeholder="Search branches..."]')).toBeNull()
+    // The flat list itself is untouched.
+    expect(rowByName('feature/x')).toBeTruthy()
+  })
+
+  it('flips the display mode without closing the menu — and back', async () => {
+    useGitPanelStore.getState().setBranches(treeFixture)
+    renderDropdown()
+    await openDropdown()
+
+    await clickToggle()
+
+    // The onSelect preventDefault keeps the menu open…
+    expect(isMenuOpen()).toBe(true)
+    // …the toggle now advertises the way back, with the state announced…
+    const treeToggle = body().querySelector(
+      '[role="menuitemcheckbox"][title="Show flat list"]',
+    )
+    expect(treeToggle).not.toBeNull()
+    expect(treeToggle!.getAttribute('aria-checked')).toBe('true')
+    expect(body().querySelector('[role="menuitemcheckbox"][title="Show branch tree"]')).toBeNull()
+    // …and Local renders its `feature` directory instead of the flat list.
+    expect(body().querySelector('[data-testid="branch-dir-feature"]')).not.toBeNull()
+    expect(rowByName('feature/auth')).toBeTruthy()
+
+    await clickToggle()
+
+    // Flipping back restores the flat view; the menu is STILL open and the
+    // checkbox is unchecked again.
+    expect(isMenuOpen()).toBe(true)
+    const flatToggle = body().querySelector(
+      '[role="menuitemcheckbox"][title="Show branch tree"]',
+    )
+    expect(flatToggle).not.toBeNull()
+    expect(flatToggle!.getAttribute('aria-checked')).toBe('false')
+    expect(body().querySelector('[data-testid="branch-dir-feature"]')).toBeNull()
+    expect(rowByName('feature/auth')).toBeTruthy()
+  })
+
+  it('tree mode builds directories in BOTH sections — local dirs and the remote-prefix top node', async () => {
+    useGitPanelStore.getState().setBranches(treeFixture)
+    renderDropdown()
+    await openDropdown()
+
+    await clickToggle()
+
+    // Local: the `feature` dir, expanded by default, holding its leaves.
+    expect(dirIds('branch-region-local')).toEqual(['branch-dir-feature'])
+    // Remote: the `origin` prefix emerges as the top-level dir, nesting `feature`.
+    expect(dirIds('branch-region-remote')).toEqual([
+      'branch-dir-origin',
+      'branch-dir-origin/feature',
+    ])
+    // Every leaf stays reachable — the accessible names are the full
+    // names; the visible labels are basenames indented under their dirs.
+    expect(rowByName('feature/auth')).toBeTruthy()
+    expect(rowByName('origin/feature/api')).toBeTruthy()
+    expect((rowByName('feature/auth').textContent ?? '').trim()).toBe('auth')
+  })
+
+  it('a search that matches nothing shows the empty state — with every tree dir pruned', async () => {
+    useGitPanelStore.getState().setBranches(treeFixture)
+    renderDropdown()
+    await openDropdown()
+
+    await clickToggle()
+
+    const input = body().querySelector(
+      'input[placeholder="Search branches..."]',
+    ) as HTMLInputElement
+    expect(input).not.toBeNull()
+    act(() => setInputValue(input, 'zzz'))
+    await flush()
+
+    expect(body().querySelector('[data-testid="branch-list-empty"]')).not.toBeNull()
+    expect(body().textContent).toContain('No matching branches')
+    // Both sections collapsed away entirely — no stray dir rows remain.
+    expect(dirIds('branch-region-local')).toEqual([])
+    expect(dirIds('branch-region-remote')).toEqual([])
+    // The flip itself never closed the menu.
+    expect(isMenuOpen()).toBe(true)
   })
 })
 
@@ -776,11 +916,18 @@ describe('BranchDropdown — collapsible sections', () => {
     await openDropdown()
 
     // Pointer-open leaves focus on the menu content; the FIRST item of the
-    // roving collection is the Local header (no search box below the
-    // 5-branch threshold). As a plain button it was invisible to the arrows
-    // — and Tab is prevented inside the menu, so it was unreachable.
+    // roving collection is the tree/flat display-mode toggle (it renders even
+    // below the 5-branch threshold, where the search box stays hidden). The
+    // Local header follows it — as a plain button it was invisible to the
+    // arrows before the toggle existed, and Tab is prevented inside the menu,
+    // so the arrows remain its only keyboard path.
     const menu = body().querySelector('[data-slot="dropdown-menu-content"]') as HTMLElement
     await pressKey(menu, 'ArrowDown')
+    expect(document.activeElement).toBe(
+      body().querySelector('[role="menuitemcheckbox"][title="Show branch tree"]'),
+    )
+
+    await pressKey(document.activeElement!, 'ArrowDown')
     expect(document.activeElement).toBe(sectionHeader('Local'))
 
     // Enter collapses the section — the menu stays open.

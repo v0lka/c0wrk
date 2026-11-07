@@ -117,7 +117,7 @@ type ConfigProviderFull struct {
 	// "local" | "remote"; empty = infer.
 	TimeoutClass string `json:"timeout_class,omitempty"`
 	// AuthMode is a chatgpt or kimi auth mode: "api_key" (default) | "oauth"
-	// (ADR-074/ADR-116); other providers leave it empty.
+	// (ADR-074/ADR-117); other providers leave it empty.
 	AuthMode string `json:"auth_mode,omitempty"`
 	// AuthRegion selects global (default) or mainland_cn for Kimi OAuth.
 	AuthRegion string `json:"auth_region,omitempty"`
@@ -201,7 +201,7 @@ type ProviderConfigRequest struct {
 	// enum validation, so an explicit "" CLEARS the override.
 	TimeoutClass *string `json:"timeout_class,omitempty"`
 	// AuthMode selects chatgpt or kimi auth: "api_key" (static key) or
-	// "oauth" (ADR-074/ADR-116). nil = keep the persisted mode; non-nil
+	// "oauth" (ADR-074/ADR-117). nil = keep the persisted mode; non-nil
 	// applies after enum validation. Other providers ignore it.
 	AuthMode *string `json:"auth_mode,omitempty"`
 	// AuthRegion selects global or mainland_cn for Kimi OAuth; nil keeps it.

@@ -64,6 +64,10 @@ vi.mock('@/api/runtime', () => ({
   // lib/systemNotifications' transport guard reads this; the real lib runs
   // here (only its init is fire-and-forget), so the export must exist.
   isWebTransport: vi.fn(() => false),
+  // ScaleHud (mounted at the App root in every phase) runs useCtrlWheelScale,
+  // whose effect gates on the transport snapshot — 'none' keeps its listeners
+  // detached in this jsdom suite exactly as in a non-wails environment.
+  transportSnapshot: vi.fn(() => 'none'),
 }))
 vi.mock('@/api/projects', () => ({ listProjects: vi.fn().mockResolvedValue([]) }))
 // The App mount also fires two more RPC paths that must stay quiet here:

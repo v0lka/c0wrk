@@ -1,8 +1,8 @@
-# ADR-116: Kimi for Coding subscription authentication and multi-provider OAuth wiring
+# ADR-117: Kimi for Coding subscription authentication and multi-provider OAuth wiring
 
 ## Status
 
-Accepted. The refusal of a live model catalog in D6 is superseded by [ADR-117](117-kimi-subscription-model-catalog.md).
+Accepted. The refusal of a live model catalog in D6 is superseded by [ADR-118](118-kimi-subscription-model-catalog.md).
 
 ## Context
 
@@ -24,7 +24,7 @@ The decision must pin subscription endpoints against credential redirection, pre
 
 **D5 — OAuth stays fail-closed, while streaming remains protocol-specific.** A marked entry with no live source uses `dynamicSubscriptionSource`, which re-reads only its provider's current source per request. Signed-out requests fail before transport with provider-specific sign-in guidance; a lingering static key is preserved but never acts as an OAuth fallback. A later sign-in or startup restore serves cached routers through the same dynamic source. `RequireStreaming` is set only for ChatGPT's Codex endpoint. Kimi OAuth retains normal OpenAI streaming behavior and calls `chat/completions`; its `anthropic-version` header does not imply Anthropic Messages transport.
 
-**D6 — Kimi owns a parallel RPC/event surface and deterministic presets.** `StartKimiSignIn`, `CancelKimiSignIn`, `GetKimiAuthStatus`, `SignOutKimi`, and `GetKimiModelPreset` expose the shared lifecycle without ChatGPT account fields. `kimi_auth:state` carries only `pending`/`success`/`error`/`cancelled` transitions and secret-free URL, error, email, and expiry fields. Sign-out and region rebinding complete synchronously and emit `cancelled` so account-scoped status and live-catalog state are invalidated. Successful sign-in mirrors the source and rebuilds the judge and router before the success event; startup restore rebuilds when oauth mode is selected. `GetKimiModelPreset` is network-free and always returns the Kimi for Coding subscription preset: `k3`, `k3-256k`, `kimi-for-coding`, `kimi-for-coding-highspeed`. API-key mode lists Moonshot platform models through `ListProviderModels`; the preset RPC never depends on a stale persisted mode. Registry metadata enrichment is fail-soft. [ADR-117](117-kimi-subscription-model-catalog.md) adds the live model catalog and expands the fallback.
+**D6 — Kimi owns a parallel RPC/event surface and deterministic presets.** `StartKimiSignIn`, `CancelKimiSignIn`, `GetKimiAuthStatus`, `SignOutKimi`, and `GetKimiModelPreset` expose the shared lifecycle without ChatGPT account fields. `kimi_auth:state` carries only `pending`/`success`/`error`/`cancelled` transitions and secret-free URL, error, email, and expiry fields. Sign-out and region rebinding complete synchronously and emit `cancelled` so account-scoped status and live-catalog state are invalidated. Successful sign-in mirrors the source and rebuilds the judge and router before the success event; startup restore rebuilds when oauth mode is selected. `GetKimiModelPreset` is network-free and always returns the Kimi for Coding subscription preset: `k3`, `k3-256k`, `kimi-for-coding`, `kimi-for-coding-highspeed`. API-key mode lists Moonshot platform models through `ListProviderModels`; the preset RPC never depends on a stale persisted mode. Registry metadata enrichment is fail-soft. [ADR-118](118-kimi-subscription-model-catalog.md) adds the live model catalog and expands the fallback.
 
 ## Consequences
 

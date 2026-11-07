@@ -1,9 +1,10 @@
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { useCallback } from 'react'
 import { Copy, Check, Save, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { clipboardSetText, emit, isWebTransport } from '@/api/runtime'
+import { emit, isWebTransport } from '@/api/runtime'
 import { saveMessageAsMarkdown } from '@/api/files'
 import { useShiftHeld } from '@/hooks/useShiftHeld'
+import { useCopyFlash } from '@/hooks/useCopyFlash'
 import { logger } from '@/lib/logger'
 import { generateUUID } from '@/lib/ids'
 
@@ -15,8 +16,8 @@ interface CopyButtonProps {
   className?: string
 }
 
-/** Which success state the button is flashing, if any. */
-type Feedback = 'copied' | 'saved' | 'download-started' | 'failed' | null
+/** The save path's extra flash kinds, on top of the shared copy contract. */
+type SaveFeedback = 'saved' | 'download-started'
 
 /**
  * CopyButton — small, low-contrast copy-to-clipboard control.
@@ -25,47 +26,18 @@ type Feedback = 'copied' | 'saved' | 'download-started' | 'failed' | null
  * "Copied" for a short window after a successful copy. While Shift is held
  * the button morphs into a `Save` action: clicking opens the native save-file
  * dialog (default directory = the active project) and writes the text to the
- * chosen .md file, flashing "Saved" on success. The button itself is always
- * visible; the hover reveal that shows/hides it in chat messages is handled
- * by the parent via a `group` + `group-hover:*` wrapper.
+ * chosen .md file, flashing "Saved" on success. The copy verdict's flash
+ * contract (native Wails runtime via `clipboardSetText`, false/rejection is a
+ * failed copy, bounded revert timer) is the shared `useCopyFlash` hook, with
+ * the save kinds flashed through the same timer via `flash`. The button
+ * itself is always visible; the hover reveal that shows/hides it in chat
+ * messages is handled by the parent via a `group` + `group-hover:*` wrapper.
  */
 export function CopyButton({ text, label = 'Copy', className }: CopyButtonProps) {
-  const [feedback, setFeedback] = useState<Feedback>(null)
+  const { feedback, copy, flash } = useCopyFlash<SaveFeedback>()
   const shiftHeld = useShiftHeld()
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  useEffect(() => {
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current)
-    }
-  }, [])
-
-  const flashFeedback = useCallback((kind: Exclude<Feedback, null>) => {
-    setFeedback(kind)
-    if (timerRef.current) clearTimeout(timerRef.current)
-    timerRef.current = setTimeout(() => setFeedback(null), 2000)
-  }, [])
-
-  const handleCopy = useCallback(() => {
-    // Copy through the native Wails runtime, NOT `navigator.clipboard`. The
-    // Web Clipboard API is unreliable inside the Wails webview
-    // (`navigator.clipboard` is undefined in production because the webview
-    // origin is not a secure context, and even when present `writeText`
-    // rejects with NotAllowedError under WKWebView's transient-activation
-    // rules) — that was the root cause of the message copy buttons needing
-    // several clicks to register. See `clipboardSetText` in @/api/runtime.
-    clipboardSetText(text)
-      .then((ok) => {
-        // `false` is a failed copy (see `clipboardSetText`) — it must never
-        // render the success state.
-        flashFeedback(ok ? 'copied' : 'failed')
-      })
-      .catch(() => {
-        // `clipboardSetText` resolves instead of throwing; this is a safety
-        // net — fail with the same visible signal rather than silently.
-        flashFeedback('failed')
-      })
-  }, [text, flashFeedback])
+  const handleCopy = useCallback(() => copy(text), [copy, text])
 
   const handleSave = useCallback(() => {
     if (isWebTransport()) {
@@ -89,14 +61,14 @@ export function CopyButton({ text, label = 'Copy', className }: CopyButtonProps)
       setTimeout(() => URL.revokeObjectURL(url), 10_000)
       // The anchor click cannot report failure (a popup blocker can eat it
       // silently) — claim only that the download was handed to the browser.
-      flashFeedback('download-started')
+      flash('download-started')
       return
     }
     saveMessageAsMarkdown(text)
       .then((path) => {
         // An empty path means the user cancelled the native dialog — no
         // feedback, the button simply stays in its idle Save state.
-        if (path) flashFeedback('saved')
+        if (path) flash('saved')
       })
       .catch((err) => {
         // Unlike clipboard writes, a failed save (dialog error, unwritable
@@ -107,7 +79,7 @@ export function CopyButton({ text, label = 'Copy', className }: CopyButtonProps)
           message: 'Failed to save message to file',
         })
       })
-  }, [text, flashFeedback])
+  }, [text, flash])
 
   const currentLabel =
     feedback === 'copied'

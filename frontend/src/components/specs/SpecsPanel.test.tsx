@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 // SpecsPanel — the panel orchestrator over specsStore (ADR-106): the
 // mount fetch, the in-panel workspace:tree_changed subscription with the
-// specs/ path filter, the read path through the file viewer, and the four
+// specs/ path filter, the manual refresh button (the header's icon-only
+// refetch trigger), the read path through the file viewer, and the four
 // render states (loading, error-alongside-previous-status, empty, full
 // body). The api boundary itself is covered by api/specs.test.ts; the
 // quick-actions/empty-state dispatch wiring by their own suites.
@@ -12,6 +13,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { SpecsPanel } from './SpecsPanel'
 import { useSpecsStore } from '@/stores/specsStore'
 import { useProjectStore } from '@/stores/projectStore'
+import { useSessionStore } from '@/stores/sessionStore'
 import { useFileViewerStore } from '@/stores/fileViewerStore'
 import type { SpecsStatus } from '@/types/models'
 
@@ -137,6 +139,7 @@ beforeEach(() => {
   eventHandlers.clear()
   useSpecsStore.getState().reset()
   useProjectStore.setState({ activeProjectId: 'p1' })
+  useSessionStore.setState({ sessions: null, activeSessionId: null })
   useFileViewerStore.setState({ openTabs: [], activeFile: null, collapsed: true })
 })
 
@@ -302,6 +305,129 @@ describe('SpecsPanel — refresh trigger (in-panel subscription)', () => {
   })
 })
 
+describe('SpecsPanel — session switch (the parse follows the active session)', () => {
+  // The backend scans the ACTIVE session's workspace (like research/papers),
+  // so a session switch is a refetch trigger exactly like a project switch —
+  // same fetch call (the server resolves the session), new parse.
+  it('refetches the active project when the active session changes', async () => {
+    await renderPanel()
+    expect(getSpecsStatusMock).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      useSessionStore.setState({ sessions: null, activeSessionId: 's2' })
+    })
+    await flush()
+
+    // EXACTLY one more fetch: the mount/project effect refires; the
+    // tree_changed effect re-keying on the session only resubscribes.
+    expect(getSpecsStatusMock).toHaveBeenCalledTimes(2)
+    expect(getSpecsStatusMock).toHaveBeenLastCalledWith('p1')
+
+    // The resubscribed tree_changed subscription still refetches (a broken
+    // resubscription would leave a dead or duplicated listener).
+    act(() => {
+      fireTreeChanged({ paths: ['/ws/p1/specs/INDEX.md'] })
+    })
+    await flush()
+    expect(getSpecsStatusMock).toHaveBeenCalledTimes(3)
+  })
+
+  it('renders the loading state — never the previous session\'s tree — across a session switch', async () => {
+    await renderPanel()
+    expect(query('specs-tree')).not.toBeNull()
+
+    // s2's fetch hangs: s1's tree must vanish for the whole flight (the
+    // store's session-stamped clean slate clears it at fetch start).
+    getSpecsStatusMock.mockReturnValue(new Promise(() => {}))
+    await act(async () => {
+      useSessionStore.setState({ sessions: null, activeSessionId: 's2' })
+    })
+    await flush()
+
+    expect(text()).toContain('Loading specs…')
+    expect(query('specs-tree')).toBeNull()
+  })
+})
+
+describe('SpecsPanel — manual refresh button (specs-refresh)', () => {
+  it('re-fetches the ACTIVE project on click', async () => {
+    await renderPanel()
+    expect(getSpecsStatusMock).toHaveBeenCalledTimes(1)
+
+    act(() => {
+      query('specs-refresh')!.click()
+    })
+    await flush()
+
+    expect(getSpecsStatusMock).toHaveBeenCalledTimes(2)
+    expect(getSpecsStatusMock).toHaveBeenLastCalledWith('p1')
+    // Enabled again once the flight lands.
+    expect(query('specs-refresh')!.hasAttribute('disabled')).toBe(false)
+  })
+
+  it('is icon-only: no text node — svg + attributes only — with the exact tooltip', async () => {
+    await renderPanel()
+
+    const refresh = query('specs-refresh')!
+    expect(refresh.textContent).toBe('')
+    expect(refresh.querySelector('svg')).not.toBeNull()
+    expect(refresh.getAttribute('title')).toBe(
+      'Re-parse the specs/ tree and re-check integrity',
+    )
+    expect(refresh.getAttribute('aria-label')).toBe(
+      'Re-parse the specs/ tree and re-check integrity',
+    )
+  })
+
+  it('is disabled while the refetch is in flight and the previous status stays rendered', async () => {
+    await renderPanel()
+    expect(query('specs-refresh')!.hasAttribute('disabled')).toBe(false)
+
+    let resolve!: (s: SpecsStatus) => void
+    getSpecsStatusMock.mockReturnValue(
+      new Promise<SpecsStatus>((res) => {
+        resolve = res
+      }),
+    )
+    act(() => {
+      query('specs-refresh')!.click()
+    })
+    await flush()
+
+    expect(getSpecsStatusMock).toHaveBeenCalledTimes(2)
+    // In flight → inert (a double click must not stack a duplicate fetch).
+    expect(query('specs-refresh')!.hasAttribute('disabled')).toBe(true)
+    // Same-project refetch: the previous parse stays on screen — no
+    // "Loading specs…" body swap, no tree loss (the store's retention +
+    // LWW ticket contract, pinned in specsStore.test.ts too).
+    expect(query('specs-tree')).not.toBeNull()
+    expect(text()).not.toContain('Loading specs…')
+
+    await act(async () => {
+      resolve(makeStatus(true))
+    })
+    await flush()
+    expect(query('specs-refresh')!.hasAttribute('disabled')).toBe(false)
+  })
+
+  it('renders and works when present=false (a tree-less project is re-parseable)', async () => {
+    getSpecsStatusMock.mockResolvedValue(makeStatus(false))
+    await renderPanel()
+
+    expect(query('specs-empty-state')).not.toBeNull()
+    const refresh = query('specs-refresh')!
+    expect(refresh.hasAttribute('disabled')).toBe(false)
+
+    act(() => {
+      refresh.click()
+    })
+    await flush()
+
+    expect(getSpecsStatusMock).toHaveBeenCalledTimes(2)
+    expect(getSpecsStatusMock).toHaveBeenLastCalledWith('p1')
+  })
+})
+
 describe('SpecsPanel — read path (file viewer)', () => {
   // Coverage boundary note: openSpec's cross-project no-op (store stamp ≠
   // active project) is defense in depth under the render guard — rows for
@@ -427,5 +553,82 @@ describe('SpecsPanel — read path (file viewer)', () => {
       badge.click()
     })
     expect(sendMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('SpecsPanel — per-finding fix badge (specs-finding-fix)', () => {
+  /** The parse with TWO findings: a per-finding dispatch must quote only
+   *  the clicked one — never the sibling backlog. */
+  function statusWithTwoFindings(): SpecsStatus {
+    const status = makeStatus(true)
+    status.findings = [
+      { kind: 'PATH_MISSING', file: 'domains/testing.md', detail: 'core/x.go does not exist' },
+      { kind: 'INDEX_STALE', file: 'domains/orphan.md', detail: 'not listed in INDEX.md' },
+    ]
+    status.counts = {
+      ...status.counts,
+      findings: 2,
+      findings_by_kind: { PATH_MISSING: 1, INDEX_STALE: 1 },
+    }
+    return status
+  }
+
+  it('clicking a finding badge dispatches exactly ONE task quoting only that finding', async () => {
+    getSpecsStatusMock.mockResolvedValue(statusWithTwoFindings())
+    await renderPanel()
+
+    const fixes = document.querySelectorAll<HTMLElement>('[data-testid="specs-finding-fix"]')
+    expect(fixes).toHaveLength(2)
+    act(() => {
+      fixes[1]!.click()
+    })
+
+    // Exactly one dispatch — the aggregate badge is a different affordance.
+    expect(sendMock).toHaveBeenCalledTimes(1)
+    const [prompt, skills, , , , options] = sendMock.mock.calls[0]!
+    expect(skills).toEqual(['spec-update'])
+    expect(options).toMatchObject({ newSession: false })
+    // The per-finding opener + the clicked finding verbatim...
+    expect(String(prompt)).toContain('Fix the following tier-1 integrity finding')
+    expect(String(prompt)).toContain('[INDEX_STALE] domains/orphan.md: not listed in INDEX.md')
+    // ...and NOTHING of the sibling finding (exactly one bullet line total).
+    expect(String(prompt)).not.toContain('[PATH_MISSING]')
+    expect(String(prompt)).not.toContain('core/x.go does not exist')
+    const lines = String(prompt)
+      .split('\n')
+      .filter((l) => l.startsWith('- ['))
+    expect(lines).toEqual(['- [INDEX_STALE] domains/orphan.md: not listed in INDEX.md'])
+    // A fix dispatch is a chat gesture — the viewer stays untouched.
+    expect(useFileViewerStore.getState().openTabs).toEqual([])
+  })
+
+  it('shift-clicking a finding badge targets a NEW session', async () => {
+    await renderPanel()
+
+    const fix = query('specs-finding-fix')!
+    await act(async () => {
+      fix.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }))
+    })
+
+    expect(sendMock).toHaveBeenCalledTimes(1)
+    expect(sendMock.mock.calls[0]![5]).toMatchObject({ newSession: true })
+  })
+
+  it('the aggregate badge keeps its own fix-all dispatch alongside the card badges', async () => {
+    getSpecsStatusMock.mockResolvedValue(statusWithTwoFindings())
+    await renderPanel()
+
+    act(() => {
+      query('specs-integrity-badge')!.click()
+    })
+
+    expect(sendMock).toHaveBeenCalledTimes(1)
+    const [prompt] = sendMock.mock.calls[0]!
+    expect(String(prompt)).toContain('Fix every tier-1 integrity finding')
+    // The aggregate still enumerates BOTH findings of the current parse...
+    expect(String(prompt)).toContain('[PATH_MISSING] domains/testing.md: core/x.go does not exist')
+    expect(String(prompt)).toContain('[INDEX_STALE] domains/orphan.md: not listed in INDEX.md')
+    // ...while the per-finding badges render alongside it unchanged.
+    expect(document.querySelectorAll('[data-testid="specs-finding-fix"]')).toHaveLength(2)
   })
 })

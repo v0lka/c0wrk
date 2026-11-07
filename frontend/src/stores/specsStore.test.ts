@@ -11,6 +11,7 @@ vi.mock('@/api/specs', () => ({
 
 import { useSpecsStore } from './specsStore'
 import { useProjectStore } from '@/stores/projectStore'
+import { useSessionStore } from './sessionStore'
 import type { SpecsStatus } from '@/types/models'
 
 function statusOf(present: boolean, projectId: string): SpecsStatus {
@@ -73,6 +74,7 @@ beforeEach(() => {
   getSpecsStatusMock.mockReset()
   useSpecsStore.getState().reset()
   useProjectStore.setState({ projects: null, activeProjectId: null })
+  useSessionStore.setState({ sessions: null, activeSessionId: null })
 })
 
 describe('specsStore — fetchStatus', () => {
@@ -216,8 +218,104 @@ describe('specsStore — cross-project guards', () => {
   })
 })
 
+describe('specsStore — session scoping (the parse belongs to a (project, session) pair)', () => {
+  it('stamps the ACTIVE session id on a successful fetch', async () => {
+    useSessionStore.setState({ sessions: null, activeSessionId: 's1' })
+    getSpecsStatusMock.mockResolvedValue(statusOf(true, 'p1'))
+
+    await useSpecsStore.getState().fetchStatus('p1')
+
+    const s = useSpecsStore.getState()
+    expect(s.projectId).toBe('p1')
+    expect(s.sessionId).toBe('s1')
+    expect(s.status?.present).toBe(true)
+  })
+
+  it("a same-project fetch for a NEW session clears the previous status the moment it starts", async () => {
+    // The backend scans the ACTIVE session's workspace, so s2's parse is a
+    // different parse even though the project is unchanged — the previous
+    // session's status must not render during the flight.
+    useSessionStore.setState({ sessions: null, activeSessionId: 's1' })
+    getSpecsStatusMock.mockResolvedValue(statusOf(true, 'p1'))
+    await useSpecsStore.getState().fetchStatus('p1')
+    expect(useSpecsStore.getState().status?.root).toBe('/ws/p1/specs')
+
+    useSessionStore.setState({ sessions: null, activeSessionId: 's2' })
+    // s2's fetch never resolves: the clear must be synchronous with START,
+    // mirroring the different-project rule.
+    getSpecsStatusMock.mockReturnValue(new Promise(() => {}))
+    void useSpecsStore.getState().fetchStatus('p1')
+
+    const s = useSpecsStore.getState()
+    expect(s.status).toBeNull()
+    expect(s.projectId).toBe('p1')
+    expect(s.sessionId).toBe('s2')
+    expect(s.isLoading).toBe(true)
+  })
+
+  it('a failed new-session fetch leaves no previous-session data to keep', async () => {
+    useSessionStore.setState({ sessions: null, activeSessionId: 's1' })
+    getSpecsStatusMock.mockResolvedValue(statusOf(true, 'p1'))
+    await useSpecsStore.getState().fetchStatus('p1')
+
+    useSessionStore.setState({ sessions: null, activeSessionId: 's2' })
+    getSpecsStatusMock.mockRejectedValue(new Error('s2 parse failed'))
+    await useSpecsStore.getState().fetchStatus('p1')
+
+    const s = useSpecsStore.getState()
+    expect(s.error).toBe('s2 parse failed')
+    expect(s.status).toBeNull()
+    expect(s.projectId).toBe('p1')
+    expect(s.sessionId).toBe('s2')
+  })
+
+  it('keeps the previous status when BOTH the project and the session are unchanged', async () => {
+    useSessionStore.setState({ sessions: null, activeSessionId: 's1' })
+    getSpecsStatusMock.mockResolvedValue(statusOf(true, 'p1'))
+    await useSpecsStore.getState().fetchStatus('p1')
+
+    getSpecsStatusMock.mockReturnValue(new Promise(() => {}))
+    void useSpecsStore.getState().fetchStatus('p1')
+
+    const s = useSpecsStore.getState()
+    expect(s.status?.root).toBe('/ws/p1/specs')
+    expect(s.projectId).toBe('p1')
+    expect(s.sessionId).toBe('s1')
+    expect(s.isLoading).toBe(true)
+  })
+
+  it('LWW holds across a session switch: the previous session\'s late response is discarded', async () => {
+    const first = deferred<SpecsStatus>()
+    const second = deferred<SpecsStatus>()
+    getSpecsStatusMock.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+
+    useSessionStore.setState({ sessions: null, activeSessionId: 's1' })
+    const p1 = useSpecsStore.getState().fetchStatus('p1')
+    // Session switches to s2 while s1's fetch is still in flight — the
+    // refetch starts and stamps s2.
+    useSessionStore.setState({ sessions: null, activeSessionId: 's2' })
+    const p2 = useSpecsStore.getState().fetchStatus('p1')
+
+    second.resolve(statusOf(true, 'p1'))
+    await p2
+    // The OLDER (previous-session) fetch resolves last — the seq ticket
+    // must discard it, not resurrect s1's parse.
+    first.resolve(statusOf(true, 'p1'))
+    await p1
+    await flush()
+
+    const s = useSpecsStore.getState()
+    expect(s.projectId).toBe('p1')
+    expect(s.sessionId).toBe('s2')
+    expect(s.status?.present).toBe(true)
+    expect(s.isLoading).toBe(false)
+    expect(s.error).toBeNull()
+  })
+})
+
 describe('specsStore — reset', () => {
-  it('clears status, projectId, error and isLoading', async () => {
+  it('clears status, projectId, sessionId, error and isLoading', async () => {
+    useSessionStore.setState({ sessions: null, activeSessionId: 's1' })
     getSpecsStatusMock.mockResolvedValue(statusOf(true, 'p1'))
     await useSpecsStore.getState().fetchStatus('p1')
 
@@ -226,6 +324,7 @@ describe('specsStore — reset', () => {
     const s = useSpecsStore.getState()
     expect(s.status).toBeNull()
     expect(s.projectId).toBeNull()
+    expect(s.sessionId).toBeNull()
     expect(s.isLoading).toBe(false)
     expect(s.error).toBeNull()
   })

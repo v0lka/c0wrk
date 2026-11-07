@@ -240,6 +240,49 @@ describe('ChangesList — tree mode file naming', () => {
     expect(rows).toHaveLength(1)
     expect(rows[0]!.textContent).toBe('f.txt')
   })
+
+  it('tree dir rows are keyboard-reachable: Enter/Space collapse and re-expand', () => {
+    useGitPanelStore.getState().loadEntries([
+      makeEntry({ path: '/repo/src/f.txt', status: 'M', staged: false, indexStatus: ' ', worktreeStatus: 'M' }),
+    ])
+    useGitPanelStore.setState({ viewMode: 'tree', expandedDirs: new Set(['src']) })
+    useProjectStore.setState({
+      projects: [{
+        id: 'p1',
+        name: 'repo',
+        workspace_path: '/repo',
+        is_external: false,
+        is_no_project: false,
+        created_at: '',
+        last_active_at: '',
+      }],
+      activeProjectId: 'p1',
+    })
+
+    const el = render()
+
+    // The dir row is the only div[role=button] in the list — section headers
+    // are native buttons and file rows are checkbox rows without the role.
+    const dirs = el.querySelectorAll('div[role="button"][aria-expanded]')
+    expect(dirs).toHaveLength(1)
+    const dir = dirs[0] as HTMLElement
+    expect(dir.textContent).toBe('src')
+    expect(dir.getAttribute('tabindex')).toBe('0')
+
+    // Enter collapses; the child file row unmounts with the subtree.
+    act(() => {
+      dir.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })
+    expect(dir.getAttribute('aria-expanded')).toBe('false')
+    expect(nameSpans(el, 'src/f.txt')).toHaveLength(0)
+
+    // Space re-expands.
+    act(() => {
+      dir.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }))
+    })
+    expect(dir.getAttribute('aria-expanded')).toBe('true')
+    expect(nameSpans(el, 'src/f.txt')).toHaveLength(1)
+  })
 })
 
 // ─────────────────────── Worktree focus display root ─────────────────────────

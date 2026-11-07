@@ -246,6 +246,15 @@ interface GitPanelState {
   sortBy: SortBy
   /** Grouping criterion for the Changes list, persisted across sessions (D8). */
   groupBy: GroupBy
+  /**
+   * Branch-list display mode for the two branch surfaces (BranchDropdown and
+   * BranchPicker render the shared BranchList): false = flat name-first rows,
+   * true = `/`-slash directory tree. Persisted like sortBy/groupBy;
+   * mergeGitPanel accepts only a real boolean, so a legacy entry without the
+   * key rehydrates to the flat default. Contract:
+   * specs/domains/frontend/branch-list.md.
+   */
+  branchListTree: boolean
   /** Transient: set by "View History" file-tree action, consumed by GitHistoryTab, cleared after use. */
   pendingHistoryFilter: string | null
   /**
@@ -331,6 +340,8 @@ interface GitPanelActions {
   setMergeRebaseState: (state: MergeRebaseState) => void
   setSortBy: (mode: SortBy) => void
   setGroupBy: (mode: GroupBy) => void
+  /** Set the branch-list display mode (false = flat, true = tree). */
+  setBranchListTree: (tree: boolean) => void
   /** Queue a file-path filter for the git history tab. */
   setPendingHistoryFilter: (filter: string) => void
   /** Clear the pending history filter after it has been consumed. */
@@ -369,6 +380,7 @@ const initialState: GitPanelState = {
   mergeRebaseState: EMPTY_MERGE_REBASE_STATE,
   sortBy: 'path',
   groupBy: 'none',
+  branchListTree: false,
   pendingHistoryFilter: null,
   pendingBranchBase: null,
   focus: null,
@@ -380,6 +392,7 @@ const initialState: GitPanelState = {
 /**
  * Select the slice of state persisted to localStorage. `expandedDirs` (a Set)
  * is serialized to an array; `sortBy`/`groupBy` are persisted directly (D8);
+ * `branchListTree` carries the branch-list display mode (branch-list.md);
  * `commitMessageByBranch` carries the branch-scoped commit drafts (ADR-098).
  * Transient slices (`commitByProject`, `operationByProject`, `entries`, …) are
  * deliberately omitted — live feedback is never rehydrated from a prior run.
@@ -391,6 +404,7 @@ export function partializeGitPanel(
   expandedDirs: string[]
   sortBy: SortBy
   groupBy: GroupBy
+  branchListTree: boolean
   activeTabByProject: Record<string, GitPanelTab>
   skipCommitSuppressByProject: Record<string, boolean>
   commitMessageByBranch: Record<string, Record<string, string>>
@@ -400,6 +414,7 @@ export function partializeGitPanel(
     expandedDirs: Array.from(state.expandedDirs),
     sortBy: state.sortBy,
     groupBy: state.groupBy,
+    branchListTree: state.branchListTree,
     activeTabByProject: state.activeTabByProject,
     skipCommitSuppressByProject: state.skipCommitSuppressByProject,
     commitMessageByBranch: state.commitMessageByBranch,
@@ -409,7 +424,9 @@ export function partializeGitPanel(
 /**
  * Rehydrate persisted state into the current state. Older localStorage entries
  * (written before D8) lack `sortBy`/`groupBy`; corrupt or unknown values are
- * rejected — both fall back to the current (default) values.
+ * rejected — both fall back to the current (default) values. The scalar
+ * `branchListTree` flag accepts only a real boolean: a legacy entry without
+ * the key rehydrates to the flat default.
  *
  * `activeTabByProject` is validated entry-by-entry: an absent map (legacy
  * state written before it existed) rehydrates to `{}`, and any entry whose
@@ -424,6 +441,7 @@ export function mergeGitPanel(
     expandedDirs?: string[]
     sortBy?: SortBy
     groupBy?: GroupBy
+    branchListTree?: unknown
     activeTabByProject?: Record<string, unknown>
     skipCommitSuppressByProject?: Record<string, unknown>
     commitMessageByBranch?: Record<string, unknown>
@@ -436,6 +454,11 @@ export function mergeGitPanel(
     p.groupBy !== undefined && GROUP_BY_VALUES.has(p.groupBy)
       ? p.groupBy
       : current.groupBy
+  // A scalar boolean needs only a type check: a legacy entry without the key
+  // — or a corrupt non-boolean (stringified "true", a number) — falls back to
+  // the current value (flat on a fresh store) rather than being trusted.
+  const branchListTree =
+    typeof p.branchListTree === 'boolean' ? p.branchListTree : current.branchListTree
   const activeTabByProject: Record<string, GitPanelTab> = {}
   if (
     p.activeTabByProject !== null &&
@@ -496,6 +519,7 @@ export function mergeGitPanel(
     expandedDirs: new Set(p.expandedDirs ?? []),
     sortBy,
     groupBy,
+    branchListTree,
     activeTabByProject,
     skipCommitSuppressByProject,
     commitMessageByBranch,
@@ -794,6 +818,8 @@ export const useGitPanelStore = create<GitPanelState & GitPanelActions>()(
       setSortBy: (mode) => set({ sortBy: mode }),
 
       setGroupBy: (mode) => set({ groupBy: mode }),
+
+      setBranchListTree: (tree) => set({ branchListTree: tree }),
 
       setPendingHistoryFilter: (filter) => set({ pendingHistoryFilter: filter }),
 
