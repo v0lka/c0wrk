@@ -1,10 +1,11 @@
-import { useState, useMemo, useCallback } from "react";
-import { GitBranch, ChevronDown } from "lucide-react";
+import { useState, useCallback } from "react";
+import { GitBranch, ChevronDown, FolderTree, List } from "lucide-react";
 import { useGitPanelStore } from "@/stores/gitPanelStore";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
   DropdownMenuContent,
+  DropdownMenuCheckboxItem,
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 import { MenuSearchInput } from "@/components/ui/MenuSearchInput";
@@ -17,24 +18,24 @@ import { useSessionWorktreePin } from "@/hooks/useSessionWorktreePin";
 import { useCollapsibleSections } from "@/hooks/useCollapsibleSections";
 import { useWorktreeActions } from "@/hooks/useWorktreeActions";
 import { focusWorktree } from "@/lib/gitFocus";
-import { LocalBranchRow } from "./LocalBranchRow";
-import { RemoteBranchRow } from "./RemoteBranchRow";
+import { BranchList } from "./BranchList";
+import { branchRegionId } from "./branchRegionId";
 import { BranchDeleteConfirmDialog } from "./BranchDeleteConfirmDialog";
 import { WorktreeDeleteConfirmDialog } from "./WorktreeDeleteConfirmDialog";
 import { WorktreesSection } from "./WorktreesSection";
-
-/** DOM id of a section's content region — the header's `aria-controls`
- *  target. The region div renders only while the section is expanded. */
-function branchRegionId(key: string): string {
-  return `branch-region-${key}`;
-}
 
 /**
  * Inline branch dropdown — the git panel's branch field.
  *
  * Modeled on {@link SessionSelector}: a `DropdownMenu` anchored to the current
- * branch indicator. Clicking the field opens the list; a search box appears
- * once there are >= 5 branches. Branches are grouped into **Local** (rows
+ * branch indicator. Clicking the field opens the list; the search-input line
+ * carries a tree/flat display-mode toggle (modeled on
+ * {@link SessionSelectorToolbar} — a registered `DropdownMenuCheckboxItem`
+ * whose `onSelect` preventDefaults, so flipping the mode never closes the
+ * menu while `aria-checked` announces the current mode; the
+ * icon shows the mode you switch TO and renders even below the 5-branch
+ * threshold, where the search box itself is hidden). Branches are grouped into
+ * **Local** (rows
  * expose hover mini-icons for push/merge/rebase/rename/delete) and **Remote**
  * (click checks the branch out as a new local tracking branch; hover exposes
  * delete-remote). A **Worktrees** section switches the panel's FOCUS between
@@ -49,7 +50,10 @@ function branchRegionId(key: string): string {
  * off-pin checkout rows dim with the explaining reason instead of failing
  * server-side (ErrPinnedWorktreeBranch). All three
  * section headers are collapsible (ephemeral state; an active search
- * force-expands them). Branch
+ * force-expands them). The Local/Remote list rendering is the shared
+ * {@link BranchList} (menu variant) — the toggle above drives its `tree`
+ * prop; this component keeps the trigger, the search box and the Worktrees
+ * section (always flat). Branch
  * creation/management lives in the `BranchPicker` modal, opened from the git
  * panel's toolbar button — the dropdown does not duplicate those entries.
  * Branch data comes from `gitPanelStore.branches`.
@@ -72,18 +76,15 @@ export function BranchDropdown() {
 
   const [search, setSearch] = useState("");
   const [open, setOpen] = useState(false);
-  // Collapsible sections (Local / Remote / Worktrees). Ephemeral — lives only
-  // for this component's lifetime; the keys mirror the section labels.
+  // Local/Remote display mode: `/`-slash tree vs flat list. Store-backed,
+  // persisted (`branchListTree`) and SHARED with the BranchPicker modal, so
+  // both branch-list surfaces always render the same mode; the Worktrees
+  // section is unaffected (it has no directory structure of its own).
+  const tree = useGitPanelStore((s) => s.branchListTree);
+  const setBranchListTree = useGitPanelStore((s) => s.setBranchListTree);
+  // Collapsible state for the Worktrees section — Local/Remote (and any tree
+  // dirs) collapse inside BranchList, which owns its own hook instance.
   const { isSectionExpanded, toggleSection } = useCollapsibleSections();
-
-  const localBranches = useMemo(
-    () => (branches ?? []).filter((b) => b.kind === "local"),
-    [branches],
-  );
-  const remoteBranches = useMemo(
-    () => (branches ?? []).filter((b) => b.kind === "remote"),
-    [branches],
-  );
 
   const showSearch = branches.length >= 5;
 
@@ -96,22 +97,19 @@ export function BranchDropdown() {
     [search],
   );
 
-  const visibleLocal = localBranches.filter((b) => filterFn(b.name));
-  const visibleRemote = remoteBranches.filter((b) => filterFn(b.name));
-
   /**
-   * Collapsible section header — the exact styling the session selector's
+   * Worktrees section header — the exact styling the session selector's
    * Managed/Local/Archived sections mirror. An active search force-expands
-   * every section so matches inside a collapsed one stay reachable.
+   * the section so matches inside a collapsed one stay reachable.
    */
   const searchActive = search.trim() !== "";
-  const renderSectionHeader = (key: string, label: string) => (
+  const renderWorktreesHeader = () => (
     <CollapsibleSectionHeader
-      label={label}
+      label="Worktrees"
       noun="branches"
-      expanded={isSectionExpanded(key, searchActive)}
-      onToggle={() => toggleSection(key)}
-      controlsId={branchRegionId(key)}
+      expanded={isSectionExpanded("worktrees", searchActive)}
+      onToggle={() => toggleSection("worktrees")}
+      controlsId={branchRegionId("worktrees")}
     />
   );
 
@@ -170,88 +168,76 @@ export function BranchDropdown() {
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" className="w-80">
-          {showSearch && (
-            <>
-              <div className="px-2 py-1">
-                <MenuSearchInput
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  placeholder="Search branches..."
-                  className="h-7 text-sm"
-                  autoFocus
-                />
-              </div>
-              <DropdownMenuSeparator />
-            </>
-          )}
+          {/* The search-input line, modeled on SessionSelectorToolbar: the
+              Local/Remote tree-mode toggle sits BEFORE the input, renders
+              even when the input is hidden (below the 5-branch threshold)
+              and its onSelect preventDefaults — flipping the display mode
+              never dismisses the menu. The icon shows the mode you switch
+              TO. The input is a MenuSearchInput so Radix's menu typeahead
+              cannot steal focus from it now that the toggle makes the menu
+              hold a registered item. */}
+          <div className="flex items-center gap-1 px-2 py-1">
+            <DropdownMenuCheckboxItem
+              checked={tree}
+              aria-label={tree ? "Show flat list" : "Show branch tree"}
+              title={tree ? "Show flat list" : "Show branch tree"}
+              // The wrapper's check indicator is suppressed: the icon-only
+              // button's glyph already shows the mode you switch TO.
+              className="h-7 w-7 shrink-0 justify-center rounded p-0 text-muted-foreground hover:bg-muted/50 active:bg-muted/30 [&>span]:hidden"
+              onSelect={(event) => {
+                // Keep the menu open — only the display mode flips.
+                event.preventDefault();
+                setBranchListTree(!tree);
+              }}
+            >
+              {tree ? <List className="size-4" /> : <FolderTree className="size-4" />}
+            </DropdownMenuCheckboxItem>
+            {showSearch && (
+              <MenuSearchInput
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search branches..."
+                className="h-7 min-w-0 flex-1 text-sm"
+                autoFocus
+              />
+            )}
+          </div>
+          {showSearch && <DropdownMenuSeparator />}
 
-          {visibleLocal.length > 0 && (
-            <>
-              {renderSectionHeader("local", "Local")}
-              {isSectionExpanded("local", searchActive) && (
-                <div id={branchRegionId("local")} role="presentation">
-                  {visibleLocal.map((b) => (
-                    <LocalBranchRow
-                      key={b.name}
-                      branch={b}
-                      inFlight={inFlightFor(b.name)}
-                      disabled={disabledFor(b.name)}
-                      pinned={b.name === pinnedBranch}
-                      checkoutBlockedReason={branchSwitchBlockedReason(b.name)}
-                      onCheckout={(name) => {
-                        actions.checkout(name);
-                        close();
-                      }}
-                      onRename={(name) => {
-                        close();
-                        actions.startRename(name);
-                      }}
-                      onMerge={actions.mergeBranch}
-                      onRebase={actions.rebaseBranch}
-                      onPush={actions.push}
-                      onDelete={actions.requestDeleteLocal}
-                    />
-                  ))}
-                </div>
-              )}
-            </>
-          )}
-
-          {visibleRemote.length > 0 && (
-            <>
-              <DropdownMenuSeparator />
-              {renderSectionHeader("remote", "Remote")}
-              {isSectionExpanded("remote", searchActive) && (
-                <div id={branchRegionId("remote")} role="presentation">
-                  {visibleRemote.map((b) => (
-                    <RemoteBranchRow
-                      key={b.name}
-                      branch={b}
-                      inFlight={inFlightFor(b.name)}
-                      disabled={disabledFor(b.name)}
-                      checkoutBlockedReason={branchSwitchBlockedReason(b.name)}
-                      onCheckoutRemote={(remoteBranch) => {
-                        actions.checkoutRemote(remoteBranch);
-                        close();
-                      }}
-                      onDeleteRemote={actions.requestDeleteRemote}
-                    />
-                  ))}
-                </div>
-              )}
-            </>
-          )}
-
-          {visibleLocal.length === 0 && visibleRemote.length === 0 && worktrees.length === 0 && (
-            <div className="px-2 py-3 text-center text-xs text-muted-foreground">
-              {branches.length === 0 ? "No branches" : "No matching branches"}
-            </div>
-          )}
+          <BranchList
+            variant="menu"
+            tree={tree}
+            branches={branches}
+            filter={filterFn}
+            searchActive={searchActive}
+            inFlightFor={inFlightFor}
+            disabledFor={disabledFor}
+            pinnedFor={(name) => name === pinnedBranch}
+            checkoutBlockedReasonFor={branchSwitchBlockedReason}
+            onCheckout={(name) => {
+              actions.checkout(name);
+              close();
+            }}
+            onRename={(name) => {
+              close();
+              actions.startRename(name);
+            }}
+            onMerge={actions.mergeBranch}
+            onRebase={actions.rebaseBranch}
+            onPush={actions.push}
+            onDeleteLocal={actions.requestDeleteLocal}
+            onCheckoutRemote={(remoteBranch) => {
+              actions.checkoutRemote(remoteBranch);
+              close();
+            }}
+            onDeleteRemote={actions.requestDeleteRemote}
+            hideEmptyState={worktrees.length > 0}
+          />
 
           {worktrees.length > 0 && (
             <>
               <DropdownMenuSeparator />
-              {renderSectionHeader("worktrees", "Worktrees")}
+              {renderWorktreesHeader()}
               {isSectionExpanded("worktrees", searchActive) && (
                 <div id={branchRegionId("worktrees")} role="presentation">
                   <WorktreesSection
