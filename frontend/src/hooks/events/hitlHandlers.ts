@@ -28,6 +28,29 @@ import type {
   HitlResolvedKind,
 } from '@/types/events'
 
+/**
+ * Live proof of a running task: the arrival of a HITL prompt event. A prompt
+ * can only be emitted by a task goroutine that is alive and blocked on the
+ * user's answer (the pending map's entry exists exactly while its waiter
+ * waits — see reconcilePendingActions), so a `taskActive` flag that a stale
+ * runtime-status snapshot reverted to false (the snapshot's read raced the
+ * backend's activation of a just-sent task) is healed here, mirroring the
+ * `step_start` re-assertion in useLifecycleEvents. The write is
+ * one-directional (TRUE only, stamped in `taskFlagsEventAt` so later
+ * snapshots cannot fight it back): pause/terminal events own the false
+ * direction — and they can only fire after the waiter is gone, i.e. after
+ * this handler's moment. This matters most for the waits with NO further
+ * events: a task blocked at the goal-suggestion gate (or on ask_user /
+ * plan_review) never emits a step_start, so nothing else would re-open the
+ * live turn's work block that the stale flip settled to `interrupted`.
+ */
+export function assertTaskActiveFromPrompt(sessionId: string): void {
+  const store = useChatStore.getState()
+  if (store.taskActive[sessionId] !== true) {
+    store.setTaskActive(sessionId, true)
+  }
+}
+
 /** Handle a tool_confirm event for a session (active or background). */
 export function handleToolConfirmEvent(sessionId: string, data: ToolConfirmData): void {
   const store = useChatStore.getState()
@@ -75,6 +98,7 @@ export function handleToolConfirmEvent(sessionId: string, data: ToolConfirmData)
     } as Record<string, unknown>,
     timestamp: Date.now(),
   })
+  assertTaskActiveFromPrompt(sessionId)
   store.setActivityStatus(sessionId, 'Awaiting confirmation...')
 }
 
@@ -91,6 +115,7 @@ export function handleAskUserEvent(sessionId: string, data: AskUserData): void {
     } as Record<string, unknown>,
     timestamp: Date.now(),
   })
+  assertTaskActiveFromPrompt(sessionId)
   useChatStore.getState().setActivityStatus(sessionId, 'Waiting for your answer...')
 }
 
@@ -111,6 +136,7 @@ export function handleStepLimitEvent(sessionId: string, data: StepLimitData): vo
     } as Record<string, unknown>,
     timestamp: Date.now(),
   })
+  assertTaskActiveFromPrompt(sessionId)
   useChatStore.getState().setActivityStatus(
     sessionId,
     data.reason
@@ -137,6 +163,7 @@ export function handlePlanReviewEvent(sessionId: string, data: PlanReviewReadyDa
     } as Record<string, unknown>,
     timestamp: Date.now(),
   })
+  assertTaskActiveFromPrompt(sessionId)
   useChatStore.getState().setActivityStatus(sessionId, 'Plan is ready for review...')
 }
 

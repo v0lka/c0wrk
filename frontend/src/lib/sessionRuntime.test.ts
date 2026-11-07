@@ -726,6 +726,90 @@ describe('reconcilePendingActions', () => {
       reason: 'multi-step build',
     })
   })
+
+  it('re-asserts taskActive when a live waiter is pending (heals a stale false flip)', () => {
+    // A reported waiter exists exactly while the task goroutine blocks on the
+    // user, so it is live proof the task runs — a runtime-status snapshot
+    // that raced the task's backend activation must not leave taskActive
+    // false (that settles the live work block to `interrupted` and buries
+    // the prompt while the user must act on it).
+    useChatStore.getState().setTaskActive(SESSION, false)
+
+    reconcilePendingActions(SESSION, {
+      ...EMPTY_PENDING,
+      goal_suggestions: [{ request_id: 'r10', reason: 'goal-shaped' }],
+    })
+
+    expect(useChatStore.getState().taskActive[SESSION]).toBe(true)
+  })
+
+  it('leaves taskActive untouched when nothing is pending', () => {
+    // No waiter → no live proof: an idle session's false flag stays false
+    // (the direction is one-way; only terminal/pause events own false).
+    useChatStore.getState().setTaskActive(SESSION, false)
+
+    reconcilePendingActions(SESSION, EMPTY_PENDING)
+
+    expect(useChatStore.getState().taskActive[SESSION]).toBe(false)
+  })
+
+  it('does not resurrect the flag over a flag transition newer than the pending read', () => {
+    // The pending RPC raced a user pause: the read still reported the waiter
+    // (the backend deletes it ON pause, but a read already in flight may have
+    // captured it), while session_paused has since settled taskActive=false
+    // and stamped taskFlagsEventAt. A read predating that stamp must not
+    // flip the flag back — the guard mirrors every other snapshot
+    // application in this module.
+    useChatStore.getState().setTaskActive(SESSION, false)
+    const readAt = Date.now() - 1000
+
+    reconcilePendingActions(
+      SESSION,
+      { ...EMPTY_PENDING, ask_user: [{ request_id: 'r11', questions: [{ id: 'q1', question: 'Proceed?', options: [] }] }] },
+      readAt,
+    )
+
+    expect(useChatStore.getState().taskActive[SESSION]).toBe(false)
+    // A read that postdates the last flag transition (no fresher event) lets
+    // the same heal apply again.
+    reconcilePendingActions(
+      SESSION,
+      { ...EMPTY_PENDING, ask_user: [{ request_id: 'r12', questions: [{ id: 'q1', question: 'Proceed?', options: [] }] }] },
+      Date.now(),
+    )
+    expect(useChatStore.getState().taskActive[SESSION]).toBe(true)
+  })
+
+  it('heals a stale-false snapshot through the load-path compose (liveFlagsEventAt regression)', () => {
+    // loadAndReconcile order: the stale active=false snapshot applies FIRST
+    // (setUnfinishedTaskStatus + applyRuntimeTaskFlags → setTaskActive, each
+    // stamping taskFlagsEventAt AFTER the read), then the pending sweep must
+    // still heal. The caller captures the LIVE-transition stamp BEFORE the
+    // status application and passes it; reading the map directly (the
+    // default) would see the snapshot's own stamp and suppress the heal —
+    // the exact interleaving that reproduced the interrupted-work-block bug.
+    const now = Date.now()
+    // Pre-load state: the optimistic send activation, stamped before the load.
+    useChatStore.setState({ taskActive: { [SESSION]: true }, taskFlagsEventAt: { [SESSION]: now - 2000 } })
+    const loadStartedAt = now - 1000
+    const readAt = now - 10
+    const liveFlagsEventAt = now - 2000
+
+    // The stale snapshot (its read postdates the optimistic stamp, so the
+    // flag guard legitimately passes): applies active=false and stamps the map.
+    reconcileRuntimeStatus(SESSION, { active: false, has_unfinished_task: false, paused: false }, readAt, loadStartedAt)
+    expect(useChatStore.getState().taskActive[SESSION]).toBe(false)
+    expect(useChatStore.getState().taskFlagsEventAt[SESSION] ?? 0).toBeGreaterThan(readAt)
+
+    reconcilePendingActions(
+      SESSION,
+      { ...EMPTY_PENDING, ask_user: [{ request_id: 'r13', questions: [{ id: 'q1', question: 'Proceed?', options: [] }] }] },
+      readAt,
+      liveFlagsEventAt,
+    )
+
+    expect(useChatStore.getState().taskActive[SESSION]).toBe(true)
+  })
 })
 
 describe('stalePromptMatchField', () => {
