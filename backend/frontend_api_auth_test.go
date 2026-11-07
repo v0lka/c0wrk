@@ -18,7 +18,6 @@ import (
 
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/providerauth"
-	"github.com/v0lka/c0wrk/core"
 )
 
 // The ChatGPT auth RPC surface, exercised against a mocked token manager
@@ -46,6 +45,7 @@ type fakeChatGPTManager struct {
 	// tests can assert they reach the catalog request (e.g.
 	// ChatGPT-Account-Id).
 	tokenExtraHeaders map[string]string
+	tokenHook         func(context.Context) (llm.BearerToken, error)
 
 	// lastPushedClient records the most recent SetHTTPClient push (the
 	// proxy re-point seam the real TokenManager exposes) so tests can
@@ -130,17 +130,19 @@ func (m *fakeChatGPTManager) Status() providerauth.AccountStatus {
 	return st
 }
 
-func (m *fakeChatGPTManager) Token(_ context.Context) (llm.BearerToken, error) {
+func (m *fakeChatGPTManager) Token(ctx context.Context) (llm.BearerToken, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	if !m.signedIn {
+	hook := m.tokenHook
+	signedIn := m.signedIn
+	headers := maps.Clone(m.tokenExtraHeaders)
+	m.mu.Unlock()
+	if hook != nil {
+		return hook(ctx)
+	}
+	if !signedIn {
 		return llm.BearerToken{}, providerauth.ErrNotSignedIn
 	}
-	return llm.BearerToken{
-		AccessToken:  "fake-access",
-		TokenType:    "Bearer",
-		ExtraHeaders: maps.Clone(m.tokenExtraHeaders),
-	}, nil
+	return llm.BearerToken{AccessToken: "fake-access", TokenType: "Bearer", ExtraHeaders: headers}, nil
 }
 
 // authPayloadEvent is one captured chatgpt_auth:state emission.
@@ -492,6 +494,47 @@ func TestCancelChatGPTSignIn_QuietOutcome(t *testing.T) {
 	}
 }
 
+func TestChatGPTSignInSuccessWinsRequestedCancellation(t *testing.T) {
+	f, mock, rec := newChatGPTAuthTestAPI(t)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	m := &fakeChatGPTManager{}
+	m.signInHook = func(ctx context.Context, opener providerauth.BrowserOpener) (*providerauth.SignInResult, error) {
+		if err := opener(defaultSignInURL); err != nil {
+			return nil, err
+		}
+		close(entered)
+		<-release
+		result := &providerauth.SignInResult{
+			Tokens:   &providerauth.Tokens{AccessToken: "fake-access", RefreshToken: "fake-refresh", Expiry: time.Now().Add(time.Hour)},
+			Identity: &providerauth.Identity{Email: "user@example.com", ChatGPTAccountID: "acct-123"},
+		}
+		m.mu.Lock()
+		m.signedIn = true
+		m.identity = result.Identity
+		m.expiresAt = result.Tokens.Expiry
+		m.mu.Unlock()
+		return result, nil
+	}
+	installChatGPTManager(t, f, m)
+	if _, err := f.StartChatGPTSignIn(); err != nil {
+		t.Fatal(err)
+	}
+	<-entered
+	if err := f.CancelChatGPTSignIn(); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	rec.waitForState(t, chatgptAuthEventSuccess)
+	seam, _ := mock.lastSubscriptionSeam()
+	if seam.TokenSource == nil {
+		t.Fatal("successful sign-in left the builder without its token source")
+	}
+	if mock.rebuildRouterCallsSnapshot() == 0 {
+		t.Fatal("successful sign-in did not rebuild the router")
+	}
+}
+
 // TestCleanupCancelsAnInFlightSignIn pins the teardown: Cleanup marks the
 // stop REQUESTED (a quit is a deliberate stop, not a fault), so the run
 // closes with the quiet cancelled event and records no error.
@@ -657,8 +700,8 @@ func TestSignOutChatGPT_WithdrawsSeamAndIsIdempotent(t *testing.T) {
 	if sets == 0 {
 		t.Fatal("the zero seam was never pushed after sign-out")
 	}
-	if seam != (core.BuilderSubscriptionAuthConfig{}) {
-		t.Fatalf("seam after sign-out = %+v, want the zero value", seam)
+	if seam.ProviderName != "" || seam.TokenSource != nil || len(seam.TokenSources) != 0 {
+		t.Fatalf("seam after sign-out = %+v, want no token sources", seam)
 	}
 	if st := f.GetChatGPTAuthStatus(); st.SignedIn {
 		t.Fatal("status reports signed in after sign-out")
@@ -1347,7 +1390,7 @@ func TestStartChatGPTSignIn_SuccessWithoutIdentity(t *testing.T) {
 		t.Errorf("success event identity = (%q, %q), want empty fields for a nil identity", success.Email, success.AccountID)
 	}
 	// The status reflects the signed-in state with empty identity fields
-	// (chatGPTIdentityField is nil-safe there too).
+	// (providerAuthIdentityField is nil-safe there too).
 	st := f.GetChatGPTAuthStatus()
 	if !st.SignedIn {
 		t.Fatal("status reports signed out after a nil-identity sign-in")
@@ -1375,7 +1418,7 @@ func TestChatGPTProxyConfig_ExpandsEnvVarsInURLAndTLSCertDir(t *testing.T) {
 	t.Setenv("C0WRK_TEST_PROXY_URL", "http://127.0.0.1:3128")
 	t.Setenv("C0WRK_TEST_CA_DIR", "/tmp/test-ca")
 
-	got := f.chatGPTProxyConfig()
+	got := f.providerAuthProxyConfig()
 	if got.URL != "http://127.0.0.1:3128" {
 		t.Errorf("proxy URL = %q, want the expanded http://127.0.0.1:3128", got.URL)
 	}

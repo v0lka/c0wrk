@@ -46,6 +46,7 @@ func ChatGPT() Profile {
 		ClientID:        chatgptClientID,
 		Scopes:          chatgptScopes,
 		Originator:      chatgptOriginator,
+		AccountIDHeader: "ChatGPT-Account-Id",
 		APIBaseURL:      chatgptAPIBaseURL,
 		RedirectPort:    chatgptRedirectPort,
 		RedirectHost:    chatgptRedirectHost,

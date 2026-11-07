@@ -480,6 +480,7 @@ export namespace backend {
 	    auto_retry_seconds?: number;
 	    timeout_class?: string;
 	    auth_mode?: string;
+	    auth_region?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigProviderFull(source);
@@ -494,6 +495,7 @@ export namespace backend {
 	        this.auto_retry_seconds = source["auto_retry_seconds"];
 	        this.timeout_class = source["timeout_class"];
 	        this.auth_mode = source["auth_mode"];
+	        this.auth_region = source["auth_region"];
 	    }
 	}
 	export class ConfigLLMResponse {
@@ -502,6 +504,7 @@ export namespace backend {
 	    openai_compatible: Record<string, ConfigProviderFull>;
 	    anthropic_compatible: Record<string, ConfigProviderFull>;
 	    chatgpt: ConfigProviderFull;
+	    kimi: ConfigProviderFull;
 	    all_models: ModelInfo[];
 	    models_ready: boolean;
 	    auto_retry_max_seconds: number;
@@ -517,6 +520,7 @@ export namespace backend {
 	        this.openai_compatible = this.convertValues(source["openai_compatible"], ConfigProviderFull, true);
 	        this.anthropic_compatible = this.convertValues(source["anthropic_compatible"], ConfigProviderFull, true);
 	        this.chatgpt = this.convertValues(source["chatgpt"], ConfigProviderFull);
+	        this.kimi = this.convertValues(source["kimi"], ConfigProviderFull);
 	        this.all_models = this.convertValues(source["all_models"], ModelInfo);
 	        this.models_ready = source["models_ready"];
 	        this.auto_retry_max_seconds = source["auto_retry_max_seconds"];
@@ -1321,6 +1325,88 @@ export namespace backend {
 	        this.respect_aiignore = source["respect_aiignore"];
 	    }
 	}
+	export class KimiAuthStatusResponse {
+	    signed_in: boolean;
+	    email?: string;
+	    expires_at?: string;
+	    mode: string;
+	    in_flight: boolean;
+	    last_error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new KimiAuthStatusResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.signed_in = source["signed_in"];
+	        this.email = source["email"];
+	        this.expires_at = source["expires_at"];
+	        this.mode = source["mode"];
+	        this.in_flight = source["in_flight"];
+	        this.last_error = source["last_error"];
+	    }
+	}
+	export class KimiModelPresetEntry {
+	    name: string;
+	    context_window?: number;
+	    output_limit?: number;
+	    reasoning?: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new KimiModelPresetEntry(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.context_window = source["context_window"];
+	        this.output_limit = source["output_limit"];
+	        this.reasoning = source["reasoning"];
+	    }
+	}
+	export class KimiModelPresetResponse {
+	    models: KimiModelPresetEntry[];
+	
+	    static createFrom(source: any = {}) {
+	        return new KimiModelPresetResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.models = this.convertValues(source["models"], KimiModelPresetEntry);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class KimiSignInResponse {
+	    auth_url: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new KimiSignInResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.auth_url = source["auth_url"];
+	    }
+	}
 	export class ProviderConfigRequest {
 	    api_key?: string;
 	    base_url?: string;
@@ -1329,6 +1415,7 @@ export namespace backend {
 	    auto_retry_seconds?: number;
 	    timeout_class?: string;
 	    auth_mode?: string;
+	    auth_region?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ProviderConfigRequest(source);
@@ -1343,6 +1430,7 @@ export namespace backend {
 	        this.auto_retry_seconds = source["auto_retry_seconds"];
 	        this.timeout_class = source["timeout_class"];
 	        this.auth_mode = source["auth_mode"];
+	        this.auth_region = source["auth_region"];
 	    }
 	}
 	export class LLMFullConfigRequest {
@@ -1351,6 +1439,7 @@ export namespace backend {
 	    openai_compatible?: Record<string, ProviderConfigRequest>;
 	    anthropic_compatible?: Record<string, ProviderConfigRequest>;
 	    chatgpt?: ProviderConfigRequest;
+	    kimi?: ProviderConfigRequest;
 	
 	    static createFrom(source: any = {}) {
 	        return new LLMFullConfigRequest(source);
@@ -1363,6 +1452,7 @@ export namespace backend {
 	        this.openai_compatible = this.convertValues(source["openai_compatible"], ProviderConfigRequest, true);
 	        this.anthropic_compatible = this.convertValues(source["anthropic_compatible"], ProviderConfigRequest, true);
 	        this.chatgpt = this.convertValues(source["chatgpt"], ProviderConfigRequest);
+	        this.kimi = this.convertValues(source["kimi"], ProviderConfigRequest);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

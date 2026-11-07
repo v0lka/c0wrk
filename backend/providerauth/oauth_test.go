@@ -125,6 +125,7 @@ func testProfile(issuer string, port int) Profile {
 		ClientID:        "cid-test",
 		Scopes:          []string{"openid", "profile", "email", "offline_access"},
 		Originator:      "c0wrk",
+		AccountIDHeader: "ChatGPT-Account-Id",
 		APIBaseURL:      "https://api.invalid/v1",
 		RedirectPort:    port,
 		RedirectHost:    "localhost",

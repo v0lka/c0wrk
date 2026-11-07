@@ -34,10 +34,14 @@ function HookHarness() {
   return null
 }
 
-async function flush(): Promise<void> {
+async function flush(expectedCalls = 1): Promise<void> {
   await act(async () => {
-    await Promise.resolve()
-    await Promise.resolve()
+    await vi.waitFor(() => {
+      expect(mocks.getConfig.mock.calls.length).toBeGreaterThanOrEqual(expectedCalls)
+    })
+    const call = mocks.getConfig.mock.results[expectedCalls - 1]
+    if (!call || call.type !== 'return') throw new Error('GetConfig did not return a promise')
+    await call.value.catch(() => undefined)
   })
 }
 
@@ -187,7 +191,7 @@ describe('useLLMConfig loading errors', () => {
     expect(result.openaiCompatibleProviderNames.has('custom')).toBe(true)
 
     await act(async () => { rejectSecondLoad(new Error('temporary config error')) })
-    await flush()
+    await flush(2)
 
     const custom: ProviderConfig | undefined = result.providerConfigs.custom
     expect(custom).toEqual({
@@ -856,5 +860,190 @@ describe('useLLMConfig chatgpt auth mode round-trip', () => {
       openai_compatible: {},
       anthropic_compatible: {},
     })
+  })
+})
+
+describe('useLLMConfig kimi auth mode round-trip', () => {
+  it('loads and persists the fixed kimi entry without turning it into a compatible provider', async () => {
+    mocks.getConfig.mockResolvedValue({
+      loaded: true,
+      llm: {
+        auto_retry_max_seconds: 3600,
+        default_model: 'kimi/k3',
+        kimi: { api_key: '***configured***', models: ['k3'], auth_mode: 'oauth' },
+      },
+    })
+    act(() => root.render(<HookHarness />))
+    await flush()
+
+    expect(result.providerConfigs.kimi?.auth_mode).toBe('oauth')
+    expect(result.openaiCompatibleProviderNames.has('kimi')).toBe(false)
+    act(() => result.updateProviderConfig('kimi', { auth_mode: 'api_key' }))
+    await act(async () => { await vi.advanceTimersByTimeAsync(300) })
+
+    expect(mocks.updateLLMConfig).toHaveBeenCalledWith({
+      default_model: 'kimi/k3',
+      kimi: { api_key: '***configured***', models: ['k3'], auth_mode: 'api_key', auth_region: 'global' },
+      openai_compatible: {},
+      anthropic_compatible: {},
+    })
+  })
+
+  it('keeps a pre-issue compatible kimi out of fixed save', async () => {
+    mocks.getConfig.mockResolvedValue({
+      loaded: true,
+      llm: {
+        auto_retry_max_seconds: 3600,
+        default_model: 'kimi/legacy-model',
+        kimi: { api_key: 'fixed-key', models: ['fixed-model'], auth_mode: 'oauth' },
+        openai_compatible: {
+          kimi: { api_key: 'legacy-key', base_url: 'https://legacy.test/v1', models: ['legacy-model'] },
+        },
+      },
+    })
+    act(() => root.render(<HookHarness />))
+    await flush()
+
+    expect(result.providerConfigs.kimi?.type).toBe('openai')
+    expect(result.providerConfigs.kimi?.auth_mode).toBeUndefined()
+    expect(result.openaiCompatibleProviderNames.has('kimi')).toBe(true)
+    act(() => result.updateProviderConfig('kimi', { models: ['legacy-model'] }))
+    await act(async () => { await vi.advanceTimersByTimeAsync(300) })
+
+    expect(mocks.updateLLMConfig).toHaveBeenCalledWith({
+      default_model: 'kimi/legacy-model',
+      openai_compatible: {
+        kimi: {
+          api_key: 'legacy-key',
+          base_url: 'https://legacy.test/v1',
+          models: ['legacy-model'],
+          tls_fingerprint: '',
+        },
+      },
+      anthropic_compatible: {},
+    })
+  })
+
+  it('keeps the pre-issue bare-default provider precedence with legacy kimi', async () => {
+    mocks.getConfig.mockResolvedValue({
+      loaded: true,
+      llm: {
+        auto_retry_max_seconds: 3600,
+        default_model: 'shared',
+        kimi: { api_key: 'fixed-key', models: ['fixed-model'], auth_mode: 'oauth' },
+        openai_compatible: {
+          aaa: { api_key: 'aaa-key', base_url: 'https://aaa.test/v1', models: ['shared'] },
+          kimi: { api_key: 'legacy-key', base_url: 'https://legacy.test/v1', models: ['shared'] },
+        },
+      },
+    })
+    act(() => root.render(<HookHarness />))
+    await flush()
+
+    expect(result.defaultModel).toBe('aaa/shared')
+  })
+})
+
+describe('useLLMConfig Kimi region round-trip', () => {
+  it('defaults to global and persists mainland_cn', async () => {
+    mocks.getConfig.mockResolvedValue({
+      loaded: true,
+      llm: {
+        auto_retry_max_seconds: 3600,
+        default_model: 'kimi/k3',
+        kimi: { api_key: 'fixed-key', models: ['k3'], auth_mode: 'oauth' },
+      },
+    })
+    act(() => root.render(<HookHarness />))
+    await flush()
+
+    expect(result.providerConfigs.kimi?.auth_region).toBe('global')
+    act(() => result.updateProviderConfig('kimi', { auth_region: 'mainland_cn' }))
+    await act(async () => { await result.flushPendingSave() })
+
+    expect(mocks.updateLLMConfig).toHaveBeenCalledWith({
+      default_model: 'kimi/k3',
+      kimi: { api_key: 'fixed-key', models: ['k3'], auth_mode: 'oauth', auth_region: 'mainland_cn' },
+      openai_compatible: {},
+      anthropic_compatible: {},
+    })
+  })
+
+  it('waits for an in-flight save before starting sign-in', async () => {
+    mocks.getConfig.mockResolvedValue({
+      loaded: true,
+      llm: {
+        auto_retry_max_seconds: 3600,
+        default_model: 'kimi/k3',
+        kimi: { api_key: 'fixed-key', models: ['k3'], auth_mode: 'oauth' },
+      },
+    })
+    let resolveSave!: (value: unknown) => void
+    mocks.updateLLMConfig.mockImplementation(() => new Promise((resolve) => { resolveSave = resolve }))
+    act(() => root.render(<HookHarness />))
+    await flush()
+    act(() => result.updateProviderConfig('kimi', { auth_region: 'mainland_cn' }))
+
+    let completed = false
+    const pending = result.flushPendingSave().then(() => { completed = true })
+    expect(mocks.updateLLMConfig).toHaveBeenCalledTimes(1)
+    expect(completed).toBe(false)
+    await act(async () => {
+      resolveSave({})
+      await pending
+    })
+    expect(completed).toBe(true)
+  })
+
+  it('retains the region snapshot for retry after a failed save', async () => {
+    mocks.getConfig.mockResolvedValue({
+      loaded: true,
+      llm: {
+        auto_retry_max_seconds: 3600,
+        default_model: 'kimi/k3',
+        kimi: { api_key: 'fixed-key', models: ['k3'], auth_mode: 'oauth' },
+      },
+    })
+    mocks.updateLLMConfig
+      .mockRejectedValueOnce(new Error('save failed'))
+      .mockResolvedValue({})
+    act(() => root.render(<HookHarness />))
+    await flush()
+    act(() => result.updateProviderConfig('kimi', { auth_region: 'mainland_cn' }))
+
+    await expect(result.flushPendingSave()).rejects.toThrow('save failed')
+    expect(mocks.loggerError).toHaveBeenCalledTimes(1)
+    expect(mocks.loggerError).toHaveBeenCalledWith('Failed to save LLM config:', expect.any(Error))
+    await act(async () => { await result.flushPendingSave() })
+    expect(mocks.updateLLMConfig).toHaveBeenCalledTimes(2)
+    expect(mocks.loggerError).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps a failed debounced region save until the next flush', async () => {
+    mocks.getConfig.mockResolvedValue({
+      loaded: true,
+      llm: {
+        auto_retry_max_seconds: 3600,
+        default_model: 'kimi/k3',
+        kimi: { api_key: 'fixed-key', models: ['k3'], auth_mode: 'oauth' },
+      },
+    })
+    mocks.updateLLMConfig
+      .mockRejectedValueOnce(new Error('save failed'))
+      .mockResolvedValue({})
+    act(() => root.render(<HookHarness />))
+    await flush()
+    act(() => result.updateProviderConfig('kimi', { auth_region: 'mainland_cn' }))
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(300) })
+    expect(mocks.updateLLMConfig).toHaveBeenCalledTimes(1)
+    expect(mocks.loggerError).toHaveBeenCalledTimes(1)
+    expect(mocks.loggerError).toHaveBeenCalledWith('Failed to save LLM config:', expect.any(Error))
+
+    await act(async () => { await result.flushPendingSave() })
+    expect(mocks.updateLLMConfig).toHaveBeenCalledTimes(2)
+    expect(mocks.updateLLMConfig).toHaveBeenLastCalledWith(expect.objectContaining({
+      kimi: expect.objectContaining({ auth_region: 'mainland_cn' }),
+    }))
   })
 })

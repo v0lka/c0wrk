@@ -13,9 +13,15 @@ import (
 	"github.com/v0lka/sp4rk/llm"
 )
 
-// DefaultExpirySkew is how long before the reported expiry a token is
-// considered stale and refreshed proactively.
+// DefaultExpirySkew is how long before the reported expiry a ChatGPT-style
+// access token is considered stale and refreshed proactively.
 const DefaultExpirySkew = 30 * time.Second
+
+// deviceFlowMinRefreshThreshold is the Moonshot kimi-cli floor
+// (MIN_REFRESH_THRESHOLD_SECONDS=300): device-flow access tokens are ~15 min,
+// so a 30 s skew leaves almost no margin before API 401s. See
+// specs/domains/llm-providers.md (Kimi subscription auth).
+const deviceFlowMinRefreshThreshold = 5 * time.Minute
 
 // persistedAuthVersion is the on-disk schema version of the stored secret.
 const persistedAuthVersion = 2
@@ -24,14 +30,13 @@ const persistedAuthVersion = 2
 var ErrNotSignedIn = errors.New("providerauth: not signed in")
 
 // persistedAuth is the JSON shape stored in the SecretStore; it holds
-// secrets and is never logged. DELIBERATELY minimal — refresh token + parsed
-// identity only, never the multi-KB access/ID JWTs: keychain bridges cap
-// secret sizes far below a full token set, and one refresh round-trip
-// reconstructs the live set on first use. Minimal-secret contract:
-// specs/domains/llm-providers.md (ChatGPT Subscription Auth).
+// secrets and is never logged. It keeps only the refresh token, identity and
+// optional issuer region, never the multi-KB access/ID JWTs. Minimal-secret
+// contract: specs/domains/llm-providers.md (subscription auth).
 type persistedAuth struct {
 	Version      int    `json:"version"`
 	Provider     string `json:"provider"`
+	Region       string `json:"region,omitempty"`
 	RefreshToken string `json:"refresh_token,omitempty"`
 	// Tokens is the legacy v1 full-token-set shape, read for one-way
 	// migration only (through its refresh token; the next persist rewrites
@@ -57,6 +62,8 @@ type ManagerConfig struct {
 	// ExpirySkew refreshes this long before the reported expiry; defaults to
 	// DefaultExpirySkew.
 	ExpirySkew time.Duration
+	// AgentDir stores the stable, non-secret device ID for Device Authorization Grant.
+	AgentDir string
 }
 
 // TokenManager owns the OAuth token lifecycle of one subscription provider
@@ -64,15 +71,16 @@ type ManagerConfig struct {
 // implements llm.TokenSource. Token/SignIn/SignOut/Refresh are
 // concurrency-safe: refresh is single-flight and ctx-aware, its commit
 // generation-guarded so a raced sign-out or newer sign-in is never
-// overwritten. See specs/domains/llm-providers.md (ChatGPT Subscription
-// Auth).
+// overwritten. See specs/domains/llm-providers.md (subscription auth).
 type TokenManager struct {
-	profile Profile
-	store   SecretStore
-	client  *http.Client
-	logger  *slog.Logger
-	now     func() time.Time
-	skew    time.Duration
+	profile  Profile
+	store    SecretStore
+	client   *http.Client
+	logger   *slog.Logger
+	now      func() time.Time
+	sleep    func(context.Context, time.Duration) error
+	skew     time.Duration
+	agentDir string
 
 	mu sync.Mutex
 	// tokens/identity are the live credential state; guarded by mu.
@@ -125,14 +133,23 @@ func NewTokenManager(cfg ManagerConfig) (*TokenManager, error) {
 	if cfg.ExpirySkew <= 0 {
 		cfg.ExpirySkew = DefaultExpirySkew
 	}
+	if cfg.Profile.DeviceFlow {
+		headers, err := deviceHeaders(cfg.AgentDir)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Profile.TokenHeaders = headers
+	}
 
 	m := &TokenManager{
-		profile: cfg.Profile,
-		store:   cfg.Store,
-		client:  cfg.HTTPClient,
-		logger:  cfg.Logger,
-		now:     cfg.Now,
-		skew:    cfg.ExpirySkew,
+		profile:  cfg.Profile,
+		store:    cfg.Store,
+		client:   cfg.HTTPClient,
+		logger:   cfg.Logger,
+		now:      cfg.Now,
+		sleep:    sleepContext,
+		skew:     cfg.ExpirySkew,
+		agentDir: cfg.AgentDir,
 	}
 	if err := m.load(); err != nil {
 		return nil, err
@@ -146,6 +163,21 @@ func NewTokenManager(cfg ManagerConfig) (*TokenManager, error) {
 // the same way); an UNUSABLE record only starts the manager signed out with
 // loadWarning set — recoverable in-app.
 func (m *TokenManager) load() error {
+	if m.profile.Region != "" {
+		rejectedRegion, rejected, err := readRegionRejection(m.agentDir)
+		if err != nil {
+			return err
+		}
+		if rejected {
+			m.loadWarning = fmt.Sprintf(
+				"providerauth: stored %s credentials from region %q were rejected; sign in again to replace them",
+				m.profile.ProviderID, rejectedRegion)
+			if err := m.store.Delete(m.profile.secretKey()); err != nil && !errors.Is(err, ErrSecretNotFound) {
+				return fmt.Errorf("providerauth: clearing region-rejected credentials: %w", err)
+			}
+			return nil
+		}
+	}
 	raw, err := m.store.Get(m.profile.secretKey())
 	if errors.Is(err, ErrSecretNotFound) {
 		return nil
@@ -158,6 +190,9 @@ func (m *TokenManager) load() error {
 		m.loadWarning = fmt.Sprintf("providerauth: stored %s credentials are unreadable (sign in again to replace them): %v",
 			m.profile.ProviderID, err)
 		return nil
+	}
+	if !m.credentialRegionMatches(auth.Region) {
+		return m.rejectCredentialRegion(auth.Region)
 	}
 	refresh := auth.RefreshToken
 	if refresh == "" && auth.Tokens != nil {
@@ -176,9 +211,35 @@ func (m *TokenManager) load() error {
 	return nil
 }
 
+func (m *TokenManager) credentialRegionMatches(persistedRegion string) bool {
+	if m.profile.Region == "" {
+		return true
+	}
+	if persistedRegion == "" {
+		return m.profile.Region == KimiRegionGlobal
+	}
+	return persistedRegion == m.profile.Region
+}
+
+func (m *TokenManager) rejectCredentialRegion(persistedRegion string) error {
+	if persistedRegion == "" {
+		persistedRegion = KimiRegionGlobal
+	}
+	if err := writeRegionRejection(m.agentDir, persistedRegion); err != nil {
+		return err
+	}
+	m.loadWarning = fmt.Sprintf(
+		"providerauth: stored %s credentials belong to region %q, but region %q is selected; sign in again to authorize the selected region",
+		m.profile.ProviderID, persistedRegion, m.profile.Region)
+	if err := m.store.Delete(m.profile.secretKey()); err != nil && !errors.Is(err, ErrSecretNotFound) {
+		return fmt.Errorf("providerauth: clearing mismatched regional credentials: %w", err)
+	}
+	return nil
+}
+
 // LoadWarning reports the non-fatal restore problem found by the
-// constructor (unreadable/incomplete record — the keychain itself works);
-// the text names the remediation.
+// constructor (an unreadable/incomplete record or a credential-region
+// mismatch); the text names the remediation.
 func (m *TokenManager) LoadWarning() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -206,8 +267,8 @@ const maxTokenRefreshRounds = 3
 // Token returns a currently valid access token, refreshing within the
 // expiry skew (llm.TokenSource; single-flight and ctx-aware — see the
 // TokenManager doc and specs/domains/llm-providers.md). The BearerToken
-// carries the ChatGPT-Account-Id and originator headers; renewals are
-// bounded per call (maxTokenRefreshRounds).
+// carries the profile's account, originator and model-API headers; renewals
+// are bounded per call (maxTokenRefreshRounds).
 func (m *TokenManager) Token(ctx context.Context) (llm.BearerToken, error) {
 	refreshRounds := 0
 	for {
@@ -306,9 +367,12 @@ func (m *TokenManager) SignIn(ctx context.Context, opener BrowserOpener) (*SignI
 	m.mu.Lock()
 	client := m.client
 	m.mu.Unlock()
-	flow := &Flow{profile: m.profile, client: client, opener: opener, now: m.now}
+	flow := &Flow{profile: m.profile, client: client, opener: opener, now: m.now, sleep: m.sleep}
 	if flow.opener == nil {
 		flow.opener = DefaultBrowserOpener
+	}
+	if flow.sleep == nil {
+		flow.sleep = sleepContext
 	}
 	result, err := flow.SignIn(ctx)
 	if err != nil {
@@ -405,6 +469,11 @@ func (m *TokenManager) SignOut() error {
 		// The delete failed: the record — and the load warning describing
 		// it — must survive; the manager stays signed in.
 		return err
+	}
+	if m.profile.Region != "" {
+		if err := clearRegionRejection(m.agentDir); err != nil {
+			return err
+		}
 	}
 	// The record is gone (or never existed): its warning is obsolete.
 	m.loadWarning = ""
@@ -514,7 +583,31 @@ func (m *TokenManager) validLocked() bool {
 	if m.tokens.Expiry.IsZero() {
 		return true
 	}
-	return m.now().Add(m.skew).Before(m.tokens.Expiry)
+	return m.now().Add(m.refreshThresholdLocked()).Before(m.tokens.Expiry)
+}
+
+// refreshThresholdLocked sizes the proactive refresh window. ChatGPT keeps
+// DefaultExpirySkew. Device-flow (Kimi) matches kimi-cli:
+// max(5m, expires_in/2), capped below the token lifetime so a fresh token
+// is never immediately stale.
+func (m *TokenManager) refreshThresholdLocked() time.Duration {
+	threshold := m.skew
+	if !m.profile.DeviceFlow || m.tokens == nil || m.tokens.ExpiresIn <= 0 {
+		return threshold
+	}
+	lifetime := time.Duration(m.tokens.ExpiresIn) * time.Second
+	half := lifetime / 2
+	threshold = half
+	if threshold < deviceFlowMinRefreshThreshold {
+		threshold = deviceFlowMinRefreshThreshold
+	}
+	if threshold >= lifetime {
+		threshold = half
+	}
+	if threshold < m.skew {
+		threshold = m.skew
+	}
+	return threshold
 }
 
 // refreshEpoch performs one refresh round-trip for credential epoch gen
@@ -573,14 +666,23 @@ func (m *TokenManager) bearerTokenLocked() llm.BearerToken {
 		TokenType:   m.tokens.TokenType,
 		ExpiresAt:   m.tokens.Expiry,
 	}
-	if m.identity != nil && m.identity.ChatGPTAccountID != "" {
-		bt.ExtraHeaders = map[string]string{"ChatGPT-Account-Id": m.identity.ChatGPTAccountID}
+	if m.profile.AccountIDHeader != "" && m.identity != nil && m.identity.ChatGPTAccountID != "" {
+		bt.ExtraHeaders = map[string]string{m.profile.AccountIDHeader: m.identity.ChatGPTAccountID}
 	}
 	if m.profile.Originator != "" {
 		if bt.ExtraHeaders == nil {
 			bt.ExtraHeaders = make(map[string]string, 1)
 		}
 		bt.ExtraHeaders["originator"] = m.profile.Originator
+	}
+	for name, value := range m.profile.APIHeaders {
+		if value == "" {
+			continue
+		}
+		if bt.ExtraHeaders == nil {
+			bt.ExtraHeaders = make(map[string]string, len(m.profile.APIHeaders))
+		}
+		bt.ExtraHeaders[name] = value
 	}
 	return bt
 }
@@ -591,12 +693,18 @@ func (m *TokenManager) persistLocked() error {
 	auth := persistedAuth{
 		Version:      persistedAuthVersion,
 		Provider:     m.profile.ProviderID,
+		Region:       m.profile.Region,
 		RefreshToken: m.tokens.RefreshToken,
 		Identity:     m.identity,
 	}
 	data, err := json.Marshal(auth)
 	if err != nil {
 		return fmt.Errorf("providerauth: encoding %s credentials: %w", m.profile.ProviderID, err)
+	}
+	if m.profile.Region != "" {
+		if err := clearRegionRejection(m.agentDir); err != nil {
+			return err
+		}
 	}
 	return m.store.Set(m.profile.secretKey(), string(data))
 }

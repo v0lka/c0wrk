@@ -524,14 +524,13 @@ export interface ConfigProviderFull {
    *  Empty/absent = standard CA verification (no override). */
   tls_fingerprint?: string
   /** Per-provider session-layer auto-retry interval in seconds (compatible
-   *  providers only). 0/absent = disabled. The fixed anthropic/chatgpt
-   *  providers always report 0. */
+   *  providers only). 0/absent = disabled. Fixed providers always report 0. */
   auto_retry_seconds?: number
-  /** How the CHATGPT provider authenticates. Only the chatgpt entry carries
-   *  the field (every other provider leaves it absent); the backend
-   *  normalizes the empty stored value to 'api_key' before serializing, so a
-   *  present value always names a real mode. */
+  /** How a subscription-capable ChatGPT or Kimi provider authenticates.
+   *  Other providers leave it absent; the backend normalizes the empty stored
+   *  value to 'api_key' before serializing. */
   auth_mode?: ChatGPTAuthMode
+  auth_region?: KimiAuthRegion
 }
 
 export interface ModelInfo {
@@ -558,6 +557,7 @@ export interface ConfigLLMResponse {
   openai_compatible: Record<string, ConfigProviderFull>
   anthropic_compatible: Record<string, ConfigProviderFull>
   chatgpt: ConfigProviderFull
+  kimi: ConfigProviderFull
   all_models: ModelInfo[]
   models_ready: boolean
   /** Inclusive upper bound for per-provider auto_retry_seconds — the SAME
@@ -710,72 +710,66 @@ export interface ProviderConfigRequest {
   /** Per-provider session-layer auto-retry interval (compatible providers
    *  only). Omitted = keep the persisted value (debounce-safe); a present
    *  value is applied verbatim, so 0 disables the retry timer. Ignored for
-   *  the fixed anthropic/chatgpt providers. */
+   *  the fixed anthropic/chatgpt/kimi providers. */
   auto_retry_seconds?: number
-  /** How the CHATGPT provider authenticates. Omitted = keep the persisted
-   *  mode (debounce-safe); a present value must be 'api_key' | 'oauth' —
-   *  the backend rejects anything else without changing state. Only
-   *  meaningful on the chatgpt entry; other providers ignore it. */
+  /** How a ChatGPT or Kimi provider authenticates. Omitted = keep the
+   *  persisted mode (debounce-safe); a present value must be
+   *  'api_key' | 'oauth' — the backend rejects anything else unchanged.
+   *  Other providers ignore it. */
   auth_mode?: ChatGPTAuthMode
+  auth_region?: KimiAuthRegion
 }
 
-/** The CHATGPT provider's authentication mode (config
- *  `llm.chatgpt.auth.mode`):
- *  - 'api_key' — the static `llm.chatgpt.api_key` (the historical behavior)
- *  - 'oauth'   — ChatGPT subscription auth via browser sign-in; OAuth tokens
- *    live in the OS keychain and never cross the frontend boundary. */
-export type ChatGPTAuthMode = 'api_key' | 'oauth'
+/** Authentication mode shared by subscription-capable fixed providers. */
+export type SubscriptionAuthMode =
+  | 'api_key' // The provider's static key.
+  | 'oauth' // Browser-issued credentials in the OS keychain.
+export type ChatGPTAuthMode = SubscriptionAuthMode
+export type KimiAuthMode = SubscriptionAuthMode
 
-/** Synchronous answer of StartChatGPTSignIn: the authorization URL the
- *  FRONTEND opens in the system browser (openExternalURL →
- *  runtime.BrowserOpenURL). The flow continues in the background; later
- *  transitions arrive through the global chatgpt_auth:state event. */
-export interface ChatGPTSignInResponse {
+/** Kimi subscription issuer and coding-API region. */
+export type KimiAuthRegion =
+  | 'global' // Global auth.kimi.ai and api.kimi.ai endpoints.
+  | 'mainland_cn' // Mainland China auth.kimi.com and api.kimi.com endpoints.
+
+/** Authorization URL returned to the frontend for the system browser. */
+export interface SubscriptionSignInResponse {
   auth_url: string
 }
 
-/** Snapshot served by GetChatGPTAuthStatus. Identity fields, the configured
- *  mode, and the authoritative in-flight flag — no OAuth token value ever
- *  crosses this boundary. */
-export interface ChatGPTAuthStatusResponse {
-  /** Whether credentials exist in the OS keychain (no refresh attempted). */
+/** Secret-free account and browser-flow snapshot. */
+export interface SubscriptionAuthStatusResponse {
   signed_in: boolean
-  /** Account email claim, when the identity is known. */
   email?: string
-  /** ChatGPT account id backing the subscription. */
+  /** ChatGPT account identity; absent for providers without one. */
   account_id?: string
-  /** Stored access token's expiry (RFC3339), when signed in and known. */
   expires_at?: string
-  /** Configured chatgpt auth mode. */
-  mode: ChatGPTAuthMode
-  /** Whether a browser sign-in flow is currently running — the busy flag a
-   *  remounted auth panel restores its Waiting/Cancel posture from. */
+  mode: SubscriptionAuthMode
   in_flight: boolean
-  /** Operator-friendly cause of the last FAILED sign-in, the subsystem
-   *  construction failure when the keychain is unavailable, or a non-fatal
-   *  startup restore problem such as an unreadable stored record (sign in
-   *  again to replace it). Empty when none of those ran. */
   last_error?: string
 }
 
-/** One curated ChatGPT (Codex) preset model served by GetChatGPTModelPreset.
- *  Metadata is fail-soft: zeros when the async model registry is not wired
- *  yet (the name is then the whole entry). */
-export interface ChatGPTModelPresetEntry {
+/** One subscription model with fail-soft registry metadata. */
+export interface SubscriptionModelPresetEntry {
   name: string
-  /** Context window / output limit from the model registry (tokens). */
   context_window?: number
   output_limit?: number
-  /** Whether the model is a reasoning model. */
   reasoning?: boolean
 }
 
-/** The curated ChatGPT (Codex) model preset offered in oauth mode: the
- *  models the subscription backend serves that c0wrk's registry knows,
- *  ordered most capable first. */
-export interface ChatGPTModelPresetResponse {
-  models: ChatGPTModelPresetEntry[]
+export interface SubscriptionModelPresetResponse {
+  models: SubscriptionModelPresetEntry[]
 }
+
+// Provider aliases preserve the existing public TypeScript contract.
+export type ChatGPTSignInResponse = SubscriptionSignInResponse
+export type ChatGPTAuthStatusResponse = SubscriptionAuthStatusResponse
+export type ChatGPTModelPresetEntry = SubscriptionModelPresetEntry
+export type ChatGPTModelPresetResponse = SubscriptionModelPresetResponse
+export type KimiSignInResponse = SubscriptionSignInResponse
+export type KimiAuthStatusResponse = SubscriptionAuthStatusResponse
+export type KimiModelPresetEntry = SubscriptionModelPresetEntry
+export type KimiModelPresetResponse = SubscriptionModelPresetResponse
 
 /** Draft credentials for ListProviderModels — lets Fetch Models work for a
  *  compatible provider that has not been persisted yet. */
@@ -814,6 +808,7 @@ export interface LLMFullConfigRequest {
   openai_compatible?: Record<string, ProviderConfigRequest>
   anthropic_compatible?: Record<string, ProviderConfigRequest>
   chatgpt?: ProviderConfigRequest
+  kimi?: ProviderConfigRequest
 }
 
 /** A model's capability flags: which features it supports. */

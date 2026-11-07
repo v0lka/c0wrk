@@ -33,7 +33,7 @@ export function useModelFetch(activeProvider: string, providerConfigs: Record<st
     const hasRequiredCredentials = useMemo(() => {
         if (!activeProvider || !providerConfigs[activeProvider]) return false
         const config = providerConfigs[activeProvider]
-        const needsBaseUrl = isOpenAICompatibleProvider(activeProvider)
+        const needsBaseUrl = isOpenAICompatibleProvider(activeProvider, config.type)
         const needsApiKey = true
         if (needsBaseUrl && !config.base_url) return false
         if (needsApiKey && !config.api_key) return false

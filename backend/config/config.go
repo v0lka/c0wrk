@@ -514,6 +514,7 @@ type LLMConfig struct {
 	OpenAICompatible    map[string]OpenAICompatibleConfig    `yaml:"openai_compatible"`
 	AnthropicCompatible map[string]AnthropicCompatibleConfig `yaml:"anthropic_compatible"`
 	ChatGPT             ChatGPTConfig                        `yaml:"chatgpt"`
+	Kimi                KimiConfig                           `yaml:"kimi"`
 	Models              map[string]ModelOverride             `yaml:"models"`
 	Retry               LLMRetryConfig                       `yaml:"retry"`
 }
@@ -642,6 +643,33 @@ type ChatGPTConfig struct {
 	// OutputTokenReserve overrides the per-provider output-token budget; 0
 	// inherits executor.output_token_reserve.
 	OutputTokenReserve int `yaml:"output_token_reserve"`
+}
+
+const (
+	// Kimi auth modes select the credential used by the fixed Kimi provider.
+	KimiAuthModeAPIKey = "api_key" // Static Moonshot platform API key.
+	KimiAuthModeOAuth  = "oauth"   // Kimi for Coding subscription credential.
+	// Kimi regions select the subscription issuer and coding API region.
+	KimiRegionGlobal     = "global"      // Global kimi.ai endpoints.
+	KimiRegionMainlandCN = "mainland_cn" // Mainland China kimi.com endpoints.
+	// KimiAPIKeyBaseURL is the public Moonshot AI OpenAI-compatible endpoint.
+	KimiAPIKeyBaseURL = "https://api.moonshot.ai/v1"
+)
+
+// KimiAuthConfig selects how and where the kimi provider authenticates.
+type KimiAuthConfig struct {
+	Mode   string `yaml:"mode,omitempty"`
+	Region string `yaml:"region,omitempty"`
+}
+
+// KimiConfig holds the first-class Kimi provider configuration. API-key mode
+// uses the Moonshot platform; oauth mode pins the Kimi for Coding endpoint in
+// the builder adapter and ignores APIKey on the wire.
+type KimiConfig struct {
+	APIKey             string         `yaml:"api_key"`
+	Models             []string       `yaml:"models"`
+	Auth               KimiAuthConfig `yaml:"auth,omitempty"`
+	OutputTokenReserve int            `yaml:"output_token_reserve"`
 }
 
 // MaxModelContextWindow is the sanity ceiling for a llm.models.<name>
@@ -2534,11 +2562,16 @@ func (c *LLMConfig) allProviderEntries() []providerEntry {
 		anthropicKeys = append(anthropicKeys, k)
 	}
 	sort.Strings(anthropicKeys)
-	entries := make([]providerEntry, 0, 2+len(openaiKeys)+len(anthropicKeys))
+	entries := make([]providerEntry, 0, 2+len(openaiKeys)+len(anthropicKeys)+1)
 	entries = append(entries,
 		providerEntry{name: "anthropic", apiKey: c.Anthropic.APIKey, models: c.Anthropic.Models, outputTokenReserve: c.Anthropic.OutputTokenReserve},
 		providerEntry{name: "chatgpt", apiKey: c.ChatGPT.APIKey, models: c.ChatGPT.Models, outputTokenReserve: c.ChatGPT.OutputTokenReserve},
 	)
+	_, openAIKimi := c.OpenAICompatible["kimi"]
+	_, anthropicKimi := c.AnthropicCompatible["kimi"]
+	if !openAIKimi && !anthropicKimi {
+		entries = append(entries, providerEntry{name: "kimi", apiKey: c.Kimi.APIKey, baseURL: KimiAPIKeyBaseURL, models: c.Kimi.Models, outputTokenReserve: c.Kimi.OutputTokenReserve})
+	}
 	for _, name := range openaiKeys {
 		cfg := c.OpenAICompatible[name]
 		entries = append(entries, providerEntry{name: name, apiKey: cfg.APIKey, baseURL: cfg.BaseURL, models: cfg.Models, tlsFingerprint: cfg.TLSFingerprint, outputTokenReserve: cfg.OutputTokenReserve, autoRetrySeconds: cfg.AutoRetrySeconds, timeoutClass: cfg.TimeoutClass})
@@ -2556,6 +2589,14 @@ func (c *LLMConfig) providerType(name string) string {
 	case "anthropic":
 		return "anthropic"
 	case "chatgpt":
+		return "openai"
+	case "kimi":
+		if _, ok := c.OpenAICompatible[name]; ok {
+			return "openai"
+		}
+		if _, ok := c.AnthropicCompatible[name]; ok {
+			return "anthropic"
+		}
 		return "openai"
 	default:
 		if _, ok := c.OpenAICompatible[name]; ok {
@@ -2799,6 +2840,22 @@ func validate(cfg *Config) error {
 		return fmt.Errorf(
 			"llm.chatgpt.auth.mode %q is not valid; must be one of: %s, %s",
 			cfg.LLM.ChatGPT.Auth.Mode, ChatGPTAuthModeAPIKey, ChatGPTAuthModeOAuth,
+		)
+	}
+	switch cfg.LLM.Kimi.Auth.Mode {
+	case "", KimiAuthModeAPIKey, KimiAuthModeOAuth:
+	default:
+		return fmt.Errorf(
+			"llm.kimi.auth.mode %q is not valid; must be one of: %s, %s",
+			cfg.LLM.Kimi.Auth.Mode, KimiAuthModeAPIKey, KimiAuthModeOAuth,
+		)
+	}
+	switch cfg.LLM.Kimi.Auth.Region {
+	case "", KimiRegionGlobal, KimiRegionMainlandCN:
+	default:
+		return fmt.Errorf(
+			"llm.kimi.auth.region %q is not valid; must be one of: %s, %s",
+			cfg.LLM.Kimi.Auth.Region, KimiRegionGlobal, KimiRegionMainlandCN,
 		)
 	}
 

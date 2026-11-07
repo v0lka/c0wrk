@@ -58,7 +58,7 @@ afterEach(() => {
 function renderOAuthAccordion(
   models: string[],
   preset: typeof PRESET = PRESET,
-  chatGPTFetch?: { loading: boolean; error: string | null; onRefresh: () => void },
+  subscriptionFetch?: { loading: boolean; error: string | null; onRefresh: () => void },
   presetSource?: 'preset' | 'subscription',
 ): void {
   const config: ProviderConfig = {
@@ -81,10 +81,13 @@ function renderOAuthAccordion(
         defaultModel=""
         providerConfigs={{ chatgpt: config }}
         autoRetryMaxSeconds={3600}
-        isOAuth={true}
-        presetModels={preset}
-        presetSource={presetSource}
-        chatGPTFetch={chatGPTFetch}
+        subscription={{
+          models: preset,
+          source: presetSource ?? 'preset',
+          fetch: subscriptionFetch,
+          providerLabel: 'ChatGPT',
+          liveCatalog: true,
+        }}
       />,
     )
   })

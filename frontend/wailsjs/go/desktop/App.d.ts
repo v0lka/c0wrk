@@ -37,6 +37,8 @@ export function CancelEmbeddedLLMInstall():Promise<void>;
 
 export function CancelGoal(arg1:string,arg2:string):Promise<void>;
 
+export function CancelKimiSignIn():Promise<void>;
+
 export function CancelSessionCompaction(arg1:string):Promise<void>;
 
 export function CancelTask(arg1:string):Promise<void>;
@@ -117,6 +119,8 @@ export function Fetch(arg1:string,arg2:Array<string>):Promise<string>;
 
 export function FetchChatGPTModels():Promise<backend.ChatGPTModelPresetResponse>;
 
+export function FetchKimiModels():Promise<backend.KimiModelPresetResponse>;
+
 export function FetchPaperOriginal(arg1:string,arg2:string):Promise<backend.PaperOriginalDTO>;
 
 export function ForkSession(arg1:string):Promise<session.SessionInfo>;
@@ -174,6 +178,10 @@ export function GetGitStatus(arg1:string):Promise<Record<string, workspace.GitSt
 export function GetHardenGitRepos():Promise<Array<string>>;
 
 export function GetIsGitRepo():Promise<boolean>;
+
+export function GetKimiAuthStatus():Promise<backend.KimiAuthStatusResponse>;
+
+export function GetKimiModelPreset():Promise<backend.KimiModelPresetResponse>;
 
 export function GetLastActiveProjectID():Promise<string>;
 
@@ -459,6 +467,8 @@ export function ShowTestNotification():Promise<void>;
 
 export function SignOutChatGPT():Promise<void>;
 
+export function SignOutKimi():Promise<void>;
+
 export function SkipVersion(arg1:string):Promise<void>;
 
 export function StageAll():Promise<void>;
@@ -466,6 +476,8 @@ export function StageAll():Promise<void>;
 export function StageFile(arg1:string):Promise<void>;
 
 export function StartChatGPTSignIn():Promise<backend.ChatGPTSignInResponse>;
+
+export function StartKimiSignIn():Promise<backend.KimiSignInResponse>;
 
 export function StartTerminal(arg1:string):Promise<void>;
 

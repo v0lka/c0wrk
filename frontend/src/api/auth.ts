@@ -1,49 +1,47 @@
-// ChatGPT subscription-auth API wrappers — the Settings → ChatGPT provider's
-// authentication surface (backend/frontend_api_auth.go).
-//
-// Ownership split (mirrors the backend's): this module owns NO OAuth policy.
-// It validates the RPC boundary data, opens the system browser for the
-// authorization URL (openExternalURL — the backend publishes the URL, it
-// never launches a browser on this path), and fans the global
-// `chatgpt_auth:state` transitions out to a guarded callback. The flow
-// itself — PKCE, the loopback listener, token refresh, the OS keychain —
-// lives behind the RPCs.
-//
-// Secrets never cross this boundary: the status carries identity fields only
-// (email, account id, expiry), and no OAuth token value ever appears in an
-// event, an RPC result, or a log line.
+// ChatGPT and Kimi subscription-auth API wrappers. This module validates RPC
+// boundary data, opens the system browser and fans global auth transitions out
+// to guarded callbacks; OAuth policy and credentials stay behind the RPCs.
+// Secrets never cross this boundary: only identity fields, auth state and
+// provider-required authorization URLs appear in events, results or logs.
 
 import { getApp, onGlobalEvent, openExternalURL, reportDroppedEvent } from './runtime'
 import { logger } from '@/lib/logger'
-import { isChatGPTAuthEventData, type ChatGPTAuthEventData } from '@/types/events'
+import {
+  isChatGPTAuthEventData,
+  isKimiAuthEventData,
+  type ChatGPTAuthEventData,
+  type KimiAuthEventData,
+} from '@/types/events'
 import type {
   ChatGPTAuthMode,
   ChatGPTAuthStatusResponse,
-  ChatGPTModelPresetEntry,
   ChatGPTModelPresetResponse,
   ChatGPTSignInResponse,
+  KimiAuthMode,
+  KimiAuthRegion,
+  KimiAuthStatusResponse,
+  KimiModelPresetResponse,
+  KimiSignInResponse,
+  SubscriptionAuthMode,
+  SubscriptionAuthStatusResponse,
+  SubscriptionModelPresetEntry,
+  SubscriptionModelPresetResponse,
+  SubscriptionSignInResponse,
 } from '@/types/models'
 
-/**
- * Normalize a wire auth-mode value to the two-state enum. The backend
- * normalizes the empty stored value to api_key before serializing (and only
- * the chatgpt entry carries the field at all), so anything else reaching the
- * frontend is schema drift — reading it as the documented default keeps the
- * selector honest instead of inventing a third state.
- */
-export function normalizeChatGPTAuthMode(mode: unknown): ChatGPTAuthMode {
+/** Normalize a wire auth-mode value to the shared two-state enum. */
+export function normalizeSubscriptionAuthMode(mode: unknown): SubscriptionAuthMode {
   return mode === 'oauth' ? 'oauth' : 'api_key'
 }
 
-function isChatGPTAuthStatusResponse(v: unknown): v is ChatGPTAuthStatusResponse {
+export function normalizeChatGPTAuthMode(mode: unknown): ChatGPTAuthMode {
+  return normalizeSubscriptionAuthMode(mode)
+}
+
+function isSubscriptionAuthStatusResponse(v: unknown): v is SubscriptionAuthStatusResponse {
   if (typeof v !== 'object' || v === null) return false
   const o = v as Record<string, unknown>
   if (typeof o.signed_in !== 'boolean') return false
-  // in_flight and mode are non-optional on the wire (the Go struct carries
-  // no omitempty for either): a payload missing them is schema drift, and
-  // an undefined in_flight would silently render a running sign-in as idle
-  // (the remount-restore path keys off it). mode is normalized to the enum
-  // after the guard, but must at least be a string here.
   if (typeof o.in_flight !== 'boolean') return false
   if (typeof o.mode !== 'string') return false
   for (const key of ['email', 'account_id', 'expires_at', 'last_error'] as const) {
@@ -52,7 +50,7 @@ function isChatGPTAuthStatusResponse(v: unknown): v is ChatGPTAuthStatusResponse
   return true
 }
 
-function isChatGPTSignInResponse(v: unknown): v is ChatGPTSignInResponse {
+function isSubscriptionSignInResponse(v: unknown): v is SubscriptionSignInResponse {
   return (
     typeof v === 'object' &&
     v !== null &&
@@ -61,7 +59,7 @@ function isChatGPTSignInResponse(v: unknown): v is ChatGPTSignInResponse {
   )
 }
 
-function isChatGPTModelPresetEntry(v: unknown): v is ChatGPTModelPresetEntry {
+function isSubscriptionModelPresetEntry(v: unknown): v is SubscriptionModelPresetEntry {
   if (typeof v !== 'object' || v === null) return false
   const o = v as Record<string, unknown>
   if (typeof o.name !== 'string' || o.name === '') return false
@@ -72,12 +70,12 @@ function isChatGPTModelPresetEntry(v: unknown): v is ChatGPTModelPresetEntry {
   return true
 }
 
-function isChatGPTModelPresetResponse(v: unknown): v is ChatGPTModelPresetResponse {
+function isSubscriptionModelPresetResponse(v: unknown): v is SubscriptionModelPresetResponse {
   return (
     typeof v === 'object' &&
     v !== null &&
     Array.isArray((v as Record<string, unknown>).models) &&
-    ((v as Record<string, unknown>).models as unknown[]).every(isChatGPTModelPresetEntry)
+    ((v as Record<string, unknown>).models as unknown[]).every(isSubscriptionModelPresetEntry)
   )
 }
 
@@ -92,7 +90,7 @@ export async function getChatGPTAuthStatus(): Promise<ChatGPTAuthStatusResponse>
   try {
     const app = getApp()
     const result = await app.GetChatGPTAuthStatus()
-    if (!isChatGPTAuthStatusResponse(result)) {
+    if (!isSubscriptionAuthStatusResponse(result)) {
       throw new Error('getChatGPTAuthStatus: backend returned invalid data')
     }
     return { ...result, mode: normalizeChatGPTAuthMode(result.mode) }
@@ -114,7 +112,7 @@ export async function startChatGPTSignIn(): Promise<ChatGPTSignInResponse> {
   try {
     const app = getApp()
     const result = await app.StartChatGPTSignIn()
-    if (!isChatGPTSignInResponse(result)) {
+    if (!isSubscriptionSignInResponse(result)) {
       throw new Error('startChatGPTSignIn: backend returned invalid data')
     }
     openExternalURL(result.auth_url)
@@ -165,7 +163,7 @@ export async function getChatGPTModelPreset(): Promise<ChatGPTModelPresetRespons
   try {
     const app = getApp()
     const result = await app.GetChatGPTModelPreset()
-    if (!isChatGPTModelPresetResponse(result)) {
+    if (!isSubscriptionModelPresetResponse(result)) {
       throw new Error('getChatGPTModelPreset: backend returned invalid data')
     }
     return result
@@ -188,7 +186,7 @@ export async function fetchChatGPTModels(): Promise<ChatGPTModelPresetResponse> 
   try {
     const app = getApp()
     const result = await app.FetchChatGPTModels()
-    if (!isChatGPTModelPresetResponse(result)) {
+    if (!isSubscriptionModelPresetResponse(result)) {
       throw new Error('fetchChatGPTModels: backend returned invalid data')
     }
     return result
@@ -208,6 +206,95 @@ export function onChatGPTAuthState(callback: (data: ChatGPTAuthEventData) => voi
   return onGlobalEvent('chatgpt_auth:state', (data) => {
     if (!isChatGPTAuthEventData(data)) {
       reportDroppedEvent('chatgpt_auth:state', data)
+      return
+    }
+    callback(data)
+  })
+}
+
+export function normalizeKimiAuthMode(mode: unknown): KimiAuthMode {
+  return normalizeSubscriptionAuthMode(mode)
+}
+
+export function normalizeKimiAuthRegion(region: unknown): KimiAuthRegion {
+  return region === 'mainland_cn' ? 'mainland_cn' : 'global'
+}
+
+export async function getKimiAuthStatus(): Promise<KimiAuthStatusResponse> {
+  try {
+    const result = await getApp().GetKimiAuthStatus()
+    if (!isSubscriptionAuthStatusResponse(result)) {
+      throw new Error('getKimiAuthStatus: backend returned invalid data')
+    }
+    return { ...result, mode: normalizeKimiAuthMode(result.mode) }
+  } catch (err) {
+    logger.error('Failed to get Kimi auth status:', err)
+    throw err
+  }
+}
+
+export async function startKimiSignIn(): Promise<KimiSignInResponse> {
+  try {
+    const result = await getApp().StartKimiSignIn()
+    if (!isSubscriptionSignInResponse(result)) {
+      throw new Error('startKimiSignIn: backend returned invalid data')
+    }
+    openExternalURL(result.auth_url)
+    return result
+  } catch (err) {
+    logger.error('Failed to start Kimi sign-in:', err)
+    throw err
+  }
+}
+
+export async function cancelKimiSignIn(): Promise<void> {
+  try {
+    await getApp().CancelKimiSignIn()
+  } catch (err) {
+    logger.error('Failed to cancel Kimi sign-in:', err)
+    throw err
+  }
+}
+
+export async function signOutKimi(): Promise<void> {
+  try {
+    await getApp().SignOutKimi()
+  } catch (err) {
+    logger.error('Failed to sign out of Kimi:', err)
+    throw err
+  }
+}
+
+export async function fetchKimiModels(): Promise<KimiModelPresetResponse> {
+  try {
+    const result = await getApp().FetchKimiModels()
+    if (!isSubscriptionModelPresetResponse(result)) {
+      throw new Error('fetchKimiModels: backend returned invalid data')
+    }
+    return result
+  } catch (err) {
+    logger.error('Failed to fetch the Kimi subscription model list:', err)
+    throw err
+  }
+}
+
+export async function getKimiModelPreset(): Promise<KimiModelPresetResponse> {
+  try {
+    const result = await getApp().GetKimiModelPreset()
+    if (!isSubscriptionModelPresetResponse(result)) {
+      throw new Error('getKimiModelPreset: backend returned invalid data')
+    }
+    return result
+  } catch (err) {
+    logger.error('Failed to get the Kimi model preset:', err)
+    throw err
+  }
+}
+
+export function onKimiAuthState(callback: (data: KimiAuthEventData) => void): () => void {
+  return onGlobalEvent('kimi_auth:state', (data) => {
+    if (!isKimiAuthEventData(data)) {
+      reportDroppedEvent('kimi_auth:state', data)
       return
     }
     callback(data)

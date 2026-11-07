@@ -142,13 +142,15 @@ func (f *FrontendAPI) buildLLMResponse() ConfigLLMResponse {
 			Models: f.config.LLM.Anthropic.Models,
 		},
 		ChatGPT: ConfigProviderFull{
-			APIKey: maskAPIKey(f.config.LLM.ChatGPT.APIKey),
-			Models: f.config.LLM.ChatGPT.Models,
-			// The auth mode round-trips so the UI renders the active mode
-			// (empty stored value reads as api_key); no secret travels —
-			// OAuth tokens live in the OS keychain.
-			// See specs/decisions/074-chatgpt-subscription-auth.md.
+			APIKey:   maskAPIKey(f.config.LLM.ChatGPT.APIKey),
+			Models:   f.config.LLM.ChatGPT.Models,
 			AuthMode: chatGPTAuthModeOrAPIKey(f.config.LLM.ChatGPT.Auth.Mode),
+		},
+		Kimi: ConfigProviderFull{
+			APIKey:     maskAPIKey(f.config.LLM.Kimi.APIKey),
+			Models:     f.config.LLM.Kimi.Models,
+			AuthMode:   kimiAuthModeOrAPIKey(f.config.LLM.Kimi.Auth.Mode),
+			AuthRegion: kimiAuthRegionOrGlobal(f.config.LLM.Kimi.Auth.Region),
 		},
 		OpenAICompatible:    make(map[string]ConfigProviderFull, len(f.config.LLM.OpenAICompatible)),
 		AnthropicCompatible: make(map[string]ConfigProviderFull, len(f.config.LLM.AnthropicCompatible)),
@@ -187,7 +189,7 @@ func (f *FrontendAPI) buildLLMResponse() ConfigLLMResponse {
 // precomputed by refreshModelProfilesGateLocked.
 func (f *FrontendAPI) collectAllModels(reg *llm.ModelRegistry) []ModelInfo {
 	// GetAllProviderConfigs returns providers in deterministic order
-	// (anthropic, chatgpt, then sorted openai_compatible, then sorted anthropic_compatible).
+	// (anthropic, chatgpt, kimi, then sorted openai_compatible, then sorted anthropic_compatible).
 	providers := f.config.LLM.GetAllProviderConfigs()
 
 	seen := make(map[string]bool) // dedupe by composite "provider/model"
@@ -326,11 +328,6 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 		if req.ChatGPT.APIKey != "" && req.ChatGPT.APIKey != maskedAPIKey {
 			candidate.ChatGPT.APIKey = req.ChatGPT.APIKey
 		}
-		// An explicit two-state switch, not a nullable override: nil keeps the
-		// persisted mode (debounced partial saves must not flip it); a
-		// non-nil value must name a real mode — fail-closed, the same stance
-		// the loader's validate() takes.
-		// See specs/decisions/074-chatgpt-subscription-auth.md.
 		if req.ChatGPT.AuthMode != nil {
 			switch mode := *req.ChatGPT.AuthMode; mode {
 			case config.ChatGPTAuthModeAPIKey, config.ChatGPTAuthModeOAuth:
@@ -339,6 +336,34 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 				f.configMu.Unlock()
 				return fmt.Errorf("invalid LLM configuration: chatgpt auth_mode must be %q or %q, got %q",
 					config.ChatGPTAuthModeAPIKey, config.ChatGPTAuthModeOAuth, mode)
+			}
+		}
+	}
+	if req.Kimi != nil {
+		if req.Kimi.Models != nil {
+			candidate.Kimi.Models = req.Kimi.Models
+		}
+		if req.Kimi.APIKey != "" && req.Kimi.APIKey != maskedAPIKey {
+			candidate.Kimi.APIKey = req.Kimi.APIKey
+		}
+		if req.Kimi.AuthMode != nil {
+			switch mode := *req.Kimi.AuthMode; mode {
+			case config.KimiAuthModeAPIKey, config.KimiAuthModeOAuth:
+				candidate.Kimi.Auth.Mode = mode
+			default:
+				f.configMu.Unlock()
+				return fmt.Errorf("invalid LLM configuration: kimi auth_mode must be %q or %q, got %q",
+					config.KimiAuthModeAPIKey, config.KimiAuthModeOAuth, mode)
+			}
+		}
+		if req.Kimi.AuthRegion != nil {
+			switch region := *req.Kimi.AuthRegion; region {
+			case config.KimiRegionGlobal, config.KimiRegionMainlandCN:
+				candidate.Kimi.Auth.Region = region
+			default:
+				f.configMu.Unlock()
+				return fmt.Errorf("invalid LLM configuration: kimi auth_region must be %q or %q, got %q",
+					config.KimiRegionGlobal, config.KimiRegionMainlandCN, region)
 			}
 		}
 	}
@@ -392,7 +417,18 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 		}
 	}
 
+	kimiRegionChanged := kimiAuthRegionOrGlobal(previous.Kimi.Auth.Region) != candidate.Kimi.Auth.Region
 	f.config.LLM = candidate
+	if kimiRegionChanged {
+		f.configMu.Unlock()
+		if err := f.rebindKimiAuthRegion(candidate.Kimi.Auth.Region); err != nil {
+			f.configMu.Lock()
+			f.config.LLM = previous
+			f.configMu.Unlock()
+			return err
+		}
+		f.configMu.Lock()
+	}
 
 	// Republish the auto-retry snapshot BEFORE the persist, under configMu:
 	// the session-layer resolver reads it lock-free, and a failed persist
@@ -409,11 +445,14 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 		if f.app != nil {
 			f.app.publishAutoRetryIntervals(f.config)
 		}
-		// Release configMu before returning: a failed persist must leave the
-		// stack as usable as a rejected request — holding the lock would
-		// deadlock every GetConfig/Settings RPC on the first persist failure.
 		f.configMu.Unlock()
-		return fmt.Errorf("failed to persist LLM config: %w", err)
+		persistErr := fmt.Errorf("failed to persist LLM config: %w", err)
+		if kimiRegionChanged {
+			if rollbackErr := f.rebindKimiAuthRegion(kimiAuthRegionOrGlobal(previous.Kimi.Auth.Region)); rollbackErr != nil {
+				return errors.Join(persistErr, fmt.Errorf("restoring Kimi auth after the failed save: %w", rollbackErr))
+			}
+		}
+		return persistErr
 	}
 
 	// Capture the provisioning guard here — after the unlock, f.config must
@@ -462,7 +501,8 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 		// toBuilderConfigLocked carries no OAuth token source, so without
 		// this the router would serve the signed-out stand-in.
 		// See specs/domains/llm-providers.md (ChatGPT Subscription Auth).
-		f.syncChatGPTBuilderSeam()
+		f.syncProviderBuilderSeam(&f.chatgptAuth, chatGPTProviderName)
+		f.syncProviderBuilderSeam(&f.kimiAuth, "kimi")
 		f.configMu.RLock()
 		fresh := f.toBuilderConfigLocked()
 		b.RebuildJudge(fresh)
@@ -751,14 +791,14 @@ func (f *FrontendAPI) UpdateProxySettings(settings ProxySettingsRequest) error {
 		}
 	}
 
-	// The auth manager's token-endpoint client rides the same effective
-	// proxy: re-point it even when the rebuild above failed — the change is
-	// already live everywhere else, and leaving the manager on the old
-	// transport would desynchronize it until the next successful update.
-	// A nil manager (auth unavailable, restore in flight) is skipped.
+	// Both auth managers' token-endpoint clients ride the same effective
+	// proxy, even when the rebuild above failed. Nil managers are skipped.
 	f.chatgptAuth.mu.Lock()
-	f.pushChatGPTManagerProxyClientLocked()
+	f.pushProviderManagerProxyClientLocked(&f.chatgptAuth)
 	f.chatgptAuth.mu.Unlock()
+	f.kimiAuth.mu.Lock()
+	f.pushProviderManagerProxyClientLocked(&f.kimiAuth)
+	f.kimiAuth.mu.Unlock()
 
 	if rebuildErr != nil {
 		return fmt.Errorf("proxy rebuild failed: %w", rebuildErr)
