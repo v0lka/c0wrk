@@ -181,7 +181,11 @@ func postFormURL(ctx context.Context, client *http.Client, profile Profile, form
 			req.Header.Set(name, value)
 		}
 	}
-	resp, err := client.Do(req)
+	bounded := *client
+	bounded.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	resp, err := bounded.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("providerauth: token request to %s failed: %w", endpoint, err)
 	}
