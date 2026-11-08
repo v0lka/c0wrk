@@ -4,6 +4,8 @@
 
 Accepted (add-only extension keys, plain observation truncation, the schema-less tool catalog, and the step-limit terminal mapping are superseded by [ADR-040](./040-e2s-stabilization.md))
 
+Amended by [ADR-083](./083-e2s-self-sufficiency.md): decision 4 (delegate-via-injection — the `conductorLauncher` + `DelegationRegistry` seam injected into `runE2SWithState` with an inert plan state) is removed entirely; E2S is self-sufficient and does not delegate. `delegate`/`cancel_delegation` join the plan-workflow tools in the always-applied catalog stripping, together with the blackboard step-store trio (`read_step_output`, `list_step_outputs`, `read_final_result`); `store_fact`, `search_facts` and `read_attachment` stay as E2S's external memory. The one-shot turn protocol, the `e2s_step` envelope, the Σ merge, the dispatch-through-`ToolRegistry.Execute` security model and the Execution State panel stand unchanged.
+
 ## Context
 
 Every execution mode c0wrk had until now — the Conductor's ReAct loop, goal mode's turn iteration, subagent runs — is **history-based**: the model's request grows with the trajectory. Compaction mitigates the growth late, but each turn still replays (a summarized) past, costing O(T²) cumulative tokens over a T-step run, and after an external state drift (a file changed underneath the agent, a tool side effect the transcript misremembers) history-based baselines hallucinate recovery context for several turns.

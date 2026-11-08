@@ -7,9 +7,13 @@ c0wrk wires sp4rk's MCP (Model Context Protocol) gateway into the orchestration 
 ## Key Files
 
 - `core/builder.go` — `NewOrchestratorBuilder` starts the gateway in `runMCPInit()` (a dedicated goroutine, gated by `mcpDone`, decoupled from `runAsyncInit`) and registers discovered tools into the core registry
-- `backend/frontend_api_mcp.go` — `GetMCPStatus` (live per-server status) / `UpdateMCPServers` (persist config + hot-reload, which calls `OrchestratorBuilder.ReconfigureMCP`) surface for the frontend MCP management UI
+- `core/builder_mcp.go` — `ReconfigureMCP` / `StopGateway` (both guarded by `mcpStopping`), `configToGatewayConfig` (the both-contexts-`disabled` dial skip) and `mcpServerModesFromConfig` (the builder's immutable mode snapshot)
+- `backend/frontend_api_mcp.go` — `GetMCPStatus` (live per-server status; `isMCPStartupPlaceholder` suppresses the config merge behind the synthetic `_gateway` entry) / `GetMCPMentionableServers` / `UpdateMCPServers` (persist config + hot-reload, which calls `OrchestratorBuilder.ReconfigureMCP`) surface for the frontend MCP management UI
+- `backend/config/mcp_mode.go` — the shared `auto`/`manual`/`disabled` enum, the legacy `mcp.servers.<name>.mode` fold, load normalization and the strict save gate
+- `backend/config/mcp_timeout.go` — `timeout` / `call_timeout` parsing, fallback resolution and the load-warning channel
 - `core/orchestrator_mcp_prepare.go` — synchronous durable intent preparation before send/resume execution
 - `core/orchestrator_mcp.go` — session-kind context resolution, per-context mode projection, and the gated set
+- `core/tools/mcp_gate.go` — `WithGatedMCPServers` / `GatedMCPServersFromContext`: the gated-complement carrier consulted by dispatch Gate 2b
 - `core/orchestrator_capabilities.go` — per-entry capability snapshot attachment shared by all three capability kinds
 - `backend/session/persistence_mcp.go` — transactional monotonic name union and ordered load; adapter and fork preserve task ownership
 - `core/tools/registry.go` — exposes the wrapped sp4rk `ToolRegistry` (via `r.ToolRegistry`) on which the sp4rk gateway registers MCP tools (see below)
@@ -86,7 +90,7 @@ Env vars are expanded as `${VAR}`. Transport types (stdio/http), schema sanitiza
 
 ### Per-server timeouts
 
-Each server entry accepts two optional duration keys (Go duration strings — a unit suffix is required, e.g. `60s`, `2m`, `500ms`):
+Each server entry accepts two optional duration keys (Go duration strings — a unit suffix is required, e.g. `60s`, `2m`, `500ms`; [ADR-063](../../decisions/063-mcp-tool-timeouts.md)):
 
 - `timeout` — bounds the server's **initialization handshake** (`initialize` + `tools/list`) and is the **default bound for every `tools/call`** on that server. Default **60s**.
 - `call_timeout` — optional **per-call override** for a single `tools/call`; unset inherits `timeout`, so a per-call wire timeout is always in effect.
@@ -129,7 +133,9 @@ registration, or one added by a config change while the task runs) stays
 
 The builder owns the current immutable mode map (per-context pairs, both-empty
 entries dropped), initialized from accepted configuration and replaced by
-`ReconfigureMCP` before gateway readiness/network work. `Build()` gives every
+`ReconfigureMCP` before gateway readiness/network work — and by
+`UpdateCapabilities`, the whole-snapshot republish `UpdateCapabilityModes`
+performs on a mode edit, which touches no gateway. `Build()` gives every
 session orchestrator a live snapshot provider
 (`OrchestratorConfig.MCPServerModesResolver`); direct constructors without a
 provider retain their static `MCPServerModes` fallback. The session's
@@ -211,11 +217,12 @@ threads mentions as `activeMCPServers` (`sendMessage` arg 5 → Go
 `SendMessage` → `HandleOptions.UserMCPServers`), and
 `PreprocessMessageText` strips plain and qualified MCP refs from the message
 text, catalog-gated and fail-closed like the other kinds. The `/` completion
-list renders an **MCP Servers** section between Subagents and Skills
-(Subagents → MCP Servers → Skills), listing the servers mentionable **in the
-active session's context** — every server not `disabled` there (a
-manual-in-context entry carries a "mention to enable" detail; a server
-disabled in the active context is hidden even when mentionable in the other).
+list renders an **MCP Servers** section between Subagents and Skills (section
+ranks: Commands 0 → Subagents 1 → MCP Servers 2 → Skills 3, ADR-096), listing
+the servers mentionable **in the active session's context** — every server not
+`disabled` there (a manual-in-context entry carries a "mention to enable"
+detail; a server disabled in the active context is hidden even when
+mentionable in the other).
 
 **Soft directive.** When one or more servers are mentioned, the system
 prompt gains a `## Requested MCP Servers` section (Conductor and E2S prompts
@@ -253,8 +260,9 @@ unchanged and still applies **on top** of the server gate.
 ## Related Specs
 
 - [sp4rk mcp-gateway](https://github.com/v0lka/sp4rk/blob/main/specs/domains/tool-system/mcp-gateway.md) — canonical Gateway/Server/mcp.Tool lifecycle, transports, schema sanitization
-- [../decisions/084-per-capability-chat-code-activation-modes.md](../../decisions/084-per-capability-chat-code-activation-modes.md) — the per-context capability-mode decision governing the modes this page documents
-- [../decisions/077-explicit-mcp-server-mentions.md](../../decisions/077-explicit-mcp-server-mentions.md) — the superseded single-mode decision (ADR-077); its mention grammar, task-scoped mention durability, and gated-complement mechanics carry over unchanged
+- [ADR-084](../../decisions/084-per-capability-chat-code-activation-modes.md) — the per-context capability-mode decision governing the modes this page documents
+- [ADR-077](../../decisions/077-explicit-mcp-server-mentions.md) — the superseded single-mode decision; its mention grammar, task-scoped mention durability, and gated-complement mechanics carry over unchanged
+- [ADR-063](../../decisions/063-mcp-tool-timeouts.md) — the per-server `timeout` / `call_timeout` decision and its unhealthy-mark policy
 - [../capabilities.md](../capabilities.md) — the cross-kind capability semantics (all three kinds, per chat/code context)
 - [../../decisions/076-unified-slash-mentions.md](../../decisions/076-unified-slash-mentions.md) — the unified `/`-mention grammar the MCP namespace joins
 - [README.md](README.md) — tool system overview

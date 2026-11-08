@@ -53,3 +53,20 @@ Design rules:
 - **A single on/off switch with fixed values.** Rejected — different small models benefit from different subsets; a fixed bundle would force an all-or-nothing trade-off and hide tunable thresholds behind a rebuild.
 - **Domain-specific tool allow-listing in `SelectTools`.** Rejected — relevance is the router's and the user's job; hardcoding "code needs X" would fight routing and age poorly. Selection stays purely semantic (union of router match + user pins + protected base + MCP).
 - **Putting injection-defense content into the Lite directive.** Rejected — it would require keeping two copies of the security-critical section in sync and risk the Lite copy drifting. Keeping it injected separately and unchanged is the safe constraint.
+
+## Historical Note
+
+2026-11-08 — successor state for the config keys and identifiers this record
+names; the decision above is unchanged.
+
+- The `small_llm.*` config keys named in Decision were renamed by
+  [ADR-043](./043-model-profiles-rename.md): the master toggle is
+  `model_profiles.enabled` (with `model_profiles.active_profile`), and the
+  variant sections are `essential_tools`, `system_prompt`, `sampling`,
+  `loop_hardening` and `context` under the `model_profiles:` section
+  (`backend/config/model_profiles.go`).
+- The `core/smallllm` package and `smallllm.SelectTools` named in Decision are
+  `core/modelprofiles` and `modelprofiles.SelectTools`
+  (`core/modelprofiles/tools_filter.go`) since the same rename.
+- `OrchestratorSystemLite` keeps its name and lives in
+  `core/prompts/prompts.go`.

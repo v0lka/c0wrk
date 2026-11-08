@@ -4,6 +4,10 @@
 
 Accepted
 
+Amended by [ADR-068](./068-embedded-llm-frontend-experimental-gate.md) in one incidental clause only: the "`experimental.enabled` gates only the E2S execution mode" scope claim ages once the embedded local model's frontend surfaces join that gate. The substantive decision — RESEARCH always on, never gated by `experimental.enabled`, no per-project toggle — stands unchanged.
+
+Amended by [ADR-114](./114-sidebar-surface-gates.md), carried forward unchanged by [ADR-115](./115-sidebar-pack-gates-reconcile-and-serialization.md): the "always seeded" invariant becomes **"seeded while the surface gate is on"**. The Settings → General sidebar surface gate `research.enabled` (default on) hides the Research tab and unseeds/reseeds the research packs, and every launch reconciles — seeding enabled surfaces' packs and unseeding disabled ones', serialized against the toggles on `researchSeedMu`. The always-on roots, the RPC surfaces and the discovery precedence (project-local `<workspace>/.agents/*` → c0wrk global `~/.c0wrk/.agents/*` → user `~/.agents/*`) stand unchanged.
+
 ## Context
 
 [ADR-051](./051-research-pack-reconciliation.md) solved the "seeded `study-paper` was shadowed by a same-named `~/.agents` copy" failure by moving the c0wrk packs INTO the project (`<workspace>/.agents/{skills,agents}`), reconciled on research enable and on every switch to a research-enabled project. That decision treated RESEARCH as an opt-in, project-local mode and deliberately refused to touch the global discovery order (its Alternatives considered and rejected the reorder).

@@ -10,8 +10,9 @@ c0wrk provides tool infrastructure for the agent on top of sp4rk's `Tool`/`ToolR
 - `core/tools/registry_canonical_reasons_test.go` — drift guard for the ADR-026 cross-repo contract: drives the real sp4rk builtin judges so a dropped/reworded `JudgeReasonCode` fails CI instead of silently making a canonical hard reason clearable
 - `core/tools/registry_shellanalysis_test.go` (+ `_unix`/`_windows` platform mirrors) — the flowsh digest contract (clean and escalated shell calls carry the digest to the strict-judge envelope; non-shell calls do not) and the behavioral backstop (the five canonical flowsh codes never pass a strict ALLOW on the interactive paths — the silent `judge` terminal is the one deliberate exception, ADR-053; ⊤ does) — see [ADR-052](../../decisions/052-flowsh-command-analysis.md)
 - `core/tools/registry_symlink.go` — symlink detection/traversal integration calling sp4rk `DetectSymlinksInToolInput`
+- `core/tools/registry_worktrees.go` — managed-worktree traversal gate (`worktreeTraversalHardReason`): a tool-call path argument resolving inside a `.worktrees` container reachable from the session roots is a hard reason carrying the canonical code `managed_worktree_traversal` ([ADR-080](../../decisions/080-session-worktrees.md))
 - `core/tools/builtin_registration.go` — `RegisterBuiltinTools` function + `BuiltinToolsConfig`
-- `core/tools/registry_unattended.go` — `ExecuteUnattended(ctx, name, input)`: second execution entry point, used by verify-on-edit; enforces structural input validation (`sdktools.ValidateToolInput`), disabled tools, and execute-group deny; never model-facing (see [../verify-on-edit.md](../verify-on-edit.md))
+- `core/tools/registry_unattended.go` — `ExecuteUnattended(ctx, name, input)`: second execution entry point, used by verify-on-edit; enforces structural input validation (`sdktools.ValidateToolInput`), disabled tools, execute-group deny, and the **canonical** hard safety reasons (judge, symlink, managed-worktree traversal — each signal's canonicality checked independently), attaching the flowsh digest for shell tools first; never model-facing (see [../verify-on-edit.md](../verify-on-edit.md))
 - `core/tools/askuser.go` / `core/tools/askuser_types.go` — c0wrk-specific `ask_user` tool + AskUser request/response types (moved out of sp4rk per ADR-011)
 - `core/toolnames.go` — tool name constants, `NoProjectDisabledTools`
 - `core/toolmanager/` — manages external binary dependencies (`rg`, `uv`, `markitdown`), auto-downloaded on first run (see ADR-010)
@@ -60,7 +61,7 @@ core ToolRegistry.Execute(ctx, name, input)
 ├─ 5. PostExecuteHook deferred (runs on every later return path)
 ├─ 6. PreExecuteHook (blocking gate, e.g., index ready)
 ├─ 7. Group policy == deny? → return error result (hard block, names the group)
-├─ 8. Gather safety signals once: for shell tools, attach the deterministic flowsh analysis first (AttachShellAnalysis → sdktools.AnalyzeShellCommandForJudge → WithShellAnalysis; the SDK Judge reads the criteria C1–C10 from ctx), then collect the tool Judge outcome (hard: blocklist / flowsh criteria / SSRF; soft: path containment, credential access) + symlink analysis (escape = hard; in-roots = not a concern; expansion suspicion removed — ADR-055)
+├─ 8. Gather safety signals once: for shell tools, attach the deterministic flowsh analysis first (AttachShellAnalysisForTool → sdktools.AnalyzeShellCommandForJudge / AnalyzeShellCommandForJudgeWithDialect → WithShellAnalysis; the SDK Judge reads the criteria C1–C10 from ctx, and the registered tool's DeclaredShellKind picks the dialect), then collect the tool Judge outcome (hard: blocklist / flowsh criteria / SSRF; soft: path containment, credential access) + symlink analysis (escape = hard; in-roots = not a concern; expansion suspicion removed — ADR-055) + managed-worktree traversal analysis (a path argument resolving inside another session's `.worktrees` container = hard, canonical; the session's own managed tree and out-of-root targets are exempt — ADR-080)
 └─ 9. Branch on the tool's GROUP policy:
       ├─ allow → hard reason ⇒ smartApproveOrConfirm (Hard) — the unified funnel,
       │           gated by the autonomy mode (security.autonomy_mode):
@@ -68,14 +69,15 @@ core ToolRegistry.Execute(ctx, name, input)
       │           attached as evidence; a canonical reason (blocklist, a flowsh
       │           control — exfil flow / privesc / system write / destructive
       │           out-of-roots write / download cradle —, SSRF, symlink escape,
-      │           unassessable input) is deterministically backstopped to confirm
+      │           managed-worktree traversal, unassessable input) is
+      │           deterministically backstopped to confirm
       │           even on ALLOW on the interactive paths (silent judge mode is the
       │           one deliberate exception: its ALLOW executes, audited); the ⊤
       │           criterion (command_unbounded_analysis) and the exec-scope criterion (command_exec_outside_roots) are non-canonical and may
       │           be cleared by a strict ALLOW
       │           soft reason ⇒ smartApproveOrConfirm (Soft): assisted mode may allow, else confirm
       │           clean ⇒ execute
-      ├─ deny → error result (step 8)
+      ├─ deny → error result (step 7)
       └─ user_confirm → local_write + auto_approve_workspace_writes + Judge.Allow ⇒ execute
                          hard reason ⇒ smartApproveOrConfirm (Hard) — same funnel + canonical backstop
                          otherwise the autonomy gate (assisted: ALLOW ⇒ execute, DENY ⇒ terminate
@@ -83,7 +85,7 @@ core ToolRegistry.Execute(ctx, name, input)
                          silent ⇒ terminal execute-or-deny, no card)
 ```
 
-The group policy resolution, auto-approval (session roots), and symlink gate are c0wrk's session-security layer — detailed in [../../architecture/security-model.md](../../architecture/security-model.md). The model, gate order, and migration are decided in [ADR-024](../../decisions/024-group-policies.md); the unified confirmation funnel (every escalation through one strict judge) and the canonical-reason deterministic backstop (interactive scope) in [ADR-026](../../decisions/026-smart-approve-unified-funnel.md); the autonomy-mode axis (`standard`/`assisted`/`silent`) and the silent terminals in [ADR-053](../../decisions/053-silent-mode.md).
+The group policy resolution, auto-approval (session roots), and the symlink and managed-worktree gates are c0wrk's session-security layer — detailed in [../../architecture/security-model.md](../../architecture/security-model.md). The model, gate order, and migration are decided in [ADR-024](../../decisions/024-group-policies.md); the unified confirmation funnel (every escalation through one strict judge) and the canonical-reason deterministic backstop (interactive scope) in [ADR-026](../../decisions/026-smart-approve-unified-funnel.md); the autonomy-mode axis (`standard`/`assisted`/`silent`) and the silent terminals in [ADR-053](../../decisions/053-silent-mode.md).
 
 ## Invariants
 
@@ -91,6 +93,7 @@ The group policy resolution, auto-approval (session roots), and symlink gate are
 - `system`-group tools bypass policy and judge checks — membership is declared on the tool itself (`ToolGroup: sdktools.GroupSystem` on `BaseTool`), not an out-of-band name set. The disabled-tool check (No Project mode) and task-context MCP server gate (Gate 2b) apply before the bypass, including to MCP tools declaring the system group. The MCP check uses source category plus server tag, so a server named `core` is gated while genuine built-ins stay exempt. `batch` is intercepted at the executor level before reaching the registry's `Execute()` path
 - A tool with an undeclared group matches no allow-list (fail-closed for group filtering, subagent budgets, verifier sets)
 - The symlink analysis runs during safety-signal gathering for every non-system tool call; only escapes out of the session roots are hard reasons — the gate is a pure literal-path extractor, so the former unresolvable/suspicious expansion escalation no longer exists (ADR-055)
+- The managed-worktree traversal analysis runs alongside it for every non-system tool call and keys on path-shaped argument names (`path`, `file_path`, `source`, `destination`, `target`); a target resolving inside a `.worktrees` container reachable from the session roots is a canonical hard reason, and the session's own managed tree stays exempt. Its hard reason yields only to an already-canonical judge/symlink reason (ADR-080)
 - MCP tools carry source category `mcp` (source tag = the MCP server's name); core built-in tools carry source category `core`
 - Disabled tools are blocked at execution time; `SetDisabledTools`/`DisabledTools` deep-copy the map to prevent concurrent mutation
 - The registry is thread-safe (sync.RWMutex)

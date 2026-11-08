@@ -2,7 +2,7 @@
 
 ## Role
 
-The `delegate` tool lets the Conductor launch one or more subagents to execute units of work in isolated ReAct loops, with DAG dependencies between them and a choice of blocking or async execution. It replaces the prior system-driven DAG execution (`executePlanWithSteps`) with an agent-driven invocation.
+The `delegate` tool lets the Conductor launch one or more subagents to execute units of work in isolated ReAct loops, with DAG dependencies between them and a choice of blocking or async execution. It replaces the prior system-driven plan-execute pipeline (removed by [ADR-012](../../decisions/012-conductor-orchestration-pipeline.md)) with an agent-driven invocation.
 
 Delegation is an **execution** mechanism, not a planning one. It has its own UI progress tracking via `SubAgentLaunch`/`SubAgentComplete` events emitted by sp4rk's `RunSubAgent`. The Conductor should NOT call `declare_plan` to display or mirror delegated tasks — `declare_plan` is for user roadmaps and approval gates only.
 
@@ -13,13 +13,13 @@ Delegation is an **execution** mechanism, not a planning one. It has its own UI 
 - `core/tools/delegate.go` — `delegate` tool implementation
 - `core/tools/cancel_delegation.go` — `cancel_delegation` tool (async cancellation)
 - `core/tools/delegation_registry.go` — Delegation Registry (active/completed delegations per Conductor run; the per-run in-memory view, not the durable record)
-- `core/units/units.go` — the durable per-unit record + `Ledger`/`Store` contract (`UnitRecord`, `UnitKind`, `UnitStatus`, `NewBlackboardLedger`, `units.NewLedger`) — see [ADR-048](../../decisions/048-unified-recovery-ledger.md)
+- `core/units/units.go` — the durable per-unit record + `Ledger`/`Store` contract (`UnitRecord`, `UnitKind`, `UnitStatus`, `units.NewLedger`) — see [ADR-048](../../decisions/048-unified-recovery-ledger.md)
+- `core/persistent_blackboard.go` — `NewBlackboardLedger`, the mainline ledger constructor over a `PersistableBlackboard` (task from `TaskID()`, store from the optional `UnitStoreProvider`, cached ledger preferred)
 - `core/conductor.go` — `conductorLauncher`, the single writer of unit lifecycle (`unitLedger()`, `markUnitRunning`, `persistUnitOutcome` → `recordUnitLedger`, `settleUnit`)
 - `core/unit_sink.go` — the ledger-bound sink for the goal verifier's isolated pass (namespace `goal_verification`, parent-linked under a `goal_verification` container unit)
 - `core/orchestrator.go` — `Resume` / `resumePausedWork` / `resumeUnits`: the ledger-driven settlement funnel
 - `github.com/v0lka/sp4rk/agent/subagent.go` — `RunSubAgent` / `RunSubAgentsParallel` (the primitive that runs an isolated executor in a goroutine)
-- `github.com/v0lka/sp4rk/orchestration/dag.go` — `FindReadySteps` and DAG traversal (reused for dependency resolution)
-- `github.com/v0lka/sp4rk/orchestration/types.go` — `Plan` and `PlanStep` types (reused as delegation task descriptors)
+- `github.com/v0lka/sp4rk/orchestration/types.go` — `Plan` and `PlanStep` types (reused as delegation task descriptors). The wave loops in `core/conductor.go` (`Launch`, `Execute`) select each ready wave themselves, so the engine's `orchestration.FindReadySteps` (dag.go) stays unused in c0wrk
 
 ## Behavior
 
@@ -38,7 +38,7 @@ Delegation is an **execution** mechanism, not a planning one. It has its own UI 
       "tools": ["local-read", "local-write", "execute"] | "all" | "read-only",
       "depends_on": ["del_0"],
       "mode": "blocking" | "async",
-      "max_steps": 50 | null,
+      "max_steps": 50 | 0,
       "allow_redelegate": false,
       "agent": "code-reviewer"
     }
@@ -48,7 +48,7 @@ Delegation is an **execution** mechanism, not a planning one. It has its own UI 
 
 | Field | Required | Description |
 | ----- | -------- | ----------- |
-| `tasks` | yes | Array of 1+ delegation tasks. Multiple tasks with no `depends_on` between them run in parallel via `RunSubAgentsParallel`. |
+| `tasks` | yes | Array of 1–16 delegation tasks (`maxDelegationBatchSize`; the schema's `maxItems` mirrors the constant). Multiple tasks with no `depends_on` between them form one wave and run concurrently under the shared `agents.max_parallel_subagents` limiter. |
 | `tasks[].id` | yes | Unique within this Conductor run. Used by `depends_on`, `read_step_output`, `cancel_delegation`. |
 | `tasks[].summary` | yes | Short label emitted to the UI plan panel. |
 | `tasks[].task` | yes | Full task description. Convention: What/How/Where/Acceptance Criteria (same format as the prior plan-step description, so existing UI rendering works unchanged). |
@@ -56,9 +56,9 @@ Delegation is an **execution** mechanism, not a planning one. It has its own UI 
 | `tasks[].tools` | no | Tool subset for the subagent, resolved by **capability group** (ADR-024). `"all"` (default) = full tool set minus Conductor-only tools; `"read-only"` = the `system ∪ local_read ∪ remote_read` groups, no MCP; array = group tokens (kebab-case: `execute`, `local-read`, `local-write`, `remote-read`, `remote-write`, `local-mcp`, `remote-mcp`, `system`) granted on top of the ALWAYS-included `system` group (finish, facts, checklist, meta tools). Unknown tokens fail closed — the delegation never launches. |
 | `tasks[].depends_on` | no | IDs of blocking delegations that must complete before this one starts. Used to express a DAG across multiple `delegate` calls within one Conductor run. `depends_on` can only reference **blocking** tasks — async tasks run in the background and cannot be depended upon. |
 | `tasks[].mode` | no | `"blocking"` (default): the tool result contains the subagent output. `"async"`: the tool result returns immediately with `delegation_id`; the Conductor reads results later via `read_step_output(id)`. |
-| `tasks[].max_steps` | no | Per-subagent ReAct iteration cap. Empty = derived from routing complexity (`complexity × 30`, same formula as the Conductor via `stepsPerComplexity`). A Subagent Profile's `max_steps` (when > 0) overrides this field and the default. |
-| `tasks[].allow_redelegate` | no | `true` grants the subagent the `delegate` and `cancel_delegation` tools (depth-capped by `OrchestratorConfig.MaxRedelegationDepth`, default 2). A Subagent Profile with `allow-redelegate: true` overrides this field to `true`. Default `false` (flat). |
-| `tasks[].agent` | no | Name of a Subagent Profile (`<workspace>/.agents/agents/<name>/AGENT.md`). When set, the launcher resolves the profile and applies it: the profile body replaces the orchestrator core directive (the shared project-context prefix is preserved via `buildSpecializedSystemPrompt`), the profile's tool preference / `max_steps` / `model` / `allow-redelegate` override the task fields, and the profile's `skills:` frontmatter (when present) is activated for the subagent (see [Profile Required Skills](#profile-required-skills), [ADR-037](../../decisions/037-agent-profile-skills.md)). Unknown name fails fast (delegate validation rejects it before any subagent launches). Empty = no profile (the legacy behavior). |
+| `tasks[].max_steps` | no | Per-subagent ReAct iteration cap. 0 or absent = derived from routing complexity (`complexity × 30`, same formula as the Conductor via `stepsPerComplexity`). A Subagent Profile's `max-steps` (when > 0) overrides this field and the default. |
+| `tasks[].allow_redelegate` | no | `true` grants the subagent the `delegate` and `cancel_delegation` tools (depth-capped by `OrchestratorConfig.MaxRedelegationDepth`, default 2). A Subagent Profile with `allow-redelegate: true` overrides this field to `true` (upgrade-only). Default `false` (flat). The grant reaches **blocking** tasks only: an async task always takes the `launchAsync` path, which runs under `subagentCtx` with no child registry, so `allow_redelegate` on an async task grants nothing. |
+| `tasks[].agent` | no | Name of a Subagent Profile (`<workspace>/.agents/agents/<name>/AGENT.md`). When set, the launcher resolves the profile and applies it: the profile body replaces the orchestrator core directive (the shared project-context prefix is preserved via `buildSpecializedSystemPrompt`), the profile's tool preference / `max-steps` / `model` / `allow-redelegate` override the task fields, and the profile's `skills:` frontmatter (when present) is activated for the subagent (see [Profile Required Skills](#profile-required-skills), [ADR-037](../../decisions/037-agent-profile-skills.md)). Unknown name fails fast (delegate validation rejects it before any subagent launches, and `buildSubAgentTask` re-resolves it at launch). A profile whose `capabilities.agents` snapshot is `disabled` is refused at launch (`agentDelegationBlocked`, fail-closed) — see [../capabilities.md](../capabilities.md). Empty = no profile (the legacy behavior). |
 
 #### Execution Flow
 
@@ -67,26 +67,41 @@ delegate.Execute(ctx, input)
 │
 ├─ 1. Parse input into a list of DelegationTask structs.
 │
-├─ 2. Validate:
-│     ├─ IDs unique within the Conductor run
-│     ├─ depends_on references exist (in the Registry or in this batch)
-│     ├─ no cycles in the combined DAG (existing + new tasks)
-│     └─ allow_redelegate depth does not exceed OrchestratorConfig.MaxRedelegationDepth
+├─ 2. Validate (validateDelegationTasks):
+│     ├─ batch size <= 16; id / summary / task present
+│     ├─ IDs unique within the call AND unregistered in this Conductor run
+│     ├─ mode is "blocking" | "async"
+│     ├─ the tools field parses ("all" / "read-only" / group-token array;
+│     │   an empty array or an unknown token fails the whole call)
+│     ├─ a named agent resolves via the AgentResolver
+│     ├─ depends_on references exist (in the Registry or in this batch),
+│     │   name no async task, and never the task itself
+│     └─ no cycles in the combined DAG (existing + new tasks)
+│     The allow_redelegate DEPTH cap is enforced per task at dispatch, not
+│     here (see Recursive Delegation).
 │
-├─ 3. Register all tasks in the Delegation Registry as "pending".
+├─ 3. Duplicate guard, then register: an id already settled on the blackboard
+│     (an auto-resume wave or a prior leg) is replayed through Register — which
+│     fires no spec sink — plus Complete so dependents still resolve, and is
+│     refused as fresh work ("already completed earlier in this task"); every
+│     other task registers as "pending" via RegisterTask, which fires the
+│     durable unit-ledger spec sink.
 │
-├─ 4. Resolve ready tasks (depends_on satisfied by completed delegations
-│     or tasks in this same batch that are blocking).
+├─ 4. Resolve the ready wave: a task is ready once every depends_on id is
+│     terminal AND neither failed nor cancelled in the Registry, so a
+│     dependency inside this batch runs in a LATER wave of the same call.
 │
 ├─ 5. For each ready task, build a SubAgentTask:
-│     ├─ Task description = task + injected context from depends_on outputs
-│     │   (truncated to OrchestratorConfig.MaxDependencyContextChars, shared
-│     │   across dependencies — same logic as the prior step dependency injection)
+│     ├─ Task description = buildTaskDescription: header + tool-call budget
+│     │   line + scope/checklist/acceptance sections + dependency context
+│     │   (tail-truncated to OrchestratorConfig.MaxDependencyContextChars,
+│     │   shared across dependencies — see Dependency Context Injection)
 │     ├─ Tool set = resolveTaskTools(tools field) — group-based:
 │     │   system group always included + granted groups (ADR-024)
-│     ├─ System prompt = buildSystemPrompt; when an agent profile is set,
-│     │   buildSpecializedSystemPrompt applies it (profile body replaces the
-│     │   core directive, shared project-context prefix preserved)
+│     ├─ System prompt = buildSystemPrompt; when an agent profile with a
+│     │   non-empty body is set, buildSpecializedSystemPrompt applies it
+│     │   (profile body replaces the core directive, shared project-context
+│     │   prefix preserved); a profile `model` override rides the caller
 │     ├─ Skills = when the profile declares `skills:`, resolve each name
 │     │   against the skill catalog (fail-closed) and merge with inherited
 │     │   active skills → `## Active Skills` in the prompt + a per-subagent
@@ -98,13 +113,22 @@ delegate.Execute(ctx, input)
 │     ├─ Executor = agent.NewExecutor with max_steps, circuit breakers, HITL,
 │     │   and the session pause checker
 │     ├─ Scoped emitter (subagent events flow to UI under the delegation ID)
-│     └─ If allow_redelegate: inject a child Delegation Registry and add
-│         delegate/cancel_delegation to the subagent tool set (depth-capped)
+│     └─ (blocking + allow_redelegate only) runRedelegBlocking wraps the built
+│         task: a child Delegation Registry in a per-task context, and
+│         delegate/cancel_delegation re-added to the tool set (depth-capped)
 │
-├─ 6. Dispatch:
-│     ├─ RunSubAgentsParallel for all ready tasks in this call
-│     └─ Each subagent runs in its own goroutine with its own context
-│        (child of the Conductor context, cancellable)
+├─ 6. Dispatch (runWave):
+│     ├─ async tasks → launchAsync: one goroutine each, based on the
+│     │   RUN-scoped asyncBaseCtx, returning { id, status: running } at once
+│     └─ blocking tasks → runBlocking, which splits them:
+│         ├─ non-redelegating → runRegularBlocking: buildSubAgentTask per
+│         │   task, then the shared-slot fan-out (runSubAgentsParallel)
+│         └─ allow_redelegate → runRedelegBlocking, one at a time, each with
+│             its own per-task context and child registry (depth-capped)
+│     Each subagent runs in its own goroutine with its own context (child of
+│     the Conductor context, cancellable). Every settled task goes through
+│     persistUnitOutcome (blackboard mirror + ledger checkpoint/status) and
+│     registry.Complete — or CompletePaused on a cooperative pause.
 │
 ├─ 7. Collect results:
 │     ├─ For each completed subagent:
@@ -117,10 +141,15 @@ delegate.Execute(ctx, input)
 │        fail immediately within this call ("dependencies could not be
 │        satisfied") and do not run
 │
-└─ 8. Return tool result:
-       ├─ All blocking: aggregate outputs of blocking tasks
-       ├─ All async: list of { delegation_id, status: "pending" | "running" }
-       └─ Mixed: blocking outputs + async IDs
+└─ 8. Return one markdown tool result (buildDelegateToolResult); a section
+       appears only when non-empty:
+       ├─ "## Delegation results" — per blocking task: its id with the
+       │   completed output, or the failed status + error
+       ├─ "## Async delegations launched" — each running id with a
+       │   read_step_output pointer
+       ├─ "## Delegations paused" — each cooperatively paused id (its partial
+       │   trajectory is checkpointed and resumes with the task)
+       └─ a trailing note naming the failed ids alongside a results section
 ```
 
 ### Profile Required Skills
@@ -156,7 +185,7 @@ This behavior is shared by direct `delegate` tasks and the subagents underlying 
 
 The blackboard `StepResult` above is the **in-memory value view** of a delegation. Durable recovery rides a second, purpose-built record: the **unit ledger**. See [ADR-048](../../decisions/048-unified-recovery-ledger.md) for why recovery was unified around it.
 
-**The record.** [`core/units`](../../../core/units/units.go) defines one durable record per execution unit — `UnitRecord{ID, TaskID, Namespace, Kind, ParentID, Depth, Status, Spec, Steps}` — with `Kind` ∈ `task | plan_step | subagent | goal_verification | tool` and `Status` ∈ `pending | running | paused | completed | failed | interrupted`. `Spec` is the opaque **rebuild spec** (enough to relaunch the unit without an LLM decision) and `Steps` is the opaque **resume checkpoint** (a JSON `[]agent.Step`). `UnitStatus.Terminal()` is the single definition of "finished" (`completed`/`failed` only); `interrupted` is a unit left unfinished by a crash/app exit and carries **no** resume intent — unlike `paused` — so it is deliberately **not** terminal and the funnel relaunches it fresh (a task cancellation maps to `interrupted` too, not `failed`, so an abandoned delegation is recovered identically whether the exit was graceful or a kill). `UnitStatus.InFlight()` (`pending`/`running`) is the "abandoned by a crash" predicate, and `UnitKind.Container()` (`task`/`goal_verification`) marks a record that groups other units rather than being relaunchable work. `Begin` is **idempotent for an existing record**: a re-registration preserves the durable `CreatedAt`, `Spec`, `Steps` and status it does not restate, and every by-id lookup is namespace-scoped, so a mainline ledger can never resolve (and settle) an isolated context's same-id row. One write/read API (`Ledger`: `Begin`/`Checkpoint`/`Settle`/`List`) over one store seam (`Store`: `SaveUnit`/`SettleUnitStatusIfInFlight`/`LoadUnits`), persisted to the additive `task_units` table in the session SQLite DB (`TaskStoreAdapter.UnitStore()`, cached on the persistent blackboard). Two constructors share one task scope: `NewBlackboardLedger(bb)` for the mainline and `units.NewLedger(store, taskID, namespace)` for an isolated context (the goal verifier). A store-less run degrades to an in-memory ledger.
+**The record.** [`core/units`](../../../core/units/units.go) defines one durable record per execution unit — `UnitRecord{ID, TaskID, Namespace, Kind, ParentID, Depth, Status, Spec, Steps, CreatedAt, UpdatedAt}` — with `Kind` ∈ `task | plan_step | subagent | goal_verification | tool` and `Status` ∈ `pending | running | paused | completed | failed | interrupted`. `Spec` is the opaque **rebuild spec** (enough to relaunch the unit without an LLM decision) and `Steps` is the opaque **resume checkpoint** (a JSON `[]agent.Step`). `UnitStatus.Terminal()` is the single definition of "finished" (`completed`/`failed` only); `interrupted` is a unit left unfinished by a crash/app exit and carries **no** resume intent — unlike `paused` — so it is deliberately **not** terminal and the funnel relaunches it fresh (a task cancellation maps to `interrupted` too, not `failed`, so an abandoned delegation is recovered identically whether the exit was graceful or a kill). `UnitStatus.InFlight()` (`pending`/`running`) is the "abandoned by a crash" predicate, and `UnitKind.Container()` (`task`/`goal_verification`) marks a record that groups other units rather than being relaunchable work. `Begin` is **idempotent for an existing record**: a re-registration preserves the durable `CreatedAt`, `Spec`, `Steps` and status it does not restate, and every by-id lookup is namespace-scoped, so a mainline ledger can never resolve (and settle) an isolated context's same-id row. One write/read API (`Ledger`: `Begin`/`Checkpoint`/`Settle`/`List`) over one store seam (`Store`: `SaveUnit`/`SettleUnitStatusIfInFlight`/`LoadUnits`), persisted to the additive `task_units` table in the session SQLite DB (`TaskStoreAdapter.UnitStore()`, cached on the persistent blackboard). Two constructors share one task scope: `NewBlackboardLedger(bb)` for the mainline and `units.NewLedger(store, taskID, namespace)` for an isolated context (the goal verifier). A store-less run degrades to an in-memory ledger.
 
 **One writer.** The `conductorLauncher` owns every transition: `wireDelegationSpecSink` registers via `ledger.Begin(...)`; `markUnitRunning` → `Settle(running)`; `persistUnitOutcome` writes the blackboard mirror **and** `recordUnitLedger` (`Checkpoint(steps)` + `Settle(paused|failed|completed)`); `settleUnit` records an outcome with no step result (build failure, cancellation, unsatisfiable dependency). Wired at every plan-step, blocking-delegate, redelegation and async-delegate site. A goal-verification pass writes through the ledger-bound [`unitSink`](../../../core/unit_sink.go) in the `goal_verification` namespace, parent-linked under a `goal_verification` container unit.
 
@@ -165,7 +194,7 @@ The blackboard `StepResult` above is the **in-memory value view** of a delegatio
 | Ledger status | Resume action |
 | ------------- | ------------- |
 | `paused` | relaunch **seeded** from the checkpoint (lifted onto the blackboard so `buildSubAgentTask` seeds the subagent) |
-| `not-started` / `running` / `interrupted` | relaunch **fresh** (the former *"interrupted ⇒ mark failed, never relaunch"* branch is **gone**) |
+| `pending` / `running` / `interrupted` | relaunch **fresh** (the former *"interrupted ⇒ mark failed, never relaunch"* branch is **gone**) |
 | `completed` / `failed` | **replay** into the wave registry so dependency resolution sees them — never re-run |
 
 Container kinds (`task`, `goal_verification`), plan-step units (owned by the plan arm) and tool units are skipped. Units recorded in an **isolated namespace** (the goal verifier's) are skipped as well: an isolated pass is re-derived by the loop that owns it, so relaunching it from the mainline funnel would write its outcome onto the **live task blackboard** (inverting the run-time isolation guarantee) and duplicate work nobody consumes. Its durable status is still surfaced through `work_units`. The terminal replay is scope-filtered per group, and a registration collision is logged rather than swallowed. Each group relaunches into its own delegation registry created at the unit's recorded depth (`NewDelegationRegistryWithDepth`), so a relaunched delegation resumes at its real position in the re-delegation hierarchy — a pause/resume cycle never grants extra redelegation levels. The wave settles deterministically before the Conductor's first LLM call: even an originally async delegation relaunches blocking-in-wave (async-ness was a property of the original run). Before classifying, a unit's ledger status is **reconciled with the other durable evidence**: the blackboard outcome wins when it exists (pause sentinel → `paused`, error → `failed`, success → `completed`) and a stored checkpoint paired with a non-terminal status is treated as `paused` — because `persistUnitOutcome` writes the blackboard first and the ledger second (both best-effort), a crash between the two writes must not make the funnel relaunch completed work fresh or discard a valid checkpoint. A relaunch that pauses again re-checkpoints the wave (unchanged).
@@ -177,8 +206,9 @@ Container kinds (`task`, `goal_verification`), plan-step units (owned by the pla
 ```
 cancel_delegation.Execute(ctx, { "id": "del_3" })
 │
-├─ Look up the delegation in the Registry
-├─ If "completed": return success (no-op)
+├─ Look up the delegation in the Registry (an unknown id is an error result)
+├─ If already terminal ("completed" | "failed" | "cancelled" | "paused"):
+│   return success with "already <status>; no action taken" (no-op)
 ├─ If "pending" or "running": cancel the subagent context
 │   └─ context-tree cancellation propagates to the subagent's Executor.Run
 │      and any child delegations
@@ -192,10 +222,13 @@ Per-Conductor-run registry tracking all delegations. Injected into the Conductor
 
 ```go
 type DelegationRegistry struct {
-    mu        sync.Mutex
+    mu          sync.Mutex
     delegations map[string]*Delegation
+    order       []string // registration order; All() replays it, entries are never removed
     cancelFuncs map[string]context.CancelFunc
     depth       int
+    parentID    string               // stamps child-registry specs with the delegating step ID
+    specSink    func(DelegationSpec) // durable unit-ledger writer, fired per RegisterTask
 }
 
 type Delegation struct {
@@ -216,7 +249,9 @@ Operations:
 
 | Operation | Purpose |
 | --------- | ------- |
-| `Register(id, summary, dependsOn, mode)` | Add a new delegation as "pending" (errors on duplicate ID) |
+| `SetSpecSink(parentID, sink)` | Wire the durable unit-ledger writer (installed before any registration; must not block) |
+| `RegisterTask(t)` / `RegisterTaskKind(kind, t)` | Add a delegation — or a `plan_step` unit — as "pending" AND fire the spec sink; the registration path used by the delegate tool and the plan wave |
+| `Register(id, summary, dependsOn, mode)` | Add a new delegation as "pending" with NO spec sink (errors on duplicate ID) — the delegate duplicate-guard replay path |
 | `Start(id, cancelFunc)` | Mark "running", store the cancellation handle |
 | `Complete(id, output, err, steps)` | Mark "completed" or "failed", store output/error/steps |
 | `CompletePaused(id, output, steps)` | Mark "paused" (a cooperative-pause checkpoint distinct from `Complete`), store the partial trajectory/steps |
@@ -275,20 +310,29 @@ Every dispatch path — the plan wave, the blocking fan-out (`runSubAgentsParall
 Before a subagent runs, outputs from its `depends_on` delegations are injected into its task description (`conductorLauncher.buildTaskDescription`):
 
 ```
-subagent task = task field + "\n## Context from previous delegations\n"
-  + For each dep in depends_on (in declaration order):
-      "\n### [{dep.ID}]: {dep.Summary}\n{dep.Output}\n"
+subagent task description =
+    "[Delegation {id}]" header ("· agent: {name}" when a profile is set) + task field
+  + "Tool call budget: {maxSteps} iterations." + the one-delegated-task scope warning
+  + "## Checklist" directive (call update_checklist with step_id omitted —
+      RunSubAgent puts the delegation id in the subagent context, so the
+      update resolves step-scoped — and report progress per item)
+  + "## Acceptance Criteria" (only when the task lists any) + "## Pre-Finish Verification"
+  + "## Context from previous delegations"
+      + for each dep in depends_on (declaration order, non-empty Output only):
+          "\n### [{dep.ID}]: {dep.Summary}\n{dep.Output}\n"
+      + a read_step_output pointer for the full outputs
+  + "Pass your result through the finish tool."
 ```
 
-The **combined** context is tail-truncated to `OrchestratorConfig.MaxDependencyContextChars` (default 8000), shared across all dependencies (not divided per-dependency), and aligned forward to a UTF-8 rune boundary so the tail does not begin inside a multi-byte sequence.
+Dependencies with an empty output contribute nothing. The **combined** context is tail-truncated to `OrchestratorConfig.MaxDependencyContextChars` (default 8000, also the fallback for a non-positive value), shared across all dependencies (not divided per-dependency), and aligned forward to a UTF-8 rune boundary so the tail does not begin inside a multi-byte sequence.
 
 ## Error Handling
 
-- **Subagent returns `Finished: false`**: stored as `Status: "failed"` with the abort reason as the error; the `delegate` tool result for that task has `isError: true` with the abort reason. The Conductor decides whether to retry, reflect, or finish.
+- **Subagent returns `ExecutorResult.Finished` false**: `RunSubAgent` converts it into `SubAgentResult.Error` (the executor's `AbortReason`, else its `Output`, else "step execution did not complete within max steps"), so the delegation is stored as `Status: "failed"` with that reason. The `delegate` tool result renders the failure as text — a `Status: failed` + `Error: <reason>` block for the task plus a trailing note naming the failed ids — with `ToolResult.IsError` false and a nil tool error. The Conductor decides whether to retry, reflect, or finish.
 - **Subagent returns error**: same as above.
 - **Subagent context cancelled** (via `cancel_delegation` or parent cancellation): stored as `Status: "cancelled"`; no error propagated to the Conductor (cancellation is intentional).
 - **Paused checkpoint cannot seed the ContextManager**: `buildSubAgentTask` returns a descriptive error before launch; the checkpoint remains intact and is not replaced by a fresh run.
-- **Validation failure** (duplicate ID, cycle, depth exceeded): the `delegate` tool call returns `isError: true` with a descriptive message; no subagents launch.
+- **Validation failure** (duplicate ID, cycle, unsatisfiable `depends_on`, unknown agent, malformed `tools`): the `delegate` tool call returns `sdktools.ErrorResult` (`IsError: true`) with a descriptive message; no subagents launch. The `allow_redelegate` DEPTH cap is enforced later, at dispatch: `runRedelegBlocking` fails that one task (`Status: "failed"` with the cap error, reported as text) while the rest of the batch still runs.
 - **Dependency failed**: a task whose `depends_on` includes a failed or cancelled delegation fails immediately within the same `delegate` call (Launch) with reason "delegation del_X: dependencies could not be satisfied"; it is marked "failed" and does not run. There is no later-trigger path — unsatisfiable pending tasks do not linger awaiting a future `delegate` call or `read_step_output`.
 
 ## Invariants
@@ -299,13 +343,13 @@ The **combined** context is tail-truncated to `OrchestratorConfig.MaxDependencyC
 - A subagent never shares its `ContextManager` with the Conductor or with other subagents.
 - Every subagent Executor receives the session pause checker; a cooperative pause stores the subagent's partial trajectory in its blackboard `StepResult` with `agent.ErrPaused`.
 - A resumed paused subagent seeds the same checkpoint into both a `StepSeedable` ContextManager and the Executor; step numbering and the returned trajectory continue from the checkpoint. A non-seedable ContextManager fails task construction before launch.
-- The durable **unit ledger** is the recovery source of truth. The `conductorLauncher` is its single writer; `Resume` enumerates it and settles every non-terminal **mainline** unit uniformly (paused → relaunch seeded, not-started/running/**interrupted** → relaunch fresh, terminal → replay), reconciling each ledger status against the blackboard outcome and any stored checkpoint first. An ISOLATED context's units (the goal verifier's namespace) are never relaunched by that funnel — the loop that owns them re-derives the pass — so an isolated outcome can never land on the live task blackboard. An `interrupted` unit is never marked failed without a relaunch attempt, and a cancellation is recorded as `interrupted` (not `failed`) so abandoned work is recovered on either kind of exit (see [Durable Unit Ledger and Resume Relaunch](#durable-unit-ledger-and-resume-relaunch)).
+- The durable **unit ledger** is the recovery source of truth. The `conductorLauncher` is its single writer; `Resume` enumerates it and settles every non-terminal **mainline** unit uniformly (paused → relaunch seeded, pending/running/**interrupted** → relaunch fresh, terminal → replay), reconciling each ledger status against the blackboard outcome and any stored checkpoint first. An ISOLATED context's units (the goal verifier's namespace) are never relaunched by that funnel — the loop that owns them re-derives the pass — so an isolated outcome can never land on the live task blackboard. An `interrupted` unit is never marked failed without a relaunch attempt, and a cancellation is recorded as `interrupted` (not `failed`) so abandoned work is recovered on either kind of exit (see [Durable Unit Ledger and Resume Relaunch](#durable-unit-ledger-and-resume-relaunch)).
 - The `system` group (agent-infrastructure/meta tools) is always included in a subagent's toolset regardless of the `tools` field; toolsets resolve from capability groups via `resolveTaskTools` (`core/conductor.go`) — see [ADR-024](../../decisions/024-group-policies.md).
-- `delegate`, `cancel_delegation` are available to a subagent only when `allow_redelegate` is true; `declare_plan` and `reflect` remain Conductor-only.
+- `delegate`, `cancel_delegation` are available to a subagent only when `allow_redelegate` is true; every launch path strips the Conductor-only tools AND the goal-loop actor tools (`stripSubagentTools` = `StripGoalModeTools(stripConductorOnlyTools(...))`), so `declare_plan`, `execute_plan`, `reflect`, `propose_goal`, `declare_goal_status` and `declare_verification` never reach a subagent.
 - Recursive delegation depth never exceeds `OrchestratorConfig.MaxRedelegationDepth`.
 - The Delegation Registry is scoped to a single Conductor run (or a single subagent run for child registries); it does not persist across sessions.
 - `finish` with pending async delegations is rejected: the executor's finish guard (`Executor.SetFinishGuard`, installed by the sp4rk Conductor) errors while async delegations are pending, and the executor injects a nudge and retries rather than accepting finish. Finish is accepted only once each pending delegation has been cancelled or completed; there is no implicit join/wait.
-- Subagent success requires `result.Finished && !DetectToolCallSyntaxInContent(result.Output)` (defense-in-depth, unchanged from the prior subagent logic).
+- Subagent success requires `result.Finished` with NEITHER `result.Output` NOR `result.Summary` matching `DetectToolCallSyntaxInContent` (a stop-tool termination carries the model's prose in `Summary` while `Output` holds only the tool's confirmation) — defense-in-depth inside sp4rk's `RunSubAgent`.
 
 ## Related Specs
 

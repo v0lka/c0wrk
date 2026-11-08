@@ -65,13 +65,16 @@ Single conversion point: `backend/configadapter.go`
 config.Config (backend/config package)
          │
          ▼
-ToBuilderConfig(cfg) → core.BuilderConfig
+ToBuilderConfig(cfg, modelProfilesCatalog, logger...) → core.BuilderConfig
          │
          ▼
 core.NewOrchestratorBuilder(builderCfg, askUserFunc, planApprovalFunc, logger)
 ```
 
-All config field mapping happens in this one function. When adding config fields:
+All config field mapping happens in this one function. The third parameter is
+an optional variadic `logger ...*slog.Logger`: residual inconsistencies a
+programmatic (load-bypassing) config can carry are logged instead of silently
+ignored — the load pipeline already warns for the normal path. When adding config fields:
 
 1. Add to `backend/config` struct (YAML parsing)
 2. Add to `core.BuilderConfig` if it needs to reach core
@@ -153,7 +156,7 @@ and direct-constructor fallback are defined in [Factory Pattern](#factory-patter
 
 The session manager never touches core internals — it treats the Orchestrator as a black box with `HandleMessage()` and `Resume()` as its entry points.
 
-**`TaskStoreAdapter` store-call deadline.** `core.TaskPersistence` methods take no ctx, so every backend adapter store call MUST be deadline-bounded (`storeCallTimeout` in `backend/session/task_adapter.go`, the same bound the restore head-reads use): all calls share the app's single SQLite pool, and an unbounded pool-wait parks the synchronous terminal finalizers (`CompleteTask`/`FailTask`/`CancelTask`) — the task UI stays 'running' forever.
+**`TaskStoreAdapter` store-call deadline.** Most `core.TaskPersistence` methods take no ctx, so every such backend adapter store call MUST be deadline-bounded (`storeCallTimeout` in `backend/session/task_adapter.go`, the same bound the restore head-reads use): all calls share the app's single SQLite pool, and an unbounded pool-wait parks the synchronous terminal finalizers (`CompleteTask`/`FailTask`/`CancelTask`) — the task UI stays 'running' forever. `PersistMCPMentions` and `LoadMCPMentions` are the exception: the adapter forwards the caller's request context to `TaskStore.SaveMCPMentions` / `LoadMCPMentions`, so those two carry no adapter-imposed bound.
 
 ## Event Emission
 
@@ -164,6 +167,48 @@ Backend implements `core.Emitter`:
 3. Emits to frontend via Wails `runtime.EventsEmit()`
 
 The emitter implementation lives in `backend/session/` (not in core).
+
+## Initialization
+
+Wiring order at startup, from the process entry to a per-session orchestrator.
+The phase map, the per-phase budgets and the background-vs-critical rule are
+documented in [../architecture/data-flow.md](../architecture/data-flow.md);
+this section states only the boundary crossings.
+
+```
+main.go → desktop.NewApp() → wails.Run{OnStartup: app.Startup}
+  │
+  ▼  desktop/startup.go Startup — numbered phases, bodies in desktop/startup_phases.go
+  │    Phase 0  resolve the agent directory (needed for logger paths)
+  │    Phase 1  shell environment + logger            (initLogger)
+  │    Phase 2  config + dependencies + tools         (initConfigAndDeps, initTools)
+  │    Phase 3  database + terminal manager           (initDatabase, initTerminalManager)
+  │    Phase 4  stores + project/session preload      (initStores)
+  │    Phase 5  callbacks + Application + FrontendAPI (backend.NewApplication, then
+  │             initEmbeddedLLM / initChatGPTAuth / initKimiAuth / initWebAccess)
+  │    Phase 6  macOS power-state wake recovery, then the background starters
+  │             (startMCPReadyNotifier, startUpdateCheckerBackground,
+  │              startAutoFetchBackground)
+  ▼
+config.Load / config.ResolveAndLoad          (backend/config, Phase 2)
+  ▼
+backend.NewApplication(ApplicationConfig)    (backend/application.go, Phase 5)
+  │    step 1: the event persister (SQLite persistence, separate from UI
+  │    emission); then the stores and the SessionManager
+  ▼
+ToBuilderConfig(cfg, modelProfilesCatalog, logger...)   (backend/configadapter.go — see Config Adapter)
+  ▼
+core.NewOrchestratorBuilder(builderCfg, askUserFunc, planApprovalFunc, logger)
+  ▼
+OrchestratorFactory closure → Build() per session   (see Factory Pattern)
+```
+
+`desktop` supplies the callbacks the backend cannot own because they need the
+Wails context (`UIEmitFunc`, `AskUserFunc`, `PlanApprovalFunc`, `ConfirmFunc`,
+`HITLHandler`); `backend` supplies everything else and is the only layer that
+constructs `core`. `BuilderConfig.MarkitdownPythonPath` is injected as a closure
+in `backend/application.go` rather than mapped by `ToBuilderConfig` (see the
+Config Adapter exception).
 
 ## Data Flow Across Boundary
 
@@ -187,7 +232,7 @@ The emitter implementation lives in `backend/session/` (not in core).
 | Managed venv interpreter (vision conversion) | backend → core | `BuilderConfig.MarkitdownPythonPath` — closure over `toolmanager.VenvPythonPath`, injected in `backend/application.go` (NOT via `ToBuilderConfig`); lazily probed at first converter init because the tool-manager installs the venv asynchronously after startup |
 | Available tools config | backend → core | `BuiltinToolsConfig`. Per-tool truncation via `BuilderConfig.ToolLimits.PerToolTruncation`. |
 | No Project mode        | backend → core | `Orchestrator.SetNoProjectMode()` (disables `semantic_search` — no vector index without a project) |
-| Tool cache config      | backend → core | `BuilderConfig.ToolResultBudget.CacheTTLSeconds` |
+| Tool cache config      | backend → core | `BuilderConfig.Executor.ToolResultBudget.CacheTTLSeconds` |
 | Security policies (incl. the autonomy posture) | backend → core | `BuilderConfig.Security` (carries `Groups map[string]BuilderGroupPolicy` — the group-policy schema, ADR-024 — plus `AutonomyMode` — the `security.autonomy_mode` posture `standard`/`assisted`/`silent` that replaced the former Smart Approve / silent-master-switch booleans, ADR-053 — `SilentMode` (the sub-policy container, live only in `silent`), `AutoApproveWorkspaceWrites`, `InjectionDefenseEnabled`) |
 | Execution result       | core → backend | `*HandleResult`                          |
 | Lifecycle events       | core → backend | `Emitter` method calls                   |
@@ -210,7 +255,7 @@ The emitter implementation lives in `backend/session/` (not in core).
 - Changing `HandleResult` fields → update session event emission in backend
 - Changing `Emitter` interface → update backend emitter implementation
 - Adding new `OrchestratorBuilder` method → update `backend/application.go` if exposed to frontend
-- Changing tool config types → update `BuiltinToolsConfig` re-exports in `core/tools/builtin_registration.go`
+- Changing tool config types → update the `BuiltinToolsConfig` fields in `core/tools/builtin_registration.go` (they name the sp4rk `builtins`/`sdktools` types directly; the struct carries no re-exports, ADR-008)
 - `vectorindex.ManagerConfig` no longer accepts model-path fields (`ModelPath`, `TokenizerPath`, `LibraryPath`, `MaxSeqLength`, `HiddenDim`); caller is now responsible for embedder lifecycle via `EmbeddingFunc` + `CloseFn`
 - `core/tools` AskUser* types are c0wrk-specific; import directly from `core/tools`
 - Adding `SessionPlansDir` to `HandleOptions` → update session manager `HandleOptions` construction in `backend/session/manager_execution.go`

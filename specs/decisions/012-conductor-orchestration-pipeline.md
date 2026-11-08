@@ -330,3 +330,18 @@ skill works because the Conductor has the tools and owns the loop.
 - [../domains/orchestration/conductor.md](../domains/orchestration/conductor.md) — Conductor component detail
 - [../domains/orchestration/delegation.md](../domains/orchestration/delegation.md) — delegate tool and async delegation registry
 - [../contracts/conductor-tools.md](../contracts/conductor-tools.md) — Conductor tool surface contract
+
+## Historical Note
+
+2026-11-08 — successor state for the paths and identifiers this record names;
+the decision above is unchanged.
+
+- `core/plan_review.go` and its `HandlePlanReview` stage (named in Decision) no
+  longer exist as a separate file: the serialization and approval-callback
+  logic moved into the `declare_plan` tool exactly as the Decision states, and
+  lives in `core/tools/declare_plan.go`.
+- The `handleWrapUpNudge` heuristic (named in Decision) left c0wrk in the SDK
+  extraction (commit `5a453669`, 2026-07-11) and now lives engine-side in sp4rk
+  under the same name, as the `Executor` method `handleWrapUpNudge`
+  (`agent/executor_run.go`); the two nudge texts it injects are the constants
+  `executorWrapUpNudge` and `executorWrapUpNudgeActive` (`agent/executor.go`).

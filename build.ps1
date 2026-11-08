@@ -425,7 +425,7 @@ Targets:
   bench-startup          startup benchmark (BenchmarkStartupCriticalPath)
   lint                   fmt-check + golangci-lint run + frontend npm run lint
   fmt-check              gofmt -l check
-  vulncheck              govulncheck ./...
+  vulncheck              pinned govulncheck via internal/vulncheck + reviewed allowlist
   dev-desktop            wails dev (hot-reload)
   dev-frontend           Vite dev server only
   fetch-onnx             install ONNX Runtime (CPU) next to the binary

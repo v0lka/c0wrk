@@ -7,7 +7,7 @@ The ReAct loop primitive (Thought → Action → Observation) is a **sp4rk engin
 ## Key Files
 
 - `core/conductor.go` — Conductor entry point: builds system prompt + tool set, injects the Delegation Registry, launches an `Executor.Run` as the Conductor
-- `core/tools/delegate.go` — `delegate` tool: builds and launches `Executor.Run` instances as subagents via `github.com/v0lka/sp4rk/agent.RunSubAgent`
+- `core/tools/delegate.go` — `delegate` tool: validates the batch and hands it to the `DelegationLauncher` in context; the subagent executors are built and launched by `conductorLauncher` (`core/conductor.go`) through `github.com/v0lka/sp4rk/agent.RunSubAgent`
 - `core/conductor.go` — `resolveTaskTools` (group-based subagent toolset resolution: `all` | `read-only` | group-token list; the `system` group is always included — ADR-024)
 
 Engine files (`github.com/v0lka/sp4rk/agent/executor.go`, `executor_run.go`, `subagent.go`, `events.go`, `github.com/v0lka/sp4rk/tools/builtins/batch.go`) are documented in [the sp4rk executor spec](https://github.com/v0lka/sp4rk/blob/main/specs/domains/orchestration/executor.md).
@@ -17,18 +17,20 @@ Engine files (`github.com/v0lka/sp4rk/agent/executor.go`, `executor_run.go`, `su
 ### Callers
 
 ```
-Conductor (core/conductor.go)
-  └─ Executor.Run(ctx, conductorTools, cm)         // owns the task
-       └─ tool_call: delegate({ tasks: [...] })
-            └─ RunSubAgent(ctx, ...)                // per task
-                 └─ Executor.Run(ctx, subagentTools, cm)  // isolated ReAct loop
+RunConductor (core/conductor.go)
+  └─ orchestration.Conductor.Run → Executor.Run(ctx, conductorTools, cm)  // owns the task
+       └─ tool_call: delegate({ tasks: [...] })        // core/tools/delegate.go
+            └─ conductorLauncher.Launch → runWave
+                 ├─ launchAsync | runRegularBlocking | runRedelegBlocking
+                 └─ agent.RunSubAgent(ctx, ...)          // per task
+                      └─ Executor.Run(ctx, subagentTools, cm)  // isolated ReAct loop
 ```
 
-The Executor is the same primitive in both cases. The difference is the tool set, system prompt, and context — assembled by the caller (Conductor entry point or `delegate` tool), not by the Executor itself. See [conductor.md](conductor.md) and [delegation.md](delegation.md) for how callers configure the Executor.
+The Executor is the same primitive in both cases. The difference is the tool set, system prompt, and context — assembled by the caller (`RunConductor` for the Conductor, `conductorLauncher.buildSubAgentTask` for a subagent), not by the Executor itself. See [conductor.md](conductor.md) and [delegation.md](delegation.md) for how callers configure the Executor.
 
 ### Non-Cacheable Meta-Tools (`AddNonCacheableTools`)
 
-c0wrk registers consumer-specific meta-tools (`delegate`, `cancel_delegation`, `declare_plan`, `execute_plan`, `reflect`, `declare_step_complete`, `ask_user`) as non-cacheable via `Executor.AddNonCacheableTools`. These tools bypass `ToolResultCache` and Stage-1 truncation (their results are not large outputs worth fragmenting). The names are also passed to the sp4rk Conductor's `ConductorConfig.NonCacheableTools`. The default non-cacheable set (`tool_result_read`, `finish`, `batch`, etc.) is an engine concern — see the sp4rk executor spec.
+c0wrk registers consumer-specific meta-tools (`delegate`, `cancel_delegation`, `declare_plan`, `execute_plan`, `reflect`, `declare_step_complete`, `ask_user`) as non-cacheable via `Executor.AddNonCacheableTools`. Non-cacheable means EAGER caching is skipped (these results are small), not that they escape truncation: a non-cacheable result truncated at Stage 1 (per-tool line/byte limits) or Stage 2 (the token budget) is cached on demand and its hash rides the truncation notice, so the dropped portion stays recoverable via `tool_result_read`. The names are also passed to the sp4rk Conductor's `ConductorConfig.NonCacheableTools`. The default non-cacheable set (`tool_result_read`, `finish`, `update_checklist`, `store_fact`, `search_facts`, `read_step_output`, `list_step_outputs`, `read_final_result`, `read_attachment`, `batch`) is an engine concern — see the sp4rk executor spec.
 
 ### Group-Based Subagent Toolsets
 
@@ -40,11 +42,21 @@ c0wrk registers consumer-specific meta-tools (`delegate`, `cancel_delegation`, `
 
 Unknown tokens fail closed (profile parser `ParseError`, delegate-task validation error, or resolver error — the delegation never launches with a silently widened/narrowed toolset).
 
-Mode-disabled tools (e.g. `glob`/`ripgrep`/`semantic_search` in No-Project/CHAT mode) are filtered out at selection time. The Conductor-only tools (`delegate`, `cancel_delegation`, `declare_plan`, `execute_plan`, `reflect`) are stripped from subagents via `stripConductorOnlyTools`; `delegate`/`cancel_delegation` are re-added only when `allow_redelegate` is true (depth-capped).
+Mode-disabled tools are filtered out at selection time (`stripDisabled`): in No-Project/CHAT mode that is `semantic_search` alone — `ripgrep` and `glob` stay available. MCP tools gated off for the task are dropped from the same list (`stripGatedMCPTools`, applied over `stripDisabled`'s output). Every branch then ends in `stripSubagentTools`, which removes the Conductor-only tools (`delegate`, `cancel_delegation`, `declare_plan`, `execute_plan`, `reflect`) plus the goal-loop actor tools (`propose_goal`, `declare_goal_status`, `declare_verification`); `runRedelegBlocking` re-adds `delegate`/`cancel_delegation` with their real registry schemas only when `allow_redelegate` is true (depth-capped).
+
+### Tool-Call Ceiling, Result Cache and Truncation Wiring
+
+The engine owns the mechanisms; c0wrk owns the wiring and the config surface:
+
+- **Per-tool-call ceiling** — `timeouts.toolCallTimeout` (seconds; default 300, `0` disables) reaches the main executor as `orchestration.ConductorConfig.ToolCallTimeout` and every subagent executor through `conductorLauncher.configureExecutor` → `Executor.SetToolCallTimeout`. An expiry ends the run with an error naming the tool that `errors.Is` matches against `agent.ErrToolTimeout` (the sp4rk Conductor maps it to `ExecutionStatusFailed`). The same value is mirrored onto the session tool registry so a user-confirmation wait is bounded just under the ceiling instead of tripping it.
+- **Exempt set** — `timeouts.toolCallTimeoutExemptTools` replaces the ceiling's exempt tool-NAME set wholesale (`Executor.SetToolCallTimeoutExempt`); leaving it unset keeps sp4rk's `agent.DefaultToolCallTimeoutExemptTools()` (`ask_user`, `declare_plan`, `delegate`, `execute_plan`, `propose_goal`). The E2S loop carries its own deliberately non-configurable exempt set (`ask_user`, `delegate`).
+- **Result cache and Stage-1 truncation** — one session-lifetime `agent.ToolResultCache` (TTL from `executor.tool_result_budget.cacheTTLSeconds`) is threaded as `ConductorConfig.ToolCache` and installed on subagents via `SetToolCache`; per-tool Stage-1 limits come from `toolLimits.perToolTruncation.<tool>` (`{maxLines, maxBytes}`) via `ConductorConfig.PerToolTruncation` / `SetPerToolTruncation`; the token budget rides `ConductorConfig.ToolResultBudget`.
+
+See [../tool-system/builtins.md](../tool-system/builtins.md) for the tool-side limits and [../../contracts/core-sp4rk.md](../../contracts/core-sp4rk.md) for the engine surface.
 
 ### Model Profiles Loop Hardening (c0wrk threshold override)
 
-When the active model profile's `loop_hardening` variant is on (master `model_profiles.enabled` AND the profile's `loop_hardening.enabled` — see [../model-profiles.md](../model-profiles.md)), `core/builder.go` `applyLoopHardening` overrides the executor's circuit-breaker `CircuitBreakerConfig` with tighter-or-equal thresholds (`repeat_nudge_threshold`, `parse_error_abort_threshold`, `fruitless_nudge_threshold`, `fruitless_abort_threshold`, `same_tool_repeat_nudge_threshold` — four strictly tighter, `parse_error_abort_threshold` equal to the baseline) so a small model that repeats itself or stalls is nudged/aborted sooner. Only the thresholds present in the profile are overridden; all others keep their baseline. The override is applied once at builder construction and is inert when the profile is off.
+When the active model profile's `loop_hardening` variant is on (master `model_profiles.enabled` AND the profile's `loop_hardening.enabled` — see [../model-profiles.md](../model-profiles.md)), `core/builder.go` `applyLoopHardening` overrides the executor's circuit-breaker `CircuitBreakerConfig` with tighter-or-equal thresholds (`repeat_nudge_threshold`, `parse_error_abort_threshold`, `fruitless_nudge_threshold`, `fruitless_abort_threshold`, `same_tool_repeat_nudge_threshold` — four strictly tighter, `parse_error_abort_threshold` equal to the baseline) so a small model that repeats itself or stalls is nudged/aborted sooner. Those five thresholds are replaced by the profile's values; every other `CircuitBreakerConfig` field (`repeatAbortThreshold`, `truncationAbortThreshold`, `fruitlessMaxResultLen`, `sameToolRepeatAbortThreshold`, `sameToolResultSizeDelta`) keeps its baseline. The override is applied once at builder construction and is inert when the profile is off.
 
 ### Verify-on-Edit Mechanical Verification
 
@@ -68,14 +80,15 @@ The following are sp4rk engine primitives, documented in [the sp4rk executor spe
 
 ## Error Handling
 
-- Step failure (executor returns error): result stored with Error field set; the orchestrator records the failure on the blackboard.
+- Tool-call failure: the step records `IsError: true` with the failure text as its `Observation` (`agent.Step` carries no error value) and the loop continues; only a context error propagates out of the call.
+- Run failure (`Executor.Run` returns an error): the sp4rk Conductor maps it to `ExecutionStatusFailed` (`ExecutionStatusCancelled` on context cancellation, `ExecutionStatusPaused` on `agent.ErrPaused`); `persistTaskOutcome` marks the task failed, which stays resumable.
 - Context cancelled: propagates immediately; pending async delegations are cancelled via context-tree cancellation.
-- Step limit reached without finish: `Finished: false`; the orchestrator records `Status: partial` (resumable).
+- Step limit reached without finish: `ExecutorResult.Finished` is false, which the sp4rk Conductor maps to `ExecutionStatusPartial`; `persistTaskOutcome` leaves the task `in_progress` (resumable).
 
 ## Invariants
 
 - `finish` is ALWAYS available in every executor instance (never filtered out).
-- Consumer meta-tools registered via `AddNonCacheableTools` are excluded from caching and Stage-1 truncation.
+- Consumer meta-tools registered via `AddNonCacheableTools` are excluded from EAGER caching; a result that is truncated anyway is cached on demand and stays recoverable via `tool_result_read`.
 - Subagent toolsets resolve from capability groups (`resolveTaskTools`, ADR-024); the `system` group is always included.
 - Each executor instance has its own `ContextManager` (isolated memory); the Conductor context never shares with subagent contexts.
 - Untrusted tool output is wrapped in `<untrusted-content>` before reaching the LLM (engine behavior; c0wrk's session-root/auto-approval gating runs in the registry, see [../../architecture/security-model.md](../../architecture/security-model.md)).

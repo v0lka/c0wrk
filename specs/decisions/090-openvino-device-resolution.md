@@ -81,7 +81,7 @@ plugin's `ov_device` metadata can be read to filter the NPU before the fact
   stranded); only the *first* session and the first lazy session can re-resolve
   a device.
 
-## Alternatives Rejected
+## Alternatives Considered
 
 - **Ship the OpenVINO stack without `libopenvino_intel_npu_plugin.so`.**
   Verified to work (the plugin then enumerates GPU → CPU and the embedder comes

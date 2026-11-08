@@ -15,13 +15,12 @@ sp4rk (module `github.com/v0lka/sp4rk`) lives in its [own repository](https://gi
 | Interface / Type       | Package                          | Consumed By                                  | Purpose                               |
 | ---------------------- | -------------------------------- | -------------------------------------------- | ------------------------------------- |
 | `LLMCaller`            | github.com/v0lka/sp4rk/agent     | core/orchestrator, github.com/v0lka/sp4rk/planner | LLM call interface                    |
-| `ToolExecutor`         | github.com/v0lka/sp4rk/agent     | core (via github.com/v0lka/sp4rk/orchestration) | Tool execution interface              |
-| `CompactionStrategy`   | github.com/v0lka/sp4rk/agent     | core/stepconfig                              | Memory compaction                     |
+| `ToolExecutor`         | github.com/v0lka/sp4rk/agent     | core/orchestrator                            | Tool execution interface              |
+| `CompactionStrategy`   | github.com/v0lka/sp4rk/agent     | core/builder (context factory resolves it via `memory.NewCompactionStrategy`) | Memory compaction                     |
 | `Events`               | github.com/v0lka/sp4rk/agent     | core/types (embedded in Emitter)             | Lifecycle event hooks                 |
 | `ContextManager`       | github.com/v0lka/sp4rk/agent     | core/types (extended)                        | Context window management             |
 | `HITLHandler`          | github.com/v0lka/sp4rk/agent     | core/orchestrator config                     | Human-in-the-loop handler (OnStepLimit + OnToolCall) |
-| `Step`                 | github.com/v0lka/sp4rk/agent     | core/types (direct)                          | Single ReAct iteration (incl. IsUntrusted flag) |
-| `ExecutorResult`       | github.com/v0lka/sp4rk/agent     | core/types (direct)                          | Executor output                       |
+| `Step`                 | github.com/v0lka/sp4rk/agent     | core/conductor, core/orchestrator, core/persistent_blackboard, core/unit_sink, backend/session | Single ReAct iteration (incl. IsUntrusted flag) |
 | `CircuitBreakerConfig` | github.com/v0lka/sp4rk/agent     | core/orchestrator                            | Circuit breaker thresholds            |
 | `ToolResultBudget`     | github.com/v0lka/sp4rk/agent     | core/orchestrator                            | Tool result truncation (Stage 2)     |
 | `ToolResultCache`      | github.com/v0lka/sp4rk/agent     | core/orchestrator, core/builder              | Full result cache keyed by short hash |
@@ -29,18 +28,18 @@ sp4rk (module `github.com/v0lka/sp4rk`) lives in its [own repository](https://gi
 | `ToolCacheMeta`        | github.com/v0lka/sp4rk/agent     | github.com/v0lka/sp4rk/agent (executor)      | Cache entry metadata (paths, mtime)  |
 | `TodoItem`             | github.com/v0lka/sp4rk/agent     | core/types (adapter)                         | Step todo item                        |
 | `Executor.AddNonCacheableTools` | github.com/v0lka/sp4rk/agent | core/conductor                          | Extends the non-cacheable tool set with consumer-specific meta-tools (delegate, declare_plan, reflect, etc.) |
-| `WithResumeSteps` (Option) | github.com/v0lka/sp4rk/agent     | core/orchestrator (Resume)                   | Seeds prior ReAct steps into the Executor so the step counter resumes from `len(steps)+1` and the full trajectory syncs to the TrajectoryStore |
-| `Step.UserNudge`           | github.com/v0lka/sp4rk/agent     | core/session (tryContinueInterruptedTask)    | User message appended to a resumed trajectory; rendered as a `{role:user}` turn |
-| `Executor.SetToolCallTimeout` / `WithToolCallTimeout` | github.com/v0lka/sp4rk/agent | core/builder, core/conductor | Per-tool-call wall-clock ceiling (main + every subagent executor); `0` disables |
+| `WithResumeSteps` (Option) | github.com/v0lka/sp4rk/agent     | core/conductor (`buildSubAgentTask`)         | Seeds prior ReAct steps into the Executor so the step counter resumes from `len(steps)+1` and the full trajectory syncs to the TrajectoryStore |
+| `Step.UserNudge`           | github.com/v0lka/sp4rk/agent     | backend/session (`tryContinueInterruptedTask`) | User message appended to a resumed trajectory; rendered as a `{role:user}` turn |
+| `Executor.SetToolCallTimeout` | github.com/v0lka/sp4rk/agent  | core/conductor (`configureExecutor`)         | Per-tool-call wall-clock ceiling on every subagent executor; the main executor rides `ConductorConfig.ToolCallTimeout`; `0` disables |
 | `Executor.SetToolCallTimeoutExempt` | github.com/v0lka/sp4rk/agent | core/conductor | Replaces the ceiling's exempt tool-NAME set wholesale; threaded from `timeouts.toolCallTimeoutExemptTools` (subagent executors) |
-| `agent.DefaultToolCallTimeoutExemptTools` | github.com/v0lka/sp4rk/agent | sp4rk agent (executor construction); documented in `backend/config` (field doc, prose) | Sorted copy of the built-in exempt set — ask_user, declare_plan, propose_goal, delegate, execute_plan; the default of `timeouts.toolCallTimeoutExemptTools` (nil knob = this set, resolved inside sp4rk at executor construction; the knob is deliberately never materialized into config.yaml, so a save cannot freeze the default) |
-| `ErrToolTimeout`, `DefaultToolCallTimeout` | github.com/v0lka/sp4rk/agent | core/builder, core/orchestrator_e2s | Ceiling sentinel + recommended default surfaced to config |
+| `agent.DefaultToolCallTimeoutExemptTools` | github.com/v0lka/sp4rk/agent | sp4rk agent (executor construction); documented in `backend/config` (field doc, prose) | Sorted copy of the built-in exempt set — ask_user, declare_plan, delegate, execute_plan, propose_goal; the default of `timeouts.toolCallTimeoutExemptTools` (nil knob = this set, resolved inside sp4rk at executor construction; the knob is deliberately never materialized into config.yaml, so a save cannot freeze the default) |
+| `ErrToolTimeout`, `DefaultToolCallTimeout` | github.com/v0lka/sp4rk/agent | `ErrToolTimeout`: core/e2s (`tool_watchdog.go` re-exports it as `e2s.ErrToolTimeout`); `DefaultToolCallTimeout`: backend/configadapter | Ceiling sentinel + recommended default surfaced to config |
 
 ### Consumed from `github.com/v0lka/sp4rk/orchestration`
 
 | Interface / Type   | Package                              | Consumed By                                   | Purpose                    |
 | ------------------ | ------------------------------------ | --------------------------------------------- | -------------------------- |
-| `Reflector`        | github.com/v0lka/sp4rk/orchestration | core (via github.com/v0lka/sp4rk/orchestration engine) | Failure analysis interface |
+| `Reflector`        | github.com/v0lka/sp4rk/orchestration | core/reflector_adapter (the `agent/reflector.Reflector` it builds satisfies this interface) | Failure analysis interface |
 | `Blackboard`       | github.com/v0lka/sp4rk/orchestration | core/types (direct)                           | Shared task state          |
 | `Conductor`       | github.com/v0lka/sp4rk/orchestration | core/conductor (`RunConductor`)               | DAG execution engine (built via `orchestration.NewConductor(cfg ConductorConfig)`) |
 | `StepSeedable`     | github.com/v0lka/sp4rk/orchestration | core/conductor                                | Optional `ContextManager` capability (`SeedSteps`) used to resume an executor from a checkpoint |
@@ -49,10 +48,9 @@ sp4rk (module `github.com/v0lka/sp4rk`) lives in its [own repository](https://gi
 | `ConductorConfig.NonCacheableTools` | github.com/v0lka/sp4rk/orchestration | core/conductor | Lists consumer-specific non-cacheable tool names passed to the sp4rk Conductor's executor |
 | `ConductorConfig.ToolCallTimeout` | github.com/v0lka/sp4rk/orchestration | core/conductor | Per-tool-call ceiling threaded to the main and every subagent executor (`0` disables) |
 | `ConductorConfig.ToolCallTimeoutExemptTools` | github.com/v0lka/sp4rk/orchestration | core/conductor | Exempt tool-name set for the main executor's ceiling (nil = sp4rk's built-in default set; non-nil — possibly empty — replaces it wholesale) |
-| `Plan`, `PlanStep` | github.com/v0lka/sp4rk/orchestration | core/types (direct use)                       | Plan data structures       |
-| `CompletedStep`    | github.com/v0lka/sp4rk/orchestration | core/types (direct)                           | Step result record         |
+| `Plan`, `PlanStep` | github.com/v0lka/sp4rk/orchestration | core/types, core/conductor, core/plan_serializer | Plan data structures       |
 | `Reflection`       | github.com/v0lka/sp4rk/orchestration | core/types (direct)                           | Reflector output           |
-| `PruningOverride`  | github.com/v0lka/sp4rk/orchestration | core/stepconfig                               | Per-step pruning config    |
+| `PruningOverride`  | github.com/v0lka/sp4rk/orchestration | core/orchestrator (`ContextManagerFactory`), core/conductor (`adaptContextFactory`), core/builder | Per-step pruning config    |
 | `StepDumpTracker`  | github.com/v0lka/sp4rk/orchestration | core/orchestrator, core/builder, backend/session | Per-step LLM dump file manager |
 
 ### Consumed from `github.com/v0lka/sp4rk/llm`
@@ -61,36 +59,36 @@ sp4rk (module `github.com/v0lka/sp4rk`) lives in its [own repository](https://gi
 | ----------------- | ----------------------------- | ----------------------------------- | ---------------------- |
 | `Provider`        | github.com/v0lka/sp4rk/llm    | core/builder (via Router)           | LLM provider interface |
 | `Router`          | github.com/v0lka/sp4rk/llm    | core/builder                        | Multi-provider routing |
-| `ModelRegistry`   | github.com/v0lka/sp4rk/llm    | core/builder, orchestrator, planner | Model metadata         |
+| `ModelRegistry`   | github.com/v0lka/sp4rk/llm    | core/builder, core/orchestrator, core/conductor, core/visionresolver | Model metadata         |
 | `TokenCounter`    | github.com/v0lka/sp4rk/llm    | core/builder (passed to sp4rk)      | Token counting         |
-| `TrackingCaller`  | github.com/v0lka/sp4rk/llm    | core/orchestrator                   | Usage tracking wrapper |
-| `Message`         | github.com/v0lka/sp4rk/llm    | core/router, planner, orchestrator  | LLM message type       |
-| `ChatRequest`     | github.com/v0lka/sp4rk/llm    | core/router, planner                | LLM request            |
-| `ReasoningEffort` | github.com/v0lka/sp4rk/llm    | core/orchestrator config            | Reasoning level (plain `string`, not a custom type) |
-| `ModelMetadata`   | github.com/v0lka/sp4rk/llm    | core/stepconfig, systemprompt       | Model capabilities     |
+| `TrackingCaller`  | github.com/v0lka/sp4rk/llm    | core/orchestrator, core/conductor   | Usage tracking wrapper |
+| `Message`         | github.com/v0lka/sp4rk/llm    | core/orchestrator, core/conductor, core/builder | LLM message type       |
+| `ChatRequest`     | github.com/v0lka/sp4rk/llm    | core/builder, core/e2s, core/prompt_suggest, core/goal_suggest | LLM request            |
+| `ChatRequest.ReasoningEffort` | github.com/v0lka/sp4rk/llm | core/orchestrator config       | Reasoning level (a plain `string` field, not a named type) |
+| `ModelMetadata`   | github.com/v0lka/sp4rk/llm    | core/builder, core/conductor, core/systemprompt | Model capabilities     |
 
 ### Consumed from `github.com/v0lka/sp4rk/tools`
 
 | Interface / Type       | Package                        | Consumed By                    | Purpose                                        |
 | ---------------------- | ------------------------------ | ------------------------------ | ---------------------------------------------- |
 | `Tool`                 | github.com/v0lka/sp4rk/tools   | core/tools (embedded registry) | Tool interface (incl. IsUntrusted())          |
-| `BaseTool`             | github.com/v0lka/sp4rk/tools   | core/tools/builtins, MCP tools | Base impl with Untrusted field               |
-| `builtins.GlobLimits`, `DefaultGlobLimits`, `NewGlobToolWithLimits` | github.com/v0lka/sp4rk/tools/builtins | core/tools (`RegisterBuiltinTools`) | Bounded glob walk (entries / results / wall-clock); a completely zero `GlobLimits` falls back to defaults |
+| `BaseTool`             | github.com/v0lka/sp4rk/tools   | core/tools (every c0wrk tool constructor), MCP tools | Base impl with `Untrusted` and `ToolGroup` fields |
+| `builtins.GlobLimits`, `DefaultGlobLimits`, `NewGlobToolWithLimits`, `NewGlobToolWithLimitsOverride` | github.com/v0lka/sp4rk/tools/builtins | core/tools (`RegisterBuiltinTools`), backend/configadapter | Bounded glob walk (entries / results / wall-clock); `NewGlobToolWithLimits` substitutes defaults for a completely zero `GlobLimits`, `NewGlobToolWithLimitsOverride` honours it verbatim |
 | `ContentBackedReader`  | github.com/v0lka/sp4rk/tools   | core/tools (`read_file_doc.go`) | Optional interface; `IsContentBacked` opts document-format `read_file` reads into content-backed caching |
 | `ToolRegistry`         | github.com/v0lka/sp4rk/tools   | core/tools (embedded)          | Tool store; SDK `Execute` adds pre-dispatch input validation + policy enforcement (shadowed by the core wrapper) |
 | `ValidateToolInput`    | github.com/v0lka/sp4rk/tools   | core/tools (registry Gate 1 in `Execute`/`ExecuteUnattended`), core/e2s (pre-dispatch action-args validation) | Recursive structural tool-input validator (closed-set schemas, fail-open on unmodeled constructs) |
 | `ToolRegistry.ListFiltered` | github.com/v0lka/sp4rk/tools | core/orchestrator              | Method on `ToolRegistry` — `ListFiltered(excludeNames map[string]bool) []ToolDescriptor`; filtered tool listing (e.g., exclude disabled tools) |
-| `ToolDescriptor`       | github.com/v0lka/sp4rk/tools   | core/orchestrator, planner     | Tool metadata                                 |
+| `ToolDescriptor`       | github.com/v0lka/sp4rk/tools   | core/orchestrator, core/conductor, core/types | Tool metadata                                 |
 | `ToolPolicy`           | github.com/v0lka/sp4rk/tools   | core/tools                     | Policy enum                                   |
 | `ToolResult`           | github.com/v0lka/sp4rk/tools   | core/tools                     | Execution result                              |
 | `ConfirmFunc`          | github.com/v0lka/sp4rk/tools   | core/tools, backend, desktop   | User confirmation callback                    |
 | `ConfirmationRequest`  | github.com/v0lka/sp4rk/tools   | core/tools, backend, desktop   | Confirmation request payload                  |
 | `ConfirmationResponse` | github.com/v0lka/sp4rk/tools   | core/tools, backend, desktop   | Confirmation response enum (`ConfirmAllowOnce`, `ConfirmDeny`, `ConfirmDenyAndStop`) |
 | `ToolJudger`           | github.com/v0lka/sp4rk/tools   | core/tools, github.com/v0lka/sp4rk/tools/mcp | Tool self-judging interface                   |
-| `StripParamsFromSchema` | github.com/v0lka/sp4rk/tools  | github.com/v0lka/sp4rk/tools/mcp | Strips auto-injected params (e.g. `project`) from MCP tool input schemas |
-| `FileCoherenceChecker` | github.com/v0lka/sp4rk/tools   | core/tools (re-exported)       | Cross-session file conflict detection          |
-| `FileSig`              | github.com/v0lka/sp4rk/tools   | core/tools (re-exported)       | File signature (mtime + size) for coherence    |
-| `CoherenceConflict`    | github.com/v0lka/sp4rk/tools   | core/tools (re-exported)       | Conflict record with session and timing detail |
+| `StripParamsFromSchema` | github.com/v0lka/sp4rk/tools  | host-supplied `mcp.GatewayConfig.SchemaSanitizer` hook — c0wrk leaves it nil, so MCP schemas pass through unmodified | Strips auto-injected params (e.g. `project`) from MCP tool input schemas |
+| `FileCoherenceChecker` | github.com/v0lka/sp4rk/tools   | backend/session (`file_coherence.go`, implemented by `FileCoherenceTracker`; injected via `sdktools.WithCoherence`) | Cross-session file conflict detection          |
+| `FileSig`              | github.com/v0lka/sp4rk/tools   | backend/session (`file_coherence.go`) | File signature (mtime + size) for coherence    |
+| `CoherenceConflict`    | github.com/v0lka/sp4rk/tools   | backend/session (`file_coherence.go`) | Conflict record with session and timing detail |
 
 AskUser types (`AskUserFunc`, `AskUserRequest`, `AskUserResponse`, `AskUserQuestion`, `AskUserAnswer`, `AskUserOption`) moved to `core/tools/` as c0wrk-specific UI types. The `ask_user` tool implementation also lives in `core/tools/askuser.go`.
 
@@ -101,8 +99,8 @@ Proxy configuration moved from sp4rk to core/ per architectural extraction (c0wr
 | Interface / Type | Package    | Consumed By                                      | Purpose                              |
 | ---------------- | ---------- | ------------------------------------------------ | ------------------------------------ |
 | `Config`         | core/proxy | core/builderconfig, backend/configadapter        | HTTP proxy settings (URL, bypass, TLS certs, env vars) |
-| `BuildTransport` | core/proxy | core/builder                                     | Build proxy-configured `*http.Transport`     |
-| `BuildClient`    | core/proxy | core/builder                                     | Build proxy-configured `*http.Client`         |
+| `BuildTransport` | core/proxy | `proxy.BuildClient` (same package)             | Build proxy-configured `*http.Transport`     |
+| `BuildClient`    | core/proxy | core/builder, core/updater, backend/frontend_api_provider_auth, backend/frontend_api_updater | Build proxy-configured `*http.Client`         |
 | `SetEnvVars`     | core/proxy | core/builder (on SetGlobalEnv opt-in)            | Export `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`/`SSL_CERT_DIR` for child processes |
 | `ClearEnvVars`   | core/proxy | core/builder (on proxy disable)                  | Remove proxy environment variables            |
 | `MaskURL`        | core/proxy | backend/frontend_api_config                      | Mask proxy URL password for UI display        |
@@ -139,10 +137,10 @@ import "github.com/v0lka/c0wrk/core/tools"       // → coretools.AskUserFunc
 
 `core/builder.go` → `NewOrchestratorBuilder`:
 
-1. Creates a `github.com/v0lka/sp4rk/tools.ToolRegistry` (`tools.NewToolRegistry()`); MCP tool schemas are sanitized later by the gateway via `sdktools.StripParamsFromSchema` (strips auto-injected params such as `project`), and OpenAI-compatible schemas by the provider via `llm.SanitizeSchemaForOpenAI`
-2. Registers built-in tools from `github.com/v0lka/sp4rk/tools/builtins`
+1. Creates the `core/tools.ToolRegistry` wrapper (`coretools.NewToolRegistry()`), which embeds a `github.com/v0lka/sp4rk/tools.ToolRegistry` built by `sdktools.NewToolRegistry()`. MCP tool input schemas reach the model unsanitized — `configToGatewayConfig` leaves `mcp.GatewayConfig.SchemaSanitizer` nil; OpenAI-compatible schemas are sanitized by the provider via `llm.SanitizeSchemaForOpenAI`
+2. Registers built-in tools through `core/tools.RegisterBuiltinTools` (`core/tools/builtin_registration.go`) — the `github.com/v0lka/sp4rk/tools/builtins` constructors plus the c0wrk-specific tools — then registers `skills.NewReadSkillResourceTool`, then maps `BuilderConfig.Security.Groups` onto `sdktools.ToolPolicy` values with `applySecurityPolicies` (the reserved `system` group is skipped, so it bypasses policy)
 3. Starts MCP gateway (async)
-4. Creates `ToolResultCache` with TTL and passes per-tool truncation to orchestrator config
+4. `Build()` creates the per-session `agent.ToolResultCache` from `BuilderConfig.Executor.ToolResultBudget.CacheTTLSeconds` and passes per-tool truncation to orchestrator config
 5. Creates a `github.com/v0lka/sp4rk/llm.Router` with providers (async)
 6. `Build()` creates per-session `Orchestrator` which internally builds a `github.com/v0lka/sp4rk/orchestration.Conductor` (via `core/conductor.go` `RunConductor` → `orchestration.NewConductor(cfg)`)
 
@@ -155,7 +153,7 @@ Core bridges c0wrk-specific configuration into sp4rk engine components via small
 - `adaptContextFactory` (`core/conductor.go`) — adapts core's `ContextManagerFactory` (returns a core `ContextManager`) to `github.com/v0lka/sp4rk/orchestration.ContextManagerFactory` (returns an `agent.ContextManager`).
 - `core.Emitter` needs **no adapter**: it embeds `agent.Events` directly and is passed to the engine Conductor (which accepts `agent.Events`).
 
-> The plan-execute-reflect pipeline — including `Planner.Plan()`, the `plannerSp4rkAdapter`, and the `emitterEventsAdapter` — was removed in [ADR-012](../decisions/012-conductor-orchestration-pipeline.md). The Conductor now plans via the LLM + `declare_plan`; `Plan`/`PlanStep` survive only as DAG library types for `delegate`/`declare_plan`.
+> The plan-execute-reflect pipeline — including `Planner.Plan()`, the `plannerSp4rkAdapter`, and the `emitterEventsAdapter` — was removed in [ADR-012](../decisions/012-conductor-orchestration-pipeline.md). The Conductor now plans via the LLM + `declare_plan`; `Plan`/`PlanStep` survive only as DAG library types, consumed by `core/conductor.go` (`conductorPublisher.Publish`, `planStepsWellFormed`, the plan wave loop) and `core/plan_serializer.go` — c0wrk imports neither `github.com/v0lka/sp4rk/planner` nor `orchestration.FindReadySteps`.
 
 ## Data Flow Across Boundary
 
@@ -184,14 +182,13 @@ Core bridges c0wrk-specific configuration into sp4rk engine components via small
 
 ## Breaking Change Checklist
 
-- If you modify a `github.com/v0lka/sp4rk/orchestration` interface → update adapter in `core/orchestrator.go`
+- If you modify a `github.com/v0lka/sp4rk/orchestration` interface → update `core/orchestrator.go` (`ContextManagerFactory`) and the `adaptContextFactory` adapter in `core/conductor.go`
 - If you add a field to `github.com/v0lka/sp4rk/orchestration.ConductorConfig` → update `RunConductor` in `core/conductor.go`
-- If you change `CallerForStep` signature (github.com/v0lka/sp4rk/planner) → update all closures in `core/builder.go`, plus all call sites in `github.com/v0lka/sp4rk/planner/planner.go` (note: core no longer uses the planner pipeline after ADR-012; `CallerForStep` is not referenced from `core/`)
 - If you modify `github.com/v0lka/sp4rk/agent.Events` → update `core.Emitter` interface AND `noopEmitter`
 - If you change the `github.com/v0lka/sp4rk/tools.Tool` interface → update `github.com/v0lka/sp4rk/tools/mcp/mcptool.go`, ALL builtins, AND all test mocks implementing `Tool`
 - If you add a new sp4rk type that backend or desktop needs → import directly from the source package
-- If you modify `github.com/v0lka/sp4rk/tools.FileCoherenceChecker` → update `backend/session/file_coherence.go` implementation
-- If you change path-containment context helpers (`SessionRoots`, `WithAllowedRoots`/`AllowedRootsFrom`, `AllPathsInSessionRoots`, `WithWorkspacePath`, `WithTempDir`) → update `core/tools/registry.go` (auto-approval), `core/tools/registry_symlink.go` (symlink roots), `backend/session/manager_execution.go` (context injection), and the security-model spec
+- If you modify `github.com/v0lka/sp4rk/tools.FileCoherenceChecker` → update the `FileCoherenceTracker` implementation in `backend/session/file_coherence.go`
+- If you change path-containment context helpers (`SessionRoots`, `WithAllowedRoots`/`AllowedRootsFrom`, `AllPathsInSessionRoots`, `WithWorkspacePath`/`WithWorkspacePathNoProbe`, `WithTempDir`, `WithCoherence`) → update `core/tools/registry_symlink.go` and `core/tools/registry_worktrees.go` (session-root containment), `backend/session/manager_execution.go` (context injection), and the security-model spec
 - If you change `IsUntrusted()` semantics → update ALL built-in tool registrations (`github.com/v0lka/sp4rk/tools/builtins/*.go`) AND `github.com/v0lka/sp4rk/security/wrap.go`
 
 ## Related Specs

@@ -28,34 +28,62 @@ specs/
 │   └── security-model.md
 │
 ├── domains/                        by business domain (NOT file structure)
+│   ├── frontend/                   (README.md = domain overview / entry point)
+│   │   ├── README.md
+│   │   ├── branch-list.md
+│   │   ├── button-tooltips.md
+│   │   ├── events.md
+│   │   ├── fonts.md
+│   │   ├── git-changes-list.md
+│   │   ├── git-operation-console.md
+│   │   ├── loading-states.md
+│   │   ├── rendering.md
+│   │   ├── row-actions.md
+│   │   ├── sound-notifications.md
+│   │   ├── stores.md
+│   │   ├── system-notifications.md
+│   │   ├── tabs.md
+│   │   └── ui-scale.md
+│   ├── memory/
+│   │   ├── README.md
+│   │   ├── blackboard.md
+│   │   └── compaction.md
 │   ├── orchestration/
-│   │   ├── README.md               domain overview (entry point)
+│   │   ├── README.md
 │   │   ├── conductor.md
 │   │   ├── delegation.md
-│   │   ├── router.md
-│   │   └── executor.md
+│   │   ├── executor.md
+│   │   └── router.md
 │   ├── tool-system/
 │   │   ├── README.md
 │   │   ├── builtins.md
 │   │   └── mcp-gateway.md
-│   ├── memory/
-│   │   ├── README.md
-│   │   ├── compaction.md
-│   │   └── blackboard.md
+│   ├── capabilities.md
+│   ├── cli.md
+│   ├── commands.md
+│   ├── crash-logging.md
+│   ├── e2s.md
+│   ├── embedded-llm.md
+│   ├── fonts.md
+│   ├── git-auto-fetch.md
 │   ├── goal-mode.md
 │   ├── llm-providers.md
+│   ├── model-profiles.md
+│   ├── papers.md
+│   ├── prompt-suggestions.md
 │   ├── research.md
 │   ├── review.md
 │   ├── session-lifecycle.md
-│   ├── model-profiles.md
+│   ├── session-worktrees.md
+│   ├── specs.md
+│   ├── terminal.md
+│   ├── testing.md
+│   ├── theming.md
 │   ├── tool-manager.md
 │   ├── verify-on-edit.md
-│   ├── workspace.md
-│   └── frontend/
-│       ├── README.md
-│       ├── stores.md
-│       ├── events.md
-│       └── rendering.md
+│   ├── web-access.md
+│   ├── webview-gpu-policy.md
+│   └── workspace.md
 │
 ├── contracts/                      interfaces between layers
 │   ├── core-sp4rk.md
@@ -69,7 +97,7 @@ specs/
     ├── 001-single-module.md
     ├── 002-sp4rk-isolation.md
     ├── ...
-    └── 027-linux-arm64-build.md
+    └── 118-kimi-subscription-model-catalog.md
 ```
 
 ## Naming Conventions
@@ -84,7 +112,7 @@ specs/
 
 ### Domain README (`domains/*/README.md` or `domains/*.md`)
 
-Required sections in order:
+Required sections in order. A spec may insert additional topic-specific sections between them; the required sections keep their relative order.
 
 ```markdown
 # [Domain Name]
@@ -210,6 +238,10 @@ Architectural rules that must never be violated.
 ## Anti-Patterns
 
 What NOT to do, with brief explanation of why.
+
+## Related Specs
+
+- [link](relative/path.md) - relationship context
 ```
 
 ### ADR (`decisions/NNN-slug.md`)
@@ -236,7 +268,31 @@ Positive and negative impacts on the codebase.
 ## Alternatives Considered
 
 What was evaluated and why it was rejected.
+
+## Historical Note
+
+Optional, and the only section a committed accepted ADR may still gain. Dated
+(`YYYY-MM-DD`). Lists paths, identifiers, or enumerated sets named above that
+have since been renamed, moved, removed, or extended, each with its successor
+state. Records location or membership only — it never restates or revises the
+decision.
 ```
+
+`## Alternatives Considered` is mandatory for every ADR created from this template.
+Five records accepted before the section was mandated — ADR-008, ADR-009,
+ADR-011, ADR-028 and ADR-087 — carry no such section. They are grandfathered:
+a committed accepted ADR is immutable, so the section is never retrofitted into
+them, and its absence from those five records is not a finding.
+
+Optional trailing sections follow `## Alternatives Considered` in this order:
+
+- `## Related` — the ADRs, specs and code this record interacts with. The
+  spellings `## Related Specs` and `## References` are the same section under
+  its earlier names; new records use `## Related`.
+- `## Amendment (<scope>)` / `## Corrigendum (<date>)` — a dated, scoped
+  correction or extension of the decision above. It states what changed and
+  from when, and leaves the original Context and Decision prose intact.
+- `## Historical Note` — as defined in the template above.
 
 ## Cross-References
 
@@ -261,7 +317,7 @@ What was evaluated and why it was rejected.
 2. Preserve the document format (sections, ordering) defined in this META.md
 3. Update cross-references if file paths changed
 4. After adding or removing a spec file, update `INDEX.md`
-5. ADRs with `Status: Accepted` are immutable once committed to the repository; an uncommitted accepted ADR is an editable draft, and a committed one is superseded by a new ADR
+5. ADRs with `Status: Accepted` are immutable once committed to the repository; an uncommitted accepted ADR is an editable draft, and a committed one is superseded by a new ADR. A committed accepted ADR is a **record of the state at decision time**, so a path, identifier, or spec it names is not a live pointer and its absence is not drift when the ADR names it as something the decision removes, when it belongs to another repository or an upstream dependency, or when its successor is named inline or through the `Status` supersession chain (the ADR-041 precedent). The single permitted edit besides the `Status` line is an appended **Historical Note**: a dated record of the successor state for a path, identifier, or enumerated set named above that has since been renamed, moved, removed, or extended. The note states the current location or membership only — it never rewords `Context`, `Decision`, `Consequences` or `Alternatives Considered`, and it never changes what was decided
 
 ### Validation checklist
 

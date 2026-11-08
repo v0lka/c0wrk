@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Enumerates the font families installed on the host system and exposes them to the frontend as the `ListFontFamilies` RPC — the data source for any family picker (e.g. a UI-font selector). The call takes a `monospace` flag: `false` lists every installed family, `true` narrows to the families fontconfig tags as monospace (`fc-list :mono`) — the monospace picker's data source. The enumeration is Linux-only via fontconfig's `fc-list`; every other platform, and any Linux system where the probe is unusable, reports "unavailable" instead of failing.
+Enumerates the font families installed on the host system and exposes them to the frontend as the `ListFontFamilies` RPC — the installed-family option source of the Settings → Appearance font pickers. The call takes a `monospace` flag: `false` lists every installed family (the interface picker's options), `true` narrows to the families fontconfig tags as monospace (`fc-list :mono`) — the monospace picker's options. The enumeration is Linux-only via fontconfig's `fc-list`; every other platform, and any Linux system where the probe is unusable, reports "unavailable" instead of failing.
 
 ## Key Files
 
@@ -38,7 +38,7 @@ FrontendAPI.ListFontFamilies ──seam──► listFontFamiliesFn (tests) / li
                                           │ keep-first) → sort (case-insensitive)
                                           ▼
                          FontFamiliesResponse{Available: true, Families: [...]}
-                                     err → {Available: false, Families: nil} + Debug log
+                                     err → the zero response {Available: false} + Debug log
 ```
 
 ## Invariants
@@ -59,7 +59,7 @@ None — the subsystem has no config.yaml surface. The probe binary (`fc-list`) 
 ## Extension Points
 
 - **Another platform reader** (e.g. macOS/Windows font enumeration): add a build-tagged `listFontFamilies` following `backend/fontlist_linux.go` (argv as compile-time constants, bounded timeout, error = "unavailable"); the RPC, seam and parser stay untouched.
-- **A font picker consumer**: the frontend wires its own RPC wrapper (`frontend/src/api/*`) and store; the backend surface is complete and read-only.
+- **Another picker consumer**: the enumeration is already wired end to end — `listFontFamilies(monospace)` in `frontend/src/api/fonts.ts` (type-guarded; `available: false` resolves to `[]`) feeds the interface and monospace comboboxes of `frontend/src/components/settings/FontSettings.tsx` over `frontend/src/stores/fontStore.ts`. A new consumer calls the same wrapper; the backend surface is complete and read-only.
 
 ## Related Specs
 

@@ -63,7 +63,7 @@ useSoundEvents()  (foreground)   /   useBackgroundSessionWatcher  (background)
 | SoundKind   | Session events | Notes |
 | ----------- | -------------- | ----- |
 | `success`   | `task_complete` | Only when the payload's `success !== false` (a missing flag is treated as success). |
-| `attention` | `ask_user`, `step_limit`, `tool_confirm`, `plan_review_ready`, `task_failed_resumable`, `goal_proposal` | Any interactive prompt that needs the user. |
+| `attention` | `ask_user`, `step_limit`, `tool_confirm`, `plan_review_ready`, `task_failed_resumable`, `goal_proposal`, `goal_suggestion` | Any interactive prompt that needs the user. |
 | `error`     | `error`, `task_cancelled`, `task_complete` with `success === false` | Failures, cancellations, and partial/aborted completions. |
 | *(silent)*  | everything else | Returns `null`; no cue is played. |
 

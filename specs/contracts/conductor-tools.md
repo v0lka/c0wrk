@@ -2,7 +2,7 @@
 
 ## Boundary Rule
 
-Conductor tools (`delegate`, `declare_plan`, `execute_plan`, `reflect`, `cancel_delegation`) are `system`-group tools (`sdktools.GroupSystem`, ADR-024) registered in `core/tools/builtin_registration.go` and added to the Conductor's tool set in `core/conductor.go`. They are always allowed (bypass policy and judge) and are never available to regular plan-step executors — only to the Conductor and, selectively, to subagents with `allow_redelegate: true`.
+Conductor tools (`delegate`, `declare_plan`, `execute_plan`, `reflect`, `cancel_delegation`) are `system`-group tools (`sdktools.GroupSystem`, ADR-024) registered on the shared registry in `core/tools/builtin_registration.go`; the Conductor's available-tool list is that registry's `ListFiltered` output, assembled in `core/orchestrator.go`. They are always allowed (bypass policy and judge) and are never available to regular plan-step executors — `conductorOnlyToolNames` in `core/conductor.go` strips them from every subagent toolset, and only a blocking subagent with `allow_redelegate: true` gets `delegate` + `cancel_delegation` added back (async delegations always take the non-redelegating path).
 
 Planning and delegation are **orthogonal** mechanisms:
 - **Planning** (`declare_plan` + `execute_plan`) manages task complexity and gets user sign-off. `execute_plan` runs all plan steps in DAG order with parallelism, emitting `plan_step_start`/`plan_step_complete` events.
@@ -18,13 +18,16 @@ Planning and delegation are **orthogonal** mechanisms:
 | `declare_plan` tool | `core/tools` | Conductor | Publish a roadmap to the blackboard and UI; optionally block for user approval |
 | `execute_plan` tool | `core/tools` | Conductor | Execute all steps of the declared plan in DAG order with parallelism; emits plan-step events via emitter adapter |
 | `reflect` tool | `core/tools` | Conductor | Invoke the Reflector on the current trajectory or a sub-task trajectory |
-| `DelegationRegistry` | `core/tools` | `delegate`, `cancel_delegation`, `read_step_output`, `finish` (via context) | Track active/completed delegations for one Conductor run |
-| `RunSubAgent` / `RunSubAgentsParallel` | `github.com/v0lka/sp4rk/agent` | `delegate` tool, `execute_plan` tool | Execute an isolated `Executor.Run` in a goroutine |
-| `PlanStepExecutor` | `core/tools` | `execute_plan` tool | Execute the declared plan's steps in DAG order (implemented by `conductorLauncher`) |
+| `DelegationRegistry` | `core/tools` | `delegate`, `cancel_delegation` (via context); the `finish` join guard reads it through `orchestration.PendingDelegations` | Track active/completed delegations for one Conductor run |
+| `DelegationLauncher` | `core/tools` | `delegate` tool (via context; implemented by `conductorLauncher`) | Builds and runs the subagents of a delegate call |
+| `RunSubAgent` / `RunSubAgentsParallel` | `github.com/v0lka/sp4rk/agent` | `core/conductor.go` (`conductorLauncher`) | Execute an isolated `Executor.Run` in a goroutine |
+| `PlanStepExecutor` | `core/tools` | `execute_plan` tool (via context; implemented by `conductorLauncher`) | Execute the declared plan's steps in DAG order |
 | `PlanChecker` | `core/tools` | `delegate` tool | Reports whether a plan is declared (enforces orthogonality guard) |
-| `Reflector.Reflect` | `github.com/v0lka/sp4rk/agent/reflector` | `reflect` tool | Produce a Reflection (root cause, action plan, suggested action) |
-| `SerializePlan` | `core` | `declare_plan` tool | Serialize a Plan to markdown for UI display and plan-file persistence |
-| `Plan` / `PlanStep` / `FindReadySteps` | `github.com/v0lka/sp4rk/orchestration` | `delegate`, `declare_plan`, `execute_plan` tools | DAG data structures and traversal |
+| `ReflectionRunner` | `core/tools` | `reflect` tool (via context; implemented by `conductorReflectionRunner`) | Runs a reflection over the current or a sub-task trajectory |
+| `Reflector.Reflect` | `github.com/v0lka/sp4rk/agent/reflector` | `core/conductor.go` (`conductorReflectionRunner`) | Produce a Reflection (root cause, action plan, suggested action) |
+| `PlanPublisher` | `core/tools` | `declare_plan` tool (via context; implemented by `conductorPublisher`) | Serializes, persists, emits and blackboards the declared plan |
+| `SerializePlan` | `core` | `core/conductor.go` (`conductorPublisher.Publish`) | Serialize a Plan to markdown for UI display and plan-file persistence |
+| `Plan` / `PlanStep` | `github.com/v0lka/sp4rk/orchestration` | `core/conductor.go`, `core/plan_serializer.go` | DAG data structures; the wave loop selects ready steps itself, so `orchestration.FindReadySteps` stays unused in c0wrk |
 
 ## Initialization
 
@@ -32,18 +35,23 @@ Conductor tools are registered at startup in `core/tools/builtin_registration.go
 
 ```go
 // core/tools/delegate.go (representative)
-return &sdktools.BaseTool{
-    // ...
-    ToolGroup: sdktools.GroupSystem, // bypasses security.groups policy
+return &DelegateTool{
+    BaseTool: &sdktools.BaseTool{
+        ToolGroup:       sdktools.GroupSystem, // bypasses security.groups policy
+        ToolName:        "delegate",
+        ToolDescription: toolDelegateDescription,
+        Schema:          json.RawMessage(`…`),
+        Policy:          sdktools.PolicyAlwaysAllow,
+    },
 }
 // system-group c0wrk tools: delegate, cancel_delegation, declare_plan,
 // execute_plan, reflect, propose_goal, declare_goal_status,
-// declare_verification, ask_user, ... (see builtins.md catalog)
+// declare_verification, ask_user, declare_step_complete (see builtins.md catalog)
 ```
 
-The Conductor tool set in `core/conductor.go` is the standard file/search/internal tools plus the conductor-only tools (`delegate`, `declare_plan`, `execute_plan`, `reflect`, `cancel_delegation`). The conductor-only names are held in `conductorOnlyToolNames` and are only ever *removed* from subagent toolsets: `stripConductorOnlyTools` drops them from a descriptor list, and `stripSubagentTools` additionally drops the goal-loop actor tools.
+The Conductor tool set is the shared registry's descriptor list: `core/orchestrator.go` calls `ListFiltered(disabledToolNames())`, then `stripGatedMCPTools`, and — on the non-goal path — `tools.StripGoalModeTools`. The conductor-only tools are present because `RegisterBuiltinTools` put them on that shared registry; `core/conductor.go` only ever *removes* them, from subagent toolsets: `conductorOnlyToolNames` names them, `stripConductorOnlyTools` drops them from a descriptor list, and `stripSubagentTools` additionally drops the goal-loop actor tools.
 
-Subagent tool sets are assembled in the `delegate` tool by `resolveTaskTools` from the `tools` field of each task (group tokens; the `system` group always included), plus `delegate` + `cancel_delegation` only when `allow_redelegate: true`.
+Subagent tool sets are assembled by `conductorLauncher.resolveTaskTools` in `core/conductor.go` — the launcher the `delegate` tool reaches through `DelegationLauncher` — from the `tools` field of each task (group tokens; the `system` group always included). Every branch ends in `stripSubagentTools`, so `delegate` and `cancel_delegation` are absent from a subagent's resolved set; `runRedelegBlocking` adds exactly those two back, by registry lookup, for a task whose `allow_redelegate` is true.
 
 ## Data Flow Across Boundary
 
@@ -55,31 +63,40 @@ Conductor (ReAct loop)
   ├─ tool_call: delegate({ tasks: [...] })
   │
   ▼
-delegate.Execute(ctx, input)
+delegate.Execute(ctx, input)                     [core/tools/delegate.go]
   │
-  ├─ Read DelegationRegistry from ctx
+  ├─ Read DelegationRegistry + DelegationLauncher from ctx
+  │  (either missing → error result: "not running inside a Conductor")
   ├─ Orthogonality guard: if PlanChecker.HasDeclaredPlan() → reject
   │  (delegate is disabled once a plan is declared; use execute_plan)
-  ├─ Validate tasks (IDs, DAG, depth)
-  ├─ Register tasks as "pending"
-  ├─ For each ready task:
-  │    ├─ Build SubAgentTask (task desc + dependency context + tools + prompt)
-  │    ├─ Create child context (cancellable)
-  │    ├─ Register cancelFunc in the Registry
-  │    └─ RunSubAgent(ctx, ...) → result channel
-  ├─ RunSubAgentsParallel collects results
-  ├─ For each result:
-  │    ├─ Store on blackboard (SetStepResult)
-  │    ├─ Update Registry (status, output, error, steps)
-  │    └─ SubAgentComplete emitted by RunSubAgent (sp4rk) — sole progress signal;
-  │       no PlanStepStart/Complete emitted for delegations
+  ├─ validateDelegationTasks (IDs, DAG, depth, agent profile existence)
+  ├─ Duplicate guard: an id already settled on the blackboard is replayed
+  │  into the Registry via Register + Complete and refused as fresh work
+  ├─ RegisterTask each remaining task as "pending"
   │
-  └─ Return tool result:
+  ├─ launcher.Launch(ctx, runnable, registry)
+  │    │
+  │    ▼  conductorLauncher.Launch → runWave      [core/conductor.go]
+  │    ├─ async tasks: launchAsync — child context, cancelFunc registered
+  │    │  in the Registry, RunSubAgent detached
+  │    ├─ blocking, non-redelegating: runRegularBlocking
+  │    │    ├─ buildSubAgentTask (task desc + dependency context + tools + prompt)
+  │    │    └─ RunSubAgentsParallel → one result channel per task
+  │    ├─ blocking, allow_redelegate: runRedelegBlocking
+  │    │    ├─ child DelegationRegistry at depth+1 via redelegTaskCtx
+  │    │    └─ RunSubAgent with delegate + cancel_delegation added back
+  │    └─ For each result:
+  │         ├─ persistUnitOutcome → blackboard SetStepResult (+ unit ledger)
+  │         ├─ Registry.Complete, or CompletePaused on agent.ErrPaused
+  │         └─ SubAgentComplete emitted by RunSubAgent (sp4rk) — sole progress
+  │            signal; no PlanStepStart/Complete emitted for delegations
+  │
+  └─ Return tool result (buildDelegateToolResult):
        ├─ blocking tasks: aggregated outputs
        └─ async tasks: { delegation_id, status } list
 ```
 
-Direction: Conductor → `delegate` tool → `RunSubAgent` → subagent `Executor.Run`. Results flow back: subagent → `RunSubAgent` channel → `delegate` tool → tool result → Conductor.
+Direction: Conductor → `delegate` tool → `DelegationLauncher.Launch` (`conductorLauncher`) → `RunSubAgent`/`RunSubAgentsParallel` → subagent `Executor.Run`. Results flow back: subagent → `RunSubAgent` channel → `conductorLauncher` → `DelegationResult` → `delegate` tool result → Conductor.
 
 **Cooperative pause and resume:** every subagent Executor receives the session pause checker. When a subagent stops with `agent.ErrPaused`, its partial `[]agent.Step` trajectory is stored on the blackboard as the step result's checkpoint rather than treated as a fresh failure. Rebuilding the same delegation/plan step reads only that cooperative-pause result, seeds the checkpoint into both `orchestration.StepSeedable.SeedSteps` on the isolated ContextManager and `agent.WithResumeSteps` on the Executor, and continues step numbering from the checkpoint. Ordinary failed steps re-run from a fresh context. A paused checkpoint with a ContextManager that does not implement `StepSeedable` fails before dispatch; silently restarting and discarding the trajectory is not permitted.
 
@@ -191,7 +208,8 @@ execute_plan.Execute(ctx, input)
   │    │         └─ Inject output into dependent steps' task descriptions
   │    └─ Return aggregated PlanStepResult[]
   │
-  └─ Return tool result: per-step status (completed/failed) + outputs
+  └─ Return tool result: per-step status (completed/failed/paused) + outputs,
+     sorted by plan-declaration index
 ```
 
 Direction: Conductor → `execute_plan` tool → `PlanStepExecutor.Execute` → `RunSubAgentsParallel` → subagent `Executor.Run` per step. Events flow through the `planStepEventTranslator` (PlanStepStart/Complete on root emitter; child events on scoped copies with `plan_step_id`). Results flow back to the Conductor as the aggregated tool result. The UI renders steps as plan steps (not subagents) because only `plan_step_start`/`plan_step_complete` events are emitted — the underlying `subagent_launch`/`subagent_complete` are intercepted by the translator.
@@ -214,24 +232,31 @@ Conductor
   │  })
   │
   ▼
-reflect.Execute(ctx, input)
+reflect.Execute(ctx, input)                        [core/tools/reflect.go]
   │
-  ├─ Build the trajectory:
-  │    ├─ scope == "trajectory": current Conductor steps + delegation summaries
-  │    └─ scope == "delegation": steps of the named delegation from the Registry
-  ├─ Call Reflector.Reflect(ctx, trajectory, plan, sessionReflections)
-  ├─ Store the Reflection on the blackboard (AddReflection)
-  ├─ Emit OnReflected event
+  ├─ Validate scope ("trajectory" default) and require delegation_id for
+  │  scope == "delegation"; resolve ReflectionRunner from ctx
+  │
+  ├─ runner.Reflect(ctx, scope, delegationID)
+  │    │
+  │    ▼  conductorReflectionRunner.Reflect        [core/conductor.go]
+  │    ├─ Build the trajectory:
+  │    │    ├─ scope == "trajectory": the run's TrajectoryStore steps
+  │    │    └─ scope == "delegation": the named delegation's steps from the
+  │    │       DelegationRegistry (unknown id → error)
+  │    ├─ Reflector.Reflect(ctx, trajectory, bb.GetPlan(), bb.GetReflections())
+  │    ├─ Store the Reflection on the blackboard (AddReflection)
+  │    └─ Emit core.Emitter.Reflection(reflection, attempt, maxAttempts)
   │
   └─ Return tool result: { summary, suggested_action, root_cause, action_plan }
        (the Conductor decides what to do with SuggestedAction: retry, replan, abort)
 ```
 
-Direction: Conductor → `reflect` tool → `Reflector.Reflect` → tool result → Conductor. The Reflector is a library, not a pipeline phase; the Conductor invokes it at a point of its own choosing.
+Direction: Conductor → `reflect` tool → `core/tools.ReflectionRunner` (`conductorReflectionRunner`) → `Reflector.Reflect` → tool result → Conductor. The Reflector is a library, not a pipeline phase; the Conductor invokes it at a point of its own choosing.
 
 ### Goal-Mode Tools
 
-Three additional system-group tools exist ONLY for goal mode (registered in `core/tools/builtin_registration.go`, listed in `goalModeTools` in `core/tools/registry.go`). They are offered to the goal-loop Conductor and the independent verifier only — `HandleMessage`/`ResumeTask` strip them from the Conductor's available-tool list on the non-goal path, and `resolveTaskTools` strips them from EVERY delegated subagent toolset (via `stripSubagentTools`, even when the `system` group is granted explicitly). `subagentCtx` (and the redelegating path) additionally clear the goal-status/verification sinks, so a task subagent can neither see nor reach the goal loop's verdict channels; the verifier keeps `declare_verification` because `verifierToolFilter`/`verifierReDerivationToolFilter` build its toolset from the raw registry list, not via `resolveTaskTools`.
+Three additional system-group tools exist ONLY for goal mode (registered in `core/tools/builtin_registration.go`, listed in `goalModeTools` in `core/tools/registry.go`). They are offered to the goal-loop Conductor and the independent verifier only — `HandleMessage`/`Resume` strip them from the Conductor's available-tool list on the non-goal path, and `resolveTaskTools` strips them from EVERY delegated subagent toolset (via `stripSubagentTools`, even when the `system` group is granted explicitly). `subagentCtx` (and the redelegating path) additionally clear the goal-status/verification sinks, so a task subagent can neither see nor reach the goal loop's verdict channels; the verifier keeps `declare_verification` because `verifierToolFilter`/`verifierReDerivationToolFilter` build its toolset from the raw registry list, not via `resolveTaskTools`.
 
 | Tool | Input | Purpose |
 | ---- | ----- | ------- |
@@ -254,19 +279,19 @@ All three bypass policy and judge (they are internal). They are NOT in `conducto
 | `declare_plan` write failure (SessionPlansDir) | Tool result `isError: true` with the filesystem error. |
 | `reflect` LLM call failure | Tool result `isError: true`; Conductor may proceed without reflection. |
 | `cancel_delegation` on unknown ID | Tool result `isError: true` (no-op otherwise). |
-| `finish` with pending async delegations | Tool result `isError: true` listing pending IDs; Conductor must cancel or wait. |
+| `finish` with pending async delegations | Not a tool error — `finish` is handled inline by the sp4rk Executor and never reaches `tools.Execute`. The `FinishGuard` the sp4rk Conductor installs (`agent.Executor.SetFinishGuard`, reading the registry from context as `orchestration.PendingDelegations`) rejects the finish and injects the pending IDs as a nudge step (`agent.Step.UserNudge`); the loop continues and the Conductor cancels or waits. |
 
-All errors are tool-level (`ToolResult{ IsError: true, Content: "..." }`), not Go errors returned from `Execute`. The Conductor sees them as observations in its ReAct loop and decides how to react. This preserves the ReAct contract: tool failures are observations, not control-flow interruptions.
+Every row above except the `finish` join guard is tool-level (`ToolResult{ IsError: true, Content: "..." }`), not a Go error returned from `Execute`. The Conductor sees those as observations in its ReAct loop and decides how to react. This preserves the ReAct contract: tool failures are observations, not control-flow interruptions. The `finish` guard is an executor-level gate, so it reaches the model as a nudge step instead of an observation.
 
 ## Breaking Change Checklist
 
 - If you change the `delegate` input schema, update `core/tools/delegate.go`, the Conductor system-prompt guidance in `core/systemprompt.go`, and [../domains/orchestration/delegation.md](../domains/orchestration/delegation.md).
-- If you change the `DelegationRegistry` API, update `delegate`, `cancel_delegation`, `read_step_output`, and the `finish` join check in the executor.
+- If you change the `DelegationRegistry` API, update `delegate`, `cancel_delegation`, every `conductorLauncher` call site in `core/conductor.go`, and the `ListPending` method the sp4rk Conductor's `finish` join guard calls through `orchestration.PendingDelegations`.
 - If you change paused-subagent checkpoint encoding or resume seeding, update `conductorLauncher.pausedCheckpoint` / `buildSubAgentTask`, the blackboard `StepResult` persistence, and [../domains/orchestration/delegation.md](../domains/orchestration/delegation.md).
-- If you add a new Conductor tool, tag it `ToolGroup: sdktools.GroupSystem` on its `BaseTool` (requires security review — it bypasses policy), register it in `core/tools/builtin_registration.go`, add it to the Conductor tool set in `core/conductor.go`, and document it in this contract.
+- If you add a new Conductor tool, tag it `ToolGroup: sdktools.GroupSystem` on its `BaseTool` (requires security review — it bypasses policy) and register it in `core/tools/builtin_registration.go`; registration alone puts it in the Conductor's tool set. Add its name to `conductorOnlyToolNames` in `core/conductor.go` when a subagent must not receive it, or to `goalModeTools` in `core/tools/registry.go` when it belongs to the goal loop only, then document it in this contract.
 - If you change the `declare_plan` event payload, the frontend plan panel ([../domains/frontend/events.md](../domains/frontend/events.md)) must be updated to match.
-- If you change the `Plan` / `PlanStep` struct in `github.com/v0lka/sp4rk/orchestration/types.go`, both `delegate` and `declare_plan` are affected (they share these types).
-- If you change the `Reflector.Reflect` signature, update the `reflect` tool wrapper.
+- If you change the `Plan` / `PlanStep` struct in `github.com/v0lka/sp4rk/orchestration/types.go`, update `conductorPublisher.Publish` and `planStepsWellFormed` in `core/conductor.go` plus `core/plan_serializer.go` — the `core/tools` layer never imports `orchestration`, so `delegate` and `declare_plan` exchange `PlanTaskInput` and reach these types only through the injected `PlanPublisher` / `PlanStepExecutor`.
+- If you change the `Reflector.Reflect` signature, update `conductorReflectionRunner` in `core/conductor.go` and the `core/tools.ReflectionRunner` shape the `reflect` tool calls.
 - If you remove or rename a system-group tool, update the "always available" invariants in [conductor.md](../domains/orchestration/conductor.md) and [delegation.md](../domains/orchestration/delegation.md).
 
 ## Related Specs

@@ -43,11 +43,9 @@ Goal mode ([ADR-019](019-goal-mode.md)) had two explicit entry points: the chat 
 - **Reserved-name protection for `goal`** (no catalog entry may take the name). Rejected for the same reasons ADR-096 rejected protecting `/goal` from custom commands: catalog names come from unenforceable, user-owned precedence roots, the collision is visible in the completion list, and the toggle remains an always-available fallback.
 - **Client-side-only budget parsing** (frontend strips `/goal:N` and sends `goalBudget`). Rejected: the backend must own activation semantics (the E2S/gate/live-send checks and the persistence stamp all run server-side on post-preprocess text); a client-stripped prefix would leave the gates blind to the exposed-prefix form.
 
-## Refinements
+## Related Specs
 
 This ADR refines, without superseding: [ADR-019](019-goal-mode.md) §2 (the entry command gains a budget form; the condition is still derived, never authored), [ADR-076](076-unified-slash-mentions.md) §9 (the preprocessing-survival argument covers `/goal:N` identically), [ADR-086](086-goal-mode-suggestion.md) (the suggestion gate's "no explicit goal" precondition covers both command spellings), [ADR-042](042-goal-mode-slm-essential-tools-gate.md) (the essential-tools block covers both spellings), and [ADR-096](096-custom-commands.md) (a template starting with `/goal:N` now carries the textual budget through the expansion).
-
-## Related Specs
 
 - [../domains/goal-mode.md](../domains/goal-mode.md) — the goal-mode domain (Mechanism § Chat Entry, Budgets, Suggested Activation)
 - [../domains/session-lifecycle.md](../domains/session-lifecycle.md) — the send path, live-send rejection, detection-before-resume-check

@@ -150,3 +150,13 @@ What *is* reused is the **pattern**, not the code: compile-time pins with no ups
 - [domains/llm-providers.md](../domains/llm-providers.md) — provider config, the lazy context probe and the context-window precedence this decision writes into.
 - [domains/model-profiles.md](../domains/model-profiles.md) — the hint-only `suggested_profile_id` invariant D8 preserves.
 - [architecture/security-model.md](../architecture/security-model.md) and `SECURITY.md` — ASI04 (supply chain) and ASI05 (agent-invokable binaries) constraints behind D3, D11 and D12.
+
+## Historical Note
+
+2026-11-08 — successor state for the identifier this record pins; the decision
+above is unchanged.
+
+- The pinned fork release has moved: the current pin is
+  `prism-b10735-842b188` (`core/embeddedllm/registry.go`, `RuntimeTag`), with
+  every URL and checksum re-recorded beside it under the same hand-bumped,
+  CVE-reviewed bump policy D11 defines.

@@ -12,16 +12,18 @@ A user message travels through the full stack:
 User types message in frontend
          │
          ▼
-Frontend: chatStore.sendMessage(text)
+Frontend: hooks/useMessageSender.ts → api/chat.ts sendMessage(...)
          │
          ▼
-RPC: window.go.desktop.App.SendMessage(id, text, activeSkills, activeAgents, modelOverride, reasoningEffort, goal, goalBudget, e2s, reviewMode)
+RPC: window.go.desktop.App.SendMessage(id, text, activeSkills, activeAgents, activeMCPServers, modelOverride, reasoningEffort, goal, goalBudget, e2s, reviewMode, clientSendID, workspace)
          │
          ▼
 backend/frontend_api_session.go: FrontendAPI.SendMessage()
          │
          ▼
 backend/session/manager_execution.go: Manager.SendMessage()
+  ├─ The single-return form of Manager.SendMessageClassified(), which also
+  │   returns the SendClassification (fresh / live nudge / paused resume)
   ├─ Creates/reuses Orchestrator for session
   ├─ Uses the combined emitFunc built once at Application init
   │   (backend/application.go: cfg.UIEmitFunc + session.NewEventPersister);
@@ -53,6 +55,11 @@ core/orchestrator.go: Orchestrator.HandleMessage(ctx, msg, sessionID, opts)
   │           → Activate matched skills (skills narrow the available toolset;
              policy comes from security.groups only — ADR-024)
   │
+  ├─ 1b. GOAL SUGGESTION GATE (ADR-086): on an eligible fresh plain task, after
+  │      routing and before execution, an accepted goal-suggestion offer diverts
+  │      the task into runGoalLoopRouted reusing THIS routing; a declined offer
+  │      or a failed derivation continues on the plain Conductor path
+  │
   ├─ 2. CONDUCTOR: runConductor() — a single ReAct loop owns the task end-to-end
   │      ├─ Executor drives the Conductor: LLM ↔ tool-call ↔ observe ↔ repeat
   │      ├─ Planning (declare_plan), delegation (delegate), reflection (reflect),
@@ -61,10 +68,15 @@ core/orchestrator.go: Orchestrator.HandleMessage(ctx, msg, sessionID, opts)
   │      └─ Emitter: AssistantChunk, ToolCall, ToolResult, PlanStep, Reflection, etc.
   │
   └─ 3. RETURN: finalizeResult() → HandleResult
-         {output, routingDecision, plan, blackboard, reflections, status}
+         {output, routingDecision, plan, blackboard, reflections, status,
+          err (typed degraded cause; JSON-omitted)}
          │
          ▼
-backend: Emitter.TaskComplete(output) → persists to SQLite
+backend/session/manager_execution.go: Manager.emitTaskComplete()
+  → task_complete carrying TaskCompleteData{output, success, completion,
+    routingDecision, plan}; the combined emitFunc hands it to the UI callback
+  → and to the EventPersister, then drains the write + token queues because
+    task_complete is a terminal persistence type
          │
          ▼
 Frontend: event handler receives session:${id}:task_complete
@@ -81,13 +93,27 @@ core/Orchestrator (via Emitter interface)
          ▼
 backend/session/emitter.go: EventEmitter
   ├─ Formats event data as typed struct
-  └─ Calls emit callback → runtime.EventsEmit(ctx, eventName, payload)
+  └─ Calls the combined emitFunc → UI emit callback + EventPersister
          │
          ▼
-Wails runtime (IPC bridge)
+desktop/startup_phases.go: buildUIEmitFunc()
+  ├─ Names the event session:${sessionId}:${type}
+  └─ App.emitBatchedEvent → desktop/event_batcher.go: EventBatcher
+       ├─ Coalesces transient streaming events (latest-wins, keyed by
+       │   session + event type + stream discriminator)
+       ├─ Barrier events (task_complete, tool_confirm, ask_user, step_limit, …)
+       │   flush immediately
+       ├─ Mirrors task-lifecycle events into the global sessions:changed push
+       └─ Flushes one envelope → App.emit → runtime.EventsEmit
          │
          ▼
-frontend: window.runtime.EventsOn(eventName, handler)
+Wails runtime (IPC bridge) — envelope event name: c0wrk:events:batch
+         │
+         ▼
+frontend: api/runtime.ts subscribe(eventName, handler)
+  ├─ installBatchListener() owns the single envelope listener;
+  │   dispatchEnvelope() fans each entry back out to its per-event handlers
+  │   (an individually emitted event reaches the same handlers unchanged)
   ├─ useSessionEvents hook dispatches to type-specific hooks
   ├─ Type guard validates payload
   └─ Updates Zustand store (chatStore, planStore, etc.)
@@ -115,9 +141,11 @@ backend/config/: config.Load()
   └─ Apply defaults (backend/config/defaults.go)
          │
          ▼
-backend/configadapter.go: ToBuilderConfig(cfg)
+backend/configadapter.go: ToBuilderConfig(cfg, modelProfilesCatalog, logger...)
   → Converts config.Config → core.BuilderConfig
   → Builds ProviderConfigs map from all providers (including those with no models enabled)
+  → Resolves the effective model profile against the catalog
+    (callers with an agent dir build it via config.LoadModelProfilesCatalog)
   → Sets DefaultModel (cross-provider, resolves to owning provider)
   → Single conversion point (all config mapping here)
          │
@@ -131,18 +159,28 @@ core/builder.go: NewOrchestratorBuilder(builderCfg)
 core/builder.go: Build() → per-session Orchestrator
   → Blocks until initDone completes (LLM router, model registry, tool judge ready)
   → Does NOT block on MCP gateway (mcpDone): MCP servers are discovered in the background; a server still connecting is simply not yet registered rather than blocking session creation
-  → Creates ToolResultCache with cacheTTLSeconds (per-session lifetime)
+  → Creates ToolResultCache with executor.tool_result_budget.cacheTTLSeconds (per-session lifetime)
   → Converts perToolTruncation map to per-tool truncation config
 ```
 
 Vector index initialization is separate from the builder pipeline:
 
 ```
-desktop/startup.go (background goroutine, after EventBackendReady):
-  → Load ONNX embedder from disk (~500-2000ms)
-  → Create vectorindex.Manager
-  → Wire into FrontendAPI via SetVectorManager()
-  → Emit vector_index:status (state=ready)
+desktop/startup.go: vectorLauncher.launch() — a background goroutine started
+  after emitBackendReady, and re-run by the UpdateIndexingSettings enabled hook
+  → desktop/startup_phases.go: runVectorIndexInit(epoch, ready)
+     ├─ vector_index.enabled false → the ONNX runtime is never loaded and every
+     │   routing path fails fast with the disabled error
+     ├─ Load the ONNX embedder + tokenizer from disk (~500-2000ms); missing
+     │   model files or a load failure → emit vector_index:status
+     │   {available: false, reason}
+     └─ Wire the per-root registry (ADR-081) through
+        Lifecycle().SetVectorRootsFactory(factory, ready, closeEmbedder) —
+        epoch-guarded, so a superseded or disabled launch wires nothing and
+        closes its own embedder
+  → backend/vector_roots.go then builds one vectorindex.Manager per root on
+    demand through that factory and streams vector_index:status
+    (indexing → ready) for the focused root only
 ```
 
 `EventBackendReady` fires without waiting for vector index or MCP gateway async init. The frontend receives projects/sessions immediately; vector search becomes available asynchronously.
@@ -204,6 +242,28 @@ emitBackendReady():
   ├─ showWindow(ctx)  (last idempotent safety net; the window is created
   │   visible and initTools already re-showed it, so this is always a no-op)
   └─ emit backend:ready
+  ↓
+Web access sidecar (browser mirror, ADR-101): initWebAccess — mounted right
+  after emitBackendReady, only while BOTH experimental.enabled and
+  web_access.enabled are on (a closed gate is a quiet Debug skip). A
+  mid-session flip applies live — SetWebAccessEnabled, or the
+  applyExperimentalWebAccess hook fired by UpdateExperimentalFeatures
+  strictly after a successful persist — no app restart (details:
+  specs/domains/web-access.md)
+  ↓
+log "startup complete — backend ready" (with total_elapsed_ms)
+  ↓
+Phase 6: macOS power-state wake recovery (registerPowerWakeObserver)
+  → on macOS 26 the webview render surface is left blank after a wake; the
+    wake observer catches SUSPENSION, an injected hook catches DEATH
+    (ADR-018, which supersedes ADR-017). A wake callback is debounced 10s
+    (one wake can post both NSWorkspaceDidWake and NSWorkspaceScreensDidWake)
+    and runs deferredWakeReload — re-navigates the frontend after a 1.5s
+    context-cancellable delay. Non-macOS: a no-op stub
+  ↓
+Background goroutines (after the "startup complete — backend ready" log):
+  MCP Ready notifier, vector-index launch (vectorLauncher.launch(), see the
+  vector section above), update check, git auto-fetch ticker
 ```
 
 **Background-vs-critical rule** (normative): new startup subsystems MUST go in a BACKGROUND phase unless they absolutely require completion before `EventBackendReady`; any change that adds >50ms to a critical phase MUST be justified in a code review comment. Per-phase timing is visible with `LOG_LEVEL=INFO`.
@@ -239,13 +299,20 @@ core/tools/registry.go: ToolRegistry.Execute(ctx, name, input)
   │      reject inputs violating the tool's JSON schema: required keys, declared
   │      types, unknown keys, recursively into nested objects and array items
   ├─ 3. Disabled-tools check (No Project mode) — applies to ALL tools, including system-group
+  ├─ 3b. Per-server MCP activation gate — a tool whose MCP source server sits in the
+  │      task's gated set (manual mode without a mention, or disabled) fails closed
+  │      here, before the system-group bypass (ADR-084)
   ├─ 4. Tool's group == system? → execute immediately, bypass policy/judge (disabled check above still applies)
   ├─ 5. Register PostExecuteHook (deferred, runs on every non-early return path)
   ├─ 6. PreExecuteHook? → call (may block for indexing gate)
   ├─ 7. Group policy == deny? → return error result (hard block, names the group)
-  ├─ 8. Gather safety signals once: ToolJudger outcome (hard: blacklist/SSRF;
-  │      soft: path containment) + symlink analysis (escape = hard;
-  │      resolution staying inside the roots = not a concern; expansion suspicion removed — dynamic constructs are flowsh's domain, ADR-055)
+  ├─ 8. Attach the flowsh digest once (AttachShellAnalysisForTool), then gather safety
+  │      signals: ToolJudger outcome (hard: blocklist match, a flowsh criterion, SSRF;
+  │      soft: path containment, credential access) + symlink analysis (escape = hard;
+  │      resolution staying inside the roots = not a concern; expansion suspicion removed — dynamic constructs are flowsh's domain, ADR-055).
+  │      splitSafetyReasons folds them into at most one hard + one soft reason; the
+  │      managed-worktree traversal gate joins after the fold as an independent hard
+  │      canonical signal (ADR-080)
   └─ 9. Branch on the tool's GROUP policy (security.groups, ADR-024; unconfigured
          group → fail-safe user_confirm):
        ├─ allow → hard reason ⇒ smartApproveOrConfirm (Hard) — unified funnel
@@ -256,7 +323,7 @@ core/tools/registry.go: ToolRegistry.Execute(ctx, name, input)
        │          paths (silent judge mode: the judge's ALLOW is final, audited),
        │          a non-canonical hard reason may be cleared by a strict ALLOW;
        │          soft reason ⇒ assisted mode may allow, else confirm; clean ⇒ execute
-       ├─ deny → return error result (step 8)
+       ├─ deny → return error result (step 7)
        └─ user_confirm → confirmFunc() blocks until user responds
                 (local_write + auto_approve_workspace_writes + Judge.Allow ⇒ execute;
                  hard reason ⇒ smartApproveOrConfirm (Hard) — same funnel +

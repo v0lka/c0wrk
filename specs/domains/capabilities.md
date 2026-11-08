@@ -8,12 +8,12 @@ Defines the `capabilities:` config section that gives every mentionable capabili
 
 - `backend/config/config.go` — `CapabilitiesConfig` (`skills` / `agents` / `mcp` maps of `CapabilityModes{ChatMode, CodeMode}`, yaml/json `chat_mode`/`code_mode`, omitempty — empty = `auto`); `MCPServerConfig.Mode` retained only as the legacy YAML key (json `-`)
 - `backend/config/mcp_mode.go` — legacy `mcp.servers.<name>.mode` migration (`migrateLegacyMCPServerModes`), load normalization (`normalizeCapabilities`), save-path gate (`ValidateCapabilities`)
-- `backend/frontend_api_capabilities.go` — `GetCapabilityModes` / `UpdateCapabilityModes` RPCs over one configMu-coherent snapshot
+- `backend/frontend_api_capabilities.go` — `GetCapabilityModes` / `UpdateCapabilityModes` RPCs over one configMu-coherent snapshot, their wire DTOs (`CapabilitiesInfo`, `CapabilityModesInfo`) and the section-id constants (`CapabilitySectionSkills` / `CapabilitySectionAgents` / `CapabilitySectionMCP`)
 - `backend/frontend_api_mcp.go` — `GetMCPStatus` / `GetMCPMentionableServers` payloads carrying `chat_mode`/`code_mode` per server
-- `backend/configadapter.go` — verbatim transfer of all three sections into `BuilderConfig.Capabilities`; absent name = zero value (`auto`/`auto`)
+- `backend/configadapter.go` — verbatim transfer of the modes: `capabilities.skills` / `capabilities.agents` into `BuilderConfig.Capabilities` (`capabilityModesToCore`), and `capabilities.mcp.<name>` onto each `BuilderMCPServer.ChatMode`/`CodeMode`; absent name = zero value (`auto`/`auto`)
 - `core/builderconfig.go` — `core.CapabilityModes{ChatMode, CodeMode}` (string-compatible with the backend enum; core does not import backend/config), `BuilderConfig.Capabilities{Skills, Agents}`
 - `core/builder_mcp.go` — gateway dial decision (`configToGatewayConfig`) and the MCP mode snapshot (`mcpServerModesFromConfig`)
-- `core/builder_capabilities.go` — builder-level snapshots for the skills/agents sections (`capabilityModesFromConfig`, cloning getters)
+- `core/builder_capabilities.go` — builder-level snapshots for all three sections: `capabilityModesFromConfig`, the cloning getters (`currentSkillModes` / `currentAgentModes`) the orchestrator resolvers read, and `UpdateCapabilities` (the whole-snapshot republish `UpdateCapabilityModes` performs on the live builder)
 - `core/orchestrator_mcp.go` — session-kind resolution (`sessionCapabilityContext`), context projection (`capabilityModesForSession`), the per-context gated set
 - `core/orchestrator_capabilities.go` — per-entry snapshot attachment (`attachCapabilitySnapshots`) and the mention filters (`mentionedSkillsForTask` / `mentionedAgentsForTask`)
 - `frontend/src/lib/capabilityModes.ts` — mentionable predicates shared by `/`-completion and the send path (`isMentionableInContext`, `mentionableNamesInContext`, `sessionKindFromProjectId`)
@@ -84,8 +84,8 @@ capabilities:
 
 ### Wire surface
 
-- `GetCapabilityModes()` returns all three sections normalized and non-nil; `capabilities.mcp` names always resolve against `mcp.servers`.
-- `UpdateCapabilityModes(kind ∈ {skills, agents, mcp}, modes)` **replaces the whole section** (never merges): strict enum validation, stale `mcp` names trimmed, both-empty entries dropped, persistence through the common atomic config pipeline (`config:updated`). No gateway reconfigure (see the dial rule above).
+- `GetCapabilityModes() CapabilitiesInfo` returns all three sections (`skills` / `agents` / `mcp`) normalized and non-nil — each a `map[string]CapabilityModesInfo` whose `chat_mode`/`code_mode` fields always carry a canonical enum string; `capabilities.mcp` names always resolve against `mcp.servers`.
+- `UpdateCapabilityModes(kind ∈ {skills, agents, mcp}, modes map[string]CapabilityModesInfo)` **replaces the whole section** (never merges): strict enum validation, stale `mcp` names trimmed, both-empty entries dropped, persistence through the common atomic config pipeline (`config:updated`), then a republish to the live builder — still under `configMu`, so the pushed `BuilderConfig` is the one just persisted. `OrchestratorBuilder.UpdateCapabilities` rewrites all three immutable snapshots (`mcp` from `mcpServerModesFromConfig`, `skills` and `agents` from `capabilityModesFromConfig`) in one write-lock pass; a cleared section publishes nil and gates nothing. Orchestrators read those snapshots through the cloning resolver getters `Build()` wires (`MCPServerModesResolver` / `SkillModesResolver` / `AgentModesResolver`), so the saved modes reach the next task entry — new task, continuation or resume — with no orchestrator rebuild and no restart, while an in-flight execution keeps the context values its own entry attached. With no builder yet the push is a no-op: construction projects the persisted section. No gateway reconfigure (see the dial rule above).
 - `GetMCPStatus` / `GetMCPMentionableServers` carry `chat_mode`/`code_mode` per server (see MCP above).
 
 ## Error Handling

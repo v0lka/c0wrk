@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-The vector-index embedder runs on ONNX Runtime with a local, quantized model. Historically it always executed on the CPU execution provider — indexing loaded the CPU while an NVIDIA GPU sat idle, and nothing in the logs indicated a problem. A research pass (`docs/cuda-embedding-research.md`, PoC verified 2026-09-09/10 on an RTX 5060 Ti, CUDA 13.3) established three facts that shape this decision:
+The vector-index embedder runs on ONNX Runtime with a local, quantized model. Historically it always executed on the CPU execution provider — indexing loaded the CPU while an NVIDIA GPU sat idle, and nothing in the logs indicated a problem. A research pass (`docs/development/cuda-embedding-research.md`, PoC verified 2026-09-09/10 on an RTX 5060 Ti, CUDA 13.3) established three facts that shape this decision:
 
 1. **The provider is opt-in API, not library flavor.** ONNX Runtime never selects the GPU on its own; without an explicit `AppendExecutionProviderCUDA` on the session options the graph runs on the CPU EP regardless of which build of `libonnxruntime.so` is installed. The session-options construction lives in sp4rk (`embedding/onnx.go`), so the fix cannot be made from c0wrk alone.
 2. **The CUDA EP keeps per-OS-thread state.** Every thread entering `Session.Run` gets its own `PerThreadContext` — a cuBLAS handle with a workspace, ~1 GiB VRAM each. Go migrates goroutines across OS threads freely, so even strictly serialized (mutex-held) inference calls arrive from ever-new threads: measured VRAM climbed from 1755 MiB to 15839 MiB within ~20 rounds and died with `CUBLAS failure 3: the resource allocation failed`. Pinning all ORT touches to one `runtime.LockOSThread` thread holds VRAM flat (~3792 MiB).

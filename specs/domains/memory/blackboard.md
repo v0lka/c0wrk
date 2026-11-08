@@ -18,8 +18,9 @@ Engine files (`github.com/v0lka/sp4rk/orchestration/blackboard.go` `MapBlackboar
 
 Wraps sp4rk `MapBlackboard` with SQLite persistence:
 
-- Non-finalizing write methods are serialized through a single background worker goroutine (`persistSafe`, with a timeout and per-op panic recovery): `SetOriginalRequest`, `SetPlan`, `SetStepResult`, `AddReflection`, `StoreFact`, `AddAttachment`, `RemoveAttachment`, `SetRouting`
+- Non-finalizing write methods are serialized through a single background worker goroutine (`persistSafe`, with a timeout and per-op panic recovery): `SetOriginalRequest`, `SetPlan`, `SetStepResult`, `AddReflection`, `StoreFact`, `AddAttachment`, `RemoveAttachment`, `SetRouting`, `ReactivateTask`
 - Finalizing writes (`CompleteTask`, `FailTask`, `CancelTask`) run synchronously (`persistSynchronously`) so the status change is guaranteed persisted before the method returns; they also shut down the background worker
+- `PauseTask` also writes synchronously (`persistSynchronously`) and keeps the worker alive — a paused task is still live and may still write (e.g. a final trajectory flush)
 - `SetFinalResult` does NOT persist — it only sets the in-memory value; the final result is persisted to the `final_output` column later by `CompleteTask`
 - Supports `RestoreBlackboard()` for task resumption — recreates the full in-memory state from SQLite
 - Tracks task lifecycle: `ReactivateTask()`, `CompleteTask()`, `FailTask()`, `CancelTask()`, `PauseTask()`
@@ -33,8 +34,10 @@ HandleMessage(ctx, message, opts)
 ├─ opts.TaskID == "" → create new Blackboard via bbFactory (fresh PersistentBlackboard)
 └─ opts.TaskID != "" → restore Blackboard from persistence
    ├─ RestoreBlackboard() → in-memory MapBlackboard populated from SQLite
-   ├─ ReactivateTask() → mark task in_progress
-   └─ existing routing decision reused (continuation fast-path; see ../orchestration/router.md)
+   ├─ existing routing decision reused (continuation fast-path; see ../orchestration/router.md)
+   └─ ReactivateTask() → mark task in_progress at the continuation's commit
+      point (after routing succeeded, or the goal loop was entered), so a
+      continuation that fails before execution keeps its prior status
 ```
 
 ### Persistence Contract (core)
@@ -43,11 +46,11 @@ HandleMessage(ctx, message, opts)
 
 - `PersistableBlackboard` — the persistence-capable Blackboard interface
 - `TaskPersistence` — the store interface (SQLite-backed) for task lifecycle + blackboard state (including `PersistAttachments`, `SaveTrajectory`/`LoadTrajectory`, and `PersistGoalState`/`LoadGoalState` for goal-mode state)
-- `BlackboardRestoreFunc` / `BlackboardFactory` — injected into the orchestrator at build time
+- `BlackboardRestoreFunc` — the restore seam injected into the orchestrator at build time; its fresh-task sibling `BlackboardFactory` is declared in `core/orchestrator.go`
 
 ### Goal State (goal mode)
 
-A task running in goal mode carries a `goal.GoalState` (condition, verify clause, budget, turn/token counts, lifecycle status, last verdict). It is persisted separately from the trajectory so a paused/active goal survives app restart and resumes into the loop:
+A task running in goal mode carries a `goal.GoalState` (condition, verify clause, verification mode, turn-only budget, turn count, lifecycle status, last verdict, last error, and the independent-verifier markers). It is persisted separately from the trajectory so a paused/active goal survives app restart and resumes into the loop:
 
 - `PersistGoalState(taskID, gs)` / `LoadGoalState(taskID)` — added to `TaskPersistence`. The goal state is persisted separately from the blackboard and restored SEPARATELY from `RestoreBlackboard`: the resume path loads it via `adapter.LoadGoalState(taskID)` and passes it to `Orchestrator.Resume`. The blackboard itself carries no goal state (`MapBlackboard` has no goal concept). `nil` for non-goal tasks.
 - Persistence is **best-effort**: a missing store/task ID is a no-op, and a persistence failure is logged but never propagates — losing the checkpoint degrades only resumability, not the current run.
@@ -99,7 +102,7 @@ Committed attachments survive app restart: `PersistentBlackboard.AddAttachment` 
 - All Blackboard methods are safe for concurrent use (sp4rk `MapBlackboard` uses `sync.RWMutex`)
 - Step results use replace semantics: writing a step ID that already has a result overwrites it (summary regenerated, trajectory replaced), and persistence upserts in lockstep (`SaveTaskStep` → `INSERT OR REPLACE INTO task_steps`). Re-execution paths — retry after failure, resume from a paused checkpoint or restart, re-run plan waves — rely on the latest execution's result winning
 - Facts accumulate monotonically (no deletion during a task)
-- Non-finalizing writes are serialized through a single background worker goroutine (with timeout + panic recovery); finalizing writes (`CompleteTask`/`FailTask`/`CancelTask`) run synchronously so the status change is persisted before returning
+- Non-finalizing writes are serialized through a single background worker goroutine (with timeout + panic recovery); finalizing writes (`CompleteTask`/`FailTask`/`CancelTask`) run synchronously so the status change is persisted before returning, and `PauseTask` writes synchronously while keeping the worker running
 - The worker's enqueue is lossless: when the channel buffer is full, `persistSafe` waits for queue space (bounded by the persistence timeout) instead of dropping the write — a dropped fact/step write has no later re-flush, so it would stay missing from the database (and the Blackboard panel) until the next full-list rewrite
 - `blackboard_updated` change notifications fire only after the write has landed in SQLite (gated on persistence success): the frontend panel refetches the database, so announcing un-persisted state would fetch state without the just-stored fact right after `store_fact` reported success
 - `RestoreBlackboard` recreates the full in-memory state from SQLite

@@ -10,14 +10,15 @@ Mechanical edit verification: after every successful `write_file` / `edit_file` 
 - `config.example.yaml` - documented example block (default off)
 - `backend/config/verify_on_edit_test.go` - config parsing/timeout fallback tests
 - `backend/configadapter.go` - maps `VerifyOnEditConfig` into `core.BuilderVerifyOnEditConfig`
-- `core/builder.go` - `Build` arms the runner when enabled AND a workspace is active; `applyProviderOutputReserves` neighborhood
+- `core/builder.go` - `Build` arms the runner when enabled AND a workspace is active
 - `core/verify_on_edit.go` - `buildEditVerifyRunner` (the runner itself), `parseVerifyOnEditTimeout` (invalid/empty → 2m fallback), `parseExitStatus`, `Orchestrator.verifyOnEditForMode` (CHAT suppression)
 - `core/tools/registry_unattended.go` - `ToolRegistry.ExecuteUnattended` — the confirmation-free execution path with every hard security gate intact
 - `core/orchestrator.go` / `core/conductor.go` - plumbing into `OrchestratorDeps` / `conductorDeps` → sp4rk `agent.Executor.SetVerifyOnEdit`
 - `core/orchestrator_goal.go` - goal-loop suppression (`deps.verifyOnEdit = nil` per turn)
+- `core/orchestrator_e2s.go` / `core/e2s/loop.go` - the E2S loop arms the same runner (`Config.EditVerify` / `Config.EditVerifyMaxChars`), debounced once per action whose dispatch contained a successful `write_file`/`edit_file`
 - sp4rk `agent/verify_on_edit.go` - SDK-side debounce, `EditVerifyResult`, `FormatVerifyNote` (rune-safe output truncation)
 - sp4rk `orchestration/conductor.go` - `ConductorConfig.VerifyOnEdit` wiring into the executor
-- `core/prompts/orchestrator_lite*.md` - "Edit → Verify Cycle" prompt sections instructing the model to fix failures before finishing
+- `core/prompts/orchestrator_system.md` / `core/prompts/orchestrator_lite.md` - the two "Edit → Verify Cycle" prompt sections instructing the model to fix failures before finishing
 
 ## Core Types
 
@@ -39,7 +40,7 @@ The runner marshals `{command, timeout, working_directory}` and calls `registry.
 
 ```
 config.yaml executor.verify_on_edit.enabled=true
-  → builder.Build: buildEditVerifyRunner(sessionRegistry, workspace, command, timeout, bashMaxTimeout)
+  → builder.Build: buildEditVerifyRunner(sessionRegistry, workspace, command, timeout, bashMaxTimeout, logger)
   → OrchestratorDeps.VerifyOnEdit → conductorDeps.verifyOnEdit
   → RunConductor → orchestration.ConductorConfig.VerifyOnEdit
   → executor.SetVerifyOnEdit(runner, maxOutputChars)
@@ -47,7 +48,23 @@ config.yaml executor.verify_on_edit.enabled=true
       runner() runs ONCE (debounced per group)
       FormatVerifyNote → "[verify_on_edit] …" appended to the group's last
       observation (before ToolResult emission: both LLM context and UI see it)
+
+E2S tasks arm the same runner through core/e2s Config.EditVerify, debounced
+once per action whose dispatched sub-calls contained a successful edit.
 ```
+
+A pending verification also flushes at the two boundaries that would otherwise
+drop it: an implicit text-only finish (the note lands in the final output) and a
+pause checkpoint (the note is recorded as a user-nudge step so a resumed run
+sees it). The checkpoint flush runs under its own short SDK budget — 5s,
+`defaultVerifyOnEditCheckpointBudget`, not host-configurable — so a pause stays
+a prompt cooperative stop: the budget is the deadline of the context the runner
+receives, so a cancellation-honoring runner returns its ordinary timeout note,
+and the flush waits a further 250 ms abandon grace
+(`verifyOnEditCheckpointAbandonGrace`) for that result before dropping a runner
+that ignores cancellation and recording a synthetic "verification did not
+complete within the pause-checkpoint budget" nudge in its place. Both notes
+leave the edit unverified and let the pause proceed on time.
 
 Suppression points: No Project (CHAT) mode (`verifyOnEditForMode` → nil), plain goal-loop turns (`orchestrator_goal.go`), and specialized passes (`RunConductor` nils `deps.verifyOnEdit` when `systemPromptOverride != nil`).
 
@@ -58,7 +75,7 @@ The command ALWAYS originates from user configuration, never from model output �
 1. structural input validation (`sdktools.ValidateToolInput` — required keys, declared types, unknown keys, recursively into nested objects and array items),
 2. disabled tools (No Project mode),
 3. execute-group policy `deny`,
-4. **canonical** hard safety reasons (judge + symlink detection, canonicality checked independently for both signals) — a canonical hard reason (blocklist match, a flowsh control — exfiltration flow / privilege escalation / system-path write / destructive write outside the session roots / download cradle — or a symlink escape) blocks outright because there is no confirmation flow to escalate to. A **non-canonical** hard reason — most notably the flowsh ⊤ limitation `command_unbounded_analysis` ("the analyzer could not bound this command") — passes: the command is the user's own verification config and an analysis limitation is not grounds to break the opted-in verification loop (`./x.sh`, an unknown CLI's `--version`).
+4. **canonical** hard safety reasons (judge + symlink detection + managed-worktree traversal, canonicality checked independently for each signal) — a canonical hard reason (blocklist match, a flowsh control — exfiltration flow / privilege escalation / system-path write / destructive write outside the session roots / download cradle —, a symlink escape, or a managed-worktree traversal) blocks outright because there is no confirmation flow to escalate to. A **non-canonical** hard reason — most notably the flowsh ⊤ limitation `command_unbounded_analysis` ("the analyzer could not bound this command") — passes: the command is the user's own verification config and an analysis limitation is not grounds to break the opted-in verification loop (`./x.sh`, an unknown CLI's `--version`).
 
 For shell tools the deterministic flowsh analysis is computed once per call and attached for the tool's Judge exactly as in `Execute` (ADR-052).
 
@@ -69,9 +86,16 @@ Deliberately skipped (input is fixed config, not model output): pre/post-execute
 - The verification command comes exclusively from `executor.verify_on_edit.command` in user config; the model cannot set, change, or suggest it.
 - The runner is nil (feature fully inert) when disabled, when the command is empty, or when no workspace is active.
 - Verification never runs in CHAT (No Project) mode or in goal-loop / specialized passes.
-- A successful edit marks the run dirty; the command runs at most once per response group (debounce), never twice for the same edit.
+- A successful edit marks the run dirty; the command runs at most once per response group (Conductor) or per action (E2S) — debounce — never twice for the same edit.
 - Failed edits, reads, and rejected tool calls never trigger verification.
 - Injected output is capped (`max_output_chars`, SDK default 4000) with an explicit truncation marker; the cut is rune-safe (never splits a multi-byte UTF-8 rune).
-- A non-zero exit is reported as `VERIFICATION FAILED` and a timeout as `NOT verified` — never as a pass.
-- The effective timeout is `min(executor.verify_on_edit.timeout, timeouts.bashMaxTimeout)`; a clamp logs a warning and `EditVerifyResult.Timeout` carries the effective limit into the timeout note, so the model is never advised to raise a knob that cannot take effect.
+- A positive exit is reported as `VERIFICATION FAILED`; a timeout and a negative (blocked-or-killed) exit are reported as `NOT verified` — never as a pass.
+- The effective timeout is `min(executor.verify_on_edit.timeout, timeouts.bashMaxTimeout)`; a clamp logs a warning and `EditVerifyResult.Timeout` carries the effective limit into the timeout note, so the model is never advised to raise a knob that cannot take effect. A pause-checkpoint flush additionally bounds that same run by the SDK's 5s checkpoint budget.
 - Fail-surface mapping is exact: infrastructure failures (input marshaling, registry execution errors) surface as the `Err` note ("could not run verification command"); policy/blocklist/canonical-criterion denials and signal kills carry no `exit status N`, so they parse to a negative exit code and surface as the `ExitCode < 0` note ("verification command did not complete (blocked or killed — no exit code). The edit was NOT verified"). Either way the edit is never reported as verified — never as a silent pass.
+
+## Related Specs
+
+- [tool-system/README.md](tool-system/README.md) — the registry pipeline and the gate order `ExecuteUnattended` keeps
+- [../decisions/052-flowsh-command-analysis.md](../decisions/052-flowsh-command-analysis.md) — the deterministic shell analysis and the canonical / non-canonical hard-reason split
+- [../decisions/058-shell-execution-override.md](../decisions/058-shell-execution-override.md) — the `shell_exec` launch shape and declared dialect the verify command inherits
+- [e2s.md](e2s.md) — the E2S loop's per-action arming of the same runner

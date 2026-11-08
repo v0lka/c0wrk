@@ -44,14 +44,28 @@ c0wrk enforces a strict layered architecture. Each layer has a single responsibi
 
 > sp4rk (module `github.com/v0lka/sp4rk`) lives in its [own repository](https://github.com/v0lka/sp4rk); c0wrk consumes it as an external dependency. It is shown here as the lowest layer.
 
+## Repository Layout
+
+Top-level entries outside the layer stack:
+
+- `main.go` — the binary's entry point: CLI parse, single-instance lock, crash capture, window-bounds load, then `wails.Run`
+- `internal/` — shared leaf utilities importable from every Go layer (see below)
+- `scripts/` — helper scripts: `fetch-onnx.ps1` and `fetch-embedding-model.ps1` sit behind Makefile targets (the Windows branch of `fetch-onnx` / `fetch-embedding-model` delegates to them; `build.ps1` mirrors the same targets), while `benchmark-vector-index.sh` has no Makefile/CI wiring and is run manually — see `core/vectorindex/BENCHMARKS.md`
+- `build/` — Wails build assets: app icons, the `darwin/` bundle metadata, the `bin/` output directory
+- `specs/`, `docs/`, `research/` — the specification system, developer guides, and the research catalog
+- `config.example.yaml`, `Makefile`, `wails.json`, `go.mod` — the authoritative config reference, the build/test entry points, the Wails project metadata, and the single Go module
+
 ## Import Rules
 
 | Layer       | May Import                           | Must NOT Import              |
 | ----------- | ------------------------------------ | ---------------------------- |
 | `frontend/` | Nothing (communicates via Wails IPC) | Go packages                  |
-| `desktop/`  | `backend`, `core`, sp4rk             | —                            |
-| `backend/`  | `core`, sp4rk                        | —                            |
-| `core/`     | sp4rk                                | `backend`, `desktop`         |
+| `desktop/`  | `backend`, `core`, `internal`, sp4rk | —                            |
+| `backend/`  | `core`, `internal`, sp4rk            | —                            |
+| `core/`     | `internal`, sp4rk                     | `backend`, `desktop`         |
+| `internal/` | Standard library, external libs, `backend/config` (`internal/webaccess` only); `internal/webaccess` test files additionally import the `backend` root package for the surface contract | `core`, `desktop`, the `backend` root package from production code |
+
+> **`internal/` hygiene** is pinned for the sidecar by `internal/webaccess/nodeps_test.go`: no file in that package — tests included — may import `desktop` or Wails.
 | sp4rk (ext. repo) | External libs only                | `core`, `backend`, `desktop` |
 
 > **Module boundary** (ADR-015): sp4rk is a separate Go module (`github.com/v0lka/sp4rk`) living in its [own repository](https://github.com/v0lka/sp4rk). The root module (`github.com/v0lka/c0wrk`) depends on it as a normal external dependency (`require github.com/v0lka/sp4rk`, no `replace` directive). The import prohibition on sp4rk is enforced at the repository level — sp4rk cannot import `core/`, `backend/`, or `desktop/` because they live in a different repository.
@@ -75,11 +89,21 @@ Also owns domain services:
 - `core/workspace/` — fsnotify watcher with debouncing, git status/diff operations, file tree walking
 - `core/tools/` — built-in tool registration, c0wrk-specific tool types (ask_user)
 - `core/goal/` — Goal domain: the declared success condition, the budget constraining work toward it, and the runtime state machine tracking progress
+- `core/e2s/` — the E2S explicit-execution-state loop: the externalized state Σ, its merge operator, and the per-turn driver built on raw sp4rk primitives
+- `core/units/` — the durable per-unit recovery ledger shared by the mainline Conductor and isolated execution contexts (ADR-048)
 - `core/markitdown/` — document-to-Markdown conversion via the managed markitdown CLI; optional vision-assisted conversion through the markitdown Python API (embedded driver) that captions embedded document images with the active vision-capable model (`core/visionresolver.go` maps the active model/provider onto the OpenAI-compatible captioning endpoint; the driver additionally extracts and captions PDF-embedded images itself — markitdown's PDF path is text-only — and replaces docx/html/epub base64 data-URI images with captions; degrades to the plain CLI on any failure)
 - `core/modelprofiles/` — tool-set narrowing for running the conductor against local / mid-size LLMs (model profiles; see [../domains/model-profiles.md](../domains/model-profiles.md))
 - `core/toolmanager/` — managed external binary tools (rg, uv, markitdown): version checking, download, install, first-run bootstrap
-- `core/updater/` — application self-update: GitHub release checking, signature verification, asset download/install
+- `core/updater/` — application self-update: GitHub release checking, fail-closed SHA256 verification against the release `SHA256SUMS` (artifacts stay unsigned — ADR-023), staged two-process install with a `.old` rollback tree
 - `core/version/` — build-time metadata (Version, GitCommit) injected via linker flags
+- `core/cli/` — command-line argument parsing (raw argv → a `Request`); fail-closed and pure (standard library + `core/version` only)
+- `core/prompts/` — the embedded (`go:embed`) markdown prompt templates the prose above refers to
+- `core/embeddedllm/` — embedded local-model provisioning and supervision: pinned runtime and weights, hardware-aware launch planning, loopback OpenAI-compatible server
+- `core/llmbudget/` — adaptive per-model LLM request budgets learned from live traffic
+- `core/llmtls/` — per-provider TLS verification overrides (certificate pinning) for self-signed LLM endpoints
+- `core/gittrust/` — the process-wide registry of user-trusted git repository roots the hardened spawn layer consults
+- `core/research/`, `core/papers/`, `core/specs/` — the document domains behind the Research, Papers and Specs panels: in-memory models, parsers, atomic containment-checked writers, and the embedded skill/Subagent packs
+- `core/seedpack/` — the crash-safe, hash-verified global pack-seeding core shared by `core/research`, `core/papers` and `core/specs`
 
 ### `backend/` — Application ViewModel
 
@@ -87,7 +111,7 @@ The "app layer" that the desktop UI interacts with. Owns the `Application` struc
 
 ### `desktop/` — Wails Bindings & Lifecycle
 
-Thin layer. The `desktop.App` struct embeds `*backend.FrontendAPI` so its methods are visible to the Wails binding generator. Handles `OnStartup` (config loading, shell environment, backend init) and `OnShutdown`. Manages pending confirmations (`sync.Map`) between backend and frontend.
+Thin layer. The `desktop.App` struct embeds `*backend.FrontendAPI` so its methods are visible to the Wails binding generator. Handles `OnStartup` (config loading, shell environment, backend init) and `OnShutdown`. Manages pending confirmations (`sync.Map`) between backend and frontend. Builds the callbacks the backend runs on (`UIEmitFunc`, `AskUserFunc`, `PlanApprovalFunc`, `ConfirmFunc`, `HITLHandler`) and owns the single Wails event funnel (`App.emit`) plus the session-event batcher (`desktop/event_batcher.go`), which coalesces transient streaming events into one `c0wrk:events:batch` envelope per flush.
 
 ### `frontend/` — React UI
 
@@ -101,6 +125,17 @@ All three go through the single gateway `frontend/src/api/runtime.ts`; component
 
 No direct Go imports. Auto-generated bindings at `frontend/wailsjs/go/desktop/App.{js,d.ts}`.
 
+### `internal/` — Shared Leaf Utilities
+
+Outside the stack: every Go layer may import `internal/`, and `internal/` imports no layer (the single exception is `internal/webaccess`, which reads its bind/TLS configuration types from `backend/config`).
+
+- `internal/sysproc/` — child-process creation attributes (console hiding on Windows) and the single git spawn choke point (`GitCmd`, `GitCmdRaw`, `gitSafetyOverrides`)
+- `internal/securehttp/` — HTTPS-only client hardening shared by the outbound download surfaces (`core/updater`, `core/toolmanager`)
+- `internal/shellresolver/` — shell binary resolution shared by `backend/config` (shell environment loading) and `core/terminal` (PTY sessions)
+- `internal/webaccess/` — the browser web-access sidecar: an HTTP + WebSocket server mirroring the desktop RPC/event surface
+- `internal/gittest/` — disposable canary git repositories for the spawn-neutralization tests
+- `internal/specslint/`, `internal/teststress/`, `internal/testtiming/`, `internal/vulncheck/` — repository tooling: ADR-numbering lint, the stress-run driver, the timer-debt guard, and the `govulncheck` wrapper
+
 ## Key Boundary Files
 
 | Boundary           | Gateway File                           | Role                            |
@@ -109,11 +144,14 @@ No direct Go imports. Auto-generated bindings at `frontend/wailsjs/go/desktop/Ap
 | core → backend     | `backend/configadapter.go`             | Converts config → BuilderConfig |
 | core → backend     | `backend/application.go`               | Wraps OrchestratorBuilder       |
 | backend → desktop  | `desktop/app.go`                       | Embeds FrontendAPI              |
+| backend → desktop  | `desktop/startup_phases.go`            | Builds the UI emit + HITL callbacks the backend runs on |
 | desktop → frontend | `frontend/wailsjs/go/desktop/App.d.ts` | Generated bindings              |
+| desktop → frontend | `frontend/src/api/runtime.ts`          | Single RPC + event gateway (batch-envelope dispatcher) |
 
 ## Invariants
 
 - `backend` may import sp4rk packages directly for type definitions
+- `internal/` packages stay leaves: they import the standard library, external dependencies, and — for `internal/webaccess` only — `backend/config` in production code plus the `backend` root package in its surface-contract test (`internal/webaccess/contract_test.go`); `core/`, `backend/` and `desktop/` all may import them
 - `core` never imports `backend` or `desktop`
 - sp4rk has zero knowledge of c0wrk-specific concepts
 - sp4rk is a separate Go module in its own repository; the import prohibition on `core/`/`backend/`/`desktop/` is enforced at the repository level (ADR-015)

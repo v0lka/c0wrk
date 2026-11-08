@@ -880,15 +880,15 @@ executor:
   # loop.
   circuitBreaker:
     repeatNudgeThreshold: 3 # Identical tool calls before nudge
-    repeatAbortThreshold: 5 # Identical tool calls before abort
+    repeatAbortThreshold: 4 # Identical tool calls before abort
     truncationAbortThreshold: 3 # Consecutive truncated responses before abort
     parseErrorAbortThreshold: 3 # Consecutive parse errors before abort
-    fruitlessNudgeThreshold: 5 # Fruitless tool calls before nudge
-    fruitlessAbortThreshold: 8 # Fruitless tool calls before abort
-    fruitlessMaxResultLen: 48 # Max result length to consider fruitless
-    sameToolRepeatNudgeThreshold: 8 # Same tool repeated calls before nudge
-    sameToolRepeatAbortThreshold: 12 # Same tool repeated calls before abort
-    sameToolResultSizeDelta: 128 # Result size delta for same-tool detection
+    fruitlessNudgeThreshold: 4 # Fruitless tool calls before nudge
+    fruitlessAbortThreshold: 6 # Fruitless tool calls before abort
+    fruitlessMaxResultLen: 32 # Max result length to consider fruitless
+    sameToolRepeatNudgeThreshold: 6 # Same tool repeated calls before nudge
+    sameToolRepeatAbortThreshold: 10 # Same tool repeated calls before abort
+    sameToolResultSizeDelta: 64 # Result size delta for same-tool detection
 
 # ---------------------------------------------------------------------------
 # Security & Tool Access Policies
@@ -956,6 +956,14 @@ security:
   # the shared state immediately but never flips the posture of a task that
   # is already running — the next task (or a resumed one) picks it up.
   autonomy_mode: "standard"
+
+  # --- AGENTS.md prompt-injection budget (security.agents_md_max_bytes) ---
+  # Cap on the combined AGENTS.md content injected into prompts —
+  # workspace-controlled untrusted input (ADR-020). The sources are read in
+  # priority order and concatenated; the combined text is capped. The cap
+  # applies in both CHAT (No Project) and CODE modes. 0 = default (65536);
+  # -1 = no cap (use with caution).
+  agents_md_max_bytes: 65536
 
   # --- Silent mode (security.silent_mode) ---
   # The sub-policies of the unattended-operation posture. They are live only

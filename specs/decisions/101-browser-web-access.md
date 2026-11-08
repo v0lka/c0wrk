@@ -110,3 +110,17 @@ Negative:
 - [044-model-profiles-out-of-experimental.md](044-model-profiles-out-of-experimental.md) — the gate-scope history decision 13 extends
 - [102-web-access-tls.md](102-web-access-tls.md) — decision 3's deferred TLS stage since closed, carrying the transport's validity and warning semantics
 - [SECURITY.md](../../SECURITY.md) — the attack-surface entry carrying the exposure model and its residual risks
+
+## Historical Note
+
+2026-11-08 — successor state for the WebSocket transport Decision 6 names; the
+decision above is unchanged.
+
+- The sidecar's WebSocket channel did not adopt `gorilla/websocket v1.5.3`:
+  the shipped transport is a hand-rolled RFC6455 handshake and frame codec on
+  the Go standard library in `internal/webaccess/ws.go` (the package's
+  dependency contract bans a websocket library, guarded by the
+  `internal/webaccess/nodeps_test.go` import-hygiene test), and
+  `github.com/gorilla/websocket` remains an `// indirect` entry in `go.mod` —
+  never promoted to a direct dependency. The shipped channel is specified in
+  [domains/web-access.md](../domains/web-access.md).

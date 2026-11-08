@@ -9,8 +9,10 @@ RESEARCH mode is a project-scoped methodology workspace for maintaining research
 - `core/research/model.go` - hypothesis lifecycle types, graph traversal, and metric computation
 - `core/research/parser.go` - pure Markdown/Mermaid parsers and best-effort research-root filesystem parsing
 - `core/research/rootwriter.go` - root-level mutations: `index.md` row moves for activation, minimal row/index creation, and project deletion with containment
+- `core/research/writer.go` - the card/graph mutations (`UpdateHypothesis`, `CreateHypothesis`, `AppendLogEntry`), the status-transition validator, the `ProjectDir`/`ActiveProjectDir` ownership resolvers, and the all-or-nothing `writeFilesAtomic` multi-file commit
 - `core/research/recommend.go` - pure next-step recommendation, project-wide and hypothesis-scoped
 - `core/research/skillpack.go` - embedded seven-skill research pack and non-destructive versioned seeding (a thin consumer of the shared core below)
+- `core/research/agentpack.go` - the embedded `research` Subagent Profile (`core/research/agents/research/AGENT.md`) and its seeding (`SeedAgents`), versioned independently by `research.AgentSeedVersion`
 - `core/research/unseed.go` - the delete half of the pack lifecycle behind the `research.enabled` surface gate: `UnseedSkills`/`UnseedAgents` remove only byte-identical (or pack-marked truncated) copies, fail-soft per entry (a failure is recorded and joined into the error, never aborting the rest of the pack)
 - `core/research/skills/` - embedded `research-*` skill sources
 - `core/seedpack` - the shared crash-safe seeding core (content-hash classification, staged write + atomic rename, `.seed-version` marker handling, leftovers sweep) behind the seeding invariants below; `core/research`, `core/papers`, and future packs are thin consumers keeping only their embed trees, version constants, and pack-specific logging (ADR-105 decision 5)
@@ -19,6 +21,9 @@ RESEARCH mode is a project-scoped methodology workspace for maintaining research
 - `backend/frontend_api_packgates.go` - the `SetResearchEnabled`/`SetSpecsEnabled` surface-gate RPCs (persist + serialized seed/unseed apply in one beat), the shared per-surface pack passes both paths run, and the `researchSeedMu`-guarded gate mirror the launch seed re-reads inside its critical section
 - `backend/frontend_api_project.go` - recursive research-tree watcher integration and incremental file-change emission
 - `frontend/src/components/research/index.tsx` - Research panel (the `[Dashboard | Papers]` segmented control + graph/status presentation)
+- `frontend/src/components/research/ResearchWorkspace.tsx` - the workspace tab's research view (the same pure view over `researchStore`)
+- `frontend/src/components/research/ResearchEventBridge.tsx` - the single App-root mount of the three sync hooks (`useResearchStatusEvents` full refresh + research-scoped watchdog, `useResearchFileWatcher` incremental graph, `usePapersEvents` paper library)
+- `frontend/src/stores/researchStore.ts` - the panel's store: status/graph snapshots with the `lastGraphSyncAt`/`graphSyncSeq` sync stamps, and the hypothesis selection keyed by `selectedHypothesisProjectId`
 - `frontend/src/components/research/ResearchLegacyMigration.tsx` - the legacy-root migration notice: replaces the panel's segments while `legacy_research_roots` is non-empty, dispatches `MigrateResearchRoots` on click (busy state, inline error with retry), and loads the fresh status on success — the empty legacy list unmounts the notice immediately, without waiting for `research:changed`
 - `frontend/src/components/papers/PapersView.tsx` - Papers segment: the `study-paper` invocation surface over the studied-paper list, plus multi-select ("Compare selected", enabled at ≥2 papers) that dispatches a library comparison
 - `frontend/src/components/papers/CompareMatrix.tsx` - paper Compare section renderer: a multi-paper comparison artifact (`<research-root>/comparisons/<slug>.md`) rendered as the papers table + dimension × paper matrix + the fairness / agreement / gaps / synthesis-verdict sections (pure parsing in `frontend/src/lib/paperComparison.ts`)
@@ -34,12 +39,17 @@ RESEARCH mode is a project-scoped methodology workspace for maintaining research
 type HypothesisStatus string // open | in-progress | confirmed | refuted | cancelled
 
 type HypothesisNode struct {
-    ID       string
-    Title    string
-    Status   HypothesisStatus
-    Parents  []string
-    Timebox  string
-    Result   string
+    ID                    string
+    Title                 string
+    Status                HypothesisStatus
+    Parents               []string
+    Timebox               string
+    Completed             string // card completion date (YYYY-MM-DD); empty while open/in-progress
+    Result                string // the card's **Finding:** value
+    Statement             string // the card's "## Statement" body
+    VerificationCriterion string // the card's "## Verification Criterion" body
+    ExperimentNotes       string // the card's "## Experiment Notes" body
+    Decision              string // continue | pivot | kill | fork; empty while undecided
 }
 
 type HypothesisGraph struct {
@@ -58,11 +68,13 @@ type Metrics struct {
 
 type ResearchProject struct {
     ID            string
+    Dir           string // absolute directory the project parsed from; the mutation entry points resolve this same directory
     Brief         Brief
     Graph         HypothesisGraph
     Metrics       Metrics
     PriorArtCount int
     HasReport     bool
+    Log           []ResearchLogEntry
 }
 
 type ResearchRoot struct {
@@ -172,8 +184,8 @@ Metrics are derived from the reconciled graph:
 
 ## Invariants
 
-- RESEARCH mode is always on for real projects: there is no per-project toggle and no persisted root. The No-Project pseudo-project has no workspace, so RESEARCH is unavailable there (`loadProjectForResearch` rejects it) and the panel renders a neutral empty state.
-- RESEARCH mode is not gated by the `experimental.enabled` switch (which gates the E2S execution mode, the embedded local model's frontend surfaces, and the Settings → General Session Statistics block) — it stays available for every real project.
+- RESEARCH mode is always on for real projects: there is no per-project toggle and no persisted root. The No-Project pseudo-project has no workspace, so RESEARCH is unavailable there (`loadProjectForResearch` rejects it): the workspace panel hides the Research tab, the store is reset without a `GetResearchStatus` call, and the panel components (`ResearchPanel`, `ResearchWorkspace`) render nothing.
+- RESEARCH mode is not gated by the `experimental.enabled` switch (which gates the E2S execution mode, the embedded local model's frontend surfaces, and the Settings → General Session Statistics and Web Access blocks) — it stays available for every real project.
 - The RESEARCH context flag (`core/tools.WithResearch` / `IsResearch` in `core/tools/mode.go`) marks a real project with a non-empty research root; it is set alongside the research root (`researchRootKey`) by the session manager — the root lives in the context because core may not import `backend/config`. Unlike No Project mode, RESEARCH keeps the full CODE toolset — the flag exists for prompt/router/UI awareness only, never tool restriction.
 - The research root is unconditionally `<workspace>/research` (`config.ProjectResearchPath`) — an absolute, workspace-contained path, never persisted per project and with no user override. `<workspace>` is the ACTIVE SESSION's execution workspace ([ADR-099](../decisions/099-research-root-follows-active-session.md)): the managed tree for a `managed_worktree` session, the project checkout for `local`/unbound sessions — panel-side resolvers follow the session through the READ-ONLY `WorkspacePathFor` lookup with `GetSessionWorkspace`'s project-ID membership, falling back to the checkout when no session of the project resolves. The visible `research` directory name (renamed from the hidden `.research`) is [ADR-113](../decisions/113-research-root-rename.md).
 - Pre-rename `<workspace>/.research` roots (written by older builds) are detection/migration-only data ([ADR-113](../decisions/113-research-root-rename.md)): `ResearchStatusDTO.legacy_research_roots` lists the detected ones — the checkout's and the active-session workspace's, deduplicated, checkout first, any entry type counts (a symlink is surfaced so the user sees it) — and a live research root is never derived from the legacy path (`config.LegacyProjectResearchPath` exists solely for detection and migration). Migration is manual and user-triggered (`MigrateResearchRoots` from the panel's migration notice — no auto-migration ever runs): each detected legacy directory is renamed into its workspace's canonical `research` under the per-root mutation mutex keyed by the TARGET; an EMPTY existing target directory is removed first, a non-empty or non-directory target is refused with an actionable error, and a symlinked legacy root is refused outright (never followed or silently moved). On success the research trees are re-registered with the live CODE watcher, `research:changed` (action=`root_migrated`) and `papers:changed` fire, and the fresh status is returned; a no-op (no legacy roots anywhere) is a plain success that creates nothing on disk and emits no event.
