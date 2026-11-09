@@ -1421,7 +1421,7 @@ pipeline (title generation, ToolJudge) receive the dump writer via
 unexported key type in `sp4rk/agent/context.go`; read back with
 `agent.DumpWriterFromContext`). The writers are injected at
 the call sites: `SendMessage` for title generation and
-`desktop/event_handlers.go` for ToolJudge.
+`backend/judge.go` for ToolJudge.
 
 ### Link-Safe Creation of Session File Artifacts
 

@@ -98,7 +98,9 @@ backend/session/emitter.go: EventEmitter
          ▼
 desktop/startup_phases.go: buildUIEmitFunc()
   ├─ Names the event session:${sessionId}:${type}
-  └─ App.emitBatchedEvent → desktop/event_batcher.go: EventBatcher
+  └─ App.emitBatchedEvent → backend/event_batcher.go: EventBatcher
+       (desktop glue — sessionEventBatcher/emitBatchedEvent/stopEventBatcher —
+        lives in desktop/event_batcher.go)
        ├─ Coalesces transient streaming events (latest-wins, keyed by
        │   session + event type + stream discriminator)
        ├─ Barrier events (task_complete, tool_confirm, ask_user, step_limit, …)
@@ -166,9 +168,11 @@ core/builder.go: Build() → per-session Orchestrator
 Vector index initialization is separate from the builder pipeline:
 
 ```
-desktop/startup.go: vectorLauncher.launch() — a background goroutine started
-  after emitBackendReady, and re-run by the UpdateIndexingSettings enabled hook
-  → desktop/startup_phases.go: runVectorIndexInit(epoch, ready)
+desktop/startup.go: vectorLauncher.Launch() — a background goroutine started
+  after emitBackendReady, and re-run by the UpdateIndexingSettings enabled hook;
+  the launcher itself lives in backend/vector_launcher.go
+  → backend/vector_launcher.go: vectorIndexLauncher.Launch /
+    ApplyEnabledChange(epoch, ready)
      ├─ vector_index.enabled false → the ONNX runtime is never loaded and every
      │   routing path fails fast with the disabled error
      ├─ Load the ONNX embedder + tokenizer from disk (~500-2000ms); missing
@@ -247,7 +251,7 @@ Web access sidecar (browser mirror, ADR-101): initWebAccess — mounted right
   after emitBackendReady, only while BOTH experimental.enabled and
   web_access.enabled are on (a closed gate is a quiet Debug skip). A
   mid-session flip applies live — SetWebAccessEnabled, or the
-  applyExperimentalWebAccess hook fired by UpdateExperimentalFeatures
+  WebAccessService.ApplyExperimental hook fired by UpdateExperimentalFeatures
   strictly after a successful persist — no app restart (details:
   specs/domains/web-access.md)
   ↓

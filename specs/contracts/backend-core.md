@@ -178,17 +178,20 @@ this section states only the boundary crossings.
 ```
 main.go → desktop.NewApp() → wails.Run{OnStartup: app.Startup}
   │
-  ▼  desktop/startup.go Startup — numbered phases, bodies in desktop/startup_phases.go
+  ▼  desktop/startup.go Startup — numbered phases; the phase-call glue lives in
+  │    desktop/startup_phases.go and the subsystem bodies in backend/startup_phases.go
+  │    (reached through backend's exported Init/Start wrappers)
   │    Phase 0  resolve the agent directory (needed for logger paths)
   │    Phase 1  shell environment + logger            (initLogger)
   │    Phase 2  config + dependencies + tools         (initConfigAndDeps, initTools)
   │    Phase 3  database + terminal manager           (initDatabase, initTerminalManager)
   │    Phase 4  stores + project/session preload      (initStores)
   │    Phase 5  callbacks + Application + FrontendAPI (backend.NewApplication, then
-  │             initEmbeddedLLM / initChatGPTAuth / initKimiAuth / initWebAccess)
+  │             initEmbeddedLLM / initChatGPTAuth / initKimiAuth (backend) and
+  │             initWebAccess (desktop))
   │    Phase 6  macOS power-state wake recovery, then the background starters
-  │             (startMCPReadyNotifier, startUpdateCheckerBackground,
-  │              startAutoFetchBackground)
+  │             (startMCPReadyNotifier (desktop), startUpdateCheckerBackground /
+  │              startAutoFetchBackground (backend wrappers))
   ▼
 config.Load / config.ResolveAndLoad          (backend/config, Phase 2)
   ▼
@@ -262,6 +265,5 @@ Config Adapter exception).
 - Adding `PendingAttachments` to `HandleOptions` → update `backend/session/manager_execution.go` (snapshot + clear `session.pendingAttachments`, pass through both HandleMessage calls in `SendMessage`); attachments are flushed into the blackboard inside `core` (`Orchestrator.setupBlackboard`)
 - Adding `PendingImages` to `HandleOptions` → update `backend/session/manager_execution.go` (snapshot + clear `session.pendingImageAttachments`, convert to `[]llm.ContentBlock` via `imageAttachmentsToContentBlocks`, pass through both `HandleMessage` calls in `SendMessage`); image blocks are injected into the context window as image content, not into the blackboard
 - Adding `ReviewMode` to `HandleOptions` → thread a `reviewMode bool` through `backend/frontend_api_session.go` (`FrontendAPI.SendMessage`) + `backend/session/manager_execution.go` (`Manager.SendMessage`, both `HandleOptions` construction sites in the send goroutine); in core, `HandleMessage` sets `ReviewModeKey` so `buildSystemPrompt` renders the Code Review section (prompts `CodeReviewMode`). Also add a `, false` arg to all `Manager.SendMessage` test call sites, regenerate Wails bindings (`wails generate module`), and add the param to `frontend/src/api/chat.ts` (`sendMessage`) plus the review submit call site (`useReviewActions.handleSubmit`).
-- Removing `LogDir`/`ProjectsDir` from `ApplicationConfig` → update `desktop/startup.go` caller; use `backend/config/paths.go` functions instead
 - Changing directories under `~/.c0wrk/` → update `backend/config/paths.go` (single source of truth); verify all callers use path functions, not direct `filepath.Join`
 - Changing the session workspace model → keep `SessionInfo.WorkspaceBinding` the only binding carrier across the boundary; managed `.worktrees` paths come exclusively from `config.ManagedWorktreePath`, and Git-panel focus stays a `GitPanelTarget`, never a binding (ADR-080)

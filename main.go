@@ -15,10 +15,14 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 
+	"github.com/v0lka/c0wrk/backend"
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/crashlog"
 	"github.com/v0lka/c0wrk/core/cli"
+	"github.com/v0lka/c0wrk/core/instancelock"
+	"github.com/v0lka/c0wrk/core/shutdown"
 	"github.com/v0lka/c0wrk/core/updater"
+	"github.com/v0lka/c0wrk/core/webviewgpu"
 	"github.com/v0lka/c0wrk/desktop"
 )
 
@@ -43,7 +47,7 @@ func main() {
 // read-only: a missing or unreadable file falls back to the built-in
 // default.
 func gpuRelaunchHandoverBudget(agentDir string) time.Duration {
-	budget := desktop.GpuRelaunchHandoverBudget(desktop.EffectiveShutdownDeadline(0))
+	budget := backend.GpuRelaunchHandoverBudget(shutdown.EffectiveShutdownDeadline(0))
 	cfg, err := config.Load(config.ConfigPath(agentDir))
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
@@ -51,7 +55,7 @@ func gpuRelaunchHandoverBudget(agentDir string) time.Duration {
 		}
 		return budget
 	}
-	return desktop.GpuRelaunchHandoverBudget(desktop.EffectiveShutdownDeadline(cfg.Shutdown.HardDeadline))
+	return backend.GpuRelaunchHandoverBudget(shutdown.EffectiveShutdownDeadline(cfg.Shutdown.HardDeadline))
 }
 
 func mainImpl() int {
@@ -113,9 +117,9 @@ func mainImpl() int {
 	// budget is sized from the configured shutdown deadline, and expiry is
 	// TERMINAL (starting anyway would relay this launch to the
 	// still-quitting instance and lose the replacement window).
-	if os.Getenv(desktop.GpuRelaunchWaitEnvVar) == "1" {
-		_ = os.Unsetenv(desktop.GpuRelaunchWaitEnvVar)
-		if err := desktop.WaitForGpuRelaunchHandover(config.SingleInstanceLockPath(agentDir), gpuRelaunchHandoverBudget(agentDir), slog.Default()); err != nil {
+	if os.Getenv(backend.GpuRelaunchWaitEnvVar) == "1" {
+		_ = os.Unsetenv(backend.GpuRelaunchWaitEnvVar)
+		if err := backend.WaitForGpuRelaunchHandover(config.SingleInstanceLockPath(agentDir), gpuRelaunchHandoverBudget(agentDir), slog.Default()); err != nil {
 			slog.Error("GPU-fallback relaunch: not starting after the failed handover "+
 				"(the fallback is persisted; the next manual start applies it)", "error", err)
 			return 1
@@ -128,7 +132,7 @@ func mainImpl() int {
 	// capture entirely (marker churn would poison the running instance's
 	// forensics); setup failures fail open to "first instance"; enforcement
 	// itself is the Wails option below.
-	instanceLock, firstInstance, lockErr := desktop.AcquireSingleInstanceLock(config.SingleInstanceLockPath(agentDir))
+	instanceLock, firstInstance, lockErr := instancelock.AcquireSingleInstanceLock(config.SingleInstanceLockPath(agentDir))
 	if lockErr != nil {
 		slog.Warn("single-instance lock file unavailable; crash-capture forensics ungated for this run",
 			"error", lockErr)
@@ -188,16 +192,16 @@ func mainImpl() int {
 	// Next-start post-mortem: a previous fresh-auto run that GDK killed on a
 	// fatal Wayland protocol error never reached the watchdog's DomReady
 	// scan; persist the fallback now, before the policy below is resolved.
-	desktop.ApplyWebviewGpuCrashFallback(agentDir, logDir, stderrObserved, slog.Default())
+	backend.ApplyWebviewGpuCrashFallback(agentDir, logDir, stderrObserved, slog.Default())
 	// NVIDIA Wayland explicit sync breaks GTK3's mixed GL/shm surface under
 	// the accelerated policy (fatal protocol error before DomReady); must be
 	// set before wails.Run initializes GTK/EGL.
-	desktop.ApplyNvidiaExplicitSyncWorkaround(slog.Default())
+	webviewgpu.ApplyNvidiaExplicitSyncWorkaround(slog.Default())
 	// Arm the Linux DMABUF-failure watchdog (issue #34) after crash capture —
 	// the stderr offset snapshot needs the redirected fds — and before
 	// wails.Run, whose webview must not render first. Nil off Linux and
 	// whenever detection does not apply.
-	app.SetWebviewGpuWatchdog(desktop.NewWebviewGpuWatchdog(agentDir, logDir, stderrObserved, slog.Default()))
+	app.SetWebviewGpuWatchdog(desktop.NewWebviewGpuWatchdogHost(backend.NewWebviewGpuWatchdog(agentDir, logDir, stderrObserved, slog.Default())))
 
 	// Hand the web-access sidecar (ADR-101) the same SPA tree the Wails
 	// asset server serves, resolved once here where the embed lives.
@@ -213,7 +217,7 @@ func mainImpl() int {
 	// app reopens at the size the user left it; first run returns the
 	// built-in 1400x900 default. The maximized flag is re-applied in Startup
 	// once the Wails context exists.
-	windowBounds := desktop.LoadWindowBounds(agentDir)
+	windowBounds := backend.LoadWindowBounds(agentDir)
 
 	runErr := wails.Run(&options.App{
 		Title:            "c0wrk",

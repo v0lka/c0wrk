@@ -104,14 +104,21 @@ Also owns domain services:
 - `core/gittrust/` — the process-wide registry of user-trusted git repository roots the hardened spawn layer consults
 - `core/research/`, `core/papers/`, `core/specs/` — the document domains behind the Research, Papers and Specs panels: in-memory models, parsers, atomic containment-checked writers, and the embedded skill/Subagent packs
 - `core/seedpack/` — the crash-safe, hash-verified global pack-seeding core shared by `core/research`, `core/papers` and `core/specs`
+- `core/memlimit/` — GC soft-memory-limit policy (`runtime.memory_soft_limit_mb`): `Setup` plus the per-OS RAM probes (`memlimit_ram_*.go`)
+- `core/csp/` — the production Content-Security-Policy (`Policy`) stamped by the desktop CSP middleware and the web-access sidecar
+- `core/savedialog/` — pure save-dialog decisions: default-directory resolution, write-path normalization, the attachment file-filter pattern
+- `core/shutdown/` — teardown deadline policy (`EffectiveShutdownDeadline`, `DefaultHardDeadline`) shared by the desktop shutdown watchdog and the GPU-relaunch handover budget
+- `core/webviewgpu/` — the WebKitGTK GPU policy parsing (`FromCanonical`) and the NVIDIA explicit-sync environment workaround
+- `core/instancelock/` — the single-instance advisory lock primitive (`InstanceLock`, `AcquireSingleInstanceLock`, `WaitForInstanceLockRelease`) with its per-OS locks (`lock_unix.go`, `lock_windows.go`)
+- `core/hitlwire/` — the transport-neutral HITL wire protocol: payload extraction and decision parsing for confirmations, ask-user answers, plan approvals, goal decisions and step-limit responses
 
 ### `backend/` — Application ViewModel
 
-The "app layer" that the desktop UI interacts with. Owns the `Application` struct, configuration loading/resolution, session lifecycle management (create, handle message, persist, resume), SQLite persistence, and project lifecycle management. Exposes `FrontendAPI` methods split by concern area (`frontend_api_*.go`). Wraps `core.OrchestratorBuilder` and imports `core/` and sp4rk directly for domain types and orchestrator integration. Delegates workspace watching, vector indexing, terminal management, and git operations to `core/` domain services. Contains `backend/config/paths.go` as the single source of truth for all `~/.c0wrk/` filesystem paths.
+The "app layer" that the desktop UI interacts with. Owns the `Application` struct, configuration loading/resolution, session lifecycle management (create, handle message, persist, resume), SQLite persistence, and project lifecycle management. Exposes `FrontendAPI` methods split by concern area (`frontend_api_*.go`). Also owns the transport-neutral subsystem engines extracted from the GUI host: the web-access sidecar service (`frontend_api_webaccess.go`), the tool judge (`judge.go`), the vector-index launcher (`vector_launcher.go`), the startup phase bodies (`startup_phases.go`), the event batcher (`event_batcher.go`), the webview GPU watchdog and post-mortem (`webview_gpu_watchdog.go`, `webview_gpu_postmortem.go`), and the dialog/window state persistence (`dialog_state.go`, `window_state.go`). Wraps `core.OrchestratorBuilder` and imports `core/` and sp4rk directly for domain types and orchestrator integration. Delegates workspace watching, vector indexing, terminal management, and git operations to `core/` domain services. Contains `backend/config/paths.go` as the single source of truth for all `~/.c0wrk/` filesystem paths.
 
 ### `desktop/` — Wails Bindings & Lifecycle
 
-Thin layer. The `desktop.App` struct embeds `*backend.FrontendAPI` so its methods are visible to the Wails binding generator. Handles `OnStartup` (config loading, shell environment, backend init) and `OnShutdown`. Manages pending confirmations (`sync.Map`) between backend and frontend. Builds the callbacks the backend runs on (`UIEmitFunc`, `AskUserFunc`, `PlanApprovalFunc`, `ConfirmFunc`, `HITLHandler`) and owns the single Wails event funnel (`App.emit`) plus the session-event batcher (`desktop/event_batcher.go`), which coalesces transient streaming events into one `c0wrk:events:batch` envelope per flush.
+Thin layer. The `desktop.App` struct embeds `*backend.FrontendAPI` so its methods are visible to the Wails binding generator. Handles `OnStartup` (config loading, shell environment, backend init) and `OnShutdown`. Manages pending confirmations (`sync.Map`) between backend and frontend. Builds the callbacks the backend runs on (`UIEmitFunc`, `AskUserFunc`, `PlanApprovalFunc`, `ConfirmFunc`, `HITLHandler`) and owns the single Wails event funnel (`App.emit`) plus the session-event batcher glue (`sessionEventBatcher`/`emitBatchedEvent`/`stopEventBatcher` in `desktop/event_batcher.go`) over the backend batcher machine (`backend/event_batcher.go`), which coalesces transient streaming events into one `c0wrk:events:batch` envelope per flush. The policy cores behind its OS-shell integrations live one layer down (`core/instancelock`, `core/csp`, `core/shutdown`, `core/webviewgpu`, `core/savedialog`, `core/hitlwire`); desktop keeps the Wails-facing hosts and adapters. The scope rule deciding what stays — lifecycle, bindings, OS-shell integration, HITL plumbing (the last until epic #84 phase 1b moves the funnels into `backend/interaction`) — is pinned by ADR-119.
 
 ### `frontend/` — React UI
 
@@ -153,6 +160,7 @@ Outside the stack: every Go layer may import `internal/`, and `internal/` import
 - `backend` may import sp4rk packages directly for type definitions
 - `internal/` packages stay leaves: they import the standard library, external dependencies, and — for `internal/webaccess` only — `backend/config` in production code plus the `backend` root package in its surface-contract test (`internal/webaccess/contract_test.go`); `core/`, `backend/` and `desktop/` all may import them
 - `core` never imports `backend` or `desktop`
+- `backend` and `core` contain no `github.com/wailsapp/wails` imports — Wails types stop at `desktop/` (ADR-119)
 - sp4rk has zero knowledge of c0wrk-specific concepts
 - sp4rk is a separate Go module in its own repository; the import prohibition on `core/`/`backend/`/`desktop/` is enforced at the repository level (ADR-015)
 - All inter-layer communication between frontend and Go goes through Wails

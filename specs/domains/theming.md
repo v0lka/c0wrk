@@ -21,7 +21,7 @@ c0wrk ships two built-in themes (Default Dark / One Dark, Default Light / One Li
 - `frontend/src/lib/cmChatTheme.ts`, `frontend/src/components/fileViewer/CodeMirrorFileViewer.tsx` - CodeMirror themes resolved from CSS variables; re-created via Compartment on theme change
 - `frontend/src/assets/themes/example-theme.css` - fully annotated example theme (light, "Solar Light"): a self-contained authoring tutorial — metadata header, validation rules, every token group explained inline; guarded by `TestValidateThemeCSS_SpecExampleTheme`
 - `frontend/src/assets/themes/` - bundled palette themes (plus the example theme), ready to import as-is (see "Bundled Themes" below); each guarded by `TestValidateThemeCSS_BundledThemes` in `backend/themes_test.go`
-- `desktop/csp.go` / `desktop/csp_dev.go` - production CSP middleware (`!dev` build) stamping a strict `Content-Security-Policy` on every asset response — the webview-level backstop that blocks any fetch an injected stylesheet might attempt, even if a future sanitizer bypass slipped through. No-op under `wails dev` (the `dev` build tag) so Vite/HMR keeps working
+- `desktop/csp.go` / `desktop/csp_dev.go` - the CSP middleware (`!dev` build) stamping the strict production `Content-Security-Policy` (`core/csp`) on every asset response — the webview-level backstop that blocks any fetch an injected stylesheet might attempt, even if a future sanitizer bypass slipped through. No-op under `wails dev` (the `dev` build tag) so Vite/HMR keeps working
 
 ## Core Types
 
@@ -202,7 +202,7 @@ non-regular `*.css` entry, one over the size cap, one it cannot read, and one
 whose name slugifies to nothing or to a reserved id.
 
 A second, webview-level backstop is the strict production CSP
-(`desktop/csp.go`, `!dev` builds): `default-src 'none'; script-src 'self';
+(`core/csp`, stamped by `desktop/csp.go` under `!dev` builds): `default-src 'none'; script-src 'self';
 style-src 'self' 'unsafe-inline'; img-src 'self' data: https: http:; connect-src 'self';
 …` — even a hypothetical future sanitizer bypass cannot turn an injected
 stylesheet into a network request.
@@ -313,7 +313,7 @@ None — theming has no `config.yaml` surface. The active theme is frontend stat
 
 - [contracts/desktop-frontend.md](../contracts/desktop-frontend.md) — the `ListThemes` / `DeleteTheme` / `PickAndImportThemes` RPC surface and the "no renderer-facing import RPC" rule
 - [architecture/security-model.md](../architecture/security-model.md) — the `~/.c0wrk` fixed-path state-surface inventory that lists the installed theme files (`backend/frontend_api_themes.go`)
-- [web-access.md](web-access.md) — the browser transport serves the same production CSP (`desktop/csp.go`)
+- [web-access.md](web-access.md) — the browser transport serves the same production CSP (`core/csp`, stamped by the desktop `CSPMiddleware`)
 - [terminal.md](terminal.md) — the embedded terminal that consumes the ANSI palette `useXTermTheme` resolves from these tokens
 - [fonts.md](fonts.md), [frontend/fonts.md](frontend/fonts.md) — the `--font-*` tokens and the user font override that writes them inline on `<html>`
 - [frontend/stores.md](frontend/stores.md) — `themeStore` in the Zustand store catalog
