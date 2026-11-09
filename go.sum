@@ -238,8 +238,6 @@ github.com/tkrajina/go-reflector v0.5.8 h1:yPADHrwmUbMq4RGEyaOUpz2H90sRsETNVpjzo
 github.com/tkrajina/go-reflector v0.5.8/go.mod h1:ECbqLgccecY5kPmPmXg1MrHW585yMcDkVl6IvJe64T4=
 github.com/v0lka/flowsh v0.8.0 h1:puuceVzQB/mNTTact23kdbTBriOiAANFEpgxq6YbOdQ=
 github.com/v0lka/flowsh v0.8.0/go.mod h1:D0SkC7Wry2qMiAixq3FYWIl/gdRaC3KhzOfokl/1/Mo=
-github.com/v0lka/sp4rk v0.17.2 h1:M4vJBHKddQ+JuObZOVnLe28b64J2z4lPltNb2cwwo+U=
-github.com/v0lka/sp4rk v0.17.2/go.mod h1:PmyRnky122pQ33uiYDW2gEkP9Fr/R8OoMYzr1rgQLZM=
 github.com/v0lka/sp4rk v0.17.3 h1:a2WwVih9/YKZswWZiuZyPinzi7EtJ/4kJTcgkoIjxaA=
 github.com/v0lka/sp4rk v0.17.3/go.mod h1:PmyRnky122pQ33uiYDW2gEkP9Fr/R8OoMYzr1rgQLZM=
 github.com/valyala/bytebufferpool v1.0.0 h1:GqA5TC/0021Y/b9FG4Oi9Mr3q7XYx6KllzawFIhcdPw=

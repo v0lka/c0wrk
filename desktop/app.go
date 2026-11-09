@@ -2,17 +2,12 @@ package desktop
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"database/sql"
 	"errors"
-	"fmt"
 	"io/fs"
 	"log/slog"
-	"net"
+	"net/http"
 	"runtime"
-	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -23,8 +18,8 @@ import (
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/logger"
 	"github.com/v0lka/c0wrk/backend/session"
-	"github.com/v0lka/c0wrk/core/markitdown"
-	"github.com/v0lka/c0wrk/internal/webaccess"
+	"github.com/v0lka/c0wrk/core/savedialog"
+	"github.com/v0lka/c0wrk/core/shutdown"
 )
 
 // App holds the Wails application state. Frontend API methods live on the
@@ -87,17 +82,18 @@ type App struct {
 	pendingGoalProposals   sync.Map
 	pendingGoalSuggestions sync.Map
 
-	// judgeWG tracks in-flight runJudgeEvaluation goroutines so Shutdown can
+	// judgeWG tracks in-flight judge-evaluation goroutines so Shutdown can
 	// wait for them before tearing down the backend application.
 	judgeWG sync.WaitGroup
 
-	// judgeInFlight holds the confirm_ids with a live runJudgeEvaluation
-	// goroutine, bounding judge spawning to one evaluation per confirmation —
-	// a repeat frame for an in-flight evaluation is dropped instead of
-	// starting a second full-budget LLM call that could only lose the
-	// first-responder race. Entries live exactly as long as their goroutine;
-	// judgeWG remains the shutdown barrier.
-	judgeInFlight sync.Map
+	// judgeService owns the judge evaluation lifecycle (in-flight claims plus
+	// the transport-neutral evaluation call in backend/judge.go), bounding
+	// judge spawning to one evaluation per confirmation — a repeat frame for
+	// an in-flight evaluation is dropped instead of starting a second
+	// full-budget LLM call that could only lose the first-responder race.
+	// Entries live exactly as long as their goroutine; judgeWG remains the
+	// shutdown barrier.
+	judgeService backend.JudgeService
 
 	// wailsEmit, when non-nil, replaces wailsRuntime.EventsEmit — the test
 	// seam for the phase helpers (W-19/W-23). Production keeps it nil.
@@ -113,24 +109,17 @@ type App struct {
 	// happens-before edge. Set it through setEventTap.
 	eventTap atomic.Pointer[func(name string, args []interface{})]
 
-	// ── Web access sidecar (internal/webaccess, ADR-101) ─────────────────
-	// Contract: specs/domains/web-access.md.
-	//
-	// webAccess is the live sidecar; nil while not running. Atomic pointer:
-	// Startup mounts it, Shutdown and SetWebAccessEnabled stop it,
-	// GetWebAccessInfo reads it — different goroutines. webAccessMu
-	// serializes the lifecycle TRANSITIONS (startup mount, Shutdown stop,
-	// SetWebAccessEnabled toggle) so two of them can never interleave into a
-	// half-torn-down server; handle reads ride the atomic pointer.
-	webAccess   atomic.Pointer[webaccess.Server]
-	webAccessMu sync.Mutex
-
-	// webAccessStatic is the SPA asset tree the sidecar serves at /, wired
-	// from main.go strictly before wails.Run begins (the
-	// webviewGpuWatchdog publishing contract), so a plain field is safely
-	// published. Nil (tests, a stripped embed) degrades the sidecar to
-	// API+WS only: the static route 404s.
-	webAccessStatic fs.FS
+	// ── Web access sidecar (backend.WebAccessService, ADR-101) ───────────
+	// Contract: specs/domains/web-access.md. The sidecar's whole lifecycle —
+	// the live server handle, the transition lock, and every control
+	// operation — lives in backend/frontend_api_webaccess.go as the
+	// transport-neutral WebAccessService (hooks in, no Wails types out).
+	// The App keeps the wire bindings (thin delegates below), the
+	// desktop-owned adapters the hooks bind (webExtraSurface,
+	// webWSInboundDispatcher, CSPMiddleware), and the WebAccessInfo wire
+	// DTO. The hooks are configured once in NewApp, before wails.Run
+	// publishes any RPC goroutine.
+	webAccessService backend.WebAccessService
 
 	// liveConfig and liveConfigPath are the desktop's handle on the live
 	// config object and its on-disk path, captured in buildFrontendAPI.
@@ -139,7 +128,7 @@ type App struct {
 	// never touches backend-owned sections through it; it exists solely so
 	// the desktop-owned web_access section can be flipped and persisted
 	// without a backend edit. The persist marshals and writes the WHOLE
-	// config file while holding only webAccessMu (desktop cannot take
+	// config file while holding only the service's transition lock (desktop cannot take
 	// configMu — the zero-backend-edit constraint), so a concurrent backend
 	// save can land inside that window and the two atomic renames are
 	// last-writer-wins: an older desktop snapshot may drop a just-persisted
@@ -155,7 +144,7 @@ type App struct {
 	// (specs/contracts/event-catalog.md); batcherOnce guards the one-time
 	// construction. See event_batcher.go.
 	batcherOnce sync.Once
-	batcherPtr  atomic.Pointer[EventBatcher]
+	batcherPtr  atomic.Pointer[backend.EventBatcher]
 
 	// reloadAppFn, when non-nil, replaces wailsRuntime.WindowReloadApp in
 	// (*App).reloadFrontend — the test seam for the deferred wake reload.
@@ -170,8 +159,9 @@ type App struct {
 	// toolSplashTotal is the splash denominator emitted with every
 	// tool_manager:progress event: Wails drops events emitted before the
 	// webview subscribes, so tool_manager:start can be lost and each progress
-	// event must self-describe the total. Written by reconcileToolsWithSplash
-	// (needsInstall list length), read by initTools' progress closure.
+	// event must self-describe the total. Written via the ToolPhaseDeps
+	// SetToolsTotal hook by backend reconcileToolsWithSplash (NeedsInstall
+	// list length), read by the desktop progress adapter.
 	toolSplashTotal atomic.Int64
 
 	// exitConfirmed bypasses the close guard (ShouldPreventClose) once the
@@ -206,9 +196,9 @@ type App struct {
 
 	// shutdownHardDeadline is the hard budget for the WHOLE Shutdown
 	// teardown, set from config (shutdown.hardDeadline) during Startup; zero
-	// falls back to defaultShutdownHardDeadline. Enforced by the shutdown
-	// watchdog (specs/domains/crash-logging.md): on expiry the process logs
-	// at Error and exits. Guarded by stateMu — see above.
+	// falls back to the core/shutdown default hard deadline. Enforced by the
+	// shutdown watchdog (specs/domains/crash-logging.md): on expiry the
+	// process logs at Error and exits. Guarded by stateMu — see above.
 	shutdownHardDeadline time.Duration
 
 	// launchStderrObserved records whether this launch has a usable stderr
@@ -230,7 +220,7 @@ type App struct {
 	// value PersistWindowBounds saved on resize. Atomic pointer: captured on
 	// the close-handler goroutine, consumed by Shutdown on the main
 	// goroutine.
-	windowGeomCache atomic.Pointer[WindowBounds]
+	windowGeomCache atomic.Pointer[backend.WindowBounds]
 
 	// windowGetSizeFn / windowIsMaximisedFn replace the wailsRuntime window
 	// queries in the geometry capture/persist paths — the per-call seam
@@ -308,9 +298,24 @@ type App struct {
 // the Wails binding dispatch's per-call dereference can never race a swap
 // (review finding #52).
 func NewApp() *App {
-	return &App{
+	a := &App{
 		FrontendAPI: &backend.FrontendAPI{},
 	}
+	// Bind the web-access service's transport hooks to this App's desktop
+	// adapters (webExtraSurface / webWSInboundDispatcher / CSPMiddleware)
+	// and accessors — the FrontendAPIConfig.EmitEvent seam shape. The
+	// accessors are hook closures reading the stateMu-guarded fields, so
+	// later setLogger/setConfigRef writes are observed by every call.
+	a.webAccessService.Configure(backend.WebAccessHooks{
+		Config:        a.configRef,
+		Logger:        a.log,
+		API:           a.frontendAPI,
+		ExtraDispatch: func() any { return &webExtraSurface{app: a} },
+		WSInbound:     a.webWSInboundDispatcher,
+		CSP:           func() func(http.Handler) http.Handler { return CSPMiddleware() },
+		SetEventTap:   a.setEventTap,
+	})
+	return a
 }
 
 // SetWailsLogger stores the Wails log adapter so that the session logger
@@ -346,12 +351,19 @@ func (a *App) startWebviewGpuWatchdog() {
 	if w == nil {
 		return
 	}
-	if w.quitFn == nil {
-		if a.wailsCtx() != nil {
-			w.quitFn = a.gpuFallbackQuit
-		}
+	a.wireGpuWatchdogQuit(w)
+	w.Start()
+}
+
+// wireGpuWatchdogQuit arms the watchdog's post-relaunch quit to
+// a.gpuFallbackQuit when a live Wails context exists. Split from
+// startWebviewGpuWatchdog so the close-guard bypass test can pin the wiring
+// without spawning the bounded scanner goroutine (the started flag is
+// backend-internal since the P-13 move).
+func (a *App) wireGpuWatchdogQuit(w *webviewGpuWatchdog) {
+	if w.QuitFn() == nil && a.wailsCtx() != nil {
+		w.SetQuitFn(a.gpuFallbackQuit)
 	}
-	w.start()
 }
 
 // gpuFallbackQuit is the webview-GPU watchdog's post-relaunch quit; it arms
@@ -389,9 +401,9 @@ func (a *App) PickDirectory() (string, error) {
 		CanCreateDirectories: true,
 	}
 	// DefaultDirectory must reference an existing directory or the runtime
-	// returns an error without showing any dialog; LoadDialogState drops
-	// stale/non-existent paths, so adopting its value is always safe.
-	if last := LoadDialogState(a.agentDir()); last.LastDirectory != "" {
+	// returns an error without showing any dialog; backend.LoadDialogState
+	// drops stale/non-existent paths, so adopting its value is always safe.
+	if last := backend.LoadDialogState(a.agentDir()); last.LastDirectory != "" {
 		options.DefaultDirectory = last.LastDirectory
 	}
 
@@ -401,23 +413,8 @@ func (a *App) PickDirectory() (string, error) {
 	}
 	// On cancel OpenDirectoryDialog returns ("", nil) — keep the previous
 	// memory instead of overwriting it with an empty path.
-	rememberDialogDirectory(a.agentDir(), dir, a.log())
+	backend.RememberDialogDirectory(a.agentDir(), dir, a.log())
 	return dir, nil
-}
-
-// attachmentFilterPattern builds the Wails FileFilter pattern string for the
-// markitdown supported extensions, using the conventional "*.ext" form (e.g.
-// "*.pdf;*.docx;*.pptx"). This is the cross-platform Wails convention — on
-// macOS the backend strips the "*." prefix internally and matches by extension.
-func attachmentFilterPattern() string {
-	exts := markitdown.SupportedExtensions()
-	cleaned := make([]string, 0, len(exts))
-	for _, ext := range exts {
-		if e := strings.TrimPrefix(ext, "."); e != "" {
-			cleaned = append(cleaned, "*."+e)
-		}
-	}
-	return strings.Join(cleaned, ";")
 }
 
 // PickAttachmentFiles opens a native multi-select file picker restricted to
@@ -440,7 +437,7 @@ func (a *App) PickAttachmentFiles() ([]string, error) {
 		Filters: []wailsRuntime.FileFilter{
 			{
 				DisplayName: "Supported documents",
-				Pattern:     attachmentFilterPattern(),
+				Pattern:     savedialog.AttachmentFilterPattern(),
 			},
 			{
 				DisplayName: "Images",
@@ -467,7 +464,7 @@ func (a *App) PickStudyDocument() (string, error) {
 		Filters: []wailsRuntime.FileFilter{
 			{
 				DisplayName: "Supported documents",
-				Pattern:     attachmentFilterPattern(),
+				Pattern:     savedialog.AttachmentFilterPattern(),
 			},
 		},
 	})
@@ -516,15 +513,16 @@ func (a *App) setShutdownHardDeadline(d time.Duration) {
 }
 
 // shutdownDeadline returns the effective hard deadline for the Shutdown
-// teardown: the value Startup recorded from shutdown.hardDeadline, or
-// defaultShutdownHardDeadline when unset (0) or Startup never got that far.
+// teardown: the value Startup recorded from shutdown.hardDeadline, or the
+// core/shutdown default hard deadline when unset (0) or Startup never got
+// that far.
 func (a *App) shutdownDeadline() time.Duration {
 	a.stateMu.RLock()
 	defer a.stateMu.RUnlock()
 	if a.shutdownHardDeadline > 0 {
 		return a.shutdownHardDeadline
 	}
-	return defaultShutdownHardDeadline
+	return shutdown.DefaultHardDeadline()
 }
 
 // setLaunchStderrObserved records whether this launch's stderr is observable
@@ -782,12 +780,6 @@ func (a *App) resolvePendingMessage(sessionID, role, matchField, matchValue stri
 // set, never the App itself — so a browser tab can neither read the
 // credential state nor flip the switch that feeds it.
 
-// webAccessStopBudget bounds one sidecar stop — deliberately small: a Stop
-// is a listener close plus a WebSocket fan-out abort on a stateless server,
-// nothing worth making a quit wait for (specs/domains/web-access.md). On
-// expiry Server.Stop force-closes what a graceful stop could not finish.
-const webAccessStopBudget = 3 * time.Second
-
 // setConfigRef captures the desktop's handle on the live config object and
 // its path (buildFrontendAPI, Startup goroutine). See the liveConfig field
 // comment for the ownership discipline.
@@ -812,12 +804,16 @@ func (a *App) configRef() (cfg *config.Config, path string) {
 // hand over a value only it holds (the embedded asset tree). Call it strictly
 // before wails.Run — the plain-field publishing contract in the field comment.
 func (a *App) SetWebAccessStaticFS(static fs.FS) {
-	a.webAccessStatic = static
+	a.webAccessService.SetStaticFS(static)
 }
 
 // WebAccessInfo is the GetWebAccessInfo payload: the Settings section's whole
 // view of the sidecar. Every field is specified in
-// specs/domains/web-access.md (the WebAccessInfo table).
+// specs/domains/web-access.md (the WebAccessInfo table). The struct is the
+// wire DTO of this Wails binding — its package must stay desktop so the
+// generated frontend/wailsjs models keep their namespace; the values are
+// produced by backend.WebAccessService.Snapshot (field-identical
+// WebAccessSnapshot, converted directly).
 type WebAccessInfo struct {
 	Enabled                  bool   `json:"enabled"`
 	Running                  bool   `json:"running"`
@@ -837,89 +833,13 @@ type WebAccessInfo struct {
 	CertDetail               string `json:"cert_detail"`
 }
 
-// webAccessURLHost maps a listener host to the host a browser opens: an
-// unspecified wildcard host (0.0.0.0, ::) becomes "localhost" — the wildcard
-// names "every interface", not an openable address. Shared by the URL
-// renderer and the certificate status check (ADR-102 decision 5) so both
-// name the SAME browser-facing host the certificate's SANs must cover.
-func webAccessURLHost(host string) string {
-	if ip := net.ParseIP(host); ip != nil && ip.IsUnspecified() {
-		return "localhost"
-	}
-	return host
-}
-
-// webAccessBrowserURL renders the URL a browser opens for the sidecar's
-// resolved listener address: the scheme follows the transport the sidecar is
-// actually serving (https under web_access.tls, ADR-102 decision 1 — what
-// the operator sees is always what the browser must open) plus host:port,
-// with one rewrite — an unspecified wildcard host becomes "localhost"
-// (webAccessURLHost).
-func webAccessBrowserURL(addr string, tlsEnabled bool) string {
-	scheme := "http"
-	if tlsEnabled {
-		scheme = "https"
-	}
-	host, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		// Not host:port — never expected from a TCP listener address; pass
-		// the raw value through rather than invent a port.
-		return scheme + "://" + addr
-	}
-	return scheme + "://" + net.JoinHostPort(webAccessURLHost(host), port)
-}
-
 // GetWebAccessInfo reports the sidecar state for Settings → Web Access
 // (desktop-only by construction: an App method, so the web reflection surface
-// cannot serve it back to a browser tab). The section read is a whole-struct
-// snapshot under webAccessMu — the same lock the control-RPC writers mutate
-// it under, and this method is itself renderer-callable, so it races them on
-// real paths; Token is a multi-word string header whose torn read is
-// UB-class, so the fields are copied once, never walked field-by-field off
-// the live config. Classification and URL rendering stay OUTSIDE the lock on
-// purpose — no file I/O rides the transition lock (ADR-102).
+// cannot serve it back to a browser tab). The snapshot — the locked section
+// read, the classification and the URL rendering — is the service's
+// Snapshot; the binding layer only converts it to the wire DTO.
 func (a *App) GetWebAccessInfo() WebAccessInfo {
-	info := WebAccessInfo{}
-	var sec config.WebAccessConfig
-	if cfg, _ := a.configRef(); cfg != nil {
-		a.webAccessMu.Lock()
-		sec = cfg.WebAccess
-		a.webAccessMu.Unlock()
-		info.Enabled = sec.Enabled
-		info.ConfiguredBind = sec.Bind
-		info.BindIsLoopback = config.IsLoopbackBind(sec.Bind)
-		info.AllowInsecureLAN = sec.AllowInsecureLAN
-		// State-only hint: would these pins be refused if the section were
-		// enabled? (ValidateWebAccessExposure over the snapshot with Enabled
-		// forced true — the same predicate every boundary applies.)
-		asEnabled := sec
-		asEnabled.Enabled = true
-		info.AllowInsecureLANRequired = config.ValidateWebAccessExposure(asEnabled) != nil
-		info.ConfiguredPort = sec.Port
-		info.TokenPinned = sec.Token != ""
-		info.TLSEnabled = sec.TLS.Enabled
-		info.TLSCert = sec.TLS.Cert
-		info.TLSKey = sec.TLS.Key
-		info.CertStatus, info.CertDetail = classifyWebAccessCert(
-			sec.TLS.Cert, sec.TLS.Key, sec.Bind)
-	}
-	if srv := a.webAccess.Load(); srv != nil {
-		info.Running = true
-		if addr, ok := srv.Addr(); ok {
-			info.URL = webAccessBrowserURL(addr, srv.TLSEnabled())
-			if _, port, perr := net.SplitHostPort(addr); perr == nil {
-				info.Port, _ = strconv.Atoi(port)
-			}
-		}
-		info.Token = srv.AuthToken()
-	} else {
-		// Not running: the configured token is what the next start would
-		// use (an empty value means that start mints and persists one).
-		// Same snapshot as above — a second configRef read here could
-		// interleave a writer between the two reads.
-		info.Token = sec.Token
-	}
-	return info
+	return WebAccessInfo(a.webAccessService.Snapshot())
 }
 
 // The warning-channel refresh (ADR-102): transport-affecting control RPCs —
@@ -936,644 +856,50 @@ func (a *App) refreshWebAccessLoadWarnings() {
 	a.frontendAPI().Lifecycle().RefreshWebAccessLoadWarnings()
 }
 
-// SetWebAccessEnabled persists the web_access.enabled switch and applies it
-// live: enabling starts the sidecar, disabling stops it. Same-state is a
-// no-op; a failed disk write rolls the in-memory flip back
-// (specs/domains/web-access.md). Enabling preflights a configured-but-
-// unusable TLS pair fail-closed (ADR-102), and with the master experimental
-// gate closed it persists operator intent but mounts nothing (ADR-101
-// decision 13). Locking: webAccessMu serializes the whole transition
-// against the startup mount and the Shutdown stop; the config write is the
-// desktop-owned whole-file window documented on the liveConfig field; the
-// warning refresh runs after the unlock (ADR-102).
+// The Set* methods below are thin delegates onto
+// backend.WebAccessService.Set* (backend/frontend_api_webaccess.go): the
+// transition lock, the config mutation + persist, and the hot-restart /
+// rollback discipline live there; each adapter adds exactly the
+// warning-channel refresh the transition requires (ADR-102 — see
+// refreshWebAccessLoadWarnings). Signatures are the Wails binding surface
+// and must not drift.
 func (a *App) SetWebAccessEnabled(on bool) error {
-	a.webAccessMu.Lock()
-	err := a.setWebAccessEnabledLocked(on)
-	a.webAccessMu.Unlock()
+	err := a.webAccessService.SetEnabled(on)
 	a.refreshWebAccessLoadWarnings()
 	return err
 }
 
-func (a *App) setWebAccessEnabledLocked(on bool) error {
-	cfg, cfgPath := a.configRef()
-	if cfg == nil || cfgPath == "" {
-		return errors.New("config not initialized")
-	}
-	if cfg.WebAccess.Enabled == on {
-		return nil
-	}
-
-	// ADR-102: a flip onto an unusable TLS is refused up front — fail-closed
-	// at this interactive boundary.
-	if on && cfg.WebAccess.TLS.Enabled {
-		if err := config.ValidateWebAccessTLSPair(cfg.WebAccess.TLS); err != nil {
-			return fmt.Errorf("cannot enable web access: %w", err)
-		}
-	}
-	// Insecure-LAN gate: enabling onto a non-loopback plaintext bind without
-	// the explicit allow_insecure_lan opt-in is refused up front — the same
-	// exposure predicate the load, save and mount paths enforce
-	// (specs/domains/web-access.md).
-	if on {
-		next := cfg.WebAccess
-		next.Enabled = true
-		if err := config.ValidateWebAccessExposure(next); err != nil {
-			return fmt.Errorf("cannot enable web access: %w", err)
-		}
-	}
-
-	prev := cfg.WebAccess
-	cfg.WebAccess.Enabled = on
-	if err := config.Save(cfg, cfgPath); err != nil {
-		cfg.WebAccess = prev
-		return fmt.Errorf("failed to persist web access config: %w", err)
-	}
-
-	if on {
-		if !webAccessMountAllowed(cfg, cfg.Experimental.Enabled) {
-			// ADR-101 decision 13: with the master gate closed the toggle
-			// still persists operator intent (the same paper state a
-			// restart would produce) but mounts no sidecar; opening the
-			// gate live-follows through applyExperimentalWebAccess.
-			a.log().Debug("web access enabled while the experimental gate is closed; the sidecar stays unmounted",
-				"experimental_enabled", cfg.Experimental.Enabled)
-			return nil
-		}
-		srv, err := a.startWebAccessLocked(a.log())
-		if err != nil {
-			// The persisted switch stays on (operator intent; the next
-			// launch retries) but the failure must be visible now.
-			return fmt.Errorf("web access enabled, but the sidecar failed to start: %w", err)
-		}
-		logWebAccessReady(a.log(), srv)
-		return nil
-	}
-
-	sctx, cancel := context.WithTimeout(context.Background(), webAccessStopBudget)
-	defer cancel()
-	if err := a.stopWebAccessLocked(sctx); err != nil {
-		return fmt.Errorf("web access disabled, but the sidecar stop failed: %w", err)
-	}
-	return nil
-}
-
-// applyExperimentalWebAccess is the backend's post-persist hook for
-// experimental.enabled (UpdateExperimentalFeatures → the OnExperimentalChanged
-// FrontendAPIConfig seam, ADR-101): gate open mounts an enabled-and-stopped
-// sidecar, gate closed stops a running one (webAccessStopBudget), everything
-// else is a no-op (specs/domains/web-access.md). Failure is fail-soft and
-// loud exactly like the startup mount: an Error log, the desktop app fully
-// usable, the persisted switch retrying on the next launch or successful
-// toggle. Locking: webAccessMu serializes the whole transition against the
-// startup mount, the Shutdown stop and the control RPCs; no lock-order cycle
-// with the backend — UpdateExperimentalFeatures holds configMu while this
-// takes webAccessMu, and desktop code never takes configMu.
-func (a *App) applyExperimentalWebAccess(enabled bool) {
-	a.webAccessMu.Lock()
-	defer a.webAccessMu.Unlock()
-
-	cfg, _ := a.configRef()
-	if cfg == nil {
-		// A Startup that never reached buildFrontendAPI: nothing to mount,
-		// and no live config to read the section's own switch from.
-		return
-	}
-
-	switch {
-	case webAccessMountAllowed(cfg, enabled):
-		srv, err := a.startWebAccessLocked(a.log())
-		if err != nil {
-			a.log().Error("web access sidecar failed to start after the experimental gate opened; continuing without it", "error", err)
-			return
-		}
-		// Idempotent on a live server: a repeated open returns the running
-		// sidecar instead of double-binding, so this is quiet for that case.
-		logWebAccessReady(a.log(), srv)
-	case !enabled:
-		if a.webAccess.Load() == nil {
-			return
-		}
-		sctx, cancel := context.WithTimeout(context.Background(), webAccessStopBudget)
-		defer cancel()
-		if err := a.stopWebAccessLocked(sctx); err != nil {
-			a.log().Error("web access sidecar failed to stop after the experimental gate closed", "error", err)
-		}
-	}
-}
-
-// SetWebAccessConnection persists the pinned bind and port (Settings →
-// Web Access: the single address field parses into these two) and applies
-// them live — a running sidecar hot-restarts onto the new connection. The
-// token is deliberately NOT part of this call: the credential has its own
-// RPCs, all serialized by webAccessMu. Empty bind = the loopback default;
-// port 0 = auto, 1–65535 = pinned; a same-pin request is a no-op
-// (specs/domains/web-access.md). If the restart with the new settings fails,
-// the previous pin is restored, persisted, and the sidecar brought back on
-// it (see restartWebAccessOrRollbackLocked). Locking: webAccessMu, like
-// SetWebAccessEnabled; the warning refresh runs after the unlock (ADR-102).
 func (a *App) SetWebAccessConnection(bind string, port int) error {
-	a.webAccessMu.Lock()
-	err := a.setWebAccessConnectionLocked(bind, port)
-	a.webAccessMu.Unlock()
+	err := a.webAccessService.SetConnection(bind, port)
 	a.refreshWebAccessLoadWarnings()
 	return err
 }
 
-func (a *App) setWebAccessConnectionLocked(bind string, port int) error {
-	cfg, cfgPath := a.configRef()
-	if cfg == nil || cfgPath == "" {
-		return errors.New("config not initialized")
-	}
-	bind = strings.TrimSpace(bind)
-	if bind == "" {
-		bind = config.DefaultWebAccessBind
-	}
-	if err := config.ValidateWebAccessBind(bind); err != nil {
-		return err
-	}
-	if err := config.ValidateWebAccessPort(port); err != nil {
-		return err
-	}
-	// Insecure-LAN gate on the re-bind boundary: refused before anything
-	// mutates or persists so the caller's error is a single honest step
-	// instead of a failed restart rollback. A disabled section keeps the
-	// paper-state doctrine: the pin persists regardless and the exposure
-	// gate fires at the enable boundary (and at load/save).
-	next := cfg.WebAccess
-	next.Bind = bind
-	next.Port = port
-	if err := config.ValidateWebAccessExposure(next); err != nil {
-		return err
-	}
-
-	if cfg.WebAccess.Bind == bind && cfg.WebAccess.Port == port {
-		return nil
-	}
-
-	prev := cfg.WebAccess
-	cfg.WebAccess.Bind = bind
-	cfg.WebAccess.Port = port
-	if err := config.Save(cfg, cfgPath); err != nil {
-		cfg.WebAccess = prev
-		return fmt.Errorf("failed to persist web access config: %w", err)
-	}
-	return a.restartWebAccessOrRollbackLocked(prev, cfg, cfgPath, "connection")
-}
-
-// RegenerateWebAccessToken mints a fresh persistent credential (the Settings
-// → Web Access button) and hot-restarts a running sidecar onto it — every
-// open browser tab must sign in again with the token Settings now shows.
-// With the sidecar stopped the persisted write is the whole effect. Failure
-// ordering and locking discipline: see restartWebAccessOrRollbackLocked and
-// specs/domains/web-access.md (webAccessMu).
 func (a *App) RegenerateWebAccessToken() error {
-	a.webAccessMu.Lock()
-	defer a.webAccessMu.Unlock()
-
-	cfg, cfgPath := a.configRef()
-	if cfg == nil || cfgPath == "" {
-		return errors.New("config not initialized")
-	}
-	tok, err := webaccess.GenerateToken()
-	if err != nil {
-		return fmt.Errorf("web access: generating auth token: %w", err)
-	}
-
-	prev := cfg.WebAccess
-	cfg.WebAccess.Token = tok
-	if err := config.Save(cfg, cfgPath); err != nil {
-		cfg.WebAccess = prev
-		return fmt.Errorf("failed to persist web access config: %w", err)
-	}
-	return a.restartWebAccessOrRollbackLocked(prev, cfg, cfgPath, "token regeneration")
+	return a.webAccessService.RegenerateToken()
 }
 
-// SetWebAccessToken persists an operator-typed credential (the Settings →
-// Web Access token field) and applies it live exactly like the rotation
-// above. The value is trimmed and bounds-checked by
-// config.ValidateWebAccessToken; the empty value is rejected — emptiness
-// means GENERATED, and clearing the field reverts the UI instead of
-// overwriting an existing credential. A request matching the stored token is
-// a no-op; failure ordering and locking mirror RegenerateWebAccessToken.
 func (a *App) SetWebAccessToken(token string) error {
-	a.webAccessMu.Lock()
-	defer a.webAccessMu.Unlock()
-
-	cfg, cfgPath := a.configRef()
-	if cfg == nil || cfgPath == "" {
-		return errors.New("config not initialized")
-	}
-	token = strings.TrimSpace(token)
-	if token == cfg.WebAccess.Token {
-		return nil
-	}
-	if err := config.ValidateWebAccessToken(token); err != nil {
-		return err
-	}
-
-	prev := cfg.WebAccess
-	cfg.WebAccess.Token = token
-	if err := config.Save(cfg, cfgPath); err != nil {
-		cfg.WebAccess = prev
-		return fmt.Errorf("failed to persist web access config: %w", err)
-	}
-	return a.restartWebAccessOrRollbackLocked(prev, cfg, cfgPath, "token change")
+	return a.webAccessService.SetToken(token)
 }
 
-// Web-access TLS certificate statuses (ADR-102 decision 5): the cert_status
-// vocabulary. The empty string (the zero value, not a constant) means no
-// cert path is configured — nothing to classify.
-const (
-	webAccessCertStatusOK         = "ok"         // loads and covers the bind within its validity window
-	webAccessCertStatusMismatch   = "mismatch"   // leaf does not cover the pinned bind's browser-facing host
-	webAccessCertStatusUnreadable = "unreadable" // pair cannot be loaded or parsed
-	webAccessCertStatusExpired    = "expired"    // outside the validity window (either end)
-)
-
-// SetWebAccessTLS persists the web_access.tls subsection (the HTTPS switch,
-// ADR-102 decision 1) and applies it live: a running sidecar is hot-restarted
-// onto the new transport. The caller authors both PEM paths explicitly — the
-// key path is never derived from the cert path. An enabled subsection with
-// empty paths is refused (config.ValidateWebAccessTLS), and a non-empty pair
-// is loaded BEFORE the no-op check or any persist — the interactive boundary
-// of the ADR-102 usability rule, with the commit check's own two-bucket
-// error split (see setWebAccessTLSLocked); a broken pair never reaches disk
-// or the sidecar. The subsection deliberately consults neither
-// web_access.enabled nor the experimental gate. Failure ordering mirrors the
-// other pin writers (persist rollback, restart restore); locking:
-// webAccessMu, with the warning refresh after the unlock (ADR-102) — the
-// HTTPS flip is precisely the transition that must move the
-// config-load-warning banner.
 func (a *App) SetWebAccessTLS(enabled bool, cert, key string) error {
-	a.webAccessMu.Lock()
-	err := a.setWebAccessTLSLocked(enabled, cert, key)
-	a.webAccessMu.Unlock()
+	err := a.webAccessService.SetTLS(enabled, cert, key)
 	a.refreshWebAccessLoadWarnings()
 	return err
 }
 
-func (a *App) setWebAccessTLSLocked(enabled bool, cert, key string) error {
-	cfg, cfgPath := a.configRef()
-	if cfg == nil || cfgPath == "" {
-		return errors.New("config not initialized")
-	}
-	cert = strings.TrimSpace(cert)
-	key = strings.TrimSpace(key)
-	if cert != "" && key != "" {
-		// Refuse an unloadable pair before the no-op check or any persist,
-		// with the commit check's own two-bucket error split (NOT the
-		// cert_status vocabulary — see classifyWebAccessCert): a key that
-		// does not match its certificate is a mismatch ("does not match"),
-		// every other load failure an unreadable pair.
-		if _, err := tls.LoadX509KeyPair(cert, key); err != nil {
-			if strings.Contains(err.Error(), "does not match") {
-				return fmt.Errorf("web access: TLS private key %q does not match the certificate %q: %w", key, cert, err)
-			}
-			return fmt.Errorf("web access: TLS certificate/key pair (%q, %q) is unreadable: %w", cert, key, err)
-		}
-	}
-	next := config.WebAccessTLSConfig{Enabled: enabled, Cert: cert, Key: key}
-	if err := config.ValidateWebAccessTLS(next); err != nil {
-		return err
-	}
-	// Insecure-LAN gate on the TLS-off boundary: the transport must not
-	// silently become a plaintext LAN exposure through the very switch that
-	// was added to encrypt it; refusing here keeps the caller's error one
-	// honest step instead of a failed restart rollback.
-	exposureNext := cfg.WebAccess
-	exposureNext.TLS = next
-	if err := config.ValidateWebAccessExposure(exposureNext); err != nil {
-		return err
-	}
-	if cfg.WebAccess.TLS == next {
-		return nil
-	}
-
-	prev := cfg.WebAccess
-	cfg.WebAccess.TLS = next
-	if err := config.Save(cfg, cfgPath); err != nil {
-		cfg.WebAccess.TLS = prev.TLS
-		return fmt.Errorf("failed to persist web access config: %w", err)
-	}
-	return a.restartWebAccessOrRollbackLocked(prev, cfg, cfgPath, "TLS switch")
-}
-
-// SetWebAccessAllowInsecureLAN persists the explicit accepted-risk opt-in
-// for the one exposure shape refused by default: an enabled, non-loopback
-// bind served over plain HTTP (specs/domains/web-access.md — the exposure
-// gate the load/save paths and the sidecar mount enforce). Flag-off while
-// the section sits in that shape is refused — the operator must first
-// disable web access, re-bind loopback, or enable TLS; a disabled section's
-// flag is pure paper state and flips freely. The flag never changes a
-// RUNNING listener (transport and bind untouched — no hot-restart); the
-// warning refresh runs after the unlock (the accepted-risk warning rides
-// the flag). Locking: webAccessMu, exactly like SetWebAccessTLS.
 func (a *App) SetWebAccessAllowInsecureLAN(allow bool) error {
-	a.webAccessMu.Lock()
-	err := a.setWebAccessAllowInsecureLANLocked(allow)
-	a.webAccessMu.Unlock()
+	err := a.webAccessService.SetAllowInsecureLAN(allow)
 	a.refreshWebAccessLoadWarnings()
 	return err
 }
 
-func (a *App) setWebAccessAllowInsecureLANLocked(allow bool) error {
-	cfg, cfgPath := a.configRef()
-	if cfg == nil || cfgPath == "" {
-		return errors.New("config not initialized")
-	}
-	if cfg.WebAccess.AllowInsecureLAN == allow {
-		return nil
-	}
-	next := cfg.WebAccess
-	next.AllowInsecureLAN = allow
-	if err := config.ValidateWebAccessExposure(next); err != nil {
-		return err
-	}
-	prev := cfg.WebAccess
-	cfg.WebAccess.AllowInsecureLAN = allow
-	if err := config.Save(cfg, cfgPath); err != nil {
-		cfg.WebAccess = prev
-		return fmt.Errorf("failed to persist web access config: %w", err)
-	}
-	return nil
-}
-
-// GenerateWebAccessCertificate regenerates the app-owned self-signed pair
-// for the CURRENTLY pinned bind (ADR-102 decision 3) at the fixed locations
-// ~/.c0wrk/web-access.crt + .key, persists the pair's paths into
-// web_access.tls (never flipping tls.enabled, never touching
-// operator-authored paths), and hot-restarts a running sidecar onto the
-// fresh certificate. Works while the sidecar is stopped too. The files are
-// written BEFORE the config save — the reverse would persist paths at files
-// that do not exist yet; leftover files on a failed persist are harmless
-// (the idempotent standard pair nothing references until the paths persist).
-// Failure ordering mirrors the other control RPCs; locking: webAccessMu.
 func (a *App) GenerateWebAccessCertificate() error {
-	err := a.generateWebAccessCertificateLocked()
+	err := a.webAccessService.GenerateCertificate()
 	// Regeneration can move the section's load-warning contribution
 	// (CS #67): a fresh valid pair heals a warned-unusable one. After the
 	// unlock, mirroring the other control RPCs.
 	a.refreshWebAccessLoadWarnings()
 	return err
-}
-
-func (a *App) generateWebAccessCertificateLocked() error {
-	a.webAccessMu.Lock()
-	defer a.webAccessMu.Unlock()
-
-	cfg, cfgPath := a.configRef()
-	if cfg == nil || cfgPath == "" {
-		return errors.New("config not initialized")
-	}
-	agentDir := config.AgentDir()
-	certPath := config.WebAccessCertPath(agentDir)
-	keyPath := config.WebAccessKeyPath(agentDir)
-	if err := webaccess.GenerateWebAccessCertificate(cfg.WebAccess.Bind, certPath, keyPath); err != nil {
-		return err
-	}
-
-	prev := cfg.WebAccess
-	next := config.WebAccessTLSConfig{
-		Enabled: cfg.WebAccess.TLS.Enabled,
-		Cert:    certPath,
-		Key:     keyPath,
-	}
-	if cfg.WebAccess.TLS != next {
-		cfg.WebAccess.TLS = next
-		if err := config.Save(cfg, cfgPath); err != nil {
-			cfg.WebAccess.TLS = prev.TLS
-			return fmt.Errorf("failed to persist web access config: %w", err)
-		}
-	}
-	// Hot-restart even when the persisted paths did not change: regeneration
-	// replaced the key material on disk, and a running sidecar keeps serving
-	// the pair it loaded at start until it is rebuilt.
-	return a.restartWebAccessOrRollbackLocked(prev, cfg, cfgPath, "certificate generation")
-}
-
-// classifyWebAccessCert computes the cert_status/cert_detail pair of
-// GetWebAccessInfo (ADR-102 decision 5): whenever a cert path is configured,
-// the pair is loaded exactly the way the sidecar loads it and the leaf is
-// checked against the pinned bind — SAN coverage of the bind's
-// browser-facing host (the same rewrite the rendered URL applies, so the
-// status certifies the address the browser actually opens) and the validity
-// window. The check order is fixed for determinism: unreadable → mismatch →
-// expired → ok; an unconfigured cert path is the empty status.
-func classifyWebAccessCert(certPath, keyPath, bind string) (status, detail string) {
-	if certPath == "" {
-		return "", ""
-	}
-	host := webAccessURLHost(bind)
-	pair, err := tls.LoadX509KeyPair(certPath, keyPath)
-	if err != nil {
-		return webAccessCertStatusUnreadable, fmt.Sprintf(
-			"the certificate pair could not be loaded (%v) — the sidecar will refuse to start while this pair is configured; fix the files or regenerate the pair", err)
-	}
-	leaf, err := x509.ParseCertificate(pair.Certificate[0])
-	if err != nil {
-		return webAccessCertStatusUnreadable, fmt.Sprintf(
-			"the certificate could not be parsed (%v) — the sidecar will refuse to start while this pair is configured; fix the files or regenerate the pair", err)
-	}
-	if !webAccessCertCoversHost(leaf, host) {
-		return webAccessCertStatusMismatch, fmt.Sprintf(
-			"the certificate does not cover %q (the current bind) — regenerate the pair for this address or point cert/key at a pair that covers it", host)
-	}
-	if !time.Now().Before(leaf.NotAfter) {
-		return webAccessCertStatusExpired, fmt.Sprintf(
-			"the certificate expired %s — regenerate the pair to renew it", leaf.NotAfter.UTC().Format(time.RFC3339))
-	}
-	if time.Now().Before(leaf.NotBefore) {
-		// Same clock-derived bucket: outside the validity window.
-		return webAccessCertStatusExpired, fmt.Sprintf(
-			"the certificate is not valid until %s — check the system clock or regenerate the pair", leaf.NotBefore.UTC().Format(time.RFC3339))
-	}
-	return webAccessCertStatusOK, ""
-}
-
-// webAccessCertCoversHost reports whether the leaf's SANs cover host: an IP
-// host must appear among the IP SANs, a name host among the DNS SANs
-// (RFC 6125 — the two lists are not interchangeable; a DNS SAN may carry the
-// RFC 6125 §6.4.3 wildcard form).
-func webAccessCertCoversHost(leaf *x509.Certificate, host string) bool {
-	if ip := net.ParseIP(host); ip != nil {
-		for _, san := range leaf.IPAddresses {
-			if san.Equal(ip) {
-				return true
-			}
-		}
-		return false
-	}
-	for _, san := range leaf.DNSNames {
-		if dnsSANCovers(san, host) {
-			return true
-		}
-	}
-	return false
-}
-
-// dnsSANCovers reports whether one DNS SAN pattern covers host: exact match,
-// or the RFC 6125 §6.4.3 wildcard — a single "*" as the complete left-most
-// label matching exactly one label ("*.example.com" covers "app.example.com"
-// but not "example.com" nor "a.b.example.com").
-func dnsSANCovers(pattern, host string) bool {
-	pattern = strings.ToLower(pattern)
-	host = strings.ToLower(host)
-	if pattern == host {
-		return true
-	}
-	wildLabel, wildRest, wildOK := strings.Cut(pattern, ".")
-	if !wildOK || wildLabel != "*" {
-		return false
-	}
-	hostLabel, hostRest, hostOK := strings.Cut(host, ".")
-	return hostOK && hostLabel != "" && hostRest == wildRest
-}
-
-// restartWebAccessOrRollbackLocked hot-restarts a running sidecar onto the
-// just-persisted config state; a no-op when the sidecar is not running (the
-// persisted write was the whole effect). If the restart cannot serve, prev —
-// the section state the sidecar was running with — is restored in memory,
-// persisted, and the sidecar brought back on it. Every failure, including a
-// failed rollback persist, is named in the returned error: the operator is
-// never told the previous settings were restored while disk still holds the
-// pin that failed to serve. Callers hold webAccessMu and have already
-// persisted the new state into cfg; `what` names the change in errors.
-func (a *App) restartWebAccessOrRollbackLocked(prev config.WebAccessConfig, cfg *config.Config, cfgPath, what string) error {
-	if a.webAccess.Load() == nil {
-		return nil
-	}
-
-	// Hot-restart onto the new state. The stop's error is deliberately not
-	// fatal: the start below needs the listener gone, and a failed stop
-	// surfaces through the start failure — the rollback path then restores
-	// the previous state.
-	sctx, cancel := context.WithTimeout(context.Background(), webAccessStopBudget)
-	defer cancel()
-	_ = a.stopWebAccessLocked(sctx)
-	srv, err := a.startWebAccessLocked(a.log())
-	if err == nil {
-		logWebAccessReady(a.log(), srv)
-		return nil
-	}
-
-	// The new state does not serve. Restore the previous one on disk and
-	// bring the sidecar back up on it; every failure is named to the caller.
-	cfg.WebAccess = prev
-	saveErr := config.Save(cfg, cfgPath)
-	if saveErr != nil {
-		a.log().Error("web access: failed to persist the rolled-back settings", "err", saveErr)
-	}
-	restored, restartErr := a.startWebAccessLocked(a.log())
-	if restartErr != nil {
-		if saveErr != nil {
-			return fmt.Errorf(
-				"web access %s not applied: the sidecar failed to start with the new settings (%w) and could not be restored on the previous ones (%w); persisting the rolled-back settings also failed (%w) — disk still holds the settings that failed to serve, and the sidecar is down until the next launch",
-				what, err, restartErr, saveErr)
-		}
-		return fmt.Errorf(
-			"web access %s not applied: the sidecar failed to start with the new settings (%w) and could not be restored on the previous ones (%w) — it will retry on the next launch",
-			what, err, restartErr)
-	}
-	logWebAccessReady(a.log(), restored)
-	if saveErr != nil {
-		return fmt.Errorf(
-			"web access %s not applied: the sidecar failed to start with the new settings (%w); the sidecar is running again on the previous settings, but persisting the rollback failed (%w) — disk still holds the settings that failed to serve and will retry them on the next launch",
-			what, err, saveErr)
-	}
-	return fmt.Errorf(
-		"web access %s not applied: the sidecar failed to start with the new settings (%w); the previous settings were restored and the sidecar is running again",
-		what, err)
-}
-
-// webAccessMountAllowed is the ADR-101 decision-13 availability conjunction —
-// the master experimental gate AND the feature's own web_access switch — as
-// ONE predicate for every mount decision: the startup mount, the live-follow
-// hook and the section toggle. experimentalEnabled is passed explicitly
-// because the live-follow hook carries the post-toggle gate value the
-// in-memory config has only just converged to.
-func webAccessMountAllowed(cfg *config.Config, experimentalEnabled bool) bool {
-	return cfg != nil && experimentalEnabled && cfg.WebAccess.Enabled
-}
-
-// startWebAccessLocked constructs and starts the sidecar and publishes the
-// handle + event tap. Callers must hold webAccessMu. Idempotent on a live
-// server: it returns the running one so a startup mount and a toggle can
-// never double-bind.
-func (a *App) startWebAccessLocked(log *slog.Logger) (*webaccess.Server, error) {
-	if cur := a.webAccess.Load(); cur != nil {
-		return cur, nil
-	}
-	cfg, cfgPath := a.configRef()
-	if cfg == nil || cfgPath == "" {
-		return nil, errors.New("config not initialized")
-	}
-	// The persistent credential: an empty config token means "mint one, now"
-	// — generated once and written back immediately (ADR-101), so the
-	// credential is stable across restarts from the first start on.
-	if cfg.WebAccess.Token == "" {
-		tok, err := webaccess.GenerateToken()
-		if err != nil {
-			return nil, fmt.Errorf("web access: generating auth token: %w", err)
-		}
-		prev := cfg.WebAccess
-		cfg.WebAccess.Token = tok
-		if err := config.Save(cfg, cfgPath); err != nil {
-			cfg.WebAccess = prev
-			return nil, fmt.Errorf("web access: failed to persist the generated auth token: %w", err)
-		}
-		log.Info("web access: generated a persistent auth token (the config token was empty)")
-	}
-	srv, err := webaccess.New(webaccess.Options{
-		Config:   cfg.WebAccess,
-		Dispatch: a.frontendAPI(),
-		// App-level methods the mirrored UI needs, behind the minimal
-		// adapter (desktop/webaccess_extra.go) — never the App itself.
-		ExtraDispatch: &webExtraSurface{app: a},
-		Static:        a.webAccessStatic,
-		CSP:           CSPMiddleware(),
-		Logger:        log,
-		// The browser-side twin of wireWailsEventListeners: an authenticated
-		// tab resolves the whitelisted HITL response events through the same
-		// App handlers the Wails runtime path uses (desktop/webaccess_inbound.go).
-		WSInbound: a.webWSInboundDispatcher(log),
-	})
-	if err != nil {
-		return nil, err
-	}
-	if err := srv.Start(context.Background()); err != nil {
-		return nil, err
-	}
-	// Publish the handle before the tap: once events fan out, a concurrent
-	// GetWebAccessInfo must already see Running.
-	a.webAccess.Store(srv)
-	a.setEventTap(srv.EventTap())
-	return srv, nil
-}
-
-// stopWebAccessLocked detaches and stops the live sidecar. Callers must hold
-// webAccessMu. The handle and tap are cleared BEFORE the stop so events stop
-// flowing to a dying server and a concurrent toggle sees "not running"
-// immediately; the stop itself is idempotent (Server.Stop is once-guarded).
-// A nil handle is a no-op.
-func (a *App) stopWebAccessLocked(ctx context.Context) error {
-	srv := a.webAccess.Load()
-	if srv == nil {
-		return nil
-	}
-	a.webAccess.Store(nil)
-	a.setEventTap(nil)
-	return srv.Stop(ctx)
-}
-
-// logWebAccessReady records the sidecar's URL at Info. The auth token is
-// deliberately NOT part of the record — it is app-secret material the
-// Settings section reveals on demand; the log only names where a browser
-// connects.
-func logWebAccessReady(log *slog.Logger, srv *webaccess.Server) {
-	addr, ok := srv.Addr()
-	if !ok {
-		addr = "(unresolved)"
-	}
-	log.Info("web access sidecar ready", "url", webAccessBrowserURL(addr, srv.TLSEnabled()),
-		"token", "(hidden — see Settings → Web Access)")
 }

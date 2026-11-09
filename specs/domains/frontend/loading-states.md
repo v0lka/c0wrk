@@ -18,7 +18,7 @@ Defines the frontend's three data-arrival loading states — the pre-React **boo
 - `frontend/src/hooks/useSessionLoader.ts` — feeds the list: `listSessions()` → `setSessions` (a FAILED fetch leaves the store untouched, i.e. still `null`)
 - `frontend/src/components/layout/SessionList.tsx` — CHAT-mode sidebar list: skeleton rows while `sessions === null`
 - `frontend/src/components/layout/SessionSelector.tsx` — CODE-mode dropdown: loading row while `sessions === null`
-- `desktop/csp.go` — the production CSP (`script-src 'self'`, `style-src 'self' 'unsafe-inline'`), injected into both the Wails asset server and the web-access sidecar
+- `core/csp` — the production CSP (`script-src 'self'`, `style-src 'self' 'unsafe-inline'`), stamped by the `desktop/csp.go` `CSPMiddleware` into both the Wails asset server and the web-access sidecar
 
 ## Behavior
 
@@ -74,7 +74,7 @@ The same `frontend/dist` tree is served by the Wails asset server and by the web
 
 ## Invariants
 
-- **No inline scripts in `index.html`, ever.** The production CSP (`desktop/csp.go`, reused by the web-access sidecar) allows `script-src 'self'` only; `style-src 'self' 'unsafe-inline'` is what makes the inline `<style>` legal. Anti-FOUC/parse-time logic lives in external scripts under `public/`.
+- **No inline scripts in `index.html`, ever.** The production CSP (`core/csp`, stamped by `desktop/csp.go` and reused by the web-access sidecar) allows `script-src 'self'` only; `style-src 'self' 'unsafe-inline'` is what makes the inline `<style>` legal. Anti-FOUC/parse-time logic lives in external scripts under `public/`.
 - **The boot loader is pure HTML+CSS** — no JS dependency for its visibility; React mount is the primary removal path and the rAF lookup is an idempotent backstop.
 - **Every loading indicator is zoom-safe**: positioned with `inset: 0` / percentages and sized with absolute lengths only — no raw viewport units or `*-screen` utilities anywhere, including `index.html` (the project-wide zoom guard scans it verbatim; see [ui-scale.md](ui-scale.md)).
 - **Exactly one writer per marker.** Only `reloadSessionHistory` writes `historyLoaded` (single try/finally); only the session-list loaders (`useSessionLoader`, the resync) write `setSessions`. No component mutates a marker directly.

@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"testing"
 	"time"
+
+	"github.com/v0lka/c0wrk/core/shutdown"
 )
 
 // discardLogger returns a logger that drops everything, so watchdog tests do
@@ -55,8 +57,8 @@ func TestShutdownWatchdog_StopDisarms(t *testing.T) {
 func TestShutdownWatchdog_DeadlineFallback(t *testing.T) {
 	w := startShutdownWatchdog(0, nil, func() {})
 	defer w.stop()
-	if w.deadline != defaultShutdownHardDeadline {
-		t.Fatalf("deadline = %v, want the default %v", w.deadline, defaultShutdownHardDeadline)
+	if w.deadline != shutdown.DefaultHardDeadline() {
+		t.Fatalf("deadline = %v, want the default %v", w.deadline, shutdown.DefaultHardDeadline())
 	}
 }
 
@@ -64,58 +66,11 @@ func TestShutdownWatchdog_DeadlineFallback(t *testing.T) {
 // deadline and falls back to the default when Startup never set it.
 func TestApp_ShutdownDeadline(t *testing.T) {
 	a := &App{}
-	if got := a.shutdownDeadline(); got != defaultShutdownHardDeadline {
-		t.Fatalf("unset deadline = %v, want %v", got, defaultShutdownHardDeadline)
+	if got := a.shutdownDeadline(); got != shutdown.DefaultHardDeadline() {
+		t.Fatalf("unset deadline = %v, want %v", got, shutdown.DefaultHardDeadline())
 	}
 	a.shutdownHardDeadline = 5 * time.Second
 	if got := a.shutdownDeadline(); got != 5*time.Second {
 		t.Fatalf("configured deadline = %v, want 5s", got)
-	}
-}
-
-// TestEffectiveShutdownDeadline pins the single configured-deadline mapping
-// both the shutdown watchdog and the GPU-relaunch handover budget consume: a
-// positive config value passes through, an unset (0) or nonsense value
-// resolves to the built-in cumulative default. The GPU-relaunch handover waits
-// exactly this long (plus margin) for the predecessor — sized against
-// anything shorter, a legitimate slow teardown (the ~46 s embedded-LLM stop)
-// would outlast the wait and lose the replacement window (review finding
-// #155.1).
-func TestEffectiveShutdownDeadline(t *testing.T) {
-	cases := []struct {
-		name              string
-		configuredSeconds int
-		want              time.Duration
-	}{
-		{"unset falls back to the default", 0, defaultShutdownHardDeadline},
-		{"negative falls back to the default", -5, defaultShutdownHardDeadline},
-		{"configured passes through", 120, 120 * time.Second},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := EffectiveShutdownDeadline(tc.configuredSeconds); got != tc.want {
-				t.Fatalf("EffectiveShutdownDeadline(%d) = %v, want %v", tc.configuredSeconds, got, tc.want)
-			}
-		})
-	}
-}
-
-// TestGpuRelaunchHandoverBudgetSizedFromShutdownDeadline pins the budget
-// derivation: the handover wait must cover the predecessor's whole bounded
-// teardown (its effective shutdown deadline) plus the fixed exit slack — a
-// budget below that made the relaunched child give up waiting mid-teardown,
-// relay into the quitting instance, and exit (the one-shot relay of review
-// finding #155.1).
-func TestGpuRelaunchHandoverBudgetSizedFromShutdownDeadline(t *testing.T) {
-	if got := GpuRelaunchHandoverBudget(0); got != defaultShutdownHardDeadline+gpuRelaunchHandoverMargin {
-		t.Fatalf("budget from the default deadline = %v, want %v", got, defaultShutdownHardDeadline+gpuRelaunchHandoverMargin)
-	}
-	if got := GpuRelaunchHandoverBudget(2 * time.Minute); got != 2*time.Minute+gpuRelaunchHandoverMargin {
-		t.Fatalf("budget from a configured deadline = %v, want %v", got, 2*time.Minute+gpuRelaunchHandoverMargin)
-	}
-	// The default budget must exceed the handover timeout that preceded this
-	// fix — the regression this test exists for.
-	if GpuRelaunchHandoverBudget(0) <= 15*time.Second {
-		t.Fatalf("default budget %v does not exceed the legacy 15s handover timeout", GpuRelaunchHandoverBudget(0))
 	}
 }

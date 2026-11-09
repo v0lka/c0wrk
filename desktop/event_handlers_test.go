@@ -28,74 +28,6 @@ func captureLogger() (*slog.Logger, *bytes.Buffer) {
 	return slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug})), buf
 }
 
-// --- extractPayload ---
-
-func TestExtractPayload_EmptyData(t *testing.T) {
-	log, buf := captureLogger()
-	_, ok := extractPayload("ev", nil, log)
-	if ok {
-		t.Fatal("expected ok=false for empty data")
-	}
-	if !strings.Contains(buf.String(), "missing payload") {
-		t.Errorf("expected 'missing payload' warning, got %q", buf.String())
-	}
-}
-
-func TestExtractPayload_WrongType(t *testing.T) {
-	log, buf := captureLogger()
-	_, ok := extractPayload("ev", []any{"not a map"}, log)
-	if ok {
-		t.Fatal("expected ok=false for wrong type")
-	}
-	if !strings.Contains(buf.String(), "unexpected payload type") {
-		t.Errorf("expected 'unexpected payload type' warning, got %q", buf.String())
-	}
-}
-
-func TestExtractPayload_Success(t *testing.T) {
-	want := map[string]any{"k": "v"}
-	got, ok := extractPayload("ev", []any{want}, silentLogger())
-	if !ok {
-		t.Fatal("expected ok=true")
-	}
-	if got["k"] != "v" {
-		t.Errorf("got %v, want %v", got, want)
-	}
-}
-
-// --- parseConfirmDecision ---
-
-func TestParseConfirmDecision(t *testing.T) {
-	tests := []struct {
-		name    string
-		payload map[string]any
-		want    sdktools.ConfirmationResponse
-		wantOK  bool
-	}{
-		{name: "missing field", payload: map[string]any{}, wantOK: false},
-		{name: "string allow_once", payload: map[string]any{"decision": "allow_once"}, want: sdktools.ConfirmAllowOnce, wantOK: true},
-		{name: "string deny", payload: map[string]any{"decision": "deny"}, want: sdktools.ConfirmDeny, wantOK: true},
-		{name: "string stop", payload: map[string]any{"decision": "stop"}, want: sdktools.ConfirmDenyAndStop, wantOK: true},
-		{name: "string deny_and_stop", payload: map[string]any{"decision": "deny_and_stop"}, want: sdktools.ConfirmDenyAndStop, wantOK: true},
-		{name: "unknown string", payload: map[string]any{"decision": "approve_forever"}, wantOK: false},
-		{name: "float64 (JSON number)", payload: map[string]any{"decision": float64(int(sdktools.ConfirmAllowOnce))}, want: sdktools.ConfirmAllowOnce, wantOK: true},
-		{name: "int", payload: map[string]any{"decision": int(sdktools.ConfirmDeny)}, want: sdktools.ConfirmDeny, wantOK: true},
-		{name: "unsupported type bool", payload: map[string]any{"decision": true}, wantOK: false},
-		{name: "unsupported type nil", payload: map[string]any{"decision": nil}, wantOK: false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, ok := parseConfirmDecision(tt.payload, silentLogger())
-			if ok != tt.wantOK {
-				t.Errorf("ok = %v, want %v", ok, tt.wantOK)
-			}
-			if ok && got != tt.want {
-				t.Errorf("got %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
 // --- handleToolConfirmResponse ---
 
 func TestHandleToolConfirmResponse_HappyPath(t *testing.T) {
@@ -375,7 +307,7 @@ func TestHandleToolJudgeRequest_NoPendingConfirmation(t *testing.T) {
 }
 
 func TestHandleToolJudgeRequest_NoApplication(t *testing.T) {
-	// runJudgeEvaluation guards against a.app == nil and emits an error.
+	// The judge goroutine guards against a nil application and emits an error.
 	a := &App{}
 	a.pendingConfirmations.Store("cid-1", &pendingConfirmData{
 		ch:        make(chan sdktools.ConfirmationResponse, 1),
@@ -432,31 +364,8 @@ func TestHandleToolJudgeRequest_NoApplication(t *testing.T) {
 	// (hypothetical) repeat frame afterwards would spawn a fresh evaluation
 	// instead of being dropped forever.
 	a.judgeWG.Wait()
-	if _, ok := a.judgeInFlight.Load("cid-1"); ok {
+	if !a.judgeService.Begin("cid-1") {
 		t.Error("in-flight marker should be released once the evaluation settles")
-	}
-}
-
-// TestBeginJudgeEvaluation_ClaimsAndReleases pins the marker mechanics: the
-// first claim wins, a claim while held is refused, and finishing the
-// evaluation makes the slot claimable again.
-func TestBeginJudgeEvaluation_ClaimsAndReleases(t *testing.T) {
-	a := &App{}
-
-	if !a.beginJudgeEvaluation("cid-1") {
-		t.Fatal("first claim on a fresh confirm_id should win")
-	}
-	if a.beginJudgeEvaluation("cid-1") {
-		t.Fatal("a claim while an evaluation is in flight should be refused")
-	}
-	// A different confirm_id is never blocked by another one's marker.
-	if !a.beginJudgeEvaluation("cid-2") {
-		t.Fatal("a different confirm_id should claim independently")
-	}
-
-	a.finishJudgeEvaluation("cid-1")
-	if !a.beginJudgeEvaluation("cid-1") {
-		t.Fatal("claim after finish should win again")
 	}
 }
 
@@ -477,7 +386,7 @@ func TestHandleToolJudgeRequest_InFlightDropIsQuiet(t *testing.T) {
 		sessionID: "sess-1",
 	})
 	// Simulate the evaluation a first frame is still running.
-	if !a.beginJudgeEvaluation("cid-drop") {
+	if !a.judgeService.Begin("cid-drop") {
 		t.Fatal("failed to claim a fresh confirm_id")
 	}
 
@@ -508,21 +417,5 @@ func TestHandleToolJudgeRequest_MissingConfirmID(t *testing.T) {
 
 	if !strings.Contains(buf.String(), "missing confirm_id") {
 		t.Errorf("expected 'missing confirm_id' warning, got %q", buf.String())
-	}
-}
-
-// --- parseAskUserAnswers (direct unit tests) ---
-
-func TestParseAskUserAnswers_NoField(t *testing.T) {
-	resp := parseAskUserAnswers(map[string]any{})
-	if len(resp.Answers) != 0 {
-		t.Errorf("got %d answers, want 0", len(resp.Answers))
-	}
-}
-
-func TestParseAskUserAnswers_AnswersWrongType(t *testing.T) {
-	resp := parseAskUserAnswers(map[string]any{"answers": "not a slice"})
-	if len(resp.Answers) != 0 {
-		t.Errorf("got %d answers, want 0", len(resp.Answers))
 	}
 }

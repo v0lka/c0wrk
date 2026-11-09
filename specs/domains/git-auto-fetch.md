@@ -11,7 +11,7 @@ Automatic background `git fetch` for the active CODE project, keeping remote-tra
 - `backend/frontend_api_project.go` - the switch trigger: `go f.autoFetchOnce(autoFetchTriggerSwitch)` on the real-switch path only (the already-active early return skips it)
 - `backend/frontend_api_git.go` - the manual remote-op side the funnel serializes against: `remoteOpMu`, `runSerializedRemoteOp` chokepoint, `remoteGitCmdTimeout` (2 min), `emitGitStatusChanged`
 - `backend/config/config.go` / `backend/config/defaults.go` - `GitConfig` (`git.auto_fetch`, `git.auto_fetch_interval`) and its defaults
-- `desktop/startup_phases.go` / `desktop/startup.go` - `startAutoFetchBackground` starts the ticker exactly once after the backend is ready (mirrors `startUpdateCheckerBackground`)
+- `backend/startup_phases.go` / `desktop/startup.go` - `startAutoFetchBackground`/`StartAutoFetchBackground` starts the ticker exactly once after the backend is ready, called from the desktop background-starter glue (mirrors `StartUpdateCheckerBackground`)
 - `frontend/src/api/git.ts` - `requestRemoteRefresh()` RPC wrapper (frontend talks to the backend only through `@/api/*`)
 - `frontend/src/hooks/useGitFocusRefresh.ts` - App-level window-focus hook: subscribes after runtime readiness, unsubscribes on unmount
 - `core/workspace/git.go` - `GitCmdInRepo`: the hardened spawn path the fetch runs through (per-invocation config scan + neutralizing `-c` overrides; raw `GitCmdRaw` escape hatch for trusted repos)

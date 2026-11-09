@@ -450,16 +450,12 @@ func TestWebInbound_AuthenticatedWSFrameResolvesToolConfirm(t *testing.T) {
 		a.stopWebAccess(ctx)
 	})
 	a.initWebAccess(cfg, log)
-	srv := a.webAccess.Load()
-	if srv == nil {
-		t.Fatal("sidecar did not mount")
-	}
+	baseURL, token := webAccessLiveEndpoint(t, a)
 
-	ts := newWebAccessHTTPTest(t, srv)
-	client := loginWebAccessClient(t, ts.URL, srv.AuthToken())
-	u, err := url.Parse(ts.URL)
+	client := loginWebAccessClient(t, baseURL, token)
+	u, err := url.Parse(baseURL)
 	if err != nil {
-		t.Fatalf("parse ts.URL: %v", err)
+		t.Fatalf("parse baseURL: %v", err)
 	}
 	cookies := client.Jar.Cookies(u)
 	cookieParts := make([]string, 0, len(cookies))
@@ -470,7 +466,7 @@ func TestWebInbound_AuthenticatedWSFrameResolvesToolConfirm(t *testing.T) {
 		t.Fatal("login produced no session cookie")
 	}
 
-	conn := dialWebAccessWS(t, ts.URL, strings.Join(cookieParts, "; "))
+	conn := dialWebAccessWS(t, baseURL, strings.Join(cookieParts, "; "))
 
 	// A malformed frame first: the drop must not poison the connection.
 	writeWSTextFrame(t, conn, []byte("{not json"))
@@ -512,22 +508,21 @@ func TestWebInbound_HotRestartRewiresInbound(t *testing.T) {
 
 	resolve := func(tag string) {
 		t.Helper()
-		srv := a.webAccess.Load()
-		if srv == nil {
+		if !a.webAccessService.Running() {
 			t.Fatalf("%s: sidecar not mounted", tag)
 		}
-		ts := newWebAccessHTTPTest(t, srv)
-		client := loginWebAccessClient(t, ts.URL, srv.AuthToken())
-		u, err := url.Parse(ts.URL)
+		baseURL, token := webAccessLiveEndpoint(t, a)
+		client := loginWebAccessClient(t, baseURL, token)
+		u, err := url.Parse(baseURL)
 		if err != nil {
-			t.Fatalf("%s: parse ts.URL: %v", tag, err)
+			t.Fatalf("%s: parse baseURL: %v", tag, err)
 		}
 		cookies := client.Jar.Cookies(u)
 		cookieParts := make([]string, 0, len(cookies))
 		for _, c := range cookies {
 			cookieParts = append(cookieParts, c.Name+"="+c.Value)
 		}
-		conn := dialWebAccessWS(t, ts.URL, strings.Join(cookieParts, "; "))
+		conn := dialWebAccessWS(t, baseURL, strings.Join(cookieParts, "; "))
 		ch := make(chan sdktools.ConfirmationResponse, 1)
 		a.pendingConfirmations.Store(tag, &pendingConfirmData{ch: ch, toolName: "bash_exec", sessionID: "sess-1"})
 		writeWSTextFrame(t, conn, webInboundFrame(t, "tool_confirm_response",

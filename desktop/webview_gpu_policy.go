@@ -9,46 +9,8 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options/linux"
 
 	"github.com/v0lka/c0wrk/backend"
+	"github.com/v0lka/c0wrk/core/webviewgpu"
 )
-
-// webviewGpuPolicy is the effective hardware-acceleration policy for the
-// Linux webview — the Wails-bound leaf of the pipeline whose canonical string
-// alphabet (env var, persisted setting, Settings UI, RPCs) lives in
-// backend/webview_gpu.go — deliberately decoupled from Wails' enum ordering
-// (see wailsWebviewGpuPolicy). See specs/domains/webview-gpu-policy.md.
-type webviewGpuPolicy int
-
-const (
-	gpuPolicyNever webviewGpuPolicy = iota
-	gpuPolicyAlways
-	gpuPolicyOnDemand
-)
-
-// String returns the canonical spelling of the policy (backend's canonical
-// alphabet).
-func (p webviewGpuPolicy) String() string {
-	switch p {
-	case gpuPolicyAlways:
-		return backend.WebviewGpuPolicyAlways
-	case gpuPolicyOnDemand:
-		return backend.WebviewGpuPolicyOnDemand
-	default:
-		return backend.WebviewGpuPolicyNever
-	}
-}
-
-// webviewGpuPolicyFromCanonical maps a canonical policy spelling (validated
-// by backend's resolvers) onto the enum.
-func webviewGpuPolicyFromCanonical(canonical string) webviewGpuPolicy {
-	switch canonical {
-	case backend.WebviewGpuPolicyAlways:
-		return gpuPolicyAlways
-	case backend.WebviewGpuPolicyOnDemand:
-		return gpuPolicyOnDemand
-	default:
-		return gpuPolicyNever
-	}
-}
 
 // wailsWebviewGpuPolicy converts the policy into the linux.WebviewGpuPolicy
 // value handed to Wails, compensating for the pinned Wails v2.16.0's
@@ -59,11 +21,11 @@ func webviewGpuPolicyFromCanonical(canonical string) webviewGpuPolicy {
 // re-verify against window.c on every Wails upgrade and update
 // webview_gpu_policy_test.go (numeric + enum-order canary pins).
 // See specs/domains/webview-gpu-policy.md.
-func (p webviewGpuPolicy) wailsWebviewGpuPolicy() linux.WebviewGpuPolicy {
+func wailsWebviewGpuPolicy(p webviewgpu.Policy) linux.WebviewGpuPolicy {
 	switch p {
-	case gpuPolicyAlways:
+	case webviewgpu.PolicyAlways:
 		return linux.WebviewGpuPolicyOnDemand
-	case gpuPolicyOnDemand:
+	case webviewgpu.PolicyOnDemand:
 		return linux.WebviewGpuPolicyAlways
 	default:
 		return linux.WebviewGpuPolicyNever
@@ -95,7 +57,7 @@ func webviewGpuPolicyOptions(goos, agentDir string, stderrObserved bool, logger 
 	// Single launch-time read of the state file: the consumed setting rides
 	// along, and a second read could observe a different state than the first.
 	run := backend.DeriveWebviewGpuRun(goos, agentDir, stderrObserved, logger)
-	resolved := webviewGpuPolicyFromCanonical(run.Policy)
+	resolved := webviewgpu.FromCanonical(run.Policy)
 	switch run.Source {
 	case backend.WebviewGpuSourceEnv:
 		logger.Info("webview GPU policy override",
@@ -112,5 +74,5 @@ func webviewGpuPolicyOptions(goos, agentDir string, stderrObserved bool, logger 
 		logger.Debug("webview GPU policy resolved",
 			"policy", run.Policy, "source", run.Source, "setting", run.Setting)
 	}
-	return &linux.Options{WebviewGpuPolicy: resolved.wailsWebviewGpuPolicy()}
+	return &linux.Options{WebviewGpuPolicy: wailsWebviewGpuPolicy(resolved)}
 }

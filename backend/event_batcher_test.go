@@ -1,0 +1,404 @@
+package backend
+
+import (
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/v0lka/c0wrk/backend/session"
+)
+
+// emittedEvent is one recorded event (name + data args) in a test sink.
+type emittedEvent struct {
+	Name string
+	Data []any
+}
+
+// batchChanSink is a channel-backed event sink for deterministic batcher tests.
+// A channel (unlike a shared slice) lets the tests wait for asynchronous
+// flushes without data races.
+type batchChanSink struct {
+	ch chan emittedEvent
+}
+
+func newBatchChanSink() *batchChanSink {
+	return &batchChanSink{ch: make(chan emittedEvent, 8192)}
+}
+
+func (s *batchChanSink) emit(name string, data ...any) {
+	s.ch <- emittedEvent{Name: name, Data: data}
+}
+
+// collectFlattened gathers `want` individual events (expanding any batch
+// envelopes) from the sink, failing the test on timeout.
+func (s *batchChanSink) collectFlattened(t *testing.T, want int) []emittedEvent {
+	t.Helper()
+	out := make([]emittedEvent, 0, want)
+	deadline := time.After(3 * time.Second)
+	for len(out) < want {
+		select {
+		case ev := <-s.ch:
+			if ev.Name == EventBatchEventName {
+				if len(ev.Data) != 1 {
+					t.Fatalf("batch event carries %d args, want 1", len(ev.Data))
+				}
+				env, ok := ev.Data[0].(BatchEnvelope)
+				if !ok {
+					t.Fatalf("batch payload type = %T, want BatchEnvelope", ev.Data[0])
+				}
+				for _, inner := range env.Events {
+					out = append(out, emittedEvent{Name: inner.Name, Data: inner.Args})
+				}
+				continue
+			}
+			out = append(out, ev)
+		case <-deadline:
+			t.Fatalf("timed out: gathered %d of %d events", len(out), want)
+		}
+	}
+	return out
+}
+
+// newTestBatcher creates a batcher with the ticker effectively disabled so
+// tests observe only explicit/barrier/size flushes.
+func newTestBatcher(sink *batchChanSink, maxEvents int) *EventBatcher {
+	return NewEventBatcherWithOptions(time.Hour, maxEvents, eventBatchMaxBytes, nil, sink.emit)
+}
+
+// mapPayload returns the single map[string]any argument of a recorded event,
+// failing the test on a shape mismatch.
+func mapPayload(t *testing.T, ev emittedEvent) map[string]any {
+	t.Helper()
+	if len(ev.Data) != 1 {
+		t.Fatalf("event %q carries %d args, want 1", ev.Name, len(ev.Data))
+	}
+	m, ok := ev.Data[0].(map[string]any)
+	if !ok {
+		t.Fatalf("event %q payload type = %T, want map[string]any", ev.Name, ev.Data[0])
+	}
+	return m
+}
+
+func TestEventBatcher_CoalescesAdjacentTransientEventsLatestWins(t *testing.T) {
+	sink := newBatchChanSink()
+	b := newTestBatcher(sink, eventBatchMaxEvents)
+	defer b.Stop()
+
+	// Three adjacent assistant_chunk events on the same (root) stream collapse
+	// to the last one — the accumulated content is a full snapshot, so dropping
+	// the intermediates loses no state.
+	b.Enqueue("session:s1:assistant_chunk", []any{map[string]any{"accumulated_content": "a"}}, "assistant_chunk", false, 0)
+	b.Enqueue("session:s1:assistant_chunk", []any{map[string]any{"accumulated_content": "ab"}}, "assistant_chunk", false, 0)
+	b.Enqueue("session:s1:assistant_chunk", []any{map[string]any{"accumulated_content": "abc"}}, "assistant_chunk", false, 0)
+	b.Flush()
+
+	got := sink.collectFlattened(t, 1)
+	if d := mapPayload(t, got[0]); d["accumulated_content"] != "abc" {
+		t.Fatalf("coalesced payload = %+v, want accumulated_content=abc", d)
+	}
+}
+
+func TestEventBatcher_DistinctStreamsAreNotCoalesced(t *testing.T) {
+	sink := newBatchChanSink()
+	b := newTestBatcher(sink, eventBatchMaxEvents)
+	defer b.Stop()
+
+	// Two different plan-step streams (different coalesce keys) must both
+	// survive even though they are adjacent.
+	b.Enqueue("session:s1:context_fill", []any{map[string]any{"plan_step_id": "step_1", "fill_percent": 10.0}}, "context_fill|step_1", false, 0)
+	b.Enqueue("session:s1:context_fill", []any{map[string]any{"plan_step_id": "step_2", "fill_percent": 20.0}}, "context_fill|step_2", false, 0)
+	b.Flush()
+
+	got := sink.collectFlattened(t, 2)
+	if mapPayload(t, got[0])["plan_step_id"] != "step_1" {
+		t.Fatalf("first event = %+v, want step_1", got[0].Data[0])
+	}
+	if mapPayload(t, got[1])["plan_step_id"] != "step_2" {
+		t.Fatalf("second event = %+v, want step_2", got[1].Data[0])
+	}
+}
+
+func TestEventBatcher_ContentOrderPreservedAcrossTransientRuns(t *testing.T) {
+	sink := newBatchChanSink()
+	b := newTestBatcher(sink, eventBatchMaxEvents)
+	defer b.Stop()
+
+	b.Enqueue("session:s1:assistant_chunk", []any{map[string]any{"accumulated_content": "A"}}, "assistant_chunk", false, 0)
+	b.Enqueue("session:s1:assistant_done", []any{map[string]any{"content": "A"}}, "", false, 0)
+	b.Enqueue("session:s1:assistant_chunk", []any{map[string]any{"accumulated_content": "B"}}, "assistant_chunk", false, 0)
+	b.Enqueue("session:s1:assistant_done", []any{map[string]any{"content": "B"}}, "", false, 0)
+	b.Flush()
+
+	got := sink.collectFlattened(t, 4)
+	if mapPayload(t, got[0])["accumulated_content"] != "A" ||
+		mapPayload(t, got[2])["accumulated_content"] != "B" {
+		t.Fatalf("chunk streams reordered: %+v", got)
+	}
+	if got[1].Name != "session:s1:assistant_done" || got[3].Name != "session:s1:assistant_done" {
+		t.Fatalf("assistant_done events not interleaved in order: %+v", got)
+	}
+}
+
+func TestEventBatcher_ContentEventsNeverLost(t *testing.T) {
+	sink := newBatchChanSink()
+	b := newTestBatcher(sink, eventBatchMaxEvents)
+	defer b.Stop()
+
+	const n = 200 // below the size threshold → delivered by the explicit flush
+	for i := 0; i < n; i++ {
+		b.Enqueue("session:s1:thought", []any{map[string]any{"content": i}}, "", false, 0)
+	}
+	b.Flush()
+
+	got := sink.collectFlattened(t, n)
+	for i, ev := range got {
+		if content := mapPayload(t, ev)["content"]; content != i {
+			t.Fatalf("event %d out of order: content=%v", i, content)
+		}
+	}
+}
+
+func TestEventBatcher_SizeThresholdTriggersFlush(t *testing.T) {
+	sink := newBatchChanSink()
+	b := newTestBatcher(sink, 4) // flush every 4 enqueued events
+	defer b.Stop()
+
+	// No explicit Flush: the size threshold must flush on its own. Each
+	// threshold crossing is collected as it lands instead of enqueueing all
+	// ten up front: the flush goroutine drains whatever is queued at its
+	// first wake, so a front-loaded burst of ten can split as 7+3 — a
+	// seven-event drain satisfies the threshold yet strands three below it
+	// (the ticker is an hour away), which made the former floor-of-8
+	// assertion depend on goroutine scheduling (observed flaking on a loaded
+	// Windows runner). Collecting each crossing pins the guarantee — a flush
+	// happens per crossing, with no timing assumption — while the collect
+	// watchdogs still catch a hang.
+	for i := 0; i < 4; i++ {
+		b.Enqueue("session:s1:thought", []any{map[string]any{"content": i}}, "", false, 0)
+	}
+	got := sink.collectFlattened(t, 4) // first crossing: exactly events 0-3
+	for i := 4; i < 8; i++ {
+		b.Enqueue("session:s1:thought", []any{map[string]any{"content": i}}, "", false, 0)
+	}
+	got = append(got, sink.collectFlattened(t, 4)...) // second crossing: events 4-7
+	for i, ev := range got {
+		if content := mapPayload(t, ev)["content"]; content != i {
+			t.Fatalf("size-flushed event %d out of order: content=%v", i, content)
+		}
+	}
+
+	// The two stragglers sit below the threshold and ride the explicit
+	// flush; the full order is pinned end to end.
+	for i := 8; i < 10; i++ {
+		b.Enqueue("session:s1:thought", []any{map[string]any{"content": i}}, "", false, 0)
+	}
+	b.Flush()
+	got = append(got, sink.collectFlattened(t, 2)...)
+	if len(got) != 10 {
+		t.Fatalf("delivered %d events, want 10", len(got))
+	}
+	for i, ev := range got {
+		if content := mapPayload(t, ev)["content"]; content != i {
+			t.Fatalf("event %d out of order after final flush: content=%v", i, content)
+		}
+	}
+}
+
+func TestEventBatcher_BarrierForcesImmediateFlush(t *testing.T) {
+	sink := newBatchChanSink()
+	b := newTestBatcher(sink, eventBatchMaxEvents)
+	defer b.Stop()
+
+	// A content event alone would sit in the queue until the (disabled) ticker;
+	// the barrier settlement event must force the flush on its own.
+	b.Enqueue("session:s1:thought", []any{map[string]any{"content": 1}}, "", false, 0)
+	b.Enqueue("session:s1:task_complete", []any{map[string]any{"success": true}}, "", true, 0)
+
+	got := sink.collectFlattened(t, 2)
+	if got[0].Name != "session:s1:thought" || got[1].Name != "session:s1:task_complete" {
+		t.Fatalf("barrier flush order = %+v", got)
+	}
+}
+
+func TestEventBatcher_FlushOnEmptyIsNoOp(t *testing.T) {
+	sink := newBatchChanSink()
+	b := newTestBatcher(sink, eventBatchMaxEvents)
+	defer b.Stop()
+
+	b.Flush()
+	b.Stop() // join the only asynchronous emitter before asserting absence
+	select {
+	case ev := <-sink.ch:
+		t.Fatalf("empty flush emitted %+v", ev)
+	default:
+	}
+}
+
+// TestEventBatcher_StreamingBurstCollapsesToOneFlush demonstrates the core
+// acceptance property: a run of coalescable streaming events becomes a single
+// Wails emission carrying only the final value.
+func TestEventBatcher_StreamingBurstCollapsesToOneFlush(t *testing.T) {
+	var mu sync.Mutex
+	flushes := 0
+	b := NewEventBatcherWithOptions(time.Hour, eventBatchMaxEvents, eventBatchMaxBytes, nil,
+		func(_ string, _ ...any) {
+			mu.Lock()
+			flushes++
+			mu.Unlock()
+		})
+	defer b.Stop()
+
+	// 70+ chunk events inside one interval — the pathological case the batcher
+	// exists to collapse.
+	for i := 0; i < 70; i++ {
+		b.Enqueue("session:s1:assistant_chunk",
+			[]any{map[string]any{"content": "x", "accumulated_content": strings.Repeat("x", i+1)}},
+			"assistant_chunk", false, 0)
+	}
+	b.Flush()
+
+	mu.Lock()
+	got := flushes
+	mu.Unlock()
+	if got != 1 {
+		t.Fatalf("70 coalescable events produced %d flushes, want 1", got)
+	}
+}
+
+// TestEventBatcher_ContentBurstFitsOneFlush shows 70+ content events are
+// delivered in a single envelope (one EventsEmit) when below the size threshold.
+func TestEventBatcher_ContentBurstFitsOneFlush(t *testing.T) {
+	var mu sync.Mutex
+	flushes := 0
+	b := NewEventBatcherWithOptions(time.Hour, eventBatchMaxEvents, eventBatchMaxBytes, nil,
+		func(_ string, _ ...any) {
+			mu.Lock()
+			flushes++
+			mu.Unlock()
+		})
+	defer b.Stop()
+
+	for i := 0; i < 70; i++ {
+		b.Enqueue("session:s1:thought", []any{map[string]any{"content": i}}, "", false, 0)
+	}
+	b.Flush()
+
+	mu.Lock()
+	got := flushes
+	mu.Unlock()
+	if got != 1 {
+		t.Fatalf("70 content events produced %d flushes, want 1", got)
+	}
+}
+
+func TestEventBatcher_StopFlushesPending(t *testing.T) {
+	sink := newBatchChanSink()
+	b := newTestBatcher(sink, eventBatchMaxEvents)
+
+	b.Enqueue("session:s1:thought", []any{map[string]any{"content": 1}}, "", false, 0)
+	b.Stop() // final flush at shutdown
+
+	got := sink.collectFlattened(t, 1)
+	if got[0].Name != "session:s1:thought" {
+		t.Fatalf("stop flush delivered %+v", got)
+	}
+}
+
+func TestSessionEventCoalesceKey(t *testing.T) {
+	cases := []struct {
+		name      string
+		sessionID string
+		eventType string
+		data      any
+		want      string
+	}{
+		{"root chunk", "s1", "assistant_chunk", map[string]any{"content": "x"}, "s1|assistant_chunk"},
+		{"scoped chunk", "s1", "assistant_chunk", map[string]any{"plan_step_id": "step_9"}, "s1|assistant_chunk|step_9"},
+		{"session tokens", "s1", "session_tokens", map[string]any{"model": "m"}, "s1|session_tokens"},
+		{"agent metrics", "s1", "agent_metrics", map[string]any{"finish": "full"}, "s1|agent_metrics"},
+		{"scoped todo", "s1", "step_todo_update", map[string]any{"step_id": "step_1"}, "s1|step_todo_update|step_1"},
+		{"root todo", "s1", "step_todo_update", map[string]any{}, "s1|step_todo_update"},
+		{"scoped fill struct", "s1", "context_fill", session.ContextFillEventData{PlanStepID: "step_3"}, "s1|context_fill|step_3"},
+		{"root fill struct", "s1", "context_fill", session.ContextFillEventData{}, "s1|context_fill"},
+		{"content event", "s1", "assistant_done", map[string]any{"content": "x"}, ""},
+		{"terminal output", "s1", "terminal_output", map[string]any{"data": "x"}, ""},
+		{"other session root chunk", "s2", "assistant_chunk", map[string]any{"content": "x"}, "s2|assistant_chunk"},
+		{"other session scoped chunk", "s2", "assistant_chunk", map[string]any{"plan_step_id": "step_9"}, "s2|assistant_chunk|step_9"},
+		{"empty session id", "", "assistant_chunk", map[string]any{"content": "x"}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sessionEventCoalesceKey(tc.sessionID, tc.eventType, tc.data); got != tc.want {
+				t.Fatalf("sessionEventCoalesceKey(%q, %q) = %q, want %q", tc.sessionID, tc.eventType, got, tc.want)
+			}
+		})
+	}
+	// The key MUST differ across sessions for the same event type — the
+	// batcher queue is shared by every session, so a session-agnostic key
+	// would let two concurrent sessions merge into each other's entries.
+	if sessionEventCoalesceKey("s1", "assistant_chunk", nil) == sessionEventCoalesceKey("s2", "assistant_chunk", nil) {
+		t.Fatal("coalesce key must be session-scoped: s1 and s2 produced identical keys for assistant_chunk")
+	}
+}
+
+// TestEventBatcher_ConcurrentSessionsDoNotCrossCoalesce is the regression
+// test for the session-scoped coalescing key. The batcher queue is shared by
+// every session (one emitFunc for all sessions), and the key used to omit the
+// session ID: session B's assistant_chunk payload was merged into the queue
+// entry still carrying session A's event name, so A's chat pane rendered B's
+// text while B's own stream stopped receiving updates entirely.
+func TestEventBatcher_ConcurrentSessionsDoNotCrossCoalesce(t *testing.T) {
+	sink := newBatchChanSink()
+	b := newTestBatcher(sink, eventBatchMaxEvents)
+	defer b.Stop()
+
+	// Interleaved root-stream chunks from two sessions, exactly as the shared
+	// producer emits them while both sessions stream concurrently. Each
+	// coalesce key is derived the way buildUIEmitFunc derives it.
+	for i := 0; i < 3; i++ {
+		b.Enqueue("session:s1:assistant_chunk",
+			[]any{map[string]any{"accumulated_content": "s1-" + strconv.Itoa(i)}},
+			sessionEventCoalesceKey("s1", "assistant_chunk", map[string]any{}), false, 0)
+		b.Enqueue("session:s2:assistant_chunk",
+			[]any{map[string]any{"accumulated_content": "s2-" + strconv.Itoa(i)}},
+			sessionEventCoalesceKey("s2", "assistant_chunk", map[string]any{}), false, 0)
+	}
+	b.Flush()
+
+	// All six snapshots must survive: adjacent entries never share a
+	// coalescing key, so nothing may be merged away. (Before the fix this
+	// collapsed to a single session:s1:assistant_chunk entry carrying s2's
+	// final payload.)
+	got := sink.collectFlattened(t, 6)
+	for i, ev := range got {
+		wantSession := "s1"
+		if i%2 == 1 {
+			wantSession = "s2"
+		}
+		wantName := "session:" + wantSession + ":assistant_chunk"
+		if ev.Name != wantName {
+			t.Fatalf("event %d name = %q, want %q", i, ev.Name, wantName)
+		}
+		// Adjacent entries never share a coalescing key, so every snapshot
+		// survives with its own payload — round r is the r-th pair index.
+		wantContent := wantSession + "-" + strconv.Itoa(i/2)
+		if d := mapPayload(t, ev); d["accumulated_content"] != wantContent {
+			t.Fatalf("event %d (%s) accumulated_content = %v, want %q", i, ev.Name, d["accumulated_content"], wantContent)
+		}
+	}
+}
+
+func TestIsImmediateFlushEvent(t *testing.T) {
+	for _, typ := range []string{"task_complete", "task_cancelled", "error", "task_failed_resumable", "ask_user", "tool_confirm", "step_limit", "plan_review_ready", "goal_proposal"} {
+		if !isImmediateFlushEvent(typ) {
+			t.Errorf("isImmediateFlushEvent(%q) = false, want true", typ)
+		}
+	}
+	for _, typ := range []string{"assistant_chunk", "thought", "terminal_output", "session_tokens", ""} {
+		if isImmediateFlushEvent(typ) {
+			t.Errorf("isImmediateFlushEvent(%q) = true, want false", typ)
+		}
+	}
+}

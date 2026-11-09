@@ -7,13 +7,13 @@ Chooses the Linux webview's (WebKitGTK) hardware-acceleration policy explicitly 
 ## Key Files
 
 - `backend/webview_gpu.go` — the canonical string level: `WebviewGpuPolicyEnvVar`, the policy alphabet constants, `NormalizeWebviewGpuPolicy` (env), `NormalizeWebviewGpuSetting` (setting), `ResolveWebviewGpuPolicy` (setting+fallback → policy+source), `WebviewGpuState` / `LoadWebviewGpuState` / `SaveWebviewGpuState` / `UpdateWebviewGpuState` (webview_state.json — `UpdateWebviewGpuState` is the load → mutate → save read-modify-write every writer funnels through under the package-level `webviewGpuStateMu`), `DeriveWebviewGpuRun` (the shared launch formula), the `GpuFallbackReasonDmabufFailure` / `GpuFallbackReasonWaylandProtocolError` fallback reason constants
-- `desktop/webview_gpu_policy.go` — the Wails-bound leaf: `webviewGpuPolicy` enum, `wailsWebviewGpuPolicy` (the compensation mapping), `WebviewGpuPolicyOptions` / `webviewGpuPolicyOptions`
-- `desktop/webview_gpu_watchdog.go` — the DMABUF-failure watchdog: offset snapshot, bounded startup scan (`scanStderrTail`), detect → persist → relaunch ordering; the relaunch handover (`WaitForGpuRelaunchHandover`, `GpuRelaunchHandoverBudget`); `webview_gpu_watchdog_relaunch_linux.go` / `..._other.go` — the detached self-relaunch
-- `desktop/webview_gpu_postmortem.go` — the next-start post-mortem (`ApplyWebviewGpuCrashFallback`): persists the fallback when the previous fresh-auto run died on a fatal Wayland protocol error before DomReady
-- `desktop/webview_nvidia_explicit_sync.go` — `ApplyNvidiaExplicitSyncWorkaround`: sets `__NV_DISABLE_EXPLICIT_SYNC=1` on Linux before wails.Run unless the environment already carries the variable
-- `desktop/shutdown_watchdog.go` — `EffectiveShutdownDeadline` (the configured `shutdown.hardDeadline` mapped onto the effective teardown deadline) and the cumulative default the handover budget is sized from
+- `core/webviewgpu/policy.go` — the canonical policy: the `Policy` enum (`PolicyNever`/`PolicyAlways`/`PolicyOnDemand`) and `FromCanonical`/`webviewGpuPolicyFromCanonical` parsing; `desktop/webview_gpu_policy.go` — the Wails-bound leaf: the `WebviewGpuPolicyOptions` / `webviewGpuPolicyOptions` option assembly and `wailsWebviewGpuPolicy` (the compensation mapping)
+- `backend/webview_gpu_watchdog.go` — the DMABUF-failure watchdog: offset snapshot, bounded startup scan (`scanStderrTail`), detect → persist → relaunch ordering; the relaunch handover (`WaitForGpuRelaunchHandover`, `GpuRelaunchHandoverBudget`); `backend/webview_gpu_watchdog_relaunch_linux.go` / `..._other.go` — the detached self-relaunch; `desktop/webview_gpu_watchdog.go` — the thin same-named GUI-host wrapper (`NewWebviewGpuWatchdogHost`, quit wiring) the Wails binding surface rides
+- `backend/webview_gpu_postmortem.go` — the next-start post-mortem (`ApplyWebviewGpuCrashFallback`): persists the fallback when the previous fresh-auto run died on a fatal Wayland protocol error before DomReady
+- `core/webviewgpu/nvidia.go` — `ApplyNvidiaExplicitSyncWorkaround`: sets `__NV_DISABLE_EXPLICIT_SYNC=1` on Linux before wails.Run unless the environment already carries the variable
+- `core/shutdown` — `EffectiveShutdownDeadline` (the configured `shutdown.hardDeadline` mapped onto the effective teardown deadline) and the cumulative default (`DefaultHardDeadline`) the handover budget is sized from; the watchdog loop itself stays in `desktop/shutdown_watchdog.go`
 - `backend/frontend_api_webview.go` — the Settings RPCs `GetWebviewGpuPolicy` / `SetWebviewGpuPolicy`; `backend/frontend_api.go` derives the running-policy snapshot in Init from the same inputs as the wails.Run options (`FrontendAPIConfig.WebviewGpuStderrObserved`)
-- `desktop/singleinstance.go` — `WaitForInstanceLockRelease`, the relaunch ordering primitive the handover wait is built on
+- `core/instancelock` — `WaitForInstanceLockRelease`, the relaunch ordering primitive the handover wait is built on
 - `backend/config/paths.go` — `WebviewStatePath` (webview_state.json, deliberately NOT part of config.yaml)
 - `main.go` — the production call sites: `Linux: desktop.WebviewGpuPolicyOptions(agentDir, stderrObserved, slog.Default())`, the watchdog arm (`SetWebviewGpuWatchdog`), the stderr-observation hand-off (`SetWebviewGpuStderrObserved`), and the relaunched-child handover (`C0WRK_GPU_RELAUNCH_WAIT_LOCK` consumption — terminal on failure)
 - `desktop/startup.go`, `desktop/app.go` — DomReady scan start (`startWebviewGpuWatchdog`)
@@ -37,14 +37,17 @@ Chooses the Linux webview's (WebKitGTK) hardware-acceleration policy explicitly 
 //   never, source "auto-unobserved" — no launch may enable acceleration
 // while the failure watchdog has no stderr to watch.
 
-// desktop/webview_gpu_policy.go — the effective policy, deliberately
-// decoupled from Wails' enum ordering.
-type webviewGpuPolicy int
+// core/webviewgpu/policy.go — the effective-policy enum, deliberately
+// decoupled from Wails' enum ordering (the desktop's Wails mapping
+// compensates for the pinned Wails v2.16.0 Go-enum/C-layer mismatch);
+// desktop/webview_gpu_policy.go keeps only the wailsWebviewGpuPolicy
+// compensation mapping and the option assembly.
+type Policy int
 
 const (
-    gpuPolicyNever    webviewGpuPolicy = iota
-    gpuPolicyAlways
-    gpuPolicyOnDemand
+    PolicyNever    Policy = iota
+    PolicyAlways
+    PolicyOnDemand
 )
 
 // wailsWebviewGpuPolicy converts to the value handed to Wails.
@@ -152,8 +155,8 @@ already persisted, so the next manual start applies it.
 ## Extension Points
 
 - New policy values: extend the canonical alphabet in `backend/webview_gpu.go` (`NormalizeWebviewGpuPolicy` + `NormalizeWebviewGpuSetting` + `ResolveWebviewGpuPolicy`) together with the `webviewGpuPolicyFromCanonical` mapping, the `wailsWebviewGpuPolicy` C-mapping and the numeric pins in the desktop test; every accepted value maps to a WebKit policy integer.
-- New failure signatures: append to `gpuDmabufFailureSignatures` in `desktop/webview_gpu_watchdog.go`. A miss leaves the grey window up (recoverable via Settings); a false match only falls back to software rendering (also recoverable).
-- New pre-DomReady fatal failures (the process dies before any scan): extend `previousRunDiedOnWaylandProtocolError` in `desktop/webview_gpu_postmortem.go` — it only ever looks at the previous run's segment, and only that run's lack of a clean exit banner makes a match actionable.
+- New failure signatures: append to `gpuDmabufFailureSignatures` in `backend/webview_gpu_watchdog.go`. A miss leaves the grey window up (recoverable via Settings); a false match only falls back to software rendering (also recoverable).
+- New pre-DomReady fatal failures (the process dies before any scan): extend `previousRunDiedOnWaylandProtocolError` in `backend/webview_gpu_postmortem.go` — it only ever looks at the previous run's segment, and only that run's lack of a clean exit banner makes a match actionable.
 - New fallback reasons: add a `GpuFallbackReason*` constant in `backend/webview_gpu.go` next to `GpuFallbackReasonDmabufFailure`; the fallback record's reason field carries it to the Settings UI verbatim.
 - Platform-scoped variants (e.g. a macOS equivalent): keep `webviewGpuPolicyOptions`'s `goos` switch fail-closed — unknown platforms return nil options — and arm the watchdog behind the same platform gate.
 

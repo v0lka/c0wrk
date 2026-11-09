@@ -19,7 +19,7 @@ import (
 )
 
 // Tests of the embedded local-model startup/shutdown wiring
-// (desktop/startup_phases.go initEmbeddedLLM / stopEmbeddedLLM).
+// (backend startup_phases.go initEmbeddedLLM / desktop stopEmbeddedLLM).
 //
 // The startup invariant under test is the one the phase exists for: restoring
 // the state is the WHOLE of the startup work — no download, no hardware probe,
@@ -195,7 +195,7 @@ func TestInitEmbeddedLLM_RestoresTheManifestWithoutNetworkOrLoad(t *testing.T) {
 	port, contacted := listenOnLoopback(t)
 	want := fx.writeInstalledTree(t, port, 32768)
 
-	fx.app.initEmbeddedLLM(fx.app.logger)
+	backend.InitEmbeddedLLM(fx.app.frontendAPI(), fx.app.logger)
 
 	states := fx.stateEvents(t)
 	if len(states) != 1 {
@@ -281,7 +281,7 @@ func TestInitEmbeddedLLM_RestoresTheManifestWithoutNetworkOrLoad(t *testing.T) {
 func TestInitEmbeddedLLM_WithoutAnInstallReportsNotInstalled(t *testing.T) {
 	fx := newEmbeddedFixture(t)
 
-	fx.app.initEmbeddedLLM(fx.app.logger)
+	backend.InitEmbeddedLLM(fx.app.frontendAPI(), fx.app.logger)
 
 	states := fx.stateEvents(t)
 	if len(states) != 1 {
@@ -311,8 +311,8 @@ func TestInitEmbeddedLLM_IsIdempotent(t *testing.T) {
 	if status := fx.app.GetEmbeddedLLMStatus(); !status.Installed {
 		t.Fatalf("an early status read did not restore the install: %+v", status)
 	}
-	fx.app.initEmbeddedLLM(fx.app.logger)
-	fx.app.initEmbeddedLLM(fx.app.logger)
+	backend.InitEmbeddedLLM(fx.app.frontendAPI(), fx.app.logger)
+	backend.InitEmbeddedLLM(fx.app.frontendAPI(), fx.app.logger)
 
 	states := fx.stateEvents(t)
 	if len(states) != 2 {
@@ -358,7 +358,7 @@ func TestShutdown_StopsTheEmbeddedLLMServer(t *testing.T) {
 			fx := newEmbeddedFixture(t)
 			port, _ := listenOnLoopback(t)
 			fx.writeInstalledTree(t, port, 32768)
-			fx.app.initEmbeddedLLM(fx.app.logger)
+			backend.InitEmbeddedLLM(fx.app.frontendAPI(), fx.app.logger)
 
 			var calls int
 			var gotCtx context.Context

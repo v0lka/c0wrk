@@ -5,10 +5,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
+	"github.com/v0lka/c0wrk/backend"
+	"github.com/v0lka/c0wrk/core/savedialog"
 	"github.com/v0lka/sp4rk/safeio"
 )
 
@@ -35,8 +36,8 @@ func (a *App) SaveMessageAsMarkdown(content string) (string, error) {
 		},
 	}
 	// DefaultDirectory must exist or the runtime errors without showing any
-	// dialog; pickSaveDialogDir only returns verified-existing paths.
-	if dir := pickSaveDialogDir(a.ActiveProjectDir(), LoadDialogState(a.agentDir()).LastDirectory); dir != "" {
+	// dialog; savedialog.PickSaveDialogDir only returns verified-existing paths.
+	if dir := savedialog.PickSaveDialogDir(a.ActiveProjectDir(), backend.LoadDialogState(a.agentDir()).LastDirectory); dir != "" {
 		options.DefaultDirectory = dir
 	}
 
@@ -48,7 +49,7 @@ func (a *App) SaveMessageAsMarkdown(content string) (string, error) {
 		return "", nil
 	}
 
-	path, err = resolveWritePath(path)
+	path, err = savedialog.ResolveWritePath(path)
 	if err != nil {
 		return "", err
 	}
@@ -71,47 +72,6 @@ func (a *App) SaveMessageAsMarkdown(content string) (string, error) {
 
 	// Remember the directory so the next native dialog opens where the user
 	// last worked (the same UX memory PickDirectory maintains); best-effort.
-	rememberDialogDirectory(a.agentDir(), filepath.Dir(path), a.log())
+	backend.RememberDialogDirectory(a.agentDir(), filepath.Dir(path), a.log())
 	return path, nil
-}
-
-// pickSaveDialogDir chooses the save dialog's default directory: the active
-// project directory when set and still existing, else the last used dialog
-// directory (already validated by LoadDialogState). Both inputs may be "".
-func pickSaveDialogDir(projectDir, lastDir string) string {
-	if projectDir != "" {
-		if info, err := os.Stat(projectDir); err == nil && info.IsDir() {
-			return projectDir
-		}
-	}
-	return lastDir
-}
-
-// ensureMarkdownExtension appends .md when the chosen path does not already
-// end with it (case-insensitive) — platform save dialogs do not reliably
-// append the filter extension, so the .md guarantee lives here.
-func ensureMarkdownExtension(path string) string {
-	if strings.HasSuffix(strings.ToLower(path), ".md") {
-		return path
-	}
-	return path + ".md"
-}
-
-// resolveWritePath guards the one case the dialog's overwrite confirmation
-// cannot cover: when .md normalization CHANGES the name, the user confirmed
-// the literal name, so an existing normalized file is never overwritten
-// silently — the write fails and the user re-picks. A verbatim-confirmed name
-// (including dialogs that appended .md themselves) goes through, as does a
-// normalized name that does not exist yet.
-func resolveWritePath(chosen string) (string, error) {
-	normalized := ensureMarkdownExtension(chosen)
-	if normalized == chosen {
-		return normalized, nil
-	}
-	if _, err := os.Stat(normalized); err == nil {
-		return "", fmt.Errorf("refusing to overwrite %q: the .md-normalized name differs from the one confirmed in the save dialog — pick the .md name explicitly or choose another name", normalized)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return "", fmt.Errorf("failed to inspect save target: %w", err)
-	}
-	return normalized, nil
 }
