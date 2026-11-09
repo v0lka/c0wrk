@@ -700,6 +700,21 @@ type VectorIndexStatus struct {
 	// yet (fresh installs, pre-§3 stores).
 	Store *vectorindex.StoreLedger `json:"store,omitempty"`
 
+	// LastError is the human-readable cause of a non-ready status (an init
+	// failure, a failed pass, a disabled/absent target). A status that says
+	// "unavailable" always carries one — the UI never has to render a bare
+	// broken state. Empty for a healthy (or deliberately switched-off) index.
+	LastError string `json:"last_error,omitempty"`
+
+	// ErrorKind classifies LastError so the UI can pick the remedy without
+	// parsing the message: the manager's init taxonomy ("repairable" — a
+	// rebuild heals it; "transient" — retry later; "fatal"; "unknown"), the
+	// registry's routing states ("no_target" / "shutting_down"), and the
+	// non-failure windows that must never look broken ("loading" — the
+	// embedder init has not settled; "restarting" — the root's manager is
+	// being replaced). Omitted when there is nothing to explain.
+	ErrorKind string `json:"error_kind,omitempty"`
+
 	DeviceID int `json:"device_id,omitempty"`
 }
 

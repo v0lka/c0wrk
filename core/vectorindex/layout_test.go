@@ -1131,6 +1131,13 @@ func TestStoreMigration_NeverOverwritesTarget(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed published corpus: %v", err)
 	}
+	// A published corpus always carries its lexical leg (the build's
+	// read-write lexical index lands there before publication); the
+	// publication predicate requires it, because a corpus without one is not
+	// servable and therefore not a validated duplicate.
+	if err := os.MkdirAll(lexicalIndexPath(h.storage, pubKey), 0o750); err != nil {
+		t.Fatalf("mkdir published lexical leg: %v", err)
+	}
 
 	st := h.runSweep(context.Background())
 	if st == nil || st.Status != storeMigrationStatusDone {

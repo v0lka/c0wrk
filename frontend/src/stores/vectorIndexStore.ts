@@ -73,7 +73,13 @@ function resolveStorage(): Storage {
 // --- Store ---
 
 // Only `mode` is persisted — it's a user preference that should survive reloads.
-// Status/entries/filters are session-scoped and reset on project switch.
+// Status/entries/filters are session-scoped and reset on project switch. The
+// status object (including an unavailable cause — `last_error`/`error_kind`) is
+// therefore transient by construction: `setStatus` replaces it wholesale with
+// the backend's newest snapshot, so a healthy status (which omits both fields)
+// drops a stale reason instead of carrying it across attempts, and `reset()`
+// clears it on a project/session reset. Never persist the cause: it describes
+// one attempt, and a stale failure would outlive the failure itself.
 export const useVectorIndexStore = create<VectorIndexState & VectorIndexActions>()(
   persist(
     (set, get) => ({

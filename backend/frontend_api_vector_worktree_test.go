@@ -566,14 +566,14 @@ func TestDeleteProject_RemovesWorktreeVectorIndexes(t *testing.T) {
 	}
 }
 
-// TestDeleteWorktreeVectorIndex_ReleasesLegacyRawKeyedManager pins the
-// dual-form release: on a legacy registration row (the stored root keeps a
-// symlinked ancestor), AGENT routing keys the tree's live manager under the
-// raw stored spelling of the tree path (the session's WorkspacePath
-// re-derives from the stored row; canonicalRoot does not resolve symlinks),
-// while the deletion flows derive the release key from the canonical root —
-// the delete must shut down both keys.
-func TestDeleteWorktreeVectorIndex_ReleasesLegacyRawKeyedManager(t *testing.T) {
+// TestDeleteWorktreeVectorIndex_ReleasesAliasSpelledLegacyManager pins the
+// alias fold on a legacy registration row (the stored root keeps a symlinked
+// ancestor): AGENT routing canonicalizes the session's tree spelling
+// (canonicalRoot resolves symlinks), so the raw and resolved spellings are
+// ONE registry key and one manager — never a second manager over the same
+// storage — and the deletion flows, which derive the release key from the
+// canonical root, take that manager down.
+func TestDeleteWorktreeVectorIndex_ReleasesAliasSpelledLegacyManager(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("directory symlinks on Windows require elevated privileges; the scenario cannot be modeled here")
 	}
@@ -603,21 +603,35 @@ func TestDeleteWorktreeVectorIndex_ReleasesLegacyRawKeyedManager(t *testing.T) {
 	rawTree := filepath.Join(config.ManagedWorktreesDir(alias), treeName)
 	h.saveManagedSession(t, "sess-legacy", treeName, branch, rawTree)
 
-	// AGENT routing keys a live manager under the raw spelling.
+	// AGENT routing resolves the raw spelling onto the registry key; a legacy
+	// row spelled through a symlink must still recognize its own tree.
 	ctx := sdktools.WithWorkspacePathNoProbe(context.Background(), rawTree)
-	if _, err := h.roots.ManagerForContext(ctx); err != nil {
+	mgr, err := h.roots.ManagerForContext(ctx)
+	if err != nil {
 		t.Fatalf("manager for the raw tree path: %v", err)
 	}
-	if h.roots.LiveManager(rawTree) == nil {
+
+	// One manager, reachable through BOTH spellings.
+	resolvedTree := canonicalRoot(rawTree)
+	if resolvedTree == rawTree {
+		t.Fatalf("fixture did not produce a distinct resolved spelling (%q)", rawTree)
+	}
+	if h.roots.LiveManager(rawTree) != mgr {
 		t.Fatal("manager not live under the raw key before the delete")
+	}
+	if got := h.roots.LiveManager(resolvedTree); got != mgr {
+		t.Fatalf("the raw and resolved spellings must share one manager (resolved lookup = %v)", got)
 	}
 
 	// The deletion flow derives the release key from the canonical root
 	// (what DeleteWorktree and the session-release flow pass): the
-	// legacy-keyed manager must be released too.
+	// alias-keyed manager must be released too.
 	h.api.deleteWorktreeVectorIndex(h.proj.WorkspacePath, h.proj.ID, treeName)
 	if h.roots.LiveManager(rawTree) != nil {
-		t.Fatal("legacy raw-keyed manager still live after the delete")
+		t.Fatal("alias-keyed manager still live after the delete")
+	}
+	if h.roots.LiveManager(resolvedTree) != nil {
+		t.Fatal("resolved-keyed manager still live after the delete")
 	}
 }
 

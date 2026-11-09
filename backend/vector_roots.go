@@ -6,6 +6,7 @@
 package backend
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/v0lka/c0wrk/backend/config"
+	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/core/vectorindex"
 	sdktools "github.com/v0lka/sp4rk/tools"
 	"github.com/v0lka/sp4rk/tools/builtins"
@@ -27,7 +29,8 @@ import (
 const vectorRootsCapacity = 4
 
 // vectorRootsEvictWait bounds the wait for an in-flight eviction's Shutdown
-// drain; it sits above the manager's own two 10 s grace periods.
+// drain; it sits above the manager's own two 10 s grace periods. A registry
+// may override the bound through evictWait (tests only; 0 = this default).
 const vectorRootsEvictWait = 25 * time.Second
 
 // errVectorStillLoading is the pre-init surface: the background ONNX init has
@@ -48,6 +51,18 @@ var errVectorDisabled = errors.New("vector search is disabled (vector_index.enab
 // errVectorNoTarget is the legacy "nothing to search with" surface: no
 // workspace in context and no focus root resolved.
 var errVectorNoTarget = errors.New("vector search not available")
+
+// errVectorRestarting is the LRU-eviction window surface: the root's previous
+// manager is still draining over the very storage a fresh one would open, so
+// the root is momentarily unsearchable but comes back on its own. It is
+// deliberately NOT errVectorUnavailable — nothing failed and nothing was
+// lost, so a status built from it reports "loading/restarting", never the
+// terminal "index unavailable".
+var errVectorRestarting = errors.New("vector search is restarting (this root's index is still shutting down); retry shortly")
+
+// errVectorShuttingDown is the process-exit surface: the registry has been
+// shut down and will not build another manager.
+var errVectorShuttingDown = errors.New("vector search is shutting down")
 
 // vectorRootEntry is one live per-root manager with its LRU bookkeeping.
 type vectorRootEntry struct {
@@ -77,7 +92,11 @@ type VectorRoots struct {
 	// across the eviction window — a reopen during the drain would otherwise
 	// build a second manager over the same chromem storage.
 	closing map[string]chan struct{}
-	focus   string // canonical focus root; "" = none yet
+	// evictWait overrides vectorRootsEvictWait when positive. Tests only:
+	// the production bound sits above the manager's own grace periods and can
+	// only be observed through the "still shutting down" retry surface.
+	evictWait time.Duration
+	focus     string // canonical focus root; "" = none yet
 
 	// factory builds a fresh manager wired to the process-global embedder; nil
 	// until the desktop background ONNX init succeeds. Once ready is closed
@@ -192,13 +211,25 @@ func (vr *VectorRoots) readySettledLocked() bool {
 	}
 }
 
-// canonicalRoot normalizes a workspace root into the registry key; Clean keeps
-// trailing separators and dot segments from forking the map.
+// canonicalRoot normalizes a workspace root into the registry key. Clean keeps
+// trailing separators and dot segments from forking the map, and a
+// best-effort symlink resolution folds an aliased spelling of an EXISTING
+// root onto its physical form: a project opened through a symlinked (or
+// moved-behind-an-alias) parent must land on the same key as its real path —
+// otherwise the registry builds a second manager over the same storage and
+// the project lookup misses, surfacing as the "Index unavailable" state.
+// A root that does not exist yet keeps its lexical form (EvalSymlinks cannot
+// resolve it), which is exactly the pre-existing behavior the watcher and
+// pre-provision probes rely on.
 func canonicalRoot(root string) string {
 	if root == "" {
 		return ""
 	}
-	return filepath.Clean(root)
+	clean := filepath.Clean(root)
+	if resolved, err := filepath.EvalSymlinks(clean); err == nil {
+		return filepath.Clean(resolved)
+	}
+	return clean
 }
 
 // ---------------------------------------------------------------------------
@@ -294,6 +325,14 @@ func (vr *VectorRoots) awaitReady(ctx context.Context, block bool) error {
 	}
 }
 
+// vectorRootMatch is one registered project that claims a workspace root:
+// as the checkout itself or as the owner of the managed tree the root is.
+type vectorRootMatch struct {
+	proj     project.ProjectInfo
+	checkout bool // the record's CHECKOUT is the root (vs. a managed tree of it)
+	exact    bool // the record's stored path spells the requested root verbatim
+}
+
 // resolveRootPlan derives (projectID, storage, cache) for a workspace root:
 // a registered project's checkout or a managed worktree of one — vector
 // indexing is a CODE-project feature. ctx bounds the one store round-trip
@@ -310,33 +349,115 @@ func (f *FrontendAPI) resolveRootPlan(ctx context.Context, root string) (project
 	if err != nil {
 		return "", "", "", fmt.Errorf("listing projects for vector routing: %w", err)
 	}
-	// Pass 1: the checkout itself. Pass 2: managed worktrees — a tree can
-	// only belong to the project whose .worktrees container holds it.
+	picked, ok := f.pickRootProject(root, projects)
+	if !ok {
+		return "", "", "", fmt.Errorf("%w: %s is not a registered project checkout or managed worktree", errVectorNoTarget, root)
+	}
+	return picked.ID, config.ProjectVectorIndexPath(f.agentDir, picked.ID), config.ProjectEmbeddingCachePath(f.agentDir, picked.ID), nil
+}
+
+// pickRootProject decides which registered project owns a workspace root —
+// the routing decision behind every per-root manager.
+//
+// BOTH sides are compared in their resolved form (canonicalRoot), so a
+// project row spelling its checkout through a symlinked or aliased parent
+// still matches the physical root the app was handed, and its managed
+// worktrees stay recognizable (config.ManagedWorktreeNameFromPath receives
+// the resolved checkout and the resolved tree).
+//
+// Several records can claim one root (a legacy alias row beside the
+// canonical one, or a duplicate registration). The pick is deterministic and
+// independent of listing order: a checkout match outranks a managed-tree
+// match, an exact spelling of the requested path outranks a merely-resolved
+// one, the freshest last_active_at settles the rest, and the project id is
+// the final tie-break. Multiple claimants are logged at Warn with the full
+// candidate list — a duplicate registration is a data defect with no other
+// surface.
+func (f *FrontendAPI) pickRootProject(root string, projects []project.ProjectInfo) (project.ProjectInfo, bool) {
+	resolvedRoot := canonicalRoot(root)
+	// The exact-spelling test ignores purely lexical noise (a trailing
+	// separator) but not a different path: only an identical spelling earns
+	// the preference.
+	lexicalRoot := filepath.Clean(root)
+	var matches []vectorRootMatch
 	for _, p := range projects {
 		if p.IsNoProject {
 			continue
 		}
-		if canonicalRoot(p.WorkspacePath) == root {
-			return p.ID, config.ProjectVectorIndexPath(f.agentDir, p.ID), config.ProjectEmbeddingCachePath(f.agentDir, p.ID), nil
-		}
-	}
-	for _, p := range projects {
-		if p.IsNoProject {
+		exact := p.WorkspacePath == lexicalRoot
+		resolvedProject := canonicalRoot(p.WorkspacePath)
+		// Pass 1: the checkout itself.
+		if resolvedProject == resolvedRoot {
+			matches = append(matches, vectorRootMatch{proj: p, checkout: true, exact: exact})
 			continue
 		}
-		// ADR-104 stage 2 (owner/view): a managed worktree shares the
-		// PROJECT's store — snapshot-keyed corpora carry the bulk content
-		// (read-only), the tree's own overlay (root-fingerprint keyed)
-		// carries its divergence, and the embedding cache is the project's
-		// single content-addressed cache (no per-tree copy, no re-embed).
-		// Membership is still decided by the .worktrees container: a tree
-		// can only belong to the project whose container holds it.
-		if _, nameErr := config.ManagedWorktreeNameFromPath(p.WorkspacePath, root); nameErr != nil {
+		// Pass 2: managed worktrees. ADR-104 stage 2 (owner/view): a managed
+		// worktree shares the PROJECT's store — snapshot-keyed corpora carry
+		// the bulk content (read-only), the tree's own overlay
+		// (root-fingerprint keyed) carries its divergence, and the embedding
+		// cache is the project's single content-addressed cache (no per-tree
+		// copy, no re-embed). Membership is still decided by the .worktrees
+		// container: a tree can only belong to the project whose container
+		// holds it.
+		if _, nameErr := config.ManagedWorktreeNameFromPath(resolvedProject, resolvedRoot); nameErr != nil {
 			continue
 		}
-		return p.ID, config.ProjectVectorIndexPath(f.agentDir, p.ID), config.ProjectEmbeddingCachePath(f.agentDir, p.ID), nil
+		matches = append(matches, vectorRootMatch{proj: p, exact: exact})
 	}
-	return "", "", "", fmt.Errorf("%w: %s is not a registered project checkout or managed worktree", errVectorNoTarget, root)
+	if len(matches) == 0 {
+		return project.ProjectInfo{}, false
+	}
+	slices.SortFunc(matches, compareRootMatches)
+	picked := matches[0].proj
+	if len(matches) > 1 {
+		candidates := make([]string, 0, len(matches))
+		for _, m := range matches {
+			candidates = append(candidates, m.proj.ID+"="+m.proj.WorkspacePath)
+		}
+		f.log().Warn("vector roots: several project records claim this root; routing to the best candidate",
+			"root", resolvedRoot, "project", picked.ID, "candidates", candidates)
+	}
+	return picked, true
+}
+
+// compareRootMatches orders candidates best-first: checkout over managed
+// tree, exact path spelling over resolved-only, freshest last_active_at, then
+// project id for a total order that never depends on listing order.
+func compareRootMatches(a, b vectorRootMatch) int {
+	if a.checkout != b.checkout {
+		if a.checkout {
+			return -1
+		}
+		return 1
+	}
+	if a.exact != b.exact {
+		if a.exact {
+			return -1
+		}
+		return 1
+	}
+	at, bt := projectActivityTime(a.proj.LastActiveAt), projectActivityTime(b.proj.LastActiveAt)
+	if !at.Equal(bt) {
+		if at.After(bt) {
+			return -1
+		}
+		return 1
+	}
+	return cmp.Compare(a.proj.ID, b.proj.ID)
+}
+
+// projectActivityTime parses a project's last_active_at; an absent or
+// malformed value sinks to the zero time, leaving the id tie-break to keep
+// the pick deterministic.
+func projectActivityTime(raw string) time.Time {
+	if raw == "" {
+		return time.Time{}
+	}
+	ts, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}
+	}
+	return ts
 }
 
 // ManagerForRoot returns the live manager for root, creating and initializing
@@ -352,7 +473,7 @@ func (vr *VectorRoots) ManagerForRoot(ctx context.Context, root string) (*vector
 	vr.mu.Lock()
 	defer vr.mu.Unlock()
 	if vr.shutdown {
-		return nil, errors.New("vector search is shutting down")
+		return nil, errVectorShuttingDown
 	}
 	if vr.disabled {
 		return nil, errVectorDisabled
@@ -368,15 +489,15 @@ func (vr *VectorRoots) ManagerForRoot(ctx context.Context, root string) (*vector
 		vr.mu.Unlock()
 		select {
 		case <-ch:
-		case <-time.After(vectorRootsEvictWait):
+		case <-time.After(vr.evictWaitDuration()):
 			vr.mu.Lock()
-			return nil, fmt.Errorf("%w: %s is still shutting down; retry shortly", errVectorUnavailable, root)
+			return nil, fmt.Errorf("%w: %s", errVectorRestarting, root)
 		}
 		vr.mu.Lock()
 		// Re-validate after reacquiring the lock: the wait may have raced a
 		// concurrent creator, a fresh eviction, or ShutdownAll.
 		if vr.shutdown {
-			return nil, errors.New("vector search is shutting down")
+			return nil, errVectorShuttingDown
 		}
 		if vr.disabled {
 			return nil, errVectorDisabled
@@ -386,7 +507,7 @@ func (vr *VectorRoots) ManagerForRoot(ctx context.Context, root string) (*vector
 			return e.mgr, nil
 		}
 		if _, evicting = vr.closing[root]; evicting {
-			return nil, fmt.Errorf("%w: %s is still shutting down; retry shortly", errVectorUnavailable, root)
+			return nil, fmt.Errorf("%w: %s", errVectorRestarting, root)
 		}
 	}
 	if vr.factory == nil {
@@ -405,7 +526,7 @@ func (vr *VectorRoots) ManagerForRoot(ctx context.Context, root string) (*vector
 	if err != nil {
 		return nil, fmt.Errorf("building vector index manager for %s: %w", root, err)
 	}
-	err = mgr.SwitchProject(projectID, root, storagePath, vr.rootCallbacks(root), cachePath)
+	err = mgr.SwitchProject(projectID, root, storagePath, vr.rootCallbacks(root, mgr), cachePath)
 	if err != nil {
 		mgr.Shutdown()
 		return nil, fmt.Errorf("initializing vector index for %s: %w", root, err)
@@ -413,6 +534,15 @@ func (vr *VectorRoots) ManagerForRoot(ctx context.Context, root string) (*vector
 	vr.roots[root] = &vectorRootEntry{mgr: mgr, projectID: projectID, lastUsed: time.Now()}
 	vr.evictLocked()
 	return mgr, nil
+}
+
+// evictWaitDuration is the bounded wait ManagerForRoot applies to an in-flight
+// eviction drain: the test override when set, the production bound otherwise.
+func (vr *VectorRoots) evictWaitDuration() time.Duration {
+	if vr.evictWait > 0 {
+		return vr.evictWait
+	}
+	return vectorRootsEvictWait
 }
 
 // evictLocked enforces vectorRootsCapacity: shut down the least-recently-used
@@ -470,7 +600,12 @@ func (vr *VectorRoots) evictLocked() {
 // rootCallbacks builds the SwitchProject status callbacks for root: the
 // vector_index:status stream is a single UI channel, so only the focus root
 // emits — non-focus managers log the same facts instead.
-func (vr *VectorRoots) rootCallbacks(root string) vectorindex.ProjectCallbacks {
+//
+// mgr is the manager the callbacks belong to; it is the single source of the
+// recorded failure reason, so a status that reports "unavailable" always
+// carries the cause and its kind — the pill must never render a bare broken
+// state.
+func (vr *VectorRoots) rootCallbacks(root string, mgr *vectorindex.Manager) vectorindex.ProjectCallbacks {
 	emitIfFocused := func(st VectorIndexStatus) {
 		vr.mu.Lock()
 		focused := vr.focus == root
@@ -480,6 +615,18 @@ func (vr *VectorRoots) rootCallbacks(root string) vectorindex.ProjectCallbacks {
 		}
 		vr.f.applyEmbedderInfo(&st)
 		vr.f.emitEvent(EventVectorIndexStatus, st)
+	}
+	// reasonOf reads the manager's recorded explanation. Used for any emission
+	// that reports "unavailable": the cause is recorded before the callback
+	// runs (notifyInitFailure writes it under statusMu, wrapProgress records a
+	// defensive one), so the event and GetVectorIndexStatus tell the same
+	// story.
+	reasonOf := func() (string, string) {
+		if mgr == nil {
+			return "", ""
+		}
+		status := mgr.GetIndexStatus()
+		return status.LastError, string(status.ErrorKind)
 	}
 	return vectorindex.ProjectCallbacks{
 		OnProgress: func(phase vectorindex.IndexPhase, state vectorindex.IndexState, indexed, total int, file string) {
@@ -492,12 +639,27 @@ func (vr *VectorRoots) rootCallbacks(root string) vectorindex.ProjectCallbacks {
 				TotalFiles:   total,
 				CurrentFile:  file,
 			}
+			if state == vectorindex.IndexStateUnavailable {
+				st.LastError, st.ErrorKind = reasonOf()
+			}
 			emitIfFocused(st)
 		},
 		OnFailure: func(err error) {
 			vr.f.log().Warn("vector index init failed; search unavailable for this root",
 				"root", root, "error", err)
-			emitIfFocused(VectorIndexStatus{State: string(vectorindex.IndexStateUnavailable), Indices: []string{}})
+			lastErr, kind := reasonOf()
+			if lastErr == "" {
+				// The manager records the cause before invoking us; a bare
+				// emission here would still have to explain itself.
+				lastErr = vectorindex.InitFailureReason(err)
+				kind = string(vectorindex.ClassifyInitError(err))
+			}
+			emitIfFocused(VectorIndexStatus{
+				State:     string(vectorindex.IndexStateUnavailable),
+				Indices:   []string{},
+				LastError: lastErr,
+				ErrorKind: kind,
+			})
 		},
 	}
 }

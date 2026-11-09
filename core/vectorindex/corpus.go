@@ -29,6 +29,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -36,6 +38,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	chromem "github.com/philippgille/chromem-go"
@@ -70,7 +73,12 @@ const (
 
 // Sentinel errors of the corpus layer. Fail-closed attach semantics
 // (ADR-104): an attach that cannot open the exact snapshot's corpus NEVER
-// falls back to serving another snapshot's or root's collection.
+// falls back to serving another snapshot's or root's collection. Most
+// sentinels here name a PROVEN store defect the repair path owns (Repairable
+// true); the two WORKSPACE sentinels — ErrCorpusNoIndexableFiles and
+// ErrCorpusWalkIncomplete — describe what the TREE contains, not what the
+// store holds, so no rebuild of the store can change them
+// (specs/domains/workspace.md, shared corpus).
 var (
 	// ErrCorpusNotPublished is returned when a corpus store exists on disk
 	// without a publication manifest — the caller must build (or wait for
@@ -79,7 +87,148 @@ var (
 	// ErrCorpusEraMismatch is returned when a published corpus was produced
 	// under a different embedding era — the caller must rebuild it.
 	ErrCorpusEraMismatch = errors.New("vector corpus embedding era mismatch")
+	// ErrCorpusLegMissing refuses a publication (or an open) whose corpus
+	// lexical leg is not live; the wrapped cause names the root failure.
+	ErrCorpusLegMissing = errors.New("vector corpus lexical leg missing")
+	// ErrCorpusUnopenable marks a published corpus the read path cannot
+	// open — repair (rebuild), never retry.
+	ErrCorpusUnopenable = errors.New("vector corpus unopenable")
+	// ErrOverlayUnopenable marks a root overlay whose store cannot be
+	// opened — repair that root's private store.
+	ErrOverlayUnopenable = errors.New("vector overlay unopenable")
+	// ErrCorpusNoIndexableFiles marks a build that produced no indexable
+	// file at all — a corpus without occurrences is not a publication. It
+	// describes the WORKSPACE, not the store, so no repair can change it:
+	// QuarantineScopeOf keeps it un-quarantined and the attach reports the
+	// actionable reason instead of rebuilding identically.
+	ErrCorpusNoIndexableFiles = errors.New("vector corpus has no indexable files")
+	// ErrCorpusWalkIncomplete refuses a publication whose pass could not
+	// traverse the whole workspace (the walk's per-entry gaps): an empty
+	// index from such a pass does not prove the tree has no indexable files,
+	// and destroying the store cannot change what the tree contains. The
+	// refusal renders the first gap as TEXT — a per-entry traversal cause is
+	// diagnostic, not the error's identity, so it must not reclassify the
+	// refusal as a store defect.
+	ErrCorpusWalkIncomplete = errors.New("vector corpus build walk was incomplete")
 )
+
+// Transient reports whether err names a TRANSIENT OS-level fault — an
+// interrupted (cancelled/expired) operation, denied permissions, a full
+// disk, descriptor exhaustion, an I/O error. Such a fault proves nothing
+// about the store, so it is neither repairable (see Repairable) nor a
+// settled verdict on the index: retry later. Everything else — the sentinel
+// family above, a missing/torn record, and any unclassified failure — is
+// NOT transient.
+func Transient(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	return errors.Is(err, fs.ErrPermission) || errors.Is(err, syscall.ENOSPC) ||
+		errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE) ||
+		errors.Is(err, syscall.EIO)
+}
+
+// Repairable is the ONE classifier between a PROVEN store defect and a
+// transient fault: a defect (missing/torn record, unopenable leg) is healed
+// by rebuilding its construct; a transient OS fault (permissions, no space,
+// fd exhaustion, I/O, a cancelled operation) proves nothing about the store
+// (specs/domains/workspace.md, shared corpus + §3 chunk records).
+func Repairable(err error) bool {
+	if err == nil {
+		return false
+	}
+	if Transient(err) {
+		return false // a transient fault proves nothing about the store
+	}
+	return errors.Is(err, fs.ErrNotExist) ||
+		errors.Is(err, io.EOF) ||
+		errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, errChunkRecordTorn) ||
+		errors.Is(err, ErrCorpusNotPublished) ||
+		errors.Is(err, ErrCorpusEraMismatch) ||
+		errors.Is(err, ErrCorpusLegMissing) ||
+		errors.Is(err, ErrCorpusUnopenable) ||
+		errors.Is(err, ErrOverlayUnopenable) ||
+		errors.Is(err, ErrCorpusNoIndexableFiles)
+}
+
+// QuarantineScope names the ONE store a proven-defect repair may destroy.
+// The scope is chosen by the STAGE that failed — AttachView tags each stage
+// with its own sentinel (ErrCorpusUnopenable / ErrOverlayUnopenable), so the
+// repair never guesses from an error message which store to delete
+// (specs/domains/workspace.md, shared corpus).
+type QuarantineScope int
+
+const (
+	// QuarantineNoStore destroys nothing: no store defect was proven (a
+	// transient fault), so the publication stays intact and the attach
+	// reports unavailable with the cause.
+	QuarantineNoStore QuarantineScope = iota
+	// QuarantineCorpusStore destroys the shared snapshot corpus: its §3
+	// publication is revoked (table.json removed, which is the unpublish)
+	// and its artifacts — occurrences.tab + snapshot lexical, the v1
+	// chromem root (corpus.json included), the per-key lexical index, the
+	// file-hash sidecar and the content-less marker — are removed so the
+	// next EnsureCorpus rebuilds the snapshot from the workspace.
+	QuarantineCorpusStore
+	// QuarantineOverlayStore destroys ONE root's private overlay: its
+	// branch store, lexical index, file-hash sidecar, content-less marker
+	// and its §3 roots/<fp> state directory. Every shared corpus is left
+	// untouched — other roots may still view it, and this root's overlay
+	// carries no corpus bytes.
+	QuarantineOverlayStore
+)
+
+// String renders the scope for logs and error messages.
+func (q QuarantineScope) String() string {
+	switch q {
+	case QuarantineCorpusStore:
+		return "corpus"
+	case QuarantineOverlayStore:
+		return "overlay"
+	default:
+		return "none"
+	}
+}
+
+// errCorpusBuildBusy reports that a repair could not take the corpus build
+// lease: another writer owns the store and did not settle within the drain
+// window. Deliberately NOT part of the sentinel family above — it says
+// nothing about the store's content, so Repairable/Transient both read it as
+// an unclassified failure.
+var errCorpusBuildBusy = errors.New("corpus store is owned by an unsettled build")
+
+// QuarantineScopeOf classifies an attach failure into the store a repair may
+// destroy. A transient fault proves nothing about the store, so it yields
+// QuarantineNoStore (the publication stays, the caller reports the cause);
+// the stage sentinels decide the scope for a proven defect. An untagged
+// repairable failure can only come from the ensure/build stage that precedes
+// the tagged attach stages, so it is corpus-scoped.
+func QuarantineScopeOf(err error) QuarantineScope {
+	// A degenerate WORKSPACE is not store damage: destroying the store cannot
+	// change what the tree contains, so the repair retry would repeat the
+	// identical failing build (two attempts, two log lines, one useless
+	// quarantine per attach). One attempt per attach — the caller reports the
+	// actionable "no indexable files" / "walk was incomplete" reason instead
+	// (specs/domains/workspace.md, shared corpus).
+	if errors.Is(err, ErrCorpusNoIndexableFiles) || errors.Is(err, ErrCorpusWalkIncomplete) {
+		return QuarantineNoStore
+	}
+	if !Repairable(err) {
+		return QuarantineNoStore
+	}
+	switch {
+	case errors.Is(err, ErrOverlayUnopenable):
+		return QuarantineOverlayStore
+	case errors.Is(err, ErrCorpusUnopenable):
+		return QuarantineCorpusStore
+	default:
+		return QuarantineCorpusStore
+	}
+}
 
 // CorpusManifest is the publication record of one snapshot corpus: the era
 // it was produced under (same fields as the branch generation manifest, so
@@ -292,10 +441,31 @@ func (cs *corpusStore) publishedCompatible(key, embeddingFP string, dims int) bo
 		return false
 	}
 	if gen, m, ok := readCurrentGeneration(cs.root); ok && m.compatible(embeddingFP, dims) && snapshotTablePublished(gen, key) {
-		return true
+		// The §3 open resolves the snapshot's lexical leg from the snapshot
+		// directory, falling back to the legacy per-key path (the shape a
+		// migrated snapshot keeps). Require ONE of them: a table whose
+		// lexical leg vanished is not servable, and reporting it published
+		// would wedge the snapshot behind a failing open with no rebuild —
+		// the same dead end the v1 leg below closes.
+		return pathExists(filepath.Join(snapshotDir(gen, key), "lexical")) ||
+			pathExists(lexicalIndexPath(cs.root, key))
 	}
 	m := readCorpusManifest(branchRootPath(cs.root, key))
-	return m != nil && m.compatible(embeddingFP, dims)
+	if m == nil || !m.compatible(embeddingFP, dims) {
+		return false
+	}
+	// A publication record is only half the contract: every v1 open ALSO
+	// opens the corpus lexical leg fail-closed (corpusStore.open). A
+	// corpus.json whose lexical leg is gone is therefore not a publication
+	// — nothing can serve it — and reporting it as published wedges the
+	// snapshot forever: EnsureCorpus returns early, every attach fails with
+	// "opening corpus lexical index", and no reindex can help because the
+	// manager has no collection to build into. Treat the absent leg as
+	// UNPUBLISHED so the ordinary repair path runs (promotion refuses the
+	// occupied target, the store is reset and rebuilt cache-spared). This
+	// mirrors the §3 rule that PROVEN damage unpublishes the snapshot while
+	// a transient fault leaves the publication intact.
+	return pathExists(lexicalIndexPath(cs.root, key))
 }
 
 // beginBuild acquires key's single-flight build lease: the first caller
@@ -328,6 +498,32 @@ func (cs *corpusStore) endBuild(key string, err error) {
 		b.err = err
 		close(b.done)
 	}
+}
+
+// liveBuildLeases returns a READ-ONLY snapshot of the store's in-flight
+// build lease keys (the snapshot keys a corpus build or the chunk-record
+// migration is writing right now). beginBuild/endBuild already maintain the
+// lease map; this is its consumer-side view, a detached copy taken under
+// cs.mu so the caller never observes the map after the unlock. It is the
+// hygiene sweep's chunk-record-reap gate (store_gc.go): a build's records
+// land BEFORE its table (the chunks-before-tables ordering) and carry no
+// owner marker of their own, so the store-wide lease set is the only sound
+// granularity — chunk records are content-addressed and shared across
+// snapshots and overlays, and no narrower unit exists.
+func (cs *corpusStore) liveBuildLeases() map[string]struct{} {
+	if cs == nil {
+		return nil
+	}
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	if len(cs.builds) == 0 {
+		return nil
+	}
+	leases := make(map[string]struct{}, len(cs.builds))
+	for key := range cs.builds {
+		leases[key] = struct{}{}
+	}
+	return leases
 }
 
 // waitBuild blocks until the given in-flight build settles; ok is false
@@ -681,6 +877,15 @@ func (cs *corpusStore) promoteLegacyStore(srcRoot, branch, key, embeddingFP stri
 		// decode would pin it in RAM in every attached process.
 		return false, "content-less marker absent", nil
 	}
+	if !pathExists(lexicalIndexPath(srcRoot, branch)) {
+		// The READ contract, not a nicety: corpusStore.open opens the
+		// corpus lexical leg fail-closed, so promoting a store without one
+		// publishes a corpus.json no attach can ever serve — exactly the
+		// wedge that strands a project at "Index unavailable" with no
+		// collection to rebuild into. Refuse the promotion instead: the
+		// caller resets the target and builds a fresh corpus, cache-spared.
+		return false, "lexical index leg absent", nil
+	}
 
 	snapRoot := branchRootPath(cs.root, key)
 	if err := ensureRealDir(filepath.Dir(snapRoot), 0o750); err != nil {
@@ -712,7 +917,12 @@ func (cs *corpusStore) promoteLegacyStore(srcRoot, branch, key, embeddingFP stri
 			continue
 		}
 		if _, statErr := os.Stat(mv.from); statErr != nil {
-			continue // absent legs are skipped, not fatal
+			// Every leg above is validated present before this loop, so an
+			// absent source here is a race (something removed it between the
+			// checks and the move), never a partially written store. Skipping
+			// keeps the promotion from failing on a harmless leftover while
+			// the validated contract legs remain mandatory.
+			continue
 		}
 		if err := os.Rename(mv.from, mv.to); err != nil {
 			return false, "", fmt.Errorf("renaming %s into the corpus for %s: %w", mv.from, key, err)
@@ -851,6 +1061,86 @@ func DeleteRootOverlay(storageRoot, workspaceRoot string) error {
 	return firstErr
 }
 
+// quarantineVictims lists the artifacts ONE scope owns. chunks/ and
+// embedding_cache/ are NEVER listed: chunk records are content-addressed and
+// shared by every snapshot and overlay of the store, and the embedding cache
+// is re-derivable content that costs inference to rebuild — destroying either
+// would punish every other store for one store's defect, and neither can make
+// a single store unopenable on its own.
+func quarantineVictims(storageRoot, key string, scope QuarantineScope) []string {
+	victims := []string{
+		branchRootPath(storageRoot, key),           // the v1 chromem root (corpus.json included)
+		lexicalIndexPath(storageRoot, key),         // the legacy per-key bleve index
+		fileHashesPathFor(storageRoot, key),        // the legacy per-key sidecar
+		contentlessMarkerPathFor(storageRoot, key), // the content-less migration marker
+	}
+	genDir, _, ok := readCurrentGeneration(storageRoot)
+	if !ok {
+		return victims
+	}
+	switch scope {
+	case QuarantineCorpusStore:
+		// The snapshot's §3 state: table.json (the completion marker — the
+		// publication itself), occurrences.tab and the snapshot's lexical
+		// index.
+		victims = append(victims, snapshotDir(genDir, key))
+	case QuarantineOverlayStore:
+		// The root's §3 state: overlay.tab, overlay-lexical, sidecar.json,
+		// view.json.
+		victims = append(victims, rootStateDir(genDir, key))
+	}
+	return victims
+}
+
+// removeQuarantinedStore revokes one scope's publication and deletes its
+// artifacts. The §3 completion marker is removed FIRST (the unpublish), so a
+// partial removal still leaves an unpublished — and therefore rebuildable —
+// store instead of a published one with missing parts. Returns the first
+// removal error (the caller then reports the attach unavailable rather than
+// retrying over a store it could not clean).
+func removeQuarantinedStore(storageRoot, key string, scope QuarantineScope) error {
+	if scope == QuarantineCorpusStore {
+		if genDir, _, ok := readCurrentGeneration(storageRoot); ok {
+			unpublishSnapshotTable(genDir, key)
+		}
+	}
+	var firstErr error
+	for _, victim := range quarantineVictims(storageRoot, key, scope) {
+		if err := os.RemoveAll(victim); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+// quarantineCorpusStore destroys a snapshot corpus's artifacts UNDER THE
+// BUILD LEASE (exactly one writer to a corpus store, ADR-104 §4): a repair
+// never races a build, and a build that owns the lease is allowed to settle
+// first. Retained (zero-ref) decode handles are closed afterwards so the
+// residency LRU never serves a store that no longer exists; attached handles
+// belong to other roots and are left alone (POSIX-safe: their readers hold
+// their own state, and the next open rebuilds).
+func (cs *corpusStore) quarantineCorpusStore(ctx context.Context, key, embeddingFP string, dims int) error {
+	started, waitCh := cs.beginBuild(key)
+	if !started {
+		cs.waitBuildFor(waitCh, key, embeddingFP, dims, corpusBuildWait)
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("waiting for the corpus build lease: %w", err)
+		}
+		started, _ = cs.beginBuild(key)
+		if !started {
+			return fmt.Errorf("%w: %s", errCorpusBuildBusy, key)
+		}
+	}
+	err := removeQuarantinedStore(cs.root, key, QuarantineCorpusStore)
+	cs.endBuild(key, err)
+	cs.reg.ReclaimKeys(cs.root, map[string]struct{}{key: {}})
+	if err != nil {
+		return fmt.Errorf("removing the corpus store of %s: %w", key, err)
+	}
+	return nil
+}
+
 // CorpusRegistry is the process-level owner of the per-store corpus
 // coordinators (ADR-104 §4: "one store owner per project store per
 // process"). The backend wires exactly one registry into every Manager of
@@ -950,6 +1240,45 @@ func (cs *corpusStore) resetUnpublishedCorpusStore(storageRoot, key string) {
 			cs.logger.Warn("vector corpus: failed to reset unpublished corpus store artifact",
 				"snapshot", key, "path", victim, "error", err)
 		}
+	}
+}
+
+// QuarantineStoreView destroys the artifacts of ONE store after a PROVEN
+// attach defect (see QuarantineScope), so the next pass rebuilds it instead
+// of wedging the attach forever. A cancelled operation destroys nothing —
+// "the store is broken" is never concluded from an interrupted request. The
+// corpus scope runs under the build lease; the overlay scope touches only
+// the named root's own store.
+func (r *CorpusRegistry) QuarantineStoreView(ctx context.Context, storageRoot, snapKey, rootKey string, scope QuarantineScope, embeddingFP string, dims int) error {
+	if r == nil {
+		return errors.New("corpus registry not wired")
+	}
+	if scope == QuarantineNoStore {
+		return errors.New("quarantining a store needs a scope")
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("quarantining the %s store: %w", scope, err)
+	}
+	cs := r.storeFor(storageRoot)
+	if cs == nil {
+		return errors.New("corpus registry is closed")
+	}
+	switch scope {
+	case QuarantineCorpusStore:
+		if snapKey == "" {
+			return errors.New("quarantining a corpus store needs the snapshot key")
+		}
+		return cs.quarantineCorpusStore(ctx, snapKey, embeddingFP, dims)
+	case QuarantineOverlayStore:
+		if rootKey == "" {
+			return errors.New("quarantining a root overlay needs the root key")
+		}
+		if err := removeQuarantinedStore(storageRoot, rootKey, QuarantineOverlayStore); err != nil {
+			return fmt.Errorf("removing the overlay store of %s: %w", rootKey, err)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unknown quarantine scope %d", scope)
 	}
 }
 

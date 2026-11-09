@@ -75,7 +75,7 @@ func (s *Service) AttachView(ctx context.Context, snapKey, rootKey string) error
 	// write race to close.
 	h, err := s.corpusRegistry.Open(ctx, storage, snapKey, s.embeddingFunc, s.embeddingCacheFingerprint, s.embeddingDimension)
 	if err != nil {
-		return fmt.Errorf("attaching vector corpus %s: %w", snapKey, err)
+		return fmt.Errorf("attaching vector corpus %s: %w: %w", snapKey, ErrCorpusUnopenable, err)
 	}
 
 	// The overlay open reuses the branch-scoped machinery wholesale: the
@@ -83,7 +83,7 @@ func (s *Service) AttachView(ctx context.Context, snapKey, rootKey string) error
 	// fileHashesPathFor exactly like a branch name.
 	if err := s.SwitchBranch(ctx, rootKey); err != nil {
 		h.Release()
-		return fmt.Errorf("opening vector overlay %s: %w", rootKey, err)
+		return fmt.Errorf("opening vector overlay %s: %w: %w", rootKey, ErrOverlayUnopenable, err)
 	}
 
 	s.mu.Lock()
@@ -105,6 +105,52 @@ func (s *Service) AttachView(ctx context.Context, snapKey, rootKey string) error
 	s.current.corpus = h
 	s.current.rootKey = rootKey
 	s.mu.Unlock()
+	return nil
+}
+
+// QuarantineStoreView destroys the artifacts of the ONE store a proven
+// attach defect belongs to (see QuarantineScope), so the caller's single
+// retry rebuilds that store instead of replaying the same defect. The
+// caller must have classified the failure with QuarantineScopeOf: a
+// transient fault is never repaired this way — it proves nothing about the
+// store, so the publication stays and the attach reports unavailable with
+// its cause. This service's own bindings on the doomed store are dropped
+// first (a decode held open across the removal would keep the directory
+// alive on Windows, and a stale binding would be served afterwards).
+func (s *Service) QuarantineStoreView(ctx context.Context, snapKey, rootKey string, scope QuarantineScope) error {
+	if s.corpusRegistry == nil {
+		return errors.New("vector corpus registry not wired")
+	}
+	if scope == QuarantineNoStore {
+		return errors.New("quarantining a store needs a scope")
+	}
+	s.mu.Lock()
+	storage := s.current.projectPath
+	if storage == "" {
+		s.mu.Unlock()
+		return errors.New("no project initialized; call SetProject first")
+	}
+	switch scope {
+	case QuarantineCorpusStore:
+		if cv := s.current.corpus; cv != nil && cv.key == snapKey {
+			s.releaseCorpusLocked(s.current)
+		}
+		if s.current.currentBranch == snapKey {
+			s.closeWorkingStoreLocked()
+		}
+	case QuarantineOverlayStore:
+		if s.current.currentBranch == rootKey {
+			s.closeWorkingStoreLocked()
+		}
+	}
+	fp, dims := s.embeddingCacheFingerprint, s.embeddingDimension
+	s.mu.Unlock()
+
+	if err := s.corpusRegistry.QuarantineStoreView(ctx, storage, snapKey, rootKey, scope, fp, dims); err != nil {
+		return err
+	}
+	s.logger.Warn("vector index: quarantined a store with a proven defect; the next pass rebuilds it",
+		"scope", scope.String(), "snapshot", snapKey, "root_key", rootKey)
 	return nil
 }
 
@@ -173,24 +219,62 @@ func (s *Service) BuildCorpusStore(ctx context.Context, snapKey string) error {
 
 // PublishCorpus atomically writes the corpus publication manifest from the
 // working state's sidecar hash map. The working store must currently be the
-// corpus (BuildCorpusStore); the manifest landing is the publication gate —
-// everything before it may crash into a rebuilt store, never a half-served
-// one. Under an adopted §3 generation the snapshot's occurrence table lands
-// FIRST (chunks were written during the pass — chunks-before-tables, ADR
-// §3): the table is itself a publication the §3 open path serves directly,
-// and a crash between the two replays through the v1 gate.
-func (s *Service) PublishCorpus(snapKey string) error {
+// corpus (BuildCorpusStore) AND carry a live lexical leg: every corpus open
+// reads that leg fail-closed, so publishing without it produces the
+// "published but never opens" wedge (specs/domains/workspace.md, shared
+// corpus). The manifest landing is the publication gate — everything before
+// it may crash into a rebuilt store, never a half-served one. Under an
+// adopted §3 generation the snapshot's occurrence table lands FIRST (chunks
+// were written during the pass — chunks-before-tables, ADR-104 §3): the
+// table is itself a publication the §3 open path serves directly, and a
+// crash between the two replays through the v1 gate.
+//
+// An EMPTY index never publishes — neither the §3 snapshot table nor the v1
+// manifest lands (both are publications their open paths serve). A cleanly
+// walked tree with no indexable file is refused with ErrCorpusNoIndexableFiles
+// and the actionable "no indexable files — check exclude patterns and ignore
+// files" reason; an empty index produced by an INCOMPLETE walk (entries the
+// pass could not read) is refused with ErrCorpusWalkIncomplete and the
+// traversal gap named, because emptiness is unproven there.
+func (s *Service) PublishCorpus(ctx context.Context, snapKey string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.current.currentBranch != snapKey || s.current.collection == nil {
 		return fmt.Errorf("publishing corpus %s: the working store is not the corpus build store", snapKey)
 	}
-	if err := s.publishCorpusTableLocked(snapKey); err != nil {
+	if err := s.requireLiveLexicalLegLocked(snapKey); err != nil {
 		return err
 	}
+	// The emptiness gate runs BEFORE any publication lands: both the §3
+	// snapshot table and the v1 manifest are publications their open paths
+	// serve, so an empty build must write NEITHER — not even the table
+	// (publishing an empty §3 table would make an "empty but valid" corpus
+	// servable while the v1 manifest never lands).
 	files, ok := hashColumn(s.current.fileHashes)
 	if !ok {
-		return fmt.Errorf("publishing corpus %s: the build produced no sidecar hashes", snapKey)
+		// "Nothing to index" is an honest outcome only for a tree the walk
+		// actually reached. When the pass could not traverse part of the
+		// workspace, emptiness is UNPROVEN: the refusal names the traversal
+		// gap instead of claiming the tree is empty, so a workspace that keeps
+		// dropping a subdirectory never fails its rebuild with a misleading
+		// "no indexable files" reason (specs/domains/workspace.md, shared
+		// corpus). Neither case publishes — the manifest is the gate.
+		if s.current.walkGapBranch == snapKey && len(s.current.walkGaps) > 0 {
+			gap := s.current.walkGaps[0]
+			noun := "entries"
+			if len(s.current.walkGaps) == 1 {
+				noun = "entry"
+			}
+			// The per-entry cause is rendered as TEXT on purpose: wrapping it
+			// would make errors.Is(ENOENT) true and reclassify this
+			// workspace outcome as store damage (see ErrCorpusWalkIncomplete).
+			return fmt.Errorf("publishing corpus %s: %w: %d unreadable %s (first %s: %s)",
+				snapKey, ErrCorpusWalkIncomplete, len(s.current.walkGaps), noun, gap.Path, gap.Err.Error())
+		}
+		return fmt.Errorf("publishing corpus %s: %w: no indexable files — check exclude patterns and ignore files", snapKey, ErrCorpusNoIndexableFiles)
+	}
+	if err := s.publishCorpusTableLocked(ctx, snapKey); err != nil {
+		return err
 	}
 	return writeCorpusManifest(branchRootPath(s.current.projectPath, snapKey), &CorpusManifest{
 		Format:      storeFormatV2,
@@ -202,6 +286,30 @@ func (s *Service) PublishCorpus(snapKey string) error {
 		Collection:  collectionName(snapKey),
 		Files:       files,
 	})
+}
+
+// errLexicalLegNeverOpened is the defensive cause for a missing leg no open
+// attempt recorded — a state bound without lexical persistence ever opening.
+var errLexicalLegNeverOpened = errors.New("no lexical index was opened for the working store")
+
+// requireLiveLexicalLegLocked refuses a publication whose corpus lexical leg
+// is not open, naming the leg and the recorded root cause: a corpus without
+// it is unopenable by every reader, so publishing is the wedge, not a
+// success. A store with no lexical persistence configured (in-memory No
+// Project) has no leg to lose. Caller must hold s.mu (read).
+func (s *Service) requireLiveLexicalLegLocked(snapKey string) error {
+	if s.current.lexical != nil {
+		return nil
+	}
+	if s.current.projectPath == "" || s.current.projectID == "" {
+		return nil // no lexical persistence for this store
+	}
+	cause := s.lastLexicalOpenErr
+	if cause == nil {
+		cause = errLexicalLegNeverOpened
+	}
+	return fmt.Errorf("publishing corpus %s: %w (%s): %w",
+		snapKey, ErrCorpusLegMissing, s.workingLexicalDirLocked(snapKey), cause)
 }
 
 // CloseWorkingStore closes the current working store's residents (lexical

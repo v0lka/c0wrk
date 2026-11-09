@@ -318,7 +318,7 @@ func (s *Service) retireLegacyOverlaySidecar(ps *projectState) {
 // Returns an error when the rows are incomplete (the count rule) —
 // publishing a partial table would reference chunks that may not exist
 // for every document. Caller must hold s.mu (write).
-func (s *Service) publishCorpusTableLocked(snapKey string) error {
+func (s *Service) publishCorpusTableLocked(ctx context.Context, snapKey string) error {
 	ps := s.current
 	if ps.storeGen == "" {
 		return nil // legacy shape: the v1 publication alone is the record
@@ -338,14 +338,49 @@ func (s *Service) publishCorpusTableLocked(snapKey string) error {
 			chunkBytes += int64(4 * s.embeddingDimension)
 		}
 	}
-	return writeSnapshotTable(ps.storeGen, snapKey, rows, &snapshotTable{
+	return writeSnapshotTable(ps.storeGen, snapKey, s.embeddingDimension, rows, &snapshotTable{
 		ChunkerFP:    s.chunkerFingerprint,
 		IgnoreFP:     s.ignoreFingerprint,
 		Files:        len(rows),
 		Chunks:       chunks,
 		UniqueChunks: len(unique),
 		ChunkBytes:   chunkBytes,
-	})
+	}, s.corpusChunkRepairLocked(ctx))
+}
+
+// corpusChunkRepairLocked is the §3 publish repair source: one occurrence's
+// vector is re-derived from the build store's own committed document (the
+// pass wrote it through the ordinary pipeline), falling back to the embedding
+// cache and the service's embedder for a legacy document that carries no
+// vector. Caller must hold s.mu (read).
+func (s *Service) corpusChunkRepairLocked(ctx context.Context) chunkRecordRepair {
+	return func(path string, chunkIndex int) ([]float32, error) {
+		col := s.current.collection
+		if col == nil {
+			return nil, fmt.Errorf("chunk %d of %s: the build store has no collection", chunkIndex, path)
+		}
+		doc, err := col.GetByID(ctx, DocumentID(path, chunkIndex))
+		if err != nil {
+			return nil, fmt.Errorf("chunk %d of %s is not in the build store: %w", chunkIndex, path, err)
+		}
+		if len(doc.Embedding) > 0 {
+			return doc.Embedding, nil
+		}
+		text := normalizeEmbeddingChunk(doc.Content)
+		if c := s.current.embeddingCache; c != nil {
+			if cached, hit := c.get(text); hit {
+				return cached, nil
+			}
+		}
+		v, embErr := s.embeddingFunc(ctx, text)
+		if embErr != nil {
+			return nil, fmt.Errorf("embedding chunk %d of %s: %w", chunkIndex, path, embErr)
+		}
+		if c := s.current.embeddingCache; c != nil {
+			c.put(text, v)
+		}
+		return v, nil
+	}
 }
 
 // workingLexicalDirLocked resolves the working store's bleve directory:

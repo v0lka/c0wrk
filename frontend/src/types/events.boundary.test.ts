@@ -340,6 +340,34 @@ describe('isVectorIndexPayload (ov_device)', () => {
   })
 })
 
+describe('isVectorIndexPayload (last_error / error_kind)', () => {
+  const base = { state: 'idle', progress: 0, files_indexed: 0, total_files: 0 }
+
+  it('accepts a canonical payload with and without the cause pair', () => {
+    expect(isVectorIndexPayload(base)).toBe(true)
+    expect(isVectorIndexPayload({ ...base, state: 'unavailable' })).toBe(true)
+    expect(
+      isVectorIndexPayload({
+        ...base,
+        state: 'unavailable',
+        last_error: 'corpus store is corrupt',
+        error_kind: 'repairable',
+      }),
+    ).toBe(true)
+  })
+
+  it('rejects a present non-string last_error (the status pill calls .trim())', () => {
+    expect(isVectorIndexPayload({ ...base, last_error: { why: 'x' } })).toBe(false)
+    expect(isVectorIndexPayload({ ...base, last_error: null })).toBe(false)
+    expect(isVectorIndexPayload({ ...base, last_error: 42 })).toBe(false)
+  })
+
+  it('rejects a present non-string error_kind (surfaces compare it against literals)', () => {
+    expect(isVectorIndexPayload({ ...base, error_kind: ['fatal'] })).toBe(false)
+    expect(isVectorIndexPayload({ ...base, error_kind: null })).toBe(false)
+  })
+})
+
 describe('isWorkUnitSettledData (CS #49 optional reason)', () => {
   const base = { step_id: 's1', status: 'interrupted' }
 

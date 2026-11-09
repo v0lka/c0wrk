@@ -52,23 +52,35 @@ package vectorindex
 //     until the store fits; each eviction reclaims the snapshot's §3
 //     tables AND its referenced chunk records (minus the records other
 //     surviving tables still reference) in the same pass, so the budget
-//     is enforced on real bytes, not only on table bytes. An evicted
-//     snapshot is re-derived by the next attach's corpus pass (honest
-//     cost, paid lazily).
+//     is enforced on real bytes, not only on table bytes. Under a live
+//     build lease the snapshot eviction still runs but the count-zero
+//     chunk-record reclamation is suppressed (the ledger keeps charging
+//     those bytes and reports `chunk_reap_skipped`) — the next pass
+//     reclaims them. An evicted snapshot is re-derived by the next
+//     attach's corpus pass (honest cost, paid lazily).
 //
 // Corpus builds are NOT serialized against this sweep: a build holds its
 // snapshot's per-key build lease, not sweepMu, so the passes can run
-// mid-build. The safety rests on write ordering plus verification:
-// a build's chunk records land before its table (chunks-before-tables),
-// and writeSnapshotTable verifies every referenced record still exists
-// before publishing — a lost record only defers the table (never publishes
-// torn) and the build replays. The grace window guards exactly pass 3
-// (the orphan sweep): a build younger than the window keeps its records
-// through it, and a build that outlives the window may lose early records
-// there. Pass 4 (budget eviction) reclaims count-zero records with no
-// mtime check, so a build sharing chunk content with an evicted snapshot
-// may lose a just-written record at any age — the publish verification is
-// what defers that build's table.
+// mid-build. The safety rests on the LIVE-LEASE GATE plus write ordering
+// plus verification: a build's chunk records land before its table
+// (chunks-before-tables), and writeSnapshotTable verifies every referenced
+// record still exists before publishing — a lost record only defers the
+// table (never publishes torn) and the build replays. While ANY build
+// lease is live in the store, the sweep reaps NO chunk records at all
+// (ledger `chunk_reap_skipped`): pass 3 is skipped outright, and the
+// budget pass evicts owner-unpinned snapshot directories WITHOUT
+// reclaiming their count-zero records. The store-wide granularity is
+// forced, not chosen — a build's records carry no owner marker of their
+// own, and chunk records are content-addressed and shared across
+// snapshots and overlays, so no narrower unit exists. The grace window
+// then remains the secondary guard for the one window the gate cannot
+// close (a build that begins after the sweep sampled the lease set): a
+// build younger than the window keeps its records through pass 3. A build
+// that outlives the window AND starts after the sample may still lose an
+// early record in pass 3 (the publish verification defers its table), and
+// the budget pass reclaims count-zero records of evicted snapshots with
+// no mtime check — both are why the gate, not the window, is the primary
+// protection.
 //
 // A store without a refs/ directory never recorded an owner: passes 2 and
 // 4 keep everything (the stage-5 conservative posture — the first
@@ -112,10 +124,19 @@ type StoreLedger struct {
 	// numbers are removable wholesale by the sweep; a HIGHER number is
 	// raced/crashed advance debris, reclaimed after the advance grace
 	// window. Reported separately so a budget breach can be attributed.
-	SupersededBytes int64  `json:"superseded_bytes"`
-	TotalBytes      int64  `json:"total_bytes"`
-	EvictedLastPass int    `json:"evicted_last_pass"`
-	UpdatedAt       string `json:"updated_at"`
+	SupersededBytes int64 `json:"superseded_bytes"`
+	TotalBytes      int64 `json:"total_bytes"`
+	EvictedLastPass int   `json:"evicted_last_pass"`
+	// ChunkReapSkipped reports that a LIVE corpus build lease held this
+	// pass's count-zero chunk-record reaping out: pass 3 (orphan records)
+	// did not run, and the budget pass evicted owner-unpinned snapshots
+	// WITHOUT reclaiming their count-zero records. A build's records land
+	// before its table and carry no owner marker, so the store-wide lease
+	// set is the only sound gate (chunk records are content-addressed and
+	// shared across snapshots and overlays). Nothing is lost: the next
+	// pass, once the lease settles, does the reaping.
+	ChunkReapSkipped bool   `json:"chunk_reap_skipped"`
+	UpdatedAt        string `json:"updated_at"`
 }
 
 // treeSize walks path summing regular-file sizes (and counting them).
@@ -449,15 +470,26 @@ type evictionCandidate struct {
 // evictSnapshotsUnderBudget removes LRU snapshot directories (oldest
 // table first) that no owner pins until the ledger's total fits the
 // budget byte cap. Pinned keys (keep) are never evicted; the eviction
-// removes every leg of the snapshot (§3 tables, v1 store, lexical) AND
-// the snapshot's EXCLUSIVE chunk records — those no surviving table
-// references — in the SAME pass, so the working ledger's stop condition
-// sees real bytes (chunk records usually dominate a store's size; leaving
-// them to the next sweep's orphan pass would evict every unpinned
-// snapshot before the budget holds). The next attach of any root
-// re-derives the corpus by an honest build pass (ADR-104 §5). Returns the
-// number of evicted snapshots.
-func evictSnapshotsUnderBudget(logger *slog.Logger, storageRoot, genDir string, keep map[string]struct{}, budgetBytes int64, ledger *StoreLedger) int {
+// removes every leg of the snapshot (§3 tables, v1 store, lexical) AND —
+// when reapChunks is set — the snapshot's EXCLUSIVE chunk records (those
+// no surviving table references) in the SAME pass, so the working
+// ledger's stop condition sees real bytes (chunk records usually dominate
+// a store's size; leaving them to the next sweep's orphan pass would evict
+// every unpinned snapshot before the budget holds).
+//
+// reapChunks is false while a corpus build lease is live in this store
+// (runHygieneLocked): the snapshot directories are still evicted — they
+// are owner-unpinned derived state — but NO count-zero chunk record is
+// removed and no chunk byte is credited to the ledger. A build's records
+// land before its table and carry no owner marker, and chunk records are
+// content-addressed and shared across snapshots and overlays, so
+// "count-zero" here can name a record a live build just wrote. The bytes
+// therefore stay charged (the ledger remains walk-honest: the record is
+// still on disk) and the next pass, once the lease settles, reclaims
+// them. The next attach of any root re-derives an evicted corpus by an
+// honest build pass (ADR-104 §5). Returns the number of evicted
+// snapshots.
+func evictSnapshotsUnderBudget(logger *slog.Logger, storageRoot, genDir string, keep map[string]struct{}, budgetBytes int64, ledger *StoreLedger, reapChunks bool) int {
 	if budgetBytes <= 0 || ledger == nil || ledger.TotalBytes <= budgetBytes {
 		return 0
 	}
@@ -515,6 +547,16 @@ func evictSnapshotsUnderBudget(logger *slog.Logger, storageRoot, genDir string, 
 					continue
 				}
 				delete(chunkRefs, c)
+				if !reapChunks {
+					// A live corpus build owns the chunk-record reap: the
+					// count-zero record STAYS (and stays charged to the
+					// ledger, so the stop condition keeps seeing real
+					// bytes). It is deliberately NOT deleted and NOT
+					// credited — a build sharing this content would lose a
+					// record it just wrote, deferring its publication on
+					// every pass that runs mid-build.
+					continue
+				}
 				path := chunkRecordPath(genDir, c)
 				info, statErr := os.Stat(path)
 				if statErr != nil || !info.Mode().IsRegular() {
@@ -622,7 +664,9 @@ func hygieneStoreFS(logger *slog.Logger, storageRoot string, keepBranches []stri
 		// without refs/ never recorded an owner, and evicting from an
 		// empty keep set would treat EVERY snapshot as unpinned (the
 		// stage-5 conservative posture governs the disk budget too).
-		ledger.EvictedLastPass = evictSnapshotsUnderBudget(logger, storageRoot, genDir, keep, budgetBytes, ledger)
+		// Manager-free form: no registry means no build leases, so the
+		// chunk-record reap is never gated here.
+		ledger.EvictedLastPass = evictSnapshotsUnderBudget(logger, storageRoot, genDir, keep, budgetBytes, ledger, true)
 	}
 	if ledger != nil {
 		ledger.ChunkOrphans = orphans
@@ -634,7 +678,9 @@ func hygieneStoreFS(logger *slog.Logger, storageRoot string, keepBranches []stri
 // (single-flighted with the store migration). Adds the registry's handle
 // and build-lease knowledge — the corpora an open or retained handle
 // serves are never swept, their generations never removed, their v1 legs
-// never reaped — and caches the fresh ledger for status reads.
+// never reaped — gates the count-zero chunk-record reap on there being no
+// live build lease (a build's records carry no owner marker of their own),
+// and caches the fresh ledger for status reads.
 func (cs *corpusStore) runHygieneLocked(logger *slog.Logger, keepBranches []string) *StoreLedger {
 	if cs == nil {
 		return nil
@@ -672,15 +718,46 @@ func (cs *corpusStore) runHygieneLocked(logger *slog.Logger, keepBranches []stri
 			removeSnapshotArtifacts(logger, cs.root, genDir, key)
 		}
 	}
-	orphans := sweepOrphanChunkRecords(logger, genDir)
+	orphans := 0
+	// Chunk-record reap gate (ADR-104 §6): while ANY corpus build lease is
+	// live in this store, NO count-zero chunk record is collected. A build
+	// writes its records BEFORE its table (chunks-before-tables) and they
+	// carry no owner marker of their own — chunk records are
+	// content-addressed and shared across snapshots and overlays, so the
+	// store-wide lease set is the only sound granularity. Without the gate
+	// a live build loses records to pass 3 once the grace window elapses,
+	// and writeSnapshotTable's verify-before-publish then defers its
+	// publication on every pass that runs mid-build.
+	liveLeases := cs.liveBuildLeases()
+	reapChunks := len(liveLeases) == 0
+	if reapChunks {
+		orphans = sweepOrphanChunkRecords(logger, genDir)
+	} else {
+		logger.Debug("vector store: chunk-record sweep skipped (a corpus build lease is live)",
+			"generation", genDir, "live_build_leases", len(liveLeases))
+	}
 	// Per-snapshot v1-leg reaping (each snapshot's rollback window closes
 	// at its own table.json; the store-wide marker is telemetry only).
 	removeMigratedV1Legs(logger, cs.root, genDir, heldKeys)
 	ledger := computeStoreLedger(cs.root)
+	if ledger != nil {
+		ledger.ChunkReapSkipped = !reapChunks
+	}
 	if ledger != nil && keep != nil {
 		// Budget eviction only under a resolved keep set (the conservative
-		// refs-less posture; see hygieneStoreFS).
-		ledger.EvictedLastPass = evictSnapshotsUnderBudget(logger, cs.root, genDir, keep, cs.diskBudgetBytes.Load(), ledger)
+		// refs-less posture; see hygieneStoreFS). Re-sample the lease set:
+		// a build may have started while passes 1-3 ran, and the budget
+		// pass reclaims count-zero chunk records, so it obeys the SAME
+		// gate — it then still evicts owner-unpinned snapshot directories
+		// but leaves every chunk record (and its bytes, so the ledger stays
+		// walk-honest) to the next pass.
+		if live := cs.liveBuildLeases(); len(live) > 0 {
+			reapChunks = false
+			ledger.ChunkReapSkipped = true
+			logger.Debug("vector store: budget-pass chunk reap skipped (a corpus build lease is live)",
+				"generation", genDir, "live_build_leases", len(live))
+		}
+		ledger.EvictedLastPass = evictSnapshotsUnderBudget(logger, cs.root, genDir, keep, cs.diskBudgetBytes.Load(), ledger, reapChunks)
 	}
 	if ledger != nil {
 		ledger.ChunkOrphans = orphans

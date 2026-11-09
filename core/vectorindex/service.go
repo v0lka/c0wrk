@@ -183,6 +183,15 @@ type projectState struct {
 	// the historical absolute-path coordinates.
 	workspaceRoot string
 
+	// walkGapBranch / walkGaps are the traversal gaps of the last full pass
+	// that built THIS store (walkProjectFiles' per-entry skips), keyed by the
+	// branch the pass was building. PublishCorpus consults them to tell an
+	// empty TREE from an INCOMPLETE traversal: publishing nothing is only
+	// honest when the walk reached everything (see Service.noteWalkGaps).
+	// Replaced by every recorded pass and dropped with the state.
+	walkGapBranch string
+	walkGaps      []walkGap
+
 	// corpus is the attached read-only shared corpus handle (ADR-104 stage
 	// 2 owner/view); nil in legacy mode or while detached. Refcounted in the
 	// process-wide corpus registry — one decode per corpus per process.
@@ -404,6 +413,13 @@ type Service struct {
 	// legacy single-store model; see ServiceConfig.Corpus).
 	corpusRegistry *CorpusRegistry
 
+	// lastLexicalOpenErr is the failure of the working store's most recent
+	// lexical open (SwitchBranch) — nil while the leg is live or untouched.
+	// PublishCorpus names it as the ROOT CAUSE of a missing leg, so a build
+	// that cannot publish reports why, not only that the leg is absent.
+	// Guarded by mu.
+	lastLexicalOpenErr error
+
 	// corpusAdoptions collects corpus-current classifications recorded under
 	// the read lock by ValidateCollection; drained per pass by
 	// TakeCorpusAdoptions. corpusAdoptionsMu is a LEAF mutex — nothing else
@@ -512,6 +528,25 @@ func (s *Service) WorkspaceRoot() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.current.workspaceRoot
+}
+
+// noteWalkGaps records the entries the full pass just run against branch
+// could not traverse (walkProjectFiles' gaps), so the corpus publication gate
+// can distinguish an empty TREE from an INCOMPLETE traversal (PublishCorpus).
+// branch is the store the walk was building; when the working store has moved
+// on (a displaced builder — EnsureCorpus is single-flight per snapshot KEY,
+// not globally) the report is dropped rather than attached to another store.
+// Every recorded pass REPLACES the previous report, so a clean walk clears a
+// stale one. The report never authorises anything: it can only add a reason
+// to a refusal.
+func (s *Service) noteWalkGaps(branch string, gaps []walkGap) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.current == nil || s.current.currentBranch != branch {
+		return
+	}
+	s.current.walkGapBranch = branch
+	s.current.walkGaps = append([]walkGap(nil), gaps...)
 }
 
 // SetProject switches to a project directory: it prepares the per-project
@@ -882,6 +917,7 @@ func (s *Service) closeStateLocked(ps *projectState) {
 // must hold s.mu.
 // See specs/decisions/064-branch-scoped-lazy-vector-index-open.md.
 func (s *Service) releaseBranchResidentsLocked() {
+	s.lastLexicalOpenErr = nil // no working store left to claim a live leg
 	if s.current.lexical != nil {
 		if err := s.current.lexical.Close(); err != nil {
 			s.logger.Warn("failed to close previous lexical index", "error", err)

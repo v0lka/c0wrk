@@ -261,6 +261,13 @@ type Manager struct {
 	totalFiles   int
 	currentFile  string
 	branch       string
+	// lastError / lastErrorKind explain WHY the status is what it is: a
+	// terminal init failure records its cause and taxonomy here, and a
+	// subsequent successful attach or ready report clears them. A status
+	// surface must never render a bare "unavailable" — this pair is the
+	// reason. Guarded by statusMu.
+	lastError     string
+	lastErrorKind IndexErrorKind
 
 	// workspacePath is the active project's workspace, stored during
 	// SwitchProject so NotifyFileChange can trigger incremental indexing
@@ -764,6 +771,11 @@ func (m *Manager) initProject(ctx context.Context, projectID, workspacePath, vec
 	// collection is live. publishInitState re-checks ctx under m.mu, closing
 	// the check-to-publish TOCTOU window; indexCancel stays owned by the
 	// Manager (the next SwitchProject / Shutdown cancels through it).
+	//
+	// The store is live again, so any reason recorded by an earlier terminal
+	// failure is superseded — the status is progress now, never
+	// "unavailable" with a stale cause.
+	m.clearIndexError()
 	indexCtx, _, published := m.publishInitState(ctx, projectID, workspacePath, vectorIndexFullPath, indexer)
 	if !published {
 		return
@@ -1060,6 +1072,19 @@ func (m *Manager) wrapProgress(userFn ProgressCallback) ProgressCallback {
 		m.filesIndexed = filesIndexed
 		m.totalFiles = totalFiles
 		m.currentFile = currentFile
+		switch {
+		case state == IndexStateReady:
+			// The index answers again: the failure it recovered from is no
+			// longer the explanation for anything.
+			m.clearIndexErrorLocked()
+		case state == IndexStateUnavailable && m.lastError == "":
+			// A pass-level report carries a state and no error, so without
+			// this the status would say "unavailable" and nothing else. The
+			// real cause is in the session log; the surface names it honestly
+			// instead of inventing a taxonomy.
+			m.lastError = unavailableWithoutCauseReason
+			m.lastErrorKind = IndexErrorKindUnknown
+		}
 		m.statusMu.Unlock()
 
 		if userFn != nil {
@@ -1077,10 +1102,35 @@ func (m *Manager) notifyInitFailure(cbs ProjectCallbacks, err error) {
 	m.statusMu.Lock()
 	m.currentState = IndexStateUnavailable
 	m.currentPhase = ""
+	// Record WHY: a terminal "unavailable" without a cause is exactly the
+	// "the index just broke" surface this pairing removes. The kind rides the
+	// store taxonomy, so a repairable corpus defect is distinguishable from a
+	// transient OS fault without parsing the message.
+	m.lastError = InitFailureReason(err)
+	m.lastErrorKind = ClassifyInitError(err)
+	if m.lastErrorKind == "" {
+		m.lastErrorKind = IndexErrorKindUnknown
+	}
 	m.statusMu.Unlock()
 	if cbs.OnFailure != nil {
 		cbs.OnFailure(err)
 	}
+}
+
+// clearIndexErrorLocked drops a recorded failure reason. Caller holds
+// statusMu. Called wherever the index proves healthy again — a fresh init
+// attempt, a successful attach, a ready report — so a stale reason never
+// outlives the failure it described.
+func (m *Manager) clearIndexErrorLocked() {
+	m.lastError = ""
+	m.lastErrorKind = ""
+}
+
+// clearIndexError drops the recorded failure reason under statusMu.
+func (m *Manager) clearIndexError() {
+	m.statusMu.Lock()
+	m.clearIndexErrorLocked()
+	m.statusMu.Unlock()
 }
 
 // setStatus updates the Manager's internal index status from a map.
@@ -1091,6 +1141,12 @@ func (m *Manager) setStatus(vals map[string]any) {
 
 	if s, ok := vals["state"].(IndexState); ok {
 		m.currentState = s
+		// A fresh attempt (loading) or a ready report supersedes any reason
+		// recorded by an earlier terminal failure: the status now describes
+		// the new attempt, not the failure it replaced.
+		if s == IndexStateLoading || s == IndexStateReady {
+			m.clearIndexErrorLocked()
+		}
 	}
 	if p, ok := vals["phase"].(IndexPhase); ok {
 		m.currentPhase = p
@@ -1117,7 +1173,71 @@ type IndexStatus struct {
 	TotalFiles   int
 	CurrentFile  string
 	Branch       string
+	// LastError is the human-readable cause of a non-ready status — the
+	// terminal init failure that made the index unavailable, or the reason
+	// a pass reported unavailable. Empty while the index is healthy.
+	LastError string
+	// ErrorKind classifies LastError (see IndexErrorKind) so a caller can
+	// decide whether a repair is meaningful without parsing the message.
+	ErrorKind IndexErrorKind
 }
+
+// IndexErrorKind classifies WHY an index status is not ready, using the same
+// taxonomy the store's repair path uses (Repairable / Transient in corpus.go):
+// a proven store defect is REPAIRABLE, an OS-level fault is TRANSIENT, and
+// anything else is FATAL — so a status surface can tell the user whether the
+// repair action is the remedy, a retry is, or neither.
+type IndexErrorKind string
+
+const (
+	// IndexErrorKindRepairable is a PROVEN store defect (Repairable true):
+	// rebuilding the corpus (or its leg) heals it, so the repair action is
+	// meaningful.
+	IndexErrorKindRepairable IndexErrorKind = "repairable"
+	// IndexErrorKindTransient is an OS-level transient fault (Transient
+	// true): nothing is proven about the store — retry later.
+	IndexErrorKindTransient IndexErrorKind = "transient"
+	// IndexErrorKindFatal is any other settled failure (git branch detection,
+	// an internal wiring failure, a dead embedder): neither a retry nor a
+	// rebuild is promised.
+	IndexErrorKindFatal IndexErrorKind = "fatal"
+	// IndexErrorKindUnknown is the defensive classification for a status that
+	// turned unavailable WITHOUT an error of its own (a pass-level report
+	// carries only a state, never the failure): the reason says so instead of
+	// leaving the surface bare.
+	IndexErrorKindUnknown IndexErrorKind = "unknown"
+)
+
+// ClassifyInitError maps an init/pass failure onto IndexErrorKind through the
+// store's own taxonomy: Repairable first (a proven defect outranks a fault
+// that merely interrupted it), then Transient, else Fatal. A nil error
+// carries no kind.
+func ClassifyInitError(err error) IndexErrorKind {
+	if err == nil {
+		return ""
+	}
+	if Repairable(err) {
+		return IndexErrorKindRepairable
+	}
+	if Transient(err) {
+		return IndexErrorKindTransient
+	}
+	return IndexErrorKindFatal
+}
+
+// InitFailureReason renders the non-empty human-readable cause of a terminal
+// init failure. A nil error (a bug in the caller) still yields a reason: the
+// "unavailable always says why" invariant is structural, not a convention.
+func InitFailureReason(err error) string {
+	if err == nil {
+		return "vector index initialization failed without a reported cause; see the session log"
+	}
+	return err.Error()
+}
+
+// unavailableWithoutCauseReason names a status transition into "unavailable"
+// that carried no error at all (indexer pass reports carry a state only).
+const unavailableWithoutCauseReason = "the indexing pass reported the index unavailable without a cause; see the session log"
 
 // GetIndexStatus returns the current indexing status for the frontend.
 func (m *Manager) GetIndexStatus() IndexStatus {
@@ -1130,6 +1250,8 @@ func (m *Manager) GetIndexStatus() IndexStatus {
 		TotalFiles:   m.totalFiles,
 		CurrentFile:  m.currentFile,
 		Branch:       m.branch,
+		LastError:    m.lastError,
+		ErrorKind:    m.lastErrorKind,
 	}
 }
 
@@ -1264,12 +1386,43 @@ func (m *Manager) Reindex(ctx context.Context) error {
 		defer m.indexingWG.Done()
 		col := m.service.GetCollection()
 		if col == nil {
-			// A failed branch open left nothing to build into — a successful
-			// no-op instead of re-publishing the announced "unavailable"
-			// state; the next successful SwitchBranch rebuilds
-			// (specs/domains/workspace.md, failed-open handling).
-			m.logger.Info("reindex skipped: no collection (index unavailable)")
-			return
+			// Nothing to reconcile into: a failed open/attach left the
+			// service without a collection. Treating that as a successful
+			// no-op is the dead end the UI cannot escape (the index reads
+			// "unavailable" and the reindex action used to be disabled), so
+			// drive a REPAIR instead — re-attach the snapshot view. The
+			// corpus publication predicate treats a corpus that cannot be
+			// opened (an absent lexical leg, a foreign era, a torn §3
+			// publication) as unpublished, so EnsureCorpus resets exactly
+			// that store's legs and rebuilds the corpus from source,
+			// cache-spared; a healthy corpus re-attaches by a bounded
+			// reconciliation. Legacy (corpus-disabled) mode has no shared
+			// store to rebuild — its branch collection IS the open, retried
+			// by the next SwitchBranch — so only that mode stays a no-op.
+			if !m.service.CorpusEnabled() {
+				m.logger.Info("reindex skipped: no collection (legacy mode has no corpus to rebuild)")
+				return
+			}
+			branch, brErr := CurrentBranch(indexCtx, workspacePath)
+			if brErr != nil {
+				m.logger.Warn("vector index repair skipped: branch detection failed", "error", brErr)
+				return
+			}
+			m.logger.Info("vector index repair: no live collection, re-attaching the snapshot view",
+				"root", workspacePath, "branch", branch)
+			if attachErr := idx.AttachSnapshot(indexCtx, workspacePath, branch); attachErr != nil {
+				if context.Cause(indexCtx) != nil {
+					m.logger.Info("vector index repair cancelled")
+				} else {
+					m.logger.Warn("vector index repair failed", "error", attachErr)
+				}
+				return
+			}
+			col = m.service.GetCollection()
+			if col == nil {
+				m.logger.Warn("vector index repair finished without a collection")
+				return
+			}
 		}
 		var idxErr error
 		// View-model services always reconcile incrementally (the corpus

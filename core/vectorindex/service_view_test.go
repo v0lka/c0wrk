@@ -80,7 +80,7 @@ func TestCloseWorkingStoreIfCurrent_DisplacedBuilderLeavesDisplacerIntact(t *tes
 
 	// A's publish fails exactly as in the incident — the slot is no longer
 	// A's corpus build store.
-	pubErr := svc.PublishCorpus("snap_aaa")
+	pubErr := svc.PublishCorpus(context.Background(), "snap_aaa")
 	if pubErr == nil || !strings.Contains(pubErr.Error(), "not the corpus build store") {
 		t.Fatalf("PublishCorpus(displaced) error = %v; want the not-the-build-store failure", pubErr)
 	}

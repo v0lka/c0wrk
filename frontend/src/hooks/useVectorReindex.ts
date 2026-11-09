@@ -12,9 +12,13 @@ import { useVectorIndexStore } from '@/stores/vectorIndexStore'
  * pre-work (`preparing` view-model attach window / `migration-rebuild`
  * legacy store promotion) — or while a request is pending (see the
  * optimistic latch below). A terminal `unavailable` index state (a failed
- * open or init failure) disables the action WITHOUT the spinner — nothing
- * is running, and a reindex cannot repair a missing collection; switching
- * branch or reopening the project retries the open. In No Project (CHAT
+ * open or attach failure) runs the action WITHOUT a spinning pass — nothing
+ * is running, and a plain reconcile cannot repair it. The action therefore
+ * stays ENABLED in this state — it is the user's repair path: with no live
+ * collection the backend re-attaches the snapshot view, which rejects an
+ * unopenable corpus as unpublished and rebuilds it from source
+ * (cache-spared), so the busy tooltip reads "Repairing index…" rather than an
+ * incremental reindex. In No Project (CHAT
  * mode), where the vector index is disabled, the action is hidden entirely
  * instead of being rendered disabled.
  *
@@ -43,11 +47,13 @@ export function useVectorReindex() {
   // manager could only fail. They count as busy so the action stays disabled
   // and spinning (events.ts VALID_VECTOR_STATES admits them onto the store).
   const isAttaching = indexState === 'preparing' || indexState === 'migration-rebuild'
-  // `unavailable` is terminal, not busy: a failed DB open or init failure left
-  // no collection, and a reindex cannot repair that (there is nothing to
-  // validate or add to). The action is disabled WITHOUT the busy spinner —
-  // nothing is running — and the next branch change or project switch retries
-  // the open.
+  // `unavailable` is terminal, not busy: a failed open/attach left no
+  // collection, so there is nothing to validate or add to and the action
+  // renders WITHOUT the busy spinner. It stays ENABLED: the backend escalates
+  // a no-op reindex into a repair (re-attach the snapshot view, which rebuilds
+  // an unopenable corpus from source), so this is the user's escape hatch — no
+  // branch switch or project reopen (which cannot fix a durable corpus defect
+  // and does not even re-run the attach for a cached manager) is required.
   const isIndexUnavailable = indexState === 'unavailable'
   // `disabled` (ADR-103) is terminal the same way: the master switch is off,
   // the registry is parked (every reindex RPC fails fast), and only Settings
@@ -65,38 +71,46 @@ export function useVectorReindex() {
   const [reindexRequested, setReindexRequested] = useState(false)
   const reindexBusy = isBusy || reindexRequested
   // The disabled set the button renders from: busy (a pass or the optimistic
-  // latch) OR a terminal state (unavailable / disabled).
-  const reindexDisabled = reindexBusy || isIndexUnavailable || isIndexDisabled
+  // latch) OR the master-switch-off terminal state. `unavailable` is NOT in it
+  // — that is the repair path (see isIndexUnavailable above).
+  const reindexDisabled = reindexBusy || isIndexDisabled
 
   // The action's tooltip names the REAL reason it is disabled, so pre-work is
   // never labelled a reindex pass — the same honesty rule the status-bar pill
   // and the search panel follow (ADR-064). The labels match IndexingStatus
   // exactly ('Preparing index…' / 'Migrating store…'). The optimistic latch (a
   // request in flight, no busy status observed yet) reads as a reindex: that
-  // is what the user just asked for. The terminal unavailable state gets its
-  // own actionable title (a reindex cannot repair it; switching branch or
-  // reopening the project retries the open).
+  // is what the user just asked for. `unavailable` is enabled, so it carries an
+  // ACTION title instead (rebuild, not "reindex"); only `disabled` keeps a
+  // reason-specific disabled title.
   const preWorkTitle = isOpening
     ? 'Opening the index…'
     : indexState === 'preparing'
       ? 'Preparing index…'
       : 'Migrating store…'
   const reindexBusyTitle =
-    (isOpening || isAttaching) && !reindexRequested ? preWorkTitle : 'Reindexing...'
+    isIndexUnavailable
+      ? 'Repairing index…'
+      : (isOpening || isAttaching) && !reindexRequested ? preWorkTitle : 'Reindexing...'
   const reindexDisabledTitle =
     isIndexDisabled && !reindexBusy
       ? 'Indexing is off — enable it in Settings → Search'
-      : isIndexUnavailable && !reindexBusy
-        ? 'Index unavailable — switch branch or reopen the project to retry'
-        : reindexBusyTitle
+      : reindexBusyTitle
+  // The action label for an ENABLED button: an unavailable index is rebuilt
+  // (the broken store is discarded and the corpus recreated from source), which
+  // is a different promise from the ordinary force-reindex.
+  const reindexActionTitle = isIndexUnavailable
+    ? 'Rebuild index — recreate the broken index from source'
+    : 'Force full project reindex'
 
   useEffect(() => {
     // The backend emits a busy status (loading/indexing/reindexing, and since
     // ADR-104 stage 2 preparing/migration-rebuild) as the first event of a
     // project open or of a pass; once the store reflects it the latch is
     // redundant. A switch to an unavailable project (No Project / no active
-    // project) — or to a terminal unavailable/disabled index state — also
-    // invalidates a pending request.
+    // project) — or to a terminal unavailable/disabled index state (a repair
+    // that did not produce a collection settles the request; the master switch
+    // off rejects it) — also invalidates a pending request.
     if (isBusy || isIndexUnavailable || isIndexDisabled || reindexUnavailable) setReindexRequested(false)
   }, [isBusy, isIndexUnavailable, isIndexDisabled, reindexUnavailable])
 
@@ -115,22 +129,24 @@ export function useVectorReindex() {
   const handleReindex = useCallback(() => {
     // Fire-and-forget: the pass runs in the background and reports progress via
     // vector_index:status. Guard against re-entry before the store has observed
-    // the busy status (see reindexRequested above) and against the terminal
-    // unavailable/disabled states (a reindex cannot repair either).
-    if (isBusy || isIndexUnavailable || isIndexDisabled || reindexRequested) return
+    // the busy status (see reindexRequested above) and against the
+    // master-switch-off state. `unavailable` is deliberately NOT guarded: with
+    // no live collection the backend escalates the request into a repair.
+    if (isBusy || isIndexDisabled || reindexRequested) return
     setReindexRequested(true)
     reindexVectorIndex().catch(() => {
       // The request never reached a running pass (No Project / no wired
       // manager / transient failure) — release the latch so a retry is possible.
       setReindexRequested(false)
     })
-  }, [isBusy, isIndexUnavailable, isIndexDisabled, reindexRequested])
+  }, [isBusy, isIndexDisabled, reindexRequested])
 
   return {
     reindexBusy,
     reindexBusyTitle,
     reindexDisabled,
     reindexDisabledTitle,
+    reindexActionTitle,
     reindexUnavailable,
     handleReindex,
   }

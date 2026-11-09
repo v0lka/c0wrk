@@ -338,34 +338,113 @@ func (f *FrontendAPI) SearchVectorStore(req SearchRequest) ([]VectorStoreEntry, 
 	return out, nil
 }
 
+// Status literals for GetVectorIndexStatus's non-manager branches. The
+// manager reports its own states (ready/indexing/reindexing/loading/...);
+// these name the routing outcomes the registry contributes.
+const (
+	// vectorStateUnavailable is the terminal "nothing to search" state — the
+	// index cannot answer for this target. Every such snapshot carries a
+	// non-empty LastError, so the UI never renders a bare broken state.
+	vectorStateUnavailable = "unavailable"
+	// vectorStateLoading is the non-failure window: the embedder init has not
+	// settled yet, or the root's manager is being replaced (LRU eviction).
+	// Neither is a broken index — both resolve on their own.
+	vectorStateLoading = "loading"
+)
+
+// Vector status error kinds the registry contributes (VectorIndexStatus.
+// ErrorKind). The manager's own values come from vectorindex.IndexErrorKind
+// (repairable / transient / fatal / unknown); these name the routing and
+// window outcomes that never reach a manager.
+const (
+	// vectorErrorKindLoading — the background embedder init has not produced
+	// a manager factory yet.
+	vectorErrorKindLoading = "loading"
+	// vectorErrorKindRestarting — the root's manager is still draining from
+	// an LRU eviction over the same storage; the next request finds it live.
+	vectorErrorKindRestarting = "restarting"
+	// vectorErrorKindNoTarget — no focus root resolved (or a foreign root):
+	// there is nothing to search against.
+	vectorErrorKindNoTarget = "no_target"
+	// vectorErrorKindShuttingDown — the registry is shutting down (app exit).
+	vectorErrorKindShuttingDown = "shutting_down"
+)
+
+// vectorIndexNoProjectReason is the cause attached to the dormant subsystem's
+// status in No Project (CHAT) mode — the same string on every path that
+// reports it, so the UI can render one coherent explanation.
+const vectorIndexNoProjectReason = "vector index is unavailable in No Project mode (there is no workspace to index)"
+
 // GetVectorIndexStatus returns the current state and progress of the
 // vector index for the FOCUS tree (the Git-panel focus root; ADR-080).
 func (f *FrontendAPI) GetVectorIndexStatus() VectorIndexStatus {
 	// No Project (CHAT mode): the vector index is disabled. Report an
 	// unavailable state so the frontend UI reflects the dormant subsystem
-	// (neither "building" nor "ready").
+	// (neither "building" nor "ready") — WITH its cause, because a bare
+	// "unavailable" is indistinguishable from a broken index.
 	if f.isNoProject() {
-		st := VectorIndexStatus{State: "unavailable", Indices: []string{}}
+		st := VectorIndexStatus{
+			State:     vectorStateUnavailable,
+			Indices:   []string{},
+			LastError: vectorIndexNoProjectReason,
+			ErrorKind: vectorErrorKindNoTarget,
+		}
 		f.applyEmbedderInfo(&st)
 		return st
 	}
 
 	vm, err := f.vectorRootsRegistry().FocusManager(f.ctx())
 	if err != nil {
-		// A disabled registry (vector_index.enabled: false) is a user state,
-		// not a failure: render the explicit off state instead of
-		// "unavailable".
-		state := "unavailable"
-		if errors.Is(err, errVectorDisabled) {
-			state = vectorStateDisabled
-		}
-		result := VectorIndexStatus{State: state, Indices: []string{}}
+		result := f.vectorIndexStatusFromRegistryError(err)
 		f.applyEmbedderInfo(&result)
 		return result
 	}
 
 	result := f.vectorIndexStatusFromManager(vm)
 	f.applyEmbedderInfo(&result)
+	return result
+}
+
+// vectorIndexStatusFromRegistryError maps a FocusManager/routing failure onto
+// the wire status. The contract is asymmetric on purpose:
+//
+//   - a disabled registry is a USER state, not a failure — "disabled" with no
+//     cause (the switch IS the explanation);
+//   - the still-loading window and an LRU-eviction drain are NOT failures —
+//     "loading" (kind loading / restarting), never "unavailable": the index
+//     was never broken and both resolve without user action;
+//   - every genuinely unavailable outcome carries its cause and kind, so the
+//     "unavailable always explains itself" invariant holds for foreign/no
+//     targets, a shutting-down registry, a dead embedder and any wrapped
+//     build/init error alike.
+func (f *FrontendAPI) vectorIndexStatusFromRegistryError(err error) VectorIndexStatus {
+	result := VectorIndexStatus{Indices: []string{}}
+	switch {
+	case errors.Is(err, errVectorDisabled):
+		result.State = vectorStateDisabled
+	case errors.Is(err, errVectorStillLoading):
+		result.State = vectorStateLoading
+		result.ErrorKind = vectorErrorKindLoading
+		result.LastError = err.Error()
+	case errors.Is(err, errVectorRestarting):
+		result.State = vectorStateLoading
+		result.ErrorKind = vectorErrorKindRestarting
+		result.LastError = err.Error()
+	case errors.Is(err, errVectorNoTarget):
+		result.State = vectorStateUnavailable
+		result.ErrorKind = vectorErrorKindNoTarget
+		result.LastError = err.Error()
+	case errors.Is(err, errVectorShuttingDown):
+		result.State = vectorStateUnavailable
+		result.ErrorKind = vectorErrorKindShuttingDown
+		result.LastError = err.Error()
+	default:
+		// Building/initializing a manager failed: the embedder never came up
+		// or the store rejected the root. Settled, not transient.
+		result.State = vectorStateUnavailable
+		result.ErrorKind = string(vectorindex.IndexErrorKindFatal)
+		result.LastError = vectorindex.InitFailureReason(err)
+	}
 	return result
 }
 
@@ -381,6 +460,8 @@ func (f *FrontendAPI) vectorIndexStatusFromManager(vm *vectorindex.Manager) Vect
 		TotalFiles:   st.TotalFiles,
 		CurrentFile:  st.CurrentFile,
 		Branch:       st.Branch,
+		LastError:    st.LastError,
+		ErrorKind:    string(st.ErrorKind),
 	}
 
 	// Compute progress as a fraction.
@@ -420,6 +501,14 @@ func (f *FrontendAPI) vectorIndexStatusFromManager(vm *vectorindex.Manager) Vect
 // pass runs in the background and streams progress through
 // vector_index:status events; an error is returned when the index is
 // unavailable (No Project, no focus root, embedder still loading or failed).
+//
+// Since the store can be left unopenable by an incomplete publication (a
+// corpus whose lexical leg is gone, a foreign era, torn §3 tables), the same
+// action is the user-facing REPAIR for a stuck "unavailable" index: with no
+// live collection the manager re-attaches the snapshot view, which makes the
+// publication predicate reject the unopenable corpus and rebuild it from
+// source (cache-spared) instead of silently doing nothing. The frontend keeps
+// the action enabled in `unavailable` for exactly this reason.
 func (f *FrontendAPI) ReindexVectorIndex() error {
 	// No Project (CHAT mode): the vector index is disabled — nothing to reindex.
 	if f.isNoProject() {

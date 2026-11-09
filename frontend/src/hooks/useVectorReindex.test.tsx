@@ -2,10 +2,11 @@
 // the ADR-064 `loading` open and the ADR-104 stage-2 pre-work states
 // (`preparing` view-model attach window / `migration-rebuild` store promotion)
 // read as busy with their own tooltips; the terminal `unavailable` state (a
-// failed open / init failure) disables the action WITHOUT the busy spinner
-// and with an actionable tooltip — a reindex cannot repair a missing
-// collection — and clicking it must not fire the RPC. Uses the real stores;
-// only the RPC boundary (@/api/vector) is mocked.
+// failed open/attach) keeps the action ENABLED — it is the user's repair path:
+// the backend escalates a request with no live collection into a re-attach
+// that rebuilds an unopenable corpus from source. It therefore renders without
+// the busy spinner, labels itself a rebuild, and clicking it DOES fire the RPC.
+// Uses the real stores; only the RPC boundary (@/api/vector) is mocked.
 
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -67,22 +68,24 @@ afterEach(() => {
 })
 
 describe('useVectorReindex — the terminal unavailable state', () => {
-  it('disables the action without the busy spinner and names the real reason', () => {
+  it('keeps the repair action enabled, without the busy spinner, labelled as a rebuild', () => {
     act(() => {
       useVectorIndexStore.setState({ status: statusWith('unavailable') })
     })
     act(() => {
       root.render(<Harness />)
     })
-    expect(hook().reindexDisabled).toBe(true)
+    // The repair path must stay reachable from the UI: no dead end.
+    expect(hook().reindexDisabled).toBe(false)
     // Nothing is running: unavailable is terminal, not busy — no spinner.
     expect(hook().reindexBusy).toBe(false)
-    expect(hook().reindexDisabledTitle).toBe(
-      'Index unavailable — switch branch or reopen the project to retry',
+    // The enabled label promises the repair, not an incremental pass.
+    expect(hook().reindexActionTitle).toBe(
+      'Rebuild index — recreate the broken index from source',
     )
   })
 
-  it('never fires the reindex RPC while the index is unavailable', () => {
+  it('fires the reindex RPC while the index is unavailable (the backend escalates to a rebuild)', () => {
     act(() => {
       useVectorIndexStore.setState({ status: statusWith('unavailable') })
     })
@@ -92,9 +95,11 @@ describe('useVectorReindex — the terminal unavailable state', () => {
     act(() => {
       hook().handleReindex()
     })
-    expect(reindexSpy).not.toHaveBeenCalled()
-    // The guard runs before the optimistic latch: no busy state either.
-    expect(hook().reindexBusy).toBe(false)
+    expect(reindexSpy).toHaveBeenCalledTimes(1)
+    // The optimistic latch owns the busy state until a status event lands, and
+    // its label names the repair rather than an incremental pass.
+    expect(hook().reindexBusy).toBe(true)
+    expect(hook().reindexBusyTitle).toBe('Repairing index…')
   })
 
   it('releases a pending optimistic latch when the index turns unavailable', () => {
@@ -109,13 +114,13 @@ describe('useVectorReindex — the terminal unavailable state', () => {
     })
     // The optimistic latch owns the busy state until a status event lands.
     expect(hook().reindexBusy).toBe(true)
-    // The backend reports the failed open instead of a busy state: the latch
-    // must release, leaving only the terminal disabled state behind.
+    // The backend reports the failed repair instead of a busy state: the latch
+    // must release, leaving the action available for another attempt.
     act(() => {
       useVectorIndexStore.setState({ status: statusWith('unavailable') })
     })
     expect(hook().reindexBusy).toBe(false)
-    expect(hook().reindexDisabled).toBe(true)
+    expect(hook().reindexDisabled).toBe(false)
   })
 })
 
