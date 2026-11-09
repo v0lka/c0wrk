@@ -33,3 +33,18 @@ The gates hide the UI surface and remove the seeded pack copies only. The resear
 - Per-project toggles — rejected: the packs are global and the surfaces are workspace-methodology features; per-project state would fork the pack-location model ADR-056 just consolidated.
 - Hiding the tabs without unseeding — rejected: removing the skills from disk (and thus from the router catalog and the `/`-completion lists) is the feature; leaving the catalog entries would keep the router bias and the completion noise.
 - Deleting every marked copy including locally edited ones — rejected: it silently destroys user edits; preserve-plus-warning keeps the non-destructive seeding invariant intact across enable/disable cycles.
+
+## Historical Note
+
+2026-11-08 — successor state for the path this record names; the decision
+above is unchanged.
+
+- The research root segment named in the Decision is `research` since
+  [ADR-113](./113-research-root-rename.md): the canonical root is
+  `<workspace>/research` (`config.ResearchRootSegment`,
+  `backend/config/paths.go`), while `.research` survives only as
+  `config.LegacyResearchRootSegment` — detection/migration-only data listed
+  by `legacy_research_roots` and moved solely by the manual
+  `MigrateResearchRoots` RPC, never derived as a live root. The "stays
+  untouched" clause reads against the canonical root either way: a toggle
+  never deletes persisted research data.

@@ -3,12 +3,10 @@ package desktop
 import (
 	"bytes"
 	"context"
-	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -57,6 +55,31 @@ func (r *emitRecorder) snapshot() []emittedEvent {
 	return out
 }
 
+// mapPayload returns the single map[string]any argument of a recorded event,
+// failing the test on a shape mismatch.
+func mapPayload(t *testing.T, ev emittedEvent) map[string]any {
+	t.Helper()
+	if len(ev.Data) != 1 {
+		t.Fatalf("event %q carries %d args, want 1", ev.Name, len(ev.Data))
+	}
+	m, ok := ev.Data[0].(map[string]any)
+	if !ok {
+		t.Fatalf("event %q payload type = %T, want map[string]any", ev.Name, ev.Data[0])
+	}
+	return m
+}
+
+// phaseEventsByName filters recorded events by name.
+func phaseEventsByName(events []emittedEvent, name string) []emittedEvent {
+	var out []emittedEvent
+	for _, ev := range events {
+		if ev.Name == name {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
+
 // flattenEmittedBatches expands any recorded c0wrk:events:batch envelopes into
 // the individual events they carried (preserving order) and passes through
 // non-batched events unchanged. Session events now travel through the batcher,
@@ -65,174 +88,22 @@ func flattenEmittedBatches(t *testing.T, events []emittedEvent) []emittedEvent {
 	t.Helper()
 	out := make([]emittedEvent, 0, len(events))
 	for _, ev := range events {
-		if ev.Name != eventBatchEventName {
+		if ev.Name != backend.EventBatchEventName {
 			out = append(out, ev)
 			continue
 		}
 		if len(ev.Data) != 1 {
 			t.Fatalf("batch event carries %d data args, want 1: %+v", len(ev.Data), ev)
 		}
-		env, ok := ev.Data[0].(batchEnvelope)
+		env, ok := ev.Data[0].(backend.BatchEnvelope)
 		if !ok {
-			t.Fatalf("batch payload type = %T, want batchEnvelope", ev.Data[0])
+			t.Fatalf("batch payload type = %T, want backend.BatchEnvelope", ev.Data[0])
 		}
 		for _, inner := range env.Events {
 			out = append(out, emittedEvent{Name: inner.Name, Data: inner.Args})
 		}
 	}
 	return out
-}
-
-// --- initDatabase ---
-
-func TestInitDatabase_CreatesSchema(t *testing.T) {
-	dir := t.TempDir()
-	a := &App{}
-	dbPath := filepath.Join(dir, "test.db")
-
-	db := a.initDatabase(dbPath, testLoggerForPhases())
-	if db == nil {
-		t.Fatal("initDatabase returned nil for valid path")
-	}
-	defer func() { _ = db.Close() }()
-
-	if err := db.PingContext(context.Background()); err != nil {
-		t.Fatalf("db.Ping failed: %v", err)
-	}
-}
-
-func TestInitDatabase_InvalidPath(t *testing.T) {
-	a := &App{}
-	// Use a path under a non-existent parent directory; sqlite cannot create
-	db := a.initDatabase("/nonexistent-root-/no/such/dir/file.db", testLoggerForPhases())
-	if db == nil {
-		return // expected
-	}
-	_ = db.Close()
-	// Some SQLite drivers tolerate odd paths; if the open succeeded the test
-	// is not exercising the error branch, but the fallback (returning nil on
-	// open error) is still covered by all other initDatabase callers.
-	t.Skip("sqlite driver tolerates the invalid-path test fixture")
-}
-
-// --- initStores ---
-
-func TestInitStores_BothInitialize(t *testing.T) {
-	dir := t.TempDir()
-	a := &App{}
-	db := a.initDatabase(filepath.Join(dir, "test.db"), testLoggerForPhases())
-	if db == nil {
-		t.Fatal("initDatabase failed")
-	}
-	defer func() { _ = db.Close() }()
-
-	projStore, sessStore, reviewStore := a.initStores(db, testLoggerForPhases())
-	if projStore == nil {
-		t.Error("projStore is nil")
-	}
-	if sessStore == nil {
-		t.Error("sessStore is nil")
-	}
-	if reviewStore == nil {
-		t.Error("reviewStore is nil")
-	}
-
-	// Smoke test: the stores must be queryable.
-	_, err := projStore.ListProjects(context.Background())
-	if err != nil {
-		t.Errorf("ListProjects returned error on empty store: %v", err)
-	}
-}
-
-func TestInitStores_NilDB(t *testing.T) {
-	a := &App{}
-	projStore, sessStore, reviewStore := a.initStores(nil, testLoggerForPhases())
-	if projStore != nil || sessStore != nil || reviewStore != nil {
-		t.Errorf("expected (nil, nil, nil) for nil db, got (%v, %v, %v)", projStore, sessStore, reviewStore)
-	}
-}
-
-// --- preloadProjectsAndSessions ---
-
-func TestPreloadProjectsAndSessions_NilManager(t *testing.T) {
-	a := &App{}
-	got := a.preloadProjectsAndSessions(nil, nil, testLoggerForPhases())
-	if got != nil {
-		t.Errorf("expected nil for nil manager, got %v", got)
-	}
-}
-
-func TestPreloadProjectsAndSessions_Empty(t *testing.T) {
-	dir := t.TempDir()
-	a := &App{}
-	rec := &emitRecorder{}
-	a.wailsEmit = rec.emit
-
-	db := a.initDatabase(filepath.Join(dir, "test.db"), testLoggerForPhases())
-	if db == nil {
-		t.Fatal("initDatabase failed")
-	}
-	defer func() { _ = db.Close() }()
-	projStore, sessStore, _ := a.initStores(db, testLoggerForPhases())
-	projectMgr := project.NewManager(projStore, dir, nil)
-
-	got := a.preloadProjectsAndSessions(projectMgr, sessStore, testLoggerForPhases())
-	if len(got) != 0 {
-		t.Errorf("expected empty slice for empty store, got %d projects", len(got))
-	}
-	// No events should be emitted when no projects exist.
-	if events := rec.snapshot(); len(events) != 0 {
-		t.Errorf("expected 0 events for empty preload, got %d: %+v", len(events), events)
-	}
-}
-
-func TestPreloadProjectsAndSessions_WithSeededData(t *testing.T) {
-	dir := t.TempDir()
-	a := &App{}
-	rec := &emitRecorder{}
-	a.wailsEmit = rec.emit
-
-	db := a.initDatabase(filepath.Join(dir, "test.db"), testLoggerForPhases())
-	if db == nil {
-		t.Fatal("initDatabase failed")
-	}
-	defer func() { _ = db.Close() }()
-	projStore, sessStore, _ := a.initStores(db, testLoggerForPhases())
-	projectMgr := project.NewManager(projStore, dir, nil)
-
-	// Seed: create a project with a session.
-	p, err := projectMgr.CreateProject("test-proj", "")
-	if err != nil {
-		t.Fatalf("CreateProject: %v", err)
-	}
-	now := time.Now().UTC().Format(time.RFC3339)
-	if err := sessStore.SaveSession(context.Background(), session.SessionInfo{
-		ID:        "sess-1",
-		ProjectID: p.ID,
-		Name:      "First",
-		CreatedAt: now,
-	}); err != nil {
-		t.Fatalf("SaveSession: %v", err)
-	}
-
-	got := a.preloadProjectsAndSessions(projectMgr, sessStore, testLoggerForPhases())
-	if len(got) != 1 {
-		t.Fatalf("expected 1 project, got %d", len(got))
-	}
-	if got[0].Name != "test-proj" {
-		t.Errorf("project name = %q, want test-proj", got[0].Name)
-	}
-
-	events := rec.snapshot()
-	if len(events) != 2 {
-		t.Fatalf("expected 2 events (projects:loaded + sessions:loaded), got %d", len(events))
-	}
-	if events[0].Name != backend.EventProjectsLoaded {
-		t.Errorf("first event name = %q, want %q", events[0].Name, backend.EventProjectsLoaded)
-	}
-	if events[1].Name != backend.EventSessionsLoaded {
-		t.Errorf("second event name = %q, want %q", events[1].Name, backend.EventSessionsLoaded)
-	}
 }
 
 // --- buildAskUserCallback ---
@@ -442,12 +313,12 @@ func TestEmitBackendReady_FreshQueryWithProjects(t *testing.T) {
 	rec := &emitRecorder{}
 	a.wailsEmit = rec.emit
 
-	db := a.initDatabase(filepath.Join(dir, "test.db"), testLoggerForPhases())
+	db := backend.InitDatabase(filepath.Join(dir, "test.db"), testLoggerForPhases())
 	if db == nil {
 		t.Fatal("initDatabase failed")
 	}
 	defer func() { _ = db.Close() }()
-	projStore, _, _ := a.initStores(db, testLoggerForPhases())
+	projStore, _, _ := backend.InitStores(db, testLoggerForPhases())
 	projectMgr := project.NewManager(projStore, dir, nil)
 	if _, err := projectMgr.CreateProject("Bar", ""); err != nil {
 		t.Fatalf("CreateProject: %v", err)
@@ -777,221 +648,14 @@ func TestStartMCPReadyNotifier_NilAppNoOp(t *testing.T) {
 	}
 }
 
-// --- reconcileToolsWithSplash (tool-install orchestration) ---
-
-// toolFlowJournal records the strict interleaving of emissions, manager passes
-// and fatal actions so tests can assert ordering. The flow under test is
-// fully synchronous, so no locking is needed.
-type toolFlowJournal struct {
-	entries []string
-}
-
-func (j *toolFlowJournal) add(entry string) {
-	j.entries = append(j.entries, entry)
-}
-
-func (j *toolFlowJournal) snapshot() []string {
-	return append([]string(nil), j.entries...)
-}
-
-// fakeToolEnsurer scripts NeedsInstall and the two EnsureCriticalTools passes,
-// journaling each call as "ensure:offline" / "ensure:network".
-type fakeToolEnsurer struct {
-	journal    *toolFlowJournal
-	needed     []toolmanager.ToolSpec
-	needsErr   error
-	offline    []toolmanager.ToolStatus
-	offlineErr error
-	network    []toolmanager.ToolStatus
-	networkErr error
-	calls      []string
-}
-
-func (f *fakeToolEnsurer) NeedsInstall() ([]toolmanager.ToolSpec, error) {
-	return f.needed, f.needsErr
-}
-
-func (f *fakeToolEnsurer) EnsureCriticalTools(_ context.Context, opts toolmanager.EnsureOptions) ([]toolmanager.ToolStatus, error) {
-	if opts.AllowNetwork {
-		f.calls = append(f.calls, "network")
-		f.journal.add("ensure:network")
-		return f.network, f.networkErr
-	}
-	f.calls = append(f.calls, "offline")
-	f.journal.add("ensure:offline")
-	return f.offline, f.offlineErr
-}
-
-// fatalRecorder captures the fatal-exit seam: every dialog message and quit.
-type fatalRecorder struct {
-	journal *toolFlowJournal
-	dialogs []string
-	quits   int
-}
-
-func (f *fatalRecorder) actions() toolFatalActions {
-	return toolFatalActions{
-		dialog: func(_ context.Context, message string) {
-			f.dialogs = append(f.dialogs, message)
-			f.journal.add("fatal:dialog")
-		},
-		quit: func(context.Context) {
-			f.quits++
-			f.journal.add("fatal:quit")
-		},
-	}
-}
-
-func (f *fatalRecorder) assertSilent(t *testing.T) {
-	t.Helper()
-	if len(f.dialogs) != 0 {
-		t.Errorf("fatal dialog shown %d time(s), want 0: %q", len(f.dialogs), f.dialogs)
-	}
-	if f.quits != 0 {
-		t.Errorf("fatal quit called %d time(s), want 0", f.quits)
-	}
-}
-
-// setupToolFlow wires an App whose emissions land in both the payload
-// recorder and the ordering journal.
-func setupToolFlow(t *testing.T) (*App, *emitRecorder, *toolFlowJournal, *fatalRecorder) {
-	t.Helper()
-	a := &App{}
-	rec := &emitRecorder{}
-	journal := &toolFlowJournal{}
-	a.wailsEmit = func(eventName string, optionalData ...any) {
-		journal.add("emit:" + eventName)
-		rec.emit(eventName, optionalData...)
-	}
-	return a, rec, journal, &fatalRecorder{journal: journal}
-}
-
-func tmSpec(name string) toolmanager.ToolSpec {
-	return toolmanager.ToolSpec{Name: name, Version: "1.2.3"}
-}
-
-func phaseEventsByName(events []emittedEvent, name string) []emittedEvent {
-	var out []emittedEvent
-	for _, ev := range events {
-		if ev.Name == name {
-			out = append(out, ev)
-		}
-	}
-	return out
-}
-
-// (a) Everything Ready after the offline pass: no blocking network call, no
-// splash start, exactly one done, no toast, no fatal.
-func TestReconcileToolsWithSplash_AllReady_NetworkNeverCalled(t *testing.T) {
-	a, rec, journal, fatal := setupToolFlow(t)
-	fake := &fakeToolEnsurer{
-		journal: journal,
-		offline: []toolmanager.ToolStatus{
-			{Tool: tmSpec("rg"), Ready: true},
-			{Tool: tmSpec("uv"), Ready: true, Installed: true},
-			{Tool: tmSpec("markitdown"), Ready: true},
-		},
-	}
-
-	installed, ok := a.reconcileToolsWithSplash(context.Background(), testLoggerForPhases(), fake, fatal.actions())
-	if !ok {
-		t.Fatal("ok = false for an all-Ready flow, want true")
-	}
-	if !installed {
-		t.Error("installed = false, want true (uv was newly installed offline)")
-	}
-	if got := fake.calls; !reflect.DeepEqual(got, []string{"offline"}) {
-		t.Errorf("ensure calls = %v, want exactly [offline]", got)
-	}
-	events := rec.snapshot()
-	if starts := phaseEventsByName(events, backend.EventToolManagerStart); len(starts) != 0 {
-		t.Errorf("tool_manager:start emitted %d time(s) for an all-Ready flow, want 0", len(starts))
-	}
-	dones := phaseEventsByName(events, backend.EventToolManagerDone)
-	if len(dones) != 1 {
-		t.Fatalf("tool_manager:done emitted %d time(s), want 1", len(dones))
-	}
-	payload := mapPayload(t, dones[0])
-	if payload["installed_count"] != 1 || payload["skipped_count"] != 2 {
-		t.Errorf("done payload = %+v, want installed_count=1 skipped_count=2", payload)
-	}
-	if rtes := phaseEventsByName(events, backend.EventRuntimeError); len(rtes) != 0 {
-		t.Errorf("runtime_error emitted %d time(s) for an all-Ready flow, want 0", len(rtes))
-	}
-	fatal.assertSilent(t)
-	want := []string{"ensure:offline", "emit:" + backend.EventToolManagerDone}
-	if got := journal.snapshot(); !reflect.DeepEqual(got, want) {
-		t.Errorf("journal = %v, want %v", got, want)
-	}
-}
-
-// (b) Tools not Ready after the offline pass: the splash start fires (once,
-// early), the blocking network pass runs, and done lands only after it.
-func TestReconcileToolsWithSplash_NotReadyAfterOffline_BlockingNetworkPass(t *testing.T) {
-	a, rec, journal, fatal := setupToolFlow(t)
-	fake := &fakeToolEnsurer{
-		journal: journal,
-		needed:  []toolmanager.ToolSpec{tmSpec("rg"), tmSpec("uv")},
-		offline: []toolmanager.ToolStatus{
-			{Tool: tmSpec("rg"), Ready: false, Err: errors.New("no cached archive")},
-			{Tool: tmSpec("uv"), Ready: true},
-		},
-		network: []toolmanager.ToolStatus{
-			{Tool: tmSpec("rg"), Ready: true, Installed: true},
-			{Tool: tmSpec("uv"), Ready: true},
-		},
-	}
-
-	installed, ok := a.reconcileToolsWithSplash(context.Background(), testLoggerForPhases(), fake, fatal.actions())
-	if !ok {
-		t.Fatal("ok = false for a satisfied network pass, want true")
-	}
-	if !installed {
-		t.Error("installed = false, want true (rg installed by the network pass)")
-	}
-	if got := fake.calls; !reflect.DeepEqual(got, []string{"offline", "network"}) {
-		t.Errorf("ensure calls = %v, want [offline network]", got)
-	}
-	// The splash denominator recorded at start time feeds every progress
-	// event — a lost tool_manager:start must not leave the splash total-less.
-	if got := a.toolSplashTotal.Load(); got != 2 {
-		t.Errorf("toolSplashTotal = %d, want 2 (the NeedsInstall list length)", got)
-	}
-	events := rec.snapshot()
-	starts := phaseEventsByName(events, backend.EventToolManagerStart)
-	if len(starts) != 1 {
-		t.Fatalf("tool_manager:start emitted %d time(s), want exactly 1", len(starts))
-	}
-	startPayload := mapPayload(t, starts[0])
-	tools, toolsOK := startPayload["tools"].([]map[string]string)
-	if !toolsOK {
-		t.Fatalf("start payload tools type = %T, want []map[string]string", startPayload["tools"])
-	}
-	if len(tools) != 2 || tools[0]["name"] != "rg" || tools[0]["version"] != "1.2.3" || tools[1]["name"] != "uv" {
-		t.Errorf("start payload tools = %+v, want rg (with version) + uv", tools)
-	}
-	dones := phaseEventsByName(events, backend.EventToolManagerDone)
-	if len(dones) != 1 {
-		t.Fatalf("tool_manager:done emitted %d time(s), want exactly 1", len(dones))
-	}
-	fatal.assertSilent(t)
-	want := []string{
-		"emit:" + backend.EventToolManagerStart,
-		"ensure:offline",
-		"ensure:network",
-		"emit:" + backend.EventToolManagerDone,
-	}
-	if got := journal.snapshot(); !reflect.DeepEqual(got, want) {
-		t.Errorf("journal = %v, want %v (done must follow the network pass)", got, want)
-	}
-}
-
 // Every tool_manager:progress event carries the full payload contract: the
 // stage, byte counts, the terminal error text, and the stamped splash
 // denominator — the webview-subscription race can lose tool_manager:start,
 // so no single progress event may be less than self-describing.
 func TestEmitToolManagerProgress_CarriesFullPayload(t *testing.T) {
-	a, rec, _, _ := setupToolFlow(t)
+	a := &App{}
+	rec := &emitRecorder{}
+	a.wailsEmit = rec.emit
 	a.toolSplashTotal.Store(3)
 
 	a.emitToolManagerProgress(toolmanager.ToolProgress{
@@ -1025,193 +689,7 @@ func TestEmitToolManagerProgress_CarriesFullPayload(t *testing.T) {
 	if bootstrap["stage"] != "python_bootstrap" || bootstrap["detail"] != "packages" {
 		t.Errorf("bootstrap payload = %+v, want the packages sub-step", bootstrap)
 	}
-	failed := mapPayload(t, events[2])
-	if failed["stage"] != "failed" || failed["error"] != "checksum mismatch" {
+	if failed := mapPayload(t, events[2]); failed["stage"] != "failed" || failed["error"] != "checksum mismatch" {
 		t.Errorf("failed payload = %+v, want the failure cause", failed)
-	}
-}
-
-// NeedsInstall saw a complete install but the offline pass disagrees (stale
-// binary): the network pass still gets its splash — start is emitted exactly
-// once, between the two passes.
-func TestReconcileToolsWithSplash_LateStartWhenNeedsInstallSawCompleteInstall(t *testing.T) {
-	a, rec, journal, fatal := setupToolFlow(t)
-	fake := &fakeToolEnsurer{
-		journal: journal,
-		offline: []toolmanager.ToolStatus{
-			{Tool: tmSpec("rg"), Ready: false, Err: errors.New("stale binary")},
-			{Tool: tmSpec("uv"), Ready: true},
-		},
-		network: []toolmanager.ToolStatus{
-			{Tool: tmSpec("rg"), Ready: true, Installed: true},
-			{Tool: tmSpec("uv"), Ready: true},
-		},
-	}
-
-	_, ok := a.reconcileToolsWithSplash(context.Background(), testLoggerForPhases(), fake, fatal.actions())
-	if !ok {
-		t.Fatal("ok = false for a satisfied network pass, want true")
-	}
-	events := rec.snapshot()
-	starts := phaseEventsByName(events, backend.EventToolManagerStart)
-	if len(starts) != 1 {
-		t.Fatalf("tool_manager:start emitted %d time(s), want exactly 1 (the late one)", len(starts))
-	}
-	startPayload := mapPayload(t, starts[0])
-	tools, toolsOK := startPayload["tools"].([]map[string]string)
-	if !toolsOK || len(tools) != 1 || tools[0]["name"] != "rg" {
-		t.Errorf("start payload tools = %+v, want only rg", startPayload["tools"])
-	}
-	fatal.assertSilent(t)
-	want := []string{
-		"ensure:offline",
-		"emit:" + backend.EventToolManagerStart,
-		"ensure:network",
-		"emit:" + backend.EventToolManagerDone,
-	}
-	if got := journal.snapshot(); !reflect.DeepEqual(got, want) {
-		t.Errorf("journal = %v, want %v", got, want)
-	}
-}
-
-// (c) The network pass still leaves tools missing: the fatal modal names the
-// failed tools and the app quits; done resolves the splash first.
-func TestReconcileToolsWithSplash_NetworkPassLeavesToolsMissing_FatalDialogAndQuit(t *testing.T) {
-	a, rec, journal, fatal := setupToolFlow(t)
-	fake := &fakeToolEnsurer{
-		journal: journal,
-		needed:  []toolmanager.ToolSpec{tmSpec("rg"), tmSpec("uv")},
-		offline: []toolmanager.ToolStatus{
-			{Tool: tmSpec("rg"), Ready: false, Err: errors.New("no cached archive")},
-			{Tool: tmSpec("uv"), Ready: false, Err: errors.New("no cached archive")},
-		},
-		network: []toolmanager.ToolStatus{
-			{Tool: tmSpec("rg"), Ready: false, Err: errors.New("download failed")},
-			{Tool: tmSpec("uv"), Ready: true, Installed: true},
-		},
-	}
-
-	installed, ok := a.reconcileToolsWithSplash(context.Background(), testLoggerForPhases(), fake, fatal.actions())
-	if ok {
-		t.Fatal("ok = true after a failed network pass, want false")
-	}
-	if installed {
-		t.Error("installed = true on the fatal path, want false")
-	}
-	if len(fatal.dialogs) != 1 {
-		t.Fatalf("fatal dialogs = %d, want 1", len(fatal.dialogs))
-	}
-	if msg := fatal.dialogs[0]; !strings.Contains(msg, "rg") || strings.Contains(msg, "uv") {
-		t.Errorf("fatal dialog message = %q, want it to name rg (and only the failed tools)", msg)
-	}
-	if fatal.quits != 1 {
-		t.Errorf("fatal quits = %d, want 1", fatal.quits)
-	}
-	events := rec.snapshot()
-	if dones := phaseEventsByName(events, backend.EventToolManagerDone); len(dones) != 1 {
-		t.Errorf("tool_manager:done emitted %d time(s), want 1 (splash must resolve before the modal)", len(dones))
-	}
-	if rtes := phaseEventsByName(events, backend.EventRuntimeError); len(rtes) != 0 {
-		t.Errorf("runtime_error emitted %d time(s) on the fatal path, want 0", len(rtes))
-	}
-	want := []string{
-		"emit:" + backend.EventToolManagerStart,
-		"ensure:offline",
-		"ensure:network",
-		"emit:" + backend.EventToolManagerDone,
-		"fatal:dialog",
-		"fatal:quit",
-	}
-	if got := journal.snapshot(); !reflect.DeepEqual(got, want) {
-		t.Errorf("journal = %v, want %v", got, want)
-	}
-}
-
-// A structural offline failure with tools known missing still runs the
-// blocking network pass; a structural network failure is fatal with the
-// error text surfaced.
-func TestReconcileToolsWithSplash_OfflineStructuralFailure_MissingTools_StillTriesNetwork(t *testing.T) {
-	a, rec, journal, fatal := setupToolFlow(t)
-	fake := &fakeToolEnsurer{
-		journal:    journal,
-		needed:     []toolmanager.ToolSpec{tmSpec("rg")},
-		offlineErr: errors.New("offline structural boom"),
-		networkErr: errors.New("insufficient disk space"),
-	}
-
-	_, ok := a.reconcileToolsWithSplash(context.Background(), testLoggerForPhases(), fake, fatal.actions())
-	if ok {
-		t.Fatal("ok = true after a structurally failed network pass, want false")
-	}
-	if got := fake.calls; !reflect.DeepEqual(got, []string{"offline", "network"}) {
-		t.Errorf("ensure calls = %v, want [offline network]", got)
-	}
-	if len(fatal.dialogs) != 1 || !strings.Contains(fatal.dialogs[0], "insufficient disk space") {
-		t.Errorf("fatal dialogs = %q, want 1 naming the structural error", fatal.dialogs)
-	}
-	if fatal.quits != 1 {
-		t.Errorf("fatal quits = %d, want 1", fatal.quits)
-	}
-	events := rec.snapshot()
-	if dones := phaseEventsByName(events, backend.EventToolManagerDone); len(dones) != 1 {
-		t.Errorf("tool_manager:done emitted %d time(s), want 1", len(dones))
-	}
-	if rtes := phaseEventsByName(events, backend.EventRuntimeError); len(rtes) != 0 {
-		t.Errorf("runtime_error emitted %d time(s) on the fatal path, want 0", len(rtes))
-	}
-}
-
-// (d) Structural offline failure over an already-complete install: degrade to
-// the runtime_error toast — no network pass, no blocking, no fatal.
-func TestReconcileToolsWithSplash_OfflineStructuralFailure_CompleteInstall_ToastOnly(t *testing.T) {
-	a, rec, journal, fatal := setupToolFlow(t)
-	fake := &fakeToolEnsurer{
-		journal:    journal,
-		offlineErr: errors.New("insufficient disk space"),
-	}
-
-	installed, ok := a.reconcileToolsWithSplash(context.Background(), testLoggerForPhases(), fake, fatal.actions())
-	if !ok {
-		t.Fatal("ok = false for the toast-only degradation, want true")
-	}
-	if installed {
-		t.Error("installed = true on the degradation path, want false")
-	}
-	if got := fake.calls; !reflect.DeepEqual(got, []string{"offline"}) {
-		t.Errorf("ensure calls = %v, want exactly [offline] (no network pass)", got)
-	}
-	events := rec.snapshot()
-	if starts := phaseEventsByName(events, backend.EventToolManagerStart); len(starts) != 0 {
-		t.Errorf("tool_manager:start emitted %d time(s), want 0", len(starts))
-	}
-	dones := phaseEventsByName(events, backend.EventToolManagerDone)
-	if len(dones) != 1 {
-		t.Fatalf("tool_manager:done emitted %d time(s), want 1", len(dones))
-	}
-	rtes := phaseEventsByName(events, backend.EventRuntimeError)
-	if len(rtes) != 1 {
-		t.Fatalf("runtime_error emitted %d time(s), want 1", len(rtes))
-	}
-	if len(rtes[0].Data) != 1 {
-		t.Fatalf("runtime_error carries %d data args, want 1", len(rtes[0].Data))
-	}
-	payload, payloadOK := rtes[0].Data[0].(map[string]string)
-	if !payloadOK {
-		t.Fatalf("runtime_error payload type = %T, want map[string]string", rtes[0].Data[0])
-	}
-	if !strings.Contains(payload["message"], "Tool initialization failed: insufficient disk space") {
-		t.Errorf("runtime_error message = %q, want it to carry the structural error", payload["message"])
-	}
-	if payload["error_code"] != "tool_install_failed" {
-		t.Errorf("runtime_error error_code = %q, want tool_install_failed", payload["error_code"])
-	}
-	fatal.assertSilent(t)
-	want := []string{
-		"ensure:offline",
-		"emit:" + backend.EventToolManagerDone,
-		"emit:" + backend.EventRuntimeError,
-	}
-	if got := journal.snapshot(); !reflect.DeepEqual(got, want) {
-		t.Errorf("journal = %v, want %v", got, want)
 	}
 }

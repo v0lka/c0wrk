@@ -27,6 +27,7 @@ type jwtClaims struct {
 	Subject          string         `json:"sub"`
 	Email            string         `json:"email"`
 	ChatGPTAccountID string         `json:"chatgpt_account_id"`
+	Exp              int64          `json:"exp"`
 	Auth             *authNamespace `json:"https://api.openai.com/auth"`
 }
 
@@ -34,6 +35,16 @@ type jwtClaims struct {
 type authNamespace struct {
 	ChatGPTAccountID string `json:"chatgpt_account_id"`
 	UserID           string `json:"user_id"`
+}
+
+// jwtExpiryUnix returns the exp claim from a JWT access token, when present.
+// Signature verification is skipped — same trust boundary as ParseIDTokenClaims.
+func jwtExpiryUnix(accessToken string) (int64, bool) {
+	claims, err := decodeJWTClaims(accessToken)
+	if err != nil || claims.Exp <= 0 {
+		return 0, false
+	}
+	return claims.Exp, true
 }
 
 // ParseIDTokenClaims extracts Identity from a JWT ID token WITHOUT verifying

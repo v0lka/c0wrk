@@ -8,9 +8,9 @@ The canonical classification algorithm (prompt, domain/complexity scales, skill 
 
 ## Key Files
 
-- `core/router_adapter.go` — core adapter wrapping the sp4rk router
+- `core/router_adapter.go` — core adapter wrapping the sp4rk router (`newCoreRouter`: the c0wrk routing prompt, the last `router.history_window` messages (default 10) as routing context, and `formatRouterContextSections`, which appends the AGENTS.md block plus — in RESEARCH mode — the research-awareness block and the advisory intent→`research-*` skill hints)
 - `core/prompts/router_system.md` — routing classification prompt
-- `core/orchestrator_handle.go` — invokes the router and applies c0wrk-specific routing policy (continuation fast-path, skill augmentation, No Project override)
+- `core/orchestrator_handle.go` — invokes the router and applies c0wrk-specific routing policy (`routeOrContinue` continuation fast-path, `routeAndActivateSkills` skill merge + Routing event, the essential-tools parse fallback)
 
 Engine file: `github.com/v0lka/sp4rk/agent/router/router.go` (Router struct, `Route` method) — see [the sp4rk router spec](https://github.com/v0lka/sp4rk/blob/main/specs/domains/orchestration/router.md).
 
@@ -44,7 +44,7 @@ c0wrk's Conductor selects a compaction strategy from `routing.Domain`:
 
 ### Complexity → Conductor Guidance (c0wrk consumption)
 
-The complexity score informs the Conductor's system-prompt guidance on whether to delegate. It is no longer mapped to a fixed step count (the Conductor chooses its own granularity).
+The complexity score informs the Conductor's system-prompt guidance on whether to delegate, and it sizes the ReAct step budget: `RunConductor` sets `ConductorConfig.MaxSteps = complexity × stepsPerComplexity` (the constant 30 in `core/conductor.go`), giving 30 (complexity 1) through 150 (complexity 5). `buildSubAgentTask` derives a subagent's default budget from the same formula; a delegation's `max_steps` or a Subagent Profile's `max-steps` overrides it. See [conductor.md](conductor.md#step-limit-and-circuit-breakers) and [delegation.md](delegation.md).
 
 | Complexity band | Conductor guidance |
 | --------------- | ------------------ |
@@ -61,7 +61,7 @@ The router itself never judges goal-mode suitability (its decision shape is clos
 
 ### Skill Merge
 
-Selected (router-matched) skills are merged with user-specified skills (from `/skill` references in the message) via `mergeSkillNames()` — a deduplicated union where router-matched skills come first. The combined set is activated for the task (system prompt injection, tool policy overrides). When `HandleOptions.UserSkills` is non-empty, the orchestrator augments the routing message with skill descriptions (`buildSkillAugmentedRoutingMessage`) so the router classifies domain/complexity based on the skill's purpose.
+Selected (router-matched) skills are merged with user-specified skills (from `/skill` references in the message) via `mergeSkillNames()` — a deduplicated union where router-matched skills come first. The combined set is activated for the task: their bodies render verbatim in the system prompt and they narrow the available toolset only — tool policy always comes from `security.groups` ([ADR-024](../../decisions/024-group-policies.md)), there is no skill policy layer. When `HandleOptions.UserSkills` is non-empty, the orchestrator augments the routing message with skill descriptions (`resolveTaskMessage` → `buildSkillAugmentedRoutingMessage`) so the router classifies domain/complexity based on the skill's purpose.
 
 ### Continuation Fast-Path
 
@@ -72,9 +72,9 @@ In No Project (CHAT) mode, `SetNoProjectMode()` disables only `semantic_search` 
 
 ## Error Handling
 
-- LLM call failure → return error (no fallback routing)
-- JSON parse failure → one retry with repair prompt asking the LLM to fix its JSON
-- Second parse failure → return error — except when the Model Profiles essential-tools variant is enabled: the orchestrator then continues with a default routing decision (`RoutingDecision{Domain: general, Complexity: defaultResumeComplexity}`, logged/emitted "Routing fallback: unparseable routing JSON — continuing with default routing") and the essential-tools filter still applies its static selection (the tool set is never re-expanded to the full registry). The unprofiled path errors as documented.
+- LLM call failure → return error (no fallback routing). The task row is flipped to failed only when it is live — a fresh task (`opts.TaskID == ""`) or the goal path; a normal-path continuation's restored status stays untouched.
+- Unparseable routing JSON → the engine's repair policy re-asks with the schema as the retry hint (two repair retries, three attempts total); exhaustion returns an error wrapping `router.ErrRoutingParse`.
+- `router.ErrRoutingParse` → return error — except when the Model Profiles essential-tools variant is enabled: the orchestrator then continues with a default routing decision (`RoutingDecision{Domain: general, Complexity: defaultResumeComplexity}` = 3, logged/emitted "Routing fallback: unparseable routing JSON — continuing with default routing") and the essential-tools filter still applies its static selection (the tool set is never re-expanded to the full registry). The unprofiled path errors as documented.
 
 (Validation rules — domain clamping, complexity range, skill dedup — are engine behavior; see the sp4rk router spec.)
 

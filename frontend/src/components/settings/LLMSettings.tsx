@@ -66,6 +66,7 @@ export function LLMSettings({
     openaiCompatibleProviderNames,
     anthropicCompatibleProviderNames,
     isLoading,
+    flushPendingSave,
     setDefaultModel,
     updateProviderConfig,
     toggleModel,
@@ -357,6 +358,7 @@ export function LLMSettings({
         onToggleModel={toggleModel}
         defaultModel={defaultModel}
         autoRetryMaxSeconds={autoRetryMaxSeconds}
+        beforeSignIn={flushPendingSave}
       />
 
       {/* Compatible provider groups — each transport type gathered under one

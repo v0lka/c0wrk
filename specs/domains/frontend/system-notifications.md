@@ -43,7 +43,7 @@ Key points:
 ## Key Files
 
 - `desktop/notifications.go` — the Go bridge: `InitNotifications` (memoized, single `OnNotificationResponse` callback, macOS authorization prompt), `SendSystemNotification` (the transport; unique `c0wrk-notification-*` ids; routes through the platform hook below on Linux), `CheckNotificationAuthorization` (non-prompting permission read for the Settings hint), `ShowTestNotification` (Settings preview, no routing data), `cleanupNotifications` (Shutdown; closes c0wrk's own Linux D-Bus connection AND the Wails notification service).
-- `desktop/singleinstance.go` — the Wails `SingleInstanceLock` option + `App.handleSecondInstanceLaunch`: the second-instance relay that a LaunchServices-resolved banner click can spawn (focus-only; see [Second-instance launches](#second-instance-launches-macos-launchservices) and ADR-075), plus the app-level advisory lock (`~/.c0wrk/app.lock`) that keeps such a transient process away from crash-capture state.
+- `desktop/singleinstance.go` — the Wails `SingleInstanceLock` option + `App.handleSecondInstanceLaunch`: the second-instance relay that a LaunchServices-resolved banner click can spawn (focus-only; see [Second-instance launches](#second-instance-launches-macos-launchservices) and ADR-075), plus the app-level advisory lock (`~/.c0wrk/app.lock`, the `core/instancelock` primitive) that keeps such a transient process away from crash-capture state.
 - `desktop/notifications_linux.go` / `desktop/notifications_notlinux.go` — the platform send hook: on Linux c0wrk's own icon-augmented `org.freedesktop.Notifications` transport (see [Notification icon](#notification-icon)); on other platforms a stub straight to the Wails runtime.
 - `desktop/notifications_icon.go` + `desktop/icon/appicon.png` — the embedded application icon (byte-identical copy of `build/appicon.png`, guarded by a drift test — `go:embed` cannot reference files above the package dir).
 - `frontend/src/api/notifications.ts` — the single import path for the Go transport: `initSystemNotifications`, `sendSystemNotification`, `showTestNotification`, `checkNotificationAuthorization`, `onNotificationClicked` (payload-validated `notification_clicked` subscription with drop reporting), plus the web-transport permission helpers behind the contract below (`ensureNotificationPermission` with its three-way outcome, `NotificationPermissionError`, `webNotificationDenialCause`).
@@ -52,7 +52,7 @@ Key points:
 - `frontend/src/stores/systemNotificationStore.ts` — the master `enabled` toggle (persisted at `c0wrk-system-notifications`, default enabled).
 - `frontend/src/components/settings/SystemNotificationSettings.tsx` — settings UI (General tab, under Sound): toggle + lazy permission probe + banner-lifetime selector (Linux only) + test button.
 - `backend/config/config.go` (`NotificationsConfig`) + `backend/config/defaults.go` — the `notifications.banner_timeout_seconds` setting and its pointer-int default; `backend/frontend_api_config.go` exposes it as `GetNotificationBannerTimeout` / `SetNotificationBannerTimeout`. Documented for operators in `config.example.yaml`.
-- `frontend/src/hooks/sessionSoundCoverage.test.tsx` — pins banner coverage for all 9 cued events (both active and background paths, disjoint ownership, malformed-payload silence).
+- `frontend/src/hooks/sessionSoundCoverage.test.tsx` — pins banner coverage for all 10 cued events (both active and background paths, disjoint ownership, malformed-payload silence).
 - `desktop/notifications_test.go` — pins the Go-side callback/transport/authorization behavior.
 - `desktop/window_activation_test.go` — pins the per-platform click activation matrix (Linux pager-then-fallback, darwin show-only, Windows guarded restore).
 - `desktop/window_activation_linux.go` / `desktop/window_activation_notlinux.go` — the Linux EWMH pager-source window activation (`x11ActivateOwnWindow`): one long-lived private X connection (`x11Conn`), own-window discovery (`_NET_CLIENT_LIST` + `_NET_WM_PID`, preferring `_NET_WM_WINDOW_TYPE_NORMAL`), fresh server timestamp, `_NET_ACTIVE_WINDOW` source=2 + focus takeover; fail-soft fallback to the Wails present() path. Non-Linux stub returns false.
@@ -60,7 +60,7 @@ Key points:
 
 ## Event → content mapping
 
-`classifyNotificationContent(event, data)` is the banner counterpart of `classifySessionEvent` — the same nine events, the same `task_complete` success disambiguation, but each event yields its own title/body pair (a banner must say WHAT needs attention, not just that something does). Bodies clip at 200 chars with an ellipsis.
+`classifyNotificationContent(event, data)` is the banner counterpart of `classifySessionEvent` — the same ten events, the same `task_complete` success disambiguation, but each event yields its own title/body pair (a banner must say WHAT needs attention, not just that something does). Bodies clip at 200 chars with an ellipsis.
 
 | NotificationKind | Session events | Title / body |
 | ---------------- | -------------- | ------------ |
@@ -71,6 +71,7 @@ Key points:
 | `attention` | `plan_review_ready` | "Plan ready for review" / a plan awaits approval |
 | `attention` | `task_failed_resumable` | "Task failed — resumable" / failure message |
 | `attention` | `goal_proposal` | "Goal proposal ready" / a proposal needs review |
+| `attention` | `goal_suggestion` | "Goal mode suggested" / the offer is waiting for an answer |
 | `error` | `error` | "Task error" / error message |
 | `error` | `task_cancelled` | "Task cancelled" / the task was cancelled |
 | `error` | `task_complete` (payload `success === false`) | "Task failed" / task output or failure note |
@@ -108,7 +109,7 @@ The activation order in the Go callback stays reveal-first: `showWindow` runs BE
 2. Empty `session_id` (the Settings preview banner) → logged no-op (focus-only click).
 3. Resolve the owning project: the payload's `project_id` first; otherwise the global session snapshot, with one immediate `refreshNow()` retry when the session is not found.
 4. Unknown session (even after the refresh) → logged no-op.
-5. Known session, flag OFF (`uiStore.tabsEnabled`, read at click time — a toggle applies to the next click without a remount): `switchProjectWithState(projectId)` when the project differs (restores that project's UI state), then `selectSession(sessionId, projectId)` — the pre-tab radar path; the tab layer is never read or written. A failed switch surfaces its own toast and selects nothing.
+5. Known session, flag OFF (the effective tabs flag `selectEffectiveTabsEnabled` — `!webTransport && uiStore.tabsEnabled` — read at click time, so a toggle applies to the next click without a remount): `switchProjectWithState(projectId)` when the project differs (restores that project's UI state), then `selectSession(sessionId, projectId)` — the pre-tab radar path; the tab layer is never read or written. A failed switch surfaces its own toast and selects nothing.
 6. Known session, flag ON: the click routes through the workspace tab engine ([tabs.md](tabs.md)) — the exact `{projectId, sessionId}` tab if one exists, else any tab already showing the session (session ids are globally unique), else a new tab created for the clicked context; `engine.activate(...)` then materializes the context (project switch + session restore inside the activation) and never rejects — a failed activation rolls the active tab back and logs a warning. The hook owns a BARE engine (no `attachWriteBack`), so a click can never install a second write-back; the app-level controller in `AppLayout` stays the only one.
 
 The Linux transport dispatches `App.notificationCallback` on its own goroutine, never inline on the godbus signal pump: the callback activates the window, which makes blocking X round trips, and a stalled pump makes godbus silently discard every subsequent signal — one slow activation would otherwise disable notification clicks until restart. Both the `ActionInvoked` and the reason-2 `NotificationClosed` handlers dispatch this way.
@@ -222,7 +223,7 @@ Two more lines bound the transport's health, once per run each: `system notifica
 - Exactly one `OnNotificationResponse` callback is registered per app run (init is memoized; a failed init is retried but never double-registers).
 - Banner ids are unique within a process (`c0wrk-notification-<GOOS>-<timestamp>-<seq>`).
 - `notification_clicked` payloads are validated (`isNotificationClickedData`); malformed ones are dropped and reported, never dispatched.
-- Banner-click navigation branches on `uiStore.tabsEnabled`, read at click time: flag ON routes through the tab engine's single activation path (a bare engine — no write-back), flag OFF keeps the pre-tab switch-then-select path and never touches the tab layer.
+- Banner-click navigation branches on the effective tabs flag (`selectEffectiveTabsEnabled`), read at click time: flag ON routes through the tab engine's single activation path (a bare engine — no write-back), flag OFF keeps the pre-tab switch-then-select path and never touches the tab layer.
 - The Linux icon transport is fail-soft: a banner is never lost to an icon/export/D-Bus failure (fallback to the Wails transport), and exactly one side tracks each notification (no double delivery, no orphan clicks).
 - The Linux click callback runs on its own goroutine, leaving the godbus signal pump free to keep reading — window activation and signal delivery never share a goroutine.
 - The transport state lock is never held across the blocking `Notify` round trip; concurrent sends serialize on a dedicated send mutex, and a slow daemon can only delay other sends, never the pump or `Shutdown`.
@@ -238,7 +239,7 @@ Two more lines bound the transport's health, once per run each: `system notifica
 - **Lock-screen exposure** — banner bodies may carry task output (`task_complete` output, error messages), and the channel is enabled by default. OS banners persist in the notification center's history and are commonly rendered on the lock screen, i.e. readable without unlocking. Titles are fixed strings and never carry content, and nothing banner-related is logged — but the banner body itself is an output channel: a user with that threat surface should disable the channel (Settings → General → System notifications). Bodies are not redacted on purpose: a stripped body makes the banner useless.
 - The webview reload (macOS wake/termination recovery) discards frontend module state — the memoized init promise included — but the Go-side init and callback survive it; the next `initSystemNotifications()` re-runs harmlessly (backend memoization makes it a no-op).
 - Linux banner-dismiss navigates like a click (the Wails reason-mapping quirk above).
-- No per-event granularity: the master toggle governs all nine cued events (mirroring the sound channel's single-switch design).
+- No per-event granularity: the master toggle governs all ten cued events (mirroring the sound channel's single-switch design).
 - Banner expiry is invisible to the app: a daemon may retire a banner without emitting `NotificationClosed`, so a banner the user never acted on leaves no trace — `banner_timeout_seconds: 0` is the way to keep such a banner reachable.
 - A banner sent with `banner_timeout_seconds: 0` stays on screen after the user handles the request inside the app; c0wrk never calls `CloseNotification`, so stale attention banners are dismissed by hand.
 - The X11 activation transport is X11-only by construction: on a Wayland session `XOpenDisplay` fails → the fail-soft `WindowUnminimise` fallback runs (GTK/`gtk_window_present` may still be honored by the compositor depending on its focus policy). A native Wayland activation path would require the foreign-toplevel-management protocol and is not implemented.
@@ -251,5 +252,5 @@ Two more lines bound the transport's health, once per run each: `system notifica
 - [sound-notifications.md](sound-notifications.md) — the audible channel; the shared listener-coverage invariant and the foreground/background ownership model.
 - [stores.md](stores.md) — `systemNotificationStore` (the persisted master toggle).
 - [tabs.md](tabs.md) — the workspace tab layer behind the flag-ON click branch (the bare engine, tab matching, activation rollback).
-- [events.md](events.md) — event subscription; `useSoundEvents` and the background watcher are composed by `useSessionEvents`.
+- [events.md](events.md) — event subscription; `useSoundEvents` is composed by `useSessionEvents`, while the background watcher is mounted once at the App root (`frontend/src/App.tsx`).
 - [../../contracts/event-catalog.md](../../contracts/event-catalog.md) — the `notification_clicked` global event.

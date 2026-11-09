@@ -12,13 +12,13 @@ Implemented (ADR-088), with v1 deltas recorded in place (each carries an inline 
 
 - `backend/session/persistence.go` — the `prompt_suggestions` table + lookup index (schema in ADR-088 D7), CRUD on the shared session store over `core.PromptSuggestion` rows (TEXT↔typed conversion at the SQLite boundary), including the store-level `SetPromptSuggestionStatus` (accept/dismiss persistence; no frontend caller yet)
 - `backend/session/prompt_suggest.go` — the trigger: the finish-hook outcome gate (D2), one fail-open generation pass per kind on a tracked background goroutine, atomic persistence of the pass, and the session-scoped `prompt_suggestions` event
-- `backend/frontend_api_suggestions.go` — the RPC surface: `GetPromptSuggestions` (restore, routed per § Flow) and `SetPromptSuggestionsEnabled` (the config gate: persist + apply in one call)
+- `backend/frontend_api_suggestions.go` — the RPC surface: `GetPromptSuggestions` (the read-only restore getter — a `PromptSuggestionsResponse` with no error return, routed per § Read routing) and `SetPromptSuggestionsEnabled` (the config gate: persist + apply in one call)
 - `core/prompt_suggest.go` — the one-shot service call (`ServiceKindPromptSuggest`): input assembly (the D3 window, `is_nudge` filter D5, language directive D6), LLM round-trip, response parsing; owns the canonical `PromptSuggestion` row type the pipeline and the wire share
 - `core/prompts/prompt_suggest_continuation.md` + `core/prompts/prompt_suggest_new_session.md` — the two generation prompts (embedded via `prompts.go`; a test pins every `.md` file as referenced): continuation for a session with a transcript, new-session for the project `next_task` hand-off
 - `frontend/src/api/suggestions.ts` — RPC wrappers (`@/api/*` only)
 - `frontend/src/stores/promptSuggestionsStore.ts` — single-slot active-session suggestion set + position index (`usePromptSuggestions`/`usePromptSelectedIndex` selectors); cleared on session switch/delete
 - `frontend/src/hooks/usePromptSuggestionsSync.ts` — refetch wiring: reloads the active session's set on session/project change and on the `prompt_suggestions` event (refetches rather than applies the payload)
-- `frontend/src/hooks/useChatInputController.ts` — suggestion mode: the ↑↓→ interception (D8), the hint placeholder
+- `frontend/src/hooks/useChatInputController.ts` — suggestion mode: the ↑↓→ interception (D8), the hint placeholder (the pure placeholder/preview helpers live in `frontend/src/lib/chatInputLock.ts`: `buildSuggestionPlaceholderNode`, `suggestionPreviewText`, `suggestionPositionLabel`, `isSuggestionPlaceholderActive`)
 - `frontend/src/components/settings/PromptSuggestionsSettings.tsx` — the Settings → General toggle for the gate
 
 ## Core Types
@@ -122,6 +122,22 @@ The gate reads the TYPED execution status (`result.Status`), not the completion 
 
 `is_nudge` (D5): a boolean stamped into the persisted message metadata at ingestion for (a) messages injected by the resume path's `nudge` parameter (`Step.UserNudge`) and (b) live user interjections sent while a task is running (the send path stamps every non-fresh classification — `mergeIsNudgeMetadata`). **v1 delta:** short contentless continuation prompts typed by the user ("continue", "продолжай", kin) are NOT stamped — a fresh classification after a finish is never stamped, so such messages can still enter a window; stamping them needs a content classifier at ingestion and is the open D5 follow-up. The flag is metadata-only — rendering and execution never consult it; only the suggestion input builder drops it. Windows are chronological, project-scoped, and per-session bounded; no embedding retrieval in v1.
 
+### Read routing (`GetPromptSuggestions`)
+
+`GetPromptSuggestions(sessionID, projectID)` returns a `PromptSuggestionsResponse` with NO error: every transcript or store read failure degrades to an empty set with a Debug log (D9). Routing is by session CONTENT, and `source` names the context CONSULTED even when `suggestions` is empty:
+
+| Addressed session | `source` | Set served |
+| --- | --- | --- |
+| Has a transcript | `continuation` | that session's own active `goal_advance` rows (its `next_task` rows belong to the new-session surface and stay out) |
+| Has a transcript, no active `goal_advance` rows | `continuation` | empty — the continuation branch never falls through to the project window |
+| Empty or brand-new (ADR-091's eager row, or the empty id) | `new_session` | the project's freshest active `next_task` set: a newest-first scan (`session.PromptSuggestSessionsNewestFirst`, pure recency — pinned sessions do not win) over the same 10-session project window D3 generates over (`promptSuggestionsProjectScan`); the first session with active `next_task` rows wins, and its rows are returned as persisted, so `session_id` names the ORIGINATING session rather than the addressed one |
+| Project window consulted, nothing active | `new_session` | empty |
+| No-Project/CHAT session, empty project id, or no store | `none` | empty |
+
+A transcript-read failure is indistinguishable from "no content yet" and falls through to the project branch (fail-open). The frontend consumes `id`/`kind`/`text` only: it never re-filters by kind and keys nothing off a row's `session_id`.
+
+`SetPromptSuggestionsEnabled(enabled)` is a no-op when the request matches the stored EFFECTIVE value (`PromptSuggestionsConfig.SuggestionsEnabled()`, nil = on); it persists first and rolls the in-memory value back when the disk write fails, then flips the session manager's outcome gate in the same beat (`Manager.SetPromptSuggestionsEnabled`, no restart) and announces `config:updated`.
+
 ### Language (D6)
 
 The generation prompt directs the model to write suggestions in the dominant language of the supplied history. No setting, no detector — the history is the signal.
@@ -154,6 +170,7 @@ Fail-open at every layer (D9): outcome-gate mismatch, empty window, LLM error/ti
 - Suggestion text matches the language of the history it was generated from (D6).
 - `↑`/`↓`/`→` are intercepted only in suggestion mode (empty input + active set); `Enter` is never captured (D8). The arrows clamp at both ends of the set (D8 v1 delta).
 - No failure in the subsystem can delay, block, or error a message send or task finish (D9).
+- The restore getter returns no error and routes by session content: a transcript session stays on its own `continuation` set (empty rather than falling through to the project window), an empty or brand-new session draws the project's freshest active `next_task` set from a newest-first scan of the same 10-session project window, and a No-Project window serves `source: "none"` with an empty set (D8/D9).
 - The only config surface is the `prompt_suggestions.enabled` gate (pointer-bool, nil = on); the 10-session window and the per-pass cap (3) remain compile-time constants (D3/D7/D9).
 
 ## Configuration

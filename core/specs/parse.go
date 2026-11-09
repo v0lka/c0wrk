@@ -197,6 +197,12 @@ func headingSlugs(content string) map[string]bool {
 // a template heading inside a fenced block never ends a section; the body
 // itself is returned raw (Key Files entries keep their backticks).
 func sectionBody(content, name string) string {
+	return sectionBodyWhere(content, func(heading string) bool { return strings.EqualFold(heading, name) })
+}
+
+// sectionBodyWhere is sectionBody with a caller-supplied heading match —
+// the same fence-aware boundaries, first matching section wins.
+func sectionBodyWhere(content string, match func(heading string) bool) string {
 	var out []string
 	inSection := false
 	inFence := false
@@ -218,7 +224,7 @@ func sectionBody(content, name string) string {
 				}
 				continue // a deeper sub-heading stays inside the section
 			}
-			if strings.EqualFold(heading, name) {
+			if match(heading) {
 				inSection = true
 				sectionLevel = level
 			}
@@ -229,6 +235,15 @@ func sectionBody(content, name string) string {
 		}
 	}
 	return strings.Join(out, "\n")
+}
+
+// isTaskTableHeading matches the task navigation table's heading: the
+// observed dialects ("Navigation by Task", "Task -> Specs", "Task ->
+// Spec") share the word "task". Matching is fail-soft — a document
+// without a task-heading section keeps an empty Tasks table, and the
+// INDEX_STALE baseline never flows through this match.
+func isTaskTableHeading(heading string) bool {
+	return strings.Contains(strings.ToLower(heading), "task")
 }
 
 // -- content parsers --
@@ -357,16 +372,20 @@ func parseADRStatusLine(line string) (status, supersededBy string) {
 	return status, ""
 }
 
-// ParseIndex parses INDEX.md: the "## Navigation by Task" table into Tasks
-// and the "## Directory Listing" section's relative .md links into
-// ListedFiles. Always returns a non-nil index; an INDEX.md without either
-// section parses to empty slices.
+// ParseIndex parses INDEX.md: the task navigation table into Tasks (the
+// first section whose heading carries the word "task"; observed dialects:
+// "Navigation by Task", "Task -> Specs", "Task -> Spec") and every
+// .md-shaped relative token the document mentions into the INDEX_STALE
+// mention baseline (ListedFiles exact paths, ListedNames bare file names).
+// Dialect tolerance is specified in specs/domains/specs.md. Always returns
+// a non-nil index; an INDEX.md without either parses to empty slices.
 func ParseIndex(content string) *SpecsIndex {
-	idx := &SpecsIndex{
-		Tasks:       parseIndexTasks(sectionBody(content, "Navigation by Task")),
-		ListedFiles: parseIndexListed(sectionBody(content, "Directory Listing")),
+	listed, names := collectIndexRefs(content)
+	return &SpecsIndex{
+		Tasks:       parseIndexTasks(sectionBodyWhere(content, isTaskTableHeading)),
+		ListedFiles: listed,
+		ListedNames: names,
 	}
-	return idx
 }
 
 // parseIndexTasks reads the navigation table: pipe rows whose second cell
@@ -419,35 +438,124 @@ func isTableSeparator(cells []string) bool {
 	return sawMarker
 }
 
-// parseIndexListed collects the directory listing's relative .md link
-// targets, normalized and deduplicated, in document order.
-func parseIndexListed(body string) []string {
-	seen := make(map[string]bool)
-	var out []string
-	for _, target := range relativeLinks(plainText(body)) {
-		cleaned, ok := normalizeListedPath(target)
-		if !ok || seen[cleaned] {
+// collectIndexRefs scans the whole document for .md-shaped relative
+// tokens, in document order, deduplicated: markdown link targets and
+// inline-code fields in prose, raw whitespace fields inside fenced blocks
+// (directory trees, dependency diagrams). Tokens with a directory part
+// land in exact; bare file names additionally land in names — a tree
+// names leaves below their directory entries, so the full path never
+// appears on one line.
+func collectIndexRefs(content string) (exact, names []string) {
+	seenExact := make(map[string]bool)
+	seenNames := make(map[string]bool)
+	addExact := func(p string) {
+		if !seenExact[p] {
+			seenExact[p] = true
+			exact = append(exact, p)
+		}
+	}
+	addName := func(p string) {
+		if !seenNames[p] {
+			seenNames[p] = true
+			names = append(names, p)
+		}
+	}
+	inFence := false
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			inFence = !inFence
 			continue
 		}
-		seen[cleaned] = true
-		out = append(out, cleaned)
+		if inFence {
+			for _, field := range strings.Fields(trimmed) {
+				classifyIndexToken(field, addExact, addName)
+			}
+			continue
+		}
+		prose := stripInlineCode(line)
+		for _, target := range relativeLinks(prose) {
+			classifyIndexToken(target, addExact, addName)
+		}
+		for _, span := range inlineCodeSpans(line) {
+			for _, field := range strings.Fields(span) {
+				classifyIndexToken(field, addExact, addName)
+			}
+		}
+		for _, field := range strings.Fields(prose) {
+			classifyIndexToken(field, addExact, addName)
+		}
 	}
-	return out
+	return exact, names
 }
 
-// normalizeListedPath reduces a link target to a specs-root-relative .md
-// path. Links leaving the specs tree (../CODING_STANDARDS.md) and non-.md
-// targets (directory links) are not listed spec files.
-func normalizeListedPath(target string) (string, bool) {
-	p, _ := splitRef(target)
-	if !strings.HasSuffix(p, ".md") {
+// classifyIndexToken files one candidate token: a valid path shape goes to
+// exact (all tokens) and to names (bare names only); URLs, absolute and
+// parent-escaping paths, globs, markup debris and non-.md shapes drop
+// out, keeping the baseline a set of plausible spec paths. The #anchor
+// splits before the shape checks — "b.md#section" is a mention of b.md.
+func classifyIndexToken(field string, addExact, addName func(string)) {
+	p, _ := splitRef(field)
+	tok, ok := cleanIndexToken(p)
+	if !ok {
+		return
+	}
+	cleaned := path.Clean(tok)
+	if cleaned == "." || cleaned == ".." || cleaned == "/" ||
+		strings.HasPrefix(cleaned, "../") || strings.HasPrefix(cleaned, "/") {
+		return
+	}
+	addExact(cleaned)
+	if !strings.Contains(cleaned, "/") {
+		addName(cleaned)
+	}
+}
+
+// cleanIndexToken strips the markup a token collects from its context —
+// wrapping brackets and quotes, trailing sentence punctuation — and
+// rejects non-path shapes: inner markup characters (a format example's
+// "text](relative/path.md" trims but stays debris), scheme'd URLs,
+// absolute and home paths, glob metacharacters, non-.md suffixes. Tree
+// glyphs need no stripping: they drop out with the .md check.
+func cleanIndexToken(field string) (string, bool) {
+	tok := strings.Trim(field, "`\"'[](){}<>,.;:!?")
+	if tok == "" {
 		return "", false
 	}
-	cleaned := path.Clean(p)
-	if cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, "../") || strings.HasPrefix(cleaned, "/") {
+	if strings.ContainsAny(tok, "[](){}<>\"'`") {
 		return "", false
 	}
-	return cleaned, true
+	if strings.Contains(tok, "://") || strings.HasPrefix(tok, "mailto:") {
+		return "", false
+	}
+	if strings.HasPrefix(tok, "/") || strings.HasPrefix(tok, "~") || strings.ContainsAny(tok, "*?") {
+		return "", false
+	}
+	if !strings.HasSuffix(strings.ToLower(tok), ".md") {
+		return "", false
+	}
+	return tok, true
+}
+
+// inlineCodeSpans returns the content of every `...` span of the line. An
+// unmatched backtick swallows the rest of the line — the same tolerance
+// stripInlineCode applies, and under-extraction can only miss mentions,
+// never invent them.
+func inlineCodeSpans(line string) []string {
+	var out []string
+	for {
+		start := strings.IndexByte(line, '`')
+		if start < 0 {
+			return out
+		}
+		rest := line[start+1:]
+		end := strings.IndexByte(rest, '`')
+		if end < 0 {
+			return out
+		}
+		out = append(out, rest[:end])
+		line = rest[end+1:]
+	}
 }
 
 // relativeLinks returns the relative link targets of a text fragment, in
@@ -831,11 +939,12 @@ func unpaddedADRNumber(number string) string {
 	return number
 }
 
-// indexStaleFindings flags section files INDEX.md does not know about. The
-// baseline is the directory listing plus the task navigation table's spec
-// targets — a file the index navigates to is not forgotten, wherever the
-// link lives. Without a parsed INDEX.md there is no baseline to be stale
-// against — a missing index produces no findings.
+// indexStaleFindings flags section files INDEX.md does not mention: the
+// baseline is the whole-document mention scan — ListedFiles exact paths
+// plus ListedNames bare file names matching any section file of that name
+// (a directory tree spells its leaves without their parent directories).
+// Without a parsed INDEX.md there is no baseline to be stale against — a
+// missing index produces no findings.
 func indexStaleFindings(root *SpecsRoot) []Finding {
 	if root.Index == nil {
 		return nil
@@ -844,16 +953,13 @@ func indexStaleFindings(root *SpecsRoot) []Finding {
 	for _, p := range root.Index.ListedFiles {
 		listed[p] = true
 	}
-	for _, task := range root.Index.Tasks {
-		for _, s := range task.Specs {
-			if cleaned, ok := normalizeListedPath(s); ok {
-				listed[cleaned] = true
-			}
-		}
+	names := make(map[string]bool, len(root.Index.ListedNames))
+	for _, n := range root.Index.ListedNames {
+		names[n] = true
 	}
 	var findings []Finding
 	for _, f := range root.Files {
-		if f.Section == "" || listed[f.Path] {
+		if f.Section == "" || listed[f.Path] || names[path.Base(f.Path)] {
 			continue
 		}
 		findings = append(findings, Finding{

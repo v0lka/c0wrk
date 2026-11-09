@@ -142,3 +142,20 @@ design; this ADR records it. (The issue drafted the ADR number as 072; numbers
   mention syntax is generalized here.
 - `docs/custom-skills-and-subagents.md` §3.4 and §4.1 — the user-facing syntax
   reference.
+
+## Historical Note
+
+2026-11-07 — successor membership for the enumerated sets this record names;
+the decisions above are unchanged.
+
+- Decision 1's completion list carries four labelled sections, not two. In
+  `frontend/src/lib/cmChatAutocomplete.ts` the section ranks are `Commands`
+  (0, added by [ADR-096](./096-custom-commands.md)), `Subagents` (1),
+  `MCP Servers` (2, added by
+  [ADR-077](./077-explicit-mcp-server-mentions.md)) and `Skills` (3).
+- Decision 5's collision-qualified spelling set carries four members:
+  `/agent:`, `/skill:`, `/mcp:` and `/command:` (the command form parsed in
+  `frontend/src/lib/commandsExpand.ts`).
+- Decisions 3, 4 and 6 partition and collision-check against four public
+  catalogs — commands, subagent profiles, skills and mentionable MCP servers —
+  instead of the two named there.

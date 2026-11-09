@@ -6,7 +6,8 @@ Conventions for running c0wrk's TypeScript and Go test suites with passing asser
 
 ## Key Files
 
-- `Makefile` - `test` = `test-go` (uncached verbose default Go checks, `-skip '^TestStress'`) + frontend; `test-stress` invokes the audited Go runner
+- `Makefile` - `test` = `test-go` (uncached verbose default Go checks, `-skip '^TestStress'`) + frontend; `test-stress` invokes the audited Go runner; `vulncheck` invokes the pinned `govulncheck` wrapper; `fmt-check` (a `lint` prerequisite) fails on any `gofmt -l` hit under `main.go`, `internal`, `core`, `backend`, `desktop`
+- `internal/vulncheck/` - the `make vulncheck` gate: re-runs the pinned `govulncheck` (`GOVULNCHECK_VERSION`, the same pin the CI `security` job uses) in JSON mode because the tool has no ignore flag, then checks every reachable finding against `internal/vulncheck/allowlist.json` fail-closed in all four directions — an uncovered finding, an EXPIRED entry, a stale entry that matches no finding, and a malformed allowlist all fail the run, so an exception is never permanent or silent
 - `internal/teststress/` - cross-platform stress driver; fixed 20 race/shuffle repetitions, buffered JSON parsing with full output printed only for failing runs, and required run/pass counts; missing/skipped/failed coverage is nonzero
 - `internal/testtiming/category_test.go` - exact stress inventory and Make/CI driver contract
 - `frontend/package.json` - frontend `test` (`vitest run`), `build` (`tsc -b && vite build`) and `lint` (`eslint .`) commands

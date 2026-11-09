@@ -1,151 +1,13 @@
 package desktop
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
-	"time"
 
+	"github.com/v0lka/c0wrk/backend"
 	"github.com/v0lka/c0wrk/backend/session"
-	coretools "github.com/v0lka/c0wrk/core/tools"
-	"github.com/v0lka/sp4rk/agent"
-	sdktools "github.com/v0lka/sp4rk/tools"
+	"github.com/v0lka/c0wrk/core/hitlwire"
 )
-
-// extractPayload performs the standard data[0].(map[string]any) shape check
-// shared by every Wails event handler. Returns the payload and ok=true on
-// success, or logs a warning and returns ok=false on missing/wrong-shape data.
-func extractPayload(eventName string, data []any, log *slog.Logger) (map[string]any, bool) {
-	if len(data) == 0 {
-		log.Warn(eventName + ": missing payload")
-		return nil, false
-	}
-	payload, ok := data[0].(map[string]any)
-	if !ok {
-		log.Warn(eventName+": unexpected payload type", "data", data)
-		return nil, false
-	}
-	return payload, true
-}
-
-// parseConfirmDecision converts the JSON decision field (JSON number →
-// float64, an int, or a string) into a sdktools.ConfirmationResponse;
-// ok=false on missing/unrecognized values, with a warning logged.
-func parseConfirmDecision(payload map[string]any, log *slog.Logger) (sdktools.ConfirmationResponse, bool) {
-	decisionVal, ok := payload["decision"]
-	if !ok {
-		log.Warn("tool confirmation response missing decision field")
-		return 0, false
-	}
-
-	switch v := decisionVal.(type) {
-	case float64:
-		return numericConfirmDecision(int(v), log)
-	case int:
-		return numericConfirmDecision(v, log)
-	case string:
-		switch v {
-		case "allow_once":
-			return sdktools.ConfirmAllowOnce, true
-		case "deny":
-			return sdktools.ConfirmDeny, true
-		case "stop", "deny_and_stop":
-			return sdktools.ConfirmDenyAndStop, true
-		default:
-			log.Warn("unknown string confirmation decision", "decision", v)
-			return 0, false
-		}
-	default:
-		log.Warn("tool confirmation decision has unsupported type", "type", fmt.Sprintf("%T", decisionVal))
-		return 0, false
-	}
-}
-
-// numericConfirmDecision converts an integer decision and rejects values
-// outside the ConfirmationResponse enum range.
-func numericConfirmDecision(v int, log *slog.Logger) (sdktools.ConfirmationResponse, bool) {
-	d := sdktools.ConfirmationResponse(v)
-	if d < sdktools.ConfirmAllowOnce || d > sdktools.ConfirmDenyAndStop {
-		log.Warn("numeric confirmation decision out of range", "decision", v)
-		return 0, false
-	}
-	return d, true
-}
-
-// parseStepLimitResponse validates a step-limit response string against the
-// known enum values; ok=false on unrecognized values.
-func parseStepLimitResponse(v string) (agent.StepLimitResponse, bool) {
-	switch v {
-	case string(agent.StepLimitAllowOnce):
-		return agent.StepLimitAllowOnce, true
-	case string(agent.StepLimitAllowMore):
-		return agent.StepLimitAllowMore, true
-	case string(agent.StepLimitAllowAlways):
-		return agent.StepLimitAllowAlways, true
-	case string(agent.StepLimitDeny):
-		return agent.StepLimitDeny, true
-	default:
-		return "", false
-	}
-}
-
-// parsePlanApprovalDecision validates a plan-review decision string against
-// the event-catalog values (approve / request_changes / abandon); ok=false on
-// missing/unrecognized. An unrecognized decision is a malformed response, not
-// an implicit rejection — the pending approval stays alive for a valid retry.
-func parsePlanApprovalDecision(v string) (string, bool) {
-	switch v {
-	case "approve", "request_changes", "abandon":
-		return v, true
-	default:
-		return "", false
-	}
-}
-
-// parseGoalProposalDecision validates a goal-proposal decision (approve /
-// cancel) under the same discipline: ok=false on unrecognized values leaves
-// the pending proposal alive instead of consuming it as an implicit cancel.
-func parseGoalProposalDecision(v string) (string, bool) {
-	switch v {
-	case "approve", "cancel":
-		return v, true
-	default:
-		return "", false
-	}
-}
-
-// stringField extracts a string field from a payload, logging a warning if the
-// field is missing or has the wrong type.
-func stringField(payload map[string]any, key, eventName string, log *slog.Logger) (string, bool) {
-	val, ok := payload[key]
-	if !ok {
-		log.Warn(eventName+": missing "+key, "key", key)
-		return "", false
-	}
-	s, ok := val.(string)
-	if !ok {
-		log.Warn(eventName+": "+key+" is not string", "type", fmt.Sprintf("%T", val))
-		return "", false
-	}
-	return s, true
-}
-
-// confirmDecisionString renders a ConfirmationResponse back to the wire
-// string the frontend protocol uses ("allow_once" / "deny" /
-// "deny_and_stop"), so a hitl_resolved event can carry the effective decision
-// as text. Returns "" for out-of-range values (the field is omitempty).
-func confirmDecisionString(resp sdktools.ConfirmationResponse) string {
-	switch resp {
-	case sdktools.ConfirmAllowOnce:
-		return "allow_once"
-	case sdktools.ConfirmDeny:
-		return "deny"
-	case sdktools.ConfirmDenyAndStop:
-		return "deny_and_stop"
-	default:
-		return ""
-	}
-}
 
 // emitHitlResolved broadcasts one HITL settlement to every surface (webview +
 // web-access tabs) so they retire their open card and learn the effective
@@ -168,28 +30,15 @@ func (a *App) emitHitlResolved(sessionID string, kind session.HitlResolvedKind, 
 	})
 }
 
-// deliverResponse performs the best-effort buffered send shared by every HITL
-// response handler and reports whether the decision was DELIVERED: a full
-// channel means the receiver is gone or a faster responder won, so the caller
-// must not broadcast the dropped response as the effective settlement.
-func deliverResponse[T any](ch chan T, resp T) bool {
-	select {
-	case ch <- resp:
-		return true
-	default:
-		return false
-	}
-}
-
 // handleToolConfirmResponse is the body of the EventToolConfirmResponse
 // listener (extracted so it is unit-testable without a live Wails runtime).
 func (a *App) handleToolConfirmResponse(payload map[string]any, log *slog.Logger) {
-	requestID, ok := stringField(payload, "confirm_id", "tool confirmation response", log)
+	requestID, ok := hitlwire.StringField(payload, "confirm_id", "tool confirmation response", log)
 	if !ok {
 		return
 	}
 
-	resp, ok := parseConfirmDecision(payload, log)
+	resp, ok := hitlwire.ConfirmDecision(payload, log)
 	if !ok {
 		return
 	}
@@ -216,7 +65,7 @@ func (a *App) handleToolConfirmResponse(payload map[string]any, log *slog.Logger
 	// a concurrent duplicate response can no longer deliver twice anyway.
 	a.pendingConfirmations.Delete(requestID)
 
-	sent := deliverResponse(confirmData.ch, resp)
+	sent := hitlwire.DeliverResponse(confirmData.ch, resp)
 	if !sent {
 		log.Warn("confirmation response dropped: channel full",
 			"confirm_id", requestID,
@@ -238,18 +87,18 @@ func (a *App) handleToolConfirmResponse(payload map[string]any, log *slog.Logger
 	// broadcast (the payload carries the effective decision — see
 	// deliverResponse).
 	if sent {
-		a.emitHitlResolved(confirmData.sessionID, session.HitlResolvedToolConfirm, requestID, confirmDecisionString(resp))
+		a.emitHitlResolved(confirmData.sessionID, session.HitlResolvedToolConfirm, requestID, hitlwire.ConfirmDecisionString(resp))
 	}
 }
 
 // handleToolJudgeRequest is the body of the EventToolJudgeRequest listener:
-// it looks up the pending confirmation and spawns runJudgeEvaluation
-// asynchronously. The beginJudgeEvaluation marker drops repeat frames —
+// it looks up the pending confirmation and spawns the judge evaluation
+// asynchronously. The Begin marker drops repeat frames —
 // first-responder-wins protects only the DELIVERY, so a second frame
 // (double-click, scripted client) would fan out a second full-budget LLM
 // evaluation that could only lose the response race.
 func (a *App) handleToolJudgeRequest(payload map[string]any, uiEmit func(session.Event), log *slog.Logger) {
-	confirmID, ok := stringField(payload, "confirm_id", "tool judge request", log)
+	confirmID, ok := hitlwire.StringField(payload, "confirm_id", "tool judge request", log)
 	if !ok {
 		return
 	}
@@ -265,7 +114,7 @@ func (a *App) handleToolJudgeRequest(payload map[string]any, uiEmit func(session
 		return
 	}
 
-	if !a.beginJudgeEvaluation(confirmID) {
+	if !a.judgeService.Begin(confirmID) {
 		log.Debug("judge evaluation already in flight; dropping repeat request",
 			"confirm_id", confirmID, "tool", pendingData.toolName)
 		return
@@ -273,106 +122,47 @@ func (a *App) handleToolJudgeRequest(payload map[string]any, uiEmit func(session
 	a.judgeWG.Add(1)
 	go func() {
 		defer a.judgeWG.Done()
-		defer a.finishJudgeEvaluation(confirmID)
-		a.runJudgeEvaluation(confirmID, pendingData, uiEmit, log)
-	}()
-}
-
-// beginJudgeEvaluation claims the confirm_id's in-flight slot (true = caller
-// owns it and must release via finishJudgeEvaluation; false = already
-// running, repeat dropped).
-func (a *App) beginJudgeEvaluation(confirmID string) bool {
-	_, loaded := a.judgeInFlight.LoadOrStore(confirmID, struct{}{})
-	return !loaded
-}
-
-// finishJudgeEvaluation releases the claim taken by beginJudgeEvaluation.
-func (a *App) finishJudgeEvaluation(confirmID string) {
-	a.judgeInFlight.Delete(confirmID)
-}
-
-// runJudgeEvaluation performs the on-demand judge call and emits the response
-// event. Always recovers from panics so the handler does not leak a goroutine
-// failure into Wails event-loop instability.
-func (a *App) runJudgeEvaluation(confirmID string, pendingData *pendingConfirmData, uiEmit func(session.Event), log *slog.Logger) {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Error("judge: goroutine panicked", "confirm_id", confirmID, "panic", r)
+		defer a.judgeService.Finish(confirmID)
+		// The on-demand judge call goes through the transport-neutral
+		// backend judge service; the service recovers panics into an error
+		// payload, so the goroutine cannot leak a failure into Wails
+		// event-loop instability. The pending-confirmation lookup and
+		// delivery stay here (HITL plumbing).
+		app := a.application()
+		if app == nil {
+			log.Warn("judge: no application available", "confirm_id", confirmID)
+			a.pendingConfirmations.Delete(confirmID)
 			uiEmit(session.Event{
 				SessionID: pendingData.sessionID,
 				Type:      "tool_judge_response",
 				Data: session.JudgeResponsePayload{
 					ConfirmID: confirmID,
-					Error:     fmt.Sprintf("Internal error during judge evaluation: %v", r),
+					Error:     "Judge unavailable: application not initialized",
 				},
 			})
+			return
 		}
+
+		payload := backend.RunJudgeEvaluation(a.wailsCtx(), &a.judgeService, app, backend.JudgeRequest{
+			ConfirmID:   confirmID,
+			SessionID:   pendingData.sessionID,
+			ToolName:    pendingData.toolName,
+			Input:       pendingData.input,
+			TaskContext: pendingData.taskContext,
+		}, log)
+		uiEmit(session.Event{SessionID: pendingData.sessionID, Type: "tool_judge_response", Data: payload})
+		log.Debug("judge: response event emitted", "confirm_id", confirmID)
 	}()
-
-	log.Debug("judge: goroutine started", "confirm_id", confirmID, "tool", pendingData.toolName)
-
-	app := a.application()
-	if app == nil {
-		log.Warn("judge: no application available", "confirm_id", confirmID)
-		a.pendingConfirmations.Delete(confirmID)
-		uiEmit(session.Event{
-			SessionID: pendingData.sessionID,
-			Type:      "tool_judge_response",
-			Data: session.JudgeResponsePayload{
-				ConfirmID: confirmID,
-				Error:     "Judge unavailable: application not initialized",
-			},
-		})
-		return
-	}
-
-	parentCtx := a.wailsCtx()
-	if parentCtx == nil {
-		parentCtx = context.Background()
-	}
-	judgeCtx, judgeCancel := context.WithTimeout(parentCtx, 120*time.Second)
-	defer judgeCancel()
-
-	// Inject the session dump writer (judge-call observability), then enrich
-	// the judge context with the session's security scope so the judge LLM
-	// sees the session's directory scope (explicit + implicit work dirs).
-	sess, sessOK := app.Manager().GetSession(pendingData.sessionID)
-	if sessOK {
-		// SHARED session writer (one appendcodec encoder per path), never
-		// closed here — the session's close chain owns the codec footer.
-		if dumpFile := sess.DumpWriter(); dumpFile != nil {
-			judgeCtx = agent.WithDumpWriter(judgeCtx, dumpFile)
-		}
-	}
-	judgeCtx = app.Manager().JudgeContext(judgeCtx, pendingData.sessionID)
-
-	responsePayload := session.JudgeResponsePayload{ConfirmID: confirmID}
-
-	// Session-pinned judge evaluation (ADR-028): the manual "Judge" action
-	// evaluates on the session's own provider/model — the same judge
-	// automatic escalations use. See specs/decisions/028-session-pinned-judge.md.
-	_, reasoning, err := app.EvaluateJudgeForSession(judgeCtx, pendingData.sessionID, pendingData.toolName, pendingData.input, pendingData.taskContext)
-	if err != nil {
-		log.Warn("judge: evaluation failed", "confirm_id", confirmID, "tool", pendingData.toolName, "error", err)
-		responsePayload.Error = fmt.Sprintf("Judge evaluation failed: %v", err)
-		responsePayload.Reasoning = reasoning
-	} else {
-		log.Debug("judge: evaluation completed", "confirm_id", confirmID, "tool", pendingData.toolName, "reasoning", reasoning)
-		responsePayload.Reasoning = reasoning
-	}
-
-	uiEmit(session.Event{SessionID: pendingData.sessionID, Type: "tool_judge_response", Data: responsePayload})
-	log.Debug("judge: response event emitted", "confirm_id", confirmID)
 }
 
 // handleAskUserResponse is the body of the EventAskUserResponse listener.
 func (a *App) handleAskUserResponse(payload map[string]any, log *slog.Logger) {
-	requestID, ok := stringField(payload, "request_id", "ask_user response", log)
+	requestID, ok := hitlwire.StringField(payload, "request_id", "ask_user response", log)
 	if !ok {
 		return
 	}
 
-	resp := parseAskUserAnswers(payload)
+	resp := hitlwire.AskUserAnswers(payload)
 
 	chVal, ok := a.pendingAskUser.Load(requestID)
 	if !ok {
@@ -393,7 +183,7 @@ func (a *App) handleAskUserResponse(payload map[string]any, log *slog.Logger) {
 	// below relies on).
 	a.pendingAskUser.Delete(requestID)
 
-	sent := deliverResponse(entry.ch, resp)
+	sent := hitlwire.DeliverResponse(entry.ch, resp)
 	if !sent {
 		log.Warn("ask_user response dropped: channel full or receiver gone",
 			"request_id", requestID)
@@ -417,13 +207,13 @@ func (a *App) handleAskUserResponse(payload map[string]any, log *slog.Logger) {
 
 // handlePlanApprovalResponse is the body of the EventPlanApprovalResponse listener.
 func (a *App) handlePlanApprovalResponse(payload map[string]any, log *slog.Logger) {
-	requestID, ok := stringField(payload, "request_id", "plan_approval response", log)
+	requestID, ok := hitlwire.StringField(payload, "request_id", "plan_approval response", log)
 	if !ok {
 		return
 	}
 
 	rawDecision, _ := payload["decision"].(string)
-	decision, ok := parsePlanApprovalDecision(rawDecision)
+	decision, ok := hitlwire.PlanApprovalDecision(rawDecision)
 	if !ok {
 		log.Warn("plan_approval response has unknown or missing decision",
 			"decision", rawDecision, "request_id", requestID)
@@ -448,7 +238,7 @@ func (a *App) handlePlanApprovalResponse(payload map[string]any, log *slog.Logge
 	// never observes a deleted-alive entry).
 	a.pendingPlanApprovals.Delete(requestID)
 
-	sent := deliverResponse(entry.ch, planApprovalResponse{Decision: decision, Feedback: feedback})
+	sent := hitlwire.DeliverResponse(entry.ch, planApprovalResponse{Decision: decision, Feedback: feedback})
 	if !sent {
 		log.Warn("plan approval response dropped: channel full or receiver gone",
 			"request_id", requestID)
@@ -498,7 +288,7 @@ func (a *App) resolveGoalProposal(requestID, decision, condition, verify, verifi
 	// (happen-before the channel send; a waiting consumer must never observe
 	// a deleted-alive entry).
 	a.pendingGoalProposals.Delete(requestID)
-	sent := deliverResponse(entry.ch, resp)
+	sent := hitlwire.DeliverResponse(entry.ch, resp)
 
 	// Mark the persisted goal_proposal message as resolved so it doesn't
 	// reappear as pending on session reload.
@@ -524,12 +314,12 @@ func (a *App) resolveGoalProposal(requestID, decision, condition, verify, verifi
 // handleGoalProposalResponse is the body of the EventGoalProposalResponse
 // listener (extracted so it is unit-testable without a live Wails runtime).
 func (a *App) handleGoalProposalResponse(payload map[string]any, log *slog.Logger) {
-	requestID, ok := stringField(payload, "request_id", "goal_proposal response", log)
+	requestID, ok := hitlwire.StringField(payload, "request_id", "goal_proposal response", log)
 	if !ok {
 		return
 	}
 	rawDecision, _ := payload["decision"].(string)
-	decision, ok := parseGoalProposalDecision(rawDecision)
+	decision, ok := hitlwire.GoalProposalDecision(rawDecision)
 	if !ok {
 		log.Warn("goal proposal response has unknown or missing decision",
 			"decision", rawDecision, "request_id", requestID)
@@ -563,7 +353,7 @@ func (a *App) resolveGoalSuggestion(requestID, decision string) bool {
 		return false
 	}
 
-	sent := deliverResponse(entry.ch, goalSuggestionResponse{Decision: decision})
+	sent := hitlwire.DeliverResponse(entry.ch, goalSuggestionResponse{Decision: decision})
 	a.pendingGoalSuggestions.Delete(requestID)
 
 	// Mark the persisted goal_suggestion message as resolved so it doesn't
@@ -587,7 +377,7 @@ func (a *App) resolveGoalSuggestion(requestID, decision string) bool {
 // handleGoalSuggestionResponse is the body of the EventGoalSuggestionResponse
 // listener (extracted so it is unit-testable without a live Wails runtime).
 func (a *App) handleGoalSuggestionResponse(payload map[string]any, log *slog.Logger) {
-	requestID, ok := stringField(payload, "request_id", "goal_suggestion response", log)
+	requestID, ok := hitlwire.StringField(payload, "request_id", "goal_suggestion response", log)
 	if !ok {
 		return
 	}
@@ -602,50 +392,9 @@ func (a *App) handleGoalSuggestionResponse(payload map[string]any, log *slog.Log
 	}
 }
 
-// parseAskUserAnswers extracts the typed answers slice from the untyped JSON
-// payload; malformed entries are skipped (unrecognized question IDs are
-// rejected upstream anyway).
-func parseAskUserAnswers(payload map[string]any) coretools.AskUserResponse {
-	var resp coretools.AskUserResponse
-
-	answersVal, ok := payload["answers"]
-	if !ok {
-		return resp
-	}
-	answersArr, ok := answersVal.([]any)
-	if !ok {
-		return resp
-	}
-
-	for _, item := range answersArr {
-		answerMap, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		var answer coretools.AskUserAnswer
-		if id, ok := answerMap["id"].(string); ok {
-			answer.ID = id
-		}
-		if selectedVal, ok := answerMap["selected"]; ok {
-			if selectedArr, ok := selectedVal.([]any); ok {
-				for _, v := range selectedArr {
-					if s, ok := v.(string); ok {
-						answer.Selected = append(answer.Selected, s)
-					}
-				}
-			}
-		}
-		if ct, ok := answerMap["custom_text"].(string); ok {
-			answer.CustomText = ct
-		}
-		resp.Answers = append(resp.Answers, answer)
-	}
-	return resp
-}
-
 // handleStepLimitResponse is the body of the EventStepLimitResponse listener.
 func (a *App) handleStepLimitResponse(payload map[string]any, log *slog.Logger) {
-	requestID, ok := stringField(payload, "request_id", "step_limit response", log)
+	requestID, ok := hitlwire.StringField(payload, "request_id", "step_limit response", log)
 	if !ok {
 		return
 	}
@@ -661,7 +410,7 @@ func (a *App) handleStepLimitResponse(payload map[string]any, log *slog.Logger) 
 		log.Warn("step_limit response has unsupported type", "type", fmt.Sprintf("%T", responseVal))
 		return
 	}
-	resp, ok := parseStepLimitResponse(respStr)
+	resp, ok := hitlwire.StepLimitResponse(respStr)
 	if !ok {
 		log.Warn("unknown step_limit response value", "response", respStr)
 		return
@@ -679,7 +428,7 @@ func (a *App) handleStepLimitResponse(payload map[string]any, log *slog.Logger) 
 		return
 	}
 
-	sent := deliverResponse(entry.ch, resp)
+	sent := hitlwire.DeliverResponse(entry.ch, resp)
 	if !sent {
 		log.Warn("step_limit response dropped: channel full or receiver gone",
 			"request_id", requestID)

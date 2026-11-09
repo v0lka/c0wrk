@@ -54,7 +54,7 @@ Two facts made the integration smaller than it sounds: the pinned `python-build-
 - The wheel table is a second pin surface a bump must re-record in full (46 entries) — the non-vacuous validator and the shape tests (46 wheels, 16 pack files, exact weights byte-total) are the guardrails.
 - MTPLX is a fast-moving upstream; the pin makes that a reviewed bump, not a drift.
 
-## Alternatives considered
+## Alternatives Considered
 
 - **Plain `mlx-lm`**: it cannot run this checkpoint — the ternary container `prism_hadamard_qwen35` needs MTPLX's kernels; serving it through stock MLX is the "wrong output" failure ADR-066 D1 originally refused.
 - **Keep llama.cpp on Metal**: forgoes the measured 64.4 vs 47 tok/s and the 16 GB tier; the fork remains the engine for every non-Apple-Silicon machine.

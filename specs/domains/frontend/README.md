@@ -7,7 +7,7 @@ React 19 application providing the user interface for c0wrk: chat interaction, p
 ## Key Files
 
 - `frontend/src/App.tsx` — root component
-- `frontend/src/stores/` — Zustand state management (37 stores)
+- `frontend/src/stores/` — Zustand state management (42 stores; catalog in [stores.md](stores.md))
 - `frontend/src/hooks/` — custom React hooks (event handlers, data loading)
 - `frontend/src/api/` — backend RPC wrapper layer
 - `frontend/src/lib/` — utilities (fuzzyMatch, parseReferences, markdown config + local image resolution, local file link detection, CodeMirror extensions, the UI-scale geometry helpers `layoutSpace` + `cursorMenuPosition`, and the `@floating-ui/dom` zoom compensation `floatingUiZoom`)
@@ -33,6 +33,16 @@ interface SessionInfo {
   model: string
   family: string
   has_unfinished_task: boolean
+  unfinished_task_status?: string   // "failed" | "in_progress" | "paused" | "" (list queries only)
+  workspace_binding?: WorkspaceBinding  // immutable execution workspace (ADR-080); absent on CHAT sessions
+}
+
+// WorkspaceBinding — the execution workspace a CODE session is pinned to at creation
+interface WorkspaceBinding {
+  kind: 'local' | 'managed_worktree'
+  workspace_path: string
+  worktree_name?: string   // managed only
+  branch?: string          // managed only: pinned at creation, not live HEAD
 }
 
 // ProjectInfo — project metadata from backend
@@ -42,7 +52,6 @@ interface ProjectInfo {
   workspace_path: string
   is_external: boolean
   is_no_project: boolean
-  research_pins: { research: string[] | null; hypotheses: Record<string, string[]> | null }
   created_at: string
   last_active_at: string
 }
@@ -68,7 +77,7 @@ interface FileEntry {
 }
 ```
 
-Note: Wails auto-generates TypeScript types from Go structs using snake_case JSON field names. Git status is stored separately in `fileTreeStore.gitStatus` (a `Record<string, GitStatusEntry>` keyed by absolute path), not as a field on each file entry.
+Note: Wails auto-generates TypeScript types from Go structs using snake_case JSON field names. Git status is stored separately in `fileTreeStore.gitStatus` (a `Record<string, GitStatusEntry>` keyed by absolute path), not as a field on each file entry. The frontend `ProjectInfo` mirror omits the Go payload's `research_pins` field: pinned research documents and hypothesis cards reach the UI through the research status payload (`researchStore.pinnedResearch`/`pinnedHypotheses`) and pinned papers through the library payload (`paperStore.pinned`).
 
 ## Stack
 
@@ -81,7 +90,11 @@ Note: Wails auto-generates TypeScript types from Go structs using snake_case JSO
 - CodeMirror 6 (file viewer + chat input editor, with Markdown mode and custom extensions)
 - react-markdown 10 + remark/rehype plugins (markdown rendering)
 - highlight.js 11 (syntax highlighting in rendered messages)
-- Mermaid 11 (lazy-loaded diagrams)
+- Mermaid 11 (lazy-loaded diagrams), sanitized with DOMPurify 3 in `MermaidBlock`
+- xterm.js 6 (`@xterm/xterm` + `@xterm/addon-fit`) — embedded terminal
+- @tanstack/react-virtual 3 — virtualized lists (the Git History tab)
+- diff 9 (`diffWords`) — character-level diffs in `lib/diffParser.ts`
+- hast-util-sanitize 5 — the paper HTML sanitize schema in `lib/paperHtmlSanitize.ts`
 
 ## Layout
 
@@ -96,7 +109,7 @@ Three-column panel layout (no router, single-page app). The file viewer can be p
 │  ┌─────────────┐  │  ┌────────────┐  │  ┌─────────────────────┐ │
 │  │ Project sel │  │  │ Pinned msg │  │  │ Tab bar             │ │
 │  │ Session sel │  │  │ Message    │  │  │ File content        │ │
-│  │ File tree   │  │  │ list       │  │  │ (syntax highlight   │ │
+│  │ Workspace   │  │  │ list       │  │  │ (syntax highlight   │ │
 │  │             │  │  │            │  │  │  or diff view)      │ │
 │  │             │  │  │ Activity   │  │  │                     │ │
 │  │             │  │  │ indicator  │  │  │                     │ │
@@ -106,24 +119,47 @@ Three-column panel layout (no router, single-page app). The file viewer can be p
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-Resize handles (4px) sit between in-flow panels and on the floating viewer's left edge. Sidebar width/collapse, viewer width/collapse, and viewer pin preference persist through Zustand `persist`/localStorage. The unpinned expanded viewer is a right-aligned absolute overlay over the chat, auto-collapses when the pointer lands outside it or when keyboard focus leaves it (an outside `focusin` collapses only after the viewer itself held focus — Radix portal menus restore focus to their trigger a tick after an item's `onSelect` opened a file, and that focus-restore must not dismiss the freshly opened viewer), and leaves a 40px in-flow rail for reopening; pinning keeps it as a permanently docked, resizable column. Collapsing unmounts the viewer content (the slim rail replaces it), so the reading position does not live in the DOM: `CodeMirrorFileViewer`/`MarkdownPreviewPane` save a per-file session-scope reading position into `fileViewerStore.scrollPositions` on unmount/tab re-target and restore it on the next mount/activation (`restoreScrollTop` scales the offset when the file changed in between; `highlightLine`'s open-at-line scroll runs after and wins), mirroring the chat's `ChatScrollManager`/`chatStore.scrollPositions` reading positions — the same file re-opened from the rail continues where reading stopped instead of jumping to the top. A middle-click (`auxclick`, `button === 1`) on a viewer tab closes that tab without activating it — browser-style semantics via the same `closeFile` path as the per-tab close button; the event is `preventDefault`-ed so the webview's autoscroll/selection does not kick in.
+Resize handles (`components/ResizeHandle.tsx`, `w-1` = 0.25rem ⇒ 3.5px at the 14px root) sit between in-flow panels and on the floating viewer's left edge. Sidebar width/collapse, viewer width/collapse, and viewer pin preference persist through Zustand `persist`/localStorage; both widths are clamped in layout px — the sidebar to `SIDEBAR_MIN` 180 … `SIDEBAR_MAX` 500 (`uiStore.setSidebarWidth`), the viewer to `VIEWER_MIN` 250 … `VIEWER_MAX` 900 — and a collapsed panel renders at `COLLAPSED_WIDTH` 40. The unpinned expanded viewer is a right-aligned absolute overlay over the chat, auto-collapses when the pointer lands outside it or when keyboard focus leaves it (an outside `focusin` collapses only after the viewer itself held focus — Radix portal menus restore focus to their trigger a tick after an item's `onSelect` opened a file, and that focus-restore must not dismiss the freshly opened viewer), and leaves a 40px in-flow rail for reopening; pinning keeps it as a permanently docked, resizable column. Collapsing unmounts the viewer content (the slim rail replaces it), so the reading position does not live in the DOM: `CodeMirrorFileViewer`/`MarkdownPreviewPane` save a per-file session-scope reading position into `fileViewerStore.scrollPositions` on unmount/tab re-target and restore it on the next mount/activation (`restoreScrollTop` scales the offset when the file changed in between; `highlightLine`'s open-at-line scroll runs after and wins), mirroring the chat's `ChatScrollManager`/`chatStore.scrollPositions` reading positions — the same file re-opened from the rail continues where reading stopped instead of jumping to the top. A middle-click (`auxclick`, `button === 1`) on a viewer tab closes that tab without activating it — browser-style semantics via the same `closeFile` path as the per-tab close button; the event is `preventDefault`-ed so the webview's autoscroll/selection does not kick in.
 
-Above the main row sits the optional **workspace tab bar** (`components/layout/TabBar.tsx`): the outermost context layer of the shell, rendered only while `uiStore.tabsEnabled` is on (Settings → Appearance, default off; the bar carries only tab-scoped affordances — «+» and close — while the sidebar header's Settings gear is unconditional in both flag states, [ADR-093](../../decisions/093-sidebar-gear-unconditional.md)). The layer itself always lives — with the flag off it runs its "exactly one tab" special case as an invisible live mirror of the workspace, and the shell is byte-identical to the pre-tab UI. Every tab activation travels the single engine path (`lib/tabEngine`, snapshot/restore over three validated UI slices); the model, invariants, and edge handling live in [tabs.md](tabs.md).
+Above the main row sits the optional **workspace tab bar** (`components/layout/TabBar.tsx`): the outermost context layer of the shell, rendered only while `uiStore.tabsEnabled` is on (Settings → Appearance, default off; the bar carries only tab-scoped affordances — «+» and close — while the sidebar header's Settings gear is unconditional in both flag states, [ADR-093](../../decisions/093-sidebar-gear-unconditional.md)). The layer itself always lives — with the flag off it runs its "exactly one tab" special case as an invisible live mirror of the workspace, and the shell is byte-identical to the pre-tab UI. Every tab activation travels the single engine path (`lib/tabEngine`, snapshot/restore over the eight validated v2 slices of `lib/tabSnapshot.ts` `TabUIState`); the model, invariants, and edge handling live in [tabs.md](tabs.md).
 
 The native desktop window separately persists validated width, height, and maximized state in `~/.c0wrk/window_state.json`. Frontend resize events debounce `PersistWindowBounds`; desktop shutdown performs a final best-effort save, and the next process launch uses valid stored dimensions (falling back to defaults for missing, malformed, or below-minimum values).
 
 ### Sidebar header
 
-Between the collapse and settings buttons sits a CHAT/CODE segmented toggle:
+The header row (`components/layout/SidebarHeader.tsx`) is an `@container` holding, in order: the collapse button, a spacer, the live-sessions indicator, the CHAT/CODE segmented toggle, a spacer, and the Settings gear.
+
+The CHAT/CODE segmented toggle:
 - **CHAT**: switches to No Project (pseudo-project with semantic_search disabled, per-session workspaces)
-- **CODE**: switches to `lastRealProjectId` (the most recent non-No-Project project) or the first available real project
+- **CODE**: switches to `lastRealProjectId` (the most recent non-No-Project project) or the first available real project; with no real project in the list it opens the Create Project dialog instead of switching
 - The toggle is hidden when no projects are loaded yet
 
-Chat input uses a CodeMirror 6 editor in Markdown mode (`@codemirror/lang-markdown`), providing syntax highlighting for Markdown constructs (headings, bold, italic, code, links) and custom token decorations for `/skill` references (warning color) and `@file` references (info color) via a `StateField`. Autocomplete is powered by `@codemirror/autocomplete` with two custom `CompletionSource` functions: typing `/` at a word boundary triggers fuzzy-filtered skill suggestions, and `@` triggers workspace file/directory suggestions. Open file viewer tabs are boosted to the top of file completions. On send, skill refs are extracted as `activeSkills[]` and file refs are converted to `fileref://` URIs by the core preprocessor (see `core/message_preprocess.go`). An `@file` ref accepts an optional line anchor in GitHub-canonical forms — `#L20`, `#L20-36`, `#L20-L36`, or legacy bare-number `#20-36`; the anchor survives into the `fileref://` URI and positions the viewer on open. Paths containing spaces use the single-quoted form `@'my file.go'` — the canonical insert of the `@`-autocomplete and of the file viewer's "Add to chat" action (anchor allowed after the closing quote or inside it); the legacy backslash-escaped form `@my\ file.go` remains recognized. The `/` completion is session-kind-aware: it filters all three sections (Subagents, MCP Servers, Skills) through the active session's chat/code capability context — a capability hidden in that context is not offered, and a manual-in-context entry carries the "mention to enable" detail (see [capabilities.md](../capabilities.md)).
+### Live-sessions indicator
+
+`components/layout/ActiveSessionsIndicator.tsx` is the global cross-project Radar button: a `Radar` glyph carrying the `ActiveSessionsBadge` dot cluster — one overlapping `size-2` dot per aggregated flag in the fixed order error (`bg-destructive`) → attention (`bg-warning`) → active (`bg-success`) → paused (`bg-muted-foreground`), anchored bottom-right with a `ring-background` ring. The button is `disabled` while nothing is live (`flags.anyLive`).
+
+- **Pure consumer.** The component reads `activeSessionsStore` and never mounts the loader: `useActiveSessionsRefresh` lives at the App root (`App.tsx`) so the snapshot stays fresh while the sidebar — and therefore the indicator — is collapsed or unmounted. Opening the dropdown additionally calls `refreshNow()` and `sweepPendingActions()`.
+- **Rows.** `sortedLiveRows` (`lib/activeSessions.ts`) folds the DB snapshot with the live flags (`deriveLiveSessionFlags` → `mergePendingOverride`) and lists every live session across ALL projects, urgent-first (`pending`/`failed` via `URGENT_STATUSES`), then `last_active_at` descending. The content is `min-w-80 max-w-[26.67rem]` and unvirtualized.
+- **Navigation.** A row's `onSelect` preventDefaults; `handleSelect` switches project first through `useProjectSwitchState` when the session lives in another one, then calls `selectSession(id, project_id)`, and closes the dropdown only on success — a failed switch leaves the list open to retry.
+- **Layout fit.** The button carries `hidden @min-[264px]:inline-flex`: below 264px of header CONTENT-box width (sidebar width − 17px for `px-2` + border) it leaves layout entirely, so the header stays intact at the 180px sidebar minimum. The threshold stays ≤264px because the 288px default sidebar width yields only 271px of queryable content box.
+- **Shared aggregation.** The same chain (`deriveLiveSessionFlags`, `mergePendingOverride`, `aggregateBadgeFlags`, `SESSION_DOT_CLASSES`/`SESSION_DOT_TITLES`) paints the session selector's `BranchActivityDot`.
+
+### Workspace panel
+
+The sidebar body's lower region is `components/layout/WorkspacePanel.tsx`, a `SegmentedControl` over up to four panels selected by `uiStore.workspaceTabByProject`. The FIRST slot is mutually exclusive on the repository check: **Git** (`git`, `GitPanel`) in a git repository, **Explorer** (`explorer`, `FileTreePanel`) otherwise. The remaining slots render only while their gate is on — **Search** (`semantics`, `VectorStorePanel`) on `indexingEnabled` (`useIndexingSettings`), **Research** (`research`, `ResearchPanel`) on `researchEnabled` and **Specs** (`specs`, `SpecsPanel`) on `specsEnabled` (both `useSidebarPacks`, the Settings → General sidebar surface gates, [ADR-115](../../decisions/115-sidebar-pack-gates-reconcile-and-serialization.md)). A remembered tab value with no trigger in the current layout is remapped inline for the render (`effectiveTab` falls back to the first slot) and corrected in the store by an effect. `BranchPicker` mounts at this level so the chat toolbar's session-draft entry can open it from any workspace tab. CHAT mode renders a vertically resizable `ChatSidebarSplit` instead (flat session list above the explorer, ratio persisted as `uiStore.chatSessionListRatio`).
+
+### Main chat area
+
+`components/chat/ChatArea.tsx` composes the middle column inside a `ScrollProvider`: `groupMessages` builds the `DisplayItem` tree and `stabilizeDisplayItems` preserves the identity of unchanged items so memoized blocks skip re-rendering; `ChatScrollManager` (keyed by `activeSessionId`, so it remounts per session) owns the smart auto-scroll contract and the per-session reading position; `ChatMessageRenderer` renders the items with `stickyUserMessages` (the pinned, collapsible last user message), `lastTurnActive`, `trailingContent` and `trailingFooter={<ActivityIndicator />}`. Below the transcript one `ErrorBoundary` wraps `ExecutionPanels` (the collapsible plan view, or the `ExecutionStatePanel` that REPLACES it for an E2S session — [../e2s.md](../e2s.md)), `BlackboardPanel` and `BookmarksPanel`; a second `ErrorBoundary` (reset on session/input-mode/archived change) wraps the input shell — `ChatInput`, or `ArchivedBanner` for a read-only archived session. With no active session, or no content and no streaming text, `ChatAreaPlaceholder` renders instead (carrying the history-in-flight state — [loading-states.md](loading-states.md)). `useTaskFlagRestore` restores `taskActive` independently of history loading, and bookmarks load per active session. The display-item pipeline, the sticky/pinned message rules and the auto-scroll threshold live in [rendering.md](rendering.md).
+
+### Chat input
+
+Chat input uses a CodeMirror 6 editor in Markdown mode (`@codemirror/lang-markdown`), providing syntax highlighting for Markdown constructs (headings, bold, italic, code, links) and kind-colored reference token decorations through the `referenceHighlighter` `StateField` (`lib/cmReferenceHighlighter.ts`): `/agent:` → `cm-ref-agent` (highlight), `/mcp:` → `cm-ref-mcp` (info), `/skill:` and a plain `/name` → `cm-ref-skill` (success), `@file` → `cm-ref-file` (info) — the same kind→color mapping the autocomplete rows and the chat chips use. Autocomplete is powered by `@codemirror/autocomplete` with two custom `CompletionSource` functions (`createChatAutocomplete` registers `override: [slashSource, fileSource]`): typing `/` at a word boundary triggers the fuzzy-filtered mention list — FOUR labelled sections, **Commands** (rank 0: the ADR-096 user commands plus the built-in `/goal`, which `visibleBuiltInCommands` hides whenever a visible catalog entry shadows the plain spelling), **Subagents** (1), **MCP Servers** (2) and **Skills** (3), every colliding name offered in its collision-qualified spelling (the applied text gains an `agent: ` / `skill: ` / `mcp: ` / `command: ` marker after the typed `/`) — and `@` triggers workspace file/directory suggestions. Open file viewer tabs are boosted to the top of file completions. On send, the `/`-refs are partitioned by kind into `activeSkills`, `activeAgents` and `activeMCPServers` (`lib/parseReferences.ts` → `sendMessage` args 3/4/5) and file refs are converted to `fileref://` URIs by the core preprocessor (see `core/message_preprocess.go`). An `@file` ref accepts an optional line anchor in GitHub-canonical forms — `#L20`, `#L20-36`, `#L20-L36`, or legacy bare-number `#20-36`; the anchor survives into the `fileref://` URI and positions the viewer on open. Paths containing spaces use the single-quoted form `@'my file.go'` — the canonical insert of the `@`-autocomplete and of the file viewer's "Add to chat" action (anchor allowed after the closing quote or inside it); the legacy backslash-escaped form `@my\ file.go` remains recognized. The `/` completion is session-kind-aware: it filters the three MENTION sections (Subagents, MCP Servers, Skills) through the active session's chat/code capability context — a capability `disabled` in that context is not offered, and a `manual`-in-context MCP server carries the "MCP server — mention to enable" detail (that wording is MCP-only: a subagent or skill row keeps its description in both modes); the Commands section carries no capability modes and is never kind-filtered (see [capabilities.md](../capabilities.md)).
 
 The `/`-ref grammar is one contract implemented twice: the frontend extraction (`REF_BOUNDARY_SPACE_SOURCE`/`SLASH_REF_SOURCE` in `frontend/src/lib/parseReferences.ts`, shared with display parsing) and the Go preprocessor scanner (`isRefBoundarySpace` and the mention scanner in `core/message_preprocess.go`) implement the same grammar — the Go ASCII boundary set `[ \t\n\r\f]` rather than JavaScript's wider `\s`; names of ASCII word characters/hyphens; a collision-qualified `agent:`/`skill:`/`mcp:` marker tolerating zero or one space/tab after its colon; and a complete name that ends at a boundary or EOF with no backtracking into a shorter name or a plain marker (the TS side asserts EOF with `(?![\s\S])` because `$` also matches before a final Unicode line separator, which Go does not treat as a boundary). Grammar tests pin both sides — `parseReferences.test.ts` asserts the Go-compatible boundary set, whole qualified names, and no-backtracking finds; `message_preprocess_test.go` asserts the same boundary and qualified cases on the strip path — and a grammar change to one side lands together with the other.
 
 Undo/redo in the chat input is layout-independent: `Ctrl+Z` (undo), `Ctrl+Shift+Z` / `Ctrl+Y` (redo) — `Cmd` replacing `Ctrl` on macOS, where the fallback additionally provides `Cmd+Y` = redo (the named history redo chord there is `Cmd+Shift+Z`) — always drive the editor's history regardless of the active keyboard layout. CodeMirror resolves a keydown in three layers: key-name bindings for `historyKeymap`'s `Mod-z` / `Mod-y` derived from `event.key`, which follows the ACTIVE layout (with a non-Latin layout active, Cyrillic `Ctrl+Z` arrives as `key='я'` and no key-name binding fires); an else-if physical fallback mapping `event.keyCode` onto a QWERTY key name and re-resolving the chord (how mac `Cmd+Shift+Z` still redoes on a Cyrillic layout); and, for every keydown no binding consumed, each keymap's `any` fallback. `createChatKeymap` (`frontend/src/lib/cmChatKeymap.ts`, the only `any`-carrying keymap of the chat extension set built in `frontend/src/lib/cmChatExtensions.ts`) recognizes the history chords in that last layer: it matches the lowercased `event.key` character FIRST — the same layout-following signal the key-name layer resolves bindings from, so a chord recomputes into the same action (on QWERTZ the printed-`y`-on-physical-`KeyZ` chord `Ctrl+Y` is redo and never undo) — and falls back to the layout-independent physical key (`event.code`) for layouts that print neither Z nor Y at all (Cyrillic `я`/`н`). A recognized chord is consumed exactly once — `any` returns true even when the history command no-ops on an empty stack, mirroring `historyKeymap`'s own bindings whose `preventDefault` defaults to true — so the physical-keyCode layer never re-interprets the same keydown as the opposite chord. Only the history chords are intercepted: AltGr (`Ctrl+Alt`) and IME composition never match, and an unrecognized keydown returns false so the remaining bindings and native behavior proceed unchanged.
+
 ### Sidebar session selector
 
 The CODE-mode session dropdown (`components/layout/SessionSelector.tsx`) has two display modes switched by the List⇄FolderTree toggle on the search-input line, positioned BEFORE the input (the FolderTree glyph is the git panel's tree-view icon; the toggle is a registered `DropdownMenuItem` whose `onSelect` preventDefaults, so switching never dismisses the menu, it renders even when the search input itself is hidden below the 5-session threshold, carries a hover affordance, and its `h-7 w-7` hit area with a `size-4` glyph matches the input's height; the icon shows the mode you switch to):
@@ -156,7 +192,7 @@ The **Prompt Suggestions** section sits directly after **System Notifications** 
 
 ## Design System
 
-One Dark theme. All colors as Tailwind v4 `@theme` custom properties:
+One Dark is the default theme; a One Light override activates under `<html data-theme="light">`, and a user-imported custom theme injects its own token block scoped to `data-custom-theme` ([../theming.md](../theming.md), `themeStore`). All colors are Tailwind v4 `@theme` custom properties — the table lists the One Dark defaults, which the light and custom themes override token-by-token:
 
 | Token                 | Value   | Usage          |
 | --------------------- | ------- | -------------- |
@@ -198,9 +234,11 @@ Font families are tokenized the same way: `--font-sans`, `--font-mono` and `--fo
 - The terminal runs on the plain `--font-mono` stack with no icon font — no Nerd Font glyphs in terminal output.
 - Hardcoded font-family stacks are forbidden: CSS may only reference `var(--font-*)` (plus the `@font-face` declaration itself); TS may only use the `FONT_*_STACK` constants from `lib/fonts.ts` (or a `var(--font-…)` string) — enforced by `frontend/src/test/typeScaleInvariant.test.ts`.
 
-Dark color-scheme. Focus outlines globally suppressed. Custom scrollbar (8px, semi-transparent thumb).
+`:root` declares `color-scheme: dark` and the `[data-theme="light"]` override declares `color-scheme: light`, so native form controls, scrollbars and UA chrome follow the active theme. Focus outlines globally suppressed. Custom scrollbar (8px, semi-transparent thumb).
 
-## Communication Pattern
+## Flow
+
+The frontend ↔ backend communication pattern:
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -239,7 +277,7 @@ Project switching is orchestrated by `useProjectSwitchState`: it saves source-pr
 - Collapsing an unpinned viewer preserves the unpinned preference and renders a 40px in-flow reopen rail
 - Persisted desktop window dimensions are accepted only at or above the minimum usable size; invalid state falls back to defaults
 - The workspace tab layer always holds at least one tab, its ACTIVE tab always mirrors the live workspace context, and every activation travels the single engine path — the `tabsEnabled` flag gates only visibility (tab bar + tab-cycling hotkeys) and notification-click routing, never the layer itself; the sidebar Settings gear is unconditional in both flag states, [ADR-093](../../decisions/093-sidebar-gear-unconditional.md) (see [tabs.md](tabs.md))
-- Tab arrangements are app-lifetime (`tabStore` never persists); only the `tabsEnabled` flag persists across restarts (`c0wrk-sidebar-collapsed` v7, default off)
+- Tab arrangements are app-lifetime (`tabStore` never persists); only the `tabsEnabled` flag persists across restarts (`c0wrk-sidebar-collapsed` v8, default off)
 - The frontend is **zoom-safe** under the app-wide UI Scale (`zoom` on `<html>`, see [ui-scale.md](ui-scale.md)): the shell and full-height containers size with percentages, viewport-derived sizes use the `--ui-vh` primitive, and pointer-anchored floating panels open at the cursor and fully inside the visible window at any scale — enforced by `frontend/src/test/zoomViewportInvariant.test.ts` plus the per-primitive guards
 - Every enabled interactive element shows the pointer cursor and every disabled one shows `not-allowed` — a base-layer cursor policy in `frontend/src/index.css` covers native `button`/`input[type=…]`/`select`/`label`/`summary` and ARIA widget roles (`button`, `menuitem*`, `option`, `tab`, `checkbox`, `radio`, `switch`, `combobox`, `link`, `treeitem`); utility classes (e.g. `cursor-grab` on drag canvases) still override it for intentional exceptions, and `cursor-default` on clickable elements is forbidden outside the allowlist in `frontend/src/test/clickableCursorInvariant.test.ts` (Radix disabled menu items keep `pointer-events-none`, so their cursor stays the UA default)
 - Typography is relative-scale-governed: text sizes come from the named Tailwind scale anchored at the 14px `html` root (see Design System); arbitrary `text-[Npx]`/`text-[Nrem]` utilities, px CSS font sizes outside the root rule, and absolute inline `fontSize` values fail the source-scan guard in `frontend/src/test/typeScaleInvariant.test.ts` (API-bound exceptions: the xterm constructor in `Terminal.tsx` and the research DAG canvas SVG labels)
@@ -252,15 +290,18 @@ Frontend configuration is derived from backend (no separate frontend config file
 | ------------------------------- | ------------------ | -------------------------- |
 | `GetConfig()` RPC              | `default_model`    | Default model display      |
 | `GetConfig()` RPC              | provider `.models` | Per-provider enabled models|
+| `GetConfig()` RPC              | `experimental.enabled`, `vector_index.enabled`, `research.enabled`/`specs.enabled`, `model_profiles.*` | Frontend feature gates mirrored in `experimentalStore`, `indexingSettingsStore`, `sidebarPacksStore` and `modelProfilesGateStore` |
 | `GetLogLevel()` RPC            | log level          | Console/log verbosity      |
-| `GetSecuritySettings()` RPC    | `security.groups`  | Tool-group policy UI state (per-group policy + execute blacklist, ADR-024) |
+| `GetSecuritySettings()` RPC    | `security.groups`, `security.autonomy_mode` + `security.silent_mode` | Tool-group policy UI state (per-group policy + execute blacklist, ADR-024) and the autonomy posture mirrored in `autonomyStore` (hydrated by `useAutonomyLoader`, re-read on `backend:ready`/`config:updated`) |
 | `GetCapabilityModes()` RPC     | `capabilities.*`   | Capability chat/code activation modes UI (ADR-084) |
-| `ListSkills()` RPC             | skills             | `/skill` autocomplete      |
+| `ListSkills()` RPC             | skills             | `/` completion — the Skills section |
 | `localStorage`                 | sidebar width + collapsed state | Persistent left-panel layout |
 | `localStorage`                 | file-viewer width + collapsed + pinned state | Persistent docked/floating right-panel layout |
 | `~/.c0wrk/window_state.json`   | window width, height, maximized | Native desktop geometry across process restarts |
-| `localStorage`                 | execution mode     | Normal/advanced toggle     |
-| `localStorage`                 | selected model     | Per-message model override |
+| `localStorage`                 | input mode + panel geometry | Chat/terminal input mode, panel height, expanded state (`c0wrk-input-mode` v4) |
+| `localStorage`                 | selected model + reasoning effort | Per-message model override and reasoning-effort selection |
+| `localStorage`                 | E2S arming (`e2sEnabled`) | Per-message E2S execution-mode toggle — persisted, and mutually exclusive with the in-memory goal-mode arming |
+| `localStorage`                 | UI preferences | Theme (`c0wrk-theme` v3), fonts (`c0wrk-fonts`), UI scale (`c0wrk-ui-scale`), sound (`c0wrk-sound`), system notifications (`c0wrk-system-notifications`), pinned branch groups (`c0wrk-pinned-worktree-groups`), specs tree expansion (`c0wrk-specs-view`), vector search mode (`c0wrk-vector-index`), review buffer (`c0wrk-review`), git-panel prefs (`git-panel-settings`), sidebar/shell prefs (`c0wrk-sidebar-collapsed` v8) — per-store detail in [stores.md](stores.md) |
 
 ## Extension Points
 
@@ -279,13 +320,18 @@ Frontend configuration is derived from backend (no separate frontend config file
 - [ui-scale.md](ui-scale.md) — UI scale feature and the zoom-safety invariant
 - [../capabilities.md](../capabilities.md) — capability activation-mode semantics the Capabilities settings surface and the mention filters consume
 - [fonts.md](fonts.md) — user font selection: UI/mono family pickers (free text + detected + installed options) plus per-scope select-only smoothing pickers over the persisted `fontStore`, once-per-launch dual system-font detection, and the inline `--font-sans`/`--font-mono` `@theme`-token + `--font-smoothing-*` delivery on `<html>` ([ADR-078](../../decisions/078-user-font-selection.md), [ADR-079](../../decisions/079-font-smoothing-selection.md))
+- [../theming.md](../theming.md) — the theme system behind the Design System tokens: the two built-in palettes (Default Dark / One Dark, Default Light / One Light), user-imported custom themes (sanitized `:root` token blocks scoped to `data-custom-theme`), and the anti-FOUC pre-paint apply
 - [button-tooltips.md](button-tooltips.md) — the button tooltip convention: a `title=`, a Radix `TooltipTrigger` wrapper, or a statically visible label on every button — exactly one, the channels never combine (both AST guards flag a `title` under a `TooltipTrigger`); buttons that may hide their label always carry a `title`, always-labeled buttons never carry an echo, picker triggers follow the heading rule
+- [row-actions.md](row-actions.md) — the shared hover action-overlay primitives (`ItemAction`/`ItemActions`) behind the project, session and worktree-branch row actions
+- [branch-list.md](branch-list.md) — the one shared `BranchList` rendering the Git panel's `BranchDropdown`/`BranchPicker` branch lists in flat or `/`-slash tree mode
 - [stores.md](stores.md) — Zustand store catalog
 - [../specs.md](../specs.md) — the Specs subsystem: the sidebar's fifth workspace tab (`specs`, after `research`) rendering `SpecsPanel` over the read-only `<workspace>/specs` tree — task→spec navigation, ADR timeline, tier-1 integrity findings, and `spec-*` skill dispatch ([ADR-105](../../decisions/105-vendor-spec-skillset.md), [ADR-106](../../decisions/106-specs-sidebar-panel.md))
 - [loading-states.md](loading-states.md) — the three loading states (pre-React boot loader in `index.html`, chat-history spinner over `chatStore.historyLoaded`, session-list skeleton/loading row over the `sessions === null` sentinel), their markers and single-writer rules, and the cross-cutting invariants: CSP legality (no inline scripts, inline `<style>` allowed), zoom-safe overlay sizing, honest `null`-vs-`[]`/cancelled semantics, identical behavior in both transports (wails webview + web-access sidecar)
 - [tabs.md](tabs.md) — the workspace tab layer: always-live model, `tabsEnabled` flag scope, single activation engine, snapshot slices ([ADR-085](../../decisions/085-workspace-tabs-single-engine.md))
 - [git-operation-console.md](git-operation-console.md) — the footer log of the last git mutation result (button tint, anchored popover, per-project scope, acknowledge semantics)
 - [git-changes-list.md](git-changes-list.md) — the Changes tab file list: porcelain-axis sections, flat name-first rows, tree basename rows, full-path tooltips
+- [sound-notifications.md](sound-notifications.md) — the audible notification channel: Web Audio-synthesized cues (no assets), webview autoplay-suspension recovery, and the persisted master toggle
+- [system-notifications.md](system-notifications.md) — the visual notification channel: native OS banners raised from the same cued session events, plus banner-click routing back to the session
 - [events.md](events.md) — event handling architecture
 - [rendering.md](rendering.md) — message display pipeline
 - [../../contracts/desktop-frontend.md](../../contracts/desktop-frontend.md) — RPC surface

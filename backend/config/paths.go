@@ -303,6 +303,16 @@ func ConfigPath(agentDir string) string {
 	return filepath.Join(agentDir, "config.yaml")
 }
 
+// DeviceIDPath returns the stable, non-secret Device Authorization Grant identifier path.
+func DeviceIDPath(agentDir string) string {
+	return filepath.Join(agentDir, "device_id")
+}
+
+// KimiAuthRegionRejectionPath returns the non-secret durable region-mismatch marker.
+func KimiAuthRegionRejectionPath(agentDir string) string {
+	return filepath.Join(agentDir, "kimi_auth_region_rejection.json")
+}
+
 // DatabasePath returns the fixed SQLite database path.
 func DatabasePath(agentDir string) string {
 	return filepath.Join(agentDir, "database.db")

@@ -21,7 +21,7 @@ Goal mode is a multi-turn, agent-driven execution loop that pursues a single use
 - `backend/config/config.go` / `backend/config/defaults.go` — `GoalLoopConfig.Verification` (`independent` default | `off`), validated in `Validate`
 - `desktop/startup_phases.go` — `goalProposerAdapter` (the desktop `GoalProposer` that emits `goal_proposal` and blocks for the user response)
 - `desktop/startup.go` — goal-proposal pending map, `goal_proposal_response` event handler, goal-proposal resolver wiring
-- `backend/frontend_api_session.go` — session-level RPC surface: `PauseSession(sessionID)` / `ResumeSession(sessionID, modelOverride, reasoningEffort, nudge)` (the universal pause/resume controls — apply to **all** tasks, goal and non-goal alike); `SendMessage` / `ResumeTask` / `ResumeSession` also refuse a goal (explicit flag OR a `/goal`/`/goal:N` prefix) and a paused-goal resume while the Model Profiles essential-tools narrowing is active (`modelProfilesGoalBlocked` / `goalResumeBlockedByModelProfiles`), before any side effect (see [model-profiles.md](model-profiles.md#goal-mode-gate-goalblocked))
+- `backend/frontend_api_session.go` — session-level RPC surface: `PauseSession(sessionID)` / `ResumeSession(sessionID, modelOverride, reasoningEffort, nudge)` (the universal pause/resume controls — apply to **all** tasks, goal and non-goal alike); `SendMessage` / `ResumeTask` / `ResumeSession` also refuse a goal (explicit flag OR a `/goal`/`/goal:N` prefix) and a paused-goal resume while the Model Profiles essential-tools narrowing is active (`modelProfilesGoalBlocked`, defined in `backend/frontend_api_config.go`, and `goalResumeBlockedByModelProfiles`), before any side effect (see [model-profiles.md](model-profiles.md#goal-mode-gate-goalblocked))
 - `backend/frontend_api_goal.go` — RPC surface: `ConfirmGoal`/`CancelGoal`; `ConfirmGoal` forwards the user-approved `verificationMode` through the proposal resolver
 - `backend/session/manager_execution.go` — `PauseSession` (delegates to `Orchestrator.PauseSession`), `ResumeSession` (delegates to `ResumeTask`), `hasPausedUnfinishedTask` (the SendMessage nudge-resume router), `SessionRuntimeStatus.Paused`, the `session_paused`/`session_resumed` emissions
 - `backend/session/manager_goal.go` — `SetGoalProposalResolver`, `ResolveGoalProposal`
@@ -65,6 +65,10 @@ type GoalState struct {
     Status           GoalStatus
     LastVerdict      *Verdict   // most recent self-evaluation verdict (nil = none yet)
     LastError        string     // reason the most recent turn FAILED with an error, or "" after a clean turn
+    LastErrorTyped   error      // the error VALUE behind LastError, forwarded as HandleResult.Err
+                                // so the session manager's auto-retry classifier can errors.As the
+                                // typed chain; process-local (`json:"-"`), never persisted and never
+                                // read after a restore
     LastVerification string     // independent-verifier outcome marker: "" | "confirmed" | "rejected" | "off"
     LastVerificationReason   string         // verifier's reason for the most recent "met" attempt (one-shot with LastVerification)
     LastVerificationEvidence []GoalEvidence // verifier's evidence backing that confirmation
@@ -375,12 +379,14 @@ Pause/resume is a **session-level** control, not a goal-level one. A single univ
 
 ## Configuration
 
-The goal budget is **turn-only**. There are no config-level token or wall-clock caps; a per-goal turn limit is selected in the UI (`BudgetCombobox`: ∞ / 3 / 5 / 10 turns, or a custom number). An unlimited goal (∞) has **no internal turn cap** — the user controls it via pause/stop. The independent verifier has two knobs: a global on/off gate (`goal_loop.verification`) and a per-goal `VerificationMode` (see [Independent Verification](#independent-verification)).
+The goal budget is **turn-only**. There are no config-level token or wall-clock caps; a per-goal turn limit is selected in the UI (`BudgetCombobox`: ∞ / 3 / 5 / 10 turns, or a custom number). An unlimited goal (∞) has **no internal turn cap** — the user controls it via pause/stop. The independent verifier has two knobs: a global on/off gate (`goal_loop.verification`) and a per-goal `VerificationMode` (see [Independent Verification](#independent-verification)). The post-routing suggestion gate adds two more (`goal_loop.suggest.*`, see [Suggested Activation](#suggested-activation)).
 
 | Parameter | Default | Description |
 | --------- | ------- | ----------- |
 | `HandleOptions.GoalBudgetOverride` | nil | Per-request budget override resolved from two sources — the toggle JSON (`{"max_turns":N}`) and the message's own `/goal:N` cap, the textual N winning ([ADR-110](../decisions/110-goal-mode-chat-activation.md)); `MaxTurns` when set, otherwise unlimited |
 | `goal_loop.verification` | `independent` | **Global on/off gate.** Whether the independent verification backstop re-checks each claimed `"met"` before the goal terminates. `independent` (default): run the verifier pass — a rejected/ non-declaring verdict keeps the loop going; `off`: rely solely on the agent's `declare_goal_status` verdict + the evidence mandate (reproduces the pre-verifier loop). Defined in `backend/config/config.go` (`GoalLoopConfig`), defaulted in `backend/config/defaults.go`, validated in `Validate` (`independent`/`off`), surfaced at runtime as `OrchestratorConfig.GoalLoop.Verification` (`GoalLoopSettings`). |
+| `goal_loop.suggest.enabled` | `true` | **Post-routing suggestion gate** (`GoalSuggestConfig.Enabled`, a pointer-bool — an unset key means on; `SuggestEnabled()` resolves it). `false` suppresses the suggestion offer entirely; goal mode stays available through the explicit toggle and `/goal`. Surfaced at runtime as `GoalLoopSettings.Suggest.Enabled` (`GoalSuggestSettings`, the pointer already resolved) |
+| `goal_loop.suggest.min_complexity` | `3` | Routing-complexity floor below which the suitability classifier is never consulted (`GoalSuggestConfig.MinComplexity`; mirrored as `GoalSuggestSettings.MinComplexity`). Valid range 0–5 (a complexity-band value); out-of-range fails `Validate`. The gate additionally requires a routed domain other than `general` |
 | `GoalState.VerificationMode` | `executable` | **Per-goal mode** (only matters while `goal_loop.verification` is `independent`). Chosen at derivation via `propose_goal`, normalized by `goal.NormalizeVerificationMode`, stored on `GoalState`, and editable by the user at the approval step. `executable` (default): the verifier independently re-runs the runnable verify clause (`verifierToolFilter`); `re_derivation`: the verifier delegates a fresh read-only run of the goal's process and confirms only on a clean outcome (`verifierReDerivationToolFilter`). |
 
 ## Invariants

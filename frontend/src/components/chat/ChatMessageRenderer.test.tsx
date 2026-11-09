@@ -220,6 +220,42 @@ describe('ChatMessageRenderer sticky user turns', () => {
     ).toBe(true)
   })
 
+  it('renders an unresolved goal_suggestion OUTSIDE the work block — even when the block is settled (stale flip)', () => {
+    // The session-start shape: user → routing notice → the goal-mode offer,
+    // no answer yet (the gate blocks before any execution). Even when a stale
+    // taskActive flip settles the work block collapsed (— interrupted), the
+    // offer must stay reachable: Radix unmounts collapsed content, so a
+    // buried panel is invisible exactly while the user must answer it.
+    const shape = (): DisplayItem[] => [
+      { kind: 'user', message: message('user-1', 'user', 'Build the feature end to end') },
+      { kind: 'service', id: 'svc-1', variant: 'status', content: 'Domain: code | Complexity: 4' },
+      {
+        kind: 'goal_suggestion',
+        message: { ...message('goal-suggestion-1', 'goal_suggestion', 'goal-shaped task'), metadata: { request_id: 'gs-1' } },
+        reason: 'multi-step build with a verifiable done criterion',
+      },
+    ]
+
+    // Live (taskActive true): block open, panel outside it.
+    const live = renderRenderer({ items: shape(), lastTurnActive: true })
+    let turn = turnRoots(live)[0]!
+    let block = turn.querySelector('[data-chevron-reveal-id^="turn-work:"]')!
+    let panel = turn.querySelector('[data-bookmark-id="goal-suggestion-1"]')
+    expect(panel).not.toBeNull()
+    expect(block.contains(panel!)).toBe(false)
+
+    // Settled (the stale-flip shape): block collapses with the interrupted
+    // marker, but the panel REMAINS visible outside it.
+    const settled = renderRenderer({ items: shape(), lastTurnActive: false })
+    turn = turnRoots(settled)[0]!
+    block = turn.querySelector('[data-chevron-reveal-id^="turn-work:"]')!
+    expect(block.querySelector('[data-slot="collapsible-content"]')!.getAttribute('data-state')).toBe('closed')
+    expect(block.textContent).toContain('interrupted')
+    panel = turn.querySelector('[data-bookmark-id="goal-suggestion-1"]')
+    expect(panel).not.toBeNull()
+    expect(block.contains(panel!)).toBe(false)
+  })
+
   it('commits the live turn in place: stream swaps from slot to outside rows when the task ends', () => {
     const live: DisplayItem[] = [
       { kind: 'user', message: message('user-1', 'user', 'Do it') },

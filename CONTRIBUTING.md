@@ -56,11 +56,11 @@ See the "Frontend architecture" section of [`AGENTS.md`](AGENTS.md) for the full
 
 Verified from project configuration and build files:
 
-- **Go 1.27.2** (single root module; `go.mod` at repo root). The `go` directive in `go.mod` and the `go-version` pins in `.github/workflows/*.yml` must stay in lockstep — CI builds with exactly this toolchain and `govulncheck` scans its stdlib, so bump both together whenever Go ships a security patch.
+- **Go 1.27.3** (single root module; `go.mod` at repo root). The `go` directive in `go.mod` and the `go-version` pins in `.github/workflows/*.yml` must stay in lockstep — CI builds with exactly this toolchain and `govulncheck` scans its stdlib, so bump both together whenever Go ships a security patch.
 - **Node.js 24 + npm** (used by Wails frontend commands and `frontend/package.json` scripts). CI pins `node-version: "24"`.
 - **Wails v2 CLI, matching the version pinned in `go.mod`** (`github.com/wailsapp/wails/v2`, currently **v2.16.0**) — CI and the release workflow install the same pinned version (`go install github.com/wailsapp/wails/v2/cmd/wails@v2.16.0`); `wails build`/`wails dev` are used by the Makefile and, on Windows, by [`build.ps1`](build.ps1).
 - **golangci-lint v2.14.0** (for `make lint` / `./build.ps1 lint`) — pinned to match CI (`go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0`).
-- **govulncheck v1.7.0** (for `make vulncheck` / `./build.ps1 vulncheck`) — the Makefile pins the version and runs it via `go run`, so no separate install is needed.
+- **govulncheck v1.7.0** (for `make vulncheck` / `./build.ps1 vulncheck`) — the Makefile pins the version and `internal/vulncheck` runs it via `go run` against a reviewed exception list, so no separate install is needed.
 - **`git`** — required for CODE mode only; checked on first project switch. CHAT mode (No Project) works without git.
 - **`rg` (ripgrep)** — auto-downloaded by the tool-manager on first run; no manual install needed.
 - Platform support in the Makefile ONNX fetch logic:
@@ -97,7 +97,7 @@ into an unexplained `pkg-config` failure.
 
 For CI/headless builds, also install `xvfb` (`sudo apt install xvfb` on Debian/Ubuntu).
 
-> End users running a prebuilt binary only need the runtime shared libraries (`libgtk-3-0`, `libwebkit2gtk-4.1-0`) — see [README.md](README.md#linux-amd64).
+> End users running a prebuilt binary only need the runtime shared libraries (`libgtk-3-0`, `libwebkit2gtk-4.1-0`) — see [README.md](README.md#linux-amd64-and-arm64).
 
 ## Windows build
 
@@ -111,8 +111,8 @@ PowerShell analog of every Makefile target ships at the repository root as
 Install once per machine. Every version below is pinned to what CI uses
 ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)):
 
-- **Go 1.27.2** — `winget install GoLang.Go`, or the official MSI from
-  [go.dev/dl](https://go.dev/dl/). Must match the `go 1.27.2` directive in `go.mod`.
+- **Go 1.27.3** — `winget install GoLang.Go`, or the official MSI from
+  [go.dev/dl](https://go.dev/dl/). Must match the `go 1.27.3` directive in `go.mod`.
 - **Node.js 24 + npm** — `winget install OpenJS.NodeJS.LTS`. CI pins `node-version: "24"`.
 - **Wails v2 CLI (v2.16.0)** —
   `go install github.com/wailsapp/wails/v2/cmd/wails@v2.16.0`.
@@ -160,17 +160,22 @@ From the repository root:
 ./build.ps1 build        # frontend-deps + wails build + fetch-onnx + fetch-embedding-model
 ./build.ps1 test         # go test ./... + frontend npm test
 ./build.ps1 lint         # fmt-check + golangci-lint + frontend eslint
-./build.ps1 vulncheck    # govulncheck ./...
+./build.ps1 vulncheck    # pinned govulncheck + reviewed allowlist
 ./build.ps1 help         # list every target
 ```
 
-`build.ps1` mirrors the Makefile one-to-one:
+`build.ps1` mirrors the Makefile target-for-target, with the divergences
+documented in the rows below: `test` behaves differently, `clean-onnx` removes
+fewer artifacts (OpenVINO is Linux-only — see its row), and `test-go` /
+`test-stress` / `fetch-onnx-openvino` have no `build.ps1` wrapper.
 
 | Makefile | `build.ps1` |
 | --- | --- |
 | `make build` | `./build.ps1 build` |
 | `make frontend-deps` | `./build.ps1 frontend-deps` |
-| `make test` | `./build.ps1 test` |
+| `make test` | `./build.ps1 test` — **diverges**: runs plain `go test ./...`, which includes the `TestStress*` tests, and drops `make test-go`'s `-count=1 -v -skip '^TestStress'` flags; the frontend half (`npm test`) is identical |
+| `make test-go` | *no target* — run `go test -count=1 -v -skip '^TestStress' ./...` directly |
+| `make test-stress` | *no target* — run `go run ./internal/teststress` directly |
 | `make bench-startup` | `./build.ps1 bench-startup` |
 | `make lint` | `./build.ps1 lint` |
 | `make fmt-check` | `./build.ps1 fmt-check` |
@@ -178,8 +183,9 @@ From the repository root:
 | `make dev-desktop` | `./build.ps1 dev-desktop` |
 | `make dev-frontend` | `./build.ps1 dev-frontend` |
 | `make fetch-onnx` | `./build.ps1 fetch-onnx` |
+| `make fetch-onnx-openvino` | *no target* — Linux-x64-only OpenVINO EP flavor ([ADR-089](specs/decisions/089-openvino-embedding-flavor.md)); the target itself fails closed on any other platform and the pinned artifact is a manylinux x86_64 wheel, so the Windows wrapper deliberately omits it |
 | `make fetch-embedding-model` | `./build.ps1 fetch-embedding-model` |
-| `make clean-onnx` | `./build.ps1 clean-onnx` |
+| `make clean-onnx` | `./build.ps1 clean-onnx` — **diverges**: the Makefile additionally removes the Linux-only OpenVINO EP artifacts (`libonnxruntime_providers_openvino_plugin.so*`, `libopenvino*`/`libtbb*`/`libhwloc*`, `openvino-third-party-programs.txt`, `.onnxruntime-openvino-version`, the `onnx-openvino` cache dir — [ADR-089](specs/decisions/089-openvino-embedding-flavor.md)); the Windows wrapper cleans the CPU + CUDA artifacts only |
 | `make clean` | `./build.ps1 clean` |
 | `make bump` | `./build.ps1 bump` |
 | `make build-gpu` / `make fetch-onnx-gpu` | `./build.ps1 build-gpu` / `./build.ps1 fetch-onnx-gpu` — **fail closed on Windows** |
@@ -237,9 +243,9 @@ Key points:
 
 - Environment placeholders are supported as `${ENV_VAR}`.
 - The active LLM provider is resolved from `llm.default_model` — the Router looks up which provider has the model in its enabled `models` list.
-- MCP servers are configured under `mcp.servers`.
+- MCP servers are configured under `mcp.servers`. Per-capability activation modes live under `capabilities.{skills,agents,mcp}.<name>.{chat_mode,code_mode}` (`auto` | `manual` | `disabled`, independently per CHAT/CODE context; empty = `auto`) — see [`specs/domains/capabilities.md`](specs/domains/capabilities.md) and ADR-084. The legacy `mcp.servers.<name>.mode` key is folded into `capabilities.mcp` at load and erased, so it disappears at the next save.
 - Security policy is configured exclusively by capability group under `security.groups`; the legacy `security.default_policy` and `security.tool_policies` keys are inert. The `execute` group alone supports a command blocklist — **empty by default**: c0wrk ships no predefined patterns, and the deterministic floor is the flowsh shell-analysis criteria C1–C10 rather than a pattern list. See [`specs/decisions/024-group-policies.md`](specs/decisions/024-group-policies.md) and [`specs/decisions/052-flowsh-command-analysis.md`](specs/decisions/052-flowsh-command-analysis.md).
-- `experimental.enabled` gates only the E2S execution mode; RESEARCH and Model Profiles are always available. `executor.verify_on_edit` is opt-in and runs only a config-authored command through the unattended hard-safety path.
+- `experimental.enabled` (default off) is an all-or-nothing master switch for three things: the E2S execution mode, the embedded local model's FRONTEND surfaces (a frontend-only gate — the backend keeps serving the subsystem's RPCs, ADR-068), and the browser web-access sidecar (a compound gate: it mounts only while `experimental.enabled && web_access.enabled`, and a mid-session flip of either switch mounts or stops it live). RESEARCH and Model Profiles are NOT gated by it — RESEARCH is always on for every real project (its own `research.enabled` sidebar gate defaults on), and Model Profiles has its own `model_profiles.enabled` master toggle. `executor.verify_on_edit` is opt-in and runs only a config-authored command through the unattended hard-safety path.
 - Main agent calls carry a request budget resolved per request: by default the adaptive per-model request budgets (`core/llmbudget`, ADR-071; kill-switch `timeouts.adaptive_budget.enabled`, default on), while a positive `timeouts.llmRequestTimeout` is a fixed override that is never escalated (0 = "no opinion"; the kill-switch off restores the legacy fixed regime, where 0 behaves as 600 s). One-shot title, commit-message, and prompt-optimization calls use `timeouts.serviceLLMRequestTimeout`.
 - Runtime limits are configurable under `toolLimits`, `timeouts`, `executor`, and `vector_index`; update checks use the `updates` section.
 - The SQLite database is always stored at `~/.c0wrk/database.db` (the `memory.database` config key has been retired).
@@ -252,18 +258,19 @@ Project-level commands (from the `Makefile`):
 
 ```bash
 make frontend-deps   # npm install in frontend/
-make test            # go test ./... && cd frontend && npm test (vitest)
+make test            # go test -count=1 -v -skip '^TestStress' ./... + cd frontend && npm test (vitest)
+make test-stress     # required probabilistic category: go run ./internal/teststress (20 race/shuffled repetitions)
 make fmt-check       # fail if gofmt would rewrite any Go source
 make lint            # make fmt-check + golangci-lint + frontend ESLint
 make dev-desktop     # full desktop hot-reload loop (wails dev + platform tags)
 make dev-frontend    # frontend Vite dev server only (no Go bridge)
 make build           # versioned wails build + ONNX runtime + embedding model
-make vulncheck       # Go dependency vulnerability gate (govulncheck, pinned)
+make vulncheck       # Go dependency vulnerability gate (pinned govulncheck + reviewed allowlist)
 make bump            # update the pinned sp4rk revision with GOWORK=off (release point only)
 make clean           # remove build/bin, .cache, frontend/dist
 ```
 
-> **Windows:** there is no `make` on a default install — every target above has a `./build.ps1 <target>` equivalent (`./build.ps1 build`, `./build.ps1 test`, …). See [Windows build](#windows-build) for prerequisites and the full target mapping.
+> **Windows:** there is no `make` on a default install — every target above except `test-stress` (which has no wrapper; run `go run ./internal/teststress` directly) has a `./build.ps1 <target>` equivalent (`./build.ps1 build`, `./build.ps1 test`, …). See [Windows build](#windows-build) for prerequisites and the full target mapping, including its two divergences.
 
 Asset/runtime fetch commands:
 
@@ -271,12 +278,15 @@ Asset/runtime fetch commands:
 make fetch-onnx            # download/copy ONNX Runtime library into app bundle
 make fetch-embedding-model # download/copy embedding model + tokenizer into app bundle
 make clean-onnx            # remove ONNX runtime libs from app bundle/cache
+# Opt-in ONNX flavors (see the Windows-build table for their build.ps1 status):
+make fetch-onnx-gpu        # CUDA 13 flavor, linux/amd64 only — replaces the CPU library (ADR-046)
+make fetch-onnx-openvino   # OpenVINO EP flavor, Linux x64 only — additive plugin stack (ADR-089)
 ```
 
 ### Focused Go workflows
 
 - Single package (root module): `go test ./core/...`
-- Single test: `go test ./core -run TestOrchestrator_PlanExecuteMode -v`
+- Single test: `go test ./core -run TestOrchestrator_HandleResultContainsRoutingDecision -v`
 - Tests use in-package style (`package agent`, not `agent_test`); many packages have a `testhelpers_test.go`.
 
 ### Cross-repository sp4rk workflow
@@ -377,12 +387,13 @@ Vector index needs ONNX Runtime plus a quantized embedding model + tokenizer (fe
 
 ## Continuous integration
 
-CI runs on pushes to `main` and pull requests targeting `main` across Linux, macOS, and Windows (see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)). Every job installs the same pinned toolchain — Go 1.27.2, Node 24, Wails v2.16.0, golangci-lint v2.14.0 — and the Windows job additionally sets `CGO_ENABLED=1` with MinGW-w64 gcc and normalizes line endings (`core.autocrlf false`). Before opening a PR, run the full local validation sequence:
+CI runs on pushes to `main`, pull requests targeting `main`, and manual `workflow_dispatch`, across Linux (amd64 **and** arm64), macOS, and Windows (see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)). Every OS/arch leg runs the default Go suite and the probabilistic stress suite as **separate steps** — `go test -count=1 -v -skip '^TestStress' ./...` filtered through awk so only failures, skips and stray diagnostics reach the log, then `go run ./internal/teststress` (20 race/shuffled repetitions; a failure, a skip or missing coverage fails the leg) — plus the frontend vitest run; Go and frontend lint run on Linux amd64, macOS, and Windows (the Linux arm64 leg skips them), while the `npm audit` gate runs on the Linux amd64 leg only. A single OS-independent `security` job runs `make vulncheck`. Every OS build leg installs the same pinned toolchain — Go 1.27.3, Node 24, Wails v2.16.0, golangci-lint v2.14.0 (golangci-lint is installed on the amd64 legs only — the Linux arm64 leg skips it — and the OS-independent `security` job installs only the Go toolchain) — and the Windows job additionally sets `CGO_ENABLED=1` with MinGW-w64 gcc and normalizes line endings (`core.autocrlf false`). Before opening a PR, run the full local validation sequence:
 
 ```bash
 make build
 make lint
 make test
+make test-stress
 make vulncheck
 ```
 
@@ -392,10 +403,11 @@ On Windows (no `make`):
 ./build.ps1 build
 ./build.ps1 lint
 ./build.ps1 test
+go run ./internal/teststress   # build.ps1 has no test-stress target
 ./build.ps1 vulncheck
 ```
 
-All must pass clean. `make lint` includes `fmt-check`; `make test` runs both Go tests (`go test ./...`) and frontend tests (`cd frontend && npm test` via vitest).
+All five must pass clean. `make lint` includes `fmt-check`; `make test` runs the default Go suite (`go test -count=1 -v -skip '^TestStress' ./...` — real HTTP/PTY/SQLite integration stays in) and the frontend tests (`cd frontend && npm test` via vitest), while `make test-stress` runs the required probabilistic category separately. `./build.ps1 test` is the one divergence: it runs plain `go test ./...`, which still includes the `TestStress*` tests.
 
 Every contribution must also follow [`SECURITY.md`](SECURITY.md). Treat files, web/MCP output, attachments, clipboard/drop content, and generated artifacts as untrusted; preserve capability-group policy, path/symlink/SSRF/blocklist gates, and never place secrets in source, logs, prompts, facts, or test fixtures. If behavior, a cross-layer interface, configuration, or an architectural invariant changes, update the affected documents under [`specs/`](specs/) according to [`specs/META.md`](specs/META.md); accepted ADRs are immutable and are superseded by a new ADR.
 
@@ -411,7 +423,7 @@ This section describes how to cut a release of **c0wrk**, the artifact inventory
 
 ### Cutting a release
 
-Releases are produced by the `release.yml` GitHub Actions workflow. It builds the app for all platforms and publishes a GitHub Release with auto-generated notes and five downloadable artifacts (four platform archives plus the opt-in CUDA 13 flavor of Linux amd64).
+Releases are produced by the `release.yml` GitHub Actions workflow. It builds the app for all platforms and publishes a GitHub Release with auto-generated notes and six downloadable artifacts (four platform archives plus the two opt-in Linux amd64 flavors, CUDA 13 and OpenVINO).
 
 **Standard flow: tag and push**
 
@@ -423,8 +435,8 @@ git push origin v0.1.0
 What happens next:
 
 1. Pushing a tag named `v*` triggers the **Release** workflow ([`.github/workflows/release.yml`](.github/workflows/release.yml)).
-2. The workflow builds the app for **4 targets** (macOS arm64, Linux amd64/arm64, Windows amd64) plus a CUDA-13 GPU flavor of Linux amd64, injects the release tag plus commit/build time into `core/version`, and bundles the ONNX Runtime shared library and embedding models.
-3. It generates a `SHA256SUMS` file for the five archives and publishes a GitHub Release tied to that tag with auto-generated release notes.
+2. The workflow builds the app for **4 targets** (macOS arm64, Linux amd64/arm64, Windows amd64) plus two opt-in flavors of Linux amd64 — a CUDA-13 GPU one and an OpenVINO one — injects the release tag plus commit/build time into `core/version`, and bundles the ONNX Runtime shared library and embedding models.
+3. It generates a `SHA256SUMS` file for the six archives and publishes a GitHub Release tied to that tag with auto-generated release notes.
 
 Verify the result under **Releases** → your tag, then promote / announce the release URL.
 

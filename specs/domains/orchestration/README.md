@@ -8,9 +8,9 @@ The orchestration domain coordinates the full lifecycle of a user request: class
 
 - `core/orchestrator.go` — top-level Orchestrator (HandleMessage, Resume, `ResolveVisionOptions` — per-call markitdown vision params for the currently active model, consumed by the backend attachment flow)
 - `core/orchestrator_mcp_prepare.go` — durable task-name preparation and one current mode snapshot before new-task, continuation or resume execution; see [../tool-system/mcp-gateway.md](../tool-system/mcp-gateway.md)
-- `core/orchestrator_handle.go` — HandleMessage body: router → Conductor launch, `prepareRequestContext` (task-context enrichment incl. the markitdown vision resolver, attached on HandleMessage and Resume; flows through to subagent delegations)
+- `core/orchestrator_handle.go` — HandleMessage helpers: `prepareRequestContext` (task-context enrichment incl. the markitdown vision resolver, attached on HandleMessage and Resume; flows through to subagent delegations), `setupBlackboard`, `routeOrContinue` / `routeAndActivateSkills` (router → skill activation → Routing event), `enrichAgentContext`, `finalizeResult`, `persistTaskOutcome`
 - `core/orchestrator_goal.go` — goal mode: deriveGoal, runGoalLoop, resumeGoalLoop, runGoalTurns, budgets, anti-spin (see [../goal-mode.md](../goal-mode.md))
-- `core/orchestrator_e2s.go` — E2S mode entry: runE2SLoop (context/launcher wiring, Σ persistence via `task_e2s_state`, resume checkpoints), hooks the `e2s_state` snapshots
+- `core/orchestrator_e2s.go` — E2S mode entry: runE2SLoop (self-sufficient context wiring — no delegation launcher, Σ persistence via `task_e2s_state`, resume checkpoints), hooks the `e2s_state` snapshots
 - `core/e2s/` — the E2S loop itself: the turn loop (`loop.go`), the `e2s_step` meta-tool + semantic anti-spin fingerprint (`steptool.go`), the Σ merge operator (`merge.go`), prompt composition (`prompt.go`), domain types (`types.go`) (see [../e2s.md](../e2s.md))
 - `core/conductor.go` — Conductor entry point: builds system prompt, tool set, launches `Executor.Run`
 - `core/modelprofiles/tools_filter.go` — pure tool-set narrowing for the Model Profiles essential-tools variant (see [../model-profiles.md](../model-profiles.md))
@@ -24,8 +24,8 @@ The orchestration domain coordinates the full lifecycle of a user request: class
 - `github.com/v0lka/sp4rk/agent/executor.go` — ReAct loop (Conductor and subagents are both `Executor.Run` instances)
 - `github.com/v0lka/sp4rk/agent/subagent.go` — `RunSubAgent` / `RunSubAgentsParallel` (isolated executor in goroutine)
 - `github.com/v0lka/sp4rk/agent/reflector/reflector.go` — failure analysis (Reflect), invoked via the `reflect` tool
-- `github.com/v0lka/sp4rk/orchestration/dag.go` — DAG data structure (used by `delegate` and `declare_plan`)
-- `core/plan_serializer.go` — Plan ↔ Markdown serialization (used by `declare_plan`)
+- `github.com/v0lka/sp4rk/orchestration/types.go` — `Plan` / `PlanStep` DAG types (declared by `declare_plan`, walked by the plan wave loop in `core/conductor.go`; the engine's `orchestration.FindReadySteps` in dag.go stays unused — c0wrk selects each ready wave itself)
+- `core/plan_serializer.go` — Plan → Markdown serialization (`SerializePlan` renders the approve-markdown, `RandomSuffix` names the plan file; called by `conductorPublisher.Publish` behind the `declare_plan` tool — no Markdown → Plan direction exists)
 - `core/systemprompt.go` — system prompt construction with skill context
 - `github.com/v0lka/sp4rk/prompt/builder.go` — fluent prompt construction with cache-break support
 - `github.com/v0lka/sp4rk/prompt/sampling.go` — family-aware temperature defaults
@@ -69,6 +69,7 @@ type OrchestratorConfig struct {
     KeepFirst                   int     // context pruning: protected head messages
     KeepLast                    int     // context pruning: protected tail messages
     MaxDependencyContextChars   int     // chars from dependency outputs injected into delegation task
+    MaxParallelSubagents        int     // cap on concurrent subagents, shared by delegate and plan waves (default: 4; <= 0 = unlimited)
     PreWarningPercent           int     // context-fill notification threshold
     Model                       string
     ReasoningEffort             string
@@ -78,10 +79,19 @@ type OrchestratorConfig struct {
     AgentsMDSearchPaths         []string // extra AGENTS.md paths (global, c0wrk) read ahead of the workspace file
     ConductorHistoryWindow      int     // recent conversation messages injected into the Conductor context (default: 20)
     GoalLoop                    GoalLoopSettings // goal-loop settings: Verification gates the independent verifier turn ("independent" | "off"); see [../goal-mode.md](../goal-mode.md)
-    Model Profiles                        ModelProfilesSettings // model profile (master toggle + essential-tools / system-prompt variants); see [../model-profiles.md](../model-profiles.md)
+    ModelProfiles               ModelProfilesSettings // model profile (master toggle + essential-tools / system-prompt variants); see [../model-profiles.md](../model-profiles.md)
+    ToolCallTimeout             time.Duration // per-tool-call ceiling on the Conductor and every subagent executor (0 = disabled); see [executor.md](executor.md)
+    ToolCallTimeoutExemptTools  []string      // replaces the ceiling's exempt tool-name set wholesale (nil keeps the sp4rk default)
 }
+// NOTE: illustrative subset. The full struct also carries `Compaction`
+// (manual history compaction), `E2S` (`E2SSettings`), and the per-capability
+// mode maps with their builder-snapshot resolvers (`MCPServerModes`,
+// `SkillModes`, `AgentModes` + `MCPServerModesResolver` /
+// `SkillModesResolver` / `AgentModesResolver`).
 
 // Routing result — domain, complexity, skills, and a clarification flag.
+// sp4rk type (`github.com/v0lka/sp4rk/agent/router`, declared in types.go);
+// c0wrk consumes it by pointer.
 // No `mode` (removed): the Conductor decides execution granularity.
 // `NeedsClarification` still exists on the sp4rk type but c0wrk IGNORES it
 // (core/orchestrator_handle.go: "Router.NeedsClarification is ignored: the
@@ -112,14 +122,15 @@ type HandleOptions struct {
     E2S                bool                       // enter the explicit-execution-state loop; mutually exclusive with Goal (see ../e2s.md)
 }
 
-// Handle result
+// Handle result (core/types.go)
 type HandleResult struct {
     Output          string
-    RoutingDecision *RoutingDecision
-    Plan            *Plan               // last plan declared via declare_plan, if any
-    Blackboard      Blackboard
-    Reflections     []orchestration.Reflection           // reflect-tool outputs, if any
-    Status          orchestration.ExecutionStatus  // success | partial | failed | aborted | cancelled | paused
+    RoutingDecision *router.RoutingDecision       // sp4rk agent/router type
+    Plan            *orchestration.Plan           // last plan declared via declare_plan, if any
+    Blackboard      orchestration.Blackboard
+    Reflections     []orchestration.Reflection    // reflect-tool outputs, if any
+    Status          orchestration.ExecutionStatus // success | partial | failed | aborted | cancelled | paused
+    Err             error                         // typed terminal cause of a degraded best-effort outcome (JSON-omitted); nil when the error is returned directly
 }
 ```
 
@@ -167,7 +178,11 @@ HandleMessage(ctx, message, sessionID, opts)
 │     is a fresh Executor.Run; the loop holds the single-flight guard for its
 │     whole run. See [../goal-mode.md](../goal-mode.md).
 │
-├─ 3. ROUTE (or continuation fast-path):
+├─ 3. ROUTE (or continuation fast-path) — routeOrContinue:
+│     ├─ First, enrichAgentContext attaches the subagent roster (filtered
+│     │   through the task's capability snapshot), the /-mentioned agents and
+│     │   the /-mentioned MCP servers to ctx — routing-independent, so the
+│     │   fast-path and fresh routing both carry them into the Conductor prompt
 │     ├─ Continuation fast-path: if opts.TaskID != "" AND the restored BB
 │     │   has BOTH an existing plan AND a routing decision → reuse the
 │     │   routing decision, reactivate skills, skip the router LLM call.
@@ -178,7 +193,9 @@ HandleMessage(ctx, message, sessionID, opts)
 │         → RoutingDecision { Domain, Complexity, MatchedSkills }
 │         → Emit Routing event
 │
-├─ 3a. No Project: override routing.Domain from "code" to "general"
+├─ 3a. No Project (CHAT): the routing domain stays as classified — a
+│     code-flavored CHAT question routes "code"; only the tool set and
+│     auto-RAG / verify-on-edit change
 │
 ├─ 4. Activate matched skills:
 │     → Merge router-matched skills with opts.UserSkills (deduplicated union)
@@ -204,15 +221,18 @@ HandleMessage(ctx, message, sessionID, opts)
 │     │   reflect, ask_user)
 │     ├─ Tool set = file ops + search + system-group tools (ask_user, finish,
 │     │   store_fact, search_facts, update_checklist, declare_step_complete,
-│     │   read_step_output, semantic_search) + Conductor tools (delegate,
+│     │   read_step_output, list_step_outputs, read_final_result,
+│     │   semantic_search) + Conductor tools (delegate,
 │     │   declare_plan, execute_plan, reflect, cancel_delegation)
-│     │   (semantic_search — like the search tools ripgrep and glob — is
-│     │   excluded in No-Project (CHAT) mode via NoProjectDisabledTools,
-│     │   applied by ListFiltered)
+│     │   (semantic_search is the ONLY tool NoProjectDisabledTools excludes
+│     │   in No-Project (CHAT) mode, applied by ListFiltered — ripgrep and
+│     │   glob stay available under the normal security.groups policies)
 │     ├─ ContextManager via contextFactory
 │     └─ Delegation Registry injected into context
 │
-├─ 6. Launch Conductor = executor.Run(ctx, conductorTools, cm)
+├─ 6. Launch Conductor = RunConductor(ctx, message, bb, availableTools, deps,
+│     plansDir) → orchestration.NewConductor(cfg).Run(...), which owns the
+│     single Executor.Run inside it
 │     └─ The Conductor owns the task until it calls finish.
 │        Planning, decomposition, interaction, reflection all happen
 │        as tool calls inside this loop.
@@ -235,7 +255,7 @@ HandleMessage(ctx, message, sessionID, opts)
 | Complex task | Conductor calls `delegate` with one or more tasks | Subagents run isolated ReAct loops; Conductor sees only summaries. Replaces the former "advanced" multi-step DAG mode. |
 | Interactive skill | Conductor calls `ask_user` / `declare_plan` mid-loop | Skill instructions are executable because the tools are available inside the loop. No pipeline-level gate. |
 | Goal mode | Any message with `opts.Goal` (fresh task or continuation) | `runGoalLoop` replaces the single route→Conductor pass: derives a {condition, verify} goal with user sign-off, then iterates the Conductor turn-by-turn (each a fresh `Executor.Run`) until the agent declares the goal met, the budget is exhausted, the agent goes idle, or the task is paused (session-level). See [../goal-mode.md](../goal-mode.md). |
-| E2S mode | Any message with `opts.E2S` (per-message frontend toggle; gated fail-closed on `experimental.enabled` on both sides) | `runE2SLoop` replaces the route→Conductor flow entirely: its own loop on raw sp4rk primitives (no Executor, no Conductor, no router) where the model's only memory is the externalized state Σ it patches every turn via `e2s_step`; actions dispatch through the registry with every security gate intact; delegation reuses the same conductor launcher with an inert plan state. Mutually exclusive with goal mode. See [../e2s.md](../e2s.md). |
+| E2S mode | Any message with `opts.E2S` (per-message frontend toggle; gated fail-closed on `experimental.enabled` on both sides) | `runE2SLoop` replaces the route→Conductor flow entirely: its own loop on raw sp4rk primitives (no Executor, no Conductor, no router) where the model's only memory is the externalized state Σ it patches every turn via `e2s_step`; actions dispatch through the registry with every security gate intact; the mode is self-sufficient and installs no delegation wiring — `delegate` is stripped from its catalog (ADR-083). Mutually exclusive with goal mode. See [../e2s.md](../e2s.md). |
 
 There is no `executionMode` toggle. The Conductor chooses its own granularity based on task complexity and its system-prompt guidance.
 
@@ -246,20 +266,20 @@ There is no `executionMode` toggle. The Conductor chooses its own granularity ba
 - Complexity is always in range [1, 5].
 - Exactly one Conductor `Executor.Run` instance owns a given task from start to finish.
 - **Goal mode is a turn-of-Conductors, not one long-lived executor.** When `opts.Goal`, `runGoalLoop` iterates: each turn launches a fresh `Executor.Run` via `RunConductor`, reusing the normal continuation-trajectory mechanism so dialogue context persists across the turn boundary. Goal mode runs on BOTH a fresh task (`opts.TaskID == ""`) and a continuation (`opts.TaskID != ""`); on a continuation the prior task's blackboard is restored and the agent derives a fresh goal against the inherited facts/history. Routing is decided once at the top of `runGoalLoop` (before derivation) and inherited unchanged by every turn; no turn re-routes. The loop holds the single-flight guard for its whole run; `PauseSession` releases it by stopping the in-flight conductor at the next step boundary (the task is persisted as paused; the goal stays `active`). See [../goal-mode.md](../goal-mode.md).
-- **E2S mode owns its loop and never mixes with the Conductor.** When `opts.E2S`, `runE2SLoop` runs on raw sp4rk primitives — no `Executor`, no Conductor, no router — with the `e2s_step` meta-tool as the model's only protocol surface. `opts.E2S` + `opts.Goal` together are rejected with `ErrE2SGoalConflict` (the E2S branch is checked first, so a conflict can never be silently swallowed by the goal branch). Plan-workflow and goal-only tools are stripped from the E2S catalog; step-limit exhaustion maps to `ExecutionStatusPartial` (a resumable checkpoint, not a failure). See [../e2s.md](../e2s.md).
+- **E2S mode owns its loop and never mixes with the Conductor.** When `opts.E2S`, `runE2SLoop` runs on raw sp4rk primitives — no `Executor`, no Conductor, no router — with the `e2s_step` meta-tool as the model's only protocol surface. `opts.E2S` + `opts.Goal` together are rejected with `ErrE2SGoalConflict` (the E2S branch is checked first, so a conflict can never be silently swallowed by the goal branch). Plan-workflow, delegation and goal-only tools are stripped from the E2S catalog (`e2sStrippedToolNames` + `tools.StripGoalModeTools`); step-limit exhaustion maps to `ExecutionStatusPartial` (a resumable checkpoint, not a failure). See [../e2s.md](../e2s.md).
 - The Conductor always has `ask_user`, `declare_plan`, `execute_plan`, `reflect`, `delegate`, `cancel_delegation`, `finish` available (they are `system`-group tools — bypass policy; ADR-024).
 - `finish` with pending async delegations is rejected: the executor's finish guard (`Executor.SetFinishGuard`, set by the sp4rk Conductor) returns an error while async delegations are pending, and the executor injects a nudge and retries rather than accepting finish. Finish is accepted only once every pending delegation completes or is cancelled via `cancel_delegation` — there is no implicit join, nothing waits.
 - `ExecutionResult.Status` is the typed success contract: success | partial | failed | aborted | cancelled | paused. Callers consult it instead of parsing Output.
 - MCP selections are durable, monotonic task-owned server names; both HandleMessage and Resume prepare names and one current mode snapshot before execution (Resume before its plan/delegate wave), sharing the gate with E2S, subagents, verifier and registry dispatch. Persistence failures preserve the task for retry, without fresh fallback. See [../tool-system/mcp-gateway.md](../tool-system/mcp-gateway.md#mention-gating-manual-mode).
 - Blackboard is created once per first message and restored for continuations.
-- Vector search hints are non-blocking (2s timeout, failure is acceptable).
+- Vector search hints are non-blocking: one deadline (from `vector_index.search_wait_timeout_ms`; unset → the 3s `defaultVectorSearchWaitTimeout`, an explicit `0` → fail fast) bounds both the readiness wait and the search, and an expiry or failure skips the hints. No Project (CHAT) injects no hints at all.
 - Skills are activated task-wide and rendered verbatim in the Conductor system prompt (no truncation).
 - requestInFlight (atomic.Bool) enforces the "one active request per `*Orchestrator`" invariant: HandleMessage CompareAndSwap's it to true on entry and stores false on defer; a concurrent caller is refused with `ErrRequestInFlight`.
 - conversationHistory is updated for every terminal outcome of HandleMessage and Resume.
 - When the assistant output contains tool-call syntax printed as text (failure-mode detected by `agent.DetectToolCallSyntaxInContent`), the history records a `HistoryNoteFailed(...)` note instead of the hallucinated text.
 - isNoProject: index-dependent tools are disabled (semantic_search) and verify-on-edit is suppressed; the routing domain is NOT overridden (code-flavored CHAT questions route as "code").
 - SetNoProjectMode(): disables index-dependent tools (semantic_search — no vector index exists without a project) on the core tool registry.
-- No Project (CHAT) mode is a context flag (`core/tools.WithNoProject` / `IsNoProject`, `core/tools/mode.go`): when set, privacy-sensitive info (e.g. the home directory) must be redacted from system prompts and code-oriented tools are disabled. Consumers: prompt builders (redaction) and tool registration (toolset narrowing). Distinct from RESEARCH mode, which keeps the full CODE toolset (see [../research.md](../research.md)).
+- No Project (CHAT) mode is a context flag (`core/tools.WithNoProject` / `IsNoProject`, `core/tools/mode.go`): the session manager sets it on the task context of a No-Project session, marking it for privacy-sensitive redaction (e.g. the home directory) in prompt builders. The toolset narrowing itself is registry-level, not flag-driven: `SetNoProjectMode()` installs `NoProjectDisabledTools` (`semantic_search` only). Distinct from RESEARCH mode, which keeps the full CODE toolset (see [../research.md](../research.md)).
 - Model Profiles essential-tools filter: when active it runs exactly once per task on the Conductor path (before the ReAct loop) and inside the E2S branch (`runE2SWithState`), but never in goal mode; `finish` and the fact-memory / human-interaction tools always survive. The profile is strictly additive — every variant is inert when its master/sub-toggle is off. See [../model-profiles.md](../model-profiles.md).
 - `loggingEmitter` (`core/emitter_logging.go`) logs every model/judge-authored payload field bounded, never verbatim: scalar prose (subagent descriptions, errors, plan summaries, reflections, goal/E2S payload scalars) gets a 200-rune UTF-8 preview plus its byte length, and payload maps get `payloadShape` (sorted key(len)/key(type) entries). Rationale: model-authored prose can embed quoted file contents, absolute paths, or secrets, and payload maps are re-logged after every applied patch (E2SState). New `Emitter` methods must follow this policy in their logging wrapper.
 
@@ -271,6 +291,7 @@ From `config.yaml` (via BuilderConfig → OrchestratorConfig):
 | --------- | ------- | ----------- |
 | `orchestration.maxDependencyContextChars` | 8000 | Max chars from dependency outputs injected into a delegation task |
 | `orchestration.maxRedelegationDepth` | 2 | Maximum recursive delegation depth when `allow_redelegate` is true (ASI07-R6). 0 = use default (2) |
+| `agents.max_parallel_subagents` | 4 | Concurrent-subagent cap shared by every dispatch path (blocking and async `delegate`, plan waves); `<= 0` resolves to 4 at config load |
 | `executor.compaction.sliding_window.keep_first` | 3 | Protected head messages during sliding-window compaction |
 | `executor.compaction.sliding_window.keep_last` | 10 | Protected tail messages during sliding-window compaction |
 | `executor.compaction.thresholds.pre_warning_percent` | 75 | Context-fill % that triggers the pre-compaction store_fact nudge |
@@ -290,7 +311,7 @@ Note: yaml key casing is mixed within and across config sections (see the struct
 - Custom `BlackboardFactory` for alternative persistence.
 - Custom `HITLHandler` for step limit and circuit breaker handling (applies to both Conductor and subagents).
 - System prompt customization via the Conductor prompt builder.
-- New Conductor tools: implement `tools.Tool`, register in `core/tools/builtin_registration.go`, add to the Conductor tool set in `core/conductor.go`. See [../../contracts/conductor-tools.md](../../contracts/conductor-tools.md).
+- New Conductor tools: implement `tools.Tool` with `ToolGroup: sdktools.GroupSystem` (ADR-024), register it in `core/tools/builtin_registration.go`, and — for a Conductor-only tool — add its name to `conductorOnlyToolNames` (stripped from every subagent toolset) and `coreNonCacheableToolNames` (eager-cache bypass; a truncated result is still cached on demand) in `core/conductor.go`. See [../../contracts/conductor-tools.md](../../contracts/conductor-tools.md).
 
 ## Related Specs
 

@@ -19,6 +19,22 @@ func TestConfigPath(t *testing.T) {
 	}
 }
 
+func TestDeviceIDPath(t *testing.T) {
+	got := DeviceIDPath(testAgentDir)
+	want := filepath.Join(testAgentDir, "device_id")
+	if got != want {
+		t.Errorf("DeviceIDPath: got %q, want %q", got, want)
+	}
+}
+
+func TestKimiAuthRegionRejectionPath(t *testing.T) {
+	got := KimiAuthRegionRejectionPath(testAgentDir)
+	want := filepath.Join(testAgentDir, "kimi_auth_region_rejection.json")
+	if got != want {
+		t.Errorf("KimiAuthRegionRejectionPath: got %q, want %q", got, want)
+	}
+}
+
 func TestDatabasePath(t *testing.T) {
 	got := DatabasePath(testAgentDir)
 	want := filepath.Join(testAgentDir, "database.db")

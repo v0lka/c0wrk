@@ -7,6 +7,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options/linux"
 
 	"github.com/v0lka/c0wrk/backend"
+	"github.com/v0lka/c0wrk/core/webviewgpu"
 )
 
 // TestWailsWebviewGpuPolicyCompensatesCMapping pins the compensation by
@@ -21,15 +22,15 @@ func TestWailsWebviewGpuPolicyCompensatesCMapping(t *testing.T) {
 	// window.c (v2.16.0): 0→WEBKIT_…POLICY_ALWAYS, 1→…POLICY_ON_DEMAND,
 	// 2→…POLICY_NEVER.
 	cases := []struct {
-		policy webviewGpuPolicy
+		policy webviewgpu.Policy
 		wantC  int
 	}{
-		{gpuPolicyAlways, 0},   // → C case 0 → WEBKIT_HARDWARE_ACCELERATION_POLICY_ALWAYS
-		{gpuPolicyOnDemand, 1}, // → C case 1 → WEBKIT_HARDWARE_ACCELERATION_POLICY_ON_DEMAND
-		{gpuPolicyNever, 2},    // → C case 2 → WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER
+		{webviewgpu.PolicyAlways, 0},   // → C case 0 → WEBKIT_HARDWARE_ACCELERATION_POLICY_ALWAYS
+		{webviewgpu.PolicyOnDemand, 1}, // → C case 1 → WEBKIT_HARDWARE_ACCELERATION_POLICY_ON_DEMAND
+		{webviewgpu.PolicyNever, 2},    // → C case 2 → WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER
 	}
 	for _, tc := range cases {
-		if got := int(tc.policy.wailsWebviewGpuPolicy()); got != tc.wantC {
+		if got := int(wailsWebviewGpuPolicy(tc.policy)); got != tc.wantC {
 			t.Fatalf("policy %v: want C-layer integer %d, got %d", tc.policy, tc.wantC, got)
 		}
 	}
@@ -61,17 +62,14 @@ func TestWailsWebviewGpuPolicyEnumOrderCanary(t *testing.T) {
 	}
 }
 
-func TestWebviewGpuPolicyString(t *testing.T) {
-	cases := map[webviewGpuPolicy]string{
-		gpuPolicyAlways:     backend.WebviewGpuPolicyAlways,
-		gpuPolicyOnDemand:   backend.WebviewGpuPolicyOnDemand,
-		gpuPolicyNever:      backend.WebviewGpuPolicyNever,
-		webviewGpuPolicy(9): backend.WebviewGpuPolicyNever,
-	}
-	for policy, want := range cases {
-		if got := policy.String(); got != want {
-			t.Fatalf("policy %d: want %q, got %q", policy, want, got)
-		}
+// dmabufFallbackFixture mirrors the backend watchdog tests' fixture (the
+// same shape): an active DMABUF auto-fallback record, used here to pin the
+// resolution order around an active fallback.
+func dmabufFallbackFixture() *backend.WebviewGpuAutoFallback {
+	return &backend.WebviewGpuAutoFallback{
+		Policy:     backend.WebviewGpuPolicyNever,
+		Reason:     backend.GpuFallbackReasonDmabufFailure,
+		DetectedAt: "2026-10-15T00:00:00Z",
 	}
 }
 

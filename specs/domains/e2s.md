@@ -159,7 +159,7 @@ Parity (mirrored):
 | `observation_budget_tokens` | `8192` | per-turn observation budget in TOKENS (the ReAct-scale cap — the executor's tool-result budget is 30K tokens against a comparable window share); engages when the loop resolves a context window: the effective cap is `min(observation_budget_tokens, observation_fill_fraction × window) × 4` characters (ADR-083) |
 | `observation_fill_fraction` | `0.4` | caps the observation budget as a fraction of the model's context window, so a small-window model gets proportionally smaller observations; only meaningful together with `observation_budget_tokens` and a resolved window |
 | `repeat_nudge_threshold` | `3`     | semantically identical consecutive actions (same tool + target anchor; precision args like line ranges are ignored, while the content payloads of `write_file`/`edit_file` are part of the identity — successive different edits of one file do not collide; a batch fingerprints per sub-call) before a nudge observation |
-| `repeat_abort_threshold` | `5`     | identical consecutive actions before `spin_stop` abort              |
+| `repeat_abort_threshold` | `5`     | identical consecutive actions before `spin_stop` abort; config load rejects a `repeat_nudge_threshold` above it, so a nudge always precedes the abort |
 
 `e2s.tools:` narrows the available-tool catalog (ADR-083) — both the "Available Tools" section of every turn's system prompt AND the action-dispatch surface (the catalog is the dispatch contract; filtered-out names are rejected fail-closed). Filtering happens before the always-applied goal/plan/delegation stripping, so a stripped name stays unreachable under any `e2s.tools` value:
 

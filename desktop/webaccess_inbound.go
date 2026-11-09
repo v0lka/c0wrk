@@ -23,8 +23,9 @@ func (a *App) webWSInboundDispatcher(log *slog.Logger) func(*webaccess.WSConn, [
 
 // dispatchWebInboundFrame decodes one inbound WS frame into the shared HITL
 // handlers; malformed, unnamed, or off-whitelist frames drop at Debug and
-// the connection stays alive. The shape gate is inline — extractPayload's
-// Warn logging would let network input spam the log (Wails keeps its Warns).
+// the connection stays alive. The shape gate is inline — core/hitlwire
+// ExtractPayload's Warn logging would let network input spam the log (Wails
+// keeps its Warns).
 func (a *App) dispatchWebInboundFrame(data []byte, uiEmit func(session.Event), log *slog.Logger) {
 	var env struct {
 		Name string `json:"name"`
@@ -36,7 +37,7 @@ func (a *App) dispatchWebInboundFrame(data []byte, uiEmit func(session.Event), l
 	}
 
 	// The whitelist mirrors wireWailsEventListeners one-to-one. JSON numbers
-	// arrive as float64, which parseConfirmDecision already accepts.
+	// arrive as float64, which core/hitlwire ConfirmDecision already accepts.
 	var dispatch func(map[string]any)
 	switch env.Name {
 	case backend.EventToolConfirmResponse:

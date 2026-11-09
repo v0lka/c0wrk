@@ -6,6 +6,14 @@ import type { BranchActionKind } from '@/hooks/useBranchActions'
 
 interface RemoteBranchRowProps {
   branch: Branch
+  /**
+   * Visible label override: in tree display mode the leaf renders the last
+   * `/`-segment of the ref (the ancestor dir rows carry the rest — the
+   * Changes list's name-only convention); undefined (flat mode) renders the
+   * full ref. Payloads, hover-action labels, tooltips and the accessible
+   * name (aria-label) always stay the FULL remote-tracking ref.
+   */
+  displayName?: string
   /** The action currently in-flight on this row (null = idle). */
   inFlight: BranchActionKind | null
   /** True when a different row's operation is in-flight — dims & blocks this row. */
@@ -66,6 +74,7 @@ interface RemoteBranchRowProps {
  */
 export function RemoteBranchRow({
   branch,
+  displayName,
   inFlight,
   disabled,
   onCheckoutRemote,
@@ -118,6 +127,10 @@ export function RemoteBranchRow({
       tabIndex={blocked || draftBlocked ? -1 : 0}
       aria-disabled={checkoutBlocked || draftBlocked ? 'true' : undefined}
       aria-current={selected ? 'true' : undefined}
+      // The accessible name is always the FULL remote-tracking ref — the
+      // visible label is the tree-mode basename, and two dirs can hold
+      // same-named leaves (`origin/ui/x` and `origin/cli/x`).
+      aria-label={branch.name}
       title={
         draftBlocked
           ? (draftBlockedReason ?? undefined)
@@ -136,7 +149,7 @@ export function RemoteBranchRow({
       )}
     >
       <Server className="size-4 shrink-0 text-muted-foreground" />
-      <span className="flex-1 truncate">{branch.name}</span>
+      <span className="flex-1 truncate">{displayName ?? branch.name}</span>
       {selected && <Check className="size-4 shrink-0" />}
       {inFlight === 'checkoutRemote' && <Loader2 className="size-4 shrink-0 animate-spin" />}
 

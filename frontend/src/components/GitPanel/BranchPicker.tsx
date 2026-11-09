@@ -4,6 +4,8 @@ import {
   Loader2,
   Search,
   AlertCircle,
+  FolderTree,
+  List,
 } from 'lucide-react'
 import {
   Dialog,
@@ -11,6 +13,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useGitPanelStore } from '@/stores/gitPanelStore'
 import { useSessionStore } from '@/stores/sessionStore'
@@ -22,8 +25,7 @@ import { useSessionWorktreePin } from '@/hooks/useSessionWorktreePin'
 import type { GitWorktree } from '@/types/models'
 import { focusWorktree } from '@/lib/gitFocus'
 import { useWorktreeActions } from '@/hooks/useWorktreeActions'
-import { LocalBranchRow } from './LocalBranchRow'
-import { RemoteBranchRow } from './RemoteBranchRow'
+import { BranchList } from './BranchList'
 import { BranchDeleteConfirmDialog } from './BranchDeleteConfirmDialog'
 import { WorktreeDeleteConfirmDialog } from './WorktreeDeleteConfirmDialog'
 import { NewBranchSection } from './NewBranchSection'
@@ -71,8 +73,9 @@ function remoteTwinName(remoteRef: string): string {
  *
  * - Opens when `gitPanelStore.isBranchPickerOpen` is true.
  * - Lists local and remote branches from `gitPanelStore.branches` (refreshed
- *   from GetBranches on open) using the shared {@link LocalBranchRow}/
- *   {@link RemoteBranchRow} components, which expose the full operation set
+ *   from GetBranches on open) through the shared {@link BranchList} (dialog
+ *   variant, over the same {@link LocalBranchRow}/{@link RemoteBranchRow}
+ *   rows), which expose the full operation set
  *   (checkout / push / merge / rebase / rename / delete for local;
  *   checkout-remote / delete-remote for remote).
  * - In draft mode (below) remote-tracking rows are selectable pick targets
@@ -153,6 +156,15 @@ export function BranchPicker() {
   }, [isOpen, clearPendingBranchBase])
 
   const [filter, setFilter] = useState('')
+  // Flat ⇄ tree display toggle (the header button before the filter input).
+  // Unlike the per-open filter query (reset on every open), the display mode
+  // is a persisted store preference (`branchListTree`, shared with the
+  // BranchDropdown so both branch-list surfaces always render the same mode)
+  // and it applies in BOTH modes — switch and draft (draft rows flow through
+  // the same BranchList row props, so the tree layout needs no draft-specific
+  // wiring).
+  const treeMode = useGitPanelStore((s) => s.branchListTree)
+  const setBranchListTree = useGitPanelStore((s) => s.setBranchListTree)
   const [loadingBranches, setLoadingBranches] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const filterRef = useRef<HTMLInputElement>(null)
@@ -192,10 +204,6 @@ export function BranchPicker() {
     () => branches.filter((b) => b.kind === 'local'),
     [branches],
   )
-  const remoteBranches = useMemo(
-    () => branches.filter((b) => b.kind === 'remote'),
-    [branches],
-  )
   // Names only, for NewBranchSection's draft-mode duplicate-name guard.
   const localBranchNames = useMemo(() => localBranches.map((b) => b.name), [localBranches])
 
@@ -207,9 +215,6 @@ export function BranchPicker() {
     },
     [filter],
   )
-
-  const visibleLocal = localBranches.filter((b) => filterFn(b.name))
-  const visibleRemote = remoteBranches.filter((b) => filterFn(b.name))
 
   // Checkout (local + remote) closes the picker once the operation settles —
   // on success AND on error. The shared hook records the outcome in the Git
@@ -367,9 +372,25 @@ export function BranchPicker() {
           )}
         </DialogHeader>
 
-        {/* Filter */}
-        <div className="px-4 pb-2 shrink-0">
-          <div className="relative">
+        {/* View toggle + filter — the toggle flips the branch list between
+            the flat and the `/`-slash tree layout in BOTH modes (switch and
+            draft); it shows the mode it switches TO (the same List⇄FolderTree
+            glyph pair the session selector's grouped toggle uses). */}
+        <div className="flex items-center gap-1.5 px-4 pb-2 shrink-0">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            className="shrink-0 text-muted-foreground hover:text-foreground"
+            aria-pressed={treeMode}
+            aria-label={treeMode ? 'Show flat list' : 'Show branch tree'}
+            title={treeMode ? 'Show flat list' : 'Show branch tree'}
+            data-testid="branch-view-toggle"
+            onClick={() => setBranchListTree(!treeMode)}
+          >
+            {treeMode ? <List className="size-4" /> : <FolderTree className="size-4" />}
+          </Button>
+          <div className="relative min-w-0 flex-1">
             <Search className="absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input
               ref={filterRef}
@@ -403,66 +424,46 @@ export function BranchPicker() {
             <div className="flex items-center justify-center py-6 text-muted-foreground">
               <Loader2 className="size-4 animate-spin" />
             </div>
-          ) : visibleLocal.length === 0 && visibleRemote.length === 0 ? (
-            <div className="px-2 py-6 text-center text-xs text-muted-foreground">
-              {branches.length === 0 ? 'No branches found' : 'No matching branches'}
-            </div>
           ) : (
-            <ul className="flex flex-col gap-0.5">
-              {visibleLocal.length > 0 && (
-                <li className="px-2 py-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  Local
-                </li>
-              )}
-              {visibleLocal.map((b) => (
-                <li key={b.name}>
-                  <LocalBranchRow
-                    branch={b}
-                    inFlight={inFlightFor(b.name)}
-                    disabled={disabledFor(b.name)}
-                    pinned={isDraftMode ? undefined : b.name === pinnedBranch}
-                    checkoutBlockedReason={isDraftMode ? undefined : branchSwitchBlockedReason(b.name)}
-                    onCheckout={handleCheckout}
-                    onRename={actions.startRename}
-                    onMerge={actions.mergeBranch}
-                    onRebase={actions.rebaseBranch}
-                    onPush={actions.push}
-                    onDelete={actions.requestDeleteLocal}
-                    draftSelect={
-                      isDraftMode
-                        ? { selected: draftSelectedBranch === b.name, onSelect: handleDraftSelect }
-                        : undefined
+            <BranchList
+              variant="dialog"
+              branches={branches}
+              filter={filterFn}
+              tree={treeMode}
+              searchActive={filter.trim().length > 0}
+              inFlightFor={inFlightFor}
+              disabledFor={disabledFor}
+              pinnedFor={isDraftMode ? undefined : (name) => name === pinnedBranch}
+              checkoutBlockedReasonFor={
+                isDraftMode ? undefined : branchSwitchBlockedReason
+              }
+              draftSelect={
+                isDraftMode
+                  ? {
+                      local: {
+                        isSelected: (name) => draftSelectedBranch === name,
+                        onSelect: handleDraftSelect,
+                        blockedReasonFor: draftBlockedReason,
+                      },
+                      remote: {
+                        isSelected: (ref) => draftSelectedRemote === ref,
+                        onSelect: handleDraftRemoteSelect,
+                        blockedReasonFor: (ref) =>
+                          draftBlockedReason(remoteTwinName(ref)),
+                      },
                     }
-                    draftBlockedReason={isDraftMode ? draftBlockedReason(b.name) : undefined}
-                  />
-                </li>
-              ))}
-              {visibleRemote.length > 0 && (
-                <li className="px-2 py-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  Remote
-                </li>
-              )}
-              {visibleRemote.map((b) => (
-                <li key={b.name}>
-                  <RemoteBranchRow
-                    branch={b}
-                    inFlight={inFlightFor(b.name)}
-                    disabled={disabledFor(b.name)}
-                    checkoutBlockedReason={isDraftMode ? undefined : branchSwitchBlockedReason(b.name)}
-                    draftBlockedReason={
-                      isDraftMode ? draftBlockedReason(remoteTwinName(b.name)) : undefined
-                    }
-                    onCheckoutRemote={handleCheckoutRemote}
-                    onDeleteRemote={actions.requestDeleteRemote}
-                    draftSelect={
-                      isDraftMode
-                        ? { selected: draftSelectedRemote === b.name, onSelect: handleDraftRemoteSelect }
-                        : undefined
-                    }
-                  />
-                </li>
-              ))}
-            </ul>
+                  : undefined
+              }
+              onCheckout={handleCheckout}
+              onRename={actions.startRename}
+              onMerge={actions.mergeBranch}
+              onRebase={actions.rebaseBranch}
+              onPush={actions.push}
+              onDeleteLocal={actions.requestDeleteLocal}
+              onCheckoutRemote={handleCheckoutRemote}
+              onDeleteRemote={actions.requestDeleteRemote}
+              noBranchesLabel="No branches found"
+            />
           )}
         </div>
 

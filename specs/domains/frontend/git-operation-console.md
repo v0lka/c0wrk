@@ -38,7 +38,7 @@ GitPanelFooter ──selectLastOperation(state, activeProjectId)──▶ GitOpe
 
 ### Button
 
-`GitOperationButton` renders a `Terminal` glyph that, while a remote op is in flight, is replaced by a `Loader2` spinner. It stays clickable during an operation so the previous result's log remains readable. Its color is the only signal of an unread result (`operationTone`):
+`GitOperationButton` renders a `FileTerminal` glyph that, while a remote op is in flight, is replaced by a `Loader2` spinner. It stays clickable during an operation so the previous result's log remains readable. Its color is the only signal of an unread result (`operationTone`):
 
 | State | Tone |
 | ----- | ---- |
@@ -52,7 +52,7 @@ It carries `aria-label="Git operation log"`, `aria-haspopup="dialog"`, `aria-exp
 
 ### Popover
 
-`GitOperationPopover` is purely presentational — the footer owns open state and dismissal. It renders a dialog (`role="dialog"`, `aria-modal="false"`, `aria-label="Git operation log"`, a stable `id` the trigger points at via `aria-controls`) and moves focus into itself once positioned, with a status header (a `Terminal` / `CheckCircle2` / `XCircle` icon plus the operation `label`, falling back to `kind`, and `No git operations yet` when there is no record) above a scrollable, pre-wrapped `<pre>`:
+`GitOperationPopover` is purely presentational — the footer owns open state and dismissal. It renders a dialog (`role="dialog"`, `aria-modal="false"`, `aria-label="Git operation log"`, a stable `id` the trigger points at via `aria-controls`) and moves focus into itself once positioned, with a status header (a `FileTerminal` / `CheckCircle2` / `XCircle` icon plus the operation `label`, falling back to `kind`, and `No git operations yet` when there is no record) above a scrollable, pre-wrapped `<pre>`:
 
 ```
 header: [icon] <label>                      ← label.trim() || kind; tinted success/destructive/muted
@@ -91,6 +91,7 @@ Every `GitOperationKind` is written by `runGitOperation`; call sites and labels:
 | `stash-create`, `stash-pop`, `stash-drop` | Stash buttons + per-entry list (`GitPanel/GitStashButtons.tsx`) | `Stashed changes`, `Popped latest stash`, `Popped/Dropped stash@{N}` | Yes |
 | `checkout`, `branch-rename`, `branch-delete`, `merge`, `rebase`, `branch-push`, `branch-checkout-remote`, `branch-delete-remote` | Branch lists (`hooks/useBranchActions.ts`) | `Checked out <name>`, `Renamed <old> to <new>`, `Merged <name> into current`, … | Yes |
 | `reset`, `tag-create`, `tag-push`, `tag-delete`, `tag-delete-remote` | History commit context menu (`GitPanel/GitHistoryContextMenu.tsx`) | `Reset <branch> to <sha7> (soft\|mixed\|hard)`, `Created tag <t>`, … | Yes |
+| `worktree-delete` | Worktrees-section delete (`hooks/useWorktreeActions.ts`, mounted by `BranchDropdown` + `BranchPicker`) | `Deleted worktree <name>` | Yes |
 | `stage`, `unstage` | Changes list rows + file context menu (`GitPanel/index.tsx`, `GitPanel/GitFileContextMenu.tsx`) | `Staged <path>` / `Unstaged <path>` | **No** — errors only |
 | `discard` | File context menu (`GitPanel/GitFileContextMenu.tsx`) | `Discarded changes in <path>` | **No** — errors only |
 | `gitignore` | File + file-tree context menus (`GitPanel/GitFileContextMenu.tsx`, `layout/FileTreeContextMenu.tsx`) | `Added <path> to .gitignore` | **No** — errors only |
@@ -111,7 +112,7 @@ The console owns operation *results* only. These non-result surfaces deliberatel
 - **Branch-list load** and **create-branch** errors in `BranchPicker` (the create-branch section is out of the funnel).
 - The per-project commit box's inline error, reserved for DRAFT/GENERATE/VALIDATION failures (e.g. a failed AI generation); a commit *outcome* is a git operation result and goes to the console.
 
-**Modal-embedded errors.** A mutation that runs from inside a blocking `Dialog` keeps a minimal inline error so the failure is visible while the dialog holds the screen (the footer console is behind the modal overlay and unreachable): the Create-tag dialog's `tagError` and the Hard-reset confirmation dialog's `resetError` in `GitHistoryContextMenu.tsx`. The operation is **still** recorded to the console (`tag-create` / `reset`) — the inline text is the modal-scoped echo, not the primary surface. Likewise `BranchPicker` closes on every branch operation *settle* — success **and** failure — so its own overlay never traps the result; the picker's residual local `error` covers only the load/create reads above.
+**Modal-embedded errors.** A mutation that runs from inside a blocking `Dialog` keeps a minimal inline error so the failure is visible while the dialog holds the screen (the footer console is behind the modal overlay and unreachable): the Create-tag dialog's `tagError` and the Hard-reset confirmation dialog's `resetError` in `GitHistoryContextMenu.tsx`, and the worktree-delete confirmation's `deleteError` (`useWorktreeActions` → `WorktreeDeleteConfirmDialog`). The operation is **still** recorded to the console (`tag-create` / `reset` / `worktree-delete`) — the inline text is the modal-scoped echo, not the primary surface. Likewise `BranchPicker` closes on every branch operation *settle* — success **and** failure — so its own overlay never traps the result; the picker's residual local `error` covers only the load/create reads above.
 
 ### Zoom-safe sizing
 

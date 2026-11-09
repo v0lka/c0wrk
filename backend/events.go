@@ -197,6 +197,10 @@ const EventEmbeddedLLMNotice = "embedded_llm:notice"
 // the report.
 const EventChatGPTAuthState = "chatgpt_auth:state"
 
+// EventKimiAuthState reports a transition of the Kimi browser sign-in flow.
+// Sign-out and region rebinding complete with a cancelled transition.
+const EventKimiAuthState = "kimi_auth:state"
+
 // ---------------------------------------------------------------------------
 // Wails event names received FROM the frontend
 // ---------------------------------------------------------------------------

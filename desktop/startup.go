@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"log/slog"
 	"os"
-	"path/filepath"
-	"runtime"
 	"runtime/debug"
 	"sync"
 	"sync/atomic"
@@ -20,6 +18,9 @@ import (
 	"github.com/v0lka/c0wrk/backend/crashlog"
 	"github.com/v0lka/c0wrk/backend/project"
 	"github.com/v0lka/c0wrk/backend/session"
+	"github.com/v0lka/c0wrk/core/hitlwire"
+	"github.com/v0lka/c0wrk/core/memlimit"
+	"github.com/v0lka/c0wrk/core/shutdown"
 	"github.com/v0lka/c0wrk/core/terminal"
 	coretools "github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/sp4rk/agent"
@@ -166,7 +167,8 @@ func (a *App) Startup(ctx context.Context) {
 
 	// Capture GOMEMLIMIT as the runtime saw it at PROCESS START: Phase 1's
 	// shell-env load can later inject a value the runtime never applied —
-	// setupMemorySoftLimit must decide on the runtime's value only (see memlimit.go).
+	// the memory-limit decision must use the runtime's value only (see
+	// core/memlimit).
 	runtimeSeenGomemlimit := os.Getenv("GOMEMLIMIT")
 
 	a.setContext(ctx)
@@ -232,8 +234,9 @@ func (a *App) Startup(ctx context.Context) {
 	// agentDir and logDir are already computed in phase 0
 
 	// Arm the hard shutdown deadline before any teardown path can run; the
-	// same mapping EffectiveShutdownDeadline hands the GPU-relaunch handover.
-	a.setShutdownHardDeadline(EffectiveShutdownDeadline(cfg.Shutdown.HardDeadline))
+	// same mapping core/shutdown's EffectiveShutdownDeadline hands the
+	// GPU-relaunch handover.
+	a.setShutdownHardDeadline(shutdown.EffectiveShutdownDeadline(cfg.Shutdown.HardDeadline))
 
 	logLevel := cfg.LogLevel
 	log, sessionLogger = a.maybeReinitLogger(logLevel, sessionLogger, log, logDir)
@@ -246,8 +249,8 @@ func (a *App) Startup(ctx context.Context) {
 	// ── GC memory soft limit (runtime.memory_soft_limit_mb) ──────────
 	// Set after config + logger re-init (the decision must land in the right
 	// log) and before background indexing, so it governs the very first
-	// indexing pass. Priority rules in memlimit.go.
-	setupMemorySoftLimit(cfg.Runtime.MemorySoftLimitMB, runtimeSeenGomemlimit, log)
+	// indexing pass. Priority rules in core/memlimit.
+	memlimit.Setup(cfg.Runtime.MemorySoftLimitMB, runtimeSeenGomemlimit, log)
 
 	// ── Phase 3: Database + Terminal Manager (parallel) ───────────────
 	dbPath := config.DatabasePath(agentDir)
@@ -255,20 +258,20 @@ func (a *App) Startup(ctx context.Context) {
 	var termManager *terminal.Manager
 	var phase3 sync.WaitGroup
 	phase3.Add(2)
-	safeGo(log, "database", func() {
+	backend.SafeGo(log, "database", func() {
 		defer phase3.Done()
-		db = a.initDatabase(dbPath, log)
+		db = backend.InitDatabase(dbPath, log)
 	})
-	safeGo(log, "terminal", func() {
+	backend.SafeGo(log, "terminal", func() {
 		defer phase3.Done()
-		termManager = a.initTerminalManager(log, cfg.Terminal.Env)
+		termManager = backend.InitTerminalManager(a.wailsCtx(), log, cfg.Terminal.Env, a.emitBatchedEvent)
 	})
 	phase3.Wait()
 	log.Info("startup phase complete", "phase", "database", "elapsed_ms", time.Since(startTime).Milliseconds())
 	a.setDatabase(db)
 
 	// ── Phase 4: Stores + Project/Session Preload ────────────────────
-	projStore, sessStore, reviewStore := a.initStores(db, log)
+	projStore, sessStore, reviewStore := backend.InitStores(db, log)
 	log.Info("startup phase complete", "phase", "stores", "elapsed_ms", time.Since(startTime).Milliseconds())
 
 	var projectMgr *project.Manager
@@ -278,7 +281,7 @@ func (a *App) Startup(ctx context.Context) {
 		// a clean first run must not create infrastructure before the app is
 		// known usable.
 	}
-	cachedProjects := a.preloadProjectsAndSessions(projectMgr, sessStore, log)
+	cachedProjects := backend.PreloadProjectsAndSessions(projectMgr, sessStore, log, a.emit)
 	log.Info("startup phase complete", "phase", "preload", "elapsed_ms", time.Since(startTime).Milliseconds())
 
 	// ── Phase 5: Callbacks + Application + FrontendAPI ───────────────
@@ -293,7 +296,7 @@ func (a *App) Startup(ctx context.Context) {
 	// Bound for vector-search readiness waits (vector_index.search_wait_
 	// timeout_ms; unset → 3000 via config defaults, explicit 0 = fail fast),
 	// governing both the semantic_search callbacks and the RAG-hint wait.
-	vectorSearchWaitTimeout := time.Duration(derefInt(cfg.VectorIndex.SearchWaitTimeoutMs)) * time.Millisecond
+	vectorSearchWaitTimeout := time.Duration(config.DerefInt(cfg.VectorIndex.SearchWaitTimeoutMs)) * time.Millisecond
 	// Explicit fail-fast flag: a bare zero reads as "unset" (3s default) in
 	// the orchestrator layer, so the user's explicit 0 must be carried
 	// separately.
@@ -387,15 +390,22 @@ func (a *App) Startup(ctx context.Context) {
 	// launch fires in Phase 6 below; UpdateIndexingSettings's enabled
 	// transitions reach the same launcher through the backend hook —
 	// enabled=false invalidates an in-flight init before the registry is
-	// parked, enabled=true relaunches a fresh embedder + factory.
-	vectorLauncher := newVectorIndexLauncher(a, agentDir, log)
-	a.frontendAPI().Lifecycle().SetVectorIndexEnabledHook(vectorLauncher.applyEnabledChange)
+	// parked, enabled=true relaunches a fresh embedder + factory. The
+	// launcher itself lives in backend (P-12); the transport seams — the
+	// event funnel and the "Wails context already cancelled" probe — are
+	// injected here so backend/ stays free of Wails types.
+	vectorLauncher := backend.NewVectorIndexLauncher(a.frontendAPI(), agentDir, log, backend.VectorIndexLauncherDeps{
+		Emit:         a.emit,
+		ShuttingDown: func() bool { ctx := a.wailsCtx(); return ctx != nil && ctx.Err() != nil },
+	})
+	a.frontendAPI().Lifecycle().SetVectorIndexEnabledHook(vectorLauncher.ApplyEnabledChange)
 
-	// ── Embedded local model: restore only (see initEmbeddedLLM) ────
-	a.initEmbeddedLLM(log)
+	// ── Embedded local model: restore only (see backend initEmbeddedLLM) ──
+	backend.InitEmbeddedLLM(a.frontendAPI(), log)
 
-	// ── ChatGPT subscription auth: keychain restore only (see initChatGPTAuth) ──
-	a.initChatGPTAuth(log)
+	// ── Subscription auth: keychain restore only, no network I/O ──
+	backend.InitChatGPTAuth(a.frontendAPI(), log)
+	backend.InitKimiAuth(a.frontendAPI(), log)
 
 	a.wireWailsEventListeners(log, uiEmitFunc)
 
@@ -459,13 +469,13 @@ func (a *App) Startup(ctx context.Context) {
 	// The launcher owns the epochal guard and a per-launch ready channel;
 	// with vector_index.enabled: false at boot, the launch parks the
 	// registry and skips the ONNX load entirely.
-	vectorLauncher.launch()
+	vectorLauncher.Launch()
 
-	// ── Background: Update check (see startUpdateCheckerBackground) ─
-	a.startUpdateCheckerBackground(log)
+	// ── Background: Update check (see backend startUpdateCheckerBackground) ─
+	backend.StartUpdateCheckerBackground(a.frontendAPI(), log)
 
-	// ── Background: git auto-fetch ticker (see startAutoFetchBackground) ──
-	a.startAutoFetchBackground()
+	// ── Background: git auto-fetch ticker (see backend startAutoFetchBackground) ──
+	backend.StartAutoFetchBackground(a.frontendAPI())
 }
 
 // Shutdown is called when the Wails app is shutting down.
@@ -635,7 +645,7 @@ func (a *App) drainPendingGoalSuggestions() {
 // without a running Wails runtime.
 func (a *App) wireWailsEventListeners(log *slog.Logger, uiEmitFunc func(session.Event)) {
 	wailsRuntime.EventsOn(a.wailsCtx(), backend.EventToolConfirmResponse, func(data ...any) {
-		payload, ok := extractPayload("tool confirmation response", data, log)
+		payload, ok := hitlwire.ExtractPayload("tool confirmation response", data, log)
 		if !ok {
 			return
 		}
@@ -643,7 +653,7 @@ func (a *App) wireWailsEventListeners(log *slog.Logger, uiEmitFunc func(session.
 	})
 
 	wailsRuntime.EventsOn(a.wailsCtx(), backend.EventToolJudgeRequest, func(data ...any) {
-		payload, ok := extractPayload("tool judge request", data, log)
+		payload, ok := hitlwire.ExtractPayload("tool judge request", data, log)
 		if !ok {
 			return
 		}
@@ -651,7 +661,7 @@ func (a *App) wireWailsEventListeners(log *slog.Logger, uiEmitFunc func(session.
 	})
 
 	wailsRuntime.EventsOn(a.wailsCtx(), backend.EventAskUserResponse, func(data ...any) {
-		payload, ok := extractPayload("ask_user response", data, log)
+		payload, ok := hitlwire.ExtractPayload("ask_user response", data, log)
 		if !ok {
 			return
 		}
@@ -659,7 +669,7 @@ func (a *App) wireWailsEventListeners(log *slog.Logger, uiEmitFunc func(session.
 	})
 
 	wailsRuntime.EventsOn(a.wailsCtx(), backend.EventStepLimitResponse, func(data ...any) {
-		payload, ok := extractPayload("step_limit response", data, log)
+		payload, ok := hitlwire.ExtractPayload("step_limit response", data, log)
 		if !ok {
 			return
 		}
@@ -667,7 +677,7 @@ func (a *App) wireWailsEventListeners(log *slog.Logger, uiEmitFunc func(session.
 	})
 
 	wailsRuntime.EventsOn(a.wailsCtx(), backend.EventPlanApprovalResponse, func(data ...any) {
-		payload, ok := extractPayload("plan_approval response", data, log)
+		payload, ok := hitlwire.ExtractPayload("plan_approval response", data, log)
 		if !ok {
 			return
 		}
@@ -675,7 +685,7 @@ func (a *App) wireWailsEventListeners(log *slog.Logger, uiEmitFunc func(session.
 	})
 
 	wailsRuntime.EventsOn(a.wailsCtx(), backend.EventGoalProposalResponse, func(data ...any) {
-		payload, ok := extractPayload("goal_proposal response", data, log)
+		payload, ok := hitlwire.ExtractPayload("goal_proposal response", data, log)
 		if !ok {
 			return
 		}
@@ -683,65 +693,10 @@ func (a *App) wireWailsEventListeners(log *slog.Logger, uiEmitFunc func(session.
 	})
 
 	wailsRuntime.EventsOn(a.wailsCtx(), backend.EventGoalSuggestionResponse, func(data ...any) {
-		payload, ok := extractPayload("goal_suggestion response", data, log)
+		payload, ok := hitlwire.ExtractPayload("goal_suggestion response", data, log)
 		if !ok {
 			return
 		}
 		a.handleGoalSuggestionResponse(payload, log)
 	})
-}
-
-// resolveModelPath checks the app bundle Resources/models/ first, then <agentDir>/models/.
-// Returns empty string if the file is not found in either location.
-func resolveModelPath(filename, agentDir string) string {
-	exePath, err := os.Executable()
-	if err == nil {
-		exeDir := filepath.Dir(exePath)
-		// macOS app bundle: <app>/Contents/MacOS/../Resources/models/<filename>
-		bundlePath := filepath.Join(exeDir, "..", "Resources", "models", filename)
-		if _, statErr := os.Stat(bundlePath); statErr == nil {
-			return bundlePath
-		}
-
-		// Flat layout (Linux/Windows): models/ next to the binary
-		flatPath := filepath.Join(exeDir, "models", filename)
-		if _, statErr := os.Stat(flatPath); statErr == nil {
-			return flatPath
-		}
-	}
-
-	// Fallback: <agentDir>/models/<filename>
-	userPath := filepath.Join(config.ModelsDir(agentDir), filename)
-	if _, statErr := os.Stat(userPath); statErr == nil {
-		return userPath
-	}
-
-	return ""
-}
-
-// resolveONNXLibPath finds the ONNX Runtime shared library next to the executable.
-func resolveONNXLibPath() string {
-	exePath, err := os.Executable()
-	if err != nil {
-		return ""
-	}
-	exeDir := filepath.Dir(exePath)
-
-	var libName string
-	switch runtime.GOOS {
-	case "darwin":
-		libName = "libonnxruntime.dylib"
-	case "linux":
-		libName = "libonnxruntime.so"
-	case "windows":
-		libName = "onnxruntime.dll"
-	default:
-		return ""
-	}
-
-	libPath := filepath.Join(exeDir, libName)
-	if _, statErr := os.Stat(libPath); statErr == nil {
-		return libPath
-	}
-	return ""
 }

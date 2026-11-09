@@ -7,24 +7,27 @@ Automatic background `git fetch` for the active CODE project, keeping remote-tra
 ## Key Files
 
 - `backend/frontend_api_git_autofetch.go` - the whole subsystem: `autoFetchOnce` (the single funnel), `autoFetchEnabled` (config gate), `runAutoFetch`/`newAutoFetchCmd` (hardened fetch runner), `pinGitTerminalPrompt` (env pin), `RequestGitRemoteRefresh` (focus RPC), `FrontendAPILifecycle.StartAutoFetch` / `autoFetchLoop` / `stopAutoFetchLoop` (ticker lifecycle)
-- `backend/frontend_api.go` - funnel state (`autoFetchMu`/`lastAutoFetchAt`, `autoFetchLoopMu`/`autoFetchLoopCancel`/`autoFetchLoopDone`, test seams `autoFetchIntervalOverride`/`autoFetchTickFn`), `isGitRepo` (30s-cached via `gitRepoCacheTTL`), `Cleanup` (stops the ticker loop first)
+- `backend/frontend_api.go` - funnel state (`autoFetchMu`/`lastAutoFetchAt`, `autoFetchLoopMu`/`autoFetchLoopCancel`/`autoFetchLoopDone`, test seams `autoFetchIntervalOverride`/`autoFetchTickFn`), `isGitRepo` (30s-cached via `gitRepoCacheTTL`), `Cleanup` (stops the ticker loop before the rest of the teardown)
 - `backend/frontend_api_project.go` - the switch trigger: `go f.autoFetchOnce(autoFetchTriggerSwitch)` on the real-switch path only (the already-active early return skips it)
 - `backend/frontend_api_git.go` - the manual remote-op side the funnel serializes against: `remoteOpMu`, `runSerializedRemoteOp` chokepoint, `remoteGitCmdTimeout` (2 min), `emitGitStatusChanged`
 - `backend/config/config.go` / `backend/config/defaults.go` - `GitConfig` (`git.auto_fetch`, `git.auto_fetch_interval`) and its defaults
-- `desktop/startup_phases.go` / `desktop/startup.go` - `startAutoFetchBackground` starts the ticker exactly once after the backend is ready (mirrors `startUpdateCheckerBackground`)
+- `backend/startup_phases.go` / `desktop/startup.go` - `startAutoFetchBackground`/`StartAutoFetchBackground` starts the ticker exactly once after the backend is ready, called from the desktop background-starter glue (mirrors `StartUpdateCheckerBackground`)
 - `frontend/src/api/git.ts` - `requestRemoteRefresh()` RPC wrapper (frontend talks to the backend only through `@/api/*`)
 - `frontend/src/hooks/useGitFocusRefresh.ts` - App-level window-focus hook: subscribes after runtime readiness, unsubscribes on unmount
 - `core/workspace/git.go` - `GitCmdInRepo`: the hardened spawn path the fetch runs through (per-invocation config scan + neutralizing `-c` overrides; raw `GitCmdRaw` escape hatch for trusted repos)
-- `internal/sysproc/git.go` - the sysproc env baseline (`GIT_EDITOR` pin, `GIT_ATTR_*` strip) that stays in effect underneath the funnel's own env pin
+- `internal/sysproc/git.go` - the sysproc env baseline (strip-then-append `GIT_EDITOR=true` and `LC_ALL=C` pins; `GIT_EDITOR`, `GIT_ATTR_*`, `LC_*`/`LANG`/`LANGUAGE` strips) plus the ADR-033 `-c` baseline (`core.fsmonitor=false`, `core.hooksPath=<safe dir>`, `commit.gpgsign=false`), all in effect underneath the funnel's own env pin; `GitCmd` (hardened) and `GitCmdRaw` (trusted repos, `cmd.Env` left nil) are the two spawn constructors `workspace.GitCmdInRepo` chooses between
 
 ## Core Types
 
 ```go
-// backend/config/config.go — config layer only stores raw values + defaults;
-// the duration is parsed by the consumer (the funnel).
+// backend/config/config.go — the auto-fetch fields of GitConfig (the struct
+// also carries worktrees_root, owned by session-worktrees.md). The config
+// layer only stores raw values + defaults; the duration is parsed by the
+// consumer (the funnel).
 type GitConfig struct {
     AutoFetch         *bool  `yaml:"auto_fetch"`          // pointer-bool; nil = default true
     AutoFetchInterval string `yaml:"auto_fetch_interval"` // duration string; default "2m"
+    // …
 }
 
 // backend/frontend_api_git_autofetch.go
@@ -63,9 +66,9 @@ trigger ──┐
               failure/skip → Debug log                    [silence]
 ```
 
-Ticker lifecycle: `desktop` startup → `StartAutoFetch()` (idempotent; a second call is a no-op) → goroutine `autoFetchLoop` with `time.NewTicker(interval)`. On every tick the interval is re-read under `configMu`, so runtime config edits apply without an app restart: a changed positive period re-arms the ticker (that tick does not fetch), and a period `<= 0` parks the loop at the slow re-check cadence (`autoFetchDisabledRecheck`, 1 min) — while parked the loop keeps re-reading the interval, so restoring a positive value re-arms the ticker without an app restart (a fetch never fires while disabled). Shutdown: `FrontendAPILifecycle.Cleanup` calls `stopAutoFetchLoop` first — a non-blocking cancel; the in-flight fetch is already bounded by `remoteGitCmdTimeout` and cancelled through `f.ctx()`. The loop's context derives from `f.ctx()`, so it also dies with the application context even if `Cleanup` were skipped; the `done` channel closes on exit so tests can prove the goroutine terminated.
+Ticker lifecycle: `desktop` startup → `StartAutoFetch()` (idempotent; a second call is a no-op) → goroutine `autoFetchLoop` with `time.NewTicker(interval)`. On every tick the interval is re-read under `configMu`, so runtime config edits apply without an app restart: a changed positive period re-arms the ticker (that tick does not fetch), and a period `<= 0` parks the loop at the slow re-check cadence (`autoFetchDisabledRecheck`, 1 min) — while parked the loop keeps re-reading the interval, so restoring a positive value re-arms the ticker without an app restart (a fetch never fires while disabled). Shutdown: `FrontendAPILifecycle.Cleanup` calls `stopAutoFetchLoop` early — right after the provider sign-in cancellations and before every other teardown step — a non-blocking cancel; the in-flight fetch is already bounded by `remoteGitCmdTimeout` and cancelled through `f.ctx()`. The loop's context derives from `f.ctx()`, so it also dies with the application context even if `Cleanup` were skipped; the `done` channel closes on exit so tests can prove the goroutine terminated.
 
-Focus path: `window focus` → `useGitFocusRefresh` → `requestRemoteRefresh()` (`@/api/git`) → RPC `RequestGitRemoteRefresh` → `go f.autoFetchOnce("focus")` and immediate return (never blocks the UI thread). All gating is server-side; the frontend never decides when a fetch is appropriate and surfaces no errors when the backend quietly skips.
+Focus path: `window focus` → `useGitFocusRefresh` (armed through `armWhenRuntimeReady`, listener removed on unmount) → `requestRemoteRefresh()` (`@/api/git`, errors swallowed) → RPC `RequestGitRemoteRefresh` → `go f.autoFetchOnce(autoFetchTriggerFocus)` and immediate return (never blocks the UI thread). All gating is server-side; the frontend never decides when a fetch is appropriate and surfaces no errors when the backend quietly skips.
 
 ## Invariants
 
@@ -75,7 +78,8 @@ Focus path: `window focus` → `useGitFocusRefresh` → `requestRemoteRefresh()`
 - Auto-fetch never queues behind a user operation: `remoteOpMu` is taken with `TryLock`; when a manual pull/push/fetch holds it, the attempt skips instantly. Conversely, manual remote ops keep their blocking `Lock` in `runSerializedRemoteOp` — only one network git operation runs at a time per app instance.
 - `GIT_TERMINAL_PROMPT=0` is pinned exactly once via strip-then-append (glibc `getenv` resolves duplicate names to the FIRST entry, so an inherited `=1` would silently void an appended `=0` — same rationale as the `GIT_EDITOR` strip). On the trusted-repo path (`GitCmdRaw` leaves `cmd.Env` nil) the environment is first materialized from `os.Environ()` — the pin is additive and never wipes the inherited environment.
 - Spawn hardening is preserved, not relaxed: the fetch runs through `workspace.GitCmdInRepo` (fresh per-invocation config scan, neutralizing `-c` overrides, sysproc baseline, fail-closed on unscannable configs). The env pin is layered on top of that baseline; there is no raw-git bypass for the funnel.
-- Shutdown stops the ticker before anything else in `Cleanup`, non-blockingly; an in-flight fetch is bounded by `remoteGitCmdTimeout` (2 min) and the application context — nothing auto-fetch-related outlives shutdown.
+- Shutdown stops the ticker early in `Cleanup` — after the two provider sign-in cancellations and before every other teardown step — non-blockingly; an in-flight fetch is bounded by `remoteGitCmdTimeout` (2 min) and the application context, so nothing auto-fetch-related outlives shutdown.
+- The fetch's wait is bounded twice: `remoteGitCmdTimeout` bounds the run, and `cmd.WaitDelay` (the shared `commitWaitDelay`, 1 s) bounds the post-exit pipe wait, so an orphan a repository hook leaves behind cannot stall the funnel while it holds `remoteOpMu`. `exec.ErrWaitDelay` after a clean exit is a success.
 - The ticker is infrastructure, never an RPC: `StartAutoFetch` is a `FrontendAPILifecycle` method (not promoted to the Wails surface), started exactly once after backend readiness; `RequestGitRemoteRefresh` is the only frontend-visible method and only enqueues an attempt.
 - `git.auto_fetch_interval` of `"0"` (any parsed value `<= 0`) disables ONLY the ticker; the switch and focus triggers keep working because they never consult the interval.
 - The switch trigger fires on the real-switch path only; the already-active early return in `SwitchProject` skips it (the project was already fetched-for when it was switched to).

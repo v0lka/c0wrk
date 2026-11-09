@@ -12,6 +12,7 @@ package desktop
 import (
 	"testing"
 
+	"github.com/v0lka/c0wrk/backend"
 	"github.com/v0lka/c0wrk/backend/session"
 	coretools "github.com/v0lka/c0wrk/core/tools"
 	"github.com/v0lka/sp4rk/agent"
@@ -65,28 +66,6 @@ func assertSingleResolved(t *testing.T, a *App, rec *emitRecorder, kind session.
 	}
 	if got.Decision != decision {
 		t.Errorf("decision = %q, want %q", got.Decision, decision)
-	}
-}
-
-// --- confirmDecisionString ---
-
-func TestConfirmDecisionString(t *testing.T) {
-	tests := []struct {
-		name string
-		resp sdktools.ConfirmationResponse
-		want string
-	}{
-		{name: "allow_once", resp: sdktools.ConfirmAllowOnce, want: "allow_once"},
-		{name: "deny", resp: sdktools.ConfirmDeny, want: "deny"},
-		{name: "deny_and_stop", resp: sdktools.ConfirmDenyAndStop, want: "deny_and_stop"},
-		{name: "out of range", resp: sdktools.ConfirmationResponse(99), want: ""},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := confirmDecisionString(tt.resp); got != tt.want {
-				t.Errorf("confirmDecisionString(%v) = %q, want %q", tt.resp, got, tt.want)
-			}
-		})
 	}
 }
 
@@ -313,7 +292,7 @@ func TestHitlResolved_IsImmediateFlushEvent(t *testing.T) {
 	// A settled prompt retires a card that was blocking a task: like the
 	// prompts themselves, the settlement must not wait for the ~16ms batch
 	// tick or it reads as a ghost card.
-	if !isImmediateFlushEvent("hitl_resolved") {
+	if !backend.IsImmediateFlushEvent("hitl_resolved") {
 		t.Error("hitl_resolved must force an immediate flush")
 	}
 }

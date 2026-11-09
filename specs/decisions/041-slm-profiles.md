@@ -44,3 +44,25 @@ Replace the inline 25-knob section with a **profile catalog**:
 - **Store custom profiles inside `config.yaml`** (a `slm.profiles:` list). Rejected: config.yaml is a hand-edited, example-documented file — embedding a machine-managed array there invites hand edits the store would have to tolerate, and blows up the example file again.
 - **Auto-apply the suggested profile on model switch.** Rejected: the master toggle is deliberately manual-only (ADR-022); silent behavior changes on model switch would violate that contract. The suggestion is a hint with an explicit Apply.
 - **Full SmallLLM→SLM rename of historical ADRs.** Rejected: ADRs are immutable records; renaming files would break inbound links and falsify history. The nomenclature switch is recorded here and applied to living documents only.
+
+## Historical Note
+
+2026-11-07 — successor state for the artifacts this record names; the decision
+above is unchanged.
+
+- The predefined catalog is no longer five entries. It carries six: the five
+  named in Decision, plus `bonsai.2-27b` ("Bonsai 2 27B (embedded)"), the
+  backend-owned local model's profile added with the embedded runtime
+  ([ADR-066](./066-embedded-llm-runtime.md)). The catalog lives in
+  `backend/config/model_profiles.go`; the dashed pre-bonsai id `bonsai-2-27b`
+  survives only as an alias mapped to `bonsai.2-27b`.
+- The `SLM*`/`slm*` identifiers, the `core/slm` package, the `slm_profiles*.go`
+  files, the `slm:` config key and `specs/domains/slm.md` named in Decision were
+  renamed by [ADR-043](./043-model-profiles-rename.md): the package is
+  `core/modelprofiles`, the config keys are `model_profiles.*`, the store is
+  `~/.c0wrk/model-profiles.yaml`, and the domain spec is
+  `specs/domains/model-profiles.md`.
+- `NewSLMProfile` and the six `*SLMProfile*` RPCs named in Decision are
+  `NewModelProfile` and `GetModelProfiles` / `CreateModelProfile` /
+  `UpdateModelProfile` / `DeleteModelProfile` / `SelectModelProfile` /
+  `SetModelProfilesEnabled`.

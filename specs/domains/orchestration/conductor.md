@@ -6,7 +6,7 @@ A single `Executor.Run` instance that owns a user task end-to-end, using the ReA
 
 ## Key Files
 
-- `core/conductor.go` — Conductor entry point: builds system prompt, assembles tool set, injects Delegation Registry + ChecklistGuard into context, manages inlineStepLifecycle, launches `Executor.Run`
+- `core/conductor.go` — Conductor entry point (`RunConductor`): installs the system-prompt factory, injects the Delegation Registry + ChecklistGuard + the launcher/publisher/reflection/plan-checker handles into context, manages `inlineStepLifecycle`, and launches the sp4rk `orchestration.Conductor` that owns the `Executor.Run`; also hosts `conductorLauncher` (delegation and plan waves, `buildSubAgentTask`, `resolveTaskTools`)
 - `core/tools/declare_step_complete.go` — `declare_step_complete` tool (inline plan-step completion signal)
 - `core/tools/execute_plan.go` — `execute_plan` tool (runs declared plan steps in DAG order)
 - `github.com/v0lka/sp4rk/agent/workspace.go` — `ChecklistGuardFunc` type + context helpers (`WithChecklistGuard`, `ChecklistGuardFromContext`)
@@ -22,9 +22,11 @@ A single `Executor.Run` instance that owns a user task end-to-end, using the ReA
 ### Lifecycle
 
 ```
-Conductor.Run(ctx, message, routing, activeSkills, opts)
+RunConductor(ctx, message, bb, availableTools, deps, plansDir)  // core/conductor.go
+│   (routing travels on ctx: DomainFromContext / ComplexityFromContext;
+│    active skills via WithActiveSkills — neither is a parameter)
 │
-├─ 1. Build system prompt
+├─ 1. Install the system-prompt factory (ConductorConfig.SystemPrompt)
 │     ├─ Core: orchestrator system + family overlay + verification mandate
 │     │    (orchestrator system + plan context have their `{shell_tool}` placeholders
 │     │     resolved to the active platform's shell tool via prompts.SubstituteShellTool)
@@ -43,23 +45,33 @@ Conductor.Run(ctx, message, routing, activeSkills, opts)
 │          - ask_user when requirements are unclear
 │          - reflect when trajectory looks wrong
 │
-├─ 2. Assemble tool set
-│     ├─ File ops, search, web (filtered by routing domain + No Project)
-│     ├─ Internal tools (all always present, except semantic_search —
-│     │    excluded, together with ripgrep/glob, in No-Project (CHAT) mode
-│     │    via NoProjectDisabledTools applied by ListFiltered):
+├─ 2. Receive the tool set — assembled by the Orchestrator, not here
+│     (ListFiltered(disabledToolNames()) → stripGatedMCPTools →
+│     StripGoalModeTools); RunConductor passes it through unchanged
+│     ├─ File ops, search, web. No Project (CHAT) drops semantic_search
+│     │    alone (NoProjectDisabledTools, applied by ListFiltered) —
+│     │    ripgrep and glob stay available under security.groups
+│     ├─ Internal tools (always present):
 │     │    ask_user, finish, store_fact, search_facts,
 │     │    update_checklist, declare_step_complete, read_step_output,
-│     │    list_step_outputs, read_final_result, semantic_search
+│     │    list_step_outputs, read_final_result, semantic_search (CODE only)
 │     └─ Conductor tools (always present):
 │          delegate, declare_plan, execute_plan, reflect, cancel_delegation
 │
-├─ 3. Create ContextManager via contextFactory
+├─ 3. Hand the ContextManager factory to the sp4rk Conductor
+│     (ConductorConfig.ContextFactory via adaptContextFactory; the engine
+│     creates the ContextManager for the run)
 │
-├─ 4. Inject Delegation Registry into context
+├─ 4. Inject Delegation Registry into context (both the c0wrk key and the
+│     sp4rk orchestration key the finish guard reads)
 │     (lives for the duration of this Conductor run)
 │
-├─ 5. executor.Run(ctx, conductorTools, cm)
+├─ 5. orchestration.NewConductor(cfg).Run(ctx, message, bb, availableTools,
+│     events, compactionStrategy) — the sp4rk Conductor creates and owns the
+│     single Executor.Run (cfg carries MaxSteps, the tool executor + registry,
+│     the context factory, ToolCache / PerToolTruncation, the circuit breaker,
+│     HITL, NonCacheableTools, ConversationHistory, ResumeSteps, PauseChecker,
+│     ToolCallTimeout(+Exempt) and VerifyOnEdit)
 │     │
 │     │  The Conductor thinks and acts in a loop:
 │     │
@@ -71,7 +83,7 @@ Conductor.Run(ctx, message, routing, activeSkills, opts)
 │     │  - calls reflect → invokes Reflector on current trajectory
 │     │  - calls finish → ends the task with a final answer
 │     │
-│     └─ Returns ExecutorResult { Output, Steps, Finished }
+│     └─ Returns ExecutorResult { Output, Steps, Finished, AbortReason, Summary }
 │
 ├─ 6. On finish: the executor's finish guard (Executor.SetFinishGuard, set
 │     by the sp4rk Conductor) rejects finish while async delegations are
@@ -79,7 +91,8 @@ Conductor.Run(ctx, message, routing, activeSkills, opts)
 │     only once each pending delegation completes or is cancelled via
 │     cancel_delegation (no join/wait exists)
 │
-└─ 7. Return ExecutionResult { Output, Status, Blackboard, Delegations }
+└─ 7. Return orchestration.ExecutionResult { Output, Summary, Steps, Plan,
+      Blackboard, AttemptCount, Reflections, Status, FailedSteps }
 ```
 
 ### Decision Heuristics (system-prompt guidance)
@@ -163,8 +176,10 @@ are unaffected: `resumeGoalLoop` keeps its own routing handling and E2S never
 routes by design.
 
 Known limitation: an explicit `/`-mention ref is **not re-applied** by a
-re-route. The frontend strips `/`-mention refs from the stored request text
-(`PreprocessMessageText`), so the stored original request carries neither
+re-route. The backend strips `/`-mention refs from the stored request text
+(`core.PreprocessMessageText`, called backend-side on every send path —
+`backend/frontend_api_session.go` and `backend/session/manager.go`), so the
+stored original request carries neither
 skills nor agents, and the requested `UserSkills`/`UserAgents` (threaded
 through `HandleOptions` on the fresh path) are unavailable on resume —
 `TaskState` carries no field for them and `Resume`/`ResumeTask` receive no
@@ -190,9 +205,9 @@ When the Conductor executes a declared plan inline (without delegating to subage
 
 - **PlanStepStart** is inferred from the first `update_checklist(step_id=X)` call. No separate start tool is needed.
 - **PlanStepComplete** is emitted by the `declare_step_complete` tool (explicit signal). The Conductor calls it after finishing an inline step.
-- **Finish fallback**: after `executor.Run` returns, `inlineStepLifecycle.completeAll()` auto-completes any steps that were started but not explicitly completed via `declare_step_complete`. This prevents steps from being stuck in "running" state. The fallback only sweeps steps of a plan **declared in the current run** (`planDeclaredInRun()`); a plan restored from a previous (completed) task is ignored, so a plan-less continuation does not synthesize terminal events for the old task's steps. A plan the user **abandoned** is likewise no longer plan-active, so `completeAll` does not sweep it either — its steps are settled at abandon time by `conductorPublisher.AbandonPlan` instead (see the abandon invariant below).
+- **Finish fallback**: after the Conductor run returns, `inlineStepLifecycle.completeAll(success, errMsg)` auto-completes any steps that were started but not explicitly completed via `declare_step_complete` (a cooperative pause skips the sweep entirely — a pause is a checkpoint, not a terminal outcome). This prevents steps from being stuck in "running" state. The fallback only sweeps steps of a plan **declared in the current run** (`planDeclaredInRun()`); a plan restored from a previous (completed) task is ignored, so a plan-less continuation does not synthesize terminal events for the old task's steps. A plan the user **abandoned** is likewise no longer plan-active, so `completeAll` does not sweep it either — its steps are settled at abandon time by `conductorPublisher.AbandonPlan` instead (see the abandon invariant below).
 
-This inline lifecycle governs only steps the Conductor executes itself. When the Conductor instead calls **`execute_plan`**, each step runs as a parallel subagent via `RunSubAgentsParallel`, and plan-step lifecycle is driven by the `planStepEventTranslator` — not by `inlineStepLifecycle`. The translator emits `PlanStepStart` / `PlanStepComplete` on the root emitter (adapting `SubAgentLaunch` / `SubAgentComplete`). To prevent `completeAll()` from double-completing steps already finished by `execute_plan`, the `inlineStepLifecycle.markCompleted(stepID)` records each completed step; `completeAll()` skips any step already marked completed. Steps that never launched (unsatisfiable dependencies or `SubAgentTask` build failure) never trigger the translator, so `Execute` / `defaultPlanStepWave` emit a synthesized `PlanStepStart` + `PlanStepComplete(success=false)` pair directly before marking them — ensuring they are not left stuck "pending". `execute_plan` is resumable: a second call skips steps that already have a successful result on the blackboard and re-runs failed/never-started steps; an optional `steps` argument forces the named steps (and their transitive dependents) to re-run. It still refuses a plan restored from a previous (completed) task: the guard consults `planRunState` (fresh per run), so a restored plan — not declared in the current run — is rejected with an error directing the Conductor to publish a new plan or use `delegate`.
+This inline lifecycle governs only steps the Conductor executes itself. When the Conductor instead calls **`execute_plan`**, `conductorLauncher.Execute` walks the DAG in dependency-ordered waves — `defaultPlanStepWave` builds one isolated subagent per ready step and fans out through the launcher's shared-slot `runSubAgentsParallel` — and plan-step lifecycle is driven by the `planStepEventTranslator`, not by `inlineStepLifecycle`. The translator emits `PlanStepStart` / `PlanStepComplete` / `PlanStepPaused` on the root emitter (adapting `SubAgentLaunch` / `SubAgentComplete` / `SubAgentPaused`). To prevent `completeAll()` from double-completing steps already finished by `execute_plan`, the `inlineStepLifecycle.markCompleted(stepID)` records each completed step; `completeAll()` skips any step already marked completed. Steps that never launched (unsatisfiable dependencies or `SubAgentTask` build failure) never trigger the translator, so `Execute` / `defaultPlanStepWave` emit a synthesized `PlanStepStart` + `PlanStepComplete(success=false)` pair directly before marking them — ensuring they are not left stuck "pending". `execute_plan` is resumable: a second call skips steps that already have a successful result on the blackboard and re-runs failed/never-started steps; an optional `steps` argument forces the named steps (and their transitive dependents, resolved to a fixpoint) to re-run, and an id absent from the plan fails the whole call in `forcedRerunSet` before any wave launches. Plan steps resolve their dependencies in a run-local registry (`DelegationKindPlanStep` units on the shared ledger), separate from the Conductor's delegation registry. `declare_plan` echoes the wave layering it computed (`planExecutionWaves` → `formatExecutionWaves` in `core/tools/declare_plan.go`, e.g. `Execution waves: 1=[step_1, step_3] · 2=[step_2]`) so an under-specified dependency graph is visible before `execute_plan` runs it. It still refuses a plan restored from a previous (completed) task: the guard consults `planRunState` (fresh per run), so a restored plan — not declared in the current run — is rejected with an error directing the Conductor to publish a new plan or use `delegate`.
 
 Checklist updates (`update_checklist`) are purely observational — they emit `step_todo_update` events but do not drive plan-step lifecycle. The checklist and plan-step lifecycle are decoupled: the checklist tracks work-in-progress **sub-tasks within a single step** (e.g. "read file X", "modify function Y", "run tests"); `declare_step_complete` marks the step done. A checklist must NOT list plan steps as its items — the plan panel already tracks plan steps, and duplicating them as checklist items is an error.
 
@@ -208,10 +223,10 @@ The guard is consulted in `UpdateChecklistTool.Execute` after parsing succeeds a
 
 ## Error Handling
 
-- **LLM call failure** in the Conductor loop: propagated as an `Executor.Run` error; the orchestrator records the failure on the blackboard.
-- **Delegation failure** (subagent error or `Finished: false`): returned as the `delegate` tool result with `isError: true`; the Conductor decides whether to retry, reflect, or finish. This replaces the prior outer retry loop.
+- **LLM call failure** in the Conductor loop: propagated as an `Executor.Run` error; the sp4rk Conductor maps it to `ExecutionStatusFailed` and `persistTaskOutcome` marks the task failed (still resumable).
+- **Delegation failure** (a subagent error, or `ExecutorResult.Finished` false): reported as TEXT inside the `delegate` tool result — a per-task `Status: failed` + `Error: <reason>` block plus a trailing note naming the failed ids — with `ToolResult.IsError` false and a nil tool error; the Conductor decides whether to retry, reflect, or finish. This replaces the prior outer retry loop.
 - **Context cancelled** (user pressed Stop): propagated immediately; pending async delegations are cancelled via context-tree cancellation.
-- **Conductor step limit reached without finish**: `Finished: false`; the orchestrator records `Status: partial` (resumable).
+- **Conductor step limit reached without finish**: `ExecutorResult.Finished` is false, which the sp4rk Conductor maps to `ExecutionStatusPartial`; `persistTaskOutcome` leaves the task `in_progress` (resumable).
 
 ## Invariants
 

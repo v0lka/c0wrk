@@ -78,6 +78,15 @@ describe('handleGoalSuggestionEvent', () => {
     handleGoalSuggestionEvent('sess-1', suggestion)
     expect(useChatStore.getState().messageOrder['sess-1']).toHaveLength(1)
   })
+
+  it('re-asserts taskActive: the gate blocks the task, so no step_start can heal a stale false flip', () => {
+    // The suggestion-gate wait emits NO step_start (execution never started),
+    // so the arrival itself is the only live-proof site that can re-open the
+    // work block a stale runtime-status snapshot settled to `interrupted`.
+    useChatStore.setState({ taskActive: { ...useChatStore.getState().taskActive, 'sess-1': false } })
+    handleGoalSuggestionEvent('sess-1', suggestion)
+    expect(useChatStore.getState().taskActive['sess-1']).toBe(true)
+  })
 })
 
 describe('groupMessages goal_suggestion rendering', () => {

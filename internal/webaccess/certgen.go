@@ -27,6 +27,8 @@ import (
 	"path/filepath"
 	"sort"
 	"time"
+
+	"github.com/v0lka/c0wrk/backend/config"
 )
 
 // webAccessCertValidity is the generated leaf's validity window (ADR-102
@@ -187,6 +189,15 @@ func certTemplate(bind string) (*x509.Certificate, error) {
 	dnsNames, ips, err := certSANs(bind)
 	if err != nil {
 		return nil, err
+	}
+	// Single-sourced coverage rule (ADR-102 decision 5): the SAME predicate
+	// the cert_status classification applies must accept the SAN set this
+	// generator is about to publish for the bind's browser-facing host —
+	// fail-closed here rather than shipping a pair the Settings section
+	// would immediately report as mismatch.
+	if host := config.WebAccessURLHost(bind); !config.WebAccessCertCoversHost(
+		&x509.Certificate{DNSNames: dnsNames, IPAddresses: ips}, host) {
+		return nil, fmt.Errorf("webaccess: tls: generated SAN set does not cover the bind's browser-facing host %q", host)
 	}
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	if err != nil {

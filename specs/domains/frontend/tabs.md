@@ -2,14 +2,14 @@
 
 ## Role
 
-The workspace tab layer is the outermost context layer of the app shell: each tab remembers which project and which session its workspace view shows plus a snapshot of the UI slices inside it, while exactly one tab — the active one — mirrors the live global stores. The layer always lives; `uiStore.tabsEnabled` only controls whether the tab bar is visible, whether the tab-cycling hotkeys respond, and how notification clicks route (see [ADR-085](../../decisions/085-workspace-tabs-single-engine.md), [ADR-093](../../decisions/093-sidebar-gear-unconditional.md)).
+The workspace tab layer is the outermost context layer of the app shell: each tab remembers which project and which session its workspace view shows plus a snapshot of the UI slices inside it, while exactly one tab — the active one — mirrors the live global stores. The layer always lives; the EFFECTIVE tabs flag (`selectEffectiveTabsEnabled` — `!webTransport && uiStore.tabsEnabled`) only controls whether the tab bar is visible, whether the tab-cycling hotkeys respond, and how notification clicks route (see [ADR-085](../../decisions/085-workspace-tabs-single-engine.md), [ADR-093](../../decisions/093-sidebar-gear-unconditional.md)).
 
 ## Key Files
 
 - `frontend/src/stores/tabStore.ts` — the tab layer state: the `Tab {id, projectId, sessionId, ui}` list plus `activeTabId`; actions `addTab` / `closeTab` / `activateTab` / `updateActiveContext`; the pure `selectActiveTab` selector. TRANSIENT — never persisted.
 - `frontend/src/lib/tabEngine.ts` — the single activation engine: `activate` (never rejects), `createAndActivate` (the shared [create → activate] chain link behind the tab bar's «+» and the banner click), `writeBack` (live stores → active tab), `attachWriteBack` (write-back subscriptions). A plain lib module (no React); it never reads the flag.
 - `frontend/src/lib/tabSnapshot.ts` — the v2 snapshot slices: `captureTabUI` / `restoreTabUI` / `sanitizeTabUI` (fail-closed validation) and `isSameTabUI` (content equality behind reference-stable no-ops). Pure functions — no store access.
-- `frontend/src/hooks/useTabController.ts` — the React seam: one engine instance per mount, `attachWriteBack` mounted in an effect, exposes `{activate, writeBack}`.
+- `frontend/src/hooks/useTabController.ts` — the React seam: one engine instance per mount, `attachWriteBack` mounted in an effect, exposes `{activate, createAndActivate, writeBack}`.
 - `frontend/src/hooks/useTabHotkeys.ts` — the system-standard tab-cycling shortcuts (host-platform pairs), routed through the app's single TabController; the pure matchers (`tabSwitchDelta`, `selectNeighborTabId`) are exported for tests.
 - `frontend/src/components/layout/AppLayout.tsx` — THE single controller mount for the app plus the `{tabsEnabled && <TabBar/>}` render gate.
 - `frontend/src/components/layout/TabBar.tsx` — the presentational tab strip; every interaction routes through the `TabController` prop; labels and task-status dots derive LIVE from the project/session/chat stores by id, so renames and lifecycle events repaint without a stale copy on the tab.
@@ -23,7 +23,7 @@ The workspace tab layer is the outermost context layer of the app shell: each ta
 
 ### Always-live layer, display-and-routing-only flag
 
-The tab layer exists unconditionally. With `uiStore.tabsEnabled` off, the UI never renders the create/close controls, so the layer runs its documented "exactly one tab" special case: that single tab is an invisible live mirror of the workspace, and flipping the flag on merely reveals the tab bar above the already-living tab. There are no flag-driven lifecycle transitions — no state is created, destroyed, or migrated when the flag flips.
+The tab layer exists unconditionally. Every reader derives the flag through `selectEffectiveTabsEnabled` (`!webTransport && tabsEnabled`), so a browser tab — which already lives in the browser's own tab strip — degenerates to the same single-tab case without the durable `tabsEnabled` preference ever being written. With the effective flag off, the UI never renders the create/close controls, so the layer runs its documented "exactly one tab" special case: that single tab is an invisible live mirror of the workspace, and flipping the flag on merely reveals the tab bar above the already-living tab. There are no flag-driven lifecycle transitions — no state is created, destroyed, or migrated when the flag flips.
 
 | `tabsEnabled` gates | `tabsEnabled` never gates |
 | ------------------- | ------------------------- |
@@ -80,7 +80,7 @@ Every tab creation goes through `TabEngine.createAndActivate(seed?)`: the [creat
 
 | Slice | Source | Content |
 | ----- | ------ | ------- |
-| `workspaceTabByProject` | `uiStore` | `'explorer'` \| `'git'` \| `'semantics'` \| `'research'` per project id |
+| `workspaceTabByProject` | `uiStore` | `'explorer'` \| `'git'` \| `'semantics'` \| `'research'` \| `'specs'` per project id |
 | `researchSegmentByProject` | `uiStore` | `'dashboard'` \| `'papers'` per project id |
 | `inputMode` | `inputModeStore` | `{mode, height, collapsedHeight, isExpanded}` — exactly the panel's persisted fields; the transient `pending*` fields are excluded |
 | `sidebar` | `uiStore` | `{collapsed, width}` — the left sidebar's geometry (v2, [ADR-085](../../decisions/085-workspace-tabs-single-engine.md)) |
@@ -150,7 +150,7 @@ The rendered strip is itself a keyboard surface: the rows are `role="tab"` insid
 - Tab-strip keys (`←`/`→`/`Home`/`End`/`Enter`/`Space`) work only when a tab row itself is focused; arrows move focus without switching (manual activation), and the nested close button keeps native button semantics.
 - Tab actions that change nothing return the same state object (reference-stable no-ops).
 - Tab arrangements stay app-lifetime: `tabStore` keeps its state in memory only, and a restart always starts from a single default tab.
-- The `tabsEnabled` flag persists across restarts (`c0wrk-sidebar-collapsed`, uiStore persist version 7, default off).
+- The `tabsEnabled` flag persists across restarts (`c0wrk-sidebar-collapsed`, uiStore persist version 8, default off).
 - A snapshot payload is validated fail-closed both before storage and before restore, so the stores receive validated values only.
 - A snapshot restore always merges the per-project maps entry-by-entry and preserves other projects' entries; scalar slices restore as an overwrite, and the viewer restore never floats an empty unpinned panel (the empty-floating invariant outranks the snapshot).
 - Exactly one engine with write-back subscriptions exists per app (the `AppLayout` controller mount); every other engine instance runs bare, without `attachWriteBack`.
@@ -159,7 +159,7 @@ The rendered strip is itself a keyboard surface: the rows are `role="tab"` insid
 
 ## Related Specs
 
-- [stores.md](stores.md) — `tabStore` in the store catalog; `uiStore` owns the persisted flag (v7) and the per-project maps the snapshot slices capture
+- [stores.md](stores.md) — `tabStore` in the store catalog; `uiStore` owns the persisted flag (v8) and the per-project maps the snapshot slices capture
 - [system-notifications.md](system-notifications.md) — the flag-on banner-click branch of `useNotificationClicks`
 - [README.md](README.md) — the app shell the tab bar sits above and the project-switch flow the engine drives
 - [ADR-085](../../decisions/085-workspace-tabs-single-engine.md) — the single-engine / disabled-mode-is-one-tab / snapshot-slices decision

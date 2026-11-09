@@ -4,6 +4,8 @@
 
 Accepted — amended in place (pre-release): the original decision was folded into the **autonomy axis** before any release shipped it. This revision records five decisions made during that fold: the axis itself (D1), the revisited canonical-backstop scope — the strict judge now holds final authority over canonical hard reasons in silent `judge` mode (D4) — and the assisted posture's `VerdictDeny` / assisted-DENY terminal / canonical-ALLOW card (D5). No released build ever implemented the earlier D4 ("the backstop holds in every mode").
 
+Amended by [ADR-072](./072-silent-mode-user-confirm-policy.md): D3's sub-policy set grows from three to four with `security.silent_mode.user_confirm` (`confirm` | `deny` | `escalate`, default `deny`, live only under `autonomy_mode: silent`), and the "every other outcome auto-denies fail-closed" terminal there becomes precisely that sub-policy's `deny` default. D4's silent-`judge` delegation optionally extends beyond the judge's ALLOW to its fail-closed CONFIRM outcome — a spoken CONFIRM, a missing judge, a judge error/timeout, an unparseable verdict — when the operator opts into the unsafe `confirm` value, which makes a judge outage a fail-open for exactly the calls the operator delegated. The autonomy axis (D1), the per-task pinning/tightening rule, the interactive canonical backstop, the assisted posture (D5) and the `autonomy_decision` audit chain (D6) stand unchanged.
+
 ## Context
 
 c0wrk gates risky work behind **blocking, human-answered prompts**: `tool_confirm`

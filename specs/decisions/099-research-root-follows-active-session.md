@@ -154,3 +154,20 @@ One protocol, documented once on the resolver declaration
   actually selected, which is ordering-independent; the frontend's
   `selectionPersisted` await closes the one window the authority cannot see
   (a watch racing the persist of its own selection).
+
+## Historical Note
+
+2026-11-07 — successor state for the paths this record names; the decision
+above is unchanged.
+
+- The `.research` root segment named throughout is `research` since
+  [ADR-113](./113-research-root-rename.md): the effective root is
+  `<workspace-of-the-active-session>/research`, the project-checkout fallback
+  is `<proj.WorkspacePath>/research`, and the watcher's admitted research root
+  carries the same spelling. The segment constants live in
+  `backend/config/paths.go` — `config.ResearchRootSegment = "research"`, with
+  `config.LegacyResearchRootSegment = ".research"` retained only for the
+  pre-rename tree that `config.ProjectResearchPath` no longer returns. A
+  pre-rename root surfaces as the `legacy_research_roots` status field and
+  moves only through the `MigrateResearchRoots` RPC
+  (`backend/frontend_api_research.go`).

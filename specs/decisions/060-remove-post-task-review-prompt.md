@@ -4,6 +4,8 @@
 
 Accepted (D4 partially superseded by [ADR-062](./062-hide-legacy-review-prompt-rows.md): legacy `review_prompt` rows are now hidden at history load instead of rendering as muted status lines) — removes the post-task activation path of the review feature ([review.md](../domains/review.md)) and, pre-release, the `review_prompt` sub-policy that [ADR-053](./053-silent-mode.md) had defined for it (D3 now covers three sub-policies; no released build ever shipped a silent-mode `review_prompt` knob).
 
+Amended by [ADR-072](./072-silent-mode-user-confirm-policy.md): the "D3 now covers three sub-policies" count above reads **four** — `security.silent_mode.user_confirm` joins `tool_confirm`, `step_limit` and `ask_user`. Nothing else in this ADR changes.
+
 ## Context
 
 The code-review feature had two activation paths: the manual **Review** button in the changes toolbar, and an automatic post-task prompt — a `review_prompt` card injected into the chat on every successful `task_complete` when the working tree had uncommitted changes and the prompt had not yet been shown for that task.

@@ -8,6 +8,7 @@
 
 import { useGoalStore } from '@/stores/goalStore'
 import { useChatStore } from '@/stores/chatStore'
+import { assertTaskActiveFromPrompt } from './hitlHandlers'
 import type { GoalProgress } from '@/stores/goalStore'
 import type { GoalProposalData, GoalStatusData, GoalProgressData, GoalSuggestionData } from '@/types/events'
 import { buildGoalTransitionNotice, goalStatusToActiveGoal } from '@/lib/goalTransition'
@@ -37,6 +38,7 @@ export function handleGoalProposalEvent(sessionId: string, data: GoalProposalDat
     } as Record<string, unknown>,
     timestamp: Date.now(),
   })
+  assertTaskActiveFromPrompt(sessionId)
   useChatStore.getState().setActivityStatus(sessionId, 'Goal proposed — awaiting your approval...')
 }
 
@@ -104,5 +106,9 @@ export function handleGoalSuggestionEvent(sessionId: string, data: GoalSuggestio
     } as Record<string, unknown>,
     timestamp: Date.now(),
   })
+  // The gate blocks the task BEFORE any execution starts — no step_start ever
+  // follows while it waits, so this arrival is the ONLY live-proof site that
+  // can heal a stale taskActive flip for a session parked at the gate.
+  assertTaskActiveFromPrompt(sessionId)
   useChatStore.getState().setActivityStatus(sessionId, 'Goal mode suggested — awaiting your answer...')
 }

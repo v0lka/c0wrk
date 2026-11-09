@@ -1,0 +1,10 @@
+{
+  "entries": [
+    {
+      "id": "GO-2026-6911",
+      "module": "github.com/mark3labs/mcp-go",
+      "reason": "SSRF + credential leak via an unvalidated Location header in mcp-go's HTTP client transports. Not reachable in this build: c0wrk never imports mcp-go directly, and the sole constructor of those transports is sp4rk's tools/mcp connectHTTP, which pins CheckRedirect to the configured endpoint's origin (tools/mcp/redirect.go originPinnedClient) for BOTH the Streamable HTTP and the SSE leg, including the proxy client c0wrk threads through ServerConfig.HTTPClient. The library's unpinned default client (NewStreamableHTTP's nil CheckRedirect) is therefore never used; cross-origin, port-change, https->http and non-http(s) redirects are refused before any header or body is replayed (regression: tools/mcp/redirect_test.go, invariant: tools/mcp/transport_pinning_test.go). No upstream fix exists (v1.5.0 and main acf999d are still unfixed, vuln DB 'Fixed in: N/A'), so the exception carries the mitigation until a release ships the safe default. Re-review at the date below: bump mcp-go to the first release whose transport sets a default CheckRedirect, then DELETE this entry.",
+      "review_by": "2027-05-07"
+    }
+  ]
+}

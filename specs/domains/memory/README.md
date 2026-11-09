@@ -28,7 +28,7 @@ Any unrecognized domain (including `code` and `mixed`) falls back to `sliding_wi
 
 ## Flow
 
-The fill-check ladder is engine behavior (see the sp4rk memory spec); c0wrk only configures the thresholds. `CheckFill` maps the fill % to a status, and every non-`ok` status runs the same `cw.Compact` (strategy compaction):
+The fill-check ladder is engine behavior (see the sp4rk memory spec); c0wrk only configures the thresholds. `CheckFill` maps the fill % to a status; `compact`, `warning` and `emergency` run the same `cw.Compact` (strategy compaction), while `reject` allows ONE reactive `cw.Compact` attempt and fails the run when the next check still rejects:
 
 ```
 Executor calls LLM → response tokens counted → ContextWindow CheckFill():
@@ -36,7 +36,11 @@ Executor calls LLM → response tokens counted → ContextWindow CheckFill():
   ├─ "compact"   (fill >= predictive 85%): run strategy compaction (cw.Compact)
   ├─ "warning"   (fill >= warning 92%): run strategy compaction (cw.Compact)
   ├─ "emergency" (fill >= emergency 98%): run strategy compaction (cw.Compact)
-  └─ "reject"    (fill >= 100%): context too full even after compaction
+  └─ "reject"    (fill >= 100%): one reactive cw.Compact, then a hard error
+                 ("context window full after reactive compaction"); a usable
+                 budget that is already non-positive (window - output limit -
+                 safety margin - tool-schema reserve) errors out with no
+                 compaction attempt
 ```
 
 Tool-output pruning is a SEPARATE mechanism, independent of `CheckFill`: on every `BuildPrompt`, once fill reaches `toolOutputPruning.thresholdPercent` (default 50), tool outputs beyond `keepLastN` are replaced with a placeholder (protected tools are never pruned). History mutation runs unconditionally on every `BuildPrompt`. Both are engine behavior — see the sp4rk memory spec.
@@ -45,7 +49,7 @@ Untrusted tool output is wrapped in `&lt;untrusted-content>` tags by the sp4rk c
 
 ## Invariants
 
-- The context window NEVER exceeds the model's limit (compaction prevents overflow)
+- Staying within the model's context limit is a design goal: compaction triggers proactively and the `reject` gate aborts the run instead of sending an over-limit request, while token estimates can under-count (see the sp4rk memory spec)
 - The system prompt is ALWAYS preserved (never compacted away)
 - Compaction is triggered proactively (before overflow, not after)
 - Each executor instance has its own `ContextManager` (no sharing between Conductor and subagents)
@@ -62,6 +66,18 @@ From `config.yaml` (values are percentages, not fractions):
 | `executor.compaction.thresholds.emergency_percent`     | 98      | "emergency" status — runs the same `cw.Compact` (%)  |
 | `executor.compaction.sliding_window.keep_first`        | 3       | Messages to always retain at start                   |
 | `executor.compaction.sliding_window.keep_last`         | 10      | Messages to always retain at end                     |
+| `executor.compaction.summarization.block_size`         | 7       | Steps per summarization block                        |
+| `executor.compaction.summarization.keepLast`           | 5       | Recent steps preserved verbatim                      |
+| `executor.compaction.hierarchical.enabled_above_steps` | 25      | Activates the 3-zone strategy above this step count  |
+| `executor.compaction.hierarchical.distantRatio`        | 0.4     | Budget ratio for the distant zone                    |
+| `executor.compaction.hierarchical.middleRatio`         | 0.3     | Budget ratio for the middle zone                     |
+| `executor.compaction.hierarchical.recentRatio`         | 0.3     | Budget ratio for the recent zone                     |
+| `executor.compaction.maxSummarizeTokens`               | 16000   | Max tokens for a summarization LLM call              |
+| `executor.compaction.observationTruncate`              | 500     | Characters an observation is truncated to in summaries |
+| `executor.compaction.safetyMarginPercent`              | 5       | % of the context window reserved as a safety margin  |
+| `executor.compaction.forecast.summarization_ratio`     | 0.3     | Manual-compaction reclaim seed (summarization + hierarchical middle); unset falls back to the sp4rk default |
+| `executor.compaction.forecast.hierarchical_distant_ratio` | 0.15 | Manual-compaction reclaim seed (hierarchical distant zone); unset falls back to the sp4rk default |
+| `executor.compaction.forecast.hierarchical_middle_ratio`  | 0.3  | Manual-compaction reclaim seed (hierarchical middle zone); unset falls back to the sp4rk default |
 | `executor.toolOutputPruning.keepLastN`                 | 3       | Recent tool outputs kept inline (older → placeholder)|
 | `executor.toolOutputPruning.protectedTools`            | `["store_fact","search_facts"]` | Tools whose outputs are never pruned       |
 | `executor.toolOutputPruning.thresholdPercent`          | 50      | Fill % below which pruning is skipped entirely (0 = always prune) |

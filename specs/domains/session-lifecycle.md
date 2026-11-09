@@ -18,7 +18,7 @@ Manages the lifecycle of user sessions: creation, message handling, task executi
 - `backend/session/persistence.go` — SessionStore (SQLite persistence including plan review state); session list queries compute effective activity (newest persisted chat message / terminal command) — see § Session Activity Semantics
 - `core/orchestrator_mcp_prepare.go` — `prepareTaskMCP`: synchronous durable mention preparation and one current-mode snapshot before any task execution or resume wave
 - `backend/session/persistence_mcp.go` — atomic task-scoped mention union and ordered load; authorization-state errors propagate for retry
-- `backend/session/persistence_fork.go` — `(*SQLiteSessionStore).ForkSession` deep-copy (messages, tasks+steps/facts/attachments/trajectory/MCP mentions, terminal commands, work directories) with regenerated identifiers in a single atomic transaction; `ForkSessionWithBinding` additionally commits a prepared managed fork binding
+- `backend/session/persistence_fork.go` — `(*SQLiteSessionStore).ForkSession` deep-copy (messages, tasks + their steps/facts/attachments/trajectory/goal state/E2S state/delegations/MCP mentions, terminal commands, work directories) with regenerated identifiers in a single atomic transaction; `ForkSessionWithBinding` additionally commits a prepared managed fork binding
 - `backend/session/persistence_promote.go` — `(*SQLiteSessionStore).PromoteSessionToProject`: one transaction re-parenting `sessions.project_id` (`__no_project__` → CODE project, archived cleared) and rewriting persisted metadata path prefixes (raw + JSON-escaped, longest first); see § Session Promotion
 - `backend/session/manager_promote.go` — `Manager.EvictSession` (in-memory drop without fs changes, single-flight-aware) and `Manager.MoveSessionStorage`/`UndoMoveSessionStorage` (the two-hop rename move of the session directory + workspace lift, best-effort rollback)
 - `backend/frontend_api_session_promote.go` — `FrontendAPI.PromoteSessionToProject`: guards, internal project creation, terminal stop → evict → move → store tx, pointer swap, fail-soft `git init`, compensation
@@ -43,7 +43,12 @@ Manages the lifecycle of user sessions: creation, message handling, task executi
 - `core/markitdown/converter.go` — markdown conversion of attached files (shells out to the managed `markitdown` CLI, ADR-010); `core/markitdown/vision.go` + `driver.go` — optional vision-assisted conversion via the markitdown Python API (embedded stdlib-only OpenAI-compatible client; the CLI exposes no LLM flags), per-document `VisionOptions` resolved from the currently active model. markitdown 0.1.9 captions only pptx images internally, so the driver adds two passes: PDF-embedded-image extraction (pdfminer XObject walk + Pillow decode) appended as an `## Embedded images` section, and data-URI replacement for docx/html/epub (converts with `keep_data_uris=True`, captions each blob, strips the base64 from the output); `core/visionresolver.go` — model/provider → vision-params mapping (vision capability gate via `ModelRegistry.ResolveLocal`; anthropic_compatible proxies excluded — no OpenAI-compatible surface)
 - `core/tools/read_file_doc.go` — read_file document wrapper; vision resolver attached to the task context by the Orchestrator, conversion cache key includes the vision identity
 - `backend/session/title.go` — auto title generation via LLM
-- `backend/frontend_api_session.go` — FrontendAPI session methods
+- `backend/frontend_api_session.go` — the FrontendAPI session RPC surface (create/fork/delete/list/rename/archive/pin, send, cancel, pause/resume, compaction, tokens, runtime status, history, blackboard/step-output reads, pending-message resolution)
+- `backend/database.go` — `OpenDatabase`: the single shared `*sql.DB` (`modernc.org/sqlite`, CGO-free) opened in WAL with the per-connection `busy_timeout`/`foreign_keys` pragmas, handed to both the session and the project store
+- `core/terminal/manager.go` + `backend/frontend_api_terminal.go` — the per-session PTY registry (`Start`/`Stop`/`StopAll`) and its RPC surface (`StartTerminal`/`StartTerminalInDir`/`StopTerminal`); see § Per-Session Terminal Lifetime
+- `frontend/src/types/models.ts` + `frontend/src/types/guards.ts` — the frontend `SessionInfo`/`WorkspaceBinding` DTOs and the `isSessionInfo` boundary validator
+- `frontend/src/types/messages.ts` + `frontend/src/lib/chatUtils.ts` — `ChatMessageUI`, the `DisplayItem` union and `groupMessages` (the kind catalog lives in [frontend/rendering.md](frontend/rendering.md))
+- `frontend/src/lib/activeSessions.ts` — `deriveSessionStatus`/`effectiveUnfinishedStatus`: the single session-status derivation shared by the sidebar row and the live-sessions radar
 - `backend/frontend_api_project.go` — project switch state persistence + destination session fallback; `SaveProjectActiveSession` (targeted saved-session write), `GetLastActiveProjectID` (restart restore)
 - `backend/project/persistence.go` — `app_state` key-value table (`SaveAppState`/`LoadAppState`; holds `last_active_project_id`), `SaveSavedSessionID` (updates ONLY `saved_session_id`, preserving open tabs / active file)
 - `frontend/src/lib/sessionRestore.ts` — shared restore resolver `resolveRestoreSession` (saved-first → latest non-archived by activity → null) used by both `useProjectSwitchState` and `useSessionLoader`
@@ -115,7 +120,9 @@ User clicks "New Chat" (or first message in empty state)
       │   └─ No Project: calls orchestrator.SetNoProjectMode() to
       │       disable code tools and add bash command blacklist
       ├─ Persist to SQLite (sessions table; best-effort when store wired)
-      └─ Return SessionInfo {id, name, projectId, createdAt}
+      ├─ Emit the global sessions:changed push AFTER the persist attempt, so
+      │   the debounced re-read sees the new row
+      └─ Return SessionInfo {id, project_id, name, created_at, workspace_binding, …}
   → Frontend: sessionStore.addSession() + selectSession(id, projectId)
       (activates the new session AND persists it as saved_session_id;
       implicit creation on send/paste/attach/terminal-mode goes through
@@ -243,7 +250,14 @@ the new workspace. The persisted binding is REQUIRED before the eviction: a
 store failure compensates the freshly provisioned tree away, and a failed
 eviction rolls the binding back (a refused rollback keeps the tree — it is
 still named by the persisted binding; adopted trees are never touched, the
-created branch is kept — no path ever deletes branches). The fresh window is
+created branch is kept — no path ever deletes branches). Staged attachments
+cross the switch as a snapshot taken under the eviction's critical section
+and re-staged after the restore (`Manager.RestorePendingAttachments`); when
+that re-staging fails the send is REJECTED with an actionable error and
+`Manager.EmitStagedAttachmentsLost` reports every snapshot item as a per-file
+failure, so the UI drops the stale chips and the user re-attaches. The binding
+stays committed — the workspace switch itself succeeded, and a silent retry
+would start the task without the files. The fresh window is
 enforced atomically by the store (no transcript, no task rows), one bind at a
 time per session, and an already-bound window accepts only the SAME choice
 again. Lazy restore and
@@ -365,7 +379,13 @@ ONLY through this persisted restore — never by the fallback.
 
 ```
 User sends message
-  → Frontend: SendMessage(sessionId, text, activeSkills, activeAgents, activeMCPServers, modelOverride, reasoningEffort, goal, goalBudget, e2s, reviewMode)
+  → Frontend: SendMessage(sessionId, text, activeSkills, activeAgents,
+      activeMCPServers, modelOverride, reasoningEffort, goal, goalBudget, e2s,
+      reviewMode, clientSendID, workspace)
+      (clientSendID = the sender's optimistic-card id, echoed on
+       message_received so the sender dedups by identity — internal sends pass
+       ""; workspace = the ADR-091 first-send workspace choice, nil = no-op —
+       see § Session Execution Workspace Binding)
   → Backend: FrontendAPI.SendMessage()
       ├─ Live-send gate: validate pause window / goal / E2S / skill-agent-MCP refs
       │   BEFORE persisting (a rejected send never reaches the store)
@@ -383,7 +403,9 @@ User sends message
       │   ├─ WithWorkspacePath (project workspace)
       │   ├─ WithTempDir (session-specific temp directory)
       │   └─ WithCoherence (FileCoherenceTracker for cross-session conflict detection)
-      ├─ Determine opts: {TaskID, UserSkills, UserAgents, UserMCPServers, ModelOverride, ReasoningEffort, Goal, GoalBudgetOverride, E2S, ReviewMode}
+      ├─ Determine opts: {TaskID, UserSkills, UserAgents, UserMCPServers,
+      │   ModelOverride, ReasoningEffort, SessionPlansDir, PendingAttachments,
+      │   PendingImages, Goal, GoalBudgetOverride, E2S, ReviewMode}
       │   ├─ First message: TaskID=""
       │   └─ Continuation: TaskID=lastCompletedTaskID
       ├─ Call orchestrator.HandleMessage(ctx, preprocessedText, sessionId, opts)
@@ -421,12 +443,14 @@ User sends message
 > task has its own empty initial set; permission is derived anew from current
 > modes at each entry (see [Task-scoped MCP authorization](#task-scoped-mcp-authorization)).
 
-> If the session has an **unfinished (interrupted) task** *and the message is
-> not a goal request*, the execution goroutine takes the
+> If the session has an **unfinished (interrupted) task** *and the message
+> requests neither goal nor E2S mode*, the execution goroutine takes the
 > `tryContinueInterruptedTask` branch *before* `HandleMessage` and resumes the
 > prior ReAct cycle instead of routing a new task. A goal request (`/goal` or
-> `/goal:N` prefix, or the goal toggle) supersedes this branch — the interrupted task is
-> abandoned and the goal loop runs instead (see [Continuing an interrupted task with a new message](#continuing-an-interrupted-task-with-a-new-message)).
+> `/goal:N` prefix, or the goal toggle) or an E2S request supersedes this
+> branch — the interrupted task is abandoned
+> (`abandonUnfinishedTaskForGoal` / `abandonUnfinishedTaskForE2S`) and the
+> requested mode's loop runs instead (see [Continuing an interrupted task with a new message](#continuing-an-interrupted-task-with-a-new-message)).
 
 ### File Reference (`fileref://`) Path Semantics
 
@@ -606,13 +630,21 @@ standalone checklist.
 User clicks "Resume" (after task_failed_resumable)
   → Frontend: ResumeTask(sessionId, modelOverride, reasoningEffort)
   → Backend: FrontendAPI.ResumeTask(id, modelOverride, reasoningEffort)
+      ├─ Model Profiles goal gate (`goalResumeBlockedByModelProfiles`): refuse
+      │   when the essential-tools narrowing is active AND the unfinished task
+      │   carries a NON-terminal goal state — the exact condition
+      │   Orchestrator.Resume uses to pick the goal loop. A task-store read
+      │   failure fails OPEN here (the manager re-checks under the session
+      │   lock and `resumeGoalLoop` is the ultimate authority).
+      │   `ResumeSession` carries the same gate
       ├─ Resolve unfinished task via TaskStoreAdapter.GetUnfinishedTaskID
       ├─ Restore Blackboard from SQLite (RestoreBlackboard: facts + step results)
       ├─ Load persisted trajectory via LoadTrajectory(taskID) → resumeSteps
       ├─ Load persisted goal state via LoadGoalState(taskID) → goalState (nil for non-goal tasks)
       ├─ Resolve routing decision (OPTIONAL — may be nil; defaults to "general")
       ├─ Emit task_resumed (resolves the resumable banner; sets UI active)
-      └─ Call orchestrator.Resume(ctx, bb, routing, plansDir, resumeSteps, goalState)
+      └─ Call orchestrator.Resume(ctx, bb, routing, plansDir, resumeSteps,
+          goalState, nudge)
           ├─ prepareTaskMCP: load durable server names, snapshot current modes once,
           │   and overwrite mention/gate context (empty values included);
           │   any load/write failure stops here with ErrMCPAuthorizationState
@@ -624,7 +656,7 @@ User clicks "Resume" (after task_failed_resumable)
           │   └─ resumeGoalLoop — re-activates a paused goal to `active`, seeds
           │       resumeSteps into the first resumed turn, and continues the
           │       multi-turn goal loop (turn counter continues from goalState.TurnCount).
-          │       See [goal-mode.md](#goal-resume) below.
+          │       See [goal-mode.md § Resume Continuity](goal-mode.md#resume-continuity).
           ├─ Seeds resumeSteps into the ContextManager (StepSeedable.SeedSteps)
           │   so they render as assistant+tool messages in BuildPrompt
           ├─ Seeds resumeSteps into the Executor (WithResumeSteps) so the step
@@ -832,9 +864,11 @@ User sends a NON-GOAL message to session with unfinished task
           ├─ ApplyRequestOverrides(ctx, modelOverride, reasoningEffort)
           ├─ for each staged attachment: bb.AddAttachment (persists to store)
           ├─ Load trajectory → append agent.Step{UserNudge: message}
-          ├─ Resolve routing decision (OPTIONAL)
+          ├─ Resolve routing decision (OPTIONAL) + persisted goal state
+          │   (best-effort: a load failure warns and continues as a plain task)
           ├─ Resolve the resumable banner (so it does not linger)
-          └─ orchestrator.Resume(ctx, bb, routing, plansDir, resumeSteps)
+          └─ orchestrator.Resume(ctx, bb, routing, plansDir, resumeSteps,
+              goalState, nudge="")
               (task ID preserved; lifecycle events stream normally)
 ```
 
@@ -921,10 +955,16 @@ task-terminal callbacks and frontend polls; a lazy restore there would
 resurrect a just-deleted or merely-viewed session (the store row still
 exists), rebuilding an orchestrator and reopening log/dump handles nobody
 closes. Lazy restore runs only from mutating user-intent entry points — the
-named four (`SendMessage`/`ResumeTask`/`CancelTask`/`PauseSession`) plus the
+named four (`SendMessage`/`ResumeTask`/`CancelTask`/`PauseSession`), the
 attachment/clipboard/compaction surfaces that share the same
 `getOrRestoreSession` gate (attachment staging, `pasteImage`,
-`PendingMessageMetadata`, `CompactSessionContext`).
+`PendingMessageMetadata`, `CompactSessionContext`), and the manager-level
+metadata accessors (`Manager.GetSession`, `Manager.RenameSession`,
+`Manager.ArchiveSession`, `Manager.PinSession`). The metadata RPCs never reach
+those: `FrontendAPI.RenameSession`/`ArchiveSession`/`PinSession` gate on
+`HasSession` (not the restoring `GetSession`) and write the store row
+directly, so renaming, archiving or pinning a never-opened session keeps it
+out of memory.
 
 ### Session Pause / Resume / Nudge
 
@@ -986,10 +1026,12 @@ User clicks "Resume" (optionally with model/reasoning-effort overrides)
 User types a message while paused → Send
   → Frontend: marks the optimistic user message is_nudge=true; clears paused
   → Backend: sendMessage's nudge-resume router detects
-      hasPausedUnfinishedTask(sessionID) == true (and the message is not a
-      goal request — the goal toggle OR a leading "/goal"/"/goal:N" prefix,
-      detected on the processed text before the router exactly like before
-      the interrupted-task resume check, [ADR-110](../decisions/110-goal-mode-chat-activation.md))
+      hasPausedUnfinishedTask(sessionID) == true (and the message requests
+      neither goal nor E2S mode — the goal toggle OR a leading
+      "/goal"/"/goal:N" prefix, detected on the processed text before the
+      router exactly like before the interrupted-task resume check,
+      [ADR-110](../decisions/110-goal-mode-chat-activation.md), plus the e2s
+      flag; both SUPERSEDE a paused task and abandon it instead of resuming)
       → routes to ResumeSession(text, ...)
         → the user's text becomes the nudge, injected as a trailing user message
           into the first resumed turn
@@ -1050,7 +1092,7 @@ User picks a strategy in the status-bar compact menu (left of the fill indicator
       ├─ Emit compaction_started {strategy}
       ├─ If a task runs: pausing window + orch.PauseSession() (identical to PauseSession)
       │    then wait on session.done for the cooperative checkpoint
-      ├─ orch.CompactConversationHistory(strategy) — rewrites o.conversationHistory
+      ├─ orch.CompactConversationHistory(compCtx, strategy) — rewrites o.conversationHistory
       │    (summarization runs through the session's tracking caller; last message kept)
       ├─ No-op (ErrNothingCompacted — dialogue already fits the limits): a SUCCESS
       │    with nothing_compacted=true and zero %; NO marker row. When a paused
@@ -1079,7 +1121,7 @@ Cancel (CancelSessionCompaction):
 ```
 
 - The UI chat history is untouched — only the LLM-visible conversation history shrinks. The manual flow emits no `context_compaction` event: its live card is derived from `compaction_finished` (same display-basis percents), and the marker row renders as the card on reload. AUTO compactions (executor fill-trigger, conductor compact-on-start) DO emit `context_compaction`, which the event pipeline persists as a durable row — those cards survive session switches and restarts.
-- A no-op outcome never writes a marker (nothing was compacted to snapshot). With a paused task waiting, the no-op defers to the resume instead: the one-shot resume-compaction request is armed strictly before the auto-resume, so the resumed run force-compacts the merged trajectory (checkpoint steps + the resumed run) up front with the user-selected strategy, regardless of fill thresholds — see [memory/compaction.md](memory/compaction.md) § Resume-side Forced Trajectory Compaction. In the UI, `compaction_finished` with `nothing_compacted` and nothing to resume clears the "Compacting" activity at once (no card follows); `deferred_to_resume` keeps the label for the subsequent `task_resumed`, like `resumed`.
+- A no-op outcome never writes a marker (nothing was compacted to snapshot). With a paused task waiting, the no-op defers to the resume instead: the one-shot resume-compaction request is armed strictly before the auto-resume, so the resumed run force-compacts the merged trajectory (checkpoint steps + the resumed run) up front with the user-selected strategy, regardless of fill thresholds — see [memory/compaction.md](memory/compaction.md) § Manual Context Compaction (the "Resume-side forced trajectory compaction" bullet). In the UI, `compaction_finished` with `nothing_compacted` and nothing to resume clears the "Compacting" activity at once (no card follows); `deferred_to_resume` keeps the label for the subsequent `task_resumed`, like `resumed`.
 - History restore (`convertChatMessagesToLLM`): the LAST marker's `messages` snapshot seeds the restored history (conversational rows before it are dropped; later exchanges append on top).
 - While compacting the UI shows the "Compacting" activity (where "Thinking" renders), locks the input area, and suppresses the `session_paused` paused affordances (the flow's own pause). `SessionRuntimeStatus.Compacting` reconciles this on session switch/restart.
 - See [memory/compaction.md](memory/compaction.md) § Manual Context Compaction for the strategy semantics and the orchestrator-level behavior.
@@ -1119,8 +1161,13 @@ User clicks Fork (GitFork icon) in SessionSelector on a session item
           ├─ For each task: new task id, copy tasks (NULL completed_at preserved)
           │   + task_steps + task_facts + task_attachments + task_trajectory
           │   + task_goal_state (preserves the task's goal history)
+          │   + task_e2s_state (the fork's Σ snapshot matches its source task)
+          │   + task_delegations (lets a Resume rebuild paused subagents)
           │   + task_mcp_mentions (server names copied under the new task ID;
           │     subsequent additions and deletion are independent of the source)
+          │   (task_units, session_bookmarks and prompt_suggestions are NOT
+          │    copied — a fork's tasks carry no unit-ledger rows, and the fork
+          │    starts with no bookmarks and no prompt suggestions)
           ├─ cloneReview(src, new) on the same tx (review_state + review_comments)
           └─ Commit (any error rolls back the whole fork; source untouched)
   → Frontend: sessionStore.addSession(forked) + selectSession(forked.id, forked.project_id)
@@ -1128,8 +1175,8 @@ User clicks Fork (GitFork icon) in SessionSelector on a session item
 ```
 
 Forking is rejected when the source session has an unfinished
-(`in_progress` or `failed`) task — copying would duplicate a half-completed
-execution state. The guard runs on the backend (authoritative); the frontend
+(`in_progress`, `paused` or `failed`) task — copying would duplicate a
+half-completed execution state. The guard runs on the backend (authoritative); the frontend
 also disables the fork button preemptively from the row's derived status (any
 non-idle status — active, paused, failed, or pending — is busy).
 
@@ -1154,7 +1201,7 @@ User clicks "Promote to project" (FolderOpen icon) on a CHAT SessionList row
       ├─ projectManager.CreateProject(name, "") — INTERNAL workspace
       ├─ stopSessionTerminal(id)   (PTY cwd sits inside the tree being moved;
       │   when a live PTY was stopped, the RPC emits session:<id>:terminal_exited —
-      │   the ONE explicit-stop exception to the terminal manager's silent rule,
+      │   an explicit-stop exception to the terminal manager's silent rule,
       │   so the surviving xterm instance resurrects the shell in the promoted
       │   workspace instead of sitting frozen on the dead PTY)
       ├─ manager.EvictSession(id)  (close log/dump handles, purge trackers;
@@ -1211,20 +1258,20 @@ Invariants:
 
 ### Per-Session Terminal Lifetime
 
-The terminal manager owns at most one PTY per session ID. Switching the active session or project does not stop that PTY: the frontend keeps one xterm instance per session, and `StartTerminal(sessionID)` treats an already-active PTY as a successful reattach. Input, resize, output events, and command history remain session-keyed, so concurrent terminal sessions do not cross streams.
+The terminal manager (`core/terminal.Manager`) owns at most one PTY per session ID. Switching the active session or project does not stop that PTY: the frontend keeps one xterm instance per session, and `StartTerminal(sessionID)` treats an already-active PTY as a successful reattach. Input, resize, output events, and command history remain session-keyed, so concurrent terminal sessions do not cross streams.
 
-`StartTerminalInDir` is the explicit restart path: the requested working directory must be contained in the session workspace, then any existing PTY for that session is stopped and replaced. `StopTerminal` ends only the named session's PTY. Application shutdown calls the terminal manager's global stop through backend cleanup; terminal processes do not outlive the app.
+`StartTerminalInDir` is the explicit restart path: the requested working directory must be contained in the session workspace, then any existing PTY for that session is stopped and replaced. `StopTerminal` ends only the named session's PTY. Application shutdown calls `Manager.StopAll` through backend cleanup; terminal processes do not outlive the app.
 
-Session promotion is the one flow that stops a PTY whose session SURVIVES the stop: the session's xterm instance is keyed by the unchanged session ID and the terminal registry intentionally outlives project switches, so a silent stop would leave a frozen panel with no user-reachable restart. The promotion therefore emits `session:<id>:terminal_exited` right after stopping a live PTY — the sole explicit-stop exception to the manager's silent rule — which arms the same lazy resurrection a natural shell exit uses: the shell respawns in the promoted workspace on the session's next activation, scrollback preserved.
+Two flows stop a PTY whose session SURVIVES the stop — session promotion, and the send-time workspace bind on both its provisioned and adopted path (§ Session Execution Workspace Binding). In both, the session's xterm instance is keyed by the unchanged session ID and the terminal registry intentionally outlives project switches, so a silent stop would leave a frozen panel with no user-reachable restart. Both therefore emit `session:<id>:terminal_exited` right after `stopSessionTerminal` reports that a live PTY was stopped — the explicit-stop exception to the manager's silent rule — which arms the same lazy resurrection a natural shell exit uses: the shell respawns in the promoted or newly bound workspace on the session's next activation, scrollback preserved. A deletion's stop stays silent: the session and its panel are both going away.
 
 ### Session Persistence
 
-Persisted in SQLite (`~/.c0wrk/database.db`) — schema defined in `backend/session/persistence.go` and `backend/project/persistence.go`:
+Persisted in SQLite (`~/.c0wrk/database.db`) — schema defined in `backend/session/persistence.go` and `backend/project/persistence.go`. `backend/database.go` `OpenDatabase` opens ONE shared `*sql.DB` on the CGO-free `modernc.org/sqlite` driver (registered as `sqlite`) and hands the same handle to the session and project stores: WAL is enabled and confirmed at open, the pool is sized 8 open / 4 idle so read RPCs proceed beside a writer, and the per-connection `busy_timeout(5000)` / `foreign_keys(1)` pragmas ride the DSN so every pooled connection receives them. Hot-path event writes are additionally serialized through the single-writer `EventPersister`:
 
 - `projects` — project roster (in `backend/project/persistence.go`)
 - `project_ui_state` — project_id, saved_session_id, open_tabs (JSON), active_file, updated_at; stores per-project switch UI restoration state
 - `app_state` — key, value; app-level key-value state (in `backend/project/persistence.go`). Currently holds `last_active_project_id` (destination of the most recent `SwitchProject`, including `__no_project__`) for restart restore, and the manual-compaction EWMA forecast under `compaction_forecast` / `compaction_forecast:<model>`
-- `sessions` — id, project_id, name, created_at, last_active_at (stored column, updated on explicit selection via `UpdateSessionActivity`), archived, pinned, total_input_tokens, total_output_tokens, model, family, fill_percent. List queries expose the computed effective activity (§ Session Activity Semantics) as `SessionInfo.last_active_at` — the stored column is only a fallback there
+- `sessions` — id, project_id, name, created_at, last_active_at (stored column, updated on explicit selection via `UpdateSessionActivity`), archived, pinned, total_input_tokens, total_output_tokens, model, family, fill_percent, plus `workspace_binding` (added by the additive migration in `backend/session/persistence_binding.go`, encoded/decoded by the helpers shared with the load and list queries). List queries expose the computed effective activity (§ Session Activity Semantics) as `SessionInfo.last_active_at` — the stored column is only a fallback there
 - `session_messages` — id, session_id, role, content, reasoning_content, tool_calls, metadata (JSON), created_at
 - `tasks` — id, session_id, original_request, routing_decision (JSON), plan (JSON), reflections (JSON), final_output, attempt_count, status, created_at, completed_at
 - `task_steps` — step_id, task_id, summary, full_output, error_text, steps (JSON), created_at (PRIMARY KEY (task_id, step_id))
@@ -1233,12 +1280,25 @@ Persisted in SQLite (`~/.c0wrk/database.db`) — schema defined in `backend/sess
 - `task_trajectory` — task_id, steps (JSON), updated_at (persisted ReAct trajectory for resume)
 - `task_mcp_mentions` — task_id, server_name (PRIMARY KEY (task_id, server_name), task FK ON DELETE CASCADE); additive migration, monotonic name union, ordered load, independent fork copies; task/session deletion cascades rows
 - `task_goal_state` — task_id, goal_state (JSON), updated_at (goal-mode state for resume; see [goal-mode.md](goal-mode.md))
+- `task_e2s_state` — task_id, e2s_state (JSON), updated_at (the E2S Σ plus bookkeeping, persisted after every applied state patch so an interrupted run resumes with the restored Σ; see [e2s.md](e2s.md))
+- `task_delegations` — task_id, delegation_id, parent_id, depth, spec, created_at (PRIMARY KEY (task_id, delegation_id); durable delegation specs, merged with the unit ledger on resume for pre-ledger tasks)
+- `task_units` — task_id, unit_id, namespace, kind, parent_id, depth, status, spec, steps (JSON), created_at, updated_at (PRIMARY KEY (task_id, namespace, unit_id); the durable per-unit recovery ledger of `core/units` — the namespace keeps a mainline ledger and an isolated one (the goal verifier) from colliding inside one task; see [ADR-048](../decisions/048-unified-recovery-ledger.md))
 - `terminal_commands` — id, session_id, command, created_at
 - `session_work_directories` — id, session_id, path, description, created_at (session-scoped additional work dirs; UNIQUE(session_id, path))
+- `session_bookmarks` — id, session_id, event_key, title, created_at (chat-event bookmarks, UNIQUE per (session_id, event_key); `event_key` is the stable `groupMessages` DisplayItem key, so a bookmark maps back to its rendered chat item across history reloads)
+- `prompt_suggestions` — id, session_id, task_id, kind (`next_task` | `goal_advance`), text, status (`active` | `accepted` | `dismissed` | `stale`), created_at (ADR-088 follow-up prompts; at most one active set per (session, kind); see [prompt-suggestions.md](prompt-suggestions.md))
+
+Every `task_*` table carries `task_id … REFERENCES tasks(id) ON DELETE CASCADE`
+and every session-scoped table carries `session_id … REFERENCES sessions(id) ON
+DELETE CASCADE`, so a task or session deletion removes its dependent rows
+(`foreign_keys(1)` is a per-connection pragma applied to the whole pool).
 
 `SessionInfo.HasUnfinishedTask` is not a stored column — it is derived at query
 time (`LoadSession`, `ListSessions`, `ListSessionsByProject`) via a correlated
-`EXISTS` subquery over `tasks` with status `in_progress` or `failed`. The fork
+`EXISTS` subquery over `tasks` with status `in_progress`, `paused` or `failed`
+(the authoritative set `GetUnfinishedTask` defines; `ListSessions`/
+`ListSessionsByProject` additionally fill `SessionInfo.UnfinishedTaskStatus`
+with the latest such task's status via `unfinishedTaskStatusSQL`). The fork
 guard (`ForkSession`) and the frontend fork-button disabled state consume it.
 
 Blackboard state is reconstructed from `tasks` + `task_steps` + `task_facts` + `task_attachments` on resume (no dedicated `blackboard` column). Events are streamed via the Wails runtime and are NOT persisted to a standalone table — any event state that must survive restart is folded into `session_messages` or `tasks`/`task_steps` via `backend/session/event_persister.go`.
@@ -1250,6 +1310,7 @@ The `backend/session/persistence.go` defines the `SessionStore` interface:
 | Method                                                       | Description                                                      |
 | ------------------------------------------------------------ | ---------------------------------------------------------------- |
 | `SaveSession(ctx, info)`                                     | Upsert session (INSERT OR REPLACE)                               |
+| `BindSessionWorkspace(ctx, sessionID, projectID, binding)`   | The single sanctioned workspace-binding mutation, for a FRESH session only; the freshness guard is atomic in the UPDATE's WHERE (refusal: `ErrSessionNotFresh`) |
 | `LoadSession(ctx, id)`                                       | Load session by ID (returns nil if not found)                    |
 | `ListSessions(ctx)`                                          | List all sessions ordered by effective activity (§ Session Activity Semantics); archived rows included |
 | `ListSessionsByProject(ctx, projectID)`                      | List sessions for a specific project (same ordering; archived rows included) |
@@ -1271,6 +1332,13 @@ The `backend/session/persistence.go` defines the `SessionStore` interface:
 | `ListSessionWorkDirs(ctx, sessionID)`                        | List session-scoped work directories                             |
 | `UpdateSessionWorkDirDescription(ctx, sessionID, id, description)` | Update a work directory's description                      |
 | `DeleteSessionWorkDir(ctx, sessionID, id)`                   | Delete a session-scoped work directory                           |
+| `SaveBookmark(ctx, b)`                                       | Insert a chat-event bookmark (`SessionBookmark`), UNIQUE per `(session_id, event_key)` so one event is bookmarked once per session; returns the stored row |
+| `ListBookmarks(ctx, sessionID)`                              | List a session's bookmarks oldest-first (`created_at ASC, id ASC`); an empty non-nil slice when none |
+| `DeleteBookmark(ctx, sessionID, id)`                         | Delete one bookmark                                            |
+| `RenameBookmark(ctx, sessionID, id, title)`                  | Retitle one bookmark                                           |
+| `SavePromptSuggestions(ctx, suggs)`                          | Replace the active prompt-suggestion set of one `(session, kind)` atomically — previous active rows become `stale`, the new rows come in (ADR-088); returns the stored rows |
+| `ListPromptSuggestions(ctx, sessionID)`                      | List the session's ACTIVE suggestion set (both kinds), newest generation first and insertion order within a generation |
+| `SetPromptSuggestionStatus(ctx, id, status)`                 | Move one suggestion between `active`/`accepted`/`dismissed`/`stale` |
 | `Close()`                                                    | Close the store (no-op for SQLite, lifecycle managed externally) |
 
 ### Conversation History
@@ -1360,7 +1428,7 @@ pipeline (title generation, ToolJudge) receive the dump writer via
 unexported key type in `sp4rk/agent/context.go`; read back with
 `agent.DumpWriterFromContext`). The writers are injected at
 the call sites: `SendMessage` for title generation and
-`desktop/event_handlers.go` for ToolJudge. Both receive the session's own
+`backend/judge.go` for ToolJudge. Both receive the session's own
 appendcodec wrapper (`Session.DumpWriter()`, an `io.Writer` view of the shared
 per-path writer) — the caller never closes it: the codec footer belongs to the
 session's close chain, and concurrent writes serialize on the wrapper's
@@ -1372,7 +1440,7 @@ The append-only session artifacts — the session log
 `logs/session_<id>.log`, the session-level LLM dump and the per-step dumps
 (the fixed scope above) — are written through
 `github.com/v0lka/sp4rk/appendcodec` under the
-`session_artifacts.compression` config section ([ADR-116](../decisions/116-session-artifact-compression.md)):
+`session_artifacts.compression` config section ([ADR-120](../decisions/120-session-artifact-compression.md)):
 
 ```
 session_artifacts:
@@ -1461,6 +1529,7 @@ operator intent (the boundary is the fully resolved root).
 type SessionInfo struct {
     ID               string
     ProjectID        string
+    WorkspaceBinding *WorkspaceBinding // `json:"workspace_binding,omitempty"` — the immutable execution workspace; nil for CHAT
     Name             string
     CreatedAt        string // RFC 3339
     LastActiveAt     string // RFC 3339
@@ -1472,10 +1541,11 @@ type SessionInfo struct {
     Model            string
     Family           string
     FillPercent      float64 // context-fill percentage (stored in sessions.fill_percent)
-    HasUnfinishedTask bool  // derived (not stored): EXISTS unfinished in_progress/failed task; gates the fork button
+    HasUnfinishedTask bool  // derived (not stored): EXISTS unfinished in_progress/paused/failed task; gates the fork button
+    UnfinishedTaskStatus string // derived; filled ONLY by the list queries: the latest unfinished task's status, "" when none
 }
 
-// HandleOptions — user-specified skill overrides + per-message model/reasoning/goal/review toggles
+// HandleOptions — user-specified skill overrides + per-message model/reasoning/goal/E2S/review toggles
 type HandleOptions struct {
     TaskID             string                     // non-empty = continuation of existing task
     UserSkills         []string                   // explicitly requested by user via /skill refs (bypass router)
@@ -1489,6 +1559,7 @@ type HandleOptions struct {
     ReviewMode         bool                       // true = message carries code-review feedback the agent must act on (sets ReviewModeKey)
     Goal               bool                       // true = dispatch to runGoalLoop (goal mode)
     GoalBudgetOverride *goal.GoalBudget           // optional per-message turn cap; MaxTurns>0 caps turns, nil/0 = unlimited (no config-level defaults)
+    E2S                bool                       // true = dispatch to runE2SLoop (explicit-execution-state mode); mutually exclusive with Goal — an explicit error, never a silent preference
 }
 
 // HandleResult — orchestration output
@@ -1499,6 +1570,7 @@ type HandleResult struct {
     Blackboard      orchestration.Blackboard      `json:"-"`
     Reflections     []orchestration.Reflection    `json:"reflections,omitempty"`
     Status          orchestration.ExecutionStatus `json:"status,omitempty"` // typed outcome: success | partial | failed | aborted | cancelled
+    Err             error                         `json:"-"` // typed terminal cause of a DEGRADED outcome returned alongside a nil error (today: the goal loop's errored-turn halt), preserved so the manager's auto-retry classifier can errors.As the *llm.Error chain (ADR-065); JSON-omitted — the frontend contract is unchanged
 }
 ```
 
@@ -1507,8 +1579,8 @@ type HandleResult struct {
 - **SessionStore interface**: replace SQLite with a different backend by implementing all methods in `backend/session/persistence.go`
 - **Auto-title generation**: customize the LLM prompt or model used for title generation in `backend/session/title.go`
 - **Preprocessing pipeline**: add custom message transforms (e.g., additional filter types) before orchestrator invocation in `FrontendAPI.SendMessage()`
-- **Event persistence**: implement `EventPersister` interface for alternative storage backends
-- **Session metadata enrichment**: add custom fields to `SessionInfo` and populate them in `SessionManager.Create()`
+- **Event persistence**: `EventPersister` is a concrete struct over the `SessionStore` interface — an alternative storage backend plugs in through `SessionStore`; the persisted-vs-transient event classification lives in `backend/session/event_persister.go`
+- **Session metadata enrichment**: add custom fields to `SessionInfo` and populate them in `Manager.CreateSessionFromDraft` (the single commit point behind both `Manager.CreateSession` and the managed fork)
 - **File coherence strategy**: replace `FileCoherenceTracker` in `backend/session/file_coherence.go` with an alternative conflict detection implementation (must satisfy `FileCoherenceChecker` interface from `github.com/v0lka/sp4rk/tools/coherence.go`)
 
 ## Invariants
@@ -1541,16 +1613,19 @@ type HandleResult struct {
 - The pending choice is transient (`sessionWorkspaceStore`): keyed per fresh session, dropped when its session is deleted, cleared by the consuming send's success teardown, and re-armed by the send-path catch on a bind refusal — it never persists across restarts (an un-sent choice has no durable meaning; the session row itself is local until the send)
 - Startup restores the exact last active context: `useProjectLoader` reopens the `last_active_project_id` from `app_state` when the project still exists (including `__no_project__` → CHAT), otherwise falls back to the most recently active real project (CODE-first), then to the Create Project dialog; No Project is never auto-selected by the fallback, and a failed restore RPC never blocks startup
 - User messages are persisted after the authoritative dispatch, not on receive: the `is_nudge` flag is written only once the live-send/fresh classification is known, and a rejected send (pause window, goal gate, attachment gate) never reaches the store
-- Archived sessions are read-only history: the session-manager choke point rejects both new `SendMessage` execution and failed/paused task resume until the session is unarchived
+- Archived sessions are read-only history: `ErrSessionArchived` is the session-manager choke point's refusal for `SendMessage`, `ResumeTask` and `CompactSessionContext` until the session is unarchived. The same choke point rejects all three with a "session … is being deleted" error once `session.deleting` is set, so a teardown racing the compaction flow's auto-resume launches no ghost task
 - Archiving a session that is running or has an unfinished task first cancels the running task and discards the unfinished task, so an archived session is a clean read-only snapshot. The session temp directory is removed once the task goroutine settles; if cancellation does not settle within `stopTimeout`, the archived flag still flips and the temp directory removal is deferred until the goroutine actually finishes (never racing a still-running tool call).
 - Task state is checkpointed on each step completion (enables resume)
 - Cancellation is cooperative (executor checks context at each iteration)
-- An unfinished task (`in_progress` or `failed`) is continued by the next user
+- An unfinished `in_progress` or `failed` task is continued by the next user
   message via `tryContinueInterruptedTask`: the message is appended as a
   user-nudge turn to the prior trajectory and `orchestrator.Resume` is invoked
-  with **no routing, no new task, and no new conversation-history pair** (task
-  ID preserved). Explicit `CancelUnfinishedTask` is the only path that closes
-  it and lets the following message start fresh.
+  with **no re-routing, no new task, and no new conversation-history pair**
+  (task ID preserved). A `paused` unfinished task takes the nudge-resume
+  router instead (§ Session Pause / Resume / Nudge), and a goal or E2S request
+  abandons the unfinished task rather than continuing it. Explicit
+  `CancelUnfinishedTask` is the only path that closes it and lets the
+  following message start fresh.
 - `orchestrator.Resume` reconstructs the full prior trajectory (`resumeSteps`)
   and seeds it into both the ContextManager (`StepSeedable.SeedSteps`) and the
   Executor (`WithResumeSteps`): the step counter continues from
@@ -1626,13 +1701,16 @@ type HandleResult struct {
   behind the just-completed task's own unfinished row stays for the next
   successful completion to cancel.
 - Session forking deep-copies all dependent rows (messages, tasks and their
-  steps/facts/attachments/trajectory/goal state/MCP mentions, terminal commands, work directories,
-  and review data — `task_goal_state` preserves the forked task's goal history)
-  with freshly generated identifiers in a single atomic
-  transaction, so the fork shares no rows with the original. A fork with any
-  unfinished (`in_progress` or `failed`) task is rejected by
-  `FrontendAPI.ForkSession` (backend guard) and the frontend fork button is
-  disabled preemptively via `has_unfinished_task` plus the live active status.
+  steps/facts/attachments/trajectory/goal state/E2S state/delegations/MCP
+  mentions, terminal commands, work directories, and review data —
+  `task_goal_state` preserves the forked task's goal history and
+  `task_e2s_state` its Σ snapshot) with freshly generated identifiers in a
+  single atomic transaction, so the fork shares no rows with the original;
+  `task_units`, `session_bookmarks` and `prompt_suggestions` stay with the
+  source. A fork with any unfinished (`in_progress`, `paused` or `failed`)
+  task is rejected by `FrontendAPI.ForkSession` (backend guard) and the
+  frontend fork button is disabled preemptively via `has_unfinished_task`
+  plus the live active status.
 - `task_complete` carries the typed success contract (`success`,
   `completion`, `failed_steps`). A degraded completion (`success=false`) is
   always followed by `task_failed_resumable` or a `service` warning — never
@@ -1650,7 +1728,9 @@ type HandleResult struct {
   never duplicated.
   See [ADR-048](../decisions/048-unified-recovery-ledger.md).
 - `GetSessionRuntimeStatus(sessionID)` exposes `{active,
-  has_unfinished_task, unfinished_task_id, paused, activity, streaming, work_units, compaction_availability?}`; the frontend calls it after
+  has_unfinished_task, unfinished_task_id?, unfinished_task_status?, paused,
+  compacting, compaction_availability?, activity?, streaming, work_units?}`
+  (`?` = `omitempty`, absent when empty); the frontend calls it after
   every history load to reconcile UI state (running/paused flags, resume banner,
   stale step_limit prompts, work units) instead of defaulting to idle.
   `compaction_availability` is the per-strategy manual-compaction prediction
@@ -1709,7 +1789,7 @@ type HandleResult struct {
 - A `plan_review_ready` event (emitted by `declare_plan` await_approval) is persisted to `session_messages` (role `plan_review`) so it reappears in history after a restart; the pending plan approval is also surfaced via `GetPendingActions` (`desktop/pending_actions.go` `PlanApprovals`)
 - Plan files live at `~/.c0wrk/projects/<pid>/<sid>/plans/` (written by `declare_plan`); previous plan files are not deleted when the Conductor revises (request_changes) or abandons
 - `DeleteSession` closes all per-step dump files via `Orchestrator.Cleanup()` before closing the session-level log and dump files
-- An existing session artifact (session log, session dump, per-step dump) always continues its own codec: opens probe the candidate extensions, sniff the first existing file's magic and append in kind — a config flip never rewrites history, and every acknowledged record is a decodable prefix on disk ([ADR-116](../decisions/116-session-artifact-compression.md))
+- An existing session artifact (session log, session dump, per-step dump) always continues its own codec: opens probe the candidate extensions, sniff the first existing file's magic and append in kind — a config flip never rewrites history, and every acknowledged record is a decodable prefix on disk ([ADR-120](../decisions/120-session-artifact-compression.md))
 - `Shutdown` marks shutdown before cancellation, waits for active task goroutines, then converts every still-`in_progress` active task to a persisted `paused` checkpoint; already failed/completed tasks retain their terminal state. Before that, after cancelling its context, it joins manager-owned background goroutines (async ignore-resolver builds, deferred session temp-dir removals, best-effort title generation) via the background tracker and stops the persistence worker of every blackboard the manager built or restored — both bounded by one shared `stopTimeout` budget, with late spawn attempts refused so callers fall back or skip the work. It also closes all per-step dump files for every session via `Orchestrator.Cleanup()` before closing session resources.
 - Pending attachments are flushed into the blackboard exactly once on `SendMessage`: the session manager snapshots and clears `session.pendingAttachments`, then passes them via `HandleOptions.PendingAttachments` (both HandleMessage calls in `SendMessage` receive the same snapshot)
 
@@ -1719,7 +1799,7 @@ type HandleResult struct {
 | ---------------------------------- | ---------------------- | --------------------------- |
 | `ConductorHistoryWindow` (internal default) | 20                     | Conversation history window injected into the Conductor context (`OrchestratorConfig`, applied when 0) |
 | Database path                      | `~/.c0wrk/database.db` | SQLite file location        |
-| `session_artifacts.compression.algorithm` | `zstd`                 | Codec of the append-only session artifacts (session log + LLM/step dumps): `none` \| `gzip` \| `zstd`; closed enum — invalid values warn + reset at load, refused at save; existing files keep their birth codec ([ADR-116](../decisions/116-session-artifact-compression.md)) |
+| `session_artifacts.compression.algorithm` | `zstd`                 | Codec of the append-only session artifacts (session log + LLM/step dumps): `none` \| `gzip` \| `zstd`; closed enum — invalid values warn + reset at load, refused at save; existing files keep their birth codec ([ADR-120](../decisions/120-session-artifact-compression.md)) |
 | `session_artifacts.compression.zstd_window_log` | 25                     | log2 of the zstd window (2^N back-reference history), 10..27; memory scales linearly (decoder ~1×, encoder ~2× window); validated even under non-zstd algorithms |
 
 ## Related Specs
@@ -1736,4 +1816,4 @@ type HandleResult struct {
 - [prompt-suggestions.md](prompt-suggestions.md) — proactive chat-input follow-ups generated after task outcomes `full`/`partial`; they consume this domain's `is_nudge` stamp and the task-finish outcome gate
 - [../decisions/030-session-context-restore.md](../decisions/030-session-context-restore.md) — saved-first restore, effective-activity semantics, archived exclusion, last-context startup restore
 - [../decisions/095-chat-file-reference-path-semantics.md](../decisions/095-chat-file-reference-path-semantics.md) — `fileref://` URI emission: GOOS-independent drive/UNC detection, canonical forward-slash forms, no migration
-- [../decisions/116-session-artifact-compression.md](../decisions/116-session-artifact-compression.md) — compressed session artifacts: config codec + per-file magic sniffing, zstd default, xz excluded (no streaming Flush)
+- [../decisions/120-session-artifact-compression.md](../decisions/120-session-artifact-compression.md) — compressed session artifacts: config codec + per-file magic sniffing, zstd default, xz excluded (no streaming Flush)

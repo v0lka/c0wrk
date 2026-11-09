@@ -8,9 +8,11 @@ import {
   INITIALIZE_ACTION,
   NO_SPECS_REASON,
   QUICK_ACTIONS,
+  buildFixFindingAction,
   buildFixFindingsAction,
+  findingLine,
 } from './specsActions'
-import type { SpecFinding } from '@/types/models'
+import type { SpecFinding, SpecFindingKind } from '@/types/models'
 
 describe('specsActions — QUICK_ACTIONS', () => {
   it('renders exactly the four lifecycle gestures in the fixed order', () => {
@@ -85,11 +87,15 @@ describe('specsActions — buildFixFindingsAction', () => {
     expect(action.skill).toBe('spec-update')
     expect(action.label).toBe('Fix findings')
     expect(action.prompt).toContain('Findings:')
-    // Every finding appears as its deterministic "[kind] file: detail" line,
-    // so the dispatched task sees exactly what the panel renders.
+    // Every finding appears as its deterministic "[kind] file: detail" line
+    // via findingLine — the single source the card's copy button renders
+    // too, so the dispatched task sees exactly what the panel shows.
     for (const f of findings) {
-      expect(action.prompt).toContain(`- [${f.kind}] ${f.file}: ${f.detail}`)
+      expect(action.prompt).toContain(findingLine(f))
     }
+    // The aggregate keeps the FULL clause list — the per-finding gesture is
+    // the one that narrows by kind.
+    expect(action.prompt).toContain('renumber duplicate ADR records')
   })
 
   it('the tooltip names the count the task will resolve', () => {
@@ -102,5 +108,94 @@ describe('specsActions — buildFixFindingsAction', () => {
     const action = buildFixFindingsAction([])
     expect(action.prompt).toContain('Findings:')
     expect(action.prompt.endsWith('Findings:\n')).toBe(true)
+  })
+})
+
+describe('specsActions — buildFixFindingAction', () => {
+  const finding: SpecFinding = {
+    kind: 'CROSS_REF_BROKEN',
+    file: 'decisions/041-slm-profiles.md',
+    detail: 'references missing decisions/099-nothing.md',
+  }
+  const other: SpecFinding = {
+    kind: 'PATH_MISSING',
+    file: 'domains/app.md',
+    detail: 'key file does not exist: specs/gone.md',
+  }
+
+  it('pins the dispatch wiring: fix-finding key, spec-update skill, short label, full tooltip', () => {
+    const action = buildFixFindingAction(finding)
+    expect(action.key).toBe('fix-finding')
+    expect(action.skill).toBe('spec-update')
+    expect(action.label).toBe('Fix finding')
+    expect(action.fullLabel).toBe('Fix this integrity finding')
+  })
+
+  it('the prompt carries the kind-scoped repair clause and the finding verbatim', () => {
+    const action = buildFixFindingAction(finding)
+    expect(action.prompt).toContain('Findings:')
+    // Only the clicked finding's clause — no foreign repair categories, so
+    // the dispatched task repairs exactly what the card shows.
+    expect(action.prompt).toContain('fix or remove the broken cross-reference')
+    expect(action.prompt).not.toContain('renumber duplicate ADR records')
+    expect(action.prompt).not.toContain('restore the missing root files')
+    expect(action.prompt).toContain('When done, re-verify that the tree parses clean.')
+    // The verbatim line is the same findingLine the card's copy button
+    // hands out — one format, no drift between panel and dispatched task.
+    expect(action.prompt).toContain(findingLine(finding))
+    expect(action.prompt.endsWith('\n' + findingLine(finding))).toBe(true)
+  })
+
+  it('every known kind resolves to its own targeted clause', () => {
+    const cases: Array<[SpecFindingKind, string]> = [
+      ['PATH_MISSING', 'Key Files path'],
+      ['CROSS_REF_BROKEN', 'cross-reference'],
+      ['DUPLICATE_ADR_NUMBER', 'renumber protocol'],
+      ['INDEX_STALE', 'INDEX.md directory listing'],
+      ['ROOT_FILE_MISSING', 'restore the missing root files'],
+      ['ADR_NAME_MALFORMED', 'NNN-slug.md shape'],
+      ['ADR_NUMBER_MISMATCH', 'heading number'],
+      ['SUPERSEDED_TARGET_MISSING', 'supersession reference'],
+      ['SUPERSEDED_CYCLE', 'supersession cycle'],
+    ]
+    for (const [kind, clause] of cases) {
+      const action = buildFixFindingAction({ kind, file: 'decisions/x.md', detail: 'd' })
+      expect(action.prompt, kind).toContain(clause)
+    }
+  })
+
+  it('an unknown runtime kind falls back to the aggregate clause list', () => {
+    // The RPC boundary accepts any non-empty kind string (a future tier
+    // renders a generic label) — an unlisted kind must not dispatch an
+    // empty instruction set.
+    const action = buildFixFindingAction({
+      kind: 'FUTURE_KIND' as SpecFindingKind,
+      file: 'domains/app.md',
+      detail: 'something new',
+    })
+    expect(action.prompt).toContain('renumber duplicate ADR records')
+    expect(action.prompt).toContain('When done, re-verify that the tree parses clean.')
+  })
+
+  it('the prompt enumerates ONLY the one finding — no foreign lines', () => {
+    const action = buildFixFindingAction(finding)
+    expect(action.prompt).not.toContain(findingLine(other))
+    // Exactly one bullet line in the Findings section, and it is the
+    // target finding's.
+    const bullets = action.prompt
+      .split('\n')
+      .filter((line) => line.startsWith('- ['))
+    expect(bullets).toEqual([findingLine(finding)])
+  })
+
+  it('findingLine is the single source of the verbatim card/prompt format', () => {
+    expect(findingLine(finding)).toBe(
+      `- [${finding.kind}] ${finding.file}: ${finding.detail}`,
+    )
+    // The aggregate builder renders the same line per finding.
+    const aggregate = buildFixFindingsAction([finding, other])
+    for (const f of [finding, other]) {
+      expect(aggregate.prompt).toContain(findingLine(f))
+    }
   })
 })

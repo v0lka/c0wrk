@@ -47,3 +47,18 @@ Codify the measurement as a second **measured backend memory profile**, keyed on
 - [ADR-067](./067-memory-aware-embedded-llm-provisioning.md) — the memory-aware launch shape whose budgets this decision makes tuple-scoped
 - [ADR-107](./107-operator-selected-offload-devices.md) — the operator device pin that narrows the pool the measured tuple's budget prices
 - `docs/development/embedded-llm-cuda-measurements.md` — the measurement's methodology, command lines and SHA256-verified logs
+
+## Historical Note
+
+2026-11-08 — successor state for the artifact location this record names; the
+decision above is unchanged.
+
+- The four CUDA measurement logs under `core/embeddedllm/testdata/cuda-measured/`
+  are local measurement artifacts that exist only on the measurement host — the
+  path is absent from the repository tree by construction, because the directory
+  holds nothing but `*.log` files and the root `.gitignore`'s `*.log` rule
+  excludes them (`git check-ignore` matches every file the directory can
+  contain). The durable in-repo record of the numbers is their transcription
+  with its methodology, parsing greps and SHA256s in
+  `docs/development/embedded-llm-cuda-measurements.md`, plus
+  `TestCUDAMeasuredProfileReplay`, which asserts every row.

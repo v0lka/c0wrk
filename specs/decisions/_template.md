@@ -47,3 +47,5 @@ Accepted
 - ADRs with `Status: Accepted` are immutable once committed to the repository (no edits after acceptance); an uncommitted accepted ADR is an editable draft
 - To change a committed decision: create a new ADR that supersedes the old one
 - Update the old ADR's status to `Superseded by [NNN]`
+- A committed accepted ADR is a record of the state at decision time: a path, identifier, or spec it names is not a live pointer, so its absence is not drift when the ADR names it as removed by the decision, when it belongs to another repository or an upstream dependency, or when its successor is named inline or through the `Status` chain
+- The one addition a committed accepted ADR may still receive is a dated `## Historical Note` section recording the successor state of a path, identifier, or enumerated set it names that has since been renamed, moved, removed, or extended — location or membership only, never a restatement of the decision (see `specs/META.md`, Update Protocol rule 5)

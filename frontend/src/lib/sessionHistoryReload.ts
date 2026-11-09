@@ -202,6 +202,18 @@ async function loadAndReconcile(
   ])
   if (isCancelled()) return
 
+  // Capture the LIVE task-flag transition time BEFORE the status application
+  // below writes through the stamping flag actions (setUnfinishedTaskStatus /
+  // applyRuntimeTaskFlags → setTaskActive). The pending sweep's taskActive
+  // heal is freshness-guarded against transitions newer than its read; the
+  // status application itself stamps the map after that read, so without
+  // this snapshot-of-the-stamp a stale active=false status would suppress
+  // the very heal that exists to correct it. Only a non-null status stamps
+  // anything before the pending application — with no status snapshot the
+  // live map IS the pre-application value, so nothing is captured (undefined
+  // makes reconcilePendingActions read the map directly).
+  const liveFlagsEventAt = status ? useChatStore.getState().taskFlagsEventAt[sessionId] ?? 0 : undefined
+
   // Collect messages resolved as stale so their resolution can be persisted
   // (otherwise they reappear on the next reload).
   const staleResolved: ChatMessageUI[] = []
@@ -218,7 +230,12 @@ async function loadAndReconcile(
     usePlanStore.getState().applyWorkUnitStatuses(workUnitOverlay)
   }
   if (pending) {
-    for (const msg of reconcilePendingActions(sessionId, pending)) staleResolved.push(msg)
+    // readAt = statusReadAt: the pending RPC was launched together with the
+    // status RPC, so the same read time bounds both snapshot applications.
+    // liveFlagsEventAt (captured above, BEFORE the status application) is
+    // what the heal's freshness guard compares, so only LIVE pause/terminal
+    // transitions outrank the sweep — never the status snapshot's own write.
+    for (const msg of reconcilePendingActions(sessionId, pending, statusReadAt, liveFlagsEventAt)) staleResolved.push(msg)
   }
 
   // Persist stale resolutions to the backend (best-effort, idempotent).

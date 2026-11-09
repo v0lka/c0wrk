@@ -6,7 +6,7 @@ import { ModelConfigDialog } from '../ModelConfigDialog'
 import { invalidateConfigCache } from '@/hooks/useConfigData'
 import { compositeModelId, bareModel } from '@/lib/modelId'
 import { formatContextWindow } from '@/lib/chatgptFormat'
-import type { ChatGPTModelPresetEntry } from '@/types/models'
+import type { SubscriptionModelPresetEntry } from '@/types/models'
 import { ChevronDown, ChevronRight, X, SlidersHorizontal } from 'lucide-react'
 
 export interface ProviderConfig {
@@ -22,9 +22,10 @@ export interface ProviderConfig {
    *  Undefined = keep the persisted value (omitted from the payload);
    *  0 = auto-resend off, sent explicitly. */
   auto_retry_seconds?: number
-  /** ChatGPT-only authentication mode ('api_key' | 'oauth'). Mirrors the
-   *  useLLMConfig draft field; only the chatgpt entry carries it. */
+  /** ChatGPT/Kimi authentication mode ('api_key' | 'oauth'). Mirrors the
+   *  useLLMConfig draft field; other fixed providers leave it absent. */
   auth_mode?: 'api_key' | 'oauth'
+  auth_region?: 'global' | 'mainland_cn'
 }
 
 interface ProviderAccordionProps {
@@ -33,7 +34,7 @@ interface ProviderAccordionProps {
   config: ProviderConfig
   isExpanded: boolean
   onToggle: () => void
-  onConfigChange: (updates: Partial<{ api_key: string; base_url: string; tls_fingerprint: string; auto_retry_seconds?: number; auth_mode?: 'api_key' | 'oauth' }>) => void
+  onConfigChange: (updates: Partial<{ api_key: string; base_url: string; tls_fingerprint: string; auto_retry_seconds?: number; auth_mode?: 'api_key' | 'oauth'; auth_region?: 'global' | 'mainland_cn' }>) => void
   onToggleModel: (model: string) => void
   onDelete?: () => void
   defaultModel: string
@@ -42,36 +43,23 @@ interface ProviderAccordionProps {
    *  to ProviderConfigForm's interval input. REQUIRED — LLMSettings gates
    *  the forms until the bound has loaded. */
   autoRetryMaxSeconds: number
-  /** Extra section rendered above the config form (the ChatGPT accordion's
-   *  authentication panel: mode selector + browser sign-in flow + status). */
+  /** Extra section rendered above the config form (the subscription-capable
+   *  accordion's mode selector + browser sign-in flow + status). */
   authSection?: ReactNode
-  /** ChatGPT subscription mode is active: the API key input renders
-   *  disabled with an explanation, the Fetch models button drives the live
-   *  subscription catalog instead of a provider API listing, and the model
-   *  checklist switches from the fetched+enabled union to the curated
-   *  preset (union with enabled models so a checked row never silently
-   *  vanishes). */
-  isOAuth?: boolean
-  /** The ChatGPT model-list entries (oauth mode): the offline preset until
-   *  a live fetch answers, the subscription's own catalog after. May be
-   *  empty before the preset RPC answers — the checklist then shows the
-   *  enabled models plus its empty-state hint. */
-  presetModels?: readonly ChatGPTModelPresetEntry[]
-  /** Where presetModels currently comes from (oauth mode): 'preset' until
-   *  the live fetch answers, 'subscription' after. Drives the checklist's
-   *  hint line. */
-  presetSource?: 'preset' | 'subscription'
-  /** The live-catalog fetch controls (oauth mode): the Fetch models button
-   *  re-runs the subscription /models fetch. Undefined outside oauth mode. */
-  chatGPTFetch?: ChatGPTFetchControls
+  /** Subscription presentation; undefined selects ordinary API-key behavior. */
+  subscription?: SubscriptionPresentation
 }
 
-/** The subset of the hook state ProviderConfigForm's Fetch models button
- *  needs in oauth mode (from useChatGPTModelPreset). */
-export interface ChatGPTFetchControls {
-  loading: boolean
-  error: string | null
-  onRefresh: () => void
+export interface SubscriptionPresentation {
+  models: readonly SubscriptionModelPresetEntry[]
+  source: 'preset' | 'subscription'
+  fetch?: {
+    loading: boolean
+    error: string | null
+    onRefresh: () => void
+  }
+  providerLabel: string
+  liveCatalog: boolean
 }
 
 export function ProviderAccordion({
@@ -87,11 +75,14 @@ export function ProviderAccordion({
   providerConfigs,
   autoRetryMaxSeconds,
   authSection,
-  isOAuth = false,
-  presetModels,
-  presetSource = 'preset',
-  chatGPTFetch,
+  subscription,
 }: ProviderAccordionProps) {
+  const isOAuth = subscription !== undefined
+  const presetModels = subscription?.models
+  const presetSource = subscription?.source ?? 'preset'
+  const subscriptionFetch = subscription?.fetch
+  const oauthProviderLabel = subscription?.providerLabel ?? 'ChatGPT'
+  const liveSubscriptionCatalog = subscription?.liveCatalog ?? true
   const {
     models,
     modelsLoading,
@@ -101,11 +92,11 @@ export function ProviderAccordion({
     hasRequiredCredentials,
   } = useModelFetch(provider, providerConfigs)
 
-  // The visible model list. In subscription (oauth) mode it is the curated
-  // ChatGPT preset — there is no listing endpoint to dial, so fetch state
-  // plays no part; enabled models missing from the preset are appended so a
-  // checked row never silently vanishes (the accordion's no-disappear
-  // invariant). In api_key mode it stays the deduplicated union of the
+  // The visible model list. In subscription (oauth) mode it comes from the
+  // provider's preset/catalog rather than the API-key listing; enabled models
+  // missing from that list are appended so a checked row never silently
+  // vanishes (the accordion's no-disappear invariant). In api_key mode it
+  // stays the deduplicated union of the
   // models fetched from the provider API and the models already enabled in
   // the config: enabled models never disappear from the list — even when a
   // later fetch (or a reopened settings dialog) no longer reports them —
@@ -135,9 +126,9 @@ export function ProviderAccordion({
   }, [isOAuth, presetModels, models, config.models])
 
   // Preset metadata badges (oauth mode): context window and the reasoning
-  // flag come from the model registry via GetChatGPTModelPreset.
+  // flag come from the model registry via GetChatGPTModelPreset/GetKimiModelPreset.
   const presetByName = useMemo(() => {
-    const map = new Map<string, ChatGPTModelPresetEntry>()
+    const map = new Map<string, SubscriptionModelPresetEntry>()
     for (const entry of presetModels ?? []) map.set(entry.name, entry)
     return map
   }, [presetModels])
@@ -242,8 +233,7 @@ export function ProviderAccordion({
             onConfigChange={onConfigChange}
             onApply={handleApply}
             autoRetryMaxSeconds={autoRetryMaxSeconds}
-            authMode={isOAuth ? 'oauth' : 'api_key'}
-            chatGPTFetch={chatGPTFetch}
+            subscription={subscription}
           />
 
           {/* Model Checklist */}
@@ -252,12 +242,14 @@ export function ProviderAccordion({
             {isOAuth && (
               <span className="text-xs text-muted-foreground">
                 {presetSource === 'subscription'
-                  ? 'Live from your ChatGPT subscription — press Fetch models to refresh the list.'
-                  : 'ChatGPT fallback preset (offline) — sign in and press Fetch models to load the models your subscription actually serves.'}
+                  ? `Live from your ${oauthProviderLabel} subscription — press Fetch models to refresh the list.`
+                  : liveSubscriptionCatalog
+                    ? `${oauthProviderLabel} fallback preset (offline) — sign in and press Fetch models to load the models your subscription actually serves.`
+                    : `${oauthProviderLabel} model preset (offline) — choose the models to enable.`}
               </span>
             )}
-            {isOAuth && chatGPTFetch?.error && (
-              <span className="text-xs text-destructive">{chatGPTFetch.error}</span>
+            {isOAuth && subscriptionFetch?.error && (
+              <span className="text-xs text-destructive">{subscriptionFetch.error}</span>
             )}
             {!isOAuth && modelsLoading && (
               <span className="text-xs text-muted-foreground">Fetching models...</span>
@@ -266,16 +258,18 @@ export function ProviderAccordion({
               <span className="text-xs text-destructive">{modelsError}</span>
             )}
             <div className="flex max-h-48 flex-col gap-1 overflow-y-auto custom-scrollbar rounded-md border p-2">
-              {isEmpty && !modelsLoading && !(isOAuth && chatGPTFetch?.loading) && (
+              {isEmpty && !modelsLoading && !(isOAuth && subscriptionFetch?.loading) && (
                 <span className="text-xs text-muted-foreground">
                   {isOAuth
-                    ? 'No ChatGPT models loaded yet — sign in above and click "Fetch models".'
+                    ? liveSubscriptionCatalog
+                      ? `No ${oauthProviderLabel} models loaded yet — sign in above and click "Fetch models".`
+                      : `No ${oauthProviderLabel} models loaded yet — click "Fetch models" to reload the preset.`
                     : hasRequiredCredentials
                       ? 'No models available. Click "Fetch Models" to load them.'
                       : 'Configure API key and click "Fetch Models" to load available models.'}
                 </span>
               )}
-              {isOAuth && chatGPTFetch?.loading && isEmpty && (
+              {isOAuth && subscriptionFetch?.loading && isEmpty && (
                 <span className="text-xs text-muted-foreground">Fetching subscription models…</span>
               )}
               {displayModels.map((model) => {
@@ -292,7 +286,7 @@ export function ProviderAccordion({
                 const notReported =
                   fetchCompleted && isEnabled && !models.includes(model)
                 // Preset metadata (oauth mode): registry-sourced context
-                // window and reasoning flag, from GetChatGPTModelPreset.
+                // window and reasoning flag, from GetChatGPTModelPreset/GetKimiModelPreset.
                 // Metadata is fail-soft — zeros mean the async registry had
                 // nothing to say, and zeros render no badge.
                 const preset = isOAuth ? presetByName.get(model) : undefined

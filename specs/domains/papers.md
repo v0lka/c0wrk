@@ -22,10 +22,11 @@ The paper ("literature") library is a per-project, workspace-contained store of 
 - `backend/frontend_api_skills.go` - the skill cache (the c0wrk packs are seeded globally at startup; see ADR-056).
 - `backend/frontend_api_project.go` - the workspace-watcher integration that emits `papers:changed` for the paper library.
 - `backend/config/paths.go` - the path helpers `PaperLibraryPathIn`/`PaperLibraryPath` and `ComparisonDirName`/`ComparisonsPathIn`/`ComparisonsPath`.
-- `frontend/src/api/papers.ts` - the RPC wrappers plus the boundary normalizers (`normalizePaperLibrary`/`normalizePaperRecord`/`normalizePaperLiteratureResult`).
+- `desktop/app.go` - `PickStudyDocument`, the native single-select file picker behind the Papers panel's "pick a local document" gesture (it needs the Wails context, so it stays on `desktop.App` rather than `FrontendAPI`); a cancel returns `("", nil)`, which the frontend maps to "no document picked" rather than a failure.
+- `frontend/src/api/papers.ts` - the RPC wrappers (`getPapers`, `setPaperPinned`, `recordFlashcardReview`, `runPaperLiterature`, `fetchPaperOriginal`, `pickStudyDocument`) plus the boundary normalizers/guards (`normalizePaperLibrary`, `normalizePaperLiteratureResult`, `normalizePaperOriginalResult`, `isPapersChangedPayload`).
 - `frontend/src/stores/paperStore.ts` - the paper-library state and its sync functions (see [frontend/stores.md](frontend/stores.md)).
 - `frontend/src/hooks/usePapersEvents.ts` - loads the active project's library and refetches it on `papers:changed`.
-- `frontend/src/components/papers/` - `PapersView` (the panel segment), `PaperWorkspace` (the per-paper viewer tab) and its sections (`PaperOverview`, `PaperMarkdownSection`, `PaperSourceView`, `PaperAnchorList`, `CriticalLayerWidgets`, `CompareMatrix`, `FlashcardsReview`, `PaperLiterature`/`LiteratureGraph`), `paperSections.ts` (the section catalog), `paperActions.ts` (the dispatch-prompt audit module), `useComparisons`/`usePaperArtifacts`/`usePaperLiterature`.
+- `frontend/src/components/papers/` - `PapersView` (the panel segment), `PaperWorkspace` (the per-paper viewer tab) and its sections (`PaperOverview`, `PaperMarkdownSection`, `PaperSourceView` with its `PaperSourceActions`/`PaperHtmlView`/`PaperSourceExtracted`/`PaperSourceRaw` sub-views, `PaperAnchorList`, `CriticalLayerWidgets`, `CompareMatrix`, `FlashcardsReview`, `PaperLiterature`/`LiteratureGraph`), `paperSections.ts` (the section catalog), `paperActions.ts` (the dispatch-prompt audit module), `useComparisons`/`usePaperArtifacts`/`usePaperLiterature`.
 - `frontend/src/components/research/PriorArtRow.tsx` - the research dashboard's prior-art row (Open + Deep read).
 - `frontend/src/lib/flashcards.ts`, `spacedRepetition.ts` - the frontend flashcards parser and schedule, mirroring `core/papers`.
 - `frontend/src/lib/paperComparison.ts`, `paperAnchors.ts`, `paperWidgets.ts`, `literatureGraph.ts` - pure frontend parsing/render helpers.
@@ -224,7 +225,7 @@ Original-HTML fetch ("Load HTML original" in the workspace Source section)
 ## Related Specs
 
 - [research.md](research.md) - RESEARCH mode: the research root, the project-local research pack, and the panel whose Papers segment renders this library
-- [../decisions/115-sidebar-pack-gates-reconcile-and-serialization.md](../decisions/115-sidebar-pack-gates-reconcile-and-serialization.md) - the `research.enabled` surface gate: the papers pack seeds and unseeds together with the research packs (off unseeds `study-paper` too; `RunPaperLiterature` degrades to its `no_seed` status)
+- [../decisions/115-sidebar-pack-gates-reconcile-and-serialization.md](../decisions/115-sidebar-pack-gates-reconcile-and-serialization.md) - the `research.enabled` surface gate: the papers pack seeds and unseeds together with the research packs (off unseeds `study-paper` too; `RunPaperLiterature` then degrades to its `no_script` status)
 - [../contracts/desktop-frontend.md](../contracts/desktop-frontend.md) - the Papers RPC surface and DTO boundary (incl. `RunPaperLiterature`/`PaperLiteratureDTO`)
 - [../contracts/event-catalog.md](../contracts/event-catalog.md) - the `papers:changed` event
 - [frontend/stores.md](frontend/stores.md) - `paperStore` and the `uiStore` Research-panel segment map

@@ -18,7 +18,7 @@ Defines the frontend's three data-arrival loading states — the pre-React **boo
 - `frontend/src/hooks/useSessionLoader.ts` — feeds the list: `listSessions()` → `setSessions` (a FAILED fetch leaves the store untouched, i.e. still `null`)
 - `frontend/src/components/layout/SessionList.tsx` — CHAT-mode sidebar list: skeleton rows while `sessions === null`
 - `frontend/src/components/layout/SessionSelector.tsx` — CODE-mode dropdown: loading row while `sessions === null`
-- `desktop/csp.go` — the production CSP (`script-src 'self'`, `style-src 'self' 'unsafe-inline'`), injected into both the Wails asset server and the web-access sidecar
+- `core/csp` — the production CSP (`script-src 'self'`, `style-src 'self' 'unsafe-inline'`), stamped by the `desktop/csp.go` `CSPMiddleware` into both the Wails asset server and the web-access sidecar
 
 ## Behavior
 
@@ -40,7 +40,7 @@ Defines the frontend's three data-arrival loading states — the pre-React **boo
 ### 2. Chat history (per-session, marker-driven)
 
 - `chatStore.historyLoaded: Set<string>` holds the sessions whose persisted-history load has **settled** — success OR failure (both mean "no longer in flight"). A session absent from the set is "never loaded" (initial, or a cancelled attempt — see below). `useSessionHistoryLoaded(sessionId)` returns a primitive (`true` for a null session id), so the selector is referentially stable.
-- **Single writer**: `lib/sessionHistoryReload.reloadSessionHistory` owns the only try/finally — its `finally` calls `markHistoryLoaded(sessionId)` on resolve AND reject, skipped when `isCancelled()` is true. Both trigger paths go through it: ChatArea's activation effect and `useShallowResync` (WS-reconnect/focus), so a resync re-run never flashes the spinner while content is on screen (with content present the spinner branch is unreachable anyway).
+- **Single writer**: `lib/sessionHistoryReload.reloadSessionHistory` owns the only try/finally — its `finally` calls `markHistoryLoaded(sessionId)` on resolve AND reject, skipped when `isCancelled()` is true or when the session left the catalog mid-flight (`sessionInCatalog`), so a deletion racing the load cannot resurrect the marker `dropSessions` just cleared. Both trigger paths go through it: ChatArea's activation effect and `useShallowResync` (WS-reconnect/focus), so a resync re-run never flashes the spinner while content is on screen (with content present the spinner branch is unreachable anyway).
 - **Cancellation is honest**: a cancelled attempt (the user switched sessions mid-flight) deliberately leaves the marker unset — its snapshot never reached the store, so the next visit to the session spins until its OWN load settles.
 - Render: ChatArea's empty branch (`!hasContent`) shows `<Loader2 className="size-8 animate-spin opacity-30" aria-label="Loading session history" />` while the active session has neither content nor the marker; once settled-empty it renders the `MessageCircle` placeholder. A failed load stops the spin (marker set in the `finally`) and the error card explains the empty chat.
 - Store hygiene: `markHistoryLoaded` is idempotent — an already-marked session keeps state identity (no gratuitous subscriber sweep); `dropSessions` forgets deleted sessions' markers in the SAME update (one `Set` copy for the whole batch), so a recreated session with a reused id starts as "never loaded" again; a batch with no marked sessions is an identity-preserving no-op.
@@ -74,11 +74,11 @@ The same `frontend/dist` tree is served by the Wails asset server and by the web
 
 ## Invariants
 
-- **No inline scripts in `index.html`, ever.** The production CSP (`desktop/csp.go`, reused by the web-access sidecar) allows `script-src 'self'` only; `style-src 'self' 'unsafe-inline'` is what makes the inline `<style>` legal. Anti-FOUC/parse-time logic lives in external scripts under `public/`.
+- **No inline scripts in `index.html`, ever.** The production CSP (`core/csp`, stamped by `desktop/csp.go` and reused by the web-access sidecar) allows `script-src 'self'` only; `style-src 'self' 'unsafe-inline'` is what makes the inline `<style>` legal. Anti-FOUC/parse-time logic lives in external scripts under `public/`.
 - **The boot loader is pure HTML+CSS** — no JS dependency for its visibility; React mount is the primary removal path and the rAF lookup is an idempotent backstop.
 - **Every loading indicator is zoom-safe**: positioned with `inset: 0` / percentages and sized with absolute lengths only — no raw viewport units or `*-screen` utilities anywhere, including `index.html` (the project-wide zoom guard scans it verbatim; see [ui-scale.md](ui-scale.md)).
 - **Exactly one writer per marker.** Only `reloadSessionHistory` writes `historyLoaded` (single try/finally); only the session-list loaders (`useSessionLoader`, the resync) write `setSessions`. No component mutates a marker directly.
-- **`historyLoaded` means "settled", not "succeeded"** — resolve and reject both stop the spinner; only a cancelled attempt leaves the marker unset, because its data never reached the store.
+- **`historyLoaded` means "settled", not "succeeded"** — resolve and reject both stop the spinner; a cancelled attempt and a session that left the catalog mid-flight both leave the marker unset, because neither delivered data the store can render.
 - **`sessions === null` means "not yet loaded"; `[]` means "loaded and empty."** A surface renders a loading affordance for `null` and the empty-state for `[]` — never the empty-state for `null`.
 - **Loading states are announced**: each carries `role="status"` + an `aria-label` (boot loader, session-list skeleton/loading row) or an explicit `aria-label` (chat-history spinner).
 - **Markers are store state, not component state**: cleared with their sessions (`dropSessions`), reset with the project switch (`resetForProjectSwitch`), and updated identity-preserving (idempotent re-marks and no-op batches never copy state).

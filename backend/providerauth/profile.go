@@ -6,7 +6,7 @@ import (
 )
 
 // Profile describes one subscription provider's OAuth and API endpoints as
-// pure data; ChatGPT() is the production profile, tests build throwaway ones.
+// pure data; ChatGPT() and Kimi() are the production profiles.
 type Profile struct {
 	// ProviderID keys the persisted secret and appears in diagnostics.
 	ProviderID string
@@ -20,8 +20,19 @@ type Profile struct {
 	// Originator is the value of the "originator" header sent to the issuer's
 	// token endpoint, identifying the calling application ("c0wrk").
 	Originator string
-	// APIBaseURL is the provider's model-API base URL (the path /responses is
-	// appended by the transport layer, not here).
+	// TokenHeaders carries additional provider-required token-endpoint headers.
+	TokenHeaders map[string]string
+	// APIHeaders carries static headers required on model-API requests.
+	APIHeaders map[string]string
+	// AccountIDHeader, when set, carries Identity.ChatGPTAccountID under this
+	// model-API header name. Only OpenAI's profile sets it.
+	AccountIDHeader string
+	// DeviceFlow selects Device Authorization Grant instead of loopback PKCE.
+	DeviceFlow bool
+	// Region binds persisted credentials to the selected issuer region; empty
+	// disables region scoping for providers without regional profiles.
+	Region string
+	// APIBaseURL is the provider's model-API base URL.
 	APIBaseURL string
 	// RedirectPort is the loopback redirect port — not negotiable: the issuer
 	// allow-lists the exact redirect URI, so a busy port fails the sign-in
@@ -45,10 +56,17 @@ func (p Profile) AuthorizeURL() string {
 	return p.Issuer + "/oauth/authorize"
 }
 
-// TokenURL returns the issuer's token endpoint (authorization-code exchange
-// and refresh both go here).
+// TokenURL returns the issuer's token endpoint for the selected flow.
 func (p Profile) TokenURL() string {
+	if p.DeviceFlow {
+		return p.Issuer + "/api/oauth/token"
+	}
 	return p.Issuer + "/oauth/token"
+}
+
+// DeviceAuthorizationURL returns the Device Authorization Grant start endpoint.
+func (p Profile) DeviceAuthorizationURL() string {
+	return p.Issuer + "/api/oauth/device_authorization"
 }
 
 // RedirectURI returns the loopback redirect URI for the given local port.

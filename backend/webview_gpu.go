@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/v0lka/c0wrk/backend/config"
+	"github.com/v0lka/c0wrk/core/webviewgpu"
 	"github.com/v0lka/sp4rk/safeio"
 )
 
@@ -19,13 +20,14 @@ import (
 const WebviewGpuPolicyEnvVar = "C0WRK_WEBVIEW_GPU_POLICY"
 
 // Canonical webview GPU-policy spellings — the alphabet of the env var, the
-// persisted setting, the Settings UI, and the RPC wire values. String-level
-// only, so the backend never imports the desktop layer.
+// persisted setting, the Settings UI, and the RPC wire values. Single-sourced
+// in core/webviewgpu (the effective-policy enum lives there too); string
+// values aliased here so backend's wire shapes keep their names.
 // See specs/domains/webview-gpu-policy.md.
 const (
-	WebviewGpuPolicyAlways   = "always"
-	WebviewGpuPolicyOnDemand = "on-demand"
-	WebviewGpuPolicyNever    = "never"
+	WebviewGpuPolicyAlways   = webviewgpu.CanonicalAlways
+	WebviewGpuPolicyOnDemand = webviewgpu.CanonicalOnDemand
+	WebviewGpuPolicyNever    = webviewgpu.CanonicalNever
 	// WebviewGpuPolicyAuto is a SETTING value, not an effective policy: it
 	// resolves to on-demand unless the watchdog persisted an auto-fallback.
 	WebviewGpuPolicyAuto = "auto"

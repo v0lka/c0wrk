@@ -24,8 +24,9 @@
 // (collapsed, superseded-by-a-step → completed status, not interrupted).
 //
 // Unresolved pending-action panels (tool_confirm, ask_user, step_limit,
-// plan_review, goal_proposal, resume_action) are LIFTED out of the work
-// region into the tail in BOTH shapes — with or without a committed answer.
+// plan_review, goal_proposal, goal_suggestion, resume_action) are LIFTED
+// out of the work region into the tail in BOTH shapes — with or without a
+// committed answer.
 // They are blocking interactive affordances, and a collapsed collapsible
 // unmounts its content: a panel buried inside a work container would be
 // unreachable exactly while the run waits for the user. The confirmation wait
@@ -76,6 +77,7 @@ const ACTION_KINDS: ReadonlySet<DisplayItem['kind']> = new Set<DisplayItem['kind
   'step_limit',
   'plan_review',
   'goal_proposal',
+  'goal_suggestion',
   'resume_action',
 ])
 

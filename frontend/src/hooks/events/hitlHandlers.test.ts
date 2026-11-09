@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { useChatStore, selectSessionMessages } from '@/stores/chatStore'
 import type { ChatMessageUI, MessageType } from '@/stores/chatStore'
-import { handleToolConfirmEvent, handleToolJudgeStartedEvent, handleToolJudgeFinishedEvent, handleAutonomyDecisionEvent } from './hitlHandlers'
+import { handleToolConfirmEvent, handleToolJudgeStartedEvent, handleToolJudgeFinishedEvent, handleAutonomyDecisionEvent, handleAskUserEvent } from './hitlHandlers'
 
 let idc = 0
 function makeUI(overrides: Partial<ChatMessageUI> & { type: MessageType }): ChatMessageUI {
@@ -148,6 +148,26 @@ describe('handleAutonomyDecisionEvent — non-blocking audit notice', () => {
     const notice = msgs.find(m => m.type === 'autonomy_decision')
     expect(notice).toBeDefined()
     expect(notice!.metadata?.plan_step_id).toBeUndefined()
+  })
+})
+
+describe('HITL prompt arrivals re-assert taskActive (live proof of a running task)', () => {
+  it('heals a stale false flag when a tool_confirm card lands', () => {
+    const sessionId = `sess-heal-confirm-${idc}`
+    useChatStore.setState({ taskActive: { ...useChatStore.getState().taskActive, [sessionId]: false } })
+
+    handleToolConfirmEvent(sessionId, { confirm_id: 'c-heal', tool: 'bash_exec', args: '{}' })
+
+    expect(useChatStore.getState().taskActive[sessionId]).toBe(true)
+  })
+
+  it('heals a stale false flag when an ask_user panel lands', () => {
+    const sessionId = `sess-heal-ask-${idc}`
+    useChatStore.setState({ taskActive: { ...useChatStore.getState().taskActive, [sessionId]: false } })
+
+    handleAskUserEvent(sessionId, { request_id: 'au-heal', questions: [{ id: 'q1', question: 'Proceed?', options: [] }] })
+
+    expect(useChatStore.getState().taskActive[sessionId]).toBe(true)
   })
 })
 
