@@ -371,12 +371,19 @@ func TestParseSpecsRootFixture(t *testing.T) {
 	wantListed := []string{
 		"architecture/layers.md",
 		"domains/app.md",
+		"domains/missing.md",
 		"decisions/001-one.md",
 		"decisions/001-duplicate.md",
 		"decisions/002-two.md",
 	}
 	if got := root.Index.ListedFiles; !reflect.DeepEqual(got, wantListed) {
 		t.Errorf("Index.ListedFiles = %v, want %v", got, wantListed)
+	}
+	// Bare names: the fixture mentions no .md token without a directory
+	// part (the intro's inline format example is markup debris, not a
+	// token).
+	if got := root.Index.ListedNames; got != nil {
+		t.Errorf("Index.ListedNames = %v, want nil", got)
 	}
 
 	// ADRs: sorted numerically, template excluded, metadata parsed.
@@ -533,8 +540,213 @@ func TestParseIndexTableRules(t *testing.T) {
 	if got := idx.Tasks[0].Specs; !reflect.DeepEqual(got, wantSpecs) {
 		t.Errorf("Specs = %v, want %v", got, wantSpecs)
 	}
-	if idx.ListedFiles != nil {
-		t.Errorf("ListedFiles = %v, want nil without a Directory Listing section", idx.ListedFiles)
+	// Baseline: every mention carries a bare file name, so all three land
+	// in both sets — exact treats them as specs-root-relative paths, names
+	// additionally matches any nested section file of that name.
+	wantNames := []string{"a.md", "b.md", "late.md"}
+	if got := idx.ListedFiles; !reflect.DeepEqual(got, wantNames) {
+		t.Errorf("ListedFiles = %v, want %v", got, wantNames)
+	}
+	if got := idx.ListedNames; !reflect.DeepEqual(got, wantNames) {
+		t.Errorf("ListedNames = %v, want %v", got, wantNames)
+	}
+}
+
+// -- INDEX.md dialect tolerance --
+
+// TestParseIndexTaskHeadingDialects pins the task-table heading spellings:
+// every observed specs dialect carries the word "task", any other heading
+// hosts no table, and the first match wins.
+func TestParseIndexTaskHeadingDialects(t *testing.T) {
+	tests := []struct{ name, heading string }{
+		{"c0wrk and sp4rk", "Navigation by Task"},
+		{"flowsh", "Task -> Specs"},
+		{"omnibus singular", "Task -> Spec"},
+		{"bare Tasks", "Tasks"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			content := "# Index\n\n## " + tt.heading + "\n\n| Task | Read |\n| --- | --- |\n| Wiring | [a.md](a.md) |\n"
+			idx := ParseIndex(content)
+			if len(idx.Tasks) != 1 || idx.Tasks[0].Task != "Wiring" {
+				t.Errorf("Tasks under heading %q = %+v, want the Wiring row", tt.heading, idx.Tasks)
+			}
+		})
+	}
+	// No task-ish heading anywhere: the table stays empty, fail-soft.
+	idx := ParseIndex("# Index\n\n## Directory Listing\n\n- [a.md](a.md)\n")
+	if idx.Tasks != nil {
+		t.Errorf("Tasks = %+v, want nil without a task heading", idx.Tasks)
+	}
+}
+
+// TestParseIndexMentionsDialects pins the whole-document mention scan on
+// the two non-c0wrk dialects observed in real trees: flowsh lists files as
+// a fenced ASCII tree plus a backticked full list, omnibus references files
+// as bracketed tokens inside a fenced dependency diagram and carries
+// non-.md entries and anchor links in its listings.
+func TestParseIndexMentionsDialects(t *testing.T) {
+	t.Run("flowsh tree and backtick list", func(t *testing.T) {
+		content := "# Specification Index\n" +
+			"\n" +
+			"## Task -> Specs\n" +
+			"\n" +
+			"| Task | Read |\n" +
+			"| ---- | ---- |\n" +
+			"| Add a command | [Knowledge Base](domains/knowledge-base.md), [SECURITY.md](../SECURITY.md) |\n" +
+			"\n" +
+			"## Directory Listing\n" +
+			"\n" +
+			"```text\n" +
+			"specs/\n" +
+			"├── META.md                 spec formats\n" +
+			"├── INDEX.md                this file\n" +
+			"├── architecture/\n" +
+			"│   ├── layers.md           layer hierarchy\n" +
+			"│   └── conservatism.md     degrade-to-top semantics\n" +
+			"└── domains/\n" +
+			"    └── knowledge-base.md   KB schema\n" +
+			"```\n" +
+			"\n" +
+			"## Full File List\n" +
+			"\n" +
+			"- `architecture/layers.md`\n" +
+			"- `architecture/conservatism.md`\n" +
+			"- `domains/knowledge-base.md`\n"
+		idx := ParseIndex(content)
+		wantExact := []string{
+			"domains/knowledge-base.md",
+			"META.md",
+			"INDEX.md",
+			"layers.md",
+			"conservatism.md",
+			"knowledge-base.md",
+			"architecture/layers.md",
+			"architecture/conservatism.md",
+		}
+		if got := idx.ListedFiles; !reflect.DeepEqual(got, wantExact) {
+			t.Errorf("ListedFiles = %v, want %v", got, wantExact)
+		}
+		wantNames := []string{"META.md", "INDEX.md", "layers.md", "conservatism.md", "knowledge-base.md"}
+		if got := idx.ListedNames; !reflect.DeepEqual(got, wantNames) {
+			t.Errorf("ListedNames = %v, want %v", got, wantNames)
+		}
+	})
+
+	t.Run("omnibus diagram brackets and non-md entries", func(t *testing.T) {
+		content := "# INDEX\n" +
+			"\n" +
+			"## Task -> Spec\n" +
+			"\n" +
+			"| Task | Read |\n" +
+			"|---|---|\n" +
+			"| Interpret an error | [error-taxonomy](architecture/error-taxonomy.md), [domains/](#directory-listing) |\n" +
+			"\n" +
+			"## Dependency Graph\n" +
+			"\n" +
+			"```\n" +
+			"agent   [contracts/mcp-client-daemon.md]\n" +
+			"core    [architecture/overview.md]\n" +
+			"tools   [tools/coverage.toml]\n" +
+			"```\n" +
+			"\n" +
+			"## Directory Listing\n" +
+			"\n" +
+			"- [architecture/error-taxonomy.md](architecture/error-taxonomy.md) - typed errors\n" +
+			"- [tools/coverage.toml](tools/coverage.toml) - coverage matrix\n"
+		idx := ParseIndex(content)
+		wantExact := []string{
+			"architecture/error-taxonomy.md",
+			"contracts/mcp-client-daemon.md",
+			"architecture/overview.md",
+		}
+		if got := idx.ListedFiles; !reflect.DeepEqual(got, wantExact) {
+			t.Errorf("ListedFiles = %v, want %v", got, wantExact)
+		}
+		if got := idx.ListedNames; got != nil {
+			t.Errorf("ListedNames = %v, want nil", got)
+		}
+	})
+}
+
+// TestIndexStaleDialects pins the finding semantics on the flowsh dialect:
+// tree leaves match section files by bare name, linked and backticked
+// paths match exactly, a bare name covers every section file carrying it,
+// and a genuinely unmentioned file still reports.
+func TestIndexStaleDialects(t *testing.T) {
+	content := "# Index\n\n## Task -> Specs\n\n| Task | Read |\n" +
+		"| ---- | ---- |\n| Layers | [architecture/layers.md](architecture/layers.md) |\n\n" +
+		"## Directory Listing\n\n```text\nspecs/\n" +
+		"├── architecture/\n│   ├── layers.md\n│   └── conservatism.md\n" +
+		"└── domains/\n    ├── cli.md\n    └── engine/\n        └── README.md\n```\n"
+	root := &SpecsRoot{
+		Path:  "/ws/specs",
+		Index: ParseIndex(content),
+		Files: []SpecFile{
+			{Path: "INDEX.md"},
+			{Path: "architecture/layers.md", Section: SectionArchitecture},
+			{Path: "architecture/conservatism.md", Section: SectionArchitecture},
+			{Path: "domains/cli.md", Section: SectionDomains},
+			{Path: "domains/engine/README.md", Section: SectionDomains},
+			{Path: "domains/forgotten.md", Section: SectionDomains},
+		},
+	}
+	want := []Finding{{Kind: FindingIndexStale, File: "domains/forgotten.md", Detail: "not listed in INDEX.md"}}
+	if got := indexStaleFindings(root); !reflect.DeepEqual(got, want) {
+		t.Errorf("indexStaleFindings = %+v, want %+v", got, want)
+	}
+
+	// One bare README.md mention lists both same-named section files: the
+	// tree names each leaf, so a shared name is a shared listing.
+	shared := &SpecsRoot{
+		Path:  "/ws/specs",
+		Index: ParseIndex("# Index\n\n## Directory Listing\n\n```text\nspecs/\n├── domains/\n│   ├── a/\n│   │   └── README.md\n│   └── b/\n│       └── README.md\n```\n"),
+		Files: []SpecFile{
+			{Path: "domains/a/README.md", Section: SectionDomains},
+			{Path: "domains/b/README.md", Section: SectionDomains},
+			{Path: "domains/c/other.md", Section: SectionDomains},
+		},
+	}
+	wantShared := []Finding{{Kind: FindingIndexStale, File: "domains/c/other.md", Detail: "not listed in INDEX.md"}}
+	if got := indexStaleFindings(shared); !reflect.DeepEqual(got, wantShared) {
+		t.Errorf("indexStaleFindings = %+v, want %+v", got, wantShared)
+	}
+}
+
+// TestCollectIndexRefsTokenShapes pins the token acceptance rules over
+// whole-document scans: markup debris, URLs, escapes, globs and non-.md
+// shapes never enter the baseline; wrapping punctuation and anchors do not
+// hide a mention.
+func TestCollectIndexRefsTokenShapes(t *testing.T) {
+	tests := []struct {
+		name      string
+		content   string
+		wantExact []string
+		wantNames []string
+	}{
+		{"external url link", "See [a.md](https://example.com/a.md) online.\n", nil, nil},
+		{"parent escape token", "Escapes to ../SECURITY.md sometimes.\n", nil, nil},
+		{"absolute token", "Lives at /etc/specs.md here.\n", nil, nil},
+		{"home token", "Notes in ~/notes.md stay out.\n", nil, nil},
+		{"glob token", "Matches *.md or a?.md patterns.\n", nil, nil},
+		{"non-md suffix", "Read notes.txt and x.mdY first.\n", nil, nil},
+		{"pure anchor", "Jump to #directory-listing below.\n", nil, nil},
+		{"inline example debris", "Example: `[display text](relative/path.md)` stays inert.\n", nil, nil},
+		{"trailing punctuation", "Mentions README.md, then cli.md; done.\n", []string{"README.md", "cli.md"}, []string{"README.md", "cli.md"}},
+		{"anchored link", "- [Layers](architecture/layers.md#intro)\n", []string{"architecture/layers.md"}, nil},
+		{"inline code path", "- `architecture/layers.md` - roles\n", []string{"architecture/layers.md"}, nil},
+		{"uppercase suffix", "The README.MD file.\n", []string{"README.MD"}, []string{"README.MD"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			exact, names := collectIndexRefs(tt.content)
+			if !reflect.DeepEqual(exact, tt.wantExact) {
+				t.Errorf("collectIndexRefs(%q) exact = %v, want %v", tt.content, exact, tt.wantExact)
+			}
+			if !reflect.DeepEqual(names, tt.wantNames) {
+				t.Errorf("collectIndexRefs(%q) names = %v, want %v", tt.content, names, tt.wantNames)
+			}
+		})
 	}
 }
 

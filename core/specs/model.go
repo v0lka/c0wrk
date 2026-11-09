@@ -122,15 +122,23 @@ type SpecFile struct {
 
 // SpecsIndex is the parsed INDEX.md.
 type SpecsIndex struct {
-	// Tasks is the "## Navigation by Task" table in document order. Rows
-	// whose second column carries no relative link (the header row, the
-	// separator row, external-only rows) are dropped.
+	// Tasks is the task navigation table in document order — the first
+	// section whose heading carries the word "task", whatever the exact
+	// wording. Rows whose second column carries no relative link (the
+	// header row, the separator row, external-only rows) are dropped.
 	Tasks []IndexTask `json:"tasks,omitempty"`
 
-	// ListedFiles is the "## Directory Listing" section's file set: every
-	// relative .md link target, anchor-stripped and cleaned, deduplicated,
-	// in document order — the baseline for the INDEX_STALE finding.
+	// ListedFiles is every specs-root-relative .md path INDEX.md mentions
+	// anywhere — link targets, inline-code entries, fenced tree lines that
+	// spell a path — anchor-stripped and cleaned, deduplicated, in
+	// document order. The exact-path half of the INDEX_STALE baseline.
 	ListedFiles []string `json:"listed_files,omitempty"`
+
+	// ListedNames is every bare .md file name INDEX.md mentions without a
+	// directory part: an ASCII tree names its leaves under their directory
+	// entries, so the full path never appears on one line. A section file
+	// whose base name appears here counts as listed.
+	ListedNames []string `json:"listed_names,omitempty"`
 }
 
 // IndexTask is one row of the INDEX.md task navigation table.
