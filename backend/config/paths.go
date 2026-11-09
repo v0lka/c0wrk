@@ -482,16 +482,71 @@ func SessionLogsDir(agentDir, projectID, sessionID string) string {
 	return filepath.Join(SessionDir(agentDir, projectID, sessionID), "logs")
 }
 
-// SessionLogPath returns the session log file path.
+// SessionLogPath returns the session log file path — the plain,
+// extension-less base name (see SessionDumpPath for the codec-extension
+// model).
 func SessionLogPath(agentDir, projectID, sessionID string) string {
 	return filepath.Join(SessionLogsDir(agentDir, projectID, sessionID),
 		"session_"+sessionID+".log")
 }
 
-// SessionDumpPath returns the LLM dump file path.
+// SessionDumpPath returns the LLM dump file path — the plain, extension-less
+// base name. Compressed variants carry the session_artifacts.compression
+// extension (SessionLogPathFor / SessionDumpPathFor); the plain path stays a
+// first-class probe candidate so pre-codec files keep their codec
+// (specs/domains/session-lifecycle.md, § Compressed Session Artifacts).
 func SessionDumpPath(agentDir, projectID, sessionID string) string {
 	return filepath.Join(SessionDir(agentDir, projectID, sessionID), "dumps",
 		"session_"+sessionID+"_llm_dump.jsonl")
+}
+
+// --- Session artifact compression extensions -------------------------------
+//
+// session_artifacts.compression names a codec for the per-session file
+// artifacts (session log, LLM dump, per-step dumps). The codec is part of the
+// FILE NAME (an extension), and an existing file always keeps its own codec:
+// openers probe the candidate paths in SessionArtifactAlgorithmsInProbeOrder
+// order, sniff the first existing file's magic, and continue with that codec;
+// only when no candidate exists is the file created under the configured
+// algorithm's extension (ADR-116).
+
+// SessionArtifactExtension returns the filename extension that the
+// session_artifacts.compression algorithm appends to a session artifact's
+// base name: none → "", gzip → ".gz", zstd → ".zst". An unrecognized name
+// maps to "" — the plain form — so a stray value can never invent a path;
+// callers pass only loader-normalized algorithms or appendcodec codec names.
+func SessionArtifactExtension(algorithm string) string {
+	switch algorithm {
+	case SessionCompressionGzip:
+		return ".gz"
+	case SessionCompressionZstd:
+		return ".zst"
+	default:
+		return ""
+	}
+}
+
+// SessionArtifactAlgorithmsInProbeOrder lists the compression algorithms in
+// the fixed order session artifact openers probe existing files: the plain
+// base form first (pre-codec files), then gzip, then zstd. The order is a
+// determinism contract, not a preference: when several candidates exist
+// (manual rotation, hand copies) the same file is resumed on every launch.
+func SessionArtifactAlgorithmsInProbeOrder() []string {
+	return []string{SessionCompressionNone, SessionCompressionGzip, SessionCompressionZstd}
+}
+
+// SessionLogPathFor returns the session log path for a session_artifacts
+// compression algorithm — the extension is appended here, never by callers.
+func SessionLogPathFor(agentDir, projectID, sessionID, algorithm string) string {
+	return SessionLogPath(agentDir, projectID, sessionID) +
+		SessionArtifactExtension(algorithm)
+}
+
+// SessionDumpPathFor returns the LLM dump path for a session_artifacts
+// compression algorithm — the extension is appended here, never by callers.
+func SessionDumpPathFor(agentDir, projectID, sessionID, algorithm string) string {
+	return SessionDumpPath(agentDir, projectID, sessionID) +
+		SessionArtifactExtension(algorithm)
 }
 
 // SessionTempDir returns the session temp directory.
@@ -696,7 +751,9 @@ func ComparisonsPath(workspacePath string) string {
 }
 
 // SessionStepDumpDir returns the per-step dump directory for a session,
-// derived from the session's LLM dump path.
+// derived from the session's LLM dump path. The directory name is
+// codec-independent — the codec extension lives on the FILES the
+// StepDumpTracker creates inside it (step_<id>.jsonl[.gz|.zst]).
 func SessionStepDumpDir(agentDir, projectID, sessionID string) string {
 	dumpPath := SessionDumpPath(agentDir, projectID, sessionID)
 	return filepath.Join(filepath.Dir(dumpPath), "steps")

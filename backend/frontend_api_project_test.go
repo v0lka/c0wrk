@@ -376,7 +376,8 @@ func TestDeleteProject_RemovesInMemorySessionsAndFiles(t *testing.T) {
 
 	// The session dir (logs, etc.) must exist before deletion.
 	sessionDir := config.SessionDir(h.api.agentDir, h.projectID, info.ID)
-	logFile := config.SessionLogPath(h.api.agentDir, h.projectID, info.ID)
+	logFile := config.SessionLogPathFor(h.api.agentDir, h.projectID, info.ID,
+		config.DefaultSessionCompressionAlgorithm)
 	if _, err := os.Stat(logFile); err != nil {
 		t.Fatalf("session log file should exist before project deletion: %v", err)
 	}
@@ -419,7 +420,8 @@ func TestDeleteProject_RemovesStoreOnlySessionFiles(t *testing.T) {
 	// Create the session's internal files on disk (as if a previous run had
 	// created them) but do NOT restore the session into memory.
 	sessionDir := config.SessionDir(h.api.agentDir, h.projectID, storeSessionID)
-	logFile := config.SessionLogPath(h.api.agentDir, h.projectID, storeSessionID)
+	logFile := config.SessionLogPathFor(h.api.agentDir, h.projectID, storeSessionID,
+		config.DefaultSessionCompressionAlgorithm)
 	if err := os.MkdirAll(filepath.Dir(logFile), 0o755); err != nil {
 		t.Fatalf("mkdir log dir: %v", err)
 	}

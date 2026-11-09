@@ -2416,3 +2416,63 @@ notifications:
 #     enabled: false
 #     cert: ""
 #     key: ""
+
+
+# ---------------------------------------------------------------------------
+# Session Artifacts (step dumps + session log)
+# ---------------------------------------------------------------------------
+# Compression for the append-only session artifacts the backend writes while
+# an agent works: the per-session step dumps (dumps/*.jsonl) and the session
+# log (logs/session_<sessionID>.log) (ADR-116). These files resend the growing
+# conversation on every request, so their cross-record redundancy is
+# enormous — and only a large-window codec reaches it. Measured on live
+# session artifacts (ADR-116 investigation; a 332 MiB step dump, each record
+# resending the whole context so far):
+#
+#     gzip       ratio x3.0–x3.5   — the 32 KiB LZ77 window cannot dedup
+#                                   across records
+#     xz -1      ratio x22–x160    — EXCLUDED, see below
+#     zstd       ratio x112–x461   — 332 MiB → 755 KiB, 242 ms encode
+#
+# compression.algorithm (default "zstd") — the codec appended artifacts are
+# written with. Readers sniff each file's magic bytes at open, so existing
+# sessions keep the codec they were created with: a config flip never
+# rewrites history (old plain files stay plain; the read paths understand
+# all three values).
+#
+#   none — write records verbatim (byte-identical to pre-compression
+#          builds).
+#   gzip — stdlib gzip, default level.
+#   zstd — klauspost/compress/zstd (see zstd_window_log below); the
+#          measured default.
+#
+#   xz is deliberately NOT offered: the pure-Go xz writer has no streaming
+#   Flush, so a live tail of a compressed artifact would lag a whole block
+#   behind the writer and the crash semantics worsen (the concatenated-
+#   stream rotation workaround was rejected as too much wrapping; ADR-116).
+#   An unrecognized value fails soft at config load — warned and reset to
+#   the default — and Save refuses to persist one.
+#
+# compression.zstd_window_log (default 25) — log2 of the zstd window: 2^N
+#   bytes of back-reference history. Only used by zstd (inert for the other
+#   algorithms, but validated regardless so the persisted shape stays
+#   canonical). Memory scales linearly with the window — the decoder needs
+#   ~1× the window, the encoder ~2× (history buffer) plus hash tables:
+#
+#     window_log    window      encoder RAM (approx.)   decoder RAM
+#     10            1 KiB       ~1 MiB (floor)          1 KiB
+#     20            1 MiB       ~2 MiB                  1 MiB
+#     23            8 MiB       ~16 MiB                 8 MiB
+#     25 (default)  32 MiB      ~64 MiB                 32 MiB
+#     27 (max)      128 MiB     ~256 MiB                128 MiB
+#
+#   The measured x112–x461 ratios need a window spanning the resent
+#   context; lower the value only if the encoder's footprint matters more
+#   than the ratio. Valid range 10..27: the floor is the zstd format
+#   minimum, the ceiling an operator cap 4× below the library max (512 MiB)
+#   so a typo cannot allocate half a GiB per stream. Out of range fails
+#   soft at load — warned and reset to 25 — and Save refuses to persist it.
+session_artifacts:
+  compression:
+    algorithm: "zstd"
+    zstd_window_log: 25

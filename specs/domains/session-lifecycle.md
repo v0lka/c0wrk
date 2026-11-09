@@ -10,8 +10,10 @@ Manages the lifecycle of user sessions: creation, message handling, task executi
 - `backend/session/manager_execution.go` — SendMessage (incl. the live-send branch + `ErrPausePending` pausing-window rejection), CancelTask execution flows
 - `core/tools/declare_plan.go` — `declare_plan` tool (`present` / `await_approval` modes); under ADR-012 plan review is a Conductor-invoked tool, not a pipeline stage
 - `backend/events.go` — `EventPlanApprovalResponse` constant (frontend → backend plan-approval decision event)
-- `backend/config/paths.go` — centralized path functions (single source of truth for ~/.c0wrk/ directory structure)
-- `github.com/v0lka/sp4rk/orchestration/step_dump_tracker.go` — StepDumpTracker (per-step LLM dump file management)
+- `backend/config/paths.go` — centralized path functions (single source of truth for ~/.c0wrk/ directory structure); codec-extension model for session artifacts (`SessionArtifactExtension`, `SessionArtifactAlgorithmsInProbeOrder`, `SessionLogPathFor`/`SessionDumpPathFor`)
+- `backend/config/session_artifacts.go` — the `session_artifacts.compression` config section (ADR-116): closed enum none|gzip|zstd, zstd window bounds 10..27, fail-soft load normalization + fail-closed save gate
+- `github.com/v0lka/sp4rk/appendcodec` — append-safe gzip/zstd codec layer behind the session artifacts (Flush-per-record durable writes, `DetectMagic` sniffing, same-descriptor TOCTOU-safe opens)
+- `github.com/v0lka/sp4rk/orchestration/step_dump_tracker.go` — StepDumpTracker (per-step LLM dump file management; takes the configured codec via `WithCodec`/`WithCodecWindowLog`)
 - `backend/session/file_coherence.go` — FileCoherenceTracker (cross-session conflict detection)
 - `backend/session/persistence.go` — SessionStore (SQLite persistence including plan review state); session list queries compute effective activity (newest persisted chat message / terminal command) — see § Session Activity Semantics
 - `core/orchestrator_mcp_prepare.go` — `prepareTaskMCP`: synchronous durable mention preparation and one current-mode snapshot before any task execution or resume wave
@@ -1326,23 +1328,28 @@ When the first message is received for a session with the default auto-generated
 ### LLM Dump Files (DEBUG mode)
 
 When the global log level is set to `DEBUG`, the session manager creates LLM dump
-files for all LLM calls within the session:
+files for all LLM calls within the session (names carry the configured
+session_artifacts codec extension — see § Compressed Session Artifacts; the
+default zstd form shown):
 
 ```
 ~/.c0wrk/projects/<projectID>/<sessionID>/dumps/
-├── session_<id>_llm_dump.jsonl       ← router, reflector, title gen, ToolJudge
+├── session_<id>_llm_dump.jsonl.zst   ← router, reflector, title gen, ToolJudge
 └── steps/
-    └── step_<stepID>.jsonl           ← executor step (initial + retries append to same file)
+    └── step_<stepID>.jsonl.zst       ← executor step (initial + retries append to same file)
 ```
 
-Each `.jsonl` file contains full, untruncated request/response pairs for every LLM
+Each dump file contains full, untruncated request/response pairs for every LLM
 call, serialized as `dumpEntry` records (`ts`, `direction`, `data`, `error`). No
-sampling or truncation is applied.
+sampling or truncation is applied. Records are JSONL lines regardless of the
+codec; a compressed file is read with the matching decoder (`zstd -dc`,
+`gzip -dc`) followed by plain line reading.
 
-The session-level file (`session_<id>_llm_dump.jsonl`) is written via `DumpCaller`
-wrapping the main `llm.Router`. Per-step files are created lazily by
-`StepDumpTracker` which manages file handles through the orchestrator lifecycle and
-closes them all on session deletion or application shutdown.
+The session-level file (`session_<id>_llm_dump.jsonl` + codec extension) is
+written via `DumpCaller` wrapping the main `llm.Router`. Per-step files are
+created lazily by `StepDumpTracker` which manages file handles through the
+orchestrator lifecycle and closes them all on session deletion or application
+shutdown.
 
 Dump file creation is controlled by `Manager.logLevel`. When not `DEBUG`:
 `dumpFile` and `stepDumpTracker` are nil, and no files are created.
@@ -1353,7 +1360,75 @@ pipeline (title generation, ToolJudge) receive the dump writer via
 unexported key type in `sp4rk/agent/context.go`; read back with
 `agent.DumpWriterFromContext`). The writers are injected at
 the call sites: `SendMessage` for title generation and
-`desktop/event_handlers.go` for ToolJudge.
+`desktop/event_handlers.go` for ToolJudge. Both receive the session's own
+appendcodec wrapper (`Session.DumpWriter()`, an `io.Writer` view of the shared
+per-path writer) — the caller never closes it: the codec footer belongs to the
+session's close chain, and concurrent writes serialize on the wrapper's
+mutex.
+
+### Compressed Session Artifacts
+
+The append-only session artifacts — the session log
+`logs/session_<id>.log`, the session-level LLM dump and the per-step dumps
+(the fixed scope above) — are written through
+`github.com/v0lka/sp4rk/appendcodec` under the
+`session_artifacts.compression` config section ([ADR-116](../decisions/116-session-artifact-compression.md)):
+
+```
+session_artifacts:
+  compression:
+    algorithm: "none" | "gzip" | "zstd"   # default zstd
+    zstd_window_log: 10..27               # default 25 (32 MiB window); inert for non-zstd
+```
+
+Rules (enforced in `Manager.openSessionArtifact`, the one funnel for the
+session log and the session-level dump; the tracker path adds rule 5):
+
+1. **The codec is part of the file name**: `none` → `""`, `gzip` → `.gz`,
+   `zstd` → `.zst` (`config.SessionArtifactExtension`; unknown names map to
+   `""` so a stray value can never invent a path). Extensions are appended
+   only by the central path helpers (`SessionLogPathFor` / `SessionDumpPathFor`).
+2. **Open = probe + sniff + continue.** Candidates are probed in the fixed
+   order `[plain, .gz, .zst]` (`config.SessionArtifactAlgorithmsInProbeOrder`);
+   the first EXISTING file is sniffed (`appendcodec.DetectMagic` — refuses
+   symlinks/non-regular files) and continued with its own codec. An empty
+   existing file adopts its extension's codec. No candidate → the file is
+   created under the configured algorithm's extension. A config flip never
+   rewrites history: a session's artifacts are created once and continued
+   forever in their birth codec.
+3. **Fail-soft refusals disable, never fall back.** A sniff/open failure
+   (planted symlink, non-regular file) warns and disables the artifact — it
+   never falls through to creating the configured path, which would bypass the
+   link. `appendcodec.OpenAppend` re-verifies the magic from the SAME
+   descriptor it appends through (TOCTOU-safe) and refuses a mismatch.
+4. **Writes are durable on return.** Every completed record is flushed before
+   its `Write` returns, so a compressed artifact is always a decodable prefix
+   on disk (live tail works; a crash before `Close` loses nothing already
+   acknowledged). One path, one writer: concurrent writers on one compressed
+   path corrupt the stream and are refused by convention. A file CONTINUED
+   after an unclean crash is `[broken frame][new frames]`: a straight
+   third-party decode stops at the broken frame (the frames completed before
+   the crash stream out; `zstd -dc` exits 1 on the checksum mismatch and
+   skips everything appended after the restart), and the appended tail is
+   recovered by splitting the file at the frame magic that begins the
+   appended section (`28 b5 2f fd` per zstd frame, `1f 8b` per gzip member)
+   and decoding the parts separately.
+5. **Per-step dumps follow the configured codec**: step files are new files at
+   execution time, so the sniff-continue rule is reserved for artifacts that
+   already exist at session open; `WithCodec`/`WithCodecWindowLog` carry the
+   config values, and a mismatch at the exact path is still refused by the
+   same-descriptor magic check.
+6. **Config plumbing mirrors the section**: load-time normalization is
+   fail-soft (unset → defaults via `ApplyDefaults`; invalid values → one
+   warning + reset per knob), save-time validation is fail-closed
+   (`validateSessionArtifactsForSave`); the window is validated even under
+   non-zstd algorithms so the persisted shape stays canonical.
+
+Migration of pre-compression plain artifacts is a manual operator step with
+no shipped tooling: the app never rewrites existing artifacts, old plain
+files are fully supported residents, and an operator who wants compression
+on them converts them by hand with the standard CLIs (`zstd`/`gzip` produce
+exactly the on-disk shape the app writes).
 
 ### Link-Safe Creation of Session File Artifacts
 
@@ -1625,6 +1700,7 @@ type HandleResult struct {
 - A `plan_review_ready` event (emitted by `declare_plan` await_approval) is persisted to `session_messages` (role `plan_review`) so it reappears in history after a restart; the pending plan approval is also surfaced via `GetPendingActions` (`desktop/pending_actions.go` `PlanApprovals`)
 - Plan files live at `~/.c0wrk/projects/<pid>/<sid>/plans/` (written by `declare_plan`); previous plan files are not deleted when the Conductor revises (request_changes) or abandons
 - `DeleteSession` closes all per-step dump files via `Orchestrator.Cleanup()` before closing the session-level log and dump files
+- An existing session artifact (session log, session dump, per-step dump) always continues its own codec: opens probe the candidate extensions, sniff the first existing file's magic and append in kind — a config flip never rewrites history, and every acknowledged record is a decodable prefix on disk ([ADR-116](../decisions/116-session-artifact-compression.md))
 - `Shutdown` marks shutdown before cancellation, waits for active task goroutines, then converts every still-`in_progress` active task to a persisted `paused` checkpoint; already failed/completed tasks retain their terminal state. Before that, after cancelling its context, it joins manager-owned background goroutines (async ignore-resolver builds, deferred session temp-dir removals, best-effort title generation) via the background tracker and stops the persistence worker of every blackboard the manager built or restored — both bounded by one shared `stopTimeout` budget, with late spawn attempts refused so callers fall back or skip the work. It also closes all per-step dump files for every session via `Orchestrator.Cleanup()` before closing session resources.
 - Pending attachments are flushed into the blackboard exactly once on `SendMessage`: the session manager snapshots and clears `session.pendingAttachments`, then passes them via `HandleOptions.PendingAttachments` (both HandleMessage calls in `SendMessage` receive the same snapshot)
 
@@ -1634,6 +1710,8 @@ type HandleResult struct {
 | ---------------------------------- | ---------------------- | --------------------------- |
 | `ConductorHistoryWindow` (internal default) | 20                     | Conversation history window injected into the Conductor context (`OrchestratorConfig`, applied when 0) |
 | Database path                      | `~/.c0wrk/database.db` | SQLite file location        |
+| `session_artifacts.compression.algorithm` | `zstd`                 | Codec of the append-only session artifacts (session log + LLM/step dumps): `none` \| `gzip` \| `zstd`; closed enum — invalid values warn + reset at load, refused at save; existing files keep their birth codec ([ADR-116](../decisions/116-session-artifact-compression.md)) |
+| `session_artifacts.compression.zstd_window_log` | 25                     | log2 of the zstd window (2^N back-reference history), 10..27; memory scales linearly (decoder ~1×, encoder ~2× window); validated even under non-zstd algorithms |
 
 ## Related Specs
 
@@ -1649,3 +1727,4 @@ type HandleResult struct {
 - [prompt-suggestions.md](prompt-suggestions.md) — proactive chat-input follow-ups generated after task outcomes `full`/`partial`; they consume this domain's `is_nudge` stamp and the task-finish outcome gate
 - [../decisions/030-session-context-restore.md](../decisions/030-session-context-restore.md) — saved-first restore, effective-activity semantics, archived exclusion, last-context startup restore
 - [../decisions/095-chat-file-reference-path-semantics.md](../decisions/095-chat-file-reference-path-semantics.md) — `fileref://` URI emission: GOOS-independent drive/UNC detection, canonical forward-slash forms, no migration
+- [../decisions/116-session-artifact-compression.md](../decisions/116-session-artifact-compression.md) — compressed session artifacts: config codec + per-file magic sniffing, zstd default, xz excluded (no streaming Flush)

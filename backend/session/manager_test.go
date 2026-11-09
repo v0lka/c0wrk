@@ -197,8 +197,9 @@ func TestManager_CreateSession(t *testing.T) {
 		t.Errorf("Session ID mismatch: got %s, want %s", session.ID, info.ID)
 	}
 
-	// Verify log file was created
-	logFile := config.SessionLogPath(agentDir, testProjectID, info.ID)
+	// Verify log file was created (the default config codec names the file).
+	logFile := config.SessionLogPathFor(agentDir, testProjectID, info.ID,
+		config.DefaultSessionCompressionAlgorithm)
 	if _, err := os.Stat(logFile); os.IsNotExist(err) {
 		t.Errorf("Log file not created: %s", logFile)
 	}
@@ -684,7 +685,8 @@ func TestManager_ArchiveSession_KeepsFiles(t *testing.T) {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
 
-	logFile := config.SessionLogPath(agentDir, testProjectID, info.ID)
+	logFile := config.SessionLogPathFor(agentDir, testProjectID, info.ID,
+		config.DefaultSessionCompressionAlgorithm)
 	if _, err := os.Stat(logFile); err != nil {
 		t.Fatalf("log file should exist before archive: %v", err)
 	}

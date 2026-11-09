@@ -338,8 +338,9 @@ func (a *App) runJudgeEvaluation(confirmID string, pendingData *pendingConfirmDa
 	// sees the session's directory scope (explicit + implicit work dirs).
 	sess, sessOK := app.Manager().GetSession(pendingData.sessionID)
 	if sessOK {
-		if dumpFile := sess.DumpFile(); dumpFile != nil {
-			defer func() { _ = dumpFile.Close() }()
+		// SHARED session writer (one appendcodec encoder per path), never
+		// closed here — the session's close chain owns the codec footer.
+		if dumpFile := sess.DumpWriter(); dumpFile != nil {
 			judgeCtx = agent.WithDumpWriter(judgeCtx, dumpFile)
 		}
 	}

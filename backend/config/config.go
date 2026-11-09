@@ -110,6 +110,12 @@ type Config struct {
 	// off; load problems fail soft (web_access.go) and Save refuses to
 	// persist an invalid enabled state. See specs/domains/web-access.md.
 	WebAccess WebAccessConfig `yaml:"web_access"`
+
+	// SessionArtifacts configures compression of the append-only session
+	// artifacts (step dumps, logs/session_<sessionID>.log; ADR-116), default
+	// zstd/25; load problems fail soft (session_artifacts.go) and Save
+	// refuses to persist an invalid section. See SessionArtifactsConfig.
+	SessionArtifacts SessionArtifactsConfig `yaml:"session_artifacts"`
 }
 
 // UpdatesConfig controls the self-update subsystem; both toggles are
@@ -2711,6 +2717,13 @@ func LoadWithResult(path string) (*LoadResult, error) {
 	// migration, whose folded values are already canonical.
 	capWarnings := normalizeCapabilities(&cfg)
 
+	// Validate the session artifact compression knobs in place (fail-soft:
+	// an unrecognized algorithm / out-of-range zstd window warned + reset
+	// to the default). After ApplyDefaults (which materializes the unset
+	// algorithm/window as zstd/25), before validate. See
+	// session_artifacts.go / ADR-116.
+	artifactWarnings := normalizeSessionArtifacts(&cfg)
+
 	// Warnings collected before validation, in a deterministic order.
 	warnings := autonomyWarnings
 	warnings = append(warnings, shellExecWarnings...)
@@ -2718,6 +2731,7 @@ func LoadWithResult(path string) (*LoadResult, error) {
 	warnings = append(warnings, mcpWarnings...)
 	warnings = append(warnings, mcpModeWarnings...)
 	warnings = append(warnings, capWarnings...)
+	warnings = append(warnings, artifactWarnings...)
 
 	// Validate configuration
 	if err := validate(&cfg); err != nil {
@@ -2737,6 +2751,12 @@ func Save(cfg *Config, path string) error {
 	// this means an in-memory mutation tried to persist an unusable section.
 	// See web_access.go / ADR-101.
 	if err := validateWebAccessForSave(cfg); err != nil {
+		return fmt.Errorf("refusing to save config: %w", err)
+	}
+	// Fail-closed session_artifacts gate: refuse to persist an invalid
+	// algorithm or an out-of-range zstd window — same doctrine. See
+	// session_artifacts.go / ADR-116.
+	if err := validateSessionArtifactsForSave(cfg); err != nil {
 		return fmt.Errorf("refusing to save config: %w", err)
 	}
 	data, err := yaml.Marshal(cfg)
