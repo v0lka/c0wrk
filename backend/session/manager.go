@@ -1417,7 +1417,11 @@ func (m *Manager) openDumpArtifacts(projectID, sessionID string) (io.WriteCloser
 // and promotion funnels remove the whole session tree): it is skipped like
 // an absent candidate instead of failing the open. An empty existing file
 // adopts its own extension's codec: an empty file is compatible with every
-// codec and its name is the only signal of intent.
+// codec and its name is the only signal of intent. A non-empty file that
+// sniffs to no codec under a compressed extension is continued as plain,
+// with a warning naming the path and the extension's algorithm — the name
+// keeps promising a codec the bytes no longer honor, and the mismatch must
+// stay visible instead of silently diverging forever.
 //
 // The open is link-safe: candidates are found with Lstat (no traversal), the
 // sniff opens O_NOFOLLOW, and appendcodec.OpenAppend re-verifies the magic
@@ -1449,9 +1453,17 @@ func (m *Manager) openSessionArtifact(basePath string) (io.WriteCloser, error) {
 			return nil, fmt.Errorf("sniffing existing artifact %s: %w", candidate, sniffErr)
 		}
 		codec := detected
-		if detected == appendcodec.CodecNone && fi.Size() == 0 && candidateAlgo != config.SessionCompressionNone {
-			if parsed, perr := appendcodec.ParseCodec(candidateAlgo); perr == nil {
-				codec = parsed
+		if detected == appendcodec.CodecNone && candidateAlgo != config.SessionCompressionNone {
+			if fi.Size() == 0 {
+				if parsed, perr := appendcodec.ParseCodec(candidateAlgo); perr == nil {
+					codec = parsed
+				}
+			} else {
+				// appendcodec's sniff warning fires only for unknown binary
+				// magic (text content warns nothing there) and never says
+				// the open proceeds — name the continuation explicitly.
+				m.log().Warn("session artifact content does not match its compressed extension; continuing as plain",
+					"path", candidate, "extension_algorithm", candidateAlgo)
 			}
 		}
 		return appendcodec.OpenAppend(candidate, codec, windowLog)

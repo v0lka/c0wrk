@@ -1404,8 +1404,17 @@ session log and the session-level dump; the tracker path adds rule 5):
 4. **Writes are durable on return.** Every completed record is flushed before
    its `Write` returns, so a compressed artifact is always a decodable prefix
    on disk (live tail works; a crash before `Close` loses nothing already
-   acknowledged). One path, one writer: concurrent writers on one compressed
-   path corrupt the stream and are refused by convention. A file CONTINUED
+   acknowledged). One writer object per path is c0wrk caller policy:
+   `Session.DumpWriter()` hands every consumer a view of the same shared
+   wrapper whose mutex serializes concurrent writes, and `openSessionArtifact`
+   never issues a second `OpenAppend` for a live path. The appendcodec
+   contract underneath: a same-process reopen of a live compressed path
+   JOINS the one live encoder (refcounted handles — the codec footer and the
+   advisory lock are released by the last `Close`), a different codec on the
+   live path is refused (`ErrMagicMismatch`), and a cross-process conflict is
+   refused (`ErrLocked`); plain (`CodecNone`) paths keep the pre-appendcodec
+   fan-out semantics (no lock, no shared encoder — only the sniff guard).
+   A file CONTINUED
    after an unclean crash is `[broken frame][new frames]`: a straight
    third-party decode stops at the broken frame (the frames completed before
    the crash stream out; `zstd -dc` exits 1 on the checksum mismatch and

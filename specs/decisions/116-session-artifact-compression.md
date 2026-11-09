@@ -57,10 +57,21 @@ stays a valid continuation of the existing stream. `DetectMagic` sniffs an
 existing file's codec from its leading bytes without following a symlink;
 `OpenAppend` reads the existing magic from the SAME descriptor it appends
 through (no Stat→Open TOCTOU window) and refuses a codec mismatch rather than
-producing an undecodable file. A single writer is safe for concurrent use (a
-mutex serializes `Write`); several writers on one path are refused by
-convention — one path, one writer. The sp4rk `StepDumpTracker` accepts the
-codec via `WithCodec`/`WithCodecWindowLog`.
+producing an undecodable file. A writer is safe for concurrent use (a mutex
+serializes `Write`). For the compressed codecs, a second `OpenAppend` of a
+path already open in the same process does not refuse — it returns an
+independent handle queued through the one live encoder (handles are
+refcounted; the codec footer and the advisory lock are released by the LAST
+handle's `Close`, and records never interleave because they serialize on the
+encoder's mutex); opening the live path with a different codec fails with
+`ErrMagicMismatch`, and from another process the advisory lock cannot be
+shared, so a conflicting open fails with `ErrLocked` instead of interleaving
+frames (`CodecNone` keeps the pre-appendcodec semantics: no lock, no shared
+encoder — only the sniff guard survives). One path, one writer is c0wrk
+caller policy, not an appendcodec refusal: `Session.DumpWriter()` hands every
+consumer (orchestrator, title generation, ToolJudge) a view of the one shared
+per-path writer. The sp4rk `StepDumpTracker` accepts the codec via
+`WithCodec`/`WithCodecWindowLog`.
 
 **2. Config — `session_artifacts.compression`** (`backend/config/session_artifacts.go`,
 documented in `config.example.yaml`):

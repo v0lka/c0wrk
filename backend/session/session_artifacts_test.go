@@ -397,3 +397,63 @@ func TestSessionArtifacts_PlainNameWithZstdContentContinuesAsZstd(t *testing.T) 
 		t.Errorf("system CLI decode of migrated file misses the appended record: %q", got)
 	}
 }
+
+// TestSessionArtifacts_PlainContentUnderCompressedExtensionWarnsAndContinuesPlain
+// pins the degraded-shape diagnostics (ADR-116 review follow-up): a non-empty
+// plain file sitting at a compressed-extension path (a botched manual copy, a
+// partially written outsider file) is CONTINUED as plain by the sniff rule,
+// and the open emits an explicit warning naming the path and the extension's
+// algorithm. Text content triggers no appendcodec sniff warning of its own,
+// so this warning is the only trace of the mismatch.
+func TestSessionArtifacts_PlainContentUnderCompressedExtensionWarnsAndContinuesPlain(t *testing.T) {
+	manager, _, agentDir := testManager(t)
+	sid := "artifacts-plainext-1"
+
+	capture := newCaptureLogger()
+	manager.SetLogger(capture.logger())
+
+	zstPath := config.SessionLogPathFor(agentDir, testProjectID, sid, config.SessionCompressionZstd)
+	if mkErr := os.MkdirAll(filepath.Dir(zstPath), 0o755); mkErr != nil {
+		t.Fatalf("mkdir log dir: %v", mkErr)
+	}
+	if werr := os.WriteFile(zstPath, []byte("{\"degraded\":true}\n"), 0o644); werr != nil {
+		t.Fatalf("seed plain content under .zst name: %v", werr)
+	}
+
+	logger, logWC, err := manager.createSessionLogger(testProjectID, sid)
+	if err != nil {
+		t.Fatalf("createSessionLogger: %v", err)
+	}
+	logger.Info("appended plain record")
+	if cerr := logWC.Close(); cerr != nil {
+		t.Fatalf("close log wrapper: %v", cerr)
+	}
+
+	if !capture.contains("continuing as plain") {
+		t.Fatalf("expected the plain-under-compressed-extension warning, got: %s", capture.snapshot())
+	}
+	if !capture.contains(filepath.Base(zstPath)) {
+		t.Errorf("warning does not name the affected path; got: %s", capture.snapshot())
+	}
+	if !capture.contains("extension_algorithm=zstd") {
+		t.Errorf("warning does not name the extension's algorithm; got: %s", capture.snapshot())
+	}
+
+	data, rerr := os.ReadFile(zstPath)
+	if rerr != nil {
+		t.Fatalf("read continued file: %v", rerr)
+	}
+	combined := string(data)
+	if !strings.Contains(combined, "{\"degraded\":true}\n") || !strings.Contains(combined, "appended plain record") {
+		t.Errorf("file not continued as plain verbatim: %q", combined)
+	}
+	if detected, derr := appendcodec.DetectMagic(zstPath, nil); derr != nil || detected != appendcodec.CodecNone {
+		t.Errorf("continued file no longer sniffs as plain (codec=%v, err=%v)", detected, derr)
+	}
+	// The degraded file stays the one artifact: no fresh compressed sibling
+	// under another extension may appear beside it.
+	gzPath := config.SessionLogPathFor(agentDir, testProjectID, sid, config.SessionCompressionGzip)
+	if _, serr := os.Stat(gzPath); !os.IsNotExist(serr) {
+		t.Errorf("gzip sibling %s created beside the degraded file", gzPath)
+	}
+}
