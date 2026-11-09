@@ -293,7 +293,14 @@ func TestSessionArtifacts_StepDumpTrackerFollowsConfigCodec(t *testing.T) {
 	manager, _, agentDir := testManager(t)
 	sid := "artifacts-steps-1"
 
-	_, tracker := manager.openDumpArtifacts(testProjectID, sid)
+	// The dump file writer is not what this test asserts (the step files
+	// are); it is still a live handle on the .zst dump file — close it via
+	// cleanup, registered before any assertion, or the leaked handle fails
+	// the temp-dir RemoveAll on Windows.
+	dumpWC, tracker := manager.openDumpArtifacts(testProjectID, sid)
+	if dumpWC != nil {
+		t.Cleanup(func() { _ = dumpWC.Close() })
+	}
 	if tracker == nil {
 		t.Fatal("step dump tracker missing under DEBUG")
 	}
