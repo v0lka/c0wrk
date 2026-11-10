@@ -568,7 +568,10 @@ func TestFetchKimiModels_LiveCatalog(t *testing.T) {
 	f, mock, _ := newKimiAuthTestAPI(t)
 	m := &fakeChatGPTManager{signedIn: true, tokenExtraHeaders: map[string]string{"User-Agent": "c0wrk/" + version.Version}}
 	installKimiManager(t, f, m)
-	mock.registry = llm.NewModelRegistry(nil)
+	// Seed the registry with c0wrk's Kimi defaults, mirroring the real builder
+	// where ToBuilderConfig merges these into cfg.LLM.Models and buildRouter
+	// seeds the registry from them.
+	mock.registry = llm.NewModelRegistry(config.KimiModelDefaults())
 	f.kimiAuth.modelsBaseURLOverride = srv.URL
 
 	resp, err := f.FetchKimiModels()
@@ -598,11 +601,19 @@ func TestFetchKimiModels_LiveCatalog(t *testing.T) {
 	if unknown.ContextWindow != 262144 || !unknown.Reasoning || unknown.OutputLimit != 0 {
 		t.Errorf("unknown model = %+v, want the endpoint context_length and reasoning flag", unknown)
 	}
-	if _, known := mock.registry.ResolveLocal("k3.1-pro"); known {
-		t.Fatalf("k3.1-pro is already in the registry; the endpoint-window assertion would no longer prove the fallback")
+	// k3.1-pro is now a c0wrk-known model: registry metadata wins over the
+	// endpoint's context_length, so the value must reflect the c0wrk overlay
+	// (1M window, 131072 output limit, reasoning) rather than the catalog's
+	// 1048576 window.
+	k31pro := resp.Models[0]
+	if k31pro.ContextWindow != 1_000_000 {
+		t.Errorf("k3.1-pro context window = %d, want c0wrk default 1000000", k31pro.ContextWindow)
 	}
-	if resp.Models[0].ContextWindow != 1048576 || !resp.Models[0].Reasoning {
-		t.Errorf("k3.1-pro = %+v, want the endpoint window and reasoning", resp.Models[0])
+	if k31pro.OutputLimit != 131_072 {
+		t.Errorf("k3.1-pro output limit = %d, want c0wrk default 131072", k31pro.OutputLimit)
+	}
+	if !k31pro.Reasoning {
+		t.Errorf("k3.1-pro reasoning = %v, want true", k31pro.Reasoning)
 	}
 }
 

@@ -2129,10 +2129,14 @@ func (f *FrontendAPI) GetModelConfig(model string) (ModelConfigResponse, error) 
 		return ModelConfigResponse{}, errors.New("config not initialized")
 	}
 
-	defMeta, _ := llm.ResolveBuiltInModel(model)
+	defMeta, ok := config.KimiModelDefault(model)
+	if !ok {
+		defMeta, _ = llm.ResolveBuiltInModel(model)
+	}
 
-	// ResolveBuiltInModel always resolves non-nil capabilities today; guard
-	// so a future nil-returning path degrades to all-false instead of panicking.
+	// ResolveBuiltInModel / KimiModelDefault always resolve non-nil
+	// capabilities today; guard so a future nil-returning path degrades to
+	// all-false instead of panicking.
 	defCaps := llm.ModelCapabilities{}
 	if defMeta.Capabilities != nil {
 		defCaps = *defMeta.Capabilities
@@ -2227,7 +2231,10 @@ func (f *FrontendAPI) SetModelConfig(model string, req ModelConfigRequest) error
 		}
 	}
 
-	defMeta, _ := llm.ResolveBuiltInModel(model)
+	defMeta, ok := config.KimiModelDefault(model)
+	if !ok {
+		defMeta, _ = llm.ResolveBuiltInModel(model)
+	}
 	defCaps := llm.ModelCapabilities{}
 	if defMeta.Capabilities != nil {
 		defCaps = *defMeta.Capabilities

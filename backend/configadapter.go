@@ -133,8 +133,9 @@ func ToBuilderConfig(cfg *config.Config, modelProfilesCatalog []config.ModelProf
 		providerConfigs[p.Name] = bpc
 	}
 
-	// Convert model overrides.
-	models := make(map[string]core.BuilderModelOverride, len(cfg.LLM.Models))
+	// Convert model overrides. User overrides win over c0wrk-specific
+	// defaults, which in turn win over the sp4rk built-in catalog.
+	models := make(map[string]core.BuilderModelOverride, len(cfg.LLM.Models)+len(config.KimiModelDefaults()))
 	for name, m := range cfg.LLM.Models {
 		models[name] = core.BuilderModelOverride{
 			ContextWindow:  m.ContextWindow,
@@ -145,6 +146,40 @@ func ToBuilderConfig(cfg *config.Config, modelProfilesCatalog []config.ModelProf
 			Capabilities:   m.Capabilities,
 			RequestTimeout: m.RequestTimeout,
 		}
+	}
+	for name, def := range config.KimiModelDefaults() {
+		merged := core.BuilderModelOverride{
+			ContextWindow: def.ContextWindow,
+			OutputLimit:   def.OutputLimit,
+			TokenizerType: def.TokenizerType,
+			Family:        def.Family,
+			Protocol:      string(def.Protocol),
+			Capabilities:  def.Capabilities,
+		}
+		if user, ok := cfg.LLM.Models[name]; ok {
+			if user.ContextWindow > 0 {
+				merged.ContextWindow = user.ContextWindow
+			}
+			if user.OutputLimit > 0 {
+				merged.OutputLimit = user.OutputLimit
+			}
+			if user.TokenizerType != "" {
+				merged.TokenizerType = user.TokenizerType
+			}
+			if user.Family != "" {
+				merged.Family = user.Family
+			}
+			if user.Protocol != "" {
+				merged.Protocol = user.Protocol
+			}
+			if user.Capabilities != nil {
+				merged.Capabilities = user.Capabilities
+			}
+			if user.RequestTimeout > 0 {
+				merged.RequestTimeout = user.RequestTimeout
+			}
+		}
+		models[name] = merged
 	}
 
 	// Convert tool groups (the security schema); entries are copied verbatim

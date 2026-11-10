@@ -1054,6 +1054,74 @@ func TestGetModelConfig_NilConfig(t *testing.T) {
 	}
 }
 
+func TestGetModelConfig_KimiC0wrkDefault(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+
+	resp, err := f.GetModelConfig("k3.1-pro")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.ContextWindow != 1_000_000 {
+		t.Errorf("ContextWindow = %d, want 1000000", resp.ContextWindow)
+	}
+	if resp.OutputLimit != 131_072 {
+		t.Errorf("OutputLimit = %d, want 131072", resp.OutputLimit)
+	}
+	if resp.Family != string(llm.FamilyKimi) {
+		t.Errorf("Family = %q, want %q", resp.Family, llm.FamilyKimi)
+	}
+	if resp.Protocol != string(llm.ProtocolChatCompletions) {
+		t.Errorf("Protocol = %q, want %q", resp.Protocol, llm.ProtocolChatCompletions)
+	}
+	if !resp.Capabilities.ToolCall || !resp.Capabilities.Reasoning {
+		t.Errorf("Capabilities = %+v, want reasoning + tool_call", resp.Capabilities)
+	}
+	if resp.DefaultContextWindow != 1_000_000 {
+		t.Errorf("DefaultContextWindow = %d, want 1000000", resp.DefaultContextWindow)
+	}
+	if resp.HasOverride {
+		t.Error("HasOverride should be false when the user has no config entry")
+	}
+}
+
+func TestGetModelConfig_KimiForCodingCorrectedDefault(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+
+	resp, err := f.GetModelConfig("kimi-for-coding")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// The c0wrk default corrects the sp4rk built-in (K2.7 Code 256K) to
+	// K2.8 Preview with a 1M context window.
+	if resp.ContextWindow != 1_000_000 {
+		t.Errorf("ContextWindow = %d, want corrected 1000000", resp.ContextWindow)
+	}
+	if resp.DefaultContextWindow != 1_000_000 {
+		t.Errorf("DefaultContextWindow = %d, want corrected 1000000", resp.DefaultContextWindow)
+	}
+	if resp.Family != string(llm.FamilyKimi) {
+		t.Errorf("Family = %q, want %q", resp.Family, llm.FamilyKimi)
+	}
+}
+
+func TestGetModelConfig_KimiC0wrkDefaultUserOverrideWins(t *testing.T) {
+	f, _, _ := newTestAPI(t)
+	f.config.LLM.Models = map[string]config.ModelOverride{
+		"k3.1-pro": {ContextWindow: 250_000},
+	}
+
+	resp, err := f.GetModelConfig("k3.1-pro")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.ContextWindow != 250_000 {
+		t.Errorf("ContextWindow = %d, want user override 250000", resp.ContextWindow)
+	}
+	if resp.DefaultContextWindow != 1_000_000 {
+		t.Errorf("DefaultContextWindow = %d, want c0wrk default 1000000", resp.DefaultContextWindow)
+	}
+}
+
 // --- SetModelConfig ---
 
 func TestSetModelConfig_BothFieldsNonDefault(t *testing.T) {

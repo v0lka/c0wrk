@@ -12,6 +12,7 @@ import (
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/core"
 	coretools "github.com/v0lka/c0wrk/core/tools"
+	"github.com/v0lka/sp4rk/llm"
 	sdktools "github.com/v0lka/sp4rk/tools"
 )
 
@@ -817,5 +818,61 @@ func TestToBuilderConfig_E2SToolsMapping(t *testing.T) {
 	}
 	if len(bc.E2S.Tools.Deny) != 1 || bc.E2S.Tools.Deny[0] != "web_search" {
 		t.Errorf("E2S.Tools.Deny = %v, want [web_search]", bc.E2S.Tools.Deny)
+	}
+}
+
+// TestToBuilderConfig_KimiModelDefaults verifies c0wrk-specific Kimi model
+// metadata is seeded into BuilderConfig.LLM.Models when the user has not
+// overridden a model, and that user overrides win field-by-field.
+func TestToBuilderConfig_KimiModelDefaults(t *testing.T) {
+	cfg := &config.Config{}
+	bc := ToBuilderConfig(cfg, nil)
+
+	for _, name := range []string{"k3.1-pro", "k3.1-pro-highspeed", "kimi-for-coding"} {
+		m, ok := bc.LLM.Models[name]
+		if !ok {
+			t.Errorf("missing c0wrk default model %q in builder config", name)
+			continue
+		}
+		if m.ContextWindow != 1_000_000 {
+			t.Errorf("%s context window = %d, want 1000000", name, m.ContextWindow)
+		}
+		if m.Family != string(llm.FamilyKimi) {
+			t.Errorf("%s family = %q, want %q", name, m.Family, llm.FamilyKimi)
+		}
+		if m.Protocol != string(llm.ProtocolChatCompletions) {
+			t.Errorf("%s protocol = %q, want %q", name, m.Protocol, llm.ProtocolChatCompletions)
+		}
+		if m.Capabilities == nil || !m.Capabilities.ToolCall {
+			t.Errorf("%s capabilities missing tool_call: %+v", name, m.Capabilities)
+		}
+	}
+}
+
+// TestToBuilderConfig_KimiModelDefaultsUserOverridesWin verifies that a user
+// override for a c0wrk-default Kimi model is respected field-by-field while
+// unset fields still inherit the c0wrk default.
+func TestToBuilderConfig_KimiModelDefaultsUserOverridesWin(t *testing.T) {
+	cfg := &config.Config{
+		LLM: config.LLMConfig{
+			Models: map[string]config.ModelOverride{
+				"k3.1-pro": {
+					ContextWindow: 500_000,
+					Family:        string(llm.FamilyDefault),
+				},
+			},
+		},
+	}
+	bc := ToBuilderConfig(cfg, nil)
+
+	m := bc.LLM.Models["k3.1-pro"]
+	if m.ContextWindow != 500_000 {
+		t.Errorf("user context window override = %d, want 500000", m.ContextWindow)
+	}
+	if m.Family != string(llm.FamilyDefault) {
+		t.Errorf("user family override = %q, want %q", m.Family, llm.FamilyDefault)
+	}
+	if m.OutputLimit != 131_072 {
+		t.Errorf("unset output limit should inherit c0wrk default = %d, want 131072", m.OutputLimit)
 	}
 }
