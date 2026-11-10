@@ -58,9 +58,13 @@ type GitMonitor struct {
 // DefaultBranch for non-git directories. Unexpected git errors propagate —
 // no silent fallback.
 func CurrentBranch(ctx context.Context, repoPath string) (string, error) {
-	// Fast-path: explicitly non-git directory.
+	// Fast-path: explicitly non-git directory. ErrNotExist alone is not
+	// ".git absent": a repoPath that is a regular FILE stats as ENOTDIR on
+	// POSIX but as ErrNotExist on Windows (see traversesNonDirectory), and
+	// trusting the Windows shape would hand a broken workspace path a
+	// DefaultBranch instead of the git failure the caller must surface.
 	gitDir := filepath.Join(repoPath, ".git")
-	if _, err := os.Stat(gitDir); os.IsNotExist(err) {
+	if _, err := os.Stat(gitDir); os.IsNotExist(err) && !traversesNonDirectory(err, gitDir) {
 		return DefaultBranch, nil
 	}
 
