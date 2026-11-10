@@ -3,6 +3,7 @@ package backend
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -440,9 +441,19 @@ func (f *FrontendAPI) vectorIndexStatusFromRegistryError(err error) VectorIndexS
 		result.LastError = err.Error()
 	default:
 		// Building/initializing a manager failed: the embedder never came up
-		// or the store rejected the root. Settled, not transient.
+		// or the store rejected the root. The kind rides the SAME taxonomy
+		// the manager's own failures use (ClassifyInitError), so one cause
+		// keeps one verdict whichever layer surfaced it — an EACCES/ENOSPC
+		// while creating the storage directories stays `transient` (a retry
+		// after the fault clears can succeed), and only genuinely settled
+		// failures read `fatal`. A nil error cannot reach this branch; the
+		// fallback keeps the wire kind non-empty regardless.
 		result.State = vectorStateUnavailable
-		result.ErrorKind = string(vectorindex.IndexErrorKindFatal)
+		kind := vectorindex.ClassifyInitError(err)
+		if kind == "" {
+			kind = vectorindex.IndexErrorKindUnknown
+		}
+		result.ErrorKind = string(kind)
 		result.LastError = vectorindex.InitFailureReason(err)
 	}
 	return result
@@ -517,7 +528,11 @@ func (f *FrontendAPI) ReindexVectorIndex() error {
 
 	vm, err := f.vectorRootsRegistry().FocusManager(f.ctx())
 	if err != nil {
-		return errors.New("vector index not available")
+		// Carry the routing cause instead of a bare refusal: the frontend
+		// surfaces the rejection (a runtime_error toast), and the honest
+		// cause names the actual remedy (a dead embedder, a missing focus
+		// root, the shutdown window) instead of a generic "not available".
+		return fmt.Errorf("vector index not available: %w", err)
 	}
 
 	return vm.Reindex(f.ctx())

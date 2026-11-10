@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { reindexVectorIndex } from '@/api/vector'
-import { subscribe } from '@/api/runtime'
+import { emit, subscribe } from '@/api/runtime'
+import { generateUUID } from '@/lib/ids'
 import { useProjectStore } from '@/stores/projectStore'
 import { useVectorIndexStore } from '@/stores/vectorIndexStore'
 
@@ -13,14 +14,19 @@ import { useVectorIndexStore } from '@/stores/vectorIndexStore'
  * legacy store promotion) — or while a request is pending (see the
  * optimistic latch below). A terminal `unavailable` index state (a failed
  * open or attach failure) runs the action WITHOUT a spinning pass — nothing
- * is running, and a plain reconcile cannot repair it. The action therefore
- * stays ENABLED in this state — it is the user's repair path: with no live
+ * is running, and a plain reconcile cannot repair it — and the action is the
+ * user's repair path exactly for the failure kinds a repair addresses
+ * (`error_kind` `repairable` / `transient` / `unknown`): with no live
  * collection the backend re-attaches the snapshot view, which rejects an
  * unopenable corpus as unpublished and rebuilds it from source
  * (cache-spared), so the busy tooltip reads "Repairing index…" rather than an
- * incremental reindex. In No Project (CHAT
- * mode), where the vector index is disabled, the action is hidden entirely
- * instead of being rendered disabled.
+ * incremental reindex. Registry-level kinds (`fatal` — e.g. the embedder
+ * never came up; `no_target`; `shutting_down`) deterministically reject the
+ * RPC before any repair, so the action renders DISABLED with a
+ * reason-specific title there, and a rejection that still slips through is
+ * surfaced as a runtime_error toast instead of a silent no-op. In No Project
+ * (CHAT mode), where the vector index is disabled, the action is hidden
+ * entirely instead of being rendered disabled.
  *
  * Extracted from FileTreePanel when the button moved to the search panel's
  * mode-selector row (hybrid/vector/lexical); ADR-064 later folded the
@@ -49,12 +55,24 @@ export function useVectorReindex() {
   const isAttaching = indexState === 'preparing' || indexState === 'migration-rebuild'
   // `unavailable` is terminal, not busy: a failed open/attach left no
   // collection, so there is nothing to validate or add to and the action
-  // renders WITHOUT the busy spinner. It stays ENABLED: the backend escalates
-  // a no-op reindex into a repair (re-attach the snapshot view, which rebuilds
-  // an unopenable corpus from source), so this is the user's escape hatch — no
-  // branch switch or project reopen (which cannot fix a durable corpus defect
-  // and does not even re-run the attach for a cached manager) is required.
+  // renders WITHOUT the busy spinner. Whether it stays ENABLED is decided by
+  // the failure KIND (`error_kind` on the same status): the repair escalation
+  // addresses exactly the manager-level kinds — `repairable` (a proven store
+  // defect; the rebuild heals it), `transient` (an OS fault; the re-attach
+  // retries the open once the fault clears) and the defensive `unknown` /
+  // missing kind (a classification gap must not dead-end the user). The
+  // registry-level kinds deterministically REJECT the RPC before any repair
+  // runs — `fatal` (the embedder never came up; the remedy is the model
+  // install in Settings, not a rebuild), `no_target` (no focus root to
+  // reindex), `shutting_down` — so for those the action renders disabled with
+  // a reason-specific title instead of a click that can only fail.
   const isIndexUnavailable = indexState === 'unavailable'
+  const errorKind = useVectorIndexStore((s) => s.status.error_kind)
+  // Absent kind (`omitempty` on the wire, or a hand-crafted status) is the
+  // defensive branch: enable rather than dead-end the user on a gap.
+  const repairKindSupported =
+    !errorKind || errorKind === 'repairable' || errorKind === 'transient' || errorKind === 'unknown'
+  const repairUnsupported = isIndexUnavailable && !repairKindSupported
   // `disabled` (ADR-103) is terminal the same way: the master switch is off,
   // the registry is parked (every reindex RPC fails fast), and only Settings
   // can change it. Disabled without the spinner, with its own tooltip.
@@ -66,14 +84,16 @@ export function useVectorReindex() {
   // `vector_index:status` event the store still reports the previous (non-busy)
   // state, so without this flag a quick second click would fire a duplicate
   // reindex RPC. It is released as soon as the store reflects the busy state
-  // (isBusy) — from then on isBusy owns the disabled state — or when the
-  // project becomes unavailable or the RPC rejects.
+  // (isBusy) — from then on isBusy owns the disabled state — when the project
+  // becomes unavailable, when the RPC resolves (the pass is scheduled; a
+  // duplicate click merely restarts the cancel-and-restart pass), or when the
+  // RPC rejects.
   const [reindexRequested, setReindexRequested] = useState(false)
   const reindexBusy = isBusy || reindexRequested
   // The disabled set the button renders from: busy (a pass or the optimistic
-  // latch) OR the master-switch-off terminal state. `unavailable` is NOT in it
-  // — that is the repair path (see isIndexUnavailable above).
-  const reindexDisabled = reindexBusy || isIndexDisabled
+  // latch), the master-switch-off terminal state, or an `unavailable` whose
+  // kind the repair cannot address (see repairUnsupported above).
+  const reindexDisabled = reindexBusy || isIndexDisabled || repairUnsupported
 
   // The action's tooltip names the REAL reason it is disabled, so pre-work is
   // never labelled a reindex pass — the same honesty rule the status-bar pill
@@ -92,8 +112,19 @@ export function useVectorReindex() {
     isIndexUnavailable
       ? 'Repairing index…'
       : (isOpening || isAttaching) && !reindexRequested ? preWorkTitle : 'Reindexing...'
-  const reindexDisabledTitle =
-    isIndexDisabled && !reindexBusy
+  // The reason-specific title for an `unavailable` whose kind the repair
+  // cannot address — the same honesty rule as every other disabled state: the
+  // title names why a click would not help, and the inline `last_error` line
+  // in the panel names the actual cause/remedy.
+  const repairUnsupportedTitle =
+    errorKind === 'no_target'
+      ? 'No focused workspace to reindex'
+      : errorKind === 'shutting_down'
+        ? 'App is shutting down'
+        : 'A rebuild cannot fix this failure — see the status cause below'
+  const reindexDisabledTitle = repairUnsupported && !reindexBusy
+    ? repairUnsupportedTitle
+    : isIndexDisabled && !reindexBusy
       ? 'Indexing is off — enable it in Settings → Search'
       : reindexBusyTitle
   // The action label for an ENABLED button: an unavailable index is rebuilt
@@ -129,17 +160,39 @@ export function useVectorReindex() {
   const handleReindex = useCallback(() => {
     // Fire-and-forget: the pass runs in the background and reports progress via
     // vector_index:status. Guard against re-entry before the store has observed
-    // the busy status (see reindexRequested above) and against the
-    // master-switch-off state. `unavailable` is deliberately NOT guarded: with
-    // no live collection the backend escalates the request into a repair.
-    if (isBusy || isIndexDisabled || reindexRequested) return
+    // the busy status (see reindexRequested above), against the
+    // master-switch-off state, and against an `unavailable` whose kind the
+    // repair cannot address (the RPC rejects it before any pass). A supported
+    // `unavailable` is deliberately NOT guarded: with no live collection the
+    // backend escalates the request into a repair.
+    if (isBusy || isIndexDisabled || repairUnsupported || reindexRequested) return
     setReindexRequested(true)
-    reindexVectorIndex().catch(() => {
-      // The request never reached a running pass (No Project / no wired
-      // manager / transient failure) — release the latch so a retry is possible.
-      setReindexRequested(false)
-    })
-  }, [isBusy, isIndexDisabled, reindexRequested])
+    reindexVectorIndex()
+      .then(() => {
+        // The RPC resolved — the pass is scheduled. Release the latch: the
+        // first busy status event takes over the disabled state, and until it
+        // lands a duplicate click merely restarts the pass (Reindex cancels
+        // any in-flight one first) instead of firing a parallel request.
+        setReindexRequested(false)
+      })
+      .catch((err: unknown) => {
+        // The request never reached a running pass — release the latch so a
+        // retry is possible, and surface the refusal through the app-wide
+        // runtime_error toast: a click that only logs to the console reads
+        // as a broken repair action. The backend error carries the routing
+        // cause (embedder, shutdown, no target), which names the real remedy.
+        setReindexRequested(false)
+        const message = err instanceof Error ? err.message : String(err)
+        // generateUUID, never the raw crypto.randomUUID: this UI is also
+        // served over plain HTTP on non-loopback addresses by the web-access
+        // sidecar (ADR-101), where randomUUID is absent and the raw call
+        // would throw INSIDE the catch — no toast, an unhandled rejection.
+        emit('runtime_error', {
+          id: generateUUID(),
+          message: `Rebuild index failed: ${message}`,
+        })
+      })
+  }, [isBusy, isIndexDisabled, repairUnsupported, reindexRequested])
 
   return {
     reindexBusy,

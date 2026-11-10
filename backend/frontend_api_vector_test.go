@@ -360,7 +360,9 @@ func TestReindexVectorIndex_NoFocusRoot(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when no focus root is set")
 	}
-	if err.Error() != "vector index not available" {
+	// The refusal carries the routing cause (the frontend surfaces it as a
+	// runtime_error toast), instead of a bare "not available" string.
+	if !strings.HasPrefix(err.Error(), "vector index not available: ") {
 		t.Errorf("unexpected error message: %v", err)
 	}
 }

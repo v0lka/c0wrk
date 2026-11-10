@@ -592,11 +592,21 @@ func (idx *Indexer) AttachSnapshot(ctx context.Context, workspacePath, legacyBra
 	}
 	scope := QuarantineScopeOf(err)
 	if scope == QuarantineNoStore {
-		// No store defect is proven — a transient OS fault, or a defect the
+		// No store defect is proven — a transient OS fault, or a failure the
 		// store cannot own (a degenerate workspace: "no indexable files", an
-		// incomplete walk) — so the publication stays, no artifact is
-		// destroyed, and the caller surfaces unavailable with this cause.
-		return fmt.Errorf("%w (transient fault: the publication stays, nothing was quarantined)", err)
+		// incomplete walk; a congested build wait; a git-identity failure) —
+		// so the publication stays, no artifact is destroyed, and the caller
+		// surfaces unavailable with this cause. The suffix names the class
+		// honestly: only a genuinely TRANSIENT fault says "transient"
+		// (retry later) — the same word rendered beside `error_kind:
+		// transient`; every other no-store outcome (a fatal
+		// git-identity/wiring failure, a degenerate workspace, a busy or
+		// expired build lease) gets the class-neutral form, so the message
+		// never contradicts the kind the same surface reports.
+		if Transient(err) {
+			return fmt.Errorf("%w (transient fault: the publication stays, nothing was quarantined)", err)
+		}
+		return fmt.Errorf("%w (nothing was quarantined: the publication stays intact)", err)
 	}
 	rootKey := overlayRootKey(workspacePath)
 	idx.logger.Warn("vector attach: proven store defect; quarantining the affected store and retrying once",

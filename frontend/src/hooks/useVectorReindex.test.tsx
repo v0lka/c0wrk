@@ -14,21 +14,37 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
 const reindexSpy = vi.hoisted(() => vi.fn())
+const emitSpy = vi.hoisted(() => vi.fn())
 
 vi.mock('@/api/vector', () => ({
   reindexVectorIndex: reindexSpy,
 }))
 
+// The hook's other runtime touchpoints: `subscribe` (the missed-status
+// release) as a no-op — these tests drive the store directly — and `emit`
+// spied, because a rejected reindex RPC must surface through the app-wide
+// runtime_error toast instead of a console-only log.
+vi.mock('@/api/runtime', () => ({
+  emit: emitSpy,
+  subscribe: () => () => {},
+}))
+
 import { useVectorReindex } from '@/hooks/useVectorReindex'
 import { useVectorIndexStore } from '@/stores/vectorIndexStore'
 import { useProjectStore } from '@/stores/projectStore'
-import type { VectorIndexStatus } from '@/types/models'
+import type { VectorIndexErrorKind, VectorIndexStatus } from '@/types/models'
 
 const statusWith = (state: VectorIndexStatus['state']): VectorIndexStatus => ({
   state,
   progress: 0,
   files_indexed: 0,
   total_files: 0,
+})
+
+const unavailableWith = (kind?: VectorIndexErrorKind): VectorIndexStatus => ({
+  ...statusWith('unavailable'),
+  last_error: kind ? `the backend's own cause (${kind})` : undefined,
+  error_kind: kind,
 })
 
 // Harness: capture the latest hook return so tests can assert and click.
@@ -44,12 +60,22 @@ function hook(): ReturnType<typeof useVectorReindex> {
   return latest
 }
 
+/** Flushes the reindex RPC's promise settlement inside act, so the latch's
+ *  release-on-resolve/reject (a React state update in a microtask) never
+ *  lands outside act and warn. */
+async function settleRpc() {
+  await act(async () => {
+    await Promise.resolve()
+  })
+}
+
 let container: HTMLElement
 let root: Root
 
 beforeEach(() => {
   reindexSpy.mockReset()
   reindexSpy.mockResolvedValue(undefined)
+  emitSpy.mockClear()
   act(() => {
     useVectorIndexStore.getState().reset()
     useProjectStore.setState({ activeProjectId: 'proj-1' })
@@ -85,7 +111,7 @@ describe('useVectorReindex — the terminal unavailable state', () => {
     )
   })
 
-  it('fires the reindex RPC while the index is unavailable (the backend escalates to a rebuild)', () => {
+  it('fires the reindex RPC while the index is unavailable (the backend escalates to a rebuild)', async () => {
     act(() => {
       useVectorIndexStore.setState({ status: statusWith('unavailable') })
     })
@@ -100,9 +126,10 @@ describe('useVectorReindex — the terminal unavailable state', () => {
     // its label names the repair rather than an incremental pass.
     expect(hook().reindexBusy).toBe(true)
     expect(hook().reindexBusyTitle).toBe('Repairing index…')
+    await settleRpc()
   })
 
-  it('releases a pending optimistic latch when the index turns unavailable', () => {
+  it('releases a pending optimistic latch when the index turns unavailable', async () => {
     act(() => {
       useVectorIndexStore.setState({ status: statusWith('ready') })
     })
@@ -121,6 +148,7 @@ describe('useVectorReindex — the terminal unavailable state', () => {
     })
     expect(hook().reindexBusy).toBe(false)
     expect(hook().reindexDisabled).toBe(false)
+    await settleRpc()
   })
 })
 
@@ -150,7 +178,7 @@ describe('useVectorReindex — the ADR-104 stage-2 pre-work states', () => {
     },
   )
 
-  it('releases a pending optimistic latch when the index enters pre-work', () => {
+  it('releases a pending optimistic latch when the index enters pre-work', async () => {
     act(() => {
       useVectorIndexStore.setState({ status: statusWith('ready') })
     })
@@ -170,6 +198,7 @@ describe('useVectorReindex — the ADR-104 stage-2 pre-work states', () => {
     })
     expect(hook().reindexBusy).toBe(true)
     expect(hook().reindexDisabledTitle).toBe('Preparing index…')
+    await settleRpc()
   })
 })
 
@@ -186,7 +215,7 @@ describe('useVectorReindex — busy states (unchanged)', () => {
     expect(hook().reindexDisabledTitle).toBe('Opening the index…')
   })
 
-  it('reports a plain click as busy during the optimistic latch', () => {
+  it('reports a plain click as busy during the optimistic latch', async () => {
     act(() => {
       useVectorIndexStore.setState({ status: statusWith('ready') })
     })
@@ -202,5 +231,118 @@ describe('useVectorReindex — busy states (unchanged)', () => {
     expect(hook().reindexBusy).toBe(true)
     expect(hook().reindexDisabled).toBe(true)
     expect(hook().reindexDisabledTitle).toBe('Reindexing...')
+    await settleRpc()
+  })
+})
+
+describe('useVectorReindex — the repair gate (error_kind)', () => {
+  // The kinds the repair escalation actually addresses: a proven store
+  // defect, an OS fault (the re-attach retries the open once it clears), the
+  // defensive unknown, and a missing kind (never dead-end the user).
+  it.each([
+    ['repairable'],
+    ['transient'],
+    ['unknown'],
+    [undefined],
+  ] as const)('keeps the repair action enabled for an unavailable index of kind %s', async (kind) => {
+    act(() => {
+      useVectorIndexStore.setState({ status: unavailableWith(kind) })
+    })
+    act(() => {
+      root.render(<Harness />)
+    })
+    expect(hook().reindexDisabled).toBe(false)
+    expect(hook().reindexBusy).toBe(false)
+    expect(hook().reindexActionTitle).toBe(
+      'Rebuild index — recreate the broken index from source',
+    )
+    act(() => {
+      hook().handleReindex()
+    })
+    expect(reindexSpy).toHaveBeenCalledTimes(1)
+    await settleRpc()
+  })
+
+  // The registry-level kinds deterministically reject the RPC before any
+  // repair runs (a dead embedder, no focus root, the shutdown window), so the
+  // action must not promise a fix it cannot deliver — and must not fire the
+  // doomed request either.
+  it.each([
+    ['fatal', 'A rebuild cannot fix this failure — see the status cause below'],
+    ['no_target', 'No focused workspace to reindex'],
+    ['shutting_down', 'App is shutting down'],
+  ] as const)(
+    'disables the action with a reason-specific title for kind %s and never fires the RPC',
+    (kind, title) => {
+      act(() => {
+        useVectorIndexStore.setState({ status: unavailableWith(kind) })
+      })
+      act(() => {
+        root.render(<Harness />)
+      })
+      expect(hook().reindexDisabled).toBe(true)
+      // Not busy: nothing is running, so no spinner — the disabled state is
+      // the kind gate, exactly like the terminal `disabled` state.
+      expect(hook().reindexBusy).toBe(false)
+      expect(hook().reindexDisabledTitle).toBe(title)
+      act(() => {
+        hook().handleReindex()
+      })
+      expect(reindexSpy).not.toHaveBeenCalled()
+      expect(emitSpy).not.toHaveBeenCalled()
+    },
+  )
+})
+
+describe('useVectorReindex — the RPC settlement', () => {
+  it('releases the optimistic latch when the RPC resolves (the pass is scheduled)', async () => {
+    act(() => {
+      useVectorIndexStore.setState({ status: statusWith('ready') })
+    })
+    act(() => {
+      root.render(<Harness />)
+    })
+    act(() => {
+      hook().handleReindex()
+    })
+    expect(hook().reindexBusy).toBe(true)
+    // The RPC resolves once the pass is scheduled: the latch releases (the
+    // first busy status event owns the disabled state from then on; until it
+    // lands a duplicate click merely restarts the cancel-and-restart pass).
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(hook().reindexBusy).toBe(false)
+    expect(hook().reindexDisabled).toBe(false)
+  })
+
+  it('releases the latch and surfaces a runtime_error toast when the RPC rejects', async () => {
+    reindexSpy.mockRejectedValueOnce(
+      new Error('vector index not available: vector search not ready'),
+    )
+    act(() => {
+      useVectorIndexStore.setState({ status: statusWith('ready') })
+    })
+    act(() => {
+      root.render(<Harness />)
+    })
+    act(() => {
+      hook().handleReindex()
+    })
+    expect(hook().reindexBusy).toBe(true)
+    await act(async () => {
+      await Promise.resolve()
+    })
+    // The refusal is never a silent no-op: the latch releases for a retry
+    // and the app-wide toast carries the backend's routing cause.
+    expect(hook().reindexBusy).toBe(false)
+    expect(emitSpy).toHaveBeenCalledTimes(1)
+    expect(emitSpy).toHaveBeenCalledWith(
+      'runtime_error',
+      expect.objectContaining({
+        id: expect.any(String),
+        message: 'Rebuild index failed: vector index not available: vector search not ready',
+      }),
+    )
   })
 })

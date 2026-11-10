@@ -64,12 +64,14 @@ const (
 	// The suffix is the root fingerprint (identity.go), so a root's overlay
 	// is stable across sessions and unique per physical tree.
 	overlayKeyPrefix = "root_"
-
-	// corpusBuildWait bounds how long a non-building attacher waits for an
-	// in-flight corpus build (the single-flight lease's drain window). On
-	// expiry the attach fails closed — it never opens a parallel store.
-	corpusBuildWait = 10 * time.Minute
 )
+
+// corpusBuildWait bounds how long a non-building attacher waits for an
+// in-flight corpus build (the single-flight lease's drain window). On
+// expiry the attach fails closed — it never opens a parallel store. A var
+// (not a const) so tests can shrink the window; the value is only read at
+// wait time and never mutated outside tests.
+var corpusBuildWait = 10 * time.Minute
 
 // Sentinel errors of the corpus layer. Fail-closed attach semantics
 // (ADR-104): an attach that cannot open the exact snapshot's corpus NEVER
@@ -124,6 +126,12 @@ func Transient(err error) bool {
 		return false
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	// An expired wait for someone else's build is the same class of
+	// interruption as a deadline: it proves congestion, nothing about the
+	// store (see errCorpusBuildOvertime).
+	if errors.Is(err, errCorpusBuildOvertime) {
 		return true
 	}
 	return errors.Is(err, fs.ErrPermission) || errors.Is(err, syscall.ENOSPC) ||
@@ -201,6 +209,16 @@ func (q QuarantineScope) String() string {
 // an unclassified failure.
 var errCorpusBuildBusy = errors.New("corpus store is owned by an unsettled build")
 
+// errCorpusBuildOvertime reports that the bounded wait for another attacher's
+// in-flight corpus build expired (corpusBuildWait). Like errCorpusBuildBusy
+// it is deliberately NOT part of the sentinel family above: an expired wait
+// is CONGESTION, not a verdict on the store — the builder may still be
+// mid-pass and publish a perfectly healthy corpus moments later — so
+// Repairable must not read it as a proven defect (the quarantine path would
+// destroy exactly that publication) and Transient classifies it as the
+// interruption it is: retry once the machine is less loaded.
+var errCorpusBuildOvertime = errors.New("timed out waiting for a concurrent corpus build to settle")
+
 // QuarantineScopeOf classifies an attach failure into the store a repair may
 // destroy. A transient fault proves nothing about the store, so it yields
 // QuarantineNoStore (the publication stays, the caller reports the cause);
@@ -263,8 +281,10 @@ func (m *CorpusManifest) compatible(embeddingFP string, dims int) bool {
 
 // readCorpusManifest loads a corpus publication record; nil (no error) when
 // absent or unparsable — absence means "not published", never "trust the
-// directory".
-func readCorpusManifest(branchRoot string) *CorpusManifest {
+// directory". A var (like newPersistentDB) so a test can steer the reads of
+// one snapshot deterministically across the quarantine path's two
+// publication checks.
+var readCorpusManifest = func(branchRoot string) *CorpusManifest {
 	data, err := safeio.ReadFile(filepath.Join(branchRoot, corpusManifestName))
 	if err != nil {
 		return nil
@@ -526,25 +546,30 @@ func (cs *corpusStore) liveBuildLeases() map[string]struct{} {
 	return leases
 }
 
-// waitBuild blocks until the given in-flight build settles; ok is false
-// when the build expired (corpusBuildWait) or failed to publish under the
-// given era.
-func (cs *corpusStore) waitBuild(waitCh <-chan struct{}, key, embeddingFP string, dims int) bool {
-	return cs.waitBuildFor(waitCh, key, embeddingFP, dims, corpusBuildWait)
-}
-
-// waitBuildFor is waitBuild with a caller-supplied bound. The unified store
-// migration uses a short one: a sweep that loses the lease to a live corpus
-// build defers the unit to its next run instead of parking for the attach
-// path's full drain window — the sweep is background hygiene, never a
-// blocker of the opened view.
-func (cs *corpusStore) waitBuildFor(waitCh <-chan struct{}, key, embeddingFP string, dims int, bound time.Duration) bool {
+// waitBuildOutcome blocks until the given in-flight build settles and tells
+// the two failure modes apart: settled reports whether the build settled
+// within the bound (false = the wait expired), published whether its outcome
+// is an era-compatible publication. Callers that must never destroy a
+// possibly-healthy concurrent build (the quarantine path) need the
+// distinction; plain waiters only need published.
+func (cs *corpusStore) waitBuildOutcome(waitCh <-chan struct{}, key, embeddingFP string, dims int, bound time.Duration) (settled, published bool) {
 	select {
 	case <-waitCh:
-		return cs.publishedCompatible(key, embeddingFP, dims)
+		return true, cs.publishedCompatible(key, embeddingFP, dims)
 	case <-time.After(bound):
-		return false
+		return false, false
 	}
+}
+
+// waitBuildFor blocks until the given in-flight build settles; ok is false
+// when the build expired (the caller's bound) or failed to publish under the
+// given era. The unified store migration uses a short one: a sweep that
+// loses the lease to a live corpus build defers the unit to its next run
+// instead of parking for the attach path's full drain window — the sweep is
+// background hygiene, never a blocker of the opened view.
+func (cs *corpusStore) waitBuildFor(waitCh <-chan struct{}, key, embeddingFP string, dims int, bound time.Duration) bool {
+	settled, published := cs.waitBuildOutcome(waitCh, key, embeddingFP, dims, bound)
+	return settled && published
 }
 
 // open returns the shared handle for key's published corpus, fail-closed:
@@ -1123,13 +1148,47 @@ func removeQuarantinedStore(storageRoot, key string, scope QuarantineScope) erro
 func (cs *corpusStore) quarantineCorpusStore(ctx context.Context, key, embeddingFP string, dims int) error {
 	started, waitCh := cs.beginBuild(key)
 	if !started {
-		cs.waitBuildFor(waitCh, key, embeddingFP, dims, corpusBuildWait)
+		// A concurrent build owned the lease. A SETTLED-but-unpublished
+		// build proceeds to the removal below (its lease is gone and the
+		// store still holds the defect we came to remove); a live
+		// PUBLICATION aborts the quarantine: it is a fresh full rebuild
+		// whose artifacts are healthy by construction, and the congestion
+		// that led here proved nothing about them.
+		_, published := cs.waitBuildOutcome(waitCh, key, embeddingFP, dims, corpusBuildWait)
+		if published {
+			cs.logger.Info("vector corpus: quarantine aborted — the concurrent build published a compatible corpus",
+				"snapshot", key)
+			return nil
+		}
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("waiting for the corpus build lease: %w", err)
 		}
 		started, _ = cs.beginBuild(key)
 		if !started {
 			return fmt.Errorf("%w: %s", errCorpusBuildBusy, key)
+		}
+		// Defense in depth for the gap between the expired wait and this
+		// lease: a build that settled right after the bound may have
+		// published in that window, and that publication is a fresh full
+		// rebuild — removing it would destroy the exact healthy corpus the
+		// caller's retry attach is about to open. This mirror of
+		// EnsureCorpus's entry check is deliberately scoped to the
+		// concurrent-build path ONLY: on the direct path (no wait) the
+		// store still holds the defect the caller PROVED, and a
+		// published-looking but unopenable corpus is exactly what the
+		// quarantine exists to remove.
+		if cs.publishedCompatible(key, embeddingFP, dims) {
+			// The retry acquired the lease, so this return OWNS it: settle
+			// it or the snapshot is wedged for the process lifetime (every
+			// later attacher first drains the full corpusBuildWait against
+			// a channel nobody will close, and the reachability sweep can
+			// never reclaim the corpus). A nil settle is the honest result
+			// for any waiter: they re-check the publication, which is
+			// exactly why we skipped.
+			cs.endBuild(key, nil)
+			cs.logger.Info("vector corpus: quarantine skipped — a compatible corpus appeared with the lease",
+				"snapshot", key)
+			return nil
 		}
 	}
 	err := removeQuarantinedStore(cs.root, key, QuarantineCorpusStore)
@@ -1304,10 +1363,21 @@ func (r *CorpusRegistry) EnsureCorpus(ctx context.Context, storageRoot, key, leg
 	if !started {
 		// Someone else is building this corpus: wait bounded, then read the
 		// published result — never open a parallel store (single-writer).
-		if !cs.waitBuild(waitCh, key, embeddingFP, dims) {
-			return fmt.Errorf("%w: concurrent corpus build for %s did not complete", ErrCorpusNotPublished, key)
+		// The two failure modes are deliberately distinct errors: an
+		// EXPIRED wait is congestion (errCorpusBuildOvertime — a transient
+		// outcome that proves nothing about the store, so the publication
+		// stays and the repair ladder must not quarantine it), while a
+		// SETTLED build without a compatible publication is the store's own
+		// verdict (ErrCorpusNotPublished — the repair ladder owns it).
+		settled, published := cs.waitBuildOutcome(waitCh, key, embeddingFP, dims, corpusBuildWait)
+		switch {
+		case published:
+			return nil
+		case settled:
+			return fmt.Errorf("%w: concurrent corpus build for %s finished without a compatible publication", ErrCorpusNotPublished, key)
+		default:
+			return fmt.Errorf("%w: concurrent corpus build for %s did not settle within %s", errCorpusBuildOvertime, key, corpusBuildWait)
 		}
-		return nil
 	}
 	buildErr := func() error {
 		migrated, reason, mErr := cs.promoteLegacyStore(storageRoot, legacyBranch, key, embeddingFP, dims)

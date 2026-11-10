@@ -3,6 +3,7 @@ package vectorindex
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -227,11 +228,18 @@ type ProjectCallbacks struct {
 type Manager struct {
 	service *Service
 
-	indexer     *Indexer
-	gitMonitor  *GitMonitor
-	indexCancel context.CancelFunc
-	indexCtx    context.Context
-	mu          sync.RWMutex
+	indexer *Indexer
+	// projectCallbacks carries the SwitchProject status callbacks (the
+	// backend's focused-root emitters) so a LATER pass on the same project —
+	// the Reindex repair — can surface a terminal failure exactly like
+	// initProject does, instead of leaving the status in whatever busy state
+	// the failed pass last reported. Replaced under m.mu on every
+	// SwitchProject; the No-Project reset clears it.
+	projectCallbacks ProjectCallbacks
+	gitMonitor       *GitMonitor
+	indexCancel      context.CancelFunc
+	indexCtx         context.Context
+	mu               sync.RWMutex
 
 	debounceMu    sync.Mutex
 	debounceTimer *time.Timer
@@ -537,6 +545,7 @@ func (m *Manager) SwitchProject(projectID, workspacePath, vectorIndexFullPath st
 			m.gitMonitor = nil
 		}
 		m.indexer = nil
+		m.projectCallbacks = ProjectCallbacks{}
 		m.workspacePath = ""
 		m.storageRoot = ""
 		m.mu.Unlock()
@@ -598,6 +607,9 @@ func (m *Manager) SwitchProject(projectID, workspacePath, vectorIndexFullPath st
 	initCtx, initCancel := context.WithCancel(context.Background())
 	m.mu.Lock()
 	m.initCancel = initCancel
+	// The callbacks outlive initProject: the Reindex repair reuses them to
+	// surface its own terminal failures (see Reindex's notifyRepairFailure).
+	m.projectCallbacks = cbs
 	m.mu.Unlock()
 	var embeddingCachePath string
 	if len(embeddingCachePaths) > 0 {
@@ -1093,11 +1105,12 @@ func (m *Manager) wrapProgress(userFn ProgressCallback) ProgressCallback {
 	}
 }
 
-// notifyInitFailure surfaces an async init failure to the caller (OnFailure)
-// and records the terminal "unavailable" state so GetIndexStatus reflects
-// that vector search is disabled for the active project, not a stale prior
-// state. Called from initProject's init-fatal paths; the caller then flips
-// readiness to true so WaitReady unblocks.
+// notifyInitFailure surfaces an async terminal failure (an initProject
+// init-fatal path, or a failed Reindex repair pass) to the caller
+// (OnFailure) and records the terminal "unavailable" state so GetIndexStatus
+// reflects that vector search is disabled for the active project, not a
+// stale prior state. Init callers flip readiness to true afterwards so
+// WaitReady unblocks; repair callers do not (readiness was never dropped).
 func (m *Manager) notifyInitFailure(cbs ProjectCallbacks, err error) {
 	m.statusMu.Lock()
 	m.currentState = IndexStateUnavailable
@@ -1340,6 +1353,19 @@ func (m *Manager) handleBranchSwitch(ctx context.Context, indexer *Indexer, work
 	}
 }
 
+// errLegacyRepairNoop is the terminal cause recorded when the reindex repair
+// is requested in legacy (corpus-disabled) mode: there is no shared corpus to
+// rebuild, so the repair action genuinely cannot help — the open is retried
+// by a branch switch or a project reopen. Fatal by the store taxonomy (a
+// rebuild promises nothing here), with the remedy named in the reason.
+var errLegacyRepairNoop = errors.New("legacy mode has no corpus to rebuild; switch branches or reopen the project to retry the open")
+
+// errRepairNoCollection is the terminal cause recorded when a snapshot-view
+// repair reported success yet left the service without a collection — a
+// contract breach between the attach and the service binding, not a store
+// defect a rebuild is proven to heal.
+var errRepairNoCollection = errors.New("the snapshot view repair finished without a collection; see the session log")
+
 // Reindex reconciles the active project's index against the workspace
 // (only changed/new/deleted files; empty collection → full build). The
 // workspace path is the one stored during SwitchProject and is read together
@@ -1384,6 +1410,40 @@ func (m *Manager) Reindex(ctx context.Context) error {
 	}
 	go func() {
 		defer m.indexingWG.Done()
+		// notifyRepairFailure publishes the terminal outcome of a FAILED
+		// repair exactly like initProject's init-fatal paths: by the time a
+		// repair fails, its own progress callbacks have already reported a
+		// busy window (preparing / migration-rebuild / loading), and without
+		// a terminal status the UI would spin on that state forever with the
+		// reindex action disabled — the dead end this ladder exists to
+		// remove. Superseded passes (a newer reindex, a project switch or a
+		// shutdown cancelled this one) stay silent: the newer pass owns the
+		// status now, and a cancelled operation is never a verdict.
+		//
+		// The currency check reads m.indexCtx under m.mu but the status is
+		// written under statusMu inside notifyInitFailure, so a newer pass
+		// CAN install its context in that gap and briefly have this pass's
+		// terminal unavailable land after the newer pass's first busy
+		// report. The blip is bounded and self-healing: the newer pass's
+		// next progress event overwrites it, and the worst case is the
+		// action flashing enabled mid-repair (a duplicate click merely
+		// restarts the cancel-and-restart pass). Re-checking currency
+		// inside the status write would couple m.mu with the callback
+		// emission for no observable gain.
+		notifyRepairFailure := func(err error) {
+			if context.Cause(indexCtx) != nil {
+				return
+			}
+			m.mu.RLock()
+			cbs := m.projectCallbacks
+			current := m.indexCtx == indexCtx
+			m.mu.RUnlock()
+			if !current {
+				m.logger.Info("vector index repair outcome dropped: pass superseded", "error", err)
+				return
+			}
+			m.notifyInitFailure(cbs, err)
+		}
 		col := m.service.GetCollection()
 		if col == nil {
 			// Nothing to reconcile into: a failed open/attach left the
@@ -1401,11 +1461,13 @@ func (m *Manager) Reindex(ctx context.Context) error {
 			// by the next SwitchBranch — so only that mode stays a no-op.
 			if !m.service.CorpusEnabled() {
 				m.logger.Info("reindex skipped: no collection (legacy mode has no corpus to rebuild)")
+				notifyRepairFailure(errLegacyRepairNoop)
 				return
 			}
 			branch, brErr := CurrentBranch(indexCtx, workspacePath)
 			if brErr != nil {
 				m.logger.Warn("vector index repair skipped: branch detection failed", "error", brErr)
+				notifyRepairFailure(fmt.Errorf("detecting the branch for the repair: %w", brErr))
 				return
 			}
 			m.logger.Info("vector index repair: no live collection, re-attaching the snapshot view",
@@ -1415,12 +1477,14 @@ func (m *Manager) Reindex(ctx context.Context) error {
 					m.logger.Info("vector index repair cancelled")
 				} else {
 					m.logger.Warn("vector index repair failed", "error", attachErr)
+					notifyRepairFailure(attachErr)
 				}
 				return
 			}
 			col = m.service.GetCollection()
 			if col == nil {
 				m.logger.Warn("vector index repair finished without a collection")
+				notifyRepairFailure(errRepairNoCollection)
 				return
 			}
 		}

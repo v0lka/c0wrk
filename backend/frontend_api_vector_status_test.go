@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -269,5 +271,53 @@ func TestVectorIndexStatus_OmitEmptyKeepsExistingConsumersHappy(t *testing.T) {
 		if !strings.Contains(string(raw), want) {
 			t.Errorf("failure payload = %s, want %s", raw, want)
 		}
+	}
+}
+
+// TestVectorIndexStatusFromRegistryError_DefaultBranchRidesTheTaxonomy pins
+// the two-layer symmetry of the failure kind: a manager-build error that
+// reaches the surface through the registry (SwitchProject/ManagerForRoot —
+// creating storage directories, opening the store) is classified by the SAME
+// taxonomy the manager's own failures use, so one cause keeps one verdict
+// whichever layer surfaced it. An OS-level fault stays `transient` (a retry
+// after it clears can succeed); only a genuinely settled failure reads
+// `fatal` — the hardcoded "fatal" lied to the user about curable states.
+func TestVectorIndexStatusFromRegistryError_DefaultBranchRidesTheTaxonomy(t *testing.T) {
+	f := newVectorStatusAPI(t)
+
+	cases := []struct {
+		name    string
+		err     error
+		wantKin string
+	}{
+		{
+			name:    "storage permission fault",
+			err:     fmt.Errorf("switching project: %w", &fs.PathError{Op: "mkdir", Path: "/tmp/vi", Err: fs.ErrPermission}),
+			wantKin: string(vectorindex.IndexErrorKindTransient),
+		},
+		{
+			name:    "no space left on device",
+			err:     fmt.Errorf("switching project: %w", &fs.PathError{Op: "mkdir", Path: "/tmp/vi", Err: syscall.ENOSPC}),
+			wantKin: string(vectorindex.IndexErrorKindTransient),
+		},
+		{
+			name:    "settled wiring failure",
+			err:     errors.New("embedder factory failed after settled init"),
+			wantKin: string(vectorindex.IndexErrorKindFatal),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := f.vectorIndexStatusFromRegistryError(tc.err)
+			if st.State != vectorStateUnavailable {
+				t.Errorf("state = %q; want unavailable", st.State)
+			}
+			if st.ErrorKind != tc.wantKin {
+				t.Errorf("kind = %q; want %q", st.ErrorKind, tc.wantKin)
+			}
+			if st.LastError == "" {
+				t.Error("the unavailable snapshot carries no cause")
+			}
+		})
 	}
 }
