@@ -283,11 +283,25 @@ func (idx *Indexer) IndexFull(ctx context.Context, workspacePath string) (err er
 	}()
 
 	walkStarted := time.Now()
-	files, err := walkProjectFiles(workspacePath, idx.resolverFor(workspacePath), idx.maxFileSize, idx.includeSubmodules)
-	idx.telemetry.observe(StageWalkValidation, len(files), time.Since(walkStarted))
+	// The branch the pass builds into, sampled BEFORE the walk: the corpus
+	// gate reads this pass's traversal gaps from the same store the walk
+	// belongs to, so a displaced builder's report can never describe another
+	// store's publication (see Service.noteWalkGaps).
+	walkBranch := idx.service.CurrentBranchName()
+	walk, err := walkProjectFilesDetailed(workspacePath, idx.resolverFor(workspacePath), idx.maxFileSize, idx.includeSubmodules)
+	idx.telemetry.observe(StageWalkValidation, len(walk.Files), time.Since(walkStarted))
 	if err != nil {
 		return fmt.Errorf("walking project files: %w", err)
 	}
+	idx.service.noteWalkGaps(walkBranch, walk.Gaps)
+	if len(walk.Gaps) > 0 {
+		// ONE aggregated line per pass: a deleted subtree is an ordinary
+		// live-workspace event, and per-entry logging would drown the log of
+		// a tree that drops many generated directories at once.
+		idx.logger.Warn("workspace walk skipped unreadable entries; indexing the reachable files",
+			"skipped", len(walk.Gaps), "path", walk.Gaps[0].Path, "error", walk.Gaps[0].Err)
+	}
+	files := walk.Files
 
 	totalFiles := len(files)
 	idx.onProgress(PhaseBoth, IndexStateIndexing, 0, totalFiles, "")
@@ -556,6 +570,15 @@ func (idx *Indexer) HandleBranchSwitch(ctx context.Context, workspacePath, newBr
 // progress callback; every failure is terminal for the attach — the caller
 // surfaces unavailable and NOTHING of another snapshot is ever served
 // (fail-closed).
+//
+// Self-healing (specs/domains/workspace.md, shared corpus): an attach that
+// fails with a PROVEN store defect quarantines the affected store and retries
+// EXACTLY ONCE — a missing lexical leg, a torn record or a corrupt store root
+// heals without user involvement, while a transient OS fault (permissions, no
+// space, descriptors, I/O, a cancelled operation) leaves the publication
+// intact and reports unavailable with its cause. "Exactly once" is structural:
+// attachSnapshotPass contains no repair logic and is called at most twice, so
+// there is no cycle a persistent defect could spin.
 func (idx *Indexer) AttachSnapshot(ctx context.Context, workspacePath, legacyBranch string) error {
 	if !idx.service.CorpusEnabled() {
 		return errors.New("corpus registry not wired")
@@ -563,9 +586,49 @@ func (idx *Indexer) AttachSnapshot(ctx context.Context, workspacePath, legacyBra
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	key, err := idx.attachSnapshotPass(ctx, workspacePath, legacyBranch)
+	if err == nil {
+		return nil
+	}
+	scope := QuarantineScopeOf(err)
+	if scope == QuarantineNoStore {
+		// No store defect is proven — a transient OS fault, or a failure the
+		// store cannot own (a degenerate workspace: "no indexable files", an
+		// incomplete walk; a congested build wait; a git-identity failure) —
+		// so the publication stays, no artifact is destroyed, and the caller
+		// surfaces unavailable with this cause. The suffix names the class
+		// honestly: only a genuinely TRANSIENT fault says "transient"
+		// (retry later) — the same word rendered beside `error_kind:
+		// transient`; every other no-store outcome (a fatal
+		// git-identity/wiring failure, a degenerate workspace, a busy or
+		// expired build lease) gets the class-neutral form, so the message
+		// never contradicts the kind the same surface reports.
+		if Transient(err) {
+			return fmt.Errorf("%w (transient fault: the publication stays, nothing was quarantined)", err)
+		}
+		return fmt.Errorf("%w (nothing was quarantined: the publication stays intact)", err)
+	}
+	rootKey := overlayRootKey(workspacePath)
+	idx.logger.Warn("vector attach: proven store defect; quarantining the affected store and retrying once",
+		"snapshot", key, "scope", scope.String(), "root", workspacePath, "error", err)
+	if qErr := idx.service.QuarantineStoreView(ctx, key, rootKey, scope); qErr != nil {
+		return fmt.Errorf("%w; the %s store could not be quarantined: %w", err, scope, qErr)
+	}
+	if _, retryErr := idx.attachSnapshotPass(ctx, workspacePath, legacyBranch); retryErr != nil {
+		return fmt.Errorf("retrying the attach after quarantining the %s store: %w", scope, retryErr)
+	}
+	return nil
+}
+
+// attachSnapshotPass is one complete attach attempt: pin the root's
+// ownership, drive the corpus to a published state, then bind the view. It
+// returns the snapshot key it resolved so the caller's repair path can name
+// the store it may quarantine. No repair happens here — the caller owns the
+// single quarantine-and-retry, which is what keeps the retry cycle-free.
+func (idx *Indexer) attachSnapshotPass(ctx context.Context, workspacePath, legacyBranch string) (string, error) {
 	oid, oidErr := CurrentCommit(ctx, workspacePath)
 	if oidErr != nil {
-		return fmt.Errorf("resolving snapshot identity: %w", oidErr)
+		return "", fmt.Errorf("resolving snapshot identity: %w", oidErr)
 	}
 	if oid == "" {
 		// Non-git tree: the synthetic snapshot is root-owned (ADR-104 §1).
@@ -620,7 +683,7 @@ func (idx *Indexer) AttachSnapshot(ctx context.Context, workspacePath, legacyBra
 			idx.service.CloseWorkingStoreIfCurrent(key)
 			return err
 		}
-		if err := idx.service.PublishCorpus(key); err != nil {
+		if err := idx.service.PublishCorpus(ctx, key); err != nil {
 			idx.service.CloseWorkingStoreIfCurrent(key)
 			return err
 		}
@@ -630,15 +693,15 @@ func (idx *Indexer) AttachSnapshot(ctx context.Context, workspacePath, legacyBra
 		idx.onProgress(PhaseMigration, IndexStateMigrating, 0, 0, "")
 	})
 	if ensureErr != nil {
-		return fmt.Errorf("ensuring corpus %s: %w", key, ensureErr)
+		return key, fmt.Errorf("ensuring corpus %s: %w", key, ensureErr)
 	}
 
 	idx.onProgress(PhaseOpen, IndexStateLoading, 0, 0, "")
 	if err := idx.service.AttachView(ctx, key, overlayRootKey(workspacePath)); err != nil {
-		return err
+		return key, err
 	}
 	idx.logger.Info("view attached", "snapshot", key, "root", workspacePath)
-	return nil
+	return key, nil
 }
 
 // sanitizeChunkContent replaces undecodable UTF-8 byte sequences with U+FFFD
@@ -1560,6 +1623,27 @@ func (idx *Indexer) collectDocumentIDsViaQuery(ctx context.Context, filePaths []
 	return ids, nil
 }
 
+// walkGap is one workspace entry the walk could not read or descend into —
+// a subdirectory deleted or made unreadable between the parent's enumeration
+// and its visit (an editor/`git checkout` removing a tree mid-pass, a
+// permission change on a mounted tree). Path is absolute; Err is the
+// traversal error.
+type walkGap struct {
+	Path string
+	Err  error
+}
+
+// walkOutcome is what a workspace walk produced: the indexable absolute file
+// paths plus the entries the traversal could not read. Gaps are NOT fatal —
+// they are the live-tree race of a workspace mutating under the walk — but
+// they are reported so a build can tell "this tree has no indexable files"
+// apart from "this tree could not be fully traversed" (the empty-corpus gate
+// in PublishCorpus).
+type walkOutcome struct {
+	Files []string
+	Gaps  []walkGap
+}
+
 // walkProjectFiles walks the workspace and returns all indexable file paths.
 // checker must be pre-built by the caller (the Indexer caches it) so the walk
 // and the watcher filter share one source of truth. Files and directories
@@ -1570,16 +1654,43 @@ func (idx *Indexer) collectDocumentIDsViaQuery(ctx context.Context, filePaths []
 // file); the walk root itself is always exempt, so a linked-worktree
 // workspace stays fully indexable. Binary content is not detected here — it
 // is a read-time guard applied in processFile.
+//
+// A per-entry read failure BELOW the root (a subdirectory deleted or made
+// unreadable mid-walk) is recorded as a gap and the traversal continues: one
+// vanishing subtree must never fail a whole pass, or a workspace that keeps
+// dropping generated directories fails its rebuild identically every time.
+// Only the ROOT itself being unreadable aborts the walk. Callers that need
+// the gaps use walkProjectFilesDetailed.
 func walkProjectFiles(root string, checker ignore.IgnoreChecker, maxFileSize int64, includeSubmodules bool) ([]string, error) {
+	outcome, err := walkProjectFilesDetailed(root, checker, maxFileSize, includeSubmodules)
+	if err != nil {
+		return nil, err
+	}
+	return outcome.Files, nil
+}
+
+// walkProjectFilesDetailed is walkProjectFiles returning the traversal gaps
+// alongside the indexable paths (the full pass publishes the gaps to the
+// corpus gate; see walkOutcome).
+func walkProjectFilesDetailed(root string, checker ignore.IgnoreChecker, maxFileSize int64, includeSubmodules bool) (walkOutcome, error) {
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
-		return nil, fmt.Errorf("resolving root path: %w", err)
+		return walkOutcome{}, fmt.Errorf("resolving root path: %w", err)
 	}
 
-	var files []string
+	var outcome walkOutcome
 	walkErr := filepath.WalkDir(absRoot, func(path string, d fs.DirEntry, walkDirErr error) error {
 		if walkDirErr != nil {
-			return walkDirErr
+			// The root is the walk's subject: if it cannot be read there is
+			// nothing to index, so an explicit pass error is the honest
+			// outcome (never a silent empty corpus).
+			if path == absRoot {
+				return walkDirErr
+			}
+			// Below the root a vanished/unreadable entry is the live-tree
+			// race: record the gap, keep walking its siblings.
+			outcome.Gaps = append(outcome.Gaps, walkGap{Path: path, Err: walkDirErr})
+			return nil
 		}
 
 		if d.IsDir() {
@@ -1613,14 +1724,14 @@ func walkProjectFiles(root string, checker ignore.IgnoreChecker, maxFileSize int
 			return nil //nolint:nilerr // skip unresolvable paths
 		}
 
-		files = append(files, absPath)
+		outcome.Files = append(outcome.Files, absPath)
 		return nil
 	})
 	if walkErr != nil {
-		return nil, fmt.Errorf("walking workspace %s: %w", absRoot, walkErr)
+		return walkOutcome{}, fmt.Errorf("walking workspace %s: %w", absRoot, walkErr)
 	}
 
-	return files, nil
+	return outcome, nil
 }
 
 // noopIgnoreChecker is the fail-open fallback when an ignore.Resolver cannot

@@ -16,10 +16,7 @@ package vectorindex
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io"
-	"io/fs"
 	"math"
 	"path/filepath"
 	"sort"
@@ -213,16 +210,11 @@ func openV2Corpus(genDir, snapKey string, gen *storeGenerationManifest) (*v2Corp
 	}
 	wg.Wait()
 	if readErr != nil {
-		// Classify before destroying: only PROVEN damage — a record absent
-		// (fs.ErrNotExist) or torn (short/over-long/non-regular, wrapped
-		// errChunkRecordTorn; a truncated read is io.ErrUnexpectedEOF) — is
-		// the power-loss window the unpublish exists to heal. A TRANSIENT
-		// fault (EACCES, EMFILE/ENFILE, EIO, an AV/indexer sharing
-		// violation on Windows) fails the open WITHOUT touching the
-		// publication: the table is intact, the next attempt retries
-		// against it, and a full rebuild pass (re-walk, re-hash,
-		// re-commit) is not triggered by a retryable OS error.
-		if !chunkRecordDamaged(readErr) {
+		// Classify before destroying: only proven damage justifies the
+		// unpublish, so a transient fault fails the open with the
+		// publication intact for the next attempt (see Repairable,
+		// specs/domains/workspace.md, shared corpus + §3 chunk records).
+		if !Repairable(readErr) {
 			return nil, fmt.Errorf("chunk record of snapshot %s (transient, publication kept): %w", snapKey, readErr)
 		}
 		unpublishSnapshotTable(genDir, snapKey)
@@ -244,18 +236,6 @@ func openV2Corpus(genDir, snapKey string, gen *storeGenerationManifest) (*v2Corp
 	}
 	v.lexical = lex
 	return v, nil
-}
-
-// chunkRecordDamaged reports whether a chunk-record read error indicates
-// PROVEN durable damage — the power-loss window the publication model
-// self-heals by unpublishing (a record absent or torn) — rather than a
-// transient fault (permissions, fd exhaustion, a disk blip, an AV/indexer
-// lock) that must leave the publication intact for the next attempt.
-func chunkRecordDamaged(err error) bool {
-	return errors.Is(err, fs.ErrNotExist) ||
-		errors.Is(err, io.EOF) ||
-		errors.Is(err, io.ErrUnexpectedEOF) ||
-		errors.Is(err, errChunkRecordTorn)
 }
 
 // cosineSimilarity is the plain cosine the vector leg ranks by — the same

@@ -21,13 +21,20 @@ package vectorindex
 // registry-level property and is covered by the backend worktree suite.
 
 import (
+	"bytes"
 	"context"
 	"encoding/gob"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -402,6 +409,13 @@ func TestPromoteLegacyStore_ManifestlessWidthGate(t *testing.T) {
 		writeLegacyDocGob(t, filepath.Join(colDir, "00000001.gob"), 8)
 		pruneWrite(t, fileHashesPathFor(srcRoot, "main"), `{"a.go":"h1"}`)
 		pruneWrite(t, contentlessMarkerPathFor(srcRoot, "main"), "")
+		// A completed legacy store always has its lexical leg (the
+		// branch open creates it), and promotion now requires it: a store
+		// without one cannot be served by any corpus open, so the fixture
+		// must model a real store rather than a half-written one.
+		if err := os.MkdirAll(lexicalIndexPath(srcRoot, "main"), 0o750); err != nil {
+			t.Fatalf("mkdir lexical leg: %v", err)
+		}
 		return srcRoot
 	}
 	newStore := func(t *testing.T) *corpusStore {
@@ -917,4 +931,516 @@ func assertSaw[T comparable](t *testing.T, got []T, want T, msg string) {
 		}
 	}
 	t.Errorf("%s: %v not found in %v", msg, want, got)
+}
+
+// TestEnsureCorpus_RebuildsCorpusMissingLexicalLeg is the regression for the
+// "Index unavailable" dead end: a corpus.json whose lexical leg is gone is not
+// a publication, because every corpus open reads that leg fail-closed. Before
+// the fix the publication predicate accepted the manifest alone, so
+// EnsureCorpus returned early on every attach, the open failed, the manager had
+// no collection to build into, and no UI action could recover the project.
+func TestEnsureCorpus_RebuildsCorpusMissingLexicalLeg(t *testing.T) {
+	reg := NewCorpusRegistry(nil)
+	t.Cleanup(reg.Close)
+	storage := t.TempDir()
+	const key = "snap_00112233445566aa"
+	const fp = "fp-cur"
+
+	builds := 0
+	build := func() error {
+		builds++
+		return publishFixtureCorpus(storage, key, fp)
+	}
+	ctx := context.Background()
+
+	if err := reg.EnsureCorpus(ctx, storage, key, "", fp, 8, build, nil); err != nil {
+		t.Fatalf("initial EnsureCorpus: %v", err)
+	}
+	if builds != 1 {
+		t.Fatalf("initial build count = %d, want 1", builds)
+	}
+	// A published, servable corpus is left alone: the second call must not
+	// rebuild it.
+	if err := reg.EnsureCorpus(ctx, storage, key, "", fp, 8, build, nil); err != nil {
+		t.Fatalf("idempotent EnsureCorpus: %v", err)
+	}
+	if builds != 1 {
+		t.Fatalf("build count after a healthy re-check = %d, want 1", builds)
+	}
+
+	// The binanalyzer shape: the vectors and the manifest survive, only the
+	// lexical leg is gone.
+	if err := os.RemoveAll(lexicalIndexPath(storage, key)); err != nil {
+		t.Fatalf("remove lexical leg: %v", err)
+	}
+	if reg.storeFor(storage).publishedCompatible(key, fp, 8) {
+		t.Fatal("a corpus without its lexical leg must not count as published")
+	}
+	if err := reg.EnsureCorpus(ctx, storage, key, "", fp, 8, build, nil); err != nil {
+		t.Fatalf("repair EnsureCorpus: %v", err)
+	}
+	if builds != 2 {
+		t.Fatalf("repair build count = %d, want 2 (the unservable store must be rebuilt)", builds)
+	}
+	if !pathExists(lexicalIndexPath(storage, key)) {
+		t.Error("repair did not restore the lexical leg")
+	}
+	if !reg.storeFor(storage).publishedCompatible(key, fp, 8) {
+		t.Error("repaired corpus is not reported as published")
+	}
+}
+
+// TestPromoteLegacyStore_RefusesMissingLexicalLeg pins the PUBLISH-side half of
+// the same contract: a legacy store without a lexical leg must never be
+// promoted, because the publication it would write can never be opened.
+func TestPromoteLegacyStore_RefusesMissingLexicalLeg(t *testing.T) {
+	srcRoot := t.TempDir()
+	legacyRoot := branchRootPath(srcRoot, "main")
+	colDir := filepath.Join(legacyRoot, "deadbeefcol")
+	if err := os.MkdirAll(colDir, 0o750); err != nil {
+		t.Fatalf("mkdir collection: %v", err)
+	}
+	writeLegacyDocGob(t, filepath.Join(colDir, "00000001.gob"), 8)
+	pruneWrite(t, fileHashesPathFor(srcRoot, "main"), `{"a.go":"h1"}`)
+	pruneWrite(t, contentlessMarkerPathFor(srcRoot, "main"), "")
+
+	reg := NewCorpusRegistry(nil)
+	t.Cleanup(reg.Close)
+	cs := reg.storeFor(t.TempDir())
+	const key = "snap_aaaa0000bbbb1111"
+
+	migrated, reason, err := cs.promoteLegacyStore(srcRoot, "main", key, "fp-cur", 8)
+	if err != nil {
+		t.Fatalf("promoteLegacyStore: %v", err)
+	}
+	if migrated || reason != "lexical index leg absent" {
+		t.Fatalf("migrated=%v reason=%q; want the missing-lexical-leg refusal", migrated, reason)
+	}
+	if pathExists(branchRootPath(cs.root, key)) || pathExists(filepath.Join(branchRootPath(cs.root, key), corpusManifestName)) {
+		t.Error("a refused promotion must not create or publish a corpus target")
+	}
+	if !pathExists(legacyRoot) {
+		t.Error("a refused promotion must leave the legacy source in place")
+	}
+}
+
+// TestPublishedCompatible_RequiresSnapshotLexicalLeg pins the §3 half of the
+// publication predicate: a snapshot table is only a publication when the
+// lexical leg the §3 open reads exists in one of its two documented locations.
+func TestPublishedCompatible_RequiresSnapshotLexicalLeg(t *testing.T) {
+	h := newChunkStoreHarness(t)
+	const key = "snap_abcdef0123456789"
+	c := chunkRecordKey("package main")
+	if err := writeChunkRecord(h.gen, c, []float32{1, 2, 3, 4, 5, 6, 7, 8}); err != nil {
+		t.Fatalf("writeChunkRecord: %v", err)
+	}
+	rows := []occurrenceRow{{
+		Path:     "a.go",
+		BlobHash: "h",
+		Chunks:   []chunkOccurrence{{C: c, Index: 0, Start: 1, End: 2, Language: "go"}},
+	}}
+	if err := writeSnapshotTable(h.gen, key, 8, rows, &snapshotTable{Files: 1, Chunks: 1, UniqueChunks: 1}, nil); err != nil {
+		t.Fatalf("writeSnapshotTable: %v", err)
+	}
+
+	reg := NewCorpusRegistry(nil)
+	t.Cleanup(reg.Close)
+	cs := reg.storeFor(h.storage)
+
+	if cs.publishedCompatible(key, "fp-era-a", 8) {
+		t.Fatal("a §3 table without any lexical leg must not count as published")
+	}
+	// The native location: a rebuild lands the lexical index inside the
+	// snapshot directory.
+	if err := os.MkdirAll(filepath.Join(snapshotDir(h.gen, key), "lexical"), 0o750); err != nil {
+		t.Fatalf("mkdir snapshot lexical: %v", err)
+	}
+	if !cs.publishedCompatible(key, "fp-era-a", 8) {
+		t.Error("a §3 table with the snapshot lexical leg must count as published")
+	}
+	// The migrated location: the v1→v2 migration leaves bleve state at the
+	// legacy per-key path until a rebuild lands it natively.
+	if err := os.RemoveAll(filepath.Join(snapshotDir(h.gen, key), "lexical")); err != nil {
+		t.Fatalf("remove snapshot lexical: %v", err)
+	}
+	if err := os.MkdirAll(lexicalIndexPath(h.storage, key), 0o750); err != nil {
+		t.Fatalf("mkdir legacy lexical: %v", err)
+	}
+	if !cs.publishedCompatible(key, "fp-era-a", 8) {
+		t.Error("a §3 table with the legacy per-key lexical leg must count as published")
+	}
+}
+
+// publishFixtureCorpus writes the minimal servable corpus shape (vectors
+// excluded — no test here reads them): the snapshot store, its lexical leg and
+// the publication manifest.
+func publishFixtureCorpus(storage, key, embeddingFP string) error {
+	snapRoot := branchRootPath(storage, key)
+	if err := os.MkdirAll(snapRoot, 0o750); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(lexicalIndexPath(storage, key), 0o750); err != nil {
+		return err
+	}
+	return writeCorpusManifest(snapRoot, &CorpusManifest{
+		Format:      storeFormatV2,
+		Coords:      coordsRelativeV1,
+		EmbeddingFP: embeddingFP,
+		Dims:        8,
+		Collection:  collectionName(key),
+		Files:       map[string]string{"a.go": "h1"},
+	})
+}
+
+// TestRepairable_ClassifiesProvenDefectsAndTransientFaults pins the single
+// classifier the repair path (rebuild, unpublish, re-embed) consults: a
+// proven store defect is repairable, while a transient OS fault — permissions,
+// no space, fd exhaustion, disk/AV I/O, a cancelled context — proves nothing
+// about the store's content and must leave every publication intact.
+func TestRepairable_ClassifiesProvenDefectsAndTransientFaults(t *testing.T) {
+	proven := []error{
+		fs.ErrNotExist,
+		io.EOF,
+		io.ErrUnexpectedEOF,
+		errChunkRecordTorn,
+		ErrCorpusNotPublished,
+		ErrCorpusEraMismatch,
+		ErrCorpusLegMissing,
+		ErrCorpusUnopenable,
+		ErrOverlayUnopenable,
+		ErrCorpusNoIndexableFiles,
+		fmt.Errorf("opening chunk record: %w", errChunkRecordTorn),
+		&fs.PathError{Op: "open", Path: "a.chunk", Err: fs.ErrNotExist},
+	}
+	for _, err := range proven {
+		if !Repairable(err) {
+			t.Errorf("Repairable(%v) = false; want a proven defect to be repairable", err)
+		}
+	}
+
+	transient := []error{
+		fs.ErrPermission,
+		syscall.EACCES,
+		syscall.ENOSPC,
+		syscall.EMFILE,
+		syscall.ENFILE,
+		syscall.EIO,
+		&fs.PathError{Op: "open", Path: "a.chunk", Err: syscall.EACCES},
+		&fs.PathError{Op: "write", Path: "a.chunk", Err: syscall.ENOSPC},
+		context.Canceled,
+		context.DeadlineExceeded,
+	}
+	for _, err := range transient {
+		if Repairable(err) {
+			t.Errorf("Repairable(%v) = true; a transient fault must never be repaired", err)
+		}
+	}
+
+	if Repairable(nil) {
+		t.Error("Repairable(nil) = true; an absent error proves nothing")
+	}
+}
+
+// TestWriteSnapshotTable_ReembedsDamagedChunkRecords pins the same-pass repair:
+// a chunk record that the orphan sweep collected mid-build (missing) or that is
+// torn is re-derived from the build store and landed before the table publishes,
+// so the build stops deferring forever over damage it can fix itself.
+func TestWriteSnapshotTable_ReembedsDamagedChunkRecords(t *testing.T) {
+	h := newChunkStoreHarness(t)
+	const key = "snap_abcdef0123456789"
+
+	intactC := chunkRecordKey("package main")
+	intactVec := chunkVec(intactC)
+	if err := writeChunkRecord(h.gen, intactC, intactVec); err != nil {
+		t.Fatalf("writeChunkRecord(intact): %v", err)
+	}
+	intactBytes, err := os.ReadFile(chunkRecordPath(h.gen, intactC))
+	if err != nil {
+		t.Fatalf("read intact record: %v", err)
+	}
+
+	tornC := chunkRecordKey("func torn() {}")
+	if err := os.MkdirAll(filepath.Dir(chunkRecordPath(h.gen, tornC)), 0o750); err != nil {
+		t.Fatalf("mkdir torn shard: %v", err)
+	}
+	if err := os.WriteFile(chunkRecordPath(h.gen, tornC), []byte{1, 2, 3}, 0o644); err != nil {
+		t.Fatalf("write torn record: %v", err)
+	}
+
+	lostC := chunkRecordKey("func lost() {}") // never written: an orphan-sweep victim
+
+	rows := []occurrenceRow{{
+		Path:     "a.go",
+		BlobHash: "h",
+		Chunks: []chunkOccurrence{
+			{C: lostC, Index: 0, Start: 1, End: 2, Language: "go"},
+			{C: tornC, Index: 1, Start: 3, End: 4, Language: "go"},
+			{C: intactC, Index: 2, Start: 5, End: 6, Language: "go"},
+		},
+	}}
+	repaired := map[int]string{}
+	repair := func(path string, chunkIndex int) ([]float32, error) {
+		repaired[chunkIndex] = path
+		return chunkVec(chunkRecordKey(fmt.Sprintf("repair-%d", chunkIndex))), nil
+	}
+
+	if err := writeSnapshotTable(h.gen, key, 8, rows, &snapshotTable{
+		ChunkerFP: "k", IgnoreFP: "i", Files: 1, Chunks: 3, UniqueChunks: 3,
+	}, repair); err != nil {
+		t.Fatalf("writeSnapshotTable with repairable damage: %v", err)
+	}
+
+	if len(repaired) != 2 || repaired[0] != "a.go" || repaired[1] != "a.go" {
+		t.Errorf("repair calls = %v; want exactly the lost (0) and torn (1) occurrences", repaired)
+	}
+	for _, c := range []string{lostC, tornC} {
+		vec, readErr := readChunkRecord(h.gen, c, 8)
+		if readErr != nil {
+			t.Fatalf("repaired record %s is unreadable: %v", c, readErr)
+		}
+		if len(vec) != 8 {
+			t.Errorf("repaired record %s has %d dims; want 8", c, len(vec))
+		}
+	}
+	after, err := os.ReadFile(chunkRecordPath(h.gen, intactC))
+	if err != nil {
+		t.Fatalf("read intact record after repair pass: %v", err)
+	}
+	if !bytes.Equal(after, intactBytes) {
+		t.Error("the repair pass rewrote an intact chunk record")
+	}
+	if !snapshotTablePublished(h.gen, key) {
+		t.Error("the repaired snapshot table did not publish")
+	}
+	if gotRows, _, ok := readSnapshotTable(h.gen, key); !ok || len(gotRows) != 1 || len(gotRows[0].Chunks) != 3 {
+		t.Errorf("published table = %+v ok=%v; want the repaired 3-occurrence row", gotRows, ok)
+	}
+}
+
+// TestWriteSnapshotTable_TransientFaultDefersWithoutDestroying pins the other
+// half of the classifier: an unreadable record whose failure is a transient OS
+// fault is never removed or re-embedded (the record may be perfectly fine), and
+// the publish defers instead of landing a table over an unproven record.
+func TestWriteSnapshotTable_TransientFaultDefersWithoutDestroying(t *testing.T) {
+	h := newChunkStoreHarness(t)
+	const key = "snap_0123456789abcdef"
+
+	c := chunkRecordKey("package transient")
+	// A regular file where the record's SHARD directory belongs makes every
+	// stat below it fail with ENOTDIR — a transient I/O fault, not damage.
+	shard := filepath.Dir(chunkRecordPath(h.gen, c))
+	if err := os.WriteFile(shard, []byte("planted"), 0o644); err != nil {
+		t.Fatalf("plant shard file: %v", err)
+	}
+
+	calls := 0
+	repair := func(string, int) ([]float32, error) {
+		calls++
+		return chunkVec(c), nil
+	}
+	rows := []occurrenceRow{{
+		Path:     "a.go",
+		BlobHash: "h",
+		Chunks:   []chunkOccurrence{{C: c, Index: 0, Start: 1, End: 2, Language: "go"}},
+	}}
+	err := writeSnapshotTable(h.gen, key, 8, rows, &snapshotTable{Files: 1, Chunks: 1, UniqueChunks: 1}, repair)
+	if err == nil {
+		t.Fatal("writeSnapshotTable published over a transiently unreadable record")
+	}
+	if !strings.Contains(err.Error(), "transient") {
+		t.Errorf("defer error = %v; want it to name the transient fault", err)
+	}
+	if calls != 0 {
+		t.Errorf("repair ran %d time(s) on a transient fault; the record must be left untouched", calls)
+	}
+	if !pathExists(shard) {
+		t.Error("the planted shard was removed; a transient fault must not destroy store state")
+	}
+	if snapshotTablePublished(h.gen, key) {
+		t.Error("the snapshot published despite the deferred record")
+	}
+}
+
+// TestPublishCorpus_RefusesCorpusWithoutLexicalLeg closes the SECOND entry of
+// the "published but never opens" defect: a corpus build whose lexical leg did
+// not open must not publish, because every corpus open reads that leg
+// fail-closed. The refusal names the leg and the recorded root cause, and the
+// snapshot stays unpublished so the next EnsureCorpus rebuilds it.
+func TestPublishCorpus_RefusesCorpusWithoutLexicalLeg(t *testing.T) {
+	storage := t.TempDir()
+	svc, err := NewService(ServiceConfig{EmbeddingFunc: fakeEmbeddingFunc()})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	t.Cleanup(func() { _ = svc.Close() })
+	if err := svc.SetProject("proj", storage); err != nil {
+		t.Fatalf("SetProject: %v", err)
+	}
+	ctx := context.Background()
+	const key = "snap_abcdef0123456789"
+
+	svc.mu.RLock()
+	lexDir := svc.workingLexicalDirLocked(key)
+	svc.mu.RUnlock()
+	// Injection: a regular file where the bleve index directory belongs makes
+	// lexical.Open fail deterministically.
+	if err := os.MkdirAll(filepath.Dir(lexDir), 0o750); err != nil {
+		t.Fatalf("mkdir lexical parent: %v", err)
+	}
+	if err := os.WriteFile(lexDir, []byte("not a bleve index"), 0o644); err != nil {
+		t.Fatalf("plant lexical file: %v", err)
+	}
+
+	if err := svc.SwitchBranch(ctx, key); err != nil {
+		t.Fatalf("SwitchBranch must stay fail-soft on a broken lexical leg: %v", err)
+	}
+	svc.mu.RLock()
+	lexicalErr := svc.lastLexicalOpenErr
+	liveLeg := svc.current.lexical != nil
+	fp, dims := svc.embeddingCacheFingerprint, svc.embeddingDimension
+	svc.mu.RUnlock()
+	if liveLeg || lexicalErr == nil {
+		t.Fatalf("injection did not take: live=%v recorded error=%v", liveLeg, lexicalErr)
+	}
+
+	pubErr := svc.PublishCorpus(ctx, key)
+	if !errors.Is(pubErr, ErrCorpusLegMissing) {
+		t.Fatalf("PublishCorpus error = %v; want ErrCorpusLegMissing", pubErr)
+	}
+	if !errors.Is(pubErr, lexicalErr) {
+		t.Errorf("publish error does not carry the lexical.Open root cause %v: %v", lexicalErr, pubErr)
+	}
+	if !strings.Contains(pubErr.Error(), lexDir) {
+		t.Errorf("publish error %v does not name the missing leg %s", pubErr, lexDir)
+	}
+	if m := readCorpusManifest(branchRootPath(storage, key)); m != nil {
+		t.Fatalf("a refused publish landed a manifest: %+v", m)
+	}
+	reg := NewCorpusRegistry(nil)
+	t.Cleanup(reg.Close)
+	if reg.storeFor(storage).publishedCompatible(key, fp, dims) {
+		t.Error("a refused publish must leave the snapshot unpublished (the rebuild gate depends on it)")
+	}
+
+	// Control: with a working leg the SAME publish passes the gate and lands.
+	if err := os.Remove(lexDir); err != nil {
+		t.Fatalf("remove planted lexical file: %v", err)
+	}
+	svc.CloseWorkingStore()
+	if err := svc.SwitchBranch(ctx, key); err != nil {
+		t.Fatalf("SwitchBranch with a working lexical leg: %v", err)
+	}
+	svc.mu.Lock()
+	svc.current.fileHashes = map[string]string{
+		"a.go": corpusAdoptionEntry("deadbeef", 1, 2, svc.chunkerFingerprint),
+	}
+	liveLeg = svc.current.lexical != nil
+	svc.mu.Unlock()
+	if !liveLeg {
+		t.Fatalf("control leg did not open: %v", lexicalErr)
+	}
+	if err := svc.PublishCorpus(ctx, key); err != nil {
+		t.Fatalf("PublishCorpus with a live lexical leg: %v", err)
+	}
+	if m := readCorpusManifest(branchRootPath(storage, key)); m == nil || len(m.Files) != 1 {
+		t.Fatalf("a successful publish did not land the manifest: %+v", m)
+	}
+	if !reg.storeFor(storage).publishedCompatible(key, fp, dims) {
+		t.Error("the published corpus is not reported as published")
+	}
+}
+
+// TestPublishCorpus_RepairsSweptChunkRecord is the end-to-end wiring of the
+// same-pass repair: the §6 sweep collected a chunk record the build had
+// already committed, and the publish re-derives it from the build store's own
+// document instead of deferring forever. specs/domains/workspace.md (§3 chunk
+// records; a working store's records are re-derivable from its collection).
+func TestPublishCorpus_RepairsSweptChunkRecord(t *testing.T) {
+	storage := t.TempDir()
+	reg := NewCorpusRegistry(nil)
+	t.Cleanup(reg.Close)
+	svc, err := NewService(ServiceConfig{
+		EmbeddingFunc:      fakeEmbeddingFunc(),
+		Corpus:             reg,
+		EmbeddingDimension: 8,
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	t.Cleanup(func() { _ = svc.Close() })
+	if err := svc.SetProject("proj", storage); err != nil {
+		t.Fatalf("SetProject: %v", err)
+	}
+	ctx := context.Background()
+	const key = "snap_abcdef0123456789"
+	if err := svc.SwitchBranch(ctx, key); err != nil {
+		t.Fatalf("SwitchBranch: %v", err)
+	}
+
+	content := "func repaired() {}\n"
+	vec := []float32{0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8}
+	col := svc.GetCollection()
+	if col == nil {
+		t.Fatal("the corpus build store did not open")
+	}
+	if addErr := col.AddDocuments(ctx, []chromem.Document{{
+		ID:        DocumentID("a.go", 0),
+		Content:   content,
+		Embedding: vec,
+		Metadata: map[string]string{
+			relPathMetaKey: "a.go", "content_hash": "deadbeef",
+			"start_line": "1", "end_line": "2", "language": "go",
+		},
+	}}, 1); addErr != nil {
+		t.Fatalf("committing the build store's document: %v", addErr)
+	}
+
+	c := chunkRecordKey(content)
+	svc.mu.Lock()
+	gen := svc.current.storeGen
+	svc.current.chunkRows = map[string]occurrenceRow{"a.go": {
+		Path:     "a.go",
+		BlobHash: "deadbeef",
+		Chunks:   []chunkOccurrence{{C: c, Index: 0, Start: 1, End: 2, Language: "go"}},
+	}}
+	svc.current.fileHashes = map[string]string{
+		"a.go": corpusAdoptionEntry("deadbeef", 1, 2, svc.chunkerFingerprint),
+	}
+	svc.mu.Unlock()
+	if gen == "" {
+		t.Fatal("the §3 generation was not adopted; the repair path needs it")
+	}
+	if chunkRecordExists(gen, c) {
+		t.Fatal("fixture must start without the record — the orphan sweep already collected it")
+	}
+
+	if err := svc.PublishCorpus(ctx, key); err != nil {
+		t.Fatalf("PublishCorpus over a swept chunk record: %v", err)
+	}
+	got, err := readChunkRecord(gen, c, 8)
+	if err != nil {
+		t.Fatalf("the repaired chunk record is unreadable: %v", err)
+	}
+	if len(got) != len(vec) {
+		t.Fatalf("repaired record has %d dims; want %d", len(got), len(vec))
+	}
+	// chromem normalizes every committed vector, so the build store's copy is
+	// the L2-normalized form of what the fixture committed.
+	var norm float64
+	for _, v := range vec {
+		norm += float64(v) * float64(v)
+	}
+	norm = math.Sqrt(norm)
+	for i := range vec {
+		want := float32(float64(vec[i]) / norm)
+		if math.Abs(float64(got[i]-want)) > 1e-6 {
+			t.Fatalf("repaired vector[%d] = %v; want the build store's %v", i, got[i], want)
+		}
+	}
+	if !snapshotTablePublished(gen, key) {
+		t.Error("the repaired snapshot table did not publish")
+	}
+	if m := readCorpusManifest(branchRootPath(storage, key)); m == nil {
+		t.Error("the repaired corpus did not publish its manifest")
+	}
 }

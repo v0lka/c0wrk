@@ -878,19 +878,19 @@ func snapshotTablePaths(dir string) (occPath, headerPath string) {
 	return filepath.Join(dir, occurrencesTabName), filepath.Join(dir, snapshotTableName)
 }
 
+// chunkRecordRepair re-derives the vector of one occurrence whose chunk
+// record proved damaged (absent or torn); nil when the caller has no source
+// for it — the publish then defers rather than landing an unservable table.
+type chunkRecordRepair func(path string, chunkIndex int) ([]float32, error)
+
 // writeSnapshotTable publishes one snapshot's §3 tables from completed
 // chunk writes: occurrences.tab lands by atomic rename FIRST, table.json
 // LAST — its presence is the snapshot's completion marker (ADR-104 §3
-// write ordering; a crash between the two leaves a tableless snapshot that
-// reads as absent and replays). Before anything lands, every referenced
-// chunk record is verified on disk: the orphan sweep runs under sweepMu,
-// NOT under the corpus build lease, so a build that outlives the sweep's
-// grace window can have its early records collected mid-build — publishing
-// a table over a missing record would fail every later open (the reader
-// fails closed) and force the unpublish-rebuild cycle to repeat. A missing
-// record defers the publish instead (the caller treats it like any other
-// incomplete pass and replays).
-func writeSnapshotTable(genDir, snapKey string, rows []occurrenceRow, header *snapshotTable) error {
+// write ordering). Before anything lands, every referenced chunk record is
+// verified on disk and proven damage is repaired IN THIS PASS (see
+// ensureChunkRecord); only a transient I/O fault defers the publish.
+// specs/domains/workspace.md (shared corpus + §3 chunk records).
+func writeSnapshotTable(genDir, snapKey string, dims int, rows []occurrenceRow, header *snapshotTable, repair chunkRecordRepair) error {
 	dir := snapshotDir(genDir, snapKey)
 	seen := make(map[string]struct{}, len(rows))
 	for _, row := range rows {
@@ -899,8 +899,8 @@ func writeSnapshotTable(genDir, snapKey string, rows []occurrenceRow, header *sn
 				continue // content addressing collapses identical chunks
 			}
 			seen[occ.C] = struct{}{}
-			if !chunkRecordExists(genDir, occ.C) {
-				return fmt.Errorf("publishing %s: chunk record %s is missing (deferred)", snapKey, occ.C)
+			if err := ensureChunkRecord(genDir, occ.C, dims, row.Path, occ.Index, repair); err != nil {
+				return fmt.Errorf("publishing %s: %w", snapKey, err)
 			}
 		}
 	}
@@ -919,6 +919,69 @@ func writeSnapshotTable(genDir, snapKey string, rows []occurrenceRow, header *sn
 	}
 	if err := safeio.WriteFileAtomic(headerPath, data, 0o644); err != nil {
 		return fmt.Errorf("writing snapshot header for %s: %w", snapKey, err)
+	}
+	return nil
+}
+
+// verifyChunkRecord proves one record usable WITHOUT reading its payload: a
+// regular file of exactly dims×4 bytes (dims 0 — a service that never learned
+// its arity — accepts any positive 4-byte-aligned width, like
+// readChunkRecord). The failure modes are the ones Repairable classifies.
+func verifyChunkRecord(genDir, c string, dims int) error {
+	info, err := os.Stat(chunkRecordPath(genDir, c))
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("chunk record %s is not a regular file: %w", c, errChunkRecordTorn)
+	}
+	if dims > 0 {
+		if info.Size() != int64(4*dims) {
+			return fmt.Errorf("chunk record %s is %d bytes, want %d for dims %d: %w",
+				c, info.Size(), 4*dims, dims, errChunkRecordTorn)
+		}
+		return nil
+	}
+	if info.Size() <= 0 || info.Size()%4 != 0 {
+		return fmt.Errorf("chunk record %s is %d bytes; not a float32 vector: %w",
+			c, info.Size(), errChunkRecordTorn)
+	}
+	return nil
+}
+
+// ensureChunkRecord proves one referenced record usable before any table
+// references it, repairing PROVEN damage in the same pass. The orphan sweep
+// runs outside the corpus build lease (ADR-104 §6), so a build that outlives
+// the sweep's grace window can lose an early record — re-deriving it here is
+// what stops the build from deferring forever. A transient fault
+// (Repairable false) leaves the record untouched and defers the publish:
+// nothing about the store's content is proven, so nothing is destroyed.
+// specs/domains/workspace.md (shared corpus + §3 chunk records).
+func ensureChunkRecord(genDir, c string, dims int, path string, chunkIndex int, repair chunkRecordRepair) error {
+	err := verifyChunkRecord(genDir, c, dims)
+	if err == nil {
+		return nil
+	}
+	if !Repairable(err) {
+		return fmt.Errorf("chunk record %s is unreadable (transient, publication deferred): %w", c, err)
+	}
+	if repair == nil {
+		return fmt.Errorf("chunk record %s is missing (deferred): %w", c, err)
+	}
+	vec, rErr := repair(path, chunkIndex)
+	if rErr != nil {
+		return fmt.Errorf("re-deriving damaged chunk record %s: %w", c, rErr)
+	}
+	// writeChunkRecord is a dedup no-op on an existing path, so a TORN
+	// record must be removed before it can be replaced.
+	if rmErr := os.Remove(chunkRecordPath(genDir, c)); rmErr != nil && !errors.Is(rmErr, fs.ErrNotExist) {
+		return fmt.Errorf("removing damaged chunk record %s: %w", c, rmErr)
+	}
+	if wErr := writeChunkRecord(genDir, c, vec); wErr != nil {
+		return fmt.Errorf("re-embedding chunk record %s: %w", c, wErr)
+	}
+	if vErr := verifyChunkRecord(genDir, c, dims); vErr != nil {
+		return fmt.Errorf("chunk record %s still unreadable after re-embedding: %w", c, vErr)
 	}
 	return nil
 }

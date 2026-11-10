@@ -320,6 +320,33 @@ export interface StoreLedger {
   updated_at: string
 }
 
+/**
+ * Classification of a vector-index `last_error` (backend
+ * core/vectorindex IndexErrorKind plus the registry's routing states), so a
+ * surface can pick the remedy without parsing the message:
+ *
+ * - `repairable` — a proven store defect; a rebuild heals it;
+ * - `transient` — an OS-level fault; retry later;
+ * - `fatal` — nothing the user can retry (missing model, unwired embedder);
+ * - `unknown` — a failure the classifier could not place;
+ * - `no_target` — no indexable target at all (No Project / disabled);
+ * - `shutting_down` — the registry is going away;
+ * - `loading` / `restarting` — NOT failures: the embedder init has not
+ *   settled / the root's manager is being replaced.
+ *
+ * Literals must stay in sync with backend/api_types.go (VectorIndexStatus
+ * ErrorKind) and core/vectorindex/index_error.go.
+ */
+export type VectorIndexErrorKind =
+  | 'repairable'
+  | 'transient'
+  | 'fatal'
+  | 'unknown'
+  | 'no_target'
+  | 'shutting_down'
+  | 'loading'
+  | 'restarting'
+
 export interface VectorIndexStatus {
   /**
    * "disabled" (ADR-103): indexing is off via the master switch — the
@@ -396,6 +423,26 @@ export interface VectorIndexStatus {
    * Omitted when 0 (the default "first GPU") — read absence as 0.
    */
   device_id?: number
+  /**
+   * Human-readable cause of a non-ready status: an init failure, a failed
+   * pass, or a disabled/absent target. The backend guarantees one for every
+   * `unavailable` status (the "unavailable always explains itself"
+   * invariant), so a surface may render it directly instead of a bare broken
+   * state. Absent for a healthy index and for the deliberately switched-off
+   * one (`disabled` is a user choice, not a failure) — absence means
+   * "nothing to explain", never "unknown failure".
+   *
+   * Transience: the cause describes the CURRENT attempt, so it lives in the
+   * whole replaced status object and is never persisted — a healthy status
+   * (which omits both fields) drops it, and a project/session reset clears it.
+   */
+  last_error?: string
+  /**
+   * Classification of `last_error` — see VectorIndexErrorKind. Omitted when
+   * there is nothing to explain; the `loading` / `restarting` kinds mark
+   * windows that are explicitly NOT failures.
+   */
+  error_kind?: VectorIndexErrorKind
 }
 
 /**

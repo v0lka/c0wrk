@@ -2,6 +2,7 @@ import { cn } from '@/lib/utils'
 import { useVectorIndexStore } from '@/stores/vectorIndexStore'
 import { CheckCircle2 } from 'lucide-react'
 import { deriveDotStatus, type DotState } from '@/lib/indexPhaseStatus'
+import type { VectorIndexStatus } from '@/types/models'
 
 function dotLabel(side: 'vector' | 'lexical', dot: DotState): string {
   const name = side === 'vector' ? 'Vector' : 'Lexical'
@@ -15,6 +16,21 @@ function dotLabel(side: 'vector' | 'lexical', dot: DotState): string {
     default:
       return name
   }
+}
+
+/**
+ * The diagnosis suffix for an `unavailable` pill: the backend's cause
+ * (`last_error`) and, when it is classified, the kind (`error_kind`). The
+ * visible label stays the short "Index unavailable" — the hover carries the
+ * reason, so a broken index is never a dead end the user has to dig out of
+ * `~/.c0wrk` by hand. Both parts are the backend's own words: the pill must
+ * not paraphrase a failure it does not understand.
+ */
+function unavailableDetail(status: VectorIndexStatus): string {
+  const reason = status.last_error?.trim()
+  const kind = status.error_kind?.trim()
+  if (reason && kind) return `${reason}\nKind: ${kind}`
+  return reason || (kind ? `Kind: ${kind}` : '')
 }
 
 function Dot({ state, label }: { state: DotState; label: string }) {
@@ -66,12 +82,19 @@ export function IndexingStatus() {
     // A failed DB open or init failure left no queryable collection. Render it
     // honestly — idle dots and a distinct label, never the "Indexing…" 0% bar
     // this state used to fall through to (the same dishonesty ADR-064 removed
-    // for `loading`). Recovery is a branch change or project switch, which
-    // retriggers the open.
+    // for `loading`). Recovery is the search panel's reindex action, which the
+    // backend escalates into a rebuild of an unopenable corpus (the action is
+    // deliberately NOT disabled in this state); a branch change or project
+    // switch no longer helps on its own, because a durable corpus defect
+    // survives both. The hover carries the backend's own cause and its
+    // classification (the "unavailable always explains itself" invariant), so
+    // the pill itself stays the short label while the diagnosis stays one
+    // hover away — never a modal, never a dead end.
+    const detail = unavailableDetail(status)
     return (
       <div
         className="flex shrink-0 items-center gap-1.5 text-xs text-warning"
-        title={tooltip}
+        title={detail ? `${tooltip}\n${detail}` : tooltip}
       >
         <div className="flex items-center gap-1">
           <Dot state={derived.vectorDot} label={vectorLabel} />

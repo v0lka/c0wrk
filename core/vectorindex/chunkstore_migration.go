@@ -231,7 +231,7 @@ func migrateCorpusChunkRecords(
 		return false, fmt.Sprintf("coverage %d occurrences over %d documents incomplete (deferred)", occTotal, total), nil
 	}
 	chunkBytes := int64(len(unique)) * int64(4*dims)
-	if err := writeSnapshotTable(genDir, snapKey, rows, &snapshotTable{
+	if err := writeSnapshotTable(genDir, snapKey, dims, rows, &snapshotTable{
 		ChunkerFP:    manifest.ChunkerFP,
 		IgnoreFP:     manifest.IgnoreFP,
 		Files:        len(rows),
@@ -239,7 +239,7 @@ func migrateCorpusChunkRecords(
 		UniqueChunks: len(unique),
 		ChunkBytes:   chunkBytes,
 		Collection:   manifest.Collection,
-	}); err != nil {
+	}, nil); err != nil {
 		return false, "", fmt.Errorf("publishing §3 table for %s: %w", snapKey, err)
 	}
 	logger.Debug("vector store: chunk-record migration converted a corpus (zero embeddings)",

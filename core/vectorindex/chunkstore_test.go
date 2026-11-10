@@ -81,7 +81,7 @@ func TestStoreGeneration_EraAdvanceStartsFreshGeneration(t *testing.T) {
 		t.Fatalf("writeChunkRecord: %v", err)
 	}
 	rows := []occurrenceRow{{Path: "pkg/a.go", BlobHash: "deadbeef", Chunks: []chunkOccurrence{{C: c, Index: 0, Start: 1, End: 9, Language: "go"}}}}
-	if err := writeSnapshotTable(h.gen, "snap_abcdef0123456789", rows, &snapshotTable{ChunkerFP: "k", IgnoreFP: "i", Files: 1, Chunks: 1, UniqueChunks: 1}); err != nil {
+	if err := writeSnapshotTable(h.gen, "snap_abcdef0123456789", 8, rows, &snapshotTable{ChunkerFP: "k", IgnoreFP: "i", Files: 1, Chunks: 1, UniqueChunks: 1}, nil); err != nil {
 		t.Fatalf("writeSnapshotTable: %v", err)
 	}
 	if err := writeRootRef(h.storage, "root_key", "/tmp/tree", "snap_abcdef0123456789"); err != nil {
@@ -259,14 +259,14 @@ func TestSnapshotTable_HeaderIsCompletionMarker(t *testing.T) {
 	// the table is the completion marker, so it must never land over a
 	// record the open path would fail closed on.
 	ghost := chunkRecordKey("never written")
-	if err := writeSnapshotTable(h.gen, key, []occurrenceRow{{Path: "g.go", BlobHash: "h", Chunks: []chunkOccurrence{{C: ghost, Index: 0, Start: 1, End: 2, Language: "go"}}}}, &snapshotTable{Files: 1, Chunks: 1}); err == nil {
+	if err := writeSnapshotTable(h.gen, key, 8, []occurrenceRow{{Path: "g.go", BlobHash: "h", Chunks: []chunkOccurrence{{C: ghost, Index: 0, Start: 1, End: 2, Language: "go"}}}}, &snapshotTable{Files: 1, Chunks: 1}, nil); err == nil {
 		t.Fatal("writeSnapshotTable must defer a publish over a missing chunk record")
 	}
 	if snapshotTablePublished(h.gen, key) {
 		t.Fatal("a deferred publish must not mark the snapshot published")
 	}
 	// Torn publish: occurrences.tab without table.json reads as absent.
-	if err := writeSnapshotTable(h.gen, key, []occurrenceRow{{Path: "x.go", BlobHash: "h", Chunks: []chunkOccurrence{{C: c, Index: 0, Start: 1, End: 2, Language: "go"}}}}, &snapshotTable{Files: 1, Chunks: 1}); err != nil {
+	if err := writeSnapshotTable(h.gen, key, 8, []occurrenceRow{{Path: "x.go", BlobHash: "h", Chunks: []chunkOccurrence{{C: c, Index: 0, Start: 1, End: 2, Language: "go"}}}}, &snapshotTable{Files: 1, Chunks: 1}, nil); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	if err := os.Remove(filepath.Join(snapshotDir(h.gen, key), snapshotTableName)); err != nil {

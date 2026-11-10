@@ -2,7 +2,7 @@
 
 ## Role
 
-Defines the frontend's three data-arrival loading states — the pre-React **boot loader**, the **chat-history spinner**, and the **session-list indicators** — the store markers that drive them, and the invariants (CSP legality, zoom safety, single writer per marker, `null`-vs-loaded semantics) they uphold identically in both transports (Wails webview and the browser web-access sidecar, which serve the same `frontend/dist` tree).
+Defines the frontend's three data-arrival loading states — the pre-React **boot loader**, the **chat-history spinner**, and the **session-list indicators** — the store markers that drive them, and the invariants (CSP legality, zoom safety, single writer per marker, `null`-vs-loaded semantics) they uphold identically in both transports (Wails webview and the browser web-access sidecar, which serve the same `frontend/dist` tree). It also defines the vector index's non-ready presentation, where `unavailable` is a FAILURE rather than a loading state and the repair action lives.
 
 ## Key Files
 
@@ -18,6 +18,10 @@ Defines the frontend's three data-arrival loading states — the pre-React **boo
 - `frontend/src/hooks/useSessionLoader.ts` — feeds the list: `listSessions()` → `setSessions` (a FAILED fetch leaves the store untouched, i.e. still `null`)
 - `frontend/src/components/layout/SessionList.tsx` — CHAT-mode sidebar list: skeleton rows while `sessions === null`
 - `frontend/src/components/layout/SessionSelector.tsx` — CODE-mode dropdown: loading row while `sessions === null`
+- `frontend/src/components/layout/IndexingStatus.tsx` — the status-bar vector-index pill: honest non-ready labels, no fake progress bar, and the `unavailable` diagnosis (`last_error` + `Kind: <error_kind>`) in its native `title`
+- `frontend/src/components/layout/VectorSearchFilters.tsx` — the search panel's inline `last_error` line and the mode-row repair action
+- `frontend/src/hooks/useVectorReindex.ts` — the repair action's state machine: busy set, `unavailable` stays enabled, optimistic latch, state-naming titles
+- `frontend/src/stores/vectorIndexStore.ts` — the replace-only status snapshot (failure reason is transient; only `mode` is persisted)
 - `core/csp` — the production CSP (`script-src 'self'`, `style-src 'self' 'unsafe-inline'`), stamped by the `desktop/csp.go` `CSPMiddleware` into both the Wails asset server and the web-access sidecar
 
 ## Behavior
@@ -66,11 +70,29 @@ The same `frontend/dist` tree is served by the Wails asset server and by the web
 - **Browser tab**: the probe (`GET /api/transport`) is an async round trip, and the gate HOLDS the app on `TransportProbeSplash` until it settles — a late-joining tab mounted into an unresolved transport would fire its mount-time RPCs into `'pending'` and strand. Settling `'web'` applies the web-mode adaptations before the app mounts; the desktop-only `backend:ready` event never fires for a late-joining tab, so the splash's safety-net RPC (`listProjects()`) is the only splash-exit path in web mode.
 - **`'none'`** (plain dev server / vitest / SSR): no sidecar serves the origin; the same probe path resolves and the gate proceeds — the loading states themselves are transport-agnostic.
 
+### 5. Vector index failure & repair (status-bar pill + search panel)
+
+The vector index streams a status snapshot rather than resolving a promise, but the same discipline applies: a window that is merely not settled yet must never render as a failure, and a failure must say why. The wire shape is `VectorIndexStatus` with the optional pair `last_error` / `error_kind` ([../workspace.md](../workspace.md), [../../decisions/120-vector-store-repair-ladder.md](../../decisions/120-vector-store-repair-ladder.md)).
+
+| Status | Status-bar pill | Search panel |
+| ------ | --------------- | ------------ |
+| store default `idle` (no status yet) | hidden — the bar renders nothing | normal "Select a project to search" |
+| `loading` (kind `loading`) / `loading` (kind `restarting`) | idle dots + "Preparing index…", no progress bar | inputs disabled because searches would wait |
+| `preparing` / `migration-rebuild` | "Preparing index…" / "Migrating store…", idle dots and no fake progress; the action stays disabled and spinning | reindex disabled, tooltip names the pre-work |
+| `ready` / `indexing` / `reindexing` | legend or honest progress | normal |
+| `unavailable` | warning pill labelled "Index unavailable" with idle dots and no bar; its native `title` = the legend + the backend's `last_error`, plus `Kind: <error_kind>` when present | the `last_error` as a plain `text-warning` line under the filters (only when non-empty); the action is ENABLED as `Rebuild index — recreate the broken index from source` for the kinds the repair addresses (`error_kind` `repairable` / `transient` / `unknown` / absent), and DISABLED with a reason-specific title for the registry-level kinds (`fatal`, `no_target`, `shutting_down`) where the RPC rejects before any repair |
+| `disabled` | idle dots + "Indexing off" (a user choice, not a failure) | action disabled with "Indexing is off — enable it in Settings → Search" |
+
+- **The failure reason is the backend's own words.** The pill keeps its short visible label and puts the diagnosis in its native `title` — one channel, no Radix tooltip and no title-under-trigger combination ([button-tooltips.md](button-tooltips.md)). A missing reason or kind leaves the clean legend (or the bare `Kind:` half) intact: the UI never invents a cause and never renders a dangling separator. The panel copy is plain inline text, not a modal or toast, so the reason is visible without hovering right above the results area the broken index cannot fill.
+- **The action is the repair, and its text tracks the state.** Busy states (a pass, the branch-scoped open, the view-attach window, the legacy promotion, or the optimistic latch) disable the action and show a spinner with a tooltip naming the real state; `unavailable` keeps it ENABLED and relabels it as a rebuild (nothing is running, so no spinner) exactly for the kinds the repair escalation addresses — `repairable` (a proven store defect), `transient` (the re-attach retries the open once the fault clears) and the defensive `unknown`/absent kind — while the registry-level kinds (`fatal`: the embedder never came up, the remedy is Settings; `no_target`; `shutting_down`) render it disabled with a reason-specific title, because the RPC rejects those before any repair runs and a click could only fail; only `disabled` is terminally disabled. A click flips the busy title to `Repairing index…`; the optimistic latch is released by the first `vector_index:status` event, by a flip into `unavailable` (a failed repair — pre-attach no-op branches included — publishes a terminal status, so another attempt stays possible), by the project becoming unavailable, by the RPC resolving (the pass is scheduled; a duplicate click merely restarts it), or by a rejected RPC (surfaced as a `runtime_error` toast, never a silent no-op).
+- **The reason belongs to one attempt.** `vectorIndexStore` replaces the status object wholesale, so a healthy snapshot (which omits both fields) drops a stale cause and `reset()` clears it on a project/session switch; `partialize` persists only `mode`, never the failure text.
+
 ## Error Handling
 
 - **History load rejects**: the wrapper's `finally` still marks the session settled — the spinner never hangs; ChatArea logs and appends a local `error` message ("Failed to load session history…") that renders as the error card. The resync path catches, logs a warning, and waits for the next trigger.
 - **Session-list fetch fails**: `useSessionLoader` leaves the store untouched (`null`) — the skeleton/loading row stays honest instead of degrading into a false "No sessions yet"; the next `sessions:changed` push or resync re-read owns the store.
 - **Bundle fails before mount**: the static boot loader keeps spinning (it never depended on JS); the rAF backstop is a no-op on the missing node's removal only after a successful mount.
+- **Vector index shows a failure, not a loading placeholder**: an `unavailable` snapshot renders the backend's cause on the pill's `title` and in the search panel; a `loading`/`restarting` window renders as loading (never as unavailable); a missing cause leaves the clean legend and no inline line rather than inventing text.
 
 ## Invariants
 
@@ -82,6 +104,10 @@ The same `frontend/dist` tree is served by the Wails asset server and by the web
 - **`sessions === null` means "not yet loaded"; `[]` means "loaded and empty."** A surface renders a loading affordance for `null` and the empty-state for `[]` — never the empty-state for `null`.
 - **Loading states are announced**: each carries `role="status"` + an `aria-label` (boot loader, session-list skeleton/loading row) or an explicit `aria-label` (chat-history spinner).
 - **Markers are store state, not component state**: cleared with their sessions (`dropSessions`), reset with the project switch (`resetForProjectSwitch`), and updated identity-preserving (idempotent re-marks and no-op batches never copy state).
+- **`unavailable` is a failure state, never a loading placeholder**, and a `loading`/`restarting` window never renders as `unavailable` — each vector state's label describes what is actually happening (opening, preparing, migrating, indexing, broken, or deliberately off) and never borrows another state's shape.
+- **Every vector failure renders the backend's cause verbatim**: the status-bar pill's native `title` and the search panel's inline line carry `last_error` (and `Kind: <error_kind>` on the pill) as the backend wrote it — a surface never paraphrases a failure it does not understand, invents a cause when the fields are absent, or leaves a dangling separator.
+- **The repair action is enabled exactly where it can help**: `unavailable` keeps it enabled as a rebuild (no spinner), busy states disable it with a spinner and a tooltip naming the real pre-work, and only the master-switch `disabled` state disables it terminally; the busy title reads `Repairing index…` during a repair.
+- **The vector failure reason is transient store state**: the status snapshot is replaced wholesale, a healthy status drops a stale cause, `reset()` clears it on a project/session switch, and persistence stores only the search `mode`.
 
 ## Related Specs
 
@@ -89,4 +115,6 @@ The same `frontend/dist` tree is served by the Wails asset server and by the web
 - [../web-access.md](../web-access.md) — the web transport, the probe boot barrier, and the CSP middleware shared by the sidecar
 - [stores.md](stores.md) — `chatStore` / `sessionStore` in the store catalog
 - [events.md](events.md) — the event-driven resync/re-read paths that re-feed these states
+- [../workspace.md](../workspace.md) — the vector index's states, honest failure reason and repair escalation
+- [../../decisions/120-vector-store-repair-ladder.md](../../decisions/120-vector-store-repair-ladder.md) — the failure/repair contract this presentation follows
 - [README.md](README.md) — frontend architecture overview

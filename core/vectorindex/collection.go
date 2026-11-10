@@ -108,19 +108,26 @@ func (s *Service) SwitchBranch(ctx context.Context, branchName string) error {
 	// Open this branch's lexical index (the previous branch's was closed by
 	// releaseBranchResidentsLocked above); a state without a storage root or
 	// project id (in-memory No Project) gets no lexical persistence. View-
-	// model stores resolve into the §3 tree (chunkstore_service.go).
+	// model stores resolve into the §3 tree (chunkstore_service.go). The open
+	// stays fail-soft (search degrades to the vector leg), but its failure is
+	// REMEMBERED: a corpus build must never publish a corpus whose lexical
+	// leg is unopenable, and PublishCorpus names this cause
+	// (specs/domains/workspace.md, shared corpus publication).
 	if s.current.projectPath != "" && s.current.projectID != "" {
 		lexDir := s.workingLexicalDirLocked(branchName)
 		// Real parent dir only (a planted symlink must not redirect the index);
 		// bleve's New() creates the leaf directory itself.
 		if mkErr := ensureRealDir(filepath.Dir(lexDir), 0o750); mkErr != nil {
 			s.logger.Warn("failed to create lexical parent directory", "path", lexDir, "error", mkErr)
+			s.lastLexicalOpenErr = fmt.Errorf("creating the lexical parent of %s: %w", lexDir, mkErr)
 		} else {
 			lex, lexErr := lexical.Open(lexDir)
 			if lexErr != nil {
 				s.logger.Warn("failed to open lexical index", "path", lexDir, "error", lexErr)
+				s.lastLexicalOpenErr = fmt.Errorf("opening the lexical index %s: %w", lexDir, lexErr)
 			} else {
 				s.current.lexical = lex
+				s.lastLexicalOpenErr = nil
 			}
 		}
 	}

@@ -914,7 +914,15 @@ func (f *FrontendAPI) switchProjectSetupVector(switchCtx context.Context, p *pro
 	// subsystem in the status stream.
 	if p.IsNoProject {
 		vr.LeaveFocus()
-		st := VectorIndexStatus{State: "unavailable", Indices: []string{}}
+		// The dormant subsystem keeps its historical "unavailable" wire
+		// state, but it now carries the cause and kind: a status stream
+		// subscriber must not see a bare broken index when nothing failed.
+		st := VectorIndexStatus{
+			State:     vectorStateUnavailable,
+			Indices:   []string{},
+			LastError: vectorIndexNoProjectReason,
+			ErrorKind: vectorErrorKindNoTarget,
+		}
 		f.applyEmbedderInfo(&st)
 		f.emitEvent(EventVectorIndexStatus, st)
 		return nil

@@ -67,4 +67,45 @@ describe('vectorIndexStore', () => {
     expect(s.mustMatch).toEqual([])
     expect(s.mode).toBe('lexical')
   })
+
+  // The unavailable cause (`last_error` / `error_kind`) describes ONE attempt:
+  // it must never be persisted, and it must disappear the moment a healthy
+  // snapshot replaces the whole status object or a reset runs.
+  it('keeps the unavailable cause transient — replaced wholesale, cleared by reset, never persisted', () => {
+    const { setStatus } = useVectorIndexStore.getState()
+    setStatus({
+      state: 'unavailable',
+      progress: 0,
+      files_indexed: 0,
+      total_files: 0,
+      last_error: 'corpus store is corrupt',
+      error_kind: 'repairable',
+    })
+    expect(useVectorIndexStore.getState().status.last_error).toBe('corpus store is corrupt')
+
+    // Only `mode` survives a reload — a stale failure must not outlive the
+    // attempt that produced it.
+    const partialize = useVectorIndexStore.persist.getOptions().partialize
+    expect(partialize).toBeTypeOf('function')
+    const persisted = partialize!(useVectorIndexStore.getState()) as Record<string, unknown>
+    expect(persisted).toEqual({ mode: 'hybrid' })
+
+    // A healthy snapshot carries no cause and replaces the object wholesale.
+    setStatus({ state: 'ready', progress: 1, files_indexed: 2, total_files: 2 })
+    expect(useVectorIndexStore.getState().status.last_error).toBeUndefined()
+    expect(useVectorIndexStore.getState().status.error_kind).toBeUndefined()
+
+    // A project/session reset clears a fresh cause too.
+    setStatus({
+      state: 'unavailable',
+      progress: 0,
+      files_indexed: 0,
+      total_files: 0,
+      last_error: 'boom',
+      error_kind: 'fatal',
+    })
+    useVectorIndexStore.getState().reset()
+    expect(useVectorIndexStore.getState().status.last_error).toBeUndefined()
+    expect(useVectorIndexStore.getState().status.error_kind).toBeUndefined()
+  })
 })

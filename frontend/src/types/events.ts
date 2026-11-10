@@ -1881,6 +1881,12 @@ export function isVectorIndexPayload(d: unknown): d is VectorIndexStatus {
   // `ov_device` ("gpu"|"cpu"|absent = unverified) is matched against
   // literals in VectorIndexDiagnostics — pin the string type when present.
   if (d.ov_device !== undefined && typeof d.ov_device !== 'string') return false
+  // `last_error` / `error_kind` are optional (omitempty) and reach `.trim()`
+  // and literal comparisons in the status pill and the search panel — pin both
+  // string types when present so a malformed payload is dropped at the
+  // boundary instead of crashing (or mis-typing) a render.
+  if (d.last_error !== undefined && typeof d.last_error !== 'string') return false
+  if (d.error_kind !== undefined && typeof d.error_kind !== 'string') return false
   return true
 }
 

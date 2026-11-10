@@ -40,12 +40,20 @@ export function VectorSearchFilters({ isSearchMode, onSearch, onClear, onKeyDown
   // Force-full-reindex action, hosted on the mode-selector row after the
   // mode buttons. State machine (busy latch, No Project hiding) lives in
   // useVectorReindex.
-  const { reindexBusy, reindexDisabled, reindexDisabledTitle, reindexUnavailable, handleReindex } = useVectorReindex()
+  const { reindexBusy, reindexDisabled, reindexDisabledTitle, reindexActionTitle, reindexUnavailable, handleReindex } = useVectorReindex()
 
   // While the index is not ready, searches would block on index readiness —
   // the query/file-pattern inputs are disabled at the widget level (the
   // search button below is gated the same way).
   const searchDisabled = status.state !== 'ready'
+
+  // The inline cause for an unavailable index: the backend guarantees a
+  // non-empty `last_error` for that state (the "unavailable always explains
+  // itself" invariant), so this is the honest sentence next to the filters —
+  // no modal, no toast, and no dead end where the user has to read logs to
+  // learn why search is gone. The reindex action on the mode row is the
+  // remedy it points at.
+  const unavailableReason = status.state === 'unavailable' ? (status.last_error?.trim() ?? '') : ''
 
   return (
     <div className="flex flex-col gap-1.5">
@@ -116,7 +124,7 @@ export function VectorSearchFilters({ isSearchMode, onSearch, onClear, onKeyDown
             variant="ghost"
             size="sm"
             className="h-6 shrink-0 px-2"
-            title={reindexDisabled ? reindexDisabledTitle : 'Force full project reindex'}
+            title={reindexDisabled ? reindexDisabledTitle : reindexActionTitle}
             disabled={reindexDisabled}
             onClick={handleReindex}
           >
@@ -128,6 +136,14 @@ export function VectorSearchFilters({ isSearchMode, onSearch, onClear, onKeyDown
           </Button>
         )}
       </div>
+
+      {/* Unavailable cause — inline text next to the filters. The status-bar
+          pill tooltip carries the same sentence; this is the panel-local copy
+          so the reason is visible without hovering, right above the results
+          area the broken index cannot fill. */}
+      {unavailableReason !== '' && (
+        <p className="text-xs text-warning">{unavailableReason}</p>
+      )}
 
       {/* MustMatch chips */}
       {mustMatch.length > 0 && (

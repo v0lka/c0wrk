@@ -129,4 +129,78 @@ describe('IndexingStatus — progress bar', () => {
     expect(container.textContent).not.toContain('ready')
     expect(() => fillElement(container)).toThrow()
   })
+
+  /** The pill's outer element — the only rendered div carrying a native title. */
+  function pill(): HTMLElement {
+    const el = container.querySelector<HTMLElement>('div[title]')
+    if (!el) throw new Error('status pill not rendered')
+    return el
+  }
+
+  it('carries the backend cause plus its kind in the unavailable pill tooltip', () => {
+    // The "unavailable always explains itself" invariant reaches the UI: the
+    // visible label stays short, the hover names the real failure — so a
+    // broken index is never a dead end that requires reading service logs.
+    state.status = {
+      state: 'unavailable',
+      progress: 0,
+      files_indexed: 0,
+      total_files: 0,
+      last_error: 'corpus store is corrupt (bad header)',
+      error_kind: 'repairable',
+    }
+    render()
+    expect(pill().title).toContain('corpus store is corrupt (bad header)')
+    expect(pill().title).toContain('Kind: repairable')
+    // Still the short honest label on screen — the diagnosis is the hover.
+    expect(container.textContent).toContain('Index unavailable')
+    expect(container.textContent).not.toContain('corrupt')
+  })
+
+  it('falls back to the classification alone when no cause text is present', () => {
+    state.status = {
+      state: 'unavailable',
+      progress: 0,
+      files_indexed: 0,
+      total_files: 0,
+      error_kind: 'no_target',
+    }
+    render()
+    expect(pill().title).toContain('Kind: no_target')
+  })
+
+  it('keeps the plain legend when an unavailable status carries neither cause nor kind', () => {
+    state.status = { state: 'unavailable', progress: 0, files_indexed: 0, total_files: 0 }
+    render()
+    // No invented diagnosis and no dangling separator.
+    expect(pill().title).toBe('Vector: idle\nLexical: idle')
+  })
+
+  it('never flickers through a progress shape when the index moves ready ↔ unavailable', () => {
+    state.status = { state: 'ready', progress: 1, files_indexed: 3, total_files: 3 }
+    render()
+    expect(container.textContent).toContain('Index ready')
+
+    state.status = {
+      state: 'unavailable',
+      progress: 0,
+      files_indexed: 3,
+      total_files: 3,
+      last_error: 'failed to open the corpus',
+      error_kind: 'fatal',
+    }
+    render()
+    expect(container.textContent).toContain('Index unavailable')
+    expect(container.textContent).not.toContain('Indexing')
+    // No intermediate bar for a state that is not running a pass.
+    expect(() => fillElement(container)).toThrow()
+
+    state.status = { state: 'ready', progress: 1, files_indexed: 3, total_files: 3 }
+    render()
+    expect(container.textContent).toContain('Index ready')
+    expect(container.textContent).not.toContain('unavailable')
+    expect(() => fillElement(container)).toThrow()
+    // The cause belongs to the failed attempt, not to the recovered index.
+    expect(pill().title).not.toContain('failed to open the corpus')
+  })
 })
