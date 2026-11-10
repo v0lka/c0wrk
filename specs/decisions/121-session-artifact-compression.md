@@ -1,4 +1,4 @@
-# ADR-120: Compressed Session Artifacts — Config Codec + Per-File Magic Sniffing, zstd Default
+# ADR-121: Compressed Session Artifacts — Config Codec + Per-File Magic Sniffing, zstd Default
 
 ## Status
 

@@ -1440,7 +1440,7 @@ The append-only session artifacts — the session log
 `logs/session_<id>.log`, the session-level LLM dump and the per-step dumps
 (the fixed scope above) — are written through
 `github.com/v0lka/sp4rk/appendcodec` under the
-`session_artifacts.compression` config section ([ADR-120](../decisions/120-session-artifact-compression.md)):
+`session_artifacts.compression` config section ([ADR-121](../decisions/121-session-artifact-compression.md)):
 
 ```
 session_artifacts:
@@ -1789,7 +1789,7 @@ type HandleResult struct {
 - A `plan_review_ready` event (emitted by `declare_plan` await_approval) is persisted to `session_messages` (role `plan_review`) so it reappears in history after a restart; the pending plan approval is also surfaced via `GetPendingActions` (`desktop/pending_actions.go` `PlanApprovals`)
 - Plan files live at `~/.c0wrk/projects/<pid>/<sid>/plans/` (written by `declare_plan`); previous plan files are not deleted when the Conductor revises (request_changes) or abandons
 - `DeleteSession` closes all per-step dump files via `Orchestrator.Cleanup()` before closing the session-level log and dump files
-- An existing session artifact (session log, session dump, per-step dump) always continues its own codec: opens probe the candidate extensions, sniff the first existing file's magic and append in kind — a config flip never rewrites history, and every acknowledged record is a decodable prefix on disk ([ADR-120](../decisions/120-session-artifact-compression.md))
+- An existing session artifact (session log, session dump, per-step dump) always continues its own codec: opens probe the candidate extensions, sniff the first existing file's magic and append in kind — a config flip never rewrites history, and every acknowledged record is a decodable prefix on disk ([ADR-121](../decisions/121-session-artifact-compression.md))
 - `Shutdown` marks shutdown before cancellation, waits for active task goroutines, then converts every still-`in_progress` active task to a persisted `paused` checkpoint; already failed/completed tasks retain their terminal state. Before that, after cancelling its context, it joins manager-owned background goroutines (async ignore-resolver builds, deferred session temp-dir removals, best-effort title generation) via the background tracker and stops the persistence worker of every blackboard the manager built or restored — both bounded by one shared `stopTimeout` budget, with late spawn attempts refused so callers fall back or skip the work. It also closes all per-step dump files for every session via `Orchestrator.Cleanup()` before closing session resources.
 - Pending attachments are flushed into the blackboard exactly once on `SendMessage`: the session manager snapshots and clears `session.pendingAttachments`, then passes them via `HandleOptions.PendingAttachments` (both HandleMessage calls in `SendMessage` receive the same snapshot)
 
@@ -1799,7 +1799,7 @@ type HandleResult struct {
 | ---------------------------------- | ---------------------- | --------------------------- |
 | `ConductorHistoryWindow` (internal default) | 20                     | Conversation history window injected into the Conductor context (`OrchestratorConfig`, applied when 0) |
 | Database path                      | `~/.c0wrk/database.db` | SQLite file location        |
-| `session_artifacts.compression.algorithm` | `zstd`                 | Codec of the append-only session artifacts (session log + LLM/step dumps): `none` \| `gzip` \| `zstd`; closed enum — invalid values warn + reset at load, refused at save; existing files keep their birth codec ([ADR-120](../decisions/120-session-artifact-compression.md)) |
+| `session_artifacts.compression.algorithm` | `zstd`                 | Codec of the append-only session artifacts (session log + LLM/step dumps): `none` \| `gzip` \| `zstd`; closed enum — invalid values warn + reset at load, refused at save; existing files keep their birth codec ([ADR-121](../decisions/121-session-artifact-compression.md)) |
 | `session_artifacts.compression.zstd_window_log` | 25                     | log2 of the zstd window (2^N back-reference history), 10..27; memory scales linearly (decoder ~1×, encoder ~2× window); validated even under non-zstd algorithms |
 
 ## Related Specs
@@ -1816,4 +1816,4 @@ type HandleResult struct {
 - [prompt-suggestions.md](prompt-suggestions.md) — proactive chat-input follow-ups generated after task outcomes `full`/`partial`; they consume this domain's `is_nudge` stamp and the task-finish outcome gate
 - [../decisions/030-session-context-restore.md](../decisions/030-session-context-restore.md) — saved-first restore, effective-activity semantics, archived exclusion, last-context startup restore
 - [../decisions/095-chat-file-reference-path-semantics.md](../decisions/095-chat-file-reference-path-semantics.md) — `fileref://` URI emission: GOOS-independent drive/UNC detection, canonical forward-slash forms, no migration
-- [../decisions/120-session-artifact-compression.md](../decisions/120-session-artifact-compression.md) — compressed session artifacts: config codec + per-file magic sniffing, zstd default, xz excluded (no streaming Flush)
+- [../decisions/121-session-artifact-compression.md](../decisions/121-session-artifact-compression.md) — compressed session artifacts: config codec + per-file magic sniffing, zstd default, xz excluded (no streaming Flush)
