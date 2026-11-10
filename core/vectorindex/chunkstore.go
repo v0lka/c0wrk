@@ -566,6 +566,29 @@ func chunkRecordPath(genDir, c string) string {
 	return filepath.Join(genDir, storeChunksDirName, c[:2], c+chunkFileExt)
 }
 
+// traversesNonDirectory reports whether a failed stat/read over path
+// traversed a NON-directory component: POSIX names that shape ENOTDIR, but
+// Windows reports ERROR_PATH_NOT_FOUND, which errors.Is reads as
+// fs.ErrNotExist — indistinguishable there from a genuinely absent leaf.
+// Only the immediate parent is inspected; the call sites (a chunk record's
+// shard directory, a repo's .git probe) are one level deep.
+func traversesNonDirectory(err error, path string) bool {
+	if err == nil || !errors.Is(err, fs.ErrNotExist) {
+		return false
+	}
+	info, statErr := os.Stat(filepath.Dir(path))
+	return statErr == nil && !info.IsDir()
+}
+
+// errPathObstructed re-names a through-a-file traversal for the classifier:
+// wrapping syscall.ENOTDIR would NOT do, because on Windows that errno IS
+// ERROR_PATH_NOT_FOUND — itself read as fs.ErrNotExist — so the wrapped
+// error would still classify the obstructed record as PROVEN-absent damage.
+// The sentinel sits in neither classifier's family (Repairable/Transient),
+// so an obstructed path defers without touching store state on either
+// platform.
+var errPathObstructed = errors.New("path traverses a regular file where a directory belongs")
+
 // encodeChunkRecord serializes one vector as dims×float32 little-endian
 // (ADR-104 §3: the record carries the vector and nothing else).
 func encodeChunkRecord(vec []float32) []byte {
@@ -666,8 +689,15 @@ func writeChunkRecord(genDir, c string, vec []float32) error {
 // record reads as an error, never as a wrong vector") holds in both
 // directions only with the total-size check.
 func readChunkRecord(genDir, c string, dims int) ([]float32, error) {
-	f, err := os.Open(chunkRecordPath(genDir, c))
+	path := chunkRecordPath(genDir, c)
+	f, err := os.Open(path)
 	if err != nil {
+		if traversesNonDirectory(err, path) {
+			// Same normalization as verifyChunkRecord: an obstructed shard
+			// is not an absent record, so the §3 open keeps the table
+			// published instead of reading Windows' ErrNotExist as damage.
+			return nil, &fs.PathError{Op: "open", Path: path, Err: errPathObstructed}
+		}
 		return nil, err
 	}
 	defer func() { _ = f.Close() }()
@@ -928,8 +958,15 @@ func writeSnapshotTable(genDir, snapKey string, dims int, rows []occurrenceRow, 
 // its arity — accepts any positive 4-byte-aligned width, like
 // readChunkRecord). The failure modes are the ones Repairable classifies.
 func verifyChunkRecord(genDir, c string, dims int) error {
-	info, err := os.Stat(chunkRecordPath(genDir, c))
+	path := chunkRecordPath(genDir, c)
+	info, err := os.Stat(path)
 	if err != nil {
+		if traversesNonDirectory(err, path) {
+			// The shard's path is obstructed by a regular file: re-name the
+			// fault so the Windows shape is never read as a PROVEN-absent
+			// record and repaired through that file (see errPathObstructed).
+			return &fs.PathError{Op: "stat", Path: path, Err: errPathObstructed}
+		}
 		return err
 	}
 	if !info.Mode().IsRegular() {

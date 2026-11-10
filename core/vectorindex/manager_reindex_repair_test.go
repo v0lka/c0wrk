@@ -44,9 +44,9 @@ func TestReindex_NoLiveCollectionReattachesSnapshotView(t *testing.T) {
 	// published corpus carries no lexical leg (the defect the read path
 	// rejects). Both legs are removed — the §3 snapshot directory and the
 	// legacy per-key path — so the defect is proven, not incidental.
-	svc.CloseWorkingStore()
+	f.detachCorpusView(svc)
 	if col := svc.GetCollection(); col != nil {
-		t.Fatalf("expected no live collection after CloseWorkingStore, got %d documents", col.Count())
+		t.Fatalf("expected no live collection after the detach, got %d documents", col.Count())
 	}
 	for _, leg := range corpusLexicalLegs(t, f.storage, key) {
 		if err := os.RemoveAll(leg); err != nil {

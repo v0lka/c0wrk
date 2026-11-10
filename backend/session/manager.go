@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -21,6 +23,7 @@ import (
 	"github.com/v0lka/c0wrk/core"
 	"github.com/v0lka/c0wrk/core/markitdown"
 	"github.com/v0lka/c0wrk/core/toolmanager"
+	"github.com/v0lka/sp4rk/appendcodec"
 	"github.com/v0lka/sp4rk/ignore"
 	"github.com/v0lka/sp4rk/llm"
 	"github.com/v0lka/sp4rk/orchestration"
@@ -61,21 +64,27 @@ func SessionIDFromContext(ctx context.Context) string {
 
 // Session represents a running agent session with its own orchestrator.
 type Session struct {
-	ID                  string
-	ProjectID           string // immutable after creation (no lock needed for reads)
-	Name                string
-	CreatedAt           time.Time
-	LastActiveAt        time.Time
-	Archived            bool
-	Pinned              bool
-	ProjectPath         string            // immutable owning project checkout
-	workspaceBinding    *WorkspaceBinding // immutable, accessor returns copies
-	WorkspacePath       string            // immutable session execution workspace
-	TempDir             string            // session-specific temp directory
-	orchestrator        *core.Orchestrator
-	emitter             *EventEmitter                  // session emitter; agent quality metrics are read from it on task finish
-	logFile             *os.File                       // session log file handle, closed on deletion
-	dumpFile            *os.File                       // LLM dump file handle (DEBUG mode only), closed on deletion
+	ID               string
+	ProjectID        string // immutable after creation (no lock needed for reads)
+	Name             string
+	CreatedAt        time.Time
+	LastActiveAt     time.Time
+	Archived         bool
+	Pinned           bool
+	ProjectPath      string            // immutable owning project checkout
+	workspaceBinding *WorkspaceBinding // immutable, accessor returns copies
+	WorkspacePath    string            // immutable session execution workspace
+	TempDir          string            // session-specific temp directory
+	orchestrator     *core.Orchestrator
+	emitter          *EventEmitter // session emitter; agent quality metrics are read from it on task finish
+	// logFile and dumpFile are appendcodec writers: every Write is codec-framed
+	// and already flushed to disk, Close writes the codec footer and releases
+	// the descriptor (so wrapper.Close subsumes file.Close at every close
+	// site — deletion, shutdown, promotion). Codec is resolved per file at
+	// open time: an existing file keeps its own codec (magic sniff), a new
+	// one uses session_artifacts.compression (ADR-116).
+	logFile             io.WriteCloser                 // session log file handle, closed on deletion
+	dumpFile            io.WriteCloser                 // LLM dump file handle (DEBUG mode only), closed on deletion
 	stepDumpTracker     *orchestration.StepDumpTracker // per-plan-step dump files (DEBUG mode only); CloseAll'd on deletion and shutdown — the orchestrator's Cleanup deliberately does not own it (session-layer resource), so without this every executed step leaks one open *os.File until process exit (and blocks Windows session-dir removal)
 	cancel              context.CancelFunc             // cancel for current task
 	active              bool                           // is currently processing
@@ -156,12 +165,19 @@ type Manager struct {
 	// restoreParked parks NEW lazy restores while the session-promotion flow
 	// owns the session; waiters re-run their restore from scratch once released
 	// (specs/domains/session-lifecycle.md, Session Promotion).
-	restoreParked        map[string]chan struct{}
-	mu                   sync.RWMutex
-	orchestratorFactory  OrchestratorFactory
-	emitFunc             func(Event) // shared event emission callback
-	agentDir             string      // base agent directory (~/.c0wrk)
-	logLevel             string      // current log level for session loggers
+	restoreParked       map[string]chan struct{}
+	mu                  sync.RWMutex
+	orchestratorFactory OrchestratorFactory
+	emitFunc            func(Event) // shared event emission callback
+	agentDir            string      // base agent directory (~/.c0wrk)
+	logLevel            string      // current log level for session loggers
+	// compressionAlgorithm/zstdWindowLog are the session_artifacts.compression
+	// knobs applied when a session artifact file is CREATED (log, LLM dump,
+	// per-step dumps). An existing file always keeps its own codec — the open
+	// sniffs its magic and continues it — so a config flip only renames the
+	// files of sessions that have no artifacts yet (ADR-116).
+	compressionAlgorithm string
+	zstdWindowLog        int
 	tokenPersist         TokenPersistFunc
 	taskStore            TaskStore               // optional persistent task store
 	sessionStore         SessionStore            // optional persistent session store
@@ -286,6 +302,8 @@ func NewManager(factory OrchestratorFactory, emitFunc func(Event), agentDir stri
 		emitFunc:             emitFunc,
 		agentDir:             agentDir,
 		logLevel:             "DEBUG",
+		compressionAlgorithm: config.DefaultSessionCompressionAlgorithm,
+		zstdWindowLog:        config.DefaultSessionZstdWindowLog,
 		stopTimeout:          10 * time.Second,
 		serviceLLMTimeout:    10 * time.Minute,
 		promptSuggestEnabled: true, // prompt_suggestions.enabled: nil config = on
@@ -1321,7 +1339,7 @@ func (m *Manager) CreateSessionFromDraft(draft SessionDraft, repositoryPath stri
 // Returns the logger, the file handle (for cleanup), and an error.
 // See specs/domains/session-lifecycle.md (§ Link-Safe Creation of Session
 // File Artifacts).
-func (m *Manager) createSessionLogger(projectID, sessionID string) (*slog.Logger, *os.File, error) {
+func (m *Manager) createSessionLogger(projectID, sessionID string) (*slog.Logger, io.WriteCloser, error) {
 	logDir := config.SessionLogsDir(m.agentDir, projectID, sessionID)
 	// MkdirAllRealWithin makes the agent dir the containment boundary: an
 	// escaping link planted anywhere in the path is refused, aborting session
@@ -1332,10 +1350,7 @@ func (m *Manager) createSessionLogger(projectID, sessionID string) (*slog.Logger
 		return nil, nil, fmt.Errorf("failed to create log directory: %w", err)
 	}
 
-	// OpenFileNoFollow fails a final-component symlink with ELOOP; Windows has
-	// no O_NOFOLLOW, tempered by symlink creation requiring elevated rights.
-	logFile := config.SessionLogPath(m.agentDir, projectID, sessionID)
-	file, err := safeio.OpenFileNoFollow(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	file, err := m.openSessionArtifact(config.SessionLogPath(m.agentDir, projectID, sessionID))
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to open log file: %w", err)
 	}
@@ -1348,10 +1363,10 @@ func (m *Manager) createSessionLogger(projectID, sessionID string) (*slog.Logger
 
 // openDumpArtifacts creates the DEBUG-mode LLM dump file and the per-step dump
 // tracker. Both are best-effort: a failure warns and disables the artifact
-// (nil) instead of failing the session. The dump file is opened O_NOFOLLOW —
-// plain safeio.OpenFile would follow a final-component symlink before its
-// regularity fstat could catch the redirection.
-func (m *Manager) openDumpArtifacts(projectID, sessionID string) (*os.File, *orchestration.StepDumpTracker) {
+// (nil) instead of failing the session. The dump file is opened through
+// appendcodec (O_NOFOLLOW — plain safeio.OpenFile would follow a final-
+// component symlink before its regularity fstat could catch the redirection).
+func (m *Manager) openDumpArtifacts(projectID, sessionID string) (io.WriteCloser, *orchestration.StepDumpTracker) {
 	if !strings.EqualFold(m.logLevelValue(), "DEBUG") {
 		return nil, nil
 	}
@@ -1360,7 +1375,7 @@ func (m *Manager) openDumpArtifacts(projectID, sessionID string) (*os.File, *orc
 		m.log().Warn("failed to create dumps directory", "session_id", sessionID, "error", mkErr)
 		return nil, nil
 	}
-	dumpFile, err := safeio.OpenFileNoFollow(dumpPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	dumpFile, err := m.openSessionArtifact(dumpPath)
 	if err != nil {
 		m.log().Warn("failed to create LLM dump file", "session_id", sessionID, "error", err)
 		return nil, nil
@@ -1372,7 +1387,93 @@ func (m *Manager) openDumpArtifacts(projectID, sessionID string) (*os.File, *orc
 		m.log().Warn("failed to create step dump directory", "session_id", sessionID, "error", mkErr)
 		return dumpFile, nil
 	}
-	return dumpFile, orchestration.NewStepDumpTracker(stepDumpDir, m.log().With("session_id", sessionID))
+	// Per-step dumps follow the CONFIGURED algorithm: step files are new
+	// files at execution time, and the sniff-continue rule is reserved for
+	// artifacts that already exist at session open. A re-executed step whose
+	// earlier file carries a different codec simply starts a new file under
+	// the current extension; appendcodec's same-descriptor magic check still
+	// refuses any mismatch at the exact path.
+	algorithm, windowLog := m.compressionValues()
+	trackerOpts := make([]orchestration.StepDumpOption, 0, 2)
+	if codec, perr := appendcodec.ParseCodec(algorithm); perr == nil {
+		trackerOpts = append(trackerOpts, orchestration.WithCodec(codec))
+	} else {
+		m.log().Warn("failed to resolve session_artifacts.compression.algorithm; step dumps stay plain",
+			"session_id", sessionID, "algorithm", algorithm, "error", perr)
+	}
+	trackerOpts = append(trackerOpts, orchestration.WithCodecWindowLog(windowLog))
+	return dumpFile, orchestration.NewStepDumpTracker(stepDumpDir, m.log().With("session_id", sessionID), trackerOpts...)
+}
+
+// openSessionArtifact opens one session artifact file (session log, LLM dump)
+// through appendcodec under the session_artifacts.compression rule (ADR-116):
+// the per-codec candidate paths are probed in
+// config.SessionArtifactAlgorithmsInProbeOrder order and the first EXISTING
+// file is sniffed (appendcodec.DetectMagic) and continued with its own codec —
+// a config flip never changes the codec of files that already exist ("для
+// существующих сессий алгоритм не меняем"). When no candidate exists, the
+// file is created under the configured algorithm's extension. A candidate
+// that vanishes between Lstat and the sniff is a benign race (the deletion
+// and promotion funnels remove the whole session tree): it is skipped like
+// an absent candidate instead of failing the open. An empty existing file
+// adopts its own extension's codec: an empty file is compatible with every
+// codec and its name is the only signal of intent. A non-empty file that
+// sniffs to no codec under a compressed extension is continued as plain,
+// with a warning naming the path and the extension's algorithm — the name
+// keeps promising a codec the bytes no longer honor, and the mismatch must
+// stay visible instead of silently diverging forever.
+//
+// The open is link-safe: candidates are found with Lstat (no traversal), the
+// sniff opens O_NOFOLLOW, and appendcodec.OpenAppend re-verifies the magic
+// from the SAME O_RDWR|O_APPEND|O_CREATE descriptor it appends through, so a
+// path swapped between sniff and open can only cause a refusal
+// (*MagicMismatchError), never a corrupting append. Any refusal disables the
+// artifact at the caller — it never falls through to creating the configured
+// path, which would silently bypass a planted link.
+func (m *Manager) openSessionArtifact(basePath string) (io.WriteCloser, error) {
+	algorithm, windowLog := m.compressionValues()
+	for _, candidateAlgo := range config.SessionArtifactAlgorithmsInProbeOrder() {
+		candidate := basePath + config.SessionArtifactExtension(candidateAlgo)
+		fi, lerr := os.Lstat(candidate)
+		if lerr != nil {
+			continue // absent: probe the next extension
+		}
+		detected, sniffErr := appendcodec.DetectMagic(candidate, m.log())
+		if sniffErr != nil {
+			if errors.Is(sniffErr, fs.ErrNotExist) {
+				// The candidate vanished between Lstat and the sniff — a
+				// benign race with the deletion/promotion funnels, which
+				// remove the whole session tree. Skip it like an absent
+				// candidate: the fall-through OpenAppend below re-creates
+				// the file under its own link-safe descriptor, and the
+				// same-descriptor magic re-check still refuses anything
+				// planted at the path.
+				continue
+			}
+			return nil, fmt.Errorf("sniffing existing artifact %s: %w", candidate, sniffErr)
+		}
+		codec := detected
+		if detected == appendcodec.CodecNone && candidateAlgo != config.SessionCompressionNone {
+			if fi.Size() == 0 {
+				if parsed, perr := appendcodec.ParseCodec(candidateAlgo); perr == nil {
+					codec = parsed
+				}
+			} else {
+				// appendcodec's sniff warning fires only for unknown binary
+				// magic (text content warns nothing there) and never says
+				// the open proceeds — name the continuation explicitly.
+				m.log().Warn("session artifact content does not match its compressed extension; continuing as plain",
+					"path", candidate, "extension_algorithm", candidateAlgo)
+			}
+		}
+		return appendcodec.OpenAppend(candidate, codec, windowLog)
+	}
+	target := basePath + config.SessionArtifactExtension(algorithm)
+	codec, err := appendcodec.ParseCodec(algorithm)
+	if err != nil {
+		return nil, fmt.Errorf("session_artifacts.compression.algorithm %q: %w", algorithm, err)
+	}
+	return appendcodec.OpenAppend(target, codec, windowLog)
 }
 
 // parseSlogLevel converts a string log level to slog.Level.
@@ -1403,6 +1504,37 @@ func (m *Manager) logLevelValue() string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.logLevel
+}
+
+// SetSessionCompression sets the session_artifacts.compression knobs used
+// when a session artifact file is CREATED (session log, LLM dump, per-step
+// dumps). An existing file always keeps its own codec — opens sniff its
+// magic and continue it — so flipping only affects sessions whose artifacts
+// do not exist yet (ADR-116). Mirroring the config loader's fail-soft
+// normalization, an unrecognized algorithm or an out-of-range window falls
+// back to the config defaults instead of storing a value the config layer
+// would have refused; a non-positive windowLog keeps the current value.
+func (m *Manager) SetSessionCompression(algorithm string, zstdWindowLog int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if config.ValidSessionCompressionAlgorithm(algorithm) {
+		m.compressionAlgorithm = algorithm
+	} else {
+		m.compressionAlgorithm = config.DefaultSessionCompressionAlgorithm
+	}
+	switch {
+	case zstdWindowLog > 0 && config.ValidateSessionZstdWindowLog(zstdWindowLog) == nil:
+		m.zstdWindowLog = zstdWindowLog
+	case zstdWindowLog > 0:
+		m.zstdWindowLog = config.DefaultSessionZstdWindowLog
+	}
+}
+
+// compressionValues returns the resolved compression knobs under m.mu.
+func (m *Manager) compressionValues() (algorithm string, zstdWindowLog int) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.compressionAlgorithm, m.zstdWindowLog
 }
 
 // DeleteSession removes an in-memory session: cancel + join the running task,
@@ -1834,20 +1966,23 @@ func (s *Session) IsCompacting() bool {
 	return s.compacting
 }
 
-// DumpFile returns a duplicated handle for the session's LLM dump file (nil
-// when DEBUG is disabled); the caller owns and closes it. Duping gives
-// background goroutines handles that survive session deletion.
-func (s *Session) DumpFile() *os.File {
+// DumpWriter returns the session's LLM dump writer (nil when DEBUG is
+// disabled) for background goroutines that write through the same file —
+// title generation. It SHARES the session's appendcodec wrapper: one encoder
+// per path (concurrent writers serialize on the wrapper's mutex, so records
+// never interleave mid-record) and the caller MUST NOT close it — the
+// session's own close chain (deletion, shutdown, promotion) owns the codec
+// footer. Shutdown already joins background goroutines before closing
+// session handles; after a deletion the writes fail with appendcodec's
+// ErrClosed and surface only as the dump layer's Debug records, which is the
+// desired outcome for a session that no longer exists.
+func (s *Session) DumpWriter() io.Writer {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.dumpFile == nil {
 		return nil
 	}
-	f, err := dupFile(s.dumpFile)
-	if err != nil {
-		return nil
-	}
-	return f
+	return s.dumpFile
 }
 
 // EmitSessionEvent emits a session-scoped event through the manager's emit

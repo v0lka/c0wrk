@@ -241,6 +241,65 @@ func TestSessionDumpPath(t *testing.T) {
 	}
 }
 
+// TestSessionArtifactExtension pins the codec→extension table: the extension
+// is part of the artifact filename contract (ADR-116) and unknown algorithms
+// must map to the plain form rather than invent a path.
+func TestSessionArtifactExtension(t *testing.T) {
+	for _, tc := range []struct {
+		algorithm string
+		want      string
+	}{
+		{SessionCompressionNone, ""},
+		{SessionCompressionGzip, ".gz"},
+		{SessionCompressionZstd, ".zst"},
+		{"", ""},
+		{"brotli", ""},
+	} {
+		if got := SessionArtifactExtension(tc.algorithm); got != tc.want {
+			t.Errorf("SessionArtifactExtension(%q): got %q, want %q", tc.algorithm, got, tc.want)
+		}
+	}
+}
+
+// TestSessionArtifactAlgorithmsInProbeOrder pins the probe order openers rely
+// on for determinism: plain base first (pre-codec files), then gzip, zstd.
+func TestSessionArtifactAlgorithmsInProbeOrder(t *testing.T) {
+	got := SessionArtifactAlgorithmsInProbeOrder()
+	want := []string{SessionCompressionNone, SessionCompressionGzip, SessionCompressionZstd}
+	if len(got) != len(want) {
+		t.Fatalf("SessionArtifactAlgorithmsInProbeOrder: got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("SessionArtifactAlgorithmsInProbeOrder: got %v, want %v", got, want)
+		}
+	}
+}
+
+// TestSessionArtifactPathFor pins that the *For helpers append the codec
+// extension themselves (callers never hand-join it).
+func TestSessionArtifactPathFor(t *testing.T) {
+	logZstd := SessionLogPathFor(testAgentDir, "proj-123", "sess-456", SessionCompressionZstd)
+	wantLog := filepath.Join(testAgentDir, "projects", "proj-123", "sess-456", "logs", "session_sess-456.log.zst")
+	if logZstd != wantLog {
+		t.Errorf("SessionLogPathFor(zstd): got %q, want %q", logZstd, wantLog)
+	}
+	logPlain := SessionLogPathFor(testAgentDir, "proj-123", "sess-456", SessionCompressionNone)
+	if logPlain != SessionLogPath(testAgentDir, "proj-123", "sess-456") {
+		t.Errorf("SessionLogPathFor(none): got %q, want the plain base path", logPlain)
+	}
+	dumpGzip := SessionDumpPathFor(testAgentDir, "proj-123", "sess-456", SessionCompressionGzip)
+	wantDump := filepath.Join(testAgentDir, "projects", "proj-123", "sess-456", "dumps", "session_sess-456_llm_dump.jsonl.gz")
+	if dumpGzip != wantDump {
+		t.Errorf("SessionDumpPathFor(gzip): got %q, want %q", dumpGzip, wantDump)
+	}
+	// An unrecognized algorithm degrades to the plain form.
+	if got := SessionLogPathFor(testAgentDir, "proj-123", "sess-456", "xz"); got !=
+		SessionLogPath(testAgentDir, "proj-123", "sess-456") {
+		t.Errorf("SessionLogPathFor(xz): got %q, want the plain base path", got)
+	}
+}
+
 func TestSessionTempDir(t *testing.T) {
 	got := SessionTempDir(testAgentDir, "proj-123", "sess-456")
 	want := filepath.Join(testAgentDir, "projects", "proj-123", "sess-456", "temp")

@@ -708,6 +708,18 @@ func ApplyDefaults(cfg *Config) {
 	if cfg.WebAccess.Bind == "" {
 		cfg.WebAccess.Bind = DefaultWebAccessBind
 	}
+
+	// session_artifacts defaults (ADR-116): the unset section IS zstd/25 —
+	// materialized here so the persisted shape names the algorithm/window
+	// explicitly (mirrors the ChatGPT auth-mode seeding). A strictly
+	// INVALID explicit value is not handled here: normalizeSessionArtifacts
+	// (load pipeline) warns and resets the knob.
+	if cfg.SessionArtifacts.Compression.Algorithm == "" {
+		cfg.SessionArtifacts.Compression.Algorithm = DefaultSessionCompressionAlgorithm
+	}
+	if cfg.SessionArtifacts.Compression.ZstdWindowLog == 0 {
+		cfg.SessionArtifacts.Compression.ZstdWindowLog = DefaultSessionZstdWindowLog
+	}
 }
 
 // defaultToolGroupPolicies is the single source of truth for the

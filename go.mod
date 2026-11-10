@@ -13,10 +13,11 @@ require (
 	github.com/google/go-cmp v0.7.0
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/css v1.0.1
+	github.com/klauspost/compress v1.20.3
 	github.com/openai/openai-go v1.12.0
 	github.com/philippgille/chromem-go v0.7.0
 	github.com/shirou/gopsutil/v4 v4.26.8
-	github.com/v0lka/sp4rk v0.17.3
+	github.com/v0lka/sp4rk v0.17.4-0.20261110101554-cc2e016d9a13
 	github.com/wailsapp/wails/v2 v2.16.0
 	github.com/zalando/go-keyring v0.2.6
 	golang.org/x/image v0.45.0

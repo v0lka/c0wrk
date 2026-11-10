@@ -2853,6 +2853,8 @@ export namespace backend {
 	    ov_device?: string;
 	    provider_fallback_reason?: string;
 	    store?: vectorindex.StoreLedger;
+	    last_error?: string;
+	    error_kind?: string;
 	    device_id?: number;
 	
 	    static createFrom(source: any = {}) {
@@ -2875,6 +2877,8 @@ export namespace backend {
 	        this.ov_device = source["ov_device"];
 	        this.provider_fallback_reason = source["provider_fallback_reason"];
 	        this.store = this.convertValues(source["store"], vectorindex.StoreLedger);
+	        this.last_error = source["last_error"];
+	        this.error_kind = source["error_kind"];
 	        this.device_id = source["device_id"];
 	    }
 	
@@ -4237,6 +4241,7 @@ export namespace vectorindex {
 	    superseded_bytes: number;
 	    total_bytes: number;
 	    evicted_last_pass: number;
+	    chunk_reap_skipped: boolean;
 	    updated_at: string;
 	
 	    static createFrom(source: any = {}) {
@@ -4256,6 +4261,7 @@ export namespace vectorindex {
 	        this.superseded_bytes = source["superseded_bytes"];
 	        this.total_bytes = source["total_bytes"];
 	        this.evicted_last_pass = source["evicted_last_pass"];
+	        this.chunk_reap_skipped = source["chunk_reap_skipped"];
 	        this.updated_at = source["updated_at"];
 	    }
 	}

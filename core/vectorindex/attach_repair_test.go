@@ -147,6 +147,20 @@ func (f *repairFixture) attachedKey(svc *Service) string {
 	return svc.current.corpus.key
 }
 
+// detachCorpusView drops the service's shared-corpus binding and closes the
+// working store, leaving no opener on the snapshot's on-disk legs: the
+// refcounted decode holds a read-only bleve index over the snapshot's
+// lexical directory, and on Windows an open handle keeps its .zap files
+// alive (the leg's removal fails). Mirrors QuarantineStoreView's
+// bindings-first discipline without destroying anything.
+func (f *repairFixture) detachCorpusView(svc *Service) {
+	f.t.Helper()
+	svc.mu.Lock()
+	svc.releaseCorpusLocked(svc.current)
+	svc.closeWorkingStoreLocked()
+	svc.mu.Unlock()
+}
+
 // int32Counter is a tiny concurrent counter (the progress callback may run
 // from worker goroutines).
 type int32Counter struct {

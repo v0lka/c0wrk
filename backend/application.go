@@ -364,6 +364,11 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	// startup on ~7 subprocess probes (~0.75s).
 	manager.StartEnvInfoCollection()
 	manager.SetMaxSummaryLen(cfg.Config.Orchestration.MaxSummaryLength)
+	// session_artifacts.compression: the knobs applied when a session
+	// artifact file is CREATED; existing files keep their codec (ADR-116).
+	manager.SetSessionCompression(
+		cfg.Config.SessionArtifacts.Compression.Algorithm,
+		cfg.Config.SessionArtifacts.Compression.ZstdWindowLog)
 	// Annotate agent quality metrics with the active Model Profiles profile;
 	// resolution warnings were already surfaced at load time.
 	modelProfilesCatalog := loadModelProfilesCatalog(app.agentDir, app.log())

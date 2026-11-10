@@ -2797,11 +2797,12 @@ func (m *Manager) maybeSpawnTitleGeneration(session *Session, id, text string, p
 	if presented || sessionName != "Session "+safeSessionPrefix(id) || titleGen == nil {
 		return
 	}
-	dumpFile := session.DumpFile()
-	titleSpawned := m.spawnBackgroundNamed("session-title-generation session="+id, func() {
-		if dumpFile != nil {
-			defer func() { _ = dumpFile.Close() }()
-		}
+	// The dump writer is SHARED with the session (one appendcodec encoder per
+	// path, no per-goroutine dup) and deliberately not closed here: the
+	// session's own close chain owns the codec footer, and Shutdown joins
+	// this goroutine before reaching it.
+	dumpFile := session.DumpWriter()
+	m.spawnBackgroundNamed("session-title-generation session="+id, func() {
 		// Readiness BEFORE the budget: the embedded model's cold load is longer
 		// than the service timeout, so arming the timeout first would spend it
 		// on the load and lose the title. BY DESIGN the gate sits outside the
@@ -2836,11 +2837,9 @@ func (m *Manager) maybeSpawnTitleGeneration(session *Session, id, text string, p
 			}
 		}
 	})
-	if !titleSpawned && dumpFile != nil {
-		// Shutdown closed the tracker concurrently, so the closure never runs
-		// and its deferred close never happens. DumpFile duplicated the
-		// descriptor for the closure to own — close it here or it leaks until
-		// process exit (and on Windows blocks the dump file's removal).
-		_ = dumpFile.Close()
-	}
+	// No !titleSpawned fallback close: the dump writer is the SESSION's shared
+	// appendcodec wrapper, never owned by this call. The old dup-based design
+	// had to close the duplicated descriptor when the closure never ran; the
+	// shared wrapper is closed by the session's own close chain (deletion,
+	// shutdown, promotion) exactly once.
 }

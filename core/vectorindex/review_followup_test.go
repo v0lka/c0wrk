@@ -247,7 +247,7 @@ func TestReindex_RepairFailurePublishesTerminalUnavailable(t *testing.T) {
 	// unpublished (its lexical leg is gone), and a rebuild that keeps hitting
 	// a permission fault — transient, so nothing is quarantined and the
 	// repair can only fail.
-	svc.CloseWorkingStore()
+	f.detachCorpusView(svc)
 	for _, leg := range corpusLexicalLegs(t, f.storage, key) {
 		if err := os.RemoveAll(leg); err != nil {
 			t.Fatalf("removing lexical leg %s: %v", leg, err)
