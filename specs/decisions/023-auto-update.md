@@ -72,7 +72,21 @@ it:
    launches that *staging copy* with `--self-update --pid <PID> --stage <dir>
    --target <installdir>`, then initiates a **coordinated graceful quit**
    (`backend/frontend_api_updater.go` `ApplyUpdate` → `wailsRuntime.Quit`;
-   shutdown hooks run, no `os.Exit`).
+   shutdown hooks run, no `os.Exit`). On macOS the staged copy is wrapped in
+   a minimal `LSUIElement` .app bundle
+   (`core/updater/installer_darwin.go` `stagingLaunchPath`) and started via
+   **LaunchServices** (`open -n`, `backend/updater_detach_darwin.go`): a bare
+   fork/exec child keeps the dying GUI app as its *responsible process* — an
+   attribution that survives even a Setsid detach — and the system kills it
+   silently about a second after the app exits, mid-apply (no error, no
+   crash report, one `updater-output.log` line, leftover staging: the "app
+   closes and nothing happens" failure). A LaunchServices launch makes
+   launchd the updater's parent with responsibility of its own, which
+   survives the app's death — the discipline Squirrel.Mac's ShipIt helper
+   follows. Because `open` cannot inherit descriptors, the updater redirects
+   its own stdio to the staging log (`main.go`, `--self-update` path); on
+   Linux/Windows the direct-exec child inherits the log file the app passes
+   (Setsid-detached on Linux).
 2. **Apply** — on the second invocation `main.go` detects `--self-update`
    **before the Wails lifecycle starts** and calls `ApplySelfUpdate`: it waits
    for the parent PID to exit, extracts the staged archive into a sibling dir,
