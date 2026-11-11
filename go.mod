@@ -1,6 +1,6 @@
 module github.com/v0lka/c0wrk
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/UserExistsError/conpty v0.1.4

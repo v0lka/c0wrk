@@ -56,7 +56,7 @@ See the "Frontend architecture" section of [`AGENTS.md`](AGENTS.md) for the full
 
 Verified from project configuration and build files:
 
-- **Go 1.27.3** (single root module; `go.mod` at repo root). The `go` directive in `go.mod` and the `go-version` pins in `.github/workflows/*.yml` must stay in lockstep — CI builds with exactly this toolchain and `govulncheck` scans its stdlib, so bump both together whenever Go ships a security patch.
+- **Go 1.27.4** (single root module; `go.mod` at repo root). The `go` directive in `go.mod` and the `go-version` pins in `.github/workflows/*.yml` must stay in lockstep — CI builds with exactly this toolchain and `govulncheck` scans its stdlib, so bump both together whenever Go ships a security patch.
 - **Node.js 24 + npm** (used by Wails frontend commands and `frontend/package.json` scripts). CI pins `node-version: "24"`.
 - **Wails v2 CLI, matching the version pinned in `go.mod`** (`github.com/wailsapp/wails/v2`, currently **v2.16.0**) — CI and the release workflow install the same pinned version (`go install github.com/wailsapp/wails/v2/cmd/wails@v2.16.0`); `wails build`/`wails dev` are used by the Makefile and, on Windows, by [`build.ps1`](build.ps1).
 - **golangci-lint v2.14.0** (for `make lint` / `./build.ps1 lint`) — pinned to match CI (`go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0`).
@@ -111,8 +111,8 @@ PowerShell analog of every Makefile target ships at the repository root as
 Install once per machine. Every version below is pinned to what CI uses
 ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)):
 
-- **Go 1.27.3** — `winget install GoLang.Go`, or the official MSI from
-  [go.dev/dl](https://go.dev/dl/). Must match the `go 1.27.3` directive in `go.mod`.
+- **Go 1.27.4** — `winget install GoLang.Go`, or the official MSI from
+  [go.dev/dl](https://go.dev/dl/). Must match the `go 1.27.4` directive in `go.mod`.
 - **Node.js 24 + npm** — `winget install OpenJS.NodeJS.LTS`. CI pins `node-version: "24"`.
 - **Wails v2 CLI (v2.16.0)** —
   `go install github.com/wailsapp/wails/v2/cmd/wails@v2.16.0`.
@@ -387,7 +387,7 @@ Vector index needs ONNX Runtime plus a quantized embedding model + tokenizer (fe
 
 ## Continuous integration
 
-CI runs on pushes to `main`, pull requests targeting `main`, and manual `workflow_dispatch`, across Linux (amd64 **and** arm64), macOS, and Windows (see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)). Every OS/arch leg runs the default Go suite and the probabilistic stress suite as **separate steps** — `go test -count=1 -v -skip '^TestStress' ./...` filtered through awk so only failures, skips and stray diagnostics reach the log, then `go run ./internal/teststress` (20 race/shuffled repetitions; a failure, a skip or missing coverage fails the leg) — plus the frontend vitest run; Go and frontend lint run on Linux amd64, macOS, and Windows (the Linux arm64 leg skips them), while the `npm audit` gate runs on the Linux amd64 leg only. A single OS-independent `security` job runs `make vulncheck`. Every OS build leg installs the same pinned toolchain — Go 1.27.3, Node 24, Wails v2.16.0, golangci-lint v2.14.0 (golangci-lint is installed on the amd64 legs only — the Linux arm64 leg skips it — and the OS-independent `security` job installs only the Go toolchain) — and the Windows job additionally sets `CGO_ENABLED=1` with MinGW-w64 gcc and normalizes line endings (`core.autocrlf false`). Before opening a PR, run the full local validation sequence:
+CI runs on pushes to `main`, pull requests targeting `main`, and manual `workflow_dispatch`, across Linux (amd64 **and** arm64), macOS, and Windows (see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)). Every OS/arch leg runs the default Go suite and the probabilistic stress suite as **separate steps** — `go test -count=1 -v -skip '^TestStress' ./...` filtered through awk so only failures, skips and stray diagnostics reach the log, then `go run ./internal/teststress` (20 race/shuffled repetitions; a failure, a skip or missing coverage fails the leg) — plus the frontend vitest run; Go and frontend lint run on Linux amd64, macOS, and Windows (the Linux arm64 leg skips them), while the `npm audit` gate runs on the Linux amd64 leg only. A single OS-independent `security` job runs `make vulncheck`. Every OS build leg installs the same pinned toolchain — Go 1.27.4, Node 24, Wails v2.16.0, golangci-lint v2.14.0 (golangci-lint is installed on the amd64 legs only — the Linux arm64 leg skips it — and the OS-independent `security` job installs only the Go toolchain) — and the Windows job additionally sets `CGO_ENABLED=1` with MinGW-w64 gcc and normalizes line endings (`core.autocrlf false`). Before opening a PR, run the full local validation sequence:
 
 ```bash
 make build
