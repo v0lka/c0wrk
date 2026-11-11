@@ -228,7 +228,7 @@ func TestValidateDelegationTasks_RejectsUnknownToolsField(t *testing.T) {
 	tasks := []DelegationTask{
 		{ID: "del_1", Summary: "s", Task: "t", Tools: []any{"local-read", "edit_file"}},
 	}
-	err := validateDelegationTasks(tasks, registry, nil)
+	err := validateDelegationTasks(tasks, registry, nil, nil)
 	if err == nil {
 		t.Fatal("expected validation error for unknown tool group, got nil")
 	}
@@ -257,12 +257,12 @@ func TestValidateDelegationTasks_RejectsOversizedBatch(t *testing.T) {
 	}
 
 	// Exactly at the cap is accepted.
-	if err := validateDelegationTasks(makeBatch(maxDelegationBatchSize), registry, nil); err != nil {
+	if err := validateDelegationTasks(makeBatch(maxDelegationBatchSize), registry, nil, nil); err != nil {
 		t.Fatalf("a batch of exactly %d tasks must be accepted, got: %v", maxDelegationBatchSize, err)
 	}
 
 	// One over the cap is rejected with an actionable message.
-	err := validateDelegationTasks(makeBatch(maxDelegationBatchSize+1), registry, nil)
+	err := validateDelegationTasks(makeBatch(maxDelegationBatchSize+1), registry, nil, nil)
 	if err == nil {
 		t.Fatal("expected rejection for an oversized batch, got nil")
 	}

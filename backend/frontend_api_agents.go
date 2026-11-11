@@ -45,7 +45,7 @@ func (f *FrontendAPI) ListAgents() []AgentDescriptorDTO {
 		if d.Hidden {
 			continue
 		}
-		result = append(result, AgentDescriptorDTO{Name: d.Name, Description: d.Description})
+		result = append(result, AgentDescriptorDTO{Name: d.Name, Description: d.Description, Model: d.Model})
 	}
 
 	// Store in cache.

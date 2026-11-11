@@ -473,11 +473,15 @@ async function slashSource(ctx: CompletionContext): Promise<CompletionResult | n
   // list.
   for (const a of fuzzyFilter(query, agents.filter((a) => agentNames.has(a.name)), (a) => a.name)) {
     const collides = skillNames.has(a.name) || mcpNames.has(a.name) || commands.some((c) => c.name === a.name)
+    // A profile's forced `model:` override rides both the row detail and the
+    // hover pane (cmMentionTooltip renders mentionMarkdown); absent = the
+    // description alone, exactly as before.
+    const model = a.model ? ` — forced model: ${a.model}` : ''
     options.push({
       label: collides ? `/agent: ${a.name}` : a.name,
-      detail: a.description,
+      detail: a.description + model,
       // Full description for the hover/selection markdown pane (cmMentionTooltip).
-      mentionMarkdown: a.description,
+      mentionMarkdown: a.description + model,
       type: 'agent',
       section: { name: 'Subagents', rank: 1 },
       // The replacement range starts AFTER the typed '/', so the applied

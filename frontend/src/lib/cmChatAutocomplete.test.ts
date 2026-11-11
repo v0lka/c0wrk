@@ -55,6 +55,7 @@ vi.mock('./cmMentionTooltip', () => ({
 }))
 
 import { createChatAutocomplete } from './cmChatAutocomplete'
+import type { MentionCompletion } from './cmMentionTooltip'
 import { logger } from '@/lib/logger'
 import { listSkills } from '@/api/skills'
 import { listAgents } from '@/api/agents'
@@ -605,6 +606,34 @@ describe('cmChatAutocomplete unified /-source', () => {
     await vi.advanceTimersByTimeAsync(100)
     acceptCompletion(view)
     expect(view.state.doc.toString()).toBe('/goal ')
+  })
+
+  it('surfaces a subagent forced model in the row detail and hover markdown; absent = bare description', async () => {
+    // AgentDescriptor.model rides both surfaces of the Subagents section —
+    // the row suffix and the hover pane's markdown — and a profile without
+    // the override renders exactly as before the field existed.
+    useProjectStore.setState({ projects: [], activeProjectId: 'slash-agent-model' })
+    vi.mocked(listAgents).mockResolvedValue([
+      { name: 'pinned', description: 'Pinned reviews', model: 'qwen3.8-27b' },
+      { name: 'plain', description: 'Plain reviews' },
+    ])
+    vi.mocked(listSkills).mockResolvedValue([])
+    getMCPMentionableServersMock.mockResolvedValue([])
+    listCommandsMock.mockResolvedValue([])
+
+    const view = newSlashView()
+    typeAndComplete(view, '/')
+    await until(
+      () => currentCompletions(view.state).some((c) => c.label === 'pinned'),
+      'agent completions to appear',
+    )
+    const completions = currentCompletions(view.state)
+    const pinned = completions.find((c) => c.label === 'pinned') as MentionCompletion
+    expect(pinned.detail).toBe('Pinned reviews — forced model: qwen3.8-27b')
+    expect(pinned.mentionMarkdown).toBe('Pinned reviews — forced model: qwen3.8-27b')
+    const plain = completions.find((c) => c.label === 'plain') as MentionCompletion
+    expect(plain.detail).toBe('Plain reviews')
+    expect(plain.mentionMarkdown).toBe('Plain reviews')
   })
 
   it('hides the built-in goal command when a catalog entry named goal shadows the plain spelling', async () => {

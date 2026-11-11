@@ -728,25 +728,26 @@ func (b *OrchestratorBuilder) Build(
 	// once construction returns, so even a panic inside NewOrchestrator releases the
 	// registration below.
 	orch := NewOrchestrator(orchConfig, OrchestratorDeps{
-		Router:               coreRouter,
-		LLM:                  loggedLLM,
-		ModelSwitcher:        llmRouter,
-		VisionResolver:       newMarkitdownVisionResolver(llmRouter, modelReg, cfg),
-		ToolExec:             sessionRegistry,         // ToolExecutor (per-session policy view)
-		ToolRegistry:         b.registry.ToolRegistry, // sp4rk ToolRegistry (shared)
-		TokenCounter:         tokenCounter,
-		ContextFactory:       contextFactory,
-		Reflector:            coreReflector,
-		Logger:               logger,
-		ServiceMetrics:       b.serviceMetrics,
-		Emitter:              emitter,
-		ModelRegistry:        modelReg,
-		ToolResultBudget:     toolResultBudget,
-		CircuitBreaker:       circuitBreaker,
-		BBFactory:            bbFactory,
-		TrackingCaller:       trackingCaller,
-		VectorSearchFunc:     b.vectorSearchFunc,
-		VectorSearchWaitFunc: b.vectorSearchWaitFunc,
+		Router:                coreRouter,
+		LLM:                   loggedLLM,
+		ModelSwitcher:         llmRouter,
+		VisionResolver:        newMarkitdownVisionResolver(llmRouter, modelReg, cfg),
+		ValidateModelOverride: modelOverrideValidator(llmRouter),
+		ToolExec:              sessionRegistry,         // ToolExecutor (per-session policy view)
+		ToolRegistry:          b.registry.ToolRegistry, // sp4rk ToolRegistry (shared)
+		TokenCounter:          tokenCounter,
+		ContextFactory:        contextFactory,
+		Reflector:             coreReflector,
+		Logger:                logger,
+		ServiceMetrics:        b.serviceMetrics,
+		Emitter:               emitter,
+		ModelRegistry:         modelReg,
+		ToolResultBudget:      toolResultBudget,
+		CircuitBreaker:        circuitBreaker,
+		BBFactory:             bbFactory,
+		TrackingCaller:        trackingCaller,
+		VectorSearchFunc:      b.vectorSearchFunc,
+		VectorSearchWaitFunc:  b.vectorSearchWaitFunc,
 		// Raw configured value: 0 (fail-fast) is enforced by the desktop search closure
 		// before this bound; an orchestrator zero → 3s default.
 		VectorSearchWaitTimeout:  b.vectorSearchWaitTimeout,
@@ -1697,6 +1698,34 @@ func modelOverridesFromConfig(cfg *BuilderConfig) map[string]llm.ModelMetadata {
 	remapLocalGoogleProtocols(overrides, cfg.LLM.ProviderConfigs, cfg.ExpandEnvVars)
 	applyProviderOutputReserves(overrides, cfg.LLM.ProviderConfigs)
 	return overrides
+}
+
+// modelOverrideValidator closes over the router's read-only provider-for-model
+// lookup (specs/domains/orchestration/delegation.md): a Subagent Profile's
+// composite "provider/model" `model:` override must name a provider the router
+// actually configured — checked at delegate validation and again defensively
+// at launch (mirrors the agent-name double-check), so a doomed subagent never
+// starts and the error names the profile, the model, and the known providers.
+// Bare model names pass through unvalidated: they ride the session's active
+// provider, which never requires naming one. A nil router yields a nil
+// validator (no pre-launch validation; the router's per-request provider miss
+// remains the backstop).
+func modelOverrideValidator(llmRouter *llm.Router) tools.ModelOverrideValidator {
+	if llmRouter == nil {
+		return nil
+	}
+	return func(agentName, model string) error {
+		provider, _, composite := llm.ParseCompositeModelID(model)
+		if !composite {
+			return nil
+		}
+		if _, ok := llmRouter.ProviderForModel(model); ok {
+			return nil
+		}
+		return fmt.Errorf(
+			"profile %q: model override %q names unknown provider %q — known providers: %s",
+			agentName, model, provider, strings.Join(llmRouter.KnownProviders(), ", "))
+	}
 }
 
 // buildRouter creates a fresh LLM Router + ModelRegistry from config;

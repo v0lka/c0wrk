@@ -208,12 +208,17 @@ export function handleSubAgentLaunch(
 ) {
   const stepId = metaString(meta, 'step_id') ?? ''
   const description = metaString(meta, 'description') ?? ''
+  // The delegate's forced model override, when the launch event carries one
+  // (additive `model` key — absent in payloads that predate it, so the badge
+  // stays hidden and the render is unchanged).
+  const model = metaString(meta, 'model') ?? ''
   // Delegated steps do not receive plan_step_start, so there is never a
   // pre-existing plan_step to convert — always create a fresh subagent block.
   const subItem: SubAgentItem = {
     kind: 'subagent', id: msg.id, stepId,
     title: description || stepId,
     description: description || undefined,
+    model: model || undefined,
     status: 'running', children: [],
   }
   openSteps.set(stepId, subItem)

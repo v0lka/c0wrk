@@ -386,6 +386,14 @@ type conductorDeps struct {
 	// unavailable, non-empty `agent` rejected by delegate validation.
 	agentResolver tools.AgentResolver
 
+	// validateModelOverride fail-closes a profile's composite "provider/model"
+	// `model:` override against the session router's configured providers —
+	// at delegate validation AND defensively in buildSubAgentTask (mirrors the
+	// agent-name double-check). Built by the builder as a closure over the
+	// router's read-only provider-for-model lookup; nil = no pre-launch
+	// validation (the router's per-request provider miss remains the backstop).
+	validateModelOverride tools.ModelOverrideValidator
+
 	// skillResolver resolves a profile's required skills, fail-closed
 	// (delegation.md, "Profile Required Skills").
 	skillResolver func(name string) (*skills.Skill, bool)
@@ -1413,7 +1421,19 @@ func (l *conductorLauncher) buildSubAgentTask(ctx context.Context, t tools.Deleg
 	complexity := ComplexityFromContext(ctx)
 	compactionStrategy := compactionStrategyForDomain(domain, complexity)
 
-	modelMeta := l.resolveModelMeta(ctx)
+	// Profile-aware metadata: a composite override sends the BARE model to
+	// the named provider, so the CM sizes against the override model's window
+	// when the registry knows it; a miss (or a bare override the registry
+	// doesn't know) falls through the usual chain — session model, registry
+	// default, static fallback.
+	effectiveModel := ""
+	if profile != nil && profile.Metadata.Model != "" {
+		effectiveModel = profile.Metadata.Model
+		if _, bare, composite := llm.ParseCompositeModelID(effectiveModel); composite {
+			effectiveModel = bare
+		}
+	}
+	modelMeta := l.resolveModelMeta(ctx, effectiveModel)
 
 	// Activate the profile's required skills (AGENT.md `skills:`), merged
 	// inherited-first, fail-closed (delegation.md).
@@ -1466,10 +1486,24 @@ func (l *conductorLauncher) buildSubAgentTask(ctx context.Context, t tools.Deleg
 	}
 
 	caller := l.callerForStep(cm, t.ID)
-	// A profile's model override forces req.Model on every call (no-op when
-	// empty, so unconditional).
+	// A profile's model override pins every call (no-op when empty). A
+	// composite "provider/model" value routes cross-provider via the
+	// per-request provider override (sp4rk ADR-011) after a defensive
+	// re-validation — delegate validation checked it at call time, but the
+	// profile may have changed mid-run (mirrors the agent-name double-check).
+	// A bare name keeps the legacy model-only form byte-identical: no
+	// provider pinning, the session's active provider keeps serving it.
 	if profile != nil {
-		caller = agent.NewModelOverrideCaller(caller, profile.Metadata.Model)
+		if provider, bare, composite := llm.ParseCompositeModelID(profile.Metadata.Model); composite {
+			if l.deps.validateModelOverride != nil {
+				if err := l.deps.validateModelOverride(t.Agent, profile.Metadata.Model); err != nil {
+					return agent.SubAgentTask{}, fmt.Errorf("delegation %q: %w", t.ID, err)
+				}
+			}
+			caller = agent.NewModelProviderOverrideCaller(caller, provider, bare)
+		} else {
+			caller = agent.NewModelOverrideCaller(caller, profile.Metadata.Model)
+		}
 	}
 	execOpts := []agent.Option{
 		agent.WithTokenCounter(l.deps.tokenCounter),
@@ -1734,9 +1768,21 @@ func (l *conductorLauncher) buildTaskDescription(t tools.DelegationTask, registr
 	return b.String()
 }
 
-func (l *conductorLauncher) resolveModelMeta(ctx context.Context) llm.ModelMetadata {
-	// Resolve always returns usable metadata; the fallback window (128000)
-	// keeps compaction alive — a zero ContextWindow means unbounded growth.
+// resolveModelMeta resolves the subagent ContextManager's model metadata:
+// the EFFECTIVE model first — a profile's override (bare for composite
+// "provider/model" values, the raw name otherwise — the string actually sent
+// to the provider), then the session's active model, then the registry
+// default, then a static fallback that keeps compaction alive. Resolve always
+// returns usable metadata; the fallback window (128000) means a zero
+// ContextWindow never reaches a CM (unbounded growth). A miss on the
+// effective model falls through the existing chain rather than failing —
+// metadata sizing is best-effort, routing is not affected.
+func (l *conductorLauncher) resolveModelMeta(ctx context.Context, effectiveModel string) llm.ModelMetadata {
+	if l.deps.modelRegistry != nil && effectiveModel != "" {
+		if meta, _ := l.deps.modelRegistry.Resolve(ctx, effectiveModel); meta.ContextWindow > 0 {
+			return meta
+		}
+	}
 	if l.deps.modelRegistry != nil && l.deps.model != "" {
 		if meta, _ := l.deps.modelRegistry.Resolve(ctx, l.deps.model); meta.ContextWindow > 0 {
 			return meta
@@ -2207,6 +2253,12 @@ func RunConductor(
 	// The agent resolver survives subagentCtx so a redelegating subagent can
 	// delegate to a named profile; nil = profiles unavailable.
 	ctx = tools.WithAgentResolver(ctx, deps.agentResolver)
+	// The profile-model validator rides the same path: composite
+	// "provider/model" overrides fail closed at delegate validation, and a
+	// redelegating subagent's delegate calls validate too. nil = no pre-launch
+	// validation (buildSubAgentTask re-checks defensively; the router's
+	// per-request provider miss remains the backstop).
+	ctx = tools.WithModelOverrideValidator(ctx, deps.validateModelOverride)
 	ctx = agent.WithTrajectoryStore(ctx, trajStore)
 	ctx = orchestration.WithDelegationRegistry(ctx, registry)
 
@@ -2376,6 +2428,8 @@ func (o *Orchestrator) buildConductorDeps(conversationHistory []llm.Message, res
 			}
 			return o.agentManager.Get(name)
 		},
+		// Composite profile-model overrides fail closed before launch; nil-safe.
+		validateModelOverride: o.validateModelOverride,
 		// Skills for profile requirements; fail-closed when the manager is nil.
 		skillResolver: func(name string) (*skills.Skill, bool) {
 			if o.skillManager == nil {

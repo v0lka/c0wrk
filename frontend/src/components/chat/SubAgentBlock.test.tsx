@@ -82,6 +82,26 @@ describe('SubAgentBlock', () => {
     expect(container.textContent).not.toContain('stale reason')
   })
 
+  // --- forced model badge (additive: absent = unchanged render) ---
+
+  it('renders the forced model badge when the launch carried one', () => {
+    render(makeSub({ status: 'running', model: 'qwen3.8-27b' }))
+    const badge = container.querySelector('span[title="Forced model: qwen3.8-27b"]')
+    expect(badge).not.toBeNull()
+    expect(badge!.textContent).toBe('qwen3.8-27b')
+    // The badge is a header hint, not an auto-expanded body.
+    expect(state()).toBe('closed')
+  })
+
+  it('renders no model badge when the launch carries none', () => {
+    render(makeSub({ status: 'completed', duration: 1200 }))
+    expect(container.querySelector('span[title^="Forced model:"]')).toBeNull()
+    // The completed block still renders its duration chip — the only header
+    // chip, exactly as before the field existed.
+    expect(container.textContent).toContain('1s')
+    expect(container.textContent).not.toContain('Forced model')
+  })
+
   it('expands its body when the user clicks the header', () => {
     render(makeSub({ status: 'completed', children: [CHILD] }))
     act(() => {

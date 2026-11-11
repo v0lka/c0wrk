@@ -47,6 +47,19 @@ describe('#11 array wrappers validate element shape', () => {
     await expect(listAgents()).resolves.toEqual([{ name: 'a', description: 'd' }])
   })
 
+  it('listAgents accepts the additive model field and preserves descriptors without it', async () => {
+    // AgentDescriptor.model (the profile's `model:` override) is additive:
+    // present-when-set passes through untouched, absent stays absent.
+    mockApp.ListAgents = vi.fn(() => Promise.resolve([
+      { name: 'pinned', description: 'd', model: 'qwen3.8-27b' },
+      { name: 'plain', description: 'd' },
+    ]))
+    await expect(listAgents()).resolves.toEqual([
+      { name: 'pinned', description: 'd', model: 'qwen3.8-27b' },
+      { name: 'plain', description: 'd', model: undefined },
+    ])
+  })
+
   it('listSkills degrades to [] on a malformed element', async () => {
     mockApp.ListSkills = vi.fn(() => Promise.resolve([{ name: 's', description: 'd' }, { name: 'x' }]))
     await expect(listSkills()).resolves.toEqual([])

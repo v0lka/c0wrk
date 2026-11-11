@@ -4,6 +4,8 @@
 
 Accepted — amended by [ADR-076](./076-unified-slash-mentions.md): the explicit `#agent-name` mention syntax (§3, and §4's explicit-request mode) is superseded by the unified `/`-mention syntax — plain `/agent-name` plus the collision-qualified `/agent: name` / `/skill: name` forms — and `#` is no longer a trigger anywhere (`#foo` is plain text, never extracted, threaded, or stripped). The profile format, discovery, delegation modes, plan-step targeting, and the Available/Requested Subagents prompt sections stand unchanged.
 
+Also amended by [ADR-122](./122-subagent-model-provider-override.md): the §2 `model:` frontmatter field additionally accepts a composite `provider/model` id — decomposed at delegation time and routed cross-provider via `agent.NewModelProviderOverrideCaller`, fail-closed at delegate validation (composite ids only; bare names pass through unvalidated), with the subagent's context sizing keyed to the override model — while the bare-name path keeps exactly the legacy application documented below. Everything else stands unchanged.
+
 ## Context
 
 c0wrk's Conductor can already delegate coherent units of work to subagents via

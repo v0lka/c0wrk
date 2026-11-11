@@ -28,7 +28,7 @@ const statusConfig = {
 } as const
 
 export const SubAgentBlock = memo(function SubAgentBlock({ item }: { item: SubAgentItem }) {
-  const { stepId, description, status, duration, error, children } = item
+  const { stepId, description, status, duration, error, model, children } = item
   const bookmarkable = useContext(BookmarkableContext)
   // Plan groups are rebuilt per session switch, so the displayed steps always
   // belong to the active session. The nested lookup returns a primitive
@@ -94,6 +94,16 @@ export const SubAgentBlock = memo(function SubAgentBlock({ item }: { item: SubAg
       {status === 'interrupted' && (
         <span className="text-xs text-muted-foreground truncate min-w-0">— interrupted</span>
       )}
+      {/* The delegate's forced `model:` override — rendered only when the
+          launch carried one (absent = unchanged render). */}
+      {model && (
+        <span
+          className="text-xs text-muted-foreground bg-muted/50 px-1.5 py-0.5 rounded shrink-0 max-w-40 truncate"
+          title={`Forced model: ${model}`}
+        >
+          {model}
+        </span>
+      )}
       {checklistTotal > 0 && (
         <StepChecklistProgress total={checklistTotal} completed={checklistDone} accent={accent} />
       )}
@@ -112,7 +122,7 @@ export const SubAgentBlock = memo(function SubAgentBlock({ item }: { item: SubAg
         </span>
       )}
     </>
-  ), [status, error, stepContextFill, stepContextTokens, checklistTotal, checklistDone, accent, duration])
+  ), [status, error, model, stepContextFill, stepContextTokens, checklistTotal, checklistDone, accent, duration])
 
   return (
     <CollapsibleBlock

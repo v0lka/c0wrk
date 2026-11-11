@@ -381,6 +381,12 @@ type Orchestrator struct {
 	// context; 0 falls back to agent.DefaultVerifyOnEditCap.
 	verifyOnEditMaxOutputChars int
 
+	// validateModelOverride fail-closes a Subagent Profile's composite
+	// "provider/model" override against the session router (delta on
+	// OrchestratorDeps.ValidateModelOverride); threaded into conductorDeps
+	// and the delegate-tool context. nil = no pre-launch validation.
+	validateModelOverride tools.ModelOverrideValidator
+
 	// isNoProject: inside the No Project pseudo-project index-dependent tools are
 	// disabled and auto-RAG/verify-on-edit suppressed; code CHAT still routes "code".
 	isNoProject bool
@@ -664,6 +670,15 @@ type OrchestratorDeps struct {
 	// VerifyOnEditMaxOutputChars caps the verification output injected into
 	// context; 0 falls back to agent.DefaultVerifyOnEditCap.
 	VerifyOnEditMaxOutputChars int
+
+	// ValidateModelOverride fail-closes a Subagent Profile's composite
+	// "provider/model" `model:` override against the session router's
+	// configured providers (core/tools.ModelOverrideValidator): delegate
+	// validation calls it before any launch and buildSubAgentTask re-checks
+	// defensively. Nil = no pre-launch validation (the router's per-request
+	// provider miss remains the backstop). Built by the builder as a closure
+	// over the router's read-only provider-for-model lookup.
+	ValidateModelOverride tools.ModelOverrideValidator
 }
 
 // NewOrchestrator creates a new Orchestrator with all components.
@@ -726,6 +741,7 @@ func NewOrchestrator(cfg OrchestratorConfig, deps OrchestratorDeps) *Orchestrato
 		onCleanup:                  deps.OnCleanup,
 		verifyOnEdit:               deps.VerifyOnEdit,
 		verifyOnEditMaxOutputChars: deps.VerifyOnEditMaxOutputChars,
+		validateModelOverride:      deps.ValidateModelOverride,
 		compactionForecast:         resolveCompactionForecast(cfg.Compaction.Forecast),
 	}
 

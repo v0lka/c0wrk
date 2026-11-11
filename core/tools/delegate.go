@@ -191,7 +191,11 @@ func (t *DelegateTool) Execute(ctx context.Context, input json.RawMessage) (sdkt
 
 	// Resolve the profile resolver first so existence is checked up front.
 	agentResolver := AgentResolverFrom(ctx)
-	if err := validateDelegationTasks(params.Tasks, registry, agentResolver); err != nil {
+	// The profile-model validator rides the same context; nil = no pre-launch
+	// validation wired (the router's per-request provider miss remains the
+	// backstop).
+	modelValidator := ModelOverrideValidatorFrom(ctx)
+	if err := validateDelegationTasks(params.Tasks, registry, agentResolver, modelValidator); err != nil {
 		return sdktools.ErrorResult("delegate validation failed: %v", err), nil
 	}
 
@@ -346,8 +350,10 @@ func validateDelegationGroupToken(s string) error {
 
 // validateDelegationTasks enforces the delegate contract — unique ids,
 // resolvable depends_on, acyclic combined graph, valid modes, resolvable
-// agent profiles. See specs/domains/orchestration/delegation.md.
-func validateDelegationTasks(tasks []DelegationTask, registry *DelegationRegistry, agentResolver AgentResolver) error {
+// agent profiles. See specs/domains/orchestration/delegation.md. modelValidator
+// (optional) fail-closes a profile's composite "provider/model" override
+// against the session router BEFORE any launch; bare names pass through.
+func validateDelegationTasks(tasks []DelegationTask, registry *DelegationRegistry, agentResolver AgentResolver, modelValidator ModelOverrideValidator) error {
 	if len(tasks) > maxDelegationBatchSize {
 		return fmt.Errorf("too many tasks: %d (max %d per delegate call) — split the work across multiple delegate calls", len(tasks), maxDelegationBatchSize)
 	}
@@ -385,8 +391,19 @@ func validateDelegationTasks(tasks []DelegationTask, registry *DelegationRegistr
 			if agentResolver == nil {
 				return fmt.Errorf("task %q: agent %q requested but no agent resolver is configured (Subagent Profiles unavailable)", task.ID, task.Agent)
 			}
-			if _, ok := agentResolver(task.Agent); !ok {
+			profile, ok := agentResolver(task.Agent)
+			if !ok {
 				return fmt.Errorf("task %q: unknown agent %q — no Subagent Profile with that name was found", task.ID, task.Agent)
+			}
+			// A profile carrying a model override must name a provider the
+			// session router actually knows — the whole call fails before any
+			// subagent launches (delegation.md, "Profile model overrides").
+			// nil validator = validation not wired; buildSubAgentTask
+			// re-checks defensively at launch.
+			if modelValidator != nil && profile != nil && profile.Metadata.Model != "" {
+				if err := modelValidator(task.Agent, profile.Metadata.Model); err != nil {
+					return fmt.Errorf("task %q: %w", task.ID, err)
+				}
 			}
 		}
 	}
@@ -544,6 +561,37 @@ func WithAgentResolver(ctx context.Context, resolver AgentResolver) context.Cont
 // AgentResolverFrom extracts the AgentResolver from the context, or returns nil.
 func AgentResolverFrom(ctx context.Context) AgentResolver {
 	if v, ok := ctx.Value(agentResolverKey{}).(AgentResolver); ok {
+		return v
+	}
+	return nil
+}
+
+// --- Profile model override validation plumbing ---
+
+// ModelOverrideValidator checks a Subagent Profile's `model:` override against
+// the session router's configured providers BEFORE any subagent launches.
+// agentName is the profile's name (for the error message) and model is the
+// profile's raw Metadata.Model. A composite "provider/model" value must name
+// a provider the router knows — fail-closed, with an error naming the profile,
+// the model, and the known providers. A bare model name passes through
+// unvalidated: it rides the session's active provider, which never requires a
+// provider name. nil error = validated (or passthrough).
+type ModelOverrideValidator func(agentName, model string) error
+
+type modelOverrideValidatorKey struct{}
+
+// WithModelOverrideValidator injects the validator; like the agent resolver it
+// is NOT stripped by subagentCtx, so a redelegating subagent's delegate calls
+// validate composite overrides too. nil = no pre-launch validation (the
+// router's per-request provider miss remains the backstop).
+func WithModelOverrideValidator(ctx context.Context, v ModelOverrideValidator) context.Context {
+	return context.WithValue(ctx, modelOverrideValidatorKey{}, v)
+}
+
+// ModelOverrideValidatorFrom extracts the validator from the context, or
+// returns nil (absent or nil — both mean "no validation wired").
+func ModelOverrideValidatorFrom(ctx context.Context) ModelOverrideValidator {
+	if v, ok := ctx.Value(modelOverrideValidatorKey{}).(ModelOverrideValidator); ok && v != nil {
 		return v
 	}
 	return nil

@@ -143,7 +143,10 @@ export function isFileEntry(v: unknown): v is FileEntry {
 }
 
 /** Element guard for ListAgents (`/`-mention agent catalog). Both fields are
- *  rendered/collected by lib/refCatalogs (`new Set(agents.map(a => a.name))`). */
+ *  rendered/collected by lib/refCatalogs (`new Set(agents.map(a => a.name))`).
+ *  The optional `model` override (AgentDescriptor.model) is additive — only
+ *  its presence when a non-empty string is sent matters, so a descriptor
+ *  without it (and any payload lacking it) validates unchanged. */
 export function isAgentDescriptor(v: unknown): v is AgentDescriptor {
     return isObj(v) && typeof v.name === 'string' && typeof v.description === 'string'
 }
