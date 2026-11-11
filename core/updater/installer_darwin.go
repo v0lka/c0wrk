@@ -72,6 +72,70 @@ func relaunchApp(targetDir string, log *slog.Logger) error {
 // created.
 func updaterStagingBase() string { return os.TempDir() }
 
+// stagingLaunchPath wraps the staged updater binary into a minimal
+// LSUIElement .app bundle and returns the bundle's path. On macOS the
+// updater MUST be launched through LaunchServices (`open`), never as a bare
+// fork/exec child of the quitting app: a bare child keeps the dying GUI app
+// as its responsible process — an attribution that survives even a Setsid
+// detach — and is killed silently by the system about a second after the
+// app exits, mid-apply: no error, no crash report, only a one-line
+// updater-output.log and a leftover staging dir (the "app closes and
+// nothing happens" failure, reproduced on macOS 27). A LaunchServices
+// launch hands the updater to launchd as its parent with responsibility of
+// its own, which survives the app's death — the same discipline
+// Squirrel.Mac's ShipIt helper follows. The updater itself never notices
+// the bundle: main.go handles --self-update before anything Wails-related
+// runs, and it redirects its own stdio to the staging log.
+func stagingLaunchPath(stagingDir, updaterPath string) (string, error) {
+	appPath := filepath.Join(stagingDir, "c0wrk-updater.app")
+	binDest := filepath.Join(appPath, "Contents", "MacOS", stagingUpdaterName())
+	if err := os.MkdirAll(filepath.Dir(binDest), 0o750); err != nil {
+		return "", fmt.Errorf("create updater bundle dirs: %w", err)
+	}
+	if err := os.Rename(updaterPath, binDest); err != nil {
+		return "", fmt.Errorf("move staged updater into bundle: %w", err)
+	}
+	plistPath := filepath.Join(appPath, "Contents", "Info.plist")
+	if err := os.WriteFile(plistPath, []byte(updaterBundleInfoPlist), 0o644); err != nil {
+		return "", fmt.Errorf("write updater Info.plist: %w", err)
+	}
+	// Seal the freshly written Info.plist into the bundle's signature, the
+	// same ad-hoc re-sign copyExecutable applies to the binary (same
+	// bounded-context reasoning: a valid re-sign of a ~80 MB bundle is
+	// sub-second).
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "codesign", "--force", "--sign", "-", appPath)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("re-sign updater bundle (codesign): %w (%s)", err, string(out))
+	}
+	return appPath, nil
+}
+
+// updaterBundleInfoPlist is the staging updater bundle's entire identity: an
+// LSUIElement (faceless — no Dock icon, no menu bar) executable wrapper. The
+// bundle identifier is deliberately distinct from the app's so LaunchServices
+// never confuses the two.
+const updaterBundleInfoPlist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleExecutable</key>
+	<string>c0wrk-updater</string>
+	<key>CFBundleIdentifier</key>
+	<string>app.c0wrk.self-updater</string>
+	<key>CFBundleName</key>
+	<string>c0wrk-updater</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSUIElement</key>
+	<true/>
+</dict>
+</plist>
+`
+
 // normalizedTempRoot returns the cleaned OS temporary directory.
 func normalizedTempRoot() (string, error) {
 	return filepath.EvalSymlinks(os.TempDir())

@@ -31,7 +31,7 @@ Detailed system specs live in `specs/`. Before making structural changes, read t
 
 - Go module: `github.com/v0lka/c0wrk` (root: `core/`, `backend/`, `desktop/`, `frontend/`). Binary/app name is `c0wrk-desktop` (see `wails.json`).
 - Entry point: `main.go` → `desktop.NewApp()` → Wails runs with `OnStartup = app.Startup` (`desktop/startup.go`). Build metadata is injected into `core/version` by Makefile/release `-ldflags` (`Version`, `GitCommit`, `BuildDate`).
-- Go `1.27.3` (single root module; `go.mod` at repo root). Frontend uses React 19, Tailwind v4, Vite 6, TS ~5.7. The `go` directive in `go.mod` and the `go-version` pins in `.github/workflows/*.yml` must stay in lockstep: CI builds with exactly this toolchain, and `govulncheck` scans its stdlib — bump both together whenever Go ships a security patch, or local and CI results drift apart.
+- Go `1.27.4` (single root module; `go.mod` at repo root). Frontend uses React 19, Tailwind v4, Vite 6, TS ~5.7. The `go` directive in `go.mod` and the `go-version` pins in `.github/workflows/*.yml` must stay in lockstep: CI builds with exactly this toolchain, and `govulncheck` scans its stdlib — bump both together whenever Go ships a security patch, or local and CI results drift apart.
 
 ### Layered architecture (import direction matters)
 

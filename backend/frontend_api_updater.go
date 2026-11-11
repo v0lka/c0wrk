@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -58,12 +57,6 @@ type UpdateProgress struct {
 // downloadTimeout caps a single archive download — the generous fallback
 // updater.NewDownloader uses, so the proxy client honours the same bound.
 const downloadTimeout = 10 * time.Minute
-
-// updaterStartProbeDelay bounds the post-Start liveness probe in ApplyUpdate:
-// a healthy staged updater is guaranteed still to be running this long, so an
-// exit inside the window proves the child was killed before doing anything
-// (macOS amfid kills asynchronously). See specs/decisions/023-auto-update.md.
-const updaterStartProbeDelay = 1 * time.Second
 
 // autoCheckEnabled reports whether automatic background checks are enabled
 // (updates.auto_check; defaults to true when unset).
@@ -325,12 +318,12 @@ func (f *FrontendAPI) ApplyUpdate() error {
 	pid := os.Getpid()
 	args := updater.SelfUpdateArgs(pid, stagingDir, target)
 
-	f.log().Info("launching self-update re-exec",
-		"updater", updaterPath, "pid", pid, "target", target)
-
 	// Capture the updater's own diagnostics in a file inside the staging dir
 	// (previously /dev/null: a failing self-update left NO trace). It
-	// survives until cleanupStaging (success) or the 24h-gated reap.
+	// survives until cleanupStaging (success) or the 24h-gated reap. On
+	// macOS the updater attaches to this file itself (main.go's --self-update
+	// redirect) because a LaunchServices launch cannot inherit descriptors;
+	// the Linux/Windows direct-exec children inherit it below.
 	updaterLogPath := filepath.Join(stagingDir, "updater-output.log")
 	updaterLog, err := os.Create(updaterLogPath)
 	if err != nil {
@@ -339,37 +332,26 @@ func (f *FrontendAPI) ApplyUpdate() error {
 	}
 	defer func() { _ = updaterLog.Close() }()
 
-	// Launch the staging updater detached so it survives this process's exit.
-	// context.Background() is intentional: the app context is cancelled by
-	// the graceful quit that follows, which would kill a CommandContext tied
-	// to it.
-	cmd := exec.CommandContext(context.Background(), updaterPath, args...)
-	cmd.Stdout = updaterLog
-	cmd.Stderr = updaterLog
-	cmd.Stdin = nil
-	if err := cmd.Start(); err != nil {
-		_ = os.RemoveAll(stagingDir)
-		f.emitUpdateError("launch updater: " + err.Error())
-		return err
-	}
+	f.log().Info("launching self-update re-exec",
+		"updater", updaterPath, "pid", pid, "target", target)
 
-	// Detect an updater that died the moment it was exec'd (the asynchronous
-	// macOS kill described on updaterStartProbeDelay). A healthy updater is
-	// guaranteed still alive here — its first action is waiting for THIS
-	// process to quit — so an exit inside the probe window means the update
-	// will never happen: abort the quit and tell the user.
-	waitCh := make(chan error, 1)
-	go func() { waitCh <- cmd.Wait() }()
-	select {
-	case waitErr := <-waitCh:
-		msg := fmt.Sprintf("the staged updater exited immediately without applying the update (%v); its output is at %s", waitErr, updaterLogPath)
-		f.log().Error("self-update aborted: staged updater died before the swap", "error", waitErr, "log", updaterLogPath)
+	// The platform launch helper starts the updater fully detached from this
+	// process (LaunchServices on macOS — a bare child is killed silently at
+	// app teardown — Setsid elsewhere) and verifies it survived its startup
+	// window before we commit to quitting.
+	if err := launchStagedUpdater(updaterPath, args, updaterLog, updaterLog, f.log()); err != nil {
+		if errors.Is(err, errUpdaterNeverStarted) {
+			// The updater never ran: nothing in the staging dir explains
+			// anything, so reclaim it.
+			_ = os.RemoveAll(stagingDir)
+			f.log().Error("self-update aborted: staged updater failed to start", "error", err)
+			f.emitUpdateError(err.Error())
+			return err
+		}
+		msg := fmt.Sprintf("%v; the updater's output is at %s", err, updaterLogPath)
+		f.log().Error("self-update aborted: staged updater died before the swap", "error", msg, "log", updaterLogPath)
 		f.emitUpdateError(msg)
 		return errors.New(msg)
-	case <-time.After(updaterStartProbeDelay):
-		// Still running: healthy. The Wait goroutine keeps blocking until the
-		// process exits (it outlives this app's quit by design); this app is
-		// about to exit anyway, so no goroutine leak needs handling.
 	}
 
 	// Coordinated quit: do NOT os.Exit — that would skip the Shutdown hooks

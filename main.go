@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"runtime/debug"
 	"time"
 
@@ -78,7 +79,23 @@ func mainImpl() int {
 		cli.PrintVersion(os.Stdout)
 		return 0
 	case cli.ActionSelfUpdate:
-		if applyErr := updater.ApplySelfUpdate(*req.SelfUpdate, slog.Default()); applyErr != nil {
+		// The staging updater captures its diagnostics itself: on macOS it is
+		// launched through LaunchServices, which cannot inherit descriptors
+		// from the quitting app, so the updater redirects its own stdio to
+		// the staging log before anything runs. Append: on Linux/Windows the
+		// launcher also passes the same path, and both writers coexist
+		// harmlessly.
+		if logFile, logErr := os.OpenFile(filepath.Join(req.SelfUpdate.Stage, "updater-output.log"),
+			os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); logErr == nil {
+			os.Stdout = logFile
+			os.Stderr = logFile
+		}
+		// An explicit logger, not slog.Default(): the default logger is
+		// created lazily and cached, and any earlier touch (a package init)
+		// would have bound it to the original stderr — this way the handler
+		// is guaranteed to hold the redirected file.
+		updLog := slog.New(slog.NewTextHandler(os.Stderr, nil))
+		if applyErr := updater.ApplySelfUpdate(*req.SelfUpdate, updLog); applyErr != nil {
 			fmt.Fprintf(os.Stderr, "c0wrk self-update failed: %v\n", applyErr)
 			return 1
 		}

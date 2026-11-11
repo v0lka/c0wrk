@@ -154,8 +154,12 @@ func isWritable(dir string) bool {
 }
 
 // PrepareSelfUpdate copies the current executable into a fresh staging
-// directory and returns the staging "updater" path to launch with the
-// --self-update flags before exiting (specs/decisions/023-auto-update.md).
+// directory and returns the staging directory and the updater's LAUNCH path
+// to start with the --self-update flags before exiting
+// (specs/decisions/023-auto-update.md). On macOS the launch path is a
+// minimal .app bundle wrapping the copy (see stagingLaunchPath) — the
+// updater must be launched via LaunchServices, never as a bare child of the
+// quitting app; elsewhere it is the staged binary itself.
 func PrepareSelfUpdate() (stagingDir, updaterPath string, err error) {
 	exe, err := os.Executable()
 	if err != nil {
@@ -171,7 +175,12 @@ func PrepareSelfUpdate() (stagingDir, updaterPath string, err error) {
 		_ = os.RemoveAll(stagingDir)
 		return "", "", err
 	}
-	return stagingDir, updaterPath, nil
+	launchPath, err := stagingLaunchPath(stagingDir, updaterPath)
+	if err != nil {
+		_ = os.RemoveAll(stagingDir)
+		return "", "", err
+	}
+	return stagingDir, launchPath, nil
 }
 
 // SelfUpdateArgs builds the command-line arguments for the staging updater
