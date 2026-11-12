@@ -386,14 +386,15 @@ type conductorDeps struct {
 	// unavailable, non-empty `agent` rejected by delegate validation.
 	agentResolver tools.AgentResolver
 
-	// validateModelOverride fail-closes a profile's `model:` override against
-	// the session router's configured providers — the value MUST be a full
-	// composite "provider/model" identifier (bare names rejected, ADR-122),
-	// checked at delegate validation AND defensively in buildSubAgentTask
-	// (mirrors the agent-name double-check). Built by the builder as a
-	// closure over the router's read-only provider-for-model lookup; nil = no
-	// pre-launch validation (the router's per-request provider miss remains
-	// the backstop).
+	// validateModelOverride fail-closes a delegation's model override against
+	// the session router's configured providers — an explicit task `model` or
+	// a profile's `model:` pin, the value MUST be a full composite
+	// "provider/model" identifier (bare names rejected, ADR-122; the task
+	// model outranks the pin, ADR-123), checked at delegate validation AND
+	// defensively in buildSubAgentTask (mirrors the agent-name
+	// double-check). Built by the builder as a closure over the router's
+	// read-only provider-for-model lookup; nil = no pre-launch validation
+	// (the router's per-request provider miss remains the backstop).
 	validateModelOverride tools.ModelOverrideValidator
 
 	// skillResolver resolves a profile's required skills, fail-closed
@@ -1423,22 +1424,62 @@ func (l *conductorLauncher) buildSubAgentTask(ctx context.Context, t tools.Deleg
 	complexity := ComplexityFromContext(ctx)
 	compactionStrategy := compactionStrategyForDomain(domain, complexity)
 
+	// Model override resolution (ADR-123): an explicit task-level `model`
+	// wins over the profile pin, which wins over the session's active model.
+	// Each candidate must be a full composite "provider/model" identifier to
+	// be honored — the mandatory-composite rule (ADR-122) is enforced at
+	// delegate validation, so reaching launch with a bare name or an
+	// empty-bare composite ("provider/") means validation was skipped (nil
+	// validator / direct construction): the candidate is WARN-ignored and the
+	// next link in the chain takes over (a dishonorable task `model` falls
+	// back to the profile pin; a dishonorable profile pin falls back to the
+	// session model). An honored composite is re-validated defensively
+	// against the router — delegate validation checked it at call time, but
+	// the value may have changed mid-run or across a resume relaunch (mirrors
+	// the agent-name double-check) — before it may pin the caller below.
+	honoredModel, honoredProvider, honoredBare := "", "", ""
+	profileModel := ""
+	if profile != nil {
+		profileModel = profile.Metadata.Model
+	}
+	for _, cand := range [...]struct{ source, model string }{
+		{source: "task " + t.ID, model: t.Model},
+		{source: "profile " + t.Agent, model: profileModel},
+	} {
+		if cand.model == "" || honoredModel != "" {
+			continue
+		}
+		provider, bare, composite := llm.ParseCompositeModelID(cand.model)
+		if !composite {
+			l.warnDishonorableModelOverride(cand.source, cand.model, false)
+			continue
+		}
+		if l.deps.validateModelOverride != nil {
+			// The validator's error already names the source ("task <id>" /
+			// "profile <name>"), the model, and the rule.
+			if err := l.deps.validateModelOverride(cand.source, cand.model); err != nil {
+				return agent.SubAgentTask{}, err
+			}
+		} else if bare == "" {
+			// Honoring an empty-bare composite would pin only the provider
+			// while req.Model silently inherits the session's model — the
+			// opposite of the override's intent.
+			l.warnDishonorableModelOverride(cand.source, cand.model, true)
+			continue
+		}
+		honoredModel, honoredProvider, honoredBare = cand.model, provider, bare
+	}
+
 	// Profile-aware metadata, calibrated on the HONORED model: a composite
 	// override sends the BARE model to the named provider, so the CM sizes
 	// against the override model's window when the registry knows it. A bare
-	// override cannot be honored as specified (the WARN-ignored branch below
-	// leaves the subagent on the session's active model), so it pins nothing
+	// override cannot be honored as specified (the WARN-ignored branch above
+	// leaves the subagent on the next model in the chain), so it pins nothing
 	// here either — calibrating against the bare name's window while running
 	// on the session model would compact at the wrong threshold. A registry
-	// miss (or no pin) falls through the usual chain — session model,
-	// registry default, static fallback.
-	effectiveModel := ""
-	if profile != nil {
-		if _, bare, composite := llm.ParseCompositeModelID(profile.Metadata.Model); composite {
-			effectiveModel = bare
-		}
-	}
-	modelMeta := l.resolveModelMeta(ctx, effectiveModel)
+	// miss (or no honored override) falls through the usual chain — session
+	// model, registry default, static fallback.
+	modelMeta := l.resolveModelMeta(ctx, honoredBare)
 
 	// Activate the profile's required skills (AGENT.md `skills:`), merged
 	// inherited-first, fail-closed (delegation.md).
@@ -1491,46 +1532,17 @@ func (l *conductorLauncher) buildSubAgentTask(ctx context.Context, t tools.Deleg
 	}
 
 	caller := l.callerForStep(cm, t.ID)
-	// launchModel carries the honored profile pin to the SubAgentLaunch event
-	// so the UI badge shows the model the subagent actually runs on; a bare
-	// override (WARN path below) pins nothing and stays "".
+	// launchModel carries the honored model override (an explicit task
+	// `model` or the profile pin, ADR-123) to the SubAgentLaunch event so the
+	// UI badge shows the model the subagent actually runs on; no honored
+	// override stays "". The honored composite was validated (or warn-skipped
+	// as dishonorable) in the resolution above, so here it only pins: the
+	// per-request provider override (sp4rk ADR-011) routes every call to the
+	// named provider with the bare model.
 	launchModel := ""
-	// A profile's model override pins every call (no-op when empty). The
-	// value MUST be a full composite "provider/model" identifier: it routes
-	// cross-provider via the per-request provider override (sp4rk ADR-011)
-	// after a defensive re-validation — delegate validation checked it at
-	// call time, but the profile may have changed mid-run (mirrors the
-	// agent-name double-check). A bare name is rejected by the validator at
-	// delegate-call time (mandatory-composite rule, ADR-122), so reaching
-	// launch with one means validation was skipped (nil validator / direct
-	// construction): the override cannot be honored as specified and the
-	// subagent runs on the session's active model with a warning. The same
-	// defensive treatment covers a composite with an EMPTY model part
-	// ("provider/"): a validator fails it closed before launch, and skipping
-	// validation must not let it pin the provider while req.Model silently
-	// inherits the session's model (the opposite of the override's intent).
-	if profile != nil {
-		if provider, bare, composite := llm.ParseCompositeModelID(profile.Metadata.Model); composite {
-			unhonorable := false
-			if l.deps.validateModelOverride != nil {
-				if err := l.deps.validateModelOverride(t.Agent, profile.Metadata.Model); err != nil {
-					return agent.SubAgentTask{}, fmt.Errorf("delegation %q: %w", t.ID, err)
-				}
-			} else if bare == "" {
-				unhonorable = true
-				if l.deps.logger != nil {
-					l.deps.logger.Warn("subagent profile model override ignored — composite identifier has an empty model part, use a full \"provider/model\" identifier",
-						"agent", t.Agent, "delegation", t.ID, "model", profile.Metadata.Model)
-				}
-			}
-			if !unhonorable {
-				caller = agent.NewModelProviderOverrideCaller(caller, provider, bare)
-				launchModel = profile.Metadata.Model
-			}
-		} else if profile.Metadata.Model != "" && l.deps.logger != nil {
-			l.deps.logger.Warn("subagent profile model override ignored — bare names are not accepted, use a full \"provider/model\" identifier",
-				"agent", t.Agent, "delegation", t.ID, "model", profile.Metadata.Model)
-		}
+	if honoredModel != "" {
+		caller = agent.NewModelProviderOverrideCaller(caller, honoredProvider, honoredBare)
+		launchModel = honoredModel
 	}
 	execOpts := []agent.Option{
 		agent.WithTokenCounter(l.deps.tokenCounter),
@@ -1563,6 +1575,25 @@ func (l *conductorLauncher) buildSubAgentTask(ctx context.Context, t tools.Deleg
 		Emitter:        scopedEvents,
 		TodoUpdateFunc: subagentTodoCallback(l.deps.emitter),
 	}, nil
+}
+
+// warnDishonorableModelOverride logs the launch-side WARN for a model
+// override candidate that cannot be honored as specified: a bare name
+// (emptyBare=false), or a composite with an empty model part ("provider/",
+// emptyBare=true). The subagent runs on the next model in the resolution
+// chain instead — an explicit task `model` falls back to the profile pin, a
+// dishonorable profile pin falls back to the session's active model.
+func (l *conductorLauncher) warnDishonorableModelOverride(source, model string, emptyBare bool) {
+	if l.deps.logger == nil {
+		return
+	}
+	if emptyBare {
+		l.deps.logger.Warn("subagent model override ignored — composite identifier has an empty model part, use a full \"provider/model\" identifier",
+			"source", source, "model", model)
+		return
+	}
+	l.deps.logger.Warn("subagent model override ignored — bare names are not accepted, use a full \"provider/model\" identifier",
+		"source", source, "model", model)
 }
 
 // conductorOnlyToolNames must never reach a regular subagent: delegation
@@ -2285,9 +2316,10 @@ func RunConductor(
 	// The agent resolver survives subagentCtx so a redelegating subagent can
 	// delegate to a named profile; nil = profiles unavailable.
 	ctx = tools.WithAgentResolver(ctx, deps.agentResolver)
-	// The profile-model validator rides the same path: profile `model:`
-	// overrides — mandatory full "provider/model" identifiers — fail closed
-	// at delegate validation, and a redelegating subagent's delegate calls
+	// The model-override validator rides the same path: delegation model
+	// overrides — an explicit task `model` or a profile `model:` pin, mandatory
+	// full "provider/model" identifiers (ADR-122/ADR-123) — fail closed at
+	// delegate validation, and a redelegating subagent's delegate calls
 	// validate too. nil = no pre-launch validation (buildSubAgentTask
 	// re-checks defensively; the router's per-request provider miss remains
 	// the backstop).
@@ -2461,8 +2493,8 @@ func (o *Orchestrator) buildConductorDeps(conversationHistory []llm.Message, res
 			}
 			return o.agentManager.Get(name)
 		},
-		// Profile-model overrides (mandatory full "provider/model") fail
-		// closed before launch; nil-safe.
+		// Delegation model overrides (task `model` / profile pin, mandatory
+		// full "provider/model") fail closed before launch; nil-safe.
 		validateModelOverride: o.validateModelOverride,
 		// Skills for profile requirements; fail-closed when the manager is nil.
 		skillResolver: func(name string) (*skills.Skill, bool) {

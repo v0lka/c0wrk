@@ -8,6 +8,7 @@ import { useChatStore } from '@/stores/chatStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import { CollapsibleBlock } from '@/components/chat/CollapsibleBlock'
 import { ContextFillStatus } from '@/components/layout/ContextFillStatus'
+import { ModelBadge } from './ModelBadge'
 import { StepTooltip } from './StepTooltip'
 import { ChatMessageRenderer } from './ChatMessageRenderer'
 import { BookmarkableContext } from './BookmarkableContext'
@@ -94,16 +95,10 @@ export const SubAgentBlock = memo(function SubAgentBlock({ item }: { item: SubAg
       {status === 'interrupted' && (
         <span className="text-xs text-muted-foreground truncate min-w-0">— interrupted</span>
       )}
-      {/* The delegate's forced `model:` override — rendered only when the
-          launch carried one (absent = unchanged render). */}
-      {model && (
-        <span
-          className="text-xs text-muted-foreground bg-muted/50 px-1.5 py-0.5 rounded shrink-0 max-w-40 truncate"
-          title={`Forced model: ${model}`}
-        >
-          {model}
-        </span>
-      )}
+      {/* The delegate's forced `model:` override — rendered only when it
+          differs from the conductor's session model (the ModelBadge rule);
+          absent = unchanged render. */}
+      {model && <ModelBadge model={model} />}
       {checklistTotal > 0 && (
         <StepChecklistProgress total={checklistTotal} completed={checklistDone} accent={accent} />
       )}

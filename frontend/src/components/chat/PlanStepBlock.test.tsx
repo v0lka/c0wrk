@@ -35,7 +35,7 @@ describe('PlanStepBlock', () => {
     document.body.replaceChildren(container)
     root = createRoot(container)
     useSessionStore.setState({ activeSessionId: 'sess-1' })
-    useChatStore.setState({ stepContextFill: {}, stepContextTokens: {} })
+    useChatStore.setState({ sessionTokens: {}, stepContextFill: {}, stepContextTokens: {} })
   })
 
   afterEach(() => {
@@ -68,19 +68,48 @@ describe('PlanStepBlock', () => {
   })
 
   // --- forced model badge (additive: absent = unchanged render) ---
+  // The badge is visible only when the pin differs from the conductor's
+  // session model (the shared ModelBadge rule); with no session tokens the
+  // conductor model is unknown, so the badge stays visible.
 
   it('renders the forced model badge when the start event carried one', () => {
     render(makeStep({ status: 'running', model: 'local-llm/qwen3:8b' }))
-    const badge = container.querySelector('span[title="Forced model: local-llm/qwen3:8b"]')
+    const badge = container.querySelector('[data-slot="badge"][title="local-llm/qwen3:8b"]')
     expect(badge).not.toBeNull()
     expect(badge!.textContent).toBe('local-llm/qwen3:8b')
+    // Status-bar styling: outline variant, no "Forced model:" prefix.
+    expect(badge!.getAttribute('data-variant')).toBe('outline')
     // The badge is a header hint, not an auto-expanded body.
     expect(state()).toBe('closed')
   })
 
+  it('hides the badge when the pinned model bare-matches the session model', () => {
+    useChatStore.setState({
+      sessionTokens: {
+        'sess-1': { total_input_tokens: 1, total_output_tokens: 1, model: 'qwen3:8b', family: 'qwen' },
+      },
+    })
+    render(makeStep({ status: 'running', model: 'local-llm/qwen3:8b' }))
+    // The provider prefix is an implementation detail — same bare model as the
+    // conductor's carries no information.
+    expect(container.querySelector('[data-slot="badge"]')).toBeNull()
+  })
+
+  it('shows the badge when the pinned model differs from the session model', () => {
+    useChatStore.setState({
+      sessionTokens: {
+        'sess-1': { total_input_tokens: 1, total_output_tokens: 1, model: 'bonsai-2-27b', family: 'bonsai' },
+      },
+    })
+    render(makeStep({ status: 'running', model: 'local-llm/qwen3:8b' }))
+    const badge = container.querySelector('[data-slot="badge"][title="local-llm/qwen3:8b"]')
+    expect(badge).not.toBeNull()
+    expect(badge!.textContent).toBe('local-llm/qwen3:8b')
+  })
+
   it('renders no model badge when the start event carries none', () => {
     render(makeStep({ status: 'completed' }))
-    expect(container.querySelector('span[title^="Forced model:"]')).toBeNull()
+    expect(container.querySelector('[data-slot="badge"]')).toBeNull()
     expect(container.textContent).not.toContain('Forced model')
   })
 

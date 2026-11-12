@@ -1701,42 +1701,43 @@ func modelOverridesFromConfig(cfg *BuilderConfig) map[string]llm.ModelMetadata {
 }
 
 // modelOverrideValidator closes over the router's read-only provider-for-model
-// lookup (specs/domains/orchestration/delegation.md): a Subagent Profile's
-// `model:` override MUST be a full composite "provider/model" identifier —
-// bare names are rejected outright (ADR-122 mandatory-composite rule) — and
-// must name a provider the router actually configured. Checked at delegate
+// lookup (specs/domains/orchestration/delegation.md): a delegation's model
+// override — an explicit task-level `model` (ADR-123) or a Subagent Profile's
+// `model:` pin — MUST be a full composite "provider/model" identifier — bare
+// names are rejected outright (ADR-122 mandatory-composite rule) — and must
+// name a provider the router actually configured. Checked at delegate
 // validation and again defensively at launch (mirrors the agent-name
 // double-check), so a doomed subagent never starts and the error names the
-// profile, the model, and the rule/providers. A composite with an EMPTY bare
-// part ("provider/") is rejected for the same reason: NewModelProviderOverride
-// Caller would pin only the provider and let req.Model silently inherit the
-// session's active model. The bare part may itself contain "/" (HF-style
-// ids): ids split on the FIRST "/" only, so "local-llm/qwen/qwen3-coder-30b"
-// names model "qwen/qwen3-coder-30b" at provider "local-llm". A nil router
-// yields a nil validator (no pre-launch validation; the router's per-request
-// provider miss remains the backstop).
+// source ("profile <name>" / "task <id>"), the model, and the rule/providers.
+// A composite with an EMPTY bare part ("provider/") is rejected for the same
+// reason: NewModelProviderOverrideCaller would pin only the provider and let
+// req.Model silently inherit the session's active model. The bare part may
+// itself contain "/" (HF-style ids): ids split on the FIRST "/" only, so
+// "local-llm/qwen/qwen3-coder-30b" names model "qwen/qwen3-coder-30b" at
+// provider "local-llm". A nil router yields a nil validator (no pre-launch
+// validation; the router's per-request provider miss remains the backstop).
 func modelOverrideValidator(llmRouter *llm.Router) tools.ModelOverrideValidator {
 	if llmRouter == nil {
 		return nil
 	}
-	return func(agentName, model string) error {
+	return func(source, model string) error {
 		provider, bare, composite := llm.ParseCompositeModelID(model)
 		if !composite {
 			return fmt.Errorf(
-				"profile %q: model override %q must be a full \"provider/model\" identifier — bare model names are not accepted (the model name itself may contain \"/\": the id splits on the first \"/\" only)",
-				agentName, model)
+				"%s: model override %q must be a full \"provider/model\" identifier — bare model names are not accepted (the model name itself may contain \"/\": the id splits on the first \"/\" only)",
+				source, model)
 		}
 		if bare == "" {
 			return fmt.Errorf(
-				"profile %q: model override %q has an empty bare model — a composite id is \"provider/model\" and the part after \"/\" must name a model",
-				agentName, model)
+				"%s: model override %q has an empty bare model — a composite id is \"provider/model\" and the part after \"/\" must name a model",
+				source, model)
 		}
 		if _, ok := llmRouter.ProviderForModel(model); ok {
 			return nil
 		}
 		return fmt.Errorf(
-			"profile %q: model override %q names unknown provider %q — known providers: %s",
-			agentName, model, provider, strings.Join(llmRouter.KnownProviders(), ", "))
+			"%s: model override %q names unknown provider %q — known providers: %s",
+			source, model, provider, strings.Join(llmRouter.KnownProviders(), ", "))
 	}
 }
 

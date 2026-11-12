@@ -32,7 +32,7 @@ func modelOverrideValidatorTestRouter(t *testing.T) *llm.Router {
 // closure accepts a composite naming a configured provider.
 func TestModelOverrideValidator_CompositeKnownProviderAccepts(t *testing.T) {
 	validate := modelOverrideValidator(modelOverrideValidatorTestRouter(t))
-	if err := validate("reviewer", "local-llm/qwen3:8b"); err != nil {
+	if err := validate("profile reviewer", "local-llm/qwen3:8b"); err != nil {
 		t.Errorf("known provider must validate, got: %v", err)
 	}
 }
@@ -42,7 +42,7 @@ func TestModelOverrideValidator_CompositeKnownProviderAccepts(t *testing.T) {
 // the known providers.
 func TestModelOverrideValidator_CompositeUnknownProviderFailsClosed(t *testing.T) {
 	validate := modelOverrideValidator(modelOverrideValidatorTestRouter(t))
-	err := validate("reviewer", "ghost-llm/qwen3:8b")
+	err := validate("profile reviewer", "ghost-llm/qwen3:8b")
 	if err == nil {
 		t.Fatal("unknown provider must fail closed")
 	}
@@ -50,6 +50,26 @@ func TestModelOverrideValidator_CompositeUnknownProviderFailsClosed(t *testing.T
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q must name %q", err.Error(), want)
 		}
+	}
+}
+
+// TestModelOverrideValidator_TaskSourceNamesTask verifies the source flows
+// into the error verbatim: a task-level `model` (ADR-123) failing validation
+// names "task <id>" — not a profile — so the operator can tell which override
+// was rejected.
+func TestModelOverrideValidator_TaskSourceNamesTask(t *testing.T) {
+	validate := modelOverrideValidator(modelOverrideValidatorTestRouter(t))
+	err := validate("task del_1", "ghost-llm/qwen3:8b")
+	if err == nil {
+		t.Fatal("unknown provider must fail closed")
+	}
+	for _, want := range []string{"task del_1", "ghost-llm/qwen3:8b", "ghost-llm", "local-llm, openai"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q must name %q", err.Error(), want)
+		}
+	}
+	if strings.Contains(err.Error(), "profile") {
+		t.Errorf("a task-source error must not claim a profile, got %q", err.Error())
 	}
 }
 
@@ -61,7 +81,7 @@ func TestModelOverrideValidator_CompositeUnknownProviderFailsClosed(t *testing.T
 // model and the empty-bare rule.
 func TestModelOverrideValidator_CompositeEmptyBareFailsClosed(t *testing.T) {
 	validate := modelOverrideValidator(modelOverrideValidatorTestRouter(t))
-	err := validate("reviewer", "local-llm/")
+	err := validate("profile reviewer", "local-llm/")
 	if err == nil {
 		t.Fatal("composite with an empty bare model must fail closed")
 	}
@@ -78,7 +98,7 @@ func TestModelOverrideValidator_CompositeEmptyBareFailsClosed(t *testing.T) {
 func TestModelOverrideValidator_BareRejected(t *testing.T) {
 	validate := modelOverrideValidator(modelOverrideValidatorTestRouter(t))
 	for _, bare := range []string{"qwen3:8b", "no-such-model-anywhere"} {
-		err := validate("reviewer", bare)
+		err := validate("profile reviewer", bare)
 		if err == nil {
 			t.Errorf("bare %q must be rejected", bare)
 			continue

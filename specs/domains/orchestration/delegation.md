@@ -40,6 +40,7 @@ Delegation is an **execution** mechanism, not a planning one. It has its own UI 
       "mode": "blocking" | "async",
       "max_steps": 50 | 0,
       "allow_redelegate": false,
+      "model": "provider/model",
       "agent": "code-reviewer"
     }
   ]
@@ -58,7 +59,8 @@ Delegation is an **execution** mechanism, not a planning one. It has its own UI 
 | `tasks[].mode` | no | `"blocking"` (default): the tool result contains the subagent output. `"async"`: the tool result returns immediately with `delegation_id`; the Conductor reads results later via `read_step_output(id)`. |
 | `tasks[].max_steps` | no | Per-subagent ReAct iteration cap. 0 or absent = derived from routing complexity (`complexity × 30`, same formula as the Conductor via `stepsPerComplexity`). A Subagent Profile's `max-steps` (when > 0) overrides this field and the default. |
 | `tasks[].allow_redelegate` | no | `true` grants the subagent the `delegate` and `cancel_delegation` tools (depth-capped by `OrchestratorConfig.MaxRedelegationDepth`, default 2). A Subagent Profile with `allow-redelegate: true` overrides this field to `true` (upgrade-only). Default `false` (flat). The grant reaches **blocking** tasks only: an async task always takes the `launchAsync` path, which runs under `subagentCtx` with no child registry, so `allow_redelegate` on an async task grants nothing. |
-| `tasks[].agent` | no | Name of a Subagent Profile (`<workspace>/.agents/agents/<name>/AGENT.md`). When set, the launcher resolves the profile and applies it: the profile body replaces the orchestrator core directive (the shared project-context prefix is preserved via `buildSpecializedSystemPrompt`), the profile's tool preference / `max-steps` / `model` / `allow-redelegate` override the task fields, and the profile's `skills:` frontmatter (when present) is activated for the subagent (see [Profile Required Skills](#profile-required-skills), [ADR-037](../../decisions/037-agent-profile-skills.md)). The profile's `model` (when set) additionally wraps the subagent caller per [ADR-122](../../decisions/122-subagent-model-provider-override.md): the value MUST be a full composite `provider/model` id — it routes cross-provider via `agent.NewModelProviderOverrideCaller` after fail-closed delegate-time validation (the provider must be configured — `ModelOverrideValidator` — and a bare name, or an empty bare part, is rejected outright; the subagent's compaction is sized to the override model). A bare name reaching launch anyway (nil validator / direct test construction) is ignored with a WARN — the subagent runs on the session's active model. Unknown name fails fast (delegate validation rejects it before any subagent launches, and `buildSubAgentTask` re-resolves it at launch). A profile whose `capabilities.agents` snapshot is `disabled` is refused at launch (`agentDelegationBlocked`, fail-closed) — see [../capabilities.md](../capabilities.md). Empty = no profile (the legacy behavior). |
+| `tasks[].model` | no | Optional per-delegation model override ([ADR-123](../../decisions/123-per-task-model-override.md)): a full composite `provider/model` id (splits on the FIRST `/`, so HF-style model names stay expressible) routing THIS subagent to another provider. A bare name — or a composite with an empty bare part (`"provider/"`) — is rejected and fails the whole delegate call (ADR-122's mandatory-composite grammar). Precedence: an explicit task `model` wins over the resolved profile's `model:` pin, which wins over the session's active model (see [Model Override Resolution](#model-override-resolution)). Omit = the profile's pin, else the session's active model (unchanged legacy behavior). |
+| `tasks[].agent` | no | Name of a Subagent Profile (`<workspace>/.agents/agents/<name>/AGENT.md`). When set, the launcher resolves the profile and applies it: the profile body replaces the orchestrator core directive (the shared project-context prefix is preserved via `buildSpecializedSystemPrompt`), the profile's tool preference / `max-steps` / `allow-redelegate` override the task fields (an explicit task-level `model` wins over the profile's pin instead — see `tasks[].model`), and the profile's `skills:` frontmatter (when present) is activated for the subagent (see [Profile Required Skills](#profile-required-skills), [ADR-037](../../decisions/037-agent-profile-skills.md)). The profile's `model` (when set) additionally wraps the subagent caller per [ADR-122](../../decisions/122-subagent-model-provider-override.md) — applying only when the task carries no explicit `model` (ADR-123 precedence): the value MUST be a full composite `provider/model` id — it routes cross-provider via `agent.NewModelProviderOverrideCaller` after fail-closed delegate-time validation (the provider must be configured — `ModelOverrideValidator` — and a bare name, or an empty bare part, is rejected outright; the subagent's compaction is sized to the honored override model). A dishonorable value reaching launch anyway (nil validator / direct test construction) is ignored with a WARN and the next link in the resolution chain takes over. Unknown name fails fast (delegate validation rejects it before any subagent launches, and `buildSubAgentTask` re-resolves it at launch). A profile whose `capabilities.agents` snapshot is `disabled` is refused at launch (`agentDelegationBlocked`, fail-closed) — see [../capabilities.md](../capabilities.md). Empty = no profile (the legacy behavior). |
 
 #### Execution Flow
 
@@ -74,10 +76,13 @@ delegate.Execute(ctx, input)
 │     ├─ the tools field parses ("all" / "read-only" / group-token array;
 │     │   an empty array or an unknown token fails the whole call)
 │     ├─ a named agent resolves via the AgentResolver
-│     ├─ a profile's `model:` override — MANDATORY full "provider/model"
-│     │   (ADR-122) — names a configured provider (ModelOverrideValidator,
+│     ├─ model overrides (ADR-122/123) — an explicit task `model` AND a
+│     │   profile's `model:` pin — are MANDATORY full "provider/model"
+│     │   composites naming a configured provider (the SAME source-labeled
+│     │   ModelOverrideValidator, sources "task <id>" / "profile <name>";
 │     │   router-backed, provider-name-only; bare names and empty bare
-│     │   parts are rejected); failure rejects the whole call before any launch
+│     │   parts are rejected); any failure rejects the whole call before
+│     │   any launch
 │     ├─ depends_on references exist (in the Registry or in this batch),
 │     │   name no async task, and never the task itself
 │     └─ no cycles in the combined DAG (existing + new tasks)
@@ -105,7 +110,8 @@ delegate.Execute(ctx, input)
 │     ├─ System prompt = buildSystemPrompt; when an agent profile with a
 │     │   non-empty body is set, buildSpecializedSystemPrompt applies it
 │     │   (profile body replaces the core directive, shared project-context
-│     │   prefix preserved); a profile `model` override rides the caller
+│     │   prefix preserved); the honored model override (task > profile >
+│     │   session, ADR-123) rides the caller and the launch event's model key
 │     ├─ Skills = when the profile declares `skills:`, resolve each name
 │     │   against the skill catalog (fail-closed) and merge with inherited
 │     │   active skills → `## Active Skills` in the prompt + a per-subagent
@@ -155,6 +161,69 @@ delegate.Execute(ctx, input)
        │   trajectory is checkpointed and resumes with the task)
        └─ a trailing note naming the failed ids alongside a results section
 ```
+
+### Model Override Resolution
+
+Every delegated subagent runs on exactly one model, resolved at launch
+(`buildSubAgentTask`) from a fixed candidate chain
+([ADR-123](../../decisions/123-per-task-model-override.md), extending
+[ADR-122](../../decisions/122-subagent-model-provider-override.md) to the
+task level):
+
+```
+task <id>.model  →  profile <agent>.model (frontmatter pin)  →  session's active model
+```
+
+- **Precedence.** The chain is walked in order and the first HONORED candidate
+  wins; once one is honored, later links are skipped (a task override fully
+  suppresses the profile's model link — the profile is still resolved for
+  persona, tools, steps and skills). No honored candidate leaves the subagent
+  on the session's active model (unchanged legacy behavior).
+- **Validation funnel.** Both hand-written sources go through the SAME
+  injected validator (`ModelOverrideValidator func(source, model string)
+  error`; `core/tools/delegate.go`), at two layers:
+  - **Delegate-time.** `validateDelegationTasks` validates the task's
+    explicit `model` (source `"task <id>"`) when non-empty and the resolved
+    profile's pin (source `"profile <name>"`) when present — BEFORE any
+    launch. Any failure rejects the WHOLE delegate call (error result, zero
+    launches). The validator rides the delegation context beside the agent
+    resolver (`WithModelOverrideValidator`, injected in `RunConductor`), and
+    like the resolver it is not stripped by `subagentCtx`, so a
+    redelegating subagent's `delegate` calls validate as well.
+  - **Defensive re-check at launch.** `buildSubAgentTask` re-runs the
+    validator on the honored composite before pinning the caller (mirroring
+    the agent-name double-check) — covering a mid-run value change and the
+    resume relaunch: the durable `DelegationSpec` embeds the task's `model`,
+    so the resume funnel relaunches with the same override and re-validates
+    it against the CURRENT router. A failure aborts that task's build.
+  The validator itself is the router-backed closure built once by the builder
+  (`modelOverrideValidator`, `core/builder.go` over the read-only
+  `ProviderForModel` / `KnownProviders`): provider-name-only (the exact
+  runtime miss predicate; whether the named provider serves the bare model
+  stays the caller's responsibility per sp4rk ADR-011), composite-mandatory
+  (a bare name, or an empty-bare composite, is rejected with the
+  `"provider/model"` guidance), its error naming the source, the model, the
+  unknown provider and the sorted known providers. A nil router yields a nil
+  validator — delegate-time validation is skipped and the router's
+  per-request provider miss remains the backstop on every path.
+- **Dishonorable fallback.** A candidate that cannot be honored AS SPECIFIED
+  — a bare name, or an empty-bare composite when no validator is configured
+  (nil validator / direct test construction) — is WARN-ignored
+  (`warnDishonorableModelOverride`, keys `source` + `model`) and the NEXT
+  link takes over: a dishonorable task `model` falls back to the profile
+  pin; a dishonorable profile pin falls back to the session model. The
+  validator's own error is returned as-is (it already names the source).
+- **Wire + CM + badge.** The honored composite wraps the subagent caller
+  with `agent.NewModelProviderOverrideCaller(caller, provider, bare)` —
+  every subagent LLM call pins `req.Provider` + the bare `req.Model`
+  (sp4rk ADR-011), immune to a mid-task `SetModel`. The subagent's
+  ContextManager is sized from the HONORED model's bare form
+  (`resolveModelMeta`; session model → registry default → static fallback
+  on a miss) — never from a WARN-ignored candidate. The composite rides the
+  launch event's additive `model` key (`subagent_launch`, or
+  `plan_step_start` via the translator) for the UI badge — which renders it
+  only when it differs from the conductor's session model (see
+  [event-catalog.md](../../contracts/event-catalog.md)).
 
 ### Profile Required Skills
 
@@ -336,12 +405,13 @@ Dependencies with an empty output contribute nothing. The **combined** context i
 - **Subagent returns error**: same as above.
 - **Subagent context cancelled** (via `cancel_delegation` or parent cancellation): stored as `Status: "cancelled"`; no error propagated to the Conductor (cancellation is intentional).
 - **Paused checkpoint cannot seed the ContextManager**: `buildSubAgentTask` returns a descriptive error before launch; the checkpoint remains intact and is not replaced by a fresh run.
-- **Validation failure** (duplicate ID, cycle, unsatisfiable `depends_on`, unknown agent, malformed `tools`): the `delegate` tool call returns `sdktools.ErrorResult` (`IsError: true`) with a descriptive message; no subagents launch. The `allow_redelegate` DEPTH cap is enforced later, at dispatch: `runRedelegBlocking` fails that one task (`Status: "failed"` with the cap error, reported as text) while the rest of the batch still runs.
+- **Validation failure** (duplicate ID, cycle, unsatisfiable `depends_on`, unknown agent, malformed `tools`, an invalid model override — a bare/unknown-provider task `model` or profile pin): the `delegate` tool call returns `sdktools.ErrorResult` (`IsError: true`) with a descriptive message; no subagents launch. The `allow_redelegate` DEPTH cap is enforced later, at dispatch: `runRedelegBlocking` fails that one task (`Status: "failed"` with the cap error, reported as text) while the rest of the batch still runs.
 - **Dependency failed**: a task whose `depends_on` includes a failed or cancelled delegation fails immediately within the same `delegate` call (Launch) with reason "delegation del_X: dependencies could not be satisfied"; it is marked "failed" and does not run. There is no later-trigger path — unsatisfiable pending tasks do not linger awaiting a future `delegate` call or `read_step_output`.
 
 ## Invariants
 
 - Delegation IDs are unique within a Conductor run (and within each child registry for recursive delegations).
+- A model override that fails validation never launches a subagent: delegate-time validation (source-labeled `"task <id>"` / `"profile <name>"`) rejects the whole call, and the launch-time defensive re-check aborts the task build; a dishonorable non-composite value is WARN-ignored and the resolution chain falls to the next link (task → profile → session, ADR-123).
 - The combined graph of delegations across all `delegate` calls in a Conductor run is always a valid DAG (no cycles).
 - A subagent's context is always a child of the Conductor's context, so cancelling the Conductor cancels all subagents.
 - A subagent never shares its `ContextManager` with the Conductor or with other subagents.
@@ -363,3 +433,4 @@ Dependencies with an empty output contribute nothing. The **combined** context i
 - [README.md](README.md) — orchestration overview
 - [../../contracts/conductor-tools.md](../../contracts/conductor-tools.md) — Conductor tool surface contract
 - [../../decisions/122-subagent-model-provider-override.md](../../decisions/122-subagent-model-provider-override.md) — the profile `model:` override (composite `provider/model`, delegate-time fail-closed validation, CM calibration) applied by this tool
+- [../../decisions/123-per-task-model-override.md](../../decisions/123-per-task-model-override.md) — the per-task `model` override (precedence task > profile > session, the same source-labeled validator, resume-safe defensive re-check, badge visibility rule) resolving on top of the ADR-122 pin — see [Model Override Resolution](#model-override-resolution)

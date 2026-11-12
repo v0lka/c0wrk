@@ -31,27 +31,27 @@ func captureMetaContextFactory(meta *llm.ModelMetadata) ContextManagerFactory {
 }
 
 // recordingModelOverrideValidator is an accepting ModelOverrideValidator that
-// records every (agentName, model) it validated.
+// records every (source, model) it validated.
 type recordingModelOverrideValidator struct {
 	calls [][2]string
 }
 
-func (v *recordingModelOverrideValidator) validate(agentName, model string) error {
-	v.calls = append(v.calls, [2]string{agentName, model})
+func (v *recordingModelOverrideValidator) validate(source, model string) error {
+	v.calls = append(v.calls, [2]string{source, model})
 	return nil
 }
 
 // unknownProviderValidator mirrors the builder closure's failure shape: a
-// composite naming an unknown provider fails with profile, model, and the
+// composite naming an unknown provider fails with the source, model, and the
 // known providers named.
-func unknownProviderValidator(agentName, model string) error {
+func unknownProviderValidator(source, model string) error {
 	provider, _, composite := llm.ParseCompositeModelID(model)
 	if !composite {
 		return nil
 	}
 	if provider != "local-llm" {
-		return fmt.Errorf("profile %q: model override %q names unknown provider %q — known providers: local-llm, openai",
-			agentName, model, provider)
+		return fmt.Errorf("%s: model override %q names unknown provider %q — known providers: local-llm, openai",
+			source, model, provider)
 	}
 	return nil
 }
@@ -114,9 +114,9 @@ func TestBuildSubAgentTask_CompositeModelRoutesCrossProvider(t *testing.T) {
 	if got := caller.calls[0].Model; got != "qwen3:8b" {
 		t.Errorf("req.Model = %q, want the bare override model %q", got, "qwen3:8b")
 	}
-	// The validator saw the RAW profile value (agent name + full composite).
-	if len(validator.calls) != 1 || validator.calls[0] != [2]string{"reviewer", "local-llm/qwen3:8b"} {
-		t.Errorf("validator calls = %v, want [[reviewer local-llm/qwen3:8b]]", validator.calls)
+	// The validator saw the RAW task-level value with its source prefix.
+	if len(validator.calls) != 1 || validator.calls[0] != [2]string{"profile reviewer", "local-llm/qwen3:8b"} {
+		t.Errorf("validator calls = %v, want [[profile reviewer local-llm/qwen3:8b]]", validator.calls)
 	}
 }
 
@@ -139,6 +139,129 @@ func TestBuildSubAgentTask_CompositeModelNilValidatorStillRoutes(t *testing.T) {
 	}
 	if len(caller.calls) != 1 || caller.calls[0].Provider != "local-llm" || caller.calls[0].Model != "qwen3:8b" {
 		t.Errorf("calls = %+v, want one request pinned to (local-llm, qwen3:8b)", caller.calls)
+	}
+}
+
+// --- Task-level model overrides (ADR-123) ---
+
+// TestBuildSubAgentTask_TaskModelOverridesProfilePin verifies the precedence
+// rule: an explicit task-level `model` outranks the profile pin — the caller
+// is pinned to the TASK model's provider/bare id, the SubAgentLaunch model is
+// the task model, and the validator consulted ONLY the task candidate (once
+// honored, the profile pin is irrelevant for this delegation).
+func TestBuildSubAgentTask_TaskModelOverridesProfilePin(t *testing.T) {
+	profile := testAgentProfile("body", agents.AgentMetadata{Name: "reviewer", Model: "local-llm/old:1b"})
+	validator := &recordingModelOverrideValidator{}
+	caller := &mockLLMCaller{responses: []*llm.ChatResponse{executorFinishResponse("done")}}
+
+	l := modelOverrideLauncher(captureMetaContextFactory(nil), validator.validate, caller, nil)
+	ctx := modelOverrideProfileCtx("reviewer", profile)
+
+	st, err := l.buildSubAgentTask(ctx, tools.DelegationTask{ID: "d1", Summary: "s", Task: "do work", Model: "local-llm/qwen3:8b", Agent: "reviewer"}, tools.NewDelegationRegistry(), &agent.NoopEvents{})
+	if err != nil {
+		t.Fatalf("buildSubAgentTask: %v", err)
+	}
+	if _, err := st.Executor.Run(ctx, st.TaskTools, st.CM); err != nil {
+		t.Fatalf("executor run: %v", err)
+	}
+
+	if len(caller.calls) != 1 {
+		t.Fatalf("caller saw %d requests, want 1", len(caller.calls))
+	}
+	if got := caller.calls[0].Provider; got != "local-llm" {
+		t.Errorf("req.Provider = %q, want %q (task model must win over the profile pin)", got, "local-llm")
+	}
+	if got := caller.calls[0].Model; got != "qwen3:8b" {
+		t.Errorf("req.Model = %q, want the task model's bare id %q", got, "qwen3:8b")
+	}
+	if st.Model != "local-llm/qwen3:8b" {
+		t.Errorf("SubAgentTask.Model = %q, want the honored task model %q", st.Model, "local-llm/qwen3:8b")
+	}
+	if len(validator.calls) != 1 || validator.calls[0] != [2]string{"task d1", "local-llm/qwen3:8b"} {
+		t.Errorf("validator calls = %v, want exactly [[task d1 local-llm/qwen3:8b]] (the shadowed profile pin must not be consulted)", validator.calls)
+	}
+}
+
+// TestBuildSubAgentTask_TaskModelSizesCMByTaskModelWindow verifies the CM is
+// sized on the honored TASK model's registry window even when the profile
+// carries its own composite pin — the winner calibrates compaction.
+func TestBuildSubAgentTask_TaskModelSizesCMByTaskModelWindow(t *testing.T) {
+	registry := llm.NewModelRegistry(map[string]llm.ModelMetadata{
+		"gpt-4o":   {ContextWindow: 128000, OutputLimit: 16384, TokenizerType: "approximate"},
+		"qwen3:8b": {ContextWindow: 32000, OutputLimit: 8000, TokenizerType: "approximate"},
+	})
+	profile := testAgentProfile("body", agents.AgentMetadata{Name: "reviewer", Model: "local-llm/gpt-4o"})
+
+	var meta llm.ModelMetadata
+	l := modelOverrideLauncher(captureMetaContextFactory(&meta), nil, &mockLLMCaller{responses: []*llm.ChatResponse{executorFinishResponse("done")}}, registry)
+	ctx := modelOverrideProfileCtx("reviewer", profile)
+
+	if _, err := l.buildSubAgentTask(ctx, tools.DelegationTask{ID: "d1", Summary: "s", Task: "do work", Model: "local-llm/qwen3:8b", Agent: "reviewer"}, tools.NewDelegationRegistry(), &agent.NoopEvents{}); err != nil {
+		t.Fatalf("buildSubAgentTask: %v", err)
+	}
+	if meta.ContextWindow != 32000 {
+		t.Errorf("CM ContextWindow = %d, want the task model's 32000", meta.ContextWindow)
+	}
+}
+
+// TestBuildSubAgentTask_TaskModelBareIgnoredFallsBackToProfilePin verifies the
+// fallback chain: a bare task model (reachable only when validation was
+// skipped — nil validator / direct construction) is WARN-ignored and the
+// profile pin takes over — the subagent does NOT silently land on the session
+// model while an honorable profile pin exists.
+func TestBuildSubAgentTask_TaskModelBareIgnoredFallsBackToProfilePin(t *testing.T) {
+	profile := testAgentProfile("body", agents.AgentMetadata{Name: "reviewer", Model: "local-llm/qwen3:8b"})
+	caller := &mockLLMCaller{responses: []*llm.ChatResponse{executorFinishResponse("done")}}
+	var buf bytes.Buffer
+	l := modelOverrideLauncher(captureMetaContextFactory(nil), nil, caller, nil)
+	l.deps.logger = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	ctx := modelOverrideProfileCtx("reviewer", profile)
+
+	st, err := l.buildSubAgentTask(ctx, tools.DelegationTask{ID: "d1", Summary: "s", Task: "do work", Model: "qwen3:8b", Agent: "reviewer"}, tools.NewDelegationRegistry(), &agent.NoopEvents{})
+	if err != nil {
+		t.Fatalf("buildSubAgentTask: %v (a bare task model must be ignored, not fail the launch)", err)
+	}
+	if _, err := st.Executor.Run(ctx, st.TaskTools, st.CM); err != nil {
+		t.Fatalf("executor run: %v", err)
+	}
+
+	if len(caller.calls) != 1 || caller.calls[0].Provider != "local-llm" || caller.calls[0].Model != "qwen3:8b" {
+		t.Errorf("calls = %+v, want one request pinned to the PROFILE override (local-llm, qwen3:8b)", caller.calls)
+	}
+	if st.Model != "local-llm/qwen3:8b" {
+		t.Errorf("SubAgentTask.Model = %q, want the profile pin %q", st.Model, "local-llm/qwen3:8b")
+	}
+	logged := buf.String()
+	if !strings.Contains(logged, "level=WARN") || !strings.Contains(logged, `provider/model`) {
+		t.Errorf("bare task model must warn with the composite guidance, got: %s", logged)
+	}
+	if !strings.Contains(logged, `source="task d1"`) {
+		t.Errorf("the WARN must name the task source, got: %s", logged)
+	}
+}
+
+// TestBuildSubAgentTask_TaskModelUnknownProviderFailsClosed verifies the
+// defensive launch-side re-validation covers the task-level model: a composite
+// whose provider the validator rejects fails buildSubAgentTask — before any
+// subagent runs — with the task source, the model, and the known providers.
+func TestBuildSubAgentTask_TaskModelUnknownProviderFailsClosed(t *testing.T) {
+	profile := testAgentProfile("body", agents.AgentMetadata{Name: "reviewer"})
+	caller := &mockLLMCaller{responses: []*llm.ChatResponse{executorFinishResponse("must never run")}}
+
+	l := modelOverrideLauncher(captureMetaContextFactory(nil), unknownProviderValidator, caller, nil)
+	ctx := modelOverrideProfileCtx("reviewer", profile)
+
+	_, err := l.buildSubAgentTask(ctx, tools.DelegationTask{ID: "d1", Summary: "s", Task: "do work", Model: "ghost-llm/qwen3:8b", Agent: "reviewer"}, tools.NewDelegationRegistry(), &agent.NoopEvents{})
+	if err == nil {
+		t.Fatal("expected fail-closed error for an unknown provider in a task-level model")
+	}
+	for _, want := range []string{"task d1", "ghost-llm/qwen3:8b", "ghost-llm", "local-llm, openai"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q must name %q", err.Error(), want)
+		}
+	}
+	if len(caller.calls) != 0 {
+		t.Errorf("caller saw %d requests; the subagent must never launch", len(caller.calls))
 	}
 }
 

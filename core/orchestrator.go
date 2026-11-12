@@ -671,13 +671,15 @@ type OrchestratorDeps struct {
 	// context; 0 falls back to agent.DefaultVerifyOnEditCap.
 	VerifyOnEditMaxOutputChars int
 
-	// ValidateModelOverride fail-closes a Subagent Profile's composite
-	// "provider/model" `model:` override against the session router's
-	// configured providers (core/tools.ModelOverrideValidator): delegate
-	// validation calls it before any launch and buildSubAgentTask re-checks
-	// defensively. Nil = no pre-launch validation (the router's per-request
-	// provider miss remains the backstop). Built by the builder as a closure
-	// over the router's read-only provider-for-model lookup.
+	// ValidateModelOverride fail-closes a delegation's composite
+	// "provider/model" model override — an explicit task `model` or a
+	// Subagent Profile's `model:` pin, source "task <id>" / "profile <name>"
+	// (ADR-123) — against the session router's configured providers
+	// (core/tools.ModelOverrideValidator): delegate validation calls it
+	// before any launch and buildSubAgentTask re-checks defensively. Nil =
+	// no pre-launch validation (the router's per-request provider miss
+	// remains the backstop). Built by the builder as a closure over the
+	// router's read-only provider-for-model lookup.
 	ValidateModelOverride tools.ModelOverrideValidator
 }
 

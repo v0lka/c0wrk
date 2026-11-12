@@ -15,11 +15,11 @@ import (
 )
 
 const toolDelegateDescription = `Purpose: launch subagents that each run a task in their own context window — parallelize independent work, keep the main context lean.
-Use when: tasks are independent and parallelizable, or the main context risks overflow. The subagent sees the blackboard and its brief, not full chat history.
-Inputs: tasks — array of {id (unique, e.g. del_1), summary (5-7 word UI label), task (What/How/Where/Acceptance criteria), acceptance_criteria (optional explicit checks), tools (optional: "all" | "read-only" bare strings, or group-token array — never ["read-only"]), depends_on (blocking delegation ids that must finish first; async ids rejected), mode ("blocking" | "async"), max_steps (0 = config default), allow_redelegate (default false), agent (optional; must name an existing Subagent Profile)}.
+Use when: tasks are independent and parallelizable, or the main context risks overflow; the subagent sees the blackboard and its brief, not chat history.
+Inputs: tasks — array of {id (unique), summary (5-7 word UI label), task (What/How/Where/Acceptance criteria), acceptance_criteria (checks), tools ("all" | "read-only", or group-token array — never ["read-only"]), depends_on (blocking ids; async ids rejected), mode ("blocking" | "async"), max_steps (0 = default), allow_redelegate (default false), model (optional "provider/model" id; bare names rejected; omit = profile pin, else session model), agent (optional Subagent Profile; overrides task fields except an explicit model, which wins)}.
 Outputs: progress events per subagent; blocking tasks return output here, async ones return a delegation id.
-Example: two independent refactors as two tasks without depends_on — they run in parallel.
-Anti-example: no re-delegation from inside a subagent unless allow_redelegate is set; not for sequential steps (chain via depends_on or run inline); delegating does not replace reading key files.`
+Example: two independent refactors as two tasks without depends_on run in parallel.
+Anti-example: no re-delegation unless allow_redelegate; not for sequential steps (chain via depends_on or run inline); delegating does not replace reading key files.`
 
 // maxDelegationBatchSize bounds one delegate call: the concurrency cap limits
 // how many subagents RUN at once, not how many a single call may queue, so an
@@ -54,7 +54,8 @@ const delegateSchemaTemplate = `{
 					"mode": {"type": "string", "enum": ["blocking", "async"], "description": "blocking (default) returns output in result; async returns delegation_id immediately"},
 					"max_steps": {"type": "integer", "description": "Per-subagent ReAct iteration cap; 0 = config default"},
 					"allow_redelegate": {"type": "boolean", "description": "Grant the subagent the delegate tool (capped by config maxRedelegationDepth); default false"},
-					"agent": {"type": "string", "description": "Must name an existing Subagent Profile (.agents/agents/<name>/AGENT.md) — an unknown name fails the whole delegate call before any subagent launches. When set, the profile's system prompt, tool preference, max-steps, model, and allow-redelegate override the task fields."}
+					"model": {"type": "string", "description": "Optional full \"provider/model\" composite id (e.g. \"local-llm/qwen3:8b\") routing THIS subagent to another provider. Bare names and \"provider/\" (empty model part) are rejected and fail the whole delegate call. An explicit model overrides the agent profile's model pin; omit to run on the profile's pin, or the session's active model."},
+					"agent": {"type": "string", "description": "Must name an existing Subagent Profile (.agents/agents/<name>/AGENT.md) — an unknown name fails the whole delegate call before any subagent launches. When set, the profile's system prompt, tool preference, max-steps, and allow-redelegate override the task fields; the profile's model pin applies only when the task carries no explicit model (an explicit task model wins)."}
 				},
 				"required": ["id", "summary", "task"]
 			}
@@ -92,8 +93,16 @@ type DelegationTask struct {
 	Mode               string   `json:"mode,omitempty"`
 	MaxSteps           int      `json:"max_steps,omitempty"`
 	AllowRedelegate    bool     `json:"allow_redelegate,omitempty"`
+	// Model optionally pins THIS delegation to a full composite
+	// "provider/model" id, overriding the agent profile's model pin (an
+	// explicit task model wins, ADR-123); omit = the profile pin, else the
+	// session's active model. A bare name — or a composite with an empty
+	// bare part — fails the whole delegate call at validation time
+	// (ModelOverrideValidator). See specs/domains/orchestration/delegation.md.
+	Model string `json:"model,omitempty"`
 	// Agent names a Subagent Profile applied by the launcher (prompt, tools,
-	// max-steps, model, allow-redelegate); unknown names fail validation
+	// max-steps, allow-redelegate — and the model pin when the task carries
+	// no explicit model, ADR-123); unknown names fail validation
 	// before any launch. See specs/domains/orchestration/delegation.md.
 	Agent string `json:"agent,omitempty"`
 }
@@ -351,10 +360,11 @@ func validateDelegationGroupToken(s string) error {
 // validateDelegationTasks enforces the delegate contract — unique ids,
 // resolvable depends_on, acyclic combined graph, valid modes, resolvable
 // agent profiles. See specs/domains/orchestration/delegation.md. modelValidator
-// (optional) fail-closes a profile's "provider/model" override BEFORE any
-// launch; the validator owns the acceptance rule — the production
-// implementation (core/builder.go modelOverrideValidator, ADR-122) rejects
-// bare names and empty bare parts outright, a test stub may accept anything.
+// (optional) fail-closes a model override — an explicit task-level `model`
+// (ADR-123) or a profile's `model:` pin — BEFORE any launch; the validator
+// owns the acceptance rule — the production implementation (core/builder.go
+// modelOverrideValidator, ADR-122) rejects bare names and empty bare parts
+// outright, a test stub may accept anything.
 func validateDelegationTasks(tasks []DelegationTask, registry *DelegationRegistry, agentResolver AgentResolver, modelValidator ModelOverrideValidator) error {
 	if len(tasks) > maxDelegationBatchSize {
 		return fmt.Errorf("too many tasks: %d (max %d per delegate call) — split the work across multiple delegate calls", len(tasks), maxDelegationBatchSize)
@@ -389,6 +399,17 @@ func validateDelegationTasks(tasks []DelegationTask, registry *DelegationRegistr
 		if err := validateDelegationTools(task.Tools); err != nil {
 			return fmt.Errorf("task %q: %w", task.ID, err)
 		}
+		// An explicit task-level model (ADR-123) validates exactly like a
+		// profile pin — the whole call fails before any subagent launches.
+		// The source ("task <id>") already identifies the offending task, so
+		// the validator's error is returned unwrapped. nil validator =
+		// validation not wired; buildSubAgentTask re-checks defensively at
+		// launch.
+		if task.Model != "" && modelValidator != nil {
+			if err := modelValidator("task "+task.ID, task.Model); err != nil {
+				return err
+			}
+		}
 		if task.Agent != "" {
 			if agentResolver == nil {
 				return fmt.Errorf("task %q: agent %q requested but no agent resolver is configured (Subagent Profiles unavailable)", task.ID, task.Agent)
@@ -403,7 +424,7 @@ func validateDelegationTasks(tasks []DelegationTask, registry *DelegationRegistr
 			// nil validator = validation not wired; buildSubAgentTask
 			// re-checks defensively at launch.
 			if modelValidator != nil && profile != nil && profile.Metadata.Model != "" {
-				if err := modelValidator(task.Agent, profile.Metadata.Model); err != nil {
+				if err := modelValidator("profile "+task.Agent, profile.Metadata.Model); err != nil {
 					return fmt.Errorf("task %q: %w", task.ID, err)
 				}
 			}
@@ -570,16 +591,18 @@ func AgentResolverFrom(ctx context.Context) AgentResolver {
 
 // --- Profile model override validation plumbing ---
 
-// ModelOverrideValidator checks a Subagent Profile's `model:` override
-// BEFORE any subagent launches. agentName is the profile's name (for the
-// error message) and model is the profile's raw Metadata.Model. The validator
-// is the single owner of the acceptance rule: the production implementation
-// (core/builder.go modelOverrideValidator, ADR-122's mandatory-composite rule)
-// rejects a bare name — and a composite with an empty bare part — outright,
-// with an error naming the profile, the model, and the known providers; a nil
-// return means accepted. This layer stays policy-neutral and consults
-// whatever validator is injected (a test stub may accept bare names).
-type ModelOverrideValidator func(agentName, model string) error
+// ModelOverrideValidator checks a delegation's model override — a Subagent
+// Profile's `model:` pin or an explicit task-level `model` (ADR-123) —
+// BEFORE any subagent launches. source names the override's origin
+// ("profile <name>" or "task <id>", for the error message) and model is the
+// raw override candidate. The validator is the single owner of the
+// acceptance rule: the production implementation (core/builder.go
+// modelOverrideValidator, ADR-122's mandatory-composite rule) rejects a bare
+// name — and a composite with an empty bare part — outright, with an error
+// naming the source, the model, and the known providers; a nil return means
+// accepted. This layer stays policy-neutral and consults whatever validator
+// is injected (a test stub may accept bare names).
+type ModelOverrideValidator func(source, model string) error
 
 type modelOverrideValidatorKey struct{}
 

@@ -171,6 +171,36 @@ func TestDelegateToolsSchema_EnumListsGroups(t *testing.T) {
 	}
 }
 
+// TestDelegateToolsSchema_ModelProperty verifies the tasks[].model property:
+// a plain string type (no polymorphism → no typeless-schema risk), present in
+// the schema so schema-enforcing providers accept it, and NOT required
+// (omitting `model` is the documented profile-pin/session-model behavior).
+func TestDelegateToolsSchema_ModelProperty(t *testing.T) {
+	raw := NewDelegateTool().InputSchema()
+	var parsed map[string]any
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		t.Fatalf("delegate schema is not valid JSON: %v", err)
+	}
+	items, _ := parsed["properties"].(map[string]any)["tasks"].(map[string]any)["items"].(map[string]any)
+	props, _ := items["properties"].(map[string]any)
+	modelProp, ok := props["model"].(map[string]any)
+	if !ok {
+		t.Fatal("tasks[].model property missing from schema")
+	}
+	if got, _ := modelProp["type"].(string); got != "string" {
+		t.Errorf("tasks[].model type = %v, want \"string\"", modelProp["type"])
+	}
+	if desc, _ := modelProp["description"].(string); !strings.Contains(desc, "provider/model") {
+		t.Errorf("tasks[].model description must carry the composite-id guidance, got: %v", desc)
+	}
+	required, _ := items["required"].([]any)
+	for _, r := range required {
+		if name, _ := r.(string); name == "model" {
+			t.Error("tasks[].model must not be required — omitting it selects the profile pin / session model")
+		}
+	}
+}
+
 // TestValidateDelegationTools verifies the `tools` field's runtime validation:
 // nil/presets pass, group arrays (kebab and underscore) pass, and everything
 // else fails closed with a message listing the valid values (acceptance

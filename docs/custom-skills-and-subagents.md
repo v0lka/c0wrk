@@ -337,7 +337,7 @@ not-yet-supported fields do not break parsing).
 | `description` | **Yes** | Drives the `/` autocomplete's Subagents section and the `## Available Subagents` roster. Describe the specialty and when to use it. |
 | `tools` | No | The subagent's tool budget. `all` (default) · `read-only` · a comma-separated list of **capability-group tokens** (see [§3.6](#36-tool-budgets-capability-groups)). A typo fails the profile. |
 | `max-steps` | No | ReAct iteration cap for the subagent. `0`/absent ⇒ derived from complexity (see [§3.8](#38-delegation-settings-and-limits)). |
-| `model` | No | Per-agent model override — every LLM call the subagent makes is forced to this model. **Must be a full composite `provider/model` identifier** (the id splits on the first `/`, so the model name itself may contain `/`); routes cross-provider, independently of the session's active model ([ADR-122](../specs/decisions/122-subagent-model-provider-override.md)). A bare name is rejected and **fails the delegation** with an error suggesting the composite form. |
+| `model` | No | Per-agent model override — every LLM call the subagent makes is forced to this model. **Must be a full composite `provider/model` identifier** (the id splits on the first `/`, so the model name itself may contain `/`); routes cross-provider, independently of the session's active model ([ADR-122](../specs/decisions/122-subagent-model-provider-override.md)). A bare name is rejected and **fails the delegation** with an error suggesting the composite form. A `delegate` call that passes an explicit task-level `model` overrides this pin for that one delegation ([ADR-123](../specs/decisions/123-per-task-model-override.md)); without one, this pin applies (see [§3.8](#38-delegation-settings-and-limits)). |
 | `allow-redelegate` | No | `true` lets this subagent itself delegate deeper (capped by config). Default `false`. |
 | `hidden` | No | `true` hides the profile from the `/` autocomplete's Subagents section and the `Available Subagents` roster (see [§3.10](#310-hidden-profiles)). Default `false`. |
 | `color` | No | UI accent color for the agent badge (e.g. `"#e06c75"`). |
@@ -348,7 +348,10 @@ not-yet-supported fields do not break parsing).
 > provider and model, whatever the session's active model is. A bare
 > `model: gpt-5.2` is rejected: each delegation to this profile fails with an
 > error asking for the full `provider/model` form (HF-style ids are fine —
-> `provider/org/name` splits on the first `/` only).
+> `provider/org/name` splits on the first `/` only). The pin is the reusable
+> default: a `delegate` call may still override it for one delegation with an
+> explicit task-level `model` (same composite grammar, ADR-123) — the chain
+> is task > profile > session.
 
 #### The body = the agent's core directive
 
@@ -437,7 +440,9 @@ When a subagent launches under a profile, `buildSubAgentTask` applies:
   complexity-derived default.
 - **Model** — a profile `model` (a full `provider/model` composite, ADR-122)
   pins that provider and model on every LLM call; a bare name fails the
-  delegation at call time.
+  delegation at call time. An explicit task-level `model` on the `delegate`
+  call overrides the pin for that one delegation (task > profile > session,
+  ADR-123; both sources run through the same fail-closed validation).
 - **Redelegation** — a profile `allow-redelegate: true` grants the deeper-
   delegation tools.
 - **Required skills** — a profile `skills:` list is activated for the subagent
