@@ -4,7 +4,16 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
 
 import { ModelPickerMenu } from './ModelPickerMenu'
+import { clipboardSetText } from '@/api/runtime'
+import { COPY_FLASH_MS } from '@/hooks/useCopyFlash'
 import type { ModelRef } from '@/lib/modelId'
+
+// The row copy action must go through the native Wails runtime, NOT
+// navigator.clipboard (mirrors CopyIconButton.test). The boundary module is
+// mocked so no real window.runtime binding is touched.
+vi.mock('@/api/runtime', () => ({
+  clipboardSetText: vi.fn().mockResolvedValue(true),
+}))
 
 // Radix popper positioning (autoUpdate) observes the trigger/content with
 // ResizeObserver, which jsdom does not provide.
@@ -357,5 +366,145 @@ describe('ModelPickerMenu — the Embedded group always leads', () => {
     await openMenu()
 
     expect(groupLabels()).toEqual(['Anthropic', 'lmstudio'])
+  })
+})
+
+// The row affordance: every model row exposes its full composite name via the
+// native `title` (restoring what the row's truncate clipping hides) and a
+// hover-revealed copy action writing that same string through the native
+// Wails clipboard. Clicking the copy action must neither select the row nor
+// close the menu (the ItemActions stopPropagation shields).
+describe('ModelPickerMenu — row full-name affordance (title + copy)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(clipboardSetText).mockResolvedValue(true)
+  })
+
+  function copyButtonOf(item: HTMLElement): HTMLButtonElement {
+    const btn = item.querySelector<HTMLButtonElement>('button[title="Copy model name"]')
+    expect(btn).not.toBeNull()
+    return btn!
+  }
+
+  it('titles every model row with its full composite id and leaves the Default row bare', async () => {
+    renderMenu()
+    await openMenu()
+
+    const rows = items()
+    expect(rows).toHaveLength(3) // Default + 2 models
+
+    // Match by the title itself: the Default row's text also contains the
+    // resolved default's bare name, so text matching would find it first.
+    expect(rows.map((r) => r.getAttribute('title'))).toEqual([
+      null,
+      'anthropic/claude-sonnet',
+      'lmstudio/glm-5.3',
+    ])
+
+    // The Default entry has no composite id of its own: no title, no copy.
+    const defaultRow = rows[0]!
+    expect(defaultRow.textContent).toContain('Default')
+    expect(defaultRow.getAttribute('title')).toBeNull()
+    expect(defaultRow.querySelector('button')).toBeNull()
+  })
+
+  it('keeps the raw composite id even for the embedded entry the display humanizes', async () => {
+    renderMenu({
+      models: [
+        { name: 'claude-sonnet', provider: 'anthropic' },
+        { name: 'Bonsai 2 27B', provider: 'embedded' },
+      ],
+      hideDefaultOption: true,
+    })
+    await openMenu()
+
+    const bonsai = items().find((i) => i.textContent?.includes('Bonsai 2 27B'))!
+    expect(bonsai.getAttribute('title')).toBe('embedded/Bonsai 2 27B')
+    expect(bonsai.getAttribute('title')).not.toContain('Embedded:')
+  })
+
+  it('reveals exactly one copy action per model row, hidden until row hover/focus', async () => {
+    renderMenu()
+    await openMenu()
+
+    const overlays = Array.from(menu().querySelectorAll('span.opacity-0'))
+    // One overlay per model row, none on the Default row.
+    expect(overlays).toHaveLength(2)
+    for (const overlay of overlays) {
+      expect(overlay.className).toContain('group-hover/item:opacity-100')
+      expect(overlay.className).toContain('group-focus-within/item:opacity-100')
+    }
+  })
+
+  it('copies the composite id through the native clipboard without selecting the row or closing the menu', async () => {
+    renderMenu({ hideDefaultOption: true })
+    await openMenu()
+
+    const glm = items().find((i) => i.textContent?.includes('glm-5.3'))!
+    const btn = copyButtonOf(glm)
+    // Fake timers + an act-wrapped flush: the copy verdict arrives on a
+    // promise continuation (clipboardSetText → useCopyFlash's flash), so the
+    // state update must land INSIDE act or React warns about it.
+    vi.useFakeTimers()
+    try {
+      await act(async () => {
+        btn.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+        await vi.advanceTimersByTimeAsync(0)
+      })
+
+      expect(clipboardSetText).toHaveBeenCalledTimes(1)
+      expect(clipboardSetText).toHaveBeenCalledWith('lmstudio/glm-5.3')
+      expect(onSelect).not.toHaveBeenCalled()
+      expect(document.querySelector('[role="menu"]')).not.toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('flashes Copied + the success icon for COPY_FLASH_MS, then reverts', async () => {
+    renderMenu({ hideDefaultOption: true })
+    await openMenu()
+
+    const btn = copyButtonOf(items().find((i) => i.textContent?.includes('claude-sonnet'))!)
+    vi.useFakeTimers()
+    try {
+      await act(async () => {
+        btn.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+        await vi.advanceTimersByTimeAsync(0)
+      })
+      expect(clipboardSetText).toHaveBeenCalledWith('anthropic/claude-sonnet')
+      expect(btn.getAttribute('title')).toBe('Copied')
+      expect(btn.querySelector('svg.lucide-check')).not.toBeNull()
+      expect(btn.querySelector('svg.lucide-copy')).toBeNull()
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(COPY_FLASH_MS)
+      })
+      expect(btn.getAttribute('title')).toBe('Copy model name')
+      expect(btn.querySelector('svg.lucide-copy')).not.toBeNull()
+      expect(btn.querySelector('svg.lucide-check')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('flashes Failed + the destructive icon when the clipboard write reports false', async () => {
+    vi.mocked(clipboardSetText).mockResolvedValue(false)
+    renderMenu({ hideDefaultOption: true })
+    await openMenu()
+
+    const btn = copyButtonOf(items().find((i) => i.textContent?.includes('claude-sonnet'))!)
+    vi.useFakeTimers()
+    try {
+      await act(async () => {
+        btn.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+        await vi.advanceTimersByTimeAsync(0)
+      })
+      expect(btn.getAttribute('title')).toBe('Failed')
+      expect(btn.querySelector('svg.lucide-x')).not.toBeNull()
+      expect(btn.querySelector('svg.lucide-check')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
