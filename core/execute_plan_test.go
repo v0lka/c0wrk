@@ -42,7 +42,7 @@ func TestPlanStepEventTranslator_SubAgentLaunch_EmitsPlanStepStartOnRoot(t *test
 		summary: "My Step Summary",
 	}
 
-	translator.SubAgentLaunch("step_1", "full task description")
+	translator.SubAgentLaunch("step_1", "full task description", "")
 
 	if len(root.planStepStarts) != 1 {
 		t.Fatalf("expected 1 PlanStepStart on root, got %d", len(root.planStepStarts))
@@ -459,7 +459,7 @@ func TestScopePlanStepEvents_ReturnsTranslator(t *testing.T) {
 	}
 
 	// SubAgentLaunch → PlanStepStart on root, not subagent_launch
-	translator.SubAgentLaunch("step_a", "Do A")
+	translator.SubAgentLaunch("step_a", "Do A", "")
 	if len(emitter.planStepStarts) != 1 {
 		t.Errorf("expected 1 PlanStepStart on root, got %d", len(emitter.planStepStarts))
 	}

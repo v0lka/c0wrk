@@ -703,8 +703,10 @@ func (e *EventEmitter) StepComplete(stepNum int, duration time.Duration) {
 	})
 }
 
-// SubAgentLaunch emits a subagent launch event.
-func (e *EventEmitter) SubAgentLaunch(stepID, description string) {
+// SubAgentLaunch emits a subagent launch event. model carries the profile's
+// honored "provider/model" pin for the UI badge ("" = the subagent runs on
+// the session's active model — no badge).
+func (e *EventEmitter) SubAgentLaunch(stepID, description, model string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.emitEvent(Event{
@@ -713,6 +715,7 @@ func (e *EventEmitter) SubAgentLaunch(stepID, description string) {
 		Data: map[string]string{
 			"step_id":     stepID,
 			"description": description,
+			"model":       model,
 		},
 	})
 }

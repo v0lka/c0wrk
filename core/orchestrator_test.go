@@ -1948,6 +1948,11 @@ func TestHandleMessage_ModelOverride_BareRejected(t *testing.T) {
 	if !strings.Contains(err.Error(), `must be a full "provider/model" identifier`) {
 		t.Errorf("error must carry the composite guidance, got: %v", err)
 	}
+	// The sentinel wrap is the contract backend/session relies on to skip the
+	// deterministic fresh-retry on a continuation send.
+	if !errors.Is(err, ErrInvalidModelOverride) {
+		t.Errorf("error must wrap ErrInvalidModelOverride, got: %v", err)
+	}
 	if orchestrator.config.Model != "default-model" {
 		t.Errorf("config.Model = %q, want the unchanged default 'default-model'", orchestrator.config.Model)
 	}

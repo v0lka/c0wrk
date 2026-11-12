@@ -847,7 +847,7 @@ func (l *conductorLauncher) runSubAgentsParallel(ctx context.Context, tasks []ag
 			slots <- struct{}{}        // acquire a running slot
 			defer func() { <-slots }() // release it once this subagent settles
 			t := tasks[i]
-			results[i] = <-agent.RunSubAgent(ctx, t.StepID, t.Executor, t.CM, t.TaskTools, t.TaskDesc, t.Emitter, t.TodoUpdateFunc)
+			results[i] = <-agent.RunSubAgent(ctx, t.StepID, t.Executor, t.CM, t.TaskTools, t.TaskDesc, t.Model, t.Emitter, t.TodoUpdateFunc)
 		}(i)
 	}
 	wg.Wait()
@@ -1287,7 +1287,7 @@ func (l *conductorLauncher) runRedelegBlocking(ctx context.Context, t tools.Dele
 
 	registry.Start(t.ID, nil)
 	l.markUnitRunning(t.ID)
-	ch := agent.RunSubAgent(taskCtx, t.ID, st.Executor, st.CM, redelegTools, st.TaskDesc, st.Emitter, st.TodoUpdateFunc)
+	ch := agent.RunSubAgent(taskCtx, t.ID, st.Executor, st.CM, redelegTools, st.TaskDesc, st.Model, st.Emitter, st.TodoUpdateFunc)
 	sr := <-ch
 
 	if isPaused(sr.Error) {
@@ -1335,7 +1335,7 @@ func (l *conductorLauncher) launchAsync(ctx context.Context, t tools.DelegationT
 		// blocking/plan-wave fan-out does (delegation.md).
 		l.acquireSubagentSlot()
 		defer l.releaseSubagentSlot()
-		ch := agent.RunSubAgent(asyncCtx, t.ID, subTask.Executor, subTask.CM, subTask.TaskTools, subTask.TaskDesc, subTask.Emitter, subTask.TodoUpdateFunc)
+		ch := agent.RunSubAgent(asyncCtx, t.ID, subTask.Executor, subTask.CM, subTask.TaskTools, subTask.TaskDesc, subTask.Model, subTask.Emitter, subTask.TodoUpdateFunc)
 		select {
 		case sr := <-ch:
 			if isPaused(sr.Error) {
@@ -1488,6 +1488,10 @@ func (l *conductorLauncher) buildSubAgentTask(ctx context.Context, t tools.Deleg
 	}
 
 	caller := l.callerForStep(cm, t.ID)
+	// launchModel carries the honored profile pin to the SubAgentLaunch event
+	// so the UI badge shows the model the subagent actually runs on; a bare
+	// override (WARN path below) pins nothing and stays "".
+	launchModel := ""
 	// A profile's model override pins every call (no-op when empty). The
 	// value MUST be a full composite "provider/model" identifier: it routes
 	// cross-provider via the per-request provider override (sp4rk ADR-011)
@@ -1506,6 +1510,7 @@ func (l *conductorLauncher) buildSubAgentTask(ctx context.Context, t tools.Deleg
 				}
 			}
 			caller = agent.NewModelProviderOverrideCaller(caller, provider, bare)
+			launchModel = profile.Metadata.Model
 		} else if profile.Metadata.Model != "" && l.deps.logger != nil {
 			l.deps.logger.Warn("subagent profile model override ignored — bare names are not accepted, use a full \"provider/model\" identifier",
 				"agent", t.Agent, "delegation", t.ID, "model", profile.Metadata.Model)
@@ -1538,6 +1543,7 @@ func (l *conductorLauncher) buildSubAgentTask(ctx context.Context, t tools.Deleg
 		CM:             cm,
 		TaskTools:      taskTools,
 		TaskDesc:       taskDesc,
+		Model:          launchModel,
 		Emitter:        scopedEvents,
 		TodoUpdateFunc: subagentTodoCallback(l.deps.emitter),
 	}, nil
@@ -1851,7 +1857,7 @@ type planStepEventTranslator struct {
 	summary string  // short UI label for PlanStepStart
 }
 
-func (t *planStepEventTranslator) SubAgentLaunch(stepID, description string) {
+func (t *planStepEventTranslator) SubAgentLaunch(stepID, description, model string) {
 	t.root.PlanStepStart(stepID, description, t.summary)
 }
 

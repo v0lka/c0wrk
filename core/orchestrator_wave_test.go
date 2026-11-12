@@ -34,7 +34,7 @@ type launchRecorder struct {
 	launches []string
 }
 
-func (e *launchRecorder) SubAgentLaunch(id, _ string) {
+func (e *launchRecorder) SubAgentLaunch(id, _, _ string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.launches = append(e.launches, id)

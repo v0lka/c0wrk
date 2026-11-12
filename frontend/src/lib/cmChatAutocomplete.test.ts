@@ -616,6 +616,7 @@ describe('cmChatAutocomplete unified /-source', () => {
     vi.mocked(listAgents).mockResolvedValue([
       { name: 'pinned', description: 'Pinned reviews', model: 'qwen3.8-27b' },
       { name: 'plain', description: 'Plain reviews' },
+      { name: 'bare', description: '', model: 'qwen3.8-27b' },
     ])
     vi.mocked(listSkills).mockResolvedValue([])
     getMCPMentionableServersMock.mockResolvedValue([])
@@ -634,6 +635,10 @@ describe('cmChatAutocomplete unified /-source', () => {
     const plain = completions.find((c) => c.label === 'plain') as MentionCompletion
     expect(plain.detail).toBe('Plain reviews')
     expect(plain.mentionMarkdown).toBe('Plain reviews')
+    // An empty description degrades to the bare model label (no leading " — ").
+    const bare = completions.find((c) => c.label === 'bare') as MentionCompletion
+    expect(bare.detail).toBe('forced model: qwen3.8-27b')
+    expect(bare.mentionMarkdown).toBe('forced model: qwen3.8-27b')
   })
 
   it('hides the built-in goal command when a catalog entry named goal shadows the plain spelling', async () => {

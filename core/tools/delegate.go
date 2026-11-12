@@ -351,8 +351,10 @@ func validateDelegationGroupToken(s string) error {
 // validateDelegationTasks enforces the delegate contract — unique ids,
 // resolvable depends_on, acyclic combined graph, valid modes, resolvable
 // agent profiles. See specs/domains/orchestration/delegation.md. modelValidator
-// (optional) fail-closes a profile's composite "provider/model" override
-// against the session router BEFORE any launch; bare names pass through.
+// (optional) fail-closes a profile's "provider/model" override BEFORE any
+// launch; the validator owns the acceptance rule — the production
+// implementation (core/builder.go modelOverrideValidator, ADR-122) rejects
+// bare names and empty bare parts outright, a test stub may accept anything.
 func validateDelegationTasks(tasks []DelegationTask, registry *DelegationRegistry, agentResolver AgentResolver, modelValidator ModelOverrideValidator) error {
 	if len(tasks) > maxDelegationBatchSize {
 		return fmt.Errorf("too many tasks: %d (max %d per delegate call) — split the work across multiple delegate calls", len(tasks), maxDelegationBatchSize)
@@ -568,14 +570,15 @@ func AgentResolverFrom(ctx context.Context) AgentResolver {
 
 // --- Profile model override validation plumbing ---
 
-// ModelOverrideValidator checks a Subagent Profile's `model:` override against
-// the session router's configured providers BEFORE any subagent launches.
-// agentName is the profile's name (for the error message) and model is the
-// profile's raw Metadata.Model. A composite "provider/model" value must name
-// a provider the router knows — fail-closed, with an error naming the profile,
-// the model, and the known providers. A bare model name passes through
-// unvalidated: it rides the session's active provider, which never requires a
-// provider name. nil error = validated (or passthrough).
+// ModelOverrideValidator checks a Subagent Profile's `model:` override
+// BEFORE any subagent launches. agentName is the profile's name (for the
+// error message) and model is the profile's raw Metadata.Model. The validator
+// is the single owner of the acceptance rule: the production implementation
+// (core/builder.go modelOverrideValidator, ADR-122's mandatory-composite rule)
+// rejects a bare name — and a composite with an empty bare part — outright,
+// with an error naming the profile, the model, and the known providers; a nil
+// return means accepted. This layer stays policy-neutral and consults
+// whatever validator is injected (a test stub may accept bare names).
 type ModelOverrideValidator func(agentName, model string) error
 
 type modelOverrideValidatorKey struct{}

@@ -2117,12 +2117,14 @@ func (o *Orchestrator) modelProfilesSettings() ModelProfilesSettings {
 // model) keeps the warn-and-continue semantics — the session stays on its
 // active model.
 func (o *Orchestrator) ApplyRequestOverrides(ctx context.Context, modelOverride, reasoningEffort string) error {
+	// Validate BEFORE any state change: a rejected override must not leave a
+	// freshly applied reasoning effort behind.
+	if err := ValidateModelOverride(modelOverride); err != nil {
+		return err
+	}
 	o.SetReasoningEffort(reasoningEffort)
 	if modelOverride == "" || o.modelSwitcher == nil {
 		return nil
-	}
-	if err := ValidateModelOverride(modelOverride); err != nil {
-		return err
 	}
 	if err := o.modelSwitcher.SetModel(ctx, modelOverride); err != nil {
 		if o.logger != nil {
@@ -2151,17 +2153,24 @@ func (o *Orchestrator) ApplyRequestOverrides(ctx context.Context, modelOverride,
 	return nil
 }
 
+// ErrInvalidModelOverride marks a rejected per-request model override (the
+// mandatory-composite rule, ADR-122). The failure is deterministic — retrying
+// with the same override cannot succeed — so callers use it via errors.Is to
+// skip pointless retries (the session-lifecycle continuation fallback in
+// backend/session).
+var ErrInvalidModelOverride = errors.New("invalid model override")
+
 // ValidateModelOverride enforces the mandatory full-composite identifier rule
 // (ADR-122) for entry points that must reject a bad override BEFORE any state
 // changes: HandleMessage surfaces ApplyRequestOverrides' error at step 0, but
 // a resume validates first so a rejected override cannot leave the session
-// half-activated.
+// half-activated. Failures wrap ErrInvalidModelOverride.
 func ValidateModelOverride(model string) error {
 	if model == "" {
 		return nil
 	}
 	if _, _, composite := llm.ParseCompositeModelID(model); !composite {
-		return fmt.Errorf("model override %q must be a full \"provider/model\" identifier — bare model names are not accepted", model)
+		return fmt.Errorf("%w: %q must be a full \"provider/model\" identifier — bare model names are not accepted", ErrInvalidModelOverride, model)
 	}
 	return nil
 }

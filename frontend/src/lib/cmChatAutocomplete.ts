@@ -475,13 +475,14 @@ async function slashSource(ctx: CompletionContext): Promise<CompletionResult | n
     const collides = skillNames.has(a.name) || mcpNames.has(a.name) || commands.some((c) => c.name === a.name)
     // A profile's forced `model:` override rides both the row detail and the
     // hover pane (cmMentionTooltip renders mentionMarkdown); absent = the
-    // description alone, exactly as before.
-    const model = a.model ? ` — forced model: ${a.model}` : ''
+    // description alone, exactly as before. An empty description degrades to
+    // the bare model label instead of a leading " — ".
+    const text = [a.description, a.model && `forced model: ${a.model}`].filter(Boolean).join(' — ')
     options.push({
       label: collides ? `/agent: ${a.name}` : a.name,
-      detail: a.description + model,
+      detail: text,
       // Full description for the hover/selection markdown pane (cmMentionTooltip).
-      mentionMarkdown: a.description + model,
+      mentionMarkdown: text,
       type: 'agent',
       section: { name: 'Subagents', rank: 1 },
       // The replacement range starts AFTER the typed '/', so the applied

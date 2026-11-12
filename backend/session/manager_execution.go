@@ -934,8 +934,10 @@ func (m *Manager) sendMessage(ctx context.Context, id, text, echoText, clientSen
 		// Fallback: a continuation that failed BEFORE executing retries fresh
 		// (see shouldRetryContinuationFresh). Goal mode is preserved — hmMsg is
 		// already prefix-stripped, msg is not, so a "/goal" send would leak the
-		// prefix into the fresh task if the flag were dropped.
-		if err != nil && !errors.Is(err, core.ErrMCPAuthorizationState) && m.shouldRetryContinuationFresh(id, lastTaskID, anchorWasUnfinished) {
+		// prefix into the fresh task if the flag were dropped. A rejected model
+		// override is deterministic — the retry would fail identically — so it
+		// skips the fallback and surfaces the error directly.
+		if err != nil && !errors.Is(err, core.ErrMCPAuthorizationState) && !errors.Is(err, core.ErrInvalidModelOverride) && m.shouldRetryContinuationFresh(id, lastTaskID, anchorWasUnfinished) {
 			m.log().Warn("continuation failed, falling back to fresh workflow", "session_id", id, "task_id", lastTaskID, "error", err)
 			session.mu.Lock()
 			session.lastCompletedTaskID = ""

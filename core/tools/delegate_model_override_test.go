@@ -81,17 +81,17 @@ func TestValidateDelegationTasks_CompositeModelKnownProviderPasses(t *testing.T)
 	}
 }
 
-// TestValidateDelegationTasks_BareModelNotValidated verifies bare model names
-// pass through: the validator is consulted (it owns the passthrough rule) but
-// must accept them without error — a bare name never fails delegate
-// validation.
-func TestValidateDelegationTasks_BareModelNotValidated(t *testing.T) {
+// TestValidateDelegationTasks_BareModelConsultsValidator verifies a bare model
+// name reaches the validator unchanged — this layer is policy-neutral, so the
+// stub's acceptance is what lets the call pass. The production validator
+// (core/builder.go, ADR-122) rejects bare names and fails the whole call.
+func TestValidateDelegationTasks_BareModelConsultsValidator(t *testing.T) {
 	validator := &knownProvidersValidator{}
 	if err := validateModelOverrideTasks(t, "reviewer", "qwen3:8b", validator.validate); err != nil {
-		t.Fatalf("bare model must pass through unvalidated: %v", err)
+		t.Fatalf("bare model must consult the validator without failing here: %v", err)
 	}
 	if len(validator.calls) != 1 || validator.calls[0] != [2]string{"reviewer", "qwen3:8b"} {
-		t.Errorf("validator calls = %v, want [[reviewer qwen3:8b]] (passthrough, no error)", validator.calls)
+		t.Errorf("validator calls = %v, want [[reviewer qwen3:8b]] (consulted, accepted by the stub)", validator.calls)
 	}
 }
 
