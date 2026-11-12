@@ -51,38 +51,62 @@ type Index interface {
 }
 
 // Open returns an Index backed by bleve at the given directory. The directory
-// is created (with the index) if it does not already exist.
+// is created (with the index) if it does not already exist. The open runs
+// under the directory's lock gate (exclusive): a busy gate — another live
+// opener on this index, in this or another process — refuses with
+// ErrLockBusy within gateWait instead of hanging on bbolt's unbounded file
+// lock. The gate stays held until Close.
 func Open(dir string) (Index, error) {
 	if dir == "" {
 		return nil, errors.New("lexical index dir must not be empty")
 	}
 	if _, err := os.Stat(dir); err == nil {
+		gate, gateErr := acquireGate(dir, true)
+		if gateErr != nil {
+			return nil, fmt.Errorf("opening lexical index at %s: %w", dir, gateErr)
+		}
 		idx, err := bleve.Open(dir)
 		if err != nil {
+			_ = gate.release()
 			return nil, fmt.Errorf("opening lexical index at %s: %w", dir, err)
 		}
-		return &bleveIndex{idx: idx, dir: dir}, nil
+		return &bleveIndex{idx: idx, dir: dir, gate: gate}, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("stat lexical index dir %s: %w", dir, err)
 	}
 
+	// The gate sentinel lives inside the directory, so the directory must
+	// exist before the gate is taken (bleve.New would create it later).
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return nil, fmt.Errorf("creating lexical index dir %s: %w", dir, err)
+	}
+	gate, gateErr := acquireGate(dir, true)
+	if gateErr != nil {
+		return nil, fmt.Errorf("creating lexical index at %s: %w", dir, gateErr)
+	}
 	idxMapping, err := buildMapping()
 	if err != nil {
+		_ = gate.release()
 		return nil, fmt.Errorf("building bleve mapping: %w", err)
 	}
 	idx, err := bleve.New(dir, idxMapping)
 	if err != nil {
+		_ = gate.release()
 		return nil, fmt.Errorf("creating lexical index at %s: %w", dir, err)
 	}
-	return &bleveIndex{idx: idx, dir: dir}, nil
+	return &bleveIndex{idx: idx, dir: dir, gate: gate}, nil
 }
 
 // OpenReadOnly returns an Index over an EXISTING directory opened
 // bleve-read-only (scorch config read_only: no persister, no merger, no
 // writes). This is the shared-corpus reader mode (ADR-104): N attached
 // workspace roots of one published snapshot corpus read the same on-disk
-// lexical index concurrently while exactly zero of them may write it. A
-// missing directory is an error — published corpora always carry one.
+// lexical index concurrently while exactly zero of them may write it. The
+// open runs under the directory's lock gate (SHARED — readers coexist with
+// readers, as the concurrent-corpus-readers contract requires): a gate held
+// exclusively by a writer — or stuck — refuses with ErrLockBusy within
+// gateWait instead of hanging on bbolt. A missing directory is an error —
+// published corpora always carry one.
 func OpenReadOnly(dir string) (Index, error) {
 	if dir == "" {
 		return nil, errors.New("lexical index dir must not be empty")
@@ -90,11 +114,16 @@ func OpenReadOnly(dir string) (Index, error) {
 	if _, err := os.Stat(dir); err != nil {
 		return nil, fmt.Errorf("opening read-only lexical index at %s: %w", dir, err)
 	}
+	gate, gateErr := acquireGate(dir, false)
+	if gateErr != nil {
+		return nil, fmt.Errorf("opening read-only lexical index at %s: %w", dir, gateErr)
+	}
 	idx, err := bleve.OpenUsing(dir, map[string]interface{}{"read_only": true})
 	if err != nil {
+		_ = gate.release()
 		return nil, fmt.Errorf("opening read-only lexical index at %s: %w", dir, err)
 	}
-	return &bleveIndex{idx: idx, dir: dir}, nil
+	return &bleveIndex{idx: idx, dir: dir, gate: gate}, nil
 }
 
 // buildMapping constructs the c0wrk_code analyzer mapping: content analyzed,
@@ -142,10 +171,14 @@ func buildMapping() (mapping.IndexMapping, error) {
 	return im, nil
 }
 
-// bleveIndex is a thin wrapper around bleve.Index implementing Index.
+// bleveIndex is a thin wrapper around bleve.Index implementing Index. The
+// gate stays held from the successful open until Close — the gate is the
+// bounded replica of bbolt's own lock, so its lifetime must match the
+// index's.
 type bleveIndex struct {
-	idx bleve.Index
-	dir string
+	idx  bleve.Index
+	dir  string
+	gate *lockGate
 }
 
 func (b *bleveIndex) Upsert(ctx context.Context, docs []Doc) error {
@@ -236,16 +269,21 @@ func (b *bleveIndex) Count() (uint64, error) {
 	return n, nil
 }
 
-// Close releases the underlying bleve index. Not safe for concurrent use;
-// after it returns, b.idx is nil and further operations must not be called.
+// Close releases the underlying bleve index and the lock gate. Not safe for
+// concurrent use; after it returns, b.idx is nil and further operations must
+// not be called.
 func (b *bleveIndex) Close() error {
 	if b.idx == nil {
 		return nil
 	}
 	err := b.idx.Close()
 	b.idx = nil
+	// The gate is released even when the bleve close failed: a half-closed
+	// index must not keep the directory locked forever.
+	gateErr := b.gate.release()
+	b.gate = nil
 	if err != nil {
 		return fmt.Errorf("closing lexical index: %w", err)
 	}
-	return nil
+	return gateErr
 }

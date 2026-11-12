@@ -368,6 +368,35 @@ describe('isVectorIndexPayload (last_error / error_kind)', () => {
   })
 })
 
+describe('isVectorIndexPayload (stalled / stalled_stage / stalled_seconds)', () => {
+  const base = { state: 'indexing', progress: 0.5, files_indexed: 3, total_files: 10 }
+
+  it('accepts the stall-overlay trio and a payload without it', () => {
+    expect(isVectorIndexPayload(base)).toBe(true)
+    expect(
+      isVectorIndexPayload({
+        ...base,
+        stalled: true,
+        stalled_stage: 'embedding',
+        stalled_seconds: 320,
+      }),
+    ).toBe(true)
+  })
+
+  it('rejects wrong-typed stall overlay fields (IndexingStatus renders the overlay off them)', () => {
+    // `stalled` gates the StalledOverlay render — a truthy non-boolean must
+    // not slip through and flip the pill into the overlay state.
+    expect(isVectorIndexPayload({ ...base, stalled: 'yes' })).toBe(false)
+    expect(isVectorIndexPayload({ ...base, stalled: 1 })).toBe(false)
+    // `stalled_stage` reaches .trim() in the overlay's tooltip.
+    expect(isVectorIndexPayload({ ...base, stalled_stage: 7 })).toBe(false)
+    expect(isVectorIndexPayload({ ...base, stalled_stage: null })).toBe(false)
+    // `stalled_seconds` feeds the silence-duration formatter.
+    expect(isVectorIndexPayload({ ...base, stalled_seconds: '320' })).toBe(false)
+    expect(isVectorIndexPayload({ ...base, stalled_seconds: null })).toBe(false)
+  })
+})
+
 describe('isWorkUnitSettledData (CS #49 optional reason)', () => {
   const base = { step_id: 's1', status: 'interrupted' }
 

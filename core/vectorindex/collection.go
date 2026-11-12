@@ -409,8 +409,13 @@ func (info fileHashInfo) entry(chunkerFP, chunkSet string) string {
 // (preventing reindex loops). includeSubmodules mirrors walkProjectFiles'
 // submodule pruning: a file indexed while submodules were included is
 // reported deleted by a pass that no longer includes them, and vice versa a
-// newly-included submodule's files surface as new.
-func (s *Service) ValidateCollection(ctx context.Context, workspacePath string, checker ignore.IgnoreChecker, includeSubmodules bool) (staleFiles, newFiles, deletedFiles []string, err error) {
+// newly-included submodule's files surface as new. onVisit, when non-nil,
+// receives every directory entry the validation walk visits (files,
+// directories and ignored entries alike): the incremental pass feeds it into
+// its stall watchdog (see walkHeartbeater), so a slow-but-alive validation on
+// slow storage is never misread as a stalled pass while a single hung stat
+// still is.
+func (s *Service) ValidateCollection(ctx context.Context, workspacePath string, checker ignore.IgnoreChecker, includeSubmodules bool, onVisit func(string)) (staleFiles, newFiles, deletedFiles []string, err error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -475,6 +480,9 @@ func (s *Service) ValidateCollection(ctx context.Context, workspacePath string, 
 	}
 
 	walkErr := filepath.WalkDir(absRoot, func(path string, d fs.DirEntry, walkDirErr error) error {
+		if onVisit != nil {
+			onVisit(path)
+		}
 		if walkDirErr != nil {
 			return walkDirErr
 		}
@@ -1653,6 +1661,16 @@ func (s *Service) AddDocuments(ctx context.Context, vecDocs []chromem.Document, 
 // specs/domains/workspace.md). Returns the commit set (input never reordered) and
 // dropped IDs. Caller must hold s.mu (write lock).
 func (s *Service) embedSubBatch(ctx context.Context, sub []chromem.Document) ([]chromem.Document, map[string]struct{}, error) {
+	return s.embedSubBatchFrom(ctx, sub, s.current.embeddingCache)
+}
+
+// embedSubBatchFrom is embedSubBatch with the embedding cache passed in
+// explicitly: the streaming accumulator calls it OUTSIDE the service write
+// window (ADR-122) through the cache captured with the pass's working-store
+// identity, while the in-window caller passes the live state's cache. The
+// cache is internally synchronized and never torn down by state teardown, so
+// a captured pointer stays safe to use across park/eviction.
+func (s *Service) embedSubBatchFrom(ctx context.Context, sub []chromem.Document, cache *embeddingCache) ([]chromem.Document, map[string]struct{}, error) {
 	texts := make([]string, 0, len(sub))
 	targets := make([]int, 0, len(sub))
 	for i := range sub {
@@ -1663,7 +1681,7 @@ func (s *Service) embedSubBatch(ctx context.Context, sub []chromem.Document) ([]
 	}
 
 	failedTargets := make(map[int]struct{}) // indices into targets/texts dropped via the per-text fallback
-	vecs, failed, err := s.resolveEmbeddingChunk(ctx, texts)
+	vecs, failed, err := s.resolveEmbeddingChunkFrom(ctx, texts, cache)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1703,8 +1721,17 @@ func (s *Service) embedSubBatch(ctx context.Context, sub []chromem.Document) ([]
 
 // resolveEmbeddingChunk fills one ordered chunk from the persistent cache and
 // embeds only unique misses. The returned failed map is keyed by chunk-local
-// index so duplicate poisoned chunks are dropped consistently.
+// index so duplicate poisoned chunks are dropped consistently. Caller must
+// hold s.mu (write lock) — the live state's cache is read directly.
 func (s *Service) resolveEmbeddingChunk(ctx context.Context, texts []string) (vecs [][]float32, failed map[int]struct{}, err error) {
+	return s.resolveEmbeddingChunkFrom(ctx, texts, s.current.embeddingCache)
+}
+
+// resolveEmbeddingChunkFrom is resolveEmbeddingChunk with the embedding cache
+// passed in explicitly — the staged-window form the indexing pass uses OUTSIDE
+// the service write window (ADR-122) through the cache captured with the
+// pass's working-store identity.
+func (s *Service) resolveEmbeddingChunkFrom(ctx context.Context, texts []string, cache *embeddingCache) (vecs [][]float32, failed map[int]struct{}, err error) {
 	vecs = make([][]float32, len(texts))
 	positions := make(map[string][]int, len(texts))
 	uniqueTexts := make([]string, 0, len(texts))
@@ -1717,8 +1744,8 @@ func (s *Service) resolveEmbeddingChunk(ctx context.Context, texts []string) (ve
 
 	misses := make([]string, 0, len(uniqueTexts))
 	for _, text := range uniqueTexts {
-		if s.current.embeddingCache != nil {
-			vec, ok := s.current.embeddingCache.get(text)
+		if cache != nil {
+			vec, ok := cache.get(text)
 			s.telemetry.observeEmbeddingCache(ok)
 			if ok {
 				for _, pos := range positions[text] {
@@ -1776,12 +1803,12 @@ func (s *Service) resolveEmbeddingChunk(ctx context.Context, texts []string) (ve
 		if s.embeddingDimension > 0 && len(vec) != s.embeddingDimension {
 			return nil, nil, fmt.Errorf("batch embedder returned dimension %d, want %d", len(vec), s.embeddingDimension)
 		}
-		s.current.embeddingCache.put(text, vec)
+		cache.put(text, vec)
 		for _, pos := range positions[text] {
 			vecs[pos] = vec
 		}
 	}
-	s.current.embeddingCache.prune()
+	cache.prune()
 	if len(failed) == 0 {
 		failed = nil
 	}

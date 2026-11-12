@@ -443,6 +443,42 @@ export interface VectorIndexStatus {
    * windows that are explicitly NOT failures.
    */
   error_kind?: VectorIndexErrorKind
+  /**
+   * Pass-liveness sub-status (backend passStallTimeout, 5 minutes): the
+   * indexing pass has made NO progress for that long and the watchdog has
+   * fired. Diagnostic evidence, never a state — `state` keeps reporting
+   * what the pass reports, and this is rendered as a loading-class overlay
+   * (never as `unavailable`, a failure). Present (true) only while the
+   * stall window is open: the pass's next progress point or its end
+   * resolves it and the next full status snapshot omits the field.
+   */
+  stalled?: boolean
+  /**
+   * Bounded pipeline stage where progress stopped (backend TelemetryStage,
+   * e.g. "read_hash_chunk" / "embedding"). Present only while stalled.
+   */
+  stalled_stage?: string
+  /**
+   * How long the pass has been without progress, in whole seconds (live on
+   * every status read/event, so the silence visibly grows). Present only
+   * while stalled; 0 is possible in the fire instant.
+   */
+  stalled_seconds?: number
+}
+
+/**
+ * Result of the "Collect diagnostics" action (DumpVectorIndexDiagnostics):
+ * one on-demand diagnostics bundle the backend wrote to disk — the live
+ * status snapshot plus the capped all-goroutine stack dump the pass-stall
+ * watchdog would log as evidence.
+ */
+export interface VectorIndexDiagnosticsDump {
+  /** The bundle file the backend wrote (~/.c0wrk/diagnostics/). */
+  path: string
+  /** The bundle size in bytes. */
+  bytes: number
+  /** The goroutine dump hit its 512 KiB cap. */
+  truncated: boolean
 }
 
 /**

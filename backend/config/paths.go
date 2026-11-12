@@ -457,6 +457,14 @@ func GitConfigSnapshotsDir(agentDir string) string {
 	return filepath.Join(agentDir, "git-config-snapshots")
 }
 
+// DiagnosticsDir stores on-demand diagnostic bundles the user explicitly
+// collected from the UI (the vector-index "Collect diagnostics" action) —
+// evidence the user asked for, never automatic output; lazily created by the
+// writer. Files carry a UTC timestamp in the name and are owned by the user.
+func DiagnosticsDir(agentDir string) string {
+	return filepath.Join(agentDir, "diagnostics")
+}
+
 // --- Per-project paths (agentDir + projectID) -------------------------------
 
 // ProjectDir returns the per-project directory within ~/.c0wrk/projects/.

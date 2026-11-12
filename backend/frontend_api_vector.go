@@ -2,11 +2,13 @@ package backend
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/project"
@@ -406,6 +408,23 @@ func (f *FrontendAPI) GetVectorIndexStatus() VectorIndexStatus {
 	return result
 }
 
+// applyStallToWire maps the manager's pass-liveness snapshot onto the wire
+// status: an open window surfaces as stalled + stage + whole-second silence;
+// a resolved or absent one zeroes the fields, so the wire never reports a
+// stale stall (omitempty drops them, and "stalled" is visible exactly while
+// it exists).
+func applyStallToWire(result *VectorIndexStatus, stall vectorindex.StallSnapshot) {
+	if !stall.Stalled {
+		result.Stalled = false
+		result.StallStage = ""
+		result.StallSeconds = 0
+		return
+	}
+	result.Stalled = true
+	result.StallStage = stall.Stage
+	result.StallSeconds = int(stall.SilentFor / time.Second)
+}
+
 // vectorIndexStatusFromRegistryError maps a FocusManager/routing failure onto
 // the wire status. The contract is asymmetric on purpose:
 //
@@ -475,6 +494,11 @@ func (f *FrontendAPI) vectorIndexStatusFromManager(vm *vectorindex.Manager) Vect
 		ErrorKind:    string(st.ErrorKind),
 	}
 
+	// The pass-liveness sub-status (core passStallTimeout): carried only
+	// while the stall window is open — a resolved or absent stall maps to
+	// the zero fields, so "stalled" is visible exactly while it exists.
+	applyStallToWire(&result, st.Stall)
+
 	// Compute progress as a fraction.
 	if st.TotalFiles > 0 {
 		result.Progress = float64(st.FilesIndexed) / float64(st.TotalFiles)
@@ -536,6 +560,101 @@ func (f *FrontendAPI) ReindexVectorIndex() error {
 	}
 
 	return vm.Reindex(f.ctx())
+}
+
+// VectorIndexDiagnosticsDump is the result of DumpVectorIndexDiagnostics: one
+// on-demand diagnostics bundle the backend wrote to disk at the user's
+// explicit request.
+type VectorIndexDiagnosticsDump struct {
+	// Path is the bundle file the RPC wrote (under
+	// ~/.c0wrk/diagnostics/, a UTC-timestamped name).
+	Path string `json:"path"`
+	// Bytes is the bundle size in bytes.
+	Bytes int64 `json:"bytes"`
+	// Truncated reports the goroutine dump hit its 512 KiB cap (the
+	// backend's fixed bound) — the evidence is complete for the captured
+	// prefix only.
+	Truncated bool `json:"truncated"`
+}
+
+// DumpVectorIndexDiagnostics writes one on-demand vector-index diagnostics
+// bundle and returns where it landed. The bundle pairs the focus root's live
+// status snapshot (the stalled sub-status included) with the same capped
+// all-goroutine stack dump the pass-stall watchdog logs as evidence — the
+// on-demand "collect diagnostics" action: the user can capture the
+// blocking-call evidence without waiting for a stall Warn, and the file gives
+// support one artifact instead of a log hunt. Nothing here is automatic; the
+// only writer is this RPC.
+//
+// The routing mirrors ReindexVectorIndex: No Project and every registry
+// routing failure reject with the carried cause, so a click that cannot
+// produce diagnostics says why instead of writing an empty bundle.
+func (f *FrontendAPI) DumpVectorIndexDiagnostics() (VectorIndexDiagnosticsDump, error) {
+	if f.isNoProject() {
+		return VectorIndexDiagnosticsDump{}, errors.New("vector index diagnostics are unavailable in No Project mode")
+	}
+	vm, err := f.vectorRootsRegistry().FocusManager(f.ctx())
+	if err != nil {
+		return VectorIndexDiagnosticsDump{}, fmt.Errorf("vector index not available: %w", err)
+	}
+	if f.agentDir == "" {
+		return VectorIndexDiagnosticsDump{}, errors.New("agent directory not set")
+	}
+
+	st := f.vectorIndexStatusFromManager(vm)
+	f.applyEmbedderInfo(&st)
+	dump, truncated := vectorindex.GoroutineDump()
+
+	bundle := vectorDiagnosticsBundle(st, dump, truncated)
+	dir := config.DiagnosticsDir(f.agentDir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return VectorIndexDiagnosticsDump{}, fmt.Errorf("create diagnostics directory: %w", err)
+	}
+	// Nanosecond timestamp: two collections inside one second must not
+	// silently overwrite each other.
+	name := "vector-index-" + time.Now().UTC().Format("20060102T150405.000000000Z") + ".txt"
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, bundle, 0o600); err != nil {
+		return VectorIndexDiagnosticsDump{}, fmt.Errorf("write diagnostics bundle: %w", err)
+	}
+
+	f.log().Info("vector index diagnostics collected", "path", path, "bytes", len(bundle), "dump_truncated", truncated)
+	return VectorIndexDiagnosticsDump{Path: path, Bytes: int64(len(bundle)), Truncated: truncated}, nil
+}
+
+// vectorDiagnosticsBundle renders the diagnostics file: a small human-readable
+// header (the stall evidence in words), the full status snapshot as JSON (the
+// self-contained machine part — future additions ride along), then the
+// all-goroutine stack dump. Content mirrors what the pass watchdog logs; the
+// bundle only adds the status snapshot around it.
+func vectorDiagnosticsBundle(st VectorIndexStatus, dump string, truncated bool) []byte {
+	var sb strings.Builder
+	sb.WriteString("c0wrk vector-index diagnostics\n")
+	sb.WriteString("collected: " + time.Now().UTC().Format(time.RFC3339Nano) + "\n")
+	if st.Stalled {
+		fmt.Fprintf(&sb,
+			"stalled: stage %q, no progress for %d s (threshold: 5 m)\n",
+			st.StallStage, st.StallSeconds,
+		)
+	} else {
+		sb.WriteString("stalled: no\n")
+	}
+	if truncated {
+		sb.WriteString("goroutine dump: TRUNCATED at the 512 KiB cap\n")
+	}
+	sb.WriteString("\n## status\n")
+	if b, err := json.MarshalIndent(st, "", "  "); err == nil {
+		sb.Write(b)
+		sb.WriteString("\n")
+	} else {
+		sb.WriteString("(status marshal failed: " + err.Error() + ")\n")
+	}
+	sb.WriteString("\n## goroutines\n")
+	sb.WriteString(dump)
+	if !strings.HasSuffix(dump, "\n") {
+		sb.WriteString("\n")
+	}
+	return []byte(sb.String())
 }
 
 // ListVectorIndexGPUs enumerates the GPUs visible on the machine for the

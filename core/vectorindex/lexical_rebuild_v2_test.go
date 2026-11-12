@@ -69,7 +69,7 @@ func seedLegacyIndexedFile(t *testing.T, idx *Indexer, svc *Service, absPath, bo
 	if err := os.WriteFile(absPath, []byte(body), 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
-	vecDocs, _, err := idx.processFile(absPath, "")
+	vecDocs, _, err := idx.processFile(absPath, "", nil)
 	if err != nil {
 		t.Fatalf("processFile(%s): %v", absPath, err)
 	}
@@ -178,7 +178,7 @@ func TestRebuildLexical_SidecarPathMatchesCollectionPath(t *testing.T) {
 	// Old path: collection enumeration into a recorder.
 	oldRec := installRecordingLex(t, svc)
 	col := svc.GetCollection()
-	if err := idx.rebuildLexicalFromCollection(context.Background(), oldRec, col, col.Count()); err != nil {
+	if err := idx.rebuildLexicalFromCollection(context.Background(), oldRec, col, col.Count(), nil); err != nil {
 		t.Fatalf("rebuildLexicalFromCollection: %v", err)
 	}
 
@@ -354,7 +354,7 @@ func TestRebuildLexicalFromCollection_StaleLargerCountTolerated(t *testing.T) {
 
 	rec := installRecordingLex(t, svc)
 	staleCount := live + 5 // documents deleted after the caller sampled
-	if err := idx.rebuildLexicalFromCollection(context.Background(), rec, col, staleCount); err != nil {
+	if err := idx.rebuildLexicalFromCollection(context.Background(), rec, col, staleCount, nil); err != nil {
 		t.Fatalf("rebuildLexicalFromCollection with a stale larger count: %v", err)
 	}
 	if got := len(rec.docs); got != live {
@@ -381,7 +381,7 @@ func TestRebuildLexicalFromCollection_EmptyLiveCollection(t *testing.T) {
 	}
 
 	rec := installRecordingLex(t, svc)
-	if err := idx.rebuildLexicalFromCollection(context.Background(), rec, col, 7); err != nil {
+	if err := idx.rebuildLexicalFromCollection(context.Background(), rec, col, 7, nil); err != nil {
 		t.Fatalf("rebuildLexicalFromCollection on an emptied collection: %v", err)
 	}
 	if got := len(rec.docs); got != 0 {

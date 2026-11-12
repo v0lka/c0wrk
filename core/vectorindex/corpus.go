@@ -160,7 +160,15 @@ func Repairable(err error) bool {
 		errors.Is(err, ErrCorpusLegMissing) ||
 		errors.Is(err, ErrCorpusUnopenable) ||
 		errors.Is(err, ErrOverlayUnopenable) ||
-		errors.Is(err, ErrCorpusNoIndexableFiles)
+		errors.Is(err, ErrCorpusNoIndexableFiles) ||
+		// A lexical lock-gate timeout (lexical.ErrLockBusy) is a PROVEN
+		// stuck/foreign holder on the leg's bleve state: bbolt would wait
+		// forever, the gate refused fast, and no retry can clear a holder
+		// that never leaves. The ADR-120 attach rung heals it by rebuilding
+		// the leg on a fresh inode while the holder keeps the orphaned old
+		// one — the gate sentinel dies with the quarantined directory, so
+		// the rebuilt index locks freely.
+		errors.Is(err, lexical.ErrLockBusy)
 }
 
 // QuarantineScope names the ONE store a proven-defect repair may destroy.

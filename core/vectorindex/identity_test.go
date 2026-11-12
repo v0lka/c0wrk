@@ -302,7 +302,7 @@ func TestPerRootIgnorePolicy_EvictsStoredCorpusEntries(t *testing.T) {
 		HashFn:          fakeHashFunc,
 		ExcludePatterns: []string{"*.log"},
 	})
-	stale, newF, deleted, valErr := svc.ValidateCollection(context.Background(), ws, strict.resolverFor(ws), false)
+	stale, newF, deleted, valErr := svc.ValidateCollection(context.Background(), ws, strict.resolverFor(ws), false, nil)
 	if valErr != nil {
 		t.Fatalf("ValidateCollection: %v", valErr)
 	}

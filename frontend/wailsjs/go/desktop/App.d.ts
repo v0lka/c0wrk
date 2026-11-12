@@ -113,6 +113,8 @@ export function DiscardChanges(arg1:string):Promise<void>;
 
 export function DownloadUpdate():Promise<void>;
 
+export function DumpVectorIndexDiagnostics():Promise<backend.VectorIndexDiagnosticsDump>;
+
 export function EmitSessionEvent(arg1:session.Event):Promise<void>;
 
 export function Fetch(arg1:string,arg2:Array<string>):Promise<string>;

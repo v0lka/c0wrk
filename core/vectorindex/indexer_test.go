@@ -703,7 +703,7 @@ func TestProcessFile_SkipsOversized(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	vecDocs, lexDocs, err := indexer.processFile(bigPath, "")
+	vecDocs, lexDocs, err := indexer.processFile(bigPath, "", nil)
 	if err != nil {
 		t.Fatalf("processFile oversized model: unexpected error: %v", err)
 	}
@@ -752,7 +752,7 @@ func TestProcessFile_SanitizesInvalidUTF8(t *testing.T) {
 		t.Fatal("test premise invalid: NUL-free legacy text must pass the binary header check")
 	}
 
-	vecDocs, lexDocs, err := indexer.processFile(path, "")
+	vecDocs, lexDocs, err := indexer.processFile(path, "", nil)
 	if err != nil {
 		t.Fatalf("processFile legacy-encoded file: unexpected error: %v", err)
 	}
@@ -844,7 +844,7 @@ func TestProcessFile_SkipsExcessChunks(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	vecDocs, lexDocs, err := indexer.processFile(path, "")
+	vecDocs, lexDocs, err := indexer.processFile(path, "", nil)
 	if err != nil {
 		t.Fatalf("processFile excess-chunks: unexpected error: %v", err)
 	}

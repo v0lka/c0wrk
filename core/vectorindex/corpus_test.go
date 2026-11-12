@@ -40,6 +40,7 @@ import (
 
 	chromem "github.com/philippgille/chromem-go"
 
+	"github.com/v0lka/c0wrk/core/vectorindex/lexical"
 	"github.com/v0lka/c0wrk/internal/gittest"
 )
 
@@ -1109,6 +1110,8 @@ func TestRepairable_ClassifiesProvenDefectsAndTransientFaults(t *testing.T) {
 		ErrCorpusUnopenable,
 		ErrOverlayUnopenable,
 		ErrCorpusNoIndexableFiles,
+		lexical.ErrLockBusy,
+		fmt.Errorf("opening lexical index at x: %w", lexical.ErrLockBusy),
 		fmt.Errorf("opening chunk record: %w", errChunkRecordTorn),
 		&fs.PathError{Op: "open", Path: "a.chunk", Err: fs.ErrNotExist},
 	}

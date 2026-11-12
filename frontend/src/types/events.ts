@@ -1887,6 +1887,15 @@ export function isVectorIndexPayload(d: unknown): d is VectorIndexStatus {
   // boundary instead of crashing (or mis-typing) a render.
   if (d.last_error !== undefined && typeof d.last_error !== 'string') return false
   if (d.error_kind !== undefined && typeof d.error_kind !== 'string') return false
+  // `stalled` / `stalled_stage` / `stalled_seconds` are the pass-stall
+  // watchdog's live overlay (omitempty, present only while the stall window
+  // is open): `stalled` gates the StalledOverlay render in IndexingStatus,
+  // `stalled_stage` reaches .trim() there, and `stalled_seconds` feeds the
+  // silence-duration formatter — pin all three types when present so a
+  // malformed payload is dropped instead of mis-rendering the overlay.
+  if (d.stalled !== undefined && typeof d.stalled !== 'boolean') return false
+  if (d.stalled_stage !== undefined && typeof d.stalled_stage !== 'string') return false
+  if (d.stalled_seconds !== undefined && typeof d.stalled_seconds !== 'number') return false
   return true
 }
 
