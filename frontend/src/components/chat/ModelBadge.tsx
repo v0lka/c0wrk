@@ -20,7 +20,8 @@ interface ModelBadgeProps {
 /**
  * The delegate's forced-model pin, rendered by the status bar's shared model
  * pill. Visible only when the pinned model differs from the conductor's
- * session model (bare-name comparison — see {@link subagentModelDiffers}): an
+ * session model (composites compare verbatim when both sides carry a
+ * provider, bare names otherwise — see {@link subagentModelDiffers}): an
  * equal pin carries no information, so the badge renders nothing.
  */
 export function ModelBadge({ model, sessionModel }: ModelBadgeProps) {

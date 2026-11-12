@@ -515,17 +515,19 @@ func (b *OrchestratorBuilder) Build(
 
 	// Session token events: the preferred seam reports the median per-call output-token
 	// rate from a sliding window; older emitters keep the plain-totals path
-	// (specs/domains/llm-providers.md).
+	// (specs/domains/llm-providers.md). The model is composed into the full
+	// provider/model selector (compositeSessionModel) so the frontend's badge
+	// comparison can tell providers apart (ADR-123 §7).
 	switch te := emitter.(type) {
 	case SessionTokenThroughputEmitter:
 		throughput := newSessionThroughputWindow()
 		usageTracker.AddTimedObserver(func(usage llm.TokenUsage, duration time.Duration, totalIn, totalOut int, model, family string) {
 			median, samples := throughput.record(usage.OutputTokens, duration)
-			te.EmitSessionTokensWithThroughput(totalIn, totalOut, model, family, median, samples)
+			te.EmitSessionTokensWithThroughput(totalIn, totalOut, compositeSessionModel(llmRouter, model), family, median, samples)
 		})
 	case SessionTokenEmitter:
 		usageTracker.AddObserver(func(_ llm.TokenUsage, totalIn, totalOut int, model, family string) {
-			te.EmitSessionTokens(totalIn, totalOut, model, family)
+			te.EmitSessionTokens(totalIn, totalOut, compositeSessionModel(llmRouter, model), family)
 		})
 	}
 
@@ -1698,6 +1700,26 @@ func modelOverridesFromConfig(cfg *BuilderConfig) map[string]llm.ModelMetadata {
 	remapLocalGoogleProtocols(overrides, cfg.LLM.ProviderConfigs, cfg.ExpandEnvVars)
 	applyProviderOutputReserves(overrides, cfg.LLM.ProviderConfigs)
 	return overrides
+}
+
+// compositeSessionModel prefixes a provider-echoed model name with the
+// session's active provider so session_tokens.model and the emitter's cached
+// last-model carry the full "provider/model" selector the frontend's badge
+// comparison needs (ADR-123 §7: a cross-provider pin sharing the session's
+// bare model name must stay visible). The provider resolves through the
+// session router's read-only ProviderForModel — the same SetModel-style
+// first-match resolution the session itself routes by. Ids that already
+// contain "/" (OpenRouter-style echoed names) and models the router cannot
+// resolve pass through unchanged; the badge falls back to bare-name
+// comparison for them.
+func compositeSessionModel(llmRouter *llm.Router, model string) string {
+	if llmRouter == nil || model == "" || strings.Contains(model, "/") {
+		return model
+	}
+	if provider, ok := llmRouter.ProviderForModel(model); ok && provider != "" {
+		return provider + "/" + model
+	}
+	return model
 }
 
 // modelOverrideValidator closes over the router's read-only provider-for-model

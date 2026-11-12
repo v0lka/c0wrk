@@ -19,10 +19,11 @@ interface ModelBadgeProps {
  * wrapper that owns the differs-from-session visibility rule).
  *
  * The visible text is the bare model name — the status-bar convention
- * (`session_tokens.model` arrives bare, so a bare input renders verbatim);
- * the `title` tooltip carries the full value, so a composite
- * `provider/model` pin surfaces its provider on hover without spending
- * horizontal space.
+ * (`session_tokens.model` arrives bare or, since the builder composes the
+ * session's provider into it, composite — a bare input renders verbatim, a
+ * composite input is stripped); the `title` tooltip carries the full value,
+ * so a composite `provider/model` pin surfaces its provider on hover without
+ * spending horizontal space.
  */
 export function ModelBadge({ model, className }: ModelBadgeProps) {
   // A value that strips to nothing (e.g. "provider/") would render an empty

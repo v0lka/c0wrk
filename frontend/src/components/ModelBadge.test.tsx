@@ -31,8 +31,9 @@ describe('ModelBadge (shared status-bar pill)', () => {
   const badge = () => container.querySelector('[data-slot="badge"]')
 
   it('renders a bare model verbatim as both text and tooltip (status-bar input)', () => {
-    // session_tokens.model arrives bare, so the status bar's usage renders
-    // the pill exactly as the pre-extraction inline badge did.
+    // session_tokens.model can arrive bare (legacy persisted rows,
+    // provider-echoed ids that already contain "/"), so the status bar's
+    // usage renders the pill exactly as the pre-extraction inline badge did.
     render(<ModelBadge model="qwen3-27b" />)
     const el = badge()
     expect(el).not.toBeNull()

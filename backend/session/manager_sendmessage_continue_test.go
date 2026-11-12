@@ -735,7 +735,9 @@ func TestSendMessage_ResumePath_AppliesOverridesAndFlushesAttachments(t *testing
 		// The initial context_fill is emitted before the first LLM call reports
 		// usage, so without ApplyRequestOverrides synchronizing the emitter's
 		// cached model it would carry the previous task's (stale) model. After
-		// the fix, the first context_fill must report the bare override model.
+		// the fix, the first context_fill must report the override model — the
+		// composite the request named, since ApplyRequestOverrides feeds the
+		// composite into the cached last-model (ADR-123 §7 badge comparison).
 		var firstFill *ContextFillEventData
 		allEventsMu.Lock()
 		for i := range allEvents {
@@ -750,8 +752,8 @@ func TestSendMessage_ResumePath_AppliesOverridesAndFlushesAttachments(t *testing
 		if firstFill == nil {
 			t.Fatal("expected at least one context_fill event in the buffered sequence")
 		}
-		if firstFill.Model != bareOverride {
-			t.Errorf("initial context_fill Model = %q, want %q (ApplyRequestOverrides must sync the emitter's cached model before the first context_fill)", firstFill.Model, bareOverride)
+		if firstFill.Model != overrideModel {
+			t.Errorf("initial context_fill Model = %q, want %q (ApplyRequestOverrides must sync the emitter's cached model before the first context_fill)", firstFill.Model, overrideModel)
 		}
 	})
 

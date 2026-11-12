@@ -61,8 +61,9 @@ decomposed at delegation time and the composite never reaches the wire:
    provider and `req.Model` to the bare name, so the request routes
    cross-provider and is immune to a mid-task `SetModel`. A bare name is not
    an input anywhere in this path: the validator rejects it at delegate-call
-   time, and a bare value reaching `buildSubAgentTask` anyway (nil validator /
-   direct test construction) is IGNORED with a one-shot WARN — the subagent
+   time, and a bare value — or an empty-provider composite (`"/model"`) —
+   reaching `buildSubAgentTask` anyway (nil validator / direct test
+   construction) is IGNORED with a one-shot WARN — the subagent
    runs on the session's active model, since an override that cannot be
    honored as specified must not silently degrade to legacy semantics.
 
@@ -79,8 +80,9 @@ decomposed at delegation time and the composite never reaches the wire:
      `delegate` calls validate as well.
    - **Defensive re-check at launch.** `buildSubAgentTask` re-runs the
      validator before wrapping the caller (mirroring the agent-name
-     double-check, covering a profile edited mid-run); the error is wrapped as
-     `delegation %q: …`.
+     double-check, covering a profile edited mid-run); the validator's error
+     propagates unwrapped — it already names the source (`task <id>` /
+     `profile <name>`), the model and the rule.
    The validator itself is built once by the builder (`modelOverrideValidator`,
    wired as `OrchestratorDeps.ValidateModelOverride` → `conductorDeps`) as a
    closure over the session router's read-only `ProviderForModel` /
@@ -91,7 +93,9 @@ decomposed at delegation time and the composite never reaches the wire:
    providers. A bare name is rejected outright with the composite guidance,
    and so is a composite with an empty bare part (`"provider/"` — pinning
    only the provider would let `req.Model` silently inherit the session's
-   active model, the opposite of the override's intent). A nil router yields
+   active model) or an empty provider name (`"/model"` — surfacing as the
+   unknown-provider rejection for `""`; pinning only the model would let
+   `req.Provider` inherit the active provider). A nil router yields
    a nil validator (no pre-launch validation), and the router's per-request
    provider miss remains the backstop on every path.
 

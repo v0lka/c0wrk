@@ -118,4 +118,17 @@ describe('ModelBadge', () => {
     })
     expect(badge()).toBeNull()
   })
+
+  it('shows a cross-provider pin even when the session model shares the bare name (prop omitted)', () => {
+    // Both sides carry a provider: composites compare verbatim, so
+    // azure/gpt-4 on an openai/gpt-4 session IS a difference (ADR-123 §7 —
+    // session_tokens.model arrives composite from the builder's observer).
+    useChatStore.setState({
+      sessionTokens: {
+        'sess-1': { total_input_tokens: 1, total_output_tokens: 1, model: 'openai/gpt-4', family: 'gpt' },
+      },
+    })
+    render(<ModelBadge model="azure/gpt-4" />)
+    expect(badge()).not.toBeNull()
+  })
 })

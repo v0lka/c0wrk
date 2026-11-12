@@ -128,11 +128,23 @@ ADR-122 introduced:
 
 7. **Badge visibility: differ-from-session.** The delegate model badge
    (`ModelBadge` on `SubAgentBlock` / `PlanStepBlock`) renders the pinned
-   model only when it DIFFERS from the conductor's session model. Both sides
-   are normalized to bare names (`bareModel` — the first-`/` split shared
-   with the backend's `llm.BareModel`), so `openrouter/qwen3-27b` matches a
-   session running bare `qwen3-27b` and renders nothing. A pin naming the
-   session's own model carries no information. An absent/empty session model
+   model only when it DIFFERS from the conductor's session model. When BOTH
+   sides carry a provider prefix the composite ids compare verbatim — a
+   cross-provider pin sharing the session's bare model name (`azure/gpt-4`
+   on a session running `openai/gpt-4`) IS a difference (different routing,
+   cost, latency), so the badge stays visible. When either side is bare the
+   comparison falls back to bare names (`bareModel` — the first-`/` split
+   shared with the backend's `llm.BareModel`), so `openrouter/qwen3-27b`
+   matches a session running bare `qwen3-27b` and renders nothing — the
+   legacy `session_tokens.model` format and provider-echoed ids that already
+   contain "/" both land here. A pin naming the session's own composite
+   carries no information. The session side carries the composite going
+   forward: the builder's UsageTracker observers compose `session_tokens.model`
+   as `provider/model` through the session router's read-only
+   `ProviderForModel` (the same SetModel-style first-match resolution), and
+   `ApplyRequestOverrides` feeds the composite into the emitter's cached
+   last-model via `SetLastModel`; the badge falls back to bare-name
+   comparison for the passthrough cases. An absent/empty session model
    counts as DIFFERENT (the conductor's model is unknown — no
    `session_tokens` event yet), so the badge stays visible; an empty/absent
    pinned model renders nothing. The badge is the status bar's shared model
@@ -141,8 +153,7 @@ ADR-122 introduced:
    (`bareModel` strips the first provider segment — the provider prefix is an
    implementation detail on the pill), while the `title` TOOLTIP carries the
    full composite `provider/model` verbatim, where the provider is exactly
-   what matters; no "Forced model:" prefix. The status bar feeds the pill its
-   bare `session_tokens.model`, so its rendering is unchanged by the sharing.
+   what matters; no "Forced model:" prefix.
 
 ## Consequences
 

@@ -1428,8 +1428,9 @@ func (l *conductorLauncher) buildSubAgentTask(ctx context.Context, t tools.Deleg
 	// wins over the profile pin, which wins over the session's active model.
 	// Each candidate must be a full composite "provider/model" identifier to
 	// be honored — the mandatory-composite rule (ADR-122) is enforced at
-	// delegate validation, so reaching launch with a bare name or an
-	// empty-bare composite ("provider/") means validation was skipped (nil
+	// delegate validation, so reaching launch with a bare name or a
+	// half-empty composite ("provider/" or "/model") means validation was
+	// skipped (nil
 	// validator / direct construction): the candidate is WARN-ignored and the
 	// next link in the chain takes over (a dishonorable task `model` falls
 	// back to the profile pin; a dishonorable profile pin falls back to the
@@ -1451,7 +1452,8 @@ func (l *conductorLauncher) buildSubAgentTask(ctx context.Context, t tools.Deleg
 		}
 		provider, bare, composite := llm.ParseCompositeModelID(cand.model)
 		if !composite {
-			l.warnDishonorableModelOverride(cand.source, cand.model, false)
+			l.warnDishonorableModelOverride(cand.source, cand.model,
+				"bare names are not accepted, use a full \"provider/model\" identifier")
 			continue
 		}
 		if l.deps.validateModelOverride != nil {
@@ -1460,11 +1462,13 @@ func (l *conductorLauncher) buildSubAgentTask(ctx context.Context, t tools.Deleg
 			if err := l.deps.validateModelOverride(cand.source, cand.model); err != nil {
 				return agent.SubAgentTask{}, err
 			}
-		} else if bare == "" {
-			// Honoring an empty-bare composite would pin only the provider
-			// while req.Model silently inherits the session's model — the
-			// opposite of the override's intent.
-			l.warnDishonorableModelOverride(cand.source, cand.model, true)
+		} else if bare == "" || provider == "" {
+			// Honoring a half-empty composite would silently degrade the
+			// override to legacy semantics: "provider/" pins only the
+			// provider while req.Model inherits the session's model, "/model"
+			// pins only the model while req.Provider inherits the ACTIVE
+			// provider — the opposite of the override's intent.
+			l.warnDishonorableModelOverride(cand.source, cand.model, dishonorableCompositeModelOverrideReason(bare))
 			continue
 		}
 		honoredModel, honoredProvider, honoredBare = cand.model, provider, bare
@@ -1578,22 +1582,28 @@ func (l *conductorLauncher) buildSubAgentTask(ctx context.Context, t tools.Deleg
 }
 
 // warnDishonorableModelOverride logs the launch-side WARN for a model
-// override candidate that cannot be honored as specified: a bare name
-// (emptyBare=false), or a composite with an empty model part ("provider/",
-// emptyBare=true). The subagent runs on the next model in the resolution
-// chain instead — an explicit task `model` falls back to the profile pin, a
-// dishonorable profile pin falls back to the session's active model.
-func (l *conductorLauncher) warnDishonorableModelOverride(source, model string, emptyBare bool) {
+// override candidate that cannot be honored as specified: a bare name, or a
+// composite with an empty model part ("provider/") or an empty provider
+// name ("/model") — reason carries the violated half of the
+// mandatory-composite rule (ADR-122). The subagent runs on the next model in
+// the resolution chain instead — an explicit task `model` falls back to the
+// profile pin, a dishonorable profile pin falls back to the session's
+// active model.
+func (l *conductorLauncher) warnDishonorableModelOverride(source, model, reason string) {
 	if l.deps.logger == nil {
 		return
 	}
-	if emptyBare {
-		l.deps.logger.Warn("subagent model override ignored — composite identifier has an empty model part, use a full \"provider/model\" identifier",
-			"source", source, "model", model)
-		return
+	l.deps.logger.Warn("subagent model override ignored — "+reason, "source", source, "model", model)
+}
+
+// dishonorableCompositeModelOverrideReason names the violated half of the
+// mandatory-composite rule for a malformed composite candidate: an empty
+// model part ("provider/") or an empty provider name ("/model").
+func dishonorableCompositeModelOverrideReason(bare string) string {
+	if bare == "" {
+		return "composite identifier has an empty model part, use a full \"provider/model\" identifier"
 	}
-	l.deps.logger.Warn("subagent model override ignored — bare names are not accepted, use a full \"provider/model\" identifier",
-		"source", source, "model", model)
+	return "composite identifier has an empty provider name, use a full \"provider/model\" identifier"
 }
 
 // conductorOnlyToolNames must never reach a regular subagent: delegation

@@ -12,10 +12,14 @@ describe('subagentModelDiffers', () => {
     expect(subagentModelDiffers('qwen3-27b', 'openrouter/qwen3-27b')).toBe(false)
   })
 
-  it('splits the composite at the FIRST "/" (inner slashes survive normalization)', () => {
-    // `ollama/org/path/model` is provider `ollama` + bare `org/path/model`;
-    // comparing bare names keeps the model part's inner slashes intact.
-    expect(subagentModelDiffers('ollama/org/path/model', 'llama.cpp/org/path/model')).toBe(false)
+  it('compares composites when both sides carry a provider (cross-provider pin shows)', () => {
+    // Same bare name on different providers = different routing (cost,
+    // latency), so the badge shows — the ids compare verbatim, no
+    // normalization (ADR-123 §7).
+    expect(subagentModelDiffers('azure/gpt-4', 'openai/gpt-4')).toBe(true)
+    expect(subagentModelDiffers('ollama/org/path/model', 'llama.cpp/org/path/model')).toBe(true)
+    // A pin naming the session's own composite carries no information.
+    expect(subagentModelDiffers('openai/gpt-4', 'openai/gpt-4')).toBe(false)
     // Different bare parts are still told apart despite matching prefixes.
     expect(subagentModelDiffers('ollama/org/path/model', 'ollama/org/other/model')).toBe(true)
   })

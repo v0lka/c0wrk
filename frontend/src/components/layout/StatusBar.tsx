@@ -47,8 +47,10 @@ export function StatusBar() {
           <span className="flex min-w-0 items-center gap-1">
             {tokens.model && (
               // The shared model pill: bare name as text, full value as the
-              // tooltip. `session_tokens.model` arrives bare, so this renders
-              // verbatim — the pill is also the delegate headers' badge.
+              // tooltip. `session_tokens.model` arrives bare or composite
+              // (the builder composes the session's provider into it), so
+              // this strips to the bare name — the pill is also the delegate
+              // headers' badge.
               <ModelBadge model={tokens.model} className="max-w-full" />
             )}
             {tokens.family && (

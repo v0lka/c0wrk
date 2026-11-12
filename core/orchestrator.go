@@ -2150,7 +2150,10 @@ func (o *Orchestrator) ApplyRequestOverrides(ctx context.Context, modelOverride,
 		}
 	}
 	if setter, ok := o.emitter.(LastModelSetter); ok {
-		setter.SetLastModel(bare, family)
+		// The composite rides the cache: session_tokens.model and the
+		// frontend's badge comparison carry the full provider/model selector
+		// (ADR-123 §7) instead of lagging bare until the next usage report.
+		setter.SetLastModel(modelOverride, family)
 	}
 	return nil
 }

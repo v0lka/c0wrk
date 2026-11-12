@@ -889,7 +889,8 @@ func (e *EventEmitter) AssistantDone(fullContent string, inputTokens, outputToke
 }
 
 // SetLastModel refreshes the cached model/family on a per-request override
-// (orchestrator's ApplyRequestOverrides) so context_fill events report the
+// (orchestrator's ApplyRequestOverrides passes the composite `provider/model`
+// selector — ADR-123 §7) so context_fill events report the
 // new model immediately instead of the previous task's stale one during a
 // continuation/resume. No-op when empty.
 func (e *EventEmitter) SetLastModel(model, family string) {

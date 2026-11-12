@@ -152,8 +152,8 @@ type DisplayContextWindowForModelSetter interface {
 // session_tokens model is synchronized the instant a per-request override is
 // applied: the emitter's cached "last model" otherwise lags until the first
 // usage report, so the opening fill would show the PREVIOUS task's model. The
-// orchestrator injects model+family inside ApplyRequestOverrides (mirroring
-// DisplayContextWindowSetter).
+// orchestrator injects the composite provider/model + family inside
+// ApplyRequestOverrides (mirroring DisplayContextWindowSetter).
 type LastModelSetter interface {
 	SetLastModel(model, family string)
 }
