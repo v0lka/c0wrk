@@ -73,7 +73,7 @@ func TestNormalizeMCPTimeouts_ValidHasNoWarnings(t *testing.T) {
 func TestLoadWithResult_InvalidMCPTimeoutWarns(t *testing.T) {
 	content := `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:

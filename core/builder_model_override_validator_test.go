@@ -53,14 +53,38 @@ func TestModelOverrideValidator_CompositeUnknownProviderFailsClosed(t *testing.T
 	}
 }
 
-// TestModelOverrideValidator_BareNamesPassThrough verifies bare model names
-// are never validated — even a name no provider lists passes (they ride the
-// session's active provider, which never requires naming one).
-func TestModelOverrideValidator_BareNamesPassThrough(t *testing.T) {
+// TestModelOverrideValidator_CompositeEmptyBareFailsClosed verifies a
+// composite with an empty bare part ("provider/") is rejected outright even
+// when the provider itself is configured: NewModelProviderOverrideCaller would
+// pin only the provider and let req.Model inherit the session's active model —
+// the opposite of the override's intent. The error names the profile, the
+// model and the empty-bare rule.
+func TestModelOverrideValidator_CompositeEmptyBareFailsClosed(t *testing.T) {
+	validate := modelOverrideValidator(modelOverrideValidatorTestRouter(t))
+	err := validate("reviewer", "local-llm/")
+	if err == nil {
+		t.Fatal("composite with an empty bare model must fail closed")
+	}
+	for _, want := range []string{"reviewer", "local-llm/", "empty bare model"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q must name %q", err.Error(), want)
+		}
+	}
+}
+
+// TestModelOverrideValidator_BareRejected verifies the mandatory-composite
+// rule: bare model names are rejected outright — even a name a configured
+// provider lists — with the composite guidance in the error.
+func TestModelOverrideValidator_BareRejected(t *testing.T) {
 	validate := modelOverrideValidator(modelOverrideValidatorTestRouter(t))
 	for _, bare := range []string{"qwen3:8b", "no-such-model-anywhere"} {
-		if err := validate("reviewer", bare); err != nil {
-			t.Errorf("bare %q must pass through, got: %v", bare, err)
+		err := validate("reviewer", bare)
+		if err == nil {
+			t.Errorf("bare %q must be rejected", bare)
+			continue
+		}
+		if !strings.Contains(err.Error(), `must be a full "provider/model" identifier`) {
+			t.Errorf("error for bare %q must carry the composite guidance, got: %v", bare, err)
 		}
 	}
 }

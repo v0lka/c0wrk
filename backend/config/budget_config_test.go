@@ -30,7 +30,7 @@ func loadFromYAML(t *testing.T, content string) *Config {
 }
 
 const budgetBaseYAML = `llm:
-  default_model: "qwen3"
+  default_model: "selfhosted/qwen3"
   openai_compatible:
     selfhosted:
       base_url: "http://127.0.0.1:1234/v1"
@@ -69,7 +69,7 @@ func TestAdaptiveBudget_ExplicitFalseSurvivesDefaults(t *testing.T) {
 func TestAdaptiveBudget_SaveRoundTrip(t *testing.T) {
 	cfg := &Config{}
 	ApplyDefaults(cfg)
-	cfg.LLM.DefaultModel = "qwen3"
+	cfg.LLM.DefaultModel = "selfhosted/qwen3"
 	cfg.LLM.OpenAICompatible = map[string]OpenAICompatibleConfig{
 		"selfhosted": {BaseURL: "http://127.0.0.1:1234/v1", APIKey: "k", Models: []string{"qwen3"}},
 	}
@@ -135,7 +135,7 @@ func TestModelRequestTimeout_Validation(t *testing.T) {
 func TestModelRequestTimeout_OmitEmpty(t *testing.T) {
 	cfg := &Config{}
 	ApplyDefaults(cfg)
-	cfg.LLM.DefaultModel = "qwen3"
+	cfg.LLM.DefaultModel = "selfhosted/qwen3"
 	cfg.LLM.OpenAICompatible = map[string]OpenAICompatibleConfig{
 		"selfhosted": {BaseURL: "http://127.0.0.1:1234/v1", APIKey: "k", Models: []string{"qwen3"}},
 	}
@@ -188,7 +188,7 @@ func TestProviderTimeoutClass_Validation(t *testing.T) {
 		})
 		t.Run("anthropic_compatible "+tt.value, func(t *testing.T) {
 			content := fmt.Sprintf(`llm:
-  default_model: "claude-sonnet-4-20250514"
+  default_model: "gateway/claude-sonnet-4-20250514"
   anthropic_compatible:
     gateway:
       base_url: "https://claude.lan:8443"
@@ -215,7 +215,7 @@ func TestProviderTimeoutClass_Validation(t *testing.T) {
 func TestProviderTimeoutClass_RoundTrip(t *testing.T) {
 	cfg := &Config{}
 	ApplyDefaults(cfg)
-	cfg.LLM.DefaultModel = "qwen3"
+	cfg.LLM.DefaultModel = "selfhosted/qwen3"
 	cfg.LLM.OpenAICompatible = map[string]OpenAICompatibleConfig{
 		"selfhosted": {BaseURL: "http://127.0.0.1:1234/v1", APIKey: "k", Models: []string{"qwen3"}, TimeoutClass: "local"},
 	}

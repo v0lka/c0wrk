@@ -1,8 +1,10 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -167,18 +169,54 @@ func TestBuildSubAgentTask_CompositeModelUnknownProviderFailsClosed(t *testing.T
 	}
 }
 
-// --- Bare passthrough ---
+// --- Bare overrides (rejected at validation; ignored defensively) ---
 
-// TestBuildSubAgentTask_BareModelKeepsLegacyOverride verifies a bare (no
-// "/") profile model keeps the legacy model-only override byte-identical:
-// req.Model is the raw name, req.Provider stays empty (active provider), and
-// the validator is never consulted.
-func TestBuildSubAgentTask_BareModelKeepsLegacyOverride(t *testing.T) {
+// TestBuildSubAgentTask_BareOverrideIgnoredWithWarn verifies the defensive
+// launch path for a bare profile model. The mandatory-composite rule is
+// enforced at delegate validation, so reaching launch with a bare value means
+// validation was skipped (nil validator / direct construction): the override
+// cannot be honored and the subagent runs on the session's active model with
+// a one-line warning naming the rule.
+func TestBuildSubAgentTask_BareOverrideIgnoredWithWarn(t *testing.T) {
 	profile := testAgentProfile("body", agents.AgentMetadata{Name: "reviewer", Model: "qwen3:8b"})
-	validator := &recordingModelOverrideValidator{}
 	caller := &mockLLMCaller{responses: []*llm.ChatResponse{executorFinishResponse("done")}}
+	var buf bytes.Buffer
+	l := modelOverrideLauncher(captureMetaContextFactory(nil), nil, caller, nil)
+	l.deps.logger = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	ctx := modelOverrideProfileCtx("reviewer", profile)
 
-	l := modelOverrideLauncher(captureMetaContextFactory(nil), validator.validate, caller, nil)
+	st, err := l.buildSubAgentTask(ctx, tools.DelegationTask{ID: "d1", Summary: "s", Task: "do work", Agent: "reviewer"}, tools.NewDelegationRegistry(), &agent.NoopEvents{})
+	if err != nil {
+		t.Fatalf("buildSubAgentTask: %v (a bare override must be ignored defensively, not fail the launch)", err)
+	}
+	if _, err := st.Executor.Run(ctx, st.TaskTools, st.CM); err != nil {
+		t.Fatalf("executor run: %v", err)
+	}
+
+	if len(caller.calls) != 1 {
+		t.Fatalf("caller saw %d requests, want 1", len(caller.calls))
+	}
+	if got := caller.calls[0].Provider; got != "" {
+		t.Errorf("req.Provider = %q, want empty (no provider pin applied)", got)
+	}
+	if got := caller.calls[0].Model; got != "" {
+		t.Errorf("req.Model = %q, want empty (override ignored — inherit the session's active model)", got)
+	}
+	logged := buf.String()
+	if !strings.Contains(logged, "level=WARN") || !strings.Contains(logged, `provider/model`) {
+		t.Errorf("bare override must warn with the composite guidance, got: %s", logged)
+	}
+}
+
+// TestBuildSubAgentTask_EmptyModelInheritsSessionModel verifies an empty
+// profile model never touches the override path: the caller stays unwrapped
+// (the subagent inherits the session's active model) and nothing is logged.
+func TestBuildSubAgentTask_EmptyModelInheritsSessionModel(t *testing.T) {
+	profile := testAgentProfile("body", agents.AgentMetadata{Name: "reviewer"})
+	caller := &mockLLMCaller{responses: []*llm.ChatResponse{executorFinishResponse("done")}}
+	var buf bytes.Buffer
+	l := modelOverrideLauncher(captureMetaContextFactory(nil), nil, caller, nil)
+	l.deps.logger = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	ctx := modelOverrideProfileCtx("reviewer", profile)
 
 	st, err := l.buildSubAgentTask(ctx, tools.DelegationTask{ID: "d1", Summary: "s", Task: "do work", Agent: "reviewer"}, tools.NewDelegationRegistry(), &agent.NoopEvents{})
@@ -192,14 +230,11 @@ func TestBuildSubAgentTask_BareModelKeepsLegacyOverride(t *testing.T) {
 	if len(caller.calls) != 1 {
 		t.Fatalf("caller saw %d requests, want 1", len(caller.calls))
 	}
-	if got := caller.calls[0].Model; got != "qwen3:8b" {
-		t.Errorf("req.Model = %q, want the bare name unchanged", got)
+	if got := caller.calls[0].Model; got != "" {
+		t.Errorf("req.Model = %q, want empty (inherit the session's active model)", got)
 	}
-	if got := caller.calls[0].Provider; got != "" {
-		t.Errorf("req.Provider = %q, want empty (bare names never pin a provider)", got)
-	}
-	if len(validator.calls) != 0 {
-		t.Errorf("validator must not be consulted for bare names, got %v", validator.calls)
+	if buf.Len() != 0 {
+		t.Errorf("empty override must not log, got: %s", buf.String())
 	}
 }
 
@@ -231,15 +266,19 @@ func TestBuildSubAgentTask_CompositeModelSizesCMByOverrideWindow(t *testing.T) {
 // TestResolveModelMeta_EffectiveModelFallbackChain verifies resolveModelMeta
 // resolves the effective (override) model first and falls through the
 // existing chain on a miss: unknown override → session model, empty effective
-// → session model (the pre-profile behavior).
+// → session model (the pre-profile behavior). The session model's window
+// (200000) deliberately differs from the registry's generic fallback (128000),
+// so a pass proves the chain reached the SESSION model rather than a masked
+// registry miss returning fallback defaults.
 func TestResolveModelMeta_EffectiveModelFallbackChain(t *testing.T) {
 	registry := llm.NewModelRegistry(map[string]llm.ModelMetadata{
-		"gpt-4o":    {ContextWindow: 128000, OutputLimit: 16384, TokenizerType: "approximate"},
-		"known-slm": {ContextWindow: 8000, OutputLimit: 2000, TokenizerType: "approximate"},
+		"gpt-4o":         {ContextWindow: 128000, OutputLimit: 16384, TokenizerType: "approximate"},
+		"known-slm":      {ContextWindow: 8000, OutputLimit: 2000, TokenizerType: "approximate"},
+		"session-sonnet": {ContextWindow: 200000, OutputLimit: 32000, TokenizerType: "approximate"},
 	})
 	l := &conductorLauncher{deps: conductorDeps{
 		modelRegistry: registry,
-		model:         "gpt-4o",
+		model:         "session-sonnet",
 	}}
 	ctx := context.Background()
 
@@ -247,13 +286,14 @@ func TestResolveModelMeta_EffectiveModelFallbackChain(t *testing.T) {
 	if got := l.resolveModelMeta(ctx, "known-slm").ContextWindow; got != 8000 {
 		t.Errorf("resolveModelMeta(known-slm) window = %d, want 8000", got)
 	}
-	// Unknown effective model falls through to the session model.
-	if got := l.resolveModelMeta(ctx, "ghost-model").ContextWindow; got != 128000 {
-		t.Errorf("resolveModelMeta(ghost-model) window = %d, want the session model's 128000", got)
+	// Unknown effective model (registry miss, ok=false) falls through to the
+	// session model — not to the registry's generic fallback.
+	if got := l.resolveModelMeta(ctx, "ghost-model").ContextWindow; got != 200000 {
+		t.Errorf("resolveModelMeta(ghost-model) window = %d, want the session model's 200000", got)
 	}
 	// Empty effective model: the pre-profile chain (session model).
-	if got := l.resolveModelMeta(ctx, "").ContextWindow; got != 128000 {
-		t.Errorf("resolveModelMeta(\"\") window = %d, want the session model's 128000", got)
+	if got := l.resolveModelMeta(ctx, "").ContextWindow; got != 200000 {
+		t.Errorf("resolveModelMeta(\"\") window = %d, want the session model's 200000", got)
 	}
 	// No registry at all: static fallback keeps compaction alive.
 	l2 := &conductorLauncher{deps: conductorDeps{model: "gpt-4o"}}

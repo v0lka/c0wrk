@@ -315,8 +315,9 @@ func TestSyncEmbeddedProviderGeneratesAndRemoves(t *testing.T) {
 		t.Error("a second sync of an unchanged state must report no change")
 	}
 
-	// The composite id resolves through the normal path, and so does a bare
-	// name; the provider is typed as openai-compatible.
+	// The composite id resolves through the normal path; the provider is
+	// typed as openai-compatible. A bare name is rejected outright (the
+	// mandatory-composite rule).
 	composite := EmbeddedLLMProviderName + "/" + EmbeddedLLMModelName
 	gotID, ambiguous, err := cfg.LLM.ResolveModelID(composite)
 	if err != nil {
@@ -325,12 +326,8 @@ func TestSyncEmbeddedProviderGeneratesAndRemoves(t *testing.T) {
 	if gotID != composite || ambiguous {
 		t.Errorf("ResolveModelID(%q) = %q, ambiguous=%v; want the same composite, unambiguous", composite, gotID, ambiguous)
 	}
-	gotBare, _, err := cfg.LLM.ResolveModelID(EmbeddedLLMModelName)
-	if err != nil {
-		t.Fatalf("ResolveModelID(%q) failed: %v", EmbeddedLLMModelName, err)
-	}
-	if gotBare != composite {
-		t.Errorf("bare name resolved to %q, want %q", gotBare, composite)
+	if _, _, err := cfg.LLM.ResolveModelID(EmbeddedLLMModelName); err == nil {
+		t.Errorf("ResolveModelID(%q) must reject a bare name", EmbeddedLLMModelName)
 	}
 
 	cfg.LLM.DefaultModel = composite
@@ -719,7 +716,7 @@ func TestLoadWithResultRemovesStaleEmbeddedProvider(t *testing.T) {
 
 	src := `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: key
     models: ["claude-3-haiku"]

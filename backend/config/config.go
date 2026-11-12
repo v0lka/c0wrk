@@ -515,7 +515,7 @@ const (
 
 // LLMConfig holds LLM provider configuration with fixed provider schema.
 type LLMConfig struct {
-	DefaultModel        string                               `yaml:"default_model"` // cross-provider default model (must exist in some provider's Models list)
+	DefaultModel        string                               `yaml:"default_model"` // cross-provider default model — full "provider/model" id, must be enabled in the named provider's Models list
 	Anthropic           AnthropicConfig                      `yaml:"anthropic"`
 	OpenAICompatible    map[string]OpenAICompatibleConfig    `yaml:"openai_compatible"`
 	AnthropicCompatible map[string]AnthropicCompatibleConfig `yaml:"anthropic_compatible"`
@@ -2636,40 +2636,26 @@ func (c *LLMConfig) GetAllProviderConfigs() []ProviderWithModels {
 	return result
 }
 
-// ResolveDefaultModelProvider looks up the provider owning DefaultModel —
-// a bare model name (first matching provider) or composite "provider/model"
-// — returning the provider config and bare model name, or an error.
+// ResolveDefaultModelProvider looks up the provider owning DefaultModel — a
+// full composite "provider/model" identifier (bare names are rejected,
+// ADR-122) — returning the provider config and bare model name, or an error.
 func (c *LLMConfig) ResolveDefaultModelProvider() (ProviderWithModels, string, error) {
 	if c.DefaultModel == "" {
 		return ProviderWithModels{}, "", errors.New("default_model is not set")
 	}
 
-	// Composite default_model: resolve to the named provider + bare model.
-	if provider, model, ok := llm.ParseCompositeModelID(c.DefaultModel); ok {
-		for _, p := range c.allProviderEntries() {
-			if p.name != provider {
-				continue
-			}
-			for _, m := range p.models {
-				if m == model {
-					return ProviderWithModels{
-						Name:           p.name,
-						ProviderType:   c.providerType(p.name),
-						APIKey:         p.apiKey,
-						BaseURL:        p.baseURL,
-						Models:         p.models,
-						TLSFingerprint: p.tlsFingerprint,
-					}, m, nil
-				}
-			}
-		}
-		return ProviderWithModels{}, "", fmt.Errorf("default_model %q not found in provider %q enabled models", model, provider)
+	provider, model, ok := llm.ParseCompositeModelID(c.DefaultModel)
+	if !ok {
+		return ProviderWithModels{}, "", fmt.Errorf(
+			"default_model %q must be a full \"provider/model\" identifier — bare model names are not accepted (the model name itself may contain \"/\": the id splits on the first \"/\" only)",
+			c.DefaultModel)
 	}
-
-	// Bare default_model: first matching provider wins.
 	for _, p := range c.allProviderEntries() {
+		if p.name != provider {
+			continue
+		}
 		for _, m := range p.models {
-			if m == c.DefaultModel {
+			if m == model {
 				return ProviderWithModels{
 					Name:           p.name,
 					ProviderType:   c.providerType(p.name),
@@ -2681,8 +2667,7 @@ func (c *LLMConfig) ResolveDefaultModelProvider() (ProviderWithModels, string, e
 			}
 		}
 	}
-
-	return ProviderWithModels{}, "", fmt.Errorf("default_model %q not found in any provider's enabled models", c.DefaultModel)
+	return ProviderWithModels{}, "", fmt.Errorf("default_model %q not found in provider %q enabled models", model, provider)
 }
 
 // Load reads, defaults, validates and returns the configuration; ${VAR}

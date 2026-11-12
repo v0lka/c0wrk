@@ -386,12 +386,14 @@ type conductorDeps struct {
 	// unavailable, non-empty `agent` rejected by delegate validation.
 	agentResolver tools.AgentResolver
 
-	// validateModelOverride fail-closes a profile's composite "provider/model"
-	// `model:` override against the session router's configured providers —
-	// at delegate validation AND defensively in buildSubAgentTask (mirrors the
-	// agent-name double-check). Built by the builder as a closure over the
-	// router's read-only provider-for-model lookup; nil = no pre-launch
-	// validation (the router's per-request provider miss remains the backstop).
+	// validateModelOverride fail-closes a profile's `model:` override against
+	// the session router's configured providers — the value MUST be a full
+	// composite "provider/model" identifier (bare names rejected, ADR-122),
+	// checked at delegate validation AND defensively in buildSubAgentTask
+	// (mirrors the agent-name double-check). Built by the builder as a
+	// closure over the router's read-only provider-for-model lookup; nil = no
+	// pre-launch validation (the router's per-request provider miss remains
+	// the backstop).
 	validateModelOverride tools.ModelOverrideValidator
 
 	// skillResolver resolves a profile's required skills, fail-closed
@@ -1486,13 +1488,16 @@ func (l *conductorLauncher) buildSubAgentTask(ctx context.Context, t tools.Deleg
 	}
 
 	caller := l.callerForStep(cm, t.ID)
-	// A profile's model override pins every call (no-op when empty). A
-	// composite "provider/model" value routes cross-provider via the
-	// per-request provider override (sp4rk ADR-011) after a defensive
-	// re-validation — delegate validation checked it at call time, but the
-	// profile may have changed mid-run (mirrors the agent-name double-check).
-	// A bare name keeps the legacy model-only form byte-identical: no
-	// provider pinning, the session's active provider keeps serving it.
+	// A profile's model override pins every call (no-op when empty). The
+	// value MUST be a full composite "provider/model" identifier: it routes
+	// cross-provider via the per-request provider override (sp4rk ADR-011)
+	// after a defensive re-validation — delegate validation checked it at
+	// call time, but the profile may have changed mid-run (mirrors the
+	// agent-name double-check). A bare name is rejected by the validator at
+	// delegate-call time (mandatory-composite rule, ADR-122), so reaching
+	// launch with one means validation was skipped (nil validator / direct
+	// construction): the override cannot be honored as specified and the
+	// subagent runs on the session's active model with a warning.
 	if profile != nil {
 		if provider, bare, composite := llm.ParseCompositeModelID(profile.Metadata.Model); composite {
 			if l.deps.validateModelOverride != nil {
@@ -1501,8 +1506,9 @@ func (l *conductorLauncher) buildSubAgentTask(ctx context.Context, t tools.Deleg
 				}
 			}
 			caller = agent.NewModelProviderOverrideCaller(caller, provider, bare)
-		} else {
-			caller = agent.NewModelOverrideCaller(caller, profile.Metadata.Model)
+		} else if profile.Metadata.Model != "" && l.deps.logger != nil {
+			l.deps.logger.Warn("subagent profile model override ignored — bare names are not accepted, use a full \"provider/model\" identifier",
+				"agent", t.Agent, "delegation", t.ID, "model", profile.Metadata.Model)
 		}
 	}
 	execOpts := []agent.Option{
@@ -1772,24 +1778,25 @@ func (l *conductorLauncher) buildTaskDescription(t tools.DelegationTask, registr
 // the EFFECTIVE model first — a profile's override (bare for composite
 // "provider/model" values, the raw name otherwise — the string actually sent
 // to the provider), then the session's active model, then the registry
-// default, then a static fallback that keeps compaction alive. Resolve always
-// returns usable metadata; the fallback window (128000) means a zero
-// ContextWindow never reaches a CM (unbounded growth). A miss on the
-// effective model falls through the existing chain rather than failing —
+// default, then a static fallback that keeps compaction alive. A registry
+// MISS (Resolve's ok=false — the metadata it returns on a miss is the generic
+// fallback, not the model's) falls through to the next tier; the > 0 window
+// guard stays as a belt-and-suspenders against a zero-window hit. A miss on
+// the effective model falls through the existing chain rather than failing —
 // metadata sizing is best-effort, routing is not affected.
 func (l *conductorLauncher) resolveModelMeta(ctx context.Context, effectiveModel string) llm.ModelMetadata {
 	if l.deps.modelRegistry != nil && effectiveModel != "" {
-		if meta, _ := l.deps.modelRegistry.Resolve(ctx, effectiveModel); meta.ContextWindow > 0 {
+		if meta, ok := l.deps.modelRegistry.Resolve(ctx, effectiveModel); ok && meta.ContextWindow > 0 {
 			return meta
 		}
 	}
 	if l.deps.modelRegistry != nil && l.deps.model != "" {
-		if meta, _ := l.deps.modelRegistry.Resolve(ctx, l.deps.model); meta.ContextWindow > 0 {
+		if meta, ok := l.deps.modelRegistry.Resolve(ctx, l.deps.model); ok && meta.ContextWindow > 0 {
 			return meta
 		}
 	}
 	if l.deps.modelRegistry != nil {
-		if meta, _ := l.deps.modelRegistry.Resolve(ctx, ""); meta.ContextWindow > 0 {
+		if meta, ok := l.deps.modelRegistry.Resolve(ctx, ""); ok && meta.ContextWindow > 0 {
 			return meta
 		}
 	}
@@ -2253,11 +2260,12 @@ func RunConductor(
 	// The agent resolver survives subagentCtx so a redelegating subagent can
 	// delegate to a named profile; nil = profiles unavailable.
 	ctx = tools.WithAgentResolver(ctx, deps.agentResolver)
-	// The profile-model validator rides the same path: composite
-	// "provider/model" overrides fail closed at delegate validation, and a
-	// redelegating subagent's delegate calls validate too. nil = no pre-launch
-	// validation (buildSubAgentTask re-checks defensively; the router's
-	// per-request provider miss remains the backstop).
+	// The profile-model validator rides the same path: profile `model:`
+	// overrides — mandatory full "provider/model" identifiers — fail closed
+	// at delegate validation, and a redelegating subagent's delegate calls
+	// validate too. nil = no pre-launch validation (buildSubAgentTask
+	// re-checks defensively; the router's per-request provider miss remains
+	// the backstop).
 	ctx = tools.WithModelOverrideValidator(ctx, deps.validateModelOverride)
 	ctx = agent.WithTrajectoryStore(ctx, trajStore)
 	ctx = orchestration.WithDelegationRegistry(ctx, registry)
@@ -2428,7 +2436,8 @@ func (o *Orchestrator) buildConductorDeps(conversationHistory []llm.Message, res
 			}
 			return o.agentManager.Get(name)
 		},
-		// Composite profile-model overrides fail closed before launch; nil-safe.
+		// Profile-model overrides (mandatory full "provider/model") fail
+		// closed before launch; nil-safe.
 		validateModelOverride: o.validateModelOverride,
 		// Skills for profile requirements; fail-closed when the manager is nil.
 		skillResolver: func(name string) (*skills.Skill, bool) {

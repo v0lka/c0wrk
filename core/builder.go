@@ -1702,22 +1702,34 @@ func modelOverridesFromConfig(cfg *BuilderConfig) map[string]llm.ModelMetadata {
 
 // modelOverrideValidator closes over the router's read-only provider-for-model
 // lookup (specs/domains/orchestration/delegation.md): a Subagent Profile's
-// composite "provider/model" `model:` override must name a provider the router
-// actually configured — checked at delegate validation and again defensively
-// at launch (mirrors the agent-name double-check), so a doomed subagent never
-// starts and the error names the profile, the model, and the known providers.
-// Bare model names pass through unvalidated: they ride the session's active
-// provider, which never requires naming one. A nil router yields a nil
-// validator (no pre-launch validation; the router's per-request provider miss
-// remains the backstop).
+// `model:` override MUST be a full composite "provider/model" identifier —
+// bare names are rejected outright (ADR-122 mandatory-composite rule) — and
+// must name a provider the router actually configured. Checked at delegate
+// validation and again defensively at launch (mirrors the agent-name
+// double-check), so a doomed subagent never starts and the error names the
+// profile, the model, and the rule/providers. A composite with an EMPTY bare
+// part ("provider/") is rejected for the same reason: NewModelProviderOverride
+// Caller would pin only the provider and let req.Model silently inherit the
+// session's active model. The bare part may itself contain "/" (HF-style
+// ids): ids split on the FIRST "/" only, so "local-llm/qwen/qwen3-coder-30b"
+// names model "qwen/qwen3-coder-30b" at provider "local-llm". A nil router
+// yields a nil validator (no pre-launch validation; the router's per-request
+// provider miss remains the backstop).
 func modelOverrideValidator(llmRouter *llm.Router) tools.ModelOverrideValidator {
 	if llmRouter == nil {
 		return nil
 	}
 	return func(agentName, model string) error {
-		provider, _, composite := llm.ParseCompositeModelID(model)
+		provider, bare, composite := llm.ParseCompositeModelID(model)
 		if !composite {
-			return nil
+			return fmt.Errorf(
+				"profile %q: model override %q must be a full \"provider/model\" identifier — bare model names are not accepted (the model name itself may contain \"/\": the id splits on the first \"/\" only)",
+				agentName, model)
+		}
+		if bare == "" {
+			return fmt.Errorf(
+				"profile %q: model override %q has an empty bare model — a composite id is \"provider/model\" and the part after \"/\" must name a model",
+				agentName, model)
 		}
 		if _, ok := llmRouter.ProviderForModel(model); ok {
 			return nil

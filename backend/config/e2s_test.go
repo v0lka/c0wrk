@@ -107,7 +107,7 @@ e2s:
 func minimalValidConfig() *Config {
 	cfg := &Config{}
 	ApplyDefaults(cfg)
-	cfg.LLM.DefaultModel = "claude-3-haiku"
+	cfg.LLM.DefaultModel = "anthropic/claude-3-haiku"
 	cfg.LLM.Anthropic = AnthropicConfig{APIKey: "key", Models: []string{"claude-3-haiku"}}
 	return cfg
 }

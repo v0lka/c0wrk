@@ -13,7 +13,7 @@ import (
 func TestToBuilderConfig_AdaptiveBudgetKeys(t *testing.T) {
 	cfg := &config.Config{}
 	config.ApplyDefaults(cfg)
-	cfg.LLM.DefaultModel = "qwen3"
+	cfg.LLM.DefaultModel = "selfhosted/qwen3"
 	cfg.LLM.OpenAICompatible = map[string]config.OpenAICompatibleConfig{
 		"selfhosted": {
 			BaseURL:      "http://127.0.0.1:1234/v1",
@@ -51,7 +51,7 @@ func TestToBuilderConfig_AdaptiveBudgetKeys(t *testing.T) {
 	}
 
 	bc = ToBuilderConfig(&config.Config{LLM: config.LLMConfig{
-		DefaultModel: "m",
+		DefaultModel: "p/m",
 		OpenAICompatible: map[string]config.OpenAICompatibleConfig{
 			"p": {BaseURL: "http://127.0.0.1:1/v1", Models: []string{"m"}},
 		},

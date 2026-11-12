@@ -26,36 +26,48 @@ sp4rk added the engine primitive on its side ([sp4rk ADR-011](https://github.com
 `ChatRequest.Provider` (per-request provider routing; an unknown name fails
 immediately as a non-retryable config error before the retry loop; empty =
 byte-identical legacy path), `agent.NewModelProviderOverrideCaller`, and the
-read-only `Router.ProviderForModel` / `Router.KnownProviders` pair for
+read-only `Router.ProviderForModel` / `Router.KnownProviders` surface for
 pre-launch validation. c0wrk had to wire profile overrides onto that primitive
 and decide its own validation contract, context sizing, and interplay with the
 session-level subsystems (judge, Model Profiles sampling, request budgets).
 
 ### Constraints
 
-- The legacy bare-`model:` path must stay byte-identical (empty
-  `req.Provider`, unchanged dumps and behavior).
+- A model reference must be unambiguous BY GRAMMAR, not by lookup order: the
+  full composite `"provider/model"` form is mandatory — bare names (and
+  composites with an empty bare part) are rejected outright everywhere a
+  model reference is hand-written (profile frontmatter, `llm.default_model`,
+  the per-message override). The same bare name may be exposed by several
+  providers; only the composite form names the intended one, and a silent
+  first-match fallback is never acceptable.
+- The model name itself may contain `/` (HF-style ids): ids split on the
+  FIRST `/` only, so `lmstudio/qwen/qwen3-coder-30b` names that exact wire
+  model at `lmstudio` — the mandatory composite form keeps such names
+  expressible instead of colliding with the provider prefix.
 - The `delegate` input schema and the `PlanStep` shape stay untouched.
 - A doomed delegation must fail closed BEFORE any subagent launches.
 - Re-delegation (a subagent's own `delegate` calls) must validate too.
 
 ## Decision
 
-A Subagent Profile's `model:` field accepts either form and is decomposed at
-delegation time; the composite id never reaches the wire:
+A Subagent Profile's `model:` field MUST be a full composite id; it is
+decomposed at delegation time and the composite never reaches the wire:
 
 1. **Composite grammar and cross-provider routing.** `llm.ParseCompositeModelID`
    (split on the first `/`) parses the raw `Metadata.Model` in
-   `buildSubAgentTask` (`core/conductor.go`). A composite id wraps the subagent
+   `buildSubAgentTask` (`core/conductor.go`). The id wraps the subagent
    caller with `agent.NewModelProviderOverrideCaller(caller, provider, bare)` —
    every subagent LLM call pins `req.Provider` to the named configured
    provider and `req.Model` to the bare name, so the request routes
-   cross-provider and is immune to a mid-task `SetModel`. A bare name keeps
-   the legacy `agent.NewModelOverrideCaller` byte-identical form: no provider
-   pinning, the session's active provider serves it.
+   cross-provider and is immune to a mid-task `SetModel`. A bare name is not
+   an input anywhere in this path: the validator rejects it at delegate-call
+   time, and a bare value reaching `buildSubAgentTask` anyway (nil validator /
+   direct test construction) is IGNORED with a one-shot WARN — the subagent
+   runs on the session's active model, since an override that cannot be
+   honored as specified must not silently degrade to legacy semantics.
 
-2. **Asymmetric validation: composite strict, bare passthrough.** Composite
-   overrides fail closed BEFORE any subagent launches, at two layers calling
+2. **Validation: full-composite mandatory, provider-name-only.** Overrides
+   fail closed BEFORE any subagent launches, at two layers calling
    the SAME injected validator:
    - **Delegate-time.** `validateDelegationTasks` (`core/tools/delegate.go`)
      runs the `ModelOverrideValidator` for every task whose resolved profile
@@ -76,18 +88,19 @@ delegation time; the composite id never reaches the wire:
    runtime `Call` miss predicate; whether the named provider serves the bare
    model stays the caller's responsibility per sp4rk ADR-011 — and its error
    names the profile, the model, the unknown provider and the sorted known
-   providers. A bare name passes through unvalidated: it rides the session's
-   active provider, which never requires naming one. A nil router yields a nil
-   validator (no pre-launch validation), and the router's per-request provider
-   miss remains the backstop on every path.
+   providers. A bare name is rejected outright with the composite guidance,
+   and so is a composite with an empty bare part (`"provider/"` — pinning
+   only the provider would let `req.Model` silently inherit the session's
+   active model, the opposite of the override's intent). A nil router yields
+   a nil validator (no pre-launch validation), and the router's per-request
+   provider miss remains the backstop on every path.
 
 3. **CM calibration follows the effective model.** The subagent's
    ContextManager is built from `resolveModelMeta(ctx, effectiveModel)`, where
-   `effectiveModel` is the override's bare form (composite) or the raw name
-   (bare); a registry miss falls through the existing chain (session model →
-   registry default → static fallback). A profile pinned to a small-window
-   model gets compaction thresholds sized to its own context window, not the
-   session's.
+   `effectiveModel` is the override's bare form; a registry miss falls
+   through the existing chain (session model → registry default → static
+   fallback). A profile pinned to a small-window model gets compaction
+   thresholds sized to its own context window, not the session's.
 
 4. **Interplay stays as already documented — nothing re-wired.**
    - The strict tool judge remains the session router's judge, bound once by
@@ -115,8 +128,12 @@ the subagent badge, so a pinned override is visible before delegation.
   where it is; request dumps record the `provider` key for misroute debugging.
 - A doomed delegation fails at `delegate` time with an actionable error
   (profile, model, unknown provider, known providers) instead of after launch.
-- The legacy bare path is byte-identical — existing profiles behave exactly as
-  before.
+- Model references are unambiguous by grammar: no layer depends on a
+  first-match bare-name scan, so the same identifier resolves identically in
+  the config, the router, and the delegation path; a mid-cycle regression
+  review's ambiguity finding (an HF-style model name colliding with the
+  provider prefix) is closed — `provider/qwen/qwen3-coder-30b` is now the
+  EXACT spelling for such names.
 - The validation surface is read-only and reuses the runtime miss predicate,
   so validation can never disagree with routing.
 - Subagent compaction is calibrated to the model actually on the wire.
@@ -135,6 +152,14 @@ the subagent badge, so a pinned override is visible before delegation.
 - The judge and Model Profiles sampling remain keyed to the session even when
   a subagent runs another model — verdict-model alignment is traded for a
   single session-pinned policy surface (ADR-028).
+- **Breaking change for existing hand-written references.** A bare
+  `default_model`, a bare profile `model:`, or a bare per-message override
+  from a config written before this rule fails loudly after the upgrade:
+  config load rejects the file, delegate validation refuses the delegation,
+  and the per-message path fails the request — every error carries the
+  `"provider/model"` guidance. UI-written values were already composite
+  (the pickers emit `provider/model`), so only hand-edited files are
+  affected; the fix is mechanical (prefix the configured provider's name).
 
 ## Alternatives Considered
 
@@ -152,13 +177,17 @@ the subagent badge, so a pinned override is visible before delegation.
   shared wrapping (token tracking, dump callers) must be rebuilt, and still
   cannot express "this one caller stays pinned" without extra per-caller
   state; rejected engine-side in sp4rk ADR-011 for the same reasons.
-- **Validate bare overrides too** (resolve the provider via
-  `ProviderForModel`'s bare branch and reject unmatched names): rejected — a
-  bare override deliberately rides the session's ACTIVE provider, which can
-  change mid-task and may serve models it does not statically list
-  (self-hosted servers load models on demand); early rejection would break
-  working legacy profiles for a condition that is not an error at delegate
-  time.
+- **Fail bare overrides closed on a registry miss** (reject the delegation
+  when no enabled provider lists the name): superseded mid-cycle by the
+  MANDATORY-COMPOSITE rule. A bare identifier is now invalid BY GRAMMAR at
+  every hand-written site — profile frontmatter, `llm.default_model`, the
+  per-message override — instead of being tolerated and resolved by lookup
+  order, so the miss path this alternative argued about no longer exists.
+  The grammar rejection is stricter than this alternative (which only
+  proposed failing on a registry miss) and keeps every error actionable:
+  the message names the `"provider/model"` form. The resolution half of the
+  original alternative (a resolvable bare name pins its provider) is moot
+  for the same reason — a composite pins its named provider directly.
 
 ## Related
 

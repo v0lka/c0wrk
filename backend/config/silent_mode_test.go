@@ -164,7 +164,7 @@ func TestSilentMode_YAMLRoundTrip(t *testing.T) {
 func TestSilentMode_Load(t *testing.T) {
 	const base = `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:
@@ -231,7 +231,7 @@ security:
 func TestSilentMode_RemovedReviewPromptKeyIgnored(t *testing.T) {
 	const base = `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:
@@ -263,7 +263,7 @@ security:
 // tests; securityContent is appended under the `security:` key.
 const autonomyBase = `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:

@@ -2110,35 +2110,60 @@ func (o *Orchestrator) modelProfilesSettings() ModelProfilesSettings {
 // ApplyRequestOverrides applies per-request model and reasoning-effort overrides
 // to every LLM-calling component (router, reflector, the direct caller,
 // config.Model). Shared step 0 of HandleMessage AND the resume path — a resume
-// that skips it silently drops the switch.
-func (o *Orchestrator) ApplyRequestOverrides(ctx context.Context, modelOverride, reasoningEffort string) {
+// that skips it silently drops the switch. A model override MUST be a full
+// composite "provider/model" identifier (ADR-122): a bare name fails the
+// request with the composite guidance instead of switching to an ambiguous
+// first-match provider. A composite SetModel failure (unknown provider or
+// model) keeps the warn-and-continue semantics — the session stays on its
+// active model.
+func (o *Orchestrator) ApplyRequestOverrides(ctx context.Context, modelOverride, reasoningEffort string) error {
 	o.SetReasoningEffort(reasoningEffort)
-	if modelOverride != "" && o.modelSwitcher != nil {
-		if err := o.modelSwitcher.SetModel(ctx, modelOverride); err != nil {
-			if o.logger != nil {
-				o.logger.Warn("failed to apply model override", "model", modelOverride, "error", err)
-			}
-		} else {
-			bare := llm.BareModel(modelOverride)
-			o.setCurrentModel(bare)
-			// Fire-and-forget probe of the new model's real context window;
-			// the result lands in the model registry for context-budget math.
-			if o.localModelProbe != nil {
-				o.localModelProbe(bare)
-			}
-			// Sync the emitter's cached model so the initial context_fill
-			// (emitted before the first usage report) shows the new model.
-			family := ""
-			if o.modelRegistry != nil {
-				if meta, _ := o.modelRegistry.Resolve(ctx, bare); meta.Family != "" {
-					family = meta.Family
-				}
-			}
-			if setter, ok := o.emitter.(LastModelSetter); ok {
-				setter.SetLastModel(bare, family)
-			}
+	if modelOverride == "" || o.modelSwitcher == nil {
+		return nil
+	}
+	if err := ValidateModelOverride(modelOverride); err != nil {
+		return err
+	}
+	if err := o.modelSwitcher.SetModel(ctx, modelOverride); err != nil {
+		if o.logger != nil {
+			o.logger.Warn("failed to apply model override", "model", modelOverride, "error", err)
+		}
+		return nil
+	}
+	bare := llm.BareModel(modelOverride)
+	o.setCurrentModel(bare)
+	// Fire-and-forget probe of the new model's real context window;
+	// the result lands in the model registry for context-budget math.
+	if o.localModelProbe != nil {
+		o.localModelProbe(bare)
+	}
+	// Sync the emitter's cached model so the initial context_fill
+	// (emitted before the first usage report) shows the new model.
+	family := ""
+	if o.modelRegistry != nil {
+		if meta, _ := o.modelRegistry.Resolve(ctx, bare); meta.Family != "" {
+			family = meta.Family
 		}
 	}
+	if setter, ok := o.emitter.(LastModelSetter); ok {
+		setter.SetLastModel(bare, family)
+	}
+	return nil
+}
+
+// ValidateModelOverride enforces the mandatory full-composite identifier rule
+// (ADR-122) for entry points that must reject a bad override BEFORE any state
+// changes: HandleMessage surfaces ApplyRequestOverrides' error at step 0, but
+// a resume validates first so a rejected override cannot leave the session
+// half-activated.
+func ValidateModelOverride(model string) error {
+	if model == "" {
+		return nil
+	}
+	if _, _, composite := llm.ParseCompositeModelID(model); !composite {
+		return fmt.Errorf("model override %q must be a full \"provider/model\" identifier — bare model names are not accepted", model)
+	}
+	return nil
 }
 
 // SetTaskStore sets the TaskPersistence store for blackboard restoration.
@@ -2396,7 +2421,9 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 		o.recordConversationOutcome(ctx, taskMessage, contentBlocks, result, err)
 	}()
 
-	o.ApplyRequestOverrides(ctx, opts.ModelOverride, opts.ReasoningEffort)
+	if err := o.ApplyRequestOverrides(ctx, opts.ModelOverride, opts.ReasoningEffort); err != nil {
+		return nil, err
+	}
 
 	o.logDebug("orchestrator: handle_message started", "messageLength", len(message), "taskID", opts.TaskID)
 	ctx = o.prepareRequestContext(ctx, taskMessage)

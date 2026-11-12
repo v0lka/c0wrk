@@ -1879,12 +1879,10 @@ func TestConversationHistory_RouterHistoryUnchanged(t *testing.T) {
 	}
 }
 
-// TestHandleMessage_ModelOverride_UpdatesConfigModel verifies that when a
-// ModelOverride is provided, o.config.Model is updated to the bare name of
-// the override. This ensures ContextWindow, buildSystemPrompt (family
-// selection), and TokenizerType all reflect the active model rather than the
-// default.
-func TestHandleMessage_ModelOverride_UpdatesConfigModel(t *testing.T) {
+// TestHandleMessage_ModelOverride_BareRejected verifies the mandatory-composite
+// rule on the per-message path: a bare override fails HandleMessage with the
+// composite guidance and leaves config.Model untouched.
+func TestHandleMessage_ModelOverride_BareRejected(t *testing.T) {
 	callIdx := 0
 	mockLLM := &mockLLMCaller{
 		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
@@ -1944,12 +1942,14 @@ func TestHandleMessage_ModelOverride_UpdatesConfigModel(t *testing.T) {
 	_, err = orchestrator.HandleMessage(context.Background(), "test", "", HandleOptions{
 		ModelOverride: "override-model",
 	})
-	if err != nil {
-		t.Fatalf("HandleMessage failed: %v", err)
+	if err == nil {
+		t.Fatal("expected HandleMessage to reject a bare model override")
 	}
-
-	if orchestrator.config.Model != "override-model" {
-		t.Errorf("expected config.Model updated to 'override-model', got %q", orchestrator.config.Model)
+	if !strings.Contains(err.Error(), `must be a full "provider/model" identifier`) {
+		t.Errorf("error must carry the composite guidance, got: %v", err)
+	}
+	if orchestrator.config.Model != "default-model" {
+		t.Errorf("config.Model = %q, want the unchanged default 'default-model'", orchestrator.config.Model)
 	}
 }
 

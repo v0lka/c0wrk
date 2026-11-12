@@ -15,50 +15,37 @@ import (
 // the config key, the model name may itself contain "/", so ids split on
 // the FIRST "/" only (specs/domains/llm-providers.md).
 
-// ResolveModelID resolves a bare or composite model identifier to its
-// canonical composite form ("providerName/modelName"). A composite id is
-// validated against the configured providers and returned as-is; a bare name
-// is scanned for in deterministic provider order (anthropic, chatgpt, then
-// openai_compatible keys sorted alphabetically) — the first match wins, and
-// ambiguous reports that more than one provider exposes it (callers should
-// log a warning so users can switch to an explicit composite identifier).
-// Errors when the model is not enabled in any provider.
+// ResolveModelID validates a model identifier against the configured
+// providers and returns its canonical composite form
+// ("providerName/modelName"). The identifier MUST be a full composite id —
+// bare names are rejected (ADR-122): the provider is part of the model's
+// identity, and the same bare name may be exposed by several providers. The
+// model name may itself contain "/": ids split on the FIRST "/" only
+// (specs/domains/llm-providers.md). Errors when the provider is not
+// configured or the named model is not enabled in it. The ambiguous return
+// is always false (kept for signature stability) — a composite id is
+// unambiguous by construction.
 func (c *LLMConfig) ResolveModelID(id string) (compositeID string, ambiguous bool, err error) {
 	if id == "" {
 		return "", false, errors.New("model identifier is empty")
 	}
 
-	// Composite input: validate the named provider exposes the named model.
-	if provider, model, ok := llm.ParseCompositeModelID(id); ok {
-		for _, p := range c.allProviderEntries() {
-			if p.name != provider {
-				continue
-			}
-			for _, m := range p.models {
-				if m == model {
-					return id, false, nil
-				}
-			}
-			return "", false, fmt.Errorf("model %q is not enabled in provider %q", model, provider)
-		}
-		return "", false, fmt.Errorf("provider %q is not configured", provider)
+	provider, model, ok := llm.ParseCompositeModelID(id)
+	if !ok {
+		return "", false, fmt.Errorf("model identifier %q must be a full \"provider/model\" id — bare model names are not accepted", id)
 	}
-
-	// Bare input: scan providers for matches.
-	var matches []string
 	for _, p := range c.allProviderEntries() {
+		if p.name != provider {
+			continue
+		}
 		for _, m := range p.models {
-			if m == id {
-				matches = append(matches, llm.CompositeModelID(p.name, m))
+			if m == model {
+				return id, false, nil
 			}
 		}
+		return "", false, fmt.Errorf("model %q is not enabled in provider %q", model, provider)
 	}
-	switch len(matches) {
-	case 0:
-		return "", false, fmt.Errorf("model %q is not enabled in any provider", id)
-	default:
-		return matches[0], len(matches) > 1, nil
-	}
+	return "", false, fmt.Errorf("provider %q is not configured", provider)
 }
 
 // AllModelIDs returns the composite identifiers for every enabled model across

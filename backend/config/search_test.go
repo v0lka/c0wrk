@@ -76,7 +76,7 @@ func TestLoad_SearxngBaseURL(t *testing.T) {
 	t.Run("default seeded", func(t *testing.T) {
 		configPath := writeTestConfig(t, `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:
@@ -96,7 +96,7 @@ search:
 	t.Run("invalid base_url fails the load", func(t *testing.T) {
 		configPath := writeTestConfig(t, `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:

@@ -16,7 +16,7 @@ func minimalValidChatGPTConfig(t *testing.T) *Config {
 	cfg := &Config{}
 	src := `
 llm:
-  default_model: gpt-4o
+  default_model: chatgpt/gpt-4o
   chatgpt:
     api_key: k
     models: ["gpt-4o"]

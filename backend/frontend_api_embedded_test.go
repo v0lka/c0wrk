@@ -127,7 +127,7 @@ func newEmbeddedTestAPI(t *testing.T) (*FrontendAPI, *embeddedEventRecorder, *mo
 
 	cfg := &config.Config{}
 	config.ApplyDefaults(cfg)
-	cfg.LLM.DefaultModel = "claude-3-opus"
+	cfg.LLM.DefaultModel = "anthropic/claude-3-opus"
 	cfg.LLM.Anthropic.APIKey = "sk-test-embedded"
 	cfg.LLM.Anthropic.Models = []string{"claude-3-opus"}
 	// The engine setting is pinned to the llama family — the record this
