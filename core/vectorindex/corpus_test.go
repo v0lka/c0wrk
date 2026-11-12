@@ -1261,6 +1261,159 @@ func TestWriteSnapshotTable_TransientFaultDefersWithoutDestroying(t *testing.T) 
 	}
 }
 
+// TestWriteSnapshotTable_RepairsRecordThatPassesStatButFailsRead pins the
+// write side of the power-loss window (ADR-104 §3 durability, ADR-120 D1):
+// publication verifies the record's PAYLOAD, not just its metadata, so a
+// record the size gate passes but the §3 open refuses is re-derived by the
+// in-pass repair hook instead of landing under a table the open would tear
+// down — the rebuild that used to republish the same broken snapshot forever
+// now heals it. The dims-0 shape (any aligned width) is the deterministic
+// fixture: aligned-but-beyond-maxVecDims is invisible to a stat-only verify
+// yet refused by readChunkRecord, exactly the stat-pass/read-fail split the
+// payload read closes.
+func TestWriteSnapshotTable_RepairsRecordThatPassesStatButFailsRead(t *testing.T) {
+	h := newChunkStoreHarness(t)
+	const key = "snap_abcdef0123456789"
+
+	c := chunkRecordKey("package stat-blind")
+	// Aligned and positive — the stat-only verify accepted it — but wider
+	// than any vector the §3 open serves (readChunkRecord's dims-0 bound).
+	oversized := make([]byte, 4*maxVecDims+64)
+	if err := os.MkdirAll(filepath.Dir(chunkRecordPath(h.gen, c)), 0o750); err != nil {
+		t.Fatalf("mkdir shard: %v", err)
+	}
+	if err := os.WriteFile(chunkRecordPath(h.gen, c), oversized, 0o644); err != nil {
+		t.Fatalf("write oversized record: %v", err)
+	}
+
+	calls := 0
+	repair := func(_ string, _ int) ([]float32, error) {
+		calls++
+		return chunkVec(c), nil
+	}
+	rows := []occurrenceRow{{
+		Path:     "a.go",
+		BlobHash: "h",
+		Chunks:   []chunkOccurrence{{C: c, Index: 0, Start: 1, End: 2, Language: "go"}},
+	}}
+	if err := writeSnapshotTable(h.gen, key, 0, rows, &snapshotTable{Files: 1, Chunks: 1, UniqueChunks: 1}, repair); err != nil {
+		t.Fatalf("writeSnapshotTable with a stat-invisible torn record: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("repair ran %d time(s); a record the §3 open refuses must be re-derived in the publish pass", calls)
+	}
+	if !snapshotTablePublished(h.gen, key) {
+		t.Fatal("the snapshot did not publish after the in-pass repair")
+	}
+	vec, err := readChunkRecord(h.gen, c, 0)
+	if err != nil {
+		t.Fatalf("the repaired record is unreadable by the §3 open: %v", err)
+	}
+	if len(vec) != 8 {
+		t.Errorf("the repaired record has %d dims; want 8", len(vec))
+	}
+}
+
+// TestVerifyChunkRecord_ClassificationUnchangedOnKnownShapes pins the D3
+// taxonomy through the payload-reading verify: every shape the old
+// stat-only verify classified keeps its classification, and the one new
+// read-discovered shape (a record the size gate passes but the read-back
+// refuses) joins the Repairable family — errChunkRecordTorn — so the
+// publish either repairs it in-pass or defers, and a transient fault never
+// destroys store state.
+func TestVerifyChunkRecord_ClassificationUnchangedOnKnownShapes(t *testing.T) {
+	h := newChunkStoreHarness(t)
+	plant := func(text string, content []byte) string {
+		t.Helper()
+		c := chunkRecordKey(text)
+		p := chunkRecordPath(h.gen, c)
+		if err := os.MkdirAll(filepath.Dir(p), 0o750); err != nil {
+			t.Fatalf("mkdir shard: %v", err)
+		}
+		if err := os.WriteFile(p, content, 0o644); err != nil {
+			t.Fatalf("write record: %v", err)
+		}
+		return c
+	}
+
+	t.Run("healthy record verifies", func(t *testing.T) {
+		c := plant("package healthy", encodeChunkRecord(chunkVec("package healthy")))
+		if err := verifyChunkRecord(h.gen, c, 8); err != nil {
+			t.Fatalf("verifyChunkRecord(healthy) = %v; want nil", err)
+		}
+	})
+	t.Run("absent record stays fs.ErrNotExist (repairable)", func(t *testing.T) {
+		c := chunkRecordKey("package absent")
+		err := verifyChunkRecord(h.gen, c, 8)
+		if !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("verifyChunkRecord(absent) = %v; want fs.ErrNotExist", err)
+		}
+		if !Repairable(err) || Transient(err) {
+			t.Errorf("an absent record must stay Repairable-not-Transient, got Repairable=%v Transient=%v", Repairable(err), Transient(err))
+		}
+	})
+	t.Run("obstructed shard defers without repair (neither family)", func(t *testing.T) {
+		c := chunkRecordKey("package obstructed")
+		shard := filepath.Dir(chunkRecordPath(h.gen, c))
+		if err := os.MkdirAll(filepath.Dir(shard), 0o750); err != nil {
+			t.Fatalf("mkdir chunks: %v", err)
+		}
+		if err := os.WriteFile(shard, []byte("planted"), 0o644); err != nil {
+			t.Fatalf("plant shard file: %v", err)
+		}
+		t.Cleanup(func() { _ = os.Remove(shard) })
+		err := verifyChunkRecord(h.gen, c, 8)
+		// The POSIX shape is the raw ENOTDIR; the Windows shape reads as
+		// ErrNotExist through the file, so traversesNonDirectory re-names it
+		// errPathObstructed. Either way the fault sits in NEITHER
+		// classifier's family: no repair may run through the planted file
+		// and nothing is classified transient — the publish just defers.
+		if !errors.Is(err, syscall.ENOTDIR) && !errors.Is(err, errPathObstructed) {
+			t.Fatalf("verifyChunkRecord(obstructed) = %v; want the ENOTDIR shape (POSIX) or errPathObstructed (Windows)", err)
+		}
+		if Repairable(err) || Transient(err) {
+			t.Errorf("an obstructed path must sit in neither family (defer, no destruction), got Repairable=%v Transient=%v", Repairable(err), Transient(err))
+		}
+	})
+	t.Run("known torn shapes stay errChunkRecordTorn (repairable)", func(t *testing.T) {
+		for name, tc := range map[string]struct {
+			dims    int
+			content []byte
+		}{
+			"misaligned garbage":      {dims: 8, content: []byte{1, 2, 3}},
+			"short but aligned":       {dims: 8, content: make([]byte, 16)},
+			"over-long":               {dims: 8, content: make([]byte, 64)},
+			"empty":                   {dims: 8, content: []byte{}},
+			"dims-0 beyond the bound": {dims: 0, content: make([]byte, 4*maxVecDims+4)},
+		} {
+			c := plant("package torn "+name, tc.content)
+			err := verifyChunkRecord(h.gen, c, tc.dims)
+			if !errors.Is(err, errChunkRecordTorn) {
+				t.Errorf("%s: verifyChunkRecord = %v; want errChunkRecordTorn", name, err)
+			}
+			if !Repairable(err) {
+				t.Errorf("%s: a torn record must be Repairable", name)
+			}
+		}
+	})
+	t.Run("non-regular record path stays errChunkRecordTorn", func(t *testing.T) {
+		c := chunkRecordKey("package not-regular")
+		p := chunkRecordPath(h.gen, c)
+		if err := os.MkdirAll(p, 0o750); err != nil {
+			t.Fatalf("mkdir record path: %v", err)
+		}
+		if err := verifyChunkRecord(h.gen, c, 8); !errors.Is(err, errChunkRecordTorn) {
+			t.Errorf("verifyChunkRecord(directory) = %v; want errChunkRecordTorn", err)
+		}
+	})
+	t.Run("dims-0 aligned width still verifies", func(t *testing.T) {
+		c := plant("package arity-free", encodeChunkRecord([]float32{1, 2, 3, 4, 5, 6}))
+		if err := verifyChunkRecord(h.gen, c, 0); err != nil {
+			t.Fatalf("verifyChunkRecord(dims-0 aligned) = %v; want nil", err)
+		}
+	})
+}
+
 // TestPublishCorpus_RefusesCorpusWithoutLexicalLeg closes the SECOND entry of
 // the "published but never opens" defect: a corpus build whose lexical leg did
 // not open must not publish, because every corpus open reads that leg

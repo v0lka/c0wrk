@@ -17,6 +17,7 @@ package vectorindex
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"math"
 	"path/filepath"
 	"sort"
@@ -134,14 +135,44 @@ func (v *v2Corpus) docByID(id string) (chromem.Document, bool) {
 	return v.documentAt(ref)
 }
 
+// openCorpusLexicalReadOnly resolves one snapshot's read-only lexical
+// index across its two on-disk legs, in the priority BOTH corpus open
+// paths share (the §3 open and the v1 fallback in corpusStore.open): the
+// §3 snapshot directory FIRST — a corpus REBUILD lands the index there
+// natively (workingLexicalDirLocked), so a fresh bleve beats any legacy
+// copy — then the legacy per-key path under the storage root (the
+// migrated-snapshot fallback: the v1→v2 chunk-record migration publishes
+// the tables but leaves the snapshot's bleve state at the legacy path,
+// and open read-only handles must never have their directory moved under
+// them). Fail-soft on both legs — the CALLER owns the failure semantics:
+// openV2Corpus errors its open (its caller falls back to the v1 corpus
+// or fails closed), the v1 leg fails the attach closed. genDir is the
+// caller-proven CURRENT-era §3 generation directory — empty when the
+// storage root has no §3 tree at all (a legacy-only store resolves the
+// legacy leg alone) or when the CURRENT generation is foreign-era (a
+// snapshot leg of another embedding era is not servable beside this
+// open; the caller era-gates the leg, exactly as publishedCompatible
+// era-gates both of its publication legs).
+func openCorpusLexicalReadOnly(genDir, storageRoot, snapKey string) (lexical.Index, error) {
+	if genDir != "" {
+		if lex, err := lexical.OpenReadOnly(filepath.Join(snapshotDir(genDir, snapKey), "lexical")); err == nil {
+			return lex, nil
+		}
+	}
+	return lexical.OpenReadOnly(lexicalIndexPath(storageRoot, snapKey))
+}
+
 // openV2Corpus loads a published §3 snapshot into a shareable corpus view:
 // occurrence table, every referenced chunk record (a missing record fails
 // the open — the chunks-before-tables invariant makes that store damage,
 // and the caller falls back to the v1 corpus or fails closed), and the
-// read-only lexical index from the snapshot directory. Returns
+// read-only lexical index (the shared two-legged resolve above). Returns
 // (nil, nil) when the snapshot has no §3 publication (the v1 path owns
-// the open).
-func openV2Corpus(genDir, snapKey string, gen *storeGenerationManifest) (*v2Corpus, error) {
+// the open). logger carries the store's logger for the unpublish record —
+// the one WARN a revocation owes (ADR-120 D7): a publication the open
+// destroyed must name the snapshot and the proven damage in the logs,
+// never vanish silently.
+func openV2Corpus(genDir, snapKey string, gen *storeGenerationManifest, logger *slog.Logger) (*v2Corpus, error) {
 	rows, header, ok := readSnapshotTable(genDir, snapKey)
 	if !ok {
 		return nil, nil // no §3 publication for this snapshot
@@ -218,21 +249,13 @@ func openV2Corpus(genDir, snapKey string, gen *storeGenerationManifest) (*v2Corp
 			return nil, fmt.Errorf("chunk record of snapshot %s (transient, publication kept): %w", snapKey, readErr)
 		}
 		unpublishSnapshotTable(genDir, snapKey)
+		logger.Warn("unpublished §3 snapshot table after proven chunk damage; the next EnsureCorpus rebuilds it",
+			"snapshot", snapKey, "reason", readErr)
 		return nil, fmt.Errorf("chunk record of snapshot %s: %w", snapKey, readErr)
 	}
-	lex, err := lexical.OpenReadOnly(filepath.Join(snapshotDir(genDir, snapKey), "lexical"))
+	lex, err := openCorpusLexicalReadOnly(genDir, storageRootOfGeneration(genDir), snapKey)
 	if err != nil {
-		// The migrated-snapshot fallback: the v1→v2 chunk-record
-		// migration publishes the tables but leaves the snapshot's bleve
-		// state at the legacy per-key path (open read-only handles must
-		// never have their directory moved under them); a corpus REBUILD
-		// lands the lexical index inside the snapshot directory natively
-		// (workingLexicalDirLocked). Fail-soft on both: a snapshot without
-		// any lexical leg errors the open (the caller falls back to v1).
-		lex, err = lexical.OpenReadOnly(lexicalIndexPath(storageRootOfGeneration(genDir), snapKey))
-		if err != nil {
-			return nil, fmt.Errorf("opening §3 corpus lexical index for %s: %w", snapKey, err)
-		}
+		return nil, fmt.Errorf("opening §3 corpus lexical index for %s: %w", snapKey, err)
 	}
 	v.lexical = lex
 	return v, nil

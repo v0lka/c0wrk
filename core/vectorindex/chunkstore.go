@@ -629,11 +629,14 @@ func decodeChunkRecord(data []byte, dims int) ([]float32, error) {
 // round-trips (the v1 form's whole-collection gob paid one sync; §3 would
 // pay thousands). The rename is process-crash-atomic, which is the crash
 // model ADR-104 §6 enumerates; a POWER-loss window (table durable, a chunk
-// record's data not) is closed by the reader instead — openV2Corpus
-// unpublishes a snapshot whose referenced chunk is provably absent or torn
-// (a transient read error leaves the publication intact) and the next
-// attach rebuilds it cache-spared. Never a torn read: a table row without
-// its chunk fails closed.
+// record's data not) is closed at BOTH ends — publication reads every
+// referenced record's payload back before any table covers it
+// (verifyChunkRecord, whose repair hook re-derives a record that passes
+// stat but fails its read-back), and the reader unpublishes a snapshot
+// whose referenced chunk is provably absent or torn (openV2Corpus; a
+// transient read error leaves the publication intact) so the next attach
+// rebuilds it cache-spared. Never a torn read: a table row without its
+// chunk fails closed.
 func writeChunkRecord(genDir, c string, vec []float32) error {
 	path := chunkRecordPath(genDir, c)
 	if _, statErr := os.Stat(path); statErr == nil {
@@ -701,7 +704,6 @@ func readChunkRecord(genDir, c string, dims int) ([]float32, error) {
 		return nil, err
 	}
 	defer func() { _ = f.Close() }()
-	const maxVecDims = 1 << 16
 	width := 4 * dims
 	info, statErr := f.Stat()
 	if statErr != nil {
@@ -953,35 +955,60 @@ func writeSnapshotTable(genDir, snapKey string, dims int, rows []occurrenceRow, 
 	return nil
 }
 
-// verifyChunkRecord proves one record usable WITHOUT reading its payload: a
-// regular file of exactly dims×4 bytes (dims 0 — a service that never learned
-// its arity — accepts any positive 4-byte-aligned width, like
-// readChunkRecord). The failure modes are the ones Repairable classifies.
+// maxVecDims is the §3 record-width ceiling: no chunk vector exceeds this
+// many float32s. readChunkRecord enforces it on the dims-0 path (a service
+// that never learned its arity), and verifyChunkRecord inherits the same
+// refusal by DELEGATING to that reader — publish-time verification refuses
+// exactly what the §3 open refuses BY CONSTRUCTION, and a record beyond
+// the ceiling never lands under a published table (the snapshot would
+// otherwise republish broken forever).
+const maxVecDims = 1 << 16
+
+// verifyChunkRecord proves one record usable by reading its PAYLOAD back
+// through the §3 open's own reader (readChunkRecord), not just its
+// metadata: a record is publishable exactly while the open that will serve
+// it accepts it, and the delegation makes that hold by construction rather
+// than by two hand-synced implementations. The publish pass also reads
+// with the same plain blocking open the open itself uses — never the
+// poller-registered safeio open whose per-fd cost readChunkRecord's doc
+// documents as prohibitive at corpus scale. The read is what closes the
+// write side of the power-loss window (ADR-104 §3's no-fsync rename
+// durability): a record that passes stat but fails its read-back would
+// fail the §3 open the moment the table was served, the rebuild would land
+// the same broken table again, and the snapshot would loop
+// unavailable-despite-everything (ADR-120 D1). The reader's verdict passes
+// through the D3 taxonomy untouched — an absent record stays
+// fs.ErrNotExist, a torn one errChunkRecordTorn, an obstructed shard
+// errPathObstructed, a transient OS fault (permissions, fd exhaustion,
+// I/O, cancellation) stays Transient — so repair vs defer is decided
+// exactly as before; the shapes the reader leaves unclassified split by
+// proof: a mid-read truncation (io.ErrUnexpectedEOF — the file shrank
+// between the reader's fstat and its ReadFull) proves the record's bytes
+// unservable and maps onto errChunkRecordTorn — the in-pass repair hook
+// re-derives it — while any other unclassified fault (a POSIX ENOTDIR
+// traversal, an exotic errno) proves nothing about the store and passes
+// through untouched, sitting in NEITHER classifier's family so the
+// publish defers without destroying (the reader's own doc contract:
+// every other open/stat/read error is a transient fault the caller must
+// not treat as store damage). Cost: publication reads every distinct
+// referenced record once — the same bytes, through the same open, the
+// next open reads.
 func verifyChunkRecord(genDir, c string, dims int) error {
-	path := chunkRecordPath(genDir, c)
-	info, err := os.Stat(path)
-	if err != nil {
-		if traversesNonDirectory(err, path) {
-			// The shard's path is obstructed by a regular file: re-name the
-			// fault so the Windows shape is never read as a PROVEN-absent
-			// record and repaired through that file (see errPathObstructed).
-			return &fs.PathError{Op: "stat", Path: path, Err: errPathObstructed}
+	if _, err := readChunkRecord(genDir, c, dims); err != nil {
+		switch {
+		case errors.Is(err, fs.ErrNotExist),
+			errors.Is(err, errChunkRecordTorn),
+			errors.Is(err, errPathObstructed),
+			Transient(err):
+			// The reader's own verdict — keep it for the D3 taxonomy.
+			return err
+		case errors.Is(err, io.ErrUnexpectedEOF), errors.Is(err, io.EOF):
+			// Proven unservable mid-read: torn, repairable in this pass.
+			return fmt.Errorf("chunk record %s is unreadable: %w", c, errChunkRecordTorn)
+		default:
+			// Proves nothing about the store — neither family, defer.
+			return err
 		}
-		return err
-	}
-	if !info.Mode().IsRegular() {
-		return fmt.Errorf("chunk record %s is not a regular file: %w", c, errChunkRecordTorn)
-	}
-	if dims > 0 {
-		if info.Size() != int64(4*dims) {
-			return fmt.Errorf("chunk record %s is %d bytes, want %d for dims %d: %w",
-				c, info.Size(), 4*dims, dims, errChunkRecordTorn)
-		}
-		return nil
-	}
-	if info.Size() <= 0 || info.Size()%4 != 0 {
-		return fmt.Errorf("chunk record %s is %d bytes; not a float32 vector: %w",
-			c, info.Size(), errChunkRecordTorn)
 	}
 	return nil
 }
