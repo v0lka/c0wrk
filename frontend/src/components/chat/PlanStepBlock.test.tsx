@@ -76,8 +76,9 @@ describe('PlanStepBlock', () => {
     render(makeStep({ status: 'running', model: 'local-llm/qwen3:8b' }))
     const badge = container.querySelector('[data-slot="badge"][title="local-llm/qwen3:8b"]')
     expect(badge).not.toBeNull()
-    expect(badge!.textContent).toBe('local-llm/qwen3:8b')
-    // Status-bar styling: outline variant, no "Forced model:" prefix.
+    expect(badge!.textContent).toBe('qwen3:8b')
+    // The shared status-bar pill: outline variant, bare model name as the
+    // visible text (provider prefix stripped), full composite as the tooltip.
     expect(badge!.getAttribute('data-variant')).toBe('outline')
     // The badge is a header hint, not an auto-expanded body.
     expect(state()).toBe('closed')
@@ -102,9 +103,11 @@ describe('PlanStepBlock', () => {
       },
     })
     render(makeStep({ status: 'running', model: 'local-llm/qwen3:8b' }))
+    // Shared status-bar pill: the visible text is the bare model name, the
+    // tooltip carries the full composite.
     const badge = container.querySelector('[data-slot="badge"][title="local-llm/qwen3:8b"]')
     expect(badge).not.toBeNull()
-    expect(badge!.textContent).toBe('local-llm/qwen3:8b')
+    expect(badge!.textContent).toBe('qwen3:8b')
   })
 
   it('renders no model badge when the start event carries none', () => {

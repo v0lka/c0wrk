@@ -135,8 +135,14 @@ ADR-122 introduced:
    session's own model carries no information. An absent/empty session model
    counts as DIFFERENT (the conductor's model is unknown — no
    `session_tokens` event yet), so the badge stays visible; an empty/absent
-   pinned model renders nothing. The badge text is the composite verbatim,
-   `title` included — no "Forced model:" prefix.
+   pinned model renders nothing. The badge is the status bar's shared model
+   pill (`components/ModelBadge` — one component for the status bar's context
+   block and the delegate headers): the visible TEXT is the bare model name
+   (`bareModel` strips the first provider segment — the provider prefix is an
+   implementation detail on the pill), while the `title` TOOLTIP carries the
+   full composite `provider/model` verbatim, where the provider is exactly
+   what matters; no "Forced model:" prefix. The status bar feeds the pill its
+   bare `session_tokens.model`, so its rendering is unchanged by the sharing.
 
 ## Consequences
 

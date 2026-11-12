@@ -34,16 +34,17 @@ describe('ModelBadge', () => {
 
   const badge = () => container.querySelector('[data-slot="badge"]')
 
-  it('renders the outline badge with the full model as title and text when the model differs', () => {
+  it('renders the outline badge with the bare text and the full composite as the tooltip', () => {
     render(<ModelBadge model="provider/qwen3-27b" sessionModel="bonsai-2-27b" />)
     const el = badge()
     expect(el).not.toBeNull()
-    // Status-bar styling: outline variant.
+    // Status-bar styling: outline variant (the shared status-bar pill).
     expect(el!.getAttribute('data-variant')).toBe('outline')
-    // title carries the FULL model name — no "Forced model:" prefix.
+    // The visible text is the bare model name (the provider prefix is an
+    // implementation detail); the tooltip carries the full composite, where
+    // the provider is exactly what matters.
     expect(el!.getAttribute('title')).toBe('provider/qwen3-27b')
-    // The visible text stays the verbatim model string.
-    expect(el!.textContent).toBe('provider/qwen3-27b')
+    expect(el!.textContent).toBe('qwen3-27b')
   })
 
   it('hides when the bare pin matches the session model (composite vs bare)', () => {
@@ -65,7 +66,16 @@ describe('ModelBadge', () => {
     render(<ModelBadge model="ollama/org/path/model" sessionModel="org/other/model" />)
     const el = badge()
     expect(el).not.toBeNull()
+    // Only the FIRST `/` is the separator — the bare text keeps the rest,
+    // the tooltip keeps the full composite.
     expect(el!.getAttribute('title')).toBe('ollama/org/path/model')
+    expect(el!.textContent).toBe('org/path/model')
+  })
+
+  it('renders nothing for a pin that strips to an empty bare name', () => {
+    render(<ModelBadge model="provider/" sessionModel="bonsai-2-27b" />)
+    // Mis-shaped value the fail-closed launch funnel never emits — no pill.
+    expect(badge()).toBeNull()
   })
 
   it('reads the conductor model from the active session tokens when the prop is omitted', () => {
