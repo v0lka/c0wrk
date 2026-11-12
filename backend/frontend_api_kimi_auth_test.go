@@ -548,11 +548,14 @@ func TestKimiAuthUnavailableAndRPCShapes(t *testing.T) {
 }
 
 func TestFetchKimiModels_LiveCatalog(t *testing.T) {
+	// Registry-unknown ids are synthetic c0wrk-namespaced names: real Kimi
+	// ids drift into the sp4rk built-in catalog over time (k3.1-pro did),
+	// which would mute the endpoint-fallback assertions below.
 	catalog := `{"object":"list","data":[
-		{"id":"k3.1-pro","context_length":1048576,"supports_reasoning":true},
+		{"id":"c0wrk-kimi-catalog-unknown-pro","context_length":1048576,"supports_reasoning":true},
 		{"id":"k3","context_length":1,"supports_reasoning":false},
 		{"id":""},
-		{"id":"k3.1-pro","context_length":1},
+		{"id":"c0wrk-kimi-catalog-unknown-pro","context_length":1},
 		{"id":"c0wrk-kimi-catalog-unknown","context_length":262144,"supports_reasoning":true}
 	]}`
 	var gotAuth, gotUA, gotPath string
@@ -581,7 +584,7 @@ func TestFetchKimiModels_LiveCatalog(t *testing.T) {
 	if gotAuth != "Bearer fake-access" || gotUA != "c0wrk/"+version.Version {
 		t.Errorf("catalog auth = %q user-agent = %q", gotAuth, gotUA)
 	}
-	wantOrder := []string{"k3.1-pro", "k3", "c0wrk-kimi-catalog-unknown"}
+	wantOrder := []string{"c0wrk-kimi-catalog-unknown-pro", "k3", "c0wrk-kimi-catalog-unknown"}
 	if len(resp.Models) != len(wantOrder) {
 		t.Fatalf("models = %+v, want %v", resp.Models, wantOrder)
 	}
@@ -598,11 +601,11 @@ func TestFetchKimiModels_LiveCatalog(t *testing.T) {
 	if unknown.ContextWindow != 262144 || !unknown.Reasoning || unknown.OutputLimit != 0 {
 		t.Errorf("unknown model = %+v, want the endpoint context_length and reasoning flag", unknown)
 	}
-	if _, known := mock.registry.ResolveLocal("k3.1-pro"); known {
-		t.Fatalf("k3.1-pro is already in the registry; the endpoint-window assertion would no longer prove the fallback")
+	if _, known := mock.registry.ResolveLocal("c0wrk-kimi-catalog-unknown-pro"); known {
+		t.Fatalf("c0wrk-kimi-catalog-unknown-pro is already in the registry; the endpoint-window assertion would no longer prove the fallback")
 	}
 	if resp.Models[0].ContextWindow != 1048576 || !resp.Models[0].Reasoning {
-		t.Errorf("k3.1-pro = %+v, want the endpoint window and reasoning", resp.Models[0])
+		t.Errorf("unknown-pro = %+v, want the endpoint window and reasoning", resp.Models[0])
 	}
 }
 
