@@ -337,11 +337,18 @@ not-yet-supported fields do not break parsing).
 | `description` | **Yes** | Drives the `/` autocomplete's Subagents section and the `## Available Subagents` roster. Describe the specialty and when to use it. |
 | `tools` | No | The subagent's tool budget. `all` (default) · `read-only` · a comma-separated list of **capability-group tokens** (see [§3.6](#36-tool-budgets-capability-groups)). A typo fails the profile. |
 | `max-steps` | No | ReAct iteration cap for the subagent. `0`/absent ⇒ derived from complexity (see [§3.8](#38-delegation-settings-and-limits)). |
-| `model` | No | Per-agent model override — every LLM call the subagent makes is forced to this model. |
+| `model` | No | Per-agent model override — every LLM call the subagent makes is forced to this model. **Must be a full composite `provider/model` identifier** (the id splits on the first `/`, so the model name itself may contain `/`); routes cross-provider, independently of the session's active model ([ADR-122](../specs/decisions/122-subagent-model-provider-override.md)). A bare name is rejected and **fails the delegation** with an error suggesting the composite form. |
 | `allow-redelegate` | No | `true` lets this subagent itself delegate deeper (capped by config). Default `false`. |
 | `hidden` | No | `true` hides the profile from the `/` autocomplete's Subagents section and the `Available Subagents` roster (see [§3.10](#310-hidden-profiles)). Default `false`. |
 | `color` | No | UI accent color for the agent badge (e.g. `"#e06c75"`). |
 | `skills` | No | A comma-separated list of **skill names this profile requires** (see [§3.7](#37-requiring-skills-profile-skills)). |
+
+> **`model:` is a composite or nothing (ADR-122).** The value must name both
+> sides — e.g. `model: openai/gpt-5.2` pins the subagent's every call to that
+> provider and model, whatever the session's active model is. A bare
+> `model: gpt-5.2` is rejected: each delegation to this profile fails with an
+> error asking for the full `provider/model` form (HF-style ids are fine —
+> `provider/org/name` splits on the first `/` only).
 
 #### The body = the agent's core directive
 
@@ -428,7 +435,9 @@ When a subagent launches under a profile, `buildSubAgentTask` applies:
 - **Tools** — the profile's `tools` preference (see [§3.6](#36-tool-budgets-capability-groups)).
 - **Max steps** — a profile `max-steps > 0` overrides both the task field and the
   complexity-derived default.
-- **Model** — a profile `model` forces that model on every LLM call.
+- **Model** — a profile `model` (a full `provider/model` composite, ADR-122)
+  pins that provider and model on every LLM call; a bare name fails the
+  delegation at call time.
 - **Redelegation** — a profile `allow-redelegate: true` grants the deeper-
   delegation tools.
 - **Required skills** — a profile `skills:` list is activated for the subagent

@@ -240,6 +240,7 @@ export function areDisplayItemsEqual(a: DisplayItem, b: DisplayItem): boolean {
         ia.status === ib.status &&
         ia.duration === ib.duration &&
         ia.error === ib.error &&
+        (ia.model ?? '') === (ib.model ?? '') &&
         childrenEqual(ia.children, ib.children)
       )
     }

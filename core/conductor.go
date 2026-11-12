@@ -1504,16 +1504,29 @@ func (l *conductorLauncher) buildSubAgentTask(ctx context.Context, t tools.Deleg
 	// delegate-call time (mandatory-composite rule, ADR-122), so reaching
 	// launch with one means validation was skipped (nil validator / direct
 	// construction): the override cannot be honored as specified and the
-	// subagent runs on the session's active model with a warning.
+	// subagent runs on the session's active model with a warning. The same
+	// defensive treatment covers a composite with an EMPTY model part
+	// ("provider/"): a validator fails it closed before launch, and skipping
+	// validation must not let it pin the provider while req.Model silently
+	// inherits the session's model (the opposite of the override's intent).
 	if profile != nil {
 		if provider, bare, composite := llm.ParseCompositeModelID(profile.Metadata.Model); composite {
+			unhonorable := false
 			if l.deps.validateModelOverride != nil {
 				if err := l.deps.validateModelOverride(t.Agent, profile.Metadata.Model); err != nil {
 					return agent.SubAgentTask{}, fmt.Errorf("delegation %q: %w", t.ID, err)
 				}
+			} else if bare == "" {
+				unhonorable = true
+				if l.deps.logger != nil {
+					l.deps.logger.Warn("subagent profile model override ignored — composite identifier has an empty model part, use a full \"provider/model\" identifier",
+						"agent", t.Agent, "delegation", t.ID, "model", profile.Metadata.Model)
+				}
 			}
-			caller = agent.NewModelProviderOverrideCaller(caller, provider, bare)
-			launchModel = profile.Metadata.Model
+			if !unhonorable {
+				caller = agent.NewModelProviderOverrideCaller(caller, provider, bare)
+				launchModel = profile.Metadata.Model
+			}
 		} else if profile.Metadata.Model != "" && l.deps.logger != nil {
 			l.deps.logger.Warn("subagent profile model override ignored — bare names are not accepted, use a full \"provider/model\" identifier",
 				"agent", t.Agent, "delegation", t.ID, "model", profile.Metadata.Model)

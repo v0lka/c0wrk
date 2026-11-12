@@ -208,6 +208,44 @@ func TestBuildSubAgentTask_BareOverrideIgnoredWithWarn(t *testing.T) {
 	}
 }
 
+// TestBuildSubAgentTask_EmptyBareCompositeIgnoredWithWarn verifies the
+// defensive launch path for a composite with an EMPTY model part ("provider/").
+// A validator rejects such a value before launch (empty-bare half of the
+// mandatory-composite rule), so reaching launch with one means validation was
+// skipped: honoring it would pin only the provider while req.Model silently
+// inherits the session's active model — the same warn-and-ignore treatment as
+// a bare name applies.
+func TestBuildSubAgentTask_EmptyBareCompositeIgnoredWithWarn(t *testing.T) {
+	profile := testAgentProfile("body", agents.AgentMetadata{Name: "reviewer", Model: "local-llm/"})
+	caller := &mockLLMCaller{responses: []*llm.ChatResponse{executorFinishResponse("done")}}
+	var buf bytes.Buffer
+	l := modelOverrideLauncher(captureMetaContextFactory(nil), nil, caller, nil)
+	l.deps.logger = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	ctx := modelOverrideProfileCtx("reviewer", profile)
+
+	st, err := l.buildSubAgentTask(ctx, tools.DelegationTask{ID: "d1", Summary: "s", Task: "do work", Agent: "reviewer"}, tools.NewDelegationRegistry(), &agent.NoopEvents{})
+	if err != nil {
+		t.Fatalf("buildSubAgentTask: %v (an empty-bare composite must be ignored defensively, not fail the launch)", err)
+	}
+	if _, err := st.Executor.Run(ctx, st.TaskTools, st.CM); err != nil {
+		t.Fatalf("executor run: %v", err)
+	}
+
+	if len(caller.calls) != 1 {
+		t.Fatalf("caller saw %d requests, want 1", len(caller.calls))
+	}
+	if got := caller.calls[0].Provider; got != "" {
+		t.Errorf("req.Provider = %q, want empty (no provider pin applied)", got)
+	}
+	if got := caller.calls[0].Model; got != "" {
+		t.Errorf("req.Model = %q, want empty (override ignored — inherit the session's active model)", got)
+	}
+	logged := buf.String()
+	if !strings.Contains(logged, "level=WARN") || !strings.Contains(logged, `provider/model`) {
+		t.Errorf("empty-bare composite must warn with the composite guidance, got: %s", logged)
+	}
+}
+
 // TestBuildSubAgentTask_EmptyModelInheritsSessionModel verifies an empty
 // profile model never touches the override path: the caller stays unwrapped
 // (the subagent inherits the session's active model) and nothing is logged.
