@@ -67,6 +67,23 @@ describe('PlanStepBlock', () => {
     expect(state()).toBe('closed')
   })
 
+  // --- forced model badge (additive: absent = unchanged render) ---
+
+  it('renders the forced model badge when the start event carried one', () => {
+    render(makeStep({ status: 'running', model: 'local-llm/qwen3:8b' }))
+    const badge = container.querySelector('span[title="Forced model: local-llm/qwen3:8b"]')
+    expect(badge).not.toBeNull()
+    expect(badge!.textContent).toBe('local-llm/qwen3:8b')
+    // The badge is a header hint, not an auto-expanded body.
+    expect(state()).toBe('closed')
+  })
+
+  it('renders no model badge when the start event carries none', () => {
+    render(makeStep({ status: 'completed' }))
+    expect(container.querySelector('span[title^="Forced model:"]')).toBeNull()
+    expect(container.textContent).not.toContain('Forced model')
+  })
+
   it('renders collapsed by default once completed', () => {
     render(makeStep({ status: 'completed', children: [CHILD] }))
     expect(state()).toBe('closed')

@@ -1958,6 +1958,36 @@ func TestHandleMessage_ModelOverride_BareRejected(t *testing.T) {
 	}
 }
 
+// TestValidateModelOverride_EmptyBareCompositeRejected pins the empty-bare
+// half of the mandatory-composite rule (ADR-122): "provider/" parses as a
+// composite with an EMPTY bare model, and the entry-point validator must
+// reject it deterministically (wrapping ErrInvalidModelOverride) instead of
+// letting it fail Router.SetModel downstream and degrade to the silent
+// warn-and-continue path — the same rejection the profile validator applies
+// to a profile's model: override.
+func TestValidateModelOverride_EmptyBareCompositeRejected(t *testing.T) {
+	if err := ValidateModelOverride(""); err != nil {
+		t.Errorf("empty override must stay valid (no override), got: %v", err)
+	}
+	for _, model := range []string{"openai/", "local-llm/", "/"} {
+		err := ValidateModelOverride(model)
+		if err == nil {
+			t.Errorf("ValidateModelOverride(%q) must reject a composite with an empty bare model", model)
+			continue
+		}
+		if !errors.Is(err, ErrInvalidModelOverride) {
+			t.Errorf("ValidateModelOverride(%q) must wrap ErrInvalidModelOverride, got: %v", model, err)
+		}
+		if !strings.Contains(err.Error(), `must be a full "provider/model" identifier`) {
+			t.Errorf("ValidateModelOverride(%q) must carry the composite guidance, got: %v", model, err)
+		}
+	}
+	// A well-formed composite (the bare part may itself contain "/") still passes.
+	if err := ValidateModelOverride("local-llm/qwen/qwen3-coder-30b"); err != nil {
+		t.Errorf("ValidateModelOverride(HF-style composite) must accept, got: %v", err)
+	}
+}
+
 // TestHandleMessage_ModelOverride_CompositeID_UpdatesConfigModel verifies that
 // a composite model override (e.g. "Zen/glm-5.2") is reduced to the bare model
 // name when stored in config.Model.

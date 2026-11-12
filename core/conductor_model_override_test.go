@@ -263,6 +263,32 @@ func TestBuildSubAgentTask_CompositeModelSizesCMByOverrideWindow(t *testing.T) {
 	}
 }
 
+// TestBuildSubAgentTask_BareOverrideSizesCMBySessionModel pins the HONORED
+// half of the CM calibration: a bare profile model is WARN-ignored (the
+// subagent runs on the session's active model), so the CM must NOT be sized
+// against the bare name's registry window — compacting at 32000 while the
+// subagent actually runs on a 128000 session model would compact far too
+// early. The registry deliberately KNOWS the bare name here: only the honored
+// composite branch may pull its metadata.
+func TestBuildSubAgentTask_BareOverrideSizesCMBySessionModel(t *testing.T) {
+	registry := llm.NewModelRegistry(map[string]llm.ModelMetadata{
+		"gpt-4o":   {ContextWindow: 128000, OutputLimit: 16384, TokenizerType: "approximate"},
+		"qwen3:8b": {ContextWindow: 32000, OutputLimit: 8000, TokenizerType: "approximate"},
+	})
+	profile := testAgentProfile("body", agents.AgentMetadata{Name: "reviewer", Model: "qwen3:8b"})
+
+	var meta llm.ModelMetadata
+	l := modelOverrideLauncher(captureMetaContextFactory(&meta), nil, &mockLLMCaller{responses: []*llm.ChatResponse{executorFinishResponse("done")}}, registry)
+	ctx := modelOverrideProfileCtx("reviewer", profile)
+
+	if _, err := l.buildSubAgentTask(ctx, tools.DelegationTask{ID: "d1", Summary: "s", Task: "do work", Agent: "reviewer"}, tools.NewDelegationRegistry(), &agent.NoopEvents{}); err != nil {
+		t.Fatalf("buildSubAgentTask: %v", err)
+	}
+	if meta.ContextWindow != 128000 {
+		t.Errorf("CM ContextWindow = %d, want the session model's 128000 (a bare override is not honored, so it must not size the CM)", meta.ContextWindow)
+	}
+}
+
 // TestResolveModelMeta_EffectiveModelFallbackChain verifies resolveModelMeta
 // resolves the effective (override) model first and falls through the
 // existing chain on a miss: unknown override → session model, empty effective

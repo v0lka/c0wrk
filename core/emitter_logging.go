@@ -202,12 +202,13 @@ func (l *loggingEmitter) PlanGenerated(stepCount int, steps []orchestration.Plan
 	l.inner.PlanGenerated(stepCount, steps)
 }
 
-func (l *loggingEmitter) PlanStepStart(stepID, description, summary string) {
+func (l *loggingEmitter) PlanStepStart(stepID, description, summary, model string) {
 	// Model-authored fields — bounded previews + lengths (file policy).
-	l.logger.Info("plan step start", "stepID", stepID,
+	// model is config-authored (a profile pin / empty), logged plainly.
+	l.logger.Info("plan step start", "stepID", stepID, "model", model,
 		"descriptionLen", len(description), "descriptionPreview", strutil.TruncateUTF8(description, 200),
 		"summaryLen", len(summary), "summaryPreview", strutil.TruncateUTF8(summary, 200))
-	l.inner.PlanStepStart(stepID, description, summary)
+	l.inner.PlanStepStart(stepID, description, summary, model)
 }
 
 func (l *loggingEmitter) PlanStepComplete(stepID string, success bool, duration time.Duration, errMsg string) {

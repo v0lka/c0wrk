@@ -44,7 +44,12 @@ export interface PlanData {
   current_step_index?: number; completed_count?: number; total_count?: number
 }
 
-export interface PlanStepStartData { step_id: string; description: string; summary?: string }
+export interface PlanStepStartData {
+  step_id: string; description: string; summary?: string
+  /** The delegated step's honored profile model pin (ADR-122) — additive,
+   *  absent for inline steps / synthesized starts (badge stays hidden). */
+  model?: string
+}
 export interface PlanStepCompleteData { step_id: string; success: boolean; duration: number; error?: string; progress?: number; current_step_index?: number; completed_count?: number; total_count?: number }
 /** Cooperative pause checkpoint: mirrors plan_step_complete's shape minus the
  *  `success` field — a pause is a recoverable state, NOT a completion

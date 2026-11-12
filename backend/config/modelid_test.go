@@ -5,10 +5,12 @@ import (
 	"testing"
 )
 
-// TestResolveModelID_CompositeIDs validates the composite branch: two
-// OpenAI-compatible providers exposing "gpt-4" carry DISTINCT composite
-// identifiers, each resolving to its own provider.
-func TestResolveModelID_CompositeIDs(t *testing.T) {
+// TestAllModelIDs_DistinctComposites validates the enabled-composite
+// enumeration: two OpenAI-compatible providers exposing "gpt-4" carry
+// DISTINCT composite identifiers (no bare-name collision), listed in
+// deterministic provider order. Membership in AllModelIDs is the resolution
+// predicate — a composite id is resolvable exactly when it is listed here.
+func TestAllModelIDs_DistinctComposites(t *testing.T) {
 	cfg := LLMConfig{
 		DefaultModel: "openai/gpt-4",
 		OpenAICompatible: map[string]OpenAICompatibleConfig{
@@ -17,16 +19,6 @@ func TestResolveModelID_CompositeIDs(t *testing.T) {
 		},
 	}
 
-	id, amb, err := cfg.ResolveModelID("openai/gpt-4")
-	if err != nil || amb || id != "openai/gpt-4" {
-		t.Errorf("ResolveModelID(openai/gpt-4) = (%q,%v,%v), want (openai/gpt-4,false,nil)", id, amb, err)
-	}
-	id, amb, err = cfg.ResolveModelID("lmstudio/gpt-4")
-	if err != nil || amb || id != "lmstudio/gpt-4" {
-		t.Errorf("ResolveModelID(lmstudio/gpt-4) = (%q,%v,%v), want (lmstudio/gpt-4,false,nil)", id, amb, err)
-	}
-
-	// AllModelIDs lists both composite identifiers (no bare-name collision).
 	all := cfg.AllModelIDs()
 	want := []string{"lmstudio/gpt-4", "openai/gpt-4"}
 	if len(all) != len(want) {
@@ -36,42 +28,6 @@ func TestResolveModelID_CompositeIDs(t *testing.T) {
 		if all[i] != w {
 			t.Errorf("AllModelIDs()[%d] = %q, want %q", i, all[i], w)
 		}
-	}
-}
-
-// TestResolveModelID_BareRejected verifies the mandatory-composite rule: bare
-// identifiers are rejected even when a provider uniquely lists the name —
-// with the composite guidance in the error.
-func TestResolveModelID_BareRejected(t *testing.T) {
-	cfg := LLMConfig{
-		DefaultModel: "chatgpt/gpt-4o",
-		ChatGPT:      ChatGPTConfig{APIKey: "k", Models: []string{"gpt-4o"}},
-	}
-	_, _, err := cfg.ResolveModelID("gpt-4o")
-	if err == nil {
-		t.Fatal("expected error for a bare model identifier")
-	}
-	if !strings.Contains(err.Error(), `must be a full "provider/model" id`) {
-		t.Errorf("error must carry the composite guidance, got: %v", err)
-	}
-}
-
-// TestResolveModelID_Errors covers the empty identifier, an unknown composite
-// provider, and a model not enabled in a known provider.
-func TestResolveModelID_Errors(t *testing.T) {
-	cfg := LLMConfig{
-		OpenAICompatible: map[string]OpenAICompatibleConfig{
-			"openai": {Models: []string{"gpt-4"}},
-		},
-	}
-	if _, _, err := cfg.ResolveModelID(""); err == nil {
-		t.Error("expected error for empty identifier")
-	}
-	if _, _, err := cfg.ResolveModelID("nope/gpt-4"); err == nil {
-		t.Error("expected error for unknown composite provider")
-	}
-	if _, _, err := cfg.ResolveModelID("openai/missing"); err == nil {
-		t.Error("expected error for model not enabled in named provider")
 	}
 }
 

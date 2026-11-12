@@ -364,9 +364,12 @@ func (e *EventEmitter) PlanGenerated(stepCount int, steps []orchestration.PlanSt
 
 // PlanStepStart emits a plan step start event; duplicate calls for the same
 // step ID are suppressed, so the inline todo callback and the subagent
-// launcher can both call it.
-func (e *EventEmitter) PlanStepStart(stepID, description, summary string) {
-	e.log().Debug("emitter: plan step start", "sessionID", e.sessionID, "stepID", stepID, "description", description, "summary", summary)
+// launcher can both call it. model carries the profile's honored pin for a
+// delegated step and is emitted ONLY when non-empty (additive `model` key —
+// absent in payloads that predate it, so the UI badge stays hidden and the
+// persisted shape is unchanged for inline steps).
+func (e *EventEmitter) PlanStepStart(stepID, description, summary, model string) {
+	e.log().Debug("emitter: plan step start", "sessionID", e.sessionID, "stepID", stepID, "description", description, "summary", summary, "model", model)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.planStartedSet != nil && e.planStartedSet[stepID] {
@@ -380,18 +383,22 @@ func (e *EventEmitter) PlanStepStart(stepID, description, summary string) {
 	e.planStartedSet[stepID] = true
 	e.planCurrentStepID = stepID
 	completedCount := len(e.planCompletedSet)
+	data := map[string]any{
+		"step_id":            stepID,
+		"description":        description,
+		"summary":            summary,
+		"progress":           e.computeProgress(completedCount),
+		"current_step_index": completedCount, // 0-based index of current step
+		"completed_count":    completedCount,
+		"total_count":        e.planTotalSteps,
+	}
+	if model != "" {
+		data["model"] = model
+	}
 	e.emitEvent(Event{
 		SessionID: e.sessionID,
 		Type:      "plan_step_start",
-		Data: map[string]any{
-			"step_id":            stepID,
-			"description":        description,
-			"summary":            summary,
-			"progress":           e.computeProgress(completedCount),
-			"current_step_index": completedCount, // 0-based index of current step
-			"completed_count":    completedCount,
-			"total_count":        e.planTotalSteps,
-		},
+		Data:      data,
 	})
 }
 

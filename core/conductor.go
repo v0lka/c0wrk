@@ -919,7 +919,7 @@ func (l *conductorLauncher) emitNeverStartedStep(stepID, errMsg string) {
 		return
 	}
 	desc, summary := lookupStepDesc(l.bb, stepID)
-	l.deps.emitter.PlanStepStart(stepID, desc, summary)
+	l.deps.emitter.PlanStepStart(stepID, desc, summary, "")
 	l.deps.emitter.PlanStepComplete(stepID, false, 0, errMsg)
 }
 
@@ -931,7 +931,7 @@ func (l *conductorLauncher) emitSkippedStepCompleted(stepID string) {
 		return
 	}
 	desc, summary := lookupStepDesc(l.bb, stepID)
-	l.deps.emitter.PlanStepStart(stepID, desc, summary)
+	l.deps.emitter.PlanStepStart(stepID, desc, summary, "")
 	l.deps.emitter.PlanStepComplete(stepID, true, 0, "")
 }
 
@@ -1423,15 +1423,18 @@ func (l *conductorLauncher) buildSubAgentTask(ctx context.Context, t tools.Deleg
 	complexity := ComplexityFromContext(ctx)
 	compactionStrategy := compactionStrategyForDomain(domain, complexity)
 
-	// Profile-aware metadata: a composite override sends the BARE model to
-	// the named provider, so the CM sizes against the override model's window
-	// when the registry knows it; a miss (or a bare override the registry
-	// doesn't know) falls through the usual chain — session model, registry
-	// default, static fallback.
+	// Profile-aware metadata, calibrated on the HONORED model: a composite
+	// override sends the BARE model to the named provider, so the CM sizes
+	// against the override model's window when the registry knows it. A bare
+	// override cannot be honored as specified (the WARN-ignored branch below
+	// leaves the subagent on the session's active model), so it pins nothing
+	// here either — calibrating against the bare name's window while running
+	// on the session model would compact at the wrong threshold. A registry
+	// miss (or no pin) falls through the usual chain — session model,
+	// registry default, static fallback.
 	effectiveModel := ""
-	if profile != nil && profile.Metadata.Model != "" {
-		effectiveModel = profile.Metadata.Model
-		if _, bare, composite := llm.ParseCompositeModelID(effectiveModel); composite {
+	if profile != nil {
+		if _, bare, composite := llm.ParseCompositeModelID(profile.Metadata.Model); composite {
 			effectiveModel = bare
 		}
 	}
@@ -1858,7 +1861,10 @@ type planStepEventTranslator struct {
 }
 
 func (t *planStepEventTranslator) SubAgentLaunch(stepID, description, model string) {
-	t.root.PlanStepStart(stepID, description, t.summary)
+	// The honored profile pin rides plan_step_start's additive `model` key,
+	// so the plan-step block renders the same "Forced model" badge as a
+	// plain delegate launch (ADR-122).
+	t.root.PlanStepStart(stepID, description, t.summary, model)
 }
 
 func (t *planStepEventTranslator) SubAgentComplete(stepID string, success bool, duration time.Duration, errMsg string) {
@@ -2530,7 +2536,8 @@ func (l *inlineStepLifecycle) onChecklistUpdate(stepID string, items []agent.Tod
 			l.scoper.SetCurrentStepID(stepID)
 		}
 		desc, summary := lookupStepDesc(l.bb, stepID)
-		l.emitter.PlanStepStart(stepID, desc, summary)
+		// Inline steps run on the Conductor's own model — no pin (model "").
+		l.emitter.PlanStepStart(stepID, desc, summary, "")
 	}
 
 	l.emitter.StepTodoUpdate(stepID, items)
@@ -2560,8 +2567,9 @@ func (l *inlineStepLifecycle) completeStep(stepID string, success bool, errMsg s
 			return
 		}
 		// Synthesized start — real start time unknown, duration stays 0.
+		// Inline steps run on the Conductor's own model — no pin (model "").
 		desc, summary := lookupStepDesc(l.bb, stepID)
-		l.emitter.PlanStepStart(stepID, desc, summary)
+		l.emitter.PlanStepStart(stepID, desc, summary, "")
 	}
 	l.emitter.PlanStepComplete(stepID, success, duration, errMsg)
 	// Clear the step scope so post-completion events are not mis-tagged.
@@ -2707,13 +2715,13 @@ func (l *inlineStepLifecycle) completeAll(success bool, errMsg string) {
 		if l.stepSucceededPreviously(id) {
 			if l.planDeclaredThisRun() {
 				desc, summary := lookupStepDesc(l.bb, id)
-				l.emitter.PlanStepStart(id, desc, summary)
+				l.emitter.PlanStepStart(id, desc, summary, "")
 				l.emitter.PlanStepComplete(id, true, 0, "")
 			}
 			continue
 		}
 		desc, summary := lookupStepDesc(l.bb, id)
-		l.emitter.PlanStepStart(id, desc, summary)
+		l.emitter.PlanStepStart(id, desc, summary, "")
 		l.emitter.PlanStepComplete(id, success, 0, errMsg)
 	}
 	// Clear the step scope so post-finish events are not mis-tagged.

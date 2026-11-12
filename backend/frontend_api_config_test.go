@@ -5575,13 +5575,11 @@ func TestUpdateLLMConfig_WholeMapReplaceKeepsEmbeddedProvider(t *testing.T) {
 		}
 	}
 
-	// The composite id still resolves after the save.
-	got, _, err := f.config.LLM.ResolveModelID(embeddedCompositeID())
-	if err != nil {
-		t.Fatalf("ResolveModelID(%q) failed: %v", embeddedCompositeID(), err)
-	}
-	if got != embeddedCompositeID() {
-		t.Errorf("ResolveModelID = %q, want %q", got, embeddedCompositeID())
+	// The composite id still resolves after the save (listed by the
+	// enabled-composite enumeration — AllModelIDs is the resolution predicate).
+	if !slices.Contains(f.config.LLM.AllModelIDs(), embeddedCompositeID()) {
+		t.Errorf("AllModelIDs() = %v, want it to contain %q after the save",
+			f.config.LLM.AllModelIDs(), embeddedCompositeID())
 	}
 }
 
@@ -5641,8 +5639,8 @@ func TestUpdateLLMConfig_RemovesEmbeddedProviderAfterUninstall(t *testing.T) {
 	if _, ok := f.config.LLM.OpenAICompatible[config.EmbeddedLLMProviderName]; ok {
 		t.Errorf("the provider record survived the uninstall: %+v", f.config.LLM.OpenAICompatible)
 	}
-	if _, _, err := f.config.LLM.ResolveModelID(embeddedCompositeID()); err == nil {
-		t.Errorf("ResolveModelID(%q) must fail once the model is uninstalled", embeddedCompositeID())
+	if slices.Contains(f.config.LLM.AllModelIDs(), embeddedCompositeID()) {
+		t.Errorf("AllModelIDs() still lists %q after the uninstall", embeddedCompositeID())
 	}
 
 	// The same removal must happen when the request carries NO provider map at
@@ -5789,8 +5787,8 @@ func TestGetConfig_NoEmbeddedProviderWhenNotInstalled(t *testing.T) {
 			t.Errorf("AllModels lists an uninstalled embedded model: %+v", m)
 		}
 	}
-	if _, _, err := f.config.LLM.ResolveModelID(embeddedCompositeID()); err == nil {
-		t.Errorf("ResolveModelID(%q) must fail while the model is not installed", embeddedCompositeID())
+	if slices.Contains(f.config.LLM.AllModelIDs(), embeddedCompositeID()) {
+		t.Errorf("AllModelIDs() lists %q while the model is not installed", embeddedCompositeID())
 	}
 }
 

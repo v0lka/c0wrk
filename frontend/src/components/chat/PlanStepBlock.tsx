@@ -22,7 +22,7 @@ interface PlanStepBlockProps {
 }
 
 export const PlanStepBlock = memo(function PlanStepBlock({ item }: PlanStepBlockProps) {
-  const { stepId, stepNum, title, description, status, duration, error, isRetry, children } = item
+  const { stepId, stepNum, title, description, status, duration, error, isRetry, model, children } = item
   // Plan groups are rebuilt per session switch, so the displayed steps always
   // belong to the active session. The nested lookup returns a primitive
   // (stable selector — no allocation).
@@ -90,6 +90,16 @@ export const PlanStepBlock = memo(function PlanStepBlock({ item }: PlanStepBlock
       {status === 'interrupted' && (
         <span className="text-xs text-muted-foreground truncate min-w-0">— interrupted</span>
       )}
+      {/* The delegated step's forced `model:` pin — rendered only when the
+          start event carried one (absent = unchanged render). */}
+      {model && (
+        <span
+          className="text-xs text-muted-foreground bg-muted/50 px-1.5 py-0.5 rounded shrink-0 max-w-40 truncate"
+          title={`Forced model: ${model}`}
+        >
+          {model}
+        </span>
+      )}
       {checklistTotal > 0 && (
         <StepChecklistProgress total={checklistTotal} completed={checklistDone} accent={accent} />
       )}
@@ -108,7 +118,7 @@ export const PlanStepBlock = memo(function PlanStepBlock({ item }: PlanStepBlock
         </span>
       )}
     </>
-  ), [isRetry, status, error, stepContextFill, stepContextTokens, checklistTotal, checklistDone, accent, duration])
+  ), [isRetry, status, error, model, stepContextFill, stepContextTokens, checklistTotal, checklistDone, accent, duration])
 
   const icon = useMemo(() => (
     <StatusIcon className={cn('h-3.5 w-3.5 shrink-0', iconClass)} />

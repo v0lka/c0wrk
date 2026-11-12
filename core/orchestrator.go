@@ -2164,13 +2164,21 @@ var ErrInvalidModelOverride = errors.New("invalid model override")
 // (ADR-122) for entry points that must reject a bad override BEFORE any state
 // changes: HandleMessage surfaces ApplyRequestOverrides' error at step 0, but
 // a resume validates first so a rejected override cannot leave the session
-// half-activated. Failures wrap ErrInvalidModelOverride.
+// half-activated. Failures wrap ErrInvalidModelOverride. A composite with an
+// EMPTY bare part ("provider/") is rejected too — mirrors the profile
+// validator (modelOverrideValidator): letting it through would fail
+// Router.SetModel downstream and degrade to the silent warn-and-continue path
+// instead of the deterministic entry-point rejection the rule requires.
 func ValidateModelOverride(model string) error {
 	if model == "" {
 		return nil
 	}
-	if _, _, composite := llm.ParseCompositeModelID(model); !composite {
+	_, bare, composite := llm.ParseCompositeModelID(model)
+	if !composite {
 		return fmt.Errorf("%w: %q must be a full \"provider/model\" identifier — bare model names are not accepted", ErrInvalidModelOverride, model)
+	}
+	if bare == "" {
+		return fmt.Errorf("%w: %q must be a full \"provider/model\" identifier — the part after \"/\" must name a model (\"provider/\" has an empty bare model)", ErrInvalidModelOverride, model)
 	}
 	return nil
 }

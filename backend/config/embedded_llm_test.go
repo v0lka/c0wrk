@@ -5,6 +5,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -315,19 +316,17 @@ func TestSyncEmbeddedProviderGeneratesAndRemoves(t *testing.T) {
 		t.Error("a second sync of an unchanged state must report no change")
 	}
 
-	// The composite id resolves through the normal path; the provider is
-	// typed as openai-compatible. A bare name is rejected outright (the
-	// mandatory-composite rule).
+	// The composite id resolves through the normal path: it is listed by the
+	// enabled-composite enumeration (AllModelIDs), whose membership is the
+	// resolution predicate — provider configured AND model enabled in it. A
+	// bare name is never a listed id (the mandatory-composite rule).
 	composite := EmbeddedLLMProviderName + "/" + EmbeddedLLMModelName
-	gotID, ambiguous, err := cfg.LLM.ResolveModelID(composite)
-	if err != nil {
-		t.Fatalf("ResolveModelID(%q) failed: %v", composite, err)
+	allIDs := cfg.LLM.AllModelIDs()
+	if !slices.Contains(allIDs, composite) {
+		t.Errorf("AllModelIDs() = %v, want it to contain %q", allIDs, composite)
 	}
-	if gotID != composite || ambiguous {
-		t.Errorf("ResolveModelID(%q) = %q, ambiguous=%v; want the same composite, unambiguous", composite, gotID, ambiguous)
-	}
-	if _, _, err := cfg.LLM.ResolveModelID(EmbeddedLLMModelName); err == nil {
-		t.Errorf("ResolveModelID(%q) must reject a bare name", EmbeddedLLMModelName)
+	if slices.Contains(allIDs, EmbeddedLLMModelName) {
+		t.Errorf("AllModelIDs() = %v, must never list the bare name %q", allIDs, EmbeddedLLMModelName)
 	}
 
 	cfg.LLM.DefaultModel = composite
@@ -353,8 +352,8 @@ func TestSyncEmbeddedProviderGeneratesAndRemoves(t *testing.T) {
 	if _, stillThere := cfg.LLM.OpenAICompatible[EmbeddedLLMProviderName]; stillThere {
 		t.Errorf("provider %q survived the uninstall: %+v", EmbeddedLLMProviderName, cfg.LLM.OpenAICompatible)
 	}
-	if _, _, err := cfg.LLM.ResolveModelID(composite); err == nil {
-		t.Errorf("ResolveModelID(%q) must fail once the model is uninstalled", composite)
+	if slices.Contains(cfg.LLM.AllModelIDs(), composite) {
+		t.Errorf("AllModelIDs() still lists %q after the uninstall", composite)
 	}
 	if cfg.SyncEmbeddedLLMProvider(0) {
 		t.Error("a second sync of an uninstalled state must report no change")
