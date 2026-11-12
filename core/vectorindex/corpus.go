@@ -148,6 +148,9 @@ func Repairable(err error) bool {
 	if err == nil {
 		return false
 	}
+	if errors.Is(err, safeio.ErrTooLarge) {
+		return false // rebuilding identical metadata cannot remove a reader limit
+	}
 	if Transient(err) {
 		return false // a transient fault proves nothing about the store
 	}
@@ -279,13 +282,17 @@ func (m *CorpusManifest) compatible(embeddingFP string, dims int) bool {
 		m.Dims == dims
 }
 
+// corpusManifestMaxBytes bounds the project-sized publication record.
+// See specs/domains/workspace.md.
+const corpusManifestMaxBytes int64 = 64 << 20
+
 // readCorpusManifest loads a corpus publication record; nil (no error) when
 // absent or unparsable — absence means "not published", never "trust the
 // directory". A var (like newPersistentDB) so a test can steer the reads of
 // one snapshot deterministically across the quarantine path's two
-// publication checks.
+// publication checks. The read is capped at corpusManifestMaxBytes.
 var readCorpusManifest = func(branchRoot string) *CorpusManifest {
-	data, err := safeio.ReadFile(filepath.Join(branchRoot, corpusManifestName))
+	data, err := safeio.ReadFileLimited(filepath.Join(branchRoot, corpusManifestName), corpusManifestMaxBytes)
 	if err != nil {
 		return nil
 	}
@@ -604,10 +611,8 @@ func (cs *corpusStore) open(ctx context.Context, key string, ef chromem.Embeddin
 			return h, nil
 		}
 	}
-	// §3 read path first (ADR-104 §3): a published occurrence table opens
-	// the corpus without any chromem decode. Failure with an existing v1
-	// corpus falls back to the v1 open (the migration will repair); failure
-	// without one propagates (fail-closed attach).
+	// Prefer the native corpus; only absence or repairable damage permits
+	// the legacy fallback. See specs/domains/workspace.md.
 	if gen, genManifest, ok := readCurrentGeneration(cs.root); ok && genManifest.compatible(embeddingFP, dims) {
 		v2, v2Err := openV2Corpus(gen, key, genManifest)
 		switch {
@@ -631,6 +636,9 @@ func (cs *corpusStore) open(ctx context.Context, key string, ef chromem.Embeddin
 			cs.refs[key] = 1
 			return h, nil
 		case v2Err != nil:
+			if !Repairable(v2Err) {
+				return nil, v2Err
+			}
 			cs.logger.Debug("vector corpus: §3 open failed; falling back to the v1 store",
 				"snapshot", key, "error", v2Err)
 		}
@@ -978,7 +986,7 @@ func (cs *corpusStore) promoteLegacyStore(srcRoot, branch, key, embeddingFP stri
 // ungated, the corpus-current adoption gate treats it as a mismatch —
 // rather than guessing a configuration the store never recorded.
 func legacySidecarChunkerFP(storageRoot, branch string) string {
-	data, err := safeio.ReadFile(fileHashesPathFor(storageRoot, branch))
+	data, err := safeio.ReadFileLimited(fileHashesPathFor(storageRoot, branch), fileHashSidecarMaxBytes)
 	if err != nil {
 		return ""
 	}
@@ -1014,7 +1022,7 @@ func legacySidecarChunkerFP(storageRoot, branch string) string {
 // legacy sidecar file (v6 envelope or bare map). ok=false when the file is
 // absent or holds no usable entries.
 func legacySidecarHashMap(storageRoot, branch string) (map[string]string, bool) {
-	data, err := safeio.ReadFile(fileHashesPathFor(storageRoot, branch))
+	data, err := safeio.ReadFileLimited(fileHashesPathFor(storageRoot, branch), fileHashSidecarMaxBytes)
 	if err != nil {
 		return nil, false
 	}
