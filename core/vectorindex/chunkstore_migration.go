@@ -67,6 +67,10 @@ type chunkRecordMigrationReport struct {
 	Marked    bool
 }
 
+// fileHashSidecarMaxBytes bounds the project-sized file-hash map.
+// See specs/domains/workspace.md.
+const fileHashSidecarMaxBytes int64 = 64 << 20
+
 // corpusSidecarChunkSets loads the corpus build's committed chunk-index
 // sets from the snapshot's own file-hash sidecar (each entry's 5th field).
 // Paths with no sidecar entry, or entries without a chunk set (older
@@ -77,9 +81,9 @@ type chunkRecordMigrationReport struct {
 // counted documents this loop never served; the sidecar's own recorded
 // set is what proves a deferral-worthy miss (a chunk it records that the
 // collection cannot serve) versus a legitimate gap (an index it never
-// recorded).
+// recorded). The read is capped at fileHashSidecarMaxBytes.
 func corpusSidecarChunkSets(storageRoot, snapKey string) map[string]map[int]bool {
-	data, err := safeio.ReadFile(fileHashesPathFor(storageRoot, snapKey))
+	data, err := safeio.ReadFileLimited(fileHashesPathFor(storageRoot, snapKey), fileHashSidecarMaxBytes)
 	if err != nil {
 		return nil
 	}

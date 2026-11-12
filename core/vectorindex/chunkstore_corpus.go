@@ -16,7 +16,9 @@ package vectorindex
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"math"
 	"path/filepath"
 	"sort"
@@ -134,17 +136,16 @@ func (v *v2Corpus) docByID(id string) (chromem.Document, bool) {
 	return v.documentAt(ref)
 }
 
-// openV2Corpus loads a published §3 snapshot into a shareable corpus view:
-// occurrence table, every referenced chunk record (a missing record fails
-// the open — the chunks-before-tables invariant makes that store damage,
-// and the caller falls back to the v1 corpus or fails closed), and the
-// read-only lexical index from the snapshot directory. Returns
-// (nil, nil) when the snapshot has no §3 publication (the v1 path owns
-// the open).
+// openV2Corpus loads the native tables, chunk vectors and read-only lexical leg.
+// Missing table files return (nil, nil); other errors preserve their cause.
+// See specs/domains/workspace.md.
 func openV2Corpus(genDir, snapKey string, gen *storeGenerationManifest) (*v2Corpus, error) {
-	rows, header, ok := readSnapshotTable(genDir, snapKey)
-	if !ok {
+	rows, header, err := loadSnapshotTable(genDir, snapKey)
+	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil // no §3 publication for this snapshot
+	}
+	if err != nil {
+		return nil, err
 	}
 	v := &v2Corpus{
 		gen:     genDir,
