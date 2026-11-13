@@ -1050,11 +1050,41 @@ func (l *FrontendAPILifecycle) NotifyVectorFileChange(root string) {
 // SetVectorEmbedderInfo records the embedder's execution-provider facts for
 // every subsequent VectorIndexStatus payload. Called once by desktop's
 // background vector init — including the unavailable paths, where the info
-// makes the failure self-explanatory in the status.
+// makes the failure self-explanatory in the status. After init the facts are
+// mutated only by ApplyVectorProviderDegrade (the runtime provider slide).
 func (l *FrontendAPILifecycle) SetVectorEmbedderInfo(info VectorEmbedderInfo) {
 	l.f.vectorRootsMu.Lock()
 	l.f.vectorEmbedderInfo = info
 	l.f.vectorRootsMu.Unlock()
+}
+
+// ApplyVectorProviderDegrade folds a runtime hardware→CPU provider slide
+// (sp4rk's embedding.OnProviderDegrade callback, sp4rk ADR-011) into the
+// stored embedder facts: the effective provider becomes `to`, the runtime
+// cause replaces FallbackReason (the slide is the last, decisive divergence
+// from the requested provider), and the hardware-path verification verdicts
+// are dropped — they describe the provider that just died, and a stale
+// `cuda_verified: true` beside `execution_provider: "cpu"` would lie. Every
+// status producer reads these facts, so the requested/effective pair
+// (ADR-045) stays honest after the slide without any dedicated re-emit.
+//
+// ok=false reports "no embedder facts recorded": a slide during the init-time
+// warmup probes lands before SetVectorEmbedderInfo — there is nothing to
+// mutate, and the init path re-reads the provider after the probes, so the
+// recorded facts are honest without this call. Never fails otherwise.
+func (l *FrontendAPILifecycle) ApplyVectorProviderDegrade(to, cause string) (VectorEmbedderInfo, bool) {
+	l.f.vectorRootsMu.Lock()
+	defer l.f.vectorRootsMu.Unlock()
+	info := l.f.vectorEmbedderInfo
+	if info.IsZero() {
+		return info, false
+	}
+	info.EffectiveProvider = to
+	info.FallbackReason = cause
+	info.CUDAVerified = nil
+	info.OVDevice = ""
+	l.f.vectorEmbedderInfo = info
+	return info, true
 }
 
 // applyEmbedderInfo fills the execution-provider fields of a

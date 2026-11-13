@@ -273,7 +273,7 @@ describe('VectorSearchFilters — force full project reindex action', () => {
       'runtime_error',
       expect.objectContaining({
         id: expect.any(String),
-        message: 'Rebuild index failed: no indexer configured',
+        message: 'Index repair failed: no indexer configured',
       }),
     )
   })

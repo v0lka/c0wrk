@@ -111,6 +111,49 @@ describe('useVectorReindex — the terminal unavailable state', () => {
     )
   })
 
+  it('labels the suspended kind as a resume, not a rebuild', () => {
+    // ADR-122: with the breaker tripped the collection is live and the same
+    // manager-level Reindex runs a validation-based reconcile that resumes
+    // indexing (the breaker's own reset path) — the title must not promise
+    // a rebuild-from-source it does not perform.
+    act(() => {
+      useVectorIndexStore.setState({
+        status: { ...statusWith('unavailable'), error_kind: 'suspended' },
+      })
+    })
+    act(() => {
+      root.render(<Harness />)
+    })
+    expect(hook().reindexDisabled).toBe(false)
+    expect(hook().reindexActionTitle).toBe(
+      'Resume indexing — rerun the pass and re-arm file changes',
+    )
+  })
+
+  it('keeps the Resume label on a READY status carrying the suspended verdict', () => {
+    // The pair-persistence corner: a failing branch-switch pass after the
+    // trip ends in a terminal ready report, and the suspended kind rides it —
+    // the state is ready (search answers) while file-change indexing stays
+    // suspended. The action is the same breaker reset, so the label must
+    // stay Resume instead of falling back to the plain force-reindex title.
+    act(() => {
+      useVectorIndexStore.setState({
+        status: {
+          ...statusWith('ready'),
+          error_kind: 'suspended',
+          last_error: 'automatic incremental indexing suspended after 5 consecutive failed passes',
+        },
+      })
+    })
+    act(() => {
+      root.render(<Harness />)
+    })
+    expect(hook().reindexDisabled).toBe(false)
+    expect(hook().reindexActionTitle).toBe(
+      'Resume indexing — rerun the pass and re-arm file changes',
+    )
+  })
+
   it('fires the reindex RPC while the index is unavailable (the backend escalates to a rebuild)', async () => {
     act(() => {
       useVectorIndexStore.setState({ status: statusWith('unavailable') })
@@ -238,10 +281,13 @@ describe('useVectorReindex — busy states (unchanged)', () => {
 describe('useVectorReindex — the repair gate (error_kind)', () => {
   // The kinds the repair escalation actually addresses: a proven store
   // defect, an OS fault (the re-attach retries the open once it clears), the
-  // defensive unknown, and a missing kind (never dead-end the user).
+  // ADR-122 circuit breaker (the manager-level Reindex is the breaker's own
+  // reset path), the defensive unknown, and a missing kind (never dead-end
+  // the user).
   it.each([
     ['repairable'],
     ['transient'],
+    ['suspended'],
     ['unknown'],
     [undefined],
   ] as const)('keeps the repair action enabled for an unavailable index of kind %s', async (kind) => {
@@ -253,8 +299,12 @@ describe('useVectorReindex — the repair gate (error_kind)', () => {
     })
     expect(hook().reindexDisabled).toBe(false)
     expect(hook().reindexBusy).toBe(false)
+    // The ADR-122 suspension is the resume-shaped exception: the collection
+    // is live and the same RPC runs the reconcile that re-arms file changes.
     expect(hook().reindexActionTitle).toBe(
-      'Rebuild index — recreate the broken index from source',
+      kind === 'suspended'
+        ? 'Resume indexing — rerun the pass and re-arm file changes'
+        : 'Rebuild index — recreate the broken index from source',
     )
     act(() => {
       hook().handleReindex()
@@ -341,7 +391,7 @@ describe('useVectorReindex — the RPC settlement', () => {
       'runtime_error',
       expect.objectContaining({
         id: expect.any(String),
-        message: 'Rebuild index failed: vector index not available: vector search not ready',
+        message: 'Index repair failed: vector index not available: vector search not ready',
       }),
     )
   })

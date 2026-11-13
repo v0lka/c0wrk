@@ -57,7 +57,10 @@ export function IndexingStatus() {
 
   if (status.state === 'idle') return null
 
-  const derived = deriveDotStatus(status.state, phase)
+  // The ADR-122 trip's EMPTY phase (a suspension is not a pass report)
+  // normalizes to "no phase" here — deriveDotStatus reasons about real pass
+  // phases only.
+  const derived = deriveDotStatus(status.state, phase || undefined)
   const vectorLabel = dotLabel('vector', derived.vectorDot)
   const lexicalLabel = dotLabel('lexical', derived.lexicalDot)
   const tooltip = `${vectorLabel}\n${lexicalLabel}`

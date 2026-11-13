@@ -329,19 +329,23 @@ export interface StoreLedger {
  * - `transient` — an OS-level fault; retry later;
  * - `fatal` — nothing the user can retry (missing model, unwired embedder);
  * - `unknown` — a failure the classifier could not place;
+ * - `suspended` — the incremental-failure circuit breaker tripped: repeated
+ *   embedder/runtime failures stopped automatic file-change indexing; a
+ *   successful pass, Reindex, or the master switch resumes it;
  * - `no_target` — no indexable target at all (No Project / disabled);
  * - `shutting_down` — the registry is going away;
  * - `loading` / `restarting` — NOT failures: the embedder init has not
  *   settled / the root's manager is being replaced.
  *
  * Literals must stay in sync with backend/api_types.go (VectorIndexStatus
- * ErrorKind) and core/vectorindex/index_error.go.
+ * ErrorKind) and core/vectorindex/manager.go (IndexErrorKind).
  */
 export type VectorIndexErrorKind =
   | 'repairable'
   | 'transient'
   | 'fatal'
   | 'unknown'
+  | 'suspended'
   | 'no_target'
   | 'shutting_down'
   | 'loading'
@@ -364,7 +368,13 @@ export interface VectorIndexStatus {
   total_files: number
   current_file?: string
   branch?: string
-  phase?: IndexPhase
+  /**
+   * The pass phase the status describes. Also `''`: the ADR-122 circuit
+   * breaker's trip push (and every pull until a reset) carries the EMPTY
+   * phase — a suspension is a pipeline verdict, not a pass report, so no
+   * phase applies (specs/contracts/event-catalog.md, `vector_index:status`).
+   */
+  phase?: IndexPhase | ''
   indices?: string[]
   /**
    * §5 disk ledger (ADR-104): the store-tree byte accounting snapshot for
@@ -376,19 +386,24 @@ export interface VectorIndexStatus {
    * ONNX Runtime execution provider the embedder effectively runs on:
    * "cpu", "cuda" or "openvino" — never "auto" ("auto" is resolved once,
    * at embedder creation; the winner is reported here). Absent when no
-   * embedder exists (model files missing or creation failed). Comparing it
-   * with requested_execution_provider classifies the outcome: an explicit
-   * "cuda" or "openvino" landing on "cpu" is a fallback; "auto" always
-   * diverges (it is resolved to the winner), so auto→cuda and auto→openvino
-   * are successes and auto→cpu is Auto's expected degradation.
+   * embedder exists (model files missing or creation failed). Also updated
+   * by a runtime degradation (sp4rk ADR-011): an "auto" embedder that came
+   * up on "cuda"/"openvino" and started failing mid-flight slides to "cpu"
+   * for the rest of the embedder's life, and this field follows. Comparing
+   * it with requested_execution_provider classifies the outcome: an
+   * explicit "cuda" or "openvino" landing on "cpu" is a fallback; "auto"
+   * always diverges (it is resolved to the winner), so auto→cuda and
+   * auto→openvino are successes and auto→cpu is Auto's expected
+   * degradation (at init, or after a mid-flight runtime slide).
    */
   execution_provider?: string
   /**
    * Config value ("auto"|"cpu"|"cuda"|"openvino") the embedder was created
    * with. Diverges from execution_provider for every "auto" request (auto
-   * is resolved to the winner) and for an explicit "cuda" or "openvino"
-   * degrading to CPU after init failure (WARN + toast) — only the latter
-   * is a fallback.
+   * is resolved to the winner), for an explicit "cuda" or "openvino"
+   * degrading to CPU after init failure (WARN + toast), and after a
+   * runtime degradation of an "auto" embedder's hardware winner (sp4rk
+   * ADR-011) — only the explicit-provider cases are fallbacks.
    */
   requested_execution_provider?: string
   /**
@@ -396,7 +411,10 @@ export interface VectorIndexStatus {
    * is "cuda" and the startup verification probe ran: true = the driver
    * lists this process among CUDA compute apps; false = absent (possible
    * silent CPU fallback inside the CUDA-capable build). Absent when no
-   * probe ran (CPU embedder, embedder unavailable, never initialized).
+   * probe ran (CPU embedder, embedder unavailable, never initialized) and
+   * dropped when a runtime slide moves the effective provider off "cuda"
+   * (the verdict described the hardware path that is no longer serving
+   * inference).
    */
   cuda_verified?: boolean
   /**
@@ -411,8 +429,14 @@ export interface VectorIndexStatus {
    */
   ov_device?: string
   /**
-   * Why the effective provider deviates from the requested one (CUDA init
-   * failure text). Absent/empty when the requested provider was honored.
+   * Why the effective provider deviates from the requested one: the
+   * init-failure text of an explicit-provider fallback, or the runtime
+   * inference-failure cause after a mid-flight hardware→CPU degradation
+   * (sp4rk ADR-011). On the auto→cpu pair a non-empty reason is the
+   * runtime-slide marker (the init-time ladder loss carries none — the
+   * two are rendered differently). Absent/empty when the requested
+   * provider was honored (an "auto" init-time degradation is WARN-logged
+   * at the sp4rk layer and carries no reason here).
    */
   provider_fallback_reason?: string
   /**

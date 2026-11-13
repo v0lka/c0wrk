@@ -6,6 +6,7 @@ import { searchVectorStore } from '@/api/vector'
 import { subscribe } from '@/api/runtime'
 import { isVectorIndexPayload } from '@/types/events'
 import { parsePlusTokens } from '@/lib/plusTokens'
+import { vectorSearchUsable } from '@/lib/vectorStatusGate'
 import type { SearchMode } from '@/types/models'
 
 export interface UseVectorSearchResult {
@@ -79,12 +80,21 @@ export function useVectorSearch(): UseVectorSearchResult {
   }, [setEntries, setLoading, wrap])
 
   // Auto-search on mount and when inputs change — but only with an active
-  // query. Empty query leaves the panel in the placeholder state.
+  // query. Empty query leaves the panel in the placeholder state. The gate
+  // is the shared vectorSearchUsable predicate, mirroring the widget level:
+  // the ADR-122 suspension keeps the search path open (a live collection
+  // keeps serving queries), so a suspended index still auto-searches. The
+  // derived boolean (not the whole `status` object) is the effect's
+  // dependency: the store replaces `status` wholesale on every progress
+  // event, so an object dep would re-run the effect — and re-fire the
+  // search RPC — on every indexing tick; the boolean re-fires only when
+  // search readiness actually flips.
+  const searchUsable = vectorSearchUsable(status)
   useEffect(() => {
-    if (status.state === 'ready' && activeProjectId && query !== '') {
+    if (searchUsable && activeProjectId && query !== '') {
       fetchEntries(query, topK, filePattern, mustMatch, mode)
     }
-  }, [status.state, activeProjectId, fetchEntries, query, topK, filePattern, mustMatch, mode])
+  }, [searchUsable, activeProjectId, fetchEntries, query, topK, filePattern, mustMatch, mode])
 
   // Clear entries whenever query becomes empty so stale results do not
   // persist after the user deletes their search text or calls handleClear.
@@ -139,17 +149,23 @@ export function useVectorSearch(): UseVectorSearchResult {
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     // Readiness gate: the search button is disabled while the index is not
-    // ready, but keydown handlers on the inputs would bypass that — Enter
-    // must be a no-op too so no search blocks on index readiness.
-    if (e.key === 'Enter' && status.state === 'ready') {
+    // usable, but keydown handlers on the inputs would bypass that — Enter
+    // must be a no-op too so no search blocks on index readiness. The gate
+    // is the shared vectorSearchUsable predicate (the ADR-122 suspension
+    // keeps the search path open), mirroring the button's disabled state —
+    // an enabled input whose Enter did nothing would be a silent dead end.
+    // The dep is the derived boolean, not `status`: a per-progress-tick
+    // object identity would needlessly recreate this callback on every
+    // indexing event.
+    if (e.key === 'Enter' && searchUsable) {
       handleSearch()
     }
-  }, [handleSearch, status.state])
+  }, [handleSearch, searchUsable])
 
   const isSearchMode = query !== ''
 
   const statusMetaText =
-    status.state !== 'ready' || !isSearchMode
+    !vectorSearchUsable(status) || !isSearchMode
       ? null
       : `${entries.length} entries · Search (${mode})`
 

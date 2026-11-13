@@ -473,7 +473,52 @@ describe('VectorIndexSettings — diagnostics', () => {
     expect(text()).not.toContain('Fell back')
     expect(text()).not.toContain('unknown reason')
     // No CUDA badge on a CPU embedder.
-    expect(container.querySelector('[data-testid="vector-cuda-verified-badge"]')).toBeNull()
+
+    // The init-time degradation is the expected, legitimate path: the
+    // effective-provider text stays the calm info color (only a runtime
+    // slide — a non-empty reason — escalates it to warning).
+    const provider = container.querySelector('[data-testid="vector-diagnostics-provider"]')
+    expect(provider).not.toBeNull()
+    expect(provider!.lastElementChild!.className).toContain('text-info')
+    expect(provider!.lastElementChild!.className).not.toContain('text-warning')
+  })
+
+  it('renders the runtime-slide warning for Auto → CPU when a reason marks the slide', async () => {
+    useVectorIndexStore.setState({
+      status: statusWith({
+        requested_execution_provider: 'auto',
+        execution_provider: 'cpu',
+        // A non-empty reason on the auto→cpu pair is the runtime-slide
+        // marker (sp4rk ADR-011): the hardware provider won at init and
+        // died under load — the opposite of the expected init-time
+        // degradation the info note describes.
+        provider_fallback_reason: 'CUDA failure: ONNXRuntimeError (simulated GPU death)',
+      }),
+    })
+    await render()
+    await flush()
+
+    const note = container.querySelector('[data-testid="vector-runtime-slide-note"]')
+    expect(note).not.toBeNull()
+    expect(note!.textContent).toContain('slid to the CPU at runtime')
+    expect(note!.textContent).toContain('simulated GPU death')
+    expect(note!.textContent).toContain('Restart the app')
+
+    // The runtime slide is a FAILURE: the effective-provider text joins the
+    // explicit-provider fallbacks in the warning color (classifyOutcome's
+    // doc promises this — pin it, or the color can silently regress to the
+    // init-time info shade).
+    const provider = container.querySelector('[data-testid="vector-diagnostics-provider"]')
+    expect(provider).not.toBeNull()
+    expect(provider!.lastElementChild!.className).toContain('text-warning')
+    expect(provider!.lastElementChild!.className).not.toContain('text-info')
+
+    // The expected-degradation info note must NOT render for a runtime
+    // slide, and neither does the explicit-fallback block.
+    expect(container.querySelector('[data-testid="vector-auto-cpu-note"]')).toBeNull()
+    expect(container.querySelector('[data-testid="vector-fallback-reason"]')).toBeNull()
+    expect(text()).not.toContain('Fell back')
+    expect(text()).not.toContain('expected Auto behavior')
   })
 
   it('renders the cuda_verified badge with the driver-probe verdict', async () => {

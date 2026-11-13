@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -43,8 +44,33 @@ type vectorIndexLauncher struct {
 	emit         func(name string, data ...any)
 	shuttingDown func() bool
 
-	mu    sync.Mutex
-	epoch uint64
+	mu sync.Mutex
+	// epoch is the launch generation. BUMPS take mu — the bump must serialize
+	// against wireIfCurrent's check+wiring critical section, or a disable
+	// whose bump lands between the check and SetFactory would let the stale
+	// factory through AFTER Disable parked the registry (SetFactory's
+	// non-shutdown branch would then clear the disabled flag — the off state
+	// resurrected against the user's explicit switch). Only the degrade
+	// callback's READ is lock-free: sp4rk fires OnProviderDegrade
+	// synchronously under the embedder's own lock, and wireIfCurrent holds mu
+	// across SetVectorRootsFactory — whose shutdown branch closes the
+	// embedder (its lock) — so a mu-based epoch read inside the callback
+	// would wait for e.mu while holding it: the classic ABBA with the wiring
+	// path. The lock-free read keeps every lock edge pointing one way
+	// (mu/vr.mu → e.mu, never back).
+	epoch atomic.Uint64
+	// infoEpoch is the launch generation whose init recorded the stored
+	// embedder facts (recordEmbedderInfo's stamp). The degrade callback
+	// requires infoEpoch == its own epoch, not merely non-zero facts: on a
+	// toggle off→on restart the lifecycle still holds the SUPERSEDED
+	// launch's facts (non-zero), and the fresh launch's probe-window slide
+	// must be refused exactly like the fresh-install one — the init
+	// reconcile records the slid provider itself, and the runtime toast
+	// must not fire for an init-window slide. Written only by
+	// recordEmbedderInfo on the init goroutine after SetVectorEmbedderInfo;
+	// read lock-free by the degrade callback (same lock-order argument as
+	// epoch: the callback runs under the embedder's own lock).
+	infoEpoch atomic.Uint64
 }
 
 // NewVectorIndexLauncher assembles the launcher around the FrontendAPI whose
@@ -85,8 +111,13 @@ func (l *vectorIndexLauncher) Launch() {
 // background init.
 func (l *vectorIndexLauncher) applyEnabledChange(enabled bool) {
 	if !enabled {
+		// Under mu (not a bare Add): the bump must serialize against
+		// wireIfCurrent's check+wiring section — otherwise it could land
+		// between the check and SetFactory, and the Disable that follows
+		// this hook would then see the stale factory wire itself right back
+		// (and clear the disabled flag). See the epoch field comment.
 		l.mu.Lock()
-		l.epoch++
+		l.epoch.Add(1)
 		l.mu.Unlock()
 		return
 	}
@@ -99,8 +130,7 @@ func (l *vectorIndexLauncher) applyEnabledChange(enabled bool) {
 // vectorOnce/vectorReady pair, which could fire only once per app run.
 func (l *vectorIndexLauncher) launch() {
 	l.mu.Lock()
-	l.epoch++
-	epoch := l.epoch
+	epoch := l.epoch.Add(1)
 	l.mu.Unlock()
 	ready := make(chan struct{})
 	var once sync.Once
@@ -118,7 +148,7 @@ func (l *vectorIndexLauncher) launch() {
 func (l *vectorIndexLauncher) wireIfCurrent(epoch uint64, factory func() (*vectorindex.Manager, error), ready <-chan struct{}, closeEmbedder func() error) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.epoch != epoch {
+	if l.epoch.Load() != epoch {
 		return false
 	}
 	l.api.Lifecycle().SetVectorRootsFactory(factory, ready, closeEmbedder)
@@ -210,6 +240,15 @@ func (l *vectorIndexLauncher) runVectorIndexInit(epoch uint64, ready chan struct
 		ExecutionProvider: requestedProvider,
 		DeviceID:          onnxDevice,
 		Logger:            log,
+		// Runtime hardware→CPU degradation (sp4rk ADR-011): an "auto"
+		// embedder that hits the consecutive-inference-failure threshold
+		// degrades ONCE to the CPU provider mid-flight and reports the
+		// slide through this callback, so indexing and search keep working
+		// (slower) instead of every call failing. The handler keeps the
+		// requested/effective pair (ADR-045) honest after the slide and
+		// raises exactly one runtime_error toast. Explicit providers never
+		// degrade at runtime — their fallback is the init-time arm below.
+		OnProviderDegrade: l.onProviderDegrade(epoch),
 	}
 	emb, embErr := embedding.NewEmbedder(embCfg)
 	// embedderInfo feeds the execution-provider facts into every
@@ -253,7 +292,7 @@ func (l *vectorIndexLauncher) runVectorIndexInit(epoch uint64, ready chan struct
 			"deviceID", onnxDevice,
 			"library", libraryPath)
 		embedderInfo.FallbackReason = embErr.Error()
-		l.api.Lifecycle().SetVectorEmbedderInfo(embedderInfo)
+		l.recordEmbedderInfo(epoch, embedderInfo)
 		l.emit("vector_index:status", map[string]any{
 			"available":                    false,
 			"reason":                       embErr.Error(),
@@ -296,7 +335,23 @@ func (l *vectorIndexLauncher) runVectorIndexInit(epoch uint64, ready chan struct
 		// only, never blocks or fails startup.
 		embedderInfo.OVDevice = vectorindex.VerifyEmbedderOvDevice(context.Background(), emb, log)
 	}
-	l.api.Lifecycle().SetVectorEmbedderInfo(embedderInfo)
+	// A slide during the probes would otherwise be recorded as its PRE-slide
+	// snapshot: re-read the live provider and reconcile (the slide's own
+	// callback landed in the pre-record window — this launch had not
+	// stamped infoEpoch yet — and was refused; the
+	// reconcile records the slid provider plus probeSlideFallbackReason —
+	// the same runtime-slide marker the post-init path stores — so the
+	// cause lives in the WARN chain: sp4rk's degrade WARN and the
+	// handler's refused-window WARN).
+	if corrected, slid := reconcileProbeSlide(embedderInfo, emb.ExecutionProvider()); slid {
+		log.Warn("vector index embedder slid to the CPU provider during the init probes",
+			"requestedExecutionProvider", requestedProvider,
+			"recordedProvider", embedderInfo.EffectiveProvider,
+			"liveProvider", corrected.EffectiveProvider,
+			"hint", "sp4rk's runtime degradation fired before the embedder facts were recorded; restart the app or toggle vector indexing off and on to retry the hardware provider")
+		embedderInfo = corrected
+	}
+	l.recordEmbedderInfo(epoch, embedderInfo)
 
 	// The per-root registry (ADR-080) builds managers on demand through
 	// this factory. CloseFn stays nil on every per-root manager: the
@@ -422,6 +477,154 @@ func (l *vectorIndexLauncher) runVectorIndexInit(epoch uint64, ready chan struct
 	// project switch.
 	l.api.Lifecycle().InitVectorIndexForActiveProject()
 	log.Info("background init complete", "phase", "vector_index", "elapsed_ms", time.Since(startTime).Milliseconds())
+}
+
+// probeSlideFallbackReason is the FallbackReason reconcileProbeSlide records
+// for a slide that landed during the init-time verification probes: a
+// non-empty reason on an auto→cpu pair marks a runtime slide (the init-time
+// ladder loss carries none), so the status surface distinguishes the two
+// without a dedicated field.
+const probeSlideFallbackReason = "the hardware provider started failing during the init verification probes and the embedder slid to the CPU for its whole life; the inference failures are WARN-logged in the session log (vector index phase)"
+
+// reconcileProbeSlide folds a runtime hardware→CPU slide that landed during
+// the init-time verification probes into the recorded embedder facts: the
+// OpenVINO device probe drives sustained inference, so two consecutive
+// failures there reach sp4rk's runtime-degradation threshold BEFORE
+// SetVectorEmbedderInfo — the slide's own callback then lands in the
+// pre-record window (infoEpoch not yet stamped for this launch; refused),
+// and the effective provider read right after
+// NewEmbedder is already stale. The live provider replaces the recorded one,
+// and the hardware-path verification verdicts are dropped with it (they
+// described the provider that is no longer serving inference — a stale
+// "cuda_verified" or "gpu" beside an effective "cpu" would lie). The second
+// return reports whether anything changed. RequestedProvider and DeviceID
+// are properties of the REQUEST, not of the serving provider, and survive
+// untouched. FallbackReason is set to probeSlideFallbackReason, mirroring
+// the post-init slide's ApplyVectorProviderDegrade: a non-empty reason on
+// an auto→cpu pair is the payload's uniform runtime-slide marker, so the
+// status surface can tell the slide from the init-time ladder loss (which
+// carries no reason) without any dedicated field. The probe-window slide
+// has no captured cause string (the callback was refused in the pre-record
+// window), so the reason names where the failures are logged instead.
+// Pure so the launcher's init path (real model files) and the reconcile
+// stay separately testable.
+func reconcileProbeSlide(info VectorEmbedderInfo, liveProvider string) (VectorEmbedderInfo, bool) {
+	if liveProvider == info.EffectiveProvider {
+		return info, false
+	}
+	info.EffectiveProvider = liveProvider
+	info.CUDAVerified = nil
+	info.OVDevice = ""
+	info.FallbackReason = probeSlideFallbackReason
+	return info, true
+}
+
+// vectorRuntimeDegradeErrorCode is the runtime_error error_code for the
+// runtime hardware→CPU provider slide (sp4rk ADR-011) — distinct from the
+// init-time "vector_cuda_fallback"/"vector_openvino_fallback" codes so the
+// UI (and the log forensics) can tell "the provider never came up" from
+// "the provider came up and died under load".
+const vectorRuntimeDegradeErrorCode = "vector_runtime_degrade"
+
+// recordEmbedderInfo records the embedder facts on epoch's behalf and
+// stamps them with that epoch (infoEpoch), so the degrade callback can tell
+// facts of ITS launch from a superseded launch's leftovers. Both init
+// recording sites (the unavailable early return and the success path) go
+// through this helper — a SetVectorEmbedderInfo call outside it would leave
+// the stamp stale and the handler refusing honest runtime slides.
+func (l *vectorIndexLauncher) recordEmbedderInfo(epoch uint64, info VectorEmbedderInfo) {
+	l.api.Lifecycle().SetVectorEmbedderInfo(info)
+	l.infoEpoch.Store(epoch)
+}
+
+// onProviderDegrade builds the EmbedderConfig.OnProviderDegrade callback for
+// one launch. sp4rk fires it at most once per embedder, synchronously under
+// the embedder's own lock while a degraded inference call is in flight —
+// so the handler stays quick and non-reentrant: it only flips the recorded
+// embedder facts (under vectorRootsMu, which no inference path holds) and
+// emits one toast. No dedicated status re-emission happens here: every
+// status producer (stream callbacks and GetVectorIndexStatus alike) reads
+// the mutated facts via applyEmbedderInfo, and in the failure storm this
+// callback exists for, the failing pass's own status report carries the
+// slid provider to the UI within one pass.
+//
+// Guards, in order:
+//   - once: the toast is structurally single even if sp4rk ever fired
+//     twice (the contract says once per embedder);
+//   - epoch: a launch superseded by a disable or a newer launch must not
+//     overwrite the newer state's embedder facts (the ownership rule
+//     wireIfCurrent enforces for the factory, mirrored here for the info).
+//     The load is lock-free on purpose: the callback fires under the
+//     embedder's own lock, and mu is held across the wiring path's
+//     SetVectorRootsFactory — whose shutdown branch closes the embedder —
+//     so a mu-based read would invert against it (see the epoch field
+//     comment). The check is at entry, and the check and the facts commit
+//     are not one atomic step (a toggle-and-reinit landing exactly in that
+//     gap could see its fresh facts overwritten by a descheduled stale
+//     callback — best-effort by design; the next toggle or restart
+//     rewrites the facts honestly),
+//   - launch-scoped facts: the guard is not "facts exist" but "facts of
+//     THIS launch exist" (infoEpoch == epoch — recordEmbedderInfo's
+//     stamp). A slide during the init-time verification probes lands
+//     before that stamp, so the init path re-reads the live provider
+//     after the probes (reconcileProbeSlide) and records the slid one.
+//     Keying the guard on mere facts-existence would break the toggle
+//     off→on restart: the lifecycle still holds the SUPERSEDED launch's
+//     non-zero facts there, and the fresh launch's probe-window slide
+//     would mutate them and fire the runtime toast — exactly the
+//     init-window outcome the reconcile owns, with a toast that
+//     misreports a startup failure as a runtime one.
+func (l *vectorIndexLauncher) onProviderDegrade(epoch uint64) func(from, to, cause string) {
+	var once sync.Once
+	return func(from, to, cause string) {
+		once.Do(func() {
+			// Lock-free epoch read — the callback runs under the embedder's
+			// own lock (see the epoch field comment for the inversion a mu
+			// read would create).
+			current := l.epoch.Load() == epoch
+			if !current {
+				l.log.Warn("vector embedder degraded at runtime, but the launch is stale; the current owner keeps the status",
+					"from", from, "to", to, "cause", cause)
+				return
+			}
+			if l.infoEpoch.Load() != epoch {
+				// The facts on file (if any) belong to a superseded launch:
+				// THIS launch has not recorded its own yet, so the slide is
+				// an init-window one — the init path re-reads the live
+				// provider after the probes (reconcileProbeSlide) and
+				// records the slid provider itself. Mutating the stale
+				// facts and firing the runtime toast here would put a
+				// probe-window slide on the surface as a runtime one.
+				l.log.Warn("vector embedder degraded before this launch recorded its embedder facts; the init path records the slid provider itself",
+					"from", from, "to", to, "cause", cause)
+				return
+			}
+			info, ok := l.api.Lifecycle().ApplyVectorProviderDegrade(to, cause)
+			if !ok {
+				// Unreachable through this handler (infoEpoch == epoch means
+				// this launch recorded non-zero facts); kept as the
+				// belt-and-braces refusal for a zero-value facts write.
+				l.log.Warn("vector embedder degraded at runtime before the embedder facts were recorded; the init path records the slid provider itself",
+					"from", from, "to", to, "cause", cause)
+				return
+			}
+			providerLabel := "CUDA"
+			if from == embedding.ExecutionProviderOpenVINO {
+				providerLabel = "OpenVINO"
+			}
+			l.log.Warn("vector embedder degraded to the CPU provider at runtime",
+				"from", from,
+				"to", to,
+				"effectiveProvider", info.EffectiveProvider,
+				"hint", "restart the app or toggle vector indexing off and on to retry the hardware provider")
+			l.emit(EventRuntimeError, map[string]string{
+				"id": uuid.New().String(),
+				"message": "Vector index: " + providerLabel + " inference failed repeatedly — the embedder degraded to the CPU at runtime, embeddings will be slower. Cause: " + cause +
+					" Restart the app (or toggle vector indexing off and on) to retry the hardware provider once it is healthy.",
+				"error_code": vectorRuntimeDegradeErrorCode,
+			})
+		})
+	}
 }
 
 // verifyEmbedderGPU performs the one-shot external GPU verification after a
