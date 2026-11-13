@@ -1706,15 +1706,26 @@ func modelOverridesFromConfig(cfg *BuilderConfig) map[string]llm.ModelMetadata {
 // session's active provider so session_tokens.model and the emitter's cached
 // last-model carry the full "provider/model" selector the frontend's badge
 // comparison needs (ADR-123 §7: a cross-provider pin sharing the session's
-// bare model name must stay visible). The provider resolves through the
-// session router's read-only ProviderForModel — the same SetModel-style
-// first-match resolution the session itself routes by. Ids that already
-// contain "/" (OpenRouter-style echoed names) and models the router cannot
-// resolve pass through unchanged; the badge falls back to bare-name
-// comparison for them.
+// bare model name must stay visible). The router's ACTIVE composite wins
+// when it shares the echoed bare name: ProviderForModel is a first-match
+// scan over every configured provider, so when two providers list the same
+// bare name and the session switched to the second (composite SetModel),
+// recomposing from the scan would attribute the report to the wrong
+// provider — the badge would show a provider the session is not on and the
+// ADR-123 §7 pin-vs-session comparison would silently pass exactly on the
+// case it was introduced for. Ids that already contain "/"
+// (OpenRouter-style echoed names) and models neither the active composite
+// nor any provider lists pass through unchanged; the badge falls back to
+// bare-name comparison for them.
 func compositeSessionModel(llmRouter *llm.Router, model string) string {
 	if llmRouter == nil || model == "" || strings.Contains(model, "/") {
 		return model
+	}
+	// Usage reports echo bare names; the active composite is the
+	// session-side attribution of record (SetModel/SetLastModel wrote it),
+	// so it outranks the first-match scan.
+	if active := llmRouter.ActiveModel(); active != "" && llm.BareModel(active) == model {
+		return active
 	}
 	if provider, ok := llmRouter.ProviderForModel(model); ok && provider != "" {
 		return provider + "/" + model

@@ -52,3 +52,42 @@ func TestCompositeSessionModel(t *testing.T) {
 		t.Errorf("compositeSessionModel(nil router) = %q, want unchanged", got)
 	}
 }
+
+// TestCompositeSessionModel_ActiveCompositeWinsOverFirstMatch pins the
+// active-composite attribution rule: with two providers listing the same
+// bare model, a session switched to the SECOND (composite SetModel) must
+// report the ACTIVE provider — not ProviderForModel's first match, which
+// would silently misattribute every usage report and defeat the ADR-123 §7
+// pin-vs-session badge comparison on exactly the case it was added for.
+func TestCompositeSessionModel_ActiveCompositeWinsOverFirstMatch(t *testing.T) {
+	router, err := llm.NewRouter(context.Background(), llm.RouterConfig{
+		Providers: []llm.ProviderEntry{
+			{Name: "local-llm", ProviderType: "openai", BaseURL: "http://localhost:9998", Models: []string{"qwen3:8b"}},
+			{Name: "openai", ProviderType: "openai", BaseURL: "http://localhost:9999", Models: []string{"qwen3:8b"}},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("failed to build llm router: %v", err)
+	}
+
+	// Fresh router: nothing has been switched yet, the first-match scan
+	// applies and both attributions agree on the first provider.
+	if got := compositeSessionModel(router, "qwen3:8b"); got != "local-llm/qwen3:8b" {
+		t.Errorf("compositeSessionModel(qwen3:8b) on a fresh router = %q, want local-llm/qwen3:8b", got)
+	}
+
+	// Switch the session to the SECOND provider via the composite selector:
+	// the echoed bare name must now carry the active provider.
+	if err := router.SetModel(context.Background(), "openai/qwen3:8b"); err != nil {
+		t.Fatalf("SetModel(openai/qwen3:8b): %v", err)
+	}
+	if got := compositeSessionModel(router, "qwen3:8b"); got != "openai/qwen3:8b" {
+		t.Errorf("compositeSessionModel(qwen3:8b) after SetModel(openai/qwen3:8b) = %q, want openai/qwen3:8b (the active composite, not the first match)", got)
+	}
+
+	// A bare name the active composite does not carry still falls through to
+	// the first-match scan / pass-through after the switch.
+	if got := compositeSessionModel(router, "unknown-model"); got != "unknown-model" {
+		t.Errorf("compositeSessionModel(unknown-model) after the switch = %q, want unchanged", got)
+	}
+}

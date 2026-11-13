@@ -1988,6 +1988,33 @@ func TestValidateModelOverride_EmptyBareCompositeRejected(t *testing.T) {
 	}
 }
 
+// TestValidateModelOverride_EmptyProviderCompositeRejected pins the
+// empty-provider half of the mandatory-composite rule (ADR-122): "/model"
+// parses as a composite with an EMPTY provider, and the entry-point validator
+// must reject it deterministically (wrapping ErrInvalidModelOverride) —
+// otherwise the override survives validation, mutates the request's
+// reasoning-effort half, and only then fails Router.SetModel, degrading to
+// the silent warn-and-continue path with a half-applied override (the
+// "validate BEFORE any state change" contract).
+func TestValidateModelOverride_EmptyProviderCompositeRejected(t *testing.T) {
+	for _, model := range []string{"/model", "/claude-3-haiku"} {
+		err := ValidateModelOverride(model)
+		if err == nil {
+			t.Errorf("ValidateModelOverride(%q) must reject a composite with an empty provider", model)
+			continue
+		}
+		if !errors.Is(err, ErrInvalidModelOverride) {
+			t.Errorf("ValidateModelOverride(%q) must wrap ErrInvalidModelOverride, got: %v", model, err)
+		}
+		if !strings.Contains(err.Error(), `must be a full "provider/model" identifier`) {
+			t.Errorf("ValidateModelOverride(%q) must carry the composite guidance, got: %v", model, err)
+		}
+		if !strings.Contains(err.Error(), "must name a provider") {
+			t.Errorf("ValidateModelOverride(%q) must name the empty-provider cause, got: %v", model, err)
+		}
+	}
+}
+
 // TestHandleMessage_ModelOverride_CompositeID_UpdatesConfigModel verifies that
 // a composite model override (e.g. "Zen/glm-5.2") is reduced to the bare model
 // name when stored in config.Model.

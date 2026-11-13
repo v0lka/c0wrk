@@ -2173,14 +2173,21 @@ var ErrInvalidModelOverride = errors.New("invalid model override")
 // EMPTY bare part ("provider/") is rejected too — mirrors the profile
 // validator (modelOverrideValidator): letting it through would fail
 // Router.SetModel downstream and degrade to the silent warn-and-continue path
-// instead of the deterministic entry-point rejection the rule requires.
+// instead of the deterministic entry-point rejection the rule requires. An
+// EMPTY provider part ("/model") is rejected for the same reason: the part
+// before "/" must name a provider, and letting it through would still apply
+// the request's reasoning-effort half before SetModel fails — exactly the
+// half-activated state this pre-activation validation exists to prevent.
 func ValidateModelOverride(model string) error {
 	if model == "" {
 		return nil
 	}
-	_, bare, composite := llm.ParseCompositeModelID(model)
+	provider, bare, composite := llm.ParseCompositeModelID(model)
 	if !composite {
 		return fmt.Errorf("%w: %q must be a full \"provider/model\" identifier — bare model names are not accepted", ErrInvalidModelOverride, model)
+	}
+	if provider == "" {
+		return fmt.Errorf("%w: %q must be a full \"provider/model\" identifier — the part before \"/\" must name a provider", ErrInvalidModelOverride, model)
 	}
 	if bare == "" {
 		return fmt.Errorf("%w: %q must be a full \"provider/model\" identifier — the part after \"/\" must name a model (\"provider/\" has an empty bare model)", ErrInvalidModelOverride, model)
