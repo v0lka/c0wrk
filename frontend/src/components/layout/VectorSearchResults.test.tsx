@@ -8,13 +8,23 @@ import { createRoot, type Root } from 'react-dom/client'
 // shared object. Mocking (rather than the real persisted store) avoids the
 // zustand `persist` middleware crashing under jsdom when localStorage is
 // undefined.
+interface MockVectorStatus {
+  state: 'idle' | 'indexing' | 'ready' | 'reindexing' | 'unavailable' | 'loading'
+  // error_kind rides the wire payload (optional, omitempty); the ADR-122
+  // suspension tests below set it.
+  error_kind?: string
+  progress: number
+  files_indexed: number
+  total_files: number
+}
+
 const state = vi.hoisted(() => ({
   status: {
-    state: 'ready' as 'idle' | 'indexing' | 'ready' | 'reindexing' | 'unavailable' | 'loading',
+    state: 'ready',
     progress: 0,
     files_indexed: 0,
     total_files: 0,
-  },
+  } as MockVectorStatus,
   entries: [] as unknown[],
   isLoading: false,
 }))
@@ -73,6 +83,45 @@ describe('VectorSearchResults — index-not-ready placeholder', () => {
     state.status = { state: 'unavailable', progress: 0, files_indexed: 0, total_files: 0 }
     render(true)
     expect(container.textContent).toContain('Vector index unavailable')
+  })
+
+  // ADR-122: the suspension keeps the search path OPEN (the breaker stops
+  // the UPDATE pipeline only, and a live collection keeps serving the
+  // queries the still-enabled inputs fire) — the fetched entries render
+  // instead of the "unavailable" placeholder, in all three result states.
+  const suspendedStatus = {
+    state: 'unavailable' as const,
+    error_kind: 'suspended',
+    progress: 0.5,
+    files_indexed: 50,
+    total_files: 100,
+  }
+
+  it('renders the fetched results while the ADR-122 suspension holds', () => {
+    state.status = { ...suspendedStatus }
+    state.entries = [
+      { file_path: 'pkg/changed.go', start_line: 1, end_line: 3, content: 'package main', score: 0.9 },
+    ]
+    render(true)
+    expect(container.textContent).not.toContain('Vector index unavailable')
+    expect(container.textContent).toContain('changed.go')
+    expect(container.textContent).toContain('package main')
+  })
+
+  it('renders the no-results state while suspended with an empty result set', () => {
+    state.status = { ...suspendedStatus }
+    state.entries = []
+    render(true)
+    expect(container.textContent).not.toContain('Vector index unavailable')
+    expect(container.textContent).toContain('No results found')
+  })
+
+  it('renders the idle search surface while suspended without an active query', () => {
+    state.status = { ...suspendedStatus }
+    state.entries = []
+    render(false)
+    expect(container.textContent).not.toContain('Vector index unavailable')
+    expect(container.textContent).not.toContain('No results found')
   })
 
   // ADR-064: the branch-scoped DB open is not an indexing pass, so it must not

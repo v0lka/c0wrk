@@ -157,11 +157,17 @@ func (f *FrontendAPI) vectorCorpusRegistry() *vectorindex.CorpusRegistry {
 // SetFactory wires the manager factory from the desktop background ONNX init,
 // with the readiness channel and the once-guarded embedder close. Called once
 // from the desktop layer; if ShutdownAll already ran, the embedder is closed
-// right here — nobody else would release it.
+// right here — nobody else would release it. The close deliberately runs
+// AFTER vr.mu is released, the same outside-the-lock rule ShutdownAll and
+// Disable follow: emb.Close blocks on the embedder's internal lock, which a
+// runtime degrade callback holds while it flips the recorded provider facts
+// (taking the facts' lock under it) — a close parked under vr.mu would hold
+// the registry's mutex behind that native lock for the whole wait, so the
+// registry's lock edges never point toward the embedder's own lock.
 func (vr *VectorRoots) SetFactory(factory func() (*vectorindex.Manager, error), ready <-chan struct{}, closeEmbedder func() error) {
 	vr.mu.Lock()
-	defer vr.mu.Unlock()
 	if vr.shutdown {
+		vr.mu.Unlock()
 		vr.f.log().Warn("vector roots: factory wired after shutdown; closing the embedder")
 		if closeEmbedder != nil {
 			if err := closeEmbedder(); err != nil {
@@ -177,6 +183,7 @@ func (vr *VectorRoots) SetFactory(factory func() (*vectorindex.Manager, error), 
 	// (startup or an UpdateIndexingSettings enabled=true restart): the
 	// registry is back on, so a previous Disable() no longer applies.
 	vr.disabled = false
+	vr.mu.Unlock()
 }
 
 // FactoryReady reports whether the registry can build managers: the factory
@@ -597,6 +604,20 @@ func (vr *VectorRoots) evictLocked() {
 	}
 }
 
+// carryStatusReason reports whether a progress push must carry the manager's
+// recorded cause pair: every unavailable report explains itself (the
+// long-standing rule), and — ADR-122 — so does every push emitted while the
+// incremental circuit breaker's suspended verdict stands. A failing
+// branch-switch pass over a live collection ends in a terminal ready report
+// (the indexer's ready-vs-unavailable contract), and without the pair that
+// push would repaint the silent suspension as a bare, healthy ready in the
+// UI's event stream — exactly the surface ADR-122's wrapProgress gate
+// prevents on the stored status; this is its stream counterpart.
+func carryStatusReason(state vectorindex.IndexState, kind string) bool {
+	return state == vectorindex.IndexStateUnavailable ||
+		kind == string(vectorindex.IndexErrorKindSuspended)
+}
+
 // rootCallbacks builds the SwitchProject status callbacks for root: the
 // vector_index:status stream is a single UI channel, so only the focus root
 // emits — non-focus managers log the same facts instead.
@@ -639,8 +660,13 @@ func (vr *VectorRoots) rootCallbacks(root string, mgr *vectorindex.Manager) vect
 				TotalFiles:   total,
 				CurrentFile:  file,
 			}
-			if state == vectorindex.IndexStateUnavailable {
-				st.LastError, st.ErrorKind = reasonOf()
+			// reasonOf is read for every push (not just unavailable ones): the
+			// carry decision needs the stored kind — the ADR-122 suspension
+			// rides even a terminal ready report, so the UI's event stream
+			// can never repaint the silent suspension as a bare, healthy
+			// ready.
+			if lastErr, kind := reasonOf(); carryStatusReason(state, kind) {
+				st.LastError, st.ErrorKind = lastErr, kind
 			}
 			emitIfFocused(st)
 		},

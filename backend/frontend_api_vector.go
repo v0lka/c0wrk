@@ -355,8 +355,9 @@ const (
 
 // Vector status error kinds the registry contributes (VectorIndexStatus.
 // ErrorKind). The manager's own values come from vectorindex.IndexErrorKind
-// (repairable / transient / fatal / unknown); these name the routing and
-// window outcomes that never reach a manager.
+// (repairable / transient / fatal / unknown, plus the incremental circuit
+// breaker's "suspended"); these name the routing and window outcomes that
+// never reach a manager.
 const (
 	// vectorErrorKindLoading — the background embedder init has not produced
 	// a manager factory yet.

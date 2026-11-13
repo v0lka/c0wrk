@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/core/vectorindex"
@@ -157,8 +158,7 @@ func TestVectorIndexLauncher_WireIfCurrentSuperseded(t *testing.T) {
 
 	// Mimic launch()'s epoch assignment without running the init body.
 	l.mu.Lock()
-	l.epoch++
-	epoch := l.epoch
+	epoch := l.epoch.Add(1)
 	l.mu.Unlock()
 
 	// errLauncherProbe marks the probe factory so a test that accidentally
@@ -187,10 +187,45 @@ func TestVectorIndexLauncher_WireIfCurrentSuperseded(t *testing.T) {
 
 	// A NEW launch (fresh epoch) wires again — the restart path.
 	l.mu.Lock()
-	l.epoch++
-	nextEpoch := l.epoch
+	nextEpoch := l.epoch.Add(1)
 	l.mu.Unlock()
 	if !l.wireIfCurrent(nextEpoch, noopFactory, ready, closeEmbedder) {
 		t.Error("the fresh epoch must wire successfully")
 	}
+}
+
+// TestVectorLauncher_DisableBumpSerializesWithWiring pins the ordering half
+// of the epoch contract: the disable-side bump takes mu, so it can never
+// land between wireIfCurrent's epoch check and SetVectorRootsFactory — the
+// interleave where a lock-free bump wins that race and the Disable that
+// follows the hook then watches the stale factory wire itself back in (and
+// clear the disabled flag). Holding mu and asserting the bump does not
+// complete is the direct probe: a lock-free Add would sail straight through;
+// the 1 s watchdog is a bounded hang detector (the happy path never waits
+// it out — the goroutine is either blocked on mu or already failed the
+// assertion).
+func TestVectorLauncher_DisableBumpSerializesWithWiring(t *testing.T) {
+	recorder := &launcherEmitRecorder{}
+	api, log := newLauncherAPI(t, newEnabledConfig(false), recorder)
+	l := NewVectorIndexLauncher(api, t.TempDir(), log, VectorIndexLauncherDeps{Emit: recorder.emit})
+
+	l.mu.Lock()
+	done := make(chan struct{})
+	go func() {
+		l.applyEnabledChange(false)
+		close(done)
+	}()
+	select {
+	case <-done:
+		// Unlock before Fatal: Goexit skips a deferred unlock, and the
+		// spawned goroutine would stay blocked on mu for the rest of the
+		// (already failing) run.
+		l.mu.Unlock()
+		t.Fatal("the disable-side epoch bump completed without taking mu — the disable-vs-wiring ordering is broken")
+	case <-time.After(1 * time.Second):
+		// Blocked on mu, as the contract requires.
+		l.mu.Unlock()
+	}
+	// Join: with mu released the blocked bump completes and closes done.
+	<-done
 }

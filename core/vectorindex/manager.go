@@ -76,6 +76,32 @@ const (
 	DefaultCorpusResidencyBudgetBytes int64 = 0
 )
 
+// Incremental-failure backoff and circuit breaker for debounce-armed passes
+// (see specs/decisions/122-vector-incremental-failure-backoff.md): a failed
+// pass backs the NEXT debounce arm off exponentially, and consecutive
+// failures suspend automatic file-change indexing instead of retrying
+// forever. Constants, not config: the behavior is a safety property, not a
+// tuning knob.
+const (
+	// incrementalFailureBackoffStart is the delay applied to the debounce
+	// arm following the first failed incremental pass (the first backoff
+	// step; the unbacked arm stays at the configured debounce window).
+	incrementalFailureBackoffStart = 5 * time.Second
+
+	// incrementalFailureBackoffMax caps the exponential growth of the
+	// per-failure arm delay. With the shipped breaker threshold the shipped
+	// arms (5s, 10s, 20s, 40s — the 80s arm would follow the 5th failure,
+	// but that failure trips the breaker instead) never reach it; the cap
+	// keeps the formula bounded if the threshold or the step ever changes.
+	incrementalFailureBackoffMax = 10 * time.Minute
+
+	// incrementalFailureBreakerThreshold is the number of CONSECUTIVE failed
+	// debounce-armed passes that trips the circuit breaker: file-change
+	// arming suspends, and the status reports the suspension honestly with
+	// IndexErrorKindSuspended. Cancelled passes never count.
+	incrementalFailureBreakerThreshold = 5
+)
+
 // DefaultEmbeddingBatchSize mirrors sp4rk's embedding.DefaultBatchSize — the
 // fixed row capacity of the embedder's persistent batch ONNX session
 // (vector_index.embedding_batch_size). Assigned, not duplicated, so the two
@@ -251,6 +277,27 @@ type Manager struct {
 	// time (effectiveDebounce), so zero-value Manager literals keep the
 	// historical 1s behaviour.
 	debounce time.Duration
+	// incFailStreak counts consecutive FAILED debounce-armed incremental
+	// passes (a cancelled pass never counts — it is not a verdict). While
+	// positive it backs the next arm off exponentially
+	// (incrementalArmDelayLocked); at incrementalFailureBreakerThreshold it
+	// trips incSuspended. Guarded by debounceMu (arming decisions read it
+	// under that lock); the trip's status write happens after debounceMu is
+	// released — these fields never participate in lock nesting.
+	incFailStreak int
+	// incSuspended is the tripped circuit breaker: set when incFailStreak
+	// reaches incrementalFailureBreakerThreshold. While set, NotifyFileChange
+	// never arms and a late timer fire runs no pass; a successful pass, an
+	// explicit Reindex, or a manager-lifecycle restart (SwitchProject — the
+	// per-root registry calls it only at manager creation; a Git-panel focus
+	// switch deliberately keeps the suspension) clears it, and tearing the
+	// manager down resets structurally (the vector_index.enabled toggle
+	// rebuilds managers, as do LRU eviction and an app restart). While set it
+	// also holds the suspend status pair against terminal ready reports (the
+	// wrapProgress gate): a pair erased beside a live incSuspended would
+	// repaint the silent suspension as a healthy ready.
+	// Guarded by debounceMu.
+	incSuspended bool
 	// indexing coalesces trailing incremental passes: embedding is already
 	// serialized by the service write lock, so this flag's narrower job is
 	// avoiding a redundant trailing pass — while a pass is in flight a
@@ -550,6 +597,14 @@ func (m *Manager) SwitchProject(projectID, workspacePath, vectorIndexFullPath st
 		m.storageRoot = ""
 		m.mu.Unlock()
 		m.stopDebounce()
+		// The switch tears the project's indexing lifecycle down: the
+		// incremental-failure backoff/breaker state goes with it (a fresh
+		// lifecycle must not inherit a suspension it never earned). This is
+		// the manager-lifecycle boundary — in the per-root registry the
+		// callers are SwitchProject's arms at a manager's creation, while a
+		// Git-panel focus switch keeps live managers (and their
+		// suspensions) by design.
+		m.resetIncrementalFailureState()
 		// Drop readiness before the (possibly deferred) reset below so a search
 		// issued in the interim never serves the outgoing project's collection.
 		m.service.SetReady(false)
@@ -589,6 +644,12 @@ func (m *Manager) SwitchProject(projectID, workspacePath, vectorIndexFullPath st
 	m.mu.Unlock()
 
 	m.stopDebounce()
+
+	// Same breaker rule as the No-Project arm: an indexing-lifecycle
+	// restart on the manager must not inherit the previous lifecycle's
+	// failure streak (in the per-root registry this arm runs only at the
+	// manager's creation; focus switches keep live managers).
+	m.resetIncrementalFailureState()
 
 	// Drop readiness synchronously so a search RPC issued right after
 	// SwitchProject returns blocks on WaitReady instead of racing the async
@@ -949,7 +1010,14 @@ func (m *Manager) installGitMonitor(ctx context.Context, projectID string, gitMo
 
 // NotifyFileChange triggers debounced incremental indexing for the active
 // project's workspace (stored during SwitchProject); no-op with no indexer
-// configured (No Project / CHAT mode) or an empty workspace path.
+// configured (No Project / CHAT mode) or an empty workspace path. While the
+// incremental circuit breaker is tripped (incSuspended) the arm is refused:
+// file-change notifications stop scheduling passes until a successful pass,
+// an explicit Reindex, or a manager-lifecycle restart (SwitchProject — in
+// the per-root registry the manager's creation) resets the breaker. A
+// Git-panel focus switch is not a reset: ApplyFocus keeps live managers
+// running, so the suspension survives it and is re-surfaced by the focus
+// snapshot.
 func (m *Manager) NotifyFileChange() {
 	m.mu.RLock()
 	idx := m.indexer
@@ -961,6 +1029,10 @@ func (m *Manager) NotifyFileChange() {
 	}
 
 	m.debounceMu.Lock()
+	if m.incSuspended {
+		m.debounceMu.Unlock()
+		return
+	}
 	if m.debounceTimer != nil {
 		m.debounceTimer.Stop()
 	}
@@ -976,13 +1048,39 @@ func (m *Manager) scheduleIncrementalLocked() {
 	m.debounceTimer = m.armIncremental()
 }
 
-// armIncremental preserves the production timer while allowing in-process
-// timing tests to control dispatch independently of filesystem indexing.
+// armIncremental arms the debounce that runs one incremental pass after the
+// delay returned by incrementalArmDelayLocked — the configured window while
+// the failure streak is zero, else the failure backoff. The production timer
+// seam (afterFunc) keeps in-process timing tests in control of dispatch
+// independently of filesystem indexing. The caller must hold m.debounceMu
+// (both current call sites do), because the delay reads the failure streak.
 func (m *Manager) armIncremental() *time.Timer {
+	delay := m.incrementalArmDelayLocked()
 	if m.afterFunc != nil {
-		return m.afterFunc(m.effectiveDebounce(), m.runIncrementalGuarded)
+		return m.afterFunc(delay, m.runIncrementalGuarded)
 	}
-	return time.AfterFunc(m.effectiveDebounce(), m.runIncrementalGuarded)
+	return time.AfterFunc(delay, m.runIncrementalGuarded)
+}
+
+// incrementalArmDelayLocked returns the delay before the next debounce arm.
+// With no failed pass pending it is the configured watcher debounce window
+// (effectiveDebounce). After failures it is the exponential backoff for the
+// consecutive-failure streak: incrementalFailureBackoffStart doubled per
+// additional consecutive failure, capped at incrementalFailureBackoffMax —
+// so a persistently failing embedder retries at human-scale intervals
+// instead of burning CPU on every file change. Caller holds m.debounceMu.
+func (m *Manager) incrementalArmDelayLocked() time.Duration {
+	if m.incFailStreak <= 0 {
+		return m.effectiveDebounce()
+	}
+	d := incrementalFailureBackoffStart
+	for range m.incFailStreak - 1 {
+		d *= 2
+		if d >= incrementalFailureBackoffMax {
+			return incrementalFailureBackoffMax
+		}
+	}
+	return d
 }
 
 // effectiveDebounce returns the configured watcher debounce window, falling
@@ -1004,9 +1102,32 @@ func (m *Manager) effectiveDebounce() time.Duration {
 // current project. It does NOT serialize embedding — IndexIncremental holds
 // the service write lock around AddDocuments; the guard's value is coalescing
 // plus cancellation safety.
+//
+// The pass outcome drives the incremental-failure backoff/circuit breaker
+// (specs/decisions/122-vector-incremental-failure-backoff.md): a failed pass
+// backs subsequent arms off exponentially and, at the breaker threshold,
+// suspends file-change arming with an honest suspended status; a success
+// resets the streak; a cancelled pass is never a verdict and counts as
+// neither.
 func (m *Manager) runIncrementalGuarded() {
+	m.debounceMu.Lock()
+	suspended := m.incSuspended
+	m.debounceMu.Unlock()
+	if suspended {
+		// A timer armed before the breaker tripped (or a fire racing the
+		// trip): no pass may start while suspended. Arming is refused at the
+		// source (NotifyFileChange), so this is a single late fire, not a
+		// retry loop.
+		m.logger.Info("incremental indexing skipped: suspended after repeated failures")
+		return
+	}
 	if m.indexing.Load() {
 		// A pass is in flight: re-arm instead of a redundant trailing pass.
+		// The delay is read before the in-flight pass's verdict lands, so a
+		// failing pass can leave this one arm at its pre-failure (shorter)
+		// delay — at most one extra pass fires early; the next notification
+		// (and every arm after it) reads the fresh streak, and the breaker's
+		// trip is per-pass, so it is never weakened by this window.
 		m.debounceMu.Lock()
 		m.debounceTimer = m.armIncremental()
 		m.debounceMu.Unlock()
@@ -1045,10 +1166,132 @@ func (m *Manager) runIncrementalGuarded() {
 		return
 	}
 	if idxErr := idx.IndexIncremental(ctx, ws); idxErr != nil {
-		m.logger.Warn("incremental indexing failed", "error", idxErr)
+		if ctx.Err() != nil {
+			// Superseded (a project switch or shutdown cancelled this pass):
+			// a cancelled operation is never a verdict — it counts toward
+			// neither the backoff nor the breaker, mirroring the Reindex
+			// repair's own superseded-pass silence.
+			m.logger.Info("incremental indexing cancelled")
+		} else {
+			m.logger.Warn("incremental indexing failed", "error", idxErr)
+			m.recordIncrementalPassFailure(ctx, idxErr)
+		}
+	} else {
+		m.recordIncrementalPassSuccess()
 	}
 	m.indexing.Store(false)
 	m.indexingWG.Done()
+}
+
+// recordIncrementalPassFailure records one failed debounce-armed incremental
+// pass: the streak grows, the next arm backs off exponentially, and at
+// incrementalFailureBreakerThreshold the breaker trips — file-change arming
+// suspends and the status reports the suspension honestly with the separate
+// IndexErrorKindSuspended kind. The suspend is deliberately NOT routed
+// through notifyInitFailure: it is a pipeline verdict about the embedder /
+// runtime, not a store verdict — it must not invoke the repair ladder's
+// failure callback (ADR-120 stays untouched) and it quarantines nothing.
+//
+// The trip is also pushed through the project's OnProgress callback so the
+// focused root's vector_index:status stream carries it live: the failing
+// pass itself has just emitted its terminal "ready" report (a live
+// collection keeps search answering — indexer.go's ready-vs-unavailable
+// by-collection-presence rule), and nothing runs after a suspension to
+// supersede it, so the stored status write alone would leave that
+// misleading event as the UI's freshest news until the next pull. The push
+// carries the last-known progress values and obeys the repair path's
+// superseded-pass silence (ctx is the pass's own index context; a lifecycle
+// that replaced it owns the status now).
+func (m *Manager) recordIncrementalPassFailure(ctx context.Context, lastErr error) {
+	m.debounceMu.Lock()
+	m.incFailStreak++
+	streak := m.incFailStreak
+	trip := streak >= incrementalFailureBreakerThreshold && !m.incSuspended
+	if trip {
+		m.incSuspended = true
+	}
+	m.debounceMu.Unlock()
+	if !trip {
+		return
+	}
+	reason := fmt.Sprintf(
+		"automatic incremental indexing suspended after %d consecutive failed passes (embedder/runtime failures); the last failure: %s — a successful pass, Reindex, or toggling vector indexing off and on resumes it",
+		streak, lastErr)
+	var files, total int
+	var file string
+	m.statusMu.Lock()
+	m.currentState = IndexStateUnavailable
+	m.currentPhase = ""
+	m.lastError = reason
+	m.lastErrorKind = IndexErrorKindSuspended
+	files, total, file = m.filesIndexed, m.totalFiles, m.currentFile
+	m.statusMu.Unlock()
+	m.logger.Warn("incremental indexing suspended: circuit breaker tripped",
+		"consecutive_failures", streak, "last_error", lastErr)
+	// Push the verdict through the project's status stream (nil-safe: bare
+	// test managers and roots without callbacks just keep the pull path).
+	// The currency check mirrors notifyRepairFailure's: m.indexCtx is
+	// re-read under m.mu, and a mismatch means this pass was superseded —
+	// the newer lifecycle owns the status from its own reports.
+	m.mu.RLock()
+	cbs := m.projectCallbacks
+	current := m.indexCtx == ctx
+	m.mu.RUnlock()
+	if !current || cbs.OnProgress == nil {
+		return
+	}
+	cbs.OnProgress("", IndexStateUnavailable, files, total, file)
+}
+
+// recordIncrementalPassSuccess records one successful debounce-armed pass
+// (also fired for a successful branch-switch pass): the backoff streak and
+// the breaker reset, so the next arm returns to the plain debounce window.
+// A tripped suspend status is cleared here too — the pass's own ready report
+// usually already replaced it, but clearing under statusMu keeps the status
+// pair from outliving the failure it described in every interleaving.
+func (m *Manager) recordIncrementalPassSuccess() {
+	m.debounceMu.Lock()
+	recovered := m.incFailStreak > 0
+	wasSuspended := m.incSuspended
+	m.incFailStreak = 0
+	m.incSuspended = false
+	m.debounceMu.Unlock()
+	if wasSuspended {
+		m.statusMu.Lock()
+		if m.lastErrorKind == IndexErrorKindSuspended {
+			m.clearIndexErrorLocked()
+		}
+		m.statusMu.Unlock()
+		m.logger.Info("incremental indexing resumed: a pass succeeded after suspension")
+	} else if recovered {
+		m.logger.Info("incremental indexing healthy again: the failure backoff reset")
+	}
+}
+
+// resetIncrementalFailureState is the explicit escape hatch behind the two
+// reset call sites of the incremental backoff/circuit breaker: a manual
+// Reindex and a manager-lifecycle restart (SwitchProject — the per-root
+// registry's only call is the manager's creation) re-arm file-change
+// indexing immediately instead of leaving the breaker's silence standing.
+// The vector_index.enabled toggle resets structurally — Disable tears the
+// manager down and an enable builds a fresh one, so a new manager always
+// starts with a clean streak. The suspend status pair is dropped when it was
+// this breaker's own; the pass this reset precedes owns the status from its
+// first progress report onward.
+func (m *Manager) resetIncrementalFailureState() {
+	m.debounceMu.Lock()
+	suspended := m.incSuspended
+	m.incFailStreak = 0
+	m.incSuspended = false
+	m.debounceMu.Unlock()
+	if suspended {
+		m.statusMu.Lock()
+		if m.lastErrorKind == IndexErrorKindSuspended {
+			m.clearIndexErrorLocked()
+		}
+		m.statusMu.Unlock()
+		m.logger.Info("incremental indexing breaker reset by an explicit reindex/project switch")
+	}
 }
 
 // CancelIndexing cancels any in-flight indexing operation and stops pending debounces.
@@ -1078,6 +1321,24 @@ func (m *Manager) stopDebounce() {
 // internal status and then calls the user-provided callback (if not nil).
 func (m *Manager) wrapProgress(userFn ProgressCallback) ProgressCallback {
 	return func(phase IndexPhase, state IndexState, filesIndexed, totalFiles int, currentFile string) {
+		// A tripped breaker holds the failure pair hostage (ADR-122): a pass
+		// that FAILED with a live collection still reports the terminal
+		// "ready" (indexer.go's ready-vs-unavailable contract — search keeps
+		// answering), so an ungated clear here would erase the suspended
+		// verdict while incSuspended keeps refusing file-change arms — the
+		// "silently stuck ready" surface ADR-122 exists to prevent. The
+		// reachable producer is a failing branch-switch pass (debounce arms
+		// are refused while suspended; a failed Reindex repair re-records its
+		// own verdict right after). The pair is dropped by the breaker's own
+		// reset paths (a successful pass, Reindex, a lifecycle restart), and
+		// only those. Read BEFORE statusMu: sequential acquisition, never
+		// nested — the breaker fields participate in no lock nesting.
+		suspended := false
+		if state == IndexStateReady {
+			m.debounceMu.Lock()
+			suspended = m.incSuspended
+			m.debounceMu.Unlock()
+		}
 		m.statusMu.Lock()
 		m.currentPhase = phase
 		m.currentState = state
@@ -1085,7 +1346,7 @@ func (m *Manager) wrapProgress(userFn ProgressCallback) ProgressCallback {
 		m.totalFiles = totalFiles
 		m.currentFile = currentFile
 		switch {
-		case state == IndexStateReady:
+		case state == IndexStateReady && !suspended:
 			// The index answers again: the failure it recovered from is no
 			// longer the explanation for anything.
 			m.clearIndexErrorLocked()
@@ -1219,6 +1480,15 @@ const (
 	// carries only a state, never the failure): the reason says so instead of
 	// leaving the surface bare.
 	IndexErrorKindUnknown IndexErrorKind = "unknown"
+	// IndexErrorKindSuspended classifies the incremental-failure circuit
+	// breaker (specs/decisions/122-vector-incremental-failure-backoff.md):
+	// debounce-armed passes failed repeatedly (an embedder/runtime fault), so
+	// automatic file-change indexing suspended itself instead of retrying
+	// forever. It is deliberately NOT the store taxonomy's verdict — no
+	// quarantine runs and the repair ladder (ADR-120) is untouched — and it
+	// is cleared by the breaker's reset paths (a successful pass, Reindex, a
+	// project switch, the vector_index.enabled toggle's manager rebuild).
+	IndexErrorKindSuspended IndexErrorKind = "suspended"
 )
 
 // ClassifyInitError maps an init/pass failure onto IndexErrorKind through the
@@ -1351,6 +1621,16 @@ func (m *Manager) handleBranchSwitch(ctx context.Context, indexer *Indexer, work
 	if fullPass {
 		m.freeOSMemoryAfterFullIndex()
 	}
+	// A successful branch-switch pass resets the incremental-failure
+	// backoff/breaker like any other successful pass ("success of any pass"
+	// is a reset path — ADR-122 D4). The reset is accepted on the switch's
+	// own terms, not as embedder proof: the (false, nil) return always ran
+	// IndexIncremental, but that pass can be a work no-op (zero inference),
+	// so a branch hop to an unchanged target may clear the breaker without
+	// the embedder having served a call — the next failing passes simply
+	// re-accrue the streak under the backoff. Its failures stay the branch
+	// switch's own logged outcome — they do not feed the breaker's streak.
+	m.recordIncrementalPassSuccess()
 }
 
 // errLegacyRepairNoop is the terminal cause recorded when the reindex repair
@@ -1394,6 +1674,12 @@ func (m *Manager) Reindex(ctx context.Context) error {
 	m.mu.Unlock()
 
 	m.stopDebounce()
+
+	// The explicit repair is also the breaker's escape hatch: reset the
+	// incremental-failure backoff/circuit breaker so file-change arming
+	// resumes with this pass, and the pass outcome (not the stale streak)
+	// shapes the next arm.
+	m.resetIncrementalFailureState()
 
 	// Start a fresh indexing pass: a full build when the collection is empty,
 	// otherwise a validation-based reconcile of the whole workspace.

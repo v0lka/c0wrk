@@ -31,10 +31,14 @@ const BADGE_UNVERIFIED = 'border-warning/40 bg-warning/10 text-warning'
  * - 'openvino-fallback' — an explicit "openvino" request degraded to
  *   "cpu": the OpenVINO twin of the CUDA fallback (plugin missing or init
  *   failure); same non-empty-reason guarantee.
- * - 'auto-cpu' — "auto" resolved to "cpu": the expected degradation path of
- *   Auto (no hardware provider usable). Legitimate, not an error; the
- *   concrete cause is WARN-logged at startup and is not part of the status
- *   payload.
+ * - 'auto-cpu' — "auto" resolved to "cpu": at INIT time this is the
+ *   expected degradation path of Auto (no hardware provider usable;
+ *   legitimate, not an error; the concrete cause is WARN-logged at startup
+ *   and is not part of the status payload — the empty-reason info note).
+ *   The same pair WITH a non-empty provider_fallback_reason is a runtime
+ *   slide (sp4rk ADR-011: the hardware winner died under load and the
+ *   embedder slid to the CPU mid-flight) — the reason carries the runtime
+ *   cause, and the note renders as the warning runtime-slide variant.
  * - 'honored' — everything else, including "auto" resolving to "cuda" or
  *   "openvino" (Auto's best outcomes — a success, never a fallback).
  */
@@ -64,10 +68,14 @@ const EFFECTIVE_COLOR: Record<ProviderOutcome, string> = {
  *
  * - requested → effective provider, colored by outcome (see
  *   classifyOutcome): success when honored (incl. "auto" winning with CUDA
- *   or OpenVINO), info for the expected Auto→CPU degradation, warning for a
- *   real explicit-"cuda"/"openvino"→CPU fallback;
+ *   or OpenVINO), info for the expected init-time Auto→CPU degradation,
+ *   warning for a real explicit-"cuda"/"openvino"→CPU fallback AND for a
+ *   runtime auto→CPU slide (a non-empty provider_fallback_reason on the
+ *   auto→cpu pair — sp4rk ADR-011);
  * - the fallback reason callout (explicit "cuda"/"openvino" fallbacks only —
- *   the backend fills provider_fallback_reason on exactly those paths);
+ *   a runtime auto→CPU slide renders its cause in the dedicated
+ *   runtime-slide note instead, and the init-time ladder loss carries no
+ *   reason at all);
  * - the `cuda_verified` badge: the external nvidia-smi verdict, present only
  *   when the effective provider is CUDA and the startup probe ran;
  * - the `ov_device` badge: the xpu-smi device-class verdict for an OpenVINO
@@ -94,6 +102,12 @@ export function VectorIndexDiagnostics({ status }: { status: VectorIndexStatus }
   const showOvBadge =
     effective === 'openvino' && (ovDevice === 'gpu' || ovDevice === 'cpu')
   const ovVerified = ovDevice === 'gpu'
+  // A runtime auto→CPU slide (sp4rk ADR-011) is a FAILURE the user must
+  // notice — the effective-provider text joins the explicit-provider
+  // fallbacks in the warning color; the expected INIT-time Auto→CPU
+  // degradation stays the calm info color. See classifyOutcome's doc.
+  const runtimeSlide = outcome === 'auto-cpu' && !!reason
+  const effectiveColor = runtimeSlide ? 'text-warning' : EFFECTIVE_COLOR[outcome]
 
   return (
     <div
@@ -118,7 +132,7 @@ export function VectorIndexDiagnostics({ status }: { status: VectorIndexStatus }
             <span className="text-muted-foreground">Provider:</span>
             <span>{providerLabel(requested)}</span>
             <span aria-hidden="true">→</span>
-            <span className={EFFECTIVE_COLOR[outcome]}>{providerLabel(effective)}</span>
+            <span className={effectiveColor}>{providerLabel(effective)}</span>
           </div>
 
           <div data-testid="vector-diagnostics-device" className="text-xs text-muted-foreground">
@@ -137,7 +151,22 @@ export function VectorIndexDiagnostics({ status }: { status: VectorIndexStatus }
             </div>
           )}
 
-          {outcome === 'auto-cpu' && (
+          {outcome === 'auto-cpu' && reason && (
+            <div
+              data-testid="vector-runtime-slide-note"
+              className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 p-2 text-xs text-warning"
+            >
+              <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+              <span>
+                The hardware provider won at startup but started failing under load, and the
+                embedder slid to the CPU at runtime — embeddings keep working, but slower.
+                Cause: {reason} Restart the app (or toggle vector indexing off and on) to retry
+                the hardware provider once it is healthy.
+              </span>
+            </div>
+          )}
+
+          {outcome === 'auto-cpu' && !reason && (
             <div
               data-testid="vector-auto-cpu-note"
               className="flex items-start gap-2 rounded-md border border-info/30 bg-info/10 p-2 text-xs text-info"
