@@ -288,7 +288,7 @@ func (idx *Indexer) IndexFull(ctx context.Context, workspacePath string) (err er
 	// identical root through Manager.initProject, so this is an anchor of
 	// record for standalone-service callers, not a switch.
 	idx.service.SetWorkspaceRoot(workspacePath)
-	// Readiness gate (ADR-122): the pass owns the readiness cycle unless it
+	// Readiness gate (ADR-123): the pass owns the readiness cycle unless it
 	// entered with the service ALREADY ready over a queryable collection —
 	// the watcher-driven mid-session pass — which keeps readiness UP, so
 	// searches keep answering from the committed-so-far state between the
@@ -354,7 +354,7 @@ func (idx *Indexer) IndexFull(ctx context.Context, workspacePath string) (err er
 	idx.onProgress(PhaseBoth, IndexStateIndexing, 0, totalFiles, "")
 	idx.logger.Info("starting full index", "workspace", workspacePath, "files", totalFiles)
 
-	// Staged acquisition (ADR-122): the pass lease restores the pass-vs-pass
+	// Staged acquisition (ADR-123): the pass lease restores the pass-vs-pass
 	// exclusion the whole-pass service write hold used to provide, and every
 	// mutating step below commits through a short identity-checked window —
 	// so search, status and Close are never frozen by the pass. The stall
@@ -391,7 +391,7 @@ func (idx *Indexer) IndexIncremental(ctx context.Context, workspacePath string) 
 	// Same root binding as IndexFull: the pass's coordinate anchor (see
 	// IndexFull).
 	idx.service.SetWorkspaceRoot(workspacePath)
-	// Same conditional readiness gate as IndexFull (ADR-122): a pass entered
+	// Same conditional readiness gate as IndexFull (ADR-123): a pass entered
 	// NOT-ready (post-switch reconciliation) keeps the historical
 	// MarkNotReady→RestoreReady cycle, while a pass that found the service
 	// already ready over a queryable collection keeps readiness up so
@@ -444,7 +444,7 @@ func (idx *Indexer) IndexIncremental(ctx context.Context, workspacePath string) 
 	// reconciliation of a clean attach is exactly this plus the walk. This
 	// runs BEFORE the no-changes early return — a clean attach has zero
 	// overlay changes and its whole value IS the adoption.
-	// Staged acquisition (ADR-122): the pass lease restores the pass-vs-pass
+	// Staged acquisition (ADR-123): the pass lease restores the pass-vs-pass
 	// exclusion the whole-pass service write hold used to provide, and the
 	// working-store identity captured here is what every window below
 	// re-validates before committing. The stall watchdog suspends across
@@ -525,7 +525,7 @@ func (idx *Indexer) IndexIncremental(ctx context.Context, workspacePath string) 
 	// Delete documents for deleted and stale files — ONE identity-checked
 	// window: enumeration, the chromem+lexical deletion and the sidecar drop
 	// land together, atomic against searches and against a displacement
-	// (ADR-122).
+	// (ADR-123).
 	filesToDelete := make([]string, 0, len(deleted)+len(stale))
 	filesToDelete = append(filesToDelete, deleted...)
 	filesToDelete = append(filesToDelete, stale...)
@@ -1084,7 +1084,7 @@ func (idx *Indexer) streamPreparedFiles(ctx context.Context, paths []string, roo
 	return out
 }
 
-// indexPass is one full/incremental pass's staged-acquisition guard (ADR-122):
+// indexPass is one full/incremental pass's staged-acquisition guard (ADR-123):
 // the pass lease — the pass-vs-pass exclusion the whole-pass service write
 // hold used to provide — plus the working-store identity every write window
 // re-validates before touching shared state. The pass holds NO service lock
@@ -1230,7 +1230,7 @@ type pendingFile struct {
 type documentAccumulator struct {
 	service   *Service
 	telemetry *Telemetry
-	// pass + cache (ADR-122): inference runs OUTSIDE the service write
+	// pass + cache (ADR-123): inference runs OUTSIDE the service write
 	// windows through the cache captured with the pass's working-store
 	// identity (internally synchronized, never torn down by state teardown);
 	// commits and sidecar publishes take identity-checked windows.
@@ -1298,7 +1298,7 @@ func (a *documentAccumulator) embedPending(ctx context.Context) error {
 	a.telemetry.observeBatch(len(docs), a.service.embeddingBatchSize)
 	a.pass.wd.heartbeat(StageEmbedding, "")
 	embedStarted := time.Now()
-	// Inference runs OUTSIDE the service write window (ADR-122) through the
+	// Inference runs OUTSIDE the service write window (ADR-123) through the
 	// cache captured with the pass's working-store identity; a displacement
 	// renders the work moot (wasted inference, never corruption) and the
 	// commit window aborts the pass.
@@ -1338,7 +1338,7 @@ func (a *documentAccumulator) embedPending(ctx context.Context) error {
 	// Files whose LAST chunk poison-dropped completed during inference: their
 	// sidecar publish (publish-after-commit — every committed chunk of such a
 	// file already landed in an earlier commit window) takes its own
-	// identity-checked window instead of riding inference (ADR-122).
+	// identity-checked window instead of riding inference (ADR-123).
 	if len(dropCompleted) > 0 {
 		if err := a.pass.window("publishing poison-drop sidecar entries", func() error {
 			for _, file := range dropCompleted {
@@ -1364,7 +1364,7 @@ func (a *documentAccumulator) commitPending(ctx context.Context) error {
 	}
 	// ONE identity-checked window per commit: the §3 chunk records, the
 	// chromem commit and the per-file sidecar publishes land together,
-	// atomic against searches and against a displacement (ADR-122; the
+	// atomic against searches and against a displacement (ADR-123; the
 	// chunks-before-tables and publish-after-commit ordering is exactly the
 	// whole-pass hold used to serialize).
 	a.pass.wd.heartbeat(StageChromemCommit, "")
@@ -1404,7 +1404,7 @@ func (a *documentAccumulator) publishFileIfComplete(file *pendingFile) {
 // inference accumulator and a separate bounded chromem commit window; the
 // inference tail flushes once, at pass end. Embedding stays single-threaded.
 //
-// Staged acquisition (ADR-122): preparation touches no shared state and
+// Staged acquisition (ADR-123): preparation touches no shared state and
 // inference runs through the embedding cache captured with the pass's
 // working-store identity, both WITHOUT the service write lock; only the
 // mutating steps — batch commits and sidecar publishes — take the lock, each
@@ -1468,7 +1468,7 @@ func (idx *Indexer) indexPrepared(ctx context.Context, paths []string, o indexPi
 					pass.wd.heartbeat(StageEmbedding, unit.path)
 					// One identity-checked window per batch: the legacy path
 					// embeds inside AddDocuments, so the window spans the
-					// commit of one addDocumentBatchSize slice (ADR-122).
+					// commit of one addDocumentBatchSize slice (ADR-123).
 					if addErr := pass.window("adding document batch", func() error {
 						return idx.service.AddDocuments(ctx, vecBatch, lexBatch)
 					}); addErr != nil {

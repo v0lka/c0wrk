@@ -1666,7 +1666,7 @@ func (s *Service) embedSubBatch(ctx context.Context, sub []chromem.Document) ([]
 
 // embedSubBatchFrom is embedSubBatch with the embedding cache passed in
 // explicitly: the streaming accumulator calls it OUTSIDE the service write
-// window (ADR-122) through the cache captured with the pass's working-store
+// window (ADR-123) through the cache captured with the pass's working-store
 // identity, while the in-window caller passes the live state's cache. The
 // cache is internally synchronized and never torn down by state teardown, so
 // a captured pointer stays safe to use across park/eviction.
@@ -1729,7 +1729,7 @@ func (s *Service) resolveEmbeddingChunk(ctx context.Context, texts []string) (ve
 
 // resolveEmbeddingChunkFrom is resolveEmbeddingChunk with the embedding cache
 // passed in explicitly — the staged-window form the indexing pass uses OUTSIDE
-// the service write window (ADR-122) through the cache captured with the
+// the service write window (ADR-123) through the cache captured with the
 // pass's working-store identity.
 func (s *Service) resolveEmbeddingChunkFrom(ctx context.Context, texts []string, cache *embeddingCache) (vecs [][]float32, failed map[int]struct{}, err error) {
 	vecs = make([][]float32, len(texts))

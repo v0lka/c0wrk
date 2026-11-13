@@ -1,4 +1,4 @@
-# ADR-122: Staged Indexing Lock Acquisition — Search Never Freezes Behind a Pass
+# ADR-123: Staged Indexing Lock Acquisition — Search Never Freezes Behind a Pass
 
 ## Status
 

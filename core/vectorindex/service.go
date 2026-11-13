@@ -302,7 +302,7 @@ type Service struct {
 
 	// indexAvailability is a metadata-only snapshot for UI status; reading it
 	// must never wait for mu — indexing passes hold that lock only in short
-	// identity-checked write windows (ADR-122), while focus changes need
+	// identity-checked write windows (ADR-123), while focus changes need
 	// status immediately.
 	indexAvailability atomic.Uint32
 
@@ -326,7 +326,7 @@ type Service struct {
 	migrationWG sync.WaitGroup
 	mu          sync.RWMutex
 	// passLease serializes full/incremental indexing passes against each
-	// other. Since ADR-122 a pass no longer holds mu for its whole duration —
+	// other. Since ADR-123 a pass no longer holds mu for its whole duration —
 	// it takes mu only in short identity-checked write windows, so search,
 	// status and Close are never frozen by a pass — and the lease is what
 	// keeps two passes from interleaving their windows (the mutual exclusion
@@ -1152,7 +1152,7 @@ func (s *Service) ReleaseWriteLock() {
 // ErrWorkingStoreDisplaced is returned by an indexing pass whose working
 // store was swapped, closed or evicted between its write windows — a
 // concurrent branch switch, project switch, No Project reset or Close won
-// the service lock while the pass was outside a window (ADR-122). The
+// the service lock while the pass was outside a window (ADR-123). The
 // condition is not a store defect (the repair ladder never quarantines for
 // it): the displacing owner rebuilt or released the store, and the next
 // triggered pass reconciles from source.
@@ -1213,7 +1213,7 @@ func (s *Service) workingStoreDisplacedLocked(id workingStoreIdentity) bool {
 
 // queryableCollection reports whether the current working store exists and
 // holds at least one committed document — the "a pass leaves something to
-// search" gate of ADR-122: an indexing pass drops readiness only when this
+// search" gate of ADR-123: an indexing pass drops readiness only when this
 // is false, and keeps it up (searches answering between windows) otherwise.
 func (s *Service) queryableCollection() bool {
 	col := s.GetCollection()
@@ -1277,7 +1277,7 @@ func (s *Service) RestoreReady(gen int64) {
 
 // GetDB returns the underlying chromem-go DB (for use by Indexer). Lock-free
 // on purpose, exactly like GetCollection: it is a best-effort snapshot of
-// whichever state is current (ADR-122 removed the whole-pass hold, so no
+// whichever state is current (ADR-123 removed the whole-pass hold, so no
 // indexing path holds the service lock continuously any more); nil-checked
 // defensively.
 func (s *Service) GetDB() *chromem.DB {

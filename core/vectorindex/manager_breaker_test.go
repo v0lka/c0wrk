@@ -354,7 +354,7 @@ func TestManagerBreaker_CancelledPassIsNotAVerdict(t *testing.T) {
 // TestIncrementalPassVerdict_Classification pins the staged-locks × breaker
 // composition at the classification boundary: a pass displaced mid-window by
 // a concurrent branch switch returns ErrWorkingStoreDisplaced with a LIVE
-// context, and that abort belongs to the displacer's lifecycle (ADR-122's
+// context, and that abort belongs to the displacer's lifecycle (ADR-123's
 // staged write windows), not to an embedder or store verdict — five unlucky
 // branch switches landing inside a pass's windows must never accrue backoff
 // or trip the breaker. (A real branch switch cannot be interleaved

@@ -16,7 +16,7 @@ import (
 const stagedPassWatchdog = 5 * time.Second
 
 // blockingChunkSeam builds a chunker seam that parks the pass inside
-// preparation — the one stage staged acquisition (ADR-122) keeps lock-free.
+// preparation — the one stage staged acquisition (ADR-123) keeps lock-free.
 // entered closes on the first chunk call; releaseAll unwinds every parked
 // call and must be registered as cleanup BEFORE any fatal assertion (the
 // idempotent-release rule), because the parked pass goroutine must always be
@@ -46,7 +46,7 @@ func (s *blockingChunkSeam) chunkFn(filePath string, content []byte, maxChunkSiz
 	return fakeChunkFunc(filePath, content, maxChunkSize, overlap)
 }
 
-// TestSearchRespondsDuringFullPass pins the ADR-122 contract the
+// TestSearchRespondsDuringFullPass pins the ADR-123 contract the
 // semantic_search tool depends on: a pass that has entered with the service
 // already ready over a queryable collection keeps readiness up and holds the
 // service write lock only in short windows, so a search must ANSWER while the
@@ -57,7 +57,7 @@ func TestSearchRespondsDuringFullPass(t *testing.T) {
 	ws := createTestWorkspace(t)
 
 	// The first pass builds a queryable collection and re-arms readiness, so
-	// the second pass enters the already-ready branch of the ADR-122 gate.
+	// the second pass enters the already-ready branch of the ADR-123 gate.
 	indexer := NewIndexer(IndexerConfig{Service: svc, HashFn: fakeHashFunc, ChunkFn: fakeChunkFunc})
 	if err := indexer.IndexFull(context.Background(), ws); err != nil {
 		t.Fatalf("initial full index: %v", err)
@@ -112,7 +112,7 @@ func TestSearchRespondsDuringFullPass(t *testing.T) {
 	}
 }
 
-// TestCloseCompletesDuringSlowedFullPass pins the Close half of ADR-122:
+// TestCloseCompletesDuringSlowedFullPass pins the Close half of ADR-123:
 // Service.Close takes the service write lock and must therefore complete
 // while a pass is parked in its lock-free preparation stage; once the pass
 // reaches its first write window it must abort with ErrWorkingStoreDisplaced
@@ -161,7 +161,7 @@ func TestCloseCompletesDuringSlowedFullPass(t *testing.T) {
 	}
 }
 
-// TestPassLeaseSerializesPasses pins the pass-lease half of ADR-122: a full
+// TestPassLeaseSerializesPasses pins the pass-lease half of ADR-123: a full
 // pass holds the lease for its whole duration, so a second pass must run its
 // entire preparation strictly AFTER the first one — the pass-vs-pass
 // exclusion the whole-pass service write hold used to provide. The assertion

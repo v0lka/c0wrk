@@ -1174,7 +1174,7 @@ func incrementalPassIsVerdict(ctx context.Context, err error) bool {
 // cancelling the context aborts an in-flight pass instead of applying an old
 // project's diff to a fresh collection, and a re-armed pass targets the
 // current project. It does NOT serialize passes by itself — the service's
-// pass lease does (ADR-122: a pass holds the lease for its duration and takes
+// pass lease does (ADR-123: a pass holds the lease for its duration and takes
 // the service write lock only in short identity-checked windows, so a queued
 // watcher pass waits for the lease, not for the lock); the guard's value is
 // coalescing plus cancellation safety.
@@ -1245,7 +1245,7 @@ func (m *Manager) runIncrementalGuarded() {
 		if !incrementalPassIsVerdict(ctx, idxErr) {
 			// Superseded or displaced: a project switch or shutdown cancelled
 			// this pass, or a concurrent branch switch, No Project reset or
-			// close displaced the working store mid-pass (ADR-122's staged
+			// close displaced the working store mid-pass (ADR-123's staged
 			// write windows). Neither is a verdict about the embedder or the
 			// store — both count toward neither the backoff nor the breaker,
 			// mirroring the Reindex repair's own superseded-pass silence; the
