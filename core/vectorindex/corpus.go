@@ -304,14 +304,23 @@ var readCorpusManifest = func(branchRoot string) *CorpusManifest {
 }
 
 // writeCorpusManifest atomically publishes the corpus record. Callers must
-// have completed every store write (documents, lexical, sidecar) first.
+// have completed every store write (documents, lexical, sidecar) first. A
+// record its own reader (readCorpusManifest's corpusManifestMaxBytes cap)
+// could never open is refused BEFORE publication: an oversized corpus.json
+// would read back as "not published" on every attach and silently
+// re-trigger the full re-derivation it was published to short-circuit —
+// the same reader-parity discipline as writeOccurrenceTable.
 func writeCorpusManifest(branchRoot string, m *CorpusManifest) error {
 	m.CreatedAt = time.Now().UTC().Format(time.RFC3339)
 	data, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return err
 	}
-	return safeio.WriteFileAtomic(filepath.Join(branchRoot, corpusManifestName), data, 0o644)
+	path := filepath.Join(branchRoot, corpusManifestName)
+	if int64(len(data)) > corpusManifestMaxBytes {
+		return &safeio.TooLargeError{Path: path, Limit: corpusManifestMaxBytes}
+	}
+	return safeio.WriteFileAtomic(path, data, 0o644)
 }
 
 // snapshotKey derives the corpus store key from a commit OID (or a

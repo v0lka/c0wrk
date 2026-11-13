@@ -1275,6 +1275,14 @@ func (ps *projectState) saveFileHashes() error {
 	if err != nil {
 		return fmt.Errorf("marshaling file hashes: %w", err)
 	}
+	// Reader parity (writeCorpusManifest/writeOccurrenceTable): refuse a
+	// sidecar its own reader (ReadFileLimited's fileHashSidecarMaxBytes cap)
+	// could never open — an oversized sidecar reads back as absent on every
+	// open, wedging the settle path into a full re-derivation each launch.
+	// Fail-soft like every saveFileHashes caller.
+	if int64(len(data)) > fileHashSidecarMaxBytes {
+		return fmt.Errorf("writing file-hash sidecar: %w", &safeio.TooLargeError{Path: path, Limit: fileHashSidecarMaxBytes})
+	}
 	// FIFO/symlink-safe: the former fixed "<path>.tmp" staging name was pre-plantable
 	// (a planted FIFO wedged the service and shutdown under s.mu); WriteFileAtomic
 	// stages under a randomized name.

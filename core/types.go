@@ -44,9 +44,10 @@ type Emitter interface {
 	Routing(mode, domain, complexity string)
 	PlanGenerated(stepCount int, steps []orchestration.PlanStepEvent)
 	// PlanStepStart emits a plan_step_start event. model carries the
-	// profile's honored model pin for a delegated step ("" for inline steps
-	// and synthesized starts) — the UI renders it as a "Forced model" badge
-	// only when non-empty (additive payload key, ADR-122).
+	// honored model pin for a delegated step ("" for inline steps and
+	// synthesized starts) — the UI renders a model badge only when the
+	// value differs from the session's model (ADR-122 payload key, ADR-123
+	// differ-from-session rule; frontend/src/lib/subagentModelBadge.ts).
 	PlanStepStart(stepID string, description, summary, model string)
 	PlanStepComplete(stepID string, success bool, duration time.Duration, errMsg string)
 	// PlanStepPaused emits a plan_step_paused event: the step stopped at a

@@ -49,7 +49,14 @@ func launchStagedUpdater(updaterPath string, args []string, _, _ io.Writer, log 
 	deadline := time.Now().Add(appearWithin)
 	var firstSeen time.Time
 	for {
-		if updaterProcessAlive(pattern) {
+		alive, probeErr := updaterProcessAlive(pattern)
+		switch {
+		case probeErr != nil:
+			// Liveness UNKNOWN (probe exec error or its cap fired): keep
+			// polling — a failed probe is not a death verdict. The
+			// appear/stable deadlines below still bound the wait.
+			log.Debug("staged updater liveness probe failed; retrying", "err", probeErr)
+		case alive:
 			now := time.Now()
 			if firstSeen.IsZero() {
 				firstSeen = now
@@ -57,7 +64,7 @@ func launchStagedUpdater(updaterPath string, args []string, _, _ io.Writer, log 
 				log.Debug("staged updater launch verified", "updater", updaterPath)
 				return nil
 			}
-		} else if !firstSeen.IsZero() {
+		case !firstSeen.IsZero():
 			return fmt.Errorf("staged updater died %.1fs after launch", time.Since(firstSeen).Seconds())
 		}
 		if time.Now().After(deadline) {
@@ -71,10 +78,24 @@ func launchStagedUpdater(updaterPath string, args []string, _, _ io.Writer, log 
 }
 
 // updaterProcessAlive reports whether a process whose command line contains
-// pattern is running (pgrep -f exits non-zero on no match). Bounded: the
-// probe's own cadence is 200ms, so a healthy pgrep is nowhere near the cap.
-func updaterProcessAlive(pattern string) bool {
+// pattern is running. matched=false with a nil probeErr is pgrep's
+// definitive "no processes matched" (exit 1); a non-nil probeErr means the
+// probe itself failed (exec error, or the 2s cap SIGKILLed it — exit -1)
+// and liveness is UNKNOWN: the caller must keep polling instead of counting
+// the failed probe as "not alive", or a transiently wedged pgrep would
+// fabricate a "died after launch" verdict on a healthy updater. Bounded:
+// the probe's own cadence is 200ms, so a healthy pgrep is nowhere near the
+// cap.
+func updaterProcessAlive(pattern string) (matched bool, probeErr error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	return exec.CommandContext(ctx, "pgrep", "-f", pattern).Run() == nil
+	err := exec.CommandContext(ctx, "pgrep", "-f", pattern).Run()
+	if err == nil {
+		return true, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, fmt.Errorf("pgrep liveness probe failed: %w", err)
 }

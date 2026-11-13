@@ -111,7 +111,17 @@ export function usePlanEvents(sessionId: string | null): void {
           sessionId,
           type: 'plan_step_start',
           content: data.description || '',
-          metadata: { step_id: data.step_id, description: data.description, summary: data.summary },
+          metadata: {
+            step_id: data.step_id,
+            description: data.description,
+            summary: data.summary,
+            // Persist the badge key like useSubagentEvents does: the
+            // grouping restore reads it ONLY from metadata, so dropping it
+            // here kills the plan-step model badge for delegated steps —
+            // live, and after a restart (the event payload itself is not
+            // replayed).
+            ...(data.model ? { model: data.model } : {}),
+          },
           timestamp: Date.now(),
         })
       }),

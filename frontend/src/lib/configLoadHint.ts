@@ -80,7 +80,17 @@ export function compositeDefaultModelHint(
           models: p?.models,
         })),
       ]
+      // A provider name can collide across the candidate sources (e.g. an
+      // openai_compatible entry keyed "anthropic" shadows the built-in
+      // "anthropic" section above) and would emit an identical suggestion
+      // twice — a duplicate banner line and a duplicate React key. First
+      // source wins; track emitted names in a Set.
+      const seenNames = new Set<string>()
       for (const candidate of candidates) {
+        if (seenNames.has(candidate.name)) {
+          continue
+        }
+        seenNames.add(candidate.name)
         if (candidate.models?.includes(bareModel)) {
           suggestions.push(`${candidate.name}/${bareModel}`)
         }

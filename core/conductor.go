@@ -1915,9 +1915,10 @@ type planStepEventTranslator struct {
 }
 
 func (t *planStepEventTranslator) SubAgentLaunch(stepID, description, model string) {
-	// The honored profile pin rides plan_step_start's additive `model` key,
-	// so the plan-step block renders the same "Forced model" badge as a
-	// plain delegate launch (ADR-122).
+	// The honored model pin rides plan_step_start's additive `model` key,
+	// so the plan-step block renders the same differ-from-session model
+	// badge as a plain delegate launch (ADR-122 payload key, ADR-123 badge
+	// rule).
 	t.root.PlanStepStart(stepID, description, t.summary, model)
 }
 
