@@ -938,7 +938,7 @@ func writeSnapshotTable(genDir, snapKey string, dims int, rows []occurrenceRow, 
 		return err
 	}
 	occPath, headerPath := snapshotTablePaths(dir)
-	if err := safeio.WriteFileAtomic(occPath, encodeOccurrenceTab(rows), 0o644); err != nil {
+	if err := writeOccurrenceTable(occPath, rows); err != nil {
 		return fmt.Errorf("writing occurrence table for %s: %w", snapKey, err)
 	}
 	header.Format = storeFormatV2Generation
@@ -1023,29 +1023,54 @@ func ensureChunkRecord(genDir, c string, dims int, path string, chunkIndex int, 
 	return nil
 }
 
-// readSnapshotTable loads a published snapshot's tables; ok is false when
-// the header (the completion marker) or the occurrence table is absent or
-// malformed — the snapshot then reads as absent and the caller falls back
-// or rebuilds. Never partially: a header without rows is a torn publish.
+// occurrenceTabMaxBytes bounds project-sized tables, beyond safeio's document cap.
+// See specs/domains/workspace.md.
+const occurrenceTabMaxBytes int64 = 256 << 20
+
+// readSnapshotTable is the conservative hygiene view of loadSnapshotTable:
+// an unreadable table makes its chunk references unknowable.
+// See specs/domains/workspace.md.
 func readSnapshotTable(genDir, snapKey string) (rows []occurrenceRow, header *snapshotTable, ok bool) {
+	rows, header, err := loadSnapshotTable(genDir, snapKey)
+	return rows, header, err == nil
+}
+
+// loadSnapshotTable preserves read errors for the native corpus open.
+// See specs/domains/workspace.md.
+func loadSnapshotTable(genDir, snapKey string) ([]occurrenceRow, *snapshotTable, error) {
 	dir := snapshotDir(genDir, snapKey)
-	headerData, err := safeio.ReadFile(filepath.Join(dir, snapshotTableName))
+	headerPath := filepath.Join(dir, snapshotTableName)
+	headerData, err := safeio.ReadFile(headerPath)
 	if err != nil {
-		return nil, nil, false
+		return nil, nil, fmt.Errorf("reading snapshot header %s: %w", headerPath, err)
 	}
 	var h snapshotTable
-	if json.Unmarshal(headerData, &h) != nil || h.Format != storeFormatV2Generation {
-		return nil, nil, false
+	if err := json.Unmarshal(headerData, &h); err != nil {
+		return nil, nil, fmt.Errorf("%w: decoding snapshot header %s: %w", ErrCorpusNotPublished, headerPath, err)
 	}
-	occData, err := safeio.ReadFile(filepath.Join(dir, occurrencesTabName))
+	if h.Format != storeFormatV2Generation {
+		return nil, nil, fmt.Errorf("%w: snapshot header %s has unsupported format %d", ErrCorpusNotPublished, headerPath, h.Format)
+	}
+	occPath := filepath.Join(dir, occurrencesTabName)
+	occData, err := safeio.ReadFileLimited(occPath, occurrenceTabMaxBytes)
 	if err != nil {
-		return nil, nil, false
+		return nil, nil, fmt.Errorf("reading occurrence table %s: %w", occPath, err)
 	}
-	rows, err = decodeOccurrenceTab(occData)
+	rows, err := decodeOccurrenceTab(occData)
 	if err != nil {
-		return nil, nil, false
+		return nil, nil, fmt.Errorf("%w: decoding occurrence table %s: %w", ErrCorpusNotPublished, occPath, err)
 	}
-	return rows, &h, true
+	return rows, &h, nil
+}
+
+// writeOccurrenceTable refuses a table its reader cannot open.
+// See specs/domains/workspace.md.
+func writeOccurrenceTable(path string, rows []occurrenceRow) error {
+	data := encodeOccurrenceTab(rows)
+	if int64(len(data)) > occurrenceTabMaxBytes {
+		return &safeio.TooLargeError{Path: path, Limit: occurrenceTabMaxBytes}
+	}
+	return safeio.WriteFileAtomic(path, data, 0o644)
 }
 
 // snapshotTablePublished reports whether the snapshot's completion marker
@@ -1098,15 +1123,15 @@ func writeOverlayTable(genDir, rootKey string, rows []occurrenceRow) error {
 	if err := ensureRealDir(rootStateDir(genDir, rootKey), 0o750); err != nil {
 		return err
 	}
-	return safeio.WriteFileAtomic(overlayTabPath(genDir, rootKey), encodeOccurrenceTab(rows), 0o644)
+	return writeOccurrenceTable(overlayTabPath(genDir, rootKey), rows)
 }
 
 // readOverlayTable loads the root's overlay rows; ok is false when absent
 // or malformed (the overlay then carries no §3 references — the chunk GC
 // keeps nothing on its behalf, and the runtime overlay engine is the
-// fallback truth).
+// fallback truth). See specs/domains/workspace.md for the size bound.
 func readOverlayTable(genDir, rootKey string) ([]occurrenceRow, bool) {
-	data, err := safeio.ReadFile(overlayTabPath(genDir, rootKey))
+	data, err := safeio.ReadFileLimited(overlayTabPath(genDir, rootKey), occurrenceTabMaxBytes)
 	if err != nil {
 		return nil, false
 	}

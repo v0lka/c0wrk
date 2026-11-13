@@ -828,7 +828,7 @@ func (s *Service) loadFileHashes() {
 	// failed backfill (fileHashMigrationFailed) — never trusted, always re-settled.
 	// See specs/domains/workspace.md (file-hash sidecar trust protocol).
 	if path := ps.fileHashesPath(); path != "" {
-		if data, err := safeio.ReadFile(path); err == nil {
+		if data, err := safeio.ReadFileLimited(path, fileHashSidecarMaxBytes); err == nil {
 			if m, ok := decodeSidecarEntries(data, rootFingerprint(ps.workspaceRoot)); ok {
 				if len(m) > 0 || contentlessMarkerExists(ps) {
 					ps.fileHashes = m
