@@ -308,7 +308,7 @@ func (idx *Indexer) IndexFull(ctx context.Context, workspacePath string) (err er
 	// explicit onProgress below handles it. See specs/domains/workspace.md.
 	defer func() {
 		if err != nil {
-			if idx.service.GetCollection() == nil {
+			if !idx.service.HasCollection() {
 				idx.onProgress(PhaseBoth, IndexStateUnavailable, 0, 0, "")
 				return
 			}
@@ -404,7 +404,7 @@ func (idx *Indexer) IndexIncremental(ctx context.Context, workspacePath string) 
 	// by collection presence. See specs/domains/workspace.md.
 	defer func() {
 		if err != nil {
-			if idx.service.GetCollection() == nil {
+			if !idx.service.HasCollection() {
 				idx.onProgress(PhaseBoth, IndexStateUnavailable, 0, 0, "")
 				return
 			}

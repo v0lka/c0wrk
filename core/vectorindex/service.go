@@ -1279,7 +1279,8 @@ func (s *Service) RestoreReady(gen int64) {
 // on purpose, exactly like GetCollection: it is a best-effort snapshot of
 // whichever state is current (ADR-123 removed the whole-pass hold, so no
 // indexing path holds the service lock continuously any more); nil-checked
-// defensively.
+// defensively. window()-scoped code calls it under the write lock, so a
+// locking read here would self-deadlock.
 func (s *Service) GetDB() *chromem.DB {
 	ps := s.current
 	if ps == nil {
@@ -1289,15 +1290,33 @@ func (s *Service) GetDB() *chromem.DB {
 }
 
 // GetCollection returns the current collection (for use by Indexer).
-// Intentionally lock-free like GetDB; status-honesty callers read it WITHOUT
-// the lock as a best-effort snapshot (the tolerance HandleBranchSwitch
-// documents).
+// Intentionally lock-free like GetDB: window()-scoped code calls it WHILE the
+// service write lock is held (e.g. collectDocumentIDs inside a commit
+// window), so a locking read would self-deadlock, and status-honesty callers
+// read it as a best-effort snapshot (the tolerance HandleBranchSwitch
+// documents). Pass-terminal verdicts that must not race a concurrent
+// park/close read the locked HasCollection accessor instead.
 func (s *Service) GetCollection() *chromem.Collection {
 	ps := s.current
 	if ps == nil {
 		return nil
 	}
 	return ps.collection
+}
+
+// HasCollection reports whether a working collection exists right now, read
+// under s.mu.RLock: the race-free read for pass-terminal verdicts (the
+// deferred ready/unavailable reports), which run outside every lock but may
+// race a concurrent switch/reset/close parking or tearing the state down
+// (closeStateLocked nils ps.collection under the write lock — a lock-free
+// GetCollection read at exactly that moment is a data race, flagged by -race
+// on the rapid-double-switch cancel path). Callers holding s.mu read
+// ps.collection directly; never call this from window()-scoped code.
+func (s *Service) HasCollection() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	ps := s.current
+	return ps != nil && ps.collection != nil
 }
 
 // IndexAvailability returns the last published (vector, lexical) snapshot
