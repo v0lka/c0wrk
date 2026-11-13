@@ -20,10 +20,9 @@ var errUpdaterNeverStarted = errors.New("staged updater never started")
 
 // updaterStartProbeDelay bounds the post-Start liveness probe: a healthy
 // staged updater is guaranteed still to be running this long, so an exit
-// inside the window proves the child died at or immediately after exec (a
-// bad ELF, a missing dynamic loader, an early crash) before doing anything.
-// A var so tests can shorten the window. See specs/decisions/023-auto-update.md.
-var updaterStartProbeDelay = 1 * time.Second
+// inside the window proves the child was killed before doing anything
+// (macOS amfid kills asynchronously). See specs/decisions/023-auto-update.md.
+const updaterStartProbeDelay = 1 * time.Second
 
 // launchStagedUpdater starts the staged updater as a Setsid-detached child:
 // detached from the app's session and process group, it survives the app's

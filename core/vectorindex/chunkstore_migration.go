@@ -64,7 +64,6 @@ type chunkRecordMigrationReport struct {
 	Converted int // snapshots whose §3 tables landed in this run
 	Deferred  int // snapshots left on the v1 path with a recorded reason
 	Done      int // already-converted snapshots observed (marker hygiene)
-	Abandoned int // permanently unconvertible snapshots (oversized table — settled, never replayed)
 	Marked    bool
 }
 
@@ -308,22 +307,6 @@ func (r *CorpusRegistry) runChunkRecordMigration(ctx context.Context, cs *corpus
 		converted, reason, err := migrateCorpusChunkRecords(ctx, logger, genDir, storageRoot, key, facts, dims)
 		cs.endBuild(key, err)
 		if err != nil {
-			if errors.Is(err, safeio.ErrTooLarge) {
-				// PERMANENT refusal, not transient: the re-derived occurrence
-				// table exceeds the reader cap (occurrenceTabMaxBytes), so no
-				// replay can ever publish this corpus's §3 table — counting
-				// it into remaining would redo the whole walk/hash/chunk pass
-				// every sweep for the same refusal, forever. Settle it
-				// instead (the promoteLegacyStore refusal pattern): the
-				// corpus stays on its v1 legs — the hygiene pass reaps a v1
-				// leg only at the corpus's own published table.json, so
-				// nothing is reclaimed that search still needs — and the
-				// refusal stays visible at Warn instead of a transient Debug.
-				logger.Warn("vector store: chunk-record migration abandoned an oversized corpus (occurrence table exceeds the reader cap)",
-					"snapshot", key, "error", err)
-				report.Abandoned++
-				continue
-			}
 			logger.Debug("vector store: chunk-record migration deferred a corpus (transient)",
 				"snapshot", key, "error", err)
 			remaining++
@@ -338,10 +321,8 @@ func (r *CorpusRegistry) runChunkRecordMigration(ctx context.Context, cs *corpus
 		remaining++
 	}
 	if remaining == 0 && ctx.Err() == nil && !storeChunkRecordsDone(storageRoot) {
-		// Every published corpus of the store is either converted, has
-		// nothing to move, or was permanently abandoned above (oversized —
-		// settled: its own table.json never publishes, so its v1 legs are
-		// never reaped): the marker lands as completion telemetry (the
+		// Every published corpus of the store is either converted or has
+		// nothing to move: the marker lands as completion telemetry (the
 		// reaping itself is per snapshot — a converted snapshot's v1 leg
 		// is reclaimable at its own table.json regardless of this marker,
 		// so a multi-branch store with legitimately deferred absent-tree

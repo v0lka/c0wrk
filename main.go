@@ -89,15 +89,6 @@ func mainImpl() int {
 			os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); logErr == nil {
 			os.Stdout = logFile
 			os.Stderr = logFile
-		} else {
-			// The log open failed (unwritable staging is the realistic
-			// case). Say so on the pre-redirect stderr — without this note
-			// a failed apply would leave zero traces anywhere, which is
-			// exactly the silent-death mode the staging log exists to
-			// prevent (the note is only visible where stdio survives, e.g.
-			// the launcher-passed Linux/Windows path; under LaunchServices
-			// it vanishes with the inherited descriptors — unavoidable).
-			fmt.Fprintf(os.Stderr, "c0wrk: opening the self-update output log failed (%v); continuing with inherited stdio\n", logErr)
 		}
 		// An explicit logger, not slog.Default(): the default logger is
 		// created lazily and cached, and any earlier touch (a package init)
