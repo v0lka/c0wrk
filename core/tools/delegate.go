@@ -54,7 +54,7 @@ const delegateSchemaTemplate = `{
 					"mode": {"type": "string", "enum": ["blocking", "async"], "description": "blocking (default) returns output in result; async returns delegation_id immediately"},
 					"max_steps": {"type": "integer", "description": "Per-subagent ReAct iteration cap; 0 = config default"},
 					"allow_redelegate": {"type": "boolean", "description": "Grant the subagent the delegate tool (capped by config maxRedelegationDepth); default false"},
-					"model": {"type": "string", "description": "Optional full \"provider/model\" composite id (e.g. \"local-llm/qwen3:8b\") routing THIS subagent to another provider. Bare names and \"provider/\" (empty model part) are rejected and fail the whole delegate call. An explicit model overrides the agent profile's model pin; omit to run on the profile's pin, or the session's active model."},
+					"model": {"type": "string", "description": "Optional full \"provider/model\" composite id (e.g. \"local-llm/qwen3:8b\") routing THIS subagent to another provider. Bare names, \"provider/\" (empty model part) and \"/model\" (empty provider part) are rejected and fail the whole delegate call. An explicit model overrides the agent profile's model pin; omit to run on the profile's pin, or the session's active model."},
 					"agent": {"type": "string", "description": "Must name an existing Subagent Profile (.agents/agents/<name>/AGENT.md) — an unknown name fails the whole delegate call before any subagent launches. When set, the profile's system prompt, tool preference, max-steps, and allow-redelegate override the task fields; the profile's model pin applies only when the task carries no explicit model (an explicit task model wins)."}
 				},
 				"required": ["id", "summary", "task"]
