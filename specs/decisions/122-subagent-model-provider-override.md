@@ -165,6 +165,17 @@ the subagent badge, so a pinned override is visible before delegation.
   (the pickers emit `provider/model`), so only hand-edited files are
   affected; the fix is mechanical (prefix the configured provider's name).
 
+**Security boundary.** A pin routes subagent calls WITHIN the
+operator-configured provider set and nowhere else: the validator resolves
+the named provider against the running router (fail-closed on an unknown
+name) and the override adds no endpoints, credentials, or network paths.
+Profile frontmatter is workspace-controlled input
+([SECURITY.md](../../SECURITY.md)) — a workspace-local profile can choose
+which of the operator's own providers serves a delegation, nothing more —
+so the honored composite is surfaced rather than applied silently: the
+roster renders the pinned id verbatim at discovery time and the launch
+badge shows the forced model for the whole subagent run.
+
 ## Alternatives Considered
 
 - **B2 — keep the single-field override and encode the provider inside

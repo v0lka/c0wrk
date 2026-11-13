@@ -5,6 +5,9 @@ import type { ConfigLLMResponse } from '@/types/models'
 const COMPOSITE_ERROR =
   'config.Load: config validation failed: default_model "claude-3-haiku" must be a full "provider/model" identifier — bare model names are not accepted (the model name itself may contain "/": the id splits on the first "/" only)'
 
+const EMPTY_PROVIDER_ERROR =
+  'config.Load: config validation failed: default_model "/model" not found in provider "" enabled models'
+
 function makeLLM(partial: Partial<ConfigLLMResponse>): ConfigLLMResponse {
   return {
     default_model: '',
@@ -33,6 +36,31 @@ describe('compositeDefaultModelHint', () => {
     const hint = compositeDefaultModelHint([COMPOSITE_ERROR], null)
     expect(hint).not.toBeNull()
     expect(hint?.bareModel).toBe('claude-3-haiku')
+  })
+
+  it('matches the empty-provider half-composite load error and strips the bare part', () => {
+    const hint = compositeDefaultModelHint([EMPTY_PROVIDER_ERROR], null)
+    expect(hint).not.toBeNull()
+    expect(hint?.bareModel).toBe('model')
+  })
+
+  it('offers a concrete suggestion for the half-composite when a provider serves the bare name', () => {
+    const hint = compositeDefaultModelHint(
+      [EMPTY_PROVIDER_ERROR],
+      makeLLM({ kimi: { api_key: '', models: ['model'] } })
+    )
+    expect(hint?.suggestions).toEqual(['kimi/model'])
+  })
+
+  it('ignores a not-found error naming a real provider (the id is already a full composite)', () => {
+    expect(
+      compositeDefaultModelHint(
+        [
+          'config.Load: config validation failed: default_model "anthropic/typo-model" not found in provider "anthropic" enabled models',
+        ],
+        null,
+      )
+    ).toBeNull()
   })
 
   it('offers no suggestions without an effective config', () => {

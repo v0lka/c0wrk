@@ -1271,6 +1271,10 @@ export function isPlanStepStartData(d: unknown): d is PlanStepStartData {
   // declared strings the guard must pin.
   if (!isObj(d) || typeof d.step_id !== 'string' || typeof d.description !== 'string') return false
   if (d.summary !== undefined && typeof d.summary !== 'string') return false
+  // Additive badge key (ADR-122): optional; a present non-string must fail
+  // the guard instead of leaking into the render — mirrors
+  // isSubAgentLaunchData.
+  if (d.model !== undefined && typeof d.model !== 'string') return false
   return true
 }
 export function isPlanStepCompleteData(d: unknown): d is PlanStepCompleteData {

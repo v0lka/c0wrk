@@ -158,6 +158,17 @@ describe('isPlanStepStartData (#127 description / summary)', () => {
     expect(isPlanStepStartData({ step_id: 's1', description: null })).toBe(false)
     expect(isPlanStepStartData({ step_id: 1, description: 'd' })).toBe(false)
   })
+
+  it('accepts the optional model badge key (string, present or absent)', () => {
+    expect(isPlanStepStartData({ step_id: 's1', description: 'd', model: 'local-llm/qwen3:8b' })).toBe(true)
+    expect(isPlanStepStartData({ step_id: 's1', description: 'd', model: '' })).toBe(true)
+    expect(isPlanStepStartData({ step_id: 's1', description: 'd' })).toBe(true)
+  })
+
+  it('rejects a present non-string model (badge render reads it as a string)', () => {
+    expect(isPlanStepStartData({ step_id: 's1', description: 'd', model: 42 })).toBe(false)
+    expect(isPlanStepStartData({ step_id: 's1', description: 'd', model: null })).toBe(false)
+  })
 })
 
 describe('isSubAgentLaunchData (#169 description, ADR-122 model badge)', () => {

@@ -20,14 +20,19 @@ export interface CompositeDefaultModelHint {
 }
 
 /**
- * Matches the backend's mandatory-composite load error for default_model
+ * Matches the backend's mandatory-composite load errors for default_model
  * (backend/config ResolveDefaultModelProvider, wrapped by config.Load's
- * "config validation failed:" prefix):
- * `default_model "claude-3-haiku" must be a full "provider/model" identifier — ...`
- * Both messages (bare-model rejection) share this prefix; empty-provider
- * config errors do not apply to default_model, so one shape suffices.
+ * "config validation failed:" prefix). Two shapes reach the banner:
+ * - bare-name rejection (ParseCompositeModelID finds no "/"):
+ *   `default_model "claude-3-haiku" must be a full "provider/model" identifier — ...`
+ * - empty-provider half-composite (the first-"/" split succeeds, so the id
+ *   falls through to the provider scan): `default_model "/model" not found
+ *   in provider "" enabled models`. A not-found error naming a REAL
+ *   provider does not match — that id is already a full composite and the
+ *   fix is the model name, not a provider prefix.
  */
 const COMPOSITE_DEFAULT_MODEL_ERROR = /default_model\s+"([^"]+)"\s+must be a full\b/
+const EMPTY_PROVIDER_DEFAULT_MODEL_ERROR = /default_model\s+"([^"]+)"\s+not found in provider ""/
 
 /**
  * Detects the mandatory-composite default_model load error among the
@@ -44,11 +49,22 @@ export function compositeDefaultModelHint(
     return null
   }
   for (const err of errors) {
-    const match = COMPOSITE_DEFAULT_MODEL_ERROR.exec(err)
+    const match = COMPOSITE_DEFAULT_MODEL_ERROR.exec(err) ?? EMPTY_PROVIDER_DEFAULT_MODEL_ERROR.exec(err)
     if (!match) {
       continue
     }
-    const bareModel = match[1]
+    const raw = match[1]
+    if (raw === undefined) {
+      continue
+    }
+    // The bare-name rejection captures the bare id verbatim (it carries no
+    // "/"); the empty-provider rejection captures the half-composite —
+    // strip its provider segment with the backend's first-"/" split.
+    const slash = raw.indexOf('/')
+    const bareModel = slash === -1 ? raw : raw.slice(slash + 1)
+    if (bareModel === '') {
+      continue
+    }
     const suggestions: string[] = []
     if (llm) {
       const candidates: Array<{ name: string; models?: string[] }> = [

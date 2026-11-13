@@ -375,6 +375,29 @@ func TestEventEmitterSubAgentLaunch(t *testing.T) {
 	}
 }
 
+// TestEventEmitterSubAgentLaunch_EmptyModelOmitsKey verifies the no-badge
+// launch (empty model) omits the additive "model" key entirely instead of
+// carrying an empty string — the same omit-when-empty placement the
+// plan_step_start translator uses and the shape isSubAgentLaunchData's
+// absent-key path accepts.
+func TestEventEmitterSubAgentLaunch_EmptyModelOmitsKey(t *testing.T) {
+	var received Event
+	emit := func(e Event) {
+		received = e
+	}
+
+	emitter := NewEventEmitter("test-session", emit)
+	emitter.SubAgentLaunch("step_1", "Do something", "")
+
+	data, ok := received.Data.(map[string]string)
+	if !ok {
+		t.Fatalf("expected map[string]string data, got %T", received.Data)
+	}
+	if _, exists := data["model"]; exists {
+		t.Error("empty model must omit the model key instead of emitting an empty string")
+	}
+}
+
 // TestEventEmitterSubAgentComplete verifies SubAgentComplete emits correct event.
 func TestEventEmitterSubAgentComplete(t *testing.T) {
 	var received Event

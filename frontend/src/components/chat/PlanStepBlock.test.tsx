@@ -69,7 +69,7 @@ describe('PlanStepBlock', () => {
 
   // --- forced model badge (additive: absent = unchanged render) ---
   // The badge is visible only when the pin differs from the conductor's
-  // session model (the shared ModelBadge rule); with no session tokens the
+  // session model (the shared DelegateModelBadge rule); with no session tokens the
   // conductor model is unknown, so the badge stays visible.
 
   it('renders the forced model badge when the start event carried one', () => {

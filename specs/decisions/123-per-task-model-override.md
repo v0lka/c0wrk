@@ -127,7 +127,7 @@ ADR-122 introduced:
    interplay ADR-122 fixed for profile pins.
 
 7. **Badge visibility: differ-from-session.** The delegate model badge
-   (`ModelBadge` on `SubAgentBlock` / `PlanStepBlock`) renders the pinned
+   (`DelegateModelBadge` on `SubAgentBlock` / `PlanStepBlock`) renders the pinned
    model only when it DIFFERS from the conductor's session model. When BOTH
    sides carry a provider prefix the composite ids compare verbatim — a
    cross-provider pin sharing the session's bare model name (`azure/gpt-4`
@@ -147,13 +147,23 @@ ADR-122 introduced:
    comparison for the passthrough cases. An absent/empty session model
    counts as DIFFERENT (the conductor's model is unknown — no
    `session_tokens` event yet), so the badge stays visible; an empty/absent
-   pinned model renders nothing. The badge is the status bar's shared model
-   pill (`components/ModelBadge` — one component for the status bar's context
-   block and the delegate headers): the visible TEXT is the bare model name
-   (`bareModel` strips the first provider segment — the provider prefix is an
-   implementation detail on the pill), while the `title` TOOLTIP carries the
-   full composite `provider/model` verbatim, where the provider is exactly
-   what matters; no "Forced model:" prefix.
+   pinned model renders nothing. The badge renders the status bar's shared
+   model pill (`components/ModelBadge`) through the `DelegateModelBadge`
+   visibility wrapper in the delegate headers: the visible TEXT is the bare
+   model name (`bareModel` strips the first provider segment — the provider
+   prefix is an implementation detail on the pill), while the `title` TOOLTIP
+   carries the full composite `provider/model` verbatim, where the provider
+   is exactly what matters; no "Forced model:" prefix.
+
+   Known limitation, display-only: a per-request delegation pin is the one
+   composite source this echo does not see — `NewModelProviderOverrideCaller`
+   pins the wire request without a session `SetModel`, so the first-match
+   `ProviderForModel` scan attributes the subagent's usage to the FIRST
+   configured provider listing the bare name. When two providers expose the
+   same bare name and the pin names the second, `session_tokens.model` (and
+   the session-side badge tooltip) names the wrong provider; routing, token
+   accounting and the badge's pin text follow the actual override. Distinct
+   bare names, or a pin naming the first-listed provider, never hit this.
 
 ## Consequences
 

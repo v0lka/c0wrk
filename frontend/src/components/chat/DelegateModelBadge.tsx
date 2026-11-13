@@ -3,7 +3,7 @@ import { useSessionStore } from '@/stores/sessionStore'
 import { ModelBadge as StatusModelBadge } from '@/components/ModelBadge'
 import { subagentModelDiffers } from '@/lib/subagentModelBadge'
 
-interface ModelBadgeProps {
+interface DelegateModelBadgeProps {
   /** The delegate's forced model string — rendered by the shared status-bar
    *  pill: the bare model name as the visible text, the full `provider/model`
    *  composite as the tooltip. */
@@ -23,8 +23,12 @@ interface ModelBadgeProps {
  * session model (composites compare verbatim when both sides carry a
  * provider, bare names otherwise — see {@link subagentModelDiffers}): an
  * equal pin carries no information, so the badge renders nothing.
+ *
+ * Named `DelegateModelBadge` to keep it distinct from the shared
+ * `components/ModelBadge` pill it wraps — the two used to collide on one
+ * export name, forcing an aliased import at every use site.
  */
-export function ModelBadge({ model, sessionModel }: ModelBadgeProps) {
+export function DelegateModelBadge({ model, sessionModel }: DelegateModelBadgeProps) {
   // Plan groups are rebuilt per session switch, so the displayed steps always
   // belong to the active session. Both selectors return primitives (stable —
   // no allocation).
