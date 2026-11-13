@@ -438,6 +438,53 @@ func TestCurrentBranch_GitRepo(t *testing.T) {
 	}
 }
 
+// TestValidateCollection_VisitCallbackObservesEntries pins the
+// validation-walk liveness wiring: onVisit observes the entries the walk
+// visits — accepted files, directories, the .gitignore and ignored files
+// alike — which is the feed the incremental pass hands its stall watchdog,
+// so a slow-storage validation that outlasts the stall threshold keeps
+// proving it is alive instead of reading as a stalled pass.
+func TestValidateCollection_VisitCallbackObservesEntries(t *testing.T) {
+	svc, err := NewService(ServiceConfig{EmbeddingFunc: fakeEmbeddingFunc()})
+	if err != nil {
+		t.Fatalf("NewService failed: %v", err)
+	}
+	t.Cleanup(func() { _ = svc.Close() })
+	if err := svc.SetProject("validate-visit", t.TempDir()); err != nil {
+		t.Fatalf("SetProject failed: %v", err)
+	}
+	if err := svc.SwitchBranch(context.Background(), "main"); err != nil {
+		t.Fatalf("SwitchBranch failed: %v", err)
+	}
+
+	wsDir := t.TempDir()
+	writeFileT(t, filepath.Join(wsDir, "file1.go"), "package main\n")
+	writeFileT(t, filepath.Join(wsDir, "sub", "file2.go"), "package sub\n")
+	writeFileT(t, filepath.Join(wsDir, ".gitignore"), "ignored.txt\n")
+	writeFileT(t, filepath.Join(wsDir, "ignored.txt"), "ignored\n")
+
+	seen := make(map[string]bool)
+	if _, _, _, valErr := svc.ValidateCollection(context.Background(), wsDir, testIgnoreChecker(t, wsDir), false, func(p string) {
+		seen[p] = true
+	}); valErr != nil {
+		t.Fatalf("ValidateCollection failed: %v", valErr)
+	}
+	for _, want := range []string{
+		wsDir,
+		filepath.Join(wsDir, "file1.go"),
+		filepath.Join(wsDir, "sub"),
+		filepath.Join(wsDir, "sub", "file2.go"),
+		// Ignored entries are visited before being filtered — their stat is
+		// part of the validation work a slow filesystem paces.
+		filepath.Join(wsDir, ".gitignore"),
+		filepath.Join(wsDir, "ignored.txt"),
+	} {
+		if !seen[want] {
+			t.Errorf("visit callback missed %q; visited = %v", want, seen)
+		}
+	}
+}
+
 func TestValidateCollection(t *testing.T) {
 	svc, err := NewService(ServiceConfig{
 		EmbeddingFunc: fakeEmbeddingFunc(),
@@ -538,7 +585,7 @@ func TestValidateCollection(t *testing.T) {
 	}
 	svc.ReleaseWriteLock()
 
-	stale, newFiles, deleted, valErr := svc.ValidateCollection(context.Background(), wsDir, testIgnoreChecker(t, wsDir), false)
+	stale, newFiles, deleted, valErr := svc.ValidateCollection(context.Background(), wsDir, testIgnoreChecker(t, wsDir), false, nil)
 	if valErr != nil {
 		t.Fatalf("ValidateCollection failed: %v", valErr)
 	}

@@ -353,6 +353,47 @@ func (l *vectorIndexLauncher) runVectorIndexInit(epoch uint64, ready chan struct
 	}
 	l.recordEmbedderInfo(epoch, embedderInfo)
 
+	// The embedder supervisor owns the live embedder instance for this
+	// launch: every batch embed call routed through it is bounded by
+	// embedCallDeadline, a timed-out call consults the authoritative sp4rk
+	// Wedged heartbeat and — on a confirmed wedge — restarts the embedder on
+	// a fresh instance (new instance = new inference mutex, so new calls
+	// never queue behind the wedged one), falling back to the CPU provider
+	// after embedCPUFallbackAfterRestarts consecutive failed restarts. The
+	// swap hook keeps the ADR-045 requested/effective provider facts honest
+	// after a supervisor swap (a CPU-fallback restart would otherwise leave
+	// every status payload advertising the original provider).
+	supervisor := newEmbedderSupervisor(embedderSupervisorConfig{
+		Log:               log,
+		Initial:           emb,
+		EmbedderCfg:       embCfg,
+		RequestedProvider: requestedProvider,
+		ShuttingDown:      l.shuttingDown,
+		OnSwapped: func(provider string, fresh liveEmbedder) {
+			// Publish the provider facts FIRST — no inference involved, so
+			// this write always lands: the ADR-045 requested/effective
+			// honesty must not depend on the probe below. The stale
+			// per-instance verdicts are dropped with the retired instance.
+			info := swappedEmbedderInfo(embedderInfo, requestedProvider, provider)
+			l.api.Lifecycle().SetVectorEmbedderInfo(info)
+			// Re-probe the fresh instance for the hardware verdicts, then
+			// publish them as a second write. A probe that parks behind a
+			// re-wedged fresh instance strands only this goroutine (the
+			// ladder's stranded-work stance); the verdicts then simply stay
+			// unverified — their honest "probe did not run" value.
+			concrete, isReal := fresh.(*embedding.Embedder)
+			switch {
+			case isReal && provider == embedding.ExecutionProviderCUDA:
+				verified := verifyEmbedderGPU(concrete, log)
+				info.CUDAVerified = &verified
+				l.api.Lifecycle().SetVectorEmbedderInfo(info)
+			case isReal && provider == embedding.ExecutionProviderOpenVINO:
+				info.OVDevice = vectorindex.VerifyEmbedderOvDevice(context.Background(), concrete, log)
+				l.api.Lifecycle().SetVectorEmbedderInfo(info)
+			}
+		},
+	})
+
 	// The per-root registry (ADR-080) builds managers on demand through
 	// this factory. CloseFn stays nil on every per-root manager: the
 	// ONNX runtime is process-global and shared, so an LRU eviction must
@@ -386,13 +427,33 @@ func (l *vectorIndexLauncher) runVectorIndexInit(epoch uint64, ready chan struct
 			reg.SetDiskBudget(config.DerefStoreDiskBudgetBytes(viNow.StoreDiskBudgetMb))
 		}
 		return vectorindex.NewManager(vectorindex.ManagerConfig{
-			EmbeddingFunc: emb.EmbeddingFunc(),
+			// Both embedding surfaces resolve the supervisor's LIVE instance
+			// per call, so a wedge restart moves them onto the fresh instance
+			// without rebuilding any manager (calls already captured keep
+			// flowing on the wedged old instance — new instance = new mu).
+			EmbeddingFunc: supervisor.queryEmbeddingFunc(),
 			// BatchEmbedder enables the batched document-embedding path in
 			// Service.AddDocuments: chunk contents are embedded via the
 			// embedder's batch ONNX session BEFORE the chromem commit, so
-			// chromem skips its one-inference-per-chunk calls entirely.
-			// *embedding.Embedder satisfies the interface directly.
-			BatchEmbedder: emb,
+			// chromem skips its one-inference-per-chunk calls entirely. The
+			// supervisor implements the interface and bounds every
+			// EmbedDocuments call with embedCallDeadline — a timeout returns
+			// a transient error and triggers the restart-on-wedge/CPU-fallback
+			// ladder described on the supervisor.
+			BatchEmbedder: supervisor,
+			// EmbedderWedged hands the manager the authoritative liveness
+			// probe of the ONNX inference thread (sp4rk Embedder.Wedged, a
+			// per-job heartbeat stamped by the runner worker itself): when
+			// Shutdown's drain grace expires, the diagnosis consults this
+			// instead of inferring a wedge from consecutive expired waits,
+			// while the grace stays the backstop bounding the wait. The
+			// supervisor applies the embed call deadline — the
+			// healthy-inference envelope — as the probe's bound, never the
+			// grace, so a normal slow batch that outlives the short grace is
+			// not diagnosed as a wedge. Through the supervisor this reads
+			// the LIVE instance, so a post-restart drain diagnoses the wedge
+			// that actually matters.
+			EmbedderWedged: supervisor.wedged,
 			HybridConfig: vectorindex.HybridConfig{
 				RRFK:              viNow.HybridRRFK,
 				FanoutMultiplier:  viNow.HybridFanoutMultiplier,
@@ -462,8 +523,11 @@ func (l *vectorIndexLauncher) runVectorIndexInit(epoch uint64, ready chan struct
 	// this launch's epoch: a disable (or a newer launch) that raced the
 	// init has bumped the epoch, and the stale launch then closes its
 	// own embedder and leaves the parked registry untouched instead of
-	// resurrecting a factory after VectorRoots.Disable unwound it.
-	if !l.wireIfCurrent(epoch, factory, ready, emb.Close) {
+	// resurrecting a factory after VectorRoots.Disable unwound it. The
+	// close seam is the supervisor's: ShutdownAll releases the LIVE
+	// instance, which a wedge restart may have swapped under the
+	// original.
+	if !l.wireIfCurrent(epoch, factory, ready, supervisor.close) {
 		log.Info("vector search init superseded (disabled or restarted); closing the stale embedder")
 		_ = emb.Close()
 		return
@@ -625,6 +689,31 @@ func (l *vectorIndexLauncher) onProviderDegrade(epoch uint64) func(from, to, cau
 			})
 		})
 	}
+}
+
+// swappedEmbedderInfo derives the post-restart embedder info from the init
+// snapshot for the supervisor's OnSwapped hook. CUDAVerified and OVDevice are
+// PER-INSTANCE probe verdicts: a swap retires the instance they ran on, so
+// keeping them would advertise cuda_verified=true (or ov_device="gpu")
+// against a CPU-running successor. Both are dropped here (the hook re-probes
+// the fresh instance separately once the facts below are published — a
+// probe that parks behind a re-wedged fresh instance must not cost the
+// requested/effective honesty this function exists for; the verdicts then
+// simply read as unverified, their honest "probe did not run" value).
+// FallbackReason follows the new requested/effective pair exactly like the
+// init-path guard: set for a CPU fallback under a hardware request, cleared
+// when the requested provider was recovered.
+func swappedEmbedderInfo(base VectorEmbedderInfo, requestedProvider, provider string) VectorEmbedderInfo {
+	info := base
+	info.EffectiveProvider = provider
+	info.CUDAVerified = nil
+	info.OVDevice = ""
+	if provider == embedding.ExecutionProviderCPU && requestedProvider != config.VectorIndexProviderCPU {
+		info.FallbackReason = "restarted on the CPU execution provider after a wedged ONNX inference thread"
+	} else if provider == requestedProvider && info.FallbackReason != "" {
+		info.FallbackReason = ""
+	}
+	return info
 }
 
 // verifyEmbedderGPU performs the one-shot external GPU verification after a

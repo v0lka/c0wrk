@@ -8,6 +8,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"github.com/v0lka/c0wrk/core/vectorindex/lexical"
 )
 
 // TestClassifyInitError_Table pins the status taxonomy on the store's own
@@ -30,6 +32,7 @@ func TestClassifyInitError_Table(t *testing.T) {
 		{"overlay unopenable", ErrOverlayUnopenable, IndexErrorKindRepairable},
 		{"no indexable files", ErrCorpusNoIndexableFiles, IndexErrorKindRepairable},
 		{"torn chunk record", errChunkRecordTorn, IndexErrorKindRepairable},
+		{"lexical lock gate busy", lexical.ErrLockBusy, IndexErrorKindRepairable},
 		{"wrapped defect", fmt.Errorf("attach snapshot view: %w", ErrCorpusUnopenable), IndexErrorKindRepairable},
 		{"permission denied", fs.ErrPermission, IndexErrorKindTransient},
 		{"no space", syscall.ENOSPC, IndexErrorKindTransient},

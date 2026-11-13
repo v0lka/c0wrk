@@ -127,6 +127,37 @@ describe('useVectorIndexStatus — push + backend:ready', () => {
     expect(useVectorIndexStore.getState().status.files_indexed).toBe(3)
   })
 
+  it('applies the stalled sub-status from events and clears it on the resolving snapshot', async () => {
+    // The pass-liveness pair: the watchdog's fire event carries the stalled
+    // fields, the resolving snapshot (a full status replacement) omits them
+    // — the store's wholesale replace must drop the stale stall, never keep
+    // it forever.
+    getStatusSpy.mockResolvedValue(statusOf('idle'))
+    await render()
+
+    await act(async () => {
+      emit('vector_index:status', {
+        ...statusOf('indexing'),
+        progress: 0.5,
+        files_indexed: 5,
+        total_files: 10,
+        stalled: true,
+        stalled_stage: 'embedding',
+        stalled_seconds: 320,
+      })
+    })
+    expect(useVectorIndexStore.getState().status.stalled).toBe(true)
+    expect(useVectorIndexStore.getState().status.stalled_stage).toBe('embedding')
+    expect(useVectorIndexStore.getState().status.stalled_seconds).toBe(320)
+
+    await act(async () => {
+      emit('vector_index:status', { ...statusOf('indexing'), progress: 0.6, files_indexed: 6, total_files: 10 })
+    })
+    expect(useVectorIndexStore.getState().status.stalled).toBeUndefined()
+    expect(useVectorIndexStore.getState().status.stalled_stage).toBeUndefined()
+    expect(useVectorIndexStore.getState().status.stalled_seconds).toBeUndefined()
+  })
+
   it('re-seeds once the backend signals readiness', async () => {
     getStatusSpy.mockResolvedValue(statusOf('idle'))
     await render()

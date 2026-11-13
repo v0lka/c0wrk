@@ -2837,6 +2837,22 @@ export namespace backend {
 	        this.operator_enabled = source["operator_enabled"];
 	    }
 	}
+	export class VectorIndexDiagnosticsDump {
+	    path: string;
+	    bytes: number;
+	    truncated: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new VectorIndexDiagnosticsDump(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.bytes = source["bytes"];
+	        this.truncated = source["truncated"];
+	    }
+	}
 	
 	export class VectorIndexStatus {
 	    state: string;
@@ -2855,6 +2871,9 @@ export namespace backend {
 	    store?: vectorindex.StoreLedger;
 	    last_error?: string;
 	    error_kind?: string;
+	    stalled?: boolean;
+	    stalled_stage?: string;
+	    stalled_seconds?: number;
 	    device_id?: number;
 	
 	    static createFrom(source: any = {}) {
@@ -2879,6 +2898,9 @@ export namespace backend {
 	        this.store = this.convertValues(source["store"], vectorindex.StoreLedger);
 	        this.last_error = source["last_error"];
 	        this.error_kind = source["error_kind"];
+	        this.stalled = source["stalled"];
+	        this.stalled_stage = source["stalled_stage"];
+	        this.stalled_seconds = source["stalled_seconds"];
 	        this.device_id = source["device_id"];
 	    }
 	

@@ -729,6 +729,23 @@ type VectorIndexStatus struct {
 	// is being replaced). Omitted when there is nothing to explain.
 	ErrorKind string `json:"error_kind,omitempty"`
 
+	// Stalled is the pass-liveness sub-status: the focused root's indexing
+	// pass has made NO progress for the fixed 5-minute stall threshold
+	// (core passStallTimeout). It is diagnostic evidence, never a state —
+	// State keeps reporting what the pass reports (indexing/reindexing/…),
+	// the UI renders it as a loading-class overlay (never unavailable),
+	// and it disappears with the pass's next progress point or its end.
+	Stalled bool `json:"stalled,omitempty"`
+
+	// StallStage names the bounded pipeline stage (TelemetryStage) where
+	// progress stopped ("read_hash_chunk", "embedding", …). Empty when not
+	// stalled or before the pass's first progress point.
+	StallStage string `json:"stalled_stage,omitempty"`
+
+	// StallSeconds is how long the pass has been without progress, in
+	// whole seconds (live on every read/event). 0 when not stalled.
+	StallSeconds int `json:"stalled_seconds,omitempty"`
+
 	DeviceID int `json:"device_id,omitempty"`
 }
 

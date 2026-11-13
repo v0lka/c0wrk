@@ -670,6 +670,18 @@ func (vr *VectorRoots) rootCallbacks(root string, mgr *vectorindex.Manager) vect
 			}
 			emitIfFocused(st)
 		},
+		OnStallChange: func(snap vectorindex.StallSnapshot) {
+			// The pass-liveness transition (the 5-minute no-progress
+			// threshold, opened and closed by the pass watchdog). The payload
+			// is a FULL status snapshot read back from the manager, so the
+			// push stream and GetVectorIndexStatus cannot disagree about the
+			// sub-status (or lose the progress/branch context the pill
+			// already renders); emitIfFocused keeps the single-UI-channel
+			// rule — only the focus root streams.
+			st := vr.f.vectorIndexStatusFromManager(mgr)
+			vr.f.applyEmbedderInfo(&st)
+			emitIfFocused(st)
+		},
 		OnFailure: func(err error) {
 			vr.f.log().Warn("vector index init failed; search unavailable for this root",
 				"root", root, "error", err)

@@ -457,6 +457,13 @@ func (f *FrontendAPI) SwitchProject(id string) error {
 	// pruneAbsentBranchVectorIndexes and specs/domains/workspace.md.
 	go f.pruneAbsentBranchVectorIndexes(p)
 
+	// Advisory storage-liveness probe on the real-switch path only: where the
+	// workspace (and the config directory) physically lives — network volume,
+	// cloud placeholder trees, cloud-sync roots. One Warn + one toast note per
+	// project per session; detection only, never a behavior change. See
+	// frontend_api_storageprobe.go and specs/domains/workspace.md.
+	go f.probeStorageAdvisories(p)
+
 	return nil
 }
 

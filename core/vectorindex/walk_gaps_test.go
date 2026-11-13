@@ -108,7 +108,7 @@ func TestWalkProjectFiles_DeletedSubtreeMidWalkIsGapNotFailure(t *testing.T) {
 	victim := filepath.Join(root, "doomed")
 	checker := &vanishingChecker{victim: victim}
 
-	outcome, err := walkProjectFilesDetailed(root, checker, 1<<20, false)
+	outcome, err := walkProjectFilesDetailed(root, checker, 1<<20, false, nil)
 	if err != nil {
 		t.Fatalf("a subtree deleted during the walk must not fail it: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestWalkProjectFiles_UnreadableRootIsExplicitError(t *testing.T) {
 	base := t.TempDir()
 	missing := filepath.Join(base, "gone")
 
-	outcome, err := walkProjectFilesDetailed(missing, noopIgnoreChecker{}, 1<<20, false)
+	outcome, err := walkProjectFilesDetailed(missing, noopIgnoreChecker{}, 1<<20, false, nil)
 	if err == nil {
 		t.Fatalf("walking a missing root succeeded with %d files and %d gaps", len(outcome.Files), len(outcome.Gaps))
 	}
@@ -503,4 +503,35 @@ func TestAttachSnapshot_IncompleteWalkNeverPublishesEmptyCorpus(t *testing.T) {
 
 	key := snapshotKey("ngit-" + rootFingerprint(ws))
 	assertNothingPublished(t, svc, storage, key)
+}
+
+// TestWalkProjectFiles_EntryCallbackSeesEveryVisit pins the walk-heartbeat
+// wiring: onEntry observes the entries the walk VISITS — the root, plain
+// files, subdirectories and hidden/ignored entries alike — because a slow
+// filesystem paces the arrival of entries, not of accepted files, and the
+// stall-watchdog feed (see walkHeartbeater) rides on exactly that signal.
+func TestWalkProjectFiles_EntryCallbackSeesEveryVisit(t *testing.T) {
+	root := t.TempDir()
+	writeFileT(t, filepath.Join(root, "a.go"), "package main\n")
+	writeFileT(t, filepath.Join(root, "sub", "b.go"), "package sub\n")
+	writeFileT(t, filepath.Join(root, ".hidden", "c.go"), "package hidden\n")
+
+	seen := make(map[string]bool)
+	onEntry := func(p string) { seen[p] = true }
+	if _, err := walkProjectFilesDetailed(root, noopIgnoreChecker{}, 1<<20, false, onEntry); err != nil {
+		t.Fatalf("walkProjectFilesDetailed: %v", err)
+	}
+	for _, want := range []string{
+		root,
+		filepath.Join(root, "a.go"),
+		filepath.Join(root, "sub"),
+		filepath.Join(root, "sub", "b.go"),
+		// Hidden entries are visited before being pruned — the readdir that
+		// surfaced them is exactly the slow-storage work the feed covers.
+		filepath.Join(root, ".hidden"),
+	} {
+		if !seen[want] {
+			t.Errorf("entry callback missed %q; visited = %v", want, seen)
+		}
+	}
 }

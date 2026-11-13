@@ -325,6 +325,14 @@ type FrontendAPI struct {
 	// a synchronous call so the purge completes before the RPC returns.
 	purgeBranchLaunchFn func(fn func())
 
+	// storageAdvisoryNotified records the keys whose storage-liveness
+	// advisory already fired this session — project ids under a "project:"
+	// prefix plus the config-dir sentinel — so a storage-class note is
+	// raised at most once per project (and once for the config directory)
+	// per app run. Zero-value-ready (sync.Map). See
+	// frontend_api_storageprobe.go and specs/domains/workspace.md.
+	storageAdvisoryNotified sync.Map
+
 	// vectorSetupMu guards deferredVectorProject — the handshake that applies a
 	// switch whose vector setup was skipped (factory not yet wired) later, via
 	// SetVectorRootsFactory. Acquired OUTSIDE vectorRootsMu and switchMu

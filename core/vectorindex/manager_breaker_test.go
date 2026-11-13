@@ -17,6 +17,7 @@ package vectorindex
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -348,6 +349,44 @@ func TestManagerBreaker_CancelledPassIsNotAVerdict(t *testing.T) {
 		t.Errorf("arm delay after a cancelled pass = %v, want the 25ms debounce", lastDelay)
 	}
 	mgr.stopDebounce()
+}
+
+// TestIncrementalPassVerdict_Classification pins the staged-locks × breaker
+// composition at the classification boundary: a pass displaced mid-window by
+// a concurrent branch switch returns ErrWorkingStoreDisplaced with a LIVE
+// context, and that abort belongs to the displacer's lifecycle (ADR-122's
+// staged write windows), not to an embedder or store verdict — five unlucky
+// branch switches landing inside a pass's windows must never accrue backoff
+// or trip the breaker. (A real branch switch cannot be interleaved
+// deterministically between a pass's write windows — the displacer serializes
+// on the same service lock — so the rule is pinned at the one seam the
+// manager consults: the cancel/displaced-vs-verdict predicate itself, with
+// the wrapping shape window() actually produces.)
+func TestIncrementalPassVerdict_Classification(t *testing.T) {
+	live, liveCancel := context.WithCancel(context.Background())
+	defer liveCancel()
+	dead, deadCancel := context.WithCancel(context.Background())
+	deadCancel()
+
+	// The exact wrap shape indexPass.window produces on displacement.
+	displacedLive := fmt.Errorf("committing documents: %w (a concurrent switch, reset or close displaced the working store; the next pass reconciles)", ErrWorkingStoreDisplaced)
+	displacedDead := fmt.Errorf("persisting corpus adoptions: %w", ErrWorkingStoreDisplaced)
+
+	if !incrementalPassIsVerdict(live, errors.New("embedding failed: connection refused")) {
+		t.Error("a live-context plain error must be a verdict (it feeds the backoff/breaker)")
+	}
+	if incrementalPassIsVerdict(live, displacedLive) {
+		t.Error("a displaced pass with a live context is the displacer's lifecycle event, never a verdict")
+	}
+	if incrementalPassIsVerdict(dead, displacedDead) {
+		t.Error("a cancelled pass is never a verdict, displaced or not")
+	}
+	if incrementalPassIsVerdict(dead, context.Canceled) {
+		t.Error("a cancelled pass is never a verdict")
+	}
+	if !errors.Is(displacedLive, ErrWorkingStoreDisplaced) {
+		t.Error("window()'s wrap must stay errors.Is-matchable — the classification keys on it")
+	}
 }
 
 // TestManagerBreaker_TripSuspendAndReindexReset is the end-to-end path on a

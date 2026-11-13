@@ -45,7 +45,7 @@ func TestProcessFile_SkipsGeneratedFile(t *testing.T) {
 	if err := os.WriteFile(genPath, generatedGoSource(8), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	vecDocs, lexDocs, err := indexer.processFile(genPath, "")
+	vecDocs, lexDocs, err := indexer.processFile(genPath, "", nil)
 	if err != nil {
 		t.Fatalf("processFile: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestProcessFile_SkipsGeneratedFile(t *testing.T) {
 		HashFn:        fakeHashFunc,
 		ContentFilter: disabledFilterPtr(),
 	})
-	vecDocs, lexDocs, err = indexerOptOut.processFile(genPath, "")
+	vecDocs, lexDocs, err = indexerOptOut.processFile(genPath, "", nil)
 	if err != nil {
 		t.Fatalf("processFile (opt-out): %v", err)
 	}
@@ -190,7 +190,7 @@ func TestValidateCollection_ContentFilterExcludedAndDeleted(t *testing.T) {
 	// stale for re-chunking — its identical chunks then hit the
 	// content-addressed embedding cache — while the now-excluded generated
 	// file is reported deleted because validation does not mark it seen.
-	stale, newFiles, deleted, valErr := svc.ValidateCollection(context.Background(), ws, testIgnoreChecker(t, ws), false)
+	stale, newFiles, deleted, valErr := svc.ValidateCollection(context.Background(), ws, testIgnoreChecker(t, ws), false, nil)
 	if valErr != nil {
 		t.Fatalf("ValidateCollection: %v", valErr)
 	}
@@ -212,7 +212,7 @@ func TestValidateCollection_ContentFilterExcludedAndDeleted(t *testing.T) {
 		t.Fatalf("IndexIncremental: %v", err)
 	}
 
-	stale, newFiles, deleted, valErr = svc.ValidateCollection(context.Background(), ws, testIgnoreChecker(t, ws), false)
+	stale, newFiles, deleted, valErr = svc.ValidateCollection(context.Background(), ws, testIgnoreChecker(t, ws), false, nil)
 	if valErr != nil {
 		t.Fatalf("follow-up ValidateCollection: %v", valErr)
 	}

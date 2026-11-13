@@ -163,7 +163,15 @@ func Repairable(err error) bool {
 		errors.Is(err, ErrCorpusLegMissing) ||
 		errors.Is(err, ErrCorpusUnopenable) ||
 		errors.Is(err, ErrOverlayUnopenable) ||
-		errors.Is(err, ErrCorpusNoIndexableFiles)
+		errors.Is(err, ErrCorpusNoIndexableFiles) ||
+		// A lexical lock-gate timeout (lexical.ErrLockBusy) is a PROVEN
+		// stuck/foreign holder on the leg's bleve state: bbolt would wait
+		// forever, the gate refused fast, and no retry can clear a holder
+		// that never leaves. The ADR-120 attach rung heals it by rebuilding
+		// the leg on a fresh inode while the holder keeps the orphaned old
+		// one — the gate sentinel dies with the quarantined directory, so
+		// the rebuilt index locks freely.
+		errors.Is(err, lexical.ErrLockBusy)
 }
 
 // QuarantineScope names the ONE store a proven-defect repair may destroy.
@@ -579,6 +587,18 @@ func (cs *corpusStore) waitBuildFor(waitCh <-chan struct{}, key, embeddingFP str
 	return settled && published
 }
 
+// v1FallbackErr joins a v1-fallback verdict with the §3 open failure that
+// preceded it (ADR-120 D7: the §3 reason is never erased). Both causes stay
+// matchable (errors.Is/As — Repairable/Transient read either leg) and named
+// in the text; without a §3 failure the verdict stands byte-for-byte alone
+// (legacy-only stores never grow a phantom §3 mention).
+func v1FallbackErr(v2Err, v1Err error) error {
+	if v2Err == nil {
+		return v1Err
+	}
+	return fmt.Errorf("§3 open failed (%w); v1 fallback: %w", v2Err, v1Err)
+}
+
 // open returns the shared handle for key's published corpus, fail-closed:
 // unpublished, foreign-era, or unreadable corpora return an error naming the
 // snapshot — never another snapshot's data. The chromem decode is cached and
@@ -611,10 +631,34 @@ func (cs *corpusStore) open(ctx context.Context, key string, ef chromem.Embeddin
 			return h, nil
 		}
 	}
-	// Prefer the native corpus; only absence or repairable damage permits
-	// the legacy fallback. See specs/domains/workspace.md.
-	if gen, genManifest, ok := readCurrentGeneration(cs.root); ok && genManifest.compatible(embeddingFP, dims) {
-		v2, v2Err := openV2Corpus(gen, key, genManifest)
+	// §3 read path first (ADR-104 §3): a published occurrence table opens
+	// the corpus without any chromem decode. Only absence or repairable
+	// damage permits the legacy fallback — a non-repairable refusal (e.g.
+	// the metadata byte-limit guard) fails closed, preserving publication
+	// and chunk/cache data (see specs/domains/workspace.md). Failure with
+	// an existing v1 corpus falls back to the v1 open (the migration will
+	// repair); failure without one propagates (fail-closed attach). The
+	// current generation resolves ONCE for both paths: the v1 fallback
+	// shares the §3 open's two-legged lexical resolve, and its
+	// snapshot-directory leg lives under this generation. v2Err survives
+	// the branch (ADR-120 D7: the §3 reason is never erased) — every
+	// v1-fallback verdict below joins it, so a failed fallback matches
+	// BOTH causes and a successful one has just logged what it papered
+	// over.
+	var v2Err error
+	gen, genManifest, genOK := readCurrentGeneration(cs.root)
+	// The snapshot-directory lexical leg the fallback below may resolve is
+	// servable only under a CURRENT-era generation: a foreign-era CURRENT
+	// (the fail-soft shape — ensureStoreGeneration refused the advance and
+	// the legacy shape keeps serving) carries snapshot legs of the OLD era,
+	// and preferring one over the legacy per-key leg would serve a
+	// stale-era lexical index beside the fresh corpus. The §3 branch rides
+	// the same compatibility gate, and publishedCompatible era-gates both
+	// of its publication legs — this is the third wheel of that discipline.
+	genLex := ""
+	if genOK && genManifest.compatible(embeddingFP, dims) {
+		genLex = gen
+		v2, err := openV2Corpus(gen, key, genManifest, cs.logger)
 		switch {
 		case v2 != nil:
 			if cs.decodes == nil {
@@ -635,25 +679,26 @@ func (cs *corpusStore) open(ctx context.Context, key string, ef chromem.Embeddin
 			cs.handles[key] = h
 			cs.refs[key] = 1
 			return h, nil
-		case v2Err != nil:
-			if !Repairable(v2Err) {
-				return nil, v2Err
+		case err != nil:
+			if !Repairable(err) {
+				return nil, err
 			}
-			cs.logger.Debug("vector corpus: §3 open failed; falling back to the v1 store",
-				"snapshot", key, "error", v2Err)
+			v2Err = err
+			cs.logger.Warn("vector corpus: §3 open failed; falling back to the v1 store",
+				"snapshot", key, "error", err)
 		}
 	}
 	branchRoot := branchRootPath(cs.root, key)
 	m := readCorpusManifest(branchRoot)
 	if m == nil {
-		return nil, fmt.Errorf("%w: %s", ErrCorpusNotPublished, key)
+		return nil, v1FallbackErr(v2Err, fmt.Errorf("%w: %s", ErrCorpusNotPublished, key))
 	}
 	if !m.compatible(embeddingFP, dims) {
-		return nil, fmt.Errorf("%w: %s (fp %q dims %d)", ErrCorpusEraMismatch, key, m.EmbeddingFP, m.Dims)
+		return nil, v1FallbackErr(v2Err, fmt.Errorf("%w: %s (fp %q dims %d)", ErrCorpusEraMismatch, key, m.EmbeddingFP, m.Dims))
 	}
 	db, err := newPersistentDB(branchRoot, false)
 	if err != nil {
-		return nil, fmt.Errorf("opening corpus DB for %s: %w", key, err)
+		return nil, v1FallbackErr(v2Err, fmt.Errorf("opening corpus DB for %s: %w", key, err))
 	}
 	name := m.Collection
 	if name == "" {
@@ -661,12 +706,21 @@ func (cs *corpusStore) open(ctx context.Context, key string, ef chromem.Embeddin
 	}
 	col := db.GetCollection(name, ef)
 	if col == nil {
-		return nil, fmt.Errorf("corpus collection %q missing for %s", name, key)
+		return nil, v1FallbackErr(v2Err, fmt.Errorf("corpus collection %q missing for %s", name, key))
 	}
-	lexDir := lexicalIndexPath(cs.root, key)
-	lex, lexErr := lexical.OpenReadOnly(lexDir)
+	// The SAME two-legged resolve the §3 open applies
+	// (openCorpusLexicalReadOnly), era-gated like every other leg:
+	// snapshot directory first (genLex — empty, legacy-only, when the
+	// current generation is foreign-era), legacy per-key path second. A §3
+	// failure that falls back here may have just unpublished a table whose
+	// only lexical leg is the snapshot directory's (a native build damaged
+	// by a torn chunk record), and the publication gate
+	// (publishedCompatible) already accepts either leg as servable —
+	// resolving the legacy path alone would structurally ENOENT exactly
+	// the snapshots this fallback exists to serve.
+	lex, lexErr := openCorpusLexicalReadOnly(genLex, cs.root, key)
 	if lexErr != nil {
-		return nil, fmt.Errorf("opening corpus lexical index for %s: %w", key, lexErr)
+		return nil, v1FallbackErr(v2Err, fmt.Errorf("opening corpus lexical index for %s: %w", key, lexErr))
 	}
 	if cs.decodes == nil {
 		cs.decodes = make(map[string]int)
