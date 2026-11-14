@@ -9,6 +9,7 @@ package backend
 // is awaited with bounded poll watchdogs, never sleeps.
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -68,10 +69,10 @@ func newVectorWorktreeHarness(t *testing.T) *vectorWorktreeHarness {
 
 	// Real git repo registered as the project workspace: managed worktrees
 	// are genuine linked worktrees under <repo>/.worktrees/<name>.
-	repoRoot := filepath.Join(t.TempDir(), "repo")
+	repoRoot := filepath.Join(worktreeTempDirBestEffort(t), "repo")
 	repo := gittest.InitRepo(t, repoRoot, "hello\n")
 
-	agentDir := t.TempDir()
+	agentDir := worktreeTempDirBestEffort(t)
 	projectManager := project.NewManager(projectStore, agentDir, nil)
 	created, err := projectManager.CreateProject("vector-worktree-fixture", repoRoot)
 	if err != nil {
@@ -106,6 +107,10 @@ func newVectorWorktreeHarness(t *testing.T) *vectorWorktreeHarness {
 	// The registry builds a real manager per routed root through the factory
 	// (fake 4-dim embeddings, same as the pre-registry fixtures). The ready
 	// channel is pre-closed: there is no background ONNX init in the test.
+	// The WARN-level buffer logger makes a grace-expiry drain (with its
+	// goroutine dump) visible in the test output — without it the manager
+	// discards everything and a wedged drain is undiagnosable.
+	var mgrLogs bytes.Buffer
 	ready := make(chan struct{})
 	close(ready)
 	roots := newVectorRoots(api)
@@ -114,6 +119,7 @@ func newVectorWorktreeHarness(t *testing.T) *vectorWorktreeHarness {
 			EmbeddingFunc: func(context.Context, string) ([]float32, error) {
 				return make([]float32, 4), nil
 			},
+			Logger: slog.New(slog.NewTextHandler(&mgrLogs, &slog.HandlerOptions{Level: slog.LevelWarn})),
 			// Widened shutdown drain: Shutdown skips Close() when the
 			// production 10s grace expires on a loaded runner, and the
 			// skipped Close leaves the lexical .zap store open — Windows
@@ -130,10 +136,32 @@ func newVectorWorktreeHarness(t *testing.T) *vectorWorktreeHarness {
 	}
 	t.Cleanup(func() {
 		roots.ShutdownAll()
+		if mgrLogs.Len() > 0 {
+			t.Logf("vector manager warnings (drain diagnostics):\n%s", mgrLogs.String())
+		}
 		manager.Shutdown()
 		_ = db.Close()
 	})
 	return h
+}
+
+// worktreeTempDirBestEffort is t.TempDir whose removal failure does not fail
+// the test: on a loaded CI runner the vector manager's drain can outlive the
+// whole grace (Shutdown then defers the lexical close to the zombie closer),
+// and Windows cannot unlink the still-open .lockgate/.zap handles. The test
+// assertions stay authoritative; a stuck cleanup is logged, not fatal.
+func worktreeTempDirBestEffort(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "c0wrk-vector-worktree")
+	if err != nil {
+		t.Fatalf("temp dir: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Logf("best-effort temp dir removal left %s behind: %v", dir, err)
+		}
+	})
+	return dir
 }
 
 // addManagedWorktree provisions a genuine linked worktree at
