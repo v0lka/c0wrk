@@ -211,6 +211,33 @@ describe('#127/#169 plan_step_start / subagent_launch persisted strings', () => 
     expect(item && item.kind === 'subagent' ? item.title : undefined).toBe('s1')
     expect(item && item.kind === 'subagent' ? item.description : undefined).toBeUndefined()
   })
+
+  it('handleSubAgentLaunch carries a string model and drops truthy non-string ones', () => {
+    const items: DisplayItem[] = []
+    handleSubAgentLaunch(
+      msg({ type: 'subagent_launch' }),
+      { step_id: 's1', description: 'd', model: 'qwen3.8-27b' },
+      new Map(), items,
+    )
+    expect(items[0] && items[0].kind === 'subagent' ? items[0].model : undefined).toBe('qwen3.8-27b')
+
+    const coerced: DisplayItem[] = []
+    handleSubAgentLaunch(
+      msg({ type: 'subagent_launch' }),
+      { step_id: 's2', description: 'd', model: 42 },
+      new Map(), coerced,
+    )
+    expect(coerced[0] && coerced[0].kind === 'subagent' ? coerced[0].model : undefined).toBeUndefined()
+
+    const legacy: DisplayItem[] = []
+    handleSubAgentLaunch(
+      msg({ type: 'subagent_launch' }),
+      { step_id: 's3', description: 'd' },
+      new Map(), legacy,
+    )
+    // Absent key (pre-model payloads): the item stays exactly as before.
+    expect(legacy[0] && legacy[0].kind === 'subagent' ? legacy[0].model : undefined).toBeUndefined()
+  })
 })
 
 describe('#123 normalizeThoughtContent defensive narrowing', () => {

@@ -670,7 +670,7 @@ func (s *resumeCompactionSpyEmitter) compactionCount() int {
 // c0wrk-specific Emitter methods: no-ops for this test.
 func (s *resumeCompactionSpyEmitter) Routing(_, _, _ string)                                       {}
 func (s *resumeCompactionSpyEmitter) PlanGenerated(_ int, _ []orchestration.PlanStepEvent)         {}
-func (s *resumeCompactionSpyEmitter) PlanStepStart(_, _, _ string)                                 {}
+func (s *resumeCompactionSpyEmitter) PlanStepStart(_, _, _, _ string)                              {}
 func (s *resumeCompactionSpyEmitter) PlanStepComplete(_ string, _ bool, _ time.Duration, _ string) {}
 func (s *resumeCompactionSpyEmitter) PlanStepPaused(_ string, _ time.Duration, _ string)           {}
 func (s *resumeCompactionSpyEmitter) Reflection(_ *orchestration.Reflection, _, _ int)             {}

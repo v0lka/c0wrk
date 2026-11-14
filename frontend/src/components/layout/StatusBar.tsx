@@ -6,7 +6,7 @@ import { useFileViewerStore } from "@/stores/fileViewerStore";
 import { formatTokenCount } from "@/lib/formatters";
 import { cn } from "@/lib/utils";
 import { Separator } from "@/components/ui/separator";
-import { Badge } from "@/components/ui/badge";
+import { ModelBadge } from "@/components/ModelBadge";
 import { IndexingStatus } from "./IndexingStatus";
 import { ContextFillStatus } from "./ContextFillStatus";
 import { CompactContextButton } from "./CompactContextButton";
@@ -46,13 +46,12 @@ export function StatusBar() {
         <>
           <span className="flex min-w-0 items-center gap-1">
             {tokens.model && (
-              <Badge
-                variant="outline"
-                className="h-5 min-w-0 shrink max-w-full px-1.5 text-xs truncate"
-                title={tokens.model}
-              >
-                {tokens.model}
-              </Badge>
+              // The shared model pill: bare name as text, full value as the
+              // tooltip. `session_tokens.model` arrives bare or composite
+              // (the builder composes the session's provider into it), so
+              // this strips to the bare name — the pill is also the delegate
+              // headers' badge.
+              <ModelBadge model={tokens.model} className="max-w-full" />
             )}
             {tokens.family && (
               <span className="min-w-0 truncate text-xs text-muted-foreground/70" title={tokens.family}>

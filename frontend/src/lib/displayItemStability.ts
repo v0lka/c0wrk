@@ -225,6 +225,7 @@ export function areDisplayItemsEqual(a: DisplayItem, b: DisplayItem): boolean {
         ia.duration === ib.duration &&
         ia.error === ib.error &&
         (ia.isRetry ?? false) === (ib.isRetry ?? false) &&
+        (ia.model ?? '') === (ib.model ?? '') &&
         childrenEqual(ia.children, ib.children)
       )
     }
@@ -239,6 +240,7 @@ export function areDisplayItemsEqual(a: DisplayItem, b: DisplayItem): boolean {
         ia.status === ib.status &&
         ia.duration === ib.duration &&
         ia.error === ib.error &&
+        (ia.model ?? '') === (ib.model ?? '') &&
         childrenEqual(ia.children, ib.children)
       )
     }

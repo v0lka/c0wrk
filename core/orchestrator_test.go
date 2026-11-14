@@ -1879,12 +1879,10 @@ func TestConversationHistory_RouterHistoryUnchanged(t *testing.T) {
 	}
 }
 
-// TestHandleMessage_ModelOverride_UpdatesConfigModel verifies that when a
-// ModelOverride is provided, o.config.Model is updated to the bare name of
-// the override. This ensures ContextWindow, buildSystemPrompt (family
-// selection), and TokenizerType all reflect the active model rather than the
-// default.
-func TestHandleMessage_ModelOverride_UpdatesConfigModel(t *testing.T) {
+// TestHandleMessage_ModelOverride_BareRejected verifies the mandatory-composite
+// rule on the per-message path: a bare override fails HandleMessage with the
+// composite guidance and leaves config.Model untouched.
+func TestHandleMessage_ModelOverride_BareRejected(t *testing.T) {
 	callIdx := 0
 	mockLLM := &mockLLMCaller{
 		callFn: func(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
@@ -1944,12 +1942,76 @@ func TestHandleMessage_ModelOverride_UpdatesConfigModel(t *testing.T) {
 	_, err = orchestrator.HandleMessage(context.Background(), "test", "", HandleOptions{
 		ModelOverride: "override-model",
 	})
-	if err != nil {
-		t.Fatalf("HandleMessage failed: %v", err)
+	if err == nil {
+		t.Fatal("expected HandleMessage to reject a bare model override")
 	}
+	if !strings.Contains(err.Error(), `must be a full "provider/model" identifier`) {
+		t.Errorf("error must carry the composite guidance, got: %v", err)
+	}
+	// The sentinel wrap is the contract backend/session relies on to skip the
+	// deterministic fresh-retry on a continuation send.
+	if !errors.Is(err, ErrInvalidModelOverride) {
+		t.Errorf("error must wrap ErrInvalidModelOverride, got: %v", err)
+	}
+	if orchestrator.config.Model != "default-model" {
+		t.Errorf("config.Model = %q, want the unchanged default 'default-model'", orchestrator.config.Model)
+	}
+}
 
-	if orchestrator.config.Model != "override-model" {
-		t.Errorf("expected config.Model updated to 'override-model', got %q", orchestrator.config.Model)
+// TestValidateModelOverride_EmptyBareCompositeRejected pins the empty-bare
+// half of the mandatory-composite rule (ADR-122): "provider/" parses as a
+// composite with an EMPTY bare model, and the entry-point validator must
+// reject it deterministically (wrapping ErrInvalidModelOverride) instead of
+// letting it fail Router.SetModel downstream and degrade to the silent
+// warn-and-continue path — the same rejection the profile validator applies
+// to a profile's model: override.
+func TestValidateModelOverride_EmptyBareCompositeRejected(t *testing.T) {
+	if err := ValidateModelOverride(""); err != nil {
+		t.Errorf("empty override must stay valid (no override), got: %v", err)
+	}
+	for _, model := range []string{"openai/", "local-llm/", "/"} {
+		err := ValidateModelOverride(model)
+		if err == nil {
+			t.Errorf("ValidateModelOverride(%q) must reject a composite with an empty bare model", model)
+			continue
+		}
+		if !errors.Is(err, ErrInvalidModelOverride) {
+			t.Errorf("ValidateModelOverride(%q) must wrap ErrInvalidModelOverride, got: %v", model, err)
+		}
+		if !strings.Contains(err.Error(), `must be a full "provider/model" identifier`) {
+			t.Errorf("ValidateModelOverride(%q) must carry the composite guidance, got: %v", model, err)
+		}
+	}
+	// A well-formed composite (the bare part may itself contain "/") still passes.
+	if err := ValidateModelOverride("local-llm/qwen/qwen3-coder-30b"); err != nil {
+		t.Errorf("ValidateModelOverride(HF-style composite) must accept, got: %v", err)
+	}
+}
+
+// TestValidateModelOverride_EmptyProviderCompositeRejected pins the
+// empty-provider half of the mandatory-composite rule (ADR-122): "/model"
+// parses as a composite with an EMPTY provider, and the entry-point validator
+// must reject it deterministically (wrapping ErrInvalidModelOverride) —
+// otherwise the override survives validation, mutates the request's
+// reasoning-effort half, and only then fails Router.SetModel, degrading to
+// the silent warn-and-continue path with a half-applied override (the
+// "validate BEFORE any state change" contract).
+func TestValidateModelOverride_EmptyProviderCompositeRejected(t *testing.T) {
+	for _, model := range []string{"/model", "/claude-3-haiku"} {
+		err := ValidateModelOverride(model)
+		if err == nil {
+			t.Errorf("ValidateModelOverride(%q) must reject a composite with an empty provider", model)
+			continue
+		}
+		if !errors.Is(err, ErrInvalidModelOverride) {
+			t.Errorf("ValidateModelOverride(%q) must wrap ErrInvalidModelOverride, got: %v", model, err)
+		}
+		if !strings.Contains(err.Error(), `must be a full "provider/model" identifier`) {
+			t.Errorf("ValidateModelOverride(%q) must carry the composite guidance, got: %v", model, err)
+		}
+		if !strings.Contains(err.Error(), "must name a provider") {
+			t.Errorf("ValidateModelOverride(%q) must name the empty-provider cause, got: %v", model, err)
+		}
 	}
 }
 

@@ -34,7 +34,7 @@ describe('SubAgentBlock', () => {
     document.body.replaceChildren(container)
     root = createRoot(container)
     useSessionStore.setState({ activeSessionId: 'sess-1' })
-    useChatStore.setState({ stepContextFill: {}, stepContextTokens: {} })
+    useChatStore.setState({ sessionTokens: {}, stepContextFill: {}, stepContextTokens: {} })
   })
 
   afterEach(() => {
@@ -80,6 +80,55 @@ describe('SubAgentBlock', () => {
   it('does not render a stale error hint when the block completed', () => {
     render(makeSub({ status: 'completed', error: 'stale reason', duration: 3000 }))
     expect(container.textContent).not.toContain('stale reason')
+  })
+
+  // --- forced model badge (additive: absent = unchanged render) ---
+  // The badge is visible only when the pin differs from the conductor's
+  // session model (the shared DelegateModelBadge rule); with no session tokens the
+  // conductor model is unknown, so the badge stays visible.
+
+  it('renders the forced model badge when the launch carried one', () => {
+    render(makeSub({ status: 'running', model: 'qwen3.8-27b' }))
+    const badge = container.querySelector('[data-slot="badge"][title="qwen3.8-27b"]')
+    expect(badge).not.toBeNull()
+    expect(badge!.textContent).toBe('qwen3.8-27b')
+    // Status-bar styling: outline variant, no "Forced model:" prefix.
+    expect(badge!.getAttribute('data-variant')).toBe('outline')
+    // The badge is a header hint, not an auto-expanded body.
+    expect(state()).toBe('closed')
+  })
+
+  it('hides the badge when the pinned model bare-matches the session model', () => {
+    useChatStore.setState({
+      sessionTokens: {
+        'sess-1': { total_input_tokens: 1, total_output_tokens: 1, model: 'qwen3.8-27b', family: 'qwen' },
+      },
+    })
+    render(makeSub({ status: 'running', model: 'provider/qwen3.8-27b' }))
+    // The provider prefix is an implementation detail — same bare model as the
+    // conductor's carries no information.
+    expect(container.querySelector('[data-slot="badge"]')).toBeNull()
+  })
+
+  it('shows the badge when the pinned model differs from the session model', () => {
+    useChatStore.setState({
+      sessionTokens: {
+        'sess-1': { total_input_tokens: 1, total_output_tokens: 1, model: 'bonsai-2-27b', family: 'bonsai' },
+      },
+    })
+    render(makeSub({ status: 'running', model: 'qwen3.8-27b' }))
+    const badge = container.querySelector('[data-slot="badge"][title="qwen3.8-27b"]')
+    expect(badge).not.toBeNull()
+    expect(badge!.textContent).toBe('qwen3.8-27b')
+  })
+
+  it('renders no model badge when the launch carries none', () => {
+    render(makeSub({ status: 'completed', duration: 1200 }))
+    expect(container.querySelector('[data-slot="badge"]')).toBeNull()
+    // The completed block still renders its duration chip — the only header
+    // chip, exactly as before the field existed.
+    expect(container.textContent).toContain('1s')
+    expect(container.textContent).not.toContain('Forced model')
   })
 
   it('expands its body when the user clicks the header', () => {

@@ -193,6 +193,31 @@ describe('groupMessages', () => {
     expect(step.children[0]!.kind).toBe('assistant')
   })
 
+  it('carries the plan_step_start model pin onto the plan_step block (badge), absent otherwise', () => {
+    const plan = makeUI({
+      type: 'plan',
+      metadata: { steps: [{ id: 'ps1', description: 'Review' }] },
+    })
+    const pinnedStart = makeUI({
+      type: 'plan_step_start',
+      metadata: { step_id: 'ps1', description: 'Review', model: 'local-llm/qwen3:8b' },
+    })
+    const pinned = groupMessages([plan, pinnedStart])
+    const pinnedStep = pinned.items[0]! as DisplayItem & { kind: 'plan_step' }
+    expect(pinnedStep.kind).toBe('plan_step')
+    expect(pinnedStep.model).toBe('local-llm/qwen3:8b')
+
+    // Absent key (inline step / synthesized start) — model stays undefined.
+    const bareStart = makeUI({
+      type: 'plan_step_start',
+      metadata: { step_id: 'ps1', description: 'Review' },
+    })
+    const bare = groupMessages([plan, bareStart])
+    const bareStep = bare.items[0]! as DisplayItem & { kind: 'plan_step' }
+    expect(bareStep.kind).toBe('plan_step')
+    expect(bareStep.model).toBeUndefined()
+  })
+
   it('keeps a single thought as kind: thought (no grouping)', () => {
     const msg = makeUI({
       type: 'thought',

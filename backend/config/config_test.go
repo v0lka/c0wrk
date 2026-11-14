@@ -21,7 +21,7 @@ import (
 func TestLoadMinimalConfig(t *testing.T) {
 	content := `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:
@@ -35,8 +35,8 @@ llm:
 	}
 
 	// Verify default_model
-	if cfg.LLM.DefaultModel != "claude-3-haiku" {
-		t.Errorf("Expected default_model 'claude-3-haiku', got %q", cfg.LLM.DefaultModel)
+	if cfg.LLM.DefaultModel != "anthropic/claude-3-haiku" {
+		t.Errorf("Expected default_model 'anthropic/claude-3-haiku', got %q", cfg.LLM.DefaultModel)
 	}
 
 	// Verify anthropic config
@@ -57,7 +57,7 @@ func TestEnvVarPreservationAndExpansion(t *testing.T) {
 
 	content := `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "${TEST_API_KEY}"
     models:
@@ -86,7 +86,7 @@ llm:
 func TestLoadAnthropicCompatible(t *testing.T) {
 	content := `
 llm:
-  default_model: claude-sonnet-4-20250514
+  default_model: my-proxy/claude-sonnet-4-20250514
   anthropic:
     api_key: "anthropic-key"
     models:
@@ -146,7 +146,7 @@ llm:
 func TestLoadAnthropicCompatible_Omitted(t *testing.T) {
 	content := `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:
@@ -163,11 +163,11 @@ llm:
 	}
 }
 
-// TestInvalidProviderError tests that invalid default_model (not in any provider's models) returns an error.
+// TestInvalidProviderError tests that invalid default_model (not in the named provider's models) returns an error.
 func TestInvalidProviderError(t *testing.T) {
 	content := `
 llm:
-  default_model: nonexistent-model
+  default_model: anthropic/nonexistent-model
   anthropic:
     api_key: "test-key"
     models:
@@ -181,7 +181,7 @@ llm:
 	}
 
 	// Verify error message mentions the issue
-	expectedSubstring := "not found in any provider"
+	expectedSubstring := "not found in provider"
 	if !contains(err.Error(), expectedSubstring) {
 		t.Errorf("Expected error to contain %q, got: %v", expectedSubstring, err)
 	}
@@ -214,7 +214,7 @@ llm:
 func TestDefaultsApplied(t *testing.T) {
 	content := `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:
@@ -375,7 +375,7 @@ func TestApplyDefaults_ToolCallTimeoutExemptToolsNotMaterialized(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "config-nil.yaml")
 	cfg = &Config{}
-	cfg.LLM.DefaultModel = "claude-3-5-sonnet"
+	cfg.LLM.DefaultModel = "anthropic/claude-3-5-sonnet"
 	cfg.LLM.Anthropic.APIKey = "test-key-123"
 	cfg.LLM.Anthropic.Models = []string{"claude-3-5-sonnet"}
 	if err := Save(cfg, path); err != nil {
@@ -467,7 +467,7 @@ func TestApplyDefaults_DiscoveryDirPrecedence(t *testing.T) {
 func TestOpenAICompatibleRequiresBaseURL(t *testing.T) {
 	content := `
 llm:
-  default_model: deepseek-chat
+  default_model: deepseek/deepseek-chat
   openai_compatible:
     deepseek:
       api_key: "test-key"
@@ -491,7 +491,7 @@ llm:
 func TestLoadWithResult_NoErrors(t *testing.T) {
 	content := `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:
@@ -518,7 +518,7 @@ llm:
 func TestModelProfilesLegacyInlineSectionIgnoredAndDropped(t *testing.T) {
 	content := `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:
@@ -603,7 +603,7 @@ func TestResolveAndLoad_ModelProfilesFallbackWarningSurfaced(t *testing.T) {
 	}
 	content := `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:
@@ -668,7 +668,7 @@ func TestLoadModelProfilesCatalog_MergesCustomProfiles(t *testing.T) {
 // TestGetAllProviderConfigs tests multi-provider config resolution.
 func TestGetAllProviderConfigs(t *testing.T) {
 	cfg := LLMConfig{
-		DefaultModel: "claude-3-haiku",
+		DefaultModel: "anthropic/claude-3-haiku",
 		Anthropic: AnthropicConfig{
 			APIKey: "anthropic-key",
 			Models: []string{"claude-3-haiku", "claude-opus"},
@@ -781,7 +781,7 @@ func TestResolveDefaultModelProvider(t *testing.T) {
 		{
 			name: "anthropic",
 			config: LLMConfig{
-				DefaultModel: "claude-3-haiku",
+				DefaultModel: "anthropic/claude-3-haiku",
 				Anthropic: AnthropicConfig{
 					APIKey: "anthropic-key",
 					Models: []string{"claude-3-haiku"},
@@ -795,7 +795,7 @@ func TestResolveDefaultModelProvider(t *testing.T) {
 		{
 			name: "chatgpt",
 			config: LLMConfig{
-				DefaultModel: "gpt-4o",
+				DefaultModel: "chatgpt/gpt-4o",
 				ChatGPT: ChatGPTConfig{
 					APIKey: "openai-key",
 					Models: []string{"gpt-4o"},
@@ -809,7 +809,7 @@ func TestResolveDefaultModelProvider(t *testing.T) {
 		{
 			name: "not_found",
 			config: LLMConfig{
-				DefaultModel: "nonexistent",
+				DefaultModel: "anthropic/nonexistent",
 				Anthropic: AnthropicConfig{
 					Models: []string{"claude-3-haiku"},
 				},
@@ -939,7 +939,7 @@ func findSubstring(s, substr string) bool {
 func TestSave_RoundTrip(t *testing.T) {
 	cfg := &Config{}
 	ApplyDefaults(cfg)
-	cfg.LLM.DefaultModel = "claude-3-5-sonnet"
+	cfg.LLM.DefaultModel = "anthropic/claude-3-5-sonnet"
 	cfg.LLM.Anthropic.APIKey = "test-key-123"
 	cfg.LLM.Anthropic.Models = []string{"claude-3-5-sonnet"}
 
@@ -962,8 +962,8 @@ func TestSave_RoundTrip(t *testing.T) {
 		t.Fatalf("Load failed: %v", err)
 	}
 
-	if loaded.LLM.DefaultModel != "claude-3-5-sonnet" {
-		t.Errorf("DefaultModel = %q, want 'claude-3-5-sonnet'", loaded.LLM.DefaultModel)
+	if loaded.LLM.DefaultModel != "anthropic/claude-3-5-sonnet" {
+		t.Errorf("DefaultModel = %q, want 'anthropic/claude-3-5-sonnet'", loaded.LLM.DefaultModel)
 	}
 	if loaded.LLM.Anthropic.APIKey != "test-key-123" {
 		t.Errorf("APIKey = %q, want 'test-key-123'", loaded.LLM.Anthropic.APIKey)
@@ -973,7 +973,7 @@ func TestSave_RoundTrip(t *testing.T) {
 func TestSave_AtomicWrite(t *testing.T) {
 	cfg := &Config{}
 	ApplyDefaults(cfg)
-	cfg.LLM.DefaultModel = "model"
+	cfg.LLM.DefaultModel = "anthropic/model"
 	cfg.LLM.Anthropic.APIKey = "key"
 	cfg.LLM.Anthropic.Models = []string{"model"}
 
@@ -994,7 +994,7 @@ func TestSave_AtomicWrite(t *testing.T) {
 func TestSave_InvalidPath(t *testing.T) {
 	cfg := &Config{}
 	ApplyDefaults(cfg)
-	cfg.LLM.DefaultModel = "model"
+	cfg.LLM.DefaultModel = "anthropic/model"
 	cfg.LLM.Anthropic.Models = []string{"model"}
 
 	err := Save(cfg, "/nonexistent/deeply/nested/dir/config.yaml")
@@ -1008,7 +1008,7 @@ func TestSave_PreservesEnvVarReferences(t *testing.T) {
 
 	content := `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "${MY_SECRET_KEY}"
     models:
@@ -1483,7 +1483,7 @@ func TestMCPServerConfig_DefaultTransport(t *testing.T) {
 	// This simulates loading an existing config file that doesn't have the transport field
 	content := `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:
@@ -1753,7 +1753,7 @@ vector_index:
 func TestVectorIndexConfig_ParkCapacity_DisableSentinel(t *testing.T) {
 	content := `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:
@@ -1786,7 +1786,7 @@ vector_index:
 func TestVectorIndexConfig_ParkBudget_Sentinels(t *testing.T) {
 	const disable = `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:
@@ -1808,7 +1808,7 @@ vector_index:
 
 	const ambiguous = `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:
@@ -1825,7 +1825,7 @@ vector_index:
 	// value below it is a typo, not a sentinel, and must fail fast at load.
 	const belowSentinel = `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:
@@ -1842,7 +1842,7 @@ vector_index:
 	// overflow to a negative, which the service would read as "budget disabled".
 	const aboveCeiling = `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:
@@ -1865,7 +1865,7 @@ vector_index:
 func TestVectorIndexConfig_StoreDiskBudget_DefaultsExplicitAndValidation(t *testing.T) {
 	const explicit = `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:
@@ -1894,7 +1894,7 @@ vector_index:
 	// would overflow the consumer's MiB→bytes shift.
 	const negative = `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:
@@ -1909,7 +1909,7 @@ vector_index:
 
 	over := int64(1) << 62
 	cfg.VectorIndex.StoreDiskBudgetMb = &over
-	cfg.LLM.DefaultModel = "claude-3-haiku"
+	cfg.LLM.DefaultModel = "anthropic/claude-3-haiku"
 	cfg.LLM.Anthropic = AnthropicConfig{APIKey: "test-key", Models: []string{"claude-3-haiku"}}
 	if err := validate(cfg); err == nil || !strings.Contains(err.Error(), "store_disk_budget_mb") {
 		t.Errorf("over-ceiling store_disk_budget_mb must fail validation naming the knob, got %v", err)
@@ -1925,7 +1925,7 @@ vector_index:
 func TestVectorIndexConfig_CorpusResidency_DefaultsAndExplicit(t *testing.T) {
 	const explicit = `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:
@@ -1998,7 +1998,7 @@ func TestVectorIndexConfig_CorpusResidency_RejectsNegativesAndCeiling(t *testing
 		t.Run(tc.name, func(t *testing.T) {
 			content := `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:
@@ -2021,7 +2021,7 @@ llm:
 func TestVectorIndexConfig_LegacyYAMLCompat(t *testing.T) {
 	content := `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:
@@ -2526,7 +2526,7 @@ func TestVectorIndexConfig_ExcludePatterns_Validation(t *testing.T) {
 func TestGoalLoopConfig_DefaultsToIndependent(t *testing.T) {
 	content := `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:
@@ -2551,7 +2551,7 @@ func TestGoalLoopConfig_ValidValues(t *testing.T) {
 		t.Run(val, func(t *testing.T) {
 			content := fmt.Sprintf(`
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:
@@ -2577,7 +2577,7 @@ goal_loop:
 func TestGoalLoopConfig_RejectsInvalidValue(t *testing.T) {
 	content := `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:
@@ -2718,7 +2718,7 @@ goal_loop:
 // needs so Load reaches the security validation stage.
 const securityGroupsTestBase = `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:
@@ -3574,7 +3574,7 @@ security:
 // keys being ignored.
 const legacySecurityYAML = `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:
@@ -3870,7 +3870,7 @@ func TestVectorIndexConfig_ContentFilter_Validation(t *testing.T) {
 func TestGitConfig_Defaults(t *testing.T) {
 	content := `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:
@@ -3896,7 +3896,7 @@ llm:
 func TestGitConfig_ExplicitValues(t *testing.T) {
 	content := `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:
@@ -3926,7 +3926,7 @@ git:
 func TestGitConfig_ZeroIntervalPreserved(t *testing.T) {
 	content := `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:
@@ -3954,7 +3954,7 @@ git:
 func TestGitCommitTimeout_DefaultsAndOverride(t *testing.T) {
 	baseLLM := `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:
@@ -4000,7 +4000,7 @@ func TestRuntimeConfig_MemorySoftLimit_TriState(t *testing.T) {
 			name: "unset decodes to auto sentinel",
 			yaml: `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:
@@ -4012,7 +4012,7 @@ llm:
 			name: "explicit zero is auto too",
 			yaml: `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:
@@ -4026,7 +4026,7 @@ runtime:
 			name: "explicit MiB value",
 			yaml: `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:
@@ -4040,7 +4040,7 @@ runtime:
 			name: "off sentinel",
 			yaml: `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:
@@ -4054,7 +4054,7 @@ runtime:
 			name: "below -1 is rejected",
 			yaml: `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:
@@ -4068,7 +4068,7 @@ runtime:
 			name: "above the 2 PiB ceiling is rejected",
 			yaml: `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:
@@ -4111,7 +4111,7 @@ func TestRuntimeConfig_MemorySoftLimit_RoundTrip(t *testing.T) {
 	for _, value := range []int{2048, -1} {
 		cfg := &Config{}
 		ApplyDefaults(cfg)
-		cfg.LLM.DefaultModel = "claude-3-haiku"
+		cfg.LLM.DefaultModel = "anthropic/claude-3-haiku"
 		cfg.LLM.Anthropic.APIKey = "test-key"
 		cfg.LLM.Anthropic.Models = []string{"claude-3-haiku"}
 		cfg.Runtime.MemorySoftLimitMB = value
@@ -4140,7 +4140,7 @@ func TestTLSFingerprint_LoadAndProviderList(t *testing.T) {
 
 	content := `
 llm:
-  default_model: qwen3
+  default_model: selfhosted/qwen3
   openai_compatible:
     selfhosted:
       base_url: "https://llm.lan:8443/v1"
@@ -4233,22 +4233,15 @@ func TestResolveDefaultModelProvider_CarriesTLSFingerprint(t *testing.T) {
 		}
 	})
 
-	t.Run("bare identifier", func(t *testing.T) {
-		p, model, err := newCfg("qwen3").ResolveDefaultModelProvider()
-		if err != nil {
-			t.Fatalf("ResolveDefaultModelProvider: %v", err)
-		}
-		if model != "qwen3" {
-			t.Errorf("model = %q, want qwen3", model)
-		}
-		if p.TLSFingerprint != pin {
-			t.Errorf("TLSFingerprint = %q, want %q", p.TLSFingerprint, pin)
+	t.Run("bare identifier rejected", func(t *testing.T) {
+		if _, _, err := newCfg("qwen3").ResolveDefaultModelProvider(); err == nil {
+			t.Fatal("a bare default_model must be rejected (mandatory-composite rule)")
 		}
 	})
 
 	t.Run("provider without a pin resolves empty", func(t *testing.T) {
 		cfg := &LLMConfig{
-			DefaultModel: "llama",
+			DefaultModel: "plain/llama",
 			OpenAICompatible: map[string]OpenAICompatibleConfig{
 				"plain": {BaseURL: "http://127.0.0.1:1234/v1", Models: []string{"llama"}},
 			},
@@ -4271,7 +4264,7 @@ func TestTLSFingerprint_SaveRoundTripAndOmitEmpty(t *testing.T) {
 
 	cfg := &Config{}
 	ApplyDefaults(cfg)
-	cfg.LLM.DefaultModel = "qwen3"
+	cfg.LLM.DefaultModel = "selfhosted/qwen3"
 	cfg.LLM.OpenAICompatible = map[string]OpenAICompatibleConfig{
 		"selfhosted": {BaseURL: "https://llm.lan:8443/v1", APIKey: "k", Models: []string{"qwen3"}, TLSFingerprint: pin},
 		"plain":      {BaseURL: "http://127.0.0.1:1234/v1", APIKey: "k", Models: []string{"llama"}},
@@ -4340,7 +4333,7 @@ func TestNotificationBannerTimeoutDefault(t *testing.T) {
 // chatgpt — which have no such knob in their schema) always report 0.
 func TestAutoRetrySeconds_ParsesAndSurfacesInProviderList(t *testing.T) {
 	content := `llm:
-  default_model: "qwen3"
+  default_model: "selfhosted/qwen3"
   anthropic:
     api_key: "k"
     models:
@@ -4426,7 +4419,7 @@ func TestAutoRetrySeconds_ParsesAndSurfacesInProviderList(t *testing.T) {
 func TestAutoRetrySeconds_SaveRoundTripAndOmitEmpty(t *testing.T) {
 	cfg := &Config{}
 	ApplyDefaults(cfg)
-	cfg.LLM.DefaultModel = "qwen3"
+	cfg.LLM.DefaultModel = "selfhosted/qwen3"
 	cfg.LLM.OpenAICompatible = map[string]OpenAICompatibleConfig{
 		"selfhosted": {BaseURL: "https://llm.lan:8443/v1", APIKey: "k", Models: []string{"qwen3"}, AutoRetrySeconds: 30},
 		"plain":      {BaseURL: "http://127.0.0.1:1234/v1", APIKey: "k", Models: []string{"llama"}},
@@ -4481,7 +4474,7 @@ func TestAutoRetrySeconds_RejectsOutOfRange(t *testing.T) {
 	for _, tt := range tests {
 		t.Run("openai_compatible "+tt.name, func(t *testing.T) {
 			content := fmt.Sprintf(`llm:
-  default_model: "qwen3"
+  default_model: "selfhosted/qwen3"
   openai_compatible:
     selfhosted:
       base_url: "http://127.0.0.1:1234/v1"
@@ -4499,7 +4492,7 @@ func TestAutoRetrySeconds_RejectsOutOfRange(t *testing.T) {
 		})
 		t.Run("anthropic_compatible "+tt.name, func(t *testing.T) {
 			content := fmt.Sprintf(`llm:
-  default_model: "claude-sonnet-4-20250514"
+  default_model: "anthropic/claude-sonnet-4-20250514"
   anthropic_compatible:
     gateway:
       base_url: "https://claude.lan:8443"
@@ -4518,7 +4511,7 @@ func TestAutoRetrySeconds_RejectsOutOfRange(t *testing.T) {
 	}
 	// The boundary itself must stay valid.
 	content := `llm:
-  default_model: "qwen3"
+  default_model: "selfhosted/qwen3"
   openai_compatible:
     selfhosted:
       base_url: "http://127.0.0.1:1234/v1"

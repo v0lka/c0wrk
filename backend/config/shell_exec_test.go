@@ -30,7 +30,7 @@ func loadShellExecYAML(t *testing.T, doc string) (cfg *Config, warnings []string
 func minimalConfigYAML(shellExec string) string {
 	doc := `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:

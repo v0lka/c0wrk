@@ -312,7 +312,7 @@ type ContextFillEventData struct {
 type SessionTokensEventData struct {
 	SessionInputTokens  int     `json:"session_input_tokens"`
 	SessionOutputTokens int     `json:"session_output_tokens"`
-	Model               string  `json:"model"`
+	Model               string  `json:"model"` // composite "provider/model" when the session router resolves the provider; bare for ids that already contain "/" or unresolvable models (ADR-123 §7)
 	Family              string  `json:"family"`
 	FillPercent         float64 `json:"fill_percent"`
 	UsedTokens          int     `json:"used_tokens"`

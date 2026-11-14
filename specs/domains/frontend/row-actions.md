@@ -14,6 +14,7 @@ Shared hover-overlay primitives for list-row actions: `ItemAction` is one icon b
 - `frontend/src/components/GitPanel/LocalBranchRow.tsx` — local branch rows (Push, Merge, Rebase, Rename, Delete); the session-pinned branch (managed worktree, ADR-080) renders NO Delete action at all and a disabled Rename — see [session-worktrees.md](../session-worktrees.md)
 - `frontend/src/components/GitPanel/RemoteBranchRow.tsx` — remote branch rows (Delete on remote)
 - `frontend/src/components/settings/ThemeMenuItem.tsx` — theme menu rows (Delete theme; predefined themes render no actions)
+- `frontend/src/components/ui/ModelPickerMenu.tsx` — model picker menu rows (Copy model name). The action lives in a per-row internal component, `CopyModelNameAction`, that owns its own `useCopyFlash` instance — so copying one row never flashes a sibling — and copies the row's full composite `provider/name` id; the row's native `title={entry.id}` restores what the row's `truncate` clipping hides (see [button-tooltips.md](button-tooltips.md)); the Default row carries neither title nor actions
 - `frontend/src/components/chat/BookmarksPanel.tsx` — bookmark rows (Rename, Delete)
 - `frontend/src/components/research/ResearchProjectPicker.tsx` — research-project rows (Pin/Unpin, Delete)
 - `frontend/src/components/research/ResearchHypothesisPicker.tsx` — hypothesis menu rows (Pin/Unpin)
@@ -38,6 +39,7 @@ A disabled button (`pointer-events-none`) never receives pointer events, so its 
 | Local branch rows | `LocalBranchRow.tsx` | Push, Merge, Rebase, Rename, Delete (Delete absent and Rename disabled on the session-pinned branch — managed worktree pin, ADR-080) |
 | Remote branch rows | `RemoteBranchRow.tsx` | Delete on remote |
 | Theme menu rows | `ThemeMenuItem.tsx` | Delete theme |
+| Model picker menu rows | `ModelPickerMenu.tsx` | Copy model name (per-row `useCopyFlash` flash) |
 | Bookmark rows | `BookmarksPanel.tsx` | Rename, Delete |
 | Research-project rows | `ResearchProjectPicker.tsx` | Pin/Unpin, Delete |
 | Hypothesis menu rows | `ResearchHypothesisPicker.tsx` | Pin/Unpin |

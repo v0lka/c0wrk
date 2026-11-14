@@ -8,6 +8,7 @@ import { useChatStore } from '@/stores/chatStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import { CollapsibleBlock } from '@/components/chat/CollapsibleBlock'
 import { ContextFillStatus } from '@/components/layout/ContextFillStatus'
+import { DelegateModelBadge } from './DelegateModelBadge'
 import { StepTooltip } from './StepTooltip'
 import { ChatMessageRenderer } from './ChatMessageRenderer'
 import { BookmarkableContext } from './BookmarkableContext'
@@ -22,7 +23,7 @@ interface PlanStepBlockProps {
 }
 
 export const PlanStepBlock = memo(function PlanStepBlock({ item }: PlanStepBlockProps) {
-  const { stepId, stepNum, title, description, status, duration, error, isRetry, children } = item
+  const { stepId, stepNum, title, description, status, duration, error, isRetry, model, children } = item
   // Plan groups are rebuilt per session switch, so the displayed steps always
   // belong to the active session. The nested lookup returns a primitive
   // (stable selector — no allocation).
@@ -90,6 +91,10 @@ export const PlanStepBlock = memo(function PlanStepBlock({ item }: PlanStepBlock
       {status === 'interrupted' && (
         <span className="text-xs text-muted-foreground truncate min-w-0">— interrupted</span>
       )}
+      {/* The delegated step's forced `model:` pin — rendered only when it
+          differs from the conductor's session model (the DelegateModelBadge rule);
+          absent = unchanged render. */}
+      {model && <DelegateModelBadge model={model} />}
       {checklistTotal > 0 && (
         <StepChecklistProgress total={checklistTotal} completed={checklistDone} accent={accent} />
       )}
@@ -108,7 +113,7 @@ export const PlanStepBlock = memo(function PlanStepBlock({ item }: PlanStepBlock
         </span>
       )}
     </>
-  ), [isRetry, status, error, stepContextFill, stepContextTokens, checklistTotal, checklistDone, accent, duration])
+  ), [isRetry, status, error, model, stepContextFill, stepContextTokens, checklistTotal, checklistDone, accent, duration])
 
   const icon = useMemo(() => (
     <StatusIcon className={cn('h-3.5 w-3.5 shrink-0', iconClass)} />

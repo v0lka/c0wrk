@@ -162,7 +162,7 @@ func TestValidateDelegationTasks_AsyncDep(t *testing.T) {
 		{ID: "A", Summary: "async task", Task: "do stuff", Mode: "async"},
 		{ID: "B", Summary: "blocking dep", Task: "do more", Mode: "blocking", DependsOn: []string{"A"}},
 	}
-	err := validateDelegationTasks(tasks, r, nil)
+	err := validateDelegationTasks(tasks, r, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for depending on async task")
 	}
@@ -174,7 +174,7 @@ func TestValidateDelegationTasks_Cycle(t *testing.T) {
 		{ID: "A", Summary: "task A", Task: "do stuff", DependsOn: []string{"B"}},
 		{ID: "B", Summary: "task B", Task: "do stuff", DependsOn: []string{"A"}},
 	}
-	err := validateDelegationTasks(tasks, r, nil)
+	err := validateDelegationTasks(tasks, r, nil, nil)
 	if err == nil {
 		t.Fatal("expected cycle error")
 	}
@@ -271,7 +271,7 @@ func TestValidateDelegationTasks_UnknownAgentRejected(t *testing.T) {
 	tasks := []DelegationTask{
 		{ID: "A", Summary: "s", Task: "do work", Agent: "ghost"},
 	}
-	err := validateDelegationTasks(tasks, r, resolver)
+	err := validateDelegationTasks(tasks, r, resolver, nil)
 	if err == nil {
 		t.Fatal("expected error for unknown agent")
 	}
@@ -288,7 +288,7 @@ func TestValidateDelegationTasks_KnownAgentAccepted(t *testing.T) {
 	tasks := []DelegationTask{
 		{ID: "A", Summary: "s", Task: "do work", Agent: "real"},
 	}
-	if err := validateDelegationTasks(tasks, r, resolver); err != nil {
+	if err := validateDelegationTasks(tasks, r, resolver, nil); err != nil {
 		t.Fatalf("known agent must be accepted, got: %v", err)
 	}
 }
@@ -298,7 +298,7 @@ func TestValidateDelegationTasks_AgentWithoutResolverRejected(t *testing.T) {
 	tasks := []DelegationTask{
 		{ID: "A", Summary: "s", Task: "do work", Agent: "x"},
 	}
-	err := validateDelegationTasks(tasks, r, nil)
+	err := validateDelegationTasks(tasks, r, nil, nil)
 	if err == nil {
 		t.Fatal("expected error when agent requested with no resolver")
 	}
@@ -313,7 +313,7 @@ func TestValidateDelegationTasks_NoAgentUnchangedWithoutResolver(t *testing.T) {
 		{ID: "A", Summary: "s", Task: "do work"},
 	}
 	// No agent field → resolver never consulted, accepted without one.
-	if err := validateDelegationTasks(tasks, r, nil); err != nil {
+	if err := validateDelegationTasks(tasks, r, nil, nil); err != nil {
 		t.Fatalf("no-agent task must pass without resolver, got: %v", err)
 	}
 }

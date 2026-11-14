@@ -211,7 +211,7 @@ func newChatGPTAuthTestAPI(t *testing.T) (*FrontendAPI, *mockBuilder, *authEvent
 	dir := t.TempDir()
 	cfg := &config.Config{}
 	config.ApplyDefaults(cfg)
-	cfg.LLM.DefaultModel = "gpt-5.5"
+	cfg.LLM.DefaultModel = "chatgpt/gpt-5.5"
 	cfg.LLM.ChatGPT.Models = []string{"gpt-5.5"}
 
 	rec := &authEventRecorder{}

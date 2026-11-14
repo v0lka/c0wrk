@@ -42,7 +42,7 @@ func TestPlanStepEventTranslator_SubAgentLaunch_EmitsPlanStepStartOnRoot(t *test
 		summary: "My Step Summary",
 	}
 
-	translator.SubAgentLaunch("step_1", "full task description", "")
+	translator.SubAgentLaunch("step_1", "full task description", "local-llm/qwen3:8b")
 
 	if len(root.planStepStarts) != 1 {
 		t.Fatalf("expected 1 PlanStepStart on root, got %d", len(root.planStepStarts))
@@ -53,6 +53,11 @@ func TestPlanStepEventTranslator_SubAgentLaunch_EmitsPlanStepStartOnRoot(t *test
 	}
 	if ps.summary != "My Step Summary" {
 		t.Errorf("expected summary 'My Step Summary', got %q", ps.summary)
+	}
+	// The honored profile pin rides plan_step_start's model key so the
+	// plan-step block renders the same badge as a plain delegate launch.
+	if ps.model != "local-llm/qwen3:8b" {
+		t.Errorf("expected model pin forwarded to root, got %q", ps.model)
 	}
 	// PlanStepStart must NOT be emitted on the scoped copy
 	if len(scoped.planStepStarts) != 0 {

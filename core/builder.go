@@ -515,17 +515,19 @@ func (b *OrchestratorBuilder) Build(
 
 	// Session token events: the preferred seam reports the median per-call output-token
 	// rate from a sliding window; older emitters keep the plain-totals path
-	// (specs/domains/llm-providers.md).
+	// (specs/domains/llm-providers.md). The model is composed into the full
+	// provider/model selector (compositeSessionModel) so the frontend's badge
+	// comparison can tell providers apart (ADR-123 §7).
 	switch te := emitter.(type) {
 	case SessionTokenThroughputEmitter:
 		throughput := newSessionThroughputWindow()
 		usageTracker.AddTimedObserver(func(usage llm.TokenUsage, duration time.Duration, totalIn, totalOut int, model, family string) {
 			median, samples := throughput.record(usage.OutputTokens, duration)
-			te.EmitSessionTokensWithThroughput(totalIn, totalOut, model, family, median, samples)
+			te.EmitSessionTokensWithThroughput(totalIn, totalOut, compositeSessionModel(llmRouter, model), family, median, samples)
 		})
 	case SessionTokenEmitter:
 		usageTracker.AddObserver(func(_ llm.TokenUsage, totalIn, totalOut int, model, family string) {
-			te.EmitSessionTokens(totalIn, totalOut, model, family)
+			te.EmitSessionTokens(totalIn, totalOut, compositeSessionModel(llmRouter, model), family)
 		})
 	}
 
@@ -728,25 +730,26 @@ func (b *OrchestratorBuilder) Build(
 	// once construction returns, so even a panic inside NewOrchestrator releases the
 	// registration below.
 	orch := NewOrchestrator(orchConfig, OrchestratorDeps{
-		Router:               coreRouter,
-		LLM:                  loggedLLM,
-		ModelSwitcher:        llmRouter,
-		VisionResolver:       newMarkitdownVisionResolver(llmRouter, modelReg, cfg),
-		ToolExec:             sessionRegistry,         // ToolExecutor (per-session policy view)
-		ToolRegistry:         b.registry.ToolRegistry, // sp4rk ToolRegistry (shared)
-		TokenCounter:         tokenCounter,
-		ContextFactory:       contextFactory,
-		Reflector:            coreReflector,
-		Logger:               logger,
-		ServiceMetrics:       b.serviceMetrics,
-		Emitter:              emitter,
-		ModelRegistry:        modelReg,
-		ToolResultBudget:     toolResultBudget,
-		CircuitBreaker:       circuitBreaker,
-		BBFactory:            bbFactory,
-		TrackingCaller:       trackingCaller,
-		VectorSearchFunc:     b.vectorSearchFunc,
-		VectorSearchWaitFunc: b.vectorSearchWaitFunc,
+		Router:                coreRouter,
+		LLM:                   loggedLLM,
+		ModelSwitcher:         llmRouter,
+		VisionResolver:        newMarkitdownVisionResolver(llmRouter, modelReg, cfg),
+		ValidateModelOverride: modelOverrideValidator(llmRouter),
+		ToolExec:              sessionRegistry,         // ToolExecutor (per-session policy view)
+		ToolRegistry:          b.registry.ToolRegistry, // sp4rk ToolRegistry (shared)
+		TokenCounter:          tokenCounter,
+		ContextFactory:        contextFactory,
+		Reflector:             coreReflector,
+		Logger:                logger,
+		ServiceMetrics:        b.serviceMetrics,
+		Emitter:               emitter,
+		ModelRegistry:         modelReg,
+		ToolResultBudget:      toolResultBudget,
+		CircuitBreaker:        circuitBreaker,
+		BBFactory:             bbFactory,
+		TrackingCaller:        trackingCaller,
+		VectorSearchFunc:      b.vectorSearchFunc,
+		VectorSearchWaitFunc:  b.vectorSearchWaitFunc,
 		// Raw configured value: 0 (fail-fast) is enforced by the desktop search closure
 		// before this bound; an orchestrator zero → 3s default.
 		VectorSearchWaitTimeout:  b.vectorSearchWaitTimeout,
@@ -1697,6 +1700,78 @@ func modelOverridesFromConfig(cfg *BuilderConfig) map[string]llm.ModelMetadata {
 	remapLocalGoogleProtocols(overrides, cfg.LLM.ProviderConfigs, cfg.ExpandEnvVars)
 	applyProviderOutputReserves(overrides, cfg.LLM.ProviderConfigs)
 	return overrides
+}
+
+// compositeSessionModel prefixes a provider-echoed model name with the
+// session's active provider so session_tokens.model and the emitter's cached
+// last-model carry the full "provider/model" selector the frontend's badge
+// comparison needs (ADR-123 §7: a cross-provider pin sharing the session's
+// bare model name must stay visible). The router's ACTIVE composite wins
+// when it shares the echoed bare name: ProviderForModel is a first-match
+// scan over every configured provider, so when two providers list the same
+// bare name and the session switched to the second (composite SetModel),
+// recomposing from the scan would attribute the report to the wrong
+// provider — the badge would show a provider the session is not on and the
+// ADR-123 §7 pin-vs-session comparison would silently pass exactly on the
+// case it was introduced for. Ids that already contain "/"
+// (OpenRouter-style echoed names) and models neither the active composite
+// nor any provider lists pass through unchanged; the badge falls back to
+// bare-name comparison for them.
+func compositeSessionModel(llmRouter *llm.Router, model string) string {
+	if llmRouter == nil || model == "" || strings.Contains(model, "/") {
+		return model
+	}
+	// Usage reports echo bare names; the active composite is the
+	// session-side attribution of record (SetModel/SetLastModel wrote it),
+	// so it outranks the first-match scan.
+	if active := llmRouter.ActiveModel(); active != "" && llm.BareModel(active) == model {
+		return active
+	}
+	if provider, ok := llmRouter.ProviderForModel(model); ok && provider != "" {
+		return provider + "/" + model
+	}
+	return model
+}
+
+// modelOverrideValidator closes over the router's read-only provider-for-model
+// lookup (specs/domains/orchestration/delegation.md): a delegation's model
+// override — an explicit task-level `model` (ADR-123) or a Subagent Profile's
+// `model:` pin — MUST be a full composite "provider/model" identifier — bare
+// names are rejected outright (ADR-122 mandatory-composite rule) — and must
+// name a provider the router actually configured. Checked at delegate
+// validation and again defensively at launch (mirrors the agent-name
+// double-check), so a doomed subagent never starts and the error names the
+// source ("profile <name>" / "task <id>"), the model, and the rule/providers.
+// A composite with an EMPTY bare part ("provider/") is rejected for the same
+// reason: NewModelProviderOverrideCaller would pin only the provider and let
+// req.Model silently inherit the session's active model. The bare part may
+// itself contain "/" (HF-style ids): ids split on the FIRST "/" only, so
+// "local-llm/qwen/qwen3-coder-30b" names model "qwen/qwen3-coder-30b" at
+// provider "local-llm". A nil router yields a nil validator (no pre-launch
+// validation; the router's per-request provider miss remains the backstop).
+func modelOverrideValidator(llmRouter *llm.Router) tools.ModelOverrideValidator {
+	if llmRouter == nil {
+		return nil
+	}
+	return func(source, model string) error {
+		provider, bare, composite := llm.ParseCompositeModelID(model)
+		if !composite {
+			return fmt.Errorf(
+				"%s: model override %q must be a full \"provider/model\" identifier — bare model names are not accepted (the model name itself may contain \"/\": the id splits on the first \"/\" only)",
+				source, model)
+		}
+		if bare == "" {
+			return fmt.Errorf(
+				"%s: model override %q has an empty bare model — a composite id is \"provider/model\" and the part after \"/\" must name a model",
+				source, model)
+		}
+		if _, ok := llmRouter.ProviderForModel(model); ok {
+			return nil
+		}
+		return fmt.Errorf(
+			"%s: model override %q names unknown provider %q — known providers: %s",
+			source, model, provider, strings.Join(llmRouter.KnownProviders(), ", "))
+	}
 }
 
 // buildRouter creates a fresh LLM Router + ModelRegistry from config;

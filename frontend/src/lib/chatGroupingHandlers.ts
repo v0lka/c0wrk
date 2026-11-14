@@ -96,6 +96,10 @@ export function handlePlanStepStart(
   const stepId = metaString(meta, 'step_id') ?? ''
   const description = metaString(meta, 'description') ?? ''
   const summary = metaString(meta, 'summary')?.trim() ?? ''
+  // The delegated step's honored profile model pin, when the start event
+  // carries one (additive `model` key — absent for inline steps / synthesized
+  // starts, so the badge stays hidden and the render is unchanged).
+  const model = metaString(meta, 'model') ?? ''
   const info = stepIndexMap.get(stepId)
   // Skip plan_step blocks for ad-hoc step_ids not in a declared plan
   // (e.g. the Conductor's own update_checklist with step_id "main").
@@ -124,7 +128,8 @@ export function handlePlanStepStart(
   stepIdCounts.set(stepId, count)
   const stepItem: PlanStep = {
     kind: 'plan_step', id: msg.id, stepId, stepNum: resolvedInfo.num, title: resolvedInfo.title,
-    description: resolvedInfo.description, status: 'running', children: [], ...(count > 1 ? { isRetry: true } : {}),
+    description: resolvedInfo.description, status: 'running', children: [],
+    ...(model ? { model } : {}), ...(count > 1 ? { isRetry: true } : {}),
   }
   openSteps.set(stepId, stepItem)
   // A delegated subagent's OWN plan steps carry the DELEGATION id as
@@ -208,12 +213,17 @@ export function handleSubAgentLaunch(
 ) {
   const stepId = metaString(meta, 'step_id') ?? ''
   const description = metaString(meta, 'description') ?? ''
+  // The delegate's forced model override, when the launch event carries one
+  // (additive `model` key — absent in payloads that predate it, so the badge
+  // stays hidden and the render is unchanged).
+  const model = metaString(meta, 'model') ?? ''
   // Delegated steps do not receive plan_step_start, so there is never a
   // pre-existing plan_step to convert — always create a fresh subagent block.
   const subItem: SubAgentItem = {
     kind: 'subagent', id: msg.id, stepId,
     title: description || stepId,
     description: description || undefined,
+    model: model || undefined,
     status: 'running', children: [],
   }
   openSteps.set(stepId, subItem)

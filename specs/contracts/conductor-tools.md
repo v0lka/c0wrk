@@ -69,7 +69,9 @@ delegate.Execute(ctx, input)                     [core/tools/delegate.go]
   │  (either missing → error result: "not running inside a Conductor")
   ├─ Orthogonality guard: if PlanChecker.HasDeclaredPlan() → reject
   │  (delegate is disabled once a plan is declared; use execute_plan)
-  ├─ validateDelegationTasks (IDs, DAG, depth, agent profile existence)
+  ├─ validateDelegationTasks (IDs, DAG, depth, agent profile existence,
+  │  model overrides — task `model` + profile pin — via the source-labeled
+  │  ModelOverrideValidator: any failure rejects the whole call, ADR-123)
   ├─ Duplicate guard: an id already settled on the blackboard is replayed
   │  into the Registry via Register + Complete and refused as fresh work
   ├─ RegisterTask each remaining task as "pending"
@@ -97,6 +99,8 @@ delegate.Execute(ctx, input)                     [core/tools/delegate.go]
 ```
 
 Direction: Conductor → `delegate` tool → `DelegationLauncher.Launch` (`conductorLauncher`) → `RunSubAgent`/`RunSubAgentsParallel` → subagent `Executor.Run`. Results flow back: subagent → `RunSubAgent` channel → `conductorLauncher` → `DelegationResult` → `delegate` tool result → Conductor.
+
+**Input contract:** each task of the `tasks` array carries `id` (unique within the run), `summary`, `task`, optional `acceptance_criteria`, `tools` (`"all"` / `"read-only"` / group-token array), `depends_on` (blocking ids only), `mode` (`blocking` | `async`), `max_steps`, `allow_redelegate`, optional `model`, and optional `agent` (a Subagent Profile name). The `model` field (ADR-123) is a per-delegation override: a full composite `provider/model` id routing THIS subagent to another provider — bare names and `"provider/"` composites are rejected outright (ADR-122's mandatory-composite grammar), the value is validated at delegate time through the source-labeled `ModelOverrideValidator` (sources `"task <id>"` / `"profile <name>"`; provider-name-only, router-backed; any failure rejects the whole call), and it wins over the resolved profile's `model:` pin (which wins over the session's active model): task > profile > session. The resolved chain re-validates defensively at launch (covering mid-run drift and resume relaunches — the durable `DelegationSpec` persists the task's `model`). The full field reference and the resolution/validation funnel live in [../domains/orchestration/delegation.md](../domains/orchestration/delegation.md) (§ Model Override Resolution).
 
 **Cooperative pause and resume:** every subagent Executor receives the session pause checker. When a subagent stops with `agent.ErrPaused`, its partial `[]agent.Step` trajectory is stored on the blackboard as the step result's checkpoint rather than treated as a fresh failure. Rebuilding the same delegation/plan step reads only that cooperative-pause result, seeds the checkpoint into both `orchestration.StepSeedable.SeedSteps` on the isolated ContextManager and `agent.WithResumeSteps` on the Executor, and continues step numbering from the checkpoint. Ordinary failed steps re-run from a fresh context. A paused checkpoint with a ContextManager that does not implement `StepSeedable` fails before dispatch; silently restarting and discarding the trajectory is not permitted.
 
@@ -301,3 +305,5 @@ Every row above except the `finish` join guard is tool-level (`ToolResult{ IsErr
 - [../domains/orchestration/executor.md](../domains/orchestration/executor.md) — ReAct loop primitive
 - [../domains/tool-system/README.md](../domains/tool-system/README.md) — tool registry and execution pipeline
 - [../decisions/012-conductor-orchestration-pipeline.md](../decisions/012-conductor-orchestration-pipeline.md) — architectural decision
+- [../decisions/122-subagent-model-provider-override.md](../decisions/122-subagent-model-provider-override.md) — the profile `model:` pin (composite grammar, provider-override caller)
+- [../decisions/123-per-task-model-override.md](../decisions/123-per-task-model-override.md) — the per-task `model` override (precedence task > profile > session, source-labeled validation funnel)

@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react'
 import { AlertTriangle } from 'lucide-react'
 import { getConfig } from '@/api/config'
+import type { ConfigResponse } from '@/types/models'
+import { compositeDefaultModelHint } from '@/lib/configLoadHint'
 
 interface ConfigWarningBannerProps {
   className?: string
@@ -9,6 +11,7 @@ interface ConfigWarningBannerProps {
 
 export function ConfigWarningBanner({ className = '', refreshKey = 0 }: ConfigWarningBannerProps) {
   const [errors, setErrors] = useState<string[]>([])
+  const [llm, setLlm] = useState<ConfigResponse['llm'] | null>(null)
   const [loaded, setLoaded] = useState(false)
 
   useEffect(() => {
@@ -17,6 +20,7 @@ export function ConfigWarningBanner({ className = '', refreshKey = 0 }: ConfigWa
         const result = await getConfig()
         setLoaded(result?.loaded ?? false)
         setErrors(result?.config_errors ?? [])
+        setLlm(result?.llm ?? null)
       } catch {
         // Silently fail - config not available yet
       }
@@ -27,6 +31,12 @@ export function ConfigWarningBanner({ className = '', refreshKey = 0 }: ConfigWa
   if (!loaded) {
     return null
   }
+
+  // The mandatory-composite default_model error (ADR-122) gets an actionable
+  // hint: the exact corrected line, provider-resolved from the effective
+  // (fail-soft fallback) config when any configured provider serves the bare
+  // model, the "<provider>/bare" pattern otherwise.
+  const hint = compositeDefaultModelHint(errors, llm)
 
   // Show errors if present
   if (errors.length > 0) {
@@ -41,6 +51,26 @@ export function ConfigWarningBanner({ className = '', refreshKey = 0 }: ConfigWa
                 <li key={`${index}-${error}`}>{error}</li>
               ))}
             </ul>
+            {hint && (
+              <div className="flex flex-col gap-0.5 pl-5">
+                <span className="text-muted-foreground">
+                  The default model must be a full{' '}
+                  <code className="text-foreground">provider/model</code> selector — fix{' '}
+                  <code className="text-foreground">~/.c0wrk/config.yaml</code>:
+                </span>
+                {hint.suggestions.length > 0 ? (
+                  hint.suggestions.map((suggestion) => (
+                    <code key={suggestion} className="text-foreground">
+                      default_model: {suggestion}
+                    </code>
+                  ))
+                ) : (
+                  <code className="text-foreground">
+                    default_model: &lt;provider&gt;/{hint.bareModel}
+                  </code>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </div>

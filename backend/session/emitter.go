@@ -364,9 +364,12 @@ func (e *EventEmitter) PlanGenerated(stepCount int, steps []orchestration.PlanSt
 
 // PlanStepStart emits a plan step start event; duplicate calls for the same
 // step ID are suppressed, so the inline todo callback and the subagent
-// launcher can both call it.
-func (e *EventEmitter) PlanStepStart(stepID, description, summary string) {
-	e.log().Debug("emitter: plan step start", "sessionID", e.sessionID, "stepID", stepID, "description", description, "summary", summary)
+// launcher can both call it. model carries the profile's honored pin for a
+// delegated step and is emitted ONLY when non-empty (additive `model` key —
+// absent in payloads that predate it, so the UI badge stays hidden and the
+// persisted shape is unchanged for inline steps).
+func (e *EventEmitter) PlanStepStart(stepID, description, summary, model string) {
+	e.log().Debug("emitter: plan step start", "sessionID", e.sessionID, "stepID", stepID, "description", description, "summary", summary, "model", model)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.planStartedSet != nil && e.planStartedSet[stepID] {
@@ -380,18 +383,22 @@ func (e *EventEmitter) PlanStepStart(stepID, description, summary string) {
 	e.planStartedSet[stepID] = true
 	e.planCurrentStepID = stepID
 	completedCount := len(e.planCompletedSet)
+	data := map[string]any{
+		"step_id":            stepID,
+		"description":        description,
+		"summary":            summary,
+		"progress":           e.computeProgress(completedCount),
+		"current_step_index": completedCount, // 0-based index of current step
+		"completed_count":    completedCount,
+		"total_count":        e.planTotalSteps,
+	}
+	if model != "" {
+		data["model"] = model
+	}
 	e.emitEvent(Event{
 		SessionID: e.sessionID,
 		Type:      "plan_step_start",
-		Data: map[string]any{
-			"step_id":            stepID,
-			"description":        description,
-			"summary":            summary,
-			"progress":           e.computeProgress(completedCount),
-			"current_step_index": completedCount, // 0-based index of current step
-			"completed_count":    completedCount,
-			"total_count":        e.planTotalSteps,
-		},
+		Data:      data,
 	})
 }
 
@@ -703,9 +710,11 @@ func (e *EventEmitter) StepComplete(stepNum int, duration time.Duration) {
 	})
 }
 
-// SubAgentLaunch emits a subagent launch event. model is the honored model
-// identity the sub-agent is pinned to ("" = session default); it rides the
-// additive "model" payload key when set (sp4rk#31 model identity).
+// SubAgentLaunch emits a subagent launch event. model carries the honored
+// "provider/model" pin (profile or per-task) for the UI badge; an empty
+// model — the subagent runs on the session's active model, no badge —
+// omits the key entirely, matching plan_step_start's omit-when-empty
+// placement.
 func (e *EventEmitter) SubAgentLaunch(stepID, description, model string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -885,7 +894,8 @@ func (e *EventEmitter) AssistantDone(fullContent string, inputTokens, outputToke
 }
 
 // SetLastModel refreshes the cached model/family on a per-request override
-// (orchestrator's ApplyRequestOverrides) so context_fill events report the
+// (orchestrator's ApplyRequestOverrides passes the composite `provider/model`
+// selector — ADR-123 §7) so context_fill events report the
 // new model immediately instead of the previous task's stale one during a
 // continuation/resume. No-op when empty.
 func (e *EventEmitter) SetLastModel(model, family string) {

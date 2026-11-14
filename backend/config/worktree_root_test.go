@@ -9,7 +9,7 @@ import (
 
 func TestWorktreesRootConfigRoundTrip(t *testing.T) {
 	base := `llm:
-  default_model: model
+  default_model: anthropic/model
   anthropic:
     models: [model]
 `

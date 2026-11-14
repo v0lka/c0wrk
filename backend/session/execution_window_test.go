@@ -112,7 +112,7 @@ func TestExecutionWindow_ResetsOnAgentMetrics(t *testing.T) {
 func TestExecutionWindow_PlanProgressSnapshot(t *testing.T) {
 	e, _ := newWindowTestEmitter()
 	e.PlanGenerated(3, nil)
-	e.PlanStepStart("s1", "first", "")
+	e.PlanStepStart("s1", "first", "", "")
 
 	snap := e.ExecutionWindowSnapshot()
 	if snap.PlanTotal != 3 || snap.PlanDone != 0 || snap.PlanStep != "s1" {

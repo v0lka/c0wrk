@@ -392,7 +392,7 @@ func TestValidateCapabilities(t *testing.T) {
 func TestLoadWithResult_LegacyModeMigratesAndKeyIsDropped(t *testing.T) {
 	content := `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:
@@ -488,7 +488,7 @@ mcp:
 func TestLoadWithResult_LegacyModeYieldsToExplicitCapabilities(t *testing.T) {
 	content := `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:
@@ -528,7 +528,7 @@ capabilities:
 func TestLoadWithResult_EmptyModeDefaultsSilently(t *testing.T) {
 	content := `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:
