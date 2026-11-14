@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -103,7 +104,10 @@ func TestDumpVectorIndexDiagnostics_WritesBundle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat bundle: %v", err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		// POSIX-only evidence: Windows files carry no POSIX permission bits
+		// (os.Stat reports the read/write bits only; owner-only enforcement
+		// lives in ACLs the Go mode cannot express).
 		t.Errorf("bundle permissions = %v, want 0600 (owner-only evidence)", info.Mode().Perm())
 	}
 

@@ -449,7 +449,6 @@ func TestValidateCollection_VisitCallbackObservesEntries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService failed: %v", err)
 	}
-	t.Cleanup(func() { _ = svc.Close() })
 	if err := svc.SetProject("validate-visit", t.TempDir()); err != nil {
 		t.Fatalf("SetProject failed: %v", err)
 	}
@@ -458,6 +457,10 @@ func TestValidateCollection_VisitCallbackObservesEntries(t *testing.T) {
 	}
 
 	wsDir := t.TempDir()
+	// Registered after both TempDirs so LIFO runs the close BEFORE their
+	// RemoveAll: the open lexical index (.lockgate) fails Windows' TempDir
+	// cleanup otherwise.
+	t.Cleanup(func() { _ = svc.Close() })
 	writeFileT(t, filepath.Join(wsDir, "file1.go"), "package main\n")
 	writeFileT(t, filepath.Join(wsDir, "sub", "file2.go"), "package sub\n")
 	writeFileT(t, filepath.Join(wsDir, ".gitignore"), "ignored.txt\n")

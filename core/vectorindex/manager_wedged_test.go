@@ -82,6 +82,13 @@ func newWedgedHarness(t *testing.T, probe func() bool) *wedgedHarness {
 		shutdownGrace:  250 * time.Millisecond, // short for the test; prod default is 10 s
 		embedderWedged: wiredProbe,
 	}
+	// The TempDirs are created BEFORE the cleanup registration (LIFO): the
+	// service close must run BEFORE the TempDirs' RemoveAll, or Windows
+	// fails the removal on the still-open lexical gate handle (POSIX hides
+	// the ordering with unlink-under-open; the sibling stuck-shutdown test
+	// documents the same discipline).
+	persistDir := t.TempDir()
+	ws := t.TempDir()
 	t.Cleanup(func() {
 		// Release first, then join (the goroutine holds the service write
 		// lock until its deferred release), then close the service.
@@ -90,8 +97,6 @@ func newWedgedHarness(t *testing.T, probe func() bool) *wedgedHarness {
 		_ = svc.Close()
 	})
 
-	persistDir := t.TempDir()
-	ws := t.TempDir()
 	if err := os.WriteFile(filepath.Join(ws, "a.go"), []byte("package main\n"), 0o644); err != nil {
 		t.Fatalf("write a.go: %v", err)
 	}

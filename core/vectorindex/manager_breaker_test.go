@@ -289,6 +289,10 @@ func TestManagerBreaker_CancelledPassIsNotAVerdict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
+	// Shutdown (registered after the TempDirs, so LIFO runs it before their
+	// RemoveAll) closes the service: a live lexical index (.lockgate) makes
+	// Windows' TempDir cleanup fail otherwise.
+	t.Cleanup(func() { mgr.Shutdown() })
 	armed := make(chan func(), 1)
 	var mu sync.Mutex
 	var delays []time.Duration
@@ -415,6 +419,10 @@ func TestManagerBreaker_TripSuspendAndReindexReset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
+	// Shutdown (registered after the TempDirs, so LIFO runs it before their
+	// RemoveAll) closes the service: live lexical handles (.lockgate/.zap)
+	// make Windows' TempDir cleanup fail otherwise.
+	t.Cleanup(func() { mgr.Shutdown() })
 	armed := make(chan func(), 1)
 	var mu sync.Mutex
 	var delays []time.Duration
