@@ -134,11 +134,11 @@ func (l *loggingEmitter) StepComplete(stepNum int, duration time.Duration) {
 	l.inner.StepComplete(stepNum, duration)
 }
 
-func (l *loggingEmitter) SubAgentLaunch(stepID, description string) {
+func (l *loggingEmitter) SubAgentLaunch(stepID, description, model string) {
 	// Model-authored prose — bounded preview + length (file policy).
 	l.logger.Debug("subagent: launch", "stepID", stepID, "descriptionLen", len(description),
-		"descriptionPreview", strutil.TruncateUTF8(description, 200))
-	l.inner.SubAgentLaunch(stepID, description)
+		"descriptionPreview", strutil.TruncateUTF8(description, 200), "model", model)
+	l.inner.SubAgentLaunch(stepID, description, model)
 }
 
 func (l *loggingEmitter) SubAgentComplete(stepID string, success bool, duration time.Duration, errMsg string) {

@@ -354,7 +354,7 @@ func TestEventEmitterSubAgentLaunch(t *testing.T) {
 	}
 
 	emitter := NewEventEmitter("test-session", emit)
-	emitter.SubAgentLaunch("step_1", "Install dependencies")
+	emitter.SubAgentLaunch("step_1", "Install dependencies", "")
 
 	if received.Type != "subagent_launch" {
 		t.Errorf("expected type 'subagent_launch', got %q", received.Type)
@@ -369,6 +369,29 @@ func TestEventEmitterSubAgentLaunch(t *testing.T) {
 	}
 	if data["description"] != "Install dependencies" {
 		t.Errorf("expected description 'Install dependencies', got %q", data["description"])
+	}
+	if _, has := data["model"]; has {
+		t.Errorf("expected no model key for empty model identity, got %q", data["model"])
+	}
+}
+
+// TestEventEmitterSubAgentLaunchWithModel verifies the additive model payload
+// key (sp4rk#31 model identity) is carried only when the model is set.
+func TestEventEmitterSubAgentLaunchWithModel(t *testing.T) {
+	var received Event
+	emit := func(e Event) {
+		received = e
+	}
+
+	emitter := NewEventEmitter("test-session", emit)
+	emitter.SubAgentLaunch("step_1", "Install dependencies", "openai/gpt-5")
+
+	data, ok := received.Data.(map[string]string)
+	if !ok {
+		t.Fatalf("expected map[string]string data, got %T", received.Data)
+	}
+	if data["model"] != "openai/gpt-5" {
+		t.Errorf("expected model 'openai/gpt-5', got %q", data["model"])
 	}
 }
 
@@ -939,7 +962,7 @@ func TestEventEmitterAllMethods(t *testing.T) {
 	emitter.ToolCall(1, 0, "bash", "ls", "core")
 	emitter.ToolResult(1, 0, 100, "", false)
 	emitter.StepComplete(1, time.Second)
-	emitter.SubAgentLaunch("step_1", "Do something")
+	emitter.SubAgentLaunch("step_1", "Do something", "")
 	emitter.SubAgentComplete("step_1", true, time.Second, "")
 	emitter.Reflection(&orchestration.Reflection{Summary: "Something went wrong", Hypotheses: []string{"Issue found"}}, 1, 3)
 	emitter.Retry(2, 3)
@@ -1032,7 +1055,7 @@ func TestEventEmitterWithPlanStepID_NonMapData(t *testing.T) {
 	if !ok {
 		t.Fatal("expected *EventEmitter from WithPlanStepID")
 	}
-	scopedEmitter.SubAgentLaunch("step_1", "Install dependencies")
+	scopedEmitter.SubAgentLaunch("step_1", "Install dependencies", "")
 
 	data, ok := received.Data.(map[string]string)
 	if !ok {

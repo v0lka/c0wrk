@@ -837,7 +837,7 @@ func (l *conductorLauncher) runSubAgentsParallel(ctx context.Context, tasks []ag
 			slots <- struct{}{}        // acquire a running slot
 			defer func() { <-slots }() // release it once this subagent settles
 			t := tasks[i]
-			results[i] = <-agent.RunSubAgent(ctx, t.StepID, t.Executor, t.CM, t.TaskTools, t.TaskDesc, t.Emitter, t.TodoUpdateFunc)
+			results[i] = <-agent.RunSubAgent(ctx, t.StepID, t.Executor, t.CM, t.TaskTools, t.TaskDesc, t.Model, t.Emitter, t.TodoUpdateFunc)
 		}(i)
 	}
 	wg.Wait()
@@ -1277,7 +1277,7 @@ func (l *conductorLauncher) runRedelegBlocking(ctx context.Context, t tools.Dele
 
 	registry.Start(t.ID, nil)
 	l.markUnitRunning(t.ID)
-	ch := agent.RunSubAgent(taskCtx, t.ID, st.Executor, st.CM, redelegTools, st.TaskDesc, st.Emitter, st.TodoUpdateFunc)
+	ch := agent.RunSubAgent(taskCtx, t.ID, st.Executor, st.CM, redelegTools, st.TaskDesc, st.Model, st.Emitter, st.TodoUpdateFunc)
 	sr := <-ch
 
 	if isPaused(sr.Error) {
@@ -1325,7 +1325,7 @@ func (l *conductorLauncher) launchAsync(ctx context.Context, t tools.DelegationT
 		// blocking/plan-wave fan-out does (delegation.md).
 		l.acquireSubagentSlot()
 		defer l.releaseSubagentSlot()
-		ch := agent.RunSubAgent(asyncCtx, t.ID, subTask.Executor, subTask.CM, subTask.TaskTools, subTask.TaskDesc, subTask.Emitter, subTask.TodoUpdateFunc)
+		ch := agent.RunSubAgent(asyncCtx, t.ID, subTask.Executor, subTask.CM, subTask.TaskTools, subTask.TaskDesc, subTask.Model, subTask.Emitter, subTask.TodoUpdateFunc)
 		select {
 		case sr := <-ch:
 			if isPaused(sr.Error) {
@@ -1466,10 +1466,13 @@ func (l *conductorLauncher) buildSubAgentTask(ctx context.Context, t tools.Deleg
 	}
 
 	caller := l.callerForStep(cm, t.ID)
-	// A profile's model override forces req.Model on every call (no-op when
-	// empty, so unconditional).
+	// A profile's model override pins every call: a composite "provider/model"
+	// id additionally routes to the named provider (sp4rk#31, ADR-012), a bare
+	// id keeps the router's active provider. An empty id is a no-op — the
+	// wrapper returns the caller unchanged.
 	if profile != nil {
-		caller = agent.NewModelOverrideCaller(caller, profile.Metadata.Model)
+		provider, bare, _ := llm.ParseCompositeModelID(profile.Metadata.Model)
+		caller = agent.NewModelProviderOverrideCaller(caller, provider, bare)
 	}
 	execOpts := []agent.Option{
 		agent.WithTokenCounter(l.deps.tokenCounter),
@@ -1798,7 +1801,11 @@ type planStepEventTranslator struct {
 	summary string  // short UI label for PlanStepStart
 }
 
-func (t *planStepEventTranslator) SubAgentLaunch(stepID, description string) {
+func (t *planStepEventTranslator) SubAgentLaunch(stepID, description, model string) {
+	// model is the honored model identity from sp4rk#31 ("" = host default).
+	// plan_step_start's payload does not carry it yet on main — the additive
+	// key (and the launch badge) arrive with the ADR-122/123 model-override
+	// PR; until then the identity stays display-only here.
 	t.root.PlanStepStart(stepID, description, t.summary)
 }
 

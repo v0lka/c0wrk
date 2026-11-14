@@ -703,17 +703,23 @@ func (e *EventEmitter) StepComplete(stepNum int, duration time.Duration) {
 	})
 }
 
-// SubAgentLaunch emits a subagent launch event.
-func (e *EventEmitter) SubAgentLaunch(stepID, description string) {
+// SubAgentLaunch emits a subagent launch event. model is the honored model
+// identity the sub-agent is pinned to ("" = session default); it rides the
+// additive "model" payload key when set (sp4rk#31 model identity).
+func (e *EventEmitter) SubAgentLaunch(stepID, description, model string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	data := map[string]string{
+		"step_id":     stepID,
+		"description": description,
+	}
+	if model != "" {
+		data["model"] = model
+	}
 	e.emitEvent(Event{
 		SessionID: e.sessionID,
 		Type:      "subagent_launch",
-		Data: map[string]string{
-			"step_id":     stepID,
-			"description": description,
-		},
+		Data:      data,
 	})
 }
 
