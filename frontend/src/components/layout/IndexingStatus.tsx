@@ -128,7 +128,7 @@ export function IndexingStatus() {
 
   if (status.state === 'idle') return null
 
-  // The ADR-122 trip's EMPTY phase (a suspension is not a pass report)
+  // The ADR-124 trip's EMPTY phase (a suspension is not a pass report)
   // normalizes to "no phase" here — deriveDotStatus reasons about real pass
   // phases only.
   const derived = deriveDotStatus(status.state, phase || undefined)

@@ -249,6 +249,12 @@ describe('array-element guards for the #11 wrappers', () => {
     expect(isAgentDescriptor({ name: 'a' })).toBe(false)
     expect(isSkillDescriptor({ name: 1, description: 'd' })).toBe(false)
     expect(isAgentDescriptor(null)).toBe(false)
+    // Optional `model` override (Go `omitempty`): absent or string passes,
+    // any other type is boundary drift.
+    expect(isAgentDescriptor({ name: 'a', description: 'd', model: 'local-llm/qwen3:8b' })).toBe(true)
+    expect(isAgentDescriptor({ name: 'a', description: 'd', model: 42 })).toBe(false)
+    expect(isAgentDescriptor({ name: 'a', description: 'd', model: null })).toBe(false)
+    expect(isAgentDescriptor({ name: 'a', description: 'd', model: ['x'] })).toBe(false)
   })
 
   it('isToolInfo requires all five string fields', () => {

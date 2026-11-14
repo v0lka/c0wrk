@@ -1,7 +1,7 @@
 package vectorindex
 
 // Tests for the incremental-failure backoff and circuit breaker
-// (specs/decisions/122-vector-incremental-failure-backoff.md): a failed
+// (specs/decisions/124-vector-incremental-failure-backoff.md): a failed
 // debounce-armed pass backs subsequent arms off exponentially (5s doubled
 // per consecutive failure, capped at 10 minutes) and, at the breaker
 // threshold, suspends file-change arming with an honest suspended status.
@@ -358,7 +358,7 @@ func TestManagerBreaker_CancelledPassIsNotAVerdict(t *testing.T) {
 // TestIncrementalPassVerdict_Classification pins the staged-locks × breaker
 // composition at the classification boundary: a pass displaced mid-window by
 // a concurrent branch switch returns ErrWorkingStoreDisplaced with a LIVE
-// context, and that abort belongs to the displacer's lifecycle (ADR-123's
+// context, and that abort belongs to the displacer's lifecycle (ADR-125's
 // staged write windows), not to an embedder or store verdict — five unlucky
 // branch switches landing inside a pass's windows must never accrue backoff
 // or trip the breaker. (A real branch switch cannot be interleaved
@@ -544,7 +544,7 @@ func TestManagerBreaker_TripSuspendAndReindexReset(t *testing.T) {
 }
 
 // TestManagerBreaker_SuspendPairSurvivesTerminalReadyReport pins the trip's
-// status-persistence rule (ADR-122): a pass that FAILS with a live collection
+// status-persistence rule (ADR-124): a pass that FAILS with a live collection
 // reports the terminal "ready" through wrapProgress (indexer.go's
 // ready-vs-unavailable contract), and while the breaker is tripped that ready
 // report must NOT erase the suspended verdict — the reachable producer is a
@@ -552,7 +552,7 @@ func TestManagerBreaker_TripSuspendAndReindexReset(t *testing.T) {
 // re-records its own verdict, and debounce arms are refused while
 // suspended). Without the wrapProgress gate the status would sit at a bare
 // "ready" while file-change indexing silently stayed suspended — the
-// "silently stuck ready" surface ADR-122 exists to prevent. A successful
+// "silently stuck ready" surface ADR-124 exists to prevent. A successful
 // pass still clears the pair (the breaker's own reset path).
 func TestManagerBreaker_SuspendPairSurvivesTerminalReadyReport(t *testing.T) {
 	mgr := &Manager{

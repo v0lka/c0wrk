@@ -46,7 +46,7 @@ export function useSubagentEvents(sessionId: string | null): void {
           sessionId,
           type: 'subagent_launch',
           content: `SubAgent: ${data.description}`,
-          metadata: { step_id: data.step_id, description: data.description, plan_step_id: data.plan_step_id },
+          metadata: { step_id: data.step_id, description: data.description, ...(data.model ? { model: data.model } : {}), plan_step_id: data.plan_step_id },
           timestamp: Date.now(),
         })
       }),

@@ -59,7 +59,9 @@ func writeWebAccessConfigDoc(t *testing.T, experimental, webAccess string) (cfg 
 	t.Helper()
 	doc := `
 llm:
-  default_model: claude-3-haiku
+  # Mandatory-composite rule (ADR-122): default_model must be a full
+  # "provider/model" identifier or config.Load rejects the file outright.
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:

@@ -11,7 +11,7 @@ import (
 // default model, so ToBuilderConfig always produces a chatgpt entry.
 func subscriptionAuthFixture() *config.Config {
 	return &config.Config{LLM: config.LLMConfig{
-		DefaultModel: "gpt-4o",
+		DefaultModel: "chatgpt/gpt-4o",
 		ChatGPT: config.ChatGPTConfig{
 			APIKey: "sk-static",
 			Models: []string{"gpt-4o"},

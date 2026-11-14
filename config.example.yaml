@@ -12,16 +12,14 @@ log_level: "INFO"
 # LLM Provider Configuration
 # ---------------------------------------------------------------------------
 llm:
-  # The single, cross-provider default model — must be enabled in the corresponding
-  # provider's models list below.
-  #
-  # The value may be a bare model name (e.g. "claude-sonnet-4-20250514") or a
-  # composite identifier "providerName/modelName" (e.g. "lmstudio/gpt-4"). Use the
-  # composite form when the same bare model name is exposed by more than one
-  # provider, so the agent routes to the intended provider. A bare name that
-  # matches several providers resolves to the first match (alphabetically by
-  # provider name) and logs a warning.
-  default_model: "claude-sonnet-4-20250514"
+  # The single, cross-provider default model — the full composite identifier
+  # "providerName/modelName" (e.g. "anthropic/claude-sonnet-4-20250514"). The
+  # model must be enabled in the named provider's models list below. The model
+  # name itself may contain "/" (e.g. "lmstudio/Qwen/Qwen3-Coder-30B"): ids
+  # split on the FIRST "/" only. Bare model names are NOT accepted — with
+  # several providers exposing the same name, only the composite form names
+  # the intended provider unambiguously.
+  default_model: "anthropic/claude-sonnet-4-20250514"
 
   anthropic:
     api_key: "${ANTHROPIC_API_KEY}"

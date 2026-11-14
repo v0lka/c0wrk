@@ -85,7 +85,7 @@ const (
 )
 
 // Incremental-failure backoff and circuit breaker for debounce-armed passes
-// (see specs/decisions/122-vector-incremental-failure-backoff.md): a failed
+// (see specs/decisions/124-vector-incremental-failure-backoff.md): a failed
 // pass backs the NEXT debounce arm off exponentially, and consecutive
 // failures suspend automatic file-change indexing instead of retrying
 // forever. Constants, not config: the behavior is a safety property, not a
@@ -1174,13 +1174,13 @@ func incrementalPassIsVerdict(ctx context.Context, err error) bool {
 // cancelling the context aborts an in-flight pass instead of applying an old
 // project's diff to a fresh collection, and a re-armed pass targets the
 // current project. It does NOT serialize passes by itself — the service's
-// pass lease does (ADR-123: a pass holds the lease for its duration and takes
+// pass lease does (ADR-125: a pass holds the lease for its duration and takes
 // the service write lock only in short identity-checked windows, so a queued
 // watcher pass waits for the lease, not for the lock); the guard's value is
 // coalescing plus cancellation safety.
 //
 // The pass outcome drives the incremental-failure backoff/circuit breaker
-// (specs/decisions/122-vector-incremental-failure-backoff.md): a failed pass
+// (specs/decisions/124-vector-incremental-failure-backoff.md): a failed pass
 // backs subsequent arms off exponentially and, at the breaker threshold,
 // suspends file-change arming with an honest suspended status; a success
 // resets the streak; a cancelled pass is never a verdict and counts as
@@ -1245,7 +1245,7 @@ func (m *Manager) runIncrementalGuarded() {
 		if !incrementalPassIsVerdict(ctx, idxErr) {
 			// Superseded or displaced: a project switch or shutdown cancelled
 			// this pass, or a concurrent branch switch, No Project reset or
-			// close displaced the working store mid-pass (ADR-123's staged
+			// close displaced the working store mid-pass (ADR-125's staged
 			// write windows). Neither is a verdict about the embedder or the
 			// store — both count toward neither the backoff nor the breaker,
 			// mirroring the Reindex repair's own superseded-pass silence; the
@@ -1404,12 +1404,12 @@ func (m *Manager) stopDebounce() {
 // silence lasts.
 func (m *Manager) wrapProgress(userFn ProgressCallback) ProgressCallback {
 	return func(phase IndexPhase, state IndexState, filesIndexed, totalFiles int, currentFile string) {
-		// A tripped breaker holds the failure pair hostage (ADR-122): a pass
+		// A tripped breaker holds the failure pair hostage (ADR-124): a pass
 		// that FAILED with a live collection still reports the terminal
 		// "ready" (indexer.go's ready-vs-unavailable contract — search keeps
 		// answering), so an ungated clear here would erase the suspended
 		// verdict while incSuspended keeps refusing file-change arms — the
-		// "silently stuck ready" surface ADR-122 exists to prevent. The
+		// "silently stuck ready" surface ADR-124 exists to prevent. The
 		// reachable producer is a failing branch-switch pass (debounce arms
 		// are refused while suspended; a failed Reindex repair re-records its
 		// own verdict right after). The pair is dropped by the breaker's own
@@ -1577,7 +1577,7 @@ const (
 	// leaving the surface bare.
 	IndexErrorKindUnknown IndexErrorKind = "unknown"
 	// IndexErrorKindSuspended classifies the incremental-failure circuit
-	// breaker (specs/decisions/122-vector-incremental-failure-backoff.md):
+	// breaker (specs/decisions/124-vector-incremental-failure-backoff.md):
 	// debounce-armed passes failed repeatedly (an embedder/runtime fault), so
 	// automatic file-change indexing suspended itself instead of retrying
 	// forever. It is deliberately NOT the store taxonomy's verdict — no
@@ -1759,7 +1759,7 @@ func (m *Manager) handleBranchSwitch(ctx context.Context, indexer *Indexer, work
 	}
 	// A successful branch-switch pass resets the incremental-failure
 	// backoff/breaker like any other successful pass ("success of any pass"
-	// is a reset path — ADR-122 D4). The reset is accepted on the switch's
+	// is a reset path — ADR-124 D4). The reset is accepted on the switch's
 	// own terms, not as embedder proof: the (false, nil) return always ran
 	// IndexIncremental, but that pass can be a work no-op (zero inference),
 	// so a branch hop to an unchanged target may clear the breaker without

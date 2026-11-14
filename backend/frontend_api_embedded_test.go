@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -127,7 +128,7 @@ func newEmbeddedTestAPI(t *testing.T) (*FrontendAPI, *embeddedEventRecorder, *mo
 
 	cfg := &config.Config{}
 	config.ApplyDefaults(cfg)
-	cfg.LLM.DefaultModel = "claude-3-opus"
+	cfg.LLM.DefaultModel = "anthropic/claude-3-opus"
 	cfg.LLM.Anthropic.APIKey = "sk-test-embedded"
 	cfg.LLM.Anthropic.Models = []string{"claude-3-opus"}
 	// The engine setting is pinned to the llama family — the record this
@@ -1505,9 +1506,9 @@ func TestRemoveEmbeddedLLMClearsTreesConfigAndSupervisorState(t *testing.T) {
 	if f.config.LLM.DefaultModel == "" {
 		t.Error("llm.default_model was cleared instead of migrated to another enabled model")
 	}
-	if _, _, err := f.config.LLM.ResolveModelID(f.config.LLM.DefaultModel); err != nil {
-		t.Errorf("the migrated llm.default_model %q does not resolve: %v",
-			f.config.LLM.DefaultModel, err)
+	if !slices.Contains(f.config.LLM.AllModelIDs(), f.config.LLM.DefaultModel) {
+		t.Errorf("the migrated llm.default_model %q is not listed by AllModelIDs() = %v",
+			f.config.LLM.DefaultModel, f.config.LLM.AllModelIDs())
 	}
 	if mock.rebuildRouterCalls == 0 {
 		t.Error("the router was not rebuilt after the removal")

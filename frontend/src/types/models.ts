@@ -605,6 +605,10 @@ export interface SkillDescriptor {
 export interface AgentDescriptor {
   name: string
   description: string
+  /** The profile's `model:` frontmatter override (sp4rk AgentDescriptor.Model).
+   *  Absent/empty when the profile pins none — the roster and the SubAgentBlock
+   *  badge render it only when present. */
+  model?: string
 }
 
 /**

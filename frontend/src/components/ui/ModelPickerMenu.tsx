@@ -1,4 +1,5 @@
 import { useMemo } from 'react'
+import { Check, Copy, X } from 'lucide-react'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -7,6 +8,8 @@ import {
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { ItemAction, ItemActions } from '@/components/layout/ItemAction'
+import { useCopyFlash } from '@/hooks/useCopyFlash'
 import { compositeModelId, bareModel, findModelRef, type ModelRef } from '@/lib/modelId'
 import { EMBEDDED_PROVIDER_NAME } from '@/lib/llm-providers'
 import { cn } from '@/lib/utils'
@@ -89,6 +92,33 @@ function groupByProvider(entries: ModelPickerEntry[]): Map<string, ModelPickerEn
     if (provider !== EMBEDDED_PROVIDER_NAME) ordered.set(provider, list)
   }
   return ordered
+}
+
+/**
+ * CopyModelNameAction — the hover-revealed copy button of one model row.
+ * Writes the row's full composite name through the shared `useCopyFlash` hook
+ * (the native Wails `clipboardSetText`; `navigator.clipboard` is unreliable
+ * in the webview). The flash state is owned by this per-row instance, so
+ * copying one row never flashes its siblings; feedback mirrors CopyIconButton
+ * (icon Copy→Check/X, label flips to "Copied"/"Failed" for COPY_FLASH_MS).
+ * ItemActions' stopPropagation shields keep the click from reaching the
+ * parent DropdownMenuItem (specs/domains/frontend/row-actions.md).
+ */
+function CopyModelNameAction({ name }: { name: string }) {
+  const { feedback, copy } = useCopyFlash()
+  const label = feedback === 'copied' ? 'Copied' : feedback === 'failed' ? 'Failed' : 'Copy model name'
+  const Icon = feedback === 'failed' ? X : feedback !== null ? Check : Copy
+  return (
+    <ItemAction label={label} onClick={() => copy(name)}>
+      <Icon
+        className={cn(
+          'size-3',
+          feedback === 'copied' && 'text-success',
+          feedback === 'failed' && 'text-destructive',
+        )}
+      />
+    </ItemAction>
+  )
 }
 
 interface ModelPickerMenuProps {
@@ -287,9 +317,17 @@ export function ModelPickerMenu({
                       key={entry.id}
                       data-selected={isSelected}
                       className={cn(
-                        'gap-2 px-3 py-1.5 text-xs',
+                        'group/item gap-2 px-3 py-1.5 text-xs',
                         isSelected && 'bg-primary/10 font-medium',
                       )}
+                      // The row's native title carries the full model name
+                      // (the composite id sent to the backend): the visible
+                      // label is truncate-clipped, so the title restores what
+                      // the clipping hides and shows exactly what the copy
+                      // action below hands to the clipboard (the R1 echo of
+                      // specs/domains/frontend/button-tooltips.md). Nested
+                      // native titles are safe — the innermost wins.
+                      title={entry.id}
                       onSelect={() => onSelect(entry.id)}
                     >
                       <span className="flex-1 text-left truncate">{entry.model}</span>
@@ -299,6 +337,9 @@ export function ModelPickerMenu({
                       {isDefault && (
                         <span className="text-xs text-muted-foreground">default</span>
                       )}
+                      <ItemActions>
+                        <CopyModelNameAction name={entry.id} />
+                      </ItemActions>
                     </DropdownMenuItem>
                   )
                 })}

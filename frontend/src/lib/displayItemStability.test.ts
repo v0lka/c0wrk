@@ -75,6 +75,25 @@ describe('areDisplayItemsEqual', () => {
     expect(areDisplayItemsEqual(a, b)).toBe(true)
     expect(areDisplayItemsEqual(a, c)).toBe(false)
   })
+
+  it('compares the subagent model pin (a changed badge breaks equality)', () => {
+    const pinned: DisplayItem = {
+      kind: 'subagent',
+      id: 'sub-1',
+      stepId: 'del_1',
+      title: 'Reviewer',
+      status: 'running',
+      model: 'local-llm/qwen3:8b',
+      children: [],
+    }
+    const pinnedCopy: DisplayItem = { ...pinned }
+    const unpinned: DisplayItem = { ...pinned, model: undefined }
+    const otherPin: DisplayItem = { ...pinned, model: 'openai/gpt-5.2' }
+    expect(areDisplayItemsEqual(pinned, pinnedCopy)).toBe(true)
+    expect(areDisplayItemsEqual(pinned, unpinned)).toBe(false)
+    expect(areDisplayItemsEqual(pinned, otherPin)).toBe(false)
+    expect(areDisplayItemsEqual(unpinned, { ...unpinned })).toBe(true)
+  })
 })
 
 describe('stabilizeDisplayItems', () => {
@@ -124,6 +143,21 @@ describe('stabilizeDisplayItems', () => {
     const out = stabilizeDisplayItems(prev, next)
     expect(out[0]).not.toBe(prev[0]) // status changed → fresh wrapper
     expect((out[0] as Extract<DisplayItem, { kind: 'plan_step' }>).children[0]).toBe(child)
+  })
+
+  it('reuses unchanged children of a subagent whose model badge changed', () => {
+    const child = assistant('c1', 'child output')
+    const prev: DisplayItem[] = [{
+      kind: 'subagent', id: 'sub-1', stepId: 'del_1', title: 'Reviewer', status: 'running', children: [child],
+    }]
+    const next: DisplayItem[] = [{
+      kind: 'subagent', id: 'sub-1', stepId: 'del_1', title: 'Reviewer', status: 'running',
+      model: 'local-llm/qwen3:8b',
+      children: [wrapAssistant(child.message)],
+    }]
+    const out = stabilizeDisplayItems(prev, next)
+    expect(out[0]).not.toBe(prev[0]) // model changed → fresh wrapper
+    expect((out[0] as Extract<DisplayItem, { kind: 'subagent' }>).children[0]).toBe(child)
   })
 
   it('returns the input untouched for an empty previous tree', () => {

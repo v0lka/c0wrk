@@ -48,7 +48,7 @@ export function VectorSearchFilters({ isSearchMode, onSearch, onClear, onKeyDown
   // search button below is gated the same way). The shared
   // vectorSearchUsable predicate owns the gate so the widget level and the
   // execution level (useVectorSearch's Enter/auto-search paths) can never
-  // drift apart; see it for the ADR-122 suspension exception — the breaker
+  // drift apart; see it for the ADR-124 suspension exception — the breaker
   // stops the UPDATE pipeline only, and a live collection keeps serving
   // queries, so blocking the widgets would disable search the backend still
   // answers. The suspension reason renders inline below, and the row's
@@ -57,7 +57,7 @@ export function VectorSearchFilters({ isSearchMode, onSearch, onClear, onKeyDown
 
   // The inline cause for a status whose failure pair stands: an unavailable
   // index always carries one (the "unavailable always explains itself"
-  // invariant), and the ADR-122 suspension keeps its verdict on a READY
+  // invariant), and the ADR-124 suspension keeps its verdict on a READY
   // status too (a failing branch-switch pass's terminal ready report — the
   // pair-persistence rule), so the honest sentence renders there as well —
   // no modal, no toast, and no dead end where the user has to read logs to

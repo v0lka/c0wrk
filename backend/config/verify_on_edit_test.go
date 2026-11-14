@@ -10,7 +10,7 @@ import (
 func TestLoadVerifyOnEdit(t *testing.T) {
 	content := `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:
@@ -49,7 +49,7 @@ executor:
 func TestLoadVerifyOnEdit_DefaultOff(t *testing.T) {
 	content := `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:

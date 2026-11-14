@@ -354,7 +354,7 @@ func TestEventEmitterSubAgentLaunch(t *testing.T) {
 	}
 
 	emitter := NewEventEmitter("test-session", emit)
-	emitter.SubAgentLaunch("step_1", "Install dependencies", "")
+	emitter.SubAgentLaunch("step_1", "Install dependencies", "local-llm/qwen3:8b")
 
 	if received.Type != "subagent_launch" {
 		t.Errorf("expected type 'subagent_launch', got %q", received.Type)
@@ -370,28 +370,31 @@ func TestEventEmitterSubAgentLaunch(t *testing.T) {
 	if data["description"] != "Install dependencies" {
 		t.Errorf("expected description 'Install dependencies', got %q", data["description"])
 	}
-	if _, has := data["model"]; has {
-		t.Errorf("expected no model key for empty model identity, got %q", data["model"])
+	if data["model"] != "local-llm/qwen3:8b" {
+		t.Errorf("expected model 'local-llm/qwen3:8b', got %q", data["model"])
 	}
 }
 
-// TestEventEmitterSubAgentLaunchWithModel verifies the additive model payload
-// key (sp4rk#31 model identity) is carried only when the model is set.
-func TestEventEmitterSubAgentLaunchWithModel(t *testing.T) {
+// TestEventEmitterSubAgentLaunch_EmptyModelOmitsKey verifies the no-badge
+// launch (empty model) omits the additive "model" key entirely instead of
+// carrying an empty string — the same omit-when-empty placement the
+// plan_step_start translator uses and the shape isSubAgentLaunchData's
+// absent-key path accepts.
+func TestEventEmitterSubAgentLaunch_EmptyModelOmitsKey(t *testing.T) {
 	var received Event
 	emit := func(e Event) {
 		received = e
 	}
 
 	emitter := NewEventEmitter("test-session", emit)
-	emitter.SubAgentLaunch("step_1", "Install dependencies", "openai/gpt-5")
+	emitter.SubAgentLaunch("step_1", "Do something", "")
 
 	data, ok := received.Data.(map[string]string)
 	if !ok {
 		t.Fatalf("expected map[string]string data, got %T", received.Data)
 	}
-	if data["model"] != "openai/gpt-5" {
-		t.Errorf("expected model 'openai/gpt-5', got %q", data["model"])
+	if _, exists := data["model"]; exists {
+		t.Error("empty model must omit the model key instead of emitting an empty string")
 	}
 }
 
@@ -1162,7 +1165,7 @@ func TestEventEmitterPlanStepStart(t *testing.T) {
 	}
 
 	emitter := NewEventEmitter("test-session", emit)
-	emitter.PlanStepStart("step-1", "Install dependencies", "Install deps")
+	emitter.PlanStepStart("step-1", "Install dependencies", "Install deps", "")
 
 	if received.SessionID != "test-session" {
 		t.Errorf("expected session_id 'test-session', got %q", received.SessionID)
@@ -1187,6 +1190,35 @@ func TestEventEmitterPlanStepStart(t *testing.T) {
 	}
 	if data["current_step_index"] != 0 {
 		t.Errorf("expected current_step_index 0, got %v", data["current_step_index"])
+	}
+	// The additive model key is ABSENT for an empty pin (inline steps /
+	// synthesized starts) — the payload shape predates the key.
+	if _, present := data["model"]; present {
+		t.Errorf("expected no model key for an empty pin, got %v", data["model"])
+	}
+}
+
+// TestEventEmitterPlanStepStart_ModelBadge verifies the additive `model` key:
+// a delegated step's honored profile pin is emitted on plan_step_start so the
+// UI can render the same "Forced model" badge as a plain delegate launch.
+func TestEventEmitterPlanStepStart_ModelBadge(t *testing.T) {
+	var received Event
+	emit := func(e Event) {
+		received = e
+	}
+
+	emitter := NewEventEmitter("test-session", emit)
+	emitter.PlanStepStart("step-1", "Review the diff", "Review", "local-llm/qwen3:8b")
+
+	data, ok := received.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map[string]interface{} data, got %T", received.Data)
+	}
+	if data["model"] != "local-llm/qwen3:8b" {
+		t.Errorf("expected model 'local-llm/qwen3:8b', got %v", data["model"])
+	}
+	if data["step_id"] != "step-1" {
+		t.Errorf("expected step_id 'step-1', got %v", data["step_id"])
 	}
 }
 
@@ -1236,8 +1268,8 @@ func TestEventEmitterPlanStepStartDuplicateSuppressed(t *testing.T) {
 	}
 
 	emitter := NewEventEmitter("test-session", emit)
-	emitter.PlanStepStart("step-1", "Do thing", "Do")
-	emitter.PlanStepStart("step-1", "Do thing again", "Do2")
+	emitter.PlanStepStart("step-1", "Do thing", "Do", "")
+	emitter.PlanStepStart("step-1", "Do thing again", "Do2", "")
 
 	planStarts := 0
 	for _, e := range events {
@@ -1259,9 +1291,9 @@ func TestEventEmitterPlanStepStartAfterPlanGenerated(t *testing.T) {
 	}
 
 	emitter := NewEventEmitter("test-session", emit)
-	emitter.PlanStepStart("step-1", "First", "F")
+	emitter.PlanStepStart("step-1", "First", "F", "")
 	emitter.PlanGenerated(1, nil)
-	emitter.PlanStepStart("step-1", "Second", "S")
+	emitter.PlanStepStart("step-1", "Second", "S", "")
 
 	planStarts := 0
 	for _, e := range events {
@@ -1299,9 +1331,9 @@ func TestEventEmitterPlanStepStartAfterPauseReEmitted(t *testing.T) {
 
 	emitter := NewEventEmitter("test-session", emit)
 	emitter.PlanGenerated(2, nil)
-	emitter.PlanStepStart("step-1", "Do thing", "Do")
+	emitter.PlanStepStart("step-1", "Do thing", "Do", "")
 	emitter.PlanStepPaused("step-1", 1500*time.Millisecond, "")
-	emitter.PlanStepStart("step-1", "Do thing", "Do") // resumed run re-enters the step
+	emitter.PlanStepStart("step-1", "Do thing", "Do", "") // resumed run re-enters the step
 
 	if got := countPlanStepStarts(events); got != 2 {
 		t.Errorf("expected 2 plan_step_start events (pre-pause and post-resume), got %d", got)
@@ -1320,9 +1352,9 @@ func TestEventEmitterPlanStepStartAfterFailureReEmitted(t *testing.T) {
 
 	emitter := NewEventEmitter("test-session", emit)
 	emitter.PlanGenerated(2, nil)
-	emitter.PlanStepStart("step-1", "Do thing", "Do")
+	emitter.PlanStepStart("step-1", "Do thing", "Do", "")
 	emitter.PlanStepComplete("step-1", false, time.Second, "boom")
-	emitter.PlanStepStart("step-1", "Do thing", "Do") // re-run of the failed step
+	emitter.PlanStepStart("step-1", "Do thing", "Do", "") // re-run of the failed step
 
 	if got := countPlanStepStarts(events); got != 2 {
 		t.Errorf("expected 2 plan_step_start events (initial and re-run), got %d", got)
@@ -1341,9 +1373,9 @@ func TestEventEmitterPlanStepStartAfterSuccessStillSuppressed(t *testing.T) {
 
 	emitter := NewEventEmitter("test-session", emit)
 	emitter.PlanGenerated(1, nil)
-	emitter.PlanStepStart("step-1", "Do thing", "Do")
+	emitter.PlanStepStart("step-1", "Do thing", "Do", "")
 	emitter.PlanStepComplete("step-1", true, time.Second, "")
-	emitter.PlanStepStart("step-1", "Do thing again", "Do2")
+	emitter.PlanStepStart("step-1", "Do thing again", "Do2", "")
 
 	if got := countPlanStepStarts(events); got != 1 {
 		t.Errorf("expected 1 plan_step_start event (success keeps the dedupe), got %d", got)
@@ -1361,9 +1393,9 @@ func TestEventEmitterPlanStepPaused(t *testing.T) {
 
 	emitter := NewEventEmitter("test-session", emit)
 	emitter.PlanGenerated(2, nil)
-	emitter.PlanStepStart("step-1", "Do thing", "Do")
+	emitter.PlanStepStart("step-1", "Do thing", "Do", "")
 	emitter.PlanStepComplete("step-1", true, time.Second, "")
-	emitter.PlanStepStart("step-2", "Do more", "More")
+	emitter.PlanStepStart("step-2", "Do more", "More", "")
 	emitter.PlanStepPaused("step-2", 2500*time.Millisecond, "user requested pause")
 
 	if received.Type != "plan_step_paused" {

@@ -56,8 +56,11 @@ export type DisplayItem =
   | { kind: 'resume_action'; message: ChatMessageUI }
   | { kind: 'error'; message: ChatMessageUI }
   | { kind: 'service'; id: string; variant: 'routing' | 'retry' | 'step_retry' | 'status'; content: string; metadata?: Record<string, unknown> }
-  | { kind: 'plan_step'; id: string; stepId: string; stepNum: number; title: string; description?: string; status: WorkUnitBlockStatus; duration?: number; error?: string; isRetry?: boolean; children: DisplayItem[] }
-  | { kind: 'subagent'; id: string; stepId: string; title: string; description?: string; status: WorkUnitBlockStatus; duration?: number; error?: string; children: DisplayItem[] }
+  | { kind: 'plan_step'; id: string; stepId: string; stepNum: number; title: string; description?: string; status: WorkUnitBlockStatus; duration?: number; error?: string; isRetry?: boolean; children: DisplayItem[]
+      /** The delegated step's honored profile model pin (ADR-122) — set only
+       *  when the plan_step_start event carried one (absent = no badge). */
+      model?: string }
+  | { kind: 'subagent'; id: string; stepId: string; title: string; description?: string; status: WorkUnitBlockStatus; duration?: number; error?: string; model?: string; children: DisplayItem[] }
   | { kind: 'reflection'; id: string; summary: string; suggestedAction: string; rootCause: string; failureAnalysis: string; actionPlan: string; reasoning: string; hypotheses: string[]; attempt: number; maxAttempts: number }
   | { kind: 'step_finish'; id: string; stepNum?: number }
   | { kind: 'context_compaction'; id: string; beforePercent: number; afterPercent: number }

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -321,8 +322,8 @@ func TestEmbeddedLLMRemoveClearsProviderRecordEndToEnd(t *testing.T) {
 	if entry, ok := cfg.LLM.OpenAICompatible[EmbeddedLLMProviderName]; ok {
 		t.Errorf("openai_compatible.%s survived Remove: %+v", EmbeddedLLMProviderName, entry)
 	}
-	if _, _, err := cfg.LLM.ResolveModelID(composite); err == nil {
-		t.Errorf("ResolveModelID(%q) still succeeds after Remove", composite)
+	if slices.Contains(cfg.LLM.AllModelIDs(), composite) {
+		t.Errorf("AllModelIDs() still lists %q after Remove", composite)
 	}
 	// The default model was migrated off the embedded composite, so the config
 	// still validates instead of failing on the next load.
@@ -332,8 +333,9 @@ func TestEmbeddedLLMRemoveClearsProviderRecordEndToEnd(t *testing.T) {
 	if cfg.LLM.DefaultModel == "" {
 		t.Error("llm.default_model was cleared instead of migrated to another enabled model")
 	}
-	if _, _, err := cfg.LLM.ResolveModelID(cfg.LLM.DefaultModel); err != nil {
-		t.Errorf("the migrated llm.default_model %q does not resolve: %v", cfg.LLM.DefaultModel, err)
+	if !slices.Contains(cfg.LLM.AllModelIDs(), cfg.LLM.DefaultModel) {
+		t.Errorf("the migrated llm.default_model %q is not listed by AllModelIDs() = %v",
+			cfg.LLM.DefaultModel, cfg.LLM.AllModelIDs())
 	}
 	if err := validate(cfg); err != nil {
 		t.Errorf("validate() after Remove: %v", err)

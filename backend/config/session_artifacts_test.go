@@ -15,7 +15,7 @@ func writeSessionArtifactsConfig(t *testing.T, fragment string) string {
 	t.Helper()
 	content := `
 llm:
-  default_model: claude-3-haiku
+  default_model: anthropic/claude-3-haiku
   anthropic:
     api_key: "test-key"
     models:

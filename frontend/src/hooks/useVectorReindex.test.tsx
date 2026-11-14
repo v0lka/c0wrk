@@ -112,7 +112,7 @@ describe('useVectorReindex — the terminal unavailable state', () => {
   })
 
   it('labels the suspended kind as a resume, not a rebuild', () => {
-    // ADR-122: with the breaker tripped the collection is live and the same
+    // ADR-124: with the breaker tripped the collection is live and the same
     // manager-level Reindex runs a validation-based reconcile that resumes
     // indexing (the breaker's own reset path) — the title must not promise
     // a rebuild-from-source it does not perform.
@@ -281,7 +281,7 @@ describe('useVectorReindex — busy states (unchanged)', () => {
 describe('useVectorReindex — the repair gate (error_kind)', () => {
   // The kinds the repair escalation actually addresses: a proven store
   // defect, an OS fault (the re-attach retries the open once it clears), the
-  // ADR-122 circuit breaker (the manager-level Reindex is the breaker's own
+  // ADR-124 circuit breaker (the manager-level Reindex is the breaker's own
   // reset path), the defensive unknown, and a missing kind (never dead-end
   // the user).
   it.each([
@@ -299,7 +299,7 @@ describe('useVectorReindex — the repair gate (error_kind)', () => {
     })
     expect(hook().reindexDisabled).toBe(false)
     expect(hook().reindexBusy).toBe(false)
-    // The ADR-122 suspension is the resume-shaped exception: the collection
+    // The ADR-124 suspension is the resume-shaped exception: the collection
     // is live and the same RPC runs the reconcile that re-arms file changes.
     expect(hook().reindexActionTitle).toBe(
       kind === 'suspended'

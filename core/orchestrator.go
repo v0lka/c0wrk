@@ -381,6 +381,12 @@ type Orchestrator struct {
 	// context; 0 falls back to agent.DefaultVerifyOnEditCap.
 	verifyOnEditMaxOutputChars int
 
+	// validateModelOverride fail-closes a Subagent Profile's composite
+	// "provider/model" override against the session router (delta on
+	// OrchestratorDeps.ValidateModelOverride); threaded into conductorDeps
+	// and the delegate-tool context. nil = no pre-launch validation.
+	validateModelOverride tools.ModelOverrideValidator
+
 	// isNoProject: inside the No Project pseudo-project index-dependent tools are
 	// disabled and auto-RAG/verify-on-edit suppressed; code CHAT still routes "code".
 	isNoProject bool
@@ -664,6 +670,17 @@ type OrchestratorDeps struct {
 	// VerifyOnEditMaxOutputChars caps the verification output injected into
 	// context; 0 falls back to agent.DefaultVerifyOnEditCap.
 	VerifyOnEditMaxOutputChars int
+
+	// ValidateModelOverride fail-closes a delegation's composite
+	// "provider/model" model override — an explicit task `model` or a
+	// Subagent Profile's `model:` pin, source "task <id>" / "profile <name>"
+	// (ADR-123) — against the session router's configured providers
+	// (core/tools.ModelOverrideValidator): delegate validation calls it
+	// before any launch and buildSubAgentTask re-checks defensively. Nil =
+	// no pre-launch validation (the router's per-request provider miss
+	// remains the backstop). Built by the builder as a closure over the
+	// router's read-only provider-for-model lookup.
+	ValidateModelOverride tools.ModelOverrideValidator
 }
 
 // NewOrchestrator creates a new Orchestrator with all components.
@@ -726,6 +743,7 @@ func NewOrchestrator(cfg OrchestratorConfig, deps OrchestratorDeps) *Orchestrato
 		onCleanup:                  deps.OnCleanup,
 		verifyOnEdit:               deps.VerifyOnEdit,
 		verifyOnEditMaxOutputChars: deps.VerifyOnEditMaxOutputChars,
+		validateModelOverride:      deps.ValidateModelOverride,
 		compactionForecast:         resolveCompactionForecast(cfg.Compaction.Forecast),
 	}
 
@@ -2094,35 +2112,87 @@ func (o *Orchestrator) modelProfilesSettings() ModelProfilesSettings {
 // ApplyRequestOverrides applies per-request model and reasoning-effort overrides
 // to every LLM-calling component (router, reflector, the direct caller,
 // config.Model). Shared step 0 of HandleMessage AND the resume path — a resume
-// that skips it silently drops the switch.
-func (o *Orchestrator) ApplyRequestOverrides(ctx context.Context, modelOverride, reasoningEffort string) {
+// that skips it silently drops the switch. A model override MUST be a full
+// composite "provider/model" identifier (ADR-122): a bare name fails the
+// request with the composite guidance instead of switching to an ambiguous
+// first-match provider. A composite SetModel failure (unknown provider or
+// model) keeps the warn-and-continue semantics — the session stays on its
+// active model.
+func (o *Orchestrator) ApplyRequestOverrides(ctx context.Context, modelOverride, reasoningEffort string) error {
+	// Validate BEFORE any state change: a rejected override must not leave a
+	// freshly applied reasoning effort behind.
+	if err := ValidateModelOverride(modelOverride); err != nil {
+		return err
+	}
 	o.SetReasoningEffort(reasoningEffort)
-	if modelOverride != "" && o.modelSwitcher != nil {
-		if err := o.modelSwitcher.SetModel(ctx, modelOverride); err != nil {
-			if o.logger != nil {
-				o.logger.Warn("failed to apply model override", "model", modelOverride, "error", err)
-			}
-		} else {
-			bare := llm.BareModel(modelOverride)
-			o.setCurrentModel(bare)
-			// Fire-and-forget probe of the new model's real context window;
-			// the result lands in the model registry for context-budget math.
-			if o.localModelProbe != nil {
-				o.localModelProbe(bare)
-			}
-			// Sync the emitter's cached model so the initial context_fill
-			// (emitted before the first usage report) shows the new model.
-			family := ""
-			if o.modelRegistry != nil {
-				if meta, _ := o.modelRegistry.Resolve(ctx, bare); meta.Family != "" {
-					family = meta.Family
-				}
-			}
-			if setter, ok := o.emitter.(LastModelSetter); ok {
-				setter.SetLastModel(bare, family)
-			}
+	if modelOverride == "" || o.modelSwitcher == nil {
+		return nil
+	}
+	if err := o.modelSwitcher.SetModel(ctx, modelOverride); err != nil {
+		if o.logger != nil {
+			o.logger.Warn("failed to apply model override", "model", modelOverride, "error", err)
+		}
+		return nil
+	}
+	bare := llm.BareModel(modelOverride)
+	o.setCurrentModel(bare)
+	// Fire-and-forget probe of the new model's real context window;
+	// the result lands in the model registry for context-budget math.
+	if o.localModelProbe != nil {
+		o.localModelProbe(bare)
+	}
+	// Sync the emitter's cached model so the initial context_fill
+	// (emitted before the first usage report) shows the new model.
+	family := ""
+	if o.modelRegistry != nil {
+		if meta, _ := o.modelRegistry.Resolve(ctx, bare); meta.Family != "" {
+			family = meta.Family
 		}
 	}
+	if setter, ok := o.emitter.(LastModelSetter); ok {
+		// The composite rides the cache: session_tokens.model and the
+		// frontend's badge comparison carry the full provider/model selector
+		// (ADR-123 §7) instead of lagging bare until the next usage report.
+		setter.SetLastModel(modelOverride, family)
+	}
+	return nil
+}
+
+// ErrInvalidModelOverride marks a rejected per-request model override (the
+// mandatory-composite rule, ADR-122). The failure is deterministic — retrying
+// with the same override cannot succeed — so callers use it via errors.Is to
+// skip pointless retries (the session-lifecycle continuation fallback in
+// backend/session).
+var ErrInvalidModelOverride = errors.New("invalid model override")
+
+// ValidateModelOverride enforces the mandatory full-composite identifier rule
+// (ADR-122) for entry points that must reject a bad override BEFORE any state
+// changes: HandleMessage surfaces ApplyRequestOverrides' error at step 0, but
+// a resume validates first so a rejected override cannot leave the session
+// half-activated. Failures wrap ErrInvalidModelOverride. A composite with an
+// EMPTY bare part ("provider/") is rejected too — mirrors the profile
+// validator (modelOverrideValidator): letting it through would fail
+// Router.SetModel downstream and degrade to the silent warn-and-continue path
+// instead of the deterministic entry-point rejection the rule requires. An
+// EMPTY provider part ("/model") is rejected for the same reason: the part
+// before "/" must name a provider, and letting it through would still apply
+// the request's reasoning-effort half before SetModel fails — exactly the
+// half-activated state this pre-activation validation exists to prevent.
+func ValidateModelOverride(model string) error {
+	if model == "" {
+		return nil
+	}
+	provider, bare, composite := llm.ParseCompositeModelID(model)
+	if !composite {
+		return fmt.Errorf("%w: %q must be a full \"provider/model\" identifier — bare model names are not accepted", ErrInvalidModelOverride, model)
+	}
+	if provider == "" {
+		return fmt.Errorf("%w: %q must be a full \"provider/model\" identifier — the part before \"/\" must name a provider", ErrInvalidModelOverride, model)
+	}
+	if bare == "" {
+		return fmt.Errorf("%w: %q must be a full \"provider/model\" identifier — the part after \"/\" must name a model (\"provider/\" has an empty bare model)", ErrInvalidModelOverride, model)
+	}
+	return nil
 }
 
 // SetTaskStore sets the TaskPersistence store for blackboard restoration.
@@ -2380,7 +2450,9 @@ func (o *Orchestrator) HandleMessage(ctx context.Context, message, sessionID str
 		o.recordConversationOutcome(ctx, taskMessage, contentBlocks, result, err)
 	}()
 
-	o.ApplyRequestOverrides(ctx, opts.ModelOverride, opts.ReasoningEffort)
+	if err := o.ApplyRequestOverrides(ctx, opts.ModelOverride, opts.ReasoningEffort); err != nil {
+		return nil, err
+	}
 
 	o.logDebug("orchestrator: handle_message started", "messageLength", len(message), "taskID", opts.TaskID)
 	ctx = o.prepareRequestContext(ctx, taskMessage)

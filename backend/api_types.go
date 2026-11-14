@@ -870,10 +870,13 @@ type SkillDescriptorDTO struct {
 
 // AgentDescriptorDTO is a lightweight Subagent Profile descriptor for the
 // /-autocomplete (ADR-076: `#` is no longer a trigger). Mirrors
-// SkillDescriptorDTO.
+// SkillDescriptorDTO. Model carries the profile's `model:` frontmatter
+// override (sp4rk AgentDescriptor.Model) so the roster and SubAgentBlock can
+// badge the forced model; empty when the profile pins none.
 type AgentDescriptorDTO struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
+	Model       string `json:"model,omitempty"`
 }
 
 // CommandDescriptorDTO is a custom-command descriptor for /-autocomplete and

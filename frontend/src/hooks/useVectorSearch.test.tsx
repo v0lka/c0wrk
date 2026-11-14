@@ -1,7 +1,7 @@
 // Readiness gating for useVectorSearch: Enter in the inputs would bypass the
 // (disabled) search button, so handleKeyDown must be a no-op while the vector
 // index is not usable — no searchVectorStore call may block on index
-// readiness. The usable predicate is ready PLUS the ADR-122 suspension (a
+// readiness. The usable predicate is ready PLUS the ADR-124 suspension (a
 // live collection keeps serving queries), so Enter and the auto-search effect
 // stay open while suspended and stay gated for every other non-ready state.
 // Uses the real stores; only the RPC boundary (@/api/vector) is mocked.
@@ -82,7 +82,7 @@ describe('useVectorSearch.handleKeyDown readiness gating', () => {
     expect(searchSpy).not.toHaveBeenCalled()
   })
 
-  it('Enter performs no search in any non-ready state except the ADR-122 suspension', async () => {
+  it('Enter performs no search in any non-ready state except the ADR-124 suspension', async () => {
     const nonReady = ['idle', 'reindexing', ['unavailable', 'fatal']] as const
     for (const entry of nonReady) {
       const [state, kind] = Array.isArray(entry) ? entry : [entry, undefined]
@@ -201,7 +201,7 @@ describe('useVectorSearch auto-search effect gating (unchanged)', () => {
     })
   })
 
-  it('auto-searches while the ADR-122 suspension holds (a live collection keeps serving queries)', async () => {
+  it('auto-searches while the ADR-124 suspension holds (a live collection keeps serving queries)', async () => {
     act(() => {
       useProjectStore.setState({ activeProjectId: 'proj-1' })
       useVectorIndexStore.setState({

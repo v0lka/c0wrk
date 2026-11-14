@@ -43,7 +43,12 @@ type Emitter interface {
 	// c0wrk-specific orchestration events
 	Routing(mode, domain, complexity string)
 	PlanGenerated(stepCount int, steps []orchestration.PlanStepEvent)
-	PlanStepStart(stepID string, description, summary string)
+	// PlanStepStart emits a plan_step_start event. model carries the
+	// honored model pin for a delegated step ("" for inline steps and
+	// synthesized starts) — the UI renders a model badge only when the
+	// value differs from the session's model (ADR-122 payload key, ADR-123
+	// differ-from-session rule; frontend/src/lib/subagentModelBadge.ts).
+	PlanStepStart(stepID string, description, summary, model string)
 	PlanStepComplete(stepID string, success bool, duration time.Duration, errMsg string)
 	// PlanStepPaused emits a plan_step_paused event: the step stopped at a
 	// cooperative pause checkpoint — recoverable, not a failure or completion;
@@ -148,8 +153,8 @@ type DisplayContextWindowForModelSetter interface {
 // session_tokens model is synchronized the instant a per-request override is
 // applied: the emitter's cached "last model" otherwise lags until the first
 // usage report, so the opening fill would show the PREVIOUS task's model. The
-// orchestrator injects model+family inside ApplyRequestOverrides (mirroring
-// DisplayContextWindowSetter).
+// orchestrator injects the composite provider/model + family inside
+// ApplyRequestOverrides (mirroring DisplayContextWindowSetter).
 type LastModelSetter interface {
 	SetLastModel(model, family string)
 }
@@ -183,7 +188,7 @@ var _ Emitter = (*noopEmitter)(nil)
 
 func (n *noopEmitter) Routing(_, _, _ string)                                       {}
 func (n *noopEmitter) PlanGenerated(_ int, _ []orchestration.PlanStepEvent)         {}
-func (n *noopEmitter) PlanStepStart(_, _, _ string)                                 {}
+func (n *noopEmitter) PlanStepStart(_, _, _, _ string)                              {}
 func (n *noopEmitter) PlanStepComplete(_ string, _ bool, _ time.Duration, _ string) {}
 func (n *noopEmitter) PlanStepPaused(_ string, _ time.Duration, _ string)           {}
 func (n *noopEmitter) Reflection(_ *orchestration.Reflection, _, _ int)             {}

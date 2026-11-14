@@ -44,7 +44,12 @@ export interface PlanData {
   current_step_index?: number; completed_count?: number; total_count?: number
 }
 
-export interface PlanStepStartData { step_id: string; description: string; summary?: string }
+export interface PlanStepStartData {
+  step_id: string; description: string; summary?: string
+  /** The delegated step's honored profile model pin (ADR-122) — additive,
+   *  absent for inline steps / synthesized starts (badge stays hidden). */
+  model?: string
+}
 export interface PlanStepCompleteData { step_id: string; success: boolean; duration: number; error?: string; progress?: number; current_step_index?: number; completed_count?: number; total_count?: number }
 /** Cooperative pause checkpoint: mirrors plan_step_complete's shape minus the
  *  `success` field — a pause is a recoverable state, NOT a completion
@@ -252,7 +257,9 @@ export interface TaskCompleteData {
   /** Refines the outcome: 'full' | 'partial' | 'failed' | 'aborted'. */
   completion?: string
 }
-export interface SubAgentLaunchData { step_id: string; description: string; plan_step_id?: string }
+/** `model` carries the profile's honored "provider/model" pin for the subagent
+ *  badge; empty/absent = the session's active model (no badge). */
+export interface SubAgentLaunchData { step_id: string; description: string; model?: string; plan_step_id?: string }
 export interface SubAgentCompleteData { step_id: string; success: boolean; duration: number; error?: string; plan_step_id?: string }
 /** Cooperative pause checkpoint for pure delegate runs (recoverable, not a
  *  failure — no success field; Resume restores the trajectory). For plan-step
@@ -1264,6 +1271,10 @@ export function isPlanStepStartData(d: unknown): d is PlanStepStartData {
   // declared strings the guard must pin.
   if (!isObj(d) || typeof d.step_id !== 'string' || typeof d.description !== 'string') return false
   if (d.summary !== undefined && typeof d.summary !== 'string') return false
+  // Additive badge key (ADR-122): optional; a present non-string must fail
+  // the guard instead of leaking into the render — mirrors
+  // isSubAgentLaunchData.
+  if (d.model !== undefined && typeof d.model !== 'string') return false
   return true
 }
 export function isPlanStepCompleteData(d: unknown): d is PlanStepCompleteData {
@@ -1338,6 +1349,9 @@ export function isSubAgentLaunchData(d: unknown): d is SubAgentLaunchData {
   // fallback) — a truthy non-string would throw inside the fallback render.
   if (!isObj(d) || typeof d.step_id !== 'string' || typeof d.description !== 'string') return false
   if (d.plan_step_id !== undefined && typeof d.plan_step_id !== 'string') return false
+  // Additive badge key (ADR-122): optional; a present non-string must fail
+  // the guard instead of leaking into the render.
+  if (d.model !== undefined && typeof d.model !== 'string') return false
   return true
 }
 export function isSubAgentCompleteData(d: unknown): d is SubAgentCompleteData {

@@ -17,7 +17,7 @@ import { useVectorIndexStore } from '@/stores/vectorIndexStore'
  * is running, and a plain reconcile cannot repair it — and the action is the
  * user's repair path exactly for the failure kinds a repair addresses
  * (`error_kind` `repairable` / `transient` / `suspended` / `unknown`; for
- * `suspended` the manager-level Reindex is the ADR-122 breaker's own reset
+ * `suspended` the manager-level Reindex is the ADR-124 breaker's own reset
  * path): with no live
  * collection the backend re-attaches the snapshot view, which rejects an
  * unopenable corpus as unpublished and rebuilds it from source
@@ -61,7 +61,7 @@ export function useVectorReindex() {
   // the failure KIND (`error_kind` on the same status): the repair escalation
   // addresses exactly the manager-level kinds — `repairable` (a proven store
   // defect; the rebuild heals it), `transient` (an OS fault; the re-attach
-  // retries the open once the fault clears), `suspended` (the ADR-122
+  // retries the open once the fault clears), `suspended` (the ADR-124
   // incremental-failure circuit breaker; the manager-level Reindex is the
   // breaker's own reset path — it re-opens file-change arming and relaunches
   // the pass, which fails honestly again if the embedder is still dead) and
@@ -143,7 +143,7 @@ export function useVectorReindex() {
   // The action label for an ENABLED button: an unavailable index is rebuilt
   // (the broken store is discarded and the corpus recreated from source),
   // which is a different promise from the ordinary force-reindex — except
-  // the ADR-122 suspension, where the collection is live and the same
+  // the ADR-124 suspension, where the collection is live and the same
   // manager-level Reindex runs a validation-based reconcile that RESUMES
   // indexing (the breaker's own reset path), so the title must not promise
   // a rebuild it does not perform. The Resume label keys on the suspended
@@ -205,7 +205,7 @@ export function useVectorReindex() {
         // as a broken repair action. The backend error carries the routing
         // cause (embedder, shutdown, no target), which names the real
         // remedy. The wording is neutral because the click may have been
-        // either repair title — the rebuild or the ADR-122 resume — and the
+        // either repair title — the rebuild or the ADR-124 resume — and the
         // toast must not contradict the action the user actually took.
         setReindexRequested(false)
         const message = err instanceof Error ? err.message : String(err)

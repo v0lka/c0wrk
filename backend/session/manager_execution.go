@@ -934,8 +934,10 @@ func (m *Manager) sendMessage(ctx context.Context, id, text, echoText, clientSen
 		// Fallback: a continuation that failed BEFORE executing retries fresh
 		// (see shouldRetryContinuationFresh). Goal mode is preserved — hmMsg is
 		// already prefix-stripped, msg is not, so a "/goal" send would leak the
-		// prefix into the fresh task if the flag were dropped.
-		if err != nil && !errors.Is(err, core.ErrMCPAuthorizationState) && m.shouldRetryContinuationFresh(id, lastTaskID, anchorWasUnfinished) {
+		// prefix into the fresh task if the flag were dropped. A rejected model
+		// override is deterministic — the retry would fail identically — so it
+		// skips the fallback and surfaces the error directly.
+		if err != nil && !errors.Is(err, core.ErrMCPAuthorizationState) && !errors.Is(err, core.ErrInvalidModelOverride) && m.shouldRetryContinuationFresh(id, lastTaskID, anchorWasUnfinished) {
 			m.log().Warn("continuation failed, falling back to fresh workflow", "session_id", id, "task_id", lastTaskID, "error", err)
 			session.mu.Lock()
 			session.lastCompletedTaskID = ""
@@ -1104,8 +1106,13 @@ func (m *Manager) tryContinueInterruptedTask(
 	}
 
 	// Apply per-request model/reasoning overrides — this path bypasses
-	// HandleMessage, where step 0 would apply them. No-op when both are empty.
-	session.orchestrator.ApplyRequestOverrides(ctx, modelOverride, reasoningEffort)
+	// HandleMessage, where step 0 would apply them. A rejected override (the
+	// mandatory-composite rule) falls back to the normal HandleMessage flow,
+	// which surfaces the same error at its step 0.
+	if err := session.orchestrator.ApplyRequestOverrides(ctx, modelOverride, reasoningEffort); err != nil {
+		m.log().Warn("continue-interrupted-task: rejected model override; falling back to fresh task", "session", id, "error", err)
+		return false
+	}
 
 	// Flush staged attachments into the restored blackboard (mirrors
 	// HandleMessage's setupBlackboard continuation path).
@@ -1336,6 +1343,13 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 	// immutable, so no lock is needed.
 	researchRoot, isResearch := m.researchProjectInfo(session)
 
+	// Mandatory full-composite model override (ADR-122): validate BEFORE the
+	// activation critical section — a rejected override must not leave the
+	// session marked active with no resume goroutine launched.
+	if err := core.ValidateModelOverride(modelOverride); err != nil {
+		return err
+	}
+
 	session.mu.Lock()
 	if session.active {
 		session.mu.Unlock()
@@ -1394,8 +1408,12 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 	// HandleMessage (step 0 would apply them). After the active-check (never
 	// leak into a concurrently running task) but before the Resume goroutine,
 	// so the emitter's cached model is synchronized before the first
-	// context_fill.
-	session.orchestrator.ApplyRequestOverrides(ctx, modelOverride, reasoningEffort)
+	// context_fill. The grammar rule was validated at entry (before
+	// activation), so this cannot reject anymore; a composite SetModel
+	// failure warns and keeps the session's active model.
+	if err := session.orchestrator.ApplyRequestOverrides(ctx, modelOverride, reasoningEffort); err != nil {
+		m.log().Error("resume: model override rejected after activation", "session", id, "error", err)
+	}
 
 	m.refreshAutonomyPosture(session)
 

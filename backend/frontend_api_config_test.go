@@ -435,7 +435,7 @@ func newTestAPI(t *testing.T) (*FrontendAPI, *mockBuilder, string) {
 	cfgPath := filepath.Join(dir, "config.yaml")
 	cfg := &config.Config{}
 	config.ApplyDefaults(cfg)
-	cfg.LLM.DefaultModel = "claude-3-opus"
+	cfg.LLM.DefaultModel = "anthropic/claude-3-opus"
 	cfg.LLM.Anthropic.APIKey = "sk-test-original"
 	cfg.LLM.Anthropic.Models = []string{"claude-3-opus"}
 
@@ -535,7 +535,7 @@ func TestUpdateLLMConfig_PersistsAndRebuilds(t *testing.T) {
 	f, mock, cfgPath := newTestAPI(t)
 
 	err := f.UpdateLLMConfig(LLMFullConfigRequest{
-		DefaultModel: "claude-3-sonnet",
+		DefaultModel: "anthropic/claude-3-sonnet",
 		Anthropic:    &ProviderConfigRequest{Models: []string{"claude-3-sonnet", "claude-3-opus"}},
 	})
 	if err != nil {
@@ -556,8 +556,8 @@ func TestUpdateLLMConfig_PersistsAndRebuilds(t *testing.T) {
 	}
 
 	// Assert in-memory config updated.
-	if f.config.LLM.DefaultModel != "claude-3-sonnet" {
-		t.Errorf("default_model = %q, want claude-3-sonnet", f.config.LLM.DefaultModel)
+	if f.config.LLM.DefaultModel != "anthropic/claude-3-sonnet" {
+		t.Errorf("default_model = %q, want anthropic/claude-3-sonnet", f.config.LLM.DefaultModel)
 	}
 }
 
@@ -566,7 +566,7 @@ func TestUpdateLLMConfig_MaskedKeyNotOverwritten(t *testing.T) {
 	original := f.config.LLM.Anthropic.APIKey
 
 	err := f.UpdateLLMConfig(LLMFullConfigRequest{
-		DefaultModel: "claude-3-sonnet",
+		DefaultModel: "anthropic/claude-3-sonnet",
 		Anthropic:    &ProviderConfigRequest{APIKey: maskedAPIKey, Models: []string{"claude-3-sonnet"}},
 	})
 	if err != nil {
@@ -582,7 +582,7 @@ func TestUpdateLLMConfig_AnthropicCompatible(t *testing.T) {
 		f, _, _ := newTestAPI(t)
 
 		err := f.UpdateLLMConfig(LLMFullConfigRequest{
-			DefaultModel: "claude-sonnet-4-20250514",
+			DefaultModel: "my-proxy/claude-sonnet-4-20250514",
 			AnthropicCompatible: map[string]ProviderConfigRequest{
 				"my-proxy": {
 					BaseURL: "https://my-anthropic-proxy.example.com",
@@ -656,7 +656,7 @@ func TestUpdateLLMConfig_NilConfig(t *testing.T) {
 	f := &FrontendAPI{}
 	f.seedPublished.Store(true)
 	f.seedPublished.Store(true)
-	err := f.UpdateLLMConfig(LLMFullConfigRequest{DefaultModel: "claude-3-sonnet"})
+	err := f.UpdateLLMConfig(LLMFullConfigRequest{DefaultModel: "anthropic/claude-3-sonnet"})
 	if err == nil {
 		t.Fatal("expected error when config is nil")
 	}
@@ -667,7 +667,7 @@ func TestUpdateLLMConfig_RollsBackWhenPersistFails(t *testing.T) {
 	f.configPath = filepath.Join(filepath.Dir(cfgPath), "missing", "config.yaml")
 
 	err := f.UpdateLLMConfig(LLMFullConfigRequest{
-		DefaultModel: "claude-3-sonnet",
+		DefaultModel: "anthropic/claude-3-sonnet",
 		Anthropic:    &ProviderConfigRequest{Models: []string{"claude-3-sonnet"}},
 	})
 	if err == nil {
@@ -679,7 +679,7 @@ func TestUpdateLLMConfig_RollsBackWhenPersistFails(t *testing.T) {
 		t.Fatal("configMu still held after failed persist")
 	}
 	f.configMu.Unlock()
-	if got := f.config.LLM.DefaultModel; got != "claude-3-opus" {
+	if got := f.config.LLM.DefaultModel; got != "anthropic/claude-3-opus" {
 		t.Errorf("default_model after failed persist = %q, want claude-3-opus", got)
 	}
 	if got := f.config.LLM.Anthropic.Models; !slices.Equal(got, []string{"claude-3-opus"}) {
@@ -891,7 +891,7 @@ func TestUpdateLLMConfig_RejectsDanglingDefaultOnModelDisabled(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected disabling the default model to be rejected")
 	}
-	if got := f.config.LLM.DefaultModel; got != "claude-3-opus" {
+	if got := f.config.LLM.DefaultModel; got != "anthropic/claude-3-opus" {
 		t.Errorf("default_model after rejected model replacement = %q, want claude-3-opus", got)
 	}
 	if got := f.config.LLM.Anthropic.Models; !slices.Equal(got, []string{"claude-3-opus"}) {
@@ -908,14 +908,14 @@ func TestUpdateLLMConfig_AcceptsReplacementDefaultWithNewModels(t *testing.T) {
 	f, mock, cfgPath := newTestAPI(t)
 
 	err := f.UpdateLLMConfig(LLMFullConfigRequest{
-		DefaultModel: "claude-3-sonnet",
+		DefaultModel: "anthropic/claude-3-sonnet",
 		Anthropic:    &ProviderConfigRequest{Models: []string{"claude-3-sonnet"}},
 	})
 	if err != nil {
 		t.Fatalf("UpdateLLMConfig(replacement default) unexpected error: %v", err)
 	}
-	if got := f.config.LLM.DefaultModel; got != "claude-3-sonnet" {
-		t.Errorf("default_model after replacement = %q, want claude-3-sonnet", got)
+	if got := f.config.LLM.DefaultModel; got != "anthropic/claude-3-sonnet" {
+		t.Errorf("default_model after replacement = %q, want anthropic/claude-3-sonnet", got)
 	}
 	if got := f.config.LLM.Anthropic.Models; !slices.Equal(got, []string{"claude-3-sonnet"}) {
 		t.Errorf("anthropic models after replacement = %v, want [claude-3-sonnet]", got)
@@ -930,8 +930,8 @@ func TestUpdateLLMConfig_AcceptsReplacementDefaultWithNewModels(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to load persisted replacement config: %v", err)
 	}
-	if got := persisted.LLM.DefaultModel; got != "claude-3-sonnet" {
-		t.Errorf("persisted default_model after replacement = %q, want claude-3-sonnet", got)
+	if got := persisted.LLM.DefaultModel; got != "anthropic/claude-3-sonnet" {
+		t.Errorf("persisted default_model after replacement = %q, want anthropic/claude-3-sonnet", got)
 	}
 }
 
@@ -3156,7 +3156,7 @@ func TestDeleteModelProfile_ActiveCustomFallsBackToGeneric(t *testing.T) {
 func TestGetConfigModelProfilesIdentityIsNonConsuming(t *testing.T) {
 	f, _, _ := newTestAPI(t)
 	// The embedded default model makes the advisory suggestion deterministic.
-	f.config.LLM.DefaultModel = config.EmbeddedLLMModelName
+	f.config.LLM.DefaultModel = embeddedCompositeID()
 	f.config.ModelProfiles.ActiveProfile = ""
 	active := activateCustomModelProfile(t, f)
 	// The helper writes the active id directly (no RPC), so refresh the gate
@@ -3914,7 +3914,7 @@ func newUpdateLLMConfigProjectHarness(t *testing.T) (*FrontendAPI, *project.Proj
 	// resolvable (matches a valid post-save state). Without this, the
 	// re-validation invariant in UpdateLLMConfig would clear a dangling
 	// default before EnsureNoProject runs.
-	cfg.LLM.DefaultModel = "claude-3-opus"
+	cfg.LLM.DefaultModel = "anthropic/claude-3-opus"
 	cfg.LLM.Anthropic.APIKey = "sk-test"
 	cfg.LLM.Anthropic.Models = []string{"claude-3-opus"}
 
@@ -4107,7 +4107,7 @@ func TestUpdateLLMConfig_DoesNotSwitchAwayFromActiveProject(t *testing.T) {
 	f.activeProjectPath = activeProj.WorkspacePath
 	f.activeProjectMu.Unlock()
 
-	if err := f.UpdateLLMConfig(LLMFullConfigRequest{DefaultModel: "claude-3-opus"}); err != nil {
+	if err := f.UpdateLLMConfig(LLMFullConfigRequest{DefaultModel: "anthropic/claude-3-opus"}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -4129,7 +4129,7 @@ func TestUpdateLLMConfig_EmitsBackendReadyOnlyWhenNoProjectFirstCreated(t *testi
 	defer func() { _ = db.Close() }()
 
 	// No project active and No Project does not exist yet → first-run.
-	if err := f.UpdateLLMConfig(LLMFullConfigRequest{DefaultModel: "claude-3-opus"}); err != nil {
+	if err := f.UpdateLLMConfig(LLMFullConfigRequest{DefaultModel: "anthropic/claude-3-opus"}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -4162,7 +4162,7 @@ func TestUpdateLLMConfig_NoEmitWhenNoProjectAlreadyExists(t *testing.T) {
 	f.activeProjectPath = activeProj.WorkspacePath
 	f.activeProjectMu.Unlock()
 
-	if err := f.UpdateLLMConfig(LLMFullConfigRequest{DefaultModel: "claude-3-opus"}); err != nil {
+	if err := f.UpdateLLMConfig(LLMFullConfigRequest{DefaultModel: "anthropic/claude-3-opus"}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -4202,7 +4202,7 @@ func TestUpdateLLMConfig_ReadersNotBlockedDuringRebuild(t *testing.T) {
 	updateDone := make(chan error, 1)
 	go func() {
 		updateDone <- f.UpdateLLMConfig(LLMFullConfigRequest{
-			DefaultModel: "claude-3-sonnet",
+			DefaultModel: "anthropic/claude-3-sonnet",
 			Anthropic:    &ProviderConfigRequest{Models: []string{"claude-3-sonnet"}},
 		})
 	}()
@@ -4231,8 +4231,8 @@ func TestUpdateLLMConfig_ReadersNotBlockedDuringRebuild(t *testing.T) {
 		if !res.resp.Loaded {
 			t.Error("GetConfig returned unloaded config during rebuild")
 		}
-		if res.resp.LLM.DefaultModel != "claude-3-sonnet" {
-			t.Errorf("GetConfig default_model = %q, want claude-3-sonnet (mutation applied before rebuild)", res.resp.LLM.DefaultModel)
+		if res.resp.LLM.DefaultModel != "anthropic/claude-3-sonnet" {
+			t.Errorf("GetConfig default_model = %q, want anthropic/claude-3-sonnet (mutation applied before rebuild)", res.resp.LLM.DefaultModel)
 		}
 	case <-time.After(2 * time.Second):
 		close(release)
@@ -4254,7 +4254,12 @@ func TestUpdateLLMConfig_ReadersNotBlockedDuringRebuild(t *testing.T) {
 func TestUpdateLLMConfig_DeferredSavesSerializedInOrder(t *testing.T) {
 	f, mock, cfgPath := newTestAPI(t)
 
-	const first, second = "claude-3-sonnet", "claude-3-haiku"
+	const (
+		first      = "anthropic/claude-3-sonnet"
+		second     = "anthropic/claude-3-haiku"
+		firstBare  = "claude-3-sonnet"
+		secondBare = "claude-3-haiku"
+	)
 
 	firstRebuildStarted := make(chan struct{})
 	releaseFirst := make(chan struct{})
@@ -4273,7 +4278,7 @@ func TestUpdateLLMConfig_DeferredSavesSerializedInOrder(t *testing.T) {
 	go func() {
 		saveErrs <- f.UpdateLLMConfig(LLMFullConfigRequest{
 			DefaultModel: first,
-			Anthropic:    &ProviderConfigRequest{Models: []string{first}},
+			Anthropic:    &ProviderConfigRequest{Models: []string{firstBare}},
 		})
 	}()
 
@@ -4288,7 +4293,7 @@ func TestUpdateLLMConfig_DeferredSavesSerializedInOrder(t *testing.T) {
 	go func() {
 		saveErrs <- f.UpdateLLMConfig(LLMFullConfigRequest{
 			DefaultModel: second,
-			Anthropic:    &ProviderConfigRequest{Models: []string{second}},
+			Anthropic:    &ProviderConfigRequest{Models: []string{secondBare}},
 		})
 	}()
 
@@ -4369,7 +4374,7 @@ func TestUpdateLLMConfig_RebuildNotRevertedByConcurrentConfigWriter(t *testing.T
 	aDone := make(chan error, 1)
 	go func() {
 		aDone <- f.UpdateLLMConfig(LLMFullConfigRequest{
-			DefaultModel: "claude-3-sonnet",
+			DefaultModel: "anthropic/claude-3-sonnet",
 			Anthropic:    &ProviderConfigRequest{Models: []string{"claude-3-sonnet"}},
 		})
 	}()
@@ -5532,7 +5537,7 @@ func TestUpdateLLMConfig_WholeMapReplaceKeepsEmbeddedProvider(t *testing.T) {
 
 	// The draft mentions only a user provider — `embedded` is absent.
 	err := f.UpdateLLMConfig(LLMFullConfigRequest{
-		DefaultModel: "claude-3-opus",
+		DefaultModel: "anthropic/claude-3-opus",
 		Anthropic:    &ProviderConfigRequest{Models: []string{"claude-3-opus"}},
 		OpenAICompatible: map[string]ProviderConfigRequest{
 			"lmstudio": {BaseURL: "http://127.0.0.1:1234/v1", Models: []string{"local-model"}},
@@ -5570,13 +5575,11 @@ func TestUpdateLLMConfig_WholeMapReplaceKeepsEmbeddedProvider(t *testing.T) {
 		}
 	}
 
-	// The composite id still resolves after the save.
-	got, _, err := f.config.LLM.ResolveModelID(embeddedCompositeID())
-	if err != nil {
-		t.Fatalf("ResolveModelID(%q) failed: %v", embeddedCompositeID(), err)
-	}
-	if got != embeddedCompositeID() {
-		t.Errorf("ResolveModelID = %q, want %q", got, embeddedCompositeID())
+	// The composite id still resolves after the save (listed by the
+	// enabled-composite enumeration — AllModelIDs is the resolution predicate).
+	if !slices.Contains(f.config.LLM.AllModelIDs(), embeddedCompositeID()) {
+		t.Errorf("AllModelIDs() = %v, want it to contain %q after the save",
+			f.config.LLM.AllModelIDs(), embeddedCompositeID())
 	}
 }
 
@@ -5589,7 +5592,7 @@ func TestUpdateLLMConfig_EmbeddedRecordIsNotClientAuthorable(t *testing.T) {
 	installEmbeddedLLM(t, f, 4321)
 
 	err := f.UpdateLLMConfig(LLMFullConfigRequest{
-		DefaultModel: "claude-3-opus",
+		DefaultModel: "anthropic/claude-3-opus",
 		OpenAICompatible: map[string]ProviderConfigRequest{
 			config.EmbeddedLLMProviderName: {
 				BaseURL: "https://not-loopback.example.com/v1",
@@ -5624,7 +5627,7 @@ func TestUpdateLLMConfig_RemovesEmbeddedProviderAfterUninstall(t *testing.T) {
 	f.config.EmbeddedLLM.Installed = false // what the Remove RPC records
 
 	err := f.UpdateLLMConfig(LLMFullConfigRequest{
-		DefaultModel: "claude-3-opus",
+		DefaultModel: "anthropic/claude-3-opus",
 		OpenAICompatible: map[string]ProviderConfigRequest{
 			// A draft that still carries the record the UI read before Remove.
 			config.EmbeddedLLMProviderName: {BaseURL: "http://127.0.0.1:4321/v1", Models: []string{config.EmbeddedLLMModelName}},
@@ -5636,8 +5639,8 @@ func TestUpdateLLMConfig_RemovesEmbeddedProviderAfterUninstall(t *testing.T) {
 	if _, ok := f.config.LLM.OpenAICompatible[config.EmbeddedLLMProviderName]; ok {
 		t.Errorf("the provider record survived the uninstall: %+v", f.config.LLM.OpenAICompatible)
 	}
-	if _, _, err := f.config.LLM.ResolveModelID(embeddedCompositeID()); err == nil {
-		t.Errorf("ResolveModelID(%q) must fail once the model is uninstalled", embeddedCompositeID())
+	if slices.Contains(f.config.LLM.AllModelIDs(), embeddedCompositeID()) {
+		t.Errorf("AllModelIDs() still lists %q after the uninstall", embeddedCompositeID())
 	}
 
 	// The same removal must happen when the request carries NO provider map at
@@ -5646,7 +5649,7 @@ func TestUpdateLLMConfig_RemovesEmbeddedProviderAfterUninstall(t *testing.T) {
 	installEmbeddedLLM(t, f, 4321)
 	f.config.EmbeddedLLM.Installed = false
 	if err := f.UpdateLLMConfig(LLMFullConfigRequest{
-		DefaultModel: "claude-3-opus",
+		DefaultModel: "anthropic/claude-3-opus",
 		Anthropic:    &ProviderConfigRequest{Models: []string{"claude-3-opus"}},
 	}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -5674,7 +5677,7 @@ func TestUpdateLLMConfig_RejectedRequestDoesNotLeakEmbeddedSync(t *testing.T) {
 	// Dropping the model that owns default_model makes the candidate dangling,
 	// so the whole update is rejected.
 	err := f.UpdateLLMConfig(LLMFullConfigRequest{
-		DefaultModel: "claude-3-opus",
+		DefaultModel: "anthropic/claude-3-opus",
 		Anthropic:    &ProviderConfigRequest{Models: []string{"claude-3-sonnet"}},
 	})
 	if err == nil {
@@ -5784,8 +5787,8 @@ func TestGetConfig_NoEmbeddedProviderWhenNotInstalled(t *testing.T) {
 			t.Errorf("AllModels lists an uninstalled embedded model: %+v", m)
 		}
 	}
-	if _, _, err := f.config.LLM.ResolveModelID(embeddedCompositeID()); err == nil {
-		t.Errorf("ResolveModelID(%q) must fail while the model is not installed", embeddedCompositeID())
+	if slices.Contains(f.config.LLM.AllModelIDs(), embeddedCompositeID()) {
+		t.Errorf("AllModelIDs() lists %q while the model is not installed", embeddedCompositeID())
 	}
 }
 
@@ -5880,7 +5883,7 @@ func TestUpdateLLMConfig_EmbeddedContextWindowOverrideUntouched(t *testing.T) {
 	}
 
 	err := f.UpdateLLMConfig(LLMFullConfigRequest{
-		DefaultModel: "claude-3-opus",
+		DefaultModel: "anthropic/claude-3-opus",
 		OpenAICompatible: map[string]ProviderConfigRequest{
 			"lmstudio": {BaseURL: "http://127.0.0.1:1234/v1", Models: []string{"local-model"}},
 		},

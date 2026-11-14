@@ -10,7 +10,7 @@ import { createRoot, type Root } from 'react-dom/client'
 // undefined.
 interface MockVectorStatus {
   state: 'idle' | 'indexing' | 'ready' | 'reindexing' | 'unavailable' | 'loading'
-  // error_kind rides the wire payload (optional, omitempty); the ADR-122
+  // error_kind rides the wire payload (optional, omitempty); the ADR-124
   // suspension tests below set it.
   error_kind?: string
   progress: number
@@ -85,7 +85,7 @@ describe('VectorSearchResults — index-not-ready placeholder', () => {
     expect(container.textContent).toContain('Vector index unavailable')
   })
 
-  // ADR-122: the suspension keeps the search path OPEN (the breaker stops
+  // ADR-124: the suspension keeps the search path OPEN (the breaker stops
   // the UPDATE pipeline only, and a live collection keeps serving the
   // queries the still-enabled inputs fire) — the fetched entries render
   // instead of the "unavailable" placeholder, in all three result states.
@@ -97,7 +97,7 @@ describe('VectorSearchResults — index-not-ready placeholder', () => {
     total_files: 100,
   }
 
-  it('renders the fetched results while the ADR-122 suspension holds', () => {
+  it('renders the fetched results while the ADR-124 suspension holds', () => {
     state.status = { ...suspendedStatus }
     state.entries = [
       { file_path: 'pkg/changed.go', start_line: 1, end_line: 3, content: 'package main', score: 0.9 },

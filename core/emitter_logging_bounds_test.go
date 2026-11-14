@@ -60,7 +60,7 @@ func TestLoggingEmitter_PlanStepStart_BoundsDescriptionAndSummary(t *testing.T) 
 	desc := secretProse()
 	summary := secretProse()
 
-	e.PlanStepStart("step_1", desc, summary)
+	e.PlanStepStart("step_1", desc, summary, "")
 
 	assertBounded(t, buf, "descriptionLen", desc)
 	assertBounded(t, buf, "summaryLen", summary)

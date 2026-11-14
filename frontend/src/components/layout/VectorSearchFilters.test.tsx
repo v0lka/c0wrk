@@ -108,7 +108,7 @@ describe('VectorSearchFilters readiness gating', () => {
     }
   })
 
-  it('disables the widgets for an unavailable index unless the kind is the ADR-122 suspension', () => {
+  it('disables the widgets for an unavailable index unless the kind is the ADR-124 suspension', () => {
     // A plain unavailable (or any manager/registry kind other than
     // "suspended") blocks the widgets: searches would wait on a readiness
     // that never returns.
@@ -125,7 +125,7 @@ describe('VectorSearchFilters readiness gating', () => {
     }
 
     // The suspension stops the UPDATE pipeline only — a live collection
-    // keeps serving queries (ADR-122 rejects failing the search path on
+    // keeps serving queries (ADR-124 rejects failing the search path on
     // suspend), so the widgets stay enabled and the suspension reason
     // renders inline as the honest explanation.
     const reason = 'automatic incremental indexing suspended after 5 consecutive failed passes'
@@ -142,7 +142,7 @@ describe('VectorSearchFilters readiness gating', () => {
   })
 
   it('renders the suspension reason inline even on a READY status (the pair-persistence corner)', () => {
-    // ADR-122: a failing branch-switch pass after the trip ends in a terminal
+    // ADR-124: a failing branch-switch pass after the trip ends in a terminal
     // ready report, and the suspended verdict deliberately OUTLIVES it — the
     // status is ready (search answers from the live collection) while the
     // pair stands. The panel must render the reason there too instead of

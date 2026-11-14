@@ -1,4 +1,4 @@
-# ADR-122: Incremental-Pass Failure Backoff and Circuit Breaker
+# ADR-124: Incremental-Pass Failure Backoff and Circuit Breaker
 
 ## Status
 

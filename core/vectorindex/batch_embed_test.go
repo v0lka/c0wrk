@@ -686,7 +686,7 @@ func TestDocumentAccumulator_FillsInferenceAcrossFileAndCommitBoundaries(t *test
 	// Multiple files with deliberately awkward chunk counts carry inference
 	// tails across both file boundaries and the 200-document commit boundary.
 	groups := []int{17, 33, 51, 99, 7, 123, 95}
-	// ADR-123: the accumulator's commit windows take the service write lock
+	// ADR-125: the accumulator's commit windows take the service write lock
 	// themselves — the driver holds the pass lease, never the lock (a held
 	// lock would deadlock every window).
 	pass := svc.beginPassLease()

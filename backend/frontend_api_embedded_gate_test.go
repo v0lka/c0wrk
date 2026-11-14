@@ -96,10 +96,13 @@ func TestActiveModelIsEmbedded(t *testing.T) {
 		f, _, _ := newEmbeddedTestAPI(t)
 		installEmbeddedLLM(t, f, 4321)
 		f.configMu.Lock()
+		// A bare model name can no longer be a configured default (config
+		// load rejects it, ADR-122 mandatory-composite rule); a hand-built
+		// in-memory state with one must NOT resolve to the embedded provider.
 		f.config.LLM.DefaultModel = config.EmbeddedLLMModelName
 		f.configMu.Unlock()
-		if !f.activeModelIsEmbedded() {
-			t.Error("a bare model name must resolve to the same provider as the composite")
+		if f.activeModelIsEmbedded() {
+			t.Error("a bare model name must not resolve to the embedded provider (mandatory-composite rule)")
 		}
 	})
 
