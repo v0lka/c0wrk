@@ -49,11 +49,11 @@ func TestStartIgnoreBuild_FifoIgnoreFileDoesNotHangShutdown(t *testing.T) {
 	if !ok {
 		t.Fatal("expected a cached resolver after the build")
 	}
-	resolver, ok := v.(*ignore.Resolver)
-	if !ok || resolver == nil {
-		t.Fatalf("cache must hold a non-nil *ignore.Resolver, got %T", v)
+	entry, ok := v.(*ignoreResolverEntry)
+	if !ok || entry.r == nil {
+		t.Fatalf("cache must hold a finished *ignoreResolverEntry, got %T", v)
 	}
-	if !resolver.Ignored(filepath.Join(root, "x.log"), false) {
+	if !entry.r.Ignored(filepath.Join(root, "x.log"), false) {
 		t.Fatal("resolver did not honour the regular .gitignore after skipping the FIFO")
 	}
 }
