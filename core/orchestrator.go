@@ -381,10 +381,9 @@ type Orchestrator struct {
 	// context; 0 falls back to agent.DefaultVerifyOnEditCap.
 	verifyOnEditMaxOutputChars int
 
-	// validateModelOverride fail-closes a Subagent Profile's composite
-	// "provider/model" override against the session router (delta on
-	// OrchestratorDeps.ValidateModelOverride); threaded into conductorDeps
-	// and the delegate-tool context. nil = no pre-launch validation.
+	// validateModelOverride threads OrchestratorDeps.ValidateModelOverride into
+	// conductorDeps and the delegate-tool context for task and profile overrides.
+	// Nil = no pre-launch validation; see specs/domains/orchestration/delegation.md.
 	validateModelOverride tools.ModelOverrideValidator
 
 	// isNoProject: inside the No Project pseudo-project index-dependent tools are
