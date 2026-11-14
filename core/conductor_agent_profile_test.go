@@ -310,11 +310,11 @@ func TestBuildSubAgentTask_AgentNameInTaskDesc(t *testing.T) {
 	}
 }
 
-// --- Per-agent model override ---
+// --- Legacy SDK model-only caller ---
 
-// TestModelOverrideCaller_AgentProfileModel verifies the integration point: a
-// profile with a model override wraps the caller so every Call forces that
-// model. This mirrors the sp4rk unit test but at the conductor build level.
+// TestModelOverrideCaller_AgentProfileModel covers the SDK's model-only wrapper,
+// not current profile routing. Composite provider/model integration is covered
+// in conductor_model_override_test.go (specs/domains/orchestration/delegation.md).
 func TestModelOverrideCaller_AgentProfileModel(t *testing.T) {
 	inner := &mockLLMCaller{}
 	const override = "claude-haiku-4"
@@ -337,8 +337,8 @@ func TestModelOverrideCaller_AgentProfileModel(t *testing.T) {
 	}
 }
 
-// TestModelOverrideCaller_EmptyModelIsNoOp verifies the no-op contract when the
-// profile has no model override.
+// TestModelOverrideCaller_EmptyModelIsNoOp covers the legacy SDK wrapper's
+// empty-model behavior, not delegation's task/profile/session resolution.
 func TestModelOverrideCaller_EmptyModelIsNoOp(t *testing.T) {
 	inner := &mockLLMCaller{}
 	got := agent.NewModelOverrideCaller(inner, "")
