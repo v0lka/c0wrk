@@ -2,8 +2,8 @@
 
 import { getApp } from './runtime'
 import { logger } from '@/lib/logger'
-import { isArrayOf, isGPUDevice, isVectorStoreEntry } from '@/types/guards'
-import type { SearchRequest, VectorStoreEntry, VectorIndexStatus, GPUDeviceResponse } from '@/types/models'
+import { isArrayOf, isGPUDevice, isVectorIndexDiagnosticsDump, isVectorStoreEntry } from '@/types/guards'
+import type { SearchRequest, VectorStoreEntry, VectorIndexStatus, VectorIndexDiagnosticsDump, GPUDeviceResponse } from '@/types/models'
 
 export async function searchVectorStore(req: SearchRequest): Promise<VectorStoreEntry[]> {
   try {
@@ -43,6 +43,30 @@ export async function reindexVectorIndex(): Promise<void> {
     await app.ReindexVectorIndex()
   } catch (err) {
     logger.error('Failed to reindex vector index:', err)
+    throw err
+  }
+}
+
+/**
+ * Collect one on-demand vector-index diagnostics bundle: the backend pairs
+ * the focus root's live status snapshot (stalled sub-status included) with
+ * the same capped all-goroutine stack dump the pass-stall watchdog logs as
+ * evidence, writes it under ~/.c0wrk/diagnostics/ and returns where it
+ * landed. Nothing is collected automatically — this RPC is the only writer.
+ * Rejects with the routing cause when there is no indexable target
+ * (No Project, embedder still loading, shutdown window).
+ */
+export async function dumpVectorIndexDiagnostics(): Promise<VectorIndexDiagnosticsDump> {
+  try {
+    const app = getApp()
+    const result = await app.DumpVectorIndexDiagnostics()
+    if (!isVectorIndexDiagnosticsDump(result)) {
+      logger.error('dumpVectorIndexDiagnostics: unexpected response shape', result)
+      throw new Error('unexpected diagnostics response shape')
+    }
+    return result
+  } catch (err) {
+    logger.error('Failed to dump vector index diagnostics:', err)
     throw err
   }
 }

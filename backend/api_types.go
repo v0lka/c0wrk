@@ -632,27 +632,38 @@ type ToolInfo struct {
 	Policy string `json:"policy"`
 }
 
-// VectorEmbedderInfo carries the embedder's execution-provider facts from the
-// one-shot background init; written once, never mutated (ADR-045/089/090).
+// VectorEmbedderInfo carries the embedder's execution-provider facts from
+// the one-shot background init (ADR-045/089/090), written once — then
+// mutated only by ApplyVectorProviderDegrade, when the "auto" embedder
+// degrades to the CPU provider at runtime (sp4rk ADR-011).
 type VectorEmbedderInfo struct {
 	// EffectiveProvider is what inference runs on ("cpu" | "cuda" |
 	// "openvino") — "auto" is resolved at creation, never leaks here.
+	// Updated when the embedder slides to the CPU at runtime.
 	EffectiveProvider string
 
 	// RequestedProvider is the config value; it diverges from
-	// EffectiveProvider for every "auto" request (always resolved) and for
-	// an explicit provider degrading to CPU — only that sets FallbackReason.
+	// EffectiveProvider for every "auto" request (always resolved), for an
+	// explicit provider's init-time CPU fallback, and after a runtime
+	// hardware→CPU slide (sp4rk ADR-011) — those last two are what set
+	// FallbackReason.
 	RequestedProvider string
 
-	// FallbackReason is the init-failure text of an explicit
-	// cuda/openvino→cpu degradation; the auto degradation is WARN-logged.
+	// FallbackReason is the cause of the requested→effective divergence:
+	// the init-failure text of an explicit cuda/openvino→cpu degradation,
+	// or the last inference-failure text after a runtime slide (the
+	// "auto" degradation itself stays WARN-logged at the sp4rk layer).
 	FallbackReason string
 
-	// CUDAVerified is the nvidia-smi verdict; nil when the probe did not run.
+	// CUDAVerified is the nvidia-smi verdict; nil when the probe did not
+	// run or after a runtime slide (the verdict described the CUDA path
+	// that is no longer serving inference — a stale "true" beside
+	// EffectiveProvider "cpu" would lie).
 	CUDAVerified *bool
 
-	// OVDevice is the xpu-smi verdict ("gpu" | "cpu"); empty when unverified
-	// — a missing verdict is never "cpu".
+	// OVDevice is the xpu-smi verdict ("gpu" | "cpu"); empty when
+	// unverified or after a runtime slide — a missing verdict is never
+	// "cpu".
 	OVDevice string
 
 	// DeviceID is the ONNX device index; 0 is a valid "first GPU" default,
@@ -709,11 +720,31 @@ type VectorIndexStatus struct {
 	// ErrorKind classifies LastError so the UI can pick the remedy without
 	// parsing the message: the manager's init taxonomy ("repairable" — a
 	// rebuild heals it; "transient" — retry later; "fatal"; "unknown"), the
-	// registry's routing states ("no_target" / "shutting_down"), and the
-	// non-failure windows that must never look broken ("loading" — the
-	// embedder init has not settled; "restarting" — the root's manager is
-	// being replaced). Omitted when there is nothing to explain.
+	// incremental-failure circuit breaker ("suspended" — automatic
+	// file-change indexing stopped after repeated embedder/runtime
+	// failures; a successful pass, Reindex, or the master switch resumes
+	// it), the registry's routing states ("no_target" / "shutting_down"),
+	// and the non-failure windows that must never look broken ("loading" —
+	// the embedder init has not settled; "restarting" — the root's manager
+	// is being replaced). Omitted when there is nothing to explain.
 	ErrorKind string `json:"error_kind,omitempty"`
+
+	// Stalled is the pass-liveness sub-status: the focused root's indexing
+	// pass has made NO progress for the fixed 5-minute stall threshold
+	// (core passStallTimeout). It is diagnostic evidence, never a state —
+	// State keeps reporting what the pass reports (indexing/reindexing/…),
+	// the UI renders it as a loading-class overlay (never unavailable),
+	// and it disappears with the pass's next progress point or its end.
+	Stalled bool `json:"stalled,omitempty"`
+
+	// StallStage names the bounded pipeline stage (TelemetryStage) where
+	// progress stopped ("read_hash_chunk", "embedding", …). Empty when not
+	// stalled or before the pass's first progress point.
+	StallStage string `json:"stalled_stage,omitempty"`
+
+	// StallSeconds is how long the pass has been without progress, in
+	// whole seconds (live on every read/event). 0 when not stalled.
+	StallSeconds int `json:"stalled_seconds,omitempty"`
 
 	DeviceID int `json:"device_id,omitempty"`
 }

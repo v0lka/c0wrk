@@ -1,8 +1,10 @@
 // Readiness gating for useVectorSearch: Enter in the inputs would bypass the
 // (disabled) search button, so handleKeyDown must be a no-op while the vector
-// index is not ready — no searchVectorStore call may block on index
-// readiness. Also locks in the existing auto-search effect gating. Uses the
-// real stores; only the RPC boundary (@/api/vector) is mocked.
+// index is not usable — no searchVectorStore call may block on index
+// readiness. The usable predicate is ready PLUS the ADR-124 suspension (a
+// live collection keeps serving queries), so Enter and the auto-search effect
+// stay open while suspended and stay gated for every other non-ready state.
+// Uses the real stores; only the RPC boundary (@/api/vector) is mocked.
 
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -80,19 +82,39 @@ describe('useVectorSearch.handleKeyDown readiness gating', () => {
     expect(searchSpy).not.toHaveBeenCalled()
   })
 
-  it('Enter performs no search in any non-ready state', async () => {
-    const nonReady = ['idle', 'reindexing', 'unavailable'] as const
-    for (const state of nonReady) {
+  it('Enter performs no search in any non-ready state except the ADR-124 suspension', async () => {
+    const nonReady = ['idle', 'reindexing', ['unavailable', 'fatal']] as const
+    for (const entry of nonReady) {
+      const [state, kind] = Array.isArray(entry) ? entry : [entry, undefined]
       searchSpy.mockClear()
       act(() => {
-        useVectorIndexStore.setState({ status: statusWith(state), query: 'handler' })
+        useVectorIndexStore.setState({ status: { ...statusWith(state), error_kind: kind }, query: 'handler' })
       })
       renderHarness()
       await act(async () => {
         pressKey('Enter')
       })
-      expect(searchSpy, state).not.toHaveBeenCalled()
+      expect(searchSpy, kind ?? state).not.toHaveBeenCalled()
     }
+
+    // The suspension keeps the search path open: the breaker stops the
+    // UPDATE pipeline only and a live collection keeps serving queries, so
+    // an enabled input whose Enter did nothing would be a silent dead end.
+    searchSpy.mockClear()
+    act(() => {
+      useVectorIndexStore.setState({
+        status: { ...statusWith('unavailable'), error_kind: 'suspended' },
+        query: 'handler',
+      })
+    })
+    renderHarness()
+    await act(async () => {
+      pressKey('Enter')
+    })
+    expect(searchSpy).toHaveBeenCalledTimes(1)
+    expect(searchSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ query: 'handler', mode: 'hybrid' }),
+    )
   })
 
   it('Enter triggers a search with the current filters when the index is ready', async () => {
@@ -177,5 +199,38 @@ describe('useVectorSearch auto-search effect gating (unchanged)', () => {
       must_match: [],
       mode: 'hybrid',
     })
+  })
+
+  it('auto-searches while the ADR-124 suspension holds (a live collection keeps serving queries)', async () => {
+    act(() => {
+      useProjectStore.setState({ activeProjectId: 'proj-1' })
+      useVectorIndexStore.setState({
+        status: { ...statusWith('unavailable'), error_kind: 'suspended' },
+        query: 'handler',
+      })
+    })
+    await act(async () => {
+      root.render(<Harness />)
+    })
+    expect(searchSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not auto-search unless the (unavailable, suspended) pair opens the gate', async () => {
+    // The gate opens on the (unavailable, suspended) PAIR; a suspended kind
+    // in another state, or an unavailable with another kind, stays gated.
+    for (const st of [
+      { ...statusWith('idle'), error_kind: 'suspended' as const },
+      { ...statusWith('unavailable'), error_kind: 'repairable' as const },
+    ]) {
+      searchSpy.mockClear()
+      act(() => {
+        useProjectStore.setState({ activeProjectId: 'proj-1' })
+        useVectorIndexStore.setState({ status: st, query: 'handler' })
+      })
+      await act(async () => {
+        root.render(<Harness />)
+      })
+      expect(searchSpy).not.toHaveBeenCalled()
+    }
   })
 })

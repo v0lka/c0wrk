@@ -210,6 +210,10 @@ export function DownloadUpdate() {
   return window['go']['desktop']['App']['DownloadUpdate']();
 }
 
+export function DumpVectorIndexDiagnostics() {
+  return window['go']['desktop']['App']['DumpVectorIndexDiagnostics']();
+}
+
 export function EmitSessionEvent(arg1) {
   return window['go']['desktop']['App']['EmitSessionEvent'](arg1);
 }

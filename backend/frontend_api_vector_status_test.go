@@ -238,6 +238,77 @@ func TestRootCallbacks_OnFailureEmitsTheCause(t *testing.T) {
 	}
 }
 
+// TestRootCallbacks_OnProgressCarriesTheSuspensionPair pins the stream
+// counterpart of ADR-122's pair-persistence rule: every progress push emitted
+// while the manager's suspended verdict stands carries the pair — including a
+// terminal READY report (a failing branch-switch pass over a live collection),
+// which without the rule would wipe the verdict from the UI's event stream and
+// repaint the silent suspension as a bare, healthy ready. Non-unavailable
+// pushes of any other kind stay clean, exactly as before.
+func TestRootCallbacks_OnProgressCarriesTheSuspensionPair(t *testing.T) {
+	api := newVectorStatusAPI(t)
+	root := canonicalRoot(t.TempDir())
+	vr := api.vectorRootsRegistry()
+	t.Cleanup(vr.ShutdownAll)
+	vr.focus = root
+
+	var emitted []VectorIndexStatus
+	api.emitEvent = func(name string, data ...any) {
+		if name != EventVectorIndexStatus || len(data) != 1 {
+			return
+		}
+		if st, ok := data[0].(VectorIndexStatus); ok {
+			emitted = append(emitted, st)
+		}
+	}
+
+	// The carry rule itself, as data: unavailable always carries (any kind,
+	// even a freshly-created manager's empty one), and the suspended kind
+	// carries in EVERY state — a non-suspended kind on a non-unavailable
+	// state does not.
+	for _, tc := range []struct {
+		state vectorindex.IndexState
+		kind  string
+		want  bool
+	}{
+		{vectorindex.IndexStateUnavailable, "", true},
+		{vectorindex.IndexStateUnavailable, string(vectorindex.IndexErrorKindFatal), true},
+		{vectorindex.IndexStateReady, "", false},
+		{vectorindex.IndexStateReady, string(vectorindex.IndexErrorKindRepairable), false},
+		{vectorindex.IndexStateReady, string(vectorindex.IndexErrorKindSuspended), true},
+		{vectorindex.IndexStateIndexing, string(vectorindex.IndexErrorKindSuspended), true},
+		{vectorindex.IndexStateReindexing, string(vectorindex.IndexErrorKindSuspended), true},
+	} {
+		if got := carryStatusReason(tc.state, tc.kind); got != tc.want {
+			t.Errorf("carryStatusReason(state=%q, kind=%q) = %v, want %v", tc.state, tc.kind, got, tc.want)
+		}
+	}
+
+	cbs := vr.rootCallbacks(root, &vectorindex.Manager{})
+
+	// A ready report with no suspension recorded: clean payload, no pair.
+	cbs.OnProgress(vectorindex.PhaseBoth, vectorindex.IndexStateReady, 3, 9, "a.go")
+	if len(emitted) != 1 {
+		t.Fatalf("emitted %d statuses after the ready push, want 1", len(emitted))
+	}
+	if emitted[0].LastError != "" || emitted[0].ErrorKind != "" {
+		t.Errorf("a clean ready push carried a pair: reason=%q kind=%q", emitted[0].LastError, emitted[0].ErrorKind)
+	}
+	if emitted[0].State != string(vectorindex.IndexStateReady) || emitted[0].FilesIndexed != 3 || emitted[0].TotalFiles != 9 {
+		t.Errorf("ready push payload = %+v, want the pass's own progress values", emitted[0])
+	}
+
+	// An unavailable report always carries the pair slot (a fresh manager has
+	// an empty one — the values come from the manager either way).
+	cbs.OnProgress(vectorindex.PhaseBoth, vectorindex.IndexStateUnavailable, 0, 0, "")
+	if len(emitted) != 2 {
+		t.Fatalf("emitted %d statuses after the unavailable push, want 2", len(emitted))
+	}
+	if emitted[1].State != string(vectorindex.IndexStateUnavailable) {
+		t.Errorf("unavailable push state = %q", emitted[1].State)
+	}
+}
+
 // TestVectorIndexStatus_OmitEmptyKeepsExistingConsumersHappy pins the wire
 // shape: a healthy status serializes without the new fields at all, so a
 // consumer (or guard) that only knows the pre-existing keys sees exactly the

@@ -31,6 +31,7 @@ import type {
     CommandDescriptor,
     ToolInfo,
     GPUDeviceResponse,
+    VectorIndexDiagnosticsDump,
     VectorStoreEntry,
 } from './models'
 
@@ -190,6 +191,13 @@ export function isToolInfo(v: unknown): v is ToolInfo {
 export function isGPUDevice(v: unknown): v is GPUDeviceResponse {
     return isObj(v) && typeof v.index === 'number' && typeof v.name === 'string'
         && (v.provider === undefined || typeof v.provider === 'string')
+}
+
+/** Shape guard for the DumpVectorIndexDiagnostics result: the UI surfaces the
+ *  path (string methods) and must not treat a malformed response as one. */
+export function isVectorIndexDiagnosticsDump(v: unknown): v is VectorIndexDiagnosticsDump {
+    return isObj(v) && typeof v.path === 'string' && typeof v.bytes === 'number'
+        && typeof v.truncated === 'boolean'
 }
 
 /** Element guard for SearchVectorStore results: the results list calls string

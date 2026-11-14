@@ -16,7 +16,9 @@ import { useVectorIndexStore } from '@/stores/vectorIndexStore'
  * open or attach failure) runs the action WITHOUT a spinning pass — nothing
  * is running, and a plain reconcile cannot repair it — and the action is the
  * user's repair path exactly for the failure kinds a repair addresses
- * (`error_kind` `repairable` / `transient` / `unknown`): with no live
+ * (`error_kind` `repairable` / `transient` / `suspended` / `unknown`; for
+ * `suspended` the manager-level Reindex is the ADR-124 breaker's own reset
+ * path): with no live
  * collection the backend re-attaches the snapshot view, which rejects an
  * unopenable corpus as unpublished and rebuilds it from source
  * (cache-spared), so the busy tooltip reads "Repairing index…" rather than an
@@ -59,19 +61,27 @@ export function useVectorReindex() {
   // the failure KIND (`error_kind` on the same status): the repair escalation
   // addresses exactly the manager-level kinds — `repairable` (a proven store
   // defect; the rebuild heals it), `transient` (an OS fault; the re-attach
-  // retries the open once the fault clears) and the defensive `unknown` /
-  // missing kind (a classification gap must not dead-end the user). The
-  // registry-level kinds deterministically REJECT the RPC before any repair
-  // runs — `fatal` (the embedder never came up; the remedy is the model
-  // install in Settings, not a rebuild), `no_target` (no focus root to
-  // reindex), `shutting_down` — so for those the action renders disabled with
-  // a reason-specific title instead of a click that can only fail.
+  // retries the open once the fault clears), `suspended` (the ADR-124
+  // incremental-failure circuit breaker; the manager-level Reindex is the
+  // breaker's own reset path — it re-opens file-change arming and relaunches
+  // the pass, which fails honestly again if the embedder is still dead) and
+  // the defensive `unknown` / missing kind (a classification gap must not
+  // dead-end the user). The registry-level kinds deterministically REJECT the
+  // RPC before any repair runs — `fatal` (the embedder never came up; the
+  // remedy is the model install in Settings, not a rebuild), `no_target` (no
+  // focus root to reindex), `shutting_down` — so for those the action renders
+  // disabled with a reason-specific title instead of a click that can only
+  // fail.
   const isIndexUnavailable = indexState === 'unavailable'
   const errorKind = useVectorIndexStore((s) => s.status.error_kind)
   // Absent kind (`omitempty` on the wire, or a hand-crafted status) is the
   // defensive branch: enable rather than dead-end the user on a gap.
   const repairKindSupported =
-    !errorKind || errorKind === 'repairable' || errorKind === 'transient' || errorKind === 'unknown'
+    !errorKind ||
+    errorKind === 'repairable' ||
+    errorKind === 'transient' ||
+    errorKind === 'suspended' ||
+    errorKind === 'unknown'
   const repairUnsupported = isIndexUnavailable && !repairKindSupported
   // `disabled` (ADR-103) is terminal the same way: the master switch is off,
   // the registry is parked (every reindex RPC fails fast), and only Settings
@@ -113,9 +123,12 @@ export function useVectorReindex() {
       ? 'Repairing index…'
       : (isOpening || isAttaching) && !reindexRequested ? preWorkTitle : 'Reindexing...'
   // The reason-specific title for an `unavailable` whose kind the repair
-  // cannot address — the same honesty rule as every other disabled state: the
-  // title names why a click would not help, and the inline `last_error` line
-  // in the panel names the actual cause/remedy.
+  // cannot address (`fatal` / `no_target` / `shutting_down`; of the manager
+  // taxonomy only `fatal` is excluded — nothing a rebuild can retry — every
+  // retryable manager kind, including `suspended`, is supported above) — the
+  // same honesty rule as every other disabled state: the title names why a
+  // click would not help, and the inline `last_error` line in the panel
+  // names the actual cause/remedy.
   const repairUnsupportedTitle =
     errorKind === 'no_target'
       ? 'No focused workspace to reindex'
@@ -128,11 +141,21 @@ export function useVectorReindex() {
       ? 'Indexing is off — enable it in Settings → Search'
       : reindexBusyTitle
   // The action label for an ENABLED button: an unavailable index is rebuilt
-  // (the broken store is discarded and the corpus recreated from source), which
-  // is a different promise from the ordinary force-reindex.
-  const reindexActionTitle = isIndexUnavailable
-    ? 'Rebuild index — recreate the broken index from source'
-    : 'Force full project reindex'
+  // (the broken store is discarded and the corpus recreated from source),
+  // which is a different promise from the ordinary force-reindex — except
+  // the ADR-124 suspension, where the collection is live and the same
+  // manager-level Reindex runs a validation-based reconcile that RESUMES
+  // indexing (the breaker's own reset path), so the title must not promise
+  // a rebuild it does not perform. The Resume label keys on the suspended
+  // KIND alone, not on the unavailable state: the verdict can ride a READY
+  // status (the pair-persistence rule — a failing branch-switch pass's
+  // terminal ready report), and the action is the same reset either way.
+  const reindexActionTitle =
+    errorKind === 'suspended'
+      ? 'Resume indexing — rerun the pass and re-arm file changes'
+      : isIndexUnavailable
+        ? 'Rebuild index — recreate the broken index from source'
+        : 'Force full project reindex'
 
   useEffect(() => {
     // The backend emits a busy status (loading/indexing/reindexing, and since
@@ -180,7 +203,10 @@ export function useVectorReindex() {
         // retry is possible, and surface the refusal through the app-wide
         // runtime_error toast: a click that only logs to the console reads
         // as a broken repair action. The backend error carries the routing
-        // cause (embedder, shutdown, no target), which names the real remedy.
+        // cause (embedder, shutdown, no target), which names the real
+        // remedy. The wording is neutral because the click may have been
+        // either repair title — the rebuild or the ADR-124 resume — and the
+        // toast must not contradict the action the user actually took.
         setReindexRequested(false)
         const message = err instanceof Error ? err.message : String(err)
         // generateUUID, never the raw crypto.randomUUID: this UI is also
@@ -189,7 +215,7 @@ export function useVectorReindex() {
         // would throw INSIDE the catch — no toast, an unhandled rejection.
         emit('runtime_error', {
           id: generateUUID(),
-          message: `Rebuild index failed: ${message}`,
+          message: `Index repair failed: ${message}`,
         })
       })
   }, [isBusy, isIndexDisabled, repairUnsupported, reindexRequested])

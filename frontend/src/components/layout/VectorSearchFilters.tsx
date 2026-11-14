@@ -5,6 +5,7 @@ import { SegmentedControl } from '@/components/ui/segmented-control'
 import { DatabaseZap, Loader2, Search, X } from 'lucide-react'
 import { useVectorIndexStore } from '@/stores/vectorIndexStore'
 import { useVectorReindex } from '@/hooks/useVectorReindex'
+import { vectorSearchUsable } from '@/lib/vectorStatusGate'
 import type { SearchMode } from '@/types/models'
 
 const MODES: SearchMode[] = ['hybrid', 'vector', 'lexical']
@@ -44,16 +45,28 @@ export function VectorSearchFilters({ isSearchMode, onSearch, onClear, onKeyDown
 
   // While the index is not ready, searches would block on index readiness —
   // the query/file-pattern inputs are disabled at the widget level (the
-  // search button below is gated the same way).
-  const searchDisabled = status.state !== 'ready'
+  // search button below is gated the same way). The shared
+  // vectorSearchUsable predicate owns the gate so the widget level and the
+  // execution level (useVectorSearch's Enter/auto-search paths) can never
+  // drift apart; see it for the ADR-124 suspension exception — the breaker
+  // stops the UPDATE pipeline only, and a live collection keeps serving
+  // queries, so blocking the widgets would disable search the backend still
+  // answers. The suspension reason renders inline below, and the row's
+  // reindex action is the remedy.
+  const searchDisabled = !vectorSearchUsable(status)
 
-  // The inline cause for an unavailable index: the backend guarantees a
-  // non-empty `last_error` for that state (the "unavailable always explains
-  // itself" invariant), so this is the honest sentence next to the filters —
+  // The inline cause for a status whose failure pair stands: an unavailable
+  // index always carries one (the "unavailable always explains itself"
+  // invariant), and the ADR-124 suspension keeps its verdict on a READY
+  // status too (a failing branch-switch pass's terminal ready report — the
+  // pair-persistence rule), so the honest sentence renders there as well —
   // no modal, no toast, and no dead end where the user has to read logs to
-  // learn why search is gone. The reindex action on the mode row is the
-  // remedy it points at.
-  const unavailableReason = status.state === 'unavailable' ? (status.last_error?.trim() ?? '') : ''
+  // learn why file-change indexing stopped. The reindex action on the mode
+  // row is the remedy it points at.
+  const inlineReason =
+    status.state === 'unavailable' || status.error_kind === 'suspended'
+      ? (status.last_error?.trim() ?? '')
+      : ''
 
   return (
     <div className="flex flex-col gap-1.5">
@@ -137,12 +150,12 @@ export function VectorSearchFilters({ isSearchMode, onSearch, onClear, onKeyDown
         )}
       </div>
 
-      {/* Unavailable cause — inline text next to the filters. The status-bar
+      {/* Failure cause — inline text next to the filters. The status-bar
           pill tooltip carries the same sentence; this is the panel-local copy
           so the reason is visible without hovering, right above the results
-          area the broken index cannot fill. */}
-      {unavailableReason !== '' && (
-        <p className="text-xs text-warning">{unavailableReason}</p>
+          area the suspended update pipeline cannot keep fresh. */}
+      {inlineReason !== '' && (
+        <p className="text-xs text-warning">{inlineReason}</p>
       )}
 
       {/* MustMatch chips */}

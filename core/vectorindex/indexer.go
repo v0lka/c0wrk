@@ -158,17 +158,31 @@ type IndexerConfig struct {
 	// keeping embedding single-threaded under the service write lock.
 	// ChunkFn and HashFn must be safe for concurrent use.
 	PrepWorkers int
-	OnProgress  ProgressCallback
-	Logger      *slog.Logger
+
+	// OnStallChange receives every pass-stall watchdog transition (opened by
+	// the 5-minute stall threshold, closed by the next progress point) so a
+	// status surface can carry the pass-liveness sub-status. Nil = no
+	// consumer; the watchdog still logs its evidence Warn.
+	OnStallChange func(StallSnapshot)
+	OnProgress    ProgressCallback
+	Logger        *slog.Logger
 	// Telemetry optionally collects bounded, content-free stage aggregates.
 	Telemetry *Telemetry
 }
 
 // Indexer orchestrates initial and incremental indexing of project files.
 type Indexer struct {
-	service          *Service
-	chunkFn          ChunkFunc
-	hashFn           HashFunc
+	service *Service
+	chunkFn ChunkFunc
+	hashFn  HashFunc
+	// readFileFn and binaryHeaderFn are the read-stage seams the per-file
+	// read watchdog wraps (see readwatchdog.go): production wires
+	// safeio.ReadFile and isBinaryHeader, and tests substitute a
+	// blocking reader to drive the watchdog in virtual time. Both run
+	// under fileReadWatchdogTimeout; a stage timeout skips the file and
+	// spends one pass read-skip budget allowance.
+	readFileFn       func(string) ([]byte, error)
+	binaryHeaderFn   func(string) (bool, error)
 	maxChunkSize     int
 	maxFileSize      int64
 	maxChunksPerFile int
@@ -176,8 +190,15 @@ type Indexer struct {
 	contentFilter    ContentFilterConfig
 	prepWorkers      int
 	onProgress       ProgressCallback
-	logger           *slog.Logger
-	telemetry        *Telemetry
+	// onStallChange is the IndexerConfig.OnStallChange consumer, handed to
+	// every pass watchdog this indexer starts (see startPassWatchdog).
+	onStallChange func(StallSnapshot)
+	logger        *slog.Logger
+	telemetry     *Telemetry
+	// stallAfterFunc is an instance-local timer factory for the per-pass
+	// stall watchdog; nil uses time.AfterFunc (virtualized under
+	// testing/synctest). Tests set it before running a pass.
+	stallAfterFunc func(time.Duration, func()) *time.Timer
 	// ignoreOptions is the resolved ignore policy (honoured ignore files +
 	// extra exclude patterns) the checker is built from; includeSubmodules
 	// gates nested-repository directories in the walks and the watcher's
@@ -226,6 +247,8 @@ func NewIndexer(cfg IndexerConfig) *Indexer {
 	if hashFn == nil {
 		hashFn = computeHash
 	}
+	readFileFn := safeio.ReadFile
+	binaryHeaderFn := isBinaryHeader
 	onProgress := cfg.OnProgress
 	if onProgress == nil {
 		onProgress = func(IndexPhase, IndexState, int, int, string) {}
@@ -234,6 +257,8 @@ func NewIndexer(cfg IndexerConfig) *Indexer {
 		service:          cfg.Service,
 		chunkFn:          cfg.ChunkFn,
 		hashFn:           hashFn,
+		readFileFn:       readFileFn,
+		binaryHeaderFn:   binaryHeaderFn,
 		maxChunkSize:     maxChunkSize,
 		maxFileSize:      maxFileSize,
 		maxChunksPerFile: maxChunksPerFile,
@@ -241,6 +266,7 @@ func NewIndexer(cfg IndexerConfig) *Indexer {
 		contentFilter:    contentFilter,
 		prepWorkers:      prepWorkers,
 		onProgress:       onProgress,
+		onStallChange:    cfg.OnStallChange,
 		logger:           logger,
 		telemetry:        cfg.Telemetry,
 		ignoreOptions: ignore.Options{
@@ -262,19 +288,27 @@ func (idx *Indexer) IndexFull(ctx context.Context, workspacePath string) (err er
 	// identical root through Manager.initProject, so this is an anchor of
 	// record for standalone-service callers, not a switch.
 	idx.service.SetWorkspaceRoot(workspacePath)
+	// Readiness gate (ADR-123): the pass owns the readiness cycle unless it
+	// entered with the service ALREADY ready over a queryable collection —
+	// the watcher-driven mid-session pass — which keeps readiness UP, so
+	// searches keep answering from the committed-so-far state between the
+	// pass's write windows. A pass entered NOT-ready (fresh project,
+	// post-switch reconciliation, corpus build) keeps the historical cycle:
 	// MarkNotReady atomically captures a readiness generation; RestoreReady
 	// uses it to restore readiness on EVERY exit, including the cancellation
 	// and batch-add error paths that once returned without SetReady(true),
 	// leaving WaitReady callers blocked forever.
-	readyGen := idx.service.MarkNotReady()
-	defer idx.service.RestoreReady(readyGen)
+	if !idx.service.IsReady() || !idx.service.queryableCollection() {
+		readyGen := idx.service.MarkNotReady()
+		defer idx.service.RestoreReady(readyGen)
+	}
 	// Emit a terminal progress event on any non-nil return so the UI does not
 	// keep showing stale pass progress: "ready" when a queryable collection
 	// remains, "unavailable" when nothing exists to query. On success the
 	// explicit onProgress below handles it. See specs/domains/workspace.md.
 	defer func() {
 		if err != nil {
-			if idx.service.GetCollection() == nil {
+			if !idx.service.HasCollection() {
 				idx.onProgress(PhaseBoth, IndexStateUnavailable, 0, 0, "")
 				return
 			}
@@ -282,13 +316,23 @@ func (idx *Indexer) IndexFull(ctx context.Context, workspacePath string) (err er
 		}
 	}()
 
+	// Pass-level stall watchdog: the walk below is plain filesystem I/O —
+	// the stage most exposed to slow or wedged storage — and every later
+	// stage heartbeats, so a full passStallTimeout of silence means a wedged
+	// pass; the Warn carries the stage, the last file and the goroutine dump
+	// naming the blocking call. The walk itself heartbeats per walked entry
+	// (throttled): slow-but-alive is never a stall, a hung stat still is.
+	wd := idx.startPassWatchdog()
+	defer wd.stop()
+	wd.watchContext(ctx)
+	wd.heartbeat(StageWalkValidation, "")
 	walkStarted := time.Now()
 	// The branch the pass builds into, sampled BEFORE the walk: the corpus
 	// gate reads this pass's traversal gaps from the same store the walk
 	// belongs to, so a displaced builder's report can never describe another
 	// store's publication (see Service.noteWalkGaps).
 	walkBranch := idx.service.CurrentBranchName()
-	walk, err := walkProjectFilesDetailed(workspacePath, idx.resolverFor(workspacePath), idx.maxFileSize, idx.includeSubmodules)
+	walk, err := walkProjectFilesDetailed(workspacePath, idx.resolverFor(workspacePath), idx.maxFileSize, idx.includeSubmodules, newWalkHeartbeater(wd, StageWalkValidation).entry)
 	idx.telemetry.observe(StageWalkValidation, len(walk.Files), time.Since(walkStarted))
 	if err != nil {
 		return fmt.Errorf("walking project files: %w", err)
@@ -301,14 +345,28 @@ func (idx *Indexer) IndexFull(ctx context.Context, workspacePath string) (err er
 		idx.logger.Warn("workspace walk skipped unreadable entries; indexing the reachable files",
 			"skipped", len(walk.Gaps), "path", walk.Gaps[0].Path, "error", walk.Gaps[0].Err)
 	}
+	// Walk completed — the per-entry heartbeats above held the window open
+	// however long the tree took; this stamps the stage transition.
+	wd.heartbeat(StageWalkValidation, "")
 	files := walk.Files
 
 	totalFiles := len(files)
 	idx.onProgress(PhaseBoth, IndexStateIndexing, 0, totalFiles, "")
 	idx.logger.Info("starting full index", "workspace", workspacePath, "files", totalFiles)
 
-	idx.service.AcquireWriteLock()
-	defer idx.service.ReleaseWriteLock()
+	// Staged acquisition (ADR-123): the pass lease restores the pass-vs-pass
+	// exclusion the whole-pass service write hold used to provide, and every
+	// mutating step below commits through a short identity-checked window —
+	// so search, status and Close are never frozen by the pass. The stall
+	// watchdog suspends across the lease acquisition: the wait is unbounded
+	// (one pass at a time, and a predecessor may legitimately run for many
+	// minutes), and a healthy pass queued behind it must not read as
+	// stalled — see passWatchdog.suspend.
+	wd.suspend()
+	pass := idx.beginIndexPass()
+	wd.resume()
+	defer pass.release()
+	pass.wd = wd
 
 	indexed, idxErr := idx.indexPrepared(ctx, files, indexPipelineOpts{
 		state:        IndexStateIndexing,
@@ -316,7 +374,7 @@ func (idx *Indexer) IndexFull(ctx context.Context, workspacePath string) (err er
 		cancelMsg:    "indexing cancelled",
 		skipLogLabel: "skipping file",
 		root:         workspacePath,
-	})
+	}, pass)
 	if idxErr != nil {
 		return idxErr
 	}
@@ -333,13 +391,20 @@ func (idx *Indexer) IndexIncremental(ctx context.Context, workspacePath string) 
 	// Same root binding as IndexFull: the pass's coordinate anchor (see
 	// IndexFull).
 	idx.service.SetWorkspaceRoot(workspacePath)
-	readyGen := idx.service.MarkNotReady()
-	defer idx.service.RestoreReady(readyGen)
+	// Same conditional readiness gate as IndexFull (ADR-123): a pass entered
+	// NOT-ready (post-switch reconciliation) keeps the historical
+	// MarkNotReady→RestoreReady cycle, while a pass that found the service
+	// already ready over a queryable collection keeps readiness up so
+	// searches answer between this pass's windows.
+	if !idx.service.IsReady() || !idx.service.queryableCollection() {
+		readyGen := idx.service.MarkNotReady()
+		defer idx.service.RestoreReady(readyGen)
+	}
 	// Same terminal progress contract as IndexFull: "ready" vs "unavailable"
 	// by collection presence. See specs/domains/workspace.md.
 	defer func() {
 		if err != nil {
-			if idx.service.GetCollection() == nil {
+			if !idx.service.HasCollection() {
 				idx.onProgress(PhaseBoth, IndexStateUnavailable, 0, 0, "")
 				return
 			}
@@ -347,29 +412,28 @@ func (idx *Indexer) IndexIncremental(ctx context.Context, workspacePath string) 
 		}
 	}()
 
-	// Wait for the background file-hash migration (first run after the
-	// sidecar upgrade, or a branch whose collection was built elsewhere) so
-	// ValidateCollection sees the full hash map instead of re-embedding
-	// every file. IndexFull is unaffected: an empty collection has nothing
-	// to migrate. See specs/decisions/049-vector-index-memory-reduction.md.
-	if err := idx.service.WaitFileHashMigration(ctx); err != nil {
-		return fmt.Errorf("waiting for file-hash migration: %w", err)
-	}
-	// Same gate for the content-less migration: its ID-preserving re-commits
-	// must not interleave with this pass's deletions and re-indexing, or a
-	// just-deleted legacy document could be resurrected from the migration's
-	// probe snapshot. Empty collections carry the marker from the start.
-	// See specs/decisions/049-vector-index-memory-reduction.md.
-	if err := idx.service.WaitContentlessMigration(ctx); err != nil {
-		return fmt.Errorf("waiting for content-less migration: %w", err)
+	// Pass-level stall watchdog, same lifecycle as IndexFull: the validation
+	// walk below is the first monitored stage — the migration waits before
+	// it run suspended (see waitSidecarMigrations).
+	wd := idx.startPassWatchdog()
+	defer wd.stop()
+	wd.watchContext(ctx)
+	wd.heartbeat(StageCacheLookup, "")
+
+	if err := idx.waitSidecarMigrations(ctx, wd); err != nil {
+		return err
 	}
 
+	wd.heartbeat(StageWalkValidation, "")
 	validationStarted := time.Now()
-	stale, newFiles, deleted, err := idx.service.ValidateCollection(ctx, workspacePath, idx.resolverFor(workspacePath), idx.includeSubmodules)
+	stale, newFiles, deleted, err := idx.service.ValidateCollection(ctx, workspacePath, idx.resolverFor(workspacePath), idx.includeSubmodules, newWalkHeartbeater(wd, StageWalkValidation).entry)
 	idx.telemetry.observe(StageWalkValidation, len(stale)+len(newFiles)+len(deleted), time.Since(validationStarted))
 	if err != nil {
 		return fmt.Errorf("validating collection: %w", err)
 	}
+	// Validation completed — the sidecar reads answered; adoptions and
+	// deletions follow under their own heartbeats.
+	wd.heartbeat(StageCacheLookup, "")
 
 	// Corpus adoptions (ADR-104 stage 2): files whose current bytes match the
 	// shared corpus were classified corpus-current by ValidateCollection.
@@ -380,12 +444,24 @@ func (idx *Indexer) IndexIncremental(ctx context.Context, workspacePath string) 
 	// reconciliation of a clean attach is exactly this plus the walk. This
 	// runs BEFORE the no-changes early return — a clean attach has zero
 	// overlay changes and its whole value IS the adoption.
+	// Staged acquisition (ADR-123): the pass lease restores the pass-vs-pass
+	// exclusion the whole-pass service write hold used to provide, and the
+	// working-store identity captured here is what every window below
+	// re-validates before committing. The stall watchdog suspends across
+	// the lease acquisition for the same reason as IndexFull: the unbounded
+	// pass-lease queue is not a stall of THIS pass — see
+	// passWatchdog.suspend.
+	wd.suspend()
+	pass := idx.beginIndexPass()
+	wd.resume()
+	defer pass.release()
+	pass.wd = wd
+
 	if adopted := idx.service.TakeCorpusAdoptions(); len(adopted) > 0 {
 		adoptPaths := make([]string, 0, len(adopted))
 		for rel := range adopted {
 			adoptPaths = append(adoptPaths, filepath.Join(workspacePath, filepath.FromSlash(rel)))
 		}
-		idx.service.AcquireWriteLock()
 		// Retire the superseded overlay documents FIRST and persist the
 		// adoption only on success: the sidecar row is what makes the
 		// corpus entry visible, and a landed row whose stale overlay
@@ -394,29 +470,34 @@ func (idx *Indexer) IndexIncremental(ctx context.Context, workspacePath string) 
 		// the file would serve twice forever. Deferring instead is safe —
 		// the classification is content-based, so the next
 		// ValidateCollection re-records and retries the adoption.
-		retired := true
-		if ids, idErr := idx.collectDocumentIDs(ctx, adoptPaths); idErr != nil {
-			idx.logger.Warn("collecting superseded overlay document IDs failed; adoption deferred to the next pass", "error", idErr)
-			retired = false
-		} else if len(ids) > 0 {
-			if delErr := idx.service.DeleteDocumentsByIDs(ctx, ids); delErr != nil {
-				idx.logger.Warn("retiring superseded overlay documents failed; adoption deferred to the next pass", "error", delErr)
+		pass.wd.heartbeat(StageChromemCommit, "")
+		if err := pass.window("persisting corpus adoptions", func() error {
+			retired := true
+			if ids, idErr := idx.collectDocumentIDs(ctx, adoptPaths); idErr != nil {
+				idx.logger.Warn("collecting superseded overlay document IDs failed; adoption deferred to the next pass", "error", idErr)
 				retired = false
+			} else if len(ids) > 0 {
+				if delErr := idx.service.DeleteDocumentsByIDs(ctx, ids); delErr != nil {
+					idx.logger.Warn("retiring superseded overlay documents failed; adoption deferred to the next pass", "error", delErr)
+					retired = false
+				}
 			}
-		}
-		if retired {
-			// The retired paths' §3 occurrence rows follow their documents
-			// out (the same coupling removeFileHashes applies for deleted
-			// files): surviving rows would forever out-count the collection
-			// and wedge the overlay table's completeness-gated flush.
-			idx.service.dropChunkRowsLocked(adoptPaths)
-			if err := idx.service.adoptCorpusFilesLocked(adopted); err != nil {
-				idx.logger.Warn("persisting corpus adoptions into the sidecar failed", "error", err)
-			} else {
-				idx.logger.Info("incremental index: adopted corpus-current files", "count", len(adopted))
+			if retired {
+				// The retired paths' §3 occurrence rows follow their documents
+				// out (the same coupling removeFileHashes applies for deleted
+				// files): surviving rows would forever out-count the collection
+				// and wedge the overlay table's completeness-gated flush.
+				idx.service.dropChunkRowsLocked(adoptPaths)
+				if err := idx.service.adoptCorpusFilesLocked(adopted); err != nil {
+					idx.logger.Warn("persisting corpus adoptions into the sidecar failed", "error", err)
+				} else {
+					idx.logger.Info("incremental index: adopted corpus-current files", "count", len(adopted))
+				}
 			}
+			return nil
+		}); err != nil {
+			return err
 		}
-		idx.service.ReleaseWriteLock()
 	}
 
 	totalChanges := len(stale) + len(newFiles) + len(deleted)
@@ -439,34 +520,37 @@ func (idx *Indexer) IndexIncremental(ctx context.Context, workspacePath string) 
 		idx.logger.Info("deleted files detected", "files", deleted)
 	}
 
-	idx.service.AcquireWriteLock()
-	defer idx.service.ReleaseWriteLock()
-
 	idx.onProgress(PhaseBoth, IndexStateReindexing, 0, totalChanges, "")
 
-	// Delete documents for deleted and stale files.
+	// Delete documents for deleted and stale files — ONE identity-checked
+	// window: enumeration, the chromem+lexical deletion and the sidecar drop
+	// land together, atomic against searches and against a displacement
+	// (ADR-123).
 	filesToDelete := make([]string, 0, len(deleted)+len(stale))
 	filesToDelete = append(filesToDelete, deleted...)
 	filesToDelete = append(filesToDelete, stale...)
 
 	if len(filesToDelete) > 0 {
-		ids, idErr := idx.collectDocumentIDs(ctx, filesToDelete)
-		if idErr != nil {
-			return fmt.Errorf("collecting document IDs for deletion: %w", idErr)
-		}
-		if len(ids) > 0 {
-			if delErr := idx.service.DeleteDocumentsByIDs(ctx, ids); delErr != nil {
-				return fmt.Errorf("deleting stale documents: %w", delErr)
+		pass.wd.heartbeat(StageChromemCommit, "")
+		if err := pass.window("deleting stale documents", func() error {
+			ids, idErr := idx.collectDocumentIDs(ctx, filesToDelete)
+			if idErr != nil {
+				return fmt.Errorf("collecting document IDs for deletion: %w", idErr)
 			}
+			if len(ids) > 0 {
+				if delErr := idx.service.DeleteDocumentsByIDs(ctx, ids); delErr != nil {
+					return fmt.Errorf("deleting stale documents: %w", delErr)
+				}
+			}
+			// Drop truly-deleted files from the file-hash sidecar. Stale files
+			// remain in the sidecar and are refreshed by the upsert during re-index.
+			if len(deleted) > 0 {
+				idx.service.removeFileHashes(deleted)
+			}
+			return nil
+		}); err != nil {
+			return err
 		}
-		// Drop truly-deleted files from the file-hash sidecar. Stale files
-		// remain in the sidecar and are refreshed by the upsert during re-index.
-		if len(deleted) > 0 {
-			idx.service.removeFileHashes(deleted)
-		}
-	}
-
-	if len(filesToDelete) > 0 {
 		idx.onProgress(PhaseBoth, IndexStateReindexing, len(deleted), totalChanges, "")
 	}
 
@@ -487,11 +571,17 @@ func (idx *Indexer) IndexIncremental(ctx context.Context, workspacePath string) 
 		skipLogLabel:  "skipping file during incremental index",
 		batchLogLabel: " (incremental)",
 		root:          workspacePath,
-	}); perr != nil {
+	}, pass); perr != nil {
 		return perr
 	}
 
-	totalInIndex := idx.service.collectionUniqueFileCount()
+	var totalInIndex int
+	if err := pass.window("reading the final file count", func() error {
+		totalInIndex = idx.service.collectionUniqueFileCount()
+		return nil
+	}); err != nil {
+		return err
+	}
 	idx.onProgress(PhaseBoth, IndexStateReady, totalChanges, totalInIndex, "")
 	idx.logger.Info("incremental index complete", "changes", totalChanges, "totalFiles", totalInIndex)
 	return nil
@@ -725,7 +815,16 @@ func sanitizeChunkContent(content []byte) ([]byte, bool) {
 // identity — document ID, sidecar key, lexical ID — while the absolute path
 // stays per-request data (L4, ADR-104). An empty root (standalone services)
 // keeps the historical absolute-path identity.
-func (idx *Indexer) processFile(filePath, root string) ([]chromem.Document, []lexical.Doc, error) {
+//
+// Both read stages (the binary-header pre-read and the full read) run under
+// the per-file read watchdog (fileReadWatchdogTimeout, see readwatchdog.go):
+// a read that outlasts the deadline is abandoned in place and the file is
+// returned as a "read timeout" skip. Each timeout spends one allowance of
+// budget — the pass's read-timeout skip budget, nil for budget-free direct
+// callers — and a spent budget refuses the file with
+// ErrReadSkipBudgetExhausted before any read is attempted, so a sick pass
+// cannot strand wedged reader goroutines without bound.
+func (idx *Indexer) processFile(filePath, root string, budget *readSkipBudget) ([]chromem.Document, []lexical.Doc, error) {
 	// The occurrence coordinate: root-relative when the file sits under the
 	// bound root, the absolute path otherwise (identity must be stable even
 	// for paths a caller feeds from outside the tree).
@@ -759,10 +858,32 @@ func (idx *Indexer) processFile(filePath, root string) ([]chromem.Document, []le
 		return nil, nil, nil
 	}
 
+	// Read watchdog: safeio hardens the OPEN (FIFOs/devices refused via the
+	// O_NONBLOCK open + fstat), but the read(2) of a regular file can still
+	// block indefinitely — a wedged network/FUSE mount hangs the prep
+	// worker, the pass and every shutdown join waiting on it. Both read
+	// stages therefore run bounded; a stage timeout abandons the stuck
+	// reader goroutine in place, spends one skip-budget allowance and skips
+	// the file. A spent budget refuses before the read so no further readers
+	// are attempted.
+	if budget != nil && budget.exhausted() {
+		return nil, nil, fmt.Errorf("reading file %s: %w: skipping before the read", filePath, ErrReadSkipBudgetExhausted)
+	}
+
 	// Bounded header pre-read rejects multi-GB binary assets (.onnx,
 	// .safetensors, .psd) before they are loaded fully into memory; see
-	// isBinaryHeader.
-	binary, bErr := isBinaryHeader(filePath)
+	// isBinaryHeader. The read seams are captured before the go statement:
+	// a timed-out read abandons its goroutine in place, and that goroutine
+	// must not read mutable receiver state — a late-started abandoned
+	// reader would race any seam reassignment (the watchdog tests swap
+	// these seams between calls).
+	binaryHeaderFn := idx.binaryHeaderFn
+	binary, timedOut, bErr := boundedRead(fileReadWatchdogTimeout, func() (bool, error) {
+		return binaryHeaderFn(filePath)
+	})
+	if timedOut {
+		return nil, nil, readTimeoutSkipError(filePath, budget)
+	}
 	if bErr != nil {
 		return nil, nil, fmt.Errorf("reading file %s: %w", filePath, bErr)
 	}
@@ -770,7 +891,13 @@ func (idx *Indexer) processFile(filePath, root string) ([]chromem.Document, []le
 		return nil, nil, nil
 	}
 
-	content, err := safeio.ReadFile(filePath)
+	readFileFn := idx.readFileFn
+	content, timedOut, err := boundedRead(fileReadWatchdogTimeout, func() ([]byte, error) {
+		return readFileFn(filePath)
+	})
+	if timedOut {
+		return nil, nil, readTimeoutSkipError(filePath, budget)
+	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("reading file %s: %w", filePath, err)
 	}
@@ -863,12 +990,16 @@ func (idx *Indexer) processFile(filePath, root string) ([]chromem.Document, []le
 // chromem and lexical document slices keyed by the same shared document IDs.
 // skipped marks a per-file prep failure (warn-and-skip semantics); such units
 // carry no documents, and whether they still count toward pass progress is a
-// per-pass policy (indexPipelineOpts.countSkipped).
+// per-pass policy (indexPipelineOpts.countSkipped). fatalErr marks the
+// pass-refusing failure — the read-timeout skip budget exhausted (see
+// readwatchdog.go): the consumer aborts the pass with it instead of
+// warn-and-skipping, so abandoned reader goroutines stop accumulating.
 type prepUnit struct {
-	path    string
-	skipped bool
-	vecDocs []chromem.Document
-	lexDocs []lexical.Doc
+	path     string
+	skipped  bool
+	fatalErr error
+	vecDocs  []chromem.Document
+	lexDocs  []lexical.Doc
 }
 
 // streamPreparedFiles fans file preparation out across idx.prepWorkers
@@ -878,13 +1009,17 @@ type prepUnit struct {
 // concurrently while the single consumer embeds earlier batches; the
 // unbuffered input channel bounds in-flight preparation to prepWorkers files.
 // root is the workspace root the pass walks (the occurrence-coordinate base
-// every document ID is derived relative to).
+// every document ID is derived relative to). budget is the pass's
+// read-timeout skip budget (see readwatchdog.go) consumed by the workers'
+// read watchdogs; a nil budget tolerates every timeout (direct/test callers).
+// wd is the pass stall watchdog; each worker heartbeats around processFile so
+// a pass wedged in preparation names the most recently started file.
 //
 // The stream closes after every path has been prepared, skipped, or dropped:
 // every send and the feeder select on ctx.Done(), so a consumer that returns
 // early never deadlocks the pool — the feeder stops feeding, workers abandon
 // in-flight sends, all goroutines exit.
-func (idx *Indexer) streamPreparedFiles(ctx context.Context, paths []string, root, skipLogLabel string) <-chan prepUnit {
+func (idx *Indexer) streamPreparedFiles(ctx context.Context, paths []string, root, skipLogLabel string, budget *readSkipBudget, wd *passWatchdog) <-chan prepUnit {
 	in := make(chan string)
 	out := make(chan prepUnit)
 
@@ -899,13 +1034,26 @@ func (idx *Indexer) streamPreparedFiles(ctx context.Context, paths []string, roo
 				if ctx.Err() != nil {
 					continue
 				}
+				// The file counts as in-flight from here: if every worker
+				// ends up wedged inside processFile, the stall Warn names
+				// the most recently started read.
+				wd.heartbeat(StageReadHashChunk, path)
 				prepStarted := time.Now()
-				vecDocs, lexDocs, err := idx.processFile(path, root)
+				vecDocs, lexDocs, err := idx.processFile(path, root, budget)
 				idx.telemetry.observe(StageReadHashChunk, len(vecDocs), time.Since(prepStarted))
+				// Completion is progress and re-arms the stall watchdog.
+				wd.heartbeat(StageReadHashChunk, path)
 				unit := prepUnit{path: path, vecDocs: vecDocs, lexDocs: lexDocs}
 				if err != nil {
-					idx.logger.Warn(skipLogLabel, "path", path, "error", err)
-					unit.skipped = true
+					if errors.Is(err, ErrReadSkipBudgetExhausted) {
+						// The pass refusal travels to the consumer as a
+						// fatal unit — not a warn-and-skip: continuing to
+						// feed paths would strand more wedged readers.
+						unit.fatalErr = err
+					} else {
+						idx.logger.Warn(skipLogLabel, "path", path, "error", err)
+						unit.skipped = true
+					}
 					unit.vecDocs, unit.lexDocs = nil, nil
 				}
 				select {
@@ -934,6 +1082,92 @@ func (idx *Indexer) streamPreparedFiles(ctx context.Context, paths []string, roo
 	}()
 
 	return out
+}
+
+// indexPass is one full/incremental pass's staged-acquisition guard (ADR-123):
+// the pass lease — the pass-vs-pass exclusion the whole-pass service write
+// hold used to provide — plus the working-store identity every write window
+// re-validates before touching shared state. The pass holds NO service lock
+// between windows: search, status and Close run freely there.
+type indexPass struct {
+	svc   *Service
+	ident workingStoreIdentity
+	// wd is the pass-level stall watchdog attached by the driving pass
+	// function. Nil for Service-side leases — every watchdog method
+	// tolerates nil.
+	wd *passWatchdog
+}
+
+// beginIndexPass takes the pass lease and captures the working-store identity
+// under a short write window. The caller releases via indexPass.release when
+// the pass ends — success, failure or displacement.
+func (idx *Indexer) beginIndexPass() *indexPass {
+	return idx.service.beginPassLease()
+}
+
+// startPassWatchdog arms a fresh per-pass stall watchdog on the Indexer's
+// logger, attaching the IndexerConfig.OnStallChange consumer when one is
+// wired (the Manager records the transitions into its status; without a
+// consumer the watchdog still logs its evidence Warn). The calling pass
+// function owns the lifecycle: start here, watchContext(ctx) for the
+// cancellation release, heartbeat on every progress point, stop via defer
+// (and again, idempotently, via indexPass.release).
+func (idx *Indexer) startPassWatchdog() *passWatchdog {
+	wd := newPassWatchdog(idx.logger, idx.stallAfterFunc)
+	wd.setOnStallChange(idx.onStallChange)
+	wd.start()
+	return wd
+}
+
+// waitSidecarMigrations waits for both one-time sidecar migrations with the
+// stall watchdog suspended (see passWatchdog.suspend): the waits block on
+// background backfill work this pass does not own, so however long they
+// last is not silence of THIS pass — the same exclusion the pass-lease
+// queue gets, unlike the walk/validation stages, which heartbeat per entry.
+//
+// The file-hash migration must settle first (first run after the sidecar
+// upgrade, or a branch whose collection was built elsewhere) so
+// ValidateCollection sees the full hash map instead of re-embedding every
+// file; the content-less migration's ID-preserving re-commits must not
+// interleave with this pass's deletions and re-indexing, or a just-deleted
+// legacy document could be resurrected from the migration's probe snapshot.
+// IndexFull is unaffected: an empty collection has nothing to migrate. See
+// specs/decisions/049-vector-index-memory-reduction.md.
+func (idx *Indexer) waitSidecarMigrations(ctx context.Context, wd *passWatchdog) error {
+	wd.suspend()
+	defer wd.resume()
+	if err := idx.service.WaitFileHashMigration(ctx); err != nil {
+		return fmt.Errorf("waiting for file-hash migration: %w", err)
+	}
+	if err := idx.service.WaitContentlessMigration(ctx); err != nil {
+		return fmt.Errorf("waiting for content-less migration: %w", err)
+	}
+	return nil
+}
+
+// release releases the pass lease and the pass stall watchdog.
+func (p *indexPass) release() {
+	p.wd.stop()
+	p.svc.passLease.Unlock()
+}
+
+// window runs fn inside one short identity-checked service write window — the
+// per-batch discipline RebuildLexical's flush windows established. Under the
+// lock the pass re-validates its working-store identity, so a concurrent
+// branch switch, project switch, No Project reset or Close that displaced the
+// store between windows aborts the pass with ErrWorkingStoreDisplaced instead
+// of committing into a store it no longer owns. Within a held window no
+// displacement can occur — every displacer takes the same write lock — so fn
+// sees a stable working store and the same publication ordering the
+// whole-pass hold provided: §3 chunk records before the chromem commit, the
+// commit before the file's sidecar row, deletions before re-indexing.
+func (p *indexPass) window(what string, fn func() error) error {
+	p.svc.AcquireWriteLock()
+	defer p.svc.ReleaseWriteLock()
+	if p.svc.workingStoreDisplacedLocked(p.ident) {
+		return fmt.Errorf("%s: %w (a concurrent switch, reset or close displaced the working store; the next pass reconciles)", what, ErrWorkingStoreDisplaced)
+	}
+	return fn()
 }
 
 // indexPipelineOpts captures the per-pass differences between the full and
@@ -994,16 +1228,24 @@ type pendingFile struct {
 // pendingInference stays below one configured inference batch between Add
 // calls, pendingCommit below one bounded commit window between drains.
 type documentAccumulator struct {
-	service          *Service
-	telemetry        *Telemetry
+	service   *Service
+	telemetry *Telemetry
+	// pass + cache (ADR-123): inference runs OUTSIDE the service write
+	// windows through the cache captured with the pass's working-store
+	// identity (internally synchronized, never torn down by state teardown);
+	// commits and sidecar publishes take identity-checked windows.
+	pass             *indexPass
+	cache            *embeddingCache
 	pendingInference []pendingDocument
 	pendingCommit    []pendingDocument
 }
 
-func newDocumentAccumulator(service *Service, telemetry *Telemetry) *documentAccumulator {
+func newDocumentAccumulator(service *Service, telemetry *Telemetry, pass *indexPass) *documentAccumulator {
 	return &documentAccumulator{
 		service:          service,
 		telemetry:        telemetry,
+		pass:             pass,
+		cache:            pass.ident.cache,
 		pendingInference: make([]pendingDocument, 0, service.embeddingBatchSize),
 		pendingCommit:    make([]pendingDocument, 0, embeddingCommitWindowSize),
 	}
@@ -1054,8 +1296,13 @@ func (a *documentAccumulator) embedPending(ctx context.Context) error {
 		docs[i] = a.pendingInference[i].vec
 	}
 	a.telemetry.observeBatch(len(docs), a.service.embeddingBatchSize)
+	a.pass.wd.heartbeat(StageEmbedding, "")
 	embedStarted := time.Now()
-	kept, dropped, err := a.service.embedSubBatch(ctx, docs)
+	// Inference runs OUTSIDE the service write window (ADR-123) through the
+	// cache captured with the pass's working-store identity; a displacement
+	// renders the work moot (wasted inference, never corruption) and the
+	// commit window aborts the pass.
+	kept, dropped, err := a.service.embedSubBatchFrom(ctx, docs, a.cache)
 	a.telemetry.observe(StageEmbedding, len(docs), time.Since(embedStarted))
 	if err != nil {
 		return err
@@ -1065,11 +1312,14 @@ func (a *documentAccumulator) embedPending(ctx context.Context) error {
 	}
 
 	keptIdx := 0
+	var dropCompleted []*pendingFile
 	for i := range a.pendingInference {
 		item := a.pendingInference[i]
 		if _, drop := dropped[item.vec.ID]; drop {
 			item.file.completed++
-			a.publishFileIfComplete(item.file)
+			if !slices.Contains(dropCompleted, item.file) {
+				dropCompleted = append(dropCompleted, item.file)
+			}
 			continue
 		}
 		if keptIdx >= len(kept) || kept[keptIdx].ID != item.vec.ID {
@@ -1085,6 +1335,20 @@ func (a *documentAccumulator) embedPending(ctx context.Context) error {
 		}
 	}
 	a.pendingInference = a.pendingInference[:0]
+	// Files whose LAST chunk poison-dropped completed during inference: their
+	// sidecar publish (publish-after-commit — every committed chunk of such a
+	// file already landed in an earlier commit window) takes its own
+	// identity-checked window instead of riding inference (ADR-123).
+	if len(dropCompleted) > 0 {
+		if err := a.pass.window("publishing poison-drop sidecar entries", func() error {
+			for _, file := range dropCompleted {
+				a.publishFileIfComplete(file)
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -1098,14 +1362,25 @@ func (a *documentAccumulator) commitPending(ctx context.Context) error {
 		vecDocs[i] = a.pendingCommit[i].vec
 		lexDocs[i] = a.pendingCommit[i].lex
 	}
-	if err := a.service.commitEmbeddedDocuments(ctx, vecDocs, lexDocs); err != nil {
+	// ONE identity-checked window per commit: the §3 chunk records, the
+	// chromem commit and the per-file sidecar publishes land together,
+	// atomic against searches and against a displacement (ADR-123; the
+	// chunks-before-tables and publish-after-commit ordering is exactly the
+	// whole-pass hold used to serialize).
+	a.pass.wd.heartbeat(StageChromemCommit, "")
+	if err := a.pass.window("committing embedded documents", func() error {
+		if err := a.service.commitEmbeddedDocuments(ctx, vecDocs, lexDocs); err != nil {
+			return err
+		}
+		for i := range a.pendingCommit {
+			file := a.pendingCommit[i].file
+			file.committedIDs = append(file.committedIDs, a.pendingCommit[i].vec.ID)
+			file.completed++
+			a.publishFileIfComplete(file)
+		}
+		return nil
+	}); err != nil {
 		return err
-	}
-	for i := range a.pendingCommit {
-		file := a.pendingCommit[i].file
-		file.committedIDs = append(file.committedIDs, a.pendingCommit[i].vec.ID)
-		file.completed++
-		a.publishFileIfComplete(file)
 	}
 	a.pendingCommit = a.pendingCommit[:0]
 	return nil
@@ -1127,31 +1402,53 @@ func (a *documentAccumulator) publishFileIfComplete(file *pendingFile) {
 // idx.prepWorkers goroutines prepares files (read/hash/chunk) while this
 // single consumer streams their documents through one configured-capacity
 // inference accumulator and a separate bounded chromem commit window; the
-// inference tail flushes once, at pass end. Embedding stays single-threaded,
-// and the caller must already hold the service write lock.
+// inference tail flushes once, at pass end. Embedding stays single-threaded.
+//
+// Staged acquisition (ADR-123): preparation touches no shared state and
+// inference runs through the embedding cache captured with the pass's
+// working-store identity, both WITHOUT the service write lock; only the
+// mutating steps — batch commits and sidecar publishes — take the lock, each
+// in a short identity-checked window, so search, status and Close are never
+// frozen by a pass. pass must be the caller's held lease
+// (Indexer.beginIndexPass).
+//
+// The pass owns one read-timeout skip budget (fileReadTimeoutSkipBudget, see
+// readwatchdog.go): each read the watchdog times out is an ordinary
+// warn-and-skip while the budget holds, and once it is spent the pass refuses
+// explicitly with ErrReadSkipBudgetExhausted instead of stacking more wedged
+// reader goroutines.
 //
 // Returns the number of files counted toward pass progress: per-file prep
-// failures are logged and skipped; ctx cancellation and AddDocuments failures
-// abort the pass.
-func (idx *Indexer) indexPrepared(ctx context.Context, paths []string, o indexPipelineOpts) (int, error) {
+// failures are logged and skipped; the read-timeout skip budget exhaustion,
+// ctx cancellation, AddDocuments failures and a displaced working store abort
+// the pass.
+func (idx *Indexer) indexPrepared(ctx context.Context, paths []string, o indexPipelineOpts, pass *indexPass) (int, error) {
 	// Derived cancellable context: the prep pool is released promptly when
 	// this consumer returns early (feeder and worker sends select on it).
 	poolCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	units := idx.streamPreparedFiles(poolCtx, paths, o.root, o.skipLogLabel)
+	budget := newReadSkipBudget(fileReadTimeoutSkipBudget)
+	units := idx.streamPreparedFiles(poolCtx, paths, o.root, o.skipLogLabel, budget, pass.wd)
 
 	progress := o.progressStart
 	var vecBatch []chromem.Document
 	var lexBatch []lexical.Doc
 	var accumulator *documentAccumulator
 	if idx.service.batchEmbedder != nil {
-		accumulator = newDocumentAccumulator(idx.service, idx.telemetry)
+		accumulator = newDocumentAccumulator(idx.service, idx.telemetry, pass)
 	}
 
 	for unit := range units {
 		if err := ctx.Err(); err != nil {
 			return progress, fmt.Errorf("%s: %w", o.cancelMsg, err)
+		}
+		// The read-timeout skip budget refusal: the pass's one explicit
+		// per-file failure. Returning cancels the pool, so already-fed
+		// paths are dropped without reads instead of stranding further
+		// reader goroutines.
+		if unit.fatalErr != nil {
+			return progress, unit.fatalErr
 		}
 		if unit.skipped && !o.countSkipped {
 			continue
@@ -1168,7 +1465,13 @@ func (idx *Indexer) indexPrepared(ctx context.Context, paths []string, o indexPi
 					idx.logger.Debug("embedding document batch"+o.batchLogLabel,
 						"batchSize", len(vecBatch), "progress", progress, "total", o.total)
 					idx.telemetry.observeBatch(len(vecBatch), addDocumentBatchSize)
-					if addErr := idx.service.AddDocuments(ctx, vecBatch, lexBatch); addErr != nil {
+					pass.wd.heartbeat(StageEmbedding, unit.path)
+					// One identity-checked window per batch: the legacy path
+					// embeds inside AddDocuments, so the window spans the
+					// commit of one addDocumentBatchSize slice (ADR-123).
+					if addErr := pass.window("adding document batch", func() error {
+						return idx.service.AddDocuments(ctx, vecBatch, lexBatch)
+					}); addErr != nil {
 						return progress, fmt.Errorf("adding document batch: %w", addErr)
 					}
 					idx.logger.Debug("batch embedded successfully")
@@ -1198,7 +1501,10 @@ func (idx *Indexer) indexPrepared(ctx context.Context, paths []string, o indexPi
 		idx.logger.Debug("embedding final document batch"+o.batchLogLabel,
 			"batchSize", len(vecBatch), "progress", progress, "total", o.total)
 		idx.telemetry.observeBatch(len(vecBatch), addDocumentBatchSize)
-		if addErr := idx.service.AddDocuments(ctx, vecBatch, lexBatch); addErr != nil {
+		pass.wd.heartbeat(StageEmbedding, "")
+		if addErr := pass.window("adding final document batch", func() error {
+			return idx.service.AddDocuments(ctx, vecBatch, lexBatch)
+		}); addErr != nil {
 			return progress, fmt.Errorf("adding final document batch: %w", addErr)
 		}
 		idx.logger.Debug("final batch embedded successfully")
@@ -1251,10 +1557,24 @@ func (idx *Indexer) RebuildLexical(ctx context.Context) error {
 		return nil
 	}
 
+	// Pass-level stall watchdog, same lifecycle as IndexFull: the sidecar
+	// snapshot and the upsert loop are the monitored stages — the migration
+	// wait before them runs suspended (see passWatchdog.suspend).
+	wd := idx.startPassWatchdog()
+	defer wd.stop()
+	wd.watchContext(ctx)
+	wd.heartbeat(StageCacheLookup, "")
+
 	// The sidecar is the v2 driving table; wait for its one-time backfill so
-	// the snapshot below is complete, not the empty placeholder.
-	if err := idx.service.WaitFileHashMigration(ctx); err != nil {
-		return fmt.Errorf("waiting for file-hash migration before lexical rebuild: %w", err)
+	// the snapshot below is complete, not the empty placeholder. The wait
+	// runs with the watchdog suspended: it blocks on backfill work this pass
+	// does not own, so it is not pass silence — same exclusion as
+	// waitSidecarMigrations and the pass-lease queue.
+	wd.suspend()
+	waitErr := idx.service.WaitFileHashMigration(ctx)
+	wd.resume()
+	if waitErr != nil {
+		return fmt.Errorf("waiting for file-hash migration before lexical rebuild: %w", waitErr)
 	}
 	hashes, err := idx.service.GetCollectionFiles()
 	if err != nil {
@@ -1264,7 +1584,7 @@ func (idx *Indexer) RebuildLexical(ctx context.Context) error {
 		// Transitional fallback: no sidecar at all (the backfill found
 		// nothing trackable). Enumerate the collection the old way.
 		idx.logger.Info("lexical rebuild: empty sidecar, using collection enumeration")
-		return idx.rebuildLexicalFromCollection(ctx, lex, col, count)
+		return idx.rebuildLexicalFromCollection(ctx, lex, col, count, wd)
 	}
 
 	paths := make([]string, 0, len(hashes))
@@ -1293,6 +1613,7 @@ func (idx *Indexer) RebuildLexical(ctx context.Context) error {
 		if len(batch) == 0 {
 			return nil
 		}
+		wd.heartbeat(StageBleveUpsert, "")
 		idx.service.AcquireWriteLock()
 		if cur := idx.service.currentLexicalLocked(); cur != lex {
 			idx.service.ReleaseWriteLock()
@@ -1313,6 +1634,7 @@ func (idx *Indexer) RebuildLexical(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("lexical rebuild cancelled: %w", err)
 		}
+		wd.heartbeat(StageBleveUpsert, fp)
 		docs, reason := idx.lexicalDocsForSidecarFile(fp, hashes[fp], rebuildRoot)
 		if reason != "" {
 			skipped++
@@ -1343,7 +1665,7 @@ func (idx *Indexer) RebuildLexical(ctx context.Context) error {
 		// stored chunk gets a lexical entry in one pass.
 		idx.logger.Info("lexical rebuild: sidecar left files without a usable fingerprint/set; using collection enumeration",
 			"sidecar_files", len(paths), "skipped", skipped, "unrepairable", unrepairable)
-		return idx.rebuildLexicalFromCollection(ctx, lex, col, count)
+		return idx.rebuildLexicalFromCollection(ctx, lex, col, count, wd)
 	}
 	if skipped > 0 {
 		idx.logger.Info("lexical backfill skipped files that changed since indexing or lack a chunker fingerprint",
@@ -1441,10 +1763,12 @@ func (idx *Indexer) lexicalDocsForSidecarFile(key, entry, root string) (docs []l
 // Concurrency: a SHORT read lock covers only the enumeration (a concurrent
 // park/close cannot free the collection mid-Query); reconstruction and the
 // bleve windows run without it, so searches are not blocked for the pass.
-// The caller must not hold s.mu.
-func (idx *Indexer) rebuildLexicalFromCollection(ctx context.Context, lex lexical.Index, col *chromem.Collection, count int) error {
+// The caller must not hold s.mu. wd heartbeats the enumeration and every
+// bleve window so a stall inside the fallback stays attributable to this pass.
+func (idx *Indexer) rebuildLexicalFromCollection(ctx context.Context, lex lexical.Index, col *chromem.Collection, count int, wd *passWatchdog) error {
 	idx.onProgress(PhaseLexical, IndexStateIndexing, 0, count, "")
 	idx.logger.Info("starting lexical backfill (collection enumeration)", "chunks", count)
+	wd.heartbeat(StageBleveUpsert, "")
 
 	// chromem has no ListAll; a single-space query enumerates every document
 	// (the ranking is irrelevant). Prefer the embedding-free unit-vector
@@ -1481,6 +1805,7 @@ func (idx *Indexer) rebuildLexicalFromCollection(ctx context.Context, lex lexica
 	// the same re-validation as the sidecar path's flush (a concurrent
 	// switch/Close would otherwise upsert into a closed, nil'd index).
 	upsertWindow := func(window []lexical.Doc) error {
+		wd.heartbeat(StageBleveUpsert, "")
 		started := time.Now()
 		idx.service.AcquireWriteLock()
 		if cur := idx.service.currentLexicalLocked(); cur != lex {
@@ -1511,6 +1836,8 @@ func (idx *Indexer) rebuildLexicalFromCollection(ctx context.Context, lex lexica
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("lexical rebuild cancelled: %w", err)
 		}
+		// Contentless re-reads are real file I/O — keep the last file fresh.
+		wd.heartbeat(StageBleveUpsert, occurrencePath(r.Metadata))
 		content := r.Content
 		if content == "" {
 			startLine, _ := strconv.Atoi(r.Metadata["start_line"])
@@ -1662,7 +1989,7 @@ type walkOutcome struct {
 // Only the ROOT itself being unreadable aborts the walk. Callers that need
 // the gaps use walkProjectFilesDetailed.
 func walkProjectFiles(root string, checker ignore.IgnoreChecker, maxFileSize int64, includeSubmodules bool) ([]string, error) {
-	outcome, err := walkProjectFilesDetailed(root, checker, maxFileSize, includeSubmodules)
+	outcome, err := walkProjectFilesDetailed(root, checker, maxFileSize, includeSubmodules, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -1671,8 +1998,13 @@ func walkProjectFiles(root string, checker ignore.IgnoreChecker, maxFileSize int
 
 // walkProjectFilesDetailed is walkProjectFiles returning the traversal gaps
 // alongside the indexable paths (the full pass publishes the gaps to the
-// corpus gate; see walkOutcome).
-func walkProjectFilesDetailed(root string, checker ignore.IgnoreChecker, maxFileSize int64, includeSubmodules bool) (walkOutcome, error) {
+// corpus gate; see walkOutcome). onEntry, when non-nil, receives EVERY
+// directory entry the walk visits — directories, files, ignored entries and
+// erroring entries alike — because the arrival of entries is what a slow
+// filesystem paces; the full pass feeds it into the stall watchdog
+// (see walkHeartbeater) so a slow-but-alive walk is never misread as
+// stalled while a single hung stat still is.
+func walkProjectFilesDetailed(root string, checker ignore.IgnoreChecker, maxFileSize int64, includeSubmodules bool, onEntry func(string)) (walkOutcome, error) {
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
 		return walkOutcome{}, fmt.Errorf("resolving root path: %w", err)
@@ -1680,6 +2012,9 @@ func walkProjectFilesDetailed(root string, checker ignore.IgnoreChecker, maxFile
 
 	var outcome walkOutcome
 	walkErr := filepath.WalkDir(absRoot, func(path string, d fs.DirEntry, walkDirErr error) error {
+		if onEntry != nil {
+			onEntry(path)
+		}
 		if walkDirErr != nil {
 			// The root is the walk's subject: if it cannot be read there is
 			// nothing to index, so an explicit pass error is the honest

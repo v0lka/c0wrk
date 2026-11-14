@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/core/vectorindex"
@@ -157,8 +158,7 @@ func TestVectorIndexLauncher_WireIfCurrentSuperseded(t *testing.T) {
 
 	// Mimic launch()'s epoch assignment without running the init body.
 	l.mu.Lock()
-	l.epoch++
-	epoch := l.epoch
+	epoch := l.epoch.Add(1)
 	l.mu.Unlock()
 
 	// errLauncherProbe marks the probe factory so a test that accidentally
@@ -187,10 +187,103 @@ func TestVectorIndexLauncher_WireIfCurrentSuperseded(t *testing.T) {
 
 	// A NEW launch (fresh epoch) wires again — the restart path.
 	l.mu.Lock()
-	l.epoch++
-	nextEpoch := l.epoch
+	nextEpoch := l.epoch.Add(1)
 	l.mu.Unlock()
 	if !l.wireIfCurrent(nextEpoch, noopFactory, ready, closeEmbedder) {
 		t.Error("the fresh epoch must wire successfully")
+	}
+}
+
+// TestVectorLauncher_DisableBumpSerializesWithWiring pins the ordering half
+// of the epoch contract: the disable-side bump takes mu, so it can never
+// land between wireIfCurrent's epoch check and SetVectorRootsFactory — the
+// interleave where a lock-free bump wins that race and the Disable that
+// follows the hook then watches the stale factory wire itself back in (and
+// clear the disabled flag). Holding mu and asserting the bump does not
+// complete is the direct probe: a lock-free Add would sail straight through;
+// the 1 s watchdog is a bounded hang detector (the happy path never waits
+// it out — the goroutine is either blocked on mu or already failed the
+// assertion).
+func TestVectorLauncher_DisableBumpSerializesWithWiring(t *testing.T) {
+	recorder := &launcherEmitRecorder{}
+	api, log := newLauncherAPI(t, newEnabledConfig(false), recorder)
+	l := NewVectorIndexLauncher(api, t.TempDir(), log, VectorIndexLauncherDeps{Emit: recorder.emit})
+
+	l.mu.Lock()
+	done := make(chan struct{})
+	go func() {
+		l.applyEnabledChange(false)
+		close(done)
+	}()
+	select {
+	case <-done:
+		// Unlock before Fatal: Goexit skips a deferred unlock, and the
+		// spawned goroutine would stay blocked on mu for the rest of the
+		// (already failing) run.
+		l.mu.Unlock()
+		t.Fatal("the disable-side epoch bump completed without taking mu — the disable-vs-wiring ordering is broken")
+	case <-time.After(1 * time.Second):
+		// Blocked on mu, as the contract requires.
+		l.mu.Unlock()
+	}
+	// Join: with mu released the blocked bump completes and closes done.
+	<-done
+}
+
+// TestSwappedEmbedderInfo_DropsStaleInstanceVerdicts pins the swap hook's
+// staleness contract: CUDAVerified/OVDevice describe the instance their probe
+// ran on, so a CPU-fallback restart must not keep advertising
+// cuda_verified=true (or ov_device="gpu") against the CPU-running successor,
+// and a restart that recovers the requested provider retires the old
+// fallback text. swappedEmbedderInfo itself carries no probe — the re-probe
+// is a second, separate write in the hook — so the derived info reads the
+// verdicts as "unverified": the honest value for an unprobed instance.
+func TestSwappedEmbedderInfo_DropsStaleInstanceVerdicts(t *testing.T) {
+	verified := true
+	base := VectorEmbedderInfo{
+		EffectiveProvider: testProviderRequested,
+		RequestedProvider: config.VectorIndexProviderCUDA,
+		FallbackReason:    "",
+		CUDAVerified:      &verified,
+		OVDevice:          "gpu",
+		DeviceID:          1,
+	}
+
+	// CPU-fallback swap: verdicts dropped, restart fallback recorded,
+	// requested/device facts preserved.
+	cpu := swappedEmbedderInfo(base, config.VectorIndexProviderCUDA, testProviderCPU)
+	if cpu.EffectiveProvider != testProviderCPU {
+		t.Errorf("effective = %q, want cpu", cpu.EffectiveProvider)
+	}
+	if cpu.CUDAVerified != nil {
+		t.Errorf("CUDAVerified = %v after a CPU swap, want nil (the probe described the retired instance)", *cpu.CUDAVerified)
+	}
+	if cpu.OVDevice != "" {
+		t.Errorf("OVDevice = %q after a CPU swap, want empty (the probe described the retired instance)", cpu.OVDevice)
+	}
+	if cpu.FallbackReason == "" {
+		t.Error("a CPU swap under a hardware request must record the restart fallback reason")
+	}
+	if cpu.RequestedProvider != config.VectorIndexProviderCUDA || cpu.DeviceID != 1 {
+		t.Errorf("requested/device facts must survive the swap: %+v", cpu)
+	}
+
+	// Requested provider recovered: the old fallback text retires.
+	recovered := swappedEmbedderInfo(cpu, config.VectorIndexProviderCUDA, testProviderRequested)
+	if recovered.FallbackReason != "" {
+		t.Errorf("FallbackReason = %q after recovering the requested provider, want empty", recovered.FallbackReason)
+	}
+	if recovered.EffectiveProvider != testProviderRequested {
+		t.Errorf("effective = %q, want the requested provider", recovered.EffectiveProvider)
+	}
+	if recovered.CUDAVerified != nil || recovered.OVDevice != "" {
+		t.Errorf("a hardware swap without its probe yet must read unverified, got %+v", recovered)
+	}
+
+	// A CPU swap under a CPU request is no fallback: the reason stays as it
+	// was (empty for a plain CPU setup).
+	plainCPU := swappedEmbedderInfo(VectorEmbedderInfo{RequestedProvider: config.VectorIndexProviderCPU}, config.VectorIndexProviderCPU, testProviderCPU)
+	if plainCPU.FallbackReason != "" {
+		t.Errorf("FallbackReason = %q for cpu→cpu, want empty", plainCPU.FallbackReason)
 	}
 }

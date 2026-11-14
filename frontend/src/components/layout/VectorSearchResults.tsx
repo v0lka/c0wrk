@@ -3,6 +3,7 @@ import { Loader2, FileCode, Search } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { useVectorIndexStore } from "@/stores/vectorIndexStore";
 import { useFileViewerStore } from "@/stores/fileViewerStore";
+import { vectorSearchUsable } from "@/lib/vectorStatusGate";
 import type { VectorIndexStatus, VectorStoreEntry } from "@/types/models";
 
 const MAX_PREVIEW_LINES = 4;
@@ -13,7 +14,9 @@ interface VectorSearchResultsProps {
 }
 
 /**
- * Placeholder copy for an index that is not `ready` yet.
+ * Placeholder copy for an index that is not usable yet — the shared
+ * `vectorSearchUsable` gate (the ADR-124 suspension renders results instead
+ * of this copy: a live collection keeps serving queries).
  *
  * `loading` (ADR-064) is the branch-scoped chromem DB open: no indexing pass
  * exists yet, so it gets its own wording instead of borrowing the
@@ -42,7 +45,14 @@ export function VectorSearchResults({ isSearchMode }: VectorSearchResultsProps) 
   const entries = useVectorIndexStore((s) => s.entries);
   const isLoading = useVectorIndexStore((s) => s.isLoading);
 
-  if (status.state !== "ready" && status.state !== "idle") {
+  // The not-ready placeholder is gated by the SAME shared predicate the
+  // widget level and the execution level use (vectorSearchUsable), so the
+  // three layers cannot drift: the ADR-124 suspension renders RESULTS here —
+  // the breaker stops the UPDATE pipeline only, and a live collection keeps
+  // serving the queries the enabled inputs fire (hiding the fetched entries
+  // behind an "unavailable" placeholder would fail the search path in
+  // exactly the way ADR-124 rejected).
+  if (!vectorSearchUsable(status) && status.state !== "idle") {
     // Index opening, building, or unavailable. The auto-search effect in
     // useVectorSearch re-runs the active query once the index reports ready
     // (incl. the vector_index:status → ready subscription), so a seeded query

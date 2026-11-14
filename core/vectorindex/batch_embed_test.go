@@ -686,8 +686,12 @@ func TestDocumentAccumulator_FillsInferenceAcrossFileAndCommitBoundaries(t *test
 	// Multiple files with deliberately awkward chunk counts carry inference
 	// tails across both file boundaries and the 200-document commit boundary.
 	groups := []int{17, 33, 51, 99, 7, 123, 95}
-	acc := newDocumentAccumulator(svc, telemetry)
-	svc.AcquireWriteLock()
+	// ADR-125: the accumulator's commit windows take the service write lock
+	// themselves — the driver holds the pass lease, never the lock (a held
+	// lock would deadlock every window).
+	pass := svc.beginPassLease()
+	defer pass.release()
+	acc := newDocumentAccumulator(svc, telemetry, pass)
 	offset := 0
 	for fileIdx, size := range groups {
 		group := docs[offset : offset+size]
@@ -696,13 +700,11 @@ func TestDocumentAccumulator_FillsInferenceAcrossFileAndCommitBoundaries(t *test
 			group[i].Metadata["content_hash"] = fmt.Sprintf("group-hash-%02d", fileIdx)
 		}
 		if err := acc.addFile(context.Background(), group, lexicalBatchTestDocs(group)); err != nil {
-			svc.ReleaseWriteLock()
 			t.Fatalf("addFile(%d): %v", fileIdx, err)
 		}
 		offset += size
 	}
 	err := acc.finish(context.Background())
-	svc.ReleaseWriteLock()
 	if err != nil {
 		t.Fatalf("finish: %v", err)
 	}
@@ -758,11 +760,11 @@ func TestDocumentAccumulator_FileHashWaitsForEveryChunkCommit(t *testing.T) {
 		docs[i].Metadata["file_path"] = "/ws/large.go"
 		docs[i].Metadata["content_hash"] = "large-hash"
 	}
-	acc := newDocumentAccumulator(svc, nil)
+	pass := svc.beginPassLease()
+	defer pass.release()
+	acc := newDocumentAccumulator(svc, nil, pass)
 
-	svc.AcquireWriteLock()
 	err := acc.addFile(context.Background(), docs, lexicalBatchTestDocs(docs))
-	svc.ReleaseWriteLock()
 	if err == nil {
 		t.Fatal("addFile must fail on the fifth inference batch")
 	}
@@ -790,14 +792,14 @@ func TestDocumentAccumulator_PoisonedTextKeepsDualIndexAlignment(t *testing.T) {
 		docs[i].Metadata["file_path"] = "/ws/poison.go"
 		docs[i].Metadata["content_hash"] = "poison-hash"
 	}
-	acc := newDocumentAccumulator(svc, nil)
+	pass := svc.beginPassLease()
+	defer pass.release()
+	acc := newDocumentAccumulator(svc, nil, pass)
 
-	svc.AcquireWriteLock()
 	err := acc.addFile(context.Background(), docs, lexicalBatchTestDocs(docs))
 	if err == nil {
 		err = acc.finish(context.Background())
 	}
-	svc.ReleaseWriteLock()
 	if err != nil {
 		t.Fatalf("streaming poisoned fallback: %v", err)
 	}
@@ -842,11 +844,11 @@ func TestDocumentAccumulator_CancellationDoesNotCommitInferenceTail(t *testing.T
 	}}
 	svc := newBatchTestService(t, fb, 50, nil, nil)
 	docs := batchTestDocs(100)
-	acc := newDocumentAccumulator(svc, nil)
+	pass := svc.beginPassLease()
+	defer pass.release()
+	acc := newDocumentAccumulator(svc, nil, pass)
 
-	svc.AcquireWriteLock()
 	err := acc.addFile(ctx, docs, lexicalBatchTestDocs(docs))
-	svc.ReleaseWriteLock()
 	if err == nil || !errors.Is(err, context.Canceled) {
 		t.Fatalf("addFile error = %v; want wrapped context.Canceled", err)
 	}
@@ -964,14 +966,14 @@ func TestDocumentAccumulator_PublishesCommittedChunkSet(t *testing.T) {
 
 	file := "/ws/acc-gapped.go"
 	docs := gappedSetDocs(file, 5, 2)
-	acc := newDocumentAccumulator(svc, nil)
+	pass := svc.beginPassLease()
+	defer pass.release()
+	acc := newDocumentAccumulator(svc, nil, pass)
 
-	svc.AcquireWriteLock()
 	err := acc.addFile(context.Background(), docs, lexicalBatchTestDocs(docs))
 	if err == nil {
 		err = acc.finish(context.Background())
 	}
-	svc.ReleaseWriteLock()
 	if err != nil {
 		t.Fatalf("accumulator: %v", err)
 	}

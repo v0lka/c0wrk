@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/project"
@@ -414,6 +415,55 @@ func TestVectorRoots_DisableThenSetFactoryClearsFlag(t *testing.T) {
 	}
 	if !vr.FactoryReady() {
 		t.Error("a wired factory must make FactoryReady true again")
+	}
+}
+
+// TestVectorRoots_SetFactoryShutdownCloseOutsideLock pins SetFactory's
+// shutdown branch closing the embedder AFTER vr.mu is released, the same
+// outside-the-lock rule ShutdownAll and Disable follow: emb.Close blocks on
+// the embedder's internal lock, which a runtime degrade callback holds while
+// it flips the recorded provider facts, so the registry's mutex must never
+// sit under that native wait. The test's closeEmbedder takes vr.mu itself:
+// under the old under-lock close the TryLock fails and the t.Error fires
+// (the close demonstrably ran under the lock); the bounded watchdog is pure
+// belt-and-braces against a true hang.
+func TestVectorRoots_SetFactoryShutdownCloseOutsideLock(t *testing.T) {
+	f := newStartupVectorAPI(t)
+	// Intercept the shutdown branch's WARN at its source (the test-output
+	// quality rule: a deliberately exercised failure path must not leak into
+	// the run's output) and assert it below.
+	var logSink strings.Builder
+	f.logger = slog.New(slog.NewTextHandler(&logSink, nil))
+	vr := f.vectorRootsRegistry()
+	t.Cleanup(vr.ShutdownAll)
+
+	vr.ShutdownAll() // park the registry into the shutdown branch's state
+
+	ready := make(chan struct{})
+	close(ready)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		vr.SetFactory(func() (*vectorindex.Manager, error) {
+			return nil, errors.New("not built in this test")
+		}, ready, func() error {
+			// Under the old under-lock close vr.mu was still held here, so
+			// this TryLock failed and the t.Error above fired.
+			if !vr.mu.TryLock() {
+				t.Error("the closeEmbedder ran while SetFactory still held vr.mu (the close must run outside the lock)")
+				return nil
+			}
+			vr.mu.Unlock()
+			return nil
+		})
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("SetFactory's shutdown-branch close deadlocked on vr.mu (the close must run outside the lock)")
+	}
+	if !strings.Contains(logSink.String(), "vector roots: factory wired after shutdown") {
+		t.Errorf("the shutdown branch did not warn about the post-shutdown factory wiring; log = %q", logSink.String())
 	}
 }
 

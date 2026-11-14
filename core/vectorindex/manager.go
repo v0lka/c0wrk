@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,6 +25,13 @@ import (
 // ErrEmbeddingDisabled is returned by NewManager when no EmbeddingFunc is
 // provided, indicating vector search is intentionally not configured.
 var ErrEmbeddingDisabled = errors.New("vector search disabled: no embedding function provided")
+
+// ErrManagerShutdown is returned by SwitchProject on a manager Shutdown has
+// sealed: a late switch would either Add to a WaitGroup the drain (or the
+// zombie closer behind it) Wait()s on — a fatal sync.WaitGroup misuse — or
+// point fresh init state at resources that are closed or closing. A caller
+// that legitimately wants the project indexed again builds a fresh manager.
+var ErrManagerShutdown = errors.New("vector index manager shut down")
 
 // Resource-consumption defaults for indexing/search — the historical hardcoded
 // values, now exposed as vector_index.* config defaults; backend/config/
@@ -76,6 +84,32 @@ const (
 	DefaultCorpusResidencyBudgetBytes int64 = 0
 )
 
+// Incremental-failure backoff and circuit breaker for debounce-armed passes
+// (see specs/decisions/124-vector-incremental-failure-backoff.md): a failed
+// pass backs the NEXT debounce arm off exponentially, and consecutive
+// failures suspend automatic file-change indexing instead of retrying
+// forever. Constants, not config: the behavior is a safety property, not a
+// tuning knob.
+const (
+	// incrementalFailureBackoffStart is the delay applied to the debounce
+	// arm following the first failed incremental pass (the first backoff
+	// step; the unbacked arm stays at the configured debounce window).
+	incrementalFailureBackoffStart = 5 * time.Second
+
+	// incrementalFailureBackoffMax caps the exponential growth of the
+	// per-failure arm delay. With the shipped breaker threshold the shipped
+	// arms (5s, 10s, 20s, 40s — the 80s arm would follow the 5th failure,
+	// but that failure trips the breaker instead) never reach it; the cap
+	// keeps the formula bounded if the threshold or the step ever changes.
+	incrementalFailureBackoffMax = 10 * time.Minute
+
+	// incrementalFailureBreakerThreshold is the number of CONSECUTIVE failed
+	// debounce-armed passes that trips the circuit breaker: file-change
+	// arming suspends, and the status reports the suspension honestly with
+	// IndexErrorKindSuspended. Cancelled passes never count.
+	incrementalFailureBreakerThreshold = 5
+)
+
 // DefaultEmbeddingBatchSize mirrors sp4rk's embedding.DefaultBatchSize — the
 // fixed row capacity of the embedder's persistent batch ONNX session
 // (vector_index.embedding_batch_size). Assigned, not duplicated, so the two
@@ -99,15 +133,30 @@ const shutdownIndexGracePeriod = 10 * time.Second
 // the embedder and passes EmbeddingFunc; the config no longer depends on model
 // paths, so the package works with any embedding backend.
 type ManagerConfig struct {
-	EmbeddingFunc    chromem.EmbeddingFunc // Required: embedding function for vector storage
-	BatchEmbedder    BatchEmbedder         // Optional: batched document embedding; nil = legacy per-doc path via chromem
-	CloseFn          func() error          // Optional: called in Shutdown (e.g., embedder.Close)
-	ChunkFn          ChunkFunc             // Optional: defaults to adapter over embedding.ChunkFile
-	HashFn           HashFunc              // Optional: defaults to embedding.ComputeFileHash
-	HybridConfig     HybridConfig          // RRF tuning + pre-fusion score thresholds (zero = defaults, thresholds off)
-	MaxFileSize      int64                 // Optional: defaults to DefaultMaxIndexableFileSize (4 MiB)
-	MaxChunkSize     int                   // Optional: defaults to DefaultMaxChunkSize (1500 chars)
-	MaxChunksPerFile int                   // Optional: defaults to DefaultMaxChunksPerFile (4000)
+	EmbeddingFunc chromem.EmbeddingFunc // Required: embedding function for vector storage
+	BatchEmbedder BatchEmbedder         // Optional: batched document embedding; nil = legacy per-doc path via chromem
+	CloseFn       func() error          // Optional: called in Shutdown (e.g., embedder.Close)
+	// EmbedderWedged is the authoritative liveness probe of the process-wide
+	// ONNX inference thread (sp4rk embedding.Embedder.Wedged): true when a
+	// job has been running on that thread long enough that no healthy call
+	// could still be in flight. Shutdown consults it when the drain grace
+	// expires so the stuck-goroutine diagnosis names the actual culprit
+	// instead of leaving the cause to be inferred from a streak of
+	// consecutive timeouts. The probe itself — not this package — owns the
+	// wedge bound (the healthy-inference envelope; production is the
+	// supervisor's embed call deadline): the drain grace bounds only how
+	// long Shutdown WAITS, and healthy inference can legitimately run tens
+	// of seconds past that short grace, so a grace-bounded probe would
+	// fabricate wedge verdicts for normal slow batches. Nil (CPU-provider
+	// embedders, tests) means "diagnosis unavailable" — the generic
+	// grace-expiry warning runs alone.
+	EmbedderWedged   func() bool
+	ChunkFn          ChunkFunc    // Optional: defaults to adapter over embedding.ChunkFile
+	HashFn           HashFunc     // Optional: defaults to embedding.ComputeFileHash
+	HybridConfig     HybridConfig // RRF tuning + pre-fusion score thresholds (zero = defaults, thresholds off)
+	MaxFileSize      int64        // Optional: defaults to DefaultMaxIndexableFileSize (4 MiB)
+	MaxChunkSize     int          // Optional: defaults to DefaultMaxChunkSize (1500 chars)
+	MaxChunksPerFile int          // Optional: defaults to DefaultMaxChunksPerFile (4000)
 
 	// ContentFilter controls deterministic early rejection of generated,
 	// minified, and pathological files before chunking; nil selects
@@ -212,6 +261,13 @@ type ManagerConfig struct {
 // ProjectCallbacks holds callbacks for project-level indexing events.
 type ProjectCallbacks struct {
 	OnProgress ProgressCallback
+	// OnStallChange is invoked on every pass-stall watchdog transition of
+	// this project's passes: Stalled=true when a pass crossed the 5-minute
+	// no-progress threshold, false when its next progress point resolved the
+	// window (and never after the pass ended). The consumer re-reads the
+	// manager's status to build the event payload, so the push stream and
+	// GetIndexStatus tell the same story. Optional — nil skips it.
+	OnStallChange func(StallSnapshot)
 	// OnFailure is invoked when asynchronous project initialization fails on
 	// an init-fatal step (DB open, branch detect, branch collection switch)
 	// so the caller can surface the terminal "unavailable" status
@@ -251,6 +307,27 @@ type Manager struct {
 	// time (effectiveDebounce), so zero-value Manager literals keep the
 	// historical 1s behaviour.
 	debounce time.Duration
+	// incFailStreak counts consecutive FAILED debounce-armed incremental
+	// passes (a cancelled pass never counts — it is not a verdict). While
+	// positive it backs the next arm off exponentially
+	// (incrementalArmDelayLocked); at incrementalFailureBreakerThreshold it
+	// trips incSuspended. Guarded by debounceMu (arming decisions read it
+	// under that lock); the trip's status write happens after debounceMu is
+	// released — these fields never participate in lock nesting.
+	incFailStreak int
+	// incSuspended is the tripped circuit breaker: set when incFailStreak
+	// reaches incrementalFailureBreakerThreshold. While set, NotifyFileChange
+	// never arms and a late timer fire runs no pass; a successful pass, an
+	// explicit Reindex, or a manager-lifecycle restart (SwitchProject — the
+	// per-root registry calls it only at manager creation; a Git-panel focus
+	// switch deliberately keeps the suspension) clears it, and tearing the
+	// manager down resets structurally (the vector_index.enabled toggle
+	// rebuilds managers, as do LRU eviction and an app restart). While set it
+	// also holds the suspend status pair against terminal ready reports (the
+	// wrapProgress gate): a pair erased beside a live incSuspended would
+	// repaint the silent suspension as a healthy ready.
+	// Guarded by debounceMu.
+	incSuspended bool
 	// indexing coalesces trailing incremental passes: embedding is already
 	// serialized by the service write lock, so this flag's narrower job is
 	// avoiding a redundant trailing pass — while a pass is in flight a
@@ -276,6 +353,15 @@ type Manager struct {
 	// reason. Guarded by statusMu.
 	lastError     string
 	lastErrorKind IndexErrorKind
+	// stall is the pass-liveness sub-status recorded by the pass watchdog's
+	// OnStallChange consumer (recordStall): the zero value is a live (or
+	// absent) pass; a fired snapshot carries the stage/file evidence, and
+	// stallSince is the silence start so GetIndexStatus can compute
+	// SilentFor live. Any progress callback (wrapProgress) or status reset
+	// (setStatus) clears it — progress is the liveness proof. Guarded by
+	// statusMu.
+	stall      StallSnapshot
+	stallSince time.Time
 
 	// workspacePath is the active project's workspace, stored during
 	// SwitchProject so NotifyFileChange can trigger incremental indexing
@@ -346,18 +432,25 @@ type Manager struct {
 	// its per-step ctx checks and s.mu serializes any residual overlap.
 	initWG sync.WaitGroup
 
-	// wgMu guards wgClosed and serializes every indexingWG.Add against
-	// Shutdown's Wait: a positive Add concurrent with Wait is a fatal
-	// sync.WaitGroup misuse, so late work registration goes through
-	// addIndexingWork, refused once Shutdown sealed the manager — an Add
-	// therefore either happens-before the Wait or never happens.
+	// wgMu guards wgClosed and serializes every initWG/indexingWG Add
+	// against Shutdown's Wait (and the zombie closer waiting behind it): a
+	// positive Add concurrent with Wait is a fatal sync.WaitGroup misuse,
+	// so late registration goes through addInitWork/addIndexingWork,
+	// refused once Shutdown sealed the manager — an Add therefore either
+	// happens-before the Wait or never happens.
 	// See specs/domains/workspace.md (indexing-work seal).
 	wgMu sync.Mutex
-	// wgClosed is set by Shutdown (under wgMu) before it drains indexingWG.
+	// wgClosed is set by Shutdown (under wgMu) before it drains initWG.
 	wgClosed bool
 
 	// closeFn is called during Shutdown to release the embedder (if provided).
 	closeFn func() error
+
+	// embedderWedged is ManagerConfig.EmbedderWedged — the authoritative
+	// ONNX-thread liveness probe consulted by Shutdown's drain diagnosis.
+	// Bound-free by contract: the probe owns its wedge bound (see
+	// ManagerConfig.EmbedderWedged), never the drain grace.
+	embedderWedged func() bool
 
 	// shutdownGrace overrides shutdownIndexGracePeriod when non-zero
 	// (ManagerConfig.ShutdownGrace): in-package tests shrink it to verify
@@ -465,6 +558,7 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 		debounce:           cfg.Debounce,
 		searchWaitTimeout:  cfg.SearchWaitTimeout,
 		closeFn:            cfg.CloseFn,
+		embedderWedged:     cfg.EmbedderWedged,
 		ignoreFiles:        cfg.IgnoreFiles,
 		excludePatterns:    cfg.ExcludePatterns,
 		includeSubmodules:  cfg.IncludeSubmodules,
@@ -514,6 +608,12 @@ func (m *Manager) IsAnyIndexablePath(changedPaths []string) bool {
 // (CHAT mode) the teardown + reset stays fully synchronous.
 // See specs/domains/workspace.md (vector index lifecycle).
 func (m *Manager) SwitchProject(projectID, workspacePath, vectorIndexFullPath string, cbs ProjectCallbacks, embeddingCachePaths ...string) error {
+	// Fail fast on a sealed manager; the init launch below re-checks the
+	// seal atomically with its initWG.Add. This early check only keeps the
+	// No Project path from resetting a closing service.
+	if m.isSealed() {
+		return ErrManagerShutdown
+	}
 	// No Project (CHAT mode): the subsystem is fully disabled — tear down any
 	// previous project's in-flight indexing and reset the service to an empty
 	// in-memory state so stale documents cannot leak into search results or
@@ -550,6 +650,14 @@ func (m *Manager) SwitchProject(projectID, workspacePath, vectorIndexFullPath st
 		m.storageRoot = ""
 		m.mu.Unlock()
 		m.stopDebounce()
+		// The switch tears the project's indexing lifecycle down: the
+		// incremental-failure backoff/breaker state goes with it (a fresh
+		// lifecycle must not inherit a suspension it never earned). This is
+		// the manager-lifecycle boundary — in the per-root registry the
+		// callers are SwitchProject's arms at a manager's creation, while a
+		// Git-panel focus switch keeps live managers (and their
+		// suspensions) by design.
+		m.resetIncrementalFailureState()
 		// Drop readiness before the (possibly deferred) reset below so a search
 		// issued in the interim never serves the outgoing project's collection.
 		m.service.SetReady(false)
@@ -590,6 +698,12 @@ func (m *Manager) SwitchProject(projectID, workspacePath, vectorIndexFullPath st
 
 	m.stopDebounce()
 
+	// Same breaker rule as the No-Project arm: an indexing-lifecycle
+	// restart on the manager must not inherit the previous lifecycle's
+	// failure streak (in the per-root registry this arm runs only at the
+	// manager's creation; focus switches keep live managers).
+	m.resetIncrementalFailureState()
+
 	// Drop readiness synchronously so a search RPC issued right after
 	// SwitchProject returns blocks on WaitReady instead of racing the async
 	// init; initProject (or its failure fallback) restores readiness.
@@ -615,7 +729,9 @@ func (m *Manager) SwitchProject(projectID, workspacePath, vectorIndexFullPath st
 	if len(embeddingCachePaths) > 0 {
 		embeddingCachePath = embeddingCachePaths[0]
 	}
-	m.initWG.Add(1)
+	if !m.addInitWork() {
+		return ErrManagerShutdown
+	}
 	go m.initProject(initCtx, projectID, workspacePath, vectorIndexFullPath, embeddingCachePath, cbs)
 
 	return nil
@@ -716,10 +832,14 @@ func (m *Manager) initProject(ctx context.Context, projectID, workspacePath, vec
 	}
 
 	// Create the indexer with a wrapped progress callback that also updates
-	// the Manager's status for GetVectorIndexStatus. It stays local until
-	// SwitchBranch succeeds — only then is it published to m.indexer — so
-	// NotifyFileChange / debounce / Reindex cannot arm a pass against a nil
-	// collection. The goroutine and monitor below capture it via closure.
+	// the Manager's status for GetVectorIndexStatus, and with the stall
+	// recorder so the pass watchdog's transitions surface as the pass
+	// liveness sub-status (recordStall re-reads the live callbacks below, so
+	// a later cbs replacement — the Reindex repair path — still emits). It
+	// stays local until SwitchBranch succeeds — only then is it published to
+	// m.indexer — so NotifyFileChange / debounce / Reindex cannot arm a pass
+	// against a nil collection. The goroutine and monitor below capture it
+	// via closure.
 	m.setStatus(map[string]any{"branch": branch})
 	indexer := NewIndexer(IndexerConfig{
 		Service:           m.service,
@@ -734,6 +854,7 @@ func (m *Manager) initProject(ctx context.Context, projectID, workspacePath, vec
 		IgnoreFiles:       m.ignoreFiles,
 		ExcludePatterns:   m.excludePatterns,
 		IncludeSubmodules: m.includeSubmodules,
+		OnStallChange:     m.recordStall,
 		OnProgress:        m.wrapProgress(cbs.OnProgress),
 		Logger:            m.logger,
 		Telemetry:         m.telemetry,
@@ -949,7 +1070,14 @@ func (m *Manager) installGitMonitor(ctx context.Context, projectID string, gitMo
 
 // NotifyFileChange triggers debounced incremental indexing for the active
 // project's workspace (stored during SwitchProject); no-op with no indexer
-// configured (No Project / CHAT mode) or an empty workspace path.
+// configured (No Project / CHAT mode) or an empty workspace path. While the
+// incremental circuit breaker is tripped (incSuspended) the arm is refused:
+// file-change notifications stop scheduling passes until a successful pass,
+// an explicit Reindex, or a manager-lifecycle restart (SwitchProject — in
+// the per-root registry the manager's creation) resets the breaker. A
+// Git-panel focus switch is not a reset: ApplyFocus keeps live managers
+// running, so the suspension survives it and is re-surfaced by the focus
+// snapshot.
 func (m *Manager) NotifyFileChange() {
 	m.mu.RLock()
 	idx := m.indexer
@@ -961,6 +1089,10 @@ func (m *Manager) NotifyFileChange() {
 	}
 
 	m.debounceMu.Lock()
+	if m.incSuspended {
+		m.debounceMu.Unlock()
+		return
+	}
 	if m.debounceTimer != nil {
 		m.debounceTimer.Stop()
 	}
@@ -976,13 +1108,39 @@ func (m *Manager) scheduleIncrementalLocked() {
 	m.debounceTimer = m.armIncremental()
 }
 
-// armIncremental preserves the production timer while allowing in-process
-// timing tests to control dispatch independently of filesystem indexing.
+// armIncremental arms the debounce that runs one incremental pass after the
+// delay returned by incrementalArmDelayLocked — the configured window while
+// the failure streak is zero, else the failure backoff. The production timer
+// seam (afterFunc) keeps in-process timing tests in control of dispatch
+// independently of filesystem indexing. The caller must hold m.debounceMu
+// (both current call sites do), because the delay reads the failure streak.
 func (m *Manager) armIncremental() *time.Timer {
+	delay := m.incrementalArmDelayLocked()
 	if m.afterFunc != nil {
-		return m.afterFunc(m.effectiveDebounce(), m.runIncrementalGuarded)
+		return m.afterFunc(delay, m.runIncrementalGuarded)
 	}
-	return time.AfterFunc(m.effectiveDebounce(), m.runIncrementalGuarded)
+	return time.AfterFunc(delay, m.runIncrementalGuarded)
+}
+
+// incrementalArmDelayLocked returns the delay before the next debounce arm.
+// With no failed pass pending it is the configured watcher debounce window
+// (effectiveDebounce). After failures it is the exponential backoff for the
+// consecutive-failure streak: incrementalFailureBackoffStart doubled per
+// additional consecutive failure, capped at incrementalFailureBackoffMax —
+// so a persistently failing embedder retries at human-scale intervals
+// instead of burning CPU on every file change. Caller holds m.debounceMu.
+func (m *Manager) incrementalArmDelayLocked() time.Duration {
+	if m.incFailStreak <= 0 {
+		return m.effectiveDebounce()
+	}
+	d := incrementalFailureBackoffStart
+	for range m.incFailStreak - 1 {
+		d *= 2
+		if d >= incrementalFailureBackoffMax {
+			return incrementalFailureBackoffMax
+		}
+	}
+	return d
 }
 
 // effectiveDebounce returns the configured watcher debounce window, falling
@@ -995,18 +1153,57 @@ func (m *Manager) effectiveDebounce() time.Duration {
 	return DefaultDebounce
 }
 
+// incrementalPassIsVerdict reports whether one finished debounce-armed
+// incremental pass is a verdict — evidence the embedder/runtime pipeline is
+// failing — versus a lifecycle abort. A ctx-cancelled pass (superseded by a
+// project switch or shutdown) and a pass displaced mid-window by a concurrent
+// branch switch, No Project reset or close (ErrWorkingStoreDisplaced) are the
+// displacer's lifecycle events, never evidence; only live-context errors feed
+// the incremental-failure backoff and circuit breaker.
+func incrementalPassIsVerdict(ctx context.Context, err error) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	return !errors.Is(err, ErrWorkingStoreDisplaced)
+}
+
 // runIncrementalGuarded runs a single incremental pass unless one is already
 // in flight (then it re-arms the debounce to coalesce trailing changes). On
 // every fire it re-reads the active indexer, workspace, and index context
 // under m.mu, so the pass is safe across SwitchProject/Reindex/CancelIndexing:
 // cancelling the context aborts an in-flight pass instead of applying an old
 // project's diff to a fresh collection, and a re-armed pass targets the
-// current project. It does NOT serialize embedding — IndexIncremental holds
-// the service write lock around AddDocuments; the guard's value is coalescing
-// plus cancellation safety.
+// current project. It does NOT serialize passes by itself — the service's
+// pass lease does (ADR-125: a pass holds the lease for its duration and takes
+// the service write lock only in short identity-checked windows, so a queued
+// watcher pass waits for the lease, not for the lock); the guard's value is
+// coalescing plus cancellation safety.
+//
+// The pass outcome drives the incremental-failure backoff/circuit breaker
+// (specs/decisions/124-vector-incremental-failure-backoff.md): a failed pass
+// backs subsequent arms off exponentially and, at the breaker threshold,
+// suspends file-change arming with an honest suspended status; a success
+// resets the streak; a cancelled pass is never a verdict and counts as
+// neither.
 func (m *Manager) runIncrementalGuarded() {
+	m.debounceMu.Lock()
+	suspended := m.incSuspended
+	m.debounceMu.Unlock()
+	if suspended {
+		// A timer armed before the breaker tripped (or a fire racing the
+		// trip): no pass may start while suspended. Arming is refused at the
+		// source (NotifyFileChange), so this is a single late fire, not a
+		// retry loop.
+		m.logger.Info("incremental indexing skipped: suspended after repeated failures")
+		return
+	}
 	if m.indexing.Load() {
 		// A pass is in flight: re-arm instead of a redundant trailing pass.
+		// The delay is read before the in-flight pass's verdict lands, so a
+		// failing pass can leave this one arm at its pre-failure (shorter)
+		// delay — at most one extra pass fires early; the next notification
+		// (and every arm after it) reads the fresh streak, and the breaker's
+		// trip is per-pass, so it is never weakened by this window.
 		m.debounceMu.Lock()
 		m.debounceTimer = m.armIncremental()
 		m.debounceMu.Unlock()
@@ -1045,10 +1242,136 @@ func (m *Manager) runIncrementalGuarded() {
 		return
 	}
 	if idxErr := idx.IndexIncremental(ctx, ws); idxErr != nil {
-		m.logger.Warn("incremental indexing failed", "error", idxErr)
+		if !incrementalPassIsVerdict(ctx, idxErr) {
+			// Superseded or displaced: a project switch or shutdown cancelled
+			// this pass, or a concurrent branch switch, No Project reset or
+			// close displaced the working store mid-pass (ADR-125's staged
+			// write windows). Neither is a verdict about the embedder or the
+			// store — both count toward neither the backoff nor the breaker,
+			// mirroring the Reindex repair's own superseded-pass silence; the
+			// displacer's reconciliation pass (or the next file change)
+			// re-drives the diff.
+			m.logger.Info("incremental indexing aborted without a verdict (cancelled or displaced)", "error", idxErr)
+		} else {
+			m.logger.Warn("incremental indexing failed", "error", idxErr)
+			m.recordIncrementalPassFailure(ctx, idxErr)
+		}
+	} else {
+		m.recordIncrementalPassSuccess()
 	}
 	m.indexing.Store(false)
 	m.indexingWG.Done()
+}
+
+// recordIncrementalPassFailure records one failed debounce-armed incremental
+// pass: the streak grows, the next arm backs off exponentially, and at
+// incrementalFailureBreakerThreshold the breaker trips — file-change arming
+// suspends and the status reports the suspension honestly with the separate
+// IndexErrorKindSuspended kind. The suspend is deliberately NOT routed
+// through notifyInitFailure: it is a pipeline verdict about the embedder /
+// runtime, not a store verdict — it must not invoke the repair ladder's
+// failure callback (ADR-120 stays untouched) and it quarantines nothing.
+//
+// The trip is also pushed through the project's OnProgress callback so the
+// focused root's vector_index:status stream carries it live: the failing
+// pass itself has just emitted its terminal "ready" report (a live
+// collection keeps search answering — indexer.go's ready-vs-unavailable
+// by-collection-presence rule), and nothing runs after a suspension to
+// supersede it, so the stored status write alone would leave that
+// misleading event as the UI's freshest news until the next pull. The push
+// carries the last-known progress values and obeys the repair path's
+// superseded-pass silence (ctx is the pass's own index context; a lifecycle
+// that replaced it owns the status now).
+func (m *Manager) recordIncrementalPassFailure(ctx context.Context, lastErr error) {
+	m.debounceMu.Lock()
+	m.incFailStreak++
+	streak := m.incFailStreak
+	trip := streak >= incrementalFailureBreakerThreshold && !m.incSuspended
+	if trip {
+		m.incSuspended = true
+	}
+	m.debounceMu.Unlock()
+	if !trip {
+		return
+	}
+	reason := fmt.Sprintf(
+		"automatic incremental indexing suspended after %d consecutive failed passes (embedder/runtime failures); the last failure: %s — a successful pass, Reindex, or toggling vector indexing off and on resumes it",
+		streak, lastErr)
+	var files, total int
+	var file string
+	m.statusMu.Lock()
+	m.currentState = IndexStateUnavailable
+	m.currentPhase = ""
+	m.lastError = reason
+	m.lastErrorKind = IndexErrorKindSuspended
+	files, total, file = m.filesIndexed, m.totalFiles, m.currentFile
+	m.statusMu.Unlock()
+	m.logger.Warn("incremental indexing suspended: circuit breaker tripped",
+		"consecutive_failures", streak, "last_error", lastErr)
+	// Push the verdict through the project's status stream (nil-safe: bare
+	// test managers and roots without callbacks just keep the pull path).
+	// The currency check mirrors notifyRepairFailure's: m.indexCtx is
+	// re-read under m.mu, and a mismatch means this pass was superseded —
+	// the newer lifecycle owns the status from its own reports.
+	m.mu.RLock()
+	cbs := m.projectCallbacks
+	current := m.indexCtx == ctx
+	m.mu.RUnlock()
+	if !current || cbs.OnProgress == nil {
+		return
+	}
+	cbs.OnProgress("", IndexStateUnavailable, files, total, file)
+}
+
+// recordIncrementalPassSuccess records one successful debounce-armed pass
+// (also fired for a successful branch-switch pass): the backoff streak and
+// the breaker reset, so the next arm returns to the plain debounce window.
+// A tripped suspend status is cleared here too — the pass's own ready report
+// usually already replaced it, but clearing under statusMu keeps the status
+// pair from outliving the failure it described in every interleaving.
+func (m *Manager) recordIncrementalPassSuccess() {
+	m.debounceMu.Lock()
+	recovered := m.incFailStreak > 0
+	wasSuspended := m.incSuspended
+	m.incFailStreak = 0
+	m.incSuspended = false
+	m.debounceMu.Unlock()
+	if wasSuspended {
+		m.statusMu.Lock()
+		if m.lastErrorKind == IndexErrorKindSuspended {
+			m.clearIndexErrorLocked()
+		}
+		m.statusMu.Unlock()
+		m.logger.Info("incremental indexing resumed: a pass succeeded after suspension")
+	} else if recovered {
+		m.logger.Info("incremental indexing healthy again: the failure backoff reset")
+	}
+}
+
+// resetIncrementalFailureState is the explicit escape hatch behind the two
+// reset call sites of the incremental backoff/circuit breaker: a manual
+// Reindex and a manager-lifecycle restart (SwitchProject — the per-root
+// registry's only call is the manager's creation) re-arm file-change
+// indexing immediately instead of leaving the breaker's silence standing.
+// The vector_index.enabled toggle resets structurally — Disable tears the
+// manager down and an enable builds a fresh one, so a new manager always
+// starts with a clean streak. The suspend status pair is dropped when it was
+// this breaker's own; the pass this reset precedes owns the status from its
+// first progress report onward.
+func (m *Manager) resetIncrementalFailureState() {
+	m.debounceMu.Lock()
+	suspended := m.incSuspended
+	m.incFailStreak = 0
+	m.incSuspended = false
+	m.debounceMu.Unlock()
+	if suspended {
+		m.statusMu.Lock()
+		if m.lastErrorKind == IndexErrorKindSuspended {
+			m.clearIndexErrorLocked()
+		}
+		m.statusMu.Unlock()
+		m.logger.Info("incremental indexing breaker reset by an explicit reindex/project switch")
+	}
 }
 
 // CancelIndexing cancels any in-flight indexing operation and stops pending debounces.
@@ -1076,16 +1399,39 @@ func (m *Manager) stopDebounce() {
 
 // wrapProgress returns a ProgressCallback that updates the Manager's
 // internal status and then calls the user-provided callback (if not nil).
+// Every progress callback is also the pass's liveness proof: a recorded
+// stall window is cleared here, so "stalled" is visible only while the
+// silence lasts.
 func (m *Manager) wrapProgress(userFn ProgressCallback) ProgressCallback {
 	return func(phase IndexPhase, state IndexState, filesIndexed, totalFiles int, currentFile string) {
+		// A tripped breaker holds the failure pair hostage (ADR-124): a pass
+		// that FAILED with a live collection still reports the terminal
+		// "ready" (indexer.go's ready-vs-unavailable contract — search keeps
+		// answering), so an ungated clear here would erase the suspended
+		// verdict while incSuspended keeps refusing file-change arms — the
+		// "silently stuck ready" surface ADR-124 exists to prevent. The
+		// reachable producer is a failing branch-switch pass (debounce arms
+		// are refused while suspended; a failed Reindex repair re-records its
+		// own verdict right after). The pair is dropped by the breaker's own
+		// reset paths (a successful pass, Reindex, a lifecycle restart), and
+		// only those. Read BEFORE statusMu: sequential acquisition, never
+		// nested — the breaker fields participate in no lock nesting.
+		suspended := false
+		if state == IndexStateReady {
+			m.debounceMu.Lock()
+			suspended = m.incSuspended
+			m.debounceMu.Unlock()
+		}
 		m.statusMu.Lock()
 		m.currentPhase = phase
 		m.currentState = state
 		m.filesIndexed = filesIndexed
 		m.totalFiles = totalFiles
 		m.currentFile = currentFile
+		m.stall = StallSnapshot{}
+		m.stallSince = time.Time{}
 		switch {
-		case state == IndexStateReady:
+		case state == IndexStateReady && !suspended:
 			// The index answers again: the failure it recovered from is no
 			// longer the explanation for anything.
 			m.clearIndexErrorLocked()
@@ -1147,11 +1493,15 @@ func (m *Manager) clearIndexError() {
 }
 
 // setStatus updates the Manager's internal index status from a map.
-// Used for initial/reset values.
+// Used for initial/reset values. A reset also drops a recorded stall: the
+// status being reset belongs to a fresh attempt, and a stale "stalled"
+// evidence line must never outlive the pass it described.
 func (m *Manager) setStatus(vals map[string]any) {
 	m.statusMu.Lock()
 	defer m.statusMu.Unlock()
 
+	m.stall = StallSnapshot{}
+	m.stallSince = time.Time{}
 	if s, ok := vals["state"].(IndexState); ok {
 		m.currentState = s
 		// A fresh attempt (loading) or a ready report supersedes any reason
@@ -1193,6 +1543,13 @@ type IndexStatus struct {
 	// ErrorKind classifies LastError (see IndexErrorKind) so a caller can
 	// decide whether a repair is meaningful without parsing the message.
 	ErrorKind IndexErrorKind
+	// Stall is the pass-liveness sub-status (zero value = live pass or no
+	// pass): a running indexing pass whose watchdog fired — no progress for
+	// the 5-minute stall threshold. It is diagnostic evidence, never a
+	// state: State keeps reporting what the pass reports, and any progress
+	// event clears the stall. SilentFor is computed live, so repeated reads
+	// show the silence growing until the window resolves.
+	Stall StallSnapshot
 }
 
 // IndexErrorKind classifies WHY an index status is not ready, using the same
@@ -1219,6 +1576,15 @@ const (
 	// carries only a state, never the failure): the reason says so instead of
 	// leaving the surface bare.
 	IndexErrorKindUnknown IndexErrorKind = "unknown"
+	// IndexErrorKindSuspended classifies the incremental-failure circuit
+	// breaker (specs/decisions/124-vector-incremental-failure-backoff.md):
+	// debounce-armed passes failed repeatedly (an embedder/runtime fault), so
+	// automatic file-change indexing suspended itself instead of retrying
+	// forever. It is deliberately NOT the store taxonomy's verdict — no
+	// quarantine runs and the repair ladder (ADR-120) is untouched — and it
+	// is cleared by the breaker's reset paths (a successful pass, Reindex, a
+	// project switch, the vector_index.enabled toggle's manager rebuild).
+	IndexErrorKindSuspended IndexErrorKind = "suspended"
 )
 
 // ClassifyInitError maps an init/pass failure onto IndexErrorKind through the
@@ -1256,6 +1622,13 @@ const unavailableWithoutCauseReason = "the indexing pass reported the index unav
 func (m *Manager) GetIndexStatus() IndexStatus {
 	m.statusMu.RLock()
 	defer m.statusMu.RUnlock()
+	stall := StallSnapshot{}
+	if m.stall.Stalled {
+		stall = m.stall
+		// The silence is still ongoing — recompute so repeated reads show
+		// it growing instead of freezing at the fire-time value.
+		stall.SilentFor = time.Since(m.stallSince)
+	}
 	return IndexStatus{
 		State:        m.currentState,
 		Phase:        m.currentPhase,
@@ -1265,6 +1638,39 @@ func (m *Manager) GetIndexStatus() IndexStatus {
 		Branch:       m.branch,
 		LastError:    m.lastError,
 		ErrorKind:    m.lastErrorKind,
+		Stall:        stall,
+	}
+}
+
+// recordStall applies one pass-watchdog stall transition (the
+// IndexerConfig.OnStallChange consumer): a fired watchdog records its
+// evidence into the status, a resolve clears it. The watchdog serializes its
+// own open/close pair under its lock, and a watchdog may only clear a stall
+// it opened itself (the Watch identity) — two overlapping passes on one
+// indexer cannot let one watchdog's resolve erase the other's live stall.
+// A resolved transition also reaches the OnStallChange status callback, so
+// the event stream mirrors the poll path; callbacks run outside every
+// manager lock.
+func (m *Manager) recordStall(snap StallSnapshot) {
+	m.mu.RLock()
+	cbs := m.projectCallbacks
+	m.mu.RUnlock()
+
+	m.statusMu.Lock()
+	if !snap.Stalled && m.stall.Stalled && m.stall.Watch != snap.Watch {
+		m.statusMu.Unlock()
+		return
+	}
+	m.stall = snap
+	if snap.Stalled {
+		m.stallSince = time.Now().Add(-snap.SilentFor)
+	} else {
+		m.stallSince = time.Time{}
+	}
+	m.statusMu.Unlock()
+
+	if cbs.OnStallChange != nil {
+		cbs.OnStallChange(snap)
 	}
 }
 
@@ -1351,6 +1757,16 @@ func (m *Manager) handleBranchSwitch(ctx context.Context, indexer *Indexer, work
 	if fullPass {
 		m.freeOSMemoryAfterFullIndex()
 	}
+	// A successful branch-switch pass resets the incremental-failure
+	// backoff/breaker like any other successful pass ("success of any pass"
+	// is a reset path — ADR-124 D4). The reset is accepted on the switch's
+	// own terms, not as embedder proof: the (false, nil) return always ran
+	// IndexIncremental, but that pass can be a work no-op (zero inference),
+	// so a branch hop to an unchanged target may clear the breaker without
+	// the embedder having served a call — the next failing passes simply
+	// re-accrue the streak under the backoff. Its failures stay the branch
+	// switch's own logged outcome — they do not feed the breaker's streak.
+	m.recordIncrementalPassSuccess()
 }
 
 // errLegacyRepairNoop is the terminal cause recorded when the reindex repair
@@ -1394,6 +1810,12 @@ func (m *Manager) Reindex(ctx context.Context) error {
 	m.mu.Unlock()
 
 	m.stopDebounce()
+
+	// The explicit repair is also the breaker's escape hatch: reset the
+	// incremental-failure backoff/circuit breaker so file-change arming
+	// resumes with this pass, and the pass outcome (not the stale streak)
+	// shapes the next arm.
+	m.resetIncrementalFailureState()
 
 	// Start a fresh indexing pass: a full build when the collection is empty,
 	// otherwise a validation-based reconcile of the whole workspace.
@@ -1520,7 +1942,11 @@ func (m *Manager) Reindex(ctx context.Context) error {
 // groups are waited for with a bounded grace (shutdownIndexGracePeriod); a
 // goroutine stuck in non-interruptible work (chromem gob-decode, os.ReadFile,
 // synchronous ONNX inference) holds a lock Close needs, so on timeout the
-// blocking Close()/closeFn() are skipped — the OS reclaims at process exit.
+// blocking Close()/closeFn() are skipped — one WARN records the evidence
+// (capped goroutine dump + the skipped closes) and the zombie closer performs
+// the skipped close once the stuck goroutine eventually returns. Shutdown
+// itself always returns within the grace.
+// See specs/domains/workspace.md (bounded shutdown drain).
 func (m *Manager) Shutdown() {
 	// Cancel the async init first so it cannot touch a closed service;
 	// initProject aborts after its current (non-interruptible) step.
@@ -1565,19 +1991,64 @@ func (m *Manager) Shutdown() {
 	indexClean := initClean && m.waitBounded(&m.indexingWG, grace, "indexing")
 
 	// Close only when both groups drained cleanly — a stuck goroutine may
-	// still hold the locks Close()/closeFn() need; the OS reclaims at exit.
+	// still hold the locks Close()/closeFn() need. On a grace expiry the
+	// manager is already sealed, so nothing new can register behind the
+	// zombie closer that inherits the skipped close.
 	if indexClean {
-		if m.service != nil {
-			if err := m.service.Close(); err != nil {
-				m.logger.Error("failed to close vector service", "error", err)
-			}
-		}
-		if m.closeFn != nil {
-			if err := m.closeFn(); err != nil {
-				m.logger.Error("failed to close embedder", "error", err)
-			}
+		m.closeResources()
+		return
+	}
+
+	skipped := make([]string, 0, 2)
+	if m.service != nil {
+		skipped = append(skipped, "service.Close")
+	}
+	if m.closeFn != nil {
+		skipped = append(skipped, "closeFn")
+	}
+	dump, truncated := goroutineDump()
+	m.logger.Warn("vector shutdown grace expired; clean close skipped and deferred to the zombie closer",
+		"grace", grace,
+		"skipped_close", skipped,
+		"dump_truncated", truncated,
+		"stacks", dump)
+	m.spawnZombieCloser()
+}
+
+// closeResources performs the blocking clean close — the service's store
+// handles first, then the embedder via closeFn. The clean Shutdown path and
+// the zombie closer share this one helper so the two can never drift.
+func (m *Manager) closeResources() {
+	if m.service != nil {
+		if err := m.service.Close(); err != nil {
+			m.logger.Error("failed to close vector service", "error", err)
 		}
 	}
+	if m.closeFn != nil {
+		if err := m.closeFn(); err != nil {
+			m.logger.Error("failed to close embedder", "error", err)
+		}
+	}
+}
+
+// spawnZombieCloser launches the grace-expiry reaper: a goroutine that waits
+// for the stuck init/indexing goroutines to return, then performs the clean
+// close Shutdown skipped, so the handles are released even when the shutdown
+// was an eviction or a Disable rather than a process exit. Add-safety: the
+// manager is sealed, and initProject's internal indexing Add is ordered
+// before the indexing Wait by this goroutine's own initWG.Wait. Reopening
+// while the zombie lives is legal — a fresh manager opens the persisted
+// storage from disk.
+func (m *Manager) spawnZombieCloser() {
+	if m.service == nil && m.closeFn == nil {
+		return
+	}
+	go func() {
+		m.initWG.Wait()
+		m.indexingWG.Wait()
+		m.logger.Info("zombie closer: hung goroutine returned; performing the clean close Shutdown skipped")
+		m.closeResources()
+	}()
 }
 
 // initDrainGrace resolves the drain grace: the test-overridable
@@ -1603,6 +2074,27 @@ func (m *Manager) addIndexingWork() bool {
 	}
 	m.indexingWG.Add(1)
 	return true
+}
+
+// addInitWork registers SwitchProject's async init goroutine under the same
+// seal as addIndexingWork: a late init must never Add to initWG while
+// Shutdown's drain (or the zombie closer waiting behind it) Wait()s on it.
+// A false return seals the switch — the caller reports ErrManagerShutdown.
+func (m *Manager) addInitWork() bool {
+	m.wgMu.Lock()
+	defer m.wgMu.Unlock()
+	if m.wgClosed {
+		return false
+	}
+	m.initWG.Add(1)
+	return true
+}
+
+// isSealed reports whether Shutdown has sealed the manager.
+func (m *Manager) isSealed() bool {
+	m.wgMu.Lock()
+	defer m.wgMu.Unlock()
+	return m.wgClosed
 }
 
 // kickStoreMigration launches (at most once per manager) the unified
@@ -1707,6 +2199,21 @@ func (m *Manager) sealIndexingWork() {
 // caller must skip blocking cleanup that depends on those goroutines having
 // exited. This bounds the drain for goroutines stuck in non-interruptible
 // work so a single stuck goroutine can never hang app shutdown.
+//
+// On expiry the drain grace stays the backstop it always was — the wait is
+// bounded either way — but the DIAGNOSIS no longer has to be inferred from
+// how many waits have timed out in a row: the authoritative ONNX-thread
+// probe (ManagerConfig.EmbedderWedged) decides whether the inference worker
+// is wedged, and when it says yes the log names that culprit explicitly,
+// because a wedged job cannot be interrupted from Go and its thread dies
+// only with the process. The grace is deliberately NOT the probe's bound:
+// the probe owns the healthy-inference envelope (see the EmbedderWedged
+// contract on ManagerConfig), and healthy inference can legitimately run
+// tens of seconds past this short grace — a job that merely outlived the
+// grace must not be diagnosed as a wedge, or the verdict this probe exists
+// to make authoritative would be fabricated by every shutdown that races a
+// normal slow batch. A nil probe (CPU-provider embedders) keeps the generic
+// warning alone.
 func (m *Manager) waitBounded(wg *sync.WaitGroup, grace time.Duration, what string) bool {
 	done := make(chan struct{})
 	go func() {
@@ -1719,8 +2226,34 @@ func (m *Manager) waitBounded(wg *sync.WaitGroup, grace time.Duration, what stri
 	case <-time.After(grace):
 		m.logger.Warn("vector goroutine did not exit within grace period; skipping clean close of vector resources",
 			"what", what, "grace", grace)
+		if m.embedderWedged != nil && m.embedderWedged() {
+			m.logger.Warn("vector shutdown diagnosis: the ONNX inference thread is wedged — the authoritative liveness probe reports one job running past the healthy-inference envelope; it cannot be interrupted from Go and its thread dies with the process",
+				"what", what, "grace", grace)
+		}
 		return false
 	}
+}
+
+// maxShutdownDumpBytes caps the grace-expiry goroutine dump against the
+// pathological thousands-of-goroutines case flooding the log.
+const maxShutdownDumpBytes = 512 * 1024
+
+// GoroutineDump returns the same bounded all-goroutine stack dump the stall
+// watchdog and the shutdown evidence path take (512 KiB cap, truncated flag):
+// the RPC-level "collect diagnostics" action reuses it on demand so a user
+// can capture the blocking-call evidence without waiting for a stall Warn.
+func GoroutineDump() (dump string, truncated bool) {
+	return goroutineDump()
+}
+
+// goroutineDump returns a bounded all-goroutine stack dump (mirroring the
+// backend switch-holder dump) for the shutdown evidence line: the stack of
+// the goroutine that outlived the drain grace is the only artifact that
+// names the exact blocking call on an unreachable user machine.
+func goroutineDump() (dump string, truncated bool) {
+	buf := make([]byte, maxShutdownDumpBytes)
+	n := runtime.Stack(buf, true)
+	return string(buf[:n]), n == len(buf)
 }
 
 // defaultChunkFn adapts embedding.ChunkFile to the ChunkFunc signature.

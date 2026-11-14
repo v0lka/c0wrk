@@ -759,7 +759,7 @@ func TestValidateCollection_FastPathSkipsReads(t *testing.T) {
 	svc.ReleaseWriteLock()
 
 	reads := swapReadFileFn(t)
-	stale, newFiles, deleted, valErr := svc.ValidateCollection(context.Background(), ws, testIgnoreChecker(t, ws), false)
+	stale, newFiles, deleted, valErr := svc.ValidateCollection(context.Background(), ws, testIgnoreChecker(t, ws), false, nil)
 	if valErr != nil {
 		t.Fatalf("ValidateCollection: %v", valErr)
 	}
@@ -817,7 +817,7 @@ func TestValidateCollection_LegacySidecarFullReadAndUpgrade(t *testing.T) {
 
 	// Legacy entries cannot use the stat fast path: the file MUST be read.
 	reads := swapReadFileFn(t)
-	stale, newFiles, deleted, valErr := svc.ValidateCollection(context.Background(), ws, testIgnoreChecker(t, ws), false)
+	stale, newFiles, deleted, valErr := svc.ValidateCollection(context.Background(), ws, testIgnoreChecker(t, ws), false, nil)
 	if valErr != nil {
 		t.Fatalf("ValidateCollection: %v", valErr)
 	}
@@ -903,7 +903,7 @@ func TestValidateCollection_StatMismatchTakesFullRead(t *testing.T) {
 	// comparison decides — NOT stale despite the size mismatch.
 	setSidecarEntry(hash + fileHashEntrySep + strconv.FormatInt(info.Size()-1, 10) + fileHashEntrySep + mtime)
 	reads := swapReadFileFn(t)
-	stale, newFiles, deleted, valErr := svc.ValidateCollection(context.Background(), ws, checker, false)
+	stale, newFiles, deleted, valErr := svc.ValidateCollection(context.Background(), ws, checker, false, nil)
 	if valErr != nil {
 		t.Fatalf("ValidateCollection (size mismatch): %v", valErr)
 	}
@@ -921,7 +921,7 @@ func TestValidateCollection_StatMismatchTakesFullRead(t *testing.T) {
 	}
 	setSidecarEntry(newFormatEntry(t, content, info))
 	reads.Store(0)
-	stale, newFiles, deleted, valErr = svc.ValidateCollection(context.Background(), ws, checker, false)
+	stale, newFiles, deleted, valErr = svc.ValidateCollection(context.Background(), ws, checker, false, nil)
 	if valErr != nil {
 		t.Fatalf("ValidateCollection (mtime touch): %v", valErr)
 	}
@@ -938,7 +938,7 @@ func TestValidateCollection_StatMismatchTakesFullRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	reads.Store(0)
-	stale, _, _, valErr = svc.ValidateCollection(context.Background(), ws, checker, false)
+	stale, _, _, valErr = svc.ValidateCollection(context.Background(), ws, checker, false, nil)
 	if valErr != nil {
 		t.Fatalf("ValidateCollection (content change): %v", valErr)
 	}
@@ -1007,7 +1007,7 @@ func TestValidateCollection_OversizedAndBinaryStillSkippedWithFastPath(t *testin
 	}
 
 	reads := swapReadFileFn(t)
-	stale, newFiles, deleted, valErr := svc.ValidateCollection(context.Background(), ws, testIgnoreChecker(t, ws), false)
+	stale, newFiles, deleted, valErr := svc.ValidateCollection(context.Background(), ws, testIgnoreChecker(t, ws), false, nil)
 	if valErr != nil {
 		t.Fatalf("ValidateCollection: %v", valErr)
 	}
@@ -1109,7 +1109,7 @@ func TestSwitchBranch_RoundTripsNewSidecarFormat(t *testing.T) {
 
 	// The reloaded entry must still drive the stat fast path: no reads.
 	reads := swapReadFileFn(t)
-	stale, newFiles, deleted, valErr := svc.ValidateCollection(context.Background(), ws, testIgnoreChecker(t, ws), false)
+	stale, newFiles, deleted, valErr := svc.ValidateCollection(context.Background(), ws, testIgnoreChecker(t, ws), false, nil)
 	if valErr != nil {
 		t.Fatalf("ValidateCollection: %v", valErr)
 	}
@@ -1178,7 +1178,7 @@ func TestValidateCollection_ChunkerFingerprintChangeStalesFiles(t *testing.T) {
 	}
 
 	// Same configuration: the file is unchanged (fast path holds, no stale).
-	stale, newFiles, deleted, valErr := svc.ValidateCollection(context.Background(), ws, testIgnoreChecker(t, ws), false)
+	stale, newFiles, deleted, valErr := svc.ValidateCollection(context.Background(), ws, testIgnoreChecker(t, ws), false, nil)
 	if valErr != nil {
 		t.Fatalf("ValidateCollection: %v", valErr)
 	}
@@ -1191,7 +1191,7 @@ func TestValidateCollection_ChunkerFingerprintChangeStalesFiles(t *testing.T) {
 	svc.mu.Lock()
 	svc.chunkerFingerprint = "cfgBBBBBBBBBBBB"
 	svc.mu.Unlock()
-	stale, newFiles, deleted, valErr = svc.ValidateCollection(context.Background(), ws, testIgnoreChecker(t, ws), false)
+	stale, newFiles, deleted, valErr = svc.ValidateCollection(context.Background(), ws, testIgnoreChecker(t, ws), false, nil)
 	if valErr != nil {
 		t.Fatalf("ValidateCollection after config change: %v", valErr)
 	}
@@ -1211,7 +1211,7 @@ func TestValidateCollection_ChunkerFingerprintChangeStalesFiles(t *testing.T) {
 		strconv.FormatInt(size, 10) + fileHashEntrySep +
 		strconv.FormatInt(mtime, 10)
 	svc.mu.Unlock()
-	stale, newFiles, deleted, valErr = svc.ValidateCollection(context.Background(), ws, testIgnoreChecker(t, ws), false)
+	stale, newFiles, deleted, valErr = svc.ValidateCollection(context.Background(), ws, testIgnoreChecker(t, ws), false, nil)
 	if valErr != nil {
 		t.Fatalf("ValidateCollection with fingerprint-less entry: %v", valErr)
 	}
@@ -1264,7 +1264,7 @@ func TestValidateCollection_PeriodicFullHashRevalidation(t *testing.T) {
 
 	reads := swapReadFileFn(t)
 	for i := 1; i < fullHashRevalidationEvery; i++ {
-		stale, newFiles, deleted, valErr := svc.ValidateCollection(context.Background(), ws, testIgnoreChecker(t, ws), false)
+		stale, newFiles, deleted, valErr := svc.ValidateCollection(context.Background(), ws, testIgnoreChecker(t, ws), false, nil)
 		if valErr != nil {
 			t.Fatalf("pass %d: %v", i, valErr)
 		}
@@ -1278,7 +1278,7 @@ func TestValidateCollection_PeriodicFullHashRevalidation(t *testing.T) {
 
 	// Pass N: the forced full-hash revalidation reads and re-hashes the
 	// file; matching content stays non-stale.
-	stale, newFiles, deleted, valErr := svc.ValidateCollection(context.Background(), ws, testIgnoreChecker(t, ws), false)
+	stale, newFiles, deleted, valErr := svc.ValidateCollection(context.Background(), ws, testIgnoreChecker(t, ws), false, nil)
 	if valErr != nil {
 		t.Fatalf("forced pass: %v", valErr)
 	}
@@ -1291,7 +1291,7 @@ func TestValidateCollection_PeriodicFullHashRevalidation(t *testing.T) {
 
 	// Counter reset: the next pass is a fast-path pass again.
 	reads.Store(0)
-	if _, _, _, valErr := svc.ValidateCollection(context.Background(), ws, testIgnoreChecker(t, ws), false); valErr != nil {
+	if _, _, _, valErr := svc.ValidateCollection(context.Background(), ws, testIgnoreChecker(t, ws), false, nil); valErr != nil {
 		t.Fatalf("post-reset pass: %v", valErr)
 	}
 	if got := reads.Load(); got != 0 {

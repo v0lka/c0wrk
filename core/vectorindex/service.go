@@ -301,8 +301,9 @@ type Service struct {
 	current *projectState
 
 	// indexAvailability is a metadata-only snapshot for UI status; reading it
-	// must never wait for mu — indexing holds that lock across embedding and
-	// persistence, while focus changes need status immediately.
+	// must never wait for mu — indexing passes hold that lock only in short
+	// identity-checked write windows (ADR-123), while focus changes need
+	// status immediately.
 	indexAvailability atomic.Uint32
 
 	// parked is the LRU of recently-parked states, oldest first (parked[0] is
@@ -324,9 +325,19 @@ type Service struct {
 	// parked states) to unwind before closing resources.
 	migrationWG sync.WaitGroup
 	mu          sync.RWMutex
-	ready       atomic.Bool
-	readyCh     chan struct{} // closed when ready becomes true; recreated on false
-	readyMu     sync.Mutex    // protects readyCh swaps + readyGen
+	// passLease serializes full/incremental indexing passes against each
+	// other. Since ADR-123 a pass no longer holds mu for its whole duration —
+	// it takes mu only in short identity-checked write windows, so search,
+	// status and Close are never frozen by a pass — and the lease is what
+	// keeps two passes from interleaving their windows (the mutual exclusion
+	// the whole-pass hold used to provide). Lock ladder: passLease is taken
+	// BEFORE mu and never the reverse; Close/SwitchBranch/SetProject take mu
+	// directly and never touch the lease, so they run between a pass's
+	// windows and the pass aborts at its next window (displacement check).
+	passLease sync.Mutex
+	ready     atomic.Bool
+	readyCh   chan struct{} // closed when ready becomes true; recreated on false
+	readyMu   sync.Mutex    // protects readyCh swaps + readyGen
 
 	// pendingNoProjectReset holds a No Project reset that could not be applied
 	// immediately because s.mu was held (TryLock fails under write and read
@@ -1138,6 +1149,77 @@ func (s *Service) ReleaseWriteLock() {
 	s.mu.Unlock()
 }
 
+// ErrWorkingStoreDisplaced is returned by an indexing pass whose working
+// store was swapped, closed or evicted between its write windows — a
+// concurrent branch switch, project switch, No Project reset or Close won
+// the service lock while the pass was outside a window (ADR-123). The
+// condition is not a store defect (the repair ladder never quarantines for
+// it): the displacing owner rebuilt or released the store, and the next
+// triggered pass reconciles from source.
+var ErrWorkingStoreDisplaced = errors.New("working store displaced mid-pass")
+
+// beginPassLease takes the pass lease and captures the working-store identity
+// under a short write window — the Service-level half of Indexer
+// .beginIndexPass, usable by drivers that run the accumulator directly.
+func (s *Service) beginPassLease() *indexPass {
+	s.passLease.Lock()
+	s.AcquireWriteLock()
+	ident := s.captureWorkingStoreLocked()
+	s.ReleaseWriteLock()
+	return &indexPass{svc: s, ident: ident}
+}
+
+// workingStoreIdentity pins the working store one indexing pass commits
+// into: the project state pointer plus the collection and lexical handles
+// it captured under the pass's initial window. Every staged write window
+// re-derives all three under the lock and compares, so any state swap
+// (SetProject/park/restore/reset), any in-place branch re-open
+// (releaseBranchResidentsLocked) and any Close aborts the pass at its next
+// window instead of committing into a store the pass no longer owns.
+type workingStoreIdentity struct {
+	state *projectState
+	col   *chromem.Collection
+	lex   lexical.Index
+	// cache is the state's embedding cache. Unlike col/lex it survives
+	// closeStateLocked (teardown never closes it), is internally
+	// synchronized, and is content-addressed — so the pass may keep
+	// embedding through a captured cache outside every write window; work
+	// rendered moot by a displacement is wasted inference, never corruption.
+	cache *embeddingCache
+}
+
+// captureWorkingStoreLocked snapshots the working-store identity. Caller
+// holds s.mu.
+func (s *Service) captureWorkingStoreLocked() workingStoreIdentity {
+	id := workingStoreIdentity{state: s.current}
+	if s.current != nil {
+		id.col = s.current.collection
+		id.lex = s.current.lexical
+		id.cache = s.current.embeddingCache
+	}
+	return id
+}
+
+// workingStoreDisplacedLocked reports whether the working store the pass
+// captured at start has been swapped, closed or torn down since. Caller
+// holds s.mu.
+func (s *Service) workingStoreDisplacedLocked(id workingStoreIdentity) bool {
+	if s.closed.Load() {
+		return true
+	}
+	return s.current != id.state ||
+		(s.current != nil && (s.current.collection != id.col || s.current.lexical != id.lex))
+}
+
+// queryableCollection reports whether the current working store exists and
+// holds at least one committed document — the "a pass leaves something to
+// search" gate of ADR-123: an indexing pass drops readiness only when this
+// is false, and keeps it up (searches answering between windows) otherwise.
+func (s *Service) queryableCollection() bool {
+	col := s.GetCollection()
+	return col != nil && col.Count() > 0
+}
+
 // SetReady updates the readiness state. When transitioning to true,
 // all WaitReady callers are unblocked.
 func (s *Service) SetReady(ready bool) {
@@ -1194,8 +1276,11 @@ func (s *Service) RestoreReady(gen int64) {
 }
 
 // GetDB returns the underlying chromem-go DB (for use by Indexer). Lock-free
-// on purpose: indexing paths already hold the service lock, so taking it here
-// would deadlock; nil-checked defensively.
+// on purpose, exactly like GetCollection: it is a best-effort snapshot of
+// whichever state is current (ADR-123 removed the whole-pass hold, so no
+// indexing path holds the service lock continuously any more); nil-checked
+// defensively. window()-scoped code calls it under the write lock, so a
+// locking read here would self-deadlock.
 func (s *Service) GetDB() *chromem.DB {
 	ps := s.current
 	if ps == nil {
@@ -1205,15 +1290,33 @@ func (s *Service) GetDB() *chromem.DB {
 }
 
 // GetCollection returns the current collection (for use by Indexer).
-// Intentionally lock-free like GetDB; status-honesty callers read it WITHOUT
-// the lock as a best-effort snapshot (the tolerance HandleBranchSwitch
-// documents).
+// Intentionally lock-free like GetDB: window()-scoped code calls it WHILE the
+// service write lock is held (e.g. collectDocumentIDs inside a commit
+// window), so a locking read would self-deadlock, and status-honesty callers
+// read it as a best-effort snapshot (the tolerance HandleBranchSwitch
+// documents). Pass-terminal verdicts that must not race a concurrent
+// park/close read the locked HasCollection accessor instead.
 func (s *Service) GetCollection() *chromem.Collection {
 	ps := s.current
 	if ps == nil {
 		return nil
 	}
 	return ps.collection
+}
+
+// HasCollection reports whether a working collection exists right now, read
+// under s.mu.RLock: the race-free read for pass-terminal verdicts (the
+// deferred ready/unavailable reports), which run outside every lock but may
+// race a concurrent switch/reset/close parking or tearing the state down
+// (closeStateLocked nils ps.collection under the write lock — a lock-free
+// GetCollection read at exactly that moment is a data race, flagged by -race
+// on the rapid-double-switch cancel path). Callers holding s.mu read
+// ps.collection directly; never call this from window()-scoped code.
+func (s *Service) HasCollection() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	ps := s.current
+	return ps != nil && ps.collection != nil
 }
 
 // IndexAvailability returns the last published (vector, lexical) snapshot
