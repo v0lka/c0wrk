@@ -37,7 +37,7 @@ func statfsVolume(path string) (volumeClass, error) {
 	attrs, err := windows.GetFileAttributes(pathPtr)
 	if err != nil {
 		// Best-effort: keep whatever the drive type established.
-		return vc, nil
+		return vc, nil //nolint:nilerr // best-effort probe: a failed attribute read degrades to the drive-type verdict alone
 	}
 	if attrsHaveRecall(attrs) {
 		vc.Placeholder = true

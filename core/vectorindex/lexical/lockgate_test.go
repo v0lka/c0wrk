@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -145,6 +146,15 @@ func TestLockGate_CloseReleasesGate(t *testing.T) {
 // and the orphaned holder keeps its fds and closes cleanly — it never
 // wedges the rebuilt index.
 func TestLockGate_QuarantineRebuildWithLiveHolder(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// Quarantine removes the whole lexical leg while the stuck holder's
+		// bbolt mapping is still live; Windows cannot delete a file with an
+		// active file mapping (POSIX unlink-under-open semantics), so this
+		// end-to-end rung is unix-only. Production matches: on Windows the
+		// removal fails loudly and the repair lands on the next launch,
+		// when no holder is left.
+		t.Skip("quarantine under a live holder requires POSIX unlink semantics")
+	}
 	dir := filepath.Join(t.TempDir(), "lex")
 	ctx := context.Background()
 	shrinkGateWait(t, 30*time.Millisecond)
