@@ -294,7 +294,7 @@ func (m *mockEmitter) Thought(_ int, _, _ string)                               
 func (m *mockEmitter) ToolCall(_, _ int, _, _, _ string)                            {}
 func (m *mockEmitter) ToolResult(_, _, _ int, _ string, _ bool)                     {}
 func (m *mockEmitter) StepComplete(_ int, _ time.Duration)                          {}
-func (m *mockEmitter) SubAgentLaunch(_, _ string)                                   {}
+func (m *mockEmitter) SubAgentLaunch(_, _, _ string)                                {}
 func (m *mockEmitter) SubAgentComplete(_ string, _ bool, _ time.Duration, _ string) {}
 
 func (m *mockEmitter) SubAgentPaused(_ string, _ time.Duration)         {}

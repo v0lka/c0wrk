@@ -50,7 +50,7 @@ func TestLoggingEmitter_SubAgentLaunch_BoundsDescription(t *testing.T) {
 	e, buf := newBufLoggerEmitter(t)
 	desc := secretProse()
 
-	e.SubAgentLaunch("step_1", desc)
+	e.SubAgentLaunch("step_1", desc, "")
 
 	assertBounded(t, buf, "descriptionLen", desc)
 }
