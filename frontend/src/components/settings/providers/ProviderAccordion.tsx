@@ -18,9 +18,7 @@ export interface ProviderConfig {
   /** Per-provider TLS pin (ADR-054): '' = standard CA verification (override
    *  off), non-empty = only the pinned key is accepted. */
   tls_fingerprint: string
-  /** Auto-resend interval in seconds (compatible providers only).
-   *  Undefined = keep the persisted value (omitted from the payload);
-   *  0 = auto-resend off, sent explicitly. */
+  /** Session-layer resend interval: undefined keeps persisted; 0 disables. */
   auto_retry_seconds?: number
   /** ChatGPT/Kimi authentication mode ('api_key' | 'oauth'). Mirrors the
    *  useLLMConfig draft field; other fixed providers leave it absent. */

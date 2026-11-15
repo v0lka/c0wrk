@@ -33,7 +33,7 @@ interface ProviderEntryPayload {
   models: string[]
   /** Only set for compatible providers (ADR-054). */
   tls_fingerprint?: string
-  /** Auto-retry interval in seconds — compatible providers only. Undefined
+  /** Auto-retry interval in seconds. Undefined
    *  (dropped by JSON serialization) keeps the persisted value via the
    *  backend pointer sentinel; an explicit number, including 0, is applied
    *  verbatim. */
@@ -79,6 +79,10 @@ export function useLLMConfigSave(onSettingsSaved?: () => void): UseLLMConfigSave
           api_key: cfg.api_key,
           models: cfg.models,
         }
+        // Undefined keeps the persisted interval; an explicit 0 disables it.
+        if (cfg.auto_retry_seconds !== undefined) {
+          entry.auto_retry_seconds = cfg.auto_retry_seconds
+        }
         if (PROVIDERS_WITH_BASE_URL.has(p, cfg.type)) {
           entry.base_url = cfg.base_url
         }
@@ -89,14 +93,6 @@ export function useLLMConfigSave(onSettingsSaved?: () => void): UseLLMConfigSave
           // atomically with the rest of the entry; the pointer sentinel on
           // the Go side means an explicit '' here clears the pin.
           entry.tls_fingerprint = cfg.tls_fingerprint
-          // The auto-retry interval travels along the same compatible-only
-          // path: undefined omits the key entirely, which the backend
-          // pointer sentinel treats as "keep the persisted value"
-          // (debounce-safe), while an explicit number — including a
-          // disabling 0 — is applied verbatim, atomically with the entry.
-          if (cfg.auto_retry_seconds !== undefined) {
-            entry.auto_retry_seconds = cfg.auto_retry_seconds
-          }
           // Route to the correct backend map by transport type. Default to
           // 'openai' for compatible providers that lack an explicit type
           // (preserves behavior for any pre-existing compatible entries).

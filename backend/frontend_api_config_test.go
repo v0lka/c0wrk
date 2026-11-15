@@ -4652,13 +4652,13 @@ func TestResolveTLSFingerprint(t *testing.T) {
 	}
 }
 
-// --- Per-provider auto-retry interval (compatible providers only) ---
+// --- Per-provider auto-retry interval ---
 
 func intPtr(i int) *int { return &i }
 
 // newAutoRetryTestAPI returns a test API whose config already holds one
 // openai-compatible and one anthropic-compatible provider with a persisted
-// auto-retry interval, plus the fixed providers (which never carry one).
+// auto-retry interval, plus fixed providers with the default-off interval.
 func newAutoRetryTestAPI(t *testing.T) (*FrontendAPI, *mockBuilder) {
 	t.Helper()
 	f, mock, _ := newTestAPI(t)
@@ -4682,8 +4682,8 @@ func newAutoRetryTestAPI(t *testing.T) (*FrontendAPI, *mockBuilder) {
 }
 
 // GetConfig (buildLLMResponse) must round-trip the persisted interval for
-// compatible providers so the settings form can show it; providers without
-// an interval — and the fixed anthropic/chatgpt providers — report 0.
+// providers so the settings form can show it; providers without an interval
+// report the default 0.
 func TestGetConfig_ExposesAutoRetrySeconds(t *testing.T) {
 	f, _ := newAutoRetryTestAPI(t)
 	f.config.LLM.OpenAICompatible["plain"] = config.OpenAICompatibleConfig{
@@ -4701,7 +4701,7 @@ func TestGetConfig_ExposesAutoRetrySeconds(t *testing.T) {
 	if got := resp.OpenAICompatible["plain"].AutoRetrySeconds; got != 0 {
 		t.Errorf("unconfigured provider interval = %d, want 0", got)
 	}
-	// The fixed providers never carry an interval: the field stays 0/empty.
+	// The untouched fixed providers retain the default-off interval.
 	if got := resp.Anthropic.AutoRetrySeconds; got != 0 {
 		t.Errorf("fixed anthropic interval = %d, want 0", got)
 	}

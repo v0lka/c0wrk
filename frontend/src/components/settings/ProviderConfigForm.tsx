@@ -18,8 +18,7 @@ interface ProviderConfig {
   type?: CompatibleType
   /** Per-provider TLS pin (ADR-054): '' = standard CA verification. */
   tls_fingerprint: string
-  /** Auto-resend interval in seconds for this provider (compatible
-   *  providers only). 0/undefined = auto-resend off. */
+  /** Auto-resend interval in seconds. 0/undefined = off. */
   auto_retry_seconds?: number
 }
 
@@ -179,30 +178,24 @@ export function ProviderConfigForm({
         </div>
       )}
 
-      {/* Auto-retry interval — compatible providers only, the same gate as
-          Base URL. The engine's in-request retry loop (backoff inside the
-          LLM call) always runs; this timer is the extra session-layer
-          auto-RESEND of a failed exchange, which only makes sense against a
-          custom endpoint the user owns. 0 = off. */}
-      {showBaseUrl && (
-        <div className="flex flex-col gap-2">
-          <label className="text-xs text-muted-foreground">Auto-retry interval</label>
-          <div className="flex max-w-[240px] items-center gap-2">
-            <EditableCombobox
-              value={config?.auto_retry_seconds ?? 0}
-              presets={autoRetryPresets}
-              min={AUTO_RETRY_MIN}
-              max={autoRetryMaxSeconds}
-              unit="s"
-              onChange={(n) => onConfigChange({ auto_retry_seconds: n })}
-              ariaLabel="Auto-retry interval"
-            />
-          </div>
-          <span className="text-xs text-muted-foreground">
-            0 = auto-resend off (retry only inside the engine)
-          </span>
+      {/* Session-layer resend, independent of endpoint and authentication. */}
+      <div className="flex flex-col gap-2">
+        <label className="text-xs text-muted-foreground">Auto-retry interval</label>
+        <div className="flex max-w-[240px] items-center gap-2">
+          <EditableCombobox
+            value={config?.auto_retry_seconds ?? 0}
+            presets={autoRetryPresets}
+            min={AUTO_RETRY_MIN}
+            max={autoRetryMaxSeconds}
+            unit="s"
+            onChange={(n) => onConfigChange({ auto_retry_seconds: n })}
+            ariaLabel="Auto-retry interval"
+          />
         </div>
-      )}
+        <span className="text-xs text-muted-foreground">
+          0 = auto-resend off (retry only inside the engine)
+        </span>
+      </div>
 
       {/* API Key */}
       {showApiKey && (

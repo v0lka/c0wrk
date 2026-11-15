@@ -22,6 +22,9 @@ llm:
   default_model: "anthropic/claude-sonnet-4-20250514"
 
   anthropic:
+    # Opt-in task auto-resend after rate-limit/overload, 0..3600 seconds.
+    # 0 / omitted = off; engine in-flight retry remains separate (ADR-126).
+    # auto_retry_seconds: 30
     api_key: "${ANTHROPIC_API_KEY}"
     models:
       - "claude-sonnet-4-20250514"
@@ -74,11 +77,12 @@ llm:
       #   and takes effect again once the proxy stops dialing for the host.
       # tls_fingerprint: ""
       #
-      # Optional: automatic retry timer for this provider (compatible
-      # providers only). After a failed LLM request the session waits this
+      # Optional: automatic retry timer for this provider.
+      # After a rate-limit/overload task failure the UI waits this
       # many seconds, then re-sends automatically instead of asking how to
       # proceed. 0 / omitted = disabled (the default). Not a router-level
-      # retry knob: the timer lives in the c0wrk session layer.
+      # retry knob: no backend timer exists — the UI owns the countdown and
+      # the resume.
       # auto_retry_seconds: 30
       #
       # Optional: request-budget timeout class for this provider (ADR-071).
@@ -108,8 +112,8 @@ llm:
     #   # proxy.bypass_list to pin and proxy simultaneously.
     #   # tls_fingerprint: ""
     #   # Same automatic retry timer as openai_compatible above
-    #   # (auto_retry_seconds, compatible providers only; 0 / omitted =
-    #   # disabled). After a failed request the session waits this many
+    #   # (auto_retry_seconds; 0 / omitted =
+    #   # disabled). After a rate-limit/overload task failure the UI waits this many
     #   # seconds, then re-sends automatically.
     #   # auto_retry_seconds: 30
     #   # Same request-budget timeout class as openai_compatible above
@@ -118,6 +122,10 @@ llm:
     #   # timeout_class: local
 
   chatgpt:
+    # Opt-in task auto-resend after rate-limit/overload, 0..3600 seconds.
+    # 0 / omitted = off; API-key and OAuth modes share this interval; the
+    # engine's in-flight retry remains separate (ADR-126).
+    # auto_retry_seconds: 30
     api_key: "${OPENAI_API_KEY}"
     models: []
     # Authentication mode for this provider:
@@ -136,6 +144,10 @@ llm:
     #   mode: api_key
 
   kimi:
+    # Opt-in task auto-resend after rate-limit/overload, 0..3600 seconds.
+    # 0 / omitted = off; API-key and OAuth modes share this interval; the
+    # engine's in-flight retry remains separate (ADR-126).
+    # auto_retry_seconds: 30
     # Moonshot AI platform API key. Existing openai_compatible /
     # anthropic_compatible Moonshot entries remain supported and do not migrate.
     api_key: "${MOONSHOT_API_KEY}"

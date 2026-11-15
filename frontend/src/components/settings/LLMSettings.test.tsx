@@ -449,7 +449,7 @@ describe('LLMSettings TLS pin proxy gate', () => {
   })
 })
 
-// --- Auto-retry interval (compatible providers only) ---
+// --- Auto-retry interval ---
 
 describe('LLMSettings auto-retry interval', () => {
   beforeEach(() => {
@@ -508,7 +508,7 @@ describe('LLMSettings auto-retry interval', () => {
     expect(container.textContent).toContain('Auto-retry interval')
   })
 
-  it('shows no field for the fixed anthropic provider', async () => {
+  it('shows the default-off field for fixed Anthropic without endpoint or TLS settings', async () => {
     mocks.getConfig.mockResolvedValue({
       loaded: true,
       proxy: { enabled: false, url: '', bypass_list: [], tls_cert_dir: '' },
@@ -525,12 +525,14 @@ describe('LLMSettings auto-retry interval', () => {
     await renderSettings()
     await expandProvider('Anthropic')
 
-    expect(container.querySelector('input[aria-label="Auto-retry interval"]')).toBeNull()
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="Auto-retry interval"]')?.value).toBe('0')
+    expect(container.textContent).not.toContain('Base URL')
+    expect(container.textContent).not.toContain('Pin TLS certificate')
   })
 
   // End-to-end through the real form: picking a preset writes the draft and
-  // the debounced save carries the interval in the compatible map only.
-  it('saves an explicit 0 through the form into the compatible map only', async () => {
+  // the debounced save carries the interval in the compatible map.
+  it('saves an explicit 0 through the form into the compatible map', async () => {
     mocks.getConfig.mockResolvedValue({
       loaded: true,
       proxy: { enabled: false, url: '', bypass_list: [], tls_cert_dir: '' },
@@ -568,9 +570,87 @@ describe('LLMSettings auto-retry interval', () => {
       const last = mocks.updateLLMConfig.mock.calls[mocks.updateLLMConfig.mock.calls.length - 1]
       const compatible = last?.[0]?.openai_compatible as Record<string, { auto_retry_seconds?: number }> | undefined
       expect(compatible?.lmstudio?.auto_retry_seconds).toBe(0)
-      // The fixed provider entry never carries the field.
+      // An omitted fixed interval remains omitted, not an explicit zero.
       const fixed = last?.[0]?.anthropic
       expect(fixed).not.toHaveProperty('auto_retry_seconds')
+    })
+  })
+
+  // The fixed path through the same chain: an explicitly set interval is
+  // saved into the fixed anthropic entry, not only the compatible map.
+  it('saves an edited interval through the form into the fixed anthropic entry', async () => {
+    mocks.getConfig.mockResolvedValue({
+      loaded: true,
+      proxy: { enabled: false, url: '', bypass_list: [], tls_cert_dir: '' },
+      llm: {
+        auto_retry_max_seconds: 3600,
+        default_model: 'anthropic/claude-sonnet',
+        anthropic: { api_key: 'sk', models: ['claude-sonnet'] },
+        openai_compatible: {
+          lmstudio: { api_key: 'k', base_url: 'http://localhost:1234', models: [] },
+        },
+      },
+    })
+
+    await renderSettings()
+    await expandProvider('Anthropic')
+
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Auto-retry interval"]')
+    expect(input?.value).toBe('0')
+
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
+    await act(async () => {
+      setter!.call(input!, '30')
+      input!.dispatchEvent(new Event('input', { bubbles: true }))
+      input!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    await vi.waitFor(() => {
+      const last = mocks.updateLLMConfig.mock.calls[mocks.updateLLMConfig.mock.calls.length - 1]
+      const fixed = last?.[0]?.anthropic as Record<string, unknown> | undefined
+      expect(fixed?.auto_retry_seconds).toBe(30)
+    })
+  })
+
+  // The subscription branch is derived from the loaded auth_mode at this
+  // level (not an injected prop): saving must keep working with the OAuth
+  // auth section mounted above the form.
+  it('saves the chatgpt interval while the OAuth branch is active', async () => {
+    mocks.getConfig.mockResolvedValue({
+      loaded: true,
+      proxy: { enabled: false, url: '', bypass_list: [], tls_cert_dir: '' },
+      llm: {
+        auto_retry_max_seconds: 3600,
+        default_model: 'chatgpt/gpt-5',
+        anthropic: { api_key: 'sk', models: [] },
+        chatgpt: { api_key: '', models: ['gpt-5'], auth_mode: 'oauth', auto_retry_seconds: 30 },
+        openai_compatible: {
+          lmstudio: { api_key: 'k', base_url: 'http://localhost:1234', models: [] },
+        },
+      },
+    })
+
+    await renderSettings()
+    await expandProvider('ChatGPT')
+
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Auto-retry interval"]')
+    expect(input?.value).toBe('30')
+
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
+    await act(async () => {
+      setter!.call(input!, '60')
+      input!.dispatchEvent(new Event('input', { bubbles: true }))
+      input!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    await vi.waitFor(() => {
+      const last = mocks.updateLLMConfig.mock.calls[mocks.updateLLMConfig.mock.calls.length - 1]
+      const fixed = last?.[0]?.chatgpt as Record<string, unknown> | undefined
+      expect(fixed?.auto_retry_seconds).toBe(60)
     })
   })
 })

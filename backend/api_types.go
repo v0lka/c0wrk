@@ -110,8 +110,7 @@ type ConfigProviderFull struct {
 	// TLSFingerprint is the per-provider SPKI pin (ADR-054): non-empty = only
 	// the pinned key is accepted; empty = system CA verification.
 	TLSFingerprint string `json:"tls_fingerprint,omitempty"`
-	// AutoRetrySeconds is the per-provider auto-retry interval, 0 = disabled
-	// (fixed providers always report 0).
+	// AutoRetrySeconds is the per-provider session resend interval; 0 = disabled.
 	AutoRetrySeconds int `json:"auto_retry_seconds,omitempty"`
 	// TimeoutClass is the adaptive budget's class override (ADR-071 D3):
 	// "local" | "remote"; empty = infer.
@@ -194,8 +193,8 @@ type ProviderConfigRequest struct {
 	// so an explicit "" CLEARS it. Compatible providers only.
 	TLSFingerprint *string `json:"tls_fingerprint,omitempty"`
 	// AutoRetrySeconds: nil = keep the persisted interval; non-nil applies
-	// verbatim, so an explicit 0 DISABLES the timer. Config round-trip only
-	// (the timer lives in the c0wrk session layer); compatible providers.
+	// verbatim, so an explicit 0 DISABLES auto-resend. Config round-trip
+	// only (no backend timer; the UI owns the countdown). See ADR-126.
 	AutoRetrySeconds *int `json:"auto_retry_seconds,omitempty"`
 	// TimeoutClass (ADR-071 D3): nil = keep; non-nil applies verbatim after
 	// enum validation, so an explicit "" CLEARS the override.

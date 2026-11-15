@@ -34,8 +34,8 @@ func isAutoRetryableCause(llmErr *llm.Error) bool {
 
 // SetAutoRetryResolver sets the callback resolving a provider name (the
 // logical config key carried by *llm.Error.Provider) to its auto-resend
-// interval in seconds; a nil resolver or a 0 answer (fixed providers have no
-// auto_retry_seconds) disables the auto-resend entirely. NO backend timer
+// interval in seconds; a nil resolver or a 0 answer (a provider without a
+// configured interval) disables the auto-resend entirely. NO backend timer
 // exists (ADR-065, specs/domains/llm-providers.md): the UI owns the countdown
 // and the resume.
 func (m *Manager) SetAutoRetryResolver(fn func(provider string) int) {

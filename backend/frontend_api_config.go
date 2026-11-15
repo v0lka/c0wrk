@@ -138,19 +138,22 @@ func (f *FrontendAPI) buildLLMResponse() ConfigLLMResponse {
 		// specs/decisions/065-auto-resend-retryable-errors.md).
 		AutoRetryMaxSeconds: config.MaxAutoRetrySeconds(),
 		Anthropic: ConfigProviderFull{
-			APIKey: maskAPIKey(f.config.LLM.Anthropic.APIKey),
-			Models: f.config.LLM.Anthropic.Models,
+			AutoRetrySeconds: f.config.LLM.Anthropic.AutoRetrySeconds,
+			APIKey:           maskAPIKey(f.config.LLM.Anthropic.APIKey),
+			Models:           f.config.LLM.Anthropic.Models,
 		},
 		ChatGPT: ConfigProviderFull{
-			APIKey:   maskAPIKey(f.config.LLM.ChatGPT.APIKey),
-			Models:   f.config.LLM.ChatGPT.Models,
-			AuthMode: chatGPTAuthModeOrAPIKey(f.config.LLM.ChatGPT.Auth.Mode),
+			AutoRetrySeconds: f.config.LLM.ChatGPT.AutoRetrySeconds,
+			APIKey:           maskAPIKey(f.config.LLM.ChatGPT.APIKey),
+			Models:           f.config.LLM.ChatGPT.Models,
+			AuthMode:         chatGPTAuthModeOrAPIKey(f.config.LLM.ChatGPT.Auth.Mode),
 		},
 		Kimi: ConfigProviderFull{
-			APIKey:     maskAPIKey(f.config.LLM.Kimi.APIKey),
-			Models:     f.config.LLM.Kimi.Models,
-			AuthMode:   kimiAuthModeOrAPIKey(f.config.LLM.Kimi.Auth.Mode),
-			AuthRegion: kimiAuthRegionOrGlobal(f.config.LLM.Kimi.Auth.Region),
+			AutoRetrySeconds: f.config.LLM.Kimi.AutoRetrySeconds,
+			APIKey:           maskAPIKey(f.config.LLM.Kimi.APIKey),
+			Models:           f.config.LLM.Kimi.Models,
+			AuthMode:         kimiAuthModeOrAPIKey(f.config.LLM.Kimi.Auth.Mode),
+			AuthRegion:       kimiAuthRegionOrGlobal(f.config.LLM.Kimi.Auth.Region),
 		},
 		OpenAICompatible:    make(map[string]ConfigProviderFull, len(f.config.LLM.OpenAICompatible)),
 		AnthropicCompatible: make(map[string]ConfigProviderFull, len(f.config.LLM.AnthropicCompatible)),
@@ -266,6 +269,7 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 	}
 
 	if req.Anthropic != nil {
+		candidate.Anthropic.AutoRetrySeconds = resolveAutoRetrySeconds(req.Anthropic.AutoRetrySeconds, candidate.Anthropic.AutoRetrySeconds, true)
 		if req.Anthropic.Models != nil {
 			candidate.Anthropic.Models = req.Anthropic.Models
 		}
@@ -322,6 +326,7 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 		candidate.AnthropicCompatible = newMap
 	}
 	if req.ChatGPT != nil {
+		candidate.ChatGPT.AutoRetrySeconds = resolveAutoRetrySeconds(req.ChatGPT.AutoRetrySeconds, candidate.ChatGPT.AutoRetrySeconds, true)
 		if req.ChatGPT.Models != nil {
 			candidate.ChatGPT.Models = req.ChatGPT.Models
 		}
@@ -340,6 +345,7 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 		}
 	}
 	if req.Kimi != nil {
+		candidate.Kimi.AutoRetrySeconds = resolveAutoRetrySeconds(req.Kimi.AutoRetrySeconds, candidate.Kimi.AutoRetrySeconds, true)
 		if req.Kimi.Models != nil {
 			candidate.Kimi.Models = req.Kimi.Models
 		}
@@ -390,7 +396,33 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 	// timeout_class (ADR-071) before anything is committed — the same bounds
 	// Load enforces; this RPC is a trust boundary for arbitrary callers, and
 	// an invalid value would only fail at the next Load (whole-config rollback).
-	for name, oc := range candidate.OpenAICompatible {
+	// Fixed entries are checked in a fixed order (anthropic, chatgpt, kimi —
+	// the allProviderEntries sequence) so several invalid values always name
+	// the same one, like the sorted compatible loops below.
+	for _, p := range []struct {
+		name    string
+		seconds int
+	}{
+		{"anthropic", candidate.Anthropic.AutoRetrySeconds},
+		{"chatgpt", candidate.ChatGPT.AutoRetrySeconds},
+		{"kimi", candidate.Kimi.AutoRetrySeconds},
+	} {
+		if p.seconds < 0 || p.seconds > config.MaxAutoRetrySeconds() {
+			f.configMu.Unlock()
+			return fmt.Errorf("invalid LLM configuration: %q auto_retry_seconds must be within [0, %d], got %d",
+				p.name, config.MaxAutoRetrySeconds(), p.seconds)
+		}
+	}
+	// Sort openai_compatible keys for deterministic order — map iteration is
+	// randomized, so with several invalid entries the error must still name
+	// the same one (the sequence GetAllProviderConfigs produces).
+	openaiNames := make([]string, 0, len(candidate.OpenAICompatible))
+	for name := range candidate.OpenAICompatible {
+		openaiNames = append(openaiNames, name)
+	}
+	sort.Strings(openaiNames)
+	for _, name := range openaiNames {
+		oc := candidate.OpenAICompatible[name]
 		if oc.AutoRetrySeconds < 0 || oc.AutoRetrySeconds > config.MaxAutoRetrySeconds() {
 			f.configMu.Unlock()
 			return fmt.Errorf("invalid LLM configuration: openai_compatible %q auto_retry_seconds must be within [0, %d], got %d",
@@ -405,7 +437,14 @@ func (f *FrontendAPI) UpdateLLMConfig(req LLMFullConfigRequest) error {
 			return fmt.Errorf("invalid LLM configuration: %w", err)
 		}
 	}
-	for name, ac := range candidate.AnthropicCompatible {
+	// Sort anthropic_compatible keys for deterministic order (as above).
+	anthropicNames := make([]string, 0, len(candidate.AnthropicCompatible))
+	for name := range candidate.AnthropicCompatible {
+		anthropicNames = append(anthropicNames, name)
+	}
+	sort.Strings(anthropicNames)
+	for _, name := range anthropicNames {
+		ac := candidate.AnthropicCompatible[name]
 		if ac.AutoRetrySeconds < 0 || ac.AutoRetrySeconds > config.MaxAutoRetrySeconds() {
 			f.configMu.Unlock()
 			return fmt.Errorf("invalid LLM configuration: anthropic_compatible %q auto_retry_seconds must be within [0, %d], got %d",
