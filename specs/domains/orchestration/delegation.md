@@ -16,6 +16,7 @@ Delegation is an **execution** mechanism, not a planning one. It has its own UI 
 - `core/units/units.go` — the durable per-unit record + `Ledger`/`Store` contract (`UnitRecord`, `UnitKind`, `UnitStatus`, `units.NewLedger`) — see [ADR-048](../../decisions/048-unified-recovery-ledger.md)
 - `core/persistent_blackboard.go` — `NewBlackboardLedger`, the mainline ledger constructor over a `PersistableBlackboard` (task from `TaskID()`, store from the optional `UnitStoreProvider`, cached ledger preferred)
 - `core/conductor.go` — `conductorLauncher`, the single writer of unit lifecycle (`unitLedger()`, `markUnitRunning`, `persistUnitOutcome` → `recordUnitLedger`, `settleUnit`)
+- `core/delegation_retry.go` — the transient auto-retry seam: `IsTransientProviderError` / `IsTransientNetworkClassError` (the ADR-065/ADR-126 class predicates, defined here ONCE and consumed by `backend/session/manager_auto_retry.go`), the fixed backoff, `retryTransientBlockingLeg`, the child-abandonment seam, and the result-note helpers
 - `core/unit_sink.go` — the ledger-bound sink for the goal verifier's isolated pass (namespace `goal_verification`, parent-linked under a `goal_verification` container unit)
 - `core/orchestrator.go` — `Resume` / `resumePausedWork` / `resumeUnits`: the ledger-driven settlement funnel
 - `github.com/v0lka/sp4rk/agent/subagent.go` — `RunSubAgent` / `RunSubAgentsParallel` (the primitive that runs an isolated executor in a goroutine)
@@ -136,9 +137,12 @@ delegate.Execute(ctx, input)
 │         └─ allow_redelegate → runRedelegBlocking, one at a time, each with
 │             its own per-task context and child registry (depth-capped)
 │     Each subagent runs in its own goroutine with its own context (child of
-│     the Conductor context, cancellable). Every settled task goes through
-│     persistUnitOutcome (blackboard mirror + ledger checkpoint/status) and
-│     registry.Complete — or CompletePaused on a cooperative pause.
+│     the Conductor context, cancellable). A blocking task whose execution
+│     error classifies transient (ADR-065/ADR-126 class) is re-launched ONCE
+│     before anything settles — see Transient Auto-Retry of Blocking
+│     Delegations. Every settled task goes through persistUnitOutcome
+│     (blackboard mirror + ledger checkpoint/status) and registry.Complete —
+│     or CompletePaused on a cooperative pause.
 │
 ├─ 7. Collect results:
 │     ├─ For each completed subagent:
@@ -276,6 +280,20 @@ Container kinds (`task`, `goal_verification`), plan-step units (owned by the pla
 
 **One read path.** The same ledger is surfaced to the frontend as `GetSessionRuntimeStatus.work_units`: an in-flight unit on a task that is not executing **and is not cooperatively paused** is settled `interrupted` through a column-scoped conditional store write (so it can neither drop a spec/checkpoint nor double-emit under racing pollers), container kinds are excluded exactly as the funnel excludes them, and a paused task settles nothing (its untouched tail units are what `Resume` runs). The session-load reconciliation (`reconcileWorkUnits`) aligns paused/interrupted delegate and plan-step chat blocks so an abandoned unit never stays a misleading `running` block — and the same overlay repairs the execution plan panel. See [session-lifecycle.md](../session-lifecycle.md#unified-recovery-ledger) and the `work_unit_settled` / `work_units` entries in [event-catalog.md](../../contracts/event-catalog.md).
 
+### Transient Auto-Retry of Blocking Delegations
+
+A **blocking** delegation whose execution error classifies **transient** is re-launched exactly ONCE after a fixed backoff, before the outcome settles anything — the failure path inserts one fresh leg between the failed attempt and the settle (`core/delegation_retry.go`: `retryTransientBlockingLeg`, reached from both `runRegularBlocking` and `runRedelegBlocking`). Async delegations and plan-step subagents never auto-retry (their outcomes settle through their own paths unchanged).
+
+**The class** is the ADR-065/ADR-126 transient provider taxonomy, defined once as `core.IsTransientProviderError` (`core/delegation_retry.go`) and consumed by the task-level auto-resend classifier (`backend/session/manager_auto_retry.go`, which adds only the interval resolution — the network-subclass discriminator behind that choice is `core.IsTransientNetworkClassError`): a terminal `*llm.Error` with HTTP 429/529 or the `rate_limit`/`overloaded` `ErrKind`, or — at `StatusCode` 0 — a wrapped chain classifying `dns`/`connect`/`reset`/`timeout` under sp4rk's `llm.TransportKind`. The carve-outs travel with the class: `tls`/`eof`/`other` never qualify, and the llmbudget transport's own-budget-expiry wrapper is excluded explicitly (`llmbudget.IsOwnBudgetExpiry` — ADR-071's ×2 escalation ladder owns that recovery; its chained `context.DeadlineExceeded` would otherwise satisfy a naive timeout predicate), while a provider-side timeout still qualifies.
+
+**The re-launch is a fresh leg, never a resume.** The regular path rebuilds the `SubAgentTask` (a fresh ContextManager — the failed attempt's partial turns are never inherited) and re-enters the shared-slot fan-out; the redeleg path builds a fresh child registry + per-task context (`runRedelegBlocking`'s leg closure), so a retry never inherits the failed attempt's child-registry state. The registry entry stays `running` across legs: `registry.Start` and `markUnitRunning` fire on the first leg only — the retry leg skips both. The abandoned attempt's own child delegations never outlive it either — see the abandonment seam below.
+
+**The ledger never observes failed→running.** The first attempt's OWN outcome is persisted NOWHERE — no blackboard `StepResult`, no registry `Complete`, no ledger settle — so the retried delegation itself shows exactly one `running → terminal` transition (the ADR-048 lifecycle stays one-directional). The abandoned attempt's child delegations are the documented exception, folded BEFORE the re-launch: `abandonAttemptChildren` (`core/delegation_retry.go`) cancels every pending/running entry of the abandoned attempt's child registry and waits for the started ones' goroutines to settle — a fresh generation can never race a non-terminal one, and a child registered but never started has its ledger record settled `interrupted` right there (no goroutine exists to settle it). A retry leg that cooperatively pauses settles as a pause checkpoint (unwrapped sentinel), and a cancellation landing during the backoff aborts the retry (no launch into a dying context) and settles the unit `interrupted` — the wrapped error chains `context.Canceled`, so `unitStatusFor`'s abandonment branch records the abandonment and the resume funnel relaunches it fresh (a cancellation in the window is never a `failed` settle).
+
+**One retry, one cadence, no knob.** The cap is hard (a re-launched leg that fails again — transient or not — settles failed exactly once, its error annotated), and the backoff is a fixed 30s package constant (the ADR-065 rate-limit cadence; `delegate` sits on the executor's per-tool-call exempt set, so the pause never competes with a watchdog ceiling). There is deliberately no config surface — the class taxonomy is already the operational price ADR-065/ADR-126 accepted; a knob here would buy per-run variance for a decision that is always the same.
+
+**The result markdown notes auto-retried legs.** A delegation that completed after a re-launched leg carries a `> [auto-retry]` notice PREPENDED to its output — it rides `sr.Output`, so the blackboard step result, the registry record and the `delegate` tool result markdown all note the leg at once. A delegation whose retry also failed notes the re-launch in its error text (the failed branch of `buildDelegateToolResult` renders only `Status: failed` + `Error:`), with the `%w` wrap preserving every `errors.Is/As` chain.
+
 ### `cancel_delegation` Tool
 
 ```
@@ -404,6 +422,7 @@ Dependencies with an empty output contribute nothing. The **combined** context i
 ## Error Handling
 
 - **Subagent returns `ExecutorResult.Finished` false**: `RunSubAgent` converts it into `SubAgentResult.Error` (the executor's `AbortReason`, else its `Output`, else "step execution did not complete within max steps"), so the delegation is stored as `Status: "failed"` with that reason. The `delegate` tool result renders the failure as text — a `Status: failed` + `Error: <reason>` block for the task plus a trailing note naming the failed ids — with `ToolResult.IsError` false and a nil tool error. The Conductor decides whether to retry, reflect, or finish.
+- **Subagent returns a transient provider-class error**: first the single auto-retry of [Transient Auto-Retry of Blocking Delegations](#transient-auto-retry-of-blocking-delegations) — the failure never settles if the re-launched leg heals it; a retry that fails again (or a non-transient error) follows the plain failure path above.
 - **Subagent returns error**: same as above.
 - **Subagent context cancelled** (via `cancel_delegation` or parent cancellation): stored as `Status: "cancelled"`; no error propagated to the Conductor (cancellation is intentional).
 - **Paused checkpoint cannot seed the ContextManager**: `buildSubAgentTask` returns a descriptive error before launch; the checkpoint remains intact and is not replaced by a fresh run.
@@ -420,6 +439,7 @@ Dependencies with an empty output contribute nothing. The **combined** context i
 - Every subagent Executor receives the session pause checker; a cooperative pause stores the subagent's partial trajectory in its blackboard `StepResult` with `agent.ErrPaused`.
 - A resumed paused subagent seeds the same checkpoint into both a `StepSeedable` ContextManager and the Executor; step numbering and the returned trajectory continue from the checkpoint. A non-seedable ContextManager fails task construction before launch.
 - The durable **unit ledger** is the recovery source of truth. The `conductorLauncher` is its single writer; `Resume` enumerates it and settles every non-terminal **mainline** unit uniformly (paused → relaunch seeded, pending/running/**interrupted** → relaunch fresh, terminal → replay), reconciling each ledger status against the blackboard outcome and any stored checkpoint first. An ISOLATED context's units (the goal verifier's namespace) are never relaunched by that funnel — the loop that owns them re-derives the pass — so an isolated outcome can never land on the live task blackboard. An `interrupted` unit is never marked failed without a relaunch attempt, and a cancellation is recorded as `interrupted` (not `failed`) so abandoned work is recovered on either kind of exit (see [Durable Unit Ledger and Resume Relaunch](#durable-unit-ledger-and-resume-relaunch)).
+- A transient delegation failure settles the unit at most once, after at most one automatic re-launch, and the ledger never observes failed→running: the first attempt's own outcome is persisted nowhere, while its child delegations are cancelled and settle terminal (`interrupted`) before the re-launch (see [Transient Auto-Retry of Blocking Delegations](#transient-auto-retry-of-blocking-delegations)).
 - The `system` group (agent-infrastructure/meta tools) is always included in a subagent's toolset regardless of the `tools` field; toolsets resolve from capability groups via `resolveTaskTools` (`core/conductor.go`) — see [ADR-024](../../decisions/024-group-policies.md).
 - `delegate`, `cancel_delegation` are available to a subagent only when `allow_redelegate` is true; every launch path strips the Conductor-only tools AND the goal-loop actor tools (`stripSubagentTools` = `StripGoalModeTools(stripConductorOnlyTools(...))`), so `declare_plan`, `execute_plan`, `reflect`, `propose_goal`, `declare_goal_status` and `declare_verification` never reach a subagent.
 - Recursive delegation depth never exceeds `OrchestratorConfig.MaxRedelegationDepth`.
@@ -434,5 +454,6 @@ Dependencies with an empty output contribute nothing. The **combined** context i
 - [executor.md](executor.md) — the ReAct loop primitive shared by Conductor and subagents
 - [README.md](README.md) — orchestration overview
 - [../../contracts/conductor-tools.md](../../contracts/conductor-tools.md) — Conductor tool surface contract
+- [../../decisions/126-auto-resend-network-errors.md](../../decisions/126-auto-resend-network-errors.md) — the transient provider class this domain's auto-retry consumes (`core.IsTransientProviderError`, defined once in `core/delegation_retry.go` and consumed by both this auto-retry and the task-level resend in `backend/session/manager_auto_retry.go`); [../../domains/llm-providers.md](../llm-providers.md) § Automatic Resend is the provider-side domain view
 - [../../decisions/122-subagent-model-provider-override.md](../../decisions/122-subagent-model-provider-override.md) — the profile `model:` override (composite `provider/model`, delegate-time fail-closed validation, CM calibration) applied by this tool
 - [../../decisions/123-per-task-model-override.md](../../decisions/123-per-task-model-override.md) — the per-task `model` override (precedence task > profile > session, the same source-labeled validator, resume-safe defensive re-check, badge visibility rule) resolving on top of the ADR-122 pin — see [Model Override Resolution](#model-override-resolution)

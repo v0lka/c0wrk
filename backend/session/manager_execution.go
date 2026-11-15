@@ -1120,16 +1120,15 @@ func (m *Manager) tryContinueInterruptedTask(
 		bb.AddAttachment(a)
 	}
 
-	// Append the user message as a final nudge step ({role:user} turn).
 	resumeSteps, err := adapter.LoadTrajectory(taskID)
 	if err != nil {
 		m.log().Warn("continue-interrupted-task: failed to load trajectory; falling back to fresh task", "session", id, "error", err)
 		return false
 	}
-	// Pre-nudge length: empty means the original run never executed a step
-	// (see the re-route arming below) — the nudge would otherwise mask that.
+	// Pre-trajectory length: empty means the original run never executed a
+	// step (see the re-route arming below) — the injected steps below must not
+	// mask that.
 	hadTrajectory := len(resumeSteps) > 0
-	resumeSteps = append(resumeSteps, agent.Step{UserNudge: message})
 
 	// Persisted routing decision, if any (see the re-route arming below).
 	var routing *router.RoutingDecision
@@ -1170,6 +1169,21 @@ func (m *Manager) tryContinueInterruptedTask(
 		m.deactivateSessionTask(session, liveActionNone)
 		return true
 	}
+
+	// Work-state summary for plain-task resumes (a non-terminal goal keeps its
+	// checkpoint untouched — the goal loop seeds resumeSteps verbatim): a
+	// compact digest of the persisted trajectory + restored plan, injected as
+	// its own {role:user} step BEFORE the user's nudge so the restarted turn
+	// does not re-pay discovery. Bounded by workStateSummaryMaxBytes. See
+	// specs/domains/session-lifecycle.md (§ Task Resumption).
+	if goalState == nil || goalState.Status.IsTerminal() {
+		if summary := buildWorkStateSummary(resumeSteps, bb.GetPlan(), blackboardStepReached(bb)); summary != "" {
+			resumeSteps = append(resumeSteps, agent.Step{UserNudge: summary})
+		}
+	}
+	// Append the user message as a final nudge step ({role:user} turn), after
+	// the summary so the model reads the work state first, then the directive.
+	resumeSteps = append(resumeSteps, agent.Step{UserNudge: message})
 
 	// Resolve the prior task_failed_resumable banner so it does not linger
 	// after the resumed execution finishes.
@@ -1337,6 +1351,22 @@ func (m *Manager) ResumeTask(ctx context.Context, id, modelOverride, reasoningEf
 	if goalState != nil && goalState.Status.IsTerminal() {
 		goalModeOver = true
 		goalState = nil
+	}
+
+	// Work-state summary for plain-task resumes (goalState==nil after the
+	// normalization above — a NON-terminal goal keeps its checkpoint untouched
+	// and the goal loop seeds resumeSteps verbatim): a compact digest of the
+	// persisted trajectory + restored plan, injected as its own {role:user}
+	// step so the restarted turn does not re-pay discovery. The user's nudge
+	// (if any) rides on the conductor task message inside Resume, so the
+	// summary always precedes it. Bounded by workStateSummaryMaxBytes. Only a
+	// non-empty trajectory produces a summary, so the re-route arming below
+	// (len(resumeSteps)==0) stays faithful to the persisted checkpoint. See
+	// specs/domains/session-lifecycle.md (§ Task Resumption).
+	if goalState == nil {
+		if summary := buildWorkStateSummary(resumeSteps, bb.GetPlan(), blackboardStepReached(bb)); summary != "" {
+			resumeSteps = append(resumeSteps, agent.Step{UserNudge: summary})
+		}
 	}
 
 	// RESEARCH mode from the session's own research root; the fields read are

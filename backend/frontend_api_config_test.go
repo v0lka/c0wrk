@@ -531,6 +531,47 @@ func TestUpdateLLMConfig_RepublishesAutoRetryIntervals(t *testing.T) {
 	}
 }
 
+// TestUpdateLLMConfig_RepublishesNetworkAutoRetryInterval pins the ADR-126
+// wiring on the Settings path: the global network-class interval rides the
+// SAME published snapshot (a nil config pointer resolves to the materialized
+// default), survives a provider-only UpdateLLMConfig commit — the candidate
+// starts from the previous section, so the RPC-carried surface (which has no
+// field for the key) can never drop it — and the kill-switch posture
+// propagates on the next publish.
+func TestUpdateLLMConfig_RepublishesNetworkAutoRetryInterval(t *testing.T) {
+	f, _, _, app := newTestAPIWithApp(t)
+	if got := app.networkAutoRetryIntervalSnapshot(); got != config.DefaultNetworkAutoRetrySeconds() {
+		t.Fatalf("pre-update network interval = %d, want the materialized default %d", got, config.DefaultNetworkAutoRetrySeconds())
+	}
+
+	sixty := 60
+	err := f.UpdateLLMConfig(LLMFullConfigRequest{
+		DefaultModel: "lmstudio/qwen3-6",
+		OpenAICompatible: map[string]ProviderConfigRequest{
+			"lmstudio": {Models: []string{"qwen3-6"}, AutoRetrySeconds: &sixty},
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpdateLLMConfig: %v", err)
+	}
+	if got := app.networkAutoRetryIntervalSnapshot(); got != config.DefaultNetworkAutoRetrySeconds() {
+		t.Errorf("post-update network interval = %d, want %d (the section key must survive a provider-only commit)", got, config.DefaultNetworkAutoRetrySeconds())
+	}
+	if got := app.autoRetryIntervalSnapshot()["lmstudio"]; got != 60 {
+		t.Errorf("post-update lmstudio interval = %d, want 60 (the provider map must keep republishing)", got)
+	}
+
+	// The kill-switch posture propagates on the next publish.
+	zero := 0
+	f.configMu.Lock()
+	f.config.LLM.NetworkAutoRetrySeconds = &zero
+	f.configMu.Unlock()
+	app.publishAutoRetryIntervals(f.config)
+	if got := app.networkAutoRetryIntervalSnapshot(); got != 0 {
+		t.Errorf("kill-switch posture = %d, want 0", got)
+	}
+}
+
 func TestUpdateLLMConfig_PersistsAndRebuilds(t *testing.T) {
 	f, mock, cfgPath := newTestAPI(t)
 

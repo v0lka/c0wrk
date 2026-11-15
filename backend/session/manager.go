@@ -264,11 +264,17 @@ type Manager struct {
 	// (specs/domains/session-lifecycle.md).
 	blackboards []*PersistentBlackboard
 
-	// autoRetryResolver maps a provider name to its auto-resend interval in
-	// seconds (0 = disabled); no backend timer exists — the deadline is only
-	// stamped into the task_failed_resumable payload; the UI owns the countdown
+	// autoRetryResolver maps a provider name to its rate-limit class
+	// auto-resend interval in seconds (0 = disabled); no backend timer exists
+	// — the deadline is only stamped into the task_failed_resumable payload;
+	// the UI owns the countdown
 	// (specs/decisions/065-auto-resend-retryable-errors.md).
 	autoRetryResolver func(provider string) int
+	// networkAutoRetryResolver resolves the GLOBAL network-class interval in
+	// seconds (0 = kill-switch; ADR-126) — the class covers every provider,
+	// so unlike autoRetryResolver there is no per-provider argument. Same
+	// live-only contract: the resolver reads the app's atomic snapshot.
+	networkAutoRetryResolver func() int
 }
 
 // SetLogger sets the logger for the manager.

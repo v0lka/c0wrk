@@ -103,11 +103,13 @@ type Application struct {
 	// hitlHandler is captured for the orchestrator factory closure.
 	hitlHandler agent.HITLHandler
 
-	// autoRetryIntervals is the published snapshot of every provider's
-	// auto_retry_seconds (ADR-065), keyed by logical provider name —
-	// immutable once stored; the pointer swap is the only synchronization.
-	// See specs/decisions/065-auto-resend-retryable-errors.md.
-	autoRetryIntervals atomic.Pointer[map[string]int]
+	// autoRetryIntervals is the published auto-retry snapshot (ADR-065 +
+	// ADR-126): every provider's auto_retry_seconds (the rate-limit class,
+	// keyed by logical provider name) plus the global network-class interval.
+	// Immutable once stored; the pointer swap is the only synchronization.
+	// See specs/decisions/065-auto-resend-retryable-errors.md and
+	// specs/decisions/126-auto-resend-network-errors.md.
+	autoRetryIntervals atomic.Pointer[autoRetrySnapshot]
 
 	// vectorRootsPtr late-binds the per-root vector-index registry (ADR-081),
 	// which lives on FrontendAPI (constructed after the Application);
@@ -386,6 +388,12 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	app.publishAutoRetryIntervals(cfg.Config)
 	manager.SetAutoRetryResolver(func(provider string) int {
 		return app.autoRetryIntervalSnapshot()[provider]
+	})
+	// The network class (ADR-126) is one global interval covering every
+	// provider — the fixed ones included — so it rides the same snapshot
+	// without a per-provider argument.
+	manager.SetNetworkAutoRetryResolver(func() int {
+		return app.networkAutoRetryIntervalSnapshot()
 	})
 	app.manager = manager
 
@@ -667,13 +675,23 @@ func (a *Application) LastToolCallID(sessionID string) (id, tool string) {
 	return a.manager.LastToolCallID(sessionID)
 }
 
-// buildAutoRetryIntervals derives the provider→interval snapshot from a
-// config; the returned map is immutable by convention — every consumer of
-// the published pointer treats it read-only.
-// See specs/decisions/065-auto-resend-retryable-errors.md.
-func buildAutoRetryIntervals(cfg *config.Config) map[string]int {
+// autoRetrySnapshot is the immutable auto-retry snapshot published under the
+// autoRetryIntervals pointer (ADR-065 + ADR-126). Both fields answer 0 for
+// "off": providerIntervals for a provider without auto_retry_seconds (the
+// fixed providers always), networkInterval for the network kill-switch.
+type autoRetrySnapshot struct {
+	providerIntervals map[string]int // rate-limit class: provider → auto_retry_seconds
+	networkInterval   int            // network class: global llm.network_auto_retry_seconds
+}
+
+// buildAutoRetrySnapshot derives the auto-retry snapshot from a config; the
+// struct is immutable by convention — every consumer of the published pointer
+// treats it read-only.
+// See specs/decisions/065-auto-resend-retryable-errors.md and
+// specs/decisions/126-auto-resend-network-errors.md.
+func buildAutoRetrySnapshot(cfg *config.Config) autoRetrySnapshot {
 	if cfg == nil {
-		return map[string]int{}
+		return autoRetrySnapshot{providerIntervals: map[string]int{}}
 	}
 	intervals := make(map[string]int, len(cfg.LLM.OpenAICompatible)+len(cfg.LLM.AnthropicCompatible))
 	for name, c := range cfg.LLM.OpenAICompatible {
@@ -682,14 +700,24 @@ func buildAutoRetryIntervals(cfg *config.Config) map[string]int {
 	for name, f := range cfg.LLM.AnthropicCompatible {
 		intervals[name] = f.AutoRetrySeconds
 	}
-	return intervals
+	snapshot := autoRetrySnapshot{providerIntervals: intervals}
+	// ApplyDefaults materializes the default 90 for an absent key, so a nil
+	// pointer only reaches hand-built configs; treat it as the same default
+	// rather than silently disabling the class.
+	if cfg.LLM.NetworkAutoRetrySeconds != nil {
+		snapshot.networkInterval = *cfg.LLM.NetworkAutoRetrySeconds
+	} else {
+		snapshot.networkInterval = config.DefaultNetworkAutoRetrySeconds()
+	}
+	return snapshot
 }
 
 // publishAutoRetryIntervals rebuilds and stores the atomic snapshot from the
 // given config — at Application construction and after every committed LLM
-// config mutation. See specs/decisions/065-auto-resend-retryable-errors.md.
+// config mutation. See specs/decisions/065-auto-resend-retryable-errors.md
+// and specs/decisions/126-auto-resend-network-errors.md.
 func (a *Application) publishAutoRetryIntervals(cfg *config.Config) {
-	snapshot := buildAutoRetryIntervals(cfg)
+	snapshot := buildAutoRetrySnapshot(cfg)
 	a.autoRetryIntervals.Store(&snapshot)
 }
 
@@ -698,7 +726,16 @@ func (a *Application) publishAutoRetryIntervals(cfg *config.Config) {
 // "no provider has an interval").
 func (a *Application) autoRetryIntervalSnapshot() map[string]int {
 	if p := a.autoRetryIntervals.Load(); p != nil {
-		return *p
+		return p.providerIntervals
 	}
 	return nil
+}
+
+// networkAutoRetryIntervalSnapshot returns the published global network-class
+// interval (0 before the first publish — the kill-switch posture).
+func (a *Application) networkAutoRetryIntervalSnapshot() int {
+	if p := a.autoRetryIntervals.Load(); p != nil {
+		return p.networkInterval
+	}
+	return 0
 }

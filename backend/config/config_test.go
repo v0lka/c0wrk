@@ -4438,8 +4438,10 @@ func TestAutoRetrySeconds_SaveRoundTripAndOmitEmpty(t *testing.T) {
 		t.Fatalf("reading saved config: %v", err)
 	}
 	// Exactly two auto_retry_seconds keys: the two timer-enabled providers.
-	// A third would mean omitempty is not doing its job.
-	if got := strings.Count(string(raw), "auto_retry_seconds"); got != 2 {
+	// A third would mean omitempty is not doing its job. The count anchors on
+	// a leading space so ADR-126's section-level llm.network_auto_retry_
+	// seconds (materialized by ApplyDefaults) cannot ride the substring.
+	if got := strings.Count(string(raw), " auto_retry_seconds:"); got != 2 {
 		t.Errorf("saved YAML has %d auto_retry_seconds keys, want 2 (omitempty must drop disabled providers)\n%s", got, raw)
 	}
 
@@ -4526,4 +4528,141 @@ func TestAutoRetrySeconds_RejectsOutOfRange(t *testing.T) {
 	if _, err := Load(path); err != nil {
 		t.Errorf("Load rejected boundary auto_retry_seconds 3600: %v", err)
 	}
+}
+
+// TestNetworkAutoRetrySeconds_DefaultAndKillSwitch pins the ADR-126 semantics
+// of llm.network_auto_retry_seconds: an absent key materializes the default
+// 90 via ApplyDefaults (omission ≠ off — deliberately unlike the
+// per-provider auto_retry_seconds knob, where omitted = disabled), while an
+// explicit 0 stays the kill-switch and any explicit in-range value survives
+// verbatim.
+func TestNetworkAutoRetrySeconds_DefaultAndKillSwitch(t *testing.T) {
+	tests := []struct {
+		name     string
+		yamlLine string
+		want     int
+	}{
+		{"absent key materializes the default", "", DefaultNetworkAutoRetrySeconds()},
+		{"explicit 0 stays the kill-switch", "  network_auto_retry_seconds: 0", 0},
+		{"explicit value survives verbatim", "  network_auto_retry_seconds: 120", 120},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			content := `llm:
+  default_model: "selfhosted/qwen3"
+` + tt.yamlLine + `
+  openai_compatible:
+    selfhosted:
+      base_url: "http://127.0.0.1:1234/v1"
+      api_key: "k"
+      models: ["qwen3"]
+`
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if cfg.LLM.NetworkAutoRetrySeconds == nil {
+				t.Fatalf("network_auto_retry_seconds is nil, want %d", tt.want)
+			}
+			if got := *cfg.LLM.NetworkAutoRetrySeconds; got != tt.want {
+				t.Errorf("network_auto_retry_seconds = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestNetworkAutoRetrySeconds_RejectsOutOfRange pins the inclusive [0, 3600]
+// bound (ADR-126): the global network knob shares the per-provider knob's
+// window — an out-of-range value would arm the banner's promised re-send on
+// an unusable timescale.
+func TestNetworkAutoRetrySeconds_RejectsOutOfRange(t *testing.T) {
+	tests := []struct {
+		name    string
+		yamlVal int
+	}{
+		{"negative", -90},
+		{"oversized", 3601},
+		{"absurdly large", 1_000_000_000},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			content := fmt.Sprintf(`llm:
+  default_model: "selfhosted/qwen3"
+  network_auto_retry_seconds: %d
+  openai_compatible:
+    selfhosted:
+      base_url: "http://127.0.0.1:1234/v1"
+      api_key: "k"
+      models: ["qwen3"]
+`, tt.yamlVal)
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			if _, err := Load(path); err == nil {
+				t.Errorf("Load accepted network_auto_retry_seconds %d, want rejection", tt.yamlVal)
+			}
+		})
+	}
+	// The boundary itself must stay valid.
+	content := `llm:
+  default_model: "selfhosted/qwen3"
+  network_auto_retry_seconds: 3600
+  openai_compatible:
+    selfhosted:
+      base_url: "http://127.0.0.1:1234/v1"
+      api_key: "k"
+      models: ["qwen3"]
+`
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := Load(path); err != nil {
+		t.Errorf("Load rejected boundary network_auto_retry_seconds 3600: %v", err)
+	}
+}
+
+// TestNetworkAutoRetrySeconds_SaveRoundTrip pins persistence (ADR-126): the
+// materialized default is written back on save (so the key becomes explicit),
+// and an explicit 0 — the kill-switch — is preserved as 0, never dropped:
+// omitempty on a *int drops only a nil pointer, never a pointed-at zero.
+func TestNetworkAutoRetrySeconds_SaveRoundTrip(t *testing.T) {
+	t.Run("materialized default is persisted", func(t *testing.T) {
+		cfg := &Config{}
+		ApplyDefaults(cfg)
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := Save(cfg, path); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("reading saved config: %v", err)
+		}
+		want := fmt.Sprintf("network_auto_retry_seconds: %d\n", DefaultNetworkAutoRetrySeconds())
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("saved YAML missing %q (the materialized default must persist)\n%s", want, raw)
+		}
+	})
+	t.Run("explicit kill-switch 0 is persisted", func(t *testing.T) {
+		cfg := &Config{}
+		ApplyDefaults(cfg)
+		zero := 0
+		cfg.LLM.NetworkAutoRetrySeconds = &zero
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := Save(cfg, path); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("reading saved config: %v", err)
+		}
+		if !strings.Contains(string(raw), "network_auto_retry_seconds: 0\n") {
+			t.Errorf("saved YAML dropped the explicit kill-switch 0\n%s", raw)
+		}
+	})
 }

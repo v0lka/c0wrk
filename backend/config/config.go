@@ -523,6 +523,17 @@ type LLMConfig struct {
 	Kimi                KimiConfig                           `yaml:"kimi"`
 	Models              map[string]ModelOverride             `yaml:"models"`
 	Retry               LLMRetryConfig                       `yaml:"retry"`
+	// NetworkAutoRetrySeconds governs the network-class auto-resend interval
+	// (ADR-126): the global seconds between task-level re-sends of
+	// connection-level provider failures (StatusCode 0 carrying one of the
+	// dns/connect/reset/timeout classes) — every provider, the fixed ones
+	// included. *int keeps the ADR's two semantics apart: nil (absent key)
+	// materializes the default via ApplyDefaults (omission ≠ off), while an
+	// explicit 0 stays the kill-switch ("never auto-resend on network
+	// errors") and is persisted verbatim. Like the per-provider knob this is
+	// not mapped into ToBuilderConfig — the timer lives in the c0wrk session
+	// layer. See specs/decisions/126-auto-resend-network-errors.md.
+	NetworkAutoRetrySeconds *int `yaml:"network_auto_retry_seconds,omitempty"`
 }
 
 // AnthropicConfig holds Anthropic provider configuration.
@@ -561,6 +572,20 @@ type OpenAICompatibleConfig struct {
 // auto_retry_seconds (ADR-065); 0 disables the timer. The Settings UI clamps
 // to the same range; validate() enforces it for edits that bypass the UI.
 const maxAutoRetrySeconds = 3600
+
+// defaultNetworkAutoRetrySeconds materializes for an absent
+// llm.network_auto_retry_seconds (ADR-126): the middle of the 60–120 s band,
+// longer than and separate from the rate-limit cadence because
+// connection-level outages heal on minutes-scale with no server-signposted
+// window. Unlike the per-provider knob (omitted = disabled), omission here
+// equals this default — only an explicit 0 is the kill-switch.
+const defaultNetworkAutoRetrySeconds = 90
+
+// DefaultNetworkAutoRetrySeconds exposes defaultNetworkAutoRetrySeconds so
+// snapshot builders share the one default instead of restating it.
+func DefaultNetworkAutoRetrySeconds() int {
+	return defaultNetworkAutoRetrySeconds
+}
 
 // MaxAutoRetrySeconds exposes maxAutoRetrySeconds so the Settings RPC
 // validates against the same bound Load enforces.
@@ -2880,6 +2905,22 @@ func validate(cfg *Config) error {
 		if err := ValidateProviderTimeoutClass(p.name, p.timeoutClass); err != nil {
 			return err
 		}
+	}
+
+	// Validate the global network-class auto-retry interval (ADR-126): the
+	// same inclusive [0, 3600] window as the per-provider knob, shared for
+	// the same reason. validate() runs after ApplyDefaults, so a nil pointer
+	// here means a hand-built config bypassed defaults — treat absent as the
+	// documented default rather than skipping the bound.
+	networkInterval := defaultNetworkAutoRetrySeconds
+	if cfg.LLM.NetworkAutoRetrySeconds != nil {
+		networkInterval = *cfg.LLM.NetworkAutoRetrySeconds
+	}
+	if networkInterval < 0 || networkInterval > maxAutoRetrySeconds {
+		return fmt.Errorf(
+			"llm.network_auto_retry_seconds must be within [0, %d], got %d",
+			maxAutoRetrySeconds, networkInterval,
+		)
 	}
 
 	// Range-check the llm.models context_window overrides: 0 = inherit,

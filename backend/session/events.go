@@ -115,10 +115,14 @@ type TaskFailedResumableData struct {
 	// Reason explains WHY the task is resumable rather than a generic message.
 	Reason string `json:"reason,omitempty"`
 	// AutoRetryAt, when non-zero, schedules the UI's auto-resend countdown —
-	// stamped only for a classified rate-limit/overload llm.Error from a
-	// provider with auto_retry_seconds > 0. There is no backend timer
-	// (ADR-065, see specs/decisions/065-auto-resend-retryable-errors.md): the
-	// deadline is advisory; 0 means the manual decision is final.
+	// stamped for a classified retryable llm.Error: the rate-limit/overload
+	// class (429/529 or ErrKind rate_limit/overloaded) from a provider with
+	// auto_retry_seconds > 0, or (ADR-126) a connection-class failure
+	// (StatusCode 0 carrying dns/connect/reset/timeout) under the global
+	// llm.network_auto_retry_seconds — every provider, fixed ones included.
+	// There is no backend timer (ADR-065, ADR-126, see
+	// specs/decisions/126-auto-resend-network-errors.md): the deadline is
+	// advisory; 0 means the manual decision is final.
 	AutoRetryAt int64 `json:"auto_retry_at,omitempty"`
 }
 

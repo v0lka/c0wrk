@@ -1169,6 +1169,9 @@ func (l *conductorLauncher) persistUnitOutcome(id, output string, execErr error,
 func (l *conductorLauncher) runRegularBlocking(ctx context.Context, tasks []tools.DelegationTask, registry *tools.DelegationRegistry) []tools.DelegationResult {
 	subCtx := subagentCtx(ctx)
 	subTasks := make([]agent.SubAgentTask, 0, len(tasks))
+	// retryTasks[i] is the delegation task behind subTasks[i] (build failures
+	// never enter either slice) — a transient-retry leg rebuilds from it.
+	retryTasks := make([]tools.DelegationTask, 0, len(tasks))
 	buildFailures := make([]tools.DelegationResult, 0)
 	for _, t := range tasks {
 		st, err := l.buildSubAgentTask(subCtx, t, registry, l.scopeEvents(t.ID))
@@ -1181,6 +1184,7 @@ func (l *conductorLauncher) runRegularBlocking(ctx context.Context, tasks []tool
 		registry.Start(t.ID, nil)
 		l.markUnitRunning(t.ID)
 		subTasks = append(subTasks, st)
+		retryTasks = append(retryTasks, t)
 	}
 
 	if len(subTasks) == 0 {
@@ -1190,26 +1194,70 @@ func (l *conductorLauncher) runRegularBlocking(ctx context.Context, tasks []tool
 	subResults := l.runSubAgentsParallel(subCtx, subTasks)
 	out := make([]tools.DelegationResult, 0, len(subResults)+len(buildFailures))
 	out = append(out, buildFailures...)
-	for _, sr := range subResults {
+	for i, sr := range subResults {
 		if isPaused(sr.Error) {
 			l.persistUnitOutcome(sr.StepID, sr.Output, sr.Error, sr.Steps)
 			registry.CompletePaused(sr.StepID, sr.Output, sr.Steps)
 			out = append(out, tools.DelegationResult{ID: sr.StepID, Status: tools.DelegationStatusPaused, Output: sr.Output, Error: sr.Error})
 			continue
 		}
+
+		// A transient provider-class failure gets ONE automatic re-launch
+		// before the failure settles the unit (delegation.md): the first
+		// attempt is never persisted, so the durable ledger never observes
+		// failed→running (ADR-048).
+		rl := l.retryTransientBlockingLeg(subCtx, sr, func() agent.SubAgentResult {
+			return l.relaunchRegularLeg(subCtx, retryTasks[i], registry)
+		})
+		sr = rl.sr
+		if rl.retried && isPaused(sr.Error) {
+			l.persistUnitOutcome(sr.StepID, sr.Output, sr.Error, sr.Steps)
+			registry.CompletePaused(sr.StepID, sr.Output, sr.Steps)
+			out = append(out, tools.DelegationResult{ID: sr.StepID, Status: tools.DelegationStatusPaused, Output: sr.Output, Error: sr.Error})
+			continue
+		}
+
 		var execErr error
 		if sr.Error != nil {
 			execErr = sr.Error
 		}
-		registry.Complete(sr.StepID, sr.Output, execErr, sr.Steps)
-		l.persistUnitOutcome(sr.StepID, sr.Output, execErr, sr.Steps)
+		output := sr.Output
+		if rl.retried {
+			if execErr != nil {
+				// The re-launched leg failed again: the narrative rides the
+				// error (delegationRetriedSuffix) — a completion note in the
+				// persisted output would contradict the failed settlement.
+				execErr = fmt.Errorf("%w (%s)", execErr, delegationRetriedSuffix)
+			} else {
+				output = noteAutoRetriedLeg(output, rl.firstErr)
+			}
+		}
+		registry.Complete(sr.StepID, output, execErr, sr.Steps)
+		l.persistUnitOutcome(sr.StepID, output, execErr, sr.Steps)
 		status := tools.DelegationStatusCompleted
 		if execErr != nil {
 			status = tools.DelegationStatusFailed
 		}
-		out = append(out, tools.DelegationResult{ID: sr.StepID, Status: status, Output: sr.Output, Error: execErr})
+		out = append(out, tools.DelegationResult{ID: sr.StepID, Status: status, Output: output, Error: execErr})
 	}
 	return out
+}
+
+// relaunchRegularLeg re-runs ONE blocking delegation leg fresh after the
+// transient-retry backoff: a rebuilt subagent task (a fresh context manager —
+// the failed attempt's partial turns are never inherited), the same scoped
+// events, and the shared fan-out (slot accounting). The registry entry stays
+// running throughout — Start/Complete fire once per delegation, not per leg.
+func (l *conductorLauncher) relaunchRegularLeg(ctx context.Context, t tools.DelegationTask, registry *tools.DelegationRegistry) agent.SubAgentResult {
+	st, err := l.buildSubAgentTask(ctx, t, registry, l.scopeEvents(t.ID))
+	if err != nil {
+		return agent.SubAgentResult{StepID: t.ID, Error: err}
+	}
+	srs := l.runSubAgentsParallel(ctx, []agent.SubAgentTask{st})
+	if len(srs) == 0 {
+		return agent.SubAgentResult{StepID: t.ID, Error: fmt.Errorf("delegation %q: re-launched leg produced no result", t.ID)}
+	}
+	return srs[0]
 }
 
 // redelegTaskCtx: per-task context for a RE-delegating subagent — keeps the
@@ -1252,44 +1300,62 @@ func (l *conductorLauncher) runRedelegBlocking(ctx context.Context, t tools.Dele
 		return tools.DelegationResult{ID: t.ID, Status: tools.DelegationStatusFailed, Error: err}
 	}
 
-	// Create a child registry one level deeper and inject it + the launcher
-	// into a per-task context so the subagent can use delegate/cancel_delegation.
-	childReg := tools.NewDelegationRegistryWithDepth(registry.Depth() + 1)
-	// Persist sub-delegation specs parented by this step's ID (nested resume
-	// ordering); unitSink wins for isolated runs, else blackboard task/store.
-	if l.deps.unitSink != nil {
-		l.deps.unitSink.wire(childReg, t.ID)
-	} else if pbb, ok := l.bb.(PersistableBlackboard); ok {
-		if tid := pbb.TaskID(); tid != "" && l.deps.taskStore != nil {
-			wireDelegationSpecSink(childReg, l.unitLedger(), t.ID, tid, l.deps.taskStore, l.deps.logger)
+	// A leg owns one full launch of the delegation: a fresh child registry and
+	// per-task context on every call, so a transient-retry leg never inherits
+	// the failed attempt's child-registry state. first moves the registry entry
+	// pending→running and records the ledger running transition; a retry leg
+	// skips both — the unit never left running (ADR-048: the ledger never
+	// observes failed→running). attemptReg remembers the CURRENT attempt's
+	// child registry for the abandonment seam below — legs run strictly
+	// sequentially, so the plain assignment races nothing.
+	var attemptReg *tools.DelegationRegistry
+	leg := func(first bool) (agent.SubAgentResult, error) {
+		// Create a child registry one level deeper and inject it + the launcher
+		// into a per-task context so the subagent can use delegate/cancel_delegation.
+		childReg := tools.NewDelegationRegistryWithDepth(registry.Depth() + 1)
+		attemptReg = childReg
+		// Persist sub-delegation specs parented by this step's ID (nested resume
+		// ordering); unitSink wins for isolated runs, else blackboard task/store.
+		if l.deps.unitSink != nil {
+			l.deps.unitSink.wire(childReg, t.ID)
+		} else if pbb, ok := l.bb.(PersistableBlackboard); ok {
+			if tid := pbb.TaskID(); tid != "" && l.deps.taskStore != nil {
+				wireDelegationSpecSink(childReg, l.unitLedger(), t.ID, tid, l.deps.taskStore, l.deps.logger)
+			}
 		}
-	}
-	taskCtx := l.redelegTaskCtx(ctx, childReg)
+		taskCtx := l.redelegTaskCtx(ctx, childReg)
 
-	// Build the subagent task. The finish guard in the sp4rk Conductor
-	// (SetFinishGuard) rejects finish with a nudge while pending async
-	// sub-delegations exist, since the child registry is in the context.
-	st, err := l.buildSubAgentTask(taskCtx, t, registry, l.scopeEvents(t.ID))
-	if err != nil {
-		registry.Complete(t.ID, "", err, nil)
-		l.settleUnit(t.ID, err)
-		return tools.DelegationResult{ID: t.ID, Status: tools.DelegationStatusFailed, Error: err}
-	}
-
-	// Re-add delegate/cancel_delegation with their REAL schema (resolveTaskTools
-	// strips them on every path) — registry lookup, not bare descriptors.
-	redelegTools := make([]sdktools.ToolDescriptor, 0, len(st.TaskTools)+2)
-	redelegTools = append(redelegTools, st.TaskTools...)
-	for _, name := range []string{"delegate", "cancel_delegation"} {
-		if d, ok := l.toolDescriptorByName(name); ok {
-			redelegTools = append(redelegTools, d)
+		// Build the subagent task. The finish guard in the sp4rk Conductor
+		// (SetFinishGuard) rejects finish with a nudge while pending async
+		// sub-delegations exist, since the child registry is in the context.
+		st, err := l.buildSubAgentTask(taskCtx, t, registry, l.scopeEvents(t.ID))
+		if err != nil {
+			return agent.SubAgentResult{}, err
 		}
+
+		// Re-add delegate/cancel_delegation with their REAL schema (resolveTaskTools
+		// strips them on every path) — registry lookup, not bare descriptors.
+		redelegTools := make([]sdktools.ToolDescriptor, 0, len(st.TaskTools)+2)
+		redelegTools = append(redelegTools, st.TaskTools...)
+		for _, name := range []string{"delegate", "cancel_delegation"} {
+			if d, ok := l.toolDescriptorByName(name); ok {
+				redelegTools = append(redelegTools, d)
+			}
+		}
+
+		if first {
+			registry.Start(t.ID, nil)
+			l.markUnitRunning(t.ID)
+		}
+		return <-agent.RunSubAgent(taskCtx, t.ID, st.Executor, st.CM, redelegTools, st.TaskDesc, st.Model, st.Emitter, st.TodoUpdateFunc), nil
 	}
 
-	registry.Start(t.ID, nil)
-	l.markUnitRunning(t.ID)
-	ch := agent.RunSubAgent(taskCtx, t.ID, st.Executor, st.CM, redelegTools, st.TaskDesc, st.Model, st.Emitter, st.TodoUpdateFunc)
-	sr := <-ch
+	sr, buildErr := leg(true)
+	if buildErr != nil {
+		registry.Complete(t.ID, "", buildErr, nil)
+		l.settleUnit(t.ID, buildErr)
+		return tools.DelegationResult{ID: t.ID, Status: tools.DelegationStatusFailed, Error: buildErr}
+	}
 
 	if isPaused(sr.Error) {
 		l.persistUnitOutcome(t.ID, sr.Output, sr.Error, sr.Steps)
@@ -1297,17 +1363,61 @@ func (l *conductorLauncher) runRedelegBlocking(ctx context.Context, t tools.Dele
 		return tools.DelegationResult{ID: t.ID, Status: tools.DelegationStatusPaused, Output: sr.Output, Error: sr.Error}
 	}
 
+	// A transient provider-class failure gets ONE automatic re-launch before
+	// the failure settles the unit (delegation.md): the first attempt is never
+	// persisted, so the ledger never observes failed→running (ADR-048). The
+	// abandoned attempt's own child delegations are the documented exception:
+	// abandonAttemptChildren cancels them and folds their ledger records
+	// terminal BEFORE the fresh leg registers a new generation.
+	rl := l.retryTransientBlockingLeg(ctx, sr, func() agent.SubAgentResult {
+		l.abandonAttemptChildren(ctx, attemptReg)
+		rsr, rerr := leg(false)
+		if rerr != nil {
+			return agent.SubAgentResult{StepID: t.ID, Error: rerr}
+		}
+		return rsr
+	})
+	sr = rl.sr
+	if rl.retried && isPaused(sr.Error) {
+		l.persistUnitOutcome(t.ID, sr.Output, sr.Error, sr.Steps)
+		registry.CompletePaused(t.ID, sr.Output, sr.Steps)
+		return tools.DelegationResult{ID: t.ID, Status: tools.DelegationStatusPaused, Output: sr.Output, Error: sr.Error}
+	}
+	if !rl.retried {
+		// No re-launch ran (a non-transient failure, or the backoff window
+		// was cancelled): the abandoned attempt's children must not outlive
+		// its settlement either.
+		l.abandonAttemptChildren(ctx, attemptReg)
+	}
+	// The LAST attempt's own children never outlive its settlement — a leg
+	// that returned without completing could not run its finish-join. A no-op
+	// whenever they already settled (the finish guard), and skipped by the
+	// pause branches above on purpose: a paused leg is a recoverable
+	// checkpoint, not an abandonment.
+	l.abandonAttemptChildren(ctx, attemptReg)
+
 	var execErr error
 	if sr.Error != nil {
 		execErr = sr.Error
 	}
-	registry.Complete(t.ID, sr.Output, execErr, sr.Steps)
-	l.persistUnitOutcome(t.ID, sr.Output, execErr, sr.Steps)
+	output := sr.Output
+	if rl.retried {
+		if execErr != nil {
+			// The re-launched leg failed again: the narrative rides the
+			// error (delegationRetriedSuffix) — a completion note in the
+			// persisted output would contradict the failed settlement.
+			execErr = fmt.Errorf("%w (%s)", execErr, delegationRetriedSuffix)
+		} else {
+			output = noteAutoRetriedLeg(output, rl.firstErr)
+		}
+	}
+	registry.Complete(t.ID, output, execErr, sr.Steps)
+	l.persistUnitOutcome(t.ID, output, execErr, sr.Steps)
 	status := tools.DelegationStatusCompleted
 	if execErr != nil {
 		status = tools.DelegationStatusFailed
 	}
-	return tools.DelegationResult{ID: t.ID, Status: status, Output: sr.Output, Error: execErr}
+	return tools.DelegationResult{ID: t.ID, Status: status, Output: output, Error: execErr}
 }
 
 func (l *conductorLauncher) launchAsync(ctx context.Context, t tools.DelegationTask, registry *tools.DelegationRegistry) tools.DelegationResult {
