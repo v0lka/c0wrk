@@ -634,8 +634,7 @@ export interface ConfigProviderFull {
   /** Per-provider TLS pin (ADR-054). Display round-trip from config.
    *  Empty/absent = standard CA verification (no override). */
   tls_fingerprint?: string
-  /** Per-provider session-layer auto-retry interval in seconds (compatible
-   *  providers only). 0/absent = disabled. Fixed providers always report 0. */
+  /** Session-layer resend interval. Absent/0 = disabled. */
   auto_retry_seconds?: number
   /** How a subscription-capable ChatGPT or Kimi provider authenticates.
    *  Other providers leave it absent; the backend normalizes the empty stored
@@ -818,10 +817,7 @@ export interface ProviderConfigRequest {
    *  (debounce-safe); a present value is applied verbatim, so '' clears the
    *  pin and disables the override. */
   tls_fingerprint?: string
-  /** Per-provider session-layer auto-retry interval (compatible providers
-   *  only). Omitted = keep the persisted value (debounce-safe); a present
-   *  value is applied verbatim, so 0 disables the retry timer. Ignored for
-   *  the fixed anthropic/chatgpt/kimi providers. */
+  /** Session-layer resend interval. Omitted = keep persisted; 0 disables. */
   auto_retry_seconds?: number
   /** How a ChatGPT or Kimi provider authenticates. Omitted = keep the
    *  persisted mode (debounce-safe); a present value must be

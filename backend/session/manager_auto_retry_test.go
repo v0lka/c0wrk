@@ -80,7 +80,7 @@ func TestMaybeAutoRetryAt_QualifyingCauseStampsDeadline(t *testing.T) {
 // TestMaybeAutoRetryAt_NonQualifyingCausesReturnZero pins every no-arm
 // branch: nil cause, a non-llm cause, a classified cause outside the
 // retryable class, a qualifying cause from a provider with NO interval
-// (fixed providers resolve to 0), and a nil resolver.
+// (unset intervals resolve to 0), and a nil resolver.
 func TestMaybeAutoRetryAt_NonQualifyingCausesReturnZero(t *testing.T) {
 	rateLimitErr := &llm.Error{
 		Provider:   "selfhosted",
@@ -125,7 +125,7 @@ func TestMaybeAutoRetryAt_NonQualifyingCausesReturnZero(t *testing.T) {
 
 	t.Run("qualifying cause, provider without interval", func(t *testing.T) {
 		manager, _, _ := testManager(t)
-		// Fixed providers (anthropic, chatgpt) resolve to 0: no auto-resend.
+		// A disabled provider resolves to 0: no auto-resend.
 		manager.SetAutoRetryResolver(func(string) int { return 0 })
 		if got := manager.maybeAutoRetryAt(rateLimitErr); got != 0 {
 			t.Errorf("zero interval returned %d, want 0", got)
@@ -254,5 +254,48 @@ func TestEmitTaskComplete_DegradedCauseStampsAutoRetryAt(t *testing.T) {
 	}
 	if deadline < before+5 || deadline > time.Now().Unix()+5 {
 		t.Errorf("auto_retry_at %d outside now+5s window (want the degraded cause to arm the countdown)", deadline)
+	}
+}
+
+func TestMaybeAutoRetryAtFixedProviderNames(t *testing.T) {
+	// The want column pins the classification independently of
+	// isAutoRetryableCause: deriving the expectation from the classifier
+	// itself would let a Retryable-only regression flip the branch silently.
+	for _, provider := range []string{"anthropic", "chatgpt", "kimi"} {
+		for _, tc := range []struct {
+			name  string
+			cause *llm.Error
+			want  bool
+		}{
+			{"429 rate limit", &llm.Error{StatusCode: 429}, true},
+			{"529 overloaded", &llm.Error{StatusCode: 529}, true},
+			{"rate_limit kind, no status", &llm.Error{ErrKind: llm.ErrKindRateLimit}, true},
+			{"overloaded kind, no status", &llm.Error{ErrKind: llm.ErrKindOverloaded}, true},
+			{"503 retryable-only", &llm.Error{StatusCode: 503, Retryable: true}, false},
+			{"retryable-only, no status", &llm.Error{Retryable: true}, false},
+		} {
+			t.Run(fmt.Sprintf("%s/%s", provider, tc.name), func(t *testing.T) {
+				manager, _, _ := testManager(t)
+				manager.SetAutoRetryResolver(func(name string) int {
+					if name == provider {
+						return 30
+					}
+					return 0
+				})
+				cause := *tc.cause
+				cause.Provider = provider
+				before := time.Now().Unix()
+				got := manager.maybeAutoRetryAt(fmt.Errorf("terminal request: %w", &cause))
+				if !tc.want {
+					if got != 0 {
+						t.Errorf("maybeAutoRetryAt(%s, %+v) = %d, want 0", provider, &cause, got)
+					}
+					return
+				}
+				if got < before+30 || got > time.Now().Unix()+30 {
+					t.Errorf("maybeAutoRetryAt(%s, %+v) = %d, want now+30", provider, &cause, got)
+				}
+			})
+		}
 	}
 }

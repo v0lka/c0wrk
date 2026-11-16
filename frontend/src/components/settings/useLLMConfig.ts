@@ -22,13 +22,7 @@ export interface ProviderConfig {
     /** Per-provider TLS pin (ADR-054): '' = standard CA verification
      *  (override off), non-empty = only the pinned key is accepted. */
     tls_fingerprint: string
-    /**
-     * Per-provider session-layer auto-retry interval in seconds (compatible
-     * providers only). Undefined = not set in the payload → the backend
-     * pointer sentinel keeps the persisted value (debounce-safe); 0 = the
-     * auto-resend timer is off (explicit zero is sent verbatim); a positive
-     * value is the resend interval. Fixed providers never carry the field.
-     */
+    /** Session-layer resend interval: undefined keeps persisted; 0 disables. */
     auto_retry_seconds?: number
     /**
      * How a ChatGPT or Kimi provider authenticates ('api_key' | 'oauth').

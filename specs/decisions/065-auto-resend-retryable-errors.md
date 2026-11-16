@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Superseded in part by [127](./127-fixed-provider-auto-resend.md) (the compatible-only provider scope only; every other decision below — UI-owned countdown, the absent backend timer, the `auto_retry_live` discriminator and the stop-on-manual-click rule — stands unchanged)
 
 ## Context
 

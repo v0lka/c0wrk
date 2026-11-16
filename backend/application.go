@@ -410,7 +410,8 @@ func NewApplication(cfg ApplicationConfig) (*Application, error) {
 	// Auto-retry resolver: resolves a provider name to its auto_retry_seconds
 	// interval from the ATOMIC snapshot — the manager calls it without
 	// configMu, and reading the live config maps would race Settings saves
-	// (a fatal concurrent-map-access crash). Fixed providers resolve to 0.
+	// (a fatal concurrent-map-access crash). Fixed and compatible providers
+	// resolve from the published snapshot.
 	// See specs/decisions/065-auto-resend-retryable-errors.md.
 	app.publishAutoRetryIntervals(cfg.Config)
 	manager.SetAutoRetryResolver(func(provider string) int {
@@ -704,12 +705,10 @@ func buildAutoRetryIntervals(cfg *config.Config) map[string]int {
 	if cfg == nil {
 		return map[string]int{}
 	}
-	intervals := make(map[string]int, len(cfg.LLM.OpenAICompatible)+len(cfg.LLM.AnthropicCompatible))
-	for name, c := range cfg.LLM.OpenAICompatible {
-		intervals[name] = c.AutoRetrySeconds
-	}
-	for name, f := range cfg.LLM.AnthropicCompatible {
-		intervals[name] = f.AutoRetrySeconds
+	providers := cfg.LLM.GetAllProviderConfigs()
+	intervals := make(map[string]int, len(providers))
+	for _, provider := range providers {
+		intervals[provider.Name] = provider.AutoRetrySeconds
 	}
 	return intervals
 }
