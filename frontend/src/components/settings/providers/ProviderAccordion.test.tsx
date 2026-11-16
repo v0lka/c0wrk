@@ -234,9 +234,19 @@ describe('ProviderAccordion configure-dialog metadata prefill', () => {
     )
     if (!configureBtn) throw new Error('Configure button not found')
     await act(async () => { configureBtn.click() })
-    // The dialog loads its config + prefills asynchronously.
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)) })
-    return Array.from(document.body.querySelectorAll('input[type="number"]'))
+    // The dialog's config load is microtask-only here (the API boundary is
+    // mocked with synchronous-resolve promises): advance a bounded number of
+    // microtask ticks inside act so the load chain settles, then read the DOM
+    // after act's flush. No real timers — the timing guard forbids adding
+    // delay-promise debt.
+    await act(async () => {
+      for (let i = 0; i < 50; i++) await Promise.resolve()
+    })
+    const inputs = Array.from(
+      document.body.querySelectorAll<HTMLInputElement>('input[type="number"]'),
+    )
+    if (inputs.length === 0) throw new Error('dialog inputs never rendered')
+    return inputs
   }
 
   it('shows the fetched listing values in the dialog fields', async () => {
