@@ -179,8 +179,10 @@ func TestSetResearchEnabled_RollbackOnFailedSave(t *testing.T) {
 
 // TestSetSpecsEnabled_PersistsAndTouchesNoDisk pins the specs gate's contract:
 // the flip persists as an explicit value and is announced, while NOTHING on
-// disk is touched — the spec-* skillset is ordinary agent skill data now, so
-// the toggle neither seeds nor unseeds it (the deleted pack lifecycle).
+// disk is touched — a leftover `spec-*` copy from the retired c0wrk pack is
+// ordinary agent skill data now (and, being a different name, not detection
+// evidence either), so the toggle neither seeds nor unseeds it (the deleted
+// pack lifecycle).
 func TestSetSpecsEnabled_PersistsAndTouchesNoDisk(t *testing.T) {
 	f, _, cfgPath := newTestAPI(t)
 	updated := make(chan string, 4)

@@ -56,16 +56,16 @@ func TestClassify(t *testing.T) {
 		dir       bool
 		want      string // concept kind; "" for no match
 	}{
-		{"sdd", "specs", "INDEX.md", false, "index"},
-		{"sdd", "specs", "META.md", false, "meta"},
-		{"sdd", "specs", "architecture/layers.md", false, "architecture"},
-		{"sdd", "specs", "domains/app.md", false, "domain"},
-		{"sdd", "specs", "domains/backend/app.md", false, "domain"},
-		{"sdd", "specs", "contracts/api.md", false, "contract"},
-		{"sdd", "specs", "decisions/001-one.md", false, "decision"},
+		{"vibespec", "specs", "INDEX.md", false, "index"},
+		{"vibespec", "specs", "META.md", false, "meta"},
+		{"vibespec", "specs", "architecture/layers.md", false, "architecture"},
+		{"vibespec", "specs", "domains/app.md", false, "domain"},
+		{"vibespec", "specs", "domains/backend/app.md", false, "domain"},
+		{"vibespec", "specs", "contracts/api.md", false, "contract"},
+		{"vibespec", "specs", "decisions/001-one.md", false, "decision"},
 		// The more specific `decisions/_*.md` wins over `decisions/*.md`.
-		{"sdd", "specs", "decisions/_template.md", false, "template"},
-		{"sdd", "specs", "unmatched.txt", false, ""},
+		{"vibespec", "specs", "decisions/_template.md", false, "template"},
+		{"vibespec", "specs", "unmatched.txt", false, ""},
 
 		{"openspec", "openspec", "specs/auth", true, "capability"},
 		{"openspec", "openspec", "specs/auth/spec.md", false, "spec"},

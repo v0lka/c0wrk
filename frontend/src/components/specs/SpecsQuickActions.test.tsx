@@ -42,17 +42,17 @@ afterEach(() => {
 })
 
 const ACTIONS: SDDAction[] = [
-  makeAction({ kind: 'init', label: 'Init', skill: 'spec-init', requires: [] }),
-  makeAction({ kind: 'check', label: 'Check drift', skill: 'spec-check' }),
+  makeAction({ kind: 'init', label: 'Init', skill: 'vibespec-init', requires: [] }),
+  makeAction({ kind: 'check', label: 'Check drift', skill: 'vibespec-check' }),
   makeAction({ kind: 'apply', label: 'Apply', concept: 'change', skill: 'openspec-apply-change' }),
-  makeAction({ kind: 'fix-findings', label: 'Fix all', skill: 'spec-update', requires: ['root', 'findings'] }),
+  makeAction({ kind: 'fix-findings', label: 'Fix all', skill: 'vibespec-update', requires: ['root', 'findings'] }),
 ]
 
 describe('SpecsQuickActions', () => {
   it('renders one button per declared panel-level action, in declaration order', async () => {
     await render(ACTIONS)
     expect(buttons().map((b) => b.textContent)).toEqual(['Init', 'Check drift'])
-    expect(buttons().map((b) => b.getAttribute('data-skill'))).toEqual(['spec-init', 'spec-check'])
+    expect(buttons().map((b) => b.getAttribute('data-skill'))).toEqual(['vibespec-init', 'vibespec-check'])
   })
 
   it('renders nothing when the framework declares no panel-level gesture', async () => {
@@ -86,7 +86,7 @@ describe('SpecsQuickActions', () => {
       { key: string; skill: string; prompt: string },
       boolean,
     ]
-    expect(pending.skill).toBe('spec-check')
+    expect(pending.skill).toBe('vibespec-check')
     expect(pending.prompt).toBe('Check the specifications for drift.')
     expect(pending.key).toBe('check')
     expect(newSession).toBe(false)
@@ -116,8 +116,8 @@ describe('SpecsQuickActions', () => {
   // the same way.
   it('renders a `constructor` action kind without crashing (own-property icon lookup)', async () => {
     await render([
-      makeAction({ kind: 'constructor', label: 'Construct specifications', skill: 'spec-init', requires: [] }),
-      makeAction({ kind: 'totally-unknown-kind', label: 'Mystery', skill: 'spec-check', requires: [] }),
+      makeAction({ kind: 'constructor', label: 'Construct specifications', skill: 'vibespec-init', requires: [] }),
+      makeAction({ kind: 'totally-unknown-kind', label: 'Mystery', skill: 'vibespec-check', requires: [] }),
     ])
     expect(buttons().map((b) => b.textContent)).toEqual(['Construct specifications', 'Mystery'])
     expect(container?.querySelector('[data-testid="specs-quick-actions"]')).not.toBeNull()

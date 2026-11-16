@@ -5,8 +5,8 @@ specification-driven development (SDD) framework.
 
 You do not need to modify or rebuild c0wrk. Install your framework's Agent
 Skills, then describe its files, checks, actions, and sidebar sections in YAML.
-The same DSL describes the three bundled integrations: Specification System
-(`sdd`), OpenSpec (`openspec`), and GitHub Spec Kit (`spec-kit`).
+The same DSL describes the three bundled integrations: VibeSpec
+(`vibespec`), OpenSpec (`openspec`), and GitHub Spec Kit (`spec-kit`).
 
 This guide describes the current `sdd-framework/v1` implementation, including
 its limitations. A schema-valid declaration is not necessarily an effective
@@ -300,9 +300,9 @@ Thus:
 
 When either skill-name list is set, `detect.skills.dirs` must be nonempty for
 schema validation. The names are exact, case-sensitive slugs, not regexes or
-globs. The built-in alias pair `spec-*` ↔ `vibespec-*` is recognized symmetrically;
-the DSL cannot define custom aliases. For an alternative custom spelling,
-list both names in `any_of`, or install the declared name.
+globs, and detection compares them exactly — there are no aliases, built-in or
+declared, so an installation must carry the declared spelling. For an
+alternative spelling, list both names in `any_of`.
 
 Markers and roots are **tree evidence only**. They cannot make the Specs tab
 appear without the matching installed skills. Marker paths are existence
@@ -341,12 +341,17 @@ or older upstream version:
 
 | Framework ID | Required installed skill names | Roots | Priority |
 | --- | --- | --- | --- |
-| `sdd` | Any of `spec-check`, `spec-consult`, `spec-create`, `spec-update`; `vibespec-*` aliases also match | `specs/` | 10 |
+| `vibespec` | Any of `vibespec-init`, `vibespec-explore`, `vibespec-consult`, `vibespec-update`, `vibespec-create`, `vibespec-check` | `specs/` | 10 |
 | `openspec` | `openspec-propose` **and** any of `openspec-apply-change`, `openspec-sync-specs`, `openspec-archive-change` | `openspec/` | 20 |
 | `spec-kit` | Any of `speckit-constitution`, `speckit-specify`, `speckit-plan`, `speckit-tasks` | `specs/`, `.specify/` | 30 |
 
 All three currently declare `.agents/skills` and `.claude/skills` as project
-skill directories. Installing only command templates, or differently named
+skill directories. Each also declares the tree markers its `init` creates —
+VibeSpec probes `specs/META.md`, `specs/INDEX.md`, `specs/WORKFLOW.md`,
+`specs/decisions/_template.md` and the `specs/architecture`, `specs/domains`,
+`specs/contracts` and `specs/decisions` directories — but markers are the tree
+signal only: they order a recognised framework as tree-present and never make
+one visible on their own. Installing only command templates, or differently named
 skills, does not satisfy these definitions. Override the definition if your
 installation uses a different set.
 
@@ -873,7 +878,7 @@ disabled on the ones that already have it. There is no `not`, `or`, numeric
 threshold, task-completion test, or arbitrary expression in `requires`.
 
 The backend checks each action's `skill` against the workspace's callable
-skill catalog (alias-aware: a declared `spec-check` matches an installed
+skill catalog by exact name (a declared `vibespec-check` needs an installed
 `vibespec-check`) and reports an unresolvable skill as `available: false` —
 the panel then renders the action inert with the reason instead of dispatching
 into a missing skill. Recognition may need only one skill while actions
@@ -971,11 +976,11 @@ or the panel's error banner. Subsequent work is an ordinary agent task:
 YAML neither grants tools nor bypasses policy, confirmations, or skill
 activation rules.
 
-Detection aliases apply to action dispatch as well: when the status is built,
-a declared `skill` that is not installed under its exact name resolves onto
-the installed alias spelling, and the action dispatches that resolved name —
-a declared `spec-check` runs an installed `vibespec-check`. Only a skill that
-resolves nowhere leaves its action inert.
+Action dispatch uses the same exact-name rule as detection: when the status is
+built, a declared `skill` that the workspace does not carry under that exact
+name is reported not-callable, and the panel renders the action inert. A
+differently spelled installation (for example the retired `spec-check`) does
+not satisfy a declared `vibespec-check`.
 
 ## 9. Views and tree presentation
 
@@ -1410,7 +1415,7 @@ and skill bodies before trusting unfamiliar integrations.
 | Area | Supported approach / limitation |
 | --- | --- |
 | Custom skill discovery | The merged framework catalog (built-ins + global + checkout DSL) drives detection, listing AND session activation, so a custom `detect.skills.dirs` is callable wherever it is detected. `skills.dirs` in c0wrk config shapes the shared base set for both sides identically. |
-| Custom aliases | No DSL alias declaration. Detection AND action dispatch honour the built-in `spec-`/`vibespec-` alias: a declared `spec-check` resolves to an installed `vibespec-check` and the action dispatches the installed name. |
+| Skill-name aliases | None. Detection and action dispatch both compare exact names, so the declared spelling is the installed spelling. To accept several spellings, list them all in `any_of`. |
 | Root completeness | `roots[].required` is honored: `Present` requires every required root to exist, and a missing one is a warning (the empty state names it). `root` (the action token) tests that same presence predicate. |
 | Required content | File `required` metadata does not become findings or comprehensive missing-content UI. Add checks. |
 | Arbitrary metadata | No JSONPath/YAMLPath, arbitrary frontmatter scalar extraction, or custom user-defined extractor/check kind. Frontmatter is parsed as real YAML (quoted/nested keys, block scalars). |
@@ -1436,10 +1441,10 @@ The following are useful when developing or debugging an integration:
 | --- | --- |
 | Fields, vocabularies, validation | [`core/sdd/framework.go`](../core/sdd/framework.go) |
 | Operator loading, warnings, full replacement | [`core/sdd/dsl.go`](../core/sdd/dsl.go) |
-| Skill recognition, aliases, default ordering | [`core/sdd/detect.go`](../core/sdd/detect.go) |
+| Skill recognition, exact name matching, default ordering | [`core/sdd/detect.go`](../core/sdd/detect.go) |
 | Markdown parsing, glob classification, checks, nodes | [`core/sdd/parse.go`](../core/sdd/parse.go) |
 | Parsed document/tree model | [`core/sdd/model.go`](../core/sdd/model.go) |
-| Bundled integration examples | [`sdd.yaml`](../core/sdd/frameworks/sdd.yaml), [`openspec.yaml`](../core/sdd/frameworks/openspec.yaml), [`spec-kit.yaml`](../core/sdd/frameworks/spec-kit.yaml) |
+| Bundled integration examples | [`vibespec.yaml`](../core/sdd/frameworks/vibespec.yaml), [`openspec.yaml`](../core/sdd/frameworks/openspec.yaml), [`spec-kit.yaml`](../core/sdd/frameworks/spec-kit.yaml) |
 | Definition-file locations | [`backend/config/sdd_store.go`](../backend/config/sdd_store.go) |
 | Detection probes, selection, action prerequisites | [`backend/frontend_api_sdd.go`](../backend/frontend_api_sdd.go) |
 | Checkout vs session workspace | [`backend/frontend_api_specs.go`](../backend/frontend_api_specs.go) |

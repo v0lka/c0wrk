@@ -28,7 +28,7 @@ import (
 // root back to the checkout.
 func TestGetSpecsStatus_FollowsActiveSession(t *testing.T) {
 	h := newWTHarness(t, wtFactory())
-	seedGlobalSkill(t, h.agentDir, "spec-check")
+	seedGlobalSkill(t, h.agentDir, "vibespec-check")
 	checkoutRoot := filepath.Join(h.project.WorkspacePath, "specs")
 
 	// No sessions yet: the checkout fallback, with no tree.
@@ -114,7 +114,7 @@ func TestGetSpecsStatus_FollowsActiveSession(t *testing.T) {
 // workspace and come back empty).
 func TestGetSpecsStatus_ForeignSessionDoesNotSteer(t *testing.T) {
 	h := newWTHarness(t, wtFactory())
-	seedGlobalSkill(t, h.agentDir, "spec-check")
+	seedGlobalSkill(t, h.agentDir, "vibespec-check")
 	checkoutRoot := filepath.Join(h.project.WorkspacePath, "specs")
 	writeSpecsTree(t, h.project.WorkspacePath)
 

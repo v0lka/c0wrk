@@ -77,7 +77,7 @@ export function makeAction(overrides: Partial<SDDAction> = {}): SDDAction {
   return {
     kind: 'check',
     label: 'Check',
-    skill: 'spec-check',
+    skill: 'vibespec-check',
     prompt: 'Check the specifications for drift.',
     requires: ['root'],
     available: true,

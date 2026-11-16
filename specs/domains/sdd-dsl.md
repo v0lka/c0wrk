@@ -9,11 +9,11 @@ The declarative description of an SDD (specification-driven development) framewo
 - `core/sdd/framework.go` - the document model (`Framework`, `Root`, `Detect`, `Skills`, `Concept`, `Match`, `Check`, `Action`, `Views`, `Section`), the strict single-document parser `Parse`, its validation (per-kind parameter sets, vocabularies, regex compilation, slug/path/glob rules) and the `Error` type naming document + field path
 - `core/sdd/dsl.go` - the operator layer: `Origin` (`builtin` | `global` | `project`), `Definition` (framework + provenance), `Load(globalPath, projectPath)`, `LoadDefinitions`, `ParseDefinitions` (a `---`-separated stream, fail-soft per document) and `Merge` (by ID, whole-document replace, `priority` then `id` order)
 - `core/sdd/builtin.go` - the embedded catalog (`core/sdd/frameworks/*.yaml` via `//go:embed`): `BuiltinNames`, `Builtins`, `BuiltinDefinitions`, `Builtin(id)`; built-ins are ordinary DSL documents
-- `core/sdd/frameworks/sdd.yaml` - c0wrk's own tree (`specs/META.md`, `INDEX.md`, `architecture/**`, `domains/**`, `contracts/**`, `decisions/**`, each excluding its `_`-prefixed templates), its eight checks (one `references` check carrying both the resolution and the cycle finding) and its `spec-*` lifecycle actions including the `fix-findings` gesture
+- `core/sdd/frameworks/vibespec.yaml` - VibeSpec: c0wrk's own tree (`specs/META.md`, `INDEX.md`, `architecture/**`, `domains/**`, `contracts/**`, `decisions/**`, each excluding its `_`-prefixed templates), its eight checks (one `references` check carrying both the resolution and the cycle finding), its `vibespec-*` lifecycle and continuous actions including the `fix-findings` gesture, and the framework's full detection signal (the tree markers plus every skill of the skillset in `any_of`)
 - `core/sdd/frameworks/openspec.yaml` - OpenSpec: `openspec/specs/*` capability folders + `spec.md`, `openspec/changes/*` change folders with delta specs and task lists
 - `core/sdd/frameworks/spec-kit.yaml` - GitHub Spec Kit: `.specify/` (constitution, templates, active-feature pointer) + `specs/<feature>/` artifact sets
 - `backend/config/sdd_store.go` - `SDDPath` (`<agentDir>/specs.yaml`, i.e. `~/.c0wrk/specs.yaml`) and `ProjectSDDPath` (`<checkout>/.c0wrk/specs.yaml`, `ProjectMetaDirName`); both are read-only path derivations that never materialize a file
-- `core/sdd/detect.go` - the I/O-free detector (`DetectInstalled`, `Evidence`, `Detection`, `DetectResult`, `SkillScope`, `SkillNameMatches`)
+- `core/sdd/detect.go` - the I/O-free detector (`DetectInstalled`, `Evidence`, `Detection`, `DetectResult`, `SkillScope`)
 - `core/sdd/parse.go` - `ParseTree`, the one filesystem entry point: root walking, concept classification, declared extraction, declared checks, containment and size caps
 - `core/sdd/model.go` - the parsed model (`Tree`, `RootState`, `Document`, `Node`, `View`, `Finding`, `Counts`, `TaskItem`, `IndexTask`); no I/O
 - `specs/domains/specs.md` - the subsystem that consumes this DSL: detection, selection, panel, gate
@@ -120,7 +120,7 @@ default     := the first recognised framework, ordered by
                  3. catalog order (priority, then id)
 ```
 
-Markers and roots are the TREE signal only: they never make a framework visible, because an installed framework with no tree yet is exactly the state the empty state and the bootstrap action exist for, and a foreign repository's tree would otherwise summon a panel for a framework nobody installed. Installed names are compared through the alias prefixes (`spec-` ↔ `vibespec-`), so an upstream copy of c0wrk's skills names the same skill. An unattributed skill scope ranks last.
+Markers and roots are the TREE signal only: they never make a framework visible, because an installed framework with no tree yet is exactly the state the empty state and the bootstrap action exist for, and a foreign repository's tree would otherwise summon a panel for a framework nobody installed. Installed names are compared by exact, case-sensitive name after trimming surrounding whitespace, so a framework is recognised only by the spelling its own installer writes. An unattributed skill scope ranks last.
 
 ### Checks
 
@@ -214,7 +214,7 @@ The project-scoped operator file (`<checkout>/.c0wrk/specs.yaml`) arrives with a
 | --------- | ------- | ----------- |
 | Global definitions file | `~/.c0wrk/specs.yaml` (`config.SDDPath`) | Operator-owned YAML stream, optional, never created; merged after the built-ins |
 | Project definitions file | `<checkout>/.c0wrk/specs.yaml` (`config.ProjectSDDPath`, `config.ProjectMetaDirName`) | Operator-owned YAML stream travelling with the repository, optional, never created; merged last, so its IDs win |
-| Embedded catalog | `core/sdd/frameworks/{sdd,openspec,spec-kit}.yaml` | Compile-time pins; an added `.yaml` here is a build-time catalog change |
+| Embedded catalog | `core/sdd/frameworks/{vibespec,openspec,spec-kit}.yaml` | Compile-time pins; an added `.yaml` here is a build-time catalog change |
 | Document size cap | 8 MiB (`maxDocumentBytes`) | An oversized document is skipped with a warning |
 
 There is no config.yaml key for the DSL: the framework definitions ARE the configuration surface, and the only settings-side switch on this path is the sidebar gate `specs.enabled` (`specs/domains/specs.md`).

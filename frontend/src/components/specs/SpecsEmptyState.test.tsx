@@ -73,14 +73,14 @@ describe('SpecsEmptyState', () => {
         makeAction({
           kind: 'init',
           label: 'Init',
-          skill: 'spec-init',
+          skill: 'vibespec-init',
           prompt: 'Initialize the specification tree.',
           requires: [],
         }),
       ]),
     )
     const cta = query('specs-initialize-cta')
-    expect(cta?.getAttribute('data-skill')).toBe('spec-init')
+    expect(cta?.getAttribute('data-skill')).toBe('vibespec-init')
 
     act(() => {
       cta?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
@@ -91,7 +91,7 @@ describe('SpecsEmptyState', () => {
       boolean,
     ]
     expect(pending.prompt).toBe('Initialize the specification tree.')
-    expect(pending.skill).toBe('spec-init')
+    expect(pending.skill).toBe('vibespec-init')
     expect(newSession).toBe(false)
   })
 
@@ -110,7 +110,7 @@ describe('SpecsEmptyState', () => {
         makeAction({
           kind: 'init',
           label: 'Init',
-          skill: 'spec-init',
+          skill: 'vibespec-init',
           prompt: 'Initialize the specification tree.',
           requires: [],
           available: false,
@@ -134,7 +134,7 @@ describe('SpecsEmptyState', () => {
       nodes: [],
       views: [],
       counts: { documents: 0, findings: 0, by_concept: {}, findings_by_kind: {} },
-      actions: [makeAction({ kind: 'init', label: 'Init', skill: 'spec-init', requires: [] })],
+      actions: [makeAction({ kind: 'init', label: 'Init', skill: 'vibespec-init', requires: [] })],
     })
     await render(status, 'empty-tree')
 
@@ -142,6 +142,6 @@ describe('SpecsEmptyState', () => {
     expect(container?.textContent).toContain('No OpenSpec documents yet')
     expect(container?.textContent).not.toContain('No OpenSpec tree yet')
     expect(container?.textContent).toContain('/ws/specs')
-    expect(query('specs-initialize-cta')?.getAttribute('data-skill')).toBe('spec-init')
+    expect(query('specs-initialize-cta')?.getAttribute('data-skill')).toBe('vibespec-init')
   })
 })

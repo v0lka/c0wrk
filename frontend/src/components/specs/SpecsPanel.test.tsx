@@ -175,8 +175,8 @@ describe('SpecsPanel — declared render model', () => {
     getSpecsStatusMock.mockResolvedValue(
       statusWithSections({
         actions: [
-          makeAction({ kind: 'init', label: 'Init', skill: 'spec-init', requires: [] }),
-          makeAction({ kind: 'check', label: 'Check drift', skill: 'spec-check' }),
+          makeAction({ kind: 'init', label: 'Init', skill: 'vibespec-init', requires: [] }),
+          makeAction({ kind: 'check', label: 'Check drift', skill: 'vibespec-check' }),
         ],
         findings: [makeFinding({ message: 'a spec file must be listed in the INDEX' })],
         counts: {
@@ -203,14 +203,14 @@ describe('SpecsPanel — declared render model', () => {
         documents: [],
         nodes: [],
         views: [],
-        actions: [makeAction({ kind: 'init', label: 'Init', skill: 'spec-init', requires: [] })],
+        actions: [makeAction({ kind: 'init', label: 'Init', skill: 'vibespec-init', requires: [] })],
       }),
     )
 
     await renderPanel()
 
     expect(query('specs-empty-state')).not.toBeNull()
-    expect(query('specs-initialize-cta')?.getAttribute('data-skill')).toBe('spec-init')
+    expect(query('specs-initialize-cta')?.getAttribute('data-skill')).toBe('vibespec-init')
   })
 
   it('renders the empty-documents state when the tree is present but holds none', async () => {
@@ -227,7 +227,7 @@ describe('SpecsPanel — declared render model', () => {
         nodes: [],
         views: [],
         counts: { documents: 0, findings: 0, by_concept: {}, findings_by_kind: {} },
-        actions: [makeAction({ kind: 'init', label: 'Init', skill: 'spec-init', requires: [] })],
+        actions: [makeAction({ kind: 'init', label: 'Init', skill: 'vibespec-init', requires: [] })],
       }),
     )
 
@@ -236,7 +236,7 @@ describe('SpecsPanel — declared render model', () => {
     const empty = query('specs-empty-state')
     expect(empty).not.toBeNull()
     expect(empty?.getAttribute('data-reason')).toBe('empty-tree')
-    expect(query('specs-initialize-cta')?.getAttribute('data-skill')).toBe('spec-init')
+    expect(query('specs-initialize-cta')?.getAttribute('data-skill')).toBe('vibespec-init')
     const badge = query('specs-integrity-badge')
     expect(badge?.textContent).toContain('Nothing to check')
     expect(badge?.textContent).not.toContain('Integrity OK')
@@ -270,7 +270,7 @@ describe('SpecsPanel — declared render model', () => {
           makeAction({
             kind: 'update',
             label: 'Update',
-            skill: 'spec-update',
+            skill: 'vibespec-update',
             prompt: 'Update {path} ({name}).',
             concept: 'decision',
             requires: ['root', 'concept:decision'],
@@ -298,14 +298,14 @@ describe('SpecsPanel — declared render model', () => {
 
     const args = sendMock.mock.calls[0] as unknown[]
     expect(args[0]).toBe('Update specs/decisions/001-one.md (001-one.md).')
-    expect(args[1]).toEqual(['spec-update'])
+    expect(args[1]).toEqual(['vibespec-update'])
   })
 
   it('keeps a cancelled gesture out of the chat entirely', async () => {
     getSpecsStatusMock.mockResolvedValue(
       statusWithSections({
         actions: [
-          makeAction({ kind: 'update', label: 'Update', skill: 'spec-update', prompt: 'Update {path}.', concept: 'decision', requires: ['root', 'concept:decision'] }),
+          makeAction({ kind: 'update', label: 'Update', skill: 'vibespec-update', prompt: 'Update {path}.', concept: 'decision', requires: ['root', 'concept:decision'] }),
         ],
       }),
     )
@@ -333,7 +333,7 @@ describe('SpecsPanel — declared render model', () => {
     getSpecsStatusMock.mockResolvedValue(
       statusWithSections({
         actions: [
-          makeAction({ kind: 'update', label: 'Update', skill: 'spec-update', prompt: 'Update {path}.', concept: 'decision', requires: ['root', 'concept:decision'] }),
+          makeAction({ kind: 'update', label: 'Update', skill: 'vibespec-update', prompt: 'Update {path}.', concept: 'decision', requires: ['root', 'concept:decision'] }),
         ],
       }),
     )
@@ -349,7 +349,7 @@ describe('SpecsPanel — declared render model', () => {
     await flush()
 
     const error = useSpecsStore.getState().error
-    expect(error).toContain('Failed to dispatch spec-update')
+    expect(error).toContain('Failed to dispatch vibespec-update')
     expect(error).toContain('session gone')
   })
 })
@@ -486,7 +486,7 @@ describe('SpecsPanel — findings gesture gating (AC5)', () => {
           makeAction({
             kind: 'fix-findings',
             label: 'Fix findings',
-            skill: 'spec-update',
+            skill: 'vibespec-update',
             prompt: 'Repair every finding, then re-check the tree.',
             requires: ['root', 'findings'],
           }),
@@ -516,7 +516,7 @@ describe('SpecsPanel — findings gesture gating (AC5)', () => {
     })
 
     const args = sendMock.mock.calls[0] as unknown[]
-    expect(args[1]).toEqual(['spec-update'])
+    expect(args[1]).toEqual(['vibespec-update'])
     expect(args[0]).toContain('Repair every finding')
     expect(args[0]).toContain(findingLine(findings[0]!))
     expect(args[0]).toContain(findingLine(findings[1]!))

@@ -64,3 +64,10 @@ Three facts invalidated that shape:
 - `specs/domains/specs.md` — the subsystem (detection, selection, panel, gate).
 - `specs/domains/sdd-dsl.md` — the DSL: format, primitives, merge rules, security.
 - `specs/contracts/desktop-frontend.md` — `GetSpecsStatus` / `SetActiveSDD` and the `SpecsStatusDTO` wire shape.
+
+## Historical Note
+
+2026-11-17: the `spec-` ↔ `vibespec-` alias prefixes named in decision 3 were
+removed by [ADR-129](./129-exact-skill-name-matching.md); skill names now match
+exactly, and the `SkillNameMatches` predicate named in `core/sdd/detect.go` no
+longer exists.

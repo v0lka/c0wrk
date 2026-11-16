@@ -99,7 +99,7 @@ export function ResearchSpecsSettings() {
         onChange={(next) => void handleChange('specs', next)}
         disabled={gates.specs === null || saving !== null}
         label="Specs"
-        description="Show the Specs sidebar tab. c0wrk ships no Specs skill pack, so this toggle only shows or hides the tab — nothing is written to or removed from disk. Copies a previous version seeded (the spec-* skills, the specs agent) stay where they are and can be deleted by hand. The change applies immediately."
+        description="Show the Specs sidebar tab. c0wrk ships no Specs skill pack, so this toggle only shows or hides the tab — nothing is written to or removed from disk. Copies a previous version seeded (the spec-* skills, the specs agent) stay where they are and can be deleted by hand; they no longer count as framework recognition, which needs the framework's own skills (vibespec-* for VibeSpec). The change applies immediately."
       />
     </div>
   )

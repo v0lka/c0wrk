@@ -28,7 +28,7 @@ function action(overrides: Partial<SDDAction> = {}): SDDAction {
   return {
     kind: 'check',
     label: 'Check',
-    skill: 'spec-check',
+    skill: 'vibespec-check',
     prompt: 'Check the specifications for drift.',
     requires: ['root'],
     available: true,
@@ -96,7 +96,7 @@ describe('actionToDispatch', () => {
   it('carries the declared skill and prompt', () => {
     expect(actionToDispatch(action())).toEqual({
       key: 'check',
-      skill: 'spec-check',
+      skill: 'vibespec-check',
       prompt: 'Check the specifications for drift.',
     })
   })
@@ -129,7 +129,7 @@ describe('nodeActionsFor', () => {
     action({ kind: 'plan', label: 'Plan', concept: 'feature', skill: 'speckit-plan' }),
     action({ kind: 'apply-unavailable', label: 'Apply', concept: 'change', skill: 'x', available: false }),
     action({ kind: 'skillless', label: 'Nope', concept: 'change', skill: undefined }),
-    action({ kind: FINDINGS_FIX_KIND, label: 'Fix', concept: 'change', skill: 'spec-update' }),
+    action({ kind: FINDINGS_FIX_KIND, label: 'Fix', concept: 'change', skill: 'vibespec-update' }),
     action({ kind: 'check', label: 'Check' }),
   ]
 
@@ -153,9 +153,9 @@ describe('nodeActionsFor', () => {
 describe('toolbarActions', () => {
   it('keeps panel-level actions and drops node + findings gestures', () => {
     const actions: SDDAction[] = [
-      action({ kind: 'init', label: 'Init', skill: 'spec-init', requires: [] }),
+      action({ kind: 'init', label: 'Init', skill: 'vibespec-init', requires: [] }),
       action({ kind: 'apply', label: 'Apply', concept: 'change', skill: 'openspec-apply-change' }),
-      action({ kind: FINDINGS_FIX_KIND, label: 'Fix findings', skill: 'spec-update' }),
+      action({ kind: FINDINGS_FIX_KIND, label: 'Fix findings', skill: 'vibespec-update' }),
     ]
     expect(toolbarActions(actions).map((a) => a.kind)).toEqual(['init'])
   })
@@ -163,7 +163,7 @@ describe('toolbarActions', () => {
 
 describe('findingsFixAction', () => {
   it('finds the reserved kind', () => {
-    const declared = action({ kind: FINDINGS_FIX_KIND, label: 'Fix findings', skill: 'spec-update' })
+    const declared = action({ kind: FINDINGS_FIX_KIND, label: 'Fix findings', skill: 'vibespec-update' })
     expect(findingsFixAction([action(), declared])).toBe(declared)
   })
 
@@ -175,7 +175,7 @@ describe('findingsFixAction', () => {
 
 describe('bootstrapAction', () => {
   it('is the toolbar action that declares no requirement', () => {
-    const init = action({ kind: 'init', skill: 'spec-init', requires: [] })
+    const init = action({ kind: 'init', skill: 'vibespec-init', requires: [] })
     expect(bootstrapAction([action(), init])).toBe(init)
   })
 
@@ -197,7 +197,7 @@ describe('findingsFixDispatch', () => {
   const declared = action({
     kind: FINDINGS_FIX_KIND,
     label: 'Fix findings',
-    skill: 'spec-update',
+    skill: 'vibespec-update',
     prompt: 'Repair every finding, then re-check the tree.',
     requires: ['root', 'findings'],
   })
@@ -209,7 +209,7 @@ describe('findingsFixDispatch', () => {
     ])
     expect(dispatch).toEqual({
       key: FINDINGS_FIX_KIND,
-      skill: 'spec-update',
+      skill: 'vibespec-update',
       prompt:
         'Repair every finding, then re-check the tree.\n\nFindings:\n' +
         '- [INDEX_STALE] specs/a.md: not listed\n' +
@@ -227,7 +227,7 @@ describe('findingsFixDispatch', () => {
   // the per-finding chips AND this dispatch inert. (Review 18.)
   it('is null when the declared action is not available for the tree', () => {
     expect(
-      findingsFixDispatch(action({ kind: FINDINGS_FIX_KIND, skill: 'spec-update', available: false }), [
+      findingsFixDispatch(action({ kind: FINDINGS_FIX_KIND, skill: 'vibespec-update', available: false }), [
         finding('X'),
       ]),
     ).toBeNull()
@@ -251,10 +251,10 @@ describe('inertActionReason', () => {
   // the skill instead of repeating the requirement wording.
   it('names the uninstalled skill rather than the tree', () => {
     const reason = inertActionReason(
-      makeAction({ skill: 'spec-init', available: false, skill_available: false }),
+      makeAction({ skill: 'vibespec-init', available: false, skill_available: false }),
     )
-    expect(reason).toBe(skillMissingReason('spec-init'))
-    expect(reason).toContain('spec-init')
+    expect(reason).toBe(skillMissingReason('vibespec-init'))
+    expect(reason).toContain('vibespec-init')
     expect(reason).not.toBe(REQUIREMENT_UNMET_REASON)
   })
 

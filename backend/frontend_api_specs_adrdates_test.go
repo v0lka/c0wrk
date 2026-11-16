@@ -247,13 +247,13 @@ func TestSpecsADRDates_FailSoft(t *testing.T) {
 
 const specsADRFixtureDate = "2025-06-01 12:00:00 +0000"
 
-// sddDatesFrontend builds the SDD harness with the global spec-* skill
-// installed, so a specs/ tree in the workspace is parsed through the sdd
+// sddDatesFrontend builds the SDD harness with the global vibespec-* skill
+// installed, so a specs/ tree in the workspace is parsed through the VibeSpec
 // framework.
 func sddDatesFrontend(t *testing.T) (api *FrontendAPI, ws string) {
 	t.Helper()
 	api, workspaces, agentDir := sddTestFrontend(t, project.ProjectInfo{ID: "proj-1", Name: "P"})
-	seedGlobalSkill(t, agentDir, "spec-check")
+	seedGlobalSkill(t, agentDir, "vibespec-check")
 	return api, workspaces["proj-1"]
 }
 

@@ -23,7 +23,7 @@ const validFramework = {
   tree_present: true,
   root_present: true,
   marker_present: true,
-  skills: [{ name: 'spec-check', dir: '/home/.agents/skills/spec-check', scope: 'global' }],
+  skills: [{ name: 'vibespec-check', dir: '/home/.agents/skills/vibespec-check', scope: 'global' }],
 }
 const validRoot = {
   id: 'specs',
@@ -76,7 +76,7 @@ const validFinding = {
 const validAction = {
   kind: 'check',
   label: 'Check',
-  skill: 'spec-check',
+  skill: 'vibespec-check',
   prompt: 'Check the specifications for drift.',
   requires: ['root'],
   available: true,

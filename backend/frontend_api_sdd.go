@@ -4,11 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"maps"
 	"os"
 	"path"
 	"path/filepath"
-	"slices"
 	"strings"
 
 	"github.com/v0lka/sp4rk/pathutil"
@@ -355,8 +353,7 @@ func (f *FrontendAPI) GetSpecsStatus(projectID string) (*SpecsStatusDTO, error) 
 	}
 	// The actions the DTO reports are gated on the workspace's CALLABLE
 	// skill catalog: a declared-but-absent skill stays visible as an
-	// inert action (available=false), and an alias spelling resolves to
-	// the name actually installed (spec-check vs vibespec-check).
+	// inert action (available=false), and names are matched exactly.
 	applySDDTree(dto, active.Framework, tree, f.callableSkillNames(workspace, sddCheckout(proj)))
 	// Environment enrichment, strictly after the pure parse: stamp decision
 	// documents with their git add date. Fail-soft by contract.
@@ -1094,25 +1091,15 @@ func nonNilStrings(values []string) []string {
 }
 
 // resolveActionSkill maps an action's declared skill onto the name actually
-// callable in the workspace: the exact name when installed, the alias spelling
-// when only the upstream copy exists (vibespec-check for a declared
-// spec-check), or the declared name flagged not-callable so the action stays
-// visible but inert. A skill-less action is not gated (its inertness is the
-// dispatch layer's decision), and an undeterminable catalog (nil) does not
-// gate either.
+// callable in the workspace: the declared name when the catalog carries it, or
+// the declared name flagged not-callable so the action stays visible but inert.
+// Names are matched exactly — the DSL declares the spelling a dispatch can
+// invoke, and a differently spelled installation is a different skill. A
+// skill-less action is not gated (its inertness is the dispatch layer's
+// decision), and an undeterminable catalog (nil) does not gate either.
 func resolveActionSkill(skill string, callable map[string]bool) (string, bool) {
 	if skill == "" || callable == nil {
 		return skill, true
 	}
-	if callable[skill] {
-		return skill, true
-	}
-	// Sorted iteration keeps the resolved spelling stable when several
-	// installed spellings fold to one declared skill's canonical name.
-	for _, name := range slices.Sorted(maps.Keys(callable)) {
-		if sdd.SkillNameMatches(skill, name) {
-			return name, true
-		}
-	}
-	return skill, false
+	return skill, callable[skill]
 }

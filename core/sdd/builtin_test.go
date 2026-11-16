@@ -17,7 +17,7 @@ func TestBuiltins_ParseEveryDocument(t *testing.T) {
 	if len(frameworks) != 3 {
 		t.Fatalf("Builtins() returned %d frameworks, want 3", len(frameworks))
 	}
-	wantOrder := []string{"sdd", "openspec", "spec-kit"}
+	wantOrder := []string{"vibespec", "openspec", "spec-kit"}
 	gotOrder := make([]string, 0, len(frameworks))
 	for _, fw := range frameworks {
 		gotOrder = append(gotOrder, fw.ID)
@@ -39,13 +39,13 @@ func TestBuiltins_ParseEveryDocument(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuiltinNames() error = %v", err)
 	}
-	if want := []string{"openspec.yaml", "sdd.yaml", "spec-kit.yaml"}; !slices.Equal(names, want) {
+	if want := []string{"openspec.yaml", "spec-kit.yaml", "vibespec.yaml"}; !slices.Equal(names, want) {
 		t.Errorf("BuiltinNames() = %v, want %v", names, want)
 	}
 }
 
 func TestBuiltin_ByID(t *testing.T) {
-	for _, id := range []string{"sdd", "openspec", "spec-kit"} {
+	for _, id := range []string{"vibespec", "openspec", "spec-kit"} {
 		fw, err := sdd.Builtin(id)
 		if err != nil {
 			t.Fatalf("Builtin(%q) error = %v", id, err)
@@ -59,17 +59,17 @@ func TestBuiltin_ByID(t *testing.T) {
 	}
 }
 
-// TestBuiltins_SDDExpressesCurrentLayout pins AC-3: the sdd document describes
+// TestBuiltins_SDDExpressesCurrentLayout pins AC-3: the vibespec document describes
 // this repository's tree (META/INDEX + the four sections) and declares exactly
 // the nine built-in integrity checks through the documented primitives.
-func TestBuiltins_SDDExpressesCurrentLayout(t *testing.T) {
-	fw, err := sdd.Builtin("sdd")
+func TestBuiltins_VibeSpecExpressesCurrentLayout(t *testing.T) {
+	fw, err := sdd.Builtin("vibespec")
 	if err != nil {
-		t.Fatalf("Builtin(sdd) error = %v", err)
+		t.Fatalf("Builtin(vibespec) error = %v", err)
 	}
 
 	if len(fw.Roots) != 1 || fw.Roots[0].Path != "specs" || !fw.Roots[0].Required {
-		t.Fatalf("sdd roots = %+v, want one required root at specs", fw.Roots)
+		t.Fatalf("vibespec roots = %+v, want one required root at specs", fw.Roots)
 	}
 
 	wantConcepts := map[string]string{
@@ -84,12 +84,12 @@ func TestBuiltins_SDDExpressesCurrentLayout(t *testing.T) {
 	for _, c := range fw.Concepts {
 		got[c.Kind] = c.Match.Glob
 		if len(c.Match.Exclude) == 0 && c.Kind != "meta" && c.Kind != "index" && c.Kind != "template" {
-			t.Errorf("sdd concept %q declares no template exclude — templates would enter the views and checks", c.Kind)
+			t.Errorf("vibespec concept %q declares no template exclude — templates would enter the views and checks", c.Kind)
 		}
 	}
 	for kind, glob := range wantConcepts {
 		if got[kind] != glob {
-			t.Errorf("sdd concept %q glob = %q, want %q", kind, got[kind], glob)
+			t.Errorf("vibespec concept %q glob = %q, want %q", kind, got[kind], glob)
 		}
 	}
 	wantFindings := make([]string, 0, 9)
@@ -99,15 +99,15 @@ func TestBuiltins_SDDExpressesCurrentLayout(t *testing.T) {
 		"SUPERSEDED_TARGET_MISSING",
 	)
 	if len(fw.Checks) != len(wantFindings) {
-		t.Fatalf("sdd declares %d checks, want %d", len(fw.Checks), len(wantFindings))
+		t.Fatalf("vibespec declares %d checks, want %d", len(fw.Checks), len(wantFindings))
 	}
 	gotFindings := make([]string, 0, len(fw.Checks))
 	for _, c := range fw.Checks {
 		if !slices.Contains(sdd.CheckKinds, c.Kind) {
-			t.Errorf("sdd check %q uses undeclared kind %q", c.Finding, c.Kind)
+			t.Errorf("vibespec check %q uses undeclared kind %q", c.Finding, c.Kind)
 		}
 		if c.Message == "" {
-			t.Errorf("sdd check %q carries no operator message", c.Finding)
+			t.Errorf("vibespec check %q carries no operator message", c.Finding)
 		}
 		gotFindings = append(gotFindings, c.Finding)
 		if c.CycleFinding != "" {
@@ -118,28 +118,28 @@ func TestBuiltins_SDDExpressesCurrentLayout(t *testing.T) {
 	// two finding tokens (finding + cycle_finding), not two sibling checks.
 	superseded := slices.IndexFunc(fw.Checks, func(c sdd.Check) bool { return c.Kind == sdd.CheckReferences })
 	if superseded < 0 {
-		t.Fatal("sdd declares no references check")
+		t.Fatal("vibespec declares no references check")
 	}
 	if fw.Checks[superseded].Finding != "SUPERSEDED_TARGET_MISSING" ||
 		fw.Checks[superseded].CycleFinding != "SUPERSEDED_CYCLE" || !fw.Checks[superseded].Acyclic {
-		t.Errorf("sdd references check = %+v, want finding SUPERSEDED_TARGET_MISSING + cycle_finding SUPERSEDED_CYCLE + acyclic", fw.Checks[superseded])
+		t.Errorf("vibespec references check = %+v, want finding SUPERSEDED_TARGET_MISSING + cycle_finding SUPERSEDED_CYCLE + acyclic", fw.Checks[superseded])
 	}
 	wantFindings = append(wantFindings, "SUPERSEDED_CYCLE")
 	sort.Strings(gotFindings)
 	sortedWant := slices.Clone(wantFindings)
 	sort.Strings(sortedWant)
 	if !slices.Equal(gotFindings, sortedWant) {
-		t.Errorf("sdd findings = %v, want %v", gotFindings, sortedWant)
+		t.Errorf("vibespec findings = %v, want %v", gotFindings, sortedWant)
 	}
 
-	wantSkills := []string{"spec-init", "spec-check", "spec-consult", "spec-explore", "spec-create", "spec-update"}
+	wantSkills := []string{"vibespec-init", "vibespec-check", "vibespec-consult", "vibespec-explore", "vibespec-create", "vibespec-update"}
 	gotSkills := make([]string, 0, len(fw.Actions))
 	for _, a := range fw.Actions {
 		gotSkills = append(gotSkills, a.Skill)
 	}
 	for _, skill := range wantSkills {
 		if !slices.Contains(gotSkills, skill) {
-			t.Errorf("sdd actions do not dispatch %q (got %v)", skill, gotSkills)
+			t.Errorf("vibespec actions do not dispatch %q (got %v)", skill, gotSkills)
 		}
 	}
 }
@@ -218,7 +218,7 @@ func TestBuiltins_ConceptKindsAreUnique(t *testing.T) {
 // (creation steps gated by the artifact's absence, not to the output file
 // that would not exist yet).
 func TestBuiltins_NodeActionsTargetNodes(t *testing.T) {
-	for _, id := range []string{"sdd", "openspec", "spec-kit"} {
+	for _, id := range []string{"vibespec", "openspec", "spec-kit"} {
 		fw, err := sdd.Builtin(id)
 		if err != nil {
 			t.Fatalf("Builtin(%q) error = %v", id, err)

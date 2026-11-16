@@ -180,15 +180,20 @@ func TestDetectInstalled_SpecKitFromFrameworkSkills(t *testing.T) {
 	}
 }
 
-// TestDetectInstalled_AliasRecognisesSDD pins AC-5: an installation carrying the
-// upstream vibespec-* spelling recognises a framework that declares spec-*, and
-// the alias is symmetric so either spelling works on either side.
-func TestDetectInstalled_AliasRecognisesSDD(t *testing.T) {
-	for _, name := range []string{"spec-check", "vibespec-check", "vibespec-consult", "vibespec-create", "vibespec-update"} {
+// TestDetectInstalled_EverySkillRecognisesVibeSpec pins AC-5: every skill of
+// the declared set is evidence on its own — the declared any_of spans the whole
+// skillset, lifecycle (init, explore) and continuous (consult, update, create,
+// check) alike. The name must be the exact installed spelling: the detector
+// folds no prefixes, so the vibespec-* names the skillset publishes are the
+// only ones that count.
+func TestDetectInstalled_EverySkillRecognisesVibeSpec(t *testing.T) {
+	for _, name := range []string{
+		"vibespec-check", "vibespec-init", "vibespec-explore", "vibespec-consult", "vibespec-create", "vibespec-update",
+	} {
 		t.Run(name, func(t *testing.T) {
 			result := detect(t, sdd.Evidence{Skills: []sdd.InstalledSkill{userSkill(name)}})
 
-			active := requireRecognized(t, result, "sdd")
+			active := requireRecognized(t, result, "vibespec")
 			if active.Scope != sdd.ScopeUser {
 				t.Errorf("Scope = %q, want %q", active.Scope, sdd.ScopeUser)
 			}
@@ -221,14 +226,14 @@ func TestDetectInstalled_MissingAllOfIsNotRecognised(t *testing.T) {
 func TestDetectInstalled_TreeOutranksScope(t *testing.T) {
 	result := detect(t, sdd.Evidence{
 		Skills: []sdd.InstalledSkill{
-			projectSkill("vibespec-check"), // sdd, strongest tier, no tree
+			projectSkill("vibespec-check"), // vibespec, strongest tier, no tree
 			userSkill("openspec-propose"),  // openspec, weakest tier, tree present
 			userSkill("openspec-apply-change"),
 		},
 		Roots: []string{"openspec"},
 	})
 
-	active := requireRecognized(t, result, "openspec", "sdd")
+	active := requireRecognized(t, result, "openspec", "vibespec")
 	if active.Scope != sdd.ScopeUser {
 		t.Errorf("Active.Scope = %q, want the user tier (the tree, not the scope, decided)", active.Scope)
 	}
@@ -236,7 +241,7 @@ func TestDetectInstalled_TreeOutranksScope(t *testing.T) {
 		t.Errorf("Active root/marker present = %v/%v, want true/false", active.RootPresent, active.MarkerPresent)
 	}
 	if result.Frameworks[1].TreePresent() {
-		t.Error("sdd TreePresent = true, want false")
+		t.Error("vibespec TreePresent = true, want false")
 	}
 }
 
@@ -245,11 +250,11 @@ func TestDetectInstalled_TreeOutranksScope(t *testing.T) {
 // framework declared earlier.
 func TestDetectInstalled_ScopeOutranksDeclarationOrder(t *testing.T) {
 	result := detect(t, sdd.Evidence{Skills: []sdd.InstalledSkill{
-		userSkill("vibespec-check"), // sdd, declared first (priority 10)
+		userSkill("vibespec-check"), // vibespec, declared first (priority 10)
 		globalSkill("speckit-plan"), // spec-kit, stronger tier
 	}})
 
-	active := requireRecognized(t, result, "spec-kit", "sdd")
+	active := requireRecognized(t, result, "spec-kit", "vibespec")
 	if active.Scope != sdd.ScopeGlobal {
 		t.Errorf("Active.Scope = %q, want %q", active.Scope, sdd.ScopeGlobal)
 	}
@@ -266,9 +271,9 @@ func TestDetectInstalled_DeclarationOrderBreaksTies(t *testing.T) {
 		userSkill("speckit-plan"),
 	}})
 
-	active := requireRecognized(t, result, "sdd", "openspec", "spec-kit")
-	if active.ID != "sdd" {
-		t.Errorf("Active = %q, want sdd (priority 10)", active.ID)
+	active := requireRecognized(t, result, "vibespec", "openspec", "spec-kit")
+	if active.ID != "vibespec" {
+		t.Errorf("Active = %q, want vibespec (priority 10)", active.ID)
 	}
 }
 
@@ -277,14 +282,14 @@ func TestDetectInstalled_DeclarationOrderBreaksTies(t *testing.T) {
 func TestDetectInstalled_UnknownScopeRanksLast(t *testing.T) {
 	unknown := installedSkill("elsewhere", "vibespec-check", sdd.ScopeUnknown)
 	result := detect(t, sdd.Evidence{Skills: []sdd.InstalledSkill{
-		unknown,                       // sdd, declared first, unclassified
+		unknown,                       // vibespec, declared first, unclassified
 		userSkill("openspec-propose"), // openspec, user tier
 		userSkill("openspec-apply-change"),
 	}})
 
-	active := requireRecognized(t, result, "openspec", "sdd")
+	active := requireRecognized(t, result, "openspec", "vibespec")
 	if result.Frameworks[1].Scope != sdd.ScopeUnknown {
-		t.Errorf("sdd Scope = %q, want %q", result.Frameworks[1].Scope, sdd.ScopeUnknown)
+		t.Errorf("vibespec Scope = %q, want %q", result.Frameworks[1].Scope, sdd.ScopeUnknown)
 	}
 	if active.ID != "openspec" {
 		t.Errorf("Active = %q, want openspec", active.ID)
@@ -415,45 +420,24 @@ func TestDetectInstalled_TreeSignal(t *testing.T) {
 	}
 }
 
-// TestDetectInstalled_AliasesDoNotOverreach pins the alias boundary: only the
-// exact upstream spelling folds to the declared one.
-func TestDetectInstalled_AliasesDoNotOverreach(t *testing.T) {
+// TestDetectInstalled_NamesMatchExactly pins the matching contract from the
+// negative side: a declared name is satisfied only by that exact skill, so the
+// retired pre-rename spec-* spellings are distinct skills that recognise
+// nothing, and a look-alike name the skillset does not ship is not evidence
+// either.
+func TestDetectInstalled_NamesMatchExactly(t *testing.T) {
 	for _, name := range []string{
-		"vibespec-checker",        // extra suffix
-		"vibespec-check-extra",    // extra suffix after the same stem
-		"my-spec-check",           // unrelated prefix
-		"vibespec-init",           // a real vibespec skill the sdd set does not declare
-		"vibespec-explore",        // likewise
-		"vibespec-archive-change", // folds to spec-archive-change, not openspec's name
+		"spec-check",         // pre-rename spelling: no prefix folding
+		"spec-init",          // pre-rename spelling
+		"spec-update",        // pre-rename spelling
+		"vibespec-checker",   // extra suffix
+		"vibespec-check-era", // extra suffix after the same stem
+		"my-spec-check",      // unrelated prefix
+		"vibespec-archive",   // not a shipped vibespec skill
 	} {
 		t.Run(name, func(t *testing.T) {
 			result := detect(t, sdd.Evidence{Skills: []sdd.InstalledSkill{userSkill(name)}})
 			requireNotRecognized(t, result)
-		})
-	}
-}
-
-// TestSkillNameMatches pins the exported alias predicate both directions.
-func TestSkillNameMatches(t *testing.T) {
-	cases := []struct {
-		required  string
-		installed string
-		want      bool
-	}{
-		{required: "spec-check", installed: "spec-check", want: true},
-		{required: "spec-check", installed: "vibespec-check", want: true},
-		{required: "vibespec-check", installed: "spec-check", want: true},
-		{required: "vibespec-check", installed: "vibespec-check", want: true},
-		{required: "spec-check", installed: "spec-checker", want: false},
-		{required: "spec-check", installed: "vibespec-checker", want: false},
-		{required: "openspec-propose", installed: "vibespec-propose", want: false},
-		{required: "spec-check", installed: " spec-check ", want: true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.required+"/"+tc.installed, func(t *testing.T) {
-			if got := sdd.SkillNameMatches(tc.required, tc.installed); got != tc.want {
-				t.Errorf("SkillNameMatches(%q, %q) = %v, want %v", tc.required, tc.installed, got, tc.want)
-			}
 		})
 	}
 }

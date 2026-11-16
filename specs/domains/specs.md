@@ -8,8 +8,8 @@ The Specs subsystem answers one question per workspace: WHICH spec-driven-develo
 
 - `core/sdd/framework.go` - the framework document model and its strict parser (`sdd-framework/v1`)
 - `core/sdd/dsl.go` - the operator layer over the built-ins: `Load` (global `~/.c0wrk/specs.yaml` then checkout `<workspace>/.c0wrk/specs.yaml`), `ParseDefinitions` (fail-soft per document) and `Merge` (by ID, whole-document, `priority` then `id` order)
-- `core/sdd/builtin.go` + `core/sdd/frameworks/{sdd,openspec,spec-kit}.yaml` - the embedded catalog; `sdd` describes c0wrk's own tree, its eight checks and its `spec-*` lifecycle actions (including `fix-findings`)
-- `core/sdd/detect.go` - the pure detector: recognised frameworks (skill evidence only), the default selection order, the `spec-`/`vibespec-` alias matching, the three skill tiers
+- `core/sdd/builtin.go` + `core/sdd/frameworks/{vibespec,openspec,spec-kit}.yaml` - the embedded catalog; `vibespec` (VibeSpec) describes c0wrk's own tree, its eight checks and its `vibespec-*` lifecycle actions (including `fix-findings`)
+- `core/sdd/detect.go` - the pure detector: recognised frameworks (skill evidence only), the default selection order, exact skill-name matching, the three skill tiers
 - `core/sdd/parse.go`, `core/sdd/model.go` - `ParseTree` (the one filesystem entry point, containment-checked and read-only) and the parsed model (`Tree`, `Document`, `Node`, `View`, `Finding`, `Counts`); the model itself does no I/O and carries no environment metadata
 - `core/specs/model.go`, `core/specs/parse.go` - the RETIRED hand-written `specs/` reader, kept only as the parity oracle `core/sdd/tree_test.go` compares the DSL parse against; no production package imports it
 - `backend/frontend_api_sdd.go` - the whole RPC surface: `SpecsStatusDTO` and its element DTOs, `GetSpecsStatus`, `SetActiveSDD`, the detection-evidence collection (installed skills with tiers, present markers, present roots), the model→DTO mapping and the action availability evaluation
@@ -69,7 +69,7 @@ Workspace tab strip (before any panel mounts)
 Specs tab mounted (a real project)
   -> SpecsPanel fetches GetSpecsStatus(projectId):
        sdd.Load(global, project)
-                    -> embedded sdd/openspec/spec-kit documents merged with
+                    -> embedded vibespec/openspec/spec-kit documents merged with
                        ~/.c0wrk/specs.yaml and <checkout>/.c0wrk/specs.yaml
        detect       -> installed skills (tiers) + present markers/roots
        selection    -> project_ui_state.active_sdd, else detection default

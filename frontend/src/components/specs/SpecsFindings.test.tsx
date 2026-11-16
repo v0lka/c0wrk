@@ -52,7 +52,7 @@ function query(testId: string): HTMLElement | null {
 const FIX_ACTION: SDDAction = makeAction({
   kind: 'fix-findings',
   label: 'Fix findings',
-  skill: 'spec-update',
+  skill: 'vibespec-update',
   prompt: 'Repair every finding, then re-check the tree.',
   requires: ['root', 'findings'],
 })
@@ -96,7 +96,7 @@ describe('SpecsFindings', () => {
     await render([FINDINGS[0]!], FIX_ACTION)
     const badge = query('specs-finding-fix')
     expect(badge?.tagName).toBe('BUTTON')
-    expect(badge?.getAttribute('data-skill')).toBe('spec-update')
+    expect(badge?.getAttribute('data-skill')).toBe('vibespec-update')
 
     act(() => {
       badge?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
@@ -108,7 +108,7 @@ describe('SpecsFindings', () => {
       boolean,
     ]
     expect(newSession).toBe(false)
-    expect(dispatch.skill).toBe('spec-update')
+    expect(dispatch.skill).toBe('vibespec-update')
     // The declared instruction + the finding quoted verbatim (the line the
     // copy button hands out).
     expect(dispatch.prompt).toContain('Repair every finding')

@@ -14,7 +14,7 @@ import (
 )
 
 // The fixtures are three synthetic WORKSPACES, each carrying one framework's
-// tree: testdata/sdd (a specs/ tree), testdata/openspec (an openspec/ tree) and
+// tree: testdata/vibespec (a specs/ tree), testdata/openspec (an openspec/ tree) and
 // testdata/spec-kit (a specs/ + .specify/ pair). A fixture is a workspace, not
 // a tree, because a framework's roots are workspace-relative.
 
@@ -104,7 +104,7 @@ func findingPairs(findings []sdd.Finding) [][2]string {
 	return pairs
 }
 
-// TestParseTree_ParityWithSpecsParser is AC-1: the sdd framework document,
+// TestParseTree_ParityWithSpecsParser is AC-1: the vibespec framework document,
 // parsed by the generic reader over the same fixture tree, reproduces the
 // documents, the navigation table, the ADR metadata and the findings the
 // hand-written core/specs parser produced — including all nine finding kinds.
@@ -113,11 +113,11 @@ func findingPairs(findings []sdd.Finding) [][2]string {
 // replaced on purpose: when core/specs is retired, this ONE test goes with it
 // and the remaining assertions (kinds, details, counts) stand on their own.
 func TestParseTree_ParityWithSpecsParser(t *testing.T) {
-	tree := parseTree(t, filepath.Join("testdata", "sdd"), "sdd")
+	tree := parseTree(t, filepath.Join("testdata", "vibespec"), "vibespec")
 	if !tree.Present {
 		t.Fatal("fixture tree not present")
 	}
-	legacy, err := specs.ParseSpecsRoot(filepath.Join("testdata", "sdd", "specs"))
+	legacy, err := specs.ParseSpecsRoot(filepath.Join("testdata", "vibespec", "specs"))
 	if err != nil {
 		t.Fatalf("ParseSpecsRoot() error = %v", err)
 	}
@@ -501,7 +501,7 @@ func assertFindingsDeclared(t *testing.T, tree *sdd.Tree, fw sdd.Framework) {
 // a root that is a file, an empty present root and a partial tree all parse
 // without an error.
 func TestParseTree_AbsentAndPartialTrees(t *testing.T) {
-	fw := builtinFramework(t, "sdd")
+	fw := builtinFramework(t, "vibespec")
 
 	t.Run("absent workspace", func(t *testing.T) {
 		tree, err := sdd.ParseTree(filepath.Join(t.TempDir(), "no-such-workspace"), fw)
@@ -593,7 +593,7 @@ func TestParseTree_AbsentAndPartialTrees(t *testing.T) {
 // TestParseTree_ReadOnly is AC-4's other half: a parse never writes. The whole
 // fixture workspace is fingerprinted before and after.
 func TestParseTree_ReadOnly(t *testing.T) {
-	for _, fixture := range []string{"sdd", "openspec", "spec-kit"} {
+	for _, fixture := range []string{"vibespec", "openspec", "spec-kit"} {
 		t.Run(fixture, func(t *testing.T) {
 			root := filepath.Join("testdata", fixture)
 			before := fingerprint(t, root)
@@ -664,7 +664,7 @@ func TestParseTree_EscapesWorkspace(t *testing.T) {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
 
-	tree, err := sdd.ParseTree(workspace, builtinFramework(t, "sdd"))
+	tree, err := sdd.ParseTree(workspace, builtinFramework(t, "vibespec"))
 	if err != nil {
 		t.Fatalf("ParseTree() error = %v", err)
 	}
@@ -736,7 +736,7 @@ concepts:
 
 // TestParseTree_Deterministic pins the ordering guarantees a panel relies on.
 func TestParseTree_Deterministic(t *testing.T) {
-	for _, fixture := range []string{"sdd", "openspec", "spec-kit"} {
+	for _, fixture := range []string{"vibespec", "openspec", "spec-kit"} {
 		first := parseTree(t, filepath.Join("testdata", fixture), frameworkOf(fixture))
 		second := parseTree(t, filepath.Join("testdata", fixture), frameworkOf(fixture))
 		if !reflect.DeepEqual(first, second) {
@@ -759,7 +759,7 @@ func TestParseTree_Deterministic(t *testing.T) {
 
 // TestParseTree_Counts pins the aggregate block the panel's badges read.
 func TestParseTree_Counts(t *testing.T) {
-	tree := parseTree(t, filepath.Join("testdata", "sdd"), "sdd")
+	tree := parseTree(t, filepath.Join("testdata", "vibespec"), "vibespec")
 	if tree.Counts.Documents != len(tree.Documents) {
 		t.Errorf("Counts.Documents = %d, want %d", tree.Counts.Documents, len(tree.Documents))
 	}

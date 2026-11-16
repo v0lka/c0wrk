@@ -94,7 +94,7 @@ func TestProjectSkillDirs_MarkerOnly(t *testing.T) {
 }
 
 // TestProjectSkillDirs_SpecKitMarkers covers a second framework so the set is
-// not accidentally hard-wired to the sdd.yaml document.
+// not accidentally hard-wired to the vibespec.yaml document.
 func TestProjectSkillDirs_SpecKitMarkers(t *testing.T) {
 	ws := t.TempDir()
 	memory := filepath.Join(ws, ".specify", "memory")

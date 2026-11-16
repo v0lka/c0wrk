@@ -720,7 +720,7 @@ checks:
 // always name a file; extracted entries are the document's own claim about
 // the workspace and real specs list package directories there. Requiring a
 // regular file for them turns a correct tree into permanent PATH_MISSING
-// findings — which is exactly what the shipped `sdd` framework did.
+// findings — which is exactly what the shipped `vibespec` framework did.
 func TestParseTree_RequiredFilesExtractedPathsAreExistenceOnly(t *testing.T) {
 	fw := mustParse(t, `schema: sdd-framework/v1
 id: probe
@@ -1597,7 +1597,7 @@ concepts:
 // concepts (views, INDEX coverage, content checks) while a nested template is
 // still recognized under its template concept.
 func TestParseTree_TemplatesStayTemplates(t *testing.T) {
-	fw, err := Builtin("sdd")
+	fw, err := Builtin("vibespec")
 	if err != nil {
 		t.Fatal(err)
 	}

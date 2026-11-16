@@ -77,7 +77,7 @@ function specsPayload(detected: string[]): Record<string, unknown> {
     ],
     findings: [],
     actions: [
-      { kind: 'check', label: 'Check', skill: 'spec-check', prompt: 'Check.', requires: ['root'], available: true },
+      { kind: 'check', label: 'Check', skill: 'vibespec-check', prompt: 'Check.', requires: ['root'], available: true },
     ],
     counts: {
       documents: 2,
@@ -795,7 +795,7 @@ describe('WorkspacePanel — Specs tab', () => {
     vi.useFakeTimers()
     act(() => {
       emitLocalEvent('workspace:tree_changed', {
-        paths: ['/ws/p1/.agents/skills/spec-init/SKILL.md'],
+        paths: ['/ws/p1/.agents/skills/vibespec-init/SKILL.md'],
       })
     })
     expect(vi.mocked(getSpecsStatus).mock.calls.length).toBe(probesAfterMount)

@@ -1,33 +1,63 @@
-# c0wrk's own specification system — the tree documented in specs/META.md.
-# A hand-written, agent-oriented spec set: one navigation index, one format
-# document, and four sections whose every document is a standing description of
-# intended behavior (never generated from code).
+# VibeSpec — Specification-Driven Development for AI agents, published as the
+# `vibespec` skillset (upstream: v0lka/skills, development/vibespec; the former
+# `sdd` skillset, whose skills now carry the `vibespec-` prefix). Every artifact
+# is plain Markdown under specs/: META.md owns the format and the rules, INDEX.md
+# owns the task-to-spec navigation, WORKFLOW.md is conditional, and architecture/,
+# domains/, contracts/ and decisions/ hold the standing descriptions.
 schema: sdd-framework/v1
-id: sdd
-label: Specification System
+id: vibespec
+label: VibeSpec
 description: >-
-  Hand-written, agent-oriented specifications: META.md owns the format and
-  rules, INDEX.md owns the task-to-spec navigation, and architecture/,
-  domains/, contracts/ and decisions/ hold the standing descriptions. The
-  workspace's installed spec-* skills carry the lifecycle (init, create,
-  update, check, consult, explore) and the panel's checks enforce the tree's
-  structural invariants.
-docs_url: https://github.com/v0lka/c0wrk/blob/main/specs/META.md
+  Specification-Driven Development for AI agents, shipped as the vibespec
+  skillset. vibespec-init bootstraps a plain-Markdown specs/ tree: META.md
+  (format, templates and conventions), INDEX.md (task-to-spec navigation),
+  architecture/ (system-level concerns), domains/ (per-domain overviews with
+  their component details), contracts/ (boundaries between layers) and
+  decisions/ (NNN-slug ADRs beside their _template.md). The skills keep that
+  tree aligned with the code — vibespec-explore turns unclear requirements into
+  an approved roadmap, vibespec-consult loads the governing constraints before a
+  structural change, and vibespec-update, vibespec-create and vibespec-check
+  reconcile the documents afterwards (an accepted ADR stays immutable). No wiki
+  engine, database or external service is required.
+docs_url: https://github.com/v0lka/skills/tree/main/development/vibespec
 priority: 10
 
 detect:
+  # The TREE signal: every artifact vibespec-init creates or maintains. Markers
+  # never make the framework visible (visibility is the skill set below); they
+  # rank a recognised framework as tree-present for the default selection and
+  # feed the panel's empty state. Directories are valid probes — a workspace that
+  # keeps specs/architecture, specs/domains, specs/contracts or specs/decisions
+  # has the tree even when a root file was renamed.
   markers:
     - specs/META.md
     - specs/INDEX.md
+    - specs/WORKFLOW.md
+    - specs/architecture
+    - specs/domains
+    - specs/contracts
+    - specs/decisions
+    - specs/decisions/_template.md
   skills:
     dirs:
       - .agents/skills
       - .claude/skills
+    # The visibility signal is the WHOLE skillset, not a sample of it: the six
+    # skills are lifecycle (init, explore) and continuous (consult, update,
+    # create, check), and an installation may legitimately carry only some of
+    # them (a workspace run by consult + update + check alone is still a
+    # VibeSpec workspace). Any installed skill therefore recognises the
+    # framework — the names below are the exact directory names the upstream
+    # skillset ships, and the detector compares skill names exactly: a
+    # pre-rename `spec-*` directory is a different skill name, not an alias of
+    # these, so it recognises nothing here.
     any_of:
-      - spec-check
-      - spec-consult
-      - spec-create
-      - spec-update
+      - vibespec-init
+      - vibespec-explore
+      - vibespec-consult
+      - vibespec-update
+      - vibespec-create
+      - vibespec-check
 
 roots:
   - id: specs
@@ -169,31 +199,31 @@ checks:
 actions:
   - kind: init
     label: Init
-    skill: spec-init
-    prompt: Initialize the specification system for this workspace.
+    skill: vibespec-init
+    prompt: Initialize the VibeSpec specification system for this workspace.
   - kind: check
     label: Check
-    skill: spec-check
+    skill: vibespec-check
     prompt: Check the specifications for drift against the code and the documented invariants.
     requires: [root]
   - kind: consult
     label: Consult
-    skill: spec-consult
+    skill: vibespec-consult
     prompt: Consult the relevant specifications before making this change.
     requires: [root]
   - kind: explore
     label: Explore
-    skill: spec-explore
+    skill: vibespec-explore
     prompt: Explore the design space with the specifications open, before planning any change.
     requires: [root]
   - kind: create
     label: Create
-    skill: spec-create
+    skill: vibespec-create
     prompt: Create a new specification document for the described domain, contract or decision.
     requires: [root]
   - kind: update
     label: Update
-    skill: spec-update
+    skill: vibespec-update
     prompt: Update the specifications affected by the current changes.
     requires: [root, findings]
   # The findings gesture: declared here so the panel's findings badge is a
@@ -201,7 +231,7 @@ actions:
   # badge — the panel renders only what the DSL declares).
   - kind: fix-findings
     label: Fix findings
-    skill: spec-update
+    skill: vibespec-update
     prompt: >-
       Repair every integrity finding reported for the specs/ tree: fix or
       remove broken paths and cross-references, renumber duplicate ADR records

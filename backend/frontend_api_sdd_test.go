@@ -206,14 +206,14 @@ func assertSDDWireShape(t *testing.T, dto *SpecsStatusDTO) {
 // ---------------------------------------------------------------------------
 
 // TestGetSpecsStatus_DetectsInstalledFrameworks pins the framework-aware
-// contract: the global spec-* skills recognise the sdd framework, the
+// contract: the global vibespec-* skill recognises the VibeSpec framework, the
 // project's openspec-* skills recognise OpenSpec, both appear in `detected`,
 // the tree-bearing framework is the default active one, and the parsed model
-// is the sdd tree (documents, nodes, roots, actions).
+// is the vibespec tree (documents, nodes, roots, actions).
 func TestGetSpecsStatus_DetectsInstalledFrameworks(t *testing.T) {
 	api, workspaces, agentDir := sddTestFrontend(t, project.ProjectInfo{ID: "proj-1", Name: "P"})
 	ws := workspaces["proj-1"]
-	seedGlobalSkill(t, agentDir, "spec-check")
+	seedGlobalSkill(t, agentDir, "vibespec-check")
 	seedProjectSkill(t, ws, "openspec-propose")
 	seedProjectSkill(t, ws, "openspec-apply-change")
 	writeSpecsTree(t, ws)
@@ -225,16 +225,16 @@ func TestGetSpecsStatus_DetectsInstalledFrameworks(t *testing.T) {
 	if !status.Present {
 		t.Fatal("Present = false, want true (gate on + detections)")
 	}
-	if got := detectedIDs(status); len(got) != 2 || got[0] != "openspec" || got[1] != "sdd" {
-		t.Fatalf("detected ids = %v, want [openspec sdd]", got)
+	if got := detectedIDs(status); len(got) != 2 || got[0] != "openspec" || got[1] != "vibespec" {
+		t.Fatalf("detected ids = %v, want [openspec vibespec]", got)
 	}
-	// The sdd tree exists, so tree-present outranks OpenSpec's stronger skill
-	// scope — sdd is the default active framework.
-	if status.ActiveID != "sdd" {
-		t.Errorf("active_id = %q, want %q (tree present wins the default order)", status.ActiveID, "sdd")
+	// The vibespec tree exists, so tree-present outranks OpenSpec's stronger skill
+	// scope — vibespec is the default active framework.
+	if status.ActiveID != "vibespec" {
+		t.Errorf("active_id = %q, want %q (tree present wins the default order)", status.ActiveID, "vibespec")
 	}
-	if status.Active == nil || status.Active.ID != "sdd" || !status.Active.TreePresent {
-		t.Errorf("active = %+v, want the sdd detection with tree present", status.Active)
+	if status.Active == nil || status.Active.ID != "vibespec" || !status.Active.TreePresent {
+		t.Errorf("active = %+v, want the vibespec detection with tree present", status.Active)
 	}
 	if !status.SelectorNeeded {
 		t.Error("selector_needed = false, want true (two frameworks, no persisted choice)")
@@ -331,21 +331,19 @@ func TestGetSpecsStatus_NoDetectionHidesSurface(t *testing.T) {
 	assertSDDWireShape(t, status)
 }
 
-// TestGetSpecsStatus_ActionSkillAliasResolvesToInstalled pins the alias half
-// of the action contract: the DSL declares spec-* names, the workspace
-// installed only the upstream vibespec-* copy. Detection must recognise the
-// alias, and the action DTO must carry the INSTALLED spelling — the name a
-// dispatch can actually invoke — not the declared spelling no catalog entry
-// bears.
-func TestGetSpecsStatus_ActionSkillAliasResolvesToInstalled(t *testing.T) {
+// TestGetSpecsStatus_ActionSkillResolvesToInstalled pins the action contract:
+// the DSL declares vibespec-* names and the workspace carries that exact copy,
+// so the action DTO reports the declared name as available — the name a
+// dispatch can actually invoke.
+func TestGetSpecsStatus_ActionSkillResolvesToInstalled(t *testing.T) {
 	api, workspaces, agentDir := sddTestFrontend(t, project.ProjectInfo{ID: "proj-1", Name: "P"})
 	ws := workspaces["proj-1"]
 	seedGlobalSkill(t, agentDir, "vibespec-check")
 	writeSpecsTree(t, ws)
 	// The callable catalog rides the builder's discovery set; the stub hands
 	// back the one installed descriptor (the real builder reports the seeded
-	// upstream skill the same way), so this test pins the resolution contract,
-	// not full discovery.
+	// skill the same way), so this test pins the resolution contract, not full
+	// discovery.
 	api.builderOverride = &mockBuilder{
 		skillDirsRes:           []string{config.SkillsDir(agentDir)},
 		getSkillDescriptorsRes: []skills.SkillDescriptor{{Name: "vibespec-check", Description: "test"}},
@@ -355,8 +353,8 @@ func TestGetSpecsStatus_ActionSkillAliasResolvesToInstalled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSpecsStatus: %v", err)
 	}
-	if !status.Present || status.ActiveID != "sdd" {
-		t.Fatalf("present=%v active_id=%q, want the sdd detection via the vibespec alias", status.Present, status.ActiveID)
+	if !status.Present || status.ActiveID != "vibespec" {
+		t.Fatalf("present=%v active_id=%q, want the vibespec detection", status.Present, status.ActiveID)
 	}
 	var checkAction *SDDActionDTO
 	for i := range status.Actions {
@@ -368,13 +366,13 @@ func TestGetSpecsStatus_ActionSkillAliasResolvesToInstalled(t *testing.T) {
 		t.Fatalf("actions = %+v, want a check action", status.Actions)
 	}
 	if checkAction.Skill != "vibespec-check" {
-		t.Errorf("check action skill = %q, want the installed vibespec-check spelling", checkAction.Skill)
+		t.Errorf("check action skill = %q, want the installed vibespec-check name", checkAction.Skill)
 	}
 	if !checkAction.Available {
-		t.Error("check action available = false, want true (the alias satisfies the declared skill)")
+		t.Error("check action available = false, want true (the declared skill is installed)")
 	}
 	// The catalog gate is per action: an action whose declared skill is
-	// genuinely absent (init wants spec-init; only vibespec-check is
+	// genuinely absent (init wants vibespec-init; only vibespec-check is
 	// installed) stays visible but INERT even though it declares no tree
 	// requirements — a partial skill install must not offer a gesture that
 	// would silently run as a plain prompted task.
@@ -387,7 +385,7 @@ func TestGetSpecsStatus_ActionSkillAliasResolvesToInstalled(t *testing.T) {
 	if initAction == nil {
 		t.Fatalf("actions = %+v, want an init action", status.Actions)
 	}
-	if initAction.Skill != "spec-init" {
+	if initAction.Skill != "vibespec-init" {
 		t.Errorf("init action skill = %q, want the declared spelling (nothing installed resolves to it)", initAction.Skill)
 	}
 	if initAction.Available {
@@ -401,15 +399,41 @@ func TestGetSpecsStatus_ActionSkillAliasResolvesToInstalled(t *testing.T) {
 	// available for this tree yet", sending the operator to look for a tree
 	// problem that does not exist.
 	if initAction.SkillAvailable {
-		t.Error("init action skill_available = true, want false (spec-init is not installed)")
+		t.Error("init action skill_available = true, want false (vibespec-init is not installed)")
 	}
 	if len(initAction.Requires) != 0 {
 		t.Errorf("init action requires = %v, want none — the missing skill must be the sole cause", initAction.Requires)
 	}
 	if !checkAction.SkillAvailable {
-		t.Error("check action skill_available = false, want true (the vibespec alias resolves to an installed skill)")
+		t.Error("check action skill_available = false, want true (the declared skill is installed)")
 	}
 	assertSDDWireShape(t, status)
+}
+
+// TestGetSpecsStatus_LegacySpecPrefixIsNotEvidence pins the retired alias from
+// the detection side: a skill directory left behind by the pre-rename c0wrk
+// skillset (`spec-check`) is an ordinary agent skill, but its name is not one
+// the VibeSpec declaration lists, so it recognises no framework and the Specs
+// surface stays hidden. Only the upstream `vibespec-*` spelling is evidence.
+func TestGetSpecsStatus_LegacySpecPrefixIsNotEvidence(t *testing.T) {
+	api, workspaces, agentDir := sddTestFrontend(t, project.ProjectInfo{ID: "proj-1", Name: "P"})
+	ws := workspaces["proj-1"]
+	seedGlobalSkill(t, agentDir, "spec-check")
+	writeSpecsTree(t, ws)
+
+	status, err := api.GetSpecsStatus("proj-1")
+	if err != nil {
+		t.Fatalf("GetSpecsStatus: %v", err)
+	}
+	if status.Present {
+		t.Error("present = true, want false (a legacy spec-* skill is not vibespec evidence)")
+	}
+	if len(status.Detected) != 0 {
+		t.Errorf("detected = %v, want none", status.Detected)
+	}
+	if status.ActiveID != "" {
+		t.Errorf("active_id = %q, want empty without a detected framework", status.ActiveID)
+	}
 }
 
 // TestResolveDeclaredPathRejectsNonRelativeDeclarations pins the probe-side
@@ -447,24 +471,24 @@ func TestResolveDeclaredPathRejectsNonRelativeDeclarations(t *testing.T) {
 }
 
 // TestResolveActionSkill pins the declared→installed skill resolution the
-// action DTO runs: the exact installed name wins, an alias-only install
-// resolves to the INSTALLED spelling (spec-check and vibespec-check name the
-// same skill), an absent skill stays declared and flags the action
-// not-callable, an undeterminable catalog does not gate, and a skill-less
-// action is left to the dispatch layer.
+// action DTO runs: the declared name is available when the catalog carries that
+// exact name, a differently spelled installation (the retired `spec-check`
+// spelling) does not satisfy it, an absent skill stays declared and flags the
+// action not-callable, an undeterminable catalog does not gate, and a
+// skill-less action is left to the dispatch layer.
 func TestResolveActionSkill(t *testing.T) {
 	callable := map[string]bool{"vibespec-check": true, "openspec-propose": true}
 
 	if got, ok := resolveActionSkill("vibespec-check", callable); !ok || got != "vibespec-check" {
 		t.Errorf("exact = %q, %v; want vibespec-check, true", got, ok)
 	}
-	if got, ok := resolveActionSkill("spec-check", callable); !ok || got != "vibespec-check" {
-		t.Errorf("alias = %q, %v; want the installed vibespec-check spelling, true", got, ok)
+	if got, ok := resolveActionSkill("spec-check", callable); ok || got != "spec-check" {
+		t.Errorf("retired spelling = %q, %v; want the declared spelling, false (names match exactly)", got, ok)
 	}
 	if got, ok := resolveActionSkill("spec-init", callable); ok || got != "spec-init" {
 		t.Errorf("absent = %q, %v; want the declared spelling, false", got, ok)
 	}
-	if got, ok := resolveActionSkill("spec-check", nil); !ok || got != "spec-check" {
+	if got, ok := resolveActionSkill("vibespec-check", nil); !ok || got != "vibespec-check" {
 		t.Errorf("nil catalog = %q, %v; want the declared spelling, true (ungated)", got, ok)
 	}
 	if got, ok := resolveActionSkill("", callable); !ok || got != "" {
@@ -477,7 +501,7 @@ func TestResolveActionSkill(t *testing.T) {
 // empty while the surface stays visible (the panel's empty state).
 func TestGetSpecsStatus_MissingRootsIsEmptyTree(t *testing.T) {
 	api, _, agentDir := sddTestFrontend(t, project.ProjectInfo{ID: "proj-1", Name: "P"})
-	seedGlobalSkill(t, agentDir, "spec-check")
+	seedGlobalSkill(t, agentDir, "vibespec-check")
 
 	status, err := api.GetSpecsStatus("proj-1")
 	if err != nil {
@@ -486,8 +510,8 @@ func TestGetSpecsStatus_MissingRootsIsEmptyTree(t *testing.T) {
 	if !status.Present {
 		t.Fatal("present = false, want true (detected framework, gate on)")
 	}
-	if status.ActiveID != "sdd" {
-		t.Errorf("active_id = %q, want sdd", status.ActiveID)
+	if status.ActiveID != "vibespec" {
+		t.Errorf("active_id = %q, want vibespec", status.ActiveID)
 	}
 	if status.TreePresent {
 		t.Error("tree_present = true, want false without specs/")
@@ -562,14 +586,14 @@ func TestGetSpecsStatus_RereadsSkillsEveryCall(t *testing.T) {
 		t.Fatal("present = true before any skill is installed")
 	}
 
-	seedGlobalSkill(t, agentDir, "spec-check")
+	seedGlobalSkill(t, agentDir, "vibespec-check")
 
 	after, err := api.GetSpecsStatus("proj-1")
 	if err != nil {
 		t.Fatalf("GetSpecsStatus (after): %v", err)
 	}
-	if !after.Present || after.ActiveID != "sdd" {
-		t.Errorf("after installing spec-check: present=%v active=%q, want a re-detected sdd", after.Present, after.ActiveID)
+	if !after.Present || after.ActiveID != "vibespec" {
+		t.Errorf("after installing vibespec-check: present=%v active=%q, want a re-detected vibespec", after.Present, after.ActiveID)
 	}
 }
 
@@ -579,13 +603,13 @@ func TestGetSpecsStatus_RereadsSkillsEveryCall(t *testing.T) {
 
 // TestSetSpecsEnabled_TogglesVisibilityWithoutTouchingDisk pins the pure
 // visibility gate: the toggle persists, flips `present` on the next status
-// read, announces config:updated, and leaves the already-installed spec-*
+// read, announces config:updated, and leaves the already-installed vibespec-*
 // skills untouched on disk.
 func TestSetSpecsEnabled_TogglesVisibilityWithoutTouchingDisk(t *testing.T) {
 	api, _, agentDir := sddTestFrontend(t, project.ProjectInfo{ID: "proj-1", Name: "P"})
-	seedGlobalSkill(t, agentDir, "spec-check")
-	seedGlobalSkill(t, agentDir, "spec-create")
-	skillPath := filepath.Join(config.SkillsDir(agentDir), "spec-check", "SKILL.md")
+	seedGlobalSkill(t, agentDir, "vibespec-check")
+	seedGlobalSkill(t, agentDir, "vibespec-create")
+	skillPath := filepath.Join(config.SkillsDir(agentDir), "vibespec-check", "SKILL.md")
 
 	before, err := api.GetSpecsStatus("proj-1")
 	if err != nil {
@@ -607,7 +631,7 @@ func TestSetSpecsEnabled_TogglesVisibilityWithoutTouchingDisk(t *testing.T) {
 	}
 	// Detection is still reported — the gate hides the surface, it does not
 	// pretend the frameworks are absent.
-	if len(off.Detected) != 1 || off.ActiveID != "sdd" {
+	if len(off.Detected) != 1 || off.ActiveID != "vibespec" {
 		t.Errorf("detected=%v active=%q, want detection preserved while hidden", off.Detected, off.ActiveID)
 	}
 
@@ -648,7 +672,7 @@ func TestSetActiveSDD_PersistsAcrossRestartAndIsPerProject(t *testing.T) {
 		project.ProjectInfo{ID: "proj-1", Name: "P1"},
 		project.ProjectInfo{ID: "proj-2", Name: "P2"},
 	)
-	seedGlobalSkill(t, agentDir, "spec-check")
+	seedGlobalSkill(t, agentDir, "vibespec-check")
 	ws1 := workspaces["proj-1"]
 	seedProjectSkill(t, ws1, "openspec-propose")
 	seedProjectSkill(t, ws1, "openspec-apply-change")
@@ -658,8 +682,8 @@ func TestSetActiveSDD_PersistsAcrossRestartAndIsPerProject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSpecsStatus: %v", err)
 	}
-	if status.ActiveID != "sdd" {
-		t.Fatalf("default active_id = %q, want sdd", status.ActiveID)
+	if status.ActiveID != "vibespec" {
+		t.Fatalf("default active_id = %q, want vibespec", status.ActiveID)
 	}
 	if !status.SelectorNeeded {
 		t.Fatal("selector_needed = false, want true before a choice")
@@ -682,13 +706,13 @@ func TestSetActiveSDD_PersistsAcrossRestartAndIsPerProject(t *testing.T) {
 		t.Error("selector_needed = true after an explicit choice")
 	}
 
-	// The other project is untouched (it detects only the global sdd skills).
+	// The other project is untouched (it detects only the global vibespec skills).
 	other, err := restarted.GetSpecsStatus("proj-2")
 	if err != nil {
 		t.Fatalf("GetSpecsStatus (other project): %v", err)
 	}
-	if other.ActiveID != "sdd" {
-		t.Errorf("other project active_id = %q, want sdd (no cross-project leak)", other.ActiveID)
+	if other.ActiveID != "vibespec" {
+		t.Errorf("other project active_id = %q, want vibespec (no cross-project leak)", other.ActiveID)
 	}
 }
 
@@ -701,7 +725,7 @@ func TestSetActiveSDD_PersistsAcrossRestartAndIsPerProject(t *testing.T) {
 // is still rejected.
 func TestSetActiveSDD_AcceptsSessionWorkspaceDetection(t *testing.T) {
 	h := newWTHarness(t, wtFactory())
-	seedGlobalSkill(t, h.agentDir, "spec-check")
+	seedGlobalSkill(t, h.agentDir, "vibespec-check")
 
 	managed := h.api.mustManagedSession(t, "", true, "")
 	ws := managed.WorkspaceBinding.WorkspacePath
@@ -737,7 +761,7 @@ func TestSetActiveSDD_ClearsToDefaultAndValidates(t *testing.T) {
 		project.ProjectInfo{ID: "proj-1", Name: "P1"},
 		project.ProjectInfo{ID: project.NoProjectID, Name: "No Project"},
 	)
-	seedGlobalSkill(t, agentDir, "spec-check")
+	seedGlobalSkill(t, agentDir, "vibespec-check")
 	ws1 := workspaces["proj-1"]
 	seedProjectSkill(t, ws1, "openspec-propose")
 	seedProjectSkill(t, ws1, "openspec-apply-change")
@@ -745,10 +769,10 @@ func TestSetActiveSDD_ClearsToDefaultAndValidates(t *testing.T) {
 	if err := api.SetActiveSDD("proj-1", "nope"); err == nil {
 		t.Error("SetActiveSDD with an undetected id: got no error, want one")
 	}
-	if err := api.SetActiveSDD("", "sdd"); err == nil {
+	if err := api.SetActiveSDD("", "vibespec"); err == nil {
 		t.Error("SetActiveSDD with an empty project id: got no error, want one")
 	}
-	if err := api.SetActiveSDD(project.NoProjectID, "sdd"); err == nil {
+	if err := api.SetActiveSDD(project.NoProjectID, "vibespec"); err == nil {
 		t.Error("SetActiveSDD for No Project: got no error, want one")
 	}
 
@@ -763,7 +787,7 @@ func TestSetActiveSDD_ClearsToDefaultAndValidates(t *testing.T) {
 		t.Fatalf("GetSpecsStatus: %v", err)
 	}
 	// After clearing, detection's default applies again (openspec has the
-	// stronger project skill scope and sdd has no tree, so openspec wins).
+	// stronger project skill scope and vibespec has no tree, so openspec wins).
 	if status.ActiveID != "openspec" {
 		t.Errorf("active_id after clearing = %q, want the detection default openspec", status.ActiveID)
 	}
@@ -867,10 +891,10 @@ func TestGetSpecsStatus_WorkspacelessProjectIsNeutral(t *testing.T) {
 	cfg := &config.Config{}
 	config.ApplyDefaults(cfg)
 	cfg.Skills.Dirs = []string{config.SkillsDir(agentDir)}
-	// A valid sdd skill in the global dir would otherwise be detection
+	// A valid vibespec skill in the global dir would otherwise be detection
 	// evidence — exactly the state the guard must keep inert for a
 	// workspace-less project.
-	seedGlobalSkill(t, agentDir, "spec-check")
+	seedGlobalSkill(t, agentDir, "vibespec-check")
 
 	api := &FrontendAPI{
 		projectManager: project.NewManager(store, base, nil),
@@ -909,7 +933,7 @@ func TestGetSpecsStatus_WorkspacelessProjectIsNeutral(t *testing.T) {
 func TestGetSpecsStatus_StalePersistedSelectionWarns(t *testing.T) {
 	api, workspaces, agentDir := sddTestFrontend(t, project.ProjectInfo{ID: "proj-1", Name: "P"})
 	ws := workspaces["proj-1"]
-	seedGlobalSkill(t, agentDir, "spec-check")
+	seedGlobalSkill(t, agentDir, "vibespec-check")
 	seedProjectSkill(t, ws, "openspec-propose")
 	seedProjectSkill(t, ws, "openspec-apply-change")
 
@@ -926,17 +950,17 @@ func TestGetSpecsStatus_StalePersistedSelectionWarns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSpecsStatus: %v", err)
 	}
-	if status.ActiveID != "sdd" {
-		t.Errorf("active_id = %q, want the detection default sdd after the fallback", status.ActiveID)
+	if status.ActiveID != "vibespec" {
+		t.Errorf("active_id = %q, want the detection default vibespec after the fallback", status.ActiveID)
 	}
 	warned := false
 	for _, w := range status.Warnings {
-		if strings.Contains(w, "openspec") && strings.Contains(w, "sdd") {
+		if strings.Contains(w, "openspec") && strings.Contains(w, "vibespec") {
 			warned = true
 		}
 	}
 	if !warned {
-		t.Fatalf("warnings = %v, want one naming the stale %q and the shown %q", status.Warnings, "openspec", "sdd")
+		t.Fatalf("warnings = %v, want one naming the stale %q and the shown %q", status.Warnings, "openspec", "vibespec")
 	}
 	assertSDDWireShape(t, status)
 }
@@ -954,14 +978,14 @@ func TestGetSpecsStatus_InvalidSkillMDIsNotEvidence(t *testing.T) {
 		content string
 	}{
 		{name: "empty document", content: ""},
-		{name: "missing description", content: "---\nname: spec-check\n---\nBody."},
-		{name: "malformed frontmatter", content: "---\nname: spec-check\ndescription: [unclosed\n---\nBody."},
+		{name: "missing description", content: "---\nname: vibespec-check\n---\nBody."},
+		{name: "malformed frontmatter", content: "---\nname: vibespec-check\ndescription: [unclosed\n---\nBody."},
 		{name: "name mismatch", content: "---\nname: other-name\ndescription: test\n---\nBody."},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			api, _, agentDir := sddTestFrontend(t, project.ProjectInfo{ID: "proj-1", Name: "P"})
-			writeRawSkillMD(t, filepath.Join(config.SkillsDir(agentDir), "spec-check"), tt.content)
+			writeRawSkillMD(t, filepath.Join(config.SkillsDir(agentDir), "vibespec-check"), tt.content)
 
 			status, err := api.GetSpecsStatus("proj-1")
 			if err != nil {
@@ -979,15 +1003,15 @@ func TestGetSpecsStatus_InvalidSkillMDIsNotEvidence(t *testing.T) {
 	// The tier invariant: an invalid project-local copy never masks the valid
 	// global one — evidence comes from whatever copy actually parses.
 	api, workspaces, agentDir := sddTestFrontend(t, project.ProjectInfo{ID: "proj-1", Name: "P"})
-	writeRawSkillMD(t, filepath.Join(workspaces["proj-1"], ".agents", "skills", "spec-check"),
-		"---\nname: spec-check\n---\nBody.")
-	seedGlobalSkill(t, agentDir, "spec-check")
+	writeRawSkillMD(t, filepath.Join(workspaces["proj-1"], ".agents", "skills", "vibespec-check"),
+		"---\nname: vibespec-check\n---\nBody.")
+	seedGlobalSkill(t, agentDir, "vibespec-check")
 
 	status, err := api.GetSpecsStatus("proj-1")
 	if err != nil {
 		t.Fatalf("GetSpecsStatus: %v", err)
 	}
-	if !status.Present || status.ActiveID != "sdd" {
+	if !status.Present || status.ActiveID != "vibespec" {
 		t.Errorf("present=%v active_id=%q, want the valid global copy to provide evidence", status.Present, status.ActiveID)
 	}
 }
@@ -999,7 +1023,7 @@ func TestGetSpecsStatus_InvalidSkillMDIsNotEvidence(t *testing.T) {
 // FrontendAPI) still falls back to the global dir on both sides.
 func TestBaseSkillDirs_ExplicitEmptyStaysEmpty(t *testing.T) {
 	api, _, agentDir := sddTestFrontend(t, project.ProjectInfo{ID: "proj-1", Name: "P"})
-	seedGlobalSkill(t, agentDir, "spec-check")
+	seedGlobalSkill(t, agentDir, "vibespec-check")
 
 	api.config.Skills.Dirs = []string{}
 	if got := api.baseSkillDirs(); len(got) != 0 {
@@ -1023,8 +1047,8 @@ func TestBaseSkillDirs_ExplicitEmptyStaysEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSpecsStatus after fallback: %v", err)
 	}
-	if !status.Present || status.ActiveID != "sdd" {
-		t.Errorf("present=%v active_id=%q, want the global-dir fallback to detect sdd", status.Present, status.ActiveID)
+	if !status.Present || status.ActiveID != "vibespec" {
+		t.Errorf("present=%v active_id=%q, want the global-dir fallback to detect vibespec", status.Present, status.ActiveID)
 	}
 }
 

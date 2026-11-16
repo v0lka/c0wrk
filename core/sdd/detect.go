@@ -127,10 +127,9 @@ type DetectResult struct {
 // of its names must be too. A framework declaring neither list never reaches
 // this matcher — the loader rejects it, because it could never be recognized
 // even when its markers exist (visibility must not depend on the tree, D8).
-// Installed names
-// are matched through their aliases (SkillNameMatches), so an installation
-// carrying the upstream vibespec-* spelling recognises a framework that
-// declares spec-*, and the reverse.
+// Installed names are compared by exact, case-sensitive name after trimming
+// surrounding whitespace: a framework is recognised by the spelling its own
+// installer writes, and no prefix folding applies.
 //
 // The default is the first framework in this order (D9): tree present first,
 // then the strongest skill scope (project > c0wrk global > user), then the
@@ -173,43 +172,12 @@ func DetectInstalled(catalog []Definition, evidence Evidence) DetectResult {
 	return result
 }
 
-// skillAliasPrefixes maps a skill-name prefix a framework document declares to
-// an alternative prefix an installation may carry.
-//
-// The upstream skillset c0wrk's DSL names as spec-* is published under the
-// vibespec-* spelling (ADR-105). c0wrk neither vendors nor seeds it any more
-// (ADR-126 §7): the operator installs one copy in one of the three skill tiers,
-// and a shared directory often holds that upstream spelling — so spec-check and
-// vibespec-check name the same skill.
-var skillAliasPrefixes = []struct{ canonical, alias string }{
-	{canonical: "spec-", alias: "vibespec-"},
-}
-
-// canonicalSkillName folds a name carrying an alias prefix back to the spelling
-// a framework document uses, so a match is symmetric: either spelling is
-// recognised on either side.
-func canonicalSkillName(name string) string {
-	for _, prefix := range skillAliasPrefixes {
-		if strings.HasPrefix(name, prefix.alias) {
-			return prefix.canonical + strings.TrimPrefix(name, prefix.alias)
-		}
-	}
-	return name
-}
-
-// SkillNameMatches reports whether an installed skill name satisfies a name a
-// framework document declares, honouring the alias prefixes (spec-* and its
-// upstream vibespec-* spelling name the same skill).
-func SkillNameMatches(required, installed string) bool {
-	return canonicalSkillName(strings.TrimSpace(installed)) == canonicalSkillName(strings.TrimSpace(required))
-}
-
 // installedIndex resolves an installed skill name to the strongest copy when the
-// same skill exists in several tiers. Keys are canonical names, so
-// spec-check and vibespec-check also compete for one slot.
+// same skill exists in several tiers. Keys are the exact skill names, so two
+// spellings of a similar name are two distinct skills.
 type installedIndex map[string]InstalledSkill
 
-// newInstalledIndex indexes the catalog by canonical skill name, keeping the
+// newInstalledIndex indexes the catalog by exact skill name, keeping the
 // strongest tier on a collision (the first entry wins a tie, so the caller's
 // order stays meaningful).
 func newInstalledIndex(skills []InstalledSkill) installedIndex {
@@ -219,11 +187,10 @@ func newInstalledIndex(skills []InstalledSkill) installedIndex {
 		if skill.Name == "" {
 			continue
 		}
-		key := canonicalSkillName(skill.Name)
-		if existing, ok := index[key]; ok && existing.Scope.rank() <= skill.Scope.rank() {
+		if existing, ok := index[skill.Name]; ok && existing.Scope.rank() <= skill.Scope.rank() {
 			continue
 		}
-		index[key] = skill
+		index[skill.Name] = skill
 	}
 	return index
 }
@@ -243,7 +210,7 @@ func (index installedIndex) match(skills Skills) ([]MatchedSkill, SkillScope, bo
 	seen := make(map[string]bool, cap(matched))
 	best := ScopeUnknown
 	collect := func(required string) bool {
-		skill, ok := index[canonicalSkillName(strings.TrimSpace(required))]
+		skill, ok := index[strings.TrimSpace(required)]
 		if !ok {
 			return false
 		}

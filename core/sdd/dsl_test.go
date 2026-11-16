@@ -57,7 +57,7 @@ func requireNoWarnings(t *testing.T, result sdd.LoadResult) {
 
 func requireBuiltinCatalog(t *testing.T, result sdd.LoadResult) {
 	t.Helper()
-	if want := []string{"sdd", "openspec", "spec-kit"}; !slices.Equal(loadedIDs(result), want) {
+	if want := []string{"vibespec", "openspec", "spec-kit"}; !slices.Equal(loadedIDs(result), want) {
 		t.Fatalf("Load() frameworks = %v, want the built-in catalog %v", loadedIDs(result), want)
 	}
 	for _, def := range result.Frameworks {
@@ -106,32 +106,32 @@ func TestLoad_EmptyPathsSkipsScopes(t *testing.T) {
 // built-in id replaces that framework wholesale — label and structure alike.
 func TestLoad_OperatorFileOverridesBuiltin(t *testing.T) {
 	globalPath := writeDefsFile(t, filepath.Join(t.TempDir(), "specs.yaml"),
-		frameworkDoc("sdd", "My Specification System", 10))
+		frameworkDoc("vibespec", "My Specification System", 10))
 
 	result := sdd.Load(globalPath, "")
 
 	requireNoWarnings(t, result)
 	// The id set and order are unchanged: an override replaces a built-in, it
 	// never adds a second entry.
-	if want := []string{"sdd", "openspec", "spec-kit"}; !slices.Equal(loadedIDs(result), want) {
+	if want := []string{"vibespec", "openspec", "spec-kit"}; !slices.Equal(loadedIDs(result), want) {
 		t.Fatalf("Load() frameworks = %v, want %v", loadedIDs(result), want)
 	}
 
-	def, ok := result.ByID("sdd")
+	def, ok := result.ByID("vibespec")
 	if !ok {
-		t.Fatalf("Load() lost the sdd framework")
+		t.Fatalf("Load() lost the vibespec framework")
 	}
 	if def.Label != "My Specification System" {
-		t.Errorf("sdd label = %q, want the operator's %q", def.Label, "My Specification System")
+		t.Errorf("vibespec label = %q, want the operator's %q", def.Label, "My Specification System")
 	}
 	if def.Origin != sdd.OriginGlobal || def.Document != globalPath {
-		t.Errorf("sdd origin/document = %q/%q, want %q/%q", def.Origin, def.Document, sdd.OriginGlobal, globalPath)
+		t.Errorf("vibespec origin/document = %q/%q, want %q/%q", def.Origin, def.Document, sdd.OriginGlobal, globalPath)
 	}
-	// minimalDoc carries a single root and two concepts; the built-in sdd
+	// minimalDoc carries a single root and two concepts; the built-in vibespec
 	// document is far richer, so the shape proves a wholesale replacement
 	// rather than a field-level merge.
 	if len(def.Roots) != 1 || def.Roots[0].ID != "demo" || len(def.Concepts) != 2 {
-		t.Errorf("sdd roots/concepts = %+v / %d, want the override's single demo root and 2 concepts", def.Roots, len(def.Concepts))
+		t.Errorf("vibespec roots/concepts = %+v / %d, want the override's single demo root and 2 concepts", def.Roots, len(def.Concepts))
 	}
 	// The other built-ins are untouched.
 	openspec, _ := result.ByID("openspec")
@@ -148,7 +148,7 @@ func TestLoad_NewIDIsAdded(t *testing.T) {
 	result := sdd.Load(globalPath, "")
 
 	requireNoWarnings(t, result)
-	if want := []string{"sdd", "openspec", "spec-kit", "acme"}; !slices.Equal(loadedIDs(result), want) {
+	if want := []string{"vibespec", "openspec", "spec-kit", "acme"}; !slices.Equal(loadedIDs(result), want) {
 		t.Fatalf("Load() frameworks = %v, want %v", loadedIDs(result), want)
 	}
 	def, ok := result.ByID("acme")
@@ -170,7 +170,7 @@ func TestLoad_PriorityOrdersMergedCatalog(t *testing.T) {
 	result := sdd.Load(globalPath, "")
 
 	requireNoWarnings(t, result)
-	if want := []string{"acme", "sdd", "openspec", "spec-kit"}; !slices.Equal(loadedIDs(result), want) {
+	if want := []string{"acme", "vibespec", "openspec", "spec-kit"}; !slices.Equal(loadedIDs(result), want) {
 		t.Fatalf("Load() frameworks = %v, want %v (Priority then ID)", loadedIDs(result), want)
 	}
 }
@@ -193,7 +193,7 @@ func TestLoad_BrokenYAMLWarnsAndKeepsCatalog(t *testing.T) {
 	if !strings.Contains(warning, globalPath) || !strings.Contains(warning, "cannot parse document 1") {
 		t.Errorf("warning %q must name the broken file and the failing document", warning)
 	}
-	if want := []string{"sdd", "openspec", "spec-kit", "acme"}; !slices.Equal(loadedIDs(result), want) {
+	if want := []string{"vibespec", "openspec", "spec-kit", "acme"}; !slices.Equal(loadedIDs(result), want) {
 		t.Errorf("Load() frameworks = %v, want the built-ins plus the project framework %v", loadedIDs(result), want)
 	}
 }
@@ -217,7 +217,7 @@ func TestLoad_InvalidDocumentSkipsOnlyItself(t *testing.T) {
 	if !strings.Contains(warning, "unknown_key") || !strings.Contains(warning, "(document 2)") {
 		t.Errorf("warning %q must name the unknown key and the document position", warning)
 	}
-	if want := []string{"sdd", "openspec", "spec-kit", "alpha", "gamma"}; !slices.Equal(loadedIDs(result), want) {
+	if want := []string{"vibespec", "openspec", "spec-kit", "alpha", "gamma"}; !slices.Equal(loadedIDs(result), want) {
 		t.Errorf("Load() frameworks = %v, want the built-ins plus alpha and gamma %v", loadedIDs(result), want)
 	}
 	if _, ok := result.ByID("beta"); ok {
@@ -237,7 +237,7 @@ func TestLoad_ProjectOverridesGlobal(t *testing.T) {
 	result := sdd.Load(globalPath, projectPath)
 
 	requireNoWarnings(t, result)
-	if want := []string{"sdd", "openspec", "spec-kit", "acme"}; !slices.Equal(loadedIDs(result), want) {
+	if want := []string{"vibespec", "openspec", "spec-kit", "acme"}; !slices.Equal(loadedIDs(result), want) {
 		t.Fatalf("Load() frameworks = %v, want %v (one acme, not two)", loadedIDs(result), want)
 	}
 	def, ok := result.ByID("acme")
@@ -260,7 +260,7 @@ func TestLoad_BuiltinCannotBeRemoved(t *testing.T) {
 	result := sdd.Load(globalPath, "")
 
 	requireNoWarnings(t, result)
-	for _, id := range []string{"sdd", "openspec", "spec-kit"} {
+	for _, id := range []string{"vibespec", "openspec", "spec-kit"} {
 		if _, ok := result.ByID(id); !ok {
 			t.Errorf("Load() dropped the built-in %q; operator files must not delete built-ins", id)
 		}
@@ -406,7 +406,7 @@ func TestMerge_ReplacesByIDUnit(t *testing.T) {
 
 	merged := sdd.Merge(builtins, overlay)
 
-	if want := []string{"sdd", "openspec", "spec-kit"}; !slices.Equal(definitionIDs(merged), want) {
+	if want := []string{"vibespec", "openspec", "spec-kit"}; !slices.Equal(definitionIDs(merged), want) {
 		t.Fatalf("Merge() ids = %v, want %v", definitionIDs(merged), want)
 	}
 	// Precedence follows argument order: a set merged later wins, which is how
@@ -422,8 +422,8 @@ func TestMerge_ReplacesByIDUnit(t *testing.T) {
 func TestLoadResult_ByID(t *testing.T) {
 	result := sdd.Load("", "")
 
-	if _, ok := result.ByID("sdd"); !ok {
-		t.Errorf("ByID(sdd) not found")
+	if _, ok := result.ByID("vibespec"); !ok {
+		t.Errorf("ByID(vibespec) not found")
 	}
 	if def, ok := result.ByID("nope"); ok || def.ID != "" {
 		t.Errorf("ByID(nope) = %+v, %v; want the zero definition and false", def, ok)
