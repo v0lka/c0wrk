@@ -712,11 +712,13 @@ func presentDeclaredPaths(workspace string, declared []string, dirOnly bool) []s
 // Only clean workspace-relative spellings resolve — the same rule the DSL
 // validator enforces at load (`~`-relative, absolute and `..`-carrying
 // declarations are rejected there), so this probe repeats the check fail-closed
-// against any future call site. A framework document never widens a probe
-// outside the directories it names.
+// against any future call site. Rootedness is lexical across every dialect
+// (core.IsAbsolutePath): filepath.IsAbs is false for "/etc/specs" on Windows,
+// which would let a rooted declaration resolve INSIDE the workspace there. A
+// framework document never widens a probe outside the directories it names.
 func resolveDeclaredPath(workspace, declared string) (string, bool) {
 	entry := strings.TrimSpace(strings.ReplaceAll(declared, `\`, "/"))
-	if entry == "" || entry == "~" || strings.HasPrefix(entry, "~/") || filepath.IsAbs(entry) {
+	if entry == "" || entry == "~" || strings.HasPrefix(entry, "~/") || core.IsAbsolutePath(entry) {
 		return "", false
 	}
 	for _, segment := range strings.Split(entry, "/") {

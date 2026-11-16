@@ -416,12 +416,18 @@ func TestGetSpecsStatus_ActionSkillAliasResolvesToInstalled(t *testing.T) {
 // twin of the load-time path validation: only clean workspace-relative
 // spellings resolve, whatever a future call site feeds in — the `~`-relative
 // and absolute forms the DSL validator already rejects at load cannot sneak
-// back through the runtime probe. The absolute shape is built from the path
-// separator, not a POSIX literal, so the assertion holds on every platform.
+// back through the runtime probe. Every rooted dialect is spelled literally
+// (POSIX, UNC, drive-rooted, and their backslash forms) so the pin does not
+// inherit the running host's notion of "absolute": filepath.IsAbs alone calls
+// the POSIX and UNC spellings relative on Windows.
 func TestResolveDeclaredPathRejectsNonRelativeDeclarations(t *testing.T) {
 	ws := t.TempDir()
 	absolute := filepath.Clean(string(filepath.Separator) + filepath.Join("etc", "specs"))
-	for _, declared := range []string{"", "   ", "~", "~/specs", absolute, "a/../specs"} {
+	invalid := []string{
+		"", "   ", "~", "~/specs", "a/../specs",
+		absolute, "/etc/specs", "//server/share/specs", "C:/specs", `C:\specs`, `\etc\specs`,
+	}
+	for _, declared := range invalid {
 		if resolved, ok := resolveDeclaredPath(ws, declared); ok {
 			t.Errorf("resolveDeclaredPath(%q) = %q, want rejection", declared, resolved)
 		}
@@ -429,6 +435,14 @@ func TestResolveDeclaredPathRejectsNonRelativeDeclarations(t *testing.T) {
 	resolved, ok := resolveDeclaredPath(ws, "specs")
 	if !ok || resolved != filepath.Join(ws, "specs") {
 		t.Fatalf("resolveDeclaredPath(specs) = %q, %v; want %q, true", resolved, ok, filepath.Join(ws, "specs"))
+	}
+	// The backslash spelling normalises to the same path on every host: a
+	// declaration is slash-separated by contract, and the probe reads either
+	// separator identically instead of depending on the running OS.
+	nested, ok := resolveDeclaredPath(ws, `specs\sub`)
+	if !ok || nested != filepath.Join(ws, "specs", "sub") {
+		t.Fatalf("resolveDeclaredPath(specs\\sub) = %q, %v; want %q, true",
+			nested, ok, filepath.Join(ws, "specs", "sub"))
 	}
 }
 

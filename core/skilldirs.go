@@ -281,11 +281,15 @@ func holdsSkill(dir string) bool {
 // centralized path-locality primitive — which also catches symlink-resolved
 // escapes for directories that already exist.
 func resolveSkillDirEntry(entry, workspacePath string) (string, bool) {
-	entry = strings.TrimSpace(entry)
+	// Backslashes are normalised before the check, and rootedness is lexical
+	// across every dialect (IsAbsolutePath): filepath.IsAbs is false for a
+	// POSIX-rooted entry on Windows, which would let it resolve INSIDE the
+	// workspace there instead of being refused.
+	entry = strings.ReplaceAll(strings.TrimSpace(entry), `\`, "/")
 	if entry == "" || workspacePath == "" {
 		return "", false
 	}
-	if strings.HasPrefix(entry, "~") || filepath.IsAbs(entry) {
+	if strings.HasPrefix(entry, "~") || IsAbsolutePath(entry) {
 		return "", false
 	}
 	resolved := filepath.Join(workspacePath, filepath.FromSlash(entry))

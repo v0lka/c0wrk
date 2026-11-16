@@ -164,10 +164,10 @@ func TestProjectSkillDirsFrom_ExplicitCatalog(t *testing.T) {
 // rejected here too — the runtime resolver never widens discovery beyond the
 // workspace on a shape the declaration could not legally express.
 func TestResolveSkillDirEntry(t *testing.T) {
-	// The spelling is platform-produced (filepath.Join / a genuinely absolute
-	// path of the running OS), not a literal: filepath.Clean and Join emit the
-	// OS separator, and an "absolute" entry is only absolute on its own
-	// platform (a POSIX spelling is a relative path on Windows).
+	// The relative entries are platform-produced (filepath.Join emits the OS
+	// separator); the rooted ones are spelled literally in every dialect,
+	// because a POSIX or UNC spelling must be refused on Windows too —
+	// filepath.IsAbs alone calls it relative there.
 	ws := filepath.Join(string(os.PathSeparator), "work", "project")
 	absolute := filepath.Join(t.TempDir(), "skills")
 	tests := []struct {
@@ -186,6 +186,9 @@ func TestResolveSkillDirEntry(t *testing.T) {
 		{name: "home alone", entry: "~", ws: ws, wantOK: false},
 		{name: "absolute", entry: absolute, ws: ws, wantOK: false},
 		{name: "absolute needs no workspace", entry: absolute, ws: "", wantOK: false},
+		{name: "posix rooted", entry: "/etc/skills", ws: ws, wantOK: false},
+		{name: "unc rooted", entry: `\\server\share\skills`, ws: ws, wantOK: false},
+		{name: "drive rooted", entry: "C:/skills", ws: ws, wantOK: false},
 		{name: "traversal", entry: filepath.Join("..", "escape", "skills"), ws: ws, wantOK: false},
 		{name: "embedded traversal", entry: "a/../../b/skills", ws: ws, wantOK: false},
 		{name: "empty", entry: "   ", ws: ws, wantOK: false},
