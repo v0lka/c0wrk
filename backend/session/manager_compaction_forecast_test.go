@@ -40,7 +40,7 @@ func (s *forecastCtxStore) SaveAppState(ctx context.Context, key, value string) 
 // forecast load parks the lazy restore (and its restoreInFlight waiters), an
 // unbounded save stalls the compaction-finish path.
 func TestCompactionForecastStoreCallsAreBounded(t *testing.T) {
-	factory := func(core.Emitter, *slog.Logger, string, core.BlackboardFactory, io.Writer, *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+	factory := func(core.Emitter, *slog.Logger, string, string, core.BlackboardFactory, io.Writer, *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
 		return nil, nil
 	}
 	m := NewManager(factory, func(Event) {}, runtimeTempDir(t))

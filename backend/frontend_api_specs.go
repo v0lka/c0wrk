@@ -1,213 +1,56 @@
 package backend
 
 import (
-	"errors"
-	"fmt"
+	"path/filepath"
 
-	"github.com/v0lka/c0wrk/backend/config"
 	"github.com/v0lka/c0wrk/backend/project"
-	"github.com/v0lka/c0wrk/core/specs"
 )
 
-// ---------------------------------------------------------------------------
-// DTOs
-// ---------------------------------------------------------------------------
+// Workspace resolution for the SDD (spec-driven development) surface.
+//
+// The SDD subsystem is framework-aware: what the Specs panel shows depends on
+// which SDD framework the workspace has installed (skill detection), and the
+// tree is parsed through that framework's declarative definition (core/sdd).
+// Two roots are involved and they deliberately differ:
+//
+//	active-session workspace   the TREE — where the agent writes specs
+//	project checkout           the operator DSL file (<checkout>/.c0wrk/specs.yaml)
+//
+// The tree follows the active session (ADR-116, ADR-099's protocol), because an
+// agent writes specifications inside its session tree; the operator's c0wrk
+// metadata file travels with the repository, so it is always read from the
+// checkout. See specs/domains/specs.md.
 
-// SpecsStatusDTO is the full Specs-panel view model (ADR-106): the parsed
-// specs/ tree of one project — every spec file, the INDEX.md task→spec
-// navigation table, ADR metadata, and the deterministic tier-1 integrity
-// findings. The wire shape is stable: the collection fields and the counts
-// histogram are ALWAYS non-nil (empty collections serialize as [] and {},
-// never null), so the frontend renders without null guards. No Project gets
-// the neutral present=false state. See specs/decisions/106-specs-sidebar-panel.md.
-type SpecsStatusDTO struct {
-	// Present reports whether <workspace>/specs exists and is a directory.
-	// A missing tree is a neutral state, never an error (ADR-106 D2).
-	Present bool `json:"present"`
-
-	// Root is the absolute specs root path (config.ProjectSpecsPath); ""
-	// for No Project.
-	Root string `json:"root"`
-
-	// Files holds every parsed spec file — the four section trees plus the
-	// root files INDEX.md and META.md — sorted by path. Always non-nil.
-	Files []specs.SpecFile `json:"files"`
-
-	// IndexTasks is the INDEX.md "Navigation by Task" table in document
-	// order. Always non-nil; empty when INDEX.md is missing (present=false
-	// or no table).
-	IndexTasks []specs.IndexTask `json:"index_tasks"`
-
-	// ADRs holds decisions/NNN-slug.md metadata, sorted by number. Always
-	// non-nil.
-	ADRs []ADRMetaDTO `json:"adrs"`
-
-	// Findings holds the deterministic tier-1 integrity findings, sorted by
-	// kind, file, detail. Always non-nil.
-	Findings []specs.Finding `json:"findings"`
-
-	// Counts aggregates the collections for panel badges and filters.
-	Counts SpecsCountsDTO `json:"counts"`
-}
-
-// ADRMetaDTO is the wire shape of one decisions/NNN-slug.md record: the
-// parsed specs.ADRMeta fields flattened verbatim (number, slug, file, title,
-// status, superseded_by) plus the environment-derived add date. Date is the
-// file's first-commit date in YYYY-MM-DD form from the workspace's git
-// history, "" (omitted on the wire) when unknown — a non-git workspace,
-// an unborn HEAD, or any git failure leave it empty without surfacing an
-// error. The date is environment metadata, never spec content. See
-// specs/domains/specs.md and specs/contracts/desktop-frontend.md § Specs.
-type ADRMetaDTO struct {
-	specs.ADRMeta
-
-	// Date is the add (first-commit) date of the ADR file, YYYY-MM-DD;
-	// omitted when unknown.
-	Date string `json:"date,omitempty"`
-}
-
-// SpecsCountsDTO is the aggregate badge model of SpecsStatusDTO: the sizes
-// of the collections plus the per-kind findings histogram. The map is
-// ALWAYS non-nil (an empty tree serializes {}); it lists only kinds that
-// actually occurred, keyed by the stringified specs.FindingKind.
-type SpecsCountsDTO struct {
-	Files          int            `json:"files"`
-	ADRs           int            `json:"adrs"`
-	Findings       int            `json:"findings"`
-	FindingsByKind map[string]int `json:"findings_by_kind"`
-}
-
-// ---------------------------------------------------------------------------
-// GetSpecsStatus
-// ---------------------------------------------------------------------------
-
-// GetSpecsStatus returns the parsed specs/ tree of a project for the Specs
-// sidebar panel (ADR-106): files, the INDEX.md task navigation table, ADR
-// metadata, and the always-fresh tier-1 integrity findings — one light
-// read-only parse per call. The specs root follows the ACTIVE SESSION
-// (ADR-099, mirroring GetResearchStatus): <workspace-of-the-active-session>/specs,
-// falling back to the project checkout when no session resolves — the agent
-// writes specs inside its session tree, so a checkout-only root would miss
-// them. A missing or non-directory root parses to the neutral present=false
-// state, and an existing empty or partial tree parses present=true with
-// whatever content is readable — never an error in either case. No Project
-// returns the same neutral state (the workspace tab strip — and with it the
-// Specs panel — is not rendered there at all; this is the defensive
-// contract, mirroring GetResearchStatus). See
-// specs/decisions/106-specs-sidebar-panel.md and
-// specs/decisions/099-research-root-follows-active-session.md.
-func (f *FrontendAPI) GetSpecsStatus(projectID string) (*SpecsStatusDTO, error) {
-	f.seedAcquire()
-	if projectID == "" {
-		return nil, errors.New("project_id is required")
-	}
-	if f.projectManager == nil {
-		return nil, errors.New("project subsystem not initialized")
-	}
-
-	// Project resolution mirrors loadProjectForResearch / GetResearchStatus,
-	// except No Project is the neutral present=false state here, not an
-	// error — the panel is simply absent in CHAT mode (ADR-106 D1).
-	proj, err := f.projectManager.GetProject(projectID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load project %q: %w", projectID, err)
-	}
-	if proj == nil {
-		return nil, fmt.Errorf("project %q not found", projectID)
-	}
-	if proj.IsNoProject {
-		return specsStatusDTOFromRoot(nil, ""), nil
-	}
-
-	specsRoot, boundary := f.specsRootWithBoundary(proj)
-	root, err := specs.ParseSpecsRoot(specsRoot)
-	if err != nil {
-		// The parser is tolerant by contract (a missing or non-directory
-		// root is present=false, never an error); fail open to the neutral
-		// state if a future revision grows an error path — the
-		// parseResearchRootBestEffort pattern.
-		f.log().Debug("GetSpecsStatus: specs root not parseable",
-			"root", specsRoot, "error", err)
-		return specsStatusDTOFromRoot(nil, specsRoot), nil
-	}
-	dto := specsStatusDTOFromRoot(root, specsRoot)
-	// Environment enrichment, strictly after the pure parse: stamp the ADR
-	// add dates from git. Fail-soft by contract — a non-git workspace, an
-	// unborn HEAD, or any git failure leaves the ADRs undated with the RPC
-	// still successful (one git invocation per call, only when ADRs exist).
-	// The git context is the BOUNDARY workspace — the tree the root was
-	// derived from — so a session worktree's dates come from the worktree's
-	// own HEAD, never the checkout's.
-	f.enrichSpecsADRDates(f.ctx(), dto, boundary)
-	return dto, nil
-}
-
-// ---------------------------------------------------------------------------
-// helpers
-// ---------------------------------------------------------------------------
-
-// specsRootWithBoundary returns the project's effective specs root, following
-// the ACTIVE SESSION (ADR-099, mirroring researchRootWithBoundary):
-// <workspace-of-the-active-session>/specs, where the active session is the
-// user-selected session when a usable selection is persisted, falling back to
-// the most recently active non-archived one, else the project checkout —
-// with the workspace its containment must be validated against (the session
-// workspace when the root followed a session — a managed tree lives OUTSIDE
-// the checkout — the checkout on the fallback). The boundary is also the git
-// context the ADR add-date enrichment must read, so the dates always come
-// from the same tree that was parsed. "" for nil, No Project, or a
-// workspace-less project. See
-// specs/decisions/099-research-root-follows-active-session.md and
-// specs/decisions/106-specs-sidebar-panel.md.
-func (f *FrontendAPI) specsRootWithBoundary(p *project.ProjectInfo) (root, boundary string) {
+// sddWorkspace resolves the workspace the SDD tree is read from: the active
+// session's workspace when one resolves and belongs to the project, the
+// project checkout otherwise. "" for nil, No Project, or a workspace-less
+// project.
+func (f *FrontendAPI) sddWorkspace(p *project.ProjectInfo) string {
 	if p == nil || p.IsNoProject || p.WorkspacePath == "" {
-		return "", ""
+		return ""
 	}
 	if ws, ok := f.activeSessionWorkspace(p.ID); ok {
-		return config.ProjectSpecsPath(ws), ws
+		return ws
 	}
-	return config.ProjectSpecsPath(p.WorkspacePath), p.WorkspacePath
+	return p.WorkspacePath
 }
 
-// specsStatusDTOFromRoot maps a parsed specs root to the wire DTO with the
-// stable non-null shape: every collection non-nil even when empty, and the
-// counts histogram always allocated. A nil root (No Project, or a parse the
-// tolerant parser refused) maps to present=false, keeping rootPath.
-func specsStatusDTOFromRoot(root *specs.SpecsRoot, rootPath string) *SpecsStatusDTO {
-	dto := &SpecsStatusDTO{
-		Root:       rootPath,
-		Files:      []specs.SpecFile{},
-		IndexTasks: []specs.IndexTask{},
-		ADRs:       []ADRMetaDTO{},
-		Findings:   []specs.Finding{},
-		Counts:     SpecsCountsDTO{FindingsByKind: map[string]int{}},
+// sddCheckout returns the project checkout path — the root the checkout-local
+// operator DSL file is read from. It deliberately does NOT follow the session:
+// the file is repository data, not agent output. "" for nil, No Project, or a
+// workspace-less project.
+func sddCheckout(p *project.ProjectInfo) string {
+	if p == nil || p.IsNoProject {
+		return ""
 	}
-	if root == nil {
-		return dto
-	}
+	return p.WorkspacePath
+}
 
-	dto.Present = root.Present
-	if root.Files != nil {
-		dto.Files = root.Files
+// sddRootPath returns the absolute path of one declared framework root inside
+// workspace. The declared path is workspace-relative and slash separated.
+func sddRootPath(workspace, declared string) string {
+	if workspace == "" || declared == "" {
+		return ""
 	}
-	if root.Index != nil && root.Index.Tasks != nil {
-		dto.IndexTasks = root.Index.Tasks
-	}
-	if root.ADRs != nil {
-		dto.ADRs = make([]ADRMetaDTO, len(root.ADRs))
-		for i, adr := range root.ADRs {
-			dto.ADRs[i] = ADRMetaDTO{ADRMeta: adr}
-		}
-	}
-	if root.Findings != nil {
-		dto.Findings = root.Findings
-	}
-
-	dto.Counts.Files = len(dto.Files)
-	dto.Counts.ADRs = len(dto.ADRs)
-	dto.Counts.Findings = len(dto.Findings)
-	for _, finding := range dto.Findings {
-		dto.Counts.FindingsByKind[string(finding.Kind)]++
-	}
-	return dto
+	return filepath.Join(workspace, filepath.FromSlash(declared))
 }

@@ -38,7 +38,7 @@ func testManager(t *testing.T) (manager *Manager, events chan Event, agentDir st
 	}
 
 	// Create factory that returns nil orchestrator with no error (we'll patch sessions manually)
-	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string, bbFactory core.BlackboardFactory, dumpWriter io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string, _ string, bbFactory core.BlackboardFactory, dumpWriter io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
 		return nil, nil
 	}
 
@@ -1370,7 +1370,7 @@ func TestManager_CreateSession_FactoryError(t *testing.T) {
 	}
 
 	// Factory that always fails
-	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string, bbFactory core.BlackboardFactory, dumpWriter io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string, _ string, bbFactory core.BlackboardFactory, dumpWriter io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
 		return nil, errors.New("factory error")
 	}
 
@@ -2320,7 +2320,7 @@ func TestSendMessage_StoresTaskIDForContinuation(t *testing.T) {
 
 	// Track whether Handle or ContinueTask was called via the mock orchestrator behavior
 	callCount := 0
-	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string, bbFactory core.BlackboardFactory, dumpWriter io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string, _ string, bbFactory core.BlackboardFactory, dumpWriter io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
 		callCount++
 		// Return nil - we'll test the session's lastCompletedTaskID field directly
 		return nil, nil
@@ -2370,7 +2370,7 @@ func TestSendMessage_LastTaskIDClearedOnContinuationError(t *testing.T) {
 		}
 	}
 
-	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string, bbFactory core.BlackboardFactory, dumpWriter io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string, _ string, bbFactory core.BlackboardFactory, dumpWriter io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
 		return nil, nil
 	}
 
@@ -2606,7 +2606,7 @@ func restoreTestManager(t *testing.T) (*Manager, chan Event, *mockSessionStoreFo
 		}
 	}
 
-	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string, bbFactory core.BlackboardFactory, dumpWriter io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string, _ string, bbFactory core.BlackboardFactory, dumpWriter io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
 		return nil, nil
 	}
 
@@ -2930,7 +2930,7 @@ func TestRestoreSession_NoProjectResolver(t *testing.T) {
 		}
 	}
 
-	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string, bbFactory core.BlackboardFactory, dumpWriter io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string, _ string, bbFactory core.BlackboardFactory, dumpWriter io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
 		return nil, nil
 	}
 
@@ -3154,7 +3154,7 @@ func TestRestoreSession_ProjectResolverError(t *testing.T) {
 		}
 	}
 
-	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string, bbFactory core.BlackboardFactory, dumpWriter io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+	factory := func(emitter core.Emitter, logger *slog.Logger, workspacePath string, _ string, bbFactory core.BlackboardFactory, dumpWriter io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
 		return nil, nil
 	}
 
@@ -3187,7 +3187,7 @@ func TestManager_LastToolCallID_WiredByEmitterSink(t *testing.T) {
 	emitFunc := func(Event) {}
 
 	var capturedEmitter core.Emitter
-	factory := func(emitter core.Emitter, _ *slog.Logger, _ string, _ core.BlackboardFactory, _ io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
+	factory := func(emitter core.Emitter, _ *slog.Logger, _ string, _ string, _ core.BlackboardFactory, _ io.Writer, _ *orchestration.StepDumpTracker) (*core.Orchestrator, error) {
 		capturedEmitter = emitter
 		return nil, nil
 	}

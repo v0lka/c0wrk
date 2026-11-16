@@ -1,0 +1,222 @@
+# c0wrk's own specification system — the tree documented in specs/META.md.
+# A hand-written, agent-oriented spec set: one navigation index, one format
+# document, and four sections whose every document is a standing description of
+# intended behavior (never generated from code).
+schema: sdd-framework/v1
+id: sdd
+label: Specification System
+description: >-
+  Hand-written, agent-oriented specifications: META.md owns the format and
+  rules, INDEX.md owns the task-to-spec navigation, and architecture/,
+  domains/, contracts/ and decisions/ hold the standing descriptions. The
+  workspace's installed spec-* skills carry the lifecycle (init, create,
+  update, check, consult, explore) and the panel's checks enforce the tree's
+  structural invariants.
+docs_url: https://github.com/v0lka/c0wrk/blob/main/specs/META.md
+priority: 10
+
+detect:
+  markers:
+    - specs/META.md
+    - specs/INDEX.md
+  skills:
+    dirs:
+      - .agents/skills
+      - .claude/skills
+    any_of:
+      - spec-check
+      - spec-consult
+      - spec-create
+      - spec-update
+
+roots:
+  - id: specs
+    path: specs
+    label: Specification tree
+    required: true
+
+concepts:
+  - kind: meta
+    label: Meta
+    match:
+      root: specs
+      glob: META.md
+    extract: [title, headings, cross_refs]
+    required: [title, non_empty]
+
+  - kind: index
+    label: Index
+    match:
+      root: specs
+      glob: INDEX.md
+    extract: [title, headings, cross_refs, index_tasks]
+    required: [title, non_empty]
+
+  # The four section concepts span their whole subtree (the reader the DSL
+  # replaced recursed into nested directories) but shed their `_`-prefixed
+  # templates: a template is a naming convention, not a standing description,
+  # and it must not enter the views, the INDEX coverage or the content checks.
+  - kind: architecture
+    label: Architecture
+    match:
+      root: specs
+      glob: architecture/**/*.md
+      exclude: ["architecture/**/_*.md"]
+    extract: [title, key_files, cross_refs, headings]
+    required: [title]
+
+  - kind: domain
+    label: Domain
+    match:
+      root: specs
+      glob: domains/**/*.md
+      exclude: ["domains/**/_*.md"]
+    extract: [title, key_files, cross_refs, headings]
+    required: [title]
+
+  - kind: contract
+    label: Contract
+    match:
+      root: specs
+      glob: contracts/**/*.md
+      exclude: ["contracts/**/_*.md"]
+    extract: [title, key_files, cross_refs, headings]
+    required: [title]
+
+  - kind: decision
+    label: Decision
+    match:
+      root: specs
+      glob: decisions/**/*.md
+      exclude: ["decisions/**/_*.md"]
+    extract: [title, number, status, superseded_by, cross_refs, headings]
+    required: [title, status]
+
+  - kind: template
+    label: Template
+    match:
+      root: specs
+      glob: decisions/**/_*.md
+    extract: [title]
+    required: [title]
+
+checks:
+  # 1. META.md and INDEX.md are the two root documents every tree carries.
+  - kind: required_files
+    finding: ROOT_FILE_MISSING
+    message: the specification tree must carry INDEX.md (navigation) and META.md (format and rules)
+    files: [INDEX.md, META.md]
+
+  # 2. Every path a document lists under "## Key Files" must exist.
+  - kind: required_files
+    finding: PATH_MISSING
+    message: a key file listed by a spec must exist in the workspace
+    from: key_files
+
+  # 3. ADR file names are NNN-slug.md; _template.md is the one exception.
+  - kind: name_pattern
+    finding: ADR_NAME_MALFORMED
+    message: a decisions/ file must be named NNN-slug.md
+    concept: decision
+    pattern: '^[0-9]{3}-[a-z0-9]+(?:-[a-z0-9]+)*\.md$'
+    allow: [_template.md]
+
+  # 4. Relative spec links and their anchors must resolve.
+  - kind: crossrefs
+    finding: CROSS_REF_BROKEN
+    message: a relative spec link or anchor must resolve
+
+  # 5. INDEX.md must name every section document.
+  - kind: index_completeness
+    finding: INDEX_STALE
+    message: INDEX.md must name every architecture, domains, contracts and decisions document
+    concept: index
+    covers: [architecture, domain, contract, decision]
+
+  # 6. An ADR's H1 number must equal its file name's number — numerically,
+  #    when the heading spells one. A heading without an "ADR-NNN:" prefix is
+  #    not a mismatch (optional), and the comparison is numeric, so an
+  #    unpadded heading ("# ADR-43:") agrees with 043-ok.md.
+  - kind: content_regex
+    finding: ADR_NUMBER_MISMATCH
+    message: the "# ADR-NNN:" heading number must equal the file name's number
+    concept: decision
+    in: first_heading
+    optional: true
+    regex: '^ADR-(?P<number>\d+): \S'
+    capture: number
+    equals: filename_number
+
+  # 7. Two decision files may not claim one number.
+  - kind: unique
+    finding: DUPLICATE_ADR_NUMBER
+    message: two decisions/ files claim the same ADR number
+    concept: decision
+    field: number
+
+  # 8. A supersession target must be a real ADR, and chains must terminate:
+  #    one declared check judges both — resolution under SUPERSEDED_TARGET_MISSING,
+  #    loops under SUPERSEDED_CYCLE.
+  - kind: references
+    finding: SUPERSEDED_TARGET_MISSING
+    cycle_finding: SUPERSEDED_CYCLE
+    message: a superseded ADR must name an existing successor and supersession chains must not loop
+    concept: decision
+    field: superseded_by
+    of: decision
+    acyclic: true
+
+actions:
+  - kind: init
+    label: Init
+    skill: spec-init
+    prompt: Initialize the specification system for this workspace.
+  - kind: check
+    label: Check
+    skill: spec-check
+    prompt: Check the specifications for drift against the code and the documented invariants.
+    requires: [root]
+  - kind: consult
+    label: Consult
+    skill: spec-consult
+    prompt: Consult the relevant specifications before making this change.
+    requires: [root]
+  - kind: explore
+    label: Explore
+    skill: spec-explore
+    prompt: Explore the design space with the specifications open, before planning any change.
+    requires: [root]
+  - kind: create
+    label: Create
+    skill: spec-create
+    prompt: Create a new specification document for the described domain, contract or decision.
+    requires: [root]
+  - kind: update
+    label: Update
+    skill: spec-update
+    prompt: Update the specifications affected by the current changes.
+    requires: [root, findings]
+  # The findings gesture: declared here so the panel's findings badge is a
+  # BUTTON for this framework (a framework that omits it keeps an inert
+  # badge — the panel renders only what the DSL declares).
+  - kind: fix-findings
+    label: Fix findings
+    skill: spec-update
+    prompt: >-
+      Repair every integrity finding reported for the specs/ tree: fix or
+      remove broken paths and cross-references, renumber duplicate ADR records
+      per the renumber protocol, register unlisted files in the INDEX.md
+      directory listing, restore missing root files, and repair ADR numbering
+      and supersession inconsistencies. When done, re-verify that the tree
+      parses clean.
+    requires: [root, findings]
+
+views:
+  sections:
+    - id: tree
+      label: Specification tree
+      kind: tree
+      concepts: [meta, index, architecture, domain, contract, decision]
+    - id: findings
+      label: Findings
+      kind: findings

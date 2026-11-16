@@ -4,25 +4,52 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const getSpecsStatusMock = vi.hoisted(() => vi.fn())
+const setActiveSDDMock = vi.hoisted(() => vi.fn())
 
 vi.mock('@/api/specs', () => ({
   getSpecsStatus: getSpecsStatusMock,
+  setActiveSDD: setActiveSDDMock,
 }))
 
 import { useSpecsStore } from './specsStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { useSessionStore } from './sessionStore'
-import type { SpecsStatus } from '@/types/models'
+import { useSddStore } from './sddStore'
+import type { SDDFramework, SpecsStatus } from '@/types/models'
+
+/** One detected framework as the backend reports it. */
+function frameworkOf(id: string, label: string, treePresent = true): SDDFramework {
+  return {
+    id,
+    label,
+    origin: 'builtin',
+    scope: 'project',
+    tree_present: treePresent,
+    root_present: treePresent,
+    marker_present: treePresent,
+    skills: [],
+  }
+}
 
 function statusOf(present: boolean, projectId: string): SpecsStatus {
+  const detected = present ? [frameworkOf('sdd', 'Specification System')] : []
   return {
     present,
+    tree_present: present,
     root: present ? `/ws/${projectId}/specs` : '',
-    files: [],
-    index_tasks: [],
-    adrs: [],
+    workspace: `/ws/${projectId}`,
+    detected,
+    active_id: present ? 'sdd' : '',
+    active: detected[0],
+    selector_needed: false,
+    roots: [],
+    documents: [],
+    nodes: [],
+    views: [],
     findings: [],
-    counts: { files: 0, adrs: 0, findings: 0, findings_by_kind: {} },
+    actions: [],
+    counts: { documents: 0, findings: 0, by_concept: {}, findings_by_kind: {} },
+    warnings: [],
   }
 }
 
@@ -72,6 +99,7 @@ async function flush(): Promise<void> {
 
 beforeEach(() => {
   getSpecsStatusMock.mockReset()
+  setActiveSDDMock.mockReset()
   useSpecsStore.getState().reset()
   useProjectStore.setState({ projects: null, activeProjectId: null })
   useSessionStore.setState({ sessions: null, activeSessionId: null })
@@ -384,5 +412,203 @@ describe('specsStore — sidebar tree expansion (per-project, persisted)', () =>
     useSpecsStore.getState().toggleTreeNode('domains')
     useSpecsStore.getState().reset()
     expect(useSpecsStore.getState().treeExpandedNodes).toEqual({})
+  })
+})
+
+describe('specsStore — framework context (sddStore projection)', () => {
+  it('mirrors every successful parse into the framework context', async () => {
+    getSpecsStatusMock.mockResolvedValue(statusOf(true, 'p1'))
+
+    await useSpecsStore.getState().fetchStatus('p1')
+
+    const sdd = useSddStore.getState()
+    expect(sdd.projectId).toBe('p1')
+    expect(sdd.known).toBe(true)
+    expect(sdd.present).toBe(true)
+    expect(sdd.frameworks.map((fw) => fw.id)).toEqual(['sdd'])
+    expect(sdd.activeId).toBe('sdd')
+    expect(sdd.confirmedActiveId).toBe('sdd')
+  })
+
+  it('reports present=false (no detected framework) to the tab strip', async () => {
+    getSpecsStatusMock.mockResolvedValue(statusOf(false, 'p1'))
+
+    await useSpecsStore.getState().fetchStatus('p1')
+
+    expect(useSddStore.getState().present).toBe(false)
+    expect(useSddStore.getState().frameworks).toEqual([])
+  })
+
+  it('reset clears the framework context with the parse', async () => {
+    getSpecsStatusMock.mockResolvedValue(statusOf(true, 'p1'))
+    await useSpecsStore.getState().fetchStatus('p1')
+
+    useSpecsStore.getState().reset()
+
+    const sdd = useSddStore.getState()
+    expect(sdd.known).toBe(false)
+    expect(sdd.projectId).toBeNull()
+    expect(sdd.frameworks).toEqual([])
+    expect(sdd.activeId).toBe('')
+  })
+})
+
+describe('specsStore — selectFramework', () => {
+  it('persists the choice, then re-parses through the same fetch ticket', async () => {
+    getSpecsStatusMock.mockResolvedValueOnce(statusOf(true, 'p1'))
+    await useSpecsStore.getState().fetchStatus('p1')
+    // The re-parse reports the new selection: that is what settles the switch.
+    getSpecsStatusMock.mockResolvedValueOnce({ ...statusOf(true, 'p1'), active_id: 'openspec' })
+    setActiveSDDMock.mockResolvedValue(undefined)
+
+    await useSpecsStore.getState().selectFramework('openspec')
+
+    expect(setActiveSDDMock).toHaveBeenCalledWith('p1', 'openspec')
+    // The switch re-uses fetchStatus: one newer flight, so its ticket wins.
+    expect(getSpecsStatusMock).toHaveBeenCalledTimes(2)
+    expect(useSddStore.getState().switching).toBe(false)
+    expect(useSddStore.getState().pendingActiveId).toBeNull()
+  })
+
+  it('shows the chosen framework at once while the previous tree stays rendered', async () => {
+    getSpecsStatusMock.mockResolvedValue(statusOf(true, 'p1'))
+    await useSpecsStore.getState().fetchStatus('p1')
+    const firstStatus = useSpecsStore.getState().status
+
+    const persist = deferred<void>()
+    setActiveSDDMock.mockReturnValue(persist.promise)
+    const reparse = deferred<SpecsStatus>()
+    getSpecsStatusMock.mockReturnValue(reparse.promise)
+
+    const flight = useSpecsStore.getState().selectFramework('openspec')
+    await flush()
+
+    // While the persist is in flight: the selector already reports the
+    // operator's choice, and the PREVIOUS parse is still on screen.
+    expect(useSddStore.getState().activeId).toBe('openspec')
+    expect(useSddStore.getState().switching).toBe(true)
+    expect(useSpecsStore.getState().status).toBe(firstStatus)
+
+    persist.resolve(undefined)
+    await flush()
+    // While the re-parse is in flight: still the previous tree (the store
+    // keeps a same-(project, session) status).
+    expect(useSpecsStore.getState().status).toBe(firstStatus)
+
+    reparse.resolve({ ...statusOf(true, 'p1'), active_id: 'openspec' })
+    await flight
+    await flush()
+
+    expect(useSddStore.getState().activeId).toBe('openspec')
+    expect(useSddStore.getState().switching).toBe(false)
+    expect(useSpecsStore.getState().status?.active_id).toBe('openspec')
+  })
+
+  it('reverts the optimistic choice when the persist fails', async () => {
+    getSpecsStatusMock.mockResolvedValue(statusOf(true, 'p1'))
+    await useSpecsStore.getState().fetchStatus('p1')
+    setActiveSDDMock.mockRejectedValue(new Error('SDD framework "nope" is not detected'))
+
+    await useSpecsStore.getState().selectFramework('nope')
+
+    const sdd = useSddStore.getState()
+    expect(sdd.activeId).toBe('sdd') // the confirmed selection again
+    expect(sdd.pendingActiveId).toBeNull()
+    expect(sdd.switching).toBe(false)
+    expect(sdd.error).toMatch(/not detected/)
+    // The panel's own banner carries it too.
+    expect(useSpecsStore.getState().error).toMatch(/not detected/)
+    // A failed persist never re-parses.
+    expect(getSpecsStatusMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('is a no-op without a project', async () => {
+    await useSpecsStore.getState().selectFramework('openspec')
+    expect(setActiveSDDMock).not.toHaveBeenCalled()
+  })
+
+  // Review 14: a persist that lands after the operator has moved to another
+  // project must not fire a follow-up fetch for the OLD project — that would
+  // clear the newer project's status mid-flight (its own fetch loses the LWW
+  // ticket to the stale continuation's NEW fetch) and re-stamp the store and
+  // the framework projection with abandoned data.
+  it('does not refetch the old project when the persist lands after a project switch', async () => {
+    getSpecsStatusMock.mockResolvedValueOnce(statusOf(true, 'p1'))
+    seedProject('p1')
+    await useSpecsStore.getState().fetchStatus('p1')
+
+    const persist = deferred<void>()
+    setActiveSDDMock.mockReturnValue(persist.promise)
+    const flight = useSpecsStore.getState().selectFramework('openspec')
+    await flush()
+
+    // The operator moves on: switch to p2 and load ITS Specs surface while
+    // the p1 persist is still in flight.
+    seedProject('p2')
+    const p2Status = statusOf(true, 'p2')
+    getSpecsStatusMock.mockResolvedValueOnce(p2Status)
+    await useSpecsStore.getState().fetchStatus('p2')
+
+    // The abandoned p1 persist lands now.
+    persist.resolve(undefined)
+    await flight
+    await flush()
+
+    // Exactly the two parses that legitimately ran: the initial p1 parse and
+    // the p2 parse — the stale continuation started no third flight.
+    expect(getSpecsStatusMock).toHaveBeenCalledTimes(2)
+    expect(getSpecsStatusMock).toHaveBeenLastCalledWith('p2')
+    // p2 owns the store AND the framework projection; p1's abandoned switch
+    // left nothing behind (the p2 parse reset the context wholesale).
+    expect(useSpecsStore.getState().status).toBe(p2Status)
+    expect(useSpecsStore.getState().projectId).toBe('p2')
+    expect(useSddStore.getState().projectId).toBe('p2')
+    expect(useSddStore.getState().activeId).toBe('sdd')
+    expect(useSddStore.getState().switching).toBe(false)
+  })
+
+  // Review 15: the switch is the persist + re-parse PAIR. A re-parse that
+  // fails (transport error, or the framework vanished between persist and
+  // parse) has still ENDED — the selector must unlock and the failure must
+  // surface, never leave a disabled selector forever.
+  it('unlocks the selector when the re-parse fails after a successful persist', async () => {
+    getSpecsStatusMock.mockResolvedValueOnce(statusOf(true, 'p1'))
+    seedProject('p1')
+    await useSpecsStore.getState().fetchStatus('p1')
+    setActiveSDDMock.mockResolvedValue(undefined)
+    getSpecsStatusMock.mockRejectedValueOnce(new Error('reparse failed'))
+
+    await useSpecsStore.getState().selectFramework('openspec')
+
+    const sdd = useSddStore.getState()
+    expect(sdd.switching).toBe(false)
+    expect(sdd.pendingActiveId).toBeNull()
+    // The persist DID land, so the selector keeps showing the saved choice.
+    expect(sdd.activeId).toBe('openspec')
+    // The refresh failure surfaces in the panel banner (the "selection
+    // saved, refresh failed" report), not as a wedged selector.
+    expect(useSpecsStore.getState().error).toMatch(/reparse failed/)
+    expect(useSpecsStore.getState().isLoading).toBe(false)
+  })
+
+  // Review 15, second half: an authoritative payload whose active_id differs
+  // from the pending choice (the backend fell back — the framework vanished)
+  // must also END the switch: pending clears, the selector unlocks, and the
+  // server's answer is recorded as the confirmed selection.
+  it('settles the switch when the re-parse reports a different active framework', async () => {
+    getSpecsStatusMock.mockResolvedValueOnce(statusOf(true, 'p1'))
+    seedProject('p1')
+    await useSpecsStore.getState().fetchStatus('p1')
+    setActiveSDDMock.mockResolvedValue(undefined)
+    // The parse lands with the backend's own fallback, not the operator's
+    // pending choice.
+    getSpecsStatusMock.mockResolvedValueOnce(statusOf(true, 'p1'))
+
+    await useSpecsStore.getState().selectFramework('openspec')
+
+    const sdd = useSddStore.getState()
+    expect(sdd.switching).toBe(false)
+    expect(sdd.pendingActiveId).toBeNull()
+    expect(sdd.confirmedActiveId).toBe('sdd')
   })
 })

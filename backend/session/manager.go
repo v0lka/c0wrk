@@ -137,9 +137,12 @@ func sessionTempDir(agentDir, projectID, sessionID string) string {
 }
 
 // OrchestratorFactory builds the session's Orchestrator. The workspace path is
-// the project workspace (so the worktree factory captures it); a nil bbFactory
-// means an in-memory MapBlackboard.
-type OrchestratorFactory func(emitter core.Emitter, logger *slog.Logger, workspacePath string, bbFactory core.BlackboardFactory, dumpWriter io.Writer, stepDumpTracker *orchestration.StepDumpTracker) (*core.Orchestrator, error)
+// the session's execution workspace (the managed worktree when the session is
+// bound to one); sddCheckoutPath is the project's repository checkout — the
+// root the checkout-local SDD operator DSL (specs.yaml) is read from, which is
+// repository data and must not follow the session tree. A nil bbFactory means
+// an in-memory MapBlackboard.
+type OrchestratorFactory func(emitter core.Emitter, logger *slog.Logger, workspacePath string, sddCheckoutPath string, bbFactory core.BlackboardFactory, dumpWriter io.Writer, stepDumpTracker *orchestration.StepDumpTracker) (*core.Orchestrator, error)
 
 // TokenPersistFunc is called with cumulative session token totals after each
 // LLM call; fillPercent is the conductor's context-window fill percent (0-100).
@@ -862,7 +865,7 @@ func (m *Manager) getOrRestoreSession(id string) (*Session, error) {
 
 	dumpFile, stepDumpTracker := m.openDumpArtifacts(info.ProjectID, id)
 
-	orchestrator, err := factory(emitter, logger, workspacePath, bbFactory, dumpFile, stepDumpTracker)
+	orchestrator, err := factory(emitter, logger, workspacePath, projectPath, bbFactory, dumpFile, stepDumpTracker)
 	if err != nil {
 		if logFile != nil {
 			_ = logFile.Close()
@@ -1231,7 +1234,7 @@ func (m *Manager) CreateSessionFromDraft(draft SessionDraft, repositoryPath stri
 
 	// The factory runs outside the lock — it can be slow.
 	phaseStart()
-	orchestrator, err := factory(emitter, logger, workspacePath, bbFactory, dumpFile, stepDumpTracker)
+	orchestrator, err := factory(emitter, logger, workspacePath, repositoryPath, bbFactory, dumpFile, stepDumpTracker)
 	if err != nil {
 		if logFile != nil {
 			_ = logFile.Close()

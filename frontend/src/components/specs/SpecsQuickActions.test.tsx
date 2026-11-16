@@ -1,157 +1,126 @@
 // @vitest-environment jsdom
-// SpecsQuickActions — the spec-* skill dispatch row (ADR-106 D4). Covers:
-// every button dispatches ITS constant prompt with ITS skill through
-// sendMessage's activeSkills slot; derived enablement (Initialize without a
-// tree, the rest only with one — no workflow-dead buttons, every disabled
-// button explains why); Shift = new session; a failed send lands on the
-// specs store's error banner (the research [22]a contract), not a toast.
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+// SpecsQuickActions — one button per PANEL-LEVEL action the framework
+// declares: the label and the skill come from the payload, enablement is the
+// backend's `available` flag (its evaluation of the declared requirements), and
+// the reserved findings gesture plus node-scoped gestures never appear here.
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
 import { SpecsQuickActions } from './SpecsQuickActions'
-import { INITIALIZE_ACTION } from './specsActions'
+import { REQUIREMENT_UNMET_REASON } from './specsActions'
+import { makeAction } from '@/test/sddFixture'
 import { useSpecsStore } from '@/stores/specsStore'
+import type { SDDAction } from '@/types/models'
 
-const sendMock = vi.fn(
-  (..._args: unknown[]) => Promise.resolve(),
-)
-vi.mock('@/hooks/useMessageSender', () => ({
-  useMessageSender: () => ({
-    send: sendMock,
-    cancel: vi.fn(async () => {}),
-    isProcessing: false,
-  }),
-}))
+let container: HTMLElement | null = null
+let root: Root | null = null
 
-let activeRoot: Root | null = null
+// The gesture goes to the onDispatch PROP (SpecsPanel's preview gate) — this
+// surface never sends into the chat itself, so the sender is not mocked here.
+const onDispatch = vi.fn()
 
-async function renderActions(present: boolean): Promise<HTMLElement> {
-  const container = document.createElement('div')
+async function render(actions: SDDAction[]): Promise<void> {
+  onDispatch.mockClear()
+  container = document.createElement('div')
   document.body.replaceChildren(container)
-  const root = createRoot(container)
-  activeRoot = root
+  root = createRoot(container)
   await act(async () => {
-    root.render(<SpecsQuickActions present={present} />)
+    root!.render(<SpecsQuickActions actions={actions} onDispatch={onDispatch} />)
   })
-  return container
 }
 
-function buttonBySkill(container: HTMLElement, skill: string): HTMLButtonElement {
-  return Array.from(
-    container.querySelectorAll<HTMLButtonElement>('[data-testid="specs-quick-action"]'),
-  ).find((b) => b.getAttribute('data-skill') === skill)!
+function buttons(): HTMLElement[] {
+  return Array.from(container?.querySelectorAll<HTMLElement>('[data-testid="specs-quick-action"]') ?? [])
 }
-
-function click(el: HTMLElement, shiftKey = false): void {
-  el.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey }))
-}
-
-beforeEach(() => {
-  // mockReset (not mockClear): a per-test rejected implementation must not
-  // leak into the next test.
-  sendMock.mockReset()
-  useSpecsStore.getState().reset()
-})
 
 afterEach(() => {
-  if (activeRoot) {
+  act(() => root?.unmount())
+  root = null
+  container = null
+  useSpecsStore.setState({ error: null })
+})
+
+const ACTIONS: SDDAction[] = [
+  makeAction({ kind: 'init', label: 'Init', skill: 'spec-init', requires: [] }),
+  makeAction({ kind: 'check', label: 'Check drift', skill: 'spec-check' }),
+  makeAction({ kind: 'apply', label: 'Apply', concept: 'change', skill: 'openspec-apply-change' }),
+  makeAction({ kind: 'fix-findings', label: 'Fix all', skill: 'spec-update', requires: ['root', 'findings'] }),
+]
+
+describe('SpecsQuickActions', () => {
+  it('renders one button per declared panel-level action, in declaration order', async () => {
+    await render(ACTIONS)
+    expect(buttons().map((b) => b.textContent)).toEqual(['Init', 'Check drift'])
+    expect(buttons().map((b) => b.getAttribute('data-skill'))).toEqual(['spec-init', 'spec-check'])
+  })
+
+  it('renders nothing when the framework declares no panel-level gesture', async () => {
+    await render([ACTIONS[2]!, ACTIONS[3]!])
+    expect(container?.childElementCount).toBe(0)
+  })
+
+  it('disables a gesture whose declared requirement is unmet, with the reason', async () => {
+    await render([makeAction({ kind: 'update', label: 'Update', available: false })])
+    const [button] = buttons()
+    expect(button?.hasAttribute('disabled')).toBe(true)
+    expect(button?.getAttribute('title')).toBe(REQUIREMENT_UNMET_REASON)
+  })
+
+  it('names the missing skill — not the tree — for a skillless declared action', async () => {
+    await render([makeAction({ kind: 'init', label: 'Init', skill: '', available: true })])
+    const [button] = buttons()
+    expect(button?.hasAttribute('disabled')).toBe(true)
+    expect(button?.getAttribute('title')).toBe(
+      'The framework declares this action with no skill to run',
+    )
+  })
+
+  it('hands the declared skill and prompt to the panel dispatch gate', async () => {
+    await render([ACTIONS[1]!])
     act(() => {
-      activeRoot!.unmount()
+      buttons()[0]?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
-    activeRoot = null
-  }
-})
-
-describe('SpecsQuickActions — dispatch', () => {
-  it('dispatches Initialize with the constant prompt + spec-init skill', async () => {
-    const container = await renderActions(false)
-    click(buttonBySkill(container, 'spec-init'))
-
-    expect(sendMock).toHaveBeenCalledTimes(1)
-    expect(sendMock).toHaveBeenCalledWith(
-      INITIALIZE_ACTION.prompt,
-      ['spec-init'],
-      undefined,
-      undefined,
-      undefined,
-      { newSession: false },
-    )
+    expect(onDispatch).toHaveBeenCalledTimes(1)
+    const [pending, newSession] = onDispatch.mock.calls[0] as [
+      { key: string; skill: string; prompt: string },
+      boolean,
+    ]
+    expect(pending.skill).toBe('spec-check')
+    expect(pending.prompt).toBe('Check the specifications for drift.')
+    expect(pending.key).toBe('check')
+    expect(newSession).toBe(false)
   })
 
-  it('dispatches Check drift / Consult / Explore with their own skills and prompts', async () => {
-    const container = await renderActions(true)
-    click(buttonBySkill(container, 'spec-check'))
-    click(buttonBySkill(container, 'spec-consult'))
-    click(buttonBySkill(container, 'spec-explore'))
-
-    expect(sendMock).toHaveBeenCalledTimes(3)
-    const skills = sendMock.mock.calls.map((c) => (c[1] as string[])[0])
-    expect(skills).toEqual(['spec-check', 'spec-consult', 'spec-explore'])
-    const prompts = sendMock.mock.calls.map((c) => c[0] as string)
-    expect(prompts[0]).toMatch(/drift/i)
-    expect(prompts.every((p) => p.length > 10)).toBe(true)
-  })
-
-  it('Shift-click dispatches into a brand-new session', async () => {
-    const container = await renderActions(true)
-    click(buttonBySkill(container, 'spec-check'), true)
-
-    expect(sendMock.mock.calls[0]![5]).toEqual({ newSession: true })
-  })
-})
-
-describe('SpecsQuickActions — derived enablement', () => {
-  it('without a tree: Initialize enabled, the rest disabled with the reason tooltip', async () => {
-    const container = await renderActions(false)
-    const buttons = container.querySelectorAll<HTMLButtonElement>(
-      '[data-testid="specs-quick-action"]',
-    )
-    expect(buttons).toHaveLength(4)
-
-    const init = buttonBySkill(container, 'spec-init')
-    expect(init.disabled).toBe(false)
-    for (const skill of ['spec-check', 'spec-consult', 'spec-explore']) {
-      const b = buttonBySkill(container, skill)
-      expect(b.disabled).toBe(true)
-      expect(b.title).toBe('No specs/ directory yet — initialize first')
-      // A disabled button dispatches nothing.
-      click(b)
-    }
-    expect(sendMock).not.toHaveBeenCalled()
-  })
-
-  it('with a tree: every action enabled', async () => {
-    const container = await renderActions(true)
-    for (const b of Array.from(
-      container.querySelectorAll<HTMLButtonElement>('[data-testid="specs-quick-action"]'),
-    )) {
-      expect(b.disabled).toBe(false)
-    }
-  })
-})
-
-describe('SpecsQuickActions — dispatch failure surfacing', () => {
-  it('routes a send rejection into the specs store error (not a throw)', async () => {
-    sendMock.mockRejectedValue(new Error('runtime not ready'))
-    const container = await renderActions(true)
-
-    await act(async () => {
-      click(buttonBySkill(container, 'spec-check'))
-      for (let i = 0; i < 5; i++) await Promise.resolve()
+  it('routes a Shift-click into a new session', async () => {
+    await render([ACTIONS[1]!])
+    act(() => {
+      buttons()[0]?.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }))
     })
-
-    const error = useSpecsStore.getState().error
-    expect(error).toContain('Failed to dispatch spec-check')
-    expect(error).toContain('runtime not ready')
+    expect((onDispatch.mock.calls[0] as unknown[])[1]).toBe(true)
   })
 
-  it('leaves the store clean when the dispatch succeeds', async () => {
-    const container = await renderActions(true)
-    await act(async () => {
-      click(buttonBySkill(container, 'spec-init'))
-      for (let i = 0; i < 5; i++) await Promise.resolve()
+  it('does not dispatch a disabled gesture', async () => {
+    await render([makeAction({ kind: 'create', label: 'Create', available: false })])
+    act(() => {
+      buttons()[0]?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
-    expect(useSpecsStore.getState().error).toBeNull()
+    expect(onDispatch).not.toHaveBeenCalled()
+  })
+
+  // A plain record lookup also reads INHERITED names: `constructor` is a
+  // VALID operator action slug, and without an own-property guard the icon
+  // lookup resolves to Object.prototype.constructor, which React tries to
+  // render as a component — crashing the whole app on panel open. (Review
+  // 28, MUST FIX.) An unknown slug takes the generic icon and must render
+  // the same way.
+  it('renders a `constructor` action kind without crashing (own-property icon lookup)', async () => {
+    await render([
+      makeAction({ kind: 'constructor', label: 'Construct specifications', skill: 'spec-init', requires: [] }),
+      makeAction({ kind: 'totally-unknown-kind', label: 'Mystery', skill: 'spec-check', requires: [] }),
+    ])
+    expect(buttons().map((b) => b.textContent)).toEqual(['Construct specifications', 'Mystery'])
+    expect(container?.querySelector('[data-testid="specs-quick-actions"]')).not.toBeNull()
+    expect(onDispatch).not.toHaveBeenCalled()
   })
 })

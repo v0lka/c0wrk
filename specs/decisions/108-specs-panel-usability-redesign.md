@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted → Partially superseded by [ADR-109](./109-specs-panel-simplification.md) (decisions 1 and 2 — the `c0wrk:specs` overview page and its INDEX navigation — and decision 4's Open-overview opener are removed; decision 3's git-derived ADR dates stand, consumed by the sidebar DECISIONS tree instead of the overview timeline, and decision 4's nested-tree + findings body and decision 5's persisted per-project expansion stand unchanged)
+Accepted → Partially superseded by [ADR-109](./109-specs-panel-simplification.md) (decisions 1 and 2 — the `c0wrk:specs` overview page and its INDEX navigation — and decision 4's Open-overview opener are removed; decision 3's git-derived ADR dates stand, consumed by the sidebar DECISIONS tree instead of the overview timeline, and decision 4's nested-tree + findings body and decision 5's persisted per-project expansion stand unchanged); [ADR-126](./126-sdd-framework-dsl.md) re-sources the panel from the DSL and replaces the `core/specs` parser that fed decision 3 — the fail-soft git-derived enrichment stands, now classifying decision documents by their declared DSL concept instead of a `decisions/` path.
 
 ## Context
 

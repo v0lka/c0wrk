@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { SPECS_DETECTION_REPROBE_DEBOUNCE_MS } from './WorkspacePanel'
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
@@ -18,29 +19,79 @@ vi.mock('./VectorStorePanel', () => ({ VectorStorePanel: () => null }))
 vi.mock('@/components/research', () => ({ ResearchPanel: () => null }))
 vi.mock('@/hooks/useProjectGitRepo', () => ({ useProjectGitRepo: vi.fn() }))
 
-// The Specs tab body fetches through @/api/specs — mocked here so the
-// specsStore fetch effect resolves without a Wails runtime (the boundary
-// validation itself is covered by api/specs.test.ts).
-vi.mock('@/api/specs', () => ({
-  getSpecsStatus: vi.fn(async () => ({
-    present: true,
-    root: '/ws/p1/specs',
-    files: [
-      { path: 'INDEX.md', title: 'Specs Index' },
-      { path: 'domains/testing.md', section: 'domains', title: 'Testing' },
-    ],
-    index_tasks: [],
-    adrs: [
+// The Specs status RPC is mocked at the api boundary: the tab strip's
+// visibility answer (gate && detection) and the panel body both come from the
+// SAME single call, so one controllable payload builder serves this suite
+// (boundary validation itself is covered by api/specs.test.ts).
+const specsDetection = vi.hoisted(() => ({ detected: ['sdd'] as string[] }))
+
+/** A framework-aware payload with `detected` frameworks; "" disables the
+ *  detected list (zero frameworks → no Specs surface). */
+function specsPayload(detected: string[]): Record<string, unknown> {
+  const frameworks = detected.map((id) => ({
+    id,
+    label: id === 'sdd' ? 'Specification System' : id,
+    origin: 'builtin',
+    scope: 'project',
+    tree_present: true,
+    root_present: true,
+    marker_present: true,
+    skills: [],
+  }))
+  return {
+    present: frameworks.length > 0,
+    tree_present: frameworks.length > 0,
+    root: frameworks.length > 0 ? '/ws/p1/specs' : '',
+    workspace: '/ws/p1',
+    detected: frameworks,
+    active_id: frameworks[0]?.id ?? '',
+    active: frameworks[0],
+    selector_needed: false,
+    roots: [{ id: 'specs', path: 'specs', required: true, present: true }],
+    documents: [
       {
-        number: '105',
-        slug: 'specs-sidebar-panel',
-        file: 'decisions/106-specs-sidebar-panel.md',
-        status: 'accepted',
+        path: 'specs/INDEX.md', root: 'specs', concept: 'index', name: 'INDEX.md',
+        slug: 'INDEX', title: 'Specs Index', headings: [], key_files: [], cross_refs: [],
+        requirements: [], scenarios: [], deltas: [], principles: [], user_stories: [],
+        task_items: [], tasks: [], missing: [],
+      },
+      {
+        path: 'specs/domains/testing.md', root: 'specs', concept: 'domain', name: 'testing.md',
+        slug: 'testing', title: 'Testing', headings: [], key_files: [], cross_refs: [],
+        requirements: [], scenarios: [], deltas: [], principles: [], user_stories: [],
+        task_items: [], tasks: [], missing: [],
       },
     ],
+    nodes: [
+      {
+        id: 'specs/INDEX.md', kind: 'document', path: 'specs/INDEX.md', label: 'Specs Index',
+        concept: 'index', name: 'INDEX.md', children: [],
+      },
+      {
+        id: 'specs/domains/testing.md', kind: 'document', path: 'specs/domains/testing.md',
+        label: 'Testing', concept: 'domain', name: 'testing.md', children: [],
+      },
+    ],
+    views: [
+      { id: 'tree', label: 'Specification tree', kind: 'tree', nodes: ['specs/INDEX.md', 'specs/domains/testing.md'] },
+    ],
     findings: [],
-    counts: { files: 2, adrs: 1, findings: 0, findings_by_kind: {} },
-  })),
+    actions: [
+      { kind: 'check', label: 'Check', skill: 'spec-check', prompt: 'Check.', requires: ['root'], available: true },
+    ],
+    counts: {
+      documents: 2,
+      findings: 0,
+      by_concept: { index: 1, domain: 1 },
+      findings_by_kind: {},
+    },
+    warnings: [],
+  }
+}
+
+vi.mock('@/api/specs', () => ({
+  getSpecsStatus: vi.fn(async () => specsPayload(specsDetection.detected)),
+  setActiveSDD: vi.fn(async () => {}),
 }))
 
 // Indexing master switch double — the gate is driven directly per test; the
@@ -59,11 +110,14 @@ vi.mock('@/hooks/useSidebarPacks', () => ({
 }))
 
 import { WorkspacePanel } from './WorkspacePanel'
+import { emitLocalEvent } from '@/api/runtime'
+import { getSpecsStatus } from '@/api/specs'
 import { useProjectStore } from '@/stores/projectStore'
 import { useGitPanelStore, selectGitPanelTab } from '@/stores/gitPanelStore'
 import { useUIStore, selectWorkspaceTab } from '@/stores/uiStore'
 import { useSpecsStore } from '@/stores/specsStore'
-import type { ProjectInfo } from '@/types/models'
+import { useSddStore } from '@/stores/sddStore'
+import type { ProjectInfo, SpecsStatus } from '@/types/models'
 
 function makeProject(overrides: Partial<ProjectInfo> & { id: string }): ProjectInfo {
   return {
@@ -113,6 +167,7 @@ beforeEach(() => {
   indexingGate.enabled = true
   sidebarGate.research = true
   sidebarGate.specs = true
+  specsDetection.detected = ['sdd']
   useProjectStore.setState({ projects: [P1, NO_PROJECT], activeProjectId: 'p1' })
   useGitPanelStore.getState().reset()
   useUIStore.setState({ workspaceTabByProject: {} })
@@ -120,6 +175,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.useRealTimers()
   if (root) {
     const r = root
     root = null
@@ -607,20 +663,233 @@ describe('WorkspacePanel — Specs tab', () => {
     renderPanel()
     await flush()
 
-    // The mocked @/api/specs payload flowed through specsStore into the DOM.
+    // The mocked @/api/specs payload flowed through specsStore into the DOM:
+    // the declared section label, the declared document labels and the
+    // framework name the payload reports.
     const s = useSpecsStore.getState()
     expect(s.projectId).toBe('p1')
     expect(s.status?.present).toBe(true)
     expect(s.error).toBeNull()
-    expect(container!.textContent).toContain('2 spec files')
-    expect(container!.textContent).toContain('1 ADRs')
+    expect(container!.textContent).toContain('Specification tree')
+    expect(container!.textContent).toContain('Specs Index')
+    expect(container!.textContent).toContain('2 documents')
+    expect(container!.textContent).toContain('Specification System')
   })
 
-  it('does not fetch while another tab is active', async () => {
+  it('probes detection on a project switch without mounting the panel body', async () => {
+    // The Git layout's default tab is neither Specs nor Research: the strip
+    // still needs the detection answer to decide whether the Specs tab exists,
+    // so ONE probe runs while no specs body is mounted.
     renderPanel()
     await flush()
 
-    expect(useSpecsStore.getState().status).toBeNull()
-    expect(useSpecsStore.getState().isLoading).toBe(false)
+    expect(useSpecsStore.getState().projectId).toBe('p1')
+    expect(container!.querySelector('#workspace-panel-specs')).toBeNull()
+  })
+
+  // A fast p1→p2→p1 switch while the Specs tab stays inactive: the probe for
+  // the RE-ENTERED project must start even though the sdd projection still
+  // names it from its previous residency — the projection lands only with a
+  // response, so matching on it skips a needed probe and lets the superseded
+  // p2 response land late, overwriting the store context with a foreign
+  // project (a phantom Specs tab no workspace event can heal: every
+  // re-probe funnel refuses while the projection names a foreign project).
+  it('supersedes an in-flight cross-project probe on a fast switch-back', async () => {
+    renderPanel()
+    await flush()
+
+    // p1's own probe landed (positive); p2 is probed under a controlled,
+    // still-in-flight deferred.
+    expect(useSddStore.getState().projectId).toBe('p1')
+    let releaseP2!: (payload: SpecsStatus) => void
+    vi.mocked(getSpecsStatus).mockImplementationOnce(
+      () =>
+        new Promise<SpecsStatus>((resolve) => {
+          releaseP2 = resolve
+        }),
+    )
+    act(() => {
+      useProjectStore.setState({ projects: [P1, P2, NO_PROJECT], activeProjectId: 'p2' })
+    })
+    await flush()
+
+    expect(useSpecsStore.getState().projectId).toBe('p2')
+    expect(useSpecsStore.getState().isLoading).toBe(true)
+    const probesBeforeSwitchBack = vi.mocked(getSpecsStatus).mock.calls.length
+
+    // While p2's probe is in flight, p2 turns negative and the user returns
+    // to p1: the incoming probe must START (the fetch-START stamp is the
+    // skip condition), superseding p2's flight.
+    specsDetection.detected = []
+    act(() => {
+      useProjectStore.setState({ activeProjectId: 'p1' })
+    })
+    await flush()
+
+    expect(vi.mocked(getSpecsStatus).mock.calls.length).toBe(probesBeforeSwitchBack + 1)
+    expect(useSpecsStore.getState().projectId).toBe('p1')
+    // p1's own (now negative) answer lands — no Specs tab.
+    expect(useSddStore.getState().projectId).toBe('p1')
+    expect(useSddStore.getState().present).toBe(false)
+    expect(container!.querySelector('[data-segment-value="specs"]')).toBeNull()
+
+    // The superseded p2 response arrives late and must be discarded
+    // wholesale: the context stays p1's own, and no phantom Specs tab
+    // appears.
+    await act(async () => {
+      releaseP2(specsPayload(['sdd']) as unknown as SpecsStatus)
+    })
+    await flush()
+
+    expect(useSpecsStore.getState().projectId).toBe('p1')
+    expect(useSddStore.getState().projectId).toBe('p1')
+    expect(useSddStore.getState().present).toBe(false)
+    expect(container!.querySelector('[data-segment-value="specs"]')).toBeNull()
+  })
+
+  it('hides the Specs tab when no SDD framework is detected (AC3)', async () => {
+    specsDetection.detected = []
+
+    renderPanel()
+    await flush()
+
+    expect(container!.querySelector('[data-segment-value="specs"]')).toBeNull()
+    expect(useSddStore.getState().known).toBe(true)
+    expect(useSddStore.getState().present).toBe(false)
+  })
+
+  it('falls a remembered specs tab back when nothing is detected', async () => {
+    specsDetection.detected = []
+    useUIStore.setState({ workspaceTabByProject: { p1: 'specs' } })
+    // The store-side fallback runs once the repo check has landed; the inline
+    // remap covers the pending window.
+    useGitPanelStore.getState().setGitRepo(false, 'p1')
+
+    renderPanel()
+    await flush()
+
+    expect(selectWorkspaceTab(useUIStore.getState(), 'p1')).toBe('explorer')
+    expect(container!.querySelector('#workspace-panel-specs')).toBeNull()
+  })
+
+  // Review 16: a NEGATIVE detection answer must not be stale forever. The
+  // panel that would refetch on workspace events never mounts for a hidden
+  // Specs tab, so the permanently-mounted workspace panel re-probes when the
+  // tree or the installed skill set changes — a framework installed AFTER the
+  // first "not detected" answer makes the tab appear without a project
+  // switch.
+  it('re-probes a negative detection when the workspace tree changes', async () => {
+    specsDetection.detected = []
+    renderPanel()
+    await flush()
+
+    expect(container!.querySelector('[data-segment-value="specs"]')).toBeNull()
+    expect(useSddStore.getState().known).toBe(true)
+    expect(useSddStore.getState().present).toBe(false)
+    const probesAfterMount = vi.mocked(getSpecsStatus).mock.calls.length
+
+    // A framework is installed into the workspace; the watcher announces it.
+    // The re-probe is debounced (one parse RPC per burst, not per event), so
+    // virtual time advances past the trailing window.
+    specsDetection.detected = ['sdd']
+    vi.useFakeTimers()
+    act(() => {
+      emitLocalEvent('workspace:tree_changed', {
+        paths: ['/ws/p1/.agents/skills/spec-init/SKILL.md'],
+      })
+    })
+    expect(vi.mocked(getSpecsStatus).mock.calls.length).toBe(probesAfterMount)
+    act(() => {
+      vi.advanceTimersByTime(SPECS_DETECTION_REPROBE_DEBOUNCE_MS)
+    })
+    await flush()
+
+    expect(vi.mocked(getSpecsStatus).mock.calls.length).toBeGreaterThan(probesAfterMount)
+    expect(useSddStore.getState().present).toBe(true)
+    expect(container!.querySelector('[data-segment-value="specs"]')).not.toBeNull()
+  })
+
+  // The skill set is the OTHER detection input (frameworks are recognised
+  // from skill evidence): the skills:changed event re-probes too.
+  it('re-probes a negative detection when the installed skills change', async () => {
+    specsDetection.detected = []
+    renderPanel()
+    await flush()
+
+    expect(useSddStore.getState().present).toBe(false)
+    const probesAfterMount = vi.mocked(getSpecsStatus).mock.calls.length
+
+    specsDetection.detected = ['sdd']
+    vi.useFakeTimers()
+    act(() => {
+      emitLocalEvent('skills:changed', { dirs: ['/ws/p1/.agents/skills'] })
+    })
+    expect(vi.mocked(getSpecsStatus).mock.calls.length).toBe(probesAfterMount)
+    act(() => {
+      vi.advanceTimersByTime(SPECS_DETECTION_REPROBE_DEBOUNCE_MS)
+    })
+    await flush()
+
+    expect(vi.mocked(getSpecsStatus).mock.calls.length).toBeGreaterThan(probesAfterMount)
+    expect(useSddStore.getState().present).toBe(true)
+  })
+
+  // The debounce itself: a burst of invalidation events inside the window
+  // collapses into ONE trailing probe — one parse RPC per burst, not per
+  // event (the workspace-level re-probe walks the whole tree, so a write
+  // burst must not multiply it).
+  it('coalesces a burst of tree changes into a single trailing probe', async () => {
+    specsDetection.detected = []
+    renderPanel()
+    await flush()
+
+    expect(useSddStore.getState().present).toBe(false)
+    const probesAfterMount = vi.mocked(getSpecsStatus).mock.calls.length
+
+    vi.useFakeTimers()
+    for (let i = 0; i < 5; i++) {
+      act(() => {
+        emitLocalEvent('workspace:tree_changed', { paths: [`/ws/p1/file-${i}.md`] })
+      })
+      // Restart the timer 1ms short of the window: every next event re-arms
+      // it, so no probe may fire while the burst continues.
+      act(() => {
+        vi.advanceTimersByTime(SPECS_DETECTION_REPROBE_DEBOUNCE_MS - 1)
+      })
+      expect(vi.mocked(getSpecsStatus).mock.calls.length).toBe(probesAfterMount)
+    }
+    act(() => {
+      vi.advanceTimersByTime(1)
+    })
+    await flush()
+    expect(vi.mocked(getSpecsStatus).mock.calls.length).toBe(probesAfterMount + 1)
+  })
+
+  // A POSITIVE projection is refreshed from this level too. The Specs panel's
+  // own `workspace:tree_changed` subscription only exists while the Specs tab
+  // is MOUNTED, so on any other tab (Git, Explorer, Search, Research) nothing
+  // else would notice a removed `specs/` directory or a removed skill: the tab
+  // would outlive its framework and only exist to refuse itself when clicked.
+  it('re-probes a positive detection when the workspace tree changes', async () => {
+    renderPanel()
+    await flush()
+
+    expect(useSddStore.getState().present).toBe(true)
+    const probesAfterMount = vi.mocked(getSpecsStatus).mock.calls.length
+
+    specsDetection.detected = []
+    vi.useFakeTimers()
+    act(() => {
+      emitLocalEvent('workspace:tree_changed', { paths: ['/ws/p1/specs/INDEX.md'] })
+    })
+    expect(vi.mocked(getSpecsStatus).mock.calls.length).toBe(probesAfterMount)
+    act(() => {
+      vi.advanceTimersByTime(SPECS_DETECTION_REPROBE_DEBOUNCE_MS)
+    })
+    await flush()
+
+    expect(vi.mocked(getSpecsStatus).mock.calls.length).toBeGreaterThan(probesAfterMount)
+    expect(useSddStore.getState().present).toBe(false)
+    expect(container!.querySelector('[data-segment-value="specs"]')).toBeNull()
   })
 })

@@ -1,60 +1,99 @@
-// Quick-actions row (ADR-106 D4): one button per lifecycle gesture, each
-// dispatching its matching `spec-*` skill (with a constant prompt from
-// specsActions.ts) through the shared dispatch hook. This is the "start
-// doing" surface — the panel never writes to specs/ itself.
+// The quick-actions row: one button per PANEL-LEVEL action the active
+// framework declares, each dispatching that action's own skill with its own
+// declared prompt. This is the "start doing" surface — the panel never writes
+// to the tree itself, and a framework that declares no gesture renders no row.
+//
+// Node-scoped actions (an action carrying a `concept`) belong to their nodes
+// and the reserved findings gesture belongs to the findings badge, so neither
+// appears here.
 
-import { BookPlus, Compass, MessagesSquare, ScanSearch, type LucideIcon } from 'lucide-react'
+import {
+  BookPlus,
+  Compass,
+  FilePlus,
+  MessagesSquare,
+  Play,
+  RefreshCw,
+  ScanSearch,
+  Sparkles,
+  type LucideIcon,
+} from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { useSpecsDispatch } from './useSpecsDispatch'
-import { NO_SPECS_REASON, QUICK_ACTIONS } from './specsActions'
+import { actionToDispatch, inertActionReason, toolbarActions, type SpecsDispatch } from './specsActions'
+import type { SDDAction } from '@/types/models'
 
-/** Icon per quick-action key (stable; the key is part of the constant list). */
+/** Icon per well-known action kind; an unknown kind gets a generic icon. The
+ *  LABEL always comes from the payload — this map is presentation only. */
 const ACTION_ICONS: Record<string, LucideIcon> = {
+  init: BookPlus,
   initialize: BookPlus,
-  'check-drift': ScanSearch,
+  check: ScanSearch,
   consult: MessagesSquare,
   explore: Compass,
+  create: FilePlus,
+  update: RefreshCw,
+  apply: Play,
 }
 
 const ACTION_BUTTON_CLASS =
   'inline-flex items-center gap-1 rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground transition-colors hover:bg-muted'
 
 /**
- * Every button's enablement is derived from the tree's presence so no
- * workflow-invalid gesture is offered: Check drift, Consult and Explore
- * operate on an existing specs/ tree and render disabled (with the reason
- * tooltip) until one exists; Initialize specs is always available — it is
- * the same gesture as the empty state's CTA and may repair a partial tree.
+ * Every button's enablement is the PAYLOAD's answer: `available` is the
+ * backend's evaluation of the action's declared `requires` against the parsed
+ * tree, so the panel offers no workflow-invalid gesture and never re-derives a
+ * requirement rule of its own. A disabled button explains why.
  *
  * Shift modifier: holding Shift while clicking dispatches into a brand-new
  * session instead of the active one (the research panel's contract).
  */
-export function SpecsQuickActions({ present }: { present: boolean }) {
-  const dispatch = useSpecsDispatch()
+export function SpecsQuickActions({
+  actions,
+  onDispatch,
+}: {
+  actions: SDDAction[]
+  /** Where the gesture goes: SpecsPanel's preview gate, which shows the
+   *  framework-declared prompt and sends on confirm. */
+  onDispatch: (pending: SpecsDispatch, newSession: boolean) => void
+}) {
+  const declared = toolbarActions(actions)
+  if (declared.length === 0) return null
 
   return (
     <div
       data-testid="specs-quick-actions"
       className="flex shrink-0 flex-wrap items-center gap-1 px-1.5 pt-1.5"
     >
-      {QUICK_ACTIONS.map((action) => {
-        const Icon = ACTION_ICONS[action.key] ?? BookPlus
-        const enabled = !action.requiresSpecs || present
+      {declared.map((action) => {
+        // hasOwnProperty: a plain record lookup also reads INHERITED names —
+        // a valid operator slug like `constructor` would resolve to
+        // Object.prototype.constructor, and React would try to render that
+        // function-as-component and crash the whole app. Unknown slugs take
+        // the generic icon.
+        const Icon: LucideIcon = Object.prototype.hasOwnProperty.call(
+          ACTION_ICONS,
+          action.kind,
+        )
+          ? (ACTION_ICONS[action.kind] ?? Sparkles)
+          : Sparkles
+        const pending = actionToDispatch(action)
+        const enabled = action.available && pending !== null
         return (
           <button
-            key={action.key}
+            key={action.kind}
             type="button"
             data-testid="specs-quick-action"
-            data-skill={action.skill}
+            data-action={action.kind}
+            data-skill={action.skill ?? ''}
             disabled={!enabled}
             onClick={(e) => {
-              if (!enabled) return
-              dispatch(action, e.shiftKey)
+              if (!enabled || pending === null) return
+              onDispatch(pending, e.shiftKey)
             }}
             title={
               enabled
-                ? `${action.fullLabel ?? action.label} (${action.skill}) — Shift = new session`
-                : NO_SPECS_REASON
+                ? `${action.label} (${action.skill ?? ''}) — Shift = new session`
+                : inertActionReason(action)
             }
             className={cn(ACTION_BUTTON_CLASS, 'disabled:opacity-50')}
           >

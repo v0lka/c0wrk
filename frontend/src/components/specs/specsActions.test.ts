@@ -1,201 +1,344 @@
-// specsActions — the auditable dispatch constants (ADR-106 D4). A quick
-// action is fully determined by its constant: the label the button renders,
-// the spec-* skill it activates (ADR-105), and the prompt dispatched with
-// it. These tests pin that wiring so a silent edit (wrong skill, empty
-// prompt) cannot slip through.
+// Dispatch helpers — the panel turns a framework's DECLARED action into a
+// sendMessage call. Nothing here hardcodes a skill, a label or a gesture: the
+// tests pin the declaration-driven behavior and the {path}/{name} substitution.
 import { describe, expect, it } from 'vitest'
+import { makeAction } from '@/test/sddFixture'
+import type { SDDAction, SDDFinding, SDDNode } from '@/types/models'
 import {
-  INITIALIZE_ACTION,
-  NO_SPECS_REASON,
-  QUICK_ACTIONS,
-  buildFixFindingAction,
-  buildFixFindingsAction,
+  FINDINGS_FIX_KIND,
+  NODE_GATE_REASON,
+  REQUIREMENT_UNMET_REASON,
+  actionScope,
+  actionToDispatch,
+  bootstrapAction,
+  dispatchableAction,
   findingLine,
+  findingsFixAction,
+  findingsFixDispatch,
+  inertActionReason,
+  nodeActionEnabled,
+  nodeActionReason,
+  nodeActionsFor,
+  skillMissingReason,
+  substituteActionText,
+  toolbarActions,
 } from './specsActions'
-import type { SpecFinding, SpecFindingKind } from '@/types/models'
 
-describe('specsActions — QUICK_ACTIONS', () => {
-  it('renders exactly the four lifecycle gestures in the fixed order', () => {
-    expect(QUICK_ACTIONS.map((a) => a.key)).toEqual([
-      'initialize',
-      'check-drift',
-      'consult',
-      'explore',
-    ])
+function action(overrides: Partial<SDDAction> = {}): SDDAction {
+  return {
+    kind: 'check',
+    label: 'Check',
+    skill: 'spec-check',
+    prompt: 'Check the specifications for drift.',
+    requires: ['root'],
+    available: true,
+    ...overrides,
+  }
+}
+
+function finding(kind: string, file = 'specs/x.md', detail = 'missing'): SDDFinding {
+  return { kind, file, detail, severity: 'error' }
+}
+
+describe('actionScope', () => {
+  it('is node scope when the action declares a concept', () => {
+    expect(actionScope(action({ concept: 'change' }))).toBe('node')
   })
 
-  it('maps every gesture to its ADR-105 skill', () => {
-    const byKey = Object.fromEntries(QUICK_ACTIONS.map((a) => [a.key, a]))
-    expect(byKey['initialize']!.skill).toBe('spec-init')
-    expect(byKey['check-drift']!.skill).toBe('spec-check')
-    expect(byKey['consult']!.skill).toBe('spec-consult')
-    expect(byKey['explore']!.skill).toBe('spec-explore')
-  })
-
-  it('every prompt is a non-empty constant and names its intent', () => {
-    for (const action of QUICK_ACTIONS) {
-      expect(action.prompt.length).toBeGreaterThan(10)
-    }
-    expect(
-      QUICK_ACTIONS.find((a) => a.key === 'initialize')!.prompt,
-    ).toMatch(/initializ/i)
-    expect(
-      QUICK_ACTIONS.find((a) => a.key === 'check-drift')!.prompt,
-    ).toMatch(/drift/i)
-  })
-
-  it('only Initialize is available without a specs/ tree', () => {
-    for (const action of QUICK_ACTIONS) {
-      if (action.key === 'initialize') {
-        expect(action.requiresSpecs).toBeFalsy()
-      } else {
-        expect(action.requiresSpecs).toBe(true)
-      }
-    }
-  })
-
-  it('the empty-state CTA is the same constant the quick-actions row renders', () => {
-    expect(QUICK_ACTIONS[0]).toBe(INITIALIZE_ACTION)
-    expect(INITIALIZE_ACTION.skill).toBe('spec-init')
-    expect(NO_SPECS_REASON.length).toBeGreaterThan(0)
-  })
-
-  it('the sidebar-strip labels are the SHORT forms; the tooltips spell the gestures', () => {
-    // ADR-109: the narrow sidebar carries short button names; the full
-    // gesture name moves to the tooltip (fullLabel).
-    const byKey = Object.fromEntries(QUICK_ACTIONS.map((a) => [a.key, a]))
-    expect(byKey['initialize']!.label).toBe('Init')
-    expect(byKey['check-drift']!.label).toBe('Check')
-    expect(byKey['initialize']!.fullLabel).toBe('Initialize specs')
-    expect(byKey['check-drift']!.fullLabel).toBe('Check drift')
-    for (const action of QUICK_ACTIONS) {
-      if (action.fullLabel === undefined) continue
-      expect(action.fullLabel.length).toBeGreaterThan(action.label.length)
-    }
+  it('is toolbar scope otherwise', () => {
+    expect(actionScope(action())).toBe('toolbar')
+    expect(actionScope(action({ concept: '' }))).toBe('toolbar')
   })
 })
 
-describe('specsActions — buildFixFindingsAction', () => {
-  const findings: SpecFinding[] = [
-    { kind: 'PATH_MISSING', file: 'domains/app.md', detail: 'key file does not exist: specs/gone.md' },
-    { kind: 'SUPERSEDED_CYCLE', file: 'decisions/001-a.md', detail: 'supersession cycle: a -> b -> a' },
+describe('substituteActionText', () => {
+  it('substitutes the node path and base name', () => {
+    expect(
+      substituteActionText('Apply {name} at {path}', {
+        path: 'openspec/changes/add-auth',
+        name: 'add-auth',
+      }),
+    ).toBe('Apply add-auth at openspec/changes/add-auth')
+  })
+
+  it('leaves unknown placeholders untouched', () => {
+    expect(substituteActionText('Do {other}', { path: 'p', name: 'n' })).toBe('Do {other}')
+  })
+
+  it('drops node placeholders when no node is in context', () => {
+    expect(substituteActionText('Apply {path}')).toBe('Apply ')
+  })
+
+  // The substituted values must land LITERALLY: a sequential string replace
+  // would read `$`-sequences in a file path as replacement templates ($$ →
+  // $, $& → the whole match) and a second pass would rewrite a literal
+  // `{name}` that is part of a path. (Review 22.)
+  it('inserts a path containing $$ literally', () => {
+    expect(substituteActionText('Update {path} ({name}).', { path: 'docs/cost$$.md', name: 'cost$$.md' })).toBe(
+      'Update docs/cost$$.md (cost$$.md).',
+    )
+  })
+
+  it('inserts a path containing $& literally', () => {
+    expect(substituteActionText('Update {path}', { path: 'docs/price$&tax.md', name: 'price$&tax.md' })).toBe(
+      'Update docs/price$&tax.md',
+    )
+  })
+
+  it('does not re-substitute a literal {name} inside the path', () => {
+    expect(substituteActionText('Update {path} ({name}).', { path: 'docs/{name}.md', name: '{name}.md' })).toBe(
+      'Update docs/{name}.md ({name}.md).',
+    )
+  })
+})
+
+describe('actionToDispatch', () => {
+  it('carries the declared skill and prompt', () => {
+    expect(actionToDispatch(action())).toEqual({
+      key: 'check',
+      skill: 'spec-check',
+      prompt: 'Check the specifications for drift.',
+    })
+  })
+
+  it('falls back to the label when the framework declares no prompt', () => {
+    expect(actionToDispatch(action({ prompt: undefined }))?.prompt).toBe('Check')
+  })
+
+  it('keys a node gesture by kind + node path and substitutes the node', () => {
+    const dispatch = actionToDispatch(
+      action({ kind: 'apply', skill: 'openspec-apply-change', concept: 'change', prompt: 'Apply {name} ({path})' }),
+      { path: 'openspec/changes/add-auth', name: 'add-auth' },
+    )
+    expect(dispatch).toEqual({
+      key: 'apply:openspec/changes/add-auth',
+      skill: 'openspec-apply-change',
+      prompt: 'Apply add-auth (openspec/changes/add-auth)',
+    })
+  })
+
+  it('is null without a declared skill (the panel invents no gesture)', () => {
+    expect(actionToDispatch(action({ skill: undefined }))).toBeNull()
+    expect(actionToDispatch(action({ skill: '' }))).toBeNull()
+  })
+})
+
+describe('nodeActionsFor', () => {
+  const actions: SDDAction[] = [
+    action({ kind: 'apply', label: 'Apply', concept: 'change', skill: 'openspec-apply-change' }),
+    action({ kind: 'plan', label: 'Plan', concept: 'feature', skill: 'speckit-plan' }),
+    action({ kind: 'apply-unavailable', label: 'Apply', concept: 'change', skill: 'x', available: false }),
+    action({ kind: 'skillless', label: 'Nope', concept: 'change', skill: undefined }),
+    action({ kind: FINDINGS_FIX_KIND, label: 'Fix', concept: 'change', skill: 'spec-update' }),
+    action({ kind: 'check', label: 'Check' }),
   ]
 
-  it('dispatches spec-update with a prompt enumerating every finding verbatim', () => {
-    const action = buildFixFindingsAction(findings)
-    expect(action.key).toBe('fix-findings')
-    expect(action.skill).toBe('spec-update')
-    expect(action.label).toBe('Fix findings')
-    expect(action.prompt).toContain('Findings:')
-    // Every finding appears as its deterministic "[kind] file: detail" line
-    // via findingLine — the single source the card's copy button renders
-    // too, so the dispatched task sees exactly what the panel shows.
-    for (const f of findings) {
-      expect(action.prompt).toContain(findingLine(f))
-    }
-    // The aggregate keeps the FULL clause list — the per-finding gesture is
-    // the one that narrows by kind.
-    expect(action.prompt).toContain('renumber duplicate ADR records')
+  it('returns the skill-carrying actions of that concept, unavailable ones INCLUDED', () => {
+    // An unmet requirement stays in the render model: the row shows the
+    // action DISABLED with the reason instead of hiding the next workflow
+    // step. Dispatch gating happens at render/dispatch time on `available`.
+    expect(nodeActionsFor(actions, 'change').map((a) => a.kind)).toEqual([
+      'apply',
+      'apply-unavailable',
+    ])
+    expect(nodeActionsFor(actions, 'feature').map((a) => a.kind)).toEqual(['plan'])
   })
 
-  it('the tooltip names the count the task will resolve', () => {
-    expect(buildFixFindingsAction(findings).fullLabel).toBe('Fix all 2 integrity findings')
-    const single = buildFixFindingsAction([findings[0]!])
-    expect(single.fullLabel).toBe('Fix all 1 integrity finding')
-  })
-
-  it('an empty findings list still produces a well-formed action', () => {
-    const action = buildFixFindingsAction([])
-    expect(action.prompt).toContain('Findings:')
-    expect(action.prompt.endsWith('Findings:\n')).toBe(true)
+  it('returns nothing for an unknown or empty concept', () => {
+    expect(nodeActionsFor(actions, 'nope')).toEqual([])
+    expect(nodeActionsFor(actions, '')).toEqual([])
   })
 })
 
-describe('specsActions — buildFixFindingAction', () => {
-  const finding: SpecFinding = {
-    kind: 'CROSS_REF_BROKEN',
-    file: 'decisions/041-slm-profiles.md',
-    detail: 'references missing decisions/099-nothing.md',
-  }
-  const other: SpecFinding = {
-    kind: 'PATH_MISSING',
-    file: 'domains/app.md',
-    detail: 'key file does not exist: specs/gone.md',
-  }
-
-  it('pins the dispatch wiring: fix-finding key, spec-update skill, short label, full tooltip', () => {
-    const action = buildFixFindingAction(finding)
-    expect(action.key).toBe('fix-finding')
-    expect(action.skill).toBe('spec-update')
-    expect(action.label).toBe('Fix finding')
-    expect(action.fullLabel).toBe('Fix this integrity finding')
-  })
-
-  it('the prompt carries the kind-scoped repair clause and the finding verbatim', () => {
-    const action = buildFixFindingAction(finding)
-    expect(action.prompt).toContain('Findings:')
-    // Only the clicked finding's clause — no foreign repair categories, so
-    // the dispatched task repairs exactly what the card shows.
-    expect(action.prompt).toContain('fix or remove the broken cross-reference')
-    expect(action.prompt).not.toContain('renumber duplicate ADR records')
-    expect(action.prompt).not.toContain('restore the missing root files')
-    expect(action.prompt).toContain('When done, re-verify that the tree parses clean.')
-    // The verbatim line is the same findingLine the card's copy button
-    // hands out — one format, no drift between panel and dispatched task.
-    expect(action.prompt).toContain(findingLine(finding))
-    expect(action.prompt.endsWith('\n' + findingLine(finding))).toBe(true)
-  })
-
-  it('every known kind resolves to its own targeted clause', () => {
-    const cases: Array<[SpecFindingKind, string]> = [
-      ['PATH_MISSING', 'Key Files path'],
-      ['CROSS_REF_BROKEN', 'cross-reference'],
-      ['DUPLICATE_ADR_NUMBER', 'renumber protocol'],
-      ['INDEX_STALE', 'INDEX.md directory listing'],
-      ['ROOT_FILE_MISSING', 'restore the missing root files'],
-      ['ADR_NAME_MALFORMED', 'NNN-slug.md shape'],
-      ['ADR_NUMBER_MISMATCH', 'heading number'],
-      ['SUPERSEDED_TARGET_MISSING', 'supersession reference'],
-      ['SUPERSEDED_CYCLE', 'supersession cycle'],
+describe('toolbarActions', () => {
+  it('keeps panel-level actions and drops node + findings gestures', () => {
+    const actions: SDDAction[] = [
+      action({ kind: 'init', label: 'Init', skill: 'spec-init', requires: [] }),
+      action({ kind: 'apply', label: 'Apply', concept: 'change', skill: 'openspec-apply-change' }),
+      action({ kind: FINDINGS_FIX_KIND, label: 'Fix findings', skill: 'spec-update' }),
     ]
-    for (const [kind, clause] of cases) {
-      const action = buildFixFindingAction({ kind, file: 'decisions/x.md', detail: 'd' })
-      expect(action.prompt, kind).toContain(clause)
-    }
+    expect(toolbarActions(actions).map((a) => a.kind)).toEqual(['init'])
+  })
+})
+
+describe('findingsFixAction', () => {
+  it('finds the reserved kind', () => {
+    const declared = action({ kind: FINDINGS_FIX_KIND, label: 'Fix findings', skill: 'spec-update' })
+    expect(findingsFixAction([action(), declared])).toBe(declared)
   })
 
-  it('an unknown runtime kind falls back to the aggregate clause list', () => {
-    // The RPC boundary accepts any non-empty kind string (a future tier
-    // renders a generic label) — an unlisted kind must not dispatch an
-    // empty instruction set.
-    const action = buildFixFindingAction({
-      kind: 'FUTURE_KIND' as SpecFindingKind,
-      file: 'domains/app.md',
-      detail: 'something new',
-    })
-    expect(action.prompt).toContain('renumber duplicate ADR records')
-    expect(action.prompt).toContain('When done, re-verify that the tree parses clean.')
+  it('is null when the framework declared none (the badge stays inert)', () => {
+    expect(findingsFixAction([action()])).toBeNull()
+    expect(findingsFixAction([])).toBeNull()
+  })
+})
+
+describe('bootstrapAction', () => {
+  it('is the toolbar action that declares no requirement', () => {
+    const init = action({ kind: 'init', skill: 'spec-init', requires: [] })
+    expect(bootstrapAction([action(), init])).toBe(init)
   })
 
-  it('the prompt enumerates ONLY the one finding — no foreign lines', () => {
-    const action = buildFixFindingAction(finding)
-    expect(action.prompt).not.toContain(findingLine(other))
-    // Exactly one bullet line in the Findings section, and it is the
-    // target finding's.
-    const bullets = action.prompt
-      .split('\n')
-      .filter((line) => line.startsWith('- ['))
-    expect(bullets).toEqual([findingLine(finding)])
+  it('is null when every declared gesture requires a tree', () => {
+    expect(bootstrapAction([action({ requires: ['root'] })])).toBeNull()
+    expect(bootstrapAction([])).toBeNull()
   })
+})
 
-  it('findingLine is the single source of the verbatim card/prompt format', () => {
-    expect(findingLine(finding)).toBe(
-      `- [${finding.kind}] ${finding.file}: ${finding.detail}`,
+describe('findingLine', () => {
+  it('renders the deterministic "- [kind] file: detail" line', () => {
+    expect(findingLine(finding('INDEX_STALE', 'specs/domains/x.md', 'not listed'))).toBe(
+      '- [INDEX_STALE] specs/domains/x.md: not listed',
     )
-    // The aggregate builder renders the same line per finding.
-    const aggregate = buildFixFindingsAction([finding, other])
-    for (const f of [finding, other]) {
-      expect(aggregate.prompt).toContain(findingLine(f))
-    }
+  })
+})
+
+describe('findingsFixDispatch', () => {
+  const declared = action({
+    kind: FINDINGS_FIX_KIND,
+    label: 'Fix findings',
+    skill: 'spec-update',
+    prompt: 'Repair every finding, then re-check the tree.',
+    requires: ['root', 'findings'],
+  })
+
+  it('appends the findings verbatim to the framework’s own instruction', () => {
+    const dispatch = findingsFixDispatch(declared, [
+      finding('INDEX_STALE', 'specs/a.md', 'not listed'),
+      finding('PATH_MISSING', 'specs/b.md', 'core/gone.go'),
+    ])
+    expect(dispatch).toEqual({
+      key: FINDINGS_FIX_KIND,
+      skill: 'spec-update',
+      prompt:
+        'Repair every finding, then re-check the tree.\n\nFindings:\n' +
+        '- [INDEX_STALE] specs/a.md: not listed\n' +
+        '- [PATH_MISSING] specs/b.md: core/gone.go',
+    })
+  })
+
+  it('is null without a declared action or skill', () => {
+    expect(findingsFixDispatch(null, [finding('X')])).toBeNull()
+    expect(findingsFixDispatch(action({ kind: FINDINGS_FIX_KIND, skill: undefined }), [])).toBeNull()
+  })
+
+  // An unavailable gesture must not dispatch, whatever surface built it:
+  // declared requirements the parsed tree does not satisfy keep the badge,
+  // the per-finding chips AND this dispatch inert. (Review 18.)
+  it('is null when the declared action is not available for the tree', () => {
+    expect(
+      findingsFixDispatch(action({ kind: FINDINGS_FIX_KIND, skill: 'spec-update', available: false }), [
+        finding('X'),
+      ]),
+    ).toBeNull()
+  })
+})
+
+describe('inertActionReason', () => {
+  it('names the missing skill for a skillless declared action', () => {
+    expect(inertActionReason(makeAction({ skill: '' }))).toBe(
+      'The framework declares this action with no skill to run',
+    )
+  })
+
+  it('falls back to the requirement reason when a skill is present', () => {
+    expect(inertActionReason(makeAction({ available: false }))).toBe(REQUIREMENT_UNMET_REASON)
+  })
+
+  // A partially installed framework (detection matches all_of plus one any_of)
+  // can block a gesture on a COMPLETE tree. The two causes need different
+  // remedies — install the skill versus build the tree — so the reason names
+  // the skill instead of repeating the requirement wording.
+  it('names the uninstalled skill rather than the tree', () => {
+    const reason = inertActionReason(
+      makeAction({ skill: 'spec-init', available: false, skill_available: false }),
+    )
+    expect(reason).toBe(skillMissingReason('spec-init'))
+    expect(reason).toContain('spec-init')
+    expect(reason).not.toBe(REQUIREMENT_UNMET_REASON)
+  })
+
+  it('keeps the declaration wording when no skill is declared at all', () => {
+    expect(
+      inertActionReason(makeAction({ skill: '', skill_available: false })),
+    ).toBe('The framework declares this action with no skill to run')
+  })
+})
+
+// The ONE predicate every dispatch surface shares: a gesture renders live
+// only when it is declared, carries a skill and is available for the parsed
+// tree — no surface may show a live button another surface refuses. (Reviews
+// 54/62: the header badge, the finding cards, the quick actions and the node
+// actions must agree.)
+describe('dispatchableAction', () => {
+  it('accepts a declared, skilled, available action', () => {
+    expect(dispatchableAction(action())).toBe(true)
+  })
+
+  it('rejects null, a skillless action and an unavailable action', () => {
+    expect(dispatchableAction(null)).toBe(false)
+    expect(dispatchableAction(action({ skill: undefined }))).toBe(false)
+    expect(dispatchableAction(action({ skill: '' }))).toBe(false)
+    expect(dispatchableAction(action({ available: false }))).toBe(false)
+  })
+})
+
+// Review 111: the tree-level `available` gate answers "could this gesture apply
+// anywhere?"; the backend's per-node list answers "does it apply HERE?", so a
+// feature that already has its plan.md loses Plan while an unplanned one keeps
+// it — in the same tree.
+describe('nodeActionEnabled', () => {
+  const planned = { path: 'specs/001-a/spec.md' } as SDDNode
+  const unplanned = { path: 'specs/002-b/spec.md' } as SDDNode
+
+  it('is true for an available action with no per-node refinement', () => {
+    expect(nodeActionEnabled(action({ concept: 'feature' }), planned)).toBe(true)
+  })
+
+  it('is false only on the nodes the backend refined as blocked', () => {
+    const plan = action({
+      kind: 'plan',
+      concept: 'feature',
+      unavailable_at: ['specs/001-a/spec.md'],
+    })
+    expect(nodeActionEnabled(plan, planned)).toBe(false)
+    expect(nodeActionEnabled(plan, unplanned)).toBe(true)
+  })
+
+  it('is false for a tree-level unavailable action whatever the node list says', () => {
+    expect(nodeActionEnabled(action({ available: false, unavailable_at: [] }), planned)).toBe(false)
+  })
+
+  it('treats an absent per-node list as no refinement', () => {
+    expect(nodeActionEnabled(action({ unavailable_at: undefined }), planned)).toBe(true)
+  })
+})
+
+// Review 111: a per-node block must not borrow the tree-level "requirement
+// unmet" wording — there the prerequisite is satisfiable, and the node's own
+// artifact is already in place.
+describe('nodeActionReason', () => {
+  const planned = { path: 'specs/001-a/spec.md' } as SDDNode
+  const unplanned = { path: 'specs/002-b/spec.md' } as SDDNode
+  const plan = action({
+    kind: 'plan',
+    concept: 'feature',
+    unavailable_at: ['specs/001-a/spec.md'],
+  })
+
+  it('names the per-node gate on a blocked node', () => {
+    expect(nodeActionReason(plan, planned)).toBe(NODE_GATE_REASON)
+    expect(NODE_GATE_REASON).not.toBe(REQUIREMENT_UNMET_REASON)
+  })
+
+  it('has no reason on an enabled node', () => {
+    expect(nodeActionReason(plan, unplanned)).toBe('')
+  })
+
+  it('keeps the tree-level wording when the whole gesture is unavailable', () => {
+    expect(nodeActionReason(action({ available: false }), planned)).toBe(REQUIREMENT_UNMET_REASON)
+    expect(nodeActionReason(action({ skill: '' }), planned)).toBe(
+      'The framework declares this action with no skill to run',
+    )
   })
 })

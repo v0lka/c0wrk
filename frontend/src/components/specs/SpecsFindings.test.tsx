@@ -1,24 +1,20 @@
 // @vitest-environment jsdom
-// SpecsFindings — the tier-1 findings list's CASCADE CARD layout (ADR-106
-// D5): row 1 carries the fix badge (icon + kind chip as one button — the
-// per-finding spec-update dispatch, ADR-109) + the file link, row 2 the
-// detail text (flex-1) with the hover-revealed copy button at its trailing
-// edge — always in the DOM, transparent until the card (the hover `group`)
-// is hovered, copying the verbatim findingLine the dispatched fix prompt
-// carries (ADR-109 D7). Renders NOTHING when clean — the header badge is
-// the clean signal.
+// SpecsFindings — the finding list of a declared view section: row 1 the fix
+// badge (a BUTTON only when the framework declared the findings-fix action,
+// otherwise an INERT chip) + the file link, row 2 the detail with the
+// hover-revealed copy button carrying the verbatim findingLine. The LABEL is
+// the check's declared message (readable token as fallback), never a frontend
+// vocabulary. Renders nothing when clean.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
 import { SpecsFindings } from './SpecsFindings'
-import { findingLine } from './specsActions'
+import { findingLine, REQUIREMENT_UNMET_REASON } from './specsActions'
 import { clipboardSetText } from '@/api/runtime'
-import type { SpecFinding } from '@/types/models'
+import { makeAction, makeFinding, makeView } from '@/test/sddFixture'
+import type { SDDAction, SDDFinding, SDDView } from '@/types/models'
 
-// Copy must go through the native Wails runtime, NOT navigator.clipboard
-// (mirrors CopyIconButton.test). The boundary module is mocked so no real
-// window.runtime binding is touched.
 vi.mock('@/api/runtime', () => ({
   clipboardSetText: vi.fn().mockResolvedValue(true),
 }))
@@ -26,20 +22,24 @@ vi.mock('@/api/runtime', () => ({
 let container: HTMLElement | null = null
 let root: Root | null = null
 let onOpenMock = vi.fn()
-let onFixMock = vi.fn()
+let onDispatchMock = vi.fn()
 
-async function render(findings: SpecFinding[]): Promise<void> {
+const SECTION: SDDView = makeView({ id: 'findings', label: 'Findings', kind: 'findings' })
+
+async function render(findings: SDDFinding[], fixAction: SDDAction | null): Promise<void> {
   onOpenMock = vi.fn()
-  onFixMock = vi.fn()
+  onDispatchMock = vi.fn()
   container = document.createElement('div')
   document.body.replaceChildren(container)
   root = createRoot(container)
   await act(async () => {
     root!.render(
       <SpecsFindings
+        section={SECTION}
         findings={findings}
+        fixAction={fixAction}
         onOpen={onOpenMock}
-        onFixFinding={onFixMock}
+        onDispatch={onDispatchMock}
       />,
     )
   })
@@ -49,243 +49,133 @@ function query(testId: string): HTMLElement | null {
   return container?.querySelector(`[data-testid="${testId}"]`) ?? null
 }
 
-const FIX_TITLE = 'Fix this finding in the chat — Shift = new session'
-
-const FINDINGS: SpecFinding[] = [
-  { kind: 'PATH_MISSING', file: 'domains/testing.md', detail: 'core/x.go does not exist' },
-  { kind: 'INDEX_STALE', file: 'domains/orphan.md', detail: 'not listed in INDEX.md' },
-]
-
-describe('SpecsFindings — cascade card', () => {
-  it('renders nothing when the tree is clean', async () => {
-    await render([])
-    expect(query('specs-findings')).toBeNull()
-  })
-
-  it('row 1 carries the fix badge and the file link, row 2 the detail with the hover copy at its trailing edge', async () => {
-    await render(FINDINGS)
-
-    const cards = document.querySelectorAll('[data-testid="specs-finding"]')
-    expect(cards).toHaveLength(2)
-
-    const card = cards[0] as HTMLElement
-    // Two stacked rows: the controls row and the detail row.
-    const rows = Array.from(card.children)
-    expect(rows).toHaveLength(2)
-
-    // Row 1: the fix badge (the kind label) + the clickable file (basename),
-    // siblings in the controls row — untouched by the copy affordance.
-    expect(rows[0]!.textContent).toContain('Missing path')
-    const fix = rows[0]!.querySelector('[data-testid="specs-finding-fix"]')
-    const link = rows[0]!.querySelector('[data-testid="specs-finding-file"]')!
-    expect(fix).not.toBeNull()
-    expect(link.textContent).toBe('testing.md')
-    expect(link.getAttribute('data-file')).toBe('domains/testing.md')
-    // The copy wrapper lives in row 2 ONLY — the controls row never grows it.
-    expect(rows[0]!.querySelector('[data-testid="specs-finding-copy"]')).toBeNull()
-
-    // Row 2: the detail on its OWN line (flex-1 — dominant width, never
-    // squeezed into the controls row) with the hover-revealed copy button
-    // pinned to the row's trailing edge.
-    const detail = rows[1]!.querySelector('[data-testid="specs-finding-detail"]') ?? rows[1]!
-    expect(detail.getAttribute('data-testid')).toBe('specs-finding-detail')
-    expect(detail.textContent).toBe('core/x.go does not exist')
-    expect(detail.className).toContain('flex-1')
-    expect(detail.className).toContain('min-w-0')
-    expect(rows[1]!.querySelector('[data-testid="specs-finding-copy"]')).not.toBeNull()
-  })
-
-  it('the fix badge is a warning-styled button with the exact tooltip', async () => {
-    await render(FINDINGS)
-
-    const fix = query('specs-finding-fix')!
-    expect(fix.tagName).toBe('BUTTON')
-    expect(fix.getAttribute('title')).toBe(FIX_TITLE)
-    // The header badge's styling: warning chip tinting darker on hover.
-    expect(fix.className).toContain('bg-warning/10')
-    expect(fix.className).toContain('hover:bg-warning/20')
-    expect(fix.className).toContain('text-warning')
-  })
-
-  it('clicking the fix badge requests the per-finding fix for THAT finding', async () => {
-    await render(FINDINGS)
-
-    const fixes = document.querySelectorAll<HTMLElement>('[data-testid="specs-finding-fix"]')
-    act(() => {
-      fixes[0]!.click()
-    })
-    expect(onFixMock).toHaveBeenCalledTimes(1)
-    expect(onFixMock).toHaveBeenCalledWith(FINDINGS[0]!, false)
-
-    act(() => {
-      fixes[1]!.click()
-    })
-    expect(onFixMock).toHaveBeenCalledTimes(2)
-    expect(onFixMock).toHaveBeenLastCalledWith(FINDINGS[1]!, false)
-    // The click dispatches — it never opens the viewer.
-    expect(onOpenMock).not.toHaveBeenCalled()
-  })
-
-  it('shift-clicking the fix badge requests a NEW session', async () => {
-    await render(FINDINGS)
-
-    const fix = query('specs-finding-fix')!
-    await act(async () => {
-      fix.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }))
-    })
-    expect(onFixMock).toHaveBeenCalledTimes(1)
-    expect(onFixMock).toHaveBeenCalledWith(FINDINGS[0]!, true)
-  })
-
-  it('the file link opens the finding file through onOpen', async () => {
-    await render(FINDINGS)
-
-    const links = document.querySelectorAll<HTMLButtonElement>(
-      '[data-testid="specs-finding-file"]',
-    )
-    act(() => {
-      links[1]!.click()
-    })
-    expect(onOpenMock).toHaveBeenCalledWith('domains/orphan.md')
-    // Opening via the link never dispatches the fix.
-    expect(onFixMock).not.toHaveBeenCalled()
-  })
+const FIX_ACTION: SDDAction = makeAction({
+  kind: 'fix-findings',
+  label: 'Fix findings',
+  skill: 'spec-update',
+  prompt: 'Repair every finding, then re-check the tree.',
+  requires: ['root', 'findings'],
 })
 
-describe('SpecsFindings — hover copy button (ADR-109 D7)', () => {
-  // The wrapper must render the exact reveal classes the MessageFooter
-  // hover pattern uses; pinned here so a styling refactor cannot silently
-  // break the hover reveal (or turn it into a layout-shifting animation).
-  const expectHoverReveal = (wrapper: Element): void => {
-    expect(wrapper.className).toContain('opacity-0')
-    expect(wrapper.className).toContain('transition-opacity')
-    expect(wrapper.className).toContain('duration-150')
-    expect(wrapper.className).toContain('group-hover:opacity-100')
-    expect(wrapper.className).toContain('focus-within:opacity-100')
-    // Trailing-edge anchor, never squeezed by the detail text.
-    expect(wrapper.className).toContain('ml-auto')
-    expect(wrapper.className).toContain('shrink-0')
-    // Opacity-only reveal: no height animation, no display toggling —
-    // hovering must not move a single pixel.
-    expect(wrapper.className).not.toContain('max-h')
-    expect(wrapper.className).not.toContain('hidden')
-  }
+const FINDINGS: SDDFinding[] = [
+  makeFinding({
+    kind: 'PATH_MISSING',
+    file: 'specs/domains/testing.md',
+    detail: 'core/x.go does not exist',
+    message: 'a Key Files path must exist',
+  }),
+  makeFinding({ kind: 'INDEX_STALE', file: 'specs/domains/orphan.md', detail: 'not listed' }),
+]
 
-  const copyButton = (): HTMLButtonElement =>
-    document.querySelector('[data-testid="specs-finding-copy"] button') as HTMLButtonElement
+beforeEach(() => {
+  vi.mocked(clipboardSetText).mockClear()
+})
 
-  async function renderForCopy(findings: SpecFinding[]): Promise<void> {
-    onOpenMock = vi.fn()
-    onFixMock = vi.fn()
-    container = document.createElement('div')
-    document.body.replaceChildren(container)
-    root = createRoot(container)
-    await act(async () => {
-      root!.render(
-        <SpecsFindings findings={findings} onOpen={onOpenMock} onFixFinding={onFixMock} />,
+afterEach(() => {
+  act(() => root?.unmount())
+  root = null
+  container = null
+})
+
+describe('SpecsFindings', () => {
+  it('renders nothing when the tree is clean', async () => {
+    await render([], FIX_ACTION)
+    expect(container?.childElementCount).toBe(0)
+  })
+
+  it('renders the declared message as the label, the readable token as fallback', async () => {
+    await render(FINDINGS, FIX_ACTION)
+    const badges = container?.querySelectorAll('[data-testid="specs-finding-fix"]')
+    expect(badges).toHaveLength(2)
+    expect(badges?.[0]?.textContent).toContain('a Key Files path must exist')
+    expect(badges?.[1]?.textContent).toContain('index stale')
+    expect(container?.textContent).toContain('not listed')
+  })
+
+  it('dispatches the framework’s own findings-fix gesture from a finding card', async () => {
+    await render([FINDINGS[0]!], FIX_ACTION)
+    const badge = query('specs-finding-fix')
+    expect(badge?.tagName).toBe('BUTTON')
+    expect(badge?.getAttribute('data-skill')).toBe('spec-update')
+
+    act(() => {
+      badge?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(onDispatchMock).toHaveBeenCalledTimes(1)
+    const [dispatch, newSession] = onDispatchMock.mock.calls[0] as [
+      { skill: string; prompt: string; key: string },
+      boolean,
+    ]
+    expect(newSession).toBe(false)
+    expect(dispatch.skill).toBe('spec-update')
+    // The declared instruction + the finding quoted verbatim (the line the
+    // copy button hands out).
+    expect(dispatch.prompt).toContain('Repair every finding')
+    expect(dispatch.prompt).toContain(findingLine(FINDINGS[0]!))
+  })
+
+  it('passes the Shift modifier through (new session)', async () => {
+    await render([FINDINGS[0]!], FIX_ACTION)
+    act(() => {
+      query('specs-finding-fix')?.dispatchEvent(
+        new MouseEvent('click', { bubbles: true, shiftKey: true }),
       )
     })
-  }
+    expect(onDispatchMock.mock.calls[0]?.[1]).toBe(true)
+  })
 
-  async function clickCopy(): Promise<HTMLButtonElement> {
-    const button = copyButton()
-    await act(async () => {
-      button.click()
-      await vi.advanceTimersByTimeAsync(0)
+  it('renders an INERT badge for a framework without the fix-findings action', async () => {
+    await render([FINDINGS[0]!], null)
+    const badge = query('specs-finding-fix')
+    expect(badge?.tagName).toBe('SPAN')
+    expect(badge?.getAttribute('data-inert')).toBe('true')
+
+    act(() => {
+      badge?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
-    return button
-  }
-
-  beforeEach(() => {
-    vi.useFakeTimers()
-    // Pin the success verdict explicitly: the failure test below overrides it.
-    vi.mocked(clipboardSetText).mockResolvedValue(true)
-    // Prove the native runtime path is taken, never navigator.clipboard.
-    Object.defineProperty(navigator, 'clipboard', {
-      configurable: true,
-      value: undefined,
-    })
+    expect(onDispatchMock).not.toHaveBeenCalled()
   })
 
-  afterEach(() => {
-    // Unmount BEFORE restoring real timers: the revert timer is cleared by
-    // the component's unmount cleanup, so nothing fires into a dead tree.
-    act(() => root!.unmount())
-    vi.clearAllMocks()
-    vi.useRealTimers()
+  it('renders an inert chip naming the unmet requirement when the declared action is unavailable', async () => {
+    await render([FINDINGS[0]!], { ...FIX_ACTION, available: false })
+    const badge = query('specs-finding-fix')
+    expect(badge?.tagName).toBe('SPAN')
+    expect(badge?.getAttribute('title')).toBe(REQUIREMENT_UNMET_REASON)
   })
 
-  it('the copy button is always in the DOM, transparent until the card is hovered (opacity-only reveal)', async () => {
-    await renderForCopy(FINDINGS)
-
-    const cards = document.querySelectorAll('[data-testid="specs-finding"]')
-    expect(cards).toHaveLength(2)
-    for (const card of cards) {
-      // The card is the hover group the reveal keys off.
-      expect(card.className).toContain('group')
-      // One copy affordance per card, always mounted (not hover-conditional).
-      const wrappers = card.querySelectorAll('[data-testid="specs-finding-copy"]')
-      expect(wrappers).toHaveLength(1)
-      expectHoverReveal(wrappers[0]!)
-      expect(wrappers[0]!.querySelector('button')).not.toBeNull()
-    }
-  })
-
-  it('clicking the copy button copies the verbatim findingLine — the same bullet the dispatched fix prompt carries', async () => {
-    await renderForCopy([FINDINGS[0]!])
-
-    await clickCopy()
-
-    expect(clipboardSetText).toHaveBeenCalledTimes(1)
-    // Exactly the dispatch-prompt bullet format: '- [KIND] file: detail'.
-    expect(vi.mocked(clipboardSetText).mock.calls[0]![0]).toBe(
-      '- [PATH_MISSING] domains/testing.md: core/x.go does not exist',
+  it('names the missing skill — not the tree — when the declared action carries no skill', async () => {
+    await render([FINDINGS[0]!], { ...FIX_ACTION, skill: '' })
+    const badge = query('specs-finding-fix')
+    expect(badge?.tagName).toBe('SPAN')
+    expect(badge?.getAttribute('title')).toBe(
+      'The framework declares this action with no skill to run',
     )
-    // Single source: byte-identical to the header badge's prompt line.
-    expect(vi.mocked(clipboardSetText).mock.calls[0]![0]).toBe(findingLine(FINDINGS[0]!))
   })
 
-  it('the copy click stays local — it never dispatches the fix nor opens the viewer', async () => {
-    await renderForCopy(FINDINGS)
-
-    await clickCopy()
-
-    expect(onFixMock).not.toHaveBeenCalled()
-    expect(onOpenMock).not.toHaveBeenCalled()
-  })
-
-  it('success flashes Copied (Check, text-success) and reverts to the idle label after 2 s', async () => {
-    await renderForCopy([FINDINGS[0]!])
-
-    const button = await clickCopy()
-    expect(button.getAttribute('aria-label')).toBe('Copied')
-    expect(button.querySelector('svg.lucide-check')).not.toBeNull()
-    expect(button.querySelector('svg')!.getAttribute('class')).toContain('text-success')
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(2000)
+  it('opens the finding file in the viewer', async () => {
+    await render([FINDINGS[0]!], FIX_ACTION)
+    act(() => {
+      query('specs-finding-file')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
-    expect(button.getAttribute('aria-label')).toBe('Copy finding line')
-    expect(button.querySelector('svg.lucide-copy')).not.toBeNull()
-    expect(button.querySelector('svg.lucide-check')).toBeNull()
+    expect(onOpenMock).toHaveBeenCalledWith('specs/domains/testing.md')
   })
 
-  it('a failed clipboard write flashes Failed (X, text-destructive) — never Copied', async () => {
-    vi.mocked(clipboardSetText).mockResolvedValue(false)
-    await renderForCopy([FINDINGS[0]!])
-
-    const button = await clickCopy()
-    expect(button.getAttribute('aria-label')).toBe('Failed')
-    expect(button.querySelector('svg.lucide-check')).toBeNull()
-    const icon = button.querySelector('svg')!
-    expect(icon.getAttribute('class')).toContain('text-destructive')
-    expect(icon.getAttribute('class')).not.toContain('text-success')
-
-    // The failure flash is bounded like the success flash.
+  it('copies the verbatim finding line', async () => {
+    await render([FINDINGS[1]!], FIX_ACTION)
+    // ASYNC act: the click starts the clipboard promise and the hook flashes
+    // its verdict from the resolution, so the flush must be awaited — a sync
+    // act() lets the state update land outside it (React act() warning).
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(2000)
+      query('specs-finding-copy')?.querySelector('button')?.dispatchEvent(
+        new MouseEvent('click', { bubbles: true }),
+      )
     })
-    expect(button.getAttribute('aria-label')).toBe('Copy finding line')
-    expect(button.querySelector('svg.lucide-x')).toBeNull()
+    expect(clipboardSetText).toHaveBeenCalledWith(findingLine(FINDINGS[1]!))
+  })
+
+  it('shows the section’s own declared heading', async () => {
+    await render(FINDINGS, FIX_ACTION)
+    expect(query('specs-findings')?.textContent).toContain('Findings')
   })
 })
