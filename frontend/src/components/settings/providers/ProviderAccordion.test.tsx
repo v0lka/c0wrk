@@ -2,29 +2,50 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
+import type { ModelMetadataInfo } from '@/types/models'
+import type { ProviderAccordionProps } from './ProviderAccordion'
 
-// Spies created via vi.hoisted so they exist before vi.mock factories run.
-const spies = vi.hoisted(() => ({
-  listProviderModels: vi.fn<(req: { provider: string; api_key?: string; base_url?: string; type?: string; tls_fingerprint?: string }) => Promise<string[]>>(),
+// The hook is mocked at the module boundary: this suite pins the ACCORDION's
+// rendering — the detector-chain metadata badges (ListProviderModels) and the
+// api-key displayModels union (enabled models stay listed, endpoint
+// duplicates collapse) — not the fetch itself (covered in
+// useModelFetch.test.tsx).
+const fetchResult = vi.hoisted(() => ({
+  models: ['deepseek-v4'],
+  modelsMetadata: undefined as Record<string, ModelMetadataInfo> | undefined,
+  modelsLoading: false,
+  modelsError: null as string | null,
+  apiKeyDirty: false,
+  handleApply: vi.fn(async () => {}),
+  hasRequiredCredentials: true,
 }))
 
-// Mock the backend API wrapper so no real Wails round-trip happens.
-// Partial mock following the project convention (ModelConfigDialog.test,
-// BlackboardPanel.test): only the functions this tree calls are provided.
-vi.mock('@/api/mcp', () => ({
-  listProviderModels: spies.listProviderModels,
+vi.mock('../useModelFetch', () => ({
+  useModelFetch: () => fetchResult,
 }))
 
-// The accordion mounts ModelConfigDialog permanently (open=false); stub it so
-// the test exercises only the model-list rendering under test.
-vi.mock('../ModelConfigDialog', () => ({
-  ModelConfigDialog: () => null,
-}))
-
-// invalidateConfigCache is only called after a dialog save; stub it out to
-// avoid pulling the config-data cache module into the jsdom environment.
-vi.mock('@/hooks/useConfigData', () => ({
-  invalidateConfigCache: vi.fn(),
+// The Configure dialog fetches the effective config over the real API when
+// opened; mock that boundary (keeping the rest of the module intact) so the
+// prefill wiring test stays deterministic.
+vi.mock('@/api/config', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/api/config')>()),
+  getModelConfig: vi.fn(async () => ({
+    model: 'deepseek-v4',
+    context_window: 32768,
+    output_limit: 8192,
+    tokenizer_type: 'approximate',
+    family: 'default',
+    protocol: 'chat_completions',
+    capabilities: { attachment: false, reasoning: false, temperature: false, tool_call: false },
+    default_context_window: 32768,
+    default_output_limit: 8192,
+    default_tokenizer_type: 'approximate',
+    default_family: 'default',
+    default_protocol: 'chat_completions',
+    default_capabilities: { attachment: false, reasoning: false, temperature: false, tool_call: false },
+    has_override: false,
+  })),
+  setModelConfig: vi.fn(async () => {}),
 }))
 
 import { ProviderAccordion } from './ProviderAccordion'
@@ -32,8 +53,32 @@ import { ProviderAccordion } from './ProviderAccordion'
 let container: HTMLDivElement
 let root: Root
 
+const baseProps: ProviderAccordionProps = {
+  provider: 'PT',
+  label: 'PT',
+  config: { api_key: 'k', base_url: 'https://api-llm.example.com/v1', models: [], tls_fingerprint: '' },
+  isExpanded: true,
+  onToggle: () => {},
+  onConfigChange: () => {},
+  onToggleModel: () => {},
+  defaultModel: '',
+  providerConfigs: {},
+  autoRetryMaxSeconds: 60,
+}
+
+function renderAccordion() {
+  act(() => {
+    root.render(<ProviderAccordion {...baseProps} />)
+  })
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
+  fetchResult.models = ['deepseek-v4']
+  fetchResult.modelsMetadata = undefined
+  fetchResult.modelsError = null
+  fetchResult.apiKeyDirty = false
+  baseProps.config.models = []
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
@@ -47,34 +92,6 @@ afterEach(() => {
   document.body.innerHTML = ''
 })
 
-function renderAccordion(models: string[], mountKey = 'mount') {
-  const config = { api_key: 'key', base_url: 'http://localhost:1234', models, tls_fingerprint: '' }
-  act(() => {
-    root.render(
-      <ProviderAccordion
-        // Changing the key forces a full remount (fresh hook state), the
-        // same situation as reopening the LLM settings dialog.
-        key={mountKey}
-        provider="local"
-        label="Local"
-        config={config}
-        isExpanded={true}
-        onToggle={() => {}}
-        onConfigChange={() => {}}
-        onToggleModel={() => {}}
-        defaultModel=""
-        providerConfigs={{ local: config }}
-        autoRetryMaxSeconds={3600}
-      />,
-    )
-  })
-}
-
-/** Flush pending microtasks so the fetch promise resolves and state settles. */
-function flush(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 50))
-}
-
 /** All model rows as {name, checked}, in render order. */
 function modelRows(): Array<{ name: string; checked: boolean }> {
   return Array.from(container.querySelectorAll('input[type="checkbox"]')).map((input) => {
@@ -87,8 +104,8 @@ function modelRows(): Array<{ name: string; checked: boolean }> {
   })
 }
 
-/** Badge texts rendered next to each model name, e.g. "default" or the
- *  "not reported by endpoint" staleness warning. */
+/** Badge texts rendered next to each model name, e.g. the "not reported by
+ *  endpoint" staleness warning. */
 function rowBadges(): Array<{ name: string; badges: string[] }> {
   return Array.from(container.querySelectorAll('input[type="checkbox"]')).map((input) => {
     const label = input.closest('label')
@@ -100,20 +117,15 @@ function rowBadges(): Array<{ name: string; badges: string[] }> {
   })
 }
 
-async function clickFetchModels(): Promise<void> {
-  const btn = Array.from(container.querySelectorAll('button')).find(
-    (b) => b.textContent?.includes('Fetch models'),
-  )
-  if (!btn) throw new Error('Fetch models button not found')
-  await act(async () => {
-    btn.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    await flush()
-  })
-}
-
-describe('ProviderAccordion model list', () => {
+describe('ProviderAccordion displayModels union (api-key)', () => {
   it('shows enabled models before any fetch', () => {
-    renderAccordion(['old-model'])
+    // The hook's pre-fetch state: nothing listed yet, the key not yet
+    // confirmed by a successful fetch.
+    fetchResult.models = []
+    fetchResult.apiKeyDirty = true
+    baseProps.config.models = ['old-model']
+    renderAccordion()
+
     const rows = modelRows()
     expect(rows).toHaveLength(1)
     expect(rows[0]).toEqual({ name: 'old-model', checked: true })
@@ -121,64 +133,139 @@ describe('ProviderAccordion model list', () => {
     expect(rowBadges()[0]?.badges).toEqual([])
   })
 
-  it('deduplicates the fetched list and keeps enabled models visible', async () => {
-    renderAccordion(['old-model'])
-    spies.listProviderModels.mockResolvedValue(['new-a', 'new-b', 'new-a'])
-
-    await clickFetchModels()
-
-    expect(spies.listProviderModels).toHaveBeenCalledWith({
-      provider: 'local',
-      api_key: 'key',
-      base_url: 'http://localhost:1234',
-      type: undefined,
-      // The draft TLS pin rides along verbatim (ADR-054): an explicit ''
-      // must win over the persisted value, not fall back to it.
-      tls_fingerprint: '',
-    })
+  it('deduplicates the fetched list and keeps enabled models visible', () => {
+    // The endpoint reports new-a twice (duplicate collapse) while the config
+    // enables old-model; the visible list is the sorted union of both.
+    fetchResult.models = ['new-a', 'new-b', 'new-a']
+    baseProps.config.models = ['old-model']
+    renderAccordion()
 
     const rows = modelRows()
     expect(rows.map((r) => r.name)).toEqual(['new-a', 'new-b', 'old-model'])
     // Only the configured model is checked; fetched entries start unchecked.
     expect(rows.find((r) => r.name === 'old-model')?.checked).toBe(true)
     expect(rows.find((r) => r.name === 'new-a')?.checked).toBe(false)
+    expect(rows.find((r) => r.name === 'new-b')?.checked).toBe(false)
   })
 
-  it('keeps an enabled model listed even when a later fetch does not report it', async () => {
-    renderAccordion(['old-model'])
-    // First fetch still reports the model; a second fetch drops it.
-    spies.listProviderModels.mockResolvedValueOnce(['old-model', 'new-a'])
-    await clickFetchModels()
+  it('keeps an enabled model listed even when a later fetch does not report it', () => {
+    baseProps.config.models = ['old-model']
+    // A completed fetch that still reports the model.
+    fetchResult.models = ['old-model', 'new-a']
+    fetchResult.apiKeyDirty = false
+    renderAccordion()
     expect(modelRows().map((r) => r.name)).toEqual(['new-a', 'old-model'])
     // Reported by the endpoint → no staleness badge.
     expect(rowBadges().find((r) => r.name === 'old-model')?.badges).toEqual([])
 
-    // The Fetch button disappears while apiKeyDirty is false, so remount the
-    // accordion (as happens when the settings dialog is reopened) and fetch
-    // again with the provider no longer reporting the enabled model.
-    spies.listProviderModels.mockResolvedValue(['new-a'])
-    renderAccordion(['old-model'], 'remount')
-    await clickFetchModels()
+    // A later fetch drops the enabled model: re-render with the hook's new
+    // state (the same situation as re-fetching in the reopened settings
+    // dialog).
+    fetchResult.models = ['new-a']
+    renderAccordion()
 
     const rows = modelRows()
     expect(rows.map((r) => r.name)).toEqual(['new-a', 'old-model'])
     expect(rows.find((r) => r.name === 'old-model')?.checked).toBe(true)
-    // Now the drift is visible: the enabled model stays listed but is marked
-    // as no longer reported by the endpoint.
+    // The enabled model stays listed but is marked as no longer reported by
+    // the endpoint.
     expect(rowBadges().find((r) => r.name === 'old-model')?.badges).toEqual([
       'not reported by endpoint',
     ])
     expect(rowBadges().find((r) => r.name === 'new-a')?.badges).toEqual([])
   })
+})
 
-  it('does not badge enabled models after a failed fetch (endpoint list unknown)', async () => {
-    renderAccordion(['old-model'])
-    spies.listProviderModels.mockRejectedValue(new Error('network down'))
+describe('ProviderAccordion endpoint-metadata badges', () => {
+  it('renders the context badge from the fetched detector-chain metadata', () => {
+    fetchResult.modelsMetadata = {
+      'deepseek-v4': {
+        context_window: 512000,
+        output_limit: 32000,
+        capabilities: { attachment: true, reasoning: true, temperature: true, tool_call: true },
+      },
+    }
+    renderAccordion()
 
-    await clickFetchModels()
+    // The compact badge (Intl compact: 512000 → "512K") plus the reasoning
+    // chip from the declared capabilities.
+    expect(document.body.textContent).toContain('512K')
+    expect(document.body.textContent).toContain('reasoning')
 
-    // The fetch failed, so we cannot claim the model is stale — no badge.
-    expect(modelRows().map((r) => r.name)).toEqual(['old-model'])
-    expect(rowBadges()[0]?.badges).toEqual([])
+    const badge = Array.from(document.body.querySelectorAll('span[title]')).find((s) =>
+      s.getAttribute('title')?.startsWith('Context window:'),
+    )
+    expect(badge?.getAttribute('title')).toBe(
+      'Context window: 512,000 tokens · output limit: 32,000',
+    )
+  })
+
+  it('renders no badge when the listing declared no metadata', () => {
+    fetchResult.modelsMetadata = undefined
+    renderAccordion()
+
+    expect(document.body.textContent).not.toContain('512K')
+    expect(
+      Array.from(document.body.querySelectorAll('span[title]')).find((s) =>
+        s.getAttribute('title')?.startsWith('Context window:'),
+      ),
+    ).toBeUndefined()
+  })
+
+  it('renders no badge for an entry the detectors could not parse', () => {
+    fetchResult.modelsMetadata = {} // model listed, no detector match
+    renderAccordion()
+
+    expect(
+      Array.from(document.body.querySelectorAll('span[title]')).find((s) =>
+        s.getAttribute('title')?.startsWith('Context window:'),
+      ),
+    ).toBeUndefined()
+  })
+})
+
+describe('ProviderAccordion configure-dialog metadata prefill', () => {
+  /** Open the Configure dialog for the listed model and return its two
+   *  number inputs (context window, output limit). */
+  async function openConfigureAndReadInputs(): Promise<HTMLInputElement[]> {
+    renderAccordion()
+    const configureBtn = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.getAttribute('aria-label') === 'Configure deepseek-v4',
+    )
+    if (!configureBtn) throw new Error('Configure button not found')
+    await act(async () => { configureBtn.click() })
+    // The dialog's config load is microtask-only here (the API boundary is
+    // mocked with synchronous-resolve promises): advance a bounded number of
+    // microtask ticks inside act so the load chain settles, then read the DOM
+    // after act's flush. No real timers — the timing guard forbids adding
+    // delay-promise debt.
+    await act(async () => {
+      for (let i = 0; i < 50; i++) await Promise.resolve()
+    })
+    const inputs = Array.from(
+      document.body.querySelectorAll<HTMLInputElement>('input[type="number"]'),
+    )
+    if (inputs.length === 0) throw new Error('dialog inputs never rendered')
+    return inputs
+  }
+
+  it('shows the fetched listing values in the dialog fields', async () => {
+    fetchResult.modelsMetadata = {
+      'deepseek-v4': {
+        context_window: 512000,
+        output_limit: 32000,
+        capabilities: { attachment: true, reasoning: true, temperature: true, tool_call: true },
+      },
+    }
+    const inputs = await openConfigureAndReadInputs()
+    expect(inputs[0]?.value).toBe('512000')
+    expect(inputs[1]?.value).toBe('32000')
+  })
+
+  it('falls back to the factory defaults when the fetch declared no metadata', async () => {
+    fetchResult.modelsMetadata = undefined
+    const inputs = await openConfigureAndReadInputs()
+    expect(inputs[0]?.value).toBe('32768')
+    expect(inputs[1]?.value).toBe('8192')
   })
 })

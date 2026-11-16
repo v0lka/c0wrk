@@ -1213,20 +1213,36 @@ func (b *OrchestratorBuilder) commitMessageParse(providerName, diff string) ones
 	}
 }
 
-// ListProviderModels returns deduplicated model names for a provider: some endpoints
-// (LM Studio, OpenAI-compatible gateways) legitimately report the same ID twice, and
-// the settings UI renders the list verbatim.
-func (b *OrchestratorBuilder) ListProviderModels(ctx context.Context, provider string, cfg *BuilderConfig) ([]string, error) {
-	names, err := b.fetchProviderModels(ctx, provider, cfg)
+// ProviderModelsListing is one provider's fetched model listing: deduplicated
+// model names plus whatever rich metadata the detector chain parsed from the
+// same raw entries. Metadata is keyed by lowercased model id; models absent
+// from the map had no detector match and fall back to catalog/factory defaults
+// downstream (specs/domains/llm-providers.md, "Detector chain"). The listing
+// is display/prefill data for the settings UI — it is never auto-persisted.
+type ProviderModelsListing struct {
+	Models   []string
+	Metadata map[string]llm.ModelMetadata
+}
+
+// ListProviderModels returns a provider's model listing for the settings UI:
+// deduplicated names (LM Studio and multi-tenant gateways legitimately report
+// the same ID twice) plus the detector-chain metadata parsed from the same
+// raw listing entries — OpenAI-compatible endpoints only; other provider
+// kinds carry names with nil metadata.
+func (b *OrchestratorBuilder) ListProviderModels(ctx context.Context, provider string, cfg *BuilderConfig) (ProviderModelsListing, error) {
+	listing, err := b.fetchProviderModels(ctx, provider, cfg)
 	if err != nil {
-		return nil, err
+		return ProviderModelsListing{}, err
 	}
-	return dedupeModelNames(names), nil
+	listing.Models = dedupeModelNames(listing.Models)
+	return listing, nil
 }
 
 // fetchProviderModels resolves the raw model-name list (built-in registry entries or an
-// endpoint fetch); ListProviderModels dedupes before display.
-func (b *OrchestratorBuilder) fetchProviderModels(ctx context.Context, provider string, cfg *BuilderConfig) ([]string, error) {
+// endpoint fetch; names sorted where the fetch produces them) plus, for
+// OpenAI-compatible endpoints, the detector-chain metadata from the same
+// listing; ListProviderModels dedupes before display.
+func (b *OrchestratorBuilder) fetchProviderModels(ctx context.Context, provider string, cfg *BuilderConfig) (ProviderModelsListing, error) {
 	// Snapshot the proxy client under the read lock so every listing branch honors the
 	// same proxy as the chat path, without racing RebuildProxy; no lock across network calls.
 	b.mu.RLock()
@@ -1240,58 +1256,78 @@ func (b *OrchestratorBuilder) fetchProviderModels(ctx context.Context, provider 
 
 	switch provider {
 	case "anthropic":
-		return llm.BuiltInModelNames("anthropic-api"), nil
+		return ProviderModelsListing{Models: llm.BuiltInModelNames("anthropic-api")}, nil
 	case "chatgpt":
 		pc, ok := cfg.LLM.ProviderConfigs["chatgpt"]
 		if !ok {
-			return nil, errors.New("ChatGPT provider not configured")
+			return ProviderModelsListing{}, errors.New("ChatGPT provider not configured")
 		}
 		apiKey := cfg.ExpandEnvVars(pc.APIKey)
 		if apiKey == "" {
-			return nil, errors.New("ChatGPT API key not configured")
+			return ProviderModelsListing{}, errors.New("ChatGPT API key not configured")
 		}
 		// Fixed provider: no pin key exists (api.openai.com has a public certificate) —
 		// this only threads the dial policy.
 		models, err := listOpenAIModels(ctx, "", apiKey, llmtls.DirectDialClient(proxyClient, dialPolicy(proxyClient, bypass, "api.openai.com"), "", log))
 		if err != nil {
-			return nil, err
+			return ProviderModelsListing{}, err
 		}
-		return filterKnownFamilyModels(models), nil
+		return ProviderModelsListing{Models: filterKnownFamilyModels(models)}, nil
 	default:
 		// Type-based dispatch: look up the provider by name, then dispatch on ProviderType.
 		pc, ok := cfg.LLM.ProviderConfigs[provider]
 		if !ok {
-			return nil, fmt.Errorf("unknown provider: %s", provider)
+			return ProviderModelsListing{}, fmt.Errorf("unknown provider: %s", provider)
 		}
 		switch pc.ProviderType {
 		case "openai":
 			baseURL := cfg.ExpandEnvVars(pc.BaseURL)
 			apiKey := cfg.ExpandEnvVars(pc.APIKey)
 			if baseURL == "" {
-				return nil, fmt.Errorf("openAI-compatible base URL not configured for provider %q", provider)
+				return ProviderModelsListing{}, fmt.Errorf("openAI-compatible base URL not configured for provider %q", provider)
 			}
 			// Per-provider TLS override under the proxy-wins rule — the listing reaches
 			// self-signed endpoints exactly like the chat path
-			// (specs/decisions/054-per-provider-tls-pinning.md).
-			return listOpenAIModels(ctx, baseURL, apiKey, llmtls.DirectDialClient(proxyClient, dialPolicy(proxyClient, bypass, baseURL), pc.TLSFingerprint, log))
+			// (specs/decisions/054-per-provider-tls-pinning.md). The fallback leg is
+			// strict: a wrong URL or revoked key on the Fetch Models surface must be
+			// actionable, unlike the best-effort lazy probe. The user-attended surface
+			// also carries the wider settingsListingTimeout per leg — the session-path
+			// 3s probe budget must not decide a settings click's fate.
+			entries, metadata, err := fetchListingEntries(ctx, baseURL, apiKey, "", llmtls.DirectDialClient(proxyClient, dialPolicy(proxyClient, bypass, baseURL), pc.TLSFingerprint, log), log, true, settingsListingTimeout)
+			if err != nil && len(entries) == 0 {
+				return ProviderModelsListing{}, err
+			}
+			if err != nil {
+				// The native leg served entries while the strict fallback leg
+				// failed; the listing is usable, so serve it and keep the
+				// failed leg visible.
+				log.Warn("provider model listing fallback leg failed; serving native listing entries",
+					"base_url", baseURL, "error", err)
+			}
+			names := make([]string, 0, len(entries))
+			for _, e := range entries {
+				names = append(names, e.ID)
+			}
+			sort.Strings(names)
+			return ProviderModelsListing{Models: names, Metadata: metadata}, nil
 		case "anthropic":
 			baseURL := cfg.ExpandEnvVars(pc.BaseURL)
 			// Fixed "anthropic" provider (no BaseURL): built-in Claude list. An
 			// anthropic_compatible entry queries /v1/models and falls back to the
 			// built-in list on any error so the UI degrades gracefully.
 			if baseURL == "" {
-				return llm.BuiltInModelNames("anthropic-api"), nil
+				return ProviderModelsListing{Models: llm.BuiltInModelNames("anthropic-api")}, nil
 			}
 			apiKey := cfg.ExpandEnvVars(pc.APIKey)
 			names, err := listAnthropicModels(ctx, baseURL, apiKey, llmtls.DirectDialClient(proxyClient, dialPolicy(proxyClient, bypass, baseURL), pc.TLSFingerprint, log))
 			if err != nil {
 				log.Warn("anthropic-compatible model listing failed; falling back to built-in list",
 					"provider", provider, "base_url", baseURL, "error", err)
-				return llm.BuiltInModelNames("anthropic-api"), nil
+				return ProviderModelsListing{Models: llm.BuiltInModelNames("anthropic-api")}, nil
 			}
-			return names, nil
+			return ProviderModelsListing{Models: names}, nil
 		default:
-			return nil, fmt.Errorf("unsupported provider type %q for provider %q", pc.ProviderType, provider)
+			return ProviderModelsListing{}, fmt.Errorf("unsupported provider type %q for provider %q", pc.ProviderType, provider)
 		}
 	}
 }
@@ -1951,11 +1987,14 @@ func remapLocalGoogleProtocols(
 }
 
 // buildLocalModelProbe returns a LocalModelProbe that locates the model's OpenAI-compatible
-// provider and fires an async context-window probe into the per-session registry via
-// SetRuntimeMetadata — any such provider, local or self-hosted (cloud is a harmless no-op);
-// endpoint order in probeSelfHostedContextWindow (specs/domains/llm-providers.md). Runs
-// detached so it never blocks session creation; onWindow fires on the same goroutine for
-// mid-task display refresh; tests override asyncRunner.
+// provider and fires an async metadata probe into the per-session registry via
+// SetRuntimeMetadata — ONLY the target model's record, even when the fetched
+// listing carries other models (they are parsed for the target-skip check but
+// never written; the settings Fetch Models surface is the full-listing
+// metadata consumer); endpoint order in probeSelfHostedMetadata
+// (specs/domains/llm-providers.md). Runs detached so it never blocks session
+// creation; onWindow fires on the same goroutine for mid-task display refresh,
+// scoped to the target model; tests override asyncRunner.
 func (b *OrchestratorBuilder) buildLocalModelProbe(cfg *BuilderConfig, registry *llm.ModelRegistry, onWindow func(model string, window int)) LocalModelProbe {
 	// Snapshot the proxy client once so the closure never touches b.mu.
 	b.mu.RLock()
@@ -1981,29 +2020,40 @@ func (b *OrchestratorBuilder) buildLocalModelProbe(cfg *BuilderConfig, registry 
 		// the caller's goroutine so the detached probe receives a ready client.
 		probeClient := llmtls.DirectDialClient(proxyClient, dialPolicy(proxyClient, bypass, baseURL), tlsFingerprint, log)
 		goRun(func() {
-			window, err := probeSelfHostedContextWindow(context.Background(), baseURL, apiKey, model, probeClient)
+			metadata, err := probeSelfHostedMetadata(context.Background(), baseURL, apiKey, model, probeClient, log)
 			if err != nil {
 				log.Warn("lazy model probe failed", "model", model, "base_url", baseURL, "error", err)
 			}
-			if window <= 0 {
-				return
-			}
 			// Tier 1.5: above the catalog (which would permanently shadow the
 			// observed runtime window), below a config override
-			// (specs/domains/llm-providers.md).
+			// (specs/domains/llm-providers.md). Only the target model's
+			// record is written: a probe of one model must never write (and
+			// possibly clobber, SetRuntimeMetadata replaces wholesale) the
+			// records of other models the listing happens to carry — an
+			// id shared across endpoints or an earlier probe of another
+			// model would silently drift the session's token budgets.
 			//
 			// OutputLimit mirrors the tier-5 fallback (32768), clamped to
-			// window/4 — a larger OutputLimit drives EffectiveMax negative
-			// and disables compaction. TokenizerType stays empty: a synthetic
-			// "approximate" would shadow the checkpoint's exact tokenizer.
-			registry.SetRuntimeMetadata(model, llm.ModelMetadata{
-				ContextWindow: window,
-				OutputLimit:   min(32768, window/4),
-			})
-			log.Debug("lazy model probe populated context window",
-				"model", model, "context_window", window)
-			if onWindow != nil {
-				onWindow(model, window)
+			// window/4, only when the source declared none — a declared
+			// limit strictly below the window wins as-is; the aggregator
+			// detector normalizes a contradictory (output >= context) or
+			// non-positive output to undeclared at the source, so listing
+			// data cannot drive EffectiveMax zero-or-negative and disable
+			// compaction.
+			// TokenizerType/Family stay empty: a synthetic value would shadow
+			// what the lower tiers carry.
+			target, ok := metadata[strings.ToLower(model)]
+			if !ok {
+				return
+			}
+			if target.OutputLimit <= 0 && target.ContextWindow > 0 {
+				target.OutputLimit = min(32768, target.ContextWindow/4)
+			}
+			registry.SetRuntimeMetadata(model, target)
+			log.Debug("lazy model probe populated model metadata",
+				"model", model, "context_window", target.ContextWindow)
+			if target.ContextWindow > 0 && onWindow != nil {
+				onWindow(model, target.ContextWindow)
 			}
 		})
 	}

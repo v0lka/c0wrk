@@ -23,7 +23,7 @@ type appBuilder interface {
 	SetVectorSearchEnabled(enabled bool)
 	UpdateShellBlocklist(*core.BuilderConfig) error
 	ReconfigureMCP(context.Context, *core.BuilderConfig) error
-	ListProviderModels(context.Context, string, *core.BuilderConfig) ([]string, error)
+	ListProviderModels(context.Context, string, *core.BuilderConfig) (core.ProviderModelsListing, error)
 	SetMCPWorkDir(string)
 	SetEmbeddedLLM(core.BuilderEmbeddedLLMConfig)
 	SetSubscriptionTokenSource(core.BuilderSubscriptionAuthConfig)

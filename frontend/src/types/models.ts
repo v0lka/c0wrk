@@ -892,6 +892,29 @@ export interface ListProviderModelsRequest {
   tls_fingerprint?: string
 }
 
+/** One listing entry's detector-chain view returned by ListProviderModels
+ *  (specs/domains/llm-providers.md, "Detector chain"): what the endpoint
+ *  declared about the model, parsed by the same chain the lazy session probe
+ *  uses. Zero/absent fields mean "not declared by the listing" — the UI falls
+ *  back to catalog/factory defaults. Display data: accordion badges and the
+ *  Configure dialog's prefill of override-free fields; a value reaches
+ *  config.yaml only through an explicit Save in the dialog. */
+export interface ModelMetadataInfo {
+  context_window: number
+  output_limit: number
+  /** Present only when the listing declared a complete modality set; the
+   *  detector emits nil on partial declarations (inherit instead). */
+  capabilities?: ModelCapabilities
+}
+
+/** ListProviderModels reply: deduplicated names plus per-model metadata keyed
+ *  by the exact name in models. Entries without a detector match are absent
+ *  from the map. */
+export interface ProviderModelsResponse {
+  models: string[]
+  metadata?: Record<string, ModelMetadataInfo>
+}
+
 /** Ask the backend for the fingerprint the provider's endpoint currently
  *  presents (TLS handshake only, no verification, no API key).
  *

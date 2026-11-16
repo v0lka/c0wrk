@@ -1614,6 +1614,40 @@ export namespace backend {
 		}
 	}
 	
+	export class ModelMetadataInfo {
+	    context_window: number;
+	    output_limit: number;
+	    capabilities?: llm.ModelCapabilities;
+	
+	    static createFrom(source: any = {}) {
+	        return new ModelMetadataInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.context_window = source["context_window"];
+	        this.output_limit = source["output_limit"];
+	        this.capabilities = this.convertValues(source["capabilities"], llm.ModelCapabilities);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class ModelProfilesCompactionResp {
 	    keep_last: number;
 	    block_size: number;
@@ -2200,6 +2234,38 @@ export namespace backend {
 	}
 	
 	
+	export class ProviderModelsResponse {
+	    models: string[];
+	    metadata: Record<string, ModelMetadataInfo>;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProviderModelsResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.models = source["models"];
+	        this.metadata = this.convertValues(source["metadata"], ModelMetadataInfo, true);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class ProxySettingsRequest {
 	    enabled: boolean;
 	    url: string;

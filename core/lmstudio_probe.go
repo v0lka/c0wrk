@@ -5,115 +5,111 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/v0lka/sp4rk/llm"
 )
 
-// probeLMStudioModels queries the native LM Studio REST API
-// (GET {base}/api/v0/models) and returns a map of model ID → context window:
-// the runtime value when the model is loaded, its capacity otherwise. URL
-// normalization, the loaded-window field spellings, the 404-silent / 5xx-error
-// response split, and the fallback chaining are specified in
-// specs/domains/llm-providers.md ("Lazy local-model probe"). httpClient
-// defaults to http.DefaultClient when nil.
-func probeLMStudioModels(ctx context.Context, baseURL, apiKey string, httpClient *http.Client) (map[string]int, error) {
+// rawModelEntry is one /models listing entry, kept as the server sent it:
+// the detector chain (modelmetadata_detectors.go) owns the field-level parse.
+type rawModelEntry struct {
+	ID   string
+	JSON []byte
+}
+
+// Per-leg listing timeouts, chosen by SURFACE not by strictness. The lazy
+// probe is best-effort latency insurance on the session path — 3s per leg
+// keeps session creation and model switches unblocked even against an
+// unreachable endpoint. The settings Fetch Models click is user-attended and
+// carries the 10s ceiling the SDK-based fetch had before the shared listing
+// layer — a cold vLLM or slow gateway answering within 10s must not fail
+// there where it did not before
+// (specs/domains/llm-providers.md, "Latency & safety").
+const (
+	probeListingTimeout    = 3 * time.Second
+	settingsListingTimeout = 10 * time.Second
+)
+
+// probeLMStudioEntries queries the native LM Studio REST API
+// (GET {base}/api/v0/models) and returns the raw listing entries. URL
+// normalization, the 404-silent / 5xx-error response split, and the fallback
+// chaining are specified in specs/domains/llm-providers.md ("Lazy
+// local-model probe"). httpClient defaults to http.DefaultClient when nil.
+// timeout bounds this leg (probeListingTimeout on the session path,
+// settingsListingTimeout on the settings surface).
+func probeLMStudioEntries(ctx context.Context, baseURL, apiKey string, httpClient *http.Client, timeout time.Duration) ([]rawModelEntry, error) {
 	endpoint := strings.TrimRight(baseURL, "/")
 	endpoint = strings.TrimSuffix(endpoint, "/v1")
 	endpoint += "/api/v0/models"
 
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, http.NoBody)
+	body, err := fetchModelListing(ctx, endpoint, apiKey, httpClient, "LM Studio", false, timeout)
 	if err != nil {
-		return make(map[string]int), fmt.Errorf("failed to build LM Studio models request: %w", err)
+		return nil, err
 	}
-	req.Header.Set("Accept", "application/json")
-	if apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+apiKey)
-	}
-
-	client := httpClient
-	if client == nil {
-		client = http.DefaultClient
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return make(map[string]int), fmt.Errorf("failed to query LM Studio models: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode < 500 && resp.StatusCode != http.StatusOK {
-		return make(map[string]int), nil
-	}
-	if resp.StatusCode >= 500 {
-		return make(map[string]int), fmt.Errorf("lm studio models endpoint returned status %d", resp.StatusCode)
-	}
-
-	// Bounded read: a hostile local server must not balloon memory.
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return make(map[string]int), fmt.Errorf("failed to read LM Studio models response: %w", err)
-	}
-
-	var payload struct {
-		Data []struct {
-			ID                  string `json:"id"`
-			MaxContextLength    int    `json:"max_context_length"`
-			LoadedContextLength int    `json:"loaded_context_length"`
-			LoadedInstances     []struct {
-				Config struct {
-					ContextLength int `json:"context_length"`
-				} `json:"config"`
-			} `json:"loaded_instances"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return make(map[string]int), fmt.Errorf("failed to parse LM Studio models response: %w", err)
-	}
-
-	result := make(map[string]int, len(payload.Data))
-	for _, m := range payload.Data {
-		if m.ID == "" {
-			continue
-		}
-		window := m.MaxContextLength
-		if m.LoadedContextLength > 0 {
-			window = m.LoadedContextLength
-		}
-		for _, li := range m.LoadedInstances {
-			if li.Config.ContextLength > 0 {
-				window = li.Config.ContextLength
-				break
-			}
-		}
-		result[m.ID] = window
-	}
-	return result, nil
+	return decodeModelListing(body, "LM Studio")
 }
 
-// probeOpenAIModels queries the standard OpenAI-compatible model listing
-// (GET {base}/v1/models) and returns a map of model ID → context window —
-// the first non-zero of max_model_len / max_context_length / context_length
-// that self-hosted servers extend the entry with; a cloud listing without
-// them maps to nothing. Error classes and URL normalization mirror
-// probeLMStudioModels; semantics: specs/domains/llm-providers.md
-// ("Lazy local-model probe").
-func probeOpenAIModels(ctx context.Context, baseURL, apiKey string, httpClient *http.Client) (map[string]int, error) {
+// probeOpenAIEntries queries the standard OpenAI-compatible model listing
+// (GET {base}/v1/models — the /v1 suffix is appended when the base_url omits
+// it, as on the chat path's best-effort legs) and returns the raw listing
+// entries; self-hosted servers (vLLM/TGI/Ollama) extend entries with window
+// fields a cloud listing omits. Error classes mirror probeLMStudioEntries:
+// 4xx stays a silent no-op, 5xx an error — this leg is best-effort only.
+// timeout bounds this leg (probeListingTimeout on the session path,
+// settingsListingTimeout on the settings surface).
+// Semantics: specs/domains/llm-providers.md ("Lazy local-model probe").
+func probeOpenAIEntries(ctx context.Context, baseURL, apiKey string, httpClient *http.Client, timeout time.Duration) ([]rawModelEntry, error) {
 	endpoint := strings.TrimRight(baseURL, "/")
 	if !strings.HasSuffix(endpoint, "/v1") {
 		endpoint += "/v1"
 	}
 	endpoint += "/models"
 
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	body, err := fetchModelListing(ctx, endpoint, apiKey, httpClient, "openai", false, timeout)
+	if err != nil {
+		return nil, err
+	}
+	return decodeModelListing(body, "openai")
+}
+
+// strictOpenAIEntries is the settings-fetch twin of probeOpenAIEntries: same
+// decode, but the endpoint is the base_url VERBATIM ({base}/models — the
+// exact URL contract the chat path derives from the same base_url) and 4xx
+// responses surface as errors — on the Fetch Models surface a wrong URL or
+// revoked API key must be actionable, not an empty list (the lazy probe
+// stays best-effort and silent). No /v1 suffix is invented: gateways mounting
+// their OpenAI-compatible surface under another path (…/v1beta/openai) list
+// in Fetch Models exactly where they chat. A base_url without /v1 (bare LM
+// Studio host) is covered by the native leg, so the strict leg's 404 there
+// degrades to the native listing (Warn, nil error). timeout bounds this leg
+// (settingsListingTimeout — the surface that is the only strict4xx caller).
+func strictOpenAIEntries(ctx context.Context, baseURL, apiKey string, httpClient *http.Client, timeout time.Duration) ([]rawModelEntry, error) {
+	endpoint := strings.TrimRight(baseURL, "/") + "/models"
+
+	body, err := fetchModelListing(ctx, endpoint, apiKey, httpClient, "openai", true, timeout)
+	if err != nil {
+		return nil, err
+	}
+	return decodeModelListing(body, "openai")
+}
+
+// fetchModelListing is the shared HTTP leg of a listing fetch: caller-chosen
+// per-leg timeout (probeListingTimeout / settingsListingTimeout), bearer
+// auth, bounded 1 MiB read, and the 4xx-silent/5xx-error split
+// (specs/domains/llm-providers.md, "Latency & safety"). strict4xx reports
+// non-200 non-5xx statuses as errors instead of swallowing them.
+// label names the endpoint in error messages.
+func fetchModelListing(ctx context.Context, endpoint, apiKey string, httpClient *http.Client, label string, strict4xx bool, timeout time.Duration) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, http.NoBody)
 	if err != nil {
-		return make(map[string]int), fmt.Errorf("failed to build OpenAI models request: %w", err)
+		return nil, fmt.Errorf("failed to build %s models request: %w", label, err)
 	}
 	req.Header.Set("Accept", "application/json")
 	if apiKey != "" {
@@ -127,75 +123,180 @@ func probeOpenAIModels(ctx context.Context, baseURL, apiKey string, httpClient *
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return make(map[string]int), fmt.Errorf("failed to query OpenAI models: %w", err)
+		return nil, fmt.Errorf("failed to query %s models: %w", label, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 500 && resp.StatusCode != http.StatusOK {
-		return make(map[string]int), nil
+		if strict4xx {
+			return nil, fmt.Errorf("%s models endpoint returned status %d", label, resp.StatusCode)
+		}
+		return nil, nil
 	}
 	if resp.StatusCode >= 500 {
-		return make(map[string]int), fmt.Errorf("openai models endpoint returned status %d", resp.StatusCode)
+		return nil, fmt.Errorf("%s models endpoint returned status %d", label, resp.StatusCode)
 	}
 
 	// Bounded read: a hostile local server must not balloon memory.
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return make(map[string]int), fmt.Errorf("failed to read OpenAI models response: %w", err)
+		return nil, fmt.Errorf("failed to read %s models response: %w", label, err)
 	}
+	return body, nil
+}
 
+// decodeModelListing extracts the id-keyed raw entries from a listing body;
+// entries without an id are skipped.
+func decodeModelListing(body []byte, label string) ([]rawModelEntry, error) {
+	if len(body) == 0 {
+		return nil, nil
+	}
 	var payload struct {
-		Data []struct {
-			ID            string `json:"id"`
-			MaxModelLen   int    `json:"max_model_len"`
-			MaxContextLen int    `json:"max_context_length"`
-			ContextLen    int    `json:"context_length"`
-		} `json:"data"`
+		Data []json.RawMessage `json:"data"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return make(map[string]int), fmt.Errorf("failed to parse OpenAI models response: %w", err)
+		return nil, fmt.Errorf("failed to parse %s models response: %w", label, err)
 	}
-
-	result := make(map[string]int, len(payload.Data))
-	for _, m := range payload.Data {
-		if m.ID == "" {
+	entries := make([]rawModelEntry, 0, len(payload.Data))
+	for _, raw := range payload.Data {
+		var idOnly struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(raw, &idOnly); err != nil || idOnly.ID == "" {
 			continue
 		}
-		window := m.MaxModelLen
-		if window == 0 {
-			window = m.MaxContextLen
-		}
-		if window == 0 {
-			window = m.ContextLen
-		}
-		if window > 0 {
-			result[m.ID] = window
-		}
+		entries = append(entries, rawModelEntry{ID: idOnly.ID, JSON: raw})
 	}
-	return result, nil
+	return entries, nil
 }
 
-// probeSelfHostedContextWindow discovers the runtime context window for a
-// single model id: LM Studio native endpoint first, standard /v1/models
-// fallback second; 0 (with the registry's existing metadata kept) when no
-// source reports. Error semantics and probe ordering:
-// specs/domains/llm-providers.md ("Lazy local-model probe").
-func probeSelfHostedContextWindow(ctx context.Context, baseURL, apiKey, model string, httpClient *http.Client) (int, error) {
-	if lm, err := probeLMStudioModels(ctx, baseURL, apiKey, httpClient); err == nil {
-		if w := lm[model]; w > 0 {
-			return w, nil
+// fetchListingEntries runs the two-leg listing chain over an OpenAI-compatible
+// endpoint: the LM Studio native listing first, the standard /models listing
+// second (the base_url VERBATIM on the strict settings leg, /v1-normalized on
+// the best-effort probe leg — see strictOpenAIEntries/probeOpenAIEntries).
+// It is the shared raw layer under BOTH consumers of the chain — the
+// lazy session probe (specs/domains/llm-providers.md, "Lazy local-model
+// probe") and the settings Fetch Models listing. The fallback leg is skipped
+// when target already carries detector metadata from the native listing (a
+// bare "" target — the settings listing — never short-circuits, so both legs
+// always merge there; being independent, they run concurrently there, so a
+// dead endpoint fails after one leg's timeout instead of the sum of both),
+// and fallback entries never overwrite an id the native leg produced — its
+// wholesale replace would trade the runtime (loaded) window for the
+// advertised capacity. strictFallback makes the fallback leg surface 4xx
+// errors (a bad key or URL on the settings surface must be actionable)
+// instead of silent-empty. A non-nil error reports only the fallback leg —
+// native entries come back alongside it and must still be used by the
+// caller. The returned metadata map is the detector chain's parse of the
+// returned entries, keyed by lowercased model id — callers never re-parse
+// (the native parse also feeds the target-skip check). log may be nil.
+// timeout bounds EACH leg at the surface's choice (probeListingTimeout on
+// the session path, settingsListingTimeout on the settings surface); with
+// the legs concurrent (target == "") it stays a per-leg bound, not a shared
+// deadline.
+func fetchListingEntries(ctx context.Context, baseURL, apiKey, target string, httpClient *http.Client, log *slog.Logger, strictFallback bool, timeout time.Duration) ([]rawModelEntry, map[string]llm.ModelMetadata, error) {
+	var lmEntries, oaiEntries []rawModelEntry
+	var lmErr, oaiErr error
+	runFallback := func() {
+		if strictFallback {
+			oaiEntries, oaiErr = strictOpenAIEntries(ctx, baseURL, apiKey, httpClient, timeout)
+		} else {
+			oaiEntries, oaiErr = probeOpenAIEntries(ctx, baseURL, apiKey, httpClient, timeout)
 		}
 	}
-	return probeOpenAIModelWindow(ctx, baseURL, apiKey, model, httpClient)
+	var lmMeta map[string]llm.ModelMetadata
+	if target == "" {
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			lmEntries, lmErr = probeLMStudioEntries(ctx, baseURL, apiKey, httpClient, timeout)
+		}()
+		go func() {
+			defer wg.Done()
+			runFallback()
+		}()
+		wg.Wait()
+	} else {
+		lmEntries, lmErr = probeLMStudioEntries(ctx, baseURL, apiKey, httpClient, timeout)
+		if lmErr == nil {
+			lmMeta = detectListingMetadata(lmEntries)
+			if _, found := lmMeta[strings.ToLower(target)]; found {
+				return lmEntries, lmMeta, nil
+			}
+		}
+		runFallback()
+	}
+	if lmErr != nil {
+		// The silent split keeps 404-class native responses quiet, so any
+		// error here is a real native-leg failure the fallback papers over —
+		// keep it visible at Debug.
+		if log != nil {
+			log.Debug("LM Studio native listing unavailable; falling back to /v1/models", "error", lmErr)
+		}
+	}
+	if oaiErr != nil {
+		// The entries served alongside the error are the native ones; their
+		// parse is already in hand unless only the target-less parallel path
+		// ran (which never needed it for the skip check).
+		if lmErr == nil && lmMeta == nil {
+			lmMeta = detectListingMetadata(lmEntries)
+		}
+		return lmEntries, lmMeta, oaiErr
+	}
+	merged := mergeListingEntries(lmEntries, oaiEntries)
+	return merged, detectListingMetadata(merged), nil
 }
 
-// probeOpenAIModelWindow is the /v1/models fallback for a single model id,
-// factored out of probeSelfHostedContextWindow for independent testability;
-// 0 when the listing omits the model.
-func probeOpenAIModelWindow(ctx context.Context, baseURL, apiKey, model string, httpClient *http.Client) (int, error) {
-	oai, err := probeOpenAIModels(ctx, baseURL, apiKey, httpClient)
-	if err != nil {
-		return 0, err
+// mergeListingEntries concatenates two legs' entries, dropping fallback
+// entries whose lowercased id the primary leg already produced. First-wins
+// metadata detection over the merged slice then preserves the native listing's
+// richer (runtime) view.
+func mergeListingEntries(primary, fallback []rawModelEntry) []rawModelEntry {
+	if len(fallback) == 0 {
+		return primary
 	}
-	return oai[model], nil
+	seen := make(map[string]struct{}, len(primary))
+	for _, e := range primary {
+		seen[strings.ToLower(e.ID)] = struct{}{}
+	}
+	merged := make([]rawModelEntry, 0, len(primary)+len(fallback))
+	merged = append(merged, primary...)
+	for _, e := range fallback {
+		if _, dup := seen[strings.ToLower(e.ID)]; dup {
+			continue
+		}
+		merged = append(merged, e)
+	}
+	return merged
+}
+
+// probeSelfHostedMetadata discovers rich metadata for every model the server
+// lists, through the detector chain over fetchListingEntries (native leg
+// first, /v1 fallback; the target-skip and no-overwrite rules live there).
+// Returned map is keyed by lowercased model id; entries no detector matches
+// are dropped. Error semantics and probe ordering:
+// specs/domains/llm-providers.md ("Lazy local-model probe"); a non-nil error
+// reports only the fallback leg — already-discovered metadata is returned
+// alongside it and must still be written by the caller. log may be nil.
+func probeSelfHostedMetadata(ctx context.Context, baseURL, apiKey, model string, httpClient *http.Client, log *slog.Logger) (map[string]llm.ModelMetadata, error) {
+	_, metadata, err := fetchListingEntries(ctx, baseURL, apiKey, model, httpClient, log, false, probeListingTimeout)
+	return metadata, err
+}
+
+// detectListingMetadata runs the detector chain over a fetched listing,
+// keyed by lowercased model id. First-wins per id: the native leg precedes
+// the fallback in a merged listing and its view of a repeated id is the
+// authoritative one.
+func detectListingMetadata(entries []rawModelEntry) map[string]llm.ModelMetadata {
+	metadata := make(map[string]llm.ModelMetadata, len(entries))
+	for _, e := range entries {
+		if meta, ok := detectModelMetadata(e.JSON); ok {
+			key := strings.ToLower(e.ID)
+			if _, dup := metadata[key]; !dup {
+				metadata[key] = meta
+			}
+		}
+	}
+	return metadata
 }

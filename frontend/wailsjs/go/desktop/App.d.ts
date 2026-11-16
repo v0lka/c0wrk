@@ -291,7 +291,7 @@ export function ListProjectWorktrees():Promise<Array<backend.GitWorktree>>;
 
 export function ListProjects():Promise<Array<project.ProjectInfo>>;
 
-export function ListProviderModels(arg1:backend.ListProviderModelsRequest):Promise<Array<string>>;
+export function ListProviderModels(arg1:backend.ListProviderModelsRequest):Promise<backend.ProviderModelsResponse>;
 
 export function ListSessionWorkDirectories(arg1:string):Promise<Array<project.WorkDirectoryRecord>>;
 

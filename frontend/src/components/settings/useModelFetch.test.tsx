@@ -11,7 +11,9 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
 const spies = vi.hoisted(() => ({
-  listProviderModels: vi.fn<(req: Record<string, unknown>) => Promise<string[]>>(),
+  listProviderModels: vi.fn<
+    (req: Record<string, unknown>) => Promise<import('@/types/models').ProviderModelsResponse>
+  >(),
 }))
 
 vi.mock('@/api/mcp', () => ({ listProviderModels: spies.listProviderModels }))
@@ -56,7 +58,7 @@ async function flush(): Promise<void> {
 
 beforeEach(() => {
   vi.clearAllMocks()
-  spies.listProviderModels.mockResolvedValue(['qwen3', 'llama'])
+  spies.listProviderModels.mockResolvedValue({ models: ['qwen3', 'llama'], metadata: { qwen3: { context_window: 512000, output_limit: 32000 } } })
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
@@ -79,6 +81,12 @@ describe('useModelFetch TLS pin handling', () => {
       type: 'openai',
       tls_fingerprint: pin,
     })
+
+    // Detector-chain metadata rides the same fetch result, keyed by the
+    // exact model name (specs/domains/llm-providers.md, "Detector chain").
+    expect(result.modelsMetadata?.qwen3?.context_window).toBe(512000)
+    expect(result.modelsMetadata?.qwen3?.output_limit).toBe(32000)
+    expect(result.modelsMetadata?.llama).toBeUndefined()
   })
 
   // An explicit empty draft must win over the persisted pin on the backend,
@@ -135,13 +143,16 @@ describe('useModelFetch TLS pin handling', () => {
     expect(result.apiKeyDirty).toBe(true)
 
     // Add the pin and retry — no remount, no list reset needed.
-    spies.listProviderModels.mockResolvedValueOnce(['qwen3'])
+    spies.listProviderModels.mockResolvedValueOnce({ models: ['qwen3'] })
     await render(makeConfig({ tls_fingerprint: pin }))
     await act(async () => { await result.handleApply() })
     await flush()
 
     expect(result.models).toEqual(['qwen3'])
     expect(result.modelsError).toBeNull()
+    // A response without a metadata map yields undefined metadata — the
+    // pre-feature behavior.
+    expect(result.modelsMetadata).toBeUndefined()
   })
 })
 
